@@ -64,8 +64,12 @@ make clean    # Clean up
 ## Status
 
 🔄 **Early Development** - Basic Docker infrastructure completed
-🎯 **Next**: Add HTTP client and JSON API parsing
+🎯 **Next**: Add HTTP client and JSON API parsing  
 📋 **Roadmap**: See [TODO.md](TODO.md)
+
+## Contributing
+
+This project follows XP pair programming with human + AI collaboration. See [CLAUDE.md](CLAUDE.md) for development guidelines.
 
 ## Who
 
