@@ -30,7 +30,7 @@ static GLOBAL_CLIENT: Lazy<Client> = Lazy::new(|| {
         .tcp_keepalive(Duration::from_secs(60))
         .pool_idle_timeout(Duration::from_secs(90))
         .pool_max_idle_per_host(20)
-        .user_agent("butterfly-dl/0.1.0")
+        .user_agent(&format!("butterfly-dl/{}", env!("BUTTERFLY_VERSION")))
         .build()
         .expect("Failed to create HTTP client")
 });

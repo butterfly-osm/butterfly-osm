@@ -12,7 +12,7 @@ mod cli;
 #[derive(Parser)]
 #[command(name = "butterfly-dl")]
 #[command(about = "Optimized OpenStreetMap data downloader with S3 and HTTP support")]
-#[command(version = "0.1.0")]
+#[command(version = env!("BUTTERFLY_VERSION"))]
 struct Cli {
     /// Source identifier (e.g., "planet", "europe", "europe/belgium")
     source: String,
@@ -67,7 +67,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .init();
     
     if cli.verbose {
-        eprintln!("🦋 Butterfly-dl v0.1.0 starting...");
+        eprintln!("🦋 Butterfly-dl v{} starting...", env!("BUTTERFLY_VERSION"));
     }
     
     // Resolve output destination

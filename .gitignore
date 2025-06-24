@@ -29,6 +29,17 @@ data/
 *.log
 .env.local
 
+# Benchmark test files
+benchmarks/*.pbf
+benchmarks/*_curl.pbf
+benchmarks/*_aria2.pbf
+benchmarks/*_butterfly.pbf
+
+# Temporary files
+*.tmp
+*~
+.DS_Store
+
 # Docker
 .dockerignore
 

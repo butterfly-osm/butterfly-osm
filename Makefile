@@ -64,7 +64,7 @@ install-pkgconfig:
 	@echo "⚙️ Installing pkg-config file..."
 	@mkdir -p $(PKGCONFIGDIR)
 	@sed -e 's|@PREFIX@|$(PREFIX)|g' \
-	     -e 's|@VERSION@|0.1.0|g' \
+	     -e "s|@VERSION@|$$(cat VERSION)|g" \
 	     butterfly-dl.pc.in > $(PKGCONFIGDIR)/butterfly-dl.pc
 
 # Build examples

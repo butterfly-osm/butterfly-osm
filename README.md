@@ -172,6 +172,40 @@ time butterfly-dl europe/monaco
 butterfly-dl europe/monaco - | wc -c
 ```
 
+### Version Management
+
+The project uses a centralized version management system to maintain consistency across all components:
+
+**📄 Single Source of Truth:**
+- **`VERSION`** file contains the current version number (e.g., `1.0.0`)
+- All other files automatically read from this central location
+
+**🔧 Automatic Version Propagation:**
+- **CLI tool**: Uses `env!("BUTTERFLY_VERSION")` from build script
+- **HTTP User-Agent**: Dynamically includes version in requests
+- **Library exports**: Version available via build-time environment
+- **C bindings**: pkg-config file includes correct version
+- **Documentation**: Version stays in sync automatically
+
+**🔄 Build Integration:**
+- `build.rs` reads `VERSION` file and sets environment variables
+- Any change to `VERSION` triggers automatic rebuild
+- Build system tracks version file as dependency
+
+**📝 Updating Version:**
+```bash
+# Update version for new release
+echo "1.1.0" > VERSION
+
+# Rebuild automatically picks up new version
+cargo build --release
+
+# All components now use 1.1.0
+./target/release/butterfly-dl --version  # Shows 1.1.0
+```
+
+**Note:** `Cargo.toml` version must still be updated manually due to Cargo limitations.
+
 ## Architecture
 
 - **Rust + Tokio**: Async/await for concurrent downloads

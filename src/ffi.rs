@@ -208,7 +208,13 @@ pub extern "C" fn butterfly_free_string(ptr: *mut c_char) {
 /// Static string with version information (does not need to be freed)
 #[no_mangle]
 pub extern "C" fn butterfly_version() -> *const c_char {
-    "butterfly-dl 0.1.0\0".as_ptr() as *const c_char
+    use std::sync::OnceLock;
+    static VERSION_STRING: OnceLock<std::ffi::CString> = OnceLock::new();
+    
+    VERSION_STRING.get_or_init(|| {
+        std::ffi::CString::new(format!("butterfly-dl {}", env!("BUTTERFLY_VERSION")))
+            .expect("Version string contains null byte")
+    }).as_ptr()
 }
 
 /// Initialize the library (optional, called automatically)
@@ -247,7 +253,7 @@ mod tests {
         let version = butterfly_version();
         let version_str = unsafe { CStr::from_ptr(version) }.to_str().unwrap();
         assert!(version_str.contains("butterfly-dl"));
-        assert!(version_str.contains("0.1.0"));
+        assert!(version_str.contains(env!("BUTTERFLY_VERSION")));
     }
 
     #[test]
