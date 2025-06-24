@@ -57,6 +57,10 @@ pub use crate::core::stream::DownloadOptions;
 // Internal modules
 mod core;
 
+// C-compatible FFI bindings (optional)
+#[cfg(feature = "c-bindings")]
+pub mod ffi;
+
 /// Download a file to a destination
 ///
 /// # Arguments

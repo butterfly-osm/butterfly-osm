@@ -12,6 +12,7 @@ edition = "2021"
 [lib]
 name = "butterfly_dl"
 path = "src/lib.rs"
+crate-type = ["cdylib", "staticlib", "rlib"]
 
 [[bin]]
 name = "butterfly-dl"
@@ -20,6 +21,7 @@ path = "src/main.rs"
 [features]
 default = ["s3"]
 s3 = ["aws-config", "aws-sdk-s3"]
+c-bindings = []
 
 [dependencies]
 reqwest = { version = "0.11", features = ["json", "gzip", "brotli", "stream", "rustls-tls"] }
