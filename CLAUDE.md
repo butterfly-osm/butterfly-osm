@@ -44,6 +44,9 @@
 13. **Patience**
 
     * Allow builds, downloads, and containers to finish without interruption.
+14. **Convention over configuration**
+
+    * Prefer established patterns and defaults to reduce unnecessary configuration.
 
 ---
 
