@@ -24,32 +24,32 @@ Simple performance benchmarks comparing butterfly-dl against curl.
 ## Sample Output
 
 ```bash
-$ ./benchmarks/bench.sh monaco
+$ ./benchmarks/bench.sh europe/monaco
 
 Building butterfly-dl...
 
-=== Benchmarking: monaco ===
+=== Benchmarking: europe/monaco ===
 
 Testing butterfly-dl...
-📁 Saving to: ./benchmarks/monaco_butterfly.pbf
-🌐 Downloading monaco
-  Duration: 0.234s
-  Size: 1.23 MB
-  Speed: 5.26 MB/s
+📁 Saving to: ./benchmarks/europe_monaco_butterfly.pbf
+🌐 Downloading europe/monaco
+  Duration: 0.421s
+  Size: 0.61 MB
+  Speed: 1.44 MB/s
 
 Testing curl...
-  Duration: 0.198s
-  Size: 1.23 MB
-  Speed: 6.21 MB/s
+######################################################################## 100.0%
+  Duration: 0.337s
+  Size: 0.61 MB
+  Speed: 1.80 MB/s
 
 === COMPARISON ===
-🐌 Butterfly-dl is 18.2% slower
-📉 Butterfly-dl has 15.3% lower throughput
-📊 Time ratio (curl/butterfly): 0.85x
+🐌 Butterfly-dl is 20.0% slower
+📉 Butterfly-dl has 20.0% lower throughput
+📊 Time ratio (curl/butterfly): 0.80x
 
-Files saved in: ./benchmarks
-  monaco_butterfly.pbf
-  monaco_curl.pbf
+Cleaning up test files...
+✅ Test files removed
 ```
 
 ## Expected Results
@@ -60,7 +60,8 @@ Files saved in: ./benchmarks
 
 ## Notes
 
-- Downloads are saved to `./benchmarks/` directory
+- Downloads are temporarily saved to `./benchmarks/` directory
 - Both tools download the same file for fair comparison
 - Network conditions affect results
-- Files are kept for verification
+- Test files are automatically cleaned up after benchmarking
+- curl shows progress bar during download

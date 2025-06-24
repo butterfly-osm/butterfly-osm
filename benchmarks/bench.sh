@@ -58,7 +58,7 @@ echo ""
 echo "Testing curl..."
 URL="https://download.geofabrik.de/${COUNTRY}-latest.osm.pbf"
 start_time=$(date +%s.%N)
-curl -s -L -o "$DOWNLOAD_DIR/${SAFE_NAME}_curl.pbf" "$URL"
+curl --progress-bar -L -o "$DOWNLOAD_DIR/${SAFE_NAME}_curl.pbf" "$URL"
 end_time=$(date +%s.%N)
 curl_duration=$(echo "$end_time - $start_time" | bc -l)
 
@@ -99,6 +99,9 @@ ratio=$(echo "scale=2; $curl_duration / $butterfly_duration" | bc -l)
 echo "📊 Time ratio (curl/butterfly): ${ratio}x"
 
 echo ""
-echo "Files saved in: $DOWNLOAD_DIR"
-echo "  ${SAFE_NAME}_butterfly.pbf"
-echo "  ${SAFE_NAME}_curl.pbf"
+
+# Clean up test files
+echo "Cleaning up test files..."
+rm -f "$DOWNLOAD_DIR/${SAFE_NAME}_butterfly.pbf"
+rm -f "$DOWNLOAD_DIR/${SAFE_NAME}_curl.pbf"
+echo "✅ Test files removed"
