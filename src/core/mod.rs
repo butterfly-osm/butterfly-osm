@@ -8,7 +8,5 @@ pub mod stream;
 pub mod downloader;
 
 // Re-export main types for internal use
-pub use error::{Error, Result};
-pub use source::{DownloadSource, SourceConfig, resolve_source, resolve_output_filename};
-pub use stream::{DownloadStream, DownloadOptions, ProgressCallback};
+pub use source::{SourceConfig, resolve_output_filename};
 pub use downloader::Downloader;

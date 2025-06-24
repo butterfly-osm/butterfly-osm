@@ -22,11 +22,7 @@ use aws_sdk_s3::Client as S3Client;
 #[cfg(feature = "s3")]
 use crate::core::stream::create_s3_stream;
 
-/// Buffer size for streaming operations (64KB)
-const BUFFER_SIZE: usize = 64 * 1024;
-
-/// Maximum number of parallel connections for HTTP downloads
-const MAX_CONNECTIONS: usize = 16;
+// Constants removed - unused in current implementation
 
 /// Global HTTP client with optimizations
 static GLOBAL_CLIENT: Lazy<Client> = Lazy::new(|| {

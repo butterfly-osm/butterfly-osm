@@ -2,7 +2,7 @@
 //!
 //! Handles intelligent routing between S3 and HTTP sources based on the requested data.
 
-use crate::core::error::{Error, Result};
+use crate::core::error::Result;
 
 /// Represents different download sources
 #[derive(Debug, Clone, PartialEq)]
