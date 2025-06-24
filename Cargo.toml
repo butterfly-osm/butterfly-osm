@@ -1,0 +1,12 @@
+[package]
+name = "geofabrik-downloader"
+version = "0.1.0"
+description = "Geofabrik PBF downloader - CLI tool and library for downloading OpenStreetMap data"
+authors = ["Pierre <pierre@warnier.net>"]
+license = "MIT"
+repository = "https://github.com/username/butterfly"
+keywords = ["osm", "geofabrik", "pbf", "openstreetmap", "download"]
+categories = ["command-line-utilities"]
+edition = "2021"
+
+[dependencies]
