@@ -1,0 +1,13 @@
+services:
+  geofabrik-downloader:
+    build: .
+    container_name: geofabrik-downloader
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+    volumes:
+      - ./data:/data
+    working_dir: /data
+    profiles:
+      - tools
+    # Override entrypoint for interactive use
+    # docker-compose run --rm geofabrik-downloader --help
