@@ -15,7 +15,7 @@ Downloads OSM data in PBF format from [Geofabrik](https://download.geofabrik.de/
 - Dry-run mode for previewing downloads
 - **Multi-connection parallel downloads** for faster speeds
 - Dockerized execution with volume mounting
-- Configuration files and environment variables
+- File freshness checking with configurable renewal periods
 - Structured logging and error handling
 
 ## Why
@@ -75,17 +75,11 @@ Default settings:
 
 Environment variables (.env file):
 ```bash
-# Basic settings
-GEOFABRIK_DATA_DIR=/data
-GEOFABRIK_LOG_LEVEL=info
-
-# Multi-connection download settings (defaults optimized for performance)
-GEOFABRIK_PARALLEL_CONNECTIONS=8
-GEOFABRIK_CHUNK_SIZE=104857600  # 100MB
-GEOFABRIK_ENABLE_PARALLEL_DOWNLOAD=true
-
-# Logging
+# Logging level
 RUST_LOG=info
+
+# File renewal period in days (default: 7)
+RENEW_PBF_PERIOD=7
 ```
 
 ## Performance
