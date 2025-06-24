@@ -29,14 +29,16 @@ use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use std::fs;
 use indicatif::{ProgressBar, ProgressStyle};
-use reqwest::Client;
+use reqwest::{Client, ClientBuilder};
 use std::io::Write;
 use log::{info, warn};
 use std::fmt;
-use futures::future::try_join_all;
-use bytes::Bytes;
 use std::sync::Arc;
 use std::time::{SystemTime, Duration};
+use once_cell::sync::Lazy;
+use futures::StreamExt;
+use std::sync::atomic::{AtomicU64, Ordering};
+use futures::TryStreamExt;
 
 /// Command-line interface for the Geofabrik PBF downloader
 #[derive(Parser)]
@@ -144,10 +146,71 @@ impl From<std::io::Error> for GeofabrikError {
     }
 }
 
-// Hardcoded optimal defaults (convention over configuration)
-const PARALLEL_CONNECTIONS: u32 = 8;
-const CHUNK_SIZE: u64 = 100 * 1024 * 1024; // 100MB
+// Optimized defaults (convention over configuration with autotuning)
+const MAX_CHUNK_SIZE: u64 = 16 * 1024 * 1024; // 16MB max
+const MIN_CHUNK_SIZE: u64 = 2 * 1024 * 1024; // 2MB min
 const ENABLE_PARALLEL_DOWNLOAD: bool = true;
+
+// Global optimized HTTP client for connection reuse
+static GLOBAL_CLIENT: Lazy<Client> = Lazy::new(|| {
+    create_optimized_client().expect("Failed to create optimized HTTP client")
+});
+
+/// Create an optimized HTTP client with performance enhancements
+fn create_optimized_client() -> Result<Client> {
+    ClientBuilder::new()
+        // Aggressive connection pooling for parallel downloads
+        .pool_max_idle_per_host(32)
+        .pool_idle_timeout(Duration::from_secs(120))
+        // Enable compression but be selective
+        .gzip(false)  // PBF files are already compressed
+        .brotli(false) // Disable compression overhead
+        // TCP optimizations for maximum throughput
+        .tcp_nodelay(true)
+        .tcp_keepalive(Duration::from_secs(30))
+        // Aggressive timeouts for faster failure detection
+        .timeout(Duration::from_secs(180))
+        .connect_timeout(Duration::from_secs(10))
+        // Use rustls for better performance than openssl
+        .use_rustls_tls()
+        // Optimized user agent
+        .user_agent("geofabrik-downloader/0.1.0 (high-performance)")
+        // Enable HTTP/2 adaptive window scaling
+        .http2_adaptive_window(true)
+        .http2_max_frame_size(Some(1024 * 1024)) // 1MB HTTP/2 frames
+        .build()
+        .map_err(|e| anyhow!("Failed to build HTTP client: {}", e))
+}
+
+/// Calculate optimal chunk size based on file size and connection count
+fn calculate_optimal_chunk_size(file_size: u64, connections: u32) -> u64 {
+    // Calculate chunk size that balances parallelism and efficiency
+    let base_calculation = file_size / (connections as u64 * 4);
+    
+    // Clamp to optimal range based on research
+    base_calculation.clamp(MIN_CHUNK_SIZE, MAX_CHUNK_SIZE)
+}
+
+/// Calculate optimal number of connections based on file size and system capabilities
+fn calculate_optimal_connections(file_size: u64) -> u32 {
+    // Get system info for intelligent scaling
+    let cpu_count = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4) as u32;
+    
+    let base_connections = match file_size {
+        size if size <= 10 * 1024 * 1024 => 2,       // <= 10MB: 2 connections
+        size if size <= 100 * 1024 * 1024 => 4,      // <= 100MB: 4 connections  
+        size if size <= 512 * 1024 * 1024 => 8,      // <= 512MB: 8 connections
+        size if size <= 1024 * 1024 * 1024 => 12,    // <= 1GB: 12 connections
+        size if size <= 2048 * 1024 * 1024 => 16,    // <= 2GB: 16 connections
+        _ => 20,                                      // > 2GB: 20 connections
+    };
+    
+    // Scale with CPU count but cap at reasonable limits
+    let scaled = std::cmp::min(base_connections, cpu_count * 4);
+    std::cmp::max(scaled, 2) // Minimum 2 connections
+}
 
 /// Check if a file exists and is newer than the renewal period
 /// 
@@ -232,7 +295,7 @@ async fn main() -> Result<()> {
 /// # Returns
 /// * `Result<()>` - Success or error details
 async fn list_regions(filter: ListFilter) -> Result<()> {
-    let client = Client::new();
+    let client = &*GLOBAL_CLIENT;
     
     info!("Fetching Geofabrik index for listing regions with filter: {:?}", filter);
     println!("🔍 Fetching Geofabrik index...");
@@ -337,7 +400,7 @@ struct Urls {
 /// # Returns
 /// * `Result<()>` - Success or error details
 async fn download_country(country: &str, dry_run: bool) -> Result<()> {
-    let client = Client::new();
+    let client = &*GLOBAL_CLIENT;
     
     info!("Starting country download: {} (dry_run: {})", country, dry_run);
     println!("🔍 Fetching Geofabrik index...");
@@ -362,7 +425,7 @@ async fn download_country(country: &str, dry_run: bool) -> Result<()> {
                 let output_path = format!("{}/pbf/{}/{}.pbf", base_dir, continent, country);
                 println!("📁 [DRY RUN] Would save to: {}", output_path);
             } else {
-                download_pbf(&client, country, pbf_url, &feature.properties.parent, false).await?;
+                download_pbf(client, country, pbf_url, &feature.properties.parent, false).await?;
             }
         } else {
             return Err(anyhow!("No PBF download available for {}", country));
@@ -383,7 +446,7 @@ async fn download_country(country: &str, dry_run: bool) -> Result<()> {
 /// # Returns
 /// * `Result<()>` - Success or error details
 async fn download_continent(continent: &str, dry_run: bool) -> Result<()> {
-    let client = Client::new();
+    let client = &*GLOBAL_CLIENT;
     
     info!("Starting continent download: {} (dry_run: {})", continent, dry_run);
     println!("🔍 Fetching Geofabrik index...");
@@ -407,7 +470,7 @@ async fn download_continent(continent: &str, dry_run: bool) -> Result<()> {
                 let output_path = format!("{}/pbf/{}.pbf", base_dir, continent);
                 println!("📁 [DRY RUN] Would save to: {}", output_path);
             } else {
-                download_pbf(&client, continent, pbf_url, &None, true).await?;
+                download_pbf(client, continent, pbf_url, &None, true).await?;
             }
         } else {
             return Err(anyhow!("No PBF download available for {}", continent));
@@ -461,23 +524,19 @@ fn find_region<'a>(index: &'a GeofabrikIndex, region_name: &str) -> Result<&'a F
     Err(anyhow!("Region '{}' not found in Geofabrik index", region_name))
 }
 
-/// Download a file using multiple parallel connections
+/// Download a file using optimized streaming with auto-tuned parallel connections and real-time progress
 /// 
 /// # Arguments
 /// * `client` - HTTP client for downloading
 /// * `url` - Download URL for the file
 /// * `output_path` - Path where to save the file
-/// * `connections` - Number of parallel connections to use
-/// * `chunk_size` - Size of each chunk in bytes
 /// 
 /// # Returns
 /// * `Result<()>` - Success or error
-async fn download_with_multiple_connections(
+async fn download_with_optimized_streaming(
     client: &Client,
     url: &str,
     output_path: &str,
-    connections: u32,
-    chunk_size: u64,
 ) -> Result<()> {
     // First, check if server supports range requests and get file size
     let head_response = client.head(url).send().await?;
@@ -504,46 +563,75 @@ async fn download_with_multiple_connections(
         return Err(anyhow!("Server does not support range requests"));
     }
     
-    info!("File size: {} bytes, using {} connections with {}MB chunks", 
+    // Auto-calculate optimal parameters
+    let connections = calculate_optimal_connections(total_size);
+    let chunk_size = calculate_optimal_chunk_size(total_size, connections);
+    
+    info!("File size: {} bytes, auto-tuned to {} connections with {}MB chunks", 
           total_size, connections, chunk_size / (1024 * 1024));
     
     // Calculate chunk ranges
-    let chunk_size = std::cmp::min(chunk_size, total_size / connections as u64);
+    let effective_chunk_size = std::cmp::min(chunk_size, total_size / connections as u64);
     let mut ranges = Vec::new();
     let mut start = 0u64;
     
     while start < total_size {
-        let end = std::cmp::min(start + chunk_size - 1, total_size - 1);
+        let end = std::cmp::min(start + effective_chunk_size - 1, total_size - 1);
         ranges.push((start, end));
         start = end + 1;
     }
     
-    // Limit to requested number of connections
     let actual_connections = std::cmp::min(connections as usize, ranges.len());
     info!("Downloading {} chunks using {} connections", ranges.len(), actual_connections);
     
-    // Setup progress bar
-    let pb = ProgressBar::new(total_size);
+    // Setup progress tracking with atomic counter for real-time updates
+    let downloaded_bytes = Arc::new(AtomicU64::new(0));
+    let pb = Arc::new(ProgressBar::new(total_size));
     pb.set_style(ProgressStyle::default_bar()
-        .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta}) {msg}")
+        .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta}) {msg}")
         .unwrap_or_else(|_| ProgressStyle::default_bar())
         .progress_chars("#>-"));
-    pb.set_message(format!("Downloading with {} connections", actual_connections));
+    pb.set_message(format!("Auto-tuned: {} connections, {}MB chunks", 
+                          actual_connections, chunk_size / (1024 * 1024)));
     
-    // Download chunks in parallel batches
+    // Enable steady tick for smoother visual updates
+    pb.enable_steady_tick(std::time::Duration::from_millis(120));
+    
+    // Simple progress updater - just reflect actual progress
+    let pb_clone = Arc::clone(&pb);
+    let downloaded_clone = Arc::clone(&downloaded_bytes);
+    let progress_task = tokio::spawn(async move {
+        let mut last_bytes = 0u64;
+        while downloaded_clone.load(Ordering::Relaxed) < total_size {
+            let current_bytes = downloaded_clone.load(Ordering::Relaxed);
+            if current_bytes != last_bytes {
+                pb_clone.set_position(current_bytes);
+                last_bytes = current_bytes;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await; // 10 FPS - enough for visual feedback
+        }
+        pb_clone.set_position(total_size);
+    });
+    
+    // Pre-allocate file space to avoid fragmentation
+    let file = fs::File::create(output_path)?;
+    file.set_len(total_size)?; // Pre-allocate full file size
+    let mut file = file;
+    
+    // Use pre-allocated chunk storage with capacity hints
     let mut chunks = Vec::with_capacity(ranges.len());
-    chunks.resize(ranges.len(), Bytes::new());
+    for (start, end) in &ranges {
+        let chunk_size = (end - start + 1) as usize;
+        chunks.push(Vec::with_capacity(chunk_size)); // Pre-allocate exact size
+    }
+    let mut next_chunk_to_write = 0;
     
-    let pb = Arc::new(pb);
-    
-    // Process chunks in batches to limit concurrent connections
-    let batch_size = actual_connections;
-    for (batch_start, batch_ranges) in ranges.chunks(batch_size).enumerate() {
-        let batch_futures: Vec<_> = batch_ranges.iter().enumerate().map(|(batch_idx, &(start, end))| {
-            let global_idx = batch_start * batch_size + batch_idx;
+    // Stream chunks with controlled concurrency and real-time progress
+    let stream = futures::stream::iter(ranges.into_iter().enumerate())
+        .map(|(idx, (start, end))| {
             let client = client.clone();
             let url = url.to_string();
-            let pb = Arc::clone(&pb);
+            let downloaded_bytes = Arc::clone(&downloaded_bytes);
             
             async move {
                 let range_header = format!("bytes={}-{}", start, end);
@@ -557,28 +645,51 @@ async fn download_with_multiple_connections(
                     return Err(anyhow!("Range request failed: {}", response.status()));
                 }
                 
-                let chunk_data = response.bytes().await?;
-                pb.inc(chunk_data.len() as u64);
+                // High-performance streaming with pre-allocated buffer
+                let expected_size = (end - start + 1) as usize;
+                let mut chunk_data = Vec::with_capacity(expected_size);
+                let mut stream = response.bytes_stream();
                 
-                Ok((global_idx, chunk_data))
+                while let Some(bytes_chunk) = stream.try_next().await? {
+                    chunk_data.extend_from_slice(&bytes_chunk);
+                    downloaded_bytes.fetch_add(bytes_chunk.len() as u64, Ordering::Relaxed);
+                }
+                
+                // Shrink to actual size to save memory
+                chunk_data.shrink_to_fit();
+                
+                Result::<(usize, Vec<u8>)>::Ok((idx, chunk_data))
             }
-        }).collect();
+        })
+        .buffer_unordered(actual_connections);
+    
+    tokio::pin!(stream);
+    
+    // Stream and write chunks maintaining order
+    while let Some(result) = stream.next().await {
+        let (idx, data) = result?;
+        chunks[idx] = data;
         
-        let results = try_join_all(batch_futures).await?;
-        for (index, data) in results {
-            chunks[index] = data;
+        // Write completed sequential chunks immediately to save memory
+        while next_chunk_to_write < chunks.len() && !chunks[next_chunk_to_write].is_empty() {
+            file.write_all(&chunks[next_chunk_to_write])?;
+            chunks[next_chunk_to_write].clear(); // Free memory
+            next_chunk_to_write += 1;
         }
     }
     
-    pb.finish_with_message("Assembling chunks...");
-    
-    // Write chunks to file in order
-    let mut file = fs::File::create(output_path)?;
-    for chunk in chunks {
-        file.write_all(&chunk)?;
+    // Write any remaining chunks
+    for i in next_chunk_to_write..chunks.len() {
+        if !chunks[i].is_empty() {
+            file.write_all(&chunks[i])?;
+        }
     }
     
-    info!("Multi-connection download completed successfully");
+    // Stop progress updater and finalize
+    progress_task.abort();
+    pb.finish_with_message("Download completed!");
+    
+    info!("Optimized streaming download completed successfully with {} connections", actual_connections);
     Ok(())
 }
 
@@ -628,17 +739,17 @@ async fn download_pbf(client: &Client, region: &str, url: &str, parent: &Option<
     
     println!("📥 Downloading {} to {}", region, output_path);
     
-    // Use hardcoded optimal settings (convention over configuration)
-    if ENABLE_PARALLEL_DOWNLOAD && PARALLEL_CONNECTIONS > 1 {
-        match download_with_multiple_connections(client, url, &output_path, PARALLEL_CONNECTIONS, CHUNK_SIZE).await {
+    // Use optimized streaming with auto-tuning (convention over configuration)
+    if ENABLE_PARALLEL_DOWNLOAD {
+        match download_with_optimized_streaming(client, url, &output_path).await {
             Ok(()) => {
-                info!("Successfully downloaded {} using {} parallel connections", region, PARALLEL_CONNECTIONS);
-                println!("✅ Downloaded {} successfully using {} parallel connections!", region, PARALLEL_CONNECTIONS);
+                info!("Successfully downloaded {} using optimized streaming", region);
+                println!("✅ Downloaded {} successfully using optimized streaming!", region);
                 println!("📁 Saved to: {}", output_path);
                 return Ok(());
             }
             Err(e) => {
-                warn!("Multi-connection download failed: {}, falling back to single connection", e);
+                warn!("Optimized streaming download failed: {}, falling back to single connection", e);
             }
         }
     }
@@ -811,7 +922,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_fetch_geofabrik_index_integration() {
-            let client = Client::new();
+            let client = &*GLOBAL_CLIENT;
             let result = fetch_geofabrik_index(&client).await;
             
             // Should successfully fetch real index
@@ -865,11 +976,29 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_hardcoded_defaults() {
-            // Test that hardcoded defaults are sane
-            assert_eq!(PARALLEL_CONNECTIONS, 8);
-            assert_eq!(CHUNK_SIZE, 100 * 1024 * 1024);
+        async fn test_autotuning_defaults() {
+            // Test that autotuning defaults are sane
+            assert_eq!(MAX_CHUNK_SIZE, 16 * 1024 * 1024);
+            assert_eq!(MIN_CHUNK_SIZE, 2 * 1024 * 1024);
             assert_eq!(ENABLE_PARALLEL_DOWNLOAD, true);
+            
+            // Test autotuning functions (results depend on CPU count, so test ranges)
+            let small_connections = calculate_optimal_connections(5 * 1024 * 1024);
+            assert!(small_connections >= 2 && small_connections <= 4); // 5MB -> 2-4 connections
+            
+            let medium_connections = calculate_optimal_connections(50 * 1024 * 1024);  
+            assert!(medium_connections >= 4 && medium_connections <= 8); // 50MB -> 4-8 connections
+            
+            let large_connections = calculate_optimal_connections(500 * 1024 * 1024);
+            assert!(large_connections >= 8 && large_connections <= 16); // 500MB -> 8-16 connections
+            
+            let xl_connections = calculate_optimal_connections(3 * 1024 * 1024 * 1024);
+            assert!(xl_connections >= 16 && xl_connections <= 32); // 3GB -> 16-32 connections
+            
+            // Test chunk size calculation
+            let chunk_size = calculate_optimal_chunk_size(100 * 1024 * 1024, 4);
+            assert!(chunk_size >= MIN_CHUNK_SIZE);
+            assert!(chunk_size <= MAX_CHUNK_SIZE);
         }
 
         #[test]
@@ -899,3 +1028,4 @@ mod tests {
         }
     }
 }
+
