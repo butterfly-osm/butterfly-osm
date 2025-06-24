@@ -1,16 +1,30 @@
 [package]
-name = "geofabrik-downloader"
-version = "0.1.0"
-description = "Geofabrik PBF downloader - CLI tool and library for downloading OpenStreetMap data"
+name = "butterfly-dl"
+version = "1.0.0"
+description = "Butterfly-dl - Optimized OpenStreetMap data downloader with S3 and HTTP support"
 authors = ["Pierre <pierre@warnier.net>"]
 license = "MIT"
 repository = "https://github.com/username/butterfly"
 keywords = ["osm", "geofabrik", "pbf", "openstreetmap", "download"]
-categories = ["command-line-utilities"]
+categories = ["command-line-utilities", "api-bindings"]
 edition = "2021"
 
+[lib]
+name = "butterfly_dl"
+path = "src/lib.rs"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[[bin]]
+name = "butterfly-dl"
+path = "src/main.rs"
+
+[features]
+default = ["s3"]
+s3 = ["aws-config", "aws-sdk-s3"]
+c-bindings = []
+
 [dependencies]
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = { version = "0.11", features = ["json", "gzip", "brotli", "stream", "rustls-tls"] }
 clap = { version = "4.0", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1.0", features = ["full"] }
@@ -19,10 +33,16 @@ indicatif = "0.17"
 futures-util = "0.3"
 log = "0.4"
 env_logger = "0.10"
-config = "0.13"
-serde_yaml = "0.9"
 futures = "0.3"
 bytes = "1.0"
+once_cell = "1.19"
+libc = "0.2"
+num_cpus = "1.0"
+tokio-util = { version = "0.7", features = ["io"] }
+
+# S3 support (optional)
+aws-config = { version = "1.0", optional = true }
+aws-sdk-s3 = { version = "1.0", optional = true }
 
 [dev-dependencies]
 serde_json = "1.0"

@@ -1,132 +1,151 @@
-.PHONY: build build-prod build-dev run run-prod run-dev test clean help list download dev-shell config-help
+# Makefile for butterfly-dl library builds
+#
+# This provides convenience targets for building different library types
+# and installing them for system-wide use.
 
-# Build both production and development images
-build:
-	docker compose build
+CARGO := cargo
+PREFIX ?= /usr/local
+LIBDIR := $(PREFIX)/lib
+INCLUDEDIR := $(PREFIX)/include
+PKGCONFIGDIR := $(LIBDIR)/pkgconfig
 
-# Build production image only
-build-prod:
-	docker compose build geofabrik-downloader
+# Build targets
+.PHONY: all rust-lib c-lib static dynamic install install-headers install-pkgconfig clean help
 
-# Build development image only  
-build-dev:
-	docker compose build geofabrik-dev
+all: rust-lib c-lib
 
-# Run with production image (default - minimal scratch-based)
-run:
-	docker compose run --rm geofabrik-downloader $(ARGS)
+# Build Rust library (rlib) for Rust projects
+rust-lib:
+	@echo "🦀 Building Rust library..."
+	$(CARGO) build --release
 
-# Run with production image (explicit)
-run-prod:
-	docker compose run --rm geofabrik-downloader $(ARGS)
+# Build C-compatible libraries (static and dynamic)
+c-lib: static dynamic
 
-# Run with development image (full Alpine with tools)
-run-dev:
-	docker compose run --rm geofabrik-dev $(ARGS)
+# Build static library (.a) for C/C++
+static:
+	@echo "📚 Building static library for C/C++..."
+	$(CARGO) build --release --features c-bindings
+	@echo "✅ Static library: target/release/libbutterfly_dl.a"
 
-# Run tests in container
+# Build dynamic library (.so/.dylib/.dll) for C/C++
+dynamic:
+	@echo "🔗 Building dynamic library for C/C++..."
+	$(CARGO) build --release --features c-bindings
+	@if [ -f target/release/libbutterfly_dl.so ]; then \
+		echo "✅ Dynamic library: target/release/libbutterfly_dl.so"; \
+	elif [ -f target/release/libbutterfly_dl.dylib ]; then \
+		echo "✅ Dynamic library: target/release/libbutterfly_dl.dylib"; \
+	elif [ -f target/release/butterfly_dl.dll ]; then \
+		echo "✅ Dynamic library: target/release/butterfly_dl.dll"; \
+	fi
+
+# Install libraries and headers system-wide
+install: install-libs install-headers install-pkgconfig
+	@echo "✅ Installation complete!"
+	@echo "📍 Libraries installed to: $(LIBDIR)"
+	@echo "📍 Headers installed to: $(INCLUDEDIR)"
+	@echo "📍 pkg-config file: $(PKGCONFIGDIR)/butterfly-dl.pc"
+
+install-libs: c-lib
+	@echo "📦 Installing libraries to $(LIBDIR)..."
+	@mkdir -p $(LIBDIR)
+	@cp target/release/libbutterfly_dl.a $(LIBDIR)/ 2>/dev/null || true
+	@cp target/release/libbutterfly_dl.so $(LIBDIR)/ 2>/dev/null || true
+	@cp target/release/libbutterfly_dl.dylib $(LIBDIR)/ 2>/dev/null || true
+	@cp target/release/butterfly_dl.dll $(LIBDIR)/ 2>/dev/null || true
+
+install-headers:
+	@echo "📄 Installing headers to $(INCLUDEDIR)..."
+	@mkdir -p $(INCLUDEDIR)
+	@cp include/butterfly.h $(INCLUDEDIR)/
+
+install-pkgconfig:
+	@echo "⚙️ Installing pkg-config file..."
+	@mkdir -p $(PKGCONFIGDIR)
+	@sed -e 's|@PREFIX@|$(PREFIX)|g' \
+	     -e "s|@VERSION@|$$(cat VERSION)|g" \
+	     butterfly-dl.pc.in > $(PKGCONFIGDIR)/butterfly-dl.pc
+
+# Build examples
+examples: c-lib
+	@echo "🧪 Building C examples..."
+	@if [ -d examples ]; then \
+		$(MAKE) -C examples; \
+	else \
+		echo "No examples directory found"; \
+	fi
+
+# Run tests
 test:
-	docker compose run --rm --entrypoint="" geofabrik-dev cargo test
+	@echo "🧪 Running Rust tests..."
+	$(CARGO) test
+	@echo "🧪 Running C FFI tests..."
+	$(CARGO) test --features c-bindings
 
-# Clean up Docker resources
+# Clean build artifacts
 clean:
-	docker compose down --rmi all --volumes --remove-orphans
+	@echo "🧹 Cleaning build artifacts..."
+	$(CARGO) clean
+	@rm -f $(PKGCONFIGDIR)/butterfly-dl.pc
 
-# List available regions (production)
-list:
-	docker compose run --rm geofabrik-downloader list
+# Development helpers
+dev-build:
+	@echo "🔧 Development build with all features..."
+	$(CARGO) build --all-features
 
-# List available regions (development)
-list-dev:
-	docker compose run --rm geofabrik-dev list
+check:
+	@echo "🔍 Checking code..."
+	$(CARGO) check --all-features
+	$(CARGO) clippy --all-features
 
-# Quick download shortcuts (production)
-download:
-	@echo "Usage: make download REGION=country_or_continent"
-	@echo "Example: make download REGION=monaco"
-	@echo "Example: make download REGION=europe"
-	@if [ -z "$(REGION)" ]; then \
-		echo "Error: REGION parameter is required"; \
-		exit 1; \
-	fi
-	docker compose run --rm geofabrik-downloader country $(REGION) || \
-	docker compose run --rm geofabrik-downloader continent $(REGION)
+fmt:
+	@echo "📐 Formatting code..."
+	$(CARGO) fmt
 
-# Quick download shortcuts (development)
-download-dev:
-	@echo "Usage: make download-dev REGION=country_or_continent"
-	@echo "Example: make download-dev REGION=monaco"
-	@echo "Example: make download-dev REGION=europe"
-	@if [ -z "$(REGION)" ]; then \
-		echo "Error: REGION parameter is required"; \
-		exit 1; \
-	fi
-	docker compose run --rm geofabrik-dev country $(REGION) || \
-	docker compose run --rm geofabrik-dev continent $(REGION)
+# Show build information
+info:
+	@echo "📊 Build Information:"
+	@echo "   Cargo: $(shell $(CARGO) --version)"
+	@echo "   Target: $(shell $(CARGO) --version --verbose | grep host | cut -d' ' -f2)"
+	@echo "   Features available:"
+	@echo "     - s3: S3 support for planet downloads"
+	@echo "     - c-bindings: C-compatible FFI interface"
+	@echo "   Output files:"
+	@echo "     - target/release/libbutterfly_dl.rlib (Rust library)"
+	@echo "     - target/release/libbutterfly_dl.a (C static library)"
+	@echo "     - target/release/libbutterfly_dl.so (C dynamic library, Linux)"
+	@echo "     - target/release/libbutterfly_dl.dylib (C dynamic library, macOS)"
+	@echo "     - target/release/butterfly_dl.dll (C dynamic library, Windows)"
+	@echo "     - target/release/butterfly-dl (CLI binary)"
 
-# Open development shell
-dev-shell:
-	docker compose run --rm geofabrik-dev sh
-
-# Show configuration help
-config-help:
-	@echo "Geofabrik Downloader Configuration:"
+help:
+	@echo "🦋 Butterfly-dl Build System"
 	@echo ""
-	@echo "Convention over Configuration:"
-	@echo "  ✅ 8 parallel connections (hardcoded optimal default)"
-	@echo "  ✅ 100MB chunks (hardcoded optimal default)"
-	@echo "  ✅ Multi-connection enabled (hardcoded optimal default)"
-	@echo "  ✅ Automatic range request detection and fallback"
+	@echo "Targets:"
+	@echo "  all          - Build all libraries (Rust + C)"
+	@echo "  rust-lib     - Build Rust library (.rlib)"
+	@echo "  c-lib        - Build C libraries (static + dynamic)"
+	@echo "  static       - Build static C library (.a)"
+	@echo "  dynamic      - Build dynamic C library (.so/.dylib/.dll)"
+	@echo "  install      - Install libraries and headers system-wide"
+	@echo "  examples     - Build C examples (if available)"
+	@echo "  test         - Run all tests"
+	@echo "  clean        - Clean build artifacts"
+	@echo "  info         - Show build information"
+	@echo "  help         - Show this help"
 	@echo ""
-	@echo "Environment Variables:"
-	@echo "  RUST_LOG          - Logging level (debug, info, warn, error)"
-	@echo "  RENEW_PBF_PERIOD  - Days before re-downloading files (default: 7)"
+	@echo "Development:"
+	@echo "  dev-build    - Development build with all features"
+	@echo "  check        - Check code and run clippy"
+	@echo "  fmt          - Format code"
+	@echo ""
+	@echo "Variables:"
+	@echo "  PREFIX       - Installation prefix (default: /usr/local)"
+	@echo "  CARGO        - Cargo command (default: cargo)"
 	@echo ""
 	@echo "Examples:"
-	@echo "  RUST_LOG=debug make run ARGS='country monaco'"
-	@echo "  RUST_LOG=warn make run-prod ARGS='continent europe'"
-	@echo "  RENEW_PBF_PERIOD=14 make run ARGS='country belgium'"
-	@echo ""
-	@echo "Note: Performance settings are hardcoded for optimal speed."
-	@echo "Files are only re-downloaded if older than RENEW_PBF_PERIOD days."
-
-# Show help
-help:
-	@echo "Geofabrik PBF Downloader - Docker Commands"
-	@echo ""
-	@echo "Build Commands:"
-	@echo "  build         - Build both production and development images"
-	@echo "  build-prod    - Build production image only (13.4MB scratch-based)"
-	@echo "  build-dev     - Build development image only (Alpine with tools)"
-	@echo ""
-	@echo "Run Commands:"
-	@echo "  run ARGS=...  - Run with production image (default, minimal)"
-	@echo "  run-prod ARGS=... - Run with production image (explicit)"
-	@echo "  run-dev ARGS=...  - Run with development image (debugging)"
-	@echo "  test          - Run tests in development container"
-	@echo "  clean         - Clean up Docker resources"
-	@echo ""
-	@echo "Convenience Commands:"
-	@echo "  list          - List available regions (production)"
-	@echo "  list-dev      - List available regions (development)"
-	@echo "  download REGION=... - Quick download with production image"
-	@echo "  download-dev REGION=... - Quick download with development image"
-	@echo "  dev-shell     - Open development shell"
-	@echo ""
-	@echo "Production Examples (13.4MB scratch image):"
-	@echo "  make run ARGS='list'"
-	@echo "  make run ARGS='list countries'"
-	@echo "  make run ARGS='country monaco'"
-	@echo "  make run ARGS='continent europe'"
-	@echo "  make run ARGS='countries monaco,belgium'"
-	@echo "  make run ARGS='--dry-run country monaco'"
-	@echo "  make download REGION=monaco"
-	@echo ""
-	@echo "Development Examples (Alpine with debugging tools):"
-	@echo "  make run-dev ARGS='country monaco'"
-	@echo "  make download-dev REGION=europe"
-	@echo "  make dev-shell  # Interactive shell for debugging"
-	@echo ""
-	@echo "Image Sizes:"
-	@echo "  Production:  ~13.4MB (FROM scratch, binary only)"
-	@echo "  Development: ~500MB+ (Alpine + Rust + tools)"
+	@echo "  make all                    # Build everything"
+	@echo "  make static                 # Build static library only"
+	@echo "  sudo make install           # Install system-wide"
+	@echo "  make install PREFIX=/opt    # Install to /opt"

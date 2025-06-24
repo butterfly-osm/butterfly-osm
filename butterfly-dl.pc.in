@@ -1,0 +1,11 @@
+prefix=@PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: butterfly-dl
+Description: High-performance OpenStreetMap data downloader with S3 and HTTP support
+Version: @VERSION@
+Requires:
+Libs: -L${libdir} -lbutterfly_dl
+Cflags: -I${includedir}

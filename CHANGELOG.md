@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2025-06-25
+
+### Major Refactoring - Library + CLI Architecture
+
+**BREAKING CHANGES:**
+- Complete refactor from monolithic CLI to library + CLI architecture
+- New public API for programmatic usage
+- C FFI bindings for cross-language integration
+
+### Added
+- **🦀 Rust Library API** with `get()`, `get_stream()`, `get_with_progress()`, `get_with_options()`
+- **📚 Static & Dynamic Libraries** for both Rust (`rlib`) and C-compatible (`a`, `so`, `dylib`, `dll`)
+- **🔗 C FFI Bindings** with thread-safe progress callbacks and comprehensive C header
+- **⚡ Smart Connection Strategy** - Single connection for files ≤1MB, scaled connections for larger files
+- **🔧 pkg-config Support** for system-wide library installation
+- **📊 Comprehensive Benchmarking** against curl and aria2 with MD5 validation
+- **🏗️ Makefile Build System** with `make all`, `make c-lib`, `make install` targets
+- **📝 Centralized Version Management** - Single `VERSION` file drives all components
+
+### Performance Optimizations
+- **Smart connection scaling** based on file size (1-16 connections)
+- **Direct I/O support** for large files (>1GB) on Unix systems
+- **Memory efficiency** - <1GB RAM usage regardless of file size
+- **HTTP User-Agent versioning** for proper server identification
+
+### Library Features
+- **Progress callbacks** with `Arc<dyn Fn(u64, u64)>` for thread-safe progress tracking
+- **Streaming API** for pipeline integration
+- **Feature flags** for optional S3 support (`default = ["s3"]`)
+- **Cross-platform support** - Windows, macOS, Linux
+
+### Benchmarking & Testing
+- **Multi-tool benchmarking** comparing butterfly-dl vs curl vs aria2
+- **Automatic tool detection** - only tests available tools
+- **Fair comparison** - matching connection strategies across tools
+- **MD5 checksum validation** for file integrity verification
+- **Performance metrics** - duration, speed, success/failure tracking
+
+### Developer Experience
+- **Comprehensive documentation** with usage examples for Rust and C
+- **Build-time version management** - change `VERSION` file, rebuild gets new version everywhere
+- **Example code** for both library and C FFI usage
+- **Automated cleanup** in benchmark scripts
+
+### Infrastructure
+- **Build script integration** reads `VERSION` file and sets environment variables
+- **Dependency tracking** - VERSION file changes trigger rebuilds
+- **pkg-config template** for proper system integration
+
 ## [0.1.0] - 2025-06-24
 
 ### Added
