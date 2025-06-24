@@ -143,13 +143,15 @@ impl Downloader {
         
         let file = create_optimized_file(file_path, Some(total_size)).await?;
         
-        if !supports_ranges || total_size < 10 * 1024 * 1024 {
-            // Single connection download
+        let optimal_connections = calculate_optimal_connections(total_size, options.max_connections);
+        
+        if !supports_ranges || optimal_connections == 1 {
+            // Single connection download for small files or servers without range support
             let response = client.get(url).send().await?;
             let stream = create_http_stream(response);
             self.stream_to_writer(stream, Box::new(file), total_size, options).await
         } else {
-            // Parallel download
+            // Parallel download for larger files
             self.download_http_parallel(client, url, Box::new(file), total_size, options).await
         }
     }
@@ -362,6 +364,7 @@ fn calculate_optimal_connections(file_size: u64, max_connections: usize) -> usiz
     let cpu_count = num_cpus::get();
     
     let base_connections = match file_size {
+        size if size <= 1024 * 1024 => 1,            // <= 1MB: single connection (curl-like)
         size if size <= 10 * 1024 * 1024 => 2,       // <= 10MB: 2 connections
         size if size <= 100 * 1024 * 1024 => 4,      // <= 100MB: 4 connections  
         size if size <= 512 * 1024 * 1024 => 8,      // <= 512MB: 8 connections
@@ -409,14 +412,24 @@ mod tests {
 
     #[test]
     fn test_calculate_optimal_connections() {
-        assert_eq!(calculate_optimal_connections(5 * 1024 * 1024, 16), 2);     // 5MB
-        assert_eq!(calculate_optimal_connections(50 * 1024 * 1024, 16), 4);    // 50MB
-        assert_eq!(calculate_optimal_connections(200 * 1024 * 1024, 16), 8);   // 200MB
-        assert_eq!(calculate_optimal_connections(2 * 1024 * 1024 * 1024, 16), 16); // 2GB
+        assert_eq!(calculate_optimal_connections(512 * 1024, 16), 1);        // 512KB: single connection
+        assert_eq!(calculate_optimal_connections(5 * 1024 * 1024, 16), 2);   // 5MB: 2 connections
+        assert_eq!(calculate_optimal_connections(50 * 1024 * 1024, 16), 4);  // 50MB: 4 connections
+        assert_eq!(calculate_optimal_connections(200 * 1024 * 1024, 16), 8); // 200MB: 8 connections
+        assert_eq!(calculate_optimal_connections(2 * 1024 * 1024 * 1024, 16), 16); // 2GB: 16 connections
     }
 
     #[test]
     fn test_calculate_optimal_connections_with_limit() {
         assert_eq!(calculate_optimal_connections(2 * 1024 * 1024 * 1024, 8), 8); // Limited to 8
+    }
+
+    #[test]
+    fn test_calculate_optimal_connections_small_files() {
+        // Small files should use single connection for curl-like performance
+        assert_eq!(calculate_optimal_connections(100 * 1024, 16), 1);     // 100KB
+        assert_eq!(calculate_optimal_connections(500 * 1024, 16), 1);     // 500KB  
+        assert_eq!(calculate_optimal_connections(1024 * 1024, 16), 1);    // 1MB (boundary)
+        assert_eq!(calculate_optimal_connections(1024 * 1024 + 1, 16), 2); // 1MB + 1 byte
     }
 }
