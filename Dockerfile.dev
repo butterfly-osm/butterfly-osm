@@ -1,0 +1,20 @@
+FROM rust:alpine
+
+# Install build dependencies
+RUN apk add --no-cache musl-dev pkgconfig openssl-dev openssl-libs-static
+
+WORKDIR /app
+
+# Copy everything for development
+COPY . .
+
+# Build the application for development use
+RUN cargo build --release
+
+# Create data directory
+RUN mkdir -p /data/pbf
+
+# Copy binary to expected location and set entrypoint
+RUN cp /app/target/release/geofabrik-downloader /usr/local/bin/ || \
+    cp /app/target/release/geofabrik_downloader /usr/local/bin/geofabrik-downloader
+ENTRYPOINT ["geofabrik-downloader"]
