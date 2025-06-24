@@ -58,7 +58,7 @@ fn resolve_output(source: &str, output: &str) -> OutputDestination {
 }
 
 #[tokio::main]
-async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     let cli = Cli::parse();
     
     // Initialize logging to stderr
