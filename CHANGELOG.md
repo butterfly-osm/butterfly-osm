@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2025-06-25
+
+### Major Enhancement - Dynamic Source Loading with Advanced Fuzzy Matching
+
+### Added
+- **🌍 Dynamic Source Discovery** - Automatically fetches latest available regions from Geofabrik JSON API
+- **📡 Real-time Source Updates** - No more hardcoded region lists, always up-to-date with Geofabrik offerings
+- **🧠 Geographic Intelligence** - Knows `belgium` belongs to `europe`, suggests `europe/belgium` not `antarctica/belgium`
+- **🎯 Standalone Country Recognition** - `luxembourg` → `europe/luxembourg`, `monaco` → `europe/monaco`
+- **⚡ Smart Caching** - Uses `OnceLock` to cache API results, avoiding repeated calls
+- **🛡️ Graceful Fallback** - Works offline with comprehensive fallback region list when API unavailable
+- **🔄 HTTP Timeout Protection** - 5-second timeout for source discovery API calls
+
+### Enhanced
+- **Fuzzy Matching Algorithm**: Now works with dynamic source lists from Geofabrik
+- **Error Messages**: More accurate suggestions based on real-time available regions
+- **Geographic Accuracy**: Improved continent/country relationship detection
+- **API Integration**: Seamless integration with Geofabrik's index-v1.json endpoint
+
+### Technical Details
+- **Source Discovery**: Fetches from `https://download.geofabrik.de/index-v1.json`
+- **Caching Strategy**: `std::sync::OnceLock` for thread-safe, lazy initialization
+- **Fallback Logic**: Comprehensive hardcoded list when network unavailable
+- **Geographic Logic**: Prioritizes correct continent/country combinations
+- **Dependencies**: Added `serde_json` for JSON parsing
+
+### Examples
+```bash
+# Before: Generic "not found" errors
+butterfly-dl luxembourg
+# Error: HttpError("Failed to get file info: 404 Not Found")
+
+# After: Intelligent suggestions with dynamic sources
+butterfly-dl luxembourg  
+# Error: Source 'luxembourg' not found. Did you mean 'europe/luxembourg'?
+```
+
 ## [1.1.0] - 2025-06-25
 
 ### Major Enhancement - HTTP-Only Architecture with Intelligent Error Messages

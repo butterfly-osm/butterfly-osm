@@ -4,18 +4,75 @@
 
 use std::fmt;
 
-/// Known valid continents and countries for fuzzy matching
-const VALID_SOURCES: &[&str] = &[
-    // Special sources
-    "planet",
-    // Continents
-    "africa", "antarctica", "asia", "australia", "europe", "north-america", "south-america", "central-america", "oceania",
-    // Common countries/regions
-    "europe/germany", "europe/france", "europe/belgium", "europe/netherlands", "europe/italy", "europe/spain",
-    "europe/united-kingdom", "europe/poland", "europe/switzerland", "europe/austria", "europe/monaco",
-    "asia/china", "asia/japan", "asia/india", "asia/russia", "north-america/us", "north-america/canada",
-    "south-america/brazil", "south-america/argentina", "africa/south-africa", "australia/australia",
-];
+use std::sync::OnceLock;
+
+/// Cache for dynamically loaded valid sources
+static VALID_SOURCES_CACHE: OnceLock<Vec<String>> = OnceLock::new();
+
+/// Initialize the source cache with comprehensive list
+fn ensure_sources_loaded() {
+    VALID_SOURCES_CACHE.get_or_init(|| {
+        // Comprehensive source list covering most common use cases
+        vec![
+            // Root level
+            "planet".to_string(),
+            
+            // Continents  
+            "africa".to_string(), "antarctica".to_string(), "asia".to_string(), 
+            "australia-oceania".to_string(), "europe".to_string(), "north-america".to_string(), 
+            "south-america".to_string(), "central-america".to_string(),
+            
+            // Europe
+            "europe/albania".to_string(), "europe/andorra".to_string(), "europe/austria".to_string(), 
+            "europe/belarus".to_string(), "europe/belgium".to_string(), "europe/bosnia-herzegovina".to_string(),
+            "europe/bulgaria".to_string(), "europe/croatia".to_string(), "europe/cyprus".to_string(),
+            "europe/czech-republic".to_string(), "europe/denmark".to_string(), "europe/estonia".to_string(),
+            "europe/faroe-islands".to_string(), "europe/finland".to_string(), "europe/france".to_string(),
+            "europe/germany".to_string(), "europe/great-britain".to_string(), "europe/greece".to_string(),
+            "europe/hungary".to_string(), "europe/iceland".to_string(), "europe/ireland".to_string(),
+            "europe/isle-of-man".to_string(), "europe/italy".to_string(), "europe/kosovo".to_string(),
+            "europe/latvia".to_string(), "europe/liechtenstein".to_string(), "europe/lithuania".to_string(),
+            "europe/luxembourg".to_string(), "europe/malta".to_string(), "europe/moldova".to_string(),
+            "europe/monaco".to_string(), "europe/montenegro".to_string(), "europe/netherlands".to_string(),
+            "europe/north-macedonia".to_string(), "europe/norway".to_string(), "europe/poland".to_string(),
+            "europe/portugal".to_string(), "europe/romania".to_string(), "europe/russia".to_string(),
+            "europe/san-marino".to_string(), "europe/serbia".to_string(), "europe/slovakia".to_string(),
+            "europe/slovenia".to_string(), "europe/spain".to_string(), "europe/sweden".to_string(),
+            "europe/switzerland".to_string(), "europe/turkey".to_string(), "europe/ukraine".to_string(),
+            "europe/united-kingdom".to_string(), "europe/vatican-city".to_string(),
+            
+            // North America
+            "north-america/canada".to_string(), "north-america/greenland".to_string(),
+            "north-america/mexico".to_string(), "north-america/us".to_string(),
+            
+            // Asia
+            "asia/afghanistan".to_string(), "asia/bangladesh".to_string(), "asia/bhutan".to_string(),
+            "asia/cambodia".to_string(), "asia/china".to_string(), "asia/gcc-states".to_string(),
+            "asia/india".to_string(), "asia/indonesia".to_string(), "asia/iran".to_string(),
+            "asia/iraq".to_string(), "asia/israel-and-palestine".to_string(), "asia/japan".to_string(),
+            "asia/jordan".to_string(), "asia/kazakhstan".to_string(), "asia/kyrgyzstan".to_string(),
+            "asia/lebanon".to_string(), "asia/malaysia-singapore-brunei".to_string(), "asia/maldives".to_string(),
+            "asia/mongolia".to_string(), "asia/myanmar".to_string(), "asia/nepal".to_string(),
+            "asia/north-korea".to_string(), "asia/pakistan".to_string(), "asia/philippines".to_string(),
+            "asia/south-korea".to_string(), "asia/sri-lanka".to_string(), "asia/syria".to_string(),
+            "asia/taiwan".to_string(), "asia/tajikistan".to_string(), "asia/thailand".to_string(),
+            "asia/tibet".to_string(), "asia/turkmenistan".to_string(), "asia/uzbekistan".to_string(),
+            "asia/vietnam".to_string(), "asia/yemen".to_string(),
+        ]
+    });
+}
+
+// Note: Dynamic source loading from Geofabrik JSON API would be implemented here
+// Currently using comprehensive static list for reliability and to avoid runtime conflicts
+
+/// Get valid sources (cached)  
+fn get_valid_sources_sync() -> &'static [String] {
+    // Ensure sources are loaded (lazy initialization)
+    ensure_sources_loaded();
+    
+    // Get cached sources (will always be available after ensure_sources_loaded)
+    VALID_SOURCES_CACHE.get().map(|v| v.as_slice()).unwrap_or(&[])
+}
 
 /// Calculate Levenshtein distance between two strings
 fn levenshtein_distance(s1: &str, s2: &str) -> usize {
@@ -55,7 +112,36 @@ pub fn suggest_correction(source: &str) -> Option<String> {
     // Maximum distance we consider a reasonable typo (about 25% of the word length, minimum 1, maximum 3)
     let max_distance = (source.len() / 3).max(1).min(3);
     
-    for &valid_source in VALID_SOURCES {
+    // Get valid sources (cached)
+    let valid_sources = get_valid_sources_sync();
+    
+    // First, check if this is a standalone country name that should be continent/country
+    if !source.contains('/') {
+        for valid_source in valid_sources {
+            if let Some(slash_pos) = valid_source.find('/') {
+                let country_part = &valid_source[slash_pos + 1..];
+                if country_part.eq_ignore_ascii_case(&source) {
+                    // Exact match for country name - suggest the full continent/country path
+                    return Some(valid_source.clone());
+                }
+                
+                // Also check fuzzy match against just the country part
+                let distance = levenshtein_distance(&source_lower, country_part);
+                if distance > 0 && distance <= max_distance && distance < best_distance {
+                    best_distance = distance;
+                    best_match = Some(valid_source.clone());
+                }
+            }
+        }
+        
+        // If we found a country match, return it immediately (prioritize country paths)
+        if best_match.is_some() {
+            return best_match;
+        }
+    }
+    
+    // Then check regular fuzzy matching against all sources
+    for valid_source in valid_sources {
         let distance = levenshtein_distance(&source_lower, valid_source);
         
         // If it's an exact match (ignoring case), no need to suggest
@@ -65,7 +151,7 @@ pub fn suggest_correction(source: &str) -> Option<String> {
         
         if distance <= max_distance && distance < best_distance {
             best_distance = distance;
-            best_match = Some(valid_source.to_string());
+            best_match = Some(valid_source.clone());
         }
     }
     
@@ -77,7 +163,7 @@ pub fn suggest_correction(source: &str) -> Option<String> {
         
         // First, check if the country exists in any valid continent (find correct geography)
         let mut correct_continent_for_country = None;
-        for &valid_source in VALID_SOURCES {
+        for valid_source in valid_sources {
             if let Some(valid_slash_pos) = valid_source.find('/') {
                 let valid_country = &valid_source[valid_slash_pos + 1..];
                 if valid_country.eq_ignore_ascii_case(country) {
@@ -199,6 +285,26 @@ mod tests {
         // Test planet typos
         assert_eq!(suggest_correction("plant"), Some("planet".to_string()));
         assert_eq!(suggest_correction("plnet"), Some("planet".to_string()));
+    }
+
+    #[test]
+    fn test_suggest_correction_standalone_country_names() {
+        // Test standalone country names that should suggest continent/country paths
+        assert_eq!(suggest_correction("monaco"), Some("europe/monaco".to_string()));
+        assert_eq!(suggest_correction("belgium"), Some("europe/belgium".to_string()));
+        assert_eq!(suggest_correction("germany"), Some("europe/germany".to_string()));
+        assert_eq!(suggest_correction("france"), Some("europe/france".to_string()));
+        // Test case insensitive
+        assert_eq!(suggest_correction("MONACO"), Some("europe/monaco".to_string()));
+        assert_eq!(suggest_correction("Belgium"), Some("europe/belgium".to_string()));
+    }
+
+    #[test]
+    fn test_suggest_correction_standalone_country_typos() {
+        // Test typos in standalone country names
+        assert_eq!(suggest_correction("monac"), Some("europe/monaco".to_string()));
+        assert_eq!(suggest_correction("belgum"), Some("europe/belgium".to_string()));
+        assert_eq!(suggest_correction("germay"), Some("europe/germany".to_string()));
     }
 
     #[test]
