@@ -76,6 +76,15 @@ fn get_valid_sources_sync() -> &'static [String] {
 }
 
 /// Find the best fuzzy match using hybrid semantic + character-based scoring
+/// 
+/// Combines character-based similarity (Jaro-Winkler 70% + Normalized Levenshtein 30%)
+/// with semantic bonuses:
+/// - Prefix matching: 20% bonus for strong prefix similarity (≥7 chars)
+/// - Substring matching: 12% bonus for compound word parts (australia-oceania)
+/// - Length similarity: 10% bonus for appropriate length matches
+/// - Anti-bias penalty: -10% for inappropriate short matches
+/// 
+/// Minimum threshold: 0.65 similarity to balance precision vs recall
 fn find_best_fuzzy_match(input: &str, candidates: &[String]) -> Option<String> {
     if candidates.is_empty() {
         return None;
@@ -157,10 +166,9 @@ fn find_best_fuzzy_match(input: &str, candidates: &[String]) -> Option<String> {
 pub fn suggest_correction(source: &str) -> Option<String> {
     // Get valid sources (cached)
     let valid_sources = get_valid_sources_sync();
-    let valid_sources_vec: Vec<String> = valid_sources.to_vec();
     
     // First, check for exact case-insensitive match (no suggestion needed)
-    for valid_source in &valid_sources_vec {
+    for valid_source in valid_sources {
         if valid_source.eq_ignore_ascii_case(source) {
             return None; // Exact match, no suggestion needed
         }
@@ -169,7 +177,7 @@ pub fn suggest_correction(source: &str) -> Option<String> {
     // For standalone inputs (no '/'), check if it's a country name first
     if !source.contains('/') {
         // Check for exact country matches that should suggest continent/country path
-        for valid_source in &valid_sources_vec {
+        for valid_source in valid_sources {
             if let Some(slash_pos) = valid_source.find('/') {
                 let country_part = &valid_source[slash_pos + 1..];
                 if country_part.eq_ignore_ascii_case(source) {
@@ -182,7 +190,7 @@ pub fn suggest_correction(source: &str) -> Option<String> {
         let mut continent_level: Vec<String> = Vec::new();
         let mut country_level: Vec<String> = Vec::new();
         
-        for valid_source in &valid_sources_vec {
+        for valid_source in valid_sources {
             if valid_source.contains('/') {
                 country_level.push(valid_source.clone());
             } else {
@@ -201,7 +209,9 @@ pub fn suggest_correction(source: &str) -> Option<String> {
         if source.len() <= 6 {
             if let Some(match_result) = find_best_fuzzy_match(source, &continent_level) {
                 // Check if it's a really good match (high similarity)
-                let similarity = jaro_winkler(source, &match_result);
+                let source_lower = source.to_lowercase();
+                let match_result_lower = match_result.to_lowercase();
+                let similarity = jaro_winkler(&source_lower, &match_result_lower);
                 if similarity > 0.8 {
                     return Some(match_result);
                 }
@@ -225,7 +235,7 @@ pub fn suggest_correction(source: &str) -> Option<String> {
         }
         
         // Finally try all sources
-        return find_best_fuzzy_match(source, &valid_sources_vec);
+        return find_best_fuzzy_match(source, valid_sources);
     }
     
     // For paths (continent/country), handle geographic corrections
@@ -234,7 +244,7 @@ pub fn suggest_correction(source: &str) -> Option<String> {
         let country = &source[slash_pos + 1..];
         
         // Check if the country exists in any valid continent (geographic correction)
-        for valid_source in &valid_sources_vec {
+        for valid_source in valid_sources {
             if let Some(valid_slash_pos) = valid_source.find('/') {
                 let valid_country = &valid_source[valid_slash_pos + 1..];
                 if valid_country.eq_ignore_ascii_case(country) {
@@ -245,7 +255,7 @@ pub fn suggest_correction(source: &str) -> Option<String> {
         }
         
         // If country not found, check if continent is close to a valid continent
-        let continents: Vec<String> = valid_sources_vec.iter()
+        let continents: Vec<String> = valid_sources.iter()
             .filter(|s| !s.contains('/'))
             .cloned()
             .collect();
@@ -261,7 +271,7 @@ pub fn suggest_correction(source: &str) -> Option<String> {
     }
     
     // Default: fuzzy match against all sources
-    find_best_fuzzy_match(source, &valid_sources_vec)
+    find_best_fuzzy_match(source, valid_sources)
 }
 
 /// Main error type for butterfly-dl operations
@@ -418,6 +428,42 @@ mod tests {
         let result = find_best_fuzzy_match("austrailia", &candidates);
         
         
+        assert_eq!(result, Some("australia-oceania".to_string()));
+    }
+
+    #[test]
+    fn test_semantic_bonuses() {
+        // Test anti-bias penalty - long input should not match very short candidates
+        let candidates = vec![
+            "austria".to_string(),          // Short candidate - should get penalty
+            "europe/austria".to_string(),   // Contains '/' - no penalty
+            "australia-oceania".to_string(), // Long candidate - gets bonuses
+        ];
+        
+        let result = find_best_fuzzy_match("very-long-input-string", &candidates);
+        // Should not suggest "austria" due to anti-bias penalty
+        assert_ne!(result, Some("austria".to_string()));
+        
+        // Test length-based bonus - similar length strings should get bonus
+        let length_candidates = vec![
+            "short".to_string(),
+            "medium-length-string".to_string(),
+            "very-long-similar-length".to_string(),
+        ];
+        
+        let result = find_best_fuzzy_match("very-long-similar-input", &length_candidates);
+        // Should prefer the similar length candidate
+        assert_eq!(result, Some("very-long-similar-length".to_string()));
+        
+        // Test prefix bonus
+        let prefix_candidates = vec![
+            "australia-oceania".to_string(),
+            "antarctica".to_string(),
+            "africa".to_string(),
+        ];
+        
+        let result = find_best_fuzzy_match("austr", &prefix_candidates);
+        // Should prefer australia-oceania due to strong prefix match
         assert_eq!(result, Some("australia-oceania".to_string()));
     }
 }
