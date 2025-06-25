@@ -121,14 +121,12 @@ impl Downloader {
         options: &DownloadOptions,
     ) -> Result<()> {
         let client = &*GLOBAL_CLIENT;
-        let url = url.to_string();
-        let file_path = file_path.to_string();
         
-        retry_on_network_error(|| async {
-            // Get file size and check range support
-            let head_response = client.head(&url).send().await?;
+        // Get file size and check range support with retry
+        let (total_size, supports_ranges) = retry_on_network_error(|| async {
+            let head_response = client.head(url).send().await?;
             if !head_response.status().is_success() {
-                return Err(create_helpful_http_error(&url, head_response.status()));
+                return Err(create_helpful_http_error(url, head_response.status()));
             }
             
             let total_size = head_response
@@ -142,21 +140,21 @@ impl Downloader {
                 .headers()
                 .get("accept-ranges")
                 .map_or(false, |v| v.to_str().unwrap_or("") == "bytes");
-            
-            let file = create_optimized_file(&file_path, Some(total_size)).await?;
-            
-            let optimal_connections = calculate_optimal_connections(total_size, options.max_connections);
-            
-            if !supports_ranges || optimal_connections == 1 {
-                // Single connection download for small files or servers without range support
-                let response = client.get(&url).send().await?;
-                let stream = create_http_stream(response);
-                self.stream_to_writer(stream, Box::new(file), total_size, options).await
-            } else {
-                // Parallel download for larger files
-                self.download_http_parallel(client, &url, Box::new(file), total_size, options).await
-            }
-        }).await
+                
+            Ok((total_size, supports_ranges))
+        }).await?;
+        
+        let file = create_optimized_file(file_path, Some(total_size)).await?;
+        
+        let optimal_connections = calculate_optimal_connections(total_size, options.max_connections);
+        
+        if !supports_ranges || optimal_connections == 1 {
+            // Single connection download - resilient streaming
+            self.download_single_resilient(client, url, Box::new(file), total_size, supports_ranges, options).await
+        } else {
+            // Parallel download - resilient chunks
+            self.download_http_parallel_resilient(client, url, Box::new(file), total_size, options).await
+        }
     }
 
 
@@ -293,6 +291,196 @@ impl Downloader {
                     }
                     
                     Ok::<(usize, Vec<u8>), Error>((idx, chunk_data))
+                }
+            })
+            .buffer_unordered(connections);
+        
+        tokio::pin!(stream);
+        
+        // Collect and write chunks in order
+        while let Some(result) = stream.next().await {
+            let (idx, data) = result?;
+            ring_buffer[idx] = Some(data);
+            
+            // Write sequential chunks
+            while next_chunk_to_write < ring_buffer.len() && ring_buffer[next_chunk_to_write].is_some() {
+                if let Some(chunk) = ring_buffer[next_chunk_to_write].take() {
+                    writer.write_all(&chunk).await?;
+                }
+                next_chunk_to_write += 1;
+            }
+        }
+        
+        writer.flush().await?;
+        
+        if let Some(handle) = progress_handle {
+            handle.abort();
+        }
+        
+        Ok(())
+    }
+
+    /// Resilient single connection download with range resume capability
+    async fn download_single_resilient(
+        &self,
+        client: &Client,
+        url: &str,
+        mut writer: Box<dyn AsyncWrite + Send + Unpin>,
+        total_size: u64,
+        supports_ranges: bool,
+        options: &DownloadOptions,
+    ) -> Result<()> {
+        let mut downloaded = 0u64;
+        
+        while downloaded < total_size {
+            let result = if downloaded == 0 {
+                // Initial request
+                retry_on_network_error(|| async {
+                    let response = client.get(url).send().await?;
+                    let stream = create_http_stream(response);
+                    Ok(stream)
+                }).await
+            } else if supports_ranges {
+                // Resume using range request
+                retry_on_network_error(|| async {
+                    let range_header = format!("bytes={}-", downloaded);
+                    let response = client.get(url).header("Range", range_header).send().await?;
+                    let stream = create_http_stream(response);
+                    Ok(stream)
+                }).await
+            } else {
+                return Err(Error::NetworkError("Cannot resume download - server doesn't support ranges".to_string()));
+            };
+            
+            match result {
+                Ok(stream) => {
+                    // Stream with resilient reading
+                    match self.stream_to_writer_resilient(stream, &mut writer, total_size, &mut downloaded, options).await {
+                        Ok(()) => break, // Download completed
+                        Err(Error::NetworkError(_)) => {
+                            eprintln!("⚠️  Stream interrupted at {} bytes, resuming...", downloaded);
+                            continue; // Retry from current position
+                        }
+                        Err(e) => return Err(e), // Non-network errors
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        
+        writer.flush().await?;
+        Ok(())
+    }
+
+    /// Resilient streaming - if stream fails, propagate error for retry at higher level
+    async fn stream_to_writer_resilient(
+        &self,
+        mut stream: DownloadStream,
+        writer: &mut Box<dyn AsyncWrite + Send + Unpin>,
+        total_size: u64,
+        downloaded: &mut u64,
+        options: &DownloadOptions,
+    ) -> Result<()> {
+        let mut buffer = vec![0u8; options.buffer_size];
+        
+        loop {
+            let bytes_read = stream.read(&mut buffer).await.map_err(|e| {
+                Error::NetworkError(format!("Stream read error: {}", e))
+            })?;
+            
+            if bytes_read == 0 {
+                break;
+            }
+            
+            writer.write_all(&buffer[..bytes_read]).await?;
+            *downloaded += bytes_read as u64;
+            
+            if let Some(ref progress) = options.progress {
+                progress(*downloaded, total_size);
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Resilient parallel download with per-chunk retry
+    async fn download_http_parallel_resilient(
+        &self,
+        client: &Client,
+        url: &str,
+        mut writer: Box<dyn AsyncWrite + Send + Unpin>,
+        total_size: u64,
+        options: &DownloadOptions,
+    ) -> Result<()> {
+        let connections = calculate_optimal_connections(total_size, options.max_connections);
+        let chunk_size = total_size / connections as u64;
+        
+        // Generate ranges
+        let ranges: Vec<(u64, u64)> = (0..connections)
+            .map(|i| {
+                let start = i as u64 * chunk_size;
+                let end = if i == connections - 1 {
+                    total_size - 1
+                } else {
+                    start + chunk_size - 1
+                };
+                (start, end)
+            })
+            .collect();
+        
+        let downloaded_bytes = Arc::new(AtomicU64::new(0));
+        
+        // Progress tracking
+        let progress_handle = if let Some(progress_fn) = options.progress.clone() {
+            let downloaded_clone = Arc::clone(&downloaded_bytes);
+            Some(tokio::spawn(async move {
+                while downloaded_clone.load(Ordering::Relaxed) < total_size {
+                    let current = downloaded_clone.load(Ordering::Relaxed);
+                    progress_fn(current, total_size);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                progress_fn(total_size, total_size);
+            }))
+        } else {
+            None
+        };
+        
+        // Ring buffer for ordering chunks
+        let mut ring_buffer: Vec<Option<Vec<u8>>> = vec![None; ranges.len()];
+        let mut next_chunk_to_write = 0;
+        
+        // Download chunks with resilient retry per chunk
+        let stream = futures::stream::iter(ranges.into_iter().enumerate())
+            .map(|(idx, (start, end))| {
+                let client = client.clone();
+                let url = url.to_string();
+                let downloaded_bytes = Arc::clone(&downloaded_bytes);
+                
+                async move {
+                    // Retry entire chunk download on failure
+                    retry_on_network_error(|| async {
+                        let range_header = format!("bytes={}-{}", start, end);
+                        let response = client
+                            .get(&url)
+                            .header("Range", range_header)
+                            .send()
+                            .await?;
+                        
+                        if !response.status().is_success() && response.status().as_u16() != 206 {
+                            return Err(Error::HttpError(format!("Range request failed: {}", response.status())));
+                        }
+                        
+                        // Stream chunk data with resilient reading
+                        let mut chunk_data = Vec::new();
+                        let mut stream = response.bytes_stream();
+                        
+                        while let Some(bytes_chunk) = stream.try_next().await? {
+                            chunk_data.extend_from_slice(&bytes_chunk);
+                            downloaded_bytes.fetch_add(bytes_chunk.len() as u64, Ordering::Relaxed);
+                        }
+                        
+                        Ok::<(usize, Vec<u8>), Error>((idx, chunk_data))
+                    }).await
                 }
             })
             .buffer_unordered(connections);
