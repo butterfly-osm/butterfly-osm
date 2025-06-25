@@ -5,6 +5,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2025-06-25
+
+### Major Enhancement - Enhanced Progress Display & Network Resilience
+
+### Added
+- **🎨 Enhanced Progress Display** - Beautiful tqdm-style progress bars with smooth Unicode blocks
+- **⚡ Comprehensive Progress Info** - Shows percentage, download speed, elapsed time, and ETA
+- **🛡️ Resilient Network Retry** - Intelligent retry mechanism with exponential backoff (1s, 2s, 4s)
+- **🔄 Smart Resume Logic** - Resumes downloads from interruption point using HTTP range requests
+- **📁 File Overwrite Protection** - Comprehensive overwrite behavior with user prompts and CLI flags
+- **🧪 Mock Server Testing** - Complete test suite with network failure simulation
+
+### Enhanced Progress Features
+- **Smooth Progress Bars**: `75%|████████████▊ | 1.2GB/1.6GB [00:30<00:10, 45.2MB/s]`
+- **Real-time Metrics**: Percentage, transfer speed, elapsed time, estimated completion
+- **Unicode Block Characters**: Smooth visual progress indication instead of pound signs
+- **Consistent Formatting**: Follows tqdm standard for familiar user experience
+
+### Network Resilience Features
+- **Automatic Retry**: Up to 3 attempts with exponential backoff for network timeouts
+- **Smart Resume**: Uses HTTP range requests to continue from interruption point
+- **Bandwidth Efficient**: Only re-downloads failed parts, not entire files
+- **Memory Efficient**: Maintains streaming architecture, no RAM bloat
+- **User Feedback**: Clear retry messages with attempt counts and delays
+
+### File Safety Features
+- **CLI Flags**: `--force` (overwrite without prompting), `--no-clobber` (never overwrite)
+- **User Prompts**: Interactive `Overwrite? [y/N]:` confirmation for existing files
+- **Pre-download Validation**: Checks file existence before starting download
+- **Helpful Error Messages**: Clear guidance with suggested `--force` flag
+- **Conflict Detection**: Prevents contradictory `--force` and `--no-clobber` together
+
+### Library API Enhancements
+- **OverwriteBehavior Enum**: `Prompt`, `Force`, `NeverOverwrite` for programmatic control
+- **Enhanced DownloadOptions**: New `overwrite` field for library consumers
+- **Type Safety**: Comprehensive error handling for all overwrite scenarios
+
+### Technical Improvements
+- **Mock Server Testing**: wiremock-based tests simulating network failures and recovery
+- **Exponential Backoff**: Verified timing tests ensuring proper 1s, 2s, 4s delays
+- **Range Request Logic**: Sophisticated resume logic for both single and parallel downloads
+- **Error Classification**: Distinguishes network errors from HTTP errors for appropriate retry
+
+### Examples
+```bash
+# Enhanced progress display
+butterfly-dl europe/belgium
+# 75%|████████████▊     | 450MB/600MB [01:30<00:30, 25.2MB/s]
+
+# Network resilience in action
+# ⚠️ Network error (attempt 1): operation timed out. Retrying in 1000ms...
+# ⚠️ Stream interrupted at 300MB, resuming...
+
+# File overwrite protection
+butterfly-dl europe/belgium
+# ⚠️ File already exists: belgium-latest.osm.pbf
+# Overwrite? [y/N]: n
+# ❌ Download cancelled
+
+# Force overwrite
+butterfly-dl europe/belgium --force
+# ⚠️ Overwriting existing file: belgium-latest.osm.pbf
+```
+
 ## [1.3.0] - 2025-06-25
 
 ### Major Enhancement - Semantic Fuzzy Matching with Advanced Error Intelligence

@@ -29,6 +29,23 @@ impl AsyncRead for DownloadStream {
 /// Progress callback function type
 pub type ProgressCallback = Arc<dyn Fn(u64, u64) + Send + Sync>;
 
+/// Overwrite behavior for existing files
+#[derive(Debug, Clone, PartialEq)]
+pub enum OverwriteBehavior {
+    /// Prompt user for confirmation (default)
+    Prompt,
+    /// Force overwrite without prompting
+    Force,
+    /// Never overwrite, fail if file exists
+    NeverOverwrite,
+}
+
+impl Default for OverwriteBehavior {
+    fn default() -> Self {
+        Self::Prompt
+    }
+}
+
 /// Options for download operations
 pub struct DownloadOptions {
     /// Optional progress callback
@@ -39,6 +56,9 @@ pub struct DownloadOptions {
     
     /// Maximum number of parallel connections for HTTP downloads
     pub max_connections: usize,
+    
+    /// Behavior when destination file already exists
+    pub overwrite: OverwriteBehavior,
 }
 
 impl Default for DownloadOptions {
@@ -47,6 +67,7 @@ impl Default for DownloadOptions {
             progress: None,
             buffer_size: 64 * 1024, // 64KB
             max_connections: 16,
+            overwrite: OverwriteBehavior::default(),
         }
     }
 }

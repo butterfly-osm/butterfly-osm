@@ -4,7 +4,7 @@
 //! Provides a curl-like interface for downloading OpenStreetMap data files.
 
 use clap::Parser;
-use butterfly_dl::Result;
+use butterfly_dl::{Result, OverwriteBehavior, DownloadOptions};
 
 mod cli;
 
@@ -16,7 +16,12 @@ mod cli;
   butterfly-dl planet              # Download planet file (81GB) from HTTP
   butterfly-dl europe              # Download Europe continent from HTTP
   butterfly-dl europe/belgium      # Download Belgium from HTTP
-  butterfly-dl europe/monaco -     # Stream Monaco to stdout")]
+  butterfly-dl europe/monaco -     # Stream Monaco to stdout
+
+File Overwrite Behavior:
+  By default, you'll be prompted if destination file exists
+  --force                          # Overwrite without asking
+  --no-clobber                     # Never overwrite, fail if file exists")]
 #[command(version = env!("BUTTERFLY_VERSION"))]
 struct Cli {
     /// Source to download: "planet" (HTTP), "europe" (continent), or "europe/belgium" (country/region)
@@ -33,6 +38,14 @@ struct Cli {
     /// Enable verbose logging
     #[arg(short, long)]
     verbose: bool,
+    
+    /// Force overwrite existing files without prompting
+    #[arg(short, long)]
+    force: bool,
+    
+    /// Never overwrite existing files (fail if destination exists)
+    #[arg(long)]
+    no_clobber: bool,
 }
 
 /// Output destination types
@@ -83,10 +96,16 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     
+    // Validate conflicting flags
+    if cli.force && cli.no_clobber {
+        eprintln!("❌ Error: --force and --no-clobber cannot be used together");
+        std::process::exit(1);
+    }
+    
     // Handle different output destinations
     match output {
         OutputDestination::File(file_path) => {
-            download_to_file(&cli.source, &file_path, cli.verbose).await?;
+            download_to_file(&cli.source, &file_path, cli.verbose, cli.force, cli.no_clobber).await?;
         }
         OutputDestination::Stdout => {
             download_to_stdout(&cli.source, cli.verbose).await?;
@@ -97,7 +116,7 @@ async fn main() -> Result<()> {
 }
 
 /// Download to a file with progress bar
-async fn download_to_file(source: &str, file_path: &str, verbose: bool) -> Result<()> {
+async fn download_to_file(source: &str, file_path: &str, verbose: bool, force: bool, no_clobber: bool) -> Result<()> {
     if verbose {
         // Show download source information
         show_download_info(source);
@@ -105,14 +124,22 @@ async fn download_to_file(source: &str, file_path: &str, verbose: bool) -> Resul
     
     eprintln!("📁 Saving to: {}", file_path);
     
+    // Determine overwrite behavior from CLI flags
+    let overwrite = if force {
+        OverwriteBehavior::Force
+    } else if no_clobber {
+        OverwriteBehavior::NeverOverwrite
+    } else {
+        OverwriteBehavior::Prompt
+    };
+    
     // Create progress bar manager
     let progress_manager = cli::ProgressManager::new(0, &format!("🌐 Downloading {}", source));
     
-    // Use library with progress callback
-    butterfly_dl::get_with_progress(
-        source,
-        Some(file_path),
-        {
+    // Create download options with overwrite behavior
+    let options = DownloadOptions {
+        overwrite,
+        progress: Some(std::sync::Arc::new({
             let pb = progress_manager.pb.clone();
             move |downloaded, total| {
                 if pb.length().unwrap_or(0) != total {
@@ -123,8 +150,12 @@ async fn download_to_file(source: &str, file_path: &str, verbose: bool) -> Resul
                     pb.finish_with_message("✅ Download completed!");
                 }
             }
-        }
-    ).await?;
+        })),
+        ..Default::default()
+    };
+    
+    // Use library with custom options
+    butterfly_dl::get_with_options(source, Some(file_path), options).await?;
     
     Ok(())
 }
