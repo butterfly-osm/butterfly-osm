@@ -307,44 +307,35 @@ butterfly-dl includes comprehensive benchmarking against industry-standard tools
 
 ### Sample Results
 
-*All benchmarks conducted over a 100 Mbps connection*
+*All benchmarks conducted on actual hardware over real network conditions*
 
-#### Small Files (Monaco ~1MB)
+#### Small Files (Monaco ~0.6MB)
 ```
 Tool         Duration(s)  Speed(MB/s)  Memory     Status    
 ----------------------------------------------------------
-aria2        0.291        2.09         ~50MB      ✅ Success
-curl         0.337        1.80         ~10MB      ✅ Success  
-butterfly-dl 0.421        1.44         ~215MB     ✅ Success
+curl         0.459        1.32         ~10MB      ✅ Success
+butterfly-dl 0.612        0.99         ~215MB     ✅ Success
+aria2        0.643        0.94         ~50MB      ✅ Success
 ```
-*Note: For very small files, lightweight tools have startup advantage*
+*For very small files, curl's lightweight design provides startup advantages*
 
-#### Medium Files (Belgium ~43MB)
+#### Medium Files (Luxembourg ~43MB)
 ```
 Tool         Duration(s)  Speed(MB/s)  Memory     Status    
 ----------------------------------------------------------
-butterfly-dl 2.1          20.5         ~215MB     ✅ Success
-aria2        2.8          15.4         ~120MB     ✅ Success
-curl         4.2          10.2         ~10MB      ✅ Success
+butterfly-dl 3.037        14.07        ~215MB     ✅ Success
+aria2        5.447        7.84         ~120MB     ✅ Success
+curl         9.349        4.57         ~10MB      ✅ Success
 ```
-*butterfly-dl's smart connection scaling shows clear advantages*
-
-#### Large Files (France ~3.5GB)
-```
-Tool         Duration(s)  Speed(MB/s)  Memory     Status    
-----------------------------------------------------------
-butterfly-dl 287          12.2         ~215MB     ✅ Success
-aria2        445          7.9          ~800MB+    ✅ Success
-curl         612          5.7          ~15MB      ✅ Success
-```
-*butterfly-dl maintains consistent memory usage while delivering superior speed*
+*butterfly-dl excels with **3x faster** than curl and **79% faster** than aria2*
 
 ### Key Performance Insights
 
-- **🎯 Sweet Spot**: Medium to large files (>10MB) where parallel connections provide clear advantages
+- **🎯 Sweet Spot**: Medium to large files (>10MB) where butterfly-dl delivers **79-200% speed improvements**
 - **📊 Memory Consistency**: Fixed ~215MB usage regardless of file size (vs aria2's scaling memory)
-- **⚡ Speed Scaling**: Performance improves significantly with file size due to connection optimization
-- **🔧 Smart Strategy**: Automatically uses single connection for small files, scaled connections for large files
+- **⚡ Speed Scaling**: **14.07 MB/s** on 43MB files vs aria2's 7.84 MB/s and curl's 4.57 MB/s
+- **🔧 Smart Strategy**: Automatically uses single connection for small files, optimized parallel connections for larger files
+- **🏆 Performance Leader**: On medium files, butterfly-dl consistently outperforms both aria2 and curl significantly
 
 ### Benchmark Features
 
@@ -375,11 +366,11 @@ cargo build --release
 
 ## Comparison with Alternatives
 
-| Tool | Memory (81GB file) | Parallel Downloads | HTTP Features | Streaming | Speed (Large Files) |
-|------|-------------------|-------------------|------------|-----------|-------------------|
-| `butterfly-dl` | ~215MB | Yes (Smart) | Advanced | Yes | **12.2 MB/s** |
-| `curl` | ~10MB | No | Basic | Yes | 5.7 MB/s |
-| `aria2c` | ~500MB+ | Yes | Basic | Limited | 7.9 MB/s |
+| Tool | Memory Usage | Parallel Downloads | HTTP Features | Streaming | Speed (43MB file) |
+|------|--------------|-------------------|------------|-----------|-------------------|
+| `butterfly-dl` | ~215MB | Yes (Smart) | Advanced | Yes | **14.07 MB/s** |
+| `aria2c` | ~50-500MB+ | Yes | Basic | Limited | 7.84 MB/s |
+| `curl` | ~10MB | No | Basic | Yes | 4.57 MB/s |
 | `wget` | ~10MB | No | Basic | No | ~4 MB/s |
 
 ## License
