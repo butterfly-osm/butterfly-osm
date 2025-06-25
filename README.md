@@ -20,8 +20,8 @@ A high-performance, memory-efficient OpenStreetMap data downloader with intellig
 
 ```bash
 # Build from source
-git clone https://github.com/username/butterfly
-cd butterfly
+git clone https://github.com/username/butterfly-dl
+cd butterfly-dl
 cargo build --release
 ```
 
@@ -349,8 +349,8 @@ curl         9.349        4.57         ~10MB      ✅ Success
 
 ```bash
 # Clone and build
-git clone https://github.com/username/butterfly
-cd butterfly
+git clone https://github.com/username/butterfly-dl
+cd butterfly-dl
 cargo build --release
 
 # Test with any supported region

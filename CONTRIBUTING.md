@@ -24,7 +24,7 @@ Welcome! This project follows **XP (Extreme Programming) pair programming** with
 ### Setup
 ```bash
 git clone <repository-url>
-cd butterfly
+cd butterfly-dl
 make build
 make test
 ```
