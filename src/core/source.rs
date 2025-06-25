@@ -1,19 +1,12 @@
 //! Source resolution logic for butterfly-dl
 //!
-//! Handles intelligent routing between S3 and HTTP sources based on the requested data.
+//! Handles HTTP source routing for OpenStreetMap data downloads.
 
 use crate::core::error::Result;
 
 /// Represents different download sources
 #[derive(Debug, Clone, PartialEq)]
 pub enum DownloadSource {
-    /// S3 source with bucket, key, and region information
-    #[cfg(feature = "s3")]
-    S3 {
-        bucket: String,
-        key: String,
-        region: String,
-    },
     /// HTTP source with direct URL
     Http {
         url: String,
@@ -22,15 +15,7 @@ pub enum DownloadSource {
 
 /// Configuration for download sources
 pub struct SourceConfig {
-    /// S3 bucket for planet files (when S3 feature is enabled)
-    #[cfg(feature = "s3")]
-    pub planet_s3_bucket: String,
-    #[cfg(feature = "s3")]
-    pub planet_s3_key: String,
-    #[cfg(feature = "s3")]
-    pub planet_s3_region: String,
-    
-    /// Fallback HTTP URL for planet files
+    /// HTTP URL for planet files
     pub planet_http_url: String,
     
     /// Base URL for Geofabrik downloads
@@ -40,13 +25,6 @@ pub struct SourceConfig {
 impl Default for SourceConfig {
     fn default() -> Self {
         Self {
-            #[cfg(feature = "s3")]
-            planet_s3_bucket: "osm-planet-eu-central-1".to_string(),
-            #[cfg(feature = "s3")]
-            planet_s3_key: "planet-latest.osm.pbf".to_string(),
-            #[cfg(feature = "s3")]
-            planet_s3_region: "eu-central-1".to_string(),
-            
             planet_http_url: "https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf".to_string(),
             geofabrik_base_url: "https://download.geofabrik.de".to_string(),
         }
@@ -66,23 +44,11 @@ pub fn resolve_source(source: &str, config: &SourceConfig) -> Result<DownloadSou
     }
 }
 
-/// Resolves planet source based on feature availability
+/// Resolves planet source to HTTP download
 fn resolve_planet_source(config: &SourceConfig) -> Result<DownloadSource> {
-    #[cfg(feature = "s3")]
-    {
-        Ok(DownloadSource::S3 {
-            bucket: config.planet_s3_bucket.clone(),
-            key: config.planet_s3_key.clone(),
-            region: config.planet_s3_region.clone(),
-        })
-    }
-    
-    #[cfg(not(feature = "s3"))]
-    {
-        Ok(DownloadSource::Http {
-            url: config.planet_http_url.clone(),
-        })
-    }
+    Ok(DownloadSource::Http {
+        url: config.planet_http_url.clone(),
+    })
 }
 
 /// Generates output filename from source
@@ -106,25 +72,9 @@ mod tests {
         let config = SourceConfig::default();
         let source = resolve_source("planet", &config).unwrap();
         
-        #[cfg(feature = "s3")]
-        {
-            match source {
-                DownloadSource::S3 { bucket, key, region } => {
-                    assert_eq!(bucket, "osm-planet-eu-central-1");
-                    assert_eq!(key, "planet-latest.osm.pbf");
-                    assert_eq!(region, "eu-central-1");
-                }
-                _ => panic!("Expected S3 source for planet with s3 feature"),
-            }
-        }
-        
-        #[cfg(not(feature = "s3"))]
-        {
-            match source {
-                DownloadSource::Http { url } => {
-                    assert_eq!(url, "https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf");
-                }
-                _ => panic!("Expected HTTP source for planet without s3 feature"),
+        match source {
+            DownloadSource::Http { url } => {
+                assert_eq!(url, "https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf");
             }
         }
     }
@@ -138,7 +88,6 @@ mod tests {
             DownloadSource::Http { url } => {
                 assert_eq!(url, "https://download.geofabrik.de/europe-latest.osm.pbf");
             }
-            _ => panic!("Expected HTTP source for continent"),
         }
     }
 
@@ -151,7 +100,6 @@ mod tests {
             DownloadSource::Http { url } => {
                 assert_eq!(url, "https://download.geofabrik.de/europe/belgium-latest.osm.pbf");
             }
-            _ => panic!("Expected HTTP source for country"),
         }
     }
 

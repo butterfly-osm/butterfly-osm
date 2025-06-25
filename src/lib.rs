@@ -243,7 +243,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_with_tempfile() {
         let dir = tempdir().unwrap();
-        let file_path = dir.path().join("test.pbf");
+        let _file_path = dir.path().join("test.pbf");
         
         // This would fail in real test without network, but validates the API
         // get("europe/monaco", Some(file_path.to_str().unwrap())).await.unwrap();

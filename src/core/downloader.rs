@@ -1,6 +1,6 @@
 //! Core download functionality for butterfly-dl
 //!
-//! Provides high-performance, memory-efficient download implementations for S3 and HTTP sources.
+//! Provides high-performance, memory-efficient download implementations for HTTP sources.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,12 +15,6 @@ use crate::core::error::{Error, Result};
 use crate::core::source::{DownloadSource, SourceConfig};
 use crate::core::stream::{DownloadOptions, DownloadStream, create_http_stream};
 
-#[cfg(feature = "s3")]
-use aws_config::BehaviorVersion;
-#[cfg(feature = "s3")]
-use aws_sdk_s3::Client as S3Client;
-#[cfg(feature = "s3")]
-use crate::core::stream::create_s3_stream;
 
 // Constants removed - unused in current implementation
 
@@ -30,6 +24,8 @@ static GLOBAL_CLIENT: Lazy<Client> = Lazy::new(|| {
         .tcp_keepalive(Duration::from_secs(60))
         .pool_idle_timeout(Duration::from_secs(90))
         .pool_max_idle_per_host(20)
+        .timeout(Duration::from_secs(30))        // Overall request timeout
+        .connect_timeout(Duration::from_secs(10)) // Connection timeout
         .user_agent(&format!("butterfly-dl/{}", env!("BUTTERFLY_VERSION")))
         .build()
         .expect("Failed to create HTTP client")
@@ -69,10 +65,6 @@ impl Downloader {
         let download_source = crate::core::source::resolve_source(source, &self.config)?;
         
         match download_source {
-            #[cfg(feature = "s3")]
-            DownloadSource::S3 { bucket, key, region } => {
-                self.download_s3_to_file(&bucket, &key, &region, file_path, options).await
-            }
             DownloadSource::Http { url } => {
                 self.download_http_to_file(&url, file_path, options).await
             }
@@ -88,31 +80,12 @@ impl Downloader {
         let download_source = crate::core::source::resolve_source(source, &self.config)?;
         
         match download_source {
-            #[cfg(feature = "s3")]
-            DownloadSource::S3 { bucket, key, region } => {
-                self.create_s3_stream(&bucket, &key, &region, options).await
-            }
             DownloadSource::Http { url } => {
                 self.create_http_stream(&url, options).await
             }
         }
     }
 
-    /// Download from S3 to file
-    #[cfg(feature = "s3")]
-    async fn download_s3_to_file(
-        &self,
-        bucket: &str,
-        key: &str,
-        region: &str,
-        file_path: &str,
-        options: &DownloadOptions,
-    ) -> Result<()> {
-        let (stream, total_size) = self.create_s3_stream(bucket, key, region, options).await?;
-        let file = create_optimized_file(file_path, Some(total_size)).await?;
-        
-        self.stream_to_writer(stream, Box::new(file), total_size, options).await
-    }
 
     /// Download from HTTP to file
     async fn download_http_to_file(
@@ -126,7 +99,7 @@ impl Downloader {
         // Get file size and check range support
         let head_response = client.head(url).send().await?;
         if !head_response.status().is_success() {
-            return Err(Error::HttpError(format!("Failed to get file info: {}", head_response.status())));
+            return Err(create_helpful_http_error(url, head_response.status()));
         }
         
         let total_size = head_response
@@ -156,45 +129,6 @@ impl Downloader {
         }
     }
 
-    /// Create S3 stream
-    #[cfg(feature = "s3")]
-    async fn create_s3_stream(
-        &self,
-        bucket: &str,
-        key: &str,
-        region: &str,
-        _options: &DownloadOptions,
-    ) -> Result<(DownloadStream, u64)> {
-        let config = aws_config::defaults(BehaviorVersion::latest())
-            .region(aws_config::Region::new(region.to_string()))
-            .load()
-            .await;
-        
-        let s3_client = S3Client::new(&config);
-        
-        // Get object metadata
-        let head_response = s3_client
-            .head_object()
-            .bucket(bucket)
-            .key(key)
-            .send()
-            .await
-            .map_err(|e| Error::S3Error(e.to_string()))?;
-        
-        let total_size = head_response.content_length().unwrap_or(0) as u64;
-        
-        // Get the object
-        let response = s3_client
-            .get_object()
-            .bucket(bucket)
-            .key(key)
-            .send()
-            .await
-            .map_err(|e| Error::S3Error(e.to_string()))?;
-        
-        let stream = create_s3_stream(response.body);
-        Ok((stream, total_size))
-    }
 
     /// Create HTTP stream (single connection)
     async fn create_http_stream(
@@ -206,7 +140,7 @@ impl Downloader {
         
         let head_response = client.head(url).send().await?;
         if !head_response.status().is_success() {
-            return Err(Error::HttpError(format!("Failed to get file info: {}", head_response.status())));
+            return Err(create_helpful_http_error(url, head_response.status()));
         }
         
         let total_size = head_response
@@ -404,6 +338,42 @@ async fn create_optimized_file(path: &str, size_hint: Option<u64>) -> Result<tok
     
     // Fallback to standard file creation
     tokio::fs::File::create(path).await.map_err(Into::into)
+}
+
+/// Create a helpful HTTP error with suggestions for common typos
+fn create_helpful_http_error(url: &str, status: reqwest::StatusCode) -> Error {
+    let mut message = format!("Failed to get file info: {}", status);
+    
+    if status == reqwest::StatusCode::NOT_FOUND {
+        // Extract source from URL patterns
+        let source = if url.contains("planet.openstreetmap.org") {
+            Some("planet".to_string())
+        } else if url.contains("download.geofabrik.de") {
+            // Extract the source from the URL pattern: https://download.geofabrik.de/{source}-latest.osm.pbf
+            url.split("download.geofabrik.de/")
+                .nth(1)
+                .and_then(|after_domain| after_domain.strip_suffix("-latest.osm.pbf"))
+                .map(|s| s.to_string())
+        } else {
+            None
+        };
+        
+        if let Some(source) = source {
+            if let Some(suggestion) = crate::core::error::suggest_correction(&source) {
+                message = format!(
+                    "Source '{}' not found. Did you mean '{}'?",
+                    source, suggestion
+                );
+            } else {
+                message = format!(
+                    "Source '{}' not found. Try: planet, europe, or europe/belgium",
+                    source
+                );
+            }
+        }
+    }
+    
+    Error::HttpError(message)
 }
 
 #[cfg(test)]
