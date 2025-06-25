@@ -196,6 +196,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "strsim",
  "tempfile",
  "tokio",
  "tokio-util",
