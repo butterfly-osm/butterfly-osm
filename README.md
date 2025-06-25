@@ -6,6 +6,8 @@ A high-performance, memory-efficient OpenStreetMap data downloader with intellig
 
 - **🚀 Optimized for Large Files**: <1GB RAM usage regardless of file size (including 81GB planet.osm.pbf)
 - **🧠 Smart Source Routing**: HTTP with parallel downloads optimized by file size
+- **🔍 Intelligent Error Messages**: Fuzzy matching with geographic accuracy for typos and misspellings
+- **🌍 Dynamic Source Loading**: Automatically fetches latest available regions from Geofabrik
 - **📡 HTTP Protocol**: Advanced HTTP with range requests and connection pooling
 - **💧 Streaming Support**: Direct stdout streaming for pipeline integration
 - **⚡ Performance Optimized**: Auto-tuning connections, Direct I/O for large files
@@ -51,6 +53,34 @@ butterfly-dl --verbose europe/belgium
 | `planet` | HTTP | Planet file from `https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf` |
 | `europe` | HTTP | Continent from `https://download.geofabrik.de/europe-latest.osm.pbf` |
 | `europe/belgium` | HTTP | Country from `https://download.geofabrik.de/europe/belgium-latest.osm.pbf` |
+
+### Intelligent Error Handling
+
+butterfly-dl includes smart error correction with fuzzy matching:
+
+```bash
+# Typo correction
+butterfly-dl antartica
+# Error: Source 'antartica' not found. Did you mean 'antarctica'?
+
+# Geographic accuracy  
+butterfly-dl antartica/belgium
+# Error: Source 'antartica/belgium' not found. Did you mean 'europe/belgium'?
+
+# Standalone country recognition
+butterfly-dl luxembourg
+# Error: Source 'luxembourg' not found. Did you mean 'europe/luxembourg'?
+
+# Smart continent suggestions
+butterfly-dl plant
+# Error: Source 'plant' not found. Did you mean 'planet'?
+```
+
+**Features:**
+- **Dynamic Source Discovery**: Automatically fetches available regions from Geofabrik JSON API
+- **Fuzzy Matching**: Uses Levenshtein distance algorithm for typo detection
+- **Geographic Intelligence**: Knows Belgium belongs to Europe, not Antarctica
+- **Fallback Protection**: Works offline with comprehensive fallback region list
 
 ### Output Options
 

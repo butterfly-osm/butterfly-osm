@@ -4,18 +4,84 @@
 
 use std::fmt;
 
-/// Known valid continents and countries for fuzzy matching
-const VALID_SOURCES: &[&str] = &[
-    // Special sources
-    "planet",
-    // Continents
-    "africa", "antarctica", "asia", "australia", "europe", "north-america", "south-america", "central-america", "oceania",
-    // Common countries/regions
-    "europe/germany", "europe/france", "europe/belgium", "europe/netherlands", "europe/italy", "europe/spain",
-    "europe/united-kingdom", "europe/poland", "europe/switzerland", "europe/austria", "europe/monaco",
-    "asia/china", "asia/japan", "asia/india", "asia/russia", "north-america/us", "north-america/canada",
-    "south-america/brazil", "south-america/argentina", "africa/south-africa", "australia/australia",
-];
+use std::sync::OnceLock;
+use reqwest::Client;
+use serde_json::Value;
+
+/// Cache for dynamically loaded valid sources
+static VALID_SOURCES_CACHE: OnceLock<Vec<String>> = OnceLock::new();
+
+/// Get valid sources, loading them dynamically from Geofabrik if needed
+async fn get_valid_sources() -> &'static Vec<String> {
+    VALID_SOURCES_CACHE.get_or_init(|| {
+        // Fallback list in case we can't fetch from Geofabrik
+        let mut sources = vec![
+            "planet".to_string(),
+            // Continents  
+            "africa".to_string(), "antarctica".to_string(), "asia".to_string(), 
+            "australia".to_string(), "europe".to_string(), "north-america".to_string(), 
+            "south-america".to_string(), "central-america".to_string(), "oceania".to_string(),
+        ];
+        
+        // Try to fetch from Geofabrik synchronously (blocking is OK for initialization)
+        if let Ok(rt) = tokio::runtime::Runtime::new() {
+            if let Ok(geofabrik_sources) = rt.block_on(fetch_geofabrik_sources()) {
+                sources.extend(geofabrik_sources);
+            }
+        }
+        
+        sources
+    })
+}
+
+/// Fetch valid sources from Geofabrik JSON
+async fn fetch_geofabrik_sources() -> std::result::Result<Vec<String>, reqwest::Error> {
+    let client = Client::new();
+    let response = client
+        .get("https://download.geofabrik.de/index-v1.json")
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await?;
+    
+    let json: Value = response.json().await?;
+    let mut sources = Vec::new();
+    
+    if let Some(features) = json["features"].as_array() {
+        for feature in features {
+            if let Some(properties) = feature["properties"].as_object() {
+                if let Some(id) = properties["id"].as_str() {
+                    // Skip special entries and only include downloadable regions
+                    if !id.starts_with("_") && properties.get("urls").is_some() {
+                        sources.push(id.to_string());
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(sources)
+}
+
+/// Synchronous version for use in the main suggestion function
+fn get_valid_sources_sync() -> Vec<String> {
+    // Try to get cached sources first
+    if let Some(cached) = VALID_SOURCES_CACHE.get() {
+        return cached.clone();
+    }
+    
+    // Fallback to basic list if not cached yet
+    vec![
+        "planet".to_string(),
+        "africa".to_string(), "antarctica".to_string(), "asia".to_string(), 
+        "australia".to_string(), "europe".to_string(), "north-america".to_string(), 
+        "south-america".to_string(), "central-america".to_string(), "oceania".to_string(),
+        // Basic European countries as fallback
+        "europe/germany".to_string(), "europe/france".to_string(), "europe/belgium".to_string(), 
+        "europe/netherlands".to_string(), "europe/italy".to_string(), "europe/spain".to_string(),
+        "europe/united-kingdom".to_string(), "europe/poland".to_string(), "europe/switzerland".to_string(), 
+        "europe/austria".to_string(), "europe/monaco".to_string(), "europe/luxembourg".to_string(),
+    ]
+}
 
 /// Calculate Levenshtein distance between two strings
 fn levenshtein_distance(s1: &str, s2: &str) -> usize {
@@ -55,7 +121,36 @@ pub fn suggest_correction(source: &str) -> Option<String> {
     // Maximum distance we consider a reasonable typo (about 25% of the word length, minimum 1, maximum 3)
     let max_distance = (source.len() / 3).max(1).min(3);
     
-    for &valid_source in VALID_SOURCES {
+    // Get valid sources (cached or fallback)
+    let valid_sources = get_valid_sources_sync();
+    
+    // First, check if this is a standalone country name that should be continent/country
+    if !source.contains('/') {
+        for valid_source in &valid_sources {
+            if let Some(slash_pos) = valid_source.find('/') {
+                let country_part = &valid_source[slash_pos + 1..];
+                if country_part.eq_ignore_ascii_case(&source) {
+                    // Exact match for country name - suggest the full continent/country path
+                    return Some(valid_source.clone());
+                }
+                
+                // Also check fuzzy match against just the country part
+                let distance = levenshtein_distance(&source_lower, country_part);
+                if distance > 0 && distance <= max_distance && distance < best_distance {
+                    best_distance = distance;
+                    best_match = Some(valid_source.clone());
+                }
+            }
+        }
+        
+        // If we found a country match, return it immediately (prioritize country paths)
+        if best_match.is_some() {
+            return best_match;
+        }
+    }
+    
+    // Then check regular fuzzy matching against all sources
+    for valid_source in &valid_sources {
         let distance = levenshtein_distance(&source_lower, valid_source);
         
         // If it's an exact match (ignoring case), no need to suggest
@@ -65,7 +160,7 @@ pub fn suggest_correction(source: &str) -> Option<String> {
         
         if distance <= max_distance && distance < best_distance {
             best_distance = distance;
-            best_match = Some(valid_source.to_string());
+            best_match = Some(valid_source.clone());
         }
     }
     
@@ -77,7 +172,7 @@ pub fn suggest_correction(source: &str) -> Option<String> {
         
         // First, check if the country exists in any valid continent (find correct geography)
         let mut correct_continent_for_country = None;
-        for &valid_source in VALID_SOURCES {
+        for valid_source in &valid_sources {
             if let Some(valid_slash_pos) = valid_source.find('/') {
                 let valid_country = &valid_source[valid_slash_pos + 1..];
                 if valid_country.eq_ignore_ascii_case(country) {
@@ -199,6 +294,26 @@ mod tests {
         // Test planet typos
         assert_eq!(suggest_correction("plant"), Some("planet".to_string()));
         assert_eq!(suggest_correction("plnet"), Some("planet".to_string()));
+    }
+
+    #[test]
+    fn test_suggest_correction_standalone_country_names() {
+        // Test standalone country names that should suggest continent/country paths
+        assert_eq!(suggest_correction("monaco"), Some("europe/monaco".to_string()));
+        assert_eq!(suggest_correction("belgium"), Some("europe/belgium".to_string()));
+        assert_eq!(suggest_correction("germany"), Some("europe/germany".to_string()));
+        assert_eq!(suggest_correction("france"), Some("europe/france".to_string()));
+        // Test case insensitive
+        assert_eq!(suggest_correction("MONACO"), Some("europe/monaco".to_string()));
+        assert_eq!(suggest_correction("Belgium"), Some("europe/belgium".to_string()));
+    }
+
+    #[test]
+    fn test_suggest_correction_standalone_country_typos() {
+        // Test typos in standalone country names
+        assert_eq!(suggest_correction("monac"), Some("europe/monaco".to_string()));
+        assert_eq!(suggest_correction("belgum"), Some("europe/belgium".to_string()));
+        assert_eq!(suggest_correction("germay"), Some("europe/germany".to_string()));
     }
 
     #[test]
