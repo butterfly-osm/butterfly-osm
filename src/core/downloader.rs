@@ -15,8 +15,11 @@ use crate::core::error::{Error, Result};
 use crate::core::source::{DownloadSource, SourceConfig};
 use crate::core::stream::{DownloadOptions, DownloadStream, create_http_stream};
 
+/// Maximum number of retry attempts for network errors
+const MAX_RETRY_ATTEMPTS: u32 = 3;
 
-// Constants removed - unused in current implementation
+/// Base delay for exponential backoff (in milliseconds)
+const BASE_RETRY_DELAY_MS: u64 = 1000;
 
 /// Global HTTP client with optimizations
 static GLOBAL_CLIENT: Lazy<Client> = Lazy::new(|| {
@@ -30,6 +33,29 @@ static GLOBAL_CLIENT: Lazy<Client> = Lazy::new(|| {
         .build()
         .expect("Failed to create HTTP client")
 });
+
+/// Execute an operation with retry logic for network errors
+async fn retry_on_network_error<F, Fut, T>(operation: F) -> Result<T>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut attempt = 0;
+    
+    loop {
+        match operation().await {
+            Ok(result) => return Ok(result),
+            Err(Error::NetworkError(msg)) if attempt < MAX_RETRY_ATTEMPTS => {
+                attempt += 1;
+                let delay = BASE_RETRY_DELAY_MS * (1 << (attempt - 1)); // Exponential backoff
+                eprintln!("⚠️  Network error (attempt {}): {}. Retrying in {}ms...", 
+                         attempt, msg, delay);
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
+            Err(e) => return Err(e), // Non-network errors or max retries exceeded
+        }
+    }
+}
 
 /// High-level downloader that handles all source types
 pub struct Downloader {
@@ -95,38 +121,42 @@ impl Downloader {
         options: &DownloadOptions,
     ) -> Result<()> {
         let client = &*GLOBAL_CLIENT;
+        let url = url.to_string();
+        let file_path = file_path.to_string();
         
-        // Get file size and check range support
-        let head_response = client.head(url).send().await?;
-        if !head_response.status().is_success() {
-            return Err(create_helpful_http_error(url, head_response.status()));
-        }
-        
-        let total_size = head_response
-            .headers()
-            .get("content-length")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok())
-            .ok_or_else(|| Error::HttpError("Could not determine file size".to_string()))?;
-        
-        let supports_ranges = head_response
-            .headers()
-            .get("accept-ranges")
-            .map_or(false, |v| v.to_str().unwrap_or("") == "bytes");
-        
-        let file = create_optimized_file(file_path, Some(total_size)).await?;
-        
-        let optimal_connections = calculate_optimal_connections(total_size, options.max_connections);
-        
-        if !supports_ranges || optimal_connections == 1 {
-            // Single connection download for small files or servers without range support
-            let response = client.get(url).send().await?;
-            let stream = create_http_stream(response);
-            self.stream_to_writer(stream, Box::new(file), total_size, options).await
-        } else {
-            // Parallel download for larger files
-            self.download_http_parallel(client, url, Box::new(file), total_size, options).await
-        }
+        retry_on_network_error(|| async {
+            // Get file size and check range support
+            let head_response = client.head(&url).send().await?;
+            if !head_response.status().is_success() {
+                return Err(create_helpful_http_error(&url, head_response.status()));
+            }
+            
+            let total_size = head_response
+                .headers()
+                .get("content-length")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .ok_or_else(|| Error::HttpError("Could not determine file size".to_string()))?;
+            
+            let supports_ranges = head_response
+                .headers()
+                .get("accept-ranges")
+                .map_or(false, |v| v.to_str().unwrap_or("") == "bytes");
+            
+            let file = create_optimized_file(&file_path, Some(total_size)).await?;
+            
+            let optimal_connections = calculate_optimal_connections(total_size, options.max_connections);
+            
+            if !supports_ranges || optimal_connections == 1 {
+                // Single connection download for small files or servers without range support
+                let response = client.get(&url).send().await?;
+                let stream = create_http_stream(response);
+                self.stream_to_writer(stream, Box::new(file), total_size, options).await
+            } else {
+                // Parallel download for larger files
+                self.download_http_parallel(client, &url, Box::new(file), total_size, options).await
+            }
+        }).await
     }
 
 
