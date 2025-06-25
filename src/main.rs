@@ -11,10 +11,15 @@ mod cli;
 /// Command-line interface for butterfly-dl
 #[derive(Parser)]
 #[command(name = "butterfly-dl")]
-#[command(about = "Optimized OpenStreetMap data downloader with S3 and HTTP support")]
+#[command(about = "Optimized OpenStreetMap data downloader with HTTP support")]
+#[command(long_about = "Downloads single OpenStreetMap files efficiently:
+  butterfly-dl planet              # Download planet file (81GB) from HTTP
+  butterfly-dl europe              # Download Europe continent from HTTP
+  butterfly-dl europe/belgium      # Download Belgium from HTTP
+  butterfly-dl europe/monaco -     # Stream Monaco to stdout")]
 #[command(version = env!("BUTTERFLY_VERSION"))]
 struct Cli {
-    /// Source identifier (e.g., "planet", "europe", "europe/belgium")
+    /// Source to download: "planet" (HTTP), "europe" (continent), or "europe/belgium" (country/region)
     source: String,
     
     /// Output file path, or "-" for stdout
@@ -145,10 +150,6 @@ async fn download_to_stdout(source: &str, verbose: bool) -> Result<()> {
 fn show_download_info(source: &str) {
     match source {
         "planet" => {
-            #[cfg(feature = "s3")]
-            eprintln!("🌍 Downloading from S3: s3://osm-planet-eu-central-1/planet-latest.osm.pbf");
-            
-            #[cfg(not(feature = "s3"))]
             eprintln!("🌐 Downloading from HTTP: https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf");
         }
         path if path.contains('/') => {

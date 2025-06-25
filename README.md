@@ -1,12 +1,12 @@
 # Butterfly-dl 🦋
 
-A high-performance, memory-efficient OpenStreetMap data downloader with intelligent source routing and curl-like behavior.
+A high-performance, memory-efficient OpenStreetMap data downloader with intelligent source routing. Downloads one file at a time with optimal performance.
 
 ## Features
 
 - **🚀 Optimized for Large Files**: <1GB RAM usage regardless of file size (including 81GB planet.osm.pbf)
-- **🧠 Smart Source Routing**: S3 for planet files, HTTP with parallel downloads for regional extracts
-- **📡 Multiple Protocols**: Native AWS S3 support + HTTP with range requests
+- **🧠 Smart Source Routing**: HTTP with parallel downloads optimized by file size
+- **📡 HTTP Protocol**: Advanced HTTP with range requests and connection pooling
 - **💧 Streaming Support**: Direct stdout streaming for pipeline integration
 - **⚡ Performance Optimized**: Auto-tuning connections, Direct I/O for large files
 - **🔧 Curl-like Interface**: Simple positional arguments, stderr logging
@@ -25,22 +25,22 @@ cargo build --release
 ### Basic Examples
 
 ```bash
-# Download planet file from S3 (81GB)
+# Download planet file from HTTP (81GB) 
 butterfly-dl planet
 
-# Download regional extract from Geofabrik
-butterfly-dl europe/belgium
-
-# Download continent
+# Download continent from HTTP
 butterfly-dl europe
 
-# Stream to stdout
+# Download country/region from HTTP  
+butterfly-dl europe/belgium
+
+# Stream to stdout for processing
 butterfly-dl europe/monaco - | gzip > monaco.pbf.gz
 
-# Save to specific file
+# Save to custom file name
 butterfly-dl planet planet-backup.pbf
 
-# Verbose output
+# Verbose output with source info
 butterfly-dl --verbose europe/belgium
 ```
 
@@ -48,7 +48,7 @@ butterfly-dl --verbose europe/belgium
 
 | Input | Source | Description |
 |-------|--------|-------------|
-| `planet` | S3 | Planet file from `s3://osm-planet-eu-central-1/planet-latest.osm.pbf` |
+| `planet` | HTTP | Planet file from `https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf` |
 | `europe` | HTTP | Continent from `https://download.geofabrik.de/europe-latest.osm.pbf` |
 | `europe/belgium` | HTTP | Country from `https://download.geofabrik.de/europe/belgium-latest.osm.pbf` |
 
@@ -67,7 +67,7 @@ butterfly-dl --verbose europe/belgium
 - **Streaming writes**: No intermediate accumulation
 
 ### Download Optimization
-- **S3**: Single optimized stream for maximum AWS backbone utilization
+- **HTTP**: Single optimized stream for maximum network utilization
 - **HTTP**: Auto-tuned parallel range requests (2-16 connections based on file size)
 - **Fallback**: Graceful degradation for servers without range support
 - **Progress tracking**: Real-time progress bars to stderr
@@ -84,9 +84,8 @@ butterfly-dl --verbose europe/belgium
 Connection buffers:    16 × 64KB = 1MB
 Ring buffer:          64MB (max)
 HTTP client overhead: ~50MB
-S3 SDK:              ~100MB
 Runtime:             ~50MB
-Total:               ~265MB (well under 1GB limit)
+Total:               ~215MB (well under 1GB limit)
 ```
 
 ### Direct I/O Support
@@ -99,10 +98,16 @@ Automatically enabled for files >1GB on Unix systems:
 ## CLI Reference
 
 ```
-butterfly-dl [OPTIONS] <SOURCE> [OUTPUT]
+Downloads single OpenStreetMap files efficiently:
+  butterfly-dl planet              # Download planet file (81GB) from HTTP
+  butterfly-dl europe              # Download Europe continent from HTTP
+  butterfly-dl europe/belgium      # Download Belgium from HTTP
+  butterfly-dl europe/monaco -     # Stream Monaco to stdout
+
+Usage: butterfly-dl [OPTIONS] <SOURCE> [OUTPUT]
 
 Arguments:
-  <SOURCE>  Source identifier (e.g., "planet", "europe", "europe/belgium")
+  <SOURCE>  Source to download: "planet" (HTTP), "europe" (continent), or "europe/belgium" (country/region)
   [OUTPUT]  Output file path, or "-" for stdout
 
 Options:
@@ -116,7 +121,7 @@ Options:
 
 ### Planet Download (81GB)
 ```bash
-# Download planet file (uses S3, single stream, Direct I/O)
+# Download planet file (uses HTTP, single stream, Direct I/O)
 butterfly-dl planet
 
 # Stream planet to compressed archive
@@ -209,19 +214,19 @@ cargo build --release
 ## Architecture
 
 - **Rust + Tokio**: Async/await for concurrent downloads
-- **AWS SDK**: Native S3 integration with anonymous access
+- **HTTP Client**: Advanced reqwest client with connection pooling
 - **Reqwest**: HTTP client with connection pooling and range requests
 - **Indicatif**: Progress bars to stderr
 - **Ring buffer**: Maintains chunk ordering with minimal memory
 
 ## Comparison with Alternatives
 
-| Tool | Memory (81GB file) | Parallel Downloads | S3 Support | Streaming |
+| Tool | Memory (81GB file) | Parallel Downloads | HTTP Features | Streaming |
 |------|-------------------|-------------------|------------|-----------|
-| `butterfly-dl` | ~265MB | Yes (HTTP) | Native | Yes |
-| `curl` | ~10MB | No | No | Yes |
-| `aws s3 cp` | ~100MB | No | Yes | Yes |
-| `aria2c` | ~500MB+ | Yes | No | Limited |
+| `butterfly-dl` | ~215MB | Yes (Smart) | Advanced | Yes |
+| `curl` | ~10MB | No | Basic | Yes |
+| `aria2c` | ~500MB+ | Yes | Basic | Limited |
+| `wget` | ~10MB | No | Basic | No |
 
 ## License
 

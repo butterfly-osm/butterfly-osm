@@ -29,11 +29,18 @@ data/
 *.log
 .env.local
 
+# Downloaded OSM files - these are large data files that shouldn't be committed
+*.osm.pbf
+*.pbf
+
 # Benchmark test files
 benchmarks/*.pbf
 benchmarks/*_curl.pbf
 benchmarks/*_aria2.pbf
 benchmarks/*_butterfly.pbf
+
+# Test output files
+/tmp/test-*.pbf
 
 # Temporary files
 *.tmp

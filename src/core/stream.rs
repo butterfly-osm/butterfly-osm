@@ -8,14 +8,10 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, ReadBuf};
 use futures::TryStreamExt;
 
-/// A unified stream that can handle both S3 and HTTP sources
+/// A unified stream for HTTP sources
 pub enum DownloadStream {
     /// HTTP stream using reqwest
     Http(Box<dyn AsyncRead + Send + Unpin>),
-    
-    /// S3 stream using AWS SDK
-    #[cfg(feature = "s3")]
-    S3(Box<dyn AsyncRead + Send + Unpin>),
 }
 
 impl AsyncRead for DownloadStream {
@@ -26,8 +22,6 @@ impl AsyncRead for DownloadStream {
     ) -> Poll<std::io::Result<()>> {
         match &mut *self {
             DownloadStream::Http(stream) => Pin::new(stream).poll_read(cx, buf),
-            #[cfg(feature = "s3")]
-            DownloadStream::S3(stream) => Pin::new(stream).poll_read(cx, buf),
         }
     }
 }
@@ -65,9 +59,3 @@ pub fn create_http_stream(response: reqwest::Response) -> DownloadStream {
     DownloadStream::Http(stream)
 }
 
-/// Creates a DownloadStream from an S3 response
-#[cfg(feature = "s3")]
-pub fn create_s3_stream(response: aws_sdk_s3::primitives::ByteStream) -> DownloadStream {
-    let stream = Box::new(response.into_async_read());
-    DownloadStream::S3(stream)
-}

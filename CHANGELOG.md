@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2025-06-25
+
+### Major Enhancement - HTTP-Only Architecture with Intelligent Error Messages
+
+**BREAKING CHANGES:**
+- Removed S3 support and AWS dependencies - now HTTP-only for better security and simplicity
+- All sources (planet, continents, countries) now use HTTP endpoints
+
+### Added
+- **🧠 Intelligent Error Messages** with fuzzy matching using Levenshtein distance algorithm
+- **🔍 Smart Typo Detection** for common misspellings (e.g., "antartica" → "antarctica", "plant" → "planet")
+- **🌍 Geographic Accuracy** - knows Belgium is in Europe, not Antarctica
+- **📋 Comprehensive Integration Tests** for all download types with timeout handling
+- **🚀 HTTP Timeouts** - connection (10s) and request (30s) timeouts to prevent hanging
+
+### Changed
+- **Simplified Architecture**: Removed all S3 code, dependencies, and feature flags
+- **Error Experience**: Clear, actionable error messages instead of raw HTTP errors
+- **Documentation**: Updated all references from S3 to HTTP throughout README and CLI help
+
+### Improved
+- **Fuzzy Matching**: Handles insertions, deletions, substitutions, and transpositions in source names
+- **Context-Aware Suggestions**: Different suggestions for unknown vs misspelled sources
+- **Test Coverage**: Added integration tests for Antarctica (valid), invalid sources, and various countries
+
+### Removed
+- **AWS Dependencies**: `aws-config`, `aws-sdk-s3` removed from Cargo.toml
+- **S3 Feature Flag**: Simplified to HTTP-only with optional `c-bindings` feature
+- **S3 Code**: Removed all S3-related source variants, methods, and error types
+
+### Technical Details
+- **Planet Source**: Now uses `https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf`
+- **Continental/Country Sources**: All use `https://download.geofabrik.de/` endpoints
+- **Error Algorithm**: Levenshtein distance with 33% character difference threshold
+- **Integration Tests**: 7 tests including timeout scenarios and geographic validation
+
 ## [1.0.0] - 2025-06-25
 
 ### Major Refactoring - Library + CLI Architecture
