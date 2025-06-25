@@ -5,71 +5,77 @@
 use std::fmt;
 
 use std::sync::OnceLock;
-use reqwest::Client;
-use serde_json::Value;
 
 /// Cache for dynamically loaded valid sources
 static VALID_SOURCES_CACHE: OnceLock<Vec<String>> = OnceLock::new();
 
-/// Get valid sources, loading them dynamically from Geofabrik if needed
-async fn get_valid_sources() -> &'static Vec<String> {
+/// Initialize the source cache with comprehensive list
+fn ensure_sources_loaded() {
     VALID_SOURCES_CACHE.get_or_init(|| {
-        // Fallback list in case we can't fetch from Geofabrik
-        let mut sources = vec![
+        // Comprehensive source list covering most common use cases
+        vec![
+            // Root level
             "planet".to_string(),
+            
             // Continents  
             "africa".to_string(), "antarctica".to_string(), "asia".to_string(), 
-            "australia".to_string(), "europe".to_string(), "north-america".to_string(), 
-            "south-america".to_string(), "central-america".to_string(), "oceania".to_string(),
-        ];
-        
-        // Try to fetch from Geofabrik synchronously (blocking is OK for initialization)
-        if let Ok(rt) = tokio::runtime::Runtime::new() {
-            if let Ok(geofabrik_sources) = rt.block_on(fetch_geofabrik_sources()) {
-                sources.extend(geofabrik_sources);
-            }
-        }
-        
-        sources
-    })
+            "australia-oceania".to_string(), "europe".to_string(), "north-america".to_string(), 
+            "south-america".to_string(), "central-america".to_string(),
+            
+            // Europe
+            "europe/albania".to_string(), "europe/andorra".to_string(), "europe/austria".to_string(), 
+            "europe/belarus".to_string(), "europe/belgium".to_string(), "europe/bosnia-herzegovina".to_string(),
+            "europe/bulgaria".to_string(), "europe/croatia".to_string(), "europe/cyprus".to_string(),
+            "europe/czech-republic".to_string(), "europe/denmark".to_string(), "europe/estonia".to_string(),
+            "europe/faroe-islands".to_string(), "europe/finland".to_string(), "europe/france".to_string(),
+            "europe/germany".to_string(), "europe/great-britain".to_string(), "europe/greece".to_string(),
+            "europe/hungary".to_string(), "europe/iceland".to_string(), "europe/ireland".to_string(),
+            "europe/isle-of-man".to_string(), "europe/italy".to_string(), "europe/kosovo".to_string(),
+            "europe/latvia".to_string(), "europe/liechtenstein".to_string(), "europe/lithuania".to_string(),
+            "europe/luxembourg".to_string(), "europe/malta".to_string(), "europe/moldova".to_string(),
+            "europe/monaco".to_string(), "europe/montenegro".to_string(), "europe/netherlands".to_string(),
+            "europe/north-macedonia".to_string(), "europe/norway".to_string(), "europe/poland".to_string(),
+            "europe/portugal".to_string(), "europe/romania".to_string(), "europe/russia".to_string(),
+            "europe/san-marino".to_string(), "europe/serbia".to_string(), "europe/slovakia".to_string(),
+            "europe/slovenia".to_string(), "europe/spain".to_string(), "europe/sweden".to_string(),
+            "europe/switzerland".to_string(), "europe/turkey".to_string(), "europe/ukraine".to_string(),
+            "europe/united-kingdom".to_string(), "europe/vatican-city".to_string(),
+            
+            // North America
+            "north-america/canada".to_string(), "north-america/greenland".to_string(),
+            "north-america/mexico".to_string(), "north-america/us".to_string(),
+            
+            // Asia
+            "asia/afghanistan".to_string(), "asia/bangladesh".to_string(), "asia/bhutan".to_string(),
+            "asia/cambodia".to_string(), "asia/china".to_string(), "asia/gcc-states".to_string(),
+            "asia/india".to_string(), "asia/indonesia".to_string(), "asia/iran".to_string(),
+            "asia/iraq".to_string(), "asia/israel-and-palestine".to_string(), "asia/japan".to_string(),
+            "asia/jordan".to_string(), "asia/kazakhstan".to_string(), "asia/kyrgyzstan".to_string(),
+            "asia/lebanon".to_string(), "asia/malaysia-singapore-brunei".to_string(), "asia/maldives".to_string(),
+            "asia/mongolia".to_string(), "asia/myanmar".to_string(), "asia/nepal".to_string(),
+            "asia/north-korea".to_string(), "asia/pakistan".to_string(), "asia/philippines".to_string(),
+            "asia/south-korea".to_string(), "asia/sri-lanka".to_string(), "asia/syria".to_string(),
+            "asia/taiwan".to_string(), "asia/tajikistan".to_string(), "asia/thailand".to_string(),
+            "asia/tibet".to_string(), "asia/turkmenistan".to_string(), "asia/uzbekistan".to_string(),
+            "asia/vietnam".to_string(), "asia/yemen".to_string(),
+        ]
+    });
 }
 
-/// Fetch valid sources from Geofabrik JSON
-async fn fetch_geofabrik_sources() -> std::result::Result<Vec<String>, reqwest::Error> {
-    let client = Client::new();
-    let response = client
-        .get("https://download.geofabrik.de/index-v1.json")
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await?;
-    
-    let json: Value = response.json().await?;
-    let mut sources = Vec::new();
-    
-    if let Some(features) = json["features"].as_array() {
-        for feature in features {
-            if let Some(properties) = feature["properties"].as_object() {
-                if let Some(id) = properties["id"].as_str() {
-                    // Skip special entries and only include downloadable regions
-                    if !id.starts_with("_") && properties.get("urls").is_some() {
-                        sources.push(id.to_string());
-                    }
-                }
-            }
-        }
-    }
-    
-    Ok(sources)
-}
+// Note: Dynamic source loading from Geofabrik JSON API would be implemented here
+// Currently using comprehensive static list for reliability and to avoid runtime conflicts
 
-/// Synchronous version for use in the main suggestion function
+/// Get valid sources (cached or fallback)
 fn get_valid_sources_sync() -> Vec<String> {
+    // Ensure sources are loaded (lazy initialization)
+    ensure_sources_loaded();
+    
     // Try to get cached sources first
     if let Some(cached) = VALID_SOURCES_CACHE.get() {
         return cached.clone();
     }
     
-    // Fallback to basic list if not cached yet
+    // Fallback to basic list if not cached yet (should rarely happen)
     vec![
         "planet".to_string(),
         "africa".to_string(), "antarctica".to_string(), "asia".to_string(), 
