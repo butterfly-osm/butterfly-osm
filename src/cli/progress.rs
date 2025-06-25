@@ -9,9 +9,9 @@ pub fn create_progress_bar(total_size: u64) -> ProgressBar {
     let pb = ProgressBar::new(total_size);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({percent}%) {bytes_per_sec} ETA: {eta}")
+            .template("{percent:>3}%|{wide_bar:.cyan/blue}| {bytes}/{total_bytes} [{elapsed_precise}<{eta}, {bytes_per_sec}]")
             .expect("Failed to create progress style")
-            .progress_chars("#>-")
+            .progress_chars("█▉▊▋▌▍▎▏ ")
     );
     pb
 }
