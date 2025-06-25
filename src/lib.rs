@@ -52,7 +52,7 @@ use tokio::io::AsyncRead;
 
 // Re-export core types that users might need
 pub use crate::core::error::{Error, Result};
-pub use crate::core::stream::DownloadOptions;
+pub use crate::core::stream::{DownloadOptions, OverwriteBehavior};
 
 // Internal modules
 mod core;
@@ -181,7 +181,7 @@ where
 ///
 /// # Examples
 /// ```rust,no_run
-/// use butterfly_dl::DownloadOptions;
+/// use butterfly_dl::{DownloadOptions, OverwriteBehavior};
 /// use std::sync::Arc;
 ///
 /// # #[tokio::main]
@@ -189,6 +189,7 @@ where
 /// let options = DownloadOptions {
 ///     buffer_size: 128 * 1024, // 128KB buffer
 ///     max_connections: 8,      // Limit to 8 connections
+///     overwrite: OverwriteBehavior::Force, // Overwrite without prompting
 ///     progress: Some(Arc::new(|downloaded, total| {
 ///         println!("Downloaded: {} / {}", downloaded, total);
 ///     })),

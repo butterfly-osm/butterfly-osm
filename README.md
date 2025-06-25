@@ -1,10 +1,13 @@
 # Butterfly-dl 🦋
 
-A high-performance, memory-efficient OpenStreetMap data downloader with intelligent source routing. Downloads one file at a time with optimal performance.
+A high-performance, memory-efficient OpenStreetMap data downloader with intelligent source routing, resilient networking, and beautiful progress display.
 
 ## Features
 
 - **🚀 Optimized for Large Files**: <1GB RAM usage regardless of file size (including 81GB planet.osm.pbf)
+- **🎨 Enhanced Progress Display**: Beautiful tqdm-style progress bars with smooth Unicode blocks
+- **🛡️ Network Resilience**: Intelligent retry with exponential backoff and smart resume from interruption points
+- **📁 File Safety**: Comprehensive overwrite protection with prompts and CLI flags
 - **🧠 Smart Source Routing**: HTTP with parallel downloads optimized by file size
 - **🔍 Semantic Error Intelligence**: Advanced fuzzy matching that understands semantic intent and geographic relationships
 - **🌍 Dynamic Source Loading**: Automatically fetches latest available regions from Geofabrik
@@ -44,6 +47,41 @@ butterfly-dl planet planet-backup.pbf
 
 # Verbose output with source info
 butterfly-dl --verbose europe/belgium
+```
+
+### Enhanced Features
+
+#### 🎨 Beautiful Progress Display
+```bash
+# Smooth tqdm-style progress bars with comprehensive information
+butterfly-dl europe/belgium
+# 75%|████████████▊     | 450MB/600MB [01:30<00:30, 25.2MB/s]
+```
+
+#### 🛡️ Network Resilience & Recovery
+```bash
+# Automatic retry with smart resume - no lost progress
+butterfly-dl europe/belgium
+# ⚠️ Network error (attempt 1): operation timed out. Retrying in 1000ms...
+# ⚠️ Stream interrupted at 300MB, resuming...
+# ✅ Download completed!
+```
+
+#### 📁 File Overwrite Protection
+```bash
+# Interactive prompts for existing files
+butterfly-dl europe/belgium
+# ⚠️ File already exists: belgium-latest.osm.pbf
+# Overwrite? [y/N]: n
+# ❌ Download cancelled
+
+# Force overwrite without prompting
+butterfly-dl europe/belgium --force
+# ⚠️ Overwriting existing file: belgium-latest.osm.pbf
+
+# Never overwrite, fail if file exists
+butterfly-dl europe/belgium --no-clobber
+# Error: File already exists: belgium-latest.osm.pbf (use --force to overwrite)
 ```
 
 ### Source Resolution
