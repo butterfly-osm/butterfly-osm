@@ -65,28 +65,13 @@ fn ensure_sources_loaded() {
 // Note: Dynamic source loading from Geofabrik JSON API would be implemented here
 // Currently using comprehensive static list for reliability and to avoid runtime conflicts
 
-/// Get valid sources (cached or fallback)
-fn get_valid_sources_sync() -> Vec<String> {
+/// Get valid sources (cached)  
+fn get_valid_sources_sync() -> &'static [String] {
     // Ensure sources are loaded (lazy initialization)
     ensure_sources_loaded();
     
-    // Try to get cached sources first
-    if let Some(cached) = VALID_SOURCES_CACHE.get() {
-        return cached.clone();
-    }
-    
-    // Fallback to basic list if not cached yet (should rarely happen)
-    vec![
-        "planet".to_string(),
-        "africa".to_string(), "antarctica".to_string(), "asia".to_string(), 
-        "australia".to_string(), "europe".to_string(), "north-america".to_string(), 
-        "south-america".to_string(), "central-america".to_string(), "oceania".to_string(),
-        // Basic European countries as fallback
-        "europe/germany".to_string(), "europe/france".to_string(), "europe/belgium".to_string(), 
-        "europe/netherlands".to_string(), "europe/italy".to_string(), "europe/spain".to_string(),
-        "europe/united-kingdom".to_string(), "europe/poland".to_string(), "europe/switzerland".to_string(), 
-        "europe/austria".to_string(), "europe/monaco".to_string(), "europe/luxembourg".to_string(),
-    ]
+    // Get cached sources (will always be available after ensure_sources_loaded)
+    VALID_SOURCES_CACHE.get().map(|v| v.as_slice()).unwrap_or(&[])
 }
 
 /// Calculate Levenshtein distance between two strings
@@ -127,12 +112,12 @@ pub fn suggest_correction(source: &str) -> Option<String> {
     // Maximum distance we consider a reasonable typo (about 25% of the word length, minimum 1, maximum 3)
     let max_distance = (source.len() / 3).max(1).min(3);
     
-    // Get valid sources (cached or fallback)
+    // Get valid sources (cached)
     let valid_sources = get_valid_sources_sync();
     
     // First, check if this is a standalone country name that should be continent/country
     if !source.contains('/') {
-        for valid_source in &valid_sources {
+        for valid_source in valid_sources {
             if let Some(slash_pos) = valid_source.find('/') {
                 let country_part = &valid_source[slash_pos + 1..];
                 if country_part.eq_ignore_ascii_case(&source) {
@@ -156,7 +141,7 @@ pub fn suggest_correction(source: &str) -> Option<String> {
     }
     
     // Then check regular fuzzy matching against all sources
-    for valid_source in &valid_sources {
+    for valid_source in valid_sources {
         let distance = levenshtein_distance(&source_lower, valid_source);
         
         // If it's an exact match (ignoring case), no need to suggest
@@ -178,7 +163,7 @@ pub fn suggest_correction(source: &str) -> Option<String> {
         
         // First, check if the country exists in any valid continent (find correct geography)
         let mut correct_continent_for_country = None;
-        for valid_source in &valid_sources {
+        for valid_source in valid_sources {
             if let Some(valid_slash_pos) = valid_source.find('/') {
                 let valid_country = &valid_source[valid_slash_pos + 1..];
                 if valid_country.eq_ignore_ascii_case(country) {
