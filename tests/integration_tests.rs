@@ -84,7 +84,7 @@ fn test_planet_download_starts() {
             println!("Stderr: {}", stderr);
             
             if success {
-                assert!(stderr.contains("Downloading planet") || stderr.contains("S3") || stderr.contains("planet"), 
+                assert!(stderr.contains("Downloading planet") || stderr.contains("HTTP") || stderr.contains("planet"), 
                        "Expected planet download indicators in stderr: {}", stderr);
             } else {
                 panic!("Planet download failed to start successfully");
