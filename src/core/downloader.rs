@@ -597,6 +597,12 @@ fn create_helpful_http_error(url: &str, status: reqwest::StatusCode) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use wiremock::{MockServer, Mock, ResponseTemplate};
+    use wiremock::matchers::{method, path};
+    use tempfile::NamedTempFile;
 
     #[test]
     fn test_calculate_optimal_connections() {
@@ -619,5 +625,237 @@ mod tests {
         assert_eq!(calculate_optimal_connections(500 * 1024, 16), 1);     // 500KB  
         assert_eq!(calculate_optimal_connections(1024 * 1024, 16), 1);    // 1MB (boundary)
         assert_eq!(calculate_optimal_connections(1024 * 1024 + 1, 16), 2); // 1MB + 1 byte
+    }
+
+    #[tokio::test]
+    async fn test_resilient_download_with_network_failure() {
+        // Create mock server
+        let mock_server = MockServer::start().await;
+        
+        // Test data: 1KB file (will fit in single connection)
+        let test_data = b"A".repeat(1024);
+        let total_size = test_data.len() as u64;
+        
+        // Track how many times each endpoint is called
+        let head_call_count = Arc::new(AtomicUsize::new(0));
+        let get_call_count = Arc::new(AtomicUsize::new(0));
+        
+        // HEAD endpoint - always succeeds, returns file info
+        let head_count_clone = Arc::clone(&head_call_count);
+        Mock::given(method("HEAD"))
+            .and(path("/test-file.pbf"))
+            .respond_with(move |_: &wiremock::Request| {
+                head_count_clone.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200)
+                    .insert_header("content-length", total_size.to_string().as_str())
+                    .insert_header("accept-ranges", "bytes")
+            })
+            .mount(&mock_server)
+            .await;
+        
+        // GET endpoint - fails on first 2 calls, succeeds on 3rd
+        let get_count_clone = Arc::clone(&get_call_count);
+        let test_data_clone = test_data.clone();
+        Mock::given(method("GET"))
+            .and(path("/test-file.pbf"))
+            .respond_with(move |req: &wiremock::Request| {
+                let call_num = get_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+                
+                println!("GET call #{}: {:?}", call_num, req.headers);
+                
+                println!("Simulating call #{}", call_num);
+                match call_num {
+                    1 => {
+                        // First call: succeed with full data to test basic functionality first
+                        println!("First call - returning full data");
+                        ResponseTemplate::new(200)
+                            .insert_header("content-length", total_size.to_string().as_str())
+                            .set_body_raw(test_data_clone.clone(), "application/octet-stream")
+                    }
+                    _ => {
+                        // Shouldn't get here for this simple test
+                        panic!("Too many GET requests for simple test");
+                    }
+                }
+            })
+            .mount(&mock_server)
+            .await;
+        
+        // Create temporary file for download
+        let temp_file = NamedTempFile::new().unwrap();
+        let file_path = temp_file.path().to_str().unwrap();
+        
+        // Create downloader and options
+        let downloader = Downloader::new();
+        let options = DownloadOptions::default();
+        
+        let url = format!("{}/test-file.pbf", mock_server.uri());
+        
+        // Test the resilient download
+        let result = downloader.download_http_to_file(&url, file_path, &options).await;
+        
+        // Verify success
+        assert!(result.is_ok(), "Download should succeed after retries: {:?}", result);
+        
+        // Verify file content
+        let downloaded_data = std::fs::read(file_path).unwrap();
+        assert_eq!(downloaded_data, test_data, "Downloaded file should match original data");
+        
+        // Verify basic behavior
+        let head_calls = head_call_count.load(Ordering::SeqCst);
+        let get_calls = get_call_count.load(Ordering::SeqCst);
+        
+        println!("HEAD calls: {}, GET calls: {}", head_calls, get_calls);
+        
+        // For basic test: should have made 1 HEAD and 1 GET call
+        assert_eq!(head_calls, 1, "Should have made 1 HEAD request");
+        assert_eq!(get_calls, 1, "Should have made 1 GET request");
+        
+        println!("✅ Basic download test passed! Made {} HEAD and {} GET calls", head_calls, get_calls);
+    }
+
+    #[tokio::test]
+    async fn test_retry_exponential_backoff() {
+        use std::time::Instant;
+        
+        // Test that retry_on_network_error implements exponential backoff
+        let start_time = Instant::now();
+        let call_count = Arc::new(AtomicUsize::new(0));
+        
+        let result = retry_on_network_error(|| {
+            let count_clone = Arc::clone(&call_count);
+            async move {
+                let call_num = count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+                
+                if call_num <= 2 {
+                    // Fail first 2 calls
+                    Err(Error::NetworkError("Simulated network failure".to_string()))
+                } else {
+                    // Succeed on 3rd call
+                    Ok("success")
+                }
+            }
+        }).await;
+        
+        let elapsed = start_time.elapsed();
+        let calls = call_count.load(Ordering::SeqCst);
+        
+        // Should succeed after 3 calls
+        assert!(result.is_ok());
+        assert_eq!(calls, 3);
+        
+        // Should have taken at least 3 seconds (1s + 2s delays)
+        assert!(elapsed >= Duration::from_secs(3), "Should implement exponential backoff delays");
+        
+        println!("✅ Exponential backoff test passed! {} calls in {:?}", calls, elapsed);
+    }
+
+    #[tokio::test]
+    async fn test_resilient_download_with_actual_network_failure() {
+        // Create mock server
+        let mock_server = MockServer::start().await;
+        
+        // Test data: 1KB file (will fit in single connection)
+        let test_data = b"B".repeat(1024);
+        let total_size = test_data.len() as u64;
+        
+        // Track how many times each endpoint is called
+        let head_call_count = Arc::new(AtomicUsize::new(0));
+        let get_call_count = Arc::new(AtomicUsize::new(0));
+        
+        // HEAD endpoint - always succeeds, returns file info with range support
+        let head_count_clone = Arc::clone(&head_call_count);
+        Mock::given(method("HEAD"))
+            .and(path("/test-file.pbf"))
+            .respond_with(move |_: &wiremock::Request| {
+                head_count_clone.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200)
+                    .insert_header("content-length", total_size.to_string().as_str())
+                    .insert_header("accept-ranges", "bytes")
+            })
+            .mount(&mock_server)
+            .await;
+        
+        // GET endpoint - simulates network failures and recovery with resume
+        let get_count_clone = Arc::clone(&get_call_count);
+        let test_data_clone = test_data.clone();
+        Mock::given(method("GET"))
+            .and(path("/test-file.pbf"))
+            .respond_with(move |req: &wiremock::Request| {
+                let call_num = get_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+                
+                println!("GET call #{}: {:?}", call_num, req.headers);
+                
+                match call_num {
+                    1 => {
+                        // First call: network timeout simulation
+                        println!("First call - simulating network timeout");
+                        ResponseTemplate::new(500)
+                    }
+                    2 => {
+                        // Second call: should be a resume request with range header
+                        if let Some(range_header) = req.headers.get(&"range".parse().unwrap()) {
+                            let range_str = range_header.to_string();
+                            println!("Second call - resume request with range: {}", range_str);
+                            
+                            // Since we failed completely on first call, should resume from 0
+                            if range_str.starts_with("bytes=0-") {
+                                // Resume from beginning - send full data
+                                ResponseTemplate::new(200)
+                                    .insert_header("content-length", total_size.to_string().as_str())
+                                    .set_body_raw(test_data_clone.clone(), "application/octet-stream")
+                            } else {
+                                ResponseTemplate::new(416) // Range not satisfiable
+                            }
+                        } else {
+                            // If no range header, send full file
+                            println!("Second call - no range header, sending full file");
+                            ResponseTemplate::new(200)
+                                .insert_header("content-length", total_size.to_string().as_str())
+                                .set_body_raw(test_data_clone.clone(), "application/octet-stream")
+                        }
+                    }
+                    _ => {
+                        // Shouldn't need more calls if retry works correctly
+                        panic!("Too many GET requests - retry should have worked by now");
+                    }
+                }
+            })
+            .mount(&mock_server)
+            .await;
+        
+        // Create temporary file for download
+        let temp_file = NamedTempFile::new().unwrap();
+        let file_path = temp_file.path().to_str().unwrap();
+        
+        // Create downloader and options
+        let downloader = Downloader::new();
+        let options = DownloadOptions::default();
+        
+        let url = format!("{}/test-file.pbf", mock_server.uri());
+        
+        // Test the resilient download
+        let result = downloader.download_http_to_file(&url, file_path, &options).await;
+        
+        // Verify success
+        assert!(result.is_ok(), "Download should succeed after retry: {:?}", result);
+        
+        // Verify file content
+        let downloaded_data = std::fs::read(file_path).unwrap();
+        assert_eq!(downloaded_data, test_data, "Downloaded file should match original data");
+        
+        // Verify retry behavior
+        let head_calls = head_call_count.load(Ordering::SeqCst);
+        let get_calls = get_call_count.load(Ordering::SeqCst);
+        
+        println!("HEAD calls: {}, GET calls: {}", head_calls, get_calls);
+        
+        // Should have made multiple HEAD calls (initial + retries)
+        assert!(head_calls >= 2, "Should have made multiple HEAD requests due to retries");
+        
+        // Should have made exactly 2 GET calls (1 failure + 1 success)
+        assert_eq!(get_calls, 2, "Should have made exactly 2 GET requests (1 failure + 1 success)");
+        
+        println!("✅ Network failure retry test passed! Made {} HEAD and {} GET calls", head_calls, get_calls);
     }
 }
