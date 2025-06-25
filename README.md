@@ -6,7 +6,7 @@ A high-performance, memory-efficient OpenStreetMap data downloader with intellig
 
 - **🚀 Optimized for Large Files**: <1GB RAM usage regardless of file size (including 81GB planet.osm.pbf)
 - **🧠 Smart Source Routing**: HTTP with parallel downloads optimized by file size
-- **🔍 Intelligent Error Messages**: Fuzzy matching with geographic accuracy for typos and misspellings
+- **🔍 Semantic Error Intelligence**: Advanced fuzzy matching that understands semantic intent and geographic relationships
 - **🌍 Dynamic Source Loading**: Automatically fetches latest available regions from Geofabrik
 - **📡 HTTP Protocol**: Advanced HTTP with range requests and connection pooling
 - **💧 Streaming Support**: Direct stdout streaming for pipeline integration
@@ -59,6 +59,10 @@ butterfly-dl --verbose europe/belgium
 butterfly-dl includes smart error correction with fuzzy matching:
 
 ```bash
+# Semantic intent recognition
+butterfly-dl austrailia
+# Error: Source 'austrailia' not found. Did you mean 'australia-oceania'?
+
 # Typo correction
 butterfly-dl antartica
 # Error: Source 'antartica' not found. Did you mean 'antarctica'?
@@ -77,8 +81,9 @@ butterfly-dl plant
 ```
 
 **Features:**
+- **Semantic Intelligence**: Hybrid fuzzy matching that understands semantic intent, not just character distance
 - **Dynamic Source Discovery**: Automatically fetches available regions from Geofabrik JSON API
-- **Fuzzy Matching**: Uses Levenshtein distance algorithm for typo detection
+- **Contextual Scoring**: Prioritizes meaningful matches like "australia-oceania" over "austria" for "austrailia"
 - **Geographic Intelligence**: Knows Belgium belongs to Europe, not Antarctica
 - **Fallback Protection**: Works offline with comprehensive fallback region list
 
