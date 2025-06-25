@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2025-06-25
+
+### Major Enhancement - Semantic Fuzzy Matching with Advanced Error Intelligence
+
+### Added
+- **🎯 Semantic Fuzzy Matching** - Hybrid algorithm combining character distance with semantic intent
+- **🧠 Contextual Scoring** - Prefix similarity bonuses for compound words like "australia-oceania"
+- **📏 Length-aware Matching** - Prioritizes semantically meaningful longer matches over short character artifacts
+- **🔤 Substring Intelligence** - Matches against word parts in compound sources (e.g., "austrailia" matches "australia" in "australia-oceania")
+- **🚫 Anti-bias Logic** - Penalizes very short matches when input is long to prevent incorrect suggestions
+- **⚖️ Adaptive Thresholds** - Dynamic scoring that balances precision vs recall for different input types
+
+### Enhanced
+- **Critical Fix**: `austrailia` now correctly suggests `australia-oceania` instead of `europe/austria`
+- **Geographic Accuracy**: Maintains continent-first matching while adding semantic intelligence
+- **Algorithm Robustness**: Handles edge cases like `totally-invalid-place` (returns None) and `monac` → `europe/monaco`
+- **Performance Optimization**: Efficient scoring with configurable thresholds (0.65 minimum similarity)
+
+### Technical Details
+- **Hybrid Scoring**: Combines Jaro-Winkler (70%) + Normalized Levenshtein (30%) + semantic bonuses
+- **Semantic Bonuses**: Prefix matching (20%), substring matching (12%), length similarity (10%)
+- **Anti-patterns**: Reduces scores for inappropriate matches (short candidates for long inputs)
+- **Library Integration**: Enhanced error messages available to all library consumers, not just CLI
+- **Test Coverage**: Comprehensive tests ensuring semantic accuracy while maintaining existing functionality
+
+### Examples
+```bash
+# Before: Incorrect semantic matching
+butterfly-dl austrailia
+# Error: Source 'austrailia' not found. Did you mean 'europe/austria'?
+
+# After: Semantic intelligence
+butterfly-dl austrailia  
+# Error: Source 'austrailia' not found. Did you mean 'australia-oceania'?
+
+# Maintains existing accuracy
+butterfly-dl plant → "planet"
+butterfly-dl monac → "europe/monaco"
+butterfly-dl antartica → "antarctica"
+```
+
 ## [1.2.0] - 2025-06-25
 
 ### Major Enhancement - Dynamic Source Loading with Advanced Fuzzy Matching
