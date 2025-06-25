@@ -13,7 +13,7 @@ use once_cell::sync::Lazy;
 
 use crate::core::error::{Error, Result};
 use crate::core::source::{DownloadSource, SourceConfig};
-use crate::core::stream::{DownloadOptions, DownloadStream, create_http_stream};
+use crate::core::stream::{DownloadOptions, DownloadStream, OverwriteBehavior, create_http_stream};
 
 /// Maximum number of retry attempts for network errors
 const MAX_RETRY_ATTEMPTS: u32 = 3;
@@ -57,6 +57,54 @@ where
     }
 }
 
+/// Check if destination file exists and handle overwrite behavior
+async fn check_overwrite_permission(file_path: &str, behavior: &OverwriteBehavior) -> Result<bool> {
+    // Check if file exists
+    if !std::path::Path::new(file_path).exists() {
+        return Ok(true); // File doesn't exist, proceed
+    }
+    
+    match behavior {
+        OverwriteBehavior::Force => {
+            eprintln!("⚠️  Overwriting existing file: {}", file_path);
+            Ok(true)
+        }
+        OverwriteBehavior::NeverOverwrite => {
+            Err(Error::IoError(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("File already exists: {} (use --force to overwrite)", file_path),
+            )))
+        }
+        OverwriteBehavior::Prompt => {
+            eprintln!("⚠️  File already exists: {}", file_path);
+            eprint!("Overwrite? [y/N]: ");
+            
+            // Flush stderr to ensure prompt is displayed
+            use std::io::Write;
+            std::io::stderr().flush().map_err(Error::IoError)?;
+            
+            // Read user input from stdin
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input).map_err(Error::IoError)?;
+            
+            let response = input.trim().to_lowercase();
+            match response.as_str() {
+                "y" | "yes" => {
+                    eprintln!("✅ Overwriting file");
+                    Ok(true)
+                }
+                _ => {
+                    eprintln!("❌ Download cancelled");
+                    Err(Error::IoError(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "Download cancelled by user",
+                    )))
+                }
+            }
+        }
+    }
+}
+
 /// High-level downloader that handles all source types
 pub struct Downloader {
     config: SourceConfig,
@@ -88,6 +136,9 @@ impl Downloader {
         file_path: &str,
         options: &DownloadOptions,
     ) -> Result<()> {
+        // Check overwrite permission before starting download
+        check_overwrite_permission(file_path, &options.overwrite).await?;
+        
         let download_source = crate::core::source::resolve_source(source, &self.config)?;
         
         match download_source {
@@ -857,5 +908,78 @@ mod tests {
         assert_eq!(get_calls, 2, "Should have made exactly 2 GET requests (1 failure + 1 success)");
         
         println!("✅ Network failure retry test passed! Made {} HEAD and {} GET calls", head_calls, get_calls);
+    }
+
+    #[tokio::test]
+    async fn test_overwrite_behavior_force() {
+        use tempfile::NamedTempFile;
+        use crate::core::stream::OverwriteBehavior;
+        
+        // Create a temporary file that already exists
+        let temp_file = NamedTempFile::new().unwrap();
+        let file_path = temp_file.path().to_str().unwrap();
+        
+        // Write some content to the file
+        std::fs::write(file_path, "existing content").unwrap();
+        assert!(std::path::Path::new(file_path).exists());
+        
+        // Test force overwrite
+        let result = check_overwrite_permission(file_path, &OverwriteBehavior::Force).await;
+        assert!(result.is_ok(), "Force overwrite should succeed");
+        assert_eq!(result.unwrap(), true, "Force overwrite should return true");
+        
+        println!("✅ Force overwrite test passed!");
+    }
+
+    #[tokio::test]
+    async fn test_overwrite_behavior_never() {
+        use tempfile::NamedTempFile;
+        use crate::core::stream::OverwriteBehavior;
+        
+        // Create a temporary file that already exists
+        let temp_file = NamedTempFile::new().unwrap();
+        let file_path = temp_file.path().to_str().unwrap();
+        
+        // Write some content to the file
+        std::fs::write(file_path, "existing content").unwrap();
+        assert!(std::path::Path::new(file_path).exists());
+        
+        // Test never overwrite
+        let result = check_overwrite_permission(file_path, &OverwriteBehavior::NeverOverwrite).await;
+        assert!(result.is_err(), "Never overwrite should fail when file exists");
+        
+        // Check error message
+        let error = result.unwrap_err();
+        match error {
+            crate::core::error::Error::IoError(io_err) => {
+                assert_eq!(io_err.kind(), std::io::ErrorKind::AlreadyExists);
+                assert!(io_err.to_string().contains("use --force to overwrite"));
+            }
+            _ => panic!("Expected IoError with AlreadyExists kind"),
+        }
+        
+        println!("✅ Never overwrite test passed!");
+    }
+
+    #[tokio::test]
+    async fn test_overwrite_behavior_new_file() {
+        use tempfile::tempdir;
+        use crate::core::stream::OverwriteBehavior;
+        
+        // Create path to non-existent file
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("nonexistent.pbf");
+        let file_path_str = file_path.to_str().unwrap();
+        
+        assert!(!std::path::Path::new(file_path_str).exists());
+        
+        // Test all behaviors with non-existent file (should all succeed)
+        for behavior in [OverwriteBehavior::Force, OverwriteBehavior::NeverOverwrite, OverwriteBehavior::Prompt] {
+            let result = check_overwrite_permission(file_path_str, &behavior).await;
+            assert!(result.is_ok(), "All behaviors should succeed for non-existent file");
+            assert_eq!(result.unwrap(), true, "All behaviors should return true for non-existent file");
+        }
+        
+        println!("✅ New file test passed!");
     }
 }
