@@ -48,8 +48,7 @@ where
             Err(Error::NetworkError(msg)) if attempt < MAX_RETRY_ATTEMPTS => {
                 attempt += 1;
                 let delay = BASE_RETRY_DELAY_MS * (1 << (attempt - 1)); // Exponential backoff
-                eprintln!("⚠️  Network error (attempt {}): {}. Retrying in {}ms...", 
-                         attempt, msg, delay);
+                eprintln!("⚠️  Network error (attempt {attempt}): {msg}. Retrying in {delay}ms...");
                 tokio::time::sleep(Duration::from_millis(delay)).await;
             }
             Err(e) => return Err(e), // Non-network errors or max retries exceeded
