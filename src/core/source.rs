@@ -56,7 +56,7 @@ pub fn resolve_output_filename(source: &str) -> String {
     match source {
         "planet" => "planet-latest.osm.pbf".to_string(),
         path if path.contains('/') => {
-            let name = path.split('/').last().unwrap_or(path);
+            let name = path.split('/').next_back().unwrap_or(path);
             format!("{}-latest.osm.pbf", name)
         },
         continent => format!("{}-latest.osm.pbf", continent),

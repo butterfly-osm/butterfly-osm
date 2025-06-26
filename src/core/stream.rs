@@ -75,7 +75,7 @@ impl Default for DownloadOptions {
 /// Creates a DownloadStream from an HTTP response
 pub fn create_http_stream(response: reqwest::Response) -> DownloadStream {
     let stream = Box::new(tokio_util::io::StreamReader::new(
-        response.bytes_stream().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        response.bytes_stream().map_err(std::io::Error::other)
     ));
     DownloadStream::Http(stream)
 }
