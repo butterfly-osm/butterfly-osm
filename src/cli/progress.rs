@@ -25,13 +25,11 @@ impl ProgressManager {
     /// Create a new progress manager
     pub fn new(total_size: u64, message: &str) -> Self {
         let pb = create_progress_bar(total_size);
-        
+
         // Print initial message to stderr
         eprintln!("{message}");
-        
-        Self {
-            pb,
-        }
+
+        Self { pb }
     }
 }
 
@@ -42,10 +40,10 @@ mod tests {
     #[test]
     fn test_create_progress_bar_template() {
         let pb = create_progress_bar(1000);
-        
+
         // Verify the progress bar is created successfully
         assert_eq!(pb.length().unwrap(), 1000);
-        
+
         // The progress bar should be created without panicking with the enhanced template
         // This verifies the template string is valid
         pb.set_position(100);
