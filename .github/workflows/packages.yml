@@ -136,8 +136,7 @@ jobs:
       - name: Verify package
         run: |
           cargo check --all-targets
-          # Skip tests for now to avoid cross-compilation issues
-          # cargo test --all-targets
+          cargo test --all-targets
 
       - name: Package for crates.io
         run: cargo package --verbose
