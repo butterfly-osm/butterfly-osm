@@ -14,18 +14,34 @@ use std::time::{Duration, Instant};
 #[allow(dead_code)]
 fn test_download_starts(source: &str, timeout_secs: u64) -> Result<(String, String, bool), String> {
     // Use the pre-built binary to avoid Cargo lock contention in CI
-    let binary_path = if std::path::Path::new("./target/debug/butterfly-dl").exists() {
-        "./target/debug/butterfly-dl"
-    } else if std::path::Path::new("./target/release/butterfly-dl").exists() {
-        "./target/release/butterfly-dl"
+    let binary_name = if cfg!(windows) {
+        "butterfly-dl.exe"
+    } else {
+        "butterfly-dl"
+    };
+
+    let binary_path = if std::path::Path::new(&format!("./target/debug/{}", binary_name)).exists() {
+        format!("./target/debug/{}", binary_name)
+    } else if std::path::Path::new(&format!("./target/release/{}", binary_name)).exists() {
+        format!("./target/release/{}", binary_name)
     } else {
         // Fallback to cargo run if no pre-built binary exists
         return test_download_with_cargo_run(source, timeout_secs);
     };
 
-    let mut cmd = Command::new(binary_path)
+    let mut cmd = Command::new(&binary_path)
         .arg(source)
-        .arg(format!("/tmp/test-{}.pbf", source.replace('/', "_")))
+        .arg({
+            let temp_dir = if cfg!(windows) {
+                std::env::temp_dir()
+            } else {
+                std::path::PathBuf::from("/tmp")
+            };
+            temp_dir
+                .join(format!("test-{}.pbf", source.replace('/', "_")))
+                .to_string_lossy()
+                .to_string()
+        })
         .arg("--verbose")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -102,7 +118,17 @@ fn test_download_with_cargo_run(
         .arg("butterfly-dl")
         .arg("--")
         .arg(source)
-        .arg(format!("/tmp/test-{}.pbf", source.replace('/', "_")))
+        .arg({
+            let temp_dir = if cfg!(windows) {
+                std::env::temp_dir()
+            } else {
+                std::path::PathBuf::from("/tmp")
+            };
+            temp_dir
+                .join(format!("test-{}.pbf", source.replace('/', "_")))
+                .to_string_lossy()
+                .to_string()
+        })
         .arg("--verbose")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -359,10 +385,16 @@ fn test_dry_run_mode() {
     println!("Testing dry run mode for different sources...");
 
     // Use the same binary detection logic as other tests
-    let binary_path = if std::path::Path::new("./target/debug/butterfly-dl").exists() {
-        "./target/debug/butterfly-dl"
-    } else if std::path::Path::new("./target/release/butterfly-dl").exists() {
-        "./target/release/butterfly-dl"
+    let binary_name = if cfg!(windows) {
+        "butterfly-dl.exe"
+    } else {
+        "butterfly-dl"
+    };
+
+    let binary_path = if std::path::Path::new(&format!("./target/debug/{}", binary_name)).exists() {
+        format!("./target/debug/{}", binary_name)
+    } else if std::path::Path::new(&format!("./target/release/{}", binary_name)).exists() {
+        format!("./target/release/{}", binary_name)
     } else {
         panic!("No pre-built binary found. Run 'cargo build' first.");
     };
@@ -370,7 +402,7 @@ fn test_dry_run_mode() {
     let sources = ["planet", "europe", "europe/monaco", "europe/belgium"];
 
     for source in &sources {
-        let output = Command::new(binary_path)
+        let output = Command::new(&binary_path)
             .arg(source)
             .arg("--dry-run")
             .output()
@@ -401,10 +433,16 @@ mod cleanup {
 
     #[ctor::dtor]
     fn cleanup() {
-        let _ = fs::remove_file("/tmp/test-planet.pbf");
-        let _ = fs::remove_file("/tmp/test-europe.pbf");
-        let _ = fs::remove_file("/tmp/test-europe_monaco.pbf");
-        let _ = fs::remove_file("/tmp/test-europe_belgium.pbf");
-        let _ = fs::remove_file("/tmp/test-antarctica.pbf");
+        let temp_dir = if cfg!(windows) {
+            std::env::temp_dir()
+        } else {
+            std::path::PathBuf::from("/tmp")
+        };
+
+        let _ = fs::remove_file(temp_dir.join("test-planet.pbf"));
+        let _ = fs::remove_file(temp_dir.join("test-europe.pbf"));
+        let _ = fs::remove_file(temp_dir.join("test-europe_monaco.pbf"));
+        let _ = fs::remove_file(temp_dir.join("test-europe_belgium.pbf"));
+        let _ = fs::remove_file(temp_dir.join("test-antarctica.pbf"));
     }
 }
