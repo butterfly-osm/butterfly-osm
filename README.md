@@ -18,8 +18,45 @@ A high-performance, memory-efficient OpenStreetMap data downloader with intellig
 
 ## Installation
 
+### Pre-built Binaries (Recommended)
+
+Download the latest release for your platform:
+
 ```bash
-# Build from source
+# Linux (x86_64)
+wget https://github.com/butterfly-osm/butterfly-dl/releases/latest/download/butterfly-dl-v1.4.1-x86_64-linux.tar.gz
+tar -xzf butterfly-dl-v1.4.1-x86_64-linux.tar.gz
+sudo mv butterfly-dl-v1.4.1-x86_64-linux/butterfly-dl /usr/local/bin/
+
+# macOS (Intel)
+wget https://github.com/butterfly-osm/butterfly-dl/releases/latest/download/butterfly-dl-v1.4.1-x86_64-macos.tar.gz
+tar -xzf butterfly-dl-v1.4.1-x86_64-macos.tar.gz
+sudo mv butterfly-dl-v1.4.1-x86_64-macos/butterfly-dl /usr/local/bin/
+
+# Windows
+# Download butterfly-dl-v1.4.1-x86_64-windows.zip from releases page
+```
+
+### Package Managers
+
+#### Debian/Ubuntu
+```bash
+wget https://github.com/butterfly-osm/butterfly-dl/releases/latest/download/butterfly-dl_1.4.1_amd64.deb
+sudo dpkg -i butterfly-dl_1.4.1_amd64.deb
+```
+
+#### Homebrew (macOS)
+```bash
+brew install butterfly-osm/tap/butterfly-dl
+```
+
+#### Cargo (Rust)
+```bash
+cargo install butterfly-dl
+```
+
+### Build from Source
+```bash
 git clone https://github.com/butterfly-osm/butterfly-dl
 cd butterfly-dl
 cargo build --release
