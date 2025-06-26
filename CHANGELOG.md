@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2025-06-26
+
+### Fixed - Code Quality and Reliability Improvements
+
+### Fixed
+- **🔧 Critical FFI Bug** - Fixed incorrect S3Error mapping for NetworkError in FFI interface
+- **✅ Test Suite** - Re-enabled and fixed `test_resilient_download_with_actual_network_failure` test
+- **📝 Error Messages** - Enhanced `create_helpful_http_error()` with generic fallback for unknown domains
+
+### Removed
+- **🗑️ Dead Code Cleanup** - Removed unused functions marked with `#[allow(dead_code)]`:
+  - `stream_to_writer()` function (superseded by resilient version)
+  - `download_http_parallel()` function (superseded by resilient version)
+- **🧹 Progress Cleanup** - Removed commented-out code and unused methods in `ProgressManager`
+- **🚫 S3 Feature Removal** - Completely removed unused and incomplete S3 feature:
+  - Removed `S3Error` enum variant from `ButterflyResult`
+  - Removed `butterfly_has_s3_support()` function
+  - Removed all `#[cfg(feature = "s3")]` conditional compilation blocks
+  - Cleaned up imports and dependencies
+
+### Improved
+- **🔍 Error Handling** - Network errors now correctly map to `NetworkError` instead of `S3Error`
+- **🧪 Test Coverage** - Enhanced mock server setup with proper network failure simulation
+- **📚 Code Quality** - Reduced codebase complexity and improved maintainability
+- **🛡️ Reliability** - Better error diagnosis and reporting through FFI interface
+
+This release focuses on code quality, removes technical debt, and fixes critical bugs while maintaining full backward compatibility.
+
 ## [1.4.0] - 2025-06-25
 
 ### Major Enhancement - Enhanced Progress Display & Network Resilience

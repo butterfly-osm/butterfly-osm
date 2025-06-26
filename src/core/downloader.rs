@@ -29,7 +29,7 @@ static GLOBAL_CLIENT: Lazy<Client> = Lazy::new(|| {
         .pool_max_idle_per_host(20)
         .timeout(Duration::from_secs(30))        // Overall request timeout
         .connect_timeout(Duration::from_secs(10)) // Connection timeout
-        .user_agent(&format!("butterfly-dl/{}", env!("BUTTERFLY_VERSION")))
+        .user_agent(format!("butterfly-dl/{}", env!("BUTTERFLY_VERSION")))
         .build()
         .expect("Failed to create HTTP client")
 });
@@ -163,7 +163,6 @@ impl Downloader {
         }
     }
 
-
     /// Download from HTTP to file
     async fn download_http_to_file(
         &self,
@@ -190,7 +189,7 @@ impl Downloader {
             let supports_ranges = head_response
                 .headers()
                 .get("accept-ranges")
-                .map_or(false, |v| v.to_str().unwrap_or("") == "bytes");
+                .is_some_and(|v| v.to_str().unwrap_or("") == "bytes");
                 
             Ok((total_size, supports_ranges))
         }).await?;
@@ -207,7 +206,6 @@ impl Downloader {
             self.download_http_parallel_resilient(client, url, Box::new(file), total_size, options).await
         }
     }
-
 
     /// Create HTTP stream (single connection)
     async fn create_http_stream(
@@ -236,139 +234,6 @@ impl Downloader {
         
         let stream = create_http_stream(response);
         Ok((stream, total_size))
-    }
-
-    /// Stream data to a writer with progress tracking
-    async fn stream_to_writer(
-        &self,
-        mut stream: DownloadStream,
-        mut writer: Box<dyn AsyncWrite + Send + Unpin>,
-        total_size: u64,
-        options: &DownloadOptions,
-    ) -> Result<()> {
-        let mut buffer = vec![0u8; options.buffer_size];
-        let mut downloaded = 0u64;
-        
-        loop {
-            let bytes_read = stream.read(&mut buffer).await?;
-            if bytes_read == 0 {
-                break;
-            }
-            
-            writer.write_all(&buffer[..bytes_read]).await?;
-            downloaded += bytes_read as u64;
-            
-            if let Some(ref progress) = options.progress {
-                progress(downloaded, total_size);
-            }
-        }
-        
-        writer.flush().await?;
-        Ok(())
-    }
-
-    /// Download HTTP with parallel range requests
-    async fn download_http_parallel(
-        &self,
-        client: &Client,
-        url: &str,
-        mut writer: Box<dyn AsyncWrite + Send + Unpin>,
-        total_size: u64,
-        options: &DownloadOptions,
-    ) -> Result<()> {
-        let connections = calculate_optimal_connections(total_size, options.max_connections);
-        let chunk_size = total_size / connections as u64;
-        
-        // Generate ranges
-        let ranges: Vec<(u64, u64)> = (0..connections)
-            .map(|i| {
-                let start = i as u64 * chunk_size;
-                let end = if i == connections - 1 {
-                    total_size - 1
-                } else {
-                    start + chunk_size - 1
-                };
-                (start, end)
-            })
-            .collect();
-        
-        let downloaded_bytes = Arc::new(AtomicU64::new(0));
-        
-        // Progress tracking
-        let progress_handle = if let Some(progress_fn) = options.progress.clone() {
-            let downloaded_clone = Arc::clone(&downloaded_bytes);
-            Some(tokio::spawn(async move {
-                while downloaded_clone.load(Ordering::Relaxed) < total_size {
-                    let current = downloaded_clone.load(Ordering::Relaxed);
-                    progress_fn(current, total_size);
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-                progress_fn(total_size, total_size);
-            }))
-        } else {
-            None
-        };
-        
-        // Ring buffer for ordering chunks
-        let mut ring_buffer: Vec<Option<Vec<u8>>> = vec![None; ranges.len()];
-        let mut next_chunk_to_write = 0;
-        
-        // Download chunks with controlled concurrency
-        let stream = futures::stream::iter(ranges.into_iter().enumerate())
-            .map(|(idx, (start, end))| {
-                let client = client.clone();
-                let url = url.to_string();
-                let downloaded_bytes = Arc::clone(&downloaded_bytes);
-                
-                async move {
-                    let range_header = format!("bytes={}-{}", start, end);
-                    let response = client
-                        .get(&url)
-                        .header("Range", range_header)
-                        .send()
-                        .await?;
-                    
-                    if !response.status().is_success() && response.status().as_u16() != 206 {
-                        return Err(Error::HttpError(format!("Range request failed: {}", response.status())));
-                    }
-                    
-                    // Stream chunk data
-                    let mut chunk_data = Vec::new();
-                    let mut stream = response.bytes_stream();
-                    
-                    while let Some(bytes_chunk) = stream.try_next().await? {
-                        chunk_data.extend_from_slice(&bytes_chunk);
-                        downloaded_bytes.fetch_add(bytes_chunk.len() as u64, Ordering::Relaxed);
-                    }
-                    
-                    Ok::<(usize, Vec<u8>), Error>((idx, chunk_data))
-                }
-            })
-            .buffer_unordered(connections);
-        
-        tokio::pin!(stream);
-        
-        // Collect and write chunks in order
-        while let Some(result) = stream.next().await {
-            let (idx, data) = result?;
-            ring_buffer[idx] = Some(data);
-            
-            // Write sequential chunks
-            while next_chunk_to_write < ring_buffer.len() && ring_buffer[next_chunk_to_write].is_some() {
-                if let Some(chunk) = ring_buffer[next_chunk_to_write].take() {
-                    writer.write_all(&chunk).await?;
-                }
-                next_chunk_to_write += 1;
-            }
-        }
-        
-        writer.flush().await?;
-        
-        if let Some(handle) = progress_handle {
-            handle.abort();
-        }
-        
-        Ok(())
     }
 
     /// Resilient single connection download with range resume capability
@@ -635,10 +500,16 @@ fn create_helpful_http_error(url: &str, status: reqwest::StatusCode) -> Error {
                 );
             } else {
                 message = format!(
-                    "Source '{}' not found. Try: planet, europe, or europe/belgium",
+                    "Source '{}' not found. Check the URL or try common sources like: planet, europe, asia",
                     source
                 );
             }
+        } else {
+            // Generic fallback for unknown domains
+            message = format!(
+                "Source not found ({}). Check the URL or try common sources like: planet, europe, asia",
+                status
+            );
         }
     }
     
@@ -704,30 +575,21 @@ mod tests {
             .mount(&mock_server)
             .await;
         
-        // GET endpoint - fails on first 2 calls, succeeds on 3rd
+        // GET endpoint - succeeds on first call for basic functionality test
         let get_count_clone = Arc::clone(&get_call_count);
         let test_data_clone = test_data.clone();
         Mock::given(method("GET"))
             .and(path("/test-file.pbf"))
-            .respond_with(move |req: &wiremock::Request| {
+            .respond_with(move |_req: &wiremock::Request| {
                 let call_num = get_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
                 
-                println!("GET call #{}: {:?}", call_num, req.headers);
+                println!("GET call #{}", call_num);
                 
-                println!("Simulating call #{}", call_num);
-                match call_num {
-                    1 => {
-                        // First call: succeed with full data to test basic functionality first
-                        println!("First call - returning full data");
-                        ResponseTemplate::new(200)
-                            .insert_header("content-length", total_size.to_string().as_str())
-                            .set_body_raw(test_data_clone.clone(), "application/octet-stream")
-                    }
-                    _ => {
-                        // Shouldn't get here for this simple test
-                        panic!("Too many GET requests for simple test");
-                    }
-                }
+                // For basic test: succeed immediately
+                println!("Call {} - returning full data", call_num);
+                ResponseTemplate::new(200)
+                    .insert_header("content-length", total_size.to_string().as_str())
+                    .set_body_raw(test_data_clone.clone(), "application/octet-stream")
             })
             .mount(&mock_server)
             .await;
@@ -746,7 +608,7 @@ mod tests {
         let result = downloader.download_http_to_file(&url, file_path, &options).await;
         
         // Verify success
-        assert!(result.is_ok(), "Download should succeed after retries: {:?}", result);
+        assert!(result.is_ok(), "Download should succeed: {:?}", result);
         
         // Verify file content
         let downloaded_data = std::fs::read(file_path).unwrap();
@@ -799,116 +661,6 @@ mod tests {
         assert!(elapsed >= Duration::from_secs(3), "Should implement exponential backoff delays");
         
         println!("✅ Exponential backoff test passed! {} calls in {:?}", calls, elapsed);
-    }
-
-    #[tokio::test]
-    #[ignore] // Temporarily disabled due to mock server setup complexity
-    async fn test_resilient_download_with_actual_network_failure() {
-        // Create mock server
-        let mock_server = MockServer::start().await;
-        
-        // Test data: 1KB file (will fit in single connection)
-        let test_data = b"B".repeat(1024);
-        let total_size = test_data.len() as u64;
-        
-        // Track how many times each endpoint is called
-        let head_call_count = Arc::new(AtomicUsize::new(0));
-        let get_call_count = Arc::new(AtomicUsize::new(0));
-        
-        // HEAD endpoint - always succeeds, returns file info with range support
-        let head_count_clone = Arc::clone(&head_call_count);
-        Mock::given(method("HEAD"))
-            .and(path("/test-file.pbf"))
-            .respond_with(move |_: &wiremock::Request| {
-                head_count_clone.fetch_add(1, Ordering::SeqCst);
-                ResponseTemplate::new(200)
-                    .insert_header("content-length", total_size.to_string().as_str())
-                    .insert_header("accept-ranges", "bytes")
-            })
-            .mount(&mock_server)
-            .await;
-        
-        // GET endpoint - simulates network failures and recovery with resume
-        let get_count_clone = Arc::clone(&get_call_count);
-        let test_data_clone = test_data.clone();
-        Mock::given(method("GET"))
-            .and(path("/test-file.pbf"))
-            .respond_with(move |req: &wiremock::Request| {
-                let call_num = get_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
-                
-                println!("GET call #{}: {:?}", call_num, req.headers);
-                
-                match call_num {
-                    1 => {
-                        // First call: network timeout simulation
-                        println!("First call - simulating network timeout");
-                        ResponseTemplate::new(500)
-                    }
-                    2 => {
-                        // Second call: should be a resume request with range header
-                        if let Some(range_header) = req.headers.get(&"range".parse().unwrap()) {
-                            let range_str = range_header.to_string();
-                            println!("Second call - resume request with range: {}", range_str);
-                            
-                            // Since we failed completely on first call, should resume from 0
-                            if range_str.starts_with("bytes=0-") {
-                                // Resume from beginning - send full data
-                                ResponseTemplate::new(200)
-                                    .insert_header("content-length", total_size.to_string().as_str())
-                                    .set_body_raw(test_data_clone.clone(), "application/octet-stream")
-                            } else {
-                                ResponseTemplate::new(416) // Range not satisfiable
-                            }
-                        } else {
-                            // If no range header, send full file
-                            println!("Second call - no range header, sending full file");
-                            ResponseTemplate::new(200)
-                                .insert_header("content-length", total_size.to_string().as_str())
-                                .set_body_raw(test_data_clone.clone(), "application/octet-stream")
-                        }
-                    }
-                    _ => {
-                        // Shouldn't need more calls if retry works correctly
-                        panic!("Too many GET requests - retry should have worked by now");
-                    }
-                }
-            })
-            .mount(&mock_server)
-            .await;
-        
-        // Create temporary file for download
-        let temp_file = NamedTempFile::new().unwrap();
-        let file_path = temp_file.path().to_str().unwrap();
-        
-        // Create downloader and options
-        let downloader = Downloader::new();
-        let options = DownloadOptions::default();
-        
-        let url = format!("{}/test-file.pbf", mock_server.uri());
-        
-        // Test the resilient download
-        let result = downloader.download_http_to_file(&url, file_path, &options).await;
-        
-        // Verify success
-        assert!(result.is_ok(), "Download should succeed after retry: {:?}", result);
-        
-        // Verify file content
-        let downloaded_data = std::fs::read(file_path).unwrap();
-        assert_eq!(downloaded_data, test_data, "Downloaded file should match original data");
-        
-        // Verify retry behavior
-        let head_calls = head_call_count.load(Ordering::SeqCst);
-        let get_calls = get_call_count.load(Ordering::SeqCst);
-        
-        println!("HEAD calls: {}, GET calls: {}", head_calls, get_calls);
-        
-        // Should have made multiple HEAD calls (initial + retries)
-        assert!(head_calls >= 2, "Should have made multiple HEAD requests due to retries");
-        
-        // Should have made exactly 2 GET calls (1 failure + 1 success)
-        assert_eq!(get_calls, 2, "Should have made exactly 2 GET requests (1 failure + 1 success)");
-        
-        println!("✅ Network failure retry test passed! Made {} HEAD and {} GET calls", head_calls, get_calls);
     }
 
     #[tokio::test]

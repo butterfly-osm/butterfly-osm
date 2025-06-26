@@ -16,8 +16,6 @@ pub fn create_progress_bar(total_size: u64) -> ProgressBar {
     pb
 }
 
-// Unused progress callback functions removed
-
 /// Progress manager for complex download operations
 pub struct ProgressManager {
     pub pb: ProgressBar,
@@ -35,8 +33,6 @@ impl ProgressManager {
             pb,
         }
     }
-
-    // Unused methods removed - ProgressManager is only used for creating progress bars
 }
 
 #[cfg(test)]
