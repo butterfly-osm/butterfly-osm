@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use std::thread;
 
 /// Helper to run a download command with timeout and capture output
+#[allow(dead_code)]
 fn test_download_starts(source: &str, timeout_secs: u64) -> Result<(String, String, bool), String> {
     // Use the pre-built binary to avoid Cargo lock contention in CI
     let binary_path = if std::path::Path::new("./target/debug/butterfly-dl").exists() {
@@ -87,6 +88,7 @@ fn test_download_starts(source: &str, timeout_secs: u64) -> Result<(String, Stri
 }
 
 /// Fallback function using cargo run (for local development)
+#[allow(dead_code)]
 fn test_download_with_cargo_run(source: &str, timeout_secs: u64) -> Result<(String, String, bool), String> {
     let mut cmd = Command::new("cargo")
         .arg("run")

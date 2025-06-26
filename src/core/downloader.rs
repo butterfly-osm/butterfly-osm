@@ -683,7 +683,7 @@ mod tests {
         // Test force overwrite
         let result = check_overwrite_permission(file_path, &OverwriteBehavior::Force).await;
         assert!(result.is_ok(), "Force overwrite should succeed");
-        assert_eq!(result.unwrap(), true, "Force overwrite should return true");
+        assert!(result.unwrap(), "Force overwrite should return true");
         
         println!("✅ Force overwrite test passed!");
     }
@@ -734,7 +734,7 @@ mod tests {
         for behavior in [OverwriteBehavior::Force, OverwriteBehavior::NeverOverwrite, OverwriteBehavior::Prompt] {
             let result = check_overwrite_permission(file_path_str, &behavior).await;
             assert!(result.is_ok(), "All behaviors should succeed for non-existent file");
-            assert_eq!(result.unwrap(), true, "All behaviors should return true for non-existent file");
+            assert!(result.unwrap(), "All behaviors should return true for non-existent file");
         }
         
         println!("✅ New file test passed!");
