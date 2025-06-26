@@ -45,11 +45,6 @@ wget https://github.com/butterfly-osm/butterfly-dl/releases/latest/download/butt
 sudo dpkg -i butterfly-dl_1.4.1_amd64.deb
 ```
 
-#### Homebrew (macOS)
-```bash
-brew install butterfly-osm/tap/butterfly-dl
-```
-
 #### Cargo (Rust)
 ```bash
 cargo install butterfly-dl
