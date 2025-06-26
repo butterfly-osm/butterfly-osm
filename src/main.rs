@@ -66,9 +66,9 @@ fn resolve_output(source: &str, output: &str) -> OutputDestination {
             "planet" => "planet-latest.osm.pbf".to_string(),
             path if path.contains('/') => {
                 let name = path.split('/').next_back().unwrap_or(path);
-                format!("{}-latest.osm.pbf", name)
+                format!("{name}-latest.osm.pbf")
             },
-            continent => format!("{}-latest.osm.pbf", continent),
+            continent => format!("{continent}-latest.osm.pbf"),
         };
         OutputDestination::File(filename)
     } else {
@@ -79,7 +79,7 @@ fn resolve_output(source: &str, output: &str) -> OutputDestination {
 #[tokio::main]
 async fn main() {
     if let Err(e) = run().await {
-        error!("❌ Error: {}", e);
+        error!("❌ Error: {e}");
         std::process::exit(1);
     }
 }
@@ -193,10 +193,10 @@ fn show_download_info(source: &str) {
             eprintln!("🌐 Downloading from HTTP: https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf");
         }
         path if path.contains('/') => {
-            eprintln!("🌐 Downloading from HTTP: https://download.geofabrik.de/{}-latest.osm.pbf", path);
+            eprintln!("🌐 Downloading from HTTP: https://download.geofabrik.de/{path}-latest.osm.pbf");
         }
         continent => {
-            eprintln!("🌐 Downloading from HTTP: https://download.geofabrik.de/{}-latest.osm.pbf", continent);
+            eprintln!("🌐 Downloading from HTTP: https://download.geofabrik.de/{continent}-latest.osm.pbf");
         }
     }
 }

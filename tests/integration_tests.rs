@@ -30,7 +30,7 @@ fn test_download_starts(source: &str, timeout_secs: u64) -> Result<(String, Stri
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to spawn command: {}", e))?;
+        .map_err(|e| format!("Failed to spawn command: {e}"))?;
 
     // Wait for timeout or process completion
     let start = Instant::now();
@@ -43,7 +43,7 @@ fn test_download_starts(source: &str, timeout_secs: u64) -> Result<(String, Stri
             Ok(Some(status)) => {
                 // Process completed
                 let output = cmd.wait_with_output()
-                    .map_err(|e| format!("Failed to get output: {}", e))?;
+                    .map_err(|e| format!("Failed to get output: {e}"))?;
                 
                 stdout_output = String::from_utf8_lossy(&output.stdout).to_string();
                 stderr_output = String::from_utf8_lossy(&output.stderr).to_string();
@@ -51,7 +51,7 @@ fn test_download_starts(source: &str, timeout_secs: u64) -> Result<(String, Stri
                 if status.success() {
                     success = true;
                 } else {
-                    return Err(format!("Process failed with status: {}\nStderr: {}", status, stderr_output));
+                    return Err(format!("Process failed with status: {status}\nStderr: {stderr_output}"));
                 }
                 return Ok((stdout_output, stderr_output, success));
             }
@@ -72,7 +72,7 @@ fn test_download_starts(source: &str, timeout_secs: u64) -> Result<(String, Stri
             }
             Err(e) => {
                 let _ = cmd.kill();
-                return Err(format!("Error checking process status: {}", e));
+                return Err(format!("Error checking process status: {e}"));
             }
         }
     }
@@ -101,7 +101,7 @@ fn test_download_with_cargo_run(source: &str, timeout_secs: u64) -> Result<(Stri
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to spawn command: {}", e))?;
+        .map_err(|e| format!("Failed to spawn command: {e}"))?;
 
     // Wait for timeout or process completion
     let start = Instant::now();
@@ -114,7 +114,7 @@ fn test_download_with_cargo_run(source: &str, timeout_secs: u64) -> Result<(Stri
             Ok(Some(status)) => {
                 // Process completed
                 let output = cmd.wait_with_output()
-                    .map_err(|e| format!("Failed to get output: {}", e))?;
+                    .map_err(|e| format!("Failed to get output: {e}"))?;
                 
                 stdout_output = String::from_utf8_lossy(&output.stdout).to_string();
                 stderr_output = String::from_utf8_lossy(&output.stderr).to_string();
@@ -122,7 +122,7 @@ fn test_download_with_cargo_run(source: &str, timeout_secs: u64) -> Result<(Stri
                 if status.success() {
                     success = true;
                 } else {
-                    return Err(format!("Process failed with status: {}\nStderr: {}", status, stderr_output));
+                    return Err(format!("Process failed with status: {status}\nStderr: {stderr_output}"));
                 }
                 return Ok((stdout_output, stderr_output, success));
             }
@@ -143,7 +143,7 @@ fn test_download_with_cargo_run(source: &str, timeout_secs: u64) -> Result<(Stri
             }
             Err(e) => {
                 let _ = cmd.kill();
-                return Err(format!("Error checking process status: {}", e));
+                return Err(format!("Error checking process status: {e}"));
             }
         }
     }
@@ -171,13 +171,13 @@ fn test_planet_download_starts() {
             
             if success {
                 assert!(stderr.contains("Downloading planet") || stderr.contains("HTTP") || stderr.contains("planet"), 
-                       "Expected planet download indicators in stderr: {}", stderr);
+                       "Expected planet download indicators in stderr: {stderr}");
             } else {
                 panic!("Planet download failed to start successfully");
             }
         }
         Err(e) => {
-            panic!("Planet download test failed: {}", e);
+            panic!("Planet download test failed: {e}");
         }
     }
 }
@@ -195,13 +195,13 @@ fn test_europe_continent_download_starts() {
             
             if success {
                 assert!(stderr.contains("Downloading europe") || stderr.contains("HTTP") || stderr.contains("geofabrik"), 
-                       "Expected Europe download indicators in stderr: {}", stderr);
+                       "Expected Europe download indicators in stderr: {stderr}");
             } else {
                 panic!("Europe download failed to start successfully");
             }
         }
         Err(e) => {
-            panic!("Europe download test failed: {}", e);
+            panic!("Europe download test failed: {e}");
         }
     }
 }
@@ -219,13 +219,13 @@ fn test_monaco_country_download_starts() {
             
             if success {
                 assert!(stderr.contains("Downloading europe/monaco") || stderr.contains("HTTP") || stderr.contains("geofabrik"), 
-                       "Expected Monaco download indicators in stderr: {}", stderr);
+                       "Expected Monaco download indicators in stderr: {stderr}");
             } else {
                 panic!("Monaco download failed to start successfully");
             }
         }
         Err(e) => {
-            panic!("Monaco download test failed: {}", e);
+            panic!("Monaco download test failed: {e}");
         }
     }
 }
@@ -246,18 +246,18 @@ fn test_invalid_continent_fails_gracefully() {
             if success {
                 // If success=true, stderr should contain error indicators
                 assert!(stderr.contains("404") || stderr.contains("not found") || stderr.contains("HttpError") || stderr.contains("error"), 
-                       "Expected error indicators in stderr for invalid continent: {}", stderr);
+                       "Expected error indicators in stderr for invalid continent: {stderr}");
             } else {
                 // If success=false, that's the expected behavior
                 assert!(stderr.contains("404") || stderr.contains("not found") || stderr.contains("HttpError"), 
-                       "Expected 404 or not found error for invalid continent: {}", stderr);
+                       "Expected 404 or not found error for invalid continent: {stderr}");
             }
         }
         Err(e) => {
             // This is expected - invalid continent should fail
-            println!("Invalid continent correctly failed: {}", e);
+            println!("Invalid continent correctly failed: {e}");
             assert!(e.contains("404") || e.contains("not found"), 
-                   "Expected 404 error for invalid continent: {}", e);
+                   "Expected 404 error for invalid continent: {e}");
         }
     }
 }
@@ -278,7 +278,7 @@ fn test_antarctica_continent_download_starts() {
             assert!(stderr.contains("antarctica"), "Should reference antarctica in output");
         }
         Err(e) => {
-            panic!("Antarctica download test failed: {}", e);
+            panic!("Antarctica download test failed: {e}");
         }
     }
 }
@@ -296,13 +296,13 @@ fn test_valid_country_belgium_download_starts() {
             
             if success {
                 assert!(stderr.contains("Downloading europe/belgium") || stderr.contains("HTTP") || stderr.contains("geofabrik"), 
-                       "Expected Belgium download indicators in stderr: {}", stderr);
+                       "Expected Belgium download indicators in stderr: {stderr}");
             } else {
                 panic!("Belgium download failed to start successfully");
             }
         }
         Err(e) => {
-            panic!("Belgium download test failed: {}", e);
+            panic!("Belgium download test failed: {e}");
         }
     }
 }
@@ -332,11 +332,11 @@ fn test_dry_run_mode() {
             .expect("Failed to run dry-run command");
         
         let stderr = String::from_utf8_lossy(&output.stderr);
-        println!("Dry run for {}: {}", source, stderr);
+        println!("Dry run for {source}: {stderr}");
         
-        assert!(output.status.success(), "Dry run should succeed for {}", source);
-        assert!(stderr.contains("DRY RUN"), "Expected DRY RUN indicator for {}", source);
-        assert!(stderr.contains(source), "Expected source name in output for {}", source);
+        assert!(output.status.success(), "Dry run should succeed for {source}");
+        assert!(stderr.contains("DRY RUN"), "Expected DRY RUN indicator for {source}");
+        assert!(stderr.contains(source), "Expected source name in output for {source}");
     }
 }
 
