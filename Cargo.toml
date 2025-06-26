@@ -5,9 +5,19 @@ description = "Butterfly-dl - Optimized OpenStreetMap data downloader with HTTP 
 authors = ["Pierre <pierre@warnier.net>"]
 license = "MIT"
 repository = "https://github.com/butterfly-osm/butterfly-dl"
+homepage = "https://github.com/butterfly-osm/butterfly-dl"
+documentation = "https://docs.rs/butterfly-dl"
+readme = "README.md"
 keywords = ["osm", "geofabrik", "pbf", "openstreetmap", "download"]
 categories = ["command-line-utilities", "api-bindings"]
 edition = "2021"
+exclude = [
+    "target/*",
+    ".github/*",
+    "benchmarks/*",
+    "*.md",
+    ".gitignore"
+]
 
 [lib]
 name = "butterflylib"
@@ -49,3 +59,23 @@ tempfile = "3.0"
 ctor = "0.2"
 wiremock = "0.5"
 tokio-test = "0.4"
+
+# Debian package metadata
+[package.metadata.deb]
+maintainer = "Pierre <pierre@warnier.net>"
+copyright = "2024, Pierre <pierre@warnier.net>"
+extended-description = """\
+Butterfly-dl is a high-performance, memory-efficient OpenStreetMap data downloader 
+with intelligent source routing, resilient networking, and beautiful progress display.
+Features include optimized large file handling (<1GB RAM for any file size), 
+enhanced progress display, network resilience with smart resume, file safety with 
+overwrite protection, and semantic error intelligence with fuzzy matching.
+"""
+depends = "$auto"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/butterfly-dl", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/butterfly-dl/", "644"],
+    ["LICENSE", "usr/share/doc/butterfly-dl/", "644"],
+]

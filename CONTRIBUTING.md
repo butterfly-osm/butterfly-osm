@@ -237,11 +237,42 @@ The automated workflow generates:
 - **Release**: Triggered by version tags
 - **Dependabot**: Automatic dependency updates with auto-merge for minor/patch versions
 
+### Package Distribution
+
+Automated package generation is handled by GitHub Actions:
+
+#### **Debian Packages**
+- Generated for `amd64` and `arm64` architectures
+- Uploaded to GitHub releases as `.deb` files
+- Include proper metadata and dependencies
+
+#### **Crates.io Publication**
+- Automatic publication to https://crates.io
+- Requires `CARGO_REGISTRY_TOKEN` secret in repository
+- Triggered on version tags
+
+#### **Homebrew Formula**
+- Updates Homebrew tap repository
+- Requires `HOMEBREW_TAP_TOKEN` secret
+- Creates formula in `butterfly-osm/homebrew-tap`
+
+#### **Binary Archives**
+- Cross-platform binaries (Linux, macOS, Windows)
+- ARM64 and x86_64 architectures
+- SHA256 checksums for verification
+
 ### Manual Release Steps (if needed)
 ```bash
 # Emergency manual release process
 cargo build --release --target x86_64-unknown-linux-gnu
 tar czf butterfly-dl-manual.tar.gz target/x86_64-unknown-linux-gnu/release/butterfly-dl README.md LICENSE
+
+# Manual Debian package
+cargo install cargo-deb
+cargo deb --target x86_64-unknown-linux-gnu
+
+# Manual crates.io publish
+cargo publish --token YOUR_TOKEN
 ```
 
 ## Getting Help
