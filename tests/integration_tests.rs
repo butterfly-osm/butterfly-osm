@@ -20,10 +20,10 @@ fn test_download_starts(source: &str, timeout_secs: u64) -> Result<(String, Stri
         "butterfly-dl"
     };
 
-    let binary_path = if std::path::Path::new(&format!("./target/debug/{}", binary_name)).exists() {
-        format!("./target/debug/{}", binary_name)
-    } else if std::path::Path::new(&format!("./target/release/{}", binary_name)).exists() {
-        format!("./target/release/{}", binary_name)
+    let binary_path = if std::path::Path::new(&format!("./target/debug/{binary_name}")).exists() {
+        format!("./target/debug/{binary_name}")
+    } else if std::path::Path::new(&format!("./target/release/{binary_name}")).exists() {
+        format!("./target/release/{binary_name}")
     } else {
         // Fallback to cargo run if no pre-built binary exists
         return test_download_with_cargo_run(source, timeout_secs);
@@ -391,10 +391,10 @@ fn test_dry_run_mode() {
         "butterfly-dl"
     };
 
-    let binary_path = if std::path::Path::new(&format!("./target/debug/{}", binary_name)).exists() {
-        format!("./target/debug/{}", binary_name)
-    } else if std::path::Path::new(&format!("./target/release/{}", binary_name)).exists() {
-        format!("./target/release/{}", binary_name)
+    let binary_path = if std::path::Path::new(&format!("./target/debug/{binary_name}")).exists() {
+        format!("./target/debug/{binary_name}")
+    } else if std::path::Path::new(&format!("./target/release/{binary_name}")).exists() {
+        format!("./target/release/{binary_name}")
     } else {
         panic!("No pre-built binary found. Run 'cargo build' first.");
     };
