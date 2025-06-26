@@ -445,28 +445,30 @@ fn calculate_optimal_connections(file_size: u64, max_connections: usize) -> usiz
 }
 
 /// Create an optimized file for large downloads with optional Direct I/O
-async fn create_optimized_file(path: &str, size_hint: Option<u64>) -> Result<tokio::fs::File> {
+async fn create_optimized_file(path: &str, _size_hint: Option<u64>) -> Result<tokio::fs::File> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        
         // Try Direct I/O for large files (>1GB) on Linux systems only
         // O_DIRECT is not available on macOS/BSD systems
         #[cfg(target_os = "linux")]
-        if let Some(size) = size_hint {
-            if size > 1024 * 1024 * 1024 {
-                match std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .custom_flags(libc::O_DIRECT)
-                    .open(path)
-                {
-                    Ok(file) => {
-                        return Ok(tokio::fs::File::from_std(file));
-                    },
-                    Err(_) => {
-                        // Direct I/O failed, fall back to standard I/O
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            
+            if let Some(size) = _size_hint {
+                if size > 1024 * 1024 * 1024 {
+                    match std::fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .custom_flags(libc::O_DIRECT)
+                        .open(path)
+                    {
+                        Ok(file) => {
+                            return Ok(tokio::fs::File::from_std(file));
+                        },
+                        Err(_) => {
+                            // Direct I/O failed, fall back to standard I/O
+                        }
                     }
                 }
             }
