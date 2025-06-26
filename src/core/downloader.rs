@@ -539,7 +539,12 @@ mod tests {
 
     #[test]
     fn test_calculate_optimal_connections_with_limit() {
-        assert_eq!(calculate_optimal_connections(2 * 1024 * 1024 * 1024, 8), 8); // Limited to 8
+        // Test with a large file (2GB) and max_connections limit of 8
+        // Result should be limited by min(base_connections=16, max_connections=8, cpu_count*2)
+        let result = calculate_optimal_connections(2 * 1024 * 1024 * 1024, 8);
+        let cpu_count = num_cpus::get();
+        let expected = std::cmp::min(8, cpu_count * 2); // Limited by either max_connections or CPU count
+        assert_eq!(result, expected);
     }
 
     #[test]
