@@ -1,6 +1,6 @@
 [package]
 name = "butterfly-dl"
-version = "1.4.2"
+version = "1.4.3"
 description = "Butterfly-dl - Optimized OpenStreetMap data downloader with HTTP support"
 authors = ["Pierre <pierre@warnier.net>"]
 license = "MIT"
