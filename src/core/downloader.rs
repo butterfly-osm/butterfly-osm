@@ -592,7 +592,7 @@ mod tests {
                 println!("GET call #{call_num}");
                 
                 // For basic test: succeed immediately
-                println!("Call {} - returning full data", call_num);
+                println!("Call {call_num} - returning full data");
                 ResponseTemplate::new(200)
                     .insert_header("content-length", total_size.to_string().as_str())
                     .set_body_raw(test_data_clone.clone(), "application/octet-stream")

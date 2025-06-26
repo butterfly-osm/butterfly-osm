@@ -100,7 +100,8 @@ async fn run() -> Result<()> {
     let output = resolve_output(&cli.source, &cli.output);
     
     if cli.dry_run {
-        eprintln!("🔍 [DRY RUN] Would download: {} to {output:?}", cli.source);
+        let source = &cli.source;
+        eprintln!("🔍 [DRY RUN] Would download: {source} to {output:?}");
         return Ok(());
     }
     
