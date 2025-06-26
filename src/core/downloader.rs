@@ -507,8 +507,8 @@ fn create_helpful_http_error(url: &str, status: reqwest::StatusCode) -> Error {
         } else {
             // Generic fallback for unknown domains
             message = format!(
-                "Source not found ({}). Check the URL or try common sources like: planet, europe, asia",
-                status
+                "Source not found ({}): {}. Check the URL or try common sources like: planet, europe, asia",
+                status, url
             );
         }
     }

@@ -17,7 +17,7 @@
 //! - 1: Invalid parameter
 //! - 2: Network error
 //! - 3: I/O error  
-//! - 5: Unknown error
+//! - 4: Unknown error
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -38,7 +38,7 @@ pub enum ButterflyResult {
     InvalidParameter = 1,
     NetworkError = 2,
     IoError = 3,
-    UnknownError = 5,
+    UnknownError = 4,
 }
 
 /// Progress callback function type for C

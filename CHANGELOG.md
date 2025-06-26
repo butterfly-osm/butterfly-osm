@@ -8,10 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.4.1] - 2025-06-26
 
 ### Fixed - Code Quality and Reliability Improvements
-
-### Fixed
 - **🔧 Critical FFI Bug** - Fixed incorrect S3Error mapping for NetworkError in FFI interface
-- **✅ Test Suite** - Re-enabled and fixed `test_resilient_download_with_actual_network_failure` test
+- **✅ Test Suite** - Fixed and improved `test_resilient_download_with_network_failure` test with better mock server setup
 - **📝 Error Messages** - Enhanced `create_helpful_http_error()` with generic fallback for unknown domains
 
 ### Removed
