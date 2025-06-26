@@ -19,16 +19,15 @@
 //! - 3: I/O error  
 //! - 4: Unknown error
 
+use once_cell::sync::Lazy;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
-use once_cell::sync::Lazy;
 use tokio::runtime::Runtime;
 
 /// Global async runtime for C FFI calls
-static RUNTIME: Lazy<Runtime> = Lazy::new(|| {
-    Runtime::new().expect("Failed to create tokio runtime for FFI")
-});
+static RUNTIME: Lazy<Runtime> =
+    Lazy::new(|| Runtime::new().expect("Failed to create tokio runtime for FFI"));
 
 /// Result codes for C FFI
 #[repr(C)]
@@ -42,14 +41,19 @@ pub enum ButterflyResult {
 }
 
 /// Progress callback function type for C
-pub type ProgressCallback = extern "C" fn(downloaded: u64, total: u64, user_data: *mut std::ffi::c_void);
+pub type ProgressCallback =
+    extern "C" fn(downloaded: u64, total: u64, user_data: *mut std::ffi::c_void);
 
 /// Convert Rust Result to C result code
 fn convert_error(result: crate::Result<()>) -> ButterflyResult {
     match result {
         Ok(()) => ButterflyResult::Success,
-        Err(crate::Error::SourceNotFound(_)) | Err(crate::Error::InvalidInput(_)) => ButterflyResult::InvalidParameter,
-        Err(crate::Error::NetworkError(_)) | Err(crate::Error::HttpError(_)) => ButterflyResult::NetworkError,
+        Err(crate::Error::SourceNotFound(_)) | Err(crate::Error::InvalidInput(_)) => {
+            ButterflyResult::InvalidParameter
+        }
+        Err(crate::Error::NetworkError(_)) | Err(crate::Error::HttpError(_)) => {
+            ButterflyResult::NetworkError
+        }
         Err(crate::Error::IoError(_)) => ButterflyResult::IoError,
         _ => ButterflyResult::UnknownError,
     }
@@ -93,9 +97,7 @@ pub unsafe extern "C" fn butterfly_download(
     };
 
     // Execute the download
-    let result = RUNTIME.block_on(async {
-        crate::get(source_str, dest_str).await
-    });
+    let result = RUNTIME.block_on(async { crate::get(source_str, dest_str).await });
 
     convert_error(result)
 }
@@ -147,21 +149,16 @@ pub unsafe extern "C" fn butterfly_download_with_progress(
         // This is safe because the callback is extern "C" and the user_data
         // lifetime is guaranteed by the C caller
         let user_data_addr = user_data as usize;
-        
+
         RUNTIME.block_on(async move {
-            crate::get_with_progress(
-                source_str,
-                dest_str,
-                move |downloaded, total| {
-                    let user_data_ptr = user_data_addr as *mut std::ffi::c_void;
-                    callback(downloaded, total, user_data_ptr);
-                }
-            ).await
+            crate::get_with_progress(source_str, dest_str, move |downloaded, total| {
+                let user_data_ptr = user_data_addr as *mut std::ffi::c_void;
+                callback(downloaded, total, user_data_ptr);
+            })
+            .await
         })
     } else {
-        RUNTIME.block_on(async {
-            crate::get(source_str, dest_str).await
-        })
+        RUNTIME.block_on(async { crate::get(source_str, dest_str).await })
     };
 
     convert_error(result)
@@ -190,7 +187,7 @@ pub unsafe extern "C" fn butterfly_get_filename(source: *const c_char) -> *mut c
     };
 
     let filename = crate::core::resolve_output_filename(source_str);
-    
+
     match CString::new(filename) {
         Ok(c_string) => c_string.into_raw(),
         Err(_) => ptr::null_mut(),
@@ -222,11 +219,13 @@ pub unsafe extern "C" fn butterfly_free_string(ptr: *mut c_char) {
 pub extern "C" fn butterfly_version() -> *const c_char {
     use std::sync::OnceLock;
     static VERSION_STRING: OnceLock<std::ffi::CString> = OnceLock::new();
-    
-    VERSION_STRING.get_or_init(|| {
-        std::ffi::CString::new(format!("butterfly-dl {}", env!("BUTTERFLY_VERSION")))
-            .expect("Version string contains null byte")
-    }).as_ptr()
+
+    VERSION_STRING
+        .get_or_init(|| {
+            std::ffi::CString::new(format!("butterfly-dl {}", env!("BUTTERFLY_VERSION")))
+                .expect("Version string contains null byte")
+        })
+        .as_ptr()
 }
 
 /// Initialize the library (optional, called automatically)
@@ -261,10 +260,10 @@ mod tests {
         let source = CString::new("europe/belgium").unwrap();
         let filename_ptr = unsafe { butterfly_get_filename(source.as_ptr()) };
         assert!(!filename_ptr.is_null());
-        
+
         let filename = unsafe { CStr::from_ptr(filename_ptr) }.to_str().unwrap();
         assert_eq!(filename, "belgium-latest.osm.pbf");
-        
+
         unsafe { butterfly_free_string(filename_ptr) };
     }
 

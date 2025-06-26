@@ -82,13 +82,15 @@ pub mod ffi;
 pub async fn get(source: &str, dest: Option<&str>) -> Result<()> {
     let downloader = core::Downloader::new();
     let options = DownloadOptions::default();
-    
+
     let file_path = match dest {
         Some(path) => path.to_string(),
         None => core::resolve_output_filename(source),
     };
-    
-    downloader.download_to_file(source, &file_path, &options).await
+
+    downloader
+        .download_to_file(source, &file_path, &options)
+        .await
 }
 
 /// Download and return a stream
@@ -118,7 +120,7 @@ pub async fn get(source: &str, dest: Option<&str>) -> Result<()> {
 pub async fn get_stream(source: &str) -> Result<impl AsyncRead + Send + Unpin> {
     let downloader = core::Downloader::new();
     let options = DownloadOptions::default();
-    
+
     let (stream, _total_size) = downloader.download_stream(source, &options).await?;
     Ok(stream)
 }
@@ -147,11 +149,7 @@ pub async fn get_stream(source: &str) -> Result<impl AsyncRead + Send + Unpin> {
 /// # Ok(())
 /// # }
 /// ```
-pub async fn get_with_progress<F>(
-    source: &str,
-    dest: Option<&str>,
-    progress: F,
-) -> Result<()>
+pub async fn get_with_progress<F>(source: &str, dest: Option<&str>, progress: F) -> Result<()>
 where
     F: Fn(u64, u64) + Send + Sync + 'static,
 {
@@ -160,13 +158,15 @@ where
         progress: Some(Arc::new(progress)),
         ..Default::default()
     };
-    
+
     let file_path = match dest {
         Some(path) => path.to_string(),
         None => core::resolve_output_filename(source),
     };
-    
-    downloader.download_to_file(source, &file_path, &options).await
+
+    downloader
+        .download_to_file(source, &file_path, &options)
+        .await
 }
 
 /// Download with custom options
@@ -205,13 +205,15 @@ pub async fn get_with_options(
     options: DownloadOptions,
 ) -> Result<()> {
     let downloader = core::Downloader::new();
-    
+
     let file_path = match dest {
         Some(path) => path.to_string(),
         None => core::resolve_output_filename(source),
     };
-    
-    downloader.download_to_file(source, &file_path, &options).await
+
+    downloader
+        .download_to_file(source, &file_path, &options)
+        .await
 }
 
 /// Advanced API: Create a downloader with custom configuration
@@ -245,15 +247,24 @@ mod tests {
     async fn test_get_with_tempfile() {
         let dir = tempdir().unwrap();
         let _file_path = dir.path().join("test.pbf");
-        
+
         // This would fail in real test without network, but validates the API
         // get("europe/monaco", Some(file_path.to_str().unwrap())).await.unwrap();
     }
 
     #[test]
     fn test_resolve_output_filename() {
-        assert_eq!(core::resolve_output_filename("planet"), "planet-latest.osm.pbf");
-        assert_eq!(core::resolve_output_filename("europe"), "europe-latest.osm.pbf");
-        assert_eq!(core::resolve_output_filename("europe/belgium"), "belgium-latest.osm.pbf");
+        assert_eq!(
+            core::resolve_output_filename("planet"),
+            "planet-latest.osm.pbf"
+        );
+        assert_eq!(
+            core::resolve_output_filename("europe"),
+            "europe-latest.osm.pbf"
+        );
+        assert_eq!(
+            core::resolve_output_filename("europe/belgium"),
+            "belgium-latest.osm.pbf"
+        );
     }
 }

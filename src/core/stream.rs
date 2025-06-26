@@ -2,11 +2,11 @@
 //!
 //! Provides AsyncRead implementations for different download sources.
 
-use std::pin::Pin;
-use std::task::{Context, Poll};
-use std::sync::Arc;
-use tokio::io::{AsyncRead, ReadBuf};
 use futures::TryStreamExt;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+use tokio::io::{AsyncRead, ReadBuf};
 
 /// A unified stream for HTTP sources
 pub enum DownloadStream {
@@ -50,13 +50,13 @@ impl Default for OverwriteBehavior {
 pub struct DownloadOptions {
     /// Optional progress callback
     pub progress: Option<ProgressCallback>,
-    
+
     /// Buffer size for streaming operations
     pub buffer_size: usize,
-    
+
     /// Maximum number of parallel connections for HTTP downloads
     pub max_connections: usize,
-    
+
     /// Behavior when destination file already exists
     pub overwrite: OverwriteBehavior,
 }
@@ -75,8 +75,7 @@ impl Default for DownloadOptions {
 /// Creates a DownloadStream from an HTTP response
 pub fn create_http_stream(response: reqwest::Response) -> DownloadStream {
     let stream = Box::new(tokio_util::io::StreamReader::new(
-        response.bytes_stream().map_err(std::io::Error::other)
+        response.bytes_stream().map_err(std::io::Error::other),
     ));
     DownloadStream::Http(stream)
 }
-
