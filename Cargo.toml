@@ -10,7 +10,7 @@ categories = ["command-line-utilities", "api-bindings"]
 edition = "2021"
 
 [lib]
-name = "butterfly_dl"
+name = "butterflylib"
 path = "src/lib.rs"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
