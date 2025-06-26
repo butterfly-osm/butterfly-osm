@@ -5,6 +5,7 @@
 
 use clap::Parser;
 use butterfly_dl::{Result, OverwriteBehavior, DownloadOptions};
+use log::error;
 
 mod cli;
 
@@ -78,7 +79,7 @@ fn resolve_output(source: &str, output: &str) -> OutputDestination {
 #[tokio::main]
 async fn main() {
     if let Err(e) = run().await {
-        eprintln!("❌ Error: {}", e);
+        error!("❌ Error: {}", e);
         std::process::exit(1);
     }
 }
