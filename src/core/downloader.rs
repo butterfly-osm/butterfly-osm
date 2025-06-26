@@ -274,7 +274,7 @@ impl Downloader {
                     match self.stream_to_writer_resilient(stream, &mut writer, total_size, &mut downloaded, options).await {
                         Ok(()) => break, // Download completed
                         Err(Error::NetworkError(_)) => {
-                            eprintln!("⚠️  Stream interrupted at {} bytes, resuming...", downloaded);
+                            eprintln!("⚠️  Stream interrupted at {downloaded} bytes, resuming...");
                             continue; // Retry from current position
                         }
                         Err(e) => return Err(e), // Non-network errors
