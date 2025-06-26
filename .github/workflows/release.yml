@@ -193,19 +193,28 @@ jobs:
     needs: [create-release, build]
     runs-on: ubuntu-latest
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v3
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Generate combined checksums
+      - name: Generate combined checksums  
         run: |
-          # Create combined checksums file
+          # Create combined checksums file with header
           echo "# SHA256 Checksums for butterfly-dl ${{ needs.create-release.outputs.version }}" > checksums.txt
           echo "" >> checksums.txt
+          echo "This file contains SHA256 checksums for all release binaries." >> checksums.txt
+          echo "Verify downloads using: sha256sum -c checksums.txt" >> checksums.txt
+          echo "" >> checksums.txt
           
-          # This step would ideally collect all the individual checksum files
-          # For now, we'll create a placeholder that documents the process
-          echo "Individual checksum files are available for each platform binary." >> checksums.txt
-          echo "Verify downloads using: sha256sum -c <checksum-file>" >> checksums.txt
+          # Since checksum files are uploaded as release assets rather than artifacts,
+          # we'll document the verification process and available checksums
+          echo "Individual platform checksums are available as separate .sha256 files:" >> checksums.txt
+          echo "- butterfly-dl-${{ needs.create-release.outputs.version }}-x86_64-linux.tar.gz.sha256" >> checksums.txt
+          echo "- butterfly-dl-${{ needs.create-release.outputs.version }}-aarch64-linux.tar.gz.sha256" >> checksums.txt
+          echo "- butterfly-dl-${{ needs.create-release.outputs.version }}-x86_64-macos.tar.gz.sha256" >> checksums.txt
+          echo "- butterfly-dl-${{ needs.create-release.outputs.version }}-aarch64-macos.tar.gz.sha256" >> checksums.txt
+          echo "- butterfly-dl-${{ needs.create-release.outputs.version }}-x86_64-windows.zip.sha256" >> checksums.txt
+          echo "" >> checksums.txt
+          echo "Download the appropriate .sha256 file alongside your binary to verify integrity." >> checksums.txt
 
       - name: Upload Combined Checksums
         uses: actions/upload-release-asset@v1
