@@ -301,22 +301,22 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::SourceNotFound(source) => {
-                write!(f, "Source '{}' not found or not supported", source)
+                write!(f, "Source '{source}' not found or not supported")
             }
             Error::DownloadFailed(msg) => {
-                write!(f, "Download failed: {}", msg)
+                write!(f, "Download failed: {msg}")
             }
             Error::HttpError(msg) => {
-                write!(f, "HTTP error: {}", msg)
+                write!(f, "HTTP error: {msg}")
             }
             Error::IoError(err) => {
-                write!(f, "I/O error: {}", err)
+                write!(f, "I/O error: {err}")
             }
             Error::InvalidInput(msg) => {
-                write!(f, "Invalid input: {}", msg)
+                write!(f, "Invalid input: {msg}")
             }
             Error::NetworkError(msg) => {
-                write!(f, "Network error: {}", msg)
+                write!(f, "Network error: {msg}")
             }
         }
     }

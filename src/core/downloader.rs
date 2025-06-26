@@ -229,7 +229,8 @@ impl Downloader {
         
         let response = client.get(url).send().await?;
         if !response.status().is_success() {
-            return Err(Error::HttpError(format!("Failed to download: {}", response.status())));
+            let status = response.status();
+            return Err(Error::HttpError(format!("Failed to download: {status}")));
         }
         
         let stream = create_http_stream(response);
@@ -301,7 +302,7 @@ impl Downloader {
         
         loop {
             let bytes_read = stream.read(&mut buffer).await.map_err(|e| {
-                Error::NetworkError(format!("Stream read error: {}", e))
+                Error::NetworkError(format!("Stream read error: {e}"))
             })?;
             
             if bytes_read == 0 {
@@ -375,7 +376,7 @@ impl Downloader {
                 async move {
                     // Retry entire chunk download on failure
                     retry_on_network_error(|| async {
-                        let range_header = format!("bytes={}-{}", start, end);
+                        let range_header = format!("bytes={start}-{end}");
                         let response = client
                             .get(&url)
                             .header("Range", range_header)
@@ -383,7 +384,8 @@ impl Downloader {
                             .await?;
                         
                         if !response.status().is_success() && response.status().as_u16() != 206 {
-                            return Err(Error::HttpError(format!("Range request failed: {}", response.status())));
+                            let status = response.status();
+                            return Err(Error::HttpError(format!("Range request failed: {status}")));
                         }
                         
                         // Stream chunk data with resilient reading
@@ -478,7 +480,7 @@ async fn create_optimized_file(path: &str, size_hint: Option<u64>) -> Result<tok
 
 /// Create a helpful HTTP error with suggestions for common typos
 fn create_helpful_http_error(url: &str, status: reqwest::StatusCode) -> Error {
-    let mut message = format!("Failed to get file info: {}", status);
+    let mut message = format!("Failed to get file info: {status}");
     
     if status == reqwest::StatusCode::NOT_FOUND {
         // Extract source from URL patterns

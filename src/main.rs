@@ -142,7 +142,7 @@ async fn download_to_file(source: &str, file_path: &str, verbose: bool, force: b
     };
     
     // Create progress bar manager
-    let progress_manager = cli::ProgressManager::new(0, &format!("🌐 Downloading {}", source));
+    let progress_manager = cli::ProgressManager::new(0, &format!("🌐 Downloading {source}"));
     
     // Create download options with overwrite behavior
     let options = DownloadOptions {
