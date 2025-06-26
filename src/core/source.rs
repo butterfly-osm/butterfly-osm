@@ -8,16 +8,14 @@ use crate::core::error::Result;
 #[derive(Debug, Clone, PartialEq)]
 pub enum DownloadSource {
     /// HTTP source with direct URL
-    Http {
-        url: String,
-    },
+    Http { url: String },
 }
 
 /// Configuration for download sources
 pub struct SourceConfig {
     /// HTTP URL for planet files
     pub planet_http_url: String,
-    
+
     /// Base URL for Geofabrik downloads
     pub geofabrik_base_url: String,
 }
@@ -25,7 +23,8 @@ pub struct SourceConfig {
 impl Default for SourceConfig {
     fn default() -> Self {
         Self {
-            planet_http_url: "https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf".to_string(),
+            planet_http_url: "https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf"
+                .to_string(),
             geofabrik_base_url: "https://download.geofabrik.de".to_string(),
         }
     }
@@ -57,9 +56,9 @@ pub fn resolve_output_filename(source: &str) -> String {
         "planet" => "planet-latest.osm.pbf".to_string(),
         path if path.contains('/') => {
             let name = path.split('/').next_back().unwrap_or(path);
-            format!("{}-latest.osm.pbf", name)
-        },
-        continent => format!("{}-latest.osm.pbf", continent),
+            format!("{name}-latest.osm.pbf")
+        }
+        continent => format!("{continent}-latest.osm.pbf"),
     }
 }
 
@@ -71,10 +70,13 @@ mod tests {
     fn test_resolve_planet_source() {
         let config = SourceConfig::default();
         let source = resolve_source("planet", &config).unwrap();
-        
+
         match source {
             DownloadSource::Http { url } => {
-                assert_eq!(url, "https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf");
+                assert_eq!(
+                    url,
+                    "https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf"
+                );
             }
         }
     }
@@ -83,7 +85,7 @@ mod tests {
     fn test_resolve_continent_source() {
         let config = SourceConfig::default();
         let source = resolve_source("europe", &config).unwrap();
-        
+
         match source {
             DownloadSource::Http { url } => {
                 assert_eq!(url, "https://download.geofabrik.de/europe-latest.osm.pbf");
@@ -95,10 +97,13 @@ mod tests {
     fn test_resolve_country_source() {
         let config = SourceConfig::default();
         let source = resolve_source("europe/belgium", &config).unwrap();
-        
+
         match source {
             DownloadSource::Http { url } => {
-                assert_eq!(url, "https://download.geofabrik.de/europe/belgium-latest.osm.pbf");
+                assert_eq!(
+                    url,
+                    "https://download.geofabrik.de/europe/belgium-latest.osm.pbf"
+                );
             }
         }
     }
@@ -107,6 +112,9 @@ mod tests {
     fn test_resolve_output_filename() {
         assert_eq!(resolve_output_filename("planet"), "planet-latest.osm.pbf");
         assert_eq!(resolve_output_filename("europe"), "europe-latest.osm.pbf");
-        assert_eq!(resolve_output_filename("europe/belgium"), "belgium-latest.osm.pbf");
+        assert_eq!(
+            resolve_output_filename("europe/belgium"),
+            "belgium-latest.osm.pbf"
+        );
     }
 }

@@ -3,8 +3,8 @@
 //! Command-line interface for the butterfly-dl library.
 //! Provides a curl-like interface for downloading OpenStreetMap data files.
 
+use butterfly_dl::{DownloadOptions, OverwriteBehavior, Result};
 use clap::Parser;
-use butterfly_dl::{Result, OverwriteBehavior, DownloadOptions};
 use log::error;
 
 mod cli;
@@ -27,23 +27,23 @@ File Overwrite Behavior:
 struct Cli {
     /// Source to download: "planet" (HTTP), "europe" (continent), or "europe/belgium" (country/region)
     source: String,
-    
+
     /// Output file path, or "-" for stdout
     #[arg(default_value = "")]
     output: String,
-    
+
     /// Enable dry-run mode (show what would be downloaded without downloading)
     #[arg(long)]
     dry_run: bool,
-    
+
     /// Enable verbose logging
     #[arg(short, long)]
     verbose: bool,
-    
+
     /// Force overwrite existing files without prompting
     #[arg(short, long)]
     force: bool,
-    
+
     /// Never overwrite existing files (fail if destination exists)
     #[arg(long)]
     no_clobber: bool,
@@ -66,9 +66,9 @@ fn resolve_output(source: &str, output: &str) -> OutputDestination {
             "planet" => "planet-latest.osm.pbf".to_string(),
             path if path.contains('/') => {
                 let name = path.split('/').next_back().unwrap_or(path);
-                format!("{}-latest.osm.pbf", name)
-            },
-            continent => format!("{}-latest.osm.pbf", continent),
+                format!("{name}-latest.osm.pbf")
+            }
+            continent => format!("{continent}-latest.osm.pbf"),
         };
         OutputDestination::File(filename)
     } else {
@@ -79,59 +79,73 @@ fn resolve_output(source: &str, output: &str) -> OutputDestination {
 #[tokio::main]
 async fn main() {
     if let Err(e) = run().await {
-        error!("❌ Error: {}", e);
+        error!("❌ Error: {e}");
         std::process::exit(1);
     }
 }
 
 async fn run() -> Result<()> {
     let cli = Cli::parse();
-    
+
     // Initialize logging to stderr
     env_logger::Builder::from_default_env()
         .target(env_logger::Target::Stderr)
         .init();
-    
+
     if cli.verbose {
         eprintln!("🦋 Butterfly-dl v{} starting...", env!("BUTTERFLY_VERSION"));
     }
-    
+
     // Resolve output destination
     let output = resolve_output(&cli.source, &cli.output);
-    
+
     if cli.dry_run {
-        eprintln!("🔍 [DRY RUN] Would download: {} to {:?}", cli.source, output);
+        let source = &cli.source;
+        eprintln!("🔍 [DRY RUN] Would download: {source} to {output:?}");
         return Ok(());
     }
-    
+
     // Validate conflicting flags
     if cli.force && cli.no_clobber {
         eprintln!("❌ Error: --force and --no-clobber cannot be used together");
         std::process::exit(1);
     }
-    
+
     // Handle different output destinations
     match output {
         OutputDestination::File(file_path) => {
-            download_to_file(&cli.source, &file_path, cli.verbose, cli.force, cli.no_clobber).await?;
+            download_to_file(
+                &cli.source,
+                &file_path,
+                cli.verbose,
+                cli.force,
+                cli.no_clobber,
+            )
+            .await?;
         }
         OutputDestination::Stdout => {
             download_to_stdout(&cli.source, cli.verbose).await?;
         }
     }
-    
+
     Ok(())
 }
 
 /// Download to a file with progress bar
-async fn download_to_file(source: &str, file_path: &str, verbose: bool, force: bool, no_clobber: bool) -> Result<()> {
+async fn download_to_file(
+    source: &str,
+    file_path: &str,
+    verbose: bool,
+    force: bool,
+    no_clobber: bool,
+) -> Result<()> {
     if verbose {
         // Show download source information
         show_download_info(source);
     }
-    
-    eprintln!("📁 Saving to: {}", file_path);
-    
+
+    eprintln!("📁 Saving to: {file_path}");
+
     // Determine overwrite behavior from CLI flags
     let overwrite = if force {
         OverwriteBehavior::Force
@@ -140,10 +154,10 @@ async fn download_to_file(source: &str, file_path: &str, verbose: bool, force: b
     } else {
         OverwriteBehavior::Prompt
     };
-    
+
     // Create progress bar manager
-    let progress_manager = cli::ProgressManager::new(0, &format!("🌐 Downloading {}", source));
-    
+    let progress_manager = cli::ProgressManager::new(0, &format!("🌐 Downloading {source}"));
+
     // Create download options with overwrite behavior
     let options = DownloadOptions {
         overwrite,
@@ -161,10 +175,10 @@ async fn download_to_file(source: &str, file_path: &str, verbose: bool, force: b
         })),
         ..Default::default()
     };
-    
+
     // Use library with custom options
     butterfly_dl::get_with_options(source, Some(file_path), options).await?;
-    
+
     Ok(())
 }
 
@@ -174,14 +188,15 @@ async fn download_to_stdout(source: &str, verbose: bool) -> Result<()> {
         show_download_info(source);
         eprintln!("📡 Streaming to stdout");
     }
-    
+
     // Get stream and pipe to stdout
     let mut stream = butterfly_dl::get_stream(source).await?;
     let mut stdout = tokio::io::stdout();
-    
-    tokio::io::copy(&mut stream, &mut stdout).await
+
+    tokio::io::copy(&mut stream, &mut stdout)
+        .await
         .map_err(butterfly_dl::Error::IoError)?;
-    
+
     Ok(())
 }
 
@@ -192,10 +207,12 @@ fn show_download_info(source: &str) {
             eprintln!("🌐 Downloading from HTTP: https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf");
         }
         path if path.contains('/') => {
-            eprintln!("🌐 Downloading from HTTP: https://download.geofabrik.de/{}-latest.osm.pbf", path);
+            eprintln!(
+                "🌐 Downloading from HTTP: https://download.geofabrik.de/{path}-latest.osm.pbf"
+            );
         }
         continent => {
-            eprintln!("🌐 Downloading from HTTP: https://download.geofabrik.de/{}-latest.osm.pbf", continent);
+            eprintln!("🌐 Downloading from HTTP: https://download.geofabrik.de/{continent}-latest.osm.pbf");
         }
     }
 }
@@ -210,7 +227,7 @@ mod tests {
         match output {
             OutputDestination::File(path) => {
                 assert_eq!(path, "belgium-latest.osm.pbf");
-            },
+            }
             _ => panic!("Expected file output"),
         }
     }
@@ -219,7 +236,7 @@ mod tests {
     fn test_resolve_output_stdout() {
         let output = resolve_output("planet", "-");
         match output {
-            OutputDestination::Stdout => {},
+            OutputDestination::Stdout => {}
             _ => panic!("Expected stdout output"),
         }
     }
@@ -230,7 +247,7 @@ mod tests {
         match output {
             OutputDestination::File(path) => {
                 assert_eq!(path, "my-planet.pbf");
-            },
+            }
             _ => panic!("Expected file output"),
         }
     }
