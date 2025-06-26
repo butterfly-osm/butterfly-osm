@@ -449,7 +449,9 @@ async fn create_optimized_file(path: &str, size_hint: Option<u64>) -> Result<tok
     {
         use std::os::unix::fs::OpenOptionsExt;
         
-        // Try Direct I/O for large files (>1GB) on Unix systems
+        // Try Direct I/O for large files (>1GB) on Linux systems only
+        // O_DIRECT is not available on macOS/BSD systems
+        #[cfg(target_os = "linux")]
         if let Some(size) = size_hint {
             if size > 1024 * 1024 * 1024 {
                 match std::fs::OpenOptions::new()
