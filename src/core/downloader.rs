@@ -528,11 +528,13 @@ mod tests {
 
     #[test]
     fn test_calculate_optimal_connections() {
+        let cpu_count = num_cpus::get();
+        
         assert_eq!(calculate_optimal_connections(512 * 1024, 16), 1);        // 512KB: single connection
         assert_eq!(calculate_optimal_connections(5 * 1024 * 1024, 16), 2);   // 5MB: 2 connections
         assert_eq!(calculate_optimal_connections(50 * 1024 * 1024, 16), 4);  // 50MB: 4 connections
-        assert_eq!(calculate_optimal_connections(200 * 1024 * 1024, 16), 8); // 200MB: 8 connections
-        assert_eq!(calculate_optimal_connections(2 * 1024 * 1024 * 1024, 16), 16); // 2GB: 16 connections
+        assert_eq!(calculate_optimal_connections(200 * 1024 * 1024, 16), std::cmp::min(8, cpu_count * 2)); // 200MB: 8 connections (or CPU limit)
+        assert_eq!(calculate_optimal_connections(2 * 1024 * 1024 * 1024, 16), std::cmp::min(16, cpu_count * 2)); // 2GB: 16 connections (or CPU limit)
     }
 
     #[test]
