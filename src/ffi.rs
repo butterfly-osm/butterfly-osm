@@ -63,8 +63,12 @@ fn convert_error(result: crate::Result<()>) -> ButterflyResult {
 ///
 /// # Returns
 /// ButterflyResult code
+///
+/// # Safety
+///
+/// This function is unsafe because it dereferences raw pointers.
 #[no_mangle]
-pub extern "C" fn butterfly_download(
+pub unsafe extern "C" fn butterfly_download(
     source: *const c_char,
     dest_path: *const c_char,
 ) -> ButterflyResult {
@@ -106,8 +110,12 @@ pub extern "C" fn butterfly_download(
 ///
 /// # Returns
 /// ButterflyResult code
+///
+/// # Safety
+///
+/// This function is unsafe because it dereferences raw pointers.
 #[no_mangle]
-pub extern "C" fn butterfly_download_with_progress(
+pub unsafe extern "C" fn butterfly_download_with_progress(
     source: *const c_char,
     dest_path: *const c_char,
     progress_callback: Option<ProgressCallback>,
@@ -166,8 +174,12 @@ pub extern "C" fn butterfly_download_with_progress(
 ///
 /// # Returns
 /// Allocated string that must be freed with `butterfly_free_string()`, or NULL on error
+///
+/// # Safety
+///
+/// This function is unsafe because it dereferences raw pointers.
 #[no_mangle]
-pub extern "C" fn butterfly_get_filename(source: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn butterfly_get_filename(source: *const c_char) -> *mut c_char {
     if source.is_null() {
         return ptr::null_mut();
     }
@@ -189,8 +201,12 @@ pub extern "C" fn butterfly_get_filename(source: *const c_char) -> *mut c_char {
 ///
 /// # Parameters
 /// - `ptr`: String pointer returned by library functions
+///
+/// # Safety
+///
+/// This function is unsafe because it dereferences raw pointers.
 #[no_mangle]
-pub extern "C" fn butterfly_free_string(ptr: *mut c_char) {
+pub unsafe extern "C" fn butterfly_free_string(ptr: *mut c_char) {
     if !ptr.is_null() {
         unsafe {
             drop(CString::from_raw(ptr));
@@ -243,13 +259,13 @@ mod tests {
     #[test]
     fn test_butterfly_get_filename() {
         let source = CString::new("europe/belgium").unwrap();
-        let filename_ptr = butterfly_get_filename(source.as_ptr());
+        let filename_ptr = unsafe { butterfly_get_filename(source.as_ptr()) };
         assert!(!filename_ptr.is_null());
         
         let filename = unsafe { CStr::from_ptr(filename_ptr) }.to_str().unwrap();
         assert_eq!(filename, "belgium-latest.osm.pbf");
         
-        butterfly_free_string(filename_ptr);
+        unsafe { butterfly_free_string(filename_ptr) };
     }
 
     #[test]
@@ -260,7 +276,7 @@ mod tests {
 
     #[test]
     fn test_invalid_parameters() {
-        let result = butterfly_download(std::ptr::null(), std::ptr::null());
+        let result = unsafe { butterfly_download(std::ptr::null(), std::ptr::null()) };
         assert_eq!(result as u32, ButterflyResult::InvalidParameter as u32);
     }
 }
