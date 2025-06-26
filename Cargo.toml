@@ -58,7 +58,7 @@ tokio-util = { version = "0.7", features = ["io"] }
 serde_json = "1.0"
 tempfile = "3.0"
 ctor = "0.2"
-wiremock = "0.5"
+wiremock = "0.6"
 tokio-test = "0.4"
 
 # Debian package metadata
