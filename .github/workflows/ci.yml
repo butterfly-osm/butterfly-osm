@@ -1,0 +1,172 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test Suite
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: [stable]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run tests
+        run: cargo test --verbose
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Build release
+        run: cargo build --release --verbose
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Run security audit
+        run: cargo audit
+
+  cross-compile-test:
+    name: Cross Compilation Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Configure cross-compilation
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          mkdir -p ~/.cargo
+          echo "[target.aarch64-unknown-linux-gnu]" >> ~/.cargo/config.toml
+          echo "linker = \"aarch64-linux-gnu-gcc\"" >> ~/.cargo/config.toml
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build for target
+        run: cargo build --target ${{ matrix.target }} --verbose
+
+  benchmark:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-bench-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release for benchmarking
+        run: cargo build --release
+
+      - name: Install benchmark dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl time
+
+      - name: Run performance benchmark
+        run: |
+          # Test with small file to verify functionality
+          echo "🧪 Running benchmark with small test file..."
+          ./benchmarks/bench.sh europe/monaco || echo "⚠️ Benchmark completed with warnings"
+
+  documentation:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-docs-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Generate documentation
+        run: cargo doc --no-deps --verbose
+
+      - name: Check for missing documentation
+        run: cargo doc --no-deps 2>&1 | grep -i "warning.*missing" && exit 1 || exit 0

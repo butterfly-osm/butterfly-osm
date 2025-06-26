@@ -187,6 +187,63 @@ Include:
 - **Pull Requests**: For code changes
 - **Discussions**: For architectural decisions
 
+## Release Process
+
+### Automated Releases
+This project uses automated GitHub Actions workflows for releases:
+
+#### Creating a Release
+1. **Update version numbers**:
+   ```bash
+   # Update VERSION file
+   echo "1.4.2" > VERSION
+   
+   # Update Cargo.toml (manual due to Cargo limitations)
+   # Edit version = "1.4.2" in Cargo.toml
+   ```
+
+2. **Commit and tag**:
+   ```bash
+   git add VERSION Cargo.toml
+   git commit -m "chore: bump version to v1.4.2"
+   git tag -a v1.4.2 -m "Release v1.4.2"
+   git push origin main --tags
+   ```
+
+3. **Automatic workflow triggers**:
+   - Cross-platform builds (Linux x86_64/ARM64, macOS Intel/Apple Silicon, Windows)
+   - Binary packaging with checksums
+   - GitHub release creation with changelog
+   - Asset uploads to release
+
+#### Release Artifacts
+The automated workflow generates:
+- `butterfly-dl-v1.4.2-x86_64-linux.tar.gz`
+- `butterfly-dl-v1.4.2-aarch64-linux.tar.gz`
+- `butterfly-dl-v1.4.2-x86_64-macos.tar.gz`
+- `butterfly-dl-v1.4.2-aarch64-macos.tar.gz`
+- `butterfly-dl-v1.4.2-x86_64-windows.zip`
+- Individual SHA256 checksum files
+- Combined `checksums.txt`
+
+#### CI/CD Workflows
+- **CI**: Runs on all PRs and main branch pushes
+  - Tests across Linux, macOS, Windows
+  - Clippy linting and formatting checks
+  - Cross-compilation testing
+  - Security audits
+  - Documentation generation
+  - Performance benchmarks
+- **Release**: Triggered by version tags
+- **Dependabot**: Automatic dependency updates with auto-merge for minor/patch versions
+
+### Manual Release Steps (if needed)
+```bash
+# Emergency manual release process
+cargo build --release --target x86_64-unknown-linux-gnu
+tar czf butterfly-dl-manual.tar.gz target/x86_64-unknown-linux-gnu/release/butterfly-dl README.md LICENSE
+```
+
 ## Getting Help
 
 ### Useful Resources
@@ -194,6 +251,7 @@ Include:
 - [Clap CLI Framework](https://docs.rs/clap/)
 - [Docker Best Practices](https://docs.docker.com/develop/dev-best-practices/)
 - [Geofabrik API](https://download.geofabrik.de/technical.html)
+- [GitHub Actions Documentation](https://docs.github.com/en/actions)
 
 ### Project Maintainer
 Pierre <pierre@warnier.net>
