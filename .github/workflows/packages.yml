@@ -143,10 +143,10 @@ jobs:
           cargo test --all-targets --features ci-tests-disabled
 
       - name: Package for crates.io
-        run: cargo package --verbose
+        run: cargo package --verbose --allow-dirty
 
       - name: Publish to crates.io
-        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }} --allow-dirty
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
