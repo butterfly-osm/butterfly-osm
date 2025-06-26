@@ -2,6 +2,9 @@
 //! 
 //! These tests verify that downloads can start successfully and then stop them
 //! after a few seconds to avoid downloading large files during testing.
+//!
+//! Note: These tests are disabled during CI package verification to avoid 
+//! network dependencies and compilation overhead during cargo publish.
 
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -9,7 +12,11 @@ use std::thread;
 
 /// Helper to run a download command with timeout and capture output
 fn test_download_starts(source: &str, timeout_secs: u64) -> Result<(String, String, bool), String> {
-    let mut cmd = Command::new("./target/release/butterfly-dl")
+    let mut cmd = Command::new("cargo")
+        .arg("run")
+        .arg("--bin")
+        .arg("butterfly-dl")
+        .arg("--")
         .arg(source)
         .arg(format!("/tmp/test-{}.pbf", source.replace('/', "_")))
         .arg("--verbose")
@@ -74,6 +81,7 @@ fn test_download_starts(source: &str, timeout_secs: u64) -> Result<(String, Stri
 }
 
 #[test]
+#[cfg(not(feature = "ci-tests-disabled"))]
 fn test_planet_download_starts() {
     println!("Testing planet download startup...");
     
@@ -97,6 +105,7 @@ fn test_planet_download_starts() {
 }
 
 #[test]
+#[cfg(not(feature = "ci-tests-disabled"))]
 fn test_europe_continent_download_starts() {
     println!("Testing Europe continent download startup...");
     
@@ -120,6 +129,7 @@ fn test_europe_continent_download_starts() {
 }
 
 #[test]
+#[cfg(not(feature = "ci-tests-disabled"))]
 fn test_monaco_country_download_starts() {
     println!("Testing Monaco country download startup...");
     
@@ -143,6 +153,7 @@ fn test_monaco_country_download_starts() {
 }
 
 #[test]
+#[cfg(not(feature = "ci-tests-disabled"))]
 fn test_invalid_continent_fails_gracefully() {
     println!("Testing invalid continent (invalid-continent) fails gracefully...");
     
@@ -167,6 +178,7 @@ fn test_invalid_continent_fails_gracefully() {
 }
 
 #[test]
+#[cfg(not(feature = "ci-tests-disabled"))]
 fn test_antarctica_continent_download_starts() {
     println!("Testing Antarctica continent download starts...");
     
@@ -187,6 +199,7 @@ fn test_antarctica_continent_download_starts() {
 }
 
 #[test]
+#[cfg(not(feature = "ci-tests-disabled"))]
 fn test_valid_country_belgium_download_starts() {
     println!("Testing Belgium country download startup...");
     
@@ -211,6 +224,7 @@ fn test_valid_country_belgium_download_starts() {
 
 /// Test dry run mode for all source types
 #[test]
+#[cfg(not(feature = "ci-tests-disabled"))]
 fn test_dry_run_mode() {
     println!("Testing dry run mode for different sources...");
     
