@@ -72,7 +72,7 @@ async fn check_overwrite_permission(file_path: &str, behavior: &OverwriteBehavio
         OverwriteBehavior::NeverOverwrite => {
             Err(Error::IoError(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
-                format!("File already exists: {} (use --force to overwrite)", file_path),
+                format!("File already exists: {file_path} (use --force to overwrite)"),
             )))
         }
         OverwriteBehavior::Prompt => {
@@ -260,7 +260,7 @@ impl Downloader {
             } else if supports_ranges {
                 // Resume using range request
                 retry_on_network_error(|| async {
-                    let range_header = format!("bytes={}-", downloaded);
+                    let range_header = format!("bytes={downloaded}-");
                     let response = client.get(url).header("Range", range_header).send().await?;
                     let stream = create_http_stream(response);
                     Ok(stream)
@@ -499,20 +499,17 @@ fn create_helpful_http_error(url: &str, status: reqwest::StatusCode) -> Error {
         if let Some(source) = source {
             if let Some(suggestion) = crate::core::error::suggest_correction(&source) {
                 message = format!(
-                    "Source '{}' not found. Did you mean '{}'?",
-                    source, suggestion
+                    "Source '{source}' not found. Did you mean '{suggestion}'?"
                 );
             } else {
                 message = format!(
-                    "Source '{}' not found. Check the URL or try common sources like: planet, europe, asia",
-                    source
+                    "Source '{source}' not found. Check the URL or try common sources like: planet, europe, asia"
                 );
             }
         } else {
             // Generic fallback for unknown domains
             message = format!(
-                "Source not found ({}): {}. Check the URL or try common sources like: planet, europe, asia",
-                status, url
+                "Source not found ({status}): {url}. Check the URL or try common sources like: planet, europe, asia"
             );
         }
     }
@@ -608,7 +605,8 @@ mod tests {
         let downloader = Downloader::new();
         let options = DownloadOptions::default();
         
-        let url = format!("{}/test-file.pbf", mock_server.uri());
+        let base_uri = mock_server.uri();
+        let url = format!("{base_uri}/test-file.pbf");
         
         // Test the resilient download
         let result = downloader.download_http_to_file(&url, file_path, &options).await;
