@@ -17,11 +17,10 @@
 //! - 1: Invalid parameter
 //! - 2: Network error
 //! - 3: I/O error  
-//! - 4: S3 error (if S3 feature enabled)
-//! - 5: Unknown error
+//! - 4: Unknown error
 
 use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_int};
+use std::os::raw::c_char;
 use std::ptr;
 use once_cell::sync::Lazy;
 use tokio::runtime::Runtime;
@@ -39,8 +38,7 @@ pub enum ButterflyResult {
     InvalidParameter = 1,
     NetworkError = 2,
     IoError = 3,
-    S3Error = 4,
-    UnknownError = 5,
+    UnknownError = 4,
 }
 
 /// Progress callback function type for C
@@ -53,8 +51,6 @@ fn convert_error(result: crate::Result<()>) -> ButterflyResult {
         Err(crate::Error::SourceNotFound(_)) | Err(crate::Error::InvalidInput(_)) => ButterflyResult::InvalidParameter,
         Err(crate::Error::NetworkError(_)) | Err(crate::Error::HttpError(_)) => ButterflyResult::NetworkError,
         Err(crate::Error::IoError(_)) => ButterflyResult::IoError,
-        #[cfg(feature = "s3")]
-        Err(crate::Error::S3Error(_)) => ButterflyResult::S3Error,
         _ => ButterflyResult::UnknownError,
     }
 }
@@ -229,18 +225,6 @@ pub extern "C" fn butterfly_init() -> ButterflyResult {
     // Just access the runtime to ensure it's initialized
     Lazy::force(&RUNTIME);
     ButterflyResult::Success
-}
-
-/// Check if S3 support is available
-///
-/// # Returns
-/// 1 if S3 support is compiled in, 0 otherwise
-#[no_mangle]
-pub extern "C" fn butterfly_has_s3_support() -> c_int {
-    #[cfg(feature = "s3")]
-    return 1;
-    #[cfg(not(feature = "s3"))]
-    return 0;
 }
 
 #[cfg(test)]

@@ -64,7 +64,7 @@ fn resolve_output(source: &str, output: &str) -> OutputDestination {
         let filename = match source {
             "planet" => "planet-latest.osm.pbf".to_string(),
             path if path.contains('/') => {
-                let name = path.split('/').last().unwrap_or(path);
+                let name = path.split('/').next_back().unwrap_or(path);
                 format!("{}-latest.osm.pbf", name)
             },
             continent => format!("{}-latest.osm.pbf", continent),
@@ -172,7 +172,7 @@ async fn download_to_stdout(source: &str, verbose: bool) -> Result<()> {
     let mut stdout = tokio::io::stdout();
     
     tokio::io::copy(&mut stream, &mut stdout).await
-        .map_err(|e| butterfly_dl::Error::IoError(e))?;
+        .map_err(butterfly_dl::Error::IoError)?;
     
     Ok(())
 }
