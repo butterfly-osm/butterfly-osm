@@ -251,10 +251,10 @@ Automated package generation is handled by GitHub Actions:
 - Requires `CARGO_REGISTRY_TOKEN` secret in repository
 - Triggered on version tags
 
-#### **Homebrew Formula**
-- Updates Homebrew tap repository
-- Requires `HOMEBREW_TAP_TOKEN` secret
-- Creates formula in `butterfly-osm/homebrew-tap`
+#### **Homebrew Formula (Future)**
+- Planned: Homebrew tap repository integration
+- Will provide `brew install butterfly-osm/tap/butterfly-dl`
+- Currently focused on Debian and crates.io distribution
 
 #### **Binary Archives**
 - Cross-platform binaries (Linux, macOS, Windows)
