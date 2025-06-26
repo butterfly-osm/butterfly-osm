@@ -27,7 +27,7 @@ impl ProgressManager {
         let pb = create_progress_bar(total_size);
         
         // Print initial message to stderr
-        eprintln!("{}", message);
+        eprintln!("{message}");
         
         Self {
             pb,

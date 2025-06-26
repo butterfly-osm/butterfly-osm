@@ -100,7 +100,7 @@ async fn run() -> Result<()> {
     let output = resolve_output(&cli.source, &cli.output);
     
     if cli.dry_run {
-        eprintln!("🔍 [DRY RUN] Would download: {} to {:?}", cli.source, output);
+        eprintln!("🔍 [DRY RUN] Would download: {} to {output:?}", cli.source);
         return Ok(());
     }
     
@@ -130,7 +130,7 @@ async fn download_to_file(source: &str, file_path: &str, verbose: bool, force: b
         show_download_info(source);
     }
     
-    eprintln!("📁 Saving to: {}", file_path);
+    eprintln!("📁 Saving to: {file_path}");
     
     // Determine overwrite behavior from CLI flags
     let overwrite = if force {

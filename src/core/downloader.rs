@@ -66,7 +66,7 @@ async fn check_overwrite_permission(file_path: &str, behavior: &OverwriteBehavio
     
     match behavior {
         OverwriteBehavior::Force => {
-            eprintln!("⚠️  Overwriting existing file: {}", file_path);
+            eprintln!("⚠️  Overwriting existing file: {file_path}");
             Ok(true)
         }
         OverwriteBehavior::NeverOverwrite => {
@@ -76,7 +76,7 @@ async fn check_overwrite_permission(file_path: &str, behavior: &OverwriteBehavio
             )))
         }
         OverwriteBehavior::Prompt => {
-            eprintln!("⚠️  File already exists: {}", file_path);
+            eprintln!("⚠️  File already exists: {file_path}");
             eprint!("Overwrite? [y/N]: ");
             
             // Flush stderr to ensure prompt is displayed
@@ -589,7 +589,7 @@ mod tests {
             .respond_with(move |_req: &wiremock::Request| {
                 let call_num = get_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
                 
-                println!("GET call #{}", call_num);
+                println!("GET call #{call_num}");
                 
                 // For basic test: succeed immediately
                 println!("Call {} - returning full data", call_num);
@@ -614,7 +614,7 @@ mod tests {
         let result = downloader.download_http_to_file(&url, file_path, &options).await;
         
         // Verify success
-        assert!(result.is_ok(), "Download should succeed: {:?}", result);
+        assert!(result.is_ok(), "Download should succeed: {result:?}");
         
         // Verify file content
         let downloaded_data = std::fs::read(file_path).unwrap();
@@ -624,13 +624,13 @@ mod tests {
         let head_calls = head_call_count.load(Ordering::SeqCst);
         let get_calls = get_call_count.load(Ordering::SeqCst);
         
-        println!("HEAD calls: {}, GET calls: {}", head_calls, get_calls);
+        println!("HEAD calls: {head_calls}, GET calls: {get_calls}");
         
         // For basic test: should have made 1 HEAD and 1 GET call
         assert_eq!(head_calls, 1, "Should have made 1 HEAD request");
         assert_eq!(get_calls, 1, "Should have made 1 GET request");
         
-        println!("✅ Basic download test passed! Made {} HEAD and {} GET calls", head_calls, get_calls);
+        println!("✅ Basic download test passed! Made {head_calls} HEAD and {get_calls} GET calls");
     }
 
     #[tokio::test]
@@ -666,7 +666,7 @@ mod tests {
         // Should have taken at least 3 seconds (1s + 2s delays)
         assert!(elapsed >= Duration::from_secs(3), "Should implement exponential backoff delays");
         
-        println!("✅ Exponential backoff test passed! {} calls in {:?}", calls, elapsed);
+        println!("✅ Exponential backoff test passed! {calls} calls in {elapsed:?}");
     }
 
     #[tokio::test]
