@@ -17,7 +17,6 @@ jobs:
     name: Create Release
     runs-on: ubuntu-latest
     outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
       version: ${{ steps.get_version.outputs.version }}
     steps:
       - name: Checkout code
@@ -32,45 +31,34 @@ jobs:
       - name: Generate release notes
         id: release_notes
         run: |
-          # Check if RELEASE_NOTES.md exists and use it, otherwise generate changelog
-          if [ -f "RELEASE_NOTES.md" ]; then
-            echo "Using detailed release notes from RELEASE_NOTES.md"
-            cp RELEASE_NOTES.md release_body.md
+          # Simplified approach: generate basic changelog for now
+          echo "Generating release notes from git commits"
+          
+          # Get the previous tag  
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+          
+          if [ -z "$PREV_TAG" ]; then
+            # First release - get recent commits
+            CHANGELOG=$(git log --pretty=format:"- %s" --reverse -n 10)
           else
-            echo "Generating changelog from git commits"
-            # Get the previous tag
-            PREV_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
-            
-            if [ -z "$PREV_TAG" ]; then
-              # First release - get all commits
-              CHANGELOG=$(git log --pretty=format:"- %s" --reverse)
-            else
-              # Get commits since previous tag
-              CHANGELOG=$(git log ${PREV_TAG}..HEAD --pretty=format:"- %s" --reverse)
-            fi
-            
-            # Save changelog to file for multiline output
-            echo "## Changes" > release_body.md
-            echo "" >> release_body.md
-            echo "$CHANGELOG" >> release_body.md
+            # Get commits since previous tag
+            CHANGELOG=$(git log ${PREV_TAG}..HEAD --pretty=format:"- %s" --reverse)
           fi
           
-          # Save to output for the release step (use file-based approach for multiline)
-          {
-            echo "release_notes<<RELEASE_NOTES_EOF"
-            cat release_body.md
-            echo "RELEASE_NOTES_EOF"
-          } >> $GITHUB_OUTPUT
-
+          # Create simple release body
+          echo "## 🚀 butterfly-dl v2.0.0 - Workspace Architecture Migration" > release_body.md
+          echo "" >> release_body.md
+          echo "### Changes:" >> release_body.md
+          echo "$CHANGELOG" >> release_body.md
+          echo "" >> release_body.md
+          echo "See [Migration Summary](MIGRATION_SUMMARY.md) for detailed information." >> release_body.md
+          
       - name: Create Release
         id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref }}
-          release_name: 🚀 butterfly-dl ${{ steps.get_version.outputs.version }}
-          body: ${{ steps.release_notes.outputs.release_notes }}
+          name: 🚀 butterfly-dl ${{ steps.get_version.outputs.version }}
+          body_path: release_body.md
           draft: false
           prerelease: false
 
@@ -192,25 +180,12 @@ jobs:
           echo "checksum_file=${{ steps.archive.outputs.archive_path }}.sha256" >> $GITHUB_OUTPUT
         shell: bash
 
-      - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v2
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ${{ steps.archive.outputs.archive_path }}
-          asset_name: ${{ steps.archive.outputs.archive_name }}
-          asset_content_type: application/octet-stream
-
-      - name: Upload Checksum
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ${{ steps.checksum.outputs.checksum_file }}
-          asset_name: ${{ steps.archive.outputs.archive_name }}.sha256
-          asset_content_type: text/plain
+          files: |
+            ${{ steps.archive.outputs.archive_path }}
+            ${{ steps.checksum.outputs.checksum_file }}
 
   checksums:
     name: Generate Combined Checksums
@@ -241,11 +216,6 @@ jobs:
           echo "Download the appropriate .sha256 file alongside your binary to verify integrity." >> checksums.txt
 
       - name: Upload Combined Checksums
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: checksums.txt
-          asset_name: checksums.txt
-          asset_content_type: text/plain
+          files: checksums.txt
