@@ -29,28 +29,35 @@ jobs:
         id: get_version
         run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
-      - name: Generate changelog
-        id: changelog
+      - name: Generate release notes
+        id: release_notes
         run: |
-          # Get the previous tag
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
-          
-          if [ -z "$PREV_TAG" ]; then
-            # First release - get all commits
-            CHANGELOG=$(git log --pretty=format:"- %s" --reverse)
+          # Check if RELEASE_NOTES.md exists and use it, otherwise generate changelog
+          if [ -f "RELEASE_NOTES.md" ]; then
+            echo "Using detailed release notes from RELEASE_NOTES.md"
+            cp RELEASE_NOTES.md release_body.md
           else
-            # Get commits since previous tag
-            CHANGELOG=$(git log ${PREV_TAG}..HEAD --pretty=format:"- %s" --reverse)
+            echo "Generating changelog from git commits"
+            # Get the previous tag
+            PREV_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+            
+            if [ -z "$PREV_TAG" ]; then
+              # First release - get all commits
+              CHANGELOG=$(git log --pretty=format:"- %s" --reverse)
+            else
+              # Get commits since previous tag
+              CHANGELOG=$(git log ${PREV_TAG}..HEAD --pretty=format:"- %s" --reverse)
+            fi
+            
+            # Save changelog to file for multiline output
+            echo "## Changes" > release_body.md
+            echo "" >> release_body.md
+            echo "$CHANGELOG" >> release_body.md
           fi
           
-          # Save changelog to file for multiline output
-          echo "## Changes" > changelog.md
-          echo "" >> changelog.md
-          echo "$CHANGELOG" >> changelog.md
-          
-          # Also save to output
-          echo "changelog<<EOF" >> $GITHUB_OUTPUT
-          cat changelog.md >> $GITHUB_OUTPUT
+          # Save to output for the release step
+          echo "release_notes<<EOF" >> $GITHUB_OUTPUT
+          cat release_body.md >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create Release
@@ -60,8 +67,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ github.ref }}
-          release_name: Release ${{ steps.get_version.outputs.version }}
-          body: ${{ steps.changelog.outputs.changelog }}
+          release_name: 🚀 butterfly-dl ${{ steps.get_version.outputs.version }}
+          body: ${{ steps.release_notes.outputs.release_notes }}
           draft: false
           prerelease: false
 
@@ -128,7 +135,7 @@ jobs:
 
       - name: Build binary
         run: |
-          cargo build --release --target ${{ matrix.target }}
+          cargo build --release -p butterfly-dl --target ${{ matrix.target }}
 
       - name: Strip binary (Unix)
         if: matrix.os != 'windows-latest'
@@ -147,7 +154,12 @@ jobs:
           
           if [ "${{ matrix.archive }}" = "zip" ]; then
             # Windows zip
-            7z a "${ARCHIVE_NAME}.zip" "./target/${{ matrix.target }}/release/${{ matrix.output }}"
+            mkdir -p "${ARCHIVE_NAME}"
+            cp "target/${{ matrix.target }}/release/${{ matrix.output }}" "${ARCHIVE_NAME}/"
+            cp README.md LICENSE "${ARCHIVE_NAME}/"
+            # Add migration documentation if available
+            [ -f "MIGRATION_SUMMARY.md" ] && cp MIGRATION_SUMMARY.md "${ARCHIVE_NAME}/" || true
+            7z a "${ARCHIVE_NAME}.zip" "${ARCHIVE_NAME}/*"
             echo "archive_name=${ARCHIVE_NAME}.zip" >> $GITHUB_OUTPUT
             echo "archive_path=${ARCHIVE_NAME}.zip" >> $GITHUB_OUTPUT
           else
@@ -155,6 +167,12 @@ jobs:
             mkdir -p "${ARCHIVE_NAME}"
             cp "target/${{ matrix.target }}/release/${{ matrix.output }}" "${ARCHIVE_NAME}/"
             cp README.md LICENSE "${ARCHIVE_NAME}/"
+            # Add migration documentation if available
+            [ -f "MIGRATION_SUMMARY.md" ] && cp MIGRATION_SUMMARY.md "${ARCHIVE_NAME}/" || true
+            # Add FFI libraries if they exist (only for native builds)
+            if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ] || [ "${{ matrix.target }}" = "x86_64-apple-darwin" ]; then
+              cp target/${{ matrix.target }}/release/libbutterfly_dl.* "${ARCHIVE_NAME}/" 2>/dev/null || true
+            fi
             tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
             echo "archive_name=${ARCHIVE_NAME}.tar.gz" >> $GITHUB_OUTPUT
             echo "archive_path=${ARCHIVE_NAME}.tar.gz" >> $GITHUB_OUTPUT
