@@ -24,25 +24,25 @@ Download the latest release for your platform:
 
 ```bash
 # Linux (x86_64)
-wget https://github.com/butterfly-osm/butterfly-dl/releases/latest/download/butterfly-dl-v1.4.1-x86_64-linux.tar.gz
-tar -xzf butterfly-dl-v1.4.1-x86_64-linux.tar.gz
-sudo mv butterfly-dl-v1.4.1-x86_64-linux/butterfly-dl /usr/local/bin/
+wget https://github.com/butterfly-osm/butterfly-dl/releases/latest/download/butterfly-dl-v1.4.12-x86_64-linux.tar.gz
+tar -xzf butterfly-dl-v1.4.12-x86_64-linux.tar.gz
+sudo mv butterfly-dl-v1.4.12-x86_64-linux/butterfly-dl /usr/local/bin/
 
 # macOS (Intel)
-wget https://github.com/butterfly-osm/butterfly-dl/releases/latest/download/butterfly-dl-v1.4.1-x86_64-macos.tar.gz
-tar -xzf butterfly-dl-v1.4.1-x86_64-macos.tar.gz
-sudo mv butterfly-dl-v1.4.1-x86_64-macos/butterfly-dl /usr/local/bin/
+wget https://github.com/butterfly-osm/butterfly-dl/releases/latest/download/butterfly-dl-v1.4.12-x86_64-macos.tar.gz
+tar -xzf butterfly-dl-v1.4.12-x86_64-macos.tar.gz
+sudo mv butterfly-dl-v1.4.12-x86_64-macos/butterfly-dl /usr/local/bin/
 
 # Windows
-# Download butterfly-dl-v1.4.1-x86_64-windows.zip from releases page
+# Download butterfly-dl-v1.4.12-x86_64-windows.zip from releases page
 ```
 
 ### Package Managers
 
 #### Debian/Ubuntu
 ```bash
-wget https://github.com/butterfly-osm/butterfly-dl/releases/latest/download/butterfly-dl_1.4.1_amd64.deb
-sudo dpkg -i butterfly-dl_1.4.1_amd64.deb
+wget https://github.com/butterfly-osm/butterfly-dl/releases/latest/download/butterfly-dl_1.4.12_amd64.deb
+sudo dpkg -i butterfly-dl_1.4.12_amd64.deb
 ```
 
 #### Cargo (Rust)
