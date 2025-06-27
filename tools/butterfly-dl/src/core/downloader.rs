@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::core::error::{Error, Result};
+use butterfly_common::{Error, Result};
 use crate::core::source::{DownloadSource, SourceConfig};
 use crate::core::stream::{create_http_stream, DownloadOptions, DownloadStream, OverwriteBehavior};
 
@@ -529,7 +529,7 @@ fn create_helpful_http_error(url: &str, status: reqwest::StatusCode) -> Error {
         };
 
         if let Some(source) = source {
-            if let Some(suggestion) = crate::core::error::suggest_correction(&source) {
+            if let Some(suggestion) = butterfly_common::error::suggest_correction(&source) {
                 message = format!("Source '{source}' not found. Did you mean '{suggestion}'?");
             } else {
                 message = format!(
@@ -762,7 +762,7 @@ mod tests {
         // Check error message
         let error = result.unwrap_err();
         match error {
-            crate::core::error::Error::IoError(io_err) => {
+            Error::IoError(io_err) => {
                 assert_eq!(io_err.kind(), std::io::ErrorKind::AlreadyExists);
                 assert!(io_err.to_string().contains("use --force to overwrite"));
             }

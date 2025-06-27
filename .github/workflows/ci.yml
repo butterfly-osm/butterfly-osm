@@ -43,14 +43,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build
-        run: cargo build --verbose
+      - name: Build workspace
+        run: cargo build --workspace --verbose
 
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test --workspace --verbose
 
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings -A clippy::redundant_closure
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings -A clippy::redundant_closure
 
       - name: Check formatting
         run: cargo fmt --all -- --check

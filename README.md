@@ -24,17 +24,17 @@ Download the latest release for your platform:
 
 ```bash
 # Linux (x86_64)
-wget https://github.com/butterfly-osm/butterfly-dl/releases/latest/download/butterfly-dl-v1.4.12-x86_64-linux.tar.gz
-tar -xzf butterfly-dl-v1.4.12-x86_64-linux.tar.gz
-sudo mv butterfly-dl-v1.4.12-x86_64-linux/butterfly-dl /usr/local/bin/
+wget https://github.com/butterfly-osm/butterfly-osm/releases/latest/download/butterfly-dl-v2.0.0-x86_64-linux.tar.gz
+tar -xzf butterfly-dl-v2.0.0-x86_64-linux.tar.gz
+sudo mv butterfly-dl-v2.0.0-x86_64-linux/butterfly-dl /usr/local/bin/
 
 # macOS (Intel)
-wget https://github.com/butterfly-osm/butterfly-dl/releases/latest/download/butterfly-dl-v1.4.12-x86_64-macos.tar.gz
-tar -xzf butterfly-dl-v1.4.12-x86_64-macos.tar.gz
-sudo mv butterfly-dl-v1.4.12-x86_64-macos/butterfly-dl /usr/local/bin/
+wget https://github.com/butterfly-osm/butterfly-osm/releases/latest/download/butterfly-dl-v2.0.0-x86_64-macos.tar.gz
+tar -xzf butterfly-dl-v2.0.0-x86_64-macos.tar.gz
+sudo mv butterfly-dl-v2.0.0-x86_64-macos/butterfly-dl /usr/local/bin/
 
 # Windows
-# Download butterfly-dl-v1.4.12-x86_64-windows.zip from releases page
+# Download butterfly-dl-v2.0.0-x86_64-windows.zip from releases page
 ```
 
 ### Package Managers
@@ -52,9 +52,29 @@ cargo install butterfly-dl
 
 ### Build from Source
 ```bash
-git clone https://github.com/butterfly-osm/butterfly-dl
-cd butterfly-dl
-cargo build --release
+git clone https://github.com/butterfly-osm/butterfly-osm
+cd butterfly-osm
+cargo build --release -p butterfly-dl
+```
+
+## Workspace Structure
+
+This repository is organized as a Rust workspace containing multiple OSM tools:
+
+- **butterfly-common**: Shared utilities and error handling
+- **tools/butterfly-dl**: The main downloader tool
+- **Future tools**: butterfly-shrink, butterfly-extract, butterfly-serve
+
+### Building Individual Tools
+```bash
+# Build all tools
+cargo build --workspace --release
+
+# Build specific tool
+cargo build --release -p butterfly-dl
+
+# Test specific tool
+cargo test -p butterfly-dl
 ```
 
 ## Usage
