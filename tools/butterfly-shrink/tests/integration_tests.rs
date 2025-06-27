@@ -31,8 +31,14 @@ fn ensure_monaco_pbf() -> PathBuf {
             .unwrap()
             .to_path_buf();
 
-        let debug_bin = workspace_root.join("target/debug/butterfly-dl");
-        let release_bin = workspace_root.join("target/release/butterfly-dl");
+        let binary_name = if cfg!(windows) {
+            "butterfly-dl.exe"
+        } else {
+            "butterfly-dl"
+        };
+
+        let debug_bin = workspace_root.join("target/debug").join(binary_name);
+        let release_bin = workspace_root.join("target/release").join(binary_name);
 
         let butterfly_dl = if debug_bin.exists() {
             debug_bin
@@ -54,7 +60,7 @@ fn ensure_monaco_pbf() -> PathBuf {
                 );
             }
 
-            workspace_root.join("target/debug/butterfly-dl")
+            workspace_root.join("target/debug").join(binary_name)
         };
 
         // Download Monaco
