@@ -23,7 +23,7 @@ pub fn echo_pbf(input: &Path, output: &Path) -> Result<()> {
 
     // Open the input PBF file
     let reader = ElementReader::from_path(input)
-        .map_err(|e| Error::InvalidInput(format!("Failed to open PBF file: {}", e)))?;
+        .map_err(|e| Error::InvalidInput(format!("Failed to open PBF file: {e}")))?;
 
     // For now, just copy the file directly to ensure bitwise identical output
     // TODO: In the next iteration, we'll implement proper PBF writing
@@ -43,7 +43,7 @@ pub fn echo_pbf(input: &Path, output: &Path) -> Result<()> {
                 }
             }
         })
-        .map_err(|e| Error::InvalidInput(format!("Failed to read PBF elements: {}", e)))?;
+        .map_err(|e| Error::InvalidInput(format!("Failed to read PBF elements: {e}")))?;
 
     println!(
         "Successfully copied {} elements from {} to {}",
