@@ -89,7 +89,7 @@ impl NodeIndex {
         
         // Open RocksDB instance
         let db = DB::open(&opts, &db_path)
-            .map_err(|e| Error::InvalidInput(format!("Failed to open RocksDB: {}", e)))?;
+            .map_err(|e| Error::InvalidInput(format!("Failed to open RocksDB: {e}")))?;
 
         Ok(NodeIndex {
             db,
@@ -115,7 +115,7 @@ impl NodeIndex {
     pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
         self.db
             .put(key, value)
-            .map_err(|e| Error::InvalidInput(format!("Failed to put key: {}", e)))?;
+            .map_err(|e| Error::InvalidInput(format!("Failed to put key: {e}")))?;
         Ok(())
     }
 
@@ -132,7 +132,7 @@ impl NodeIndex {
         match self.db.get(key) {
             Ok(Some(value)) => Ok(Some(value)),
             Ok(None) => Ok(None),
-            Err(e) => Err(Error::InvalidInput(format!("Failed to get key: {}", e))),
+            Err(e) => Err(Error::InvalidInput(format!("Failed to get key: {e}"))),
         }
     }
 }
