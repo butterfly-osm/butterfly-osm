@@ -109,7 +109,7 @@ pub async fn get(source: &str, dest: Option<&str>) -> Result<()> {
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use tokio::io::AsyncReadExt;
-/// 
+///
 /// let mut stream = butterfly_dl::get_stream("europe/monaco").await?;
 /// let mut buffer = Vec::new();
 /// stream.read_to_end(&mut buffer).await?;
