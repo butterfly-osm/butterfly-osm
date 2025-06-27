@@ -1,120 +1,142 @@
+use assert_cmd::Command;
+use predicates::prelude::*;
+use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
+use tempfile::tempdir;
 
-/// Get the path to the butterfly-shrink binary, building it if necessary
-fn get_butterfly_shrink_binary() -> PathBuf {
-    // Determine binary name based on platform
-    let binary_name = if cfg!(windows) {
-        "butterfly-shrink.exe"
-    } else {
-        "butterfly-shrink"
-    };
+/// Get test data directory
+fn get_test_data_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("data")
+}
 
-    // Calculate workspace root (two levels up from package dir)
-    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap();
+/// Download Monaco PBF file if it doesn't exist
+fn ensure_monaco_pbf() -> PathBuf {
+    let test_data_dir = get_test_data_dir();
+    fs::create_dir_all(&test_data_dir).expect("Failed to create test data directory");
 
-    // Check for debug and release binaries
-    let debug_binary = workspace_root
-        .join("target")
-        .join("debug")
-        .join(binary_name);
-    let release_binary = workspace_root
-        .join("target")
-        .join("release")
-        .join(binary_name);
+    let monaco_file = test_data_dir.join("monaco.pbf");
 
-    // Use existing binary if available
-    if debug_binary.exists() {
-        return debug_binary;
-    } else if release_binary.exists() {
-        return release_binary;
+    // If file doesn't exist, download it using butterfly-dl
+    if !monaco_file.exists() {
+        println!("Downloading Monaco PBF file for tests...");
+
+        // Try to find butterfly-dl binary
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = manifest_dir
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+
+        let binary_name = if cfg!(windows) {
+            "butterfly-dl.exe"
+        } else {
+            "butterfly-dl"
+        };
+
+        let debug_bin = workspace_root.join("target/debug").join(binary_name);
+        let release_bin = workspace_root.join("target/release").join(binary_name);
+
+        let butterfly_dl = if debug_bin.exists() {
+            debug_bin
+        } else if release_bin.exists() {
+            release_bin
+        } else {
+            // Build butterfly-dl if it doesn't exist
+            println!("Building butterfly-dl for test data download...");
+            let build_output = std::process::Command::new("cargo")
+                .args(["build", "--package", "butterfly-dl"])
+                .current_dir(&workspace_root)
+                .output()
+                .expect("Failed to build butterfly-dl");
+
+            if !build_output.status.success() {
+                panic!(
+                    "Failed to build butterfly-dl: {}",
+                    String::from_utf8_lossy(&build_output.stderr)
+                );
+            }
+
+            workspace_root.join("target/debug").join(binary_name)
+        };
+
+        // Download Monaco
+        let output = std::process::Command::new(&butterfly_dl)
+            .args(["europe/monaco", monaco_file.to_str().unwrap()])
+            .output()
+            .expect("Failed to run butterfly-dl");
+
+        if !output.status.success() {
+            panic!(
+                "Failed to download Monaco PBF: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        println!("Monaco PBF downloaded successfully");
     }
 
-    // Build the binary if it doesn't exist
-    let output = Command::new("cargo")
-        .args(["build", "--bin", "butterfly-shrink"])
-        .current_dir(workspace_root)
-        .output()
-        .expect("Failed to build butterfly-shrink binary");
+    monaco_file
+}
 
-    if !output.status.success() {
-        panic!(
-            "Failed to build butterfly-shrink: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    // Return path to the built binary (should be in debug after build)
-    debug_binary
+/// Calculate MD5 hash of a file
+fn md5_file(path: &PathBuf) -> String {
+    let contents = fs::read(path).expect("Failed to read file for MD5");
+    format!("{:x}", md5::compute(contents))
 }
 
 #[test]
 fn test_cli_help_works() {
-    let binary_path = get_butterfly_shrink_binary();
-
-    let output = Command::new(&binary_path)
-        .arg("--help")
-        .output()
-        .expect("Failed to execute butterfly-shrink --help");
-
-    assert!(
-        output.status.success(),
-        "Help command should exit successfully"
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("butterfly-shrink"),
-        "Help output should contain program name"
-    );
-    assert!(
-        stdout.contains("Usage:"),
-        "Help output should contain usage information"
-    );
+    let mut cmd = Command::cargo_bin("butterfly-shrink").unwrap();
+    cmd.arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("butterfly-shrink"))
+        .stdout(predicate::str::contains(
+            "A tool to shrink OpenStreetMap data",
+        ));
 }
 
 #[test]
 fn test_cli_version_works() {
-    let binary_path = get_butterfly_shrink_binary();
+    let mut cmd = Command::cargo_bin("butterfly-shrink").unwrap();
+    cmd.arg("--version")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
+}
 
-    let output = Command::new(&binary_path)
-        .arg("--version")
-        .output()
-        .expect("Failed to execute butterfly-shrink --version");
+#[test]
+fn test_echo_roundtrip() {
+    let monaco_pbf = ensure_monaco_pbf();
+    let temp_dir = tempdir().unwrap();
+    let output_file = temp_dir.path().join("echo.pbf");
 
-    assert!(
-        output.status.success(),
-        "Version command should exit successfully"
-    );
+    // Run butterfly-shrink to echo the file
+    let mut cmd = Command::cargo_bin("butterfly-shrink").unwrap();
+    cmd.args([monaco_pbf.to_str().unwrap(), output_file.to_str().unwrap()])
+        .assert()
+        .success();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("2.0.0"),
-        "Version output should contain version number"
+    // Verify files are identical
+    assert_eq!(
+        md5_file(&monaco_pbf),
+        md5_file(&output_file),
+        "Echo output should be bitwise identical to input"
     );
 }
 
 #[test]
-fn test_cli_basic_functionality() {
-    let binary_path = get_butterfly_shrink_binary();
+fn test_missing_input_file() {
+    let temp_dir = tempdir().unwrap();
+    let output_file = temp_dir.path().join("output.pbf");
 
-    let output = Command::new(&binary_path)
-        .args(["--name", "test"])
-        .output()
-        .expect("Failed to execute butterfly-shrink --name test");
-
-    assert!(
-        output.status.success(),
-        "Basic command should exit successfully"
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("Hello, test!"),
-        "Output should contain greeting with provided name"
-    );
+    let mut cmd = Command::cargo_bin("butterfly-shrink").unwrap();
+    cmd.args(["nonexistent.pbf", output_file.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Input file not found"));
 }

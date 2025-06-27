@@ -106,14 +106,21 @@ pub async fn get(source: &str, dest: Option<&str>) -> Result<()> {
 ///
 /// # Examples
 /// ```rust,no_run
-/// use tokio::io::AsyncReadExt;
-///
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// // Import needed for reading the stream
 /// let mut stream = butterfly_dl::get_stream("europe/monaco").await?;
-/// let mut buffer = Vec::new();
-/// stream.read_to_end(&mut buffer).await?;
-/// println!("Downloaded {} bytes", buffer.len());
+///
+/// // Example: Read to a buffer (requires tokio::io::AsyncReadExt)
+/// // use tokio::io::AsyncReadExt;
+/// // let mut buffer = Vec::new();
+/// // stream.read_to_end(&mut buffer).await?;
+///
+/// // Example: Copy to a file (requires tokio::io::AsyncWriteExt)
+/// // use tokio::io::AsyncWriteExt;
+/// // let mut file = tokio::fs::File::create("monaco.pbf").await?;
+/// // tokio::io::copy(&mut stream, &mut file).await?;
+///
 /// # Ok(())
 /// # }
 /// ```
