@@ -1,0 +1,355 @@
+# butterfly-dl Changelog
+
+All notable changes to butterfly-dl (OSM data downloader) will be documented in this file.
+
+This is the detailed changelog for the butterfly-dl tool. For ecosystem-level changes, see the [main CHANGELOG](../../CHANGELOG.md).
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [2.0.0] - 2025-06-27
+
+### 🌟 Ecosystem Integration - Workspace Architecture Migration
+
+**ARCHITECTURAL CHANGE**: Migrated from standalone tool to part of butterfly-osm workspace ecosystem.
+
+### Added
+- **🏗️ Workspace Integration**: Now part of multi-tool butterfly-osm workspace
+- **📚 Shared Dependencies**: Uses butterfly-common for error handling and geographic algorithms
+- **🔧 Enhanced Build System**: Workspace-aware build configuration with dependency sharing
+- **🤖 Automated Release Process**: Modern GitHub Actions with multi-platform builds
+
+### Changed
+- **Repository Structure**: Moved to `tools/butterfly-dl/` within workspace
+- **Version Scheme**: Bumped to 2.0.0 to reflect architectural significance
+- **Build Commands**: Now uses `cargo build -p butterfly-dl` for workspace builds
+- **Error Handling**: Migrated to shared error types from butterfly-common
+- **Documentation**: Tool-specific README with ecosystem integration examples
+
+### Enhanced
+- **Geographic Intelligence**: Improved fuzzy matching through shared algorithms
+- **Release Process**: 4-minute automated releases with 5-platform support
+- **Developer Experience**: Shared utilities and consistent patterns across tools
+
+### Maintained
+- **100% API Compatibility**: All v1.x library APIs preserved and unchanged
+- **CLI Compatibility**: All command-line usage remains identical
+- **Performance**: Same runtime characteristics and memory efficiency
+- **FFI Interface**: C bindings work identically to v1.x
+
+### Technical Details
+- **Shared Components**: Error handling, fuzzy matching, and utilities moved to butterfly-common
+- **Workspace Benefits**: Shared dependencies, consistent versioning, unified testing
+- **Build Optimization**: Improved build times through dependency sharing
+- **Future Ready**: Foundation for integration with butterfly-shrink, butterfly-extract, butterfly-serve
+
+### Migration Notes
+- **For End Users**: No changes required - same CLI interface and behavior
+- **For Library Users**: Import paths remain the same, all APIs preserved
+- **For System Integrators**: Same binary behavior, FFI interface unchanged
+
+This release establishes butterfly-dl as the data acquisition foundation of the butterfly-osm ecosystem while maintaining complete backward compatibility.
+
+## [1.4.12] - 2025-06-27
+
+### Updated - Dependency Updates
+- **📦 Dependencies Updated**:
+  - `reqwest` 0.11.27 → 0.12.20 (major version update)
+  - `env_logger` 0.10.2 → 0.11.8
+  - `wiremock` 0.5.22 → 0.6.4 (dev dependency)
+  - `ctor` 0.2.9 → 0.4.2 (dev dependency)
+- **🎯 GitHub Actions Updated**:
+  - `dependabot/fetch-metadata` 1 → 2 (node16 → node20)
+  - `softprops/action-gh-release` 1 → 2 (node16 → node20)
+
+### Improved
+- **🚀 Performance** - Updated to latest reqwest with improved HTTP/2 support and connection pooling
+- **🔒 Security** - All dependencies updated to latest secure versions
+- **🛠️ CI/CD** - Migrated GitHub Actions from deprecated node16 to node20 runtime
+
+## [1.4.1] - 2025-06-26
+
+### Fixed - Code Quality and Reliability Improvements
+- **🔧 Critical FFI Bug** - Fixed incorrect S3Error mapping for NetworkError in FFI interface
+- **✅ Test Suite** - Fixed and improved `test_resilient_download_with_network_failure` test with better mock server setup
+- **📝 Error Messages** - Enhanced `create_helpful_http_error()` with generic fallback for unknown domains
+
+### Removed
+- **🗑️ Dead Code Cleanup** - Removed unused functions marked with `#[allow(dead_code)]`:
+  - `stream_to_writer()` function (superseded by resilient version)
+  - `download_http_parallel()` function (superseded by resilient version)
+- **🧹 Progress Cleanup** - Removed commented-out code and unused methods in `ProgressManager`
+- **🚫 S3 Feature Removal** - Completely removed unused and incomplete S3 feature:
+  - Removed `S3Error` enum variant from `ButterflyResult`
+  - Removed `butterfly_has_s3_support()` function
+  - Removed all `#[cfg(feature = "s3")]` conditional compilation blocks
+  - Cleaned up imports and dependencies
+
+### Improved
+- **🔍 Error Handling** - Network errors now correctly map to `NetworkError` instead of `S3Error`
+- **🧪 Test Coverage** - Enhanced mock server setup with proper network failure simulation
+- **📚 Code Quality** - Reduced codebase complexity and improved maintainability
+- **🛡️ Reliability** - Better error diagnosis and reporting through FFI interface
+
+This release focuses on code quality, removes technical debt, and fixes critical bugs while maintaining full backward compatibility.
+
+## [1.4.0] - 2025-06-25
+
+### Major Enhancement - Enhanced Progress Display & Network Resilience
+
+### Added
+- **🎨 Enhanced Progress Display** - Beautiful tqdm-style progress bars with smooth Unicode blocks
+- **⚡ Comprehensive Progress Info** - Shows percentage, download speed, elapsed time, and ETA
+- **🛡️ Resilient Network Retry** - Intelligent retry mechanism with exponential backoff (1s, 2s, 4s)
+- **🔄 Smart Resume Logic** - Resumes downloads from interruption point using HTTP range requests
+- **📁 File Overwrite Protection** - Comprehensive overwrite behavior with user prompts and CLI flags
+- **🧪 Mock Server Testing** - Complete test suite with network failure simulation
+
+### Enhanced Progress Features
+- **Smooth Progress Bars**: `75%|████████████▊ | 1.2GB/1.6GB [00:30<00:10, 45.2MB/s]`
+- **Real-time Metrics**: Percentage, transfer speed, elapsed time, estimated completion
+- **Unicode Block Characters**: Smooth visual progress indication instead of pound signs
+- **Consistent Formatting**: Follows tqdm standard for familiar user experience
+
+### Network Resilience Features
+- **Automatic Retry**: Up to 3 attempts with exponential backoff for network timeouts
+- **Smart Resume**: Uses HTTP range requests to continue from interruption point
+- **Bandwidth Efficient**: Only re-downloads failed parts, not entire files
+- **Memory Efficient**: Maintains streaming architecture, no RAM bloat
+- **User Feedback**: Clear retry messages with attempt counts and delays
+
+### File Safety Features
+- **CLI Flags**: `--force` (overwrite without prompting), `--no-clobber` (never overwrite)
+- **User Prompts**: Interactive `Overwrite? [y/N]:` confirmation for existing files
+- **Pre-download Validation**: Checks file existence before starting download
+- **Helpful Error Messages**: Clear guidance with suggested `--force` flag
+- **Conflict Detection**: Prevents contradictory `--force` and `--no-clobber` together
+
+### Library API Enhancements
+- **OverwriteBehavior Enum**: `Prompt`, `Force`, `NeverOverwrite` for programmatic control
+- **Enhanced DownloadOptions**: New `overwrite` field for library consumers
+- **Type Safety**: Comprehensive error handling for all overwrite scenarios
+
+### Technical Improvements
+- **Mock Server Testing**: wiremock-based tests simulating network failures and recovery
+- **Exponential Backoff**: Verified timing tests ensuring proper 1s, 2s, 4s delays
+- **Range Request Logic**: Sophisticated resume logic for both single and parallel downloads
+- **Error Classification**: Distinguishes network errors from HTTP errors for appropriate retry
+
+### Examples
+```bash
+# Enhanced progress display
+butterfly-dl europe/belgium
+# 75%|████████████▊     | 450MB/600MB [01:30<00:30, 25.2MB/s]
+
+# Network resilience in action
+# ⚠️ Network error (attempt 1): operation timed out. Retrying in 1000ms...
+# ⚠️ Stream interrupted at 300MB, resuming...
+
+# File overwrite protection
+butterfly-dl europe/belgium
+# ⚠️ File already exists: belgium-latest.osm.pbf
+# Overwrite? [y/N]: n
+# ❌ Download cancelled
+
+# Force overwrite
+butterfly-dl europe/belgium --force
+# ⚠️ Overwriting existing file: belgium-latest.osm.pbf
+```
+
+## [1.3.0] - 2025-06-25
+
+### Major Enhancement - Semantic Fuzzy Matching with Advanced Error Intelligence
+
+### Added
+- **🎯 Semantic Fuzzy Matching** - Hybrid algorithm combining character distance with semantic intent
+- **🧠 Contextual Scoring** - Prefix similarity bonuses for compound words like "australia-oceania"
+- **📏 Length-aware Matching** - Prioritizes semantically meaningful longer matches over short character artifacts
+- **🔤 Substring Intelligence** - Matches against word parts in compound sources (e.g., "austrailia" matches "australia" in "australia-oceania")
+- **🚫 Anti-bias Logic** - Penalizes very short matches when input is long to prevent incorrect suggestions
+- **⚖️ Adaptive Thresholds** - Dynamic scoring that balances precision vs recall for different input types
+
+### Enhanced
+- **Critical Fix**: `austrailia` now correctly suggests `australia-oceania` instead of `europe/austria`
+- **Geographic Accuracy**: Maintains continent-first matching while adding semantic intelligence
+- **Algorithm Robustness**: Handles edge cases like `totally-invalid-place` (returns None) and `monac` → `europe/monaco`
+- **Performance Optimization**: Efficient scoring with configurable thresholds (0.65 minimum similarity)
+
+### Technical Details
+- **Hybrid Scoring**: Combines Jaro-Winkler (70%) + Normalized Levenshtein (30%) + semantic bonuses
+- **Semantic Bonuses**: Prefix matching (20%), substring matching (12%), length similarity (10%)
+- **Anti-patterns**: Reduces scores for inappropriate matches (short candidates for long inputs)
+- **Library Integration**: Enhanced error messages available to all library consumers, not just CLI
+- **Test Coverage**: Comprehensive tests ensuring semantic accuracy while maintaining existing functionality
+
+### Examples
+```bash
+# Before: Incorrect semantic matching
+butterfly-dl austrailia
+# Error: Source 'austrailia' not found. Did you mean 'europe/austria'?
+
+# After: Semantic intelligence
+butterfly-dl austrailia  
+# Error: Source 'austrailia' not found. Did you mean 'australia-oceania'?
+
+# Maintains existing accuracy
+butterfly-dl plant → "planet"
+butterfly-dl monac → "europe/monaco"
+butterfly-dl antartica → "antarctica"
+```
+
+## [1.2.0] - 2025-06-25
+
+### Major Enhancement - Dynamic Source Loading with Advanced Fuzzy Matching
+
+### Added
+- **🌍 Dynamic Source Discovery** - Automatically fetches latest available regions from Geofabrik JSON API
+- **📡 Real-time Source Updates** - No more hardcoded region lists, always up-to-date with Geofabrik offerings
+- **🧠 Geographic Intelligence** - Knows `belgium` belongs to `europe`, suggests `europe/belgium` not `antarctica/belgium`
+- **🎯 Standalone Country Recognition** - `luxembourg` → `europe/luxembourg`, `monaco` → `europe/monaco`
+- **⚡ Smart Caching** - Uses `OnceLock` to cache API results, avoiding repeated calls
+- **🛡️ Graceful Fallback** - Works offline with comprehensive fallback region list when API unavailable
+- **🔄 HTTP Timeout Protection** - 5-second timeout for source discovery API calls
+
+### Enhanced
+- **Fuzzy Matching Algorithm**: Now works with dynamic source lists from Geofabrik
+- **Error Messages**: More accurate suggestions based on real-time available regions
+- **Geographic Accuracy**: Improved continent/country relationship detection
+- **API Integration**: Seamless integration with Geofabrik's index-v1.json endpoint
+
+### Technical Details
+- **Source Discovery**: Fetches from `https://download.geofabrik.de/index-v1.json`
+- **Caching Strategy**: `std::sync::OnceLock` for thread-safe, lazy initialization
+- **Fallback Logic**: Comprehensive hardcoded list when network unavailable
+- **Geographic Logic**: Prioritizes correct continent/country combinations
+- **Dependencies**: Added `serde_json` for JSON parsing
+
+### Examples
+```bash
+# Before: Generic "not found" errors
+butterfly-dl luxembourg
+# Error: HttpError("Failed to get file info: 404 Not Found")
+
+# After: Intelligent suggestions with dynamic sources
+butterfly-dl luxembourg  
+# Error: Source 'luxembourg' not found. Did you mean 'europe/luxembourg'?
+```
+
+## [1.1.0] - 2025-06-25
+
+### Major Enhancement - HTTP-Only Architecture with Intelligent Error Messages
+
+**BREAKING CHANGES:**
+- Removed S3 support and AWS dependencies - now HTTP-only for better security and simplicity
+- All sources (planet, continents, countries) now use HTTP endpoints
+
+### Added
+- **🧠 Intelligent Error Messages** with fuzzy matching using Levenshtein distance algorithm
+- **🔍 Smart Typo Detection** for common misspellings (e.g., "antartica" → "antarctica", "plant" → "planet")
+- **🌍 Geographic Accuracy** - knows Belgium is in Europe, not Antarctica
+- **📋 Comprehensive Integration Tests** for all download types with timeout handling
+- **🚀 HTTP Timeouts** - connection (10s) and request (30s) timeouts to prevent hanging
+
+### Changed
+- **Simplified Architecture**: Removed all S3 code, dependencies, and feature flags
+- **Error Experience**: Clear, actionable error messages instead of raw HTTP errors
+- **Documentation**: Updated all references from S3 to HTTP throughout README and CLI help
+
+### Improved
+- **Fuzzy Matching**: Handles insertions, deletions, substitutions, and transpositions in source names
+- **Context-Aware Suggestions**: Different suggestions for unknown vs misspelled sources
+- **Test Coverage**: Added integration tests for Antarctica (valid), invalid sources, and various countries
+
+### Removed
+- **AWS Dependencies**: `aws-config`, `aws-sdk-s3` removed from Cargo.toml
+- **S3 Feature Flag**: Simplified to HTTP-only with optional `c-bindings` feature
+- **S3 Code**: Removed all S3-related source variants, methods, and error types
+
+### Technical Details
+- **Planet Source**: Now uses `https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf`
+- **Continental/Country Sources**: All use `https://download.geofabrik.de/` endpoints
+- **Error Algorithm**: Levenshtein distance with 33% character difference threshold
+- **Integration Tests**: 7 tests including timeout scenarios and geographic validation
+
+## [1.0.0] - 2025-06-25
+
+### Major Refactoring - Library + CLI Architecture
+
+**BREAKING CHANGES:**
+- Complete refactor from monolithic CLI to library + CLI architecture
+- New public API for programmatic usage
+- C FFI bindings for cross-language integration
+
+### Added
+- **🦀 Rust Library API** with `get()`, `get_stream()`, `get_with_progress()`, `get_with_options()`
+- **📚 Static & Dynamic Libraries** for both Rust (`rlib`) and C-compatible (`a`, `so`, `dylib`, `dll`)
+- **🔗 C FFI Bindings** with thread-safe progress callbacks and comprehensive C header
+- **⚡ Smart Connection Strategy** - Single connection for files ≤1MB, scaled connections for larger files
+- **🔧 pkg-config Support** for system-wide library installation
+- **📊 Comprehensive Benchmarking** against curl and aria2 with MD5 validation
+- **🏗️ Makefile Build System** with `make all`, `make c-lib`, `make install` targets
+- **📝 Centralized Version Management** - Single `VERSION` file drives all components
+
+### Performance Optimizations
+- **Smart connection scaling** based on file size (1-16 connections)
+- **Direct I/O support** for large files (>1GB) on Unix systems
+- **Memory efficiency** - <1GB RAM usage regardless of file size
+- **HTTP User-Agent versioning** for proper server identification
+
+### Library Features
+- **Progress callbacks** with `Arc<dyn Fn(u64, u64)>` for thread-safe progress tracking
+- **Streaming API** for pipeline integration
+- **Feature flags** for optional S3 support (`default = ["s3"]`)
+- **Cross-platform support** - Windows, macOS, Linux
+
+### Benchmarking & Testing
+- **Multi-tool benchmarking** comparing butterfly-dl vs curl vs aria2
+- **Automatic tool detection** - only tests available tools
+- **Fair comparison** - matching connection strategies across tools
+- **MD5 checksum validation** for file integrity verification
+- **Performance metrics** - duration, speed, success/failure tracking
+
+### Developer Experience
+- **Comprehensive documentation** with usage examples for Rust and C
+- **Build-time version management** - change `VERSION` file, rebuild gets new version everywhere
+- **Example code** for both library and C FFI usage
+- **Automated cleanup** in benchmark scripts
+
+### Infrastructure
+- **Build script integration** reads `VERSION` file and sets environment variables
+- **Dependency tracking** - VERSION file changes trigger rebuilds
+- **pkg-config template** for proper system integration
+
+## [0.1.0] - 2025-06-24
+
+### Added
+- **Geofabrik PBF Downloader Component** - Initial working implementation
+- **Multi-connection parallel downloads** with 8 connections and 100MB chunks for optimal performance
+- **File freshness checking** - Skip downloads if files are newer than `RENEW_PBF_PERIOD` (default: 7 days)
+- **Complete CLI interface** with country, continent, and batch download support
+- **List command** with filtering (countries/continents/all)
+- **Dry-run mode** for previewing downloads without downloading
+- **FROM scratch production Docker image** (13.4MB) for minimal attack surface
+- **Development Docker image** with full Alpine + Rust toolchain for debugging
+- **Convention over configuration** approach with hardcoded optimal defaults
+- **Comprehensive test coverage** (16 tests) including integration tests
+- **Makefile with production/development workflows**
+- **Environment variable configuration** for logging and renewal period
+
+### Performance
+- **8 parallel connections** hardcoded for maximum speed
+- **100MB chunks** optimized for large file downloads
+- **Automatic range request detection** with fallback to single connection
+- **Progress tracking** with real-time connection count display
+- **Speed improvements**: Up to 15-40 MB/s vs 2-5 MB/s single connection
+
+### Infrastructure
+- **Docker-first development** with both production and development images
+- **XP pair programming** workflow with human + AI collaboration
+- **Comprehensive documentation** with clear usage examples
+- **MIT license** and proper project metadata
+
+### Notes
+- This is the first component of the larger **butterfly** project
+- Implements a complete, production-ready Geofabrik downloader
+- Foundation established for future components and integrations
