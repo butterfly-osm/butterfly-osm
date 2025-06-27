@@ -55,10 +55,12 @@ jobs:
             echo "$CHANGELOG" >> release_body.md
           fi
           
-          # Save to output for the release step
-          echo "release_notes<<EOF" >> $GITHUB_OUTPUT
-          cat release_body.md >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          # Save to output for the release step (use file-based approach for multiline)
+          {
+            echo "release_notes<<RELEASE_NOTES_EOF"
+            cat release_body.md
+            echo "RELEASE_NOTES_EOF"
+          } >> $GITHUB_OUTPUT
 
       - name: Create Release
         id: create_release
