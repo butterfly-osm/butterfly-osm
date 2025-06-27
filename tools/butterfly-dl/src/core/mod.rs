@@ -3,7 +3,6 @@
 //! This module contains the internal implementation details of the butterfly-dl library.
 
 pub mod downloader;
-pub mod error;
 pub mod source;
 pub mod stream;
 

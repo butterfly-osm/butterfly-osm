@@ -1,9 +1,8 @@
-//! Error types for butterfly-dl library
+//! Error types and utilities for butterfly-osm toolkit
 //!
-//! Provides comprehensive error handling for download operations.
+//! Provides comprehensive error handling and fuzzy matching for OSM source identification.
 
 use std::fmt;
-
 use std::sync::OnceLock;
 use strsim::{jaro_winkler, normalized_levenshtein};
 
@@ -345,7 +344,7 @@ pub fn suggest_correction(source: &str) -> Option<String> {
     find_best_fuzzy_match(source, valid_sources)
 }
 
-/// Main error type for butterfly-dl operations
+/// Main error type for butterfly-osm operations
 #[derive(Debug)]
 pub enum Error {
     /// Source identifier not recognized or supported
@@ -407,6 +406,7 @@ impl From<std::io::Error> for Error {
     }
 }
 
+#[cfg(feature = "http")]
 impl From<reqwest::Error> for Error {
     fn from(err: reqwest::Error) -> Self {
         if err.is_connect() || err.is_timeout() {
@@ -417,7 +417,7 @@ impl From<reqwest::Error> for Error {
     }
 }
 
-/// Convenience result type for butterfly-dl operations
+/// Convenience result type for butterfly-osm operations
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]

@@ -1,0 +1,19 @@
+[package]
+name = "butterfly-common"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+description = "Common utilities for the butterfly-osm toolkit"
+keywords = ["osm", "openstreetmap", "utilities"]
+categories = ["api-bindings", "data-structures"]
+
+[dependencies]
+thiserror.workspace = true
+strsim.workspace = true
+reqwest = { workspace = true, optional = true }
+
+[features]
+default = []
+http = ["reqwest"]
