@@ -27,7 +27,7 @@ pub fn echo_pbf(input: &Path, output: &Path) -> Result<()> {
 
     // For now, just copy the file directly to ensure bitwise identical output
     // TODO: In the next iteration, we'll implement proper PBF writing
-    std::fs::copy(input, output)?;
+    std::fs::copy(input, output).map_err(Error::IoError)?;
 
     // Verify we can read the file
     let mut element_count = 0;

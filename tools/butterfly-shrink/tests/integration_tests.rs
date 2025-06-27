@@ -30,10 +30,10 @@ fn ensure_monaco_pbf() -> PathBuf {
             .parent()
             .unwrap()
             .to_path_buf();
-        
+
         let debug_bin = workspace_root.join("target/debug/butterfly-dl");
         let release_bin = workspace_root.join("target/release/butterfly-dl");
-        
+
         let butterfly_dl = if debug_bin.exists() {
             debug_bin
         } else if release_bin.exists() {
@@ -46,14 +46,14 @@ fn ensure_monaco_pbf() -> PathBuf {
                 .current_dir(&workspace_root)
                 .output()
                 .expect("Failed to build butterfly-dl");
-            
+
             if !build_output.status.success() {
                 panic!(
                     "Failed to build butterfly-dl: {}",
                     String::from_utf8_lossy(&build_output.stderr)
                 );
             }
-            
+
             workspace_root.join("target/debug/butterfly-dl")
         };
 
@@ -100,7 +100,7 @@ fn test_cli_version_works() {
     cmd.arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("2.0.0"));
+        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
 }
 
 #[test]
