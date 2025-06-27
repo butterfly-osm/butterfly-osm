@@ -10,10 +10,10 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Helper to run a download command with timeout and capture output
-#[allow(dead_code)]
-fn test_download_starts(source: &str, timeout_secs: u64) -> Result<(String, String, bool), String> {
-    // Use the pre-built binary to avoid Cargo lock contention in CI
+/// Helper function to get the butterfly-dl binary path
+/// This will check for existing binaries in debug/release folders
+/// and build the binary if it doesn't exist
+fn get_butterfly_dl_binary() -> Result<String, String> {
     let binary_name = if cfg!(windows) {
         "butterfly-dl.exe"
     } else {
@@ -35,10 +35,10 @@ fn test_download_starts(source: &str, timeout_secs: u64) -> Result<(String, Stri
         .join("release")
         .join(binary_name);
 
-    let binary_path = if debug_binary.exists() {
-        debug_binary.to_string_lossy().to_string()
+    if debug_binary.exists() {
+        Ok(debug_binary.to_string_lossy().to_string())
     } else if release_binary.exists() {
-        release_binary.to_string_lossy().to_string()
+        Ok(release_binary.to_string_lossy().to_string())
     } else {
         // Build the binary first to avoid chicken-and-egg problem
         let build_output = Command::new("cargo")
@@ -54,8 +54,15 @@ fn test_download_starts(source: &str, timeout_secs: u64) -> Result<(String, Stri
             ));
         }
 
-        debug_binary.to_string_lossy().to_string()
-    };
+        Ok(debug_binary.to_string_lossy().to_string())
+    }
+}
+
+/// Helper to run a download command with timeout and capture output
+#[allow(dead_code)]
+fn test_download_starts(source: &str, timeout_secs: u64) -> Result<(String, String, bool), String> {
+    // Get the binary path using the helper function
+    let binary_path = get_butterfly_dl_binary()?;
 
     let mut cmd = Command::new(&binary_path)
         .arg(source)
@@ -412,49 +419,8 @@ fn test_valid_country_belgium_download_starts() {
 fn test_dry_run_mode() {
     println!("Testing dry run mode for different sources...");
 
-    // Use the same binary detection logic as other tests
-    let binary_name = if cfg!(windows) {
-        "butterfly-dl.exe"
-    } else {
-        "butterfly-dl"
-    };
-
-    // Calculate workspace root (two levels up from package dir)
-    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap();
-    let debug_binary = workspace_root
-        .join("target")
-        .join("debug")
-        .join(binary_name);
-    let release_binary = workspace_root
-        .join("target")
-        .join("release")
-        .join(binary_name);
-
-    let binary_path = if debug_binary.exists() {
-        debug_binary.to_string_lossy().to_string()
-    } else if release_binary.exists() {
-        release_binary.to_string_lossy().to_string()
-    } else {
-        // Build the binary first to avoid chicken-and-egg problem
-        let build_output = Command::new("cargo")
-            .args(["build", "--bin", "butterfly-dl"])
-            .current_dir(workspace_root)
-            .output()
-            .expect("Failed to build butterfly-dl binary");
-
-        if !build_output.status.success() {
-            panic!(
-                "Failed to build butterfly-dl: {}",
-                String::from_utf8_lossy(&build_output.stderr)
-            );
-        }
-
-        debug_binary.to_string_lossy().to_string()
-    };
+    // Get the binary path using the helper function
+    let binary_path = get_butterfly_dl_binary().expect("Failed to get butterfly-dl binary");
 
     let sources = ["planet", "europe", "europe/monaco", "europe/belgium"];
 
