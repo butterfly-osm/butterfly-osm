@@ -114,7 +114,7 @@ publish_package() {
     fi
 }
 
-# Step 1: Verify both packages
+# Step 1: Verify butterfly-common only (butterfly-dl needs butterfly-common published first)
 echo "=================================="
 echo "Step 1: Package Verification"
 echo "=================================="
@@ -123,9 +123,7 @@ if ! verify_package "butterfly-common"; then
     exit 1
 fi
 
-if ! verify_package "butterfly-dl"; then
-    exit 1
-fi
+print_status "${CLOCK} Skipping butterfly-dl verification (requires butterfly-common to be published first)"
 
 echo ""
 
@@ -154,10 +152,19 @@ fi
 
 echo ""
 
-# Step 4: Publish butterfly-dl
+# Step 4: Verify and publish butterfly-dl
 echo "=================================="
 echo "Step 4: Publishing butterfly-dl"
 echo "=================================="
+
+print_status "${SEARCH} Now verifying butterfly-dl package..."
+if ! verify_package "butterfly-dl"; then
+    print_error "${CROSS} butterfly-dl package verification failed even after butterfly-common is available"
+    echo "This might indicate a different issue. Please check the error above."
+    exit 1
+fi
+
+print_status "${CHECK} butterfly-dl package verified"
 
 if ! publish_package "butterfly-dl"; then
     exit 1
