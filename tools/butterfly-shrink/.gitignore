@@ -1,0 +1,6 @@
+# Test data - PBF files are downloaded during test runs
+tests/data/*.pbf
+tests/data/*.osm.pbf
+
+# Temporary test output
+*.tmp

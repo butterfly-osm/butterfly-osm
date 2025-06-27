@@ -4,7 +4,33 @@
 
 ## Development Status
 
-**Current Phase**: Planning and Design. Detailed specifications are available in `PLAN.md`.
+**Current Phase**: M0 - Bootstrap. PBF reader and writer skeleton implemented.
+
+## Features
+
+- ✅ Read OpenStreetMap PBF files
+- ✅ Echo mode: Copy PBF files (bitwise identical)
+- 🚧 Filter non-routing data (coming soon)
+- 🚧 Node collapsing to grid resolution (coming soon)
+
+## Usage
+
+```bash
+# Echo a PBF file (creates bitwise identical copy)
+butterfly-shrink input.pbf output.pbf
+```
+
+## Development
+
+### Running Tests
+
+Tests require a PBF file which will be automatically downloaded using butterfly-dl:
+
+```bash
+cargo test
+```
+
+The first test run will download Monaco (~500KB) for testing purposes.
 
 ## Contributing
 
