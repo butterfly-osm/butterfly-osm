@@ -5,11 +5,19 @@
 
 use butterfly_common::{Error, Result};
 use osmpbf::{Element, ElementReader};
-use std::collections::HashMap;
+use rocksdb::{DB, Options};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tempfile::TempDir;
 use uuid::Uuid;
+
+/// Earth circumference constants for coordinate calculations
+/// Average meters per degree of latitude
+const METERS_PER_DEGREE_LAT: f64 = 111_111.0;
+/// Meters per degree of longitude at the equator
+const METERS_PER_DEGREE_LON_AT_EQUATOR: f64 = 111_320.0;
+/// Minimum cosine value to prevent division issues at extreme latitudes
+const MIN_COS_LAT: f64 = 0.001; // ~89.9 degrees
 
 /// Snap a coordinate to a fixed grid with latitude-aware scaling
 ///
@@ -31,17 +39,18 @@ pub fn snap_coordinate(lat: f64, lon: f64, grid_meters: f64) -> (i64, i64) {
     // Clamp latitude to valid range but don't drop
     let lat_clamped = lat.clamp(-89.9, 89.9);
 
-    let lat_scale = grid_meters / 111_111.0;
+    let lat_scale = grid_meters / METERS_PER_DEGREE_LAT;
 
-    // Accurate longitude scaling: 111_320m × cos(lat) at equator
+    // Accurate longitude scaling: METERS_PER_DEGREE_LON_AT_EQUATOR × cos(lat) at equator
     // At extreme latitudes (>85°), grid cells become very narrow E-W
     // This is correct behavior - maintains proper distances
-    let cos_lat = lat_clamped.to_radians().cos().max(0.001); // Min ~89.9°
-    let lon_scale = grid_meters / (111_320.0 * cos_lat);
+    let cos_lat = lat_clamped.to_radians().cos().max(MIN_COS_LAT); // Min ~89.9°
+    let lon_scale = grid_meters / (METERS_PER_DEGREE_LON_AT_EQUATOR * cos_lat);
 
     // Snap to cell center (floor + 0.5)
     let lat_snapped = ((lat_clamped / lat_scale).floor() + 0.5) * lat_scale;
-    let lon_snapped = ((lon / lon_scale).floor() + 0.5) * lon_scale;
+    let lon_clamped = lon.clamp(-180.0, 180.0);
+    let lon_snapped = ((lon_clamped / lon_scale).floor() + 0.5) * lon_scale;
 
     // Store as nanodegrees (OSM format)
     let lat_nano = (lat_snapped * 1e9).round() as i64;
@@ -50,16 +59,12 @@ pub fn snap_coordinate(lat: f64, lon: f64, grid_meters: f64) -> (i64, i64) {
     (lat_nano, lon_nano)
 }
 
-/// Node index for deduplication
-///
-/// TODO: Replace with RocksDB once libclang dependency is resolved in CI
+/// Node index for deduplication using RocksDB
 pub struct NodeIndex {
-    /// In-memory index for now
-    index: HashMap<Vec<u8>, Vec<u8>>,
-    /// Temp directory for future RocksDB implementation
+    /// RocksDB instance
+    db: DB,
+    /// Temp directory to ensure cleanup
     _temp_dir: TempDir,
-    /// Path to the subdirectory (for future RocksDB implementation)
-    _db_path: PathBuf,
 }
 
 impl NodeIndex {
@@ -74,10 +79,17 @@ impl NodeIndex {
         let db_path = temp_dir.path().join(format!("butterfly-shrink-{uuid}"));
         fs::create_dir(&db_path).map_err(Error::IoError)?;
 
+        // Configure RocksDB options
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        
+        // Open RocksDB instance
+        let db = DB::open(&opts, &db_path)
+            .map_err(|e| Error::InvalidInput(format!("Failed to open RocksDB: {}", e)))?;
+
         Ok(NodeIndex {
-            index: HashMap::new(),
+            db,
             _temp_dir: temp_dir,
-            _db_path: db_path,
         })
     }
 
@@ -89,13 +101,19 @@ impl NodeIndex {
 
     /// Put a key-value pair into the index
     pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
-        self.index.insert(key.to_vec(), value.to_vec());
+        self.db
+            .put(key, value)
+            .map_err(|e| Error::InvalidInput(format!("Failed to put key: {}", e)))?;
         Ok(())
     }
 
     /// Get a value by key from the index
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        Ok(self.index.get(key).cloned())
+        match self.db.get(key) {
+            Ok(Some(value)) => Ok(Some(value)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(Error::InvalidInput(format!("Failed to get key: {}", e))),
+        }
     }
 }
 
@@ -199,25 +217,21 @@ mod tests {
 
     #[test]
     fn test_temp_directory_location() {
-        use std::env;
-
         // Create index
         let index = NodeIndex::new().expect("Failed to create NodeIndex");
 
         // Get temp directory path
         let temp_path = index.temp_path();
 
-        // Verify it's in TMPDIR or system temp
-        let tmpdir = env::var("TMPDIR")
-            .or_else(|_| env::var("TEMP"))
-            .or_else(|_| env::var("TMP"))
-            .unwrap_or_else(|_| "/tmp".to_string());
+        // Get the system's temporary directory
+        let tmpdir = std::env::temp_dir();
 
         // The temp directory should be under the system temp directory
         assert!(
-            temp_path.starts_with(&tmpdir) || temp_path.starts_with("/tmp"),
-            "Temp directory {:?} is not under expected temp location",
-            temp_path
+            temp_path.starts_with(&tmpdir),
+            "Temp directory {:?} is not under expected temp location {:?}",
+            temp_path,
+            tmpdir
         );
 
         // Verify the butterfly-shrink-{uuid} subdirectory exists

@@ -43,6 +43,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Install system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev
+
       - name: Build workspace
         run: cargo build --workspace --verbose
 
@@ -144,7 +150,7 @@ jobs:
       - name: Install benchmark dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl time
+          sudo apt-get install -y curl time libclang-dev
 
       - name: Verify benchmark script exists
         run: |
