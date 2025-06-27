@@ -23,6 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Composable Interface**: Works seamlessly with butterfly-dl and butterfly-extract
 - **Modern Performance**: Leverage Rust's zero-cost abstractions and SIMD
 
+## [2.0.0] - 2025-06-27
+
+### Added
+- **🚀 Initial Cargo Scaffold**: Created butterfly-shrink binary crate with CLI skeleton
+- **📋 Project Planning**: Comprehensive GitHub issues roadmap (Issues #24-#38)
+- **🔧 Development Foundation**: Basic clap CLI with --help functionality
+- **✅ CI Integration**: Automated build, test, and clippy checks
+- **📚 Documentation**: README, CHANGELOG, and project planning documents
+
+### Development
+- Created complete milestone-based development plan (M0-M4)
+- Established dependency graph for 15 planned features
+- Set up testing framework for future implementations
+
 ---
 
 **Status**: In development as part of butterfly-osm Phase 2

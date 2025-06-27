@@ -24,6 +24,9 @@ For detailed tool-specific changes, see individual tool changelogs:
 - **🔒 Security**: Automatic checksums and integrity verification for all releases
 - **📋 Tool Templates**: Standardized structure for future butterfly tools
 - **🌍 Enhanced Geographic Intelligence**: Advanced fuzzy matching with semantic understanding
+- **✂️ butterfly-shrink Scaffold**: Initial Cargo crate and CLI skeleton for polygon extraction tool
+- **🎯 Project Roadmap**: Comprehensive GitHub issues (#24-#38) with milestone-based development plan
+- **📊 CI Badge**: Added build status badge to README for transparency
 
 ### Changed
 - **Repository Structure**: Organized as multi-tool workspace

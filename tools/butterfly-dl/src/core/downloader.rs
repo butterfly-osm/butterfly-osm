@@ -11,9 +11,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use butterfly_common::{Error, Result};
 use crate::core::source::{DownloadSource, SourceConfig};
 use crate::core::stream::{create_http_stream, DownloadOptions, DownloadStream, OverwriteBehavior};
+use butterfly_common::{Error, Result};
 
 /// Maximum number of retry attempts for network errors
 const MAX_RETRY_ATTEMPTS: u32 = 3;

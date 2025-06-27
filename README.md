@@ -1,5 +1,7 @@
 # Butterfly-OSM 🦋
 
+[![CI](https://github.com/butterfly-osm/butterfly-osm/workflows/CI/badge.svg)](https://github.com/butterfly-osm/butterfly-osm/actions/workflows/ci.yml)
+
 Hurricane-fast drivetime engine and OSM toolkit built for modern performance requirements.
 
 ## Vision
