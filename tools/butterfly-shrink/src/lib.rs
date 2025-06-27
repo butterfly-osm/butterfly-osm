@@ -49,6 +49,8 @@ pub fn snap_coordinate(lat: f64, lon: f64, grid_meters: f64) -> (i64, i64) {
 
     // Snap to cell center (floor + 0.5)
     let lat_snapped = ((lat_clamped / lat_scale).floor() + 0.5) * lat_scale;
+    // Clamp longitude to valid range [-180°, 180°] to handle edge cases
+    // where coordinates might wrap around the antimeridian
     let lon_clamped = lon.clamp(-180.0, 180.0);
     let lon_snapped = ((lon_clamped / lon_scale).floor() + 0.5) * lon_scale;
 
@@ -63,7 +65,9 @@ pub fn snap_coordinate(lat: f64, lon: f64, grid_meters: f64) -> (i64, i64) {
 pub struct NodeIndex {
     /// RocksDB instance
     db: DB,
-    /// Temp directory to ensure cleanup
+    /// Temp directory handle - kept for RAII cleanup on drop
+    /// The underscore prefix indicates this field is not directly used,
+    /// but must be kept alive for its Drop implementation
     _temp_dir: TempDir,
 }
 
@@ -100,6 +104,14 @@ impl NodeIndex {
     }
 
     /// Put a key-value pair into the index
+    ///
+    /// # Arguments
+    /// * `key` - The key to store
+    /// * `value` - The value to associate with the key
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err` if the database operation fails
     pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
         self.db
             .put(key, value)
@@ -108,6 +120,14 @@ impl NodeIndex {
     }
 
     /// Get a value by key from the index
+    ///
+    /// # Arguments
+    /// * `key` - The key to look up
+    ///
+    /// # Returns
+    /// * `Ok(Some(value))` if the key exists
+    /// * `Ok(None)` if the key does not exist
+    /// * `Err` if the database operation fails
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         match self.db.get(key) {
             Ok(Some(value)) => Ok(Some(value)),
