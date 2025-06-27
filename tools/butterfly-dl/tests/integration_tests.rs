@@ -25,8 +25,18 @@ fn test_download_starts(source: &str, timeout_secs: u64) -> Result<(String, Stri
     } else if std::path::Path::new(&format!("./target/release/{binary_name}")).exists() {
         format!("./target/release/{binary_name}")
     } else {
-        // Fallback to cargo run if no pre-built binary exists
-        return test_download_with_cargo_run(source, timeout_secs);
+        // Build the binary first to avoid chicken-and-egg problem
+        let build_output = Command::new("cargo")
+            .args(["build", "--bin", "butterfly-dl"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .map_err(|e| format!("Failed to execute cargo build: {e}"))?;
+        
+        if !build_output.status.success() {
+            return Err(format!("Failed to build butterfly-dl: {}", String::from_utf8_lossy(&build_output.stderr)));
+        }
+        
+        format!("./target/debug/{binary_name}")
     };
 
     let mut cmd = Command::new(&binary_path)
@@ -396,7 +406,18 @@ fn test_dry_run_mode() {
     } else if std::path::Path::new(&format!("./target/release/{binary_name}")).exists() {
         format!("./target/release/{binary_name}")
     } else {
-        panic!("No pre-built binary found. Run 'cargo build' first.");
+        // Build the binary first to avoid chicken-and-egg problem
+        let build_output = Command::new("cargo")
+            .args(["build", "--bin", "butterfly-dl"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .expect("Failed to build butterfly-dl binary");
+        
+        if !build_output.status.success() {
+            panic!("Failed to build butterfly-dl: {}", String::from_utf8_lossy(&build_output.stderr));
+        }
+        
+        format!("./target/debug/{binary_name}")
     };
 
     let sources = ["planet", "europe", "europe/monaco", "europe/belgium"];
