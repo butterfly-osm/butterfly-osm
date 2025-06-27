@@ -24,17 +24,27 @@ Download the latest release for your platform:
 
 ```bash
 # Linux (x86_64)
-wget https://github.com/butterfly-osm/butterfly-osm/releases/latest/download/butterfly-dl-v2.0.0-x86_64-linux.tar.gz
-tar -xzf butterfly-dl-v2.0.0-x86_64-linux.tar.gz
-sudo mv butterfly-dl-v2.0.0-x86_64-linux/butterfly-dl /usr/local/bin/
+wget https://github.com/butterfly-osm/butterfly-osm/releases/latest/download/butterfly-dl-v2.0.0-x86_64-unknown-linux-gnu.tar.gz
+tar -xzf butterfly-dl-v2.0.0-x86_64-unknown-linux-gnu.tar.gz
+sudo mv butterfly-dl-v2.0.0-x86_64-unknown-linux-gnu/butterfly-dl /usr/local/bin/
+
+# Linux (ARM64)
+wget https://github.com/butterfly-osm/butterfly-osm/releases/latest/download/butterfly-dl-v2.0.0-aarch64-unknown-linux-gnu.tar.gz
+tar -xzf butterfly-dl-v2.0.0-aarch64-unknown-linux-gnu.tar.gz
+sudo mv butterfly-dl-v2.0.0-aarch64-unknown-linux-gnu/butterfly-dl /usr/local/bin/
 
 # macOS (Intel)
-wget https://github.com/butterfly-osm/butterfly-osm/releases/latest/download/butterfly-dl-v2.0.0-x86_64-macos.tar.gz
-tar -xzf butterfly-dl-v2.0.0-x86_64-macos.tar.gz
-sudo mv butterfly-dl-v2.0.0-x86_64-macos/butterfly-dl /usr/local/bin/
+wget https://github.com/butterfly-osm/butterfly-osm/releases/latest/download/butterfly-dl-v2.0.0-x86_64-apple-darwin.tar.gz
+tar -xzf butterfly-dl-v2.0.0-x86_64-apple-darwin.tar.gz
+sudo mv butterfly-dl-v2.0.0-x86_64-apple-darwin/butterfly-dl /usr/local/bin/
 
-# Windows
-# Download butterfly-dl-v2.0.0-x86_64-windows.zip from releases page
+# macOS (Apple Silicon)
+wget https://github.com/butterfly-osm/butterfly-osm/releases/latest/download/butterfly-dl-v2.0.0-aarch64-apple-darwin.tar.gz
+tar -xzf butterfly-dl-v2.0.0-aarch64-apple-darwin.tar.gz
+sudo mv butterfly-dl-v2.0.0-aarch64-apple-darwin/butterfly-dl /usr/local/bin/
+
+# Windows (x86_64)
+# Download butterfly-dl-v2.0.0-x86_64-pc-windows-msvc.zip from releases page
 ```
 
 ### Package Managers
