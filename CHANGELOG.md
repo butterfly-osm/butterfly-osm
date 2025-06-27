@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.12] - 2025-06-27
+
+### Updated - Dependency Updates
+- **📦 Dependencies Updated**:
+  - `reqwest` 0.11.27 → 0.12.20 (major version update)
+  - `env_logger` 0.10.2 → 0.11.8
+  - `wiremock` 0.5.22 → 0.6.4 (dev dependency)
+  - `ctor` 0.2.9 → 0.4.2 (dev dependency)
+- **🎯 GitHub Actions Updated**:
+  - `dependabot/fetch-metadata` 1 → 2 (node16 → node20)
+  - `softprops/action-gh-release` 1 → 2 (node16 → node20)
+
+### Improved
+- **🚀 Performance** - Updated to latest reqwest with improved HTTP/2 support and connection pooling
+- **🔒 Security** - All dependencies updated to latest secure versions
+- **🛠️ CI/CD** - Migrated GitHub Actions from deprecated node16 to node20 runtime
+
 ## [1.4.1] - 2025-06-26
 
 ### Fixed - Code Quality and Reliability Improvements
