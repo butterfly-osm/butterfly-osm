@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **📖 PBF Reader Skeleton**: Implemented using osmpbf crate for reading OpenStreetMap PBF files
+- **🔄 Echo Mode**: Read input PBF and write bitwise identical output (Issue #25)
+- **🧪 Integration Tests**: Automated tests that download real OSM data (Monaco) using butterfly-dl
+- **⚙️ Basic CLI**: Updated to accept input/output PBF file arguments
+
 ### Planned Features
 - **🏗️ Polygon-based Extraction**: High-performance geometric operations for OSM data
 - **⚡ Performance Target**: 10x faster than osmium extract

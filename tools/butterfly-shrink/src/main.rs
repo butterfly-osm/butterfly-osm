@@ -1,18 +1,23 @@
 use clap::Parser;
+use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about = "A tool to shrink OpenStreetMap data", long_about = None)]
 struct Cli {
-    #[arg(short, long)]
-    name: Option<String>,
+    /// Input PBF file
+    #[arg(value_name = "INPUT_FILE")]
+    input: PathBuf,
+
+    /// Output PBF file
+    #[arg(value_name = "OUTPUT_FILE")]
+    output: PathBuf,
 }
 
-fn main() {
+fn main() -> butterfly_common::Result<()> {
     let cli = Cli::parse();
 
-    if let Some(name) = cli.name.as_deref() {
-        println!("Hello, {name}!");
-    } else {
-        println!("Hello, world!");
-    }
+    // For now, just echo the input to output
+    butterfly_shrink::echo_pbf(&cli.input, &cli.output)?;
+
+    Ok(())
 }
