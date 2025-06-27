@@ -20,13 +20,41 @@ fn test_download_starts(source: &str, timeout_secs: u64) -> Result<(String, Stri
         "butterfly-dl"
     };
 
-    let binary_path = if std::path::Path::new(&format!("./target/debug/{binary_name}")).exists() {
-        format!("./target/debug/{binary_name}")
-    } else if std::path::Path::new(&format!("./target/release/{binary_name}")).exists() {
-        format!("./target/release/{binary_name}")
+    // Calculate workspace root (two levels up from package dir)
+    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let debug_binary = workspace_root
+        .join("target")
+        .join("debug")
+        .join(binary_name);
+    let release_binary = workspace_root
+        .join("target")
+        .join("release")
+        .join(binary_name);
+
+    let binary_path = if debug_binary.exists() {
+        debug_binary.to_string_lossy().to_string()
+    } else if release_binary.exists() {
+        release_binary.to_string_lossy().to_string()
     } else {
-        // Fallback to cargo run if no pre-built binary exists
-        return test_download_with_cargo_run(source, timeout_secs);
+        // Build the binary first to avoid chicken-and-egg problem
+        let build_output = Command::new("cargo")
+            .args(["build", "--bin", "butterfly-dl"])
+            .current_dir(workspace_root)
+            .output()
+            .map_err(|e| format!("Failed to execute cargo build: {e}"))?;
+
+        if !build_output.status.success() {
+            return Err(format!(
+                "Failed to build butterfly-dl: {}",
+                String::from_utf8_lossy(&build_output.stderr)
+            ));
+        }
+
+        debug_binary.to_string_lossy().to_string()
     };
 
     let mut cmd = Command::new(&binary_path)
@@ -391,12 +419,41 @@ fn test_dry_run_mode() {
         "butterfly-dl"
     };
 
-    let binary_path = if std::path::Path::new(&format!("./target/debug/{binary_name}")).exists() {
-        format!("./target/debug/{binary_name}")
-    } else if std::path::Path::new(&format!("./target/release/{binary_name}")).exists() {
-        format!("./target/release/{binary_name}")
+    // Calculate workspace root (two levels up from package dir)
+    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let debug_binary = workspace_root
+        .join("target")
+        .join("debug")
+        .join(binary_name);
+    let release_binary = workspace_root
+        .join("target")
+        .join("release")
+        .join(binary_name);
+
+    let binary_path = if debug_binary.exists() {
+        debug_binary.to_string_lossy().to_string()
+    } else if release_binary.exists() {
+        release_binary.to_string_lossy().to_string()
     } else {
-        panic!("No pre-built binary found. Run 'cargo build' first.");
+        // Build the binary first to avoid chicken-and-egg problem
+        let build_output = Command::new("cargo")
+            .args(["build", "--bin", "butterfly-dl"])
+            .current_dir(workspace_root)
+            .output()
+            .expect("Failed to build butterfly-dl binary");
+
+        if !build_output.status.success() {
+            panic!(
+                "Failed to build butterfly-dl: {}",
+                String::from_utf8_lossy(&build_output.stderr)
+            );
+        }
+
+        debug_binary.to_string_lossy().to_string()
     };
 
     let sources = ["planet", "europe", "europe/monaco", "europe/belgium"];

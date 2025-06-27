@@ -51,8 +51,8 @@ use std::sync::Arc;
 use tokio::io::AsyncRead;
 
 // Re-export core types that users might need
-pub use butterfly_common::{Error, Result};
 pub use crate::core::stream::{DownloadOptions, OverwriteBehavior};
+pub use butterfly_common::{Error, Result};
 
 // Internal modules
 mod core;
