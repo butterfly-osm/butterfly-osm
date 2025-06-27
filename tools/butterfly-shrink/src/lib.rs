@@ -5,7 +5,11 @@
 
 use butterfly_common::{Error, Result};
 use osmpbf::{Element, ElementReader};
-use std::path::Path;
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use tempfile::TempDir;
+use uuid::Uuid;
 
 /// Snap a coordinate to a fixed grid with latitude-aware scaling
 ///
@@ -44,6 +48,55 @@ pub fn snap_coordinate(lat: f64, lon: f64, grid_meters: f64) -> (i64, i64) {
     let lon_nano = (lon_snapped * 1e9).round() as i64;
 
     (lat_nano, lon_nano)
+}
+
+/// Node index for deduplication
+///
+/// TODO: Replace with RocksDB once libclang dependency is resolved in CI
+pub struct NodeIndex {
+    /// In-memory index for now
+    index: HashMap<Vec<u8>, Vec<u8>>,
+    /// Temp directory for future RocksDB implementation
+    _temp_dir: TempDir,
+    /// Path to the subdirectory (for future RocksDB implementation)
+    _db_path: PathBuf,
+}
+
+impl NodeIndex {
+    /// Create a new node index in a temporary directory
+    pub fn new() -> Result<Self> {
+        // Create temporary directory in $TMPDIR
+        let temp_dir = TempDir::new()
+            .map_err(Error::IoError)?;
+
+        // Create unique subdirectory
+        let uuid = Uuid::new_v4();
+        let db_path = temp_dir.path().join(format!("butterfly-shrink-{uuid}"));
+        fs::create_dir(&db_path).map_err(Error::IoError)?;
+
+        Ok(NodeIndex {
+            index: HashMap::new(),
+            _temp_dir: temp_dir,
+            _db_path: db_path,
+        })
+    }
+
+    /// Get the path to the temporary directory (for testing)
+    #[cfg(test)]
+    pub fn temp_path(&self) -> &Path {
+        self._temp_dir.path()
+    }
+
+    /// Put a key-value pair into the index
+    pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
+        self.index.insert(key.to_vec(), value.to_vec());
+        Ok(())
+    }
+
+    /// Get a value by key from the index
+    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        Ok(self.index.get(key).cloned())
+    }
 }
 
 /// Echo a PBF file - read input and write identical output
@@ -92,4 +145,125 @@ pub fn echo_pbf(input: &Path, output: &Path) -> Result<()> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rocksdb_round_trip() {
+        // Create index
+        let mut index = NodeIndex::new().expect("Failed to create NodeIndex");
+
+        // Test basic put/get
+        let key = b"test_key";
+        let value = b"test_value";
+
+        index.put(key, value).expect("Failed to put");
+        let retrieved = index.get(key).expect("Failed to get");
+
+        assert_eq!(retrieved, Some(value.to_vec()));
+    }
+
+    #[test]
+    fn test_rocksdb_100k_keys() {
+        // Create index
+        let mut index = NodeIndex::new().expect("Failed to create NodeIndex");
+
+        // Write 100k random keys
+        let num_keys = 100_000;
+        for i in 0..num_keys {
+            let key = format!("key_{:08}", i);
+            let value = format!("value_{:08}", i);
+            index
+                .put(key.as_bytes(), value.as_bytes())
+                .expect("Failed to put key");
+        }
+
+        // Read all keys back and verify
+        for i in 0..num_keys {
+            let key = format!("key_{:08}", i);
+            let expected_value = format!("value_{:08}", i);
+
+            let retrieved = index.get(key.as_bytes()).expect("Failed to get key");
+
+            assert_eq!(
+                retrieved,
+                Some(expected_value.into_bytes()),
+                "Mismatch for key {}",
+                key
+            );
+        }
+    }
+
+    #[test]
+    fn test_temp_directory_location() {
+        use std::env;
+
+        // Create index
+        let index = NodeIndex::new().expect("Failed to create NodeIndex");
+
+        // Get temp directory path
+        let temp_path = index.temp_path();
+
+        // Verify it's in TMPDIR or system temp
+        let tmpdir = env::var("TMPDIR")
+            .or_else(|_| env::var("TEMP"))
+            .or_else(|_| env::var("TMP"))
+            .unwrap_or_else(|_| "/tmp".to_string());
+
+        // The temp directory should be under the system temp directory
+        assert!(
+            temp_path.starts_with(&tmpdir) || temp_path.starts_with("/tmp"),
+            "Temp directory {:?} is not under expected temp location",
+            temp_path
+        );
+
+        // Verify the butterfly-shrink-{uuid} subdirectory exists
+        let entries: Vec<_> = std::fs::read_dir(temp_path)
+            .expect("Failed to read temp directory")
+            .collect();
+
+        assert_eq!(entries.len(), 1, "Expected exactly one subdirectory");
+
+        let entry = entries[0].as_ref().expect("Failed to get entry");
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+
+        assert!(
+            name_str.starts_with("butterfly-shrink-"),
+            "Subdirectory should start with 'butterfly-shrink-', got: {}",
+            name_str
+        );
+    }
+
+    #[test]
+    fn test_temp_directory_cleanup() {
+        let temp_path = {
+            // Create index in a scope
+            let index = NodeIndex::new().expect("Failed to create NodeIndex");
+            let path = index.temp_path().to_path_buf();
+
+            // Verify directory exists
+            assert!(path.exists(), "Temp directory should exist");
+
+            // Return path to check after drop
+            path
+        }; // index is dropped here
+
+        // Verify directory is cleaned up
+        assert!(
+            !temp_path.exists(),
+            "Temp directory should be cleaned up after drop"
+        );
+    }
+
+    #[test]
+    fn test_nonexistent_key() {
+        let index = NodeIndex::new().expect("Failed to create NodeIndex");
+
+        let result = index.get(b"nonexistent_key").expect("Failed to get");
+        assert_eq!(result, None);
+    }
 }
