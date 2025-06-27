@@ -144,7 +144,7 @@ jobs:
       - name: Install benchmark dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl time
+          sudo apt-get install -y curl aria2 time
 
       - name: Verify benchmark script exists
         run: |
