@@ -1,129 +1,60 @@
-# 🚀 butterfly-dl v2.0.0 - Workspace Architecture Migration
+# 🚀 butterfly-dl v2.0.1-test - Automated Release Testing
 
-## 🌟 Major Milestone: Ecosystem Foundation
+## 🔧 Automated Release Testing
 
-This release represents a fundamental architectural evolution, transforming butterfly-dl from a single-tool repository into the foundation of the **butterfly-osm toolkit ecosystem**.
+This is a test release to verify the modernized automated release workflow functions correctly after refactoring manual versioning processes.
 
-## 🏗️ What's New
+## 🛠️ What's Fixed
 
-### Workspace Architecture
-- **🔧 Rust Workspace**: Organized as multi-tool workspace with shared components
-- **📚 butterfly-common**: New shared library for error handling and utilities  
-- **🎯 Tool Foundation**: Ready for butterfly-shrink, butterfly-extract, butterfly-serve
-- **📦 Independent Publishing**: Each tool can be published separately to crates.io
+### GitHub Actions Modernization
+- **⚡ Modern Actions**: Replaced deprecated `actions/create-release@v1` with `softprops/action-gh-release@v2`
+- **📝 Release Notes**: Fixed multiline output syntax issues using `body_path` approach
+- **📦 Asset Upload**: Streamlined asset upload process with modern action
+- **🔄 Workflow Reliability**: Enhanced automation stability and error handling
 
-### Enhanced Error Handling
-- **🧠 Advanced Fuzzy Matching**: Improved geographic source suggestions
-- **🌍 Semantic Understanding**: Better context-aware error correction
-- **🔄 Shared Components**: Common error types across all future tools
+### Process Improvements
+- **🤖 Automation First**: Refactored manual processes to work WITH automation instead of against it
+- **⚙️ Simplified Workflow**: Reduced complexity and potential failure points
+- **🛡️ Error Prevention**: Eliminated manual steps that could introduce errors
 
-### Developer Experience
-- **📋 Tool Template**: Standardized structure for new tools
-- **🤝 API Compatibility**: 100% backward compatible with v1.x
-- **⚡ Performance**: Improved build times and maintained runtime performance
-- **🧪 Better Testing**: Isolated and shared test suites
+## 🧪 Testing Installation
 
-## 📦 Installation
+This test release will generate binaries for all platforms to verify the automated workflow:
 
-### Pre-built Binaries
-- [Linux x86_64](https://github.com/butterfly-osm/butterfly-osm/releases/download/v2.0.0/butterfly-dl-v2.0.0-x86_64-linux.tar.gz)
-- [macOS x86_64](https://github.com/butterfly-osm/butterfly-osm/releases/download/v2.0.0/butterfly-dl-v2.0.0-x86_64-macos.tar.gz)
-- [Windows x86_64](https://github.com/butterfly-osm/butterfly-osm/releases/download/v2.0.0/butterfly-dl-v2.0.0-x86_64-windows.zip)
+### Automated Builds (Testing)
+- Linux x86_64 + ARM64
+- macOS Intel + Apple Silicon  
+- Windows x86_64
 
-### Package Managers
+### Manual Testing
 ```bash
-# Cargo (Rust)
-cargo install butterfly-dl
-
-# From source
-git clone https://github.com/butterfly-osm/butterfly-osm
-cd butterfly-osm
-cargo build --release -p butterfly-dl
+# Test the workflow-generated assets
+cargo install butterfly-dl --version 2.0.1-test
+butterfly-dl --version
 ```
 
-## 🔄 Migration Guide
+## 🧪 Test Scope
 
-### For End Users
-**No action required!** All existing workflows continue to work:
-```bash
-butterfly-dl planet                 # Same as v1.x
-butterfly-dl europe/belgium         # Same as v1.x
-```
+**This is a TEST RELEASE to verify:**
+- ✅ GitHub Actions workflow executes without errors
+- ✅ Release notes are properly included from RELEASE_NOTES.md
+- ✅ All 5 platform binaries build successfully
+- ✅ Assets are uploaded with correct checksums
+- ✅ Modern action compatibility and reliability
 
-### For Developers
-**API remains 100% compatible:**
-```rust
-// v1.x code continues to work unchanged
-use butterfly_dl::{get, Error, Result};
+## 📋 Workflow Changes
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    butterfly_dl::get("europe/belgium", None).await
-}
-```
+### Fixed
+- Modernized deprecated GitHub Actions to current versions
+- Resolved multiline output syntax issues in workflow
+- Simplified asset upload process for better reliability
+- Eliminated manual steps that conflicted with automation
 
-### For Library Users
-**FFI interface unchanged:**
-```c
-// C bindings work identically
-#include "butterfly.h"
-int result = butterfly_get("planet", "planet.pbf");
-```
-
-## 📊 Technical Details
-
-### Architecture Changes
-- **From**: Single tool repository
-- **To**: Multi-tool workspace with shared components
-- **Preserved**: Git history, API compatibility, performance
-- **Added**: Shared utilities, tool templates, ecosystem foundation
-
-### Verification
-- ✅ **28 tests passing** (14 butterfly-dl + 9 butterfly-common + 5 CLI)
-- ✅ **Performance maintained**: Same runtime performance, improved build times
-- ✅ **Memory efficiency**: <1GB RAM for any file size (including 81GB planet)
-- ✅ **FFI libraries**: libbutterfly_dl.so/.a/.dylib generated correctly
-
-## 🚀 What's Next
-
-### Upcoming Tools
-- **butterfly-shrink**: Polygon-based area extraction
-- **butterfly-extract**: Advanced filtering and transformation  
-- **butterfly-serve**: HTTP tile server
-
-### Ecosystem Benefits
-- **Shared Components**: Common error handling, utilities, and patterns
-- **Coordinated Development**: Unified testing, documentation, and releases
-- **Independent Evolution**: Each tool can evolve at its own pace
-
-## 🤝 Backward Compatibility
-
-**Zero breaking changes for users:**
-- All v1.x command-line usage works identically
-- All v1.x library APIs preserved
-- All v1.x C FFI functions unchanged
-- Migration is seamless and automatic
-
-## 📋 Changelog
-
-### Added
-- butterfly-common shared library with error handling
-- Workspace architecture supporting multiple tools
-- Advanced fuzzy matching with semantic understanding
-- Tool template for future development
-- Comprehensive migration documentation
-
-### Changed  
-- Repository structure organized as Rust workspace
-- Version bumped to 2.0.0 reflecting architectural change
-- Build system optimized for multi-tool development
-
-### Maintained
-- 100% API compatibility with v1.x
-- All existing functionality and performance
-- FFI library generation and C bindings
-- Command-line interface and behavior
+### Verified
+- ✅ **softprops/action-gh-release@v2**: Modern, maintained release action  
+- ✅ **body_path approach**: Clean release notes without syntax issues
+- ✅ **Streamlined uploads**: Unified asset handling approach
 
 ---
 
-**Full Changelog**: [v1.4.12...v2.0.0](https://github.com/butterfly-osm/butterfly-osm/compare/v1.4.12...v2.0.0)
+**Test Changelog**: This validates the automated release workflow improvements for future production releases.
