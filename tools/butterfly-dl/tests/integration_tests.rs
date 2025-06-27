@@ -26,8 +26,14 @@ fn test_download_starts(source: &str, timeout_secs: u64) -> Result<(String, Stri
         .unwrap()
         .parent()
         .unwrap();
-    let debug_binary = workspace_root.join("target").join("debug").join(&binary_name);
-    let release_binary = workspace_root.join("target").join("release").join(&binary_name);
+    let debug_binary = workspace_root
+        .join("target")
+        .join("debug")
+        .join(binary_name);
+    let release_binary = workspace_root
+        .join("target")
+        .join("release")
+        .join(binary_name);
 
     let binary_path = if debug_binary.exists() {
         debug_binary.to_string_lossy().to_string()
@@ -40,11 +46,14 @@ fn test_download_starts(source: &str, timeout_secs: u64) -> Result<(String, Stri
             .current_dir(workspace_root)
             .output()
             .map_err(|e| format!("Failed to execute cargo build: {e}"))?;
-        
+
         if !build_output.status.success() {
-            return Err(format!("Failed to build butterfly-dl: {}", String::from_utf8_lossy(&build_output.stderr)));
+            return Err(format!(
+                "Failed to build butterfly-dl: {}",
+                String::from_utf8_lossy(&build_output.stderr)
+            ));
         }
-        
+
         debug_binary.to_string_lossy().to_string()
     };
 
@@ -416,8 +425,14 @@ fn test_dry_run_mode() {
         .unwrap()
         .parent()
         .unwrap();
-    let debug_binary = workspace_root.join("target").join("debug").join(&binary_name);
-    let release_binary = workspace_root.join("target").join("release").join(&binary_name);
+    let debug_binary = workspace_root
+        .join("target")
+        .join("debug")
+        .join(binary_name);
+    let release_binary = workspace_root
+        .join("target")
+        .join("release")
+        .join(binary_name);
 
     let binary_path = if debug_binary.exists() {
         debug_binary.to_string_lossy().to_string()
@@ -430,11 +445,14 @@ fn test_dry_run_mode() {
             .current_dir(workspace_root)
             .output()
             .expect("Failed to build butterfly-dl binary");
-        
+
         if !build_output.status.success() {
-            panic!("Failed to build butterfly-dl: {}", String::from_utf8_lossy(&build_output.stderr));
+            panic!(
+                "Failed to build butterfly-dl: {}",
+                String::from_utf8_lossy(&build_output.stderr)
+            );
         }
-        
+
         debug_binary.to_string_lossy().to_string()
     };
 
