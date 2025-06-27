@@ -41,8 +41,8 @@ sudo mv butterfly-dl-v2.0.0-x86_64-macos/butterfly-dl /usr/local/bin/
 
 #### Debian/Ubuntu
 ```bash
-wget https://github.com/butterfly-osm/butterfly-dl/releases/latest/download/butterfly-dl_1.4.12_amd64.deb
-sudo dpkg -i butterfly-dl_1.4.12_amd64.deb
+wget https://github.com/butterfly-osm/butterfly-osm/releases/latest/download/butterfly-dl_2.0.0_amd64.deb
+sudo dpkg -i butterfly-dl_2.0.0_amd64.deb
 ```
 
 #### Cargo (Rust)
@@ -401,8 +401,8 @@ curl         9.349        4.57         ~10MB      ✅ Success
 
 ```bash
 # Clone and build
-git clone https://github.com/butterfly-osm/butterfly-dl
-cd butterfly-dl
+git clone https://github.com/butterfly-osm/butterfly-osm
+cd butterfly-osm
 cargo build --release
 
 # Test with any supported region
