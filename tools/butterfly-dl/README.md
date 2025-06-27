@@ -135,7 +135,41 @@ butterfly-dl planet
 butterfly-serve planet-latest.osm.pbf --port 8080
 ```
 
-## Development
+## Error Handling
+
+`butterfly-dl` provides robust error handling with helpful messages and fuzzy matching for common input mistakes. Errors are categorized for easier debugging and integration.
+
+### CLI Errors
+
+When using the command-line interface, errors will be displayed with a descriptive message, often including suggestions for correction:
+
+-   **Source Not Found**: Occurs when the provided source (e.g., `europe/belgium`) is misspelled or does not exist. The tool will attempt to suggest a correct source using fuzzy matching.
+    ```
+    butterfly-dl austrailia
+    # Error: Source 'austrailia' not found. Did you mean 'australia-oceania'?
+    ```
+-   **Network Error**: Indicates issues with network connectivity, DNS resolution, or timeouts during the download process. The tool will automatically retry these errors with exponential backoff.
+-   **HTTP Error**: Specific errors returned by the HTTP server (e.g., 404 Not Found, 500 Internal Server Error). For 404 errors, the tool attempts to provide helpful suggestions if the source can be inferred from the URL.
+-   **I/O Error**: Problems with reading from or writing to the local filesystem (e.g., disk full, permission denied, file already exists).
+-   **Invalid Input**: General errors related to incorrect command-line arguments or parameters.
+
+### FFI Error Codes
+
+For users integrating `butterfly-dl` via its C-compatible Foreign Function Interface (FFI), functions return a `ButterflyResult` enum, which maps to the following integer codes:
+
+-   `0` (Success): The operation completed successfully.
+-   `1` (InvalidParameter): An input parameter was invalid (e.g., null pointer for a required string, malformed source). This often corresponds to `SourceNotFound` or `InvalidInput` internally.
+-   `2` (NetworkError): A network-related issue occurred during the download. This corresponds to `NetworkError` or `HttpError` internally.
+-   `3` (IoError): An I/O operation failed.
+-   `4` (UnknownError): A generic error occurred that doesn't fit into other categories.
+
+## Contributing
+
+We welcome contributions to `butterfly-dl`! Please see the main project's [CONTRIBUTING.md](../../CONTRIBUTING.md) for detailed guidelines on how to contribute, including:
+
+-   Setting up your development environment.
+-   Running tests and benchmarks.
+-   Adhering to the project's performance-first and memory-conscious philosophy.
 
 ### Building
 ```bash

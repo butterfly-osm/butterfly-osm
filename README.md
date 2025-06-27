@@ -186,7 +186,7 @@ butterfly-osm/
 │   ├── butterfly-extract/# Data transformation (planned)
 │   └── butterfly-serve/  # Tile server (planned)
 ├── benchmarks/          # Performance benchmarks
-└── examples/            # Usage examples and tutorials
+├── examples/            # Usage examples and tutorials (planned)
 ```
 
 ### Building Individual Tools
