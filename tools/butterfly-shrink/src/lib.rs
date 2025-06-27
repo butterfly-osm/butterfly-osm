@@ -192,8 +192,8 @@ mod tests {
         // Write 100k random keys
         let num_keys = 100_000;
         for i in 0..num_keys {
-            let key = format!("key_{:08}", i);
-            let value = format!("value_{:08}", i);
+            let key = format!("key_{i:08}");
+            let value = format!("value_{i:08}");
             index
                 .put(key.as_bytes(), value.as_bytes())
                 .expect("Failed to put key");
@@ -201,16 +201,15 @@ mod tests {
 
         // Read all keys back and verify
         for i in 0..num_keys {
-            let key = format!("key_{:08}", i);
-            let expected_value = format!("value_{:08}", i);
+            let key = format!("key_{i:08}");
+            let expected_value = format!("value_{i:08}");
 
             let retrieved = index.get(key.as_bytes()).expect("Failed to get key");
 
             assert_eq!(
                 retrieved,
                 Some(expected_value.into_bytes()),
-                "Mismatch for key {}",
-                key
+                "Mismatch for key {key}"
             );
         }
     }
@@ -229,9 +228,7 @@ mod tests {
         // The temp directory should be under the system temp directory
         assert!(
             temp_path.starts_with(&tmpdir),
-            "Temp directory {:?} is not under expected temp location {:?}",
-            temp_path,
-            tmpdir
+            "Temp directory {temp_path:?} is not under expected temp location {tmpdir:?}"
         );
 
         // Verify the butterfly-shrink-{uuid} subdirectory exists
@@ -247,8 +244,7 @@ mod tests {
 
         assert!(
             name_str.starts_with("butterfly-shrink-"),
-            "Subdirectory should start with 'butterfly-shrink-', got: {}",
-            name_str
+            "Subdirectory should start with 'butterfly-shrink-', got: {name_str}"
         );
     }
 
