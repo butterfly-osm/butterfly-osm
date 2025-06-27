@@ -11,7 +11,7 @@ fn main() {
     let cli = Cli::parse();
 
     if let Some(name) = cli.name.as_deref() {
-        println!("Hello, {}!", name);
+        println!("Hello, {name}!");
     } else {
         println!("Hello, world!");
     }
