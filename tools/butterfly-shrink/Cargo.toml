@@ -30,4 +30,4 @@ butterfly-common = { path = "../../butterfly-common", version = "2.0.0" }
 tempfile = { workspace = true }
 assert_cmd = "2.0"
 predicates = "3.0"
-md5 = "0.7"
+md5 = "0.8"
