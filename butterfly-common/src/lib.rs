@@ -6,10 +6,13 @@ pub use error::{Error, Result};
 
 #[cfg(test)]
 mod tests {
+    use crate::error::suggest_correction;
+
     #[test]
-    fn it_works() {
-        // Basic smoke test to ensure the library compiles
-        let _result = 2 + 2;
-        assert_eq!(_result, 4);
+    fn suggest_correction_returns_expected_country() {
+        assert_eq!(
+            suggest_correction("belgum"),
+            Some("europe/belgium".to_string())
+        );
     }
 }
