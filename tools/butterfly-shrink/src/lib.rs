@@ -46,11 +46,13 @@ pub fn snap_coordinate(lat: f64, lon: f64, grid_meters: f64) -> (i64, i64) {
     (lat_nano, lon_nano)
 }
 
-/// Echo a PBF file - read input and write identical output
+/// Echo a PBF file by verifying it and copying it unchanged.
 ///
-/// This is the initial implementation that demonstrates PBF reading and writing.
-/// It reads all elements from the input file and writes them to the output file,
-/// producing a bitwise identical copy.
+/// The function checks that the input PBF exists, copies it directly to the output to
+/// create a bitwise identical file, and reads through the elements to count them.
+///
+/// # Errors
+/// Returns an error if the input file is missing or cannot be read.
 pub fn echo_pbf(input: &Path, output: &Path) -> Result<()> {
     // Check if input file exists
     if !input.exists() {
