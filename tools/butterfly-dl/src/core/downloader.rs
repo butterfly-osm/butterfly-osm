@@ -469,9 +469,12 @@ fn calculate_optimal_connections(file_size: u64, max_connections: usize) -> usiz
         _ => 16,                          // > 1GB: 16 connections
     };
 
+    // Ensure at least one connection to avoid division by zero when calculating chunks
+    let effective_max = std::cmp::max(1, max_connections);
+
     std::cmp::min(
         base_connections,
-        std::cmp::min(max_connections, cpu_count * 2),
+        std::cmp::min(effective_max, cpu_count * 2),
     )
 }
 
@@ -591,6 +594,12 @@ mod tests {
         assert_eq!(calculate_optimal_connections(500 * 1024, 16), 1); // 500KB
         assert_eq!(calculate_optimal_connections(1024 * 1024, 16), 1); // 1MB (boundary)
         assert_eq!(calculate_optimal_connections(1024 * 1024 + 1, 16), 2); // 1MB + 1 byte
+    }
+
+    #[test]
+    fn test_calculate_optimal_connections_zero_max() {
+        // Even if max_connections is set to 0, we should use at least one connection
+        assert_eq!(calculate_optimal_connections(50 * 1024 * 1024, 0), 1);
     }
 
     #[tokio::test]
