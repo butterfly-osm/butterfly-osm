@@ -32,6 +32,7 @@ impl Default for SourceConfig {
 
 /// Resolves a source string to a download source
 pub fn resolve_source(source: &str, config: &SourceConfig) -> Result<DownloadSource> {
+    let source = source.trim_end_matches('/');
     match source {
         "planet" => resolve_planet_source(config),
         path if path.contains('/') => Ok(DownloadSource::Http {
@@ -52,6 +53,7 @@ fn resolve_planet_source(config: &SourceConfig) -> Result<DownloadSource> {
 
 /// Generates output filename from source
 pub fn resolve_output_filename(source: &str) -> String {
+    let source = source.trim_end_matches('/');
     match source {
         "planet" => "planet-latest.osm.pbf".to_string(),
         path if path.contains('/') => {
@@ -115,6 +117,26 @@ mod tests {
         assert_eq!(
             resolve_output_filename("europe/belgium"),
             "belgium-latest.osm.pbf"
+        );
+    }
+
+    #[test]
+    fn test_trailing_slash() {
+        let config = SourceConfig::default();
+        let source = resolve_source("europe/belgium/", &config).unwrap();
+
+        match source {
+            DownloadSource::Http { url } => {
+                assert_eq!(
+                    url,
+                    "https://download.geofabrik.de/europe/belgium-latest.osm.pbf",
+                );
+            }
+        }
+
+        assert_eq!(
+            resolve_output_filename("europe/belgium/"),
+            "belgium-latest.osm.pbf",
         );
     }
 }
