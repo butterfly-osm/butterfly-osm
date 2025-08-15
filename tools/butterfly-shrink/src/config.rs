@@ -167,7 +167,7 @@ impl Default for Config {
             // I/O optimization
             multiget_readahead_mb: 4,             // 4MB readahead for MultiGet
             zstd_level: 6,                         // Zstd level 6 (good balance)
-            pbf_block_size_kb: 64,                // 64KB PBF blocks
+            pbf_block_size_kb: 256,               // 256KB blocks - good balance for most sizes
             
             // Tile bucketing disabled by default
             enable_tile_bucketing: false,

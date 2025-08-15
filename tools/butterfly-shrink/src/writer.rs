@@ -217,7 +217,9 @@ impl PbfWriter {
         let granularity = 100; // 100 nanodegrees = ~1cm precision
         let builder = PrimitiveBuilder::new(granularity);
         let compression_level = Compression::new(config.zstd_level);
-        let max_block_elements = (config.pbf_block_size_kb * 1024 / 100).max(1000); // Estimate ~100 bytes per element
+        // Calculate reasonable element count based on block size
+        // Assuming ~100 bytes per element average, aim for 70% fill rate before compression
+        let max_block_elements = ((config.pbf_block_size_kb * 1024 * 7) / (100 * 10)).max(1000).min(100_000);
 
         Ok(Self {
             writer,

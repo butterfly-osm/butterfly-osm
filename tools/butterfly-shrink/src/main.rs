@@ -69,6 +69,10 @@ struct Cli {
     #[arg(long, default_value = "6")]
     zstd: u32,
     
+    /// PBF output block size in KB (default: 256)
+    #[arg(long, default_value = "256")]
+    block_size: usize,
+    
     // Optional features
     /// Disable compaction at phase boundary
     #[arg(long)]
@@ -119,6 +123,7 @@ fn main() -> anyhow::Result<()> {
     
     // Compression settings
     config.zstd_level = cli.zstd.min(22);
+    config.pbf_block_size_kb = cli.block_size;
     
     // Optional features
     config.compact_after_nodes = !cli.no_compact;
