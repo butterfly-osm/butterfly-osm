@@ -2,7 +2,7 @@
 
 use crate::batch::{BatchConfig, WayBatcher};
 use crate::config::Config;
-use crate::db::NodeIndex;
+use crate::db::{NodeIndex, PhaseMode};
 use crate::snap_coordinate;
 use crate::telemetry::{Telemetry, Timer};
 use crate::writer::PbfWriter;
@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use butterfly_common::Error;
 use osmpbf::{Element, ElementReader};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,17 +37,19 @@ pub struct Stats {
 /// Main processor for shrinking PBF files
 pub struct Processor {
     config: Config,
-    node_index: Arc<NodeIndex>,
+    db_path: PathBuf,
+    node_index: Option<Arc<NodeIndex>>,
     stats: Stats,
     telemetry: Telemetry,
     batch_config: BatchConfig,
 }
 
 impl Processor {
-    pub fn new(config: Config, node_index: NodeIndex) -> Self {
+    pub fn new(config: Config, db_path: PathBuf) -> Self {
         Self {
             config,
-            node_index: Arc::new(node_index),
+            db_path,
+            node_index: None,
             stats: Stats::default(),
             telemetry: Telemetry::new(),
             batch_config: BatchConfig::default(),
@@ -86,6 +88,12 @@ impl Processor {
     ) -> Result<()> {
         let mut grid_cells = HashMap::new();
         
+        // Open NodeIndex in write-optimized mode for node ingestion
+        log::info!("Opening RocksDB in write-optimized mode for node ingestion...");
+        let node_index = NodeIndex::new_with_mode(&self.db_path, PhaseMode::WriteHeavy, self.config.db_cache_mb)
+            .context("Failed to open NodeIndex for writes")?;
+        self.node_index = Some(Arc::new(node_index));
+        
         // Create PBF writer
         let mut pbf_writer = PbfWriter::new(output)
             .context("Failed to create PBF writer")?;
@@ -102,6 +110,7 @@ impl Processor {
         let node_timer = Timer::new();
         let mut way_timer = Timer::default();
         let mut relation_timer = Timer::default();
+        let mut switch_error: Option<anyhow::Error> = None;
         
         let read_result = reader.for_each(|element| {
             match element {
@@ -112,10 +121,13 @@ impl Processor {
                         log::info!("Phase 1 complete: {} nodes processed in {}ms", 
                             self.stats.input_nodes, node_timer.elapsed().as_millis());
                         
-                        // Compact RocksDB for optimal read performance
-                        log::info!("Compacting database for optimal read performance...");
-                        if let Err(e) = self.node_index.compact_for_reads() {
-                            log::error!("Failed to compact RocksDB: {}", e);
+                        // Switch to read-optimized mode for way processing
+                        if switch_error.is_none() {
+                            if let Err(e) = self.switch_to_read_mode() {
+                                log::error!("Failed to switch to read mode: {}", e);
+                                switch_error = Some(e);
+                                return;
+                            }
                         }
                         
                         processing_phase = ProcessingPhase::Ways;
@@ -134,10 +146,13 @@ impl Processor {
                         log::info!("Phase 1 complete: {} nodes processed in {}ms", 
                             self.stats.input_nodes, node_timer.elapsed().as_millis());
                         
-                        // Compact RocksDB for optimal read performance
-                        log::info!("Compacting database for optimal read performance...");
-                        if let Err(e) = self.node_index.compact_for_reads() {
-                            log::error!("Failed to compact RocksDB: {}", e);
+                        // Switch to read-optimized mode for way processing
+                        if switch_error.is_none() {
+                            if let Err(e) = self.switch_to_read_mode() {
+                                log::error!("Failed to switch to read mode: {}", e);
+                                switch_error = Some(e);
+                                return;
+                            }
                         }
                         
                         processing_phase = ProcessingPhase::Ways;
@@ -156,10 +171,13 @@ impl Processor {
                         log::info!("Phase 1 complete: {} nodes processed in {}ms", 
                             self.stats.input_nodes, node_timer.elapsed().as_millis());
                         
-                        // Compact RocksDB for optimal read performance
-                        log::info!("Compacting database for optimal read performance...");
-                        if let Err(e) = self.node_index.compact_for_reads() {
-                            log::error!("Failed to compact RocksDB: {}", e);
+                        // Switch to read-optimized mode for way processing
+                        if switch_error.is_none() {
+                            if let Err(e) = self.switch_to_read_mode() {
+                                log::error!("Failed to switch to read mode: {}", e);
+                                switch_error = Some(e);
+                                return;
+                            }
                         }
                         
                         processing_phase = ProcessingPhase::Ways;
@@ -171,26 +189,30 @@ impl Processor {
                     }
                     
                     self.stats.input_ways += 1;
-                    if let Err(e) = way_batcher.add_way(&way, &highway_tags, &self.node_index, &mut pbf_writer) {
-                        log::error!("Failed to process way {}: {}", way.id(), e);
+                    if let Some(ref node_index) = self.node_index {
+                        if let Err(e) = way_batcher.add_way(&way, &highway_tags, node_index, &mut pbf_writer) {
+                            log::error!("Failed to process way {}: {}", way.id(), e);
+                        }
                     }
                 }
                 Element::Relation(relation) => {
                     if processing_phase == ProcessingPhase::Ways {
                         // Start relation processing phase
                         // Flush all remaining tiles first
-                        if let Err(e) = way_batcher.flush_all_tiles(&self.node_index, &mut pbf_writer) {
-                            log::error!("Failed to flush tiles: {}", e);
-                        }
-                        
-                        // Then flush any remaining unbucketed ways
-                        match way_batcher.flush_batch(&self.node_index, &mut pbf_writer) {
-                            Ok(final_batch_ways) => {
-                                self.stats.output_ways = way_batcher.total_ways_written() + final_batch_ways;
+                        if let Some(ref node_index) = self.node_index {
+                            if let Err(e) = way_batcher.flush_all_tiles(node_index, &mut pbf_writer) {
+                                log::error!("Failed to flush tiles: {}", e);
                             }
-                            Err(e) => {
-                                log::error!("Failed to flush final way batch: {}", e);
-                                self.stats.output_ways = way_batcher.total_ways_written();
+                            
+                            // Then flush any remaining unbucketed ways
+                            match way_batcher.flush_batch(node_index, &mut pbf_writer) {
+                                Ok(final_batch_ways) => {
+                                    self.stats.output_ways = way_batcher.total_ways_written() + final_batch_ways;
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to flush final way batch: {}", e);
+                                    self.stats.output_ways = way_batcher.total_ways_written();
+                                }
                             }
                         }
                         
@@ -222,15 +244,17 @@ impl Processor {
             }
             ProcessingPhase::Ways => {
                 // Flush all remaining tiles first
-                if let Err(e) = way_batcher.flush_all_tiles(&self.node_index, &mut pbf_writer) {
-                    log::error!("Failed to flush tiles: {}", e);
-                }
-                
-                // Then flush any remaining unbucketed ways
-                if let Ok(final_batch_ways) = way_batcher.flush_batch(&self.node_index, &mut pbf_writer) {
-                    self.stats.output_ways = way_batcher.total_ways_written() + final_batch_ways;
-                } else {
-                    self.stats.output_ways = way_batcher.total_ways_written();
+                if let Some(ref node_index) = self.node_index {
+                    if let Err(e) = way_batcher.flush_all_tiles(node_index, &mut pbf_writer) {
+                        log::error!("Failed to flush tiles: {}", e);
+                    }
+                    
+                    // Then flush any remaining unbucketed ways
+                    if let Ok(final_batch_ways) = way_batcher.flush_batch(node_index, &mut pbf_writer) {
+                        self.stats.output_ways = way_batcher.total_ways_written() + final_batch_ways;
+                    } else {
+                        self.stats.output_ways = way_batcher.total_ways_written();
+                    }
                 }
                 
                 self.telemetry.record_way_remap_time(way_timer.elapsed());
@@ -242,6 +266,11 @@ impl Processor {
                 log::info!("Phase 3 complete: {} relations processed in {}ms", 
                     self.stats.input_relations, relation_timer.elapsed().as_millis());
             }
+        }
+        
+        // Check for switch errors first
+        if let Some(err) = switch_error {
+            return Err(err);
         }
         
         // Check for PBF reading errors
@@ -294,9 +323,13 @@ impl Processor {
         };
         
         // Store mapping in RocksDB immediately
-        self.node_index.put(node_id, representative_id)
-            .context("Failed to store node mapping")?;
-        self.telemetry.increment_puts(1);
+        if let Some(ref node_index) = self.node_index {
+            node_index.put(node_id, representative_id)
+                .context("Failed to store node mapping")?;
+            self.telemetry.increment_puts(1);
+        } else {
+            return Err(anyhow::anyhow!("NodeIndex not initialized"));
+        }
         
         // Write snapped node to output PBF if it's a representative
         if representative_id == node_id {
@@ -344,6 +377,37 @@ impl Processor {
             .context("Failed to write relation to PBF")?;
             
         log::debug!("Found turn restriction: {}", relation.id());
+        Ok(())
+    }
+    
+    /// Switch from write-optimized to read-optimized mode at phase boundary
+    fn switch_to_read_mode(&mut self) -> Result<()> {
+        log::info!("Switching to read-optimized mode for way processing...");
+        let start = std::time::Instant::now();
+        
+        // First compact the existing DB
+        if let Some(ref node_index) = self.node_index {
+            log::info!("Compacting database for optimal read performance...");
+            node_index.compact_for_reads()
+                .context("Failed to compact RocksDB")?;
+        }
+        
+        // Close the write-optimized DB
+        log::info!("Closing write-optimized database...");
+        self.node_index = None;
+        
+        // Small delay to ensure files are released
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        
+        // Reopen in read-optimized mode
+        log::info!("Reopening database in read-optimized mode...");
+        let node_index = NodeIndex::new_with_mode(&self.db_path, PhaseMode::ReadOptimized, self.config.db_cache_mb)
+            .context("Failed to reopen NodeIndex for reads")?;
+        self.node_index = Some(Arc::new(node_index));
+        
+        let elapsed = start.elapsed();
+        log::info!("Mode switch completed in {:.2}s", elapsed.as_secs_f64());
+        
         Ok(())
     }
     

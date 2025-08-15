@@ -1,6 +1,5 @@
 use butterfly_shrink::{Config, Preset, Processor};
 use butterfly_shrink::batch::BatchConfig;
-use butterfly_shrink::db::{NodeIndex, PhaseMode};
 use butterfly_shrink::processor::check_tmpfs;
 use clap::Parser;
 use std::path::PathBuf;
@@ -156,11 +155,9 @@ fn main() -> anyhow::Result<()> {
         log::warn!("  Action: export TMPDIR=/mnt/ssd/tmp");
     }
     
-    // Create RocksDB index with write-optimized settings for node phase
+    // Prepare RocksDB path (will be opened by processor)
     let db_path = tmp_dir.join("node_index");
-    log::info!("Using RocksDB at {}", db_path.display());
-    
-    let node_index = NodeIndex::new_with_mode(&db_path, PhaseMode::WriteHeavy, config.db_cache_mb)?;
+    log::info!("RocksDB will be created at {}", db_path.display());
     
     // Process the file
     let input_path = if cli.input == "-" {
@@ -194,7 +191,7 @@ fn main() -> anyhow::Result<()> {
         max_tiles_in_memory: config.max_tiles_in_memory,
     };
     
-    let mut processor = Processor::new(config, node_index)
+    let mut processor = Processor::new(config, db_path)
         .with_batch_config(batch_config);
     let stats = processor.process(&input_path, &output_path)?;
     
