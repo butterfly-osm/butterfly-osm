@@ -178,12 +178,19 @@ impl Processor {
                 Element::Relation(relation) => {
                     if processing_phase == ProcessingPhase::Ways {
                         // Start relation processing phase
+                        // Flush all remaining tiles first
+                        if let Err(e) = way_batcher.flush_all_tiles(&self.node_index, &mut pbf_writer) {
+                            log::error!("Failed to flush tiles: {}", e);
+                        }
+                        
+                        // Then flush any remaining unbucketed ways
                         match way_batcher.flush_batch(&self.node_index, &mut pbf_writer) {
                             Ok(final_batch_ways) => {
                                 self.stats.output_ways = way_batcher.total_ways_written() + final_batch_ways;
                             }
                             Err(e) => {
                                 log::error!("Failed to flush final way batch: {}", e);
+                                self.stats.output_ways = way_batcher.total_ways_written();
                             }
                         }
                         
@@ -214,10 +221,18 @@ impl Processor {
                 log::info!("Processing complete: only nodes found");
             }
             ProcessingPhase::Ways => {
-                // Flush remaining ways
+                // Flush all remaining tiles first
+                if let Err(e) = way_batcher.flush_all_tiles(&self.node_index, &mut pbf_writer) {
+                    log::error!("Failed to flush tiles: {}", e);
+                }
+                
+                // Then flush any remaining unbucketed ways
                 if let Ok(final_batch_ways) = way_batcher.flush_batch(&self.node_index, &mut pbf_writer) {
                     self.stats.output_ways = way_batcher.total_ways_written() + final_batch_ways;
+                } else {
+                    self.stats.output_ways = way_batcher.total_ways_written();
                 }
+                
                 self.telemetry.record_way_remap_time(way_timer.elapsed());
                 log::info!("Phase 2 complete: {} ways processed in {}ms", 
                     self.stats.input_ways, way_timer.elapsed().as_millis());

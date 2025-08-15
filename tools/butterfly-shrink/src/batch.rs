@@ -15,6 +15,9 @@ pub struct BatchConfig {
     pub max_ways: usize,           // Max ways per batch (e.g., 50k)
     pub max_unique_nodes: usize,   // Max unique node IDs per batch (e.g., 1.5M)
     pub cache_capacity: usize,     // LRU cache size (e.g., 2-4M entries)
+    pub enable_tile_bucketing: bool,  // Enable spatial tile bucketing
+    pub tile_grid_degrees: f64,    // Tile size in degrees (e.g., 0.1)
+    pub max_tiles_in_memory: usize,   // Max tiles to keep in memory
 }
 
 impl BatchConfig {
@@ -28,6 +31,9 @@ impl BatchConfig {
             max_ways: config.batch_ways,
             max_unique_nodes,
             cache_capacity: config.lru_cache_size,
+            enable_tile_bucketing: config.enable_tile_bucketing,
+            tile_grid_degrees: config.tile_grid_degrees,
+            max_tiles_in_memory: config.max_tiles_in_memory,
         }
     }
     
@@ -84,6 +90,7 @@ pub struct WayData {
     pub id: i64,
     pub refs: Vec<i64>,
     pub tags: HashMap<String, String>,
+    pub tile_key: Option<(i32, i32)>,  // Tile coordinates for bucketing
 }
 
 impl From<&osmpbf::Way<'_>> for WayData {
@@ -92,7 +99,42 @@ impl From<&osmpbf::Way<'_>> for WayData {
             id: way.id(),
             refs: way.refs().collect(),
             tags: way.tags().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            tile_key: None,  // Will be computed when first node is resolved
         }
+    }
+}
+
+/// Tile-based queue for spatial bucketing
+struct TileQueue {
+    tile_key: (i32, i32),
+    ways: Vec<WayData>,
+    unique_nodes: HashSet<i64>,
+    size_estimate: usize,
+}
+
+impl TileQueue {
+    fn new(tile_key: (i32, i32)) -> Self {
+        Self {
+            tile_key,
+            ways: Vec::new(),
+            unique_nodes: HashSet::new(),
+            size_estimate: 0,
+        }
+    }
+    
+    fn add_way(&mut self, mut way: WayData) {
+        way.tile_key = Some(self.tile_key);
+        for &node_id in &way.refs {
+            self.unique_nodes.insert(node_id);
+        }
+        self.size_estimate += 100 + way.refs.len() * 8;
+        self.ways.push(way);
+    }
+    
+    fn should_flush(&self, max_ways: usize, max_nodes: usize) -> bool {
+        self.ways.len() >= max_ways || 
+        self.unique_nodes.len() >= max_nodes ||
+        self.size_estimate >= 32 * 1024 * 1024  // 32MB per tile
     }
 }
 
@@ -100,6 +142,7 @@ impl From<&osmpbf::Way<'_>> for WayData {
 pub struct WayBatcher {
     config: BatchConfig,
     current_batch: WayBatch,
+    tile_queues: HashMap<(i32, i32), TileQueue>,  // Tile-based queues
     cache: LruCache,
     telemetry: Telemetry,
     total_ways_written: u64,
@@ -110,10 +153,21 @@ impl WayBatcher {
         Self {
             cache: LruCache::new(config.cache_capacity),
             current_batch: WayBatch::new(),
+            tile_queues: HashMap::new(),
             config,
             telemetry,
             total_ways_written: 0,
         }
+    }
+    
+    /// Compute tile key from coordinates
+    #[allow(dead_code)]
+    fn compute_tile_key(&self, lat_nano: i64, lon_nano: i64) -> (i32, i32) {
+        let lat = lat_nano as f64 / 1e9;
+        let lon = lon_nano as f64 / 1e9;
+        let tile_x = (lon / self.config.tile_grid_degrees).floor() as i32;
+        let tile_y = (lat / self.config.tile_grid_degrees).floor() as i32;
+        (tile_x, tile_y)
     }
 
     /// Add a way to the current batch, processing if batch is full
@@ -125,7 +179,7 @@ impl WayBatcher {
         pbf_writer: &mut PbfWriter,
     ) -> Result<()> {
         // Convert way to owned data
-        let way_data = WayData::from(way);
+        let mut way_data = WayData::from(way);
         
         // Filter by highway tags first
         let mut highway_tag = None;
@@ -154,16 +208,46 @@ impl WayBatcher {
             return Ok(());
         }
         
-        // Add unique node IDs to batch tracking
+        if self.config.enable_tile_bucketing && !way_data.refs.is_empty() {
+            // Tile bucketing enabled: compute tile from first node
+            let first_node_id = way_data.refs[0];
+            
+            // Try cache first
+            if let Some(rep_id) = self.cache.get(first_node_id) {
+                // Get the representative node's position (assuming it's stored)
+                if let Ok(Some(rep_id)) = node_index.get(rep_id) {
+                    // For now, use a simple hash-based tile assignment
+                    // In production, we'd look up the actual coordinates
+                    let tile_key = ((rep_id / 1000000) as i32, (rep_id / 10000000) as i32);
+                    way_data.tile_key = Some(tile_key);
+                    
+                    // Add to tile queue
+                    let tile_queue = self.tile_queues.entry(tile_key)
+                        .or_insert_with(|| TileQueue::new(tile_key));
+                    tile_queue.add_way(way_data);
+                    
+                    // Check if this tile should be flushed
+                    if tile_queue.should_flush(self.config.max_ways / 4, self.config.max_unique_nodes / 4) {
+                        self.flush_tile(tile_key, node_index, pbf_writer)?;
+                    }
+                    
+                    // Check if we have too many tiles in memory
+                    if self.tile_queues.len() > self.config.max_tiles_in_memory {
+                        self.flush_largest_tile(node_index, pbf_writer)?;
+                    }
+                    
+                    return Ok(());
+                }
+            }
+        }
+        
+        // Fall back to non-tiled batching
         for &node_id in &way_data.refs {
             self.current_batch.unique_node_ids.insert(node_id);
         }
         
-        // Add way to batch
         self.current_batch.ways.push(way_data);
-        
-        // Estimate memory usage (rough approximation)
-        self.current_batch.total_size_estimate += 100; // Base way overhead
+        self.current_batch.total_size_estimate += 100;
         
         // Check if batch is full
         if self.should_flush_batch() {
@@ -305,6 +389,64 @@ impl WayBatcher {
         self.current_batch = WayBatch::new();
         
         Ok(ways_written as u64)
+    }
+
+    /// Flush a specific tile
+    fn flush_tile(
+        &mut self,
+        tile_key: (i32, i32),
+        node_index: &Arc<NodeIndex>,
+        pbf_writer: &mut PbfWriter,
+    ) -> Result<()> {
+        if let Some(tile_queue) = self.tile_queues.remove(&tile_key) {
+            log::debug!("Flushing tile {:?} with {} ways", tile_key, tile_queue.ways.len());
+            
+            // Convert tile queue to batch and flush
+            let mut batch = WayBatch {
+                ways: tile_queue.ways,
+                unique_node_ids: tile_queue.unique_nodes,
+                total_size_estimate: tile_queue.size_estimate,
+            };
+            
+            // Swap with current batch temporarily
+            std::mem::swap(&mut self.current_batch, &mut batch);
+            let ways_written = self.flush_batch(node_index, pbf_writer)?;
+            std::mem::swap(&mut self.current_batch, &mut batch);
+            
+            self.total_ways_written += ways_written;
+        }
+        Ok(())
+    }
+    
+    /// Flush the largest tile to free memory
+    fn flush_largest_tile(
+        &mut self,
+        node_index: &Arc<NodeIndex>,
+        pbf_writer: &mut PbfWriter,
+    ) -> Result<()> {
+        // Find the largest tile
+        let largest_tile = self.tile_queues
+            .iter()
+            .max_by_key(|(_, queue)| queue.ways.len())
+            .map(|(key, _)| *key);
+            
+        if let Some(tile_key) = largest_tile {
+            self.flush_tile(tile_key, node_index, pbf_writer)?;
+        }
+        Ok(())
+    }
+    
+    /// Flush all remaining tiles
+    pub fn flush_all_tiles(
+        &mut self,
+        node_index: &Arc<NodeIndex>,
+        pbf_writer: &mut PbfWriter,
+    ) -> Result<()> {
+        let tile_keys: Vec<_> = self.tile_queues.keys().cloned().collect();
+        for tile_key in tile_keys {
+            self.flush_tile(tile_key, node_index, pbf_writer)?;
+        }
+        Ok(())
     }
 
     /// Get total ways written across all batches

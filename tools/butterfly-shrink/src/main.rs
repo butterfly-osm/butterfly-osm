@@ -189,6 +189,9 @@ fn main() -> anyhow::Result<()> {
         max_ways: config.batch_ways,
         max_unique_nodes: config.batch_unique_nodes,
         cache_capacity: config.lru_cache_size,
+        enable_tile_bucketing: config.enable_tile_bucketing,
+        tile_grid_degrees: config.tile_grid_degrees,
+        max_tiles_in_memory: config.max_tiles_in_memory,
     };
     
     let mut processor = Processor::new(config, node_index)
