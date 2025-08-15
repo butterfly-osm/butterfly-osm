@@ -1,0 +1,65 @@
+syntax = "proto2";
+
+option java_package = "crosby.binary";
+package OSMPBF;
+
+message HeaderBlock {
+  optional string writingprogram = 16;
+  optional string source = 17;
+}
+
+message PrimitiveBlock {
+  required StringTable stringtable = 1;
+  repeated PrimitiveGroup primitivegroup = 2;
+  optional int32 granularity = 17 [default=100];
+  optional int64 lat_offset = 19 [default=0];
+  optional int64 lon_offset = 20 [default=0];
+  optional int32 date_granularity = 18 [default=1000];
+}
+
+message PrimitiveGroup {
+  repeated Node nodes = 1;
+  optional DenseNodes dense = 2;
+  repeated Way ways = 3;
+  repeated Relation relations = 4;
+}
+
+message StringTable {
+  repeated bytes s = 1;
+}
+
+message Node {
+  required sint64 id = 1;
+  repeated uint32 keys = 2 [packed = true];
+  repeated uint32 vals = 3 [packed = true];
+  required sint64 lat = 8;
+  required sint64 lon = 9;
+}
+
+message DenseNodes {
+  repeated sint64 id = 1 [packed = true];
+  repeated sint64 lat = 8 [packed = true];
+  repeated sint64 lon = 9 [packed = true];
+  repeated int32 keys_vals = 10 [packed = true];
+}
+
+message Way {
+  required int64 id = 1;
+  repeated uint32 keys = 2 [packed = true];
+  repeated uint32 vals = 3 [packed = true];
+  repeated sint64 refs = 8 [packed = true];
+}
+
+message Relation {
+  enum MemberType {
+    NODE = 0;
+    WAY = 1;
+    RELATION = 2;
+  }
+  required int64 id = 1;
+  repeated uint32 keys = 2 [packed = true];
+  repeated uint32 vals = 3 [packed = true];
+  repeated int32 roles_sid = 8 [packed = true];
+  repeated sint64 memids = 9 [packed = true];
+  repeated MemberType types = 10 [packed = true];
+}

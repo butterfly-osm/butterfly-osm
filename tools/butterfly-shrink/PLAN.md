@@ -8,18 +8,20 @@ This document describes the production-ready design for butterfly-shrink, a tool
 - Removing non-routing data  
 - Collapsing nodes to a fixed grid resolution
 - Maintaining full compatibility with OSRM, Valhalla, GraphHopper
-- Supporting true single-pass streaming
+- Supporting true single-pass streaming with parallel processing
 
 **Key Design Decisions**:
 - **Grid**: Fixed resolution (1/2/5/10m) - NOT dynamic/adaptive
 - **Index**: RocksDB only - NOT custom binary format
 - **Errors**: Fail-fast on corruption - NO forward reference buffering
+- **Parallelism**: Multi-threaded processing with ordered output
 
 **Key Constraints**:
 - Memory usage: <200MB active RAM (plus RocksDB managed memory)
 - Single-pass processing for streaming compatibility
 - Standard PBF output readable by any OSM tool
 - Optimized for pipeline use with butterfly-dl
+- Multi-core utilization while maintaining stream ordering
 
 ---
 
@@ -28,11 +30,13 @@ This document describes the production-ready design for butterfly-shrink, a tool
 ### 1.1 What It Does
 
 1. **Single-pass streaming**: Process PBF data in order (nodes → ways → relations)
-2. **Fixed grid snapping**: Configurable resolution (1/2/5/10m) with latitude-aware scaling
-3. **Routing data extraction**: Keep only highway ways, turn restrictions, and essential tags
-4. **Node deduplication**: Merge nodes in same grid cell using consistent rules
-5. **Flexible I/O**: Support file input/output and stdin/stdout streaming
-6. **Direct I/O**: Optional O_DIRECT for large files (Unix only)
+2. **Parallel processing**: Multi-threaded architecture for CPU utilization
+3. **Fixed grid snapping**: Configurable resolution (1/2/5/10m) with latitude-aware scaling
+4. **Routing data extraction**: Keep only highway ways, turn restrictions, and essential tags
+5. **Node deduplication**: Merge nodes in same grid cell using consistent rules
+6. **Flexible I/O**: Support file input/output and stdin/stdout streaming
+7. **Direct I/O**: Optional O_DIRECT for large files (Unix only)
+8. **Metadata preservation**: Add data lineage to output PBF header
 
 ### 1.2 Output Characteristics
 
@@ -41,6 +45,7 @@ This document describes the production-ready design for butterfly-shrink, a tool
 - Minimal tags: `highway`, `oneway`, turn restrictions
 - 90-98% size reduction typical
 - Full routing graph connectivity preserved
+- Metadata header with `writingprogram` and `source` tags for lineage
 
 ---
 
@@ -125,10 +130,21 @@ opts.set_compression_type(DBCompressionType::Zstd);
 opts.set_block_cache(&Cache::new_lru_cache(128_MB));
 opts.set_bloom_filter(10.0); // 10 bits per key
 opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(8));
+opts.set_optimize_filters_for_hits(true); // Most lookups will find a node
 
-// Single-threaded tuning (adjust for future parallelization)
-opts.set_max_background_jobs(2);
-opts.set_num_levels(3); // Increase if parallel writes added
+// WAL tuning for temporary database
+opts.set_wal_ttl_seconds(60); // Keep WAL for only 1 minute
+opts.set_wal_size_limit_mb(256); // Limit WAL size
+// Optional: opts.disable_wal(true) for maximum performance
+
+// Parallel processing tuning
+let num_cores = num_cpus::get();
+opts.set_max_background_jobs((num_cores / 4).max(2));
+opts.set_num_levels(4); // Support parallel writes
+
+// Batch write optimization
+opts.set_write_buffer_size(64_MB);
+opts.set_max_write_buffer_number(3);
 ```
 
 **Benefits**:
@@ -153,7 +169,39 @@ opts.set_num_levels(3); // Increase if parallel writes added
 - Auto-cleanup on exit
 - Location: `$TMPDIR/butterfly-shrink-{uuid}/`
 
-### 2.5 Highway Tag Configuration
+### 2.5 Parallel Processing Architecture
+
+**Thread design**: Multi-threaded processing while maintaining stream ordering
+- **Reader thread**: Decodes PBF blobs from input stream
+- **Worker pool**: Processes elements (snapping, RocksDB operations)
+- **Writer thread**: Outputs processed elements in correct order
+
+**Channel architecture**:
+```rust
+// Bounded channels to control memory usage
+let (decoded_tx, decoded_rx) = channel::bounded(1000);
+let (processed_tx, processed_rx) = channel::bounded(1000);
+
+// Reader -> Workers
+Reader Thread -> decoded_tx -> Worker Pool -> processed_tx -> Writer Thread
+```
+
+**Ordering guarantee**:
+- Elements tagged with sequence numbers
+- Writer buffers and reorders as needed
+- Maximum reorder window: 1000 elements
+
+**Worker pool sizing**:
+```rust
+let worker_count = num_cpus::get().min(8); // Cap at 8 workers
+```
+
+**Benefits**:
+- Better CPU utilization (2-3x speedup on multi-core)
+- I/O operations don't block processing
+- Maintains strict output ordering for PBF compliance
+
+### 2.6 Highway Tag Configuration
 
 **Built-in presets**:
 ```bash
@@ -196,10 +244,31 @@ restrictions:
 ### 3.1 Initialization
 
 1. **Validate inputs**: Check grid size (1-20m), verify paths
-2. **Disk space check**: Ensure adequate space in $TMPDIR
-3. **Create RocksDB**: `$TMPDIR/butterfly-shrink-{uuid}/node_index/`
-4. **Open streams**: PBF reader (file/stdin), writer (file/stdout)
-5. **Load configuration**: Built-in preset or custom YAML
+2. **Tmpfs detection**: Check if $TMPDIR is RAM-backed filesystem
+3. **Disk space check**: Ensure adequate space in $TMPDIR
+4. **Create RocksDB**: `$TMPDIR/butterfly-shrink-{uuid}/node_index/`
+5. **Open streams**: PBF reader (file/stdin), writer (file/stdout)
+6. **Load configuration**: Built-in preset or custom YAML
+7. **Setup parallelism**: Initialize thread pool and channels
+8. **Write metadata**: Add lineage info to output PBF header
+
+**Tmpfs detection**:
+```rust
+fn check_tmpfs(path: &Path) -> bool {
+    // Linux: Check /proc/mounts for tmpfs
+    // macOS: Check mount output for tmpfs/ramfs
+    // Warning if detected, but continue
+}
+```
+
+**Output metadata**:
+```rust
+header.set_writingprogram("butterfly-shrink v0.1.0");
+if let Some(source) = input_metadata.get("source") {
+    header.set_source(source);
+}
+header.set_timestamp(SystemTime::now());
+```
 
 **Startup messages**:
 ```
@@ -208,13 +277,18 @@ Estimated space needed: ~15GB
 Available space: 42.3GB
 Grid resolution: 5m
 Highway preset: car
+Parallel workers: 8
 
-WARNING: Ensure TMPDIR points to disk-backed storage (not tmpfs)
-Verbose mode: RocksDB using compression=zstd, cache=128MB
+WARNING: TMPDIR appears to be tmpfs (RAM-backed)
+  Current: /tmp (tmpfs filesystem detected)
+  Action: export TMPDIR=/mnt/ssd/tmp
+  
+Verbose mode: RocksDB using compression=zstd, cache=128MB, WAL=limited
 ```
 
 ### 3.2 Node Processing
 
+**Single-threaded flow** (for reference):
 ```
 For each node:
   1. Extract ID and coordinates
@@ -225,6 +299,35 @@ For each node:
      - No: This node becomes representative
   5. Store mapping in RocksDB
   6. Write node to output (snapped coordinates)
+```
+
+**Parallel flow**:
+```
+Reader thread:
+  - Decode PBF blobs
+  - Tag with sequence number
+  - Send to worker pool via channel
+
+Worker threads:
+  - Receive batch of nodes
+  - Apply grid snapping
+  - Batch RocksDB operations (write_batch)
+  - Send to writer via channel
+
+Writer thread:
+  - Buffer and reorder by sequence
+  - Write dense node blocks
+  - Maintain output ordering
+```
+
+**Batch optimization**:
+```rust
+// Collect node mappings in batches
+let mut batch = WriteBatch::default();
+for (original_id, representative_id) in mappings.iter() {
+    batch.put(original_id.to_be_bytes(), representative_id.to_be_bytes());
+}
+db.write(batch)?; // Single write operation
 ```
 
 **Representative selection**: First node in each cell wins (deterministic by input order)
@@ -332,10 +435,10 @@ TMPDIR=/fast/nvme butterfly-shrink planet.pbf planet-routing.pbf
 ## 5. Performance Characteristics
 
 ### Processing Speed (Expected)
-- Nodes: 2-3M/second
-- Ways: 400-500K/second  
+- Nodes: 4-6M/second (with parallel processing)
+- Ways: 800K-1M/second (with parallel lookups)
 - Relations: 50-100K/second
-- Planet processing: ~4 hours
+- Planet processing: ~2-3 hours (multi-core system)
 
 ### Resource Usage
 - Active RAM: <200MB constant

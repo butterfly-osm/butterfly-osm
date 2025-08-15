@@ -96,7 +96,7 @@ fn test_cli_help_works() {
         .success()
         .stdout(predicate::str::contains("butterfly-shrink"))
         .stdout(predicate::str::contains(
-            "A tool to shrink OpenStreetMap data",
+            "Transform OSM PBF files into minimal routing-ready versions",
         ));
 }
 

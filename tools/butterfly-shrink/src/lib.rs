@@ -3,9 +3,24 @@
 //! This library provides functionality to read and write OpenStreetMap PBF files,
 //! with the ability to filter and shrink the data.
 
+pub mod batch;
+pub mod cache;
+pub mod config;
+pub mod db;
+pub mod parallel;
+pub mod processor;
+pub mod telemetry;
+pub mod writer;
+
+// Protobuf modules
+pub mod proto;
+
 use butterfly_common::{Error, Result};
 use osmpbf::{Element, ElementReader};
 use std::path::Path;
+
+pub use config::{Config, Preset};
+pub use processor::{Processor, Stats};
 
 /// Snap a coordinate to a fixed grid with latitude-aware scaling
 ///
@@ -32,7 +47,8 @@ pub fn snap_coordinate(lat: f64, lon: f64, grid_meters: f64) -> (i64, i64) {
     // Accurate longitude scaling: 111_320m × cos(lat) at equator
     // At extreme latitudes (>85°), grid cells become very narrow E-W
     // This is correct behavior - maintains proper distances
-    let cos_lat = lat_clamped.to_radians().cos().max(0.001); // Min ~89.9°
+    // Use the actual latitude for cosine calculation to get proper scale at that location
+    let cos_lat = lat.to_radians().cos().abs().max(0.001); // Min ~89.9°
     let lon_scale = grid_meters / (111_320.0 * cos_lat);
 
     // Snap to cell center (floor + 0.5)

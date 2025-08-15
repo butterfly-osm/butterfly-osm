@@ -44,8 +44,9 @@ cargo test --lib   # no tests yet, but must compile
 
 ### #2 PBF Reader & Writer Skeleton 🏷 core  🚩 blocked‑by #1
 
-* Add `pbf-craft` dependency.
+* Add `pbf` crate dependency (actively maintained, supports read/write).
 * Stream input file & echo nodes to output.
+* Add metadata support (writingprogram, source tags).
 
 **DoD**
 
@@ -86,23 +87,30 @@ fn echo_roundtrip() {
 ### #4 RocksDB Integration 🏷 core  🚩 blocked‑by #1
 
 * Add `rocksdb` crate, open temp dir.
-* Basic put/get round‑trip.
+* Configure with optimizations (WAL tuning, batch writes, optimize_for_hits).
+* Basic put/get round‑trip with batch operations.
+* Implement tmpfs detection and warning.
 
 **DoD**
 
-* Unit test writes 100k random keys and reads them back successfully.
+* Unit test writes 100k random keys using batch operations and reads them back successfully.
 * RocksDB temp directory is created inside `$TMPDIR/butterfly-shrink-{uuid}/`.
+* Tmpfs detection works on Linux and macOS.
 
 ---
 
 ### #5 Node Streaming Pipeline 🏷 core  🚩 blocked‑by #2 #3 #4 🔗 blocks #6
 
-* Read nodes, snap, dedup via RocksDB, write dense nodes.
+* Implement parallel architecture: reader thread, worker pool, writer thread.
+* Read nodes, snap, dedup via RocksDB using batch operations.
+* Write dense nodes with proper ordering.
+* Add sequence numbering for order preservation.
 
 **DoD**
 
 * `cargo run tests/berlin-mini.pbf out.pbf` finishes successfully.
 * Output node count is less than input node count.
+* Parallel processing maintains correct element ordering.
 * Temp directory is automatically cleaned up on success or failure.
 
 **Tests**
