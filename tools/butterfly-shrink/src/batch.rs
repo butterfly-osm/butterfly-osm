@@ -81,7 +81,7 @@ impl Default for BatchConfig {
 /// A batch of ways to be processed together
 pub struct WayBatch {
     ways: Vec<WayData>,
-    unique_node_ids: HashSet<i64>,
+    unique_node_ids: Vec<i64>,  // Will be sorted and deduped
     total_size_estimate: usize,
 }
 
@@ -108,7 +108,7 @@ impl From<&osmpbf::Way<'_>> for WayData {
 struct TileQueue {
     tile_key: (i32, i32),
     ways: Vec<WayData>,
-    unique_nodes: HashSet<i64>,
+    unique_nodes: Vec<i64>,  // Will be sorted and deduped on flush
     size_estimate: usize,
 }
 
@@ -117,23 +117,25 @@ impl TileQueue {
         Self {
             tile_key,
             ways: Vec::new(),
-            unique_nodes: HashSet::new(),
+            unique_nodes: Vec::new(),
             size_estimate: 0,
         }
     }
     
     fn add_way(&mut self, mut way: WayData) {
         way.tile_key = Some(self.tile_key);
-        for &node_id in &way.refs {
-            self.unique_nodes.insert(node_id);
-        }
+        // Just append all node IDs, deduplicate on flush
+        self.unique_nodes.extend(&way.refs);
         self.size_estimate += 100 + way.refs.len() * 8;
         self.ways.push(way);
     }
     
     fn should_flush(&self, max_ways: usize, max_nodes: usize) -> bool {
+        // Estimate unique nodes (assume 50% duplication)
+        let estimated_unique = self.unique_nodes.len() / 2;
+        
         self.ways.len() >= max_ways || 
-        self.unique_nodes.len() >= max_nodes ||
+        estimated_unique >= max_nodes ||
         self.size_estimate >= 32 * 1024 * 1024  // 32MB per tile
     }
 }
@@ -242,9 +244,8 @@ impl WayBatcher {
         }
         
         // Fall back to non-tiled batching
-        for &node_id in &way_data.refs {
-            self.current_batch.unique_node_ids.insert(node_id);
-        }
+        // Just append all node IDs, we'll deduplicate later
+        self.current_batch.unique_node_ids.extend(&way_data.refs);
         
         self.current_batch.ways.push(way_data);
         self.current_batch.total_size_estimate += 100;
@@ -260,8 +261,12 @@ impl WayBatcher {
 
     /// Check if the current batch should be flushed
     fn should_flush_batch(&self) -> bool {
+        // Since we don't deduplicate until flush, use a rough estimate
+        // Assume ~50% duplication rate for node IDs
+        let estimated_unique = self.current_batch.unique_node_ids.len() / 2;
+        
         self.current_batch.ways.len() >= self.config.max_ways ||
-        self.current_batch.unique_node_ids.len() >= self.config.max_unique_nodes ||
+        estimated_unique >= self.config.max_unique_nodes ||
         self.current_batch.total_size_estimate >= 64 * 1024 * 1024 // 64MB
     }
 
@@ -277,16 +282,16 @@ impl WayBatcher {
 
         let timer = Timer::new();
         
-        // Collect unique node IDs, sorted for better locality
-        let mut unique_nodes: Vec<i64> = self.current_batch.unique_node_ids.iter().cloned().collect();
-        unique_nodes.sort_unstable();
+        // Deduplicate and sort node IDs for better locality
+        self.current_batch.deduplicate_nodes();
+        let unique_nodes = &self.current_batch.unique_node_ids;
         
         // Check cache first for all nodes
         let mut cache_hits = 0;
         let mut cache_misses = Vec::new();
         let mut cached_mappings = HashMap::new();
         
-        for &node_id in &unique_nodes {
+        for &node_id in unique_nodes {
             if let Some(rep_id) = self.cache.get(node_id) {
                 cached_mappings.insert(node_id, rep_id);
                 cache_hits += 1;
@@ -467,8 +472,14 @@ impl WayBatch {
     fn new() -> Self {
         Self {
             ways: Vec::new(),
-            unique_node_ids: HashSet::new(),
+            unique_node_ids: Vec::new(),
             total_size_estimate: 0,
         }
+    }
+    
+    /// Sort and deduplicate node IDs
+    fn deduplicate_nodes(&mut self) {
+        self.unique_node_ids.sort_unstable();
+        self.unique_node_ids.dedup();
     }
 }
