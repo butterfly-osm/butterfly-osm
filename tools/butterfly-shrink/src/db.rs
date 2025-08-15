@@ -8,52 +8,112 @@ use rocksdb::{
 use std::path::Path;
 use std::collections::HashMap;
 
+/// Configuration for different phases of processing
+#[derive(Debug, Clone)]
+pub enum PhaseMode {
+    /// Write-heavy mode for node ingestion
+    WriteHeavy,
+    /// Read-optimized mode for way processing
+    ReadOptimized,
+}
+
 pub struct NodeIndex {
     db: DB,
     cell_cf: String,
     node_cf: String,
+    #[allow(dead_code)]
+    phase_mode: PhaseMode,
 }
 
 impl NodeIndex {
-    pub fn new(path: &Path, cache_mb: usize) -> Result<Self> {
+    /// Create a new NodeIndex optimized for write-heavy phase (node ingestion)
+    pub fn new_for_writes(path: &Path) -> Result<Self> {
+        Self::new_with_mode(path, PhaseMode::WriteHeavy, 128)
+    }
+    
+    /// Create a new NodeIndex optimized for read-heavy phase (way processing)
+    pub fn new_for_reads(path: &Path, cache_mb: usize) -> Result<Self> {
+        Self::new_with_mode(path, PhaseMode::ReadOptimized, cache_mb)
+    }
+    
+    /// Create with explicit phase mode configuration
+    pub fn new_with_mode(path: &Path, mode: PhaseMode, cache_mb: usize) -> Result<Self> {
         let mut opts = Options::default();
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
         
-        // Optimize for point lookups (per plan)
-        opts.optimize_for_point_lookup(cache_mb as u64);
+        // Phase-specific configuration
+        match mode {
+            PhaseMode::WriteHeavy => {
+                // Optimize for writes during node ingestion
+                opts.set_write_buffer_size(64 * 1024 * 1024); // 64MB write buffer
+                opts.set_max_write_buffer_number(3);
+                opts.set_min_write_buffer_number_to_merge(2);
+                
+                // Faster writes - use only None and Zstd which are always available
+                opts.set_compression_per_level(&[
+                    DBCompressionType::None,    // L0: No compression for fast writes
+                    DBCompressionType::None,    // L1: No compression for speed
+                    DBCompressionType::Zstd,    // L2: Start compression
+                    DBCompressionType::Zstd,    // L3+: Better compression
+                    DBCompressionType::Zstd,
+                    DBCompressionType::Zstd,
+                    DBCompressionType::Zstd,
+                ]);
+                
+                // Aggressive parallelism for writes
+                let num_cores = num_cpus::get();
+                opts.set_max_background_jobs(num_cores.max(4) as i32);
+                opts.increase_parallelism(num_cores as i32);
+                
+                // More aggressive flushing
+                opts.set_bytes_per_sync(4 * 1024 * 1024); // 4MB
+                
+                // Block-based options for writes
+                let mut block_opts = BlockBasedOptions::default();
+                block_opts.set_block_size(64 * 1024); // 64KB blocks for writes
+                block_opts.set_format_version(5); // Latest format
+                opts.set_block_based_table_factory(&block_opts);
+            }
+            
+            PhaseMode::ReadOptimized => {
+                // Optimize for point lookups during way processing
+                opts.optimize_for_point_lookup(cache_mb as u64);
+                
+                // Block-based table options for reads
+                let cache = Cache::new_lru_cache(cache_mb * 1024 * 1024);
+                let mut block_opts = BlockBasedOptions::default();
+                block_opts.set_block_cache(&cache);
+                block_opts.set_bloom_filter(10.0, false); // 10 bits per key
+                block_opts.set_block_size(8 * 1024); // 8KB blocks for point lookups
+                block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
+                block_opts.set_cache_index_and_filter_blocks(true);
+                block_opts.set_format_version(5);
+                opts.set_block_based_table_factory(&block_opts);
+                
+                // Smaller write buffer for read phase
+                opts.set_write_buffer_size(16 * 1024 * 1024); // 16MB
+                opts.set_max_write_buffer_number(2);
+                
+                // Uniform compression for read phase
+                opts.set_compression_type(DBCompressionType::Zstd);
+                
+                // Moderate parallelism
+                let num_cores = num_cpus::get();
+                opts.set_max_background_jobs((num_cores / 2).max(2) as i32);
+                
+                // Less aggressive sync for reads
+                opts.set_bytes_per_sync(1024 * 1024); // 1MB
+            }
+        }
         
-        // Block-based table options for point lookups
-        let cache = Cache::new_lru_cache(cache_mb * 1024 * 1024);
-        let mut block_opts = BlockBasedOptions::default();
-        block_opts.set_block_cache(&cache);
-        block_opts.set_bloom_filter(10.0, false);
-        block_opts.set_block_size(8 * 1024); // 8KB blocks for point lookups
-        block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
-        opts.set_block_based_table_factory(&block_opts);
-        
-        // Write buffer optimization
-        opts.set_write_buffer_size(32 * 1024 * 1024); // 32MB
-        opts.set_max_write_buffer_number(3);
-        
-        // Compression settings - use Zstd which is available
-        opts.set_compression_type(DBCompressionType::Zstd);
-        
-        // Level compaction with dynamic level bytes
+        // Common settings for both modes
         opts.set_level_compaction_dynamic_level_bytes(true);
-        
-        // I/O optimization
-        opts.set_bytes_per_sync(1024 * 1024); // 1MB
-        
-        // Parallelism
-        let num_cores = num_cpus::get();
-        opts.set_max_background_jobs((num_cores / 2).max(2) as i32);
-        opts.increase_parallelism(num_cores as i32);
-        
-        // Open files optimization
         opts.set_max_open_files(-1);
+        opts.set_use_direct_reads(true);
+        opts.set_use_direct_io_for_flush_and_compaction(true);
         
-        // Column families
+        // Column families with same options
         let node_cf_name = "nodes".to_string();
         let cell_cf_name = "cells".to_string();
         
@@ -68,7 +128,13 @@ impl NodeIndex {
             db,
             node_cf: node_cf_name,
             cell_cf: cell_cf_name,
+            phase_mode: mode,
         })
+    }
+    
+    /// Legacy constructor for compatibility
+    pub fn new(path: &Path, cache_mb: usize) -> Result<Self> {
+        Self::new_for_reads(path, cache_mb)
     }
     
     /// Store a mapping from original node ID to representative node ID
@@ -198,17 +264,40 @@ impl NodeIndex {
             .context("Failed to check node existence")
     }
     
-    /// Compact the database for optimal read performance
+    /// Compact the database for optimal read performance at phase boundary
     pub fn compact_for_reads(&self) -> Result<()> {
-        log::info!("Compacting RocksDB for optimal read performance...");
+        log::info!("Starting phase boundary compaction...");
+        let start = std::time::Instant::now();
         
-        // Flush all memtables to SST files
+        // First flush all memtables to SST files
+        log::debug!("Flushing memtables...");
         self.db.flush()?;
         
-        // Compact all levels to optimize SST layout
+        // Get column family handles
+        let node_cf = self.db.cf_handle(&self.node_cf).context("Failed to get node column family")?;
+        let cell_cf = self.db.cf_handle(&self.cell_cf).context("Failed to get cell column family")?;
+        
+        // Compact both column families completely
+        log::debug!("Compacting node column family...");
+        self.db.compact_range_cf(node_cf, None::<&[u8]>, None::<&[u8]>);
+        
+        log::debug!("Compacting cell column family...");
+        self.db.compact_range_cf(cell_cf, None::<&[u8]>, None::<&[u8]>);
+        
+        // Also compact the default column family if any data exists there
         self.db.compact_range::<&[u8], &[u8]>(None, None);
         
-        log::info!("RocksDB compaction completed");
+        let elapsed = start.elapsed();
+        log::info!("RocksDB compaction completed in {:.2}s", elapsed.as_secs_f64());
+        
+        // Log some stats about the compaction
+        if let Some(sst_files) = self.get_property("rocksdb.num-files-at-level0") {
+            log::debug!("L0 SST files after compaction: {}", sst_files);
+        }
+        if let Some(total_size) = self.get_property("rocksdb.total-sst-files-size") {
+            log::debug!("Total SST size: {} MB", total_size / (1024 * 1024));
+        }
+        
         Ok(())
     }
     

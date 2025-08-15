@@ -1,5 +1,6 @@
 use butterfly_shrink::{Config, Preset, Processor};
-use butterfly_shrink::db::NodeIndex;
+use butterfly_shrink::batch::BatchConfig;
+use butterfly_shrink::db::{NodeIndex, PhaseMode};
 use butterfly_shrink::processor::check_tmpfs;
 use clap::Parser;
 use std::path::PathBuf;
@@ -45,6 +46,42 @@ struct Cli {
     /// Number of parallel workers
     #[arg(short = 'j', long)]
     workers: Option<usize>,
+    
+    // Cache configuration
+    /// LRU cache size in MB for node mappings (default: 128)
+    #[arg(long, default_value = "128")]
+    cache_mb: usize,
+    
+    /// RocksDB block cache size in MB (default: 128)
+    #[arg(long, default_value = "128")]
+    db_cache_mb: usize,
+    
+    // Batching configuration
+    /// Maximum ways per batch (default: 50000)
+    #[arg(long, default_value = "50000")]
+    batch_ways: usize,
+    
+    /// Maximum unique node IDs per batch (default: 1500000)
+    #[arg(long, default_value = "1500000")]
+    batch_ids: usize,
+    
+    // Compression configuration
+    /// Zstd compression level 1-22 (default: 6)
+    #[arg(long, default_value = "6")]
+    zstd: u32,
+    
+    // Optional features
+    /// Disable compaction at phase boundary
+    #[arg(long)]
+    no_compact: bool,
+    
+    /// Enable tile bucketing for ways (experimental)
+    #[arg(long)]
+    tile_bucket: bool,
+    
+    /// Disable autotuning
+    #[arg(long)]
+    no_autotune: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -73,9 +110,28 @@ fn main() -> anyhow::Result<()> {
     config.grid_size_m = cli.grid;
     config.direct_io = cli.direct_io;
     
+    // Cache settings
+    config.set_cache_mb(cli.cache_mb);
+    config.db_cache_mb = cli.db_cache_mb;
+    
+    // Batching settings
+    config.batch_ways = cli.batch_ways;
+    config.batch_unique_nodes = cli.batch_ids;
+    
+    // Compression settings
+    config.zstd_level = cli.zstd.min(22);
+    
+    // Optional features
+    config.compact_after_nodes = !cli.no_compact;
+    config.enable_tile_bucketing = cli.tile_bucket;
+    config.enable_autotuning = !cli.no_autotune;
+    
     if let Some(workers) = cli.workers {
         config.num_workers = workers;
     }
+    
+    // Validate configuration
+    config.validate();
     
     // Apply preset
     if let Some(preset_str) = &cli.preset {
@@ -100,11 +156,11 @@ fn main() -> anyhow::Result<()> {
         log::warn!("  Action: export TMPDIR=/mnt/ssd/tmp");
     }
     
-    // Create RocksDB index
+    // Create RocksDB index with write-optimized settings for node phase
     let db_path = tmp_dir.join("node_index");
     log::info!("Using RocksDB at {}", db_path.display());
     
-    let node_index = NodeIndex::new(&db_path, config.rocksdb_cache_mb)?;
+    let node_index = NodeIndex::new_with_mode(&db_path, PhaseMode::WriteHeavy, config.db_cache_mb)?;
     
     // Process the file
     let input_path = if cli.input == "-" {
@@ -119,11 +175,24 @@ fn main() -> anyhow::Result<()> {
         PathBuf::from(&cli.output)
     };
     
-    log::info!("Grid resolution: {}m", config.grid_size_m);
-    log::info!("Highway preset: {:?}", cli.preset.as_deref().unwrap_or("car"));
-    log::info!("Parallel workers: {}", config.num_workers);
+    log::info!("Configuration:");
+    log::info!("  Grid resolution: {}m", config.grid_size_m);
+    log::info!("  Highway preset: {:?}", cli.preset.as_deref().unwrap_or("car"));
+    log::info!("  Cache: {}MB LRU, {}MB RocksDB", config.cache_mb, config.db_cache_mb);
+    log::info!("  Batching: {} ways, {} unique nodes", config.batch_ways, config.batch_unique_nodes);
+    log::info!("  Compression: Zstd level {}", config.zstd_level);
+    log::info!("  Features: compact={}, tile={}, autotune={}", 
+        config.compact_after_nodes, config.enable_tile_bucketing, config.enable_autotuning);
     
-    let mut processor = Processor::new(config, node_index);
+    // Create batch configuration
+    let batch_config = BatchConfig {
+        max_ways: config.batch_ways,
+        max_unique_nodes: config.batch_unique_nodes,
+        cache_capacity: config.lru_cache_size,
+    };
+    
+    let mut processor = Processor::new(config, node_index)
+        .with_batch_config(batch_config);
     let stats = processor.process(&input_path, &output_path)?;
     
     // Print statistics

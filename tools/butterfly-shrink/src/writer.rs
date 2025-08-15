@@ -216,7 +216,7 @@ impl PbfWriter {
         let writer = BufWriter::with_capacity(buffer_size, file);
         let granularity = 100; // 100 nanodegrees = ~1cm precision
         let builder = PrimitiveBuilder::new(granularity);
-        let compression_level = Compression::new(config.pbf_compression_level);
+        let compression_level = Compression::new(config.zstd_level);
         let max_block_elements = (config.pbf_block_size_kb * 1024 / 100).max(1000); // Estimate ~100 bytes per element
 
         Ok(Self {

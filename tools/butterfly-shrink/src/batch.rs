@@ -25,7 +25,7 @@ impl BatchConfig {
         let max_unique_nodes = (memory_bytes / 24).min(1_500_000); // Cap at 1.5M for safety
         
         Self {
-            max_ways: config.batch_size,
+            max_ways: config.batch_ways,
             max_unique_nodes,
             cache_capacity: config.lru_cache_size,
         }

@@ -88,3 +88,4 @@
 5. **Release**
 
    * Update CHANGELOG; tag with semantic version; build artifacts.
+- stop with wget from geofabrik. Use butterfly-dl !!
