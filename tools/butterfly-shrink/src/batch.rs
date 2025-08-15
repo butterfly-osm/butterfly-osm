@@ -12,25 +12,24 @@ use std::sync::Arc;
 /// Configuration for batching behavior
 #[derive(Debug, Clone)]
 pub struct BatchConfig {
-    pub max_ways: usize,           // Max ways per batch (e.g., 50k)
-    pub max_unique_nodes: usize,   // Max unique node IDs per batch (e.g., 1.5M)
-    pub cache_capacity: usize,     // LRU cache size (e.g., 2-4M entries)
-    pub enable_tile_bucketing: bool,  // Enable spatial tile bucketing
-    pub tile_grid_degrees: f64,    // Tile size in degrees (e.g., 0.1)
+    pub max_ways: usize,           // Max ways per batch (hard limit)
+    pub max_unique_nodes: usize,   // Max unique node IDs per batch (hard limit)
+    pub cache_capacity: usize,     // LRU cache size
+    pub batch_memory_limit_mb: usize, // Max memory per batch in MB (hard limit)
+    pub max_multiget_keys: usize,  // Max keys per MultiGet call
+    pub enable_tile_bucketing: bool,  // Enable spatial tile bucketing (disabled)
+    pub tile_grid_degrees: f64,    // Tile size in degrees
     pub max_tiles_in_memory: usize,   // Max tiles to keep in memory
 }
 
 impl BatchConfig {
     pub fn from_config(config: &Config) -> Self {
-        // Calculate max unique nodes based on memory limit
-        // Assume each unique node costs ~24 bytes (8 bytes ID + 16 bytes overhead)
-        let memory_bytes = config.batch_memory_limit_mb * 1024 * 1024;
-        let max_unique_nodes = (memory_bytes / 24).min(1_500_000); // Cap at 1.5M for safety
-        
         Self {
             max_ways: config.batch_ways,
-            max_unique_nodes,
+            max_unique_nodes: config.batch_unique_nodes,
             cache_capacity: config.lru_cache_size,
+            batch_memory_limit_mb: config.batch_memory_limit_mb,
+            max_multiget_keys: config.max_multiget_keys,
             enable_tile_bucketing: config.enable_tile_bucketing,
             tile_grid_degrees: config.tile_grid_degrees,
             max_tiles_in_memory: config.max_tiles_in_memory,
@@ -244,11 +243,14 @@ impl WayBatcher {
         }
         
         // Fall back to non-tiled batching
-        // Just append all node IDs, we'll deduplicate later
+        // Append node IDs and track memory usage
+        let refs_count = way_data.refs.len();
         self.current_batch.unique_node_ids.extend(&way_data.refs);
         
         self.current_batch.ways.push(way_data);
-        self.current_batch.total_size_estimate += 100;
+        
+        // Better memory estimation: way overhead + node refs
+        self.current_batch.total_size_estimate += 100 + (refs_count * 8);
         
         // Check if batch is full
         if self.should_flush_batch() {
@@ -259,15 +261,34 @@ impl WayBatcher {
         Ok(())
     }
 
-    /// Check if the current batch should be flushed
+    /// Check if the current batch should be flushed (ANY limit triggers flush)
     fn should_flush_batch(&self) -> bool {
-        // Since we don't deduplicate until flush, use a rough estimate
-        // Assume ~50% duplication rate for node IDs
-        let estimated_unique = self.current_batch.unique_node_ids.len() / 2;
+        // Count actual accumulated node IDs (before dedup)
+        let accumulated_nodes = self.current_batch.unique_node_ids.len();
         
-        self.current_batch.ways.len() >= self.config.max_ways ||
-        estimated_unique >= self.config.max_unique_nodes ||
-        self.current_batch.total_size_estimate >= 64 * 1024 * 1024 // 64MB
+        // Estimate memory usage more accurately
+        let estimated_mb = self.current_batch.total_size_estimate / (1024 * 1024);
+        
+        // Log which limit triggered flush (if any)
+        if accumulated_nodes >= self.config.max_unique_nodes {
+            log::debug!("Flushing batch: hit unique_nodes limit ({} >= {})", 
+                accumulated_nodes, self.config.max_unique_nodes);
+            return true;
+        }
+        
+        if self.current_batch.ways.len() >= self.config.max_ways {
+            log::debug!("Flushing batch: hit max_ways limit ({} >= {})", 
+                self.current_batch.ways.len(), self.config.max_ways);
+            return true;
+        }
+        
+        if estimated_mb >= self.config.batch_memory_limit_mb {
+            log::debug!("Flushing batch: hit memory limit ({}MB >= {}MB)", 
+                estimated_mb, self.config.batch_memory_limit_mb);
+            return true;
+        }
+        
+        false
     }
 
     /// Flush the current batch by processing all ways
@@ -302,20 +323,32 @@ impl WayBatcher {
             }
         }
         
-        // MultiGet for cache misses
+        // MultiGet for cache misses (chunked to avoid huge queries)
         let mut db_mappings = HashMap::new();
         if !cache_misses.is_empty() {
             let multiget_timer = Timer::new();
-            db_mappings = node_index.multi_get(&cache_misses)
-                .context("Failed to perform MultiGet on node index")?;
             
-            // Record telemetry
+            // Process in chunks to avoid memory spikes
+            let chunk_size = self.config.max_multiget_keys;
+            for chunk in cache_misses.chunks(chunk_size) {
+                let chunk_mappings = node_index.multi_get(chunk)
+                    .context("Failed to perform MultiGet on node index")?;
+                
+                // Fill cache with fetched mappings
+                for (&orig_id, &rep_id) in &chunk_mappings {
+                    self.cache.put(orig_id, rep_id);
+                }
+                
+                db_mappings.extend(chunk_mappings);
+            }
+            
+            // Record telemetry for the entire operation
             self.telemetry.record_multiget(cache_misses.len(), multiget_timer.elapsed());
             
-            // Fill cache with fetched mappings
-            for (&orig_id, &rep_id) in &db_mappings {
-                self.cache.put(orig_id, rep_id);
-            }
+            log::debug!("MultiGet: {} keys in {} chunks of max {}", 
+                cache_misses.len(), 
+                (cache_misses.len() + chunk_size - 1) / chunk_size,
+                chunk_size);
         }
         
         // Combine cached and fetched mappings

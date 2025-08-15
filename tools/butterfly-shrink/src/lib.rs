@@ -7,6 +7,7 @@ pub mod batch;
 pub mod cache;
 pub mod config;
 pub mod db;
+pub mod memory;
 pub mod parallel;
 pub mod processor;
 pub mod telemetry;

@@ -114,10 +114,11 @@ pub struct Config {
     pub direct_io: bool,
     pub compact_after_nodes: bool,        // Whether to compact at phase boundary
     
-    // Batching configuration
-    pub batch_ways: usize,                // Max ways per batch
-    pub batch_memory_limit_mb: usize,     // Max memory per batch
-    pub batch_unique_nodes: usize,        // Max unique node IDs per batch
+    // Batching configuration with hard limits
+    pub batch_ways: usize,                // Max ways per batch (hard limit)
+    pub batch_memory_limit_mb: usize,     // Max memory per batch (hard limit)
+    pub batch_unique_nodes: usize,        // Max unique node IDs per batch (hard limit)
+    pub max_multiget_keys: usize,         // Max keys per MultiGet call (chunk larger batches)
     
     // LRU cache configuration
     pub cache_mb: usize,                  // In-memory LRU cache size in MB
@@ -136,11 +137,14 @@ pub struct Config {
     // Autotuning
     pub enable_autotuning: bool,          // Enable batch size autotuning
     pub autotune_interval: usize,         // Batches between autotune checks
+    
+    // Memory management
+    pub max_memory_mb: usize,             // Max RSS before forcing flush/abort
 }
 
 impl Default for Config {
     fn default() -> Self {
-        let cache_mb = 128; // Default 128MB for LRU cache
+        let cache_mb = 64; // Default 64MB for LRU cache (reduced)
         let entry_size = 24; // ~24 bytes per entry (8 byte key + 8 byte value + overhead)
         let lru_cache_size = (cache_mb * 1024 * 1024) / entry_size;
         
@@ -151,32 +155,36 @@ impl Default for Config {
             num_workers: num_cpus::get().min(8),
             
             // RocksDB configuration
-            db_cache_mb: 128,                     // 128MB RocksDB block cache
+            db_cache_mb: 96,                      // 96MB RocksDB block cache (reduced from 128MB)
             direct_io: true,                      // Use direct I/O for better control
             compact_after_nodes: true,            // Always compact at phase boundary
             
-            // Batching configuration
-            batch_ways: 50_000,                   // 50k ways per batch
-            batch_memory_limit_mb: 150,           // 150MB max memory per batch
-            batch_unique_nodes: 1_500_000,        // 1.5M unique nodes max
+            // Batching configuration with hard limits
+            batch_ways: 50_000,                   // 50k ways per batch (hard limit)
+            batch_memory_limit_mb: 64,            // 64MB max memory per batch (hard limit)
+            batch_unique_nodes: 1_000_000,        // 1M unique nodes max (hard limit)
+            max_multiget_keys: 200_000,           // 200k keys per MultiGet (chunk larger)
             
             // LRU cache configuration
-            cache_mb,                              // 128MB LRU cache
-            lru_cache_size,                        // Calculated from cache_mb
+            cache_mb,                              // 64MB LRU cache (reduced from 128MB)
+            lru_cache_size,                        // Calculated from cache_mb above
             
             // I/O optimization
             multiget_readahead_mb: 4,             // 4MB readahead for MultiGet
             zstd_level: 6,                         // Zstd level 6 (good balance)
             pbf_block_size_kb: 256,               // 256KB blocks - good balance for most sizes
             
-            // Tile bucketing disabled by default
-            enable_tile_bucketing: false,
+            // Tile bucketing disabled (adds overhead without benefit)
+            enable_tile_bucketing: false,         // KEEP DISABLED until coordinate storage added
             tile_grid_degrees: 0.1,               // 0.1° grid (~11km at equator)
             max_tiles_in_memory: 32,              // Keep up to 32 tiles
             
             // Autotuning enabled by default
             enable_autotuning: true,
             autotune_interval: 10,                // Check every 10 batches
+            
+            // Memory management
+            max_memory_mb: 220,                   // 220MB RSS limit (soft limit)
         }
     }
 }
