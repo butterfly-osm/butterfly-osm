@@ -3,6 +3,7 @@
 //! A read-only, compressed index optimized for point lookups with tile-based locality.
 //! Fixed memory usage with hard caps, no unbounded growth.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Read, Write, Seek, SeekFrom};
 use std::path::Path;
@@ -282,32 +283,44 @@ impl BcsiReader {
     }
 }
 
-/// Fixed-size LRU block cache
+/// Fixed-size LRU block cache with O(1) lookups
 struct BlockCache {
-    entries: Vec<Option<(usize, Arc<Vec<(i64, BcsiPayload)>>)>>,
+    map: HashMap<usize, Arc<Vec<(i64, BcsiPayload)>>>,
     max_entries: usize,
     next_slot: usize,
+    // Track which blocks are in which slots for eviction
+    slot_to_block: Vec<Option<usize>>,
 }
 
 impl BlockCache {
     fn new(max_entries: usize) -> Self {
         Self {
-            entries: vec![None; max_entries],
+            map: HashMap::with_capacity(max_entries),
             max_entries,
             next_slot: 0,
+            slot_to_block: vec![None; max_entries],
         }
     }
     
     fn get(&self, block_idx: usize) -> Option<Arc<Vec<(i64, BcsiPayload)>>> {
-        self.entries.iter()
-            .filter_map(|e| e.as_ref())
-            .find(|(idx, _)| *idx == block_idx)
-            .map(|(_, block)| block.clone())
+        // O(1) lookup instead of O(n) linear scan!
+        self.map.get(&block_idx).cloned()
     }
     
     fn insert(&mut self, block_idx: usize, block: Arc<Vec<(i64, BcsiPayload)>>) {
-        // Simple ring buffer eviction
-        self.entries[self.next_slot] = Some((block_idx, block));
+        // Check if already in cache
+        if self.map.contains_key(&block_idx) {
+            return;
+        }
+        
+        // Evict old block if necessary
+        if let Some(old_block_idx) = self.slot_to_block[self.next_slot] {
+            self.map.remove(&old_block_idx);
+        }
+        
+        // Insert new block
+        self.map.insert(block_idx, block);
+        self.slot_to_block[self.next_slot] = Some(block_idx);
         self.next_slot = (self.next_slot + 1) % self.max_entries;
     }
 }

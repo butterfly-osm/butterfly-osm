@@ -46,6 +46,11 @@ benchmarks/*_butterfly.pbf
 *.tmp
 *~
 .DS_Store
+/tmp/
+
+# BCSI temporary directories
+butterfly-shrink-*
+butterfly-bcsi-*
 
 # Docker
 .dockerignore
