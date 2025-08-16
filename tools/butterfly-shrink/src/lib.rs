@@ -13,6 +13,7 @@ pub mod cache;
 pub mod config;
 pub mod db;
 pub mod debug_reader;
+pub mod debug_v2;
 pub mod external_sort;
 pub mod hot_cache;
 pub mod memory;

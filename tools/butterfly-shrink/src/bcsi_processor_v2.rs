@@ -179,87 +179,94 @@ impl BcsiProcessorV2 {
                 total_ways += 1;
                 
                 let way_refs: Vec<i64> = way.refs().collect();
-                if let Some(&first_node) = way_refs.first() {
+                
+                // Find first node that exists in BCSI (try all nodes if needed)
+                let mut tile_id = None;
+                for &node_id in &way_refs {
                     // Try hot cache first
-                    let tile_id = if let Some(rep_id) = self.hot_cache.get(first_node) {
-                        // Hot cache hit! Skip BCSI lookup
-                        compute_tile_id(rep_id, rep_id, self.config.grid_size_m)
-                    } else {
-                        // Cold - need BCSI lookup
-                        if let Ok(results) = bcsi.lookup_chunk(&[first_node]) {
-                            if let Some((_, payload)) = results.first() {
-                                // Add to hot cache for future
-                                self.hot_cache.insert(first_node, payload.rep_id);
-                                payload.tile_id
-                            } else {
-                                return;  // Node not found
-                            }
-                        } else {
-                            return;  // Lookup failed
-                        }
-                    };
+                    if let Some(rep_id) = self.hot_cache.get(node_id) {
+                        // Hot cache hit!
+                        tile_id = Some(compute_tile_id(rep_id, rep_id, self.config.grid_size_m));
+                        break;
+                    }
                     
-                    // Check if we can allocate memory for this way
-                    let estimated_bytes = way_refs.len() * 8 + 100;
+                    // Try BCSI lookup
+                    if let Ok(results) = bcsi.lookup_chunk(&[node_id]) {
+                        if let Some((_, payload)) = results.first() {
+                            // Add to hot cache for future
+                            self.hot_cache.insert(node_id, payload.rep_id);
+                            tile_id = Some(payload.tile_id);
+                            break;
+                        }
+                    }
+                }
+                
+                // Skip way if no nodes found in BCSI
+                let tile_id = match tile_id {
+                    Some(id) => id,
+                    None => return,  // No nodes in this way are representatives
+                };
+                
+                // Check if we can allocate memory for this way
+                let estimated_bytes = way_refs.len() * 8 + 100;
+                if !self.memory_tracker.try_allocate(estimated_bytes) {
+                    // Need to flush a tile first
+                    if let Some((&flush_id, _)) = tile_queues.iter()
+                        .max_by_key(|(_, q)| q.allocated_bytes()) {
+                        if let Some(mut queue) = tile_queues.remove(&flush_id) {
+                            let bytes = queue.allocated_bytes();
+                            let flushed = self.flush_tile_v2(&mut queue, &mut bcsi, &mut writer).unwrap_or(0);
+                            written_ways += flushed;
+                            self.memory_tracker.release(bytes);
+                        }
+                    }
+                    
+                    // Try again
                     if !self.memory_tracker.try_allocate(estimated_bytes) {
-                        // Need to flush a tile first
-                        if let Some((&flush_id, _)) = tile_queues.iter()
-                            .max_by_key(|(_, q)| q.allocated_bytes()) {
-                            if let Some(mut queue) = tile_queues.remove(&flush_id) {
-                                let bytes = queue.allocated_bytes();
-                                let flushed = self.flush_tile_v2(&mut queue, &mut bcsi, &mut writer).unwrap_or(0);
-                                written_ways += flushed;
-                                self.memory_tracker.release(bytes);
-                            }
-                        }
-                        
-                        // Try again
-                        if !self.memory_tracker.try_allocate(estimated_bytes) {
-                            return;  // Still can't allocate
-                        }
+                        return;  // Still can't allocate
                     }
+                }
+                
+                // Extract tags
+                let tags: Vec<(&str, &str)> = way.tags()
+                    .map(|(k, v)| (k, v))
+                    .collect();
+                
+                // Add to tile queue
+                let queue = tile_queues.entry(tile_id)
+                    .or_insert_with(|| TileQueueSlab::new());
+                
+                if !queue.add_way(way.id(), &way_refs, &tags) {
+                    // Queue full or would overflow indices
+                    let bytes = queue.allocated_bytes();
+                    let mut queue_owned = std::mem::replace(queue, TileQueueSlab::new());
+                    let flushed = self.flush_tile_v2(&mut queue_owned, &mut bcsi, &mut writer).unwrap_or(0);
+                    written_ways += flushed;
+                    self.memory_tracker.release(bytes);
                     
-                    // Extract tags
-                    let tags: Vec<(&str, &str)> = way.tags()
-                        .map(|(k, v)| (k, v))
-                        .collect();
-                    
-                    // Add to tile queue
-                    let queue = tile_queues.entry(tile_id)
-                        .or_insert_with(|| TileQueueSlab::new());
-                    
-                    if !queue.add_way(way.id(), &way_refs, &tags) {
-                        // Queue full or would overflow indices
-                        let bytes = queue.allocated_bytes();
-                        let mut queue_owned = std::mem::replace(queue, TileQueueSlab::new());
-                        let flushed = self.flush_tile_v2(&mut queue_owned, &mut bcsi, &mut writer).unwrap_or(0);
-                        written_ways += flushed;
-                        self.memory_tracker.release(bytes);
-                        
-                        // Add to fresh queue
-                        queue.add_way(way.id(), &way_refs, &tags);
-                    }
-                    
-                    // Check flush conditions
-                    if queue.should_flush() {
-                        let bytes = queue.allocated_bytes();
-                        let mut queue_owned = std::mem::replace(queue, TileQueueSlab::new());
-                        let flushed = self.flush_tile_v2(&mut queue_owned, &mut bcsi, &mut writer).unwrap_or(0);
-                        written_ways += flushed;
-                        self.memory_tracker.release(bytes);
-                    }
-                    
-                    // Limit active tiles
-                    if tile_queues.len() >= MAX_ACTIVE_TILES {
-                        // Flush smallest tile
-                        if let Some((&flush_id, _)) = tile_queues.iter()
-                            .min_by_key(|(_, q)| q.way_count()) {
-                            if let Some(mut queue) = tile_queues.remove(&flush_id) {
-                                let bytes = queue.allocated_bytes();
-                                let flushed = self.flush_tile_v2(&mut queue, &mut bcsi, &mut writer).unwrap_or(0);
-                                written_ways += flushed;
-                                self.memory_tracker.release(bytes);
-                            }
+                    // Add to fresh queue
+                    queue.add_way(way.id(), &way_refs, &tags);
+                }
+                
+                // Check flush conditions
+                if queue.should_flush() {
+                    let bytes = queue.allocated_bytes();
+                    let mut queue_owned = std::mem::replace(queue, TileQueueSlab::new());
+                    let flushed = self.flush_tile_v2(&mut queue_owned, &mut bcsi, &mut writer).unwrap_or(0);
+                    written_ways += flushed;
+                    self.memory_tracker.release(bytes);
+                }
+                
+                // Limit active tiles
+                if tile_queues.len() >= MAX_ACTIVE_TILES {
+                    // Flush smallest tile
+                    if let Some((&flush_id, _)) = tile_queues.iter()
+                        .min_by_key(|(_, q)| q.way_count()) {
+                        if let Some(mut queue) = tile_queues.remove(&flush_id) {
+                            let bytes = queue.allocated_bytes();
+                            let flushed = self.flush_tile_v2(&mut queue, &mut bcsi, &mut writer).unwrap_or(0);
+                            written_ways += flushed;
+                            self.memory_tracker.release(bytes);
                         }
                     }
                 }
@@ -344,10 +351,18 @@ impl BcsiProcessorV2 {
         let mut written = 0u64;
         
         for (idx, (way_id, refs, has_highway)) in queue.ways().enumerate() {
-            if !has_highway || !self.config.highway_tags.iter().any(|t| {
-                queue.get_tags(idx).iter().any(|(k, v)| k == &"highway" && v == t)
-            }) {
-                continue;
+            if !has_highway {
+                continue;  // No highway tag at all
+            }
+            
+            // Check if highway value matches our filter
+            let tags = queue.get_tags(idx);
+            let highway_matches = tags.iter().any(|(k, v)| {
+                *k == "highway" && self.config.highway_tags.iter().any(|t| *v == t.as_str())
+            });
+            
+            if !highway_matches {
+                continue;  // Highway type not in our list
             }
             
             // Remap using binary search

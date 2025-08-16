@@ -70,6 +70,10 @@ struct Cli {
     #[arg(long)]
     debug_elements: bool,
     
+    /// Debug way analysis (show highway tag distribution)
+    #[arg(long)]
+    debug_ways: bool,
+    
     /// Number of parallel workers
     #[arg(short = 'j', long)]
     workers: Option<usize>,
@@ -225,6 +229,12 @@ fn main() -> anyhow::Result<()> {
         tile_grid_degrees: config.tile_grid_degrees,
         max_tiles_in_memory: config.max_tiles_in_memory,
     };
+    
+    // Debug mode for way analysis
+    if cli.debug_ways {
+        butterfly_shrink::debug_v2::debug_ways(&input_path)?;
+        return Ok(());
+    }
     
     // Choose between single-pass, two-pass, BCSI, V2, or emergency mode
     if cli.bcsi_v2 {
