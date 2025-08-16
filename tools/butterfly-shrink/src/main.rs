@@ -6,6 +6,14 @@ use std::path::PathBuf;
 use std::env;
 use uuid::Uuid;
 
+// Use jemalloc as global allocator for better memory management
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 #[derive(Parser)]
 #[command(
     author,
@@ -50,6 +58,9 @@ struct Cli {
     #[arg(long)]
     bcsi: bool,
     
+    /// Use emergency BCSI mode with strict memory controls (guaranteed <4GB)
+    #[arg(long)]
+    bcsi_emergency: bool,
     
     /// Debug element reading (counts elements without processing)
     #[arg(long)]
@@ -211,8 +222,26 @@ fn main() -> anyhow::Result<()> {
         max_tiles_in_memory: config.max_tiles_in_memory,
     };
     
-    // Choose between single-pass, two-pass, or BCSI mode
-    if cli.bcsi {
+    // Choose between single-pass, two-pass, BCSI, or emergency mode
+    if cli.bcsi_emergency {
+        // Emergency BCSI mode - guaranteed <4GB with all fixes
+        println!("Running in EMERGENCY BCSI mode (strict <4GB guarantee)...");
+        println!("Features: shared slabs, serialized lookups, byte-accurate cache");
+        let mut emergency_processor = butterfly_shrink::bcsi_processor_emergency::BcsiProcessorEmergency::new(config)?;
+        let stats = emergency_processor.process(&input_path, &output_path)?;
+        
+        // Print statistics
+        println!("\nbutterfly-shrink EMERGENCY statistics:");
+        println!("  Nodes: {} → {} representatives", stats.total_nodes, stats.rep_nodes);
+        println!("  Ways: {} → {} written", stats.total_ways, stats.written_ways);
+        println!("  Relations: {} → {} written", stats.total_relations, stats.written_relations);
+        println!("  Total time: {:.2}s", stats.elapsed_secs);
+        
+        if stats.total_nodes > 0 {
+            let node_reduction = 100.0 - (stats.rep_nodes as f64 / stats.total_nodes as f64 * 100.0);
+            println!("  Node reduction: {:.1}%", node_reduction);
+        }
+    } else if cli.bcsi {
         // BCSI mode - single-pass with hard 4GB memory cap
         println!("Running in BCSI mode (4GB memory cap)...");
         let mut bcsi_processor = butterfly_shrink::bcsi_processor::BcsiProcessor::new(config)?;

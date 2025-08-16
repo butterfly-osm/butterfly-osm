@@ -6,6 +6,7 @@
 pub mod batch;
 pub mod bcsi;
 pub mod bcsi_processor;
+pub mod bcsi_processor_emergency;
 pub mod cache;
 pub mod config;
 pub mod db;

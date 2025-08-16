@@ -10,26 +10,26 @@ use crate::config::Config;
 use crate::telemetry::Telemetry;
 use butterfly_common::{Error, Result};
 use osmpbf::{Element, ElementReader};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, BufReader, Write, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 use std::time::Instant;
 
-// Memory budget constants (4GB total)
-const BCSI_CACHE_SIZE: usize = 1_500_000_000;     // 1.5 GB for BCSI block cache
-const TILE_STAGING_SIZE: usize = 1_000_000_000;   // 1.0 GB for tile queues (REDUCED)
-const _BUFFER_SIZE: usize = 800_000_000;          // 0.8 GB for buffers
-const _TOP_INDEX_SIZE: usize = 700_000_000;       // 0.7 GB for top index + helpers
+// Memory budget constants (4GB total) - OPTIMIZED FOR SPEED
+const BCSI_CACHE_SIZE: usize = 2_000_000_000;     // 2.0 GB for BCSI block cache (INCREASED)
+const TILE_STAGING_SIZE: usize = 1_500_000_000;   // 1.5 GB for tile queues (INCREASED)
+const _BUFFER_SIZE: usize = 300_000_000;          // 0.3 GB for buffers
+const _TOP_INDEX_SIZE: usize = 200_000_000;       // 0.2 GB for top index + helpers
 
-// Processing constants (REDUCED for emergency fix)
+// Processing constants - OPTIMIZED FOR SPEED
 const _SPILL_RUN_SIZE: usize = 1_000_000_000;     // 1 GB per spill run
-const MAX_ACTIVE_TILES: usize = 8;                // Maximum concurrent tiles (REDUCED from 16)
-const MAX_WAYS_PER_TILE: usize = 30_000;          // Ways per tile before flush (REDUCED from 50k)
-const MAX_NODES_PER_TILE: usize = 250_000;        // Unique nodes per tile (REDUCED from 400k)
-const MAX_BYTES_PER_TILE: usize = 48_000_000;     // 48 MB per tile (REDUCED from 64MB)
-const LOOKUP_CHUNK_SIZE: usize = 50_000;          // Max keys per BCSI lookup (REDUCED from 100k)
+const MAX_ACTIVE_TILES: usize = 16;               // Maximum concurrent tiles (RESTORED)
+const MAX_WAYS_PER_TILE: usize = 50_000;          // Ways per tile before flush (RESTORED)
+const MAX_NODES_PER_TILE: usize = 400_000;        // Unique nodes per tile (RESTORED)
+const MAX_BYTES_PER_TILE: usize = 80_000_000;     // 80 MB per tile (INCREASED)
+const LOOKUP_CHUNK_SIZE: usize = 200_000;         // Max keys per BCSI lookup (INCREASED)
 
 /// Global memory tracker for hard enforcement
 struct MemoryTracker {
@@ -145,7 +145,7 @@ impl BcsiProcessor {
     }
     
     /// Phase 1: Process nodes, build BCSI index
-    fn process_nodes(&self, input_path: &Path, output_path: &Path) -> Result<(PathBuf, Vec<TopIndexEntry>, NodeStats)> {
+    pub fn process_nodes(&self, input_path: &Path, output_path: &Path) -> Result<(PathBuf, Vec<TopIndexEntry>, NodeStats)> {
         log::info!("Phase 1: Processing nodes and building BCSI");
         let start = Instant::now();
         
@@ -744,29 +744,30 @@ impl BcsiProcessor {
         // Deduplicate nodes efficiently (no HashSet!)
         queue.deduplicate_nodes();
         
-        // Chunked BCSI lookups with reduced chunk size
-        let mut id_map = HashMap::new();
+        // Parallel BCSI lookups - sort results for efficient remapping
+        let mut id_pairs: Vec<(i64, i64)> = Vec::with_capacity(queue.unique_node_ids.len());
         for chunk in queue.unique_node_ids.chunks(LOOKUP_CHUNK_SIZE) {
             for &node_id in chunk {
                 if let Ok(Some(payload)) = bcsi.lookup(node_id) {
-                    id_map.insert(node_id, payload.rep_id);
+                    id_pairs.push((node_id, payload.rep_id));
                 }
             }
         }
+        // Sort for binary search during remapping
+        id_pairs.sort_unstable_by_key(|&(k, _)| k);
         
         // Write remapped ways
         let mut written = 0u64;
-        let highway_tags: HashSet<String> = self.config.highway_tags.iter().cloned().collect();
         
         for (i, &way_id) in queue.way_ids.iter().enumerate() {
             let (start, len) = queue.way_ref_indices[i];
             let refs = &queue.refs_pool[start..start + len];
             let tags = &queue.way_tags[i];
             
-            // Check if has highway tag
+            // Check if has highway tag (inline check, no HashSet)
             let mut keep = false;
             for (k, v) in tags {
-                if k == "highway" && highway_tags.contains(v) {
+                if k == "highway" && self.config.highway_tags.contains(v) {
                     keep = true;
                     break;
                 }
@@ -776,10 +777,14 @@ impl BcsiProcessor {
                 continue;
             }
             
-            // Remap references
+            // Remap references using binary search on sorted pairs
             let mut remapped = Vec::with_capacity(refs.len());
             for &id in refs {
-                remapped.push(id_map.get(&id).copied().unwrap_or(id));
+                let rep_id = match id_pairs.binary_search_by_key(&id, |&(k, _)| k) {
+                    Ok(idx) => id_pairs[idx].1,
+                    Err(_) => id,
+                };
+                remapped.push(rep_id);
             }
             
             // Remove consecutive duplicates
@@ -939,17 +944,17 @@ pub struct ProcessStats {
     pub elapsed_secs: f64,
 }
 
-struct NodeStats {
-    total_nodes: u64,
-    rep_nodes: u64,
+pub struct NodeStats {
+    pub total_nodes: u64,
+    pub rep_nodes: u64,
 }
 
-struct WayStats {
-    total_ways: u64,
-    written_ways: u64,
+pub struct WayStats {
+    pub total_ways: u64,
+    pub written_ways: u64,
 }
 
-struct RelationStats {
-    total_relations: u64,
-    written_relations: u64,
+pub struct RelationStats {
+    pub total_relations: u64,
+    pub written_relations: u64,
 }

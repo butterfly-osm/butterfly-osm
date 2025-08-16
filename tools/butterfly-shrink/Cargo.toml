@@ -45,6 +45,9 @@ anyhow = "1.0"
 zstd = "0.13"
 indicatif = "0.17"
 
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "0.6"
+
 [build-dependencies]
 protobuf-codegen = "3.1"
 
