@@ -390,12 +390,13 @@ impl BcsiProcessorEmergency {
     }
     
     /// Phase 1: Process nodes (delegates to existing efficient implementation)
-    fn process_nodes(&self, input_path: &Path, output_path: &Path) 
+    fn process_nodes(&self, _input_path: &Path, _output_path: &Path) 
         -> Result<(PathBuf, Vec<TopIndexEntry>, crate::bcsi_processor::NodeStats)> {
         // Use the existing efficient implementation (already memory-efficient)
-        let processor = crate::bcsi_processor::BcsiProcessor::new(self.config.clone())?;
-        // Call the existing process_nodes method which is already efficient
-        processor.process_nodes(input_path, output_path)
+        // TODO: Fix this to use the new process_nodes_with_writer signature
+        // let processor = crate::bcsi_processor::BcsiProcessor::new(self.config.clone())?;
+        // processor.process_nodes(input_path, output_path)
+        unimplemented!("Emergency processor needs update for new writer API")
     }
     
     /// Phase 2: Process ways with ALL emergency controls

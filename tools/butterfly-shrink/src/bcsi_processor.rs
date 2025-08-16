@@ -632,7 +632,7 @@ impl BcsiProcessor {
                                 .max_by_key(|(_, q)| q.allocated_bytes) {
                                 if let Some(mut largest) = tile_queues.remove(&largest_id) {
                                     let bytes_to_release = largest.allocated_bytes;
-                                    let flushed = self.flush_tile(&mut largest, &mut bcsi, &mut writer).unwrap_or(0);
+                                    let flushed = self.flush_tile(&mut largest, &mut bcsi, writer).unwrap_or(0);
                                     written_ways += flushed;
                                     self.memory_tracker.release(bytes_to_release);
                                     largest.reset();
@@ -669,7 +669,7 @@ impl BcsiProcessor {
                         if queue.should_flush() {
                             if let Some(mut queue) = tile_queues.remove(&tile_id) {
                                 let bytes_to_release = queue.allocated_bytes;
-                                let flushed = self.flush_tile(&mut queue, &mut bcsi, &mut writer).unwrap_or(0);
+                                let flushed = self.flush_tile(&mut queue, &mut bcsi, writer).unwrap_or(0);
                                 written_ways += flushed;
                                 tiles_flushed += 1;
                                 self.memory_tracker.release(bytes_to_release);
@@ -684,7 +684,7 @@ impl BcsiProcessor {
                                 .min_by_key(|(_, q)| q.way_ids.len()) {
                                 if let Some(mut smallest) = tile_queues.remove(&smallest_id) {
                                     let bytes_to_release = smallest.allocated_bytes;
-                                    let flushed = self.flush_tile(&mut smallest, &mut bcsi, &mut writer).unwrap_or(0);
+                                    let flushed = self.flush_tile(&mut smallest, &mut bcsi, writer).unwrap_or(0);
                                     written_ways += flushed;
                                     self.memory_tracker.release(bytes_to_release);
                                 }
@@ -699,7 +699,7 @@ impl BcsiProcessor {
         // Flush remaining tiles
         for (_, mut queue) in tile_queues {
             let bytes_to_release = queue.allocated_bytes;
-            let flushed = self.flush_tile(&mut queue, &mut bcsi, &mut writer).unwrap_or(0);
+            let flushed = self.flush_tile(&mut queue, &mut bcsi, writer).unwrap_or(0);
             written_ways += flushed;
             self.memory_tracker.release(bytes_to_release);
         }
@@ -792,7 +792,7 @@ impl BcsiProcessor {
     }
     
     /// Phase 3: Process relations
-    fn process_relations(
+    fn _process_relations(
         &self,
         _input_path: &Path,
         _output_path: &Path,
