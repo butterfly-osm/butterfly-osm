@@ -17,11 +17,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 use std::time::Instant;
 
-// Memory budget constants (4GB total) - OPTIMIZED FOR SPEED
-const BCSI_CACHE_SIZE: usize = 2_000_000_000;     // 2.0 GB for BCSI block cache (INCREASED)
-const TILE_STAGING_SIZE: usize = 1_500_000_000;   // 1.5 GB for tile queues (INCREASED)
-const _BUFFER_SIZE: usize = 300_000_000;          // 0.3 GB for buffers
-const _TOP_INDEX_SIZE: usize = 200_000_000;       // 0.2 GB for top index + helpers
+// Memory budget constants (4GB total) - EMERGENCY SAFE BASELINE
+const BCSI_CACHE_SIZE: usize = 512_000_000;       // 512 MB for BCSI block cache (SAFE)
+const TILE_STAGING_SIZE: usize = 512_000_000;     // 512 MB for tile queues (SAFE)
+const _LOOKUP_STAGING_SIZE: usize = 128_000_000;  // 128 MB for lookup staging
+const _WRITER_IO_SIZE: usize = 384_000_000;       // 384 MB for writer/decoder
+const _TOP_INDEX_SIZE: usize = 256_000_000;       // 256 MB for top index + misc
+// Total: ~1.9GB peak, leaves margin for allocator/page cache
 
 // Processing constants - OPTIMIZED FOR SPEED
 const _SPILL_RUN_SIZE: usize = 1_000_000_000;     // 1 GB per spill run
@@ -29,7 +31,7 @@ const MAX_ACTIVE_TILES: usize = 16;               // Maximum concurrent tiles (R
 const MAX_WAYS_PER_TILE: usize = 50_000;          // Ways per tile before flush (RESTORED)
 const MAX_NODES_PER_TILE: usize = 400_000;        // Unique nodes per tile (RESTORED)
 const MAX_BYTES_PER_TILE: usize = 80_000_000;     // 80 MB per tile (INCREASED)
-const LOOKUP_CHUNK_SIZE: usize = 200_000;         // Max keys per BCSI lookup (INCREASED)
+const LOOKUP_CHUNK_SIZE: usize = 100_000;         // Max keys per BCSI lookup (SAFE)
 
 /// Global memory tracker for hard enforcement
 struct MemoryTracker {
@@ -590,6 +592,8 @@ impl BcsiProcessor {
         
         let mut total_ways = 0u64;
         let mut written_ways = 0u64;
+        let mut ways_enqueued = 0u64;
+        let mut tiles_flushed = 0u64;
         
         // Continue reading from where we left off (after nodes)
         let reader = ElementReader::from_path(input_path)
@@ -598,6 +602,12 @@ impl BcsiProcessor {
         reader.for_each(|element| {
             if let Element::Way(way) = element {
                 total_ways += 1;
+                
+                // Progress logging every 10k ways
+                if total_ways % 10_000 == 0 {
+                    log::info!("Progress: ways_seen={}, enqueued={}, tiles_flushed={}, ways_emitted={}", 
+                        total_ways, ways_enqueued, tiles_flushed, written_ways);
+                }
                 
                 // Get tile from first node
                 let way_refs: Vec<i64> = way.refs().collect();
@@ -636,6 +646,7 @@ impl BcsiProcessor {
                         let tags: Vec<(&str, &str)> = way.tags().collect();
                         let old_bytes = queue.allocated_bytes;
                         queue.add_way(way.id(), way_refs, tags);
+                        ways_enqueued += 1;
                         
                         // Track actual allocation delta (in case queue grew its vectors)
                         let new_bytes = queue.allocated_bytes;
@@ -653,6 +664,7 @@ impl BcsiProcessor {
                                 let bytes_to_release = queue.allocated_bytes;
                                 let flushed = self.flush_tile(&mut queue, &mut bcsi, &mut writer).unwrap_or(0);
                                 written_ways += flushed;
+                                tiles_flushed += 1;
                                 self.memory_tracker.release(bytes_to_release);
                                 queue.reset();
                             }
