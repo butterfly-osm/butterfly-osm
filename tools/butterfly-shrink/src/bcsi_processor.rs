@@ -519,85 +519,52 @@ impl BcsiProcessor {
         Ok(top_index)
     }
     
-    /// Write representative nodes to output using external sorting
+    /// Write representative nodes to output in spatial order (no sorting needed!)
     fn write_rep_nodes(&self, reps_path: &Path, output_path: &Path) -> Result<()> {
-        log::info!("Writing representative nodes to output");
+        log::info!("Writing representative nodes in spatial order (Morton/cell_key)");
         
-        // Define a sortable node record for external sorting
-        #[derive(Clone)]
-        struct NodeRecord {
-            id: i64,
-            lat_nano: i64,
-            lon_nano: i64,
-        }
+        // REPS file is already sorted by cell_key (Morton order) - perfect for spatial locality!
+        // This gives BETTER compression than ID order for lat/lon deltas in DenseNodes
         
-        impl SortableRecord for NodeRecord {
-            const SIZE: usize = 24;
-            
-            fn to_bytes(&self) -> Vec<u8> {
-                let mut bytes = Vec::with_capacity(Self::SIZE);
-                bytes.extend_from_slice(&self.id.to_le_bytes());
-                bytes.extend_from_slice(&self.lat_nano.to_le_bytes());
-                bytes.extend_from_slice(&self.lon_nano.to_le_bytes());
-                bytes
-            }
-            
-            fn from_bytes(bytes: &[u8]) -> Result<Self> {
-                Ok(Self {
-                    id: i64::from_le_bytes(bytes[0..8].try_into().unwrap()),
-                    lat_nano: i64::from_le_bytes(bytes[8..16].try_into().unwrap()),
-                    lon_nano: i64::from_le_bytes(bytes[16..24].try_into().unwrap()),
-                })
-            }
-            
-            fn compare(&self, other: &Self) -> std::cmp::Ordering {
-                self.id.cmp(&other.id)
-            }
-        }
-        
-        // Convert REPS to sortable format
-        let unsorted_nodes_path = self.temp_dir.join("nodes_unsorted.bin");
-        let mut reader = BufReader::with_capacity(8_000_000, File::open(reps_path).map_err(Error::IoError)?);
-        let mut writer = BufWriter::with_capacity(8_000_000, File::create(&unsorted_nodes_path).map_err(Error::IoError)?);
-        let mut buf = vec![0u8; CellRecord::SIZE + 4];
-        let mut node_count = 0u64;
-        
-        while reader.read_exact(&mut buf).is_ok() {
-            let record = CellRecord::from_bytes(&buf[..CellRecord::SIZE])?;
-            let node = NodeRecord {
-                id: record.orig_id,
-                lat_nano: record.lat_nano,
-                lon_nano: record.lon_nano,
-            };
-            writer.write_all(&node.to_bytes()).map_err(Error::IoError)?;
-            node_count += 1;
-        }
-        writer.flush().map_err(Error::IoError)?;
-        
-        // Sort nodes by ID using external sorting (256MB memory limit)
-        log::info!("Sorting {} nodes by ID for PBF compression", node_count);
-        let sorted_nodes_path = self.temp_dir.join("nodes_sorted.bin");
-        let sorter = ExternalSorter::<NodeRecord>::new(ExternalSortConfig {
-            memory_limit: 256_000_000, // 256MB for sorting
-            temp_dir: self.temp_dir.clone(),
-            max_fan_in: 16,
-        })?;
-        sorter.sort_file(&unsorted_nodes_path, &sorted_nodes_path)?;
-        
-        // Write sorted nodes to PBF
+        // Open PBF writer
         let mut pbf_writer = PbfWriter::new(output_path).map_err(|e| Error::InvalidInput(format!("Failed to create writer: {}", e)))?;
         pbf_writer.write_header().map_err(|e| Error::InvalidInput(format!("Failed to write header: {}", e)))?;
         
-        let mut sorted_reader = BufReader::with_capacity(8_000_000, File::open(&sorted_nodes_path).map_err(Error::IoError)?);
-        let mut node_buf = vec![0u8; NodeRecord::SIZE];
+        // Stream REPS directly to PBF (already in spatial order)
+        let mut reader = BufReader::with_capacity(8_000_000, File::open(reps_path).map_err(Error::IoError)?);
+        let mut buf = vec![0u8; CellRecord::SIZE + 4]; // +4 for tile_id
+        let mut node_count = 0u64;
+        let mut nodes_batch = Vec::with_capacity(8000); // DenseNodes batch size
         
-        while sorted_reader.read_exact(&mut node_buf).is_ok() {
-            let node = NodeRecord::from_bytes(&node_buf)?;
-            pbf_writer.write_node_nano(node.id, node.lat_nano, node.lon_nano, &[])
+        while reader.read_exact(&mut buf).is_ok() {
+            let record = CellRecord::from_bytes(&buf[..CellRecord::SIZE])?;
+            // tile_id is in buf[CellRecord::SIZE..] but we don't need it for node writing
+            
+            nodes_batch.push((record.orig_id, record.lat_nano, record.lon_nano));
+            node_count += 1;
+            
+            // Write batch when full (8k nodes per DenseNodes block is typical)
+            if nodes_batch.len() >= 8000 {
+                for (id, lat, lon) in nodes_batch.drain(..) {
+                    pbf_writer.write_node_nano(id, lat, lon, &[])
+                        .map_err(|e| Error::InvalidInput(format!("Failed to write node: {}", e)))?;
+                }
+            }
+            
+            if node_count % 1_000_000 == 0 {
+                log::debug!("Written {} representative nodes", node_count);
+            }
+        }
+        
+        // Write remaining nodes
+        for (id, lat, lon) in nodes_batch {
+            pbf_writer.write_node_nano(id, lat, lon, &[])
                 .map_err(|e| Error::InvalidInput(format!("Failed to write node: {}", e)))?;
         }
         
         pbf_writer.finalize().map_err(|e| Error::InvalidInput(format!("Failed to finalize: {}", e)))?;
+        
+        log::info!("Wrote {} representative nodes in spatial order", node_count);
         Ok(())
     }
     
@@ -859,12 +826,14 @@ struct TileQueue {
 
 impl TileQueue {
     fn new() -> Self {
+        // Pre-allocate vectors with expected capacity to avoid reallocations
+        // This prevents the "Vector reallocation exceeded estimate" warnings with France
         Self {
-            way_ids: Vec::new(),
-            way_ref_indices: Vec::new(),
-            refs_pool: Vec::new(),
-            way_tags: Vec::new(),
-            unique_node_ids: Vec::new(),
+            way_ids: Vec::with_capacity(MAX_WAYS_PER_TILE),
+            way_ref_indices: Vec::with_capacity(MAX_WAYS_PER_TILE),
+            refs_pool: Vec::with_capacity(MAX_WAYS_PER_TILE * 20), // Avg ~20 nodes per way
+            way_tags: Vec::with_capacity(MAX_WAYS_PER_TILE),
+            unique_node_ids: Vec::with_capacity(MAX_NODES_PER_TILE),
             unique_nodes_sorted: false,
             allocated_bytes: 0,
         }
@@ -922,12 +891,13 @@ impl TileQueue {
     }
     
     fn reset(&mut self) {
-        // Properly release memory by replacing with new vectors
-        self.way_ids = Vec::new();
-        self.way_ref_indices = Vec::new();
-        self.refs_pool = Vec::new();
-        self.way_tags = Vec::new();
-        self.unique_node_ids = Vec::new();
+        // Clear vectors but retain allocated capacity to avoid reallocations
+        // This is crucial for performance with large datasets like France
+        self.way_ids.clear();
+        self.way_ref_indices.clear();
+        self.refs_pool.clear();
+        self.way_tags.clear();
+        self.unique_node_ids.clear();
         self.unique_nodes_sorted = false;
         self.allocated_bytes = 0;
     }
