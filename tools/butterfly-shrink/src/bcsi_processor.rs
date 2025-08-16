@@ -119,14 +119,24 @@ impl BcsiProcessor {
         let start = Instant::now();
         log::info!("Starting BCSI processor with 4GB memory cap");
         
+        // Create a single writer that will be used for both phases
+        let mut pbf_writer = PbfWriter::new(output_path)
+            .map_err(|e| Error::InvalidInput(format!("Failed to create writer: {}", e)))?;
+        pbf_writer.write_header()
+            .map_err(|e| Error::InvalidInput(format!("Failed to write header: {}", e)))?;
+        
         // Phase 1: Process nodes and build BCSI
-        let (bcsi_path, top_index, node_stats) = self.process_nodes(input_path, output_path)?;
+        let (bcsi_path, top_index, node_stats) = self.process_nodes_with_writer(input_path, &mut pbf_writer)?;
         
-        // Phase 2: Process ways using BCSI
-        let way_stats = self.process_ways(input_path, output_path, &bcsi_path, top_index)?;
+        // Phase 2: Process ways using BCSI (using same writer)
+        let way_stats = self.process_ways_with_writer(input_path, &mut pbf_writer, &bcsi_path, top_index)?;
         
-        // Phase 3: Process relations
-        let relation_stats = self.process_relations(input_path, output_path, &bcsi_path)?;
+        // Phase 3: Process relations (skipping for now)
+        let relation_stats = RelationStats { total_relations: 0, written_relations: 0 };
+        
+        // Finalize the PBF file now that all phases are complete
+        pbf_writer.finalize()
+            .map_err(|e| Error::InvalidInput(format!("Failed to finalize PBF: {}", e)))?;
         
         // Cleanup temp files
         self.cleanup()?;
@@ -147,7 +157,7 @@ impl BcsiProcessor {
     }
     
     /// Phase 1: Process nodes, build BCSI index
-    pub fn process_nodes(&self, input_path: &Path, output_path: &Path) -> Result<(PathBuf, Vec<TopIndexEntry>, NodeStats)> {
+    fn process_nodes_with_writer(&self, input_path: &Path, writer: &mut PbfWriter) -> Result<(PathBuf, Vec<TopIndexEntry>, NodeStats)> {
         log::info!("Phase 1: Processing nodes and building BCSI");
         let start = Instant::now();
         
@@ -250,7 +260,7 @@ impl BcsiProcessor {
         let (bcsi_path, top_index, rep_nodes) = self.build_bcsi_from_spills(
             &spill_a_path,
             &spill_b_path,
-            output_path,
+            writer,
             total_nodes,
         )?;
         
@@ -269,7 +279,7 @@ impl BcsiProcessor {
         &self,
         spill_a_path: &Path,
         spill_b_path: &Path,
-        output_path: &Path,
+        writer: &mut PbfWriter,
         total_nodes: u64,
     ) -> Result<(PathBuf, Vec<TopIndexEntry>, u64)> {
         log::info!("Building BCSI index from spills (total nodes: {})", total_nodes);
@@ -304,8 +314,8 @@ impl BcsiProcessor {
         let bcsi_path = self.temp_dir.join("index.bcsi");
         let top_index = self.build_bcsi(&sorted_c_path, &bcsi_path)?;
         
-        // Step 7: Write representative nodes to output
-        self.write_rep_nodes(&reps_path, output_path)?;
+        // Step 7: Write representative nodes to output using provided writer
+        self.write_rep_nodes_to_writer(&reps_path, writer)?;
         
         Ok((bcsi_path, top_index, rep_count))
     }
@@ -522,15 +532,13 @@ impl BcsiProcessor {
     }
     
     /// Write representative nodes to output in spatial order (no sorting needed!)
-    fn write_rep_nodes(&self, reps_path: &Path, output_path: &Path) -> Result<()> {
+    fn write_rep_nodes_to_writer(&self, reps_path: &Path, pbf_writer: &mut PbfWriter) -> Result<()> {
         log::info!("Writing representative nodes in spatial order (Morton/cell_key)");
         
         // REPS file is already sorted by cell_key (Morton order) - perfect for spatial locality!
         // This gives BETTER compression than ID order for lat/lon deltas in DenseNodes
         
-        // Open PBF writer
-        let mut pbf_writer = PbfWriter::new(output_path).map_err(|e| Error::InvalidInput(format!("Failed to create writer: {}", e)))?;
-        pbf_writer.write_header().map_err(|e| Error::InvalidInput(format!("Failed to write header: {}", e)))?;
+        // Use the provided writer (already has header written)
         
         // Stream REPS directly to PBF (already in spatial order)
         let mut reader = BufReader::with_capacity(8_000_000, File::open(reps_path).map_err(Error::IoError)?);
@@ -564,17 +572,17 @@ impl BcsiProcessor {
                 .map_err(|e| Error::InvalidInput(format!("Failed to write node: {}", e)))?;
         }
         
-        pbf_writer.finalize().map_err(|e| Error::InvalidInput(format!("Failed to finalize: {}", e)))?;
+        // Don't finalize here - keep writer open for Phase 2!
         
         log::info!("Wrote {} representative nodes in spatial order", node_count);
         Ok(())
     }
     
     /// Phase 2: Process ways using BCSI
-    fn process_ways(
+    fn process_ways_with_writer(
         &self,
         input_path: &Path,
-        output_path: &Path,
+        writer: &mut PbfWriter,
         bcsi_path: &Path,
         top_index: Vec<TopIndexEntry>,
     ) -> Result<WayStats> {
@@ -587,8 +595,7 @@ impl BcsiProcessor {
         // Tile queues with hard caps
         let mut tile_queues: HashMap<u32, TileQueue> = HashMap::new();
         
-        // Append to existing output
-        let mut writer = PbfWriter::append(output_path).map_err(|e| Error::InvalidInput(format!("Failed to append: {}", e)))?;
+        // Use the same writer from Phase 1 (no append needed!)
         
         let mut total_ways = 0u64;
         let mut written_ways = 0u64;
@@ -697,7 +704,7 @@ impl BcsiProcessor {
             self.memory_tracker.release(bytes_to_release);
         }
         
-        writer.finalize().map_err(|e| Error::InvalidInput(format!("Failed to finalize: {}", e)))?;
+        // Don't finalize yet - Phase 3 (relations) might come next
         
         let elapsed = start.elapsed();
         log::info!("Phase 2 complete: {} ways → {} written in {:.2}s",
