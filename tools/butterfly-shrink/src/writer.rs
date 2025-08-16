@@ -208,6 +208,28 @@ impl PbfWriter {
         Self::with_config(path, &Config::default())
     }
     
+    /// Open an existing PBF file for appending (used in Pass 2)
+    pub fn append<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .append(true)
+            .open(path.as_ref())
+            .context("Failed to open output file for appending")?;
+        let writer = BufWriter::with_capacity(8192 * 1024, file);
+        let granularity = 100;
+        let builder = PrimitiveBuilder::new(granularity);
+        let compression_level = Compression::new(6);
+        let max_block_elements = 8000;
+
+        Ok(Self {
+            writer,
+            builder,
+            granularity,
+            compression_level,
+            max_block_elements,
+        })
+    }
+    
     /// Create a new PBF writer with custom configuration
     pub fn with_config<P: AsRef<Path>>(path: P, config: &Config) -> Result<Self> {
         let file = File::create(path.as_ref())
@@ -316,6 +338,16 @@ impl PbfWriter {
 
         Ok(())
     }
+    
+    /// Write a single node with nano-degree coordinates (simplified for two-pass)
+    pub fn write_node_nano(&mut self, id: i64, lat_nano: i64, lon_nano: i64, tags: &[(&str, &str)]) -> Result<()> {
+        let lat = lat_nano as f64 / 1e9;
+        let lon = lon_nano as f64 / 1e9;
+        let tag_map: HashMap<String, String> = tags.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        self.write_node(id, lat, lon, &tag_map)
+    }
 
     /// Write a single way
     pub fn write_way(&mut self, id: i64, refs: &[i64], tags: &HashMap<String, String>) -> Result<()> {
@@ -327,6 +359,14 @@ impl PbfWriter {
         }
 
         Ok(())
+    }
+    
+    /// Write a single way with tags as slice (simplified for two-pass)
+    pub fn write_way_simple(&mut self, id: i64, refs: Vec<i64>, tags: Vec<(&str, &str)>) -> Result<()> {
+        let tag_map: HashMap<String, String> = tags.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        self.write_way(id, &refs, &tag_map)
     }
 
     /// Write a single relation

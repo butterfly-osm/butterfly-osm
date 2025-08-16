@@ -42,6 +42,19 @@ struct Cli {
     #[arg(long)]
     direct_io: bool,
     
+    /// Enable two-pass mode for better memory efficiency
+    #[arg(long)]
+    two_pass: bool,
+    
+    /// Use BCSI index instead of RocksDB (experimental, single-pass with 4GB cap)
+    #[arg(long)]
+    bcsi: bool,
+    
+    
+    /// Debug element reading (counts elements without processing)
+    #[arg(long)]
+    debug_elements: bool,
+    
     /// Number of parallel workers
     #[arg(short = 'j', long)]
     workers: Option<usize>,
@@ -198,29 +211,69 @@ fn main() -> anyhow::Result<()> {
         max_tiles_in_memory: config.max_tiles_in_memory,
     };
     
-    let mut processor = Processor::new(config, db_path)
-        .with_batch_config(batch_config);
-    let stats = processor.process(&input_path, &output_path)?;
-    
-    // Print statistics
-    println!("\nbutterfly-shrink statistics:");
-    println!("  Input:  {} nodes, {} ways, {} relations",
-        stats.input_nodes, stats.input_ways, stats.input_relations);
-    println!("  Output: {} nodes, {} ways, {} relations",
-        stats.output_nodes, stats.output_ways, stats.output_relations);
-    
-    if stats.input_nodes > 0 {
-        let node_reduction = 100.0 - (stats.output_nodes as f64 / stats.input_nodes as f64 * 100.0);
-        println!("  Reduction: {:.1}% nodes", node_reduction);
-    }
-    
-    println!("  Grid cells: {}", stats.grid_cells);
-    
-    if stats.dropped_ways > 0 {
-        println!("  Dropped ways: {}", stats.dropped_ways);
-    }
-    if stats.failed_restrictions > 0 {
-        println!("  Failed restrictions: {}", stats.failed_restrictions);
+    // Choose between single-pass, two-pass, or BCSI mode
+    if cli.bcsi {
+        // BCSI mode - single-pass with hard 4GB memory cap
+        println!("Running in BCSI mode (4GB memory cap)...");
+        let mut bcsi_processor = butterfly_shrink::bcsi_processor::BcsiProcessor::new(config)?;
+        let stats = bcsi_processor.process(&input_path, &output_path)?;
+        
+        // Print statistics
+        println!("\nbutterfly-shrink BCSI statistics:");
+        println!("  Nodes: {} → {} representatives", stats.total_nodes, stats.rep_nodes);
+        println!("  Ways: {} → {} written", stats.total_ways, stats.written_ways);
+        println!("  Relations: {} → {} written", stats.total_relations, stats.written_relations);
+        println!("  Total time: {:.2}s", stats.elapsed_secs);
+        
+        if stats.total_nodes > 0 {
+            let node_reduction = 100.0 - (stats.rep_nodes as f64 / stats.total_nodes as f64 * 100.0);
+            println!("  Node reduction: {:.1}%", node_reduction);
+        }
+    } else if cli.two_pass {
+        // Two-pass mode
+        println!("Running in two-pass mode...");
+        let two_pass_processor = butterfly_shrink::two_pass::TwoPassProcessor::new(config)?;
+        
+        // Pass 1: Nodes
+        let pass1_stats = two_pass_processor.pass1_nodes(&input_path, &output_path)?;
+        println!("Pass 1 complete: {} nodes → {} representatives", 
+            pass1_stats.total_nodes, pass1_stats.rep_nodes);
+        
+        // Pass 2: Ways
+        let pass2_stats = two_pass_processor.pass2_ways(&input_path, &output_path)?;
+        println!("Pass 2 complete: {} ways → {} written", 
+            pass2_stats.total_ways, pass2_stats.written_ways);
+        
+        // Print summary statistics
+        println!("\nbutterfly-shrink two-pass statistics:");
+        println!("  Nodes: {} → {} representatives", pass1_stats.total_nodes, pass1_stats.rep_nodes);
+        println!("  Ways: {} → {} written", pass2_stats.total_ways, pass2_stats.written_ways);
+    } else {
+        // Single-pass mode (existing code)
+        let mut processor = Processor::new(config, db_path)
+            .with_batch_config(batch_config);
+        let stats = processor.process(&input_path, &output_path)?;
+        
+        // Print statistics
+        println!("\nbutterfly-shrink statistics:");
+        println!("  Input:  {} nodes, {} ways, {} relations",
+            stats.input_nodes, stats.input_ways, stats.input_relations);
+        println!("  Output: {} nodes, {} ways, {} relations",
+            stats.output_nodes, stats.output_ways, stats.output_relations);
+        
+        if stats.input_nodes > 0 {
+            let node_reduction = 100.0 - (stats.output_nodes as f64 / stats.input_nodes as f64 * 100.0);
+            println!("  Reduction: {:.1}% nodes", node_reduction);
+        }
+        
+        println!("  Grid cells: {}", stats.grid_cells);
+        
+        if stats.dropped_ways > 0 {
+            println!("  Dropped ways: {}", stats.dropped_ways);
+        }
+        if stats.failed_restrictions > 0 {
+            println!("  Failed restrictions: {}", stats.failed_restrictions);
+        }
     }
     
     // Cleanup

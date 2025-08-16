@@ -42,6 +42,8 @@ rayon = "1.10"
 log = "0.4"
 env_logger = { workspace = true }
 anyhow = "1.0"
+zstd = "0.13"
+indicatif = "0.17"
 
 [build-dependencies]
 protobuf-codegen = "3.1"

@@ -4,13 +4,20 @@
 //! with the ability to filter and shrink the data.
 
 pub mod batch;
+pub mod bcsi;
+pub mod bcsi_processor;
 pub mod cache;
 pub mod config;
 pub mod db;
+pub mod debug_reader;
+pub mod external_sort;
 pub mod memory;
 pub mod parallel;
+pub mod parallel_batch;
 pub mod processor;
+pub mod progress;
 pub mod telemetry;
+pub mod two_pass;
 pub mod writer;
 
 // Protobuf modules

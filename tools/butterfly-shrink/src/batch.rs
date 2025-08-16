@@ -273,18 +273,21 @@ impl WayBatcher {
         if accumulated_nodes >= self.config.max_unique_nodes {
             log::debug!("Flushing batch: hit unique_nodes limit ({} >= {})", 
                 accumulated_nodes, self.config.max_unique_nodes);
+            self.telemetry.record_batch_trigger_nodes();
             return true;
         }
         
         if self.current_batch.ways.len() >= self.config.max_ways {
             log::debug!("Flushing batch: hit max_ways limit ({} >= {})", 
                 self.current_batch.ways.len(), self.config.max_ways);
+            self.telemetry.record_batch_trigger_ways();
             return true;
         }
         
         if estimated_mb >= self.config.batch_memory_limit_mb {
             log::debug!("Flushing batch: hit memory limit ({}MB >= {}MB)", 
                 estimated_mb, self.config.batch_memory_limit_mb);
+            self.telemetry.record_batch_trigger_memory();
             return true;
         }
         
@@ -423,8 +426,26 @@ impl WayBatcher {
             timer.elapsed().as_millis()
         );
         
-        // Clear the batch
-        self.current_batch = WayBatch::new();
+        // Clear the batch and manage capacity to prevent growth
+        self.current_batch.ways.clear();
+        self.current_batch.unique_node_ids.clear();
+        
+        // Shrink vectors if they've grown too large
+        const MAX_RETAINED_CAPACITY: usize = 1_200_000; // 20% buffer over 1M limit
+        if self.current_batch.unique_node_ids.capacity() > MAX_RETAINED_CAPACITY {
+            self.current_batch.unique_node_ids.shrink_to(MAX_RETAINED_CAPACITY);
+            log::debug!("Shrunk unique_node_ids capacity from {} to {}", 
+                self.current_batch.unique_node_ids.capacity(), MAX_RETAINED_CAPACITY);
+        }
+        
+        const MAX_WAYS_CAPACITY: usize = 60_000; // 20% buffer over 50k limit  
+        if self.current_batch.ways.capacity() > MAX_WAYS_CAPACITY {
+            self.current_batch.ways.shrink_to(MAX_WAYS_CAPACITY);
+            log::debug!("Shrunk ways capacity from {} to {}",
+                self.current_batch.ways.capacity(), MAX_WAYS_CAPACITY);
+        }
+        
+        self.current_batch.total_size_estimate = 0;
         
         Ok(ways_written as u64)
     }

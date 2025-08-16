@@ -29,6 +29,11 @@ struct TelemetryInner {
     batch_count: AtomicU64,
     multiget_p95_ms: AtomicU64,
     
+    // Batch trigger counts
+    batch_trigger_ways: AtomicU64,
+    batch_trigger_nodes: AtomicU64,
+    batch_trigger_memory: AtomicU64,
+    
     // Cache metrics
     cache_hits: AtomicU64,
     cache_misses: AtomicU64,
@@ -58,6 +63,9 @@ impl Telemetry {
                 unique_node_ids_in_batch: AtomicU64::new(0),
                 batch_count: AtomicU64::new(0),
                 multiget_p95_ms: AtomicU64::new(0),
+                batch_trigger_ways: AtomicU64::new(0),
+                batch_trigger_nodes: AtomicU64::new(0),
+                batch_trigger_memory: AtomicU64::new(0),
                 cache_hits: AtomicU64::new(0),
                 cache_misses: AtomicU64::new(0),
                 pbf_blocks_written: AtomicU64::new(0),
@@ -101,6 +109,19 @@ impl Telemetry {
         self.inner.batch_count.fetch_add(1, Ordering::Relaxed);
         self.inner.ways_in_batch.fetch_add(ways_count as u64, Ordering::Relaxed);
         self.inner.unique_node_ids_in_batch.fetch_add(unique_nodes as u64, Ordering::Relaxed);
+    }
+    
+    // Record what triggered a batch flush
+    pub fn record_batch_trigger_ways(&self) {
+        self.inner.batch_trigger_ways.fetch_add(1, Ordering::Relaxed);
+    }
+    
+    pub fn record_batch_trigger_nodes(&self) {
+        self.inner.batch_trigger_nodes.fetch_add(1, Ordering::Relaxed);
+    }
+    
+    pub fn record_batch_trigger_memory(&self) {
+        self.inner.batch_trigger_memory.fetch_add(1, Ordering::Relaxed);
     }
 
     // Cache metrics
@@ -150,6 +171,9 @@ impl Telemetry {
             unique_node_ids_in_batch: self.inner.unique_node_ids_in_batch.load(Ordering::Relaxed),
             batch_count: self.inner.batch_count.load(Ordering::Relaxed),
             multiget_p95_ms: self.inner.multiget_p95_ms.load(Ordering::Relaxed),
+            batch_trigger_ways: self.inner.batch_trigger_ways.load(Ordering::Relaxed),
+            batch_trigger_nodes: self.inner.batch_trigger_nodes.load(Ordering::Relaxed),
+            batch_trigger_memory: self.inner.batch_trigger_memory.load(Ordering::Relaxed),
             cache_hits: self.inner.cache_hits.load(Ordering::Relaxed),
             cache_misses: self.inner.cache_misses.load(Ordering::Relaxed),
             pbf_blocks_written: self.inner.pbf_blocks_written.load(Ordering::Relaxed),
@@ -177,6 +201,8 @@ impl Telemetry {
             log::info!("  Batches: {}", stats.batch_count);
             log::info!("  Avg ways/batch: {}", stats.ways_in_batch / stats.batch_count);
             log::info!("  Avg unique nodes/batch: {}", stats.unique_node_ids_in_batch / stats.batch_count);
+            log::info!("  Batch triggers: ways={}, nodes={}, memory={}", 
+                stats.batch_trigger_ways, stats.batch_trigger_nodes, stats.batch_trigger_memory);
         }
         
         if stats.cache_hits + stats.cache_misses > 0 {
@@ -205,6 +231,9 @@ pub struct TelemetryStats {
     pub unique_node_ids_in_batch: u64,
     pub batch_count: u64,
     pub multiget_p95_ms: u64,
+    pub batch_trigger_ways: u64,
+    pub batch_trigger_nodes: u64,
+    pub batch_trigger_memory: u64,
     pub cache_hits: u64,
     pub cache_misses: u64,
     pub pbf_blocks_written: u64,
