@@ -340,6 +340,7 @@ dependencies = [
  "md5",
  "num_cpus",
  "osmpbf",
+ "parking_lot",
  "predicates",
  "protobuf",
  "protobuf-codegen",

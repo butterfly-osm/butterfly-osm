@@ -5,19 +5,23 @@
 
 pub mod batch;
 pub mod bcsi;
+pub mod bcsi_prefetch;
 pub mod bcsi_processor;
 pub mod bcsi_processor_emergency;
+pub mod bcsi_processor_v2;
 pub mod cache;
 pub mod config;
 pub mod db;
 pub mod debug_reader;
 pub mod external_sort;
+pub mod hot_cache;
 pub mod memory;
 pub mod parallel;
 pub mod parallel_batch;
 pub mod processor;
 pub mod progress;
 pub mod telemetry;
+pub mod tile_slab;
 pub mod two_pass;
 pub mod writer;
 
