@@ -17,7 +17,7 @@ A comprehensive ecosystem of OSM tools designed around **separation of concerns*
 - **🚀 butterfly-dl**: Memory-efficient OSM data downloader (<1GB RAM for any file size)
 - **📊 butterfly-extract**: PBF streaming processor with routing-relevant filtering and telemetry
 - **🧠 butterfly-plan**: Adaptive memory planning with telemetry-driven parameter optimization
-- **🌐 butterfly-serve**: REST API server with /telemetry and /probe/snap endpoints for spatial metrics and QA
+- **🌐 butterfly-serve**: REST API server with /telemetry, /probe/snap, and /graph debug endpoints for spatial metrics and QA
 
 ### Shared Foundation
 
@@ -129,6 +129,13 @@ Common patterns abstracted into `butterfly-common`:
   - Node canonicalization using grid hash + union-find for collision-safe coordinate merging
   - Policy smoothing with 3×3 median filtering for tile boundary consistency  
   - /probe/snap API endpoint for QA/debugging of canonical mapping
+
+- **M3 - Super-Edge Construction**: Graph topology optimization with memory safety
+  - Canonical adjacency lists over canonical nodes with bidirectional neighbor tracking
+  - Policy-aware degree-2 node collapse with super-edge chain construction
+  - Memory safety guards: 4,096 point limit and 1km segment length protection
+  - Border reconciliation framework for consistent cross-tile processing
+  - Graph debug artifacts (nodes.bin, super_edges.bin, geom.temp) and REST APIs (/graph/stats, /graph/edge/{id})
 
 ### 🚧 Future Development
 
