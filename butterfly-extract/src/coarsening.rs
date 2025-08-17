@@ -1603,21 +1603,47 @@ impl BorderReconciliation {
         // For border reconciliation, we need to ensure that nodes representing
         // the same geographic location have the same canonical ID across tiles
         
-        // Generate consistent global IDs based on coordinates
-        let global_start_id = self.coordinate_to_global_id(edge1.crossing_coords);
-        let global_end_id = self.coordinate_to_global_id(edge1.crossing_coords); // Same crossing point
+        // The crossing coordinates represent the boundary point - only nodes
+        // at this exact location should get the same global ID
+        let boundary_global_id = self.coordinate_to_global_id(edge1.crossing_coords);
         
         // Update global mapping for both tiles
         let tile1_id = self.extract_tile_id_from_edge(edge1);
         let tile2_id = self.extract_tile_id_from_edge(edge2);
         
-        // Map local nodes to global canonical IDs
-        self.global_mapping.insert((edge1.start_node, tile1_id), global_start_id);
-        self.global_mapping.insert((edge1.end_node, tile1_id), global_end_id);
-        self.global_mapping.insert((edge2.start_node, tile2_id), global_start_id);
-        self.global_mapping.insert((edge2.end_node, tile2_id), global_end_id);
+        // Determine which nodes are actually at the boundary crossing
+        // In a border edge, typically one node is at the boundary and one is internal
+        let (boundary_node1, internal_node1) = self.identify_boundary_nodes(edge1)?;
+        let (boundary_node2, internal_node2) = self.identify_boundary_nodes(edge2)?;
+        
+        // Map boundary nodes to the same global ID
+        self.global_mapping.insert((boundary_node1, tile1_id), boundary_global_id);
+        self.global_mapping.insert((boundary_node2, tile2_id), boundary_global_id);
+        
+        // Internal nodes get their own unique global IDs based on their tile + local ID
+        // This ensures they don't conflict with boundary nodes but remain unique
+        let internal_global_id1 = self.generate_internal_global_id(internal_node1, tile1_id);
+        let internal_global_id2 = self.generate_internal_global_id(internal_node2, tile2_id);
+        
+        self.global_mapping.insert((internal_node1, tile1_id), internal_global_id1);
+        self.global_mapping.insert((internal_node2, tile2_id), internal_global_id2);
         
         Ok(())
+    }
+    
+    /// Identify which nodes in a border edge are at the boundary vs internal
+    fn identify_boundary_nodes(&self, edge: &BorderEdge) -> Result<(i64, i64), String> {
+        // In the current implementation, we assume the crossing_coords represent
+        // where the edge crosses the tile boundary. In a real implementation,
+        // this would analyze the edge geometry to determine which node is closer
+        // to the boundary coordinates.
+        
+        // For now, we'll use a simple heuristic:
+        // - start_node is assumed to be the boundary node
+        // - end_node is assumed to be the internal node
+        // This would need actual geometric analysis in production
+        
+        Ok((edge.start_node, edge.end_node))
     }
     
     /// Verify that edge attributes are consistent across tiles
@@ -1687,11 +1713,60 @@ impl BorderReconciliation {
         hasher.finish() as i64
     }
     
-    /// Extract tile ID from edge (placeholder - would depend on edge encoding)
+    /// Extract tile ID from edge based on local edge ID encoding
     fn extract_tile_id_from_edge(&self, edge: &BorderEdge) -> i64 {
-        // In a real implementation, this would extract the tile ID from the edge
-        // For now, we'll use a hash of the edge coordinates as a proxy
-        self.coordinate_to_global_id(edge.crossing_coords) / 1000 // Simple tile approximation
+        // In this implementation, we derive the tile ID from the edge's local_edge_id
+        // and crossing coordinates. This assumes the local_edge_id incorporates
+        // tile-specific information or we can derive it from coordinates.
+        
+        // Method 1: Extract from high bits of local_edge_id (assuming encoding includes tile info)
+        let potential_tile_from_id = edge.local_edge_id >> 32; // Upper 32 bits as tile ID
+        
+        if potential_tile_from_id != 0 {
+            // If upper bits contain tile info, use it
+            potential_tile_from_id
+        } else {
+            // Method 2: Calculate tile ID from crossing coordinates using tile grid
+            // Assuming 125m tiles (same as telemetry system)
+            const TILE_SIZE_METERS: f64 = 125.0;
+            const EARTH_RADIUS: f64 = 6371000.0;
+            
+            // Convert coordinates to tile indices
+            let lat_rad = edge.crossing_coords.0.to_radians();
+            let lon_rad = edge.crossing_coords.1.to_radians();
+            
+            // Approximate tile calculation (simplified for this implementation)
+            let tile_x = ((lon_rad * EARTH_RADIUS) / TILE_SIZE_METERS).floor() as i32;
+            let tile_y = ((lat_rad * EARTH_RADIUS) / TILE_SIZE_METERS).floor() as i32;
+            
+            // Combine tile coordinates into a single ID
+            // Using Cantor pairing function for unique ID generation
+            let tile_x_abs = tile_x.abs() as i64;
+            let tile_y_abs = tile_y.abs() as i64;
+            
+            // Cantor pairing: (x + y) * (x + y + 1) / 2 + y
+            let sum = tile_x_abs + tile_y_abs;
+            (sum * (sum + 1)) / 2 + tile_y_abs
+        }
+    }
+
+    /// Generate unique global ID for internal (non-boundary) nodes
+    fn generate_internal_global_id(&self, local_node: i64, tile_id: i64) -> i64 {
+        // Combine tile ID and local node ID to create a unique global ID
+        // Use a different hash space than coordinate-based IDs to avoid conflicts
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        
+        let mut hasher = DefaultHasher::new();
+        
+        // Hash tile ID and local node ID together
+        tile_id.hash(&mut hasher);
+        local_node.hash(&mut hasher);
+        
+        // Add a salt to distinguish from coordinate-based hashes
+        "internal_node".hash(&mut hasher);
+        
+        hasher.finish() as i64
     }
 
     /// Get global canonical ID for local node
