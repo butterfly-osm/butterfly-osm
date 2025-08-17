@@ -17,10 +17,15 @@
 **Commit**: `"M4.3: component pruning"`
 
 ## M4.4 — Speed & Time Weights
-**Why**: Mode-specific travel time calculation
-**Artifacts**: Highway/surface speed tables, u16 quantization, overflow handling, grade/surface penalties (bike: gravel/sand; foot: steep/steps)
-**Monitoring**: Log quantization tick distribution per block to ensure compressibility
-**Commit**: `"M4.4: weights + penalties (car/bike/foot)"`
+**Why**: Mode-specific travel time calculation with adaptive grade penalties
+**Artifacts**: Highway/surface speed tables, u16 quantization, overflow handling, **adaptive grade-aware penalties** auto-scaled from telemetry data:
+- **Bike**: Exponential uphill penalty (`factor = exp(α * grade)`) with α auto-solved from 95th percentile grade distribution
+- **Foot**: Naismith-style time penalties (`t_ascent = k_up * Δh`) with k_up scaled from 90th percentile ascent data  
+- **Car**: Gentle linear/logistic penalty bounded by engine limits, auto-scaled from grade telemetry
+- **Surface modulation**: Grade penalties amplified on gravel/dirt/sand for bike/foot
+- **Model validation**: Tests verify monotonicity and model-consistent slowdowns (not hard-coded thresholds)
+**Monitoring**: Log quantization tick distribution per block + grade penalty parameters in meta.json.plan
+**Commit**: `"M4.4: adaptive weights + telemetry-driven grade penalties"`
 
 ## M4.5 — Multi-Profile Loader
 **Why**: Server support for all transportation modes

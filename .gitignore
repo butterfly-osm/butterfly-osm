@@ -107,3 +107,13 @@ geom.temp
 graph-stats-*.json
 edge-debug-*.json
 border-reconciliation-*.json
+
+# M4 Multi-Profile outputs
+profile-masks-*.json
+component-analysis-*.json
+speed-weights-*.json
+quantization-stats-*.json
+prs-report-*.json
+access-stats-*.json
+routing-debug-*.json
+*.multi_profile

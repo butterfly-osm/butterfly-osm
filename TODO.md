@@ -43,7 +43,7 @@
 - ✅ **M0.5**: Geometry Traits - Complete 3-pass pipeline trait definitions
 - ⏳ **M0.6**: Test Infrastructure - Framework exists, needs full implementation
 
-**Next Priority**: Complete M0.2 Binary Formats Core - the I/O foundation other milestones depend on
+**Next Priority**: Continue with M5 - Geometry Dual Cores or complete remaining M0 milestones
 
 ### M1 — Telemetry & Adaptive Planning (✅ Complete)
 - ✅ **M1.1**: PBF Reader & Tag Sieve - OSM streaming with routing-relevant filtering
@@ -65,8 +65,16 @@
 - ✅ **M3.3**: Border Reconciliation - Complete geometric analysis for cross-tile consistency with deterministic global ID generation  
 - ✅ **M3.4**: Graph Debug APIs - Binary artifacts (nodes.bin, super_edges.bin, geom.temp) + REST endpoints (/graph/stats, /graph/edge/{id}) with OpenAPI schema
 
-### M4-M20 — Advanced Milestones (Not Started)
-M4+ milestones await foundation completion and architectural decisions. See individual milestone files for detailed specifications.
+### M4 — Multi-Profile System (✅ Complete)
+- ✅ **M4.1**: Access Truth Tables - Car/bike/foot access evaluation with 219+ synthetic junction tests
+- ✅ **M4.2**: Profile Masking - Mode-specific graph pruning for each transportation profile  
+- ✅ **M4.3**: Component Analysis - Profile-aware pruning with legitimate island preservation
+- ✅ **M4.4**: Speed & Time Weights - Adaptive grade penalties auto-scaled from telemetry (exponential bike, Naismith foot, linear car) + u16 quantization + overflow handling
+- ✅ **M4.5**: Multi-Profile Loader - Server support with /route echo per mode + comprehensive statistics
+- ✅ **PRS v1**: Profile Regression Suite - Access legality + routing smoke tests + forbidden-edge reporter (51 tests passing)
+
+### M5-M20 — Advanced Milestones (Not Started)
+M5+ milestones await architectural decisions. See individual milestone files for detailed specifications.
 
 ---
 

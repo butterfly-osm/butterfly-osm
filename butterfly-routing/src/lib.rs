@@ -8,7 +8,11 @@ pub mod profiles;
 pub use profiles::{
     TransportProfile, AccessLevel, HighwayType, WayAccess, AccessTruthTable,
     ProfileMask, MultiProfileMask, EdgeId, MaskingStats, MaskValidationResult,
-    ComponentAnalyzer, Component, ComponentId, ComponentType, ComponentStats
+    ComponentAnalyzer, Component, ComponentId, ComponentType, ComponentStats,
+    SpeedWeightCalculator, SpeedConfig, GradePenalties, GradeParams, GradeTelemetry, EdgeWeight, WeightPenalties, QuantizationStats,
+    MultiProfileLoader, ProfileLoadingStats, ProfileAccessibilityStats, RouteEchoResponse,
+    ProfileRegressionSuite, TestResult, TestType, TestStatus, ForbiddenEdgeReport, PRSReport, PRSTestSummary,
+    create_tags
 };
 
 /// Core routing engine

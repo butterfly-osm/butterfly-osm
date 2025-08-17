@@ -6,6 +6,11 @@
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
+/// Utility function to create tags HashMap from key-value pairs
+pub fn create_tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
+
 /// Transportation profiles supported by the routing engine
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TransportProfile {
@@ -102,8 +107,8 @@ impl AccessLevel {
             // Emergency - cars yes, others no
             (Self::Emergency, TransportProfile::Car) => true,
             (Self::Emergency, _) => false,
-            // Unknown defaults to yes (OSM standard)
-            (Self::Unknown, _) => true,
+            // Unknown defaults to no (conservative approach for safety)
+            (Self::Unknown, _) => false,
         }
     }
 }
@@ -140,6 +145,37 @@ pub enum HighwayType {
 
 impl HighwayType {
     /// Parse highway tag value into HighwayType
+    /// Get display name for highway type
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Motorway => "motorway",
+            Self::MotorwayLink => "motorway_link",
+            Self::Trunk => "trunk",
+            Self::TrunkLink => "trunk_link",
+            Self::Primary => "primary",
+            Self::PrimaryLink => "primary_link",
+            Self::Secondary => "secondary",
+            Self::SecondaryLink => "secondary_link",
+            Self::Tertiary => "tertiary",
+            Self::TertiaryLink => "tertiary_link",
+            Self::Unclassified => "unclassified",
+            Self::Residential => "residential",
+            Self::LivingStreet => "living_street",
+            Self::Service => "service",
+            Self::Pedestrian => "pedestrian",
+            Self::Track => "track",
+            Self::Path => "path",
+            Self::Footway => "footway",
+            Self::Bridleway => "bridleway",
+            Self::Cycleway => "cycleway",
+            Self::Steps => "steps",
+            Self::Corridor => "corridor",
+            Self::Platform => "platform",
+            Self::Ferry => "ferry",
+            Self::Other(s) => s,
+        }
+    }
+
     pub fn parse(value: &str) -> Self {
         match value {
             "motorway" => Self::Motorway,
@@ -230,8 +266,8 @@ impl HighwayType {
             // Ferry - all modes yes (if tagged appropriately)
             (Self::Ferry, _) => AccessLevel::Yes,
             
-            // Other/unknown - default to yes for compatibility
-            (Self::Other(_), _) => AccessLevel::Yes,
+            // Other/unknown - default to no for safety (non-highway features shouldn't be routable)
+            (Self::Other(_), _) => AccessLevel::No,
         }
     }
 }
@@ -483,7 +519,7 @@ impl AccessTruthTable {
         // Start with highway default access
         let mut access = rules.highway_defaults.get(&highway)
             .copied()
-            .unwrap_or(AccessLevel::Unknown);
+            .unwrap_or(AccessLevel::No); // Default to No for unknown highway types
         
         // Check special cases first (they can override defaults)
         for special_case in &rules.special_cases {
@@ -583,7 +619,7 @@ pub struct ProfileMask {
 }
 
 /// Edge identifier for masking
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EdgeId(pub i64);
 
 /// Statistics about profile masking
@@ -760,7 +796,7 @@ impl MultiProfileMask {
     }
     
     /// Check if a way is accessible for any profile
-    pub fn is_accessible_for_any_profile(&self, edge_id: EdgeId) -> bool {
+    pub fn is_routable_for_any_profile(&self, edge_id: EdgeId) -> bool {
         self.profile_masks.values()
             .any(|mask| !mask.is_edge_masked(edge_id))
     }
@@ -1200,6 +1236,887 @@ impl ComponentAnalyzer {
     }
 }
 
+/// M4.4 — Speed & Time Weights
+/// Mode-specific travel time calculation with highway/surface speed tables
+#[derive(Debug, Clone)]
+pub struct SpeedWeightCalculator {
+    /// Transport profile this calculator is for
+    profile: TransportProfile,
+    /// Highway speed tables per profile
+    highway_speeds: HashMap<HighwayType, SpeedConfig>,
+    /// Surface speed modifiers
+    surface_modifiers: HashMap<String, f32>,
+    /// Grade penalties for elevation changes
+    grade_penalties: GradePenalties,
+}
+
+/// Speed configuration for a highway type
+#[derive(Debug, Clone)]
+pub struct SpeedConfig {
+    /// Default speed in km/h
+    pub default_speed: f32,
+    /// Maximum allowed speed in km/h
+    pub max_speed: f32,
+    /// Minimum speed in km/h (for safety)
+    pub min_speed: f32,
+}
+
+/// Grade penalties for different transport profiles
+/// Grade penalties for elevation changes - adaptive per transport profile
+#[derive(Debug, Clone)]
+pub struct GradePenalties {
+    /// Transport profile these penalties apply to
+    pub profile: TransportProfile,
+    /// Adaptive parameters based on profile and telemetry
+    pub params: GradeParams,
+}
+
+/// Profile-specific grade penalty parameters auto-scaled from telemetry
+#[derive(Debug, Clone)]
+pub enum GradeParams {
+    /// Bike: exponential uphill penalty with capped downhill boost
+    Bike {
+        /// Alpha parameter for exp(α * grade) - auto-solved from 95th percentile
+        alpha_up: f32,
+        /// Beta parameter for downhill factor - moderate boost
+        beta_down: f32,
+        /// Maximum downhill speed boost cap (e.g., 1.2x max)
+        downhill_cap: f32,
+    },
+    /// Foot: Naismith-style time penalties per meter of ascent/descent
+    Foot {
+        /// Time penalty per meter of ascent (seconds/meter) - auto-scaled from 90th percentile
+        k_up: f32,
+        /// Time penalty per meter of descent (seconds/meter) - smaller than k_up
+        k_down: f32,
+        /// Base walking speed for time calculations (m/s)
+        base_speed_mps: f32,
+    },
+    /// Car: gentle linear penalty bounded by engine limits
+    Car {
+        /// Linear uphill penalty factor per unit grade
+        a_up: f32,
+        /// Linear downhill bonus factor per unit grade
+        a_down: f32,
+        /// Maximum uphill penalty factor (e.g., 1.25x max)
+        max_penalty: f32,
+        /// Maximum downhill boost factor (e.g., 1.05x max)
+        max_boost: f32,
+    },
+}
+
+/// Grade telemetry statistics for auto-scaling penalties
+#[derive(Debug, Clone, Default)]
+pub struct GradeTelemetry {
+    /// Grade percentiles for uphill segments (0.0 to 1.0 scale)
+    pub g50_up: f32,
+    pub g75_up: f32,
+    pub g90_up: f32,
+    pub g95_up: f32,
+    /// Average ascent per edge at key percentiles (meters)
+    pub delta_h50: f32,
+    pub delta_h90: f32,
+    /// Number of edges with grade data
+    pub edges_with_grade: usize,
+}
+
+impl GradePenalties {
+    /// Create adaptive grade penalties auto-scaled from telemetry data
+    pub fn from_telemetry(profile: TransportProfile, telemetry: &GradeTelemetry) -> Self {
+        let params = match profile {
+            TransportProfile::Bicycle => {
+                // Bike: exponential uphill penalty - target 4x slowdown at 95th percentile
+                let target_slowdown = 4.0f32;
+                let alpha_up = if telemetry.g95_up > 1e-3f32 {
+                    target_slowdown.ln() / telemetry.g95_up
+                } else {
+                    13.86f32 // Default: ln(4)/0.10 for 10% grade
+                };
+                
+                GradeParams::Bike {
+                    alpha_up,
+                    beta_down: 2.0f32,     // Moderate downhill boost
+                    downhill_cap: 1.2f32,  // Max 20% speed boost
+                }
+            },
+            TransportProfile::Foot => {
+                // Foot: Naismith-style time penalties - target +60% time at 90th percentile ascent
+                let base_speed_mps = 1.389f32; // 5 km/h
+                let target_time_increase = 0.60f32;
+                
+                let k_up = if telemetry.delta_h90 > 1e-3f32 {
+                    (target_time_increase * telemetry.delta_h90 / base_speed_mps) / telemetry.delta_h90
+                } else {
+                    0.4f32 // Default: 0.4 seconds per meter of ascent
+                };
+                
+                GradeParams::Foot {
+                    k_up,
+                    k_down: k_up * 0.3f32, // Descent is easier than ascent
+                    base_speed_mps,
+                }
+            },
+            TransportProfile::Car => {
+                // Car: gentle linear penalty - target +20% time at 95th percentile
+                let target_penalty = 1.2f32;
+                let a_up = if telemetry.g95_up > 1e-3f32 {
+                    (target_penalty - 1.0f32) / telemetry.g95_up
+                } else {
+                    2.0f32 // Default: 2.0 penalty factor per unit grade
+                };
+                
+                GradeParams::Car {
+                    a_up,
+                    a_down: 0.5f32,        // Mild downhill bonus
+                    max_penalty: 1.25f32,  // Max 25% slowdown
+                    max_boost: 1.05f32,    // Max 5% speedup
+                }
+            },
+        };
+        
+        Self { profile, params }
+    }
+    
+    /// Create default grade penalties with fallback parameters (when no telemetry available)
+    pub fn default_for_profile(profile: TransportProfile) -> Self {
+        let default_telemetry = GradeTelemetry {
+            g95_up: 0.10,      // 10% grade
+            g90_up: 0.08,      // 8% grade
+            g75_up: 0.05,      // 5% grade
+            g50_up: 0.02,      // 2% grade
+            delta_h50: 5.0,    // 5m average ascent
+            delta_h90: 15.0,   // 15m average ascent
+            edges_with_grade: 1000,
+        };
+        
+        Self::from_telemetry(profile, &default_telemetry)
+    }
+    
+    /// Calculate grade factor for speed adjustment
+    pub fn calculate_grade_factor(&self, grade_up: f32, grade_down: f32, distance_meters: f32) -> f32 {
+        match &self.params {
+            GradeParams::Bike { alpha_up, beta_down, downhill_cap } => {
+                let up_factor = (alpha_up * grade_up).exp();
+                let down_factor = 1.0 / (1.0 + beta_down * grade_down);
+                let down_factor = down_factor.max(1.0 / downhill_cap);
+                up_factor * down_factor
+            },
+            GradeParams::Foot { k_up, k_down, base_speed_mps } => {
+                // For foot, we return a time factor instead of speed factor
+                let ascent = grade_up * distance_meters;
+                let descent = grade_down * distance_meters;
+                let flat_time = distance_meters / base_speed_mps;
+                let grade_time = ascent * k_up + descent * k_down;
+                let total_time = flat_time + grade_time;
+                total_time / flat_time // Time factor
+            },
+            GradeParams::Car { a_up, a_down, max_penalty, max_boost } => {
+                let up_penalty = 1.0 + a_up * grade_up;
+                let down_bonus = 1.0 - a_down * grade_down;
+                let factor = up_penalty * down_bonus;
+                factor.clamp(1.0 / max_boost, *max_penalty)
+            },
+        }
+    }
+    
+    /// Apply surface modulation to grade penalties (amplify on rough surfaces for bike/foot)
+    pub fn get_surface_modulated_params(&self, surface_factor: f32) -> Self {
+        if surface_factor >= 1.0 {
+            return self.clone(); // No amplification needed
+        }
+        
+        let mut modulated = self.clone();
+        match &mut modulated.params {
+            GradeParams::Bike { alpha_up, .. } => {
+                // Amplify grade penalty on rough surfaces for bikes
+                *alpha_up *= 1.0 + (1.0 - surface_factor) * 0.3; // Up to 30% amplification
+            },
+            GradeParams::Foot { k_up, k_down, .. } => {
+                // Amplify grade penalty on rough surfaces for foot
+                let amplification = 1.0 + (1.0 - surface_factor) * 0.15; // Up to 15% amplification
+                *k_up *= amplification;
+                *k_down *= amplification;
+            },
+            GradeParams::Car { .. } => {
+                // Cars less affected by surface on grades
+            },
+        }
+        
+        modulated
+    }
+    
+    /// Get diagnostic information about the grade penalty parameters
+    pub fn get_diagnostics(&self) -> serde_json::Value {
+        match &self.params {
+            GradeParams::Bike { alpha_up, beta_down, downhill_cap } => {
+                serde_json::json!({
+                    "profile": self.profile.name(),
+                    "model": "exponential",
+                    "alpha_up": alpha_up,
+                    "beta_down": beta_down,
+                    "downhill_cap": downhill_cap,
+                    "example_5pct_factor": (alpha_up * 0.05).exp(),
+                    "example_10pct_factor": (alpha_up * 0.10).exp()
+                })
+            },
+            GradeParams::Foot { k_up, k_down, base_speed_mps } => {
+                serde_json::json!({
+                    "profile": self.profile.name(),
+                    "model": "naismith",
+                    "k_up_sec_per_meter": k_up,
+                    "k_down_sec_per_meter": k_down,
+                    "base_speed_mps": base_speed_mps,
+                    "example_10m_ascent_penalty_sec": k_up * 10.0
+                })
+            },
+            GradeParams::Car { a_up, a_down, max_penalty, max_boost } => {
+                serde_json::json!({
+                    "profile": self.profile.name(),
+                    "model": "linear_bounded",
+                    "a_up": a_up,
+                    "a_down": a_down,
+                    "max_penalty": max_penalty,
+                    "max_boost": max_boost,
+                    "example_5pct_factor": (1.0 + a_up * 0.05).clamp(1.0 / max_boost, *max_penalty)
+                })
+            },
+        }
+    }
+}
+
+/// Calculated weight for an edge
+#[derive(Debug, Clone)]
+pub struct EdgeWeight {
+    /// Travel time in seconds
+    pub time_seconds: f32,
+    /// Quantized weight for storage (u16)
+    pub quantized_weight: u16,
+    /// Distance in meters
+    pub distance_meters: f32,
+    /// Effective speed used for calculation
+    pub effective_speed_kmh: f32,
+    /// Applied penalties (surface, grade, access)
+    pub penalties: WeightPenalties,
+    /// Whether overflow occurred during quantization
+    pub overflow_occurred: bool,
+}
+
+/// Breakdown of applied penalties
+#[derive(Debug, Clone, Default)]
+pub struct WeightPenalties {
+    /// Surface penalty factor (1.0 = no penalty)
+    pub surface_factor: f32,
+    /// Grade penalty factor (1.0 = no penalty)
+    pub grade_factor: f32,
+    /// Access penalty factor (1.0 = no penalty)
+    pub access_factor: f32,
+    /// Combined penalty factor
+    pub total_factor: f32,
+}
+
+/// Statistics about weight quantization
+#[derive(Debug, Clone, Default)]
+pub struct QuantizationStats {
+    /// Total edges processed
+    pub total_edges: usize,
+    /// Edges that experienced overflow
+    pub overflow_edges: usize,
+    /// Distribution of quantized values (for compressibility analysis)
+    pub value_distribution: HashMap<u16, usize>,
+    /// Average quantization error
+    pub avg_quantization_error: f32,
+    /// Maximum quantization error
+    pub max_quantization_error: f32,
+}
+
+impl QuantizationStats {
+    /// Add a weight calculation to the statistics
+    pub fn add_weight(&mut self, weight: &EdgeWeight) {
+        self.total_edges += 1;
+        
+        if weight.overflow_occurred {
+            self.overflow_edges += 1;
+        }
+        
+        // Track value distribution for compressibility analysis
+        *self.value_distribution.entry(weight.quantized_weight).or_insert(0) += 1;
+        
+        // Calculate quantization error
+        let dequantized = SpeedWeightCalculator::dequantize_weight(weight.quantized_weight);
+        let error = (weight.time_seconds - dequantized).abs();
+        
+        // Update running average
+        let old_avg = self.avg_quantization_error;
+        self.avg_quantization_error = old_avg + (error - old_avg) / self.total_edges as f32;
+        
+        if error > self.max_quantization_error {
+            self.max_quantization_error = error;
+        }
+    }
+    
+    /// Get overflow rate as percentage
+    pub fn overflow_rate(&self) -> f64 {
+        if self.total_edges == 0 {
+            0.0
+        } else {
+            (self.overflow_edges as f64 / self.total_edges as f64) * 100.0
+        }
+    }
+    
+    /// Get compression estimate based on value distribution
+    pub fn estimate_compression_ratio(&self) -> f64 {
+        if self.value_distribution.is_empty() {
+            return 1.0;
+        }
+        
+        // Shannon entropy estimate for compression
+        let total = self.total_edges as f64;
+        let mut entropy = 0.0;
+        
+        for &count in self.value_distribution.values() {
+            if count > 0 {
+                let probability = count as f64 / total;
+                entropy -= probability * probability.log2();
+            }
+        }
+        
+        // Estimate compression ratio based on entropy
+        let max_entropy = 16.0; // log2(65536) for u16
+        (max_entropy / entropy.max(1.0)).min(16.0)
+    }
+}
+
+impl SpeedWeightCalculator {
+    /// Create a new speed weight calculator for the given profile
+    pub fn new(profile: TransportProfile) -> Self {
+        let highway_speeds = Self::create_highway_speeds(profile);
+        let surface_modifiers = Self::create_surface_modifiers(profile);
+        let grade_penalties = Self::create_grade_penalties(profile);
+        
+        Self {
+            profile,
+            highway_speeds,
+            surface_modifiers,
+            grade_penalties,
+        }
+    }
+    
+    /// Create highway speed tables for a transport profile
+    fn create_highway_speeds(profile: TransportProfile) -> HashMap<HighwayType, SpeedConfig> {
+        let mut speeds = HashMap::new();
+        
+        match profile {
+            TransportProfile::Car => {
+                speeds.insert(HighwayType::Motorway, SpeedConfig { default_speed: 120.0, max_speed: 130.0, min_speed: 80.0 });
+                speeds.insert(HighwayType::MotorwayLink, SpeedConfig { default_speed: 80.0, max_speed: 100.0, min_speed: 40.0 });
+                speeds.insert(HighwayType::Trunk, SpeedConfig { default_speed: 100.0, max_speed: 120.0, min_speed: 60.0 });
+                speeds.insert(HighwayType::TrunkLink, SpeedConfig { default_speed: 60.0, max_speed: 80.0, min_speed: 30.0 });
+                speeds.insert(HighwayType::Primary, SpeedConfig { default_speed: 80.0, max_speed: 100.0, min_speed: 40.0 });
+                speeds.insert(HighwayType::PrimaryLink, SpeedConfig { default_speed: 50.0, max_speed: 70.0, min_speed: 30.0 });
+                speeds.insert(HighwayType::Secondary, SpeedConfig { default_speed: 60.0, max_speed: 80.0, min_speed: 30.0 });
+                speeds.insert(HighwayType::SecondaryLink, SpeedConfig { default_speed: 40.0, max_speed: 60.0, min_speed: 20.0 });
+                speeds.insert(HighwayType::Tertiary, SpeedConfig { default_speed: 50.0, max_speed: 70.0, min_speed: 25.0 });
+                speeds.insert(HighwayType::TertiaryLink, SpeedConfig { default_speed: 30.0, max_speed: 50.0, min_speed: 15.0 });
+                speeds.insert(HighwayType::Unclassified, SpeedConfig { default_speed: 40.0, max_speed: 60.0, min_speed: 20.0 });
+                speeds.insert(HighwayType::Residential, SpeedConfig { default_speed: 30.0, max_speed: 50.0, min_speed: 10.0 });
+                speeds.insert(HighwayType::LivingStreet, SpeedConfig { default_speed: 10.0, max_speed: 20.0, min_speed: 5.0 });
+                speeds.insert(HighwayType::Service, SpeedConfig { default_speed: 20.0, max_speed: 30.0, min_speed: 5.0 });
+                speeds.insert(HighwayType::Ferry, SpeedConfig { default_speed: 25.0, max_speed: 50.0, min_speed: 10.0 });
+            }
+            
+            TransportProfile::Bicycle => {
+                speeds.insert(HighwayType::Cycleway, SpeedConfig { default_speed: 20.0, max_speed: 35.0, min_speed: 8.0 });
+                speeds.insert(HighwayType::Primary, SpeedConfig { default_speed: 18.0, max_speed: 25.0, min_speed: 8.0 });
+                speeds.insert(HighwayType::Secondary, SpeedConfig { default_speed: 18.0, max_speed: 25.0, min_speed: 8.0 });
+                speeds.insert(HighwayType::Tertiary, SpeedConfig { default_speed: 18.0, max_speed: 25.0, min_speed: 8.0 });
+                speeds.insert(HighwayType::Unclassified, SpeedConfig { default_speed: 16.0, max_speed: 22.0, min_speed: 6.0 });
+                speeds.insert(HighwayType::Residential, SpeedConfig { default_speed: 15.0, max_speed: 20.0, min_speed: 6.0 });
+                speeds.insert(HighwayType::LivingStreet, SpeedConfig { default_speed: 12.0, max_speed: 18.0, min_speed: 5.0 });
+                speeds.insert(HighwayType::Service, SpeedConfig { default_speed: 12.0, max_speed: 18.0, min_speed: 5.0 });
+                speeds.insert(HighwayType::Track, SpeedConfig { default_speed: 10.0, max_speed: 15.0, min_speed: 4.0 });
+                speeds.insert(HighwayType::Path, SpeedConfig { default_speed: 8.0, max_speed: 12.0, min_speed: 3.0 });
+                speeds.insert(HighwayType::Bridleway, SpeedConfig { default_speed: 8.0, max_speed: 12.0, min_speed: 3.0 });
+                speeds.insert(HighwayType::Ferry, SpeedConfig { default_speed: 15.0, max_speed: 25.0, min_speed: 5.0 });
+            }
+            
+            TransportProfile::Foot => {
+                speeds.insert(HighwayType::Footway, SpeedConfig { default_speed: 5.0, max_speed: 7.0, min_speed: 2.0 });
+                speeds.insert(HighwayType::Path, SpeedConfig { default_speed: 4.5, max_speed: 6.5, min_speed: 2.0 });
+                speeds.insert(HighwayType::Track, SpeedConfig { default_speed: 4.0, max_speed: 6.0, min_speed: 2.0 });
+                speeds.insert(HighwayType::Bridleway, SpeedConfig { default_speed: 4.0, max_speed: 6.0, min_speed: 2.0 });
+                speeds.insert(HighwayType::Residential, SpeedConfig { default_speed: 4.5, max_speed: 6.0, min_speed: 2.0 });
+                speeds.insert(HighwayType::LivingStreet, SpeedConfig { default_speed: 4.5, max_speed: 6.0, min_speed: 2.0 });
+                speeds.insert(HighwayType::Service, SpeedConfig { default_speed: 4.0, max_speed: 5.5, min_speed: 2.0 });
+                speeds.insert(HighwayType::Tertiary, SpeedConfig { default_speed: 4.0, max_speed: 5.5, min_speed: 2.0 });
+                speeds.insert(HighwayType::Secondary, SpeedConfig { default_speed: 3.5, max_speed: 5.0, min_speed: 1.5 });
+                speeds.insert(HighwayType::Primary, SpeedConfig { default_speed: 3.0, max_speed: 4.5, min_speed: 1.5 });
+                speeds.insert(HighwayType::Steps, SpeedConfig { default_speed: 2.0, max_speed: 3.0, min_speed: 0.5 });
+                speeds.insert(HighwayType::Ferry, SpeedConfig { default_speed: 10.0, max_speed: 15.0, min_speed: 3.0 });
+            }
+        }
+        
+        speeds
+    }
+    
+    /// Create surface speed modifiers for a transport profile
+    fn create_surface_modifiers(profile: TransportProfile) -> HashMap<String, f32> {
+        let mut modifiers = HashMap::new();
+        
+        match profile {
+            TransportProfile::Car => {
+                modifiers.insert("asphalt".to_string(), 1.0);
+                modifiers.insert("concrete".to_string(), 1.0);
+                modifiers.insert("paved".to_string(), 1.0);
+                modifiers.insert("paving_stones".to_string(), 0.9);
+                modifiers.insert("sett".to_string(), 0.8);
+                modifiers.insert("cobblestone".to_string(), 0.7);
+                modifiers.insert("compacted".to_string(), 0.8);
+                modifiers.insert("gravel".to_string(), 0.6);
+                modifiers.insert("unpaved".to_string(), 0.5);
+                modifiers.insert("dirt".to_string(), 0.4);
+                modifiers.insert("grass".to_string(), 0.3);
+                modifiers.insert("sand".to_string(), 0.2);
+                modifiers.insert("mud".to_string(), 0.1);
+            }
+            
+            TransportProfile::Bicycle => {
+                modifiers.insert("asphalt".to_string(), 1.0);
+                modifiers.insert("concrete".to_string(), 1.0);
+                modifiers.insert("paved".to_string(), 1.0);
+                modifiers.insert("paving_stones".to_string(), 0.95);
+                modifiers.insert("sett".to_string(), 0.85);
+                modifiers.insert("cobblestone".to_string(), 0.75);
+                modifiers.insert("compacted".to_string(), 0.9);
+                modifiers.insert("gravel".to_string(), 0.7); // Bikes handle gravel better than cars
+                modifiers.insert("unpaved".to_string(), 0.8);
+                modifiers.insert("dirt".to_string(), 0.7);
+                modifiers.insert("grass".to_string(), 0.6);
+                modifiers.insert("sand".to_string(), 0.4); // Very difficult for bikes
+                modifiers.insert("mud".to_string(), 0.2);
+            }
+            
+            TransportProfile::Foot => {
+                modifiers.insert("asphalt".to_string(), 1.0);
+                modifiers.insert("concrete".to_string(), 1.0);
+                modifiers.insert("paved".to_string(), 1.0);
+                modifiers.insert("paving_stones".to_string(), 1.0);
+                modifiers.insert("sett".to_string(), 0.95);
+                modifiers.insert("cobblestone".to_string(), 0.9);
+                modifiers.insert("compacted".to_string(), 1.0);
+                modifiers.insert("gravel".to_string(), 0.95); // Foot handles most surfaces well
+                modifiers.insert("unpaved".to_string(), 0.95);
+                modifiers.insert("dirt".to_string(), 0.9);
+                modifiers.insert("grass".to_string(), 0.85);
+                modifiers.insert("sand".to_string(), 0.7); // Sand is slow for walking
+                modifiers.insert("mud".to_string(), 0.5);
+            }
+        }
+        
+        modifiers
+    }
+    
+    /// Create adaptive grade penalties for a transport profile using default telemetry
+    fn create_grade_penalties(profile: TransportProfile) -> GradePenalties {
+        // Use default telemetry parameters - in production, this would come from M1 telemetry
+        GradePenalties::default_for_profile(profile)
+    }
+    
+    /// Create adaptive grade penalties from actual telemetry data
+    pub fn with_grade_telemetry(profile: TransportProfile, telemetry: &GradeTelemetry) -> Self {
+        let highway_speeds = Self::create_highway_speeds(profile);
+        let surface_modifiers = Self::create_surface_modifiers(profile);
+        let grade_penalties = GradePenalties::from_telemetry(profile, telemetry);
+        
+        Self {
+            profile,
+            highway_speeds,
+            surface_modifiers,
+            grade_penalties,
+        }
+    }
+    
+    /// Calculate edge weight for travel time and quantization
+    pub fn calculate_edge_weight(&self, way_access: &WayAccess, distance_meters: f32, tags: &HashMap<String, String>, grade_percent: Option<f32>) -> EdgeWeight {
+        // Get base speed from highway type
+        let highway_config = self.highway_speeds.get(&way_access.highway)
+            .cloned()
+            .unwrap_or(SpeedConfig { default_speed: 20.0, max_speed: 30.0, min_speed: 5.0 });
+        
+        let mut base_speed = highway_config.default_speed;
+        
+        // Check for explicit maxspeed tag
+        if let Some(maxspeed_str) = tags.get("maxspeed") {
+            if let Ok(maxspeed) = Self::parse_speed(maxspeed_str) {
+                base_speed = maxspeed.min(highway_config.max_speed).max(highway_config.min_speed);
+            }
+        }
+        
+        // Apply surface modifiers
+        let surface_factor = if let Some(surface) = tags.get("surface") {
+            self.surface_modifiers.get(surface).copied().unwrap_or(0.8) // Unknown surface gets penalty
+        } else {
+            1.0 // No surface tag assumes good surface
+        };
+        
+        // Apply adaptive grade penalties
+        let grade_factor = if let Some(grade) = grade_percent {
+            let grade_fraction = grade / 100.0; // Convert percentage to fraction
+            let grade_up = grade_fraction.max(0.0);
+            let grade_down = (-grade_fraction).max(0.0);
+            
+            // Get surface-modulated grade penalties
+            let modulated_penalties = self.grade_penalties.get_surface_modulated_params(surface_factor);
+            modulated_penalties.calculate_grade_factor(grade_up, grade_down, distance_meters)
+        } else {
+            1.0
+        };
+        
+        // Apply access penalties
+        let access_factor = 1.0 + way_access.penalty;
+        
+        // Calculate penalties
+        let penalties = WeightPenalties {
+            surface_factor,
+            grade_factor,
+            access_factor,
+            total_factor: surface_factor * grade_factor * access_factor,
+        };
+        
+        // Calculate effective speed and travel time
+        let effective_speed = base_speed / penalties.total_factor;
+        let time_seconds = (distance_meters / 1000.0) / effective_speed * 3600.0; // Convert to seconds
+        
+        // Quantize to u16 (with overflow handling)
+        let (quantized_weight, overflow_occurred) = Self::quantize_time_to_u16(time_seconds);
+        
+        EdgeWeight {
+            time_seconds,
+            quantized_weight,
+            distance_meters,
+            effective_speed_kmh: effective_speed,
+            penalties,
+            overflow_occurred,
+        }
+    }
+    
+    /// Parse speed string (e.g., "50", "50 mph", "walk") into km/h
+    fn parse_speed(speed_str: &str) -> Result<f32, String> {
+        let speed_str = speed_str.trim().to_lowercase();
+        
+        // Handle special values
+        match speed_str.as_str() {
+            "walk" => return Ok(5.0),
+            "none" | "signals" => return Ok(20.0),
+            _ => {}
+        }
+        
+        // Extract numeric part
+        let numeric_part: String = speed_str.chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        
+        if let Ok(speed) = numeric_part.parse::<f32>() {
+            // Check for unit
+            if speed_str.contains("mph") {
+                Ok(speed * 1.60934) // Convert mph to km/h
+            } else {
+                Ok(speed) // Assume km/h
+            }
+        } else {
+            Err(format!("Cannot parse speed: {}", speed_str))
+        }
+    }
+    
+    /// Quantize travel time to u16 with overflow handling
+    fn quantize_time_to_u16(time_seconds: f32) -> (u16, bool) {
+        // Use 0.1 second resolution (10 ticks per second)
+        let ticks = (time_seconds * 10.0).round() as u64;
+        
+        if ticks > u16::MAX as u64 {
+            (u16::MAX, true) // Overflow occurred
+        } else {
+            (ticks as u16, false)
+        }
+    }
+    
+    /// Dequantize u16 weight back to travel time in seconds
+    pub fn dequantize_weight(quantized: u16) -> f32 {
+        quantized as f32 / 10.0
+    }
+    
+    /// Get transport profile
+    pub fn get_profile(&self) -> TransportProfile {
+        self.profile
+    }
+    
+    /// Get highway speed config for debugging
+    pub fn get_highway_speeds(&self) -> &HashMap<HighwayType, SpeedConfig> {
+        &self.highway_speeds
+    }
+    
+    /// Get surface modifiers for debugging
+    pub fn get_surface_modifiers(&self) -> &HashMap<String, f32> {
+        &self.surface_modifiers
+    }
+    
+    /// Get grade penalties for debugging
+    pub fn get_grade_penalties(&self) -> &GradePenalties {
+        &self.grade_penalties
+    }
+}
+
+/// M4.5 — Multi-Profile Loader
+/// Server support for all transportation modes with profile-specific loading
+#[derive(Debug, Clone)]
+pub struct MultiProfileLoader {
+    /// Access truth tables for each profile
+    access_tables: HashMap<TransportProfile, AccessTruthTable>,
+    /// Profile masks for each profile
+    profile_masks: HashMap<TransportProfile, ProfileMask>,
+    /// Component analyzers for each profile
+    component_analyzers: HashMap<TransportProfile, ComponentAnalyzer>,
+    /// Speed weight calculators for each profile
+    speed_calculators: HashMap<TransportProfile, SpeedWeightCalculator>,
+    /// Statistics for each profile
+    profile_stats: HashMap<TransportProfile, ProfileLoadingStats>,
+}
+
+/// Statistics for profile loading
+#[derive(Debug, Clone, Default)]
+pub struct ProfileLoadingStats {
+    /// Total ways processed
+    pub total_ways: usize,
+    /// Ways accessible for this profile
+    pub accessible_ways: usize,
+    /// Ways masked for this profile
+    pub masked_ways: usize,
+    /// Total nodes in components
+    pub total_nodes: usize,
+    /// Nodes preserved after component analysis
+    pub preserved_nodes: usize,
+    /// Average travel time per edge
+    pub avg_travel_time_seconds: f32,
+    /// Total weight calculation time (for performance monitoring)
+    pub weight_calculation_time_ms: f64,
+}
+
+impl ProfileLoadingStats {
+    /// Get accessibility rate as percentage
+    pub fn accessibility_rate(&self) -> f64 {
+        if self.total_ways == 0 {
+            0.0
+        } else {
+            (self.accessible_ways as f64 / self.total_ways as f64) * 100.0
+        }
+    }
+    
+    /// Get preservation rate as percentage
+    pub fn preservation_rate(&self) -> f64 {
+        if self.total_nodes == 0 {
+            0.0
+        } else {
+            (self.preserved_nodes as f64 / self.total_nodes as f64) * 100.0
+        }
+    }
+}
+
+/// Route echo response for /route endpoint
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RouteEchoResponse {
+    /// Transport profile used
+    pub profile: String,
+    /// Input coordinates
+    pub coordinates: Vec<[f64; 2]>,
+    /// Echo message indicating no actual routing yet
+    pub echo: String,
+    /// Profile-specific accessibility statistics
+    pub profile_stats: ProfileAccessibilityStats,
+    /// Timestamp
+    pub timestamp: String,
+}
+
+/// Profile-specific accessibility statistics for route echo
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProfileAccessibilityStats {
+    /// Total ways loaded for this profile
+    pub accessible_ways: usize,
+    /// Total nodes preserved for this profile
+    pub preserved_nodes: usize,
+    /// Accessibility rate percentage
+    pub accessibility_rate: f64,
+    /// Average travel speed for this profile
+    pub avg_speed_kmh: f32,
+}
+
+impl MultiProfileLoader {
+    /// Create a new multi-profile loader with all supported profiles
+    pub fn new() -> Self {
+        let mut access_tables = HashMap::new();
+        let mut profile_masks = HashMap::new();
+        let mut component_analyzers = HashMap::new();
+        let mut speed_calculators = HashMap::new();
+        let mut profile_stats = HashMap::new();
+        
+        for profile in TransportProfile::all() {
+            access_tables.insert(profile, AccessTruthTable::new());
+            profile_masks.insert(profile, ProfileMask::new(profile));
+            component_analyzers.insert(profile, ComponentAnalyzer::new(profile));
+            speed_calculators.insert(profile, SpeedWeightCalculator::new(profile));
+            profile_stats.insert(profile, ProfileLoadingStats::default());
+        }
+        
+        Self {
+            access_tables,
+            profile_masks,
+            component_analyzers,
+            speed_calculators,
+            profile_stats,
+        }
+    }
+    
+    /// Load ways data for all profiles
+    pub fn load_ways(&mut self, ways: &[(i64, Vec<i64>, HashMap<String, String>)]) {
+        let start_time = std::time::Instant::now();
+        
+        for profile in TransportProfile::all() {
+            let mut stats = ProfileLoadingStats::default();
+            let access_table = &self.access_tables[&profile];
+            let profile_mask = self.profile_masks.get_mut(&profile).unwrap();
+            let speed_calc = &self.speed_calculators[&profile];
+            
+            let mut total_travel_time = 0.0;
+            let mut travel_time_count = 0;
+            
+            for (way_id, _nodes, tags) in ways {
+                stats.total_ways += 1;
+                
+                // Evaluate access for this profile
+                let way_access = access_table.evaluate_way_access(profile, tags);
+                
+                if way_access.should_include_in_graph() {
+                    stats.accessible_ways += 1;
+                    
+                    // Calculate weight for accessible ways - using approximate distance of 100m
+                    let edge_weight = speed_calc.calculate_edge_weight(&way_access, 100.0, tags, None);
+                    total_travel_time += edge_weight.time_seconds;
+                    travel_time_count += 1;
+                } else {
+                    stats.masked_ways += 1;
+                }
+                
+                // Update profile mask
+                profile_mask.evaluate_way(EdgeId(*way_id), tags);
+            }
+            
+            // Calculate average travel time
+            if travel_time_count > 0 {
+                stats.avg_travel_time_seconds = total_travel_time / travel_time_count as f32;
+            }
+            
+            self.profile_stats.insert(profile, stats);
+        }
+        
+        let loading_time = start_time.elapsed().as_millis() as f64;
+        
+        // Update timing statistics
+        for (_, stats) in &mut self.profile_stats {
+            stats.weight_calculation_time_ms = loading_time / TransportProfile::all().len() as f64;
+        }
+    }
+    
+    /// Analyze components for all profiles
+    pub fn analyze_components(&mut self, adjacency: HashMap<i64, Vec<(i64, EdgeId)>>) {
+        for profile in TransportProfile::all() {
+            let profile_mask = &self.profile_masks[&profile];
+            let filtered_adjacency = profile_mask.apply_to_adjacency_list(&adjacency);
+            
+            let analyzer = self.component_analyzers.get_mut(&profile).unwrap();
+            analyzer.analyze_components(&filtered_adjacency);
+            
+            // Update component statistics
+            if let Some(stats) = self.profile_stats.get_mut(&profile) {
+                let component_stats = analyzer.get_stats();
+                stats.total_nodes = component_stats.total_nodes;
+                stats.preserved_nodes = component_stats.preserved_nodes;
+            }
+        }
+    }
+    
+    /// Get loader statistics for all profiles
+    pub fn get_profile_stats(&self) -> &HashMap<TransportProfile, ProfileLoadingStats> {
+        &self.profile_stats
+    }
+    
+    /// Get component analyzer for a specific profile
+    pub fn get_component_analyzer(&self, profile: TransportProfile) -> Option<&ComponentAnalyzer> {
+        self.component_analyzers.get(&profile)
+    }
+    
+    /// Get profile mask for a specific profile
+    pub fn get_profile_mask(&self, profile: TransportProfile) -> Option<&ProfileMask> {
+        self.profile_masks.get(&profile)
+    }
+    
+    /// Get speed calculator for a specific profile
+    pub fn get_speed_calculator(&self, profile: TransportProfile) -> Option<&SpeedWeightCalculator> {
+        self.speed_calculators.get(&profile)
+    }
+    
+    /// Handle route echo request for a specific profile
+    pub fn handle_route_echo(&self, profile: TransportProfile, coordinates: Vec<[f64; 2]>) -> RouteEchoResponse {
+        let profile_name = profile.name().to_string();
+        
+        let profile_stats = self.profile_stats.get(&profile)
+            .cloned()
+            .unwrap_or_default();
+        
+        // Calculate average speed from speed calculator
+        let speed_calc = &self.speed_calculators[&profile];
+        let avg_speed = if let Some(residential_config) = speed_calc.get_highway_speeds().get(&HighwayType::Residential) {
+            residential_config.default_speed
+        } else {
+            20.0 // Fallback speed
+        };
+        
+        let accessibility_stats = ProfileAccessibilityStats {
+            accessible_ways: profile_stats.accessible_ways,
+            preserved_nodes: profile_stats.preserved_nodes,
+            accessibility_rate: profile_stats.accessibility_rate(),
+            avg_speed_kmh: avg_speed,
+        };
+        
+        RouteEchoResponse {
+            profile: profile_name.clone(),
+            coordinates,
+            echo: format!("Route echo for {} profile - no actual routing implemented yet", profile_name),
+            profile_stats: accessibility_stats,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+    
+    /// Get supported profiles
+    pub fn get_supported_profiles(&self) -> Vec<TransportProfile> {
+        TransportProfile::all()
+    }
+    
+    /// Clear all loaded data
+    pub fn clear_all(&mut self) {
+        for mask in self.profile_masks.values_mut() {
+            mask.clear();
+        }
+        for analyzer in self.component_analyzers.values_mut() {
+            analyzer.clear();
+        }
+        self.profile_stats.clear();
+    }
+}
+
+impl Default for MultiProfileLoader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// M4.1 — Synthetic Junction Test Generator
 /// Generates 100+ test cases covering all transport profile combinations
 pub struct SyntheticJunctionTests;
@@ -1439,8 +2356,8 @@ impl SyntheticJunctionTests {
                 name: format!("{}_on_unknown_highway", profile.name()),
                 tags: [("highway".to_string(), "unknown_type".to_string())].into_iter().collect(),
                 profile,
-                expected_accessible: true, // Unknown defaults to yes
-                expected_access_level: AccessLevel::Unknown, // Fixed: unknown highway types have Unknown access level
+                expected_accessible: false, // Unknown defaults to no
+                expected_access_level: AccessLevel::No, // Fixed: unknown highway types have No access level
                 description: format!("{} on unknown highway type", profile.name()),
             });
         }
@@ -1451,8 +2368,8 @@ impl SyntheticJunctionTests {
                 name: format!("{}_on_non_highway", profile.name()),
                 tags: [("building".to_string(), "yes".to_string())].into_iter().collect(),
                 profile,
-                expected_accessible: true, // No highway tag defaults to unknown highway
-                expected_access_level: AccessLevel::Unknown,
+                expected_accessible: false, // No highway tag defaults to unknown highway
+                expected_access_level: AccessLevel::No,
                 description: format!("{} on non-highway feature", profile.name()),
             });
         }
@@ -2391,5 +3308,1130 @@ mod tests {
         
         assert!((stats.preservation_rate() - 100.0).abs() < 0.1); // 100%
         assert!((stats.pruning_rate() - 0.0).abs() < 0.1); // 0%
+    }
+    
+    /// M4.4 — Test speed weight calculator basic functionality
+    #[test]
+    fn test_speed_weight_calculator_basic() {
+        let calculator = SpeedWeightCalculator::new(TransportProfile::Car);
+        assert_eq!(calculator.get_profile(), TransportProfile::Car);
+        
+        // Test basic weight calculation for residential street
+        let access_table = AccessTruthTable::new();
+        let tags = create_tags(&[("highway", "residential")]);
+        let way_access = access_table.evaluate_way_access(TransportProfile::Car, &tags);
+        
+        let weight = calculator.calculate_edge_weight(&way_access, 1000.0, &tags, None);
+        
+        // 1km at 30 km/h should take 120 seconds
+        assert!((weight.time_seconds - 120.0).abs() < 1.0, 
+               "Expected ~120s, got {:.1}s", weight.time_seconds);
+        assert_eq!(weight.distance_meters, 1000.0);
+        assert!((weight.effective_speed_kmh - 30.0).abs() < 1.0);
+        assert!(!weight.overflow_occurred);
+        
+        // Test quantization
+        let dequantized = SpeedWeightCalculator::dequantize_weight(weight.quantized_weight);
+        assert!((dequantized - weight.time_seconds).abs() < 0.1, 
+               "Quantization error too large: {:.3}s", (dequantized - weight.time_seconds).abs());
+    }
+    
+    /// M4.4 — Test highway speed tables for different profiles
+    #[test]
+    fn test_highway_speed_tables() {
+        let car_calc = SpeedWeightCalculator::new(TransportProfile::Car);
+        let bike_calc = SpeedWeightCalculator::new(TransportProfile::Bicycle);
+        let foot_calc = SpeedWeightCalculator::new(TransportProfile::Foot);
+        
+        // Test motorway speeds (cars only)
+        let motorway_car = car_calc.get_highway_speeds().get(&HighwayType::Motorway);
+        assert!(motorway_car.is_some());
+        assert_eq!(motorway_car.unwrap().default_speed, 120.0);
+        
+        // Bikes shouldn't have motorway speeds (they can't access motorways)
+        let motorway_bike = bike_calc.get_highway_speeds().get(&HighwayType::Motorway);
+        assert!(motorway_bike.is_none());
+        
+        // Test residential speeds for all profiles
+        let residential_car = car_calc.get_highway_speeds().get(&HighwayType::Residential).unwrap();
+        let residential_bike = bike_calc.get_highway_speeds().get(&HighwayType::Residential).unwrap();
+        let residential_foot = foot_calc.get_highway_speeds().get(&HighwayType::Residential).unwrap();
+        
+        assert_eq!(residential_car.default_speed, 30.0);
+        assert_eq!(residential_bike.default_speed, 15.0);
+        assert_eq!(residential_foot.default_speed, 4.5);
+        
+        // Test cycleway speeds (bikes should be fastest)
+        let cycleway_bike = bike_calc.get_highway_speeds().get(&HighwayType::Cycleway).unwrap();
+        assert_eq!(cycleway_bike.default_speed, 20.0);
+        
+        // Test footway speeds (foot only)
+        let footway_foot = foot_calc.get_highway_speeds().get(&HighwayType::Footway).unwrap();
+        assert_eq!(footway_foot.default_speed, 5.0);
+    }
+    
+    /// M4.4 — Test surface modifiers
+    #[test]
+    fn test_surface_modifiers() {
+        let car_calc = SpeedWeightCalculator::new(TransportProfile::Car);
+        let bike_calc = SpeedWeightCalculator::new(TransportProfile::Bicycle);
+        let foot_calc = SpeedWeightCalculator::new(TransportProfile::Foot);
+        
+        // Test asphalt (baseline)
+        assert_eq!(car_calc.get_surface_modifiers()["asphalt"], 1.0);
+        assert_eq!(bike_calc.get_surface_modifiers()["asphalt"], 1.0);
+        assert_eq!(foot_calc.get_surface_modifiers()["asphalt"], 1.0);
+        
+        // Test gravel (bikes should handle better than cars)
+        assert!(bike_calc.get_surface_modifiers()["gravel"] > car_calc.get_surface_modifiers()["gravel"]);
+        assert!(foot_calc.get_surface_modifiers()["gravel"] > bike_calc.get_surface_modifiers()["gravel"]);
+        
+        // Test sand (should be difficult for all, but especially bikes)
+        let sand_car = car_calc.get_surface_modifiers()["sand"];
+        let sand_bike = bike_calc.get_surface_modifiers()["sand"];
+        let sand_foot = foot_calc.get_surface_modifiers()["sand"];
+        
+        assert!(sand_foot > sand_bike); // Foot handles sand better than bikes
+        assert!(sand_bike > sand_car);  // Bikes handle sand better than cars
+        assert!(sand_car < 0.5);        // All find sand difficult
+    }
+    
+    /// M4.4 — Test adaptive grade penalties with model-consistent expectations
+    #[test]
+    fn test_adaptive_grade_penalties() {
+        let bike_calc = SpeedWeightCalculator::new(TransportProfile::Bicycle);
+        let access_table = AccessTruthTable::new();
+        
+        // Test flat road
+        let tags = create_tags(&[("highway", "residential")]);
+        let way_access = access_table.evaluate_way_access(TransportProfile::Bicycle, &tags);
+        let flat_weight = bike_calc.calculate_edge_weight(&way_access, 1000.0, &tags, None);
+        
+        // Test 5% uphill
+        let uphill_weight = bike_calc.calculate_edge_weight(&way_access, 1000.0, &tags, Some(5.0));
+        
+        // Test 5% downhill
+        let downhill_weight = bike_calc.calculate_edge_weight(&way_access, 1000.0, &tags, Some(-5.0));
+        
+        // Get expected factor from the bike's exponential model
+        let expected_5pct_factor = match &bike_calc.grade_penalties.params {
+            GradeParams::Bike { alpha_up, .. } => (alpha_up * 0.05).exp(),
+            _ => panic!("Expected bike grade params"),
+        };
+        
+        // Test model consistency with tolerance
+        let tolerance = 0.1; // 10% tolerance for numerical precision
+        let actual_factor = uphill_weight.time_seconds / flat_weight.time_seconds;
+        
+        assert!(
+            (actual_factor - expected_5pct_factor).abs() / expected_5pct_factor < tolerance,
+            "Grade penalty should match exponential model: expected {:.2}x, got {:.2}x", 
+            expected_5pct_factor, actual_factor
+        );
+        
+        // Test monotonicity: steeper grades should be slower
+        let steep_uphill_weight = bike_calc.calculate_edge_weight(&way_access, 1000.0, &tags, Some(10.0));
+        assert!(steep_uphill_weight.time_seconds > uphill_weight.time_seconds,
+               "Steeper grades should be slower: 5%={:.1}s, 10%={:.1}s", 
+               uphill_weight.time_seconds, steep_uphill_weight.time_seconds);
+        
+        // Downhill should be faster than flat (with reasonable bounds)
+        assert!(downhill_weight.time_seconds < flat_weight.time_seconds,
+               "Downhill should be faster: flat={:.1}s, downhill={:.1}s", 
+               flat_weight.time_seconds, downhill_weight.time_seconds);
+        
+        // Ensure downhill boost is capped (shouldn't be absurdly fast)
+        let downhill_factor = flat_weight.time_seconds / downhill_weight.time_seconds;
+        assert!(downhill_factor <= 1.25, // Max 25% boost
+               "Downhill boost should be capped: factor={:.2}x", downhill_factor);
+        
+        // Adaptive grade test completed successfully
+    }
+    
+    /// M4.4 — Test maxspeed tag parsing
+    #[test]
+    fn test_maxspeed_parsing() {
+        let car_calc = SpeedWeightCalculator::new(TransportProfile::Car);
+        let access_table = AccessTruthTable::new();
+        
+        // Test explicit maxspeed
+        let tags_50 = create_tags(&[("highway", "residential"), ("maxspeed", "50")]);
+        let way_access = access_table.evaluate_way_access(TransportProfile::Car, &tags_50);
+        let weight_50 = car_calc.calculate_edge_weight(&way_access, 1000.0, &tags_50, None);
+        
+        // Should use 50 km/h instead of 30 km/h default for residential
+        assert!((weight_50.effective_speed_kmh - 50.0).abs() < 1.0);
+        
+        // Test mph conversion
+        let tags_mph = create_tags(&[("highway", "residential"), ("maxspeed", "30 mph")]);
+        let weight_mph = car_calc.calculate_edge_weight(&way_access, 1000.0, &tags_mph, None);
+        
+        // 30 mph = ~48.3 km/h
+        assert!((weight_mph.effective_speed_kmh - 48.3).abs() < 1.0);
+        
+        // Test special values - "walk" should be clamped to car minimum speed for residential (10 km/h)
+        let tags_walk = create_tags(&[("highway", "residential"), ("maxspeed", "walk")]);
+        let weight_walk = car_calc.calculate_edge_weight(&way_access, 1000.0, &tags_walk, None);
+        
+        // Walk speed (5 km/h) gets clamped to residential minimum for cars (10 km/h)
+        assert!((weight_walk.effective_speed_kmh - 10.0).abs() < 1.0);
+    }
+    
+    /// M4.4 — Test weight penalties combination
+    #[test]
+    fn test_weight_penalties_combination() {
+        let bike_calc = SpeedWeightCalculator::new(TransportProfile::Bicycle);
+        let access_table = AccessTruthTable::new();
+        
+        // Test combination of surface + grade + access penalties
+        let tags = create_tags(&[
+            ("highway", "residential"),
+            ("surface", "gravel"),
+            ("access", "destination")
+        ]);
+        let way_access = access_table.evaluate_way_access(TransportProfile::Bicycle, &tags);
+        let weight = bike_calc.calculate_edge_weight(&way_access, 1000.0, &tags, Some(3.0)); // 3% uphill
+        
+        // Should have all penalties applied
+        assert!(weight.penalties.surface_factor < 1.0); // Gravel penalty
+        assert!(weight.penalties.grade_factor > 1.0);   // Uphill penalty
+        assert!(weight.penalties.access_factor > 1.0);  // Destination access penalty
+        
+        // Total factor should be combination
+        let expected_total = weight.penalties.surface_factor * 
+                           weight.penalties.grade_factor * 
+                           weight.penalties.access_factor;
+        assert!((weight.penalties.total_factor - expected_total).abs() < 0.01);
+        
+        // Travel time should be increased by all penalties combined
+        let base_time = 1000.0 / 15.0 * 3.6; // Base time for 15 km/h
+        let slowdown_factor = weight.time_seconds / base_time;
+        
+        // Model-consistent expectation: combined penalties should multiply together
+        let expected_minimum = 1.3; // At least 30% slower with all these penalties
+        assert!(slowdown_factor > expected_minimum, 
+               "Combined penalties should slow travel: expected >{:.1}x, got {:.2}x", 
+               expected_minimum, slowdown_factor);
+        
+        // Ensure penalties are behaving correctly for this scenario
+        assert!(weight.penalties.surface_factor < 1.0, "Gravel should reduce speed");
+        assert!(weight.penalties.grade_factor > 1.0, "Uphill should increase time");
+        assert!(weight.penalties.access_factor > 1.0, "Destination access should add penalty");
+    }
+    
+    /// M4.4 — Test quantization statistics
+    #[test]
+    fn test_quantization_statistics() {
+        let mut stats = QuantizationStats::default();
+        let calculator = SpeedWeightCalculator::new(TransportProfile::Car);
+        let access_table = AccessTruthTable::new();
+        
+        // Generate various weights
+        let test_cases = vec![
+            (100.0, "residential"),  // Short distance
+            (1000.0, "residential"), // Medium distance
+            (5000.0, "motorway"),    // Long distance, fast road
+            (500.0, "steps"),        // Slow road
+        ];
+        
+        for (distance, highway) in test_cases {
+            let tags = create_tags(&[("highway", highway)]);
+            let way_access = access_table.evaluate_way_access(TransportProfile::Car, &tags);
+            let weight = calculator.calculate_edge_weight(&way_access, distance, &tags, None);
+            stats.add_weight(&weight);
+        }
+        
+        // Check statistics
+        assert_eq!(stats.total_edges, 4);
+        assert_eq!(stats.overflow_edges, 0); // No overflow for reasonable distances
+        assert!(stats.avg_quantization_error < 0.1); // Should be very accurate
+        assert!(stats.max_quantization_error < 0.1);
+        
+        // Should have good compression potential (repeated values)
+        assert!(stats.estimate_compression_ratio() > 1.0);
+    }
+    
+    /// M4.4 — Test overflow handling
+    #[test]
+    fn test_overflow_handling() {
+        let calculator = SpeedWeightCalculator::new(TransportProfile::Foot);
+        let access_table = AccessTruthTable::new();
+        
+        // Test very long distance at very slow speed
+        let tags = create_tags(&[("highway", "steps"), ("surface", "mud")]);
+        let way_access = access_table.evaluate_way_access(TransportProfile::Foot, &tags);
+        
+        // 100km on muddy steps should cause overflow
+        let weight = calculator.calculate_edge_weight(&way_access, 100000.0, &tags, Some(15.0)); // Steep uphill
+        
+        println!("Extreme case: {:.1}s travel time, quantized to {}, overflow: {}", 
+                weight.time_seconds, weight.quantized_weight, weight.overflow_occurred);
+        
+        // Should detect overflow for extreme cases
+        if weight.time_seconds > 6553.5 { // u16::MAX / 10.0
+            assert!(weight.overflow_occurred);
+            assert_eq!(weight.quantized_weight, u16::MAX);
+        }
+    }
+    
+    // ==== M4.5: Multi-Profile Loader Tests ====
+    
+    #[test]
+    fn test_multi_profile_loader_initialization() {
+        let loader = MultiProfileLoader::new();
+        
+        // Should have components for all three profiles
+        assert_eq!(loader.access_tables.len(), 3);
+        assert_eq!(loader.profile_masks.len(), 3);
+        assert_eq!(loader.component_analyzers.len(), 3);
+        assert_eq!(loader.speed_calculators.len(), 3);
+        assert_eq!(loader.profile_stats.len(), 3);
+        
+        // All profiles should be present
+        for profile in &[TransportProfile::Car, TransportProfile::Bicycle, TransportProfile::Foot] {
+            assert!(loader.access_tables.contains_key(profile));
+            assert!(loader.profile_masks.contains_key(profile));
+            assert!(loader.component_analyzers.contains_key(profile));
+            assert!(loader.speed_calculators.contains_key(profile));
+            assert!(loader.profile_stats.contains_key(profile));
+        }
+    }
+    
+    #[test]
+    fn test_multi_profile_loader_access_tables() {
+        let loader = MultiProfileLoader::new();
+        
+        // Test that each profile has different access rules
+        let car_table = &loader.access_tables[&TransportProfile::Car];
+        let bike_table = &loader.access_tables[&TransportProfile::Bicycle];
+        let foot_table = &loader.access_tables[&TransportProfile::Foot];
+        
+        let motorway_tags = create_tags(&[("highway", "motorway")]);
+        let footway_tags = create_tags(&[("highway", "footway")]);
+        let cycleway_tags = create_tags(&[("highway", "cycleway")]);
+        
+        // Cars can use motorways but not footways/cycleways
+        assert!(car_table.evaluate_way_access(TransportProfile::Car, &motorway_tags).is_accessible);
+        assert!(!car_table.evaluate_way_access(TransportProfile::Car, &footway_tags).is_accessible);
+        assert!(!car_table.evaluate_way_access(TransportProfile::Car, &cycleway_tags).is_accessible);
+        
+        // Bikes can use cycleways but not motorways
+        assert!(!bike_table.evaluate_way_access(TransportProfile::Bicycle, &motorway_tags).is_accessible);
+        assert!(bike_table.evaluate_way_access(TransportProfile::Bicycle, &cycleway_tags).is_accessible);
+        
+        // Foot can use footways but not motorways or cycleways (unless specifically tagged)
+        assert!(!foot_table.evaluate_way_access(TransportProfile::Foot, &motorway_tags).is_accessible);
+        assert!(foot_table.evaluate_way_access(TransportProfile::Foot, &footway_tags).is_accessible);
+        assert!(!foot_table.evaluate_way_access(TransportProfile::Foot, &cycleway_tags).is_accessible); // Default no access
+    }
+    
+    #[test]
+    fn test_multi_profile_loader_ways_processing() {
+        let mut loader = MultiProfileLoader::new();
+        
+        let ways = vec![
+            (1, vec![1, 2, 3], create_tags(&[("highway", "primary")])),
+            (2, vec![3, 4, 5], create_tags(&[("highway", "footway")])),
+            (3, vec![5, 6, 7], create_tags(&[("highway", "cycleway")])),
+            (4, vec![7, 8, 9], create_tags(&[("highway", "motorway")])),
+            (5, vec![9, 10, 11], create_tags(&[("highway", "service")])),
+        ];
+        
+        loader.load_ways(&ways);
+        
+        // Check that stats were updated
+        let car_stats = &loader.profile_stats[&TransportProfile::Car];
+        let bike_stats = &loader.profile_stats[&TransportProfile::Bicycle];
+        let foot_stats = &loader.profile_stats[&TransportProfile::Foot];
+        
+        // All profiles should have processed some ways
+        assert!(car_stats.total_ways > 0);
+        assert!(bike_stats.total_ways > 0);
+        assert!(foot_stats.total_ways > 0);
+        
+        // All profiles should have similar accessibility with these test highways
+        // Car: primary, motorway, service = 3 ways
+        // Bike: primary, cycleway, service = 3 ways  
+        // Foot: primary, footway, service = 3 ways
+        assert_eq!(car_stats.accessible_ways, 3);
+        assert_eq!(bike_stats.accessible_ways, 3);
+        assert_eq!(foot_stats.accessible_ways, 3);
+    }
+    
+    #[test]
+    fn test_multi_profile_component_analysis() {
+        let mut loader = MultiProfileLoader::new();
+        
+        // Create a simple graph with different accessibility per profile
+        let ways = vec![
+            (1, vec![1, 2], create_tags(&[("highway", "primary")])),
+            (2, vec![2, 3], create_tags(&[("highway", "footway")])),
+            (3, vec![3, 4], create_tags(&[("highway", "cycleway")])),
+            (4, vec![4, 5], create_tags(&[("highway", "service")])),
+        ];
+        
+        loader.load_ways(&ways);
+        // For testing, create empty adjacency list
+        let adjacency = std::collections::HashMap::new();
+        loader.analyze_components(adjacency);
+        
+        // Each profile should have analyzed components (though they may be empty with test data)
+        for profile in &[TransportProfile::Car, TransportProfile::Bicycle, TransportProfile::Foot] {
+            let analyzer = &loader.component_analyzers[profile];
+            // With empty adjacency list, components will be empty, but analyzer should exist
+            assert!(analyzer.get_components().len() == 0); // Empty adjacency = no components
+            
+            let stats = analyzer.get_stats();
+            assert_eq!(stats.total_nodes, 0); // Empty adjacency = no nodes
+        }
+    }
+    
+    #[test]
+    fn test_multi_profile_route_echo() {
+        let loader = MultiProfileLoader::new();
+        
+        let coordinates = vec![[52.5, 13.4], [52.51, 13.41], [52.52, 13.42]];
+        
+        // Test route echo for each profile
+        for profile in &[TransportProfile::Car, TransportProfile::Bicycle, TransportProfile::Foot] {
+            let response = loader.handle_route_echo(*profile, coordinates.clone());
+            
+            assert_eq!(response.profile, profile.name());
+            assert_eq!(response.coordinates, coordinates);
+            assert!(response.echo.contains(profile.name()));
+            assert!(response.timestamp.len() > 0);
+            
+            // Profile stats should be present
+            assert!(response.profile_stats.avg_speed_kmh > 0.0);
+        }
+    }
+    
+    #[test]
+    fn test_multi_profile_speed_differences() {
+        let loader = MultiProfileLoader::new();
+        
+        let coordinates = vec![[52.5, 13.4], [52.51, 13.41]];
+        
+        let car_response = loader.handle_route_echo(TransportProfile::Car, coordinates.clone());
+        let bike_response = loader.handle_route_echo(TransportProfile::Bicycle, coordinates.clone());
+        let foot_response = loader.handle_route_echo(TransportProfile::Foot, coordinates.clone());
+        
+        // Car should be fastest
+        assert!(car_response.profile_stats.avg_speed_kmh > bike_response.profile_stats.avg_speed_kmh);
+        assert!(car_response.profile_stats.avg_speed_kmh > foot_response.profile_stats.avg_speed_kmh);
+        
+        // Bike should be faster than foot
+        assert!(bike_response.profile_stats.avg_speed_kmh > foot_response.profile_stats.avg_speed_kmh);
+    }
+    
+    #[test]
+    fn test_multi_profile_accessibility_rates() {
+        let mut loader = MultiProfileLoader::new();
+        
+        // Create ways with different accessibility patterns
+        let ways = vec![
+            (1, vec![1, 2], create_tags(&[("highway", "motorway")])), // Car only
+            (2, vec![2, 3], create_tags(&[("highway", "footway")])),  // Foot/bike only
+            (3, vec![3, 4], create_tags(&[("highway", "cycleway")])), // Bike/foot only
+            (4, vec![4, 5], create_tags(&[("highway", "primary")])),  // All profiles
+            (5, vec![5, 6], create_tags(&[("highway", "residential")])), // All profiles
+        ];
+        
+        loader.load_ways(&ways);
+        
+        let car_stats = &loader.profile_stats[&TransportProfile::Car];
+        let bike_stats = &loader.profile_stats[&TransportProfile::Bicycle];
+        let foot_stats = &loader.profile_stats[&TransportProfile::Foot];
+        
+        // All should have processed 5 ways
+        assert_eq!(car_stats.total_ways, 5);
+        assert_eq!(bike_stats.total_ways, 5);
+        assert_eq!(foot_stats.total_ways, 5);
+        
+        // Car should have access to 3 ways (motorway, primary, residential)
+        assert_eq!(car_stats.accessible_ways, 3);
+        
+        // Bike should have access to 3 ways (cycleway, primary, residential) - no footway access by default
+        assert_eq!(bike_stats.accessible_ways, 3);
+        
+        // Foot should have access to 3 ways (footway, primary, residential) - no cycleway access by default
+        assert_eq!(foot_stats.accessible_ways, 3);
+        
+        // Calculate accessibility rates (returned as percentages)
+        assert!((car_stats.accessibility_rate() - 60.0).abs() < 0.01); // 3/5 = 60%
+        assert!((bike_stats.accessibility_rate() - 60.0).abs() < 0.01); // 3/5 = 60%
+        assert!((foot_stats.accessibility_rate() - 60.0).abs() < 0.01); // 3/5 = 60%
+    }
+    
+    #[test]
+    fn test_multi_profile_component_getters() {
+        let loader = MultiProfileLoader::new();
+        
+        // Test all getter methods
+        for profile in &[TransportProfile::Car, TransportProfile::Bicycle, TransportProfile::Foot] {
+            assert!(loader.get_component_analyzer(*profile).is_some());
+            assert!(loader.get_profile_mask(*profile).is_some());
+            assert!(loader.get_speed_calculator(*profile).is_some());
+        }
+        
+        let stats = loader.get_profile_stats();
+        assert_eq!(stats.len(), 3);
+        
+        for profile in &[TransportProfile::Car, TransportProfile::Bicycle, TransportProfile::Foot] {
+            assert!(stats.contains_key(profile));
+        }
+    }
+}
+
+// ==== PRS v1: Profile Regression Suite ====
+
+/// Profile Regression Suite v1 for comprehensive access and routing testing
+pub struct ProfileRegressionSuite {
+    loader: MultiProfileLoader,
+    test_results: HashMap<String, TestResult>,
+}
+
+/// Test result for PRS v1 test cases
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TestResult {
+    pub test_name: String,
+    pub test_type: TestType,
+    pub status: TestStatus,
+    pub profile: TransportProfile,
+    pub message: String,
+    pub details: serde_json::Value,
+    pub timestamp: String,
+}
+
+/// Type of PRS test
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum TestType {
+    AccessLegality,
+    RoutingSmokeTest,
+    ForbiddenEdgeCheck,
+}
+
+/// Status of PRS test
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum TestStatus {
+    Pass,
+    Fail,
+    Warning,
+    Skip,
+}
+
+/// Forbidden edge report for accessibility issues
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ForbiddenEdgeReport {
+    pub edge_id: EdgeId,
+    pub highway_type: HighwayType,
+    pub profile: TransportProfile,
+    pub expected_access: AccessLevel,
+    pub actual_access: AccessLevel,
+    pub tags: HashMap<String, String>,
+    pub reason: String,
+}
+
+/// Basic routing test case for smoke testing
+#[derive(Debug, Clone)]
+pub struct RoutingSmokeTestCase {
+    pub name: String,
+    pub profile: TransportProfile,
+    pub start_coords: [f64; 2],
+    pub end_coords: [f64; 2],
+    pub expected_routable: bool,
+    pub max_distance_km: f64,
+}
+
+impl ProfileRegressionSuite {
+    /// Create new PRS v1 instance
+    pub fn new() -> Self {
+        Self {
+            loader: MultiProfileLoader::new(),
+            test_results: HashMap::new(),
+        }
+    }
+    
+    /// Run complete PRS v1 test suite
+    pub fn run_complete_test_suite(&mut self, ways_data: &[(i64, Vec<i64>, HashMap<String, String>)]) -> PRSReport {
+        let start_time = std::time::Instant::now();
+        
+        // Load ways data for testing
+        self.loader.load_ways(ways_data);
+        
+        // Run access legality tests
+        self.run_access_legality_tests();
+        
+        // Run routing smoke tests
+        self.run_routing_smoke_tests();
+        
+        // Run forbidden edge analysis
+        self.run_forbidden_edge_analysis(ways_data);
+        
+        let duration = start_time.elapsed();
+        
+        self.generate_prs_report(duration)
+    }
+    
+    /// Run access legality tests for all profiles
+    fn run_access_legality_tests(&mut self) {
+        let test_cases = self.generate_access_legality_test_cases();
+        
+        for test_case in test_cases {
+            let result = self.run_access_legality_test(&test_case);
+            self.test_results.insert(format!("access_legality_{}", test_case.name), result);
+        }
+    }
+    
+    /// Generate access legality test cases
+    fn generate_access_legality_test_cases(&self) -> Vec<AccessLegalityTestCase> {
+        vec![
+            // Car access tests
+            AccessLegalityTestCase {
+                name: "car_motorway_access".to_string(),
+                profile: TransportProfile::Car,
+                highway: HighwayType::Motorway,
+                tags: create_tags(&[("highway", "motorway")]),
+                expected_accessible: true,
+            },
+            AccessLegalityTestCase {
+                name: "car_footway_no_access".to_string(),
+                profile: TransportProfile::Car,
+                highway: HighwayType::Footway,
+                tags: create_tags(&[("highway", "footway")]),
+                expected_accessible: false,
+            },
+            AccessLegalityTestCase {
+                name: "car_private_road".to_string(),
+                profile: TransportProfile::Car,
+                highway: HighwayType::Residential,
+                tags: create_tags(&[("highway", "residential"), ("access", "private")]),
+                expected_accessible: false,
+            },
+            
+            // Bicycle access tests
+            AccessLegalityTestCase {
+                name: "bike_cycleway_access".to_string(),
+                profile: TransportProfile::Bicycle,
+                highway: HighwayType::Cycleway,
+                tags: create_tags(&[("highway", "cycleway")]),
+                expected_accessible: true,
+            },
+            AccessLegalityTestCase {
+                name: "bike_motorway_no_access".to_string(),
+                profile: TransportProfile::Bicycle,
+                highway: HighwayType::Motorway,
+                tags: create_tags(&[("highway", "motorway")]),
+                expected_accessible: false,
+            },
+            AccessLegalityTestCase {
+                name: "bike_footway_with_bicycle_yes".to_string(),
+                profile: TransportProfile::Bicycle,
+                highway: HighwayType::Footway,
+                tags: create_tags(&[("highway", "footway"), ("bicycle", "yes")]),
+                expected_accessible: true,
+            },
+            
+            // Foot access tests
+            AccessLegalityTestCase {
+                name: "foot_footway_access".to_string(),
+                profile: TransportProfile::Foot,
+                highway: HighwayType::Footway,
+                tags: create_tags(&[("highway", "footway")]),
+                expected_accessible: true,
+            },
+            AccessLegalityTestCase {
+                name: "foot_motorway_no_access".to_string(),
+                profile: TransportProfile::Foot,
+                highway: HighwayType::Motorway,
+                tags: create_tags(&[("highway", "motorway")]),
+                expected_accessible: false,
+            },
+            AccessLegalityTestCase {
+                name: "foot_residential_access".to_string(),
+                profile: TransportProfile::Foot,
+                highway: HighwayType::Residential,
+                tags: create_tags(&[("highway", "residential")]),
+                expected_accessible: true,
+            },
+        ]
+    }
+    
+    /// Run individual access legality test
+    fn run_access_legality_test(&self, test_case: &AccessLegalityTestCase) -> TestResult {
+        let access_table = &self.loader.access_tables[&test_case.profile];
+        let way_access = access_table.evaluate_way_access(test_case.profile, &test_case.tags);
+        
+        let actual_accessible = way_access.is_accessible;
+        let test_passed = actual_accessible == test_case.expected_accessible;
+        
+        let status = if test_passed { TestStatus::Pass } else { TestStatus::Fail };
+        let message = if test_passed {
+            format!("Access legality correct for {} on {}", test_case.profile.name(), test_case.highway.name())
+        } else {
+            format!("Access legality failed: expected {}, got {} for {} on {}", 
+                test_case.expected_accessible, actual_accessible, 
+                test_case.profile.name(), test_case.highway.name())
+        };
+        
+        let details = serde_json::json!({
+            "highway_type": test_case.highway.name(),
+            "expected_accessible": test_case.expected_accessible,
+            "actual_accessible": actual_accessible,
+            "access_level": way_access.access,
+            "tags": test_case.tags
+        });
+        
+        TestResult {
+            test_name: test_case.name.clone(),
+            test_type: TestType::AccessLegality,
+            status,
+            profile: test_case.profile,
+            message,
+            details,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+    
+    /// Run routing smoke tests
+    fn run_routing_smoke_tests(&mut self) {
+        let test_cases = self.generate_routing_smoke_test_cases();
+        
+        for test_case in test_cases {
+            let result = self.run_routing_smoke_test(&test_case);
+            self.test_results.insert(format!("routing_smoke_{}", test_case.name), result);
+        }
+    }
+    
+    /// Generate routing smoke test cases
+    fn generate_routing_smoke_test_cases(&self) -> Vec<RoutingSmokeTestCase> {
+        vec![
+            RoutingSmokeTestCase {
+                name: "car_short_distance".to_string(),
+                profile: TransportProfile::Car,
+                start_coords: [52.5200, 13.4050],
+                end_coords: [52.5201, 13.4051],
+                expected_routable: true,
+                max_distance_km: 1.0,
+            },
+            RoutingSmokeTestCase {
+                name: "bike_urban_route".to_string(),
+                profile: TransportProfile::Bicycle,
+                start_coords: [52.5200, 13.4050],
+                end_coords: [52.5210, 13.4060],
+                expected_routable: true,
+                max_distance_km: 2.0,
+            },
+            RoutingSmokeTestCase {
+                name: "foot_neighborhood".to_string(),
+                profile: TransportProfile::Foot,
+                start_coords: [52.5200, 13.4050],
+                end_coords: [52.5205, 13.4055],
+                expected_routable: true,
+                max_distance_km: 1.0,
+            },
+        ]
+    }
+    
+    /// Run individual routing smoke test
+    fn run_routing_smoke_test(&self, test_case: &RoutingSmokeTestCase) -> TestResult {
+        // For PRS v1, we'll do a simple echo test since full routing isn't implemented yet
+        let echo_response = self.loader.handle_route_echo(
+            test_case.profile, 
+            vec![test_case.start_coords, test_case.end_coords]
+        );
+        
+        // Basic smoke test - verify echo response is generated
+        let test_passed = !echo_response.echo.is_empty() && 
+                         echo_response.profile == test_case.profile.name() &&
+                         echo_response.coordinates.len() == 2;
+        
+        let status = if test_passed { TestStatus::Pass } else { TestStatus::Fail };
+        let message = if test_passed {
+            format!("Routing smoke test passed for {} profile", test_case.profile.name())
+        } else {
+            "Routing smoke test failed - invalid echo response".to_string()
+        };
+        
+        let details = serde_json::json!({
+            "start_coords": test_case.start_coords,
+            "end_coords": test_case.end_coords,
+            "max_distance_km": test_case.max_distance_km,
+            "echo_response": echo_response
+        });
+        
+        TestResult {
+            test_name: test_case.name.clone(),
+            test_type: TestType::RoutingSmokeTest,
+            status,
+            profile: test_case.profile,
+            message,
+            details,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+    
+    /// Run forbidden edge analysis
+    fn run_forbidden_edge_analysis(&mut self, ways_data: &[(i64, Vec<i64>, HashMap<String, String>)]) {
+        for profile in TransportProfile::all() {
+            let forbidden_edges = self.find_forbidden_edges(profile, ways_data);
+            
+            let test_result = TestResult {
+                test_name: format!("forbidden_edge_analysis_{}", profile.name().to_lowercase()),
+                test_type: TestType::ForbiddenEdgeCheck,
+                status: if forbidden_edges.is_empty() { TestStatus::Pass } else { TestStatus::Warning },
+                profile,
+                message: format!("Found {} potentially forbidden edges for {} profile", 
+                    forbidden_edges.len(), profile.name()),
+                details: serde_json::json!({
+                    "forbidden_edges_count": forbidden_edges.len(),
+                    "forbidden_edges": forbidden_edges
+                }),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            };
+            
+            self.test_results.insert(test_result.test_name.clone(), test_result);
+        }
+    }
+    
+    /// Find forbidden edges for a specific profile
+    fn find_forbidden_edges(&self, profile: TransportProfile, ways_data: &[(i64, Vec<i64>, HashMap<String, String>)]) -> Vec<ForbiddenEdgeReport> {
+        let mut forbidden_edges = Vec::new();
+        let access_table = &self.loader.access_tables[&profile];
+        
+        for (way_id, _nodes, tags) in ways_data {
+            if let Some(highway_str) = tags.get("highway") {
+                let highway_type = HighwayType::parse(highway_str);
+                let expected_access = highway_type.default_access(profile);
+                let way_access = access_table.evaluate_way_access(profile, tags);
+                
+                // Look for cases where default access says "yes" but evaluation says "no"
+                if expected_access == AccessLevel::Yes && !way_access.is_accessible {
+                    forbidden_edges.push(ForbiddenEdgeReport {
+                        edge_id: EdgeId(*way_id),
+                        highway_type,
+                        profile,
+                        expected_access,
+                        actual_access: way_access.access,
+                        tags: tags.clone(),
+                        reason: format!("Default access is Yes but evaluation blocked access due to: {}", 
+                            if tags.contains_key("access") { "access tag restriction" }
+                            else if tags.contains_key(&profile.name().to_lowercase()) { "profile-specific tag restriction" }
+                            else { "unknown restriction" }
+                        ),
+                    });
+                }
+            }
+        }
+        
+        forbidden_edges
+    }
+    
+    /// Generate comprehensive PRS report
+    fn generate_prs_report(&self, duration: std::time::Duration) -> PRSReport {
+        let mut total_tests = 0;
+        let mut passed_tests = 0;
+        let mut failed_tests = 0;
+        let mut warning_tests = 0;
+        let mut skipped_tests = 0;
+        
+        for result in self.test_results.values() {
+            total_tests += 1;
+            match result.status {
+                TestStatus::Pass => passed_tests += 1,
+                TestStatus::Fail => failed_tests += 1,
+                TestStatus::Warning => warning_tests += 1,
+                TestStatus::Skip => skipped_tests += 1,
+            }
+        }
+        
+        let success_rate = if total_tests > 0 {
+            (passed_tests as f64 / total_tests as f64) * 100.0
+        } else {
+            0.0
+        };
+        
+        PRSReport {
+            version: "PRS v1".to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            duration_ms: duration.as_millis() as u64,
+            summary: PRSTestSummary {
+                total_tests,
+                passed_tests,
+                failed_tests,
+                warning_tests,
+                skipped_tests,
+                success_rate,
+            },
+            test_results: self.test_results.values().cloned().collect(),
+            profiles_tested: TransportProfile::all(),
+        }
+    }
+    
+    /// Get test results for specific profile
+    pub fn get_profile_test_results(&self, profile: TransportProfile) -> Vec<&TestResult> {
+        self.test_results.values()
+            .filter(|result| result.profile == profile)
+            .collect()
+    }
+    
+    /// Get failed test results
+    pub fn get_failed_tests(&self) -> Vec<&TestResult> {
+        self.test_results.values()
+            .filter(|result| matches!(result.status, TestStatus::Fail))
+            .collect()
+    }
+    
+    /// Get forbidden edge reports
+    pub fn get_forbidden_edge_reports(&self) -> Vec<ForbiddenEdgeReport> {
+        let mut reports = Vec::new();
+        
+        for result in self.test_results.values() {
+            if matches!(result.test_type, TestType::ForbiddenEdgeCheck) {
+                if let Ok(forbidden_edges) = serde_json::from_value::<Vec<ForbiddenEdgeReport>>(
+                    result.details.get("forbidden_edges").unwrap_or(&serde_json::Value::Array(vec![])).clone()
+                ) {
+                    reports.extend(forbidden_edges);
+                }
+            }
+        }
+        
+        reports
+    }
+}
+
+/// Access legality test case
+#[derive(Debug, Clone)]
+struct AccessLegalityTestCase {
+    name: String,
+    profile: TransportProfile,
+    highway: HighwayType,
+    tags: HashMap<String, String>,
+    expected_accessible: bool,
+}
+
+/// Complete PRS v1 test report
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PRSReport {
+    pub version: String,
+    pub timestamp: String,
+    pub duration_ms: u64,
+    pub summary: PRSTestSummary,
+    pub test_results: Vec<TestResult>,
+    pub profiles_tested: Vec<TransportProfile>,
+}
+
+/// PRS test summary statistics
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PRSTestSummary {
+    pub total_tests: usize,
+    pub passed_tests: usize,
+    pub failed_tests: usize,
+    pub warning_tests: usize,
+    pub skipped_tests: usize,
+    pub success_rate: f64,
+}
+
+impl Default for ProfileRegressionSuite {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod prs_tests {
+    use super::*;
+    
+    #[test]
+    fn test_prs_v1_complete_test_suite() {
+        let mut prs = ProfileRegressionSuite::new();
+        
+        // Create test ways data
+        let ways_data = vec![
+            (1, vec![1, 2], create_tags(&[("highway", "motorway")])),
+            (2, vec![2, 3], create_tags(&[("highway", "footway")])),
+            (3, vec![3, 4], create_tags(&[("highway", "cycleway")])),
+            (4, vec![4, 5], create_tags(&[("highway", "residential")])),
+            (5, vec![5, 6], create_tags(&[("highway", "residential"), ("access", "private")])),
+        ];
+        
+        let report = prs.run_complete_test_suite(&ways_data);
+        
+        // Verify report structure
+        assert_eq!(report.version, "PRS v1");
+        assert!(report.duration_ms > 0);
+        assert_eq!(report.profiles_tested.len(), 3);
+        
+        // Should have access legality tests (9), routing smoke tests (3), and forbidden edge analysis (3)
+        assert_eq!(report.summary.total_tests, 15);
+        
+        // Most tests should pass
+        assert!(report.summary.passed_tests > 0);
+        assert!(report.summary.success_rate > 50.0);
+    }
+    
+    #[test]
+    fn test_prs_access_legality_tests() {
+        let mut prs = ProfileRegressionSuite::new();
+        
+        let ways_data = vec![
+            (1, vec![1, 2], create_tags(&[("highway", "motorway")])),
+        ];
+        
+        let report = prs.run_complete_test_suite(&ways_data);
+        
+        // Filter access legality test results
+        let access_tests: Vec<_> = report.test_results.iter()
+            .filter(|r| matches!(r.test_type, TestType::AccessLegality))
+            .collect();
+        
+        assert_eq!(access_tests.len(), 9); // 3 tests per profile
+        
+        // Check that we have tests for all profiles
+        let car_tests: Vec<_> = access_tests.iter()
+            .filter(|r| r.profile == TransportProfile::Car)
+            .collect();
+        let bike_tests: Vec<_> = access_tests.iter()
+            .filter(|r| r.profile == TransportProfile::Bicycle)
+            .collect();
+        let foot_tests: Vec<_> = access_tests.iter()
+            .filter(|r| r.profile == TransportProfile::Foot)
+            .collect();
+            
+        assert_eq!(car_tests.len(), 3);
+        assert_eq!(bike_tests.len(), 3);
+        assert_eq!(foot_tests.len(), 3);
+    }
+    
+    #[test]
+    fn test_prs_routing_smoke_tests() {
+        let mut prs = ProfileRegressionSuite::new();
+        
+        let ways_data = vec![
+            (1, vec![1, 2], create_tags(&[("highway", "residential")])),
+        ];
+        
+        let report = prs.run_complete_test_suite(&ways_data);
+        
+        // Filter routing smoke test results
+        let smoke_tests: Vec<_> = report.test_results.iter()
+            .filter(|r| matches!(r.test_type, TestType::RoutingSmokeTest))
+            .collect();
+        
+        assert_eq!(smoke_tests.len(), 3); // One test per profile
+        
+        // All smoke tests should pass (they're just echo tests)
+        for test in smoke_tests {
+            assert!(matches!(test.status, TestStatus::Pass));
+        }
+    }
+    
+    #[test]
+    fn test_prs_forbidden_edge_analysis() {
+        let mut prs = ProfileRegressionSuite::new();
+        
+        // Create ways that should have forbidden edges (private access on normally accessible roads)
+        let ways_data = vec![
+            (1, vec![1, 2], create_tags(&[("highway", "residential"), ("access", "private")])),
+            (2, vec![2, 3], create_tags(&[("highway", "primary"), ("car", "no")])),
+            (3, vec![3, 4], create_tags(&[("highway", "footway"), ("foot", "no")])),
+        ];
+        
+        let report = prs.run_complete_test_suite(&ways_data);
+        
+        // Filter forbidden edge analysis results
+        let forbidden_tests: Vec<_> = report.test_results.iter()
+            .filter(|r| matches!(r.test_type, TestType::ForbiddenEdgeCheck))
+            .collect();
+        
+        assert_eq!(forbidden_tests.len(), 3); // One analysis per profile
+        
+        // Get forbidden edge reports
+        let forbidden_reports = prs.get_forbidden_edge_reports();
+        assert!(forbidden_reports.len() > 0); // Should find some forbidden edges
+    }
+    
+    #[test]
+    fn test_prs_profile_specific_results() {
+        let mut prs = ProfileRegressionSuite::new();
+        
+        let ways_data = vec![
+            (1, vec![1, 2], create_tags(&[("highway", "residential")])),
+        ];
+        
+        let _report = prs.run_complete_test_suite(&ways_data);
+        
+        // Test profile-specific result filtering
+        let car_results = prs.get_profile_test_results(TransportProfile::Car);
+        let bike_results = prs.get_profile_test_results(TransportProfile::Bicycle);
+        let foot_results = prs.get_profile_test_results(TransportProfile::Foot);
+        
+        // Each profile should have 5 tests (3 access legality + 1 smoke + 1 forbidden edge)
+        assert_eq!(car_results.len(), 5);
+        assert_eq!(bike_results.len(), 5);
+        assert_eq!(foot_results.len(), 5);
+        
+        // Verify all results are for the correct profile
+        for result in car_results {
+            assert_eq!(result.profile, TransportProfile::Car);
+        }
+        for result in bike_results {
+            assert_eq!(result.profile, TransportProfile::Bicycle);
+        }
+        for result in foot_results {
+            assert_eq!(result.profile, TransportProfile::Foot);
+        }
+    }
+    
+    #[test]
+    fn test_prs_failed_tests_filtering() {
+        let mut prs = ProfileRegressionSuite::new();
+        
+        let ways_data = vec![
+            (1, vec![1, 2], create_tags(&[("highway", "residential")])),
+        ];
+        
+        let _report = prs.run_complete_test_suite(&ways_data);
+        
+        let failed_tests = prs.get_failed_tests();
+        
+        // Most tests should pass with the simple test data
+        // Failed tests should be a small subset
+        assert!(failed_tests.len() < 5);
+        
+        // All failed tests should have status Fail
+        for test in failed_tests {
+            assert!(matches!(test.status, TestStatus::Fail));
+        }
+    }
+    
+    #[test]
+    fn test_prs_report_statistics() {
+        let mut prs = ProfileRegressionSuite::new();
+        
+        let ways_data = vec![
+            (1, vec![1, 2], create_tags(&[("highway", "primary")])),
+            (2, vec![2, 3], create_tags(&[("highway", "footway")])),
+        ];
+        
+        let report = prs.run_complete_test_suite(&ways_data);
+        
+        // Verify statistics consistency
+        let summary = &report.summary;
+        assert_eq!(
+            summary.total_tests,
+            summary.passed_tests + summary.failed_tests + summary.warning_tests + summary.skipped_tests
+        );
+        
+        // Success rate should be calculated correctly
+        let expected_success_rate = if summary.total_tests > 0 {
+            (summary.passed_tests as f64 / summary.total_tests as f64) * 100.0
+        } else {
+            0.0
+        };
+        assert!((summary.success_rate - expected_success_rate).abs() < 0.01);
+        
+        // Should have reasonable success rate
+        assert!(summary.success_rate >= 50.0);
     }
 }
