@@ -17,7 +17,7 @@ A comprehensive ecosystem of OSM tools designed around **separation of concerns*
 - **🚀 butterfly-dl**: Memory-efficient OSM data downloader (<1GB RAM for any file size)
 - **📊 butterfly-extract**: PBF streaming processor with routing-relevant filtering and telemetry
 - **🧠 butterfly-plan**: Adaptive memory planning with telemetry-driven parameter optimization
-- **🌐 butterfly-serve**: REST API server with /telemetry endpoint for spatial metrics
+- **🌐 butterfly-serve**: REST API server with /telemetry and /probe/snap endpoints for spatial metrics and QA
 
 ### Shared Foundation
 
@@ -122,6 +122,13 @@ Common patterns abstracted into `butterfly-common`:
   - REST API with /telemetry endpoint for spatial density analysis
   - Adaptive memory planning with urban/suburban/rural density classification
   - Comprehensive fuzzing with planet-scale distributions and safety invariants
+
+- **M2 - Adaptive Coarsening**: Advanced topology preservation and optimization
+  - Semantic breakpoints for routing-critical features (bridges, tunnels, named roads)
+  - Curvature analysis with geometry-aware vertex retention and fast-path optimization
+  - Node canonicalization using grid hash + union-find for collision-safe coordinate merging
+  - Policy smoothing with 3×3 median filtering for tile boundary consistency  
+  - /probe/snap API endpoint for QA/debugging of canonical mapping
 
 ### 🚧 Future Development
 

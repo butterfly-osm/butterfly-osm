@@ -52,8 +52,15 @@
 - ✅ **M1.4**: Telemetry → BuildPlan - Urban/suburban/rural density classes with adaptive planning
 - ✅ **M1.5**: Plan Fuzzing & Validation - Synthetic histogram fuzzing with safety invariants
 
-### M2-M20 — Advanced Milestones (Not Started)
-M2+ milestones await foundation completion and architectural decisions. See individual milestone files for detailed specifications.
+### M2 — Adaptive Coarsening (✅ Complete)
+- ✅ **M2.1**: Semantic Breakpoints - Name/ref/access/speed/layer/bridge/tunnel detection + turn restriction anchors
+- ✅ **M2.2**: Curvature Analysis - Local angle + cumulative bend windows, importance scoring, fast-path for <3° angles
+- ✅ **M2.3**: Node Canonicalization - Grid hash + union-find, canonical ID mapping, illegal merge guards
+- ✅ **M2.4**: Policy Smoothing - 3×3 median smoothing, coarsen.map, node_map.bin, debug heatmaps
+- ✅ **M2.5**: /probe/snap API - Snap probe endpoint for QA/debugging canonical mapping validation
+
+### M3-M20 — Advanced Milestones (Not Started)
+M3+ milestones await foundation completion and architectural decisions. See individual milestone files for detailed specifications.
 
 ---
 

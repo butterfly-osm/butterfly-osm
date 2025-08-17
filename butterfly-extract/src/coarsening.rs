@@ -14,7 +14,7 @@ pub struct SemanticBreakpoints {
 }
 
 /// Semantic importance flags for routing preservation
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct SemanticImportance {
     /// Has name tag (street names are routing-critical)
     pub has_name: bool,
@@ -32,21 +32,6 @@ pub struct SemanticImportance {
     pub is_tunnel: bool,
     /// Overall importance score
     pub importance_score: u8,
-}
-
-impl Default for SemanticImportance {
-    fn default() -> Self {
-        Self {
-            has_name: false,
-            has_ref: false,
-            has_access_restriction: false,
-            has_speed_limit: false,
-            has_layer_change: false,
-            is_bridge: false,
-            is_tunnel: false,
-            importance_score: 0,
-        }
-    }
 }
 
 impl SemanticBreakpoints {
@@ -111,13 +96,13 @@ impl SemanticBreakpoints {
         }
 
         // Bridge detection
-        if tags.get("bridge").map_or(false, |v| v == "yes" || v == "true") {
+        if tags.get("bridge").is_some_and(|v| v == "yes" || v == "true") {
             importance.is_bridge = true;
             score += 3; // Bridges are routing-critical
         }
 
         // Tunnel detection
-        if tags.get("tunnel").map_or(false, |v| v == "yes" || v == "true") {
+        if tags.get("tunnel").is_some_and(|v| v == "yes" || v == "true") {
             importance.is_tunnel = true;
             score += 3; // Tunnels are routing-critical
         }
@@ -179,7 +164,7 @@ impl SemanticBreakpoints {
     /// Check if a way has semantic importance
     pub fn is_semantically_important(&self, way_id: i64) -> bool {
         self.way_cache.get(&way_id)
-            .map_or(false, |imp| imp.importance_score > 2)
+            .is_some_and(|imp| imp.importance_score > 2)
     }
 
     /// Check if a node is a turn restriction anchor
@@ -475,8 +460,8 @@ impl UnionFind {
     }
 
     fn make_set(&mut self, x: i64) {
-        if !self.parent.contains_key(&x) {
-            self.parent.insert(x, x);
+        if let std::collections::hash_map::Entry::Vacant(e) = self.parent.entry(x) {
+            e.insert(x);
             self.rank.insert(x, 0);
         }
     }
@@ -593,7 +578,7 @@ impl NodeCanonicalizer {
             };
 
             self.grid_hash.entry(grid_cell)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(canonical_node);
         }
     }
@@ -830,7 +815,7 @@ impl PolicySmoother {
     pub fn smooth_policies(&mut self) {
         let mut smoothed_grid = HashMap::new();
 
-        for (tile_coord, _policy) in &self.tile_grid {
+        for tile_coord in self.tile_grid.keys() {
             let smoothed_policy = self.calculate_smoothed_policy(tile_coord);
             smoothed_grid.insert(tile_coord.clone(), smoothed_policy);
         }
@@ -991,7 +976,7 @@ impl NodeMapper {
     pub fn add_mapping(&mut self, original_id: i64, canonical_id: i64) {
         self.mapping.insert(original_id, canonical_id);
         self.reverse_mapping.entry(canonical_id)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(original_id);
     }
 

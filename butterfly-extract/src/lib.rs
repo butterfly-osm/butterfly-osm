@@ -29,16 +29,22 @@ use std::io::Write;
 pub struct Extractor {
     telemetry: TelemetryCalculator,
     _sieve: TagSieve,
+    #[allow(dead_code)]
     coarsening: CoarseningProcessor,
 }
 
 /// Coarsening processor for M2 functionality
 #[derive(Default)]
 struct CoarseningProcessor {
+    #[allow(dead_code)]
     semantic_breakpoints: SemanticBreakpoints,
+    #[allow(dead_code)]
     curvature_analyzer: CurvatureAnalyzer,
+    #[allow(dead_code)]
     node_canonicalizer: NodeCanonicalizer,
+    #[allow(dead_code)]
     policy_smoother: PolicySmoother,
+    #[allow(dead_code)]
     node_mapper: NodeMapper,
 }
 

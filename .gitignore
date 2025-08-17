@@ -90,3 +90,11 @@ fuzzing-results.json
 # Serve API logs
 serve.log
 api-*.log
+
+# M2 Coarsening outputs
+coarsen.map
+node_map.bin
+*.coarsen
+canonical-*.json
+debug-heatmap.json
+probe-*.json
