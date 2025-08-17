@@ -5,7 +5,7 @@ use axum::{
     http::StatusCode,
     response::Json as ResponseJson,
 };
-use butterfly_extract::{Extractor, TileTelemetry, GlobalPercentiles};
+use butterfly_extract::{Extractor, TileTelemetry, GlobalPercentiles, CanonicalNodeProbe};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -183,6 +183,149 @@ fn validate_bbox_params(params: &TelemetryQuery) -> Result<(), String> {
 /// Route endpoint placeholder (legacy)
 pub async fn route_handler() -> ResponseJson<Value> {
     ResponseJson(serde_json::json!({"message": "Route endpoint not implemented"}))
+}
+
+/// Probe/snap query parameters for canonical mapping validation
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ProbeSnapQuery {
+    /// Latitude for snap probe
+    #[serde(rename = "lat")]
+    pub lat: f64,
+    /// Longitude for snap probe
+    #[serde(rename = "lon")]
+    pub lon: f64,
+    /// Original node ID to validate (optional)
+    #[serde(rename = "node_id")]
+    pub node_id: Option<i64>,
+    /// Maximum search radius in meters
+    #[serde(rename = "radius", default = "default_probe_radius")]
+    pub radius: f64,
+}
+
+fn default_probe_radius() -> f64 {
+    100.0 // 100 meter default search radius
+}
+
+/// Probe/snap response for canonical mapping validation
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ProbeSnapResponse {
+    /// Query coordinates
+    pub query_lat: f64,
+    pub query_lon: f64,
+    /// Search radius used
+    pub search_radius: f64,
+    /// Canonical mapping results
+    pub canonical_nodes: Vec<CanonicalNodeProbe>,
+    /// Validation status
+    pub validation_status: ValidationStatus,
+    /// Distance to nearest canonical node
+    pub nearest_distance: Option<f64>,
+}
+
+
+/// Validation status for probe results
+#[derive(Debug, Serialize, ToSchema)]
+pub enum ValidationStatus {
+    /// Canonical mapping found and valid
+    Valid,
+    /// No canonical nodes found within radius
+    NotFound,
+    /// Mapping found but suspicious (large distance)
+    Suspicious,
+    /// Error in validation process
+    Error(String),
+}
+
+/// GET /probe/snap - Snap probe endpoint for QA/debugging canonical mapping
+#[utoipa::path(
+    get,
+    path = "/probe/snap",
+    params(
+        ("lat" = f64, Query, description = "Latitude for snap probe"),
+        ("lon" = f64, Query, description = "Longitude for snap probe"),
+        ("node_id" = Option<i64>, Query, description = "Original node ID to validate"),
+        ("radius" = Option<f64>, Query, description = "Maximum search radius in meters (default: 100)")
+    ),
+    responses(
+        (status = 200, description = "Probe results retrieved successfully", body = ProbeSnapResponse),
+        (status = 400, description = "Invalid query parameters", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    tag = "probe"
+)]
+pub async fn probe_snap(
+    State(state): State<AppState>,
+    Query(params): Query<ProbeSnapQuery>,
+) -> Result<ResponseJson<ProbeSnapResponse>, (StatusCode, ResponseJson<ErrorResponse>)> {
+    // Validate coordinates
+    if !(-90.0..=90.0).contains(&params.lat) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            ResponseJson(ErrorResponse {
+                error: "lat must be between -90 and 90".to_string(),
+                code: 400,
+            }),
+        ));
+    }
+
+    if !(-180.0..=180.0).contains(&params.lon) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            ResponseJson(ErrorResponse {
+                error: "lon must be between -180 and 180".to_string(),
+                code: 400,
+            }),
+        ));
+    }
+
+    if params.radius <= 0.0 || params.radius > 10000.0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            ResponseJson(ErrorResponse {
+                error: "radius must be between 0 and 10000 meters".to_string(),
+                code: 400,
+            }),
+        ));
+    }
+
+    // Perform canonical mapping probe
+    let canonical_nodes = state.extractor.probe_canonical_mapping(
+        params.lat,
+        params.lon,
+        params.radius,
+        params.node_id,
+    );
+
+    // Determine validation status
+    let validation_status = if canonical_nodes.is_empty() {
+        ValidationStatus::NotFound
+    } else {
+        let nearest_distance = canonical_nodes.iter()
+            .map(|node| node.distance)
+            .min_by(|a, b| a.partial_cmp(b).unwrap())
+            .unwrap_or(f64::INFINITY);
+
+        if nearest_distance > params.radius * 0.8 {
+            ValidationStatus::Suspicious
+        } else {
+            ValidationStatus::Valid
+        }
+    };
+
+    let nearest_distance = canonical_nodes.iter()
+        .map(|node| node.distance)
+        .min_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let response = ProbeSnapResponse {
+        query_lat: params.lat,
+        query_lon: params.lon,
+        search_radius: params.radius,
+        canonical_nodes,
+        validation_status,
+        nearest_distance,
+    };
+
+    Ok(ResponseJson(response))
 }
 
 #[cfg(test)]

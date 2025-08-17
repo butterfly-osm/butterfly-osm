@@ -5,7 +5,7 @@ use butterfly_extract::Extractor;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
-use crate::routes::{AppState, get_telemetry};
+use crate::routes::{AppState, get_telemetry, probe_snap};
 
 /// Main routing server
 pub struct RoutingServer {
@@ -26,6 +26,7 @@ impl RoutingServer {
         Router::new()
             .route("/health", axum::routing::get(health_check))
             .route("/telemetry", axum::routing::get(get_telemetry))
+            .route("/probe/snap", axum::routing::get(probe_snap))
             .with_state(state)
             .layer(CorsLayer::permissive())
     }
@@ -41,6 +42,7 @@ impl RoutingServer {
         println!("Available endpoints:");
         println!("  GET /health - Health check");
         println!("  GET /telemetry - Spatial density telemetry with bbox filtering");
+        println!("  GET /probe/snap - Canonical mapping validation probe");
         axum::serve(listener, app).await?;
         Ok(())
     }

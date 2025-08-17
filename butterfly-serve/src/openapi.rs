@@ -1,13 +1,14 @@
 //! OpenAPI specification with utoipa
 
 use utoipa::OpenApi;
-use crate::routes::{TelemetryQuery, TelemetryResponse, BboxInfo, ErrorResponse};
-use butterfly_extract::{TileTelemetry, TileMetrics, TilePercentiles, DensityClass, TileId, GlobalPercentiles};
+use crate::routes::{TelemetryQuery, TelemetryResponse, BboxInfo, ErrorResponse, ProbeSnapQuery, ProbeSnapResponse, ValidationStatus};
+use butterfly_extract::{TileTelemetry, TileMetrics, TilePercentiles, DensityClass, TileId, GlobalPercentiles, CanonicalNodeProbe};
 
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        crate::routes::get_telemetry
+        crate::routes::get_telemetry,
+        crate::routes::probe_snap
     ),
     components(
         schemas(
@@ -15,6 +16,10 @@ use butterfly_extract::{TileTelemetry, TileMetrics, TilePercentiles, DensityClas
             TelemetryResponse,
             BboxInfo,
             ErrorResponse,
+            ProbeSnapQuery,
+            ProbeSnapResponse,
+            ValidationStatus,
+            CanonicalNodeProbe,
             TileTelemetry,
             TileMetrics,
             TilePercentiles,
@@ -25,6 +30,7 @@ use butterfly_extract::{TileTelemetry, TileMetrics, TilePercentiles, DensityClas
     ),
     tags(
         (name = "telemetry", description = "Spatial density telemetry endpoints"),
+        (name = "probe", description = "Canonical mapping validation endpoints"),
         (name = "routing", description = "Routing endpoints")
     ),
     info(
