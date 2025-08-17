@@ -405,6 +405,7 @@ dependencies = [
  "butterfly-common",
  "butterfly-geometry",
  "butterfly-io",
+ "serde",
  "tempfile",
  "thiserror",
  "tokio",

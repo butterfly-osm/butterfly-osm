@@ -13,6 +13,7 @@ butterfly-io = { path = "../butterfly-io" }
 butterfly-geometry = { path = "../butterfly-geometry" }
 tokio = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
