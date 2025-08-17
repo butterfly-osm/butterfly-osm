@@ -1517,15 +1517,181 @@ impl BorderReconciliation {
     }
 
     /// Reconcile edges at a specific boundary
-    fn reconcile_boundary_edges(&mut self, _boundary: &TileBoundary, _edges: &[BorderEdge]) -> Result<(), String> {
-        // Implementation would:
+    fn reconcile_boundary_edges(&mut self, boundary: &TileBoundary, edges: &[BorderEdge]) -> Result<(), String> {
         // 1. Find matching edges on adjacent tiles
-        // 2. Ensure consistent canonical node IDs
-        // 3. Verify edge attributes match
-        // 4. Update global mapping
-
-        // Placeholder implementation
+        let adjacent_boundary = self.get_adjacent_boundary(boundary);
+        let adjacent_edges = self.border_edges.get(&adjacent_boundary).cloned().unwrap_or_default();
+        
+        // 2. Match edges across boundary based on coordinates and attributes
+        for edge in edges {
+            let matching_edge = self.find_matching_edge(edge, &adjacent_edges)?;
+            
+            if let Some(match_edge) = matching_edge {
+                // 3. Ensure consistent canonical node IDs
+                self.reconcile_node_ids(edge, &match_edge)?;
+                
+                // 4. Verify edge attributes match
+                self.verify_edge_attributes(edge, &match_edge)?;
+                
+                // 5. Update global mapping for consistent node IDs
+                self.update_global_node_mapping(edge, &match_edge)?;
+            } else {
+                // Edge has no match - this could indicate data inconsistency
+                // For now, we'll log this but not fail the process
+                eprintln!("Warning: No matching edge found for border edge {} on boundary {:?}", 
+                         edge.local_edge_id, boundary);
+            }
+        }
+        
         Ok(())
+    }
+    
+    /// Get the adjacent boundary for cross-tile matching
+    fn get_adjacent_boundary(&self, boundary: &TileBoundary) -> TileBoundary {
+        match boundary.side {
+            BoundarySide::North => TileBoundary {
+                tile_x: boundary.tile_x,
+                tile_y: boundary.tile_y + 1,
+                side: BoundarySide::South,
+            },
+            BoundarySide::South => TileBoundary {
+                tile_x: boundary.tile_x,
+                tile_y: boundary.tile_y - 1,
+                side: BoundarySide::North,
+            },
+            BoundarySide::East => TileBoundary {
+                tile_x: boundary.tile_x + 1,
+                tile_y: boundary.tile_y,
+                side: BoundarySide::West,
+            },
+            BoundarySide::West => TileBoundary {
+                tile_x: boundary.tile_x - 1,
+                tile_y: boundary.tile_y,
+                side: BoundarySide::East,
+            },
+        }
+    }
+    
+    /// Find matching edge on adjacent tile
+    fn find_matching_edge(&self, edge: &BorderEdge, adjacent_edges: &[BorderEdge]) -> Result<Option<BorderEdge>, String> {
+        const COORDINATE_TOLERANCE: f64 = 1e-6; // Small tolerance for coordinate matching
+        
+        for adj_edge in adjacent_edges {
+            // Match by crossing coordinates (should be very close)
+            let lat_diff = (edge.crossing_coords.0 - adj_edge.crossing_coords.0).abs();
+            let lon_diff = (edge.crossing_coords.1 - adj_edge.crossing_coords.1).abs();
+            
+            if lat_diff < COORDINATE_TOLERANCE && lon_diff < COORDINATE_TOLERANCE {
+                // Verify highway class matches
+                if edge.highway_class == adj_edge.highway_class {
+                    return Ok(Some(adj_edge.clone()));
+                } else {
+                    return Err(format!(
+                        "Highway class mismatch at coordinates ({}, {}): {} vs {}",
+                        edge.crossing_coords.0, edge.crossing_coords.1,
+                        edge.highway_class, adj_edge.highway_class
+                    ));
+                }
+            }
+        }
+        
+        Ok(None)
+    }
+    
+    /// Reconcile canonical node IDs between matched edges
+    fn reconcile_node_ids(&mut self, edge1: &BorderEdge, edge2: &BorderEdge) -> Result<(), String> {
+        // For border reconciliation, we need to ensure that nodes representing
+        // the same geographic location have the same canonical ID across tiles
+        
+        // Generate consistent global IDs based on coordinates
+        let global_start_id = self.coordinate_to_global_id(edge1.crossing_coords);
+        let global_end_id = self.coordinate_to_global_id(edge1.crossing_coords); // Same crossing point
+        
+        // Update global mapping for both tiles
+        let tile1_id = self.extract_tile_id_from_edge(edge1);
+        let tile2_id = self.extract_tile_id_from_edge(edge2);
+        
+        // Map local nodes to global canonical IDs
+        self.global_mapping.insert((edge1.start_node, tile1_id), global_start_id);
+        self.global_mapping.insert((edge1.end_node, tile1_id), global_end_id);
+        self.global_mapping.insert((edge2.start_node, tile2_id), global_start_id);
+        self.global_mapping.insert((edge2.end_node, tile2_id), global_end_id);
+        
+        Ok(())
+    }
+    
+    /// Verify that edge attributes are consistent across tiles
+    fn verify_edge_attributes(&self, edge1: &BorderEdge, edge2: &BorderEdge) -> Result<(), String> {
+        // Highway class should match (already checked in find_matching_edge)
+        if edge1.highway_class != edge2.highway_class {
+            return Err(format!("Highway class mismatch: {} vs {}", 
+                              edge1.highway_class, edge2.highway_class));
+        }
+        
+        // Access restrictions should be compatible
+        let restrictions1: std::collections::HashSet<_> = edge1.access_restrictions.iter().collect();
+        let restrictions2: std::collections::HashSet<_> = edge2.access_restrictions.iter().collect();
+        
+        // Check for major conflicts (some variations are acceptable)
+        for restriction in &restrictions1 {
+            if restriction.contains("access=no") && !restrictions2.contains(restriction) {
+                eprintln!("Warning: Access restriction inconsistency at ({}, {}): {}", 
+                         edge1.crossing_coords.0, edge1.crossing_coords.1, restriction);
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Update global node mapping for consistent IDs
+    fn update_global_node_mapping(&mut self, edge1: &BorderEdge, edge2: &BorderEdge) -> Result<(), String> {
+        // This extends the reconcile_node_ids functionality
+        // Additional validation could be added here for complex scenarios
+        
+        // Verify that our mapping is consistent
+        let tile1_id = self.extract_tile_id_from_edge(edge1);
+        let tile2_id = self.extract_tile_id_from_edge(edge2);
+        
+        // Check for mapping consistency
+        if let (Some(&global1), Some(&global2)) = (
+            self.global_mapping.get(&(edge1.start_node, tile1_id)),
+            self.global_mapping.get(&(edge2.start_node, tile2_id))
+        ) {
+            if global1 != global2 {
+                return Err(format!(
+                    "Inconsistent global mapping for border nodes: {} vs {}", 
+                    global1, global2
+                ));
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Generate global canonical ID from coordinates
+    fn coordinate_to_global_id(&self, coords: (f64, f64)) -> i64 {
+        // Use a deterministic hash of coordinates to generate consistent global IDs
+        // This ensures the same coordinates always produce the same ID across tiles
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        
+        let mut hasher = DefaultHasher::new();
+        
+        // Scale coordinates to avoid floating point precision issues
+        let scaled_lat = (coords.0 * 1_000_000.0).round() as i64;
+        let scaled_lon = (coords.1 * 1_000_000.0).round() as i64;
+        
+        scaled_lat.hash(&mut hasher);
+        scaled_lon.hash(&mut hasher);
+        
+        hasher.finish() as i64
+    }
+    
+    /// Extract tile ID from edge (placeholder - would depend on edge encoding)
+    fn extract_tile_id_from_edge(&self, edge: &BorderEdge) -> i64 {
+        // In a real implementation, this would extract the tile ID from the edge
+        // For now, we'll use a hash of the edge coordinates as a proxy
+        self.coordinate_to_global_id(edge.crossing_coords) / 1000 // Simple tile approximation
     }
 
     /// Get global canonical ID for local node
