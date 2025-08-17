@@ -117,3 +117,19 @@ prs-report-*.json
 access-stats-*.json
 routing-debug-*.json
 *.multi_profile
+
+# M5 Geometry + Dual Cores outputs
+snap.rtree
+snap.skel
+nav.simpl
+nav.full
+*.snap
+*.nav
+dual-core-*.json
+geometry-debug-*.json
+hausdorff-stats-*.json
+prs-v2-report-*.json
+consistency-digests-*.json
+route-debug-*.json
+chunk-*.bin
+anchor-*.json

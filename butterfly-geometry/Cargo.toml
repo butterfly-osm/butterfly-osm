@@ -10,7 +10,9 @@ description = "Geometry processing and 3-pass pipeline for butterfly-osm"
 [dependencies]
 butterfly-common = { path = "../butterfly-common" }
 butterfly-io = { path = "../butterfly-io" }
+butterfly-extract = { path = "../butterfly-extract" }
 thiserror = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

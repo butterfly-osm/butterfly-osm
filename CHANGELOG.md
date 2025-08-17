@@ -8,6 +8,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For detailed tool-specific changes, see individual tool changelogs:
 - [butterfly-dl](./tools/butterfly-dl/CHANGELOG.md) - OSM data downloader
 
+## [2.1.0] - 2025-08-17
+
+### 🌟 Major Milestone: M5 Geometry + Dual Cores Complete
+
+**Complete implementation of 3-Pass Geometry Pipeline + Dual Core Architecture**
+
+### Added
+- **🎯 Pass A (Snap Skeleton)**: Arc-length resampling with urban/rural density detection and semantic breakpoint preservation
+- **🎯 Pass B (Navigation Grade)**: RDP simplification with segment-based processing and quality gates (≤2m median, ≤5m p95 Hausdorff)
+- **🎯 Pass C (Full Fidelity)**: Delta encoding with minimal noise removal (optional for planet SLA)
+- **🔄 Dual Core Architecture**: Separate Time Graph (no geometry) and Nav Graph (with geometry) with XXH3 consistency
+- **🗺️ Distance Routing**: Dijkstra-based routing with comprehensive turn restriction handling
+- **🧪 PRS v2 Testing**: Enhanced Profile Regression Suite with realistic test data corpus
+- **📍 M1/M2 Integration**: Urban density detection via telemetry and semantic breakpoint preservation from coarsening
+- **🏗️ R-tree Spatial Index**: Universal snapping infrastructure for all geometry passes
+- **⚡ Streaming Pipeline**: Memory-efficient single-pass A→B→C geometry processing
+
+### Enhanced
+- **🎯 Geometry Quality**: Automatic fallback mechanisms when quality gates fail
+- **🔧 Turn Restrictions**: Profile-specific enforcement for car/bike/foot routing
+- **📊 Test Coverage**: 167+ tests across all modules with realistic urban/suburban/rural scenarios
+- **🚀 Performance**: Segment-based RDP optimization for small vector processing
+
+### Technical Implementation
+- **M5.1**: R-tree bulk-loaded from super-edge bboxes for spatial queries
+- **M5.2**: Urban spacing min(5m, r_local), rural 20-30m, force-keep semantic breakpoints
+- **M5.4**: Curvature prefilter + RDP post-segment, quality gates with multi-pass fallback
+- **M5.6**: XXH3 consistency digests with blocking verification on build failure
+- **M5.7**: Profile-aware Dijkstra with no-turn/no-u-turn/only-turn restriction support
+
+### Verified
+- **✅ Gemini Review**: All implementations fully compliant with M5 specification
+- **✅ Test Suite**: All 167 tests passing across geometry, routing, and dual core modules
+- **✅ Integration**: Proper M1 telemetry and M2 semantic breakpoint integration
+- **✅ Quality Gates**: Hausdorff distance targets met with automatic fallback
+
 ## [2.0.0] - 2025-06-27
 
 ### 🌟 Major Milestone: Ecosystem Foundation

@@ -1269,6 +1269,7 @@ pub struct CollapsePolicy {
     /// Whether to preserve semantic boundaries
     preserve_semantic_boundaries: bool,
     /// Whether to preserve tile boundaries
+    #[allow(dead_code)] // Planned for M2/M3 implementation
     preserve_tile_boundaries: bool,
 }
 
@@ -1647,11 +1648,6 @@ impl BorderReconciliation {
         match tile_boundary_info {
             BoundaryPosition::StartNodeOnBoundary => Ok((edge.start_node, edge.end_node)),
             BoundaryPosition::EndNodeOnBoundary => Ok((edge.end_node, edge.start_node)),
-            BoundaryPosition::BothNodesOnBoundary => {
-                // Rare case: both nodes are exactly on the boundary
-                // In this case, both should get the same global ID
-                Ok((edge.start_node, edge.end_node))
-            },
             BoundaryPosition::Ambiguous => {
                 // Fallback: use node ID magnitude as a heuristic
                 // Lower ID typically indicates the node was encountered first during processing
@@ -1859,8 +1855,6 @@ enum BoundaryPosition {
     StartNodeOnBoundary,
     /// End node is on the boundary, start node is internal
     EndNodeOnBoundary,
-    /// Both nodes are on the boundary (rare)
-    BothNodesOnBoundary,
     /// Cannot determine with available information
     Ambiguous,
 }

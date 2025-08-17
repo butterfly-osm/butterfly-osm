@@ -73,8 +73,18 @@
 - ✅ **M4.5**: Multi-Profile Loader - Server support with /route echo per mode + comprehensive statistics
 - ✅ **PRS v1**: Profile Regression Suite - Access legality + routing smoke tests + forbidden-edge reporter (51 tests passing)
 
-### M5-M20 — Advanced Milestones (Not Started)
-M5+ milestones await architectural decisions. See individual milestone files for detailed specifications.
+### M5 — Geometry + Dual Cores (✅ Complete)
+- ✅ **M5.1**: R-tree Index - Spatial index for universal snapping
+- ✅ **M5.2**: Pass A (Snap Skeleton) - Arc-length resampling + angle guards with urban/rural spacing + semantic breakpoint preservation
+- ✅ **M5.3**: Pass C (Full Fidelity) - Delta encoding + minimal noise removal (optional for SLA)
+- ✅ **M5.4**: Pass B (Navigation Grade) - RDP + curvature prefilter with segment-based processing + quality gates
+- ✅ **M5.5**: Single-Pass Integration - Memory-efficient streaming pipeline
+- ✅ **M5.6**: Dual Core Construction - Time Graph + Nav Graph with XXH3 consistency
+- ✅ **M5.7**: Distance Routing - Dijkstra distance-based routing with turn restriction handling
+- ✅ **PRS v2**: Enhanced testing with realistic test data corpus + snap recall + geometry quality
+
+### M6-M20 — Advanced Milestones (Not Started)
+M6+ milestones await architectural decisions. See individual milestone files for detailed specifications.
 
 ---
 

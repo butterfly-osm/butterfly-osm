@@ -376,7 +376,9 @@ name = "butterfly-geometry"
 version = "2.0.0"
 dependencies = [
  "butterfly-common",
+ "butterfly-extract",
  "butterfly-io",
+ "serde",
  "tempfile",
  "thiserror",
 ]
@@ -417,15 +419,20 @@ dependencies = [
 name = "butterfly-routing"
 version = "2.0.0"
 dependencies = [
+ "bincode",
  "butterfly-common",
  "butterfly-geometry",
  "butterfly-io",
+ "bytemuck",
  "chrono",
+ "rstar",
  "serde",
  "serde_json",
+ "spade",
  "tempfile",
  "thiserror",
  "tokio",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -462,6 +469,26 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "bytemuck"
+version = "1.23.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3995eaeebcdf32f91f980d360f78732ddc061097ab4e39991ae7a6ace9194677"
+dependencies = [
+ "bytemuck_derive",
+]
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f154e572231cb6ba2bd1176980827e3d5dc04cc183a75dea38109fbdd672d29"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
