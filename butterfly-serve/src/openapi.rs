@@ -8,7 +8,9 @@ use butterfly_extract::{TileTelemetry, TileMetrics, TilePercentiles, DensityClas
 #[openapi(
     paths(
         crate::routes::get_telemetry,
-        crate::routes::probe_snap
+        crate::routes::probe_snap,
+        crate::routes::graph_stats,
+        crate::routes::graph_edge
     ),
     components(
         schemas(
@@ -31,6 +33,7 @@ use butterfly_extract::{TileTelemetry, TileMetrics, TilePercentiles, DensityClas
     tags(
         (name = "telemetry", description = "Spatial density telemetry endpoints"),
         (name = "probe", description = "Canonical mapping validation endpoints"),
+        (name = "graph", description = "Graph debugging and inspection endpoints"),
         (name = "routing", description = "Routing endpoints")
     ),
     info(

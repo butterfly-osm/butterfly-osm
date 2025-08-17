@@ -3,21 +3,21 @@
 use axum::{response::Json, Router};
 use butterfly_extract::Extractor;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tower_http::cors::CorsLayer;
-use crate::routes::{AppState, get_telemetry, probe_snap};
+use crate::routes::{AppState, get_telemetry, probe_snap, graph_stats, graph_edge};
 
 /// Main routing server
 pub struct RoutingServer {
     addr: SocketAddr,
-    extractor: Arc<Extractor>,
+    extractor: Arc<Mutex<Extractor>>,
 }
 
 impl RoutingServer {
     pub fn new(addr: SocketAddr, extractor: Extractor) -> Self {
         Self { 
             addr,
-            extractor: Arc::new(extractor),
+            extractor: Arc::new(Mutex::new(extractor)),
         }
     }
 
@@ -27,6 +27,8 @@ impl RoutingServer {
             .route("/health", axum::routing::get(health_check))
             .route("/telemetry", axum::routing::get(get_telemetry))
             .route("/probe/snap", axum::routing::get(probe_snap))
+            .route("/graph/stats", axum::routing::get(graph_stats))
+            .route("/graph/edge/:id", axum::routing::get(graph_edge))
             .with_state(state)
             .layer(CorsLayer::permissive())
     }
@@ -43,6 +45,8 @@ impl RoutingServer {
         println!("  GET /health - Health check");
         println!("  GET /telemetry - Spatial density telemetry with bbox filtering");
         println!("  GET /probe/snap - Canonical mapping validation probe");
+        println!("  GET /graph/stats - Graph statistics for debugging");
+        println!("  GET /graph/edge/{{id}} - Edge details for debugging");
         axum::serve(listener, app).await?;
         Ok(())
     }

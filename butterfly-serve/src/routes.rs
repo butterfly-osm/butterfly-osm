@@ -1,20 +1,20 @@
 //! Route handlers
 
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::Json as ResponseJson,
 };
 use butterfly_extract::{Extractor, TileTelemetry, GlobalPercentiles, CanonicalNodeProbe};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use utoipa::ToSchema;
 
 /// Server state containing telemetry data
 #[derive(Clone)]
 pub struct AppState {
-    pub extractor: Arc<Extractor>,
+    pub extractor: Arc<Mutex<Extractor>>,
 }
 
 /// Telemetry query parameters with bbox filtering
@@ -100,16 +100,26 @@ pub async fn get_telemetry(
     }
     
     // Get telemetry data based on bbox filtering
+    let extractor = state.extractor.lock().map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ResponseJson(ErrorResponse {
+                error: "Failed to acquire extractor lock".to_string(),
+                code: 500,
+            }),
+        )
+    })?;
+    
     let tiles = match (params.min_lat, params.max_lat, params.min_lon, params.max_lon) {
         (Some(min_lat), Some(max_lat), Some(min_lon), Some(max_lon)) => {
-            state.extractor.get_telemetry_for_bbox(min_lat, max_lat, min_lon, max_lon)
+            extractor.get_telemetry_for_bbox(min_lat, max_lat, min_lon, max_lon)
         }
-        _ => state.extractor.get_telemetry(),
+        _ => extractor.get_telemetry(),
     };
     
     // Get global percentiles if requested
     let global_percentiles = if params.include_global {
-        Some(state.extractor.get_global_percentiles())
+        Some(extractor.get_global_percentiles())
     } else {
         None
     };
@@ -289,7 +299,17 @@ pub async fn probe_snap(
     }
 
     // Perform canonical mapping probe
-    let canonical_nodes = state.extractor.probe_canonical_mapping(
+    let extractor = state.extractor.lock().map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ResponseJson(ErrorResponse {
+                error: "Failed to acquire extractor lock".to_string(),
+                code: 500,
+            }),
+        )
+    })?;
+    
+    let canonical_nodes = extractor.probe_canonical_mapping(
         params.lat,
         params.lon,
         params.radius,
@@ -326,6 +346,75 @@ pub async fn probe_snap(
     };
 
     Ok(ResponseJson(response))
+}
+
+// ==== M3.4 - Graph Debug APIs ====
+
+/// GET /graph/stats - Graph statistics endpoint
+#[utoipa::path(
+    get,
+    path = "/graph/stats",
+    responses(
+        (status = 200, description = "Graph statistics retrieved successfully", body = Value),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    tag = "graph"
+)]
+pub async fn graph_stats(
+    State(state): State<AppState>,
+) -> Result<ResponseJson<Value>, (StatusCode, ResponseJson<ErrorResponse>)> {
+    let mut extractor = state.extractor.lock().map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ResponseJson(ErrorResponse {
+                error: "Failed to acquire extractor lock".to_string(),
+                code: 500,
+            }),
+        )
+    })?;
+
+    let stats = extractor.get_graph_stats();
+    Ok(ResponseJson(stats))
+}
+
+/// GET /graph/edge/{id} - Edge details endpoint
+#[utoipa::path(
+    get,
+    path = "/graph/edge/{id}",
+    params(
+        ("id" = String, Path, description = "Edge ID in format 'start_end'")
+    ),
+    responses(
+        (status = 200, description = "Edge details retrieved successfully", body = Value),
+        (status = 404, description = "Edge not found", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    tag = "graph"
+)]
+pub async fn graph_edge(
+    State(state): State<AppState>,
+    Path(edge_id): Path<String>,
+) -> Result<ResponseJson<Value>, (StatusCode, ResponseJson<ErrorResponse>)> {
+    let extractor = state.extractor.lock().map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ResponseJson(ErrorResponse {
+                error: "Failed to acquire extractor lock".to_string(),
+                code: 500,
+            }),
+        )
+    })?;
+
+    match extractor.get_edge_details(&edge_id) {
+        Some(edge_details) => Ok(ResponseJson(edge_details)),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            ResponseJson(ErrorResponse {
+                error: format!("Edge '{}' not found", edge_id),
+                code: 404,
+            }),
+        )),
+    }
 }
 
 #[cfg(test)]

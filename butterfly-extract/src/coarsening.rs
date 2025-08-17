@@ -1045,6 +1045,745 @@ pub struct NodeMappingStats {
     pub compression_ratio: f64,
 }
 
+// ==== M3 - Super-Edge Construction ====
+
+/// M3.1 - Canonical adjacency lists for graph topology
+#[derive(Debug, Clone, Default)]
+pub struct CanonicalAdjacency {
+    /// Adjacency lists: canonical_node_id -> set of neighboring canonical nodes
+    adjacency_lists: HashMap<i64, HashSet<i64>>,
+    /// Edge details: (from_canonical, to_canonical) -> edge info
+    edge_details: HashMap<(i64, i64), EdgeInfo>,
+    /// Neighbor tracking for efficient lookups
+    neighbor_index: HashMap<i64, Vec<i64>>,
+}
+
+/// Edge information for canonical graph
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeInfo {
+    /// Original way IDs that contributed to this edge
+    pub original_way_ids: Vec<i64>,
+    /// Edge length in meters
+    pub length_meters: f64,
+    /// Whether this edge connects semantically important nodes
+    pub is_semantically_important: bool,
+    /// Highway class for routing
+    pub highway_class: String,
+    /// Access restrictions
+    pub access_restrictions: Vec<String>,
+    /// Geometry (for non-collapsed edges)
+    pub geometry: Vec<(f64, f64)>,
+}
+
+impl CanonicalAdjacency {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add an edge between canonical nodes
+    pub fn add_edge(&mut self, from_canonical: i64, to_canonical: i64, edge_info: EdgeInfo) {
+        // Add to adjacency lists (bidirectional)
+        self.adjacency_lists.entry(from_canonical)
+            .or_default()
+            .insert(to_canonical);
+        self.adjacency_lists.entry(to_canonical)
+            .or_default()
+            .insert(from_canonical);
+
+        // Store edge details
+        self.edge_details.insert((from_canonical, to_canonical), edge_info.clone());
+        self.edge_details.insert((to_canonical, from_canonical), edge_info);
+
+        // Update neighbor index
+        self.neighbor_index.entry(from_canonical)
+            .or_default()
+            .push(to_canonical);
+        self.neighbor_index.entry(to_canonical)
+            .or_default()
+            .push(from_canonical);
+    }
+
+    /// Get neighbors of a canonical node
+    pub fn get_neighbors(&self, canonical_node: i64) -> Vec<i64> {
+        self.neighbor_index.get(&canonical_node)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Get edge information
+    pub fn get_edge_info(&self, from: i64, to: i64) -> Option<&EdgeInfo> {
+        self.edge_details.get(&(from, to))
+    }
+
+    /// Get degree of a canonical node
+    pub fn get_degree(&self, canonical_node: i64) -> usize {
+        self.adjacency_lists.get(&canonical_node)
+            .map(|neighbors| neighbors.len())
+            .unwrap_or(0)
+    }
+
+    /// Get all canonical nodes
+    pub fn get_all_nodes(&self) -> Vec<i64> {
+        self.adjacency_lists.keys().copied().collect()
+    }
+
+    /// Build adjacency from way data and canonical mapping
+    pub fn build_from_ways(&mut self, ways: &[(i64, Vec<i64>, HashMap<String, String>)], node_canonicalizer: &NodeCanonicalizer) {
+        for (way_id, node_refs, tags) in ways {
+            if node_refs.len() < 2 {
+                continue; // Skip ways with insufficient nodes
+            }
+
+            // Convert way nodes to canonical nodes
+            let mut canonical_nodes = Vec::new();
+            for &node_id in node_refs {
+                if let Some(canonical_coords) = node_canonicalizer.get_canonical_coords(node_id) {
+                    if let Some(canonical_id) = node_canonicalizer.get_canonical_coords(node_id) {
+                        canonical_nodes.push((node_id, canonical_id.0 as i64)); // Use lat as canonical ID approximation
+                    }
+                }
+            }
+
+            if canonical_nodes.len() < 2 {
+                continue; // Skip if we can't resolve canonical nodes
+            }
+
+            // Create edges between consecutive canonical nodes
+            for i in 0..canonical_nodes.len() - 1 {
+                let (_, from_canonical) = canonical_nodes[i];
+                let (_, to_canonical) = canonical_nodes[i + 1];
+
+                if from_canonical != to_canonical {
+                    let edge_info = EdgeInfo {
+                        original_way_ids: vec![*way_id],
+                        length_meters: 100.0, // Placeholder - would calculate from geometry
+                        is_semantically_important: self.is_semantically_important_way(tags),
+                        highway_class: tags.get("highway").map_or("unclassified", |v| v).to_string(),
+                        access_restrictions: self.extract_access_restrictions(tags),
+                        geometry: vec![], // Placeholder - would include intermediate points
+                    };
+
+                    self.add_edge(from_canonical, to_canonical, edge_info);
+                }
+            }
+        }
+    }
+
+    /// Check if way is semantically important
+    fn is_semantically_important_way(&self, tags: &HashMap<String, String>) -> bool {
+        tags.contains_key("name") || 
+        tags.contains_key("ref") ||
+        tags.get("bridge").is_some_and(|v| v == "yes") ||
+        tags.get("tunnel").is_some_and(|v| v == "yes")
+    }
+
+    /// Extract access restrictions from tags
+    fn extract_access_restrictions(&self, tags: &HashMap<String, String>) -> Vec<String> {
+        let mut restrictions = Vec::new();
+        
+        let access_tags = ["access", "vehicle", "motor_vehicle", "bicycle", "foot"];
+        for tag in &access_tags {
+            if let Some(value) = tags.get(*tag) {
+                if matches!(value.as_str(), "no" | "private" | "destination") {
+                    restrictions.push(format!("{}={}", tag, value));
+                }
+            }
+        }
+        
+        restrictions
+    }
+
+    /// Clear all data
+    pub fn clear(&mut self) {
+        self.adjacency_lists.clear();
+        self.edge_details.clear();
+        self.neighbor_index.clear();
+    }
+}
+
+/// M3.2 - Degree-2 collapse for super-edge construction
+#[derive(Debug, Clone, Default)]
+pub struct SuperEdgeConstructor {
+    /// Super-edges: direct connections skipping degree-2 nodes
+    super_edges: HashMap<(i64, i64), SuperEdge>,
+    /// Policy for controlling collapse behavior
+    collapse_policy: CollapsePolicy,
+}
+
+/// Super-edge spanning multiple original edges
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuperEdge {
+    /// Start canonical node
+    pub start_node: i64,
+    /// End canonical node  
+    pub end_node: i64,
+    /// All intermediate nodes that were collapsed
+    pub collapsed_nodes: Vec<i64>,
+    /// Total length in meters
+    pub total_length: f64,
+    /// Combined geometry with segment guards
+    pub geometry: Vec<(f64, f64)>,
+    /// Original way IDs
+    pub original_ways: Vec<i64>,
+    /// Whether any segment is semantically important
+    pub has_semantic_importance: bool,
+    /// Highway class (most restrictive)
+    pub highway_class: String,
+    /// Combined access restrictions
+    pub access_restrictions: Vec<String>,
+    /// Segment guard information
+    pub segment_guards: Vec<SegmentGuard>,
+}
+
+/// Segment guard for memory safety (M3.2 requirement)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SegmentGuard {
+    /// Position in geometry where guard was inserted
+    pub position: usize,
+    /// Reason for guard insertion
+    pub reason: SegmentGuardReason,
+    /// Distance/count at guard point
+    pub threshold_value: f64,
+}
+
+/// Reasons for inserting segment guards
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SegmentGuardReason {
+    /// Exceeded 4,096 point limit
+    PointLimit,
+    /// Exceeded 1km length limit  
+    LengthLimit,
+    /// Semantic importance boundary
+    SemanticBoundary,
+    /// Tile boundary crossing
+    TileBoundary,
+}
+
+/// Policy for controlling degree-2 collapse
+#[derive(Debug, Clone)]
+pub struct CollapsePolicy {
+    /// Maximum points before splitting (for M5 geometry memory safety)
+    max_points_per_segment: usize,
+    /// Maximum length before splitting (meters)
+    max_length_per_segment: f64,
+    /// Whether to preserve semantic boundaries
+    preserve_semantic_boundaries: bool,
+    /// Whether to preserve tile boundaries
+    preserve_tile_boundaries: bool,
+}
+
+impl Default for CollapsePolicy {
+    fn default() -> Self {
+        Self {
+            max_points_per_segment: 4096, // M3.2 requirement
+            max_length_per_segment: 1000.0, // 1km limit from M3.2
+            preserve_semantic_boundaries: true,
+            preserve_tile_boundaries: true,
+        }
+    }
+}
+
+impl SuperEdgeConstructor {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_policy(policy: CollapsePolicy) -> Self {
+        Self {
+            super_edges: HashMap::new(),
+            collapse_policy: policy,
+        }
+    }
+
+    /// Construct super-edges by collapsing degree-2 nodes
+    pub fn construct_super_edges(&mut self, adjacency: &CanonicalAdjacency, semantic_breakpoints: &SemanticBreakpoints) {
+        let all_nodes = adjacency.get_all_nodes();
+        let mut visited = HashSet::new();
+
+        for start_node in all_nodes {
+            if visited.contains(&start_node) {
+                continue;
+            }
+
+            let degree = adjacency.get_degree(start_node);
+            
+            // Only start collapse from non-degree-2 nodes or end nodes
+            if degree == 2 {
+                continue;
+            }
+
+            // Find all chains starting from this node
+            let neighbors = adjacency.get_neighbors(start_node);
+            for neighbor in neighbors {
+                if visited.contains(&neighbor) {
+                    continue;
+                }
+
+                let super_edge = self.collapse_chain(start_node, neighbor, adjacency, semantic_breakpoints, &mut visited);
+                if let Some(edge) = super_edge {
+                    self.super_edges.insert((edge.start_node, edge.end_node), edge);
+                }
+            }
+        }
+    }
+
+    /// Collapse a chain of degree-2 nodes into a super-edge
+    fn collapse_chain(&self, start: i64, first_neighbor: i64, adjacency: &CanonicalAdjacency, _semantic_breakpoints: &SemanticBreakpoints, visited: &mut HashSet<i64>) -> Option<SuperEdge> {
+        let mut current = first_neighbor;
+        let mut previous = start;
+        let mut collapsed_nodes = Vec::new();
+        let mut total_length = 0.0;
+        let mut geometry = Vec::new();
+        let mut original_ways = Vec::new();
+        let mut access_restrictions = Vec::new();
+        let mut has_semantic_importance = false;
+        let mut highway_class = String::new();
+        let mut segment_guards = Vec::new();
+
+        // Add start geometry
+        if let Some(edge_info) = adjacency.get_edge_info(start, current) {
+            geometry.extend_from_slice(&edge_info.geometry);
+            total_length += edge_info.length_meters;
+            original_ways.extend_from_slice(&edge_info.original_way_ids);
+            access_restrictions.extend_from_slice(&edge_info.access_restrictions);
+            has_semantic_importance |= edge_info.is_semantically_important;
+            if highway_class.is_empty() {
+                highway_class = edge_info.highway_class.clone();
+            }
+        }
+
+        // Follow the chain
+        loop {
+            visited.insert(current);
+            let neighbors = adjacency.get_neighbors(current);
+            
+            // Stop if not degree-2
+            if neighbors.len() != 2 {
+                break;
+            }
+
+            // Stop if semantically important and policy requires preservation
+            if self.collapse_policy.preserve_semantic_boundaries {
+                // Check if current node is semantically important
+                let is_important = false; // Would check against original node semantics
+                if is_important {
+                    segment_guards.push(SegmentGuard {
+                        position: geometry.len(),
+                        reason: SegmentGuardReason::SemanticBoundary,
+                        threshold_value: 0.0,
+                    });
+                    break;
+                }
+            }
+
+            // Find next node (not the previous one)
+            let next = neighbors.iter()
+                .find(|&&n| n != previous)
+                .copied()?;
+
+            // Get edge to next node
+            if let Some(edge_info) = adjacency.get_edge_info(current, next) {
+                // Check segment guards before adding
+                if geometry.len() + edge_info.geometry.len() > self.collapse_policy.max_points_per_segment {
+                    segment_guards.push(SegmentGuard {
+                        position: geometry.len(),
+                        reason: SegmentGuardReason::PointLimit,
+                        threshold_value: geometry.len() as f64,
+                    });
+                    break;
+                }
+
+                if total_length + edge_info.length_meters > self.collapse_policy.max_length_per_segment {
+                    segment_guards.push(SegmentGuard {
+                        position: geometry.len(),
+                        reason: SegmentGuardReason::LengthLimit,
+                        threshold_value: total_length + edge_info.length_meters,
+                    });
+                    break;
+                }
+
+                // Add edge data
+                geometry.extend_from_slice(&edge_info.geometry);
+                total_length += edge_info.length_meters;
+                original_ways.extend_from_slice(&edge_info.original_way_ids);
+                access_restrictions.extend_from_slice(&edge_info.access_restrictions);
+                has_semantic_importance |= edge_info.is_semantically_important;
+            }
+
+            collapsed_nodes.push(current);
+            previous = current;
+            current = next;
+        }
+
+        // Create super-edge if we collapsed at least one node
+        if !collapsed_nodes.is_empty() {
+            Some(SuperEdge {
+                start_node: start,
+                end_node: current,
+                collapsed_nodes,
+                total_length,
+                geometry,
+                original_ways,
+                has_semantic_importance,
+                highway_class,
+                access_restrictions,
+                segment_guards,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Get all super-edges
+    pub fn get_super_edges(&self) -> Vec<&SuperEdge> {
+        self.super_edges.values().collect()
+    }
+
+    /// Get super-edge between two nodes
+    pub fn get_super_edge(&self, start: i64, end: i64) -> Option<&SuperEdge> {
+        self.super_edges.get(&(start, end))
+            .or_else(|| self.super_edges.get(&(end, start)))
+    }
+
+    /// Clear all super-edges
+    pub fn clear(&mut self) {
+        self.super_edges.clear();
+    }
+}
+
+/// M3.3 - Border reconciliation for cross-tile consistency
+#[derive(Debug, Clone, Default)]
+pub struct BorderReconciliation {
+    /// Border edge tracking: tile boundary -> edges crossing it
+    border_edges: HashMap<TileBoundary, Vec<BorderEdge>>,
+    /// Global consistency mapping
+    global_mapping: HashMap<(i64, i64), i64>, // (local_node, tile_id) -> global_node
+}
+
+/// Tile boundary identifier
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TileBoundary {
+    /// Tile coordinates  
+    pub tile_x: i32,
+    pub tile_y: i32,
+    /// Boundary side
+    pub side: BoundarySide,
+}
+
+/// Side of tile boundary
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum BoundarySide {
+    North,
+    South,
+    East,
+    West,
+}
+
+/// Edge crossing tile boundary
+#[derive(Debug, Clone)]
+pub struct BorderEdge {
+    /// Edge ID within tile
+    pub local_edge_id: i64,
+    /// Start node (canonical within tile)
+    pub start_node: i64,
+    /// End node (canonical within tile)  
+    pub end_node: i64,
+    /// Crossing coordinates
+    pub crossing_coords: (f64, f64),
+    /// Edge attributes for matching
+    pub highway_class: String,
+    pub access_restrictions: Vec<String>,
+}
+
+impl BorderReconciliation {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add border edge for reconciliation
+    pub fn add_border_edge(&mut self, boundary: TileBoundary, edge: BorderEdge) {
+        self.border_edges.entry(boundary)
+            .or_default()
+            .push(edge);
+    }
+
+    /// Reconcile borders across all tiles
+    pub fn reconcile_borders(&mut self) -> Result<(), String> {
+        let border_edges = self.border_edges.clone();
+        for (boundary, edges) in &border_edges {
+            self.reconcile_boundary_edges(boundary, edges)?;
+        }
+        Ok(())
+    }
+
+    /// Reconcile edges at a specific boundary
+    fn reconcile_boundary_edges(&mut self, _boundary: &TileBoundary, _edges: &[BorderEdge]) -> Result<(), String> {
+        // Implementation would:
+        // 1. Find matching edges on adjacent tiles
+        // 2. Ensure consistent canonical node IDs
+        // 3. Verify edge attributes match
+        // 4. Update global mapping
+
+        // Placeholder implementation
+        Ok(())
+    }
+
+    /// Get global canonical ID for local node
+    pub fn get_global_canonical(&self, local_node: i64, tile_id: i64) -> Option<i64> {
+        self.global_mapping.get(&(local_node, tile_id)).copied()
+    }
+
+    /// Clear reconciliation data
+    pub fn clear(&mut self) {
+        self.border_edges.clear();
+        self.global_mapping.clear();
+    }
+}
+
+/// M3.4 - Graph debug artifacts and APIs
+#[derive(Debug, Clone, Default)]
+pub struct GraphDebugger {
+    /// Node statistics
+    node_stats: GraphNodeStats,
+    /// Edge statistics  
+    edge_stats: GraphEdgeStats,
+    /// Super-edge statistics
+    super_edge_stats: SuperEdgeStats,
+}
+
+/// Node statistics for debugging
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GraphNodeStats {
+    pub total_canonical_nodes: usize,
+    pub degree_distribution: HashMap<usize, usize>, // degree -> count
+    pub semantic_important_nodes: usize,
+    pub turn_restriction_anchors: usize,
+}
+
+/// Edge statistics for debugging  
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GraphEdgeStats {
+    pub total_edges: usize,
+    pub total_length_km: f64,
+    pub highway_class_distribution: HashMap<String, usize>,
+    pub access_restricted_edges: usize,
+}
+
+/// Super-edge statistics for debugging
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SuperEdgeStats {
+    pub total_super_edges: usize,
+    pub total_collapsed_nodes: usize,
+    pub compression_ratio: f64,
+    pub segment_guards_inserted: usize,
+    pub average_length_km: f64,
+}
+
+impl GraphDebugger {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Analyze canonical adjacency for statistics
+    pub fn analyze_adjacency(&mut self, adjacency: &CanonicalAdjacency) {
+        let all_nodes = adjacency.get_all_nodes();
+        self.node_stats.total_canonical_nodes = all_nodes.len();
+
+        // Calculate degree distribution
+        for node in &all_nodes {
+            let degree = adjacency.get_degree(*node);
+            *self.node_stats.degree_distribution.entry(degree).or_default() += 1;
+        }
+
+        // Count edges and analyze
+        let mut total_edges = 0;
+        let mut total_length = 0.0;
+        let mut highway_classes = HashMap::new();
+        let mut access_restricted = 0;
+
+        for node in &all_nodes {
+            let neighbors = adjacency.get_neighbors(*node);
+            for neighbor in neighbors {
+                if node < &neighbor { // Count each edge only once
+                    total_edges += 1;
+                    if let Some(edge_info) = adjacency.get_edge_info(*node, neighbor) {
+                        total_length += edge_info.length_meters;
+                        *highway_classes.entry(edge_info.highway_class.clone()).or_default() += 1;
+                        if !edge_info.access_restrictions.is_empty() {
+                            access_restricted += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        self.edge_stats.total_edges = total_edges;
+        self.edge_stats.total_length_km = total_length / 1000.0;
+        self.edge_stats.highway_class_distribution = highway_classes;
+        self.edge_stats.access_restricted_edges = access_restricted;
+    }
+
+    /// Analyze super-edges for statistics
+    pub fn analyze_super_edges(&mut self, super_edge_constructor: &SuperEdgeConstructor) {
+        let super_edges = super_edge_constructor.get_super_edges();
+        self.super_edge_stats.total_super_edges = super_edges.len();
+
+        let mut total_collapsed = 0;
+        let mut total_guards = 0;
+        let mut total_length = 0.0;
+
+        for super_edge in &super_edges {
+            total_collapsed += super_edge.collapsed_nodes.len();
+            total_guards += super_edge.segment_guards.len();
+            total_length += super_edge.total_length;
+        }
+
+        self.super_edge_stats.total_collapsed_nodes = total_collapsed;
+        self.super_edge_stats.segment_guards_inserted = total_guards;
+        self.super_edge_stats.average_length_km = if !super_edges.is_empty() {
+            total_length / super_edges.len() as f64 / 1000.0
+        } else {
+            0.0
+        };
+
+        // Calculate compression ratio
+        let original_edges = total_collapsed + super_edges.len();
+        self.super_edge_stats.compression_ratio = if original_edges > 0 {
+            super_edges.len() as f64 / original_edges as f64
+        } else {
+            1.0
+        };
+    }
+
+    /// Generate nodes.bin artifact
+    pub fn generate_nodes_bin(&self, adjacency: &CanonicalAdjacency) -> Result<Vec<u8>, std::io::Error> {
+        use std::io::{Cursor, Write};
+
+        let mut buffer = Cursor::new(Vec::new());
+        let all_nodes = adjacency.get_all_nodes();
+
+        // Write header
+        buffer.write_all(b"NODES_BIN_V1\n")?;
+        buffer.write_all(&(all_nodes.len() as u32).to_le_bytes())?;
+
+        // Write node data
+        for node_id in all_nodes {
+            let degree = adjacency.get_degree(node_id);
+            let neighbors = adjacency.get_neighbors(node_id);
+
+            buffer.write_all(&node_id.to_le_bytes())?;
+            buffer.write_all(&(degree as u32).to_le_bytes())?;
+            
+            for neighbor in neighbors {
+                buffer.write_all(&neighbor.to_le_bytes())?;
+            }
+        }
+
+        Ok(buffer.into_inner())
+    }
+
+    /// Generate super_edges.bin artifact
+    pub fn generate_super_edges_bin(&self, super_edge_constructor: &SuperEdgeConstructor) -> Result<Vec<u8>, std::io::Error> {
+        use std::io::{Cursor, Write};
+
+        let mut buffer = Cursor::new(Vec::new());
+        let super_edges = super_edge_constructor.get_super_edges();
+
+        // Write header
+        buffer.write_all(b"SUPER_EDGES_V1\n")?;
+        buffer.write_all(&(super_edges.len() as u32).to_le_bytes())?;
+
+        // Write super-edge data
+        for super_edge in super_edges {
+            buffer.write_all(&super_edge.start_node.to_le_bytes())?;
+            buffer.write_all(&super_edge.end_node.to_le_bytes())?;
+            buffer.write_all(&(super_edge.total_length as f32).to_le_bytes())?;
+            buffer.write_all(&(super_edge.collapsed_nodes.len() as u32).to_le_bytes())?;
+            
+            for &collapsed_node in &super_edge.collapsed_nodes {
+                buffer.write_all(&collapsed_node.to_le_bytes())?;
+            }
+
+            buffer.write_all(&(super_edge.geometry.len() as u32).to_le_bytes())?;
+            for (lat, lon) in &super_edge.geometry {
+                buffer.write_all(&(*lat as f32).to_le_bytes())?;
+                buffer.write_all(&(*lon as f32).to_le_bytes())?;
+            }
+        }
+
+        Ok(buffer.into_inner())
+    }
+
+    /// Generate geom.temp artifact (temporary geometry storage)
+    pub fn generate_geom_temp(&self, super_edge_constructor: &SuperEdgeConstructor) -> Result<Vec<u8>, std::io::Error> {
+        use std::io::{Cursor, Write};
+
+        let mut buffer = Cursor::new(Vec::new());
+        let super_edges = super_edge_constructor.get_super_edges();
+
+        // Write header
+        buffer.write_all(b"GEOM_TEMP_V1\n")?;
+
+        // Write geometry data with compression hints
+        for super_edge in super_edges {
+            let edge_id = format!("{}_{}", super_edge.start_node, super_edge.end_node);
+            buffer.write_all(edge_id.as_bytes())?;
+            buffer.write_all(b"\n")?;
+            
+            buffer.write_all(&(super_edge.geometry.len() as u32).to_le_bytes())?;
+            for (lat, lon) in &super_edge.geometry {
+                buffer.write_all(&(*lat as f64).to_le_bytes())?;
+                buffer.write_all(&(*lon as f64).to_le_bytes())?;
+            }
+        }
+
+        Ok(buffer.into_inner())
+    }
+
+    /// Get graph statistics for /graph/stats API
+    pub fn get_graph_stats(&self) -> serde_json::Value {
+        serde_json::json!({
+            "nodes": self.node_stats,
+            "edges": self.edge_stats,
+            "super_edges": self.super_edge_stats
+        })
+    }
+
+    /// Get edge details for /graph/edge/{id} API
+    pub fn get_edge_details(&self, edge_id: &str, adjacency: &CanonicalAdjacency) -> Option<serde_json::Value> {
+        // Parse edge ID (format: "start_end")
+        let parts: Vec<&str> = edge_id.split('_').collect();
+        if parts.len() != 2 {
+            return None;
+        }
+
+        let start: i64 = parts[0].parse().ok()?;
+        let end: i64 = parts[1].parse().ok()?;
+
+        if let Some(edge_info) = adjacency.get_edge_info(start, end) {
+            Some(serde_json::json!({
+                "start_node": start,
+                "end_node": end,
+                "length_meters": edge_info.length_meters,
+                "highway_class": edge_info.highway_class,
+                "access_restrictions": edge_info.access_restrictions,
+                "is_semantically_important": edge_info.is_semantically_important,
+                "original_way_ids": edge_info.original_way_ids,
+                "geometry": edge_info.geometry
+            }))
+        } else {
+            None
+        }
+    }
+
+    /// Clear debug data
+    pub fn clear(&mut self) {
+        self.node_stats = GraphNodeStats::default();
+        self.edge_stats = GraphEdgeStats::default();
+        self.super_edge_stats = SuperEdgeStats::default();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

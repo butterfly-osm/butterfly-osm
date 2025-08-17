@@ -17,35 +17,38 @@ pub use telemetry::{
 };
 pub use coarsening::{
     SemanticBreakpoints, SemanticImportance, CurvatureAnalyzer, LocalAngle, BendWindow,
-    NodeCanonicalizer, CanonicalStats, PolicySmoother, CoarseningPolicy, NodeMapper, NodeMappingStats
+    NodeCanonicalizer, CanonicalStats, PolicySmoother, CoarseningPolicy, NodeMapper, NodeMappingStats,
+    CanonicalAdjacency, EdgeInfo, SuperEdgeConstructor, SuperEdge, SegmentGuard, SegmentGuardReason,
+    CollapsePolicy, BorderReconciliation, TileBoundary, BoundarySide, BorderEdge,
+    GraphDebugger, GraphNodeStats, GraphEdgeStats, SuperEdgeStats
 };
 
 use std::path::Path;
 use std::fs::File;
 use std::io::Write;
+use std::collections::HashMap;
 
 /// OSM data extraction and processing pipeline
 #[derive(Default)]
 pub struct Extractor {
     telemetry: TelemetryCalculator,
-    _sieve: TagSieve,
-    #[allow(dead_code)]
+    sieve: TagSieve,
     coarsening: CoarseningProcessor,
 }
 
-/// Coarsening processor for M2 functionality
+/// Coarsening processor for M2 and M3 functionality
 #[derive(Default)]
 struct CoarseningProcessor {
-    #[allow(dead_code)]
     semantic_breakpoints: SemanticBreakpoints,
-    #[allow(dead_code)]
     curvature_analyzer: CurvatureAnalyzer,
-    #[allow(dead_code)]
     node_canonicalizer: NodeCanonicalizer,
-    #[allow(dead_code)]
     policy_smoother: PolicySmoother,
-    #[allow(dead_code)]
     node_mapper: NodeMapper,
+    // M3 components
+    canonical_adjacency: CanonicalAdjacency,
+    super_edge_constructor: SuperEdgeConstructor,
+    border_reconciliation: BorderReconciliation,
+    graph_debugger: GraphDebugger,
 }
 
 impl CoarseningProcessor {
@@ -56,6 +59,10 @@ impl CoarseningProcessor {
             node_canonicalizer: NodeCanonicalizer::new(),
             policy_smoother: PolicySmoother::new(TILE_SIZE_METERS),
             node_mapper: NodeMapper::new(),
+            canonical_adjacency: CanonicalAdjacency::new(),
+            super_edge_constructor: SuperEdgeConstructor::new(),
+            border_reconciliation: BorderReconciliation::new(),
+            graph_debugger: GraphDebugger::new(),
         }
     }
 }
@@ -64,7 +71,7 @@ impl Extractor {
     pub fn new() -> Self {
         Self {
             telemetry: TelemetryCalculator::new(),
-            _sieve: TagSieve::new(),
+            sieve: TagSieve::new(),
             coarsening: CoarseningProcessor::new(),
         }
     }
@@ -169,6 +176,99 @@ impl Extractor {
         
         let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
         6371000.0 * c // Earth radius in meters
+    }
+
+    // ==== M3 - Super-Edge Construction Methods ====
+
+    /// Process ways to build canonical adjacency (M3.1)
+    pub fn build_canonical_adjacency(&mut self, ways: &[(i64, Vec<i64>, HashMap<String, String>)]) {
+        self.coarsening.canonical_adjacency.build_from_ways(ways, &self.coarsening.node_canonicalizer);
+    }
+
+    /// Construct super-edges by collapsing degree-2 nodes (M3.2)
+    pub fn construct_super_edges(&mut self) {
+        self.coarsening.super_edge_constructor.construct_super_edges(
+            &self.coarsening.canonical_adjacency,
+            &self.coarsening.semantic_breakpoints
+        );
+    }
+
+    /// Add border edge for reconciliation (M3.3)
+    pub fn add_border_edge(&mut self, boundary: TileBoundary, edge: BorderEdge) {
+        self.coarsening.border_reconciliation.add_border_edge(boundary, edge);
+    }
+
+    /// Reconcile borders across tiles (M3.3)
+    pub fn reconcile_borders(&mut self) -> Result<(), String> {
+        self.coarsening.border_reconciliation.reconcile_borders()
+    }
+
+    /// Generate M3.4 debug artifacts
+    pub fn generate_m3_artifacts<P: AsRef<Path>>(&mut self, output_dir: P) -> std::io::Result<()> {
+        use std::fs;
+        
+        let output_dir = output_dir.as_ref();
+        fs::create_dir_all(output_dir)?;
+
+        // Analyze current state for statistics
+        self.coarsening.graph_debugger.analyze_adjacency(&self.coarsening.canonical_adjacency);
+        self.coarsening.graph_debugger.analyze_super_edges(&self.coarsening.super_edge_constructor);
+
+        // Generate nodes.bin
+        let nodes_bin = self.coarsening.graph_debugger.generate_nodes_bin(&self.coarsening.canonical_adjacency)?;
+        fs::write(output_dir.join("nodes.bin"), nodes_bin)?;
+
+        // Generate super_edges.bin
+        let super_edges_bin = self.coarsening.graph_debugger.generate_super_edges_bin(&self.coarsening.super_edge_constructor)?;
+        fs::write(output_dir.join("super_edges.bin"), super_edges_bin)?;
+
+        // Generate geom.temp
+        let geom_temp = self.coarsening.graph_debugger.generate_geom_temp(&self.coarsening.super_edge_constructor)?;
+        fs::write(output_dir.join("geom.temp"), geom_temp)?;
+
+        Ok(())
+    }
+
+    /// Get graph statistics for /graph/stats API (M3.4)
+    pub fn get_graph_stats(&mut self) -> serde_json::Value {
+        // Ensure statistics are up to date
+        self.coarsening.graph_debugger.analyze_adjacency(&self.coarsening.canonical_adjacency);
+        self.coarsening.graph_debugger.analyze_super_edges(&self.coarsening.super_edge_constructor);
+        
+        self.coarsening.graph_debugger.get_graph_stats()
+    }
+
+    /// Get edge details for /graph/edge/{id} API (M3.4)
+    pub fn get_edge_details(&self, edge_id: &str) -> Option<serde_json::Value> {
+        self.coarsening.graph_debugger.get_edge_details(edge_id, &self.coarsening.canonical_adjacency)
+    }
+
+    /// Get canonical adjacency for access by other components
+    pub fn get_canonical_adjacency(&self) -> &CanonicalAdjacency {
+        &self.coarsening.canonical_adjacency
+    }
+
+    /// Get super-edge constructor for access by other components
+    pub fn get_super_edge_constructor(&self) -> &SuperEdgeConstructor {
+        &self.coarsening.super_edge_constructor
+    }
+
+    /// Get all super-edges
+    pub fn get_super_edges(&self) -> Vec<&SuperEdge> {
+        self.coarsening.super_edge_constructor.get_super_edges()
+    }
+
+    /// Get specific super-edge
+    pub fn get_super_edge(&self, start: i64, end: i64) -> Option<&SuperEdge> {
+        self.coarsening.super_edge_constructor.get_super_edge(start, end)
+    }
+
+    /// Clear all M3 data for memory management
+    pub fn clear_m3_data(&mut self) {
+        self.coarsening.canonical_adjacency.clear();
+        self.coarsening.super_edge_constructor.clear();
+        self.coarsening.border_reconciliation.clear();
+        self.coarsening.graph_debugger.clear();
     }
 }
 
