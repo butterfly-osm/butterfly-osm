@@ -49,7 +49,6 @@ benchmarks/*_butterfly.pbf
 /tmp/
 
 # BCSI temporary directories
-butterfly-shrink-*
 butterfly-bcsi-*
 
 # Docker

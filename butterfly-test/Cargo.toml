@@ -1,0 +1,19 @@
+[package]
+name = "butterfly-test"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+description = "Test infrastructure and synthetic data generation for butterfly-osm"
+
+[dependencies]
+butterfly-common = { path = "../butterfly-common" }
+butterfly-dl = { path = "../butterfly-dl" }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+rand = "0.8"
+geo = "0.28"
+
+[dev-dependencies]
+tempfile = { workspace = true }

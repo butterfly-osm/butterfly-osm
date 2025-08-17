@@ -1,0 +1,20 @@
+[package]
+name = "butterfly-plan"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+description = "Autopilot memory planning and resource allocation for butterfly-osm"
+
+[dependencies]
+butterfly-common = { path = "../butterfly-common" }
+clap = { workspace = true }
+thiserror = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+env_logger = { workspace = true }
+num_cpus = "1.16"
+
+[dev-dependencies]
+tempfile = { workspace = true }

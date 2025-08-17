@@ -22,10 +22,7 @@ Create OSM tools that are **10x faster** than state-of-the-art while using minim
 
 ### Tools Architecture
 ```
-butterfly-dl    → Data acquisition (download, streaming)
-butterfly-shrink → Geometric operations (extraction, clipping)  
-butterfly-extract → Data transformation (filtering, conversion)
-butterfly-serve  → Data serving (HTTP, caching, tiles)
+butterfly-dl → Data acquisition (download, streaming)
 ```
 
 ### Shared Foundation
@@ -79,7 +76,7 @@ cargo test
 cargo build --release
 
 # Test integration with other tools
-echo "test data" | butterfly-dl - | butterfly-extract --filter tags
+butterfly-dl europe/belgium  # Download OSM data
 ```
 
 ### 3. Branch Strategy
@@ -115,9 +112,6 @@ time -v ./target/release/butterfly-dl europe/belgium
 | Tool | Memory Usage | Speed Target | Improvement Goal |
 |------|-------------|--------------|------------------|
 | butterfly-dl | <1GB fixed | 10-20MB/s | 3-6x vs aria2 |
-| butterfly-shrink | <2GB fixed | <30s extraction | 10x vs osmium |
-| butterfly-extract | <1GB fixed | 50MB/s filtering | 5-10x vs osmosis |
-| butterfly-serve | <500MB | 5000+ QPS | 10-50x vs existing |
 
 ### Code Quality Standards
 
@@ -163,21 +157,6 @@ async fn process_stream<R: AsyncRead>(mut reader: R) -> Result<()> {
 - **Memory limit**: <1GB regardless of file size
 - **Key metrics**: Download speed, memory usage, reliability
 
-### butterfly-shrink (planned)
-- **Focus**: Geometric operations and polygon clipping
-- **Memory limit**: <2GB for planet-scale operations
-- **Key metrics**: Extraction speed, geometric accuracy
-
-### butterfly-extract (planned)
-- **Focus**: Data transformation and filtering
-- **Memory limit**: <1GB for streaming operations
-- **Key metrics**: Filtering speed, memory efficiency
-
-### butterfly-serve (planned)
-- **Focus**: High-performance HTTP serving
-- **Memory limit**: <500MB baseline + caching
-- **Key metrics**: QPS, latency, cache hit rate
-
 ## Testing Requirements
 
 ### Performance Tests
@@ -218,7 +197,7 @@ cargo test --features memory-profiling
 type(tool): description
 
 perf(dl): optimize HTTP connection pooling for 25% speed improvement
-feat(shrink): add polygon clipping with GEOS integration
+feat(dl): improve download resumption logic
 fix(common): resolve geographic fuzzy matching edge case
 docs(readme): update performance benchmark results
 ```

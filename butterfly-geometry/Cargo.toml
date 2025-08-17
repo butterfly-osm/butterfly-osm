@@ -1,0 +1,16 @@
+[package]
+name = "butterfly-geometry"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+description = "Geometry processing and 3-pass pipeline for butterfly-osm"
+
+[dependencies]
+butterfly-common = { path = "../butterfly-common" }
+butterfly-io = { path = "../butterfly-io" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

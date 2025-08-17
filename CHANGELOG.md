@@ -7,9 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 For detailed tool-specific changes, see individual tool changelogs:
 - [butterfly-dl](./tools/butterfly-dl/CHANGELOG.md) - OSM data downloader
-- [butterfly-shrink](./tools/butterfly-shrink/CHANGELOG.md) - Polygon extraction tool (planned)
-- [butterfly-extract](./tools/butterfly-extract/CHANGELOG.md) - Data transformation tool (planned)
-- [butterfly-serve](./tools/butterfly-serve/CHANGELOG.md) - High-performance tile server (planned)
 
 ## [2.0.0] - 2025-06-27
 

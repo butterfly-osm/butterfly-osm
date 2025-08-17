@@ -1,0 +1,20 @@
+[package]
+name = "butterfly-io"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+description = "Binary formats and I/O infrastructure for butterfly-osm"
+
+[dependencies]
+butterfly-common = { path = "../butterfly-common" }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+zstd = "0.13"
+crc32fast = "1.4"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+memmap2 = "0.9"
+
+[dev-dependencies]
+tempfile = { workspace = true }

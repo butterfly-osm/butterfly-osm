@@ -15,9 +15,6 @@ A comprehensive ecosystem of OSM tools designed around **separation of concerns*
 ### Core Tools
 
 - **🚀 butterfly-dl**: Memory-efficient OSM data downloader (<1GB RAM for any file size)
-- **✂️ butterfly-shrink**: Polygon-based area extraction with geometric optimization  
-- **🔧 butterfly-extract**: Advanced filtering and transformation engine
-- **🌐 butterfly-serve**: High-performance HTTP tile server with caching
 
 ### Shared Foundation
 
@@ -45,11 +42,9 @@ Current OSM tools suffer from fundamental limitations:
 
 ### Target Performance
 
-| Operation | Current Tools | Butterfly-OSM Target | Improvement |
-|-----------|---------------|---------------------|-------------|
+| Operation | Current Tools | Butterfly-OSM | Improvement |
+|-----------|---------------|---------------|-------------|
 | Planet download | 2-4 hours | 20-40 minutes | **3-6x faster** |
-| Regional extraction | 5-15 minutes | 30-90 seconds | **10x faster** |
-| Tile serving (QPS) | 100-500 | 5,000+ | **10-50x faster** |
 | Memory usage | 4-16GB | <1GB | **4-16x less** |
 
 ## How
@@ -59,19 +54,14 @@ Current OSM tools suffer from fundamental limitations:
 #### 1. Separation of Concerns
 Each tool has a single, well-defined responsibility:
 ```
-butterfly-dl    → Data acquisition (download, streaming)
-butterfly-shrink → Geometric operations (extraction, clipping)  
-butterfly-extract → Data transformation (filtering, conversion)
-butterfly-serve  → Data serving (HTTP, caching, tiles)
+butterfly-dl → Data acquisition (download, streaming)
 ```
 
 #### 2. Composable Pipeline Design
 Tools work together via standard streams and file formats:
 ```bash
-# Download → Extract → Serve pipeline
-butterfly-dl planet - | \
-butterfly-extract --bbox 2.0,46.0,8.0,49.0 - france.pbf && \
-butterfly-serve france.pbf --port 8080
+# Download OSM data
+butterfly-dl europe/france
 ```
 
 #### 3. Shared Intelligence
@@ -123,18 +113,14 @@ Common patterns abstracted into `butterfly-common`:
   - 79% faster than aria2, 3x faster than curl on medium files
   - <1GB memory usage regardless of file size
 
-### 🚧 In Development
+### 🚧 Future Development
 
-- **butterfly-shrink**: Polygon-based extraction engine
-- **butterfly-extract**: Advanced filtering and transformation
-- **butterfly-serve**: High-performance tile server
+Future tools and capabilities will be added based on community needs and feedback.
 
 ### 🎯 Roadmap
 
 **Phase 1 (Current)**: Core data acquisition and workspace foundation  
-**Phase 2**: Geometric operations and extraction tools  
-**Phase 3**: Advanced transformation and filtering capabilities  
-**Phase 4**: High-performance serving and caching infrastructure  
+**Future Phases**: Additional tools and capabilities based on community needs  
 
 ## Installation
 
@@ -181,10 +167,7 @@ Download optimized binaries for your platform:
 butterfly-osm/
 ├── butterfly-common/     # Shared utilities and algorithms
 ├── tools/
-│   ├── butterfly-dl/     # OSM data downloader  
-│   ├── butterfly-shrink/ # Polygon extraction (planned)
-│   ├── butterfly-extract/# Data transformation (planned)
-│   └── butterfly-serve/  # Tile server (planned)
+│   └── butterfly-dl/     # OSM data downloader
 ├── benchmarks/          # Performance benchmarks
 ├── examples/            # Usage examples and tutorials (planned)
 ```
