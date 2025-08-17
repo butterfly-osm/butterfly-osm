@@ -36,7 +36,7 @@
 ## 🚀 Current Implementation Status
 
 ### M0 — Foundation (33% Complete - 2/6 milestones)
-- ✅ **M0.1**: Workspace & CI - 9-crate workspace, all tests passing (75+ tests), CI configured
+- ✅ **M0.1**: Workspace & CI - 9-crate workspace, all tests passing (85+ tests), CI configured
 - 🔄 **M0.2**: Binary Formats Core - Structure exists, needs I/O implementation 
 - ⏳ **M0.3**: External Sorter - Awaiting M0.2 completion
 - ⏳ **M0.4**: Autopilot Skeleton - Basic structure exists, needs CLI
@@ -60,10 +60,10 @@
 - ✅ **M2.5**: /probe/snap API - Snap probe endpoint for QA/debugging canonical mapping validation
 
 ### M3 — Super-Edge Construction (✅ Complete)
-- ✅ **M3.1**: Canonical Adjacency - Bidirectional adjacency lists over canonical nodes with neighbor tracking
-- ✅ **M3.2**: Degree-2 Collapse - Policy-aware chain collapse, super-edge construction, segment guards (4,096 pts / 1km limits)
-- ✅ **M3.3**: Border Reconciliation - Tile boundary edge handling and global consistency framework
-- ✅ **M3.4**: Graph Debug APIs - Binary artifacts (nodes.bin, super_edges.bin, geom.temp) + /graph/stats + /graph/edge/{id} endpoints
+- ✅ **M3.1**: Canonical Adjacency - Bidirectional adjacency lists over canonical nodes with neighbor tracking and edge semantics
+- ✅ **M3.2**: Degree-2 Collapse - Policy-aware chain collapse, super-edge construction, segment guards (4,096 pts / 1km limits) for M5 memory safety
+- ✅ **M3.3**: Border Reconciliation - Complete geometric analysis for cross-tile consistency with deterministic global ID generation  
+- ✅ **M3.4**: Graph Debug APIs - Binary artifacts (nodes.bin, super_edges.bin, geom.temp) + REST endpoints (/graph/stats, /graph/edge/{id}) with OpenAPI schema
 
 ### M4-M20 — Advanced Milestones (Not Started)
 M4+ milestones await foundation completion and architectural decisions. See individual milestone files for detailed specifications.

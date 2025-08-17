@@ -1137,7 +1137,7 @@ impl CanonicalAdjacency {
             // Convert way nodes to canonical nodes
             let mut canonical_nodes = Vec::new();
             for &node_id in node_refs {
-                if let Some(canonical_coords) = node_canonicalizer.get_canonical_coords(node_id) {
+                if let Some(_canonical_coords) = node_canonicalizer.get_canonical_coords(node_id) {
                     if let Some(canonical_id) = node_canonicalizer.get_canonical_coords(node_id) {
                         canonical_nodes.push((node_id, canonical_id.0 as i64)); // Use lat as canonical ID approximation
                     }
@@ -2057,8 +2057,8 @@ impl GraphDebugger {
             
             buffer.write_all(&(super_edge.geometry.len() as u32).to_le_bytes())?;
             for (lat, lon) in &super_edge.geometry {
-                buffer.write_all(&(*lat as f64).to_le_bytes())?;
-                buffer.write_all(&(*lon as f64).to_le_bytes())?;
+                buffer.write_all(&(*lat).to_le_bytes())?;
+                buffer.write_all(&(*lon).to_le_bytes())?;
             }
         }
 
@@ -2085,8 +2085,7 @@ impl GraphDebugger {
         let start: i64 = parts[0].parse().ok()?;
         let end: i64 = parts[1].parse().ok()?;
 
-        if let Some(edge_info) = adjacency.get_edge_info(start, end) {
-            Some(serde_json::json!({
+        adjacency.get_edge_info(start, end).map(|edge_info| serde_json::json!({
                 "start_node": start,
                 "end_node": end,
                 "length_meters": edge_info.length_meters,
@@ -2096,9 +2095,6 @@ impl GraphDebugger {
                 "original_way_ids": edge_info.original_way_ids,
                 "geometry": edge_info.geometry
             }))
-        } else {
-            None
-        }
     }
 
     /// Clear debug data

@@ -130,12 +130,12 @@ Common patterns abstracted into `butterfly-common`:
   - Policy smoothing with 3×3 median filtering for tile boundary consistency  
   - /probe/snap API endpoint for QA/debugging of canonical mapping
 
-- **M3 - Super-Edge Construction**: Graph topology optimization with memory safety
-  - Canonical adjacency lists over canonical nodes with bidirectional neighbor tracking
-  - Policy-aware degree-2 node collapse with super-edge chain construction
-  - Memory safety guards: 4,096 point limit and 1km segment length protection
-  - Border reconciliation framework for consistent cross-tile processing
-  - Graph debug artifacts (nodes.bin, super_edges.bin, geom.temp) and REST APIs (/graph/stats, /graph/edge/{id})
+- **M3 - Super-Edge Construction**: Advanced graph topology optimization with cross-tile consistency
+  - **M3.1**: Canonical adjacency lists with bidirectional neighbor tracking and edge semantics
+  - **M3.2**: Policy-aware degree-2 collapse creating super-edges with segment guards (4,096 pt / 1km limits)
+  - **M3.3**: Border reconciliation using geometric analysis for global consistency across tiles
+  - **M3.4**: Graph debug artifacts (nodes.bin, super_edges.bin, geom.temp) with REST APIs (/graph/stats, /graph/edge/{id})
+  - Memory safety compliance for M5 geometry processing and production-ready tile boundary handling
 
 ### 🚧 Future Development
 

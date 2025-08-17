@@ -98,3 +98,12 @@ node_map.bin
 canonical-*.json
 debug-heatmap.json
 probe-*.json
+
+# M3 Super-Edge outputs
+nodes.bin
+super_edges.bin
+geom.temp
+*.super_edges
+graph-stats-*.json
+edge-debug-*.json
+border-reconciliation-*.json
