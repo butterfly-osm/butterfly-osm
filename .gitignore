@@ -48,6 +48,14 @@ benchmarks/*_butterfly.pbf
 .DS_Store
 /tmp/
 
+# External sorter temp files
+butterfly-sort-*
+*.bfly
+run_*.bfly
+
+# Test temp directories  
+butterfly-test-*/
+
 # BCSI temporary directories
 butterfly-bcsi-*
 

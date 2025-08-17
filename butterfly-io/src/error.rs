@@ -13,6 +13,9 @@ pub enum IoError {
 
     #[error("Invalid format: {0}")]
     InvalidFormat(String),
+
+    #[error("Serialization error: {0}")]
+    Serialization(String),
 }
 
 pub type IoResult<T> = Result<T, IoError>;

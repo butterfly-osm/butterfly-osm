@@ -18,3 +18,7 @@ num_cpus = "1.16"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[[bin]]
+name = "butterfly-plan"
+path = "src/main.rs"

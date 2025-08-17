@@ -22,17 +22,19 @@ impl MemoryBudget {
         Self {
             cap_mb,
             usable_mb,
-            per_worker_mb: 8,   // Initial estimate
-            io_buffers_mb: 64,  // Initial estimate
-            merge_heaps_mb: 32, // Initial estimate
-            fixed_overhead_mb: 256,
+            per_worker_mb: 64,   // 64MB per worker thread
+            io_buffers_mb: 128,  // I/O buffer allocation
+            merge_heaps_mb: 64,  // Merge heap allocation
+            fixed_overhead_mb: 256, // Fixed overhead (OS, runtime)
         }
     }
 
-    /// Validate that the budget fits within constraints
-    pub fn validate(&self) -> bool {
-        let total =
-            self.fixed_overhead_mb + self.per_worker_mb + self.io_buffers_mb + self.merge_heaps_mb;
+    /// Validate that the budget fits within constraints for given worker count
+    pub fn validate(&self, workers: u32) -> bool {
+        let total = self.fixed_overhead_mb 
+                  + (workers * self.per_worker_mb)
+                  + self.io_buffers_mb 
+                  + self.merge_heaps_mb;
         total <= self.usable_mb
     }
 }

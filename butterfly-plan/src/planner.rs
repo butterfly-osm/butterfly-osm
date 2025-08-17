@@ -27,8 +27,9 @@ impl AutopilotPlanner {
                 (budget.usable_mb as f64 / budget.cap_mb as f64 * 100.0) as u32
             );
             println!(
-                "  Constraint: {} + {} + {} + {} ≤ {} MB",
+                "  Constraint: {} + {} × {} + {} + {} ≤ {} MB",
                 budget.fixed_overhead_mb,
+                self.config.workers,
                 budget.per_worker_mb,
                 budget.io_buffers_mb,
                 budget.merge_heaps_mb,
@@ -36,6 +37,6 @@ impl AutopilotPlanner {
             );
         }
 
-        budget.validate()
+        budget.validate(self.config.workers)
     }
 }
