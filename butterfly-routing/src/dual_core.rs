@@ -2,7 +2,7 @@
 
 use crate::profiles::{EdgeId, TransportProfile};
 use butterfly_geometry::Point2D;
-use butterfly_geometry::{SnapSkeleton, NavigationGeometry, FullFidelityGeometry};
+use butterfly_geometry::{FullFidelityGeometry, NavigationGeometry, SnapSkeleton};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use xxhash_rust::xxh3::xxh3_64;
@@ -20,8 +20,8 @@ impl NodeId {
 /// Edge weight for time-only routing
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TimeWeight {
-    pub time_seconds: u16,     // Quantized time weight
-    pub distance_meters: u16,  // Distance for fallback calculations
+    pub time_seconds: u16,    // Quantized time weight
+    pub distance_meters: u16, // Distance for fallback calculations
 }
 
 impl TimeWeight {
@@ -118,12 +118,11 @@ impl NavEdge {
         match pass {
             GeometryPass::Snap => self.snap_skeleton.points.clone(),
             GeometryPass::Navigation => self.nav_geometry.simplified_points.clone(),
-            GeometryPass::FullFidelity => {
-                self.full_geometry
-                    .as_ref()
-                    .map(|fg| fg.to_points())
-                    .unwrap_or_else(|| self.nav_geometry.simplified_points.clone())
-            }
+            GeometryPass::FullFidelity => self
+                .full_geometry
+                .as_ref()
+                .map(|fg| fg.to_points())
+                .unwrap_or_else(|| self.nav_geometry.simplified_points.clone()),
         }
     }
 }
@@ -140,9 +139,9 @@ pub struct TurnRestriction {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RestrictionType {
-    NoTurn,      // no_left_turn, no_right_turn, etc.
-    OnlyTurn,    // only_left_turn, only_right_turn, etc.
-    NoUturn,     // no_u_turn
+    NoTurn,   // no_left_turn, no_right_turn, etc.
+    OnlyTurn, // only_left_turn, only_right_turn, etc.
+    NoUturn,  // no_u_turn
 }
 
 /// Geometry pass selector
@@ -216,11 +215,11 @@ impl TimeGraph {
 
     pub fn calculate_consistency_hash(&mut self) {
         let mut hasher_input = Vec::new();
-        
+
         // Hash all node positions and IDs
         let mut sorted_nodes: Vec<_> = self.nodes.iter().collect();
         sorted_nodes.sort_by_key(|(id, _)| id.0);
-        
+
         for (node_id, node) in sorted_nodes {
             hasher_input.extend_from_slice(&node_id.0.to_le_bytes());
             hasher_input.extend_from_slice(&node.coordinate.x.to_le_bytes());
@@ -230,12 +229,12 @@ impl TimeGraph {
         // Hash all edge weights and connectivity
         let mut sorted_edges: Vec<_> = self.edges.iter().collect();
         sorted_edges.sort_by_key(|(id, _)| id.0);
-        
+
         for (edge_id, edge) in sorted_edges {
             hasher_input.extend_from_slice(&edge_id.0.to_le_bytes());
             hasher_input.extend_from_slice(&edge.from_node.0.to_le_bytes());
             hasher_input.extend_from_slice(&edge.to_node.0.to_le_bytes());
-            
+
             // Hash weights for each profile in deterministic order
             for profile in &self.profiles {
                 if let Some(weight) = edge.get_weight(profile) {
@@ -286,11 +285,11 @@ impl NavGraph {
 
     pub fn calculate_consistency_hash(&mut self) {
         let mut hasher_input = Vec::new();
-        
+
         // Hash all node positions and IDs
         let mut sorted_nodes: Vec<_> = self.nodes.iter().collect();
         sorted_nodes.sort_by_key(|(id, _)| id.0);
-        
+
         for (node_id, node) in sorted_nodes {
             hasher_input.extend_from_slice(&node_id.0.to_le_bytes());
             hasher_input.extend_from_slice(&node.coordinate.x.to_le_bytes());
@@ -300,12 +299,12 @@ impl NavGraph {
         // Hash all edge weights and geometry
         let mut sorted_edges: Vec<_> = self.edges.iter().collect();
         sorted_edges.sort_by_key(|(id, _)| id.0);
-        
+
         for (edge_id, edge) in sorted_edges {
             hasher_input.extend_from_slice(&edge_id.0.to_le_bytes());
             hasher_input.extend_from_slice(&edge.from_node.0.to_le_bytes());
             hasher_input.extend_from_slice(&edge.to_node.0.to_le_bytes());
-            
+
             // Hash weights for each profile
             for profile in &self.profiles {
                 if let Some(weight) = edge.get_weight(profile) {
@@ -381,11 +380,16 @@ impl DualCoreGraph {
         for (edge_id, time_edge) in &self.time_graph.edges {
             if let Some(nav_edge) = self.nav_graph.edges.get(edge_id) {
                 // Verify same connectivity
-                if time_edge.from_node != nav_edge.from_node || time_edge.to_node != nav_edge.to_node {
+                if time_edge.from_node != nav_edge.from_node
+                    || time_edge.to_node != nav_edge.to_node
+                {
                     return Err(format!(
                         "Edge {:?} connectivity mismatch: time=({:?},{:?}), nav=({:?},{:?})",
-                        edge_id, time_edge.from_node, time_edge.to_node,
-                        nav_edge.from_node, nav_edge.to_node
+                        edge_id,
+                        time_edge.from_node,
+                        time_edge.to_node,
+                        nav_edge.from_node,
+                        nav_edge.to_node
                     ));
                 }
 
@@ -393,19 +397,24 @@ impl DualCoreGraph {
                 for profile in &self.time_graph.profiles {
                     let time_weight = time_edge.get_weight(profile);
                     let nav_weight = nav_edge.get_weight(profile);
-                    
+
                     match (time_weight, nav_weight) {
                         (Some(tw), Some(nw)) => {
-                            if tw.time_seconds != nw.time_seconds || tw.distance_meters != nw.distance_meters {
+                            if tw.time_seconds != nw.time_seconds
+                                || tw.distance_meters != nw.distance_meters
+                            {
                                 return Err(format!(
                                     "Edge {:?} weight mismatch for {:?}: time=({},{}), nav=({},{})",
-                                    edge_id, profile,
-                                    tw.time_seconds, tw.distance_meters,
-                                    nw.time_seconds, nw.distance_meters
+                                    edge_id,
+                                    profile,
+                                    tw.time_seconds,
+                                    tw.distance_meters,
+                                    nw.time_seconds,
+                                    nw.distance_meters
                                 ));
                             }
                         }
-                        (None, None) => {}, // Both missing is OK
+                        (None, None) => {} // Both missing is OK
                         _ => {
                             return Err(format!(
                                 "Edge {:?} weight presence mismatch for {:?}",
@@ -429,7 +438,10 @@ impl DualCoreGraph {
             self.time_graph.calculate_consistency_hash();
             self.nav_graph.calculate_consistency_hash();
         }
-        (self.time_graph.consistency_hash, self.nav_graph.consistency_hash)
+        (
+            self.time_graph.consistency_hash,
+            self.nav_graph.consistency_hash,
+        )
     }
 
     /// Check if consistency verification is required
@@ -476,7 +488,7 @@ mod tests {
         let node_id = NodeId::new(1);
         let coordinate = Point2D::new(10.0, 20.0);
         let node = GraphNode::new(node_id, coordinate);
-        
+
         assert_eq!(node.node_id, node_id);
         assert_eq!(node.coordinate.x, 10.0);
         assert_eq!(node.coordinate.y, 20.0);
@@ -488,7 +500,7 @@ mod tests {
         let weight = TimeWeight::new(123.7, 456.2);
         assert_eq!(weight.time_seconds, 124);
         assert_eq!(weight.distance_meters, 456);
-        
+
         // Test overflow protection
         let large_weight = TimeWeight::new(100000.0, 100000.0);
         assert_eq!(large_weight.time_seconds, u16::MAX);
@@ -500,15 +512,15 @@ mod tests {
         let edge_id = EdgeId(1);
         let from_node = NodeId::new(1);
         let to_node = NodeId::new(2);
-        
+
         let mut edge = TimeEdge::new(edge_id, from_node, to_node);
         let weight = TimeWeight::new(30.0, 100.0);
         edge.add_weight(TransportProfile::Car, weight);
-        
+
         assert_eq!(edge.edge_id, edge_id);
         assert_eq!(edge.from_node, from_node);
         assert_eq!(edge.to_node, to_node);
-        
+
         let retrieved_weight = edge.get_weight(&TransportProfile::Car).unwrap();
         assert_eq!(retrieved_weight.time_seconds, 30);
         assert_eq!(retrieved_weight.distance_meters, 100);
@@ -518,25 +530,25 @@ mod tests {
     fn test_time_graph_consistency_hash() {
         let profiles = vec![TransportProfile::Car, TransportProfile::Bicycle];
         let mut graph = TimeGraph::new(profiles);
-        
+
         // Add some nodes and edges
         let node1 = GraphNode::new(NodeId::new(1), Point2D::new(0.0, 0.0));
         let node2 = GraphNode::new(NodeId::new(2), Point2D::new(1.0, 1.0));
         graph.add_node(node1);
         graph.add_node(node2);
-        
+
         let mut edge = TimeEdge::new(EdgeId(1), NodeId::new(1), NodeId::new(2));
         edge.add_weight(TransportProfile::Car, TimeWeight::new(30.0, 100.0));
         graph.add_edge(edge);
-        
+
         graph.calculate_consistency_hash();
         let hash1 = graph.consistency_hash;
-        
+
         // Hash should be deterministic
         graph.calculate_consistency_hash();
         let hash2 = graph.consistency_hash;
         assert_eq!(hash1, hash2);
-        
+
         // Hash should change when we add data
         let node3 = GraphNode::new(NodeId::new(3), Point2D::new(2.0, 2.0));
         graph.add_node(node3);
@@ -549,7 +561,7 @@ mod tests {
     fn test_dual_core_consistency_verification() {
         let profiles = vec![TransportProfile::Car];
         let mut dual_core = DualCoreGraph::new(profiles);
-        
+
         // Add matching nodes to both graphs
         let node1 = GraphNode::new(NodeId::new(1), Point2D::new(0.0, 0.0));
         let node2 = GraphNode::new(NodeId::new(2), Point2D::new(1.0, 1.0));
@@ -557,13 +569,13 @@ mod tests {
         dual_core.time_graph.add_node(node2.clone());
         dual_core.nav_graph.add_node(node1);
         dual_core.nav_graph.add_node(node2);
-        
+
         // Add matching edges to both graphs
         let mut time_edge = TimeEdge::new(EdgeId(1), NodeId::new(1), NodeId::new(2));
         let weight = TimeWeight::new(30.0, 100.0);
         time_edge.add_weight(TransportProfile::Car, weight);
         dual_core.time_graph.add_edge(time_edge);
-        
+
         let snap_skeleton = SnapSkeleton::new(
             vec![Point2D::new(0.0, 0.0), Point2D::new(1.0, 1.0)],
             vec![],
@@ -588,7 +600,7 @@ mod tests {
         );
         nav_edge.add_weight(TransportProfile::Car, weight);
         dual_core.nav_graph.add_edge(nav_edge);
-        
+
         // Verification should pass
         assert!(dual_core.verify_consistency().is_ok());
         assert!(dual_core.consistency_verified);
@@ -598,11 +610,11 @@ mod tests {
     fn test_dual_core_consistency_mismatch() {
         let profiles = vec![TransportProfile::Car];
         let mut dual_core = DualCoreGraph::new(profiles);
-        
+
         // Add node only to time graph
         let node1 = GraphNode::new(NodeId::new(1), Point2D::new(0.0, 0.0));
         dual_core.time_graph.add_node(node1);
-        
+
         // Verification should fail due to node count mismatch
         assert!(dual_core.verify_consistency().is_err());
     }
@@ -610,7 +622,11 @@ mod tests {
     #[test]
     fn test_nav_edge_geometry_access() {
         let snap_skeleton = SnapSkeleton::new(
-            vec![Point2D::new(0.0, 0.0), Point2D::new(0.5, 0.5), Point2D::new(1.0, 1.0)],
+            vec![
+                Point2D::new(0.0, 0.0),
+                Point2D::new(0.5, 0.5),
+                Point2D::new(1.0, 1.0),
+            ],
             vec![],
             141.42,
             5.0,
@@ -623,7 +639,7 @@ mod tests {
             1.0,
             0.8,
         );
-        
+
         let nav_edge = NavEdge::new(
             EdgeId(1),
             NodeId::new(1),
@@ -632,25 +648,25 @@ mod tests {
             nav_geometry,
             None,
         );
-        
+
         let snap_geom = nav_edge.get_geometry(GeometryPass::Snap);
         let nav_geom = nav_edge.get_geometry(GeometryPass::Navigation);
         let full_geom = nav_edge.get_geometry(GeometryPass::FullFidelity);
-        
-        assert_eq!(snap_geom.len(), 3);  // Snap has more points
-        assert_eq!(nav_geom.len(), 2);   // Nav is simplified
-        assert_eq!(full_geom.len(), 2);  // Falls back to nav since no Pass C
+
+        assert_eq!(snap_geom.len(), 3); // Snap has more points
+        assert_eq!(nav_geom.len(), 2); // Nav is simplified
+        assert_eq!(full_geom.len(), 2); // Falls back to nav since no Pass C
     }
 
     #[test]
     fn test_dual_core_stats() {
         let profiles = vec![TransportProfile::Car, TransportProfile::Bicycle];
         let mut dual_core = DualCoreGraph::new(profiles);
-        
+
         let node1 = GraphNode::new(NodeId::new(1), Point2D::new(0.0, 0.0));
         dual_core.time_graph.add_node(node1.clone());
         dual_core.nav_graph.add_node(node1);
-        
+
         let stats = dual_core.get_stats();
         assert_eq!(stats.time_graph_nodes, 1);
         assert_eq!(stats.nav_graph_nodes, 1);

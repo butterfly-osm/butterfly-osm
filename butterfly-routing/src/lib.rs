@@ -1,88 +1,84 @@
 //! Core routing algorithms and graph processing for butterfly-osm
 
 pub mod dijkstra;
-pub mod graph;
-pub mod profiles;
-pub mod spatial;
 pub mod dual_core;
+pub mod graph;
+pub mod load_testing;
+pub mod profiles;
 pub mod prs_v2;
 pub mod prs_v3;
-pub mod weight_compression;
-pub mod turn_restriction_tables;
-pub mod time_routing;
-pub mod thread_architecture;
-pub mod sharded_caching;
-pub mod load_testing;
 pub mod prs_v4_simple;
+pub mod sharded_caching;
+pub mod spatial;
+pub mod thread_architecture;
+pub mod time_routing;
+pub mod turn_restriction_tables;
+pub mod weight_compression;
 
 // Re-export main types
 pub use profiles::{
-    TransportProfile, AccessLevel, HighwayType, WayAccess, AccessTruthTable,
-    ProfileMask, MultiProfileMask, EdgeId, MaskingStats, MaskValidationResult,
-    ComponentAnalyzer, Component, ComponentId, ComponentType, ComponentStats,
-    SpeedWeightCalculator, SpeedConfig, GradePenalties, GradeParams, GradeTelemetry, EdgeWeight, WeightPenalties, QuantizationStats,
-    MultiProfileLoader, ProfileLoadingStats, ProfileAccessibilityStats, RouteEchoResponse,
-    ProfileRegressionSuite, TestResult, TestType, TestStatus, ForbiddenEdgeReport, PRSReport, PRSTestSummary,
-    create_tags
+    create_tags, AccessLevel, AccessTruthTable, Component, ComponentAnalyzer, ComponentId,
+    ComponentStats, ComponentType, EdgeId, EdgeWeight, ForbiddenEdgeReport, GradeParams,
+    GradePenalties, GradeTelemetry, HighwayType, MaskValidationResult, MaskingStats,
+    MultiProfileLoader, MultiProfileMask, PRSReport, PRSTestSummary, ProfileAccessibilityStats,
+    ProfileLoadingStats, ProfileMask, ProfileRegressionSuite, QuantizationStats, RouteEchoResponse,
+    SpeedConfig, SpeedWeightCalculator, TestResult, TestStatus, TestType, TransportProfile,
+    WayAccess, WeightPenalties,
 };
 
-pub use spatial::{
-    Point2D, BBox, SpatialEdge, SnapIndex, SnapResult, SnapEngine, SnapIndexStats
-};
+pub use spatial::{BBox, Point2D, SnapEngine, SnapIndex, SnapIndexStats, SnapResult, SpatialEdge};
 
 pub use dual_core::{
-    NodeId, TimeWeight, TimeEdge, NavEdge, TurnRestriction, RestrictionType,
-    GeometryPass, GraphNode, TimeGraph, NavGraph, DualCoreGraph, DualCoreStats
+    DualCoreGraph, DualCoreStats, GeometryPass, GraphNode, NavEdge, NavGraph, NodeId,
+    RestrictionType, TimeEdge, TimeGraph, TimeWeight, TurnRestriction,
 };
 
-pub use dijkstra::{
-    RouteResult, ComputationStats, GraphType, DistanceRouter
-};
+pub use dijkstra::{ComputationStats, DistanceRouter, GraphType, RouteResult};
 
 pub use prs_v2::{
-    PRSv2TestResult, PRSv2TestType, PRSv2Metrics, PRSv2Config, 
-    ProfileRegressionSuiteV2, PRSv2Report, PRSv2Summary
+    PRSv2Config, PRSv2Metrics, PRSv2Report, PRSv2Summary, PRSv2TestResult, PRSv2TestType,
+    ProfileRegressionSuiteV2,
 };
 
 pub use weight_compression::{
-    CompressedTimeWeight, CompressionConfig, OverflowTable, WeightCompressionSystem,
-    CompressionStats, SystemCompressionStats, EDGE_BLOCK_SIZE
+    CompressedTimeWeight, CompressionConfig, CompressionStats, OverflowTable,
+    SystemCompressionStats, WeightCompressionSystem, EDGE_BLOCK_SIZE,
 };
 
 pub use turn_restriction_tables::{
-    JunctionId, TurnMovement, ProfileTurnMatrix, TurnRestrictionShard, TurnRestrictionTableSystem,
-    TurnPenalty, TURN_ALLOWED, TURN_FORBIDDEN, TURN_DISCOURAGED, TARGET_WARM_HIT_RATE,
-    ProfileMatrixStats, ShardStats, TurnRestrictionSystemStats
+    JunctionId, ProfileMatrixStats, ProfileTurnMatrix, ShardStats, TurnMovement, TurnPenalty,
+    TurnRestrictionShard, TurnRestrictionSystemStats, TurnRestrictionTableSystem,
+    TARGET_WARM_HIT_RATE, TURN_ALLOWED, TURN_DISCOURAGED, TURN_FORBIDDEN,
 };
 
 pub use time_routing::{
-    TimeRouteRequest, TimeRouteResponse, RouteQuality, TimeComputationStats,
-    TimeBasedRouter, ProfileRouteConfig, TimeRouterStats, route_endpoint
+    route_endpoint, ProfileRouteConfig, RouteQuality, TimeBasedRouter, TimeComputationStats,
+    TimeRouteRequest, TimeRouteResponse, TimeRouterStats,
 };
 
 pub use prs_v3::{
-    PRSv3TestType, PRSv3TestResult, PRSv3Metrics, PRSv3Config, 
-    ProfileRegressionSuiteV3, PRSv3Report, PRSv3Summary
+    PRSv3Config, PRSv3Metrics, PRSv3Report, PRSv3Summary, PRSv3TestResult, PRSv3TestType,
+    ProfileRegressionSuiteV3,
 };
 
 pub use thread_architecture::{
-    NumaNode, ThreadArena, ThreadPoolConfig, NumaThreadPool, LockFreeHotPath,
-    ThreadArchitectureSystem, ThreadArenaStats, ThreadPoolStats, LockFreeStats
+    LockFreeHotPath, LockFreeStats, NumaNode, NumaThreadPool, ThreadArchitectureSystem,
+    ThreadArena, ThreadArenaStats, ThreadPoolConfig, ThreadPoolStats,
 };
 
 pub use sharded_caching::{
-    TurnCacheEntry, GeometryCacheEntry, CacheShard, ShardedTurnCache, ShardedGeometryCache,
-    AutoRebalancingCacheManager, CacheShardStats, ShardedCacheStats, RebalancingAction
+    AutoRebalancingCacheManager, CacheShard, CacheShardStats, GeometryCacheEntry,
+    RebalancingAction, ShardedCacheStats, ShardedGeometryCache, ShardedTurnCache, TurnCacheEntry,
 };
 
 pub use load_testing::{
-    LoadTestConfig, RouteComplexityMix, LoadTestOrchestrator, LoadTestReport,
-    AxumStreamingHandler, RoutingStreamChunk
+    AxumStreamingHandler, LoadTestConfig, LoadTestOrchestrator, LoadTestReport, RouteComplexityMix,
+    RoutingStreamChunk,
 };
 
 pub use prs_v4_simple::{
-    PRSv4TestType, PRSv4TestResult, PRSv4Metrics, PRSv4Config,
-    ProfileRegressionSuiteV4Simple, PRSv4Report, PRSv4Summary
+    PRSv4Config, PRSv4Metrics, PRSv4Report, PRSv4Summary, PRSv4TestResult, PRSv4TestType,
+    ProfileRegressionSuiteV4Simple,
 };
 
 /// Core routing engine

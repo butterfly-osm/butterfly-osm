@@ -1,10 +1,10 @@
 //! M7.3 - Load Testing: Concurrent multi-profile serving validation
 
-use crate::profiles::TransportProfile;
-use crate::thread_architecture::{ThreadArchitectureSystem, ThreadPoolConfig};
-use crate::sharded_caching::AutoRebalancingCacheManager;
-use crate::time_routing::{TimeBasedRouter, TimeRouteRequest, TimeRouteResponse};
 use crate::dual_core::{DualCoreGraph, NodeId};
+use crate::profiles::TransportProfile;
+use crate::sharded_caching::AutoRebalancingCacheManager;
+use crate::thread_architecture::{ThreadArchitectureSystem, ThreadPoolConfig};
+use crate::time_routing::{TimeBasedRouter, TimeRouteRequest, TimeRouteResponse};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -29,9 +29,9 @@ pub struct LoadTestConfig {
 impl Default for LoadTestConfig {
     fn default() -> Self {
         let mut profile_distribution = HashMap::new();
-        profile_distribution.insert(TransportProfile::Car, 0.6);      // 60% car routes
+        profile_distribution.insert(TransportProfile::Car, 0.6); // 60% car routes
         profile_distribution.insert(TransportProfile::Bicycle, 0.25); // 25% bike routes
-        profile_distribution.insert(TransportProfile::Foot, 0.15);    // 15% foot routes
+        profile_distribution.insert(TransportProfile::Foot, 0.15); // 15% foot routes
 
         Self {
             duration_seconds: 60,
@@ -50,7 +50,7 @@ impl Default for LoadTestConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteComplexityMix {
     pub short_routes_percent: f64,   // <5km routes
-    pub medium_routes_percent: f64,  // 5-20km routes  
+    pub medium_routes_percent: f64,  // 5-20km routes
     pub long_routes_percent: f64,    // >20km routes
     pub complex_routes_percent: f64, // Routes with turn restrictions
 }
@@ -58,9 +58,9 @@ pub struct RouteComplexityMix {
 impl Default for RouteComplexityMix {
     fn default() -> Self {
         Self {
-            short_routes_percent: 0.5,   // 50% short routes
-            medium_routes_percent: 0.35, // 35% medium routes
-            long_routes_percent: 0.1,    // 10% long routes
+            short_routes_percent: 0.5,    // 50% short routes
+            medium_routes_percent: 0.35,  // 35% medium routes
+            long_routes_percent: 0.1,     // 10% long routes
             complex_routes_percent: 0.05, // 5% complex routes
         }
     }
@@ -117,11 +117,7 @@ pub struct LoadTestClient {
 }
 
 impl LoadTestClient {
-    pub fn new(
-        client_id: usize,
-        config: LoadTestConfig,
-        router: Arc<TimeBasedRouter>,
-    ) -> Self {
+    pub fn new(client_id: usize, config: LoadTestConfig, router: Arc<TimeBasedRouter>) -> Self {
         Self {
             client_id,
             config,
@@ -143,7 +139,7 @@ impl LoadTestClient {
         while start_time.elapsed() < duration {
             let request = self.generate_request();
             let response = self.execute_request(request).await;
-            
+
             if response_tx.send(response).is_err() {
                 break; // Receiver dropped
             }
@@ -195,7 +191,9 @@ impl LoadTestClient {
             RouteComplexity::Short
         } else if rand_val < mix.short_routes_percent + mix.medium_routes_percent {
             RouteComplexity::Medium
-        } else if rand_val < mix.short_routes_percent + mix.medium_routes_percent + mix.long_routes_percent {
+        } else if rand_val
+            < mix.short_routes_percent + mix.medium_routes_percent + mix.long_routes_percent
+        {
             RouteComplexity::Long
         } else {
             RouteComplexity::Complex
@@ -208,24 +206,36 @@ impl LoadTestClient {
             RouteComplexity::Short => {
                 // Short routes: nodes close together
                 let base = (rand::random::<u64>() % 1000) + 1;
-                (NodeId::new(base), NodeId::new(base + 1 + (rand::random::<u64>() % 10)))
+                (
+                    NodeId::new(base),
+                    NodeId::new(base + 1 + (rand::random::<u64>() % 10)),
+                )
             }
             RouteComplexity::Medium => {
                 // Medium routes: nodes moderately far apart
                 let base = (rand::random::<u64>() % 1000) + 1;
-                (NodeId::new(base), NodeId::new(base + 10 + (rand::random::<u64>() % 50)))
+                (
+                    NodeId::new(base),
+                    NodeId::new(base + 10 + (rand::random::<u64>() % 50)),
+                )
             }
             RouteComplexity::Long => {
                 // Long routes: nodes far apart
                 let base = (rand::random::<u64>() % 1000) + 1;
-                (NodeId::new(base), NodeId::new(base + 100 + (rand::random::<u64>() % 500)))
+                (
+                    NodeId::new(base),
+                    NodeId::new(base + 100 + (rand::random::<u64>() % 500)),
+                )
             }
             RouteComplexity::Complex => {
                 // Complex routes: specific nodes known to have turn restrictions
                 let complex_nodes = [123, 456, 789, 1011, 1213]; // Predefined complex nodes
                 let start_idx = rand::random::<usize>() % complex_nodes.len();
                 let end_idx = (start_idx + 1 + rand::random::<usize>()) % complex_nodes.len();
-                (NodeId::new(complex_nodes[start_idx]), NodeId::new(complex_nodes[end_idx]))
+                (
+                    NodeId::new(complex_nodes[start_idx]),
+                    NodeId::new(complex_nodes[end_idx]),
+                )
             }
         }
     }
@@ -233,7 +243,7 @@ impl LoadTestClient {
     /// Execute a routing request
     async fn execute_request(&self, request: LoadTestRequest) -> LoadTestResponse {
         let start_time = Instant::now();
-        
+
         let route_request = TimeRouteRequest {
             profile: request.profile,
             start_node: request.start_node,
@@ -263,7 +273,7 @@ impl LoadTestClient {
                     }
                     Ok(router.route(route_request))
                 }
-                Err(e) => Err(e)
+                Err(e) => Err(e),
             }
         };
 
@@ -299,7 +309,11 @@ pub struct LoadTestClientStats {
 impl LoadTestClientStats {
     pub fn new(client_id: usize) -> Self {
         let mut profile_stats = HashMap::new();
-        for profile in [TransportProfile::Car, TransportProfile::Bicycle, TransportProfile::Foot] {
+        for profile in [
+            TransportProfile::Car,
+            TransportProfile::Bicycle,
+            TransportProfile::Foot,
+        ] {
             profile_stats.insert(profile, ProfileClientStats::new());
         }
 
@@ -366,10 +380,7 @@ pub struct LoadTestOrchestrator {
 }
 
 impl LoadTestOrchestrator {
-    pub fn new(
-        config: LoadTestConfig,
-        dual_core: DualCoreGraph,
-    ) -> Result<Self, String> {
+    pub fn new(config: LoadTestConfig, dual_core: DualCoreGraph) -> Result<Self, String> {
         let thread_config = ThreadPoolConfig::default();
         let mut thread_architecture = ThreadArchitectureSystem::new(thread_config);
         thread_architecture.start()?;
@@ -388,24 +399,19 @@ impl LoadTestOrchestrator {
     /// Run comprehensive load test
     pub async fn run_load_test(&mut self) -> Result<LoadTestReport, String> {
         let start_time = Instant::now();
-        
+
         // Set up response collection
         let (response_tx, mut response_rx) = mpsc::unbounded_channel();
-        
+
         // Spawn clients
         let mut client_handles = Vec::new();
         for client_id in 0..self.config.concurrent_clients {
-            let client = LoadTestClient::new(
-                client_id,
-                self.config.clone(),
-                Arc::clone(&self.router),
-            );
-            
+            let client =
+                LoadTestClient::new(client_id, self.config.clone(), Arc::clone(&self.router));
+
             let tx = response_tx.clone();
-            let handle = tokio::spawn(async move {
-                client.run(tx).await
-            });
-            
+            let handle = tokio::spawn(async move { client.run(tx).await });
+
             client_handles.push(handle);
         }
 
@@ -432,14 +438,17 @@ impl LoadTestOrchestrator {
         }
 
         // Collect all responses
-        let responses = response_collection_handle.await
+        let responses = response_collection_handle
+            .await
             .map_err(|e| format!("Response collection error: {}", e))?;
 
         let total_duration = start_time.elapsed();
 
         // Generate comprehensive report
-        let report = self.generate_report(client_stats, responses, total_duration).await?;
-        
+        let report = self
+            .generate_report(client_stats, responses, total_duration)
+            .await?;
+
         Ok(report)
     }
 
@@ -450,9 +459,9 @@ impl LoadTestOrchestrator {
         responses: Vec<LoadTestResponse>,
         total_duration: Duration,
     ) -> Result<LoadTestReport, String> {
-        
         // Calculate latency percentiles
-        let mut latencies: Vec<u64> = responses.iter()
+        let mut latencies: Vec<u64> = responses
+            .iter()
             .map(|r| r.latency.as_millis() as u64)
             .collect();
         latencies.sort();
@@ -471,50 +480,76 @@ impl LoadTestOrchestrator {
 
         // Profile breakdown
         let mut profile_breakdown = HashMap::new();
-        for profile in [TransportProfile::Car, TransportProfile::Bicycle, TransportProfile::Foot] {
-            let profile_responses: Vec<_> = responses.iter()
-                .filter(|r| r.profile == profile)
-                .collect();
-            
-            let profile_latencies: Vec<u64> = profile_responses.iter()
+        for profile in [
+            TransportProfile::Car,
+            TransportProfile::Bicycle,
+            TransportProfile::Foot,
+        ] {
+            let profile_responses: Vec<_> =
+                responses.iter().filter(|r| r.profile == profile).collect();
+
+            let profile_latencies: Vec<u64> = profile_responses
+                .iter()
                 .map(|r| r.latency.as_millis() as u64)
                 .collect();
-            
-            let profile_successes = profile_responses.iter()
+
+            let profile_successes = profile_responses
+                .iter()
                 .filter(|r| r.response.is_ok())
                 .count();
 
-            profile_breakdown.insert(profile, ProfileLoadTestStats {
-                total_requests: profile_responses.len(),
-                successful_requests: profile_successes,
-                success_rate: if profile_responses.len() > 0 {
-                    profile_successes as f64 / profile_responses.len() as f64
-                } else { 0.0 },
-                average_latency_ms: if !profile_latencies.is_empty() {
-                    profile_latencies.iter().sum::<u64>() as f64 / profile_latencies.len() as f64
-                } else { 0.0 },
-                latency_p95_ms: percentile(&profile_latencies, 0.95),
-            });
+            profile_breakdown.insert(
+                profile,
+                ProfileLoadTestStats {
+                    total_requests: profile_responses.len(),
+                    successful_requests: profile_successes,
+                    success_rate: if profile_responses.len() > 0 {
+                        profile_successes as f64 / profile_responses.len() as f64
+                    } else {
+                        0.0
+                    },
+                    average_latency_ms: if !profile_latencies.is_empty() {
+                        profile_latencies.iter().sum::<u64>() as f64
+                            / profile_latencies.len() as f64
+                    } else {
+                        0.0
+                    },
+                    latency_p95_ms: percentile(&profile_latencies, 0.95),
+                },
+            );
         }
 
         // Complexity breakdown
         let mut complexity_breakdown = HashMap::new();
-        for complexity in [RouteComplexity::Short, RouteComplexity::Medium, RouteComplexity::Long, RouteComplexity::Complex] {
-            let complexity_responses: Vec<_> = responses.iter()
+        for complexity in [
+            RouteComplexity::Short,
+            RouteComplexity::Medium,
+            RouteComplexity::Long,
+            RouteComplexity::Complex,
+        ] {
+            let complexity_responses: Vec<_> = responses
+                .iter()
                 .filter(|r| r.complexity == complexity)
                 .collect();
-            
-            let complexity_latencies: Vec<u64> = complexity_responses.iter()
+
+            let complexity_latencies: Vec<u64> = complexity_responses
+                .iter()
                 .map(|r| r.latency.as_millis() as u64)
                 .collect();
 
-            complexity_breakdown.insert(complexity, ComplexityLoadTestStats {
-                total_requests: complexity_responses.len(),
-                average_latency_ms: if !complexity_latencies.is_empty() {
-                    complexity_latencies.iter().sum::<u64>() as f64 / complexity_latencies.len() as f64
-                } else { 0.0 },
-                latency_p95_ms: percentile(&complexity_latencies, 0.95),
-            });
+            complexity_breakdown.insert(
+                complexity,
+                ComplexityLoadTestStats {
+                    total_requests: complexity_responses.len(),
+                    average_latency_ms: if !complexity_latencies.is_empty() {
+                        complexity_latencies.iter().sum::<u64>() as f64
+                            / complexity_latencies.len() as f64
+                    } else {
+                        0.0
+                    },
+                    latency_p95_ms: percentile(&complexity_latencies, 0.95),
+                },
+            );
         }
 
         // Check if targets were met
@@ -593,7 +628,7 @@ fn percentile(sorted_values: &[u64], p: f64) -> u64 {
     if sorted_values.is_empty() {
         return 0;
     }
-    
+
     let index = (p * (sorted_values.len() - 1) as f64) as usize;
     sorted_values[index.min(sorted_values.len() - 1)]
 }
@@ -609,7 +644,10 @@ impl AxumStreamingHandler {
     }
 
     /// Convert routing response to streaming chunks
-    pub fn create_streaming_response(&self, response: TimeRouteResponse) -> Vec<RoutingStreamChunk> {
+    pub fn create_streaming_response(
+        &self,
+        response: TimeRouteResponse,
+    ) -> Vec<RoutingStreamChunk> {
         // Serialize the response
         let serialized = serde_json::to_vec(&response).unwrap_or_default();
         let total_size = serialized.len();
@@ -635,12 +673,12 @@ impl AxumStreamingHandler {
         chunk_tx: mpsc::UnboundedSender<RoutingStreamChunk>,
     ) -> Result<(), String> {
         let chunks = self.create_streaming_response(response);
-        
+
         for chunk in chunks {
             if chunk_tx.send(chunk).is_err() {
                 return Err("Receiver dropped".to_string());
             }
-            
+
             // Small delay between chunks to simulate real streaming
             sleep(Duration::from_millis(1)).await;
         }
@@ -652,12 +690,16 @@ impl AxumStreamingHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dual_core::{GraphNode, TimeEdge, NavEdge, TimeWeight};
+    use crate::dual_core::{GraphNode, NavEdge, TimeEdge, TimeWeight};
     use crate::profiles::EdgeId;
-    use butterfly_geometry::{Point2D, SnapSkeleton, NavigationGeometry};
+    use butterfly_geometry::{NavigationGeometry, Point2D, SnapSkeleton};
 
     fn create_test_dual_core() -> DualCoreGraph {
-        let profiles = vec![TransportProfile::Car, TransportProfile::Bicycle, TransportProfile::Foot];
+        let profiles = vec![
+            TransportProfile::Car,
+            TransportProfile::Bicycle,
+            TransportProfile::Foot,
+        ];
         let mut dual_core = DualCoreGraph::new(profiles);
 
         // Add test nodes
@@ -669,20 +711,30 @@ mod tests {
 
         // Add test edges
         for i in 1..=5 {
-            let mut time_edge = TimeEdge::new(EdgeId(i), NodeId::new(i as u64), NodeId::new((i + 1) as u64));
+            let mut time_edge = TimeEdge::new(
+                EdgeId(i),
+                NodeId::new(i as u64),
+                NodeId::new((i + 1) as u64),
+            );
             time_edge.add_weight(TransportProfile::Car, TimeWeight::new(60.0, 1000.0));
             time_edge.add_weight(TransportProfile::Bicycle, TimeWeight::new(120.0, 1000.0));
             time_edge.add_weight(TransportProfile::Foot, TimeWeight::new(600.0, 1000.0));
             dual_core.time_graph.add_edge(time_edge);
 
             let snap_skeleton = SnapSkeleton::new(
-                vec![Point2D::new(i as f64, i as f64), Point2D::new((i + 1) as f64, (i + 1) as f64)],
+                vec![
+                    Point2D::new(i as f64, i as f64),
+                    Point2D::new((i + 1) as f64, (i + 1) as f64),
+                ],
                 vec![],
                 1000.0,
                 5.0,
             );
             let nav_geometry = NavigationGeometry::new(
-                vec![Point2D::new(i as f64, i as f64), Point2D::new((i + 1) as f64, (i + 1) as f64)],
+                vec![
+                    Point2D::new(i as f64, i as f64),
+                    Point2D::new((i + 1) as f64, (i + 1) as f64),
+                ],
                 vec![],
                 500.0,
                 0.5,
@@ -713,7 +765,7 @@ mod tests {
         assert_eq!(config.concurrent_clients, 50);
         assert_eq!(config.requests_per_second, 100.0);
         assert!(config.enable_streaming);
-        
+
         // Check profile distribution sums to 1.0
         let total_weight: f64 = config.profile_distribution.values().sum();
         assert!((total_weight - 1.0).abs() < 0.001);
@@ -722,8 +774,10 @@ mod tests {
     #[test]
     fn test_route_complexity_mix() {
         let mix = RouteComplexityMix::default();
-        let total = mix.short_routes_percent + mix.medium_routes_percent + 
-                   mix.long_routes_percent + mix.complex_routes_percent;
+        let total = mix.short_routes_percent
+            + mix.medium_routes_percent
+            + mix.long_routes_percent
+            + mix.complex_routes_percent;
         assert!((total - 1.0).abs() < 0.001);
     }
 
@@ -732,7 +786,7 @@ mod tests {
         let dual_core = create_test_dual_core();
         let router = Arc::new(TimeBasedRouter::new(dual_core).unwrap());
         let config = LoadTestConfig::default();
-        
+
         let client = LoadTestClient::new(0, config, router);
         assert_eq!(client.client_id, 0);
         assert_eq!(client.stats.lock().unwrap().client_id, 0);
@@ -744,11 +798,20 @@ mod tests {
         let router = Arc::new(TimeBasedRouter::new(dual_core).unwrap());
         let config = LoadTestConfig::default();
         let client = LoadTestClient::new(0, config, router);
-        
+
         let request = client.generate_request();
         assert_eq!(request.id, 0);
-        assert!(matches!(request.profile, TransportProfile::Car | TransportProfile::Bicycle | TransportProfile::Foot));
-        assert!(matches!(request.complexity, RouteComplexity::Short | RouteComplexity::Medium | RouteComplexity::Long | RouteComplexity::Complex));
+        assert!(matches!(
+            request.profile,
+            TransportProfile::Car | TransportProfile::Bicycle | TransportProfile::Foot
+        ));
+        assert!(matches!(
+            request.complexity,
+            RouteComplexity::Short
+                | RouteComplexity::Medium
+                | RouteComplexity::Long
+                | RouteComplexity::Complex
+        ));
     }
 
     #[test]
@@ -757,19 +820,19 @@ mod tests {
         let router = Arc::new(TimeBasedRouter::new(dual_core).unwrap());
         let config = LoadTestConfig::default();
         let client = LoadTestClient::new(0, config, router);
-        
+
         // Generate many profiles and check distribution
         let mut profile_counts = HashMap::new();
         for _ in 0..1000 {
             let profile = client.select_random_profile();
             *profile_counts.entry(profile).or_insert(0) += 1;
         }
-        
+
         // Should have all three profiles
         assert!(profile_counts.contains_key(&TransportProfile::Car));
         assert!(profile_counts.contains_key(&TransportProfile::Bicycle));
         assert!(profile_counts.contains_key(&TransportProfile::Foot));
-        
+
         // Car should be most common (60% target)
         let car_count = profile_counts.get(&TransportProfile::Car).unwrap_or(&0);
         assert!(*car_count > 500); // Should be roughly 600, allow some variance
@@ -781,14 +844,14 @@ mod tests {
         let router = Arc::new(TimeBasedRouter::new(dual_core).unwrap());
         let config = LoadTestConfig::default();
         let client = LoadTestClient::new(0, config, router);
-        
+
         // Generate many complexities and check distribution
         let mut complexity_counts = HashMap::new();
         for _ in 0..1000 {
             let complexity = client.select_random_complexity();
             *complexity_counts.entry(complexity).or_insert(0) += 1;
         }
-        
+
         // Short routes should be most common (50% target)
         let short_count = complexity_counts.get(&RouteComplexity::Short).unwrap_or(&0);
         assert!(*short_count > 400); // Should be roughly 500, allow some variance
@@ -800,15 +863,23 @@ mod tests {
         let router = Arc::new(TimeBasedRouter::new(dual_core).unwrap());
         let config = LoadTestConfig::default();
         let client = LoadTestClient::new(0, config, router);
-        
+
         // Test short route generation
         let (start, end) = client.generate_route_nodes(RouteComplexity::Short);
-        let distance = if end.0 > start.0 { end.0 - start.0 } else { start.0 - end.0 };
+        let distance = if end.0 > start.0 {
+            end.0 - start.0
+        } else {
+            start.0 - end.0
+        };
         assert!(distance <= 11); // Should be close together
-        
+
         // Test long route generation
         let (start, end) = client.generate_route_nodes(RouteComplexity::Long);
-        let distance = if end.0 > start.0 { end.0 - start.0 } else { start.0 - end.0 };
+        let distance = if end.0 > start.0 {
+            end.0 - start.0
+        } else {
+            start.0 - end.0
+        };
         assert!(distance >= 100); // Should be far apart
     }
 
@@ -819,11 +890,11 @@ mod tests {
         assert_eq!(stats.total_requests, 0);
         assert_eq!(stats.success_rate(), 0.0);
         assert_eq!(stats.average_latency_ms(), 0.0);
-        
+
         // Record some requests
         stats.record_request(TransportProfile::Car, Duration::from_millis(100), true);
         stats.record_request(TransportProfile::Car, Duration::from_millis(200), false);
-        
+
         assert_eq!(stats.total_requests, 2);
         assert_eq!(stats.successful_requests, 1);
         assert_eq!(stats.success_rate(), 0.5);
@@ -833,12 +904,12 @@ mod tests {
     #[test]
     fn test_percentile_calculation() {
         let values = vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
-        
+
         assert_eq!(percentile(&values, 0.0), 10);
         assert_eq!(percentile(&values, 0.5), 50);
         assert_eq!(percentile(&values, 0.9), 90);
         assert_eq!(percentile(&values, 1.0), 100);
-        
+
         // Empty array
         assert_eq!(percentile(&[], 0.5), 0);
     }
@@ -846,7 +917,7 @@ mod tests {
     #[test]
     fn test_axum_streaming_handler() {
         let handler = AxumStreamingHandler::new(100);
-        
+
         // Create a test response
         let request = TimeRouteRequest {
             profile: TransportProfile::Car,
@@ -880,10 +951,10 @@ mod tests {
             },
             route_quality: crate::time_routing::RouteQuality::Excellent,
         };
-        
+
         let chunks = handler.create_streaming_response(response);
         assert!(!chunks.is_empty());
-        
+
         // Check chunk properties
         for (i, chunk) in chunks.iter().enumerate() {
             assert_eq!(chunk.chunk_id, i);
@@ -902,7 +973,7 @@ mod tests {
             requests_per_second: 5.0,
             ..LoadTestConfig::default()
         };
-        
+
         let orchestrator = LoadTestOrchestrator::new(config, dual_core);
         assert!(orchestrator.is_ok());
     }
@@ -911,7 +982,7 @@ mod tests {
     async fn test_streaming_response() {
         let handler = AxumStreamingHandler::new(50);
         let (tx, mut rx) = mpsc::unbounded_channel();
-        
+
         let request = TimeRouteRequest {
             profile: TransportProfile::Bicycle,
             start_node: NodeId::new(1),
@@ -944,11 +1015,10 @@ mod tests {
             },
             route_quality: crate::time_routing::RouteQuality::Good,
         };
-        
-        let stream_handle = tokio::spawn(async move {
-            handler.stream_response(response, tx).await
-        });
-        
+
+        let stream_handle =
+            tokio::spawn(async move { handler.stream_response(response, tx).await });
+
         let mut chunks_received = 0;
         while let Some(chunk) = rx.recv().await {
             chunks_received += 1;
@@ -957,7 +1027,7 @@ mod tests {
                 break;
             }
         }
-        
+
         assert!(chunks_received > 0);
         assert!(stream_handle.await.unwrap().is_ok());
     }

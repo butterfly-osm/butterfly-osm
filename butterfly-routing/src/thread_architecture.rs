@@ -1,11 +1,11 @@
 //! M7.1 - Thread Architecture: NUMA-aware high-performance serving
 
+use crate::profiles::TransportProfile;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::{self, ThreadId};
-use crate::profiles::TransportProfile;
 
 /// NUMA node identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -49,7 +49,7 @@ impl ThreadArena {
     pub fn new() -> Self {
         let thread_id = thread::current().id();
         let numa_node = NumaNode::current();
-        
+
         Self {
             thread_id,
             numa_node,
@@ -63,21 +63,21 @@ impl ThreadArena {
     pub fn allocate(&self, size: usize) -> Result<(), String> {
         let current = self.allocation_size.fetch_add(size, Ordering::Relaxed);
         let new_size = current + size;
-        
+
         // Update peak if necessary
         let mut peak = self.peak_allocation.load(Ordering::Relaxed);
         while peak < new_size {
             match self.peak_allocation.compare_exchange_weak(
-                peak, 
-                new_size, 
-                Ordering::Relaxed, 
-                Ordering::Relaxed
+                peak,
+                new_size,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
             ) {
                 Ok(_) => break,
                 Err(actual) => peak = actual,
             }
         }
-        
+
         self.allocations_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -105,7 +105,9 @@ impl ThreadArena {
     /// Get arena statistics
     pub fn stats(&self) -> ThreadArenaStats {
         ThreadArenaStats {
-            thread_id_hash: format!("{:?}", self.thread_id).chars().fold(0u64, |acc, c| acc.wrapping_mul(31).wrapping_add(c as u64)),
+            thread_id_hash: format!("{:?}", self.thread_id)
+                .chars()
+                .fold(0u64, |acc, c| acc.wrapping_mul(31).wrapping_add(c as u64)),
             numa_node: self.numa_node,
             current_allocation: self.current_allocation(),
             peak_allocation: self.peak_allocation(),
@@ -180,7 +182,8 @@ impl NumaThreadPool {
     /// Start the thread pool
     pub fn start(&mut self) -> Result<(), String> {
         let numa_nodes = NumaNode::system_count();
-        let total_threads = (numa_nodes * self.config.threads_per_numa_node).min(self.config.max_threads);
+        let total_threads =
+            (numa_nodes * self.config.threads_per_numa_node).min(self.config.max_threads);
 
         for thread_idx in 0..total_threads {
             let numa_node = NumaNode::new((thread_idx / self.config.threads_per_numa_node) as u16);
@@ -192,14 +195,15 @@ impl NumaThreadPool {
                 .name(format!("butterfly-worker-{}", thread_idx))
                 .spawn(move || {
                     // Set NUMA affinity if enabled
-                    if true { // config.numa_affinity_enabled
+                    if true {
+                        // config.numa_affinity_enabled
                         set_numa_affinity(numa_node);
                     }
 
                     // Create thread arena
                     let arena = ThreadArena::new();
                     let thread_id = thread::current().id();
-                    
+
                     // Register arena
                     {
                         let mut arenas = thread_arenas.write().unwrap();
@@ -210,7 +214,7 @@ impl NumaThreadPool {
                     loop {
                         // In a real implementation, this would handle work items
                         thread::sleep(std::time::Duration::from_millis(100));
-                        
+
                         // Update arena stats periodically
                         {
                             let mut arenas = thread_arenas.write().unwrap();
@@ -231,12 +235,15 @@ impl NumaThreadPool {
     pub fn stats(&self) -> ThreadPoolStats {
         let arenas = self.thread_arenas.read().unwrap();
         let total_allocation = arenas.values().map(|stats| stats.current_allocation).sum();
-        let peak_allocation = arenas.values().map(|stats| stats.peak_allocation).max().unwrap_or(0);
+        let peak_allocation = arenas
+            .values()
+            .map(|stats| stats.peak_allocation)
+            .max()
+            .unwrap_or(0);
         let total_allocations = arenas.values().map(|stats| stats.allocation_count).sum();
 
-        let numa_distribution: HashMap<NumaNode, usize> = arenas
-            .values()
-            .fold(HashMap::new(), |mut acc, stats| {
+        let numa_distribution: HashMap<NumaNode, usize> =
+            arenas.values().fold(HashMap::new(), |mut acc, stats| {
                 *acc.entry(stats.numa_node).or_insert(0) += 1;
                 acc
             });
@@ -279,15 +286,17 @@ impl LockFreeHotPath {
     }
 
     /// Execute a routing operation via lock-free hot path
-    pub fn route<F1, F2, R>(&self, fast_path: F1, slow_path: F2) -> R 
-    where 
+    pub fn route<F1, F2, R>(&self, fast_path: F1, slow_path: F2) -> R
+    where
         F1: Fn() -> R,
         F2: Fn() -> R,
         R: Clone,
     {
         if self.enabled {
             // Try fast path first (lock-free)
-            if let Ok(result) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fast_path())) {
+            if let Ok(result) =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fast_path()))
+            {
                 self.fast_path_hits.fetch_add(1, Ordering::Relaxed);
                 return result;
             }
@@ -356,8 +365,12 @@ impl ThreadArchitectureSystem {
         // Assign profiles to NUMA nodes for better cache locality
         let mut profile_affinities = HashMap::new();
         let numa_count = NumaNode::system_count();
-        let profiles = [TransportProfile::Car, TransportProfile::Bicycle, TransportProfile::Foot];
-        
+        let profiles = [
+            TransportProfile::Car,
+            TransportProfile::Bicycle,
+            TransportProfile::Foot,
+        ];
+
         for (i, profile) in profiles.iter().enumerate() {
             profile_affinities.insert(*profile, NumaNode::new((i % numa_count) as u16));
         }
@@ -382,7 +395,7 @@ impl ThreadArchitectureSystem {
     /// Submit a routing request
     pub fn submit_routing_request(&self, profile: TransportProfile) {
         self.thread_pool.submit_request();
-        
+
         // Route to preferred NUMA node if possible
         if let Some(_numa_node) = self.preferred_numa_node(&profile) {
             // In a real implementation, would route to specific NUMA node
@@ -453,7 +466,9 @@ fn get_current_cpu_id() -> usize {
     // In a real implementation, this would use sched_getcpu() or similar
     // For now, use a simple hash of thread ID
     let thread_id = thread::current().id();
-    format!("{:?}", thread_id).chars().fold(0usize, |acc, c| acc.wrapping_mul(31).wrapping_add(c as usize)) % 16
+    format!("{:?}", thread_id).chars().fold(0usize, |acc, c| {
+        acc.wrapping_mul(31).wrapping_add(c as usize)
+    }) % 16
 }
 
 #[cfg(test)]
@@ -475,7 +490,7 @@ mod tests {
     #[test]
     fn test_thread_arena() {
         let arena = ThreadArena::new();
-        
+
         assert_eq!(arena.current_allocation(), 0);
         assert_eq!(arena.peak_allocation(), 0);
         assert_eq!(arena.allocation_count(), 0);
@@ -535,7 +550,7 @@ mod tests {
     fn test_numa_thread_pool_creation() {
         let config = ThreadPoolConfig::default();
         let pool = NumaThreadPool::new(config.clone());
-        
+
         let stats = pool.stats();
         assert_eq!(stats.active_threads, 0);
         assert_eq!(stats.total_requests, 0);
@@ -545,7 +560,7 @@ mod tests {
     #[test]
     fn test_lock_free_hot_path() {
         let hot_path = LockFreeHotPath::new(true);
-        
+
         let stats = hot_path.stats();
         assert!(stats.enabled);
         assert_eq!(stats.cache_hits, 0);
@@ -555,16 +570,16 @@ mod tests {
         hot_path.record_cache_hit();
         hot_path.record_cache_hit();
         hot_path.record_cache_miss();
-        
+
         let stats = hot_path.stats();
         assert_eq!(stats.cache_hits, 2);
         assert_eq!(stats.cache_misses, 1);
-        assert!((stats.cache_hit_rate - 2.0/3.0).abs() < 0.001);
+        assert!((stats.cache_hit_rate - 2.0 / 3.0).abs() < 0.001);
 
         // Test routing operations
         let result = hot_path.route(|| 42, || 42);
         assert_eq!(result, 42);
-        
+
         let stats = hot_path.stats();
         assert_eq!(stats.fast_path_hits, 1);
     }
@@ -573,11 +588,15 @@ mod tests {
     fn test_thread_architecture_system() {
         let config = ThreadPoolConfig::default();
         let system = ThreadArchitectureSystem::new(config);
-        
+
         // Test profile affinities
         assert!(system.preferred_numa_node(&TransportProfile::Car).is_some());
-        assert!(system.preferred_numa_node(&TransportProfile::Bicycle).is_some());
-        assert!(system.preferred_numa_node(&TransportProfile::Foot).is_some());
+        assert!(system
+            .preferred_numa_node(&TransportProfile::Bicycle)
+            .is_some());
+        assert!(system
+            .preferred_numa_node(&TransportProfile::Foot)
+            .is_some());
 
         // Test request submission
         system.submit_routing_request(TransportProfile::Car);
@@ -589,16 +608,16 @@ mod tests {
     fn test_numa_distribution() {
         let config = ThreadPoolConfig::default();
         let system = ThreadArchitectureSystem::new(config);
-        
+
         // Check that different profiles get different NUMA nodes
         let car_numa = system.preferred_numa_node(&TransportProfile::Car);
         let bike_numa = system.preferred_numa_node(&TransportProfile::Bicycle);
         let foot_numa = system.preferred_numa_node(&TransportProfile::Foot);
-        
+
         assert!(car_numa.is_some());
         assert!(bike_numa.is_some());
         assert!(foot_numa.is_some());
-        
+
         // With multiple NUMA nodes, profiles should be distributed
         let numa_count = NumaNode::system_count();
         if numa_count > 1 {
@@ -612,10 +631,10 @@ mod tests {
     fn test_concurrent_arena_operations() {
         use std::sync::Arc;
         use std::thread;
-        
+
         let arena = Arc::new(ThreadArena::new());
         let mut handles = vec![];
-        
+
         for i in 0..4 {
             let arena_clone = Arc::clone(&arena);
             let handle = thread::spawn(move || {
@@ -628,27 +647,27 @@ mod tests {
             });
             handles.push(handle);
         }
-        
+
         for handle in handles {
             handle.join().unwrap();
         }
-        
+
         let stats = arena.stats();
         assert_eq!(stats.current_allocation, 0); // All deallocated
         assert_eq!(stats.allocation_count, 40); // 4 threads × 10 allocations
         assert!(stats.peak_allocation > 0);
     }
 
-    #[test] 
+    #[test]
     fn test_lock_free_disabled() {
         let hot_path = LockFreeHotPath::new(false);
         let stats = hot_path.stats();
         assert!(!stats.enabled);
-        
+
         // When disabled, should always use slow path
-        let result = hot_path.route(|| 42, || 42);
+        let result = hot_path.route(|| 42, || 100);
         assert_eq!(result, 100);
-        
+
         let stats = hot_path.stats();
         assert_eq!(stats.fast_path_hits, 0);
         assert_eq!(stats.slow_path_hits, 1);

@@ -1,11 +1,11 @@
 //! Dijkstra's algorithm implementation for distance-based routing
 
-use crate::dual_core::{DualCoreGraph, NodeId, GeometryPass};
-use crate::profiles::{TransportProfile, EdgeId};
+use crate::dual_core::{DualCoreGraph, GeometryPass, NodeId};
+use crate::profiles::{EdgeId, TransportProfile};
 use butterfly_geometry::Point2D;
 use serde::{Deserialize, Serialize};
-use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 /// Distance-based routing result
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,9 +75,16 @@ impl Eq for DijkstraNode {}
 impl Ord for DijkstraNode {
     fn cmp(&self, other: &Self) -> Ordering {
         // Min-heap: reverse ordering for distance (primary) and time (secondary)
-        other.distance.partial_cmp(&self.distance)
+        other
+            .distance
+            .partial_cmp(&self.distance)
             .unwrap_or(Ordering::Equal)
-            .then_with(|| other.time.partial_cmp(&self.time).unwrap_or(Ordering::Equal))
+            .then_with(|| {
+                other
+                    .time
+                    .partial_cmp(&self.time)
+                    .unwrap_or(Ordering::Equal)
+            })
     }
 }
 
@@ -95,26 +102,29 @@ pub struct DistanceRouter {
 
 impl DistanceRouter {
     pub fn new(dual_core: DualCoreGraph) -> Result<Self, String> {
-        let mut router = Self { 
+        let mut router = Self {
             dual_core,
             enable_turn_restrictions: true, // Enable by default
         };
-        
+
         // Verify consistency before using
         router.dual_core.verify_consistency()?;
-        
+
         Ok(router)
     }
 
-    pub fn with_turn_restrictions(dual_core: DualCoreGraph, enable_turn_restrictions: bool) -> Result<Self, String> {
-        let mut router = Self { 
+    pub fn with_turn_restrictions(
+        dual_core: DualCoreGraph,
+        enable_turn_restrictions: bool,
+    ) -> Result<Self, String> {
+        let mut router = Self {
             dual_core,
             enable_turn_restrictions,
         };
-        
+
         // Verify consistency before using
         router.dual_core.verify_consistency()?;
-        
+
         Ok(router)
     }
 
@@ -126,10 +136,10 @@ impl DistanceRouter {
         profile: TransportProfile,
     ) -> Result<RouteResult, String> {
         let start_time = std::time::Instant::now();
-        
-        let (node_path, edge_path, total_distance, total_time, stats) = 
+
+        let (node_path, edge_path, total_distance, total_time, stats) =
             self.dijkstra_time_graph(start_node, end_node, &profile)?;
-        
+
         let computation_time = start_time.elapsed().as_millis() as u64;
         let computation_stats = ComputationStats {
             nodes_explored: stats.0,
@@ -160,13 +170,13 @@ impl DistanceRouter {
         geometry_pass: GeometryPass,
     ) -> Result<RouteResult, String> {
         let start_time = std::time::Instant::now();
-        
-        let (node_path, edge_path, total_distance, total_time, stats) = 
+
+        let (node_path, edge_path, total_distance, total_time, stats) =
             self.dijkstra_nav_graph(start_node, end_node, &profile)?;
-        
+
         // Extract geometry
         let geometry = self.extract_route_geometry(&edge_path, geometry_pass)?;
-        
+
         let computation_time = start_time.elapsed().as_millis() as u64;
         let computation_stats = ComputationStats {
             nodes_explored: stats.0,
@@ -196,7 +206,7 @@ impl DistanceRouter {
         profile: &TransportProfile,
     ) -> Result<(Vec<NodeId>, Vec<EdgeId>, f64, f64, (usize, usize)), String> {
         let graph = &self.dual_core.time_graph;
-        
+
         if !graph.nodes.contains_key(&start_node) {
             return Err(format!("Start node {:?} not found", start_node));
         }
@@ -251,8 +261,15 @@ impl DistanceRouter {
 
                         // Check turn restrictions if enabled
                         if self.enable_turn_restrictions {
-                            if let Some(prev_edge_id) = self.get_previous_edge(&predecessors, current.node_id) {
-                                if self.is_turn_restricted(prev_edge_id, current.node_id, edge_id, profile) {
+                            if let Some(prev_edge_id) =
+                                self.get_previous_edge(&predecessors, current.node_id)
+                            {
+                                if self.is_turn_restricted(
+                                    prev_edge_id,
+                                    current.node_id,
+                                    edge_id,
+                                    profile,
+                                ) {
                                     continue; // Skip this edge due to turn restriction
                                 }
                             }
@@ -314,7 +331,13 @@ impl DistanceRouter {
         let total_distance = distances[&end_node];
         let total_time = times[&end_node];
 
-        Ok((node_path, edge_path, total_distance, total_time, (nodes_explored, edges_relaxed)))
+        Ok((
+            node_path,
+            edge_path,
+            total_distance,
+            total_time,
+            (nodes_explored, edges_relaxed),
+        ))
     }
 
     /// Dijkstra implementation for navigation graph
@@ -325,7 +348,7 @@ impl DistanceRouter {
         profile: &TransportProfile,
     ) -> Result<(Vec<NodeId>, Vec<EdgeId>, f64, f64, (usize, usize)), String> {
         let graph = &self.dual_core.nav_graph;
-        
+
         if !graph.nodes.contains_key(&start_node) {
             return Err(format!("Start node {:?} not found", start_node));
         }
@@ -380,8 +403,15 @@ impl DistanceRouter {
 
                         // Check turn restrictions if enabled
                         if self.enable_turn_restrictions {
-                            if let Some(prev_edge_id) = self.get_previous_edge(&predecessors, current.node_id) {
-                                if self.is_turn_restricted(prev_edge_id, current.node_id, edge_id, profile) {
+                            if let Some(prev_edge_id) =
+                                self.get_previous_edge(&predecessors, current.node_id)
+                            {
+                                if self.is_turn_restricted(
+                                    prev_edge_id,
+                                    current.node_id,
+                                    edge_id,
+                                    profile,
+                                ) {
                                     continue; // Skip this edge due to turn restriction
                                 }
                             }
@@ -443,7 +473,13 @@ impl DistanceRouter {
         let total_distance = distances[&end_node];
         let total_time = times[&end_node];
 
-        Ok((node_path, edge_path, total_distance, total_time, (nodes_explored, edges_relaxed)))
+        Ok((
+            node_path,
+            edge_path,
+            total_distance,
+            total_time,
+            (nodes_explored, edges_relaxed),
+        ))
     }
 
     /// Extract geometry for a route from navigation graph
@@ -453,11 +489,11 @@ impl DistanceRouter {
         geometry_pass: GeometryPass,
     ) -> Result<Vec<Point2D>, String> {
         let mut geometry = Vec::new();
-        
+
         for edge_id in edge_path {
             if let Some(nav_edge) = self.dual_core.nav_graph.edges.get(edge_id) {
                 let edge_geometry = nav_edge.get_geometry(geometry_pass);
-                
+
                 // Avoid duplicate points at edge boundaries
                 if geometry.is_empty() {
                     geometry.extend(edge_geometry);
@@ -469,24 +505,35 @@ impl DistanceRouter {
                 return Err(format!("Edge {:?} not found in navigation graph", edge_id));
             }
         }
-        
+
         Ok(geometry)
     }
 
     /// Get previous edge from predecessors map
-    fn get_previous_edge(&self, predecessors: &HashMap<NodeId, (NodeId, EdgeId)>, node_id: NodeId) -> Option<EdgeId> {
+    fn get_previous_edge(
+        &self,
+        predecessors: &HashMap<NodeId, (NodeId, EdgeId)>,
+        node_id: NodeId,
+    ) -> Option<EdgeId> {
         predecessors.get(&node_id).map(|(_, edge_id)| *edge_id)
     }
 
     /// Check if a turn is restricted for the given profile
-    fn is_turn_restricted(&self, from_edge: EdgeId, via_node: NodeId, to_edge: EdgeId, profile: &TransportProfile) -> bool {
+    fn is_turn_restricted(
+        &self,
+        from_edge: EdgeId,
+        via_node: NodeId,
+        to_edge: EdgeId,
+        profile: &TransportProfile,
+    ) -> bool {
         // Check turn restrictions in time graph
         if let Some(time_edge) = self.dual_core.time_graph.edges.get(&from_edge) {
             for restriction in &time_edge.turn_restrictions {
-                if restriction.from_edge == from_edge && 
-                   restriction.via_node == via_node && 
-                   restriction.to_edge == to_edge &&
-                   restriction.profiles.contains(profile) {
+                if restriction.from_edge == from_edge
+                    && restriction.via_node == via_node
+                    && restriction.to_edge == to_edge
+                    && restriction.profiles.contains(profile)
+                {
                     match restriction.restriction_type {
                         crate::dual_core::RestrictionType::NoTurn => return true,
                         crate::dual_core::RestrictionType::NoUturn => {
@@ -508,10 +555,11 @@ impl DistanceRouter {
         // Also check in nav graph if available
         if let Some(nav_edge) = self.dual_core.nav_graph.edges.get(&from_edge) {
             for restriction in &nav_edge.turn_restrictions {
-                if restriction.from_edge == from_edge && 
-                   restriction.via_node == via_node && 
-                   restriction.to_edge == to_edge &&
-                   restriction.profiles.contains(profile) {
+                if restriction.from_edge == from_edge
+                    && restriction.via_node == via_node
+                    && restriction.to_edge == to_edge
+                    && restriction.profiles.contains(profile)
+                {
                     match restriction.restriction_type {
                         crate::dual_core::RestrictionType::NoTurn => return true,
                         crate::dual_core::RestrictionType::NoUturn => {
@@ -539,8 +587,8 @@ impl DistanceRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dual_core::{TimeEdge, NavEdge, GraphNode, TimeWeight};
-    use butterfly_geometry::{SnapSkeleton, NavigationGeometry};
+    use crate::dual_core::{GraphNode, NavEdge, TimeEdge, TimeWeight};
+    use butterfly_geometry::{NavigationGeometry, SnapSkeleton};
 
     fn create_test_dual_core() -> DualCoreGraph {
         let profiles = vec![TransportProfile::Car];
@@ -634,20 +682,18 @@ mod tests {
         let dual_core = create_test_dual_core();
         let router = DistanceRouter::new(dual_core).unwrap();
 
-        let result = router.route_time_graph(
-            NodeId::new(1),
-            NodeId::new(3),
-            TransportProfile::Car,
-        ).unwrap();
+        let result = router
+            .route_time_graph(NodeId::new(1), NodeId::new(3), TransportProfile::Car)
+            .unwrap();
 
         assert_eq!(result.start_node, NodeId::new(1));
         assert_eq!(result.end_node, NodeId::new(3));
         assert_eq!(result.profile, TransportProfile::Car);
         assert_eq!(result.total_distance, 2000.0); // Two 1000m edges
-        assert_eq!(result.total_time, 120.0);      // Two 60s edges
-        assert_eq!(result.node_path.len(), 3);     // 3 nodes in path
-        assert_eq!(result.edge_path.len(), 2);     // 2 edges in path
-        assert!(result.geometry.is_none());       // No geometry in time graph
+        assert_eq!(result.total_time, 120.0); // Two 60s edges
+        assert_eq!(result.node_path.len(), 3); // 3 nodes in path
+        assert_eq!(result.edge_path.len(), 2); // 2 edges in path
+        assert!(result.geometry.is_none()); // No geometry in time graph
     }
 
     #[test]
@@ -655,19 +701,21 @@ mod tests {
         let dual_core = create_test_dual_core();
         let router = DistanceRouter::new(dual_core).unwrap();
 
-        let result = router.route_nav_graph(
-            NodeId::new(1),
-            NodeId::new(3),
-            TransportProfile::Car,
-            GeometryPass::Navigation,
-        ).unwrap();
+        let result = router
+            .route_nav_graph(
+                NodeId::new(1),
+                NodeId::new(3),
+                TransportProfile::Car,
+                GeometryPass::Navigation,
+            )
+            .unwrap();
 
         assert_eq!(result.start_node, NodeId::new(1));
         assert_eq!(result.end_node, NodeId::new(3));
         assert_eq!(result.total_distance, 2000.0);
         assert_eq!(result.total_time, 120.0);
         assert!(result.geometry.is_some());
-        
+
         let geometry = result.geometry.unwrap();
         assert_eq!(geometry.len(), 3); // Start + intermediate + end points
         assert_eq!(geometry[0], Point2D::new(0.0, 0.0));
@@ -691,11 +739,7 @@ mod tests {
 
         let router = DistanceRouter::new(dual_core).unwrap();
 
-        let result = router.route_time_graph(
-            NodeId::new(1),
-            NodeId::new(2),
-            TransportProfile::Car,
-        );
+        let result = router.route_time_graph(NodeId::new(1), NodeId::new(2), TransportProfile::Car);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("No path found"));
@@ -724,11 +768,9 @@ mod tests {
         let dual_core = create_test_dual_core();
         let router = DistanceRouter::new(dual_core).unwrap();
 
-        let result = router.route_time_graph(
-            NodeId::new(1),
-            NodeId::new(3),
-            TransportProfile::Car,
-        ).unwrap();
+        let result = router
+            .route_time_graph(NodeId::new(1), NodeId::new(3), TransportProfile::Car)
+            .unwrap();
 
         assert!(result.computation_stats.nodes_explored > 0);
         assert!(result.computation_stats.edges_relaxed > 0);
@@ -741,13 +783,11 @@ mod tests {
     fn test_turn_restrictions_enabled() {
         let dual_core = create_test_dual_core();
         let router = DistanceRouter::with_turn_restrictions(dual_core, true).unwrap();
-        
+
         // Basic routing should still work with turn restrictions enabled
-        let result = router.route_time_graph(
-            NodeId::new(1),
-            NodeId::new(3),
-            TransportProfile::Car,
-        ).unwrap();
+        let result = router
+            .route_time_graph(NodeId::new(1), NodeId::new(3), TransportProfile::Car)
+            .unwrap();
 
         assert_eq!(result.start_node, NodeId::new(1));
         assert_eq!(result.end_node, NodeId::new(3));
@@ -758,13 +798,11 @@ mod tests {
     fn test_turn_restrictions_disabled() {
         let dual_core = create_test_dual_core();
         let router = DistanceRouter::with_turn_restrictions(dual_core, false).unwrap();
-        
+
         // Routing should work the same with turn restrictions disabled
-        let result = router.route_time_graph(
-            NodeId::new(1),
-            NodeId::new(3),
-            TransportProfile::Car,
-        ).unwrap();
+        let result = router
+            .route_time_graph(NodeId::new(1), NodeId::new(3), TransportProfile::Car)
+            .unwrap();
 
         assert_eq!(result.start_node, NodeId::new(1));
         assert_eq!(result.end_node, NodeId::new(3));
@@ -794,15 +832,15 @@ mod tests {
         // Add edges with turn restrictions
         let mut time_edge1 = TimeEdge::new(EdgeId(1), NodeId::new(1), NodeId::new(2));
         time_edge1.add_weight(TransportProfile::Car, TimeWeight::new(60.0, 1000.0));
-        
+
         let mut time_edge2 = TimeEdge::new(EdgeId(2), NodeId::new(2), NodeId::new(3));
         time_edge2.add_weight(TransportProfile::Car, TimeWeight::new(60.0, 1000.0));
-        
+
         let mut time_edge3 = TimeEdge::new(EdgeId(3), NodeId::new(2), NodeId::new(4));
         time_edge3.add_weight(TransportProfile::Car, TimeWeight::new(60.0, 1000.0));
 
         // Add turn restriction: no right turn from edge 1 to edge 3 at node 2
-        use crate::dual_core::{TurnRestriction, RestrictionType};
+        use crate::dual_core::{RestrictionType, TurnRestriction};
         let turn_restriction = TurnRestriction {
             from_edge: EdgeId(1),
             via_node: NodeId::new(2),
@@ -901,25 +939,31 @@ mod tests {
     fn test_turn_restriction_logic() {
         let dual_core = create_test_dual_core_with_restrictions();
         let router = DistanceRouter::with_turn_restrictions(dual_core, true).unwrap();
-        
+
         // Test turn restriction checking
         let is_restricted = router.is_turn_restricted(
-            EdgeId(1),        // from edge
-            NodeId::new(2),   // via node  
-            EdgeId(3),        // to edge
-            &TransportProfile::Car
+            EdgeId(1),      // from edge
+            NodeId::new(2), // via node
+            EdgeId(3),      // to edge
+            &TransportProfile::Car,
         );
-        
-        assert!(is_restricted, "Turn from edge 1 to edge 3 via node 2 should be restricted");
-        
+
+        assert!(
+            is_restricted,
+            "Turn from edge 1 to edge 3 via node 2 should be restricted"
+        );
+
         // Test non-restricted turn
         let is_not_restricted = router.is_turn_restricted(
-            EdgeId(1),        // from edge
-            NodeId::new(2),   // via node
-            EdgeId(2),        // to edge (different edge)
-            &TransportProfile::Car
+            EdgeId(1),      // from edge
+            NodeId::new(2), // via node
+            EdgeId(2),      // to edge (different edge)
+            &TransportProfile::Car,
         );
-        
-        assert!(!is_not_restricted, "Turn from edge 1 to edge 2 via node 2 should not be restricted");
+
+        assert!(
+            !is_not_restricted,
+            "Turn from edge 1 to edge 2 via node 2 should not be restricted"
+        );
     }
 }

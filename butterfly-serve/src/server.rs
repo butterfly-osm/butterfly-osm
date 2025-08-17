@@ -1,11 +1,11 @@
 //! Main server implementation
 
+use crate::routes::{get_telemetry, graph_edge, graph_stats, probe_snap, AppState};
 use axum::{response::Json, Router};
 use butterfly_extract::Extractor;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tower_http::cors::CorsLayer;
-use crate::routes::{AppState, get_telemetry, probe_snap, graph_stats, graph_edge};
 
 /// Main routing server
 pub struct RoutingServer {
@@ -15,7 +15,7 @@ pub struct RoutingServer {
 
 impl RoutingServer {
     pub fn new(addr: SocketAddr, extractor: Extractor) -> Self {
-        Self { 
+        Self {
             addr,
             extractor: Arc::new(Mutex::new(extractor)),
         }

@@ -4,9 +4,11 @@ pub mod benchmarks;
 pub mod corpus;
 pub mod generators;
 
-pub use benchmarks::{BenchmarkRunner, BenchmarkResults, GeometryBenchmarks};
-pub use corpus::{TestCorpus, PbfInfo, DatasetInfo, fetch_monaco_data, load_sample_pbf_data};
-pub use generators::{ProblematicRegionGenerator, KnownProblematicRegions, generate_test_linestring};
+pub use benchmarks::{BenchmarkResults, BenchmarkRunner, GeometryBenchmarks};
+pub use corpus::{fetch_monaco_data, load_sample_pbf_data, DatasetInfo, PbfInfo, TestCorpus};
+pub use generators::{
+    generate_test_linestring, KnownProblematicRegions, ProblematicRegionGenerator,
+};
 
 /// Test data generator
 #[derive(Default)]

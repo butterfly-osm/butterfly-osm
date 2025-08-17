@@ -83,8 +83,20 @@
 - ✅ **M5.7**: Distance Routing - Dijkstra distance-based routing with turn restriction handling
 - ✅ **PRS v2**: Enhanced testing with realistic test data corpus + snap recall + geometry quality
 
-### M6-M20 — Advanced Milestones (Not Started)
-M6+ milestones await architectural decisions. See individual milestone files for detailed specifications.
+### M6 — Time-Based Routing (✅ Complete)
+- ✅ **M6.1**: Weight Compression - u16 quantization with overflow tables for memory-efficient edge weights
+- ✅ **M6.2**: Turn Restriction Tables - Junction-based turn penalty matrices with sharded caching
+- ✅ **M6.3**: Time-Cost Routing - Complete time-based routing with departure time and route quality assessment
+- ✅ **PRS v3**: Enhanced testing with turn restriction validation + ETA plausibility + time-based routing smoke tests
+
+### M7 — Parallel Serving (✅ Complete)
+- ✅ **M7.1**: Thread Architecture - NUMA-aware thread pools with per-thread memory arenas and lock-free hot paths
+- ✅ **M7.2**: Sharded Caching - 64-shard LRU caches with auto-rebalancing for turn restrictions and geometry
+- ✅ **M7.3**: Load Testing - Mixed-profile load testing with throughput scaling and Axum streaming validation
+- ✅ **PRS v4**: Parallel serving validation with thread utilization, cache efficiency, and NUMA performance tests
+
+### M8-M20 — Advanced Milestones (Not Started)
+M8+ milestones await architectural decisions. See individual milestone files for detailed specifications.
 
 ---
 

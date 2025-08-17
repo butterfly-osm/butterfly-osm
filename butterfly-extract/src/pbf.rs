@@ -63,26 +63,28 @@ impl PbfReader {
         let file = File::open(path)?;
         let buf_reader = BufReader::new(file);
         let reader = BlobReader::new(buf_reader);
-        
+
         Ok(Self { reader })
     }
-    
+
     /// Stream OSM primitives with routing-relevant filtering
     pub fn stream_routing_data<F>(&mut self, mut callback: F) -> Result<(), PbfError>
     where
         F: FnMut(OsmPrimitive) -> bool, // return false to stop streaming
     {
         for blob in &mut self.reader {
-            let blob = blob.map_err(|e| PbfError::Decode(format!("Failed to read blob: {:?}", e)))?;
-            
+            let blob =
+                blob.map_err(|e| PbfError::Decode(format!("Failed to read blob: {:?}", e)))?;
+
             if let Ok(primitive_block) = blob.to_primitiveblock() {
                 for group in primitive_block.groups() {
                     // Process nodes
                     for node in group.nodes() {
-                        let tags: HashMap<String, String> = node.tags()
+                        let tags: HashMap<String, String> = node
+                            .tags()
                             .map(|(k, v)| (k.to_string(), v.to_string()))
                             .collect();
-                        
+
                         // Only include nodes with routing-relevant tags or referenced by ways
                         if has_routing_tags(&tags) {
                             let primitive = OsmPrimitive::Node {
@@ -91,19 +93,20 @@ impl PbfReader {
                                 lon: node.lon(),
                                 tags,
                             };
-                            
+
                             if !callback(primitive) {
                                 return Ok(());
                             }
                         }
                     }
-                    
+
                     // Process dense nodes
                     for node in group.dense_nodes() {
-                        let tags: HashMap<String, String> = node.tags()
+                        let tags: HashMap<String, String> = node
+                            .tags()
                             .map(|(k, v)| (k.to_string(), v.to_string()))
                             .collect();
-                        
+
                         if has_routing_tags(&tags) {
                             let primitive = OsmPrimitive::Node {
                                 id: node.id(),
@@ -111,19 +114,20 @@ impl PbfReader {
                                 lon: node.lon(),
                                 tags,
                             };
-                            
+
                             if !callback(primitive) {
                                 return Ok(());
                             }
                         }
                     }
-                    
+
                     // Process ways
                     for way in group.ways() {
-                        let tags: HashMap<String, String> = way.tags()
+                        let tags: HashMap<String, String> = way
+                            .tags()
                             .map(|(k, v)| (k.to_string(), v.to_string()))
                             .collect();
-                        
+
                         // Include ways with highway tags or routing-relevant tags
                         if has_routing_tags(&tags) || tags.contains_key("highway") {
                             let primitive = OsmPrimitive::Way {
@@ -131,22 +135,24 @@ impl PbfReader {
                                 nodes: way.refs().collect(),
                                 tags,
                             };
-                            
+
                             if !callback(primitive) {
                                 return Ok(());
                             }
                         }
                     }
-                    
+
                     // Process relations
                     for relation in group.relations() {
-                        let tags: HashMap<String, String> = relation.tags()
+                        let tags: HashMap<String, String> = relation
+                            .tags()
                             .map(|(k, v)| (k.to_string(), v.to_string()))
                             .collect();
-                        
+
                         // Include relations with routing-relevant tags
                         if has_routing_tags(&tags) || is_routing_relation(&tags) {
-                            let members: Vec<RelationMember> = relation.members()
+                            let members: Vec<RelationMember> = relation
+                                .members()
                                 .map(|m| RelationMember {
                                     id: m.member_id,
                                     role: m.role().unwrap_or("").to_string(),
@@ -157,13 +163,13 @@ impl PbfReader {
                                     },
                                 })
                                 .collect();
-                            
+
                             let primitive = OsmPrimitive::Relation {
                                 id: relation.id(),
                                 members,
                                 tags,
                             };
-                            
+
                             if !callback(primitive) {
                                 return Ok(());
                             }
@@ -172,16 +178,16 @@ impl PbfReader {
                 }
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Count routing-relevant primitives in the file
     pub fn count_routing_primitives(&mut self) -> Result<(usize, usize, usize), PbfError> {
         let mut nodes = 0;
         let mut ways = 0;
         let mut relations = 0;
-        
+
         self.stream_routing_data(|primitive| {
             match primitive {
                 OsmPrimitive::Node { .. } => nodes += 1,
@@ -190,7 +196,7 @@ impl PbfReader {
             }
             true // continue counting
         })?;
-        
+
         Ok((nodes, ways, relations))
     }
 }
@@ -201,23 +207,63 @@ fn has_routing_tags(tags: &HashMap<String, String>) -> bool {
     if tags.contains_key("highway") {
         return true;
     }
-    
+
     // Routing-specific tags
     for key in &[
-        "access", "vehicle", "motor_vehicle", "bicycle", "foot", "pedestrian",
-        "barrier", "maxspeed", "oneway", "junction", "cycleway", "footway",
-        "sidewalk", "lanes", "turn:lanes", "surface", "tracktype", "smoothness",
-        "restriction", "except", "toll", "ferry", "bridge", "tunnel", "layer",
-        "car", "motorcycle", "hgv", "bus", "taxi", "emergency", "delivery",
-        "service", "psv", "goods", "agricultural", "forestry", "destination",
-        "weight", "maxweight", "width", "maxwidth", "height", "maxheight",
-        "length", "maxlength", "axleload", "maxaxleload"
+        "access",
+        "vehicle",
+        "motor_vehicle",
+        "bicycle",
+        "foot",
+        "pedestrian",
+        "barrier",
+        "maxspeed",
+        "oneway",
+        "junction",
+        "cycleway",
+        "footway",
+        "sidewalk",
+        "lanes",
+        "turn:lanes",
+        "surface",
+        "tracktype",
+        "smoothness",
+        "restriction",
+        "except",
+        "toll",
+        "ferry",
+        "bridge",
+        "tunnel",
+        "layer",
+        "car",
+        "motorcycle",
+        "hgv",
+        "bus",
+        "taxi",
+        "emergency",
+        "delivery",
+        "service",
+        "psv",
+        "goods",
+        "agricultural",
+        "forestry",
+        "destination",
+        "weight",
+        "maxweight",
+        "width",
+        "maxwidth",
+        "height",
+        "maxheight",
+        "length",
+        "maxlength",
+        "axleload",
+        "maxaxleload",
     ] {
         if tags.contains_key(*key) {
             return true;
         }
     }
-    
+
     false
 }
 

@@ -14,13 +14,13 @@ pub mod loser_tree;
 pub mod roundtrip;
 pub mod token_bucket;
 
-pub use compression::{ChunkSizeAuditor, CompressedWriter, CompressedReader, ChunkEntry};
+pub use compression::{ChunkEntry, ChunkSizeAuditor, CompressedReader, CompressedWriter};
 pub use error::{IoError, IoResult};
 pub use external_sort::{ExternalSorter, MemoryThrottledSorter, RssMonitor, SortedIterator};
 pub use format::BflyHeader;
 pub use io::AlignedIo;
 pub use loser_tree::{LoserTree, LoserTreeEntry};
-pub use token_bucket::{TokenBucket, WorkerAdmissionController, AdmissionStats};
+pub use token_bucket::{AdmissionStats, TokenBucket, WorkerAdmissionController};
 
 /// BFLY format version
 pub const BFLY_VERSION: u32 = 1;

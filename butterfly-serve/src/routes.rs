@@ -5,7 +5,7 @@ use axum::{
     http::StatusCode,
     response::Json as ResponseJson,
 };
-use butterfly_extract::{Extractor, TileTelemetry, GlobalPercentiles, CanonicalNodeProbe};
+use butterfly_extract::{CanonicalNodeProbe, Extractor, GlobalPercentiles, TileTelemetry};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -98,7 +98,7 @@ pub async fn get_telemetry(
             }),
         ));
     }
-    
+
     // Get telemetry data based on bbox filtering
     let extractor = state.extractor.lock().map_err(|_| {
         (
@@ -109,55 +109,68 @@ pub async fn get_telemetry(
             }),
         )
     })?;
-    
-    let tiles = match (params.min_lat, params.max_lat, params.min_lon, params.max_lon) {
+
+    let tiles = match (
+        params.min_lat,
+        params.max_lat,
+        params.min_lon,
+        params.max_lon,
+    ) {
         (Some(min_lat), Some(max_lat), Some(min_lon), Some(max_lon)) => {
             extractor.get_telemetry_for_bbox(min_lat, max_lat, min_lon, max_lon)
         }
         _ => extractor.get_telemetry(),
     };
-    
+
     // Get global percentiles if requested
     let global_percentiles = if params.include_global {
         Some(extractor.get_global_percentiles())
     } else {
         None
     };
-    
+
     // Create bbox info if all parameters provided
-    let bbox = match (params.min_lat, params.max_lat, params.min_lon, params.max_lon) {
-        (Some(min_lat), Some(max_lat), Some(min_lon), Some(max_lon)) => {
-            Some(BboxInfo {
-                min_lat,
-                max_lat,
-                min_lon,
-                max_lon,
-            })
-        }
+    let bbox = match (
+        params.min_lat,
+        params.max_lat,
+        params.min_lon,
+        params.max_lon,
+    ) {
+        (Some(min_lat), Some(max_lat), Some(min_lon), Some(max_lon)) => Some(BboxInfo {
+            min_lat,
+            max_lat,
+            min_lon,
+            max_lon,
+        }),
         _ => None,
     };
-    
+
     let response = TelemetryResponse {
         total_tiles: tiles.len(),
         bbox,
         global_percentiles,
         tiles,
     };
-    
+
     Ok(ResponseJson(response))
 }
 
 /// Validate bbox query parameters
 fn validate_bbox_params(params: &TelemetryQuery) -> Result<(), String> {
     // Check if bbox parameters are consistent
-    let has_any_bbox = params.min_lat.is_some() || 
-                       params.max_lat.is_some() || 
-                       params.min_lon.is_some() || 
-                       params.max_lon.is_some();
-    
+    let has_any_bbox = params.min_lat.is_some()
+        || params.max_lat.is_some()
+        || params.min_lon.is_some()
+        || params.max_lon.is_some();
+
     if has_any_bbox {
         // If any bbox parameter is provided, all must be provided
-        match (params.min_lat, params.max_lat, params.min_lon, params.max_lon) {
+        match (
+            params.min_lat,
+            params.max_lat,
+            params.min_lon,
+            params.max_lon,
+        ) {
             (Some(min_lat), Some(max_lat), Some(min_lon), Some(max_lon)) => {
                 // Validate lat/lon ranges
                 if !(-90.0..=90.0).contains(&min_lat) {
@@ -172,7 +185,7 @@ fn validate_bbox_params(params: &TelemetryQuery) -> Result<(), String> {
                 if !(-180.0..=180.0).contains(&max_lon) {
                     return Err("max_lon must be between -180 and 180".to_string());
                 }
-                
+
                 // Validate bbox consistency
                 if min_lat >= max_lat {
                     return Err("min_lat must be less than max_lat".to_string());
@@ -186,7 +199,7 @@ fn validate_bbox_params(params: &TelemetryQuery) -> Result<(), String> {
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -231,7 +244,6 @@ pub struct ProbeSnapResponse {
     /// Distance to nearest canonical node
     pub nearest_distance: Option<f64>,
 }
-
 
 /// Validation status for probe results
 #[derive(Debug, Serialize, ToSchema)]
@@ -308,19 +320,16 @@ pub async fn probe_snap(
             }),
         )
     })?;
-    
-    let canonical_nodes = extractor.probe_canonical_mapping(
-        params.lat,
-        params.lon,
-        params.radius,
-        params.node_id,
-    );
+
+    let canonical_nodes =
+        extractor.probe_canonical_mapping(params.lat, params.lon, params.radius, params.node_id);
 
     // Determine validation status
     let validation_status = if canonical_nodes.is_empty() {
         ValidationStatus::NotFound
     } else {
-        let nearest_distance = canonical_nodes.iter()
+        let nearest_distance = canonical_nodes
+            .iter()
             .map(|node| node.distance)
             .min_by(|a, b| a.partial_cmp(b).unwrap())
             .unwrap_or(f64::INFINITY);
@@ -332,7 +341,8 @@ pub async fn probe_snap(
         }
     };
 
-    let nearest_distance = canonical_nodes.iter()
+    let nearest_distance = canonical_nodes
+        .iter()
         .map(|node| node.distance)
         .min_by(|a, b| a.partial_cmp(b).unwrap());
 
@@ -420,7 +430,7 @@ pub async fn graph_edge(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_bbox_validation() {
         // Valid bbox
@@ -432,7 +442,7 @@ mod tests {
             include_global: false,
         };
         assert!(validate_bbox_params(&valid_params).is_ok());
-        
+
         // Invalid: min >= max
         let invalid_params = TelemetryQuery {
             min_lat: Some(53.0),
@@ -442,7 +452,7 @@ mod tests {
             include_global: false,
         };
         assert!(validate_bbox_params(&invalid_params).is_err());
-        
+
         // Invalid: out of range
         let invalid_range = TelemetryQuery {
             min_lat: Some(-95.0),
@@ -452,7 +462,7 @@ mod tests {
             include_global: false,
         };
         assert!(validate_bbox_params(&invalid_range).is_err());
-        
+
         // Invalid: incomplete bbox
         let incomplete_params = TelemetryQuery {
             min_lat: Some(52.0),
@@ -462,7 +472,7 @@ mod tests {
             include_global: false,
         };
         assert!(validate_bbox_params(&incomplete_params).is_err());
-        
+
         // Valid: no bbox
         let no_bbox = TelemetryQuery {
             min_lat: None,

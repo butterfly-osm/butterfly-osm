@@ -1,14 +1,14 @@
 //! Profile Regression Suite v2 - Enhanced testing for M5 dual core system
 
-use crate::profiles::{TransportProfile, TestStatus};
+use crate::dijkstra::DistanceRouter;
+use crate::dual_core::{DualCoreGraph, GeometryPass, NodeId};
 #[cfg(test)]
 use crate::profiles::EdgeId;
-use crate::dual_core::{DualCoreGraph, NodeId, GeometryPass};
-use crate::dijkstra::DistanceRouter;
-use crate::spatial::SnapEngine;
-use butterfly_geometry::Point2D;
+use crate::profiles::{TestStatus, TransportProfile};
 use crate::spatial;
+use crate::spatial::SnapEngine;
 use butterfly_geometry::GeometryPipeline;
+use butterfly_geometry::Point2D;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
@@ -29,7 +29,7 @@ pub enum PRSv2TestType {
     // Legacy PRS v1 tests
     AccessLegality,
     RoutingSmoke,
-    
+
     // New PRS v2 tests
     SnapRecall,
     SnapAccuracy,
@@ -115,7 +115,7 @@ impl ProfileRegressionSuiteV2 {
     ) -> Result<Self, String> {
         let geometry_pipeline = GeometryPipeline::default();
         let distance_router = DistanceRouter::new(dual_core.clone())?;
-        
+
         Ok(Self {
             config,
             dual_core,
@@ -136,8 +136,14 @@ impl ProfileRegressionSuiteV2 {
         }
 
         let total_time = start_time.elapsed().as_millis() as u64;
-        let passed = results.iter().filter(|r| r.status == TestStatus::Pass).count();
-        let failed = results.iter().filter(|r| r.status == TestStatus::Fail).count();
+        let passed = results
+            .iter()
+            .filter(|r| r.status == TestStatus::Pass)
+            .count();
+        let failed = results
+            .iter()
+            .filter(|r| r.status == TestStatus::Fail)
+            .count();
 
         PRSv2Report {
             version: "2.0".to_string(),
@@ -148,7 +154,11 @@ impl ProfileRegressionSuiteV2 {
                 passed,
                 failed,
                 execution_time_ms: total_time,
-                overall_status: if failed == 0 { TestStatus::Pass } else { TestStatus::Fail },
+                overall_status: if failed == 0 {
+                    TestStatus::Pass
+                } else {
+                    TestStatus::Fail
+                },
             },
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -217,8 +227,11 @@ impl ProfileRegressionSuiteV2 {
                 test_type: PRSv2TestType::SnapRecall,
                 profile: *profile,
                 status,
-                message: format!("Snap recall: {:.2}% (target: {:.2}%)", 
-                               recall_rate * 100.0, self.config.snap_recall_target * 100.0),
+                message: format!(
+                    "Snap recall: {:.2}% (target: {:.2}%)",
+                    recall_rate * 100.0,
+                    self.config.snap_recall_target * 100.0
+                ),
                 metrics,
                 timestamp: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -259,7 +272,7 @@ impl ProfileRegressionSuiteV2 {
             if !distances.is_empty() {
                 distances.sort_by(|a, b| a.partial_cmp(b).unwrap());
                 let median = distances[distances.len() / 2];
-                
+
                 metrics.snap_accuracy_meters = Some(median);
                 metrics.execution_time_ms = start_time.elapsed().as_millis() as u64;
 
@@ -273,8 +286,10 @@ impl ProfileRegressionSuiteV2 {
                     test_type: PRSv2TestType::SnapAccuracy,
                     profile: *profile,
                     status,
-                    message: format!("Snap accuracy median: {:.2}m (target: ≤{:.2}m)", 
-                                   median, self.config.snap_accuracy_target),
+                    message: format!(
+                        "Snap accuracy median: {:.2}m (target: ≤{:.2}m)",
+                        median, self.config.snap_accuracy_target
+                    ),
                     metrics,
                     timestamp: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -316,7 +331,7 @@ impl ProfileRegressionSuiteV2 {
 
         // Generate test geometry
         let test_geometry = self.generate_test_geometry();
-        
+
         // Process through geometry pipeline
         match self.geometry_pipeline.process_geometry(&test_geometry) {
             Ok(result) => {
@@ -327,8 +342,9 @@ impl ProfileRegressionSuiteV2 {
                 metrics.hausdorff_p95 = Some(hausdorff_p95);
                 metrics.execution_time_ms = start_time.elapsed().as_millis() as u64;
 
-                let status = if hausdorff_median <= self.config.hausdorff_median_target &&
-                               hausdorff_p95 <= self.config.hausdorff_p95_target {
+                let status = if hausdorff_median <= self.config.hausdorff_median_target
+                    && hausdorff_p95 <= self.config.hausdorff_p95_target
+                {
                     TestStatus::Pass
                 } else {
                     TestStatus::Fail
@@ -338,9 +354,13 @@ impl ProfileRegressionSuiteV2 {
                     test_type: PRSv2TestType::GeometryQuality,
                     profile: *profile,
                     status,
-                    message: format!("Hausdorff median: {:.2}m, p95: {:.2}m (targets: ≤{:.2}m, ≤{:.2}m)",
-                                   hausdorff_median, hausdorff_p95,
-                                   self.config.hausdorff_median_target, self.config.hausdorff_p95_target),
+                    message: format!(
+                        "Hausdorff median: {:.2}m, p95: {:.2}m (targets: ≤{:.2}m, ≤{:.2}m)",
+                        hausdorff_median,
+                        hausdorff_p95,
+                        self.config.hausdorff_median_target,
+                        self.config.hausdorff_p95_target
+                    ),
                     metrics,
                     timestamp: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -348,19 +368,17 @@ impl ProfileRegressionSuiteV2 {
                         .as_secs(),
                 }
             }
-            Err(e) => {
-                PRSv2TestResult {
-                    test_type: PRSv2TestType::GeometryQuality,
-                    profile: *profile,
-                    status: TestStatus::Fail,
-                    message: format!("Geometry processing failed: {}", e),
-                    metrics,
-                    timestamp: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs(),
-                }
-            }
+            Err(e) => PRSv2TestResult {
+                test_type: PRSv2TestType::GeometryQuality,
+                profile: *profile,
+                status: TestStatus::Fail,
+                message: format!("Geometry processing failed: {}", e),
+                metrics,
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            },
         }
     }
 
@@ -375,19 +393,25 @@ impl ProfileRegressionSuiteV2 {
 
         for (start_node, end_node) in test_routes {
             // Route in time graph
-            let time_result = self.distance_router.route_time_graph(start_node, end_node, *profile);
-            
+            let time_result = self
+                .distance_router
+                .route_time_graph(start_node, end_node, *profile);
+
             // Route in nav graph
             let nav_result = self.distance_router.route_nav_graph(
-                start_node, end_node, *profile, GeometryPass::Navigation
+                start_node,
+                end_node,
+                *profile,
+                GeometryPass::Navigation,
             );
 
             match (time_result, nav_result) {
                 (Ok(time_route), Ok(nav_route)) => {
                     // Check that time and distances are consistent (within 0.5s tolerance)
                     let time_diff = (time_route.total_time - nav_route.total_time).abs();
-                    let distance_diff = (time_route.total_distance - nav_route.total_distance).abs();
-                    
+                    let distance_diff =
+                        (time_route.total_distance - nav_route.total_distance).abs();
+
                     if time_diff <= 0.5 && distance_diff <= 1.0 {
                         consistent_routes += 1;
                     }
@@ -398,10 +422,12 @@ impl ProfileRegressionSuiteV2 {
             }
         }
 
-        let consistency_rate = consistent_routes as f64 / self.config.test_routes_per_profile as f64;
+        let consistency_rate =
+            consistent_routes as f64 / self.config.test_routes_per_profile as f64;
         metrics.execution_time_ms = start_time.elapsed().as_millis() as u64;
 
-        let status = if consistency_rate >= 0.95 { // 95% consistency target
+        let status = if consistency_rate >= 0.95 {
+            // 95% consistency target
             TestStatus::Pass
         } else {
             TestStatus::Fail
@@ -411,7 +437,10 @@ impl ProfileRegressionSuiteV2 {
             test_type: PRSv2TestType::RoutingConsistency,
             profile: *profile,
             status,
-            message: format!("Routing consistency: {:.1}% (target: ≥95%)", consistency_rate * 100.0),
+            message: format!(
+                "Routing consistency: {:.1}% (target: ≥95%)",
+                consistency_rate * 100.0
+            ),
             metrics,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -431,7 +460,9 @@ impl ProfileRegressionSuiteV2 {
 
         for (start_node, end_node) in test_routes {
             let route_start = Instant::now();
-            let _result = self.distance_router.route_time_graph(start_node, end_node, *profile);
+            let _result = self
+                .distance_router
+                .route_time_graph(start_node, end_node, *profile);
             let route_time = route_start.elapsed().as_millis() as u64;
             route_times.push(route_time);
         }
@@ -454,7 +485,10 @@ impl ProfileRegressionSuiteV2 {
                 test_type: PRSv2TestType::PerformanceRegression,
                 profile: *profile,
                 status,
-                message: format!("Routing p95: {}ms (budget: ≤{}ms)", p95_time, self.config.routing_time_budget_ms),
+                message: format!(
+                    "Routing p95: {}ms (budget: ≤{}ms)",
+                    p95_time, self.config.routing_time_budget_ms
+                ),
                 metrics,
                 timestamp: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -487,12 +521,15 @@ impl ProfileRegressionSuiteV2 {
 
         for (start_node, end_node) in test_routes {
             let io_start = Instant::now();
-            
+
             // Simulate cold I/O by routing with geometry (represents loading nav chunks)
             let _result = self.distance_router.route_nav_graph(
-                start_node, end_node, *profile, GeometryPass::Navigation
+                start_node,
+                end_node,
+                *profile,
+                GeometryPass::Navigation,
             );
-            
+
             let io_time = io_start.elapsed().as_millis() as u64;
             io_times.push(io_time);
         }
@@ -514,7 +551,10 @@ impl ProfileRegressionSuiteV2 {
                 test_type: PRSv2TestType::ColdIOPerformance,
                 profile: *profile,
                 status,
-                message: format!("Cold I/O p95: {}ms (target: ≤{}ms)", p95_io_time, self.config.cold_io_p95_target_ms),
+                message: format!(
+                    "Cold I/O p95: {}ms (target: ≤{}ms)",
+                    p95_io_time, self.config.cold_io_p95_target_ms
+                ),
                 metrics,
                 timestamp: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -561,8 +601,12 @@ impl ProfileRegressionSuiteV2 {
             test_type: PRSv2TestType::DualCoreConsistency,
             profile: *profile,
             status,
-            message: format!("Dual core consistency: {} (hashes: time={}, nav={})", 
-                           if consistent { "verified" } else { "failed" }, time_hash, nav_hash),
+            message: format!(
+                "Dual core consistency: {} (hashes: time={}, nav={})",
+                if consistent { "verified" } else { "failed" },
+                time_hash,
+                nav_hash
+            ),
             metrics,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -577,27 +621,24 @@ impl ProfileRegressionSuiteV2 {
         let mut points = Vec::new();
         let patterns = [
             // Urban grid pattern (Berlin-like)
-            (52.520008, 13.404954, 0.0005),  // High density
+            (52.520008, 13.404954, 0.0005), // High density
             // Suburban pattern (outskirts)
-            (52.4755, 13.3679, 0.002),       // Medium density  
+            (52.4755, 13.3679, 0.002), // Medium density
             // Rural pattern (countryside)
-            (52.3906, 13.0645, 0.01),        // Low density
+            (52.3906, 13.0645, 0.01), // Low density
         ];
-        
+
         for i in 0..count {
             let pattern_idx = i % patterns.len();
             let (base_lat, base_lon, spread) = patterns[pattern_idx];
-            
+
             // Add realistic variation based on road network patterns
             let offset_lat = ((i as f64 * 0.123456) % 1.0 - 0.5) * spread;
             let offset_lon = ((i as f64 * 0.789012) % 1.0 - 0.5) * spread;
-            
-            points.push(Point2D::new(
-                base_lat + offset_lat,
-                base_lon + offset_lon,
-            ));
+
+            points.push(Point2D::new(base_lat + offset_lat, base_lon + offset_lon));
         }
-        
+
         points
     }
 
@@ -606,16 +647,16 @@ impl ProfileRegressionSuiteV2 {
         // Realistic geometry patterns based on real OSM data characteristics
         vec![
             // Highway on-ramp curve (realistic curvature)
-            Point2D::new(52.520008, 13.404954),   // Start
-            Point2D::new(52.520158, 13.405104),   // Slight curve
-            Point2D::new(52.520308, 13.405354),   // More curve
-            Point2D::new(52.520408, 13.405654),   // Peak curve
-            Point2D::new(52.520458, 13.406004),   // Straightening
-            Point2D::new(52.520508, 13.406404),   // Straight section
+            Point2D::new(52.520008, 13.404954), // Start
+            Point2D::new(52.520158, 13.405104), // Slight curve
+            Point2D::new(52.520308, 13.405354), // More curve
+            Point2D::new(52.520408, 13.405654), // Peak curve
+            Point2D::new(52.520458, 13.406004), // Straightening
+            Point2D::new(52.520508, 13.406404), // Straight section
             // Urban street with slight variations
-            Point2D::new(52.520558, 13.406754),   // Building deflection
-            Point2D::new(52.520608, 13.407104),   // Slight adjustment
-            Point2D::new(52.520658, 13.407454),   // End point
+            Point2D::new(52.520558, 13.406754), // Building deflection
+            Point2D::new(52.520608, 13.407104), // Slight adjustment
+            Point2D::new(52.520658, 13.407454), // End point
         ]
     }
 
@@ -623,33 +664,45 @@ impl ProfileRegressionSuiteV2 {
     fn generate_test_routes(&self, count: usize) -> Vec<(NodeId, NodeId)> {
         // Realistic route patterns based on typical routing scenarios
         let mut routes = Vec::new();
-        
+
         // Common routing patterns
         let route_patterns = [
             // Short urban routes (1-5km)
-            (1, 2), (2, 3), (3, 4), (4, 5),
-            // Medium suburban routes (5-15km) 
-            (1, 5), (2, 6), (3, 7), (4, 8),
+            (1, 2),
+            (2, 3),
+            (3, 4),
+            (4, 5),
+            // Medium suburban routes (5-15km)
+            (1, 5),
+            (2, 6),
+            (3, 7),
+            (4, 8),
             // Longer inter-city routes (15km+)
-            (1, 8), (2, 9), (3, 10), (4, 11),
+            (1, 8),
+            (2, 9),
+            (3, 10),
+            (4, 11),
             // Return trips
-            (5, 1), (6, 2), (7, 3), (8, 4),
+            (5, 1),
+            (6, 2),
+            (7, 3),
+            (8, 4),
         ];
-        
+
         for i in 0..count {
             let pattern_idx = i % route_patterns.len();
             let (start_base, end_base) = route_patterns[pattern_idx];
-            
+
             // Add variation to node IDs to create realistic distribution
             let start_offset = (i / route_patterns.len()) as u64;
             let end_offset = ((i + 7) / route_patterns.len()) as u64; // Different offset for variety
-            
+
             routes.push((
                 NodeId::new(start_base + start_offset),
                 NodeId::new(end_base + end_offset),
             ));
         }
-        
+
         routes
     }
 
@@ -682,8 +735,8 @@ pub struct PRSv2Summary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dual_core::{TimeEdge, NavEdge, GraphNode, TimeWeight};
-    use butterfly_geometry::{SnapSkeleton, NavigationGeometry};
+    use crate::dual_core::{GraphNode, NavEdge, TimeEdge, TimeWeight};
+    use butterfly_geometry::{NavigationGeometry, SnapSkeleton};
 
     fn create_test_setup() -> (DualCoreGraph, PRSv2Config) {
         let profiles = vec![TransportProfile::Car];
@@ -746,9 +799,9 @@ mod tests {
     fn test_geometry_quality_test() {
         let (dual_core, config) = create_test_setup();
         let prs = ProfileRegressionSuiteV2::new(config, dual_core, None).unwrap();
-        
+
         let result = prs.test_geometry_quality(&TransportProfile::Car);
-        
+
         assert_eq!(result.test_type, PRSv2TestType::GeometryQuality);
         assert_eq!(result.profile, TransportProfile::Car);
         assert!(result.metrics.hausdorff_median.is_some());
@@ -759,9 +812,9 @@ mod tests {
     fn test_dual_core_consistency_test() {
         let (dual_core, config) = create_test_setup();
         let prs = ProfileRegressionSuiteV2::new(config, dual_core, None).unwrap();
-        
+
         let result = prs.test_dual_core_consistency(&TransportProfile::Car);
-        
+
         assert_eq!(result.test_type, PRSv2TestType::DualCoreConsistency);
         assert_eq!(result.profile, TransportProfile::Car);
         assert!(result.metrics.consistency_hash_matches.is_some());
@@ -771,9 +824,9 @@ mod tests {
     fn test_performance_regression_test() {
         let (dual_core, config) = create_test_setup();
         let prs = ProfileRegressionSuiteV2::new(config, dual_core, None).unwrap();
-        
+
         let result = prs.test_performance_regression(&TransportProfile::Car);
-        
+
         assert_eq!(result.test_type, PRSv2TestType::PerformanceRegression);
         assert_eq!(result.profile, TransportProfile::Car);
         // Note: May fail due to missing routes in minimal test setup
@@ -783,10 +836,10 @@ mod tests {
     fn test_complete_suite_execution() {
         let (dual_core, config) = create_test_setup();
         let prs = ProfileRegressionSuiteV2::new(config, dual_core, None).unwrap();
-        
+
         let profiles = vec![TransportProfile::Car];
         let report = prs.run_complete_suite(&profiles);
-        
+
         assert_eq!(report.version, "2.0");
         assert_eq!(report.profiles, profiles);
         assert!(report.results.len() > 0);
@@ -797,10 +850,10 @@ mod tests {
     fn test_test_point_generation() {
         let (dual_core, config) = create_test_setup();
         let prs = ProfileRegressionSuiteV2::new(config, dual_core, None).unwrap();
-        
+
         let points = prs.generate_test_points(100);
         assert_eq!(points.len(), 100);
-        
+
         // Points should be deterministic
         let points2 = prs.generate_test_points(100);
         assert_eq!(points, points2);
@@ -810,10 +863,10 @@ mod tests {
     fn test_test_route_generation() {
         let (dual_core, config) = create_test_setup();
         let prs = ProfileRegressionSuiteV2::new(config, dual_core, None).unwrap();
-        
+
         let routes = prs.generate_test_routes(10);
         assert_eq!(routes.len(), 10);
-        
+
         // Routes should be valid node pairs
         for (start, end) in routes {
             assert_ne!(start, end);
@@ -824,65 +877,65 @@ mod tests {
     fn test_realistic_test_data_corpus() {
         let (dual_core, config) = create_test_setup();
         let prs = ProfileRegressionSuiteV2::new(config, dual_core, None).unwrap();
-        
+
         // Test realistic point generation
         let points = prs.generate_test_points(100);
         assert_eq!(points.len(), 100);
-        
+
         // Points should be deterministic
         let points2 = prs.generate_test_points(100);
         assert_eq!(points, points2);
-        
+
         // Should have urban, suburban, and rural patterns
         // Check that we have different coordinate ranges (urban should be tighter)
         let urban_points: Vec<_> = points.iter().step_by(3).collect(); // Every 3rd point
         let suburban_points: Vec<_> = points.iter().skip(1).step_by(3).collect();
         let rural_points: Vec<_> = points.iter().skip(2).step_by(3).collect();
-        
+
         assert!(!urban_points.is_empty());
         assert!(!suburban_points.is_empty());
         assert!(!rural_points.is_empty());
-        
+
         // Test realistic geometry
         let geometry = prs.generate_test_geometry();
         assert_eq!(geometry.len(), 9); // Highway on-ramp + urban street
-        
+
         // Verify realistic coordinate progression (should be Berlin area)
         assert!(geometry[0].x > 52.0 && geometry[0].x < 53.0); // Latitude
         assert!(geometry[0].y > 13.0 && geometry[0].y < 14.0); // Longitude
-        
+
         // Test realistic routes
         let routes = prs.generate_test_routes(50);
         assert_eq!(routes.len(), 50);
-        
+
         // Should have variety in route patterns
         let unique_starts: std::collections::HashSet<_> = routes.iter().map(|(s, _)| s).collect();
         let unique_ends: std::collections::HashSet<_> = routes.iter().map(|(_, e)| e).collect();
-        
+
         assert!(unique_starts.len() > 5); // Should have variety
-        assert!(unique_ends.len() > 5);   // Should have variety
+        assert!(unique_ends.len() > 5); // Should have variety
     }
 
     #[test]
     fn test_prs_v2_with_realistic_corpus() {
         let (dual_core, mut config) = create_test_setup();
-        
+
         // Use larger corpus for realistic testing
-        config.test_points_per_profile = 50;  // Smaller for test performance
+        config.test_points_per_profile = 50; // Smaller for test performance
         config.test_routes_per_profile = 10;
-        
+
         let prs = ProfileRegressionSuiteV2::new(config, dual_core, None).unwrap();
-        
+
         let profiles = vec![TransportProfile::Car];
         let report = prs.run_complete_suite(&profiles);
-        
+
         assert_eq!(report.version, "2.0");
         assert_eq!(report.profiles, profiles);
         assert!(report.results.len() > 0);
-        
+
         // With realistic corpus, we should get meaningful test coverage
         assert!(report.summary.total_tests > 0); // Should have some tests
-        
+
         // Check that realistic data produced valid results
         for result in &report.results {
             assert!(result.timestamp > 0);

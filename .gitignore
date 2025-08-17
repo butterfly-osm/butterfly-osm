@@ -145,3 +145,28 @@ compression-stats-*.json
 *.weight_compression
 *.turn_restrictions
 *.time_routing
+
+# M7 Parallel Serving outputs
+thread-architecture-*.json
+cache-stats-*.json
+load-test-report-*.json
+prs-v4-report-*.json
+numa-stats-*.json
+thread-pool-*.json
+rebalancing-action-*.json
+parallel-performance-*.json
+*.thread_architecture
+*.sharded_cache
+*.load_testing
+*.parallel_serving
+
+# NUMA and threading debug files
+numa-debug-*.log
+thread-debug-*.log
+cache-debug-*.log
+affinity-*.log
+
+# Load testing temporary files
+load-test-temp-*
+client-stats-*.json
+orchestrator-*.log

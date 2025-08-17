@@ -137,6 +137,36 @@ Common patterns abstracted into `butterfly-common`:
   - **M3.4**: Graph debug artifacts (nodes.bin, super_edges.bin, geom.temp) with REST APIs (/graph/stats, /graph/edge/{id})
   - Memory safety compliance for M5 geometry processing and production-ready tile boundary handling
 
+- **M4 - Multi-Profile System**: Complete transportation mode support (Car/Bike/Foot)
+  - **M4.1**: Access truth tables with 219+ synthetic junction tests for mode-specific routing
+  - **M4.2**: Profile masking for mode-specific graph pruning and component isolation
+  - **M4.3**: Component analysis with legitimate island preservation per transportation mode
+  - **M4.4**: Speed & time weights with adaptive grade penalties and u16 quantization
+  - **M4.5**: Multi-profile loader with server support and comprehensive statistics
+  - **PRS v1**: Profile Regression Suite with access legality and routing smoke tests (51 tests)
+
+- **M5 - Geometry + Dual Cores**: 3-pass geometry pipeline with dual graph architecture
+  - **M5.1**: R-tree spatial index for universal snapping with ±35° heading tolerance
+  - **M5.2**: Pass A (Snap Skeleton) - Arc-length resampling with urban/rural spacing adaptation
+  - **M5.3**: Pass C (Full Fidelity) - Delta encoding with minimal noise removal for debug/export
+  - **M5.4**: Pass B (Navigation Grade) - RDP + curvature prefilter with quality gates
+  - **M5.5**: Single-pass integration with memory-efficient streaming pipeline
+  - **M5.6**: Dual core construction - Time Graph (CSR + weights) + Nav Graph (geometry)
+  - **M5.7**: Distance routing with Dijkstra implementation and turn restriction handling
+  - **PRS v2**: Enhanced testing with snap recall and geometry quality validation
+
+- **M6 - Time-Based Routing**: Advanced time-cost routing with compression and turn penalties
+  - **M6.1**: Weight compression with u16 quantization and overflow tables for memory efficiency
+  - **M6.2**: Turn restriction tables with junction-based penalty matrices and sharded caching
+  - **M6.3**: Time-cost routing with departure time, route quality assessment, and ETA computation
+  - **PRS v3**: Turn restriction validation, ETA plausibility, and time-based routing tests
+
+- **M7 - Parallel Serving**: NUMA-aware threading and concurrent cache architecture  
+  - **M7.1**: Thread architecture with NUMA-aware thread pools, per-thread memory arenas, and lock-free hot paths
+  - **M7.2**: Sharded caching with 64-shard LRU caches, auto-rebalancing, and NUMA-interleaved allocation
+  - **M7.3**: Load testing framework with mixed-profile workloads, throughput scaling, and Axum streaming
+  - **PRS v4**: Parallel serving validation with thread utilization, cache efficiency, and NUMA performance tests
+
 ### 🚧 Future Development
 
 Future tools and capabilities will be added based on community needs and feedback.

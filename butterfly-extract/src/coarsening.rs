@@ -1,8 +1,8 @@
 //! Adaptive coarsening for topology preservation and efficiency
 
-use std::collections::{HashMap, HashSet};
-use serde::{Deserialize, Serialize};
 use crate::pbf::OsmPrimitive;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
 /// Semantic breakpoint detection for routing-critical topology changes
 #[derive(Debug, Clone, Default)]
@@ -96,13 +96,19 @@ impl SemanticBreakpoints {
         }
 
         // Bridge detection
-        if tags.get("bridge").is_some_and(|v| v == "yes" || v == "true") {
+        if tags
+            .get("bridge")
+            .is_some_and(|v| v == "yes" || v == "true")
+        {
             importance.is_bridge = true;
             score += 3; // Bridges are routing-critical
         }
 
         // Tunnel detection
-        if tags.get("tunnel").is_some_and(|v| v == "yes" || v == "true") {
+        if tags
+            .get("tunnel")
+            .is_some_and(|v| v == "yes" || v == "true")
+        {
             importance.is_tunnel = true;
             score += 3; // Tunnels are routing-critical
         }
@@ -114,8 +120,14 @@ impl SemanticBreakpoints {
     /// Check for access restrictions that affect routing
     fn has_access_restrictions(&self, tags: &HashMap<String, String>) -> bool {
         let access_tags = [
-            "access", "vehicle", "motor_vehicle", "motorcar",
-            "foot", "bicycle", "horse", "barrier"
+            "access",
+            "vehicle",
+            "motor_vehicle",
+            "motorcar",
+            "foot",
+            "bicycle",
+            "horse",
+            "barrier",
         ];
 
         for tag in &access_tags {
@@ -131,7 +143,11 @@ impl SemanticBreakpoints {
     }
 
     /// Process relations for turn restrictions and other semantic anchors
-    fn process_relation_semantics(&mut self, tags: &HashMap<String, String>, members: &[crate::pbf::RelationMember]) {
+    fn process_relation_semantics(
+        &mut self,
+        tags: &HashMap<String, String>,
+        members: &[crate::pbf::RelationMember],
+    ) {
         // Turn restriction detection
         if let Some(restriction_type) = tags.get("type") {
             if restriction_type == "restriction" {
@@ -146,7 +162,11 @@ impl SemanticBreakpoints {
     }
 
     /// Process turn restriction relations to mark anchor nodes
-    fn process_turn_restriction(&mut self, _tags: &HashMap<String, String>, members: &[crate::pbf::RelationMember]) {
+    fn process_turn_restriction(
+        &mut self,
+        _tags: &HashMap<String, String>,
+        members: &[crate::pbf::RelationMember],
+    ) {
         for member in members {
             if member.role == "via" && member.member_type == crate::pbf::MemberType::Node {
                 // Via nodes in turn restrictions are critical routing anchors
@@ -156,14 +176,19 @@ impl SemanticBreakpoints {
     }
 
     /// Process route relations for additional semantic importance
-    fn process_route_relation(&mut self, _route_type: &str, _members: &[crate::pbf::RelationMember]) {
+    fn process_route_relation(
+        &mut self,
+        _route_type: &str,
+        _members: &[crate::pbf::RelationMember],
+    ) {
         // Route relations affect importance of member ways
         // This could be extended to mark route-specific nodes as important
     }
 
     /// Check if a way has semantic importance
     pub fn is_semantically_important(&self, way_id: i64) -> bool {
-        self.way_cache.get(&way_id)
+        self.way_cache
+            .get(&way_id)
             .is_some_and(|imp| imp.importance_score > 2)
     }
 
@@ -202,7 +227,7 @@ impl Default for CurvatureAnalyzer {
     fn default() -> Self {
         Self {
             straight_angle_threshold: 3.0, // <3° is considered straight
-            min_arc_length: 50.0, // 50m minimum for fast-path
+            min_arc_length: 50.0,          // 50m minimum for fast-path
         }
     }
 }
@@ -229,9 +254,9 @@ impl CurvatureAnalyzer {
             let importance = self.calculate_angle_importance(angle, curr, prev, next);
 
             // Check if angle is straight (close to 0 or 180 degrees)
-            let is_straight = angle.abs() < self.straight_angle_threshold || 
-                             (angle.abs() - 180.0).abs() < self.straight_angle_threshold;
-            
+            let is_straight = angle.abs() < self.straight_angle_threshold
+                || (angle.abs() - 180.0).abs() < self.straight_angle_threshold;
+
             angles.push(LocalAngle {
                 position: i,
                 coordinates: curr,
@@ -257,9 +282,15 @@ impl CurvatureAnalyzer {
     }
 
     /// Calculate importance score for an angle
-    fn calculate_angle_importance(&self, angle: f64, curr: (f64, f64), prev: (f64, f64), next: (f64, f64)) -> u8 {
+    fn calculate_angle_importance(
+        &self,
+        angle: f64,
+        curr: (f64, f64),
+        prev: (f64, f64),
+        next: (f64, f64),
+    ) -> u8 {
         let abs_angle = angle.abs();
-        
+
         // Arc length calculation (approximate)
         let dist1 = self.haversine_distance(prev, curr);
         let dist2 = self.haversine_distance(curr, next);
@@ -288,11 +319,10 @@ impl CurvatureAnalyzer {
     fn haversine_distance(&self, p1: (f64, f64), p2: (f64, f64)) -> f64 {
         let dlat = (p2.0 - p1.0).to_radians();
         let dlon = (p2.1 - p1.1).to_radians();
-        
-        let a = (dlat / 2.0).sin().powi(2) + 
-                p1.0.to_radians().cos() * p2.0.to_radians().cos() * 
-                (dlon / 2.0).sin().powi(2);
-        
+
+        let a = (dlat / 2.0).sin().powi(2)
+            + p1.0.to_radians().cos() * p2.0.to_radians().cos() * (dlon / 2.0).sin().powi(2);
+
         let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
         6371000.0 * c // Earth radius in meters
     }
@@ -302,7 +332,7 @@ impl CurvatureAnalyzer {
         // Calculate actual arc length from geometry first
         let mut total_arc_length = 0.0;
         for i in 1..coordinates.len() {
-            total_arc_length += self.haversine_distance(coordinates[i-1], coordinates[i]);
+            total_arc_length += self.haversine_distance(coordinates[i - 1], coordinates[i]);
         }
 
         // Arc-length guard: segment must be long enough for fast-path optimization
@@ -352,7 +382,11 @@ pub struct BendWindow {
 
 impl CurvatureAnalyzer {
     /// Analyze cumulative bends in sliding windows
-    pub fn analyze_bend_windows(&self, angles: &[LocalAngle], window_size: usize) -> Vec<BendWindow> {
+    pub fn analyze_bend_windows(
+        &self,
+        angles: &[LocalAngle],
+        window_size: usize,
+    ) -> Vec<BendWindow> {
         let mut windows = Vec::new();
 
         if angles.len() < window_size {
@@ -363,13 +397,9 @@ impl CurvatureAnalyzer {
             let end = start + window_size;
             let window_angles = &angles[start..end];
 
-            let total_curvature: f64 = window_angles.iter()
-                .map(|a| a.angle_degrees.abs())
-                .sum();
+            let total_curvature: f64 = window_angles.iter().map(|a| a.angle_degrees.abs()).sum();
 
-            let bend_count = window_angles.iter()
-                .filter(|a| !a.is_straight)
-                .count();
+            let bend_count = window_angles.iter().filter(|a| !a.is_straight).count();
 
             let importance_score = self.calculate_window_importance(total_curvature, bend_count);
 
@@ -506,7 +536,7 @@ impl Default for NodeCanonicalizer {
         Self {
             grid_hash: HashMap::new(),
             union_find: UnionFind::new(),
-            grid_resolution: 1.0, // 1 meter grid cells
+            grid_resolution: 1.0,    // 1 meter grid cells
             max_merge_distance: 5.0, // 5 meter merge threshold
             canonical_mapping: HashMap::new(),
         }
@@ -531,12 +561,12 @@ impl NodeCanonicalizer {
     /// Add a node for canonicalization
     pub fn add_node(&mut self, node_id: i64, coords: (f64, f64), is_semantically_important: bool) {
         self.union_find.make_set(node_id);
-        
+
         let grid_cell = self.coords_to_grid(coords);
-        
+
         // Find merge candidate without borrowing
         let mut merge_target: Option<i64> = None;
-        
+
         // Check current and adjacent cells for merge candidates
         for dx in -1..=1 {
             for dy in -1..=1 {
@@ -548,8 +578,14 @@ impl NodeCanonicalizer {
                 if let Some(nodes) = self.grid_hash.get(&check_cell) {
                     for node in nodes {
                         let distance = self.haversine_distance(coords, node.canonical_coords);
-                        if distance <= self.max_merge_distance 
-                            && self.can_merge_nodes(coords, node.canonical_coords, is_semantically_important, node.is_semantically_important) {
+                        if distance <= self.max_merge_distance
+                            && self.can_merge_nodes(
+                                coords,
+                                node.canonical_coords,
+                                is_semantically_important,
+                                node.is_semantically_important,
+                            )
+                        {
                             merge_target = Some(node.original_id);
                             break;
                         }
@@ -577,7 +613,8 @@ impl NodeCanonicalizer {
                 is_semantically_important,
             };
 
-            self.grid_hash.entry(grid_cell)
+            self.grid_hash
+                .entry(grid_cell)
                 .or_default()
                 .push(canonical_node);
         }
@@ -591,11 +628,16 @@ impl NodeCanonicalizer {
         }
     }
 
-
     /// Check if two nodes can be safely merged
-    fn can_merge_nodes(&self, coords1: (f64, f64), coords2: (f64, f64), important1: bool, important2: bool) -> bool {
+    fn can_merge_nodes(
+        &self,
+        coords1: (f64, f64),
+        coords2: (f64, f64),
+        important1: bool,
+        important2: bool,
+    ) -> bool {
         let distance = self.haversine_distance(coords1, coords2);
-        
+
         // Distance check
         if distance > self.max_merge_distance {
             return false;
@@ -611,15 +653,23 @@ impl NodeCanonicalizer {
     }
 
     /// Update canonical node with merged coordinates
-    fn update_canonical_node(&mut self, grid_cell: &GridCell, canonical_id: i64, new_node_id: i64, new_coords: (f64, f64)) {
+    fn update_canonical_node(
+        &mut self,
+        grid_cell: &GridCell,
+        canonical_id: i64,
+        new_node_id: i64,
+        new_coords: (f64, f64),
+    ) {
         if let Some(nodes) = self.grid_hash.get_mut(grid_cell) {
             for node in nodes.iter_mut() {
                 if node.original_id == canonical_id {
                     // Recalculate canonical coordinates as average
                     let total_nodes = node.merged_nodes.len() as f64;
-                    let new_x = (node.canonical_coords.0 * total_nodes + new_coords.0) / (total_nodes + 1.0);
-                    let new_y = (node.canonical_coords.1 * total_nodes + new_coords.1) / (total_nodes + 1.0);
-                    
+                    let new_x = (node.canonical_coords.0 * total_nodes + new_coords.0)
+                        / (total_nodes + 1.0);
+                    let new_y = (node.canonical_coords.1 * total_nodes + new_coords.1)
+                        / (total_nodes + 1.0);
+
                     node.canonical_coords = (new_x, new_y);
                     node.merged_nodes.push(new_node_id);
                     break;
@@ -632,11 +682,10 @@ impl NodeCanonicalizer {
     fn haversine_distance(&self, p1: (f64, f64), p2: (f64, f64)) -> f64 {
         let dlat = (p2.0 - p1.0).to_radians();
         let dlon = (p2.1 - p1.1).to_radians();
-        
-        let a = (dlat / 2.0).sin().powi(2) + 
-                p1.0.to_radians().cos() * p2.0.to_radians().cos() * 
-                (dlon / 2.0).sin().powi(2);
-        
+
+        let a = (dlat / 2.0).sin().powi(2)
+            + p1.0.to_radians().cos() * p2.0.to_radians().cos() * (dlon / 2.0).sin().powi(2);
+
         let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
         6371000.0 * c // Earth radius in meters
     }
@@ -684,14 +733,14 @@ impl NodeCanonicalizer {
 
     /// Get statistics about canonicalization
     pub fn get_stats(&self) -> CanonicalStats {
-        let total_nodes: usize = self.grid_hash.values()
+        let total_nodes: usize = self
+            .grid_hash
+            .values()
             .flat_map(|nodes| nodes.iter())
             .map(|node| node.merged_nodes.len())
             .sum();
 
-        let canonical_nodes: usize = self.grid_hash.values()
-            .map(|nodes| nodes.len())
-            .sum();
+        let canonical_nodes: usize = self.grid_hash.values().map(|nodes| nodes.len()).sum();
 
         let merged_count = total_nodes - canonical_nodes;
 
@@ -699,10 +748,10 @@ impl NodeCanonicalizer {
             total_original_nodes: total_nodes,
             canonical_nodes,
             merged_nodes: merged_count,
-            compression_ratio: if total_nodes > 0 { 
-                canonical_nodes as f64 / total_nodes as f64 
-            } else { 
-                1.0 
+            compression_ratio: if total_nodes > 0 {
+                canonical_nodes as f64 / total_nodes as f64
+            } else {
+                1.0
             },
         }
     }
@@ -762,7 +811,7 @@ impl Default for CoarseningPolicy {
         Self {
             semantic_threshold: 2.0,
             curvature_threshold: 10.0, // degrees
-            merge_distance: 5.0, // meters
+            merge_distance: 5.0,       // meters
             tile_importance: 1.0,
             node_count: 0,
         }
@@ -785,9 +834,16 @@ impl PolicySmoother {
     }
 
     /// Add coarsening data for a tile
-    pub fn add_tile_data(&mut self, lat: f64, lon: f64, semantic_score: f64, curvature_score: f64, node_count: usize) {
+    pub fn add_tile_data(
+        &mut self,
+        lat: f64,
+        lon: f64,
+        semantic_score: f64,
+        curvature_score: f64,
+        node_count: usize,
+    ) {
         let tile_coord = self.coords_to_tile(lat, lon);
-        
+
         let policy = CoarseningPolicy {
             semantic_threshold: semantic_score,
             curvature_threshold: curvature_score,
@@ -804,7 +860,7 @@ impl PolicySmoother {
         // Convert to meters using Web Mercator approximation
         let x_meters = lon * 111_320.0; // Approximate meters per degree longitude
         let y_meters = lat * 110_540.0; // Approximate meters per degree latitude
-        
+
         TileCoord {
             x: (x_meters / self.tile_size).floor() as i32,
             y: (y_meters / self.tile_size).floor() as i32,
@@ -975,7 +1031,8 @@ impl NodeMapper {
     /// Add node mapping
     pub fn add_mapping(&mut self, original_id: i64, canonical_id: i64) {
         self.mapping.insert(original_id, canonical_id);
-        self.reverse_mapping.entry(canonical_id)
+        self.reverse_mapping
+            .entry(canonical_id)
             .or_default()
             .push(original_id);
     }
@@ -987,7 +1044,8 @@ impl NodeMapper {
 
     /// Get all original IDs for canonical node
     pub fn get_originals(&self, canonical_id: i64) -> Vec<i64> {
-        self.reverse_mapping.get(&canonical_id)
+        self.reverse_mapping
+            .get(&canonical_id)
             .cloned()
             .unwrap_or_default()
     }
@@ -1083,29 +1141,36 @@ impl CanonicalAdjacency {
     /// Add an edge between canonical nodes
     pub fn add_edge(&mut self, from_canonical: i64, to_canonical: i64, edge_info: EdgeInfo) {
         // Add to adjacency lists (bidirectional)
-        self.adjacency_lists.entry(from_canonical)
+        self.adjacency_lists
+            .entry(from_canonical)
             .or_default()
             .insert(to_canonical);
-        self.adjacency_lists.entry(to_canonical)
+        self.adjacency_lists
+            .entry(to_canonical)
             .or_default()
             .insert(from_canonical);
 
         // Store edge details
-        self.edge_details.insert((from_canonical, to_canonical), edge_info.clone());
-        self.edge_details.insert((to_canonical, from_canonical), edge_info);
+        self.edge_details
+            .insert((from_canonical, to_canonical), edge_info.clone());
+        self.edge_details
+            .insert((to_canonical, from_canonical), edge_info);
 
         // Update neighbor index
-        self.neighbor_index.entry(from_canonical)
+        self.neighbor_index
+            .entry(from_canonical)
             .or_default()
             .push(to_canonical);
-        self.neighbor_index.entry(to_canonical)
+        self.neighbor_index
+            .entry(to_canonical)
             .or_default()
             .push(from_canonical);
     }
 
     /// Get neighbors of a canonical node
     pub fn get_neighbors(&self, canonical_node: i64) -> Vec<i64> {
-        self.neighbor_index.get(&canonical_node)
+        self.neighbor_index
+            .get(&canonical_node)
             .cloned()
             .unwrap_or_default()
     }
@@ -1117,7 +1182,8 @@ impl CanonicalAdjacency {
 
     /// Get degree of a canonical node
     pub fn get_degree(&self, canonical_node: i64) -> usize {
-        self.adjacency_lists.get(&canonical_node)
+        self.adjacency_lists
+            .get(&canonical_node)
             .map(|neighbors| neighbors.len())
             .unwrap_or(0)
     }
@@ -1128,7 +1194,11 @@ impl CanonicalAdjacency {
     }
 
     /// Build adjacency from way data and canonical mapping
-    pub fn build_from_ways(&mut self, ways: &[(i64, Vec<i64>, HashMap<String, String>)], node_canonicalizer: &NodeCanonicalizer) {
+    pub fn build_from_ways(
+        &mut self,
+        ways: &[(i64, Vec<i64>, HashMap<String, String>)],
+        node_canonicalizer: &NodeCanonicalizer,
+    ) {
         for (way_id, node_refs, tags) in ways {
             if node_refs.len() < 2 {
                 continue; // Skip ways with insufficient nodes
@@ -1158,7 +1228,10 @@ impl CanonicalAdjacency {
                         original_way_ids: vec![*way_id],
                         length_meters: 100.0, // Placeholder - would calculate from geometry
                         is_semantically_important: self.is_semantically_important_way(tags),
-                        highway_class: tags.get("highway").map_or("unclassified", |v| v).to_string(),
+                        highway_class: tags
+                            .get("highway")
+                            .map_or("unclassified", |v| v)
+                            .to_string(),
                         access_restrictions: self.extract_access_restrictions(tags),
                         geometry: vec![], // Placeholder - would include intermediate points
                     };
@@ -1171,16 +1244,16 @@ impl CanonicalAdjacency {
 
     /// Check if way is semantically important
     fn is_semantically_important_way(&self, tags: &HashMap<String, String>) -> bool {
-        tags.contains_key("name") || 
-        tags.contains_key("ref") ||
-        tags.get("bridge").is_some_and(|v| v == "yes") ||
-        tags.get("tunnel").is_some_and(|v| v == "yes")
+        tags.contains_key("name")
+            || tags.contains_key("ref")
+            || tags.get("bridge").is_some_and(|v| v == "yes")
+            || tags.get("tunnel").is_some_and(|v| v == "yes")
     }
 
     /// Extract access restrictions from tags
     fn extract_access_restrictions(&self, tags: &HashMap<String, String>) -> Vec<String> {
         let mut restrictions = Vec::new();
-        
+
         let access_tags = ["access", "vehicle", "motor_vehicle", "bicycle", "foot"];
         for tag in &access_tags {
             if let Some(value) = tags.get(*tag) {
@@ -1189,7 +1262,7 @@ impl CanonicalAdjacency {
                 }
             }
         }
-        
+
         restrictions
     }
 
@@ -1276,7 +1349,7 @@ pub struct CollapsePolicy {
 impl Default for CollapsePolicy {
     fn default() -> Self {
         Self {
-            max_points_per_segment: 4096, // M3.2 requirement
+            max_points_per_segment: 4096,   // M3.2 requirement
             max_length_per_segment: 1000.0, // 1km limit from M3.2
             preserve_semantic_boundaries: true,
             preserve_tile_boundaries: true,
@@ -1297,7 +1370,11 @@ impl SuperEdgeConstructor {
     }
 
     /// Construct super-edges by collapsing degree-2 nodes
-    pub fn construct_super_edges(&mut self, adjacency: &CanonicalAdjacency, semantic_breakpoints: &SemanticBreakpoints) {
+    pub fn construct_super_edges(
+        &mut self,
+        adjacency: &CanonicalAdjacency,
+        semantic_breakpoints: &SemanticBreakpoints,
+    ) {
         let all_nodes = adjacency.get_all_nodes();
         let mut visited = HashSet::new();
 
@@ -1307,7 +1384,7 @@ impl SuperEdgeConstructor {
             }
 
             let degree = adjacency.get_degree(start_node);
-            
+
             // Only start collapse from non-degree-2 nodes or end nodes
             if degree == 2 {
                 continue;
@@ -1320,16 +1397,30 @@ impl SuperEdgeConstructor {
                     continue;
                 }
 
-                let super_edge = self.collapse_chain(start_node, neighbor, adjacency, semantic_breakpoints, &mut visited);
+                let super_edge = self.collapse_chain(
+                    start_node,
+                    neighbor,
+                    adjacency,
+                    semantic_breakpoints,
+                    &mut visited,
+                );
                 if let Some(edge) = super_edge {
-                    self.super_edges.insert((edge.start_node, edge.end_node), edge);
+                    self.super_edges
+                        .insert((edge.start_node, edge.end_node), edge);
                 }
             }
         }
     }
 
     /// Collapse a chain of degree-2 nodes into a super-edge
-    fn collapse_chain(&self, start: i64, first_neighbor: i64, adjacency: &CanonicalAdjacency, _semantic_breakpoints: &SemanticBreakpoints, visited: &mut HashSet<i64>) -> Option<SuperEdge> {
+    fn collapse_chain(
+        &self,
+        start: i64,
+        first_neighbor: i64,
+        adjacency: &CanonicalAdjacency,
+        _semantic_breakpoints: &SemanticBreakpoints,
+        visited: &mut HashSet<i64>,
+    ) -> Option<SuperEdge> {
         let mut current = first_neighbor;
         let mut previous = start;
         let mut collapsed_nodes = Vec::new();
@@ -1357,7 +1448,7 @@ impl SuperEdgeConstructor {
         loop {
             visited.insert(current);
             let neighbors = adjacency.get_neighbors(current);
-            
+
             // Stop if not degree-2
             if neighbors.len() != 2 {
                 break;
@@ -1378,14 +1469,14 @@ impl SuperEdgeConstructor {
             }
 
             // Find next node (not the previous one)
-            let next = neighbors.iter()
-                .find(|&&n| n != previous)
-                .copied()?;
+            let next = neighbors.iter().find(|&&n| n != previous).copied()?;
 
             // Get edge to next node
             if let Some(edge_info) = adjacency.get_edge_info(current, next) {
                 // Check segment guards before adding
-                if geometry.len() + edge_info.geometry.len() > self.collapse_policy.max_points_per_segment {
+                if geometry.len() + edge_info.geometry.len()
+                    > self.collapse_policy.max_points_per_segment
+                {
                     segment_guards.push(SegmentGuard {
                         position: geometry.len(),
                         reason: SegmentGuardReason::PointLimit,
@@ -1394,7 +1485,9 @@ impl SuperEdgeConstructor {
                     break;
                 }
 
-                if total_length + edge_info.length_meters > self.collapse_policy.max_length_per_segment {
+                if total_length + edge_info.length_meters
+                    > self.collapse_policy.max_length_per_segment
+                {
                     segment_guards.push(SegmentGuard {
                         position: geometry.len(),
                         reason: SegmentGuardReason::LengthLimit,
@@ -1442,7 +1535,8 @@ impl SuperEdgeConstructor {
 
     /// Get super-edge between two nodes
     pub fn get_super_edge(&self, start: i64, end: i64) -> Option<&SuperEdge> {
-        self.super_edges.get(&(start, end))
+        self.super_edges
+            .get(&(start, end))
             .or_else(|| self.super_edges.get(&(end, start)))
     }
 
@@ -1503,9 +1597,7 @@ impl BorderReconciliation {
 
     /// Add border edge for reconciliation
     pub fn add_border_edge(&mut self, boundary: TileBoundary, edge: BorderEdge) {
-        self.border_edges.entry(boundary)
-            .or_default()
-            .push(edge);
+        self.border_edges.entry(boundary).or_default().push(edge);
     }
 
     /// Reconcile borders across all tiles
@@ -1518,35 +1610,45 @@ impl BorderReconciliation {
     }
 
     /// Reconcile edges at a specific boundary
-    fn reconcile_boundary_edges(&mut self, boundary: &TileBoundary, edges: &[BorderEdge]) -> Result<(), String> {
+    fn reconcile_boundary_edges(
+        &mut self,
+        boundary: &TileBoundary,
+        edges: &[BorderEdge],
+    ) -> Result<(), String> {
         // 1. Find matching edges on adjacent tiles
         let adjacent_boundary = self.get_adjacent_boundary(boundary);
-        let adjacent_edges = self.border_edges.get(&adjacent_boundary).cloned().unwrap_or_default();
-        
+        let adjacent_edges = self
+            .border_edges
+            .get(&adjacent_boundary)
+            .cloned()
+            .unwrap_or_default();
+
         // 2. Match edges across boundary based on coordinates and attributes
         for edge in edges {
             let matching_edge = self.find_matching_edge(edge, &adjacent_edges)?;
-            
+
             if let Some(match_edge) = matching_edge {
                 // 3. Ensure consistent canonical node IDs
                 self.reconcile_node_ids(edge, &match_edge)?;
-                
+
                 // 4. Verify edge attributes match
                 self.verify_edge_attributes(edge, &match_edge)?;
-                
+
                 // 5. Update global mapping for consistent node IDs
                 self.update_global_node_mapping(edge, &match_edge)?;
             } else {
                 // Edge has no match - this could indicate data inconsistency
                 // For now, we'll log this but not fail the process
-                eprintln!("Warning: No matching edge found for border edge {} on boundary {:?}", 
-                         edge.local_edge_id, boundary);
+                eprintln!(
+                    "Warning: No matching edge found for border edge {} on boundary {:?}",
+                    edge.local_edge_id, boundary
+                );
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Get the adjacent boundary for cross-tile matching
     fn get_adjacent_boundary(&self, boundary: &TileBoundary) -> TileBoundary {
         match boundary.side {
@@ -1572,16 +1674,20 @@ impl BorderReconciliation {
             },
         }
     }
-    
+
     /// Find matching edge on adjacent tile
-    fn find_matching_edge(&self, edge: &BorderEdge, adjacent_edges: &[BorderEdge]) -> Result<Option<BorderEdge>, String> {
+    fn find_matching_edge(
+        &self,
+        edge: &BorderEdge,
+        adjacent_edges: &[BorderEdge],
+    ) -> Result<Option<BorderEdge>, String> {
         const COORDINATE_TOLERANCE: f64 = 1e-6; // Small tolerance for coordinate matching
-        
+
         for adj_edge in adjacent_edges {
             // Match by crossing coordinates (should be very close)
             let lat_diff = (edge.crossing_coords.0 - adj_edge.crossing_coords.0).abs();
             let lon_diff = (edge.crossing_coords.1 - adj_edge.crossing_coords.1).abs();
-            
+
             if lat_diff < COORDINATE_TOLERANCE && lon_diff < COORDINATE_TOLERANCE {
                 // Verify highway class matches
                 if edge.highway_class == adj_edge.highway_class {
@@ -1589,62 +1695,68 @@ impl BorderReconciliation {
                 } else {
                     return Err(format!(
                         "Highway class mismatch at coordinates ({}, {}): {} vs {}",
-                        edge.crossing_coords.0, edge.crossing_coords.1,
-                        edge.highway_class, adj_edge.highway_class
+                        edge.crossing_coords.0,
+                        edge.crossing_coords.1,
+                        edge.highway_class,
+                        adj_edge.highway_class
                     ));
                 }
             }
         }
-        
+
         Ok(None)
     }
-    
+
     /// Reconcile canonical node IDs between matched edges
     fn reconcile_node_ids(&mut self, edge1: &BorderEdge, edge2: &BorderEdge) -> Result<(), String> {
         // For border reconciliation, we need to ensure that nodes representing
         // the same geographic location have the same canonical ID across tiles
-        
+
         // The crossing coordinates represent the boundary point - only nodes
         // at this exact location should get the same global ID
         let boundary_global_id = self.coordinate_to_global_id(edge1.crossing_coords);
-        
+
         // Update global mapping for both tiles
         let tile1_id = self.extract_tile_id_from_edge(edge1);
         let tile2_id = self.extract_tile_id_from_edge(edge2);
-        
+
         // Determine which nodes are actually at the boundary crossing
         // In a border edge, typically one node is at the boundary and one is internal
         let (boundary_node1, internal_node1) = self.identify_boundary_nodes(edge1)?;
         let (boundary_node2, internal_node2) = self.identify_boundary_nodes(edge2)?;
-        
+
         // Map boundary nodes to the same global ID
-        self.global_mapping.insert((boundary_node1, tile1_id), boundary_global_id);
-        self.global_mapping.insert((boundary_node2, tile2_id), boundary_global_id);
-        
+        self.global_mapping
+            .insert((boundary_node1, tile1_id), boundary_global_id);
+        self.global_mapping
+            .insert((boundary_node2, tile2_id), boundary_global_id);
+
         // Internal nodes get their own unique global IDs based on their tile + local ID
         // This ensures they don't conflict with boundary nodes but remain unique
         let internal_global_id1 = self.generate_internal_global_id(internal_node1, tile1_id);
         let internal_global_id2 = self.generate_internal_global_id(internal_node2, tile2_id);
-        
-        self.global_mapping.insert((internal_node1, tile1_id), internal_global_id1);
-        self.global_mapping.insert((internal_node2, tile2_id), internal_global_id2);
-        
+
+        self.global_mapping
+            .insert((internal_node1, tile1_id), internal_global_id1);
+        self.global_mapping
+            .insert((internal_node2, tile2_id), internal_global_id2);
+
         Ok(())
     }
-    
+
     /// Identify which nodes in a border edge are at the boundary vs internal
     fn identify_boundary_nodes(&self, edge: &BorderEdge) -> Result<(i64, i64), String> {
         // Analyze the edge to determine which node is actually at the tile boundary
         // This is based on the assumption that crossing_coords represents where
         // the edge intersects the tile boundary
-        
+
         // For a proper implementation, we would need the actual coordinates of both nodes
         // Since BorderEdge doesn't contain node coordinates, we'll use the semantic
         // information available to make the best determination possible
-        
+
         // Method 1: Use tile boundary information to infer node positions
         let tile_boundary_info = self.analyze_tile_boundary_position(edge)?;
-        
+
         match tile_boundary_info {
             BoundaryPosition::StartNodeOnBoundary => Ok((edge.start_node, edge.end_node)),
             BoundaryPosition::EndNodeOnBoundary => Ok((edge.end_node, edge.start_node)),
@@ -1659,32 +1771,35 @@ impl BorderReconciliation {
             }
         }
     }
-    
+
     /// Analyze tile boundary position to determine node roles
-    fn analyze_tile_boundary_position(&self, edge: &BorderEdge) -> Result<BoundaryPosition, String> {
+    fn analyze_tile_boundary_position(
+        &self,
+        edge: &BorderEdge,
+    ) -> Result<BoundaryPosition, String> {
         // Analyze the tile boundary side and crossing coordinates to determine
         // the most likely boundary node configuration
-        
+
         // Extract tile coordinates from the crossing point
         let tile_id = self.extract_tile_id_from_edge(edge);
         let (tile_x, tile_y) = self.tile_id_to_coordinates(tile_id);
-        
+
         // Calculate tile boundaries based on 125m grid
         const TILE_SIZE_METERS: f64 = 125.0;
         const EARTH_RADIUS: f64 = 6371000.0;
-        
+
         let tile_lat_rad = (tile_y as f64 * TILE_SIZE_METERS) / EARTH_RADIUS;
         let tile_lon_rad = (tile_x as f64 * TILE_SIZE_METERS) / EARTH_RADIUS;
-        
+
         let crossing_lat_rad = edge.crossing_coords.0.to_radians();
         let crossing_lon_rad = edge.crossing_coords.1.to_radians();
-        
+
         // Determine which edge of the tile the crossing is closest to
         let lat_diff = (crossing_lat_rad - tile_lat_rad).abs();
         let lon_diff = (crossing_lon_rad - tile_lon_rad).abs();
-        
+
         const BOUNDARY_TOLERANCE: f64 = 1e-6; // Small tolerance for boundary detection
-        
+
         // If crossing is very close to tile boundary, we can make educated guesses
         if lat_diff < BOUNDARY_TOLERANCE || lon_diff < BOUNDARY_TOLERANCE {
             // The edge crosses near a tile boundary
@@ -1699,96 +1814,106 @@ impl BorderReconciliation {
             Ok(BoundaryPosition::Ambiguous)
         }
     }
-    
+
     /// Convert tile ID back to tile coordinates
     fn tile_id_to_coordinates(&self, tile_id: i64) -> (i32, i32) {
         // Reverse the Cantor pairing function used in extract_tile_id_from_edge
         // This is an approximation since we lost some information in the encoding
-        
+
         // For simplicity, we'll use the tile_id to derive approximate coordinates
         let sqrt_id = (tile_id as f64).sqrt() as i64;
         let tile_x = (sqrt_id % 1000) as i32;
         let tile_y = (sqrt_id / 1000) as i32;
-        
+
         (tile_x, tile_y)
     }
-    
+
     /// Verify that edge attributes are consistent across tiles
     fn verify_edge_attributes(&self, edge1: &BorderEdge, edge2: &BorderEdge) -> Result<(), String> {
         // Highway class should match (already checked in find_matching_edge)
         if edge1.highway_class != edge2.highway_class {
-            return Err(format!("Highway class mismatch: {} vs {}", 
-                              edge1.highway_class, edge2.highway_class));
+            return Err(format!(
+                "Highway class mismatch: {} vs {}",
+                edge1.highway_class, edge2.highway_class
+            ));
         }
-        
+
         // Access restrictions should be compatible
-        let restrictions1: std::collections::HashSet<_> = edge1.access_restrictions.iter().collect();
-        let restrictions2: std::collections::HashSet<_> = edge2.access_restrictions.iter().collect();
-        
+        let restrictions1: std::collections::HashSet<_> =
+            edge1.access_restrictions.iter().collect();
+        let restrictions2: std::collections::HashSet<_> =
+            edge2.access_restrictions.iter().collect();
+
         // Check for major conflicts (some variations are acceptable)
         for restriction in &restrictions1 {
             if restriction.contains("access=no") && !restrictions2.contains(restriction) {
-                eprintln!("Warning: Access restriction inconsistency at ({}, {}): {}", 
-                         edge1.crossing_coords.0, edge1.crossing_coords.1, restriction);
+                eprintln!(
+                    "Warning: Access restriction inconsistency at ({}, {}): {}",
+                    edge1.crossing_coords.0, edge1.crossing_coords.1, restriction
+                );
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Update global node mapping for consistent IDs
-    fn update_global_node_mapping(&mut self, edge1: &BorderEdge, edge2: &BorderEdge) -> Result<(), String> {
+    fn update_global_node_mapping(
+        &mut self,
+        edge1: &BorderEdge,
+        edge2: &BorderEdge,
+    ) -> Result<(), String> {
         // This extends the reconcile_node_ids functionality
         // Additional validation could be added here for complex scenarios
-        
+
         // Verify that our mapping is consistent
         let tile1_id = self.extract_tile_id_from_edge(edge1);
         let tile2_id = self.extract_tile_id_from_edge(edge2);
-        
+
         // Check for mapping consistency
         if let (Some(&global1), Some(&global2)) = (
             self.global_mapping.get(&(edge1.start_node, tile1_id)),
-            self.global_mapping.get(&(edge2.start_node, tile2_id))
+            self.global_mapping.get(&(edge2.start_node, tile2_id)),
         ) {
             if global1 != global2 {
                 return Err(format!(
-                    "Inconsistent global mapping for border nodes: {} vs {}", 
+                    "Inconsistent global mapping for border nodes: {} vs {}",
                     global1, global2
                 ));
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Generate global canonical ID from coordinates
     fn coordinate_to_global_id(&self, coords: (f64, f64)) -> i64 {
         // Use a deterministic hash of coordinates to generate consistent global IDs
         // This ensures the same coordinates always produce the same ID across tiles
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        
+
         let mut hasher = DefaultHasher::new();
-        
+
         // Scale coordinates to avoid floating point precision issues
         let scaled_lat = (coords.0 * 1_000_000.0).round() as i64;
         let scaled_lon = (coords.1 * 1_000_000.0).round() as i64;
-        
+
         scaled_lat.hash(&mut hasher);
         scaled_lon.hash(&mut hasher);
-        
+
         hasher.finish() as i64
     }
-    
+
     /// Extract tile ID from edge based on local edge ID encoding
     fn extract_tile_id_from_edge(&self, edge: &BorderEdge) -> i64 {
         // In this implementation, we derive the tile ID from the edge's local_edge_id
         // and crossing coordinates. This assumes the local_edge_id incorporates
         // tile-specific information or we can derive it from coordinates.
-        
+
         // Method 1: Extract from high bits of local_edge_id (assuming encoding includes tile info)
         let potential_tile_from_id = edge.local_edge_id >> 32; // Upper 32 bits as tile ID
-        
+
         if potential_tile_from_id != 0 {
             // If upper bits contain tile info, use it
             potential_tile_from_id
@@ -1797,20 +1922,20 @@ impl BorderReconciliation {
             // Assuming 125m tiles (same as telemetry system)
             const TILE_SIZE_METERS: f64 = 125.0;
             const EARTH_RADIUS: f64 = 6371000.0;
-            
+
             // Convert coordinates to tile indices
             let lat_rad = edge.crossing_coords.0.to_radians();
             let lon_rad = edge.crossing_coords.1.to_radians();
-            
+
             // Approximate tile calculation (simplified for this implementation)
             let tile_x = ((lon_rad * EARTH_RADIUS) / TILE_SIZE_METERS).floor() as i32;
             let tile_y = ((lat_rad * EARTH_RADIUS) / TILE_SIZE_METERS).floor() as i32;
-            
+
             // Combine tile coordinates into a single ID
             // Using Cantor pairing function for unique ID generation
             let tile_x_abs = tile_x.abs() as i64;
             let tile_y_abs = tile_y.abs() as i64;
-            
+
             // Cantor pairing: (x + y) * (x + y + 1) / 2 + y
             let sum = tile_x_abs + tile_y_abs;
             (sum * (sum + 1)) / 2 + tile_y_abs
@@ -1823,16 +1948,16 @@ impl BorderReconciliation {
         // Use a different hash space than coordinate-based IDs to avoid conflicts
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        
+
         let mut hasher = DefaultHasher::new();
-        
+
         // Hash tile ID and local node ID together
         tile_id.hash(&mut hasher);
         local_node.hash(&mut hasher);
-        
+
         // Add a salt to distinguish from coordinate-based hashes
         "internal_node".hash(&mut hasher);
-        
+
         hasher.finish() as i64
     }
 
@@ -1911,7 +2036,11 @@ impl GraphDebugger {
         // Calculate degree distribution
         for node in &all_nodes {
             let degree = adjacency.get_degree(*node);
-            *self.node_stats.degree_distribution.entry(degree).or_default() += 1;
+            *self
+                .node_stats
+                .degree_distribution
+                .entry(degree)
+                .or_default() += 1;
         }
 
         // Count edges and analyze
@@ -1923,11 +2052,14 @@ impl GraphDebugger {
         for node in &all_nodes {
             let neighbors = adjacency.get_neighbors(*node);
             for neighbor in neighbors {
-                if node < &neighbor { // Count each edge only once
+                if node < &neighbor {
+                    // Count each edge only once
                     total_edges += 1;
                     if let Some(edge_info) = adjacency.get_edge_info(*node, neighbor) {
                         total_length += edge_info.length_meters;
-                        *highway_classes.entry(edge_info.highway_class.clone()).or_default() += 1;
+                        *highway_classes
+                            .entry(edge_info.highway_class.clone())
+                            .or_default() += 1;
                         if !edge_info.access_restrictions.is_empty() {
                             access_restricted += 1;
                         }
@@ -1975,7 +2107,10 @@ impl GraphDebugger {
     }
 
     /// Generate nodes.bin artifact
-    pub fn generate_nodes_bin(&self, adjacency: &CanonicalAdjacency) -> Result<Vec<u8>, std::io::Error> {
+    pub fn generate_nodes_bin(
+        &self,
+        adjacency: &CanonicalAdjacency,
+    ) -> Result<Vec<u8>, std::io::Error> {
         use std::io::{Cursor, Write};
 
         let mut buffer = Cursor::new(Vec::new());
@@ -1992,7 +2127,7 @@ impl GraphDebugger {
 
             buffer.write_all(&node_id.to_le_bytes())?;
             buffer.write_all(&(degree as u32).to_le_bytes())?;
-            
+
             for neighbor in neighbors {
                 buffer.write_all(&neighbor.to_le_bytes())?;
             }
@@ -2002,7 +2137,10 @@ impl GraphDebugger {
     }
 
     /// Generate super_edges.bin artifact
-    pub fn generate_super_edges_bin(&self, super_edge_constructor: &SuperEdgeConstructor) -> Result<Vec<u8>, std::io::Error> {
+    pub fn generate_super_edges_bin(
+        &self,
+        super_edge_constructor: &SuperEdgeConstructor,
+    ) -> Result<Vec<u8>, std::io::Error> {
         use std::io::{Cursor, Write};
 
         let mut buffer = Cursor::new(Vec::new());
@@ -2018,7 +2156,7 @@ impl GraphDebugger {
             buffer.write_all(&super_edge.end_node.to_le_bytes())?;
             buffer.write_all(&(super_edge.total_length as f32).to_le_bytes())?;
             buffer.write_all(&(super_edge.collapsed_nodes.len() as u32).to_le_bytes())?;
-            
+
             for &collapsed_node in &super_edge.collapsed_nodes {
                 buffer.write_all(&collapsed_node.to_le_bytes())?;
             }
@@ -2034,7 +2172,10 @@ impl GraphDebugger {
     }
 
     /// Generate geom.temp artifact (temporary geometry storage)
-    pub fn generate_geom_temp(&self, super_edge_constructor: &SuperEdgeConstructor) -> Result<Vec<u8>, std::io::Error> {
+    pub fn generate_geom_temp(
+        &self,
+        super_edge_constructor: &SuperEdgeConstructor,
+    ) -> Result<Vec<u8>, std::io::Error> {
         use std::io::{Cursor, Write};
 
         let mut buffer = Cursor::new(Vec::new());
@@ -2048,7 +2189,7 @@ impl GraphDebugger {
             let edge_id = format!("{}_{}", super_edge.start_node, super_edge.end_node);
             buffer.write_all(edge_id.as_bytes())?;
             buffer.write_all(b"\n")?;
-            
+
             buffer.write_all(&(super_edge.geometry.len() as u32).to_le_bytes())?;
             for (lat, lon) in &super_edge.geometry {
                 buffer.write_all(&(*lat).to_le_bytes())?;
@@ -2069,7 +2210,11 @@ impl GraphDebugger {
     }
 
     /// Get edge details for /graph/edge/{id} API
-    pub fn get_edge_details(&self, edge_id: &str, adjacency: &CanonicalAdjacency) -> Option<serde_json::Value> {
+    pub fn get_edge_details(
+        &self,
+        edge_id: &str,
+        adjacency: &CanonicalAdjacency,
+    ) -> Option<serde_json::Value> {
         // Parse edge ID (format: "start_end")
         let parts: Vec<&str> = edge_id.split('_').collect();
         if parts.len() != 2 {
@@ -2079,7 +2224,8 @@ impl GraphDebugger {
         let start: i64 = parts[0].parse().ok()?;
         let end: i64 = parts[1].parse().ok()?;
 
-        adjacency.get_edge_info(start, end).map(|edge_info| serde_json::json!({
+        adjacency.get_edge_info(start, end).map(|edge_info| {
+            serde_json::json!({
                 "start_node": start,
                 "end_node": end,
                 "length_meters": edge_info.length_meters,
@@ -2088,7 +2234,8 @@ impl GraphDebugger {
                 "is_semantically_important": edge_info.is_semantically_important,
                 "original_way_ids": edge_info.original_way_ids,
                 "geometry": edge_info.geometry
-            }))
+            })
+        })
     }
 
     /// Clear debug data
@@ -2106,15 +2253,15 @@ mod tests {
     #[test]
     fn test_semantic_importance_detection() {
         let breakpoints = SemanticBreakpoints::new();
-        
+
         // Test way with name and ref
         let mut tags = HashMap::new();
         tags.insert("name".to_string(), "Main Street".to_string());
         tags.insert("ref".to_string(), "A1".to_string());
         tags.insert("bridge".to_string(), "yes".to_string());
-        
+
         let importance = breakpoints.analyze_way_semantics(&tags);
-        
+
         assert!(importance.has_name);
         assert!(importance.has_ref);
         assert!(importance.is_bridge);
@@ -2124,37 +2271,37 @@ mod tests {
     #[test]
     fn test_access_restrictions() {
         let breakpoints = SemanticBreakpoints::new();
-        
+
         let mut tags = HashMap::new();
         tags.insert("access".to_string(), "private".to_string());
-        
+
         assert!(breakpoints.has_access_restrictions(&tags));
-        
+
         tags.clear();
         tags.insert("motor_vehicle".to_string(), "no".to_string());
-        
+
         assert!(breakpoints.has_access_restrictions(&tags));
     }
 
     #[test]
     fn test_angle_calculation() {
         let analyzer = CurvatureAnalyzer::new();
-        
+
         // Straight line - should have 180 degree angle (straight through)
         let coords = vec![(0.0, 0.0), (0.0, 1.0), (0.0, 2.0)];
         let angles = analyzer.analyze_local_angles(&coords);
-        
+
         assert_eq!(angles.len(), 1);
         // The angle calculation returns the turn angle. For a straight line,
         // it should be close to 180 degrees (straight through) or close to 0
         let angle_abs = angles[0].angle_degrees.abs();
         assert!(angle_abs < 5.0 || (angle_abs - 180.0).abs() < 5.0);
         assert!(angles[0].is_straight);
-        
+
         // 90-degree turn
         let coords = vec![(0.0, 0.0), (0.0, 1.0), (1.0, 1.0)];
         let angles = analyzer.analyze_local_angles(&coords);
-        
+
         assert_eq!(angles.len(), 1);
         assert!((angles[0].angle_degrees.abs() - 90.0).abs() < 15.0);
         assert!(!angles[0].is_straight);
@@ -2163,63 +2310,59 @@ mod tests {
     #[test]
     fn test_fast_path_eligibility() {
         let analyzer = CurvatureAnalyzer::new();
-        
+
         // Long straight segment should be fast-path eligible
         let coords = vec![(0.0, 0.0), (0.0, 1.0), (0.0, 2.0)]; // ~222km total
-        let straight_angles = vec![
-            LocalAngle {
-                position: 1,
-                coordinates: (0.0, 1.0),
-                angle_degrees: 180.0, // Straight line
-                importance_score: 0,
-                is_straight: true,
-            }
-        ];
-        
+        let straight_angles = vec![LocalAngle {
+            position: 1,
+            coordinates: (0.0, 1.0),
+            angle_degrees: 180.0, // Straight line
+            importance_score: 0,
+            is_straight: true,
+        }];
+
         assert!(analyzer.is_fast_path_eligible(&straight_angles, &coords));
-        
+
         // Sharp angles should not be fast-path eligible
         let sharp_coords = vec![(0.0, 0.0), (0.0, 1.0), (1.0, 1.0)];
-        let sharp_angles = vec![
-            LocalAngle {
-                position: 1,
-                coordinates: (0.0, 1.0),
-                angle_degrees: 90.0,
-                importance_score: 3,
-                is_straight: false,
-            }
-        ];
-        
+        let sharp_angles = vec![LocalAngle {
+            position: 1,
+            coordinates: (0.0, 1.0),
+            angle_degrees: 90.0,
+            importance_score: 3,
+            is_straight: false,
+        }];
+
         assert!(!analyzer.is_fast_path_eligible(&sharp_angles, &sharp_coords));
-        
-        // Short straight segment should not be fast-path eligible  
+
+        // Short straight segment should not be fast-path eligible
         let short_coords = vec![(0.0, 0.0), (0.0, 0.0001)]; // ~11m
         let short_straight_angles = vec![];
-        
+
         assert!(!analyzer.is_fast_path_eligible(&short_straight_angles, &short_coords));
     }
 
     #[test]
     fn test_node_canonicalization() {
         let mut canonicalizer = NodeCanonicalizer::new();
-        
+
         // Add two nodes close together
         canonicalizer.add_node(1, (52.5200, 13.4050), false);
         canonicalizer.add_node(2, (52.5201, 13.4051), false); // ~15m apart
-        
+
         canonicalizer.finalize();
-        
+
         // Should not merge (distance > 5m threshold)
         let canonical1 = canonicalizer.get_canonical_id(1).unwrap();
         let canonical2 = canonicalizer.get_canonical_id(2).unwrap();
         assert_ne!(canonical1, canonical2);
-        
+
         // Add two nodes very close together
         canonicalizer.add_node(3, (52.5200, 13.4050), false);
         canonicalizer.add_node(4, (52.5200, 13.4050), false); // Same coordinates
-        
+
         canonicalizer.finalize();
-        
+
         // Should merge
         let canonical3 = canonicalizer.get_canonical_id(3).unwrap();
         let canonical4 = canonicalizer.get_canonical_id(4).unwrap();
@@ -2229,18 +2372,18 @@ mod tests {
     #[test]
     fn test_union_find() {
         let mut uf = UnionFind::new();
-        
+
         uf.make_set(1);
         uf.make_set(2);
         uf.make_set(3);
-        
+
         assert_eq!(uf.find(1), 1);
         assert_eq!(uf.find(2), 2);
-        
+
         uf.union(1, 2);
         assert_eq!(uf.find(1), uf.find(2));
         assert_ne!(uf.find(1), uf.find(3));
-        
+
         uf.union(2, 3);
         assert_eq!(uf.find(1), uf.find(3));
     }

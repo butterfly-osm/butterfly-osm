@@ -2,8 +2,8 @@
 //!
 //! Implements M1.4 - telemetry-driven parameter derivation for BuildPlan
 
-use butterfly_extract::{TelemetryOutput, DensityClass, GlobalPercentiles};
-use crate::{PlanConfig, MemoryBudget};
+use crate::{MemoryBudget, PlanConfig};
+use butterfly_extract::{DensityClass, GlobalPercentiles, TelemetryOutput};
 
 /// Adaptive planner that uses telemetry data to optimize parameters
 pub struct AdaptivePlanner {
@@ -21,27 +21,29 @@ impl AdaptivePlanner {
             telemetry: None,
         }
     }
-    
+
     /// Load telemetry data for adaptive planning
     pub fn load_telemetry(&mut self, telemetry: TelemetryOutput) {
         self.telemetry = Some(telemetry);
     }
-    
+
     /// Create adaptive build plan based on telemetry
     pub fn create_adaptive_plan(&self) -> AdaptiveBuildPlan {
         let Some(ref telemetry) = self.telemetry else {
             // Fallback to static plan if no telemetry available
             return AdaptiveBuildPlan::static_plan(&self.base_config);
         };
-        
+
         // Analyze density distribution
         let density_stats = self.analyze_density_distribution(telemetry);
-        
+
         // Derive adaptive parameters
-        let worker_scaling = self.calculate_worker_scaling(&density_stats, &telemetry.global_percentiles);
-        let memory_factors = self.calculate_memory_factors(&density_stats, &telemetry.global_percentiles);
+        let worker_scaling =
+            self.calculate_worker_scaling(&density_stats, &telemetry.global_percentiles);
+        let memory_factors =
+            self.calculate_memory_factors(&density_stats, &telemetry.global_percentiles);
         let chunk_sizes = self.calculate_adaptive_chunk_sizes(&density_stats);
-        
+
         AdaptiveBuildPlan {
             base_config: self.base_config.clone(),
             density_stats,
@@ -51,20 +53,20 @@ impl AdaptivePlanner {
             telemetry_summary: TelemetrySummary::from_telemetry(telemetry),
         }
     }
-    
+
     /// Analyze density distribution across tiles
     fn analyze_density_distribution(&self, telemetry: &TelemetryOutput) -> DensityDistribution {
         let mut urban_count = 0;
         let mut suburban_count = 0;
         let mut rural_count = 0;
-        
+
         let mut total_urban_density = 0.0;
         let mut total_suburban_density = 0.0;
         let mut total_rural_density = 0.0;
-        
+
         for tile in &telemetry.tiles {
             let road_density = tile.metrics.total_length_m / (125.0 * 125.0); // per m²
-            
+
             match tile.density_class {
                 DensityClass::Urban => {
                     urban_count += 1;
@@ -80,50 +82,66 @@ impl AdaptivePlanner {
                 }
             }
         }
-        
+
         let total_tiles = telemetry.total_tiles;
-        
+
         DensityDistribution {
             urban_ratio: urban_count as f64 / total_tiles as f64,
             suburban_ratio: suburban_count as f64 / total_tiles as f64,
             rural_ratio: rural_count as f64 / total_tiles as f64,
-            avg_urban_density: if urban_count > 0 { total_urban_density / urban_count as f64 } else { 0.0 },
-            avg_suburban_density: if suburban_count > 0 { total_suburban_density / suburban_count as f64 } else { 0.0 },
-            avg_rural_density: if rural_count > 0 { total_rural_density / rural_count as f64 } else { 0.0 },
+            avg_urban_density: if urban_count > 0 {
+                total_urban_density / urban_count as f64
+            } else {
+                0.0
+            },
+            avg_suburban_density: if suburban_count > 0 {
+                total_suburban_density / suburban_count as f64
+            } else {
+                0.0
+            },
+            avg_rural_density: if rural_count > 0 {
+                total_rural_density / rural_count as f64
+            } else {
+                0.0
+            },
             complexity_score: self.calculate_complexity_score(telemetry),
         }
     }
-    
+
     /// Calculate overall complexity score for the dataset
     fn calculate_complexity_score(&self, telemetry: &TelemetryOutput) -> f64 {
         let global = &telemetry.global_percentiles;
-        
+
         // Normalize metrics to 0-1 scale for complexity calculation
         let junction_complexity = (global.junction_count_p85 / 20.0).min(1.0); // Max ~20 junctions per tile
         let density_complexity = (global.density_p85 / 0.05).min(1.0); // Max 0.05 road density
         let length_complexity = (global.total_length_p85 / 10000.0).min(1.0); // Max 10km per tile
-        
+
         // Weighted average with emphasis on junctions and density
         junction_complexity * 0.4 + density_complexity * 0.4 + length_complexity * 0.2
     }
-    
+
     /// Calculate worker scaling factors based on density distribution
-    fn calculate_worker_scaling(&self, density: &DensityDistribution, _global: &GlobalPercentiles) -> WorkerScaling {
+    fn calculate_worker_scaling(
+        &self,
+        density: &DensityDistribution,
+        _global: &GlobalPercentiles,
+    ) -> WorkerScaling {
         // Scale workers based on complexity and urban ratio
         let base_workers = self.base_config.workers as usize;
-        
+
         // Urban areas need more parallelism due to complexity
         let urban_factor = 1.0 + (density.urban_ratio * 0.5); // Up to 50% more workers
-        
+
         // High complexity also increases worker needs
         let complexity_factor = 1.0 + (density.complexity_score * 0.3); // Up to 30% more
-        
+
         // But don't over-scale for rural-heavy datasets
         let rural_penalty = 1.0 - (density.rural_ratio * 0.2); // Up to 20% fewer workers
-        
+
         let total_factor = (urban_factor * complexity_factor * rural_penalty).clamp(0.5, 2.0);
         let recommended_workers = (base_workers as f64 * total_factor).round() as usize;
-        
+
         WorkerScaling {
             base_workers,
             recommended_workers: recommended_workers.max(1),
@@ -133,14 +151,19 @@ impl AdaptivePlanner {
             rural_penalty,
         }
     }
-    
+
     /// Calculate memory scaling factors
-    fn calculate_memory_factors(&self, density: &DensityDistribution, _global: &GlobalPercentiles) -> MemoryFactors {
+    fn calculate_memory_factors(
+        &self,
+        density: &DensityDistribution,
+        _global: &GlobalPercentiles,
+    ) -> MemoryFactors {
         // Memory needs scale with density and complexity
         let io_buffer_factor = 1.0 + (density.complexity_score * 0.4); // Up to 40% more I/O buffers
         let merge_heap_factor = 1.0 + (density.urban_ratio * 0.3); // Up to 30% more merge heaps
-        let per_worker_factor = 1.0 + ((density.avg_urban_density + density.avg_suburban_density) * 0.1);
-        
+        let per_worker_factor =
+            1.0 + ((density.avg_urban_density + density.avg_suburban_density) * 0.1);
+
         MemoryFactors {
             io_buffer_factor,
             merge_heap_factor,
@@ -148,20 +171,21 @@ impl AdaptivePlanner {
             overhead_factor: 1.0, // Keep overhead constant
         }
     }
-    
+
     /// Calculate adaptive chunk sizes for different processing phases
     fn calculate_adaptive_chunk_sizes(&self, density: &DensityDistribution) -> ChunkSizes {
         // Smaller chunks for dense urban areas, larger for rural
-        let density_mix = density.urban_ratio * 2.0 + density.suburban_ratio * 1.0 + density.rural_ratio * 0.5;
-        
+        let density_mix =
+            density.urban_ratio * 2.0 + density.suburban_ratio * 1.0 + density.rural_ratio * 0.5;
+
         // Base chunk sizes (in number of elements)
         let base_read_chunk = 10000;
         let base_process_chunk = 5000;
         let base_write_chunk = 8000;
-        
+
         // Scale based on density - denser areas need smaller chunks for better parallelism
         let chunk_factor = (2.0 - density_mix).clamp(0.5, 1.5);
-        
+
         ChunkSizes {
             read_chunk_size: (base_read_chunk as f64 * chunk_factor) as usize,
             process_chunk_size: (base_process_chunk as f64 * chunk_factor) as usize,
@@ -225,7 +249,7 @@ impl TelemetrySummary {
     fn from_telemetry(telemetry: &TelemetryOutput) -> Self {
         let avg_density = telemetry.global_percentiles.density_p50;
         let avg_junctions = telemetry.global_percentiles.junction_count_p50;
-        
+
         let complexity_rating = if avg_density > 0.03 && avg_junctions > 10.0 {
             ComplexityRating::High
         } else if avg_density > 0.015 || avg_junctions > 5.0 {
@@ -233,7 +257,7 @@ impl TelemetrySummary {
         } else {
             ComplexityRating::Low
         };
-        
+
         Self {
             total_tiles: telemetry.total_tiles,
             avg_road_density: avg_density,
@@ -303,31 +327,34 @@ impl AdaptiveBuildPlan {
             },
         }
     }
-    
+
     /// Create optimized configuration from adaptive plan
     pub fn to_optimized_config(&self) -> PlanConfig {
         let mut config = self.base_config.clone();
         config.workers = self.worker_scaling.recommended_workers as u32;
         config
     }
-    
+
     /// Create memory budget with adaptive factors
     pub fn create_adaptive_budget(&self) -> MemoryBudget {
         let config = self.to_optimized_config();
         let mut budget = MemoryBudget::new(config.max_ram_mb, config.workers);
-        
+
         // Apply memory scaling factors
-        budget.io_buffers_mb = (budget.io_buffers_mb as f64 * self.memory_factors.io_buffer_factor) as u32;
-        budget.merge_heaps_mb = (budget.merge_heaps_mb as f64 * self.memory_factors.merge_heap_factor) as u32;
-        budget.per_worker_mb = (budget.per_worker_mb as f64 * self.memory_factors.per_worker_factor) as u32;
-        
+        budget.io_buffers_mb =
+            (budget.io_buffers_mb as f64 * self.memory_factors.io_buffer_factor) as u32;
+        budget.merge_heaps_mb =
+            (budget.merge_heaps_mb as f64 * self.memory_factors.merge_heap_factor) as u32;
+        budget.per_worker_mb =
+            (budget.per_worker_mb as f64 * self.memory_factors.per_worker_factor) as u32;
+
         budget
     }
-    
+
     /// Generate planning recommendations
     pub fn recommendations(&self) -> Vec<String> {
         let mut recs = Vec::new();
-        
+
         // Worker recommendations
         if self.worker_scaling.recommended_workers != self.worker_scaling.base_workers {
             recs.push(format!(
@@ -337,7 +364,7 @@ impl AdaptiveBuildPlan {
                 ((self.worker_scaling.scaling_factor - 1.0) * 100.0) as i32
             ));
         }
-        
+
         // Complexity recommendations
         match self.telemetry_summary.complexity_rating {
             ComplexityRating::High => {
@@ -348,14 +375,17 @@ impl AdaptiveBuildPlan {
             }
             _ => {}
         }
-        
+
         // Density-specific recommendations
         if self.density_stats.urban_ratio > 0.7 {
             recs.push("Urban-heavy dataset: Prioritize memory for merge operations and smaller chunk sizes".to_string());
         } else if self.density_stats.rural_ratio > 0.7 {
-            recs.push("Rural-heavy dataset: Can optimize for larger chunks and sequential processing".to_string());
+            recs.push(
+                "Rural-heavy dataset: Can optimize for larger chunks and sequential processing"
+                    .to_string(),
+            );
         }
-        
+
         recs
     }
 }
@@ -364,23 +394,29 @@ impl AdaptiveBuildPlan {
 mod tests {
     use super::*;
     use butterfly_extract::GlobalPercentiles;
-    
+
     #[test]
     fn test_static_adaptive_plan() {
         let config = PlanConfig::default();
         let planner = AdaptivePlanner::new(config.clone());
         let plan = planner.create_adaptive_plan();
-        
+
         // Should create static plan when no telemetry
-        assert_eq!(plan.worker_scaling.recommended_workers, config.workers as usize);
-        assert_eq!(plan.telemetry_summary.complexity_rating, ComplexityRating::Medium);
+        assert_eq!(
+            plan.worker_scaling.recommended_workers,
+            config.workers as usize
+        );
+        assert_eq!(
+            plan.telemetry_summary.complexity_rating,
+            ComplexityRating::Medium
+        );
     }
-    
+
     #[test]
     fn test_density_distribution_analysis() {
         let config = PlanConfig::default();
         let mut planner = AdaptivePlanner::new(config);
-        
+
         // Create mock telemetry with urban-heavy distribution
         let global_percentiles = GlobalPercentiles {
             junction_count_p15: 1.0,
@@ -396,23 +432,23 @@ mod tests {
             density_p85: 0.04,
             density_p99: 0.08,
         };
-        
+
         let telemetry = TelemetryOutput {
             tile_size_meters: 125.0,
             total_tiles: 1000,
             global_percentiles,
             tiles: vec![], // Empty for this test
         };
-        
+
         planner.load_telemetry(telemetry);
         let plan = planner.create_adaptive_plan();
-        
+
         // Should have calculated density distribution
         assert!(plan.density_stats.complexity_score > 0.0);
         assert!(plan.worker_scaling.scaling_factor >= 0.5);
         assert!(plan.memory_factors.io_buffer_factor >= 1.0);
     }
-    
+
     #[test]
     fn test_worker_scaling() {
         let config = PlanConfig {
@@ -420,7 +456,7 @@ mod tests {
             ..Default::default()
         };
         let planner = AdaptivePlanner::new(config);
-        
+
         // High urban ratio should increase workers
         let density = DensityDistribution {
             urban_ratio: 0.8,
@@ -431,7 +467,7 @@ mod tests {
             avg_rural_density: 0.005,
             complexity_score: 0.7,
         };
-        
+
         let global = GlobalPercentiles {
             junction_count_p15: 5.0,
             junction_count_p50: 15.0,
@@ -446,19 +482,19 @@ mod tests {
             density_p85: 0.05,
             density_p99: 0.08,
         };
-        
+
         let scaling = planner.calculate_worker_scaling(&density, &global);
-        
+
         assert!(scaling.recommended_workers >= 4); // Should recommend at least base workers
         assert!(scaling.urban_factor > 1.0); // Urban areas increase workers
         assert!(scaling.complexity_factor > 1.0); // High complexity increases workers
     }
-    
+
     #[test]
     fn test_complexity_score_calculation() {
         let config = PlanConfig::default();
         let planner = AdaptivePlanner::new(config);
-        
+
         // High complexity telemetry
         let high_complexity = TelemetryOutput {
             tile_size_meters: 125.0,
@@ -479,11 +515,11 @@ mod tests {
             },
             tiles: vec![],
         };
-        
+
         let score = planner.calculate_complexity_score(&high_complexity);
         assert!(score > 0.7); // Should be high complexity
-        
-        // Low complexity telemetry  
+
+        // Low complexity telemetry
         let low_complexity = TelemetryOutput {
             tile_size_meters: 125.0,
             total_tiles: 100,
@@ -503,7 +539,7 @@ mod tests {
             },
             tiles: vec![],
         };
-        
+
         let score = planner.calculate_complexity_score(&low_complexity);
         assert!(score < 0.3); // Should be low complexity
     }

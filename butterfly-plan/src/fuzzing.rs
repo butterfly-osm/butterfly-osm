@@ -3,8 +3,10 @@
 //! Implements synthetic histogram fuzzing with planet-like distributions
 //! and safety invariant checking to ensure plans never exceed compile-time cap
 
-use butterfly_extract::{TelemetryOutput, TileTelemetry, TileMetrics, DensityClass, GlobalPercentiles, TileId};
-use crate::{AdaptivePlanner, PlanConfig, MemoryBudget, BFLY_MAX_RAM_MB};
+use crate::{AdaptivePlanner, MemoryBudget, PlanConfig, BFLY_MAX_RAM_MB};
+use butterfly_extract::{
+    DensityClass, GlobalPercentiles, TelemetryOutput, TileId, TileMetrics, TileTelemetry,
+};
 
 /// Fuzzing configuration for synthetic data generation
 #[derive(Debug, Clone)]
@@ -64,7 +66,7 @@ impl TelemetryFuzzer {
             config,
         }
     }
-    
+
     /// Generate synthetic telemetry data for fuzzing
     pub fn generate_synthetic_telemetry(&mut self) -> TelemetryOutput {
         let tiles = match self.config.distribution_type {
@@ -75,9 +77,9 @@ impl TelemetryFuzzer {
             DistributionType::PlanetLike => self.generate_planet_like_distribution(),
             DistributionType::Random => self.generate_random_distribution(),
         };
-        
+
         let global_percentiles = self.calculate_global_percentiles(&tiles);
-        
+
         TelemetryOutput {
             tile_size_meters: 125.0,
             total_tiles: tiles.len(),
@@ -85,74 +87,87 @@ impl TelemetryFuzzer {
             tiles,
         }
     }
-    
+
     /// Generate realistic world-like distribution
     fn generate_realistic_distribution(&mut self) -> Vec<TileTelemetry> {
         let mut tiles = Vec::new();
         let total_tiles = self.config.tile_count;
-        
+
         // Realistic proportions: ~10% urban, ~30% suburban, ~60% rural
         let urban_count = (total_tiles as f64 * 0.1) as usize;
         let suburban_count = (total_tiles as f64 * 0.3) as usize;
         let rural_count = total_tiles - urban_count - suburban_count;
-        
+
         // Generate urban tiles (high density, many junctions)
         for i in 0..urban_count {
             let tile_id = TileId { x: i as i32, y: 0 };
             let metrics = self.generate_urban_metrics();
             tiles.push(self.create_tile_telemetry(tile_id, metrics, DensityClass::Urban));
         }
-        
+
         // Generate suburban tiles (medium density)
         for i in 0..suburban_count {
-            let tile_id = TileId { x: (urban_count + i) as i32, y: 0 };
+            let tile_id = TileId {
+                x: (urban_count + i) as i32,
+                y: 0,
+            };
             let metrics = self.generate_suburban_metrics();
             tiles.push(self.create_tile_telemetry(tile_id, metrics, DensityClass::Suburban));
         }
-        
+
         // Generate rural tiles (low density)
         for i in 0..rural_count {
-            let tile_id = TileId { x: (urban_count + suburban_count + i) as i32, y: 0 };
+            let tile_id = TileId {
+                x: (urban_count + suburban_count + i) as i32,
+                y: 0,
+            };
             let metrics = self.generate_rural_metrics();
             tiles.push(self.create_tile_telemetry(tile_id, metrics, DensityClass::Rural));
         }
-        
+
         tiles
     }
-    
+
     /// Generate urban-heavy distribution for stress testing
     fn generate_urban_heavy_distribution(&mut self) -> Vec<TileTelemetry> {
         let mut tiles = Vec::new();
-        
+
         // 80% urban, 15% suburban, 5% rural - stress test memory usage
         let urban_count = (self.config.tile_count as f64 * 0.8) as usize;
         let suburban_count = (self.config.tile_count as f64 * 0.15) as usize;
         let rural_count = self.config.tile_count - urban_count - suburban_count;
-        
+
         for i in 0..urban_count {
             let tile_id = TileId { x: i as i32, y: 1 };
             let mut metrics = self.generate_urban_metrics();
             // Amplify complexity for stress testing
             metrics.total_length_m *= self.config.max_complexity_multiplier;
-            metrics.junction_count = (metrics.junction_count as f64 * self.config.max_complexity_multiplier) as u32;
+            metrics.junction_count =
+                (metrics.junction_count as f64 * self.config.max_complexity_multiplier) as u32;
             tiles.push(self.create_tile_telemetry(tile_id, metrics, DensityClass::Urban));
         }
-        
+
         for i in 0..suburban_count {
-            let tile_id = TileId { x: (urban_count + i) as i32, y: 1 };
+            let tile_id = TileId {
+                x: (urban_count + i) as i32,
+                y: 1,
+            };
             let metrics = self.generate_suburban_metrics();
             tiles.push(self.create_tile_telemetry(tile_id, metrics, DensityClass::Suburban));
         }
-        
+
         for i in 0..rural_count {
-            let tile_id = TileId { x: (urban_count + suburban_count + i) as i32, y: 1 };
+            let tile_id = TileId {
+                x: (urban_count + suburban_count + i) as i32,
+                y: 1,
+            };
             let metrics = self.generate_rural_metrics();
             tiles.push(self.create_tile_telemetry(tile_id, metrics, DensityClass::Rural));
         }
-        
+
         tiles
     }
-    
+
     /// Generate rural-only distribution (minimal complexity)
     fn generate_rural_only_distribution(&mut self) -> Vec<TileTelemetry> {
         (0..self.config.tile_count)
@@ -163,7 +178,7 @@ impl TelemetryFuzzer {
             })
             .collect()
     }
-    
+
     /// Generate extreme complexity distribution for edge case testing
     fn generate_extreme_complexity_distribution(&mut self) -> Vec<TileTelemetry> {
         (0..self.config.tile_count)
@@ -180,26 +195,33 @@ impl TelemetryFuzzer {
             })
             .collect()
     }
-    
+
     /// Generate planet-like distribution with long tails and hot urban spots
     fn generate_planet_like_distribution(&mut self) -> Vec<TileTelemetry> {
         let mut tiles = Vec::new();
-        let tile_count = if self.config.planet_scale { 1_000_000 } else { self.config.tile_count };
-        
+        let tile_count = if self.config.planet_scale {
+            1_000_000
+        } else {
+            self.config.tile_count
+        };
+
         // Planet-like distribution:
         // - 0.1% mega-urban hot spots
-        // - 2% urban areas  
+        // - 2% urban areas
         // - 15% suburban areas
         // - 82.9% rural/empty areas
-        
+
         let mega_urban_count = (tile_count as f64 * 0.001) as usize;
         let urban_count = (tile_count as f64 * 0.02) as usize;
         let suburban_count = (tile_count as f64 * 0.15) as usize;
         let rural_count = tile_count - mega_urban_count - urban_count - suburban_count;
-        
+
         // Mega-urban hot spots (extreme density)
         for i in 0..mega_urban_count {
-            let tile_id = TileId { x: i as i32, y: 100 };
+            let tile_id = TileId {
+                x: i as i32,
+                y: 100,
+            };
             let metrics = TileMetrics {
                 junction_count: (100.0 * self.config.max_complexity_multiplier) as u32,
                 total_length_m: 25000.0 * self.config.max_complexity_multiplier,
@@ -209,110 +231,140 @@ impl TelemetryFuzzer {
             };
             tiles.push(self.create_tile_telemetry(tile_id, metrics, DensityClass::Urban));
         }
-        
+
         // Standard urban areas
         for i in 0..urban_count {
-            let tile_id = TileId { x: (mega_urban_count + i) as i32, y: 100 };
+            let tile_id = TileId {
+                x: (mega_urban_count + i) as i32,
+                y: 100,
+            };
             let metrics = self.generate_urban_metrics();
             tiles.push(self.create_tile_telemetry(tile_id, metrics, DensityClass::Urban));
         }
-        
+
         // Suburban areas
         for i in 0..suburban_count {
-            let tile_id = TileId { x: (mega_urban_count + urban_count + i) as i32, y: 100 };
+            let tile_id = TileId {
+                x: (mega_urban_count + urban_count + i) as i32,
+                y: 100,
+            };
             let metrics = self.generate_suburban_metrics();
             tiles.push(self.create_tile_telemetry(tile_id, metrics, DensityClass::Suburban));
         }
-        
+
         // Rural areas (long tail)
         for i in 0..rural_count {
-            let tile_id = TileId { x: (mega_urban_count + urban_count + suburban_count + i) as i32, y: 100 };
+            let tile_id = TileId {
+                x: (mega_urban_count + urban_count + suburban_count + i) as i32,
+                y: 100,
+            };
             let metrics = self.generate_rural_metrics();
             tiles.push(self.create_tile_telemetry(tile_id, metrics, DensityClass::Rural));
         }
-        
+
         tiles
     }
-    
+
     /// Generate random distribution for edge case testing
     fn generate_random_distribution(&mut self) -> Vec<TileTelemetry> {
         (0..self.config.tile_count)
             .map(|i| {
                 let tile_id = TileId { x: i as i32, y: 4 };
-                
+
                 // Random metrics within reasonable bounds
-                let junction_count = (self.random_f64() * 50.0 * self.config.max_complexity_multiplier) as u32;
-                let total_length_m = self.random_f64() * 20000.0 * self.config.max_complexity_multiplier;
-                
+                let junction_count =
+                    (self.random_f64() * 50.0 * self.config.max_complexity_multiplier) as u32;
+                let total_length_m =
+                    self.random_f64() * 20000.0 * self.config.max_complexity_multiplier;
+
                 let density_class = match self.random_f64() {
                     x if x < 0.1 => DensityClass::Urban,
                     x if x < 0.4 => DensityClass::Suburban,
                     _ => DensityClass::Rural,
                 };
-                
+
                 let way_count = (self.random_f64() * 200.0) as usize;
                 let metrics = TileMetrics {
                     junction_count,
                     total_length_m,
                     way_lengths: (0..way_count).map(|_| self.random_f64() * 500.0).collect(),
                     way_curvatures: (0..way_count).map(|_| self.random_f64()).collect(),
-                    junction_complexities: (0..junction_count as usize).map(|_| self.random_f64() * 10.0).collect(),
+                    junction_complexities: (0..junction_count as usize)
+                        .map(|_| self.random_f64() * 10.0)
+                        .collect(),
                 };
-                
+
                 self.create_tile_telemetry(tile_id, metrics, density_class)
             })
             .collect()
     }
-    
+
     /// Generate typical urban tile metrics
     fn generate_urban_metrics(&mut self) -> TileMetrics {
         let junction_count = 5 + (self.random_f64() * 15.0) as u32; // 5-20 junctions
         let total_length_m = 2000.0 + self.random_f64() * 6000.0; // 2-8km of roads
         let way_count = 30 + (self.random_f64() * 50.0) as usize;
-        
+
         TileMetrics {
             junction_count,
             total_length_m,
-            way_lengths: (0..way_count).map(|_| 50.0 + self.random_f64() * 200.0).collect(),
+            way_lengths: (0..way_count)
+                .map(|_| 50.0 + self.random_f64() * 200.0)
+                .collect(),
             way_curvatures: (0..way_count).map(|_| self.random_f64() * 0.6).collect(),
-            junction_complexities: (0..junction_count as usize).map(|_| 2.0 + self.random_f64() * 5.0).collect(),
+            junction_complexities: (0..junction_count as usize)
+                .map(|_| 2.0 + self.random_f64() * 5.0)
+                .collect(),
         }
     }
-    
+
     /// Generate typical suburban tile metrics
     fn generate_suburban_metrics(&mut self) -> TileMetrics {
         let junction_count = 1 + (self.random_f64() * 8.0) as u32; // 1-9 junctions
         let total_length_m = 500.0 + self.random_f64() * 2000.0; // 0.5-2.5km of roads
         let way_count = 10 + (self.random_f64() * 20.0) as usize;
-        
+
         TileMetrics {
             junction_count,
             total_length_m,
-            way_lengths: (0..way_count).map(|_| 100.0 + self.random_f64() * 300.0).collect(),
+            way_lengths: (0..way_count)
+                .map(|_| 100.0 + self.random_f64() * 300.0)
+                .collect(),
             way_curvatures: (0..way_count).map(|_| self.random_f64() * 0.3).collect(),
-            junction_complexities: (0..junction_count as usize).map(|_| 1.0 + self.random_f64() * 3.0).collect(),
+            junction_complexities: (0..junction_count as usize)
+                .map(|_| 1.0 + self.random_f64() * 3.0)
+                .collect(),
         }
     }
-    
+
     /// Generate typical rural tile metrics
     fn generate_rural_metrics(&mut self) -> TileMetrics {
         let junction_count = (self.random_f64() * 3.0) as u32; // 0-3 junctions
         let total_length_m = self.random_f64() * 800.0; // 0-800m of roads
         let way_count = (self.random_f64() * 10.0) as usize;
-        
+
         TileMetrics {
             junction_count,
             total_length_m,
-            way_lengths: (0..way_count).map(|_| 200.0 + self.random_f64() * 500.0).collect(),
+            way_lengths: (0..way_count)
+                .map(|_| 200.0 + self.random_f64() * 500.0)
+                .collect(),
             way_curvatures: (0..way_count).map(|_| self.random_f64() * 0.2).collect(),
-            junction_complexities: (0..junction_count as usize).map(|_| self.random_f64() * 2.0).collect(),
+            junction_complexities: (0..junction_count as usize)
+                .map(|_| self.random_f64() * 2.0)
+                .collect(),
         }
     }
-    
+
     /// Create tile telemetry from metrics
-    fn create_tile_telemetry(&self, tile_id: TileId, metrics: TileMetrics, density_class: DensityClass) -> TileTelemetry {
+    fn create_tile_telemetry(
+        &self,
+        tile_id: TileId,
+        metrics: TileMetrics,
+        density_class: DensityClass,
+    ) -> TileTelemetry {
         let percentiles = metrics.calculate_percentiles();
-        
+
         TileTelemetry {
             tile_id,
             bbox: tile_id.bbox(),
@@ -321,33 +373,37 @@ impl TelemetryFuzzer {
             density_class,
         }
     }
-    
+
     /// Calculate global percentiles from all tiles
     fn calculate_global_percentiles(&self, tiles: &[TileTelemetry]) -> GlobalPercentiles {
-        let junction_counts: Vec<f64> = tiles.iter().map(|t| t.metrics.junction_count as f64).collect();
+        let junction_counts: Vec<f64> = tiles
+            .iter()
+            .map(|t| t.metrics.junction_count as f64)
+            .collect();
         let total_lengths: Vec<f64> = tiles.iter().map(|t| t.metrics.total_length_m).collect();
-        let densities: Vec<f64> = tiles.iter()
+        let densities: Vec<f64> = tiles
+            .iter()
             .map(|t| t.metrics.total_length_m / (125.0 * 125.0))
             .collect();
-        
+
         GlobalPercentiles {
             junction_count_p15: percentile(&junction_counts, 0.15),
             junction_count_p50: percentile(&junction_counts, 0.50),
             junction_count_p85: percentile(&junction_counts, 0.85),
             junction_count_p99: percentile(&junction_counts, 0.99),
-            
+
             total_length_p15: percentile(&total_lengths, 0.15),
             total_length_p50: percentile(&total_lengths, 0.50),
             total_length_p85: percentile(&total_lengths, 0.85),
             total_length_p99: percentile(&total_lengths, 0.99),
-            
+
             density_p15: percentile(&densities, 0.15),
             density_p50: percentile(&densities, 0.50),
             density_p85: percentile(&densities, 0.85),
             density_p99: percentile(&densities, 0.99),
         }
     }
-    
+
     /// Simple deterministic random number generator (LCG)
     fn random_f64(&mut self) -> f64 {
         // Linear congruential generator
@@ -368,11 +424,11 @@ impl PlanFuzzer {
             telemetry_fuzzer: TelemetryFuzzer::new(config),
         }
     }
-    
+
     /// Run comprehensive fuzzing tests
     pub fn run_fuzzing_tests(&mut self) -> FuzzingResults {
         let mut results = FuzzingResults::new();
-        
+
         // Test all distribution types
         let distributions = vec![
             DistributionType::Realistic,
@@ -382,39 +438,39 @@ impl PlanFuzzer {
             DistributionType::PlanetLike,
             DistributionType::Random,
         ];
-        
+
         for distribution in distributions {
             let test_result = self.fuzz_distribution(distribution);
             results.add_test_result(test_result);
         }
-        
+
         results
     }
-    
+
     /// Fuzz test a specific distribution type
     fn fuzz_distribution(&mut self, distribution: DistributionType) -> DistributionTestResult {
         // Update fuzzer config for this distribution
         self.telemetry_fuzzer.config.distribution_type = distribution.clone();
-        
+
         // Generate synthetic telemetry
         let telemetry = self.telemetry_fuzzer.generate_synthetic_telemetry();
-        
+
         // Test different base configurations
         let configs = self.generate_test_configurations();
         let mut config_results = Vec::new();
-        
+
         for config in configs {
             let config_result = self.test_config_with_telemetry(&config, &telemetry);
             config_results.push(config_result);
         }
-        
+
         DistributionTestResult {
             distribution_type: distribution,
             total_tiles: telemetry.total_tiles,
             config_results,
         }
     }
-    
+
     /// Generate various configurations for testing
     fn generate_test_configurations(&self) -> Vec<PlanConfig> {
         vec![
@@ -444,9 +500,13 @@ impl PlanFuzzer {
             },
         ]
     }
-    
+
     /// Test a specific configuration with telemetry data
-    fn test_config_with_telemetry(&self, config: &PlanConfig, telemetry: &TelemetryOutput) -> ConfigTestResult {
+    fn test_config_with_telemetry(
+        &self,
+        config: &PlanConfig,
+        telemetry: &TelemetryOutput,
+    ) -> ConfigTestResult {
         let mut result = ConfigTestResult {
             base_config: config.clone(),
             invariant_violations: Vec::new(),
@@ -454,7 +514,7 @@ impl PlanFuzzer {
             adaptive_recommendations: Vec::new(),
             test_passed: true,
         };
-        
+
         // Test 1: Basic memory budget validation
         let budget = MemoryBudget::new(config.max_ram_mb, config.workers);
         if !budget.validate(config.workers) {
@@ -465,7 +525,7 @@ impl PlanFuzzer {
             });
             result.test_passed = false;
         }
-        
+
         // Test 2: Compile-time cap invariant
         if config.max_ram_mb > BFLY_MAX_RAM_MB {
             result.invariant_violations.push(InvariantViolation {
@@ -478,12 +538,12 @@ impl PlanFuzzer {
             });
             result.test_passed = false;
         }
-        
+
         // Test 3: Adaptive planning with telemetry
         let mut adaptive_planner = AdaptivePlanner::new(config.clone());
         adaptive_planner.load_telemetry(telemetry.clone());
         let adaptive_plan = adaptive_planner.create_adaptive_plan();
-        
+
         // Test adaptive budget
         let adaptive_budget = adaptive_plan.create_adaptive_budget();
         if !adaptive_budget.validate(adaptive_plan.worker_scaling.recommended_workers as u32) {
@@ -494,7 +554,7 @@ impl PlanFuzzer {
             });
             result.test_passed = false;
         }
-        
+
         // Test 4: Adaptive cap invariant
         if adaptive_budget.cap_mb > BFLY_MAX_RAM_MB {
             result.invariant_violations.push(InvariantViolation {
@@ -507,7 +567,7 @@ impl PlanFuzzer {
             });
             result.test_passed = false;
         }
-        
+
         // Test 5: Worker scaling sanity
         if adaptive_plan.worker_scaling.recommended_workers == 0 {
             result.invariant_violations.push(InvariantViolation {
@@ -517,7 +577,7 @@ impl PlanFuzzer {
             });
             result.test_passed = false;
         }
-        
+
         // Store results
         result.memory_usage = Some(MemoryUsageStats {
             base_budget_mb: budget.cap_mb,
@@ -525,9 +585,9 @@ impl PlanFuzzer {
             scaling_factor: adaptive_plan.worker_scaling.scaling_factor,
             memory_efficiency: adaptive_budget.usable_mb as f64 / adaptive_budget.cap_mb as f64,
         });
-        
+
         result.adaptive_recommendations = adaptive_plan.recommendations();
-        
+
         result
     }
 }
@@ -552,7 +612,7 @@ impl FuzzingResults {
             critical_violations: 0,
         }
     }
-    
+
     fn add_test_result(&mut self, result: DistributionTestResult) {
         for config_result in &result.config_results {
             self.total_tests += 1;
@@ -561,20 +621,22 @@ impl FuzzingResults {
             } else {
                 self.failed_tests += 1;
             }
-            
-            self.critical_violations += config_result.invariant_violations.iter()
+
+            self.critical_violations += config_result
+                .invariant_violations
+                .iter()
                 .filter(|v| v.severity == Severity::Critical)
                 .count();
         }
-        
+
         self.distribution_results.push(result);
     }
-    
+
     /// Check if all tests passed
     pub fn all_tests_passed(&self) -> bool {
         self.failed_tests == 0 && self.critical_violations == 0
     }
-    
+
     /// Generate summary report
     pub fn summary(&self) -> String {
         format!(
@@ -654,10 +716,10 @@ fn percentile(data: &[f64], p: f64) -> f64 {
     if data.is_empty() {
         return 0.0;
     }
-    
+
     let mut sorted_data = data.to_vec();
     sorted_data.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    
+
     let index = (p * (sorted_data.len() - 1) as f64) as usize;
     sorted_data[index.min(sorted_data.len() - 1)]
 }
@@ -665,19 +727,19 @@ fn percentile(data: &[f64], p: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_synthetic_telemetry_generation() {
         let config = FuzzingConfig::default();
         let mut fuzzer = TelemetryFuzzer::new(config);
-        
+
         let telemetry = fuzzer.generate_synthetic_telemetry();
-        
+
         assert_eq!(telemetry.total_tiles, 10000);
         assert!(!telemetry.tiles.is_empty());
         assert!(telemetry.global_percentiles.density_p50 > 0.0);
     }
-    
+
     #[test]
     fn test_urban_heavy_distribution() {
         let config = FuzzingConfig {
@@ -686,16 +748,18 @@ mod tests {
             ..Default::default()
         };
         let mut fuzzer = TelemetryFuzzer::new(config);
-        
+
         let telemetry = fuzzer.generate_synthetic_telemetry();
-        
+
         // Should have mostly urban tiles
-        let urban_count = telemetry.tiles.iter()
+        let urban_count = telemetry
+            .tiles
+            .iter()
             .filter(|t| t.density_class == DensityClass::Urban)
             .count();
         assert!(urban_count as f64 / telemetry.total_tiles as f64 > 0.7); // >70% urban
     }
-    
+
     #[test]
     fn test_rural_only_distribution() {
         let config = FuzzingConfig {
@@ -704,13 +768,16 @@ mod tests {
             ..Default::default()
         };
         let mut fuzzer = TelemetryFuzzer::new(config);
-        
+
         let telemetry = fuzzer.generate_synthetic_telemetry();
-        
+
         // Should have only rural tiles
-        assert!(telemetry.tiles.iter().all(|t| t.density_class == DensityClass::Rural));
+        assert!(telemetry
+            .tiles
+            .iter()
+            .all(|t| t.density_class == DensityClass::Rural));
     }
-    
+
     #[test]
     fn test_planet_like_distribution() {
         let config = FuzzingConfig {
@@ -720,16 +787,18 @@ mod tests {
             ..Default::default()
         };
         let mut fuzzer = TelemetryFuzzer::new(config);
-        
+
         let telemetry = fuzzer.generate_synthetic_telemetry();
-        
+
         // Should have long tail distribution
-        let rural_count = telemetry.tiles.iter()
+        let rural_count = telemetry
+            .tiles
+            .iter()
             .filter(|t| t.density_class == DensityClass::Rural)
             .count();
         assert!(rural_count as f64 / telemetry.total_tiles as f64 > 0.8); // >80% rural
     }
-    
+
     #[test]
     fn test_plan_fuzzing_invariants() {
         let config = FuzzingConfig {
@@ -739,14 +808,17 @@ mod tests {
             ..Default::default()
         };
         let mut fuzzer = PlanFuzzer::new(config);
-        
+
         let results = fuzzer.run_fuzzing_tests();
-        
+
         // All tests should pass (no critical violations)
-        assert_eq!(results.critical_violations, 0, "Critical invariant violations detected");
+        assert_eq!(
+            results.critical_violations, 0,
+            "Critical invariant violations detected"
+        );
         assert!(results.total_tests > 0, "No tests were run");
     }
-    
+
     #[test]
     fn test_compile_time_cap_invariant() {
         let config = FuzzingConfig {
@@ -756,7 +828,7 @@ mod tests {
             ..Default::default()
         };
         let mut plan_fuzzer = PlanFuzzer::new(config);
-        
+
         // Test with configuration at compile-time cap
         let telemetry = plan_fuzzer.telemetry_fuzzer.generate_synthetic_telemetry();
         let max_config = PlanConfig {
@@ -764,16 +836,20 @@ mod tests {
             workers: 8,
             ..Default::default()
         };
-        
+
         let result = plan_fuzzer.test_config_with_telemetry(&max_config, &telemetry);
-        
+
         // Should not exceed compile-time cap
-        assert!(result.invariant_violations.iter()
+        assert!(result
+            .invariant_violations
+            .iter()
             .all(|v| v.violation_type != ViolationType::CompileTimeCapExceeded));
-        assert!(result.invariant_violations.iter()
+        assert!(result
+            .invariant_violations
+            .iter()
             .all(|v| v.violation_type != ViolationType::AdaptiveCapExceeded));
     }
-    
+
     #[test]
     fn test_deterministic_fuzzing() {
         let config1 = FuzzingConfig {
@@ -786,21 +862,23 @@ mod tests {
             tile_count: 100,
             ..Default::default()
         };
-        
+
         let mut fuzzer1 = TelemetryFuzzer::new(config1);
         let mut fuzzer2 = TelemetryFuzzer::new(config2);
-        
+
         let telemetry1 = fuzzer1.generate_synthetic_telemetry();
         let telemetry2 = fuzzer2.generate_synthetic_telemetry();
-        
+
         // Should generate identical results with same seed
         assert_eq!(telemetry1.total_tiles, telemetry2.total_tiles);
         assert_eq!(telemetry1.tiles.len(), telemetry2.tiles.len());
-        
+
         // First tile should be identical
         if !telemetry1.tiles.is_empty() && !telemetry2.tiles.is_empty() {
-            assert_eq!(telemetry1.tiles[0].metrics.junction_count, 
-                      telemetry2.tiles[0].metrics.junction_count);
+            assert_eq!(
+                telemetry1.tiles[0].metrics.junction_count,
+                telemetry2.tiles[0].metrics.junction_count
+            );
         }
     }
 }

@@ -7,9 +7,9 @@ use std::process;
 fn main() {
     // Initialize logger
     env_logger::init();
-    
+
     let args: Vec<String> = env::args().collect();
-    
+
     // Check for special commands first
     if args.len() > 1 {
         match args[1].as_str() {
@@ -48,7 +48,7 @@ fn create_cli_from_args(args: &[String]) -> PlanCli {
     // Create CLI with remaining args
     let mut full_args = vec!["butterfly-plan".to_string()];
     full_args.extend_from_slice(args);
-    
+
     let mut cli = match PlanCli::from_args(full_args) {
         Ok(cli) => cli,
         Err(e) => {
@@ -56,16 +56,16 @@ fn create_cli_from_args(args: &[String]) -> PlanCli {
             process::exit(1);
         }
     };
-    
+
     // Load from environment and config files
     cli.load_env();
-    
+
     // Try to load from default config file
     if let Ok(home) = env::var("HOME") {
         let config_path = format!("{}/.config/butterfly/plan.toml", home);
         let _ = cli.load_toml(&config_path); // Ignore errors for optional config
     }
-    
+
     cli
 }
 
@@ -81,7 +81,10 @@ fn print_help() {
     println!("    --help             Show this help message");
     println!();
     println!("OPTIONS:");
-    println!("    --max-ram <MB>     Maximum RAM usage in MB (default: {})", butterfly_plan::BFLY_MAX_RAM_MB);
+    println!(
+        "    --max-ram <MB>     Maximum RAM usage in MB (default: {})",
+        butterfly_plan::BFLY_MAX_RAM_MB
+    );
     println!("    --workers <N>      Number of worker threads (default: auto-detect)");
     println!("    --deterministic    Enable deterministic mode (fixed parameters)");
     println!("    --debug-plan       Enable debug output during validation");

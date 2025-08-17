@@ -8,14 +8,14 @@ pub mod memory;
 pub mod planner;
 
 pub use adaptive::{
-    AdaptivePlanner, AdaptiveBuildPlan, DensityDistribution, WorkerScaling,
-    MemoryFactors, ChunkSizes, TelemetrySummary, ComplexityRating
+    AdaptiveBuildPlan, AdaptivePlanner, ChunkSizes, ComplexityRating, DensityDistribution,
+    MemoryFactors, TelemetrySummary, WorkerScaling,
 };
 pub use cli::PlanCli;
 pub use config::PlanConfig;
 pub use fuzzing::{
-    PlanFuzzer, TelemetryFuzzer, FuzzingConfig, DistributionType,
-    FuzzingResults, InvariantViolation, ViolationType, Severity
+    DistributionType, FuzzingConfig, FuzzingResults, InvariantViolation, PlanFuzzer, Severity,
+    TelemetryFuzzer, ViolationType,
 };
 pub use memory::MemoryBudget;
 pub use planner::AutopilotPlanner;

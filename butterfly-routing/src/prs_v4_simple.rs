@@ -1,9 +1,9 @@
 //! PRS v4 - Simplified parallel scaling + profile concurrency + cache efficiency validation
 
-use crate::profiles::{TransportProfile, TestStatus};
-use crate::thread_architecture::{ThreadArchitectureSystem, ThreadPoolConfig};
-use crate::sharded_caching::AutoRebalancingCacheManager;
 use crate::dual_core::DualCoreGraph;
+use crate::profiles::{TestStatus, TransportProfile};
+use crate::sharded_caching::AutoRebalancingCacheManager;
+use crate::thread_architecture::{ThreadArchitectureSystem, ThreadPoolConfig};
 use crate::time_routing::TimeBasedRouter;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -27,17 +27,17 @@ pub enum PRSv4TestType {
     ThroughputScaling,
     LatencyUnderLoad,
     ThreadUtilization,
-    
+
     // Profile concurrency tests
     MultiProfileConcurrency,
     ProfileIsolation,
     CrossProfileConsistency,
-    
+
     // Cache efficiency tests
     CacheHitRates,
     CacheRebalancing,
     NUMAEfficiency,
-    
+
     // System stability tests
     ResourceLeakage,
     GracefulDegradation,
@@ -80,19 +80,19 @@ impl PRSv4Metrics {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PRSv4Config {
     // Throughput scaling targets
-    pub min_throughput_rps: f64,           // ≥100 RPS baseline
-    pub scaling_efficiency_target: f64,     // ≥0.8 linear scaling efficiency
-    pub max_latency_p95_ms: u64,           // ≤100ms p95 latency under load
-    
-    // Profile concurrency targets  
-    pub max_profile_interference: f64,     // ≤5% performance degradation
-    pub consistency_threshold: f64,        // ≥99% cross-profile consistency
-    
+    pub min_throughput_rps: f64,        // ≥100 RPS baseline
+    pub scaling_efficiency_target: f64, // ≥0.8 linear scaling efficiency
+    pub max_latency_p95_ms: u64,        // ≤100ms p95 latency under load
+
+    // Profile concurrency targets
+    pub max_profile_interference: f64, // ≤5% performance degradation
+    pub consistency_threshold: f64,    // ≥99% cross-profile consistency
+
     // Cache efficiency targets
-    pub min_cache_hit_rate: f64,          // ≥85% cache hit rate
-    pub rebalancing_effectiveness: f64,    // ≥10% improvement from rebalancing
-    pub numa_efficiency_target: f64,      // ≥90% NUMA locality
-    
+    pub min_cache_hit_rate: f64,        // ≥85% cache hit rate
+    pub rebalancing_effectiveness: f64, // ≥10% improvement from rebalancing
+    pub numa_efficiency_target: f64,    // ≥90% NUMA locality
+
     // Test parameters
     pub test_duration_seconds: u64,
 }
@@ -125,13 +125,12 @@ pub struct ProfileRegressionSuiteV4Simple {
 }
 
 impl ProfileRegressionSuiteV4Simple {
-    pub fn new(
-        config: PRSv4Config,
-        dual_core: DualCoreGraph,
-    ) -> Result<Self, String> {
+    pub fn new(config: PRSv4Config, dual_core: DualCoreGraph) -> Result<Self, String> {
         let thread_config = ThreadPoolConfig::default();
         let mut thread_architecture = ThreadArchitectureSystem::new(thread_config);
-        thread_architecture.start().map_err(|e| format!("Failed to start thread architecture: {}", e))?;
+        thread_architecture
+            .start()
+            .map_err(|e| format!("Failed to start thread architecture: {}", e))?;
 
         let cache_manager = AutoRebalancingCacheManager::new(20000, 20000, true);
         let router = Arc::new(TimeBasedRouter::new(dual_core.clone())?);
@@ -166,8 +165,14 @@ impl ProfileRegressionSuiteV4Simple {
         results.push(self.test_resource_tracking());
 
         let total_time = start_time.elapsed().as_millis() as u64;
-        let passed = results.iter().filter(|r| r.status == TestStatus::Pass).count();
-        let failed = results.iter().filter(|r| r.status == TestStatus::Fail).count();
+        let passed = results
+            .iter()
+            .filter(|r| r.status == TestStatus::Pass)
+            .count();
+        let failed = results
+            .iter()
+            .filter(|r| r.status == TestStatus::Fail)
+            .count();
 
         PRSv4Report {
             version: "4.0-simplified".to_string(),
@@ -177,7 +182,11 @@ impl ProfileRegressionSuiteV4Simple {
                 passed,
                 failed,
                 execution_time_ms: total_time,
-                overall_status: if failed == 0 { TestStatus::Pass } else { TestStatus::Fail },
+                overall_status: if failed == 0 {
+                    TestStatus::Pass
+                } else {
+                    TestStatus::Fail
+                },
             },
             config: self.config.clone(),
             timestamp: std::time::SystemTime::now()
@@ -194,10 +203,12 @@ impl ProfileRegressionSuiteV4Simple {
 
         // Measure thread stats
         let thread_stats = self.thread_architecture.stats();
-        
+
         // Calculate utilization estimate based on active threads
         let utilization_estimate = if thread_stats.thread_pool.active_threads > 0 {
-            (thread_stats.thread_pool.total_requests as f64 / thread_stats.thread_pool.active_threads as f64).min(1.0)
+            (thread_stats.thread_pool.total_requests as f64
+                / thread_stats.thread_pool.active_threads as f64)
+                .min(1.0)
         } else {
             0.0
         };
@@ -205,7 +216,8 @@ impl ProfileRegressionSuiteV4Simple {
         metrics.cpu_utilization_percent = Some(utilization_estimate * 100.0);
         metrics.execution_time_ms = start_time.elapsed().as_millis() as u64;
 
-        let status = if utilization_estimate >= 0.1 { // At least 10% utilization
+        let status = if utilization_estimate >= 0.1 {
+            // At least 10% utilization
             TestStatus::Pass
         } else {
             TestStatus::Fail
@@ -215,7 +227,10 @@ impl ProfileRegressionSuiteV4Simple {
             test_type: PRSv4TestType::ThreadUtilization,
             profiles: vec![TransportProfile::Car],
             status,
-            message: format!("Thread utilization: {:.1}% (target: ≥10%)", utilization_estimate * 100.0),
+            message: format!(
+                "Thread utilization: {:.1}% (target: ≥10%)",
+                utilization_estimate * 100.0
+            ),
             metrics,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -238,7 +253,8 @@ impl ProfileRegressionSuiteV4Simple {
         metrics.cache_hit_rate = Some(combined_hit_rate);
         metrics.execution_time_ms = start_time.elapsed().as_millis() as u64;
 
-        let status = if combined_hit_rate >= 0.0 { // Any hit rate is acceptable for simplified test
+        let status = if combined_hit_rate >= 0.0 {
+            // Any hit rate is acceptable for simplified test
             TestStatus::Pass
         } else {
             TestStatus::Fail
@@ -246,11 +262,17 @@ impl ProfileRegressionSuiteV4Simple {
 
         PRSv4TestResult {
             test_type: PRSv4TestType::CacheHitRates,
-            profiles: vec![TransportProfile::Car, TransportProfile::Bicycle, TransportProfile::Foot],
+            profiles: vec![
+                TransportProfile::Car,
+                TransportProfile::Bicycle,
+                TransportProfile::Foot,
+            ],
             status,
             message: format!(
                 "Cache hit rate: {:.1}% (turn: {:.1}%, geom: {:.1}%)",
-                combined_hit_rate * 100.0, turn_hit_rate * 100.0, geom_hit_rate * 100.0
+                combined_hit_rate * 100.0,
+                turn_hit_rate * 100.0,
+                geom_hit_rate * 100.0
             ),
             metrics,
             timestamp: std::time::SystemTime::now()
@@ -267,18 +289,20 @@ impl ProfileRegressionSuiteV4Simple {
 
         // Get thread architecture stats
         let thread_stats = self.thread_architecture.stats();
-        
+
         // Calculate NUMA distribution efficiency
         let numa_distribution = &thread_stats.thread_pool.numa_distribution;
         let total_threads = numa_distribution.values().sum::<usize>() as f64;
         let numa_nodes = numa_distribution.len();
-        
+
         let efficiency = if numa_nodes > 1 && total_threads > 0.0 {
             // Calculate how evenly distributed threads are across NUMA nodes
             let ideal_per_node = total_threads / numa_nodes as f64;
-            let variance = numa_distribution.values()
+            let variance = numa_distribution
+                .values()
                 .map(|&count| (count as f64 - ideal_per_node).powi(2))
-                .sum::<f64>() / numa_nodes as f64;
+                .sum::<f64>()
+                / numa_nodes as f64;
             let std_dev = variance.sqrt();
             let efficiency = 1.0 - (std_dev / ideal_per_node).min(1.0);
             efficiency.max(0.0)
@@ -289,7 +313,8 @@ impl ProfileRegressionSuiteV4Simple {
         metrics.numa_efficiency = Some(efficiency);
         metrics.execution_time_ms = start_time.elapsed().as_millis() as u64;
 
-        let status = if efficiency >= 0.5 { // 50% efficiency target for simplified test
+        let status = if efficiency >= 0.5 {
+            // 50% efficiency target for simplified test
             TestStatus::Pass
         } else {
             TestStatus::Fail
@@ -299,10 +324,7 @@ impl ProfileRegressionSuiteV4Simple {
             test_type: PRSv4TestType::NUMAEfficiency,
             profiles: vec![TransportProfile::Car],
             status,
-            message: format!(
-                "NUMA efficiency: {:.1}% (target: ≥50%)",
-                efficiency * 100.0
-            ),
+            message: format!("NUMA efficiency: {:.1}% (target: ≥50%)", efficiency * 100.0),
             metrics,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -318,8 +340,10 @@ impl ProfileRegressionSuiteV4Simple {
 
         // Simplified profile isolation test - check that different profiles have different affinities
         let profile_affinities = &self.thread_architecture.stats().profile_affinities;
-        let unique_affinities = profile_affinities.values().collect::<std::collections::HashSet<_>>();
-        
+        let unique_affinities = profile_affinities
+            .values()
+            .collect::<std::collections::HashSet<_>>();
+
         let isolation_score = if profile_affinities.len() > 1 {
             unique_affinities.len() as f64 / profile_affinities.len() as f64
         } else {
@@ -328,7 +352,8 @@ impl ProfileRegressionSuiteV4Simple {
 
         metrics.execution_time_ms = start_time.elapsed().as_millis() as u64;
 
-        let status = if isolation_score >= 0.5 { // 50% isolation target for simplified test
+        let status = if isolation_score >= 0.5 {
+            // 50% isolation target for simplified test
             TestStatus::Pass
         } else {
             TestStatus::Fail
@@ -336,9 +361,16 @@ impl ProfileRegressionSuiteV4Simple {
 
         PRSv4TestResult {
             test_type: PRSv4TestType::ProfileIsolation,
-            profiles: vec![TransportProfile::Car, TransportProfile::Bicycle, TransportProfile::Foot],
+            profiles: vec![
+                TransportProfile::Car,
+                TransportProfile::Bicycle,
+                TransportProfile::Foot,
+            ],
             status,
-            message: format!("Profile isolation: {:.1}% (target: ≥50%)", isolation_score * 100.0),
+            message: format!(
+                "Profile isolation: {:.1}% (target: ≥50%)",
+                isolation_score * 100.0
+            ),
             metrics,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -404,37 +436,54 @@ pub struct PRSv4Summary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dual_core::{GraphNode, TimeEdge, NavEdge, TimeWeight};
+    use crate::dual_core::{GraphNode, NavEdge, TimeEdge, TimeWeight};
     use crate::profiles::EdgeId;
-    use butterfly_geometry::{Point2D, SnapSkeleton, NavigationGeometry};
+    use butterfly_geometry::{NavigationGeometry, Point2D, SnapSkeleton};
 
     fn create_test_dual_core() -> DualCoreGraph {
-        let profiles = vec![TransportProfile::Car, TransportProfile::Bicycle, TransportProfile::Foot];
+        let profiles = vec![
+            TransportProfile::Car,
+            TransportProfile::Bicycle,
+            TransportProfile::Foot,
+        ];
         let mut dual_core = DualCoreGraph::new(profiles);
 
         // Add test nodes
         for i in 1..=5 {
-            let node = GraphNode::new(crate::dual_core::NodeId::new(i as u64), Point2D::new(i as f64, i as f64));
+            let node = GraphNode::new(
+                crate::dual_core::NodeId::new(i as u64),
+                Point2D::new(i as f64, i as f64),
+            );
             dual_core.time_graph.add_node(node.clone());
             dual_core.nav_graph.add_node(node);
         }
 
         // Add test edges
         for i in 1..=3 {
-            let mut time_edge = TimeEdge::new(EdgeId(i), crate::dual_core::NodeId::new(i as u64), crate::dual_core::NodeId::new((i + 1) as u64));
+            let mut time_edge = TimeEdge::new(
+                EdgeId(i),
+                crate::dual_core::NodeId::new(i as u64),
+                crate::dual_core::NodeId::new((i + 1) as u64),
+            );
             time_edge.add_weight(TransportProfile::Car, TimeWeight::new(60.0, 1000.0));
             time_edge.add_weight(TransportProfile::Bicycle, TimeWeight::new(120.0, 1000.0));
             time_edge.add_weight(TransportProfile::Foot, TimeWeight::new(600.0, 1000.0));
             dual_core.time_graph.add_edge(time_edge);
 
             let snap_skeleton = SnapSkeleton::new(
-                vec![Point2D::new(i as f64, i as f64), Point2D::new((i + 1) as f64, (i + 1) as f64)],
+                vec![
+                    Point2D::new(i as f64, i as f64),
+                    Point2D::new((i + 1) as f64, (i + 1) as f64),
+                ],
                 vec![],
                 1000.0,
                 5.0,
             );
             let nav_geometry = NavigationGeometry::new(
-                vec![Point2D::new(i as f64, i as f64), Point2D::new((i + 1) as f64, (i + 1) as f64)],
+                vec![
+                    Point2D::new(i as f64, i as f64),
+                    Point2D::new((i + 1) as f64, (i + 1) as f64),
+                ],
                 vec![],
                 500.0,
                 0.5,
@@ -471,7 +520,7 @@ mod tests {
         let dual_core = create_test_dual_core();
         let config = PRSv4Config::default();
         let prs = ProfileRegressionSuiteV4Simple::new(config, dual_core).unwrap();
-        
+
         let result = prs.test_thread_utilization_simple();
         assert_eq!(result.test_type, PRSv4TestType::ThreadUtilization);
         assert!(result.metrics.cpu_utilization_percent.is_some());
@@ -482,7 +531,7 @@ mod tests {
         let dual_core = create_test_dual_core();
         let config = PRSv4Config::default();
         let prs = ProfileRegressionSuiteV4Simple::new(config, dual_core).unwrap();
-        
+
         let result = prs.test_cache_hit_rates_simple();
         assert_eq!(result.test_type, PRSv4TestType::CacheHitRates);
         assert!(result.metrics.cache_hit_rate.is_some());
@@ -493,7 +542,7 @@ mod tests {
         let dual_core = create_test_dual_core();
         let config = PRSv4Config::default();
         let mut prs = ProfileRegressionSuiteV4Simple::new(config, dual_core).unwrap();
-        
+
         let report = prs.run_complete_suite().await;
         assert_eq!(report.version, "4.0-simplified");
         assert!(report.results.len() >= 5);

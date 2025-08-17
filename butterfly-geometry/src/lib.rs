@@ -1,13 +1,13 @@
 //! Geometry processing and 3-pass pipeline for butterfly-osm
 
 pub mod delta;
+pub mod pipeline;
 pub mod resample;
 pub mod simplify;
 pub mod traits;
-pub mod pipeline;
 
-pub use traits::{DeltaEncode, ResampleArcLen, SimplifyNav};
-pub use resample::{Point2D, SnapSkeleton, ArcLengthResampler, HeadingSample};
-pub use delta::{DeltaPoint, FullFidelityGeometry, DeltaEncoder};
+pub use delta::{DeltaEncoder, DeltaPoint, FullFidelityGeometry};
+pub use pipeline::{GeometryPipeline, GeometryPipelineResult, PipelineConfig, ProcessingStats};
+pub use resample::{ArcLengthResampler, HeadingSample, Point2D, SnapSkeleton};
 pub use simplify::{AnchorPoint, AnchorType, NavigationGeometry, NavigationSimplifier};
-pub use pipeline::{PipelineConfig, GeometryPipelineResult, ProcessingStats, GeometryPipeline};
+pub use traits::{DeltaEncode, ResampleArcLen, SimplifyNav};

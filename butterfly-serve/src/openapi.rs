@@ -1,8 +1,14 @@
 //! OpenAPI specification with utoipa
 
+use crate::routes::{
+    BboxInfo, ErrorResponse, ProbeSnapQuery, ProbeSnapResponse, TelemetryQuery, TelemetryResponse,
+    ValidationStatus,
+};
+use butterfly_extract::{
+    CanonicalNodeProbe, DensityClass, GlobalPercentiles, TileId, TileMetrics, TilePercentiles,
+    TileTelemetry,
+};
 use utoipa::OpenApi;
-use crate::routes::{TelemetryQuery, TelemetryResponse, BboxInfo, ErrorResponse, ProbeSnapQuery, ProbeSnapResponse, ValidationStatus};
-use butterfly_extract::{TileTelemetry, TileMetrics, TilePercentiles, DensityClass, TileId, GlobalPercentiles, CanonicalNodeProbe};
 
 #[derive(OpenApi)]
 #[openapi(

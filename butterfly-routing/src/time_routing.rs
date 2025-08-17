@@ -1,10 +1,10 @@
 //! M6.3 - Time-Cost Routing: /route time-based Dijkstra per profile
 
-use crate::profiles::{EdgeId, TransportProfile};
-use crate::dual_core::{NodeId, DualCoreGraph};
 use crate::dijkstra::{DistanceRouter, RouteResult};
+use crate::dual_core::{DualCoreGraph, NodeId};
+use crate::profiles::{EdgeId, TransportProfile};
+use crate::turn_restriction_tables::{JunctionId, TurnMovement, TurnRestrictionTableSystem};
 use crate::weight_compression::WeightCompressionSystem;
-use crate::turn_restriction_tables::{TurnRestrictionTableSystem, JunctionId, TurnMovement};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Instant;
@@ -23,11 +23,7 @@ pub struct TimeRouteRequest {
 }
 
 impl TimeRouteRequest {
-    pub fn new(
-        profile: TransportProfile,
-        start_node: NodeId,
-        end_node: NodeId,
-    ) -> Self {
+    pub fn new(profile: TransportProfile, start_node: NodeId, end_node: NodeId) -> Self {
         Self {
             profile,
             start_node,
@@ -100,7 +96,8 @@ impl TimeRouteResponse {
         turn_penalty: f64,
         stats: TimeComputationStats,
     ) -> Self {
-        let estimated_arrival = request.departure_time
+        let estimated_arrival = request
+            .departure_time
             .map(|dep| dep + route_result.total_time as u64);
 
         let quality = RouteQuality::evaluate(
@@ -146,11 +143,11 @@ impl TimeRouteResponse {
 /// Route quality assessment
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RouteQuality {
-    Excellent,   // Fast, direct route
-    Good,        // Reasonable route
-    Acceptable,  // Longer but valid route
-    Poor,        // Very long or indirect route
-    NotFound,    // No route found
+    Excellent,  // Fast, direct route
+    Good,       // Reasonable route
+    Acceptable, // Longer but valid route
+    Poor,       // Very long or indirect route
+    NotFound,   // No route found
 }
 
 impl RouteQuality {
@@ -254,7 +251,11 @@ impl TimeBasedRouter {
         self
     }
 
-    pub fn with_profile_config(mut self, profile: TransportProfile, config: ProfileRouteConfig) -> Self {
+    pub fn with_profile_config(
+        mut self,
+        profile: TransportProfile,
+        config: ProfileRouteConfig,
+    ) -> Self {
         self.profile_configs.insert(profile, config);
         self
     }
@@ -296,9 +297,7 @@ impl TimeBasedRouter {
             Ok((route, turn_penalty)) => {
                 TimeRouteResponse::found(request, route, turn_penalty, stats)
             }
-            Err(_) => {
-                TimeRouteResponse::not_found(request, stats)
-            }
+            Err(_) => TimeRouteResponse::not_found(request, stats),
         }
     }
 
@@ -320,7 +319,12 @@ impl TimeBasedRouter {
 
         // Calculate turn penalties if turn restriction system is available
         let turn_penalty = if let Some(ref mut turn_system) = self.turn_restrictions {
-            Self::calculate_turn_penalties_static(&base_result.edge_path, turn_system, request.profile, stats)
+            Self::calculate_turn_penalties_static(
+                &base_result.edge_path,
+                turn_system,
+                request.profile,
+                stats,
+            )
         } else {
             0.0
         };
@@ -409,11 +413,15 @@ impl TimeBasedRouter {
     /// Get router statistics
     pub fn get_stats(&self) -> TimeRouterStats {
         let dual_core_stats = self.dual_core.get_stats();
-        
-        let compression_stats = self.weight_compression.as_ref()
+
+        let compression_stats = self
+            .weight_compression
+            .as_ref()
             .map(|ws| ws.get_system_stats());
 
-        let turn_stats = self.turn_restrictions.as_ref()
+        let turn_stats = self
+            .turn_restrictions
+            .as_ref()
             .map(|ts| ts.get_system_stats());
 
         TimeRouterStats {
@@ -429,8 +437,8 @@ impl TimeBasedRouter {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfileRouteConfig {
     pub profile: TransportProfile,
-    pub max_detour_factor: f64,      // Maximum detour allowed (1.5 = 50% longer)
-    pub turn_penalty_weight: f64,    // How much to weight turn penalties
+    pub max_detour_factor: f64, // Maximum detour allowed (1.5 = 50% longer)
+    pub turn_penalty_weight: f64, // How much to weight turn penalties
     pub avoid_unpaved: bool,
     pub avoid_steps: bool,
     pub max_grade_percent: Option<f64>,
@@ -481,7 +489,10 @@ pub struct TimeRouterStats {
 }
 
 /// HTTP API endpoint handler for /route
-pub fn route_endpoint(request: TimeRouteRequest, router: &mut TimeBasedRouter) -> Result<TimeRouteResponse, String> {
+pub fn route_endpoint(
+    request: TimeRouteRequest,
+    router: &mut TimeBasedRouter,
+) -> Result<TimeRouteResponse, String> {
     // Validate request
     if request.start_node == request.end_node {
         return Err("Start and end nodes cannot be the same".to_string());
@@ -502,7 +513,7 @@ pub fn route_endpoint(request: TimeRouteRequest, router: &mut TimeBasedRouter) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dual_core::{TimeEdge, TimeWeight, GraphNode};
+    use crate::dual_core::{GraphNode, TimeEdge, TimeWeight};
     use butterfly_geometry::Point2D;
 
     fn create_test_router() -> TimeBasedRouter {
@@ -532,7 +543,7 @@ mod tests {
 
         // Add nav edges (required for dual core consistency)
         use crate::dual_core::NavEdge;
-        use butterfly_geometry::{SnapSkeleton, NavigationGeometry};
+        use butterfly_geometry::{NavigationGeometry, SnapSkeleton};
 
         let snap_skeleton1 = SnapSkeleton::new(
             vec![Point2D::new(0.0, 0.0), Point2D::new(1.0, 0.0)],
@@ -589,11 +600,7 @@ mod tests {
 
     #[test]
     fn test_time_route_request_creation() {
-        let request = TimeRouteRequest::new(
-            TransportProfile::Car,
-            NodeId::new(1),
-            NodeId::new(2),
-        );
+        let request = TimeRouteRequest::new(TransportProfile::Car, NodeId::new(1), NodeId::new(2));
 
         assert_eq!(request.profile, TransportProfile::Car);
         assert_eq!(request.start_node, NodeId::new(1));
@@ -604,14 +611,10 @@ mod tests {
 
     #[test]
     fn test_time_route_request_with_constraints() {
-        let request = TimeRouteRequest::new(
-            TransportProfile::Car,
-            NodeId::new(1),
-            NodeId::new(2),
-        )
-        .with_departure_time(1234567890)
-        .with_constraints(true, false, true)
-        .with_max_time(3600);
+        let request = TimeRouteRequest::new(TransportProfile::Car, NodeId::new(1), NodeId::new(2))
+            .with_departure_time(1234567890)
+            .with_constraints(true, false, true)
+            .with_max_time(3600);
 
         assert_eq!(request.departure_time, Some(1234567890));
         assert!(request.avoid_toll_roads);
@@ -653,7 +656,7 @@ mod tests {
     #[test]
     fn test_time_based_router_creation() {
         let router = create_test_router();
-        
+
         let stats = router.get_stats();
         assert_eq!(stats.profiles_configured, 0); // No profiles configured yet
         assert!(stats.compression_stats.is_none());
@@ -663,15 +666,11 @@ mod tests {
     #[test]
     fn test_basic_time_routing() {
         let mut router = create_test_router();
-        
-        let request = TimeRouteRequest::new(
-            TransportProfile::Car,
-            NodeId::new(1),
-            NodeId::new(3),
-        );
+
+        let request = TimeRouteRequest::new(TransportProfile::Car, NodeId::new(1), NodeId::new(3));
 
         let response = router.route(request);
-        
+
         // Should find a route (1 -> 2 -> 3)
         assert!(response.route_found);
         assert!(response.total_time_seconds > 0.0);
@@ -682,11 +681,9 @@ mod tests {
 
     #[test]
     fn test_time_route_response_methods() {
-        let request = TimeRouteRequest::new(
-            TransportProfile::Car,
-            NodeId::new(1),
-            NodeId::new(2),
-        ).with_departure_time(1000).with_max_time(120);
+        let request = TimeRouteRequest::new(TransportProfile::Car, NodeId::new(1), NodeId::new(2))
+            .with_departure_time(1000)
+            .with_max_time(120);
 
         let mut stats = TimeComputationStats::new();
         stats.computation_time_ms = 50;
@@ -736,12 +733,8 @@ mod tests {
     #[test]
     fn test_route_endpoint() {
         let mut router = create_test_router();
-        
-        let request = TimeRouteRequest::new(
-            TransportProfile::Car,
-            NodeId::new(1),
-            NodeId::new(3),
-        );
+
+        let request = TimeRouteRequest::new(TransportProfile::Car, NodeId::new(1), NodeId::new(3));
 
         let result = route_endpoint(request, &mut router);
         assert!(result.is_ok());
@@ -750,11 +743,8 @@ mod tests {
         assert!(response.route_found);
 
         // Test invalid request (same start/end)
-        let invalid_request = TimeRouteRequest::new(
-            TransportProfile::Car,
-            NodeId::new(1),
-            NodeId::new(1),
-        );
+        let invalid_request =
+            TimeRouteRequest::new(TransportProfile::Car, NodeId::new(1), NodeId::new(1));
 
         let invalid_result = route_endpoint(invalid_request, &mut router);
         assert!(invalid_result.is_err());
@@ -763,27 +753,25 @@ mod tests {
     #[test]
     fn test_router_with_extensions() {
         let router = create_test_router();
-        
+
         // Test with weight compression
         let weight_system = crate::weight_compression::WeightCompressionSystem::new();
         let router_with_compression = router.with_weight_compression(weight_system);
-        
+
         let stats = router_with_compression.get_stats();
         assert!(stats.compression_stats.is_some());
 
         // Test with turn restrictions
         let turn_system = crate::turn_restriction_tables::TurnRestrictionTableSystem::new(100);
         let router_with_turns = router_with_compression.with_turn_restrictions(turn_system);
-        
+
         let stats = router_with_turns.get_stats();
         assert!(stats.turn_stats.is_some());
 
         // Test with profile config
-        let router_with_config = router_with_turns.with_profile_config(
-            TransportProfile::Car,
-            ProfileRouteConfig::for_car(),
-        );
-        
+        let router_with_config = router_with_turns
+            .with_profile_config(TransportProfile::Car, ProfileRouteConfig::for_car());
+
         let stats = router_with_config.get_stats();
         assert_eq!(stats.profiles_configured, 1);
     }

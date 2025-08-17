@@ -1,12 +1,14 @@
 //! Spatial indexing for geometry and snapping
 
+use crate::profiles::EdgeId;
 use rstar::{RTree, RTreeObject, AABB};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::profiles::EdgeId;
 
 /// Point in 2D space with coordinates
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Serialize, Deserialize, bytemuck::Pod, bytemuck::Zeroable,
+)]
 #[repr(C)]
 pub struct Point2D {
     pub x: f64,
@@ -34,7 +36,12 @@ pub struct BBox {
 
 impl BBox {
     pub fn new(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Self {
-        Self { min_x, min_y, max_x, max_y }
+        Self {
+            min_x,
+            min_y,
+            max_x,
+            max_y,
+        }
     }
 
     pub fn from_points(points: &[Point2D]) -> Self {
@@ -67,8 +74,10 @@ impl BBox {
     }
 
     pub fn contains_point(&self, point: &Point2D) -> bool {
-        point.x >= self.min_x && point.x <= self.max_x && 
-        point.y >= self.min_y && point.y <= self.max_y
+        point.x >= self.min_x
+            && point.x <= self.max_x
+            && point.y >= self.min_y
+            && point.y <= self.max_y
     }
 
     pub fn area(&self) -> f64 {
@@ -89,11 +98,17 @@ impl SpatialEdge {
     pub fn new(edge_id: EdgeId, geometry: Vec<Point2D>) -> Self {
         let bbox = BBox::from_points(&geometry);
         let length = Self::calculate_length(&geometry);
-        Self { edge_id, bbox, geometry, length }
+        Self {
+            edge_id,
+            bbox,
+            geometry,
+            length,
+        }
     }
 
     fn calculate_length(geometry: &[Point2D]) -> f64 {
-        geometry.windows(2)
+        geometry
+            .windows(2)
             .map(|window| window[0].distance_to(&window[1]))
             .sum()
     }
@@ -106,24 +121,29 @@ impl SpatialEdge {
         let mut cumulative_distance = 0.0;
 
         for segment in self.geometry.windows(2) {
-            let (proj_point, dist, t) = Self::point_to_segment_distance(query_point, &segment[0], &segment[1]);
-            
+            let (proj_point, dist, t) =
+                Self::point_to_segment_distance(query_point, &segment[0], &segment[1]);
+
             if dist < min_distance {
                 min_distance = dist;
                 closest_point = proj_point;
                 position_along_edge = cumulative_distance + t * segment[0].distance_to(&segment[1]);
             }
-            
+
             cumulative_distance += segment[0].distance_to(&segment[1]);
         }
 
         (closest_point, min_distance, position_along_edge)
     }
 
-    fn point_to_segment_distance(point: &Point2D, seg_start: &Point2D, seg_end: &Point2D) -> (Point2D, f64, f64) {
+    fn point_to_segment_distance(
+        point: &Point2D,
+        seg_start: &Point2D,
+        seg_end: &Point2D,
+    ) -> (Point2D, f64, f64) {
         let dx = seg_end.x - seg_start.x;
         let dy = seg_end.y - seg_start.y;
-        
+
         if dx == 0.0 && dy == 0.0 {
             return (*seg_start, point.distance_to(seg_start), 0.0);
         }
@@ -131,10 +151,7 @@ impl SpatialEdge {
         let t = ((point.x - seg_start.x) * dx + (point.y - seg_start.y) * dy) / (dx * dx + dy * dy);
         let t = t.max(0.0).min(1.0);
 
-        let proj_point = Point2D::new(
-            seg_start.x + t * dx,
-            seg_start.y + t * dy,
-        );
+        let proj_point = Point2D::new(seg_start.x + t * dx, seg_start.y + t * dy);
 
         (proj_point, point.distance_to(&proj_point), t)
     }
@@ -150,7 +167,6 @@ impl RTreeObject for SpatialEdge {
         )
     }
 }
-
 
 /// Spatial index for snap operations
 #[derive(Debug)]
@@ -175,7 +191,7 @@ impl SnapIndex {
         }
 
         let rtree = RTree::bulk_load(edges);
-        
+
         Self { rtree, edge_lookup }
     }
 
@@ -204,7 +220,7 @@ impl SnapIndex {
     pub fn nearest_edge(&self, point: &Point2D) -> Option<&SpatialEdge> {
         // Use a more manual approach for finding nearest edge
         let candidates = self.nearest_edges(point, 1000.0); // Search in 1km radius
-        
+
         if candidates.is_empty() {
             return None;
         }
@@ -225,7 +241,8 @@ impl SnapIndex {
 
     /// Get edge by ID
     pub fn get_edge(&self, edge_id: &EdgeId) -> Option<&SpatialEdge> {
-        self.edge_lookup.get(edge_id)
+        self.edge_lookup
+            .get(edge_id)
             .and_then(|&idx| self.rtree.iter().nth(idx))
     }
 
@@ -296,7 +313,7 @@ impl SnapEngine {
     /// Snap a point to the nearest appropriate edge
     pub fn snap_point(&self, point: &Point2D, query_heading: Option<f64>) -> Option<SnapResult> {
         let candidates = self.index.nearest_edges(point, self.max_snap_distance);
-        
+
         if candidates.is_empty() {
             return None;
         }
@@ -306,14 +323,14 @@ impl SnapEngine {
 
         for edge in candidates {
             let (snapped_point, distance, position) = edge.closest_point_on_edge(point);
-            
+
             if distance > self.max_snap_distance {
                 continue;
             }
 
             // Calculate edge heading at snap point
             let edge_heading = self.calculate_edge_heading_at_position(edge, position);
-            
+
             // Apply heading filter if provided
             if let (Some(query_h), Some(edge_h)) = (query_heading, edge_heading) {
                 let heading_diff = self.normalize_heading_difference(query_h - edge_h);
@@ -323,15 +340,16 @@ impl SnapEngine {
             }
 
             // Score combines distance and heading alignment
-            let heading_penalty = if let (Some(query_h), Some(edge_h)) = (query_heading, edge_heading) {
-                let heading_diff = self.normalize_heading_difference(query_h - edge_h);
-                heading_diff / self.heading_tolerance_degrees
-            } else {
-                0.0
-            };
+            let heading_penalty =
+                if let (Some(query_h), Some(edge_h)) = (query_heading, edge_heading) {
+                    let heading_diff = self.normalize_heading_difference(query_h - edge_h);
+                    heading_diff / self.heading_tolerance_degrees
+                } else {
+                    0.0
+                };
 
             let score = distance + heading_penalty * 10.0; // Heading penalty in meters equivalent
-            
+
             if score < best_score {
                 best_score = score;
                 best_candidate = Some(SnapResult::new(
@@ -353,26 +371,34 @@ impl SnapEngine {
         }
 
         let mut cumulative_distance = 0.0;
-        
+
         for segment in edge.geometry.windows(2) {
             let segment_length = segment[0].distance_to(&segment[1]);
-            
+
             if cumulative_distance + segment_length >= position {
                 let dx = segment[1].x - segment[0].x;
                 let dy = segment[1].y - segment[0].y;
                 let heading = dy.atan2(dx).to_degrees();
-                return Some(if heading < 0.0 { heading + 360.0 } else { heading });
+                return Some(if heading < 0.0 {
+                    heading + 360.0
+                } else {
+                    heading
+                });
             }
-            
+
             cumulative_distance += segment_length;
         }
 
         // Fallback to last segment
-        let last_segment = &edge.geometry[edge.geometry.len()-2..];
+        let last_segment = &edge.geometry[edge.geometry.len() - 2..];
         let dx = last_segment[1].x - last_segment[0].x;
         let dy = last_segment[1].y - last_segment[0].y;
         let heading = dy.atan2(dx).to_degrees();
-        Some(if heading < 0.0 { heading + 360.0 } else { heading })
+        Some(if heading < 0.0 {
+            heading + 360.0
+        } else {
+            heading
+        })
     }
 
     fn normalize_heading_difference(&self, diff: f64) -> f64 {
@@ -385,7 +411,8 @@ impl SnapEngine {
 
     /// Snap multiple points efficiently
     pub fn snap_points(&self, points: &[(Point2D, Option<f64>)]) -> Vec<Option<SnapResult>> {
-        points.iter()
+        points
+            .iter()
             .map(|(point, heading)| self.snap_point(point, *heading))
             .collect()
     }
@@ -440,13 +467,10 @@ mod tests {
 
     #[test]
     fn test_closest_point_on_edge() {
-        let geometry = vec![
-            Point2D::new(0.0, 0.0),
-            Point2D::new(2.0, 0.0),
-        ];
+        let geometry = vec![Point2D::new(0.0, 0.0), Point2D::new(2.0, 0.0)];
         let edge = SpatialEdge::new(EdgeId(1), geometry);
         let query_point = Point2D::new(1.0, 1.0);
-        
+
         let (closest, distance, position) = edge.closest_point_on_edge(&query_point);
         assert_eq!(closest.x, 1.0);
         assert_eq!(closest.y, 0.0);
@@ -457,8 +481,14 @@ mod tests {
     #[test]
     fn test_snap_index_creation() {
         let edges = vec![
-            SpatialEdge::new(EdgeId(1), vec![Point2D::new(0.0, 0.0), Point2D::new(1.0, 0.0)]),
-            SpatialEdge::new(EdgeId(2), vec![Point2D::new(0.0, 1.0), Point2D::new(1.0, 1.0)]),
+            SpatialEdge::new(
+                EdgeId(1),
+                vec![Point2D::new(0.0, 0.0), Point2D::new(1.0, 0.0)],
+            ),
+            SpatialEdge::new(
+                EdgeId(2),
+                vec![Point2D::new(0.0, 1.0), Point2D::new(1.0, 1.0)],
+            ),
         ];
         let index = SnapIndex::from_super_edges(edges);
         assert_eq!(index.size(), 2);
@@ -466,15 +496,16 @@ mod tests {
 
     #[test]
     fn test_snap_engine_basic() {
-        let edges = vec![
-            SpatialEdge::new(EdgeId(1), vec![Point2D::new(0.0, 0.0), Point2D::new(2.0, 0.0)]),
-        ];
+        let edges = vec![SpatialEdge::new(
+            EdgeId(1),
+            vec![Point2D::new(0.0, 0.0), Point2D::new(2.0, 0.0)],
+        )];
         let index = SnapIndex::from_super_edges(edges);
         let engine = SnapEngine::new(index, 5.0, 35.0);
-        
+
         let query_point = Point2D::new(1.0, 0.5);
         let result = engine.snap_point(&query_point, None).unwrap();
-        
+
         assert_eq!(result.edge_id, EdgeId(1));
         assert_eq!(result.distance, 0.5);
         assert!(result.position_along_edge > 0.9 && result.position_along_edge < 1.1);

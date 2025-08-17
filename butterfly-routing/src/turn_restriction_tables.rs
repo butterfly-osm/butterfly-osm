@@ -1,7 +1,7 @@
 //! M6.2 - Turn Restriction Tables: Profile-specific turn rules with sharding
 
-use crate::profiles::{EdgeId, TransportProfile};
 use crate::dual_core::{NodeId, RestrictionType, TurnRestriction};
+use crate::profiles::{EdgeId, TransportProfile};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -89,7 +89,10 @@ impl ProfileTurnMatrix {
 
     /// Get penalty for a turn movement
     pub fn get_penalty(&self, movement: &TurnMovement) -> TurnPenalty {
-        self.turn_penalties.get(movement).copied().unwrap_or(self.default_penalty)
+        self.turn_penalties
+            .get(movement)
+            .copied()
+            .unwrap_or(self.default_penalty)
     }
 
     /// Check if a turn is forbidden
@@ -109,17 +112,22 @@ impl ProfileTurnMatrix {
 
     /// Memory usage of this matrix
     pub fn memory_usage(&self) -> usize {
-        std::mem::size_of::<Self>() + 
-        self.turn_penalties.len() * (std::mem::size_of::<TurnMovement>() + std::mem::size_of::<TurnPenalty>())
+        std::mem::size_of::<Self>()
+            + self.turn_penalties.len()
+                * (std::mem::size_of::<TurnMovement>() + std::mem::size_of::<TurnPenalty>())
     }
 
     /// Statistics about this matrix
     pub fn stats(&self) -> ProfileMatrixStats {
-        let forbidden_count = self.turn_penalties.values()
+        let forbidden_count = self
+            .turn_penalties
+            .values()
             .filter(|&&penalty| penalty == TURN_FORBIDDEN)
             .count();
-        
-        let penalized_count = self.turn_penalties.values()
+
+        let penalized_count = self
+            .turn_penalties
+            .values()
             .filter(|&&penalty| penalty != TURN_ALLOWED && penalty != TURN_FORBIDDEN)
             .count();
 
@@ -159,18 +167,24 @@ impl TurnRestrictionShard {
     /// Add a junction to this shard
     pub fn add_junction(&mut self, junction_id: JunctionId) {
         self.junction_count += 1;
-        
+
         // Update range
-        if junction_id.0 < self.junction_range.0.0 {
+        if junction_id.0 < self.junction_range.0 .0 {
             self.junction_range.0 = junction_id;
         }
-        if junction_id.0 > self.junction_range.1.0 {
+        if junction_id.0 > self.junction_range.1 .0 {
             self.junction_range.1 = junction_id;
         }
 
         // Initialize profile matrices if needed
-        for profile in &[TransportProfile::Car, TransportProfile::Bicycle, TransportProfile::Foot] {
-            self.profile_matrices.entry(*profile).or_insert_with(|| ProfileTurnMatrix::new(*profile));
+        for profile in &[
+            TransportProfile::Car,
+            TransportProfile::Bicycle,
+            TransportProfile::Foot,
+        ] {
+            self.profile_matrices
+                .entry(*profile)
+                .or_insert_with(|| ProfileTurnMatrix::new(*profile));
         }
     }
 
@@ -181,14 +195,21 @@ impl TurnRestrictionShard {
         movement: TurnMovement,
         penalty: TurnPenalty,
     ) {
-        let matrix = self.profile_matrices.entry(profile).or_insert_with(|| ProfileTurnMatrix::new(profile));
+        let matrix = self
+            .profile_matrices
+            .entry(profile)
+            .or_insert_with(|| ProfileTurnMatrix::new(profile));
         matrix.add_restriction(movement, penalty);
     }
 
     /// Get turn penalty for a movement
-    pub fn get_turn_penalty(&mut self, profile: &TransportProfile, movement: &TurnMovement) -> TurnPenalty {
+    pub fn get_turn_penalty(
+        &mut self,
+        profile: &TransportProfile,
+        movement: &TurnMovement,
+    ) -> TurnPenalty {
         self.access_count += 1;
-        
+
         if let Some(matrix) = self.profile_matrices.get(profile) {
             self.hit_count += 1;
             matrix.get_penalty(movement)
@@ -199,7 +220,7 @@ impl TurnRestrictionShard {
 
     /// Check if shard contains a junction
     pub fn contains_junction(&self, junction_id: JunctionId) -> bool {
-        junction_id.0 >= self.junction_range.0.0 && junction_id.0 <= self.junction_range.1.0
+        junction_id.0 >= self.junction_range.0 .0 && junction_id.0 <= self.junction_range.1 .0
     }
 
     /// Get hit rate for this shard
@@ -218,13 +239,19 @@ impl TurnRestrictionShard {
 
     /// Memory usage of this shard
     pub fn memory_usage(&self) -> usize {
-        std::mem::size_of::<Self>() +
-        self.profile_matrices.values().map(|m| m.memory_usage()).sum::<usize>()
+        std::mem::size_of::<Self>()
+            + self
+                .profile_matrices
+                .values()
+                .map(|m| m.memory_usage())
+                .sum::<usize>()
     }
 
     /// Get shard statistics
     pub fn stats(&self) -> ShardStats {
-        let total_restrictions: usize = self.profile_matrices.values()
+        let total_restrictions: usize = self
+            .profile_matrices
+            .values()
             .map(|m| m.restriction_count)
             .sum();
 
@@ -255,7 +282,7 @@ impl TurnRestrictionTableSystem {
     pub fn new(estimated_junctions: usize) -> Self {
         let shard_count = Self::calculate_optimal_shard_count(estimated_junctions);
         let mut shards = Vec::with_capacity(shard_count);
-        
+
         for i in 0..shard_count {
             shards.push(TurnRestrictionShard::new(i));
         }
@@ -303,7 +330,7 @@ impl TurnRestrictionTableSystem {
 
         let shard_id = via_junction.shard_id(self.shards.len());
         self.shards[shard_id].add_turn_restriction(profile, movement, penalty);
-        
+
         if penalty == TURN_FORBIDDEN {
             self.total_restrictions += 1;
         }
@@ -312,7 +339,7 @@ impl TurnRestrictionTableSystem {
     /// Add turn restriction from TurnRestriction struct
     pub fn add_turn_restriction_struct(&mut self, restriction: &TurnRestriction) {
         let junction_id = JunctionId::from_node(restriction.via_node);
-        
+
         for &profile in &restriction.profiles {
             self.add_turn_restriction(
                 profile,
@@ -338,9 +365,13 @@ impl TurnRestrictionTableSystem {
     }
 
     /// Get turn penalty for a movement
-    pub fn get_turn_penalty(&mut self, profile: &TransportProfile, movement: &TurnMovement) -> TurnPenalty {
+    pub fn get_turn_penalty(
+        &mut self,
+        profile: &TransportProfile,
+        movement: &TurnMovement,
+    ) -> TurnPenalty {
         let shard_id = movement.via_junction.shard_id(self.shards.len());
-        
+
         // Track shard access
         let (access_count, miss_count) = self.shard_access_stats.entry(shard_id).or_insert((0, 0));
         *access_count += 1;
@@ -355,7 +386,11 @@ impl TurnRestrictionTableSystem {
     }
 
     /// Get turn penalty in seconds
-    pub fn get_turn_penalty_seconds(&mut self, profile: &TransportProfile, movement: &TurnMovement) -> f64 {
+    pub fn get_turn_penalty_seconds(
+        &mut self,
+        profile: &TransportProfile,
+        movement: &TurnMovement,
+    ) -> f64 {
         let penalty = self.get_turn_penalty(profile, movement);
         if penalty == TURN_FORBIDDEN {
             f64::INFINITY
@@ -403,9 +438,11 @@ impl TurnRestrictionTableSystem {
 
         for shard in &self.shards {
             total_memory += shard.memory_usage();
-            
+
             for (profile, matrix) in &shard.profile_matrices {
-                let entry = profile_stats.entry(*profile).or_insert_with(|| ProfileSystemStats::new(*profile));
+                let entry = profile_stats
+                    .entry(*profile)
+                    .or_insert_with(|| ProfileSystemStats::new(*profile));
                 entry.total_movements += matrix.turn_penalties.len();
                 entry.forbidden_movements += matrix.restriction_count;
                 entry.memory_usage += matrix.memory_usage();
@@ -430,13 +467,13 @@ impl TurnRestrictionTableSystem {
 
         // Find under-utilized and over-utilized shards
         let _avg_junctions = self.total_junctions / self.shards.len().max(1);
-        
+
         for (_i, shard) in self.shards.iter().enumerate() {
             if shard.junction_count < MIN_JUNCTIONS_PER_SHARD / 2 {
                 // Under-utilized shard
                 rebalanced_shards += 1;
             } else if shard.junction_count > MAX_JUNCTIONS_PER_SHARD {
-                // Over-utilized shard  
+                // Over-utilized shard
                 rebalanced_shards += 1;
             }
         }
@@ -523,7 +560,7 @@ mod tests {
         let junction3 = JunctionId::new(1000);
 
         let total_shards = 4;
-        
+
         let shard1 = junction1.shard_id(total_shards);
         let shard2 = junction2.shard_id(total_shards);
         let shard3 = junction3.shard_id(total_shards);
@@ -531,19 +568,18 @@ mod tests {
         assert!(shard1 < total_shards);
         assert!(shard2 < total_shards);
         assert!(shard3 < total_shards);
-        
+
         // Same junction should always map to same shard
-        assert_eq!(junction1.shard_id(total_shards), junction1.shard_id(total_shards));
+        assert_eq!(
+            junction1.shard_id(total_shards),
+            junction1.shard_id(total_shards)
+        );
     }
 
     #[test]
     fn test_profile_turn_matrix() {
         let mut matrix = ProfileTurnMatrix::new(TransportProfile::Car);
-        let movement = TurnMovement::new(
-            EdgeId(1),
-            JunctionId::new(10),
-            EdgeId(2),
-        );
+        let movement = TurnMovement::new(EdgeId(1), JunctionId::new(10), EdgeId(2));
 
         // Default should be allowed
         assert_eq!(matrix.get_penalty(&movement), TURN_ALLOWED);
@@ -587,10 +623,22 @@ mod tests {
 
     #[test]
     fn test_optimal_shard_count_calculation() {
-        assert_eq!(TurnRestrictionTableSystem::calculate_optimal_shard_count(100), 1);
-        assert_eq!(TurnRestrictionTableSystem::calculate_optimal_shard_count(500), 2);
-        assert_eq!(TurnRestrictionTableSystem::calculate_optimal_shard_count(1000), 3);
-        assert_eq!(TurnRestrictionTableSystem::calculate_optimal_shard_count(2000), 6);
+        assert_eq!(
+            TurnRestrictionTableSystem::calculate_optimal_shard_count(100),
+            1
+        );
+        assert_eq!(
+            TurnRestrictionTableSystem::calculate_optimal_shard_count(500),
+            2
+        );
+        assert_eq!(
+            TurnRestrictionTableSystem::calculate_optimal_shard_count(1000),
+            3
+        );
+        assert_eq!(
+            TurnRestrictionTableSystem::calculate_optimal_shard_count(2000),
+            6
+        );
     }
 
     #[test]
@@ -623,7 +671,7 @@ mod tests {
     #[test]
     fn test_turn_restriction_from_struct() {
         let mut system = TurnRestrictionTableSystem::new(500);
-        
+
         let restriction = TurnRestriction {
             from_edge: EdgeId(1),
             via_node: NodeId::new(10),
@@ -635,11 +683,16 @@ mod tests {
         system.add_turn_restriction_struct(&restriction);
 
         let junction_id = JunctionId::from_node(restriction.via_node);
-        
+
         // Should be forbidden for both profiles
         assert!(!system.is_turn_allowed(&TransportProfile::Car, EdgeId(1), junction_id, EdgeId(2)));
-        assert!(!system.is_turn_allowed(&TransportProfile::Bicycle, EdgeId(1), junction_id, EdgeId(2)));
-        
+        assert!(!system.is_turn_allowed(
+            &TransportProfile::Bicycle,
+            EdgeId(1),
+            junction_id,
+            EdgeId(2)
+        ));
+
         // Should be allowed for pedestrian (not in restriction)
         assert!(system.is_turn_allowed(&TransportProfile::Foot, EdgeId(1), junction_id, EdgeId(2)));
     }
@@ -647,7 +700,7 @@ mod tests {
     #[test]
     fn test_performance_targets() {
         let system = TurnRestrictionTableSystem::new(100);
-        
+
         // New system should meet targets (empty shards are considered warm)
         assert!(system.get_warm_hit_rate() >= TARGET_WARM_HIT_RATE);
         assert!(system.meets_performance_targets());
@@ -656,7 +709,7 @@ mod tests {
     #[test]
     fn test_system_statistics() {
         let mut system = TurnRestrictionTableSystem::new(500);
-        
+
         // Add some data
         let junction1 = JunctionId::new(100);
         system.add_junction(junction1);
@@ -678,16 +731,12 @@ mod tests {
     #[test]
     fn test_shard_miss_tracking() {
         let mut system = TurnRestrictionTableSystem::new(100);
-        
-        let movement = TurnMovement::new(
-            EdgeId(1),
-            JunctionId::new(999),
-            EdgeId(2),
-        );
+
+        let movement = TurnMovement::new(EdgeId(1), JunctionId::new(999), EdgeId(2));
 
         // Access a movement (should track access)
         let _penalty = system.get_turn_penalty(&TransportProfile::Car, &movement);
-        
+
         // Should have access stats now
         assert!(!system.shard_access_stats.is_empty());
     }
@@ -695,7 +744,7 @@ mod tests {
     #[test]
     fn test_memory_usage_calculation() {
         let mut system = TurnRestrictionTableSystem::new(200);
-        
+
         let junction1 = JunctionId::new(100);
         system.add_junction(junction1);
         system.add_turn_restriction(
