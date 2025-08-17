@@ -669,7 +669,7 @@ mod tests {
 
         // Add test edges
         for i in 1..=5 {
-            let mut time_edge = TimeEdge::new(EdgeId(i), NodeId::new(i), NodeId::new(i + 1));
+            let mut time_edge = TimeEdge::new(EdgeId(i), NodeId::new(i as u64), NodeId::new((i + 1) as u64));
             time_edge.add_weight(TransportProfile::Car, TimeWeight::new(60.0, 1000.0));
             time_edge.add_weight(TransportProfile::Bicycle, TimeWeight::new(120.0, 1000.0));
             time_edge.add_weight(TransportProfile::Foot, TimeWeight::new(600.0, 1000.0));
@@ -735,7 +735,7 @@ mod tests {
         
         let client = LoadTestClient::new(0, config, router);
         assert_eq!(client.client_id, 0);
-        assert_eq!(client.stats.client_id, 0);
+        assert_eq!(client.stats.lock().unwrap().client_id, 0);
     }
 
     #[test]
@@ -814,9 +814,9 @@ mod tests {
 
     #[test]
     fn test_client_stats() {
-        let stats = LoadTestClientStats::new(5);
+        let mut stats = LoadTestClientStats::new(5);
         assert_eq!(stats.client_id, 5);
-        assert_eq!(stats.total_requests.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.total_requests, 0);
         assert_eq!(stats.success_rate(), 0.0);
         assert_eq!(stats.average_latency_ms(), 0.0);
         
@@ -824,8 +824,8 @@ mod tests {
         stats.record_request(TransportProfile::Car, Duration::from_millis(100), true);
         stats.record_request(TransportProfile::Car, Duration::from_millis(200), false);
         
-        assert_eq!(stats.total_requests.load(Ordering::Relaxed), 2);
-        assert_eq!(stats.successful_requests.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.total_requests, 2);
+        assert_eq!(stats.successful_requests, 1);
         assert_eq!(stats.success_rate(), 0.5);
         assert_eq!(stats.average_latency_ms(), 150.0);
     }

@@ -739,7 +739,7 @@ mod tests {
         for i in 0..100 {
             let movement = TurnMovement::new(
                 EdgeId(i),
-                JunctionId::new(i),
+                JunctionId::new(i as u64),
                 EdgeId(i + 1),
             );
             cache.insert(movement, TransportProfile::Car, i as u16);
@@ -757,7 +757,7 @@ mod tests {
         for i in 100..150 {
             let movement = TurnMovement::new(
                 EdgeId(i),
-                JunctionId::new(i),
+                JunctionId::new(i as u64),
                 EdgeId(i + 1),
             );
             cache.insert(movement, TransportProfile::Car, i as u16);
@@ -811,7 +811,7 @@ mod tests {
         for i in 0..1000 {
             let movement = TurnMovement::new(
                 EdgeId(i),
-                JunctionId::new(i),
+                JunctionId::new(i as u64),
                 EdgeId(i + 1),
             );
             let key = TurnCacheKey::new(movement, TransportProfile::Car);
@@ -884,7 +884,7 @@ mod tests {
                 for i in 0..100 {
                     let movement = TurnMovement::new(
                         EdgeId(thread_id * 100 + i),
-                        JunctionId::new(thread_id * 100 + i),
+                        JunctionId::new((thread_id * 100 + i) as u64),
                         EdgeId(thread_id * 100 + i + 1),
                     );
                     

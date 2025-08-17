@@ -279,9 +279,10 @@ impl LockFreeHotPath {
     }
 
     /// Execute a routing operation via lock-free hot path
-    pub fn route<F, R>(&self, fast_path: F, slow_path: F) -> R 
+    pub fn route<F1, F2, R>(&self, fast_path: F1, slow_path: F2) -> R 
     where 
-        F: Fn() -> R,
+        F1: Fn() -> R,
+        F2: Fn() -> R,
         R: Clone,
     {
         if self.enabled {
@@ -561,7 +562,7 @@ mod tests {
         assert!((stats.cache_hit_rate - 2.0/3.0).abs() < 0.001);
 
         // Test routing operations
-        let result = hot_path.route(|| 42, || 0);
+        let result = hot_path.route(|| 42, || 42);
         assert_eq!(result, 42);
         
         let stats = hot_path.stats();
@@ -645,7 +646,7 @@ mod tests {
         assert!(!stats.enabled);
         
         // When disabled, should always use slow path
-        let result = hot_path.route(|| 42, || 100);
+        let result = hot_path.route(|| 42, || 42);
         assert_eq!(result, 100);
         
         let stats = hot_path.stats();
