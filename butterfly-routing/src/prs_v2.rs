@@ -887,7 +887,7 @@ mod tests {
         for result in &report.results {
             assert!(result.timestamp > 0);
             // Basic validation that the test ran
-            assert!(result.metrics.execution_time_ms >= 0);
+            // execution_time_ms is u64, so it's always >= 0
         }
     }
 }

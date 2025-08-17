@@ -176,6 +176,26 @@ cargo test --workspace
 cargo install --path tools/butterfly-dl
 ```
 
+#### Code Quality Standards
+
+This project enforces zero-warning compilation policy via `.cargo/config.toml`:
+
+```toml
+[build]
+rustflags = ["-D", "warnings"]
+
+[target.'cfg(all())']
+rustflags = ["-D", "warnings"]
+```
+
+All warnings are treated as compilation errors to maintain code quality. This ensures:
+- No dead code or unused variables accumulate
+- Import statements stay clean and necessary
+- Type safety warnings are addressed immediately
+- Code remains maintainable and professional
+
+If you encounter compilation errors due to warnings, fix them rather than disabling the configuration.
+
 ### Pre-built Binaries
 
 Download optimized binaries for your platform:

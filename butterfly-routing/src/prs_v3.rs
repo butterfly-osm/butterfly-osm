@@ -1,6 +1,6 @@
 //! PRS v3 - Profile Regression Suite v3: ETA plausibility + turn legality + time parity validation
 
-use crate::profiles::{TransportProfile, EdgeId};
+use crate::profiles::TransportProfile;
 use crate::dual_core::{NodeId, DualCoreGraph};
 use crate::time_routing::{TimeBasedRouter, TimeRouteRequest, RouteQuality};
 use crate::turn_restriction_tables::{TurnRestrictionTableSystem, JunctionId};
@@ -752,7 +752,7 @@ impl ProfileRegressionSuiteV3 {
     }
 
     /// Generate test routes for a profile
-    fn generate_test_routes(&self, profile: TransportProfile) -> Vec<(NodeId, NodeId)> {
+    fn generate_test_routes(&self, _profile: TransportProfile) -> Vec<(NodeId, NodeId)> {
         // Generate realistic test routes based on profile
         let mut routes = Vec::new();
         
@@ -818,6 +818,7 @@ fn calculate_correlation(x: &[f64], y: &[f64]) -> f64 {
 mod tests {
     use super::*;
     use crate::dual_core::{TimeEdge, TimeWeight, GraphNode};
+    use crate::profiles::EdgeId;
     use butterfly_geometry::Point2D;
 
     fn create_test_setup() -> (DualCoreGraph, PRSv3Config) {

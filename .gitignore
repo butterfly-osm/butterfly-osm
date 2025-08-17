@@ -133,3 +133,15 @@ consistency-digests-*.json
 route-debug-*.json
 chunk-*.bin
 anchor-*.json
+
+# M6 Time-Based Routing outputs
+weight-compression-*.json
+turn-restriction-tables-*.json
+time-routing-*.json
+prs-v3-report-*.json
+route-timing-*.json
+shard-stats-*.json
+compression-stats-*.json
+*.weight_compression
+*.turn_restrictions
+*.time_routing

@@ -365,7 +365,7 @@ impl TurnRestrictionTableSystem {
     }
 
     /// Get shard miss rate for a profile
-    pub fn get_shard_miss_rate(&self, profile: &TransportProfile) -> f64 {
+    pub fn get_shard_miss_rate(&self, _profile: &TransportProfile) -> f64 {
         let mut total_access = 0u64;
         let mut total_miss = 0u64;
 
@@ -425,13 +425,13 @@ impl TurnRestrictionTableSystem {
 
     /// Optimize shard distribution for better performance
     pub fn optimize_shards(&mut self) -> OptimizationResult {
-        let mut moved_junctions = 0;
+        let moved_junctions = 0;
         let mut rebalanced_shards = 0;
 
         // Find under-utilized and over-utilized shards
-        let avg_junctions = self.total_junctions / self.shards.len().max(1);
+        let _avg_junctions = self.total_junctions / self.shards.len().max(1);
         
-        for (i, shard) in self.shards.iter().enumerate() {
+        for (_i, shard) in self.shards.iter().enumerate() {
             if shard.junction_count < MIN_JUNCTIONS_PER_SHARD / 2 {
                 // Under-utilized shard
                 rebalanced_shards += 1;

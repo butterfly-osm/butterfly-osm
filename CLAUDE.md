@@ -90,3 +90,4 @@
    * Update CHANGELOG; tag with semantic version; build artifacts.
 - stop with wget from geofabrik. Use butterfly-dl !!
 - never allow dead code !
+- warnings are errors
