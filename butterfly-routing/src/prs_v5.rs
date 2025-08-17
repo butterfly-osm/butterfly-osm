@@ -453,7 +453,7 @@ impl ProfileRegressionSuiteV5 {
     }
 
     /// Test CCH distance correctness against baseline
-    async fn test_cch_distance_correctness(&self) -> PRSv5TestResult {
+    async fn test_cch_distance_correctness(&mut self) -> PRSv5TestResult {
         let start_time = Instant::now();
         let mut metrics = PRSv5Metrics::new();
 
@@ -461,21 +461,38 @@ impl ProfileRegressionSuiteV5 {
         let mut total_comparisons = 0;
         let tolerance = 0.01; // 1% tolerance for floating point comparison
 
+        let test_pairs = self.generate_test_node_pairs(10);
+
         if let Some(_baseline) = &self.baseline_router {
             if let Some(engine) = self.query_engines.get(&TransportProfile::Car) {
-                let test_pairs = self.generate_test_node_pairs(10);
                 
                 for (source, target) in test_pairs {
                     // Get CCH result
                     if let Ok(cch_result) = engine.query(source, target, TransportProfile::Car) {
-                        // Get baseline result (simplified comparison)
-                        // In practice, this would use the baseline router
-                        let baseline_distance = cch_result.distance; // Simplified
-                        
-                        total_comparisons += 1;
-                        
-                        if (cch_result.distance - baseline_distance).abs() <= tolerance * baseline_distance {
-                            correct_distances += 1;
+                        // Get baseline result using TimeBasedRouter
+                        if let Some(ref mut baseline_router) = self.baseline_router {
+                            let baseline_request = crate::time_routing::TimeRouteRequest::new(
+                                TransportProfile::Car,
+                                source,
+                                target,
+                            );
+                            
+                            let baseline_response = baseline_router.route(baseline_request);
+                            let baseline_distance = baseline_response.total_time_seconds;
+                            
+                            total_comparisons += 1;
+                            
+                            // Compare distances with tolerance
+                            if !baseline_response.route_found && !cch_result.path_found {
+                                // Both found no path - this is correct
+                                correct_distances += 1;
+                            } else if baseline_response.route_found && cch_result.path_found {
+                                // Both found paths - compare distances
+                                if (cch_result.distance - baseline_distance).abs() <= tolerance * baseline_distance.max(1.0) {
+                                    correct_distances += 1;
+                                }
+                            }
+                            // If one found a path and the other didn't, it's an error
                         }
                     }
                 }
@@ -854,15 +871,62 @@ impl ProfileRegressionSuiteV5 {
     }
 
     /// Test CCH vs Dijkstra consistency
-    async fn test_cch_dijkstra_consistency(&self) -> PRSv5TestResult {
+    async fn test_cch_dijkstra_consistency(&mut self) -> PRSv5TestResult {
         let start_time = Instant::now();
         let mut metrics = PRSv5Metrics::new();
 
-        // Simplified consistency test - in practice would compare with actual Dijkstra
-        let consistent_results = 10; // Assume all are consistent for this simplified test
-        let total_tests = 10;
+        let mut consistent_results = 0;
+        let mut total_tests = 0;
+        let tolerance = 0.01; // 1% tolerance for floating point comparison
 
-        let consistency_rate = consistent_results as f64 / total_tests as f64;
+        let test_pairs = self.generate_test_node_pairs(15);
+        
+        if let Some(ref mut baseline_router) = self.baseline_router {
+            if let Some(engine) = self.query_engines.get(&TransportProfile::Car) {
+                
+                for (source, target) in test_pairs {
+                    total_tests += 1;
+                    
+                    // Get CCH result
+                    if let Ok(cch_result) = engine.query(source, target, TransportProfile::Car) {
+                        // Get baseline Dijkstra result
+                        let baseline_request = crate::time_routing::TimeRouteRequest::new(
+                            TransportProfile::Car,
+                            source,
+                            target,
+                        );
+                        
+                        let baseline_response = baseline_router.route(baseline_request);
+                        // Check consistency between CCH and Dijkstra
+                        let cch_found_path = cch_result.path_found;
+                        let dijkstra_found_path = baseline_response.route_found;
+                        
+                        if cch_found_path == dijkstra_found_path {
+                            if cch_found_path {
+                                // Both found paths - compare distances
+                                let cch_distance = cch_result.distance;
+                                let dijkstra_distance = baseline_response.total_time_seconds;
+                                
+                                if (cch_distance - dijkstra_distance).abs() <= tolerance * dijkstra_distance.max(1.0) {
+                                    consistent_results += 1;
+                                }
+                            } else {
+                                // Both found no path - this is consistent
+                                consistent_results += 1;
+                            }
+                        }
+                        // If one found a path and the other didn't, it's inconsistent
+                    }
+                }
+            }
+        }
+
+        let consistency_rate = if total_tests > 0 {
+            consistent_results as f64 / total_tests as f64
+        } else {
+            0.0
+        };
+        
         metrics.path_consistency_rate = Some(consistency_rate);
         metrics.execution_time_ms = start_time.elapsed().as_millis() as u64;
 
@@ -1014,17 +1078,50 @@ mod tests {
             dual_core.nav_graph.add_node(node);
         }
 
-        // Add test edges
+        // Add test edges to both time and nav graphs
         for i in 1..=9 {
-            let mut edge = TimeEdge::new(
+            // Add time edge
+            let mut time_edge = TimeEdge::new(
                 crate::profiles::EdgeId(i),
                 crate::dual_core::NodeId::new(i as u64),
                 crate::dual_core::NodeId::new((i + 1) as u64),
             );
             for &profile in &profiles {
-                edge.add_weight(profile, TimeWeight::new(60.0, 1000.0));
+                time_edge.add_weight(profile, TimeWeight::new(60.0, 1000.0));
             }
-            dual_core.time_graph.add_edge(edge);
+            dual_core.time_graph.add_edge(time_edge);
+
+            // Add corresponding nav edge
+            use butterfly_geometry::{NavigationGeometry, SnapSkeleton};
+            let start_point = Point2D::new(i as f64, i as f64);
+            let end_point = Point2D::new((i + 1) as f64, (i + 1) as f64);
+
+            let snap_skeleton = SnapSkeleton::new(
+                vec![start_point, end_point],
+                vec![],
+                1000.0,
+                5.0,
+            );
+            let nav_geometry = NavigationGeometry::new(
+                vec![start_point, end_point],
+                vec![],
+                500.0,
+                0.5,
+                1.0,
+                0.8,
+            );
+            let mut nav_edge = crate::dual_core::NavEdge::new(
+                crate::profiles::EdgeId(i),
+                crate::dual_core::NodeId::new(i as u64),
+                crate::dual_core::NodeId::new((i + 1) as u64),
+                snap_skeleton,
+                nav_geometry,
+                None,
+            );
+            for &profile in &profiles {
+                nav_edge.add_weight(profile, crate::dual_core::TimeWeight::new(60.0, 1000.0));
+            }
+            dual_core.nav_graph.add_edge(nav_edge);
         }
 
         dual_core

@@ -91,7 +91,7 @@ pub use cch_ordering::{
 };
 
 pub use cch_customization::{
-    CCHCustomization, CCHShortcut, CCHUpwardEdge, CustomizationConfig, CustomizationStats,
+    BackwardCSR, CCHCustomization, CCHShortcut, CCHUpwardEdge, CustomizationConfig, CustomizationStats,
     UpwardCSR, MAX_SHORTCUTS_PER_NODE,
 };
 

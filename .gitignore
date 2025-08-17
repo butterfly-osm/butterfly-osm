@@ -170,3 +170,25 @@ affinity-*.log
 load-test-temp-*
 client-stats-*.json
 orchestrator-*.log
+
+# M8 Contraction Hierarchies outputs
+cch-ordering-*.json
+cch-customization-*.json
+cch-query-*.json
+prs-v5-report-*.json
+shortcut-stats-*.json
+hierarchy-stats-*.json
+witness-search-*.json
+cch-performance-*.json
+*.cch_ordering
+*.cch_customization
+*.cch_query
+*.contraction_hierarchies
+
+# CCH debug and validation files
+cch-debug-*.log
+ordering-debug-*.log
+customization-debug-*.log
+query-debug-*.log
+witness-debug-*.log
+shortcut-debug-*.log

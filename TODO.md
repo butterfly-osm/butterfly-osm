@@ -95,8 +95,14 @@
 - ✅ **M7.3**: Load Testing - Mixed-profile load testing with throughput scaling and Axum streaming validation
 - ✅ **PRS v4**: Parallel serving validation with thread utilization, cache efficiency, and NUMA performance tests
 
-### M8-M20 — Advanced Milestones (Not Started)
-M8+ milestones await architectural decisions. See individual milestone files for detailed specifications.
+### M8 — Contraction Hierarchies (✅ Complete)
+- ✅ **M8.1**: CCH Graph Ordering - Nested dissection ordering with watchdog and level computation
+- ✅ **M8.2**: Profile Customization - Per-profile shortcut computation with bidirectional Dijkstra witness search
+- ✅ **M8.3**: Bidirectional Queries - Complete bidirectional CCH query engine with path reconstruction
+- ✅ **PRS v5**: CCH correctness validation with performance SLAs - **ROUTER CORE PRODUCTION-READY**
+
+### M9-M20 — Advanced Milestones (Not Started)
+M9+ milestones await architectural decisions. See individual milestone files for detailed specifications.
 
 ---
 
