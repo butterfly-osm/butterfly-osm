@@ -20,10 +20,8 @@ fn get_butterfly_dl_binary() -> Result<String, String> {
         "butterfly-dl"
     };
 
-    // Calculate workspace root (two levels up from package dir)
+    // Calculate workspace root (one level up from package dir)
     let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
         .parent()
         .unwrap();
     let debug_binary = workspace_root
