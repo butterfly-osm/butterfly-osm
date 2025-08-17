@@ -259,6 +259,26 @@ impl TimeBasedRouter {
         self
     }
 
+    /// Get a reference to the dual core graph
+    pub fn dual_core(&self) -> &DualCoreGraph {
+        &self.dual_core
+    }
+
+    /// Get a reference to the weight compression system
+    pub fn weight_compression(&self) -> Option<&WeightCompressionSystem> {
+        self.weight_compression.as_ref()
+    }
+
+    /// Get a reference to the turn restrictions system
+    pub fn turn_restrictions(&self) -> Option<&TurnRestrictionTableSystem> {
+        self.turn_restrictions.as_ref()
+    }
+
+    /// Get a reference to the profile configurations
+    pub fn profile_configs(&self) -> &HashMap<TransportProfile, ProfileRouteConfig> {
+        &self.profile_configs
+    }
+
     /// Route using time-based costs
     pub fn route(&mut self, request: TimeRouteRequest) -> TimeRouteResponse {
         let start_time = Instant::now();

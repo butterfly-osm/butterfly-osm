@@ -11,7 +11,7 @@ description = "Core routing algorithms and graph processing for butterfly-osm"
 butterfly-common = { path = "../butterfly-common" }
 butterfly-io = { path = "../butterfly-io" }
 butterfly-geometry = { path = "../butterfly-geometry" }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -21,6 +21,7 @@ spade = { workspace = true }
 xxhash-rust = { workspace = true }
 bytemuck = { workspace = true }
 bincode = { workspace = true }
+rand = "0.8"
 
 [dev-dependencies]
 tempfile = { workspace = true }

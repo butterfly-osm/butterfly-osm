@@ -10,6 +10,10 @@ pub mod prs_v3;
 pub mod weight_compression;
 pub mod turn_restriction_tables;
 pub mod time_routing;
+pub mod thread_architecture;
+pub mod sharded_caching;
+pub mod load_testing;
+pub mod prs_v4_simple;
 
 // Re-export main types
 pub use profiles::{
@@ -59,6 +63,26 @@ pub use time_routing::{
 pub use prs_v3::{
     PRSv3TestType, PRSv3TestResult, PRSv3Metrics, PRSv3Config, 
     ProfileRegressionSuiteV3, PRSv3Report, PRSv3Summary
+};
+
+pub use thread_architecture::{
+    NumaNode, ThreadArena, ThreadPoolConfig, NumaThreadPool, LockFreeHotPath,
+    ThreadArchitectureSystem, ThreadArenaStats, ThreadPoolStats, LockFreeStats
+};
+
+pub use sharded_caching::{
+    TurnCacheEntry, GeometryCacheEntry, CacheShard, ShardedTurnCache, ShardedGeometryCache,
+    AutoRebalancingCacheManager, CacheShardStats, ShardedCacheStats, RebalancingAction
+};
+
+pub use load_testing::{
+    LoadTestConfig, RouteComplexityMix, LoadTestOrchestrator, LoadTestReport,
+    AxumStreamingHandler, RoutingStreamChunk
+};
+
+pub use prs_v4_simple::{
+    PRSv4TestType, PRSv4TestResult, PRSv4Metrics, PRSv4Config,
+    ProfileRegressionSuiteV4Simple, PRSv4Report, PRSv4Summary
 };
 
 /// Core routing engine
