@@ -1,5 +1,8 @@
 //! Core routing algorithms and graph processing for butterfly-osm
 
+pub mod cch_customization;
+pub mod cch_ordering;
+pub mod cch_query;
 pub mod dijkstra;
 pub mod dual_core;
 pub mod graph;
@@ -8,6 +11,7 @@ pub mod profiles;
 pub mod prs_v2;
 pub mod prs_v3;
 pub mod prs_v4_simple;
+pub mod prs_v5;
 pub mod sharded_caching;
 pub mod spatial;
 pub mod thread_architecture;
@@ -79,6 +83,26 @@ pub use load_testing::{
 pub use prs_v4_simple::{
     PRSv4Config, PRSv4Metrics, PRSv4Report, PRSv4Summary, PRSv4TestResult, PRSv4TestType,
     ProfileRegressionSuiteV4Simple,
+};
+
+pub use cch_ordering::{
+    CCHNode, CCHNodeId, CCHOrdering, NestedCell, OrderingConfig, OrderingStats, OrderingWatchdog,
+    COARSENED_MIN_CELL_SIZE, DEFAULT_MIN_CELL_SIZE, MAX_ORDERING_WALL_TIME,
+};
+
+pub use cch_customization::{
+    CCHCustomization, CCHShortcut, CCHUpwardEdge, CustomizationConfig, CustomizationStats,
+    UpwardCSR, MAX_SHORTCUTS_PER_NODE,
+};
+
+pub use cch_query::{
+    CCHComputationStats, CCHQueryConfig, CCHQueryEngine, CCHQueryResult,
+    PerformanceValidationConfig, MAX_SEARCH_NODES,
+};
+
+pub use prs_v5::{
+    PRSv5Config, PRSv5Metrics, PRSv5Report, PRSv5Summary, PRSv5TestResult, PRSv5TestType,
+    ProfileRegressionSuiteV5,
 };
 
 /// Core routing engine
