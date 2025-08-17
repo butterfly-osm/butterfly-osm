@@ -33,6 +33,23 @@
 
 ---
 
+## 🚀 Current Implementation Status
+
+### M0 — Foundation (33% Complete - 2/6 milestones)
+- ✅ **M0.1**: Workspace & CI - 9-crate workspace, all tests passing (46 tests), CI configured
+- 🔄 **M0.2**: Binary Formats Core - Structure exists, needs I/O implementation 
+- ⏳ **M0.3**: External Sorter - Awaiting M0.2 completion
+- ⏳ **M0.4**: Autopilot Skeleton - Basic structure exists, needs CLI
+- ✅ **M0.5**: Geometry Traits - Complete 3-pass pipeline trait definitions
+- ⏳ **M0.6**: Test Infrastructure - Framework exists, needs full implementation
+
+**Next Priority**: Complete M0.2 Binary Formats Core - the I/O foundation other milestones depend on
+
+### M1-M20 — Advanced Milestones (Not Started)
+All subsequent milestones await M0 foundation completion. See individual milestone files for detailed specifications.
+
+---
+
 # Performance Targets: Beat OSRM/Valhalla
 
 ## Query-Time SLAs (single socket, 16C/32T, NVMe)
