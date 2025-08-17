@@ -313,21 +313,25 @@ impl CurvatureAnalyzer {
     }
 
     /// Check if a segment qualifies for fast-path optimization
-    pub fn is_fast_path_eligible(&self, angles: &[LocalAngle]) -> bool {
-        if angles.is_empty() {
-            return true; // Straight line is fast-path eligible
+    pub fn is_fast_path_eligible(&self, angles: &[LocalAngle], coordinates: &[(f64, f64)]) -> bool {
+        // Calculate actual arc length from geometry first
+        let mut total_arc_length = 0.0;
+        for i in 1..coordinates.len() {
+            total_arc_length += self.haversine_distance(coordinates[i-1], coordinates[i]);
         }
 
-        // All angles must be straight and total arc length sufficient
-        let all_straight = angles.iter().all(|a| a.is_straight);
-        
-        if !all_straight {
+        // Arc-length guard: segment must be long enough for fast-path optimization
+        if total_arc_length < self.min_arc_length {
             return false;
         }
 
-        // Calculate total arc length for the segment
-        let total_arc_length = angles.len() as f64 * self.min_arc_length;
-        total_arc_length >= self.min_arc_length
+        // If no angles to analyze, it's a straight line and eligible
+        if angles.is_empty() {
+            return true;
+        }
+
+        // All angles must be straight
+        angles.iter().all(|a| a.is_straight)
     }
 }
 
@@ -1121,31 +1125,39 @@ mod tests {
     fn test_fast_path_eligibility() {
         let analyzer = CurvatureAnalyzer::new();
         
-        // Straight angles should be fast-path eligible
+        // Long straight segment should be fast-path eligible
+        let coords = vec![(0.0, 0.0), (0.0, 1.0), (0.0, 2.0)]; // ~222km total
         let straight_angles = vec![
             LocalAngle {
                 position: 1,
                 coordinates: (0.0, 1.0),
-                angle_degrees: 1.0,
+                angle_degrees: 180.0, // Straight line
                 importance_score: 0,
                 is_straight: true,
             }
         ];
         
-        assert!(analyzer.is_fast_path_eligible(&straight_angles));
+        assert!(analyzer.is_fast_path_eligible(&straight_angles, &coords));
         
         // Sharp angles should not be fast-path eligible
+        let sharp_coords = vec![(0.0, 0.0), (0.0, 1.0), (1.0, 1.0)];
         let sharp_angles = vec![
             LocalAngle {
                 position: 1,
                 coordinates: (0.0, 1.0),
-                angle_degrees: 45.0,
+                angle_degrees: 90.0,
                 importance_score: 3,
                 is_straight: false,
             }
         ];
         
-        assert!(!analyzer.is_fast_path_eligible(&sharp_angles));
+        assert!(!analyzer.is_fast_path_eligible(&sharp_angles, &sharp_coords));
+        
+        // Short straight segment should not be fast-path eligible  
+        let short_coords = vec![(0.0, 0.0), (0.0, 0.0001)]; // ~11m
+        let short_straight_angles = vec![];
+        
+        assert!(!analyzer.is_fast_path_eligible(&short_straight_angles, &short_coords));
     }
 
     #[test]
