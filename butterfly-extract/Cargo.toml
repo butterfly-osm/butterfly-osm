@@ -10,9 +10,12 @@ description = "OSM data processing and extraction for butterfly-osm"
 [dependencies]
 butterfly-common = { path = "../butterfly-common" }
 butterfly-io = { path = "../butterfly-io" }
-butterfly-plan = { path = "../butterfly-plan" }
 tokio = { workspace = true }
 thiserror = { workspace = true }
+osmpbf = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+utoipa = "5.2"
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -78,3 +78,15 @@ package_summary.md
 
 # Release artifacts
 releases/
+
+# M1 Telemetry outputs
+telemetry.json
+*.telemetry
+
+# Fuzzing outputs
+fuzzing-results.json
+*.fuzz
+
+# Serve API logs
+serve.log
+api-*.log

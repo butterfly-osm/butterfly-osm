@@ -9,6 +9,7 @@ description = "Autopilot memory planning and resource allocation for butterfly-o
 
 [dependencies]
 butterfly-common = { path = "../butterfly-common" }
+butterfly-extract = { path = "../butterfly-extract" }
 clap = { workspace = true }
 thiserror = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }

@@ -11,6 +11,7 @@ description = "HTTP routing server for butterfly-osm"
 butterfly-common = { path = "../butterfly-common" }
 butterfly-routing = { path = "../butterfly-routing" }
 butterfly-geometry = { path = "../butterfly-geometry" }
+butterfly-extract = { path = "../butterfly-extract" }
 tokio = { workspace = true }
 axum = "0.8"
 utoipa = "5.2"

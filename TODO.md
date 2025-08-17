@@ -45,8 +45,15 @@
 
 **Next Priority**: Complete M0.2 Binary Formats Core - the I/O foundation other milestones depend on
 
-### M1-M20 — Advanced Milestones (Not Started)
-All subsequent milestones await M0 foundation completion. See individual milestone files for detailed specifications.
+### M1 — Telemetry & Adaptive Planning (✅ Complete)
+- ✅ **M1.1**: PBF Reader & Tag Sieve - OSM streaming with routing-relevant filtering
+- ✅ **M1.2**: Density Tiles - 125m tile grid with spatial metrics and percentiles
+- ✅ **M1.3**: /telemetry Endpoint - REST API with bbox filtering and schema validation
+- ✅ **M1.4**: Telemetry → BuildPlan - Urban/suburban/rural density classes with adaptive planning
+- ✅ **M1.5**: Plan Fuzzing & Validation - Synthetic histogram fuzzing with safety invariants
+
+### M2-M20 — Advanced Milestones (Not Started)
+M2+ milestones await foundation completion and architectural decisions. See individual milestone files for detailed specifications.
 
 ---
 

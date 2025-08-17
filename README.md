@@ -15,6 +15,9 @@ A comprehensive ecosystem of OSM tools designed around **separation of concerns*
 ### Core Tools
 
 - **🚀 butterfly-dl**: Memory-efficient OSM data downloader (<1GB RAM for any file size)
+- **📊 butterfly-extract**: PBF streaming processor with routing-relevant filtering and telemetry
+- **🧠 butterfly-plan**: Adaptive memory planning with telemetry-driven parameter optimization
+- **🌐 butterfly-serve**: REST API server with /telemetry endpoint for spatial metrics
 
 ### Shared Foundation
 
@@ -112,6 +115,13 @@ Common patterns abstracted into `butterfly-common`:
   - Handles files from 1MB to 81GB (planet.osm.pbf)
   - 79% faster than aria2, 3x faster than curl on medium files
   - <1GB memory usage regardless of file size
+
+- **M1 - Telemetry & Adaptive Planning**: Complete foundation for intelligent OSM processing
+  - PBF streaming with routing-relevant tag filtering
+  - 125m spatial tile grid with junction/length/curvature metrics
+  - REST API with /telemetry endpoint for spatial density analysis
+  - Adaptive memory planning with urban/suburban/rural density classification
+  - Comprehensive fuzzing with planet-scale distributions and safety invariants
 
 ### 🚧 Future Development
 
