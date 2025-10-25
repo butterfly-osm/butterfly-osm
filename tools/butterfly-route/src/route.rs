@@ -2,12 +2,133 @@ use crate::geo::{haversine_distance, nearest_node_spatial};
 use crate::graph::RouteGraph;
 use anyhow::{anyhow, Result};
 use petgraph::algo::astar;
-use petgraph::graph::NodeIndex;
+use petgraph::graph::{EdgeIndex, NodeIndex};
+use petgraph::visit::EdgeRef;
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
 
 pub struct RouteResult {
     pub distance_meters: f64,
     pub time_seconds: f64,
     pub node_count: usize,
+}
+
+// State for A* with turn restriction support
+#[derive(Clone, Debug)]
+struct AStarState {
+    node: NodeIndex,
+    prev_edge: Option<EdgeIndex>,
+    cost: f64,
+    estimated_total: f64,
+}
+
+impl PartialEq for AStarState {
+    fn eq(&self, other: &Self) -> bool {
+        self.estimated_total == other.estimated_total
+    }
+}
+
+impl Eq for AStarState {}
+
+impl PartialOrd for AStarState {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for AStarState {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Reverse ordering for min-heap
+        other.estimated_total.partial_cmp(&self.estimated_total)
+            .unwrap_or(Ordering::Equal)
+    }
+}
+
+// A* with turn restriction support
+fn astar_with_restrictions(
+    graph: &RouteGraph,
+    start: NodeIndex,
+    goal: NodeIndex,
+    goal_coord: (f64, f64),
+) -> Option<(f64, Vec<NodeIndex>)> {
+    let mut open_set = BinaryHeap::new();
+    let mut came_from: HashMap<NodeIndex, (NodeIndex, EdgeIndex)> = HashMap::new();
+    let mut g_score: HashMap<NodeIndex, f64> = HashMap::new();
+
+    g_score.insert(start, 0.0);
+
+    // Heuristic function
+    let heuristic = |idx: NodeIndex| -> f64 {
+        if let Some(&osm_id) = graph.graph.node_weight(idx) {
+            if let Some(&coord) = graph.coords.get(&osm_id) {
+                let distance = haversine_distance(coord.0, coord.1, goal_coord.0, goal_coord.1);
+                return distance / 33.33; // Optimistic time estimate (120 km/h)
+            }
+        }
+        0.0
+    };
+
+    open_set.push(AStarState {
+        node: start,
+        prev_edge: None,
+        cost: 0.0,
+        estimated_total: heuristic(start),
+    });
+
+    while let Some(current) = open_set.pop() {
+        if current.node == goal {
+            // Reconstruct path
+            let mut path = vec![goal];
+            let mut current_node = goal;
+            while let Some(&(prev_node, _)) = came_from.get(&current_node) {
+                path.push(prev_node);
+                current_node = prev_node;
+            }
+            path.reverse();
+            return Some((current.cost, path));
+        }
+
+        // Explore neighbors
+        for edge in graph.graph.edges(current.node) {
+            let neighbor = edge.target();
+            let edge_cost = *edge.weight();
+            let tentative_g_score = current.cost + edge_cost;
+
+            // Check turn restrictions
+            if let Some(prev_edge_idx) = current.prev_edge {
+                // Get the way IDs for the previous edge and current edge
+                if let (Some(&from_way), Some(&to_way)) = (
+                    graph.edge_to_way.get(&prev_edge_idx),
+                    graph.edge_to_way.get(&edge.id())
+                ) {
+                    // Get the OSM node ID for the current intersection
+                    if let Some(&via_node_osm) = graph.graph.node_weight(current.node) {
+                        // Check if this turn is restricted
+                        if let Some(restricted_ways) = graph.restrictions.get(&(from_way, via_node_osm)) {
+                            if restricted_ways.contains(&to_way) {
+                                // This turn is restricted, skip this edge
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if tentative_g_score < *g_score.get(&neighbor).unwrap_or(&f64::INFINITY) {
+                came_from.insert(neighbor, (current.node, edge.id()));
+                g_score.insert(neighbor, tentative_g_score);
+
+                open_set.push(AStarState {
+                    node: neighbor,
+                    prev_edge: Some(edge.id()),
+                    cost: tentative_g_score,
+                    estimated_total: tentative_g_score + heuristic(neighbor),
+                });
+            }
+        }
+    }
+
+    None
 }
 
 pub fn find_route(
@@ -33,24 +154,29 @@ pub fn find_route(
 
     println!("Routing from node {} to node {}", start_osm_id, end_osm_id);
 
-    // A* heuristic: straight-line distance / max speed (120 km/h = 33.33 m/s)
-    let heuristic = |idx: NodeIndex| -> f64 {
-        if let Some(&osm_id) = graph.graph.node_weight(idx) {
-            if let Some(&coord) = graph.coords.get(&osm_id) {
-                let distance = haversine_distance(coord.0, coord.1, goal_coord.0, goal_coord.1);
-                return distance / 33.33; // Optimistic time estimate (120 km/h)
+    // Use custom A* with turn restriction support if restrictions exist
+    let result = if !graph.restrictions.is_empty() {
+        astar_with_restrictions(graph, *start_idx, *end_idx, *goal_coord)
+    } else {
+        // Fall back to standard A* for better performance when no restrictions
+        let heuristic = |idx: NodeIndex| -> f64 {
+            if let Some(&osm_id) = graph.graph.node_weight(idx) {
+                if let Some(&coord) = graph.coords.get(&osm_id) {
+                    let distance = haversine_distance(coord.0, coord.1, goal_coord.0, goal_coord.1);
+                    return distance / 33.33;
+                }
             }
-        }
-        0.0
-    };
+            0.0
+        };
 
-    let result = astar(
-        &graph.graph,
-        *start_idx,
-        |idx| idx == *end_idx,
-        |e| *e.weight(),
-        heuristic,
-    );
+        astar(
+            &graph.graph,
+            *start_idx,
+            |idx| idx == *end_idx,
+            |e| *e.weight(),
+            heuristic,
+        )
+    };
 
     let (time_seconds, path) = result
         .ok_or_else(|| anyhow!("No route found between points"))?;
