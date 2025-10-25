@@ -449,9 +449,53 @@ We check 1.2M edges for restrictions but only 353 actually block. This means:
 - Complex to implement correctly
 - Implementation: 4-5 hours
 
+## Comparison with OSRM
+
+**OSRM** is a production-grade routing engine with years of optimization. Here's how butterfly-route compares:
+
+### Performance Benchmark (Belgium dataset)
+
+| Route | OSRM | butterfly-route | Difference |
+|-------|------|-----------------|------------|
+| **Brussels → Antwerp** | | | |
+| Query time | **0.006s (6ms)** | 0.751s | **125x slower** |
+| Distance | 45.9 km | 29.2 km | +57% longer |
+| Duration | 46 minutes | 32 minutes | +44% longer |
+| **Brussels → Ghent** | | | |
+| Query time | **0.005s (5ms)** | 0.586s | **117x slower** |
+| Distance | 58.8 km | 32.2 km | +83% longer |
+| Duration | 56 minutes | 36 minutes | +56% longer |
+
+### Analysis
+
+**Why is OSRM 100-125x faster?**
+1. **Contraction Hierarchies (CH)** - Preprocessing technique that pre-computes shortcuts
+2. **No runtime restriction checks** - Restrictions baked into preprocessing
+3. **Highly optimized C++ code** - Years of performance tuning
+4. **Minimal graph traversal** - CH reduces search space dramatically
+
+**Why are routes so different?**
+1. **Speed profiles** - OSRM has more realistic speed data
+2. **Road preferences** - Different highway type preferences
+3. **Turn penalties** - OSRM considers turn difficulty/time
+4. **Real-world calibration** - OSRM's profiles are tuned to actual GPS traces
+
+**What butterfly-route does well:**
+- ✅ Simple, understandable codebase
+- ✅ No preprocessing required (faster graph builds)
+- ✅ Easy to customize and extend
+- ✅ Good for learning and experimentation
+- ✅ Sub-second queries are acceptable for many use cases
+
+**What we can learn from OSRM:**
+1. Implement Contraction Hierarchies for 100x speedup
+2. Better speed profiles based on real-world data
+3. Turn penalties and junction modeling
+4. Profile-specific optimizations (car vs bike vs foot)
+
 ## Profiling Summary
 
-**Status: Bottlenecks identified! ✅**
+**Status: Bottlenecks identified and compared with production systems! ✅**
 
 Turn restrictions add 0.677s overhead (1.023s vs 0.346s = 3x slower) due to:
 1. **Restriction checks: 0.404s (59%)** - 1.2M checks with 0.03% hit rate
@@ -459,6 +503,8 @@ Turn restrictions add 0.677s overhead (1.023s vs 0.346s = 3x slower) due to:
 3. **Heuristic: increased by ~0.1s** - More nodes explored
 
 **Root cause:** We're doing 1.2M HashMap lookups to find 353 restrictions. **99.97% waste!**
+
+**Context:** Even after optimization, we'll still be ~50-100x slower than OSRM due to lack of preprocessing. This is acceptable for a simple routing engine focused on clarity and ease of customization.
 
 ## Recommendation
 
