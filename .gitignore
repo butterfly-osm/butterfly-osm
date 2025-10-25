@@ -69,3 +69,8 @@ releases/
 
 # Routing graph files (generated, large binary files)
 *.graph
+
+# Research documentation (not for commit)
+tools/butterfly-route/tests/OSRM.md
+tools/butterfly-route/tests/Valhalla.md
+tools/butterfly-route/tests/GraphHopper.md
