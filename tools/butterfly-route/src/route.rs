@@ -1,4 +1,4 @@
-use crate::geo::{haversine_distance, nearest_node};
+use crate::geo::{haversine_distance, nearest_node_spatial};
 use crate::graph::RouteGraph;
 use anyhow::{anyhow, Result};
 use petgraph::algo::astar;
@@ -15,10 +15,11 @@ pub fn find_route(
     from: (f64, f64),
     to: (f64, f64),
 ) -> Result<RouteResult> {
-    let start_osm_id = nearest_node(from, &graph.coords)
+    // Use R-tree for fast nearest neighbor search - O(log n) instead of O(n)
+    let start_osm_id = nearest_node_spatial(from, &graph.spatial_index)
         .ok_or_else(|| anyhow!("Could not find start node"))?;
 
-    let end_osm_id = nearest_node(to, &graph.coords)
+    let end_osm_id = nearest_node_spatial(to, &graph.spatial_index)
         .ok_or_else(|| anyhow!("Could not find end node"))?;
 
     let start_idx = graph.node_map.get(&start_osm_id)

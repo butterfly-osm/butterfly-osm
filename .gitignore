@@ -66,5 +66,6 @@ package_summary.md
 
 # Release artifacts
 releases/
-monaco.graph
-belgium.graph
+
+# Routing graph files (generated, large binary files)
+*.graph
