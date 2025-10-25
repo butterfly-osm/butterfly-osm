@@ -1,27 +1,30 @@
 # Butterfly-Route Test Suite
 
-## Comparison Testing Against OSRM
+## Comparison Testing Against Production Routing Engines
 
 ### compare_osrm.sh
 
-Comprehensive test script that compares butterfly-route performance and route quality against OSRM.
+Comprehensive test script that compares butterfly-route performance and route quality against production routing engines:
+- **OSRM** (Open Source Routing Machine)
+- **Valhalla** (Mapbox/Linux Foundation)
+- **GraphHopper**
 
 #### Features
 
 - Tests multiple routes across Belgium (urban, intercity, long routes)
 - Runs multiple iterations per route for statistical accuracy
 - Calculates performance statistics (mean, median, stddev, min, max)
-- Compares query latency, distance, and duration
+- Compares query latency, distance, and duration across all engines
 - Optional JSON output for CI/CD integration
 - Automatic binary detection
-- Graceful handling of OSRM availability
+- Graceful handling of unavailable routing engines
 
 #### Usage
 
 ```bash
 cd /home/snape/projects/butterfly-osm
 
-# Basic usage (requires OSRM running on localhost:6666)
+# Basic usage (tests all available engines)
 ./tools/butterfly-route/tests/compare_osrm.sh
 
 # Custom number of runs
@@ -36,8 +39,11 @@ cd /home/snape/projects/butterfly-osm
 # Verbose mode for debugging
 ./tools/butterfly-route/tests/compare_osrm.sh --verbose
 
-# Custom OSRM server
-./tools/butterfly-route/tests/compare_osrm.sh --osrm-url http://osrm-server:5000
+# Custom server URLs
+./tools/butterfly-route/tests/compare_osrm.sh \
+  --osrm-url http://localhost:6666 \
+  --valhalla-url http://localhost:6667 \
+  --graphhopper-url http://localhost:6668
 ```
 
 #### Options
@@ -45,6 +51,8 @@ cd /home/snape/projects/butterfly-osm
 - `--butterfly-graph PATH`: Path to butterfly-route graph file (default: belgium-restrictions.graph)
 - `--butterfly-bin PATH`: Path to butterfly-route binary (default: auto-detect)
 - `--osrm-url URL`: OSRM server URL (default: http://localhost:6666)
+- `--valhalla-url URL`: Valhalla server URL (default: http://localhost:6667)
+- `--graphhopper-url URL`: GraphHopper server URL (default: http://localhost:6668)
 - `--runs N`: Number of test runs per route (default: 5)
 - `--output FILE`: Save results to JSON file
 - `--verbose`: Enable verbose output
@@ -53,12 +61,17 @@ cd /home/snape/projects/butterfly-osm
 #### Prerequisites
 
 - **butterfly-route**: Built binary (release mode recommended for accurate benchmarking)
-- **OSRM**: Running OSRM server with Belgium dataset
+- **Routing Engines** (at least one required):
+  - OSRM server with Belgium dataset (port 6666)
+  - Valhalla server with Belgium dataset (port 6667)
+  - GraphHopper server with Belgium dataset (port 6668)
 - **jq**: JSON processor (`apt install jq` or `brew install jq`)
 - **bc**: Basic calculator (`apt install bc` or `brew install bc`)
 - **curl**: HTTP client (usually pre-installed)
 
-#### Setting up OSRM
+#### Setting up Routing Engines
+
+##### OSRM
 
 See the main PLAN.md for OSRM setup instructions. Quick start:
 
@@ -75,6 +88,46 @@ docker run -t -v $(pwd):/data ghcr.io/project-osrm/osrm-backend osrm-customize /
 docker run -t -i -p 6666:5000 -v $(pwd):/data ghcr.io/project-osrm/osrm-backend osrm-routed --algorithm mld /data/belgium.osrm
 ```
 
+##### Valhalla
+
+```bash
+# Pull Valhalla Docker image
+docker pull ghcr.io/valhalla/valhalla:latest
+
+# Process Belgium PBF
+mkdir -p valhalla_tiles
+docker run -v $(pwd):/data ghcr.io/valhalla/valhalla:latest \
+  valhalla_build_config \
+  --mjolnir-tile-dir /data/valhalla_tiles \
+  --mjolnir-tile-extract /data/valhalla_tiles.tar \
+  --mjolnir-timezone /data/valhalla_tiles/timezones.sqlite \
+  --mjolnir-admin /data/valhalla_tiles/admins.sqlite \
+  > valhalla.json
+
+docker run -v $(pwd):/data ghcr.io/valhalla/valhalla:latest \
+  valhalla_build_tiles -c /data/valhalla.json /data/belgium.pbf
+
+# Start Valhalla server
+docker run -p 6667:8002 -v $(pwd):/data ghcr.io/valhalla/valhalla:latest \
+  valhalla_service /data/valhalla.json 1
+```
+
+##### GraphHopper
+
+```bash
+# Pull GraphHopper Docker image
+docker pull graphhopper/graphhopper:latest
+
+# Start GraphHopper server (processes PBF on startup)
+docker run -p 6668:8989 -v $(pwd):/data \
+  -e "JAVA_OPTS=-Xmx4g -Xms1g" \
+  graphhopper/graphhopper:latest \
+  --input /data/belgium.pbf \
+  --host 0.0.0.0
+```
+
+**Note**: All engines need to process the Belgium PBF file. This can take several minutes to hours depending on your hardware. OSRM is typically the fastest to set up.
+
 #### Test Routes
 
 The script includes 10 predefined routes covering:
@@ -88,20 +141,25 @@ Note: Some routes may fail if there's no valid path in the graph (e.g., isolated
 
 #### Output Format
 
-The script generates a formatted table comparing butterfly-route vs OSRM:
+The script generates a formatted table comparing butterfly-route against all available engines:
 
 ```
-Route                     | Butterfly Time  | OSRM Time       | Speedup   | Butterfly Dist | OSRM Dist
---------------------------------------------------------------------------------------------------------------------------
-Brussels_Antwerp          |        0.751s   |        0.006s   |    125.2x |       29223m   |       45935m (+57%)
-Brussels_Ghent            |        0.689s   |        0.007s   |     98.4x |       34650m   |       55863m (+61%)
+Route                   | Butterfly     | OSRM        | Valhalla    | GraphHopper | Distance
+-----------------------------------------------------------------------------------------------
+Brussels_Center         |     0.751s    |   0.006s    |   0.008s    |   0.010s    |    0.9km
+Brussels_Antwerp        |     0.825s    |   0.007s    |   0.009s    |   0.012s    |   45.9km
+Brussels_Ghent          |     0.689s    |   0.008s    |   0.010s    |   0.011s    |   55.9km
 ...
 
 Overall Statistics:
-  Average butterfly-route query time: 0.720s
-  Average OSRM query time: 0.0065s
-  Average speedup: 110.8x (OSRM is faster)
   Successful tests: 8/10
+
+  Engine                Avg Time
+  --------------------------------
+  butterfly-route         0.755s
+  OSRM                    0.007s  (107.9x faster)
+  Valhalla                0.009s  (83.9x faster)
+  GraphHopper             0.011s  (68.6x faster)
 ```
 
 #### JSON Output
@@ -148,24 +206,32 @@ When using `--output FILE`, results are saved in JSON format for programmatic an
 
 #### Interpreting Results
 
-**Performance**: OSRM is typically 100-150x faster due to Contraction Hierarchies preprocessing. Butterfly-route prioritizes simplicity and educational value over raw speed.
+**Performance**: Production routing engines (OSRM, Valhalla, GraphHopper) are typically 50-150x faster due to advanced preprocessing techniques:
+- OSRM uses Contraction Hierarchies (CH) or Multi-Level Dijkstra (MLD)
+- Valhalla uses tiled graph architecture with bidirectional A*
+- GraphHopper supports CH and Landmarks (ALT)
 
-**Route Quality**: Differences in distance/duration may indicate:
-- Different routing strategies (OSRM uses real road speeds, butterfly uses simplified speed model)
-- OSM data interpretation differences
-- Turn restriction enforcement (butterfly-route includes restrictions)
+Butterfly-route prioritizes simplicity, clarity, and educational value over raw speed.
+
+**Route Quality**: Differences in distance/duration across engines may indicate:
+- Different routing strategies and speed models
+- OSM data interpretation differences (e.g., access restrictions, road classifications)
+- Turn restriction enforcement variations
+- Different cost functions and heuristics
 
 **Expected Performance**: For Belgium dataset:
 - butterfly-route: 0.5-1.5s per query
 - OSRM: 0.005-0.015s per query
+- Valhalla: 0.008-0.020s per query
+- GraphHopper: 0.010-0.025s per query
 
 #### Troubleshooting
 
 **"Error: Graph file not found"**: Specify correct path with `--butterfly-graph`
 
-**"OSRM server not accessible"**: Ensure OSRM is running on the specified port. Script will continue with butterfly-only tests.
+**"Engine server not accessible"**: Ensure the routing engine is running on the specified port. Script will continue testing other available engines.
 
-**"No route found between points"**: Some test coordinates may not have valid paths. This is expected for isolated areas or data gaps.
+**"No route found between points"**: Some test coordinates may not have valid paths. This is expected for isolated areas or data gaps in the OSM extract.
 
 **Script hangs**: Check if butterfly-route queries are completing. Try `--verbose` mode to see detailed progress.
 
