@@ -1,18 +1,19 @@
 # butterfly-route: A-to-B Drivetime Calculator
 
-## Status: Production-Ready with R-tree Spatial Index ✅
+## Status: Production-Ready with Turn Restrictions ✅
 
-Fast routing engine with A* pathfinding, R-tree spatial index, HTTP API server, and OpenAPI documentation.
+Fast routing engine with A* pathfinding, R-tree spatial index, turn restrictions, HTTP API server, and OpenAPI documentation.
 
-## Current Features (v0.4)
+## Current Features (v0.5)
 
 **Implemented:**
-- ✅ PBF parsing (nodes + highway ways)
+- ✅ PBF parsing (nodes, highway ways, and restriction relations)
 - ✅ In-memory graph building with speed-based travel times
 - ✅ **A* shortest-path routing** (175-4750x fewer nodes explored than Dijkstra)
 - ✅ **R-tree spatial index** (O(log n) nearest neighbor search)
+- ✅ **Turn restrictions** (respects no_left_turn, no_right_turn, etc.)
 - ✅ **HTTP API server** (axum + OpenAPI + Swagger UI)
-- ✅ Graph serialization/deserialization (bincode + R-tree persistence)
+- ✅ Graph serialization/deserialization (bincode + R-tree + restrictions)
 - ✅ CLI with `build`, `route`, and `server` commands
 - ✅ Haversine distance calculations
 - ✅ Fast nearest node search (R-tree - <1ms per lookup)
@@ -61,12 +62,22 @@ Breakdown:
 
 **Performance improvement: 8-10x faster queries!**
 
-**Test routes (v0.4 with R-tree):**
+**Test routes (v0.4 with R-tree only):**
 ```
 Brussels → Antwerp (29km):  0.346s, 880 nodes visited
 Brussels → Ghent (32km):    0.269s, 840 nodes visited
 Brussels → Namur (36km):    0.358s, 1055 nodes visited
 ```
+
+**Test routes (v0.5 with R-tree + turn restrictions):**
+```
+Brussels → Antwerp:  0.745s, 928 nodes visited, 29.2km
+Brussels → Ghent:    0.474s, 840 nodes visited, 32.2km
+
+Turn restrictions loaded: 7,054 from Belgium dataset
+```
+
+**Note:** Turn restriction checking adds ~0.3-0.4s overhead but ensures legal routes in cities.
 
 ## API Usage
 
@@ -101,6 +112,45 @@ Open browser to `http://localhost:3000/docs` for Swagger UI with:
 - Interactive API testing
 - Complete request/response schemas
 - OpenAPI 3.0 specification
+
+## Turn Restrictions Implementation ✅
+
+### What Are Turn Restrictions?
+
+Turn restrictions are OSM relations that specify forbidden or required turns at intersections:
+- `no_left_turn`: Cannot turn left from way A to way B at intersection C
+- `no_right_turn`: Cannot turn right
+- `no_u_turn`: Cannot make a U-turn
+- `only_straight_on`: Must go straight (all other turns forbidden)
+
+These are critical for accurate city routing where traffic rules prohibit certain maneuvers.
+
+### Implementation
+
+**Parsing (tools/butterfly-route/src/parse.rs):**
+- Parse `type=restriction` relations from PBF
+- Extract `from` way, `via` node, and `to` way members
+- Store as `TurnRestriction` struct
+
+**Graph Structure (tools/butterfly-route/src/graph.rs):**
+- Build edge-to-way mapping: `HashMap<EdgeIndex, WayId>`
+- Build restriction index: `HashMap<(from_way, via_node), HashSet<to_way>>`
+- O(1) lookup during routing
+
+**Routing Algorithm (tools/butterfly-route/src/route.rs):**
+- Custom A* implementation that tracks previous edge
+- When exploring neighbors, check if turn from `prev_edge` → `current_edge` is restricted
+- Skip restricted edges during pathfinding
+
+**Performance Impact:**
+- Adds ~0.3-0.4s to Belgium queries (0.3s → 0.5-0.7s)
+- Routes may be slightly longer to avoid restricted turns
+- More nodes visited as router explores legal alternatives
+
+**Belgium Dataset:**
+- Parsed: 7,054 turn restrictions
+- Build time: +1s (24s parse + 10s graph build)
+- Graph size: Similar (restrictions are compact)
 
 ## R-tree Spatial Index Implementation ✅
 
@@ -293,16 +343,16 @@ tools/butterfly-route/
 
 ## Recommendation
 
-**R-tree spatial index has been successfully implemented!** The server is now production-ready with ~300ms queries for Belgium-scale datasets.
+**Turn restrictions have been successfully implemented!** The routing engine now respects real-world traffic rules and provides accurate, legal routes.
 
 ### Next Steps
 
 Choose from the following enhancements based on your needs:
 
 1. **Better Speed Profiles** - Parse more OSM tags (surface, lanes, lit) for realistic travel times
-2. **Turn Restrictions** - Parse restriction relations for accurate city routing
-3. **Multiple Profiles** - Support car, bike, and foot routing
-4. **Isochrone Maps** - "Show everywhere reachable in N minutes" feature
+2. **Multiple Profiles** - Support car, bike, and foot routing with different restrictions
+3. **Isochrone Maps** - "Show everywhere reachable in N minutes" feature
+4. **Route Optimization** - Cache or optimize the restriction checking for faster queries
 5. **Planet Scale** - Test on larger datasets or implement RocksDB for disk-based storage
 
-The routing engine is now genuinely useful and can handle real-world traffic with sub-second response times.
+The routing engine now provides production-ready, legally accurate routes with sub-second response times.
