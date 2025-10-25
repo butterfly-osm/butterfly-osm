@@ -506,7 +506,37 @@ Turn restrictions add 0.677s overhead (1.023s vs 0.346s = 3x slower) due to:
 
 **Context:** Even after optimization, we'll still be ~50-100x slower than OSRM due to lack of preprocessing. This is acceptable for a simple routing engine focused on clarity and ease of customization.
 
-## Recommendation
+## End Goal: Beat Them All 🚀
+
+**Target: Build the fastest open-source routing engine with complete feature parity.**
+
+After researching OSRM, Valhalla, and GraphHopper (see `tests/OSRM.md`, `tests/Valhalla.md`, `tests/GraphHopper.md`), our end goal is clear:
+
+### What We Want to Achieve
+
+**Performance Target:**
+- **At least 2x faster than OSRM** (target: <3ms queries vs OSRM's 6ms)
+- Planet-scale capability on reasonable workstation (64GB RAM, SSD)
+
+**Feature Completeness:**
+- ✅ **Single Route**: A-to-B pathfinding with turn-by-turn
+- ✅ **Matrix NxN**: Distance/time matrices for logistics
+- ✅ **Isochrones**: Reachability polygons
+- ✅ **Multi-modal**: Car, bike, foot, and public transit
+
+**Current Status (v0.5):**
+- Single route: ✅ Working (0.75s on Belgium)
+- Matrix NxN: ❌ Not implemented
+- Isochrones: ❌ Not implemented
+- Multi-modal: ❌ Only car (bike/foot/transit not implemented)
+- Performance: 125x slower than OSRM (750ms vs 6ms)
+
+**Gap to Close:**
+- Need to be **250x faster** to beat OSRM by 2x
+- Need to implement matrix and isochrone calculations
+- Need to add bike, foot, and transit routing modes
+
+## Current Recommendation
 
 **Implement Bloom Filter optimization first** (Expected: 1.023s → 0.7s, ~30% faster)
 
@@ -520,7 +550,7 @@ After bloom filter:
 2. **Better Speed Profiles** - Parse more OSM tags for realistic travel times
 3. **Multiple Profiles** - Car, bike, and foot routing with different restrictions
 4. **Isochrone Maps** - "Show everywhere reachable in N minutes" feature
-5. **Faster Hash Function** - Easy 2% win with rustc-hash
-6. **Planet Scale** - Test on larger datasets
+5. **Matrix Calculations** - Many-to-many distance/time matrices
+6. **Faster Hash Function** - Easy 2% win with rustc-hash
 
 The routing engine provides production-ready, legally accurate routes. With bloom filter optimization, queries should be <0.7s on Belgium-scale datasets.
