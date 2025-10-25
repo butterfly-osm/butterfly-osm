@@ -341,18 +341,140 @@ tools/butterfly-route/
 
 ```
 
+## Performance Profiling
+
+### Goal
+
+Identify bottlenecks causing the ~0.3-0.4s overhead when turn restrictions are enabled.
+
+### Current Performance (Belgium, 7.96M nodes)
+
+**Without restrictions:**
+- Brussels → Antwerp: 0.346s
+- R-tree lookup: <1ms (×2 for start+end)
+- A* routing: ~0.345s
+
+**With restrictions (7,054 restrictions loaded):**
+- Brussels → Antwerp: 0.745s
+- Overhead: +0.4s (~115% slower)
+
+### Profiling Strategy
+
+**1. Instrumented Timing**
+Add timing measurements to:
+- R-tree nearest neighbor lookups
+- A* heuristic calculations
+- Turn restriction checks
+- Graph edge iteration
+- Path reconstruction
+
+**2. Flamegraph Analysis**
+Use `cargo flamegraph` to visualize CPU time:
+```bash
+cargo install flamegraph
+cargo build --release
+sudo flamegraph --bin butterfly-route -- route belgium-restrictions.graph --from 50.8503,4.3517 --to 51.2194,4.4025
+```
+
+**3. Perf Analysis**
+Use Linux `perf` for detailed CPU profiling:
+```bash
+perf record --call-graph dwarf ./target/release/butterfly-route route ...
+perf report
+```
+
+### Profiling Results (Brussels → Antwerp, Belgium)
+
+**Total time: 1.023s** (vs 0.346s without restrictions = **3x slower**)
+
+**Time breakdown:**
+- **Restrictions: 0.404s (39.4%)** ⚠️ **BIGGEST BOTTLENECK**
+- **Heap operations: 0.327s (31.9%)**
+- **Heuristic: 0.303s (29.6%)**
+- R-tree lookups: <0.001s (0.1%)
+
+**Statistics:**
+- Iterations: 574,075
+- Edges explored: 1,201,898
+- **Restrictions checked: 1,201,896** (almost every edge!)
+- **Restrictions blocked: 353** (0.03% hit rate)
+- Heuristic calls: 576,869
+- Heap operations: 1,150,944
+
+### Key Findings
+
+**Critical Issue: 99.97% of restriction checks are wasted!**
+
+We check 1.2M edges for restrictions but only 353 actually block. This means:
+- Each check does 3-4 HashMap lookups (prev edge → way, current edge → way, restriction lookup)
+- 0.404s spent checking restrictions
+- Only 353 useful checks (0.03% hit rate)
+
+**Breakdown of restriction check overhead:**
+1. `edge_to_way.get(&prev_edge)` - HashMap lookup #1
+2. `edge_to_way.get(&edge.id())` - HashMap lookup #2
+3. `graph.node_weight(current.node)` - Graph lookup #3
+4. `restrictions.get(&(from_way, via_node))` - HashMap lookup #4
+5. `restricted_ways.contains(&to_way)` - HashSet check #5
+
+### Optimization Opportunities (Ranked by Impact)
+
+**1. Bloom Filter for Restrictions (Expected: -0.3s, ~30% faster)** ⭐⭐⭐
+- Pre-compute bloom filter for `(from_way, via_node)` keys
+- Fast negative checks avoid 99.97% of HashMap lookups
+- Only check actual HashMap when bloom filter says "maybe"
+- Implementation: 1-2 hours
+
+**2. Pre-filter Edges (Expected: -0.1s, ~10% faster)** ⭐⭐
+- Mark edges that can never be restricted (first/last edge of a way)
+- Skip restriction checking for these edges
+- Reduces checks by ~40-50%
+- Implementation: 2-3 hours
+
+**3. Inline Way IDs (Expected: -0.05s, ~5% faster)** ⭐
+- Store way_id directly in edge weight struct
+- Eliminates 2 HashMap lookups per restriction check
+- Requires changing graph structure
+- Implementation: 3-4 hours
+
+**4. Faster Hash Function (Expected: -0.02s, ~2% faster)** ⭐
+- Use `rustc_hash::FxHashMap` instead of `std::HashMap`
+- Faster for small keys like `(i64, i64)`
+- Easy win, minimal code changes
+- Implementation: 30 minutes
+
+**5. Cache Hot Restrictions (Expected: variable)**
+- LRU cache for recently checked restrictions
+- Only helps if queries share geographic areas
+- Complex to implement correctly
+- Implementation: 4-5 hours
+
+## Profiling Summary
+
+**Status: Bottlenecks identified! ✅**
+
+Turn restrictions add 0.677s overhead (1.023s vs 0.346s = 3x slower) due to:
+1. **Restriction checks: 0.404s (59%)** - 1.2M checks with 0.03% hit rate
+2. **Heap operations: increased by ~0.2s** - Larger state struct and more iterations
+3. **Heuristic: increased by ~0.1s** - More nodes explored
+
+**Root cause:** We're doing 1.2M HashMap lookups to find 353 restrictions. **99.97% waste!**
+
 ## Recommendation
 
-**Turn restrictions have been successfully implemented!** The routing engine now respects real-world traffic rules and provides accurate, legal routes.
+**Implement Bloom Filter optimization first** (Expected: 1.023s → 0.7s, ~30% faster)
 
-### Next Steps
+Quick win with big impact:
+1. Add bloomfilter dependency
+2. Build bloom filter for `(from_way, via_node)` keys during graph construction
+3. Check bloom filter before HashMap lookup
+4. Should eliminate ~99% of wasted HashMap lookups
 
-Choose from the following enhancements based on your needs:
+After bloom filter:
+2. **Better Speed Profiles** - Parse more OSM tags for realistic travel times
+3. **Multiple Profiles** - Car, bike, and foot routing with different restrictions
+4. **Isochrone Maps** - "Show everywhere reachable in N minutes" feature
+5. **Faster Hash Function** - Easy 2% win with rustc-hash
+6. **Planet Scale** - Test on larger datasets
 
-1. **Better Speed Profiles** - Parse more OSM tags (surface, lanes, lit) for realistic travel times
-2. **Multiple Profiles** - Support car, bike, and foot routing with different restrictions
-3. **Isochrone Maps** - "Show everywhere reachable in N minutes" feature
-4. **Route Optimization** - Cache or optimize the restriction checking for faster queries
-5. **Planet Scale** - Test on larger datasets or implement RocksDB for disk-based storage
-
-The routing engine now provides production-ready, legally accurate routes with sub-second response times.
+The routing engine provides production-ready, legally accurate routes. With bloom filter optimization, queries should be <0.7s on Belgium-scale datasets.
