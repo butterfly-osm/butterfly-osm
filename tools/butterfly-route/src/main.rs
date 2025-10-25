@@ -1,6 +1,7 @@
 use anyhow::Result;
 use butterfly_route::{find_route, RouteGraph};
 use butterfly_route::parse::parse_pbf;
+use butterfly_route::server::run_server;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -33,6 +34,14 @@ enum Commands {
         #[arg(long)]
         to: String,
     },
+    /// Start HTTP API server with OpenAPI docs
+    Server {
+        /// Graph file
+        graph: PathBuf,
+        /// Port to listen on
+        #[arg(short, long, default_value = "3000")]
+        port: u16,
+    },
 }
 
 fn parse_coord(s: &str) -> Result<(f64, f64)> {
@@ -45,7 +54,8 @@ fn parse_coord(s: &str) -> Result<(f64, f64)> {
     Ok((lat, lon))
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -83,6 +93,14 @@ fn main() -> Result<()> {
             println!("Distance: {:.0}m", result.distance_meters);
             println!("Time: {:.1} minutes", result.time_seconds / 60.0);
             println!("Nodes visited: {}", result.node_count);
+        }
+        Commands::Server { graph, port } => {
+            println!("Loading graph from {}...", graph.display());
+            let start = Instant::now();
+            let route_graph = RouteGraph::load(&graph)?;
+            println!("Graph loaded in {:.2}s", start.elapsed().as_secs_f64());
+
+            run_server(route_graph, port).await?;
         }
     }
 
