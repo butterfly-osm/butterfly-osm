@@ -23,7 +23,7 @@ use std::path::Path;
 use std::time::Instant;
 
 /// A shortcut edge that bypasses a contracted node
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Shortcut {
     /// The middle node that was contracted (for unpacking)
     pub via_node: NodeIndex,
