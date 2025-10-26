@@ -538,19 +538,81 @@ After researching OSRM, Valhalla, and GraphHopper (see `tests/OSRM.md`, `tests/V
 
 ## Current Recommendation
 
-**Implement Bloom Filter optimization first** (Expected: 1.023s → 0.7s, ~30% faster)
+**Implement Contraction Hierarchies (CH)** - The foundational algorithm to reach our end goal.
 
-Quick win with big impact:
-1. Add bloomfilter dependency
-2. Build bloom filter for `(from_way, via_node)` keys during graph construction
-3. Check bloom filter before HashMap lookup
-4. Should eliminate ~99% of wasted HashMap lookups
+**Why skip incremental optimizations:**
+- Bloom filter would give ~30% speedup (750ms → 500ms)
+- But we need 250x speedup to beat OSRM by 2x
+- Incremental optimizations can't close this gap
+- CH is the only path forward
 
-After bloom filter:
-2. **Better Speed Profiles** - Parse more OSM tags for realistic travel times
-3. **Multiple Profiles** - Car, bike, and foot routing with different restrictions
-4. **Isochrone Maps** - "Show everywhere reachable in N minutes" feature
-5. **Matrix Calculations** - Many-to-many distance/time matrices
-6. **Faster Hash Function** - Easy 2% win with rustc-hash
+**Approach: Measure, Implement, Compare**
 
-The routing engine provides production-ready, legally accurate routes. With bloom filter optimization, queries should be <0.7s on Belgium-scale datasets.
+### Step 1: Record Baseline Timings
+Before implementing CH, document current performance:
+- Brussels → Antwerp: 750ms (880 nodes visited)
+- Brussels → Ghent: 474ms (840 nodes visited)
+- Breakdown: R-tree (<1ms) + Restrictions (400ms) + A* (300ms)
+
+### Step 2: Implement Contraction Hierarchies
+**Core components:**
+
+1. **Node Ordering** (preprocessing)
+   - Heuristic: edge difference (shortcuts created - edges removed)
+   - Lazy witness search to check if shortcut needed
+   - Order from least to most important
+
+2. **Node Contraction** (preprocessing)
+   - Remove node from graph
+   - For each pair of neighbors (u, v):
+     - If shortest path goes through contracted node
+     - Create shortcut edge u → v
+   - Store shortcuts with metadata (what they expand to)
+
+3. **Turn Restrictions Integration** (preprocessing)
+   - Apply restrictions BEFORE contraction
+   - Remove illegal edges from graph
+   - Or mark with infinite weight
+   - Restrictions baked into shortcuts
+
+4. **Bidirectional CH Query** (runtime)
+   - Forward search: Only explore edges to higher-ranked nodes
+   - Backward search: Only explore edges to higher-ranked nodes
+   - Meet at highest-ranked node in path
+   - Unpack shortcuts to get actual route
+
+**Expected performance:**
+- Preprocessing: 5-10 minutes for Belgium (one-time cost)
+- Query time: ~50-100ms (first implementation, not optimized)
+- Graph size: +30-50% (shortcuts added)
+
+### Step 3: Compare Results
+After CH implementation:
+- Same test routes (Brussels → Antwerp, Brussels → Ghent)
+- Record query times
+- Record nodes explored (should be ~100-500 vs 574,000!)
+- Verify correctness (same or similar distances)
+
+**Success criteria:**
+- ✅ Queries <100ms (10x faster than current 750ms)
+- ✅ Dramatically fewer nodes explored
+- ✅ Correct routes (within 5% of A* distances)
+
+### Step 4: Iterate and Optimize
+Once basic CH works:
+1. Better node ordering heuristics
+2. Optimize witness search
+3. Graph compression techniques
+4. Target: Get to ~10-20ms
+
+**Then:** Move to multi-level PHAST architecture (L0 tiles + L1 CH)
+
+**Timeline:**
+- Record baselines: 1 hour
+- CH implementation: 2-4 weeks (this is complex!)
+- Testing and comparison: 3-5 days
+- Optimization: 1-2 weeks
+
+**Total: ~6-8 weeks to working CH**
+
+The routing engine currently provides production-ready, legally accurate routes. CH will transform it into a competitive high-performance system.
