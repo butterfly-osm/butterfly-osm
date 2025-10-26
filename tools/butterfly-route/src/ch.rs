@@ -10,13 +10,16 @@
 
 use crate::geo::haversine_distance;
 use crate::graph::RouteGraph;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use petgraph::graph::{EdgeIndex, Graph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use petgraph::Direction;
 use serde::{Deserialize, Serialize};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::cmp::Ordering;
+use std::fs::File;
+use std::io::{BufReader, BufWriter};
+use std::path::Path;
 use std::time::Instant;
 
 /// A shortcut edge that bypasses a contracted node
@@ -29,8 +32,18 @@ pub struct Shortcut {
     pub edge2: EdgeIndex,
 }
 
-/// Contracted graph with hierarchy information
+/// Serializable representation of CH graph
 #[derive(Debug, Serialize, Deserialize)]
+struct SerializableCHGraph {
+    nodes: Vec<i64>,
+    edges: Vec<(usize, usize, f64)>,
+    coords: HashMap<i64, (f64, f64)>,
+    node_levels: Vec<(usize, usize)>, // (node_index, level)
+    shortcuts: Vec<(usize, usize, usize, usize)>, // (edge_index, via_node, edge1, edge2)
+}
+
+/// Contracted graph with hierarchy information
+#[derive(Debug)]
 pub struct CHGraph {
     /// The underlying graph (includes original + shortcut edges)
     pub graph: Graph<i64, f64>,
@@ -253,6 +266,23 @@ impl CHGraph {
         shortcuts
     }
 
+    /// Find nearest OSM node ID to a coordinate
+    pub fn nearest_node(&self, coord: (f64, f64)) -> Option<i64> {
+        // Simple linear search - TODO: add R-tree to CHGraph if needed
+        let mut best_node = None;
+        let mut best_dist = f64::INFINITY;
+
+        for (osm_id, node_coord) in &self.coords {
+            let dist = haversine_distance(coord.0, coord.1, node_coord.0, node_coord.1);
+            if dist < best_dist {
+                best_dist = dist;
+                best_node = Some(*osm_id);
+            }
+        }
+
+        best_node
+    }
+
     /// Query CH graph using bidirectional Dijkstra
     /// Searches "upward" in the hierarchy from both start and goal
     pub fn query(&self, start_osm: i64, goal_osm: i64) -> Option<(f64, Vec<NodeIndex>)> {
@@ -414,6 +444,92 @@ impl CHGraph {
         }
 
         path
+    }
+
+    /// Save CH graph to file
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let nodes: Vec<i64> = self.graph.node_weights().copied().collect();
+        let edges: Vec<(usize, usize, f64)> = self.graph
+            .edge_references()
+            .map(|e| (e.source().index(), e.target().index(), *e.weight()))
+            .collect();
+
+        let node_levels: Vec<(usize, usize)> = self.node_levels
+            .iter()
+            .map(|(idx, level)| (idx.index(), *level))
+            .collect();
+
+        let shortcuts: Vec<(usize, usize, usize, usize)> = self.shortcuts
+            .iter()
+            .map(|(edge_idx, shortcut)| {
+                (edge_idx.index(), shortcut.via_node.index(), shortcut.edge1.index(), shortcut.edge2.index())
+            })
+            .collect();
+
+        let serializable = SerializableCHGraph {
+            nodes,
+            edges,
+            coords: self.coords.clone(),
+            node_levels,
+            shortcuts,
+        };
+
+        let file = File::create(path).context("Failed to create CH graph file")?;
+        let writer = BufWriter::new(file);
+        bincode::serialize_into(writer, &serializable).context("Failed to serialize CH graph")?;
+        Ok(())
+    }
+
+    /// Load CH graph from file
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let file = File::open(path).context("Failed to open CH graph file")?;
+        let reader = BufReader::new(file);
+        let serializable: SerializableCHGraph = bincode::deserialize_from(reader)
+            .context("Failed to deserialize CH graph")?;
+
+        let mut graph = Graph::new();
+        let mut node_map = HashMap::new();
+
+        // Recreate nodes
+        for (idx, osm_id) in serializable.nodes.iter().enumerate() {
+            let node_idx = graph.add_node(*osm_id);
+            assert_eq!(node_idx.index(), idx, "Node index mismatch during CH deserialization");
+            node_map.insert(*osm_id, node_idx);
+        }
+
+        // Recreate edges
+        for (source_idx, target_idx, weight) in serializable.edges {
+            let source = NodeIndex::new(source_idx);
+            let target = NodeIndex::new(target_idx);
+            graph.add_edge(source, target, weight);
+        }
+
+        // Recreate node levels
+        let mut node_levels = HashMap::new();
+        for (node_idx, level) in serializable.node_levels {
+            node_levels.insert(NodeIndex::new(node_idx), level);
+        }
+
+        // Recreate shortcuts
+        let mut shortcuts = HashMap::new();
+        for (edge_idx, via_node_idx, edge1_idx, edge2_idx) in serializable.shortcuts {
+            shortcuts.insert(
+                EdgeIndex::new(edge_idx),
+                Shortcut {
+                    via_node: NodeIndex::new(via_node_idx),
+                    edge1: EdgeIndex::new(edge1_idx),
+                    edge2: EdgeIndex::new(edge2_idx),
+                }
+            );
+        }
+
+        Ok(CHGraph {
+            graph,
+            node_map,
+            coords: serializable.coords,
+            node_levels,
+            shortcuts,
+        })
     }
 }
 
