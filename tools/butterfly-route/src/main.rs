@@ -128,14 +128,40 @@ async fn main() -> Result<()> {
             let ch_graph = CHGraph::from_route_graph(&route_graph)?;
 
             println!("\nSaving CH graph to {}...", output.display());
-            // TODO: Implement save/load for CHGraph
-            println!("⚠ Warning: CH graph serialization not yet implemented");
-            println!("CH graph built successfully (in-memory only)");
+            let save_start = Instant::now();
+            ch_graph.save(&output)?;
+            println!("✓ CH graph saved in {:.2}s", save_start.elapsed().as_secs_f64());
+            println!("✓ CH preprocessing complete!");
         }
         Commands::RouteCh { graph, from, to } => {
-            println!("⚠ Warning: CH graph loading not yet implemented");
-            println!("Build CH graph first, then implement serialization");
-            anyhow::bail!("CH graph routing not yet ready");
+            println!("Loading CH graph from {}...", graph.display());
+            let load_start = Instant::now();
+            let ch_graph = CHGraph::load(&graph)?;
+            println!("CH graph loaded in {:.2}s", load_start.elapsed().as_secs_f64());
+
+            let from_coord = parse_coord(&from)?;
+            let to_coord = parse_coord(&to)?;
+
+            // Find nearest nodes
+            println!("\nFinding nearest nodes...");
+            let start_osm = ch_graph.nearest_node(from_coord)
+                .ok_or_else(|| anyhow::anyhow!("Could not find start node"))?;
+            let goal_osm = ch_graph.nearest_node(to_coord)
+                .ok_or_else(|| anyhow::anyhow!("Could not find goal node"))?;
+
+            println!("Routing from node {} to node {}", start_osm, goal_osm);
+
+            // Query CH graph
+            let query_start = Instant::now();
+            let result = ch_graph.query(start_osm, goal_osm)
+                .ok_or_else(|| anyhow::anyhow!("No route found"))?;
+
+            println!("\n=== CH Query Results ===");
+            println!("Total query time: {:.3}s", query_start.elapsed().as_secs_f64());
+            println!("Distance: {:.0}m ({:.1} km)", result.0, result.0 / 1000.0);
+            println!("Time: {:.1} minutes", result.0 / 33.33); // Assuming average 120 km/h
+            println!("Nodes in path: {}", result.1.len());
+            println!("========================");
         }
     }
 
