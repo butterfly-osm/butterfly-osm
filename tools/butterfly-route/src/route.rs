@@ -15,6 +15,63 @@ pub struct RouteResult {
     pub node_count: usize,
 }
 
+/// Simple A* routing on a tile graph (for PHAST L0 layer)
+/// Returns (distance, time, path)
+pub fn astar_tile_route(
+    graph: &petgraph::graph::Graph<i64, f64>,
+    coords: &std::collections::HashMap<i64, (f64, f64)>,
+    start: petgraph::graph::NodeIndex,
+    end: petgraph::graph::NodeIndex,
+    _restrictions: &[crate::parse::TurnRestriction],
+) -> Result<(f64, f64, Vec<i64>), String> {
+    use petgraph::visit::EdgeRef;
+
+    // Get goal coordinates for heuristic
+    let goal_osm_id = *graph.node_weight(end).ok_or("Goal node not in graph")?;
+    let goal_coord = coords.get(&goal_osm_id).ok_or("Goal coordinates not found")?;
+
+    // Run A* (using petgraph's implementation for simplicity on tiles)
+    let result = petgraph::algo::astar(
+        graph,
+        start,
+        |n| n == end,
+        |e| *e.weight(),
+        |n| {
+            // Heuristic: straight-line distance / optimistic speed
+            if let Some(&osm_id) = graph.node_weight(n) {
+                if let Some(&(lat, lon)) = coords.get(&osm_id) {
+                    let distance = crate::geo::haversine_distance(lat, lon, goal_coord.0, goal_coord.1);
+                    return distance / 33.33; // 120 km/h optimistic
+                }
+            }
+            0.0
+        },
+    );
+
+    match result {
+        Some((total_time, path)) => {
+            // Calculate actual distance
+            let mut distance = 0.0;
+            for window in path.windows(2) {
+                if let (Some(&osm1), Some(&osm2)) = (graph.node_weight(window[0]), graph.node_weight(window[1])) {
+                    if let (Some(&(lat1, lon1)), Some(&(lat2, lon2))) = (coords.get(&osm1), coords.get(&osm2)) {
+                        distance += crate::geo::haversine_distance(lat1, lon1, lat2, lon2);
+                    }
+                }
+            }
+
+            // Convert NodeIndex path to OSM IDs
+            let osm_path: Vec<i64> = path
+                .iter()
+                .filter_map(|&idx| graph.node_weight(idx).copied())
+                .collect();
+
+            Ok((distance, total_time, osm_path))
+        }
+        None => Err("No route found".to_string()),
+    }
+}
+
 // State for A* with turn restriction support
 #[derive(Clone, Debug)]
 struct AStarState {

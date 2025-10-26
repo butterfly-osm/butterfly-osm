@@ -29,6 +29,8 @@ pub struct RouteGraph {
     pub edge_to_way: HashMap<EdgeIndex, i64>,
     // Key: (from_way_id, via_node_osm_id), Value: Set of restricted to_way_ids
     pub restrictions: HashMap<(i64, i64), HashSet<i64>>,
+    // Original turn restrictions (for tile extraction)
+    pub raw_restrictions: Vec<TurnRestriction>,
 }
 
 fn get_speed(highway_type: &str, maxspeed: Option<u32>) -> f64 {
@@ -130,6 +132,7 @@ impl RouteGraph {
             spatial_index,
             edge_to_way,
             restrictions,
+            raw_restrictions: data.restrictions,
         }
     }
 
@@ -154,26 +157,12 @@ impl RouteGraph {
             .map(|(edge_idx, way_id)| (edge_idx.index(), *way_id))
             .collect();
 
-        // Convert restrictions HashMap to Vec
-        let restrictions: Vec<TurnRestriction> = self
-            .restrictions
-            .iter()
-            .flat_map(|((from_way, via_node), to_ways)| {
-                to_ways.iter().map(move |to_way| TurnRestriction {
-                    restriction_type: "no_turn".to_string(), // We lose the specific type, but that's okay
-                    from_way: *from_way,
-                    via_node: *via_node,
-                    to_way: *to_way,
-                })
-            })
-            .collect();
-
         let serializable = SerializableGraph {
             nodes,
             edges,
             coords: self.coords.clone(),
             spatial_points,
-            restrictions,
+            restrictions: self.raw_restrictions.clone(),
             edge_to_way,
         };
 
@@ -236,6 +225,7 @@ impl RouteGraph {
             spatial_index,
             edge_to_way,
             restrictions,
+            raw_restrictions: serializable.restrictions,
         })
     }
 }
