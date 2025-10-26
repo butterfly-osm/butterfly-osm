@@ -1,5 +1,5 @@
 use anyhow::Result;
-use butterfly_route::{find_route, RouteGraph};
+use butterfly_route::{find_route, RouteGraph, CHGraph};
 use butterfly_route::parse::parse_pbf;
 use butterfly_route::server::run_server;
 use clap::{Parser, Subcommand};
@@ -41,6 +41,24 @@ enum Commands {
         /// Port to listen on
         #[arg(short, long, default_value = "3000")]
         port: u16,
+    },
+    /// Build Contraction Hierarchies graph from regular graph
+    BuildCh {
+        /// Input graph file (regular RouteGraph)
+        input: PathBuf,
+        /// Output CH graph file
+        output: PathBuf,
+    },
+    /// Find route using Contraction Hierarchies
+    RouteCh {
+        /// CH graph file
+        graph: PathBuf,
+        /// Start coordinate (lat,lon)
+        #[arg(long)]
+        from: String,
+        /// End coordinate (lat,lon)
+        #[arg(long)]
+        to: String,
     },
 }
 
@@ -101,6 +119,23 @@ async fn main() -> Result<()> {
             println!("Graph loaded in {:.2}s", start.elapsed().as_secs_f64());
 
             run_server(route_graph, port).await?;
+        }
+        Commands::BuildCh { input, output } => {
+            println!("Loading graph from {}...", input.display());
+            let route_graph = RouteGraph::load(&input)?;
+
+            println!("\nBuilding Contraction Hierarchies...");
+            let ch_graph = CHGraph::from_route_graph(&route_graph)?;
+
+            println!("\nSaving CH graph to {}...", output.display());
+            // TODO: Implement save/load for CHGraph
+            println!("⚠ Warning: CH graph serialization not yet implemented");
+            println!("CH graph built successfully (in-memory only)");
+        }
+        Commands::RouteCh { graph, from, to } => {
+            println!("⚠ Warning: CH graph loading not yet implemented");
+            println!("Build CH graph first, then implement serialization");
+            anyhow::bail!("CH graph routing not yet ready");
         }
     }
 
