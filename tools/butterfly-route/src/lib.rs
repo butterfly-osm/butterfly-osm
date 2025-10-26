@@ -4,6 +4,7 @@ pub mod route;
 pub mod geo;
 pub mod server;
 pub mod ch;
+pub mod phast;
 
 pub use graph::RouteGraph;
 pub use route::find_route;
