@@ -536,15 +536,40 @@ After researching OSRM, Valhalla, and GraphHopper (see `tests/OSRM.md`, `tests/V
 - Need to implement matrix and isochrone calculations
 - Need to add bike, foot, and transit routing modes
 
-## Current Recommendation
+## Current Recommendation: PIVOT TO PHAST 🎯
 
-**Implement Contraction Hierarchies (CH)** - The foundational algorithm to reach our end goal.
+**After attempting full-graph CH and discovering why OSRM is different, we're pivoting to PHAST (Partitioned Highway-centric A* Search Technique).**
 
-**Why skip incremental optimizations:**
-- Bloom filter would give ~30% speedup (750ms → 500ms)
-- But we need 250x speedup to beat OSRM by 2x
-- Incremental optimizations can't close this gap
-- CH is the only path forward
+### What We Learned from CH Attempt
+
+**Node-based CH (our implementation):**
+- ✅ Implemented: Dynamic priority queue, A* witness search, adaptive hop limits
+- ❌ Problem: Stalls at 84-87% on Belgium (7.96M nodes)
+- ❌ Root cause: Highway interchanges have degree 20-50+, witness search explodes
+- ❌ Even aggressive optimizations (skip degree >50, 2-hop limits) still stall
+
+**Edge-expanded CH (OSRM's approach):**
+- ✅ Nodes = road segments (not intersections)
+- ✅ Edges = turns between segments
+- ✅ Uniform low degree (2-4 per node)
+- ✅ Preprocessing completes in ~2 minutes for Belgium
+- ❌ Not suitable for PHAST (3x graph size, harder L0/L1 separation)
+
+**Key insight:** OSRM runs CH on **full edge-expanded graph**. PHAST runs CH on **small highway-only subgraph**. Different architectures, different constraints.
+
+### Why PHAST Instead of Full-Graph CH
+
+**PHAST advantages:**
+1. **No high-degree intersection problem** - CH only on highway network (~200k nodes)
+2. **Node-based works fine** - Highway interchanges naturally low-degree
+3. **Better for our goals** - Multi-level architecture, scalable to planet
+4. **Parallelizable** - Independent L0 tiles can build concurrently
+5. **Memory efficient** - L1 graph tiny, load L0 tiles on-demand
+
+**Performance expectations:**
+- Query time: ~5-10ms (vs OSRM 3ms, A* 780ms)
+- Preprocessing: ~10-15 minutes (L0 tiling + L1 CH)
+- Memory: Much lower than full-graph CH
 
 **Approach: Measure, Implement, Compare**
 
@@ -554,65 +579,104 @@ Before implementing CH, document current performance:
 - Brussels → Ghent: 474ms (840 nodes visited)
 - Breakdown: R-tree (<1ms) + Restrictions (400ms) + A* (300ms)
 
-### Step 2: Implement Contraction Hierarchies
-**Core components:**
+### Step 2: Implement PHAST Architecture
+**Core components (L0 + L1 two-level hierarchy):**
 
-1. **Node Ordering** (preprocessing)
-   - Heuristic: edge difference (shortcuts created - edges removed)
-   - Lazy witness search to check if shortcut needed
-   - Order from least to most important
+**Phase 1: L0 Tiling (Local Search)**
+1. **Geographic Partitioning**
+   - Divide Belgium into ~50-100 tiles (e.g., 10km × 10km)
+   - Use lat/lon bounding boxes for tile assignment
+   - Each tile: 50k-150k nodes (manageable size)
 
-2. **Node Contraction** (preprocessing)
-   - Remove node from graph
-   - For each pair of neighbors (u, v):
-     - If shortest path goes through contracted node
-     - Create shortcut edge u → v
-   - Store shortcuts with metadata (what they expand to)
+2. **Tile Graph Extraction**
+   - Extract all nodes/edges within tile bounds
+   - Mark boundary nodes (connect to other tiles)
+   - Store turn restrictions per tile
+   - Serialize each tile independently
 
-3. **Turn Restrictions Integration** (preprocessing)
-   - Apply restrictions BEFORE contraction
-   - Remove illegal edges from graph
-   - Or mark with infinite weight
-   - Restrictions baked into shortcuts
+3. **Tile-Local Routing**
+   - Within-tile queries: Use A* on tile graph
+   - No CH needed for L0 (small enough for A*)
+   - Cross-tile queries: Escalate to L1
 
-4. **Bidirectional CH Query** (runtime)
-   - Forward search: Only explore edges to higher-ranked nodes
-   - Backward search: Only explore edges to higher-ranked nodes
-   - Meet at highest-ranked node in path
-   - Unpack shortcuts to get actual route
+**Phase 2: L1 Highway Network (Long-Distance)**
+1. **Highway Extraction**
+   - Filter to motorway, trunk, primary roads only
+   - Result: ~100-200k nodes (vs 8M full graph)
+   - Includes all boundary nodes from L0 tiles
+
+2. **CH on L1 Graph**
+   - Run node-based CH (same code we wrote!)
+   - Should complete quickly (low node count + low degree)
+   - Preprocessing: ~1-2 minutes
+   - Query speedup: 100-200x
+
+3. **Turn Restrictions on L1**
+   - Apply restrictions before CH preprocessing
+   - Highway-level restrictions only (rare)
+
+**Phase 3: Two-Level Query**
+1. **Query Classification**
+   - Same tile: L0 A* only (~100ms)
+   - Adjacent tiles: L0 boundary search (~200ms)
+   - Long distance: L0 → L1 CH → L0 (~5-10ms)
+
+2. **L0 → L1 Escalation**
+   - Find nearest highway entry points (boundary nodes)
+   - Run CH query on L1 between entry/exit
+   - Expand back to L0 for first/last mile
 
 **Expected performance:**
-- Preprocessing: 5-10 minutes for Belgium (one-time cost)
-- Query time: ~50-100ms (first implementation, not optimized)
-- Graph size: +30-50% (shortcuts added)
+- Preprocessing: 10-15 minutes for Belgium
+  - L0 tiling: 5-7 minutes (parallelizable)
+  - L1 CH: 2-3 minutes (small graph)
+- Query time: 5-10ms (long distance), 50-200ms (local)
+- Memory: ~1GB L1 + load L0 tiles on-demand
 
 ### Step 3: Compare Results
-After CH implementation:
+After PHAST implementation:
 - Same test routes (Brussels → Antwerp, Brussels → Ghent)
-- Record query times
-- Record nodes explored (should be ~100-500 vs 574,000!)
+- Record query times for each scenario:
+  - Within-tile (local)
+  - Cross-tile (regional)
+  - Long-distance (L0 → L1 → L0)
+- Record nodes explored at each level
 - Verify correctness (same or similar distances)
 
 **Success criteria:**
-- ✅ Queries <100ms (10x faster than current 750ms)
-- ✅ Dramatically fewer nodes explored
+- ✅ Local queries <200ms (within tile)
+- ✅ Regional queries <500ms (cross-tile)
+- ✅ Long-distance <10ms (L1 CH speedup)
 - ✅ Correct routes (within 5% of A* distances)
 
 ### Step 4: Iterate and Optimize
-Once basic CH works:
-1. Better node ordering heuristics
-2. Optimize witness search
-3. Graph compression techniques
-4. Target: Get to ~10-20ms
+Once basic PHAST works:
 
-**Then:** Move to multi-level PHAST architecture (L0 tiles + L1 CH)
+**L0 Optimizations:**
+1. Tune tile size (test 5km, 10km, 15km)
+2. Optimize tile boundary handling
+3. Cache frequently-used tiles
+4. Parallel tile loading
+
+**L1 Optimizations:**
+1. Better node ordering for highway CH
+2. Optimize witness search (already have this!)
+3. Graph compression on L1
+4. Target: Get long-distance to ~3-5ms
+
+**Multi-Level Extensions:**
+1. Add L2 for continental scale (Europe-wide)
+2. Implement tile prefetching based on query patterns
+3. Add tile updates without full rebuild
 
 **Timeline:**
-- Record baselines: 1 hour
-- CH implementation: 2-4 weeks (this is complex!)
+- Record baselines: 1 hour (done ✅)
+- L0 Tiling: 1-2 weeks
+- L1 Highway extraction + CH: 1 week (reuse CH code!)
+- Two-level query: 1-2 weeks
 - Testing and comparison: 3-5 days
 - Optimization: 1-2 weeks
 
-**Total: ~6-8 weeks to working CH**
+**Total: ~5-7 weeks to working PHAST**
 
-The routing engine currently provides production-ready, legally accurate routes. CH will transform it into a competitive high-performance system.
+The routing engine currently provides production-ready, legally accurate routes. PHAST will transform it into a scalable, high-performance system that can handle planet-scale routing.
