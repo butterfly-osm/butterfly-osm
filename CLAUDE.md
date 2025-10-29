@@ -88,3 +88,5 @@
 5. **Release**
 
    * Update CHANGELOG; tag with semantic version; build artifacts.
+- Don't consult gemini unless I tell you to.
+- when talking with gemini, use a 5 minuets timeout. If Gemini is rate limited, use gemini -m gemini-flash-2.5 -p "short prompt with full file paths here"
