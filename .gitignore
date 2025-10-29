@@ -33,12 +33,6 @@ data/
 *.osm.pbf
 *.pbf
 
-# Benchmark test files
-benchmarks/*.pbf
-benchmarks/*_curl.pbf
-benchmarks/*_aria2.pbf
-benchmarks/*_butterfly.pbf
-
 # Test output files
 /tmp/test-*.pbf
 
@@ -66,11 +60,3 @@ package_summary.md
 
 # Release artifacts
 releases/
-
-# Routing graph files (generated, large binary files)
-*.graph
-
-# Research documentation (not for commit)
-tools/butterfly-route/tests/OSRM.md
-tools/butterfly-route/tests/Valhalla.md
-tools/butterfly-route/tests/GraphHopper.md
