@@ -1,351 +1,338 @@
-Here’s **Step 1: PBF ingest** — fully specified so you can implement it, run it, and **lock it as correct** before moving on.
+Here’s **Step 2 — Modal profiling (Rust-only)**, fully specified with artifacts and **lock conditions** so you can freeze it before Step 3.
 
-# Step 1 — PBF Ingest (stream → immutable artifacts)
+---
+
+# Step 2 — From raw tags to per-mode attributes
 
 ## Objective
 
-Deterministically read an OSM **.pbf** and emit three immutable, compact artifacts:
+From `ways.raw` and `relations.raw` (Step 1), compute **mode-specific, deterministic** attributes:
 
-1. `nodes.bin` — mapping of **OSM node id → (lat, lon)** in fixed-point.
-2. `ways.raw` — per-way: ordered **node ids** + **minimal tag view** (lossless for what we need later).
-3. `relations.raw` — **turn restrictions** and relevant relation info (lossless for restrictions).
+1. **Per-way attributes** (for car/bike/foot): access, oneway, base speed, class flags, per-way penalties.
+2. **Turn rules** (per mode): bans/“only”-turns and explicit turn penalties derived from restriction relations (normalized, de-duplicated).
+3. **Metadata** needed down the line (enumeration dictionaries, version info).
 
-All outputs must be **bit-for-bit deterministic** for the same inputs.
+All authored and executed in **Rust** (profiles too).
 
 ---
 
 ## Inputs
 
-* `planet-latest.osm.pbf` (or region).
-* Optional: **block allowlist** (to filter bbox during dev), not used in production.
+* `nodes.sa` / `nodes.si` (from Step 1) — not required for tag logic, but available.
+* `ways.raw` — lossless way nodes + tag dictionaries.
+* `relations.raw` — restriction relations + dictionaries.
+* `profile_car.rs`, `profile_bike.rs`, `profile_foot.rs` — **Rust** profiles implementing the ABI below.
 
 ---
 
-## Constraints
+## Rust profile ABI (stable, testable)
 
-* **RAM budget** during ingest: **< 2 GB** (planet).
-* **Single pass** over PBF payloads (DenseNodes, Ways, Relations), streaming.
-* **No tag interpretation** here (that’s Step 2). Keep tags raw/minimal-lossless.
+Each profile is a Rust crate compiled as a `cdylib` **or** to **WASM** (either is fine; same ABI). It exports:
 
----
+```rust
+#[repr(C)]
+pub struct WayInput<'a> {
+    pub kv_keys: &'a [u32],   // ids into ways.raw key dict
+    pub kv_vals: &'a [u32],   // parallel array into ways.raw val dict
+}
 
-## Data Representation (on disk)
+#[repr(C)]
+pub struct WayOutput {
+    pub access_fwd: bool,
+    pub access_rev: bool,
+    pub oneway: u8,           // 0=no,1=fwd,2=rev,3=both (rare), respects mode-specific oneway rules
+    pub base_speed_mmps: u32, // integer mm/s, applies to traversable directions
+    pub surface_class: u16,   // enum index (optional)
+    pub highway_class: u16,   // enum index (required)
+    pub class_bits: u32,      // bit flags (toll,tunnel,bridge,link,residential,track,cycleway,footway,ferry,…)
+    pub per_km_penalty_ds: u16, // extra deciseconds per km (preference shaping; 0 if none)
+    pub const_penalty_ds: u32,  // constant penalty per edge entry (e.g., traffic-calmed)
+}
 
-### 1) `nodes.sa` + `nodes.si` (sorted array + sparse index)
+#[repr(C)]
+pub struct TurnInput<'a> {
+    pub tags_keys: &'a [u32],
+    pub tags_vals: &'a [u32],
+}
 
-* Purpose: random-access node coords by **OSM node id** with O(log N) lookup.
-* **Rationale**: Sparse bitmap approach wastes gigabytes when OSM IDs span billions (99.5% empty for Belgium). Sorted array is simpler, smaller, and mmap-friendly.
+#[repr(C)]
+pub enum TurnRuleKind { None=0, Ban=1, Only=2, Penalty=3 }
 
-#### `nodes.sa` (Sorted Array - little-endian, memory-mappable, fixed 16 bytes/record)
+#[repr(C)]
+pub struct TurnOutput {
+    pub kind: TurnRuleKind,
+    pub applies: u8,             // bitmask: bit0=car, bit1=bike, bit2=foot
+    pub except_mask: u8,         // bitmask for exceptions (same encoding)
+    pub penalty_ds: u32,         // for Penalty; 0 otherwise
+    pub is_time_dependent: bool, // true if any :conditional encountered
+}
+```
 
-  ```
-  Header (128 bytes):
-    magic:        u32 = 0x4E4F4453      // "NODS"
-    version:      u16 = 1
-    reserved:     u16 = 0
-    count:        u64                    // number of nodes stored
-    scale:        u32 = 10_000_000       // 1e-7 deg units (WGS84)
-    bbox_min_lat: i32                    // fixed-point (scale above)
-    bbox_min_lon: i32
-    bbox_max_lat: i32
-    bbox_max_lon: i32
-    created_unix: u64                    // timestamp
-    input_sha256: [32]u8                 // SHA-256 of input PBF
-    reserved2:    [60]u8 = 0
+**Exports:**
 
-  Body (count records, sorted strictly ascending by id):
-    For each node:
-      id:         i64                    // OSM node id
-      lat_fxp:    i32                    // degrees * scale
-      lon_fxp:    i32                    // degrees * scale
+```rust
+#[no_mangle] pub extern "C" fn profile_version() -> u32; // increment on ABI change
+#[no_mangle] pub extern "C" fn process_way(input: WayInput) -> WayOutput;
+#[no_mangle] pub extern "C" fn process_turn(input: TurnInput) -> TurnOutput;
+```
 
-  Footer (16 bytes):
-    body_crc64:   u64                    // CRC-64-ISO of body section
-    file_crc64:   u64                    // CRC-64-ISO of entire file except footer
-  ```
-
-#### `nodes.si` (Sparse Index - two-level for fast binary search bounds)
-
-  ```
-  Header (32 bytes):
-    magic:        u32 = 0x4E4F4458      // "NODX"
-    version:      u16 = 1
-    reserved:     u16 = 0
-    block_size:   u32 = 2048             // records per sample
-    top_bits:     u8  = 16               // high-bit partition (2^16 buckets)
-    reserved2:    [19]u8 = 0
-
-  Level 1 (65536 entries for top_bits=16):
-    For each bucket k in [0..65535]:
-      start_idx:  u64                    // index into Level 2 for first sample
-      end_idx:    u64                    // one past last (start=end if empty)
-
-  Level 2 (M = ceil(count / block_size) samples):
-    For each sample j in [0..M-1]:
-      id_sample:  i64                    // id at record j*block_size in nodes.sa
-      rec_index:  u64                    // = j*block_size
-  ```
-
-* **Size**: Belgium (70.1M nodes) → nodes.sa ≈ **1.12 GB**, nodes.si ≈ **1.6 MB**
-* **Access**:
-  1. Compute `hi = (id as u64) >> (64 - top_bits)`
-  2. Read Level-1 bucket `[start_idx, end_idx)` → if empty, not found
-  3. Binary search Level-2 samples to find candidate block j
-  4. Binary search nodes.sa records `[j*block_size .. min((j+1)*block_size, count))` on id
-  5. Return `(lat_fxp, lon_fxp)` if found
-* **Complexity**: O(log(samples_in_bucket) + log(block_size)) ≈ 20-30 comparisons worst-case
-
-### 2) `ways.raw` (append-only, sequential access)
-
-* Purpose: preserve **way → ordered nodes** + **raw tags** needed later.
-* Layout:
-
-  ```
-  Header:
-    magic:      u32 = 0x57415953         // "WAYS"
-    version:    u16 = 1
-    reserved:   u16 = 0
-    count:      u64                      // ways count
-    kdict_off:  u64                      // offset to key dictionary (see below)
-    vdict_off:  u64                      // offset to value dictionary
-  Body:
-    For each way (in ascending way id as seen in PBF):
-      way_id:    i64
-      n_nodes:   u32
-      nodes:     i64[n_nodes]            // OSM node ids (unaltered)
-      n_tags:    u16
-      tags:      { k_id: u32, v_id: u32 } [n_tags]  // dictionary-coded
-  Dictionaries:
-    kdict: distinct tag keys sorted;   record: (k_id: u32, len: u16, bytes[len])
-    vdict: distinct tag values sorted; record: (v_id: u32, len: u16, bytes[len])
-  Footer:
-    ways_crc64: u64
-    file_crc64: u64
-  ```
-* Note: keep **all tags** for ways (lossless) — you will filter/interpret in Step 2.
-
-### 3) `relations.raw` (restriction-focused)
-
-* Purpose: capture **turn restrictions** precisely, plus minimal extras used later.
-* Layout:
-
-  ```
-  Header:
-    magic:       u32 = 0x52454C53        // "RELS"
-    version:     u16 = 1
-    reserved:    u16 = 0
-    count:       u64
-    kdict_off:   u64
-    vdict_off:   u64
-  Body:
-    For each relation of interest (type=restriction or with keys we care about):
-      rel_id:    i64
-      n_members: u16
-      members:
-        role_id: u16        // dictionary-coded role ("from","via","to")
-        kind:    u8         // 0=node,1=way,2=relation (we store only node/way here)
-        reserved:u8=0
-        ref:     i64        // OSM id
-      n_tags:   u16
-      tags:     { k_id: u32, v_id: u32 } [n_tags]
-  Dictionaries:
-    key/value dictionaries as in ways.raw; roles share the same vdict
-  Footer:
-    rels_crc64: u64
-    file_crc64: u64
-  ```
-* Filtering: include **only** relations with `type=restriction` (any mode) OR relations whose tags intersect a small allowlist used later (e.g., route=ferry). Everything else can be ignored for Step 1.
+> Profiles interpret **only tag semantics**. No geometry, no node lookups.
 
 ---
 
-## Parsing & Pipeline (Rust)
+## Artifacts (on disk)
 
-### Core approach
+### 1) `way_attrs.<mode>.bin`  (one per mode)
 
-* Streaming parse PBF blocks; process **DenseNodes**, **Ways**, **Relations** separately.
-* **No inter-block buffering of full datasets.** Write to disk incrementally.
-* **Order of emission** must be stable (ascending ids within each file).
+Fixed-width, sorted by **way_id** (ascending). Little-endian, mmap-friendly.
 
-### Recommended crates / techniques
+```
+Header (64B)
+  magic        u32 = 0x57415941   // "WAYA"
+  version      u16 = 1
+  mode         u8  = {0=car,1=bike,2=foot}
+  reserved     u8  = 0
+  count        u64                 // number of ways present in ways.raw
+  dict_k_sha   [32]u8             // sha256 of ways.raw key dict
+  dict_v_sha   [32]u8             // sha256 of ways.raw val dict
 
-* Use an efficient PBF reader (e.g., implement with Prost over OSM PBF schema or a zero-copy PBF decoder).
-* Use **rayon** for CPU-bound transforms **within** a block when safe; keep write order deterministic via per-type output buffers flushed in id order.
+Body (count records)
+  way_id       i64
+  flags        u32                 // bit0 access_fwd, bit1 access_rev, bits2.. enc oneway + feature flags
+  base_speed_mmps u32              // mm/s, 0 if inaccessible both ways
+  highway_class  u16
+  surface_class  u16
+  per_km_penalty_ds u16
+  const_penalty_ds  u32
 
-### Steps
+Footer (16B)
+  body_crc64   u64
+  file_crc64   u64
+```
 
-1. **Nodes pass**
+**Flag layout (u32 `flags`):**
 
-   * For each DenseNodes:
+* bit0: access_fwd, bit1: access_rev
+* bits2..3: oneway (00=no, 01=fwd, 10=rev, 11=both)
+* bits4..31: class bits (toll=4, ferry=5, tunnel=6, bridge=7, link=8, residential=9, track=10, cycleway=11, footway=12, living_street=13, service=14, construction=15, …) — enumerate in a JSON alongside.
 
-     * Maintain running deltas (OSM PBF stores lat/lon as scaled ints with deltas).
-     * Convert to **i32 fixed-point** with `scale = 1e7`.
-     * Track global **min/max lat/lon** and **min/max node id**.
-     * Append presence bits and coords into **chunked buffers** (e.g., 4–16 MiB) and flush to a temp file.
-   * After full pass:
+### 2) `turn_rules.<mode>.bin`  (one per mode)
 
-     * Build final `nodes.bin`: write header with `id_base = min_id`, `id_stride = max_id - min_id + 1`.
-     * Re-emit presence bitmap (composed during pass) and packed coords in **id order**.
-     * Compute **CRC-64** fields; fsync.
+Normalized turn rules for this mode only; sorted by `(via_node_id, from_way_id, to_way_id)`.
 
-2. **Ways pass**
+```
+Header (56B)
+  magic         u32 = 0x5455524E   // "TURN"
+  version       u16 = 1
+  mode          u8  = {0,1,2}
+  reserved      u8  = 0
+  count         u64
+  rel_dict_k_sha [32]u8           // from relations.raw key dict
+  rel_dict_v_sha [32]u8
 
-   * For each Way:
+Body (count records)
+  via_node_id   i64
+  from_way_id   i64
+  to_way_id     i64
+  kind          u8    // 0=None,1=Ban,2=Only,3=Penalty
+  penalty_ds    u32   // valid iff kind==Penalty
+  is_time_dep   u8    // 0/1
+  reserved[6]   u8
 
-     * Collect node refs (i64) and tags (string k/v).
-     * Insert keys/values into **deduplicated dictionaries** (hash set), but **store tag pairs temporarily** as string ids (u32) mapped later to sorted ids.
-     * Append a record into a temp file (way_id, nodes, tag_khash, tag_vhash).
-   * After full pass:
+Footer
+  body_crc64    u64
+  file_crc64    u64
+```
 
-     * Sort **dictionaries lexicographically**, assign sequential ids.
-     * One migration pass: rewrite temp records into final `ways.raw` with dictionary ids.
-     * Compute CRC-64s; fsync.
+**Notes**
 
-3. **Relations pass**
+* **ONLY** rules materialize to multiple bans as needed at Step 4 (expansion); here we store the canonical triple.
+* `is_time_dep=1` means **exclude** from baseline static graph later (but keep here for future TD support).
 
-   * For each Relation:
+### 3) `profile_meta.json`
 
-     * Read tags; **keep only** if `type=restriction` or tag keys intersect allowlist (e.g., `restriction:*`, `except`, `vehicle`, `bicycle`, `foot`, `ferry`).
-     * Normalize members: store kind (node/way), role (string) → role dictionary.
-     * As with ways: build dictionaries, then rewrite to final `relations.raw`.
-   * Compute CRC-64s; fsync.
+Contains:
+
+* `abi_version`, `profile_version_car/bike/foot`
+* enumerations for `highway_class`, `surface_class`, bit positions for `class_bits`
+* unit constants and rounding policy
+* sha256 of inputs and produced artifacts
 
 ---
 
-## Determinism & Reproducibility
+## Pipeline
 
-* Sort all items by **OSM id ascending** before final write (nodes implicit via `id_stride`; ways/relations explicit).
-* Dictionaries: **lexicographic UTF-8** order; stable sort.
-* Hash-based collections must use **seeded deterministic hash** (e.g., `ahash` with fixed seed or a simple FNV-1a).
-* All integers are **little-endian** on disk; specify explicitly in writer/reader.
-* Record lengths are implied by counts; no varints in our files (fixed sizes for speed).
+1. **Open dictionaries**
+
+   * Map `ways.raw` and `relations.raw` dicts into memory. Compute SHA-256 for headers to pin.
+
+2. **Per-way processing**
+
+   * Stream `ways.raw` in **way_id order**. For each way:
+
+     * Create `WayInput` using the tag ids (no string allocation).
+     * Call `process_way` three times (car/bike/foot profiles).
+     * Write one record per mode into the respective `way_attrs.<mode>.bin`.
+   * Keep deterministic feature **class_bits** mapping (centralized enum).
+
+3. **Turn relations processing**
+
+   * Stream `relations.raw`. For each relation with `type=restriction`:
+
+     * Build a `TurnInput` from relation tags.
+     * Call `process_turn` **once per mode**.
+     * If `TurnOutput.kind != None`, emit a record to that mode’s `turn_rules.<mode>.bin` for **each** concrete triple `(from, via, to)` implied by the relation:
+
+       * If member roles are: `from`=way, `via`=node, `to`=way → single triple.
+       * If `via` is a **way** (rare): **defer** expansion — store as *(from_way, via_way, to_way)* with `via_node_id = 0`; Step 4 will expand against geometry/topology. Mark such entries with `is_time_dep=2` (special “needs expansion” flag).
+     * For `only_*` restrictions: store as kind `Only` (do **not** explode to bans here).
+     * `:conditional` tags ⇒ set `is_time_dep=1`.
+
+4. **Finalize**
+
+   * Fill headers (counts, SHA-256 of dicts), compute CRC-64s, fsync.
+   * Write `profile_meta.json`.
+
+**Resource bounds**: Streaming; peak RSS **< 1.5 GB**.
 
 ---
 
-## Concurrency
+## Determinism & Rounding (musts)
 
-* Parse blocks sequentially to respect streaming order; inside a block, you may parallelize:
-
-  * DenseNodes: delta decode is sequential; post-decode coord packing can use small threads but keep ordering.
-  * Ways/Relations: parallel tag dictionary insertion using sharded maps; commit to per-shard temporary buffers and merge deterministically.
-* Disk I/O: use **O_DIRECT/O_SYNC** only at final fsync; otherwise buffered I/O with large writes.
+* **Integer speeds**: `base_speed_mmps = round(max(0, min(MAX, kmh * 1000.0 / 3.6)))`.
+* **Penalty units**: deciseconds (ds) as integers; per-km penalty applied later in weight calc.
+* **One-way logic** is mode-specific (e.g., `oneway:bicycle=no` overrides `oneway=yes` for bike).
+* **Access resolution order (example)**: `access:*` → mode-specific (`motor_vehicle`, `bicycle`, `foot`) → `oneway:*` → exceptions (`vehicle=*`, `except=*`) — codify in profile tests.
 
 ---
 
-## Validation (Lock Conditions)
+## Validation & **Lock conditions**
 
-You **only proceed to Step 2** when **all** conditions pass.
+You **cannot proceed** until all pass.
 
 ### A. Structural integrity
 
-1. **Counts**
+1. `way_attrs.<mode>.bin.header.count == ways.raw.count` for all modes.
+2. CRC-64s in all produced files verify; header SHA-256 of dicts match inputs.
+3. `turn_rules.<mode>.bin` sorted by `(via_node_id, from_way_id, to_way_id)` (single pass check).
+4. Two identical runs → identical SHA-256 for each artifact (determinism).
 
-   * `nodes.bin.count` equals number of **present bits** in bitmap.
-   * `ways.raw.count` equals the number of PBF ways encountered.
-   * `relations.raw.count` equals filtered relation count.
-   * **Lock** if counts match and are non-zero for realistic extracts.
+### B. Profile semantics (unit tests baked into CI)
 
-2. **Checksums**
+5. **Golden tag cases** (per mode, minimum set):
 
-   * Re-open each file, recompute CRC-64 sections; must equal footers.
-   * **Lock** if all CRCs match.
+   * `highway=motorway` → access car fwd/rev true/false as per `oneway` rules; base speed derived from `maxspeed` or default table.
+   * `highway=track + tracktype=grade4` (bike) → reduced base speed & possibly access=false if `bicycle=no`.
+   * `highway=footway` (car) → access false.
+   * `bicycle=dismount` (bike) → access true but base speed limited (e.g., foot speed).
+   * `route=ferry` / `motor_vehicle=no` / `bicycle=yes` cases.
+   * `maxspeed=signals` / `maxspeed:type=…` parsing, including `mph`.
+   * `oneway:bicycle=no` overrides `oneway=yes`.
+   * Barrier cases (`barrier=gate`, `access=private`, `destination`).
+   * `*:conditional` flagged `is_time_dep=1`.
 
-3. **Determinism**
+   **Lock** if every expected `WayOutput` field matches the golden table **exactly**.
 
-   * Two runs on identical input produce **identical byte-for-byte files** (compare SHA-256).
-   * **Lock** if SHA-256 is identical.
+6. **Enumeration stability**
 
-### B. Semantics
+   * `highway_class` and `surface_class` enum ids are **stable** (compare to snapshot JSON).
+   * `class_bits` positions match `profile_meta.json`.
 
-4. **Coordinate accuracy**
+7. **Turn restriction correctness**
 
-   * For a random sample (e.g., 1M nodes): reconstruct lat/lon in degrees; compare to PBF-decoded doubles directly; error ≤ **5e-8 deg** (due to fixed-point).
-   * **Lock** if max error ≤ threshold.
+   * For a random sample of ≥10k `type=restriction` relations:
 
-5. **Way continuity**
+     * `process_turn` does **not** return `None` when a legal restriction tag is present.
+     * Roles `from|via|to` captured correctly (member kinds respected).
+     * `only_*` produce kind `Only`; `no_*` produce kind `Ban`.
+     * `except=*` populates `except_mask` bits (via `process_turn`).
+     * `:*:conditional` → `is_time_dep=1`.
 
-   * For a random sample (e.g., 100k ways): verify each consecutive node pair exists in `nodes.bin` presence bitmap.
-   * **Lock** if missing ratio = **0** (or ≤ known OSM anomalies threshold, typically ~0; log if any).
+   **Lock** if zero mismatches.
 
-6. **Relation coverage (restrictions)**
+8. **Coverage parity**
 
-   * Count of `type=restriction` relations in PBF equals count retained in `relations.raw` (including subtypes like `restriction:conditional`, `no_left_turn`, `only_right_turn`, etc.).
-   * **Lock** if counts equal; **and** for a random sample of 10k restrictions, roles `from|via|to` are present and member kinds (node/way) match PBF.
+   * Count of relations with restriction semantics in `relations.raw` equals the number of **distinct** `(rel_id)` that yielded a non-`None` `TurnOutput` in at least one mode (allowing time-dependent flag).
+   * **Lock** if counts match.
 
-7. **Dictionary losslessness**
+### C. Cross-artifact consistency
 
-   * Reconstruct string tags for a 100k sample and compare to PBF source exactly (byte-equal UTF-8).
-   * **Lock** if all equal.
+9. **Access vs classes**
 
-### C. Performance & resource bounds
+   * No way with `highway=motorway` yields `access=true` for foot or bike unless tags explicitly allow.
+   * Ferry set (`route=ferry`) must set `class_bits.ferry` for all modes; access follows tags.
+   * **Lock** if all checks pass on full dataset scan.
 
-8. **Peak RSS** ≤ **2 GB** (measure under cgroup limit).
-9. **Throughput** ≥ **X MB/s** (set target based on disk: e.g., ≥ 150 MB/s on NVMe; not a hard lock, but investigate if below half of target).
-10. **File sizes (planet)** indicative (not strict locks, but alerts):
+10. **Speed bounds**
 
-    * `nodes.bin` ≈ 4–6 GB
-    * `ways.raw` ≈ 6–9 GB
-    * `relations.raw` ≈ 0.1–0.3 GB
+* `base_speed_mmps` must be within `[walk_min, vmax_mode]` hard limits:
 
-### D. Fuzz & robustness
+  * car: ≤ 60 m/s (216 km/h) unless an explicit higher `maxspeed` table allows it, still capped at 80 m/s.
+  * bike: ≤ 16.7 m/s (60 km/h), ≥ 0 if access true.
+  * foot: ≤ 2.8 m/s (10 km/h).
+* **Lock** if all records satisfy bounds.
 
-11. **Fuzzed PBF inputs** (mutated headers, truncated blobs): parser must **fail fast with clear error** and **no panics/UB**; exit code ≠ 0.
-12. **Graceful skip** of unknown tags and extra relation members; no crashes.
+### D. Performance & resources
 
-If **any** fails, fix before proceeding. Keep a **LOCKFILE**:
+11. Peak RSS ≤ **1.5 GB**.
+12. Throughput: ≥ **300k ways/s** and ≥ **50k relations/s** on a modern 16-core box (indicative).
+13. File sizes (indicative; Belgium-scale):
 
-```
-step1.lock.json {
-  input_sha256,
-  nodes_sha256,
-  ways_sha256,
-  relations_sha256,
-  counts: {nodes, ways, relations},
-  bbox: {min_lat, min_lon, max_lat, max_lon},
-  created_at_utc
+* `way_attrs.car.bin` ~ 100–200 MB; bike/foot typically smaller.
+* `turn_rules.<mode>.bin` ~ few–tens of MB.
+
+### E. Failure handling
+
+14. If a relation has `via=way`, mark `is_time_dep=2` and log **exact** rel_id count; do **not** drop it.
+15. Unknown tags: ignored by profiles without panic; return consistent defaults.
+
+**Lockfile (append fields to Step 1’s format):**
+
+```json
+step2.lock.json {
+  "input_sha256": "...", 
+  "ways_sha256": "...",
+  "relations_sha256": "...",
+  "way_attrs": {
+    "car": {"sha256":"...", "count": Nw, "crc64":"..."},
+    "bike":{"sha256":"...", "count": Nw, "crc64":"..."},
+    "foot":{"sha256":"...", "count": Nw, "crc64":"..."}
+  },
+  "turn_rules": {
+    "car":  {"sha256":"...", "count": Nr_car,  "crc64":"..."},
+    "bike": {"sha256":"...", "count": Nr_bike, "crc64":"..."},
+    "foot": {"sha256":"...", "count": Nr_foot, "crc64":"..."}
+  },
+  "profile_meta_sha256": "...",
+  "created_at_utc": "..."
 }
 ```
 
 ---
 
-## CLI Specification (for Step 1)
+## CLI (Step 2)
 
 ```
-osm-build step1-ingest \
-  --input planet.osm.pbf \
+osm-build step2-profile \
+  --ways ways.raw \
+  --rels relations.raw \
+  --nodes nodes.sa \
+  --profile-car   ./profiles/car/target/release/libcar_profile.so \
+  --profile-bike  ./profiles/bike/target/release/libbike_profile.so \
+  --profile-foot  ./profiles/foot/target/release/libfoot_profile.so \
   --outdir /data/osm/2025-10-29 \
-  --scale 10000000 \
-  --threads 8 \
-  --filter-relations restriction \
-  --bbox ""                       # empty = no filter
+  --threads 16
 ```
 
-* Exit code 0 only if **all lock conditions** (A–D) pass and `step1.lock.json` is written.
-* `--verify-only` re-checks CRCs and determinism (no write).
+Exit **0** only if all **lock conditions A–E** pass and `step2.lock.json` is written.
 
 ---
 
-## Error Handling (musts)
+## Notes
 
-* On malformed PBF: print exact block, offset, entity type; do **not** continue.
-* On missing nodes referenced by ways: log first N, count total, **but do not drop the way** (needed later to diagnose data issues).
-* On dictionary overflow (unlikely): escalate to 64-bit ids; fail with actionable message.
+* This step is **pure tag semantics**; no topology yet.
+* Time-dependent restrictions are preserved and flagged (`is_time_dep`), but **not** applied in the static baseline.
+* Enumerations/bit positions are centralized in `profile_meta.json` to keep later steps consistent and drift-free.
 
----
-
-## Metrics to export (for CI)
-
-* `ingest.nodes.total`, `ingest.ways.total`, `ingest.rels.total`
-* `ingest.bytes_read`, `ingest.seconds`, `ingest.rss_peak_bytes`
-* `ingest.determinism.sha256` (strings)
-* `ingest.crc_mismatch` (0/1)
-
----
-
-## Why Step 1 is “locked”
-
-* Files are **immutable, checksummed, deterministic**.
-* They contain **all** raw information required for Step 2 (profiles) without committing to any cost model.
-* Validation ensures **no drift** vs original PBF content, setting a clean foundation for correctness downstream.
-
-If you want next, I’ll specify **Step 2 (Rust profiles → per-mode edge attributes)** with its file formats and lock conditions.
+If you want, I’ll write the **exact Rust structs & full writer/reader code** for `way_attrs.*` and `turn_rules.*` next—copy/paste ready.
 
