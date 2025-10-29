@@ -36,7 +36,7 @@ impl EbgCsrFile {
         let n_nodes_bytes = data.n_nodes.to_le_bytes();
         let n_arcs_bytes = data.n_arcs.to_le_bytes();
         let created_unix_bytes = data.created_unix.to_le_bytes();
-        let padding = [0u8; 8]; // Pad to 64 bytes: 4+2+2+4+8+8+32 = 60, need 4 more
+        let padding = [0u8; 4]; // Pad to 64 bytes: 4+2+2+4+8+8+32 = 60, need 4 more
 
         writer.write_all(&magic_bytes)?;
         writer.write_all(&version_bytes)?;
