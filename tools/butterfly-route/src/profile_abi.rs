@@ -10,6 +10,10 @@ pub struct WayInput<'a> {
     pub kv_keys: &'a [u32],
     /// Tag value IDs from ways.raw value dictionary (parallel to kv_keys)
     pub kv_vals: &'a [u32],
+    /// Optional key dictionary for string lookup
+    pub key_dict: Option<&'a std::collections::HashMap<u32, String>>,
+    /// Optional value dictionary for string lookup
+    pub val_dict: Option<&'a std::collections::HashMap<u32, String>>,
 }
 
 #[repr(C)]
@@ -58,6 +62,10 @@ pub struct TurnInput<'a> {
     pub tags_keys: &'a [u32],
     /// Relation tag value IDs from relations.raw value dictionary
     pub tags_vals: &'a [u32],
+    /// Optional key dictionary for string lookup
+    pub key_dict: Option<&'a std::collections::HashMap<u32, String>>,
+    /// Optional value dictionary for string lookup
+    pub val_dict: Option<&'a std::collections::HashMap<u32, String>>,
 }
 
 #[repr(C)]

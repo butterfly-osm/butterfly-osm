@@ -150,6 +150,8 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
         let input = WayInput {
             kv_keys: &keys,
             kv_vals: &vals,
+            key_dict: Some(&key_dict),
+            val_dict: Some(&val_dict),
         };
 
         // Process through each profile
@@ -233,6 +235,8 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
         let input = TurnInput {
             tags_keys: &keys,
             tags_vals: &vals,
+            key_dict: Some(&rel_key_dict),
+            val_dict: Some(&rel_val_dict),
         };
 
         // Extract via_node, from_way, to_way from members
@@ -281,6 +285,11 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
 
     println!("  ✓ Extracted turn restrictions: car={}, bike={}, foot={}",
         turn_rules_car.len(), turn_rules_bike.len(), turn_rules_foot.len());
+
+    // Sort turn_rules by (via_node_id, from_way_id, to_way_id)
+    turn_rules_car.sort_unstable();
+    turn_rules_bike.sort_unstable();
+    turn_rules_foot.sort_unstable();
 
     // Write turn_rules files
     println!();
