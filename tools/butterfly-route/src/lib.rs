@@ -4,6 +4,7 @@
 //! Step 2: Modal Profiling - Per-mode attributes and turn restrictions
 //! Step 3: Node-Based Graph - Mode-agnostic road/ferry topology
 //! Step 4: Edge-Based Graph - Turn-expanded graph with mode masks
+//! Step 5: Per-mode weights & masks - Mode-specific traversal costs
 
 pub mod formats;
 pub mod ingest;
@@ -14,6 +15,7 @@ pub mod profiles;
 pub mod profile;
 pub mod nbg;
 pub mod ebg;
+pub mod step5;
 
 pub use formats::{WaysFile, RelationsFile};
 pub use validate::{LockFile, Step2LockFile};

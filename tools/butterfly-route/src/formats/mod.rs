@@ -21,6 +21,11 @@ pub mod ebg_nodes;
 pub mod ebg_csr;
 pub mod ebg_turn_table;
 
+// Step 5 formats
+pub mod mod_weights;
+pub mod mod_turns;
+pub mod mod_mask;
+
 pub use ways::{Way, WaysFile};
 pub use relations::{Member, MemberKind, Relation, RelationsFile};
 pub use way_attrs::WayAttr;
@@ -31,3 +36,6 @@ pub use nbg_node_map::{NbgNodeMap, NbgNodeMapFile, NodeMapping};
 pub use ebg_nodes::{EbgNode, EbgNodes, EbgNodesFile};
 pub use ebg_csr::{EbgCsr, EbgCsrFile};
 pub use ebg_turn_table::{TurnEntry, TurnKind, TurnTable, TurnTableFile};
+pub use mod_weights::ModWeights;
+pub use mod_turns::ModTurns;
+pub use mod_mask::ModMask;
