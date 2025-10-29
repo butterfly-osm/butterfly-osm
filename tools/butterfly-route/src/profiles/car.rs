@@ -13,7 +13,7 @@ impl Profile for CarProfile {
     }
 
     fn process_way(input: WayInput) -> WayOutput {
-        let tags = TagLookup::new(input.kv_keys, input.kv_vals);
+        let tags = TagLookup::from_input(input.kv_keys, input.kv_vals, input.key_dict, input.val_dict);
 
         // Default: no access
         let mut output = WayOutput::default();
@@ -149,7 +149,7 @@ impl Profile for CarProfile {
     }
 
     fn process_turn(input: TurnInput) -> TurnOutput {
-        let tags = TagLookup::new(input.tags_keys, input.tags_vals);
+        let tags = TagLookup::from_input(input.tags_keys, input.tags_vals, input.key_dict, input.val_dict);
 
         let mut output = TurnOutput::default();
 

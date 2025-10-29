@@ -1,13 +1,16 @@
-///! Validation and lock file generation for Step 1 and Step 2
+///! Validation and lock file generation for Step 1, Step 2, and Step 3
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
 use crate::formats::{RelationsFile, WaysFile};
+
+pub mod step3;
+pub use step3::{Step3LockFile, ComponentStats, verify_step3_lock_conditions};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BBox {
@@ -623,7 +626,7 @@ fn verify_turn_rules_sorted(path: &Path) -> Result<()> {
 
     let mut prev_triple = (0i64, 0i64, 0i64);
     for _ in 0..count {
-        let mut record = vec![0u8; 32];
+        let mut record = vec![0u8; 36];  // Record size: i64*3 + u8 + u32 + u8 + [6]u8 padding
         file.read_exact(&mut record)?;
 
         let via_node_id = i64::from_le_bytes([
@@ -640,7 +643,7 @@ fn verify_turn_rules_sorted(path: &Path) -> Result<()> {
         ]);
 
         let triple = (via_node_id, from_way_id, to_way_id);
-        if triple <= prev_triple && prev_triple != (0, 0, 0) {
+        if triple < prev_triple && prev_triple != (0, 0, 0) {
             anyhow::bail!(
                 "{}: turn_rules not sorted: {:?} follows {:?}",
                 path.display(),
@@ -668,15 +671,17 @@ fn verify_access_class_consistency(path: &Path) -> Result<()> {
         let mut record = vec![0u8; 32];
         file.read_exact(&mut record)?;
 
-        // Skip records with no access
-        let access_fwd = record[8] != 0;
-        let access_rev = record[9] != 0;
+        // Record format: way_id(8) + flags(4) + base_speed(4) + highway_class(2) + surface_class(2) + penalties(6) + padding(6)
+        // Access bits are in flags field (bits 0 and 1)
+        let flags = u32::from_le_bytes([record[8], record[9], record[10], record[11]]);
+        let access_fwd = (flags & (1 << 0)) != 0;
+        let access_rev = (flags & (1 << 1)) != 0;
         if !access_fwd && !access_rev {
             continue;
         }
 
-        // Check that highway_class is set
-        let highway_class = u16::from_le_bytes([record[14], record[15]]);
+        // Check that highway_class is set (at offset 16-17)
+        let highway_class = u16::from_le_bytes([record[16], record[17]]);
         if highway_class == 0 {
             anyhow::bail!(
                 "{}: access granted but highway_class=0",
@@ -739,7 +744,7 @@ fn verify_golden_tag_cases() -> Result<()> {
     // Test case 1: Empty tags should produce no access
     let keys: Vec<u32> = vec![];
     let vals: Vec<u32> = vec![];
-    let input = WayInput { kv_keys: &keys, kv_vals: &vals };
+    let input = WayInput { kv_keys: &keys, kv_vals: &vals, key_dict: None, val_dict: None };
 
     let car_output = CarProfile::process_way(input);
     let bike_output = BikeProfile::process_way(input);

@@ -24,6 +24,20 @@ impl<'a> TagLookup<'a> {
         }
     }
 
+    pub fn from_input(
+        keys: &'a [u32],
+        vals: &'a [u32],
+        key_dict: Option<&'a HashMap<u32, String>>,
+        val_dict: Option<&'a HashMap<u32, String>>,
+    ) -> Self {
+        Self {
+            keys,
+            vals,
+            key_dict,
+            val_dict,
+        }
+    }
+
     pub fn with_dicts(
         keys: &'a [u32],
         vals: &'a [u32],
