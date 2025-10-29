@@ -1,179 +1,183 @@
-Great—here’s **Step 3: Node-based graph (NBG)** fully specified, with artifacts, build rules, and **lock conditions**.
+Awesome—let’s lock down **Step 4: Edge-Based Graph (EBG, turn-expanded)** so it’s **shared by all modes**, compact, and provably correct.
 
 ---
 
-# Step 3 — Node-based graph (topology backbone)
+# Step 4 — Turn-expanded, mode-agnostic core
 
 ## Objective
 
-Build a **mode-agnostic** road/ferry topology that preserves true intersections and geometry, to drive **ordering/partitioning** later.
-No weights yet—**length only**.
+From the **node-based graph (NBG)** + Step-2 attributes, build a **single** edge-based topology that enumerates all legal **turn transitions** at intersections.
+
+* **Nodes (state):** directed NBG edges (`u→v`).
+* **Arcs (transition):** legal turns `(incoming edge-state u→v) → (v→w)`.
+* Mode specificity is encoded as **bitmasks**; later steps apply per-mode weights/penalties.
 
 ---
 
 ## Inputs
 
-* `nodes.sa` / `nodes.si` (Step 1) — OSM node id → (lat, lon).
-* `ways.raw` (Step 1) — ways with node sequences + tag dicts.
-* `way_attrs.{car,bike,foot}.bin` (Step 2) — to decide if a way is relevant (accessible by **any** mode).
-* `profile_meta.json` (Step 2) — class bit positions, enums.
+* `nbg.csr`, `nbg.geo`, `nbg.node_map` (Step 3).
+* `ways.raw` (for way ids along geometry chunks if needed).
+* `way_attrs.{car,bike,foot}.bin` (Step 2).
+* `turn_rules.{car,bike,foot}.bin` (Step 2) — includes `Ban` / `Only` / `Penalty` (time-dep flagged).
 
 ---
 
-## Inclusion rules (what becomes topology)
+## Effective turn rules (unified view)
 
-A way is **in** the NBG if **any** mode has `access_fwd || access_rev` and it is a linear road/ferry segment:
+Before expansion, build a **canonical turn rule index**:
 
-* Include `highway=*` ways (except obvious non-linear/areas):
+1. **Expand `via=way`** restrictions (those flagged `is_time_dep=2`):
 
-  * **Exclude**: `area=yes`, `highway=pedestrian + area=yes`, `highway=platform`, `highway=rest_area` (unless it has linear geometry and any access).
-* Include `route=ferry` ways (linear).
-* Exclude **non-navigable** geometries: `railway=*` (unless explicitly allowed by any mode), `aeroway=*`, `waterway=*` (unless ferry).
-* Multi-polygon/area relations are ignored here.
+   * Use NBG topology: find all nodes that lie on the `via` way; emit triples `(from_way, via_node, to_way)`.
+   * This may create many triples—dedupe them.
 
-> Mode-agnostic means: union of car/bike/foot access from Step 2 to decide inclusion; **but** the graph remains **undirected** for now.
+2. **Merge per-mode rules** into a single **canonical table** keyed by `(via_node_id, from_way_id, to_way_id)`:
 
----
+   * `mode_mask` (3 bits: car/bike/foot).
+   * `kind` (Ban, Only, Penalty).
+   * `penalty_ds[3]` (u32 each) — **store** but not applied here.
+   * `has_time_dep` (true if any contributing relation was time-dependent).
 
-## Topology rules (where to cut)
+3. For **ONLY turns** at `(via, from_way)`, compute the **allowed to_way set**; other to_ways at that `(via, from_way)` become **implicit bans** for relevant modes (recorded as `Ban` in the table to simplify the builder).
 
-We **split** ways into NBG edges between **decision nodes**:
-
-* **Ends of ways.**
-* **OSM intersections**: a node shared by ≥2 included ways **at the same layer** (see below).
-* **Tags forcing a split** (to stabilize geometry & later expansion):
-
-  * `junction=roundabout` entry/exit nodes.
-  * `bridge=*`, `tunnel=*`, `ford=yes` transition boundaries.
-  * `route=ferry` endpoints.
-  * **Layer changes**: split at first node where `layer` value changes along a way.
-  * **Barriers**: `barrier=*` nodes if any mode allows passing only conditionally later (we mark but keep topology continuous here).
-
-**Layer/level crossing**
-Only connect ways at a shared node if their effective `layer` is equal (default 0).
-Bridges/tunnels that **share a node** with surface links but different `layer` **do not** intersect.
+This yields a **mode-aware, static, turn rule table** we can query in O(log k) per intersection.
 
 ---
 
-## Geometry & metrics
+## Graph objects & on-disk artifacts
 
-* Coordinate unit: fixed-point 1e-7 deg from `nodes.sa`.
-* Length per segment: **geodesic chord** in meters using **haversine** on WGS84 sphere (R=6,371,008.8 m), summed along the polyline between decision nodes.
-* Store **u32 millimeters** (`length_mm`), saturated at `u32::MAX`.
-* Optional `bearing_deci_deg` (0–3599) from first to last vertex of the collapsed segment (for snapping heuristics later).
+### A) EBG node table (directed NBG edges)
 
----
-
-## Artifacts (all little-endian, mmap-friendly)
-
-### 1) `nbg.csr`
-
-Compact CSR for **undirected** topology over **compacted graph nodes**.
+Each NBG undirected edge `(u—v)` becomes **two** EBG nodes: `u→v` and `v→u`.
 
 ```
+File: ebg.nodes  (little-endian, mmap-able; fixed size per record)
 Header (64B)
-  magic        u32 = 0x4E424743   // "NBGC"
+  magic        u32 = 0x4542474E   // "EBGN"
   version      u16 = 1
   reserved     u16 = 0
-  n_nodes      u32
-  n_edges_und  u64                 // number of undirected edges
+  n_nodes      u32                 // = 2 * nbg.geo.n_edges_und
   created_unix u64
-  inputs_sha   [32]u8              // hash of nodes.sa + ways.raw + way_attrs.* + meta
-Body
-  offsets      u64[n_nodes + 1]    // adjacency offsets into heads[]
-  heads        u32[2 * n_edges_und]// neighbor node ids (each undirected becomes two arcs)
-  edge_idx     u64[2 * n_edges_und]// index into nbg.geo for each arc
+  inputs_sha   [32]u8
+Body (n_nodes records; id = index)
+  u32  tail_nbg      // compact NBG node id
+  u32  head_nbg      // compact NBG node id
+  u32  geom_idx      // index into nbg.geo record
+  u32  length_mm     // copy of nbg.geo.length_mm (same both directions)
+  u32  class_bits    // inherited (ferry, bridge, tunnel, roundabout, ford, etc.)
+  u32  primary_way   // lower 32 bits of first_osm_way_id (debug; full i64 optional in side table)
 Footer
-  body_crc64   u64
-  file_crc64   u64
+  body_crc64  u64
+  file_crc64  u64
 ```
 
-* Node ids are **dense** `0..n_nodes-1`.
-* `edge_idx` points into `nbg.geo` records (same for both directions).
+> `geom_idx` here satisfies your requested **geom_idx[]**.
 
-### 2) `nbg.geo`
-
-Per **undirected** edge geometry/metrics.
+### B) EBG adjacency (CSR over EBG nodes)
 
 ```
+File: ebg.csr
 Header (64B)
-  magic        u32 = 0x4E424747   // "NBGG"
+  magic        u32 = 0x45424743   // "EBGC"
   version      u16 = 1
   reserved     u16 = 0
-  n_edges_und  u64
-  poly_bytes   u64                 // size of poly blob section
-Body (n_edges_und records)
-  u32  u_node                     // tail compact node id (small copy for debugging)
-  u32  v_node                     // head compact node id
-  u32  length_mm                  // total length (mm)
-  u16  bearing_deci_deg           // optional; 0..3599; 65535 if NA
-  u16  n_poly_pts                 // number of intermediate vertices INCLUDING endpoints
-  u64  poly_off                   // byte offset into poly blob
-  i64  first_osm_way_id           // primary way id contributing
-  u32  flags                      // bit0=ferry, bit1=bridge, bit2=tunnel, bit3=roundabout, bit4=ford, bit5=layer_boundary, ...
-Poly blob (append-only)
-  For each record:
-    i32 lat_fxp[n_poly_pts]       // 1e-7 deg
-    i32 lon_fxp[n_poly_pts]
+  n_nodes      u32                 // must match ebg.nodes
+  n_arcs       u64                 // number of turn transitions
+  created_unix u64
+  inputs_sha   [32]u8
+Body
+  offsets      u64[n_nodes + 1]    // CSR
+  heads        u32[n_arcs]         // destination EBG node id
+  turn_idx     u32[n_arcs]         // index into turn_table (see C)
 Footer
   body_crc64   u64
   file_crc64   u64
 ```
 
-### 3) `nbg.node_map`
+> This realizes your **turn_idx[]** alongside CSR.
 
-Mapping between **OSM node ids** kept in NBG and **compact node ids**.
+### C) Deduplicated turn table (mode mask + semantics)
 
 ```
-Header
-  magic        u32 = 0x4E42474D   // "NBGM"
+File: ebg.turn_table
+Header (40B)
+  magic        u32 = 0x45424754   // "EBGT"
   version      u16 = 1
   reserved     u16 = 0
-  count        u64                // number of kept nodes
-Body (sorted by OSM node id)
-  i64 osm_node_id
-  u32 compact_id
+  n_entries    u32
+  inputs_sha   [32]u8
+Body (n_entries records)
+  u8   mode_mask          // bit0=car, bit1=bike, bit2=foot
+  u8   kind               // 1=Ban, 2=Only, 3=Penalty, 0=None (rare; should not be referenced)
+  u8   has_time_dep       // 0/1
+  u8   reserved
+  u32  penalty_ds_car     // 0 if N/A
+  u32  penalty_ds_bike
+  u32  penalty_ds_foot
+  u32  attrs_idx          // future use (e.g., turn classes); 0 for now
 Footer
-  body_crc64   u64
-  file_crc64   u64
+  body_crc64  u64
+  file_crc64  u64
 ```
 
-> Minimal extra file, but **critical** downstream (edge-based expansion & snapping). Size ≈ 12 bytes/kept node.
+> Most arcs will map to a small set of table entries; expect **high reuse**.
 
 ---
 
-## Build algorithm (streaming, low-RAM)
+## Build algorithm (streamed, low-RAM)
 
-1. **Mark included ways**
+1. **Enumerate EBG nodes**
 
-   * Map `way_attrs.*`. A way is included if **any** mode has access in either direction.
-2. **Collect candidate nodes**
+   * For each `nbg.geo` record `(u,v, geom_idx, length, class_bits)`:
 
-   * First pass over included ways: count occurrences of each OSM node id (using external sort buckets to stay <2 GB).
-   * Mark decision nodes:
+     * Emit EBG node `idA` = `u→v`, `idB` = `v→u` into `ebg.nodes`.
 
-     * endpoints, shared nodes (count ≥ 2 within the **same layer** bucket), and tag-driven split points (see rules).
-3. **Compact node ids**
+2. **Pre-index adjacency candidates**
 
-   * Build `nbg.node_map` with only decision nodes; assign dense ids 0..N-1 (external sort by OSM node id, then sequential assign).
-4. **Emit edges**
+   * For each NBG node `x`, collect incoming EBG nodes (`?→x`) and outgoing EBG nodes (`x→?`).
+   * These lists are derived from NBG CSR; keep them in **spillable** per-node buffers.
 
-   * For each included way, walk its node list:
+3. **Apply **turn rules** to produce transitions**
+   For each intersection node `x`:
 
-     * Track current segment vertices until reaching the next **decision node**; if both endpoints are decision nodes, create one **undirected** edge:
+   * For each incoming `a = u→x`:
 
-       * Compute length via haversine summed across segment vertices.
-       * Write a `nbg.geo` record (and append vertices to the poly blob).
-       * Add two arcs into in-memory adjacency write buffers: `(u→v)` and `(v→u)` with `edge_idx`.
-     * If a segment collapses to <2 distinct coordinates or zero length, **skip** (log counter).
-5. **Assemble CSR**
+     * For each outgoing `b = x→w` with `w != u` (U-turn policy configurable later):
 
-   * Collect per-node adjacency buffers; sort neighbors by id; compute `offsets[]` and write `heads[]` + `edge_idx[]`.
-6. **Finalize**
+       * Determine **way ids** of `a` and `b` from `nbg.geo[geom_idx].first_osm_way_id` (or way set if needed).
+       * Lookup canonical rule by key `(x_as_osm_node_id, from_way_id, to_way_id)`:
 
-   * Fill headers, compute CRC-64, write `inputs_sha` as SHA-256 of all inputs (Step 1+2 artifacts), fsync.
+         * Combine explicit **Ban** / **Only** / **Penalty** rules; convert `Only` into **allowed set**; if `b` not in allowed set ⇒ treat as **Ban** for the relevant modes.
+         * Build a **mode_mask** that is allowed (start with all three modes; clear bits that are banned at this turn).
+         * Record any **per-mode penalty** (for later weights).
+       * If `mode_mask == 0` ⇒ **skip** emitting this arc (no mode can use it).
+       * Else:
 
-**Memory target:** use chunked/partitioned external sorts and per-node spill files; keep **RSS ≤ 2–3 GB** for planet.
+         * Get / insert a **turn_table** entry for `(mode_mask, kind/penalties, has_time_dep)` → get `t_idx`.
+         * Append `heads.push(b_id)` and `turn_idx.push(t_idx)` to adjacency for `a_id`.
+
+   **Notes**
+
+   * If no explicit rule applies, the arc is **allowed** with `mode_mask = union(access on a & b by mode)`.
+     (Don’t allow a transition for a mode that cannot traverse either approach or exit segment in that mode.)
+   * **U-turns**: respect global policy; often **forbidden for car**, allowed for foot, sometimes for bike. Encode via default rule or via special `turn_table` entry.
+
+4. **Materialize CSR**
+
+   * For EBG node ids in ascending order, flush their adjacency buffers; fill `offsets[]`, then concatenate `heads[]` and `turn_idx[]`.
+   * Compute CRCs; fsync.
+
+**Peak RSS target:** **≤ 6–8 GB** (planet), using chunked per-node adjacency and on-disk spill.
+
+---
+
+## What about `classes[]`?
+
+You asked for `classes[]` (motorway, residential, path, etc.).
+
+* We store **per-EBG node** `class_bits` in `ebg.nodes` (inherited from `nbg.geo` & Step-2 way classes).
+* If you also want **per-arc** class flags (rare), keep a small `arc_flags[]` parallel to `heads[]` (not necessary for core routing).
 
 ---
 
@@ -181,110 +185,97 @@ Footer
 
 You cannot proceed until **all** pass.
 
-### A. Structural
+### A. Structural integrity
 
-1. **Determinism**: Two runs with same inputs produce identical SHA-256 for `nbg.csr`, `nbg.geo`, `nbg.node_map`.
-2. **Counts**:
+1. **Counts match**:
 
-   * `nbg.csr.n_nodes` equals `nbg.node_map.count`.
-   * `2 * n_edges_und == len(heads) == len(edge_idx)`.
-3. **CSR integrity**:
+   * `ebg.nodes.n_nodes == 2 * nbg.geo.n_edges_und`.
+   * `ebg.csr.n_nodes == ebg.nodes.n_nodes`.
+   * `len(heads) == len(turn_idx) == ebg.csr.n_arcs`.
+2. **CSR integrity**:
 
-   * `offsets[0]==0`, `offsets[i] ≤ offsets[i+1]`, `offsets[n_nodes]==len(heads)`.
+   * `offsets[0]==0`, `offsets[i] ≤ offsets[i+1]`, `offsets[n]==len(heads)`.
    * All `heads[k] < n_nodes`.
-4. **Geo integrity**:
+3. **Determinism**: identical inputs ⇒ identical SHA-256 for `ebg.nodes`, `ebg.csr`, `ebg.turn_table`.
 
-   * `nbg.geo.n_edges_und` equals the number of unique undirected edges referenced by `edge_idx`.
-   * Every `poly_off + sizeof(record_poly)` is within `poly_bytes`.
+### B. Topology semantics (turn expansion)
 
-### B. Topology semantics
+4. **Turn bans honored (hard lock)**:
 
-5. **Layer correctness**: For every shared OSM node with **different** effective `layer`, ensure **no** adjacency between the corresponding compact nodes (only nodes with same layer connect).
-6. **Symmetry**: For each undirected edge `(u,v)`, both arcs appear: `u→v` and `v→u` referencing the **same** `edge_idx`.
-7. **No self-loops unless legitimate**:
+   * Sample **10,000** banned triples from the canonical rule table (across all modes). For each, find all EBG arcs at that `(via, from_way)` and assert **no arc** exists to the banned `to_way` **for any mode whose bit is banned**.
+   * If any exists ⇒ **fail** with diagnostics (via node, from/to way ids, ebg node ids).
+5. **ONLY rules honored**:
 
-   * Count arcs with `u==v`. Should be **0** except for degenerate closed geometries you explicitly allowed (target 0).
-8. **Parallel edges allowed** (dual carriageways, ramps). No de-dup constraint.
+   * For **1,000** random `(via, from_way)` pairs that have at least one `Only` rule per mode, assert that **exactly and only** the allowed `to_way` arcs exist for that mode; others are absent.
+6. **Mode propagation**:
 
-### C. Metric correctness
+   * For **100k** random arcs, check: a mode bit is set **iff** that mode has access on **both** EBG nodes’ base segments **and** the turn rule does not ban it. (Derive mode access from Step-2 `way_attrs` on contributing ways.)
+7. **No stray arcs**:
 
-9. **Length plausibility**:
+   * There must be no arc `(a→b)` where `tail(a).head_nbg != head(b).tail_nbg`. (All transitions meet at the same NBG node.)
 
-   * For all edges: `1 m ≤ length_mm ≤ 500 km` (saturation allowed only for pathological ferries; log).
-10. **Geometry sum parity** (**lock test**):
+### C. Roundabouts & complex junctions
 
-* Sample **1,000 random vertex pairs** `(u,v)` that are adjacent in NBG (i.e., an edge).
-* Recompute length by summing haversine over the stored polyline vertices; must equal `length_mm` within **±1 m**.
+8. **Hand-picked test set parity** (lock):
 
-11. **Way sum parity** (**lock test**):
+   * Maintain a curated list (e.g., 200 intersections worldwide) covering: roundabouts, multi-leg with slips, stacked junction layers, ferry terminals, bike-only connectors.
+   * For each, compare EBG turn fan-out with **OSRM** on the same data (allowed/forbidden per mode). Must match **exactly** (ignoring time-dependent rules).
+   * Any mismatch ⇒ fail with a diff (incoming/outgoing pairs by way id per mode).
 
-* Sample **1,000 random OSM ways** used to generate edges.
-* For each, concatenate the lengths of its emitted NBG segments; must equal the haversine sum along the original way (between decision nodes) within **±1 m** total.
+### D. Geometry & indices
 
-### D. End-to-end reachability sanity
+9. **Geom indices**: For 10k random EBG nodes, `nbg.geo[geom_idx]` must connect `tail_nbg` ↔ `head_nbg` and `length_mm` must equal that record’s length.
+10. **Class bits stability**: For 100k random EBG nodes, `class_bits` must be the union of the contributing `nbg.geo.flags` and consistent with Step-2 `way_attrs` (`ferry` always set for ferry, etc.).
 
-12. **Dijkstra parity on length** (**lock test**):
+### E. Reachability sanity (per mode, ignoring weights)
 
-* Sample **1,000 random compact node pairs** `(s,t)` in the same connected component.
-* Run Dijkstra **on NBG (edge lengths)**; then reconstruct the path’s polyline length by summing `nbg.geo` polylines along the returned edges.
-* The two totals must match within **±1 m**.
+11. **Graph connectivity mirrors access**:
 
-13. **Component stats**:
+* For each mode, build a **reachability filter**: keep EBG nodes whose base segments are accessible in that mode.
+* On this filtered node set, arcs with `mode_mask` containing the mode must keep components connected exactly as expected:
 
-* Report number and size distribution of connected components; largest contains most road km. Thresholds aren’t locks, but **drastic deviations** from previous build block the step.
+  * For 1,000 random pairs in the largest component, BFS in EBG succeeds.
+  * If an **Only** rule creates a dead end that OSRM also yields (validate against OSRM on the sample), it’s fine. Any drift ⇒ fail.
 
-### E. Performance & resource bounds
+### F. Performance & resource bounds
 
-14. **Peak RSS** ≤ **3 GB** (planet target; enforce via cgroup).
-15. **Throughput**: ≥ **2M edges/min** emission (indicative; alert if <50% of baseline).
-16. **File sizes (indicative)**:
-
-* `nbg.csr`: ~ (8*(n_nodes+1) + 12*2*n_edges_und) bytes.
-* `nbg.geo`: ~ (24*n_edges_und + poly_bytes). On planet, expect a few GB total; Belgium: hundreds of MB.
-
-### F. Failure handling
-
-17. **Missing coordinates** for nodes referenced by included ways: count and **exclude** those segments; if >0.01% of segments, **fail** with diagnostics (list first 1,000 node ids).
-18. **Zero/NaN lengths**: any NaN/Inf detected in length computation → **fail** with the offending edge id and coordinates.
+12. **Peak RSS** ≤ **8 GB** during build (planet).
+13. **Arc count** sanity: `n_arcs` within expected band (empirically: ~8–20 per EBG node on average, network-dependent). Huge deviations block the step.
+14. **Build time** indicative threshold recorded; alert if regress >2× baseline.
 
 **Lockfile**
 
 ```json
-step3.lock.json {
+step4.lock.json {
   "inputs_sha256": "...",
-  "nbg_csr_sha256": "...",
-  "nbg_geo_sha256": "...",
-  "nbg_node_map_sha256": "...",
+  "ebg_nodes_sha256": "...",
+  "ebg_csr_sha256": "...",
+  "ebg_turn_table_sha256": "...",
   "n_nodes": N,
-  "n_edges_und": M,
-  "components": {"count": C, "largest_nodes": Ln, "largest_edges": Le},
+  "n_arcs": M,
   "rss_peak_bytes": ...,
+  "ban_checks": {"sampled":10000,"violations":0},
+  "only_checks": {"sampled":1000,"violations":0},
   "created_at_utc": "..."
 }
 ```
 
 ---
 
-## CLI
+## U-turn policy (set once; tested)
 
-```
-osm-build step3-nbg \
-  --nodes nodes.sa \
-  --ways ways.raw \
-  --way-attrs-car  way_attrs.car.bin \
-  --way-attrs-bike way_attrs.bike.bin \
-  --way-attrs-foot way_attrs.foot.bin \
-  --outdir /data/osm/2025-10-29 \
-  --threads 16
-```
-
-Exit **0** only if all **lock conditions** above pass and `step3.lock.json` is written.
+* Default: **car**: forbid at ordinary nodes; allow at dead-ends; **bike/foot**: allow unless banned.
+* Implement via a small policy table resolved **before** rule lookup (so you can override per mode).
+* Encode as special `turn_table` entries (so arc generation is uniform).
 
 ---
 
-## Notes
+## Why this satisfies your goals
 
-* NBG is **undirected** and **mode-agnostic** by design; directionality and turn costs arrive when we build the **edge-based graph** (Step 4).
-* Keeping `nbg.node_map` now avoids expensive lookups later and guarantees **consistent IDs** across steps.
-* Strict **±1 m** tolerances ensure geometry and length math are locked before relying on NBG for ordering/partitioning.
+* **Single EBG** shared by all modes → minimal memory.
+* **SoA + CSR** → compact, cache-friendly.
+* **Turn bans & ONLY** applied at build → no drift later; isochrones and routes will respect restrictions identically.
+* **Mode masks** keep it mode-agnostic now, mode-specific later (weights/customization).
+
+If you want, I can follow with the **exact Rust record layouts + full builder outline** (copy-paste), or move on to Step 5 (per-mode weight layers & fast customization) with lock conditions.
 

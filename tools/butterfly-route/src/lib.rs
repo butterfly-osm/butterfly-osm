@@ -3,6 +3,7 @@
 //! Step 1: PBF Ingest - Convert OSM PBF to immutable, deterministic artifacts
 //! Step 2: Modal Profiling - Per-mode attributes and turn restrictions
 //! Step 3: Node-Based Graph - Mode-agnostic road/ferry topology
+//! Step 4: Edge-Based Graph - Turn-expanded graph with mode masks
 
 pub mod formats;
 pub mod ingest;
@@ -12,6 +13,7 @@ pub mod profile_abi;
 pub mod profiles;
 pub mod profile;
 pub mod nbg;
+pub mod ebg;
 
 pub use formats::{WaysFile, RelationsFile};
 pub use validate::{LockFile, Step2LockFile};

@@ -8,6 +8,7 @@ use crate::ingest::{run_ingest, IngestConfig};
 use crate::validate::{verify_lock_conditions, Counts, LockFile};
 use crate::profile::{run_profiling, ProfileConfig};
 use crate::nbg::{build_nbg, NbgConfig};
+use crate::ebg::{build_ebg, EbgConfig};
 
 #[derive(Parser)]
 #[command(name = "butterfly-route")]
@@ -76,6 +77,49 @@ pub enum Commands {
         foot: PathBuf,
 
         /// Output directory for nbg.csr, nbg.geo, nbg.node_map
+        #[arg(short, long)]
+        outdir: PathBuf,
+    },
+
+    /// Step 4: Build edge-based graph (EBG) with turn expansion
+    Step4Ebg {
+        /// Path to nbg.csr from Step 3
+        #[arg(long)]
+        nbg_csr: PathBuf,
+
+        /// Path to nbg.geo from Step 3
+        #[arg(long)]
+        nbg_geo: PathBuf,
+
+        /// Path to nbg.node_map from Step 3
+        #[arg(long)]
+        nbg_node_map: PathBuf,
+
+        /// Path to way_attrs.car.bin from Step 2
+        #[arg(long)]
+        way_attrs_car: PathBuf,
+
+        /// Path to way_attrs.bike.bin from Step 2
+        #[arg(long)]
+        way_attrs_bike: PathBuf,
+
+        /// Path to way_attrs.foot.bin from Step 2
+        #[arg(long)]
+        way_attrs_foot: PathBuf,
+
+        /// Path to turn_rules.car.bin from Step 2
+        #[arg(long)]
+        turn_rules_car: PathBuf,
+
+        /// Path to turn_rules.bike.bin from Step 2
+        #[arg(long)]
+        turn_rules_bike: PathBuf,
+
+        /// Path to turn_rules.foot.bin from Step 2
+        #[arg(long)]
+        turn_rules_foot: PathBuf,
+
+        /// Output directory for ebg.nodes, ebg.csr, ebg.turn_table
         #[arg(short, long)]
         outdir: PathBuf,
     },
@@ -206,6 +250,37 @@ impl Cli {
                 println!();
                 println!("🎉 Success! All lock conditions passed.");
                 println!("📋 Lock file: {}", lock_path.display());
+
+                Ok(())
+            }
+            Commands::Step4Ebg {
+                nbg_csr,
+                nbg_geo,
+                nbg_node_map,
+                way_attrs_car,
+                way_attrs_bike,
+                way_attrs_foot,
+                turn_rules_car,
+                turn_rules_bike,
+                turn_rules_foot,
+                outdir,
+            } => {
+                let config = EbgConfig {
+                    nbg_csr_path: nbg_csr,
+                    nbg_geo_path: nbg_geo,
+                    nbg_node_map_path: nbg_node_map,
+                    way_attrs_car_path: way_attrs_car,
+                    way_attrs_bike_path: way_attrs_bike,
+                    way_attrs_foot_path: way_attrs_foot,
+                    turn_rules_car_path: turn_rules_car,
+                    turn_rules_bike_path: turn_rules_bike,
+                    turn_rules_foot_path: turn_rules_foot,
+                    outdir,
+                };
+
+                let _result = build_ebg(config)?;
+
+                // TODO: Add validation and lock file generation
 
                 Ok(())
             }
