@@ -116,7 +116,7 @@ impl TurnTableFile {
     /// Read turn table from file
     pub fn read<P: AsRef<Path>>(path: P) -> Result<TurnTable> {
         let mut reader = BufReader::new(File::open(path)?);
-        let mut header = vec![0u8; 40];
+        let mut header = vec![0u8; 44]; // magic(4) + version(2) + reserved(2) + n_entries(4) + inputs_sha(32)
         reader.read_exact(&mut header)?;
 
         let n_entries = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);

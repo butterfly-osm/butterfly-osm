@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use crate::ingest::{run_ingest, IngestConfig};
-use crate::validate::{verify_lock_conditions, Counts, LockFile};
+use crate::validate::{verify_lock_conditions, verify_step3_lock_conditions, validate_step4, Counts, LockFile};
 use crate::profile::{run_profiling, ProfileConfig};
 use crate::nbg::{build_nbg, NbgConfig};
 use crate::ebg::{build_ebg, EbgConfig};
@@ -266,21 +266,41 @@ impl Cli {
                 outdir,
             } => {
                 let config = EbgConfig {
-                    nbg_csr_path: nbg_csr,
-                    nbg_geo_path: nbg_geo,
-                    nbg_node_map_path: nbg_node_map,
-                    way_attrs_car_path: way_attrs_car,
-                    way_attrs_bike_path: way_attrs_bike,
-                    way_attrs_foot_path: way_attrs_foot,
-                    turn_rules_car_path: turn_rules_car,
-                    turn_rules_bike_path: turn_rules_bike,
-                    turn_rules_foot_path: turn_rules_foot,
-                    outdir,
+                    nbg_csr_path: nbg_csr.clone(),
+                    nbg_geo_path: nbg_geo.clone(),
+                    nbg_node_map_path: nbg_node_map.clone(),
+                    way_attrs_car_path: way_attrs_car.clone(),
+                    way_attrs_bike_path: way_attrs_bike.clone(),
+                    way_attrs_foot_path: way_attrs_foot.clone(),
+                    turn_rules_car_path: turn_rules_car.clone(),
+                    turn_rules_bike_path: turn_rules_bike.clone(),
+                    turn_rules_foot_path: turn_rules_foot.clone(),
+                    outdir: outdir.clone(),
                 };
 
-                let _result = build_ebg(config)?;
+                let result = build_ebg(config)?;
 
-                // TODO: Add validation and lock file generation
+                // Run validation and generate lock file
+                println!();
+                let lock_file = validate_step4(
+                    &result.nodes_path,
+                    &result.csr_path,
+                    &result.turn_table_path,
+                    &nbg_csr,
+                    &nbg_geo,
+                    &nbg_node_map,
+                    &turn_rules_car,
+                    &turn_rules_bike,
+                    &turn_rules_foot,
+                )?;
+
+                let lock_path = outdir.join("step4.lock.json");
+                let lock_json = serde_json::to_string_pretty(&lock_file)?;
+                std::fs::write(&lock_path, lock_json)?;
+
+                println!();
+                println!("✅ EBG validation complete!");
+                println!("📋 Lock file: {}", lock_path.display());
 
                 Ok(())
             }
