@@ -123,4 +123,51 @@ impl NbgGeoFile {
 
         Ok(())
     }
+
+    /// Read NBG geo from file
+    pub fn read<P: AsRef<Path>>(path: P) -> Result<NbgGeo> {
+        use std::io::{BufReader, Read};
+
+        let mut reader = BufReader::new(std::fs::File::open(path)?);
+        let mut header = vec![0u8; 64];
+        reader.read_exact(&mut header)?;
+
+        let n_edges_und = u64::from_le_bytes([
+            header[8], header[9], header[10], header[11],
+            header[12], header[13], header[14], header[15],
+        ]);
+
+        // Read edges (36 bytes each)
+        let mut edges = Vec::with_capacity(n_edges_und as usize);
+        for _ in 0..n_edges_und {
+            let mut record = [0u8; 36];
+            reader.read_exact(&mut record)?;
+
+            edges.push(NbgEdge {
+                u_node: u32::from_le_bytes([record[0], record[1], record[2], record[3]]),
+                v_node: u32::from_le_bytes([record[4], record[5], record[6], record[7]]),
+                length_mm: u32::from_le_bytes([record[8], record[9], record[10], record[11]]),
+                bearing_deci_deg: u16::from_le_bytes([record[12], record[13]]),
+                n_poly_pts: u16::from_le_bytes([record[14], record[15]]),
+                poly_off: u64::from_le_bytes([
+                    record[16], record[17], record[18], record[19],
+                    record[20], record[21], record[22], record[23],
+                ]),
+                first_osm_way_id: i64::from_le_bytes([
+                    record[24], record[25], record[26], record[27],
+                    record[28], record[29], record[30], record[31],
+                ]),
+                flags: u32::from_le_bytes([record[32], record[33], record[34], record[35]]),
+            });
+        }
+
+        // For simplicity, skip reading polylines for now (not needed for EBG)
+        let polylines = Vec::new();
+
+        Ok(NbgGeo {
+            n_edges_und,
+            edges,
+            polylines,
+        })
+    }
 }

@@ -90,4 +90,29 @@ impl NbgNodeMapFile {
 
         Ok(map)
     }
+
+    /// Read node map from file as NbgNodeMap struct
+    pub fn read_map<P: AsRef<Path>>(path: P) -> Result<NbgNodeMap> {
+        let mut file = File::open(path)?;
+        let mut header = [0u8; 16];
+        file.read_exact(&mut header)?;
+
+        let count = u64::from_le_bytes(header[8..16].try_into()?);
+
+        let mut mappings = Vec::with_capacity(count as usize);
+        for compact_id in 0..count {
+            let mut osm_bytes = [0u8; 8];
+            let mut _compact_bytes = [0u8; 4];
+            file.read_exact(&mut osm_bytes)?;
+            file.read_exact(&mut _compact_bytes)?;
+
+            let osm_node_id = i64::from_le_bytes(osm_bytes);
+            mappings.push(NodeMapping {
+                osm_node_id,
+                compact_id: compact_id as u32,
+            });
+        }
+
+        Ok(NbgNodeMap { mappings })
+    }
 }
