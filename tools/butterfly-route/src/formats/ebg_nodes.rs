@@ -42,7 +42,7 @@ impl EbgNodesFile {
         let reserved_bytes = 0u16.to_le_bytes();
         let n_nodes_bytes = data.n_nodes.to_le_bytes();
         let created_unix_bytes = data.created_unix.to_le_bytes();
-        let padding = [0u8; 16]; // Pad to 64 bytes: 4+2+2+4+8+32+16 = 68, need 64 - 48 = 16
+        let padding = [0u8; 12]; // Pad to 64 bytes: 4+2+2+4+8+32 = 52, need 12 more
 
         writer.write_all(&magic_bytes)?;
         writer.write_all(&version_bytes)?;

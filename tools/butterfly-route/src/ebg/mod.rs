@@ -40,11 +40,12 @@ pub struct EbgResult {
     pub turn_table_path: PathBuf,
     pub n_nodes: u32,
     pub n_arcs: u64,
+    pub build_time_ms: u64,
 }
 
 /// Canonical turn rule key
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct TurnRuleKey {
+pub struct TurnRuleKey {
     pub via_node_osm: i64,
     pub from_way_id: i64,
     pub to_way_id: i64,
@@ -52,7 +53,7 @@ pub(crate) struct TurnRuleKey {
 
 /// Canonical turn rule
 #[derive(Debug, Clone)]
-pub(crate) struct CanonicalTurnRule {
+pub struct CanonicalTurnRule {
     pub mode_mask: u8,      // Which modes this rule applies to
     pub kind: TurnKind,
     pub penalty_ds_car: u32,
@@ -164,12 +165,15 @@ pub fn build_ebg(config: EbgConfig) -> Result<EbgResult> {
     println!("  Arcs: {}", n_arcs);
     println!("  Time: {:.2}s", start_time.elapsed().as_secs_f64());
 
+    let build_time_ms = start_time.elapsed().as_millis() as u64;
+
     Ok(EbgResult {
         nodes_path,
         csr_path,
         turn_table_path,
         n_nodes: ebg_nodes_data.n_nodes,
         n_arcs,
+        build_time_ms,
     })
 }
 
@@ -336,6 +340,14 @@ fn build_adjacency(
                     idx
                 };
 
+                // Debug: Verify turn_idx is valid
+                debug_assert!(
+                    (turn_idx as usize) < turn_table.len(),
+                    "turn_idx {} out of bounds (turn_table.len()={})",
+                    turn_idx,
+                    turn_table.len()
+                );
+
                 // Add arc
                 adjacency
                     .entry(a_id)
@@ -364,6 +376,14 @@ fn materialize_csr(
 
         if let Some(neighbors) = adjacency.get(&node_id) {
             for &(head, tidx) in neighbors {
+                // Debug: Verify tidx is reasonable
+                debug_assert!(
+                    (head as usize) < n_nodes as usize,
+                    "head {} out of bounds (n_nodes={})",
+                    head,
+                    n_nodes
+                );
+
                 heads.push(head);
                 turn_idx.push(tidx);
                 current_offset += 1;

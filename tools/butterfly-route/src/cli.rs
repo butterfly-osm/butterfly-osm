@@ -289,9 +289,13 @@ impl Cli {
                     &nbg_csr,
                     &nbg_geo,
                     &nbg_node_map,
+                    &way_attrs_car,
+                    &way_attrs_bike,
+                    &way_attrs_foot,
                     &turn_rules_car,
                     &turn_rules_bike,
                     &turn_rules_foot,
+                    result.build_time_ms,
                 )?;
 
                 let lock_path = outdir.join("step4.lock.json");

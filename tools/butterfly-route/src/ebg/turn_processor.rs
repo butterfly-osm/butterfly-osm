@@ -23,19 +23,22 @@ pub fn build_canonical_turn_rules(
 
     let mut canonical_rules: HashMap<TurnRuleKey, CanonicalTurnRule> = HashMap::new();
 
+    // Build way→nodes index ONCE (huge perf win!)
+    let way_nodes_index = build_way_nodes_index(nbg_geo, nbg_node_map);
+
     // Process car rules
     for rule in car_rules {
-        process_rule(rule, MODE_CAR, &mut canonical_rules, nbg_csr, nbg_geo, nbg_node_map)?;
+        process_rule(rule, MODE_CAR, &mut canonical_rules, nbg_csr, nbg_geo, nbg_node_map, &way_nodes_index)?;
     }
 
     // Process bike rules
     for rule in bike_rules {
-        process_rule(rule, MODE_BIKE, &mut canonical_rules, nbg_csr, nbg_geo, nbg_node_map)?;
+        process_rule(rule, MODE_BIKE, &mut canonical_rules, nbg_csr, nbg_geo, nbg_node_map, &way_nodes_index)?;
     }
 
     // Process foot rules
     for rule in foot_rules {
-        process_rule(rule, MODE_FOOT, &mut canonical_rules, nbg_csr, nbg_geo, nbg_node_map)?;
+        process_rule(rule, MODE_FOOT, &mut canonical_rules, nbg_csr, nbg_geo, nbg_node_map, &way_nodes_index)?;
     }
 
     // Convert ONLY rules to implicit Bans
@@ -44,14 +47,42 @@ pub fn build_canonical_turn_rules(
     Ok(canonical_rules)
 }
 
+/// Build way_id → OSM node IDs index (scan edges once, O(n_edges))
+fn build_way_nodes_index(nbg_geo: &NbgGeo, nbg_node_map: &NbgNodeMap) -> HashMap<i64, Vec<i64>> {
+    let mut index: HashMap<i64, Vec<i64>> = HashMap::new();
+
+    for edge in &nbg_geo.edges {
+        let way_id = edge.first_osm_way_id;
+
+        // Get OSM node IDs for both endpoints
+        let u_osm = nbg_node_map.mappings.get(edge.u_node as usize)
+            .map(|m| m.osm_node_id)
+            .unwrap_or(0);
+        let v_osm = nbg_node_map.mappings.get(edge.v_node as usize)
+            .map(|m| m.osm_node_id)
+            .unwrap_or(0);
+
+        let nodes = index.entry(way_id).or_default();
+        if u_osm != 0 && !nodes.contains(&u_osm) {
+            nodes.push(u_osm);
+        }
+        if v_osm != 0 && !nodes.contains(&v_osm) {
+            nodes.push(v_osm);
+        }
+    }
+
+    index
+}
+
 /// Process a single turn rule and add to canonical table
 fn process_rule(
     rule: TurnRule,
     mode_bit: u8,
     canonical_rules: &mut HashMap<TurnRuleKey, CanonicalTurnRule>,
-    nbg_csr: &NbgCsr,
-    nbg_geo: &NbgGeo,
-    nbg_node_map: &NbgNodeMap,
+    _nbg_csr: &NbgCsr,
+    _nbg_geo: &NbgGeo,
+    _nbg_node_map: &NbgNodeMap,
+    way_nodes_index: &HashMap<i64, Vec<i64>>,
 ) -> Result<()> {
     // Convert rule kind from profile_abi TurnRuleKind to ebg TurnKind
     use crate::profile_abi::TurnRuleKind as PRK;
@@ -65,10 +96,12 @@ fn process_rule(
     // For via=way rules (is_time_dep == 2), expand to via=node rules
     if rule.is_time_dep == 2 {
         let via_way_id = rule.via_node_id; // Actually via_way_id in this case
-        let via_nodes = find_nodes_on_way(via_way_id, nbg_geo, nbg_node_map)?;
+
+        // O(1) lookup instead of O(n_edges) scan!
+        let via_nodes = way_nodes_index.get(&via_way_id).map(|v| v.as_slice()).unwrap_or(&[]);
 
         // Create a rule for each node on the via way
-        for via_node_osm in via_nodes {
+        for &via_node_osm in via_nodes {
             add_canonical_rule(
                 via_node_osm,
                 rule.from_way_id,
@@ -274,7 +307,8 @@ fn find_outgoing_ways_from_intersection(
     nbg_csr: &NbgCsr,
     nbg_geo: &NbgGeo,
 ) -> Vec<i64> {
-    let mut to_ways = Vec::new();
+    use std::collections::HashSet;
+    let mut to_ways_set = HashSet::new();
 
     // Get outgoing edges from via_node
     let start = nbg_csr.offsets[via_node as usize];
@@ -285,16 +319,12 @@ fn find_outgoing_ways_from_intersection(
         let edge = &nbg_geo.edges[edge_idx as usize];
 
         // Skip if this is the from_way (U-turn back)
-        if edge.first_osm_way_id == from_way_id {
-            continue;
-        }
-
-        if !to_ways.contains(&edge.first_osm_way_id) {
-            to_ways.push(edge.first_osm_way_id);
+        if edge.first_osm_way_id != from_way_id {
+            to_ways_set.insert(edge.first_osm_way_id);
         }
     }
 
-    to_ways
+    to_ways_set.into_iter().collect()
 }
 
 /// Load turn rules from file
