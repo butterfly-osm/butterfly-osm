@@ -2,7 +2,7 @@
 ///!
 ///! Format (little-endian, mmap-friendly):
 ///!
-///! Header (64 bytes):
+///! Header (80 bytes):
 ///!   magic:       u32 = 0x57415941  // "WAYA"
 ///!   version:     u16 = 1
 ///!   mode:        u8  = {0=car,1=bike,2=foot}
@@ -12,13 +12,14 @@
 ///!   dict_v_sha:  [32]u8
 ///!
 ///! Body (count records, sorted by way_id):
-///!   way_id:      i64
-///!   flags:       u32  // access + oneway + class bits
-///!   base_speed_mmps: u32
-///!   highway_class:   u16
-///!   surface_class:   u16
-///!   per_km_penalty_ds: u16
-///!   const_penalty_ds:  u32
+///!   way_id:             i64
+///!   flags:              u32  // access + oneway + class bits
+///!   base_speed_mmps:    u32
+///!   highway_class:      u16
+///!   surface_class:      u16
+///!   per_km_penalty_ds:  u16
+///!   const_penalty_ds:   u32
+///!   reserved:           [6]u8  // padding to 32 bytes
 ///!
 ///! Footer (16 bytes):
 ///!   body_crc64:  u64
@@ -34,8 +35,8 @@ use crate::profile_abi::{Mode, WayOutput};
 
 const MAGIC: u32 = 0x57415941; // "WAYA"
 const VERSION: u16 = 1;
-const HEADER_SIZE: usize = 64;
-const RECORD_SIZE: usize = 32; // i64 + u32*4 + u16*3
+const HEADER_SIZE: usize = 80; // 4 + 2 + 1 + 1 + 8 + 32 + 32
+const RECORD_SIZE: usize = 32; // 8 + 4 + 4 + 2 + 2 + 2 + 4 + 6(pad)
 
 #[derive(Debug, Clone)]
 pub struct WayAttr {
@@ -120,6 +121,7 @@ fn encode_record(attr: &WayAttr) -> Vec<u8> {
     record.extend_from_slice(&attr.output.surface_class.to_le_bytes());
     record.extend_from_slice(&attr.output.per_km_penalty_ds.to_le_bytes());
     record.extend_from_slice(&attr.output.const_penalty_ds.to_le_bytes());
+    record.extend_from_slice(&[0u8; 6]); // padding to 32 bytes
 
     assert_eq!(record.len(), RECORD_SIZE);
     record

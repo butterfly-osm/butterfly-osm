@@ -2,7 +2,7 @@
 ///!
 ///! Format (little-endian):
 ///!
-///! Header (56 bytes):
+///! Header (80 bytes):
 ///!   magic:         u32 = 0x5455524E  // "TURN"
 ///!   version:       u16 = 1
 ///!   mode:          u8  = {0,1,2}
@@ -34,7 +34,7 @@ use crate::profile_abi::{Mode, TurnRuleKind};
 
 const MAGIC: u32 = 0x5455524E; // "TURN"
 const VERSION: u16 = 1;
-const HEADER_SIZE: usize = 56;
+const HEADER_SIZE: usize = 80; // 4 + 2 + 1 + 1 + 8 + 32 + 32
 const RECORD_SIZE: usize = 32; // i64*3 + u8 + u32 + u8 + [6]u8
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

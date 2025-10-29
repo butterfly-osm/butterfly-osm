@@ -3,7 +3,7 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use super::crc;
@@ -60,7 +60,7 @@ impl WaysFile {
         sorted_ways.sort_by_key(|w| w.id);
 
         // Calculate offsets BEFORE writing anything
-        let header_size = 28u64; // magic(4) + version(2) + reserved(2) + count(8) + kdict_off(8) + vdict_off(8)
+        let header_size = 32u64; // magic(4) + version(2) + reserved(2) + count(8) + kdict_off(8) + vdict_off(8)
 
         let mut body_size = 0u64;
         for way in &sorted_ways {
@@ -179,6 +179,204 @@ impl WaysFile {
         Ok(())
     }
 
+    /// Read ways.raw file and return ways with tags resolved from dictionaries
+    pub fn read<P: AsRef<Path>>(path: P) -> Result<Vec<Way>> {
+        let mut file = File::open(path)?;
+        let file_len = file.metadata()?.len();
+
+        if file_len < 32 + 16 {
+            anyhow::bail!("File too short");
+        }
+
+        // Read header (32 bytes)
+        let mut header = [0u8; 32];
+        file.read_exact(&mut header)?;
+
+        let magic = u32::from_le_bytes(header[0..4].try_into()?);
+        if magic != MAGIC {
+            anyhow::bail!("Invalid magic number: expected 0x{:08x}, got 0x{:08x}", MAGIC, magic);
+        }
+
+        let version = u16::from_le_bytes(header[4..6].try_into()?);
+        if version != VERSION {
+            anyhow::bail!("Unsupported version: {}", version);
+        }
+
+        let count = u64::from_le_bytes(header[8..16].try_into()?);
+        let kdict_off = u64::from_le_bytes(header[16..24].try_into()?);
+        let vdict_off = u64::from_le_bytes(header[24..32].try_into()?);
+
+        // Read entire file
+        let mut all_bytes = vec![0u8; file_len as usize];
+        all_bytes[..32].copy_from_slice(&header);
+        file.read_exact(&mut all_bytes[32..])?;
+
+        // Read key dictionary
+        let key_dict = Self::read_dict(&all_bytes, kdict_off as usize, vdict_off as usize)?;
+
+        // Read value dictionary
+        let val_dict = Self::read_dict(&all_bytes, vdict_off as usize, all_bytes.len() - 16)?;
+
+        // Read ways from body (starts at offset 32)
+        let mut ways = Vec::with_capacity(count as usize);
+        let mut pos = 32usize;
+
+        for _ in 0..count {
+            // way_id
+            let way_id = i64::from_le_bytes(all_bytes[pos..pos+8].try_into()?);
+            pos += 8;
+
+            // n_nodes
+            let n_nodes = u32::from_le_bytes(all_bytes[pos..pos+4].try_into()?) as usize;
+            pos += 4;
+
+            // nodes
+            let mut nodes = Vec::with_capacity(n_nodes);
+            for _ in 0..n_nodes {
+                let node_id = i64::from_le_bytes(all_bytes[pos..pos+8].try_into()?);
+                nodes.push(node_id);
+                pos += 8;
+            }
+
+            // n_tags
+            let n_tags = u16::from_le_bytes(all_bytes[pos..pos+2].try_into()?) as usize;
+            pos += 2;
+
+            // tags
+            let mut tags = Vec::with_capacity(n_tags);
+            for _ in 0..n_tags {
+                let k_id = u32::from_le_bytes(all_bytes[pos..pos+4].try_into()?);
+                let v_id = u32::from_le_bytes(all_bytes[pos+4..pos+8].try_into()?);
+                pos += 8;
+
+                let key = key_dict.get(&k_id)
+                    .ok_or_else(|| anyhow::anyhow!("Key ID {} not in dictionary", k_id))?
+                    .clone();
+                let val = val_dict.get(&v_id)
+                    .ok_or_else(|| anyhow::anyhow!("Value ID {} not in dictionary", v_id))?
+                    .clone();
+                tags.push((key, val));
+            }
+
+            ways.push(Way {
+                id: way_id,
+                nodes,
+                tags,
+            });
+        }
+
+        Ok(ways)
+    }
+
+    /// Read dictionaries from ways.raw and return them with their SHA-256 hashes
+    pub fn read_dictionaries<P: AsRef<Path>>(path: P) -> Result<(HashMap<u32, String>, HashMap<u32, String>, [u8; 32], [u8; 32])> {
+        let mut file = File::open(path)?;
+        let file_len = file.metadata()?.len();
+
+        if file_len < 32 + 16 {
+            anyhow::bail!("File too short");
+        }
+
+        // Read header (32 bytes: magic(4) + version(2) + reserved(2) + count(8) + kdict_off(8) + vdict_off(8))
+        let mut header = [0u8; 32];
+        file.read_exact(&mut header)?;
+
+        let kdict_off = u64::from_le_bytes(header[16..24].try_into()?);
+        let vdict_off = u64::from_le_bytes(header[24..32].try_into()?);
+
+        // Read entire file
+        let mut all_bytes = vec![0u8; file_len as usize];
+        all_bytes[..32].copy_from_slice(&header);
+        file.read_exact(&mut all_bytes[32..])?;
+
+        // Read key dictionary
+        let key_dict = Self::read_dict(&all_bytes, kdict_off as usize, vdict_off as usize)?;
+
+        // Read value dictionary
+        let val_dict = Self::read_dict(&all_bytes, vdict_off as usize, all_bytes.len() - 16)?;
+
+        // Compute SHA-256 of dictionaries
+        let key_sha256 = Self::compute_dict_sha256(&key_dict);
+        let val_sha256 = Self::compute_dict_sha256(&val_dict);
+
+        Ok((key_dict, val_dict, key_sha256, val_sha256))
+    }
+
+    /// Read a dictionary from byte buffer
+    fn read_dict(bytes: &[u8], start: usize, end: usize) -> Result<HashMap<u32, String>> {
+        let mut dict = HashMap::new();
+        let mut pos = start;
+
+        while pos < end {
+            if pos + 6 > end {
+                break; // Not enough bytes for id(4) + len(2)
+            }
+
+            let id = u32::from_le_bytes(bytes[pos..pos+4].try_into()?);
+            let len = u16::from_le_bytes(bytes[pos+4..pos+6].try_into()?) as usize;
+            pos += 6;
+
+            if pos + len > end {
+                anyhow::bail!("Dictionary entry extends beyond bounds");
+            }
+
+            // Use from_utf8_lossy to handle malformed UTF-8 in OSM data
+            let s = String::from_utf8_lossy(&bytes[pos..pos+len]).to_string();
+            dict.insert(id, s);
+            pos += len;
+        }
+
+        Ok(dict)
+    }
+
+    /// Stream ways from file without loading all into memory
+    /// Yields (way_id, tag_key_ids, tag_val_ids, nodes)
+    pub fn stream_ways<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<impl Iterator<Item = Result<(i64, Vec<u32>, Vec<u32>, Vec<i64>)>>> {
+        use std::io::{BufReader, Seek, SeekFrom};
+
+        let mut file = File::open(path)?;
+        let file_len = file.metadata()?.len();
+
+        // Read header
+        let mut header = [0u8; 32];
+        file.read_exact(&mut header)?;
+
+        let count = u64::from_le_bytes(header[8..16].try_into()?);
+        let kdict_off = u64::from_le_bytes(header[16..24].try_into()?);
+
+        // Position at start of ways data
+        file.seek(SeekFrom::Start(32))?;
+
+        let reader = BufReader::with_capacity(1024 * 1024, file); // 1MB buffer
+
+        Ok(WayStreamIterator {
+            reader,
+            remaining: count,
+            end_offset: kdict_off,
+        })
+    }
+
+    /// Compute SHA-256 of a dictionary
+    fn compute_dict_sha256(dict: &HashMap<u32, String>) -> [u8; 32] {
+        use sha2::{Sha256, Digest};
+
+        let mut hasher = Sha256::new();
+        let mut keys: Vec<_> = dict.keys().collect();
+        keys.sort();
+
+        for key in keys {
+            hasher.update(&key.to_le_bytes());
+            hasher.update(dict[key].as_bytes());
+        }
+
+        let result = hasher.finalize();
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&result);
+        hash
+    }
+
     /// Verify checksums in ways.raw file
     pub fn verify<P: AsRef<Path>>(path: P) -> Result<()> {
         let mut file = File::open(path)?;
@@ -211,6 +409,75 @@ impl WaysFile {
 
         println!("✓ ways.raw CRC-64 verified");
         Ok(())
+    }
+}
+
+/// Iterator for streaming ways from file
+pub struct WayStreamIterator<R: Read> {
+    reader: BufReader<R>,
+    remaining: u64,
+    end_offset: u64,
+}
+
+impl<R: Read> Iterator for WayStreamIterator<R> {
+    type Item = Result<(i64, Vec<u32>, Vec<u32>, Vec<i64>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+
+        self.remaining -= 1;
+
+        // Read way_id
+        let mut buf8 = [0u8; 8];
+        if let Err(e) = self.reader.read_exact(&mut buf8) {
+            return Some(Err(e.into()));
+        }
+        let way_id = i64::from_le_bytes(buf8);
+
+        // Read n_nodes
+        let mut buf4 = [0u8; 4];
+        if let Err(e) = self.reader.read_exact(&mut buf4) {
+            return Some(Err(e.into()));
+        }
+        let n_nodes = u32::from_le_bytes(buf4) as usize;
+
+        // Read nodes
+        let mut nodes = Vec::with_capacity(n_nodes);
+        for _ in 0..n_nodes {
+            if let Err(e) = self.reader.read_exact(&mut buf8) {
+                return Some(Err(e.into()));
+            }
+            nodes.push(i64::from_le_bytes(buf8));
+        }
+
+        // Read n_tags
+        let mut buf2 = [0u8; 2];
+        if let Err(e) = self.reader.read_exact(&mut buf2) {
+            return Some(Err(e.into()));
+        }
+        let n_tags = u16::from_le_bytes(buf2) as usize;
+
+        // Read tag IDs
+        let mut keys = Vec::with_capacity(n_tags);
+        let mut vals = Vec::with_capacity(n_tags);
+        for _ in 0..n_tags {
+            if let Err(e) = self.reader.read_exact(&mut buf4) {
+                return Some(Err(e.into()));
+            }
+            let k_id = u32::from_le_bytes(buf4);
+
+            if let Err(e) = self.reader.read_exact(&mut buf4) {
+                return Some(Err(e.into()));
+            }
+            let v_id = u32::from_le_bytes(buf4);
+
+            keys.push(k_id);
+            vals.push(v_id);
+        }
+
+        Some(Ok((way_id, keys, vals, nodes)))
     }
 }
 

@@ -9,8 +9,9 @@ pub mod validate;
 pub mod cli;
 pub mod profile_abi;
 pub mod profiles;
+pub mod profile;
 
 pub use formats::{WaysFile, RelationsFile};
-pub use validate::LockFile;
+pub use validate::{LockFile, Step2LockFile};
 pub use profile_abi::{Mode, WayInput, WayOutput, TurnInput, TurnOutput, TurnRuleKind, Profile};
 pub use profiles::{CarProfile, BikeProfile, FootProfile};
