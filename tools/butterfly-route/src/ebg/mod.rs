@@ -250,9 +250,20 @@ fn build_adjacency(
                     continue;
                 }
 
-                // Skip U-turns for now (configurable policy can be added)
-                if a_node.tail_nbg == b_node.head_nbg {
-                    continue; // U-turn
+                // Handle U-turns with mode-specific policy
+                let is_uturn = a_node.tail_nbg == b_node.head_nbg;
+                if is_uturn {
+                    // Check if this is a dead-end (degree == 1 for outgoing)
+                    let is_dead_end = outgoing.len() == 1;
+
+                    // Car: forbid U-turns except at dead-ends
+                    // Bike/Foot: allow U-turns unless explicitly banned
+                    // We'll handle this by filtering mode_mask below
+                    if !is_dead_end {
+                        // At non-dead-ends, remove car from allowed modes for U-turns
+                        // Bike and foot can still make U-turns
+                        // This will be applied after checking way accessibility
+                    }
                 }
 
                 // Determine mode accessibility
@@ -290,6 +301,15 @@ fn build_adjacency(
                 // Filter by way accessibility
                 mode_mask &= get_way_mode_mask(from_way_id, way_attrs_car, way_attrs_bike, way_attrs_foot);
                 mode_mask &= get_way_mode_mask(to_way_id, way_attrs_car, way_attrs_bike, way_attrs_foot);
+
+                // Apply U-turn policy
+                if is_uturn {
+                    let is_dead_end = outgoing.len() == 1;
+                    if !is_dead_end {
+                        // Remove car mode from U-turns at non-dead-ends
+                        mode_mask &= !MODE_CAR;
+                    }
+                }
 
                 // If no modes can use this turn, skip it
                 if mode_mask == 0 {
@@ -397,10 +417,13 @@ fn nbg_node_to_osm_id(compact_id: u32, node_map: &NbgNodeMap) -> i64 {
 }
 
 /// Helper: Load way attributes into HashMap
-fn load_way_attrs(_path: &Path) -> Result<HashMap<i64, WayAttr>> {
-    // TODO: Implement way_attrs reader
-    // For now, return empty map (will allow all modes)
-    Ok(HashMap::new())
+fn load_way_attrs(path: &Path) -> Result<HashMap<i64, WayAttr>> {
+    let attrs = way_attrs::read_all(path)?;
+    let mut map = HashMap::with_capacity(attrs.len());
+    for attr in attrs {
+        map.insert(attr.way_id, attr);
+    }
+    Ok(map)
 }
 
 /// Compute combined SHA-256 of all inputs
