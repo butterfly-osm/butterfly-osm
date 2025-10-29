@@ -60,14 +60,12 @@ cargo install --path tools/butterfly-dl
 ### 1. Performance-Driven Development
 
 ```bash
-# Always start with benchmarks
-./benchmarks/bench.sh europe/luxembourg  # Baseline
-# ... make changes ...
-./benchmarks/bench.sh europe/luxembourg  # Verify improvement
-
 # Memory testing
 cargo build --release -p butterfly-dl
 valgrind --tool=massif ./target/release/butterfly-dl europe/monaco
+
+# Timing tests
+time ./target/release/butterfly-dl europe/luxembourg
 ```
 
 ### 2. Workspace Development
@@ -100,13 +98,16 @@ git commit -m "perf(dl): reduce memory allocation by 40% with ring buffer"
 
 **All performance claims must be verified:**
 ```bash
-# Required benchmarks for PRs
-./benchmarks/bench.sh europe/monaco      # Small files
-./benchmarks/bench.sh europe/luxembourg  # Medium files  
-./benchmarks/bench.sh europe/belgium     # Large files
-
-# Memory usage verification
+# Required benchmarks for PRs using different file sizes
 cargo build --release -p butterfly-dl
+
+# Small files
+time -v ./target/release/butterfly-dl europe/monaco
+
+# Medium files
+time -v ./target/release/butterfly-dl europe/luxembourg
+
+# Large files
 time -v ./target/release/butterfly-dl europe/belgium
 ```
 
@@ -185,11 +186,8 @@ async fn process_stream<R: AsyncRead>(mut reader: R) -> Result<()> {
 # Required for all PRs
 cargo test --workspace --release
 
-# Benchmark verification
-./benchmarks/verify_performance.sh
-
 # Memory testing
-cargo test --features memory-profiling
+time -v cargo test --workspace --release
 ```
 
 ### Unit Tests
@@ -256,9 +254,6 @@ time ./target/release/butterfly-dl europe/monaco
 
 # Memory analysis
 valgrind --tool=massif ./target/release/butterfly-dl europe/monaco
-
-# Benchmark comparison
-./benchmarks/compare.sh baseline feature-branch
 ```
 
 ### Performance Debugging

@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "butterfly-common",
     "tools/butterfly-dl",
-    "tools/butterfly-route",
 ]
 
 [workspace.package]

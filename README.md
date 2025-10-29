@@ -183,13 +183,11 @@ Download optimized binaries for your platform:
 butterfly-osm/
 ├── butterfly-common/     # Shared utilities and algorithms
 ├── tools/
-│   ├── butterfly-dl/     # OSM data downloader  
-│   ├── butterfly-shrink/ # Polygon extraction (planned)
-│   ├── butterfly-extract/# Data transformation (planned)
-│   └── butterfly-serve/  # Tile server (planned)
-├── benchmarks/          # Performance benchmarks
-├── examples/            # Usage examples and tutorials (planned)
+│   └── butterfly-dl/     # OSM data downloader (production-ready)
+└── data/                # Test data and examples
 ```
+
+**Note**: Additional tools (butterfly-shrink, butterfly-extract, butterfly-serve) are planned for future development.
 
 ### Building Individual Tools
 

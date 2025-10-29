@@ -7,9 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 For detailed tool-specific changes, see individual tool changelogs:
 - [butterfly-dl](./tools/butterfly-dl/CHANGELOG.md) - OSM data downloader
-- [butterfly-shrink](./tools/butterfly-shrink/CHANGELOG.md) - Polygon extraction tool (planned)
-- [butterfly-extract](./tools/butterfly-extract/CHANGELOG.md) - Data transformation tool (planned)
-- [butterfly-serve](./tools/butterfly-serve/CHANGELOG.md) - High-performance tile server (planned)
+
+## [Unreleased]
+
+### Removed
+- **butterfly-route**: Experimental PHAST routing implementation and related routing tools
+- **benchmarks/**: Deprecated benchmark infrastructure
+- **scripts/**: Deprecated utility scripts
+- **Planned tool scaffolds**: Removed placeholder directories for butterfly-shrink, butterfly-extract, and butterfly-serve to focus on core functionality first
+
+### Changed
+- **Workspace structure**: Simplified to focus on production-ready butterfly-dl and butterfly-common foundation
+- **Development focus**: Concentrating on core data acquisition tools before expanding to additional planned tools
 
 ## [2.0.0] - 2025-06-27
 
@@ -24,8 +33,7 @@ For detailed tool-specific changes, see individual tool changelogs:
 - **🔒 Security**: Automatic checksums and integrity verification for all releases
 - **📋 Tool Templates**: Standardized structure for future butterfly tools
 - **🌍 Enhanced Geographic Intelligence**: Advanced fuzzy matching with semantic understanding
-- **✂️ butterfly-shrink Scaffold**: Initial Cargo crate and CLI skeleton for polygon extraction tool
-- **🎯 Project Roadmap**: Comprehensive GitHub issues (#24-#38) with milestone-based development plan
+- **🎯 Project Roadmap**: Comprehensive development plan for ecosystem expansion
 - **📊 CI Badge**: Added build status badge to README for transparency
 
 ### Changed
