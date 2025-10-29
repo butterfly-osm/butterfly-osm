@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use crate::ingest::{run_ingest, IngestConfig};
 use crate::validate::{verify_lock_conditions, Counts, LockFile};
+use crate::profile::{run_profiling, ProfileConfig};
 
 #[derive(Parser)]
 #[command(name = "butterfly-route")]
@@ -34,6 +35,21 @@ pub enum Commands {
         /// Verify only (don't write, just check CRCs)
         #[arg(long)]
         verify_only: bool,
+    },
+
+    /// Step 2: Generate per-mode attributes via routing profiles
+    Step2Profile {
+        /// Path to ways.raw from Step 1
+        #[arg(long)]
+        ways: PathBuf,
+
+        /// Path to relations.raw from Step 1
+        #[arg(long)]
+        relations: PathBuf,
+
+        /// Output directory for way_attrs.*.bin and turn_rules.*.bin
+        #[arg(short, long)]
+        outdir: PathBuf,
     },
 }
 
@@ -96,6 +112,20 @@ impl Cli {
                     println!("📋 Lock file: {}", lock_path.display());
                 }
 
+                Ok(())
+            }
+            Commands::Step2Profile {
+                ways,
+                relations,
+                outdir,
+            } => {
+                let config = ProfileConfig {
+                    ways_path: ways,
+                    relations_path: relations,
+                    outdir,
+                };
+
+                run_profiling(config)?;
                 Ok(())
             }
         }

@@ -107,7 +107,7 @@ impl RelationsFile {
         sorted_rels.sort_by_key(|r| r.id);
 
         // Calculate offsets BEFORE writing anything
-        let header_size = 28u64; // magic(4) + version(2) + reserved(2) + count(8) + kdict_off(8) + vdict_off(8)
+        let header_size = 32u64; // magic(4) + version(2) + reserved(2) + count(8) + kdict_off(8) + vdict_off(8)
 
         let mut body_size = 0u64;
         for rel in &sorted_rels {
@@ -239,6 +239,189 @@ impl RelationsFile {
         writer.flush()?;
 
         Ok(())
+    }
+
+    /// Read relations.raw file and return relations with tags resolved from dictionaries
+    pub fn read<P: AsRef<Path>>(path: P) -> Result<Vec<Relation>> {
+        let mut file = File::open(path)?;
+        let file_len = file.metadata()?.len();
+
+        if file_len < 32 + 16 {
+            anyhow::bail!("File too short");
+        }
+
+        // Read header (32 bytes)
+        let mut header = [0u8; 32];
+        file.read_exact(&mut header)?;
+
+        let magic = u32::from_le_bytes(header[0..4].try_into()?);
+        if magic != MAGIC {
+            anyhow::bail!("Invalid magic number: expected 0x{:08x}, got 0x{:08x}", MAGIC, magic);
+        }
+
+        let version = u16::from_le_bytes(header[4..6].try_into()?);
+        if version != VERSION {
+            anyhow::bail!("Unsupported version: {}", version);
+        }
+
+        let count = u64::from_le_bytes(header[8..16].try_into()?);
+        let kdict_off = u64::from_le_bytes(header[16..24].try_into()?);
+        let vdict_off = u64::from_le_bytes(header[24..32].try_into()?);
+
+        // Read entire file
+        let mut all_bytes = vec![0u8; file_len as usize];
+        all_bytes[..32].copy_from_slice(&header);
+        file.read_exact(&mut all_bytes[32..])?;
+
+        // Read key dictionary
+        let key_dict = Self::read_dict(&all_bytes, kdict_off as usize, vdict_off as usize)?;
+
+        // Read value dictionary (includes roles)
+        let val_dict = Self::read_dict(&all_bytes, vdict_off as usize, all_bytes.len() - 16)?;
+
+        // Read relations from body (starts at offset 32)
+        let mut relations = Vec::with_capacity(count as usize);
+        let mut pos = 32usize;
+
+        for _ in 0..count {
+            // rel_id
+            let rel_id = i64::from_le_bytes(all_bytes[pos..pos+8].try_into()?);
+            pos += 8;
+
+            // n_members
+            let n_members = u16::from_le_bytes(all_bytes[pos..pos+2].try_into()?) as usize;
+            pos += 2;
+
+            // members
+            let mut members = Vec::with_capacity(n_members);
+            for _ in 0..n_members {
+                let role_id = u16::from_le_bytes(all_bytes[pos..pos+2].try_into()?) as u32;
+                let kind_byte = all_bytes[pos+2];
+                let kind = MemberKind::from_u8(kind_byte)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid member kind: {}", kind_byte))?;
+                // skip reserved byte at pos+3
+                let ref_id = i64::from_le_bytes(all_bytes[pos+4..pos+12].try_into()?);
+                pos += 12;
+
+                let role = val_dict.get(&role_id)
+                    .ok_or_else(|| anyhow::anyhow!("Role ID {} not in dictionary", role_id))?
+                    .clone();
+
+                members.push(Member {
+                    role,
+                    kind,
+                    ref_id,
+                });
+            }
+
+            // n_tags
+            let n_tags = u16::from_le_bytes(all_bytes[pos..pos+2].try_into()?) as usize;
+            pos += 2;
+
+            // tags
+            let mut tags = Vec::with_capacity(n_tags);
+            for _ in 0..n_tags {
+                let k_id = u32::from_le_bytes(all_bytes[pos..pos+4].try_into()?);
+                let v_id = u32::from_le_bytes(all_bytes[pos+4..pos+8].try_into()?);
+                pos += 8;
+
+                let key = key_dict.get(&k_id)
+                    .ok_or_else(|| anyhow::anyhow!("Key ID {} not in dictionary", k_id))?
+                    .clone();
+                let val = val_dict.get(&v_id)
+                    .ok_or_else(|| anyhow::anyhow!("Value ID {} not in dictionary", v_id))?
+                    .clone();
+                tags.push((key, val));
+            }
+
+            relations.push(Relation {
+                id: rel_id,
+                members,
+                tags,
+            });
+        }
+
+        Ok(relations)
+    }
+
+    /// Read dictionaries from relations.raw and return them with their SHA-256 hashes
+    pub fn read_dictionaries<P: AsRef<Path>>(path: P) -> Result<(HashMap<u32, String>, HashMap<u32, String>, [u8; 32], [u8; 32])> {
+        let mut file = File::open(path)?;
+        let file_len = file.metadata()?.len();
+
+        if file_len < 32 + 16 {
+            anyhow::bail!("File too short");
+        }
+
+        // Read header (32 bytes)
+        let mut header = [0u8; 32];
+        file.read_exact(&mut header)?;
+
+        let kdict_off = u64::from_le_bytes(header[16..24].try_into()?);
+        let vdict_off = u64::from_le_bytes(header[24..32].try_into()?);
+
+        // Read entire file
+        let mut all_bytes = vec![0u8; file_len as usize];
+        all_bytes[..32].copy_from_slice(&header);
+        file.read_exact(&mut all_bytes[32..])?;
+
+        // Read key dictionary
+        let key_dict = Self::read_dict(&all_bytes, kdict_off as usize, vdict_off as usize)?;
+
+        // Read value dictionary
+        let val_dict = Self::read_dict(&all_bytes, vdict_off as usize, all_bytes.len() - 16)?;
+
+        // Compute SHA-256 of dictionaries
+        let key_sha256 = Self::compute_dict_sha256(&key_dict);
+        let val_sha256 = Self::compute_dict_sha256(&val_dict);
+
+        Ok((key_dict, val_dict, key_sha256, val_sha256))
+    }
+
+    /// Read a dictionary from byte buffer
+    fn read_dict(bytes: &[u8], start: usize, end: usize) -> Result<HashMap<u32, String>> {
+        let mut dict = HashMap::new();
+        let mut pos = start;
+
+        while pos < end {
+            if pos + 6 > end {
+                break; // Not enough bytes for id(4) + len(2)
+            }
+
+            let id = u32::from_le_bytes(bytes[pos..pos+4].try_into()?);
+            let len = u16::from_le_bytes(bytes[pos+4..pos+6].try_into()?) as usize;
+            pos += 6;
+
+            if pos + len > end {
+                anyhow::bail!("Dictionary entry extends beyond bounds");
+            }
+
+            // Use from_utf8_lossy to handle malformed UTF-8 in OSM data
+            let s = String::from_utf8_lossy(&bytes[pos..pos+len]).to_string();
+            dict.insert(id, s);
+            pos += len;
+        }
+
+        Ok(dict)
+    }
+
+    /// Compute SHA-256 of a dictionary
+    fn compute_dict_sha256(dict: &HashMap<u32, String>) -> [u8; 32] {
+        use sha2::{Sha256, Digest};
+
+        let mut hasher = Sha256::new();
+        let mut keys: Vec<_> = dict.keys().collect();
+        keys.sort();
+
+        for key in keys {
+            hasher.update(&key.to_le_bytes());
+            hasher.update(dict[key].as_bytes());
+        }
+
+        let result = hasher.finalize();
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&result);
+        hash
     }
 
     /// Verify checksums in relations.raw file

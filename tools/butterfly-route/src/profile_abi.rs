@@ -4,7 +4,7 @@
 ///! Profiles can be compiled as cdylib or WASM with the same interface.
 
 #[repr(C)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct WayInput<'a> {
     /// Tag key IDs from ways.raw key dictionary
     pub kv_keys: &'a [u32],
@@ -52,7 +52,7 @@ impl Default for WayOutput {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct TurnInput<'a> {
     /// Relation tag key IDs from relations.raw key dictionary
     pub tags_keys: &'a [u32],
@@ -98,7 +98,7 @@ impl Default for TurnOutput {
 
 /// Mode enumeration matching file formats
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
     Car = 0,
     Bike = 1,
