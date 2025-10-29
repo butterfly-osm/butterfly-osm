@@ -119,6 +119,70 @@ fn encode_record(rule: &TurnRule) -> Vec<u8> {
     record
 }
 
+/// Decode a single turn rule record
+fn decode_record(record: &[u8]) -> Result<TurnRule> {
+    anyhow::ensure!(record.len() >= RECORD_SIZE, "Record too small");
+
+    let via_node_id = i64::from_le_bytes([
+        record[0], record[1], record[2], record[3],
+        record[4], record[5], record[6], record[7],
+    ]);
+    let from_way_id = i64::from_le_bytes([
+        record[8], record[9], record[10], record[11],
+        record[12], record[13], record[14], record[15],
+    ]);
+    let to_way_id = i64::from_le_bytes([
+        record[16], record[17], record[18], record[19],
+        record[20], record[21], record[22], record[23],
+    ]);
+    let kind_byte = record[24];
+    let penalty_ds = u32::from_le_bytes([record[25], record[26], record[27], record[28]]);
+    let is_time_dep = record[29];
+
+    let kind = match kind_byte {
+        0 => TurnRuleKind::None,
+        1 => TurnRuleKind::Ban,
+        2 => TurnRuleKind::Only,
+        3 => TurnRuleKind::Penalty,
+        _ => anyhow::bail!("Invalid turn rule kind: {}", kind_byte),
+    };
+
+    Ok(TurnRule {
+        via_node_id,
+        from_way_id,
+        to_way_id,
+        kind,
+        penalty_ds,
+        is_time_dep,
+    })
+}
+
+/// Read all turn rules from file
+pub fn read_all<P: AsRef<Path>>(path: P) -> Result<Vec<TurnRule>> {
+    use std::io::Read;
+
+    let mut file = File::open(path.as_ref())
+        .with_context(|| format!("Failed to open {}", path.as_ref().display()))?;
+
+    // Read header
+    let mut header = vec![0u8; HEADER_SIZE];
+    file.read_exact(&mut header)?;
+
+    let count = u64::from_le_bytes([
+        header[8], header[9], header[10], header[11],
+        header[12], header[13], header[14], header[15],
+    ]);
+
+    let mut rules = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let mut record = vec![0u8; RECORD_SIZE];
+        file.read_exact(&mut record)?;
+        rules.push(decode_record(&record)?);
+    }
+
+    Ok(rules)
+}
+
 /// Verify turn_rules file structure and checksums
 pub fn verify<P: AsRef<Path>>(path: P) -> Result<()> {
     use std::io::{Read, Seek, SeekFrom};

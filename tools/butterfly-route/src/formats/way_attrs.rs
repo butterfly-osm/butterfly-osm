@@ -127,6 +127,70 @@ fn encode_record(attr: &WayAttr) -> Vec<u8> {
     record
 }
 
+/// Decode a single way_attrs record
+fn decode_record(record: &[u8], way_id: i64) -> Result<WayAttr> {
+    anyhow::ensure!(record.len() >= RECORD_SIZE, "Record too small");
+
+    let flags = u32::from_le_bytes([record[8], record[9], record[10], record[11]]);
+    let base_speed_mmps = u32::from_le_bytes([record[12], record[13], record[14], record[15]]);
+    let highway_class = u16::from_le_bytes([record[16], record[17]]);
+    let surface_class = u16::from_le_bytes([record[18], record[19]]);
+    let per_km_penalty_ds = u16::from_le_bytes([record[20], record[21]]);
+    let const_penalty_ds = u32::from_le_bytes([record[22], record[23], record[24], record[25]]);
+
+    let access_fwd = (flags & (1 << 0)) != 0;
+    let access_rev = (flags & (1 << 1)) != 0;
+    let oneway = ((flags >> 2) & 0x3) as u8;
+    let class_bits = flags & !0xF; // Clear lower 4 bits
+
+    Ok(WayAttr {
+        way_id,
+        output: WayOutput {
+            access_fwd,
+            access_rev,
+            oneway,
+            base_speed_mmps,
+            highway_class,
+            surface_class,
+            class_bits,
+            per_km_penalty_ds,
+            const_penalty_ds,
+        },
+    })
+}
+
+/// Read all way_attrs from file
+pub fn read_all<P: AsRef<Path>>(path: P) -> Result<Vec<WayAttr>> {
+    use std::io::Read;
+
+    let mut file = File::open(path.as_ref())
+        .with_context(|| format!("Failed to open {}", path.as_ref().display()))?;
+
+    // Read header
+    let mut header = vec![0u8; HEADER_SIZE];
+    file.read_exact(&mut header)?;
+
+    let count = u64::from_le_bytes([
+        header[8], header[9], header[10], header[11],
+        header[12], header[13], header[14], header[15],
+    ]);
+
+    let mut attrs = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let mut record = vec![0u8; RECORD_SIZE];
+        file.read_exact(&mut record)?;
+
+        let way_id = i64::from_le_bytes([
+            record[0], record[1], record[2], record[3],
+            record[4], record[5], record[6], record[7],
+        ]);
+
+        attrs.push(decode_record(&record, way_id)?);
+    }
+
+    Ok(attrs)
+}
+
 /// Verify way_attrs file structure and checksums
 pub fn verify<P: AsRef<Path>>(path: P) -> Result<()> {
     use std::io::{Read, Seek, SeekFrom};
