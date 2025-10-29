@@ -1,0 +1,47 @@
+[package]
+name = "butterfly-route"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+
+[dependencies]
+# CLI
+clap = { workspace = true }
+
+# Error handling
+anyhow = "1.0"
+thiserror = { workspace = true }
+
+# PBF parsing
+osmpbf = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Memory mapping and I/O
+memmap2 = "0.9"
+
+# Bitmap
+bit-vec = "0.8"
+
+# Checksums
+crc = "3.2"
+
+# Hashing (deterministic)
+ahash = "0.8"
+
+# Parallelism
+rayon = "1.10"
+
+# Logging
+env_logger = { workspace = true }
+
+# SHA-256 hashing
+sha2 = "0.10"
+hex = "0.4"
+
+# Timestamps
+chrono = "0.4"
