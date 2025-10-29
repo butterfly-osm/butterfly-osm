@@ -7,5 +7,5 @@ pub mod ingest;
 pub mod validate;
 pub mod cli;
 
-pub use formats::{NodesFile, WaysFile, RelationsFile};
+pub use formats::{WaysFile, RelationsFile};
 pub use validate::LockFile;
