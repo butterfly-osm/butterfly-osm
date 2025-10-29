@@ -5,10 +5,11 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use crate::ingest::{run_ingest, IngestConfig};
-use crate::validate::{verify_lock_conditions, verify_step3_lock_conditions, validate_step4, Counts, LockFile};
+use crate::validate::{verify_lock_conditions, validate_step4, validate_step5, Counts, LockFile};
 use crate::profile::{run_profiling, ProfileConfig};
 use crate::nbg::{build_nbg, NbgConfig};
 use crate::ebg::{build_ebg, EbgConfig};
+use crate::step5;
 
 #[derive(Parser)]
 #[command(name = "butterfly-route")]
@@ -120,6 +121,41 @@ pub enum Commands {
         turn_rules_foot: PathBuf,
 
         /// Output directory for ebg.nodes, ebg.csr, ebg.turn_table
+        #[arg(short, long)]
+        outdir: PathBuf,
+    },
+
+    /// Step 5: Generate per-mode weights & masks
+    Step5Weights {
+        /// Path to ebg.nodes from Step 4
+        #[arg(long)]
+        ebg_nodes: PathBuf,
+
+        /// Path to ebg.csr from Step 4
+        #[arg(long)]
+        ebg_csr: PathBuf,
+
+        /// Path to ebg.turn_table from Step 4
+        #[arg(long)]
+        turn_table: PathBuf,
+
+        /// Path to nbg.geo from Step 3
+        #[arg(long)]
+        nbg_geo: PathBuf,
+
+        /// Path to way_attrs.car.bin from Step 2
+        #[arg(long)]
+        way_attrs_car: PathBuf,
+
+        /// Path to way_attrs.bike.bin from Step 2
+        #[arg(long)]
+        way_attrs_bike: PathBuf,
+
+        /// Path to way_attrs.foot.bin from Step 2
+        #[arg(long)]
+        way_attrs_foot: PathBuf,
+
+        /// Output directory for w.*.u32, t.*.u32, mask.*.bitset
         #[arg(short, long)]
         outdir: PathBuf,
     },
@@ -304,6 +340,50 @@ impl Cli {
 
                 println!();
                 println!("✅ EBG validation complete!");
+                println!("📋 Lock file: {}", lock_path.display());
+
+                Ok(())
+            }
+            Commands::Step5Weights {
+                ebg_nodes,
+                ebg_csr,
+                turn_table,
+                nbg_geo,
+                way_attrs_car,
+                way_attrs_bike,
+                way_attrs_foot,
+                outdir,
+            } => {
+                let result = step5::generate_weights(
+                    &ebg_nodes,
+                    &ebg_csr,
+                    &turn_table,
+                    &nbg_geo,
+                    &way_attrs_car,
+                    &way_attrs_bike,
+                    &way_attrs_foot,
+                    &outdir,
+                )?;
+
+                // Run validation and generate lock file
+                println!();
+                let lock_file = validate_step5(
+                    &result,
+                    &ebg_nodes,
+                    &ebg_csr,
+                    &turn_table,
+                    &nbg_geo,
+                    &way_attrs_car,
+                    &way_attrs_bike,
+                    &way_attrs_foot,
+                )?;
+
+                let lock_path = outdir.join("step5.lock.json");
+                let lock_json = serde_json::to_string_pretty(&lock_file)?;
+                std::fs::write(&lock_path, lock_json)?;
+
+                println!();
+                println!("✅ Step 5 weights validation complete!");
                 println!("📋 Lock file: {}", lock_path.display());
 
                 Ok(())
