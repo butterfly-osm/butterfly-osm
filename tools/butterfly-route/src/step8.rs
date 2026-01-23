@@ -302,7 +302,140 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
         }
     }
 
-    println!("  ✓ Customization complete");
+    println!("  ✓ Initial customization complete");
+
+    // ===== PASS 2: Triangle Relaxation =====
+    // Process nodes in apex-rank order (lowest to highest).
+    // For each apex m, relax edges x→y where:
+    //   - x→m is a DOWN edge from x (rank[x] > rank[m])
+    //   - m→y is an UP edge from m (rank[y] > rank[m])
+    //   - w(x,y) = min(w(x,y), w(x,m) + w(m,y))
+    //
+    // This finds cheaper paths through alternative contracted nodes.
+
+    // Build reverse DOWN adjacency: for each node m, list incoming DOWN edges x→m
+    println!("\nBuilding reverse DOWN adjacency...");
+    let mut down_rev_counts = vec![0u64; n_nodes];
+    for u in 0..n_nodes {
+        let start = topo.down_offsets[u] as usize;
+        let end = topo.down_offsets[u + 1] as usize;
+        for i in start..end {
+            let m = topo.down_targets[i] as usize;
+            down_rev_counts[m] += 1;
+        }
+    }
+
+    let mut down_rev_offsets = vec![0u64; n_nodes + 1];
+    for m in 0..n_nodes {
+        down_rev_offsets[m + 1] = down_rev_offsets[m] + down_rev_counts[m];
+    }
+
+    let total_down_rev = down_rev_offsets[n_nodes] as usize;
+    let mut down_rev_sources = vec![0u32; total_down_rev];
+    let mut down_rev_edge_idx = vec![0usize; total_down_rev];
+    let mut down_rev_insert = vec![0u64; n_nodes];
+
+    for u in 0..n_nodes {
+        let start = topo.down_offsets[u] as usize;
+        let end = topo.down_offsets[u + 1] as usize;
+        for i in start..end {
+            let m = topo.down_targets[i] as usize;
+            let pos = (down_rev_offsets[m] + down_rev_insert[m]) as usize;
+            down_rev_sources[pos] = u as u32;
+            down_rev_edge_idx[pos] = i;
+            down_rev_insert[m] += 1;
+        }
+    }
+    println!("  ✓ Built reverse DOWN adjacency ({} entries)", total_down_rev);
+
+    // Triangle relaxation by apex rank (lowest to highest)
+    // Iterate until convergence (no more updates)
+    println!("\nTriangle relaxation (iterating until convergence)...");
+    let mut total_relaxations = 0u64;
+    let mut pass = 0;
+
+    loop {
+        pass += 1;
+        let mut pass_relaxations = 0u64;
+
+        for rank in 0..n_nodes {
+            if pass == 1 && rank % report_interval == 0 {
+                let pct = (rank as f64 / n_nodes as f64) * 100.0;
+                println!("  Pass 1: {:5.1}% relaxed ({} updates so far)", pct, pass_relaxations);
+            }
+
+            let m = inv_perm[rank] as usize; // Apex node (lowest rank in triangle)
+
+            // For each incoming DOWN edge x→m (i.e., edges from higher-rank nodes to m)
+            let rev_start = down_rev_offsets[m] as usize;
+            let rev_end = down_rev_offsets[m + 1] as usize;
+
+            for i_rev in rev_start..rev_end {
+                let x = down_rev_sources[i_rev] as usize;
+                let edge_idx_xm = down_rev_edge_idx[i_rev];
+                let w_xm = down_weights[edge_idx_xm];
+
+                if w_xm == u32::MAX {
+                    continue;
+                }
+
+                // For each UP edge m→y
+                let up_start = topo.up_offsets[m] as usize;
+                let up_end = topo.up_offsets[m + 1] as usize;
+
+                for i_my in up_start..up_end {
+                    let y = topo.up_targets[i_my] as usize;
+
+                    if y == x {
+                        continue; // Skip self-loop
+                    }
+
+                    let w_my = up_weights[i_my];
+
+                    if w_my == u32::MAX {
+                        continue;
+                    }
+
+                    let new_weight = w_xm.saturating_add(w_my);
+
+                    // Check if x→y edge exists and relax
+                    let rank_x = perm[x];
+                    let rank_y = perm[y];
+
+                    if rank_y > rank_x {
+                        // UP edge from x
+                        if let Some(idx) = find_edge_index(x, y, &topo.up_offsets, &topo.up_targets) {
+                            if new_weight < up_weights[idx] {
+                                up_weights[idx] = new_weight;
+                                pass_relaxations += 1;
+                            }
+                        }
+                    } else {
+                        // DOWN edge from x
+                        if let Some(idx) = find_edge_index(x, y, &topo.down_offsets, &topo.down_targets) {
+                            if new_weight < down_weights[idx] {
+                                down_weights[idx] = new_weight;
+                                pass_relaxations += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        println!("  Pass {}: {} updates", pass, pass_relaxations);
+        total_relaxations += pass_relaxations;
+
+        if pass_relaxations == 0 {
+            break; // Converged
+        }
+
+        if pass >= 100 {
+            println!("  WARNING: Did not converge after 100 passes!");
+            break;
+        }
+    }
+    println!("  ✓ Triangle relaxation complete: {} total updates in {} passes", total_relaxations, pass);
 
     // Detailed sanity check
     let mut up_orig_max = 0usize;
@@ -451,6 +584,31 @@ fn find_edge_weight(
     match slice.binary_search(&v32) {
         Ok(idx) => weights[start + idx],
         Err(_) => u32::MAX,
+    }
+}
+
+/// Find edge index using binary search in CCH CSR
+/// Returns Some(global_index) if edge exists, None otherwise
+#[inline]
+fn find_edge_index(
+    u: usize,
+    v: usize,
+    offsets: &[u64],
+    targets: &[u32],
+) -> Option<usize> {
+    let start = offsets[u] as usize;
+    let end = offsets[u + 1] as usize;
+
+    if start >= end {
+        return None;
+    }
+
+    let slice = &targets[start..end];
+    let v32 = v as u32;
+
+    match slice.binary_search(&v32) {
+        Ok(idx) => Some(start + idx),
+        Err(_) => None,
     }
 }
 
