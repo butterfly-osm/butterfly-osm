@@ -113,12 +113,13 @@ See **[TODO.md](TODO.md)** for the detailed implementation plan, including:
 
 ## Testing
 
-**All tests MUST use `belgium.pbf`** as the reference dataset:
-- ~1.9M NBG nodes, ~4M edges → ~8M EBG nodes
-- Representative European road network with turn restrictions
-- Available from Geofabrik: `https://download.geofabrik.de/europe/belgium-latest.osm.pbf`
+**Belgium is the ONLY test dataset. No other countries.**
 
-Run the full pipeline on Belgium before considering any step complete.
+- File: `belgium.pbf` from Geofabrik
+- ~1.9M NBG nodes, ~4M edges → ~5M EBG nodes
+- All tests, benchmarks, and validation MUST run on Belgium
+- Do NOT create test data for Monaco, Luxembourg, or any other region
+- Run the full pipeline on Belgium before considering any step complete
 
 ## Code Quality Requirements
 
