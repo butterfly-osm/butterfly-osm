@@ -76,7 +76,7 @@ High-performance routing engine using **edge-based CCH** (Customizable Contracti
 | 3 | `step3-nbg` | ✅ | Node-Based Graph (build-time intermediate only) |
 | 4 | `step4-ebg` | ✅ | Edge-Based Graph → `ebg.nodes`, `ebg.csr`, `ebg.turn_table` |
 | 5 | `step5-weights` | ✅ | Per-mode weights → `w.*.u32`, `t.*.u32`, `mask.*.bitset` |
-| 6 | `step6-order` | TODO | **ND ordering on EBG** (not NBG!) |
+| 6 | `step6-order` | ✅ | ND ordering on EBG |
 | 7 | `step7-contract` | TODO | CCH contraction on EBG |
 | 8 | `step8-customize` | TODO | Apply weights to shortcuts |
 
@@ -110,6 +110,27 @@ See **[TODO.md](TODO.md)** for the detailed implementation plan, including:
 - Algorithm details and lock conditions
 - Performance targets
 - "What NOT to do" constraints
+
+## Testing
+
+**All tests MUST use `belgium.pbf`** as the reference dataset:
+- ~1.9M NBG nodes, ~4M edges → ~8M EBG nodes
+- Representative European road network with turn restrictions
+- Available from Geofabrik: `https://download.geofabrik.de/europe/belgium-latest.osm.pbf`
+
+Run the full pipeline on Belgium before considering any step complete.
+
+## Code Quality Requirements
+
+**ABSOLUTE REQUIREMENTS — NO EXCEPTIONS:**
+
+1. **No placeholders** — Every function must be fully implemented
+2. **No code shortcuts** — No "TODO: implement later", no stub functions
+3. **No sloppiness** — Code must be correct, not "good enough"
+4. **Prove it works** — Run on belgium.pbf and verify lock conditions pass
+5. **No assumptions** — If uncertain, investigate; don't guess
+
+**If code cannot be completed correctly, stop and ask rather than writing incomplete code.**
 
 ## Development Principles
 

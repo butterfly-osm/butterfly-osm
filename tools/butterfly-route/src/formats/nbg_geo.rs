@@ -161,8 +161,36 @@ impl NbgGeoFile {
             });
         }
 
-        // For simplicity, skip reading polylines for now (not needed for EBG)
-        let polylines = Vec::new();
+        // Read polylines - stored sequentially: for each edge, all lats then all lons
+        let mut polylines = Vec::with_capacity(n_edges_und as usize);
+        for edge in &edges {
+            let n_pts = edge.n_poly_pts as usize;
+            if n_pts == 0 {
+                polylines.push(PolyLine {
+                    lat_fxp: Vec::new(),
+                    lon_fxp: Vec::new(),
+                });
+                continue;
+            }
+
+            // Read lat values
+            let mut lat_fxp = Vec::with_capacity(n_pts);
+            for _ in 0..n_pts {
+                let mut buf = [0u8; 4];
+                reader.read_exact(&mut buf)?;
+                lat_fxp.push(i32::from_le_bytes(buf));
+            }
+
+            // Read lon values
+            let mut lon_fxp = Vec::with_capacity(n_pts);
+            for _ in 0..n_pts {
+                let mut buf = [0u8; 4];
+                reader.read_exact(&mut buf)?;
+                lon_fxp.push(i32::from_le_bytes(buf));
+            }
+
+            polylines.push(PolyLine { lat_fxp, lon_fxp });
+        }
 
         Ok(NbgGeo {
             n_edges_und,

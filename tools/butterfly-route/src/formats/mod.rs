@@ -26,6 +26,9 @@ pub mod mod_weights;
 pub mod mod_turns;
 pub mod mod_mask;
 
+// Step 6 formats
+pub mod order_ebg;
+
 pub use ways::{Way, WaysFile};
 pub use relations::{Member, MemberKind, Relation, RelationsFile};
 pub use way_attrs::WayAttr;
@@ -39,3 +42,4 @@ pub use ebg_turn_table::{TurnEntry, TurnKind, TurnTable, TurnTableFile};
 pub use mod_weights::ModWeights;
 pub use mod_turns::ModTurns;
 pub use mod_mask::ModMask;
+pub use order_ebg::{OrderEbg, OrderEbgFile};

@@ -13,7 +13,7 @@ Build a routing engine with **exact turn-aware isochrones** and **OSRM-class spe
 
 ## Completed Steps
 
-### Step 1-5: Data Pipeline ✅
+### Step 1-6: Data Pipeline ✅
 
 | Step | Output | Description |
 |------|--------|-------------|
@@ -22,44 +22,7 @@ Build a routing engine with **exact turn-aware isochrones** and **OSRM-class spe
 | 3 | `nbg.csr`, `nbg.geo`, `nbg.node_map` | Node-Based Graph (intermediate) |
 | 4 | `ebg.nodes`, `ebg.csr`, `ebg.turn_table` | Edge-Based Graph (THE routing graph) |
 | 5 | `w.*.u32`, `t.*.u32`, `mask.*.bitset` | Per-mode edge weights and turn penalties |
-
----
-
-## Step 6: CCH Ordering on EBG
-
-### Objective
-
-Compute a **single, high-quality elimination order** on the **EBG** (not NBG!) that is:
-- Weight-independent (used by CCH for all modes)
-- Deterministic (byte-for-byte reproducible)
-- Good separators (balanced, small edge cuts)
-
-### Inputs
-
-- `ebg.csr` — Edge-based graph CSR
-- `ebg.nodes` — Node metadata (for coordinates via NBG linkage)
-- `nbg.geo` — Geometry (for inertial partitioning coordinates)
-
-### Outputs
-
-1. `order.ebg` — Permutation array: `perm[old_ebg_node] → rank`
-2. `ebg.order.lock.json` — Lock file with SHA-256 and quality metrics
-
-### Algorithm
-
-Same nested dissection as before, but on EBG nodes:
-1. Inertial partitioning via PCA on node coordinates
-2. Histogram-based O(n) median selection
-3. Boundary ring extraction + greedy minimum node cover
-4. FM refinement on ring (1-2 passes)
-5. Parallel recursion with Rayon (leaf threshold ~8k-16k)
-
-### Lock Conditions
-
-- A.1: `perm` is a valid permutation of `[0..n_ebg_nodes)`
-- B.3: Balance ∈ [0.4, 0.6] for all non-leaf splits
-- B.4: Separator size ≤ 12% for all splits
-- B.5: Edge-cut efficiency cut_per_k ≤ 50 for 90% of splits
+| 6 | `order.ebg` | CCH ordering on EBG via nested dissection |
 
 ---
 
