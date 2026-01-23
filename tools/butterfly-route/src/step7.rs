@@ -1,12 +1,50 @@
-///! Step 7: CCH Contraction
-///!
-///! Builds the CCH topology (shortcuts) using the EBG ordering.
-///! Uses streaming to disk to avoid memory explosion.
-///!
-///! Key optimization: **Witness Search**
-///! Before adding a shortcut (u, w) when contracting v, we check if there's
-///! already a path u → x → w through some other higher-ranked node x.
-///! If such a witness path exists, the shortcut is redundant and skipped.
+//! Step 7: CCH Contraction
+//!
+//! Builds the Customizable Contraction Hierarchy (CCH) topology from the Edge-Based
+//! Graph (EBG) using a pre-computed Nested Dissection ordering.
+//!
+//! # Algorithm Overview
+//!
+//! CCH contraction processes nodes in rank order (lowest first). For each node v being
+//! contracted, we examine all pairs (u, w) where:
+//! - u is an in-neighbor of v with rank > rank(v)
+//! - w is an out-neighbor of v with rank > rank(v)
+//!
+//! A shortcut edge (u → w) via v is added only if:
+//! 1. The direct edge (u → w) doesn't already exist
+//! 2. No witness path u → ... → w exists through other higher-ranked nodes
+//!
+//! # Key Optimization: Witness Search
+//!
+//! The witness search is critical for reducing shortcut count. Without it, Belgium
+//! generates 2.45B shortcuts (167x ratio). With depth-3 witness search, this drops
+//! to 45.7M shortcuts (3.12x ratio) - a 54x reduction.
+//!
+//! The witness search checks:
+//! - Depth-2 forward: u → x → w (where x ≠ v)
+//! - Depth-2 backward: u → x → w via in-neighbors of w
+//! - Depth-3 forward: u → x → y → w
+//! - Depth-3 backward: u → x → y → w via in-neighbors
+//!
+//! # Memory Management
+//!
+//! - Shortcuts are streamed to a temp file during contraction to avoid memory explosion
+//! - Adjacency lists use HashSet for O(1) lookups during witness search
+//! - Final up/down graphs are built by streaming through the temp file twice
+//!
+//! # Parallelism Strategy
+//!
+//! - Node contraction is sequential (required for correctness - each node must see
+//!   shortcuts from previously contracted nodes)
+//! - Inner shortcut computation is parallel for high-degree nodes (work > 1000 pairs)
+//! - Initial adjacency building and final sorting are fully parallel
+//!
+//! # Output
+//!
+//! Produces `cch.topo` containing:
+//! - Up graph: edges from lower-ranked to higher-ranked nodes (for forward search)
+//! - Down graph: edges from higher-ranked to lower-ranked nodes (for backward search)
+//! - Middle pointers for shortcut unpacking during path reconstruction
 
 use anyhow::Result;
 use rayon::prelude::*;
@@ -18,7 +56,26 @@ use std::path::PathBuf;
 use crate::formats::{CchTopo, CchTopoFile, EbgCsrFile, OrderEbgFile};
 
 /// Check if there's a witness path u → ... → w (not through v) using depth-3 search.
-/// Returns true if a witness exists (meaning we DON'T need the shortcut).
+///
+/// A witness path is an alternate route from u to w that doesn't go through the node
+/// being contracted (v). If such a path exists, the shortcut (u → w) via v is redundant.
+///
+/// # Algorithm
+///
+/// Performs bidirectional bounded search:
+/// 1. **Depth-2 forward**: Check if any out-neighbor x of u has w as an out-neighbor
+/// 2. **Depth-2 backward**: Check if any in-neighbor x of w is an out-neighbor of u
+/// 3. **Depth-3 forward**: Check u → x → y → w for all x, y
+/// 4. **Depth-3 backward**: Check if u can reach any in-neighbor of an in-neighbor of w
+///
+/// # Performance
+///
+/// Uses HashSet for O(1) membership tests. The function is marked `#[inline]` since it's
+/// called in a tight loop during contraction.
+///
+/// # Returns
+///
+/// `true` if a witness exists (DON'T add shortcut), `false` if shortcut is needed.
 #[inline]
 fn has_witness(
     u: usize,
