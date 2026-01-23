@@ -6,7 +6,7 @@
 //! - Step 3: Node-Based Graph - Mode-agnostic road/ferry topology (build-time intermediate)
 //! - Step 4: Edge-Based Graph - Turn-expanded graph with mode masks (THE routing graph)
 //! - Step 5: Per-mode weights & masks - Mode-specific traversal costs on EBG
-//! - Step 6: CCH ordering on EBG - Nested dissection for contraction (TODO)
+//! - Step 6: CCH ordering on EBG - Nested dissection for contraction
 //! - Step 7: CCH contraction - Build hierarchy (TODO)
 //! - Step 8: Customization - Apply weights to shortcuts (TODO)
 //!
@@ -23,6 +23,7 @@ pub mod profile;
 pub mod nbg;
 pub mod ebg;
 pub mod step5;
+pub mod step6;
 
 pub use formats::{WaysFile, RelationsFile};
 pub use validate::{LockFile, Step2LockFile};

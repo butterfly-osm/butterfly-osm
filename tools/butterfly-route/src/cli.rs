@@ -5,11 +5,12 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use crate::ingest::{run_ingest, IngestConfig};
-use crate::validate::{verify_lock_conditions, validate_step4, validate_step5, Counts, LockFile};
+use crate::validate::{verify_lock_conditions, validate_step4, validate_step5, validate_step6, Counts, LockFile};
 use crate::profile::{run_profiling, ProfileConfig};
 use crate::nbg::{build_nbg, NbgConfig};
 use crate::ebg::{build_ebg, EbgConfig};
 use crate::step5;
+use crate::step6;
 
 #[derive(Parser)]
 #[command(name = "butterfly-route")]
@@ -160,6 +161,32 @@ pub enum Commands {
         outdir: PathBuf,
     },
 
+    /// Step 6: Generate CCH ordering on EBG via nested dissection
+    Step6Order {
+        /// Path to ebg.csr from Step 4
+        #[arg(long)]
+        ebg_csr: PathBuf,
+
+        /// Path to ebg.nodes from Step 4
+        #[arg(long)]
+        ebg_nodes: PathBuf,
+
+        /// Path to nbg.geo from Step 3 (for coordinates)
+        #[arg(long)]
+        nbg_geo: PathBuf,
+
+        /// Output directory for order.ebg
+        #[arg(short, long)]
+        outdir: PathBuf,
+
+        /// Leaf threshold for recursion (default: 8192)
+        #[arg(long, default_value = "8192")]
+        leaf_threshold: usize,
+
+        /// Balance epsilon (default: 0.05)
+        #[arg(long, default_value = "0.05")]
+        balance_eps: f32,
+    },
 }
 
 impl Cli {
@@ -385,6 +412,39 @@ impl Cli {
 
                 println!();
                 println!("✅ Step 5 weights validation complete!");
+                println!("📋 Lock file: {}", lock_path.display());
+
+                Ok(())
+            }
+            Commands::Step6Order {
+                ebg_csr,
+                ebg_nodes,
+                nbg_geo,
+                outdir,
+                leaf_threshold,
+                balance_eps,
+            } => {
+                let config = step6::Step6Config {
+                    ebg_csr_path: ebg_csr.clone(),
+                    ebg_nodes_path: ebg_nodes,
+                    nbg_geo_path: nbg_geo,
+                    outdir: outdir.clone(),
+                    leaf_threshold,
+                    balance_eps,
+                };
+
+                let result = step6::generate_ordering(config)?;
+
+                // Run validation and generate lock file
+                println!();
+                let lock_file = validate_step6(&result, &ebg_csr)?;
+
+                let lock_path = outdir.join("step6.lock.json");
+                let lock_json = serde_json::to_string_pretty(&lock_file)?;
+                std::fs::write(&lock_path, lock_json)?;
+
+                println!();
+                println!("✅ Step 6 ordering complete!");
                 println!("📋 Lock file: {}", lock_path.display());
 
                 Ok(())
