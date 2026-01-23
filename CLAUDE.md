@@ -149,8 +149,22 @@ See **[todo_immediate.md](todo_immediate.md)** for immediate bugs and fixes that
 - Lock conditions must pass before proceeding to next step
 - **One graph, one hierarchy, one query engine** — no separate backends for different query types
 
-## Gemini Integration
+## AI Code Review
 
-When consulting Gemini (only if explicitly requested):
-- Use 5 minute timeout
-- If rate limited: `gemini -m gemini-flash-2.5 -p "short prompt with full file paths"`
+When consulting AI reviewers (Gemini and Codex), **ALWAYS run them in parallel**:
+
+```bash
+# CORRECT - parallel execution
+timeout 300 gemini -m gemini-2.5-pro -p "prompt" &
+timeout 300 codex -q "prompt" &
+wait
+
+# WRONG - sequential execution (wastes time)
+timeout 300 gemini -m gemini-2.5-pro -p "prompt"
+timeout 300 codex -q "prompt"
+```
+
+Tips:
+- Use 5 minute timeout for complex reviews
+- If Gemini rate limited: `gemini -m gemini-flash-2.5 -p "shorter prompt"`
+- Codex uses `-q` flag for queries, `-p` for prompts with context

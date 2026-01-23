@@ -151,11 +151,25 @@ Verify and document that `w.*.u32[node_id]` = traversal cost of EBG node (direct
 **Unreachable edge analysis:**
 | Mode | Original | Shortcuts | Total |
 |------|----------|-----------|-------|
-| Car  | 52% | 75-85% | 74% |
+| Car  | 51% | 75-84% | 73% |
 | Bike | 4% | 16-30% | 20% |
 | Foot | 1% | 7-17% | 10% |
 
 The high unreachable percentage for car mode reflects real-world access restrictions (pedestrian paths, one-way streets, etc.). Shortcuts cascade unreachability: if either leg is unreachable, the shortcut is unreachable.
+
+## Step 9 Requirement: Smart Snapping
+
+The 51% car-inaccessible rate is correct preprocessing - it includes:
+- Footways, cycleways, pedestrian paths (both directions blocked)
+- One-way streets (reverse direction blocked)
+- Private roads, no-access roads
+
+**Query-time solution:** Snap to nearest **accessible** node:
+1. Find K nearest EBG nodes using spatial index
+2. Filter to nodes with `mask.*.bitset[node_id] == 1` (mode-accessible)
+3. Snap to nearest accessible node
+
+This ensures users always start from a car-accessible road segment.
 
 ---
 
