@@ -41,6 +41,10 @@ data/
 *~
 .DS_Store
 
+# Profiling
+perf.data
+perf.data.old
+
 # Docker
 .dockerignore
 

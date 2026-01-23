@@ -21,6 +21,9 @@ pub use step5::{Step5LockFile, validate_step5};
 pub mod step6;
 pub use step6::{Step6LockFile, validate_step6};
 
+pub mod step7;
+pub use step7::{Step7LockFile, validate_step7};
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BBox {
     pub min_lat: f64,

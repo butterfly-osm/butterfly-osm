@@ -5,12 +5,13 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use crate::ingest::{run_ingest, IngestConfig};
-use crate::validate::{verify_lock_conditions, validate_step4, validate_step5, validate_step6, Counts, LockFile};
+use crate::validate::{verify_lock_conditions, validate_step4, validate_step5, validate_step6, validate_step7, Counts, LockFile};
 use crate::profile::{run_profiling, ProfileConfig};
 use crate::nbg::{build_nbg, NbgConfig};
 use crate::ebg::{build_ebg, EbgConfig};
 use crate::step5;
 use crate::step6;
+use crate::step7;
 
 #[derive(Parser)]
 #[command(name = "butterfly-route")]
@@ -186,6 +187,21 @@ pub enum Commands {
         /// Balance epsilon (default: 0.05)
         #[arg(long, default_value = "0.05")]
         balance_eps: f32,
+    },
+
+    /// Step 7: Build CCH topology via contraction
+    Step7Contract {
+        /// Path to ebg.csr from Step 4
+        #[arg(long)]
+        ebg_csr: PathBuf,
+
+        /// Path to order.ebg from Step 6
+        #[arg(long)]
+        order: PathBuf,
+
+        /// Output directory for cch.topo
+        #[arg(short, long)]
+        outdir: PathBuf,
     },
 }
 
@@ -445,6 +461,33 @@ impl Cli {
 
                 println!();
                 println!("✅ Step 6 ordering complete!");
+                println!("📋 Lock file: {}", lock_path.display());
+
+                Ok(())
+            }
+            Commands::Step7Contract {
+                ebg_csr,
+                order,
+                outdir,
+            } => {
+                let config = step7::Step7Config {
+                    ebg_csr_path: ebg_csr.clone(),
+                    order_path: order.clone(),
+                    outdir: outdir.clone(),
+                };
+
+                let result = step7::build_cch_topology(config)?;
+
+                // Run validation and generate lock file
+                println!();
+                let lock_file = validate_step7(&result, &ebg_csr, &order)?;
+
+                let lock_path = outdir.join("step7.lock.json");
+                let lock_json = serde_json::to_string_pretty(&lock_file)?;
+                std::fs::write(&lock_path, lock_json)?;
+
+                println!();
+                println!("✅ Step 7 CCH contraction complete!");
                 println!("📋 Lock file: {}", lock_path.display());
 
                 Ok(())
