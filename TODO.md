@@ -13,7 +13,7 @@ Build a routing engine with **exact turn-aware isochrones** and **OSRM-class spe
 
 ## Completed Steps
 
-### Step 1-6: Data Pipeline ✅
+### Step 1-7: Data Pipeline + CCH Topology ✅
 
 | Step | Output | Description |
 |------|--------|-------------|
@@ -23,31 +23,13 @@ Build a routing engine with **exact turn-aware isochrones** and **OSRM-class spe
 | 4 | `ebg.nodes`, `ebg.csr`, `ebg.turn_table` | Edge-Based Graph (THE routing graph) |
 | 5 | `w.*.u32`, `t.*.u32`, `mask.*.bitset` | Per-mode edge weights and turn penalties |
 | 6 | `order.ebg` | CCH ordering on EBG via nested dissection |
+| 7 | `cch.topo` | CCH contraction (shortcuts topology) |
 
----
-
-## Step 7: CCH Contraction
-
-### Objective
-
-Build the CCH topology (shortcuts) using the EBG ordering.
-
-### Inputs
-
-- `ebg.csr`, `ebg.turn_table`
-- `order.ebg`
-
-### Outputs
-
-- `cch.topo` — Shortcut topology (which shortcuts exist)
-- `cch.topo.lock.json`
-
-### Algorithm
-
-Standard CCH contraction:
-1. Process nodes in elimination order
-2. For each contracted node, add shortcuts between remaining neighbors
-3. Store shortcut topology (metric-independent)
+**Step 7 Performance (Belgium):**
+- 45.7M shortcuts (3.12x ratio)
+- 595MB output
+- 55s build time
+- Depth-3 witness search, FxHashSet, parallel edge filling
 
 ---
 
