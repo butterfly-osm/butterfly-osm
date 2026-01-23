@@ -44,6 +44,11 @@ data/
 # Profiling
 perf.data
 perf.data.old
+flamegraph.svg
+*.perf
+
+# CCH build temporaries (normally cleaned up, but just in case)
+shortcuts.tmp
 
 # Docker
 .dockerignore
