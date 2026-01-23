@@ -2,6 +2,11 @@
 ///!
 ///! Builds the CCH topology (shortcuts) using the EBG ordering.
 ///! Uses streaming to disk to avoid memory explosion.
+///!
+///! Key optimization: **Witness Search**
+///! Before adding a shortcut (u, w) when contracting v, we check if there's
+///! already a path u → x → w through some other higher-ranked node x.
+///! If such a witness path exists, the shortcut is redundant and skipped.
 
 use anyhow::Result;
 use rayon::prelude::*;
@@ -11,6 +16,74 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 
 use crate::formats::{CchTopo, CchTopoFile, EbgCsrFile, OrderEbgFile};
+
+/// Check if there's a witness path u → ... → w (not through v) using depth-3 search.
+/// Returns true if a witness exists (meaning we DON'T need the shortcut).
+#[inline]
+fn has_witness(
+    u: usize,
+    w: u32,
+    v: u32,
+    out_higher: &[HashSet<u32>],
+    in_higher: &[HashSet<u32>],
+) -> bool {
+    let w_idx = w as usize;
+
+    // Depth-2 forward check: u → x → w
+    for &x in &out_higher[u] {
+        if x == v {
+            continue;
+        }
+        if out_higher[x as usize].contains(&w) {
+            return true;
+        }
+    }
+
+    // Depth-2 backward check: u → x → w via in_higher of w
+    for &x in &in_higher[w_idx] {
+        if x == v {
+            continue;
+        }
+        if out_higher[u].contains(&x) {
+            return true;
+        }
+    }
+
+    // Depth-3 check: u → x → y → w
+    // Forward from u: check if any neighbor of u can reach w in 2 hops
+    for &x in &out_higher[u] {
+        if x == v {
+            continue;
+        }
+        let x_idx = x as usize;
+        for &y in &out_higher[x_idx] {
+            if y == v {
+                continue;
+            }
+            if out_higher[y as usize].contains(&w) {
+                return true;
+            }
+        }
+    }
+
+    // Depth-3 backward check: u → x → y → w via in_higher
+    for &y in &in_higher[w_idx] {
+        if y == v {
+            continue;
+        }
+        let y_idx = y as usize;
+        for &x in &in_higher[y_idx] {
+            if x == v {
+                continue;
+            }
+            if out_higher[u].contains(&x) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
 
 /// Configuration for Step 7
 pub struct Step7Config {
@@ -141,10 +214,13 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
             max_degree_seen = degree;
         }
 
-        // Compute shortcuts - parallel for large neighborhoods
+        // Compute shortcuts with WITNESS SEARCH - parallel for large neighborhoods
+        // A shortcut (u, w) is only needed if there's no witness path u → x → w
+        // through some other higher-ranked node x (not v)
         let work_amount = in_neighbors.len() * out_neighbors.len();
         let out_higher_ref = &out_higher;
         let in_higher_ref = &in_higher;
+        let v_u32 = v as u32;
 
         let new_shortcuts: Vec<(u32, u32)> = if work_amount > 1000 {
             // Parallel computation for high-degree nodes
@@ -156,15 +232,28 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
                     out_neighbors
                         .iter()
                         .filter_map(move |&w| {
-                            if u == w { return None; }
+                            if u == w {
+                                return None;
+                            }
                             let w_idx = w as usize;
                             let rank_w = perm[w_idx];
+
+                            // Check 1: Direct edge already exists?
                             let already_exists = if rank_w > rank_u {
                                 out_higher_ref[u_idx].contains(&w)
                             } else {
                                 in_higher_ref[w_idx].contains(&u)
                             };
-                            if already_exists { None } else { Some((u, w)) }
+                            if already_exists {
+                                return None;
+                            }
+
+                            // Check 2: Witness path exists? (depth-2 search)
+                            if has_witness(u_idx, w, v_u32, out_higher_ref, in_higher_ref) {
+                                return None;
+                            }
+
+                            Some((u, w))
                         })
                         .collect::<Vec<_>>()
                 })
@@ -176,17 +265,28 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
                 let u_idx = u as usize;
                 let rank_u = perm[u_idx];
                 for &w in &out_neighbors {
-                    if u == w { continue; }
+                    if u == w {
+                        continue;
+                    }
                     let w_idx = w as usize;
                     let rank_w = perm[w_idx];
+
+                    // Check 1: Direct edge already exists?
                     let already_exists = if rank_w > rank_u {
                         out_higher[u_idx].contains(&w)
                     } else {
                         in_higher[w_idx].contains(&u)
                     };
-                    if !already_exists {
-                        result.push((u, w));
+                    if already_exists {
+                        continue;
                     }
+
+                    // Check 2: Witness path exists? (depth-2 search)
+                    if has_witness(u_idx, w, v_u32, &out_higher, &in_higher) {
+                        continue;
+                    }
+
+                    result.push((u, w));
                 }
             }
             result
