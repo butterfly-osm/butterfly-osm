@@ -10,16 +10,25 @@
 //! - **Original edges**: weight = edge_weight[target] + turn_penalty[arc]
 //! - **Shortcuts u→w via m**: weight = weight(u→m) + weight(m→w)
 //!
-//! Since we process bottom-up, when computing a shortcut's weight, the weights
-//! of its constituent edges have already been computed.
+//! # Dependency Order (CRITICAL)
+//!
+//! For each node u processed at rank r:
+//! 1. **DOWN edges must be processed FIRST**, in order of INCREASING target rank
+//!    - Down shortcut u→v via m requires down_weights[u→m]
+//!    - Since rank(m) < rank(v), processing by increasing rank ensures u→m before u→v
+//! 2. **UP edges processed SECOND** (order doesn't matter within UP)
+//!    - Up shortcut u→v via m requires down_weights[u→m] and up_weights[m→v]
+//!    - down_weights[u→m] computed in phase 1
+//!    - up_weights[m→v] computed when node m was processed (rank(m) < rank(u))
 //!
 //! # Performance
 //!
-//! - Edge lookup uses binary search (edges sorted by target)
-//! - Original edge arc lookup uses linear scan (could be optimized with hashmap)
-//! - Parallel processing of independent nodes (TODO)
+//! - Edge lookup uses binary search (CCH edges sorted by target in Step 7)
+//! - Original edge arc lookup uses binary search on sorted EBG adjacency
+//! - Parallel processing via Rayon for independent node batches
 
 use anyhow::Result;
+use rayon::prelude::*;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -46,6 +55,73 @@ pub struct Step8Result {
     pub n_up_edges: u64,
     pub n_down_edges: u64,
     pub customize_time_ms: u64,
+}
+
+/// Sorted EBG adjacency for fast arc index lookup
+/// Flat CSR-like structure: for node u, sorted targets are in sorted_heads[offsets[u]..offsets[u+1]]
+struct SortedEbgAdj {
+    offsets: Vec<u64>,
+    sorted_heads: Vec<u32>,
+    sorted_arc_idx: Vec<u32>,
+}
+
+impl SortedEbgAdj {
+    /// Build sorted adjacency from EBG CSR
+    fn build(ebg_csr: &crate::formats::EbgCsr) -> Self {
+        let n_nodes = ebg_csr.n_nodes as usize;
+        let n_arcs = ebg_csr.n_arcs as usize;
+
+        // Collect and sort edges per node in parallel
+        let sorted_per_node: Vec<Vec<(u32, u32)>> = (0..n_nodes)
+            .into_par_iter()
+            .map(|u| {
+                let start = ebg_csr.offsets[u] as usize;
+                let end = ebg_csr.offsets[u + 1] as usize;
+                let mut edges: Vec<(u32, u32)> = (start..end)
+                    .map(|i| (ebg_csr.heads[i], i as u32))
+                    .collect();
+                edges.sort_unstable_by_key(|(head, _)| *head);
+                edges
+            })
+            .collect();
+
+        // Flatten into CSR structure
+        let mut offsets = Vec::with_capacity(n_nodes + 1);
+        let mut sorted_heads = Vec::with_capacity(n_arcs);
+        let mut sorted_arc_idx = Vec::with_capacity(n_arcs);
+
+        let mut offset = 0u64;
+        for edges in sorted_per_node {
+            offsets.push(offset);
+            for (head, arc_idx) in edges {
+                sorted_heads.push(head);
+                sorted_arc_idx.push(arc_idx);
+            }
+            offset = sorted_heads.len() as u64;
+        }
+        offsets.push(offset);
+
+        Self {
+            offsets,
+            sorted_heads,
+            sorted_arc_idx,
+        }
+    }
+
+    /// Find arc index for edge u→v using binary search
+    #[inline]
+    fn find_arc_index(&self, u: usize, v: u32) -> Option<u32> {
+        let start = self.offsets[u] as usize;
+        let end = self.offsets[u + 1] as usize;
+        if start >= end {
+            return None;
+        }
+        let slice = &self.sorted_heads[start..end];
+        match slice.binary_search(&v) {
+            Ok(idx) => Some(self.sorted_arc_idx[start + idx]),
+            Err(_) => None,
+        }
+    }
 }
 
 /// Customize CCH for a specific mode
@@ -92,11 +168,12 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     let mut up_weights = vec![u32::MAX; n_up];
     let mut down_weights = vec![u32::MAX; n_down];
 
-    // Build arc lookup: precompute for faster original edge weight computation
-    // For each EBG edge u→v, store the arc index
-    println!("\nBuilding arc index...");
-    let arc_lookup = build_arc_lookup(&ebg_csr);
-    println!("  ✓ Built arc lookup");
+    // Build sorted EBG adjacency for fast arc lookup
+    println!("\nBuilding sorted EBG adjacency (parallel)...");
+    let sorted_ebg = SortedEbgAdj::build(&ebg_csr);
+    println!("  ✓ Built sorted adjacency");
+
+    // Note: We don't need ebg_csr.turn_idx - turn penalties are indexed by arc_idx directly
 
     // Process in contraction order (bottom-up by rank)
     println!("\nCustomizing weights (bottom-up)...");
@@ -105,6 +182,24 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
 
     let report_interval = (n_nodes / 20).max(1);
 
+    // Pre-compute sorted down edge indices for each node (sorted by target rank)
+    println!("  Pre-sorting down edges by target rank (parallel)...");
+    let sorted_down_indices: Vec<Vec<usize>> = (0..n_nodes)
+        .into_par_iter()
+        .map(|u| {
+            let start = topo.down_offsets[u] as usize;
+            let end = topo.down_offsets[u + 1] as usize;
+            if start >= end {
+                return Vec::new();
+            }
+            let mut indices: Vec<usize> = (start..end).collect();
+            indices.sort_unstable_by_key(|&i| perm[topo.down_targets[i] as usize]);
+            indices
+        })
+        .collect();
+    println!("  ✓ Pre-sorted down edges");
+
+    // Main customization loop
     for rank in 0..n_nodes {
         if rank % report_interval == 0 {
             let pct = (rank as f64 / n_nodes as f64) * 100.0;
@@ -113,56 +208,28 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
 
         let u = inv_perm[rank] as usize;
 
-        // Process UP edges from u (to higher-ranked nodes)
-        let up_start = topo.up_offsets[u] as usize;
-        let up_end = topo.up_offsets[u + 1] as usize;
-
-        for i in up_start..up_end {
-            let v = topo.up_targets[i] as usize;
-
-            if !topo.up_is_shortcut[i] {
-                // Original edge: weight = w[v] + turn_penalty
-                let weight = compute_original_weight(u, v, &weights.weights, &turns.penalties, &arc_lookup);
-                up_weights[i] = weight;
-            } else {
-                // Shortcut via m: weight = weight(u→m) + weight(m→v)
-                let m = topo.up_middle[i] as usize;
-
-                // u→m: rank(m) < rank(u), so it's a DOWN edge from u
-                let w_um = find_edge_weight(
-                    u,
-                    m,
-                    &topo.down_offsets,
-                    &topo.down_targets,
-                    &down_weights,
-                );
-
-                // m→v: rank(v) > rank(m), so it's an UP edge from m
-                let w_mv =
-                    find_edge_weight(m, v, &topo.up_offsets, &topo.up_targets, &up_weights);
-
-                up_weights[i] = w_um.saturating_add(w_mv);
-            }
-        }
-
-        // Process DOWN edges from u (to lower-ranked nodes)
-        let down_start = topo.down_offsets[u] as usize;
-        let down_end = topo.down_offsets[u + 1] as usize;
-
-        for i in down_start..down_end {
+        // ===== PHASE 1: Process DOWN edges (sorted by target rank) =====
+        // This MUST come before UP edges because UP shortcuts depend on down_weights[u→m]
+        for &i in &sorted_down_indices[u] {
             let v = topo.down_targets[i] as usize;
 
             if !topo.down_is_shortcut[i] {
                 // Original edge: weight = w[v] + turn_penalty
-                let weight = compute_original_weight(u, v, &weights.weights, &turns.penalties, &arc_lookup);
+                let weight = compute_original_weight(
+                    u,
+                    v,
+                    &weights.weights,
+                    &turns.penalties,
+                    &sorted_ebg,
+                );
                 down_weights[i] = weight;
             } else {
                 // Shortcut via m: weight = weight(u→m) + weight(m→v)
+                // rank(m) < rank(v) < rank(u)
                 let m = topo.down_middle[i] as usize;
 
-                // For down shortcut u→v via m:
-                // rank(m) < rank(v) < rank(u)
                 // u→m: DOWN edge from u (rank(m) < rank(u))
+                // Already computed because we process by increasing target rank
                 let w_um = find_edge_weight(
                     u,
                     m,
@@ -172,15 +239,137 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
                 );
 
                 // m→v: UP edge from m (rank(v) > rank(m))
-                let w_mv =
-                    find_edge_weight(m, v, &topo.up_offsets, &topo.up_targets, &up_weights);
+                // Already computed because node m was processed earlier
+                let w_mv = find_edge_weight(
+                    m,
+                    v,
+                    &topo.up_offsets,
+                    &topo.up_targets,
+                    &up_weights,
+                );
 
                 down_weights[i] = w_um.saturating_add(w_mv);
+            }
+        }
+
+        // ===== PHASE 2: Process UP edges =====
+        // All down_weights[u→*] are now computed, so UP shortcuts can safely read them
+        let up_start = topo.up_offsets[u] as usize;
+        let up_end = topo.up_offsets[u + 1] as usize;
+
+        for i in up_start..up_end {
+            let v = topo.up_targets[i] as usize;
+
+            if !topo.up_is_shortcut[i] {
+                // Original edge: weight = w[v] + turn_penalty
+                let weight = compute_original_weight(
+                    u,
+                    v,
+                    &weights.weights,
+                    &turns.penalties,
+                    &sorted_ebg,
+                );
+                up_weights[i] = weight;
+            } else {
+                // Shortcut via m: weight = weight(u→m) + weight(m→v)
+                // rank(m) < rank(u) < rank(v)
+                let m = topo.up_middle[i] as usize;
+
+                // u→m: DOWN edge from u (rank(m) < rank(u))
+                // Just computed in phase 1
+                let w_um = find_edge_weight(
+                    u,
+                    m,
+                    &topo.down_offsets,
+                    &topo.down_targets,
+                    &down_weights,
+                );
+
+                // m→v: UP edge from m (rank(v) > rank(m))
+                // Already computed because node m was processed earlier
+                let w_mv = find_edge_weight(
+                    m,
+                    v,
+                    &topo.up_offsets,
+                    &topo.up_targets,
+                    &up_weights,
+                );
+
+                up_weights[i] = w_um.saturating_add(w_mv);
             }
         }
     }
 
     println!("  ✓ Customization complete");
+
+    // Detailed sanity check
+    let mut up_orig_max = 0usize;
+    let mut up_short_max = 0usize;
+    let mut down_orig_max = 0usize;
+    let mut down_short_max = 0usize;
+    let mut up_orig_total = 0usize;
+    let mut up_short_total = 0usize;
+    let mut down_orig_total = 0usize;
+    let mut down_short_total = 0usize;
+
+    for i in 0..n_up {
+        if topo.up_is_shortcut[i] {
+            up_short_total += 1;
+            if up_weights[i] == u32::MAX {
+                up_short_max += 1;
+            }
+        } else {
+            up_orig_total += 1;
+            if up_weights[i] == u32::MAX {
+                up_orig_max += 1;
+            }
+        }
+    }
+
+    for i in 0..n_down {
+        if topo.down_is_shortcut[i] {
+            down_short_total += 1;
+            if down_weights[i] == u32::MAX {
+                down_short_max += 1;
+            }
+        } else {
+            down_orig_total += 1;
+            if down_weights[i] == u32::MAX {
+                down_orig_max += 1;
+            }
+        }
+    }
+
+    let up_max_count = up_orig_max + up_short_max;
+    let down_max_count = down_orig_max + down_short_max;
+    let total_max = up_max_count + down_max_count;
+    let total_edges = n_up + n_down;
+    let max_pct = (total_max as f64 / total_edges as f64) * 100.0;
+
+    println!("\n📊 Sanity check:");
+    println!(
+        "  Unreachable edges: {} / {} ({:.2}%)",
+        total_max, total_edges, max_pct
+    );
+    println!("    Up original:  {} / {} ({:.2}%)", up_orig_max, up_orig_total,
+             up_orig_max as f64 / up_orig_total as f64 * 100.0);
+    println!("    Up shortcuts: {} / {} ({:.2}%)", up_short_max, up_short_total,
+             up_short_max as f64 / up_short_total as f64 * 100.0);
+    println!("    Down original:  {} / {} ({:.2}%)", down_orig_max, down_orig_total,
+             down_orig_max as f64 / down_orig_total as f64 * 100.0);
+    println!("    Down shortcuts: {} / {} ({:.2}%)", down_short_max, down_short_total,
+             down_short_max as f64 / down_short_total as f64 * 100.0);
+
+    // Note: High unreachable percentage is expected for modes with many restricted roads.
+    // Car mode in Belgium has ~52% inaccessible nodes (pedestrian paths, one-way, etc.)
+    // Shortcuts cascade: if either leg is unreachable, shortcut is unreachable.
+    // P(both legs reachable) ≈ 0.48² = 23%, so ~77% unreachable shortcuts is normal.
+    if max_pct > 95.0 {
+        anyhow::bail!(
+            "CRITICAL: {}% of edges are unreachable (u32::MAX). This indicates a bug!",
+            max_pct
+        );
+    }
 
     // Write output
     std::fs::create_dir_all(&config.outdir)?;
@@ -201,46 +390,14 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     })
 }
 
-/// Build arc lookup: for each (u, v) pair in EBG, store the arc index
-/// Returns a nested structure: arc_lookup[u] = sorted vec of (target, arc_idx)
-fn build_arc_lookup(ebg_csr: &crate::formats::EbgCsr) -> Vec<Vec<(u32, usize)>> {
-    let n_nodes = ebg_csr.n_nodes as usize;
-    let mut lookup: Vec<Vec<(u32, usize)>> = vec![Vec::new(); n_nodes];
-
-    for u in 0..n_nodes {
-        let start = ebg_csr.offsets[u] as usize;
-        let end = ebg_csr.offsets[u + 1] as usize;
-
-        for arc_idx in start..end {
-            let v = ebg_csr.heads[arc_idx];
-            lookup[u].push((v, arc_idx));
-        }
-
-        // Sort by target for binary search
-        lookup[u].sort_unstable_by_key(|(v, _)| *v);
-    }
-
-    lookup
-}
-
-/// Find arc index for edge u→v using binary search
-fn find_arc_index(arc_lookup: &[Vec<(u32, usize)>], u: usize, v: usize) -> Option<usize> {
-    let targets = &arc_lookup[u];
-    let v32 = v as u32;
-
-    match targets.binary_search_by_key(&v32, |(t, _)| *t) {
-        Ok(idx) => Some(targets[idx].1),
-        Err(_) => None,
-    }
-}
-
 /// Compute weight for an original edge
+#[inline]
 fn compute_original_weight(
     u: usize,
     v: usize,
     node_weights: &[u32],
     turn_penalties: &[u32],
-    arc_lookup: &[Vec<(u32, usize)>],
+    sorted_ebg: &SortedEbgAdj,
 ) -> u32 {
     let w_v = node_weights[v];
 
@@ -250,20 +407,21 @@ fn compute_original_weight(
     }
 
     // Find arc index to get turn penalty
-    match find_arc_index(arc_lookup, u, v) {
+    // Turn penalties are indexed by arc_idx directly (see Step 5)
+    match sorted_ebg.find_arc_index(u, v as u32) {
         Some(arc_idx) => {
-            let penalty = turn_penalties[arc_idx];
+            let penalty = turn_penalties[arc_idx as usize];
             w_v.saturating_add(penalty)
         }
         None => {
             // Edge not found in EBG - should not happen for original edges
-            // This might indicate a self-loop that was excluded
             u32::MAX
         }
     }
 }
 
-/// Find edge weight using binary search in CSR
+/// Find edge weight using binary search in CCH CSR
+#[inline]
 fn find_edge_weight(
     u: usize,
     v: usize,

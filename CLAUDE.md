@@ -77,8 +77,8 @@ High-performance routing engine using **edge-based CCH** (Customizable Contracti
 | 4 | `step4-ebg` | ✅ | Edge-Based Graph → `ebg.nodes`, `ebg.csr`, `ebg.turn_table` |
 | 5 | `step5-weights` | ✅ | Per-mode weights → `w.*.u32`, `t.*.u32`, `mask.*.bitset` |
 | 6 | `step6-order` | ✅ | ND ordering on EBG |
-| 7 | `step7-contract` | TODO | CCH contraction on EBG |
-| 8 | `step8-customize` | TODO | Apply weights to shortcuts |
+| 7 | `step7-contract` | ✅ | CCH contraction on EBG |
+| 8 | `step8-customize` | ✅ | Apply weights to shortcuts |
 
 **Important:** NBG is a build-time intermediate. The ND ordering and CCH contraction must operate on the EBG because:
 - Routing state = directed edge ID
@@ -105,11 +105,13 @@ Each step produces a `stepN.lock.json` with SHA-256 checksums for reproducibilit
 
 ## Implementation Plan
 
-See **[TODO.md](TODO.md)** for the detailed implementation plan, including:
+See **[todo_overall.md](todo_overall.md)** for the overall implementation plan, including:
 - Step-by-step pipeline specification
 - Algorithm details and lock conditions
 - Performance targets
 - "What NOT to do" constraints
+
+See **[todo_immediate.md](todo_immediate.md)** for immediate bugs and fixes that must be addressed before continuing.
 
 ## Testing
 
