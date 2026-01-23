@@ -7,8 +7,8 @@
 //! - Step 4: Edge-Based Graph - Turn-expanded graph with mode masks (THE routing graph)
 //! - Step 5: Per-mode weights & masks - Mode-specific traversal costs on EBG
 //! - Step 6: CCH ordering on EBG - Nested dissection for contraction
-//! - Step 7: CCH contraction - Build hierarchy (TODO)
-//! - Step 8: Customization - Apply weights to shortcuts (TODO)
+//! - Step 7: CCH contraction - Build hierarchy topology
+//! - Step 8: Customization - Apply per-mode weights to shortcuts
 //!
 //! Key principle: Edge-based graph is the single source of truth for routing.
 //! All queries (P2P, matrix, isochrone) use the same EBG-based CCH.
@@ -25,6 +25,7 @@ pub mod ebg;
 pub mod step5;
 pub mod step6;
 pub mod step7;
+pub mod step8;
 
 pub use formats::{WaysFile, RelationsFile};
 pub use validate::{LockFile, Step2LockFile};

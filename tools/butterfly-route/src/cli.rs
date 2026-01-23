@@ -12,6 +12,8 @@ use crate::ebg::{build_ebg, EbgConfig};
 use crate::step5;
 use crate::step6;
 use crate::step7;
+use crate::step8;
+use crate::profile_abi::Mode;
 
 #[derive(Parser)]
 #[command(name = "butterfly-route")]
@@ -200,6 +202,37 @@ pub enum Commands {
         order: PathBuf,
 
         /// Output directory for cch.topo
+        #[arg(short, long)]
+        outdir: PathBuf,
+    },
+
+    /// Step 8: Customize CCH with per-mode weights
+    Step8Customize {
+        /// Path to cch.topo from Step 7
+        #[arg(long)]
+        cch_topo: PathBuf,
+
+        /// Path to ebg.csr from Step 4
+        #[arg(long)]
+        ebg_csr: PathBuf,
+
+        /// Path to order.ebg from Step 6
+        #[arg(long)]
+        order: PathBuf,
+
+        /// Path to w.*.u32 weights file from Step 5
+        #[arg(long)]
+        weights: PathBuf,
+
+        /// Path to t.*.u32 turn penalties file from Step 5
+        #[arg(long)]
+        turns: PathBuf,
+
+        /// Mode to customize for (car, bike, foot)
+        #[arg(long)]
+        mode: String,
+
+        /// Output directory for cch.w.*.u32
         #[arg(short, long)]
         outdir: PathBuf,
     },
@@ -488,6 +521,61 @@ impl Cli {
 
                 println!();
                 println!("✅ Step 7 CCH contraction complete!");
+                println!("📋 Lock file: {}", lock_path.display());
+
+                Ok(())
+            }
+            Commands::Step8Customize {
+                cch_topo,
+                ebg_csr,
+                order,
+                weights,
+                turns,
+                mode,
+                outdir,
+            } => {
+                // Parse mode
+                let mode = match mode.to_lowercase().as_str() {
+                    "car" => Mode::Car,
+                    "bike" => Mode::Bike,
+                    "foot" => Mode::Foot,
+                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
+                };
+
+                let config = step8::Step8Config {
+                    cch_topo_path: cch_topo,
+                    ebg_csr_path: ebg_csr,
+                    order_path: order,
+                    weights_path: weights,
+                    turns_path: turns,
+                    mode,
+                    outdir: outdir.clone(),
+                };
+
+                let result = step8::customize_cch(config)?;
+
+                // Generate lock file
+                let mode_name = match result.mode {
+                    Mode::Car => "car",
+                    Mode::Bike => "bike",
+                    Mode::Foot => "foot",
+                };
+
+                let lock = serde_json::json!({
+                    "mode": mode_name,
+                    "output_path": result.output_path.display().to_string(),
+                    "n_up_edges": result.n_up_edges,
+                    "n_down_edges": result.n_down_edges,
+                    "customize_time_ms": result.customize_time_ms,
+                    "created_at_utc": chrono::Utc::now().to_rfc3339(),
+                });
+
+                let lock_path = outdir.join(format!("step8.{}.lock.json", mode_name));
+                let lock_json = serde_json::to_string_pretty(&lock)?;
+                std::fs::write(&lock_path, lock_json)?;
+
+                println!();
+                println!("✅ Step 8 CCH customization complete!");
                 println!("📋 Lock file: {}", lock_path.display());
 
                 Ok(())
