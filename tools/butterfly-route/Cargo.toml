@@ -36,3 +36,6 @@ chrono = "0.4"
 
 # Parallelization
 rayon = "1.10"
+
+# Fast hashing (FxHashSet for CCH contraction)
+rustc-hash = "2.0"

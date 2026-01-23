@@ -280,8 +280,9 @@ impl NdBuilder {
 
         let balance = part_a.len() as f32 / (part_a.len() + part_b.len()).max(1) as f32;
 
-        // Quality check: if balance is bad, fall back to leaf ordering
-        if balance < 0.4 - self.balance_eps || balance > 0.6 + self.balance_eps {
+        // Quality check: if balance is very bad, fall back to leaf ordering
+        // Be more permissive - only give up on very extreme imbalance
+        if balance < 0.2 || balance > 0.8 {
             let ordering = self.minimum_degree_order(csr, nodes);
             return Ok(NdResult {
                 ordering,
@@ -457,28 +458,87 @@ impl NdBuilder {
     }
 
     fn minimum_degree_order(&self, csr: &crate::formats::EbgCsr, nodes: &[u32]) -> Vec<u32> {
-        let mut remaining: Vec<u32> = nodes.to_vec();
-        remaining.sort_unstable();
+        if nodes.is_empty() {
+            return vec![];
+        }
 
-        let mut ordered = Vec::with_capacity(nodes.len());
+        // Build local adjacency with node-local IDs
+        let n = nodes.len();
+        let mut local_id: HashMap<u32, usize> = HashMap::with_capacity(n);
+        let mut global_id: Vec<u32> = Vec::with_capacity(n);
 
-        while !remaining.is_empty() {
+        for (i, &node) in nodes.iter().enumerate() {
+            local_id.insert(node, i);
+            global_id.push(node);
+        }
+
+        // Build adjacency lists (only edges within the subgraph)
+        let mut adj: Vec<HashSet<usize>> = vec![HashSet::new(); n];
+
+        for &node in nodes {
+            let u = local_id[&node];
+            let start = csr.offsets[node as usize] as usize;
+            let end = csr.offsets[node as usize + 1] as usize;
+
+            for i in start..end {
+                let neighbor = csr.heads[i];
+                if let Some(&v) = local_id.get(&neighbor) {
+                    if u != v {
+                        adj[u].insert(v);
+                        adj[v].insert(u); // Undirected for elimination
+                    }
+                }
+            }
+        }
+
+        // Track degrees and eliminated status
+        let mut degrees: Vec<usize> = adj.iter().map(|s| s.len()).collect();
+        let mut eliminated = vec![false; n];
+        let mut ordered = Vec::with_capacity(n);
+
+        for _ in 0..n {
+            // Find minimum degree node among remaining
             let mut min_deg = usize::MAX;
-            let mut min_idx = 0;
+            let mut min_node = 0;
 
-            for (i, &node) in remaining.iter().enumerate() {
-                let start = csr.offsets[node as usize] as usize;
-                let end = csr.offsets[node as usize + 1] as usize;
-                let deg = end - start;
-
-                if deg < min_deg || (deg == min_deg && node < remaining[min_idx]) {
-                    min_deg = deg;
-                    min_idx = i;
+            for u in 0..n {
+                if !eliminated[u] && (degrees[u] < min_deg || (degrees[u] == min_deg && global_id[u] < global_id[min_node])) {
+                    min_deg = degrees[u];
+                    min_node = u;
                 }
             }
 
-            let node = remaining.swap_remove(min_idx);
-            ordered.push(node);
+            // Eliminate this node
+            eliminated[min_node] = true;
+            ordered.push(global_id[min_node]);
+
+            // Get neighbors to form clique
+            let neighbors: Vec<usize> = adj[min_node]
+                .iter()
+                .filter(|&&v| !eliminated[v])
+                .copied()
+                .collect();
+
+            // Add fill-in edges (form clique among remaining neighbors)
+            for i in 0..neighbors.len() {
+                for j in (i + 1)..neighbors.len() {
+                    let u = neighbors[i];
+                    let v = neighbors[j];
+
+                    if !adj[u].contains(&v) {
+                        adj[u].insert(v);
+                        adj[v].insert(u);
+                        degrees[u] += 1;
+                        degrees[v] += 1;
+                    }
+                }
+            }
+
+            // Remove eliminated node from neighbors' adjacency
+            for &v in &neighbors {
+                adj[v].remove(&min_node);
+                degrees[v] = degrees[v].saturating_sub(1);
+            }
         }
 
         ordered
