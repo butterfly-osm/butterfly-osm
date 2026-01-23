@@ -12,70 +12,153 @@
 //!
 //! A shortcut edge (u → w) via v is added only if:
 //! 1. The direct edge (u → w) doesn't already exist
-//! 2. No witness path u → ... → w exists through other higher-ranked nodes
+//! 2. No witness path u → ... → w exists with cost ≤ shortcut cost
 //!
-//! # Per-Mode Filtered CCH
+//! # Metric-Aware Witness Search (CORRECT)
 //!
-//! The CCH is now built on the filtered EBG (mode-accessible subgraph only). This ensures
-//! that all nodes in the CCH are actually reachable in that mode, eliminating orphaned
-//! nodes that caused routing failures in the previous design.
+//! The witness search uses bounded Dijkstra to find alternative paths:
+//! - Shortcut cost = weight(u→v) + weight(v→w)
+//! - Run bounded Dijkstra from u toward w
+//! - Early stop when queue min-key > shortcut_cost
+//! - If we find path with cost ≤ shortcut_cost, skip shortcut (witness found)
+//! - Otherwise, create shortcut (conservative - correct by design)
 //!
-//! # Key Optimization: Witness Search
-//!
-//! The witness search is critical for reducing shortcut count. Without it, Belgium
-//! generates 2.45B shortcuts (167x ratio). With depth-3 witness search, this drops
-//! to 45.7M shortcuts (3.12x ratio) - a 54x reduction.
-//!
-//! The witness search checks:
-//! - Depth-2 forward: u → x → w (where x ≠ v)
-//! - Depth-2 backward: u → x → w via in-neighbors of w
-//! - Depth-3 forward: u → x → y → w
-//! - Depth-3 backward: u → x → y → w via in-neighbors
+//! This is **metric-aware** and compares COSTS, not just path existence.
+//! False positives (extra shortcuts) are fine; false negatives break correctness.
 //!
 //! # Memory Management
 //!
 //! - Shortcuts are streamed to a temp file during contraction to avoid memory explosion
-//! - Adjacency lists use FxHashSet (fast hash) for O(1) lookups during witness search
+//! - Adjacency lists use FxHashMap for O(1) lookups with weights
 //! - Final up/down graphs are built by streaming through the temp file twice
 //!
 //! # Parallelism Strategy
 //!
 //! - Node contraction is sequential (required for correctness - each node must see
 //!   shortcuts from previously contracted nodes)
-//! - Inner shortcut computation is parallel for high-degree nodes (work > 1000 pairs)
 //! - Initial adjacency building, edge counting/filling, and sorting are fully parallel
 
 use anyhow::Result;
+use priority_queue::PriorityQueue;
 use rayon::prelude::*;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::cmp::Reverse;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 
-use crate::formats::{CchTopo, CchTopoFile, FilteredEbg, FilteredEbgFile, OrderEbgFile};
+use crate::formats::{mod_turns, mod_weights, CchTopo, CchTopoFile, FilteredEbgFile, OrderEbgFile};
 use crate::profile_abi::Mode;
 
-/// Check if there's a witness path u → ... → w (not through v).
+/// Witness search settings
+const WITNESS_SETTLED_LIMIT: usize = 500;  // Max nodes to settle before giving up
+const WITNESS_HOP_LIMIT: usize = 5;        // Max hops to explore
+
+/// Edge weight for weighted adjacency - stores (target, weight)
+type WeightedAdj = Vec<FxHashMap<u32, u32>>;
+
+/// Bounded Dijkstra witness search.
 ///
-/// DISABLED: Witness search was causing missing shortcuts needed for CCH bidirectional
-/// queries to find optimal paths. For correctness, we now create ALL shortcuts.
-/// This increases shortcut count but ensures the CCH property holds.
+/// Checks if there's an alternative path u → ... → w (not through v)
+/// with cost ≤ shortcut_cost.
 ///
-/// The triangle relaxation in Step 8 will assign appropriate weights to shortcuts,
-/// including u32::MAX for redundant ones.
+/// # Arguments
+///
+/// * `u` - Source node
+/// * `w` - Target node
+/// * `v` - Node being contracted (excluded from search)
+/// * `shortcut_cost` - Cost of the shortcut u→v→w
+/// * `adj` - Adjacency list with weights: adj[node] = [(neighbor, weight), ...]
 ///
 /// # Returns
 ///
-/// Always `false` (no witness, always add shortcut) - witness search disabled.
+/// `true` if witness found (skip shortcut), `false` if no witness (create shortcut)
 #[inline]
-fn has_witness(
-    _u: usize,
-    _w: u32,
-    _v: u32,
-    _out_higher: &[FxHashSet<u32>],
-    _in_higher: &[FxHashSet<u32>],
+fn has_witness_dijkstra(
+    u: usize,
+    w: u32,
+    v: u32,
+    shortcut_cost: u32,
+    adj: &[FxHashMap<u32, u32>],
 ) -> bool {
-    // Witness search disabled for correctness
+    // If shortcut cost is MAX, no witness can beat it
+    if shortcut_cost == u32::MAX {
+        return false;
+    }
+
+    // Bounded Dijkstra from u
+    let mut dist: FxHashMap<u32, u32> = FxHashMap::default();
+    let mut pq: PriorityQueue<u32, Reverse<u32>> = PriorityQueue::new();
+    let mut settled = 0usize;
+    let mut hops: FxHashMap<u32, usize> = FxHashMap::default();
+
+    dist.insert(u as u32, 0);
+    pq.push(u as u32, Reverse(0));
+    hops.insert(u as u32, 0);
+
+    while let Some((node, Reverse(d))) = pq.pop() {
+        // Early termination: queue min-key exceeds shortcut cost
+        if d > shortcut_cost {
+            break;
+        }
+
+        // Check if we've found a witness path to w
+        if node == w {
+            // Found alternative path with cost ≤ shortcut_cost
+            return true;
+        }
+
+        // Check if this is a stale entry
+        if let Some(&best) = dist.get(&node) {
+            if d > best {
+                continue;
+            }
+        }
+
+        settled += 1;
+        if settled > WITNESS_SETTLED_LIMIT {
+            break;
+        }
+
+        let current_hops = *hops.get(&node).unwrap_or(&0);
+        if current_hops >= WITNESS_HOP_LIMIT {
+            continue;
+        }
+
+        // Relax edges
+        if let Some(neighbors) = adj.get(node as usize) {
+            for (&neighbor, &weight) in neighbors {
+                // Skip the contracted node
+                if neighbor == v {
+                    continue;
+                }
+
+                if weight == u32::MAX {
+                    continue;
+                }
+
+                let new_dist = d.saturating_add(weight);
+
+                // Prune: don't explore paths costlier than shortcut
+                if new_dist > shortcut_cost {
+                    continue;
+                }
+
+                let should_update = match dist.get(&neighbor) {
+                    Some(&old) => new_dist < old,
+                    None => true,
+                };
+
+                if should_update {
+                    dist.insert(neighbor, new_dist);
+                    hops.insert(neighbor, current_hops + 1);
+                    pq.push(neighbor, Reverse(new_dist));
+                }
+            }
+        }
+    }
+
+    // No witness found within bounds - create the shortcut (conservative)
     false
 }
 
@@ -83,6 +166,8 @@ fn has_witness(
 pub struct Step7Config {
     pub filtered_ebg_path: PathBuf,
     pub order_path: PathBuf,
+    pub weights_path: PathBuf,  // w.*.u32 from Step 5
+    pub turns_path: PathBuf,    // t.*.u32 from Step 5
     pub mode: Mode,
     pub outdir: PathBuf,
 }
@@ -131,6 +216,50 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
     let n_nodes = filtered_ebg.n_filtered_nodes as usize;
     let perm = &order.perm;
     let inv_perm = &order.inv_perm;
+
+    // Load weights for metric-aware witness search
+    println!("Loading weights for witness search ({})...", mode_name);
+    let weights_data = mod_weights::read_all(&config.weights_path)?;
+    let _turns_data = mod_turns::read_all(&config.turns_path)?;
+    let weights = &weights_data.weights;
+    println!("  ✓ {} edge weights", weights.len());
+
+    // Verify we have original_arc_idx in the filtered EBG to look up weights
+    if filtered_ebg.original_arc_idx.is_empty() {
+        anyhow::bail!("Filtered EBG has no original_arc_idx - cannot look up weights for witness search");
+    }
+
+    // Build weighted adjacency for witness search
+    // adj[u][v] = min weight of edge u→v
+    println!("Building weighted adjacency for witness search...");
+    let weighted_adj: WeightedAdj = (0..n_nodes)
+        .into_par_iter()
+        .map(|u| {
+            let start = filtered_ebg.offsets[u] as usize;
+            let end = filtered_ebg.offsets[u + 1] as usize;
+            let mut adj_map: FxHashMap<u32, u32> = FxHashMap::default();
+            for i in start..end {
+                let v = filtered_ebg.heads[i];
+                if u as u32 == v {
+                    continue;
+                }
+                // Original arc index maps to the EBG edge index
+                let arc_idx = filtered_ebg.original_arc_idx[i] as usize;
+                let edge_weight = if arc_idx < weights.len() {
+                    weights[arc_idx]
+                } else {
+                    u32::MAX // Should not happen
+                };
+                // Take minimum weight if multiple edges to same target
+                adj_map
+                    .entry(v)
+                    .and_modify(|w| *w = (*w).min(edge_weight))
+                    .or_insert(edge_weight);
+            }
+            adj_map
+        })
+        .collect();
+    println!("  ✓ Built weighted adjacency");
 
     // Build initial adjacency using FxHashSet (faster than std HashSet)
     println!("\nBuilding initial higher-neighbor lists (parallel)...");
@@ -201,8 +330,11 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
     let mut last_report = 0;
     let mut max_degree_seen = 0usize;
 
+    // Make weighted_adj mutable so we can add shortcuts as we go
+    let mut weighted_adj = weighted_adj;
+
     // Sequential contraction - MUST process one node at a time for correctness
-    // But parallelize the inner shortcut computation for high-degree nodes
+    // Metric-aware witness search requires weights, so we compute shortcut costs
     for rank in 0..n_nodes {
         if rank - last_report >= report_interval {
             let pct = (rank as f64 / n_nodes as f64) * 100.0;
@@ -227,19 +359,30 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
             max_degree_seen = degree;
         }
 
-        // Compute shortcuts with WITNESS SEARCH - parallel for large neighborhoods
+        // Compute shortcuts with METRIC-AWARE witness search
+        // For each pair (u, w), compute shortcut_cost = w(u→v) + w(v→w)
+        // Then check if an alternative path exists with cost ≤ shortcut_cost
         let work_amount = in_neighbors.len() * out_neighbors.len();
         let out_higher_ref = &out_higher;
         let in_higher_ref = &in_higher;
+        let weighted_adj_ref = &weighted_adj;
         let v_u32 = v as u32;
 
-        let new_shortcuts: Vec<(u32, u32)> = if work_amount > 1000 {
+        // new_shortcuts stores (u, w, shortcut_cost) for updating weighted_adj
+        let new_shortcuts: Vec<(u32, u32, u32)> = if work_amount > 1000 {
             // Parallel computation for high-degree nodes
             in_neighbors
                 .par_iter()
                 .flat_map(|&u| {
                     let u_idx = u as usize;
                     let rank_u = perm[u_idx];
+
+                    // Get weight of u→v
+                    let w_uv = weighted_adj_ref[u_idx]
+                        .get(&v_u32)
+                        .copied()
+                        .unwrap_or(u32::MAX);
+
                     out_neighbors
                         .iter()
                         .filter_map(move |&w| {
@@ -259,12 +402,21 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
                                 return None;
                             }
 
-                            // Check 2: Witness path exists?
-                            if has_witness(u_idx, w, v_u32, out_higher_ref, in_higher_ref) {
+                            // Get weight of v→w
+                            let w_vw = weighted_adj_ref[v as usize]
+                                .get(&w)
+                                .copied()
+                                .unwrap_or(u32::MAX);
+
+                            // Compute shortcut cost
+                            let shortcut_cost = w_uv.saturating_add(w_vw);
+
+                            // Check 2: Witness path exists with cost ≤ shortcut_cost?
+                            if has_witness_dijkstra(u_idx, w, v_u32, shortcut_cost, weighted_adj_ref) {
                                 return None;
                             }
 
-                            Some((u, w))
+                            Some((u, w, shortcut_cost))
                         })
                         .collect::<Vec<_>>()
                 })
@@ -275,6 +427,13 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
             for &u in &in_neighbors {
                 let u_idx = u as usize;
                 let rank_u = perm[u_idx];
+
+                // Get weight of u→v
+                let w_uv = weighted_adj[u_idx]
+                    .get(&v_u32)
+                    .copied()
+                    .unwrap_or(u32::MAX);
+
                 for &w in &out_neighbors {
                     if u == w {
                         continue;
@@ -292,19 +451,28 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
                         continue;
                     }
 
-                    // Check 2: Witness path exists?
-                    if has_witness(u_idx, w, v_u32, &out_higher, &in_higher) {
+                    // Get weight of v→w
+                    let w_vw = weighted_adj[v]
+                        .get(&w)
+                        .copied()
+                        .unwrap_or(u32::MAX);
+
+                    // Compute shortcut cost
+                    let shortcut_cost = w_uv.saturating_add(w_vw);
+
+                    // Check 2: Witness path exists with cost ≤ shortcut_cost?
+                    if has_witness_dijkstra(u_idx, w, v_u32, shortcut_cost, &weighted_adj) {
                         continue;
                     }
 
-                    result.push((u, w));
+                    result.push((u, w, shortcut_cost));
                 }
             }
             result
         };
 
-        // Write shortcuts to disk and update adjacency IMMEDIATELY (correctness requirement)
-        for (u, w) in new_shortcuts {
+        // Write shortcuts to disk and update both adjacencies IMMEDIATELY (correctness requirement)
+        for (u, w, shortcut_cost) in new_shortcuts {
             shortcut_writer.write_all(&u.to_le_bytes())?;
             shortcut_writer.write_all(&w.to_le_bytes())?;
             shortcut_writer.write_all(&(v as u32).to_le_bytes())?;
@@ -315,11 +483,18 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
             let rank_u = perm[u_idx];
             let rank_w = perm[w_idx];
 
+            // Update topology adjacency
             if rank_w > rank_u {
                 out_higher[u_idx].insert(w);
             } else {
                 in_higher[w_idx].insert(u);
             }
+
+            // Update weighted adjacency - keep minimum weight if edge already exists
+            weighted_adj[u_idx]
+                .entry(w)
+                .and_modify(|existing| *existing = (*existing).min(shortcut_cost))
+                .or_insert(shortcut_cost);
         }
     }
 

@@ -232,9 +232,27 @@ fn extract_filtered_ebg_coordinates(
     Ok(coords)
 }
 
-/// Find connected components using BFS on filtered EBG
+/// Find connected components using BFS on SYMMETRIZED filtered EBG
+///
+/// For CCH ordering to work correctly on directed graphs, we need to find
+/// weakly connected components (treating edges as undirected). This ensures
+/// that nodes reachable in either direction are in the same component.
 fn find_filtered_components(filtered_ebg: &FilteredEbg) -> Result<Vec<Vec<u32>>> {
     let n = filtered_ebg.n_filtered_nodes as usize;
+
+    // Build reverse adjacency for symmetric traversal
+    let mut reverse_adj: Vec<Vec<u32>> = vec![Vec::new(); n];
+    for u in 0..n {
+        let start_idx = filtered_ebg.offsets[u] as usize;
+        let end_idx = filtered_ebg.offsets[u + 1] as usize;
+        for i in start_idx..end_idx {
+            let v = filtered_ebg.heads[i] as usize;
+            if v < n {
+                reverse_adj[v].push(u as u32);
+            }
+        }
+    }
+
     let mut visited = vec![false; n];
     let mut components = Vec::new();
 
@@ -251,10 +269,20 @@ fn find_filtered_components(filtered_ebg: &FilteredEbg) -> Result<Vec<Vec<u32>>>
         while let Some(u) = queue.pop_front() {
             component.push(u as u32);
 
+            // Follow forward edges
             let start_idx = filtered_ebg.offsets[u] as usize;
             let end_idx = filtered_ebg.offsets[u + 1] as usize;
             for i in start_idx..end_idx {
                 let v = filtered_ebg.heads[i] as usize;
+                if v < n && !visited[v] {
+                    visited[v] = true;
+                    queue.push_back(v);
+                }
+            }
+
+            // Follow reverse edges (symmetric)
+            for &v in &reverse_adj[u] {
+                let v = v as usize;
                 if !visited[v] {
                     visited[v] = true;
                     queue.push_back(v);
@@ -789,17 +817,34 @@ impl NdBuilder {
         part_a: &[u32],
         part_b: &[u32],
     ) -> Vec<u32> {
+        let set_a: HashSet<u32> = part_a.iter().copied().collect();
         let set_b: HashSet<u32> = part_b.iter().copied().collect();
 
         let mut cross_edges: Vec<(u32, u32)> = Vec::new();
         let mut ring: HashSet<u32> = HashSet::new();
 
+        // Check edges from part_a to part_b
         for &node in part_a {
             let start = filtered_ebg.offsets[node as usize] as usize;
             let end = filtered_ebg.offsets[node as usize + 1] as usize;
             for i in start..end {
                 let neighbor = filtered_ebg.heads[i];
                 if set_b.contains(&neighbor) {
+                    ring.insert(node);
+                    ring.insert(neighbor);
+                    cross_edges.push((node, neighbor));
+                }
+            }
+        }
+
+        // Also check edges from part_b to part_a (symmetric for directed graphs)
+        // This ensures the separator properly disconnects both directions
+        for &node in part_b {
+            let start = filtered_ebg.offsets[node as usize] as usize;
+            let end = filtered_ebg.offsets[node as usize + 1] as usize;
+            for i in start..end {
+                let neighbor = filtered_ebg.heads[i];
+                if set_a.contains(&neighbor) {
                     ring.insert(node);
                     ring.insert(neighbor);
                     cross_edges.push((node, neighbor));
