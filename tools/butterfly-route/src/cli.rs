@@ -159,6 +159,7 @@ pub enum Commands {
         #[arg(short, long)]
         outdir: PathBuf,
     },
+
 }
 
 impl Cli {
