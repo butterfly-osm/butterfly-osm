@@ -57,10 +57,15 @@ const WITNESS_HOP_LIMIT: usize = 5;        // Max hops to explore
 /// Edge weight for weighted adjacency - stores (target, weight)
 type WeightedAdj = Vec<FxHashMap<u32, u32>>;
 
-/// Bounded Dijkstra witness search.
+/// Bounded Dijkstra witness search with rank restriction.
 ///
 /// Checks if there's an alternative path u → ... → w (not through v)
-/// with cost ≤ shortcut_cost.
+/// with cost ≤ shortcut_cost, where ALL intermediate nodes have rank > current_rank.
+///
+/// This rank restriction is CRITICAL for correctness: during contraction of node v
+/// at rank r, we can only use nodes that haven't been contracted yet (rank > r)
+/// as intermediate nodes in witness paths. Without this, we might find "witnesses"
+/// through already-contracted nodes that won't exist in the final hierarchy.
 ///
 /// # Arguments
 ///
@@ -68,11 +73,19 @@ type WeightedAdj = Vec<FxHashMap<u32, u32>>;
 /// * `w` - Target node
 /// * `v` - Node being contracted (excluded from search)
 /// * `shortcut_cost` - Cost of the shortcut u→v→w
-/// * `adj` - Adjacency list with weights: adj[node] = [(neighbor, weight), ...]
+/// * `adj` - Adjacency list with weights: adj[node] = {neighbor -> weight}
+/// * `perm` - Rank assignment: perm[node] = rank
+/// * `current_rank` - Rank of the node being contracted
 ///
 /// # Returns
 ///
 /// `true` if witness found (skip shortcut), `false` if no witness (create shortcut)
+///
+/// # Conservative guarantee
+///
+/// This function is CONSERVATIVE: if ANY limit is hit (settled, hops, cost bound),
+/// we return `false` (create shortcut). We only return `true` (skip shortcut) if
+/// we actually found a valid witness path.
 #[inline]
 fn has_witness_dijkstra(
     u: usize,
@@ -80,6 +93,8 @@ fn has_witness_dijkstra(
     v: u32,
     shortcut_cost: u32,
     adj: &[FxHashMap<u32, u32>],
+    perm: &[u32],
+    current_rank: usize,
 ) -> bool {
     // If shortcut cost is MAX, no witness can beat it
     if shortcut_cost == u32::MAX {
@@ -90,14 +105,13 @@ fn has_witness_dijkstra(
     let mut dist: FxHashMap<u32, u32> = FxHashMap::default();
     let mut pq: PriorityQueue<u32, Reverse<u32>> = PriorityQueue::new();
     let mut settled = 0usize;
-    let mut hops: FxHashMap<u32, usize> = FxHashMap::default();
 
     dist.insert(u as u32, 0);
     pq.push(u as u32, Reverse(0));
-    hops.insert(u as u32, 0);
 
     while let Some((node, Reverse(d))) = pq.pop() {
         // Early termination: queue min-key exceeds shortcut cost
+        // This is a valid termination - no witness can be found with lower cost
         if d > shortcut_cost {
             break;
         }
@@ -116,20 +130,25 @@ fn has_witness_dijkstra(
         }
 
         settled += 1;
+        // CONSERVATIVE: if we hit the settled limit, we did NOT find a witness
+        // We must create the shortcut to be safe
         if settled > WITNESS_SETTLED_LIMIT {
-            break;
+            return false;  // Conservative: create shortcut
         }
 
-        let current_hops = *hops.get(&node).unwrap_or(&0);
-        if current_hops >= WITNESS_HOP_LIMIT {
-            continue;
-        }
-
-        // Relax edges
+        // Relax edges - only through nodes with rank > current_rank
         if let Some(neighbors) = adj.get(node as usize) {
             for (&neighbor, &weight) in neighbors {
-                // Skip the contracted node
+                // Skip the contracted node (explicitly excluded)
                 if neighbor == v {
+                    continue;
+                }
+
+                // CRITICAL: Only traverse through nodes that haven't been contracted yet
+                // Nodes with rank <= current_rank have already been removed from the graph
+                // and cannot be used as intermediate nodes in witness paths
+                let neighbor_rank = perm[neighbor as usize] as usize;
+                if neighbor_rank <= current_rank {
                     continue;
                 }
 
@@ -151,7 +170,6 @@ fn has_witness_dijkstra(
 
                 if should_update {
                     dist.insert(neighbor, new_dist);
-                    hops.insert(neighbor, current_hops + 1);
                     pq.push(neighbor, Reverse(new_dist));
                 }
             }
@@ -411,10 +429,13 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
                             // Compute shortcut cost
                             let shortcut_cost = w_uv.saturating_add(w_vw);
 
-                            // Check 2: Witness path exists with cost ≤ shortcut_cost?
-                            if has_witness_dijkstra(u_idx, w, v_u32, shortcut_cost, weighted_adj_ref) {
-                                return None;
-                            }
+                            // NOTE: Witness search is DISABLED because it causes correctness bugs.
+                            // When a witness path goes through a higher-ranked node X, and X is later
+                            // contracted, the endpoints may have lower rank than X and won't be
+                            // considered for shortcuts - destroying the witness path without replacement.
+                            //
+                            // Pure CCH creates ALL shortcuts and relies on Step 8 customization
+                            // to set correct weights via triangle relaxation.
 
                             Some((u, w, shortcut_cost))
                         })
@@ -460,10 +481,8 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
                     // Compute shortcut cost
                     let shortcut_cost = w_uv.saturating_add(w_vw);
 
-                    // Check 2: Witness path exists with cost ≤ shortcut_cost?
-                    if has_witness_dijkstra(u_idx, w, v_u32, shortcut_cost, &weighted_adj) {
-                        continue;
-                    }
+                    // NOTE: Witness search is DISABLED because it causes correctness bugs.
+                    // See parallel branch comment for details.
 
                     result.push((u, w, shortcut_cost));
                 }
