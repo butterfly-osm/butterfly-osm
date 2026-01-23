@@ -196,8 +196,10 @@ impl Profile for CarProfile {
 }
 
 /// Helper: check if access is denied
+/// Note: "destination" means accessible to reach local destinations (not for through traffic)
+/// We allow these roads but could add a penalty to discourage through traffic
 fn is_denied(value: Option<&str>) -> bool {
-    matches!(value, Some("no") | Some("private") | Some("destination"))
+    matches!(value, Some("no") | Some("private"))
 }
 
 /// Convert km/h to mm/s (integer)
