@@ -39,3 +39,16 @@ rayon = "1.10"
 
 # Fast hashing (FxHashSet for CCH contraction)
 rustc-hash = "2.0"
+
+# Step 9: Query server
+axum = "0.7"
+tokio = { version = "1.0", features = ["full"] }
+utoipa = { version = "4.2", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "7.1", features = ["axum"] }
+tower-http = { version = "0.5", features = ["cors"] }
+
+# Spatial indexing
+rstar = "0.12"
+
+# Priority queue for Dijkstra
+priority-queue = "2.0"

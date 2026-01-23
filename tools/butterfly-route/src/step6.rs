@@ -1,19 +1,21 @@
-///! Step 6: Nested Dissection ordering on EBG
+///! Step 6: Nested Dissection ordering on per-mode filtered EBG
 ///!
-///! Computes a high-quality elimination order on the Edge-Based Graph for CCH.
-///! This is the correct approach: routing state = directed edge ID.
+///! Computes a high-quality elimination order on the mode-filtered Edge-Based Graph.
+///! Each mode gets its own ordering computed on only the mode-accessible nodes.
 
 use anyhow::Result;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
-use crate::formats::{EbgCsrFile, EbgNodesFile, NbgGeoFile, OrderEbg, OrderEbgFile};
+use crate::formats::{EbgCsrFile, EbgNodesFile, FilteredEbg, FilteredEbgFile, NbgGeoFile, OrderEbg, OrderEbgFile};
+use crate::profile_abi::Mode;
 
 /// Configuration for Step 6
 pub struct Step6Config {
-    pub ebg_csr_path: PathBuf,
+    pub filtered_ebg_path: PathBuf,
     pub ebg_nodes_path: PathBuf,
     pub nbg_geo_path: PathBuf,
+    pub mode: Mode,
     pub outdir: PathBuf,
     pub leaf_threshold: usize,
     pub balance_eps: f32,
@@ -23,21 +25,28 @@ pub struct Step6Config {
 #[derive(Debug)]
 pub struct Step6Result {
     pub order_path: PathBuf,
+    pub mode: Mode,
     pub n_nodes: u32,
     pub n_components: usize,
     pub tree_depth: usize,
     pub build_time_ms: u64,
 }
 
-/// Generate nested dissection ordering on EBG
+/// Generate nested dissection ordering on per-mode filtered EBG
 pub fn generate_ordering(config: Step6Config) -> Result<Step6Result> {
     let start_time = std::time::Instant::now();
-    println!("\n📐 Step 6: Generating CCH ordering on EBG...\n");
+    let mode_name = match config.mode {
+        Mode::Car => "car",
+        Mode::Bike => "bike",
+        Mode::Foot => "foot",
+    };
+    println!("\n📐 Step 6: Generating CCH ordering for {} mode...\n", mode_name);
 
-    // Load EBG CSR
-    println!("Loading EBG CSR...");
-    let ebg_csr = EbgCsrFile::read(&config.ebg_csr_path)?;
-    println!("  ✓ {} nodes, {} arcs", ebg_csr.n_nodes, ebg_csr.n_arcs);
+    // Load filtered EBG
+    println!("Loading filtered EBG ({})...", mode_name);
+    let filtered_ebg = FilteredEbgFile::read(&config.filtered_ebg_path)?;
+    println!("  ✓ {} filtered nodes (of {} original), {} arcs",
+        filtered_ebg.n_filtered_nodes, filtered_ebg.n_original_nodes, filtered_ebg.n_filtered_arcs);
 
     // Load EBG nodes (for geometry linkage)
     println!("Loading EBG nodes...");
@@ -49,16 +58,15 @@ pub fn generate_ordering(config: Step6Config) -> Result<Step6Result> {
     let nbg_geo = NbgGeoFile::read(&config.nbg_geo_path)?;
     println!("  ✓ {} edges", nbg_geo.n_edges_und);
 
-    // Extract coordinates for each EBG node
-    // EBG node i corresponds to directed edge (tail_nbg -> head_nbg)
-    // Use the midpoint of the NBG edge as the coordinate
-    println!("\nExtracting EBG node coordinates...");
-    let coords = extract_ebg_coordinates(&ebg_nodes, &nbg_geo)?;
+    // Extract coordinates for filtered EBG nodes
+    // Each filtered node maps back to an original EBG node
+    println!("\nExtracting filtered EBG node coordinates...");
+    let coords = extract_filtered_ebg_coordinates(&filtered_ebg, &ebg_nodes, &nbg_geo)?;
     println!("  ✓ {} coordinates", coords.len());
 
-    // Find connected components
+    // Find connected components on filtered graph
     println!("\nFinding connected components...");
-    let components = find_components(&ebg_csr)?;
+    let components = find_filtered_components(&filtered_ebg)?;
     let n_components = components.len();
     println!("  ✓ {} components", n_components);
     for (i, comp) in components.iter().take(5).enumerate() {
@@ -68,10 +76,10 @@ pub fn generate_ordering(config: Step6Config) -> Result<Step6Result> {
         println!("    ... and {} more small components", components.len() - 5);
     }
 
-    // Build ordering via nested dissection
+    // Build ordering via nested dissection on filtered space
     println!("\nBuilding nested dissection ordering...");
     let mut builder = NdBuilder::new(
-        ebg_csr.n_nodes as usize,
+        filtered_ebg.n_filtered_nodes as usize,
         config.leaf_threshold,
         config.balance_eps,
     );
@@ -81,7 +89,7 @@ pub fn generate_ordering(config: Step6Config) -> Result<Step6Result> {
         if comp_idx % 100 == 0 && comp_idx > 0 {
             println!("  Processing component {} / {}...", comp_idx, components.len());
         }
-        let depth = builder.order_component(&ebg_csr, &coords, component)?;
+        let depth = builder.order_component_filtered(&filtered_ebg, &coords, component)?;
         max_depth = max_depth.max(depth);
     }
 
@@ -90,18 +98,18 @@ pub fn generate_ordering(config: Step6Config) -> Result<Step6Result> {
 
     // Compute inputs SHA
     let inputs_sha = compute_inputs_sha(
-        &config.ebg_csr_path,
+        &config.filtered_ebg_path,
         &config.ebg_nodes_path,
         &config.nbg_geo_path,
     )?;
 
-    // Write output
+    // Write output - use mode-specific filename
     std::fs::create_dir_all(&config.outdir)?;
-    let order_path = config.outdir.join("order.ebg");
+    let order_path = config.outdir.join(format!("order.{}.ebg", mode_name));
 
     println!("\nWriting output...");
     let order = OrderEbg {
-        n_nodes: ebg_csr.n_nodes,
+        n_nodes: filtered_ebg.n_filtered_nodes,
         inputs_sha,
         perm,
         inv_perm,
@@ -113,7 +121,8 @@ pub fn generate_ordering(config: Step6Config) -> Result<Step6Result> {
 
     Ok(Step6Result {
         order_path,
-        n_nodes: ebg_csr.n_nodes,
+        mode: config.mode,
+        n_nodes: filtered_ebg.n_filtered_nodes,
         n_components,
         tree_depth: max_depth,
         build_time_ms,
@@ -172,6 +181,98 @@ fn extract_ebg_coordinates(
     }
 
     Ok(coords)
+}
+
+/// Extract coordinates for filtered EBG nodes
+///
+/// Maps filtered node IDs back to original EBG nodes to get geometry.
+fn extract_filtered_ebg_coordinates(
+    filtered_ebg: &FilteredEbg,
+    ebg_nodes: &crate::formats::EbgNodes,
+    nbg_geo: &crate::formats::NbgGeo,
+) -> Result<Vec<(f64, f64)>> {
+    let mut coords = Vec::with_capacity(filtered_ebg.n_filtered_nodes as usize);
+    let has_polylines = !nbg_geo.polylines.is_empty();
+
+    for filtered_id in 0..filtered_ebg.n_filtered_nodes {
+        // Map filtered node to original EBG node
+        let original_id = filtered_ebg.filtered_to_original[filtered_id as usize] as usize;
+        let node = &ebg_nodes.nodes[original_id];
+        let geom_idx = node.geom_idx as usize;
+
+        if geom_idx < nbg_geo.edges.len() {
+            let edge = &nbg_geo.edges[geom_idx];
+
+            // Try to get coordinates from polyline
+            if has_polylines && geom_idx < nbg_geo.polylines.len() {
+                let poly = &nbg_geo.polylines[geom_idx];
+                if !poly.lat_fxp.is_empty() && !poly.lon_fxp.is_empty() {
+                    let mid = poly.lat_fxp.len() / 2;
+                    let lat = poly.lat_fxp[mid] as f64 * 1e-7;
+                    let lon = poly.lon_fxp[mid] as f64 * 1e-7;
+                    coords.push((lon, lat));
+                    continue;
+                }
+            }
+
+            // Fallback: use bearing and length
+            let bearing_rad = (edge.bearing_deci_deg as f64 / 10.0).to_radians();
+            let length_km = edge.length_mm as f64 / 1_000_000.0;
+            let base_x = (geom_idx as f64) * 0.001;
+            let base_y = (geom_idx as f64) * 0.001;
+            let lon = base_x + bearing_rad.cos() * length_km * 0.01;
+            let lat = base_y + bearing_rad.sin() * length_km * 0.01;
+            coords.push((lon, lat));
+        } else {
+            let idx = coords.len() as f64;
+            coords.push((idx * 0.0001, idx * 0.0001));
+        }
+    }
+
+    Ok(coords)
+}
+
+/// Find connected components using BFS on filtered EBG
+fn find_filtered_components(filtered_ebg: &FilteredEbg) -> Result<Vec<Vec<u32>>> {
+    let n = filtered_ebg.n_filtered_nodes as usize;
+    let mut visited = vec![false; n];
+    let mut components = Vec::new();
+
+    for start in 0..n {
+        if visited[start] {
+            continue;
+        }
+
+        let mut component = Vec::new();
+        let mut queue = VecDeque::new();
+        queue.push_back(start);
+        visited[start] = true;
+
+        while let Some(u) = queue.pop_front() {
+            component.push(u as u32);
+
+            let start_idx = filtered_ebg.offsets[u] as usize;
+            let end_idx = filtered_ebg.offsets[u + 1] as usize;
+            for i in start_idx..end_idx {
+                let v = filtered_ebg.heads[i] as usize;
+                if !visited[v] {
+                    visited[v] = true;
+                    queue.push_back(v);
+                }
+            }
+        }
+
+        components.push(component);
+    }
+
+    // Sort by size descending, then by min node ID for determinism
+    components.sort_by(|a, b| {
+        b.len()
+            .cmp(&a.len())
+            .then_with(|| a.iter().min().cmp(&b.iter().min()))
+    });
+
+    Ok(components)
 }
 
 /// Find connected components using BFS on the EBG
@@ -552,6 +653,287 @@ impl NdBuilder {
 
     fn finish(self) -> (Vec<u32>, Vec<u32>) {
         (self.perm, self.inv_perm)
+    }
+
+    // ==========================================================================
+    // Filtered EBG versions of the ND methods
+    // ==========================================================================
+
+    fn order_component_filtered(
+        &mut self,
+        filtered_ebg: &FilteredEbg,
+        coords: &[(f64, f64)],
+        component: &[u32],
+    ) -> Result<usize> {
+        if component.is_empty() {
+            return Ok(0);
+        }
+
+        let result = self.recursive_nd_filtered(filtered_ebg, coords, component, 0)?;
+
+        for &node in &result.ordering {
+            self.assign_rank(node);
+        }
+
+        Ok(result.depth)
+    }
+
+    fn recursive_nd_filtered(
+        &self,
+        filtered_ebg: &FilteredEbg,
+        coords: &[(f64, f64)],
+        nodes: &[u32],
+        depth: usize,
+    ) -> Result<NdResult> {
+        let n_sub = nodes.len();
+
+        if n_sub <= self.leaf_threshold {
+            let ordering = self.minimum_degree_order_filtered(filtered_ebg, nodes);
+            return Ok(NdResult { ordering, depth });
+        }
+
+        let (part_a, part_b, separator) = self.inertial_partition_filtered(filtered_ebg, coords, nodes)?;
+
+        let balance = part_a.len() as f32 / (part_a.len() + part_b.len()).max(1) as f32;
+
+        if balance < 0.2 || balance > 0.8 {
+            let ordering = self.minimum_degree_order_filtered(filtered_ebg, nodes);
+            return Ok(NdResult { ordering, depth });
+        }
+
+        const PARALLEL_THRESHOLD: usize = 50_000;
+
+        let (result_a, result_b) = if part_a.len() >= PARALLEL_THRESHOLD
+            && part_b.len() >= PARALLEL_THRESHOLD
+        {
+            rayon::join(
+                || self.recursive_nd_filtered(filtered_ebg, coords, &part_a, depth + 1),
+                || self.recursive_nd_filtered(filtered_ebg, coords, &part_b, depth + 1),
+            )
+        } else {
+            let a = self.recursive_nd_filtered(filtered_ebg, coords, &part_a, depth + 1)?;
+            let b = self.recursive_nd_filtered(filtered_ebg, coords, &part_b, depth + 1)?;
+            (Ok(a), Ok(b))
+        };
+
+        let result_a = result_a?;
+        let result_b = result_b?;
+
+        let mut ordering = result_a.ordering;
+        ordering.extend(result_b.ordering);
+        ordering.extend(separator);
+
+        Ok(NdResult {
+            ordering,
+            depth: result_a.depth.max(result_b.depth),
+        })
+    }
+
+    fn inertial_partition_filtered(
+        &self,
+        filtered_ebg: &FilteredEbg,
+        coords: &[(f64, f64)],
+        nodes: &[u32],
+    ) -> Result<(Vec<u32>, Vec<u32>, Vec<u32>)> {
+        if nodes.len() <= 2 {
+            return Ok((vec![], vec![], nodes.to_vec()));
+        }
+
+        let mut mean_x = 0.0;
+        let mut mean_y = 0.0;
+        for &node in nodes {
+            let (x, y) = coords[node as usize];
+            mean_x += x;
+            mean_y += y;
+        }
+        mean_x /= nodes.len() as f64;
+        mean_y /= nodes.len() as f64;
+
+        let mut cov_xx = 0.0;
+        let mut cov_xy = 0.0;
+        let mut cov_yy = 0.0;
+        for &node in nodes {
+            let (x, y) = coords[node as usize];
+            let dx = x - mean_x;
+            let dy = y - mean_y;
+            cov_xx += dx * dx;
+            cov_xy += dx * dy;
+            cov_yy += dy * dy;
+        }
+
+        let (dir_x, dir_y) = compute_principal_direction(cov_xx, cov_xy, cov_yy);
+
+        let projections: Vec<(f64, u32)> = nodes
+            .iter()
+            .map(|&node| {
+                let (x, y) = coords[node as usize];
+                let proj = (x - mean_x) * dir_x + (y - mean_y) * dir_y;
+                (proj, node)
+            })
+            .collect();
+
+        let (part_a, part_b) = histogram_partition(&projections);
+
+        let separator = self.extract_separator_filtered(filtered_ebg, &part_a, &part_b);
+
+        let sep_set: HashSet<u32> = separator.iter().copied().collect();
+        let part_a: Vec<u32> = part_a.into_iter().filter(|n| !sep_set.contains(n)).collect();
+        let part_b: Vec<u32> = part_b.into_iter().filter(|n| !sep_set.contains(n)).collect();
+
+        Ok((part_a, part_b, separator))
+    }
+
+    fn extract_separator_filtered(
+        &self,
+        filtered_ebg: &FilteredEbg,
+        part_a: &[u32],
+        part_b: &[u32],
+    ) -> Vec<u32> {
+        let set_b: HashSet<u32> = part_b.iter().copied().collect();
+
+        let mut cross_edges: Vec<(u32, u32)> = Vec::new();
+        let mut ring: HashSet<u32> = HashSet::new();
+
+        for &node in part_a {
+            let start = filtered_ebg.offsets[node as usize] as usize;
+            let end = filtered_ebg.offsets[node as usize + 1] as usize;
+            for i in start..end {
+                let neighbor = filtered_ebg.heads[i];
+                if set_b.contains(&neighbor) {
+                    ring.insert(node);
+                    ring.insert(neighbor);
+                    cross_edges.push((node, neighbor));
+                }
+            }
+        }
+
+        if cross_edges.is_empty() {
+            return vec![];
+        }
+
+        let mut node_edges: HashMap<u32, Vec<usize>> = HashMap::new();
+        for (idx, &(u, v)) in cross_edges.iter().enumerate() {
+            node_edges.entry(u).or_default().push(idx);
+            node_edges.entry(v).or_default().push(idx);
+        }
+
+        let mut ring_sorted: Vec<(u32, usize)> = node_edges
+            .iter()
+            .map(|(&node, edges)| (node, edges.len()))
+            .collect();
+        ring_sorted.sort_by_key(|(node, deg)| (std::cmp::Reverse(*deg), *node));
+
+        let mut separator = Vec::new();
+        let mut covered = vec![false; cross_edges.len()];
+        let mut num_covered = 0;
+
+        for (node, _) in ring_sorted {
+            if num_covered == cross_edges.len() {
+                break;
+            }
+
+            if let Some(edges) = node_edges.get(&node) {
+                let mut covers_new = false;
+                for &edge_idx in edges {
+                    if !covered[edge_idx] {
+                        covers_new = true;
+                        break;
+                    }
+                }
+
+                if covers_new {
+                    separator.push(node);
+                    for &edge_idx in edges {
+                        if !covered[edge_idx] {
+                            covered[edge_idx] = true;
+                            num_covered += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        separator.sort_unstable();
+        separator
+    }
+
+    fn minimum_degree_order_filtered(&self, filtered_ebg: &FilteredEbg, nodes: &[u32]) -> Vec<u32> {
+        if nodes.is_empty() {
+            return vec![];
+        }
+
+        let n = nodes.len();
+        let mut local_id: HashMap<u32, usize> = HashMap::with_capacity(n);
+        let mut global_id: Vec<u32> = Vec::with_capacity(n);
+
+        for (i, &node) in nodes.iter().enumerate() {
+            local_id.insert(node, i);
+            global_id.push(node);
+        }
+
+        let mut adj: Vec<HashSet<usize>> = vec![HashSet::new(); n];
+
+        for &node in nodes {
+            let u = local_id[&node];
+            let start = filtered_ebg.offsets[node as usize] as usize;
+            let end = filtered_ebg.offsets[node as usize + 1] as usize;
+
+            for i in start..end {
+                let neighbor = filtered_ebg.heads[i];
+                if let Some(&v) = local_id.get(&neighbor) {
+                    if u != v {
+                        adj[u].insert(v);
+                        adj[v].insert(u);
+                    }
+                }
+            }
+        }
+
+        let mut degrees: Vec<usize> = adj.iter().map(|s| s.len()).collect();
+        let mut eliminated = vec![false; n];
+        let mut ordered = Vec::with_capacity(n);
+
+        for _ in 0..n {
+            let mut min_deg = usize::MAX;
+            let mut min_node = 0;
+
+            for u in 0..n {
+                if !eliminated[u] && (degrees[u] < min_deg || (degrees[u] == min_deg && global_id[u] < global_id[min_node])) {
+                    min_deg = degrees[u];
+                    min_node = u;
+                }
+            }
+
+            eliminated[min_node] = true;
+            ordered.push(global_id[min_node]);
+
+            let neighbors: Vec<usize> = adj[min_node]
+                .iter()
+                .filter(|&&v| !eliminated[v])
+                .copied()
+                .collect();
+
+            for i in 0..neighbors.len() {
+                for j in (i + 1)..neighbors.len() {
+                    let u = neighbors[i];
+                    let v = neighbors[j];
+
+                    if !adj[u].contains(&v) {
+                        adj[u].insert(v);
+                        adj[v].insert(u);
+                        degrees[u] += 1;
+                        degrees[v] += 1;
+                    }
+                }
+            }
+
+            for &v in &neighbors {
+                adj[v].remove(&min_node);
+                degrees[v] = degrees[v].saturating_sub(1);
+            }
+        }
+
+        ordered
     }
 }
 

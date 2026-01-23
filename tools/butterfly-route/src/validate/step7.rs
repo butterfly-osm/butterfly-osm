@@ -1,4 +1,4 @@
-///! Step 7 validation - CCH topology lock conditions
+///! Step 7 validation - CCH topology lock conditions (per-mode on filtered EBG)
 
 use anyhow::Result;
 use rayon::prelude::*;
@@ -6,11 +6,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BinaryHeap, HashSet};
 use std::path::Path;
 
-use crate::formats::{CchTopoFile, EbgCsrFile, OrderEbgFile};
+use crate::formats::{CchTopoFile, FilteredEbg, FilteredEbgFile, OrderEbgFile};
 use crate::step7::Step7Result;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Step7LockFile {
+    pub mode: String,
     pub inputs_sha256: String,
     pub topo_sha256: String,
     pub n_nodes: u32,
@@ -26,19 +27,24 @@ pub struct Step7LockFile {
 /// Validate Step 7 outputs and generate lock file
 pub fn validate_step7(
     result: &Step7Result,
-    ebg_csr_path: &Path,
+    filtered_ebg_path: &Path,
     order_path: &Path,
 ) -> Result<Step7LockFile> {
-    println!("\n🔐 Running Step 7 validation...\n");
+    let mode_name = match result.mode {
+        crate::profile_abi::Mode::Car => "car",
+        crate::profile_abi::Mode::Bike => "bike",
+        crate::profile_abi::Mode::Foot => "foot",
+    };
+    println!("\n🔐 Running Step 7 validation for {} mode...\n", mode_name);
 
     // Load data
     let topo = CchTopoFile::read(&result.topo_path)?;
-    let ebg_csr = EbgCsrFile::read(ebg_csr_path)?;
+    let filtered_ebg = FilteredEbgFile::read(filtered_ebg_path)?;
     let order = OrderEbgFile::read(order_path)?;
 
     // Lock Condition A: Structural integrity
     println!("A. Structural integrity checks...");
-    verify_node_counts(&topo, &ebg_csr, &order)?;
+    verify_node_counts(&topo, &filtered_ebg, &order)?;
     println!("  ✓ Node counts match");
     verify_csr_structure(&topo)?;
     println!("  ✓ CSR structure valid");
@@ -52,12 +58,12 @@ pub fn validate_step7(
 
     // Lock Condition C: Original edges preserved
     println!("\nC. Edge preservation checks...");
-    verify_original_edges(&topo, &ebg_csr)?;
+    verify_original_edges(&topo, &filtered_ebg)?;
     println!("  ✓ Original edges preserved");
 
     // Lock Condition D: Reachability correctness (random samples)
     println!("\nD. Reachability correctness checks (random samples)...");
-    verify_query_correctness(&topo, &ebg_csr, &order, 100)?;
+    verify_query_correctness(&topo, &filtered_ebg, &order, 100)?;
     println!("  ✓ CCH reachability matches BFS on {} samples", 100);
 
     // Compute SHA-256
@@ -66,10 +72,11 @@ pub fn validate_step7(
 
     let shortcut_ratio = result.n_shortcuts as f64 / result.n_original_arcs as f64;
 
-    println!("\n✅ Step 7 validation passed!");
+    println!("\n✅ Step 7 validation passed for {} mode!", mode_name);
     println!("  Shortcut ratio: {:.2}x original arcs", shortcut_ratio);
 
     Ok(Step7LockFile {
+        mode: mode_name.to_string(),
         inputs_sha256,
         topo_sha256,
         n_nodes: result.n_nodes,
@@ -85,14 +92,14 @@ pub fn validate_step7(
 
 fn verify_node_counts(
     topo: &crate::formats::CchTopo,
-    ebg_csr: &crate::formats::EbgCsr,
+    filtered_ebg: &FilteredEbg,
     order: &crate::formats::OrderEbg,
 ) -> Result<()> {
     anyhow::ensure!(
-        topo.n_nodes == ebg_csr.n_nodes,
+        topo.n_nodes == filtered_ebg.n_filtered_nodes,
         "topo.n_nodes ({}) != ebg.n_nodes ({})",
         topo.n_nodes,
-        ebg_csr.n_nodes
+        filtered_ebg.n_filtered_nodes
     );
     anyhow::ensure!(
         topo.n_nodes == order.n_nodes,
@@ -235,7 +242,7 @@ fn verify_downward_property(topo: &crate::formats::CchTopo, order: &crate::forma
     Ok(())
 }
 
-fn verify_original_edges(topo: &crate::formats::CchTopo, ebg_csr: &crate::formats::EbgCsr) -> Result<()> {
+fn verify_original_edges(topo: &crate::formats::CchTopo, filtered_ebg: &FilteredEbg) -> Result<()> {
     // Count non-shortcut edges
     let n_up_original = topo.up_is_shortcut.iter().filter(|&&x| !x).count();
     let n_down_original = topo.down_is_shortcut.iter().filter(|&&x| !x).count();
@@ -243,17 +250,17 @@ fn verify_original_edges(topo: &crate::formats::CchTopo, ebg_csr: &crate::format
 
     // Count self-loops in EBG (which we exclude from CCH)
     let mut n_self_loops = 0usize;
-    for u in 0..ebg_csr.n_nodes as usize {
-        let start = ebg_csr.offsets[u] as usize;
-        let end = ebg_csr.offsets[u + 1] as usize;
+    for u in 0..filtered_ebg.n_filtered_nodes as usize {
+        let start = filtered_ebg.offsets[u] as usize;
+        let end = filtered_ebg.offsets[u + 1] as usize;
         for i in start..end {
-            if ebg_csr.heads[i] == u as u32 {
+            if filtered_ebg.heads[i] == u as u32 {
                 n_self_loops += 1;
             }
         }
     }
 
-    let expected = ebg_csr.n_arcs as usize - n_self_loops;
+    let expected = filtered_ebg.n_filtered_arcs as usize - n_self_loops;
 
     anyhow::ensure!(
         total_original == expected,
@@ -280,13 +287,13 @@ fn compute_file_sha256(path: &Path) -> Result<String> {
 /// Verify CCH query correctness by comparing against BFS on original graph
 fn verify_query_correctness(
     topo: &crate::formats::CchTopo,
-    ebg_csr: &crate::formats::EbgCsr,
+    filtered_ebg: &FilteredEbg,
     order: &crate::formats::OrderEbg,
     n_samples: usize,
 ) -> Result<()> {
     use std::hash::{Hash, Hasher};
 
-    let n_nodes = ebg_csr.n_nodes as usize;
+    let n_nodes = filtered_ebg.n_filtered_nodes as usize;
 
     // Precompute reverse DOWN adjacency (for backward search)
     println!("    Building reverse DOWN graph...");
@@ -325,7 +332,7 @@ fn verify_query_correctness(
             }
 
             // BFS on original graph (unweighted shortest path)
-            let original_dist = bfs_distance(ebg_csr, src, dst);
+            let original_dist = bfs_distance(filtered_ebg, src, dst);
 
             // CCH query (up-then-down with unweighted edges)
             let cch_dist = cch_query_distance_with_rev(topo, down_rev_ref, src, dst);
@@ -368,14 +375,14 @@ fn verify_query_correctness(
 }
 
 /// BFS shortest path distance on original EBG (unweighted)
-fn bfs_distance(ebg_csr: &crate::formats::EbgCsr, src: usize, dst: usize) -> Option<u32> {
+fn bfs_distance(filtered_ebg: &FilteredEbg, src: usize, dst: usize) -> Option<u32> {
     use std::collections::VecDeque;
 
     if src == dst {
         return Some(0);
     }
 
-    let n = ebg_csr.n_nodes as usize;
+    let n = filtered_ebg.n_filtered_nodes as usize;
     let mut dist = vec![u32::MAX; n];
     let mut queue = VecDeque::new();
 
@@ -387,11 +394,11 @@ fn bfs_distance(ebg_csr: &crate::formats::EbgCsr, src: usize, dst: usize) -> Opt
             return Some(dist[dst]);
         }
 
-        let start = ebg_csr.offsets[u] as usize;
-        let end = ebg_csr.offsets[u + 1] as usize;
+        let start = filtered_ebg.offsets[u] as usize;
+        let end = filtered_ebg.offsets[u + 1] as usize;
 
         for i in start..end {
-            let v = ebg_csr.heads[i] as usize;
+            let v = filtered_ebg.heads[i] as usize;
             if dist[v] == u32::MAX {
                 dist[v] = dist[u] + 1;
                 queue.push_back(v);

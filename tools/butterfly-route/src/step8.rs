@@ -33,13 +33,13 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
-use crate::formats::{mod_turns, mod_weights, CchTopoFile, EbgCsrFile, OrderEbgFile};
+use crate::formats::{mod_turns, mod_weights, CchTopoFile, FilteredEbgFile, OrderEbgFile};
 use crate::profile_abi::Mode;
 
 /// Configuration for Step 8
 pub struct Step8Config {
     pub cch_topo_path: PathBuf,
-    pub ebg_csr_path: PathBuf,
+    pub filtered_ebg_path: PathBuf,
     pub weights_path: PathBuf, // w.*.u32
     pub turns_path: PathBuf,   // t.*.u32
     pub order_path: PathBuf,
@@ -57,28 +57,28 @@ pub struct Step8Result {
     pub customize_time_ms: u64,
 }
 
-/// Sorted EBG adjacency for fast arc index lookup
-/// Flat CSR-like structure: for node u, sorted targets are in sorted_heads[offsets[u]..offsets[u+1]]
-struct SortedEbgAdj {
+/// Sorted filtered EBG adjacency for fast arc index lookup
+/// Uses filtered node IDs but stores original arc indices for turn penalty lookup
+struct SortedFilteredEbgAdj {
     offsets: Vec<u64>,
-    sorted_heads: Vec<u32>,
-    sorted_arc_idx: Vec<u32>,
+    sorted_heads: Vec<u32>,       // Filtered node IDs (targets)
+    sorted_orig_arc_idx: Vec<u32>, // Original arc indices for turn penalty lookup
 }
 
-impl SortedEbgAdj {
-    /// Build sorted adjacency from EBG CSR
-    fn build(ebg_csr: &crate::formats::EbgCsr) -> Self {
-        let n_nodes = ebg_csr.n_nodes as usize;
-        let n_arcs = ebg_csr.n_arcs as usize;
+impl SortedFilteredEbgAdj {
+    /// Build sorted adjacency from FilteredEbg
+    fn build(filtered_ebg: &crate::formats::FilteredEbg) -> Self {
+        let n_nodes = filtered_ebg.n_filtered_nodes as usize;
+        let n_arcs = filtered_ebg.n_filtered_arcs as usize;
 
         // Collect and sort edges per node in parallel
         let sorted_per_node: Vec<Vec<(u32, u32)>> = (0..n_nodes)
             .into_par_iter()
             .map(|u| {
-                let start = ebg_csr.offsets[u] as usize;
-                let end = ebg_csr.offsets[u + 1] as usize;
+                let start = filtered_ebg.offsets[u] as usize;
+                let end = filtered_ebg.offsets[u + 1] as usize;
                 let mut edges: Vec<(u32, u32)> = (start..end)
-                    .map(|i| (ebg_csr.heads[i], i as u32))
+                    .map(|i| (filtered_ebg.heads[i], filtered_ebg.original_arc_idx[i]))
                     .collect();
                 edges.sort_unstable_by_key(|(head, _)| *head);
                 edges
@@ -88,14 +88,14 @@ impl SortedEbgAdj {
         // Flatten into CSR structure
         let mut offsets = Vec::with_capacity(n_nodes + 1);
         let mut sorted_heads = Vec::with_capacity(n_arcs);
-        let mut sorted_arc_idx = Vec::with_capacity(n_arcs);
+        let mut sorted_orig_arc_idx = Vec::with_capacity(n_arcs);
 
         let mut offset = 0u64;
         for edges in sorted_per_node {
             offsets.push(offset);
-            for (head, arc_idx) in edges {
+            for (head, orig_arc_idx) in edges {
                 sorted_heads.push(head);
-                sorted_arc_idx.push(arc_idx);
+                sorted_orig_arc_idx.push(orig_arc_idx);
             }
             offset = sorted_heads.len() as u64;
         }
@@ -104,13 +104,13 @@ impl SortedEbgAdj {
         Self {
             offsets,
             sorted_heads,
-            sorted_arc_idx,
+            sorted_orig_arc_idx,
         }
     }
 
-    /// Find arc index for edge u→v using binary search
+    /// Find original arc index for filtered edge u→v using binary search
     #[inline]
-    fn find_arc_index(&self, u: usize, v: u32) -> Option<u32> {
+    fn find_original_arc_index(&self, u: usize, v: u32) -> Option<u32> {
         let start = self.offsets[u] as usize;
         let end = self.offsets[u + 1] as usize;
         if start >= end {
@@ -118,7 +118,7 @@ impl SortedEbgAdj {
         }
         let slice = &self.sorted_heads[start..end];
         match slice.binary_search(&v) {
-            Ok(idx) => Some(self.sorted_arc_idx[start + idx]),
+            Ok(idx) => Some(self.sorted_orig_arc_idx[start + idx]),
             Err(_) => None,
         }
     }
@@ -145,10 +145,10 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
         n_nodes, n_up, n_down
     );
 
-    // Load EBG CSR (for arc→turn_idx mapping)
-    println!("Loading EBG CSR...");
-    let ebg_csr = EbgCsrFile::read(&config.ebg_csr_path)?;
-    println!("  ✓ {} arcs", ebg_csr.n_arcs);
+    // Load filtered EBG (for arc→turn_idx mapping and node ID mapping)
+    println!("Loading filtered EBG...");
+    let filtered_ebg = FilteredEbgFile::read(&config.filtered_ebg_path)?;
+    println!("  ✓ {} filtered nodes, {} arcs", filtered_ebg.n_filtered_nodes, filtered_ebg.n_filtered_arcs);
 
     // Load ordering
     println!("Loading ordering...");
@@ -168,9 +168,9 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     let mut up_weights = vec![u32::MAX; n_up];
     let mut down_weights = vec![u32::MAX; n_down];
 
-    // Build sorted EBG adjacency for fast arc lookup
-    println!("\nBuilding sorted EBG adjacency (parallel)...");
-    let sorted_ebg = SortedEbgAdj::build(&ebg_csr);
+    // Build sorted filtered EBG adjacency for fast arc lookup
+    println!("\nBuilding sorted filtered EBG adjacency (parallel)...");
+    let sorted_ebg = SortedFilteredEbgAdj::build(&filtered_ebg);
     println!("  ✓ Built sorted adjacency");
 
     // Note: We don't need ebg_csr.turn_idx - turn penalties are indexed by arc_idx directly
@@ -214,13 +214,14 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
             let v = topo.down_targets[i] as usize;
 
             if !topo.down_is_shortcut[i] {
-                // Original edge: weight = w[v] + turn_penalty
+                // Original edge: weight = w[original_v] + turn_penalty
                 let weight = compute_original_weight(
                     u,
                     v,
                     &weights.weights,
                     &turns.penalties,
                     &sorted_ebg,
+                    &filtered_ebg.filtered_to_original,
                 );
                 down_weights[i] = weight;
             } else {
@@ -261,13 +262,14 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
             let v = topo.up_targets[i] as usize;
 
             if !topo.up_is_shortcut[i] {
-                // Original edge: weight = w[v] + turn_penalty
+                // Original edge: weight = w[original_v] + turn_penalty
                 let weight = compute_original_weight(
                     u,
                     v,
                     &weights.weights,
                     &turns.penalties,
                     &sorted_ebg,
+                    &filtered_ebg.filtered_to_original,
                 );
                 up_weights[i] = weight;
             } else {
@@ -391,30 +393,37 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
 }
 
 /// Compute weight for an original edge
+///
+/// CCH operates in filtered node space, but weights are indexed by original node ID.
+/// We map filtered_v → original_v for weight lookup.
+/// Turn penalties are indexed by original arc index (from filtered_ebg.original_arc_idx).
 #[inline]
 fn compute_original_weight(
     u: usize,
     v: usize,
     node_weights: &[u32],
     turn_penalties: &[u32],
-    sorted_ebg: &SortedEbgAdj,
+    sorted_ebg: &SortedFilteredEbgAdj,
+    filtered_to_original: &[u32],
 ) -> u32 {
-    let w_v = node_weights[v];
+    // Map filtered v to original v for weight lookup
+    let original_v = filtered_to_original[v] as usize;
+    let w_v = node_weights[original_v];
 
     // If target node is inaccessible, edge is inaccessible
     if w_v == 0 {
         return u32::MAX;
     }
 
-    // Find arc index to get turn penalty
-    // Turn penalties are indexed by arc_idx directly (see Step 5)
-    match sorted_ebg.find_arc_index(u, v as u32) {
-        Some(arc_idx) => {
-            let penalty = turn_penalties[arc_idx as usize];
+    // Find original arc index to get turn penalty
+    // Turn penalties are indexed by original arc_idx
+    match sorted_ebg.find_original_arc_index(u, v as u32) {
+        Some(orig_arc_idx) => {
+            let penalty = turn_penalties[orig_arc_idx as usize];
             w_v.saturating_add(penalty)
         }
         None => {
-            // Edge not found in EBG - should not happen for original edges
+            // Edge not found in filtered EBG - should not happen for original edges
             u32::MAX
         }
     }
