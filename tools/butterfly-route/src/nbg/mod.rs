@@ -210,8 +210,9 @@ fn load_node_coordinates(path: &PathBuf) -> Result<HashMap<i64, (f64, f64)>> {
         let lat_lon = u64::from_le_bytes(record[8..16].try_into()?);
 
         // Decode lat/lon from packed format (1e-7 degrees)
-        let lat_fxp = (lat_lon >> 32) as i32;
-        let lon_fxp = (lat_lon & 0xFFFFFFFF) as i32;
+        // In little-endian: lower 32 bits are lat_fxp (bytes 8-11), upper 32 bits are lon_fxp (bytes 12-15)
+        let lat_fxp = (lat_lon & 0xFFFFFFFF) as i32;
+        let lon_fxp = (lat_lon >> 32) as i32;
         let lat = lat_fxp as f64 * 1e-7;
         let lon = lon_fxp as f64 * 1e-7;
 

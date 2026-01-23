@@ -206,6 +206,14 @@ pub enum Commands {
         #[arg(long)]
         order: PathBuf,
 
+        /// Path to w.*.u32 weights file from Step 5 (for metric-aware witness search)
+        #[arg(long)]
+        weights: PathBuf,
+
+        /// Path to t.*.u32 turn penalties file from Step 5 (for metric-aware witness search)
+        #[arg(long)]
+        turns: PathBuf,
+
         /// Mode to build CCH for (car, bike, foot)
         #[arg(long)]
         mode: String,
@@ -536,6 +544,8 @@ impl Cli {
             Commands::Step7Contract {
                 filtered_ebg,
                 order,
+                weights,
+                turns,
                 mode,
                 outdir,
             } => {
@@ -550,6 +560,8 @@ impl Cli {
                 let config = step7::Step7Config {
                     filtered_ebg_path: filtered_ebg.clone(),
                     order_path: order.clone(),
+                    weights_path: weights,
+                    turns_path: turns,
                     mode,
                     outdir: outdir.clone(),
                 };
