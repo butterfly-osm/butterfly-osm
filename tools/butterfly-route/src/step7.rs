@@ -1,7 +1,7 @@
-//! Step 7: CCH Contraction
+//! Step 7: CCH Contraction (per-mode on filtered EBG)
 //!
-//! Builds the Customizable Contraction Hierarchy (CCH) topology from the Edge-Based
-//! Graph (EBG) using a pre-computed Nested Dissection ordering.
+//! Builds the Customizable Contraction Hierarchy (CCH) topology from the mode-filtered
+//! Edge-Based Graph (EBG) using a pre-computed per-mode Nested Dissection ordering.
 //!
 //! # Algorithm Overview
 //!
@@ -13,6 +13,12 @@
 //! A shortcut edge (u → w) via v is added only if:
 //! 1. The direct edge (u → w) doesn't already exist
 //! 2. No witness path u → ... → w exists through other higher-ranked nodes
+//!
+//! # Per-Mode Filtered CCH
+//!
+//! The CCH is now built on the filtered EBG (mode-accessible subgraph only). This ensures
+//! that all nodes in the CCH are actually reachable in that mode, eliminating orphaned
+//! nodes that caused routing failures in the previous design.
 //!
 //! # Key Optimization: Witness Search
 //!
@@ -46,7 +52,8 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 
-use crate::formats::{CchTopo, CchTopoFile, EbgCsrFile, OrderEbgFile};
+use crate::formats::{CchTopo, CchTopoFile, FilteredEbg, FilteredEbgFile, OrderEbgFile};
+use crate::profile_abi::Mode;
 
 /// Check if there's a witness path u → ... → w (not through v) using depth-3 search.
 ///
@@ -131,8 +138,9 @@ fn has_witness(
 
 /// Configuration for Step 7
 pub struct Step7Config {
-    pub ebg_csr_path: PathBuf,
+    pub filtered_ebg_path: PathBuf,
     pub order_path: PathBuf,
+    pub mode: Mode,
     pub outdir: PathBuf,
 }
 
@@ -140,6 +148,7 @@ pub struct Step7Config {
 #[derive(Debug)]
 pub struct Step7Result {
     pub topo_path: PathBuf,
+    pub mode: Mode,
     pub n_nodes: u32,
     pub n_original_arcs: u64,
     pub n_shortcuts: u64,
@@ -148,30 +157,35 @@ pub struct Step7Result {
     pub build_time_ms: u64,
 }
 
-/// Build CCH topology via contraction
+/// Build CCH topology via contraction on filtered EBG
 pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
     let start_time = std::time::Instant::now();
-    println!("\n🔨 Step 7: Building CCH topology...\n");
+    let mode_name = match config.mode {
+        Mode::Car => "car",
+        Mode::Bike => "bike",
+        Mode::Foot => "foot",
+    };
+    println!("\n🔨 Step 7: Building CCH topology for {} mode...\n", mode_name);
 
-    // Load EBG CSR
-    println!("Loading EBG CSR...");
-    let ebg_csr = EbgCsrFile::read(&config.ebg_csr_path)?;
-    println!("  ✓ {} nodes, {} arcs", ebg_csr.n_nodes, ebg_csr.n_arcs);
+    // Load filtered EBG
+    println!("Loading filtered EBG ({})...", mode_name);
+    let filtered_ebg = FilteredEbgFile::read(&config.filtered_ebg_path)?;
+    println!("  ✓ {} nodes, {} arcs", filtered_ebg.n_filtered_nodes, filtered_ebg.n_filtered_arcs);
 
     // Load ordering
-    println!("Loading ordering...");
+    println!("Loading ordering ({})...", mode_name);
     let order = OrderEbgFile::read(&config.order_path)?;
     println!("  ✓ {} nodes", order.n_nodes);
 
-    if ebg_csr.n_nodes != order.n_nodes {
+    if filtered_ebg.n_filtered_nodes != order.n_nodes {
         anyhow::bail!(
-            "Node count mismatch: EBG has {} nodes, order has {}",
-            ebg_csr.n_nodes,
+            "Node count mismatch: filtered EBG has {} nodes, order has {}",
+            filtered_ebg.n_filtered_nodes,
             order.n_nodes
         );
     }
 
-    let n_nodes = ebg_csr.n_nodes as usize;
+    let n_nodes = filtered_ebg.n_filtered_nodes as usize;
     let perm = &order.perm;
     let inv_perm = &order.inv_perm;
 
@@ -184,12 +198,12 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
             .into_par_iter()
             .map(|u| {
                 let rank_u = perm[u];
-                let start = ebg_csr.offsets[u] as usize;
-                let end = ebg_csr.offsets[u + 1] as usize;
+                let start = filtered_ebg.offsets[u] as usize;
+                let end = filtered_ebg.offsets[u + 1] as usize;
                 let degree = end - start;
                 let mut set = FxHashSet::with_capacity_and_hasher(degree, Default::default());
                 for i in start..end {
-                    let v = ebg_csr.heads[i] as usize;
+                    let v = filtered_ebg.heads[i] as usize;
                     if u != v && perm[v] > rank_u {
                         set.insert(v as u32);
                     }
@@ -202,10 +216,10 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
         let mut in_vecs: Vec<Vec<u32>> = vec![Vec::new(); n_nodes];
         for u in 0..n_nodes {
             let rank_u = perm[u];
-            let start = ebg_csr.offsets[u] as usize;
-            let end = ebg_csr.offsets[u + 1] as usize;
+            let start = filtered_ebg.offsets[u] as usize;
+            let end = filtered_ebg.offsets[u + 1] as usize;
             for i in start..end {
-                let v = ebg_csr.heads[i] as usize;
+                let v = filtered_ebg.heads[i] as usize;
                 if u != v && rank_u > perm[v] {
                     in_vecs[v].push(u as u32);
                 }
@@ -383,11 +397,11 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
         .into_par_iter()
         .map(|u| {
             let rank_u = perm[u];
-            let start = ebg_csr.offsets[u] as usize;
-            let end = ebg_csr.offsets[u + 1] as usize;
+            let start = filtered_ebg.offsets[u] as usize;
+            let end = filtered_ebg.offsets[u + 1] as usize;
             let mut count = 0;
             for i in start..end {
-                let v = ebg_csr.heads[i] as usize;
+                let v = filtered_ebg.heads[i] as usize;
                 if u != v && rank_u < perm[v] {
                     count += 1;
                 }
@@ -400,11 +414,11 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
         .into_par_iter()
         .map(|u| {
             let rank_u = perm[u];
-            let start = ebg_csr.offsets[u] as usize;
-            let end = ebg_csr.offsets[u + 1] as usize;
+            let start = filtered_ebg.offsets[u] as usize;
+            let end = filtered_ebg.offsets[u + 1] as usize;
             let mut count = 0;
             for i in start..end {
-                let v = ebg_csr.heads[i] as usize;
+                let v = filtered_ebg.heads[i] as usize;
                 if u != v && rank_u >= perm[v] {
                     count += 1;
                 }
@@ -481,11 +495,11 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
     // Fill original edges in parallel
     (0..n_nodes).into_par_iter().for_each(|u| {
         let rank_u = perm[u];
-        let start = ebg_csr.offsets[u] as usize;
-        let end = ebg_csr.offsets[u + 1] as usize;
+        let start = filtered_ebg.offsets[u] as usize;
+        let end = filtered_ebg.offsets[u + 1] as usize;
 
         for i in start..end {
-            let v = ebg_csr.heads[i];
+            let v = filtered_ebg.heads[i];
             if u == v as usize {
                 continue;
             }
@@ -618,16 +632,16 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
     );
 
     // Compute inputs SHA using streaming (avoid loading whole files into memory)
-    let inputs_sha = compute_inputs_sha_streaming(&config.ebg_csr_path, &config.order_path)?;
+    let inputs_sha = compute_inputs_sha_streaming(&config.filtered_ebg_path, &config.order_path)?;
 
-    // Write output
-    let topo_path = config.outdir.join("cch.topo");
+    // Write output - use mode-specific filename
+    let topo_path = config.outdir.join(format!("cch.{}.topo", mode_name));
 
     println!("\nWriting output...");
     let topo = CchTopo {
-        n_nodes: ebg_csr.n_nodes,
+        n_nodes: filtered_ebg.n_filtered_nodes,
         n_shortcuts,
-        n_original_arcs: ebg_csr.n_arcs,
+        n_original_arcs: filtered_ebg.n_filtered_arcs,
         inputs_sha,
         up_offsets,
         up_targets,
@@ -645,8 +659,9 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
 
     Ok(Step7Result {
         topo_path,
-        n_nodes: ebg_csr.n_nodes,
-        n_original_arcs: ebg_csr.n_arcs,
+        mode: config.mode,
+        n_nodes: filtered_ebg.n_filtered_nodes,
+        n_original_arcs: filtered_ebg.n_filtered_arcs,
         n_shortcuts,
         n_up_edges,
         n_down_edges,
@@ -656,7 +671,7 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
 
 /// Compute SHA256 of input files using streaming (memory efficient)
 fn compute_inputs_sha_streaming(
-    ebg_csr_path: &std::path::Path,
+    filtered_ebg_path: &std::path::Path,
     order_path: &std::path::Path,
 ) -> Result<[u8; 32]> {
     use sha2::{Digest, Sha256};
@@ -664,7 +679,7 @@ fn compute_inputs_sha_streaming(
     let mut hasher = Sha256::new();
 
     // Stream first file
-    let mut file1 = BufReader::with_capacity(64 * 1024, File::open(ebg_csr_path)?);
+    let mut file1 = BufReader::with_capacity(64 * 1024, File::open(filtered_ebg_path)?);
     std::io::copy(&mut file1, &mut hasher)?;
 
     // Stream second file

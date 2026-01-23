@@ -1,4 +1,4 @@
-///! Step 5: Per-mode weights & masks (car | bike | foot)
+///! Step 5: Per-mode weights, masks, and filtered EBGs (car | bike | foot)
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -13,12 +13,15 @@ pub struct Step5Result {
     pub car_weights: PathBuf,
     pub car_turns: PathBuf,
     pub car_mask: PathBuf,
+    pub car_filtered_ebg: PathBuf,
     pub bike_weights: PathBuf,
     pub bike_turns: PathBuf,
     pub bike_mask: PathBuf,
+    pub bike_filtered_ebg: PathBuf,
     pub foot_weights: PathBuf,
     pub foot_turns: PathBuf,
     pub foot_mask: PathBuf,
+    pub foot_filtered_ebg: PathBuf,
     pub n_nodes: u32,
     pub n_arcs: u64,
 }
@@ -73,6 +76,17 @@ pub fn generate_weights(
     let mut inputs_sha_8 = [0u8; 8];
     inputs_sha_8.copy_from_slice(&ebg_nodes.inputs_sha[0..8]);
 
+    // Debug: check access flags in loaded way_attrs
+    let car_with_access = way_attrs_car.iter().filter(|a| a.output.access_fwd || a.output.access_rev).count();
+    let car_fwd_only = way_attrs_car.iter().filter(|a| a.output.access_fwd && !a.output.access_rev).count();
+    let car_rev_only = way_attrs_car.iter().filter(|a| !a.output.access_fwd && a.output.access_rev).count();
+    let car_both = way_attrs_car.iter().filter(|a| a.output.access_fwd && a.output.access_rev).count();
+    println!("  DEBUG: Car access flags:");
+    println!("    With any access: {}", car_with_access);
+    println!("    Fwd only: {}", car_fwd_only);
+    println!("    Rev only: {}", car_rev_only);
+    println!("    Both: {}", car_both);
+
     // Generate weights, turns, and masks for each mode
     println!("\n🚗 Generating car weights...");
     let (car_weights, car_turns, car_mask) = generate_mode_data(
@@ -116,14 +130,17 @@ pub fn generate_weights(
     let car_weights_path = outdir.join("w.car.u32");
     let car_turns_path = outdir.join("t.car.u32");
     let car_mask_path = outdir.join("mask.car.bitset");
+    let car_filtered_path = outdir.join("filtered.car.ebg");
 
     let bike_weights_path = outdir.join("w.bike.u32");
     let bike_turns_path = outdir.join("t.bike.u32");
     let bike_mask_path = outdir.join("mask.bike.bitset");
+    let bike_filtered_path = outdir.join("filtered.bike.ebg");
 
     let foot_weights_path = outdir.join("w.foot.u32");
     let foot_turns_path = outdir.join("t.foot.u32");
     let foot_mask_path = outdir.join("mask.foot.bitset");
+    let foot_filtered_path = outdir.join("filtered.foot.ebg");
 
     println!("\nWriting output files...");
     mod_weights::write(&car_weights_path, &car_weights)?;
@@ -140,16 +157,75 @@ pub fn generate_weights(
 
     println!("  ✓ Written 9 files (3 modes × 3 types)");
 
+    // Build and write filtered EBGs for each mode
+    println!("\n🔍 Building per-mode filtered EBGs...");
+
+    // Compute inputs SHA for filtered EBG (includes all inputs)
+    let filtered_inputs_sha = compute_filtered_inputs_sha(
+        ebg_nodes_path,
+        ebg_csr_path,
+        way_attrs_car_path,
+        way_attrs_bike_path,
+        way_attrs_foot_path,
+    )?;
+
+    // Car filtered EBG
+    println!("  Building car filtered EBG...");
+    let car_filtered = FilteredEbg::build(
+        Mode::Car,
+        &ebg_csr.offsets,
+        &ebg_csr.heads,
+        &car_mask.mask,
+        ebg_nodes.n_nodes,
+        filtered_inputs_sha,
+    );
+    println!("    ✓ {} nodes (of {}), {} arcs",
+        car_filtered.n_filtered_nodes, car_filtered.n_original_nodes, car_filtered.n_filtered_arcs);
+    FilteredEbgFile::write(&car_filtered_path, &car_filtered)?;
+
+    // Bike filtered EBG
+    println!("  Building bike filtered EBG...");
+    let bike_filtered = FilteredEbg::build(
+        Mode::Bike,
+        &ebg_csr.offsets,
+        &ebg_csr.heads,
+        &bike_mask.mask,
+        ebg_nodes.n_nodes,
+        filtered_inputs_sha,
+    );
+    println!("    ✓ {} nodes (of {}), {} arcs",
+        bike_filtered.n_filtered_nodes, bike_filtered.n_original_nodes, bike_filtered.n_filtered_arcs);
+    FilteredEbgFile::write(&bike_filtered_path, &bike_filtered)?;
+
+    // Foot filtered EBG
+    println!("  Building foot filtered EBG...");
+    let foot_filtered = FilteredEbg::build(
+        Mode::Foot,
+        &ebg_csr.offsets,
+        &ebg_csr.heads,
+        &foot_mask.mask,
+        ebg_nodes.n_nodes,
+        filtered_inputs_sha,
+    );
+    println!("    ✓ {} nodes (of {}), {} arcs",
+        foot_filtered.n_filtered_nodes, foot_filtered.n_original_nodes, foot_filtered.n_filtered_arcs);
+    FilteredEbgFile::write(&foot_filtered_path, &foot_filtered)?;
+
+    println!("  ✓ Written 3 filtered EBG files");
+
     Ok(Step5Result {
         car_weights: car_weights_path,
         car_turns: car_turns_path,
         car_mask: car_mask_path,
+        car_filtered_ebg: car_filtered_path,
         bike_weights: bike_weights_path,
         bike_turns: bike_turns_path,
         bike_mask: bike_mask_path,
+        bike_filtered_ebg: bike_filtered_path,
         foot_weights: foot_weights_path,
         foot_turns: foot_turns_path,
         foot_mask: foot_mask_path,
+        foot_filtered_ebg: foot_filtered_path,
         n_nodes: ebg_nodes.n_nodes,
         n_arcs: ebg_csr.n_arcs,
     })
@@ -184,6 +260,12 @@ fn generate_mode_data(
     let mut penalties = vec![0u32; n_arcs];
     let mut mask = ModMask::new(mode, n_nodes, inputs_sha_8);
 
+    // Debug counters
+    let mut dbg_no_way = 0usize;
+    let mut dbg_no_access = 0usize;
+    let mut dbg_zero_speed = 0usize;
+    let mut dbg_accessible = 0usize;
+
     // Compute node weights and accessibility mask
     for (ebg_id, ebg_node) in ebg_nodes.nodes.iter().enumerate() {
         let nbg_edge = &nbg_geo.edges[ebg_node.geom_idx as usize];
@@ -194,6 +276,7 @@ fn generate_mode_data(
             Some(attr) => attr,
             None => {
                 // Way not in this mode's index - inaccessible
+                dbg_no_way += 1;
                 weights[ebg_id] = 0;
                 continue;
             }
@@ -211,6 +294,7 @@ fn generate_mode_data(
 
         if !has_access {
             // Not accessible in this direction
+            dbg_no_access += 1;
             weights[ebg_id] = 0;
             continue;
         }
@@ -224,9 +308,12 @@ fn generate_mode_data(
 
         if base_speed_mmps == 0 {
             // Inaccessible (zero speed)
+            dbg_zero_speed += 1;
             weights[ebg_id] = 0;
             continue;
         }
+
+        dbg_accessible += 1;
 
         // Compute travel_time_ds using integer math (ceiling division)
         // travel_time_ds = ceil(length_mm / base_speed_mmps * 10)
@@ -274,6 +361,16 @@ fn generate_mode_data(
         }
     }
 
+    // Debug output
+    let mode_name = match mode {
+        Mode::Car => "car",
+        Mode::Bike => "bike",
+        Mode::Foot => "foot",
+    };
+    println!("  DEBUG {}: no_way={}, no_access={}, zero_speed={}, accessible={} ({:.1}%)",
+        mode_name, dbg_no_way, dbg_no_access, dbg_zero_speed, dbg_accessible,
+        dbg_accessible as f64 * 100.0 / n_nodes as f64);
+
     let weights_data = ModWeights {
         mode,
         weights,
@@ -287,4 +384,27 @@ fn generate_mode_data(
     };
 
     Ok((weights_data, turns_data, mask))
+}
+
+/// Compute SHA256 hash of inputs for filtered EBG
+fn compute_filtered_inputs_sha(
+    ebg_nodes_path: &Path,
+    ebg_csr_path: &Path,
+    way_attrs_car_path: &Path,
+    way_attrs_bike_path: &Path,
+    way_attrs_foot_path: &Path,
+) -> Result<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(&std::fs::read(ebg_nodes_path)?);
+    hasher.update(&std::fs::read(ebg_csr_path)?);
+    hasher.update(&std::fs::read(way_attrs_car_path)?);
+    hasher.update(&std::fs::read(way_attrs_bike_path)?);
+    hasher.update(&std::fs::read(way_attrs_foot_path)?);
+
+    let result = hasher.finalize();
+    let mut sha = [0u8; 32];
+    sha.copy_from_slice(&result);
+    Ok(sha)
 }

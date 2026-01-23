@@ -25,6 +25,7 @@ pub mod ebg_turn_table;
 pub mod mod_weights;
 pub mod mod_turns;
 pub mod mod_mask;
+pub mod filtered_ebg;
 
 // Step 6 formats
 pub mod order_ebg;
@@ -45,5 +46,6 @@ pub use ebg_turn_table::{TurnEntry, TurnKind, TurnTable, TurnTableFile};
 pub use mod_weights::ModWeights;
 pub use mod_turns::ModTurns;
 pub use mod_mask::ModMask;
+pub use filtered_ebg::{FilteredEbg, FilteredEbgFile};
 pub use order_ebg::{OrderEbg, OrderEbgFile};
 pub use cch_topo::{CchTopo, CchTopoFile, Shortcut};

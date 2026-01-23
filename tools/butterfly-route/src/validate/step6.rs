@@ -1,14 +1,15 @@
-///! Step 6 validation - CCH ordering lock conditions
+///! Step 6 validation - CCH ordering lock conditions (per-mode on filtered EBG)
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use crate::formats::{EbgCsrFile, OrderEbgFile};
+use crate::formats::{FilteredEbgFile, OrderEbgFile};
 use crate::step6::Step6Result;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Step6LockFile {
+    pub mode: String,
     pub inputs_sha256: String,
     pub order_sha256: String,
     pub n_nodes: u32,
@@ -21,13 +22,18 @@ pub struct Step6LockFile {
 /// Validate Step 6 outputs and generate lock file
 pub fn validate_step6(
     result: &Step6Result,
-    ebg_csr_path: &Path,
+    filtered_ebg_path: &Path,
 ) -> Result<Step6LockFile> {
-    println!("\n🔐 Running Step 6 validation...\n");
+    let mode_name = match result.mode {
+        crate::profile_abi::Mode::Car => "car",
+        crate::profile_abi::Mode::Bike => "bike",
+        crate::profile_abi::Mode::Foot => "foot",
+    };
+    println!("\n🔐 Running Step 6 validation for {} mode...\n", mode_name);
 
     // Load data
     let order = OrderEbgFile::read(&result.order_path)?;
-    let ebg_csr = EbgCsrFile::read(ebg_csr_path)?;
+    let filtered_ebg = FilteredEbgFile::read(filtered_ebg_path)?;
 
     // Lock Condition A: Structural integrity
     println!("A. Structural integrity checks...");
@@ -35,16 +41,17 @@ pub fn validate_step6(
     println!("  ✓ perm is a valid permutation");
     verify_inverse(&order)?;
     println!("  ✓ inv_perm is correct inverse");
-    verify_node_count(&order, &ebg_csr)?;
-    println!("  ✓ node count matches EBG");
+    verify_node_count(&order, &filtered_ebg)?;
+    println!("  ✓ node count matches filtered EBG");
 
     // Compute SHA-256
     let inputs_sha256 = hex::encode(&order.inputs_sha);
     let order_sha256 = compute_file_sha256(&result.order_path)?;
 
-    println!("\n✅ Step 6 validation passed!");
+    println!("\n✅ Step 6 validation passed for {} mode!", mode_name);
 
     Ok(Step6LockFile {
+        mode: mode_name.to_string(),
         inputs_sha256,
         order_sha256,
         n_nodes: result.n_nodes,
@@ -94,12 +101,12 @@ fn verify_inverse(order: &crate::formats::OrderEbg) -> Result<()> {
     Ok(())
 }
 
-/// Verify node count matches EBG
-fn verify_node_count(order: &crate::formats::OrderEbg, csr: &crate::formats::EbgCsr) -> Result<()> {
+/// Verify node count matches filtered EBG
+fn verify_node_count(order: &crate::formats::OrderEbg, filtered_ebg: &crate::formats::FilteredEbg) -> Result<()> {
     anyhow::ensure!(
-        order.n_nodes == csr.n_nodes,
-        "order.n_nodes ({}) != ebg.n_nodes ({})",
-        order.n_nodes, csr.n_nodes
+        order.n_nodes == filtered_ebg.n_filtered_nodes,
+        "order.n_nodes ({}) != filtered_ebg.n_filtered_nodes ({})",
+        order.n_nodes, filtered_ebg.n_filtered_nodes
     );
     Ok(())
 }

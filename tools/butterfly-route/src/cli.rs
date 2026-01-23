@@ -13,6 +13,7 @@ use crate::step5;
 use crate::step6;
 use crate::step7;
 use crate::step8;
+use crate::step9;
 use crate::profile_abi::Mode;
 
 #[derive(Parser)]
@@ -164,11 +165,11 @@ pub enum Commands {
         outdir: PathBuf,
     },
 
-    /// Step 6: Generate CCH ordering on EBG via nested dissection
+    /// Step 6: Generate per-mode CCH ordering on filtered EBG via nested dissection
     Step6Order {
-        /// Path to ebg.csr from Step 4
+        /// Path to filtered.*.ebg from Step 5
         #[arg(long)]
-        ebg_csr: PathBuf,
+        filtered_ebg: PathBuf,
 
         /// Path to ebg.nodes from Step 4
         #[arg(long)]
@@ -178,7 +179,11 @@ pub enum Commands {
         #[arg(long)]
         nbg_geo: PathBuf,
 
-        /// Output directory for order.ebg
+        /// Mode to generate ordering for (car, bike, foot)
+        #[arg(long)]
+        mode: String,
+
+        /// Output directory for order.*.ebg
         #[arg(short, long)]
         outdir: PathBuf,
 
@@ -191,32 +196,36 @@ pub enum Commands {
         balance_eps: f32,
     },
 
-    /// Step 7: Build CCH topology via contraction
+    /// Step 7: Build per-mode CCH topology via contraction on filtered EBG
     Step7Contract {
-        /// Path to ebg.csr from Step 4
+        /// Path to filtered.*.ebg from Step 5
         #[arg(long)]
-        ebg_csr: PathBuf,
+        filtered_ebg: PathBuf,
 
-        /// Path to order.ebg from Step 6
+        /// Path to order.*.ebg from Step 6
         #[arg(long)]
         order: PathBuf,
 
-        /// Output directory for cch.topo
+        /// Mode to build CCH for (car, bike, foot)
+        #[arg(long)]
+        mode: String,
+
+        /// Output directory for cch.*.topo
         #[arg(short, long)]
         outdir: PathBuf,
     },
 
-    /// Step 8: Customize CCH with per-mode weights
+    /// Step 8: Customize per-mode CCH with weights
     Step8Customize {
-        /// Path to cch.topo from Step 7
+        /// Path to cch.*.topo from Step 7
         #[arg(long)]
         cch_topo: PathBuf,
 
-        /// Path to ebg.csr from Step 4
+        /// Path to filtered.*.ebg from Step 5
         #[arg(long)]
-        ebg_csr: PathBuf,
+        filtered_ebg: PathBuf,
 
-        /// Path to order.ebg from Step 6
+        /// Path to order.*.ebg from Step 6
         #[arg(long)]
         order: PathBuf,
 
@@ -235,6 +244,17 @@ pub enum Commands {
         /// Output directory for cch.w.*.u32
         #[arg(short, long)]
         outdir: PathBuf,
+    },
+
+    /// Step 9: Start query server
+    Serve {
+        /// Directory containing all step outputs (step3/, step4/, etc.)
+        #[arg(short, long)]
+        data_dir: PathBuf,
+
+        /// Port to listen on (default: find free port starting from 8080)
+        #[arg(short, long)]
+        port: Option<u16>,
     },
 }
 
@@ -466,17 +486,27 @@ impl Cli {
                 Ok(())
             }
             Commands::Step6Order {
-                ebg_csr,
+                filtered_ebg,
                 ebg_nodes,
                 nbg_geo,
+                mode,
                 outdir,
                 leaf_threshold,
                 balance_eps,
             } => {
+                // Parse mode
+                let mode = match mode.to_lowercase().as_str() {
+                    "car" => Mode::Car,
+                    "bike" => Mode::Bike,
+                    "foot" => Mode::Foot,
+                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
+                };
+
                 let config = step6::Step6Config {
-                    ebg_csr_path: ebg_csr.clone(),
+                    filtered_ebg_path: filtered_ebg.clone(),
                     ebg_nodes_path: ebg_nodes,
                     nbg_geo_path: nbg_geo,
+                    mode,
                     outdir: outdir.clone(),
                     leaf_threshold,
                     balance_eps,
@@ -486,26 +516,41 @@ impl Cli {
 
                 // Run validation and generate lock file
                 println!();
-                let lock_file = validate_step6(&result, &ebg_csr)?;
+                let lock_file = validate_step6(&result, &filtered_ebg)?;
 
-                let lock_path = outdir.join("step6.lock.json");
+                let mode_name = match result.mode {
+                    Mode::Car => "car",
+                    Mode::Bike => "bike",
+                    Mode::Foot => "foot",
+                };
+                let lock_path = outdir.join(format!("step6.{}.lock.json", mode_name));
                 let lock_json = serde_json::to_string_pretty(&lock_file)?;
                 std::fs::write(&lock_path, lock_json)?;
 
                 println!();
-                println!("✅ Step 6 ordering complete!");
+                println!("✅ Step 6 ordering complete for {} mode!", mode_name);
                 println!("📋 Lock file: {}", lock_path.display());
 
                 Ok(())
             }
             Commands::Step7Contract {
-                ebg_csr,
+                filtered_ebg,
                 order,
+                mode,
                 outdir,
             } => {
+                // Parse mode
+                let mode = match mode.to_lowercase().as_str() {
+                    "car" => Mode::Car,
+                    "bike" => Mode::Bike,
+                    "foot" => Mode::Foot,
+                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
+                };
+
                 let config = step7::Step7Config {
-                    ebg_csr_path: ebg_csr.clone(),
+                    filtered_ebg_path: filtered_ebg.clone(),
                     order_path: order.clone(),
+                    mode,
                     outdir: outdir.clone(),
                 };
 
@@ -513,21 +558,26 @@ impl Cli {
 
                 // Run validation and generate lock file
                 println!();
-                let lock_file = validate_step7(&result, &ebg_csr, &order)?;
+                let lock_file = validate_step7(&result, &filtered_ebg, &order)?;
 
-                let lock_path = outdir.join("step7.lock.json");
+                let mode_name = match result.mode {
+                    Mode::Car => "car",
+                    Mode::Bike => "bike",
+                    Mode::Foot => "foot",
+                };
+                let lock_path = outdir.join(format!("step7.{}.lock.json", mode_name));
                 let lock_json = serde_json::to_string_pretty(&lock_file)?;
                 std::fs::write(&lock_path, lock_json)?;
 
                 println!();
-                println!("✅ Step 7 CCH contraction complete!");
+                println!("✅ Step 7 CCH contraction complete for {} mode!", mode_name);
                 println!("📋 Lock file: {}", lock_path.display());
 
                 Ok(())
             }
             Commands::Step8Customize {
                 cch_topo,
-                ebg_csr,
+                filtered_ebg,
                 order,
                 weights,
                 turns,
@@ -544,7 +594,7 @@ impl Cli {
 
                 let config = step8::Step8Config {
                     cch_topo_path: cch_topo,
-                    ebg_csr_path: ebg_csr,
+                    filtered_ebg_path: filtered_ebg,
                     order_path: order,
                     weights_path: weights,
                     turns_path: turns,
@@ -578,6 +628,12 @@ impl Cli {
                 println!("✅ Step 8 CCH customization complete!");
                 println!("📋 Lock file: {}", lock_path.display());
 
+                Ok(())
+            }
+            Commands::Serve { data_dir, port } => {
+                // Create tokio runtime
+                let rt = tokio::runtime::Runtime::new()?;
+                rt.block_on(step9::serve(&data_dir, port))?;
                 Ok(())
             }
         }
