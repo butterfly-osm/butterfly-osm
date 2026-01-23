@@ -24,6 +24,7 @@ pub mod nbg;
 pub mod ebg;
 pub mod step5;
 pub mod step6;
+pub mod step7;
 
 pub use formats::{WaysFile, RelationsFile};
 pub use validate::{LockFile, Step2LockFile};

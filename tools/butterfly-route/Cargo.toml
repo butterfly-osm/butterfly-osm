@@ -33,3 +33,6 @@ hex = "0.4"
 
 # Timestamps
 chrono = "0.4"
+
+# Parallelization
+rayon = "1.10"
