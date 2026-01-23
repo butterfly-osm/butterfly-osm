@@ -55,84 +55,27 @@ use std::path::PathBuf;
 use crate::formats::{CchTopo, CchTopoFile, FilteredEbg, FilteredEbgFile, OrderEbgFile};
 use crate::profile_abi::Mode;
 
-/// Check if there's a witness path u → ... → w (not through v) using depth-3 search.
+/// Check if there's a witness path u → ... → w (not through v).
 ///
-/// A witness path is an alternate route from u to w that doesn't go through the node
-/// being contracted (v). If such a path exists, the shortcut (u → w) via v is redundant.
+/// DISABLED: Witness search was causing missing shortcuts needed for CCH bidirectional
+/// queries to find optimal paths. For correctness, we now create ALL shortcuts.
+/// This increases shortcut count but ensures the CCH property holds.
 ///
-/// # Algorithm
-///
-/// Performs combined bidirectional bounded search (depth-2 and depth-3 in single pass):
-/// 1. Forward: For each out-neighbor x of u, check both x→w (depth-2) and x→y→w (depth-3)
-/// 2. Backward: For each in-neighbor y of w, check both u→y (depth-2) and u→x→y (depth-3)
-///
-/// # Performance
-///
-/// Uses FxHashSet for O(1) membership tests with fast hashing. The function is marked
-/// `#[inline]` since it's called in a tight loop during contraction. Loops are combined
-/// to avoid redundant neighbor traversals.
+/// The triangle relaxation in Step 8 will assign appropriate weights to shortcuts,
+/// including u32::MAX for redundant ones.
 ///
 /// # Returns
 ///
-/// `true` if a witness exists (DON'T add shortcut), `false` if shortcut is needed.
+/// Always `false` (no witness, always add shortcut) - witness search disabled.
 #[inline]
 fn has_witness(
-    u: usize,
-    w: u32,
-    v: u32,
-    out_higher: &[FxHashSet<u32>],
-    in_higher: &[FxHashSet<u32>],
+    _u: usize,
+    _w: u32,
+    _v: u32,
+    _out_higher: &[FxHashSet<u32>],
+    _in_higher: &[FxHashSet<u32>],
 ) -> bool {
-    let w_idx = w as usize;
-
-    // Combined forward check: u → x (→ y) → w
-    // Single pass through out_higher[u] for both depth-2 and depth-3
-    for &x in &out_higher[u] {
-        if x == v {
-            continue;
-        }
-        let x_idx = x as usize;
-
-        // Depth-2: u → x → w
-        if out_higher[x_idx].contains(&w) {
-            return true;
-        }
-
-        // Depth-3: u → x → y → w
-        for &y in &out_higher[x_idx] {
-            if y == v {
-                continue;
-            }
-            if out_higher[y as usize].contains(&w) {
-                return true;
-            }
-        }
-    }
-
-    // Combined backward check: u (→ x) → y → w
-    // Single pass through in_higher[w] for both depth-2 and depth-3
-    for &y in &in_higher[w_idx] {
-        if y == v {
-            continue;
-        }
-
-        // Depth-2: u → y → w (y is in-neighbor of w, check if u has edge to y)
-        if out_higher[u].contains(&y) {
-            return true;
-        }
-
-        // Depth-3: u → x → y → w (check if any out-neighbor of u is in-neighbor of y)
-        let y_idx = y as usize;
-        for &x in &in_higher[y_idx] {
-            if x == v {
-                continue;
-            }
-            if out_higher[u].contains(&x) {
-                return true;
-            }
-        }
-    }
-
+    // Witness search disabled for correctness
     false
 }
 

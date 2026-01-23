@@ -8,13 +8,70 @@ use crate::profile_abi::Mode;
 
 use super::state::{CchWeights, DownReverseAdj, ServerState};
 
+/// Validate backward adjacency invariant:
+/// For every entry in down_rev, the reversed edge must be "upward in reversed graph"
+/// i.e., for DOWN edge x→u (rank[x] >= rank[u]), reversed edge u→x has rank[u] <= rank[x]
+pub fn validate_down_rev(
+    topo: &CchTopo,
+    down_rev: &DownReverseAdj,
+    perm: &[u32],
+) -> Result<(), String> {
+    let n_nodes = topo.n_nodes as usize;
+    let mut violations = 0;
+
+    for u in 0..n_nodes {
+        let start = down_rev.offsets[u] as usize;
+        let end = down_rev.offsets[u + 1] as usize;
+
+        for i in start..end {
+            let x = down_rev.sources[i] as usize;
+            let edge_idx = down_rev.edge_idx[i] as usize;
+
+            // Verify this is a valid DOWN edge x→u
+            let rank_x = perm[x];
+            let rank_u = perm[u];
+
+            // DOWN edge: rank[x] >= rank[u]
+            // Reversed: u→x should be upward (rank[u] <= rank[x])
+            if rank_x < rank_u {
+                violations += 1;
+                if violations <= 5 {
+                    eprintln!("  down_rev violation: edge {}→{} has rank {} < {} (should be >=)",
+                              x, u, rank_x, rank_u);
+                }
+            }
+
+            // Verify edge_idx points to valid DOWN edge
+            if edge_idx >= topo.down_targets.len() {
+                return Err(format!("Invalid edge_idx {} >= {}", edge_idx, topo.down_targets.len()));
+            }
+
+            // Verify the target of this DOWN edge is actually u
+            let stored_target = topo.down_targets[edge_idx];
+            if stored_target != u as u32 {
+                violations += 1;
+                if violations <= 5 {
+                    eprintln!("  down_rev target mismatch: edge_idx {} has target {}, expected {}",
+                              edge_idx, stored_target, u);
+                }
+            }
+        }
+    }
+
+    if violations > 0 {
+        Err(format!("{} down_rev violations found", violations))
+    } else {
+        Ok(())
+    }
+}
+
 /// Query result
 #[derive(Debug, Clone)]
 pub struct QueryResult {
-    pub distance: u32,        // Total distance in deciseconds
-    pub meeting_node: u32,    // Node where forward/backward meet
-    pub forward_parent: Vec<(u32, u32)>,  // (node, edge_idx) pairs for path
-    pub backward_parent: Vec<(u32, u32)>, // (node, edge_idx) pairs for path
+    pub distance: u32,
+    pub meeting_node: u32,
+    pub forward_parent: Vec<(u32, u32)>,
+    pub backward_parent: Vec<(u32, u32)>,
 }
 
 /// Bidirectional CCH query
@@ -38,6 +95,11 @@ impl<'a> CchQuery<'a> {
 
     /// Run bidirectional query from source to target
     pub fn query(&self, source: u32, target: u32) -> Option<QueryResult> {
+        self.query_with_debug(source, target, false)
+    }
+
+    /// Run bidirectional query with optional debug output
+    pub fn query_with_debug(&self, source: u32, target: u32, debug: bool) -> Option<QueryResult> {
         if source == target {
             return Some(QueryResult {
                 distance: 0,
@@ -49,33 +111,12 @@ impl<'a> CchQuery<'a> {
 
         let n = self.n_nodes;
 
-        // Debug: check source/target connectivity
-        let src_up_start = self.topo.up_offsets[source as usize] as usize;
-        let src_up_end = self.topo.up_offsets[source as usize + 1] as usize;
-        let src_up_count = src_up_end - src_up_start;
-        let src_up_reachable = (src_up_start..src_up_end)
-            .filter(|&i| self.weights.up[i] != u32::MAX)
-            .count();
-
-        let tgt_down_rev_start = self.down_rev.offsets[target as usize] as usize;
-        let tgt_down_rev_end = self.down_rev.offsets[target as usize + 1] as usize;
-        let tgt_down_rev_count = tgt_down_rev_end - tgt_down_rev_start;
-        let tgt_down_rev_reachable = (tgt_down_rev_start..tgt_down_rev_end)
-            .filter(|&i| {
-                let orig_idx = self.down_rev.edge_idx[i] as usize;
-                self.weights.down[orig_idx] != u32::MAX
-            })
-            .count();
-
-        eprintln!("DEBUG: src={} has {} UP edges ({} reachable), target={} has {} incoming DOWN edges ({} reachable)",
-            source, src_up_count, src_up_reachable, target, tgt_down_rev_count, tgt_down_rev_reachable);
-
         // Distance arrays
         let mut dist_fwd = vec![u32::MAX; n];
         let mut dist_bwd = vec![u32::MAX; n];
 
         // Parent tracking for path reconstruction
-        let mut parent_fwd: Vec<Option<(u32, u32)>> = vec![None; n]; // (parent_node, edge_idx)
+        let mut parent_fwd: Vec<Option<(u32, u32)>> = vec![None; n];
         let mut parent_bwd: Vec<Option<(u32, u32)>> = vec![None; n];
 
         // Priority queues (min-heap via Reverse)
@@ -92,7 +133,14 @@ impl<'a> CchQuery<'a> {
         let mut best_dist = u32::MAX;
         let mut meeting_node = u32::MAX;
 
-        // Alternating search
+        // Debug counters
+        let mut fwd_settled = 0usize;
+        let mut bwd_settled = 0usize;
+        let mut fwd_relaxed = 0usize;
+        let mut bwd_relaxed = 0usize;
+
+        // Run both searches to completion (no early termination for now)
+        // This helps diagnose if the issue is in termination logic
         while !pq_fwd.is_empty() || !pq_bwd.is_empty() {
             // Forward step - search UP graph
             if let Some((u, Reverse(d))) = pq_fwd.pop() {
@@ -100,18 +148,18 @@ impl<'a> CchQuery<'a> {
                     continue; // Stale entry
                 }
 
-                // Check if we can improve meeting point
+                fwd_settled += 1;
+
+                // Check meeting point when settling a node
                 if dist_bwd[u as usize] != u32::MAX {
                     let total = d.saturating_add(dist_bwd[u as usize]);
                     if total < best_dist {
                         best_dist = total;
                         meeting_node = u;
+                        if debug {
+                            eprintln!("  FWD meet at {}: dist_fwd={}, dist_bwd={}, total={}", u, d, dist_bwd[u as usize], total);
+                        }
                     }
-                }
-
-                // Pruning: if we can't improve, stop
-                if d >= best_dist {
-                    continue;
                 }
 
                 // Relax UP edges
@@ -123,27 +171,38 @@ impl<'a> CchQuery<'a> {
                     let w = self.weights.up[i];
 
                     if w == u32::MAX {
-                        continue; // Unreachable edge
+                        continue;
                     }
 
+                    fwd_relaxed += 1;
                     let new_dist = d.saturating_add(w);
                     if new_dist < dist_fwd[v as usize] {
                         dist_fwd[v as usize] = new_dist;
                         parent_fwd[v as usize] = Some((u, i as u32));
                         pq_fwd.push(v, Reverse(new_dist));
+
+                        // Check meeting when updating
+                        if dist_bwd[v as usize] != u32::MAX {
+                            let total = new_dist.saturating_add(dist_bwd[v as usize]);
+                            if total < best_dist {
+                                best_dist = total;
+                                meeting_node = v;
+                                if debug {
+                                    eprintln!("  FWD meet at {} (via edge): dist_fwd={}, dist_bwd={}, total={}", v, new_dist, dist_bwd[v as usize], total);
+                                }
+                            }
+                        }
                     }
                 }
             }
 
-            // Backward step - use REVERSE of DOWN graph
-            // In directed CCH, backward search traverses DOWN edges in reverse:
-            // - DOWN edge x→y (rank(x) > rank(y)) with weight w means "x can reach y with cost w"
-            // - For backward search: if y can reach target, then x can too via x→y
-            // - We iterate incoming edges to u (edges x→u) and update dist_bwd[x]
+            // Backward step - traverse reversed DOWN edges (= upward in reversed graph)
             if let Some((u, Reverse(d))) = pq_bwd.pop() {
                 if d > dist_bwd[u as usize] {
                     continue;
                 }
+
+                bwd_settled += 1;
 
                 // Check meeting point
                 if dist_fwd[u as usize] != u32::MAX {
@@ -151,51 +210,57 @@ impl<'a> CchQuery<'a> {
                     if total < best_dist {
                         best_dist = total;
                         meeting_node = u;
+                        if debug {
+                            eprintln!("  BWD meet at {}: dist_fwd={}, dist_bwd={}, total={}", u, dist_fwd[u as usize], d, total);
+                        }
                     }
                 }
 
-                if d >= best_dist {
-                    continue;
-                }
-
-                // Relax reverse DOWN edges (incoming edges x→u in the DOWN graph)
-                // For each x that has a DOWN edge x→u:
-                //   dist_bwd[x] = min(dist_bwd[x], down_weight[x→u] + dist_bwd[u])
+                // Relax reverse DOWN edges
+                // down_rev[u] contains sources x of DOWN edges x→u
+                // We update dist_bwd[x] = dist_bwd[u] + weight[x→u]
                 let start = self.down_rev.offsets[u as usize] as usize;
                 let end = self.down_rev.offsets[u as usize + 1] as usize;
 
                 for i in start..end {
-                    let x = self.down_rev.sources[i];       // source node of edge x→u
-                    let orig_idx = self.down_rev.edge_idx[i] as usize; // index in down_weights
-                    let w = self.weights.down[orig_idx];
+                    let x = self.down_rev.sources[i];
+                    let edge_idx = self.down_rev.edge_idx[i] as usize;
+                    let w = self.weights.down[edge_idx];
 
                     if w == u32::MAX {
                         continue;
                     }
 
+                    bwd_relaxed += 1;
                     let new_dist = d.saturating_add(w);
                     if new_dist < dist_bwd[x as usize] {
                         dist_bwd[x as usize] = new_dist;
-                        parent_bwd[x as usize] = Some((u, orig_idx as u32));
+                        parent_bwd[x as usize] = Some((u, edge_idx as u32));
                         pq_bwd.push(x, Reverse(new_dist));
+
+                        // Check meeting when updating
+                        if dist_fwd[x as usize] != u32::MAX {
+                            let total = new_dist.saturating_add(dist_fwd[x as usize]);
+                            if total < best_dist {
+                                best_dist = total;
+                                meeting_node = x;
+                                if debug {
+                                    eprintln!("  BWD meet at {} (via edge): dist_fwd={}, dist_bwd={}, total={}", x, dist_fwd[x as usize], new_dist, total);
+                                }
+                            }
+                        }
                     }
                 }
             }
+        }
 
-            // Early termination check
-            let min_fwd = pq_fwd.peek().map(|(_, Reverse(d))| *d).unwrap_or(u32::MAX);
-            let min_bwd = pq_bwd.peek().map(|(_, Reverse(d))| *d).unwrap_or(u32::MAX);
-            if min_fwd.min(min_bwd) >= best_dist {
-                break;
-            }
+        if debug {
+            eprintln!("  Search stats: fwd_settled={}, bwd_settled={}, fwd_relaxed={}, bwd_relaxed={}",
+                      fwd_settled, bwd_settled, fwd_relaxed, bwd_relaxed);
+            eprintln!("  Final: best_dist={}, meeting_node={}", best_dist, meeting_node);
         }
 
         if best_dist == u32::MAX {
-            // Debug: count how far each search got
-            let fwd_reached = dist_fwd.iter().filter(|&&d| d != u32::MAX).count();
-            let bwd_reached = dist_bwd.iter().filter(|&&d| d != u32::MAX).count();
-            eprintln!("DEBUG: No route found. Forward reached {} nodes, backward reached {} nodes",
-                fwd_reached, bwd_reached);
             return None;
         }
 
