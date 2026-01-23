@@ -13,7 +13,7 @@ Build a routing engine with **exact turn-aware isochrones** and **OSRM-class spe
 
 ## Completed Steps
 
-### Step 1-7: Data Pipeline + CCH Topology ✅
+### Step 1-8: Data Pipeline + CCH Complete ✅
 
 | Step | Output | Description |
 |------|--------|-------------|
@@ -24,6 +24,7 @@ Build a routing engine with **exact turn-aware isochrones** and **OSRM-class spe
 | 5 | `w.*.u32`, `t.*.u32`, `mask.*.bitset` | Per-mode edge weights and turn penalties |
 | 6 | `order.ebg` | CCH ordering on EBG via nested dissection |
 | 7 | `cch.topo` | CCH contraction (shortcuts topology) |
+| 8 | `cch.w.*.u32` | Per-mode customized weights |
 
 **Step 7 Performance (Belgium):**
 - 45.7M shortcuts (3.12x ratio)
@@ -31,28 +32,9 @@ Build a routing engine with **exact turn-aware isochrones** and **OSRM-class spe
 - 55s build time
 - Depth-3 witness search, FxHashSet, parallel edge filling
 
----
-
-## Step 8: CCH Customization
-
-### Objective
-
-Apply per-mode weights to the CCH shortcuts.
-
-### Inputs
-
-- `cch.topo`
-- `w.*.u32`, `t.*.u32` (per-mode weights from Step 5)
-
-### Outputs
-
-- `cch.w.*.u32` — Per-mode shortcut weights (one file per mode)
-
-### Algorithm
-
-Bottom-up customization:
-1. For each shortcut in contraction order
-2. Compute shortcut weight = min over middle nodes
+**Step 8 Performance (Belgium, per mode):**
+- ~4.7s customization time (target was ≤30s)
+- 231MB output per mode
 
 ---
 
