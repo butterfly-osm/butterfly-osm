@@ -55,3 +55,15 @@ priority-queue = "2.0"
 
 # Random number generation for validation
 rand = "0.8"
+
+# Benchmarking
+hdrhistogram = "7.5"
+
+# Arrow streaming for bulk matrix output
+arrow = { version = "53", default-features = false, features = ["ipc"] }
+futures = "0.3"
+bytes = "1.5"
+
+[[bin]]
+name = "butterfly-bench"
+path = "src/bench/main.rs"

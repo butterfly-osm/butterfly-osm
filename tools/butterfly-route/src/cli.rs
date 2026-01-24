@@ -314,6 +314,227 @@ pub enum Commands {
         #[arg(long)]
         mode: String,
     },
+
+    /// Validate graph/weight invariants for CCH correctness
+    ValidateInvariants {
+        /// Path to cch.*.topo from Step 7
+        #[arg(long)]
+        cch_topo: PathBuf,
+
+        /// Path to cch.w.*.u32 from Step 8
+        #[arg(long)]
+        cch_weights: PathBuf,
+
+        /// Path to order.*.ebg from Step 6
+        #[arg(long)]
+        order: PathBuf,
+
+        /// Mode to validate (car, bike, foot)
+        #[arg(long)]
+        mode: String,
+    },
+
+    /// Bounded Dijkstra for isochrone (range query)
+    RangeCch {
+        /// Path to cch.*.topo from Step 7
+        #[arg(long)]
+        cch_topo: PathBuf,
+
+        /// Path to cch.w.*.u32 from Step 8
+        #[arg(long)]
+        cch_weights: PathBuf,
+
+        /// Path to order.*.ebg from Step 6
+        #[arg(long)]
+        order: PathBuf,
+
+        /// Origin node ID (EBG node, not OSM ID)
+        #[arg(long)]
+        origin_node: u32,
+
+        /// Time threshold in milliseconds
+        #[arg(long)]
+        threshold_ms: u32,
+
+        /// Mode (car, bike, foot)
+        #[arg(long)]
+        mode: String,
+    },
+
+    /// Validate range query properties (monotonicity, equivalence, P2P consistency)
+    ValidateRange {
+        /// Path to cch.*.topo from Step 7
+        #[arg(long)]
+        cch_topo: PathBuf,
+
+        /// Path to cch.w.*.u32 from Step 8
+        #[arg(long)]
+        cch_weights: PathBuf,
+
+        /// Path to order.*.ebg from Step 6
+        #[arg(long)]
+        order: PathBuf,
+
+        /// Origin node ID (EBG node, not OSM ID)
+        #[arg(long)]
+        origin_node: u32,
+
+        /// Mode (car, bike, foot)
+        #[arg(long)]
+        mode: String,
+    },
+
+    /// PHAST-based range query (fast one-to-many)
+    PhastRange {
+        /// Path to cch.*.topo from Step 7
+        #[arg(long)]
+        cch_topo: PathBuf,
+
+        /// Path to cch.w.*.u32 from Step 8
+        #[arg(long)]
+        cch_weights: PathBuf,
+
+        /// Path to order.*.ebg from Step 6
+        #[arg(long)]
+        order: PathBuf,
+
+        /// Origin node ID (EBG node, not OSM ID)
+        #[arg(long)]
+        origin_node: u32,
+
+        /// Time threshold in milliseconds
+        #[arg(long)]
+        threshold_ms: u32,
+
+        /// Mode (car, bike, foot)
+        #[arg(long)]
+        mode: String,
+    },
+
+    /// Validate PHAST correctness against naive Dijkstra
+    ValidatePhast {
+        /// Path to cch.*.topo from Step 7
+        #[arg(long)]
+        cch_topo: PathBuf,
+
+        /// Path to cch.w.*.u32 from Step 8
+        #[arg(long)]
+        cch_weights: PathBuf,
+
+        /// Path to order.*.ebg from Step 6
+        #[arg(long)]
+        order: PathBuf,
+
+        /// Origin node ID (EBG node, not OSM ID)
+        #[arg(long)]
+        origin_node: u32,
+
+        /// Time threshold in milliseconds
+        #[arg(long)]
+        threshold_ms: u32,
+
+        /// Mode (car, bike, foot)
+        #[arg(long)]
+        mode: String,
+    },
+
+    /// Extract frontier on base graph (real road segments, not CCH shortcuts)
+    ExtractFrontier {
+        /// Path to cch.*.topo from Step 7
+        #[arg(long)]
+        cch_topo: PathBuf,
+
+        /// Path to cch.w.*.u32 from Step 8
+        #[arg(long)]
+        cch_weights: PathBuf,
+
+        /// Path to order.*.ebg from Step 6
+        #[arg(long)]
+        order: PathBuf,
+
+        /// Path to filtered.*.ebg from Step 5
+        #[arg(long)]
+        filtered_ebg: PathBuf,
+
+        /// Path to ebg.nodes from Step 4
+        #[arg(long)]
+        ebg_nodes: PathBuf,
+
+        /// Path to nbg.geo from Step 3
+        #[arg(long)]
+        nbg_geo: PathBuf,
+
+        /// Path to w.*.u32 (base edge weights) from Step 5
+        #[arg(long)]
+        base_weights: PathBuf,
+
+        /// Origin node ID (filtered EBG node, not OSM ID)
+        #[arg(long)]
+        origin_node: u32,
+
+        /// Time threshold in milliseconds
+        #[arg(long)]
+        threshold_ms: u32,
+
+        /// Mode (car, bike, foot)
+        #[arg(long)]
+        mode: String,
+
+        /// Optional: export frontier to GeoJSON file
+        #[arg(long)]
+        geojson_out: Option<PathBuf>,
+    },
+
+    /// Generate isochrone polygon (full pipeline: PHAST → frontier → contour)
+    Isochrone {
+        /// Path to cch.*.topo from Step 7
+        #[arg(long)]
+        cch_topo: PathBuf,
+
+        /// Path to cch.w.*.u32 from Step 8
+        #[arg(long)]
+        cch_weights: PathBuf,
+
+        /// Path to order.*.ebg from Step 6
+        #[arg(long)]
+        order: PathBuf,
+
+        /// Path to filtered.*.ebg from Step 5
+        #[arg(long)]
+        filtered_ebg: PathBuf,
+
+        /// Path to ebg.nodes from Step 4
+        #[arg(long)]
+        ebg_nodes: PathBuf,
+
+        /// Path to nbg.geo from Step 3
+        #[arg(long)]
+        nbg_geo: PathBuf,
+
+        /// Path to w.*.u32 (base edge weights) from Step 5
+        #[arg(long)]
+        base_weights: PathBuf,
+
+        /// Origin node ID (filtered EBG node, not OSM ID)
+        #[arg(long)]
+        origin_node: u32,
+
+        /// Time threshold in milliseconds
+        #[arg(long)]
+        threshold_ms: u32,
+
+        /// Mode (car, bike, foot)
+        #[arg(long)]
+        mode: String,
+
+        /// Output GeoJSON file
+        #[arg(long)]
+        output: PathBuf,
+
+        /// Grid cell size in meters (default: mode-dependent)
+        #[arg(long)]
+        grid_size: Option<f64>,
+    },
 }
 
 impl Cli {
@@ -768,6 +989,281 @@ impl Cli {
                 if failed_count > 0 {
                     anyhow::bail!("Regression tests failed: {} failures", failed_count);
                 }
+
+                Ok(())
+            }
+            Commands::ValidateInvariants {
+                cch_topo,
+                cch_weights,
+                order,
+                mode,
+            } => {
+                // Parse mode
+                let mode = match mode.to_lowercase().as_str() {
+                    "car" => Mode::Car,
+                    "bike" => Mode::Bike,
+                    "foot" => Mode::Foot,
+                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
+                };
+
+                let result = crate::validate::validate_invariants(
+                    &cch_topo,
+                    &cch_weights,
+                    &order,
+                    mode,
+                )?;
+
+                if !result.passed {
+                    anyhow::bail!("Invariant validation failed with {} errors", result.errors.len());
+                }
+
+                Ok(())
+            }
+            Commands::RangeCch {
+                cch_topo,
+                cch_weights,
+                order,
+                origin_node,
+                threshold_ms,
+                mode,
+            } => {
+                // Parse mode
+                let mode = match mode.to_lowercase().as_str() {
+                    "car" => Mode::Car,
+                    "bike" => Mode::Bike,
+                    "foot" => Mode::Foot,
+                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
+                };
+
+                let result = crate::range::run_range_query(
+                    &cch_topo,
+                    &cch_weights,
+                    &order,
+                    origin_node,
+                    threshold_ms,
+                    mode,
+                )?;
+
+                // Success if no errors in verification
+                let engine = crate::range::RangeEngine::load(&cch_topo, &cch_weights, &order, mode)?;
+                let errors = engine.verify(&result, origin_node, threshold_ms);
+                if !errors.is_empty() {
+                    anyhow::bail!("Range query verification failed with {} errors", errors.len());
+                }
+
+                Ok(())
+            }
+            Commands::ValidateRange {
+                cch_topo,
+                cch_weights,
+                order,
+                origin_node,
+                mode,
+            } => {
+                // Parse mode
+                let mode = match mode.to_lowercase().as_str() {
+                    "car" => Mode::Car,
+                    "bike" => Mode::Bike,
+                    "foot" => Mode::Foot,
+                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
+                };
+
+                crate::range::run_range_validation(
+                    &cch_topo,
+                    &cch_weights,
+                    &order,
+                    origin_node,
+                    mode,
+                )?;
+
+                Ok(())
+            }
+            Commands::PhastRange {
+                cch_topo,
+                cch_weights,
+                order,
+                origin_node,
+                threshold_ms,
+                mode,
+            } => {
+                // Parse mode
+                let mode = match mode.to_lowercase().as_str() {
+                    "car" => Mode::Car,
+                    "bike" => Mode::Bike,
+                    "foot" => Mode::Foot,
+                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
+                };
+
+                crate::range::run_phast_query(
+                    &cch_topo,
+                    &cch_weights,
+                    &order,
+                    origin_node,
+                    threshold_ms,
+                    mode,
+                )?;
+
+                Ok(())
+            }
+            Commands::ValidatePhast {
+                cch_topo,
+                cch_weights,
+                order,
+                origin_node,
+                threshold_ms,
+                mode,
+            } => {
+                // Parse mode
+                let mode = match mode.to_lowercase().as_str() {
+                    "car" => Mode::Car,
+                    "bike" => Mode::Bike,
+                    "foot" => Mode::Foot,
+                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
+                };
+
+                crate::range::validate_phast(
+                    &cch_topo,
+                    &cch_weights,
+                    &order,
+                    origin_node,
+                    threshold_ms,
+                    mode,
+                )?;
+
+                Ok(())
+            }
+            Commands::ExtractFrontier {
+                cch_topo,
+                cch_weights,
+                order,
+                filtered_ebg,
+                ebg_nodes,
+                nbg_geo,
+                base_weights,
+                origin_node,
+                threshold_ms,
+                mode,
+                geojson_out,
+            } => {
+                // Parse mode
+                let mode = match mode.to_lowercase().as_str() {
+                    "car" => Mode::Car,
+                    "bike" => Mode::Bike,
+                    "foot" => Mode::Foot,
+                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
+                };
+
+                // First run PHAST to get distances
+                println!("Running PHAST to compute distances...");
+                let phast_engine = crate::range::PhastEngine::load(&cch_topo, &cch_weights, &order)?;
+                let phast_result = phast_engine.query_bounded(origin_node, threshold_ms);
+                println!("  ✓ PHAST complete: {} reachable nodes in {} ms",
+                         phast_result.n_reachable, phast_result.stats.total_time_ms);
+
+                // Then extract frontier on base graph
+                let cut_points = crate::range::run_frontier_extraction(
+                    &filtered_ebg,
+                    &ebg_nodes,
+                    &nbg_geo,
+                    &base_weights,
+                    &phast_result.dist,
+                    threshold_ms,
+                    mode,
+                )?;
+
+                println!("\n✅ Frontier extraction complete: {} cut points", cut_points.len());
+
+                // Export to GeoJSON if requested
+                if let Some(geojson_path) = geojson_out {
+                    crate::range::frontier::export_geojson(&cut_points, &geojson_path)?;
+                    println!("  Exported to: {}", geojson_path.display());
+                }
+
+                Ok(())
+            }
+            Commands::Isochrone {
+                cch_topo,
+                cch_weights,
+                order,
+                filtered_ebg,
+                ebg_nodes,
+                nbg_geo,
+                base_weights,
+                origin_node,
+                threshold_ms,
+                mode,
+                output,
+                grid_size,
+            } => {
+                // Parse mode
+                let mode_enum = match mode.to_lowercase().as_str() {
+                    "car" => Mode::Car,
+                    "bike" => Mode::Bike,
+                    "foot" => Mode::Foot,
+                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
+                };
+
+                let mode_name = mode.to_lowercase();
+
+                println!("\n🗺️  Isochrone Generation ({} mode)", mode_name);
+                println!("  Origin: node {}", origin_node);
+                println!("  Threshold: {} ms ({:.1} min)", threshold_ms, threshold_ms as f64 / 60_000.0);
+
+                // Step 1: PHAST distances
+                println!("\n[1/4] Running PHAST...");
+                let phast_engine = crate::range::PhastEngine::load(&cch_topo, &cch_weights, &order)?;
+                let phast_result = phast_engine.query_bounded(origin_node, threshold_ms);
+                println!("  ✓ {} reachable nodes in {} ms",
+                         phast_result.n_reachable, phast_result.stats.total_time_ms);
+
+                // Step 2: Extract reachable road segments
+                println!("\n[2/4] Extracting reachable road segments...");
+                let extractor = crate::range::FrontierExtractor::load(
+                    &filtered_ebg,
+                    &ebg_nodes,
+                    &nbg_geo,
+                    &base_weights,
+                )?;
+                let segments = extractor.extract_reachable_segments(&phast_result.dist, threshold_ms);
+                println!("  ✓ {} reachable road segments", segments.len());
+
+                // Step 3: Generate contour (grid fill + marching squares)
+                println!("\n[3/4] Generating contour...");
+                let config = if let Some(size) = grid_size {
+                    crate::range::GridConfig {
+                        cell_size_m: size,
+                        simplify_tolerance_m: size,
+                        closing_iterations: 1,
+                    }
+                } else {
+                    match mode_enum {
+                        Mode::Car => crate::range::GridConfig::for_car(),
+                        Mode::Bike => crate::range::GridConfig::for_bike(),
+                        Mode::Foot => crate::range::GridConfig::for_foot(),
+                    }
+                };
+
+                println!("  Grid: {}m cells, {}m simplify, {} closing iterations",
+                         config.cell_size_m, config.simplify_tolerance_m, config.closing_iterations);
+
+                let contour = crate::range::generate_contour(&segments, &config)?;
+
+                println!("  ✓ {}x{} grid, {} filled cells → {} vertices (before simplify: {})",
+                         contour.stats.grid_cols, contour.stats.grid_rows,
+                         contour.stats.filled_cells,
+                         contour.stats.contour_vertices_after_simplify,
+                         contour.stats.contour_vertices_before_simplify);
+
+                // Step 4: Export
+                println!("\n[4/4] Exporting GeoJSON...");
+                crate::range::export_contour_geojson(&contour, &output)?;
+
+                let file_size = std::fs::metadata(&output)?.len();
+                println!("  ✓ Saved to: {} ({:.1} KB)", output.display(), file_size as f64 / 1024.0);
+
+                println!("\n=== ISOCHRONE COMPLETE ===");
+                println!("  Total vertices: {}", contour.stats.contour_vertices_after_simplify);
+                println!("  Processing time: {} ms", contour.stats.elapsed_ms);
 
                 Ok(())
             }

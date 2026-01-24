@@ -47,6 +47,11 @@ perf.data.old
 flamegraph.svg
 *.perf
 
+# Benchmark output
+bench_results/
+*.arrow
+*.ipc
+
 # CCH build temporaries (normally cleaned up, but just in case)
 shortcuts.tmp
 

@@ -1,104 +1,381 @@
-# CCH Query Bug - RESOLVED ✅
+# Immediate Roadmap: Correctness → Isochrones → Speed
 
-## Summary
+## Current Status
 
-Car/bike routing was failing with "No route found" due to orphaned nodes in the shared CCH topology. **Fixed with per-mode filtered CCH architecture.**
-
----
-
-## Root Cause
-
-When the CCH was built on all 5M EBG nodes but ~51% became car-inaccessible (via INF weights), some car-accessible nodes became **orphaned** in the hierarchy:
-- No finite UP edges (couldn't climb hierarchy)
-- No finite incoming DOWN edges (couldn't be reached from above)
-
-This happened because shortcuts were built assuming all nodes are accessible, but car mode only uses ~49% of the graph.
+CCH validated with 75k+ queries across all modes (0 mismatches).
+Regression test suite in place (87 edge cases per mode).
+Invariant validation complete for all modes (car/bike/foot).
 
 ---
 
-## Solution Implemented
+## Phase 1: Lock Down Invariants ✅ DONE
 
-**Per-mode filtered CCH architecture** - each mode has its own CCH built on only mode-accessible nodes.
+### 1.1 `validate-invariants` Command ✅
 
-### Pipeline Changes
+Fast-fail validation for graph/weight correctness:
 
-| Step | Change | Output |
-|------|--------|--------|
-| 5 | Generate FilteredEbg per mode | `filtered.{car,bike,foot}.ebg` |
-| 6 | ND ordering on filtered EBG | `order.{mode}.ebg` |
-| 7 | CCH contraction on filtered EBG | `cch.{mode}.topo` |
-| 8 | Customization with filtered node mapping | `cch.w.{mode}.u32` |
-| 9 | Query server with per-mode CCH | HTTP API |
-
-### FilteredEbg Format
-
-Dense subgraph containing only mode-accessible nodes with ID mappings:
-- `filtered_to_original[filtered_id] → original_id`
-- `original_to_filtered[original_id] → filtered_id` (u32::MAX if inaccessible)
-
-### Query Flow
-
-1. Spatial index returns **original** EBG node ID
-2. Convert to **filtered** ID via `original_to_filtered`
-3. Run CCH query in filtered space
-4. Convert results back to **original** for geometry
-
----
-
-## Results on Belgium
-
-| Mode | Filtered Nodes | % of EBG | Unreachable CCH Edges |
-|------|----------------|----------|----------------------|
-| Car  | 2,447,122     | 48.8%    | **0%** (was ~70%) |
-| Bike | 4,770,739     | 95.1%    | **0%** |
-| Foot | 4,932,592     | 98.3%    | **0%** |
-
----
-
-## Verification
-
-All query types tested successfully:
+- [x] **Non-negative weights**: All edge weights ≥ 0 (required for Dijkstra)
+- [x] **No overflow**: Check u32 additions don't wrap (use saturating_add or detect)
+- [x] **Deterministic tie-breaking**: When costs equal, pick consistent predecessor (by node_id)
+- [x] **CSR structure validity**: Offsets monotonic, targets in range
+- [x] **Hierarchy property**: UP edges go to higher rank, DOWN to lower
 
 ```bash
-# Start server
-butterfly-route serve --data-dir data/belgium --port 8080
-
-# Test car routing (previously failed)
-curl "http://localhost:8080/route?src_lon=4.3517&src_lat=50.8467&dst_lon=4.4210&dst_lat=51.2177&mode=car"
-# ✅ Returns route: Brussels → Antwerp, 55.8 min, 60.6 km
-
-# Test bike routing
-curl "http://localhost:8080/route?src_lon=4.3517&src_lat=50.8467&dst_lon=4.4210&dst_lat=51.2177&mode=bike"
-# ✅ Returns route: 4.2 hours, 73.4 km
-
-# Test foot routing
-curl "http://localhost:8080/route?src_lon=4.3517&src_lat=50.8467&dst_lon=4.4210&dst_lat=51.2177&mode=foot"
-# ✅ Returns route: 15.9 hours, 73.7 km
-
-# Test matrix
-curl "http://localhost:8080/matrix?src_lon=4.3517&src_lat=50.8467&dst_lons=4.4210,5.5714,3.7253&dst_lats=51.2177,50.6333,51.0544&mode=car"
-# ✅ Returns durations for all 3 destinations
-
-# Test isochrone
-curl "http://localhost:8080/isochrone?lon=4.3517&lat=50.8467&time_s=600&mode=car"
-# ✅ Returns polygon with 76,787 reachable nodes
+butterfly-route validate-invariants \
+  --cch-topo cch.car.topo \
+  --cch-weights cch.w.car.u32 \
+  --order order.car.ebg \
+  --mode car
 ```
+
+### 1.2 Weight Domain Checks ✅
+
+- [x] Weights are in expected range (0 to reasonable max, e.g., 24h in ms)
+- [x] No INF weights on edges that should be reachable
+- [x] Isolated nodes detected (nodes with all INF outgoing edges)
 
 ---
 
-## Checklist
+## Phase 2: Exact Isochrone Core (Range Query) ✅ DONE
 
-- [x] Implement FilteredEbg format with node ID mappings
-- [x] Step 5: Generate filtered EBGs per mode
-- [x] Step 6: ND ordering on filtered EBG
-- [x] Step 7: CCH contraction on filtered EBG
-- [x] Step 8: Customization with filtered node mapping
-- [x] Step 9: Query server with per-mode CCH
-- [x] Verify 0% unreachable edges for all modes
-- [x] Test car routing works
-- [x] Test bike routing works
-- [x] Test foot routing works
-- [x] Test matrix endpoint
-- [x] Test isochrone endpoint
+### 2.1 `range-cch` Command ✅
 
-**Status: COMPLETE** ✅
+Bounded Dijkstra in edge-based state space:
+
+- [x] Input: snapped origin, threshold T (milliseconds)
+- [x] Output: all settled states with dist ≤ T
+- [x] Uses same CCH backend as P2P queries
+- [x] Returns: dist map + parent pointers for path reconstruction
+- [x] Frontier edge extraction for polygon construction
+
+```bash
+butterfly-route range-cch \
+  --cch-topo cch.car.topo \
+  --cch-weights cch.w.car.u32 \
+  --order order.car.ebg \
+  --origin-node 12345 \
+  --threshold-ms 600000 \
+  --mode car
+```
+
+### 2.2 Range Query Tests ✅
+
+- [x] **Monotonicity**: reachable(T1) ⊆ reachable(T2) for T1 < T2
+- [x] **Equivalence**: dist(target) ≤ T iff target in reachable set
+- [x] **Edge frontier**: Frontier edges satisfy inside/outside correctly
+- [x] **Consistency with P2P**: For any target in range, dist matches P2P query
+
+All 3 modes (car/bike/foot) pass validation.
+
+---
+
+## Phase 3: Frontier Extraction + Polygonization ✅ DONE
+
+**Critical insight**: CCH frontier edges (160M+) are shortcuts, not real roads.
+Must compute frontier on **base graph edges** with actual geometry.
+
+### 3.0 Base Graph Frontier ✅ DONE
+
+- [x] Map PHAST distances (CCH node IDs) → base EBG edge distances
+- [x] `extract_frontier_base_edges(dist, T)` → boundary cut points on real edges
+- [x] For each base edge (u→v) with cost w: if `dist[u] ≤ T < dist[u] + w`, emit cut point
+- [x] Interpolate position along polyline at cut fraction
+- [x] Fixed critical units bug: PHAST distances in deciseconds, threshold in milliseconds
+
+Results (after unit fix):
+| Mode | Threshold | Frontier | Interior | Total | Unique Cells |
+|------|-----------|----------|----------|-------|--------------|
+| Car  | 5 min     | 232      | 3599     | 3831  | 923          |
+| Bike | 5 min     | 73       | 1081     | 1154  | 424          |
+| Foot | 5 min     | 38       | 246      | 284   | 137          |
+
+### 3.1 Frontier Tests ✅
+
+- [x] Every cut point lies on edge that crosses T (by construction)
+- [x] No cut points on edges fully inside or outside (by construction)
+- [x] Frontier count is manageable (<500 points after unit fix)
+
+### 3.2 Polygon Construction ✅ DONE
+
+**Problem**: Convex hull bridges across unreachable space (water, parks). Need road-following concave envelope.
+
+**Solution**: Grid fill + marching squares with segment stamping
+
+Pipeline:
+1. **Build metric grid** ✅
+   - [x] Project to Web Mercator (meters)
+   - [x] Compute bounding box with margin (5 cells)
+   - [x] Create boolean raster grid
+
+2. **Stamp reachable road segments onto grid** ✅
+   - [x] For each base edge: compute reachable sub-segment using PHAST dist + cut fraction
+   - [x] Stamp polyline segments onto grid cells using Bresenham's line algorithm
+   - [x] Cell is "inside" if touched by reachable road geometry
+
+3. **Morphological closing** (dilate then erode) ✅
+   - [x] Asymmetric closing: 3+ dilations, 1 erosion (to connect linear road features)
+   - [x] Deterministic, stable across runs
+
+4. **Marching squares contour extraction** ✅
+   - [x] Flood fill from corners to identify exterior cells
+   - [x] Extract outer boundary from filled boolean grid
+   - [x] Proper case handling for all 16 configurations
+
+5. **Simplify polygon** ✅
+   - [x] Douglas-Peucker with tolerance (≈ cell size)
+   - [x] Valid GeoJSON Polygon output
+
+Grid settings per mode:
+- Car: 100m grid, 1 closing iter, 75m simplify
+- Bike: 50m grid, 1 closing iter, 50m simplify
+- Foot: 25m grid, 1 closing iter, 25m simplify
+
+### 3.3 Polygon Tests ✅ (Basic)
+
+- [x] Output <10KB GeoJSON, <500 vertices
+- [x] Concave shape follows road network (not convex)
+- [x] All modes work: car, bike, foot
+- [x] Valid GeoJSON (parses correctly)
+
+```bash
+butterfly-route isochrone \
+  --cch-topo cch.bike.topo \
+  --cch-weights cch.w.bike.u32 \
+  --order order.bike.ebg \
+  --filtered-ebg filtered.bike.ebg \
+  --ebg-nodes ebg.nodes \
+  --nbg-geo nbg.geo \
+  --base-weights w.bike.u32 \
+  --origin-node 2000000 \
+  --threshold-ms 300000 \
+  --mode bike \
+  --output isochrone.geojson
+```
+
+Results (Belgium):
+| Mode | Threshold | Time   | Vertices | Size   | Dimensions      |
+|------|-----------|--------|----------|--------|-----------------|
+| Foot | 10 min    | 280ms  | 57       | 1.5 KB | 2.1km × 1.3km   |
+| Bike | 10 min    | 270ms  | 141      | 3.4 KB | 8.0km × 5.0km   |
+| Bike | 15 min    | 270ms  | 179      | 4.3 KB | 11.5km × 8.1km  |
+| Car  | 10 min    | 90ms   | 321      | 7.7 KB | 26.3km × 14.5km |
+
+---
+
+## Phase 4: Performance Optimization ✅ DONE
+
+### 4.1 PHAST Implementation ✅
+
+Replaced naive PQ-based Dijkstra with PHAST (PHAst Shortest-path Trees):
+- **Upward phase**: PQ-based, UP edges only (~5ms)
+- **Downward phase**: Linear scan in rank order, DOWN edges (~280ms)
+
+Results:
+| Mode | Threshold | Old (Naive) | New (PHAST) | Speedup |
+|------|-----------|-------------|-------------|---------|
+| Car  | 5 min     | 455ms       | 92ms        | 5x      |
+| Bike | 5 min     | 3100ms      | 261ms       | 12x     |
+| Foot | 10 min    | 5560ms      | 290ms       | 19x     |
+
+All queries now under 300ms - production viable.
+
+### 4.2 Future Optimizations (Not Needed Now)
+
+- [ ] Restricted PHAST (skip unreachable nodes in downward scan)
+- [ ] SIMD-accelerated weight lookups
+- [ ] Memory-mapped files
+- [ ] Reuse allocations across queries
+
+---
+
+## Phase 5: Bulk Performance Optimization ← CURRENT
+
+Target: **huge matrices** (100k×100k) and **millions of isochrones**
+
+### Reality Checks
+
+- 100k × 100k dense matrix = 10¹⁰ cells = 40 GB → must tile/stream
+- Millions of isochrones → can't do one PHAST scan per origin
+
+---
+
+### Milestone 1: Profiling Infrastructure ✅ DONE
+
+**Goal**: Repeatable benchmarks + flamegraphs to guide optimization
+
+#### 1.1 Benchmark Harness (`bench/` binary) ✅ DONE
+
+- [x] Load Belgium data once
+- [x] Run workloads: `phast-only`, `isochrone`, `isochrone-batch`
+- [x] Output: p50/p90/p95/p99 time via hdrhistogram
+- [x] Counters per run:
+  - Upward PQ pushes/pops, relaxations, settled
+  - Downward relaxations, improvements
+  - Frontier segments
+  - Grid cells filled
+  - Contour vertices
+
+**Baseline Results (Belgium, 10-min isochrone, 50 random origins)**:
+
+| Mode | PHAST p50 | Relaxations | Throughput |
+|------|-----------|-------------|------------|
+| Car | 89ms | 18.2M | 10.8/sec |
+| Bike | 266ms | 71.8M | 3.7/sec |
+
+**Time breakdown** (bike):
+- PHAST: 266ms (98.3%)
+- Frontier: 2.7ms (1.0%)
+- Contour: 1.1ms (0.4%)
+
+#### 1.2 Flamegraph / Perf Setup ✅ DONE
+
+- [x] Wall-clock flamegraph (`cargo flamegraph`)
+- [x] `perf stat` (cache misses, branch misses, LLC-load-misses)
+- [x] Annotated hot spots in downward scan
+
+**perf stat results** (bike, 20 queries):
+- Cache miss rate: **80-87%** - extremely memory-bound
+- LLC miss rate: 27-42% - main memory accesses
+- Branch misses: 0.04-0.4% - excellent prediction
+- IPC: 2.8-3.2 - CPU not starved but memory-limited
+
+**Annotated hot spots** (downward scan inner loop):
+| Instruction | % | Operation |
+|-------------|---|-----------|
+| Load weight | **23.76%** | `mov (%r8,%r14,4),%ebx` |
+| Load offset | **11.83%** | `mov (%r9,%rbp,8),%r13` |
+| Compare dist | **9.31%** | `cmp (%r9,%rbp,4),%ebx` |
+| Load value | **6.59%** | `mov -0x4(%r9,%r14,4),%ebp` |
+| **Total memory ops** | **~58%** | Inner loop is memory-bound |
+
+#### 1.3 Baseline Report ✅ DONE
+
+| Workload | p50 | p99 | Relaxations | Key Insight |
+|----------|-----|-----|-------------|-------------|
+| Bike PHAST | 266ms | 274ms | 71.8M | Memory-bound scan |
+| Car PHAST | 89ms | 94ms | 18.2M | Smaller graph |
+| Bike isochrone | 270ms | 300ms | - | PHAST dominates |
+
+**Optimization targets**:
+1. K-lane batching to amortize memory access cost
+2. Prefetching to hide memory latency
+3. SoA data layout for better cache utilization
+
+---
+
+### Milestone 2: Arrow Streaming for Matrix Tiles ✅ PARTIAL
+
+**Goal**: Streaming output for long-running bulk queries
+
+- [x] Arrow IPC module implemented (`matrix/arrow_stream.rs`)
+- [x] Tiled block schema:
+  ```
+  src_block_start: u32
+  dst_block_start: u32
+  src_block_len: u16
+  dst_block_len: u16
+  durations_ms: Binary (packed row-major u32)
+  ```
+- [x] `ArrowMatrixWriter` for streaming writes
+- [x] Unit tests for tile creation and Arrow serialization
+- [x] HTTP endpoint `POST /matrix/bulk` with JSON and Arrow format support
+- [ ] Bounded channel between compute and writer (for streaming large matrices)
+- [ ] Cancellation token on client disconnect
+
+---
+
+### Milestone 3: K-Lane Batched PHAST for Matrices ✅ DONE
+
+**Goal**: Single most important algorithmic optimization
+
+**Implementation** (`matrix/batched_phast.rs`):
+- [x] K-lane downward scan (K=8 lanes)
+- [x] K sources processed in one downward pass
+- [x] Upward: K sequential searches (per batch)
+- [x] Downward: iterate ranks once, update `dist[K]` per node
+- [x] Reduces `O(N × #sources)` → `O(N × #sources/K)`
+
+**Benchmark Results** (Belgium, car mode):
+```
+64 sources × 1000 targets:
+  Single-source: 5.57s (11.5 queries/sec)
+  K-lane batched: 2.48s (25.8 queries/sec)
+  Speedup: 2.24x
+  Correctness: ✅ All 64,000 distances match
+```
+
+**Analysis**:
+- 2.24x speedup vs theoretical 8x (K lanes)
+- Speedup limited by sequential upward phases (95ms of 2.48s)
+- Downward phase benefits fully from K-lane amortization
+- Next step: parallelize upward phases with rayon
+
+Tasks:
+- [x] Implement K-lane downward scan
+- [x] Benchmark correctness verification
+- [x] HTTP endpoint `POST /matrix/bulk` with Arrow output
+- [ ] Parallelize upward phases with rayon (potential 4x further speedup)
+
+---
+
+### Milestone 4: Batched Isochrones ← NEXT
+
+**Two modes**:
+
+1. **K-lane PHAST + per-origin frontier/raster**
+   - Same K-lane scan computes K distance fields
+   - Then per origin: frontier → raster → contour
+   - Good for many origins, similar thresholds
+
+2. **Active-set gating (rPHAST-lite)**
+   - Skip `dist[v] > T` nodes in downward scan
+   - Maintain `active` bitset for nodes with finite dist ≤ T
+   - Skip nodes not active
+   - Good for single-origin latency
+
+Tasks:
+- [ ] Implement active-set gating in PHAST
+- [ ] Measure relaxations drop
+- [ ] Implement K-lane isochrone batch mode
+- [ ] Reusable grid buffer per worker
+
+---
+
+### Milestone 5: Scale Testing
+
+- [ ] Run 10M isochrones offline, validate throughput + memory
+- [ ] Run matrix build as distributed tiles
+- [ ] Document SLO targets (p95 latency, throughput)
+
+---
+
+## Phase 6: Production Hardening (Deferred)
+
+### 6.1 Snapping
+
+- [ ] Snapper as first-class component
+- [ ] Same snapping for route/matrix/isochrone
+- [ ] Edge snapping (not just node snapping)
+
+### 6.2 Concurrency
+
+- [ ] Per-request scratch buffers
+- [ ] No global mutable state
+- [ ] Thread-safe query engine
+
+---
+
+## Completed Phases ✅
+
+- [x] Phase 1: Lock Down Invariants
+- [x] Phase 2: Exact Isochrone Core (Range Query)
+- [x] Phase 3: Frontier Extraction + Polygonization
+- [x] Phase 4: PHAST Performance Optimization
+
+**Current Performance** (Belgium):
+| Mode | Threshold | Time   | Vertices | Dimensions      |
+|------|-----------|--------|----------|-----------------|
+| Foot | 10 min    | 280ms  | 57       | 2.1km × 1.3km   |
+| Bike | 10 min    | 270ms  | 141      | 8.0km × 5.0km   |
+| Bike | 15 min    | 270ms  | 179      | 11.5km × 8.1km  |
+| Car  | 10 min    | 90ms   | 321      | 26.3km × 14.5km |
