@@ -188,7 +188,7 @@ All queries now under 300ms - production viable.
 
 ---
 
-## Phase 5: Bulk Performance Optimization ← CURRENT
+## Phase 5: Bulk Performance Optimization (4/5 Milestones Done)
 
 Target: **huge matrices** (100k×100k) and **millions of isochrones**
 
@@ -318,7 +318,7 @@ Tasks:
 
 ---
 
-### Milestone 4: Batched Isochrones ← CURRENT
+### Milestone 4: Batched Isochrones ✅ DONE
 
 **Two modes**:
 
@@ -362,7 +362,7 @@ Tasks:
 
 ---
 
-### Milestone 5: Scale Testing
+### Milestone 5: Scale Testing ← NEXT
 
 - [ ] Run 10M isochrones offline, validate throughput + memory
 - [ ] Run matrix build as distributed tiles
