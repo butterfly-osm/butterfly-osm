@@ -33,6 +33,9 @@ pub mod order_ebg;
 // Step 7 formats
 pub mod cch_topo;
 
+// Step 8 formats
+pub mod cch_weights;
+
 pub use ways::{Way, WaysFile};
 pub use relations::{Member, MemberKind, Relation, RelationsFile};
 pub use way_attrs::WayAttr;
@@ -49,3 +52,4 @@ pub use mod_mask::ModMask;
 pub use filtered_ebg::{FilteredEbg, FilteredEbgFile};
 pub use order_ebg::{OrderEbg, OrderEbgFile};
 pub use cch_topo::{CchTopo, CchTopoFile, Shortcut};
+pub use cch_weights::{CchWeights, CchWeightsFile};

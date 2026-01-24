@@ -264,6 +264,56 @@ pub enum Commands {
         #[arg(short, long)]
         port: Option<u16>,
     },
+
+    /// Validate CCH correctness by comparing bidirectional CCH vs CCH-Dijkstra
+    ValidateCch {
+        /// Path to cch.*.topo from Step 7
+        #[arg(long)]
+        cch_topo: PathBuf,
+
+        /// Path to cch.w.*.u32 from Step 8
+        #[arg(long)]
+        cch_weights: PathBuf,
+
+        /// Path to order.*.ebg from Step 6
+        #[arg(long)]
+        order: PathBuf,
+
+        /// Mode to validate (car, bike, foot)
+        #[arg(long)]
+        mode: String,
+
+        /// Number of random query pairs (default: 50000)
+        #[arg(long, default_value = "50000")]
+        n_pairs: usize,
+
+        /// Random seed (default: 42424242)
+        #[arg(long, default_value = "42424242")]
+        seed: u64,
+
+        /// Output file for failures (optional)
+        #[arg(long)]
+        failures_file: Option<PathBuf>,
+    },
+
+    /// Run targeted regression tests for CCH edge cases
+    RegressionCch {
+        /// Path to cch.*.topo from Step 7
+        #[arg(long)]
+        cch_topo: PathBuf,
+
+        /// Path to cch.w.*.u32 from Step 8
+        #[arg(long)]
+        cch_weights: PathBuf,
+
+        /// Path to order.*.ebg from Step 6
+        #[arg(long)]
+        order: PathBuf,
+
+        /// Mode to test (car, bike, foot)
+        #[arg(long)]
+        mode: String,
+    },
 }
 
 impl Cli {
@@ -646,6 +696,79 @@ impl Cli {
                 // Create tokio runtime
                 let rt = tokio::runtime::Runtime::new()?;
                 rt.block_on(step9::serve(&data_dir, port))?;
+                Ok(())
+            }
+            Commands::ValidateCch {
+                cch_topo,
+                cch_weights,
+                order,
+                mode,
+                n_pairs,
+                seed,
+                failures_file,
+            } => {
+                // Parse mode
+                let mode = match mode.to_lowercase().as_str() {
+                    "car" => Mode::Car,
+                    "bike" => Mode::Bike,
+                    "foot" => Mode::Foot,
+                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
+                };
+
+                let (result, failures) = crate::validate::validate_cch_correctness(
+                    &cch_topo,
+                    &cch_weights,
+                    &order,
+                    n_pairs,
+                    seed,
+                    mode,
+                )?;
+
+                // Write failures to file if requested
+                if let Some(path) = failures_file {
+                    use std::io::Write;
+                    let mut f = std::fs::File::create(&path)?;
+                    writeln!(f, "src,dst,bidi_cost,baseline_cost,diff")?;
+                    for failure in &failures {
+                        let diff = (failure.bidi_cost as i64) - (failure.baseline_cost as i64);
+                        writeln!(f, "{},{},{},{},{}",
+                                 failure.src, failure.dst, failure.bidi_cost, failure.baseline_cost, diff)?;
+                    }
+                    println!("\nFailures written to: {}", path.display());
+                }
+
+                if result.mismatches > 0 {
+                    anyhow::bail!("Validation failed with {} mismatches", result.mismatches);
+                }
+
+                Ok(())
+            }
+            Commands::RegressionCch {
+                cch_topo,
+                cch_weights,
+                order,
+                mode,
+            } => {
+                // Parse mode
+                let mode = match mode.to_lowercase().as_str() {
+                    "car" => Mode::Car,
+                    "bike" => Mode::Bike,
+                    "foot" => Mode::Foot,
+                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
+                };
+
+                let results = crate::validate::run_regression_tests(
+                    &cch_topo,
+                    &cch_weights,
+                    &order,
+                    mode,
+                )?;
+
+                let failed_count = results.iter().filter(|r| !r.passed).count();
+                if failed_count > 0 {
+                    anyhow::bail!("Regression tests failed: {} failures", failed_count);
+                }
+
                 Ok(())
             }
         }

@@ -52,3 +52,6 @@ rstar = "0.12"
 
 # Priority queue for Dijkstra
 priority-queue = "2.0"
+
+# Random number generation for validation
+rand = "0.8"
