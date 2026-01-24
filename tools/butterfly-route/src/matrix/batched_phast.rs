@@ -19,8 +19,7 @@ use crate::formats::{CchTopo, CchWeights, CchTopoFile, CchWeightsFile, OrderEbg,
 /// K=8 gives good balance between parallelism and register pressure
 pub const K_LANES: usize = 8;
 
-/// Block size for blocked relaxation (nodes per block)
-/// 8192 nodes × 4 bytes = 32KB, fits in L1 cache
+/// Block size for rank-based memory blocking
 pub const BLOCK_SIZE: usize = 8192;
 
 /// Batched PHAST engine for K-lane parallel queries
@@ -35,10 +34,6 @@ pub struct BatchedPhastEngine {
     inv_perm: Vec<u32>,
     /// Number of nodes
     n_nodes: usize,
-    /// Pre-sorted edge order for cache-efficient downward scan
-    /// Each entry: (source_node, edge_index)
-    /// Sorted by (source_rank DESC, target ASC)
-    sorted_down_edges: Vec<(u32, usize)>,
 }
 
 /// Result of K-lane batched PHAST query
@@ -81,39 +76,12 @@ impl BatchedPhastEngine {
             inv_perm[rank as usize] = node as u32;
         }
 
-        // Pre-sort DOWN edges by (source_rank DESC, target ASC)
-        // This improves cache locality during the downward scan
-        let mut sorted_down_edges: Vec<(u32, usize)> = Vec::new();
-        for node in 0..n_nodes as u32 {
-            let down_start = topo.down_offsets[node as usize] as usize;
-            let down_end = topo.down_offsets[node as usize + 1] as usize;
-
-            for edge_idx in down_start..down_end {
-                sorted_down_edges.push((node, edge_idx));
-            }
-        }
-
-        // Sort by (source_rank DESC, target ASC)
-        sorted_down_edges.sort_by(|a, b| {
-            let rank_a = perm[a.0 as usize];
-            let rank_b = perm[b.0 as usize];
-            match rank_b.cmp(&rank_a) {  // rank descending
-                std::cmp::Ordering::Equal => {
-                    let target_a = topo.down_targets[a.1];
-                    let target_b = topo.down_targets[b.1];
-                    target_a.cmp(&target_b)  // target ascending
-                }
-                other => other,
-            }
-        });
-
         Self {
             topo,
             weights,
             perm,
             inv_perm,
             n_nodes,
-            sorted_down_edges,
         }
     }
 
@@ -278,20 +246,17 @@ impl BatchedPhastEngine {
         }
     }
 
-    /// Run K-lane batched PHAST with destination-sorted edges for cache efficiency
+    /// Run K-lane batched PHAST with experimental cache optimizations
     ///
-    /// PHAST requires processing in strict source rank order (decreasing), so we can't
-    /// use arbitrary bucket-based processing. Instead, we process in rank order but
-    /// within each source's edges, we sort by destination to improve write locality.
+    /// Current status: Rank-block buffering approach failed because:
+    /// 1. Node indices don't align with rank order (random access pattern)
+    /// 2. Buffering overhead exceeds cache benefit
+    /// 3. Even sorted flushes require inv_perm lookup (random access)
     ///
-    /// This is a modest improvement that maintains correctness while improving
-    /// cache performance for the write path.
+    /// Future: Consider renumbering nodes by rank at construction time,
+    /// so that rank-ordered processing gives memory-sequential access.
     ///
-    /// # Arguments
-    /// * `sources` - Up to K source node IDs (len must be <= K_LANES)
-    ///
-    /// # Returns
-    /// BatchedPhastResult with distance arrays for each source
+    /// For now, this is identical to query_batch but tracks extra stats.
     pub fn query_batch_blocked(&self, sources: &[u32]) -> BatchedPhastResult {
         assert!(sources.len() <= K_LANES, "Too many sources for batch");
         let k = sources.len();
@@ -313,7 +278,7 @@ impl BatchedPhastEngine {
         }
 
         // ============================================================
-        // Phase 1: K upward searches (same as non-blocked version)
+        // Phase 1: K upward searches
         // ============================================================
         let upward_start = std::time::Instant::now();
 
@@ -354,40 +319,64 @@ impl BatchedPhastEngine {
         stats.upward_time_ms = upward_start.elapsed().as_millis() as u64;
 
         // ============================================================
-        // Phase 2: K-lane downward scan with PRE-SORTED edges
+        // Phase 2: K-lane downward scan (node-ordered for read locality)
         // ============================================================
-        //
-        // Use pre-sorted edges (sorted at construction time by source_rank DESC, target ASC).
-        // This maintains PHAST correctness while improving cache locality for writes.
         let downward_start = std::time::Instant::now();
 
-        stats.buffered_updates = self.sorted_down_edges.len();
+        // Process nodes in DECREASING rank order (highest rank first)
+        // This gives sequential reads for dist[u], but random writes for dist[v]
+        for rank in (0..self.n_nodes).rev() {
+            let u = self.inv_perm[rank];
+            let u_idx = u as usize;
 
-        // Process edges in pre-sorted order
-        for &(src, edge_idx) in &self.sorted_down_edges {
-            let w = self.weights.down[edge_idx];
-            if w == u32::MAX {
+            // Get DOWN edge range
+            let down_start = self.topo.down_offsets[u_idx] as usize;
+            let down_end = self.topo.down_offsets[u_idx + 1] as usize;
+
+            if down_start == down_end {
                 continue;
             }
 
-            let target = self.topo.down_targets[edge_idx] as usize;
-            let src_idx = src as usize;
-            stats.downward_relaxations += 1;
-
-            // Update all K lanes
+            // Check if ANY lane has finite distance
+            let mut any_reachable = false;
             for lane in 0..k {
-                let d_src = dist[lane][src_idx];
-                if d_src != u32::MAX {
-                    let new_dist = d_src.saturating_add(w);
-                    if new_dist < dist[lane][target] {
-                        dist[lane][target] = new_dist;
-                        stats.downward_improved += 1;
+                if dist[lane][u_idx] != u32::MAX {
+                    any_reachable = true;
+                    break;
+                }
+            }
+            if !any_reachable {
+                continue;
+            }
+
+            // Relax DOWN edges for ALL K lanes
+            for i in down_start..down_end {
+                let v = self.topo.down_targets[i];
+                let w = self.weights.down[i];
+
+                if w == u32::MAX {
+                    continue;
+                }
+
+                let v_idx = v as usize;
+                stats.downward_relaxations += 1;
+
+                // Update all K lanes
+                for lane in 0..k {
+                    let d_u = dist[lane][u_idx];
+                    if d_u != u32::MAX {
+                        let new_dist = d_u.saturating_add(w);
+                        if new_dist < dist[lane][v_idx] {
+                            dist[lane][v_idx] = new_dist;
+                            stats.downward_improved += 1;
+                        }
                     }
                 }
             }
         }
 
-        stats.buffer_flushes = 1; // One pass through sorted edges
+        stats.buffer_flushes = 0;
+        stats.buffered_updates = 0;
 
         stats.downward_time_ms = downward_start.elapsed().as_millis() as u64;
         stats.total_time_ms = start.elapsed().as_millis() as u64;

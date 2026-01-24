@@ -369,40 +369,56 @@ Tasks:
 
 ---
 
-### Milestone 5: Cache-Friendly Edge Processing ✅ DONE (partial)
+### Milestone 5: Cache-Friendly PHAST via Rank-Aligned Memory ← BLOCKED
 
-**Problem**: 80-87% cache miss rate in downward scan due to random writes to `dist[v]`
+**Problem**: 80-87% cache miss rate in downward scan
 
-**Original hypothesis**: Blocked relaxation (buffer writes, flush in batches) would improve cache efficiency.
+**Root cause identified**: Node indices don't align with rank order!
+- Processing by rank gives `inv_perm[rank]` → random node index
+- Both reads `dist[u]` AND writes `dist[v]` are random
+- Buffering overhead exceeds cache benefit (tested: 0.3x slower)
 
-**Finding**: Blocked relaxation doesn't work for PHAST because:
-- PHAST requires strict source rank ordering (decreasing)
-- When processing node u, `dist[u]` must already have all updates from higher-ranked nodes
-- Buffering writes breaks this invariant (updates to u may be sitting in buffers)
-- Even bucket-based processing by destination block violates global rank order
+**Experiments conducted**:
 
-**Alternative implemented**: Pre-sorted edge processing
-- Sort DOWN edges at construction by (source_rank DESC, target ASC)
-- Process edges in pre-sorted order
-- Maintains PHAST correctness while improving write locality
+| Approach | Speedup | Issue |
+|----------|---------|-------|
+| Global edge stream sorted by (src_rank, target) | 1.19x | Destroyed read locality |
+| Rank-block buffering with rank-safe flush | 0.5-0.7x | Buffer overhead |
+| Sorted flush by node index | 0.3x | Sort overhead |
 
-#### 5.1 Results
+**Correct understanding** (thanks to user feedback):
+- Blocked relaxation IS compatible with PHAST (flush before processing)
+- But requires **rank-aligned memory layout** to be effective
+- Without rank-aligned layout, `inv_perm[rank]` lookup defeats the optimization
 
-| Method | Downward Time | Speedup | Cache Miss Rate |
-|--------|---------------|---------|-----------------|
-| Baseline | 2161ms | 1.00x | 57-85% |
-| Pre-sorted edges | 1816ms | 1.19x | 57-85% |
+#### 5.1 The Real Fix: Rank-Aligned Node Renumbering
 
-**Analysis**: Modest 1.19x improvement on downward phase. Cache miss rate still high because:
-- Writes are now sequential (sorted by target) ✅
-- Reads (`dist[src]`) are still random (different sources each edge) ❌
-- Read misses dominate the cache behavior
+To achieve cache efficiency, nodes must be renumbered so that `node_id = rank`:
+
+```
+// After CCH construction, renumber everything:
+new_node_id[old_node] = rank[old_node]
+
+// Then:
+inv_perm[rank] = rank  // identity!
+perm[node] = node      // identity!
+dist[rank] = sequential access
+```
+
+This requires:
+1. Renumber all node references in CCH topology
+2. Renumber all node references in edge weights
+3. Update snapping indices
+4. Renumber geometry references
+
+**Expected gain**: With rank-aligned layout, blocked relaxation should achieve 2-4x
 
 Tasks:
-- [x] Implement pre-sorted edge order at construction
-- [x] Benchmark cache miss rate with `perf stat`
-- [x] Verify correctness (all distances match)
-- [ ] Try SoA layout to improve read locality (Milestone 6)
+- [x] Implemented and tested rank-block buffering (works but overhead too high)
+- [x] Confirmed root cause: node indices not aligned with ranks
+- [ ] **Implement rank-aligned node renumbering at CCH construction**
+- [ ] Re-run blocked relaxation with aligned layout
+- [ ] Benchmark cache miss rate with `perf stat`
 
 ---
 
