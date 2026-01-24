@@ -153,7 +153,14 @@ butterfly-route serve --data-dir ./build/ --port 8080
 
 ---
 
-## Bulk Performance Optimization (Current Focus)
+## Bulk Performance Optimization
+
+### Current Status
+
+**Profiling revealed the bottleneck**: 80-87% cache miss rate in downward scan.
+- Downward phase = 98% of runtime
+- Problem: random writes to `dist[v]` for each edge relaxation
+- K-lane batching alone gives only 2.24x (not 8x) due to memory bottleneck
 
 ### Reality Checks
 
@@ -162,47 +169,71 @@ butterfly-route serve --data-dir ./build/ --port 8080
 - **Millions of isochrones** = can't do one PHAST per origin
   → Need K-lane batched PHAST or restricted scan
 
-### Phase A: Measurement Infrastructure ← CURRENT
+### Phase A: Measurement Infrastructure ✅ DONE
 
 | Task | Status |
 |------|--------|
-| Benchmark harness (`bench/` binary) | ⬜ |
-| Flamegraph + perf scripts | ⬜ |
-| Counters: upward settled, downward scanned, relaxations, frontier edges | ⬜ |
-| Baseline report per workload | ⬜ |
+| Benchmark harness (`bench/` binary) | ✅ |
+| Flamegraph + perf scripts | ✅ |
+| Counters: upward settled, downward scanned, relaxations, frontier edges | ✅ |
+| Baseline report per workload | ✅ |
 
-### Phase B: Batch Compute (Big Win)
+**Key finding**: 80-87% cache miss rate, 98% time in downward scan
 
-**K-lane batched PHAST** (single most important optimization):
-- Upward: K parallel searches
-- Downward: one scan updating `dist[K]` vector per node
-- Reduces `O(N × #sources)` scans to `O(N × #sources/K)`
-- K = 8/16/32/64 (tune for cache/SIMD)
+### Phase B: Batch Compute ✅ DONE
 
-| Task | Status |
-|------|--------|
-| K-lane downward scan implementation | ⬜ |
-| Matrix tile computation (64×256 blocks) | ⬜ |
-| Batched isochrones (K origins per scan) | ⬜ |
-| Active-set gating (rPHAST-lite) | ⬜ |
+| Task | Status | Result |
+|------|--------|--------|
+| K-lane downward scan (K=8) | ✅ | 2.24x speedup |
+| Matrix tile computation | ✅ | Arrow streaming |
+| Batched isochrones (K origins) | ✅ | 2.63x speedup |
+| Active-set gating (rPHAST-lite) | ✅ | 2.79x for bounded |
 
-### Phase C: Arrow Streaming Output
+### Phase C: Arrow Streaming Output ✅ PARTIAL
 
 | Task | Status |
 |------|--------|
-| Content negotiation (JSON default, Arrow for bulk) | ⬜ |
-| Tiled block schema for matrices | ⬜ |
+| Content negotiation (JSON default, Arrow for bulk) | ✅ |
+| Tiled block schema for matrices | ✅ |
 | Backpressure + cancellation (bounded channel) | ⬜ |
-| Streaming writer for long-running queries | ⬜ |
+| Streaming writer for long-running queries | ✅ |
 
-### Phase D: Low-Level Optimizations
+### Phase D: Cache-Friendly Memory Access ← CRITICAL FOR 10x
+
+**This is the key to 10x improvement.**
+
+| Task | Status | Expected Gain |
+|------|--------|---------------|
+| **Blocked relaxation** (buffer updates by dst block) | ⬜ | 2-5x |
+| SoA layout for dist arrays | ⬜ | 1.2-1.5x |
+| SIMD vectorization (after cache fixed) | ⬜ | 1.5-2x |
+
+**Blocked relaxation algorithm**:
+```
+dst_block_size = 8192
+buffers = [Vec<(v, cand_dist)>; N/block_size]
+
+for rank in descending order:
+    for edge (u→v, w):
+        buffers[v / block_size].push((v, dist[u] + w))
+
+    if should_flush():
+        for buffer in buffers:
+            for (v, cand) in buffer:
+                dist[v] = min(dist[v], cand)  // sequential within block
+            buffer.clear()
+```
+
+**Why this works**: Converts random writes to sequential writes within cache-friendly blocks.
+Expected cache miss rate: 85% → 30-50%
+
+### Phase E: Low-Level Optimizations (After Phase D)
 
 | Task | Status |
 |------|--------|
-| SoA layout for down-edges (`to[]`, `weight[]`, `first_out[]`) | ⬜ |
-| Early termination: skip if `dist[v] > bound` | ⬜ |
+| AVX2 SIMD for K-lane inner loop | ⬜ |
+| Prefetching for edge arrays | ⬜ |
 | Reusable grid buffer with generation counters | ⬜ |
-| Batch polygon simplification | ⬜ |
 
 ---
 

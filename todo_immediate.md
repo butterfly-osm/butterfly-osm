@@ -256,10 +256,17 @@ Target: **huge matrices** (100k×100k) and **millions of isochrones**
 | Car PHAST | 89ms | 94ms | 18.2M | Smaller graph |
 | Bike isochrone | 270ms | 300ms | - | PHAST dominates |
 
-**Optimization targets**:
-1. K-lane batching to amortize memory access cost
-2. Prefetching to hide memory latency
-3. SoA data layout for better cache utilization
+**Optimization targets** (in priority order):
+1. ~~K-lane batching to amortize memory access cost~~ ✅ Done (2.24x)
+2. **Blocked relaxation** to fix 80-87% cache miss rate ← CRITICAL
+3. SoA data layout for dist arrays
+4. SIMD vectorization (only after cache is fixed)
+
+**Root cause analysis**:
+- Downward scan is 98% of runtime
+- Cache miss rate: 80-87%
+- Problem: random writes to `dist[v]` for each edge relaxation
+- Solution: block updates by destination rank to improve locality
 
 ---
 
@@ -362,7 +369,60 @@ Tasks:
 
 ---
 
-### Milestone 5: Scale Testing ← NEXT
+### Milestone 5: Cache-Friendly Blocked Relaxation ← CRITICAL (10x target)
+
+**Problem**: 80-87% cache miss rate in downward scan due to random writes to `dist[v]`
+
+**Solution**: Block updates by destination rank to improve locality
+
+#### 5.1 Blocked Relaxation Algorithm
+```
+dst_block_size = 8192 nodes
+buffers = [Vec<(v, candidate_dist)>; N/block_size]
+
+for rank in (0..n_nodes).rev():
+    u = inv_perm[rank]
+    for edge (u→v, w) in down_edges[u]:
+        block_id = v / dst_block_size
+        buffers[block_id].push((v, dist[u] + w))
+
+    // Periodically flush buffers (every M ranks or when buffer full)
+    if should_flush():
+        for each buffer:
+            for (v, cand) in buffer:
+                dist[v] = min(dist[v], cand)  // sequential writes within block
+            buffer.clear()
+```
+
+**Expected gain**: 2-5x on downward phase (cache miss rate 85% → 30-50%)
+
+Tasks:
+- [ ] Implement blocked relaxation with configurable block size
+- [ ] Benchmark cache miss rate with `perf stat`
+- [ ] Tune block size (4096, 8192, 16384)
+- [ ] Integrate with K-lane batching
+
+---
+
+### Milestone 6: SoA Layout + SIMD ← After cache is fixed
+
+**Prerequisites**: Milestone 5 complete (cache miss rate < 50%)
+
+#### 6.1 Structure of Arrays Layout
+- [ ] Convert `dist[K][N]` to `dist_lane0[N], dist_lane1[N], ...`
+- [ ] Align arrays to cache line boundaries (64 bytes)
+- [ ] Benchmark improvement
+
+#### 6.2 AVX2 SIMD Inner Loop
+- [ ] Implement SIMD min/saturating_add for K lanes
+- [ ] Handle u32::MAX (INF) correctly
+- [ ] Benchmark with and without SIMD
+
+**Expected gain**: 1.5-3x after cache is fixed
+
+---
+
+### Milestone 7: Scale Testing
 
 - [ ] Run 10M isochrones offline, validate throughput + memory
 - [ ] Run matrix build as distributed tiles
