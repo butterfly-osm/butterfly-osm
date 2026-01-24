@@ -52,6 +52,10 @@ bench_results/
 *.arrow
 *.ipc
 
+# Isochrone output files
+isochrone*.geojson
+batch_isochrone/
+
 # CCH build temporaries (normally cleaned up, but just in case)
 shortcuts.tmp
 
