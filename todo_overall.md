@@ -198,34 +198,26 @@ butterfly-route serve --data-dir ./build/ --port 8080
 | Backpressure + cancellation (bounded channel) | ⬜ |
 | Streaming writer for long-running queries | ✅ |
 
-### Phase D: Cache-Friendly Memory Access ← CRITICAL FOR 10x
+### Phase D: Cache-Friendly Memory Access ✅ ATTEMPTED
 
-**This is the key to 10x improvement.**
+**Finding**: Blocked relaxation doesn't work for PHAST due to ordering constraints.
 
-| Task | Status | Expected Gain |
-|------|--------|---------------|
-| **Blocked relaxation** (buffer updates by dst block) | ⬜ | 2-5x |
-| SoA layout for dist arrays | ⬜ | 1.2-1.5x |
-| SIMD vectorization (after cache fixed) | ⬜ | 1.5-2x |
+| Task | Status | Actual Gain |
+|------|--------|-------------|
+| **Blocked relaxation** (buffer updates by dst block) | ❌ N/A | Breaks correctness |
+| **Pre-sorted edges** (by source rank, target) | ✅ | 1.19x |
+| SoA layout for dist arrays | ⬜ | TBD |
+| SIMD vectorization (after cache fixed) | ⬜ | TBD |
 
-**Blocked relaxation algorithm**:
-```
-dst_block_size = 8192
-buffers = [Vec<(v, cand_dist)>; N/block_size]
+**Why blocked relaxation failed**:
+- PHAST requires `dist[u]` to be finalized when processing node u
+- Buffering writes delays updates, causing stale reads
+- Even bucket-based processing by destination violates global rank order
 
-for rank in descending order:
-    for edge (u→v, w):
-        buffers[v / block_size].push((v, dist[u] + w))
+**Pre-sorted edges**: Implemented alternative that sorts edges by (source_rank DESC, target ASC)
+at construction time. Provides modest 1.19x speedup (2161ms → 1816ms) with full correctness.
 
-    if should_flush():
-        for buffer in buffers:
-            for (v, cand) in buffer:
-                dist[v] = min(dist[v], cand)  // sequential within block
-            buffer.clear()
-```
-
-**Why this works**: Converts random writes to sequential writes within cache-friendly blocks.
-Expected cache miss rate: 85% → 30-50%
+**Cache miss rate**: Still 57-85% because reads (`dist[src]`) are random.
 
 ### Phase E: Low-Level Optimizations (After Phase D)
 
