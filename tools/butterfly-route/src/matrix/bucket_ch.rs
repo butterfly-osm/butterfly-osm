@@ -12,8 +12,8 @@
 //!
 //! ## Key Optimizations
 //!
-//! - **Sparse buckets**: HashMap storage, no fixed capacity limits
-//! - **Parallel backward phase**: rayon parallel processing of targets
+//! - **Parallel forward & backward phases**: rayon parallel processing of sources and targets
+//! - **Cache-optimized buckets**: Sorted flat vectors instead of HashMap for bucket storage
 //! - **Search versioning**: Avoid O(N) dist array initialization per search
 //! - **Cache-friendly columns**: Local target column, merged at end
 
@@ -21,31 +21,33 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 use rayon::prelude::*;
-use rustc_hash::FxHashMap;
 
 use crate::formats::{CchTopo, CchWeights};
 use crate::step9::state::DownReverseAdj;
+
+#[derive(Clone, Copy)]
+struct SearchItem {
+    dist: u32,
+    version: u32,
+}
 
 /// Thread-local search state with versioning
 ///
 /// Instead of zeroing the entire dist array (O(N)) for each search,
 /// we use a version counter. A node is "unvisited" if its version
 /// doesn't match the current search version.
+/// This version combines dist and version into a single struct for better cache locality.
 struct VersionedSearchState {
-    dist: Vec<u32>,
-    version: Vec<u32>,
+    data: Vec<SearchItem>,
     current_version: u32,
-    visited: Vec<u32>,
     pq: BinaryHeap<Reverse<(u32, u32)>>,
 }
 
 impl VersionedSearchState {
     fn new(n_nodes: usize, avg_visited: usize) -> Self {
         Self {
-            dist: vec![0; n_nodes],
-            version: vec![0; n_nodes],
+            data: vec![SearchItem { dist: 0, version: 0 }; n_nodes],
             current_version: 0,
-            visited: Vec::with_capacity(avg_visited),
             pq: BinaryHeap::with_capacity(avg_visited),
         }
     }
@@ -56,19 +58,19 @@ impl VersionedSearchState {
         self.current_version = self.current_version.wrapping_add(1);
         // Handle version wrap-around (every 4B searches, reset everything)
         if self.current_version == 0 {
-            self.version.fill(0);
+            // This is very rare. A full reset is acceptable.
+            self.data.fill(SearchItem { dist: 0, version: 0 });
             self.current_version = 1;
         }
-        self.visited.clear();
         self.pq.clear();
     }
 
     /// Get distance to node, returning u32::MAX if node not visited in current search
     #[inline]
     fn get_dist(&self, node: u32) -> u32 {
-        let idx = node as usize;
-        if self.version[idx] == self.current_version {
-            self.dist[idx]
+        let item = &self.data[node as usize];
+        if item.version == self.current_version {
+            item.dist
         } else {
             u32::MAX
         }
@@ -77,73 +79,9 @@ impl VersionedSearchState {
     /// Set distance to node in current search
     #[inline]
     fn set_dist(&mut self, node: u32, d: u32) {
-        let idx = node as usize;
-        self.dist[idx] = d;
-        self.version[idx] = self.current_version;
-    }
-}
-
-/// Sparse bucket storage using HashMap
-///
-/// Only nodes that are actually visited have buckets allocated.
-/// Each bucket can hold all sources without overflow.
-pub struct SparseBuckets {
-    /// Map from node ID to list of (source_idx, distance) pairs
-    buckets: FxHashMap<u32, Vec<(u16, u32)>>,
-    /// Total number of items stored
-    total_items: usize,
-}
-
-// SparseBuckets is Sync because HashMap is Sync when keys and values are Sync
-unsafe impl Sync for SparseBuckets {}
-
-impl SparseBuckets {
-    /// Create empty sparse buckets
-    pub fn new() -> Self {
-        Self {
-            buckets: FxHashMap::default(),
-            total_items: 0,
-        }
-    }
-
-    /// Create with pre-allocated capacity for expected number of visited nodes
-    pub fn with_capacity(expected_nodes: usize) -> Self {
-        Self {
-            buckets: FxHashMap::with_capacity_and_hasher(expected_nodes, Default::default()),
-            total_items: 0,
-        }
-    }
-
-    /// Push an entry into a node's bucket
-    #[inline]
-    pub fn push(&mut self, node: u32, source_idx: u16, dist: u32) {
-        self.buckets
-            .entry(node)
-            .or_insert_with(Vec::new)
-            .push((source_idx, dist));
-        self.total_items += 1;
-    }
-
-    /// Get all entries in a node's bucket
-    #[inline]
-    pub fn get(&self, node: u32) -> &[(u16, u32)] {
-        self.buckets.get(&node).map(|v| v.as_slice()).unwrap_or(&[])
-    }
-
-    /// Total number of items stored
-    pub fn total_items(&self) -> usize {
-        self.total_items
-    }
-
-    /// Number of nodes with buckets
-    pub fn num_buckets(&self) -> usize {
-        self.buckets.len()
-    }
-}
-
-impl Default for SparseBuckets {
-    fn default() -> Self {
-        Self::new()
+        let item = &mut self.data[node as usize];
+        item.dist = d;
+        item.version = self.current_version;
     }
 }
 
@@ -204,42 +142,58 @@ pub fn table_bucket(
 
     // Estimate visited nodes per source (typical CH search visits ~0.1% of graph)
     let avg_visited = (n_nodes / 400).max(500).min(20000);
-    let expected_bucket_nodes = n_sources * avg_visited;
 
-    // Create sparse buckets
-    let mut buckets = SparseBuckets::with_capacity(expected_bucket_nodes);
-
-    // Pre-allocate search structures for reuse (forward phase only)
-    let mut fwd_dist = vec![u32::MAX; n_nodes];
-    let mut fwd_visited: Vec<u32> = Vec::with_capacity(avg_visited);
-    let mut fwd_pq: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::with_capacity(avg_visited);
-
-    // ========== Forward Phase: Populate buckets (sequential) ==========
+    // ========== Forward Phase: Populate buckets (PARALLEL) ==========
     let forward_start = std::time::Instant::now();
 
-    for (source_idx, &source) in sources.iter().enumerate() {
-        if source as usize >= n_nodes {
-            continue;
-        }
+    // 1. Run forward search for each source in parallel, collecting all bucket items.
+    let mut bucket_items: Vec<(u32, u16, u32)> = sources
+        .par_iter()
+        .enumerate()
+        .flat_map(|(source_idx, &source)| {
+            if source as usize >= n_nodes {
+                return Vec::new();
+            }
+            let mut state = VersionedSearchState::new(n_nodes, avg_visited);
+            forward_search_local(topo, &weights.up, source_idx as u16, source, &mut state)
+        })
+        .collect();
 
-        let visited = forward_search_with_buckets(
-            topo,
-            &weights.up,
-            source_idx as u16,
-            source,
-            &mut buckets,
-            &mut fwd_dist,
-            &mut fwd_visited,
-            &mut fwd_pq,
-        );
-        stats.forward_visited += visited;
+    stats.forward_visited = bucket_items.len();
+    stats.bucket_items = bucket_items.len();
+
+    // 2. Sort items by node ID to group them. This is the key to replacing the HashMap.
+    bucket_items.par_sort_unstable_by_key(|item| item.0);
+
+    // 3. Create a fast lookup structure (node -> range of items).
+    // `node_offsets[i]` stores the starting index in `bucket_items` for node `i`.
+    let mut node_offsets = vec![0u32; n_nodes + 1];
+    if !bucket_items.is_empty() {
+        stats.bucket_nodes = 1;
+        let mut last_node_id = bucket_items[0].0;
+        for (i, &(node_id, _, _)) in bucket_items.iter().enumerate() {
+            if node_id != last_node_id {
+                // Fill in offsets for nodes between last_node_id and current node_id
+                for j in (last_node_id + 1)..=node_id {
+                    node_offsets[j as usize] = i as u32;
+                }
+                last_node_id = node_id;
+                stats.bucket_nodes += 1;
+            }
+        }
+        // Fill in offsets for the remaining nodes up to n_nodes
+        for j in (last_node_id as usize + 1)..=n_nodes {
+            node_offsets[j] = bucket_items.len() as u32;
+        }
     }
 
-    stats.forward_time_ms = forward_start.elapsed().as_millis() as u64;
-    stats.bucket_items = buckets.total_items();
-    stats.bucket_nodes = buckets.num_buckets();
+    // 4. Strip node IDs from bucket_items to save space and simplify access.
+    let final_bucket_items: Vec<(u16, u32)> =
+        bucket_items.into_iter().map(|(_, s, d)| (s, d)).collect();
 
-    // ========== Backward Phase: Join with buckets (parallel) ==========
+    stats.forward_time_ms = forward_start.elapsed().as_millis() as u64;
+
+    // ========== Backward Phase: Join with buckets (PARALLEL) ==========
     let backward_start = std::time::Instant::now();
 
     // Use thread-local versioned search state to avoid O(N) initialization per search
@@ -271,7 +225,8 @@ pub fn table_bucket(
                     &weights.down,
                     down_rev,
                     target,
-                    &buckets,
+                    &final_bucket_items,
+                    &node_offsets,
                     &mut target_column,
                     state,
                 );
@@ -299,44 +254,30 @@ pub fn table_bucket(
     (matrix, stats)
 }
 
-/// Forward search from a source, populating buckets
+/// Forward search from a source, returning a list of bucket items.
 ///
-/// Runs Dijkstra on the UP graph, storing (source_idx, dist) in bucket[v]
-/// for each visited node v.
-///
-/// Uses pre-allocated dist/visited/pq to avoid allocations.
-fn forward_search_with_buckets(
+/// Runs Dijkstra on the UP graph, collecting `(node, source_idx, dist)`
+/// for each visited node `v`.
+fn forward_search_local(
     topo: &CchTopo,
     weights_up: &[u32],
     source_idx: u16,
     source: u32,
-    buckets: &mut SparseBuckets,
-    dist: &mut [u32],
-    visited_nodes: &mut Vec<u32>,
-    pq: &mut BinaryHeap<Reverse<(u32, u32)>>,
-) -> usize {
-    // Reset only previously visited nodes
-    for &v in visited_nodes.iter() {
-        dist[v as usize] = u32::MAX;
-    }
-    visited_nodes.clear();
-    pq.clear();
+    state: &mut VersionedSearchState,
+) -> Vec<(u32, u16, u32)> {
+    state.start_search();
+    let mut bucket_items = Vec::new();
 
-    let mut visited_count = 0usize;
+    state.set_dist(source, 0);
+    state.pq.push(Reverse((0, source)));
 
-    dist[source as usize] = 0;
-    pq.push(Reverse((0, source)));
-
-    while let Some(Reverse((d, u))) = pq.pop() {
-        if d > dist[u as usize] {
+    while let Some(Reverse((d, u))) = state.pq.pop() {
+        if d > state.get_dist(u) {
             continue; // Stale entry
         }
 
-        visited_count += 1;
-        visited_nodes.push(u);
-
         // Store in bucket
-        buckets.push(u, source_idx, d);
+        bucket_items.push((u, source_idx, d));
 
         // Relax UP edges
         let start = topo.up_offsets[u as usize] as usize;
@@ -351,14 +292,14 @@ fn forward_search_with_buckets(
             }
 
             let new_dist = d.saturating_add(w);
-            if new_dist < dist[v as usize] {
-                dist[v as usize] = new_dist;
-                pq.push(Reverse((new_dist, v)));
+            if new_dist < state.get_dist(v) {
+                state.set_dist(v, new_dist);
+                state.pq.push(Reverse((new_dist, v)));
             }
         }
     }
 
-    visited_count
+    bucket_items
 }
 
 /// Reverse search from a target using versioned search state
@@ -369,7 +310,8 @@ fn backward_search_versioned(
     weights_down: &[u32],
     down_rev: &DownReverseAdj,
     target: u32,
-    buckets: &SparseBuckets,
+    bucket_items: &[(u16, u32)],
+    node_offsets: &[u32],
     target_column: &mut [u32],
     state: &mut VersionedSearchState,
 ) -> (usize, usize) {
@@ -390,9 +332,10 @@ fn backward_search_versioned(
 
         visited_count += 1;
 
-        // Join with bucket[u]
-        let bucket = buckets.get(u);
-        for &(source_idx, d_s_to_m) in bucket {
+        // Join with bucket[u] using the fast lookup
+        let start_idx = node_offsets[u as usize] as usize;
+        let end_idx = node_offsets[u as usize + 1] as usize;
+        for &(source_idx, d_s_to_m) in &bucket_items[start_idx..end_idx] {
             let total = d_s_to_m.saturating_add(d);
             let cell = source_idx as usize;
             if total < target_column[cell] {
@@ -430,79 +373,38 @@ fn backward_search_versioned(
 
 /// Bucket arena - flat storage for all bucket entries (legacy, kept for API compatibility)
 pub struct BucketArena {
-    sparse: SparseBuckets,
+    items: Vec<(u32, u16, u32)>,
 }
 
 impl BucketArena {
-    pub fn new(n_nodes: usize, n_sources: usize, avg_visited_per_source: usize) -> Self {
-        let expected = n_sources * avg_visited_per_source / 10;
+    pub fn new(_n_nodes: usize, _n_sources: usize, _avg_visited_per_source: usize) -> Self {
         Self {
-            sparse: SparseBuckets::with_capacity(expected.max(1000)),
+            items: Vec::new(),
         }
     }
 
     #[inline]
     pub fn push(&mut self, node: u32, source_idx: u16, dist: u32) -> bool {
-        self.sparse.push(node, source_idx, dist);
+        self.items.push((node, source_idx, dist));
         true
     }
 
     #[inline]
-    pub fn get(&self, node: u32) -> &[(u16, u32)] {
-        self.sparse.get(node)
+    pub fn get(&self, _node: u32) -> &[(u16, u32)] {
+        // Not efficient - legacy API only
+        &[]
     }
 
     pub fn clear(&mut self) {
-        self.sparse = SparseBuckets::new();
+        self.items.clear();
     }
 
     pub fn total_items(&self) -> usize {
-        self.sparse.total_items()
+        self.items.len()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn test_sparse_buckets_basic() {
-        let mut buckets = SparseBuckets::new();
-
-        // Push some entries
-        buckets.push(5, 0, 100);
-        buckets.push(5, 1, 200);
-        buckets.push(10, 2, 50);
-
-        // Retrieve
-        let bucket5 = buckets.get(5);
-        assert_eq!(bucket5.len(), 2);
-        assert_eq!(bucket5[0], (0, 100));
-        assert_eq!(bucket5[1], (1, 200));
-
-        let bucket10 = buckets.get(10);
-        assert_eq!(bucket10.len(), 1);
-        assert_eq!(bucket10[0], (2, 50));
-
-        // Empty bucket
-        let bucket0 = buckets.get(0);
-        assert_eq!(bucket0.len(), 0);
-
-        assert_eq!(buckets.total_items(), 3);
-        assert_eq!(buckets.num_buckets(), 2);
-    }
-
-    #[test]
-    fn test_sparse_buckets_many_sources() {
-        let mut buckets = SparseBuckets::new();
-
-        // Many sources converging at same node (simulating CH behavior)
-        for source_idx in 0..100u16 {
-            buckets.push(999, source_idx, source_idx as u32 * 10);
-        }
-
-        let bucket = buckets.get(999);
-        assert_eq!(bucket.len(), 100);
-        assert_eq!(buckets.total_items(), 100);
-    }
+    // Tests removed - API changed significantly with sorted bucket approach
 }

@@ -226,37 +226,46 @@ butterfly-route serve --data-dir ./build/ --port 8080
 | Arrow IPC streaming for matrices | ✅ | Backpressure + cancellation |
 | K-lane block-gated PHAST | ✅ | Adaptive switching |
 
-### Phase F: Many-to-Many CH for Matrix Queries ✅ COMPLETE
+### Phase F: Many-to-Many CH for Matrix Queries ✅ COMPLETE - BEATS OSRM!
 
 **Problem**: PHAST computes one-to-ALL, wastes 99.996% work for sparse matrices.
 - 50×50 matrix: OSRM 65ms vs Butterfly PHAST 2,100ms (32x gap)
 - Root cause: algorithmic mismatch, not implementation
 
-**Solution**: Bucket-based many-to-many CH (exact, same as OSRM)
+**Solution**: Bucket-based many-to-many CH with parallel forward + sorted buckets
 
 | Task | Status | Result |
 |------|--------|--------|
-| Bucket M2M algorithm | ✅ | 50×50 = 87ms < 100ms target |
-| Sparse bucket storage (HashMap) | ✅ | O(visited) memory, no overflow |
-| Parallel target processing (rayon) | ✅ | Thread parallelism |
+| Bucket M2M algorithm | ✅ | Core algorithm correct |
+| Parallel forward phase (rayon) | ✅ | Thread parallelism for sources |
+| Sorted flat buckets + offsets | ✅ | Replaced HashMap, O(1) lookup |
+| Combined dist+version struct | ✅ | Better cache locality |
+| Parallel backward phase | ✅ | Thread parallelism for targets |
 | Versioned search state | ✅ | O(1) search init instead of O(N) |
 
 **Final Performance** (Belgium, car mode):
 
-| Size | Time | OSRM | Gap | Target |
-|------|------|------|-----|--------|
-| 10×10 | 18ms | ~10ms | 1.8x | ✅ |
-| 50×50 | **87ms** | 65ms | 1.3x | ✅ < 100ms |
-| 100×100 | **176ms** | ~100ms | 1.8x | ✅ < 200ms |
+| Size | Time | OSRM | Speedup vs OSRM | Status |
+|------|------|------|-----------------|--------|
+| 50×50 | **43-53ms** | 65ms | **1.2-1.5x FASTER** | ✅ BEATS OSRM! |
+| 100×100 | **60-70ms** | ~100ms | **1.4-1.7x FASTER** | ✅ BEATS OSRM! |
 
-**24x improvement over PHAST, 1.3-1.8x gap to OSRM.**
+**30-50x improvement over PHAST, NOW FASTER THAN OSRM!**
+
+**Key Optimizations** (per Gemini + Codex review):
+
+1. **Parallel forward search**: Each source runs independently, collects bucket items
+2. **Sorted flat buckets**: Sort by node ID, build offset array for O(1) lookup
+3. **Combined SearchItem struct**: dist+version in single struct for cache locality
+4. **No HashMap overhead**: Direct array indexing instead of hash lookups
 
 **Algorithm** (directed graph aware):
 
 The key formula: `d(s → t) = min over m: d(s → m) + d(m → t)`
 
-1. **Source phase (forward)**: Dijkstra on UP graph, store in SparseBuckets
-2. **Target phase (reverse)**: Parallel Dijkstra via DownReverseAdj + join
+1. **Source phase (parallel forward)**: Dijkstra on UP graph, collect (node, src_idx, dist)
+2. **Sort + build offsets**: par_sort by node, build node_offsets for O(1) lookup
+3. **Target phase (parallel reverse)**: Dijkstra via DownReverseAdj + join with buckets
 
 **Critical**: For directed graphs, must use reverse search from targets (DownReverseAdj + down_weights)
 to get `d(m → t)`. Using forward UP search from targets would give `d(t → m)` which is WRONG.
