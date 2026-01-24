@@ -198,26 +198,34 @@ butterfly-route serve --data-dir ./build/ --port 8080
 | Backpressure + cancellation (bounded channel) | ⬜ |
 | Streaming writer for long-running queries | ✅ |
 
-### Phase D: Cache-Friendly Memory Access ✅ ATTEMPTED
+### Phase D: Cache-Friendly Memory Access ← ROOT CAUSE IDENTIFIED
 
-**Finding**: Blocked relaxation doesn't work for PHAST due to ordering constraints.
+**Finding**: Blocked relaxation IS compatible with PHAST, but requires rank-aligned memory layout.
 
 | Task | Status | Actual Gain |
 |------|--------|-------------|
-| **Blocked relaxation** (buffer updates by dst block) | ❌ N/A | Breaks correctness |
+| **Blocked relaxation** (buffer updates by dst block) | ✅ Works | 0.5-0.7x (overhead) |
 | **Pre-sorted edges** (by source rank, target) | ✅ | 1.19x |
+| **Rank-aligned node renumbering** | ⬜ | Expected 2-4x |
 | SoA layout for dist arrays | ⬜ | TBD |
 | SIMD vectorization (after cache fixed) | ⬜ | TBD |
 
-**Why blocked relaxation failed**:
-- PHAST requires `dist[u]` to be finalized when processing node u
-- Buffering writes delays updates, causing stale reads
-- Even bucket-based processing by destination violates global rank order
+**Root cause**: Node indices don't align with rank order.
+- `inv_perm[rank]` gives random node index
+- Both reads `dist[u]` AND writes `dist[v]` are random
+- Buffering adds overhead without cache benefit
 
-**Pre-sorted edges**: Implemented alternative that sorts edges by (source_rank DESC, target ASC)
-at construction time. Provides modest 1.19x speedup (2161ms → 1816ms) with full correctness.
+**The fix**: Renumber nodes so that `node_id = rank` after CCH construction.
+- Then `inv_perm[rank] = rank` (identity)
+- Processing by rank = sequential memory access
+- Blocked relaxation becomes effective
 
-**Cache miss rate**: Still 57-85% because reads (`dist[src]`) are random.
+**Experiments**:
+| Approach | Result |
+|----------|--------|
+| Pre-sorted edge stream | 1.19x (destroyed read locality) |
+| Rank-block buffering | 0.5x (buffer overhead > cache benefit) |
+| Sorted flush | 0.3x (sort overhead)
 
 ### Phase E: Low-Level Optimizations (After Phase D)
 
