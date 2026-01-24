@@ -120,6 +120,29 @@ enum Commands {
         #[arg(long, default_value = "42")]
         seed: u64,
     },
+
+    /// Compare active-set gating vs naive bounded PHAST
+    ActiveSet {
+        /// Data directory
+        #[arg(long)]
+        data_dir: PathBuf,
+
+        /// Transport mode
+        #[arg(long, default_value = "car")]
+        mode: String,
+
+        /// Time threshold in milliseconds
+        #[arg(long, default_value = "600000")]
+        threshold_ms: u32,
+
+        /// Number of queries
+        #[arg(long, default_value = "50")]
+        n_queries: usize,
+
+        /// Random seed
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
 }
 
 /// Aggregated statistics across multiple runs
@@ -203,6 +226,14 @@ fn main() -> anyhow::Result<()> {
             n_targets,
             seed,
         } => run_batched_phast_bench(&data_dir, &mode, n_sources, n_targets, seed),
+
+        Commands::ActiveSet {
+            data_dir,
+            mode,
+            threshold_ms,
+            n_queries,
+            seed,
+        } => run_active_set_bench(&data_dir, &mode, threshold_ms, n_queries, seed),
     }
 }
 
@@ -727,4 +758,149 @@ fn load_batched_phast(data_dir: &PathBuf, mode: &str) -> anyhow::Result<BatchedP
     ]).ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
 
     BatchedPhastEngine::load(&topo_path, &weights_path, &order_path)
+}
+
+fn run_active_set_bench(
+    data_dir: &PathBuf,
+    mode: &str,
+    threshold_ms: u32,
+    n_queries: usize,
+    seed: u64,
+) -> anyhow::Result<()> {
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  ACTIVE-SET GATING BENCHMARK");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  Mode: {}", mode);
+    println!("  Threshold: {} ms ({:.1} min)", threshold_ms, threshold_ms as f64 / 60000.0);
+    println!("  Queries: {}", n_queries);
+    println!();
+
+    // Load data
+    println!("[1/3] Loading PHAST engine...");
+    let load_start = Instant::now();
+    let phast = load_phast(data_dir, mode)?;
+    println!("  ✓ Loaded in {:.1}s ({} nodes)",
+        load_start.elapsed().as_secs_f64(), phast.n_nodes());
+    println!();
+
+    // Generate random origins
+    let mut rng = StdRng::seed_from_u64(seed);
+    let origins: Vec<u32> = (0..n_queries)
+        .map(|_| rng.gen_range(0..phast.n_nodes() as u32))
+        .collect();
+
+    // ========== Naive bounded PHAST ==========
+    println!("[2/3] Running naive bounded PHAST...");
+
+    let mut naive_times: Vec<Duration> = Vec::with_capacity(n_queries);
+    let mut naive_relaxations: u64 = 0;
+    let mut naive_reachable: u64 = 0;
+
+    for (i, &origin) in origins.iter().enumerate() {
+        let start = Instant::now();
+        let result = phast.query_bounded_naive(origin, threshold_ms);
+        naive_times.push(start.elapsed());
+        naive_relaxations += result.stats.downward_relaxations as u64;
+        naive_reachable += result.n_reachable as u64;
+
+        if (i + 1) % 10 == 0 || i == n_queries - 1 {
+            print!("\r  Progress: {}/{}", i + 1, n_queries);
+            std::io::Write::flush(&mut std::io::stdout())?;
+        }
+    }
+    println!();
+
+    let naive_total: Duration = naive_times.iter().sum();
+    let naive_avg_ms = naive_total.as_millis() as f64 / n_queries as f64;
+    println!("  ✓ Naive: {:.1}ms avg, {:.1}M relaxations/query",
+        naive_avg_ms,
+        naive_relaxations as f64 / n_queries as f64 / 1_000_000.0);
+    println!();
+
+    // ========== Active-set gated PHAST ==========
+    println!("[3/3] Running active-set gated PHAST...");
+
+    let mut gated_times: Vec<Duration> = Vec::with_capacity(n_queries);
+    let mut gated_relaxations: u64 = 0;
+    let mut gated_reachable: u64 = 0;
+
+    for (i, &origin) in origins.iter().enumerate() {
+        let start = Instant::now();
+        let result = phast.query_active_set(origin, threshold_ms);
+        gated_times.push(start.elapsed());
+        gated_relaxations += result.stats.downward_relaxations as u64;
+        gated_reachable += result.n_reachable as u64;
+
+        if (i + 1) % 10 == 0 || i == n_queries - 1 {
+            print!("\r  Progress: {}/{}", i + 1, n_queries);
+            std::io::Write::flush(&mut std::io::stdout())?;
+        }
+    }
+    println!();
+
+    let gated_total: Duration = gated_times.iter().sum();
+    let gated_avg_ms = gated_total.as_millis() as f64 / n_queries as f64;
+    println!("  ✓ Active-set: {:.1}ms avg, {:.1}M relaxations/query",
+        gated_avg_ms,
+        gated_relaxations as f64 / n_queries as f64 / 1_000_000.0);
+    println!();
+
+    // ========== Verification ==========
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  CORRECTNESS VERIFICATION");
+    println!("───────────────────────────────────────────────────────────────");
+
+    // Verify that both methods produce same reachable count
+    if naive_reachable == gated_reachable {
+        println!("  ✅ Reachable counts match: {} total", naive_reachable);
+    } else {
+        println!("  ❌ Reachable count mismatch: naive={}, gated={}", naive_reachable, gated_reachable);
+    }
+
+    // Spot check a few queries for exact distance equality
+    let mut spot_check_ok = true;
+    for &origin in origins.iter().take(5) {
+        let naive_result = phast.query_bounded_naive(origin, threshold_ms);
+        let gated_result = phast.query_active_set(origin, threshold_ms);
+
+        for (i, (&naive_d, &gated_d)) in naive_result.dist.iter().zip(gated_result.dist.iter()).enumerate() {
+            if naive_d <= threshold_ms && gated_d <= threshold_ms && naive_d != gated_d {
+                println!("  ❌ Distance mismatch at node {}: naive={}, gated={}", i, naive_d, gated_d);
+                spot_check_ok = false;
+                break;
+            }
+        }
+    }
+    if spot_check_ok {
+        println!("  ✅ Spot check: 5 queries have matching distances");
+    }
+    println!();
+
+    // ========== Performance comparison ==========
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  PERFORMANCE COMPARISON");
+    println!("───────────────────────────────────────────────────────────────");
+
+    let time_speedup = naive_total.as_secs_f64() / gated_total.as_secs_f64();
+    let relax_reduction = 1.0 - (gated_relaxations as f64 / naive_relaxations as f64);
+
+    println!("  Naive avg time:        {:>8.1} ms", naive_avg_ms);
+    println!("  Active-set avg time:   {:>8.1} ms", gated_avg_ms);
+    println!("  Time speedup:          {:>8.2}x", time_speedup);
+    println!();
+    println!("  Naive relaxations:     {:>12}", format_number(naive_relaxations / n_queries as u64));
+    println!("  Active-set relaxations:{:>12}", format_number(gated_relaxations / n_queries as u64));
+    println!("  Relaxation reduction:  {:>8.1}%", relax_reduction * 100.0);
+    println!();
+
+    if time_speedup > 1.5 {
+        println!("  ✅ Active-set gating provides significant speedup!");
+    } else if time_speedup > 1.1 {
+        println!("  ⚠️  Active-set gating provides modest speedup");
+    } else {
+        println!("  ⚠️  Active-set gating overhead may outweigh benefits for this threshold");
+    }
+    println!();
+
+    Ok(())
 }
