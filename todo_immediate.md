@@ -369,38 +369,40 @@ Tasks:
 
 ---
 
-### Milestone 5: Cache-Friendly Blocked Relaxation ← CRITICAL (10x target)
+### Milestone 5: Cache-Friendly Edge Processing ✅ DONE (partial)
 
 **Problem**: 80-87% cache miss rate in downward scan due to random writes to `dist[v]`
 
-**Solution**: Block updates by destination rank to improve locality
+**Original hypothesis**: Blocked relaxation (buffer writes, flush in batches) would improve cache efficiency.
 
-#### 5.1 Blocked Relaxation Algorithm
-```
-dst_block_size = 8192 nodes
-buffers = [Vec<(v, candidate_dist)>; N/block_size]
+**Finding**: Blocked relaxation doesn't work for PHAST because:
+- PHAST requires strict source rank ordering (decreasing)
+- When processing node u, `dist[u]` must already have all updates from higher-ranked nodes
+- Buffering writes breaks this invariant (updates to u may be sitting in buffers)
+- Even bucket-based processing by destination block violates global rank order
 
-for rank in (0..n_nodes).rev():
-    u = inv_perm[rank]
-    for edge (u→v, w) in down_edges[u]:
-        block_id = v / dst_block_size
-        buffers[block_id].push((v, dist[u] + w))
+**Alternative implemented**: Pre-sorted edge processing
+- Sort DOWN edges at construction by (source_rank DESC, target ASC)
+- Process edges in pre-sorted order
+- Maintains PHAST correctness while improving write locality
 
-    // Periodically flush buffers (every M ranks or when buffer full)
-    if should_flush():
-        for each buffer:
-            for (v, cand) in buffer:
-                dist[v] = min(dist[v], cand)  // sequential writes within block
-            buffer.clear()
-```
+#### 5.1 Results
 
-**Expected gain**: 2-5x on downward phase (cache miss rate 85% → 30-50%)
+| Method | Downward Time | Speedup | Cache Miss Rate |
+|--------|---------------|---------|-----------------|
+| Baseline | 2161ms | 1.00x | 57-85% |
+| Pre-sorted edges | 1816ms | 1.19x | 57-85% |
+
+**Analysis**: Modest 1.19x improvement on downward phase. Cache miss rate still high because:
+- Writes are now sequential (sorted by target) ✅
+- Reads (`dist[src]`) are still random (different sources each edge) ❌
+- Read misses dominate the cache behavior
 
 Tasks:
-- [ ] Implement blocked relaxation with configurable block size
-- [ ] Benchmark cache miss rate with `perf stat`
-- [ ] Tune block size (4096, 8192, 16384)
-- [ ] Integrate with K-lane batching
+- [x] Implement pre-sorted edge order at construction
+- [x] Benchmark cache miss rate with `perf stat`
+- [x] Verify correctness (all distances match)
+- [ ] Try SoA layout to improve read locality (Milestone 6)
 
 ---
 

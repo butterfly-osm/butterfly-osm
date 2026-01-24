@@ -167,6 +167,29 @@ enum Commands {
         #[arg(long, default_value = "42")]
         seed: u64,
     },
+
+    /// Compare blocked vs non-blocked relaxation (cache efficiency test)
+    BlockedRelaxation {
+        /// Data directory
+        #[arg(long)]
+        data_dir: PathBuf,
+
+        /// Transport mode
+        #[arg(long, default_value = "car")]
+        mode: String,
+
+        /// Number of sources to benchmark
+        #[arg(long, default_value = "64")]
+        n_sources: usize,
+
+        /// Number of targets (0 = all nodes)
+        #[arg(long, default_value = "1000")]
+        n_targets: usize,
+
+        /// Random seed
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
 }
 
 /// Aggregated statistics across multiple runs
@@ -266,6 +289,14 @@ fn main() -> anyhow::Result<()> {
             n_origins,
             seed,
         } => run_batched_isochrone_bench(&data_dir, &mode, threshold_ms, n_origins, seed),
+
+        Commands::BlockedRelaxation {
+            data_dir,
+            mode,
+            n_sources,
+            n_targets,
+            seed,
+        } => run_blocked_relaxation_bench(&data_dir, &mode, n_sources, n_targets, seed),
     }
 }
 
@@ -1125,6 +1156,156 @@ fn run_batched_isochrone_bench(
     } else {
         println!("  ⚠️  K-lane batching shows minimal benefit (may be I/O or contour dominated)");
     }
+    println!();
+
+    Ok(())
+}
+
+fn run_blocked_relaxation_bench(
+    data_dir: &PathBuf,
+    mode: &str,
+    n_sources: usize,
+    n_targets: usize,
+    seed: u64,
+) -> anyhow::Result<()> {
+    use butterfly_route::matrix::batched_phast::BLOCK_SIZE;
+
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  BLOCKED RELAXATION BENCHMARK (Cache Efficiency)");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  Mode: {}", mode);
+    println!("  Sources: {}", n_sources);
+    println!("  Targets: {}", if n_targets == 0 { "all".to_string() } else { n_targets.to_string() });
+    println!("  K-lanes: {}", K_LANES);
+    println!("  Block size: {} nodes", BLOCK_SIZE);
+    println!();
+
+    // Load data
+    println!("[1/4] Loading batched PHAST engine...");
+    let load_start = Instant::now();
+    let engine = load_batched_phast(data_dir, mode)?;
+    println!("  ✓ Loaded in {:.1}s ({} nodes)", load_start.elapsed().as_secs_f64(), engine.n_nodes());
+    println!();
+
+    // Generate random sources and targets
+    let mut rng = StdRng::seed_from_u64(seed);
+    let sources: Vec<u32> = (0..n_sources)
+        .map(|_| rng.gen_range(0..engine.n_nodes() as u32))
+        .collect();
+    let targets: Vec<u32> = if n_targets == 0 {
+        // Sample 1000 targets for verification
+        (0..1000.min(engine.n_nodes()))
+            .map(|_| rng.gen_range(0..engine.n_nodes() as u32))
+            .collect()
+    } else {
+        (0..n_targets)
+            .map(|_| rng.gen_range(0..engine.n_nodes() as u32))
+            .collect()
+    };
+
+    // ========== Non-blocked baseline ==========
+    println!("[2/4] Running non-blocked K-lane PHAST...");
+    let baseline_start = Instant::now();
+    let (baseline_matrix, baseline_stats) = engine.compute_matrix_flat(&sources, &targets);
+    let baseline_time = baseline_start.elapsed();
+    println!("  ✓ Non-blocked: {:.2}s ({:.1} queries/sec)",
+        baseline_time.as_secs_f64(),
+        n_sources as f64 / baseline_time.as_secs_f64());
+    println!("    Downward time: {}ms", baseline_stats.downward_time_ms);
+    println!();
+
+    // ========== Blocked relaxation ==========
+    println!("[3/4] Running BLOCKED K-lane PHAST...");
+    let blocked_start = Instant::now();
+    let (blocked_matrix, blocked_stats) = engine.compute_matrix_flat_blocked(&sources, &targets);
+    let blocked_time = blocked_start.elapsed();
+    println!("  ✓ Blocked: {:.2}s ({:.1} queries/sec)",
+        blocked_time.as_secs_f64(),
+        n_sources as f64 / blocked_time.as_secs_f64());
+    println!("    Downward time: {}ms", blocked_stats.downward_time_ms);
+    println!("    Buffer flushes: {}", blocked_stats.buffer_flushes);
+    println!("    Buffered updates: {}", format_number(blocked_stats.buffered_updates as u64));
+    println!();
+
+    // ========== Correctness verification ==========
+    println!("[4/4] Verifying correctness...");
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  CORRECTNESS VERIFICATION");
+    println!("───────────────────────────────────────────────────────────────");
+
+    let mut mismatches = 0;
+    let mut max_diff: i64 = 0;
+    let n_tgt = targets.len();
+
+    for src_idx in 0..n_sources {
+        for tgt_idx in 0..n_tgt {
+            let expected = baseline_matrix[src_idx * n_tgt + tgt_idx];
+            let actual = blocked_matrix[src_idx * n_tgt + tgt_idx];
+            if expected != actual {
+                mismatches += 1;
+                let diff = (expected as i64 - actual as i64).abs();
+                max_diff = max_diff.max(diff);
+                if mismatches <= 3 {
+                    println!("  Mismatch: src={} tgt={}: baseline={}, blocked={}",
+                        src_idx, tgt_idx, expected, actual);
+                }
+            }
+        }
+    }
+
+    if mismatches == 0 {
+        println!("  ✅ All {} × {} = {} distances match!",
+            n_sources, n_tgt, n_sources * n_tgt);
+    } else {
+        println!("  ❌ {} mismatches (max diff: {})", mismatches, max_diff);
+    }
+    println!();
+
+    // ========== Performance comparison ==========
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  PERFORMANCE COMPARISON");
+    println!("───────────────────────────────────────────────────────────────");
+
+    let speedup = baseline_time.as_secs_f64() / blocked_time.as_secs_f64();
+    let downward_speedup = baseline_stats.downward_time_ms as f64 / blocked_stats.downward_time_ms.max(1) as f64;
+
+    println!("  Non-blocked:");
+    println!("    Total time:     {:>8.2}s", baseline_time.as_secs_f64());
+    println!("    Downward time:  {:>8}ms", baseline_stats.downward_time_ms);
+    println!("    Upward time:    {:>8}ms", baseline_stats.upward_time_ms);
+    println!();
+    println!("  Blocked:");
+    println!("    Total time:     {:>8.2}s", blocked_time.as_secs_f64());
+    println!("    Downward time:  {:>8}ms", blocked_stats.downward_time_ms);
+    println!("    Upward time:    {:>8}ms", blocked_stats.upward_time_ms);
+    println!();
+    println!("  Total speedup:       {:>8.2}x", speedup);
+    println!("  Downward speedup:    {:>8.2}x", downward_speedup);
+    println!();
+
+    // Analysis
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  ANALYSIS");
+    println!("───────────────────────────────────────────────────────────────");
+
+    if speedup > 2.0 {
+        println!("  ✅ Blocked relaxation provides significant speedup!");
+        println!("     Cache miss rate likely improved substantially.");
+    } else if speedup > 1.2 {
+        println!("  ✅ Blocked relaxation provides moderate speedup.");
+        println!("     Try tuning BLOCK_SIZE or MAX_BUFFER_ENTRIES.");
+    } else if speedup > 0.9 {
+        println!("  ⚠️  Blocked relaxation shows minimal benefit.");
+        println!("     Buffer overhead may be too high for this graph.");
+    } else {
+        println!("  ❌ Blocked relaxation is SLOWER than baseline!");
+        println!("     This is unexpected - investigate buffer/flush overhead.");
+    }
+    println!();
+
+    // Suggest perf stat
+    println!("  💡 For accurate cache analysis, run:");
+    println!("     perf stat -e cache-misses,cache-references,LLC-load-misses butterfly-bench blocked-relaxation ...");
     println!();
 
     Ok(())
