@@ -102,10 +102,35 @@ High-performance routing engine using **edge-based CCH** (Customizable Contracti
 The Step 9 query server (`butterfly-route serve`) provides:
 - `GET /route` - Point-to-point routing with geometry
 - `GET /matrix` - One-to-many distance matrix
-- `POST /matrix/bulk` - Bulk many-to-many matrix (K-lane batched PHAST)
+- `POST /matrix/bulk` - Bulk many-to-many matrix (K-lane batched PHAST, Arrow streaming)
 - `GET /isochrone` - Reachability polygon for time threshold
+- `POST /isochrone/batch` - K-lane batched isochrones (up to 8 origins per request)
 - `GET /health` - Health check
 - Swagger UI at `/swagger-ui`
+
+#### Performance Optimizations
+
+**PHAST (PHAst Shortest-path Trees)**:
+- Upward phase: PQ-based search on UP edges (~5ms)
+- Downward phase: Linear rank-order scan on DOWN edges (~90-270ms)
+- 5-19x faster than naive Dijkstra
+
+**K-Lane Batching** (K=8):
+- Process 8 sources in one downward scan
+- Amortizes memory access cost (80-87% cache miss rate)
+- 2.24x speedup for matrices, 2.63x for isochrones
+
+**Active-Set Gating** (rPHAST-lite):
+- Skip nodes with dist > threshold
+- Up to 68% relaxation reduction for bounded queries
+- 2.79x speedup when reachable set is <30% of graph
+
+**Current Throughput** (Belgium):
+| Query Type | Throughput | Latency |
+|------------|------------|---------|
+| Single isochrone (car) | 10.8/sec | 90ms |
+| K-lane isochrones | 25.6/sec | 39ms/iso |
+| K-lane matrix | 25.8 queries/sec | - |
 
 ### Binary File Formats
 
