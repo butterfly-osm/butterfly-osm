@@ -98,7 +98,19 @@ Per-mode weights → cch.w.{mode}.u32
 | Server startup | ~25s (loading all data) |
 | P2P query | < 10ms |
 | Matrix (1×3) | < 30ms |
-| Isochrone (10 min) | < 100ms |
+| **Isochrone (PHAST)** | |
+| - Car 5 min | 92ms |
+| - Bike 5 min | 261ms |
+| - Foot 10 min | 290ms |
+
+### Isochrone Pipeline ✅
+
+```
+PHAST distances → Base graph frontier → Stamp segments → Grid fill → Marching squares → Simplify
+     (92-287ms)      (73-232 points)      (rasterize)     (close)       (contour)        (D-P)
+```
+
+Road-following concave envelope via grid + marching squares (not convex hull).
 
 ### CCH Statistics (Belgium)
 
@@ -141,20 +153,68 @@ butterfly-route serve --data-dir ./build/ --port 8080
 
 ---
 
-## Future Improvements
+## Bulk Performance Optimization (Current Focus)
 
-### Performance
-- [ ] SIMD-accelerated weight lookups
-- [ ] Memory-mapped files for faster startup
-- [ ] Parallel query processing
+### Reality Checks
 
-### Features
+- **100k × 100k dense matrix** = 10¹⁰ cells = 40 GB @ 4 bytes/cell
+  → Must tile/stream/distribute; never materialize in one request
+- **Millions of isochrones** = can't do one PHAST per origin
+  → Need K-lane batched PHAST or restricted scan
+
+### Phase A: Measurement Infrastructure ← CURRENT
+
+| Task | Status |
+|------|--------|
+| Benchmark harness (`bench/` binary) | ⬜ |
+| Flamegraph + perf scripts | ⬜ |
+| Counters: upward settled, downward scanned, relaxations, frontier edges | ⬜ |
+| Baseline report per workload | ⬜ |
+
+### Phase B: Batch Compute (Big Win)
+
+**K-lane batched PHAST** (single most important optimization):
+- Upward: K parallel searches
+- Downward: one scan updating `dist[K]` vector per node
+- Reduces `O(N × #sources)` scans to `O(N × #sources/K)`
+- K = 8/16/32/64 (tune for cache/SIMD)
+
+| Task | Status |
+|------|--------|
+| K-lane downward scan implementation | ⬜ |
+| Matrix tile computation (64×256 blocks) | ⬜ |
+| Batched isochrones (K origins per scan) | ⬜ |
+| Active-set gating (rPHAST-lite) | ⬜ |
+
+### Phase C: Arrow Streaming Output
+
+| Task | Status |
+|------|--------|
+| Content negotiation (JSON default, Arrow for bulk) | ⬜ |
+| Tiled block schema for matrices | ⬜ |
+| Backpressure + cancellation (bounded channel) | ⬜ |
+| Streaming writer for long-running queries | ⬜ |
+
+### Phase D: Low-Level Optimizations
+
+| Task | Status |
+|------|--------|
+| SoA layout for down-edges (`to[]`, `weight[]`, `first_out[]`) | ⬜ |
+| Early termination: skip if `dist[v] > bound` | ⬜ |
+| Reusable grid buffer with generation counters | ⬜ |
+| Batch polygon simplification | ⬜ |
+
+---
+
+## Future Features
+
 - [ ] Alternative routes
 - [ ] Traffic-aware routing (live weight updates)
 - [ ] Multi-modal routing (car + foot)
 - [ ] Turn-by-turn instructions
 
-### Correctness
+## Correctness
+
 - [ ] Validate routes against reference (OSRM/Valhalla)
 - [ ] Stress test with random queries
 - [ ] Edge case handling (ferries, toll roads, restricted areas)

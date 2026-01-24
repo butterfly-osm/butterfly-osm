@@ -30,6 +30,9 @@ pub use cch_correctness::{
     run_regression_tests, RegressionCase, RegressionResult,
 };
 
+pub mod invariants;
+pub use invariants::{validate_invariants, InvariantResult};
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BBox {
     pub min_lat: f64,

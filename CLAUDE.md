@@ -92,6 +92,20 @@ High-performance routing engine using **edge-based CCH** (Customizable Contracti
 - `src/ebg/` - Edge-Based Graph construction (THE routing graph)
 - `src/nbg/` - Node-Based Graph (intermediate only)
 - `src/validate/` - Lock condition verification per step
+- `src/range/` - PHAST-based range queries for isochrones
+- `src/matrix/` - K-lane batched PHAST for bulk distance matrices
+- `src/step9/` - HTTP query server (Axum + Utoipa)
+- `src/bench/` - Benchmark harness (`butterfly-bench` binary)
+
+#### Query Server API
+
+The Step 9 query server (`butterfly-route serve`) provides:
+- `GET /route` - Point-to-point routing with geometry
+- `GET /matrix` - One-to-many distance matrix
+- `POST /matrix/bulk` - Bulk many-to-many matrix (K-lane batched PHAST)
+- `GET /isochrone` - Reachability polygon for time threshold
+- `GET /health` - Health check
+- Swagger UI at `/swagger-ui`
 
 ### Binary File Formats
 

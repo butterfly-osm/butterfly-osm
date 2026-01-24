@@ -1,10 +1,11 @@
 //! HTTP API handlers with Axum and Utoipa
 
 use axum::{
+    body::Body,
     extract::{Query, State},
-    http::StatusCode,
-    response::IntoResponse,
-    routing::get,
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,8 @@ use utoipa::{OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::profile_abi::Mode;
+use crate::matrix::arrow_stream::{MatrixTile, ArrowMatrixWriter, ARROW_STREAM_CONTENT_TYPE};
+use crate::matrix::batched_phast::K_LANES;
 
 use super::geometry::{build_geometry, build_isochrone_geometry, Point, RouteGeometry};
 use super::query::{query_one_to_many, CchQuery};
@@ -23,7 +26,7 @@ use super::unpack::unpack_path;
 /// OpenAPI documentation
 #[derive(OpenApi)]
 #[openapi(
-    paths(route, matrix, isochrone, health),
+    paths(route, matrix, isochrone, health, matrix_bulk),
     components(schemas(
         RouteRequest,
         RouteResponse,
@@ -31,6 +34,8 @@ use super::unpack::unpack_path;
         MatrixResponse,
         IsochroneRequest,
         IsochroneResponse,
+        MatrixBulkRequest,
+        MatrixBulkResponse,
         Point,
         ErrorResponse
     )),
@@ -53,6 +58,7 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .route("/route", get(route))
         .route("/matrix", get(matrix))
+        .route("/matrix/bulk", post(matrix_bulk))
         .route("/isochrone", get(isochrone))
         .route("/health", get(health))
         .route("/debug/compare", get(debug_compare))
@@ -506,6 +512,274 @@ fn bounded_dijkstra(
     }
 
     settled
+}
+
+// ============ Bulk Matrix Endpoint ============
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct MatrixBulkRequest {
+    /// Source node IDs (filtered CCH space) OR source coordinates
+    #[schema(example = json!([1000, 2000, 3000]))]
+    pub sources: Vec<u32>,
+    /// Target node IDs (filtered CCH space) OR target coordinates
+    #[schema(example = json!([4000, 5000]))]
+    pub targets: Vec<u32>,
+    /// Transport mode: car, bike, or foot
+    #[schema(example = "car")]
+    pub mode: String,
+    /// Output format: "json" or "arrow" (default: json)
+    #[schema(example = "json")]
+    pub format: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MatrixBulkResponse {
+    /// Row-major matrix of durations in deciseconds (u32::MAX = unreachable)
+    pub durations_ds: Vec<u32>,
+    /// Number of sources
+    pub n_sources: usize,
+    /// Number of targets
+    pub n_targets: usize,
+    /// Computation time in milliseconds
+    pub compute_time_ms: u64,
+}
+
+/// Compute bulk distance matrix using K-lane batched PHAST
+///
+/// Returns a row-major matrix of durations from each source to each target.
+/// For large matrices, use `format=arrow` to stream Arrow IPC output.
+#[utoipa::path(
+    post,
+    path = "/matrix/bulk",
+    request_body = MatrixBulkRequest,
+    responses(
+        (status = 200, description = "Matrix computed", body = MatrixBulkResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+    )
+)]
+async fn matrix_bulk(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<MatrixBulkRequest>,
+) -> impl IntoResponse {
+    let mode = match parse_mode(&req.mode) {
+        Ok(m) => m,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
+    };
+
+    let mode_data = state.get_mode(mode);
+    let format = req.format.as_deref().unwrap_or("json");
+
+    let start = std::time::Instant::now();
+
+    // Use inline K-lane batched PHAST computation
+    let (matrix, _n_batches) = compute_batched_matrix(
+        &mode_data.cch_topo,
+        &mode_data.cch_weights,
+        &mode_data.order,
+        &req.sources,
+        &req.targets,
+    );
+
+    let compute_time_ms = start.elapsed().as_millis() as u64;
+
+    match format {
+        "arrow" => {
+            // Return Arrow IPC format
+            let tile = MatrixTile::from_flat(
+                0,
+                0,
+                req.sources.len() as u16,
+                req.targets.len() as u16,
+                &matrix,
+            );
+
+            let mut buf = Vec::new();
+            match ArrowMatrixWriter::new(&mut buf) {
+                Ok(mut writer) => {
+                    if let Err(e) = writer.write_tile(&tile) {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse { error: format!("Arrow write error: {}", e) }),
+                        ).into_response();
+                    }
+                    if let Err(e) = writer.finish() {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse { error: format!("Arrow finish error: {}", e) }),
+                        ).into_response();
+                    }
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse { error: format!("Arrow init error: {}", e) }),
+                    ).into_response();
+                }
+            }
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                .header("X-Compute-Time-Ms", compute_time_ms.to_string())
+                .header("X-N-Sources", req.sources.len().to_string())
+                .header("X-N-Targets", req.targets.len().to_string())
+                .body(Body::from(buf))
+                .unwrap()
+                .into_response()
+        }
+        _ => {
+            // Return JSON format
+            Json(MatrixBulkResponse {
+                durations_ds: matrix,
+                n_sources: req.sources.len(),
+                n_targets: req.targets.len(),
+                compute_time_ms,
+            }).into_response()
+        }
+    }
+}
+
+/// Compute batched matrix using K-lane PHAST (without owning data)
+fn compute_batched_matrix(
+    cch_topo: &crate::formats::CchTopo,
+    cch_weights: &super::state::CchWeights,
+    order: &crate::formats::OrderEbg,
+    sources: &[u32],
+    targets: &[u32],
+) -> (Vec<u32>, usize) {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
+    let n_nodes = cch_topo.n_nodes as usize;
+    let n_src = sources.len();
+    let n_tgt = targets.len();
+    let mut matrix = vec![u32::MAX; n_src * n_tgt];
+
+    // Build inverse permutation
+    let mut inv_perm = vec![0u32; n_nodes];
+    for (node, &rank) in order.perm.iter().enumerate() {
+        inv_perm[rank as usize] = node as u32;
+    }
+
+    let mut n_batches = 0;
+
+    // Process sources in batches of K
+    for chunk in sources.chunks(K_LANES) {
+        n_batches += 1;
+        let k = chunk.len();
+
+        // Initialize K distance arrays
+        let mut dist: Vec<Vec<u32>> = (0..k)
+            .map(|_| vec![u32::MAX; n_nodes])
+            .collect();
+
+        // Set origin distances
+        for (lane, &src) in chunk.iter().enumerate() {
+            if (src as usize) < n_nodes {
+                dist[lane][src as usize] = 0;
+            }
+        }
+
+        // Phase 1: K parallel upward searches
+        for lane in 0..k {
+            let origin = chunk[lane];
+            if (origin as usize) >= n_nodes {
+                continue;
+            }
+
+            let mut pq: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
+            pq.push(Reverse((0, origin)));
+
+            while let Some(Reverse((d, u))) = pq.pop() {
+                if d > dist[lane][u as usize] {
+                    continue;
+                }
+
+                // Relax UP edges
+                let up_start = cch_topo.up_offsets[u as usize] as usize;
+                let up_end = cch_topo.up_offsets[u as usize + 1] as usize;
+
+                for i in up_start..up_end {
+                    let v = cch_topo.up_targets[i];
+                    let w = cch_weights.up[i];
+
+                    if w == u32::MAX {
+                        continue;
+                    }
+
+                    let new_dist = d.saturating_add(w);
+                    if new_dist < dist[lane][v as usize] {
+                        dist[lane][v as usize] = new_dist;
+                        pq.push(Reverse((new_dist, v)));
+                    }
+                }
+            }
+        }
+
+        // Phase 2: Single K-lane downward scan
+        for rank in (0..n_nodes).rev() {
+            let u = inv_perm[rank];
+            let u_idx = u as usize;
+
+            let down_start = cch_topo.down_offsets[u_idx] as usize;
+            let down_end = cch_topo.down_offsets[u_idx + 1] as usize;
+
+            if down_start == down_end {
+                continue;
+            }
+
+            // Check if ANY lane has finite distance
+            let mut any_reachable = false;
+            for lane in 0..k {
+                if dist[lane][u_idx] != u32::MAX {
+                    any_reachable = true;
+                    break;
+                }
+            }
+            if !any_reachable {
+                continue;
+            }
+
+            // Relax DOWN edges for ALL K lanes
+            for i in down_start..down_end {
+                let v = cch_topo.down_targets[i];
+                let w = cch_weights.down[i];
+
+                if w == u32::MAX {
+                    continue;
+                }
+
+                let v_idx = v as usize;
+
+                // Update all K lanes
+                for lane in 0..k {
+                    let d_u = dist[lane][u_idx];
+                    if d_u != u32::MAX {
+                        let new_dist = d_u.saturating_add(w);
+                        if new_dist < dist[lane][v_idx] {
+                            dist[lane][v_idx] = new_dist;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Copy distances to flat matrix
+        let batch_start = (n_batches - 1) * K_LANES;
+        for (lane, d) in dist.iter().enumerate() {
+            let src_idx = batch_start + lane;
+            if src_idx >= n_src {
+                break;
+            }
+            for (tgt_idx, &tgt) in targets.iter().enumerate() {
+                if (tgt as usize) < n_nodes {
+                    matrix[src_idx * n_tgt + tgt_idx] = d[tgt as usize];
+                }
+            }
+        }
+    }
+
+    (matrix, n_batches)
 }
 
 // ============ Health Endpoint ============
