@@ -198,42 +198,73 @@ butterfly-route serve --data-dir ./build/ --port 8080
 | Backpressure + cancellation (bounded channel) | ⬜ |
 | Streaming writer for long-running queries | ✅ |
 
-### Phase D: Cache-Friendly Memory Access ← ROOT CAUSE IDENTIFIED
+### Phase D: Cache-Friendly Memory Access ✅ DONE
 
-**Finding**: Blocked relaxation IS compatible with PHAST, but requires rank-aligned memory layout.
+**Finding**: Rank-aligned CCH eliminates the "permute penalty".
 
 | Task | Status | Actual Gain |
 |------|--------|-------------|
-| **Blocked relaxation** (buffer updates by dst block) | ✅ Works | 0.5-0.7x (overhead) |
-| **Pre-sorted edges** (by source rank, target) | ✅ | 1.19x |
-| **Rank-aligned node renumbering** | ⬜ | Expected 2-4x |
-| SoA layout for dist arrays | ⬜ | TBD |
-| SIMD vectorization (after cache fixed) | ⬜ | TBD |
+| **Rank-aligned node renumbering** | ✅ | node_id == rank |
+| CCH Topology Version 2 | ✅ | rank_to_filtered mapping |
+| PHAST simplified (no inv_perm) | ✅ | Sequential dist[rank] access |
+| K-lane batching | ✅ | 1.91x speedup |
 
-**Root cause**: Node indices don't align with rank order.
-- `inv_perm[rank]` gives random node index
-- Both reads `dist[u]` AND writes `dist[v]` are random
-- Buffering adds overhead without cache benefit
+**Performance** (Belgium, car mode):
+| Metric | Value |
+|--------|-------|
+| Single PHAST | 39ms (25.5 queries/sec) |
+| K-lane batched (K=8) | 20.7ms effective (48.3 queries/sec) |
+| Batching speedup | 1.91x |
+| Correctness | 100% (0 mismatches) |
 
-**The fix**: Renumber nodes so that `node_id = rank` after CCH construction.
-- Then `inv_perm[rank] = rank` (identity)
-- Processing by rank = sequential memory access
-- Blocked relaxation becomes effective
+### Phase E: Bulk Engine Optimizations ✅ DONE
 
-**Experiments**:
-| Approach | Result |
-|----------|--------|
-| Pre-sorted edge stream | 1.19x (destroyed read locality) |
-| Rank-block buffering | 0.5x (buffer overhead > cache benefit) |
-| Sorted flush | 0.3x (sort overhead)
+| Task | Status | Result |
+|------|--------|--------|
+| SoA dist layout (cache-line aligned) | ✅ | Implemented in batched PHAST |
+| Block-level active gating | ✅ | 2.58x for bounded queries |
+| Arrow IPC streaming for matrices | ✅ | Backpressure + cancellation |
+| K-lane block-gated PHAST | ✅ | Adaptive switching |
 
-### Phase E: Low-Level Optimizations (After Phase D)
+### Phase F: Many-to-Many CH for Matrix Queries ✅ COMPLETE
 
-| Task | Status |
-|------|--------|
-| AVX2 SIMD for K-lane inner loop | ⬜ |
-| Prefetching for edge arrays | ⬜ |
-| Reusable grid buffer with generation counters | ⬜ |
+**Problem**: PHAST computes one-to-ALL, wastes 99.996% work for sparse matrices.
+- 50×50 matrix: OSRM 65ms vs Butterfly PHAST 2,100ms (32x gap)
+- Root cause: algorithmic mismatch, not implementation
+
+**Solution**: Bucket-based many-to-many CH (exact, same as OSRM)
+
+| Task | Status | Result |
+|------|--------|--------|
+| Bucket M2M algorithm | ✅ | 50×50 = 87ms < 100ms target |
+| Sparse bucket storage (HashMap) | ✅ | O(visited) memory, no overflow |
+| Parallel target processing (rayon) | ✅ | Thread parallelism |
+| Versioned search state | ✅ | O(1) search init instead of O(N) |
+
+**Final Performance** (Belgium, car mode):
+
+| Size | Time | OSRM | Gap | Target |
+|------|------|------|-----|--------|
+| 10×10 | 18ms | ~10ms | 1.8x | ✅ |
+| 50×50 | **87ms** | 65ms | 1.3x | ✅ < 100ms |
+| 100×100 | **176ms** | ~100ms | 1.8x | ✅ < 200ms |
+
+**24x improvement over PHAST, 1.3-1.8x gap to OSRM.**
+
+**Algorithm** (directed graph aware):
+
+The key formula: `d(s → t) = min over m: d(s → m) + d(m → t)`
+
+1. **Source phase (forward)**: Dijkstra on UP graph, store in SparseBuckets
+2. **Target phase (reverse)**: Parallel Dijkstra via DownReverseAdj + join
+
+**Critical**: For directed graphs, must use reverse search from targets (DownReverseAdj + down_weights)
+to get `d(m → t)`. Using forward UP search from targets would give `d(t → m)` which is WRONG.
+
+**Query Type Routing** (validated):
+- **Sparse matrix** (N×M ≤ 10,000): Bucket many-to-many CH
+- **Dense matrix** (huge): Tiled multi-source PHAST
+- **Isochrones**: PHAST/range (all reachable nodes needed)
 
 ---
 

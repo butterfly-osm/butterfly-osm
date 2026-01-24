@@ -188,22 +188,163 @@ See **[todo_immediate.md](todo_immediate.md)** for immediate bugs and fixes that
 - Lock conditions must pass before proceeding to next step
 - **One graph, one hierarchy, one query engine** — no separate backends for different query types
 
-## AI Code Review
+## AI Code Review Process
 
-When consulting AI reviewers (Gemini and Codex), **ALWAYS run them in parallel**:
+**Goal: Beat OSRM in every respect.** Profile relentlessly and never assume.
 
-```bash
-# CORRECT - parallel execution
-timeout 300 gemini -m gemini-2.5-pro -p "prompt" &
-timeout 300 codex -q "prompt" &
-wait
+### When to Consult AI Reviewers
 
-# WRONG - sequential execution (wastes time)
-timeout 300 gemini -m gemini-2.5-pro -p "prompt"
-timeout 300 codex -q "prompt"
+Always consult with Gemini and Codex **before making drastic changes** to:
+- Algorithm selection or implementation
+- Data structure changes
+- Performance-critical code paths
+- CCH/CH search semantics
+
+### How to Use AI Reviewers
+
+1. **Check availability**:
+   ```bash
+   which gemini && which codex
+   ```
+
+2. **Run in parallel** (never sequential):
+   ```bash
+   timeout 300 gemini -m gemini-2.5-pro -p "prompt" &
+   timeout 300 codex -q "prompt" &
+   wait
+   ```
+
+3. **Structure your review request**:
+   - **Explain the problem fully** — context, constraints, current behavior
+   - **Do NOT lead** — don't suggest solutions, let them find issues
+   - **Provide ALL relevant file paths** — even remotely involved files
+   - **Request focus areas**: correctness, efficiency (CPU, RAM, disk), smart algorithms first, parallelism second
+
+4. **After review**:
+   - Reviewers update `todo_overall.md` and `todo_immediate.md` with findings
+   - Implement fixes based on reviewer consensus
+   - If reviewers disagree or you're stuck, **keep looping and iterating**
+
+### Review Request Template
+
+```
+Problem: [Describe what you're trying to achieve]
+
+Current behavior: [What happens now, including benchmark numbers]
+
+Expected behavior: [Target metrics, e.g., "50×50 matrix < 100ms"]
+
+Relevant files:
+- tools/butterfly-route/src/matrix/bucket_ch.rs
+- tools/butterfly-route/src/step9/query.rs
+- [... all potentially involved files]
+
+Please review for:
+1. Correctness (especially directed graph semantics)
+2. Algorithmic efficiency (smart algorithms > parallelism)
+3. Memory efficiency (allocation patterns, cache locality)
+4. CPU efficiency (branch prediction, vectorization opportunities)
+
+Do not assume anything works. Prove it with analysis.
 ```
 
-Tips:
-- Use 5 minute timeout for complex reviews
-- If Gemini rate limited: `gemini -m gemini-flash-2.5 -p "shorter prompt"`
-- Codex uses `-q` flag for queries, `-p` for prompts with context
+---
+
+## Algorithm Strategy (Empirically Validated)
+
+**State-of-the-art routing engine architecture:**
+
+### 1. PHAST (Parallel Hierarchical Approximate Shortest-path Trees)
+**Use for:**
+- Exact distance fields (one-to-ALL)
+- Isochrones (need all reachable nodes)
+- Batched throughput (K-lane amortization)
+
+**Why:** PHAST computes ALL distances in one linear scan. For isochrones/reachability, this is optimal.
+
+### 2. Bucket Many-to-Many CH
+**Use for:**
+- Sparse matrices (specific source-target pairs)
+- Small N×M queries (N×M ≤ 10,000)
+- Low-latency table API
+
+**Why:** Only explores paths to REQUESTED targets. For 50×50 matrix, explores ~5% of graph vs PHAST's 100%.
+
+**Critical for directed graphs:**
+```
+d(s → t) = min over m: d(s → m) + d(m → t)
+
+- Source phase: forward UP search → d(s → m)
+- Target phase: REVERSE search (DownReverseAdj) → d(m → t)
+
+WARNING: d(t → m) ≠ d(m → t) in directed graphs!
+```
+
+### 3. Rank-Aligned CCH
+**Foundation for both algorithms:**
+- Shared topology (UP/DOWN edge structure)
+- Identical cost semantics across all query types
+- Internal consistency (routes = matrices = isochrones)
+- Cache-friendly memory access (node_id == rank)
+
+### Algorithm Selection Logic
+
+```
+if query_type == isochrone:
+    use PHAST (need all reachable nodes)
+elif n_sources * n_targets <= 10_000:
+    use Bucket M2M (sparse, low latency)
+else:
+    use K-lane batched PHAST + Arrow streaming (throughput)
+```
+
+---
+
+## Key File Paths by Component
+
+### CCH Core
+- `tools/butterfly-route/src/formats/cch_topo.rs` — CCH topology (UP/DOWN edges)
+- `tools/butterfly-route/src/formats/cch_weights.rs` — Customized edge weights
+- `tools/butterfly-route/src/step7.rs` — CCH contraction
+- `tools/butterfly-route/src/step8.rs` — Weight customization
+
+### Query Engine
+- `tools/butterfly-route/src/step9/query.rs` — Bidirectional P2P search
+- `tools/butterfly-route/src/step9/state.rs` — Server state, DownReverseAdj
+- `tools/butterfly-route/src/step9/api.rs` — HTTP endpoints
+
+### PHAST / Isochrones
+- `tools/butterfly-route/src/range/phast.rs` — Single-source PHAST
+- `tools/butterfly-route/src/range/batched_isochrone.rs` — K-lane batched PHAST
+- `tools/butterfly-route/src/range/frontier.rs` — Frontier extraction
+- `tools/butterfly-route/src/range/contour.rs` — Polygon generation
+
+### Matrix / Many-to-Many
+- `tools/butterfly-route/src/matrix/bucket_ch.rs` — Bucket M2M algorithm
+- `tools/butterfly-route/src/matrix/batched_phast.rs` — K-lane PHAST for matrices
+- `tools/butterfly-route/src/matrix/arrow_stream.rs` — Arrow IPC streaming
+
+### Benchmarking
+- `tools/butterfly-route/src/bench/main.rs` — Benchmark harness
+
+### Planning Documents
+- `todo_overall.md` — Architecture and roadmap
+- `todo_immediate.md` — Current sprint tasks
+
+---
+
+## Performance Optimization Philosophy
+
+1. **Profile first** — Never optimize without data
+2. **Smart algorithms > parallelism** — Right algorithm beats threads
+3. **Memory locality > raw speed** — Cache misses dominate
+4. **Correctness > performance** — Wrong fast is still wrong
+5. **Iterate relentlessly** — Small gains compound
+
+### Optimization Priority Order
+
+1. **Algorithm selection** (e.g., Bucket M2M vs PHAST)
+2. **Data structure design** (e.g., flat arena vs per-node vectors)
+3. **Memory layout** (e.g., SoA vs AoS, rank-alignment)
+4. **Allocation reduction** (e.g., buffer reuse)
+5. **Parallelism** (only after above are exhausted)

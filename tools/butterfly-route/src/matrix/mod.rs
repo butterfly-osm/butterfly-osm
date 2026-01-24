@@ -1,24 +1,32 @@
-//! Bulk Matrix Computation with K-Lane Batched PHAST
+//! Bulk Matrix Computation
 //!
-//! This module implements high-performance distance matrix computation using
-//! K-lane batched PHAST - the single most important optimization for bulk queries.
+//! This module provides two complementary algorithms for distance matrix computation:
 //!
-//! ## Key Insight
+//! ## 1. Bucket-based Many-to-Many CH (`bucket_ch`)
 //!
-//! The downward scan in PHAST is memory-bound (80-87% cache miss rate).
-//! By processing K sources in one downward pass, we amortize memory access cost:
-//! - Each node is loaded from memory once
-//! - We update K distance values per load
-//! - Reduces O(N × #sources) memory access to O(N × #sources/K)
+//! For **sparse matrices** (small N×M relative to graph size):
+//! - Forward search from sources populates buckets
+//! - Backward search from targets joins with buckets
+//! - Complexity: O(N × up_search + M × down_search)
+//! - Target: 50×50 < 100ms, matching OSRM performance
 //!
-//! ## Architecture
+//! ## 2. K-Lane Batched PHAST (`batched_phast`)
 //!
-//! 1. **K-Lane Upward Phase**: K parallel PQ-based Dijkstra searches
-//! 2. **K-Lane Downward Phase**: Single linear scan updating K dist arrays
-//! 3. **Tiled Output**: Stream results as Arrow IPC batches
+//! For **dense queries** (isochrones, one-to-all, huge matrices):
+//! - One-to-ALL distance computation
+//! - K-lane batching amortizes memory access
+//! - Best for streaming large matrices or isochrone computation
+//!
+//! ## Strategy Selection
+//!
+//! - **N×M ≤ 10,000**: Use bucket many-to-many (latency mode)
+//! - **N×M > 10,000**: Use tiled PHAST streaming (throughput mode)
+//! - **Isochrones**: Always use PHAST (need all reachable nodes)
 
 pub mod batched_phast;
 pub mod arrow_stream;
+pub mod bucket_ch;
 
 pub use batched_phast::{BatchedPhastEngine, BatchedPhastResult, BatchedPhastStats};
 pub use arrow_stream::{MatrixTile, ArrowMatrixWriter};
+pub use bucket_ch::{table_bucket, BucketArena, BucketM2MStats};
