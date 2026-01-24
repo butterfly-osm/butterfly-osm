@@ -318,7 +318,7 @@ Tasks:
 
 ---
 
-### Milestone 4: Batched Isochrones ← NEXT
+### Milestone 4: Batched Isochrones ← CURRENT
 
 **Two modes**:
 
@@ -327,15 +327,27 @@ Tasks:
    - Then per origin: frontier → raster → contour
    - Good for many origins, similar thresholds
 
-2. **Active-set gating (rPHAST-lite)**
+2. **Active-set gating (rPHAST-lite)** ✅ DONE
    - Skip `dist[v] > T` nodes in downward scan
    - Maintain `active` bitset for nodes with finite dist ≤ T
    - Skip nodes not active
    - Good for single-origin latency
 
+**Active-Set Gating Results** (Belgium):
+
+| Mode | Threshold | Naive | Active-Set | Speedup | Relaxation Drop |
+|------|-----------|-------|------------|---------|-----------------|
+| Car  | 30 sec    | 85ms  | 33ms       | 2.57x   | 68.3%           |
+| Bike | 2 min     | 269ms | 97ms       | 2.79x   | 68.8%           |
+| Bike | 5 min     | 267ms | 250ms      | 1.07x   | 15.9%           |
+| Car  | 3 min     | 88ms  | 100ms      | 0.88x   | 0%              |
+
+**Insight**: Active-set gating is effective when the reachable set is small (<30% of graph).
+For large thresholds where most of the graph is reachable, the bitset overhead negates benefits.
+
 Tasks:
-- [ ] Implement active-set gating in PHAST
-- [ ] Measure relaxations drop
+- [x] Implement active-set gating in PHAST (`query_active_set()` in phast.rs)
+- [x] Measure relaxations drop (up to 68% for bounded queries)
 - [ ] Implement K-lane isochrone batch mode
 - [ ] Reusable grid buffer per worker
 
