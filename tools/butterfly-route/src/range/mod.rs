@@ -25,6 +25,9 @@ pub use frontier::{FrontierExtractor, FrontierCutPoint, ReachablePoint, Reachabl
 pub mod contour;
 pub use contour::{GridConfig, ContourResult, generate_contour, export_contour_geojson};
 
+pub mod batched_isochrone;
+pub use batched_isochrone::{BatchedIsochroneEngine, BatchedIsochroneResult, BatchedIsochroneStats};
+
 /// Result of a range query
 #[derive(Debug)]
 pub struct RangeResult {

@@ -17,6 +17,7 @@ use rand::prelude::*;
 use butterfly_route::range::phast::{PhastEngine, PhastStats};
 use butterfly_route::range::frontier::FrontierExtractor;
 use butterfly_route::range::contour::{generate_contour, GridConfig};
+use butterfly_route::range::batched_isochrone::BatchedIsochroneEngine;
 use butterfly_route::matrix::batched_phast::{BatchedPhastEngine, K_LANES};
 
 #[derive(Parser)]
@@ -143,6 +144,29 @@ enum Commands {
         #[arg(long, default_value = "42")]
         seed: u64,
     },
+
+    /// Compare K-lane batched isochrones vs single-source isochrones
+    BatchedIsochrone {
+        /// Data directory
+        #[arg(long)]
+        data_dir: PathBuf,
+
+        /// Transport mode
+        #[arg(long, default_value = "car")]
+        mode: String,
+
+        /// Time threshold in milliseconds
+        #[arg(long, default_value = "120000")]
+        threshold_ms: u32,
+
+        /// Number of origins to process
+        #[arg(long, default_value = "32")]
+        n_origins: usize,
+
+        /// Random seed
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
 }
 
 /// Aggregated statistics across multiple runs
@@ -234,6 +258,14 @@ fn main() -> anyhow::Result<()> {
             n_queries,
             seed,
         } => run_active_set_bench(&data_dir, &mode, threshold_ms, n_queries, seed),
+
+        Commands::BatchedIsochrone {
+            data_dir,
+            mode,
+            threshold_ms,
+            n_origins,
+            seed,
+        } => run_batched_isochrone_bench(&data_dir, &mode, threshold_ms, n_origins, seed),
     }
 }
 
@@ -899,6 +931,199 @@ fn run_active_set_bench(
         println!("  ⚠️  Active-set gating provides modest speedup");
     } else {
         println!("  ⚠️  Active-set gating overhead may outweigh benefits for this threshold");
+    }
+    println!();
+
+    Ok(())
+}
+
+fn run_batched_isochrone_bench(
+    data_dir: &PathBuf,
+    mode: &str,
+    threshold_ms: u32,
+    n_origins: usize,
+    seed: u64,
+) -> anyhow::Result<()> {
+    use butterfly_route::profile_abi::Mode;
+
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  K-LANE BATCHED ISOCHRONE BENCHMARK");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  Mode: {}", mode);
+    println!("  Threshold: {} ms ({:.1} min)", threshold_ms, threshold_ms as f64 / 60000.0);
+    println!("  Origins: {} (in batches of {})", n_origins, K_LANES);
+    println!();
+
+    // Parse mode
+    let mode_enum = match mode.to_lowercase().as_str() {
+        "car" => Mode::Car,
+        "bike" => Mode::Bike,
+        "foot" => Mode::Foot,
+        _ => Mode::Car,
+    };
+
+    // ========== Load data ==========
+    println!("[1/4] Loading single-source engine...");
+    let single_start = Instant::now();
+    let phast = load_phast(data_dir, mode)?;
+    let extractor = load_extractor(data_dir, mode)?;
+    let grid_config = match mode {
+        "car" => GridConfig::for_car(),
+        "bike" => GridConfig::for_bike(),
+        "foot" => GridConfig::for_foot(),
+        _ => GridConfig::for_car(),
+    };
+    println!("  ✓ Loaded in {:.1}s ({} nodes)", single_start.elapsed().as_secs_f64(), phast.n_nodes());
+
+    println!("\n[2/4] Loading K-lane batched engine...");
+    let batched_start = Instant::now();
+
+    // Find paths using the same discovery logic as single-source
+    let topo_path = find_file(data_dir, &[
+        format!("cch.{}.topo", mode),
+        format!("step7/cch.{}.topo", mode),
+        format!("step7-new/cch.{}.topo", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
+
+    let weights_path = find_file(data_dir, &[
+        format!("cch.w.{}.u32", mode),
+        format!("step8/cch.w.{}.u32", mode),
+        format!("step8-new/cch.w.{}.u32", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
+
+    let order_path = find_file(data_dir, &[
+        format!("order.{}.ebg", mode),
+        format!("step6/order.{}.ebg", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
+
+    let filtered_path = find_file(data_dir, &[
+        format!("filtered.{}.ebg", mode),
+        format!("step5/filtered.{}.ebg", mode),
+        format!("step5-debug/filtered.{}.ebg", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find filtered.{}.ebg", mode))?;
+
+    let ebg_nodes_path = find_file(data_dir, &[
+        "ebg.nodes".to_string(),
+        "step4/ebg.nodes".to_string(),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find ebg.nodes"))?;
+
+    let nbg_geo_path = find_file(data_dir, &[
+        "nbg.geo".to_string(),
+        "step3/nbg.geo".to_string(),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find nbg.geo"))?;
+
+    let base_weights_path = find_file(data_dir, &[
+        format!("w.{}.u32", mode),
+        format!("step5/w.{}.u32", mode),
+        format!("step5-debug/w.{}.u32", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find w.{}.u32", mode))?;
+
+    let batched_engine = BatchedIsochroneEngine::load(
+        &topo_path,
+        &weights_path,
+        &order_path,
+        &filtered_path,
+        &ebg_nodes_path,
+        &nbg_geo_path,
+        &base_weights_path,
+        mode_enum,
+    )?;
+    println!("  ✓ Loaded in {:.1}s", batched_start.elapsed().as_secs_f64());
+
+    // Generate random origins
+    let mut rng = StdRng::seed_from_u64(seed);
+    let origins: Vec<u32> = (0..n_origins)
+        .map(|_| rng.gen_range(0..phast.n_nodes() as u32))
+        .collect();
+
+    // ========== Run single-source baseline ==========
+    println!("\n[3/4] Running single-source isochrones...");
+    let single_run_start = Instant::now();
+    let mut single_vertices = 0usize;
+
+    for (i, &origin) in origins.iter().enumerate() {
+        let result = phast.query_bounded(origin, threshold_ms);
+        let segments = extractor.extract_reachable_segments(&result.dist, threshold_ms);
+        let contour = generate_contour(&segments, &grid_config)?;
+        single_vertices += contour.outer_ring.len();
+
+        if (i + 1) % 10 == 0 || i + 1 == n_origins {
+            print!("  Progress: {}/{}\r", i + 1, n_origins);
+            std::io::Write::flush(&mut std::io::stdout())?;
+        }
+    }
+    let single_time = single_run_start.elapsed();
+    println!("  ✓ Single: {:.2}s ({:.1} iso/s)",
+        single_time.as_secs_f64(),
+        n_origins as f64 / single_time.as_secs_f64());
+
+    // ========== Run K-lane batched ==========
+    println!("\n[4/4] Running K-lane batched isochrones...");
+    let batched_run_start = Instant::now();
+    let mut batched_vertices = 0usize;
+    let mut n_batches = 0usize;
+
+    for (batch_idx, chunk) in origins.chunks(K_LANES).enumerate() {
+        let result = batched_engine.query_batch(chunk, threshold_ms)?;
+        for contour in &result.contours {
+            batched_vertices += contour.outer_ring.len();
+        }
+        n_batches += 1;
+
+        if (batch_idx + 1) % 2 == 0 || batch_idx + 1 == (n_origins + K_LANES - 1) / K_LANES {
+            print!("  Progress: {}/{} batches\r", batch_idx + 1, (n_origins + K_LANES - 1) / K_LANES);
+            std::io::Write::flush(&mut std::io::stdout())?;
+        }
+    }
+    let batched_time = batched_run_start.elapsed();
+    println!("  ✓ Batched: {:.2}s ({:.1} iso/s, {} batches)",
+        batched_time.as_secs_f64(),
+        n_origins as f64 / batched_time.as_secs_f64(),
+        n_batches);
+
+    // ========== Correctness verification ==========
+    println!();
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  CORRECTNESS VERIFICATION");
+    println!("───────────────────────────────────────────────────────────────");
+
+    // Rough check: vertex counts should be similar
+    let vertex_diff_pct = ((single_vertices as f64 - batched_vertices as f64).abs() / single_vertices as f64) * 100.0;
+    if vertex_diff_pct < 5.0 {
+        println!("  ✅ Vertex counts similar: {} (single) vs {} (batched), diff {:.1}%",
+            single_vertices, batched_vertices, vertex_diff_pct);
+    } else {
+        println!("  ⚠️  Vertex counts differ: {} (single) vs {} (batched), diff {:.1}%",
+            single_vertices, batched_vertices, vertex_diff_pct);
+    }
+
+    // ========== Performance comparison ==========
+    println!();
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  PERFORMANCE COMPARISON");
+    println!("───────────────────────────────────────────────────────────────");
+
+    let single_throughput = n_origins as f64 / single_time.as_secs_f64();
+    let batched_throughput = n_origins as f64 / batched_time.as_secs_f64();
+    let speedup = batched_throughput / single_throughput;
+
+    println!("  Single-source:");
+    println!("    Time: {:.2}s for {} isochrones", single_time.as_secs_f64(), n_origins);
+    println!("    Throughput: {:.1} iso/sec", single_throughput);
+    println!();
+    println!("  K-lane batched (K={}):", K_LANES);
+    println!("    Time: {:.2}s for {} isochrones", batched_time.as_secs_f64(), n_origins);
+    println!("    Throughput: {:.1} iso/sec", batched_throughput);
+    println!();
+    println!("  Speedup: {:.2}x", speedup);
+    println!();
+
+    if speedup > 2.0 {
+        println!("  ✅ K-lane batching provides significant speedup!");
+    } else if speedup > 1.2 {
+        println!("  ✅ K-lane batching provides moderate speedup");
+    } else {
+        println!("  ⚠️  K-lane batching shows minimal benefit (may be I/O or contour dominated)");
     }
     println!();
 

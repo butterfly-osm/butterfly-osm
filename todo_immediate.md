@@ -345,11 +345,20 @@ Tasks:
 **Insight**: Active-set gating is effective when the reachable set is small (<30% of graph).
 For large thresholds where most of the graph is reachable, the bitset overhead negates benefits.
 
+**K-Lane Batched Isochrone Results** (Belgium, car, 2-min threshold):
+
+| Method | Time (32 origins) | Throughput | Speedup |
+|--------|-------------------|------------|---------|
+| Single-source | 3.29s | 9.7 iso/s | baseline |
+| K-lane (K=8) | 1.25s | 25.6 iso/s | 2.63x |
+
+✅ Vertex counts match exactly (100% correctness)
+
 Tasks:
 - [x] Implement active-set gating in PHAST (`query_active_set()` in phast.rs)
 - [x] Measure relaxations drop (up to 68% for bounded queries)
-- [ ] Implement K-lane isochrone batch mode
-- [ ] Reusable grid buffer per worker
+- [x] Implement K-lane isochrone batch mode (`range/batched_isochrone.rs`)
+- [ ] Reusable grid buffer per worker (deferred - contour is only 1-2% of time)
 
 ---
 
