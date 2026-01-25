@@ -537,11 +537,17 @@ Edge-based CCH provides exact turn costs but at 2.7-4x computational cost.
    - Matrix queries: verify same distances
    - Isochrone queries: verify same reachable sets
 
-**CONFIRMED Impact (Belgium car mode):**
+**CONFIRMED Impact (Belgium car mode, bug fix 2026-01-25):**
 - State count: 5,019,010 → 1,917,731 (**2.62x reduction**)
-- Arc count: 14,644,223 → 2,473,137 (**5.92x reduction**)
-- **Expected query speedup: 2.6-6x** (proportional to graph reduction)
-- Current table gap: 6.4x → Expected after hybrid: **~1.1-2.5x**
+- Arc count: 14,644,223 → 4,992,605 (**2.93x reduction**)
+- Connected components: 4,570 (largest: 1,904,288 = 99.3%)
+- Step 6 ordering complete: max depth 8, build time 1.5s
+- **Expected query speedup: 2.6-3x** (proportional to graph reduction)
+- Current table gap: 6.4x → Expected after hybrid: **~2-2.5x**
+
+**Bug fixes applied:**
+- Fixed weight indexing: use `weights[tgt_ebg]` not `weights[arc_idx]`
+- Fixed reachability check: only create node-states for reachable NBG nodes
 
 ---
 
