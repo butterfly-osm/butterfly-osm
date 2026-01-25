@@ -19,7 +19,8 @@ use butterfly_route::range::phast::{PhastEngine, PhastStats};
 use butterfly_route::range::frontier::FrontierExtractor;
 use butterfly_route::range::contour::{generate_contour, GridConfig};
 use butterfly_route::range::sparse_contour::{generate_sparse_contour, SparseContourConfig};
-use butterfly_route::range::batched_isochrone::BatchedIsochroneEngine;
+use butterfly_route::range::batched_isochrone::{BatchedIsochroneEngine, AdaptiveIsochroneEngine, ADAPTIVE_THRESHOLD_DS};
+use butterfly_route::range::wkb_stream::{encode_polygon_wkb, IsochroneRecord, write_ndjson};
 use butterfly_route::matrix::batched_phast::{BatchedPhastEngine, BatchedPhastStats, K_LANES};
 use butterfly_route::formats::CchWeightsFile;
 use butterfly_route::step9::state::DownReverseAdj;
@@ -364,6 +365,29 @@ enum Commands {
         #[arg(long, default_value = "42")]
         seed: u64,
     },
+
+    /// End-to-end isochrone benchmark (compute + WKB + serialization)
+    E2eIsochrone {
+        /// Data directory
+        #[arg(long)]
+        data_dir: PathBuf,
+
+        /// Transport mode
+        #[arg(long, default_value = "car")]
+        mode: String,
+
+        /// Threshold in milliseconds
+        #[arg(long, default_value = "300000")]
+        threshold_ms: u32,
+
+        /// Number of origins to test
+        #[arg(long, default_value = "100")]
+        n_origins: usize,
+
+        /// Random seed
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
 }
 
 /// Aggregated statistics across multiple runs
@@ -546,6 +570,14 @@ fn main() -> anyhow::Result<()> {
             n_queries,
             seed,
         } => run_contour_compare_bench(&data_dir, &mode, threshold_ds, n_queries, seed),
+
+        Commands::E2eIsochrone {
+            data_dir,
+            mode,
+            threshold_ms,
+            n_origins,
+            seed,
+        } => run_e2e_isochrone_bench(&data_dir, &mode, threshold_ms, n_origins, seed),
     }
 }
 
@@ -3015,6 +3047,255 @@ fn run_contour_compare_bench(
     } else {
         println!();
         println!("  ⚠️  DENSE is faster (sparse overhead may dominate for small areas)");
+    }
+
+    Ok(())
+}
+
+/// End-to-end isochrone benchmark measuring full pipeline:
+/// compute → contour → WKB encode → serialize
+fn run_e2e_isochrone_bench(
+    data_dir: &PathBuf,
+    mode: &str,
+    threshold_ms: u32,
+    n_origins: usize,
+    seed: u64,
+) -> anyhow::Result<()> {
+    use butterfly_route::profile_abi::Mode;
+
+    let threshold_ds = threshold_ms / 100;
+
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  END-TO-END ISOCHRONE BENCHMARK");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  Mode: {}", mode);
+    println!("  Threshold: {} ms = {} ds ({:.1} min)", threshold_ms, threshold_ds, threshold_ms as f64 / 60000.0);
+    println!("  Origins: {}", n_origins);
+    println!("  Adaptive crossover: {} ds ({:.1} min)", ADAPTIVE_THRESHOLD_DS, ADAPTIVE_THRESHOLD_DS as f64 / 600.0);
+    println!();
+
+    // Parse mode
+    let mode_enum = match mode.to_lowercase().as_str() {
+        "car" => Mode::Car,
+        "bike" => Mode::Bike,
+        "foot" => Mode::Foot,
+        _ => Mode::Car,
+    };
+
+    // Load adaptive engine
+    println!("[1/3] Loading adaptive isochrone engine...");
+    let load_start = Instant::now();
+
+    // Find file paths
+    let topo_path = find_file(data_dir, &[
+        format!("cch.{}.topo", mode),
+        format!("step7-rank-aligned/cch.{}.topo", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
+
+    let weights_path = find_file(data_dir, &[
+        format!("cch.w.{}.u32", mode),
+        format!("step8-rank-aligned/cch.w.{}.u32", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
+
+    let order_path = find_file(data_dir, &[
+        format!("order.{}.ebg", mode),
+        format!("step6/order.{}.ebg", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
+
+    let filtered_path = find_file(data_dir, &[
+        format!("filtered.{}.ebg", mode),
+        format!("step5/filtered.{}.ebg", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find filtered.{}.ebg", mode))?;
+
+    let ebg_nodes_path = find_file(data_dir, &[
+        "ebg.nodes".to_string(),
+        "step4/ebg.nodes".to_string(),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find ebg.nodes"))?;
+
+    let nbg_geo_path = find_file(data_dir, &[
+        "nbg.geo".to_string(),
+        "step3/nbg.geo".to_string(),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find nbg.geo"))?;
+
+    let base_weights_path = find_file(data_dir, &[
+        format!("w.{}.u32", mode),
+        format!("step5/w.{}.u32", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find w.{}.u32", mode))?;
+
+    let engine = AdaptiveIsochroneEngine::load(
+        &topo_path,
+        &weights_path,
+        &order_path,
+        &filtered_path,
+        &ebg_nodes_path,
+        &nbg_geo_path,
+        &base_weights_path,
+        mode_enum,
+    )?;
+    let n_nodes = engine.n_nodes();
+    println!("  ✓ Loaded in {:.2}s ({} nodes)", load_start.elapsed().as_secs_f64(), n_nodes);
+    println!();
+
+    // Generate random origins
+    let mut rng = StdRng::seed_from_u64(seed);
+    let origins: Vec<u32> = (0..n_origins)
+        .map(|_| rng.gen_range(0..n_nodes as u32))
+        .collect();
+
+    // Timing breakdown accumulators
+    let mut compute_times_us: Vec<u64> = Vec::with_capacity(n_origins);
+    let mut wkb_times_us: Vec<u64> = Vec::with_capacity(n_origins);
+    let mut total_times_us: Vec<u64> = Vec::with_capacity(n_origins);
+    let mut wkb_sizes: Vec<usize> = Vec::with_capacity(n_origins);
+    let mut vertex_counts: Vec<usize> = Vec::with_capacity(n_origins);
+    let mut records: Vec<IsochroneRecord> = Vec::with_capacity(n_origins);
+
+    println!("[2/3] Running {} end-to-end isochrone queries...", n_origins);
+
+    for (i, &origin) in origins.iter().enumerate() {
+        let total_start = Instant::now();
+
+        // Phase 1: Compute (PHAST + segment extraction + contour)
+        let compute_start = Instant::now();
+        let contour_results = engine.query_many(&[origin], threshold_ds)?;
+        let compute_time = compute_start.elapsed();
+
+        if contour_results.is_empty() || contour_results[0].outer_ring.is_empty() {
+            continue;
+        }
+        let contour = &contour_results[0];
+
+        // Phase 2: WKB encoding
+        let wkb_start = Instant::now();
+        let wkb = match encode_polygon_wkb(contour) {
+            Some(w) => w,
+            None => continue,
+        };
+        let wkb_time = wkb_start.elapsed();
+
+        let total_time = total_start.elapsed();
+
+        // Record stats
+        compute_times_us.push(compute_time.as_micros() as u64);
+        wkb_times_us.push(wkb_time.as_micros() as u64);
+        total_times_us.push(total_time.as_micros() as u64);
+        wkb_sizes.push(wkb.len());
+        vertex_counts.push(contour.outer_ring.len());
+
+        // Create record for serialization test
+        records.push(IsochroneRecord {
+            origin_id: origin,
+            threshold_ds,
+            wkb,
+            n_vertices: contour.outer_ring.len() as u32,
+            elapsed_us: total_time.as_micros() as u64,
+        });
+
+        if (i + 1) % 20 == 0 || i == n_origins - 1 {
+            print!("\r  Progress: {}/{}", i + 1, n_origins);
+            std::io::Write::flush(&mut std::io::stdout())?;
+        }
+    }
+    println!("\n");
+
+    if total_times_us.is_empty() {
+        println!("  ⚠️  No valid isochrones (all origins unreachable)");
+        return Ok(());
+    }
+
+    // Phase 3: Serialization benchmark
+    println!("[3/3] Benchmarking serialization...");
+    let serialize_start = Instant::now();
+    let ndjson_bytes = write_ndjson(&records);
+    let serialize_time = serialize_start.elapsed();
+    println!("  ✓ Serialized {} records to {} KB NDJSON in {:.2}ms",
+             records.len(),
+             ndjson_bytes.len() / 1024,
+             serialize_time.as_secs_f64() * 1000.0);
+    println!();
+
+    // Compute percentiles
+    let n = total_times_us.len();
+    compute_times_us.sort();
+    wkb_times_us.sort();
+    total_times_us.sort();
+    wkb_sizes.sort();
+    vertex_counts.sort();
+
+    let p50 = n / 2;
+    let p95 = (n * 95 / 100).min(n - 1);
+    let p99 = (n * 99 / 100).min(n - 1);
+
+    let compute_sum: u64 = compute_times_us.iter().sum();
+    let wkb_sum: u64 = wkb_times_us.iter().sum();
+    let total_sum: u64 = total_times_us.iter().sum();
+    let wkb_size_sum: usize = wkb_sizes.iter().sum();
+
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  TIMING BREAKDOWN (μs)");
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  {:12} {:>10} {:>10} {:>10} {:>10}", "", "p50", "p95", "p99", "mean");
+    println!("  {:12} {:>10} {:>10} {:>10} {:>10.0}",
+             "Compute:",
+             compute_times_us[p50],
+             compute_times_us[p95],
+             compute_times_us[p99],
+             compute_sum as f64 / n as f64);
+    println!("  {:12} {:>10} {:>10} {:>10} {:>10.0}",
+             "WKB encode:",
+             wkb_times_us[p50],
+             wkb_times_us[p95],
+             wkb_times_us[p99],
+             wkb_sum as f64 / n as f64);
+    println!("  {:12} {:>10} {:>10} {:>10} {:>10.0}",
+             "Total:",
+             total_times_us[p50],
+             total_times_us[p95],
+             total_times_us[p99],
+             total_sum as f64 / n as f64);
+    println!();
+
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  OUTPUT SIZES");
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  WKB bytes (mean):     {:.0} bytes", wkb_size_sum as f64 / n as f64);
+    println!("  WKB bytes (p99):      {} bytes", wkb_sizes[p99]);
+    println!("  Vertices (mean):      {:.0}", vertex_counts.iter().sum::<usize>() as f64 / n as f64);
+    println!("  Vertices (p99):       {}", vertex_counts[p99]);
+    println!("  NDJSON total:         {} KB for {} records", ndjson_bytes.len() / 1024, n);
+    println!("  NDJSON per record:    {:.0} bytes", ndjson_bytes.len() as f64 / n as f64);
+    println!();
+
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  THROUGHPUT");
+    println!("───────────────────────────────────────────────────────────────");
+    let total_mean_ms = total_sum as f64 / n as f64 / 1000.0;
+    let throughput = 1000.0 / total_mean_ms;
+    println!("  Mean latency:         {:.2} ms", total_mean_ms);
+    println!("  p99 latency:          {:.2} ms", total_times_us[p99] as f64 / 1000.0);
+    println!("  Throughput:           {:.1} iso/sec (single-threaded)", throughput);
+    println!();
+
+    // Time budget breakdown
+    let compute_pct = 100.0 * compute_sum as f64 / total_sum as f64;
+    let wkb_pct = 100.0 * wkb_sum as f64 / total_sum as f64;
+    let other_pct = 100.0 - compute_pct - wkb_pct;
+
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  TIME BUDGET");
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  Compute (PHAST+contour): {:>5.1}%", compute_pct);
+    println!("  WKB encoding:            {:>5.1}%", wkb_pct);
+    println!("  Other overhead:          {:>5.1}%", other_pct);
+
+    if wkb_pct > 10.0 {
+        println!();
+        println!("  ⚠️  WKB encoding is {:.1}% of total - consider streaming", wkb_pct);
+    }
+
+    if throughput > 100.0 {
+        println!();
+        println!("  ✅ Excellent throughput: {:.0} iso/sec", throughput);
     }
 
     Ok(())
