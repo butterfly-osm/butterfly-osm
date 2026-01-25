@@ -745,6 +745,40 @@ pub enum Commands {
         outdir: PathBuf,
     },
 
+    /// Analyze turn model to understand when turns matter
+    ///
+    /// Answers: How many junctions need expansion for exact turn semantics?
+    /// Use this to decide if node-based CH + junction expansion is viable.
+    TurnModelAnalysis {
+        /// Path to ebg.nodes from Step 4
+        #[arg(long)]
+        ebg_nodes: PathBuf,
+
+        /// Path to ebg.csr from Step 4
+        #[arg(long)]
+        ebg_csr: PathBuf,
+
+        /// Path to ebg.turn_table from Step 4
+        #[arg(long)]
+        turn_table: PathBuf,
+
+        /// Path to nbg.csr from Step 3
+        #[arg(long)]
+        nbg_csr: PathBuf,
+
+        /// Path to turn_rules.car.bin from Step 2
+        #[arg(long)]
+        turn_rules_car: PathBuf,
+
+        /// Path to turn_rules.bike.bin from Step 2
+        #[arg(long)]
+        turn_rules_bike: PathBuf,
+
+        /// Path to turn_rules.foot.bin from Step 2
+        #[arg(long)]
+        turn_rules_foot: PathBuf,
+    },
+
     /// Step 8 (Hybrid): Customize CCH with weights from hybrid state graph
     Step8Hybrid {
         /// Path to cch.hybrid.<mode>.topo from Step 7 Hybrid
@@ -1986,6 +2020,31 @@ impl Cli {
                 println!();
                 println!("✅ Step 7 (Hybrid) CCH contraction complete!");
                 println!("📋 Lock file: {}", lock_path.display());
+
+                Ok(())
+            }
+            Commands::TurnModelAnalysis {
+                ebg_nodes,
+                ebg_csr,
+                turn_table,
+                nbg_csr,
+                turn_rules_car,
+                turn_rules_bike,
+                turn_rules_foot,
+            } => {
+                println!("\n=== TURN MODEL ANALYSIS ===\n");
+
+                let analysis = crate::analysis::analyze_turn_model(
+                    &ebg_nodes,
+                    &ebg_csr,
+                    &turn_table,
+                    &nbg_csr,
+                    &turn_rules_car,
+                    &turn_rules_bike,
+                    &turn_rules_foot,
+                )?;
+
+                analysis.print();
 
                 Ok(())
             }

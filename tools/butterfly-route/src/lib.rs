@@ -30,6 +30,7 @@ pub mod step9;
 pub mod range;
 pub mod matrix;
 pub mod hybrid;
+pub mod analysis;
 
 pub use formats::{WaysFile, RelationsFile};
 pub use validate::{LockFile, Step2LockFile};

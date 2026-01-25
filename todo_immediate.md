@@ -816,7 +816,103 @@ Added `table_bucket_parallel()` using rayon:
 - Sequential 100×100: 221ms (vs OSRM 35ms) = 6.3x gap
 - With parallel 100×100: 174ms = 5.0x gap
 
-**Remaining gap is architectural (edge-based CCH 2.7x more edges than node-based).**
+**Parallel speedup is low due to:**
+- Too fine-grained tasks (per-source, not per-block)
+- Per-task SearchState allocation (~19MB per thread)
+- Should chunk by source/target blocks (512-2048)
+- Thread-local arenas for heaps, dist arrays, buckets
+
+---
+
+### Milestone 7.6: Node-Based CH + Junction Expansion ← NEXT PRIORITY
+
+**Key Insight (2026-01-25):**
+
+The 3-6x gap is NOT fundamentally unavoidable. It exists because we contract the full edge-state graph.
+
+**The Smart Solution: Don't contract edge-states at all.**
+
+Turns only matter at **junctions**. Between junctions, travel is edge-weight only.
+
+**Architecture:**
+1. Build **node-based CH** on NBG (1.9M nodes, not 5M edge-states)
+2. At query time, handle exact turns via **local expansion at junctions**
+
+**Two Exact Approaches:**
+
+**A) Junction Expansion (recommended)**
+- State = (node, incoming_edge) only at turn-relevant junctions
+- Between junctions: simple node-to-node CH search
+- At junction: expand to consider all legal outgoing edges with penalties
+- Exact because CH distances are between correct entry/exit states
+
+**B) Turn-Patch Overlay**
+- Precompute node-based shortest paths ignoring turns
+- Apply exact penalties via small correction graph at junctions
+- Works when penalties are local (they are)
+
+**Why This Will Work:**
+- Node-based CH: 1.9M nodes, ~7 edges/node
+- Edge-based CCH: 2.4M nodes, ~15 edges/node
+- **2.7x less work per search** (matching OSRM architecture)
+- Turns handled exactly via junction expansion (no approximation)
+
+**Implementation Plan:**
+
+1. ✅ **Analyze turn model** (COMPLETED 2026-01-25)
+   - CLI command: `turn-model-analysis`
+   - Analysis module: `src/analysis/turn_model.rs`
+
+   **Key Findings (Belgium):**
+   ```
+   Turn Restriction Rules (from OSM relations):
+     Car:  7,052 rules
+     Bike: 3 rules
+     Foot: 0 rules
+
+   NBG Junction Analysis:
+     Total NBG nodes:        1,907,139
+     Multi-way (degree > 2): 1,267,821 (66.48%)
+     With explicit restrict: 5,726 (0.30%)
+
+   Turn Table Entries (deduplicated):
+     Total: 15 entries (Ban: 5, Only: 3, Penalty: 0, None: 7)
+
+   EBG Arc Analysis:
+     Total arcs:        14,644,223
+     With ban:          5,663 (0.04%)
+     With penalty:      0 (0.00%)
+
+   === CRITICAL INSIGHT ===
+   TRUE turn-relevant junctions: 5,726 (0.30%)
+   Turn-free junctions:          1,901,413 (99.70%)
+
+   Note: U-turn bans (66.48% of junctions) are NOT turn-relevant!
+   - U-turns are handled by search policy (don't reverse)
+   - Only EXPLICIT OSM restrictions need junction expansion
+   ```
+
+   **Verdict: EXCELLENT for Node-Based CH + Junction Expansion**
+   - Only 0.30% of junctions need expansion (5,726 / 1.9M)
+   - Expected overhead: minimal (most searches never hit restricted junctions)
+   - This validates the junction expansion approach!
+
+2. ⬜ **Build node-based CH** ← NEXT STEP
+   - Use existing NBG from Step 3
+   - Contract on NBG (not EBG)
+   - Expected: ~10M shortcuts (vs 30M for EBG CCH)
+
+3. ⬜ **Implement junction expansion**
+   - At bucket M2M query time:
+     - Forward search: at turn-relevant node, expand to (node, in_edge) states
+     - Backward search: same expansion
+   - Only expand at junctions with non-trivial turn costs
+
+4. ⬜ **Benchmark**
+   - Target: 10×10 < 10ms (match OSRM)
+   - Target: 100×100 < 50ms
+
+**This is the single most promising way to close the architectural gap without approximation.**
 
 ---
 
