@@ -644,23 +644,71 @@ If this holds, collapsing is **exact** and does **NOT increase degree**.
    have identical behavior signatures. This is the best possible result - we can
    collapse to nearly NBG size (1.96M states) while maintaining exact turn semantics.
 
-2. ⬜ **Group incoming edges by identical signature → class_id** ← NEXT
+2. ✅ **Group incoming edges by identical signature → class_id** ← DONE
    - Each class has EXACTLY the outgoing edges of ONE member
    - This guarantees edges-per-state = outdeg (not union)
+   - **VERIFIED**: Out-degree ratio 0.89x, In-degree ratio 0.89x
 
-3. ⬜ **Create hybrid states as `(node, class_id)`**
-   - Verify edges-per-node ≤ 15.4 before CCH build
-   - If higher, signature computation is wrong
+3. ✅ **Create hybrid states as `(node, class_id)`** ← DONE
+   - States: 5.0M → 1.96M (2.56x reduction)
+   - Arcs: 14.6M → 5.08M (2.88x reduction)
+   - Degree: 2.92 → 2.59 (0.89x - LOWER than EBG!)
 
-4. ⬜ **Build CCH on equivalence-class graph**
-   - Should have fewer nodes AND same-or-lower edges-per-node
-   - Expected speedup: proportional to state reduction
+4. ⚠️ **Build CCH on equivalence-class graph** ← ORDERING MISMATCH DISCOVERED
+   - Geometry-based ND ordering FAILED:
+     - Shortcuts per original arc: EBG 5.25x → Hybrid **17.11x** (3.2x worse)
+     - Up/Down balance: EBG 0.96x → Hybrid **3.39x** (severely unbalanced)
+   - **Root cause**: ND assumes "connectivity ≈ spatial proximity"
+   - Hybrid graph breaks this: equivalence classes create non-local connections
+   - **This is NOT a fundamental limit** - it's an ordering mismatch!
 
-**Key Metrics to Validate:**
-- K(node) distribution: median, p90, p99 → ✅ MEASURED (median=1, p99=2)
-- Edges-per-node ratio: MUST be ≤ 1.0x vs regular CCH
-- Current naive hybrid: 1.36x (WRONG, proves the point)
-- True equivalence hybrid: should be ~1.0x or lower
+**Key Metrics from Equivalence-Class Hybrid:**
+- K(node) distribution: median=1, p99=2 → ✅ EXCELLENT
+- Input graph degree ratio: 0.89x → ✅ LOWER than EBG (preserved invariant)
+- CCH fill-in: 17.11x → ❌ BAD (due to geometry-based ordering, not topology)
+- Up/Down balance: 3.39x → ❌ BAD (smoking gun for ordering mismatch)
+
+---
+
+### Milestone 7.4.1: Graph-Based Ordering for Hybrid CCH ← NEXT
+
+**Problem**: Geometry-based ND fails because hybrid graph connectivity ≠ spatial proximity.
+
+**Solution**: Use graph partitioning instead of coordinate-based partitioning.
+
+**Experiment to prove ordering is the issue (not topology):**
+
+1. ⬜ **Implement graph-based ND for hybrid graph**
+   - Recursive bisection using adjacency only (no coordinates)
+   - Options:
+     - BFS-based separators (cheap, good baseline)
+     - Spectral bisection (better quality, more complex)
+     - KaHIP/METIS integration (best quality, external dep)
+   - Start with BFS separators as minimum-effort test
+
+2. ⬜ **Run contraction with graph-based order**
+   - Measure: shortcuts per original arc (target: ~5-8x, not 17x)
+   - Measure: up/down balance (target: ~1.0x, not 3.4x)
+   - Measure: max_degree during contraction
+
+3. ⬜ **If fill-in drops significantly → ordering was the problem**
+   - Expected: shortcuts/arc drops from 17x toward 5-8x
+   - Expected: up/down balance moves toward 1.0x
+   - Then: benchmark actual query performance
+
+4. ⬜ **If fill-in stays bad → consider alternative hierarchies**
+   - MLD-like overlays (partition-based, not elimination-based)
+   - May be better suited for graphs that lost geometric structure
+
+**Why this matters:**
+- If hybrid + good ordering works → close OSRM table gap without parallelism
+- If hybrid abandoned → stuck with parallelism (brute force) or accepting slower tables
+
+**Current ordering implementation (Step 6):**
+- Uses inertial partitioning based on coordinates
+- Recursive ND with geometric bisection
+- Works well for EBG (edges have spatial locality)
+- Fails for hybrid (equivalence classes break spatial locality)
 
 ---
 

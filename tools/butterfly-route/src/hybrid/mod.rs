@@ -39,7 +39,9 @@
 pub mod state_graph;
 pub mod builder;
 pub mod equivalence;
+pub mod equiv_builder;
 
 pub use state_graph::{HybridStateGraph, HybridState, HybridArc};
 pub use builder::HybridGraphBuilder;
 pub use equivalence::{analyze_equivalence_classes, EquivalenceAnalysis};
+pub use equiv_builder::EquivHybridBuilder;
