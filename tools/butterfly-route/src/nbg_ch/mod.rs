@@ -14,11 +14,9 @@
 
 mod ordering;
 mod contraction;
-mod weights;
 
 pub use ordering::{NbgNdOrdering, compute_nbg_ordering};
 pub use contraction::{NbgChTopo, contract_nbg};
-pub use weights::{NbgChWeights, customize_nbg_ch};
 
 /// Statistics from NBG CH construction
 #[derive(Debug, Clone)]
@@ -31,5 +29,4 @@ pub struct NbgChStats {
     pub max_rank: u32,
     pub ordering_time_ms: u64,
     pub contraction_time_ms: u64,
-    pub customize_time_ms: u64,
 }

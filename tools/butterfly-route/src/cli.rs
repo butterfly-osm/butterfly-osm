@@ -2083,10 +2083,10 @@ impl Cli {
                          ordering.n_nodes, ordering.n_components, ordering.max_depth);
                 println!("  Ordering time: {} ms", order_time);
 
-                // Contract
-                println!("\n[Contraction] Contracting NBG...");
+                // Contract with witness search
+                println!("\n[Contraction] Contracting NBG with witness search...");
                 let start_contract = std::time::Instant::now();
-                let topo = contract_nbg(&nbg_csr_data, &ordering)?;
+                let topo = contract_nbg(&nbg_csr_data, &nbg_geo_data, &ordering)?;
                 let contract_time = start_contract.elapsed().as_millis();
 
                 println!("\n=== NBG CH COMPLETE ===");
