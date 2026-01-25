@@ -8,14 +8,17 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
 use utoipa::{OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::profile_abi::Mode;
-use crate::matrix::arrow_stream::{MatrixTile, ArrowMatrixWriter, ARROW_STREAM_CONTENT_TYPE};
+use crate::matrix::arrow_stream::{MatrixTile, ArrowMatrixWriter, ARROW_STREAM_CONTENT_TYPE, tiles_to_record_batch};
 use crate::matrix::batched_phast::K_LANES;
 
 use super::geometry::{build_geometry, build_isochrone_geometry, Point, RouteGeometry};
@@ -26,7 +29,7 @@ use super::unpack::unpack_path;
 /// OpenAPI documentation
 #[derive(OpenApi)]
 #[openapi(
-    paths(route, matrix, isochrone, health, matrix_bulk),
+    paths(route, matrix, isochrone, health, matrix_bulk, matrix_stream),
     components(schemas(
         RouteRequest,
         RouteResponse,
@@ -36,6 +39,7 @@ use super::unpack::unpack_path;
         IsochroneResponse,
         MatrixBulkRequest,
         MatrixBulkResponse,
+        MatrixStreamRequest,
         Point,
         ErrorResponse
     )),
@@ -59,6 +63,7 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
         .route("/route", get(route))
         .route("/matrix", get(matrix))
         .route("/matrix/bulk", post(matrix_bulk))
+        .route("/matrix/stream", post(matrix_stream))
         .route("/isochrone", get(isochrone))
         .route("/health", get(health))
         .route("/debug/compare", get(debug_compare))
@@ -544,6 +549,26 @@ pub struct MatrixBulkResponse {
     pub compute_time_ms: u64,
 }
 
+/// Request for streaming matrix computation
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct MatrixStreamRequest {
+    /// Source node IDs (filtered CCH space)
+    #[schema(example = json!([1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000]))]
+    pub sources: Vec<u32>,
+    /// Target node IDs (filtered CCH space)
+    #[schema(example = json!([4000, 5000, 6000]))]
+    pub targets: Vec<u32>,
+    /// Transport mode: car, bike, or foot
+    #[schema(example = "car")]
+    pub mode: String,
+    /// Source tile size (default: 8, matches K_LANES)
+    #[schema(example = 8)]
+    pub src_tile_size: Option<u16>,
+    /// Destination tile size for output chunking (default: 256)
+    #[schema(example = 256)]
+    pub dst_tile_size: Option<u16>,
+}
+
 /// Compute bulk distance matrix using K-lane batched PHAST
 ///
 /// Returns a row-major matrix of durations from each source to each target.
@@ -637,6 +662,366 @@ async fn matrix_bulk(
             }).into_response()
         }
     }
+}
+
+// ============ Streaming Matrix Endpoint ============
+
+/// Stream distance matrix as Arrow IPC tiles
+///
+/// Computes the matrix in tiles (K sources × M targets at a time) and streams
+/// each tile as an Arrow IPC RecordBatch as soon as it's ready.
+///
+/// ## Streaming Protocol
+/// 1. Server sends Arrow IPC schema message
+/// 2. Server streams RecordBatch messages as tiles complete
+/// 3. Connection closes when all tiles are sent
+/// 4. If client disconnects, computation stops (cancellation)
+///
+/// ## Backpressure
+/// Uses a bounded channel (depth 4) - if client is slow to consume,
+/// computation pauses until channel has space.
+///
+/// ## Tile Schema
+/// Each RecordBatch contains one or more tiles:
+/// - src_block_start: u32 (first source index)
+/// - dst_block_start: u32 (first destination index)
+/// - src_block_len: u16 (sources in tile)
+/// - dst_block_len: u16 (destinations in tile)
+/// - durations_ms: Binary (row-major packed u32 distances)
+#[utoipa::path(
+    post,
+    path = "/matrix/stream",
+    request_body = MatrixStreamRequest,
+    responses(
+        (status = 200, description = "Arrow IPC stream", content_type = "application/vnd.apache.arrow.stream"),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+    )
+)]
+async fn matrix_stream(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<MatrixStreamRequest>,
+) -> impl IntoResponse {
+    let mode = match parse_mode(&req.mode) {
+        Ok(m) => m,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
+    };
+
+    if req.sources.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "sources cannot be empty".into() })).into_response();
+    }
+    if req.targets.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "targets cannot be empty".into() })).into_response();
+    }
+
+    let src_tile_size = req.src_tile_size.unwrap_or(K_LANES as u16) as usize;
+    let dst_tile_size = req.dst_tile_size.unwrap_or(256) as usize;
+
+    // Clone data needed for async task
+    let sources = req.sources.clone();
+    let targets = req.targets.clone();
+    let mode_data = state.get_mode(mode);
+    let cch_topo = mode_data.cch_topo.clone();
+    let cch_weights_up = mode_data.cch_weights.up.clone();
+    let cch_weights_down = mode_data.cch_weights.down.clone();
+    let order_perm = mode_data.order.perm.clone();
+
+    // Bounded channel for backpressure (4 tiles in flight)
+    let (tx, rx) = mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(4);
+
+    // Cancellation token - dropped when receiver is dropped (client disconnect)
+    let cancel = CancellationToken::new();
+    let cancel_clone = cancel.clone();
+
+    // Spawn computation task
+    tokio::task::spawn_blocking(move || {
+        compute_and_stream_tiles(
+            &cch_topo,
+            &cch_weights_up,
+            &cch_weights_down,
+            &order_perm,
+            &sources,
+            &targets,
+            src_tile_size,
+            dst_tile_size,
+            tx,
+            cancel_clone,
+        );
+    });
+
+    // Convert receiver to stream
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+
+    // Build streaming response
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+        .header("X-N-Sources", req.sources.len().to_string())
+        .header("X-N-Targets", req.targets.len().to_string())
+        .header("X-Src-Tile-Size", src_tile_size.to_string())
+        .header("X-Dst-Tile-Size", dst_tile_size.to_string())
+        .body(Body::from_stream(stream))
+        .unwrap()
+        .into_response()
+}
+
+/// Compute matrix tiles and stream them over channel
+fn compute_and_stream_tiles(
+    cch_topo: &crate::formats::CchTopo,
+    weights_up: &[u32],
+    weights_down: &[u32],
+    perm: &[u32],
+    sources: &[u32],
+    targets: &[u32],
+    src_tile_size: usize,
+    dst_tile_size: usize,
+    tx: mpsc::Sender<Result<bytes::Bytes, std::io::Error>>,
+    cancel: CancellationToken,
+) {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    use arrow::ipc::writer::StreamWriter;
+
+    let n_nodes = cch_topo.n_nodes as usize;
+    let n_src = sources.len();
+    let n_tgt = targets.len();
+
+    // Build inverse permutation
+    let mut inv_perm = vec![0u32; n_nodes];
+    for (node, &rank) in perm.iter().enumerate() {
+        inv_perm[rank as usize] = node as u32;
+    }
+
+    // Send Arrow schema first
+    let schema = Arc::new(crate::matrix::arrow_stream::matrix_tile_schema());
+    let mut schema_buf = Vec::new();
+    {
+        let mut writer = match StreamWriter::try_new(&mut schema_buf, &schema) {
+            Ok(w) => w,
+            Err(e) => {
+                let _ = tx.blocking_send(Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
+                return;
+            }
+        };
+        if let Err(e) = writer.finish() {
+            let _ = tx.blocking_send(Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
+            return;
+        }
+    }
+    if tx.blocking_send(Ok(bytes::Bytes::from(schema_buf))).is_err() {
+        return; // Client disconnected
+    }
+
+    // Process sources in batches matching src_tile_size (aligned to K_LANES for efficiency)
+    let effective_tile_size = ((src_tile_size + K_LANES - 1) / K_LANES) * K_LANES;
+
+    for src_batch_start in (0..n_src).step_by(effective_tile_size) {
+        // Check for cancellation
+        if cancel.is_cancelled() {
+            return;
+        }
+
+        let src_batch_end = (src_batch_start + effective_tile_size).min(n_src);
+        let batch_sources = &sources[src_batch_start..src_batch_end];
+        let actual_src_len = batch_sources.len();
+
+        // Compute distances for this batch of sources to ALL nodes
+        // We'll extract target distances after
+        let dist_batch = compute_batch_distances(
+            cch_topo,
+            weights_up,
+            weights_down,
+            &inv_perm,
+            batch_sources,
+        );
+
+        // Extract tiles for each destination chunk
+        for dst_batch_start in (0..n_tgt).step_by(dst_tile_size) {
+            if cancel.is_cancelled() {
+                return;
+            }
+
+            let dst_batch_end = (dst_batch_start + dst_tile_size).min(n_tgt);
+            let batch_targets = &targets[dst_batch_start..dst_batch_end];
+            let actual_dst_len = batch_targets.len();
+
+            // Extract distances for this tile
+            let mut tile_data = Vec::with_capacity(actual_src_len * actual_dst_len * 4);
+            for (lane, dist) in dist_batch.iter().enumerate() {
+                if lane >= actual_src_len {
+                    break;
+                }
+                for &tgt in batch_targets {
+                    let d = if (tgt as usize) < n_nodes {
+                        dist[tgt as usize]
+                    } else {
+                        u32::MAX
+                    };
+                    tile_data.extend_from_slice(&d.to_le_bytes());
+                }
+            }
+
+            let tile = MatrixTile {
+                src_block_start: src_batch_start as u32,
+                dst_block_start: dst_batch_start as u32,
+                src_block_len: actual_src_len as u16,
+                dst_block_len: actual_dst_len as u16,
+                durations_ms: tile_data,
+            };
+
+            // Serialize tile as Arrow RecordBatch
+            let batch = match tiles_to_record_batch(&[tile]) {
+                Ok(b) => b,
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
+                    return;
+                }
+            };
+
+            let mut buf = Vec::new();
+            {
+                let mut writer = match StreamWriter::try_new(&mut buf, batch.schema_ref()) {
+                    Ok(w) => w,
+                    Err(e) => {
+                        let _ = tx.blocking_send(Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
+                        return;
+                    }
+                };
+                if let Err(e) = writer.write(&batch) {
+                    let _ = tx.blocking_send(Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
+                    return;
+                }
+                if let Err(e) = writer.finish() {
+                    let _ = tx.blocking_send(Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
+                    return;
+                }
+            }
+
+            // Send tile (backpressure: blocks if channel full)
+            if tx.blocking_send(Ok(bytes::Bytes::from(buf))).is_err() {
+                return; // Client disconnected
+            }
+        }
+    }
+}
+
+/// Compute K-lane batched distances for a batch of sources
+fn compute_batch_distances(
+    cch_topo: &crate::formats::CchTopo,
+    weights_up: &[u32],
+    weights_down: &[u32],
+    inv_perm: &[u32],
+    sources: &[u32],
+) -> Vec<Vec<u32>> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
+    let n_nodes = cch_topo.n_nodes as usize;
+
+    // Process in K_LANES chunks for efficiency
+    let mut all_dist: Vec<Vec<u32>> = Vec::with_capacity(sources.len());
+
+    for chunk in sources.chunks(K_LANES) {
+        let k = chunk.len();
+
+        // Initialize K distance arrays
+        let mut dist: Vec<Vec<u32>> = (0..k)
+            .map(|_| vec![u32::MAX; n_nodes])
+            .collect();
+
+        // Set origin distances
+        for (lane, &src) in chunk.iter().enumerate() {
+            if (src as usize) < n_nodes {
+                dist[lane][src as usize] = 0;
+            }
+        }
+
+        // Phase 1: K parallel upward searches
+        for lane in 0..k {
+            let origin = chunk[lane];
+            if (origin as usize) >= n_nodes {
+                continue;
+            }
+
+            let mut pq: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
+            pq.push(Reverse((0, origin)));
+
+            while let Some(Reverse((d, u))) = pq.pop() {
+                if d > dist[lane][u as usize] {
+                    continue;
+                }
+
+                let up_start = cch_topo.up_offsets[u as usize] as usize;
+                let up_end = cch_topo.up_offsets[u as usize + 1] as usize;
+
+                for i in up_start..up_end {
+                    let v = cch_topo.up_targets[i];
+                    let w = weights_up[i];
+
+                    if w == u32::MAX {
+                        continue;
+                    }
+
+                    let new_dist = d.saturating_add(w);
+                    if new_dist < dist[lane][v as usize] {
+                        dist[lane][v as usize] = new_dist;
+                        pq.push(Reverse((new_dist, v)));
+                    }
+                }
+            }
+        }
+
+        // Phase 2: Single K-lane downward scan
+        for rank in (0..n_nodes).rev() {
+            let u = inv_perm[rank];
+            let u_idx = u as usize;
+
+            let down_start = cch_topo.down_offsets[u_idx] as usize;
+            let down_end = cch_topo.down_offsets[u_idx + 1] as usize;
+
+            if down_start == down_end {
+                continue;
+            }
+
+            // Check if ANY lane has finite distance
+            let mut any_reachable = false;
+            for lane in 0..k {
+                if dist[lane][u_idx] != u32::MAX {
+                    any_reachable = true;
+                    break;
+                }
+            }
+            if !any_reachable {
+                continue;
+            }
+
+            // Relax DOWN edges for ALL K lanes
+            for i in down_start..down_end {
+                let v = cch_topo.down_targets[i];
+                let w = weights_down[i];
+
+                if w == u32::MAX {
+                    continue;
+                }
+
+                let v_idx = v as usize;
+
+                for lane in 0..k {
+                    let d_u = dist[lane][u_idx];
+                    if d_u != u32::MAX {
+                        let new_dist = d_u.saturating_add(w);
+                        if new_dist < dist[lane][v_idx] {
+                            dist[lane][v_idx] = new_dist;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Collect distances
+        all_dist.extend(dist);
+    }
+
+    all_dist
 }
 
 /// Compute batched matrix using K-lane PHAST (without owning data)

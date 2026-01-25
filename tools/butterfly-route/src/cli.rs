@@ -438,6 +438,29 @@ pub enum Commands {
         mode: String,
     },
 
+    /// Validate block-gated PHAST against active-set PHAST
+    ValidateBlockGated {
+        /// Path to cch.*.topo from Step 7
+        #[arg(long)]
+        cch_topo: PathBuf,
+
+        /// Path to cch.w.*.u32 from Step 8
+        #[arg(long)]
+        cch_weights: PathBuf,
+
+        /// Path to order.*.ebg from Step 6
+        #[arg(long)]
+        order: PathBuf,
+
+        /// Comma-separated origin node IDs (EBG nodes)
+        #[arg(long, default_value = "0,1000,10000,100000")]
+        origins: String,
+
+        /// Comma-separated time thresholds in milliseconds
+        #[arg(long, default_value = "60000,300000,600000")]
+        thresholds: String,
+    },
+
     /// Extract frontier on base graph (real road segments, not CCH shortcuts)
     ExtractFrontier {
         /// Path to cch.*.topo from Step 7
@@ -1128,6 +1151,35 @@ impl Cli {
                     origin_node,
                     threshold_ms,
                     mode,
+                )?;
+
+                Ok(())
+            }
+            Commands::ValidateBlockGated {
+                cch_topo,
+                cch_weights,
+                order,
+                origins,
+                thresholds,
+            } => {
+                // Parse origins
+                let origins: Vec<u32> = origins
+                    .split(',')
+                    .filter_map(|s| s.trim().parse().ok())
+                    .collect();
+
+                // Parse thresholds
+                let thresholds: Vec<u32> = thresholds
+                    .split(',')
+                    .filter_map(|s| s.trim().parse().ok())
+                    .collect();
+
+                crate::range::validate_block_gated_phast(
+                    &cch_topo,
+                    &cch_weights,
+                    &order,
+                    &origins,
+                    &thresholds,
                 )?;
 
                 Ok(())

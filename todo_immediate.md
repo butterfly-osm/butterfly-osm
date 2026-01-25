@@ -429,7 +429,7 @@ For directed graphs: **d(s → t) = min over m: d(s → m) + d(m → t)**
 | Lazy deletion heap | +10ms, 75% stale | ❌ Much worse than DecreaseKey |
 | Indexed heap (fixed array) | 57ms (+30%) | ❌ Overhead > savings |
 | Indexed heap (HashMap) | 65ms (+48%) | ❌ Hash overhead worse |
-| Stall-on-demand pruning | 60ms (+36%) | ❌ Check overhead > savings |
+| Stall-on-demand (forward search) | 45ms (2x slower), **0% stall rate** | ❌ **NOT APPLICABLE to edge-based CCH** |
 | Swapped direction (bwd→fwd) | Incorrect | ❌ Wrong semantics for directed |
 | Early-exit pruning (global min_found) | BREAKS CORRECTNESS | ❌ Wrong algorithm |
 
@@ -439,6 +439,13 @@ For directed graphs: **d(s → t) = min over m: d(s → m) + d(m → t)**
 - Early-exit pruning with global `min_found` is INCORRECT (breaks correctness)
   - Tracks min to ANY source, but we might still need paths to OTHER sources
   - Correct early-exit requires per-source upper bounds (complex)
+- **Stall-on-demand NOT applicable to edge-based CCH** (2026-01-25):
+  - OSRM uses stall-on-demand for node-based CH (~1M nodes)
+  - Our edge-based CCH has ~2.4M "nodes" (actually directed edges)
+  - The stall condition (better path via incoming UP edge) never triggers
+  - **0% stall rate** observed across all matrix sizes
+  - Overhead of checking incoming UP edges makes it 2x slower
+  - Root cause: Edge-based hierarchy has different structure from node-based CH
 
 **Improvements achieved:**
 - 44ms → 21.2ms for 10×10 (52% improvement total)
@@ -480,23 +487,61 @@ Edge-based CCH provides exact turn costs but at 2.7-4x computational cost.
 
 ---
 
-### Milestone 7.4: Remaining Options ⬜
+### Milestone 7.4: Hybrid Exact Turn Model ⬜ CRITICAL PATH
 
-**Likely to help:**
-1. **Parallelism** - Now that sequential is optimized (0% stale), parallel can provide linear speedup
-   - Forward phase: Thread-local bucket arenas
-   - Backward phase: Targets update disjoint columns
+**Analysis Result (2026-01-25):**
+- **Complex intersections: 5,726 / 1,907,111 = 0.30%**
+- **Simple intersections: 99.70%**
+- Current EBG: 5,018,890 nodes (2.6x expansion from NBG)
+- Expected hybrid: ~1.9M states (only complex nodes need edge-states)
+- **Expected reduction: 2.6x fewer states → directly attacks the performance gap**
 
-**Unlikely to help much:**
-2. **Stalling heuristics** - Already tried, adds more overhead than it saves
-3. **Aggressive CCH contraction** - Would require re-running Step 7, marginal gains
-4. **Hub labels** - Major algorithm change for O(1) queries (different trade-offs)
+**Why Hybrid Works (Exact, Not Approximation):**
+- Turn costs only matter where they vary by incoming edge
+- 99.70% of intersections have NO turn restrictions
+- Collapsing incoming-edge states at simple nodes doesn't change shortest paths
+- Complex nodes (0.30%) retain full edge-state semantics
 
-**The reality:**
-- Edge-based CCH is inherently ~2.7x more work than node-based CH
-- We've optimized the algorithm to be efficient (0% stale, proper heap)
-- Remaining gap is mostly fundamental architecture cost
-- Parallelism is the most practical path to close remaining gap
+**Implementation Plan:**
+
+1. **Node Classification** (`is_complex(node)`):
+   - Check turn_rules table for any entry involving this node
+   - Complex if: turn restriction, conditional access, u-turn rule, or angle-dependent penalty
+   - All others are simple
+
+2. **Build Hybrid State Graph**:
+   - Simple destination node → represent by node-id state
+   - Complex destination node → represent by (incoming edge-id) state
+   - This is a preprocessing pass before CCH construction
+
+3. **Generate Transitions**:
+   - From node-state → next state based on outgoing edge
+   - From edge-state → next state based on outgoing edge
+   - Destination type determines target state type
+
+4. **Re-run CCH Pipeline**:
+   - Step 6 (ordering) on hybrid state graph
+   - Step 7 (contraction) on hybrid state graph
+   - Step 8 (customization) on hybrid state graph
+   - Query code unchanged (operates on "state graph")
+
+**Expected Impact:**
+- State count: 5M → ~1.9M (2.6x reduction)
+- Edge count: proportional reduction
+- Table gap: 6.4x → ~2.5x (within striking distance of OSRM)
+
+---
+
+### Milestone 7.5: Remaining Options (After Hybrid)
+
+**After hybrid implementation:**
+1. **Parallelism** - Linear speedup on already-efficient sequential algorithm
+2. **CCH edge deduplication** - Remove dominated parallel arcs during customization
+3. **Better contraction order** - Quality ordering → fewer shortcuts
+
+**Deprioritized:**
+- Stalling heuristics (0% stall rate, not applicable to edge-based)
+- Hub labels (different paradigm, significant complexity)
 
 ---
 

@@ -277,6 +277,71 @@ to get `d(m → t)`. Using forward UP search from targets would give `d(t → m)
 
 ---
 
+## CRITICAL PATH: Hybrid Exact Turn Model (2026-01-25)
+
+### The Problem
+
+Current edge-based CCH has **2.6x state expansion** vs node-based:
+- NBG nodes: 1,907,111
+- EBG nodes: 5,018,890 (2.6x)
+- This directly causes the 3-6x performance gap vs OSRM
+
+### The Solution
+
+**Only 0.30% of intersections require edge-based state!**
+
+| Category | Count | Percentage |
+|----------|-------|------------|
+| Complex intersections (turn restrictions) | 5,726 | 0.30% |
+| Simple intersections (no restrictions) | 1,901,385 | 99.70% |
+
+### Hybrid State Graph
+
+Build a mixed-state graph:
+- **Simple nodes** → 1 node-state per directed graph node
+- **Complex nodes** → edge-states (one per incoming edge) as before
+
+This is **exact** (not an approximation):
+- Turn costs only matter where they vary by incoming edge
+- Collapsing states at simple nodes doesn't change shortest paths
+
+### Expected Impact
+
+| Metric | Current | Hybrid | Improvement |
+|--------|---------|--------|-------------|
+| State count | 5.0M | ~1.9M | 2.6x reduction |
+| Edge count | ~18M | ~7M | ~2.5x reduction |
+| Table gap vs OSRM | 6.4x | ~2.5x | Within striking distance |
+
+### Implementation Plan
+
+1. **Node Classification** (`is_complex(node)`)
+   - Check turn_rules table for restrictions at this node
+   - Complex if: any turn restriction, conditional access, angle-dependent penalty
+
+2. **Build Hybrid State Graph** (new step between 4 and 5)
+   - Map original EBG → hybrid states
+   - Simple destination → node-state
+   - Complex destination → edge-state
+
+3. **Re-run CCH Pipeline** (Steps 6-8 unchanged)
+   - Works on hybrid state graph instead of full EBG
+   - Query code unchanged (operates on "state graph")
+
+4. **Validate Correctness**
+   - P2P queries: compare vs full EBG queries
+   - Isochrones: verify reachable sets match
+   - Matrix: compare vs reference
+
+### Why This Beats OSRM
+
+OSRM uses node-based CH (~1.9M nodes) and **ignores most turn restrictions**.
+We use hybrid (~1.9M states) and **handle all turn restrictions exactly**.
+
+Same state count + exact turn semantics = faster AND more correct.
+
+---
+
 ## Future Features
 
 - [ ] Alternative routes
@@ -289,3 +354,58 @@ to get `d(m → t)`. Using forward UP search from targets would give `d(t → m)
 - [ ] Validate routes against reference (OSRM/Valhalla)
 - [ ] Stress test with random queries
 - [ ] Edge case handling (ferries, toll roads, restricted areas)
+
+---
+
+## OSRM Algorithm Analysis (2026-01-25)
+
+### Key Finding: OSRM Uses NO PARALLELISM
+
+The OSRM many-to-many CH implementation (`many_to_many_ch.cpp`) is **purely sequential**.
+Parallelism is NOT why OSRM is fast. Smart algorithms are.
+
+### OSRM's Bucket M2M Structure
+
+```
+Phase 1: Backward searches (SEQUENTIAL)
+  for each target:
+    backward_dijkstra(target)
+    append NodeBucket(node, target_idx, dist) to buckets[]
+
+Phase 2: Sort buckets by node_id (ONCE)
+  std::sort(buckets)
+
+Phase 3: Forward searches (SEQUENTIAL)
+  for each source:
+    forward_dijkstra(source)
+    for each settled node:
+      binary_search(buckets, node)  // std::equal_range
+      update matrix[source][target]
+```
+
+### Why OSRM is Fast
+
+1. **d-ary heap with DecreaseKey** (not lazy reinsert)
+2. **O(1) visited check** via position array
+3. **Stall-on-demand** checks opposite-direction edges
+4. **Binary search** for bucket lookup (not offset arrays)
+5. **No parallel overhead**
+
+### Butterfly vs OSRM Performance Gap
+
+| Size | OSRM | Butterfly | Gap | Root Cause |
+|------|------|-----------|-----|------------|
+| 10×10 | 6ms | 19ms | 3.2x | Parallel overhead, O(n) init |
+| 25×25 | 10ms | 14ms | 1.4x | Still some overhead |
+| 50×50 | 17ms | 21ms | 1.2x | Converging |
+| 100×100 | 35ms | 36ms | 1.0x | Matched |
+
+### Action Items
+
+1. **Remove parallelism** - match OSRM's sequential approach
+2. **Binary search buckets** - not O(n_nodes) offset arrays
+3. **Proper heap** - d-ary with decrease-key
+4. **Fix stall-on-demand** - check opposite direction edges
+5. **Backward-then-forward** - match OSRM order
+
+**Goal: Beat OSRM on 10×10 with algorithms, not threads.**

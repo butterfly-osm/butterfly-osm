@@ -333,6 +333,170 @@ else:
 
 ---
 
+## Benchmark Reference (Belgium, 2026-01-25)
+
+**OSRM CH (docker, port 5050) - SEQUENTIAL, NO PARALLELISM:**
+| Size | Avg | Min | Max |
+|------|-----|-----|-----|
+| 10×10 | 4.5ms | 4.4ms | 4.6ms |
+| 25×25 | 8.7ms | 7.9ms | 9.6ms |
+| 50×50 | 18.9ms | 16.7ms | 19.9ms |
+| 100×100 | 34.6ms | 32.5ms | 37.4ms |
+
+**Butterfly Bucket M2M (sequential, no parallelism):**
+| Size | Avg | Phase Breakdown | Gap vs OSRM |
+|------|-----|-----------------|-------------|
+| 10×10 | 32ms | Fwd: 13ms, Sort: 0ms, Bwd: 17ms | 5.3x slower |
+| 25×25 | 79ms | Fwd: 35ms, Sort: 0ms, Bwd: 41ms | 7.9x slower |
+| 50×50 | 161ms | Fwd: 69ms, Sort: 1ms, Bwd: 87ms | 9.5x slower |
+| 100×100 | 330ms | Fwd: 139ms, Sort: 3ms, Bwd: 187ms | 9.4x slower |
+
+**Optimizations Implemented:**
+| Optimization | Result | Status |
+|--------------|--------|--------|
+| Flat reverse adjacency (embedded weights) | Eliminates 1 indirection in backward | ✅ Done |
+| Sorted buckets (binary search) | 0ms sort vs 15ms prefix-sum build | ✅ Done |
+| Version-stamped distances | O(1) per-search init | ✅ Done |
+| Combined dist+version struct | Cache-friendly 8-byte entries | ✅ Done |
+| Lazy reinsertion (BinaryHeap) | 75% stale rate but no positions array | ✅ Current |
+
+**What's Causing the Remaining 5-9x Gap (NOT "fundamental"):**
+
+The gap is NOT because edge-based CCH is inherently 10x slower. The real multipliers are:
+
+1. **75% stale heap entries = 4x heap operations**
+   - Lazy reinsertion pushes duplicates
+   - OSRM uses proper decrease-key with d-ary heap
+
+2. **Binary search bucket lookup** (O(log n) per settled node)
+   - Should be O(1) with prefix-sum offsets
+   - Current prefix-sum build was 15ms due to allocating 2.4M element arrays per query
+   - **FIX**: Reuse count/offset buffers across queries
+
+3. **BinaryHeap vs 4-ary heap**
+   - 4-ary heap has better cache behavior (4 children per cache line)
+   - Can use lazy reinsertion with 4-ary structure (no positions array needed)
+
+**The edge-based overhead is only ~1.3-2.5x, not 10x:**
+- 2.4M / 1.9M = 1.26x more nodes
+- 15 / 7 = 2.1x more edges per node
+- Combined: ~2.7x more edge relaxations + cache effects
+
+**Target:** 10-20ms for 10×10, 50-120ms for 50×50 (within 2-3x of OSRM)
+
+**Next Steps to Close Gap (in order):**
+1. ✅ Flat reverse adjacency (done)
+2. **4-ary heap with lazy reinsertion** (better cache, no positions array)
+3. **Prefix-sum bucket layout with reused buffers** (O(1) lookup without per-query allocation)
+4. **Re-benchmark** - should get 10-20ms for 10×10
+5. **ONLY THEN**: Consider parallelism for additional throughput
+
+**Run benchmarks:**
+```bash
+# OSRM (must be running on port 5050)
+python3 scripts/osrm_matrix_bench.py
+
+# Butterfly
+./target/release/butterfly-bench bucket-m2m --data-dir ./data/belgium
+```
+
+---
+
+## OSRM Algorithm Analysis (many_to_many_ch.cpp)
+
+**CRITICAL: OSRM uses NO PARALLELISM in core matrix algorithm.**
+
+### Fundamental Architecture Difference
+
+| Aspect | OSRM | Butterfly |
+|--------|------|-----------|
+| **Graph type** | Node-based | Edge-based (bidirectional edges) |
+| **State** | Node ID | Directed edge ID |
+| **Turn costs** | Approximated/ignored | Exact (edge→edge transitions) |
+| **Graph size** | ~1.9M nodes | ~5M edge-states |
+| **CH complexity** | Simpler | ~2.5x more states |
+
+**This matters!** Edge-based CH has inherently more work:
+- More nodes to contract (~5M vs ~1.9M)
+- More edges in hierarchy
+- More bucket items per search
+
+**Goal: Be FASTER than OSRM despite the extra complexity. No excuses.**
+
+### Algorithm Structure
+1. **Backward phase FIRST**: Sequential Dijkstra from each target
+2. **Collect NodeBuckets**: Store (node, target_idx, dist) in flat vector
+3. **Sort buckets** once by node ID
+4. **Forward phase**: Sequential Dijkstra from each source
+5. **Join via binary search**: `std::equal_range` for O(log n) bucket lookup
+
+### Key Implementation Details
+
+**Heap**: d-ary heap with proper DecreaseKey (NOT lazy reinsert)
+```cpp
+// OSRM uses boost::heap::d_ary_heap with index storage
+heap.Insert(to, to_weight, parent);  // or
+heap.DecreaseKey(*toHeapNode);       // proper decrease-key
+```
+
+**Stall-on-Demand**: Check OPPOSITE direction edges
+```cpp
+// In forward search, check backward edges for stalling
+for (edge in opposite_direction_edges) {
+    if (neighbor_in_heap && neighbor.dist + edge.weight < current.dist) {
+        return true;  // stall this node
+    }
+}
+```
+
+**Index Storage**: O(1) "was node visited" lookup
+```cpp
+// ArrayStorage for overlay nodes (dense)
+// UnorderedMapStorage for base nodes (sparse)
+Key peek_index(NodeID node) const { return positions[node]; }
+```
+
+### Why OSRM is Fast
+1. **No parallel overhead** for small matrices
+2. **Proper heap** with O(log n) decrease-key, not O(n) lazy duplicates
+3. **O(1) visited check** via index storage
+4. **Stalling** reduces search space by 20-40%
+5. **Binary search** for bucket lookup is cache-efficient
+
+### Remaining Issues to Fix (Priority Order)
+
+1. **75% stale heap entries** - 4x more heap operations than OSRM
+   - Don't use positions array (9.6MB, causes cache misses)
+   - Instead: 4-ary heap with lazy reinsertion (better cache, fewer ops)
+   - Or: reduce duplicates via stricter relax condition
+
+2. **Per-query array allocation** - O(n_nodes) bucket offset build is 15ms
+   - Fix: Reuse count/offset buffers across queries in `SearchState`
+   - Amortize allocation cost over multiple queries
+
+3. **Binary heap vs 4-ary heap** - Cache behavior matters
+   - 4-ary heap: 4 children per node, shallower tree
+   - Better cache utilization, fewer memory accesses
+
+### Critical Finding: 75% Stale Heap Entries
+
+Profiling revealed that lazy reinsertion causes massive overhead:
+```
+pushes=205K, pops=??, stale=75%
+```
+- For 10×10: ~20K nodes visited, but ~80K heap operations
+- OSRM uses decrease-key or strict duplicate prevention
+- We push duplicates freely → 4x wasted work
+
+**Solutions (pick one):**
+1. **4-ary heap + lazy reinsertion** - Better cache, same semantics
+2. **Strict relax** - Only push if `new_dist < best_seen[u]` (already doing this)
+3. **Small positions array** - Only for visited nodes (sparse), not all 2.4M
+
+The issue is that even with strict relax, the graph structure causes natural re-relaxations.
+
+---
+
 ## Performance Optimization Philosophy
 
 1. **Profile first** — Never optimize without data

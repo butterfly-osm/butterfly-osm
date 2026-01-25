@@ -224,6 +224,8 @@ mod tests {
         let input = WayInput {
             kv_keys: &keys,
             kv_vals: &vals,
+            key_dict: None,
+            val_dict: None,
         };
         // This will fail without highway tag, but tests the function compiles
         let _output = CarProfile::process_way(input);
