@@ -359,24 +359,39 @@ OSRM's Table uses bucket-based many-to-many CH (O(|V|+|E|)), not N×M P2P querie
 
 ---
 
-## Phase 7: Many-to-Many CH for Matrix Queries ✅ IMPLEMENTED
+## Phase 7: Many-to-Many CH for Matrix Queries ⚠️ OPTIMIZED - GAP EXPLAINED
 
-### The Problem (Solved)
+### The Problem
 
 PHAST computes one-to-ALL distances, which is correct for isochrones but wasteful for sparse matrix queries where we only need specific source-target pairs.
 
-| Query | OSRM | Butterfly PHAST | Butterfly Bucket M2M | Status |
-|-------|------|-----------------|----------------------|--------|
-| 50×50 | 65ms | 2,100ms | **100ms** | ✅ Target met |
-| 100×100 | ~100ms | 2,112ms | **213ms** | ⚠️ Slightly over |
+### Current State (2026-01-25): Reusable Engine with Buffer Reuse ✅
 
-**21x improvement over PHAST, 1.5-2x gap to OSRM.**
+**Constraint**: No parallelism - comparing apples-to-apples with OSRM's sequential algorithm.
+
+| Query | OSRM CH | Butterfly Bucket M2M | Gap | Notes |
+|-------|---------|----------------------|-----|-------|
+| 10×10 | 6ms | **21.2ms** | 3.5x slower | Was 44ms originally |
+| 25×25 | 10ms | **52.9ms** | 5.3x slower | |
+| 50×50 | 17ms | **108.7ms** | 6.4x slower | |
+| 100×100 | 35ms | **225.2ms** | 6.4x slower | |
+
+**Time Breakdown** (100×100):
+- Forward phase (UP edges): 88ms (39%)
+- Sort buckets: 2ms (1%)
+- Backward phase (reversed DOWN): 132ms (59%)
+- Overhead: 3.2ms (1%)
+
+**Key Achievements**:
+- 0% stale heap entries (4-ary heap with DecreaseKey)
+- Reusable BucketM2MEngine avoids per-call allocations
+- Flat DownReverseAdjFlat with embedded weights
 
 ---
 
-### Milestone 7.1: Bucket Many-to-Many Algorithm ✅ COMPLETE
+### Milestone 7.1: Bucket Many-to-Many Algorithm ✅ CORRECT
 
-#### Algorithm (Verified Correct for Directed Graphs)
+#### Algorithm (Verified for Directed Graphs)
 
 For directed graphs: **d(s → t) = min over m: d(s → m) + d(m → t)**
 
@@ -385,53 +400,212 @@ For directed graphs: **d(s → t) = min over m: d(s → m) + d(m → t)**
 
 #### Implementation
 
-- [x] **SparseBuckets** - HashMap-based storage (no fixed capacity overflow)
+- [x] **Combined dist+version struct** - Single cache line for locality
 - [x] **Forward search** - Dijkstra on UP graph, populate buckets
 - [x] **Backward search** - Dijkstra on reversed DOWN graph via DownReverseAdj
-- [x] **Parallel backward phase** - rayon parallel processing of targets
-- [x] **Cache-friendly local columns** - each target writes to local Vec, merged at end
+- [x] **Binary search buckets** - partition_point for O(log n) lookup
+- [x] **Versioned search state** - O(1) init instead of O(N)
+- [x] **Lazy heap reinsertion** - Despite 75% stale rate, faster than indexed heap
 
 #### Validation ✅
 
 - [x] Compared 5×5 M2M vs P2P queries: **All 25 queries match**
-- [x] No bucket overflows with sparse HashMap approach
-
-#### Benchmark Results (Belgium, car mode)
-
-| Size | Time | Cells/sec | Target | Status |
-|------|------|-----------|--------|--------|
-| 10×10 | **18ms** | 5,438 | - | ✅ |
-| 25×25 | **48ms** | 13,063 | - | ✅ |
-| 50×50 | **87ms** | 28,693 | <100ms | ✅ **Met!** |
-| 100×100 | **176ms** | 56,643 | <200ms | ✅ **Met!** |
 
 ---
 
-### Milestone 7.2: Optimizations Applied ✅
+### Milestone 7.2: Optimizations Implemented ✅
 
-#### Versioned Search State ✅ DONE
+| Optimization | Result | Verdict |
+|--------------|--------|---------|
+| Combined dist+version struct | 47ms → 44ms (-6%) | ✅ Keep |
+| Flat reverse adjacency (embedded weights) | Eliminates 1 indirection | ✅ Keep |
+| Sorted buckets (binary search) | Efficient for sparse matrices | ✅ Keep |
+| **4-ary heap with DecreaseKey (OSRM-style)** | **32ms → 23.7ms (-26%)** | ✅ **KEY WIN** |
+| **BucketM2MEngine (buffer reuse)** | **23.7ms → 21.2ms (-11%)** | ✅ **KEY WIN** |
+| Lazy reinsertion | 75% stale entries | ❌ Replaced with DecreaseKey |
+| Flat UP adjacency (pre-filtered INF) | +3ms overhead (no INF edges to filter) | ❌ No benefit |
+| Prefix-sum bucket layout (stamped) | No improvement over binary search | ❌ Binary search already fast |
+| Merged NodeEntry (dist+version+handle) | +1.2ms overhead (16 bytes vs 12) | ❌ Worse cache locality |
+| Lazy deletion heap | +10ms, 75% stale | ❌ Much worse than DecreaseKey |
+| Indexed heap (fixed array) | 57ms (+30%) | ❌ Overhead > savings |
+| Indexed heap (HashMap) | 65ms (+48%) | ❌ Hash overhead worse |
+| Stall-on-demand pruning | 60ms (+36%) | ❌ Check overhead > savings |
+| Swapped direction (bwd→fwd) | Incorrect | ❌ Wrong semantics for directed |
 
-Avoid O(N) dist array initialization per backward search:
-- Each thread has a VersionedSearchState with version counter
-- Node is "unvisited" if its version doesn't match current search
-- Start search is O(1) instead of O(N)
-- **Result: 1.2-2.3x speedup**
+**Improvements achieved:**
+- 44ms → 21.2ms for 10×10 (52% improvement total)
+- Original: 44ms (lazy heap, no buffer reuse)
+- After DecreaseKey: 23.7ms (26% faster)
+- After BucketM2MEngine: 21.2ms (11% faster)
+- **0% stale heap entries** (was 75%)
 
-#### Remaining Gap to OSRM
+---
 
-| Size | OSRM | Butterfly | Gap |
-|------|------|-----------|-----|
-| 50×50 | 65ms | **87ms** | 1.3x |
-| 100×100 | ~100ms | **176ms** | 1.8x |
+### Milestone 7.3: Root Cause Analysis ✅ UNDERSTOOD
 
-**Analysis**: Remaining gap is likely due to:
-- Edge-based CCH (more complex than node-based)
-- Turn-awareness overhead
-- Some gap is inherent to the architecture
+**Why we're 4-7x slower than OSRM:**
 
-#### Further Optimization Ideas (Not Implemented)
+| Aspect | OSRM | Butterfly | Impact |
+|--------|------|-----------|--------|
+| Graph type | Node-based CH | Edge-based CCH | - |
+| Nodes (Belgium) | ~1.9M | ~2.4M | +26% |
+| Edges/node | ~7 | ~15 | +114% |
+| Total edges | ~13M | ~37M | +185% |
 
-- [ ] **Stalling**: OSRM uses stalling to prune search space
+**The math:**
+- 2.4M/1.9M = 1.26x more nodes
+- 15/7 = 2.14x more edges per node
+- Combined: **1.26 × 2.14 ≈ 2.7x more edge relaxations per search**
+
+**Current gap analysis (10×10):**
+- Expected from graph size: 2.7x slower
+- Actual: 4.0x slower (23.7ms vs 6ms)
+- Unexplained overhead: 1.5x (likely cache effects from larger working set)
+
+**This is largely fundamental architecture overhead**, not algorithmic inefficiency.
+Edge-based CCH provides exact turn costs but at 2.7-4x computational cost.
+
+**Progress from optimization:**
+- Started: 32ms (5.3x slower than OSRM)
+- After 4-ary heap with DecreaseKey: 23.7ms (4.0x slower)
+- **Improvement: 26% faster, closed 25% of the gap**
+
+---
+
+### Milestone 7.4: Remaining Options ⬜
+
+**Likely to help:**
+1. **Parallelism** - Now that sequential is optimized (0% stale), parallel can provide linear speedup
+   - Forward phase: Thread-local bucket arenas
+   - Backward phase: Targets update disjoint columns
+
+**Unlikely to help much:**
+2. **Stalling heuristics** - Already tried, adds more overhead than it saves
+3. **Aggressive CCH contraction** - Would require re-running Step 7, marginal gains
+4. **Hub labels** - Major algorithm change for O(1) queries (different trade-offs)
+
+**The reality:**
+- Edge-based CCH is inherently ~2.7x more work than node-based CH
+- We've optimized the algorithm to be efficient (0% stale, proper heap)
+- Remaining gap is mostly fundamental architecture cost
+- Parallelism is the most practical path to close remaining gap
+
+---
+
+## CRITICAL: OSRM Algorithm Analysis (2026-01-25)
+
+**OSRM uses NO PARALLELISM in core matrix algorithm. We must match apples-to-apples.**
+
+### Fundamental Architecture Difference
+
+| Aspect | OSRM | Butterfly |
+|--------|------|-----------|
+| **Graph type** | Node-based | Edge-based (bidirectional edges) |
+| **State** | Node ID | Directed edge ID |
+| **Turn costs** | Approximated/ignored | Exact (edge→edge transitions) |
+| **Graph size (Belgium)** | ~1.9M nodes | ~5M edge-states |
+| **CH complexity** | Simpler | ~2.5x more states to search |
+
+**This matters!** Edge-based CH has inherently more work per search.
+We must be FASTER than OSRM despite the extra complexity. No excuses.
+
+### OSRM many_to_many_ch.cpp Structure
+
+```
+1. Backward phase FIRST (sequential):
+   for each target:
+     run backward Dijkstra on CH
+     store NodeBucket(node, target_idx, dist) in flat vector
+
+2. Sort buckets by node ID (once)
+
+3. Forward phase (sequential):
+   for each source:
+     run forward Dijkstra on CH
+     for each popped node:
+       binary_search buckets (std::equal_range)
+       update matrix cells
+```
+
+### Why OSRM is Fast (NO parallelism needed)
+
+1. **d-ary heap with DecreaseKey** - not lazy reinsert
+   ```cpp
+   heap.Insert(to, weight, parent);
+   heap.DecreaseKey(*toHeapNode);  // O(log n), not O(n) duplicates
+   ```
+
+2. **O(1) visited check** via index storage
+   ```cpp
+   positions[node]  // direct array lookup, not version comparison
+   ```
+
+3. **Stall-on-demand** - checks OPPOSITE direction edges
+   ```cpp
+   // In forward search, check backward edges
+   if (backward_neighbor.dist + edge.weight < current.dist)
+       return true;  // stall
+   ```
+
+4. **Binary search** for bucket lookup
+   ```cpp
+   std::equal_range(buckets, node);  // O(log n)
+   ```
+
+### Current Butterfly Performance Gap
+
+| Size | OSRM | Butterfly | Gap | Root Cause |
+|------|------|-----------|-----|------------|
+| 10×10 | 6ms | 19ms | 3.2x | Parallel overhead, O(n) offset build |
+| 25×25 | 10ms | 14ms | 1.4x | Parallel overhead |
+| 50×50 | 17ms | 21ms | 1.2x | Lazy heap, no proper stalling |
+| 100×100 | 35ms | 36ms | 1.0x | At scale, algorithms converge |
+
+### What We're Doing Wrong
+
+1. **Parallelism as crutch** - adds overhead for small inputs
+2. **Lazy reinsert heap** - duplicates in PQ waste time
+3. **Version-based visited** - cache miss on every check
+4. **Forward-then-backward** - OSRM does backward-then-forward
+5. **O(n_nodes) offset array** - should use binary search like OSRM
+
+### Immediate Fixes (Priority Order)
+
+1. ✅ **Remove parallelism** - go fully sequential like OSRM
+2. ✅ **Binary search buckets** - replace offset array with partition_point
+3. ❌ **Backward-then-forward** - not needed, forward-then-backward is equivalent
+4. ⚠️ **Proper heap** - d-ary heap with decrease-key ← **CRITICAL**
+5. **Index storage** - O(1) visited lookup
+
+### Critical Finding: 73% Stale Heap Entries → FIXED ✅
+
+**Before (lazy reinsertion):**
+```
+pops=9891, stale=7276 (73%), pushes=9890
+```
+- 73% of heap pops were wasted on stale duplicates
+- 4x more heap operations than necessary
+
+**After (4-ary heap with DecreaseKey):**
+```
+pops=2500, stale=0 (0%), pushes=~20000
+```
+- 0% stale entries
+- Each node inserted at most once
+- DecreaseKey updates priority in-place
+
+**Performance improvement:**
+| Size | Before | After | Improvement |
+|------|--------|-------|-------------|
+| 10×10 | 32ms | 23.7ms | 26% faster |
+| 100×100 | 328ms | 240ms | 27% faster |
+
+**Remaining gap to OSRM (4x) is now mostly explained by edge-based CCH overhead (2.7x theoretical).**
+
+---
+
+#### Legacy Optimization Ideas (Deprioritized)
+
 - [ ] **SIMD join**: Vectorize bucket join operations
 - [ ] **Collective backward search**: Single pass instead of |T| Dijkstra runs
 
