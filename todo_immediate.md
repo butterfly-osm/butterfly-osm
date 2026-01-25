@@ -500,25 +500,29 @@ Edge-based CCH provides exact turn costs but at 2.7-4x computational cost.
   - **State reduction: 2.62x** (5.0M → 1.9M)
   - **Arc reduction: 2.93x** (14.6M → 4.9M arcs)
 
-**CRITICAL FAILURE (2026-01-25): CCH Contraction Explodes**
+**FIXED (2026-01-25): CCH Contraction Now Works**
 
-Attempted to run CCH Step 7 on hybrid state graph:
-- **Regular EBG CCH**: 30M shortcuts, max_degree=966, completes in 11s
-- **Hybrid CCH**: 187M+ shortcuts at 81%, max_degree=6361, memory explosion
+Initial failure was due to broken coordinate extraction in Step 6:
+- Bug: All states got the same coordinate → spatial partitioning failed → bad ordering
+- Fix: Properly map each hybrid state to its NBG node's coordinate
 
-**Root Cause Analysis:**
-The "one node-state per simple node" design creates **high-degree hub supernodes**:
-- When multiple EBG edges arrive at the same simple NBG node, they collapse to ONE state
-- This creates hubs with extremely high in/out degree
-- CH/CCH shortcut creation cost is O(in_degree × out_degree) per node
-- Hub contraction creates cascading shortcuts through the hierarchy
+After fix:
+- **Regular EBG CCH**: 30M shortcuts, max_degree=966, 2.4M nodes
+- **Hybrid CCH**: 35M shortcuts, max_degree=1338, 1.9M nodes ← NOW WORKS
 
-**Failure Timeline:**
-```
-32%: 6.7M shortcuts, max_degree=394
-37%: 56M shortcuts, max_degree=2658   ← Hub cascade begins
-81%: 187M shortcuts, max_degree=6361  ← Explosion
-```
+**However: Performance is 10% SLOWER, not faster!**
+
+| Metric | Regular | Hybrid | Change |
+|--------|---------|--------|--------|
+| Nodes | 2.4M | 1.9M | -21% ✓ |
+| Edges | 37M | 40M | +8% ✗ |
+| Edges/node | 15.4 | 21.0 | **+36%** ✗ |
+| 100×100 matrix | 227ms | 250ms | +10% ✗ |
+
+**Root Cause:**
+Collapsing edges to node-states **increases edges-per-node** because:
+- Each node-state inherits ALL outgoing edges from ALL collapsed incoming edges
+- This cancels out the benefit of fewer nodes
 
 ---
 
@@ -575,59 +579,74 @@ Even without changing state model, prevent explosion via ordering:
 
 ### Recommended Path Forward
 
-**Equivalence-Class Hybrid (Fix 2) + Degree-Aware Ordering (Fix 3A)**
+**CRITICAL INSIGHT**: Node-state hybrid doesn't reduce edges-per-node. Need TRUE equivalence classes.
 
-Why:
-- Less architecture change than full overlay/MLD
-- Directly targets the hub cause
-- Keeps CH/CCH machinery intact
+**Equivalence-Class Hybrid (Fix 2)** - STILL THE RIGHT APPROACH
+
+The difference from current implementation:
+- Current: One node-state per simple node → edges-per-node INCREASES
+- Needed: Only collapse edges with IDENTICAL outgoing behavior → edges-per-node DECREASES
+
+**True equivalence class definition:**
+Two incoming edges e1, e2 at node v are equivalent if:
+1. They have identical allowed outgoing edges (restriction mask)
+2. They have identical turn costs to each outgoing edge
+
+This is MORE restrictive than "same destination node" and ensures edges-per-node doesn't increase.
 
 **Implementation Plan:**
 
 1. ⬜ **Compute canonical signature per incoming edge at each node:**
    - Restriction mask (hash of restricted outgoing edges)
-   - Penalty parameters (turn cost function identity)
+   - Turn cost vector to all outgoing edges
+   - This is NOT just "same node" but "same behavior"
 
 2. ⬜ **Group incoming edges by identical signature → class_id**
-   - Expected: 2-8 classes per node (most nodes will have 1-2)
+   - Key insight: At simple nodes with uniform turn costs, all edges ARE equivalent
+   - At simple nodes with angle-dependent costs, group by incoming angle bucket
 
 3. ⬜ **Create hybrid states as `(node, class_id)`:**
-   - Simple nodes: bounded number of states (not 1, not |incoming|)
-   - Complex nodes: keep full edge-states
+   - Each class has EXACTLY the outgoing edges of ONE of its members
+   - This guarantees edges-per-node stays constant or decreases
 
-4. ⬜ **Ordering: mark high-degree states (>32) as "late"**
-   - Prevents hub cascade during contraction
+4. ⬜ **Verify edges-per-node before CCH:**
+   - Must be ≤ regular EBG edges-per-node (15.4)
+   - If higher, equivalence classes are wrong
 
-5. ⬜ **Validate p99 degree < 64 before CCH**
-   - If not achieved, refine class computation
-
-**Validation Before Full Build:**
-- [ ] Analyze degree distribution with class-based states
-- [ ] Confirm p99 degree < 64
-- [ ] Run partial contraction to verify no explosion
+**Key Metric to Track:**
+- Edges-per-node ratio: MUST be ≤ 1.0x vs regular CCH
+- Current naive hybrid: 1.36x (WRONG)
+- True equivalence hybrid: should be ~1.0x or lower
 
 ---
 
-### Completed Steps (Before Failure)
+### Completed Steps (Naive Hybrid - WORKS but 10% slower)
 
 1. ✅ **Node Classification** (`is_complex(node)`):
    - 5,719 nodes classified as complex (0.30%)
 
-2. ✅ **Build Hybrid State Graph** (flawed design):
+2. ✅ **Build Hybrid State Graph** (naive design):
    - hybrid/builder.rs, hybrid/state_graph.rs
    - Serialization: formats/hybrid_state.rs
+   - 1.9M states (2.62x reduction), 5.0M arcs (2.93x reduction)
 
-3. ✅ **Step 6 Hybrid Ordering**:
-   - generate_ordering_hybrid() in step6.rs
+3. ✅ **Step 6 Hybrid Ordering** (FIXED coordinate extraction):
+   - Fixed: properly map each state to its NBG node coordinate
    - 4,570 components, 99.3% in largest
+   - 100% coordinate coverage (was broken before)
 
-4. ❌ **Step 7 Hybrid Contraction**: FAILED (shortcut explosion)
+4. ✅ **Step 7 Hybrid Contraction**: 35M shortcuts, max_degree=1338
+   - No longer explodes after coordinate fix!
 
-5. ⬜ **Step 8 Hybrid Customization**: Blocked by Step 7 failure
+5. ✅ **Step 8 Hybrid Customization**: 0% unreachable edges, converged in 2 passes
 
-**Bug fixes applied (still valid):**
+**Result**: Pipeline works but **10% slower** due to 36% higher edges-per-node.
+Need true equivalence-class hybrid to get speedup.
+
+**Bug fixes applied:**
 - Fixed weight indexing: use `weights[tgt_ebg]` not `weights[arc_idx]`
 - Fixed reachability check: only create node-states for reachable NBG nodes
+- Fixed coordinate extraction: map states to proper NBG node coordinates
 
 ---
 
