@@ -349,6 +349,119 @@ Same state count + exact turn semantics = faster AND more correct.
 
 ---
 
+## CRITICAL PATH: Turn Penalty Cost Model (2026-01-25)
+
+### The Problem
+
+Butterfly routes are ~27% faster than OSRM despite correct turn **restriction** enforcement.
+**Root cause**: Missing turn **penalty** cost model.
+
+Turn restrictions (banned turns) are now correctly enforced via arc-level mode_mask filtering.
+But standard turn delays are missing:
+- Left turns at signalized intersections
+- Right turns at busy junctions
+- U-turns everywhere
+- Signal delays at traffic lights
+- Stop sign delays
+- Complex intersection navigation time
+
+### Arc Filtering Fix (Completed)
+
+**Bug fixed**: `FilteredEbg::build()` only checked NODE accessibility, not ARC accessibility.
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Car arcs included | 5,871,801 | 3,750,954 |
+| Arcs correctly filtered | 0 | 2,120,847 (36%) |
+
+**Files changed**:
+- `tools/butterfly-route/src/formats/filtered_ebg.rs` - New `build_with_arc_filter()` function
+- `tools/butterfly-route/src/step5.rs` - Extract mode_masks and pass to arc filter
+
+### Turn Penalty Implementation Plan
+
+#### 1. Turn Geometry Calculation
+
+```rust
+struct TurnGeometry {
+    from_bearing: f32,      // 0-360° heading of incoming edge
+    to_bearing: f32,        // 0-360° heading of outgoing edge
+    angle: f32,             // Signed turn angle (-180 to +180)
+    classification: TurnClass,
+}
+
+enum TurnClass {
+    Straight,   // |angle| < 30°
+    SlightRight, SlightLeft,
+    Right, Left,
+    SharpRight, SharpLeft,
+    UTurn,      // |angle| > 150°
+}
+```
+
+**Bearing calculation**: Use NBG geometry (lat/lon pairs) to compute edge bearings at intersection.
+
+#### 2. Turn Penalty Formula
+
+```
+turn_penalty = base_angle_cost(angle)
+             + signal_delay(has_traffic_signal)
+             + intersection_complexity(degree, road_class_diff)
+```
+
+**Angle-based costs** (car mode):
+| Turn Type | Angle Range | Penalty |
+|-----------|-------------|---------|
+| Straight | |θ| < 30° | 0s |
+| Slight turn | 30° ≤ |θ| < 60° | 2s |
+| Right turn | 60° ≤ θ < 120° | 5s |
+| Left turn | -120° < θ ≤ -60° | 8s |
+| Sharp turn | 120° ≤ |θ| < 150° | 10s |
+| U-turn | |θ| ≥ 150° | 30s |
+
+**Signal delays**:
+| Intersection Type | Delay |
+|------------------|-------|
+| Traffic signal | 15s average |
+| Stop sign | 5s |
+| Give way | 2s |
+| No control | 0s |
+
+**Intersection complexity**:
+| Factor | Delay |
+|--------|-------|
+| High-degree intersection (>4 ways) | +3s |
+| Road class change (highway→residential) | +2s |
+| Crossing major road | +5s |
+
+#### 3. Files to Modify
+
+| File | Change |
+|------|--------|
+| `src/profiles/mod.rs` | Add turn penalty calculation |
+| `src/step4.rs` | Compute turn geometry, store penalties |
+| `src/formats/turn_table.rs` | Store computed penalties |
+| `src/step5.rs` | Read penalties into turn costs |
+
+#### 4. Validation
+
+After implementation:
+- [ ] Re-run OSRM comparison benchmark
+- [ ] Expect routes to be 0-10% slower than OSRM (not 27% faster)
+- [ ] Verify realistic left-turn avoidance in urban areas
+- [ ] Check highway-to-local transition penalties
+
+### Expected Impact
+
+| Metric | Current | Expected |
+|--------|---------|----------|
+| Route speed vs OSRM | 27% faster | ~5% (margin of error) |
+| Turn delays enforced | None | Realistic |
+| Left turn avoidance | None | Yes (urban) |
+| Signal delay modeling | None | 15s average |
+
+---
+
 ## Future Features
 
 - [ ] Alternative routes
