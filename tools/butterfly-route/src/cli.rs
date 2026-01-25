@@ -745,6 +745,30 @@ pub enum Commands {
         outdir: PathBuf,
     },
 
+    /// Build Node-Based CH on NBG (for junction expansion approach)
+    ///
+    /// This builds a contraction hierarchy on the node-based graph (1.9M nodes)
+    /// instead of the edge-based graph (5M nodes). Combined with junction
+    /// expansion at query time, this provides exact turn handling with 2-3x
+    /// less overhead than edge-based CCH.
+    BuildNbgCh {
+        /// Path to nbg.csr from Step 3
+        #[arg(long)]
+        nbg_csr: PathBuf,
+
+        /// Path to nbg.geo from Step 3
+        #[arg(long)]
+        nbg_geo: PathBuf,
+
+        /// Leaf threshold for ND recursion (default: 8192)
+        #[arg(long, default_value = "8192")]
+        leaf_threshold: usize,
+
+        /// Balance epsilon (default: 0.05)
+        #[arg(long, default_value = "0.05")]
+        balance_eps: f32,
+    },
+
     /// Analyze turn model to understand when turns matter
     ///
     /// Answers: How many junctions need expansion for exact turn semantics?
@@ -2020,6 +2044,67 @@ impl Cli {
                 println!();
                 println!("✅ Step 7 (Hybrid) CCH contraction complete!");
                 println!("📋 Lock file: {}", lock_path.display());
+
+                Ok(())
+            }
+            Commands::BuildNbgCh {
+                nbg_csr,
+                nbg_geo,
+                leaf_threshold,
+                balance_eps,
+            } => {
+                use crate::formats::{NbgCsrFile, NbgGeoFile};
+                use crate::nbg_ch::{compute_nbg_ordering, contract_nbg};
+
+                println!("\n=== BUILD NODE-BASED CH ===\n");
+
+                // Load NBG CSR
+                println!("[1/3] Loading NBG CSR...");
+                let nbg_csr_data = NbgCsrFile::read(&nbg_csr)?;
+                println!("  {} nodes, {} edges (undirected)",
+                         nbg_csr_data.n_nodes, nbg_csr_data.n_edges_und);
+
+                // Load NBG Geo
+                println!("[2/3] Loading NBG Geo...");
+                let nbg_geo_data = NbgGeoFile::read(&nbg_geo)?;
+                println!("  {} edges", nbg_geo_data.n_edges_und);
+
+                // Compute ordering
+                println!("\n[Ordering] Computing nested dissection ordering...");
+                let start_order = std::time::Instant::now();
+                let ordering = compute_nbg_ordering(
+                    &nbg_csr_data,
+                    &nbg_geo_data,
+                    leaf_threshold,
+                    balance_eps,
+                )?;
+                let order_time = start_order.elapsed().as_millis();
+                println!("  Ordering complete: {} nodes, {} components, max depth {}",
+                         ordering.n_nodes, ordering.n_components, ordering.max_depth);
+                println!("  Ordering time: {} ms", order_time);
+
+                // Contract
+                println!("\n[Contraction] Contracting NBG...");
+                let start_contract = std::time::Instant::now();
+                let topo = contract_nbg(&nbg_csr_data, &ordering)?;
+                let contract_time = start_contract.elapsed().as_millis();
+
+                println!("\n=== NBG CH COMPLETE ===");
+                println!("  Nodes:      {}", topo.n_nodes);
+                println!("  UP edges:   {}", topo.n_up_edges);
+                println!("  DOWN edges: {}", topo.n_down_edges);
+                println!("  Shortcuts:  {}", topo.n_shortcuts);
+                println!("  Ordering time:    {} ms", order_time);
+                println!("  Contraction time: {} ms", contract_time);
+
+                // Compare with EBG CCH
+                println!("\n=== COMPARISON WITH EBG CCH ===");
+                println!("  EBG CCH: ~5M nodes, ~30M shortcuts (typical)");
+                println!("  NBG CH:  {}M nodes, {}M shortcuts",
+                         topo.n_nodes as f64 / 1_000_000.0,
+                         topo.n_shortcuts as f64 / 1_000_000.0);
+                println!("  Expected speedup: ~{:.1}x fewer nodes to search",
+                         5_000_000.0 / topo.n_nodes as f64);
 
                 Ok(())
             }

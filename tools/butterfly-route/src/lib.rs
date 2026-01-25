@@ -31,6 +31,7 @@ pub mod range;
 pub mod matrix;
 pub mod hybrid;
 pub mod analysis;
+pub mod nbg_ch;
 
 pub use formats::{WaysFile, RelationsFile};
 pub use validate::{LockFile, Step2LockFile};
