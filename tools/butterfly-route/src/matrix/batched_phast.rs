@@ -267,6 +267,194 @@ impl BatchedPhastEngine {
         }
     }
 
+    /// Run K-lane batched PHAST with early-stop and lane masking for bounded queries
+    ///
+    /// Key optimizations for small thresholds:
+    /// 1. Early-stop upward phase: stop each lane when heap min > threshold
+    /// 2. Track active blocks per lane: only process lanes with reachable nodes
+    /// 3. Lane masking in downward: skip lanes that have no active work
+    ///
+    /// This makes batched competitive with single-source for small thresholds,
+    /// while maintaining amortization benefits for large thresholds.
+    pub fn query_batch_bounded(&self, sources: &[u32], threshold: u32) -> BatchedPhastResult {
+        assert!(sources.len() <= K_LANES, "Too many sources for batch");
+        let k = sources.len();
+
+        let start = std::time::Instant::now();
+        let mut stats = BatchedPhastStats {
+            n_sources: k,
+            ..Default::default()
+        };
+
+        // Initialize K distance arrays
+        let mut dist: Vec<Vec<u32>> = (0..k)
+            .map(|_| vec![u32::MAX; self.n_nodes])
+            .collect();
+
+        // Set origin distances
+        for (lane, &src) in sources.iter().enumerate() {
+            dist[lane][src as usize] = 0;
+        }
+
+        // Track which lanes are still active (have nodes within threshold)
+        let mut lane_active = [true; K_LANES];
+        for i in k..K_LANES {
+            lane_active[i] = false;
+        }
+
+        // Per-lane active block bitsets for downward gating
+        const BLOCK_SIZE: usize = 512;
+        let n_blocks = (self.n_nodes + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        let n_words = (n_blocks + 63) / 64;
+        let mut active_blocks: Vec<Vec<u64>> = (0..k)
+            .map(|_| vec![0u64; n_words])
+            .collect();
+
+        // Mark origin blocks as active
+        for (lane, &src) in sources.iter().enumerate() {
+            let block = src as usize / BLOCK_SIZE;
+            active_blocks[lane][block / 64] |= 1u64 << (block % 64);
+        }
+
+        // ============================================================
+        // Phase 1: K upward searches with early-stop per lane
+        // ============================================================
+        let upward_start = std::time::Instant::now();
+
+        for lane in 0..k {
+            let origin = sources[lane];
+            let mut pq: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
+            pq.push(Reverse((0, origin)));
+
+            while let Some(Reverse((d, u))) = pq.pop() {
+                // Early stop: if current min distance exceeds threshold, this lane is done
+                if d > threshold {
+                    break;
+                }
+
+                if d > dist[lane][u as usize] {
+                    continue;
+                }
+
+                stats.upward_settled += 1;
+
+                let up_start = self.topo.up_offsets[u as usize] as usize;
+                let up_end = self.topo.up_offsets[u as usize + 1] as usize;
+
+                for i in up_start..up_end {
+                    let v = self.topo.up_targets[i];
+                    let w = self.weights.up[i];
+
+                    if w == u32::MAX {
+                        continue;
+                    }
+
+                    let new_dist = d.saturating_add(w);
+                    stats.upward_relaxations += 1;
+
+                    if new_dist < dist[lane][v as usize] {
+                        dist[lane][v as usize] = new_dist;
+                        pq.push(Reverse((new_dist, v)));
+
+                        // Track active blocks if within threshold
+                        if new_dist <= threshold {
+                            let v_block = v as usize / BLOCK_SIZE;
+                            active_blocks[lane][v_block / 64] |= 1u64 << (v_block % 64);
+                        }
+                    }
+                }
+            }
+        }
+
+        stats.upward_time_ms = upward_start.elapsed().as_millis() as u64;
+
+        // Count active blocks per lane and mark inactive lanes
+        let mut lane_block_counts = [0usize; K_LANES];
+        for lane in 0..k {
+            lane_block_counts[lane] = active_blocks[lane].iter()
+                .map(|w| w.count_ones() as usize)
+                .sum();
+            if lane_block_counts[lane] == 0 {
+                lane_active[lane] = false;
+            }
+        }
+
+        // ============================================================
+        // Phase 2: K-lane downward scan with lane masking
+        // ============================================================
+        let downward_start = std::time::Instant::now();
+
+        for rank in (0..self.n_nodes).rev() {
+            let u = rank;
+            let block = u / BLOCK_SIZE;
+            let word_idx = block / 64;
+            let bit = 1u64 << (block % 64);
+
+            let down_start = self.topo.down_offsets[u] as usize;
+            let down_end = self.topo.down_offsets[u + 1] as usize;
+
+            if down_start == down_end {
+                continue;
+            }
+
+            // Check which lanes have this block active
+            let mut any_lane_active = false;
+            for lane in 0..k {
+                if lane_active[lane] && (active_blocks[lane][word_idx] & bit) != 0 {
+                    any_lane_active = true;
+                    break;
+                }
+            }
+            if !any_lane_active {
+                continue;
+            }
+
+            // Relax DOWN edges for active lanes only
+            for i in down_start..down_end {
+                let v = self.topo.down_targets[i] as usize;
+                let w = self.weights.down[i];
+
+                if w == u32::MAX {
+                    continue;
+                }
+
+                stats.downward_relaxations += 1;
+
+                // Update only active lanes with this block active
+                for lane in 0..k {
+                    if !lane_active[lane] {
+                        continue;
+                    }
+                    if (active_blocks[lane][word_idx] & bit) == 0 {
+                        continue;
+                    }
+
+                    let d_u = dist[lane][u];
+                    if d_u != u32::MAX {
+                        let new_dist = d_u.saturating_add(w);
+                        if new_dist <= threshold && new_dist < dist[lane][v] {
+                            dist[lane][v] = new_dist;
+                            stats.downward_improved += 1;
+
+                            // Mark target block as active
+                            let v_block = v / BLOCK_SIZE;
+                            active_blocks[lane][v_block / 64] |= 1u64 << (v_block % 64);
+                        }
+                    }
+                }
+            }
+        }
+
+        stats.downward_time_ms = downward_start.elapsed().as_millis() as u64;
+        stats.total_time_ms = start.elapsed().as_millis() as u64;
+
+        BatchedPhastResult {
+            dist,
+            n_lanes: k,
+            stats,
+        }
+    }
+
     /// Run K-lane batched PHAST with rank-aligned CCH
     ///
     /// With rank-aligned CCH (Version 2), this method achieves cache efficiency:

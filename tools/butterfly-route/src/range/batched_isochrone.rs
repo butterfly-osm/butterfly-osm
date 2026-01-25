@@ -135,10 +135,10 @@ impl BatchedIsochroneEngine {
         };
 
         // ============================================================
-        // Phase 1: K-lane batched PHAST (single downward scan for K)
+        // Phase 1: K-lane batched PHAST with early-stop and lane masking
         // ============================================================
         let phast_start = std::time::Instant::now();
-        let phast_result = self.phast.query_batch(origins);
+        let phast_result = self.phast.query_batch_bounded(origins, threshold_ds);
         stats.phast_time_ms = phast_start.elapsed().as_millis() as u64;
 
         // ============================================================
@@ -214,26 +214,29 @@ impl BatchedIsochroneEngine {
     ///
     /// # Arguments
     /// * `origins` - Any number of origin node IDs
-    /// * `threshold_ms` - Time threshold in milliseconds
+    /// * `threshold_ds` - Time threshold in deciseconds
     ///
     /// # Returns
     /// Vector of ContourResult, one per origin
     pub fn query_many(
         &self,
         origins: &[u32],
-        threshold_ms: u32,
+        threshold_ds: u32,
     ) -> Result<Vec<ContourResult>> {
         let mut all_contours = Vec::with_capacity(origins.len());
 
         // Process in batches of K
         for chunk in origins.chunks(K_LANES) {
-            let result = self.query_batch(chunk, threshold_ms)?;
+            let result = self.query_batch(chunk, threshold_ds)?;
             all_contours.extend(result.contours);
         }
 
         Ok(all_contours)
     }
 }
+
+// Re-export the adaptive threshold for external use
+pub const ADAPTIVE_THRESHOLD_DS: u32 = 9000; // 15 min
 
 /// Export multiple contours to separate GeoJSON files
 pub fn export_batch_geojson(
