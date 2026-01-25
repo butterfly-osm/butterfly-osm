@@ -332,6 +332,10 @@ enum Commands {
         #[arg(long, default_value = "10,25,50,100")]
         sizes: String,
 
+        /// Use parallel implementation
+        #[arg(long)]
+        parallel: bool,
+
         /// Random seed
         #[arg(long, default_value = "42")]
         seed: u64,
@@ -502,13 +506,14 @@ fn main() -> anyhow::Result<()> {
             data_dir,
             mode,
             sizes,
+            parallel,
             seed,
         } => {
             let sizes: Vec<usize> = sizes
                 .split(',')
                 .filter_map(|s| s.trim().parse().ok())
                 .collect();
-            run_bucket_m2m_bench(&data_dir, &mode, &sizes, seed)
+            run_bucket_m2m_bench(&data_dir, &mode, &sizes, parallel, seed)
         }
     }
 }
@@ -2372,15 +2377,18 @@ fn run_bucket_m2m_bench(
     data_dir: &PathBuf,
     mode: &str,
     sizes: &[usize],
+    parallel: bool,
     seed: u64,
 ) -> anyhow::Result<()> {
     use butterfly_route::formats::CchTopoFile;
+    use butterfly_route::matrix::bucket_ch::table_bucket_parallel;
 
     println!("═══════════════════════════════════════════════════════════════");
-    println!("  BUCKET MANY-TO-MANY CH BENCHMARK");
+    println!("  BUCKET MANY-TO-MANY CH BENCHMARK {}", if parallel { "(PARALLEL)" } else { "(SEQUENTIAL)" });
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}", mode);
     println!("  Sizes: {:?}", sizes);
+    println!("  Parallel: {}", parallel);
     println!("───────────────────────────────────────────────────────────────");
     println!();
 
@@ -2451,8 +2459,12 @@ fn run_bucket_m2m_bench(
             .map(|_| rng.gen_range(0..n_nodes as u32))
             .collect();
 
-        // Warmup run (using engine to pre-warm allocations)
-        let _ = engine.compute(&topo, &weights, &down_rev_flat, &sources, &targets);
+        // Warmup run
+        if parallel {
+            let _ = table_bucket_parallel(n_nodes, &up_adj_flat, &down_rev_flat, &sources, &targets);
+        } else {
+            let _ = engine.compute(&topo, &weights, &down_rev_flat, &sources, &targets);
+        }
 
         // Benchmark run (average of 3)
         let mut times = Vec::new();
@@ -2460,7 +2472,11 @@ fn run_bucket_m2m_bench(
 
         for _ in 0..3 {
             let start = Instant::now();
-            let (_, stats) = engine.compute(&topo, &weights, &down_rev_flat, &sources, &targets);
+            let (_, stats) = if parallel {
+                table_bucket_parallel(n_nodes, &up_adj_flat, &down_rev_flat, &sources, &targets)
+            } else {
+                engine.compute(&topo, &weights, &down_rev_flat, &sources, &targets)
+            };
             times.push(start.elapsed());
             last_stats = Some(stats);
         }
