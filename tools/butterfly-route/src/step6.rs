@@ -1192,51 +1192,66 @@ pub fn generate_ordering_hybrid(config: Step6HybridConfig) -> Result<Step6Result
 
 /// Extract coordinates for hybrid states
 ///
-/// - Node-states: Use NBG node coordinates
+/// - Node-states: Use NBG node coordinates from edge geometry
 /// - Edge-states: Use head NBG node coordinates (where edge arrives)
 fn extract_hybrid_coordinates(hybrid: &HybridState, nbg_geo: &crate::formats::NbgGeo) -> Result<Vec<(f64, f64)>> {
+    use std::collections::HashMap;
+
+    // Build map from NBG node ID to coordinate
+    // We use the first point of each edge's polyline for u_node,
+    // and the last point for v_node
+    let mut nbg_node_coords: HashMap<u32, (f64, f64)> = HashMap::new();
+
+    for (edge_idx, edge) in nbg_geo.edges.iter().enumerate() {
+        if edge_idx < nbg_geo.polylines.len() {
+            let poly = &nbg_geo.polylines[edge_idx];
+            if !poly.lat_fxp.is_empty() && !poly.lon_fxp.is_empty() {
+                // Use first point for u_node (source)
+                if !nbg_node_coords.contains_key(&edge.u_node) {
+                    let lat = poly.lat_fxp[0] as f64 * 1e-7;
+                    let lon = poly.lon_fxp[0] as f64 * 1e-7;
+                    nbg_node_coords.insert(edge.u_node, (lon, lat));
+                }
+                // Use last point for v_node (target)
+                if !nbg_node_coords.contains_key(&edge.v_node) {
+                    let last = poly.lat_fxp.len() - 1;
+                    let lat = poly.lat_fxp[last] as f64 * 1e-7;
+                    let lon = poly.lon_fxp[last] as f64 * 1e-7;
+                    nbg_node_coords.insert(edge.v_node, (lon, lat));
+                }
+            }
+        }
+    }
+
+    println!("  Built coordinate map for {} NBG nodes", nbg_node_coords.len());
+
+    // Now extract coordinates for each hybrid state
     let mut coords = Vec::with_capacity(hybrid.n_states as usize);
-    let has_polylines = !nbg_geo.polylines.is_empty();
+    let mut found_count = 0usize;
+    let mut fallback_count = 0usize;
 
     for state in 0..hybrid.n_states {
         // Get NBG node for this state
         let nbg_node = hybrid.state_to_nbg(state);
 
-        // Find an edge incident to this NBG node to get coordinates
-        // This is a heuristic - we use the first edge we find
-        let mut found = false;
-
-        // Search for an edge that starts or ends at this NBG node
-        // Use edge geometry for coordinates
-        for (geom_idx, edge) in nbg_geo.edges.iter().enumerate() {
-            // Check if this edge involves our NBG node
-            // We use the edge's geometry as a proxy for the node's location
-            if has_polylines && geom_idx < nbg_geo.polylines.len() {
-                let poly = &nbg_geo.polylines[geom_idx];
-                if !poly.lat_fxp.is_empty() && !poly.lon_fxp.is_empty() {
-                    // Use endpoint of polyline closest to the node
-                    // For node-states we use start, for edge-states we use end
-                    let idx = if state < hybrid.n_node_states {
-                        0 // Start of polyline for node-states
-                    } else {
-                        poly.lat_fxp.len() - 1 // End for edge-states
-                    };
-                    let lat = poly.lat_fxp[idx] as f64 * 1e-7;
-                    let lon = poly.lon_fxp[idx] as f64 * 1e-7;
-                    coords.push((lon, lat));
-                    found = true;
-                    break;
-                }
-            }
-        }
-
-        if !found {
+        if let Some(&(lon, lat)) = nbg_node_coords.get(&nbg_node) {
+            coords.push((lon, lat));
+            found_count += 1;
+        } else {
             // Fallback: use state index as pseudo-coordinate
             // This preserves some locality since states are numbered sequentially
             let idx = state as f64;
             coords.push((idx * 0.0001, idx * 0.0001));
+            fallback_count += 1;
         }
     }
+
+    if fallback_count > 0 {
+        println!("  WARNING: {} states used fallback coordinates ({:.2}%)",
+            fallback_count, 100.0 * fallback_count as f64 / hybrid.n_states as f64);
+    }
+    println!("  Found coordinates for {} states ({:.2}%)",
+        found_count, 100.0 * found_count as f64 / hybrid.n_states as f64);
 
     Ok(coords)
 }
