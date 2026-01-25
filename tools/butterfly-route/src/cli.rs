@@ -647,6 +647,44 @@ pub enum Commands {
         #[arg(long, default_value = "0.05")]
         balance_eps: f32,
     },
+
+    /// Step 7 (Hybrid): Build CCH topology via contraction on hybrid state graph
+    Step7Hybrid {
+        /// Path to hybrid.<mode>.state from Step 5.5
+        #[arg(long)]
+        hybrid_state: PathBuf,
+
+        /// Path to order.hybrid.<mode>.ebg from Step 6 Hybrid
+        #[arg(long)]
+        order: PathBuf,
+
+        /// Mode (car, bike, foot)
+        #[arg(long)]
+        mode: String,
+
+        /// Output directory for cch.hybrid.<mode>.topo
+        #[arg(short, long)]
+        outdir: PathBuf,
+    },
+
+    /// Step 8 (Hybrid): Customize CCH with weights from hybrid state graph
+    Step8Hybrid {
+        /// Path to cch.hybrid.<mode>.topo from Step 7 Hybrid
+        #[arg(long)]
+        cch_topo: PathBuf,
+
+        /// Path to hybrid.<mode>.state from Step 5.5
+        #[arg(long)]
+        hybrid_state: PathBuf,
+
+        /// Mode (car, bike, foot)
+        #[arg(long)]
+        mode: String,
+
+        /// Output directory for cch.w.hybrid.<mode>.u32
+        #[arg(short, long)]
+        outdir: PathBuf,
+    },
 }
 
 impl Cli {
@@ -1648,6 +1686,99 @@ impl Cli {
 
                 println!();
                 println!("✅ Step 6 (Hybrid) ordering complete!");
+                println!("📋 Lock file: {}", lock_path.display());
+
+                Ok(())
+            }
+            Commands::Step7Hybrid {
+                hybrid_state,
+                order,
+                mode,
+                outdir,
+            } => {
+                // Parse mode
+                let mode_enum = match mode.to_lowercase().as_str() {
+                    "car" => Mode::Car,
+                    "bike" => Mode::Bike,
+                    "foot" => Mode::Foot,
+                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
+                };
+
+                let config = step7::Step7HybridConfig {
+                    hybrid_state_path: hybrid_state.clone(),
+                    order_path: order.clone(),
+                    mode: mode_enum,
+                    outdir: outdir.clone(),
+                };
+
+                let result = step7::build_cch_topology_hybrid(config)?;
+
+                // Generate lock file
+                let mode_name = mode.to_lowercase();
+                let lock = serde_json::json!({
+                    "mode": mode_name,
+                    "graph_type": "hybrid",
+                    "topo_path": result.topo_path.display().to_string(),
+                    "n_nodes": result.n_nodes,
+                    "n_original_arcs": result.n_original_arcs,
+                    "n_shortcuts": result.n_shortcuts,
+                    "n_up_edges": result.n_up_edges,
+                    "n_down_edges": result.n_down_edges,
+                    "build_time_ms": result.build_time_ms,
+                    "created_at_utc": chrono::Utc::now().to_rfc3339(),
+                });
+
+                let lock_path = outdir.join(format!("step7.hybrid.{}.lock.json", mode_name));
+                let lock_json = serde_json::to_string_pretty(&lock)?;
+                std::fs::write(&lock_path, lock_json)?;
+
+                println!();
+                println!("✅ Step 7 (Hybrid) CCH contraction complete!");
+                println!("📋 Lock file: {}", lock_path.display());
+
+                Ok(())
+            }
+            Commands::Step8Hybrid {
+                cch_topo,
+                hybrid_state,
+                mode,
+                outdir,
+            } => {
+                // Parse mode
+                let mode_enum = match mode.to_lowercase().as_str() {
+                    "car" => Mode::Car,
+                    "bike" => Mode::Bike,
+                    "foot" => Mode::Foot,
+                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
+                };
+
+                let config = step8::Step8HybridConfig {
+                    cch_topo_path: cch_topo,
+                    hybrid_state_path: hybrid_state,
+                    mode: mode_enum,
+                    outdir: outdir.clone(),
+                };
+
+                let result = step8::customize_cch_hybrid(config)?;
+
+                // Generate lock file
+                let mode_name = mode.to_lowercase();
+                let lock = serde_json::json!({
+                    "mode": mode_name,
+                    "graph_type": "hybrid",
+                    "output_path": result.output_path.display().to_string(),
+                    "n_up_edges": result.n_up_edges,
+                    "n_down_edges": result.n_down_edges,
+                    "customize_time_ms": result.customize_time_ms,
+                    "created_at_utc": chrono::Utc::now().to_rfc3339(),
+                });
+
+                let lock_path = outdir.join(format!("step8.hybrid.{}.lock.json", mode_name));
+                let lock_json = serde_json::to_string_pretty(&lock)?;
+                std::fs::write(&lock_path, lock_json)?;
+
+                println!();
+                println!("✅ Step 8 (Hybrid) CCH customization complete!");
                 println!("📋 Lock file: {}", lock_path.display());
 
                 Ok(())

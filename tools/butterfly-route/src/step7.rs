@@ -965,3 +965,575 @@ fn remap_to_rank_space(
 
     (new_offsets, new_targets, new_is_shortcut, new_middle)
 }
+
+// ==========================================================================
+// Hybrid State Graph CCH Contraction
+// ==========================================================================
+
+use crate::formats::HybridStateFile;
+
+/// Configuration for Step 7 with hybrid state graph
+pub struct Step7HybridConfig {
+    pub hybrid_state_path: PathBuf,
+    pub order_path: PathBuf,
+    pub mode: Mode,
+    pub outdir: PathBuf,
+}
+
+/// Build CCH topology via contraction on hybrid state graph
+pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Result> {
+    let start_time = std::time::Instant::now();
+    let mode_name = match config.mode {
+        Mode::Car => "car",
+        Mode::Bike => "bike",
+        Mode::Foot => "foot",
+    };
+    println!("\n🔨 Step 7: Building CCH topology for {} mode (HYBRID)...\n", mode_name);
+
+    // Load hybrid state graph
+    println!("Loading hybrid state graph ({})...", mode_name);
+    let hybrid = HybridStateFile::read(&config.hybrid_state_path)?;
+    println!("  ✓ {} states, {} arcs", hybrid.n_states, hybrid.n_arcs);
+
+    // Load ordering
+    println!("Loading ordering ({})...", mode_name);
+    let order = OrderEbgFile::read(&config.order_path)?;
+    println!("  ✓ {} nodes", order.n_nodes);
+
+    if hybrid.n_states != order.n_nodes {
+        anyhow::bail!(
+            "Node count mismatch: hybrid has {} states, order has {}",
+            hybrid.n_states,
+            order.n_nodes
+        );
+    }
+
+    let n_nodes = hybrid.n_states as usize;
+    let perm = &order.perm;
+    let inv_perm = &order.inv_perm;
+
+    // Build weighted adjacency for witness search
+    // Hybrid state graph already has weights embedded
+    println!("Building weighted adjacency for witness search...");
+    let weighted_adj: WeightedAdj = (0..n_nodes)
+        .into_par_iter()
+        .map(|u| {
+            let start = hybrid.offsets[u] as usize;
+            let end = hybrid.offsets[u + 1] as usize;
+            let mut adj_map: FxHashMap<u32, u32> = FxHashMap::default();
+            for i in start..end {
+                let v = hybrid.targets[i];
+                if u as u32 == v {
+                    continue;
+                }
+                let edge_weight = hybrid.weights[i];
+                // Take minimum weight if multiple edges to same target
+                adj_map
+                    .entry(v)
+                    .and_modify(|w| *w = (*w).min(edge_weight))
+                    .or_insert(edge_weight);
+            }
+            adj_map
+        })
+        .collect();
+    println!("  ✓ Built weighted adjacency");
+
+    // Build initial higher-neighbor lists
+    println!("\nBuilding initial higher-neighbor lists (parallel)...");
+
+    let (out_higher, in_higher): (Vec<FxHashSet<u32>>, Vec<FxHashSet<u32>>) = {
+        let out: Vec<FxHashSet<u32>> = (0..n_nodes)
+            .into_par_iter()
+            .map(|u| {
+                let rank_u = perm[u];
+                let start = hybrid.offsets[u] as usize;
+                let end = hybrid.offsets[u + 1] as usize;
+                let degree = end - start;
+                let mut set = FxHashSet::with_capacity_and_hasher(degree, Default::default());
+                for i in start..end {
+                    let v = hybrid.targets[i] as usize;
+                    if u != v && perm[v] > rank_u {
+                        set.insert(v as u32);
+                    }
+                }
+                set
+            })
+            .collect();
+
+        let mut in_vecs: Vec<Vec<u32>> = vec![Vec::new(); n_nodes];
+        for u in 0..n_nodes {
+            let rank_u = perm[u];
+            let start = hybrid.offsets[u] as usize;
+            let end = hybrid.offsets[u + 1] as usize;
+            for i in start..end {
+                let v = hybrid.targets[i] as usize;
+                if u != v && rank_u > perm[v] {
+                    in_vecs[v].push(u as u32);
+                }
+            }
+        }
+
+        let in_sets: Vec<FxHashSet<u32>> = in_vecs
+            .into_par_iter()
+            .map(|v| {
+                let mut set = FxHashSet::with_capacity_and_hasher(v.len(), Default::default());
+                set.extend(v);
+                set
+            })
+            .collect();
+
+        (out, in_sets)
+    };
+
+    let mut out_higher = out_higher;
+    let mut in_higher = in_higher;
+    println!("  ✓ Built initial neighbor lists");
+
+    // Stream shortcuts to temp file
+    std::fs::create_dir_all(&config.outdir)?;
+    let shortcut_path = config.outdir.join("shortcuts.hybrid.tmp");
+    let mut shortcut_writer =
+        BufWriter::with_capacity(64 * 1024 * 1024, File::create(&shortcut_path)?);
+    let mut n_shortcuts = 0u64;
+
+    println!("\nContracting nodes (sequential with parallel inner loops)...");
+    let n_threads = rayon::current_num_threads();
+    println!("  Using {} threads for parallel inner loops", n_threads);
+
+    let report_interval = (n_nodes / 100).max(1);
+    let mut last_report = 0;
+    let mut max_degree_seen = 0usize;
+    let mut weighted_adj = weighted_adj;
+
+    // Sequential contraction
+    for rank in 0..n_nodes {
+        if rank - last_report >= report_interval {
+            let pct = (rank as f64 / n_nodes as f64) * 100.0;
+            println!(
+                "  {:5.1}% contracted ({} shortcuts, max_degree={})",
+                pct, n_shortcuts, max_degree_seen
+            );
+            last_report = rank;
+        }
+
+        let v = inv_perm[rank] as usize;
+
+        let in_neighbors: Vec<u32> = std::mem::take(&mut in_higher[v]).into_iter().collect();
+        let out_neighbors: Vec<u32> = std::mem::take(&mut out_higher[v]).into_iter().collect();
+
+        if in_neighbors.is_empty() || out_neighbors.is_empty() {
+            continue;
+        }
+
+        let degree = in_neighbors.len().max(out_neighbors.len());
+        if degree > max_degree_seen {
+            max_degree_seen = degree;
+        }
+
+        let work_amount = in_neighbors.len() * out_neighbors.len();
+        let out_higher_ref = &out_higher;
+        let in_higher_ref = &in_higher;
+        let weighted_adj_ref = &weighted_adj;
+        let v_u32 = v as u32;
+
+        let new_shortcuts: Vec<(u32, u32, u32)> = if work_amount > 1000 {
+            in_neighbors
+                .par_iter()
+                .flat_map(|&u| {
+                    let u_idx = u as usize;
+                    let rank_u = perm[u_idx];
+                    let w_uv = weighted_adj_ref[u_idx]
+                        .get(&v_u32)
+                        .copied()
+                        .unwrap_or(u32::MAX);
+
+                    out_neighbors
+                        .iter()
+                        .filter_map(move |&w| {
+                            if u == w {
+                                return None;
+                            }
+                            let w_idx = w as usize;
+                            let rank_w = perm[w_idx];
+
+                            let already_exists = if rank_w > rank_u {
+                                out_higher_ref[u_idx].contains(&w)
+                            } else {
+                                in_higher_ref[w_idx].contains(&u)
+                            };
+                            if already_exists {
+                                return None;
+                            }
+
+                            let w_vw = weighted_adj_ref[v as usize]
+                                .get(&w)
+                                .copied()
+                                .unwrap_or(u32::MAX);
+                            let shortcut_cost = w_uv.saturating_add(w_vw);
+
+                            Some((u, w, shortcut_cost))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        } else {
+            let mut result = Vec::with_capacity(work_amount);
+            for &u in &in_neighbors {
+                let u_idx = u as usize;
+                let rank_u = perm[u_idx];
+                let w_uv = weighted_adj[u_idx]
+                    .get(&v_u32)
+                    .copied()
+                    .unwrap_or(u32::MAX);
+
+                for &w in &out_neighbors {
+                    if u == w {
+                        continue;
+                    }
+                    let w_idx = w as usize;
+                    let rank_w = perm[w_idx];
+
+                    let already_exists = if rank_w > rank_u {
+                        out_higher[u_idx].contains(&w)
+                    } else {
+                        in_higher[w_idx].contains(&u)
+                    };
+                    if already_exists {
+                        continue;
+                    }
+
+                    let w_vw = weighted_adj[v]
+                        .get(&w)
+                        .copied()
+                        .unwrap_or(u32::MAX);
+                    let shortcut_cost = w_uv.saturating_add(w_vw);
+
+                    result.push((u, w, shortcut_cost));
+                }
+            }
+            result
+        };
+
+        for (u, w, shortcut_cost) in new_shortcuts {
+            shortcut_writer.write_all(&u.to_le_bytes())?;
+            shortcut_writer.write_all(&w.to_le_bytes())?;
+            shortcut_writer.write_all(&(v as u32).to_le_bytes())?;
+            n_shortcuts += 1;
+
+            let u_idx = u as usize;
+            let w_idx = w as usize;
+            let rank_u = perm[u_idx];
+            let rank_w = perm[w_idx];
+
+            if rank_w > rank_u {
+                out_higher[u_idx].insert(w);
+            } else {
+                in_higher[w_idx].insert(u);
+            }
+
+            weighted_adj[u_idx]
+                .entry(w)
+                .and_modify(|existing| *existing = (*existing).min(shortcut_cost))
+                .or_insert(shortcut_cost);
+        }
+    }
+
+    shortcut_writer.flush()?;
+    drop(shortcut_writer);
+    drop(out_higher);
+    drop(in_higher);
+
+    println!("  ✓ Contraction complete: {} shortcuts", n_shortcuts);
+
+    // Build up/down graphs
+    println!("\nBuilding hierarchical graph (parallel)...");
+
+    let up_counts: Vec<usize> = (0..n_nodes)
+        .into_par_iter()
+        .map(|u| {
+            let rank_u = perm[u];
+            let start = hybrid.offsets[u] as usize;
+            let end = hybrid.offsets[u + 1] as usize;
+            let mut count = 0;
+            for i in start..end {
+                let v = hybrid.targets[i] as usize;
+                if u != v && rank_u < perm[v] {
+                    count += 1;
+                }
+            }
+            count
+        })
+        .collect();
+
+    let down_counts: Vec<usize> = (0..n_nodes)
+        .into_par_iter()
+        .map(|u| {
+            let rank_u = perm[u];
+            let start = hybrid.offsets[u] as usize;
+            let end = hybrid.offsets[u + 1] as usize;
+            let mut count = 0;
+            for i in start..end {
+                let v = hybrid.targets[i] as usize;
+                if u != v && rank_u >= perm[v] {
+                    count += 1;
+                }
+            }
+            count
+        })
+        .collect();
+
+    let mut up_counts = up_counts;
+    let mut down_counts = down_counts;
+
+    // Count shortcuts from file
+    {
+        let mut reader =
+            BufReader::with_capacity(64 * 1024 * 1024, File::open(&shortcut_path)?);
+        let mut buf = [0u8; 12];
+        while reader.read_exact(&mut buf).is_ok() {
+            let u = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+            let w = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]) as usize;
+            let rank_u = perm[u];
+            let rank_w = perm[w];
+            if rank_u < rank_w {
+                up_counts[u] += 1;
+            } else {
+                down_counts[u] += 1;
+            }
+        }
+    }
+
+    // Build CSR offsets
+    let mut up_offsets = Vec::with_capacity(n_nodes + 1);
+    let mut offset = 0u64;
+    for &count in &up_counts {
+        up_offsets.push(offset);
+        offset += count as u64;
+    }
+    up_offsets.push(offset);
+    let n_up_edges = offset;
+
+    let mut down_offsets = Vec::with_capacity(n_nodes + 1);
+    let mut offset = 0u64;
+    for &count in &down_counts {
+        down_offsets.push(offset);
+        offset += count as u64;
+    }
+    down_offsets.push(offset);
+    let n_down_edges = offset;
+
+    // Allocate edge arrays
+    let mut up_targets = vec![0u32; n_up_edges as usize];
+    let mut up_is_shortcut = vec![false; n_up_edges as usize];
+    let mut up_middle = vec![u32::MAX; n_up_edges as usize];
+
+    let mut down_targets = vec![0u32; n_down_edges as usize];
+    let mut down_is_shortcut = vec![false; n_down_edges as usize];
+    let mut down_middle = vec![u32::MAX; n_down_edges as usize];
+
+    // Fill arrays - original edges
+    let up_offsets_clone = up_offsets.clone();
+    let down_offsets_clone = down_offsets.clone();
+
+    let up_pos: Vec<std::sync::atomic::AtomicUsize> = up_offsets
+        .iter()
+        .map(|&x| std::sync::atomic::AtomicUsize::new(x as usize))
+        .collect();
+    let down_pos: Vec<std::sync::atomic::AtomicUsize> = down_offsets
+        .iter()
+        .map(|&x| std::sync::atomic::AtomicUsize::new(x as usize))
+        .collect();
+
+    (0..n_nodes).into_par_iter().for_each(|u| {
+        let rank_u = perm[u];
+        let start = hybrid.offsets[u] as usize;
+        let end = hybrid.offsets[u + 1] as usize;
+
+        for i in start..end {
+            let v = hybrid.targets[i];
+            if u == v as usize {
+                continue;
+            }
+            let rank_v = perm[v as usize];
+
+            if rank_u < rank_v {
+                let pos = up_pos[u].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                unsafe {
+                    *up_targets.as_ptr().add(pos).cast_mut() = v;
+                    *up_is_shortcut.as_ptr().add(pos).cast_mut() = false;
+                    *up_middle.as_ptr().add(pos).cast_mut() = u32::MAX;
+                }
+            } else {
+                let pos = down_pos[u].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                unsafe {
+                    *down_targets.as_ptr().add(pos).cast_mut() = v;
+                    *down_is_shortcut.as_ptr().add(pos).cast_mut() = false;
+                    *down_middle.as_ptr().add(pos).cast_mut() = u32::MAX;
+                }
+            }
+        }
+    });
+
+    // Fill shortcuts from file
+    {
+        let mut reader =
+            BufReader::with_capacity(64 * 1024 * 1024, File::open(&shortcut_path)?);
+        let mut buf = [0u8; 12];
+        while reader.read_exact(&mut buf).is_ok() {
+            let u = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+            let w = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+            let middle = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+            let rank_u = perm[u];
+            let rank_w = perm[w as usize];
+            if rank_u < rank_w {
+                let pos = up_pos[u].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                up_targets[pos] = w;
+                up_is_shortcut[pos] = true;
+                up_middle[pos] = middle;
+            } else {
+                let pos = down_pos[u].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                down_targets[pos] = w;
+                down_is_shortcut[pos] = true;
+                down_middle[pos] = middle;
+            }
+        }
+    }
+
+    std::fs::remove_file(&shortcut_path)?;
+
+    // Sort edges within each node
+    println!("  Sorting edges (parallel)...");
+
+    #[derive(Clone, Copy)]
+    struct EdgeData {
+        target: u32,
+        is_shortcut: bool,
+        middle: u32,
+    }
+
+    let up_ranges: Vec<(usize, usize)> = (0..n_nodes)
+        .map(|u| (up_offsets_clone[u] as usize, up_offsets_clone[u + 1] as usize))
+        .collect();
+
+    up_ranges.par_iter().for_each(|&(start, end)| {
+        if end > start {
+            let mut edges: Vec<EdgeData> = (start..end)
+                .map(|i| EdgeData {
+                    target: up_targets[i],
+                    is_shortcut: up_is_shortcut[i],
+                    middle: up_middle[i],
+                })
+                .collect();
+            edges.sort_unstable_by_key(|e| e.target);
+            for (i, edge) in edges.into_iter().enumerate() {
+                unsafe {
+                    *up_targets.as_ptr().add(start + i).cast_mut() = edge.target;
+                    *up_is_shortcut.as_ptr().add(start + i).cast_mut() = edge.is_shortcut;
+                    *up_middle.as_ptr().add(start + i).cast_mut() = edge.middle;
+                }
+            }
+        }
+    });
+
+    let down_ranges: Vec<(usize, usize)> = (0..n_nodes)
+        .map(|u| (down_offsets_clone[u] as usize, down_offsets_clone[u + 1] as usize))
+        .collect();
+
+    down_ranges.par_iter().for_each(|&(start, end)| {
+        if end > start {
+            let mut edges: Vec<EdgeData> = (start..end)
+                .map(|i| EdgeData {
+                    target: down_targets[i],
+                    is_shortcut: down_is_shortcut[i],
+                    middle: down_middle[i],
+                })
+                .collect();
+            edges.sort_unstable_by_key(|e| e.target);
+            for (i, edge) in edges.into_iter().enumerate() {
+                unsafe {
+                    *down_targets.as_ptr().add(start + i).cast_mut() = edge.target;
+                    *down_is_shortcut.as_ptr().add(start + i).cast_mut() = edge.is_shortcut;
+                    *down_middle.as_ptr().add(start + i).cast_mut() = edge.middle;
+                }
+            }
+        }
+    });
+
+    println!(
+        "  ✓ Up graph: {} edges ({} shortcuts)",
+        n_up_edges,
+        up_is_shortcut.iter().filter(|&&x| x).count()
+    );
+    println!(
+        "  ✓ Down graph: {} edges ({} shortcuts)",
+        n_down_edges,
+        down_is_shortcut.iter().filter(|&&x| x).count()
+    );
+
+    // Rank-aligned transformation
+    println!("\nApplying rank-aligned transformation...");
+
+    let rank_to_filtered: Vec<u32> = inv_perm.clone();
+
+    let (rank_up_offsets, rank_up_targets, rank_up_is_shortcut, rank_up_middle) =
+        remap_to_rank_space(
+            &up_offsets,
+            &up_targets,
+            &up_is_shortcut,
+            &up_middle,
+            perm,
+            inv_perm,
+            n_nodes,
+        );
+
+    let (rank_down_offsets, rank_down_targets, rank_down_is_shortcut, rank_down_middle) =
+        remap_to_rank_space(
+            &down_offsets,
+            &down_targets,
+            &down_is_shortcut,
+            &down_middle,
+            perm,
+            inv_perm,
+            n_nodes,
+        );
+
+    println!("  ✓ Rank-aligned transformation complete");
+
+    // Compute inputs SHA
+    let inputs_sha = compute_inputs_sha_streaming(&config.hybrid_state_path, &config.order_path)?;
+
+    // Write output
+    let topo_path = config.outdir.join(format!("cch.hybrid.{}.topo", mode_name));
+
+    println!("\nWriting output...");
+    let topo = CchTopo {
+        n_nodes: hybrid.n_states,
+        n_shortcuts,
+        n_original_arcs: hybrid.n_arcs,
+        inputs_sha,
+        up_offsets: rank_up_offsets,
+        up_targets: rank_up_targets,
+        up_is_shortcut: rank_up_is_shortcut,
+        up_middle: rank_up_middle,
+        down_offsets: rank_down_offsets,
+        down_targets: rank_down_targets,
+        down_is_shortcut: rank_down_is_shortcut,
+        down_middle: rank_down_middle,
+        rank_to_filtered,
+    };
+    CchTopoFile::write(&topo_path, &topo)?;
+    println!("  ✓ Written {}", topo_path.display());
+
+    let build_time_ms = start_time.elapsed().as_millis() as u64;
+
+    Ok(Step7Result {
+        topo_path,
+        mode: config.mode,
+        n_nodes: hybrid.n_states,
+        n_original_arcs: hybrid.n_arcs,
+        n_shortcuts,
+        n_up_edges,
+        n_down_edges,
+        build_time_ms,
+    })
+}
