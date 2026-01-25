@@ -635,11 +635,24 @@ impl SortedBuckets {
         Self { items }
     }
 
+    /// Create from already-sorted items (for parallel sort case)
+    fn from_sorted(items: Vec<(u32, u16, u32)>) -> Self {
+        Self { items }
+    }
+
     #[inline]
     fn get(&self, node: u32) -> impl Iterator<Item = (u16, u32)> + '_ {
         let start = self.items.partition_point(|&(n, _, _)| n < node);
         let end = self.items.partition_point(|&(n, _, _)| n <= node);
         self.items[start..end].iter().map(|&(_, s, d)| (s, d))
+    }
+
+    /// Get bucket items as a slice (for parallel join)
+    #[inline]
+    fn get_slice(&self, node: u32) -> &[(u32, u16, u32)] {
+        let start = self.items.partition_point(|&(n, _, _)| n < node);
+        let end = self.items.partition_point(|&(n, _, _)| n <= node);
+        &self.items[start..end]
     }
 
     fn total_items(&self) -> usize {
@@ -1404,6 +1417,165 @@ fn backward_join_prefix(
         for i in edge_start..edge_end {
             let x = down_rev_flat.sources[i];
             let w = down_rev_flat.weights[i]; // Direct access, no indirection!
+            let new_dist = d.saturating_add(w);
+            state.relax(x, new_dist);
+        }
+    }
+
+    (visited, joins)
+}
+
+// =============================================================================
+// PARALLEL BUCKET M2M
+// =============================================================================
+
+use rayon::prelude::*;
+
+/// Parallel bucket M2M computation
+/// Uses rayon to parallelize both forward and backward phases
+pub fn table_bucket_parallel(
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    down_rev_flat: &DownReverseAdjFlat,
+    sources: &[u32],
+    targets: &[u32],
+) -> (Vec<u32>, BucketM2MStats) {
+    let n_sources = sources.len();
+    let n_targets = targets.len();
+
+    if n_sources == 0 || n_targets == 0 {
+        return (vec![u32::MAX; n_sources * n_targets], BucketM2MStats::default());
+    }
+
+    let mut stats = BucketM2MStats {
+        n_sources,
+        n_targets,
+        ..Default::default()
+    };
+
+    // ========== PHASE 1: Parallel forward searches from SOURCES ==========
+    let forward_start = std::time::Instant::now();
+
+    // Each source produces its own bucket items
+    let bucket_chunks: Vec<Vec<(u32, u16, u32)>> = sources
+        .par_iter()
+        .enumerate()
+        .filter_map(|(source_idx, &source)| {
+            if source as usize >= n_nodes {
+                return None;
+            }
+
+            // Thread-local search state
+            let avg_visited = (n_nodes / 400).max(500).min(20000);
+            let mut state = SearchState::new(n_nodes, avg_visited);
+            let mut bucket_items = Vec::with_capacity(avg_visited);
+
+            forward_fill_buckets_flat(
+                up_adj_flat,
+                source_idx as u16,
+                source,
+                &mut state,
+                &mut bucket_items,
+            );
+
+            Some(bucket_items)
+        })
+        .collect();
+
+    // Merge all bucket chunks
+    let mut bucket_items: Vec<(u32, u16, u32)> = bucket_chunks.into_iter().flatten().collect();
+    stats.forward_visited = bucket_items.len();
+    stats.forward_time_ms = forward_start.elapsed().as_millis() as u64;
+
+    // ========== PHASE 2: Sort buckets (parallel sort) ==========
+    let sort_start = std::time::Instant::now();
+    bucket_items.par_sort_unstable_by_key(|(node, _, _)| *node);
+    let buckets = SortedBuckets::from_sorted(bucket_items);
+    stats.bucket_items = buckets.total_items();
+    stats.bucket_nodes = buckets.n_nodes_with_buckets();
+    stats.sort_time_ms = sort_start.elapsed().as_millis() as u64;
+
+    // ========== PHASE 3: Parallel backward searches from TARGETS ==========
+    let backward_start = std::time::Instant::now();
+
+    // Pre-allocate matrix
+    let matrix: Vec<std::sync::atomic::AtomicU32> = (0..n_sources * n_targets)
+        .map(|_| std::sync::atomic::AtomicU32::new(u32::MAX))
+        .collect();
+
+    // Parallel backward phase - each target can run independently
+    let (total_visited, total_joins): (usize, usize) = targets
+        .par_iter()
+        .enumerate()
+        .filter(|(_, &target)| (target as usize) < n_nodes)
+        .map(|(target_idx, &target)| {
+            // Thread-local search state
+            let avg_visited = (n_nodes / 400).max(500).min(20000);
+            let mut state = SearchState::new(n_nodes, avg_visited);
+
+            backward_join_parallel(
+                down_rev_flat,
+                target,
+                &buckets,
+                &matrix,
+                n_targets,
+                target_idx,
+                &mut state,
+            )
+        })
+        .reduce(|| (0, 0), |(v1, j1), (v2, j2)| (v1 + v2, j1 + j2));
+
+    stats.backward_visited = total_visited;
+    stats.join_operations = total_joins;
+    stats.backward_time_ms = backward_start.elapsed().as_millis() as u64;
+
+    // Convert atomic matrix to regular Vec
+    let result_matrix: Vec<u32> = matrix
+        .into_iter()
+        .map(|a| a.into_inner())
+        .collect();
+
+    (result_matrix, stats)
+}
+
+/// Backward join for parallel execution (uses atomic matrix)
+fn backward_join_parallel(
+    down_rev_flat: &DownReverseAdjFlat,
+    target: u32,
+    buckets: &SortedBuckets,
+    matrix: &[std::sync::atomic::AtomicU32],
+    n_targets: usize,
+    target_idx: usize,
+    state: &mut SearchState,
+) -> (usize, usize) {
+    use std::sync::atomic::Ordering;
+
+    state.start_search();
+    state.relax(target, 0);
+
+    let mut visited = 0usize;
+    let mut joins = 0usize;
+
+    while let Some((d, u)) = state.pop() {
+        visited += 1;
+
+        // Join with buckets at this node
+        for (source_idx, dist_to_source) in buckets.get(u) {
+            joins += 1;
+            let total_dist = dist_to_source.saturating_add(d);
+            let idx = source_idx as usize * n_targets + target_idx;
+
+            // Atomic min update
+            matrix[idx].fetch_min(total_dist, Ordering::Relaxed);
+        }
+
+        // Relax DOWN-reverse edges
+        let edge_start = down_rev_flat.offsets[u as usize] as usize;
+        let edge_end = down_rev_flat.offsets[u as usize + 1] as usize;
+
+        for i in edge_start..edge_end {
+            let x = down_rev_flat.sources[i];
+            let w = down_rev_flat.weights[i];
             let new_dist = d.saturating_add(w);
             state.relax(x, new_dist);
         }
