@@ -1963,11 +1963,14 @@ fn run_klane_bounded_bench(
     n_batches: usize,
     seed: u64,
 ) -> anyhow::Result<()> {
+    // Convert to deciseconds (CCH weight units)
+    let threshold_ds = threshold_ms / 100;
+
     println!("═══════════════════════════════════════════════════════════════");
     println!("  K-LANE BLOCK-GATED PHAST BENCHMARK");
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}", mode);
-    println!("  Threshold: {} ms ({:.1} min)", threshold_ms, threshold_ms as f64 / 60000.0);
+    println!("  Threshold: {} ms = {} ds ({:.1} min)", threshold_ms, threshold_ds, threshold_ms as f64 / 60000.0);
     println!("  Batches: {} × {} lanes = {} total sources", n_batches, K_LANES, n_batches * K_LANES);
     println!();
 
@@ -2008,14 +2011,14 @@ fn run_klane_bounded_bench(
     println!();
 
     // ========== K-lane block-gated PHAST (bounded) ==========
-    println!("[3/3] Running K-lane block-gated PHAST (bounded T={})...", threshold_ms);
+    println!("[3/3] Running K-lane block-gated PHAST (bounded T={} ds)...", threshold_ds);
 
     let mut gated_times: Vec<Duration> = Vec::with_capacity(n_batches);
     let mut gated_stats = BatchedPhastStats::default();
 
     for batch in &sources {
         let start = Instant::now();
-        let result = engine.query_batch_block_gated(batch, threshold_ms);
+        let result = engine.query_batch_block_gated(batch, threshold_ds);
         gated_times.push(start.elapsed());
 
         gated_stats.upward_relaxations += result.stats.upward_relaxations;
@@ -2038,7 +2041,7 @@ fn run_klane_bounded_bench(
 
     // Compare first batch results
     let regular_result = engine.query_batch(&sources[0]);
-    let gated_result = engine.query_batch_block_gated(&sources[0], threshold_ms);
+    let gated_result = engine.query_batch_block_gated(&sources[0], threshold_ds);
 
     let mut mismatches = 0;
     for lane in 0..K_LANES {
@@ -2046,9 +2049,9 @@ fn run_klane_bounded_bench(
             let regular_d = regular_result.dist[lane][node];
             let gated_d = gated_result.dist[lane][node];
 
-            // Both should agree on reachability within threshold
-            let regular_reachable = regular_d <= threshold_ms;
-            let gated_reachable = gated_d <= threshold_ms;
+            // Both should agree on reachability within threshold (using deciseconds)
+            let regular_reachable = regular_d <= threshold_ds;
+            let gated_reachable = gated_d <= threshold_ds;
 
             if regular_reachable != gated_reachable {
                 mismatches += 1;
@@ -2884,10 +2887,13 @@ fn run_contour_compare_bench(
     let mut sparse_contour_times: Vec<u64> = Vec::with_capacity(n_queries);
     let mut sparse_simplify_times: Vec<u64> = Vec::with_capacity(n_queries);
 
+    // Convert threshold_ds to threshold_ms for segment extraction
+    let threshold_ms = threshold_ds * 100;
+
     for (i, &origin) in origins.iter().enumerate() {
         // Run PHAST + frontier (same for both)
         let result = phast.query_active_set(origin, threshold_ds);
-        let segments = extractor.extract_reachable_segments(&result.dist, threshold_ds);
+        let segments = extractor.extract_reachable_segments(&result.dist, threshold_ms);
 
         if segments.is_empty() {
             continue;
