@@ -918,7 +918,27 @@ Turns only matter at **junctions**. Between junctions, travel is edge-weight onl
      → 2.6x fewer nodes, 17x fewer shortcuts!
    ```
 
-3. ⬜ **Implement junction expansion** ← NEXT STEP
+   **Initial Benchmark (no optimizations):**
+   ```
+   NBG CH Bucket M2M (Belgium):
+     10×10:   20ms (OSRM: 4ms)  - 5x gap
+     25×25:   27ms (OSRM: 9ms)  - 3x gap
+     50×50:   37ms (OSRM: 19ms) - 2x gap
+     100×100: 56ms (OSRM: 35ms) - 1.6x gap
+
+   Compare to EBG CCH: was 9-10x slower than OSRM!
+   NBG CH already 2-5x faster than EBG CCH.
+   Gap narrows with larger matrices.
+   ```
+
+3. ⬜ **Optimize NBG CH queries** ← NEXT STEP
+   - Apply same optimizations as EBG bucket M2M:
+     - Flat adjacency structure
+     - Version-stamped distances (O(1) reset)
+     - Sorted buckets with binary search
+   - Target: match or beat OSRM (<20ms for 50×50)
+
+4. ⬜ **Implement junction expansion**
    - At bucket M2M query time:
      - Forward search: at turn-relevant node, expand to (node, in_edge) states
      - Backward search: same expansion
