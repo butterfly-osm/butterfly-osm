@@ -6,6 +6,14 @@
 //! 3. Generating contour polygons for each origin (parallel)
 //!
 //! This amortizes the expensive downward scan across K queries.
+//!
+//! ## Adaptive Mode Selection
+//!
+//! For bounded queries, the optimal algorithm depends on threshold:
+//! - Small thresholds (< 15 min): Single-source + early-stop wins
+//! - Large thresholds (> 20 min): K-lane batching + lane masking wins
+//!
+//! Use `AdaptiveIsochroneEngine` to automatically select the best mode.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -18,6 +26,7 @@ use crate::profile_abi::Mode;
 use super::frontier::{FrontierExtractor, ReachableSegment};
 use super::contour::{ContourResult, export_contour_geojson};
 use super::sparse_contour::{SparseContourConfig, generate_sparse_contour};
+use super::phast::PhastEngine;
 
 /// Result of a batched isochrone query
 #[derive(Debug)]
@@ -235,8 +244,186 @@ impl BatchedIsochroneEngine {
     }
 }
 
-// Re-export the adaptive threshold for external use
-pub const ADAPTIVE_THRESHOLD_DS: u32 = 9000; // 15 min
+/// Threshold in deciseconds below which single-source beats K-lane batched.
+/// Empirically determined on Belgium dataset:
+/// - Below 15 min: single-source + early-stop is faster
+/// - Above 18 min: K-lane batching + lane masking is faster
+pub const ADAPTIVE_THRESHOLD_DS: u32 = 10000; // ~17 min crossover
+
+/// Adaptive isochrone engine that automatically selects the best algorithm.
+///
+/// For small thresholds: uses single-source PHAST with early-stop
+/// For large thresholds: uses K-lane batched PHAST with lane masking
+pub struct AdaptiveIsochroneEngine {
+    /// Single-source PHAST engine (for small thresholds)
+    single_phast: PhastEngine,
+    /// K-lane batched PHAST engine (for large thresholds)
+    batched_phast: BatchedPhastEngine,
+    /// Frontier extractor (shared)
+    extractor: Arc<FrontierExtractor>,
+    /// Sparse contour config
+    config: SparseContourConfig,
+    /// Mode
+    mode: Mode,
+}
+
+impl AdaptiveIsochroneEngine {
+    /// Load adaptive isochrone engine from file paths
+    pub fn load(
+        cch_topo_path: &Path,
+        cch_weights_path: &Path,
+        order_path: &Path,
+        filtered_ebg_path: &Path,
+        ebg_nodes_path: &Path,
+        nbg_geo_path: &Path,
+        base_weights_path: &Path,
+        mode: Mode,
+    ) -> Result<Self> {
+        // Load both PHAST engines (they share the same underlying data)
+        let single_phast = PhastEngine::load(cch_topo_path, cch_weights_path, order_path)?;
+        let batched_phast = BatchedPhastEngine::load(cch_topo_path, cch_weights_path, order_path)?;
+
+        // Load frontier extractor
+        let extractor = FrontierExtractor::load(
+            filtered_ebg_path,
+            ebg_nodes_path,
+            nbg_geo_path,
+            base_weights_path,
+        )?;
+
+        let config = match mode {
+            Mode::Car => SparseContourConfig::for_car(),
+            Mode::Bike => SparseContourConfig::for_bike(),
+            Mode::Foot => SparseContourConfig::for_foot(),
+        };
+
+        Ok(Self {
+            single_phast,
+            batched_phast,
+            extractor: Arc::new(extractor),
+            config,
+            mode,
+        })
+    }
+
+    /// Get number of nodes
+    pub fn n_nodes(&self) -> usize {
+        self.single_phast.n_nodes()
+    }
+
+    /// Generate a single isochrone using the optimal algorithm for the threshold
+    pub fn query_single(&self, origin: u32, threshold_ds: u32) -> Result<ContourResult> {
+        let threshold_ms = threshold_ds * 100;
+
+        // Always use single-source for single queries (no batching benefit)
+        let phast_result = self.single_phast.query_bounded(origin, threshold_ds);
+        let segments = self.extractor.extract_reachable_segments(&phast_result.dist, threshold_ms);
+
+        if segments.is_empty() {
+            return Ok(ContourResult {
+                outer_ring: vec![],
+                holes: vec![],
+                stats: super::contour::ContourStats::default(),
+            });
+        }
+
+        let sparse_result = generate_sparse_contour(&segments, &self.config)?;
+
+        // Convert to ContourResult
+        let elapsed_us = sparse_result.stats.stamp_time_us
+            + sparse_result.stats.morphology_time_us
+            + sparse_result.stats.contour_time_us
+            + sparse_result.stats.simplify_time_us;
+
+        Ok(ContourResult {
+            outer_ring: sparse_result.outer_ring,
+            holes: sparse_result.holes,
+            stats: super::contour::ContourStats {
+                input_segments: sparse_result.stats.input_segments,
+                grid_cols: 0,
+                grid_rows: 0,
+                filled_cells: sparse_result.stats.total_cells_set,
+                contour_vertices_before_simplify: sparse_result.stats.contour_vertices_before_simplify,
+                contour_vertices_after_simplify: sparse_result.stats.contour_vertices_after_simplify,
+                elapsed_ms: elapsed_us / 1000,
+            },
+        })
+    }
+
+    /// Generate multiple isochrones, automatically choosing the best algorithm
+    ///
+    /// - For threshold < ADAPTIVE_THRESHOLD_DS: runs single-source queries
+    /// - For threshold >= ADAPTIVE_THRESHOLD_DS: uses K-lane batching
+    pub fn query_many(&self, origins: &[u32], threshold_ds: u32) -> Result<Vec<ContourResult>> {
+        let threshold_ms = threshold_ds * 100;
+
+        if threshold_ds < ADAPTIVE_THRESHOLD_DS {
+            // Small threshold: single-source is faster
+            // Process sequentially (could parallelize with rayon if needed)
+            let mut results = Vec::with_capacity(origins.len());
+            for &origin in origins {
+                results.push(self.query_single(origin, threshold_ds)?);
+            }
+            Ok(results)
+        } else {
+            // Large threshold: K-lane batching is faster
+            let mut all_contours = Vec::with_capacity(origins.len());
+
+            for chunk in origins.chunks(K_LANES) {
+                let phast_result = self.batched_phast.query_batch_bounded(chunk, threshold_ds);
+
+                // Extract segments and generate contours for each lane
+                let extractor = Arc::clone(&self.extractor);
+                let config = self.config.clone();
+
+                let contours: Vec<ContourResult> = (0..chunk.len())
+                    .into_par_iter()
+                    .filter_map(|lane| {
+                        let segments = extractor.extract_reachable_segments(
+                            &phast_result.dist[lane],
+                            threshold_ms,
+                        );
+                        if segments.is_empty() {
+                            return Some(ContourResult {
+                                outer_ring: vec![],
+                                holes: vec![],
+                                stats: super::contour::ContourStats::default(),
+                            });
+                        }
+                        generate_sparse_contour(&segments, &config).ok().map(|sparse| {
+                            let elapsed_us = sparse.stats.stamp_time_us
+                                + sparse.stats.morphology_time_us
+                                + sparse.stats.contour_time_us
+                                + sparse.stats.simplify_time_us;
+                            ContourResult {
+                                outer_ring: sparse.outer_ring,
+                                holes: sparse.holes,
+                                stats: super::contour::ContourStats {
+                                    input_segments: sparse.stats.input_segments,
+                                    grid_cols: 0,
+                                    grid_rows: 0,
+                                    filled_cells: sparse.stats.total_cells_set,
+                                    contour_vertices_before_simplify: sparse.stats.contour_vertices_before_simplify,
+                                    contour_vertices_after_simplify: sparse.stats.contour_vertices_after_simplify,
+                                    elapsed_ms: elapsed_us / 1000,
+                                },
+                            }
+                        })
+                    })
+                    .collect();
+
+                all_contours.extend(contours);
+            }
+
+            Ok(all_contours)
+        }
+    }
+
+    /// Get the mode being used
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+}
 
 /// Export multiple contours to separate GeoJSON files
 pub fn export_batch_geojson(
