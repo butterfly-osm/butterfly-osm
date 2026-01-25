@@ -586,6 +586,25 @@ pub enum Commands {
         turns: PathBuf,
     },
 
+    /// Analyze equivalence classes to determine if equivalence-class hybrid is worth building
+    EquivalenceAnalysis {
+        /// Path to ebg.nodes from Step 4
+        #[arg(long)]
+        ebg_nodes: PathBuf,
+
+        /// Path to ebg.csr from Step 4
+        #[arg(long)]
+        ebg_csr: PathBuf,
+
+        /// Path to t.<mode>.u32 from Step 5
+        #[arg(long)]
+        turns: PathBuf,
+
+        /// Mode (car, bike, foot)
+        #[arg(long)]
+        mode: String,
+    },
+
     /// Step 5.5: Build hybrid state graph for specified mode
     Step5Hybrid {
         /// Path to ebg.nodes from Step 4
@@ -1519,6 +1538,49 @@ impl Cli {
                 println!("  Arc reduction: {:.2}x → proportional speedup in relaxations", hybrid_graph.stats.arc_reduction_ratio);
                 println!();
                 println!("Next step: Build CCH on hybrid state graph for actual benchmark.");
+
+                Ok(())
+            }
+            Commands::EquivalenceAnalysis {
+                ebg_nodes,
+                ebg_csr,
+                turns,
+                mode,
+            } => {
+                use crate::formats::{EbgNodesFile, EbgCsrFile, mod_turns};
+                use crate::hybrid::analyze_equivalence_classes;
+
+                let mode_name = mode.to_lowercase();
+                println!("\n=== EQUIVALENCE CLASS ANALYSIS ({}) ===\n", mode_name);
+
+                // Load EBG nodes
+                println!("[1/3] Loading EBG nodes...");
+                let ebg_nodes_data = EbgNodesFile::read(&ebg_nodes)?;
+                let ebg_nodes_vec: Vec<(u32, u32)> = ebg_nodes_data.nodes.iter()
+                    .map(|n| (n.tail_nbg, n.head_nbg))
+                    .collect();
+                println!("  ✓ {} EBG nodes", ebg_nodes_vec.len());
+
+                // Load EBG CSR
+                println!("[2/3] Loading EBG CSR...");
+                let ebg_csr_data = EbgCsrFile::read(&ebg_csr)?;
+                println!("  ✓ {} arcs", ebg_csr_data.heads.len());
+
+                // Load turn costs
+                println!("[3/3] Loading turn costs...");
+                let turns_data = mod_turns::read_all(&turns)?;
+                println!("  ✓ {} turn costs", turns_data.penalties.len());
+
+                // Run equivalence analysis
+                println!("\nAnalyzing equivalence classes...");
+                let analysis = analyze_equivalence_classes(
+                    &ebg_nodes_vec,
+                    &ebg_csr_data.offsets,
+                    &ebg_csr_data.heads,
+                    &turns_data.penalties,
+                );
+
+                analysis.print();
 
                 Ok(())
             }
