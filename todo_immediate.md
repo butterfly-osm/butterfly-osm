@@ -709,59 +709,77 @@ Geometry-based ND works better because separators naturally end up late in the o
 
 ---
 
-### Milestone 7.4.2: Constrained Ordering with Densifier Delay ← NEXT
+### Milestone 7.4.2: Constrained Ordering with Densifier Delay ✅ TESTED - NO IMPROVEMENT
 
-**The Smart Fix**: Don't contract densifiers early.
+**Hypothesis**: Delaying high in×out states would reduce fill-in.
 
-**Approach A: Late-Rank Densifiers**
-1. Compute densifier score for each hybrid state: `in(u) × out(u)`
-2. Force top 1-5% highest scores to last X% of ranks
-3. Run geometry ND for the rest with this constraint
+**Experiment Results (2026-01-25):**
 
-**Approach B: Selective Collapse**
-1. Modify hybrid collapse to skip nodes where `in × out > threshold`
-2. Preserve edge-states at combinatorial explosion points
-3. Only collapse at "safe" simple nodes
+1. ✅ **Densifier distribution analysis**
+   - Max in×out: 144 (only 7 states above 100)
+   - 86 states with in×out > 50 (0.004%)
+   - This is actually a VERY LOW densifier count
 
-**Implementation Plan:**
+2. ✅ **Constrained geometry ND**
+   - Added `--densifier-threshold=50` option
+   - Forces 86 high in×out states to late ranks
 
-1. ⬜ **Compute densifier distribution**
-   - Histogram of `in × out` for all hybrid states
-   - Identify top 0.1%, 1%, 5% thresholds
-   - Check if these are where max_degree explodes during contraction
+3. ✅ **Results: MADE THINGS WORSE**
 
-2. ⬜ **Experiment A: Constrained geometry ND**
-   - Add `force_late_ranks: Vec<u32>` to ordering config
-   - Force high in×out nodes to rank > 95th percentile
-   - Run Step 6/7/8 and measure shortcuts/arc
+| Metric | No Delay | With Delay (50) | Change |
+|--------|----------|-----------------|--------|
+| Shortcuts | 86.9M | 89.1M | **+2.5% WORSE** |
+| Up edges | 71.1M | 73.1M | +2.8% |
+| Down edges | 20.9M | 21.1M | +0.9% |
+| Up/Down ratio | 3.40x | 3.46x | Slightly worse |
 
-3. ⬜ **Experiment B: Selective collapse**
-   - Add threshold to equiv_builder: skip collapse if `in × out > T`
-   - Rebuild hybrid with selective collapse
-   - Run Step 6/7/8 and measure
+**Conclusion**: The 86 densifiers are NOT the root cause.
 
-4. ⬜ **Success criteria**
-   - Shortcuts/arc drops from 17x toward 5-8x
-   - Max degree stays bounded (< 1500)
-   - Query performance improves vs regular EBG CCH
+---
 
-**Why This Should Work:**
+### Milestone 7.4.3: Hybrid CCH ❌ ABANDONED
 
-| Node Type | in×out | Should Collapse? | Should Contract? |
-|-----------|--------|------------------|------------------|
-| Simple 2-way | 4 | ✅ Yes | Early (low degree) |
-| Simple 4-way | 16 | ✅ Yes | Mid (moderate) |
-| Complex hub | 100+ | ❌ No | Late (apex node) |
+**Final Verdict (2026-01-25):**
 
-The biclique fill-in only happens when high in×out nodes are contracted.
-If they stay at the top of the hierarchy, they cause no shortcuts.
+Equivalence-class hybrid is **structurally incompatible with CCH**.
 
-**If Both Approaches Fail:**
+**Evidence:**
+- Geometry-based ND: 86.9M shortcuts (17.1x per arc)
+- BFS ordering: 365M+ shortcuts (catastrophic)
+- Densifier delay: 89.1M shortcuts (worse)
+- Regular EBG CCH: 30.9M shortcuts (5.25x per arc)
 
-Then hybrid is structurally incompatible with CCH, and we:
-- Keep full edge-based CCH for turn-exactness
-- Accept 4-7x OSRM gap as "cost of exact turns"
-- Close gap with parallelism (later milestone)
+**Root Cause Analysis:**
+
+Road networks have good CCH separators because they're **nearly planar**.
+Equivalence-class collapse destroys this property:
+- Creates non-local connections (edges skip over spatial regions)
+- Cross-cutting arcs force shortcuts to bridge remote hierarchy levels
+- Result: 3x more shortcuts than uncollapsed EBG
+
+The problem is NOT:
+- ❌ Individual high-degree densifiers (max in×out=144, only 7 above 100)
+- ❌ Ordering algorithm choice (both geometry and BFS failed)
+- ❌ Contraction being too aggressive
+
+The problem IS:
+- ✅ The collapse transformation fundamentally changes graph structure
+- ✅ Non-planar connections created by collapse
+- ✅ Separator quality destroyed regardless of ordering
+
+**Impact on Project:**
+
+| Approach | Shortcuts/arc | Status |
+|----------|---------------|--------|
+| Regular EBG CCH | 5.25x | ✅ Use this |
+| Naive hybrid | - | ❌ Abandoned (degree +36%) |
+| Equiv-class hybrid | 17.11x | ❌ Abandoned (fill-in 3x worse) |
+
+**Path Forward:**
+1. Keep full edge-based CCH for turn-exactness
+2. Accept 4-7x OSRM gap as "cost of exact turns"
+3. Close gap with **parallelism** (Milestone 7.5)
+4. Can still achieve sub-20ms for 10×10 with 4-8 parallel searches
 
 ---
 
