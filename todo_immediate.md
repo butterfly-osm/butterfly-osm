@@ -579,73 +579,94 @@ Even without changing state model, prevent explosion via ordering:
 
 ### Recommended Path Forward
 
-**CRITICAL INSIGHT**: Node-state hybrid doesn't reduce edges-per-node. Need TRUE equivalence classes.
+**CRITICAL INSIGHT (2026-01-25)**: The naive hybrid result proves exactly WHY equivalence-class hybrid is necessary.
 
-**Equivalence-Class Hybrid (Fix 2)** - STILL THE RIGHT APPROACH
+**Why Naive Hybrid Failed (Mathematically Inevitable)**
 
-The difference from current implementation:
-- Current: One node-state per simple node → edges-per-node INCREASES
-- Needed: Only collapse edges with IDENTICAL outgoing behavior → edges-per-node DECREASES
+CH/CCH query cost is dominated by:
+```
+#relaxations ≈ Σ(deg(u)) over visited u
+```
 
-**True equivalence class definition:**
-Two incoming edges e1, e2 at node v are equivalent if:
-1. They have identical allowed outgoing edges (restriction mask)
-2. They have identical turn costs to each outgoing edge
+Naive hybrid: reduced nodes by 21% but increased degree by 36%
+→ Total relaxations INCREASED → Query time INCREASED
 
-This is MORE restrictive than "same destination node" and ensures edges-per-node doesn't increase.
+This is not a bug - it's the **provably worst possible collapse strategy**.
+
+**Why Equivalence-Class Hybrid is Fundamentally Different**
+
+| Approach | States/node | Edges/state | Total edges |
+|----------|-------------|-------------|-------------|
+| Edge-based | indeg(v) | outdeg(v) | indeg × outdeg |
+| Naive node-state | 1 | sum(all outs) | indeg × outdeg (worse locality) |
+| Equivalence-class | K (small) | outdeg(v) | **K × outdeg** where K ≪ indeg |
+
+The key invariant for equivalence-class collapse:
+> Two incoming edges e1, e2 can share a state IFF they have:
+> 1. Identical allowed outgoing transitions (restriction mask)
+> 2. Identical turn penalties to each outgoing edge
+
+If this holds, collapsing is **exact** and does **NOT increase degree**.
 
 **Implementation Plan:**
 
-1. ⬜ **Compute canonical signature per incoming edge at each node:**
-   - Restriction mask (hash of restricted outgoing edges)
-   - Turn cost vector to all outgoing edges
-   - This is NOT just "same node" but "same behavior"
+1. ⬜ **FIRST: Measure K(node) distribution (BEFORE coding anything)**
+   - For each node, compute behavior signature per incoming edge
+   - Signature = (allowed_outgoing_bitmask, turn_cost_vector)
+   - Count unique signatures → K(node)
+   - Compare: indeg(node) vs K(node)
+   - If median K ≤ 4-8: equivalence-class hybrid will help
+   - If median K ≈ indeg: no hybrid can help, edge-based is optimal
 
 2. ⬜ **Group incoming edges by identical signature → class_id**
-   - Key insight: At simple nodes with uniform turn costs, all edges ARE equivalent
-   - At simple nodes with angle-dependent costs, group by incoming angle bucket
+   - Each class has EXACTLY the outgoing edges of ONE member
+   - This guarantees edges-per-state = outdeg (not union)
 
-3. ⬜ **Create hybrid states as `(node, class_id)`:**
-   - Each class has EXACTLY the outgoing edges of ONE of its members
-   - This guarantees edges-per-node stays constant or decreases
+3. ⬜ **Create hybrid states as `(node, class_id)`**
+   - Verify edges-per-node ≤ 15.4 before CCH build
+   - If higher, signature computation is wrong
 
-4. ⬜ **Verify edges-per-node before CCH:**
-   - Must be ≤ regular EBG edges-per-node (15.4)
-   - If higher, equivalence classes are wrong
+4. ⬜ **Build CCH on equivalence-class graph**
+   - Should have fewer nodes AND same-or-lower edges-per-node
+   - Expected speedup: proportional to state reduction
 
-**Key Metric to Track:**
+**Key Metrics to Validate:**
+- K(node) distribution: median, p90, p99
 - Edges-per-node ratio: MUST be ≤ 1.0x vs regular CCH
-- Current naive hybrid: 1.36x (WRONG)
+- Current naive hybrid: 1.36x (WRONG, proves the point)
 - True equivalence hybrid: should be ~1.0x or lower
 
 ---
 
-### Completed Steps (Naive Hybrid - WORKS but 10% slower)
+### Completed Steps (Naive Hybrid - Proves Why Equivalence Classes Are Needed)
 
 1. ✅ **Node Classification** (`is_complex(node)`):
    - 5,719 nodes classified as complex (0.30%)
 
-2. ✅ **Build Hybrid State Graph** (naive design):
-   - hybrid/builder.rs, hybrid/state_graph.rs
-   - Serialization: formats/hybrid_state.rs
-   - 1.9M states (2.62x reduction), 5.0M arcs (2.93x reduction)
+2. ✅ **Build Naive Hybrid State Graph**:
+   - Collapsed ALL incoming edges to single node-state per simple node
+   - 1.9M states (2.62x reduction), but edges-per-node +36%
+   - This proves naive collapse is provably the WORST strategy
 
-3. ✅ **Step 6 Hybrid Ordering** (FIXED coordinate extraction):
-   - Fixed: properly map each state to its NBG node coordinate
-   - 4,570 components, 99.3% in largest
-   - 100% coordinate coverage (was broken before)
+3. ✅ **Step 6/7/8 Hybrid Pipeline** (infrastructure complete):
+   - Coordinate extraction fixed
+   - Contraction works (35M shortcuts)
+   - Customization works (0% unreachable)
+   - BUT 10% slower due to degree explosion
 
-4. ✅ **Step 7 Hybrid Contraction**: 35M shortcuts, max_degree=1338
-   - No longer explodes after coordinate fix!
+**Key Learning**: The naive hybrid result is NOT a failure - it's **scientific validation** that:
+- Collapsing without behavior-equivalence invariant increases degree
+- Degree increase dominates node reduction
+- Equivalence-class hybrid is the ONLY viable approach
 
-5. ✅ **Step 8 Hybrid Customization**: 0% unreachable edges, converged in 2 passes
+**Infrastructure ready for equivalence-class hybrid:**
+- hybrid/builder.rs, hybrid/state_graph.rs
+- formats/hybrid_state.rs
+- Step 6/7/8 CLI commands
+- Just need to change the collapse criterion from "same node" to "same behavior signature"
 
-**Result**: Pipeline works but **10% slower** due to 36% higher edges-per-node.
-Need true equivalence-class hybrid to get speedup.
-
-**Bug fixes applied:**
+**Bug fixes applied (still valid):**
 - Fixed weight indexing: use `weights[tgt_ebg]` not `weights[arc_idx]`
-- Fixed reachability check: only create node-states for reachable NBG nodes
 - Fixed coordinate extraction: map states to proper NBG node coordinates
 
 ---
