@@ -897,15 +897,28 @@ Turns only matter at **junctions**. Between junctions, travel is edge-weight onl
    - Expected overhead: minimal (most searches never hit restricted junctions)
    - This validates the junction expansion approach!
 
-2. 🔄 **Build node-based CH** ← IN PROGRESS
-   - Module created: `src/nbg_ch/` (ordering.rs, contraction.rs, weights.rs)
+2. ✅ **Build node-based CH** (COMPLETED 2026-01-25)
+   - Module: `src/nbg_ch/` (ordering.rs, contraction.rs)
    - CLI command: `build-nbg-ch`
-   - Uses existing NBG from Step 3 (1.9M nodes, 2.5M edges)
-   - **Issue**: Naive contraction (no witness search) is too slow
-   - **Need**: Implement proper witness search to avoid unnecessary shortcuts
-   - Expected: ~10M shortcuts with witness search (vs ~30M for EBG CCH)
+   - **Fully parallelized**: 2.4 seconds total build time
+     - Ordering: 1.3s (parallel nested dissection)
+     - Contraction: 0.7s (parallel batched shortcuts)
 
-3. ⬜ **Implement junction expansion**
+   **Results (Belgium):**
+   ```
+   NBG CH (node-based):
+     Nodes:     1,907,139 (vs 5M for EBG)
+     Shortcuts: 1,758,274 (vs ~30M for EBG CCH!)
+     UP edges:  3,243,447
+     DOWN edges: 3,276,342
+
+   Comparison:
+     EBG CCH: 5M nodes, ~30M shortcuts
+     NBG CH:  1.9M nodes, 1.8M shortcuts
+     → 2.6x fewer nodes, 17x fewer shortcuts!
+   ```
+
+3. ⬜ **Implement junction expansion** ← NEXT STEP
    - At bucket M2M query time:
      - Forward search: at turn-relevant node, expand to (node, in_edge) states
      - Backward search: same expansion
