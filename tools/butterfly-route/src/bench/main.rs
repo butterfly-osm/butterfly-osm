@@ -2405,15 +2405,19 @@ fn run_bucket_m2m_bench(
 
     println!("Loading CCH weights from {:?}...", weights_path);
     let weights = CchWeightsFile::read(&weights_path)?;
-    println!("  ✓ {} up weights, {} down weights", weights.up.len(), weights.down.len());
+    let up_inf = weights.up.iter().filter(|&&w| w == u32::MAX).count();
+    let down_inf = weights.down.iter().filter(|&&w| w == u32::MAX).count();
+    println!("  ✓ {} up weights ({} INF = {:.1}%), {} down weights ({} INF = {:.1}%)",
+             weights.up.len(), up_inf, 100.0 * up_inf as f64 / weights.up.len() as f64,
+             weights.down.len(), down_inf, 100.0 * down_inf as f64 / weights.down.len() as f64);
 
-    println!("Building DownReverseAdj (for reverse/backward search)...");
-    let down_rev = build_down_rev(&topo);
-    println!("  ✓ {} reverse entries", down_rev.sources.len());
-
-    println!("Building DownReverseAdjFlat (optimized with embedded weights)...");
+    println!("Building DownReverseAdjFlat (optimized backward adjacency)...");
     let down_rev_flat = DownReverseAdjFlat::build(&topo, &weights);
     println!("  ✓ {} flat reverse entries", down_rev_flat.sources.len());
+
+    println!("Building DownReverseAdj (for P2P validation)...");
+    let down_rev = build_down_rev(&topo);
+    println!("  ✓ {} reverse entries", down_rev.sources.len());
     println!();
 
     // Run benchmarks for each size
@@ -2499,8 +2503,8 @@ fn run_bucket_m2m_bench(
     let val_sources: Vec<u32> = (0..5).map(|_| val_rng.gen_range(0..n_nodes as u32)).collect();
     let val_targets: Vec<u32> = (0..5).map(|_| val_rng.gen_range(0..n_nodes as u32)).collect();
 
-    // Run bucket M2M
-    let (m2m_matrix, _) = table_bucket_optimized(&topo, &weights, &down_rev_flat, &val_sources, &val_targets);
+    // Run bucket M2M (using the same engine as benchmarks)
+    let (m2m_matrix, _) = engine.compute(&topo, &weights, &down_rev_flat, &val_sources, &val_targets);
 
     // Run P2P queries for comparison
     let mut mismatches = 0;

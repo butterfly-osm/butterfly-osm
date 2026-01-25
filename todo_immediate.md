@@ -423,7 +423,7 @@ For directed graphs: **d(s → t) = min over m: d(s → m) + d(m → t)**
 | **4-ary heap with DecreaseKey (OSRM-style)** | **32ms → 23.7ms (-26%)** | ✅ **KEY WIN** |
 | **BucketM2MEngine (buffer reuse)** | **23.7ms → 21.2ms (-11%)** | ✅ **KEY WIN** |
 | Lazy reinsertion | 75% stale entries | ❌ Replaced with DecreaseKey |
-| Flat UP adjacency (pre-filtered INF) | +3ms overhead (no INF edges to filter) | ❌ No benefit |
+| Flat UP adjacency (pre-filtered INF) | +3ms overhead (0 INF edges to filter) | ❌ No benefit |
 | Prefix-sum bucket layout (stamped) | No improvement over binary search | ❌ Binary search already fast |
 | Merged NodeEntry (dist+version+handle) | +1.2ms overhead (16 bytes vs 12) | ❌ Worse cache locality |
 | Lazy deletion heap | +10ms, 75% stale | ❌ Much worse than DecreaseKey |
@@ -431,6 +431,14 @@ For directed graphs: **d(s → t) = min over m: d(s → m) + d(m → t)**
 | Indexed heap (HashMap) | 65ms (+48%) | ❌ Hash overhead worse |
 | Stall-on-demand pruning | 60ms (+36%) | ❌ Check overhead > savings |
 | Swapped direction (bwd→fwd) | Incorrect | ❌ Wrong semantics for directed |
+| Early-exit pruning (global min_found) | BREAKS CORRECTNESS | ❌ Wrong algorithm |
+
+**Key Discovery (2026-01-25):**
+- CCH weights have **0 INF edges** after step8 customization
+- INF check in forward loop has near-zero overhead (branch perfectly predicted)
+- Early-exit pruning with global `min_found` is INCORRECT (breaks correctness)
+  - Tracks min to ANY source, but we might still need paths to OTHER sources
+  - Correct early-exit requires per-source upper bounds (complex)
 
 **Improvements achieved:**
 - 44ms → 21.2ms for 10×10 (52% improvement total)
