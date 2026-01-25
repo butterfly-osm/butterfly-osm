@@ -620,6 +620,33 @@ pub enum Commands {
         #[arg(short, long)]
         outdir: PathBuf,
     },
+
+    /// Step 6 (Hybrid): Generate CCH ordering on hybrid state graph
+    Step6Hybrid {
+        /// Path to hybrid.<mode>.state from Step 5.5
+        #[arg(long)]
+        hybrid_state: PathBuf,
+
+        /// Path to nbg.geo from Step 3 (for coordinates)
+        #[arg(long)]
+        nbg_geo: PathBuf,
+
+        /// Mode (car, bike, foot)
+        #[arg(long)]
+        mode: String,
+
+        /// Output directory for order.hybrid.<mode>.ebg
+        #[arg(short, long)]
+        outdir: PathBuf,
+
+        /// Leaf threshold for recursion (default: 8192)
+        #[arg(long, default_value = "8192")]
+        leaf_threshold: usize,
+
+        /// Balance epsilon (default: 0.05)
+        #[arg(long, default_value = "0.05")]
+        balance_eps: f32,
+    },
 }
 
 impl Cli {
@@ -1572,6 +1599,56 @@ impl Cli {
                 println!("Arc reduction: {:.2}x", hybrid_graph.stats.arc_reduction_ratio);
                 println!();
                 println!("Next: Run Step 6 ordering on hybrid.{}.state", mode_name);
+
+                Ok(())
+            }
+            Commands::Step6Hybrid {
+                hybrid_state,
+                nbg_geo,
+                mode,
+                outdir,
+                leaf_threshold,
+                balance_eps,
+            } => {
+                // Parse mode
+                let mode_enum = match mode.to_lowercase().as_str() {
+                    "car" => Mode::Car,
+                    "bike" => Mode::Bike,
+                    "foot" => Mode::Foot,
+                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
+                };
+
+                let config = step6::Step6HybridConfig {
+                    hybrid_state_path: hybrid_state.clone(),
+                    nbg_geo_path: nbg_geo,
+                    mode: mode_enum,
+                    outdir: outdir.clone(),
+                    leaf_threshold,
+                    balance_eps,
+                };
+
+                let result = step6::generate_ordering_hybrid(config)?;
+
+                // Generate lock file
+                let mode_name = mode.to_lowercase();
+                let lock = serde_json::json!({
+                    "mode": mode_name,
+                    "graph_type": "hybrid",
+                    "order_path": result.order_path.display().to_string(),
+                    "n_nodes": result.n_nodes,
+                    "n_components": result.n_components,
+                    "tree_depth": result.tree_depth,
+                    "build_time_ms": result.build_time_ms,
+                    "created_at_utc": chrono::Utc::now().to_rfc3339(),
+                });
+
+                let lock_path = outdir.join(format!("step6.hybrid.{}.lock.json", mode_name));
+                let lock_json = serde_json::to_string_pretty(&lock)?;
+                std::fs::write(&lock_path, lock_json)?;
+
+                println!();
+                println!("✅ Step 6 (Hybrid) ordering complete!");
+                println!("📋 Lock file: {}", lock_path.display());
 
                 Ok(())
             }
