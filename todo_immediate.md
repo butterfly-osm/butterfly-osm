@@ -35,9 +35,52 @@ When heap minimum > threshold, stop upward search (exact, no approximation).
 
 - Small thresholds: Single-source + early-stop wins (most upward work skipped)
 - Large thresholds: K-lane batching wins (downward amortization helps)
-- TODO: Add early-stop to batched PHAST for best of both
+- ✅ Early-stop added to batched PHAST (see below)
 
 For 1M 5-min car isochrones: ~1 hour on single core, ~3 min with 20 cores.
+
+**Batched Early-Stop (2026-01-25):** ✅ COMPLETE
+
+Added `query_batch_bounded()` to BatchedPhastEngine with:
+- Per-lane early-stop in upward phase (8 separate heaps, each stops when min > threshold)
+- Active block tracking per lane (bitset marks which rank blocks have reachable nodes)
+- Lane masking in downward scan (skip inactive lanes per block)
+
+| Mode | Threshold | Single iso/sec | Batched iso/sec | Winner |
+|------|-----------|----------------|-----------------|--------|
+| **Car** | 5 min | 680/sec | 129/sec | **Single** |
+| **Car** | 30 min | 168/sec | 200+/sec | **Batched** |
+
+**Adaptive Isochrone Engine (2026-01-25):** ✅ COMPLETE
+
+Created `AdaptiveIsochroneEngine` that auto-selects optimal algorithm:
+- `ADAPTIVE_THRESHOLD_DS = 10000` (~17 min crossover point)
+- Below threshold: Uses single-source PHAST with early-stop (Mode A)
+- Above threshold: Uses K-lane batched PHAST with early-stop (Mode B)
+
+```rust
+impl AdaptiveIsochroneEngine {
+    pub fn query_many(&self, origins: &[u32], threshold_ds: u32) -> Result<Vec<ContourResult>> {
+        if threshold_ds < ADAPTIVE_THRESHOLD_DS {
+            // Small threshold: single-source is faster
+            self.query_single_batch(origins, threshold_ds)
+        } else {
+            // Large threshold: K-lane batching is faster
+            self.query_batched(origins, threshold_ds)
+        }
+    }
+}
+```
+
+**WKB Streaming (2026-01-25):** ✅ COMPLETE
+
+Created `wkb_stream.rs` module for high-throughput isochrone output:
+- `encode_polygon_wkb()`: Standard WKB polygon format (byte order, type, rings, points as f64)
+- `IsochroneRecord`: Combines origin_id, threshold_ds, wkb, n_vertices, elapsed_us
+- `IsochroneBatch`: Columnar storage for Arrow-friendly output
+- `write_ndjson()`: Newline-delimited JSON with base64-encoded WKB
+
+Output formats ready for GIS tools (PostGIS, QGIS, GeoPandas, Shapely).
 
 ---
 
