@@ -1356,6 +1356,10 @@ fn run_batched_isochrone_bench(
     )?;
     println!("  ✓ Loaded in {:.1}s", batched_start.elapsed().as_secs_f64());
 
+    // Convert ms to deciseconds (CCH weight units)
+    // 1 decisecond = 100 milliseconds
+    let threshold_ds = threshold_ms / 100;
+
     // Generate random origins
     let mut rng = StdRng::seed_from_u64(seed);
     let origins: Vec<u32> = (0..n_origins)
@@ -1368,7 +1372,7 @@ fn run_batched_isochrone_bench(
     let mut single_vertices = 0usize;
 
     for (i, &origin) in origins.iter().enumerate() {
-        let result = phast.query_bounded(origin, threshold_ms);
+        let result = phast.query_bounded(origin, threshold_ds);
         let segments = extractor.extract_reachable_segments(&result.dist, threshold_ms);
         let contour = generate_sparse_contour(&segments, &sparse_config)?;
         single_vertices += contour.outer_ring.len();
@@ -1390,7 +1394,7 @@ fn run_batched_isochrone_bench(
     let mut n_batches = 0usize;
 
     for (batch_idx, chunk) in origins.chunks(K_LANES).enumerate() {
-        let result = batched_engine.query_batch(chunk, threshold_ms)?;
+        let result = batched_engine.query_batch(chunk, threshold_ds)?;
         for contour in &result.contours {
             batched_vertices += contour.outer_ring.len();
         }
