@@ -14,9 +14,11 @@
 
 mod ordering;
 mod contraction;
+mod query;
 
 pub use ordering::{NbgNdOrdering, compute_nbg_ordering};
 pub use contraction::{NbgChTopo, contract_nbg};
+pub use query::{NbgChQuery, NbgBucketM2M, NbgM2MStats};
 
 /// Statistics from NBG CH construction
 #[derive(Debug, Clone)]

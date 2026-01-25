@@ -767,6 +767,10 @@ pub enum Commands {
         /// Balance epsilon (default: 0.05)
         #[arg(long, default_value = "0.05")]
         balance_eps: f32,
+
+        /// Run matrix benchmark after building
+        #[arg(long)]
+        benchmark: bool,
     },
 
     /// Analyze turn model to understand when turns matter
@@ -2052,9 +2056,10 @@ impl Cli {
                 nbg_geo,
                 leaf_threshold,
                 balance_eps,
+                benchmark,
             } => {
                 use crate::formats::{NbgCsrFile, NbgGeoFile};
-                use crate::nbg_ch::{compute_nbg_ordering, contract_nbg};
+                use crate::nbg_ch::{compute_nbg_ordering, contract_nbg, NbgBucketM2M};
 
                 println!("\n=== BUILD NODE-BASED CH ===\n");
 
@@ -2105,6 +2110,50 @@ impl Cli {
                          topo.n_shortcuts as f64 / 1_000_000.0);
                 println!("  Expected speedup: ~{:.1}x fewer nodes to search",
                          5_000_000.0 / topo.n_nodes as f64);
+
+                // Run benchmark if requested
+                if benchmark {
+                    println!("\n=== MATRIX BENCHMARK ===\n");
+
+                    let engine = NbgBucketM2M::new(&topo);
+
+                    // Generate random source/target pairs
+                    use rand::prelude::*;
+                    let mut rng = rand::thread_rng();
+                    let n_nodes = topo.n_nodes;
+
+                    for size in [10, 25, 50, 100] {
+                        let sources: Vec<u32> = (0..size).map(|_| rng.gen_range(0..n_nodes)).collect();
+                        let targets: Vec<u32> = (0..size).map(|_| rng.gen_range(0..n_nodes)).collect();
+
+                        // Warmup
+                        let _ = engine.compute(&sources, &targets);
+
+                        // Timed runs
+                        let n_runs = 5;
+                        let mut times = Vec::new();
+
+                        for _ in 0..n_runs {
+                            let start = std::time::Instant::now();
+                            let (matrix, stats) = engine.compute(&sources, &targets);
+                            let elapsed = start.elapsed().as_millis() as u64;
+                            times.push(elapsed);
+                        }
+
+                        let avg = times.iter().sum::<u64>() / n_runs;
+                        let min = *times.iter().min().unwrap();
+                        let max = *times.iter().max().unwrap();
+
+                        println!("  {}×{}: avg {}ms, min {}ms, max {}ms",
+                                 size, size, avg, min, max);
+                    }
+
+                    println!("\n  Compare with OSRM (sequential CH):");
+                    println!("    10×10:   ~4ms");
+                    println!("    25×25:   ~9ms");
+                    println!("    50×50:   ~19ms");
+                    println!("    100×100: ~35ms");
+                }
 
                 Ok(())
             }
