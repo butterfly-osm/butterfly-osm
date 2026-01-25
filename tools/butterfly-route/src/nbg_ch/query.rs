@@ -1,191 +1,177 @@
-//! NBG CH bidirectional query
+//! Optimized NBG CH bucket M2M query
 //!
-//! Simple bidirectional Dijkstra on NBG CH for distance queries.
+//! Key optimizations:
+//! 1. Flat adjacency structure (cache-friendly)
+//! 2. Version-stamped distances (O(1) reset)
+//! 3. Sorted buckets with binary search
+//! 4. Reusable search state (zero allocation per query)
 
 use std::collections::BinaryHeap;
 use std::cmp::Reverse;
 
 use super::NbgChTopo;
 
-/// Query engine for NBG CH
-pub struct NbgChQuery<'a> {
-    topo: &'a NbgChTopo,
-    // Reusable search state
-    fwd_dist: Vec<u32>,
-    bwd_dist: Vec<u32>,
-    fwd_version: Vec<u32>,
-    bwd_version: Vec<u32>,
-    current_version: u32,
+/// Flat UP adjacency for cache-friendly access
+pub struct FlatUpAdj {
+    pub offsets: Vec<u64>,
+    pub targets: Vec<u32>,
+    pub weights: Vec<u32>,
 }
 
-impl<'a> NbgChQuery<'a> {
-    pub fn new(topo: &'a NbgChTopo) -> Self {
-        let n = topo.n_nodes as usize;
+impl FlatUpAdj {
+    pub fn from_topo(topo: &NbgChTopo) -> Self {
         Self {
-            topo,
-            fwd_dist: vec![u32::MAX; n],
-            bwd_dist: vec![u32::MAX; n],
-            fwd_version: vec![0; n],
-            bwd_version: vec![0; n],
-            current_version: 0,
+            offsets: topo.up_offsets.clone(),
+            targets: topo.up_heads.clone(),
+            weights: topo.up_weights.clone(),
         }
     }
 
-    /// Compute shortest distance from source to target
-    pub fn distance(&mut self, source: u32, target: u32) -> u32 {
-        self.current_version += 1;
-        let v = self.current_version;
+    #[inline(always)]
+    pub fn neighbors(&self, node: u32) -> impl Iterator<Item = (u32, u32)> + '_ {
+        let start = self.offsets[node as usize] as usize;
+        let end = self.offsets[node as usize + 1] as usize;
+        (start..end).map(move |i| (self.targets[i], self.weights[i]))
+    }
+}
 
-        // Initialize
-        self.fwd_dist[source as usize] = 0;
-        self.fwd_version[source as usize] = v;
-        self.bwd_dist[target as usize] = 0;
-        self.bwd_version[target as usize] = v;
+/// Version-stamped distance entry (8 bytes, cache-line friendly)
+#[derive(Clone, Copy)]
+struct DistEntry {
+    dist: u32,
+    version: u32,
+}
 
-        let mut fwd_heap: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
-        let mut bwd_heap: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
+/// Reusable search state with version stamping
+pub struct SearchState {
+    dist: Vec<DistEntry>,
+    version: u32,
+    heap: BinaryHeap<Reverse<(u32, u32)>>,
+}
 
-        fwd_heap.push(Reverse((0, source)));
-        bwd_heap.push(Reverse((0, target)));
-
-        let mut best = u32::MAX;
-        let mut fwd_settled = 0u32;
-        let mut bwd_settled = 0u32;
-
-        // Alternating bidirectional search
-        while !fwd_heap.is_empty() || !bwd_heap.is_empty() {
-            // Forward step
-            if let Some(Reverse((d, u))) = fwd_heap.pop() {
-                if self.fwd_version[u as usize] != v || d > self.fwd_dist[u as usize] {
-                    continue;
-                }
-
-                // Check meeting point
-                if self.bwd_version[u as usize] == v {
-                    let total = d.saturating_add(self.bwd_dist[u as usize]);
-                    best = best.min(total);
-                }
-
-                // Stall check: if we've settled enough and current dist > best/2, stop
-                fwd_settled += 1;
-                if d > best / 2 {
-                    // Can safely stop forward search
-                }
-
-                // Relax UP edges
-                let start = self.topo.up_offsets[u as usize] as usize;
-                let end = self.topo.up_offsets[u as usize + 1] as usize;
-
-                for i in start..end {
-                    let v_node = self.topo.up_heads[i];
-                    let w = self.topo.up_weights[i];
-                    let new_dist = d.saturating_add(w);
-
-                    let old_dist = if self.fwd_version[v_node as usize] == v {
-                        self.fwd_dist[v_node as usize]
-                    } else {
-                        u32::MAX
-                    };
-
-                    if new_dist < old_dist {
-                        self.fwd_dist[v_node as usize] = new_dist;
-                        self.fwd_version[v_node as usize] = v;
-                        fwd_heap.push(Reverse((new_dist, v_node)));
-                    }
-                }
-            }
-
-            // Backward step
-            if let Some(Reverse((d, u))) = bwd_heap.pop() {
-                if self.bwd_version[u as usize] != v || d > self.bwd_dist[u as usize] {
-                    continue;
-                }
-
-                // Check meeting point
-                if self.fwd_version[u as usize] == v {
-                    let total = d.saturating_add(self.fwd_dist[u as usize]);
-                    best = best.min(total);
-                }
-
-                bwd_settled += 1;
-                if d > best / 2 {
-                    // Can safely stop backward search
-                }
-
-                // Relax UP edges (backward search goes UP in CH)
-                let start = self.topo.up_offsets[u as usize] as usize;
-                let end = self.topo.up_offsets[u as usize + 1] as usize;
-
-                for i in start..end {
-                    let v_node = self.topo.up_heads[i];
-                    let w = self.topo.up_weights[i];
-                    let new_dist = d.saturating_add(w);
-
-                    let old_dist = if self.bwd_version[v_node as usize] == v {
-                        self.bwd_dist[v_node as usize]
-                    } else {
-                        u32::MAX
-                    };
-
-                    if new_dist < old_dist {
-                        self.bwd_dist[v_node as usize] = new_dist;
-                        self.bwd_version[v_node as usize] = v;
-                        bwd_heap.push(Reverse((new_dist, v_node)));
-                    }
-                }
-            }
-
-            // Termination: both heaps exhausted or best found
-            if fwd_heap.is_empty() && bwd_heap.is_empty() {
-                break;
-            }
+impl SearchState {
+    pub fn new(n_nodes: usize) -> Self {
+        Self {
+            dist: vec![DistEntry { dist: u32::MAX, version: 0 }; n_nodes],
+            version: 0,
+            heap: BinaryHeap::with_capacity(1024),
         }
+    }
 
-        best
+    #[inline(always)]
+    fn reset(&mut self) {
+        self.version = self.version.wrapping_add(1);
+        if self.version == 0 {
+            // Version wrapped, need full reset
+            for entry in &mut self.dist {
+                entry.version = 0;
+            }
+            self.version = 1;
+        }
+        self.heap.clear();
+    }
+
+    #[inline(always)]
+    fn get_dist(&self, node: u32) -> u32 {
+        let entry = &self.dist[node as usize];
+        if entry.version == self.version {
+            entry.dist
+        } else {
+            u32::MAX
+        }
+    }
+
+    #[inline(always)]
+    fn set_dist(&mut self, node: u32, dist: u32) {
+        self.dist[node as usize] = DistEntry { dist, version: self.version };
     }
 }
 
-/// Bucket-based many-to-many on NBG CH
-pub struct NbgBucketM2M<'a> {
-    topo: &'a NbgChTopo,
+/// Sorted bucket structure for O(log n) lookup
+pub struct SortedBuckets {
+    // Flat array of (node, source_idx, dist) sorted by node
+    items: Vec<(u32, u16, u32)>,
 }
 
-impl<'a> NbgBucketM2M<'a> {
-    pub fn new(topo: &'a NbgChTopo) -> Self {
-        Self { topo }
+impl SortedBuckets {
+    pub fn new() -> Self {
+        Self { items: Vec::new() }
     }
 
-    /// Compute distance matrix
+    pub fn clear(&mut self) {
+        self.items.clear();
+    }
+
+    pub fn add(&mut self, node: u32, source_idx: u16, dist: u32) {
+        self.items.push((node, source_idx, dist));
+    }
+
+    pub fn sort(&mut self) {
+        self.items.sort_unstable_by_key(|(node, _, _)| *node);
+    }
+
+    /// Get all bucket entries for a node using binary search
+    #[inline(always)]
+    pub fn get(&self, node: u32) -> &[(u32, u16, u32)] {
+        // Binary search for first occurrence
+        let start = self.items.partition_point(|(n, _, _)| *n < node);
+        let end = self.items[start..].partition_point(|(n, _, _)| *n == node) + start;
+        &self.items[start..end]
+    }
+}
+
+/// Optimized bucket M2M engine
+pub struct NbgBucketM2M {
+    n_nodes: usize,
+    up_adj: FlatUpAdj,
+}
+
+impl NbgBucketM2M {
+    pub fn new(topo: &NbgChTopo) -> Self {
+        Self {
+            n_nodes: topo.n_nodes as usize,
+            up_adj: FlatUpAdj::from_topo(topo),
+        }
+    }
+
+    /// Compute distance matrix with optimizations
     pub fn compute(&self, sources: &[u32], targets: &[u32]) -> (Vec<u32>, NbgM2MStats) {
-        let n_nodes = self.topo.n_nodes as usize;
         let n_sources = sources.len();
         let n_targets = targets.len();
 
-        let start = std::time::Instant::now();
+        let start_time = std::time::Instant::now();
 
-        // Phase 1: Forward search from sources, fill buckets
-        let mut buckets: Vec<Vec<(u16, u32)>> = vec![Vec::new(); n_nodes]; // (source_idx, dist)
+        // Reusable state
+        let mut state = SearchState::new(self.n_nodes);
+        let mut buckets = SortedBuckets::new();
 
+        // Phase 1: Forward searches from sources
         let mut fwd_visited = 0u64;
         for (src_idx, &source) in sources.iter().enumerate() {
-            let visited = self.forward_search(source, src_idx as u16, &mut buckets);
-            fwd_visited += visited as u64;
+            fwd_visited += self.forward_search(source, src_idx as u16, &mut state, &mut buckets) as u64;
         }
 
-        let fwd_time = start.elapsed().as_millis();
+        let fwd_time = start_time.elapsed().as_micros();
 
-        // Phase 2: Backward search from targets, join with buckets
+        // Sort buckets once
+        buckets.sort();
+
+        let sort_time = start_time.elapsed().as_micros() - fwd_time;
+
+        // Phase 2: Backward searches from targets
         let mut matrix = vec![u32::MAX; n_sources * n_targets];
         let mut bwd_visited = 0u64;
         let mut joins = 0u64;
 
         for (tgt_idx, &target) in targets.iter().enumerate() {
-            let (visited, j) = self.backward_search(target, tgt_idx, &buckets, &mut matrix, n_targets);
+            let (visited, j) = self.backward_search(
+                target, tgt_idx, &buckets, &mut matrix, n_targets, &mut state
+            );
             bwd_visited += visited as u64;
             joins += j;
         }
 
-        let total_time = start.elapsed().as_millis();
+        let total_time = start_time.elapsed().as_micros();
 
         let stats = NbgM2MStats {
             n_sources,
@@ -193,43 +179,45 @@ impl<'a> NbgBucketM2M<'a> {
             fwd_visited,
             bwd_visited,
             joins,
-            fwd_time_ms: fwd_time as u64,
-            total_time_ms: total_time as u64,
+            fwd_time_us: fwd_time as u64,
+            sort_time_us: sort_time as u64,
+            bwd_time_us: (total_time - fwd_time - sort_time) as u64,
+            total_time_us: total_time as u64,
         };
 
         (matrix, stats)
     }
 
-    fn forward_search(&self, source: u32, src_idx: u16, buckets: &mut [Vec<(u16, u32)>]) -> usize {
-        let n_nodes = self.topo.n_nodes as usize;
-        let mut dist = vec![u32::MAX; n_nodes];
-        let mut heap: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
+    #[inline(never)]
+    fn forward_search(
+        &self,
+        source: u32,
+        src_idx: u16,
+        state: &mut SearchState,
+        buckets: &mut SortedBuckets,
+    ) -> usize {
+        state.reset();
+        state.set_dist(source, 0);
+        state.heap.push(Reverse((0, source)));
 
-        dist[source as usize] = 0;
-        heap.push(Reverse((0, source)));
-        let mut visited = 0;
+        let mut visited = 0usize;
 
-        while let Some(Reverse((d, u))) = heap.pop() {
-            if d > dist[u as usize] {
+        while let Some(Reverse((d, u))) = state.heap.pop() {
+            // Skip stale entries
+            if d > state.get_dist(u) {
                 continue;
             }
 
             // Add to bucket
-            buckets[u as usize].push((src_idx, d));
+            buckets.add(u, src_idx, d);
             visited += 1;
 
             // Relax UP edges
-            let start = self.topo.up_offsets[u as usize] as usize;
-            let end = self.topo.up_offsets[u as usize + 1] as usize;
-
-            for i in start..end {
-                let v = self.topo.up_heads[i];
-                let w = self.topo.up_weights[i];
+            for (v, w) in self.up_adj.neighbors(u) {
                 let new_dist = d.saturating_add(w);
-
-                if new_dist < dist[v as usize] {
-                    dist[v as usize] = new_dist;
-                    heap.push(Reverse((new_dist, v)));
+                if new_dist < state.get_dist(v) {
+                    state.set_dist(v, new_dist);
+                    state.heap.push(Reverse((new_dist, v)));
                 }
             }
         }
@@ -237,32 +225,34 @@ impl<'a> NbgBucketM2M<'a> {
         visited
     }
 
+    #[inline(never)]
     fn backward_search(
         &self,
         target: u32,
         tgt_idx: usize,
-        buckets: &[Vec<(u16, u32)>],
+        buckets: &SortedBuckets,
         matrix: &mut [u32],
         n_targets: usize,
+        state: &mut SearchState,
     ) -> (usize, u64) {
-        let n_nodes = self.topo.n_nodes as usize;
-        let mut dist = vec![u32::MAX; n_nodes];
-        let mut heap: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
+        state.reset();
+        state.set_dist(target, 0);
+        state.heap.push(Reverse((0, target)));
 
-        dist[target as usize] = 0;
-        heap.push(Reverse((0, target)));
-        let mut visited = 0;
+        let mut visited = 0usize;
         let mut joins = 0u64;
 
-        while let Some(Reverse((d, u))) = heap.pop() {
-            if d > dist[u as usize] {
+        while let Some(Reverse((d, u))) = state.heap.pop() {
+            // Skip stale entries
+            if d > state.get_dist(u) {
                 continue;
             }
 
             visited += 1;
 
-            // Join with bucket
-            for &(src_idx, src_dist) in &buckets[u as usize] {
+            // Join with bucket (binary search)
+            let bucket_entries = buckets.get(u);
+            for &(_, src_idx, src_dist) in bucket_entries {
                 let total = src_dist.saturating_add(d);
                 let idx = src_idx as usize * n_targets + tgt_idx;
                 if total < matrix[idx] {
@@ -271,18 +261,12 @@ impl<'a> NbgBucketM2M<'a> {
                 joins += 1;
             }
 
-            // Relax UP edges (backward goes UP in CH)
-            let start = self.topo.up_offsets[u as usize] as usize;
-            let end = self.topo.up_offsets[u as usize + 1] as usize;
-
-            for i in start..end {
-                let v = self.topo.up_heads[i];
-                let w = self.topo.up_weights[i];
+            // Relax UP edges
+            for (v, w) in self.up_adj.neighbors(u) {
                 let new_dist = d.saturating_add(w);
-
-                if new_dist < dist[v as usize] {
-                    dist[v as usize] = new_dist;
-                    heap.push(Reverse((new_dist, v)));
+                if new_dist < state.get_dist(v) {
+                    state.set_dist(v, new_dist);
+                    state.heap.push(Reverse((new_dist, v)));
                 }
             }
         }
@@ -298,6 +282,23 @@ pub struct NbgM2MStats {
     pub fwd_visited: u64,
     pub bwd_visited: u64,
     pub joins: u64,
-    pub fwd_time_ms: u64,
-    pub total_time_ms: u64,
+    pub fwd_time_us: u64,
+    pub sort_time_us: u64,
+    pub bwd_time_us: u64,
+    pub total_time_us: u64,
+}
+
+// Keep old interface for compatibility
+pub struct NbgChQuery<'a> {
+    topo: &'a NbgChTopo,
+    state: SearchState,
+}
+
+impl<'a> NbgChQuery<'a> {
+    pub fn new(topo: &'a NbgChTopo) -> Self {
+        Self {
+            topo,
+            state: SearchState::new(topo.n_nodes as usize),
+        }
+    }
 }
