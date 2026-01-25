@@ -7,6 +7,7 @@
 //!
 //! Outputs: p50/p95/p99 times + detailed counters
 
+use std::cmp::Reverse;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -18,7 +19,10 @@ use butterfly_route::range::phast::{PhastEngine, PhastStats};
 use butterfly_route::range::frontier::FrontierExtractor;
 use butterfly_route::range::contour::{generate_contour, GridConfig};
 use butterfly_route::range::batched_isochrone::BatchedIsochroneEngine;
-use butterfly_route::matrix::batched_phast::{BatchedPhastEngine, K_LANES};
+use butterfly_route::matrix::batched_phast::{BatchedPhastEngine, BatchedPhastStats, K_LANES};
+use butterfly_route::formats::CchWeightsFile;
+use butterfly_route::step9::state::DownReverseAdj;
+use butterfly_route::matrix::bucket_ch::{table_bucket, table_bucket_optimized, table_bucket_full_flat, DownReverseAdjFlat, UpAdjFlat, BucketM2MStats, BucketM2MEngine};
 
 #[derive(Parser)]
 #[command(name = "butterfly-bench")]
@@ -190,6 +194,148 @@ enum Commands {
         #[arg(long, default_value = "42")]
         seed: u64,
     },
+
+    /// Compare block-gated vs active-set gated PHAST
+    BlockGated {
+        /// Data directory
+        #[arg(long)]
+        data_dir: PathBuf,
+
+        /// Transport mode
+        #[arg(long, default_value = "foot")]
+        mode: String,
+
+        /// Time threshold in milliseconds
+        #[arg(long, default_value = "300000")]
+        threshold_ms: u32,
+
+        /// Number of queries
+        #[arg(long, default_value = "100")]
+        n_queries: usize,
+
+        /// Random seed
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
+
+    /// Benchmark adaptive gating strategy (switches based on active block ratio)
+    Adaptive {
+        /// Data directory
+        #[arg(long)]
+        data_dir: PathBuf,
+
+        /// Transport mode
+        #[arg(long, default_value = "foot")]
+        mode: String,
+
+        /// Comma-separated thresholds in milliseconds
+        #[arg(long, default_value = "60000,300000,600000")]
+        thresholds: String,
+
+        /// Number of queries per threshold
+        #[arg(long, default_value = "50")]
+        n_queries: usize,
+
+        /// Random seed
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
+
+    /// Compare K-lane block-gated PHAST vs regular batched PHAST for bounded queries
+    KlaneBounded {
+        /// Data directory
+        #[arg(long)]
+        data_dir: PathBuf,
+
+        /// Transport mode
+        #[arg(long, default_value = "foot")]
+        mode: String,
+
+        /// Time threshold in milliseconds
+        #[arg(long, default_value = "300000")]
+        threshold_ms: u32,
+
+        /// Number of batches to run
+        #[arg(long, default_value = "8")]
+        n_batches: usize,
+
+        /// Random seed
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
+
+    /// Analyze reachability fraction at various thresholds (for rPHAST decision)
+    Reachability {
+        /// Data directory
+        #[arg(long)]
+        data_dir: PathBuf,
+
+        /// Transport mode
+        #[arg(long, default_value = "foot")]
+        mode: String,
+
+        /// Comma-separated list of thresholds in ms (e.g., "60000,120000,300000,600000")
+        #[arg(long, default_value = "60000,120000,300000,600000")]
+        thresholds: String,
+
+        /// Number of random origins to sample
+        #[arg(long, default_value = "20")]
+        n_origins: usize,
+
+        /// Random seed
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
+
+    /// Benchmark matrix tile streaming (tests the streaming compute path)
+    MatrixStream {
+        /// Data directory
+        #[arg(long)]
+        data_dir: PathBuf,
+
+        /// Transport mode
+        #[arg(long, default_value = "car")]
+        mode: String,
+
+        /// Number of sources
+        #[arg(long, default_value = "1000")]
+        n_sources: usize,
+
+        /// Number of targets
+        #[arg(long, default_value = "1000")]
+        n_targets: usize,
+
+        /// Source tile size (default 8 = K_LANES)
+        #[arg(long, default_value = "8")]
+        src_tile_size: usize,
+
+        /// Destination tile size
+        #[arg(long, default_value = "256")]
+        dst_tile_size: usize,
+
+        /// Random seed
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
+
+    /// Benchmark bucket-based many-to-many CH (for sparse matrices)
+    BucketM2M {
+        /// Data directory
+        #[arg(long)]
+        data_dir: PathBuf,
+
+        /// Transport mode
+        #[arg(long, default_value = "car")]
+        mode: String,
+
+        /// Comma-separated matrix sizes to test (e.g., "10,25,50,100")
+        #[arg(long, default_value = "10,25,50,100")]
+        sizes: String,
+
+        /// Random seed
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
 }
 
 /// Aggregated statistics across multiple runs
@@ -297,6 +443,73 @@ fn main() -> anyhow::Result<()> {
             n_targets,
             seed,
         } => run_blocked_relaxation_bench(&data_dir, &mode, n_sources, n_targets, seed),
+
+        Commands::BlockGated {
+            data_dir,
+            mode,
+            threshold_ms,
+            n_queries,
+            seed,
+        } => run_block_gated_bench(&data_dir, &mode, threshold_ms, n_queries, seed),
+
+        Commands::Adaptive {
+            data_dir,
+            mode,
+            thresholds,
+            n_queries,
+            seed,
+        } => {
+            let thresholds: Vec<u32> = thresholds
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            run_adaptive_bench(&data_dir, &mode, &thresholds, n_queries, seed)
+        }
+
+        Commands::KlaneBounded {
+            data_dir,
+            mode,
+            threshold_ms,
+            n_batches,
+            seed,
+        } => run_klane_bounded_bench(&data_dir, &mode, threshold_ms, n_batches, seed),
+
+        Commands::Reachability {
+            data_dir,
+            mode,
+            thresholds,
+            n_origins,
+            seed,
+        } => {
+            let thresholds: Vec<u32> = thresholds
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            run_reachability_analysis(&data_dir, &mode, &thresholds, n_origins, seed)
+        }
+
+        Commands::MatrixStream {
+            data_dir,
+            mode,
+            n_sources,
+            n_targets,
+            src_tile_size,
+            dst_tile_size,
+            seed,
+        } => run_matrix_stream_bench(&data_dir, &mode, n_sources, n_targets, src_tile_size, dst_tile_size, seed),
+
+        Commands::BucketM2M {
+            data_dir,
+            mode,
+            sizes,
+            seed,
+        } => {
+            let sizes: Vec<usize> = sizes
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            run_bucket_m2m_bench(&data_dir, &mode, &sizes, seed)
+        }
     }
 }
 
@@ -570,18 +783,22 @@ fn load_phast(data_dir: &PathBuf, mode: &str) -> anyhow::Result<PhastEngine> {
     // 2. Split across step6/step7/step8 subdirectories
     // 3. Split across step6-belgium-fixed, step7-belgium-fixed, etc.
 
+    // Prioritize rank-aligned (version 2) over older versions
     let topo_path = find_file(data_dir, &[
         format!("cch.{}.topo", mode),
+        format!("step7-rank-aligned/cch.{}.topo", mode),
         format!("step7-belgium-fixed/cch.{}.topo", mode),
     ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
 
     let weights_path = find_file(data_dir, &[
         format!("cch.w.{}.u32", mode),
+        format!("step8-rank-aligned/cch.w.{}.u32", mode),
         format!("step8-belgium-fixed/cch.w.{}.u32", mode),
     ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
 
     let order_path = find_file(data_dir, &[
         format!("order.{}.ebg", mode),
+        format!("step6/order.{}.ebg", mode),
         format!("step6-belgium-fixed/order.{}.ebg", mode),
     ]).ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
 
@@ -730,17 +947,29 @@ fn run_batched_phast_bench(
         n_sources as f64 / single_time.as_secs_f64());
     println!();
 
-    // ========== K-lane batched PHAST ==========
-    println!("[3/3] Running K-lane batched PHAST ({} sources in {} batches)...",
+    // ========== K-lane batched PHAST (AoS layout) ==========
+    println!("[3/4] Running K-lane batched PHAST AoS ({} sources in {} batches)...",
         n_sources, (n_sources + K_LANES - 1) / K_LANES);
 
     let batched_start = Instant::now();
     let (batched_matrix, batched_stats) = batched_phast.compute_matrix_flat(&sources, &verification_targets);
     let batched_time = batched_start.elapsed();
 
-    println!("  ✓ Batched PHAST: {:.2}s ({:.1} queries/sec)",
+    println!("  ✓ Batched AoS: {:.2}s ({:.1} queries/sec)",
         batched_time.as_secs_f64(),
         n_sources as f64 / batched_time.as_secs_f64());
+
+    // ========== K-lane batched PHAST (SoA layout) ==========
+    println!("[4/4] Running K-lane batched PHAST SoA ({} sources in {} batches)...",
+        n_sources, (n_sources + K_LANES - 1) / K_LANES);
+
+    let soa_start = Instant::now();
+    let (soa_matrix, soa_stats) = batched_phast.compute_matrix_flat_soa(&sources, &verification_targets);
+    let soa_time = soa_start.elapsed();
+
+    println!("  ✓ Batched SoA: {:.2}s ({:.1} queries/sec)",
+        soa_time.as_secs_f64(),
+        n_sources as f64 / soa_time.as_secs_f64());
     println!();
 
     // ========== Verify correctness ==========
@@ -749,29 +978,41 @@ fn run_batched_phast_bench(
     println!("───────────────────────────────────────────────────────────────");
 
     let n_targets_actual = verification_targets.len();
-    let mut mismatches = 0;
-    let mut max_diff: i64 = 0;
 
+    // Check AoS results
+    let mut aos_mismatches = 0;
     for (src_idx, single_dist) in single_results.iter().enumerate() {
         for (tgt_idx, &expected) in single_dist.iter().enumerate() {
             let actual = batched_matrix[src_idx * n_targets_actual + tgt_idx];
             if expected != actual {
-                mismatches += 1;
-                let diff = (expected as i64 - actual as i64).abs();
-                max_diff = max_diff.max(diff);
-                if mismatches <= 3 {
-                    println!("  Mismatch: src={} tgt={}: expected={}, actual={}",
-                        src_idx, tgt_idx, expected, actual);
-                }
+                aos_mismatches += 1;
             }
         }
     }
 
-    if mismatches == 0 {
-        println!("  ✅ All {} × {} = {} distances match!",
+    // Check SoA results
+    let mut soa_mismatches = 0;
+    for (src_idx, single_dist) in single_results.iter().enumerate() {
+        for (tgt_idx, &expected) in single_dist.iter().enumerate() {
+            let actual = soa_matrix[src_idx * n_targets_actual + tgt_idx];
+            if expected != actual {
+                soa_mismatches += 1;
+            }
+        }
+    }
+
+    if aos_mismatches == 0 && soa_mismatches == 0 {
+        println!("  ✅ AoS: All {} × {} = {} distances match!",
+            n_sources, n_targets_actual, n_sources * n_targets_actual);
+        println!("  ✅ SoA: All {} × {} = {} distances match!",
             n_sources, n_targets_actual, n_sources * n_targets_actual);
     } else {
-        println!("  ❌ {} mismatches (max diff: {})", mismatches, max_diff);
+        if aos_mismatches > 0 {
+            println!("  ❌ AoS: {} mismatches", aos_mismatches);
+        }
+        if soa_mismatches > 0 {
+            println!("  ❌ SoA: {} mismatches", soa_mismatches);
+        }
     }
     println!();
 
@@ -780,24 +1021,31 @@ fn run_batched_phast_bench(
     println!("  PERFORMANCE COMPARISON");
     println!("───────────────────────────────────────────────────────────────");
 
-    let speedup = single_time.as_secs_f64() / batched_time.as_secs_f64();
+    let aos_speedup = single_time.as_secs_f64() / batched_time.as_secs_f64();
+    let soa_speedup = single_time.as_secs_f64() / soa_time.as_secs_f64();
+    let soa_vs_aos = batched_time.as_secs_f64() / soa_time.as_secs_f64();
+
     println!("  Single-source time:    {:>8.2}s", single_time.as_secs_f64());
-    println!("  K-lane batched time:   {:>8.2}s", batched_time.as_secs_f64());
-    println!("  Speedup:               {:>8.2}x", speedup);
-    println!("  Expected speedup:      {:>8.2}x (K-lanes amortization)", K_LANES as f64 * 0.8);
-    println!();
-    println!("  Batched stats:");
-    println!("    Upward relaxations:   {:>12}", format_number(batched_stats.upward_relaxations as u64));
-    println!("    Downward relaxations: {:>12}", format_number(batched_stats.downward_relaxations as u64));
-    println!("    Downward improved:    {:>12}", format_number(batched_stats.downward_improved as u64));
-    println!("    Upward time:          {:>12} ms", batched_stats.upward_time_ms);
-    println!("    Downward time:        {:>12} ms", batched_stats.downward_time_ms);
+    println!("  K-lane AoS time:       {:>8.2}s ({:.2}x vs single)", batched_time.as_secs_f64(), aos_speedup);
+    println!("  K-lane SoA time:       {:>8.2}s ({:.2}x vs single)", soa_time.as_secs_f64(), soa_speedup);
+    println!("  SoA vs AoS speedup:    {:>8.2}x", soa_vs_aos);
     println!();
 
-    if speedup < 1.5 {
-        println!("  ⚠️  Speedup lower than expected - check cache efficiency");
-    } else if speedup >= K_LANES as f64 * 0.5 {
-        println!("  ✅ Good speedup from K-lane batching!");
+    println!("  AoS stats:");
+    println!("    Upward time:          {:>12} ms", batched_stats.upward_time_ms);
+    println!("    Downward time:        {:>12} ms", batched_stats.downward_time_ms);
+
+    println!("  SoA stats:");
+    println!("    Upward time:          {:>12} ms", soa_stats.upward_time_ms);
+    println!("    Downward time:        {:>12} ms", soa_stats.downward_time_ms);
+    println!();
+
+    if soa_vs_aos > 1.3 {
+        println!("  ✅ SoA layout provides significant cache benefit!");
+    } else if soa_vs_aos > 1.0 {
+        println!("  ℹ️  SoA slightly faster - may need SIMD to see full benefit");
+    } else {
+        println!("  ⚠️  SoA not faster - investigate memory layout");
     }
     println!();
 
@@ -805,18 +1053,22 @@ fn run_batched_phast_bench(
 }
 
 fn load_batched_phast(data_dir: &PathBuf, mode: &str) -> anyhow::Result<BatchedPhastEngine> {
+    // Prioritize rank-aligned (version 2) over older versions
     let topo_path = find_file(data_dir, &[
         format!("cch.{}.topo", mode),
+        format!("step7-rank-aligned/cch.{}.topo", mode),
         format!("step7-belgium-fixed/cch.{}.topo", mode),
     ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
 
     let weights_path = find_file(data_dir, &[
         format!("cch.w.{}.u32", mode),
+        format!("step8-rank-aligned/cch.w.{}.u32", mode),
         format!("step8-belgium-fixed/cch.w.{}.u32", mode),
     ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
 
     let order_path = find_file(data_dir, &[
         format!("order.{}.ebg", mode),
+        format!("step6/order.{}.ebg", mode),
         format!("step6-belgium-fixed/order.{}.ebg", mode),
     ]).ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
 
@@ -1010,14 +1262,17 @@ fn run_batched_isochrone_bench(
     let batched_start = Instant::now();
 
     // Find paths using the same discovery logic as single-source
+    // Prioritize rank-aligned (version 2) over older versions
     let topo_path = find_file(data_dir, &[
         format!("cch.{}.topo", mode),
+        format!("step7-rank-aligned/cch.{}.topo", mode),
         format!("step7/cch.{}.topo", mode),
         format!("step7-new/cch.{}.topo", mode),
     ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
 
     let weights_path = find_file(data_dir, &[
         format!("cch.w.{}.u32", mode),
+        format!("step8-rank-aligned/cch.w.{}.u32", mode),
         format!("step8/cch.w.{}.u32", mode),
         format!("step8-new/cch.w.{}.u32", mode),
     ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
@@ -1309,4 +1564,1118 @@ fn run_blocked_relaxation_bench(
     println!();
 
     Ok(())
+}
+
+fn run_block_gated_bench(
+    data_dir: &PathBuf,
+    mode: &str,
+    threshold_ms: u32,
+    n_queries: usize,
+    seed: u64,
+) -> anyhow::Result<()> {
+    use butterfly_route::range::phast::BLOCK_SIZE;
+
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  BLOCK-GATED PHAST BENCHMARK");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  Mode: {}", mode);
+    println!("  Threshold: {} ms ({:.1} min)", threshold_ms, threshold_ms as f64 / 60000.0);
+    println!("  Queries: {}", n_queries);
+    println!("  Block size: {} ranks", BLOCK_SIZE);
+    println!();
+
+    // Load data
+    println!("[1/4] Loading PHAST engine...");
+    let load_start = Instant::now();
+    let phast = load_phast(data_dir, mode)?;
+    let n_nodes = phast.n_nodes();
+    let n_blocks = (n_nodes + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    println!("  ✓ Loaded in {:.1}s ({} nodes, {} blocks)",
+        load_start.elapsed().as_secs_f64(), n_nodes, n_blocks);
+    println!();
+
+    // Generate random origins
+    let mut rng = StdRng::seed_from_u64(seed);
+    let origins: Vec<u32> = (0..n_queries)
+        .map(|_| rng.gen_range(0..n_nodes as u32))
+        .collect();
+
+    // ========== Active-set gated PHAST ==========
+    println!("[2/4] Running active-set gated PHAST...");
+
+    let mut active_times: Vec<Duration> = Vec::with_capacity(n_queries);
+    let mut active_relaxations: u64 = 0;
+    let mut active_reachable: u64 = 0;
+
+    for (i, &origin) in origins.iter().enumerate() {
+        let start = Instant::now();
+        let result = phast.query_active_set(origin, threshold_ms);
+        active_times.push(start.elapsed());
+        active_relaxations += result.stats.downward_relaxations as u64;
+        active_reachable += result.n_reachable as u64;
+
+        if (i + 1) % 10 == 0 || i == n_queries - 1 {
+            print!("\r  Progress: {}/{}", i + 1, n_queries);
+            std::io::Write::flush(&mut std::io::stdout())?;
+        }
+    }
+    println!();
+
+    let active_total: Duration = active_times.iter().sum();
+    let active_avg_ms = active_total.as_millis() as f64 / n_queries as f64;
+    println!("  ✓ Active-set: {:.1}ms avg", active_avg_ms);
+    println!();
+
+    // ========== Block-gated PHAST ==========
+    println!("[3/4] Running block-gated PHAST...");
+
+    let mut block_times: Vec<Duration> = Vec::with_capacity(n_queries);
+    let mut block_relaxations: u64 = 0;
+    let mut block_reachable: u64 = 0;
+    let mut total_blocks_processed: u64 = 0;
+    let mut total_blocks_skipped: u64 = 0;
+    let mut total_nodes_skipped_in_block: u64 = 0;
+
+    for (i, &origin) in origins.iter().enumerate() {
+        let start = Instant::now();
+        let result = phast.query_block_gated(origin, threshold_ms);
+        block_times.push(start.elapsed());
+        block_relaxations += result.stats.downward_relaxations as u64;
+        block_reachable += result.n_reachable as u64;
+        total_blocks_processed += result.stats.blocks_processed as u64;
+        total_blocks_skipped += result.stats.blocks_skipped as u64;
+        total_nodes_skipped_in_block += result.stats.nodes_skipped_in_block as u64;
+
+        if (i + 1) % 10 == 0 || i == n_queries - 1 {
+            print!("\r  Progress: {}/{}", i + 1, n_queries);
+            std::io::Write::flush(&mut std::io::stdout())?;
+        }
+    }
+    println!();
+
+    let block_total: Duration = block_times.iter().sum();
+    let block_avg_ms = block_total.as_millis() as f64 / n_queries as f64;
+    println!("  ✓ Block-gated: {:.1}ms avg", block_avg_ms);
+    println!();
+
+    // ========== Verification ==========
+    println!("[4/4] Verifying correctness...");
+
+    let mut mismatches = 0;
+    for &origin in origins.iter().take(10) {
+        let active_result = phast.query_active_set(origin, threshold_ms);
+        let block_result = phast.query_block_gated(origin, threshold_ms);
+
+        for node in 0..n_nodes {
+            let active_d = active_result.dist[node];
+            let block_d = block_result.dist[node];
+            let active_reach = active_d <= threshold_ms;
+            let block_reach = block_d <= threshold_ms;
+
+            if active_reach != block_reach || (active_reach && block_reach && active_d != block_d) {
+                mismatches += 1;
+            }
+        }
+    }
+
+    if mismatches == 0 {
+        println!("  ✅ All distances match (spot-checked 10 queries)");
+    } else {
+        println!("  ❌ {} mismatches found!", mismatches);
+    }
+    println!();
+
+    // ========== Results ==========
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  RESULTS");
+    println!("═══════════════════════════════════════════════════════════════");
+
+    // Sort times for percentile calculation
+    active_times.sort();
+    block_times.sort();
+
+    let active_p50 = active_times[n_queries / 2].as_millis();
+    let active_p95 = active_times[n_queries * 95 / 100].as_millis();
+    let active_p99 = active_times[n_queries * 99 / 100].as_millis();
+
+    let block_p50 = block_times[n_queries / 2].as_millis();
+    let block_p95 = block_times[n_queries * 95 / 100].as_millis();
+    let block_p99 = block_times[n_queries * 99 / 100].as_millis();
+
+    println!("  Active-set gating:");
+    println!("    p50:  {:>6}ms", active_p50);
+    println!("    p95:  {:>6}ms", active_p95);
+    println!("    p99:  {:>6}ms", active_p99);
+    println!("    Avg:  {:>6.1}ms", active_avg_ms);
+    println!("    Relaxations/query: {:.2}M", active_relaxations as f64 / n_queries as f64 / 1_000_000.0);
+    println!();
+
+    println!("  Block-level gating:");
+    println!("    p50:  {:>6}ms", block_p50);
+    println!("    p95:  {:>6}ms", block_p95);
+    println!("    p99:  {:>6}ms", block_p99);
+    println!("    Avg:  {:>6.1}ms", block_avg_ms);
+    println!("    Relaxations/query: {:.2}M", block_relaxations as f64 / n_queries as f64 / 1_000_000.0);
+    println!("    Blocks processed/query: {:.0} / {} ({:.1}%)",
+        total_blocks_processed as f64 / n_queries as f64,
+        n_blocks,
+        100.0 * total_blocks_processed as f64 / (n_queries as f64 * n_blocks as f64));
+    println!("    Blocks skipped/query: {:.0} ({:.1}%)",
+        total_blocks_skipped as f64 / n_queries as f64,
+        100.0 * total_blocks_skipped as f64 / (n_queries as f64 * n_blocks as f64));
+    println!("    Nodes skipped in active blocks/query: {:.0}",
+        total_nodes_skipped_in_block as f64 / n_queries as f64);
+    println!();
+
+    // Speedup
+    let speedup = active_avg_ms / block_avg_ms;
+    let p95_speedup = active_p95 as f64 / block_p95 as f64;
+
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  COMPARISON");
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  Avg speedup:  {:.2}x", speedup);
+    println!("  p95 speedup:  {:.2}x", p95_speedup);
+    println!();
+
+    // Reachable comparison
+    let avg_reachable = active_reachable as f64 / n_queries as f64;
+    println!("  Avg reachable nodes: {:.0} ({:.2}% of graph)",
+        avg_reachable, 100.0 * avg_reachable / n_nodes as f64);
+    println!();
+
+    // Analysis
+    if speedup > 1.2 {
+        println!("  ✅ Block-level gating provides speedup!");
+        println!("     Consider larger BLOCK_SIZE for even more benefit.");
+    } else if speedup > 0.95 {
+        println!("  ➡️  Block-level gating is roughly equivalent.");
+        println!("     Benefit increases with smaller thresholds.");
+    } else {
+        println!("  ⚠️  Block-level gating is slightly slower.");
+        println!("     Per-node gating is more efficient at this scale.");
+    }
+    println!();
+
+    // Target check from todo
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  TARGET CHECK (from todo_immediate.md)");
+    println!("───────────────────────────────────────────────────────────────");
+
+    let target_met = match (mode, threshold_ms) {
+        ("foot", 300000) => block_p95 <= 40,  // foot 5min: p95 < 20-40ms
+        ("bike", 600000) => block_p95 <= 80,  // bike 10min: p95 < 50-80ms
+        _ => true,
+    };
+
+    if mode == "foot" && threshold_ms == 300000 {
+        println!("  Foot 5min target: p95 < 20-40ms");
+        println!("  Actual p95: {}ms → {}", block_p95, if target_met { "✅ MET" } else { "❌ NOT MET" });
+    } else if mode == "bike" && threshold_ms == 600000 {
+        println!("  Bike 10min target: p95 < 50-80ms");
+        println!("  Actual p95: {}ms → {}", block_p95, if target_met { "✅ MET" } else { "❌ NOT MET" });
+    } else {
+        println!("  (No specific target for mode={}, threshold={}ms)", mode, threshold_ms);
+    }
+    println!();
+
+    Ok(())
+}
+
+fn run_adaptive_bench(
+    data_dir: &PathBuf,
+    mode: &str,
+    thresholds: &[u32],
+    n_queries: usize,
+    seed: u64,
+) -> anyhow::Result<()> {
+    use butterfly_route::range::phast::BLOCK_SIZE;
+
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  ADAPTIVE GATING BENCHMARK");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  Mode: {}", mode);
+    println!("  Thresholds: {:?}", thresholds);
+    println!("  Queries per threshold: {}", n_queries);
+    println!("  Block size: {} ranks", BLOCK_SIZE);
+    println!("  Gating threshold: 25% active blocks");
+    println!();
+
+    // Load data
+    println!("[1/2] Loading PHAST engine...");
+    let load_start = Instant::now();
+    let phast = load_phast(data_dir, mode)?;
+    let n_nodes = phast.n_nodes();
+    let n_blocks = (n_nodes + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    println!("  ✓ Loaded in {:.1}s ({} nodes, {} blocks)",
+        load_start.elapsed().as_secs_f64(), n_nodes, n_blocks);
+    println!();
+
+    // Generate random origins
+    let mut rng = StdRng::seed_from_u64(seed);
+    let origins: Vec<u32> = (0..n_queries)
+        .map(|_| rng.gen_range(0..n_nodes as u32))
+        .collect();
+
+    println!("[2/2] Running benchmarks...");
+    println!();
+
+    // Results table header
+    println!("┌──────────┬──────────┬──────────┬──────────┬───────────┬───────────┬──────────┐");
+    println!("│ Thresh   │ Method   │ p50 (ms) │ p95 (ms) │ Avg (ms)  │ Strategy  │ Reachable│");
+    println!("├──────────┼──────────┼──────────┼──────────┼───────────┼───────────┼──────────┤");
+
+    for &threshold_ms in thresholds {
+        // Run plain PHAST (unbounded, then filter)
+        let mut plain_times: Vec<Duration> = Vec::with_capacity(n_queries);
+        for &origin in &origins {
+            let start = Instant::now();
+            let _ = phast.query(origin);
+            plain_times.push(start.elapsed());
+        }
+        plain_times.sort();
+        let plain_p50 = plain_times[n_queries / 2].as_millis();
+        let plain_p95 = plain_times[n_queries * 95 / 100].as_millis();
+        let plain_avg: f64 = plain_times.iter().map(|d| d.as_millis() as f64).sum::<f64>() / n_queries as f64;
+
+        // Run adaptive PHAST
+        let mut adaptive_times: Vec<Duration> = Vec::with_capacity(n_queries);
+        let mut total_reachable: u64 = 0;
+        let mut gated_count = 0usize;
+        let mut ungated_count = 0usize;
+
+        for &origin in &origins {
+            let start = Instant::now();
+            let result = phast.query_adaptive(origin, threshold_ms);
+            adaptive_times.push(start.elapsed());
+            total_reachable += result.n_reachable as u64;
+
+            // Determine which strategy was used based on blocks_processed/skipped
+            if result.stats.blocks_processed > 0 || result.stats.blocks_skipped > 0 {
+                gated_count += 1;
+            } else {
+                ungated_count += 1;
+            }
+        }
+        adaptive_times.sort();
+        let adaptive_p50 = adaptive_times[n_queries / 2].as_millis();
+        let adaptive_p95 = adaptive_times[n_queries * 95 / 100].as_millis();
+        let adaptive_avg: f64 = adaptive_times.iter().map(|d| d.as_millis() as f64).sum::<f64>() / n_queries as f64;
+
+        // Run block-gated PHAST (always gated)
+        let mut gated_times: Vec<Duration> = Vec::with_capacity(n_queries);
+        for &origin in &origins {
+            let start = Instant::now();
+            let _ = phast.query_block_gated(origin, threshold_ms);
+            gated_times.push(start.elapsed());
+        }
+        gated_times.sort();
+        let gated_p50 = gated_times[n_queries / 2].as_millis();
+        let gated_p95 = gated_times[n_queries * 95 / 100].as_millis();
+        let gated_avg: f64 = gated_times.iter().map(|d| d.as_millis() as f64).sum::<f64>() / n_queries as f64;
+
+        let avg_reachable = total_reachable as f64 / n_queries as f64;
+        let reachable_pct = 100.0 * avg_reachable / n_nodes as f64;
+
+        let strategy_desc = if gated_count > ungated_count {
+            format!("Gated {}", gated_count)
+        } else {
+            format!("Plain {}", ungated_count)
+        };
+
+        // Print results
+        println!("│ {:>6}ms │ Plain    │ {:>8} │ {:>8} │ {:>9.1} │           │          │",
+            threshold_ms, plain_p50, plain_p95, plain_avg);
+        println!("│          │ Block    │ {:>8} │ {:>8} │ {:>9.1} │           │          │",
+            gated_p50, gated_p95, gated_avg);
+        println!("│          │ Adaptive │ {:>8} │ {:>8} │ {:>9.1} │ {:>9} │ {:>6.1}%  │",
+            adaptive_p50, adaptive_p95, adaptive_avg, strategy_desc, reachable_pct);
+        println!("├──────────┼──────────┼──────────┼──────────┼───────────┼───────────┼──────────┤");
+    }
+
+    println!("└──────────┴──────────┴──────────┴──────────┴───────────┴───────────┴──────────┘");
+    println!();
+
+    // Analysis
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  ANALYSIS");
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  - Plain PHAST: unbounded, full graph scan");
+    println!("  - Block-gated: always uses block-level gating");
+    println!("  - Adaptive: switches based on active block ratio (>25% → plain)");
+    println!();
+    println!("  Adaptive should match or beat both methods:");
+    println!("  - For small T (few active blocks): uses gating → fast");
+    println!("  - For large T (many active blocks): skips gating overhead → no regression");
+    println!();
+
+    Ok(())
+}
+
+fn run_klane_bounded_bench(
+    data_dir: &PathBuf,
+    mode: &str,
+    threshold_ms: u32,
+    n_batches: usize,
+    seed: u64,
+) -> anyhow::Result<()> {
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  K-LANE BLOCK-GATED PHAST BENCHMARK");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  Mode: {}", mode);
+    println!("  Threshold: {} ms ({:.1} min)", threshold_ms, threshold_ms as f64 / 60000.0);
+    println!("  Batches: {} × {} lanes = {} total sources", n_batches, K_LANES, n_batches * K_LANES);
+    println!();
+
+    // Load batched PHAST engine
+    println!("[1/3] Loading batched PHAST engine...");
+    let load_start = Instant::now();
+    let engine = load_batched_phast(data_dir, mode)?;
+    let n_nodes = engine.n_nodes();
+    println!("  ✓ Loaded in {:.1}s ({} nodes)", load_start.elapsed().as_secs_f64(), n_nodes);
+    println!();
+
+    // Generate random sources (K per batch)
+    let mut rng = StdRng::seed_from_u64(seed);
+    let sources: Vec<Vec<u32>> = (0..n_batches)
+        .map(|_| (0..K_LANES).map(|_| rng.gen_range(0..n_nodes as u32)).collect())
+        .collect();
+
+    // ========== Regular batched PHAST (unbounded) ==========
+    println!("[2/3] Running regular batched PHAST (unbounded)...");
+
+    let mut regular_times: Vec<Duration> = Vec::with_capacity(n_batches);
+    let mut regular_stats = BatchedPhastStats::default();
+
+    for batch in &sources {
+        let start = Instant::now();
+        let result = engine.query_batch(batch);
+        regular_times.push(start.elapsed());
+
+        regular_stats.upward_relaxations += result.stats.upward_relaxations;
+        regular_stats.downward_relaxations += result.stats.downward_relaxations;
+        regular_stats.downward_improved += result.stats.downward_improved;
+    }
+
+    let regular_total: Duration = regular_times.iter().sum();
+    let regular_avg = regular_total.as_millis() as f64 / n_batches as f64;
+    let regular_per_query = regular_avg / K_LANES as f64;
+    println!("  ✓ Regular: {:.1}ms/batch, {:.2}ms/query effective", regular_avg, regular_per_query);
+    println!();
+
+    // ========== K-lane block-gated PHAST (bounded) ==========
+    println!("[3/3] Running K-lane block-gated PHAST (bounded T={})...", threshold_ms);
+
+    let mut gated_times: Vec<Duration> = Vec::with_capacity(n_batches);
+    let mut gated_stats = BatchedPhastStats::default();
+
+    for batch in &sources {
+        let start = Instant::now();
+        let result = engine.query_batch_block_gated(batch, threshold_ms);
+        gated_times.push(start.elapsed());
+
+        gated_stats.upward_relaxations += result.stats.upward_relaxations;
+        gated_stats.downward_relaxations += result.stats.downward_relaxations;
+        gated_stats.downward_improved += result.stats.downward_improved;
+        gated_stats.buffer_flushes += result.stats.buffer_flushes;  // blocks_skipped
+        gated_stats.buffered_updates += result.stats.buffered_updates;  // blocks_processed
+    }
+
+    let gated_total: Duration = gated_times.iter().sum();
+    let gated_avg = gated_total.as_millis() as f64 / n_batches as f64;
+    let gated_per_query = gated_avg / K_LANES as f64;
+    println!("  ✓ K-lane gated: {:.1}ms/batch, {:.2}ms/query effective", gated_avg, gated_per_query);
+    println!();
+
+    // ========== Correctness check ==========
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  CORRECTNESS CHECK");
+    println!("───────────────────────────────────────────────────────────────");
+
+    // Compare first batch results
+    let regular_result = engine.query_batch(&sources[0]);
+    let gated_result = engine.query_batch_block_gated(&sources[0], threshold_ms);
+
+    let mut mismatches = 0;
+    for lane in 0..K_LANES {
+        for node in 0..n_nodes {
+            let regular_d = regular_result.dist[lane][node];
+            let gated_d = gated_result.dist[lane][node];
+
+            // Both should agree on reachability within threshold
+            let regular_reachable = regular_d <= threshold_ms;
+            let gated_reachable = gated_d <= threshold_ms;
+
+            if regular_reachable != gated_reachable {
+                mismatches += 1;
+            } else if regular_reachable && gated_reachable && regular_d != gated_d {
+                mismatches += 1;
+            }
+        }
+    }
+
+    if mismatches == 0 {
+        println!("  ✅ All distances within threshold match!");
+    } else {
+        println!("  ❌ {} mismatches found!", mismatches);
+    }
+    println!();
+
+    // ========== Results ==========
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  RESULTS");
+    println!("═══════════════════════════════════════════════════════════════");
+
+    regular_times.sort();
+    gated_times.sort();
+
+    let regular_p50 = regular_times[n_batches / 2].as_millis();
+    let regular_p95 = regular_times[n_batches * 95 / 100.max(1)].as_millis();
+
+    let gated_p50 = gated_times[n_batches / 2].as_millis();
+    let gated_p95 = gated_times[n_batches * 95 / 100.max(1)].as_millis();
+
+    println!("  Regular batched (unbounded):");
+    println!("    p50 batch:  {:>6}ms", regular_p50);
+    println!("    p95 batch:  {:>6}ms", regular_p95);
+    println!("    Avg batch:  {:>6.1}ms", regular_avg);
+    println!("    Effective/query: {:>6.2}ms", regular_per_query);
+    println!("    Relaxations/batch: {:.2}M", regular_stats.downward_relaxations as f64 / n_batches as f64 / 1_000_000.0);
+    println!();
+
+    println!("  K-lane block-gated (T={}ms):", threshold_ms);
+    println!("    p50 batch:  {:>6}ms", gated_p50);
+    println!("    p95 batch:  {:>6}ms", gated_p95);
+    println!("    Avg batch:  {:>6.1}ms", gated_avg);
+    println!("    Effective/query: {:>6.2}ms", gated_per_query);
+    println!("    Relaxations/batch: {:.2}M", gated_stats.downward_relaxations as f64 / n_batches as f64 / 1_000_000.0);
+    println!("    Blocks processed/batch: {:.0}", gated_stats.buffered_updates as f64 / n_batches as f64);
+    println!("    Blocks skipped/batch: {:.0}", gated_stats.buffer_flushes as f64 / n_batches as f64);
+    println!();
+
+    // Speedup
+    let speedup = regular_avg / gated_avg;
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  COMPARISON");
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  Batch speedup: {:.2}x", speedup);
+    println!("  Effective per-query speedup: {:.2}x", regular_per_query / gated_per_query);
+    println!();
+
+    // Analysis
+    if speedup > 1.5 {
+        println!("  ✅ K-lane block-gated provides significant speedup!");
+        println!("     Bounded queries benefit from lane masking and block skipping.");
+    } else if speedup > 1.1 {
+        println!("  ✅ K-lane block-gated provides moderate speedup.");
+    } else if speedup > 0.95 {
+        println!("  ➡️  K-lane block-gated is roughly equivalent.");
+        println!("     Consider smaller threshold for more benefit.");
+    } else {
+        println!("  ⚠️  K-lane block-gated is slower (overhead not worth it).");
+    }
+    println!();
+
+    Ok(())
+}
+
+/// Analyze reachability fraction at various thresholds
+///
+/// This helps decide whether rPHAST is worth implementing:
+/// - If reachable fraction is high (>80-90%), rPHAST won't help much
+/// - If reachable fraction is moderate (<60%), rPHAST preprocessing may be worth it
+fn run_reachability_analysis(
+    data_dir: &PathBuf,
+    mode: &str,
+    thresholds: &[u32],
+    n_origins: usize,
+    seed: u64,
+) -> anyhow::Result<()> {
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  REACHABILITY ANALYSIS FOR rPHAST DECISION");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  Mode: {}", mode);
+    println!("  Thresholds: {:?}", thresholds.iter().map(|t| format!("{:.1}min", *t as f64 / 60000.0)).collect::<Vec<_>>());
+    println!("  Origins sampled: {}", n_origins);
+    println!();
+
+    // Load PHAST engine
+    println!("[1/2] Loading PHAST engine...");
+    let load_start = std::time::Instant::now();
+    let phast = load_phast(data_dir, mode)?;
+    let n_nodes = phast.n_nodes();
+    let total_edges = phast.total_down_edges();
+    println!("  ✓ Loaded in {:.1}s", load_start.elapsed().as_secs_f64());
+    println!("  Total nodes: {}", n_nodes);
+    println!("  Total down-edges: {:.2}M", total_edges as f64 / 1_000_000.0);
+    println!();
+
+    // Generate random origins
+    let mut rng = StdRng::seed_from_u64(seed);
+    let origins: Vec<u32> = (0..n_origins)
+        .map(|_| rng.gen_range(0..n_nodes as u32))
+        .collect();
+
+    // Run analysis
+    println!("[2/2] Analyzing reachability...");
+    println!();
+
+    // Track statistics for each threshold
+    struct ThresholdStats {
+        threshold: u32,
+        avg_reachable_nodes_pct: f64,
+        avg_reachable_edges_pct: f64,
+        min_reachable_nodes_pct: f64,
+        max_reachable_nodes_pct: f64,
+        min_reachable_edges_pct: f64,
+        max_reachable_edges_pct: f64,
+    }
+
+    let mut all_stats: Vec<ThresholdStats> = Vec::new();
+
+    for &threshold in thresholds {
+        let mut node_pcts: Vec<f64> = Vec::with_capacity(n_origins);
+        let mut edge_pcts: Vec<f64> = Vec::with_capacity(n_origins);
+
+        for &origin in &origins {
+            // Run unbounded PHAST query
+            let result = phast.query(origin);
+
+            // Compute reachability at this threshold
+            let (reachable_nodes, reachable_edges, total_n, total_e) =
+                phast.compute_reachability(&result.dist, threshold);
+
+            node_pcts.push(reachable_nodes as f64 / total_n as f64 * 100.0);
+            edge_pcts.push(reachable_edges as f64 / total_e as f64 * 100.0);
+        }
+
+        let avg_nodes = node_pcts.iter().sum::<f64>() / n_origins as f64;
+        let avg_edges = edge_pcts.iter().sum::<f64>() / n_origins as f64;
+        let min_nodes = node_pcts.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_nodes = node_pcts.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let min_edges = edge_pcts.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_edges = edge_pcts.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+        all_stats.push(ThresholdStats {
+            threshold,
+            avg_reachable_nodes_pct: avg_nodes,
+            avg_reachable_edges_pct: avg_edges,
+            min_reachable_nodes_pct: min_nodes,
+            max_reachable_nodes_pct: max_nodes,
+            min_reachable_edges_pct: min_edges,
+            max_reachable_edges_pct: max_edges,
+        });
+    }
+
+    // Print results table
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  REACHABILITY RESULTS");
+    println!("───────────────────────────────────────────────────────────────");
+    println!();
+    println!("┌──────────┬──────────────────────────────┬──────────────────────────────┐");
+    println!("│ Threshold│     Reachable Nodes (%)      │     Reachable Edges (%)      │");
+    println!("│          │   avg    (min   -   max)     │   avg    (min   -   max)     │");
+    println!("├──────────┼──────────────────────────────┼──────────────────────────────┤");
+
+    for stats in &all_stats {
+        let threshold_str = format!("{:.1}min", stats.threshold as f64 / 60000.0);
+        println!(
+            "│ {:>8} │  {:>5.1}%  ({:>5.1}% - {:>5.1}%) │  {:>5.1}%  ({:>5.1}% - {:>5.1}%) │",
+            threshold_str,
+            stats.avg_reachable_nodes_pct,
+            stats.min_reachable_nodes_pct,
+            stats.max_reachable_nodes_pct,
+            stats.avg_reachable_edges_pct,
+            stats.min_reachable_edges_pct,
+            stats.max_reachable_edges_pct,
+        );
+    }
+
+    println!("└──────────┴──────────────────────────────┴──────────────────────────────┘");
+    println!();
+
+    // Decision guidance
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  rPHAST DECISION GUIDANCE");
+    println!("───────────────────────────────────────────────────────────────");
+    println!();
+
+    for stats in &all_stats {
+        let threshold_str = format!("{:.1}min", stats.threshold as f64 / 60000.0);
+        let edge_pct = stats.avg_reachable_edges_pct;
+
+        print!("  {} T={}: ", mode, threshold_str);
+
+        if edge_pct > 90.0 {
+            println!("❌ rPHAST NOT recommended (>90% edges reachable)");
+            println!("     → Use K-lane batching for throughput, accept full scan");
+        } else if edge_pct > 70.0 {
+            println!("⚠️  rPHAST marginal benefit ({:.1}% edges)", edge_pct);
+            println!("     → K-lane batching likely better ROI");
+        } else if edge_pct > 40.0 {
+            println!("✅ rPHAST may help ({:.1}% edges)", edge_pct);
+            println!("     → Consider rPHAST if throughput not sufficient");
+        } else {
+            println!("✅ rPHAST recommended ({:.1}% edges)", edge_pct);
+            println!("     → Preprocessing could save significant work");
+        }
+    }
+
+    println!();
+    println!("  Key insight: rPHAST preprocessing is only worth it when the");
+    println!("  reachable fraction is well below 100%. For large thresholds");
+    println!("  where most of the graph is reachable, K-lane batching is the");
+    println!("  better approach for throughput optimization.");
+    println!();
+
+    Ok(())
+}
+
+/// Benchmark matrix tile streaming (compute path only, no HTTP)
+fn run_matrix_stream_bench(
+    data_dir: &PathBuf,
+    mode: &str,
+    n_sources: usize,
+    n_targets: usize,
+    src_tile_size: usize,
+    dst_tile_size: usize,
+    seed: u64,
+) -> anyhow::Result<()> {
+    use butterfly_route::matrix::arrow_stream::{MatrixTile, tiles_to_record_batch};
+    use arrow::ipc::writer::StreamWriter;
+
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  MATRIX STREAMING BENCHMARK");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  Mode: {}", mode);
+    println!("  Sources: {}", n_sources);
+    println!("  Targets: {}", n_targets);
+    println!("  Src tile size: {}", src_tile_size);
+    println!("  Dst tile size: {}", dst_tile_size);
+    println!("  Matrix size: {}x{} = {} cells", n_sources, n_targets, n_sources * n_targets);
+    println!("───────────────────────────────────────────────────────────────");
+    println!();
+
+    // Load CCH data (uses path search logic that handles different directory structures)
+    println!("Loading CCH data...");
+    let engine = load_batched_phast(data_dir, mode)?;
+    let n_nodes = engine.n_nodes();
+    println!("  ✓ {} nodes loaded", n_nodes);
+    println!();
+
+    // Generate random sources and targets
+    let mut rng = StdRng::seed_from_u64(seed);
+    let sources: Vec<u32> = (0..n_sources)
+        .map(|_| rng.gen_range(0..n_nodes as u32))
+        .collect();
+    let targets: Vec<u32> = (0..n_targets)
+        .map(|_| rng.gen_range(0..n_nodes as u32))
+        .collect();
+
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  STREAMING COMPUTE + SERIALIZATION");
+    println!("───────────────────────────────────────────────────────────────");
+
+    let start = Instant::now();
+    let mut total_tiles = 0usize;
+    let mut total_bytes = 0usize;
+    let mut total_compute_ms = 0u64;
+    let mut total_serialize_ms = 0u64;
+
+    // Align src_tile_size to K_LANES
+    let effective_src_tile = ((src_tile_size + K_LANES - 1) / K_LANES) * K_LANES;
+
+    for src_batch_start in (0..n_sources).step_by(effective_src_tile) {
+        let src_batch_end = (src_batch_start + effective_src_tile).min(n_sources);
+        let batch_sources = &sources[src_batch_start..src_batch_end];
+
+        // Compute distances for this batch
+        let compute_start = Instant::now();
+        let (matrix, _stats) = engine.compute_matrix_flat(batch_sources, &targets);
+        total_compute_ms += compute_start.elapsed().as_millis() as u64;
+
+        // Serialize tiles
+        for dst_batch_start in (0..n_targets).step_by(dst_tile_size) {
+            let dst_batch_end = (dst_batch_start + dst_tile_size).min(n_targets);
+            let actual_src_len = batch_sources.len();
+            let actual_dst_len = dst_batch_end - dst_batch_start;
+
+            // Extract tile data
+            let mut tile_data = Vec::with_capacity(actual_src_len * actual_dst_len * 4);
+            for src_offset in 0..actual_src_len {
+                for dst_offset in 0..actual_dst_len {
+                    let d = matrix[src_offset * n_targets + dst_batch_start + dst_offset];
+                    tile_data.extend_from_slice(&d.to_le_bytes());
+                }
+            }
+
+            let tile = MatrixTile {
+                src_block_start: src_batch_start as u32,
+                dst_block_start: dst_batch_start as u32,
+                src_block_len: actual_src_len as u16,
+                dst_block_len: actual_dst_len as u16,
+                durations_ms: tile_data,
+            };
+
+            // Serialize to Arrow IPC
+            let serialize_start = Instant::now();
+            let batch = tiles_to_record_batch(&[tile])?;
+            let mut buf = Vec::new();
+            {
+                let mut writer = StreamWriter::try_new(&mut buf, batch.schema_ref())?;
+                writer.write(&batch)?;
+                writer.finish()?;
+            }
+            total_serialize_ms += serialize_start.elapsed().as_millis() as u64;
+            total_bytes += buf.len();
+            total_tiles += 1;
+        }
+    }
+
+    let total_time = start.elapsed();
+
+    println!();
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  RESULTS");
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  Total tiles: {}", total_tiles);
+    println!("  Total bytes: {:.2} MB", total_bytes as f64 / 1024.0 / 1024.0);
+    println!("  Total time: {:?}", total_time);
+    println!();
+    println!("  Compute time: {}ms ({:.1}%)", total_compute_ms,
+             total_compute_ms as f64 / total_time.as_millis() as f64 * 100.0);
+    println!("  Serialize time: {}ms ({:.1}%)", total_serialize_ms,
+             total_serialize_ms as f64 / total_time.as_millis() as f64 * 100.0);
+    println!();
+
+    let cells = n_sources * n_targets;
+    let cells_per_sec = cells as f64 / total_time.as_secs_f64();
+    let mb_per_sec = total_bytes as f64 / 1024.0 / 1024.0 / total_time.as_secs_f64();
+    let tiles_per_sec = total_tiles as f64 / total_time.as_secs_f64();
+
+    println!("  Throughput:");
+    println!("    Cells/sec: {:.0}", cells_per_sec);
+    println!("    MB/sec: {:.2}", mb_per_sec);
+    println!("    Tiles/sec: {:.1}", tiles_per_sec);
+    println!();
+
+    // Effective queries/sec (each source is essentially a PHAST query)
+    let queries_per_sec = n_sources as f64 / total_time.as_secs_f64();
+    println!("  Effective PHAST queries/sec: {:.1}", queries_per_sec);
+    println!();
+
+    Ok(())
+}
+
+/// Benchmark bucket-based many-to-many CH algorithm
+fn run_bucket_m2m_bench(
+    data_dir: &PathBuf,
+    mode: &str,
+    sizes: &[usize],
+    seed: u64,
+) -> anyhow::Result<()> {
+    use butterfly_route::formats::CchTopoFile;
+
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  BUCKET MANY-TO-MANY CH BENCHMARK");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  Mode: {}", mode);
+    println!("  Sizes: {:?}", sizes);
+    println!("───────────────────────────────────────────────────────────────");
+    println!();
+
+    // Load CCH data
+    let topo_path = find_file(data_dir, &[
+        format!("cch.{}.topo", mode),
+        format!("step7-rank-aligned/cch.{}.topo", mode),
+        format!("step7/cch.{}.topo", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
+
+    let weights_path = find_file(data_dir, &[
+        format!("cch.w.{}.u32", mode),
+        format!("step8-rank-aligned/cch.w.{}.u32", mode),
+        format!("step8/cch.w.{}.u32", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
+
+    println!("Loading CCH topology from {:?}...", topo_path);
+    let topo = CchTopoFile::read(&topo_path)?;
+    let n_nodes = topo.n_nodes as usize;
+    println!("  ✓ {} nodes, {} up edges, {} down edges",
+             n_nodes, topo.up_targets.len(), topo.down_targets.len());
+
+    println!("Loading CCH weights from {:?}...", weights_path);
+    let weights = CchWeightsFile::read(&weights_path)?;
+    println!("  ✓ {} up weights, {} down weights", weights.up.len(), weights.down.len());
+
+    println!("Building DownReverseAdj (for reverse/backward search)...");
+    let down_rev = build_down_rev(&topo);
+    println!("  ✓ {} reverse entries", down_rev.sources.len());
+
+    println!("Building DownReverseAdjFlat (optimized with embedded weights)...");
+    let down_rev_flat = DownReverseAdjFlat::build(&topo, &weights);
+    println!("  ✓ {} flat reverse entries", down_rev_flat.sources.len());
+    println!();
+
+    // Run benchmarks for each size
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  BENCHMARK RESULTS");
+    println!("───────────────────────────────────────────────────────────────");
+    println!();
+    println!("{:>8} {:>12} {:>10} {:>12} {:>10} {:>10} {:>10} {:>10}",
+             "Size", "Cells", "Time(ms)", "Cells/sec", "Fwd Vis", "Bwd Vis", "Pushes", "Stale%");
+    println!("{}", "-".repeat(100));
+
+    let mut rng = StdRng::seed_from_u64(seed);
+
+    // Create reusable engine to avoid per-call allocations
+    let mut engine = BucketM2MEngine::new(n_nodes);
+
+    for &n in sizes {
+        // Generate random sources and targets
+        let sources: Vec<u32> = (0..n)
+            .map(|_| rng.gen_range(0..n_nodes as u32))
+            .collect();
+        let targets: Vec<u32> = (0..n)
+            .map(|_| rng.gen_range(0..n_nodes as u32))
+            .collect();
+
+        // Warmup run (using engine to pre-warm allocations)
+        let _ = engine.compute(&topo, &weights, &down_rev_flat, &sources, &targets);
+
+        // Benchmark run (average of 3)
+        let mut times = Vec::new();
+        let mut last_stats = None;
+
+        for _ in 0..3 {
+            let start = Instant::now();
+            let (_, stats) = engine.compute(&topo, &weights, &down_rev_flat, &sources, &targets);
+            times.push(start.elapsed());
+            last_stats = Some(stats);
+        }
+
+        let avg_time = times.iter().map(|t| t.as_secs_f64()).sum::<f64>() / times.len() as f64;
+        let avg_time_ms = avg_time * 1000.0;
+        let cells = n * n;
+        let cells_per_sec = cells as f64 / avg_time;
+
+        let stats = last_stats.unwrap();
+        let fwd_vis_avg = stats.forward_visited / n;
+        let bwd_vis_avg = stats.backward_visited / n;
+
+        let stale_pct = if stats.heap_pops > 0 {
+            100.0 * stats.stale_pops as f64 / stats.heap_pops as f64
+        } else {
+            0.0
+        };
+
+        println!("{:>8} {:>12} {:>10.1} {:>12.0} {:>10} {:>10} {:>10} {:>9.1}%",
+                 format!("{}×{}", n, n),
+                 cells,
+                 avg_time_ms,
+                 cells_per_sec,
+                 fwd_vis_avg,
+                 bwd_vis_avg,
+                 stats.heap_pushes,
+                 stale_pct);
+        println!("         Fwd: {}ms, Sort: {}ms, Bwd: {}ms",
+                 stats.forward_time_ms, stats.sort_time_ms, stats.backward_time_ms);
+    }
+
+    println!();
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  TARGET COMPARISON");
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  OSRM benchmark (CH, Belgium, sequential):");
+    println!("    10×10: 6ms, 25×25: 10ms, 50×50: 17ms, 100×100: 35ms");
+    println!();
+
+    // ========== Correctness Validation ==========
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  CORRECTNESS VALIDATION (5×5 vs P2P)");
+    println!("───────────────────────────────────────────────────────────────");
+
+    // Use fresh random sources/targets for validation
+    let mut val_rng = StdRng::seed_from_u64(12345);
+    let val_sources: Vec<u32> = (0..5).map(|_| val_rng.gen_range(0..n_nodes as u32)).collect();
+    let val_targets: Vec<u32> = (0..5).map(|_| val_rng.gen_range(0..n_nodes as u32)).collect();
+
+    // Run bucket M2M
+    let (m2m_matrix, _) = table_bucket_optimized(&topo, &weights, &down_rev_flat, &val_sources, &val_targets);
+
+    // Run P2P queries for comparison
+    let mut mismatches = 0;
+    let mut checked = 0;
+
+    for (si, &s) in val_sources.iter().enumerate() {
+        for (ti, &t) in val_targets.iter().enumerate() {
+            let m2m_dist = m2m_matrix[si * 5 + ti];
+
+            // Run P2P query using the same algorithm as the server
+            let p2p_dist = run_p2p_query(&topo, &weights, &down_rev, s, t);
+
+            checked += 1;
+            if m2m_dist != p2p_dist {
+                mismatches += 1;
+                if mismatches <= 5 {
+                    println!("  MISMATCH: s={}, t={}: M2M={}, P2P={}",
+                             s, t,
+                             if m2m_dist == u32::MAX { "INF".to_string() } else { m2m_dist.to_string() },
+                             if p2p_dist == u32::MAX { "INF".to_string() } else { p2p_dist.to_string() });
+                }
+            }
+        }
+    }
+
+    if mismatches == 0 {
+        println!("  ✓ All {} queries match P2P results!", checked);
+    } else {
+        println!("  ✗ {} / {} mismatches found", mismatches, checked);
+    }
+    println!();
+
+    Ok(())
+}
+
+/// Run a single P2P query using bidirectional Dijkstra (same as server)
+/// Returns distance or u32::MAX if unreachable
+fn run_p2p_query(
+    topo: &butterfly_route::formats::CchTopo,
+    weights: &butterfly_route::formats::CchWeights,
+    down_rev: &DownReverseAdj,
+    source: u32,
+    target: u32,
+) -> u32 {
+    use std::collections::BinaryHeap;
+
+    if source == target {
+        return 0;
+    }
+
+    let n = topo.n_nodes as usize;
+    let mut dist_fwd = vec![u32::MAX; n];
+    let mut dist_bwd = vec![u32::MAX; n];
+    let mut pq_fwd: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
+    let mut pq_bwd: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
+
+    dist_fwd[source as usize] = 0;
+    dist_bwd[target as usize] = 0;
+    pq_fwd.push(Reverse((0, source)));
+    pq_bwd.push(Reverse((0, target)));
+
+    let mut best_dist = u32::MAX;
+
+    while !pq_fwd.is_empty() || !pq_bwd.is_empty() {
+        // Forward step - UP edges
+        if let Some(Reverse((d, u))) = pq_fwd.pop() {
+            if d > dist_fwd[u as usize] {
+                continue;
+            }
+
+            // Check meeting
+            if dist_bwd[u as usize] != u32::MAX {
+                let total = d.saturating_add(dist_bwd[u as usize]);
+                if total < best_dist {
+                    best_dist = total;
+                }
+            }
+
+            // Relax UP edges
+            let start = topo.up_offsets[u as usize] as usize;
+            let end = topo.up_offsets[u as usize + 1] as usize;
+            for i in start..end {
+                let v = topo.up_targets[i];
+                let w = weights.up[i];
+                if w == u32::MAX { continue; }
+                let new_d = d.saturating_add(w);
+                if new_d < dist_fwd[v as usize] {
+                    dist_fwd[v as usize] = new_d;
+                    pq_fwd.push(Reverse((new_d, v)));
+                    if dist_bwd[v as usize] != u32::MAX {
+                        let total = new_d.saturating_add(dist_bwd[v as usize]);
+                        if total < best_dist { best_dist = total; }
+                    }
+                }
+            }
+        }
+
+        // Backward step - reversed DOWN edges
+        if let Some(Reverse((d, u))) = pq_bwd.pop() {
+            if d > dist_bwd[u as usize] {
+                continue;
+            }
+
+            // Check meeting
+            if dist_fwd[u as usize] != u32::MAX {
+                let total = d.saturating_add(dist_fwd[u as usize]);
+                if total < best_dist {
+                    best_dist = total;
+                }
+            }
+
+            // Relax reversed DOWN edges
+            let start = down_rev.offsets[u as usize] as usize;
+            let end = down_rev.offsets[u as usize + 1] as usize;
+            for i in start..end {
+                let x = down_rev.sources[i];
+                let edge_idx = down_rev.edge_idx[i] as usize;
+                let w = weights.down[edge_idx];
+                if w == u32::MAX { continue; }
+                let new_d = d.saturating_add(w);
+                if new_d < dist_bwd[x as usize] {
+                    dist_bwd[x as usize] = new_d;
+                    pq_bwd.push(Reverse((new_d, x)));
+                    if dist_fwd[x as usize] != u32::MAX {
+                        let total = new_d.saturating_add(dist_fwd[x as usize]);
+                        if total < best_dist { best_dist = total; }
+                    }
+                }
+            }
+        }
+    }
+
+    best_dist
+}
+
+/// Build reverse adjacency for DOWN edges
+///
+/// For each node u, collects all nodes x that have DOWN edges x→u.
+/// This enables reverse search: given target t, find all nodes that can reach t.
+fn build_down_rev(topo: &butterfly_route::formats::CchTopo) -> DownReverseAdj {
+    let n_nodes = topo.n_nodes as usize;
+
+    // Count incoming DOWN edges for each node
+    let mut counts = vec![0u32; n_nodes];
+    for &target in &topo.down_targets {
+        counts[target as usize] += 1;
+    }
+
+    // Build offsets
+    let mut offsets = vec![0u64; n_nodes + 1];
+    for i in 0..n_nodes {
+        offsets[i + 1] = offsets[i] + counts[i] as u64;
+    }
+
+    let total_edges = offsets[n_nodes] as usize;
+    let mut sources = vec![0u32; total_edges];
+    let mut edge_idx = vec![0u32; total_edges];
+
+    // Reset counts for filling
+    counts.fill(0);
+
+    // Fill reverse edges
+    // For each source node src, iterate its outgoing DOWN edges
+    for src in 0..n_nodes {
+        let start = topo.down_offsets[src] as usize;
+        let end = topo.down_offsets[src + 1] as usize;
+
+        for i in start..end {
+            let target = topo.down_targets[i] as usize;
+            let pos = offsets[target] as usize + counts[target] as usize;
+            sources[pos] = src as u32;
+            edge_idx[pos] = i as u32;
+            counts[target] += 1;
+        }
+    }
+
+    DownReverseAdj { offsets, sources, edge_idx }
 }
