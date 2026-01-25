@@ -8,6 +8,13 @@ Rank-aligned CCH (Version 2) implemented and validated:
 - **Batching speedup**: 1.91x
 - **CCH validation**: 0 mismatches (100% correct)
 
+**Sparse Contour Optimization (2026-01-25):** ✅ COMPLETE
+- Moore-neighbor boundary tracing: O(perimeter) instead of O(area)
+- Contour extraction: 1426x speedup (car), 5070x speedup (bike)
+- End-to-end isochrone: 10.8x faster (80ms → 7.4ms for car 30-min)
+- Throughput: 134.5 isochrones/sec (was 12.4/sec)
+- Contour now <1% of total time (was ~90%), PHAST dominates (89%)
+
 ---
 
 ## Phase 5: Cache-Friendly PHAST via Rank-Aligned Memory ✅ DONE

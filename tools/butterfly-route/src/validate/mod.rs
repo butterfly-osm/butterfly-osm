@@ -19,7 +19,7 @@ pub mod step5;
 pub use step5::{Step5LockFile, validate_step5};
 
 pub mod step6;
-pub use step6::{Step6LockFile, validate_step6};
+pub use step6::{Step6LockFile, validate_step6, Step6LiftedLockFile, validate_step6_lifted};
 
 pub mod step7;
 pub use step7::{Step7LockFile, validate_step7};

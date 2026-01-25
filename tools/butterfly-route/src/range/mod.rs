@@ -25,6 +25,9 @@ pub use frontier::{FrontierExtractor, FrontierCutPoint, ReachablePoint, Reachabl
 pub mod contour;
 pub use contour::{GridConfig, ContourResult, generate_contour, export_contour_geojson};
 
+pub mod sparse_contour;
+pub use sparse_contour::{SparseContourConfig, SparseContourResult, SparseContourStats, generate_sparse_contour};
+
 pub mod batched_isochrone;
 pub use batched_isochrone::{BatchedIsochroneEngine, BatchedIsochroneResult, BatchedIsochroneStats};
 
