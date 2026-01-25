@@ -14,17 +14,30 @@ Rank-aligned CCH (Version 2) implemented and validated:
 - End-to-end isochrone: 10.8x faster (80ms → 7.4ms for car 30-min)
 - Contour now <1% of total time (was ~90%), PHAST dominates (89%)
 
-**K-Lane Batched Isochrone Performance (2026-01-25):**
+**Early-Stop Upward Phase (2026-01-25):** ✅ COMPLETE
 
-| Mode | Threshold | Single | Batched K=8 | Speedup |
-|------|-----------|--------|-------------|---------|
-| Car | 5 min | 23.2/sec | **45.1/sec** | 1.94x |
-| Car | 10 min | 21.1/sec | **40.7/sec** | 1.93x |
-| Car | 30 min | 9.8/sec | **23.2/sec** | 2.37x |
-| Bike | 5 min | 8.6/sec | **13.1/sec** | 1.52x |
-| Bike | 30 min | 6.5/sec | **11.1/sec** | 1.72x |
+When heap minimum > threshold, stop upward search (exact, no approximation).
 
-For 1M isochrones: ~12 hours single-core, ~36 min with 20 cores.
+| Mode | Threshold | Single iso/sec | Notes |
+|------|-----------|----------------|-------|
+| **Car** | 5 min | **680/sec** | 1.5ms/query |
+| **Car** | 10 min | **543/sec** | 1.8ms/query |
+| **Car** | 30 min | **168/sec** | 6ms/query |
+| **Bike** | 5 min | **351/sec** | 2.8ms/query |
+| **Bike** | 30 min | **188/sec** | 5.3ms/query |
+
+**Critical Finding: Early-stop changes optimal strategy**
+
+| Threshold | Single (early-stop) | Batched K=8 | Winner |
+|-----------|---------------------|-------------|--------|
+| 5 min | 275/sec | 45/sec | **Single** |
+| 30 min | 13/sec | 23/sec | **Batched** |
+
+- Small thresholds: Single-source + early-stop wins (most upward work skipped)
+- Large thresholds: K-lane batching wins (downward amortization helps)
+- TODO: Add early-stop to batched PHAST for best of both
+
+For 1M 5-min car isochrones: ~1 hour on single core, ~3 min with 20 cores.
 
 ---
 
