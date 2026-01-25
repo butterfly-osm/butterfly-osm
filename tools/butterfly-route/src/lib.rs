@@ -24,6 +24,7 @@ pub mod nbg;
 pub mod ebg;
 pub mod step5;
 pub mod step6;
+pub mod step6_lifted;
 pub mod step7;
 pub mod step8;
 pub mod step9;

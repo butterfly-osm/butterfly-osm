@@ -105,12 +105,19 @@ Per-mode weights → cch.w.{mode}.u32
 
 ### Isochrone Pipeline ✅
 
+**Sparse Contour with Moore-Neighbor Boundary Tracing (2026-01-25):**
 ```
-PHAST distances → Base graph frontier → Stamp segments → Grid fill → Marching squares → Simplify
-     (92-287ms)      (73-232 points)      (rasterize)     (close)       (contour)        (D-P)
+PHAST distances → Base graph frontier → Sparse tile stamp → Boundary trace → Simplify
+     (6-7ms)         (73-232 points)     (O(segments))     (O(perimeter))   (D-P)
 ```
 
-Road-following concave envelope via grid + marching squares (not convex hull).
+**Key Optimization**: Replaced dense grid marching squares with O(perimeter) boundary tracing.
+- No densification step needed (works directly on sparse tile map)
+- Contour extraction: 47μs (was 67ms) = **1426x speedup** (car 30-min)
+- Bike 30-min: 43μs (was 217ms) = **5070x speedup**
+- End-to-end: 7.4ms per isochrone (was 80ms) = **10.8x faster**
+- Throughput: **134.5 isochrones/sec** (car 30-min), 95.6/sec (bike 30-min)
+- Contour is now <1% of total time; PHAST dominates at 89%
 
 ### CCH Statistics (Belgium)
 

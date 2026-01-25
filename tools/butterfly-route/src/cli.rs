@@ -5,12 +5,13 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use crate::ingest::{run_ingest, IngestConfig};
-use crate::validate::{verify_lock_conditions, validate_step4, validate_step5, validate_step6, validate_step7, Counts, LockFile};
+use crate::validate::{verify_lock_conditions, validate_step4, validate_step5, validate_step6, validate_step6_lifted, validate_step7, Counts, LockFile};
 use crate::profile::{run_profiling, ProfileConfig};
 use crate::nbg::{build_nbg, NbgConfig};
 use crate::ebg::{build_ebg, EbgConfig};
 use crate::step5;
 use crate::step6;
+use crate::step6_lifted;
 use crate::step7;
 use crate::step8;
 use crate::step9;
@@ -194,6 +195,45 @@ pub enum Commands {
         /// Balance epsilon (default: 0.05)
         #[arg(long, default_value = "0.05")]
         balance_eps: f32,
+    },
+
+    /// Step 6 (Lifted): Generate CCH ordering via NBG ND + lift to EBG
+    ///
+    /// This is the CORRECT approach for CCH: compute nested dissection on the
+    /// physical node graph (NBG), then lift to edge-states with block ranks.
+    /// This preserves separator quality unlike ordering on the EBG directly.
+    Step6Lifted {
+        /// Path to nbg.csr from Step 3
+        #[arg(long)]
+        nbg_csr: PathBuf,
+
+        /// Path to nbg.geo from Step 3
+        #[arg(long)]
+        nbg_geo: PathBuf,
+
+        /// Path to ebg.nodes from Step 4
+        #[arg(long)]
+        ebg_nodes: PathBuf,
+
+        /// Path to ebg.csr from Step 4
+        #[arg(long)]
+        ebg_csr: PathBuf,
+
+        /// Path to filtered.*.ebg from Step 5
+        #[arg(long)]
+        filtered_ebg: PathBuf,
+
+        /// Mode (car, bike, foot)
+        #[arg(long)]
+        mode: String,
+
+        /// Output directory
+        #[arg(short, long)]
+        outdir: PathBuf,
+
+        /// Leaf threshold for ND recursion (default: 8192)
+        #[arg(long, default_value = "8192")]
+        leaf_threshold: usize,
     },
 
     /// Step 7: Build per-mode CCH topology via contraction on filtered EBG
@@ -771,6 +811,14 @@ pub enum Commands {
         /// Run matrix benchmark after building
         #[arg(long)]
         benchmark: bool,
+
+        /// Validate correctness against Dijkstra ground truth
+        #[arg(long)]
+        validate: bool,
+
+        /// Number of validation tests (default: 1000)
+        #[arg(long, default_value = "1000")]
+        validate_tests: usize,
     },
 
     /// Analyze turn model to understand when turns matter
@@ -1098,6 +1146,56 @@ impl Cli {
 
                 println!();
                 println!("✅ Step 6 ordering complete for {} mode!", mode_name);
+                println!("📋 Lock file: {}", lock_path.display());
+
+                Ok(())
+            }
+            Commands::Step6Lifted {
+                nbg_csr,
+                nbg_geo,
+                ebg_nodes,
+                ebg_csr,
+                filtered_ebg,
+                mode,
+                outdir,
+                leaf_threshold,
+            } => {
+                // Parse mode
+                let mode = match mode.to_lowercase().as_str() {
+                    "car" => Mode::Car,
+                    "bike" => Mode::Bike,
+                    "foot" => Mode::Foot,
+                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
+                };
+
+                let config = step6_lifted::Step6LiftedConfig {
+                    nbg_csr_path: nbg_csr,
+                    nbg_geo_path: nbg_geo,
+                    ebg_nodes_path: ebg_nodes,
+                    ebg_csr_path: ebg_csr,
+                    filtered_ebg_path: filtered_ebg.clone(),
+                    mode,
+                    outdir: outdir.clone(),
+                    leaf_threshold,
+                };
+
+                let result = step6_lifted::generate_lifted_ordering(config)?;
+
+                // Generate lock file (reuse step6 validation for ordering format)
+                println!();
+                let lock_file = validate_step6_lifted(&result, &filtered_ebg)?;
+
+                let mode_name = match result.mode {
+                    Mode::Car => "car",
+                    Mode::Bike => "bike",
+                    Mode::Foot => "foot",
+                };
+                let lock_path = outdir.join(format!("step6.lifted.{}.lock.json", mode_name));
+                let lock_json = serde_json::to_string_pretty(&lock_file)?;
+                std::fs::write(&lock_path, lock_json)?;
+
+                println!();
+                println!("✅ Step 6 (Lifted) ordering complete for {} mode!", mode_name);
                 println!("📋 Lock file: {}", lock_path.display());
 
                 Ok(())
@@ -2057,9 +2155,11 @@ impl Cli {
                 leaf_threshold,
                 balance_eps,
                 benchmark,
+                validate,
+                validate_tests,
             } => {
                 use crate::formats::{NbgCsrFile, NbgGeoFile};
-                use crate::nbg_ch::{compute_nbg_ordering, contract_nbg, NbgBucketM2M};
+                use crate::nbg_ch::{compute_nbg_ordering, contract_nbg, NbgBucketM2M, validate_nbg_ch, validate_matrix};
 
                 println!("\n=== BUILD NODE-BASED CH ===\n");
 
@@ -2153,6 +2253,40 @@ impl Cli {
                     println!("    25×25:   ~9ms");
                     println!("    50×50:   ~19ms");
                     println!("    100×100: ~35ms");
+                }
+
+                // Run validation if requested
+                if validate {
+                    println!("\n=== VALIDATION AGAINST DIJKSTRA ===\n");
+
+                    // Validate single queries
+                    let result = validate_nbg_ch(
+                        &nbg_csr_data,
+                        &nbg_geo_data,
+                        &topo,
+                        validate_tests,
+                        42,  // Fixed seed for reproducibility
+                    );
+                    result.print();
+
+                    if !result.is_valid() {
+                        anyhow::bail!("NBG CH validation FAILED! Results are incorrect.");
+                    }
+
+                    // Also validate a small matrix to catch matrix-specific bugs
+                    println!("\n--- Matrix Validation ---");
+                    let matrix_result = validate_matrix(
+                        &nbg_csr_data,
+                        &nbg_geo_data,
+                        &topo,
+                        50,  // 50x50 matrix = 2500 tests
+                        123, // Different seed
+                    );
+                    matrix_result.print();
+
+                    if !matrix_result.is_valid() {
+                        anyhow::bail!("NBG CH matrix validation FAILED! Results are incorrect.");
+                    }
                 }
 
                 Ok(())
