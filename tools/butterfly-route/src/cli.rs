@@ -605,6 +605,20 @@ pub enum Commands {
         mode: String,
     },
 
+    /// Analyze densifier distribution (in×out) for hybrid CCH ordering
+    ///
+    /// Identifies high-degree nodes that cause fill-in explosion if contracted early.
+    /// Use results to constrain ordering: force densifiers to late ranks.
+    DensifierAnalysis {
+        /// Path to hybrid.<mode>.state from Step 5.5
+        #[arg(long)]
+        hybrid_state: PathBuf,
+
+        /// Mode (car, bike, foot)
+        #[arg(long)]
+        mode: String,
+    },
+
     /// Step 5.5a: Build equivalence-class hybrid state graph (RECOMMENDED)
     ///
     /// Uses behavior signatures to group incoming edges by identical patterns.
@@ -704,6 +718,12 @@ pub enum Commands {
         /// Enable this for equivalence-class hybrid where coordinate-based ND fails
         #[arg(long, default_value = "false")]
         graph_partition: bool,
+
+        /// Densifier threshold: states with in×out > threshold are forced to late ranks
+        /// This prevents fill-in explosion from high-degree nodes
+        /// Use densifier-analysis command to find appropriate threshold (e.g., 50 or 100)
+        #[arg(long, default_value = "0")]
+        densifier_threshold: usize,
     },
 
     /// Step 7 (Hybrid): Build CCH topology via contraction on hybrid state graph
@@ -1623,6 +1643,29 @@ impl Cli {
 
                 Ok(())
             }
+            Commands::DensifierAnalysis {
+                hybrid_state,
+                mode,
+            } => {
+                use crate::formats::HybridStateFile;
+                use crate::hybrid::analyze_densifiers;
+
+                let mode_name = mode.to_lowercase();
+                println!("\n=== DENSIFIER ANALYSIS ({}) ===\n", mode_name);
+
+                // Load hybrid state graph
+                println!("Loading hybrid state graph...");
+                let hybrid = HybridStateFile::read(&hybrid_state)?;
+                println!("  ✓ {} states, {} arcs", hybrid.n_states, hybrid.n_arcs);
+
+                // Run densifier analysis
+                println!("\nAnalyzing densifier distribution (in × out)...");
+                let analysis = analyze_densifiers(&hybrid.offsets, &hybrid.targets);
+
+                analysis.print();
+
+                Ok(())
+            }
             Commands::Step5EquivHybrid {
                 ebg_nodes,
                 ebg_csr,
@@ -1852,6 +1895,7 @@ impl Cli {
                 leaf_threshold,
                 balance_eps,
                 graph_partition,
+                densifier_threshold,
             } => {
                 // Parse mode
                 let mode_enum = match mode.to_lowercase().as_str() {
@@ -1869,6 +1913,7 @@ impl Cli {
                     leaf_threshold,
                     balance_eps,
                     use_graph_partition: graph_partition,
+                    densifier_threshold,
                 };
 
                 let result = step6::generate_ordering_hybrid(config)?;

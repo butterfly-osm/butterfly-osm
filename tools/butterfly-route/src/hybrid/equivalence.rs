@@ -246,3 +246,187 @@ impl EquivalenceAnalysis {
         println!("═══════════════════════════════════════════════════════════════\n");
     }
 }
+
+// =============================================================================
+// Densifier Analysis for Hybrid CCH Ordering
+// =============================================================================
+
+/// Result of densifier analysis
+#[derive(Debug, Clone)]
+pub struct DensifierAnalysis {
+    /// Number of states analyzed
+    pub n_states: usize,
+    /// in×out distribution percentiles
+    pub inout_p50: usize,
+    pub inout_p90: usize,
+    pub inout_p95: usize,
+    pub inout_p99: usize,
+    pub inout_p999: usize,
+    pub inout_max: usize,
+    /// Out-degree distribution
+    pub outdeg_p50: usize,
+    pub outdeg_p90: usize,
+    pub outdeg_p99: usize,
+    pub outdeg_max: usize,
+    /// In-degree distribution
+    pub indeg_p50: usize,
+    pub indeg_p90: usize,
+    pub indeg_p99: usize,
+    pub indeg_max: usize,
+    /// Top densifiers (state_id, in×out score)
+    pub top_densifiers: Vec<(u32, usize)>,
+    /// Thresholds for constraint-based ordering
+    pub threshold_1pct: usize,
+    pub threshold_5pct: usize,
+    pub count_above_100: usize,
+    pub count_above_50: usize,
+    pub count_above_25: usize,
+}
+
+/// Analyze densifier distribution for a hybrid state graph
+///
+/// Densifier score = in-degree × out-degree
+/// High-score nodes cause fill-in explosion if contracted early
+pub fn analyze_densifiers(
+    offsets: &[u64],     // CSR offsets for hybrid graph
+    targets: &[u32],     // CSR targets
+) -> DensifierAnalysis {
+    let n_states = offsets.len() - 1;
+
+    // Compute out-degree for each state
+    let mut out_degrees: Vec<usize> = Vec::with_capacity(n_states);
+    for state in 0..n_states {
+        let start = offsets[state] as usize;
+        let end = offsets[state + 1] as usize;
+        out_degrees.push(end - start);
+    }
+
+    // Build reverse adjacency to compute in-degree
+    let mut in_degrees: Vec<usize> = vec![0; n_states];
+    for state in 0..n_states {
+        let start = offsets[state] as usize;
+        let end = offsets[state + 1] as usize;
+        for i in start..end {
+            let tgt = targets[i] as usize;
+            if tgt < n_states {
+                in_degrees[tgt] += 1;
+            }
+        }
+    }
+
+    // Compute in×out scores
+    let mut inout_scores: Vec<(u32, usize)> = Vec::with_capacity(n_states);
+    for state in 0..n_states {
+        let score = in_degrees[state] * out_degrees[state];
+        inout_scores.push((state as u32, score));
+    }
+
+    // Sort for percentiles
+    let mut sorted_inout: Vec<usize> = inout_scores.iter().map(|(_, s)| *s).collect();
+    sorted_inout.sort_unstable();
+
+    let mut sorted_indeg = in_degrees.clone();
+    sorted_indeg.sort_unstable();
+
+    let mut sorted_outdeg = out_degrees.clone();
+    sorted_outdeg.sort_unstable();
+
+    // Percentile helper
+    let percentile = |values: &[usize], p: f64| -> usize {
+        if values.is_empty() {
+            return 0;
+        }
+        let idx = ((values.len() as f64 * p) as usize).min(values.len() - 1);
+        values[idx]
+    };
+
+    // Find top densifiers
+    inout_scores.sort_by_key(|(_, s)| std::cmp::Reverse(*s));
+    let top_densifiers: Vec<(u32, usize)> = inout_scores.iter().take(20).cloned().collect();
+
+    // Count above thresholds
+    let count_above_100 = sorted_inout.iter().filter(|&&s| s > 100).count();
+    let count_above_50 = sorted_inout.iter().filter(|&&s| s > 50).count();
+    let count_above_25 = sorted_inout.iter().filter(|&&s| s > 25).count();
+
+    DensifierAnalysis {
+        n_states,
+        inout_p50: percentile(&sorted_inout, 0.50),
+        inout_p90: percentile(&sorted_inout, 0.90),
+        inout_p95: percentile(&sorted_inout, 0.95),
+        inout_p99: percentile(&sorted_inout, 0.99),
+        inout_p999: percentile(&sorted_inout, 0.999),
+        inout_max: *sorted_inout.last().unwrap_or(&0),
+        outdeg_p50: percentile(&sorted_outdeg, 0.50),
+        outdeg_p90: percentile(&sorted_outdeg, 0.90),
+        outdeg_p99: percentile(&sorted_outdeg, 0.99),
+        outdeg_max: *sorted_outdeg.last().unwrap_or(&0),
+        indeg_p50: percentile(&sorted_indeg, 0.50),
+        indeg_p90: percentile(&sorted_indeg, 0.90),
+        indeg_p99: percentile(&sorted_indeg, 0.99),
+        indeg_max: *sorted_indeg.last().unwrap_or(&0),
+        top_densifiers,
+        threshold_1pct: percentile(&sorted_inout, 0.99),
+        threshold_5pct: percentile(&sorted_inout, 0.95),
+        count_above_100,
+        count_above_50,
+        count_above_25,
+    }
+}
+
+impl DensifierAnalysis {
+    /// Print analysis results
+    pub fn print(&self) {
+        println!("\n═══════════════════════════════════════════════════════════════");
+        println!("  DENSIFIER ANALYSIS (in × out)");
+        println!("═══════════════════════════════════════════════════════════════");
+        println!("  States analyzed: {:>12}", self.n_states);
+        println!("───────────────────────────────────────────────────────────────");
+        println!("  in×out distribution (densifier score):");
+        println!("    p50:  {:>8}", self.inout_p50);
+        println!("    p90:  {:>8}", self.inout_p90);
+        println!("    p95:  {:>8}", self.inout_p95);
+        println!("    p99:  {:>8}", self.inout_p99);
+        println!("    p999: {:>8}", self.inout_p999);
+        println!("    max:  {:>8}", self.inout_max);
+        println!("───────────────────────────────────────────────────────────────");
+        println!("  Out-degree distribution:");
+        println!("    p50: {:>8}  p90: {:>8}  p99: {:>8}  max: {:>8}",
+            self.outdeg_p50, self.outdeg_p90, self.outdeg_p99, self.outdeg_max);
+        println!("  In-degree distribution:");
+        println!("    p50: {:>8}  p90: {:>8}  p99: {:>8}  max: {:>8}",
+            self.indeg_p50, self.indeg_p90, self.indeg_p99, self.indeg_max);
+        println!("───────────────────────────────────────────────────────────────");
+        println!("  Thresholds for constrained ordering:");
+        println!("    Top 1%  (force late): in×out > {:>6}", self.threshold_1pct);
+        println!("    Top 5%  (force late): in×out > {:>6}", self.threshold_5pct);
+        println!("───────────────────────────────────────────────────────────────");
+        println!("  States above thresholds:");
+        println!("    in×out > 100: {:>8} ({:.3}%)",
+            self.count_above_100, 100.0 * self.count_above_100 as f64 / self.n_states as f64);
+        println!("    in×out > 50:  {:>8} ({:.3}%)",
+            self.count_above_50, 100.0 * self.count_above_50 as f64 / self.n_states as f64);
+        println!("    in×out > 25:  {:>8} ({:.3}%)",
+            self.count_above_25, 100.0 * self.count_above_25 as f64 / self.n_states as f64);
+        println!("───────────────────────────────────────────────────────────────");
+        println!("  Top 20 densifiers:");
+        for (i, (state, score)) in self.top_densifiers.iter().take(10).enumerate() {
+            println!("    #{:>2}: state {:>8} → in×out = {:>6}", i + 1, state, score);
+        }
+        if self.top_densifiers.len() > 10 {
+            println!("    ... (showing top 10 of 20)");
+        }
+        println!("───────────────────────────────────────────────────────────────");
+
+        // Recommendations
+        if self.inout_max > 500 {
+            println!("  ⚠️  WARNING: Very high max densifier ({})", self.inout_max);
+            println!("     These nodes MUST be contracted late to avoid fill-in explosion");
+        }
+        if self.count_above_100 > 0 {
+            println!("  → Recommendation: Force {} states with in×out > 100 to late ranks",
+                self.count_above_100);
+        }
+        println!("═══════════════════════════════════════════════════════════════\n");
+    }
+}

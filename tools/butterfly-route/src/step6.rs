@@ -1102,6 +1102,9 @@ pub struct Step6HybridConfig {
     /// Use graph-based partitioning instead of geometry-based
     /// Set to true when coordinate-based ND fails (e.g., equivalence-class hybrid)
     pub use_graph_partition: bool,
+    /// Densifier threshold: states with in×out > threshold are forced to late ranks
+    /// Set to 0 to disable (default)
+    pub densifier_threshold: usize,
 }
 
 /// Generate nested dissection ordering on hybrid state graph
@@ -1144,9 +1147,28 @@ pub fn generate_ordering_hybrid(config: Step6HybridConfig) -> Result<Step6Result
         println!("    ... and {} more small components", components.len() - 5);
     }
 
+    // Compute in×out scores if densifier threshold is set
+    let densifiers: Vec<u32> = if config.densifier_threshold > 0 {
+        println!("\nIdentifying densifiers (in×out > {})...", config.densifier_threshold);
+        let scores = compute_inout_scores(&hybrid);
+        let densifiers: Vec<u32> = scores.iter()
+            .enumerate()
+            .filter(|(_, &score)| score > config.densifier_threshold)
+            .map(|(i, _)| i as u32)
+            .collect();
+        println!("  ✓ {} densifiers identified ({:.3}% of states)",
+            densifiers.len(),
+            100.0 * densifiers.len() as f64 / hybrid.n_states as f64);
+        densifiers
+    } else {
+        Vec::new()
+    };
+
     // Build ordering via nested dissection
     let ordering_method = if config.use_graph_partition {
         "GRAPH-BASED (BFS bisection)"
+    } else if config.densifier_threshold > 0 {
+        "GEOMETRY-BASED + DENSIFIER DELAY"
     } else {
         "GEOMETRY-BASED (inertial partitioning)"
     };
@@ -1157,17 +1179,43 @@ pub fn generate_ordering_hybrid(config: Step6HybridConfig) -> Result<Step6Result
         config.balance_eps,
     );
 
+    // Mark densifiers so they're skipped during normal ordering
+    let densifier_set: std::collections::HashSet<u32> = densifiers.iter().copied().collect();
+
     let mut max_depth = 0;
     for (comp_idx, component) in components.iter().enumerate() {
         if comp_idx % 100 == 0 && comp_idx > 0 {
             println!("  Processing component {} / {}...", comp_idx, components.len());
         }
-        let depth = if config.use_graph_partition {
-            builder.order_component_hybrid_graph(&hybrid, component)?
+
+        // Filter out densifiers from component if threshold is set
+        let filtered_component: Vec<u32> = if config.densifier_threshold > 0 {
+            component.iter()
+                .filter(|&state| !densifier_set.contains(state))
+                .copied()
+                .collect()
         } else {
-            builder.order_component_hybrid(&hybrid, &coords, component)?
+            component.clone()
+        };
+
+        if filtered_component.is_empty() {
+            continue;
+        }
+
+        let depth = if config.use_graph_partition {
+            builder.order_component_hybrid_graph(&hybrid, &filtered_component)?
+        } else {
+            builder.order_component_hybrid(&hybrid, &coords, &filtered_component)?
         };
         max_depth = max_depth.max(depth);
+    }
+
+    // Append densifiers at the end (highest ranks = contracted last)
+    if !densifiers.is_empty() {
+        println!("  Appending {} densifiers at late ranks...", densifiers.len());
+        for &state in &densifiers {
+            builder.assign_rank(state);
+        }
     }
 
     let (perm, inv_perm) = builder.finish();
@@ -1200,6 +1248,37 @@ pub fn generate_ordering_hybrid(config: Step6HybridConfig) -> Result<Step6Result
         tree_depth: max_depth,
         build_time_ms,
     })
+}
+
+/// Compute in×out scores for all states (densifier metric)
+fn compute_inout_scores(hybrid: &HybridState) -> Vec<usize> {
+    let n_states = hybrid.n_states as usize;
+
+    // Compute out-degree
+    let mut out_degrees: Vec<usize> = Vec::with_capacity(n_states);
+    for state in 0..n_states {
+        let start = hybrid.offsets[state] as usize;
+        let end = hybrid.offsets[state + 1] as usize;
+        out_degrees.push(end - start);
+    }
+
+    // Compute in-degree
+    let mut in_degrees: Vec<usize> = vec![0; n_states];
+    for state in 0..n_states {
+        let start = hybrid.offsets[state] as usize;
+        let end = hybrid.offsets[state + 1] as usize;
+        for i in start..end {
+            let tgt = hybrid.targets[i] as usize;
+            if tgt < n_states {
+                in_degrees[tgt] += 1;
+            }
+        }
+    }
+
+    // Compute in×out
+    (0..n_states)
+        .map(|i| in_degrees[i] * out_degrees[i])
+        .collect()
 }
 
 /// Extract coordinates for hybrid states
