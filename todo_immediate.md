@@ -12,8 +12,19 @@ Rank-aligned CCH (Version 2) implemented and validated:
 - Moore-neighbor boundary tracing: O(perimeter) instead of O(area)
 - Contour extraction: 1426x speedup (car), 5070x speedup (bike)
 - End-to-end isochrone: 10.8x faster (80ms → 7.4ms for car 30-min)
-- Throughput: 134.5 isochrones/sec (was 12.4/sec)
 - Contour now <1% of total time (was ~90%), PHAST dominates (89%)
+
+**K-Lane Batched Isochrone Performance (2026-01-25):**
+
+| Mode | Threshold | Single | Batched K=8 | Speedup |
+|------|-----------|--------|-------------|---------|
+| Car | 5 min | 23.2/sec | **45.1/sec** | 1.94x |
+| Car | 10 min | 21.1/sec | **40.7/sec** | 1.93x |
+| Car | 30 min | 9.8/sec | **23.2/sec** | 2.37x |
+| Bike | 5 min | 8.6/sec | **13.1/sec** | 1.52x |
+| Bike | 30 min | 6.5/sec | **11.1/sec** | 1.72x |
+
+For 1M isochrones: ~12 hours single-core, ~36 min with 20 cores.
 
 ---
 
