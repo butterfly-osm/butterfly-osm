@@ -487,7 +487,7 @@ Edge-based CCH provides exact turn costs but at 2.7-4x computational cost.
 
 ---
 
-### Milestone 7.4: Hybrid Exact Turn Model ⬜ CRITICAL PATH
+### Milestone 7.4: Hybrid Exact Turn Model ⚠️ REQUIRES REDESIGN
 
 **CONFIRMED Analysis Result (2026-01-25):**
 - **Complex intersections: 5,719 / 1,907,139 = 0.30%**
@@ -498,54 +498,134 @@ Edge-based CCH provides exact turn costs but at 2.7-4x computational cost.
   - Edge-states: 16,311 (0.9%)
   - Total: 1,917,731 hybrid states
   - **State reduction: 2.62x** (5.0M → 1.9M)
-  - **Arc reduction: 5.92x** (14.6M → 2.5M arcs)
-- **This is BETTER than expected** - arc reduction particularly impressive
+  - **Arc reduction: 2.93x** (14.6M → 4.9M arcs)
 
-**Why Hybrid Works (Exact, Not Approximation):**
-- Turn costs only matter where they vary by incoming edge
-- 99.70% of intersections have NO turn restrictions
-- Collapsing incoming-edge states at simple nodes doesn't change shortest paths
-- Complex nodes (0.30%) retain full edge-state semantics
+**CRITICAL FAILURE (2026-01-25): CCH Contraction Explodes**
+
+Attempted to run CCH Step 7 on hybrid state graph:
+- **Regular EBG CCH**: 30M shortcuts, max_degree=966, completes in 11s
+- **Hybrid CCH**: 187M+ shortcuts at 81%, max_degree=6361, memory explosion
+
+**Root Cause Analysis:**
+The "one node-state per simple node" design creates **high-degree hub supernodes**:
+- When multiple EBG edges arrive at the same simple NBG node, they collapse to ONE state
+- This creates hubs with extremely high in/out degree
+- CH/CCH shortcut creation cost is O(in_degree × out_degree) per node
+- Hub contraction creates cascading shortcuts through the hierarchy
+
+**Failure Timeline:**
+```
+32%: 6.7M shortcuts, max_degree=394
+37%: 56M shortcuts, max_degree=2658   ← Hub cascade begins
+81%: 187M shortcuts, max_degree=6361  ← Explosion
+```
+
+---
+
+### Three Smart Fixes for Hybrid Exactness
+
+#### Fix 1: Two-Level Overlay Design (MLD-style)
+
+Instead of one CH over hybrid graph, build:
+- **Base layer**: Keep exact edge-based graph for correctness
+- **Overlay layer**: Node-based "simple-intersection" overlay
+
+For simple-only regions:
+- Identify maximal chains/regions of simple nodes
+- Replace each region with bounded-degree overlay via exact multi-source Dijkstra
+- Boundary states = transitions entering/exiting the region
+
+**Result**: Reduces CH search states without creating hubs.
+
+#### Fix 2: Equivalence-Class Hybrid (RECOMMENDED)
+
+Never collapse to ONE node-state per node. Use **bounded equivalence classes**:
+
+Current (broken):
+```
+State = node_id  (all incoming edges → one state)
+```
+
+Fixed:
+```
+State = (node_id, incoming_class)  where class ∈ {0..K-1}, K small (2-8)
+```
+
+Classes based on exact equivalence:
+- Incoming edges grouped by identical restriction sets + penalty function
+- Or by: road class, approach angle bucket (8-16 bins), carriageway type
+
+**Key insight**: Classes are exact if they have same allowed outgoing set + same penalties.
+
+**Result**: Prevents single-hub effect while reducing states vs full edge-based.
+
+#### Fix 3: Degree-Constrained Contraction Ordering
+
+Even without changing state model, prevent explosion via ordering:
+
+**A) Degree-aware importance:**
+- Any state with degree > threshold (16-32) gets very high importance
+- High-degree hubs become apex nodes (contracted last) instead of cascade generators
+
+**B) Cap shortcut growth:**
+- Monitor shortcut count per rank
+- If growth rate explodes, force remaining high-degree nodes to top of hierarchy
+
+---
+
+### Recommended Path Forward
+
+**Equivalence-Class Hybrid (Fix 2) + Degree-Aware Ordering (Fix 3A)**
+
+Why:
+- Less architecture change than full overlay/MLD
+- Directly targets the hub cause
+- Keeps CH/CCH machinery intact
 
 **Implementation Plan:**
 
+1. ⬜ **Compute canonical signature per incoming edge at each node:**
+   - Restriction mask (hash of restricted outgoing edges)
+   - Penalty parameters (turn cost function identity)
+
+2. ⬜ **Group incoming edges by identical signature → class_id**
+   - Expected: 2-8 classes per node (most nodes will have 1-2)
+
+3. ⬜ **Create hybrid states as `(node, class_id)`:**
+   - Simple nodes: bounded number of states (not 1, not |incoming|)
+   - Complex nodes: keep full edge-states
+
+4. ⬜ **Ordering: mark high-degree states (>32) as "late"**
+   - Prevents hub cascade during contraction
+
+5. ⬜ **Validate p99 degree < 64 before CCH**
+   - If not achieved, refine class computation
+
+**Validation Before Full Build:**
+- [ ] Analyze degree distribution with class-based states
+- [ ] Confirm p99 degree < 64
+- [ ] Run partial contraction to verify no explosion
+
+---
+
+### Completed Steps (Before Failure)
+
 1. ✅ **Node Classification** (`is_complex(node)`):
-   - Check turn_rules table for any entry involving this node
-   - Complex if: ANY turn restriction references node as via_node
-   - All others are simple
-   - **DONE**: 5,719 nodes classified as complex
+   - 5,719 nodes classified as complex (0.30%)
 
-2. ✅ **Build Hybrid State Graph**:
-   - Simple destination node → represent by node-id state (1.9M)
-   - Complex destination node → represent by (incoming edge-id) state (16K)
-   - **DONE**: hybrid/builder.rs implements full CSR construction
-   - Arc deduplication keeps minimum weight per (src_state, tgt_state) pair
+2. ✅ **Build Hybrid State Graph** (flawed design):
+   - hybrid/builder.rs, hybrid/state_graph.rs
+   - Serialization: formats/hybrid_state.rs
 
-3. ⬜ **Serialize Hybrid State Graph**:
-   - Add binary format for hybrid CSR (similar to filtered.ebg)
-   - Include mappings: node_state↔nbg, edge_state↔ebg
-   - CLI command: `step4.5-hybrid` or integrate into step4
+3. ✅ **Step 6 Hybrid Ordering**:
+   - generate_ordering_hybrid() in step6.rs
+   - 4,570 components, 99.3% in largest
 
-4. ⬜ **Re-run CCH Pipeline on Hybrid Graph**:
-   - Step 6 (ordering) on hybrid state graph
-   - Step 7 (contraction) on hybrid state graph
-   - Step 8 (customization) on hybrid state graph
-   - Query code unchanged (operates on "state graph")
+4. ❌ **Step 7 Hybrid Contraction**: FAILED (shortcut explosion)
 
-5. ⬜ **Validate Correctness**:
-   - P2P queries: hybrid CCH vs baseline EBG CCH
-   - Matrix queries: verify same distances
-   - Isochrone queries: verify same reachable sets
+5. ⬜ **Step 8 Hybrid Customization**: Blocked by Step 7 failure
 
-**CONFIRMED Impact (Belgium car mode, bug fix 2026-01-25):**
-- State count: 5,019,010 → 1,917,731 (**2.62x reduction**)
-- Arc count: 14,644,223 → 4,992,605 (**2.93x reduction**)
-- Connected components: 4,570 (largest: 1,904,288 = 99.3%)
-- Step 6 ordering complete: max depth 8, build time 1.5s
-- **Expected query speedup: 2.6-3x** (proportional to graph reduction)
-- Current table gap: 6.4x → Expected after hybrid: **~2-2.5x**
-
-**Bug fixes applied:**
+**Bug fixes applied (still valid):**
 - Fixed weight indexing: use `weights[tgt_ebg]` not `weights[arc_idx]`
 - Fixed reachability check: only create node-states for reachable NBG nodes
 
