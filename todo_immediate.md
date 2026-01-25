@@ -2,6 +2,219 @@
 
 ## Current Status
 
+**API Normalization Fix (2026-01-25):** ✅ CRITICAL FIX
+
+The API endpoints were NOT using the optimized PHAST code due to coordinate space bugs:
+
+**Before fix:**
+- `/matrix` used N separate P2P queries (not PHAST)
+- `/isochrone` used naive inline Dijkstra (not PHAST)
+- `/route` passed filtered IDs to rank-indexed CCH (wrong results!)
+- Matrix and route endpoints returned DIFFERENT distances for same origin-destination!
+
+**After fix:**
+- All endpoints properly convert: original → filtered → rank space
+- `/matrix` now uses `compute_batched_matrix()` (K-lane PHAST)
+- `/isochrone` now uses `run_phast_bounded()` (PHAST with threshold)
+- `/route` correctly converts to rank space before CCH query
+- `/matrix/bulk` and `/matrix/stream` also fixed for rank-aligned CCH
+
+**Verification:**
+```
+Brussels → Leuven:
+  Matrix endpoint:  22.0 min ✓
+  Route endpoint:   22.0 min ✓ (was 38.4 min before fix!)
+  OSRM:            30.3 min
+```
+
+---
+
+**Turn Restriction Arc Filtering Fix (2026-01-25):** ✅ CRITICAL FIX
+
+**Problem discovered:**
+Butterfly was ~27-30% faster than OSRM on same routes. Investigation revealed:
+
+1. Turn table has 15 unique entries with different `mode_mask` values
+2. Arc-level mode_mask analysis (Belgium):
+   - CAR allowed arcs: 4,336,787 (29.6%)
+   - CAR banned arcs: 10,307,436 (70.4%) ← These are turns cars cannot make
+3. **BUG**: `FilteredEbg::build()` only checked NODE accessibility, not ARC accessibility
+   - If source and target nodes were car-accessible, the arc was included
+   - But the arc's turn itself might be banned for cars!
+
+**Fix implemented:**
+- Added `FilteredEbg::build_with_arc_filter()` that checks BOTH:
+  1. Source and target node accessibility (from node mask)
+  2. Arc (turn) accessibility for this mode (from turn table mode_mask)
+- Updated step5.rs to extract mode_masks from turn table and pass to new function
+
+**Files changed:**
+- `tools/butterfly-route/src/formats/filtered_ebg.rs` - New `build_with_arc_filter()` function
+- `tools/butterfly-route/src/step5.rs` - Pass turn_idx and arc_mode_masks
+
+**Verification:**
+After rebuilding step5/6/7/8, turn restrictions are now properly enforced.
+
+---
+
+**Turn Penalty Cost Model (2026-01-25):** ← NEXT PRIORITY
+
+**Root cause of remaining ~30% speed difference vs OSRM:**
+
+Butterfly is missing a **cost model** for turns. OSRM's timing advantage comes from implicit turn costs layered on the graph. This is standard transport modeling, not magic.
+
+**Current state:**
+- ✅ OSM turn restrictions (no_left_turn, only_straight_on, etc.) - ENFORCED
+- ✅ U-turn bans at non-dead-ends - ENFORCED
+- ✅ Mode-specific road access - ENFORCED
+- ❌ Turn angle penalties (left/right/u-turn delays)
+- ❌ Traffic signal delays
+- ❌ Intersection complexity costs
+- ❌ Road class transition penalties
+
+---
+
+### Implementation Plan: Geometry-Based Turn Penalties
+
+#### Step 1: Compute Turn Geometry (during EBG construction in step4)
+
+For each arc/turn (u → v → w):
+
+```rust
+struct TurnGeometry {
+    angle_deg: i16,       // Signed delta: wrap_to_180(bearing_out - bearing_in)
+    turn_type: TurnType,  // Straight/Right/Left/UTurn (2 bits)
+    via_has_signal: bool, // traffic_signals tag at via node
+    via_degree: u8,       // in_degree + out_degree at via node
+}
+
+enum TurnType { Straight = 0, Right = 1, Left = 2, UTurn = 3 }
+```
+
+**Classification thresholds:**
+- Straight: `|Δ| <= 30°`
+- Right: `Δ > 30°` (right-hand traffic)
+- Left: `Δ < -30°`
+- U-turn: `|Δ| >= 170°`
+
+**Bearing calculation:**
+```rust
+fn bearing(from: (f64, f64), to: (f64, f64)) -> f64 {
+    let (lon1, lat1) = from;
+    let (lon2, lat2) = to;
+    let dlon = (lon2 - lon1).to_radians();
+    let lat1 = lat1.to_radians();
+    let lat2 = lat2.to_radians();
+    let y = dlon.sin() * lat2.cos();
+    let x = lat1.cos() * lat2.sin() - lat1.sin() * lat2.cos() * dlon.cos();
+    y.atan2(x).to_degrees()
+}
+
+fn wrap_to_180(deg: f64) -> f64 {
+    ((deg + 180.0) % 360.0) - 180.0
+}
+```
+
+#### Step 2: Apply Turn Penalty Function (in step5)
+
+**Turn penalty formula (seconds):**
+
+```rust
+fn turn_penalty_seconds(geom: &TurnGeometry) -> f64 {
+    let angle = geom.angle_deg.abs() as f64;
+
+    // Base by turn type
+    let mut penalty = match geom.turn_type {
+        TurnType::Straight => 0.0,
+        TurnType::Right => 2.0 + 2.0 * ((angle - 30.0) / 120.0).clamp(0.0, 1.0),
+        TurnType::Left => 6.0 + 4.0 * ((angle - 30.0) / 120.0).clamp(0.0, 1.0),
+        TurnType::UTurn => 25.0,
+    };
+
+    // Traffic signal delay
+    if geom.via_has_signal {
+        penalty += 8.0;
+    }
+
+    // High-complexity intersection
+    if geom.via_degree >= 6 {
+        penalty += match geom.turn_type {
+            TurnType::Left => 2.0,
+            TurnType::Right => 1.0,
+            _ => 0.0,
+        };
+    }
+
+    penalty
+}
+```
+
+**Expected penalties:**
+| Turn Type | Base | Angle Adj | Signal | Complex | Total Range |
+|-----------|------|-----------|--------|---------|-------------|
+| Straight  | 0s   | 0         | +8s    | 0       | 0-8s        |
+| Right     | 2s   | +0-2s     | +8s    | +1s     | 2-13s       |
+| Left      | 6s   | +0-4s     | +8s    | +2s     | 6-20s       |
+| U-turn    | 25s  | 0         | +8s    | 0       | 25-33s      |
+
+#### Step 3: Data Flow
+
+**Where to store turn geometry:**
+- Option A: Extend `TurnEntry` in `ebg.turn_table` with geometry fields
+- Option B: Separate `ebg.turn_geometry` file indexed by arc
+
+**Where to apply:**
+- In step5 when computing `penalties[arc_idx]`
+- Turn penalty belongs on the **arc** (turn transition), not the node
+
+#### Step 4: Profile Constants
+
+Add to car profile (tunable):
+```rust
+pub struct TurnCostConfig {
+    pub right_base_s: f64,     // 2.0
+    pub left_base_s: f64,      // 6.0
+    pub uturn_base_s: f64,     // 25.0
+    pub signal_delay_s: f64,   // 8.0
+    pub straight_threshold: f64, // 30.0 degrees
+    pub uturn_threshold: f64,  // 170.0 degrees
+}
+```
+
+---
+
+### Files to Modify
+
+1. **step4 (EBG construction)**: Compute turn angles from NBG geo coordinates
+2. **formats/ebg_turn_table.rs**: Add `angle_deg`, `turn_type`, `via_has_signal`, `via_degree`
+3. **step5.rs**: Apply `turn_penalty_seconds()` instead of just returning 0
+4. **profiles/car.rs**: Add turn cost configuration constants
+
+---
+
+### Expected Impact
+
+This should close most of the ~30% gap in urban routing:
+- Turn costs dominate in cities (many intersections)
+- Highway routes will see less impact (few turns)
+- Signal delays add 8s per signalized intersection
+
+**What this won't fix (last ~5-10%):**
+- Profile-specific speed tables
+- Surface/tracktype penalties
+- Sliproad/link handling quirks
+
+---
+
+### Validation Plan
+
+After implementation:
+1. Re-run Brussels→Antwerp, Brussels→Leuven comparisons
+2. Target: within 10% of OSRM (not 30%)
+3. Urban routes should improve more than highway routes
+
+---
+
 Rank-aligned CCH (Version 2) implemented and validated:
 - **Single PHAST**: 39ms per query (25.5 queries/sec)
 - **K-lane batched (K=8)**: 20.7ms effective (48.3 queries/sec)
@@ -81,6 +294,167 @@ Created `wkb_stream.rs` module for high-throughput isochrone output:
 - `write_ndjson()`: Newline-delimited JSON with base64-encoded WKB
 
 Output formats ready for GIS tools (PostGIS, QGIS, GeoPandas, Shapely).
+
+**End-to-End Validation (2026-01-25):** ✅ COMPLETE
+
+Full pipeline benchmark (compute + contour + WKB + serialize):
+
+| Mode | Threshold | p50 | p95 | p99 | Throughput |
+|------|-----------|-----|-----|-----|------------|
+| **Car** | 5 min | 3.3ms | 7.6ms | 12ms | **260/sec** |
+| **Car** | 30 min | 83ms | 177ms | 197ms | 11/sec |
+| **Bike** | 10 min | 5.2ms | 23ms | 39ms | 137/sec |
+| **Foot** | 5 min | 3.0ms | 4.3ms | 10ms | **314/sec** |
+
+Time budget breakdown:
+- Compute (PHAST + contour): **100%**
+- WKB encoding: **<0.1%** (negligible)
+- Serialization overhead: **~0%**
+
+---
+
+## Phase 8: Production Hardening ← CURRENT
+
+### 8.1 Pathological Origins Validation ✅ COMPLETE (2026-01-25)
+
+Test worst-case scenarios across all modes - **all locations tested, all under 500ms**:
+
+**Car Mode (2.4M filtered nodes):**
+| Location | 5 min | 10 min | 30 min | 60 min | Vertices |
+|----------|-------|--------|--------|--------|----------|
+| Brussels Center | 7ms | 6ms | 65ms | 333ms | 53 |
+| Antwerp Center | 3ms | 8ms | 54ms | 204ms | 16 |
+| Ghent Center | 4ms | 8ms | 115ms | 419ms | 46 |
+| Liège Center | 3ms | 17ms | 143ms | **473ms** | 58 |
+| Charleroi | 5ms | 10ms | 68ms | 212ms | 17 |
+| E40/E19 Junction | 3ms | 6ms | 46ms | 190ms | 21 |
+| Ring Brussels S | 3ms | 5ms | 78ms | 332ms | 25 |
+| Near Netherlands | 3ms | 5ms | 54ms | 209ms | 16 |
+| Near France | 3ms | 7ms | 83ms | 343ms | 5 |
+
+**Bike Mode (4.8M filtered nodes):**
+| Location | 5 min | 10 min | 30 min | 60 min | Vertices |
+|----------|-------|--------|--------|--------|----------|
+| Brussels Center | 15ms | 17ms | 144ms | **264ms** | 23 |
+| Antwerp Center | 3ms | 3ms | 18ms | 33ms | 12 |
+| Ghent Center | 6ms | 14ms | 61ms | 100ms | 13 |
+| Liège Center | 3ms | 3ms | 18ms | 45ms | 28 |
+| Near Germany | 6ms | 8ms | 32ms | 72ms | 8 |
+| Near France | 3ms | 5ms | 33ms | 111ms | 10 |
+
+**Foot Mode (4.9M filtered nodes):**
+| Location | 5 min | 10 min | 30 min | 60 min | Vertices |
+|----------|-------|--------|--------|--------|----------|
+| Brussels Center | 9ms | 4ms | 19ms | 23ms | 12 |
+| Antwerp Center | 2ms | 2ms | 13ms | 15ms | 10 |
+| Ghent Center | 2ms | 3ms | 16ms | 22ms | 30 |
+| Charleroi | 3ms | 5ms | 23ms | **38ms** | 5 |
+| Near Germany | 2ms | 2ms | 17ms | 26ms | 8 |
+
+**Summary:**
+| Mode | Worst Case | Threshold |
+|------|------------|-----------|
+| Car | 473ms | 60 min (Liège) |
+| Bike | 264ms | 60 min (Brussels) |
+| Foot | 38ms | 60 min (Charleroi) ✅ All <200ms |
+
+**Valhalla Comparison (2026-01-25):**
+
+| Threshold | Valhalla | Butterfly | Speedup |
+|-----------|----------|-----------|---------|
+| 5 min | 36ms | **4ms** | **9.5x faster** |
+| 10 min | 63ms | **8ms** | **7.9x faster** |
+| 30 min | 260ms | **78ms** | **3.3x faster** |
+| 60 min | 737ms | **302ms** | **2.4x faster** |
+
+**Butterfly beats Valhalla at all thresholds!**
+
+Run comparison:
+```bash
+docker run -d --name valhalla_belgium -p 8002:8002 \
+  -v "/home/snape/projects/routing/valhalla_tiles:/custom_files/valhalla_tiles" \
+  ghcr.io/gis-ops/docker-valhalla/valhalla:latest
+python3 scripts/valhalla_isochrone_bench.py
+```
+
+Run commands:
+```bash
+./target/release/butterfly-bench pathological-origins --data-dir ./data/belgium --mode car
+./target/release/butterfly-bench pathological-origins --data-dir ./data/belgium --mode bike
+./target/release/butterfly-bench pathological-origins --data-dir ./data/belgium --mode foot
+```
+
+### 8.2 Bulk Pipeline (10K Isochrones) ✅ COMPLETE (2026-01-25)
+
+**Results (10,000 random origins, 5-min threshold, car mode):**
+- Time: 33.5s
+- Rate: **299 isochrones/sec**
+- Valid: 100% (10,000/10,000)
+- Total vertices: 64,718
+- WKB output: 1,294 KB
+- RSS growth: +19MB (stable, no memory leak)
+
+Run command:
+```bash
+./target/release/butterfly-bench bulk-pipeline --data-dir ./data/belgium --mode car --threshold-ms 300000 --n-origins 10000
+```
+
+### 8.3 Polygon Output Stability ⬜ TODO
+
+Deterministic output for production:
+- [ ] Fixed epsilon simplification (meters, not adaptive)
+- [ ] Consistent ring orientation (CCW outer, CW holes)
+- [ ] Hole handling policy (configurable keep/remove)
+
+**KNOWN ISSUE: Polygon Vertex Count (2026-01-25)**
+
+Our sparse contour approach produces far fewer vertices than Valhalla:
+- Butterfly: ~50-100 vertices (30-min car isochrone)
+- Valhalla: ~3000-4000 vertices
+
+Root cause: Grid-based rasterization fundamentally limits vertex count.
+- We stamp roads on a binary grid, run morphology, trace boundary
+- Boundary vertices only occur at grid cell corners (direction changes)
+- Large isochrones form smooth blobs with few direction changes
+
+Attempted solutions (none worked well):
+- Smaller cells (5m): Only 94 vertices, 570ms compute time
+- No morphology: Fewer vertices (blob doesn't form)
+- Concave hull on frontier: Star-shaped, wrong topology
+- Radial polygon: Urchin-shaped (crosses unreachable areas)
+
+**What Valhalla does differently:**
+- Computes travel time at grid points (continuous, not binary)
+- Uses marching squares to interpolate contour positions
+- Interpolation gives detailed vertices even with coarse grids
+
+**Potential fix:** Implement marching squares on distance field
+- Requires nearest-road lookup per grid point (expensive)
+- Deferred for now, polygon quality acceptable for most use cases
+
+### 8.4 Monotonicity Test ✅ COMPLETE (2026-01-25)
+
+Automated regression tests:
+- [x] Monotonicity: T1 < T2 ⇒ reachable(T1) ⊆ reachable(T2) **VERIFIED**
+  - Tested: 100 origins × 6 thresholds (1.7min to 30min)
+  - Tests: 500 threshold pairs
+  - Violations: **0** (100% pass rate)
+
+Run command:
+```bash
+./target/release/butterfly-bench monotonicity-test --data-dir ./data/belgium --mode car --n-origins 100
+```
+
+- [ ] Boundary points correspond to base-edge cutpoints within grid tolerance
+- [ ] Cross-mode consistency checks
+
+### 8.5 Throughput Scaling ⬜ TODO
+
+Measure at 1, 2, 4, 8, 16 threads:
+- [ ] iso/sec scaling
+- [ ] RSS memory usage
+- [ ] LLC miss rate (perf stat)
+- [ ] Writer throughput bottleneck
 
 ---
 

@@ -169,13 +169,20 @@ pub fn generate_weights(
         way_attrs_foot_path,
     )?;
 
+    // Extract mode_masks from turn_table for arc filtering
+    // This is CRITICAL for enforcing turn restrictions!
+    let arc_mode_masks: Vec<u8> = turn_table.entries.iter().map(|e| e.mode_mask).collect();
+    println!("  Extracted {} turn entry mode masks for arc filtering", arc_mode_masks.len());
+
     // Car filtered EBG
     println!("  Building car filtered EBG...");
-    let car_filtered = FilteredEbg::build(
+    let car_filtered = FilteredEbg::build_with_arc_filter(
         Mode::Car,
         &ebg_csr.offsets,
         &ebg_csr.heads,
         &car_mask.mask,
+        Some(&ebg_csr.turn_idx),
+        Some(&arc_mode_masks),
         ebg_nodes.n_nodes,
         filtered_inputs_sha,
     );
@@ -185,11 +192,13 @@ pub fn generate_weights(
 
     // Bike filtered EBG
     println!("  Building bike filtered EBG...");
-    let bike_filtered = FilteredEbg::build(
+    let bike_filtered = FilteredEbg::build_with_arc_filter(
         Mode::Bike,
         &ebg_csr.offsets,
         &ebg_csr.heads,
         &bike_mask.mask,
+        Some(&ebg_csr.turn_idx),
+        Some(&arc_mode_masks),
         ebg_nodes.n_nodes,
         filtered_inputs_sha,
     );
@@ -199,11 +208,13 @@ pub fn generate_weights(
 
     // Foot filtered EBG
     println!("  Building foot filtered EBG...");
-    let foot_filtered = FilteredEbg::build(
+    let foot_filtered = FilteredEbg::build_with_arc_filter(
         Mode::Foot,
         &ebg_csr.offsets,
         &ebg_csr.heads,
         &foot_mask.mask,
+        Some(&ebg_csr.turn_idx),
+        Some(&arc_mode_masks),
         ebg_nodes.n_nodes,
         filtered_inputs_sha,
     );

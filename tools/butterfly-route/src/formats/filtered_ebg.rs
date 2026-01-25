@@ -35,6 +35,10 @@ pub struct FilteredEbg {
 
 impl FilteredEbg {
     /// Build filtered EBG from original EBG and mode mask
+    ///
+    /// DEPRECATED: Use build_with_arc_filter instead to properly enforce turn restrictions.
+    /// This function only checks node accessibility, not arc (turn) accessibility.
+    #[allow(dead_code)]
     pub fn build(
         mode: Mode,
         ebg_offsets: &[u64],
@@ -43,19 +47,80 @@ impl FilteredEbg {
         n_original_nodes: u32,
         inputs_sha: [u8; 32],
     ) -> Self {
+        // Delegate to build_with_arc_filter with no arc filtering
+        Self::build_with_arc_filter(
+            mode,
+            ebg_offsets,
+            ebg_heads,
+            mask,
+            None, // No turn_idx
+            None, // No arc_mode_masks
+            n_original_nodes,
+            inputs_sha,
+        )
+    }
+
+    /// Build filtered EBG from original EBG with both node and arc filtering.
+    ///
+    /// This function filters arcs based on:
+    /// 1. Source and target node accessibility (from node mask)
+    /// 2. Arc (turn) accessibility for this mode (from turn table mode_mask)
+    ///
+    /// # Arguments
+    ///
+    /// * `mode` - The mode to filter for (Car, Bike, Foot)
+    /// * `ebg_offsets` - CSR offsets for the original EBG
+    /// * `ebg_heads` - CSR heads (target node IDs) for the original EBG
+    /// * `mask` - Bitset of accessible nodes for this mode
+    /// * `turn_idx` - For each arc, index into arc_mode_masks (None to skip arc filtering)
+    /// * `arc_mode_masks` - Mode mask for each unique turn entry (None to skip arc filtering)
+    /// * `n_original_nodes` - Number of nodes in original EBG
+    /// * `inputs_sha` - SHA-256 of input files
+    pub fn build_with_arc_filter(
+        mode: Mode,
+        ebg_offsets: &[u64],
+        ebg_heads: &[u32],
+        mask: &[u8],
+        turn_idx: Option<&[u32]>,
+        arc_mode_masks: Option<&[u8]>,
+        n_original_nodes: u32,
+        inputs_sha: [u8; 32],
+    ) -> Self {
         let n_orig = n_original_nodes as usize;
 
-        // Helper to check mask
-        let is_accessible = |node: usize| -> bool {
+        // Mode bit for checking arc accessibility
+        let mode_bit = match mode {
+            Mode::Car => 1u8,
+            Mode::Bike => 2u8,
+            Mode::Foot => 4u8,
+        };
+
+        // Helper to check node mask
+        let is_node_accessible = |node: usize| -> bool {
             let byte_idx = node / 8;
             let bit_idx = node % 8;
             byte_idx < mask.len() && (mask[byte_idx] & (1 << bit_idx)) != 0
         };
 
+        // Helper to check arc accessibility
+        let is_arc_accessible = |arc_idx: usize| -> bool {
+            match (turn_idx, arc_mode_masks) {
+                (Some(tidx), Some(masks)) => {
+                    let turn_entry_idx = tidx[arc_idx] as usize;
+                    if turn_entry_idx < masks.len() {
+                        (masks[turn_entry_idx] & mode_bit) != 0
+                    } else {
+                        true // Invalid index - allow (shouldn't happen)
+                    }
+                }
+                _ => true, // No arc filtering - allow all
+            }
+        };
+
         // Build filtered_to_original: collect accessible nodes
         let mut filtered_to_original = Vec::new();
         for i in 0..n_orig {
-            if is_accessible(i) {
+            if is_node_accessible(i) {
                 filtered_to_original.push(i as u32);
             }
         }
@@ -80,7 +145,8 @@ impl FilteredEbg {
 
             for arc_idx in start..end {
                 let original_v = ebg_heads[arc_idx] as usize;
-                if is_accessible(original_v) {
+                // Check BOTH node accessibility AND arc accessibility
+                if is_node_accessible(original_v) && is_arc_accessible(arc_idx) {
                     let filtered_v = original_to_filtered[original_v];
                     heads.push(filtered_v);
                     original_arc_idx.push(arc_idx as u32);
