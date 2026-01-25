@@ -113,15 +113,17 @@ impl BatchedIsochroneEngine {
     ///
     /// # Arguments
     /// * `origins` - Up to K origin node IDs (len must be <= K_LANES)
-    /// * `threshold_ms` - Time threshold in milliseconds
+    /// * `threshold_ds` - Time threshold in deciseconds (CCH weight units)
     ///
     /// # Returns
     /// BatchedIsochroneResult with K contour polygons
     pub fn query_batch(
         &self,
         origins: &[u32],
-        threshold_ms: u32,
+        threshold_ds: u32,
     ) -> Result<BatchedIsochroneResult> {
+        // Convert to milliseconds for frontier extraction
+        let threshold_ms = threshold_ds * 100;
         let start = std::time::Instant::now();
         let k = origins.len();
 
