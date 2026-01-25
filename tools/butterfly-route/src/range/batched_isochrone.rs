@@ -16,7 +16,8 @@ use rayon::prelude::*;
 use crate::matrix::batched_phast::{BatchedPhastEngine, BatchedPhastResult, K_LANES};
 use crate::profile_abi::Mode;
 use super::frontier::{FrontierExtractor, ReachableSegment};
-use super::contour::{GridConfig, ContourResult, generate_contour, export_contour_geojson};
+use super::contour::{ContourResult, export_contour_geojson};
+use super::sparse_contour::{SparseContourConfig, generate_sparse_contour};
 
 /// Result of a batched isochrone query
 #[derive(Debug)]
@@ -54,8 +55,8 @@ pub struct BatchedIsochroneEngine {
     phast: BatchedPhastEngine,
     /// Frontier extractor (shared across queries)
     extractor: Arc<FrontierExtractor>,
-    /// Grid config per mode
-    config: GridConfig,
+    /// Sparse contour config per mode
+    config: SparseContourConfig,
     /// Mode
     mode: Mode,
 }
@@ -83,11 +84,11 @@ impl BatchedIsochroneEngine {
             base_weights_path,
         )?;
 
-        // Get grid config for mode
+        // Get sparse contour config for mode
         let config = match mode {
-            Mode::Car => GridConfig::for_car(),
-            Mode::Bike => GridConfig::for_bike(),
-            Mode::Foot => GridConfig::for_foot(),
+            Mode::Car => SparseContourConfig::for_car(),
+            Mode::Bike => SparseContourConfig::for_bike(),
+            Mode::Foot => SparseContourConfig::for_foot(),
         };
 
         Ok(Self {
@@ -159,11 +160,30 @@ impl BatchedIsochroneEngine {
         // ============================================================
         let contour_start = std::time::Instant::now();
 
-        let config = self.config;
+        let config = self.config.clone();
         let contours: Vec<ContourResult> = segments
             .par_iter()
             .filter_map(|segs| {
-                generate_contour(segs, &config).ok()
+                generate_sparse_contour(segs, &config).ok().map(|sparse| {
+                    // Convert SparseContourResult to ContourResult
+                    let elapsed_us = sparse.stats.stamp_time_us
+                        + sparse.stats.morphology_time_us
+                        + sparse.stats.contour_time_us
+                        + sparse.stats.simplify_time_us;
+                    ContourResult {
+                        outer_ring: sparse.outer_ring,
+                        holes: sparse.holes,
+                        stats: super::contour::ContourStats {
+                            input_segments: sparse.stats.input_segments,
+                            grid_cols: 0,
+                            grid_rows: 0,
+                            filled_cells: sparse.stats.total_cells_set,
+                            contour_vertices_before_simplify: sparse.stats.contour_vertices_before_simplify,
+                            contour_vertices_after_simplify: sparse.stats.contour_vertices_after_simplify,
+                            elapsed_ms: elapsed_us / 1000,
+                        },
+                    }
+                })
             })
             .collect();
 

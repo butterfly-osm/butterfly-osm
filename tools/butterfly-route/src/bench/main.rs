@@ -1290,11 +1290,11 @@ fn run_batched_isochrone_bench(
     let single_start = Instant::now();
     let phast = load_phast(data_dir, mode)?;
     let extractor = load_extractor(data_dir, mode)?;
-    let grid_config = match mode {
-        "car" => GridConfig::for_car(),
-        "bike" => GridConfig::for_bike(),
-        "foot" => GridConfig::for_foot(),
-        _ => GridConfig::for_car(),
+    let sparse_config = match mode {
+        "car" => SparseContourConfig::for_car(),
+        "bike" => SparseContourConfig::for_bike(),
+        "foot" => SparseContourConfig::for_foot(),
+        _ => SparseContourConfig::for_car(),
     };
     println!("  ✓ Loaded in {:.1}s ({} nodes)", single_start.elapsed().as_secs_f64(), phast.n_nodes());
 
@@ -1370,7 +1370,7 @@ fn run_batched_isochrone_bench(
     for (i, &origin) in origins.iter().enumerate() {
         let result = phast.query_bounded(origin, threshold_ms);
         let segments = extractor.extract_reachable_segments(&result.dist, threshold_ms);
-        let contour = generate_contour(&segments, &grid_config)?;
+        let contour = generate_sparse_contour(&segments, &sparse_config)?;
         single_vertices += contour.outer_ring.len();
 
         if (i + 1) % 10 == 0 || i + 1 == n_origins {
