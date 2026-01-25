@@ -610,15 +610,41 @@ If this holds, collapsing is **exact** and does **NOT increase degree**.
 
 **Implementation Plan:**
 
-1. ⬜ **FIRST: Measure K(node) distribution (BEFORE coding anything)**
-   - For each node, compute behavior signature per incoming edge
-   - Signature = (allowed_outgoing_bitmask, turn_cost_vector)
-   - Count unique signatures → K(node)
-   - Compare: indeg(node) vs K(node)
-   - If median K ≤ 4-8: equivalence-class hybrid will help
-   - If median K ≈ indeg: no hybrid can help, edge-based is optimal
+1. ✅ **FIRST: Measure K(node) distribution (BEFORE coding anything)** ← DONE
 
-2. ⬜ **Group incoming edges by identical signature → class_id**
+   **Results (Belgium, car mode, 2026-01-25):**
+   ```
+   Nodes analyzed:      1,907,139
+   Total indeg:         5,019,010
+   Total K:             1,961,816
+   Reduction ratio:     2.56x
+
+   K(node) distribution:
+     p50: 1    ← EXCELLENT!
+     p90: 1
+     p95: 1
+     p99: 2
+     max: 10
+
+   Indeg distribution (comparison):
+     p50: 3
+     p90: 4
+     p99: 4
+     max: 12
+
+   Node breakdown:
+     Fully collapsed (K=1):     1,869,701 (98.0%)
+     Partial reduction (K<indeg): 1,579,879 (82.8%)
+     No benefit (K=indeg):        327,260 (17.2%)
+
+   VERDICT: ✅ Equivalence-class hybrid WILL HELP
+   ```
+
+   **Key Insight**: 98% of nodes have K=1, meaning ALL incoming edges at these nodes
+   have identical behavior signatures. This is the best possible result - we can
+   collapse to nearly NBG size (1.96M states) while maintaining exact turn semantics.
+
+2. ⬜ **Group incoming edges by identical signature → class_id** ← NEXT
    - Each class has EXACTLY the outgoing edges of ONE member
    - This guarantees edges-per-state = outdeg (not union)
 
@@ -631,7 +657,7 @@ If this holds, collapsing is **exact** and does **NOT increase degree**.
    - Expected speedup: proportional to state reduction
 
 **Key Metrics to Validate:**
-- K(node) distribution: median, p90, p99
+- K(node) distribution: median, p90, p99 → ✅ MEASURED (median=1, p99=2)
 - Edges-per-node ratio: MUST be ≤ 1.0x vs regular CCH
 - Current naive hybrid: 1.36x (WRONG, proves the point)
 - True equivalence hybrid: should be ~1.0x or lower
