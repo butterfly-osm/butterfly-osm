@@ -558,6 +558,33 @@ pub enum Commands {
         #[arg(long)]
         grid_size: Option<f64>,
     },
+
+    /// Analyze hybrid state graph (step towards beating OSRM)
+    HybridAnalysis {
+        /// Path to ebg.nodes from Step 4
+        #[arg(long)]
+        ebg_nodes: PathBuf,
+
+        /// Path to ebg.csr from Step 4
+        #[arg(long)]
+        ebg_csr: PathBuf,
+
+        /// Path to nbg.node_map from Step 3
+        #[arg(long)]
+        nbg_node_map: PathBuf,
+
+        /// Path to turn_rules.car.bin from Step 2
+        #[arg(long)]
+        turn_rules_car: PathBuf,
+
+        /// Path to w.car.u32 from Step 5
+        #[arg(long)]
+        weights: PathBuf,
+
+        /// Path to t.car.u32 from Step 5
+        #[arg(long)]
+        turns: PathBuf,
+    },
 }
 
 impl Cli {
@@ -1316,6 +1343,82 @@ impl Cli {
                 println!("\n=== ISOCHRONE COMPLETE ===");
                 println!("  Total vertices: {}", contour.stats.contour_vertices_after_simplify);
                 println!("  Processing time: {} ms", contour.stats.elapsed_ms);
+
+                Ok(())
+            }
+            Commands::HybridAnalysis {
+                ebg_nodes,
+                ebg_csr,
+                nbg_node_map,
+                turn_rules_car,
+                weights,
+                turns,
+            } => {
+                use crate::formats::{EbgNodesFile, EbgCsrFile, NbgNodeMapFile, turn_rules, mod_weights, mod_turns};
+                use crate::hybrid::HybridGraphBuilder;
+
+                println!("\n=== HYBRID STATE GRAPH ANALYSIS ===\n");
+
+                // Load EBG nodes
+                println!("[1/6] Loading EBG nodes...");
+                let ebg_nodes_data = EbgNodesFile::read(&ebg_nodes)?;
+                println!("  ✓ {} EBG nodes", ebg_nodes_data.nodes.len());
+
+                // Load EBG CSR
+                println!("[2/6] Loading EBG CSR...");
+                let ebg_csr_data = EbgCsrFile::read(&ebg_csr)?;
+                println!("  ✓ {} arcs", ebg_csr_data.heads.len());
+
+                // Load NBG node map (OSM ID → compact ID)
+                println!("[3/6] Loading NBG node map...");
+                let osm_to_nbg = NbgNodeMapFile::read(&nbg_node_map)?;
+                println!("  ✓ {} OSM→NBG mappings", osm_to_nbg.len());
+
+                // Compute actual n_nbg_nodes from EBG node data (max NBG ID + 1)
+                let n_nbg_nodes = ebg_nodes_data.nodes.iter()
+                    .flat_map(|n| [n.tail_nbg, n.head_nbg])
+                    .max()
+                    .map(|m| m as usize + 1)
+                    .unwrap_or(0);
+                println!("  ✓ {} NBG nodes (from EBG)", n_nbg_nodes);
+
+                // Load turn rules
+                println!("[4/6] Loading turn rules (car mode)...");
+                let turn_rules_data = turn_rules::read_all(&turn_rules_car)?;
+                println!("  ✓ {} turn rules", turn_rules_data.len());
+
+                // Load weights
+                println!("[5/6] Loading weights...");
+                let weights_data = mod_weights::read_all(&weights)?;
+                println!("  ✓ {} weights", weights_data.weights.len());
+
+                // Load turn costs
+                let turns_data = mod_turns::read_all(&turns)?;
+                println!("  ✓ {} turn costs", turns_data.penalties.len());
+
+                // Build hybrid state graph
+                println!("\n[6/6] Building hybrid state graph...");
+                let mut builder = HybridGraphBuilder::new();
+                builder.classify_nodes(&turn_rules_data, &osm_to_nbg);
+
+                let hybrid_graph = builder.build(
+                    &ebg_nodes_data,
+                    &ebg_csr_data,
+                    &weights_data.weights,
+                    &turns_data.penalties,
+                    n_nbg_nodes,
+                );
+
+                println!();
+                hybrid_graph.print_stats();
+
+                println!("\n=== HYBRID ANALYSIS COMPLETE ===");
+                println!();
+                println!("Expected performance impact:");
+                println!("  State reduction: {:.2}x → proportional speedup in searches", hybrid_graph.stats.state_reduction_ratio);
+                println!("  Arc reduction: {:.2}x → proportional speedup in relaxations", hybrid_graph.stats.arc_reduction_ratio);
+                println!();
+                println!("Next step: Build CCH on hybrid state graph for actual benchmark.");
 
                 Ok(())
             }
