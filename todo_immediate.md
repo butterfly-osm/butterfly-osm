@@ -670,45 +670,106 @@ If this holds, collapsing is **exact** and does **NOT increase degree**.
 
 ---
 
-### Milestone 7.4.1: Graph-Based Ordering for Hybrid CCH ← NEXT
+### Milestone 7.4.1: Graph-Based Ordering for Hybrid CCH ✅ TESTED - BFS FAILED
 
 **Problem**: Geometry-based ND fails because hybrid graph connectivity ≠ spatial proximity.
 
-**Solution**: Use graph partitioning instead of coordinate-based partitioning.
+**Hypothesis**: Graph-based partitioning would produce better separators.
 
-**Experiment to prove ordering is the issue (not topology):**
+**Experiment Results (2026-01-25): BFS Bisection Ordering**
 
-1. ⬜ **Implement graph-based ND for hybrid graph**
-   - Recursive bisection using adjacency only (no coordinates)
-   - Options:
-     - BFS-based separators (cheap, good baseline)
-     - Spectral bisection (better quality, more complex)
-     - KaHIP/METIS integration (best quality, external dep)
-   - Start with BFS separators as minimum-effort test
+Implemented BFS-based graph partitioning (no coordinates):
+- Pseudo-diameter heuristic to find two peripheral nodes
+- Bidirectional BFS from seeds to partition nodes
+- Boundary nodes become separators
 
-2. ⬜ **Run contraction with graph-based order**
-   - Measure: shortcuts per original arc (target: ~5-8x, not 17x)
-   - Measure: up/down balance (target: ~1.0x, not 3.4x)
-   - Measure: max_degree during contraction
+**Results: CATASTROPHIC FAILURE**
 
-3. ⬜ **If fill-in drops significantly → ordering was the problem**
-   - Expected: shortcuts/arc drops from 17x toward 5-8x
-   - Expected: up/down balance moves toward 1.0x
-   - Then: benchmark actual query performance
+| Metric | Geometry-Based | BFS-Based (at 18%) |
+|--------|----------------|-------------------|
+| Shortcuts | 86.9M (final) | 365M (and climbing) |
+| Max degree | ~966 | 2769 |
+| Projected total | 86.9M | Billions |
 
-4. ⬜ **If fill-in stays bad → consider alternative hierarchies**
-   - MLD-like overlays (partition-based, not elimination-based)
-   - May be better suited for graphs that lost geometric structure
+**BFS contraction was stopped at 18% due to runaway fill-in.**
 
-**Why this matters:**
-- If hybrid + good ordering works → close OSRM table gap without parallelism
-- If hybrid abandoned → stuck with parallelism (brute force) or accepting slower tables
+**Root Cause Analysis:**
 
-**Current ordering implementation (Step 6):**
-- Uses inertial partitioning based on coordinates
-- Recursive ND with geometric bisection
-- Works well for EBG (edges have spatial locality)
-- Fails for hybrid (equivalence classes break spatial locality)
+BFS ordering has two CH-specific pathologies:
+1. **Layering effect**: Creates huge contiguous rank bands with similar structural role
+2. **No fill-awareness**: Doesn't account for shortcut creation cost
+
+The hybrid graph has **densifier nodes** (high in×out product) that create local bicliques.
+BFS contracts these early → cascade of fill-in.
+
+**Key Insight**: This doesn't prove "graph-based ordering is fundamentally worse".
+It proves **naive BFS is incompatible with CCH on densifier-heavy graphs**.
+
+Geometry-based ND works better because separators naturally end up late in the order.
+
+---
+
+### Milestone 7.4.2: Constrained Ordering with Densifier Delay ← NEXT
+
+**The Smart Fix**: Don't contract densifiers early.
+
+**Approach A: Late-Rank Densifiers**
+1. Compute densifier score for each hybrid state: `in(u) × out(u)`
+2. Force top 1-5% highest scores to last X% of ranks
+3. Run geometry ND for the rest with this constraint
+
+**Approach B: Selective Collapse**
+1. Modify hybrid collapse to skip nodes where `in × out > threshold`
+2. Preserve edge-states at combinatorial explosion points
+3. Only collapse at "safe" simple nodes
+
+**Implementation Plan:**
+
+1. ⬜ **Compute densifier distribution**
+   - Histogram of `in × out` for all hybrid states
+   - Identify top 0.1%, 1%, 5% thresholds
+   - Check if these are where max_degree explodes during contraction
+
+2. ⬜ **Experiment A: Constrained geometry ND**
+   - Add `force_late_ranks: Vec<u32>` to ordering config
+   - Force high in×out nodes to rank > 95th percentile
+   - Run Step 6/7/8 and measure shortcuts/arc
+
+3. ⬜ **Experiment B: Selective collapse**
+   - Add threshold to equiv_builder: skip collapse if `in × out > T`
+   - Rebuild hybrid with selective collapse
+   - Run Step 6/7/8 and measure
+
+4. ⬜ **Success criteria**
+   - Shortcuts/arc drops from 17x toward 5-8x
+   - Max degree stays bounded (< 1500)
+   - Query performance improves vs regular EBG CCH
+
+**Why This Should Work:**
+
+| Node Type | in×out | Should Collapse? | Should Contract? |
+|-----------|--------|------------------|------------------|
+| Simple 2-way | 4 | ✅ Yes | Early (low degree) |
+| Simple 4-way | 16 | ✅ Yes | Mid (moderate) |
+| Complex hub | 100+ | ❌ No | Late (apex node) |
+
+The biclique fill-in only happens when high in×out nodes are contracted.
+If they stay at the top of the hierarchy, they cause no shortcuts.
+
+**If Both Approaches Fail:**
+
+Then hybrid is structurally incompatible with CCH, and we:
+- Keep full edge-based CCH for turn-exactness
+- Accept 4-7x OSRM gap as "cost of exact turns"
+- Close gap with parallelism (later milestone)
+
+---
+
+### Current Ordering Implementation (Step 6)
+
+- `--graph-partition` flag added for BFS-based ordering (proven ineffective)
+- Geometry-based inertial partitioning is current default
+- Need to add `--force-late` constraint for densifier handling
 
 ---
 

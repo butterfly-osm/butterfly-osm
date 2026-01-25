@@ -699,6 +699,11 @@ pub enum Commands {
         /// Balance epsilon (default: 0.05)
         #[arg(long, default_value = "0.05")]
         balance_eps: f32,
+
+        /// Use graph-based partitioning instead of geometry-based
+        /// Enable this for equivalence-class hybrid where coordinate-based ND fails
+        #[arg(long, default_value = "false")]
+        graph_partition: bool,
     },
 
     /// Step 7 (Hybrid): Build CCH topology via contraction on hybrid state graph
@@ -1846,6 +1851,7 @@ impl Cli {
                 outdir,
                 leaf_threshold,
                 balance_eps,
+                graph_partition,
             } => {
                 // Parse mode
                 let mode_enum = match mode.to_lowercase().as_str() {
@@ -1862,6 +1868,7 @@ impl Cli {
                     outdir: outdir.clone(),
                     leaf_threshold,
                     balance_eps,
+                    use_graph_partition: graph_partition,
                 };
 
                 let result = step6::generate_ordering_hybrid(config)?;
