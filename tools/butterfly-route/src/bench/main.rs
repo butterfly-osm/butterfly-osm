@@ -22,7 +22,7 @@ use butterfly_route::range::batched_isochrone::BatchedIsochroneEngine;
 use butterfly_route::matrix::batched_phast::{BatchedPhastEngine, BatchedPhastStats, K_LANES};
 use butterfly_route::formats::CchWeightsFile;
 use butterfly_route::step9::state::DownReverseAdj;
-use butterfly_route::matrix::bucket_ch::{table_bucket, table_bucket_optimized, table_bucket_full_flat, DownReverseAdjFlat, UpAdjFlat, BucketM2MStats, BucketM2MEngine};
+use butterfly_route::matrix::bucket_ch::{table_bucket, table_bucket_optimized, table_bucket_full_flat, DownReverseAdjFlat, UpAdjFlat, UpReverseAdjFlat, BucketM2MStats, BucketM2MEngine};
 
 #[derive(Parser)]
 #[command(name = "butterfly-bench")]
@@ -2411,9 +2411,17 @@ fn run_bucket_m2m_bench(
              weights.up.len(), up_inf, 100.0 * up_inf as f64 / weights.up.len() as f64,
              weights.down.len(), down_inf, 100.0 * down_inf as f64 / weights.down.len() as f64);
 
+    println!("Building UpAdjFlat (optimized forward adjacency)...");
+    let up_adj_flat = UpAdjFlat::build(&topo, &weights);
+    println!("  ✓ {} flat forward entries", up_adj_flat.targets.len());
+
     println!("Building DownReverseAdjFlat (optimized backward adjacency)...");
     let down_rev_flat = DownReverseAdjFlat::build(&topo, &weights);
     println!("  ✓ {} flat reverse entries", down_rev_flat.sources.len());
+
+    println!("Building UpReverseAdjFlat (for stall-on-demand)...");
+    let up_rev_flat = UpReverseAdjFlat::build(&topo, &weights);
+    println!("  ✓ {} incoming UP entries", up_rev_flat.sources.len());
 
     println!("Building DownReverseAdj (for P2P validation)...");
     let down_rev = build_down_rev(&topo);
@@ -2426,7 +2434,7 @@ fn run_bucket_m2m_bench(
     println!("───────────────────────────────────────────────────────────────");
     println!();
     println!("{:>8} {:>12} {:>10} {:>12} {:>10} {:>10} {:>10} {:>10}",
-             "Size", "Cells", "Time(ms)", "Cells/sec", "Fwd Vis", "Bwd Vis", "Pushes", "Stale%");
+             "Size", "Cells", "Time(ms)", "Cells/sec", "Fwd Vis", "Bwd Vis", "Joins", "Stale%");
     println!("{}", "-".repeat(100));
 
     let mut rng = StdRng::seed_from_u64(seed);
@@ -2479,10 +2487,73 @@ fn run_bucket_m2m_bench(
                  cells_per_sec,
                  fwd_vis_avg,
                  bwd_vis_avg,
-                 stats.heap_pushes,
+                 stats.join_operations,
                  stale_pct);
         println!("         Fwd: {}ms, Sort: {}ms, Bwd: {}ms",
                  stats.forward_time_ms, stats.sort_time_ms, stats.backward_time_ms);
+    }
+
+    // ========== Stall-on-Demand Benchmark ==========
+    println!();
+    println!("───────────────────────────────────────────────────────────────");
+    println!("  STALL-ON-DEMAND BENCHMARK");
+    println!("───────────────────────────────────────────────────────────────");
+    println!();
+    println!("{:>8} {:>12} {:>10} {:>10} {:>10} {:>10} {:>10}",
+             "Size", "Cells", "Time(ms)", "Stalls", "NonStall", "StallRate", "vs Base");
+    println!("{}", "-".repeat(80));
+
+    let mut rng2 = StdRng::seed_from_u64(seed + 1000);  // Different seed for variety
+
+    for &n in sizes {
+        // Generate random sources and targets
+        let sources: Vec<u32> = (0..n)
+            .map(|_| rng2.gen_range(0..n_nodes as u32))
+            .collect();
+        let targets: Vec<u32> = (0..n)
+            .map(|_| rng2.gen_range(0..n_nodes as u32))
+            .collect();
+
+        // Baseline (without stall)
+        let base_start = Instant::now();
+        let (base_matrix, _) = engine.compute_flat(&up_adj_flat, &down_rev_flat, &sources, &targets);
+        let base_time = base_start.elapsed();
+
+        // With stall-on-demand
+        let stall_start = Instant::now();
+        let (stall_matrix, stats, stalls, non_stalls) = engine.compute_with_stall(
+            &up_adj_flat, &up_rev_flat, &down_rev_flat, &sources, &targets
+        );
+        let stall_time = stall_start.elapsed();
+
+        // Verify correctness
+        let mut mismatches = 0;
+        for i in 0..(n * n) {
+            if base_matrix[i] != stall_matrix[i] {
+                mismatches += 1;
+            }
+        }
+
+        let stall_rate = if stalls + non_stalls > 0 {
+            100.0 * stalls as f64 / (stalls + non_stalls) as f64
+        } else {
+            0.0
+        };
+
+        let speedup = base_time.as_secs_f64() / stall_time.as_secs_f64();
+
+        println!("{:>8} {:>12} {:>10.1} {:>10} {:>10} {:>9.1}% {:>9.2}x",
+                 format!("{}×{}", n, n),
+                 n * n,
+                 stall_time.as_secs_f64() * 1000.0,
+                 stalls,
+                 non_stalls,
+                 stall_rate,
+                 speedup);
+
+        if mismatches > 0 {
+            println!("         ⚠️  {} mismatches vs baseline!", mismatches);
+        }
     }
 
     println!();

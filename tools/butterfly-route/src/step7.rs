@@ -768,6 +768,44 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
         down_is_shortcut.iter().filter(|&&x| x).count()
     );
 
+    // ===== RANK-ALIGNED TRANSFORMATION =====
+    // Convert from filtered-space indexing to rank-space indexing
+    // This makes PHAST downward scan access memory sequentially
+    println!("\nApplying rank-aligned transformation...");
+
+    // Build new CSR structure indexed by rank
+    // new_offsets[rank] = start of edges for node at that rank
+    // This reorders nodes so that node_id == rank (identity mapping)
+
+    // Step 1: Build rank_to_filtered mapping (same as inv_perm)
+    let rank_to_filtered: Vec<u32> = inv_perm.clone();
+
+    // Step 2: Rebuild UP graph with rank-aligned indexing
+    let (rank_up_offsets, rank_up_targets, rank_up_is_shortcut, rank_up_middle) =
+        remap_to_rank_space(
+            &up_offsets,
+            &up_targets,
+            &up_is_shortcut,
+            &up_middle,
+            perm,
+            inv_perm,
+            n_nodes,
+        );
+
+    // Step 3: Rebuild DOWN graph with rank-aligned indexing
+    let (rank_down_offsets, rank_down_targets, rank_down_is_shortcut, rank_down_middle) =
+        remap_to_rank_space(
+            &down_offsets,
+            &down_targets,
+            &down_is_shortcut,
+            &down_middle,
+            perm,
+            inv_perm,
+            n_nodes,
+        );
+
+    println!("  ✓ Rank-aligned transformation complete");
+
     // Compute inputs SHA using streaming (avoid loading whole files into memory)
     let inputs_sha = compute_inputs_sha_streaming(&config.filtered_ebg_path, &config.order_path)?;
 
@@ -780,14 +818,15 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
         n_shortcuts,
         n_original_arcs: filtered_ebg.n_filtered_arcs,
         inputs_sha,
-        up_offsets,
-        up_targets,
-        up_is_shortcut,
-        up_middle,
-        down_offsets,
-        down_targets,
-        down_is_shortcut,
-        down_middle,
+        up_offsets: rank_up_offsets,
+        up_targets: rank_up_targets,
+        up_is_shortcut: rank_up_is_shortcut,
+        up_middle: rank_up_middle,
+        down_offsets: rank_down_offsets,
+        down_targets: rank_down_targets,
+        down_is_shortcut: rank_down_is_shortcut,
+        down_middle: rank_down_middle,
+        rank_to_filtered,
     };
     CchTopoFile::write(&topo_path, &topo)?;
     println!("  ✓ Written {}", topo_path.display());
@@ -827,4 +866,102 @@ fn compute_inputs_sha_streaming(
     let mut sha = [0u8; 32];
     sha.copy_from_slice(&result);
     Ok(sha)
+}
+
+/// Remap CSR graph from filtered-space indexing to rank-space indexing.
+///
+/// Input:
+/// - offsets[filtered_id] = start of edges for node with that filtered ID
+/// - targets[i] = filtered ID of target node
+/// - middle[i] = filtered ID of middle node (for shortcuts)
+///
+/// Output:
+/// - new_offsets[rank] = start of edges for node at that rank
+/// - new_targets[i] = rank of target node
+/// - new_middle[i] = rank of middle node
+///
+/// This transformation makes PHAST downward scan access memory sequentially:
+/// - Before: for rank in (0..n).rev() { u = inv_perm[rank]; offsets[u]... } (random access)
+/// - After:  for rank in (0..n).rev() { offsets[rank]... } (sequential access)
+fn remap_to_rank_space(
+    offsets: &[u64],
+    targets: &[u32],
+    is_shortcut: &[bool],
+    middle: &[u32],
+    perm: &[u32],       // perm[filtered_id] = rank
+    inv_perm: &[u32],   // inv_perm[rank] = filtered_id
+    n_nodes: usize,
+) -> (Vec<u64>, Vec<u32>, Vec<bool>, Vec<u32>) {
+    let n_edges = targets.len();
+
+    // Step 1: Count edges per rank (same as per filtered_id, just reordered)
+    let mut new_offsets = Vec::with_capacity(n_nodes + 1);
+    let mut offset = 0u64;
+
+    for rank in 0..n_nodes {
+        new_offsets.push(offset);
+        let filtered_id = inv_perm[rank] as usize;
+        let count = offsets[filtered_id + 1] - offsets[filtered_id];
+        offset += count;
+    }
+    new_offsets.push(offset);
+
+    // Step 2: Allocate output arrays
+    let mut new_targets = vec![0u32; n_edges];
+    let mut new_is_shortcut = vec![false; n_edges];
+    let mut new_middle = vec![u32::MAX; n_edges];
+
+    // Step 3: Copy and remap edges, reordered by source rank
+    let mut write_pos = 0;
+    for rank in 0..n_nodes {
+        let filtered_id = inv_perm[rank] as usize;
+        let old_start = offsets[filtered_id] as usize;
+        let old_end = offsets[filtered_id + 1] as usize;
+
+        for i in old_start..old_end {
+            // Remap target: filtered_id -> rank
+            let target_filtered = targets[i] as usize;
+            let target_rank = perm[target_filtered];
+            new_targets[write_pos] = target_rank;
+
+            // Copy is_shortcut flag
+            new_is_shortcut[write_pos] = is_shortcut[i];
+
+            // Remap middle: filtered_id -> rank (only for shortcuts)
+            if is_shortcut[i] {
+                let middle_filtered = middle[i] as usize;
+                let middle_rank = perm[middle_filtered];
+                new_middle[write_pos] = middle_rank;
+            } else {
+                new_middle[write_pos] = u32::MAX;
+            }
+
+            write_pos += 1;
+        }
+    }
+
+    // Step 4: Sort edges within each rank's edge list by target rank
+    // This preserves binary search capability
+    for rank in 0..n_nodes {
+        let start = new_offsets[rank] as usize;
+        let end = new_offsets[rank + 1] as usize;
+        if end > start {
+            // Collect into tuples for sorting
+            let mut edges: Vec<(u32, bool, u32)> = (start..end)
+                .map(|i| (new_targets[i], new_is_shortcut[i], new_middle[i]))
+                .collect();
+
+            // Sort by target rank
+            edges.sort_unstable_by_key(|(target, _, _)| *target);
+
+            // Write back
+            for (i, (target, is_sc, mid)) in edges.into_iter().enumerate() {
+                new_targets[start + i] = target;
+                new_is_shortcut[start + i] = is_sc;
+                new_middle[start + i] = mid;
+            }
+        }
+    }
+
+    (new_offsets, new_targets, new_is_shortcut, new_middle)
 }

@@ -17,7 +17,7 @@ use crate::formats::{CchTopoFile, CchWeightsFile, OrderEbgFile};
 use crate::profile_abi::Mode;
 
 pub mod phast;
-pub use phast::{PhastEngine, PhastResult, PhastStats};
+pub use phast::{PhastEngine, PhastResult, PhastStats, BLOCK_SIZE};
 
 pub mod frontier;
 pub use frontier::{FrontierExtractor, FrontierCutPoint, ReachablePoint, ReachableSegment, run_frontier_extraction};
@@ -73,37 +73,46 @@ pub struct RangeStats {
 }
 
 /// Range query engine
+///
+/// # Rank-Aligned CCH
+///
+/// With rank-aligned CCH (Version 2), all node IDs are rank positions.
+/// The rank_to_filtered mapping is stored in the topology for path reconstruction.
 pub struct RangeEngine {
-    /// CCH topology
+    /// CCH topology (rank-aligned)
     topo: crate::formats::CchTopo,
     /// CCH weights
     weights: crate::formats::CchWeights,
-    /// Node ordering (permutation)
-    order: crate::formats::OrderEbg,
     /// Number of nodes
     n_nodes: usize,
 }
 
 impl RangeEngine {
     /// Load CCH data and create range query engine
+    ///
+    /// Note: order_path is kept for backward compatibility but is no longer used.
+    /// With rank-aligned CCH, the mapping is in the topology file.
     pub fn load(
         topo_path: &Path,
         weights_path: &Path,
-        order_path: &Path,
+        _order_path: &Path,  // Unused with rank-aligned CCH
         _mode: Mode,
     ) -> Result<Self> {
         let topo = CchTopoFile::read(topo_path)?;
         let weights = CchWeightsFile::read(weights_path)?;
-        let order = OrderEbgFile::read(order_path)?;
 
         let n_nodes = topo.n_nodes as usize;
 
         Ok(Self {
             topo,
             weights,
-            order,
             n_nodes,
         })
+    }
+
+    /// Get the rank_to_filtered mapping for converting results to filtered space
+    pub fn rank_to_filtered(&self) -> &[u32] {
+        &self.topo.rank_to_filtered
     }
 
     /// Run bounded Dijkstra from origin with threshold T (in milliseconds)
@@ -774,6 +783,141 @@ pub fn validate_phast(
             println!("  First mismatch: node {} (naive={}, phast={})", node, naive_d, phast_d);
         }
         anyhow::bail!("PHAST validation failed with {} mismatches", mismatches);
+    }
+
+    Ok(())
+}
+
+/// Validate block-gated PHAST against active-set PHAST (the baseline)
+///
+/// Compares distances and reachable sets for multiple thresholds and origins.
+/// The active-set PHAST is already validated against naive Dijkstra.
+pub fn validate_block_gated_phast(
+    topo_path: &Path,
+    weights_path: &Path,
+    order_path: &Path,
+    origins: &[u32],
+    thresholds: &[u32],
+) -> Result<()> {
+    println!("\n🧪 Block-Gated PHAST Validation");
+    println!("  Block size: {} ranks", BLOCK_SIZE);
+    println!("  Origins: {:?}", origins);
+    println!("  Thresholds: {:?}", thresholds);
+
+    println!("\nLoading CCH data...");
+    let engine = PhastEngine::load(topo_path, weights_path, order_path)?;
+    let n_nodes = engine.n_nodes();
+    let n_blocks = (n_nodes + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    println!("  ✓ {} nodes, {} blocks", n_nodes, n_blocks);
+
+    let mut total_tests = 0;
+    let mut total_mismatches = 0;
+    let mut total_block_gated_time = 0u64;
+    let mut total_active_set_time = 0u64;
+
+    for &origin in origins {
+        if origin as usize >= n_nodes {
+            println!("  ⚠ Skipping origin {} (out of range)", origin);
+            continue;
+        }
+
+        for &threshold in thresholds {
+            total_tests += 1;
+
+            // Run both methods
+            let active_start = std::time::Instant::now();
+            let active_result = engine.query_active_set(origin, threshold);
+            let active_time = active_start.elapsed().as_millis() as u64;
+            total_active_set_time += active_time;
+
+            let block_start = std::time::Instant::now();
+            let block_result = engine.query_block_gated(origin, threshold);
+            let block_time = block_start.elapsed().as_millis() as u64;
+            total_block_gated_time += block_time;
+
+            // Compare reachable sets (nodes with dist <= threshold)
+            let mut mismatches = 0;
+            let mut first_mismatch: Option<(usize, u32, u32)> = None;
+
+            for node in 0..n_nodes {
+                let active_d = active_result.dist[node];
+                let block_d = block_result.dist[node];
+
+                let active_reachable = active_d <= threshold;
+                let block_reachable = block_d <= threshold;
+
+                if active_reachable != block_reachable {
+                    mismatches += 1;
+                    if first_mismatch.is_none() {
+                        first_mismatch = Some((node, active_d, block_d));
+                    }
+                } else if active_reachable && block_reachable && active_d != block_d {
+                    // Both reachable but different distances
+                    mismatches += 1;
+                    if first_mismatch.is_none() {
+                        first_mismatch = Some((node, active_d, block_d));
+                    }
+                }
+            }
+
+            // Report per-query results
+            let status = if mismatches == 0 { "✓" } else { "✗" };
+            let speedup = if block_time > 0 {
+                format!("{:.2}x", active_time as f64 / block_time as f64)
+            } else {
+                "∞".to_string()
+            };
+
+            println!(
+                "  {} origin={}, T={}ms: active={}ms, block={}ms ({}), reachable={}/{}, blocks processed={}/{}, skipped={}",
+                status,
+                origin,
+                threshold,
+                active_time,
+                block_time,
+                speedup,
+                active_result.n_reachable,
+                block_result.n_reachable,
+                block_result.stats.blocks_processed,
+                n_blocks,
+                block_result.stats.blocks_skipped
+            );
+
+            if mismatches > 0 {
+                total_mismatches += mismatches;
+                if let Some((node, active_d, block_d)) = first_mismatch {
+                    println!(
+                        "    First mismatch: node {} (active={}, block={})",
+                        node, active_d, block_d
+                    );
+                }
+            }
+        }
+    }
+
+    // Summary
+    println!("\n=== VALIDATION SUMMARY ===");
+    println!("  Tests run: {}", total_tests);
+    println!("  Total mismatches: {}", total_mismatches);
+    println!(
+        "  Active-set time: {}ms, Block-gated time: {}ms",
+        total_active_set_time, total_block_gated_time
+    );
+    if total_active_set_time > 0 && total_block_gated_time > 0 {
+        println!(
+            "  Overall speedup: {:.2}x",
+            total_active_set_time as f64 / total_block_gated_time as f64
+        );
+    }
+
+    if total_mismatches == 0 {
+        println!("\n  ✅ All block-gated PHAST tests passed!");
+    } else {
+        println!("\n  ❌ Block-gated PHAST validation FAILED!");
+        anyhow::bail!(
+            "Block-gated PHAST validation failed with {} mismatches",
+            total_mismatches
+        );
     }
 
     Ok(())

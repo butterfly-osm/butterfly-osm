@@ -150,10 +150,9 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     let filtered_ebg = FilteredEbgFile::read(&config.filtered_ebg_path)?;
     println!("  ✓ {} filtered nodes, {} arcs", filtered_ebg.n_filtered_nodes, filtered_ebg.n_filtered_arcs);
 
-    // Load ordering
-    println!("Loading ordering...");
-    let order = OrderEbgFile::read(&config.order_path)?;
-    println!("  ✓ {} nodes", order.n_nodes);
+    // Note: With rank-aligned CCH (Version 2), we no longer need the order file.
+    // The rank_to_filtered mapping is stored directly in the CCH topology.
+    // Keeping the order_path in config for backward compatibility but not loading it.
 
     // Load weights and turn penalties
     println!("Loading weights ({})...", mode_name);
@@ -176,57 +175,68 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     // Note: We don't need ebg_csr.turn_idx - turn penalties are indexed by arc_idx directly
 
     // Process in contraction order (bottom-up by rank)
+    // With rank-aligned CCH: node_id == rank, no inv_perm lookup needed!
     println!("\nCustomizing weights (bottom-up)...");
-    let perm = &order.perm;
-    let inv_perm = &order.inv_perm;
+
+    // rank_to_filtered: convert rank position back to filtered_id for weight lookups
+    let rank_to_filtered = &topo.rank_to_filtered;
 
     let report_interval = (n_nodes / 20).max(1);
 
     // Pre-compute sorted down edge indices for each node (sorted by target rank)
+    // With rank-aligned CCH, targets ARE already ranks - just sort directly
     println!("  Pre-sorting down edges by target rank (parallel)...");
     let sorted_down_indices: Vec<Vec<usize>> = (0..n_nodes)
         .into_par_iter()
         .map(|u| {
+            // u is the rank (node_id == rank in rank-aligned CCH)
             let start = topo.down_offsets[u] as usize;
             let end = topo.down_offsets[u + 1] as usize;
             if start >= end {
                 return Vec::new();
             }
             let mut indices: Vec<usize> = (start..end).collect();
-            indices.sort_unstable_by_key(|&i| perm[topo.down_targets[i] as usize]);
+            // down_targets[i] is already the target's rank - no perm lookup needed!
+            indices.sort_unstable_by_key(|&i| topo.down_targets[i]);
             indices
         })
         .collect();
     println!("  ✓ Pre-sorted down edges");
 
     // Main customization loop
+    // With rank-aligned CCH: u IS the rank (node_id == rank)
     for rank in 0..n_nodes {
         if rank % report_interval == 0 {
             let pct = (rank as f64 / n_nodes as f64) * 100.0;
             println!("  {:5.1}% customized", pct);
         }
 
-        let u = inv_perm[rank] as usize;
+        // In rank-aligned CCH, node_id == rank (no inv_perm lookup!)
+        let u = rank;
 
         // ===== PHASE 1: Process DOWN edges (sorted by target rank) =====
         // This MUST come before UP edges because UP shortcuts depend on down_weights[u→m]
         for &i in &sorted_down_indices[u] {
+            // v is the target's rank (rank-aligned CCH)
             let v = topo.down_targets[i] as usize;
 
             if !topo.down_is_shortcut[i] {
                 // Original edge: weight = w[original_v] + turn_penalty
-                let weight = compute_original_weight(
+                // Need to convert rank -> filtered_id -> original_id for weight lookup
+                let weight = compute_original_weight_rank_aligned(
                     u,
                     v,
                     &weights.weights,
                     &turns.penalties,
                     &sorted_ebg,
                     &filtered_ebg.filtered_to_original,
+                    rank_to_filtered,
                 );
                 down_weights[i] = weight;
             } else {
                 // Shortcut via m: weight = weight(u→m) + weight(m→v)
                 // rank(m) < rank(v) < rank(u)
+                // m is the middle node's rank (rank-aligned CCH)
                 let m = topo.down_middle[i] as usize;
 
                 // u→m: DOWN edge from u (rank(m) < rank(u))
@@ -259,17 +269,19 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
         let up_end = topo.up_offsets[u + 1] as usize;
 
         for i in up_start..up_end {
+            // v is the target's rank (rank-aligned CCH)
             let v = topo.up_targets[i] as usize;
 
             if !topo.up_is_shortcut[i] {
                 // Original edge: weight = w[original_v] + turn_penalty
-                let weight = compute_original_weight(
+                let weight = compute_original_weight_rank_aligned(
                     u,
                     v,
                     &weights.weights,
                     &turns.penalties,
                     &sorted_ebg,
                     &filtered_ebg.filtered_to_original,
+                    rank_to_filtered,
                 );
                 up_weights[i] = weight;
             } else {
@@ -364,13 +376,15 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
                 println!("  Pass 1: {:5.1}% relaxed ({} updates so far)", pct, pass_relaxations);
             }
 
-            let m = inv_perm[rank] as usize; // Apex node (lowest rank in triangle)
+            // In rank-aligned CCH, node_id == rank (no inv_perm lookup!)
+            let m = rank; // Apex node (lowest rank in triangle)
 
             // For each incoming DOWN edge x→m (i.e., edges from higher-rank nodes to m)
             let rev_start = down_rev_offsets[m] as usize;
             let rev_end = down_rev_offsets[m + 1] as usize;
 
             for i_rev in rev_start..rev_end {
+                // x is a rank (rank-aligned CCH)
                 let x = down_rev_sources[i_rev] as usize;
                 let edge_idx_xm = down_rev_edge_idx[i_rev];
                 let w_xm = down_weights[edge_idx_xm];
@@ -384,6 +398,7 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
                 let up_end = topo.up_offsets[m + 1] as usize;
 
                 for i_my in up_start..up_end {
+                    // y is a rank (rank-aligned CCH)
                     let y = topo.up_targets[i_my] as usize;
 
                     if y == x {
@@ -399,8 +414,9 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
                     let new_weight = w_xm.saturating_add(w_my);
 
                     // Check if x→y edge exists and relax
-                    let rank_x = perm[x];
-                    let rank_y = perm[y];
+                    // In rank-aligned CCH, x and y ARE already ranks
+                    let rank_x = x;
+                    let rank_y = y;
 
                     if rank_y > rank_x {
                         // UP edge from x
@@ -525,12 +541,13 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     })
 }
 
-/// Compute weight for an original edge
+/// Compute weight for an original edge (deprecated - use rank-aligned version)
 ///
 /// CCH operates in filtered node space, but weights are indexed by original node ID.
 /// We map filtered_v → original_v for weight lookup.
 /// Turn penalties are indexed by original arc index (from filtered_ebg.original_arc_idx).
 #[inline]
+#[allow(dead_code)]
 fn compute_original_weight(
     u: usize,
     v: usize,
@@ -551,6 +568,48 @@ fn compute_original_weight(
     // Find original arc index to get turn penalty
     // Turn penalties are indexed by original arc_idx
     match sorted_ebg.find_original_arc_index(u, v as u32) {
+        Some(orig_arc_idx) => {
+            let penalty = turn_penalties[orig_arc_idx as usize];
+            w_v.saturating_add(penalty)
+        }
+        None => {
+            // Edge not found in filtered EBG - should not happen for original edges
+            u32::MAX
+        }
+    }
+}
+
+/// Compute weight for an original edge in rank-aligned CCH
+///
+/// In rank-aligned CCH, node IDs are rank positions, not filtered IDs.
+/// We need to convert: rank → filtered_id → original_id for weight lookup.
+/// Turn penalties are indexed by original arc index (from filtered_ebg.original_arc_idx).
+#[inline]
+fn compute_original_weight_rank_aligned(
+    u_rank: usize,
+    v_rank: usize,
+    node_weights: &[u32],
+    turn_penalties: &[u32],
+    sorted_ebg: &SortedFilteredEbgAdj,
+    filtered_to_original: &[u32],
+    rank_to_filtered: &[u32],
+) -> u32 {
+    // Convert rank positions to filtered IDs
+    let u_filtered = rank_to_filtered[u_rank] as usize;
+    let v_filtered = rank_to_filtered[v_rank] as usize;
+
+    // Map filtered v to original v for weight lookup
+    let original_v = filtered_to_original[v_filtered] as usize;
+    let w_v = node_weights[original_v];
+
+    // If target node is inaccessible, edge is inaccessible
+    if w_v == 0 {
+        return u32::MAX;
+    }
+
+    // Find original arc index to get turn penalty
+    // sorted_ebg uses filtered IDs, not ranks
+    match sorted_ebg.find_original_arc_index(u_filtered, v_filtered as u32) {
         Some(orig_arc_idx) => {
             let penalty = turn_penalties[orig_arc_idx as usize];
             w_v.saturating_add(penalty)

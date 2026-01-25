@@ -184,26 +184,27 @@ fn verify_csr_structure(topo: &crate::formats::CchTopo) -> Result<()> {
     Ok(())
 }
 
-fn verify_upward_property(topo: &crate::formats::CchTopo, order: &crate::formats::OrderEbg) -> Result<()> {
+fn verify_upward_property(topo: &crate::formats::CchTopo, _order: &crate::formats::OrderEbg) -> Result<()> {
     let n = topo.n_nodes as usize;
-    let perm = &order.perm;
 
     // Sample check: verify first 10000 nodes
     let check_limit = n.min(10000);
 
-    for u in 0..check_limit {
-        let rank_u = perm[u];
-        let start = topo.up_offsets[u] as usize;
-        let end = topo.up_offsets[u + 1] as usize;
+    // RANK-ALIGNED CCH: node_id IS the rank, no perm lookup needed!
+    // In rank-aligned CCH, offsets[rank] gives edges for node at that rank
+    // targets[i] is the target's rank
+    for rank_u in 0..check_limit {
+        let start = topo.up_offsets[rank_u] as usize;
+        let end = topo.up_offsets[rank_u + 1] as usize;
 
         for i in start..end {
-            let v = topo.up_targets[i] as usize;
-            let rank_v = perm[v];
+            // In rank-aligned CCH, up_targets[i] IS the target's rank
+            let rank_v = topo.up_targets[i] as usize;
             anyhow::ensure!(
                 rank_v > rank_u,
                 "Upward edge {} -> {} violates hierarchy: rank {} -> {}",
-                u,
-                v,
+                rank_u,
+                rank_v,
                 rank_u,
                 rank_v
             );
@@ -213,26 +214,25 @@ fn verify_upward_property(topo: &crate::formats::CchTopo, order: &crate::formats
     Ok(())
 }
 
-fn verify_downward_property(topo: &crate::formats::CchTopo, order: &crate::formats::OrderEbg) -> Result<()> {
+fn verify_downward_property(topo: &crate::formats::CchTopo, _order: &crate::formats::OrderEbg) -> Result<()> {
     let n = topo.n_nodes as usize;
-    let perm = &order.perm;
 
     // Sample check: verify first 10000 nodes
     let check_limit = n.min(10000);
 
-    for u in 0..check_limit {
-        let rank_u = perm[u];
-        let start = topo.down_offsets[u] as usize;
-        let end = topo.down_offsets[u + 1] as usize;
+    // RANK-ALIGNED CCH: node_id IS the rank, no perm lookup needed!
+    for rank_u in 0..check_limit {
+        let start = topo.down_offsets[rank_u] as usize;
+        let end = topo.down_offsets[rank_u + 1] as usize;
 
         for i in start..end {
-            let v = topo.down_targets[i] as usize;
-            let rank_v = perm[v];
+            // In rank-aligned CCH, down_targets[i] IS the target's rank
+            let rank_v = topo.down_targets[i] as usize;
             anyhow::ensure!(
                 rank_v < rank_u,
                 "Downward edge {} -> {} violates hierarchy: rank {} -> {}",
-                u,
-                v,
+                rank_u,
+                rank_v,
                 rank_u,
                 rank_v
             );
@@ -295,20 +295,27 @@ fn verify_query_correctness(
 
     let n_nodes = filtered_ebg.n_filtered_nodes as usize;
 
+    // RANK-ALIGNED CCH: Need to convert between filtered_id and rank
+    // perm[filtered_id] = rank (for query input)
+    // rank_to_filtered[rank] = filtered_id (from topo, for mapping results)
+    let perm = &order.perm;
+
     // Precompute reverse DOWN adjacency (for backward search)
+    // Note: In rank-aligned CCH, indices are ranks
     println!("    Building reverse DOWN graph...");
     let mut down_rev: Vec<Vec<u32>> = vec![Vec::new(); n_nodes];
-    for u in 0..n_nodes {
-        let start = topo.down_offsets[u] as usize;
-        let end = topo.down_offsets[u + 1] as usize;
+    for rank_u in 0..n_nodes {
+        let start = topo.down_offsets[rank_u] as usize;
+        let end = topo.down_offsets[rank_u + 1] as usize;
         for i in start..end {
-            let v = topo.down_targets[i] as usize;
-            down_rev[v].push(u as u32);
+            let rank_v = topo.down_targets[i] as usize;
+            down_rev[rank_v].push(rank_u as u32);
         }
     }
     println!("    ✓ Built reverse DOWN graph");
 
     // Generate deterministic "random" pairs using a simple hash
+    // These are filtered_id pairs (for BFS)
     let pairs: Vec<(usize, usize)> = (0..n_samples)
         .map(|i| {
             // Simple deterministic pseudo-random
@@ -325,17 +332,21 @@ fn verify_query_correctness(
     let down_rev_ref = &down_rev;
     let results: Vec<Result<(), String>> = pairs
         .par_iter()
-        .map(|&(src, dst)| {
+        .map(|&(src_filtered, dst_filtered)| {
             // Skip self-queries
-            if src == dst {
+            if src_filtered == dst_filtered {
                 return Ok(());
             }
 
-            // BFS on original graph (unweighted shortest path)
-            let original_dist = bfs_distance(filtered_ebg, src, dst);
+            // BFS on original graph (unweighted shortest path, uses filtered IDs)
+            let original_dist = bfs_distance(filtered_ebg, src_filtered, dst_filtered);
 
-            // CCH query (up-then-down with unweighted edges)
-            let cch_dist = cch_query_distance_with_rev(topo, down_rev_ref, src, dst);
+            // Convert filtered_id to rank for CCH query
+            let src_rank = perm[src_filtered] as usize;
+            let dst_rank = perm[dst_filtered] as usize;
+
+            // CCH query (up-then-down with unweighted edges, uses rank positions)
+            let cch_dist = cch_query_distance_with_rev(topo, down_rev_ref, src_rank, dst_rank);
 
             // For unweighted CCH, we only check REACHABILITY, not distance
             // CCH shortcuts compress multiple hops into one, so hop counts differ
@@ -344,16 +355,16 @@ fn verify_query_correctness(
                 (false, false) => Ok(()), // Both unreachable - OK
                 (true, false) => {
                     Err(format!(
-                        "CCH reports unreachable but BFS found path {}->{} (dist={})",
-                        src, dst, original_dist.unwrap()
+                        "CCH reports unreachable but BFS found path {}->{} (filtered) / {}->{} (rank), dist={}",
+                        src_filtered, dst_filtered, src_rank, dst_rank, original_dist.unwrap()
                     ))
                 }
                 (false, true) => {
                     // CCH found a path but BFS didn't - this shouldn't happen
                     // unless there's a bug in BFS or CCH has spurious paths
                     Err(format!(
-                        "CCH found path {}->{} but BFS reports unreachable",
-                        src, dst
+                        "CCH found path {}->{} (filtered) / {}->{} (rank) but BFS reports unreachable",
+                        src_filtered, dst_filtered, src_rank, dst_rank
                     ))
                 }
             }

@@ -43,6 +43,8 @@ rustc-hash = "2.0"
 # Step 9: Query server
 axum = "0.7"
 tokio = { version = "1.0", features = ["full"] }
+tokio-stream = "0.1"
+tokio-util = "0.7"
 utoipa = { version = "4.2", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "7.1", features = ["axum"] }
 tower-http = { version = "0.5", features = ["cors"] }
@@ -63,6 +65,9 @@ hdrhistogram = "7.5"
 arrow = { version = "53", default-features = false, features = ["ipc"] }
 futures = "0.3"
 bytes = "1.5"
+
+[dev-dependencies]
+tempfile = "3.10"
 
 [[bin]]
 name = "butterfly-bench"
