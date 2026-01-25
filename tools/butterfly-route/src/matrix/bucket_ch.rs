@@ -843,6 +843,99 @@ impl BucketM2MEngine {
 
         (matrix, stats)
     }
+
+    /// Compute using pre-built flat UP adjacency (no INF checks in forward loop)
+    pub fn compute_flat(
+        &mut self,
+        up_adj_flat: &UpAdjFlat,
+        down_rev_flat: &DownReverseAdjFlat,
+        sources: &[u32],
+        targets: &[u32],
+    ) -> (Vec<u32>, BucketM2MStats) {
+        let n_sources = sources.len();
+        let n_targets = targets.len();
+
+        let mut matrix = vec![u32::MAX; n_sources * n_targets];
+
+        if n_sources == 0 || n_targets == 0 {
+            return (matrix, BucketM2MStats::default());
+        }
+
+        let mut stats = BucketM2MStats {
+            n_sources,
+            n_targets,
+            ..Default::default()
+        };
+
+        // Clear bucket items (reuse allocation)
+        self.bucket_items.clear();
+
+        // Reset counters for this computation
+        self.state.pushes = 0;
+        self.state.pops = 0;
+        self.state.stale_pops = 0;
+
+        // ========== PHASE 1: Forward searches from SOURCES (UP edges, pre-filtered) ==========
+        let forward_start = std::time::Instant::now();
+
+        for (source_idx, &source) in sources.iter().enumerate() {
+            if source as usize >= self.n_nodes {
+                continue;
+            }
+            forward_fill_buckets_flat(
+                up_adj_flat,
+                source_idx as u16,
+                source,
+                &mut self.state,
+                &mut self.bucket_items,
+            );
+        }
+
+        stats.forward_visited = self.bucket_items.len();
+        stats.forward_time_ms = forward_start.elapsed().as_millis() as u64;
+
+        // ========== PHASE 2: Sort buckets for binary search ==========
+        let sort_start = std::time::Instant::now();
+        let bucket_items = std::mem::take(&mut self.bucket_items);
+        let buckets = SortedBuckets::build(bucket_items);
+        stats.bucket_items = buckets.total_items();
+        stats.bucket_nodes = buckets.n_nodes_with_buckets();
+        stats.sort_time_ms = sort_start.elapsed().as_millis() as u64;
+
+        // ========== PHASE 3: Backward searches from TARGETS ==========
+        let backward_start = std::time::Instant::now();
+
+        for (target_idx, &target) in targets.iter().enumerate() {
+            if target as usize >= self.n_nodes {
+                continue;
+            }
+
+            let (visited, joins) = backward_join_opt(
+                down_rev_flat,
+                target,
+                &buckets,
+                &mut matrix,
+                n_targets,
+                target_idx,
+                &mut self.state,
+            );
+
+            stats.backward_visited += visited;
+            stats.join_operations += joins;
+        }
+
+        stats.backward_time_ms = backward_start.elapsed().as_millis() as u64;
+
+        // Restore bucket_items for reuse
+        self.bucket_items = buckets.into_items();
+
+        // Collect stats
+        stats.heap_pushes = self.state.pushes;
+        stats.heap_pops = self.state.pops;
+        stats.stale_pops = self.state.stale_pops;
+
+        (matrix, stats)
+    }
 }
 
 /// Fully optimized version using pre-built flat adjacencies for both directions
@@ -996,6 +1089,7 @@ fn forward_fill_buckets_opt(
 }
 
 /// Backward search from target using flat reverse adjacency, joining with buckets
+/// Includes early-exit pruning: stops when current_dist > min_found
 fn backward_join_opt(
     down_rev_flat: &DownReverseAdjFlat,
     target: u32,
