@@ -303,6 +303,12 @@ impl PhastEngine {
         while let Some(Reverse((d, u))) = pq.pop() {
             stats.upward_pq_pops += 1;
 
+            // Early stop: if current min distance exceeds threshold, no point continuing
+            // All remaining nodes in the heap have d >= current d, so they're all beyond threshold
+            if d > threshold {
+                break;
+            }
+
             if d > dist[u as usize] {
                 continue;
             }
@@ -477,6 +483,11 @@ impl PhastEngine {
 
         while let Some(Reverse((d, u))) = pq.pop() {
             stats.upward_pq_pops += 1;
+
+            // Early stop: if current min distance exceeds threshold, no point continuing
+            if d > threshold {
+                break;
+            }
 
             if d > dist[u as usize] {
                 continue;
