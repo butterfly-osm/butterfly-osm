@@ -29,7 +29,15 @@ pub mod sparse_contour;
 pub use sparse_contour::{SparseContourConfig, SparseContourResult, SparseContourStats, generate_sparse_contour};
 
 pub mod batched_isochrone;
-pub use batched_isochrone::{BatchedIsochroneEngine, BatchedIsochroneResult, BatchedIsochroneStats};
+pub use batched_isochrone::{
+    BatchedIsochroneEngine, BatchedIsochroneResult, BatchedIsochroneStats,
+    AdaptiveIsochroneEngine, ADAPTIVE_THRESHOLD_DS,
+};
+
+pub mod wkb_stream;
+pub use wkb_stream::{
+    encode_polygon_wkb, IsochroneRecord, IsochroneBatch, write_ndjson,
+};
 
 /// Result of a range query
 #[derive(Debug)]
