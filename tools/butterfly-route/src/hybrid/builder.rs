@@ -83,13 +83,30 @@ impl HybridGraphBuilder {
 
         // === Phase 1: Enumerate hybrid states ===
 
-        // Node-states: one per simple NBG node
+        // First, find which NBG nodes are reachable (have at least one EBG edge arriving)
+        // We only create node-states for simple NBG nodes that are REACHABLE via EBG
+        let mut nbg_is_reachable = vec![false; n_nbg_nodes];
+        for ebg_id in 0..n_ebg_nodes {
+            let head_nbg = ebg_tail_head[ebg_id].1 as usize;
+            if head_nbg < n_nbg_nodes {
+                nbg_is_reachable[head_nbg] = true;
+            }
+        }
+        let n_reachable_nbg = nbg_is_reachable.iter().filter(|&&x| x).count();
+        let n_reachable_simple = nbg_is_reachable.iter().enumerate()
+            .filter(|(i, &x)| x && !is_complex[*i])
+            .count();
+        println!("  Reachable NBG nodes: {} ({:.2}% of total)",
+            n_reachable_nbg, 100.0 * n_reachable_nbg as f64 / n_nbg_nodes as f64);
+        println!("  Reachable simple nodes: {}", n_reachable_simple);
+
+        // Node-states: one per REACHABLE simple NBG node
         // We'll number them 0..n_node_states
-        let mut node_state_to_nbg: Vec<u32> = Vec::with_capacity(n_simple);
+        let mut node_state_to_nbg: Vec<u32> = Vec::with_capacity(n_reachable_simple);
         let mut nbg_to_node_state: Vec<u32> = vec![u32::MAX; n_nbg_nodes];
 
         for nbg_node in 0..n_nbg_nodes {
-            if !is_complex[nbg_node] {
+            if nbg_is_reachable[nbg_node] && !is_complex[nbg_node] {
                 let state_id = node_state_to_nbg.len() as u32;
                 nbg_to_node_state[nbg_node] = state_id;
                 node_state_to_nbg.push(nbg_node as u32);
@@ -162,7 +179,9 @@ impl HybridGraphBuilder {
                 }
 
                 // Compute weight: edge traversal + turn cost
-                let edge_weight = weights.get(arc_idx).copied().unwrap_or(u32::MAX);
+                // weights is indexed by EBG node ID (cost to traverse that edge)
+                // turns is indexed by arc ID (turn cost for this specific transition)
+                let edge_weight = weights.get(tgt_ebg).copied().unwrap_or(u32::MAX);
                 let turn_cost = turns.get(arc_idx).copied().unwrap_or(0);
                 let total_weight = edge_weight.saturating_add(turn_cost);
 
