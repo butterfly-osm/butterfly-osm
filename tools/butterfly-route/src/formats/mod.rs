@@ -26,6 +26,7 @@ pub mod mod_weights;
 pub mod mod_turns;
 pub mod mod_mask;
 pub mod filtered_ebg;
+pub mod hybrid_state;
 
 // Step 6 formats
 pub mod order_ebg;
@@ -50,6 +51,7 @@ pub use mod_weights::ModWeights;
 pub use mod_turns::ModTurns;
 pub use mod_mask::ModMask;
 pub use filtered_ebg::{FilteredEbg, FilteredEbgFile};
+pub use hybrid_state::{HybridState, HybridStateFile};
 pub use order_ebg::{OrderEbg, OrderEbgFile};
 pub use cch_topo::{CchTopo, CchTopoFile, Shortcut};
 pub use cch_weights::{CchWeights, CchWeightsFile};

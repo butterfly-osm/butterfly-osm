@@ -1084,3 +1084,519 @@ fn compute_inputs_sha(ebg_csr_path: &Path, ebg_nodes_path: &Path, nbg_geo_path: 
     sha.copy_from_slice(&result);
     Ok(sha)
 }
+
+// ==========================================================================
+// Hybrid State Graph Ordering
+// ==========================================================================
+
+use crate::formats::hybrid_state::HybridState;
+
+/// Configuration for Step 6 with hybrid state graph
+pub struct Step6HybridConfig {
+    pub hybrid_state_path: PathBuf,
+    pub nbg_geo_path: PathBuf,
+    pub mode: Mode,
+    pub outdir: PathBuf,
+    pub leaf_threshold: usize,
+    pub balance_eps: f32,
+}
+
+/// Generate nested dissection ordering on hybrid state graph
+pub fn generate_ordering_hybrid(config: Step6HybridConfig) -> Result<Step6Result> {
+    use crate::formats::HybridStateFile;
+
+    let start_time = std::time::Instant::now();
+    let mode_name = match config.mode {
+        Mode::Car => "car",
+        Mode::Bike => "bike",
+        Mode::Foot => "foot",
+    };
+    println!("\n📐 Step 6: Generating CCH ordering for {} mode (HYBRID)...\n", mode_name);
+
+    // Load hybrid state graph
+    println!("Loading hybrid state graph ({})...", mode_name);
+    let hybrid = HybridStateFile::read(&config.hybrid_state_path)?;
+    println!("  ✓ {} hybrid states ({} node-states, {} edge-states), {} arcs",
+        hybrid.n_states, hybrid.n_node_states, hybrid.n_edge_states, hybrid.n_arcs);
+
+    // Load NBG geo (for coordinates)
+    println!("Loading NBG geo...");
+    let nbg_geo = NbgGeoFile::read(&config.nbg_geo_path)?;
+    println!("  ✓ {} edges", nbg_geo.n_edges_und);
+
+    // Extract coordinates for hybrid states
+    println!("\nExtracting hybrid state coordinates...");
+    let coords = extract_hybrid_coordinates(&hybrid, &nbg_geo)?;
+    println!("  ✓ {} coordinates", coords.len());
+
+    // Find connected components on hybrid graph
+    println!("\nFinding connected components...");
+    let components = find_hybrid_components(&hybrid)?;
+    let n_components = components.len();
+    println!("  ✓ {} components", n_components);
+    for (i, comp) in components.iter().take(5).enumerate() {
+        println!("    Component {}: {} states", i, comp.len());
+    }
+    if components.len() > 5 {
+        println!("    ... and {} more small components", components.len() - 5);
+    }
+
+    // Build ordering via nested dissection
+    println!("\nBuilding nested dissection ordering...");
+    let mut builder = NdBuilder::new(
+        hybrid.n_states as usize,
+        config.leaf_threshold,
+        config.balance_eps,
+    );
+
+    let mut max_depth = 0;
+    for (comp_idx, component) in components.iter().enumerate() {
+        if comp_idx % 100 == 0 && comp_idx > 0 {
+            println!("  Processing component {} / {}...", comp_idx, components.len());
+        }
+        let depth = builder.order_component_hybrid(&hybrid, &coords, component)?;
+        max_depth = max_depth.max(depth);
+    }
+
+    let (perm, inv_perm) = builder.finish();
+    println!("  ✓ Generated ordering (max depth: {})", max_depth);
+
+    // Compute inputs SHA
+    let inputs_sha = compute_inputs_sha_hybrid(&config.hybrid_state_path, &config.nbg_geo_path)?;
+
+    // Write output
+    std::fs::create_dir_all(&config.outdir)?;
+    let order_path = config.outdir.join(format!("order.hybrid.{}.ebg", mode_name));
+
+    println!("\nWriting output...");
+    let order = OrderEbg {
+        n_nodes: hybrid.n_states,
+        inputs_sha,
+        perm,
+        inv_perm,
+    };
+    OrderEbgFile::write(&order_path, &order)?;
+    println!("  ✓ Written {}", order_path.display());
+
+    let build_time_ms = start_time.elapsed().as_millis() as u64;
+
+    Ok(Step6Result {
+        order_path,
+        mode: config.mode,
+        n_nodes: hybrid.n_states,
+        n_components,
+        tree_depth: max_depth,
+        build_time_ms,
+    })
+}
+
+/// Extract coordinates for hybrid states
+///
+/// - Node-states: Use NBG node coordinates
+/// - Edge-states: Use head NBG node coordinates (where edge arrives)
+fn extract_hybrid_coordinates(hybrid: &HybridState, nbg_geo: &crate::formats::NbgGeo) -> Result<Vec<(f64, f64)>> {
+    let mut coords = Vec::with_capacity(hybrid.n_states as usize);
+    let has_polylines = !nbg_geo.polylines.is_empty();
+
+    for state in 0..hybrid.n_states {
+        // Get NBG node for this state
+        let nbg_node = hybrid.state_to_nbg(state);
+
+        // Find an edge incident to this NBG node to get coordinates
+        // This is a heuristic - we use the first edge we find
+        let mut found = false;
+
+        // Search for an edge that starts or ends at this NBG node
+        // Use edge geometry for coordinates
+        for (geom_idx, edge) in nbg_geo.edges.iter().enumerate() {
+            // Check if this edge involves our NBG node
+            // We use the edge's geometry as a proxy for the node's location
+            if has_polylines && geom_idx < nbg_geo.polylines.len() {
+                let poly = &nbg_geo.polylines[geom_idx];
+                if !poly.lat_fxp.is_empty() && !poly.lon_fxp.is_empty() {
+                    // Use endpoint of polyline closest to the node
+                    // For node-states we use start, for edge-states we use end
+                    let idx = if state < hybrid.n_node_states {
+                        0 // Start of polyline for node-states
+                    } else {
+                        poly.lat_fxp.len() - 1 // End for edge-states
+                    };
+                    let lat = poly.lat_fxp[idx] as f64 * 1e-7;
+                    let lon = poly.lon_fxp[idx] as f64 * 1e-7;
+                    coords.push((lon, lat));
+                    found = true;
+                    break;
+                }
+            }
+        }
+
+        if !found {
+            // Fallback: use state index as pseudo-coordinate
+            // This preserves some locality since states are numbered sequentially
+            let idx = state as f64;
+            coords.push((idx * 0.0001, idx * 0.0001));
+        }
+    }
+
+    Ok(coords)
+}
+
+/// Find connected components in hybrid graph using BFS on symmetrized graph
+fn find_hybrid_components(hybrid: &HybridState) -> Result<Vec<Vec<u32>>> {
+    let n = hybrid.n_states as usize;
+
+    // Build reverse adjacency for symmetric traversal
+    let mut reverse_adj: Vec<Vec<u32>> = vec![Vec::new(); n];
+    for u in 0..n {
+        let start_idx = hybrid.offsets[u] as usize;
+        let end_idx = hybrid.offsets[u + 1] as usize;
+        for i in start_idx..end_idx {
+            let v = hybrid.targets[i] as usize;
+            if v < n {
+                reverse_adj[v].push(u as u32);
+            }
+        }
+    }
+
+    let mut visited = vec![false; n];
+    let mut components = Vec::new();
+
+    for start in 0..n {
+        if visited[start] {
+            continue;
+        }
+
+        let mut component = Vec::new();
+        let mut queue = VecDeque::new();
+        queue.push_back(start);
+        visited[start] = true;
+
+        while let Some(u) = queue.pop_front() {
+            component.push(u as u32);
+
+            // Follow forward edges
+            let start_idx = hybrid.offsets[u] as usize;
+            let end_idx = hybrid.offsets[u + 1] as usize;
+            for i in start_idx..end_idx {
+                let v = hybrid.targets[i] as usize;
+                if v < n && !visited[v] {
+                    visited[v] = true;
+                    queue.push_back(v);
+                }
+            }
+
+            // Follow reverse edges (symmetric)
+            for &v in &reverse_adj[u] {
+                let v = v as usize;
+                if !visited[v] {
+                    visited[v] = true;
+                    queue.push_back(v);
+                }
+            }
+        }
+
+        components.push(component);
+    }
+
+    // Sort by size descending
+    components.sort_by(|a, b| {
+        b.len()
+            .cmp(&a.len())
+            .then_with(|| a.iter().min().cmp(&b.iter().min()))
+    });
+
+    Ok(components)
+}
+
+fn compute_inputs_sha_hybrid(hybrid_path: &Path, nbg_geo_path: &Path) -> Result<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(&std::fs::read(hybrid_path)?);
+    hasher.update(&std::fs::read(nbg_geo_path)?);
+
+    let result = hasher.finalize();
+    let mut sha = [0u8; 32];
+    sha.copy_from_slice(&result);
+    Ok(sha)
+}
+
+impl NdBuilder {
+    // ==========================================================================
+    // Hybrid State Graph versions of the ND methods
+    // ==========================================================================
+
+    fn order_component_hybrid(
+        &mut self,
+        hybrid: &HybridState,
+        coords: &[(f64, f64)],
+        component: &[u32],
+    ) -> Result<usize> {
+        if component.is_empty() {
+            return Ok(0);
+        }
+
+        let result = self.recursive_nd_hybrid(hybrid, coords, component, 0)?;
+
+        for &node in &result.ordering {
+            self.assign_rank(node);
+        }
+
+        Ok(result.depth)
+    }
+
+    fn recursive_nd_hybrid(
+        &self,
+        hybrid: &HybridState,
+        coords: &[(f64, f64)],
+        nodes: &[u32],
+        depth: usize,
+    ) -> Result<NdResult> {
+        let n_sub = nodes.len();
+
+        if n_sub <= self.leaf_threshold {
+            let ordering = self.minimum_degree_order_hybrid(hybrid, nodes);
+            return Ok(NdResult { ordering, depth });
+        }
+
+        let (part_a, part_b, separator) = self.inertial_partition_hybrid(hybrid, coords, nodes)?;
+
+        let balance = part_a.len() as f32 / (part_a.len() + part_b.len()).max(1) as f32;
+
+        if balance < 0.2 || balance > 0.8 {
+            let ordering = self.minimum_degree_order_hybrid(hybrid, nodes);
+            return Ok(NdResult { ordering, depth });
+        }
+
+        const PARALLEL_THRESHOLD: usize = 50_000;
+
+        let (result_a, result_b) = if part_a.len() >= PARALLEL_THRESHOLD
+            && part_b.len() >= PARALLEL_THRESHOLD
+        {
+            rayon::join(
+                || self.recursive_nd_hybrid(hybrid, coords, &part_a, depth + 1),
+                || self.recursive_nd_hybrid(hybrid, coords, &part_b, depth + 1),
+            )
+        } else {
+            let a = self.recursive_nd_hybrid(hybrid, coords, &part_a, depth + 1)?;
+            let b = self.recursive_nd_hybrid(hybrid, coords, &part_b, depth + 1)?;
+            (Ok(a), Ok(b))
+        };
+
+        let result_a = result_a?;
+        let result_b = result_b?;
+
+        let mut ordering = result_a.ordering;
+        ordering.extend(result_b.ordering);
+        ordering.extend(separator);
+
+        Ok(NdResult {
+            ordering,
+            depth: result_a.depth.max(result_b.depth),
+        })
+    }
+
+    fn inertial_partition_hybrid(
+        &self,
+        hybrid: &HybridState,
+        coords: &[(f64, f64)],
+        nodes: &[u32],
+    ) -> Result<(Vec<u32>, Vec<u32>, Vec<u32>)> {
+        if nodes.len() <= 2 {
+            return Ok((vec![], vec![], nodes.to_vec()));
+        }
+
+        let mut mean_x = 0.0;
+        let mut mean_y = 0.0;
+        for &node in nodes {
+            let (x, y) = coords[node as usize];
+            mean_x += x;
+            mean_y += y;
+        }
+        mean_x /= nodes.len() as f64;
+        mean_y /= nodes.len() as f64;
+
+        let mut cov_xx = 0.0;
+        let mut cov_xy = 0.0;
+        let mut cov_yy = 0.0;
+        for &node in nodes {
+            let (x, y) = coords[node as usize];
+            let dx = x - mean_x;
+            let dy = y - mean_y;
+            cov_xx += dx * dx;
+            cov_xy += dx * dy;
+            cov_yy += dy * dy;
+        }
+
+        let (dir_x, dir_y) = compute_principal_direction(cov_xx, cov_xy, cov_yy);
+
+        let projections: Vec<(f64, u32)> = nodes
+            .iter()
+            .map(|&node| {
+                let (x, y) = coords[node as usize];
+                let proj = (x - mean_x) * dir_x + (y - mean_y) * dir_y;
+                (proj, node)
+            })
+            .collect();
+
+        let (part_a, part_b) = histogram_partition(&projections);
+
+        let separator = self.extract_separator_hybrid(hybrid, &part_a, &part_b);
+
+        let sep_set: HashSet<u32> = separator.iter().copied().collect();
+        let part_a: Vec<u32> = part_a.into_iter().filter(|n| !sep_set.contains(n)).collect();
+        let part_b: Vec<u32> = part_b.into_iter().filter(|n| !sep_set.contains(n)).collect();
+
+        Ok((part_a, part_b, separator))
+    }
+
+    fn extract_separator_hybrid(
+        &self,
+        hybrid: &HybridState,
+        part_a: &[u32],
+        part_b: &[u32],
+    ) -> Vec<u32> {
+        let set_b: HashSet<u32> = part_b.iter().copied().collect();
+
+        let mut cross_edges: Vec<(u32, u32)> = Vec::new();
+
+        for &node in part_a {
+            let start = hybrid.offsets[node as usize] as usize;
+            let end = hybrid.offsets[node as usize + 1] as usize;
+            for i in start..end {
+                let neighbor = hybrid.targets[i];
+                if set_b.contains(&neighbor) {
+                    cross_edges.push((node, neighbor));
+                }
+            }
+        }
+
+        if cross_edges.is_empty() {
+            return vec![];
+        }
+
+        let mut node_edges: HashMap<u32, Vec<usize>> = HashMap::new();
+        for (idx, &(u, v)) in cross_edges.iter().enumerate() {
+            node_edges.entry(u).or_default().push(idx);
+            node_edges.entry(v).or_default().push(idx);
+        }
+
+        let mut ring_sorted: Vec<(u32, usize)> = node_edges
+            .iter()
+            .map(|(&node, edges)| (node, edges.len()))
+            .collect();
+        ring_sorted.sort_by_key(|(node, deg)| (std::cmp::Reverse(*deg), *node));
+
+        let mut separator = Vec::new();
+        let mut covered = vec![false; cross_edges.len()];
+        let mut num_covered = 0;
+
+        for (node, _) in ring_sorted {
+            if num_covered == cross_edges.len() {
+                break;
+            }
+
+            if let Some(edges) = node_edges.get(&node) {
+                let mut covers_new = false;
+                for &edge_idx in edges {
+                    if !covered[edge_idx] {
+                        covers_new = true;
+                        break;
+                    }
+                }
+
+                if covers_new {
+                    separator.push(node);
+                    for &edge_idx in edges {
+                        if !covered[edge_idx] {
+                            covered[edge_idx] = true;
+                            num_covered += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        separator.sort_unstable();
+        separator
+    }
+
+    fn minimum_degree_order_hybrid(&self, hybrid: &HybridState, nodes: &[u32]) -> Vec<u32> {
+        if nodes.is_empty() {
+            return vec![];
+        }
+
+        let n = nodes.len();
+        let mut local_id: HashMap<u32, usize> = HashMap::with_capacity(n);
+        let mut global_id: Vec<u32> = Vec::with_capacity(n);
+
+        for (i, &node) in nodes.iter().enumerate() {
+            local_id.insert(node, i);
+            global_id.push(node);
+        }
+
+        let mut adj: Vec<HashSet<usize>> = vec![HashSet::new(); n];
+
+        for &node in nodes {
+            let u = local_id[&node];
+            let start = hybrid.offsets[node as usize] as usize;
+            let end = hybrid.offsets[node as usize + 1] as usize;
+
+            for i in start..end {
+                let neighbor = hybrid.targets[i];
+                if let Some(&v) = local_id.get(&neighbor) {
+                    if u != v {
+                        adj[u].insert(v);
+                        adj[v].insert(u);
+                    }
+                }
+            }
+        }
+
+        let mut degrees: Vec<usize> = adj.iter().map(|s| s.len()).collect();
+        let mut eliminated = vec![false; n];
+        let mut ordered = Vec::with_capacity(n);
+
+        for _ in 0..n {
+            let mut min_deg = usize::MAX;
+            let mut min_node = 0;
+
+            for u in 0..n {
+                if !eliminated[u] && (degrees[u] < min_deg || (degrees[u] == min_deg && global_id[u] < global_id[min_node])) {
+                    min_deg = degrees[u];
+                    min_node = u;
+                }
+            }
+
+            eliminated[min_node] = true;
+            ordered.push(global_id[min_node]);
+
+            let neighbors: Vec<usize> = adj[min_node]
+                .iter()
+                .filter(|&&v| !eliminated[v])
+                .copied()
+                .collect();
+
+            for i in 0..neighbors.len() {
+                for j in (i + 1)..neighbors.len() {
+                    let u = neighbors[i];
+                    let v = neighbors[j];
+
+                    if !adj[u].contains(&v) {
+                        adj[u].insert(v);
+                        adj[v].insert(u);
+                        degrees[u] += 1;
+                        degrees[v] += 1;
+                    }
+                }
+            }
+
+            for &v in &neighbors {
+                adj[v].remove(&min_node);
+                degrees[v] = degrees[v].saturating_sub(1);
+            }
+        }
+
+        ordered
+    }
+}

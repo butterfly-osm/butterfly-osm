@@ -2,7 +2,8 @@
 //!
 //! Defines the state graph with mixed node-states and edge-states.
 
-use std::collections::HashMap;
+use crate::formats::hybrid_state::HybridState as FormatHybridState;
+use crate::profile_abi::Mode;
 
 /// A state in the hybrid graph
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -189,5 +190,37 @@ impl HybridStateGraph {
         println!("  EBG arcs:         {:>12}", self.stats.n_ebg_arcs);
         println!("  State reduction:  {:>12.2}x", self.stats.state_reduction_ratio);
         println!("  Arc reduction:    {:>12.2}x", self.stats.arc_reduction_ratio);
+    }
+
+    /// Convert to format struct for serialization
+    ///
+    /// # Arguments
+    /// * `mode` - The routing mode (car/bike/foot)
+    /// * `ebg_head_nbg` - For each EBG node, the head NBG node (for coordinate lookup)
+    /// * `inputs_sha` - SHA-256 of input files (truncated to 32 bytes)
+    pub fn to_format(
+        &self,
+        mode: Mode,
+        ebg_head_nbg: Vec<u32>,
+        inputs_sha: [u8; 32],
+    ) -> FormatHybridState {
+        FormatHybridState {
+            mode,
+            n_states: self.n_states,
+            n_node_states: self.n_node_states,
+            n_edge_states: self.n_edge_states,
+            n_arcs: self.stats.n_hybrid_arcs as u64,
+            n_nbg_nodes: self.stats.n_nbg_nodes as u32,
+            n_ebg_nodes: self.stats.n_ebg_nodes as u32,
+            inputs_sha,
+            offsets: self.offsets.clone(),
+            targets: self.targets.clone(),
+            weights: self.weights.clone(),
+            node_state_to_nbg: self.node_state_to_nbg.clone(),
+            edge_state_to_ebg: self.edge_state_to_ebg.clone(),
+            nbg_to_node_state: self.nbg_to_node_state.clone(),
+            ebg_to_edge_state: self.ebg_to_edge_state.clone(),
+            ebg_head_nbg,
+        }
     }
 }
