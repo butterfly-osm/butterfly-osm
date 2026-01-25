@@ -783,6 +783,43 @@ The problem IS:
 
 ---
 
+### Milestone 7.5: Parallel Bucket M2M ✅ IMPLEMENTED
+
+**Implementation (2026-01-25):**
+
+Added `table_bucket_parallel()` using rayon:
+- Parallel forward phase: thread-local buckets merged at end
+- Parallel sort: `par_sort_unstable_by_key`
+- Parallel backward phase: atomic min updates to shared matrix
+
+**Benchmark Results (Belgium, car mode, 20 threads):**
+
+| Size | Sequential | Parallel | Speedup |
+|------|------------|----------|---------|
+| 10×10 | 20.8ms | 21.8ms | 0.95x (slower) |
+| 25×25 | 51.8ms | 55.1ms | 0.94x (slower) |
+| 50×50 | 107ms | 113ms | 0.95x (slower) |
+| 100×100 | 221ms | **174ms** | **1.27x faster** |
+
+**Analysis:**
+- Small matrices hurt by thread-local SearchState allocation (19MB per thread)
+- 100×100 shows 27% speedup from parallelism
+- Overhead dominates for N×M < 2500
+
+**TODO for better small-matrix performance:**
+1. Thread pool with pre-allocated SearchState per worker
+2. Only use parallel for N×M > threshold (e.g., 2500)
+3. Fallback to sequential for small matrices
+
+**Current Status:**
+- Sequential 10×10: 20.8ms (vs OSRM 6ms) = 3.5x gap
+- Sequential 100×100: 221ms (vs OSRM 35ms) = 6.3x gap
+- With parallel 100×100: 174ms = 5.0x gap
+
+**Remaining gap is architectural (edge-based CCH 2.7x more edges than node-based).**
+
+---
+
 ### Current Ordering Implementation (Step 6)
 
 - `--graph-partition` flag added for BFS-based ordering (proven ineffective)
