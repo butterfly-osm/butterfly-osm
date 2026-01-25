@@ -1099,6 +1099,9 @@ pub struct Step6HybridConfig {
     pub outdir: PathBuf,
     pub leaf_threshold: usize,
     pub balance_eps: f32,
+    /// Use graph-based partitioning instead of geometry-based
+    /// Set to true when coordinate-based ND fails (e.g., equivalence-class hybrid)
+    pub use_graph_partition: bool,
 }
 
 /// Generate nested dissection ordering on hybrid state graph
@@ -1142,7 +1145,12 @@ pub fn generate_ordering_hybrid(config: Step6HybridConfig) -> Result<Step6Result
     }
 
     // Build ordering via nested dissection
-    println!("\nBuilding nested dissection ordering...");
+    let ordering_method = if config.use_graph_partition {
+        "GRAPH-BASED (BFS bisection)"
+    } else {
+        "GEOMETRY-BASED (inertial partitioning)"
+    };
+    println!("\nBuilding nested dissection ordering ({})...", ordering_method);
     let mut builder = NdBuilder::new(
         hybrid.n_states as usize,
         config.leaf_threshold,
@@ -1154,7 +1162,11 @@ pub fn generate_ordering_hybrid(config: Step6HybridConfig) -> Result<Step6Result
         if comp_idx % 100 == 0 && comp_idx > 0 {
             println!("  Processing component {} / {}...", comp_idx, components.len());
         }
-        let depth = builder.order_component_hybrid(&hybrid, &coords, component)?;
+        let depth = if config.use_graph_partition {
+            builder.order_component_hybrid_graph(&hybrid, component)?
+        } else {
+            builder.order_component_hybrid(&hybrid, &coords, component)?
+        };
         max_depth = max_depth.max(depth);
     }
 
@@ -1534,6 +1546,244 @@ impl NdBuilder {
 
         separator.sort_unstable();
         separator
+    }
+
+    /// Graph-based partition using BFS bisection (no coordinates needed)
+    /// This is for graphs where coordinate-based ND fails (e.g., equivalence-class hybrid)
+    fn graph_partition_hybrid(
+        &self,
+        hybrid: &HybridState,
+        nodes: &[u32],
+    ) -> Result<(Vec<u32>, Vec<u32>, Vec<u32>)> {
+        if nodes.len() <= 2 {
+            return Ok((vec![], vec![], nodes.to_vec()));
+        }
+
+        let n = nodes.len();
+
+        // Build local adjacency (undirected)
+        let mut local_id: HashMap<u32, usize> = HashMap::with_capacity(n);
+        for (i, &node) in nodes.iter().enumerate() {
+            local_id.insert(node, i);
+        }
+
+        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for &node in nodes {
+            let u = local_id[&node];
+            let start = hybrid.offsets[node as usize] as usize;
+            let end = hybrid.offsets[node as usize + 1] as usize;
+
+            for i in start..end {
+                let neighbor = hybrid.targets[i];
+                if let Some(&v) = local_id.get(&neighbor) {
+                    if u != v && !adj[u].contains(&v) {
+                        adj[u].push(v);
+                        adj[v].push(u);
+                    }
+                }
+            }
+        }
+
+        // Step 1: Find peripheral node using BFS (pseudo-diameter heuristic)
+        let seed1 = self.find_peripheral_node(&adj, 0);
+        let seed2 = self.find_peripheral_node(&adj, seed1);
+
+        // Step 2: Bidirectional BFS from two seeds to partition nodes
+        let mut dist1 = vec![u32::MAX; n];
+        let mut dist2 = vec![u32::MAX; n];
+
+        // BFS from seed1
+        let mut queue: VecDeque<usize> = VecDeque::new();
+        queue.push_back(seed1);
+        dist1[seed1] = 0;
+        while let Some(u) = queue.pop_front() {
+            for &v in &adj[u] {
+                if dist1[v] == u32::MAX {
+                    dist1[v] = dist1[u] + 1;
+                    queue.push_back(v);
+                }
+            }
+        }
+
+        // BFS from seed2
+        queue.push_back(seed2);
+        dist2[seed2] = 0;
+        while let Some(u) = queue.pop_front() {
+            for &v in &adj[u] {
+                if dist2[v] == u32::MAX {
+                    dist2[v] = dist2[u] + 1;
+                    queue.push_back(v);
+                }
+            }
+        }
+
+        // Step 3: Assign nodes to partitions based on which seed is closer
+        let mut part_a_local: Vec<usize> = Vec::with_capacity(n / 2);
+        let mut part_b_local: Vec<usize> = Vec::with_capacity(n / 2);
+
+        for u in 0..n {
+            // Handle disconnected nodes
+            if dist1[u] == u32::MAX && dist2[u] == u32::MAX {
+                // Assign to smaller partition for balance
+                if part_a_local.len() <= part_b_local.len() {
+                    part_a_local.push(u);
+                } else {
+                    part_b_local.push(u);
+                }
+            } else if dist1[u] == u32::MAX {
+                part_b_local.push(u);
+            } else if dist2[u] == u32::MAX {
+                part_a_local.push(u);
+            } else if dist1[u] < dist2[u] {
+                part_a_local.push(u);
+            } else if dist2[u] < dist1[u] {
+                part_b_local.push(u);
+            } else {
+                // Tie: assign to smaller partition for balance
+                if part_a_local.len() <= part_b_local.len() {
+                    part_a_local.push(u);
+                } else {
+                    part_b_local.push(u);
+                }
+            }
+        }
+
+        // Step 4: Extract separator (boundary nodes with edges to both partitions)
+        let mut in_a = vec![false; n];
+        let mut in_b = vec![false; n];
+        for &u in &part_a_local {
+            in_a[u] = true;
+        }
+        for &u in &part_b_local {
+            in_b[u] = true;
+        }
+
+        let mut separator_local: Vec<usize> = Vec::new();
+        let mut final_a: Vec<usize> = Vec::new();
+        let mut final_b: Vec<usize> = Vec::new();
+
+        for &u in &part_a_local {
+            let has_neighbor_in_b = adj[u].iter().any(|&v| in_b[v]);
+            if has_neighbor_in_b {
+                separator_local.push(u);
+            } else {
+                final_a.push(u);
+            }
+        }
+
+        for &u in &part_b_local {
+            let has_neighbor_in_a = adj[u].iter().any(|&v| in_a[v]);
+            if has_neighbor_in_a {
+                separator_local.push(u);
+            } else {
+                final_b.push(u);
+            }
+        }
+
+        // Convert back to global IDs
+        let part_a: Vec<u32> = final_a.iter().map(|&u| nodes[u]).collect();
+        let part_b: Vec<u32> = final_b.iter().map(|&u| nodes[u]).collect();
+        let separator: Vec<u32> = separator_local.iter().map(|&u| nodes[u]).collect();
+
+        Ok((part_a, part_b, separator))
+    }
+
+    /// Find a peripheral node using BFS (farthest from start)
+    fn find_peripheral_node(&self, adj: &[Vec<usize>], start: usize) -> usize {
+        let n = adj.len();
+        let mut dist = vec![u32::MAX; n];
+        let mut queue: VecDeque<usize> = VecDeque::new();
+
+        queue.push_back(start);
+        dist[start] = 0;
+        let mut farthest = start;
+        let mut max_dist = 0;
+
+        while let Some(u) = queue.pop_front() {
+            if dist[u] > max_dist {
+                max_dist = dist[u];
+                farthest = u;
+            }
+            for &v in &adj[u] {
+                if dist[v] == u32::MAX {
+                    dist[v] = dist[u] + 1;
+                    queue.push_back(v);
+                }
+            }
+        }
+
+        farthest
+    }
+
+    /// Recursive ND using graph-based partitioning (no coordinates)
+    fn recursive_nd_hybrid_graph(
+        &self,
+        hybrid: &HybridState,
+        nodes: &[u32],
+        depth: usize,
+    ) -> Result<NdResult> {
+        let n_sub = nodes.len();
+
+        if n_sub <= self.leaf_threshold {
+            let ordering = self.minimum_degree_order_hybrid(hybrid, nodes);
+            return Ok(NdResult { ordering, depth });
+        }
+
+        let (part_a, part_b, separator) = self.graph_partition_hybrid(hybrid, nodes)?;
+
+        let balance = part_a.len() as f32 / (part_a.len() + part_b.len()).max(1) as f32;
+
+        // If partition is too unbalanced, fall back to minimum degree
+        if balance < 0.1 || balance > 0.9 || part_a.is_empty() || part_b.is_empty() {
+            let ordering = self.minimum_degree_order_hybrid(hybrid, nodes);
+            return Ok(NdResult { ordering, depth });
+        }
+
+        const PARALLEL_THRESHOLD: usize = 50_000;
+
+        let (result_a, result_b) = if part_a.len() >= PARALLEL_THRESHOLD
+            && part_b.len() >= PARALLEL_THRESHOLD
+        {
+            rayon::join(
+                || self.recursive_nd_hybrid_graph(hybrid, &part_a, depth + 1),
+                || self.recursive_nd_hybrid_graph(hybrid, &part_b, depth + 1),
+            )
+        } else {
+            let a = self.recursive_nd_hybrid_graph(hybrid, &part_a, depth + 1)?;
+            let b = self.recursive_nd_hybrid_graph(hybrid, &part_b, depth + 1)?;
+            (Ok(a), Ok(b))
+        };
+
+        let result_a = result_a?;
+        let result_b = result_b?;
+
+        let mut ordering = result_a.ordering;
+        ordering.extend(result_b.ordering);
+        ordering.extend(separator);
+
+        Ok(NdResult {
+            ordering,
+            depth: result_a.depth.max(result_b.depth),
+        })
+    }
+
+    /// Order component using graph-based ND (no coordinates)
+    fn order_component_hybrid_graph(
+        &mut self,
+        hybrid: &HybridState,
+        component: &[u32],
+    ) -> Result<usize> {
+        if component.is_empty() {
+            return Ok(0);
+        }
+
+        let result = self.recursive_nd_hybrid_graph(hybrid, component, 0)?;
+
+        for &node in &result.ordering {
+            self.assign_rank(node);
+        }
+
+        Ok(result.depth)
     }
 
     fn minimum_degree_order_hybrid(&self, hybrid: &HybridState, nodes: &[u32]) -> Vec<u32> {
