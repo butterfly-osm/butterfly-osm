@@ -585,6 +585,41 @@ pub enum Commands {
         #[arg(long)]
         turns: PathBuf,
     },
+
+    /// Step 5.5: Build hybrid state graph for specified mode
+    Step5Hybrid {
+        /// Path to ebg.nodes from Step 4
+        #[arg(long)]
+        ebg_nodes: PathBuf,
+
+        /// Path to ebg.csr from Step 4
+        #[arg(long)]
+        ebg_csr: PathBuf,
+
+        /// Path to nbg.node_map from Step 3
+        #[arg(long)]
+        nbg_node_map: PathBuf,
+
+        /// Path to turn_rules.<mode>.bin from Step 2
+        #[arg(long)]
+        turn_rules: PathBuf,
+
+        /// Path to w.<mode>.u32 from Step 5
+        #[arg(long)]
+        weights: PathBuf,
+
+        /// Path to t.<mode>.u32 from Step 5
+        #[arg(long)]
+        turns: PathBuf,
+
+        /// Mode (car, bike, foot)
+        #[arg(long)]
+        mode: String,
+
+        /// Output directory for hybrid.<mode>.state
+        #[arg(short, long)]
+        outdir: PathBuf,
+    },
 }
 
 impl Cli {
@@ -1419,6 +1454,124 @@ impl Cli {
                 println!("  Arc reduction: {:.2}x → proportional speedup in relaxations", hybrid_graph.stats.arc_reduction_ratio);
                 println!();
                 println!("Next step: Build CCH on hybrid state graph for actual benchmark.");
+
+                Ok(())
+            }
+            Commands::Step5Hybrid {
+                ebg_nodes,
+                ebg_csr,
+                nbg_node_map,
+                turn_rules,
+                weights,
+                turns,
+                mode,
+                outdir,
+            } => {
+                use crate::formats::{EbgNodesFile, EbgCsrFile, NbgNodeMapFile, turn_rules as tr, mod_weights, mod_turns, HybridStateFile};
+                use crate::hybrid::HybridGraphBuilder;
+                use sha2::{Sha256, Digest as Sha2Digest};
+
+                // Parse mode
+                let mode_enum = match mode.to_lowercase().as_str() {
+                    "car" => Mode::Car,
+                    "bike" => Mode::Bike,
+                    "foot" => Mode::Foot,
+                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
+                };
+                let mode_name = mode.to_lowercase();
+
+                println!("\n=== STEP 5.5: HYBRID STATE GRAPH ({}) ===\n", mode_name);
+
+                // Create output directory
+                std::fs::create_dir_all(&outdir)?;
+
+                // Load EBG nodes
+                println!("[1/7] Loading EBG nodes...");
+                let ebg_nodes_data = EbgNodesFile::read(&ebg_nodes)?;
+                println!("  ✓ {} EBG nodes", ebg_nodes_data.nodes.len());
+
+                // Build ebg_head_nbg mapping
+                let ebg_head_nbg: Vec<u32> = ebg_nodes_data.nodes.iter()
+                    .map(|n| n.head_nbg)
+                    .collect();
+
+                // Load EBG CSR
+                println!("[2/7] Loading EBG CSR...");
+                let ebg_csr_data = EbgCsrFile::read(&ebg_csr)?;
+                println!("  ✓ {} arcs", ebg_csr_data.heads.len());
+
+                // Load NBG node map (OSM ID → compact ID)
+                println!("[3/7] Loading NBG node map...");
+                let osm_to_nbg = NbgNodeMapFile::read(&nbg_node_map)?;
+                println!("  ✓ {} OSM→NBG mappings", osm_to_nbg.len());
+
+                // Compute actual n_nbg_nodes from EBG node data (max NBG ID + 1)
+                let n_nbg_nodes = ebg_nodes_data.nodes.iter()
+                    .flat_map(|n| [n.tail_nbg, n.head_nbg])
+                    .max()
+                    .map(|m| m as usize + 1)
+                    .unwrap_or(0);
+                println!("  ✓ {} NBG nodes (from EBG)", n_nbg_nodes);
+
+                // Load turn rules
+                println!("[4/7] Loading turn rules ({} mode)...", mode_name);
+                let turn_rules_data = tr::read_all(&turn_rules)?;
+                println!("  ✓ {} turn rules", turn_rules_data.len());
+
+                // Load weights
+                println!("[5/7] Loading weights...");
+                let weights_data = mod_weights::read_all(&weights)?;
+                println!("  ✓ {} weights", weights_data.weights.len());
+
+                // Load turn costs
+                let turns_data = mod_turns::read_all(&turns)?;
+                println!("  ✓ {} turn costs", turns_data.penalties.len());
+
+                // Build hybrid state graph
+                println!("\n[6/7] Building hybrid state graph...");
+                let mut builder = HybridGraphBuilder::new();
+                builder.classify_nodes(&turn_rules_data, &osm_to_nbg);
+
+                let hybrid_graph = builder.build(
+                    &ebg_nodes_data,
+                    &ebg_csr_data,
+                    &weights_data.weights,
+                    &turns_data.penalties,
+                    n_nbg_nodes,
+                );
+
+                println!();
+                hybrid_graph.print_stats();
+
+                // Compute inputs SHA for reproducibility
+                let mut hasher = Sha256::new();
+                hasher.update(ebg_nodes.to_string_lossy().as_bytes());
+                hasher.update(ebg_csr.to_string_lossy().as_bytes());
+                hasher.update(nbg_node_map.to_string_lossy().as_bytes());
+                hasher.update(turn_rules.to_string_lossy().as_bytes());
+                hasher.update(weights.to_string_lossy().as_bytes());
+                hasher.update(turns.to_string_lossy().as_bytes());
+                let hash = hasher.finalize();
+                let mut inputs_sha = [0u8; 32];
+                inputs_sha.copy_from_slice(&hash);
+
+                // Convert to format and serialize
+                println!("\n[7/7] Serializing hybrid state graph...");
+                let format_data = hybrid_graph.to_format(mode_enum, ebg_head_nbg, inputs_sha);
+
+                let output_path = outdir.join(format!("hybrid.{}.state", mode_name));
+                HybridStateFile::write(&output_path, &format_data)?;
+
+                let file_size = std::fs::metadata(&output_path)?.len();
+                println!("  ✓ Wrote {} ({:.1} MB)", output_path.display(), file_size as f64 / 1_000_000.0);
+
+                println!("\n=== STEP 5.5 COMPLETE ===");
+                println!();
+                println!("Output: {}", output_path.display());
+                println!("State reduction: {:.2}x", hybrid_graph.stats.state_reduction_ratio);
+                println!("Arc reduction: {:.2}x", hybrid_graph.stats.arc_reduction_ratio);
+                println!();
+                println!("Next: Run Step 6 ordering on hybrid.{}.state", mode_name);
 
                 Ok(())
             }
