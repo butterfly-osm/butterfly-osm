@@ -1,10 +1,12 @@
-//! Nested Dissection ordering for NBG
+//! Parallel Nested Dissection ordering for NBG
 //!
 //! Computes a high-quality elimination order using inertial partitioning
-//! with coordinate-based bisection.
+//! with coordinate-based bisection. Uses rayon for parallel recursion.
 
 use anyhow::Result;
-use std::collections::{HashSet, VecDeque};
+use rayon::prelude::*;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering as AtomicOrdering};
 
 use crate::formats::{NbgCsr, NbgGeo};
 
@@ -20,19 +22,18 @@ pub struct NbgNdOrdering {
     pub max_depth: usize,
 }
 
-/// Compute nested dissection ordering on NBG
+/// Compute nested dissection ordering on NBG (parallelized)
 pub fn compute_nbg_ordering(
     nbg_csr: &NbgCsr,
     nbg_geo: &NbgGeo,
     leaf_threshold: usize,
-    balance_eps: f32,
+    _balance_eps: f32,
 ) -> Result<NbgNdOrdering> {
     let n_nodes = nbg_csr.n_nodes as usize;
 
-    println!("Computing NBG ordering ({} nodes)...", n_nodes);
+    println!("Computing NBG ordering ({} nodes, parallel)...", n_nodes);
 
     // Extract node coordinates from NBG geo
-    // Each NBG node can be found as the u_node or v_node of edges
     println!("  Extracting node coordinates...");
     let coords = extract_nbg_coords(nbg_csr, nbg_geo)?;
     println!("    {} coordinates extracted", coords.len());
@@ -49,29 +50,225 @@ pub fn compute_nbg_ordering(
         println!("      ... and {} more components", components.len() - 5);
     }
 
-    // Build ordering via nested dissection
-    println!("  Building nested dissection ordering...");
-    let mut builder = NdBuilder::new(n_nodes, leaf_threshold, balance_eps);
+    // Build adjacency list for faster neighbor lookup
+    println!("  Building adjacency index...");
+    let adj = build_adjacency(nbg_csr);
 
+    // Process components in parallel and collect orderings
+    println!("  Running parallel nested dissection...");
+    let progress = AtomicUsize::new(0);
+    let total_nodes = n_nodes;
+
+    let component_orderings: Vec<(Vec<u32>, usize)> = components
+        .par_iter()
+        .map(|component| {
+            let result = parallel_nd(&adj, &coords, component, leaf_threshold, 0);
+            let done = progress.fetch_add(component.len(), AtomicOrdering::Relaxed);
+            if (done + component.len()) * 100 / total_nodes > done * 100 / total_nodes {
+                let pct = (done + component.len()) * 100 / total_nodes;
+                if pct % 10 == 0 {
+                    eprintln!("    {}% complete", pct);
+                }
+            }
+            result
+        })
+        .collect();
+
+    // Combine orderings from all components
+    println!("  Combining orderings...");
+    let mut perm = vec![u32::MAX; n_nodes];
+    let mut inv_perm = Vec::with_capacity(n_nodes);
     let mut max_depth = 0;
-    for (comp_idx, component) in components.iter().enumerate() {
-        if comp_idx % 100 == 0 && comp_idx > 0 {
-            println!("    Processing component {} / {}...", comp_idx, components.len());
+
+    for (ordering, depth) in &component_orderings {
+        max_depth = max_depth.max(*depth);
+        for &node in ordering {
+            let rank = inv_perm.len() as u32;
+            perm[node as usize] = rank;
+            inv_perm.push(node);
         }
-        let depth = builder.order_component(nbg_csr, &coords, component)?;
-        max_depth = max_depth.max(depth);
     }
 
-    let (perm, inv_perm) = builder.finish();
     println!("    Generated ordering (max depth: {})", max_depth);
 
     Ok(NbgNdOrdering {
         perm,
         inv_perm,
-        n_nodes: nbg_csr.n_nodes,
+        n_nodes: n_nodes as u32,
         n_components,
         max_depth,
     })
+}
+
+/// Build adjacency list for fast neighbor lookup
+fn build_adjacency(nbg_csr: &NbgCsr) -> Vec<Vec<u32>> {
+    let n_nodes = nbg_csr.n_nodes as usize;
+    let mut adj = vec![Vec::new(); n_nodes];
+
+    for u in 0..n_nodes {
+        let start = nbg_csr.offsets[u] as usize;
+        let end = nbg_csr.offsets[u + 1] as usize;
+        adj[u] = nbg_csr.heads[start..end].to_vec();
+    }
+
+    adj
+}
+
+/// Parallel nested dissection on a component
+fn parallel_nd(
+    adj: &[Vec<u32>],
+    coords: &[(f64, f64)],
+    nodes: &[u32],
+    leaf_threshold: usize,
+    depth: usize,
+) -> (Vec<u32>, usize) {
+    // Base case: small component - use simple ordering
+    if nodes.len() <= leaf_threshold {
+        return (nodes.to_vec(), depth);
+    }
+
+    // Inertial bisection
+    let (left, right, separator) = inertial_bisect_fast(adj, coords, nodes);
+
+    // If bisection failed (all in one side), just return the nodes
+    if left.is_empty() || right.is_empty() {
+        return (nodes.to_vec(), depth);
+    }
+
+    // Parallel recursion on left and right
+    let ((left_order, left_depth), (right_order, right_depth)) = rayon::join(
+        || parallel_nd(adj, coords, &left, leaf_threshold, depth + 1),
+        || parallel_nd(adj, coords, &right, leaf_threshold, depth + 1),
+    );
+
+    // Combine: left, right, then separator (separator gets highest ranks)
+    let mut ordering = Vec::with_capacity(nodes.len());
+    ordering.extend(left_order);
+    ordering.extend(right_order);
+    ordering.extend(separator);
+
+    let max_depth = left_depth.max(right_depth);
+    (ordering, max_depth)
+}
+
+/// Fast inertial bisection using principal axis
+fn inertial_bisect_fast(
+    adj: &[Vec<u32>],
+    coords: &[(f64, f64)],
+    nodes: &[u32],
+) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+    if nodes.len() <= 1 {
+        return (vec![], vec![], nodes.to_vec());
+    }
+
+    // Compute centroid
+    let mut sum_x = 0.0f64;
+    let mut sum_y = 0.0f64;
+    for &node in nodes {
+        let (x, y) = coords[node as usize];
+        sum_x += x;
+        sum_y += y;
+    }
+    let n = nodes.len() as f64;
+    let cx = sum_x / n;
+    let cy = sum_y / n;
+
+    // Compute principal axis via covariance
+    let mut cxx = 0.0f64;
+    let mut cyy = 0.0f64;
+    let mut cxy = 0.0f64;
+    for &node in nodes {
+        let (x, y) = coords[node as usize];
+        let dx = x - cx;
+        let dy = y - cy;
+        cxx += dx * dx;
+        cyy += dy * dy;
+        cxy += dx * dy;
+    }
+
+    // Principal axis direction
+    let (ax, ay) = if cxy.abs() > 1e-10 {
+        let trace = cxx + cyy;
+        let det = cxx * cyy - cxy * cxy;
+        let discrim = ((trace * trace / 4.0) - det).max(0.0).sqrt();
+        let ratio = (cxx - (trace / 2.0 - discrim)) / cxy;
+        let len = (1.0 + ratio * ratio).sqrt();
+        (1.0 / len, ratio / len)
+    } else if cxx >= cyy {
+        (1.0, 0.0)
+    } else {
+        (0.0, 1.0)
+    };
+
+    // Project nodes and sort by projection
+    let mut projections: Vec<(u32, f64)> = nodes
+        .iter()
+        .map(|&node| {
+            let (x, y) = coords[node as usize];
+            let proj = (x - cx) * ax + (y - cy) * ay;
+            (node, proj)
+        })
+        .collect();
+
+    projections.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+    // Find median cut point
+    let cut_idx = nodes.len() / 2;
+    let cut_value = projections[cut_idx].1;
+
+    // Build node set for fast lookup
+    let node_set: std::collections::HashSet<u32> = nodes.iter().copied().collect();
+
+    // Partition into left/right/separator
+    // A node is in separator if it has neighbors on both sides
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    let mut separator = Vec::new();
+
+    for &(node, proj) in &projections {
+        let mut has_left = false;
+        let mut has_right = false;
+
+        for &neighbor in &adj[node as usize] {
+            if !node_set.contains(&neighbor) {
+                continue;
+            }
+            // Find neighbor's projection (binary search since sorted)
+            if let Ok(idx) = projections.binary_search_by(|(n, _)| n.cmp(&neighbor)) {
+                let n_proj = projections[idx].1;
+                if n_proj < cut_value {
+                    has_left = true;
+                } else {
+                    has_right = true;
+                }
+            }
+        }
+
+        if has_left && has_right {
+            separator.push(node);
+        } else if proj < cut_value {
+            left.push(node);
+        } else {
+            right.push(node);
+        }
+    }
+
+    // If separator is too large (>20% of nodes), just use positional split
+    if separator.len() > nodes.len() / 5 {
+        left.clear();
+        right.clear();
+        separator.clear();
+
+        for (i, &(node, _)) in projections.iter().enumerate() {
+            if i < cut_idx {
+                left.push(node);
+            } else {
+                right.push(node);
+            }
+        }
+    }
+
+    (left, right, separator)
 }
 
 /// Extract coordinates for all NBG nodes
@@ -157,235 +354,4 @@ fn find_components(nbg_csr: &NbgCsr) -> Result<Vec<Vec<u32>>> {
     components.sort_by(|a, b| b.len().cmp(&a.len()));
 
     Ok(components)
-}
-
-/// Nested dissection builder
-struct NdBuilder {
-    n_nodes: usize,
-    perm: Vec<u32>,        // node → rank
-    inv_perm: Vec<u32>,    // rank → node
-    next_rank: u32,
-    leaf_threshold: usize,
-    balance_eps: f32,
-}
-
-impl NdBuilder {
-    fn new(n_nodes: usize, leaf_threshold: usize, balance_eps: f32) -> Self {
-        Self {
-            n_nodes,
-            perm: vec![u32::MAX; n_nodes],
-            inv_perm: Vec::with_capacity(n_nodes),
-            next_rank: 0,
-            leaf_threshold,
-            balance_eps,
-        }
-    }
-
-    fn assign_rank(&mut self, node: u32) {
-        if self.perm[node as usize] == u32::MAX {
-            self.perm[node as usize] = self.next_rank;
-            self.inv_perm.push(node);
-            self.next_rank += 1;
-        }
-    }
-
-    fn order_component(
-        &mut self,
-        nbg_csr: &NbgCsr,
-        coords: &[(f64, f64)],
-        component: &[u32],
-    ) -> Result<usize> {
-        if component.is_empty() {
-            return Ok(0);
-        }
-
-        let result = self.recursive_nd(nbg_csr, coords, component, 0)?;
-
-        // Assign ranks in order
-        for &node in &result.ordering {
-            self.assign_rank(node);
-        }
-
-        Ok(result.depth)
-    }
-
-    fn recursive_nd(
-        &self,
-        nbg_csr: &NbgCsr,
-        coords: &[(f64, f64)],
-        nodes: &[u32],
-        depth: usize,
-    ) -> Result<NdResult> {
-        // Base case: small component
-        if nodes.len() <= self.leaf_threshold {
-            return Ok(NdResult {
-                ordering: nodes.to_vec(),
-                depth,
-            });
-        }
-
-        // Inertial bisection
-        let (left, right, separator) = self.inertial_bisect(nbg_csr, coords, nodes)?;
-
-        // Recursively order left and right
-        let left_result = if !left.is_empty() {
-            self.recursive_nd(nbg_csr, coords, &left, depth + 1)?
-        } else {
-            NdResult { ordering: vec![], depth }
-        };
-
-        let right_result = if !right.is_empty() {
-            self.recursive_nd(nbg_csr, coords, &right, depth + 1)?
-        } else {
-            NdResult { ordering: vec![], depth }
-        };
-
-        // Combine: left first, then right, then separator (highest rank)
-        let mut ordering = Vec::with_capacity(nodes.len());
-        ordering.extend(left_result.ordering);
-        ordering.extend(right_result.ordering);
-        ordering.extend(separator);
-
-        let max_depth = left_result.depth.max(right_result.depth);
-
-        Ok(NdResult {
-            ordering,
-            depth: max_depth,
-        })
-    }
-
-    fn inertial_bisect(
-        &self,
-        nbg_csr: &NbgCsr,
-        coords: &[(f64, f64)],
-        nodes: &[u32],
-    ) -> Result<(Vec<u32>, Vec<u32>, Vec<u32>)> {
-        if nodes.len() <= 1 {
-            return Ok((vec![], vec![], nodes.to_vec()));
-        }
-
-        // Find principal axis via coordinate centroid and variance
-        let mut sum_x = 0.0f64;
-        let mut sum_y = 0.0f64;
-        for &node in nodes {
-            let (x, y) = coords[node as usize];
-            sum_x += x;
-            sum_y += y;
-        }
-        let n = nodes.len() as f64;
-        let cx = sum_x / n;
-        let cy = sum_y / n;
-
-        // Compute covariance matrix
-        let mut cxx = 0.0f64;
-        let mut cyy = 0.0f64;
-        let mut cxy = 0.0f64;
-        for &node in nodes {
-            let (x, y) = coords[node as usize];
-            let dx = x - cx;
-            let dy = y - cy;
-            cxx += dx * dx;
-            cyy += dy * dy;
-            cxy += dx * dy;
-        }
-
-        // Principal axis direction (eigenvector of larger eigenvalue)
-        let trace = cxx + cyy;
-        let det = cxx * cyy - cxy * cxy;
-        let discrim = ((trace * trace / 4.0) - det).max(0.0).sqrt();
-        let _lambda1 = trace / 2.0 + discrim;
-
-        // Direction of principal axis
-        let (ax, ay) = if cxy.abs() > 1e-10 {
-            let ratio = (cxx - (trace / 2.0 - discrim)) / cxy;
-            let len = (1.0 + ratio * ratio).sqrt();
-            (1.0 / len, ratio / len)
-        } else if cxx >= cyy {
-            (1.0, 0.0)
-        } else {
-            (0.0, 1.0)
-        };
-
-        // Project nodes onto principal axis
-        let mut projections: Vec<(u32, f64)> = nodes.iter()
-            .map(|&node| {
-                let (x, y) = coords[node as usize];
-                let proj = (x - cx) * ax + (y - cy) * ay;
-                (node, proj)
-            })
-            .collect();
-
-        projections.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-
-        // Find balanced cut point
-        let target = (nodes.len() as f32 * (0.5 - self.balance_eps)) as usize;
-        let cut_idx = target.max(1).min(nodes.len() - 1);
-
-        let cut_value = projections[cut_idx].1;
-
-        // Build left/right/separator sets
-        let node_set: HashSet<u32> = nodes.iter().copied().collect();
-
-        let mut left = Vec::new();
-        let mut right = Vec::new();
-        let mut separator = Vec::new();
-
-        for &(node, proj) in &projections {
-            // Check if this node has neighbors on both sides (separator candidate)
-            let start = nbg_csr.offsets[node as usize] as usize;
-            let end = nbg_csr.offsets[node as usize + 1] as usize;
-
-            let mut has_left_neighbor = false;
-            let mut has_right_neighbor = false;
-
-            for i in start..end {
-                let neighbor = nbg_csr.heads[i];
-                if !node_set.contains(&neighbor) {
-                    continue;
-                }
-                // Find neighbor's projection
-                if let Some(&(_, n_proj)) = projections.iter().find(|(n, _)| *n == neighbor) {
-                    if n_proj < cut_value {
-                        has_left_neighbor = true;
-                    } else {
-                        has_right_neighbor = true;
-                    }
-                }
-            }
-
-            if has_left_neighbor && has_right_neighbor {
-                separator.push(node);
-            } else if proj < cut_value {
-                left.push(node);
-            } else {
-                right.push(node);
-            }
-        }
-
-        // If separator is too large, just use positional split
-        if separator.len() > nodes.len() / 3 {
-            left.clear();
-            right.clear();
-            separator.clear();
-
-            for (i, &(node, _)) in projections.iter().enumerate() {
-                if i < cut_idx {
-                    left.push(node);
-                } else {
-                    right.push(node);
-                }
-            }
-        }
-
-        Ok((left, right, separator))
-    }
-
-    fn finish(self) -> (Vec<u32>, Vec<u32>) {
-        (self.perm, self.inv_perm)
-    }
-}
-
-struct NdResult {
-    ordering: Vec<u32>,
-    depth: usize,
 }
