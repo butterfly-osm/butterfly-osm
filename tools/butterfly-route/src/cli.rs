@@ -605,7 +605,41 @@ pub enum Commands {
         mode: String,
     },
 
-    /// Step 5.5: Build hybrid state graph for specified mode
+    /// Step 5.5a: Build equivalence-class hybrid state graph (RECOMMENDED)
+    ///
+    /// Uses behavior signatures to group incoming edges by identical patterns.
+    /// Only collapses edges with IDENTICAL behavior, preserving the degree invariant.
+    Step5EquivHybrid {
+        /// Path to ebg.nodes from Step 4
+        #[arg(long)]
+        ebg_nodes: PathBuf,
+
+        /// Path to ebg.csr from Step 4
+        #[arg(long)]
+        ebg_csr: PathBuf,
+
+        /// Path to w.<mode>.u32 from Step 5
+        #[arg(long)]
+        weights: PathBuf,
+
+        /// Path to t.<mode>.u32 from Step 5
+        #[arg(long)]
+        turns: PathBuf,
+
+        /// Number of NBG nodes (from step3.lock.json or nbg.geo header)
+        #[arg(long)]
+        n_nbg_nodes: usize,
+
+        /// Mode (car, bike, foot)
+        #[arg(long)]
+        mode: String,
+
+        /// Output directory for hybrid.<mode>.state
+        #[arg(short, long)]
+        outdir: PathBuf,
+    },
+
+    /// Step 5.5b: Build naive hybrid state graph (for comparison only)
     Step5Hybrid {
         /// Path to ebg.nodes from Step 4
         #[arg(long)]
@@ -1581,6 +1615,109 @@ impl Cli {
                 );
 
                 analysis.print();
+
+                Ok(())
+            }
+            Commands::Step5EquivHybrid {
+                ebg_nodes,
+                ebg_csr,
+                weights,
+                turns,
+                n_nbg_nodes,
+                mode,
+                outdir,
+            } => {
+                use crate::formats::{EbgNodesFile, EbgCsrFile, mod_weights, mod_turns, HybridStateFile};
+                use crate::hybrid::EquivHybridBuilder;
+                use sha2::{Sha256, Digest as Sha2Digest};
+
+                // Parse mode
+                let mode_enum = match mode.to_lowercase().as_str() {
+                    "car" => Mode::Car,
+                    "bike" => Mode::Bike,
+                    "foot" => Mode::Foot,
+                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
+                };
+                let mode_name = mode.to_lowercase();
+
+                println!("\n=== STEP 5.5a: EQUIVALENCE-CLASS HYBRID STATE GRAPH ({}) ===\n", mode_name);
+
+                // Create output directory
+                std::fs::create_dir_all(&outdir)?;
+
+                // Load EBG nodes
+                println!("[1/4] Loading EBG nodes...");
+                let ebg_nodes_data = EbgNodesFile::read(&ebg_nodes)?;
+                println!("  {} EBG nodes", ebg_nodes_data.nodes.len());
+
+                // Build ebg_head_nbg mapping
+                let ebg_head_nbg: Vec<u32> = ebg_nodes_data.nodes.iter()
+                    .map(|n| n.head_nbg)
+                    .collect();
+
+                // Load EBG CSR
+                println!("[2/4] Loading EBG CSR...");
+                let ebg_csr_data = EbgCsrFile::read(&ebg_csr)?;
+                println!("  {} arcs", ebg_csr_data.heads.len());
+
+                // Load weights
+                println!("[3/4] Loading weights...");
+                let weights_data = mod_weights::read_all(&weights)?;
+                println!("  {} edge weights", weights_data.weights.len());
+
+                // Load turn costs
+                println!("[4/4] Loading turn costs...");
+                let turns_data = mod_turns::read_all(&turns)?;
+                println!("  {} turn costs", turns_data.penalties.len());
+
+                // Build the equivalence-class hybrid state graph
+                println!("\n[Building] Equivalence-class hybrid state graph...\n");
+                let hybrid_graph = EquivHybridBuilder::build(
+                    &ebg_nodes_data,
+                    &ebg_csr_data,
+                    &weights_data.weights,
+                    &turns_data.penalties,
+                    n_nbg_nodes,
+                );
+
+                // Print stats
+                println!("\n");
+                hybrid_graph.print_stats();
+
+                // Compute input hash
+                let mut hasher = Sha256::new();
+                hasher.update(&ebg_nodes.to_string_lossy().as_bytes());
+                hasher.update(&ebg_csr.to_string_lossy().as_bytes());
+                hasher.update(&weights.to_string_lossy().as_bytes());
+                hasher.update(&turns.to_string_lossy().as_bytes());
+                let hash = hasher.finalize();
+                let mut inputs_sha = [0u8; 32];
+                inputs_sha.copy_from_slice(&hash[..32]);
+
+                // Convert to format and write
+                let format_data = hybrid_graph.to_format(mode_enum, ebg_head_nbg, inputs_sha);
+                let output_path = outdir.join(format!("hybrid.{}.state", mode_name));
+                println!("\n[Writing] {}...", output_path.display());
+                HybridStateFile::write(&output_path, &format_data)?;
+                println!("  Written: {} bytes", std::fs::metadata(&output_path)?.len());
+
+                // Verify degree invariant
+                let ebg_avg_degree = ebg_csr_data.heads.len() as f64 / ebg_nodes_data.nodes.len() as f64;
+                let hybrid_avg_degree = hybrid_graph.stats.n_hybrid_arcs as f64 / hybrid_graph.stats.n_hybrid_states as f64;
+                let degree_ratio = hybrid_avg_degree / ebg_avg_degree;
+
+                println!("\n=== DEGREE INVARIANT CHECK ===");
+                println!("  EBG avg degree:    {:.2}", ebg_avg_degree);
+                println!("  Hybrid avg degree: {:.2}", hybrid_avg_degree);
+                println!("  Degree ratio:      {:.2}x", degree_ratio);
+
+                if degree_ratio <= 1.05 {
+                    println!("  PASSED: Degree invariant preserved (ratio <= 1.05)");
+                    println!("\nNext step: Run step6-hybrid to build CCH ordering on this graph.");
+                } else {
+                    println!("  WARNING: Degree ratio > 1.05, this should not happen!");
+                    println!("           Naive hybrid had 1.36x, equivalence-class should have ~1.0x");
+                }
 
                 Ok(())
             }
