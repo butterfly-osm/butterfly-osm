@@ -349,21 +349,32 @@ Same state count + exact turn semantics = faster AND more correct.
 
 ---
 
-## CRITICAL PATH: Turn Penalty Cost Model (2026-01-25)
+## CRITICAL PATH: Turn Penalty Cost Model (2026-01-31) ✅ IMPLEMENTED
 
-### The Problem
+### Summary
 
-Butterfly routes are ~27% faster than OSRM despite correct turn **restriction** enforcement.
-**Root cause**: Missing turn **penalty** cost model.
+Implemented OSRM-compatible turn penalties using the exact sigmoid formula from car.lua.
 
-Turn restrictions (banned turns) are now correctly enforced via arc-level mode_mask filtering.
-But standard turn delays are missing:
-- Left turns at signalized intersections
-- Right turns at busy junctions
-- U-turns everywhere
-- Signal delays at traffic lights
-- Stop sign delays
-- Complex intersection navigation time
+**Results:**
+| Metric | Before | After |
+|--------|--------|-------|
+| Brussels-Antwerp | 29 min | 33.7 min |
+| Gap vs OSRM | 27% faster | **16% faster** |
+| Route distance | 37.6 km | 32.9 km |
+
+The router now properly avoids left turns (which cross traffic in right-hand drive countries).
+
+**OSRM car.lua formula:**
+```
+penalty = turn_penalty / (1 + exp(-((13/turn_bias) * -angle/180 - 6.5*turn_bias)))
+```
+
+With parameters:
+- `turn_penalty = 7.5s` (max penalty)
+- `turn_bias = 1.075` (right turns cheaper)
+- `u_turn_penalty = 20s` (additional)
+
+### Previous Issues (Fixed)
 
 ### Arc Filtering Fix (Completed)
 

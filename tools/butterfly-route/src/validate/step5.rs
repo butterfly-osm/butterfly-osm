@@ -292,28 +292,20 @@ fn verify_lock_c_turns(
             );
         } else {
             // Mode allowed - check penalty mapping
-            if turn_entry.kind == TurnKind::Penalty {
-                let expected_penalty = match mode {
-                    Mode::Car => turn_entry.penalty_ds_car,
-                    Mode::Bike => turn_entry.penalty_ds_bike,
-                    Mode::Foot => turn_entry.penalty_ds_foot,
-                };
-                anyhow::ensure!(
-                    turns.penalties[arc_idx] == expected_penalty,
-                    "Arc {} penalty mismatch: expected {} got {}",
-                    arc_idx,
-                    expected_penalty,
-                    turns.penalties[arc_idx]
-                );
-            } else {
-                // Ban or Only - penalty should be 0
-                anyhow::ensure!(
-                    turns.penalties[arc_idx] == 0,
-                    "Arc {} is Ban/Only but penalty={}",
-                    arc_idx,
-                    turns.penalties[arc_idx]
-                );
-            }
+            // All turns now have geometry-based penalties stored in the turn table
+            // regardless of kind (None, Ban, Only, or Penalty)
+            let expected_penalty = match mode {
+                Mode::Car => turn_entry.penalty_ds_car,
+                Mode::Bike => turn_entry.penalty_ds_bike,
+                Mode::Foot => turn_entry.penalty_ds_foot,
+            };
+            anyhow::ensure!(
+                turns.penalties[arc_idx] == expected_penalty,
+                "Arc {} penalty mismatch: expected {} got {}",
+                arc_idx,
+                expected_penalty,
+                turns.penalties[arc_idx]
+            );
         }
 
         sampled += 1;
