@@ -22,7 +22,7 @@ use crate::matrix::arrow_stream::{MatrixTile, ArrowMatrixWriter, ARROW_STREAM_CO
 use crate::matrix::batched_phast::K_LANES;
 
 use super::geometry::{build_geometry, build_isochrone_geometry, Point, RouteGeometry};
-use super::query::{query_one_to_many, CchQuery};
+use super::query::CchQuery;
 use super::state::ServerState;
 use super::unpack::unpack_path;
 
@@ -182,9 +182,13 @@ async fn route(
             .into_response();
     }
 
-    // Run query (in filtered space)
+    // Convert to rank space (with rank-aligned CCH)
+    let src_rank = mode_data.order.perm[src_filtered as usize];
+    let dst_rank = mode_data.order.perm[dst_filtered as usize];
+
+    // Run query (in rank space)
     let query = CchQuery::new(&state, mode);
-    let result = match query.query(src_filtered, dst_filtered) {
+    let result = match query.query(src_rank, dst_rank) {
         Some(r) => r,
         None => {
             return (
@@ -197,20 +201,23 @@ async fn route(
         }
     };
 
-    // Unpack path (in filtered space)
-    let filtered_path = unpack_path(
+    // Unpack path (in rank space)
+    let rank_path = unpack_path(
         &mode_data.cch_topo,
         &result.forward_parent,
         &result.backward_parent,
-        src_filtered,
-        dst_filtered,
+        src_rank,
+        dst_rank,
         result.meeting_node,
     );
 
-    // Convert path from filtered to original EBG node IDs for geometry
-    let ebg_path: Vec<u32> = filtered_path
+    // Convert path from rank to filtered to original EBG node IDs for geometry
+    let ebg_path: Vec<u32> = rank_path
         .iter()
-        .map(|&filtered_id| mode_data.filtered_ebg.filtered_to_original[filtered_id as usize])
+        .map(|&rank| {
+            let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
+            mode_data.filtered_ebg.filtered_to_original[filtered_id as usize]
+        })
         .collect();
 
     // Build geometry (uses original EBG node IDs)
@@ -314,7 +321,7 @@ async fn matrix(
         }
     };
 
-    // Convert to filtered space
+    // Convert to filtered space, then to rank space
     let src_filtered = mode_data.filtered_ebg.original_to_filtered[src_orig as usize];
     if src_filtered == u32::MAX {
         return (
@@ -325,25 +332,50 @@ async fn matrix(
         )
             .into_response();
     }
+    let src_rank = mode_data.order.perm[src_filtered as usize];
 
-    // Snap destinations and convert to filtered space
-    let targets_filtered: Vec<u32> = dst_lons
-        .iter()
-        .zip(dst_lats.iter())
-        .filter_map(|(&lon, &lat)| {
-            state.spatial_index.snap(lon, lat, &mode_data.mask, 10).and_then(|orig_id| {
-                let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
-                if filtered != u32::MAX { Some(filtered) } else { None }
-            })
-        })
-        .collect();
+    // Snap destinations and convert to rank space
+    // Keep track of which destinations failed to snap
+    let mut targets_rank: Vec<u32> = Vec::with_capacity(dst_lons.len());
+    let mut target_valid: Vec<bool> = Vec::with_capacity(dst_lons.len());
 
-    // Run queries (in filtered space)
-    let distances = query_one_to_many(&state, mode, src_filtered, &targets_filtered);
+    for (&lon, &lat) in dst_lons.iter().zip(dst_lats.iter()) {
+        if let Some(orig_id) = state.spatial_index.snap(lon, lat, &mode_data.mask, 10) {
+            let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
+            if filtered != u32::MAX {
+                let rank = mode_data.order.perm[filtered as usize];
+                targets_rank.push(rank);
+                target_valid.push(true);
+            } else {
+                targets_rank.push(0); // placeholder
+                target_valid.push(false);
+            }
+        } else {
+            targets_rank.push(0); // placeholder
+            target_valid.push(false);
+        }
+    }
 
-    let durations: Vec<Option<f64>> = distances
+    // Run PHAST-based one-to-many query (using batched matrix with single source)
+    let (matrix_distances, _) = compute_batched_matrix(
+        &mode_data.cch_topo,
+        &mode_data.cch_weights,
+        &mode_data.order,
+        &[src_rank],
+        &targets_rank,
+    );
+
+    // Convert results to output format, respecting validity
+    let durations: Vec<Option<f64>> = matrix_distances
         .into_iter()
-        .map(|d| d.map(|ds| ds as f64 / 10.0))
+        .zip(target_valid.iter())
+        .map(|(d, &valid)| {
+            if !valid || d == u32::MAX {
+                None
+            } else {
+                Some(d as f64 / 10.0) // deciseconds to seconds
+            }
+        })
         .collect();
 
     Json(MatrixResponse { durations }).into_response()
@@ -412,7 +444,7 @@ async fn isochrone(
         }
     };
 
-    // Convert to filtered space
+    // Convert to filtered space, then to rank space
     let center_filtered = mode_data.filtered_ebg.original_to_filtered[center_orig as usize];
     if center_filtered == u32::MAX {
         return (
@@ -423,17 +455,29 @@ async fn isochrone(
         )
             .into_response();
     }
+    let center_rank = mode_data.order.perm[center_filtered as usize];
 
-    // Run bounded Dijkstra (in filtered space)
-    let settled_filtered = bounded_dijkstra(&state, mode, center_filtered, time_ds);
+    // Run PHAST bounded query (in rank space)
+    let phast_result = run_phast_bounded(
+        &mode_data.cch_topo,
+        &mode_data.cch_weights,
+        center_rank,
+        time_ds,
+    );
 
-    // Convert settled nodes from filtered to original EBG node IDs for geometry
-    let settled: Vec<(u32, u32)> = settled_filtered
-        .iter()
-        .map(|&(filtered_id, dist)| {
-            (mode_data.filtered_ebg.filtered_to_original[filtered_id as usize], dist)
-        })
-        .collect();
+    // Convert settled nodes from rank to original EBG node IDs for geometry
+    // phast_result.dist is indexed by rank
+    let mut settled: Vec<(u32, u32)> = Vec::new();
+    let n_nodes = mode_data.cch_topo.n_nodes as usize;
+    for rank in 0..n_nodes {
+        let dist = phast_result[rank];
+        if dist <= time_ds {
+            // rank -> filtered -> original
+            let filtered_id = mode_data.cch_topo.rank_to_filtered[rank];
+            let original_id = mode_data.filtered_ebg.filtered_to_original[filtered_id as usize];
+            settled.push((original_id, dist));
+        }
+    }
 
     // Build isochrone geometry (uses original EBG node IDs)
     let polygon = build_isochrone_geometry(&settled, time_ds, &state.ebg_nodes, &state.nbg_geo);
@@ -519,6 +563,95 @@ fn bounded_dijkstra(
     settled
 }
 
+/// Run PHAST bounded query (in rank space)
+///
+/// PHAST is a two-phase algorithm:
+/// 1. Upward phase: PQ-based Dijkstra using only UP edges from origin
+/// 2. Downward phase: Linear scan in reverse rank order, relaxing DOWN edges
+///
+/// With rank-aligned CCH, node_id == rank, so no inv_perm lookup is needed
+/// in the downward phase, giving excellent cache efficiency.
+fn run_phast_bounded(
+    cch_topo: &crate::formats::CchTopo,
+    cch_weights: &super::state::CchWeights,
+    origin_rank: u32,
+    threshold: u32,
+) -> Vec<u32> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
+    let n_nodes = cch_topo.n_nodes as usize;
+    let mut dist = vec![u32::MAX; n_nodes];
+    dist[origin_rank as usize] = 0;
+
+    // Phase 1: Upward search (PQ-based, UP edges only)
+    let mut pq: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
+    pq.push(Reverse((0, origin_rank)));
+
+    while let Some(Reverse((d, u))) = pq.pop() {
+        // Early stop: if current min distance exceeds threshold, stop
+        if d > threshold {
+            break;
+        }
+
+        if d > dist[u as usize] {
+            continue; // Stale entry
+        }
+
+        // Relax UP edges only
+        let up_start = cch_topo.up_offsets[u as usize] as usize;
+        let up_end = cch_topo.up_offsets[u as usize + 1] as usize;
+
+        for i in up_start..up_end {
+            let v = cch_topo.up_targets[i];
+            let w = cch_weights.up[i];
+
+            if w == u32::MAX {
+                continue;
+            }
+
+            let new_dist = d.saturating_add(w);
+            if new_dist < dist[v as usize] {
+                dist[v as usize] = new_dist;
+                pq.push(Reverse((new_dist, v)));
+            }
+        }
+    }
+
+    // Phase 2: Downward scan (linear, DOWN edges only)
+    // Process nodes in DECREASING rank order (highest rank first)
+    // With rank-aligned CCH: u = rank (no inv_perm lookup needed)
+    for rank in (0..n_nodes).rev() {
+        let u = rank;
+        let d_u = dist[u];
+
+        // Skip unreachable nodes or nodes beyond threshold
+        if d_u == u32::MAX || d_u > threshold {
+            continue;
+        }
+
+        // Relax DOWN edges
+        let down_start = cch_topo.down_offsets[u] as usize;
+        let down_end = cch_topo.down_offsets[u + 1] as usize;
+
+        for i in down_start..down_end {
+            let v = cch_topo.down_targets[i] as usize;
+            let w = cch_weights.down[i];
+
+            if w == u32::MAX {
+                continue;
+            }
+
+            let new_dist = d_u.saturating_add(w);
+            if new_dist < dist[v] {
+                dist[v] = new_dist;
+            }
+        }
+    }
+
+    dist
+}
+
 // ============ Bulk Matrix Endpoint ============
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -596,13 +729,34 @@ async fn matrix_bulk(
 
     let start = std::time::Instant::now();
 
-    // Use inline K-lane batched PHAST computation
+    // Convert filtered IDs to rank space (with rank-aligned CCH)
+    let n_nodes = mode_data.cch_topo.n_nodes as usize;
+    let sources_rank: Vec<u32> = req.sources.iter()
+        .map(|&filtered_id| {
+            if (filtered_id as usize) < n_nodes {
+                mode_data.order.perm[filtered_id as usize]
+            } else {
+                filtered_id // Out of bounds - pass through, will be handled by compute
+            }
+        })
+        .collect();
+    let targets_rank: Vec<u32> = req.targets.iter()
+        .map(|&filtered_id| {
+            if (filtered_id as usize) < n_nodes {
+                mode_data.order.perm[filtered_id as usize]
+            } else {
+                filtered_id
+            }
+        })
+        .collect();
+
+    // Use inline K-lane batched PHAST computation (in rank space)
     let (matrix, _n_batches) = compute_batched_matrix(
         &mode_data.cch_topo,
         &mode_data.cch_weights,
         &mode_data.order,
-        &req.sources,
-        &req.targets,
+        &sources_rank,
+        &targets_rank,
     );
 
     let compute_time_ms = start.elapsed().as_millis() as u64;
@@ -717,9 +871,29 @@ async fn matrix_stream(
     let dst_tile_size = req.dst_tile_size.unwrap_or(256) as usize;
 
     // Clone data needed for async task
-    let sources = req.sources.clone();
-    let targets = req.targets.clone();
     let mode_data = state.get_mode(mode);
+
+    // Convert filtered IDs to rank space (with rank-aligned CCH)
+    let n_nodes = mode_data.cch_topo.n_nodes as usize;
+    let sources: Vec<u32> = req.sources.iter()
+        .map(|&filtered_id| {
+            if (filtered_id as usize) < n_nodes {
+                mode_data.order.perm[filtered_id as usize]
+            } else {
+                filtered_id
+            }
+        })
+        .collect();
+    let targets: Vec<u32> = req.targets.iter()
+        .map(|&filtered_id| {
+            if (filtered_id as usize) < n_nodes {
+                mode_data.order.perm[filtered_id as usize]
+            } else {
+                filtered_id
+            }
+        })
+        .collect();
+
     let cch_topo = mode_data.cch_topo.clone();
     let cch_weights_up = mode_data.cch_weights.up.clone();
     let cch_weights_down = mode_data.cch_weights.down.clone();
@@ -765,31 +939,28 @@ async fn matrix_stream(
 }
 
 /// Compute matrix tiles and stream them over channel
+///
+/// Sources and targets must be RANK values (with rank-aligned CCH, node_id == rank).
 fn compute_and_stream_tiles(
     cch_topo: &crate::formats::CchTopo,
     weights_up: &[u32],
     weights_down: &[u32],
-    perm: &[u32],
-    sources: &[u32],
-    targets: &[u32],
+    _perm: &[u32],  // Unused with rank-aligned CCH
+    sources: &[u32],  // Sources in rank space
+    targets: &[u32],  // Targets in rank space
     src_tile_size: usize,
     dst_tile_size: usize,
     tx: mpsc::Sender<Result<bytes::Bytes, std::io::Error>>,
     cancel: CancellationToken,
 ) {
-    use std::cmp::Reverse;
-    use std::collections::BinaryHeap;
     use arrow::ipc::writer::StreamWriter;
 
     let n_nodes = cch_topo.n_nodes as usize;
     let n_src = sources.len();
     let n_tgt = targets.len();
 
-    // Build inverse permutation
-    let mut inv_perm = vec![0u32; n_nodes];
-    for (node, &rank) in perm.iter().enumerate() {
-        inv_perm[rank as usize] = node as u32;
-    }
+    // With rank-aligned CCH, no inv_perm needed - we create empty one for API compatibility
+    let inv_perm = vec![0u32; 0];
 
     // Send Arrow schema first
     let schema = Arc::new(crate::matrix::arrow_stream::matrix_tile_schema());
@@ -905,12 +1076,16 @@ fn compute_and_stream_tiles(
 }
 
 /// Compute K-lane batched distances for a batch of sources
+/// Compute batch distances using K-lane PHAST
+///
+/// Sources must be RANK values (with rank-aligned CCH, node_id == rank).
+/// Returns distance arrays indexed by rank.
 fn compute_batch_distances(
     cch_topo: &crate::formats::CchTopo,
     weights_up: &[u32],
     weights_down: &[u32],
-    inv_perm: &[u32],
-    sources: &[u32],
+    _inv_perm: &[u32],  // Unused with rank-aligned CCH
+    sources: &[u32],  // Sources in rank space
 ) -> Vec<Vec<u32>> {
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
@@ -923,15 +1098,15 @@ fn compute_batch_distances(
     for chunk in sources.chunks(K_LANES) {
         let k = chunk.len();
 
-        // Initialize K distance arrays
+        // Initialize K distance arrays (indexed by rank)
         let mut dist: Vec<Vec<u32>> = (0..k)
             .map(|_| vec![u32::MAX; n_nodes])
             .collect();
 
-        // Set origin distances
-        for (lane, &src) in chunk.iter().enumerate() {
-            if (src as usize) < n_nodes {
-                dist[lane][src as usize] = 0;
+        // Set origin distances (sources are rank values)
+        for (lane, &src_rank) in chunk.iter().enumerate() {
+            if (src_rank as usize) < n_nodes {
+                dist[lane][src_rank as usize] = 0;
             }
         }
 
@@ -954,7 +1129,7 @@ fn compute_batch_distances(
                 let up_end = cch_topo.up_offsets[u as usize + 1] as usize;
 
                 for i in up_start..up_end {
-                    let v = cch_topo.up_targets[i];
+                    let v = cch_topo.up_targets[i];  // v is a rank
                     let w = weights_up[i];
 
                     if w == u32::MAX {
@@ -971,12 +1146,12 @@ fn compute_batch_distances(
         }
 
         // Phase 2: Single K-lane downward scan
+        // With rank-aligned CCH: node_id == rank, so no inv_perm lookup needed
         for rank in (0..n_nodes).rev() {
-            let u = inv_perm[rank];
-            let u_idx = u as usize;
+            let u = rank;  // With rank-aligned CCH: u = rank
 
-            let down_start = cch_topo.down_offsets[u_idx] as usize;
-            let down_end = cch_topo.down_offsets[u_idx + 1] as usize;
+            let down_start = cch_topo.down_offsets[u] as usize;
+            let down_end = cch_topo.down_offsets[u + 1] as usize;
 
             if down_start == down_end {
                 continue;
@@ -985,7 +1160,7 @@ fn compute_batch_distances(
             // Check if ANY lane has finite distance
             let mut any_reachable = false;
             for lane in 0..k {
-                if dist[lane][u_idx] != u32::MAX {
+                if dist[lane][u] != u32::MAX {
                     any_reachable = true;
                     break;
                 }
@@ -996,21 +1171,19 @@ fn compute_batch_distances(
 
             // Relax DOWN edges for ALL K lanes
             for i in down_start..down_end {
-                let v = cch_topo.down_targets[i];
+                let v = cch_topo.down_targets[i] as usize;  // v is a rank
                 let w = weights_down[i];
 
                 if w == u32::MAX {
                     continue;
                 }
 
-                let v_idx = v as usize;
-
                 for lane in 0..k {
-                    let d_u = dist[lane][u_idx];
+                    let d_u = dist[lane][u];
                     if d_u != u32::MAX {
                         let new_dist = d_u.saturating_add(w);
-                        if new_dist < dist[lane][v_idx] {
-                            dist[lane][v_idx] = new_dist;
+                        if new_dist < dist[lane][v] {
+                            dist[lane][v] = new_dist;
                         }
                     }
                 }
@@ -1025,12 +1198,15 @@ fn compute_batch_distances(
 }
 
 /// Compute batched matrix using K-lane PHAST (without owning data)
+///
+/// Sources and targets must be RANK values (with rank-aligned CCH, node_id == rank).
+/// Use order.perm[filtered_id] to convert from filtered space to rank space.
 fn compute_batched_matrix(
     cch_topo: &crate::formats::CchTopo,
     cch_weights: &super::state::CchWeights,
-    order: &crate::formats::OrderEbg,
-    sources: &[u32],
-    targets: &[u32],
+    _order: &crate::formats::OrderEbg,  // Unused with rank-aligned CCH
+    sources: &[u32],  // Sources in rank space
+    targets: &[u32],  // Targets in rank space
 ) -> (Vec<u32>, usize) {
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
@@ -1040,12 +1216,6 @@ fn compute_batched_matrix(
     let n_tgt = targets.len();
     let mut matrix = vec![u32::MAX; n_src * n_tgt];
 
-    // Build inverse permutation
-    let mut inv_perm = vec![0u32; n_nodes];
-    for (node, &rank) in order.perm.iter().enumerate() {
-        inv_perm[rank as usize] = node as u32;
-    }
-
     let mut n_batches = 0;
 
     // Process sources in batches of K
@@ -1053,15 +1223,15 @@ fn compute_batched_matrix(
         n_batches += 1;
         let k = chunk.len();
 
-        // Initialize K distance arrays
+        // Initialize K distance arrays (indexed by rank)
         let mut dist: Vec<Vec<u32>> = (0..k)
             .map(|_| vec![u32::MAX; n_nodes])
             .collect();
 
-        // Set origin distances
-        for (lane, &src) in chunk.iter().enumerate() {
-            if (src as usize) < n_nodes {
-                dist[lane][src as usize] = 0;
+        // Set origin distances (sources are rank values)
+        for (lane, &src_rank) in chunk.iter().enumerate() {
+            if (src_rank as usize) < n_nodes {
+                dist[lane][src_rank as usize] = 0;
             }
         }
 
@@ -1080,12 +1250,12 @@ fn compute_batched_matrix(
                     continue;
                 }
 
-                // Relax UP edges
+                // Relax UP edges (cch_topo is indexed by rank)
                 let up_start = cch_topo.up_offsets[u as usize] as usize;
                 let up_end = cch_topo.up_offsets[u as usize + 1] as usize;
 
                 for i in up_start..up_end {
-                    let v = cch_topo.up_targets[i];
+                    let v = cch_topo.up_targets[i];  // v is a rank
                     let w = cch_weights.up[i];
 
                     if w == u32::MAX {
@@ -1102,12 +1272,12 @@ fn compute_batched_matrix(
         }
 
         // Phase 2: Single K-lane downward scan
+        // With rank-aligned CCH: node_id == rank, so no inv_perm lookup needed
         for rank in (0..n_nodes).rev() {
-            let u = inv_perm[rank];
-            let u_idx = u as usize;
+            let u = rank;  // With rank-aligned CCH: u = rank
 
-            let down_start = cch_topo.down_offsets[u_idx] as usize;
-            let down_end = cch_topo.down_offsets[u_idx + 1] as usize;
+            let down_start = cch_topo.down_offsets[u] as usize;
+            let down_end = cch_topo.down_offsets[u + 1] as usize;
 
             if down_start == down_end {
                 continue;
@@ -1116,7 +1286,7 @@ fn compute_batched_matrix(
             // Check if ANY lane has finite distance
             let mut any_reachable = false;
             for lane in 0..k {
-                if dist[lane][u_idx] != u32::MAX {
+                if dist[lane][u] != u32::MAX {
                     any_reachable = true;
                     break;
                 }
@@ -1127,38 +1297,36 @@ fn compute_batched_matrix(
 
             // Relax DOWN edges for ALL K lanes
             for i in down_start..down_end {
-                let v = cch_topo.down_targets[i];
+                let v = cch_topo.down_targets[i] as usize;  // v is a rank
                 let w = cch_weights.down[i];
 
                 if w == u32::MAX {
                     continue;
                 }
 
-                let v_idx = v as usize;
-
                 // Update all K lanes
                 for lane in 0..k {
-                    let d_u = dist[lane][u_idx];
+                    let d_u = dist[lane][u];
                     if d_u != u32::MAX {
                         let new_dist = d_u.saturating_add(w);
-                        if new_dist < dist[lane][v_idx] {
-                            dist[lane][v_idx] = new_dist;
+                        if new_dist < dist[lane][v] {
+                            dist[lane][v] = new_dist;
                         }
                     }
                 }
             }
         }
 
-        // Copy distances to flat matrix
+        // Copy distances to flat matrix (targets are rank values)
         let batch_start = (n_batches - 1) * K_LANES;
         for (lane, d) in dist.iter().enumerate() {
             let src_idx = batch_start + lane;
             if src_idx >= n_src {
                 break;
             }
-            for (tgt_idx, &tgt) in targets.iter().enumerate() {
-                if (tgt as usize) < n_nodes {
-                    matrix[src_idx * n_tgt + tgt_idx] = d[tgt as usize];
+            for (tgt_idx, &tgt_rank) in targets.iter().enumerate() {
+                if (tgt_rank as usize) < n_nodes {
+                    matrix[src_idx * n_tgt + tgt_idx] = d[tgt_rank as usize];
                 }
             }
         }

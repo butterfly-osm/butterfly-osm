@@ -209,6 +209,60 @@ impl FrontierExtractor {
         points
     }
 
+    /// Extract ONLY frontier segments (edges that cross the threshold boundary)
+    ///
+    /// This is much smaller than all reachable segments and defines the actual
+    /// isochrone boundary. Use this for concave hull polygon generation.
+    ///
+    /// Returns polylines from start to cut point for each frontier edge.
+    pub fn extract_frontier_segments(&self, phast_dist: &[u32], threshold_ms: u32) -> Vec<ReachableSegment> {
+        let mut segments = Vec::new();
+
+        for filtered_id in 0..self.filtered_ebg.n_filtered_nodes {
+            let dist_ds = phast_dist[filtered_id as usize];
+
+            // Skip unreachable edges
+            if dist_ds == u32::MAX {
+                continue;
+            }
+
+            // Convert PHAST distance from deciseconds to milliseconds
+            let dist_ms = (dist_ds as u64 * 100).min(u32::MAX as u64) as u32;
+
+            // Skip edges that start beyond the threshold
+            if dist_ms > threshold_ms {
+                continue;
+            }
+
+            // Get original EBG node ID
+            let ebg_node_id = self.filtered_ebg.filtered_to_original[filtered_id as usize];
+
+            // Get edge weight (in deciseconds, convert to ms)
+            let weight_ds = self.weights[ebg_node_id as usize];
+            if weight_ds == 0 {
+                continue;
+            }
+            let weight_ms = weight_ds * 100;
+
+            // Check if this edge crosses the threshold (frontier edge)
+            let dist_end_ms = dist_ms.saturating_add(weight_ms);
+            if dist_end_ms <= threshold_ms {
+                // Fully reachable - NOT a frontier edge, skip
+                continue;
+            }
+
+            // This IS a frontier edge - extract from start to cut point
+            let geom_idx = self.ebg_nodes.nodes[ebg_node_id as usize].geom_idx as usize;
+            let cut_fraction = (threshold_ms - dist_ms) as f32 / weight_ms as f32;
+            let points = self.extract_partial_polyline(geom_idx, cut_fraction);
+            if !points.is_empty() {
+                segments.push(ReachableSegment { points });
+            }
+        }
+
+        segments
+    }
+
     /// Extract all reachable road segments with their geometry for grid stamping
     ///
     /// Returns polylines for:

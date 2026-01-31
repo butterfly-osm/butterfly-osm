@@ -28,6 +28,9 @@ pub use contour::{GridConfig, ContourResult, generate_contour, export_contour_ge
 pub mod sparse_contour;
 pub use sparse_contour::{SparseContourConfig, SparseContourResult, SparseContourStats, generate_sparse_contour};
 
+pub mod concave_hull;
+pub use concave_hull::{ConcaveHullConfig, ConcaveHullResult, ConcaveHullStats, generate_concave_hull};
+
 pub mod batched_isochrone;
 pub use batched_isochrone::{
     BatchedIsochroneEngine, BatchedIsochroneResult, BatchedIsochroneStats,

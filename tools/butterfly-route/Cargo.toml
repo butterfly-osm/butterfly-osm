@@ -52,6 +52,9 @@ tower-http = { version = "0.5", features = ["cors"] }
 # Spatial indexing
 rstar = "0.12"
 
+# Geometry algorithms (concave hull, simplification)
+geo = "0.28"
+
 # Priority queue for Dijkstra
 priority-queue = "2.0"
 

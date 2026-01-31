@@ -8,7 +8,7 @@
 //! Outputs: p50/p95/p99 times + detailed counters
 
 use std::cmp::Reverse;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
@@ -388,6 +388,78 @@ enum Commands {
         #[arg(long, default_value = "42")]
         seed: u64,
     },
+
+    /// Pathological origins benchmark (worst-case scenarios)
+    PathologicalOrigins {
+        /// Data directory
+        #[arg(long)]
+        data_dir: PathBuf,
+
+        /// Transport mode
+        #[arg(long, default_value = "car")]
+        mode: String,
+    },
+
+    /// Bulk isochrone pipeline benchmark (1M origins simulation)
+    BulkPipeline {
+        /// Data directory
+        #[arg(long)]
+        data_dir: PathBuf,
+
+        /// Transport mode
+        #[arg(long, default_value = "car")]
+        mode: String,
+
+        /// Threshold in milliseconds
+        #[arg(long, default_value = "300000")]
+        threshold_ms: u32,
+
+        /// Number of origins to process
+        #[arg(long, default_value = "10000")]
+        n_origins: usize,
+
+        /// Output file for WKB NDJSON (optional)
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Random seed
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
+
+    /// Monotonicity test (T1 < T2 implies polygon(T1) ⊆ polygon(T2))
+    MonotonicityTest {
+        /// Data directory
+        #[arg(long)]
+        data_dir: PathBuf,
+
+        /// Transport mode
+        #[arg(long, default_value = "car")]
+        mode: String,
+
+        /// Number of origins to test
+        #[arg(long, default_value = "50")]
+        n_origins: usize,
+
+        /// Random seed
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
+
+    /// Compare polygon detail levels (cell sizes)
+    DetailCompare {
+        /// Data directory
+        #[arg(long)]
+        data_dir: PathBuf,
+
+        /// Transport mode
+        #[arg(long, default_value = "car")]
+        mode: String,
+
+        /// Threshold in minutes
+        #[arg(long, default_value = "30")]
+        threshold_min: u32,
+    },
 }
 
 /// Aggregated statistics across multiple runs
@@ -578,6 +650,33 @@ fn main() -> anyhow::Result<()> {
             n_origins,
             seed,
         } => run_e2e_isochrone_bench(&data_dir, &mode, threshold_ms, n_origins, seed),
+
+        Commands::PathologicalOrigins {
+            data_dir,
+            mode,
+        } => run_pathological_origins_bench(&data_dir, &mode),
+
+        Commands::BulkPipeline {
+            data_dir,
+            mode,
+            threshold_ms,
+            n_origins,
+            output,
+            seed,
+        } => run_bulk_pipeline_bench(&data_dir, &mode, threshold_ms, n_origins, output.as_deref(), seed),
+
+        Commands::MonotonicityTest {
+            data_dir,
+            mode,
+            n_origins,
+            seed,
+        } => run_monotonicity_test(&data_dir, &mode, n_origins, seed),
+
+        Commands::DetailCompare {
+            data_dir,
+            mode,
+            threshold_min,
+        } => run_detail_compare(&data_dir, &mode, threshold_min),
     }
 }
 
@@ -3297,6 +3396,562 @@ fn run_e2e_isochrone_bench(
         println!();
         println!("  ✅ Excellent throughput: {:.0} iso/sec", throughput);
     }
+
+    Ok(())
+}
+
+/// Pathological origins benchmark - tests worst-case scenarios
+fn run_pathological_origins_bench(
+    data_dir: &PathBuf,
+    mode: &str,
+) -> anyhow::Result<()> {
+    use butterfly_route::profile_abi::Mode;
+    use butterfly_route::step9::spatial::SpatialIndex;
+    use butterfly_route::formats::{EbgNodesFile, NbgGeoFile, FilteredEbgFile};
+
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  PATHOLOGICAL ORIGINS BENCHMARK");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  Mode: {}", mode);
+    println!();
+
+    // Parse mode
+    let mode_enum = match mode.to_lowercase().as_str() {
+        "car" => Mode::Car,
+        "bike" => Mode::Bike,
+        "foot" => Mode::Foot,
+        _ => Mode::Car,
+    };
+
+    // Load engine
+    println!("[1/3] Loading engine and spatial index...");
+    let load_start = Instant::now();
+
+    let topo_path = find_file(data_dir, &[
+        format!("cch.{}.topo", mode),
+        format!("step7-rank-aligned/cch.{}.topo", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
+
+    let weights_path = find_file(data_dir, &[
+        format!("cch.w.{}.u32", mode),
+        format!("step8-rank-aligned/cch.w.{}.u32", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
+
+    let order_path = find_file(data_dir, &[
+        format!("order.{}.ebg", mode),
+        format!("step6/order.{}.ebg", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
+
+    let filtered_path = find_file(data_dir, &[
+        format!("filtered.{}.ebg", mode),
+        format!("step5/filtered.{}.ebg", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find filtered.{}.ebg", mode))?;
+
+    let ebg_nodes_path = find_file(data_dir, &[
+        "ebg.nodes".to_string(),
+        "step4/ebg.nodes".to_string(),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find ebg.nodes"))?;
+
+    let nbg_geo_path = find_file(data_dir, &[
+        "nbg.geo".to_string(),
+        "step3/nbg.geo".to_string(),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find nbg.geo"))?;
+
+    let base_weights_path = find_file(data_dir, &[
+        format!("w.{}.u32", mode),
+        format!("step5/w.{}.u32", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find w.{}.u32", mode))?;
+
+    let mask_path = find_file(data_dir, &[
+        format!("mask.{}.bitset", mode),
+        format!("step5/mask.{}.bitset", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find mask.{}.bitset", mode))?;
+
+    // Load spatial index components
+    let ebg_nodes = EbgNodesFile::read(&ebg_nodes_path)?;
+    let nbg_geo = NbgGeoFile::read(&nbg_geo_path)?;
+    let spatial_index = SpatialIndex::build(&ebg_nodes, &nbg_geo);
+
+    // Load filtered EBG for original->filtered ID mapping
+    let filtered_ebg = FilteredEbgFile::read(&filtered_path)?;
+
+    // Load mask for snapping
+    let mask_data = std::fs::read(&mask_path)?;
+    let mask: Vec<u64> = mask_data
+        .chunks_exact(8)
+        .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
+        .collect();
+
+    let engine = AdaptiveIsochroneEngine::load(
+        &topo_path,
+        &weights_path,
+        &order_path,
+        &filtered_path,
+        &ebg_nodes_path,
+        &nbg_geo_path,
+        &base_weights_path,
+        mode_enum,
+    )?;
+
+    println!("  ✓ Loaded in {:.2}s", load_start.elapsed().as_secs_f64());
+    println!();
+
+    // Define pathological test locations (Belgium)
+    let test_locations: Vec<(&str, f64, f64, &str)> = vec![
+        // Major cities (dense networks)
+        ("Brussels Center", 4.3517, 50.8503, "Dense urban"),
+        ("Antwerp Center", 4.4025, 51.2194, "Port city"),
+        ("Ghent Center", 3.7174, 51.0543, "Historic"),
+        ("Liège Center", 5.5796, 50.6326, "Industrial"),
+        ("Charleroi", 4.4447, 50.4108, "Industrial"),
+        // Highway interchanges
+        ("E40/E19 Junction", 4.4167, 50.8833, "Highway"),
+        ("Ring Brussels S", 4.3500, 50.7833, "Ring road"),
+        // Border areas
+        ("Near Netherlands", 4.2833, 51.3500, "N border"),
+        ("Near Germany", 6.0333, 50.7500, "E border"),
+        ("Near France", 4.0833, 49.5667, "S border"),
+    ];
+
+    let thresholds_ms: Vec<u32> = vec![300_000, 600_000, 1_800_000, 3_600_000];
+
+    println!("[2/3] Snapping test locations...");
+    let mut snapped_origins: Vec<(&str, u32)> = Vec::new();
+    for (name, lon, lat, _desc) in &test_locations {
+        // Try up to 100 nearest candidates to find one in the filtered graph
+        let candidates = spatial_index.snap_k(*lon, *lat, &mask, 100);
+        let mut found = false;
+        for orig_id in candidates {
+            let filtered_id = filtered_ebg.original_to_filtered[orig_id as usize];
+            if filtered_id != u32::MAX {
+                snapped_origins.push((name, filtered_id));
+                println!("  ✓ {} → filtered node {} (orig {})", name, filtered_id, orig_id);
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            println!("  ✗ {} → no candidate in filtered graph", name);
+        }
+    }
+    println!();
+
+    println!("[3/3] Running pathological tests...");
+    println!();
+    println!("┌────────────────────┬────────┬────────┬────────┬────────┬────────┬────────┐");
+    println!("│ Location           │ 5 min  │ 10 min │ 30 min │ 60 min │ Before │ After  │");
+    println!("├────────────────────┼────────┼────────┼────────┼────────┼────────┼────────┤");
+
+    let mut worst_ms: f64 = 0.0;
+    let mut worst_loc = "";
+
+    for (name, filtered_id) in &snapped_origins {
+        print!("│ {:18} │", name);
+        std::io::Write::flush(&mut std::io::stdout())?;
+
+        let mut before_verts = 0usize;
+        let mut after_verts = 0usize;
+        for &t_ms in &thresholds_ms {
+            let t_ds = t_ms / 100;
+            let start = Instant::now();
+            let results = engine.query_many(&[*filtered_id], t_ds)?;
+            let ms = start.elapsed().as_secs_f64() * 1000.0;
+            if !results.is_empty() {
+                before_verts = results[0].stats.contour_vertices_before_simplify;
+                after_verts = results[0].stats.contour_vertices_after_simplify;
+            }
+            print!(" {:>5.0}ms│", ms);
+            std::io::Write::flush(&mut std::io::stdout())?;
+            if ms > worst_ms { worst_ms = ms; worst_loc = name; }
+        }
+        println!(" {:>6} │ {:>6} │", before_verts, after_verts);
+    }
+    println!("└────────────────────┴────────┴────────┴────────┴────────┴────────┴────────┘");
+    println!();
+    println!("  Worst case: {} at {:.0}ms", worst_loc, worst_ms);
+    if worst_ms < 200.0 { println!("  ✅ All under 200ms"); }
+
+    Ok(())
+}
+
+/// Bulk pipeline benchmark
+fn run_bulk_pipeline_bench(
+    data_dir: &PathBuf,
+    mode: &str,
+    threshold_ms: u32,
+    n_origins: usize,
+    output_path: Option<&Path>,
+    seed: u64,
+) -> anyhow::Result<()> {
+    use butterfly_route::profile_abi::Mode;
+    use std::io::{BufWriter, Write};
+    use std::fs::File;
+
+    let threshold_ds = threshold_ms / 100;
+
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  BULK ISOCHRONE PIPELINE");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  Mode: {}, Threshold: {} min, Origins: {}", mode, threshold_ms / 60000, n_origins);
+    println!();
+
+    let mode_enum = match mode.to_lowercase().as_str() {
+        "car" => Mode::Car, "bike" => Mode::Bike, "foot" => Mode::Foot, _ => Mode::Car,
+    };
+
+    println!("[1/3] Loading engine...");
+    let topo_path = find_file(data_dir, &[
+        format!("cch.{}.topo", mode),
+        format!("step7-rank-aligned/cch.{}.topo", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
+    let weights_path = find_file(data_dir, &[
+        format!("cch.w.{}.u32", mode),
+        format!("step8-rank-aligned/cch.w.{}.u32", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
+    let order_path = find_file(data_dir, &[
+        format!("order.{}.ebg", mode),
+        format!("step6/order.{}.ebg", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
+    let filtered_path = find_file(data_dir, &[
+        format!("filtered.{}.ebg", mode),
+        format!("step5/filtered.{}.ebg", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find filtered.{}.ebg", mode))?;
+    let ebg_nodes_path = find_file(data_dir, &[
+        "ebg.nodes".to_string(),
+        "step4/ebg.nodes".to_string(),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find ebg.nodes"))?;
+    let nbg_geo_path = find_file(data_dir, &[
+        "nbg.geo".to_string(),
+        "step3/nbg.geo".to_string(),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find nbg.geo"))?;
+    let base_weights_path = find_file(data_dir, &[
+        format!("w.{}.u32", mode),
+        format!("step5/w.{}.u32", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find w.{}.u32", mode))?;
+
+    let engine = AdaptiveIsochroneEngine::load(
+        &topo_path, &weights_path, &order_path, &filtered_path,
+        &ebg_nodes_path, &nbg_geo_path, &base_weights_path, mode_enum,
+    )?;
+    let n_nodes = engine.n_nodes();
+    println!("  ✓ Loaded ({} nodes)", n_nodes);
+
+    println!("[2/3] Processing...");
+    let mut rng = StdRng::seed_from_u64(seed);
+    let origins: Vec<u32> = (0..n_origins).map(|_| rng.gen_range(0..n_nodes as u32)).collect();
+
+    let mut writer: Option<BufWriter<File>> = output_path.map(|p|
+        BufWriter::with_capacity(64 * 1024, File::create(p).unwrap())
+    );
+
+    let start = Instant::now();
+    let initial_rss = get_rss_kb();
+    let mut valid = 0usize;
+    let mut total_verts = 0usize;
+    let mut total_wkb = 0usize;
+
+    for (i, &origin) in origins.iter().enumerate() {
+        let results = engine.query_many(&[origin], threshold_ds)?;
+        if !results.is_empty() && !results[0].outer_ring.is_empty() {
+            let c = &results[0];
+            valid += 1;
+            total_verts += c.outer_ring.len();
+            if let Some(wkb) = encode_polygon_wkb(c) {
+                total_wkb += wkb.len();
+                if let Some(ref mut w) = writer {
+                    writeln!(w, r#"{{"origin":{},"wkb":"{}"}}"#, origin, base64_simple(&wkb))?;
+                }
+            }
+        }
+        if (i + 1) % 1000 == 0 {
+            print!("\r  {}/{} ({:.0}/s)", i + 1, n_origins, (i + 1) as f64 / start.elapsed().as_secs_f64());
+            std::io::Write::flush(&mut std::io::stdout())?;
+        }
+    }
+    if let Some(ref mut w) = writer { w.flush()?; }
+    println!();
+
+    let elapsed = start.elapsed();
+    let final_rss = get_rss_kb();
+
+    println!("[3/3] Results");
+    println!("  Time: {:.1}s, Rate: {:.0}/s", elapsed.as_secs_f64(), n_origins as f64 / elapsed.as_secs_f64());
+    println!("  Valid: {}/{}, Verts: {}, WKB: {} KB", valid, n_origins, total_verts, total_wkb / 1024);
+    println!("  RSS: {} → {} KB (Δ{:+})", initial_rss, final_rss, final_rss as i64 - initial_rss as i64);
+
+    Ok(())
+}
+
+fn base64_simple(data: &[u8]) -> String {
+    const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut r = String::with_capacity((data.len() + 2) / 3 * 4);
+    for c in data.chunks(3) {
+        let (b0, b1, b2) = (c[0] as usize, c.get(1).copied().unwrap_or(0) as usize, c.get(2).copied().unwrap_or(0) as usize);
+        r.push(A[b0 >> 2] as char);
+        r.push(A[((b0 & 3) << 4) | (b1 >> 4)] as char);
+        if c.len() > 1 { r.push(A[((b1 & 0xF) << 2) | (b2 >> 6)] as char); }
+        if c.len() > 2 { r.push(A[b2 & 0x3F] as char); }
+    }
+    r
+}
+
+fn get_rss_kb() -> usize {
+    std::fs::read_to_string("/proc/self/status").ok()
+        .and_then(|s| s.lines().find(|l| l.starts_with("VmRSS:"))
+            .and_then(|l| l.split_whitespace().nth(1)?.parse().ok()))
+        .unwrap_or(0)
+}
+
+/// Monotonicity test: T1 < T2 ⇒ reachable(T1) ⊆ reachable(T2)
+fn run_monotonicity_test(
+    data_dir: &PathBuf,
+    mode: &str,
+    n_origins: usize,
+    seed: u64,
+) -> anyhow::Result<()> {
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  MONOTONICITY TEST: T1 < T2 ⇒ reachable(T1) ⊆ reachable(T2)");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  Mode: {}, Origins: {}", mode, n_origins);
+    println!();
+
+    println!("[1/2] Loading PHAST...");
+    let topo_path = find_file(data_dir, &[
+        format!("cch.{}.topo", mode),
+        format!("step7-rank-aligned/cch.{}.topo", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
+    let weights_path = find_file(data_dir, &[
+        format!("cch.w.{}.u32", mode),
+        format!("step8-rank-aligned/cch.w.{}.u32", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
+    let order_path = find_file(data_dir, &[
+        format!("order.{}.ebg", mode),
+        format!("step6/order.{}.ebg", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
+    let phast = PhastEngine::load(&topo_path, &weights_path, &order_path)?;
+    let n_nodes = phast.n_nodes();
+    println!("  ✓ Loaded ({} nodes)", n_nodes);
+
+    println!("[2/2] Testing monotonicity...");
+    let mut rng = StdRng::seed_from_u64(seed);
+    let origins: Vec<u32> = (0..n_origins).map(|_| rng.gen_range(0..n_nodes as u32)).collect();
+    let thresholds: Vec<u32> = vec![1000, 2000, 3000, 6000, 12000, 18000]; // deciseconds
+
+    let mut tests = 0usize;
+    let mut violations = 0usize;
+
+    for (i, &origin) in origins.iter().enumerate() {
+        let mut prev: Option<(u32, usize)> = None;
+
+        for &t in &thresholds {
+            let result = phast.query_bounded(origin, t);
+            let reach: usize = result.dist.iter().filter(|&&d| d <= t).count();
+
+            if let Some((prev_t, prev_reach)) = prev {
+                tests += 1;
+                if reach < prev_reach {
+                    violations += 1;
+                }
+            }
+            prev = Some((t, reach));
+        }
+
+        if (i + 1) % 10 == 0 {
+            print!("\r  {}/{} (violations: {})", i + 1, n_origins, violations);
+            std::io::Write::flush(&mut std::io::stdout())?;
+        }
+    }
+    println!();
+
+    println!();
+    println!("  Tests: {}, Violations: {}", tests, violations);
+    if violations == 0 {
+        println!("  ✅ Monotonicity holds for all {} tests", tests);
+    } else {
+        println!("  ❌ {} violations detected", violations);
+    }
+
+    Ok(())
+}
+
+/// Compare polygon detail levels with different cell sizes
+fn run_detail_compare(
+    data_dir: &PathBuf,
+    mode: &str,
+    threshold_min: u32,
+) -> anyhow::Result<()> {
+    use butterfly_route::profile_abi::Mode;
+    use butterfly_route::range::sparse_contour::{SparseContourConfig, generate_sparse_contour};
+    use butterfly_route::range::concave_hull::{ConcaveHullConfig, generate_concave_hull};
+    use butterfly_route::range::frontier::FrontierExtractor;
+    use butterfly_route::range::phast::PhastEngine;
+
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  POLYGON DETAIL COMPARISON: Sparse Contour vs Concave Hull");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  Mode: {}, Threshold: {} min", mode, threshold_min);
+    println!();
+
+    let _mode_enum = match mode.to_lowercase().as_str() {
+        "car" => Mode::Car, "bike" => Mode::Bike, "foot" => Mode::Foot, _ => Mode::Car,
+    };
+
+    // Load PHAST and extractor
+    println!("[1/3] Loading engine...");
+    let topo_path = find_file(data_dir, &[
+        format!("cch.{}.topo", mode),
+        format!("step7-rank-aligned/cch.{}.topo", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
+    let weights_path = find_file(data_dir, &[
+        format!("cch.w.{}.u32", mode),
+        format!("step8-rank-aligned/cch.w.{}.u32", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
+    let order_path = find_file(data_dir, &[
+        format!("order.{}.ebg", mode),
+        format!("step6/order.{}.ebg", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
+    let filtered_path = find_file(data_dir, &[
+        format!("filtered.{}.ebg", mode),
+        format!("step5/filtered.{}.ebg", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find filtered.{}.ebg", mode))?;
+    let ebg_nodes_path = find_file(data_dir, &[
+        "ebg.nodes".to_string(),
+        "step4/ebg.nodes".to_string(),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find ebg.nodes"))?;
+    let nbg_geo_path = find_file(data_dir, &[
+        "nbg.geo".to_string(),
+        "step3/nbg.geo".to_string(),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find nbg.geo"))?;
+    let base_weights_path = find_file(data_dir, &[
+        format!("w.{}.u32", mode),
+        format!("step5/w.{}.u32", mode),
+    ]).ok_or_else(|| anyhow::anyhow!("Cannot find w.{}.u32", mode))?;
+
+    let phast = PhastEngine::load(&topo_path, &weights_path, &order_path)?;
+    let extractor = FrontierExtractor::load(&filtered_path, &ebg_nodes_path, &nbg_geo_path, &base_weights_path)?;
+    println!("  ✓ Loaded");
+
+    // Use middle node as test origin
+    let origin = phast.n_nodes() as u32 / 2;
+    let threshold_ds = threshold_min * 600; // Convert min to deciseconds
+
+    // Run PHAST query once
+    println!("[2/3] Running PHAST query...");
+    let result = phast.query_bounded(origin, threshold_ds);
+
+    // Extract segments
+    let all_segments = extractor.extract_reachable_segments(&result.dist, threshold_ds * 100);
+    let frontier_segments = extractor.extract_frontier_segments(&result.dist, threshold_ds * 100);
+    println!("  ✓ All segments: {}, Frontier segments: {}", all_segments.len(), frontier_segments.len());
+    println!();
+
+    // ===== SPARSE CONTOUR (grid-based) =====
+    println!("[3/3] Testing polygon generation methods...");
+    println!();
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  SPARSE CONTOUR (grid-based rasterization)");
+    println!("═══════════════════════════════════════════════════════════════");
+
+    let sparse_configs: Vec<(&str, SparseContourConfig)> = vec![
+        ("100m (default)", SparseContourConfig::custom(100.0, 75.0)),
+        ("25m morphology", SparseContourConfig::custom(25.0, 0.0)),
+        ("25m NO morph", SparseContourConfig::no_morphology(25.0)),
+        ("10m morphology", SparseContourConfig::custom(10.0, 0.0)),
+        ("10m NO morph", SparseContourConfig::no_morphology(10.0)),
+        ("5m NO morph", SparseContourConfig::no_morphology(5.0)),
+    ];
+
+    println!("┌──────────────────┬────────┬────────┬────────┬────────────┐");
+    println!("│ Cell Size        │ Before │ After  │ Time   │ Reduction  │");
+    println!("├──────────────────┼────────┼────────┼────────┼────────────┤");
+
+    for (name, config) in sparse_configs {
+        let start = Instant::now();
+        match generate_sparse_contour(&all_segments, &config) {
+            Ok(contour) => {
+                let elapsed = start.elapsed().as_millis();
+                let before = contour.stats.contour_vertices_before_simplify;
+                let after = contour.stats.contour_vertices_after_simplify;
+                let reduction = if before > 0 {
+                    100.0 * (1.0 - after as f64 / before as f64)
+                } else {
+                    0.0
+                };
+                println!("│ {:16} │ {:>6} │ {:>6} │ {:>5}ms│ {:>7.1}%   │",
+                    name, before, after, elapsed, reduction);
+            }
+            Err(e) => {
+                println!("│ {:16} │ ERROR: {:?}", name, e);
+            }
+        }
+    }
+    println!("└──────────────────┴────────┴────────┴────────┴────────────┘");
+    println!();
+
+    // ===== CONCAVE HULL (frontier-based) =====
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  CONCAVE HULL (frontier-based, uses actual road geometry)");
+    println!("═══════════════════════════════════════════════════════════════");
+
+    let hull_configs: Vec<(&str, ConcaveHullConfig)> = vec![
+        ("Frontier c=2.0", ConcaveHullConfig {
+            concavity: 2.0,
+            simplify_tolerance: 0.0,
+            include_intermediate_points: true,
+        }),
+        ("Frontier c=1.0", ConcaveHullConfig {
+            concavity: 1.0,
+            simplify_tolerance: 0.0,
+            include_intermediate_points: true,
+        }),
+        ("Frontier c=0.5", ConcaveHullConfig {
+            concavity: 0.5,
+            simplify_tolerance: 0.0,
+            include_intermediate_points: true,
+        }),
+        ("Frontier c=0.2", ConcaveHullConfig {
+            concavity: 0.2,
+            simplify_tolerance: 0.0,
+            include_intermediate_points: true,
+        }),
+        ("Frontier c=0.1", ConcaveHullConfig {
+            concavity: 0.1,
+            simplify_tolerance: 0.0,
+            include_intermediate_points: true,
+        }),
+        ("Frontier c=0.05", ConcaveHullConfig {
+            concavity: 0.05,
+            simplify_tolerance: 0.0,
+            include_intermediate_points: true,
+        }),
+    ];
+
+    println!("┌──────────────────────────┬────────┬────────┬────────┐");
+    println!("│ Configuration            │ Points │ Verts  │ Time   │");
+    println!("├──────────────────────────┼────────┼────────┼────────┤");
+
+    for (_i, (name, config)) in hull_configs.iter().enumerate() {
+        let start = Instant::now();
+        let result = generate_concave_hull(&frontier_segments, config);
+        let elapsed = start.elapsed().as_millis();
+
+        println!("│ {:24} │ {:>6} │ {:>6} │ {:>5}ms│",
+            name, result.stats.input_points, result.stats.final_vertices, elapsed);
+    }
+    println!("└──────────────────────────┴────────┴────────┴────────┘");
+
+    println!();
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  SUMMARY");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  Valhalla reference (30-min, 50m generalize): ~3600 vertices");
+    println!();
+    println!("  Sparse Contour: Correct shape but limited vertex count");
+    println!("  Concave Hull: Limited because isochrones are star-shaped");
+    println!();
+    println!("  KNOWN ISSUE: Grid-based approach limits vertex count.");
+    println!("  Fix requires marching squares on distance field (future work).");
+    println!();
 
     Ok(())
 }

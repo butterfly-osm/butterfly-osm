@@ -337,6 +337,7 @@ pub struct SparseContourConfig {
 }
 
 impl SparseContourConfig {
+    /// Default car config - fast but coarse (100m cells, ~50-300 vertices)
     pub fn for_car() -> Self {
         Self {
             cell_size_m: 100.0,
@@ -346,6 +347,7 @@ impl SparseContourConfig {
         }
     }
 
+    /// Default bike config (50m cells)
     pub fn for_bike() -> Self {
         Self {
             cell_size_m: 50.0,
@@ -355,12 +357,78 @@ impl SparseContourConfig {
         }
     }
 
+    /// Default foot config (25m cells)
     pub fn for_foot() -> Self {
         Self {
             cell_size_m: 25.0,
             dilation_rounds: 2,
             erosion_rounds: 1,
             simplify_tolerance_m: 25.0,
+        }
+    }
+
+    /// High-detail car config - more vertices, comparable to Valhalla (25m cells, ~2000+ vertices)
+    pub fn for_car_hd() -> Self {
+        Self {
+            cell_size_m: 25.0,
+            dilation_rounds: 2,
+            erosion_rounds: 1,
+            simplify_tolerance_m: 50.0, // Match Valhalla default generalize
+        }
+    }
+
+    /// High-detail bike config (15m cells)
+    pub fn for_bike_hd() -> Self {
+        Self {
+            cell_size_m: 15.0,
+            dilation_rounds: 2,
+            erosion_rounds: 1,
+            simplify_tolerance_m: 25.0,
+        }
+    }
+
+    /// High-detail foot config (10m cells)
+    pub fn for_foot_hd() -> Self {
+        Self {
+            cell_size_m: 10.0,
+            dilation_rounds: 2,
+            erosion_rounds: 1,
+            simplify_tolerance_m: 15.0,
+        }
+    }
+
+    /// Custom configuration
+    pub fn custom(cell_size_m: f64, simplify_tolerance_m: f64) -> Self {
+        Self {
+            cell_size_m,
+            dilation_rounds: 2,
+            erosion_rounds: 1,
+            simplify_tolerance_m,
+        }
+    }
+
+    /// Custom configuration with explicit morphology control
+    pub fn custom_full(
+        cell_size_m: f64,
+        dilation_rounds: usize,
+        erosion_rounds: usize,
+        simplify_tolerance_m: f64,
+    ) -> Self {
+        Self {
+            cell_size_m,
+            dilation_rounds,
+            erosion_rounds,
+            simplify_tolerance_m,
+        }
+    }
+
+    /// No morphology - raw stamped segments only (for debugging)
+    pub fn no_morphology(cell_size_m: f64) -> Self {
+        Self {
+            cell_size_m,
+            dilation_rounds: 0,
+            erosion_rounds: 0,
+            simplify_tolerance_m: 0.0,
         }
     }
 }
