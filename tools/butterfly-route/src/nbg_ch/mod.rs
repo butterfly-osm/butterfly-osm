@@ -17,12 +17,14 @@ mod contraction;
 mod query;
 mod validate;
 mod lift_ordering;
+mod turn_restrictions;
 
 pub use ordering::{NbgNdOrdering, compute_nbg_ordering};
 pub use contraction::{NbgChTopo, contract_nbg};
 pub use query::{NbgChQuery, NbgBucketM2M, NbgM2MStats, FlatUpAdj, SearchState, SortedBuckets};
 pub use validate::{dijkstra_nbg, validate_nbg_ch, validate_matrix, ValidationResult, ValidationError};
 pub use lift_ordering::{LiftedEbgOrdering, lift_ordering_to_ebg};
+pub use turn_restrictions::{TurnRestrictionIndex, NbgEdgeWayMap};
 
 /// Statistics from NBG CH construction
 #[derive(Debug, Clone)]
