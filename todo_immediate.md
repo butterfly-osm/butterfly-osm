@@ -84,8 +84,13 @@ Implemented OSRM-compatible turn penalties using the exact sigmoid formula from 
 - ✅ Mode-specific road access - ENFORCED
 - ✅ Turn angle penalties (OSRM sigmoid) - ENFORCED
 - ✅ Left/right asymmetry (turn_bias) - ENFORCED
-- ⚠️ Traffic signal delays - NOT YET (need node tags)
-- ⚠️ Road class transition penalties - NOT YET
+- ✅ Traffic signal delays - IMPLEMENTED (8s for cars at signalized intersections)
+- ⬜ Road class transition penalties - TODO
+
+**Results with traffic signals (Brussels → Antwerp):**
+- Duration: 34.9 min (was 33.7 min without signals)
+- Distance: 32.9 km
+- Gap vs OSRM: ~12.8% faster (OSRM ~40 min)
 
 ---
 
