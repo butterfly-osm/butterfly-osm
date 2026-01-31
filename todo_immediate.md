@@ -85,7 +85,7 @@ Implemented OSRM-compatible turn penalties using the exact sigmoid formula from 
 - ✅ Turn angle penalties (OSRM sigmoid) - ENFORCED
 - ✅ Left/right asymmetry (turn_bias) - ENFORCED
 - ✅ Traffic signal delays - IMPLEMENTED (8s for cars at signalized intersections)
-- ⬜ Road class transition penalties - TODO
+- ✅ Road class transition penalties - IMPLEMENTED (0.5s per class diff, max 3s)
 
 **Results with traffic signals (Brussels → Antwerp):**
 - Duration: 34.9 min (was 33.7 min without signals)

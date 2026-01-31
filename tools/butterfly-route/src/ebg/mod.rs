@@ -367,8 +367,25 @@ fn build_adjacency(
                     }
                 };
 
-                // Compute turn geometry
-                let geom = TurnGeometry::compute(from_bearing, to_bearing, via_has_signal, via_degree);
+                // Get highway classes for road class transition penalty
+                let from_highway_class = way_attrs_car
+                    .get(&from_way_id)
+                    .map(|a| a.output.highway_class)
+                    .unwrap_or(0);
+                let to_highway_class = way_attrs_car
+                    .get(&to_way_id)
+                    .map(|a| a.output.highway_class)
+                    .unwrap_or(0);
+
+                // Compute turn geometry (including road class info)
+                let geom = TurnGeometry::compute(
+                    from_bearing,
+                    to_bearing,
+                    via_has_signal,
+                    via_degree,
+                    from_highway_class,
+                    to_highway_class,
+                );
 
                 // Compute per-mode penalties
                 let mut penalty_ds_car = compute_turn_penalty(&geom, &car_penalty_config);
