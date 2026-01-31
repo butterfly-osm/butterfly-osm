@@ -11,7 +11,10 @@ use std::path::{Path, PathBuf};
 
 use crate::formats::*;
 
+pub mod turn_penalty;
 pub mod turn_processor;
+
+use turn_penalty::{TurnGeometry, TurnPenaltyConfig, compute_turn_penalty};
 
 // Mode bit flags
 pub const MODE_CAR: u8 = 0b001;
@@ -206,7 +209,7 @@ fn enumerate_ebg_nodes(nbg_geo: &NbgGeo) -> Result<Vec<EbgNode>> {
     Ok(nodes)
 }
 
-/// Build adjacency lists with turn rule application
+/// Build adjacency lists with turn rule application and geometry-based penalties
 fn build_adjacency(
     nbg_csr: &NbgCsr,
     nbg_geo: &NbgGeo,
@@ -220,6 +223,11 @@ fn build_adjacency(
     let mut adjacency: HashMap<u32, Vec<(u32, u32)>> = HashMap::new();
     let mut turn_table = Vec::new();
     let mut turn_table_index: HashMap<TurnEntry, u32> = HashMap::new();
+
+    // Turn penalty configurations for each mode
+    let car_penalty_config = TurnPenaltyConfig::car();
+    let bike_penalty_config = TurnPenaltyConfig::bike();
+    let foot_penalty_config = TurnPenaltyConfig::foot();
 
     // Build index: NBG node -> incoming/outgoing EBG nodes
     let mut incoming_by_nbg: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -236,18 +244,32 @@ fn build_adjacency(
             .push(ebg_id as u32);
     }
 
+    // Debug counters for turn penalty statistics
+    let mut total_arcs = 0u64;
+    let mut arcs_with_car_penalty = 0u64;
+    let mut total_car_penalty_ds = 0u64;
+
     // For each NBG intersection node
     for nbg_node in 0..nbg_csr.n_nodes {
         let incoming = incoming_by_nbg.get(&nbg_node).cloned().unwrap_or_default();
         let outgoing = outgoing_by_nbg.get(&nbg_node).cloned().unwrap_or_default();
 
+        // Intersection degree for complexity penalty
+        let via_degree = (incoming.len() + outgoing.len()) as u8;
+
+        // Check if via node has traffic signal (would need node tags - for now, false)
+        // TODO: Load highway=traffic_signals from node tags in a future iteration
+        let via_has_signal = false;
+
         // For each incoming EBG edge (a = u→nbg_node)
         for &a_id in &incoming {
             let a_node = &ebg_nodes[a_id as usize];
+            let from_edge = &nbg_geo.edges[a_node.geom_idx as usize];
 
             // For each outgoing EBG edge (b = nbg_node→w)
             for &b_id in &outgoing {
                 let b_node = &ebg_nodes[b_id as usize];
+                let to_edge = &nbg_geo.edges[b_node.geom_idx as usize];
 
                 // Skip if not a valid turn (tail of b must equal head of a)
                 if a_node.head_nbg != b_node.tail_nbg {
@@ -256,23 +278,11 @@ fn build_adjacency(
 
                 // Handle U-turns with mode-specific policy
                 let is_uturn = a_node.tail_nbg == b_node.head_nbg;
-                if is_uturn {
-                    // Check if this is a dead-end (degree == 1 for outgoing)
-                    let is_dead_end = outgoing.len() == 1;
-
-                    // Car: forbid U-turns except at dead-ends
-                    // Bike/Foot: allow U-turns unless explicitly banned
-                    // We'll handle this by filtering mode_mask below
-                    if !is_dead_end {
-                        // At non-dead-ends, remove car from allowed modes for U-turns
-                        // Bike and foot can still make U-turns
-                        // This will be applied after checking way accessibility
-                    }
-                }
+                let is_dead_end = outgoing.len() == 1;
 
                 // Determine mode accessibility
-                let from_way_id = nbg_geo.edges[a_node.geom_idx as usize].first_osm_way_id;
-                let to_way_id = nbg_geo.edges[b_node.geom_idx as usize].first_osm_way_id;
+                let from_way_id = from_edge.first_osm_way_id;
+                let to_way_id = to_edge.first_osm_way_id;
 
                 // Get OSM node ID for via node
                 let via_node_osm = nbg_node_to_osm_id(nbg_node, nbg_node_map);
@@ -307,12 +317,9 @@ fn build_adjacency(
                 mode_mask &= get_way_mode_mask(to_way_id, way_attrs_car, way_attrs_bike, way_attrs_foot);
 
                 // Apply U-turn policy
-                if is_uturn {
-                    let is_dead_end = outgoing.len() == 1;
-                    if !is_dead_end {
-                        // Remove car mode from U-turns at non-dead-ends
-                        mode_mask &= !MODE_CAR;
-                    }
+                if is_uturn && !is_dead_end {
+                    // Remove car mode from U-turns at non-dead-ends
+                    mode_mask &= !MODE_CAR;
                 }
 
                 // If no modes can use this turn, skip it
@@ -320,14 +327,65 @@ fn build_adjacency(
                     continue;
                 }
 
+                // === COMPUTE TURN GEOMETRY AND PENALTIES ===
+                //
+                // Get bearings for incoming and outgoing edges
+                // bearing_deci_deg is stored as u→v direction
+                //
+                // For incoming edge a (u→v where v=nbg_node):
+                //   - The bearing AT the intersection is the stored bearing
+                //
+                // For outgoing edge b (v→w where v=nbg_node):
+                //   - If b is stored as v→w, use the stored bearing
+                //   - If b is stored as w→v, we need the reverse bearing (+180°)
+
+                let from_bearing = from_edge.bearing_deci_deg;
+
+                // For outgoing, check if EBG node direction matches NBG edge direction
+                let to_bearing = if b_node.tail_nbg == to_edge.u_node {
+                    // EBG direction matches NBG: u→v, use stored bearing
+                    to_edge.bearing_deci_deg
+                } else {
+                    // EBG is reverse of NBG: need to flip bearing by 180°
+                    if to_edge.bearing_deci_deg == 65535 {
+                        65535 // Keep NA as NA
+                    } else {
+                        (to_edge.bearing_deci_deg + 1800) % 3600
+                    }
+                };
+
+                // Compute turn geometry
+                let geom = TurnGeometry::compute(from_bearing, to_bearing, via_has_signal, via_degree);
+
+                // Compute per-mode penalties
+                let mut penalty_ds_car = compute_turn_penalty(&geom, &car_penalty_config);
+                let mut penalty_ds_bike = compute_turn_penalty(&geom, &bike_penalty_config);
+                let penalty_ds_foot = compute_turn_penalty(&geom, &foot_penalty_config);
+
+                // Add explicit penalties from turn rules if any
+                if let Some(rule) = canonical_rules.get(&rule_key) {
+                    if rule.kind == TurnKind::Penalty {
+                        penalty_ds_car = penalty_ds_car.saturating_add(rule.penalty_ds_car);
+                        penalty_ds_bike = penalty_ds_bike.saturating_add(rule.penalty_ds_bike);
+                        // foot penalties from rules are rare but supported
+                    }
+                }
+
+                // Statistics
+                total_arcs += 1;
+                if penalty_ds_car > 0 && (mode_mask & MODE_CAR) != 0 {
+                    arcs_with_car_penalty += 1;
+                    total_car_penalty_ds += penalty_ds_car as u64;
+                }
+
                 // Get or create turn table entry
                 let turn_entry = TurnEntry {
                     mode_mask,
                     kind: canonical_rules.get(&rule_key).map(|r| r.kind).unwrap_or(TurnKind::None),
                     has_time_dep: canonical_rules.get(&rule_key).map(|r| r.has_time_dep).unwrap_or(false),
-                    penalty_ds_car: canonical_rules.get(&rule_key).map(|r| r.penalty_ds_car).unwrap_or(0),
-                    penalty_ds_bike: canonical_rules.get(&rule_key).map(|r| r.penalty_ds_bike).unwrap_or(0),
-                    penalty_ds_foot: canonical_rules.get(&rule_key).map(|r| r.penalty_ds_foot).unwrap_or(0),
+                    penalty_ds_car,
+                    penalty_ds_bike,
+                    penalty_ds_foot,
                     attrs_idx: 0,
                 };
 
@@ -355,6 +413,17 @@ fn build_adjacency(
                     .push((b_id, turn_idx));
             }
         }
+    }
+
+    // Print turn penalty statistics
+    println!("  Turn penalty statistics:");
+    println!("    Total arcs: {}", total_arcs);
+    println!("    Arcs with car penalty: {} ({:.1}%)",
+        arcs_with_car_penalty,
+        arcs_with_car_penalty as f64 * 100.0 / total_arcs.max(1) as f64);
+    if arcs_with_car_penalty > 0 {
+        println!("    Avg car penalty: {:.1}s",
+            total_car_penalty_ds as f64 / arcs_with_car_penalty as f64 / 10.0);
     }
 
     Ok((adjacency, turn_table))

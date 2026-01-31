@@ -57,20 +57,35 @@ After rebuilding step5/6/7/8, turn restrictions are now properly enforced.
 
 ---
 
-**Turn Penalty Cost Model (2026-01-25):** ← NEXT PRIORITY
+**Turn Penalty Cost Model (2026-01-31):** ✅ IMPLEMENTED
 
-**Root cause of remaining ~30% speed difference vs OSRM:**
+Implemented OSRM-compatible turn penalties using the exact sigmoid formula from car.lua.
 
-Butterfly is missing a **cost model** for turns. OSRM's timing advantage comes from implicit turn costs layered on the graph. This is standard transport modeling, not magic.
+**Results:**
+- Brussels-Antwerp: 33.7 min (was 29 min without penalties)
+- Gap vs OSRM: **~16% faster** (was 27% faster)
+- Route distance: 32.9 km (was 37.6 km) - router now avoids left turns
+
+**OSRM Configuration (from car.lua):**
+- `turn_penalty = 7.5s` (max penalty for 180° turns via sigmoid)
+- `turn_bias = 1.075` (right turns cheaper in right-hand traffic)
+- `u_turn_penalty = 20s` (additional penalty for U-turns)
+- Penalties only at intersections (degree >= 3)
+
+**Files changed:**
+- `src/ebg/turn_penalty.rs` - OSRM sigmoid formula implementation
+- `src/ebg/mod.rs` - Integration into EBG construction
+- `src/step5.rs` - Turn penalties applied from turn table
+- `src/validate/step5.rs` - Updated validation
 
 **Current state:**
 - ✅ OSM turn restrictions (no_left_turn, only_straight_on, etc.) - ENFORCED
 - ✅ U-turn bans at non-dead-ends - ENFORCED
 - ✅ Mode-specific road access - ENFORCED
-- ❌ Turn angle penalties (left/right/u-turn delays)
-- ❌ Traffic signal delays
-- ❌ Intersection complexity costs
-- ❌ Road class transition penalties
+- ✅ Turn angle penalties (OSRM sigmoid) - ENFORCED
+- ✅ Left/right asymmetry (turn_bias) - ENFORCED
+- ⚠️ Traffic signal delays - NOT YET (need node tags)
+- ⚠️ Road class transition penalties - NOT YET
 
 ---
 

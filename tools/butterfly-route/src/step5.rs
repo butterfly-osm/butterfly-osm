@@ -346,6 +346,14 @@ fn generate_mode_data(
     }
 
     // Compute turn penalties
+    // Turn penalties are now geometry-based (computed in step4 EBG construction)
+    // Every turn has a penalty stored in the turn table based on:
+    // - Turn angle (straight/right/left/u-turn)
+    // - Intersection complexity (degree)
+    // - Traffic signals (future: not yet implemented)
+    let mut total_penalty_ds = 0u64;
+    let mut arcs_with_penalty = 0usize;
+
     for arc_idx in 0..n_arcs {
         let turn_idx = ebg_csr.turn_idx[arc_idx] as usize;
         let turn_entry = &turn_table.entries[turn_idx];
@@ -357,19 +365,26 @@ fn generate_mode_data(
             continue;
         }
 
-        // Check if this is a Penalty turn
-        if turn_entry.kind == TurnKind::Penalty {
-            // Extract per-mode penalty
-            let penalty_ds = match mode {
-                Mode::Car => turn_entry.penalty_ds_car,
-                Mode::Bike => turn_entry.penalty_ds_bike,
-                Mode::Foot => turn_entry.penalty_ds_foot,
-            };
-            penalties[arc_idx] = penalty_ds;
-        } else {
-            // Ban or Only (allowed) - no penalty (ban enforced by bitmask)
-            penalties[arc_idx] = 0;
+        // Extract per-mode penalty (geometry-based + explicit from OSM rules)
+        let penalty_ds = match mode {
+            Mode::Car => turn_entry.penalty_ds_car,
+            Mode::Bike => turn_entry.penalty_ds_bike,
+            Mode::Foot => turn_entry.penalty_ds_foot,
+        };
+        penalties[arc_idx] = penalty_ds;
+
+        if penalty_ds > 0 {
+            total_penalty_ds += penalty_ds as u64;
+            arcs_with_penalty += 1;
         }
+    }
+
+    // Print turn penalty statistics
+    if arcs_with_penalty > 0 {
+        println!("  Turn penalties: {} arcs ({:.1}%), avg {:.1}s",
+            arcs_with_penalty,
+            arcs_with_penalty as f64 * 100.0 / n_arcs as f64,
+            total_penalty_ds as f64 / arcs_with_penalty as f64 / 10.0);
     }
 
     // Debug output
