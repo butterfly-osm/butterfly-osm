@@ -1415,17 +1415,29 @@ Turns only matter at **junctions**. Between junctions, travel is edge-weight onl
      NBG CH:  3-4x FASTER than OSRM!
    ```
 
-4. ⬜ **Implement junction expansion** ← NEXT STEP
-   - At bucket M2M query time:
-     - Forward search: at turn-relevant node, expand to (node, in_edge) states
-     - Backward search: same expansion
-   - Only expand at junctions with non-trivial turn costs
+4. ⚠️ **Junction expansion infrastructure** ← IN PROGRESS
+   - ✅ `TurnRestrictionIndex`: Loads turn rules, maps OSM→compact node IDs
+   - ✅ `NbgEdgeWayMap`: Maps NBG edges (tail,head) to way_id for restriction checking
+   - ✅ `is_turn_allowed()`: Checks ban/only restrictions at junctions
+   - ✅ Unit tests passing
 
-4. ⬜ **Benchmark**
-   - Target: 10×10 < 10ms (match OSRM)
-   - Target: 100×100 < 50ms
+   **Challenge discovered**: CH shortcuts hide intermediate nodes
+   - A shortcut u→w might pass through turn-relevant node v
+   - Without unpacking, we can't check the turn at v
+   - Full unpacking defeats the speed advantage
 
-**This is the single most promising way to close the architectural gap without approximation.**
+   **Current recommendation**:
+   - NBG CH: Fast (3-4x faster than OSRM), approximate (ignores 0.3% restricted junctions)
+   - EBG CCH: Slower (4-7x slower than OSRM), exact turn handling
+   - Choose based on use case: analytics vs navigation
+
+5. ⬜ **Full junction expansion** (optional future work)
+   - Mark shortcuts that pass through restricted nodes during CH construction
+   - Split such shortcuts at query time
+   - Or use MLD-style approach with cell-level turn handling
+
+**NBG CH already beats OSRM by 3-4x without junction expansion. The 0.3% restriction rate means
+approximation error is acceptable for many use cases (logistics, analytics, coverage).**
 
 ---
 
