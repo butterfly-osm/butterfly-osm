@@ -402,6 +402,55 @@ python3 scripts/osrm_matrix_bench.py
 
 ---
 
+## Benchmark Comparison Policy
+
+**ALWAYS compare to external baselines when benchmarking on Belgium:**
+
+| API Endpoint | Compare Against | How to Run |
+|--------------|----------------|------------|
+| `/table` (distance matrix) | **OSRM CH** (docker, port 5050) | `python3 scripts/osrm_matrix_bench.py` |
+| `/isochrone` | **Valhalla** | See below |
+
+### OSRM Setup (for /table comparison)
+```bash
+# One-time setup
+docker pull osrm/osrm-backend
+docker run -t -v "${PWD}/data:/data" osrm/osrm-backend osrm-extract -p /opt/car.lua /data/belgium.osm.pbf
+docker run -t -v "${PWD}/data:/data" osrm/osrm-backend osrm-partition /data/belgium.osrm
+docker run -t -v "${PWD}/data:/data" osrm/osrm-backend osrm-customize /data/belgium.osrm
+
+# Run (CH profile)
+docker run -t -i -p 5050:5000 -v "${PWD}/data:/data" osrm/osrm-backend osrm-routed --algorithm ch /data/belgium.osrm
+```
+
+### Valhalla Setup (for /isochrone comparison)
+```bash
+# One-time setup with valhalla docker
+docker pull ghcr.io/gis-ops/valhalla:latest
+mkdir -p valhalla_tiles
+# Create valhalla config and build tiles from belgium.pbf
+# See: https://github.com/valhalla/valhalla/blob/master/docs/api/isochrone/api-reference.md
+
+# Run Valhalla
+docker run -d -p 8002:8002 -v "${PWD}/valhalla_tiles:/custom_files" ghcr.io/gis-ops/valhalla:latest
+```
+
+### Comparison Benchmarks
+```bash
+# /table comparison: Butterfly vs OSRM CH
+./target/release/butterfly-bench bucket-m2m --data-dir ./data/belgium --sizes 10,25,50,100
+
+# /isochrone comparison: Butterfly vs Valhalla
+./target/release/butterfly-bench pathological-origins --data-dir ./data/belgium --mode car
+./target/release/butterfly-bench e2e-isochrone --data-dir ./data/belgium --mode car
+```
+
+**Targets:**
+- `/table`: Within 2-3x of OSRM CH for same matrix sizes
+- `/isochrone`: Faster than Valhalla for equivalent thresholds (Valhalla typically 200-500ms for 30-min)
+
+---
+
 ## OSRM Algorithm Analysis (many_to_many_ch.cpp)
 
 **CRITICAL: OSRM uses NO PARALLELISM in core matrix algorithm.**
