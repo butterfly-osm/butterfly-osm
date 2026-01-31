@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::formats::{Member, MemberKind, Relation, RelationsFile, Way, WaysFile};
 use crate::formats::{nodes_sa, nodes_si};
+use crate::formats::{NodeSignals, NodeSignalsFile};
 
 pub struct IngestConfig {
     pub input: PathBuf,
@@ -16,10 +17,12 @@ pub struct IngestConfig {
 
 pub struct IngestResult {
     pub nodes_count: u64,
+    pub signal_nodes_count: u64,
     pub ways_count: u64,
     pub relations_count: u64,
     pub nodes_sa_file: PathBuf,
     pub nodes_si_file: PathBuf,
+    pub node_signals_file: PathBuf,
     pub ways_file: PathBuf,
     pub relations_file: PathBuf,
 }
@@ -40,19 +43,28 @@ pub fn run_ingest(config: IngestConfig) -> Result<IngestResult> {
     let input_sha256 = compute_file_sha256(&config.input)?;
     println!("  ✓ SHA-256: {}", hex::encode(&input_sha256));
 
-    // Pass 1: Extract nodes
+    // Pass 1: Extract nodes (including traffic signals)
     println!("Pass 1/3: Processing nodes...");
-    let nodes = extract_nodes(&config.input)?;
-    println!("  ✓ Found {} nodes", nodes.len());
+    let node_result = extract_nodes(&config.input)?;
+    println!("  ✓ Found {} nodes", node_result.nodes.len());
+    println!(
+        "  ✓ Found {} traffic signal nodes",
+        node_result.signal_node_ids.len()
+    );
 
     let nodes_sa_file = config.outdir.join("nodes.sa");
     let nodes_si_file = config.outdir.join("nodes.si");
+    let node_signals_file = config.outdir.join("node_signals.bin");
 
-    nodes_sa::write(&nodes_sa_file, &nodes, &input_sha256)?;
+    nodes_sa::write(&nodes_sa_file, &node_result.nodes, &input_sha256)?;
     println!("  ✓ Wrote {}", nodes_sa_file.display());
 
-    nodes_si::write(&nodes_si_file, &nodes)?;
+    nodes_si::write(&nodes_si_file, &node_result.nodes)?;
     println!("  ✓ Wrote {}", nodes_si_file.display());
+
+    let signals = NodeSignals::new(node_result.signal_node_ids.clone());
+    NodeSignalsFile::write(&node_signals_file, &signals, &input_sha256)?;
+    println!("  ✓ Wrote {}", node_signals_file.display());
 
     // Pass 2: Extract ways
     println!("Pass 2/3: Processing ways...");
@@ -76,11 +88,13 @@ pub fn run_ingest(config: IngestConfig) -> Result<IngestResult> {
     println!("✅ Ingestion complete!");
 
     Ok(IngestResult {
-        nodes_count: nodes.len() as u64,
+        nodes_count: node_result.nodes.len() as u64,
+        signal_nodes_count: node_result.signal_node_ids.len() as u64,
         ways_count: ways.len() as u64,
         relations_count: relations.len() as u64,
         nodes_sa_file,
         nodes_si_file,
+        node_signals_file,
         ways_file,
         relations_file,
     })
@@ -110,21 +124,50 @@ fn compute_file_sha256<P: AsRef<Path>>(path: P) -> Result<[u8; 32]> {
     Ok(hash)
 }
 
-/// Extract all nodes from PBF
-fn extract_nodes<P: AsRef<Path>>(path: P) -> Result<Vec<(i64, f64, f64)>> {
+/// Result of node extraction including traffic signals
+struct NodeExtractionResult {
+    nodes: Vec<(i64, f64, f64)>,
+    signal_node_ids: Vec<i64>,
+}
+
+/// Extract all nodes from PBF, also collecting traffic signal node IDs
+fn extract_nodes<P: AsRef<Path>>(path: P) -> Result<NodeExtractionResult> {
     use std::sync::Mutex;
 
     let reader = ElementReader::from_path(path)?;
     let nodes = Mutex::new(Vec::new());
+    let signal_nodes = Mutex::new(Vec::new());
 
     reader
         .for_each(|element| {
             match element {
                 Element::Node(node) => {
-                    nodes.lock().unwrap().push((node.id(), node.lat(), node.lon()));
+                    nodes
+                        .lock()
+                        .unwrap()
+                        .push((node.id(), node.lat(), node.lon()));
+
+                    // Check for traffic signal tag
+                    for (key, value) in node.tags() {
+                        if key == "highway" && value == "traffic_signals" {
+                            signal_nodes.lock().unwrap().push(node.id());
+                            break;
+                        }
+                    }
                 }
                 Element::DenseNode(node) => {
-                    nodes.lock().unwrap().push((node.id(), node.lat(), node.lon()));
+                    nodes
+                        .lock()
+                        .unwrap()
+                        .push((node.id(), node.lat(), node.lon()));
+
+                    // Check for traffic signal tag
+                    for (key, value) in node.tags() {
+                        if key == "highway" && value == "traffic_signals" {
+                            signal_nodes.lock().unwrap().push(node.id());
+                            break;
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -132,11 +175,17 @@ fn extract_nodes<P: AsRef<Path>>(path: P) -> Result<Vec<(i64, f64, f64)>> {
         .context("Failed to read nodes")?;
 
     let mut nodes = nodes.into_inner().unwrap();
+    let mut signal_node_ids = signal_nodes.into_inner().unwrap();
 
     // Sort by ID for determinism
     nodes.sort_by_key(|(id, _, _)| *id);
+    signal_node_ids.sort_unstable();
+    signal_node_ids.dedup();
 
-    Ok(nodes)
+    Ok(NodeExtractionResult {
+        nodes,
+        signal_node_ids,
+    })
 }
 
 /// Extract all ways from PBF

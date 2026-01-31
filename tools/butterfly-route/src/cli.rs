@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::ingest::{run_ingest, IngestConfig};
 use crate::validate::{verify_lock_conditions, validate_step4, validate_step5, validate_step6, validate_step6_lifted, validate_step7, Counts, LockFile};
@@ -101,6 +101,10 @@ pub enum Commands {
         /// Path to nbg.node_map from Step 3
         #[arg(long)]
         nbg_node_map: PathBuf,
+
+        /// Path to node_signals.bin from Step 1 (optional)
+        #[arg(long)]
+        node_signals: Option<PathBuf>,
 
         /// Path to way_attrs.car.bin from Step 2
         #[arg(long)]
@@ -1007,6 +1011,7 @@ impl Cli {
                 nbg_csr,
                 nbg_geo,
                 nbg_node_map,
+                node_signals,
                 way_attrs_car,
                 way_attrs_bike,
                 way_attrs_foot,
@@ -1015,10 +1020,19 @@ impl Cli {
                 turn_rules_foot,
                 outdir,
             } => {
+                // Default to data directory sibling of nbg_csr if not provided
+                let signals_path = node_signals.clone().unwrap_or_else(|| {
+                    nbg_csr
+                        .parent()
+                        .unwrap_or(Path::new("."))
+                        .join("node_signals.bin")
+                });
+
                 let config = EbgConfig {
                     nbg_csr_path: nbg_csr.clone(),
                     nbg_geo_path: nbg_geo.clone(),
                     nbg_node_map_path: nbg_node_map.clone(),
+                    node_signals_path: signals_path,
                     way_attrs_car_path: way_attrs_car.clone(),
                     way_attrs_bike_path: way_attrs_bike.clone(),
                     way_attrs_foot_path: way_attrs_foot.clone(),

@@ -4,6 +4,7 @@
 pub mod crc;
 pub mod nodes_sa;
 pub mod nodes_si;
+pub mod node_signals;
 pub mod ways;
 pub mod relations;
 
@@ -55,3 +56,4 @@ pub use hybrid_state::{HybridState, HybridStateFile};
 pub use order_ebg::{OrderEbg, OrderEbgFile};
 pub use cch_topo::{CchTopo, CchTopoFile, Shortcut};
 pub use cch_weights::{CchWeights, CchWeightsFile};
+pub use node_signals::{NodeSignals, NodeSignalsFile};

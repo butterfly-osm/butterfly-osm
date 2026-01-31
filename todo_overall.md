@@ -430,10 +430,14 @@ turn_penalty = base_angle_cost(angle)
 | Sharp turn | 120° ≤ |θ| < 150° | 10s |
 | U-turn | |θ| ≥ 150° | 30s |
 
-**Signal delays**:
-| Intersection Type | Delay |
-|------------------|-------|
-| Traffic signal | 15s average |
+**Signal delays** (✅ IMPLEMENTED 2026-01-31):
+| Mode | Delay at Signal |
+|------|-----------------|
+| Car | 8s |
+| Bike | 5s |
+| Foot | 4s |
+
+12,979 traffic signals extracted from Belgium PBF (`node_signals.bin`).
 | Stop sign | 5s |
 | Give way | 2s |
 | No control | 0s |
@@ -469,7 +473,14 @@ After implementation:
 | Route speed vs OSRM | 27% faster | ~5% (margin of error) |
 | Turn delays enforced | None | Realistic |
 | Left turn avoidance | None | Yes (urban) |
-| Signal delay modeling | None | 15s average |
+| Signal delay modeling | None | 8s/signal (✅ implemented) |
+
+**Actual Results (Brussels→Antwerp):**
+- Without turn penalties: 29 min
+- With turn penalties: 33.7 min
+- With turn penalties + signals: 34.9 min
+- OSRM reference: ~40 min
+- **Gap: ~12.8% faster than OSRM**
 
 ---
 

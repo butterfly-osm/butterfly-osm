@@ -27,6 +27,7 @@ pub struct EbgConfig {
     pub nbg_csr_path: PathBuf,
     pub nbg_geo_path: PathBuf,
     pub nbg_node_map_path: PathBuf,
+    pub node_signals_path: PathBuf,
     pub way_attrs_car_path: PathBuf,
     pub way_attrs_bike_path: PathBuf,
     pub way_attrs_foot_path: PathBuf,
@@ -82,6 +83,16 @@ pub fn build_ebg(config: EbgConfig) -> Result<EbgResult> {
     let nbg_node_map = NbgNodeMapFile::read_map(&config.nbg_node_map_path)?;
     println!("  ✓ NBG loaded: {} nodes, {} edges", nbg_csr.n_nodes, nbg_geo.n_edges_und);
 
+    // 1b. Load traffic signal nodes
+    let node_signals = if config.node_signals_path.exists() {
+        let signals = NodeSignalsFile::read(&config.node_signals_path)?;
+        println!("  ✓ Loaded {} traffic signal nodes", signals.len());
+        signals
+    } else {
+        println!("  ⚠ No node_signals.bin found, traffic signals disabled");
+        NodeSignals::new(vec![])
+    };
+
     // 2. Load way attributes (to determine access per mode)
     println!("Loading way attributes...");
     let way_attrs_car = load_way_attrs(&config.way_attrs_car_path)?;
@@ -112,6 +123,7 @@ pub fn build_ebg(config: EbgConfig) -> Result<EbgResult> {
         &nbg_csr,
         &nbg_geo,
         &nbg_node_map,
+        &node_signals,
         &ebg_nodes,
         &canonical_rules,
         &way_attrs_car,
@@ -214,6 +226,7 @@ fn build_adjacency(
     nbg_csr: &NbgCsr,
     nbg_geo: &NbgGeo,
     nbg_node_map: &NbgNodeMap,
+    node_signals: &NodeSignals,
     ebg_nodes: &[EbgNode],
     canonical_rules: &HashMap<TurnRuleKey, CanonicalTurnRule>,
     way_attrs_car: &HashMap<i64, WayAttr>,
@@ -257,9 +270,9 @@ fn build_adjacency(
         // Intersection degree for complexity penalty
         let via_degree = (incoming.len() + outgoing.len()) as u8;
 
-        // Check if via node has traffic signal (would need node tags - for now, false)
-        // TODO: Load highway=traffic_signals from node tags in a future iteration
-        let via_has_signal = false;
+        // Check if via node has traffic signal
+        let via_node_osm_for_signal = nbg_node_to_osm_id(nbg_node, nbg_node_map);
+        let via_has_signal = node_signals.has_signal(via_node_osm_for_signal);
 
         // For each incoming EBG edge (a = u→nbg_node)
         for &a_id in &incoming {

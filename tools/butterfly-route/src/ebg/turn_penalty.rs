@@ -16,6 +16,7 @@ pub struct TurnGeometry {
     pub angle_deg: i16,          // Signed turn angle (-180 to +180)
     pub is_uturn: bool,
     pub via_degree: u8,          // Intersection complexity
+    pub via_has_signal: bool,    // Traffic signal at intersection
 }
 
 impl TurnGeometry {
@@ -23,11 +24,12 @@ impl TurnGeometry {
     ///
     /// from_bearing: bearing of incoming edge at intersection (deci-degrees 0-3599)
     /// to_bearing: bearing of outgoing edge at intersection (deci-degrees 0-3599)
+    /// via_has_signal: whether the via node has a traffic signal
     /// degree: in_degree + out_degree at via node
     pub fn compute(
         from_bearing_deci: u16,
         to_bearing_deci: u16,
-        _via_has_signal: bool,  // Reserved for future use
+        via_has_signal: bool,
         via_degree: u8,
     ) -> Self {
         // Handle NA bearings (65535)
@@ -38,6 +40,7 @@ impl TurnGeometry {
                 angle_deg: 0,
                 is_uturn: false,
                 via_degree,
+                via_has_signal,
             };
         }
 
@@ -67,6 +70,7 @@ impl TurnGeometry {
             angle_deg,
             is_uturn,
             via_degree,
+            via_has_signal,
         }
     }
 }
@@ -87,6 +91,10 @@ pub struct TurnPenaltyConfig {
     /// Minimum intersection degree to apply turn penalty
     /// (OSRM only applies at complex intersections with >2 roads)
     pub min_degree_for_penalty: u8,
+
+    /// Traffic signal delay in deciseconds (typical: 15-30 seconds)
+    /// OSRM uses variable signal penalties based on intersection complexity
+    pub signal_delay_ds: u32,
 }
 
 impl TurnPenaltyConfig {
@@ -97,6 +105,7 @@ impl TurnPenaltyConfig {
             turn_bias: 1.075,          // Slight right-turn preference
             u_turn_penalty_ds: 200,    // 20 seconds (OSRM default)
             min_degree_for_penalty: 3, // Only at intersections (not straight roads)
+            signal_delay_ds: 80,       // 8 seconds average signal wait
         }
     }
 
@@ -107,6 +116,7 @@ impl TurnPenaltyConfig {
             turn_bias: 1.4,            // Bikes prefer right turns more
             u_turn_penalty_ds: 50,     // 5 seconds
             min_degree_for_penalty: 3,
+            signal_delay_ds: 50,       // 5 seconds (bikes often filter)
         }
     }
 
@@ -119,6 +129,7 @@ impl TurnPenaltyConfig {
             turn_bias: 1.0,            // Symmetric - no left/right preference
             u_turn_penalty_ds: 0,      // No U-turn penalty for walking
             min_degree_for_penalty: 4, // Only at complex intersections
+            signal_delay_ds: 40,       // 4 seconds pedestrian signal wait
         }
     }
 }
@@ -135,6 +146,8 @@ impl TurnPenaltyConfig {
 /// - Is asymmetric based on turn_bias (right turns slightly cheaper)
 ///
 /// For pedestrians (turn_bias == 1.0), we use a flat crossing penalty instead.
+///
+/// Traffic signals add an additional delay (typically 8 seconds for cars).
 pub fn compute_turn_penalty(geom: &TurnGeometry, config: &TurnPenaltyConfig) -> u32 {
     // Only apply at intersections (not simple road continuations)
     if geom.via_degree < config.min_degree_for_penalty {
@@ -142,30 +155,37 @@ pub fn compute_turn_penalty(geom: &TurnGeometry, config: &TurnPenaltyConfig) -> 
     }
 
     // Skip if no penalty configured
-    if config.turn_penalty_ds == 0 {
+    if config.turn_penalty_ds == 0 && config.signal_delay_ds == 0 {
         return 0;
     }
+
+    let mut penalty = 0u32;
 
     // For pedestrians (turn_bias == 1.0), use flat crossing penalty
     // Pedestrians don't care about turn angle, just intersection complexity
     if (config.turn_bias - 1.0).abs() < 0.001 {
-        return config.turn_penalty_ds;
+        penalty = config.turn_penalty_ds;
+    } else if config.turn_penalty_ds > 0 {
+        let angle = geom.angle_deg as f64;
+        let turn_bias = config.turn_bias;
+
+        // OSRM sigmoid formula
+        // The formula uses -angle because OSRM convention is opposite
+        // Positive angle = left turn in OSRM, right turn in our convention
+        let exponent = -((13.0 / turn_bias) * (-angle / 180.0) - 6.5 * turn_bias);
+        let sigmoid = 1.0 / (1.0 + exponent.exp());
+
+        penalty = (config.turn_penalty_ds as f64 * sigmoid).round() as u32;
+
+        // Add U-turn penalty
+        if geom.is_uturn {
+            penalty = penalty.saturating_add(config.u_turn_penalty_ds);
+        }
     }
 
-    let angle = geom.angle_deg as f64;
-    let turn_bias = config.turn_bias;
-
-    // OSRM sigmoid formula
-    // The formula uses -angle because OSRM convention is opposite
-    // Positive angle = left turn in OSRM, right turn in our convention
-    let exponent = -((13.0 / turn_bias) * (-angle / 180.0) - 6.5 * turn_bias);
-    let sigmoid = 1.0 / (1.0 + exponent.exp());
-
-    let mut penalty = (config.turn_penalty_ds as f64 * sigmoid).round() as u32;
-
-    // Add U-turn penalty
-    if geom.is_uturn {
-        penalty = penalty.saturating_add(config.u_turn_penalty_ds);
+    // Add traffic signal delay
+    if geom.via_has_signal {
+        penalty = penalty.saturating_add(config.signal_delay_ds);
     }
 
     penalty
@@ -240,5 +260,40 @@ mod tests {
         assert!(left_penalty > right_penalty,
             "left turn ({}ds) should cost more than right turn ({}ds)",
             left_penalty, right_penalty);
+    }
+
+    #[test]
+    fn test_traffic_signal_delay() {
+        let config = TurnPenaltyConfig::car();
+
+        // Straight at signalized intersection: signal delay only
+        let geom_no_signal = TurnGeometry::compute(0, 0, false, 4);
+        let geom_with_signal = TurnGeometry::compute(0, 0, true, 4);
+
+        let penalty_no = compute_turn_penalty(&geom_no_signal, &config);
+        let penalty_with = compute_turn_penalty(&geom_with_signal, &config);
+
+        // With signal should add signal_delay_ds
+        assert_eq!(
+            penalty_with - penalty_no,
+            config.signal_delay_ds,
+            "signal should add {}ds delay, got {} vs {}",
+            config.signal_delay_ds,
+            penalty_with,
+            penalty_no
+        );
+
+        // Left turn at signalized intersection: turn penalty + signal delay
+        let left_no_signal = TurnGeometry::compute(0, 2700, false, 4);
+        let left_with_signal = TurnGeometry::compute(0, 2700, true, 4);
+
+        let penalty_left_no = compute_turn_penalty(&left_no_signal, &config);
+        let penalty_left_with = compute_turn_penalty(&left_with_signal, &config);
+
+        assert_eq!(
+            penalty_left_with - penalty_left_no,
+            config.signal_delay_ds,
+            "signal should add consistent delay to left turn"
+        );
     }
 }
