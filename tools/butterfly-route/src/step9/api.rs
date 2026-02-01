@@ -1,20 +1,24 @@
 //! HTTP API handlers with Axum and Utoipa
 
 use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
+    body::Body,
+    extract::{DefaultBodyLimit, Path, Query, State},
+    http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tokio_stream::StreamExt;
 use tower_http::cors::{Any, CorsLayer};
 use utoipa::{OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::profile_abi::Mode;
 use crate::matrix::bucket_ch::{table_bucket_parallel, table_bucket_full_flat};
+use crate::matrix::arrow_stream::{MatrixTile, tiles_to_record_batch, record_batch_to_bytes, ARROW_STREAM_CONTENT_TYPE};
 
 use super::geometry::{build_geometry, build_isochrone_geometry, Point, RouteGeometry};
 use super::query::CchQuery;
@@ -50,6 +54,11 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    // Streaming endpoint needs larger body limit for 50k+ coordinates
+    let stream_route = Router::new()
+        .route("/table/stream", post(table_stream))
+        .layer(DefaultBodyLimit::max(256 * 1024 * 1024)); // 256MB limit
+
     Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .route("/route", get(route))
@@ -57,6 +66,8 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
         .route("/table/v1/:profile/*coords", get(table_osrm))
         // POST alternative for table (easier for large coordinate lists)
         .route("/table", post(table_post))
+        // Arrow streaming for large matrices (50k×50k+)
+        .merge(stream_route)
         .route("/isochrone", get(isochrone))
         .route("/health", get(health))
         .route("/debug/compare", get(debug_compare))
@@ -505,6 +516,196 @@ async fn compute_table_bucket_m2m(
         sources: Some(source_waypoints),
         destinations: Some(dest_waypoints),
     }).into_response()
+}
+
+// ============ Arrow Streaming Table Endpoint ============
+
+/// Request for streaming table computation
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct TableStreamRequest {
+    /// Source coordinates [[lon, lat], ...]
+    pub sources: Vec<[f64; 2]>,
+    /// Destination coordinates [[lon, lat], ...]
+    pub destinations: Vec<[f64; 2]>,
+    /// Transport mode: car, bike, or foot
+    pub mode: String,
+    /// Tile size for sources (default 1000)
+    #[serde(default = "default_tile_size")]
+    pub src_tile_size: usize,
+    /// Tile size for destinations (default 1000)
+    #[serde(default = "default_tile_size")]
+    pub dst_tile_size: usize,
+}
+
+fn default_tile_size() -> usize { 1000 }
+
+/// Arrow streaming endpoint for large matrices
+///
+/// Computes distance matrix in tiles and streams results as Apache Arrow IPC.
+/// Use this for matrices larger than 10k×10k where JSON would be too large.
+///
+/// Response: Arrow IPC stream with tiles containing:
+/// - src_block_start, dst_block_start: tile offsets
+/// - src_block_len, dst_block_len: tile dimensions
+/// - durations_ms: packed u32 distances in milliseconds
+async fn table_stream(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<TableStreamRequest>,
+) -> impl IntoResponse {
+    let mode = match parse_mode(&req.mode) {
+        Ok(m) => m,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
+    };
+
+    if req.sources.is_empty() || req.destinations.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse {
+            error: "sources and destinations cannot be empty".into()
+        })).into_response();
+    }
+
+    let mode_data = state.get_mode(mode);
+    let n_nodes = mode_data.cch_topo.n_nodes as usize;
+
+    // Convert all sources to rank space, keeping track of valid indices
+    let mut sources_rank: Vec<u32> = Vec::with_capacity(req.sources.len());
+    let mut valid_src_indices: Vec<usize> = Vec::with_capacity(req.sources.len());
+    for (i, [lon, lat]) in req.sources.iter().enumerate() {
+        if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &mode_data.mask, 10) {
+            let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
+            if filtered != u32::MAX {
+                let rank = mode_data.order.perm[filtered as usize];
+                sources_rank.push(rank);
+                valid_src_indices.push(i);
+            }
+        }
+    }
+
+    // Convert all destinations to rank space
+    let mut targets_rank: Vec<u32> = Vec::with_capacity(req.destinations.len());
+    let mut valid_dst_indices: Vec<usize> = Vec::with_capacity(req.destinations.len());
+    for (i, [lon, lat]) in req.destinations.iter().enumerate() {
+        if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &mode_data.mask, 10) {
+            let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
+            if filtered != u32::MAX {
+                let rank = mode_data.order.perm[filtered as usize];
+                targets_rank.push(rank);
+                valid_dst_indices.push(i);
+            }
+        }
+    }
+
+    let n_valid_sources = sources_rank.len();
+    let n_valid_targets = targets_rank.len();
+    let n_total_sources = req.sources.len();
+    let n_total_targets = req.destinations.len();
+    let src_tile_size = req.src_tile_size.min(n_total_sources).max(1);
+    let dst_tile_size = req.dst_tile_size.min(n_total_targets).max(1);
+
+    // Create channel for streaming tiles
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(8);
+
+    // Clone what we need for the spawned task
+    let up_adj_flat = mode_data.up_adj_flat.clone();
+    let down_rev_flat = mode_data.down_rev_flat.clone();
+
+    // Spawn compute task - compute tiles in parallel, stream each as it completes
+    tokio::task::spawn_blocking(move || {
+        // Generate all tile coordinates
+        let src_tiles: Vec<(usize, usize)> = (0..n_total_sources)
+            .step_by(src_tile_size)
+            .map(|start| (start, (start + src_tile_size).min(n_total_sources)))
+            .collect();
+
+        let dst_tiles: Vec<(usize, usize)> = (0..n_total_targets)
+            .step_by(dst_tile_size)
+            .map(|start| (start, (start + dst_tile_size).min(n_total_targets)))
+            .collect();
+
+        // Create list of all tile coordinates
+        let all_tiles: Vec<(usize, usize, usize, usize)> = src_tiles.iter()
+            .flat_map(|&(ss, se)| dst_tiles.iter().map(move |&(ds, de)| (ss, se, ds, de)))
+            .collect();
+
+        // Use rayon's for_each to compute and stream tiles as they complete
+        let tx_clone = tx.clone();
+        all_tiles.par_iter().for_each(|&(src_start, src_end, dst_start, dst_end)| {
+            let tile_rows = src_end - src_start;
+            let tile_cols = dst_end - dst_start;
+
+            // Extract sources for this tile
+            let mut tile_src_ranks: Vec<u32> = Vec::new();
+            let mut tile_src_orig_indices: Vec<usize> = Vec::new();
+
+            for (valid_idx, &orig_idx) in valid_src_indices.iter().enumerate() {
+                if orig_idx >= src_start && orig_idx < src_end {
+                    tile_src_ranks.push(sources_rank[valid_idx]);
+                    tile_src_orig_indices.push(orig_idx);
+                }
+            }
+
+            // Extract destinations for this tile
+            let mut tile_dst_ranks: Vec<u32> = Vec::new();
+            let mut tile_dst_orig_indices: Vec<usize> = Vec::new();
+
+            for (valid_idx, &orig_idx) in valid_dst_indices.iter().enumerate() {
+                if orig_idx >= dst_start && orig_idx < dst_end {
+                    tile_dst_ranks.push(targets_rank[valid_idx]);
+                    tile_dst_orig_indices.push(orig_idx);
+                }
+            }
+
+            // Build output tile
+            let mut durations_ms = vec![u32::MAX; tile_rows * tile_cols];
+
+            if !tile_src_ranks.is_empty() && !tile_dst_ranks.is_empty() {
+                // Compute this small tile
+                let (tile_matrix, _) = table_bucket_full_flat(
+                    n_nodes,
+                    &up_adj_flat,
+                    &down_rev_flat,
+                    &tile_src_ranks,
+                    &tile_dst_ranks,
+                );
+
+                // Map computed distances to output positions
+                for (tile_src_idx, &orig_src_idx) in tile_src_orig_indices.iter().enumerate() {
+                    let out_row = orig_src_idx - src_start;
+
+                    for (tile_dst_idx, &orig_dst_idx) in tile_dst_orig_indices.iter().enumerate() {
+                        let out_col = orig_dst_idx - dst_start;
+                        let d = tile_matrix[tile_src_idx * tile_dst_ranks.len() + tile_dst_idx];
+                        durations_ms[out_row * tile_cols + out_col] =
+                            if d == u32::MAX { u32::MAX } else { d * 100 };
+                    }
+                }
+            }
+
+            let tile = MatrixTile::from_flat(
+                src_start as u32,
+                dst_start as u32,
+                tile_rows as u16,
+                tile_cols as u16,
+                &durations_ms,
+            );
+
+            // Stream this tile immediately
+            if let Ok(batch) = tiles_to_record_batch(&[tile]) {
+                if let Ok(bytes) = record_batch_to_bytes(&batch) {
+                    let _ = tx_clone.blocking_send(Ok(bytes));
+                }
+            }
+        });
+    });
+
+    // Convert receiver to stream
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+        .body(Body::from_stream(stream))
+        .unwrap()
+        .into_response()
 }
 
 /// Get the location (lon, lat) of an EBG node

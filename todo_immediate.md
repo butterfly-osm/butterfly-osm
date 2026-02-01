@@ -2,6 +2,32 @@
 
 ## Current Status
 
+**Arrow Streaming for Large Matrices (2026-02-01):** ✅ COMPLETE
+
+Implemented proper tile-by-tile Arrow IPC streaming for matrices up to 50k×50k.
+
+**Key Results:**
+| Size | Distances | Time | Throughput | First Byte | Data |
+|------|-----------|------|------------|------------|------|
+| 10k×10k | 100M | 24s | 4.1M/sec | 3.6s | 381 MB |
+| 50k×50k | 2.5B | 9.5 min | 4.4M/sec | 3.6s | 9.5 GB |
+
+**vs OSRM:**
+- 10k×10k: Butterfly 24s vs OSRM 33.6s → **28% faster**
+- 50k×50k: OSRM **crashes** (URL too long), Butterfly streams successfully
+
+**Implementation:**
+- `POST /table/stream` endpoint with 256MB body limit
+- Tiles computed in parallel using rayon (`par_iter().for_each`)
+- Each tile streamed immediately as Arrow IPC (no memory accumulation)
+- RAM overhead only ~2GB above baseline during 50k×50k
+
+**Files changed:**
+- `tools/butterfly-route/src/step9/api.rs` - Arrow streaming endpoint
+- `tools/butterfly-route/src/matrix/arrow_stream.rs` - Tile encoding
+
+---
+
 **Table API Rank Space Fix (2026-02-01):** ✅ CRITICAL FIX
 
 The `/table` endpoint was returning distances 2-5x longer than the `/route` endpoint for identical coordinate pairs.
