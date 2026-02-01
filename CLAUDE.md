@@ -336,22 +336,28 @@ else:
 
 ## Strategic Status (2026-02-01)
 
-**Isochrone Geometry: FIXED** ✅
+**Isochrone Geometry: CORRECT BUT NEEDS OPTIMIZATION** ⚠️
 
-Previously broken - convex/concave hull produced incorrect polygons.
+Sparse raster approach works but has two issues:
+1. **33ms latency** (stamps ALL 50k+ edges, needs frontier-local optimization)
+2. **4.8% test violations** (test semantics wrong - samples plane not roads)
 
-**Solution Implemented: Sparse Tile Rasterization + Boundary Tracing**
-- Stamp reachable road segments into sparse 30m tile grid
-- Apply local morphology (dilation/erosion for fillable regions)
-- Extract boundary via Moore-neighbor tracing (O(perimeter))
-- Consistency test: 4.8% violation rate (passes 15% threshold)
+**Current Implementation:**
+- Sparse tile rasterization + Moore boundary tracing (correct approach)
+- 30m cells, 2 dilations, 1 erosion
+- Stamps ALL reachable edges (slow)
+
+**Optimization Plan (D6-D9):**
+1. Fix test: sample SNAPPED road points, not random plane
+2. Frontier-local stamping: only stamp edges in frontier tile halo (33ms → 5-12ms)
+3. Two-resolution: coarse interior (40m), fine frontier (15m)
+4. Reduce morphology: 1 dilation, 0-1 erosion
+
+**Correct isochrone definition:**
+- Point P is "reachable" iff snap(P) has route time ≤ threshold
+- Polygon = buffered reachable roads (not arbitrary 2-D area)
 
 Run test: `cargo test -p butterfly-route test_isochrone_consistency -- --ignored --nocapture`
-
-**Requirements for correct isochrones:**
-1. 100% consistency: inside polygon ⟺ drive time ≤ threshold
-2. Follow road network (no convex approximations)
-3. Extremely fast (maintain 5ms p50, 1500+/sec bulk)
 
 **Completed:**
 - ✅ Exact turn-aware single truth model
