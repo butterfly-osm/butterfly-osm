@@ -20,7 +20,7 @@ use crate::profile_abi::Mode;
 use crate::matrix::bucket_ch::{table_bucket_parallel, table_bucket_full_flat, forward_build_buckets, backward_join_with_buckets};
 use crate::matrix::arrow_stream::{MatrixTile, tiles_to_record_batch, record_batch_to_bytes, ARROW_STREAM_CONTENT_TYPE};
 
-use super::geometry::{build_geometry, build_isochrone_geometry, Point, RouteGeometry};
+use super::geometry::{build_geometry, build_isochrone_geometry_concave, Point, RouteGeometry};
 use super::query::CchQuery;
 use super::state::ServerState;
 use super::unpack::unpack_path;
@@ -901,8 +901,14 @@ async fn isochrone(
         settled.push((original_id, dist));
     }
 
-    // Build isochrone geometry (uses original EBG node IDs)
-    let polygon = build_isochrone_geometry(&settled, time_ds, &state.ebg_nodes, &state.nbg_geo);
+    // Build isochrone geometry using frontier-based concave hull
+    let polygon = build_isochrone_geometry_concave(
+        &settled,
+        time_ds,
+        &mode_data.node_weights,
+        &state.ebg_nodes,
+        &state.nbg_geo,
+    );
 
     Json(IsochroneResponse {
         polygon,
@@ -959,8 +965,14 @@ async fn isochrone_wkb(
         settled.push((original_id, dist));
     }
 
-    // Build polygon as list of points
-    let points = build_isochrone_geometry(&settled, time_ds, &state.ebg_nodes, &state.nbg_geo);
+    // Build polygon using frontier-based concave hull
+    let points = build_isochrone_geometry_concave(
+        &settled,
+        time_ds,
+        &mode_data.node_weights,
+        &state.ebg_nodes,
+        &state.nbg_geo,
+    );
 
     // Convert to ContourResult format for WKB encoding
     let outer_ring: Vec<(f64, f64)> = points.iter().map(|p| (p.lon, p.lat)).collect();
@@ -1042,8 +1054,14 @@ async fn isochrone_bulk(
                 settled.push((original_id, dist));
             }
 
-            // Build polygon
-            let points = build_isochrone_geometry(&settled, time_ds, &state.ebg_nodes, &state.nbg_geo);
+            // Build polygon using frontier-based concave hull
+            let points = build_isochrone_geometry_concave(
+                &settled,
+                time_ds,
+                &mode_data.node_weights,
+                &state.ebg_nodes,
+                &state.nbg_geo,
+            );
             let outer_ring: Vec<(f64, f64)> = points.iter().map(|p| (p.lon, p.lat)).collect();
             let contour = ContourResult {
                 outer_ring,
@@ -1244,7 +1262,7 @@ thread_local! {
 
 /// Run PHAST bounded query using thread-local state
 /// Returns Vec<(rank, dist)> of settled nodes only - avoids 9.6MB output allocation
-fn run_phast_bounded_fast(
+pub fn run_phast_bounded_fast(
     cch_topo: &crate::formats::CchTopo,
     cch_weights: &super::state::CchWeights,
     origin_rank: u32,
