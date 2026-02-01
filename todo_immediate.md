@@ -4,8 +4,9 @@
 
 **Isochrones: SOLVED** ✅
 - 5ms p50 latency (was 90ms) - **18x improvement**
-- 815 queries/sec throughput (8 threads)
-- Block-gated PHAST + thread-local state
+- Individual: 815 queries/sec (8 threads)
+- Bulk endpoint: **1526 iso/sec** (1.9x faster than individual)
+- Block-gated PHAST + thread-local state + WKB streaming
 
 **Matrices: Gap shrinks at scale, Butterfly WINS at 10k+**
 | Size | Butterfly | OSRM | Ratio |
@@ -18,7 +19,7 @@ At scale, Arrow streaming + parallel tiling beats OSRM's single-threaded approac
 
 ---
 
-## 🔥 OPTIMIZATION RESULTS (2026-02-01) - A1, B1, C1 DONE ✅
+## 🔥 OPTIMIZATION RESULTS (2026-02-01) - ALL MAJOR ITEMS DONE ✅
 
 ### Executive Summary (After A1+B1+C1 Fixes)
 
