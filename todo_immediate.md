@@ -71,7 +71,10 @@ src_blocks.par_iter().for_each(|src_block| {
   - Only ~3% of visited nodes have no DOWN edges (most upward-visited nodes are high-rank)
   - The can_meet() check overhead offsets the bucket reduction
   - Reverted: not worth the code complexity
-- [ ] **A3: Prefetching** - `_mm_prefetch` in relax for `entries[v]` and `handles[v]`
+- [x] **A3: Prefetching** - TESTED, NOT BENEFICIAL
+  - Added software prefetching to forward/backward search loops
+  - No measurable improvement (hardware prefetcher already effective)
+  - Reverted: adds complexity without benefit
 
 ### B) Isochrones - Eliminate Allocation Overhead
 
