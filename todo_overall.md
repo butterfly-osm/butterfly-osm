@@ -563,3 +563,58 @@ Phase 3: Forward searches (SEQUENTIAL)
 
 **Result:** Edge-based CCH with exact turn handling is **1.4x slower** than OSRM at scale.
 This is excellent given we have 2.5x more nodes and exact turn restrictions.
+
+---
+
+## Arrow Streaming for Large Matrices (2026-02-01) ✅ COMPLETE
+
+### The Problem
+
+OSRM's GET-based API cannot handle matrices larger than ~10k×10k (URL length limits).
+Butterfly needed a streaming solution for massive matrices (50k×50k = 2.5B distances).
+
+### Solution: Tile-by-Tile Arrow IPC Streaming
+
+**Endpoint:** `POST /table/stream`
+
+**Architecture:**
+```
+Request (50k sources, 50k destinations)
+    ↓
+Rayon parallel tile computation (1000×1000 tiles)
+    ↓
+Each tile → Arrow IPC → HTTP chunked transfer
+    ↓
+Client receives tiles as they complete
+```
+
+**Key Design Decisions:**
+1. Compute tiles in parallel using `rayon::par_iter().for_each()`
+2. Stream each tile immediately (no memory accumulation)
+3. Use `tokio::sync::mpsc` channel for backpressure (depth 8)
+4. 256MB body limit for large coordinate payloads
+
+### Benchmark Results
+
+| Size | Distances | Time | Throughput | First Byte | Data |
+|------|-----------|------|------------|------------|------|
+| 10k×10k | 100M | 24s | 4.1M/sec | 3.6s | 381 MB |
+| 50k×50k | 2.5B | 9.5 min | 4.4M/sec | 3.6s | 9.5 GB |
+
+### vs OSRM
+
+| Size | Butterfly | OSRM | Result |
+|------|-----------|------|--------|
+| 10k×10k | 24s | 33.6s | **Butterfly 28% faster** |
+| 50k×50k | 9.5 min | CRASHES | **Butterfly only option** |
+
+### Memory Efficiency
+
+- Baseline (server loaded): 11.6 GB
+- During 50k×50k query: 14 GB
+- **Query overhead: only 2.4 GB** (tiles streamed, not accumulated)
+
+### Files Changed
+
+- `tools/butterfly-route/src/step9/api.rs` - `table_stream` endpoint
+- `tools/butterfly-route/src/matrix/arrow_stream.rs` - `MatrixTile`, `tiles_to_record_batch`

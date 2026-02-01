@@ -103,6 +103,7 @@ The Step 9 query server (`butterfly-route serve`) provides:
 - `GET /route` - Point-to-point routing with geometry
 - `GET /matrix` - One-to-many distance matrix
 - `POST /matrix/bulk` - Bulk many-to-many matrix (K-lane batched PHAST, Arrow streaming)
+- `POST /table/stream` - Arrow IPC streaming for large matrices (handles 50k×50k = 2.5B distances)
 - `GET /isochrone` - Reachability polygon for time threshold
 - `POST /isochrone/batch` - K-lane batched isochrones (up to 8 origins per request)
 - `GET /health` - Health check
@@ -343,6 +344,16 @@ else:
 | 3000×3000 | 3.1s | 5.3s | 1.7x | Gap closing |
 | 5000×5000 | 8.0s | 11.1s | **1.38x** | Near convergence |
 | 10000×10000 | ~32s | ~44s | **~1.4x** | Extrapolated |
+
+**Arrow Streaming (POST /table/stream) - Large Scale:**
+| Size | Butterfly | OSRM | Winner |
+|------|-----------|------|--------|
+| 10k×10k (100M) | **24s** | 33s | **Butterfly 28% faster** |
+| 50k×50k (2.5B) | **9.5 min** | ❌ crashes | **Butterfly only** |
+
+- Throughput: **4.4M distances/sec** sustained
+- RAM overhead: Only **2.4 GB** above baseline (tile-by-tile streaming)
+- OSRM cannot handle 50k×50k (URL length limits, no streaming)
 
 **Key finding:** At large scale, Butterfly is only **1.4x slower** than OSRM despite:
 - Edge-based CCH (2.5x more nodes than OSRM's node-based CH)
