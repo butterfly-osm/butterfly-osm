@@ -55,23 +55,19 @@
   - 10% tolerance for boundary effects (violations only counted if >10% over threshold)
   - Result: 1.2% violation rate (1/82 reachable samples) - test passes
 
-- [x] **D7: Near-frontier stamping** ✅ DONE - 40% latency improvement
-  - Changed from frontier-local (sparse tiles) to near-frontier (distance threshold)
-  - Only stamp edges where dist >= 60% of max_time
-  - Skips deep interior edges that don't affect boundary
-  - Latency: 33ms → 20ms (40% improvement)
-  - Quality: same polygon output (~1588 points), test still passes
+- [x] **D7: Multi-component contour fix** ✅ DONE (2026-02-01)
+  - Bug: contour extraction picked topmost-leftmost component, which for large
+    isochrones could be a tiny disconnected outlier region
+  - Fix: trace ALL boundary components, return the LARGEST one (by vertex count)
+  - Reverted near-frontier stamping optimization (caused incorrect sparse polygons)
+  - Quality: correct polygons verified for 5/10/15/20/30 min thresholds
 
 - [ ] **D8: Two-resolution mask** (DEFERRED)
-  - Not needed with current 30m cells + near-frontier stamping
-  - Could provide additional quality win if needed
+  - Could provide quality improvement for boundary accuracy
 
-- [ ] **D9: Tune morphology down** (DEFERRED)
-  - Current 2 dilations, 1 erosion works well
-  - Could try 1 dilation if boundary bleeding becomes an issue
-
-**Key insight:** Near-frontier stamping is simpler than frontier-local tile approach.
-Just skip edges with dist < 60% * threshold. Interior edges don't affect boundary.
+- [ ] **D9: Performance optimization** (DEFERRED)
+  - Current ~30ms latency acceptable
+  - Future: investigate PHAST-level optimizations if needed
 
 ---
 
@@ -81,12 +77,11 @@ Just skip edges with dist < 60% * threshold. Interior edges don't affect boundar
 
 ## Current Performance
 
-**Isochrones: OPTIMIZED** ✅
+**Isochrones: CORRECT** ✅
 | Endpoint | Throughput | Latency | Status |
 |----------|------------|---------|--------|
-| Individual JSON | ~50/sec | 20ms | Near-frontier stamping optimization |
-| Before optimization | ~30/sec | 33ms | Was stamping all 50k+ edges |
-| **Further target** | 100+/sec | 10ms | Would need PHAST optimization |
+| Individual JSON | ~30/sec | ~33ms | Multi-component fix, stamps all reachable edges |
+| Multi-component fix | - | - | Returns largest contour, handles disconnected regions |
 
 **Matrices: WIN AT SCALE** ✅
 | Size | Butterfly | OSRM | Ratio |
