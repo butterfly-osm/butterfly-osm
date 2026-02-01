@@ -81,8 +81,13 @@ src_blocks.par_iter().for_each(|src_block| {
 - [x] **B1: Thread-local dist + generation stamping** ✅ DONE - 7% speedup
   - Eliminated 9.6MB output allocation (now returns only settled nodes)
   - Foundation for C1 (block-gating)
-- [ ] **B2: Binary response (WKB)** - Skip JSON serialization for bulk
-- [ ] **B3: Bulk endpoint** - Accept list of origins, stream WKB/Arrow results
+- [x] **B2: Binary response (WKB)** ✅ DONE
+  - Added `/isochrone/wkb` endpoint returning raw WKB
+  - 1.05x faster, 55% smaller response (225 vs 500 bytes)
+- [x] **B3: Bulk endpoint** ✅ DONE - **1.9x throughput improvement**
+  - Added `POST /isochrone/bulk` accepting array of origins
+  - Parallel processing with rayon, returns length-prefixed WKB stream
+  - 1526 iso/sec vs 799 iso/sec individual (8 threads)
 
 ### C) Block-Gated Downward Scan ✅ DONE
 
