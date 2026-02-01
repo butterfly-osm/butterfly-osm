@@ -53,10 +53,11 @@ src_blocks.par_iter().for_each(|src_block| {
 ### A) Matrix Optimization
 
 - [x] **A1: Source-block outer loop** ✅ DONE - 1.56x speedup (25.3s → 16.2s)
-- [ ] **A2: Bucket structure** - Only emit bucket entries for meeting nodes, not all settled
+- [x] **A2: Bucket filtering** - TESTED, NOT BENEFICIAL
+  - Only ~3% of visited nodes have no DOWN edges (most upward-visited nodes are high-rank)
+  - The can_meet() check overhead offsets the bucket reduction
+  - Reverted: not worth the code complexity
 - [ ] **A3: Prefetching** - `_mm_prefetch` in relax for `entries[v]` and `handles[v]`
-
-Expected from A2+A3: Additional 1.5-2x possible
 
 ### B) Isochrones - Eliminate Allocation Overhead
 
