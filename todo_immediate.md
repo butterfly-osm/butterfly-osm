@@ -1,18 +1,47 @@
 # Immediate Roadmap: Production Hardening
 
-## 🎉 PRODUCTION HARDENING COMPLETE 🎉
+## 🚨 CRITICAL BUG: ISOCHRONE GEOMETRY INCORRECT 🚨
 
-**Final Status (2026-02-01):**
+**Issue Discovered (2026-02-01):**
 
-We now have the **best of both worlds**:
-- Exact turn-aware single truth model ✅
-- Isochrones fast at scale ✅
-- Matrices fastest at scale ✅
-- Trust package verified ✅
-- Bulk APIs documented ✅
-- Progress tracking headers ✅
+Isochrone consistency tests revealed that **polygons do not match actual drive times**:
+- Points INSIDE polygon have drive times EXCEEDING threshold (up to +1300s over 30min limit)
+- Antwerp test: polygon area 0.0 deg² (degenerate) with 60 outside violations
 
-**The routing engine is PRODUCTION READY.**
+**Root Cause:** `build_isochrone_geometry()` uses **convex hull** which is fundamentally wrong:
+- Convex hull includes unreachable areas inside the hull
+- Real road networks have holes (rivers, parks, restricted areas)
+- A concave hull implementation EXISTS in `src/range/concave_hull.rs` but is NOT USED
+
+**Requirements for correct isochrones:**
+1. **100% geometric consistency**: Inside polygon ⟺ drive time ≤ threshold
+2. **Follow road network**: No convex approximations that include unreachable areas
+3. **Extremely fast**: Maintain current 5ms p50 / 1526/sec bulk throughput
+4. **Use frontier points**: Only boundary edges, not all reachable nodes
+
+---
+
+## IMMEDIATE PRIORITY: Fix Isochrone Geometry
+
+### D) Isochrone Correctness 🔴 CRITICAL
+
+- [ ] **D1: Replace convex hull with concave hull**
+  - Wire up existing `src/range/concave_hull.rs` to `build_isochrone_geometry()`
+  - Use frontier segments (edges crossing threshold) not all reachable nodes
+  - Maintain performance (concave hull on frontier is O(n log n))
+
+- [ ] **D2: Add consistency unit tests**
+  - `scripts/isochrone_consistency_test.py` created
+  - Must pass: 0 inside violations, 0 outside violations
+  - Test multiple origins and time thresholds
+
+- [ ] **D3: Benchmark after fix**
+  - Must maintain 5ms p50 latency
+  - Must maintain 1500+ bulk throughput
+
+---
+
+## Previous Status
 
 ---
 

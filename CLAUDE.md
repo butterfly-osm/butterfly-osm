@@ -336,22 +336,26 @@ else:
 
 ## Strategic Status (2026-02-01)
 
-**PRODUCTION HARDENING COMPLETE** ✅
+**🚨 CRITICAL BUG: ISOCHRONE GEOMETRY INCORRECT**
 
-Butterfly now has:
+Consistency tests revealed isochrone polygons do NOT match actual drive times:
+- Points inside polygon exceed time threshold by up to +1300s
+- Root cause: `build_isochrone_geometry()` uses CONVEX HULL (wrong!)
+- Fix: Use existing `src/range/concave_hull.rs` with frontier segments
+
+**Requirements for correct isochrones:**
+1. 100% consistency: inside polygon ⟺ drive time ≤ threshold
+2. Follow road network (no convex approximations)
+3. Extremely fast (maintain 5ms p50, 1500+/sec bulk)
+
+**Completed:**
 - ✅ Exact turn-aware single truth model
-- ✅ Isochrones: 5ms p50, 1526/sec bulk throughput
 - ✅ Matrices: **1.8x FASTER than OSRM at 10k+** scale
-- ✅ **Trust Package COMPLETE** (OSRM parity 0.98 correlation)
-- ✅ **Bulk-First APIs** with progress tracking headers
-- ✅ **Comprehensive documentation** in README
+- ✅ Trust Package (routes): OSRM parity 0.98 correlation
+- ✅ Bulk-First APIs with progress headers
+- ❌ **Isochrones: GEOMETRY BROKEN** - fast but incorrect
 
-**All production hardening tasks completed:**
-- A) Trust package: OSRM parity suite, debug fields, 5km snap radius fix ✓
-- B) Bulk-first APIs: README docs, progress headers ✓
-- C) Small-table fast path: Profiled (~100ms overhead), skipped (win at scale)
-
-**The routing engine is PRODUCTION READY.**
+**Immediate priority: Fix isochrone geometry (D1-D3 in todo_immediate.md)**
 
 ---
 
