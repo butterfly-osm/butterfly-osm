@@ -125,6 +125,12 @@ Common patterns abstracted into `butterfly-common`:
   - 79% faster than aria2, 3x faster than curl on medium files
   - <1GB memory usage regardless of file size
 
+- **butterfly-route**: High-performance routing engine
+  - Exact turn-aware routing (edge-based CCH)
+  - **1.8x FASTER than OSRM** at scale (10k×10k matrices)
+  - Bulk APIs optimized for production workloads
+  - See [Routing Engine](#routing-engine-butterfly-route) below
+
 ### 🚧 In Development
 
 - **butterfly-shrink**: Polygon-based extraction engine
@@ -137,6 +143,97 @@ Common patterns abstracted into `butterfly-common`:
 **Phase 2**: Geometric operations and extraction tools  
 **Phase 3**: Advanced transformation and filtering capabilities  
 **Phase 4**: High-performance serving and caching infrastructure  
+
+## Routing Engine (butterfly-route)
+
+High-performance routing engine with **exact turn-aware queries** using edge-based Customizable Contraction Hierarchies (CCH).
+
+### Performance
+
+| Workload | Butterfly | OSRM | Result |
+|----------|-----------|------|--------|
+| Isochrones (bulk) | **1,526/sec** | - | Production-ready |
+| Matrix 100×100 | 164ms | 55ms | 3x slower (acceptable) |
+| Matrix 10k×10k | **18.2s** | 32.9s | **1.8x FASTER** |
+
+**Key insight**: Butterfly wins at scale. Use bulk APIs for production workloads.
+
+### Bulk APIs (Recommended for Production)
+
+#### Bulk Isochrones
+
+For computing many isochrones, use the bulk endpoint which processes origins in parallel:
+
+```bash
+# Compute 100 isochrones in one request
+curl -X POST http://localhost:8080/isochrone/bulk \
+  -H "Content-Type: application/json" \
+  -d '{
+    "origins": [[4.35, 50.85], [4.40, 50.86], ...],
+    "time_s": 1800,
+    "mode": "car"
+  }' \
+  --output isochrones.wkb
+
+# Response: Length-prefixed WKB stream
+# Format: [4B origin_idx][4B wkb_len][WKB polygon]...
+```
+
+**Throughput**: 1,526 isochrones/sec (vs 815/sec individual)
+
+#### Bulk Distance Matrices
+
+For large matrices (1000+ origins/destinations), use Arrow streaming:
+
+```bash
+# Compute 10,000 × 10,000 matrix via Arrow IPC
+curl -X POST http://localhost:8080/table/stream \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sources": [[lon1,lat1], [lon2,lat2], ...],
+    "destinations": [[lon1,lat1], [lon2,lat2], ...],
+    "mode": "car"
+  }' \
+  --output matrix.arrow
+
+# Process with PyArrow, DuckDB, or any Arrow-compatible tool
+```
+
+**Performance**: 18.2s for 10k×10k (1.8x faster than OSRM)
+
+### Individual APIs
+
+For single queries or small workloads:
+
+```bash
+# Single route with debug info
+curl "http://localhost:8080/route?src_lon=4.35&src_lat=50.85&dst_lon=4.40&dst_lat=50.86&mode=car&debug=true"
+
+# Single isochrone (GeoJSON)
+curl "http://localhost:8080/isochrone?lon=4.35&lat=50.85&time_s=1800&mode=car"
+
+# Small matrix (OSRM-compatible)
+curl "http://localhost:8080/table/v1/driving/4.35,50.85;4.40,50.86;4.45,50.87"
+```
+
+### Building the Routing Engine
+
+```bash
+# Download Belgium data
+butterfly-dl europe/belgium
+
+# Build the routing graph (Steps 1-8)
+./target/release/butterfly-route step1-ingest ./data/belgium.pbf ./data/belgium
+./target/release/butterfly-route step2-profile ./data/belgium car,bike,foot
+# ... (steps 3-8)
+
+# Start the query server
+./target/release/butterfly-route serve --data-dir ./data/belgium --port 8080
+
+# Swagger UI at http://localhost:8080/swagger-ui/
+```
+
+See [CLAUDE.md](CLAUDE.md) for detailed build instructions and algorithm documentation.
 
 ## Installation
 
@@ -183,7 +280,9 @@ Download optimized binaries for your platform:
 butterfly-osm/
 ├── butterfly-common/     # Shared utilities and algorithms
 ├── tools/
-│   └── butterfly-dl/     # OSM data downloader (production-ready)
+│   ├── butterfly-dl/     # OSM data downloader (production-ready)
+│   └── butterfly-route/  # Routing engine (production-ready)
+├── scripts/             # Benchmarking and validation scripts
 └── data/                # Test data and examples
 ```
 
@@ -203,6 +302,20 @@ cargo install --path tools/butterfly-dl
 ```
 
 ## Performance Benchmarks
+
+### butterfly-route vs OSRM (Belgium)
+
+| Workload | Butterfly | OSRM | Ratio |
+|----------|-----------|------|-------|
+| Single route | 2ms | 1ms | 2x slower |
+| Isochrone (30min) | **5ms** | - | - |
+| Bulk isochrones | **1,526/sec** | - | - |
+| Matrix 100×100 | 164ms | 55ms | 3x slower |
+| Matrix 1k×1k | 1.55s | 0.68s | 2.3x slower |
+| Matrix 10k×10k | **18.2s** | 32.9s | **1.8x FASTER** |
+
+**Key insight**: Edge-based CH has ~2.5x more states than node-based (exact turn handling).
+The overhead is acceptable for small queries, and **Butterfly wins at scale**.
 
 ### butterfly-dl vs Industry Standard
 
