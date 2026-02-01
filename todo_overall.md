@@ -618,3 +618,46 @@ Client receives tiles as they complete
 
 - `tools/butterfly-route/src/step9/api.rs` - `table_stream` endpoint
 - `tools/butterfly-route/src/matrix/arrow_stream.rs` - `MatrixTile`, `tiles_to_record_batch`
+
+---
+
+## Profiling Analysis (2026-02-01) ⚠️ CRITICAL BUGS FOUND
+
+### Matrix `/table/stream` - 10x Forward Waste
+
+**Profile:** `forward_fill_buckets_flat` = 92% of CPU time
+
+**Bug:** Current tiling computes forward searches per TILE, not per SOURCE BLOCK:
+```
+Current (wrong):
+  for tile in (src_block × dst_block):
+    forward_search(sources_in_tile)  ← REPEATED for each dst_block!
+    backward_search(targets_in_tile)
+
+Should be:
+  for src_block:
+    forward_search(sources_in_block)  ← ONCE per src_block
+    for dst_block:
+      backward_search + join → emit tile
+```
+
+For 10k×10k (10×10 tiles), same sources computed 10x.
+
+**Fix:** Source-block outer loop in `table_stream` endpoint.
+
+### Isochrones `/isochrone` - Memory-Bandwidth Dominated
+
+**Profile:**
+- `run_phast_bounded`: 44% (algorithm)
+- HTTP overhead: 37% (Axum + JSON)
+- memset/alloc: 8-20%
+
+**Cache miss rate:** 71% (vs 34% for matrix)
+
+**Root cause:** `vec![u32::MAX; 2.4M]` per query = 9.6MB memset @ 1370 q/s = 13 GB/s
+
+**Fix:** Thread-local dist array with generation stamping (O(1) init instead of O(N))
+
+### Action Items
+
+See `todo_immediate.md` for detailed fix plan.

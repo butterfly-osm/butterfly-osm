@@ -405,6 +405,42 @@ python3 scripts/osrm_matrix_bench.py
 
 ---
 
+## Profiling Results (2026-02-01)
+
+### Matrix 10k×10k - CPU Profile
+
+| Function | CPU % | Description |
+|----------|-------|-------------|
+| `forward_fill_buckets_flat` | **88-92%** | Forward Dijkstra on UP edges |
+| `SearchState::pop` | 3-5% | Heap operations |
+| `SearchState::new` | 1% | Per-search allocation |
+
+**Cache miss rate:** 23-34% (compute-dominated, not memory-bound)
+**IPC:** 3.9-4.4 (healthy)
+
+**CRITICAL BUG:** Tiling recomputes forward searches 10x (once per target block instead of once per source block)
+
+### Isochrones 100K - CPU Profile
+
+| Function | CPU % | Description |
+|----------|-------|-------------|
+| `run_phast_bounded` | **36-44%** | PHAST algorithm |
+| Axum HTTP handler | **35-37%** | Request/response overhead |
+| libc memset/alloc | 8-20% | 9.6MB `vec![MAX; n]` per query |
+
+**Cache miss rate:** 68-71% (memory-bandwidth dominated)
+**IPC:** 2.4-2.8 (memory-starved)
+
+**Root cause:** Linear downward scan over 2.4M nodes with random `dist[v]` writes
+
+### Optimization Priorities
+
+1. **Matrix:** Fix source-block tiling (10x forward waste)
+2. **Isochrones:** Thread-local dist + generation stamping (eliminate memset)
+3. **Isochrones:** Binary response (WKB) for bulk queries
+
+---
+
 ## Benchmark Comparison Policy
 
 **ALWAYS compare to external baselines when benchmarking on Belgium:**

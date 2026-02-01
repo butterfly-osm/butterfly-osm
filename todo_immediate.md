@@ -2,6 +2,85 @@
 
 ## Current Status
 
+---
+
+## 🔥 PROFILING RESULTS (2026-02-01) - ACTION REQUIRED
+
+### Executive Summary
+
+| Workload | Time | Throughput | Cache Miss | Main Bottleneck |
+|----------|------|------------|------------|-----------------|
+| Matrix 10k×10k | 25.3s | 3.96M/sec | **23-34%** | `forward_fill_buckets_flat` (92%) |
+| 100K Isochrones | 70.5s | 1,370/sec | **68-71%** | `run_phast_bounded` (44%) + HTTP (37%) |
+
+### CRITICAL BUG FOUND: Matrix Forward Work Repeated 10x
+
+In `/table/stream`, tiling is done WRONG:
+```rust
+all_tiles.par_iter().for_each(|&(src_start, src_end, dst_start, dst_end)| {
+    table_bucket_full_flat(...tile_src_ranks, tile_dst_ranks...)  // Forward computed per TILE!
+});
+```
+
+For 10k×10k with 1000×1000 tiles:
+- 10 source blocks × 10 target blocks = 100 tiles
+- Same 1000 sources recomputed 10 times each (once per target block)
+- **10x wasted forward work!**
+
+**FIX:** Refactor to source-block outer loop:
+```
+for each source_block (1000 sources):
+    forward_searches → buckets  // ONCE per source block
+    for each target_block (1000 targets):
+        backward_search + join → emit tile
+```
+
+### Isochrones: Memory-Bandwidth Dominated (71% cache miss)
+
+**Root cause:** `vec![u32::MAX; 2.4M]` per query = 9.6MB memset @ 1370 q/s = 13 GB/s writes
+
+**Breakdown:**
+- `run_phast_bounded`: 44% (actual algorithm)
+- Axum HTTP handler: 37% (request parsing, JSON serialization)
+- libc memset/alloc: 8-20%
+
+---
+
+## ACTION ITEMS (Priority Order)
+
+### A) Matrix - Fix 10x Forward Waste (CRITICAL)
+
+- [ ] **A1: Source-block outer loop** - Compute forward ONCE per source block, then iterate target blocks
+- [ ] **A2: Bucket structure** - Only emit bucket entries for meeting nodes, not all settled
+- [ ] **A3: Prefetching** - `_mm_prefetch` in relax for `entries[v]` and `handles[v]`
+
+Expected: **5-10x speedup** on 10k×10k (25s → 3-5s)
+
+### B) Isochrones - Eliminate Allocation Overhead
+
+- [ ] **B1: Thread-local dist + generation stamping** - Remove 9.6MB memset per query
+  ```rust
+  struct PhastState {
+      dist: Vec<u32>,
+      seen: Vec<u32>,  // generation stamp
+      gen: u32,
+  }
+  // On write: dist[v] = d; seen[v] = gen;
+  // On read: if seen[v] != gen { return INF; }
+  ```
+- [ ] **B2: Binary response (WKB)** - Skip JSON serialization for bulk
+- [ ] **B3: Bulk endpoint** - Accept list of origins, stream WKB/Arrow results
+
+Expected: **2-3x throughput** (1370/sec → 3000-4000/sec)
+
+### C) Lower Priority (After A & B)
+
+- [ ] C1: Block-gated downward scan for isochrones (needs B1 first)
+- [ ] C2: K-lane batched forward for matrix (complex, diminishing returns)
+- [ ] C3: SIMD bucket joins
+
+---
+
 **Arrow Streaming for Large Matrices (2026-02-01):** ✅ COMPLETE
 
 Implemented proper tile-by-tile Arrow IPC streaming for matrices up to 50k×50k.
