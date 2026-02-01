@@ -108,10 +108,9 @@ pub fn build_isochrone_geometry_concave(
 
 /// Build isochrone geometry with mode-specific configuration
 ///
-/// Optimization: near-frontier stamping
-/// Only stamps edges whose start distance is >= 70% of threshold.
-/// Interior edges (< 70% of threshold) don't affect the boundary shape.
-/// This reduces stamping from 50k+ edges to ~10-15k near-frontier edges.
+/// Stamps all reachable edges into a sparse tile grid, then traces the boundary.
+/// Previous optimization (near-frontier stamping) was removed because it caused
+/// incorrect polygons for larger isochrones where the frontier became too sparse.
 pub fn build_isochrone_geometry_sparse(
     settled_nodes: &[(u32, u32)], // (original_ebg_id, distance_ds)
     max_time_ds: u32,
@@ -126,20 +125,10 @@ pub fn build_isochrone_geometry_sparse(
         Mode::Foot => SparseContourConfig::for_foot(),
     };
 
-    // Near-frontier threshold: only stamp edges starting at >= 60% of max_time
-    // This skips interior edges that don't affect the boundary
-    let near_frontier_threshold_ds = (max_time_ds as f64 * 0.60) as u32;
-
     let mut segments: Vec<ReachableSegment> = Vec::new();
 
     for &(ebg_id, dist_ds) in settled_nodes {
         if dist_ds > max_time_ds {
-            continue;
-        }
-
-        // Skip deep interior edges (< 70% of threshold)
-        // These don't affect the boundary shape
-        if dist_ds < near_frontier_threshold_ds {
             continue;
         }
 
