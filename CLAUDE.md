@@ -407,20 +407,21 @@ python3 scripts/osrm_matrix_bench.py
 
 ## Profiling Results (2026-02-01)
 
-### Matrix 10k×10k - CPU Profile
+### Matrix 10k×10k - Source-Block Fix ✅
 
-| Function | CPU % | Description |
-|----------|-------|-------------|
-| `forward_fill_buckets_flat` | **88-92%** | Forward Dijkstra on UP edges |
-| `SearchState::pop` | 3-5% | Heap operations |
-| `SearchState::new` | 1% | Per-search allocation |
+**Before fix (forward repeated 10x):**
+- 25.3s, 3.96M distances/sec
+- `forward_fill_buckets_flat`: 92% CPU
 
-**Cache miss rate:** 23-34% (compute-dominated, not memory-bound)
-**IPC:** 3.9-4.4 (healthy)
+**After fix (forward computed once per source block):**
+- **16.2s, 6.1M distances/sec**
+- **1.56x speedup**
 
-**CRITICAL BUG:** Tiling recomputes forward searches 10x (once per target block instead of once per source block)
+**Fix:** New API in `bucket_ch.rs`:
+- `forward_build_buckets()` - Forward phase only
+- `backward_join_with_buckets()` - Backward with prebuilt buckets
 
-### Isochrones 100K - CPU Profile
+### Isochrones 100K - CPU Profile (Still to optimize)
 
 | Function | CPU % | Description |
 |----------|-------|-------------|
@@ -433,9 +434,9 @@ python3 scripts/osrm_matrix_bench.py
 
 **Root cause:** Linear downward scan over 2.4M nodes with random `dist[v]` writes
 
-### Optimization Priorities
+### Remaining Optimization Priorities
 
-1. **Matrix:** Fix source-block tiling (10x forward waste)
+1. ✅ **Matrix:** Source-block tiling fix - DONE (1.56x)
 2. **Isochrones:** Thread-local dist + generation stamping (eliminate memset)
 3. **Isochrones:** Binary response (WKB) for bulk queries
 

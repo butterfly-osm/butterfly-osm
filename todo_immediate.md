@@ -4,38 +4,35 @@
 
 ---
 
-## 🔥 PROFILING RESULTS (2026-02-01) - ACTION REQUIRED
+## 🔥 PROFILING RESULTS (2026-02-01) - A1 FIXED ✅
 
-### Executive Summary
+### Executive Summary (After A1 Fix)
 
-| Workload | Time | Throughput | Cache Miss | Main Bottleneck |
-|----------|------|------------|------------|-----------------|
-| Matrix 10k×10k | 25.3s | 3.96M/sec | **23-34%** | `forward_fill_buckets_flat` (92%) |
-| 100K Isochrones | 70.5s | 1,370/sec | **68-71%** | `run_phast_bounded` (44%) + HTTP (37%) |
+| Workload | Before | After | Speedup |
+|----------|--------|-------|---------|
+| Matrix 10k×10k | 25.3s (3.96M/sec) | **16.2s (6.1M/sec)** | **1.56x** |
+| 100K Isochrones | 70.5s (1,370/sec) | TBD | - |
 
-### CRITICAL BUG FOUND: Matrix Forward Work Repeated 10x
+### A1 Fix: Source-Block Outer Loop ✅ DONE
 
-In `/table/stream`, tiling is done WRONG:
+**Problem:** Forward searches repeated 10x (once per tile instead of once per source block)
+
+**Solution:**
 ```rust
-all_tiles.par_iter().for_each(|&(src_start, src_end, dst_start, dst_end)| {
-    table_bucket_full_flat(...tile_src_ranks, tile_dst_ranks...)  // Forward computed per TILE!
+// NEW: Source block outer loop with nested parallelism
+src_blocks.par_iter().for_each(|src_block| {
+    let source_buckets = Arc::new(forward_build_buckets(...));  // ONCE per src block
+    dst_blocks.par_iter().for_each(|dst_block| {
+        backward_join_with_buckets(&source_buckets, ...);  // Reuse buckets
+    });
 });
 ```
 
-For 10k×10k with 1000×1000 tiles:
-- 10 source blocks × 10 target blocks = 100 tiles
-- Same 1000 sources recomputed 10 times each (once per target block)
-- **10x wasted forward work!**
+**New API added to `bucket_ch.rs`:**
+- `forward_build_buckets()` - Forward phase only, returns `SourceBuckets`
+- `backward_join_with_buckets()` - Backward phase using prebuilt buckets
 
-**FIX:** Refactor to source-block outer loop:
-```
-for each source_block (1000 sources):
-    forward_searches → buckets  // ONCE per source block
-    for each target_block (1000 targets):
-        backward_search + join → emit tile
-```
-
-### Isochrones: Memory-Bandwidth Dominated (71% cache miss)
+### Remaining Isochrones Issue: Memory-Bandwidth Dominated (71% cache miss)
 
 **Root cause:** `vec![u32::MAX; 2.4M]` per query = 9.6MB memset @ 1370 q/s = 13 GB/s writes
 
@@ -48,13 +45,13 @@ for each source_block (1000 sources):
 
 ## ACTION ITEMS (Priority Order)
 
-### A) Matrix - Fix 10x Forward Waste (CRITICAL)
+### A) Matrix Optimization
 
-- [ ] **A1: Source-block outer loop** - Compute forward ONCE per source block, then iterate target blocks
+- [x] **A1: Source-block outer loop** ✅ DONE - 1.56x speedup (25.3s → 16.2s)
 - [ ] **A2: Bucket structure** - Only emit bucket entries for meeting nodes, not all settled
 - [ ] **A3: Prefetching** - `_mm_prefetch` in relax for `entries[v]` and `handles[v]`
 
-Expected: **5-10x speedup** on 10k×10k (25s → 3-5s)
+Expected from A2+A3: Additional 1.5-2x possible
 
 ### B) Isochrones - Eliminate Allocation Overhead
 
