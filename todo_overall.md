@@ -181,10 +181,19 @@ butterfly-route serve --data-dir ./build/ --port 8080
 **Tools:**
 - `scripts/osrm_parity_suite.py` - 10K random route comparison vs OSRM
 
-### Next: Bulk-First APIs
+### Bulk-First APIs ✅ COMPLETE (2026-02-01)
 
-- [ ] Document bulk as primary path (README examples)
-- [ ] Add streaming progress indicators
+| Item | Status | Result |
+|------|--------|--------|
+| Documentation | ✅ | README with bulk examples |
+| Progress Headers | ✅ | X-Total-Tiles, X-Successful-Isochrones, etc. |
+
+### Small-Table Analysis (Skipped)
+
+Profiled ~100ms constant overhead from snapping + HTTP + tiling setup.
+Not worth dedicated fast path since we win at scale.
+
+## 🎉 PRODUCTION HARDENING COMPLETE 🎉
 
 ---
 
