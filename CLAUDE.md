@@ -361,10 +361,13 @@ else:
 
 The gap closes at scale because fixed overhead (HTTP, coordination) is amortized.
 
-**Small Matrix (HTTP API):**
+**Small Matrix (HTTP API) - After C1 Optimization:**
 | Size | OSRM CH | Butterfly | Gap |
 |------|---------|-----------|-----|
-| 100×100 | 35ms | ~100ms | ~3x (HTTP overhead) |
+| 10×10 | 4.5ms | 26ms | 5.8x |
+| 25×25 | 8.7ms | 48ms | 5.5x |
+| 50×50 | 18.9ms | 85ms | 4.5x |
+| 100×100 | 35ms | 160ms | 4.6x |
 
 **Optimizations Implemented:**
 | Optimization | Effect | Status |
@@ -375,6 +378,8 @@ The gap closes at scale because fixed overhead (HTTP, coordination) is amortized
 | O(1) prefix-sum bucket lookup | -7% time | ✅ |
 | Bound-aware join pruning | -41% joins, -10% time | ✅ |
 | SoA bucket layout | -24% time | ✅ |
+| Thread-local PHAST state | O(1) per-query init | ✅ |
+| Block-gated downward scan (C1) | 18x isochrone speedup | ✅ |
 
 **Combined improvement:** 51s → 32.4s (algorithm time) = **36% faster**, HTTP comparison: 1.4x slower than OSRM at scale
 
@@ -382,12 +387,15 @@ The gap closes at scale because fixed overhead (HTTP, coordination) is amortized
 - **Bucket M2M**: for `/table` (sparse S×T matrices)
 - **PHAST**: for `/isochrone` (need full distance field)
 
-**Isochrone Performance (5-min threshold):**
-| Mode | Mean Latency | Throughput |
-|------|--------------|------------|
-| Car | 3.3ms | 306 iso/sec |
-| Bike | 4.3ms | 233 iso/sec |
-| Foot | 2.8ms | 356 iso/sec |
+**Isochrone Performance (30-min threshold, after C1 block-gated PHAST):**
+| Metric | Value |
+|--------|-------|
+| Mean latency | 8.3ms |
+| P50 latency | **5ms** |
+| P99 latency | 53ms |
+| Throughput (8 threads) | **827 queries/sec** |
+
+**Improvement:** 90ms → 5ms p50 latency (**18x faster**) via block-gated downward scan
 
 **Thread Scaling (Matrix 1000×1000):**
 - 4 threads: 3.2x speedup (80% efficiency)

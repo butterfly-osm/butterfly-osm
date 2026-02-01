@@ -935,13 +935,22 @@ fn bounded_dijkstra(
 
 use std::cell::RefCell;
 
-/// Thread-local PHAST state with generation stamping
+/// Block size for block-gated downward scan
+/// Each block contains BLOCK_SIZE consecutive ranks
+const PHAST_BLOCK_SIZE: usize = 4096;
+
+/// Thread-local PHAST state with generation stamping and block gating
 /// Eliminates O(n) initialization per query by using version stamps
+/// Block gating skips large portions of the graph in downward phase
 struct PhastState {
     /// Distance array (persistent across queries)
     dist: Vec<u32>,
     /// Version stamp per node (marks which generation set the distance)
     version: Vec<u32>,
+    /// Version stamp per block (marks which blocks have active nodes)
+    block_active: Vec<u32>,
+    /// Number of blocks
+    n_blocks: usize,
     /// Current generation (incremented per query)
     current_gen: u32,
     /// Priority queue (reused across queries)
@@ -950,9 +959,12 @@ struct PhastState {
 
 impl PhastState {
     fn new(n_nodes: usize) -> Self {
+        let n_blocks = (n_nodes + PHAST_BLOCK_SIZE - 1) / PHAST_BLOCK_SIZE;
         Self {
             dist: vec![u32::MAX; n_nodes],
             version: vec![0; n_nodes],
+            block_active: vec![0; n_blocks],
+            n_blocks,
             current_gen: 0,
             pq: std::collections::BinaryHeap::with_capacity(n_nodes / 100),
         }
@@ -965,6 +977,7 @@ impl PhastState {
         if self.current_gen == 0 {
             // Overflow - reset all versions (rare, every ~4B queries)
             self.version.iter_mut().for_each(|v| *v = 0);
+            self.block_active.iter_mut().for_each(|v| *v = 0);
             self.current_gen = 1;
         }
         self.pq.clear();
@@ -980,11 +993,20 @@ impl PhastState {
         }
     }
 
-    /// Set distance (also marks version)
+    /// Set distance (also marks version and block as active)
     #[inline]
     fn set_dist(&mut self, node: usize, dist: u32) {
         self.dist[node] = dist;
         self.version[node] = self.current_gen;
+        // Mark block as active
+        let block_idx = node / PHAST_BLOCK_SIZE;
+        self.block_active[block_idx] = self.current_gen;
+    }
+
+    /// Check if a block is active this query
+    #[inline]
+    fn is_block_active(&self, block_idx: usize) -> bool {
+        self.block_active[block_idx] == self.current_gen
     }
 }
 
@@ -1072,42 +1094,61 @@ fn run_phast_bounded_fast(
             }
         }
 
-        // Phase 2: Downward scan (linear, DOWN edges only)
-        // Note: We still need to scan all nodes because downward propagation
-        // can reach nodes not touched in upward phase
-        for rank in (0..n_nodes).rev() {
-            let d_u = state.get_dist(rank);
-
-            if d_u == u32::MAX || d_u > threshold {
+        // Phase 2: Block-gated downward scan (linear, DOWN edges only)
+        // Only scan blocks that have active nodes - huge savings for bounded queries
+        // Process blocks in reverse order (highest rank first)
+        for block_idx in (0..state.n_blocks).rev() {
+            // Skip blocks with no active nodes
+            if !state.is_block_active(block_idx) {
                 continue;
             }
 
-            let down_start = cch_topo.down_offsets[rank] as usize;
-            let down_end = cch_topo.down_offsets[rank + 1] as usize;
+            // Process nodes in this block in reverse rank order
+            let block_start = block_idx * PHAST_BLOCK_SIZE;
+            let block_end = ((block_idx + 1) * PHAST_BLOCK_SIZE).min(n_nodes);
 
-            for i in down_start..down_end {
-                let v = cch_topo.down_targets[i] as usize;
-                let w = cch_weights.down[i];
+            for rank in (block_start..block_end).rev() {
+                let d_u = state.get_dist(rank);
 
-                if w == u32::MAX {
+                if d_u == u32::MAX || d_u > threshold {
                     continue;
                 }
 
-                let new_dist = d_u.saturating_add(w);
-                if new_dist < state.get_dist(v) {
-                    state.set_dist(v, new_dist);
+                let down_start = cch_topo.down_offsets[rank] as usize;
+                let down_end = cch_topo.down_offsets[rank + 1] as usize;
+
+                for i in down_start..down_end {
+                    let v = cch_topo.down_targets[i] as usize;
+                    let w = cch_weights.down[i];
+
+                    if w == u32::MAX {
+                        continue;
+                    }
+
+                    let new_dist = d_u.saturating_add(w);
+                    if new_dist < state.get_dist(v) {
+                        // set_dist marks the target block as active too
+                        state.set_dist(v, new_dist);
+                    }
                 }
             }
         }
 
         // Collect settled nodes (only those within threshold)
-        // This is much smaller than full n_nodes array
+        // Only scan active blocks - much faster than full n_nodes scan
         let mut result: Vec<(u32, u32)> = Vec::with_capacity(n_nodes / 10);
-        for rank in 0..n_nodes {
-            if state.version[rank] == state.current_gen {
-                let d = state.dist[rank];
-                if d <= threshold {
-                    result.push((rank as u32, d));
+        for block_idx in 0..state.n_blocks {
+            if !state.is_block_active(block_idx) {
+                continue;
+            }
+            let block_start = block_idx * PHAST_BLOCK_SIZE;
+            let block_end = ((block_idx + 1) * PHAST_BLOCK_SIZE).min(n_nodes);
+            for rank in block_start..block_end {
+                if state.version[rank] == state.current_gen {
+                    let d = state.dist[rank];
+                    if d <= threshold {
+                        result.push((rank as u32, d));
+                    }
                 }
             }
         }
