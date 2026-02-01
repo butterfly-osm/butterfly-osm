@@ -336,24 +336,22 @@ else:
 
 ## Strategic Status (2026-02-01)
 
-**PRODUCTION HARDENING IN PROGRESS**
+**PRODUCTION HARDENING COMPLETE** ✅
 
 Butterfly now has:
 - ✅ Exact turn-aware single truth model
 - ✅ Isochrones: 5ms p50, 1526/sec bulk throughput
 - ✅ Matrices: **1.8x FASTER than OSRM at 10k+** scale
 - ✅ **Trust Package COMPLETE** (OSRM parity 0.98 correlation)
+- ✅ **Bulk-First APIs** with progress tracking headers
+- ✅ **Comprehensive documentation** in README
 
-**Completed:**
-- Trust package: OSRM parity suite, debug fields, duration units ✓
-- Critical fix: 5km max snap distance (was snapping 37km+ to French roads)
+**All production hardening tasks completed:**
+- A) Trust package: OSRM parity suite, debug fields, 5km snap radius fix ✓
+- B) Bulk-first APIs: README docs, progress headers ✓
+- C) Small-table fast path: Profiled (~100ms overhead), skipped (win at scale)
 
-**Next priorities:**
-1. Bulk-first API documentation
-2. Streaming progress indicators
-3. Small-table fast path (optional)
-
-**Do NOT chase small-table parity at the expense of bulk performance.**
+**The routing engine is PRODUCTION READY.**
 
 ---
 
