@@ -399,8 +399,9 @@ async fn compute_table_bucket_m2m(
     let mode_data = state.get_mode(mode);
     let n_nodes = mode_data.cch_topo.n_nodes as usize;
 
-    // Snap sources to graph nodes and convert to filtered space
-    let mut sources_filtered: Vec<u32> = Vec::with_capacity(sources.len());
+    // Snap sources to graph nodes and convert to RANK space
+    // The bucket M2M algorithm operates on rank positions (CCH is rank-aligned)
+    let mut sources_rank: Vec<u32> = Vec::with_capacity(sources.len());
     let mut source_waypoints: Vec<Waypoint> = Vec::with_capacity(sources.len());
     let mut source_valid: Vec<bool> = Vec::with_capacity(sources.len());
 
@@ -408,25 +409,27 @@ async fn compute_table_bucket_m2m(
         if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &mode_data.mask, 10) {
             let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
             if filtered != u32::MAX {
-                sources_filtered.push(filtered);
+                // Convert filtered ID to rank position (same as /route endpoint)
+                let rank = mode_data.order.perm[filtered as usize];
+                sources_rank.push(rank);
                 source_valid.push(true);
                 // Get snapped location from EBG node
                 let snapped = get_node_location(state, orig_id);
                 source_waypoints.push(Waypoint { location: snapped, name: String::new() });
             } else {
-                sources_filtered.push(0);
+                sources_rank.push(0);
                 source_valid.push(false);
                 source_waypoints.push(Waypoint { location: [*lon, *lat], name: String::new() });
             }
         } else {
-            sources_filtered.push(0);
+            sources_rank.push(0);
             source_valid.push(false);
             source_waypoints.push(Waypoint { location: [*lon, *lat], name: String::new() });
         }
     }
 
-    // Snap destinations to graph nodes and convert to filtered space
-    let mut targets_filtered: Vec<u32> = Vec::with_capacity(destinations.len());
+    // Snap destinations to graph nodes and convert to RANK space
+    let mut targets_rank: Vec<u32> = Vec::with_capacity(destinations.len());
     let mut dest_waypoints: Vec<Waypoint> = Vec::with_capacity(destinations.len());
     let mut target_valid: Vec<bool> = Vec::with_capacity(destinations.len());
 
@@ -434,17 +437,19 @@ async fn compute_table_bucket_m2m(
         if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &mode_data.mask, 10) {
             let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
             if filtered != u32::MAX {
-                targets_filtered.push(filtered);
+                // Convert filtered ID to rank position
+                let rank = mode_data.order.perm[filtered as usize];
+                targets_rank.push(rank);
                 target_valid.push(true);
                 let snapped = get_node_location(state, orig_id);
                 dest_waypoints.push(Waypoint { location: snapped, name: String::new() });
             } else {
-                targets_filtered.push(0);
+                targets_rank.push(0);
                 target_valid.push(false);
                 dest_waypoints.push(Waypoint { location: [*lon, *lat], name: String::new() });
             }
         } else {
-            targets_filtered.push(0);
+            targets_rank.push(0);
             target_valid.push(false);
             dest_waypoints.push(Waypoint { location: [*lon, *lat], name: String::new() });
         }
@@ -453,21 +458,21 @@ async fn compute_table_bucket_m2m(
     // Run bucket M2M algorithm
     // Use sequential for small matrices (< 2500 cells) to avoid parallel overhead
     // Use parallel for large matrices where thread amortization helps
-    let (matrix, _stats) = if sources_filtered.len() * targets_filtered.len() < 2500 {
+    let (matrix, _stats) = if sources_rank.len() * targets_rank.len() < 2500 {
         table_bucket_full_flat(
             n_nodes,
             &mode_data.up_adj_flat,
             &mode_data.down_rev_flat,
-            &sources_filtered,
-            &targets_filtered,
+            &sources_rank,
+            &targets_rank,
         )
     } else {
         table_bucket_parallel(
             n_nodes,
             &mode_data.up_adj_flat,
             &mode_data.down_rev_flat,
-            &sources_filtered,
-            &targets_filtered,
+            &sources_rank,
+            &targets_rank,
         )
     };
 
