@@ -621,22 +621,49 @@ Client receives tiles as they complete
 
 ---
 
-## Profiling Analysis (2026-02-01) ⚠️ CRITICAL BUGS FOUND
+## Profiling & Optimization (2026-02-01) ✅ FIXES APPLIED
 
-### Matrix `/table/stream` - 10x Forward Waste
+### Summary of Optimizations
 
-**Profile:** `forward_fill_buckets_flat` = 92% of CPU time
+| Fix | Before | After | Speedup |
+|-----|--------|-------|---------|
+| **A1: Source-block outer loop** | 25.3s, 3.96M/sec | **16.2s, 6.1M/sec** | **1.56x** |
+| **B1: Thread-local PHAST** | 1370/sec, 21.1ms | **1471/sec, 19.5ms** | **1.07x** |
 
-**Bug:** Current tiling computes forward searches per TILE, not per SOURCE BLOCK:
+### Matrix `/table/stream` - Source-Block Fix ✅ DONE
+
+**Problem:** Forward searches repeated 10x (once per tile instead of once per source block)
+
+**Solution:** Source-block outer loop with nested parallelism
+```rust
+src_blocks.par_iter().for_each(|src_block| {
+    let source_buckets = Arc::new(forward_build_buckets(...));  // ONCE
+    dst_blocks.par_iter().for_each(|dst_block| {
+        backward_join_with_buckets(&source_buckets, ...);
+    });
+});
 ```
-Current (wrong):
-  for tile in (src_block × dst_block):
-    forward_search(sources_in_tile)  ← REPEATED for each dst_block!
-    backward_search(targets_in_tile)
 
-Should be:
-  for src_block:
-    forward_search(sources_in_block)  ← ONCE per src_block
+**New API in `bucket_ch.rs`:**
+- `forward_build_buckets()` - Forward phase only, returns `SourceBuckets`
+- `backward_join_with_buckets()` - Backward phase using prebuilt buckets
+
+### Isochrones `/isochrone` - Thread-Local PHAST ✅ DONE
+
+**Problem:** 9.6MB `vec![MAX; n]` allocation per query = 13 GB/s memset overhead
+
+**Solution:** Thread-local `PhastState` with generation stamping
+- O(1) query init via generation stamp (vs O(n) memset)
+- Returns only settled nodes (not full n_nodes array)
+- Separate state per mode (car/bike/foot)
+
+**Remaining bottleneck:** Downward scan still iterates 2.4M nodes → need block-gating (C1)
+
+### Remaining Optimization Opportunities
+
+1. **C1: Block-gated downward** - Skip blocks with no active nodes
+2. **A2: Bucket structure** - Only emit meeting nodes, not all settled
+3. **B2/B3: Binary response + bulk** - Reduce HTTP overhead for bulk queries
     for dst_block:
       backward_search + join → emit tile
 ```
