@@ -97,10 +97,14 @@ Per-mode weights → cch.w.{mode}.u32
 |-----------|----------|
 | Server startup | ~25s (loading all data) |
 | P2P query | < 10ms |
-| **Matrix (Bucket M2M)** | |
-| - 100×100 | 160ms (OSRM: 29ms = 5.5x) |
-| - 1000×1000 | 1.5s (OSRM: 0.5s = 3x) |
-| - 5000×5000 | 11s (OSRM: 8s = 1.38x) |
+| **Matrix (Bucket M2M, HTTP)** | |
+| - 10×10 | 30ms (OSRM: 6ms = 5x) |
+| - 100×100 | 171ms (OSRM: 30ms = 5.7x) |
+| - 200×200 | 300ms (OSRM: 61ms = 4.9x) |
+| - 1000×1000 | ~1.5s (OSRM: 0.5s = 3x) |
+| - 5000×5000 | ~11s (OSRM: 8s = 1.38x) |
+
+*Note: Gap closes at scale. Edge-based CCH has 2.7x more edge relaxations than node-based CH.*
 | **Isochrone (PHAST)** | |
 | - Car 5 min | 3.3ms (306 iso/sec) |
 | - Bike 5 min | 4.3ms (233 iso/sec) |
