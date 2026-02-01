@@ -388,15 +388,16 @@ The gap closes at scale because fixed overhead (HTTP, coordination) is amortized
 - **Bucket M2M**: for `/table` (sparse S×T matrices)
 - **PHAST**: for `/isochrone` (need full distance field)
 
-**Isochrone Performance (30-min threshold, after C1 block-gated PHAST):**
-| Metric | Value |
-|--------|-------|
-| Mean latency | 8.3ms |
-| P50 latency | **5ms** |
-| P99 latency | 53ms |
-| Throughput (8 threads) | **827 queries/sec** |
+**Isochrone Performance (30-min threshold, after all optimizations):**
+| Endpoint | Throughput | Latency |
+|----------|------------|---------|
+| `/isochrone` (JSON) | 815/sec | 5ms p50 |
+| `/isochrone/wkb` (binary) | 814/sec | 5ms p50, 55% smaller |
+| `/isochrone/bulk` (batch) | **1526 iso/sec** | - |
 
-**Improvement:** 90ms → 5ms p50 latency (**18x faster**) via block-gated downward scan
+**Improvements:**
+- Block-gated PHAST: 90ms → 5ms p50 (**18x faster**)
+- Bulk endpoint: 1.9x throughput over individual requests
 
 **Thread Scaling (Matrix 1000×1000):**
 - 4 threads: 3.2x speedup (80% efficiency)

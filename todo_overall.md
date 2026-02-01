@@ -317,7 +317,8 @@ Major isochrone optimization achieving **18x latency improvement**.
 | Workload | Before | After | Speedup |
 |----------|--------|-------|---------|
 | Isochrone p50 latency | 90ms | **5ms** | **18x** |
-| Isochrone throughput (8 threads) | ~100/sec | **815/sec** | **8x** |
+| Isochrone throughput (individual) | ~100/sec | **815/sec** | **8x** |
+| Isochrone throughput (bulk) | N/A | **1526 iso/sec** | - |
 | Matrix 50×50 | 161ms | **93ms** | 1.7x |
 | Matrix 100×100 | 330ms | **173ms** | 1.9x |
 
