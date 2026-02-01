@@ -126,12 +126,20 @@ The Step 9 query server (`butterfly-route serve`) provides:
 - Up to 68% relaxation reduction for bounded queries
 - 2.79x speedup when reachable set is <30% of graph
 
-**Current Throughput** (Belgium, after C1 optimization):
+**Current Throughput** (Belgium):
 | Query Type | Throughput | Latency |
 |------------|------------|---------|
-| Isochrone (30-min, car) | **815/sec** | **5ms p50** |
+| Isochrone (10-min, car) | ~50/sec | 20ms |
 | Matrix 50×50 | ~11/sec | 93ms |
 | Matrix 100×100 | ~6/sec | 173ms |
+
+**Isochrone Geometry Pipeline**:
+```
+PHAST → Near-frontier filter → Sparse tile stamp → Moore boundary trace → Simplify
+```
+- Near-frontier stamping: only stamp edges with dist >= 60% of threshold
+- Skips interior edges that don't affect boundary shape
+- Consistency test: 1.2% violation rate (snapped road point semantics)
 
 ### Binary File Formats
 

@@ -114,17 +114,21 @@ Per-mode weights → cch.w.{mode}.u32
 
 **Sparse Contour with Moore-Neighbor Boundary Tracing (2026-01-25):**
 ```
-PHAST distances → Base graph frontier → Sparse tile stamp → Boundary trace → Simplify
-     (6-7ms)         (73-232 points)     (O(segments))     (O(perimeter))   (D-P)
+PHAST distances → Near-frontier filter → Sparse tile stamp → Boundary trace → Simplify
+     (6-7ms)       (dist >= 60% max)      (O(segments))     (O(perimeter))   (D-P)
 ```
 
-**Key Optimization**: Replaced dense grid marching squares with O(perimeter) boundary tracing.
-- No densification step needed (works directly on sparse tile map)
+**Key Optimizations**:
+1. **Moore-neighbor boundary tracing**: O(perimeter) instead of O(area)
+2. **Near-frontier stamping (2026-02-01)**: Only stamp edges with dist >= 60% of threshold
+   - Skips deep interior edges that don't affect boundary
+   - Reduces stamped edges from 50k+ to ~15k
+   - Latency: 33ms → 20ms (40% improvement)
+
+**Performance**:
 - Contour extraction: 47μs (was 67ms) = **1426x speedup** (car 30-min)
-- Bike 30-min: 43μs (was 217ms) = **5070x speedup**
-- End-to-end: 7.4ms per isochrone (was 80ms) = **10.8x faster**
-- Throughput: **134.5 isochrones/sec** (car 30-min), 95.6/sec (bike 30-min)
-- Contour is now <1% of total time; PHAST dominates at 89%
+- End-to-end: ~20ms per isochrone (car 10-min)
+- Quality: 1.2% violation rate in consistency tests
 
 ### CCH Statistics (Belgium)
 
