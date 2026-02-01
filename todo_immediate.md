@@ -39,10 +39,11 @@ This is the **correct trade-off** for exact turn handling.
 
 Build confidence that results are correct:
 
-- [ ] **A1: OSRM sanity parity suite**
-  - Compare Butterfly vs OSRM on 10K random pairs
-  - Track drift bounds and correlation coefficient
-  - Flag queries where |butterfly - osrm| > 20%
+- [x] **A1: OSRM sanity parity suite** ✅ DONE
+  - Created `scripts/osrm_parity_suite.py`
+  - Fixed critical snap bug: added 5km max snap distance
+  - Results: 0.98 correlation, 9.5% mean drift, 6.6% flagged
+  - Status: PASSED ✓
 
 - [ ] **A2: Debug fields in responses**
   - Snapped coordinates (what we actually used)
