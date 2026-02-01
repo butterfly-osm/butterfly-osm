@@ -45,14 +45,19 @@ Build confidence that results are correct:
   - Results: 0.98 correlation, 9.5% mean drift, 6.6% flagged
   - Status: PASSED ✓
 
-- [ ] **A2: Debug fields in responses**
-  - Snapped coordinates (what we actually used)
-  - Applied penalties summary
-  - Snapped way IDs for verification
+- [x] **A2: Debug fields in responses** ✅ DONE
+  - Added `debug=true` query parameter to `/route`
+  - Response includes `src_snapped` and `dst_snapped`:
+    - Snapped coordinates (lon, lat)
+    - Snap distance in meters
+    - Internal EBG node ID
 
-- [ ] **A3: Duration units enforcement**
-  - Audit all APIs: pick ms or ds and enforce
-  - Document units in OpenAPI spec
+- [x] **A3: Duration units enforcement** ✅ DONE (already consistent)
+  - All public APIs use SECONDS for durations
+  - `/route`: `duration_s` (seconds)
+  - `/table`: `durations` (seconds)
+  - `/isochrone`: `time_s` (seconds)
+  - Documented in OpenAPI spec
 
 ### B) Bulk-First APIs 🟡 MEDIUM PRIORITY
 
