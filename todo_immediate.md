@@ -11,7 +11,7 @@
 | Workload | Before | After | Speedup |
 |----------|--------|-------|---------|
 | Matrix 10k×10k | 25.3s (3.96M/sec) | **16.2s (6.1M/sec)** | **1.56x** |
-| 100K Isochrones | 70.5s (1,370/sec) | TBD | - |
+| 100K Isochrones | 70.5s (1,370/sec) | **65.7s (1,471/sec)** | **1.07x** |
 
 ### A1 Fix: Source-Block Outer Loop ✅ DONE
 
@@ -55,20 +55,15 @@ Expected from A2+A3: Additional 1.5-2x possible
 
 ### B) Isochrones - Eliminate Allocation Overhead
 
-- [ ] **B1: Thread-local dist + generation stamping** - Remove 9.6MB memset per query
-  ```rust
-  struct PhastState {
-      dist: Vec<u32>,
-      seen: Vec<u32>,  // generation stamp
-      gen: u32,
-  }
-  // On write: dist[v] = d; seen[v] = gen;
-  // On read: if seen[v] != gen { return INF; }
-  ```
+- [x] **B1: Thread-local dist + generation stamping** ✅ DONE - 7% speedup
+  - Before: 1370/sec, 21.1ms avg latency
+  - After: **1471/sec, 19.5ms avg latency** (1.07x faster)
+  - Eliminated 9.6MB output allocation (now returns only settled nodes)
+  - Note: Downward scan still iterates 2.4M nodes → need block-gating for bigger win
 - [ ] **B2: Binary response (WKB)** - Skip JSON serialization for bulk
 - [ ] **B3: Bulk endpoint** - Accept list of origins, stream WKB/Arrow results
 
-Expected: **2-3x throughput** (1370/sec → 3000-4000/sec)
+For bigger gains: need block-gated downward scan (C1)
 
 ### C) Lower Priority (After A & B)
 

@@ -826,26 +826,23 @@ async fn isochrone(
     }
     let center_rank = mode_data.order.perm[center_filtered as usize];
 
-    // Run PHAST bounded query (in rank space)
-    let phast_result = run_phast_bounded(
+    // Run PHAST bounded query (in rank space) - uses thread-local state
+    // Returns Vec<(rank, dist)> of settled nodes only
+    let phast_settled = run_phast_bounded_fast(
         &mode_data.cch_topo,
         &mode_data.cch_weights,
         center_rank,
         time_ds,
+        mode,
     );
 
     // Convert settled nodes from rank to original EBG node IDs for geometry
-    // phast_result.dist is indexed by rank
-    let mut settled: Vec<(u32, u32)> = Vec::new();
-    let n_nodes = mode_data.cch_topo.n_nodes as usize;
-    for rank in 0..n_nodes {
-        let dist = phast_result[rank];
-        if dist <= time_ds {
-            // rank -> filtered -> original
-            let filtered_id = mode_data.cch_topo.rank_to_filtered[rank];
-            let original_id = mode_data.filtered_ebg.filtered_to_original[filtered_id as usize];
-            settled.push((original_id, dist));
-        }
+    let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());
+    for (rank, dist) in phast_settled {
+        // rank -> filtered -> original
+        let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
+        let original_id = mode_data.filtered_ebg.filtered_to_original[filtered_id as usize];
+        settled.push((original_id, dist));
     }
 
     // Build isochrone geometry (uses original EBG node IDs)
@@ -932,7 +929,193 @@ fn bounded_dijkstra(
     settled
 }
 
-/// Run PHAST bounded query (in rank space)
+// =============================================================================
+// THREAD-LOCAL PHAST STATE (eliminates 9.6MB memset per query)
+// =============================================================================
+
+use std::cell::RefCell;
+
+/// Thread-local PHAST state with generation stamping
+/// Eliminates O(n) initialization per query by using version stamps
+struct PhastState {
+    /// Distance array (persistent across queries)
+    dist: Vec<u32>,
+    /// Version stamp per node (marks which generation set the distance)
+    version: Vec<u32>,
+    /// Current generation (incremented per query)
+    current_gen: u32,
+    /// Priority queue (reused across queries)
+    pq: std::collections::BinaryHeap<std::cmp::Reverse<(u32, u32)>>,
+}
+
+impl PhastState {
+    fn new(n_nodes: usize) -> Self {
+        Self {
+            dist: vec![u32::MAX; n_nodes],
+            version: vec![0; n_nodes],
+            current_gen: 0,
+            pq: std::collections::BinaryHeap::with_capacity(n_nodes / 100),
+        }
+    }
+
+    /// Start a new query (O(1) instead of O(n))
+    #[inline]
+    fn start_query(&mut self) {
+        self.current_gen = self.current_gen.wrapping_add(1);
+        if self.current_gen == 0 {
+            // Overflow - reset all versions (rare, every ~4B queries)
+            self.version.iter_mut().for_each(|v| *v = 0);
+            self.current_gen = 1;
+        }
+        self.pq.clear();
+    }
+
+    /// Get distance (returns MAX if not set this query)
+    #[inline]
+    fn get_dist(&self, node: usize) -> u32 {
+        if self.version[node] == self.current_gen {
+            self.dist[node]
+        } else {
+            u32::MAX
+        }
+    }
+
+    /// Set distance (also marks version)
+    #[inline]
+    fn set_dist(&mut self, node: usize, dist: u32) {
+        self.dist[node] = dist;
+        self.version[node] = self.current_gen;
+    }
+}
+
+thread_local! {
+    /// Thread-local PHAST state for car mode (most common)
+    static PHAST_STATE_CAR: RefCell<Option<PhastState>> = const { RefCell::new(None) };
+    /// Thread-local PHAST state for bike mode
+    static PHAST_STATE_BIKE: RefCell<Option<PhastState>> = const { RefCell::new(None) };
+    /// Thread-local PHAST state for foot mode
+    static PHAST_STATE_FOOT: RefCell<Option<PhastState>> = const { RefCell::new(None) };
+}
+
+/// Run PHAST bounded query using thread-local state
+/// Returns Vec<(rank, dist)> of settled nodes only - avoids 9.6MB output allocation
+fn run_phast_bounded_fast(
+    cch_topo: &crate::formats::CchTopo,
+    cch_weights: &super::state::CchWeights,
+    origin_rank: u32,
+    threshold: u32,
+    mode: crate::profile_abi::Mode,
+) -> Vec<(u32, u32)> {
+    use std::cmp::Reverse;
+    use crate::profile_abi::Mode;
+
+    let n_nodes = cch_topo.n_nodes as usize;
+
+    // Get thread-local state for this mode
+    let state_cell = match mode {
+        Mode::Car => &PHAST_STATE_CAR,
+        Mode::Bike => &PHAST_STATE_BIKE,
+        Mode::Foot => &PHAST_STATE_FOOT,
+    };
+
+    state_cell.with(|cell| {
+        let mut state_opt = cell.borrow_mut();
+
+        // Initialize if needed (only first query per thread)
+        if state_opt.is_none() {
+            *state_opt = Some(PhastState::new(n_nodes));
+        }
+        let state = state_opt.as_mut().unwrap();
+
+        // Verify size matches (in case different datasets)
+        if state.dist.len() != n_nodes {
+            *state = PhastState::new(n_nodes);
+        }
+
+        // Start new query (O(1) instead of O(n) memset)
+        state.start_query();
+        state.set_dist(origin_rank as usize, 0);
+
+        // Track settled nodes during upward phase
+        let mut upward_settled: Vec<u32> = Vec::with_capacity(n_nodes / 100);
+
+        // Phase 1: Upward search (PQ-based, UP edges only)
+        state.pq.push(Reverse((0, origin_rank)));
+
+        while let Some(Reverse((d, u))) = state.pq.pop() {
+            if d > threshold {
+                break;
+            }
+
+            if d > state.get_dist(u as usize) {
+                continue; // Stale entry
+            }
+
+            upward_settled.push(u);
+
+            let up_start = cch_topo.up_offsets[u as usize] as usize;
+            let up_end = cch_topo.up_offsets[u as usize + 1] as usize;
+
+            for i in up_start..up_end {
+                let v = cch_topo.up_targets[i] as usize;
+                let w = cch_weights.up[i];
+
+                if w == u32::MAX {
+                    continue;
+                }
+
+                let new_dist = d.saturating_add(w);
+                if new_dist < state.get_dist(v) {
+                    state.set_dist(v, new_dist);
+                    state.pq.push(Reverse((new_dist, v as u32)));
+                }
+            }
+        }
+
+        // Phase 2: Downward scan (linear, DOWN edges only)
+        // Note: We still need to scan all nodes because downward propagation
+        // can reach nodes not touched in upward phase
+        for rank in (0..n_nodes).rev() {
+            let d_u = state.get_dist(rank);
+
+            if d_u == u32::MAX || d_u > threshold {
+                continue;
+            }
+
+            let down_start = cch_topo.down_offsets[rank] as usize;
+            let down_end = cch_topo.down_offsets[rank + 1] as usize;
+
+            for i in down_start..down_end {
+                let v = cch_topo.down_targets[i] as usize;
+                let w = cch_weights.down[i];
+
+                if w == u32::MAX {
+                    continue;
+                }
+
+                let new_dist = d_u.saturating_add(w);
+                if new_dist < state.get_dist(v) {
+                    state.set_dist(v, new_dist);
+                }
+            }
+        }
+
+        // Collect settled nodes (only those within threshold)
+        // This is much smaller than full n_nodes array
+        let mut result: Vec<(u32, u32)> = Vec::with_capacity(n_nodes / 10);
+        for rank in 0..n_nodes {
+            if state.version[rank] == state.current_gen {
+                let d = state.dist[rank];
+                if d <= threshold {
+                    result.push((rank as u32, d));
+                }
+            }
+        }
+        result
+    })
+}
+
+/// Run PHAST bounded query (in rank space) - LEGACY version with per-query allocation
 ///
 /// PHAST is a two-phase algorithm:
 /// 1. Upward phase: PQ-based Dijkstra using only UP edges from origin
@@ -940,6 +1123,7 @@ fn bounded_dijkstra(
 ///
 /// With rank-aligned CCH, node_id == rank, so no inv_perm lookup is needed
 /// in the downward phase, giving excellent cache efficiency.
+#[allow(dead_code)]
 fn run_phast_bounded(
     cch_topo: &crate::formats::CchTopo,
     cch_weights: &super::state::CchWeights,
