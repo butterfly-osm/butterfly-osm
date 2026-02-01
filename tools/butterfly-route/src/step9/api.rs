@@ -17,7 +17,7 @@ use utoipa::{OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::profile_abi::Mode;
-use crate::matrix::bucket_ch::{table_bucket_parallel, table_bucket_full_flat};
+use crate::matrix::bucket_ch::{table_bucket_parallel, table_bucket_full_flat, forward_build_buckets, backward_join_with_buckets};
 use crate::matrix::arrow_stream::{MatrixTile, tiles_to_record_batch, record_batch_to_bytes, ARROW_STREAM_CONTENT_TYPE};
 
 use super::geometry::{build_geometry, build_isochrone_geometry, Point, RouteGeometry};
@@ -608,93 +608,117 @@ async fn table_stream(
     let up_adj_flat = mode_data.up_adj_flat.clone();
     let down_rev_flat = mode_data.down_rev_flat.clone();
 
-    // Spawn compute task - compute tiles in parallel, stream each as it completes
+    // Spawn compute task - SOURCE-BLOCK OUTER LOOP to avoid repeated forward computation
+    // For 10k×10k with 1000×1000 tiles: forward computed 10x (once per src block) instead of 100x
     tokio::task::spawn_blocking(move || {
-        // Generate all tile coordinates
-        let src_tiles: Vec<(usize, usize)> = (0..n_total_sources)
+        // Generate source and destination blocks
+        let src_blocks: Vec<(usize, usize)> = (0..n_total_sources)
             .step_by(src_tile_size)
             .map(|start| (start, (start + src_tile_size).min(n_total_sources)))
             .collect();
 
-        let dst_tiles: Vec<(usize, usize)> = (0..n_total_targets)
+        let dst_blocks: Vec<(usize, usize)> = (0..n_total_targets)
             .step_by(dst_tile_size)
             .map(|start| (start, (start + dst_tile_size).min(n_total_targets)))
             .collect();
 
-        // Create list of all tile coordinates
-        let all_tiles: Vec<(usize, usize, usize, usize)> = src_tiles.iter()
-            .flat_map(|&(ss, se)| dst_tiles.iter().map(move |&(ds, de)| (ss, se, ds, de)))
-            .collect();
-
-        // Use rayon's for_each to compute and stream tiles as they complete
-        let tx_clone = tx.clone();
-        all_tiles.par_iter().for_each(|&(src_start, src_end, dst_start, dst_end)| {
+        // Process source blocks in parallel (forward computed ONCE per source block)
+        src_blocks.par_iter().for_each(|&(src_start, src_end)| {
             let tile_rows = src_end - src_start;
-            let tile_cols = dst_end - dst_start;
 
-            // Extract sources for this tile
-            let mut tile_src_ranks: Vec<u32> = Vec::new();
-            let mut tile_src_orig_indices: Vec<usize> = Vec::new();
+            // Extract sources for this block
+            let mut block_src_ranks: Vec<u32> = Vec::new();
+            let mut block_src_orig_indices: Vec<usize> = Vec::new();
 
             for (valid_idx, &orig_idx) in valid_src_indices.iter().enumerate() {
                 if orig_idx >= src_start && orig_idx < src_end {
-                    tile_src_ranks.push(sources_rank[valid_idx]);
-                    tile_src_orig_indices.push(orig_idx);
+                    block_src_ranks.push(sources_rank[valid_idx]);
+                    block_src_orig_indices.push(orig_idx);
                 }
             }
 
-            // Extract destinations for this tile
-            let mut tile_dst_ranks: Vec<u32> = Vec::new();
-            let mut tile_dst_orig_indices: Vec<usize> = Vec::new();
-
-            for (valid_idx, &orig_idx) in valid_dst_indices.iter().enumerate() {
-                if orig_idx >= dst_start && orig_idx < dst_end {
-                    tile_dst_ranks.push(targets_rank[valid_idx]);
-                    tile_dst_orig_indices.push(orig_idx);
-                }
-            }
-
-            // Build output tile
-            let mut durations_ms = vec![u32::MAX; tile_rows * tile_cols];
-
-            if !tile_src_ranks.is_empty() && !tile_dst_ranks.is_empty() {
-                // Compute this small tile
-                let (tile_matrix, _) = table_bucket_full_flat(
-                    n_nodes,
-                    &up_adj_flat,
-                    &down_rev_flat,
-                    &tile_src_ranks,
-                    &tile_dst_ranks,
-                );
-
-                // Map computed distances to output positions
-                for (tile_src_idx, &orig_src_idx) in tile_src_orig_indices.iter().enumerate() {
-                    let out_row = orig_src_idx - src_start;
-
-                    for (tile_dst_idx, &orig_dst_idx) in tile_dst_orig_indices.iter().enumerate() {
-                        let out_col = orig_dst_idx - dst_start;
-                        let d = tile_matrix[tile_src_idx * tile_dst_ranks.len() + tile_dst_idx];
-                        durations_ms[out_row * tile_cols + out_col] =
-                            if d == u32::MAX { u32::MAX } else { d * 100 };
+            if block_src_ranks.is_empty() {
+                // No valid sources in this block - emit empty tiles for all dst blocks
+                for &(dst_start, dst_end) in &dst_blocks {
+                    let tile_cols = dst_end - dst_start;
+                    let durations_ms = vec![u32::MAX; tile_rows * tile_cols];
+                    let tile = MatrixTile::from_flat(
+                        src_start as u32,
+                        dst_start as u32,
+                        tile_rows as u16,
+                        tile_cols as u16,
+                        &durations_ms,
+                    );
+                    if let Ok(batch) = tiles_to_record_batch(&[tile]) {
+                        if let Ok(bytes) = record_batch_to_bytes(&batch) {
+                            let _ = tx.blocking_send(Ok(bytes));
+                        }
                     }
                 }
+                return;
             }
 
-            let tile = MatrixTile::from_flat(
-                src_start as u32,
-                dst_start as u32,
-                tile_rows as u16,
-                tile_cols as u16,
-                &durations_ms,
-            );
+            // FORWARD PHASE: Compute forward searches ONCE for this source block
+            let source_buckets = std::sync::Arc::new(forward_build_buckets(n_nodes, &up_adj_flat, &block_src_ranks));
 
-            // Stream this tile immediately
-            if let Ok(batch) = tiles_to_record_batch(&[tile]) {
-                if let Ok(bytes) = record_batch_to_bytes(&batch) {
-                    let _ = tx_clone.blocking_send(Ok(bytes));
+            // BACKWARD PHASE: Process destination blocks in parallel
+            // This maintains high parallelism while avoiding repeated forward work
+            dst_blocks.par_iter().for_each(|&(dst_start, dst_end)| {
+                let source_buckets = source_buckets.clone();
+                let tile_cols = dst_end - dst_start;
+
+                // Extract destinations for this block
+                let mut block_dst_ranks: Vec<u32> = Vec::new();
+                let mut block_dst_orig_indices: Vec<usize> = Vec::new();
+
+                for (valid_idx, &orig_idx) in valid_dst_indices.iter().enumerate() {
+                    if orig_idx >= dst_start && orig_idx < dst_end {
+                        block_dst_ranks.push(targets_rank[valid_idx]);
+                        block_dst_orig_indices.push(orig_idx);
+                    }
                 }
-            }
-        });
+
+                // Build output tile
+                let mut durations_ms = vec![u32::MAX; tile_rows * tile_cols];
+
+                if !block_dst_ranks.is_empty() {
+                    // BACKWARD + JOIN using prebuilt source buckets
+                    let tile_matrix = backward_join_with_buckets(
+                        n_nodes,
+                        &down_rev_flat,
+                        &source_buckets,
+                        &block_dst_ranks,
+                    );
+
+                    // Map computed distances to output positions
+                    for (tile_src_idx, &orig_src_idx) in block_src_orig_indices.iter().enumerate() {
+                        let out_row = orig_src_idx - src_start;
+
+                        for (tile_dst_idx, &orig_dst_idx) in block_dst_orig_indices.iter().enumerate() {
+                            let out_col = orig_dst_idx - dst_start;
+                            let d = tile_matrix[tile_src_idx * block_dst_ranks.len() + tile_dst_idx];
+                            durations_ms[out_row * tile_cols + out_col] =
+                                if d == u32::MAX { u32::MAX } else { d * 100 };
+                        }
+                    }
+                }
+
+                let tile = MatrixTile::from_flat(
+                    src_start as u32,
+                    dst_start as u32,
+                    tile_rows as u16,
+                    tile_cols as u16,
+                    &durations_ms,
+                );
+
+                // Stream this tile immediately
+                if let Ok(batch) = tiles_to_record_batch(&[tile]) {
+                    if let Ok(bytes) = record_batch_to_bytes(&batch) {
+                        let _ = tx.blocking_send(Ok(bytes));
+                    }
+                }
+            });  // end dst_blocks.par_iter()
+        });  // end src_blocks.par_iter()
     });
 
     // Convert receiver to stream

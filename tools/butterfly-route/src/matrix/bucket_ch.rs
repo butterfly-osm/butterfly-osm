@@ -1239,6 +1239,117 @@ pub fn table_bucket_full_flat(
     (matrix, stats)
 }
 
+// =============================================================================
+// SOURCE-BLOCK OPTIMIZED API (avoid repeated forward computation)
+// =============================================================================
+
+/// Precomputed forward buckets for a block of sources
+/// Use `forward_build_buckets` to create, then `backward_join_with_buckets` for each target block
+pub struct SourceBuckets {
+    buckets: PrefixSumBuckets,
+    n_sources: usize,
+}
+
+impl SourceBuckets {
+    /// Get number of sources in this bucket set
+    pub fn n_sources(&self) -> usize {
+        self.n_sources
+    }
+
+    /// Get total bucket items (for stats)
+    pub fn total_items(&self) -> usize {
+        self.buckets.total_items()
+    }
+}
+
+/// Forward phase only: compute buckets for a block of sources
+/// Call ONCE per source block, then use `backward_join_with_buckets` for each target block
+pub fn forward_build_buckets(
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    sources: &[u32],
+) -> SourceBuckets {
+    let n_sources = sources.len();
+
+    if n_sources == 0 {
+        return SourceBuckets {
+            buckets: PrefixSumBuckets::new(n_nodes),
+            n_sources: 0,
+        };
+    }
+
+    // Estimate for pre-allocation
+    let avg_visited = (n_nodes / 400).max(500).min(20000);
+
+    // Single reusable search state
+    let mut state = SearchState::new(n_nodes, avg_visited);
+
+    // Collect bucket items: (node, source_idx, dist)
+    let mut bucket_items: Vec<(u32, u16, u32)> = Vec::with_capacity(n_sources * avg_visited);
+
+    for (source_idx, &source) in sources.iter().enumerate() {
+        if source as usize >= n_nodes {
+            continue;
+        }
+        forward_fill_buckets_flat(
+            up_adj_flat,
+            source_idx as u16,
+            source,
+            &mut state,
+            &mut bucket_items,
+        );
+    }
+
+    // Build prefix-sum buckets
+    let mut buckets = PrefixSumBuckets::new(n_nodes);
+    buckets.build(&bucket_items);
+
+    SourceBuckets {
+        buckets,
+        n_sources,
+    }
+}
+
+/// Backward phase only: compute distances for targets using prebuilt source buckets
+/// Returns a matrix of size n_sources × n_targets (row-major: matrix[src_idx * n_targets + tgt_idx])
+pub fn backward_join_with_buckets(
+    n_nodes: usize,
+    down_rev_flat: &DownReverseAdjFlat,
+    source_buckets: &SourceBuckets,
+    targets: &[u32],
+) -> Vec<u32> {
+    let n_sources = source_buckets.n_sources;
+    let n_targets = targets.len();
+
+    let mut matrix = vec![u32::MAX; n_sources * n_targets];
+
+    if n_sources == 0 || n_targets == 0 {
+        return matrix;
+    }
+
+    // Estimate for pre-allocation
+    let avg_visited = (n_nodes / 400).max(500).min(20000);
+    let mut state = SearchState::new(n_nodes, avg_visited);
+
+    for (target_idx, &target) in targets.iter().enumerate() {
+        if target as usize >= n_nodes {
+            continue;
+        }
+
+        backward_join_prefix(
+            down_rev_flat,
+            target,
+            &source_buckets.buckets,
+            &mut matrix,
+            n_targets,
+            target_idx,
+            &mut state,
+        );
+    }
+
+    matrix
+}
+
 /// Forward search using flat UP adjacency (no INF check in hot loop)
 fn forward_fill_buckets_flat(
     up_adj_flat: &UpAdjFlat,

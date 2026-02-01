@@ -29,4 +29,10 @@ pub mod bucket_ch;
 
 pub use batched_phast::{BatchedPhastEngine, BatchedPhastResult, BatchedPhastStats};
 pub use arrow_stream::{MatrixTile, ArrowMatrixWriter};
-pub use bucket_ch::{table_bucket, table_bucket_optimized, table_bucket_full_flat, table_bucket_parallel, DownReverseAdjFlat, UpAdjFlat, UpReverseAdjFlat, BucketArena, BucketM2MStats, BucketM2MEngine};
+pub use bucket_ch::{
+    table_bucket, table_bucket_optimized, table_bucket_full_flat, table_bucket_parallel,
+    // Source-block optimized API (avoids repeated forward computation)
+    forward_build_buckets, backward_join_with_buckets, SourceBuckets,
+    // Data structures
+    DownReverseAdjFlat, UpAdjFlat, UpReverseAdjFlat, BucketArena, BucketM2MStats, BucketM2MEngine,
+};
