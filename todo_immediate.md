@@ -50,18 +50,38 @@ Use existing `sparse_contour.rs` infrastructure:
   - Convert to lat/lon
   - Output as JSON/WKB
 
-- [x] **D5: Pass consistency tests**
-  - Rust test `test_isochrone_consistency_brussels` PASSES
-  - 4.8% violation rate (well under 15% threshold)
-  - Run with: `cargo test -p butterfly-route test_isochrone_consistency -- --ignored --nocapture`
+- [x] **D5: Basic consistency tests pass**
+  - 4.8% violation rate - but test semantics are WRONG
+  - Test samples random plane points, not road-snapped points
+  - This causes false violations for off-road areas (parks, water, etc.)
 
-- [x] **D6: Benchmark after fix**
-  - Current: ~33ms latency (up from 5ms with broken hull)
-  - This is the cost of correctness - sparse raster is more expensive than convex hull
-  - Bulk throughput TBD (need to test bulk endpoint with new algorithm)
+### D-Phase 2: Optimize Isochrone (Current Priority)
 
-**Key insight:** Isochrone = union of reachable road geometry (1-D curves) + small buffer.
-Polygon represents "points within tolerance of reachable roads", not arbitrary 2-D regions.
+- [ ] **D6: Fix test semantics**
+  - Sample points must be SNAPPED to roads (not random plane)
+  - Evaluate containment on snapped point coordinates
+  - Enforce snap radius consistent with API
+  - Target: <1% violations with correct semantics
+
+- [ ] **D7: Frontier-local stamping (biggest time win)**
+  - Current: stamps ALL 50k+ reachable edges → 33ms latency
+  - Fix: stamp only frontier edges + edges in frontier tile halo
+  - Mark frontier tiles as active, expand by 1-2 rings
+  - Only stamp edges whose geometry intersects active tiles
+  - Target: 33ms → 5-12ms
+
+- [ ] **D8: Two-resolution mask (quality win)**
+  - Coarse interior (40-60m cells) for fully reachable edges
+  - Fine frontier belt (10-20m cells) for boundary accuracy
+  - Blend layers for final mask
+
+- [ ] **D9: Tune morphology down**
+  - Current: 2 dilations, 1 erosion (causes bleeding into parks/water)
+  - With frontier-local stamping: reduce to 1 dilation, 0-1 erosion
+  - Target: minimal bridging while maintaining connectivity
+
+**Key insight:** Isochrone = buffered reachable roads. A point is "reachable" iff its
+snap-to-road location is reachable within threshold. Test must use same definition.
 
 ---
 
@@ -71,11 +91,11 @@ Polygon represents "points within tolerance of reachable roads", not arbitrary 2
 
 ## Current Performance
 
-**Isochrones: DONE** ✅
-| Endpoint | Throughput | Latency |
-|----------|------------|---------|
-| Individual JSON | 815/sec | 5ms p50 |
-| **Bulk WKB** | **1526/sec** | - |
+**Isochrones: CORRECT BUT SLOW** ⚠️
+| Endpoint | Throughput | Latency | Status |
+|----------|------------|---------|--------|
+| Individual JSON | ~30/sec | 33ms | Need frontier-local optimization |
+| **Target** | 100+/sec | 5-12ms | After D7 frontier-local stamping |
 
 **Matrices: WIN AT SCALE** ✅
 | Size | Butterfly | OSRM | Ratio |
