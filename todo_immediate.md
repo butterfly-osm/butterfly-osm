@@ -2,6 +2,33 @@
 
 ## Current Status
 
+**Table API Rank Space Fix (2026-02-01):** ✅ CRITICAL FIX
+
+The `/table` endpoint was returning distances 2-5x longer than the `/route` endpoint for identical coordinate pairs.
+
+**Root Cause:**
+- `/route` correctly converts: original → filtered → **rank** (line 179: `mode_data.order.perm[src_filtered]`)
+- `/table` was only converting: original → filtered (**missing rank conversion!**)
+- Bucket M2M algorithm expects rank positions (CCH is rank-aligned)
+- Passing filtered IDs caused incorrect distance lookups
+
+**Fix:**
+- Added rank conversion in `compute_table_bucket_m2m()`:
+  ```rust
+  let rank = mode_data.order.perm[filtered as usize];
+  sources_rank.push(rank);  // was: sources_filtered.push(filtered)
+  ```
+
+**Before fix:** `/table` returned 2326s, `/route` returned 906s for same pair
+**After fix:** `/table` returns 906s, matching `/route` exactly
+
+**Correctness validation (5×5 central Belgium):**
+- `/table` now matches `/route` within 0 seconds for all pairs
+- 90% of Butterfly routes within 20% of OSRM durations
+- Remaining 10% difference due to different turn cost models (expected)
+
+---
+
 **Table API Location Fix (2026-02-01):** ✅ FIXED
 - `/table` endpoint was returning `[0.0, 0.0]` for source/destination locations
 - Bug: `get_node_location()` was using `poly_off` as an index, but polylines are indexed by edge index
