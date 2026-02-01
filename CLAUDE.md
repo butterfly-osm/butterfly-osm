@@ -361,13 +361,14 @@ else:
 
 The gap closes at scale because fixed overhead (HTTP, coordination) is amortized.
 
-**Small Matrix (HTTP API) - After C1 Optimization:**
-| Size | OSRM CH | Butterfly | Gap |
-|------|---------|-----------|-----|
-| 10×10 | 4.5ms | 26ms | 5.8x |
-| 25×25 | 8.7ms | 48ms | 5.5x |
-| 50×50 | 18.9ms | 85ms | 4.5x |
-| 100×100 | 35ms | 160ms | 4.6x |
+**Matrix Performance (2026-02-01):**
+| Size | OSRM CH | Butterfly | Ratio |
+|------|---------|-----------|-------|
+| 100×100 | 55ms | 164ms | 3.0x slower |
+| 1000×1000 | 684ms | 1.55s | 2.3x slower |
+| 10000×10000 | 32.9s | **18.2s** | **1.8x FASTER** |
+
+**Key insight:** Gap shrinks at scale. Butterfly WINS at 10k+ due to Arrow streaming + parallel tiling.
 
 **Optimizations Implemented:**
 | Optimization | Effect | Status |

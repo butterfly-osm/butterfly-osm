@@ -321,14 +321,16 @@ Major isochrone optimization achieving **18x latency improvement**.
 | Matrix 50×50 | 161ms | **93ms** | 1.7x |
 | Matrix 100×100 | 330ms | **173ms** | 1.9x |
 
-**vs OSRM (small matrices)**:
-| Size | OSRM | Butterfly | Gap |
-|------|------|-----------|-----|
-| 10×10 | 4.5ms | 24ms | 5.3x |
-| 50×50 | 19ms | 93ms | 4.9x |
-| 100×100 | 35ms | 173ms | 4.9x |
+**vs OSRM (full scale comparison)**:
+| Size | OSRM | Butterfly | Ratio |
+|------|------|-----------|-------|
+| 100×100 | 55ms | 164ms | 3.0x slower |
+| 1000×1000 | 684ms | 1.55s | 2.3x slower |
+| 10000×10000 | 32.9s | **18.2s** | **1.8x FASTER** |
 
-**Remaining gap analysis**: The 5x gap for small matrices is due to:
+**Key insight:** Butterfly WINS at 10k+ scale due to Arrow streaming + parallel tiling.
+
+**Remaining gap analysis (small matrices)**: The 3x gap is due to:
 - Edge-based CH (2.5x more nodes than OSRM's node-based)
 - Heap operations overhead (lazy reinsertion vs proper decrease-key)
 - No stall-on-demand in current implementation
