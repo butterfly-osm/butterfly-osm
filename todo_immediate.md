@@ -899,7 +899,7 @@ OSRM's Table uses bucket-based many-to-many CH (O(|V|+|E|)), not N×M P2P querie
 #### Done-ness Bar
 - [x] Streaming endpoint implemented with backpressure
 - [x] 10k×10k matrix benchmark with bounded memory ✅
-- [ ] Python Arrow consumer verification
+- [x] Python Arrow consumer verification ✅ (test_50k.py - 2.5B distances, 9.5GB received)
 - [x] Sustained throughput benchmark documented ✅
 - [x] OSRM comparison completed ✅
 
