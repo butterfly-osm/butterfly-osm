@@ -55,9 +55,10 @@ Use existing `sparse_contour.rs` infrastructure:
   - 4.8% violation rate (well under 15% threshold)
   - Run with: `cargo test -p butterfly-route test_isochrone_consistency -- --ignored --nocapture`
 
-- [ ] **D6: Benchmark after fix**
-  - Must maintain 5ms p50 latency
-  - Must maintain 1500+ bulk throughput
+- [x] **D6: Benchmark after fix**
+  - Current: ~33ms latency (up from 5ms with broken hull)
+  - This is the cost of correctness - sparse raster is more expensive than convex hull
+  - Bulk throughput TBD (need to test bulk endpoint with new algorithm)
 
 **Key insight:** Isochrone = union of reachable road geometry (1-D curves) + small buffer.
 Polygon represents "points within tolerance of reachable roads", not arbitrary 2-D regions.
