@@ -7,9 +7,12 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use crate::formats::{
-    mod_mask, mod_weights, CchTopo, CchTopoFile, EbgCsr, EbgCsrFile, EbgNodes, EbgNodesFile,
-    FilteredEbg, FilteredEbgFile, NbgGeo, NbgGeoFile, OrderEbg, OrderEbgFile,
+    mod_mask, mod_weights, CchTopo, CchTopoFile, CchWeightsFile, EbgCsr, EbgCsrFile, EbgNodes,
+    EbgNodesFile, FilteredEbg, FilteredEbgFile, NbgGeo, NbgGeoFile, OrderEbg, OrderEbgFile,
 };
+// Re-export CchWeights for use by api.rs
+pub use crate::formats::CchWeights;
+use crate::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
 use crate::profile_abi::Mode;
 
 use super::spatial::SpatialIndex;
@@ -27,13 +30,12 @@ pub struct ModeData {
     // Original node weights and mask (indexed by original EBG node ID)
     pub node_weights: Vec<u32>,
     pub mask: Vec<u64>,
+    // Flat adjacencies for bucket M2M (pre-built for performance)
+    pub up_adj_flat: UpAdjFlat,
+    pub down_rev_flat: DownReverseAdjFlat,
 }
 
-/// CCH weights (up and down)
-pub struct CchWeights {
-    pub up: Vec<u32>,
-    pub down: Vec<u32>,
-}
+// CchWeights is imported from crate::formats
 
 /// Reverse adjacency for DOWN edges (used in backward search)
 /// For each node y, stores all nodes x that have DOWN edges x→y
@@ -177,7 +179,11 @@ fn load_mode_data(
 
     // Load CCH weights from step 8
     let cch_weights_path = step8_dir.join(format!("cch.w.{}.u32", mode_name));
-    let cch_weights = load_cch_weights(&cch_weights_path)?;
+    let cch_weights = CchWeightsFile::read(&cch_weights_path)?;
+
+    // Build flat adjacencies for bucket M2M (pre-filtered for INF, embedded weights)
+    let up_adj_flat = UpAdjFlat::build(&cch_topo, &cch_weights);
+    let down_rev_flat = DownReverseAdjFlat::build(&cch_topo, &cch_weights);
 
     Ok(ModeData {
         mode,
@@ -188,6 +194,8 @@ fn load_mode_data(
         filtered_ebg,
         node_weights: weights_data.weights,
         mask,
+        up_adj_flat,
+        down_rev_flat,
     })
 }
 
@@ -206,44 +214,6 @@ fn bytes_to_u64_words(bytes: &[u8]) -> Vec<u64> {
 }
 
 /// Load CCH weights from file
-fn load_cch_weights(path: &Path) -> Result<CchWeights> {
-    use std::fs::File;
-    use std::io::Read;
-
-    let mut file = File::open(path).context("Failed to open CCH weights")?;
-
-    // Read header (32 bytes)
-    let mut header = [0u8; 32];
-    file.read_exact(&mut header)?;
-
-    let n_up = u64::from_le_bytes([
-        header[8], header[9], header[10], header[11], header[12], header[13], header[14],
-        header[15],
-    ]) as usize;
-    let n_down = u64::from_le_bytes([
-        header[16], header[17], header[18], header[19], header[20], header[21], header[22],
-        header[23],
-    ]) as usize;
-
-    // Read up weights
-    let mut up = Vec::with_capacity(n_up);
-    for _ in 0..n_up {
-        let mut buf = [0u8; 4];
-        file.read_exact(&mut buf)?;
-        up.push(u32::from_le_bytes(buf));
-    }
-
-    // Read down weights
-    let mut down = Vec::with_capacity(n_down);
-    for _ in 0..n_down {
-        let mut buf = [0u8; 4];
-        file.read_exact(&mut buf)?;
-        down.push(u32::from_le_bytes(buf));
-    }
-
-    Ok(CchWeights { up, down })
-}
-
 /// Build reverse adjacency for DOWN edges
 /// For each node y, we want to find all edges x→y in the DOWN graph
 /// This allows backward search to iterate over incoming edges efficiently

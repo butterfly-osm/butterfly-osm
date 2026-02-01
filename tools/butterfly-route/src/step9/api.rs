@@ -1,25 +1,20 @@
 //! HTTP API handlers with Axum and Utoipa
 
 use axum::{
-    body::Body,
-    extract::{Query, State},
-    http::{header, StatusCode},
+    extract::{Path, Query, State},
+    http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
-use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
 use utoipa::{OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::profile_abi::Mode;
-use crate::matrix::arrow_stream::{MatrixTile, ArrowMatrixWriter, ARROW_STREAM_CONTENT_TYPE, tiles_to_record_batch};
-use crate::matrix::batched_phast::K_LANES;
+use crate::matrix::bucket_ch::{table_bucket_parallel, table_bucket_full_flat};
 
 use super::geometry::{build_geometry, build_isochrone_geometry, Point, RouteGeometry};
 use super::query::CchQuery;
@@ -29,17 +24,14 @@ use super::unpack::unpack_path;
 /// OpenAPI documentation
 #[derive(OpenApi)]
 #[openapi(
-    paths(route, matrix, isochrone, health, matrix_bulk, matrix_stream),
+    paths(route, table_osrm, table_post, isochrone, health),
     components(schemas(
         RouteRequest,
         RouteResponse,
-        MatrixRequest,
-        MatrixResponse,
+        TablePostRequest,
+        TableResponse,
         IsochroneRequest,
         IsochroneResponse,
-        MatrixBulkRequest,
-        MatrixBulkResponse,
-        MatrixStreamRequest,
         Point,
         ErrorResponse
     )),
@@ -61,9 +53,10 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
     Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .route("/route", get(route))
-        .route("/matrix", get(matrix))
-        .route("/matrix/bulk", post(matrix_bulk))
-        .route("/matrix/stream", post(matrix_stream))
+        // OSRM-compatible table endpoint
+        .route("/table/v1/:profile/*coords", get(table_osrm))
+        // POST alternative for table (easier for large coordinate lists)
+        .route("/table", post(table_post))
         .route("/isochrone", get(isochrone))
         .route("/health", get(health))
         .route("/debug/compare", get(debug_compare))
@@ -236,149 +229,295 @@ async fn route(
     .into_response()
 }
 
-// ============ Matrix Endpoint ============
+// ============ Table Endpoint (OSRM-compatible) ============
 
+/// Query parameters for OSRM-style table endpoint
+#[derive(Debug, Deserialize)]
+pub struct TableQueryParams {
+    /// Source indices (semicolon-separated, e.g., "0;1;2"). If omitted, all coordinates are sources.
+    sources: Option<String>,
+    /// Destination indices (semicolon-separated). If omitted, all coordinates are destinations.
+    destinations: Option<String>,
+}
+
+/// POST request for table computation
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct MatrixRequest {
-    /// Source longitude
-    src_lon: f64,
-    /// Source latitude
-    src_lat: f64,
-    /// Destination longitudes (comma-separated)
-    dst_lons: String,
-    /// Destination latitudes (comma-separated)
-    dst_lats: String,
-    /// Transport mode
-    mode: String,
+pub struct TablePostRequest {
+    /// Source coordinates [[lon, lat], ...]
+    #[schema(example = json!([[4.3517, 50.8503], [4.4017, 50.8603]]))]
+    pub sources: Vec<[f64; 2]>,
+    /// Destination coordinates [[lon, lat], ...]
+    #[schema(example = json!([[4.3817, 50.8553], [4.4217, 50.8653]]))]
+    pub destinations: Vec<[f64; 2]>,
+    /// Transport mode: car, bike, or foot
+    #[schema(example = "car")]
+    pub mode: String,
+}
+
+/// Response for table computation (OSRM-compatible format)
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TableResponse {
+    /// Status code (always "Ok" on success)
+    pub code: String,
+    /// Row-major matrix of durations in seconds (null if unreachable)
+    pub durations: Vec<Vec<Option<f64>>>,
+    /// Source waypoints with snapped locations
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sources: Option<Vec<Waypoint>>,
+    /// Destination waypoints with snapped locations
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destinations: Option<Vec<Waypoint>>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct MatrixResponse {
-    /// Durations in seconds (null if unreachable)
-    pub durations: Vec<Option<f64>>,
+pub struct Waypoint {
+    /// Snapped location [lon, lat]
+    pub location: [f64; 2],
+    /// Name (empty for now)
+    pub name: String,
 }
 
-/// Calculate distance matrix from one source to many destinations
+/// OSRM-compatible table endpoint: GET /table/v1/{profile}/{coordinates}
+///
+/// Computes a distance matrix using bucket many-to-many algorithm.
+/// Coordinates are semicolon-separated "lon,lat" pairs.
+///
+/// Example: GET /table/v1/car/4.35,50.85;4.40,50.86;4.38,50.84?sources=0&destinations=1;2
 #[utoipa::path(
     get,
-    path = "/matrix",
+    path = "/table/v1/{profile}/{coords}",
     params(
-        ("src_lon" = f64, Query, description = "Source longitude"),
-        ("src_lat" = f64, Query, description = "Source latitude"),
-        ("dst_lons" = String, Query, description = "Destination longitudes (comma-separated)"),
-        ("dst_lats" = String, Query, description = "Destination latitudes (comma-separated)"),
-        ("mode" = String, Query, description = "Transport mode"),
+        ("profile" = String, Path, description = "Transport mode: car, bike, foot"),
+        ("coords" = String, Path, description = "Semicolon-separated lon,lat pairs"),
+        ("sources" = Option<String>, Query, description = "Source indices (semicolon-separated)"),
+        ("destinations" = Option<String>, Query, description = "Destination indices (semicolon-separated)"),
     ),
     responses(
-        (status = 200, description = "Matrix computed", body = MatrixResponse),
+        (status = 200, description = "Table computed", body = TableResponse),
         (status = 400, description = "Bad request", body = ErrorResponse),
     )
 )]
-async fn matrix(
+async fn table_osrm(
     State(state): State<Arc<ServerState>>,
-    Query(req): Query<MatrixRequest>,
+    Path((profile, coords)): Path<(String, String)>,
+    Query(params): Query<TableQueryParams>,
+) -> impl IntoResponse {
+    let mode = match parse_mode(&profile) {
+        Ok(m) => m,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
+    };
+
+    // Parse coordinates: "lon,lat;lon,lat;..."
+    let all_coords: Vec<(f64, f64)> = coords
+        .split(';')
+        .filter_map(|s| {
+            let parts: Vec<&str> = s.split(',').collect();
+            if parts.len() == 2 {
+                let lon = parts[0].trim().parse().ok()?;
+                let lat = parts[1].trim().parse().ok()?;
+                Some((lon, lat))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if all_coords.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse {
+            error: "No valid coordinates provided".into()
+        })).into_response();
+    }
+
+    // Parse source/destination indices
+    let source_indices: Vec<usize> = match &params.sources {
+        Some(s) if !s.is_empty() => s.split(';').filter_map(|x| x.trim().parse().ok()).collect(),
+        _ => (0..all_coords.len()).collect(), // all coordinates are sources
+    };
+    let dest_indices: Vec<usize> = match &params.destinations {
+        Some(s) if !s.is_empty() => s.split(';').filter_map(|x| x.trim().parse().ok()).collect(),
+        _ => (0..all_coords.len()).collect(), // all coordinates are destinations
+    };
+
+    // Extract source and destination coordinates
+    let sources: Vec<[f64; 2]> = source_indices.iter()
+        .filter_map(|&i| all_coords.get(i).map(|&(lon, lat)| [lon, lat]))
+        .collect();
+    let destinations: Vec<[f64; 2]> = dest_indices.iter()
+        .filter_map(|&i| all_coords.get(i).map(|&(lon, lat)| [lon, lat]))
+        .collect();
+
+    if sources.is_empty() || destinations.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse {
+            error: "Invalid source or destination indices".into()
+        })).into_response();
+    }
+
+    // Compute table using bucket M2M
+    compute_table_bucket_m2m(&state, mode, &sources, &destinations).await
+}
+
+/// POST /table - Alternative table endpoint for easier large coordinate lists
+#[utoipa::path(
+    post,
+    path = "/table",
+    request_body = TablePostRequest,
+    responses(
+        (status = 200, description = "Table computed", body = TableResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+    )
+)]
+async fn table_post(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<TablePostRequest>,
 ) -> impl IntoResponse {
     let mode = match parse_mode(&req.mode) {
         Ok(m) => m,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
     };
 
+    if req.sources.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse {
+            error: "sources cannot be empty".into()
+        })).into_response();
+    }
+    if req.destinations.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse {
+            error: "destinations cannot be empty".into()
+        })).into_response();
+    }
+
+    compute_table_bucket_m2m(&state, mode, &req.sources, &req.destinations).await
+}
+
+/// Core table computation using bucket M2M algorithm
+async fn compute_table_bucket_m2m(
+    state: &Arc<ServerState>,
+    mode: Mode,
+    sources: &[[f64; 2]],
+    destinations: &[[f64; 2]],
+) -> Response {
     let mode_data = state.get_mode(mode);
+    let n_nodes = mode_data.cch_topo.n_nodes as usize;
 
-    // Parse destinations
-    let dst_lons: Vec<f64> = req
-        .dst_lons
-        .split(',')
-        .filter_map(|s| s.trim().parse().ok())
-        .collect();
-    let dst_lats: Vec<f64> = req
-        .dst_lats
-        .split(',')
-        .filter_map(|s| s.trim().parse().ok())
-        .collect();
+    // Snap sources to graph nodes and convert to filtered space
+    let mut sources_filtered: Vec<u32> = Vec::with_capacity(sources.len());
+    let mut source_waypoints: Vec<Waypoint> = Vec::with_capacity(sources.len());
+    let mut source_valid: Vec<bool> = Vec::with_capacity(sources.len());
 
-    if dst_lons.len() != dst_lats.len() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Mismatched destination coordinates".to_string(),
-            }),
-        )
-            .into_response();
-    }
-
-    // Snap source (original EBG node ID)
-    let src_orig = match state.spatial_index.snap(req.src_lon, req.src_lat, &mode_data.mask, 10) {
-        Some(id) => id,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Could not snap source".to_string(),
-                }),
-            )
-                .into_response()
-        }
-    };
-
-    // Convert to filtered space, then to rank space
-    let src_filtered = mode_data.filtered_ebg.original_to_filtered[src_orig as usize];
-    if src_filtered == u32::MAX {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Source not accessible for this mode".to_string(),
-            }),
-        )
-            .into_response();
-    }
-    let src_rank = mode_data.order.perm[src_filtered as usize];
-
-    // Snap destinations and convert to rank space
-    // Keep track of which destinations failed to snap
-    let mut targets_rank: Vec<u32> = Vec::with_capacity(dst_lons.len());
-    let mut target_valid: Vec<bool> = Vec::with_capacity(dst_lons.len());
-
-    for (&lon, &lat) in dst_lons.iter().zip(dst_lats.iter()) {
-        if let Some(orig_id) = state.spatial_index.snap(lon, lat, &mode_data.mask, 10) {
+    for [lon, lat] in sources {
+        if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &mode_data.mask, 10) {
             let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
             if filtered != u32::MAX {
-                let rank = mode_data.order.perm[filtered as usize];
-                targets_rank.push(rank);
-                target_valid.push(true);
+                sources_filtered.push(filtered);
+                source_valid.push(true);
+                // Get snapped location from EBG node
+                let snapped = get_node_location(state, orig_id);
+                source_waypoints.push(Waypoint { location: snapped, name: String::new() });
             } else {
-                targets_rank.push(0); // placeholder
-                target_valid.push(false);
+                sources_filtered.push(0);
+                source_valid.push(false);
+                source_waypoints.push(Waypoint { location: [*lon, *lat], name: String::new() });
             }
         } else {
-            targets_rank.push(0); // placeholder
-            target_valid.push(false);
+            sources_filtered.push(0);
+            source_valid.push(false);
+            source_waypoints.push(Waypoint { location: [*lon, *lat], name: String::new() });
         }
     }
 
-    // Run PHAST-based one-to-many query (using batched matrix with single source)
-    let (matrix_distances, _) = compute_batched_matrix(
-        &mode_data.cch_topo,
-        &mode_data.cch_weights,
-        &mode_data.order,
-        &[src_rank],
-        &targets_rank,
-    );
+    // Snap destinations to graph nodes and convert to filtered space
+    let mut targets_filtered: Vec<u32> = Vec::with_capacity(destinations.len());
+    let mut dest_waypoints: Vec<Waypoint> = Vec::with_capacity(destinations.len());
+    let mut target_valid: Vec<bool> = Vec::with_capacity(destinations.len());
 
-    // Convert results to output format, respecting validity
-    let durations: Vec<Option<f64>> = matrix_distances
-        .into_iter()
-        .zip(target_valid.iter())
-        .map(|(d, &valid)| {
-            if !valid || d == u32::MAX {
-                None
+    for [lon, lat] in destinations {
+        if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &mode_data.mask, 10) {
+            let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
+            if filtered != u32::MAX {
+                targets_filtered.push(filtered);
+                target_valid.push(true);
+                let snapped = get_node_location(state, orig_id);
+                dest_waypoints.push(Waypoint { location: snapped, name: String::new() });
             } else {
-                Some(d as f64 / 10.0) // deciseconds to seconds
+                targets_filtered.push(0);
+                target_valid.push(false);
+                dest_waypoints.push(Waypoint { location: [*lon, *lat], name: String::new() });
             }
-        })
-        .collect();
+        } else {
+            targets_filtered.push(0);
+            target_valid.push(false);
+            dest_waypoints.push(Waypoint { location: [*lon, *lat], name: String::new() });
+        }
+    }
 
-    Json(MatrixResponse { durations }).into_response()
+    // Run bucket M2M algorithm
+    // Use sequential for small matrices (< 2500 cells) to avoid parallel overhead
+    // Use parallel for large matrices where thread amortization helps
+    let (matrix, _stats) = if sources_filtered.len() * targets_filtered.len() < 2500 {
+        table_bucket_full_flat(
+            n_nodes,
+            &mode_data.up_adj_flat,
+            &mode_data.down_rev_flat,
+            &sources_filtered,
+            &targets_filtered,
+        )
+    } else {
+        table_bucket_parallel(
+            n_nodes,
+            &mode_data.up_adj_flat,
+            &mode_data.down_rev_flat,
+            &sources_filtered,
+            &targets_filtered,
+        )
+    };
+
+    // Convert flat matrix to 2D array with nulls for invalid/unreachable
+    let n_sources = sources.len();
+    let n_targets = destinations.len();
+    let mut durations: Vec<Vec<Option<f64>>> = Vec::with_capacity(n_sources);
+
+    for src_idx in 0..n_sources {
+        let mut row: Vec<Option<f64>> = Vec::with_capacity(n_targets);
+        for tgt_idx in 0..n_targets {
+            if !source_valid[src_idx] || !target_valid[tgt_idx] {
+                row.push(None);
+            } else {
+                let dist = matrix[src_idx * n_targets + tgt_idx];
+                if dist == u32::MAX {
+                    row.push(None);
+                } else {
+                    // Convert deciseconds to seconds
+                    row.push(Some(dist as f64 / 10.0));
+                }
+            }
+        }
+        durations.push(row);
+    }
+
+    Json(TableResponse {
+        code: "Ok".into(),
+        durations,
+        sources: Some(source_waypoints),
+        destinations: Some(dest_waypoints),
+    }).into_response()
+}
+
+/// Get the location (lon, lat) of an EBG node
+fn get_node_location(state: &ServerState, node_id: u32) -> [f64; 2] {
+    let node = &state.ebg_nodes.nodes[node_id as usize];
+    // EBG node has geom_idx pointing to NBG edge index
+    let edge_idx = node.geom_idx as usize;
+    // Polylines are indexed by edge index (same order as edges)
+    if edge_idx < state.nbg_geo.polylines.len() {
+        let polyline = &state.nbg_geo.polylines[edge_idx];
+        if !polyline.lon_fxp.is_empty() {
+            return [
+                polyline.lon_fxp[0] as f64 / 1e7,
+                polyline.lat_fxp[0] as f64 / 1e7,
+            ];
+        }
+    }
+    [0.0, 0.0]
 }
 
 // ============ Isochrone Endpoint ============
@@ -650,689 +789,6 @@ fn run_phast_bounded(
     }
 
     dist
-}
-
-// ============ Bulk Matrix Endpoint ============
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct MatrixBulkRequest {
-    /// Source node IDs (filtered CCH space) OR source coordinates
-    #[schema(example = json!([1000, 2000, 3000]))]
-    pub sources: Vec<u32>,
-    /// Target node IDs (filtered CCH space) OR target coordinates
-    #[schema(example = json!([4000, 5000]))]
-    pub targets: Vec<u32>,
-    /// Transport mode: car, bike, or foot
-    #[schema(example = "car")]
-    pub mode: String,
-    /// Output format: "json" or "arrow" (default: json)
-    #[schema(example = "json")]
-    pub format: Option<String>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct MatrixBulkResponse {
-    /// Row-major matrix of durations in deciseconds (u32::MAX = unreachable)
-    pub durations_ds: Vec<u32>,
-    /// Number of sources
-    pub n_sources: usize,
-    /// Number of targets
-    pub n_targets: usize,
-    /// Computation time in milliseconds
-    pub compute_time_ms: u64,
-}
-
-/// Request for streaming matrix computation
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct MatrixStreamRequest {
-    /// Source node IDs (filtered CCH space)
-    #[schema(example = json!([1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000]))]
-    pub sources: Vec<u32>,
-    /// Target node IDs (filtered CCH space)
-    #[schema(example = json!([4000, 5000, 6000]))]
-    pub targets: Vec<u32>,
-    /// Transport mode: car, bike, or foot
-    #[schema(example = "car")]
-    pub mode: String,
-    /// Source tile size (default: 8, matches K_LANES)
-    #[schema(example = 8)]
-    pub src_tile_size: Option<u16>,
-    /// Destination tile size for output chunking (default: 256)
-    #[schema(example = 256)]
-    pub dst_tile_size: Option<u16>,
-}
-
-/// Compute bulk distance matrix using K-lane batched PHAST
-///
-/// Returns a row-major matrix of durations from each source to each target.
-/// For large matrices, use `format=arrow` to stream Arrow IPC output.
-#[utoipa::path(
-    post,
-    path = "/matrix/bulk",
-    request_body = MatrixBulkRequest,
-    responses(
-        (status = 200, description = "Matrix computed", body = MatrixBulkResponse),
-        (status = 400, description = "Bad request", body = ErrorResponse),
-    )
-)]
-async fn matrix_bulk(
-    State(state): State<Arc<ServerState>>,
-    Json(req): Json<MatrixBulkRequest>,
-) -> impl IntoResponse {
-    let mode = match parse_mode(&req.mode) {
-        Ok(m) => m,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
-    };
-
-    let mode_data = state.get_mode(mode);
-    let format = req.format.as_deref().unwrap_or("json");
-
-    let start = std::time::Instant::now();
-
-    // Convert filtered IDs to rank space (with rank-aligned CCH)
-    let n_nodes = mode_data.cch_topo.n_nodes as usize;
-    let sources_rank: Vec<u32> = req.sources.iter()
-        .map(|&filtered_id| {
-            if (filtered_id as usize) < n_nodes {
-                mode_data.order.perm[filtered_id as usize]
-            } else {
-                filtered_id // Out of bounds - pass through, will be handled by compute
-            }
-        })
-        .collect();
-    let targets_rank: Vec<u32> = req.targets.iter()
-        .map(|&filtered_id| {
-            if (filtered_id as usize) < n_nodes {
-                mode_data.order.perm[filtered_id as usize]
-            } else {
-                filtered_id
-            }
-        })
-        .collect();
-
-    // Use inline K-lane batched PHAST computation (in rank space)
-    let (matrix, _n_batches) = compute_batched_matrix(
-        &mode_data.cch_topo,
-        &mode_data.cch_weights,
-        &mode_data.order,
-        &sources_rank,
-        &targets_rank,
-    );
-
-    let compute_time_ms = start.elapsed().as_millis() as u64;
-
-    match format {
-        "arrow" => {
-            // Return Arrow IPC format
-            let tile = MatrixTile::from_flat(
-                0,
-                0,
-                req.sources.len() as u16,
-                req.targets.len() as u16,
-                &matrix,
-            );
-
-            let mut buf = Vec::new();
-            match ArrowMatrixWriter::new(&mut buf) {
-                Ok(mut writer) => {
-                    if let Err(e) = writer.write_tile(&tile) {
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(ErrorResponse { error: format!("Arrow write error: {}", e) }),
-                        ).into_response();
-                    }
-                    if let Err(e) = writer.finish() {
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(ErrorResponse { error: format!("Arrow finish error: {}", e) }),
-                        ).into_response();
-                    }
-                }
-                Err(e) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse { error: format!("Arrow init error: {}", e) }),
-                    ).into_response();
-                }
-            }
-
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
-                .header("X-Compute-Time-Ms", compute_time_ms.to_string())
-                .header("X-N-Sources", req.sources.len().to_string())
-                .header("X-N-Targets", req.targets.len().to_string())
-                .body(Body::from(buf))
-                .unwrap()
-                .into_response()
-        }
-        _ => {
-            // Return JSON format
-            Json(MatrixBulkResponse {
-                durations_ds: matrix,
-                n_sources: req.sources.len(),
-                n_targets: req.targets.len(),
-                compute_time_ms,
-            }).into_response()
-        }
-    }
-}
-
-// ============ Streaming Matrix Endpoint ============
-
-/// Stream distance matrix as Arrow IPC tiles
-///
-/// Computes the matrix in tiles (K sources × M targets at a time) and streams
-/// each tile as an Arrow IPC RecordBatch as soon as it's ready.
-///
-/// ## Streaming Protocol
-/// 1. Server sends Arrow IPC schema message
-/// 2. Server streams RecordBatch messages as tiles complete
-/// 3. Connection closes when all tiles are sent
-/// 4. If client disconnects, computation stops (cancellation)
-///
-/// ## Backpressure
-/// Uses a bounded channel (depth 4) - if client is slow to consume,
-/// computation pauses until channel has space.
-///
-/// ## Tile Schema
-/// Each RecordBatch contains one or more tiles:
-/// - src_block_start: u32 (first source index)
-/// - dst_block_start: u32 (first destination index)
-/// - src_block_len: u16 (sources in tile)
-/// - dst_block_len: u16 (destinations in tile)
-/// - durations_ms: Binary (row-major packed u32 distances)
-#[utoipa::path(
-    post,
-    path = "/matrix/stream",
-    request_body = MatrixStreamRequest,
-    responses(
-        (status = 200, description = "Arrow IPC stream", content_type = "application/vnd.apache.arrow.stream"),
-        (status = 400, description = "Bad request", body = ErrorResponse),
-    )
-)]
-async fn matrix_stream(
-    State(state): State<Arc<ServerState>>,
-    Json(req): Json<MatrixStreamRequest>,
-) -> impl IntoResponse {
-    let mode = match parse_mode(&req.mode) {
-        Ok(m) => m,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
-    };
-
-    if req.sources.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "sources cannot be empty".into() })).into_response();
-    }
-    if req.targets.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "targets cannot be empty".into() })).into_response();
-    }
-
-    let src_tile_size = req.src_tile_size.unwrap_or(K_LANES as u16) as usize;
-    let dst_tile_size = req.dst_tile_size.unwrap_or(256) as usize;
-
-    // Clone data needed for async task
-    let mode_data = state.get_mode(mode);
-
-    // Convert filtered IDs to rank space (with rank-aligned CCH)
-    let n_nodes = mode_data.cch_topo.n_nodes as usize;
-    let sources: Vec<u32> = req.sources.iter()
-        .map(|&filtered_id| {
-            if (filtered_id as usize) < n_nodes {
-                mode_data.order.perm[filtered_id as usize]
-            } else {
-                filtered_id
-            }
-        })
-        .collect();
-    let targets: Vec<u32> = req.targets.iter()
-        .map(|&filtered_id| {
-            if (filtered_id as usize) < n_nodes {
-                mode_data.order.perm[filtered_id as usize]
-            } else {
-                filtered_id
-            }
-        })
-        .collect();
-
-    let cch_topo = mode_data.cch_topo.clone();
-    let cch_weights_up = mode_data.cch_weights.up.clone();
-    let cch_weights_down = mode_data.cch_weights.down.clone();
-    let order_perm = mode_data.order.perm.clone();
-
-    // Bounded channel for backpressure (4 tiles in flight)
-    let (tx, rx) = mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(4);
-
-    // Cancellation token - dropped when receiver is dropped (client disconnect)
-    let cancel = CancellationToken::new();
-    let cancel_clone = cancel.clone();
-
-    // Spawn computation task
-    tokio::task::spawn_blocking(move || {
-        compute_and_stream_tiles(
-            &cch_topo,
-            &cch_weights_up,
-            &cch_weights_down,
-            &order_perm,
-            &sources,
-            &targets,
-            src_tile_size,
-            dst_tile_size,
-            tx,
-            cancel_clone,
-        );
-    });
-
-    // Convert receiver to stream
-    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-
-    // Build streaming response
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
-        .header("X-N-Sources", req.sources.len().to_string())
-        .header("X-N-Targets", req.targets.len().to_string())
-        .header("X-Src-Tile-Size", src_tile_size.to_string())
-        .header("X-Dst-Tile-Size", dst_tile_size.to_string())
-        .body(Body::from_stream(stream))
-        .unwrap()
-        .into_response()
-}
-
-/// Compute matrix tiles and stream them over channel
-///
-/// Sources and targets must be RANK values (with rank-aligned CCH, node_id == rank).
-fn compute_and_stream_tiles(
-    cch_topo: &crate::formats::CchTopo,
-    weights_up: &[u32],
-    weights_down: &[u32],
-    _perm: &[u32],  // Unused with rank-aligned CCH
-    sources: &[u32],  // Sources in rank space
-    targets: &[u32],  // Targets in rank space
-    src_tile_size: usize,
-    dst_tile_size: usize,
-    tx: mpsc::Sender<Result<bytes::Bytes, std::io::Error>>,
-    cancel: CancellationToken,
-) {
-    use arrow::ipc::writer::StreamWriter;
-
-    let n_nodes = cch_topo.n_nodes as usize;
-    let n_src = sources.len();
-    let n_tgt = targets.len();
-
-    // With rank-aligned CCH, no inv_perm needed - we create empty one for API compatibility
-    let inv_perm = vec![0u32; 0];
-
-    // Send Arrow schema first
-    let schema = Arc::new(crate::matrix::arrow_stream::matrix_tile_schema());
-    let mut schema_buf = Vec::new();
-    {
-        let mut writer = match StreamWriter::try_new(&mut schema_buf, &schema) {
-            Ok(w) => w,
-            Err(e) => {
-                let _ = tx.blocking_send(Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
-                return;
-            }
-        };
-        if let Err(e) = writer.finish() {
-            let _ = tx.blocking_send(Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
-            return;
-        }
-    }
-    if tx.blocking_send(Ok(bytes::Bytes::from(schema_buf))).is_err() {
-        return; // Client disconnected
-    }
-
-    // Process sources in batches matching src_tile_size (aligned to K_LANES for efficiency)
-    let effective_tile_size = ((src_tile_size + K_LANES - 1) / K_LANES) * K_LANES;
-
-    for src_batch_start in (0..n_src).step_by(effective_tile_size) {
-        // Check for cancellation
-        if cancel.is_cancelled() {
-            return;
-        }
-
-        let src_batch_end = (src_batch_start + effective_tile_size).min(n_src);
-        let batch_sources = &sources[src_batch_start..src_batch_end];
-        let actual_src_len = batch_sources.len();
-
-        // Compute distances for this batch of sources to ALL nodes
-        // We'll extract target distances after
-        let dist_batch = compute_batch_distances(
-            cch_topo,
-            weights_up,
-            weights_down,
-            &inv_perm,
-            batch_sources,
-        );
-
-        // Extract tiles for each destination chunk
-        for dst_batch_start in (0..n_tgt).step_by(dst_tile_size) {
-            if cancel.is_cancelled() {
-                return;
-            }
-
-            let dst_batch_end = (dst_batch_start + dst_tile_size).min(n_tgt);
-            let batch_targets = &targets[dst_batch_start..dst_batch_end];
-            let actual_dst_len = batch_targets.len();
-
-            // Extract distances for this tile
-            let mut tile_data = Vec::with_capacity(actual_src_len * actual_dst_len * 4);
-            for (lane, dist) in dist_batch.iter().enumerate() {
-                if lane >= actual_src_len {
-                    break;
-                }
-                for &tgt in batch_targets {
-                    let d = if (tgt as usize) < n_nodes {
-                        dist[tgt as usize]
-                    } else {
-                        u32::MAX
-                    };
-                    tile_data.extend_from_slice(&d.to_le_bytes());
-                }
-            }
-
-            let tile = MatrixTile {
-                src_block_start: src_batch_start as u32,
-                dst_block_start: dst_batch_start as u32,
-                src_block_len: actual_src_len as u16,
-                dst_block_len: actual_dst_len as u16,
-                durations_ms: tile_data,
-            };
-
-            // Serialize tile as Arrow RecordBatch
-            let batch = match tiles_to_record_batch(&[tile]) {
-                Ok(b) => b,
-                Err(e) => {
-                    let _ = tx.blocking_send(Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
-                    return;
-                }
-            };
-
-            let mut buf = Vec::new();
-            {
-                let mut writer = match StreamWriter::try_new(&mut buf, batch.schema_ref()) {
-                    Ok(w) => w,
-                    Err(e) => {
-                        let _ = tx.blocking_send(Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
-                        return;
-                    }
-                };
-                if let Err(e) = writer.write(&batch) {
-                    let _ = tx.blocking_send(Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
-                    return;
-                }
-                if let Err(e) = writer.finish() {
-                    let _ = tx.blocking_send(Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
-                    return;
-                }
-            }
-
-            // Send tile (backpressure: blocks if channel full)
-            if tx.blocking_send(Ok(bytes::Bytes::from(buf))).is_err() {
-                return; // Client disconnected
-            }
-        }
-    }
-}
-
-/// Compute K-lane batched distances for a batch of sources
-/// Compute batch distances using K-lane PHAST
-///
-/// Sources must be RANK values (with rank-aligned CCH, node_id == rank).
-/// Returns distance arrays indexed by rank.
-fn compute_batch_distances(
-    cch_topo: &crate::formats::CchTopo,
-    weights_up: &[u32],
-    weights_down: &[u32],
-    _inv_perm: &[u32],  // Unused with rank-aligned CCH
-    sources: &[u32],  // Sources in rank space
-) -> Vec<Vec<u32>> {
-    use std::cmp::Reverse;
-    use std::collections::BinaryHeap;
-
-    let n_nodes = cch_topo.n_nodes as usize;
-
-    // Process in K_LANES chunks for efficiency
-    let mut all_dist: Vec<Vec<u32>> = Vec::with_capacity(sources.len());
-
-    for chunk in sources.chunks(K_LANES) {
-        let k = chunk.len();
-
-        // Initialize K distance arrays (indexed by rank)
-        let mut dist: Vec<Vec<u32>> = (0..k)
-            .map(|_| vec![u32::MAX; n_nodes])
-            .collect();
-
-        // Set origin distances (sources are rank values)
-        for (lane, &src_rank) in chunk.iter().enumerate() {
-            if (src_rank as usize) < n_nodes {
-                dist[lane][src_rank as usize] = 0;
-            }
-        }
-
-        // Phase 1: K parallel upward searches
-        for lane in 0..k {
-            let origin = chunk[lane];
-            if (origin as usize) >= n_nodes {
-                continue;
-            }
-
-            let mut pq: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
-            pq.push(Reverse((0, origin)));
-
-            while let Some(Reverse((d, u))) = pq.pop() {
-                if d > dist[lane][u as usize] {
-                    continue;
-                }
-
-                let up_start = cch_topo.up_offsets[u as usize] as usize;
-                let up_end = cch_topo.up_offsets[u as usize + 1] as usize;
-
-                for i in up_start..up_end {
-                    let v = cch_topo.up_targets[i];  // v is a rank
-                    let w = weights_up[i];
-
-                    if w == u32::MAX {
-                        continue;
-                    }
-
-                    let new_dist = d.saturating_add(w);
-                    if new_dist < dist[lane][v as usize] {
-                        dist[lane][v as usize] = new_dist;
-                        pq.push(Reverse((new_dist, v)));
-                    }
-                }
-            }
-        }
-
-        // Phase 2: Single K-lane downward scan
-        // With rank-aligned CCH: node_id == rank, so no inv_perm lookup needed
-        for rank in (0..n_nodes).rev() {
-            let u = rank;  // With rank-aligned CCH: u = rank
-
-            let down_start = cch_topo.down_offsets[u] as usize;
-            let down_end = cch_topo.down_offsets[u + 1] as usize;
-
-            if down_start == down_end {
-                continue;
-            }
-
-            // Check if ANY lane has finite distance
-            let mut any_reachable = false;
-            for lane in 0..k {
-                if dist[lane][u] != u32::MAX {
-                    any_reachable = true;
-                    break;
-                }
-            }
-            if !any_reachable {
-                continue;
-            }
-
-            // Relax DOWN edges for ALL K lanes
-            for i in down_start..down_end {
-                let v = cch_topo.down_targets[i] as usize;  // v is a rank
-                let w = weights_down[i];
-
-                if w == u32::MAX {
-                    continue;
-                }
-
-                for lane in 0..k {
-                    let d_u = dist[lane][u];
-                    if d_u != u32::MAX {
-                        let new_dist = d_u.saturating_add(w);
-                        if new_dist < dist[lane][v] {
-                            dist[lane][v] = new_dist;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Collect distances
-        all_dist.extend(dist);
-    }
-
-    all_dist
-}
-
-/// Compute batched matrix using K-lane PHAST (without owning data)
-///
-/// Sources and targets must be RANK values (with rank-aligned CCH, node_id == rank).
-/// Use order.perm[filtered_id] to convert from filtered space to rank space.
-fn compute_batched_matrix(
-    cch_topo: &crate::formats::CchTopo,
-    cch_weights: &super::state::CchWeights,
-    _order: &crate::formats::OrderEbg,  // Unused with rank-aligned CCH
-    sources: &[u32],  // Sources in rank space
-    targets: &[u32],  // Targets in rank space
-) -> (Vec<u32>, usize) {
-    use std::cmp::Reverse;
-    use std::collections::BinaryHeap;
-
-    let n_nodes = cch_topo.n_nodes as usize;
-    let n_src = sources.len();
-    let n_tgt = targets.len();
-    let mut matrix = vec![u32::MAX; n_src * n_tgt];
-
-    let mut n_batches = 0;
-
-    // Process sources in batches of K
-    for chunk in sources.chunks(K_LANES) {
-        n_batches += 1;
-        let k = chunk.len();
-
-        // Initialize K distance arrays (indexed by rank)
-        let mut dist: Vec<Vec<u32>> = (0..k)
-            .map(|_| vec![u32::MAX; n_nodes])
-            .collect();
-
-        // Set origin distances (sources are rank values)
-        for (lane, &src_rank) in chunk.iter().enumerate() {
-            if (src_rank as usize) < n_nodes {
-                dist[lane][src_rank as usize] = 0;
-            }
-        }
-
-        // Phase 1: K parallel upward searches
-        for lane in 0..k {
-            let origin = chunk[lane];
-            if (origin as usize) >= n_nodes {
-                continue;
-            }
-
-            let mut pq: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
-            pq.push(Reverse((0, origin)));
-
-            while let Some(Reverse((d, u))) = pq.pop() {
-                if d > dist[lane][u as usize] {
-                    continue;
-                }
-
-                // Relax UP edges (cch_topo is indexed by rank)
-                let up_start = cch_topo.up_offsets[u as usize] as usize;
-                let up_end = cch_topo.up_offsets[u as usize + 1] as usize;
-
-                for i in up_start..up_end {
-                    let v = cch_topo.up_targets[i];  // v is a rank
-                    let w = cch_weights.up[i];
-
-                    if w == u32::MAX {
-                        continue;
-                    }
-
-                    let new_dist = d.saturating_add(w);
-                    if new_dist < dist[lane][v as usize] {
-                        dist[lane][v as usize] = new_dist;
-                        pq.push(Reverse((new_dist, v)));
-                    }
-                }
-            }
-        }
-
-        // Phase 2: Single K-lane downward scan
-        // With rank-aligned CCH: node_id == rank, so no inv_perm lookup needed
-        for rank in (0..n_nodes).rev() {
-            let u = rank;  // With rank-aligned CCH: u = rank
-
-            let down_start = cch_topo.down_offsets[u] as usize;
-            let down_end = cch_topo.down_offsets[u + 1] as usize;
-
-            if down_start == down_end {
-                continue;
-            }
-
-            // Check if ANY lane has finite distance
-            let mut any_reachable = false;
-            for lane in 0..k {
-                if dist[lane][u] != u32::MAX {
-                    any_reachable = true;
-                    break;
-                }
-            }
-            if !any_reachable {
-                continue;
-            }
-
-            // Relax DOWN edges for ALL K lanes
-            for i in down_start..down_end {
-                let v = cch_topo.down_targets[i] as usize;  // v is a rank
-                let w = cch_weights.down[i];
-
-                if w == u32::MAX {
-                    continue;
-                }
-
-                // Update all K lanes
-                for lane in 0..k {
-                    let d_u = dist[lane][u];
-                    if d_u != u32::MAX {
-                        let new_dist = d_u.saturating_add(w);
-                        if new_dist < dist[lane][v] {
-                            dist[lane][v] = new_dist;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Copy distances to flat matrix (targets are rank values)
-        let batch_start = (n_batches - 1) * K_LANES;
-        for (lane, d) in dist.iter().enumerate() {
-            let src_idx = batch_start + lane;
-            if src_idx >= n_src {
-                break;
-            }
-            for (tgt_idx, &tgt_rank) in targets.iter().enumerate() {
-                if (tgt_rank as usize) < n_nodes {
-                    matrix[src_idx * n_tgt + tgt_idx] = d[tgt_rank as usize];
-                }
-            }
-        }
-    }
-
-    (matrix, n_batches)
 }
 
 // ============ Health Endpoint ============
