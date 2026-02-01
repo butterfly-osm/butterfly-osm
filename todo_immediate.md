@@ -7,11 +7,14 @@
 - 815 queries/sec throughput (8 threads)
 - Block-gated PHAST + thread-local state
 
-**Matrices: 5x gap to OSRM** (fundamental edge-based overhead)
-- 10×10: 24ms vs OSRM 4.5ms (5.3x)
-- 50×50: 93ms vs OSRM 19ms (4.9x)
-- 100×100: 173ms vs OSRM 35ms (4.9x)
-- Large scale (10k+): Only 1.4x slower due to Arrow streaming
+**Matrices: Gap shrinks at scale, Butterfly WINS at 10k+**
+| Size | Butterfly | OSRM | Ratio |
+|------|-----------|------|-------|
+| 100×100 | 164ms | 55ms | 3.0x slower |
+| 1000×1000 | 1.55s | 0.68s | 2.3x slower |
+| 10000×10000 | **18.2s** | 32.9s | **1.8x FASTER** |
+
+At scale, Arrow streaming + parallel tiling beats OSRM's single-threaded approach.
 
 ---
 
