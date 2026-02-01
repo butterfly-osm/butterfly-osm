@@ -78,3 +78,6 @@ package_summary.md
 
 # Release artifacts
 releases/
+
+# External comparison data (Valhalla tiles)
+valhalla_tiles/
