@@ -4,14 +4,19 @@
 
 ---
 
-## 🔥 PROFILING RESULTS (2026-02-01) - A1 FIXED ✅
+## 🔥 PROFILING RESULTS (2026-02-01) - A1, B1, C1 FIXED ✅
 
-### Executive Summary (After A1 Fix)
+### Executive Summary (After A1+B1+C1 Fixes)
 
-| Workload | Before | After | Speedup |
-|----------|--------|-------|---------|
-| Matrix 10k×10k | 25.3s (3.96M/sec) | **16.2s (6.1M/sec)** | **1.56x** |
-| 100K Isochrones | 70.5s (1,370/sec) | **65.7s (1,471/sec)** | **1.07x** |
+| Workload | Original | After Fixes | Speedup |
+|----------|----------|-------------|---------|
+| Matrix 10×10 | 32ms | **26ms** | **1.2x** |
+| Matrix 50×50 | 161ms | **85ms** | **1.9x** |
+| Matrix 100×100 | 330ms | **160ms** | **2.1x** |
+| Isochrone latency (p50) | 90ms | **5ms** | **18x** |
+| Isochrone throughput (8 threads) | ~100/sec | **827/sec** | **8x** |
+
+**Isochrone latency breakthrough:** 90ms → 5ms p50 (8.3ms mean) with block-gated PHAST + thread-local state
 
 ### A1 Fix: Source-Block Outer Loop ✅ DONE
 
@@ -56,20 +61,26 @@ Expected from A2+A3: Additional 1.5-2x possible
 ### B) Isochrones - Eliminate Allocation Overhead
 
 - [x] **B1: Thread-local dist + generation stamping** ✅ DONE - 7% speedup
-  - Before: 1370/sec, 21.1ms avg latency
-  - After: **1471/sec, 19.5ms avg latency** (1.07x faster)
   - Eliminated 9.6MB output allocation (now returns only settled nodes)
-  - Note: Downward scan still iterates 2.4M nodes → need block-gating for bigger win
+  - Foundation for C1 (block-gating)
 - [ ] **B2: Binary response (WKB)** - Skip JSON serialization for bulk
 - [ ] **B3: Bulk endpoint** - Accept list of origins, stream WKB/Arrow results
 
-For bigger gains: need block-gated downward scan (C1)
+### C) Block-Gated Downward Scan ✅ DONE
 
-### C) Lower Priority (After A & B)
+- [x] **C1: Block-gated downward scan for isochrones** ✅ DONE - **18x latency improvement**
+  - Before: 90ms p50 latency, ~100 queries/sec
+  - After: **5ms p50 latency, 827 queries/sec (8 threads)**
+  - Implementation:
+    - 4096-node blocks with generation-stamped `block_active` array
+    - Downward phase skips inactive blocks entirely
+    - Result collection only scans active blocks
+  - Bounded queries (30min isochrone) typically activate <20% of blocks
 
-- [ ] C1: Block-gated downward scan for isochrones (needs B1 first)
-- [ ] C2: K-lane batched forward for matrix (complex, diminishing returns)
-- [ ] C3: SIMD bucket joins
+### D) Lower Priority
+- [ ] D1: K-lane batched forward for matrix (complex, diminishing returns)
+- [ ] D2: SIMD bucket joins
+- [ ] D3: 4-ary heap with decrease-key (OSRM-style)
 
 ---
 
