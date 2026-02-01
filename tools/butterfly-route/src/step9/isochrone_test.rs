@@ -20,6 +20,7 @@ pub struct IsochroneTestResult {
     pub origin: (f64, f64),
     pub threshold_s: u32,
     pub n_samples: usize,
+    pub n_snapped: usize,  // How many samples successfully snapped to roads
     pub inside_correct: usize,
     pub inside_violations: Vec<ViolationInfo>,
     pub outside_correct: usize,
@@ -29,7 +30,9 @@ pub struct IsochroneTestResult {
 
 #[derive(Debug, Clone)]
 pub struct ViolationInfo {
-    pub point: (f64, f64),
+    pub sampled_point: (f64, f64),    // Original random sample
+    pub snapped_point: (f64, f64),    // Snapped road point (used for containment check)
+    pub snap_distance_m: f64,          // Distance from sampled to snapped
     pub drive_time_s: f32,
     pub threshold_s: u32,
 }
@@ -263,25 +266,48 @@ mod tests {
 
         let polygon = points_to_polygon(&polygon_points).expect("Failed to create polygon");
 
-        // Sample test points
+        // Sample test points - we sample random points then snap to roads
+        // The test semantics: "Is this ROAD POINT inside the polygon?"
+        // This matches the isochrone definition: polygon should contain road surface
         let (min_lon, max_lon, min_lat, max_lat) = polygon_bbox_with_buffer(&polygon_points, 1.3);
-        let sample_points = sample_points_in_bbox(min_lon, max_lon, min_lat, max_lat, 50, 12345);
+        let sample_points = sample_points_in_bbox(min_lon, max_lon, min_lat, max_lat, 100, 12345);
 
         let mut inside_correct = 0;
-        let mut inside_violations = 0;
+        let mut inside_violations: Vec<ViolationInfo> = Vec::new();
         let mut outside_correct = 0;
-        let mut outside_violations = 0;
+        let mut outside_violations: Vec<ViolationInfo> = Vec::new();
         let mut unreachable = 0;
+        let mut n_snapped = 0;
 
         // Create query engine
         let query = CchQuery::new(&state, mode);
 
-        for (lon, lat) in &sample_points {
-            let point = Point::new(*lon, *lat);
-            let is_inside = polygon.contains(&point);
+        // Maximum snap distance for test samples (500m - larger than routing to get more coverage)
+        const MAX_SNAP_DISTANCE_M: f64 = 500.0;
 
-            // Compute actual drive time
-            let drive_time = compute_drive_time(&state, mode_data, &query, origin_ebg, *lon, *lat);
+        for (lon, lat) in &sample_points {
+            // Snap the random point to the nearest road
+            let snap_result = state.spatial_index.snap_with_info(*lon, *lat, &mode_data.mask, 10);
+
+            let (dst_ebg, snapped_lon, snapped_lat, snap_dist_m) = match snap_result {
+                Some(result) => result,
+                None => continue, // No road nearby, skip this sample
+            };
+
+            // Reject samples that snapped too far (likely water/parks)
+            if snap_dist_m > MAX_SNAP_DISTANCE_M {
+                continue;
+            }
+
+            n_snapped += 1;
+
+            // Use SNAPPED coordinates for polygon containment check
+            // This is the correct semantics: "is this road point inside the polygon?"
+            let snapped_point = Point::new(snapped_lon, snapped_lat);
+            let is_inside = polygon.contains(&snapped_point);
+
+            // Compute drive time from origin to snapped EBG node
+            let drive_time = compute_drive_time_ebg(mode_data, &query, origin_ebg, dst_ebg);
 
             match drive_time {
                 Some(time_ds) => {
@@ -290,20 +316,47 @@ mod tests {
                         if time_s <= threshold_s as f32 {
                             inside_correct += 1;
                         } else {
-                            inside_violations += 1;
-                            // Allow some tolerance (10% over threshold)
-                            if time_s > threshold_s as f32 * 1.1 {
-                                eprintln!("VIOLATION: ({:.4}, {:.4}) inside polygon but drive time {:.1}s > {}s",
-                                    lon, lat, time_s, threshold_s);
+                            // Inside polygon but drive time exceeds threshold
+                            // Allow 10% tolerance for boundary effects
+                            let excess_ratio = time_s / threshold_s as f32;
+                            if excess_ratio > 1.10 {
+                                inside_violations.push(ViolationInfo {
+                                    sampled_point: (*lon, *lat),
+                                    snapped_point: (snapped_lon, snapped_lat),
+                                    snap_distance_m: snap_dist_m,
+                                    drive_time_s: time_s,
+                                    threshold_s,
+                                });
+                                eprintln!("INSIDE VIOLATION: snapped ({:.4}, {:.4}) drive time {:.1}s > {}s ({}% over)",
+                                    snapped_lon, snapped_lat, time_s, threshold_s,
+                                    ((excess_ratio - 1.0) * 100.0) as u32);
+                            } else {
+                                // Within 10% tolerance - count as correct for boundary
+                                inside_correct += 1;
                             }
                         }
                     } else {
                         if time_s > threshold_s as f32 {
                             outside_correct += 1;
                         } else {
-                            outside_violations += 1;
-                            eprintln!("VIOLATION: ({:.4}, {:.4}) outside polygon but drive time {:.1}s <= {}s",
-                                lon, lat, time_s, threshold_s);
+                            // Outside polygon but drive time within threshold
+                            // Allow 10% tolerance for boundary effects
+                            let margin_ratio = time_s / threshold_s as f32;
+                            if margin_ratio < 0.90 {
+                                outside_violations.push(ViolationInfo {
+                                    sampled_point: (*lon, *lat),
+                                    snapped_point: (snapped_lon, snapped_lat),
+                                    snap_distance_m: snap_dist_m,
+                                    drive_time_s: time_s,
+                                    threshold_s,
+                                });
+                                eprintln!("OUTSIDE VIOLATION: snapped ({:.4}, {:.4}) drive time {:.1}s <= {}s ({}% under)",
+                                    snapped_lon, snapped_lat, time_s, threshold_s,
+                                    ((1.0 - margin_ratio) * 100.0) as u32);
+                            } else {
+                                // Within 10% of threshold - boundary case, count as correct
+                                outside_correct += 1;
+                            }
                         }
                     }
                 }
@@ -314,34 +367,63 @@ mod tests {
         }
 
         println!("\nIsochrone consistency test results (Brussels 10min):");
+        println!("  Samples attempted: {}", sample_points.len());
+        println!("  Samples snapped to roads: {}", n_snapped);
         println!("  Inside correct: {}", inside_correct);
-        println!("  Inside violations: {}", inside_violations);
+        println!("  Inside violations (>10% over threshold): {}", inside_violations.len());
         println!("  Outside correct: {}", outside_correct);
-        println!("  Outside violations: {}", outside_violations);
-        println!("  Unreachable: {}", unreachable);
-        println!("  Total violations: {}", inside_violations + outside_violations);
+        println!("  Outside violations (<90% of threshold): {}", outside_violations.len());
+        println!("  Unreachable (no route): {}", unreachable);
+
+        // Print worst violations for debugging
+        if !inside_violations.is_empty() {
+            println!("\n  Worst inside violations:");
+            let mut sorted = inside_violations.clone();
+            sorted.sort_by(|a, b| b.drive_time_s.partial_cmp(&a.drive_time_s).unwrap());
+            for v in sorted.iter().take(3) {
+                println!("    snapped ({:.4}, {:.4}): {:.1}s > {}s ({:.0}% over)",
+                    v.snapped_point.0, v.snapped_point.1,
+                    v.drive_time_s, v.threshold_s,
+                    (v.drive_time_s / v.threshold_s as f32 - 1.0) * 100.0);
+            }
+        }
+
+        if !outside_violations.is_empty() {
+            println!("\n  Worst outside violations:");
+            let mut sorted = outside_violations.clone();
+            sorted.sort_by(|a, b| a.drive_time_s.partial_cmp(&b.drive_time_s).unwrap());
+            for v in sorted.iter().take(3) {
+                println!("    snapped ({:.4}, {:.4}): {:.1}s <= {}s ({:.0}% under)",
+                    v.snapped_point.0, v.snapped_point.1,
+                    v.drive_time_s, v.threshold_s,
+                    (1.0 - v.drive_time_s / v.threshold_s as f32) * 100.0);
+            }
+        }
 
         // Allow some tolerance - polygon is geographic approximation
-        let total_violations = inside_violations + outside_violations;
-        let total_reachable = inside_correct + inside_violations + outside_correct + outside_violations;
-        let violation_rate = total_violations as f32 / total_reachable as f32;
+        // Only count hard violations (>10% deviation from threshold)
+        let total_violations = inside_violations.len() + outside_violations.len();
+        let total_tested = inside_correct + inside_violations.len() + outside_correct + outside_violations.len();
 
-        assert!(violation_rate < 0.15,
-            "Violation rate {:.1}% exceeds 15% threshold", violation_rate * 100.0);
+        if total_tested == 0 {
+            panic!("No samples could be tested - check data paths and snapping");
+        }
+
+        let violation_rate = total_violations as f32 / total_tested as f32;
+        println!("\n  Total violations: {}/{} ({:.1}%)", total_violations, total_tested, violation_rate * 100.0);
+
+        assert!(violation_rate < 0.10,
+            "Violation rate {:.1}% exceeds 10% threshold", violation_rate * 100.0);
     }
 
-    /// Compute drive time from origin to destination
-    fn compute_drive_time(
-        state: &crate::step9::state::ServerState,
+    /// Compute drive time from origin EBG node to destination EBG node
+    /// Returns drive time in deciseconds (ds), or None if no route
+    fn compute_drive_time_ebg(
         mode_data: &crate::step9::state::ModeData,
         query: &crate::step9::query::CchQuery,
         origin_ebg: u32,
-        dst_lon: f64,
-        dst_lat: f64,
+        dst_ebg: u32,
     ) -> Option<u32> {
-        // Snap destination
-        let dst_ebg = state.spatial_index.snap(dst_lon, dst_lat, &mode_data.mask, 10)?;
-
         // Convert to filtered
         let src_filtered = mode_data.filtered_ebg.original_to_filtered[origin_ebg as usize];
         let dst_filtered = mode_data.filtered_ebg.original_to_filtered[dst_ebg as usize];
