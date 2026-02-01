@@ -169,12 +169,14 @@ butterfly-route serve --data-dir ./build/ --port 8080
 
 ## Bulk Performance Optimization
 
-### Current Status
+### Current Status (2026-02-01)
 
-**Profiling revealed the bottleneck**: 80-87% cache miss rate in downward scan.
-- Downward phase = 98% of runtime
-- Problem: random writes to `dist[v]` for each edge relaxation
-- K-lane batching alone gives only 2.24x (not 8x) due to memory bottleneck
+**Isochrones: SOLVED** - Block-gated PHAST achieves 5ms p50 latency, 815 queries/sec.
+
+**Matrices: 5x gap to OSRM** - Edge-based overhead + heap operations.
+- Small matrices (10×10 to 100×100): 5x slower than OSRM
+- Large matrices (10k×10k+): Only 1.4x slower (Arrow streaming)
+- The gap is fundamental to edge-based CH, not implementation
 
 ### Reality Checks
 
@@ -293,6 +295,43 @@ to get `d(m → t)`. Using forward UP search from targets would give `d(t → m)
 **Query Type Routing** (validated):
 - **Matrices**: Bucket many-to-many CH
 - **Isochrones**: PHAST/range (all reachable nodes needed)
+
+### Phase G: Block-Gated PHAST + Thread-Local State ✅ DONE (2026-02-01)
+
+Major isochrone optimization achieving **18x latency improvement**.
+
+| Task | Status | Result |
+|------|--------|--------|
+| Thread-local PHAST state (B1) | ✅ | O(1) init via generation stamps |
+| Block-gated downward scan (C1) | ✅ | **18x latency improvement** |
+| Bucket filtering for matrices (A2) | ❌ | Tested, not beneficial (~3% reduction) |
+
+**Implementation**:
+- 4096-node blocks with generation-stamped `block_active` array
+- Downward phase skips inactive blocks entirely
+- Result collection only scans active blocks
+- Bounded queries (30min) typically activate <20% of blocks
+
+**Current Performance** (Belgium, 2026-02-01):
+
+| Workload | Before | After | Speedup |
+|----------|--------|-------|---------|
+| Isochrone p50 latency | 90ms | **5ms** | **18x** |
+| Isochrone throughput (8 threads) | ~100/sec | **815/sec** | **8x** |
+| Matrix 50×50 | 161ms | **93ms** | 1.7x |
+| Matrix 100×100 | 330ms | **173ms** | 1.9x |
+
+**vs OSRM (small matrices)**:
+| Size | OSRM | Butterfly | Gap |
+|------|------|-----------|-----|
+| 10×10 | 4.5ms | 24ms | 5.3x |
+| 50×50 | 19ms | 93ms | 4.9x |
+| 100×100 | 35ms | 173ms | 4.9x |
+
+**Remaining gap analysis**: The 5x gap for small matrices is due to:
+- Edge-based CH (2.5x more nodes than OSRM's node-based)
+- Heap operations overhead (lazy reinsertion vs proper decrease-key)
+- No stall-on-demand in current implementation
 
 ---
 
