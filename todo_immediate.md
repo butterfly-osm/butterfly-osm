@@ -1,25 +1,87 @@
-# Immediate Roadmap: Bulk Engine Optimization
+# Immediate Roadmap: Production Hardening
 
-## Current Status (2026-02-01)
+## 🎯 ALGORITHM RESEARCH COMPLETE - SHIFT TO PRODUCTION
 
-**Isochrones: SOLVED** ✅
-- 5ms p50 latency (was 90ms) - **18x improvement**
-- Individual: 815 queries/sec (8 threads)
-- Bulk endpoint: **1526 iso/sec** (1.9x faster than individual)
-- Block-gated PHAST + thread-local state + WKB streaming
+**Strategic Conclusion (2026-02-01):**
 
-**Matrices: Gap shrinks at scale, Butterfly WINS at 10k+**
-| Size | Butterfly | OSRM | Ratio |
-|------|-----------|------|-------|
-| 100×100 | 164ms | 55ms | 3.0x slower |
-| 1000×1000 | 1.55s | 0.68s | 2.3x slower |
-| 10000×10000 | **18.2s** | 32.9s | **1.8x FASTER** |
+We now have the **best of both worlds**:
+- Exact turn-aware single truth model ✅
+- Isochrones fast at scale ✅
+- Matrices fastest at scale ✅
 
-At scale, Arrow streaming + parallel tiling beats OSRM's single-threaded approach.
+**Stop algorithm research. Ship production features.**
 
 ---
 
-## 🔥 OPTIMIZATION RESULTS (2026-02-01) - ALL MAJOR ITEMS DONE ✅
+## Current Performance
+
+**Isochrones: DONE** ✅
+| Endpoint | Throughput | Latency |
+|----------|------------|---------|
+| Individual JSON | 815/sec | 5ms p50 |
+| **Bulk WKB** | **1526/sec** | - |
+
+**Matrices: WIN AT SCALE** ✅
+| Size | Butterfly | OSRM | Ratio |
+|------|-----------|------|-------|
+| 100×100 | 164ms | 55ms | 3.0x slower (acceptable) |
+| 1000×1000 | 1.55s | 0.68s | 2.3x slower |
+| **10000×10000** | **18.2s** | 32.9s | **1.8x FASTER** |
+
+The 3x gap on small tables is due to edge-based CH overhead (2.5x more states).
+This is the **correct trade-off** for exact turn handling.
+
+---
+
+## NEXT PRIORITIES (Production Hardening)
+
+### A) Trust Package 🔴 HIGH PRIORITY
+
+Build confidence that results are correct:
+
+- [ ] **A1: OSRM sanity parity suite**
+  - Compare Butterfly vs OSRM on 10K random pairs
+  - Track drift bounds and correlation coefficient
+  - Flag queries where |butterfly - osrm| > 20%
+
+- [ ] **A2: Debug fields in responses**
+  - Snapped coordinates (what we actually used)
+  - Applied penalties summary
+  - Snapped way IDs for verification
+
+- [ ] **A3: Duration units enforcement**
+  - Audit all APIs: pick ms or ds and enforce
+  - Document units in OpenAPI spec
+
+### B) Bulk-First APIs 🟡 MEDIUM PRIORITY
+
+Make bulk the default for high-volume workloads:
+
+- [x] `/isochrone/bulk` with WKB streaming ✅
+- [x] `/table/stream` with Arrow IPC ✅
+- [ ] **B1: Document bulk as primary path**
+  - README examples for 1M isochrones
+  - README examples for 100k×100k matrices
+
+- [ ] **B2: Add streaming progress**
+  - Chunk count / total in headers
+  - ETA for long-running streams
+
+### C) Small-Table Fast Path 🟢 OPTIONAL
+
+Only if profiling shows easy wins:
+
+- [ ] **C1: Profile 100×100 specifically**
+  - Is it setup/allocation? Tiler orchestration? Serialization?
+
+- [ ] **C2: Dedicated small-table mode (N ≤ 256)**
+  - Single-thread, no tiling
+  - Preallocated buffers
+  - Compact binary response
+
+---
+
+## 🔥 COMPLETED OPTIMIZATIONS (2026-02-01)
 
 ### Executive Summary (After A1+B1+C1 Fixes)
 

@@ -334,6 +334,27 @@ else:
 
 ---
 
+## Strategic Status (2026-02-01)
+
+**ALGORITHM RESEARCH COMPLETE. SHIFT TO PRODUCTION HARDENING.**
+
+Butterfly now has:
+- ✅ Exact turn-aware single truth model
+- ✅ Isochrones: 5ms p50, 1526/sec bulk throughput
+- ✅ Matrices: **1.8x FASTER than OSRM at 10k+** scale
+
+The 3x gap on small tables (100×100) is the **correct trade-off** for exact turn handling.
+Edge-based CH has 2.5x more states than node-based - this is fundamental, not fixable.
+
+**Next priorities:**
+1. Trust package (OSRM parity suite, debug fields)
+2. Bulk-first API documentation
+3. Small-table fast path (optional)
+
+**Do NOT chase small-table parity at the expense of bulk performance.**
+
+---
+
 ## Benchmark Reference (Belgium, 2026-02-01)
 
 **Fair HTTP Comparison (same methodology, single requests):**
