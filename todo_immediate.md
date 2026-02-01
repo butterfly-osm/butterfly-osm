@@ -1,10 +1,21 @@
 # Immediate Roadmap: Bulk Engine Optimization
 
-## Current Status
+## Current Status (2026-02-01)
+
+**Isochrones: SOLVED** ✅
+- 5ms p50 latency (was 90ms) - **18x improvement**
+- 815 queries/sec throughput (8 threads)
+- Block-gated PHAST + thread-local state
+
+**Matrices: 5x gap to OSRM** (fundamental edge-based overhead)
+- 10×10: 24ms vs OSRM 4.5ms (5.3x)
+- 50×50: 93ms vs OSRM 19ms (4.9x)
+- 100×100: 173ms vs OSRM 35ms (4.9x)
+- Large scale (10k+): Only 1.4x slower due to Arrow streaming
 
 ---
 
-## 🔥 PROFILING RESULTS (2026-02-01) - A1, B1, C1 FIXED ✅
+## 🔥 OPTIMIZATION RESULTS (2026-02-01) - A1, B1, C1 DONE ✅
 
 ### Executive Summary (After A1+B1+C1 Fixes)
 

@@ -126,12 +126,12 @@ The Step 9 query server (`butterfly-route serve`) provides:
 - Up to 68% relaxation reduction for bounded queries
 - 2.79x speedup when reachable set is <30% of graph
 
-**Current Throughput** (Belgium):
+**Current Throughput** (Belgium, after C1 optimization):
 | Query Type | Throughput | Latency |
 |------------|------------|---------|
-| Single isochrone (car) | 10.8/sec | 90ms |
-| K-lane isochrones | 25.6/sec | 39ms/iso |
-| K-lane matrix | 25.8 queries/sec | - |
+| Isochrone (30-min, car) | **815/sec** | **5ms p50** |
+| Matrix 50×50 | ~11/sec | 93ms |
+| Matrix 100×100 | ~6/sec | 173ms |
 
 ### Binary File Formats
 
