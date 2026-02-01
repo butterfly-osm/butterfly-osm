@@ -60,9 +60,11 @@ Make bulk the default for high-volume workloads:
 
 - [x] `/isochrone/bulk` with WKB streaming ✅
 - [x] `/table/stream` with Arrow IPC ✅
-- [ ] **B1: Document bulk as primary path**
-  - README examples for 1M isochrones
-  - README examples for 100k×100k matrices
+- [x] **B1: Document bulk as primary path** ✅
+  - Added comprehensive README section for butterfly-route
+  - Bulk isochrone examples with WKB streaming
+  - Arrow IPC matrix examples for large workloads
+  - Emphasizes "Butterfly wins at scale"
 
 - [ ] **B2: Add streaming progress**
   - Chunk count / total in headers
