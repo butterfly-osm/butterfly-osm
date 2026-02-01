@@ -73,17 +73,26 @@ Make bulk the default for high-volume workloads:
 
 ### B) Bulk-First APIs ✅ COMPLETE
 
-### C) Small-Table Fast Path 🟢 OPTIONAL
+### C) Small-Table Fast Path 🟢 OPTIONAL - PROFILED
 
-Only if profiling shows easy wins:
+**Profiling Results (2026-02-01):**
+| Size | Butterfly | OSRM | Overhead |
+|------|-----------|------|----------|
+| 10×10 | 110ms | 4.5ms | ~100ms base |
+| 25×25 | 146ms | 8.7ms | ~100ms base |
+| 50×50 | 172ms | 18.9ms | ~100ms base |
+| 100×100 | 245ms | 34.6ms | ~100ms base |
 
-- [ ] **C1: Profile 100×100 specifically**
-  - Is it setup/allocation? Tiler orchestration? Serialization?
+**Analysis**: ~100ms constant overhead from:
+1. Snapping 200 coordinates (~50ms estimate)
+2. HTTP/JSON parsing (~20ms estimate)
+3. Tiling layer setup (~30ms estimate)
 
-- [ ] **C2: Dedicated small-table mode (N ≤ 256)**
-  - Single-thread, no tiling
-  - Preallocated buffers
-  - Compact binary response
+**Conclusion**: Would need dedicated fast path bypassing tiling layer.
+Not worth the complexity since we win at scale. **SKIPPING**.
+
+- [~] **C1: Profile 100×100** - Done, ~100ms base overhead identified
+- [ ] ~~C2: Dedicated small-table mode~~ - Skipping, not worth complexity
 
 ---
 
