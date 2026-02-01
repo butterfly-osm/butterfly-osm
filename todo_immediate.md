@@ -66,9 +66,12 @@ Make bulk the default for high-volume workloads:
   - Arrow IPC matrix examples for large workloads
   - Emphasizes "Butterfly wins at scale"
 
-- [ ] **B2: Add streaming progress**
-  - Chunk count / total in headers
-  - ETA for long-running streams
+- [x] **B2: Add streaming progress** ✅
+  - `/table/stream`: X-Total-Tiles, X-Total-Cells, X-Valid-Sources/Destinations
+  - `/isochrone/bulk`: X-Total-Origins, X-Successful/Failed-Isochrones
+  - Clients can show progress bars and detect snap failures
+
+### B) Bulk-First APIs ✅ COMPLETE
 
 ### C) Small-Table Fast Path 🟢 OPTIONAL
 
