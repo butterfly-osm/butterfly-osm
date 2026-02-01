@@ -2763,16 +2763,34 @@ fn run_bucket_m2m_bench(
     let val_sources: Vec<u32> = (0..5).map(|_| val_rng.gen_range(0..n_nodes as u32)).collect();
     let val_targets: Vec<u32> = (0..5).map(|_| val_rng.gen_range(0..n_nodes as u32)).collect();
 
-    // Run bucket M2M (using the same engine as benchmarks)
-    let (m2m_matrix, _) = engine.compute(&topo, &weights, &down_rev_flat, &val_sources, &val_targets);
+    // Run SEQUENTIAL bucket M2M (engine.compute uses SortedBuckets)
+    let (seq_matrix, _) = engine.compute(&topo, &weights, &down_rev_flat, &val_sources, &val_targets);
 
-    // Run P2P queries for comparison
+    // Run PARALLEL bucket M2M (table_bucket_parallel uses PrefixSumBuckets with SoA)
+    // This is what we're actually benchmarking, so we must validate this path!
+    let (par_matrix, _) = table_bucket_parallel(n_nodes, &up_adj_flat, &down_rev_flat, &val_sources, &val_targets);
+
+    // Compare parallel vs sequential
+    let mut seq_par_mismatches = 0;
+    for i in 0..25 {
+        if seq_matrix[i] != par_matrix[i] {
+            seq_par_mismatches += 1;
+            if seq_par_mismatches <= 3 {
+                println!("  SEQ/PAR mismatch at {}: seq={}, par={}", i, seq_matrix[i], par_matrix[i]);
+            }
+        }
+    }
+    if seq_par_mismatches > 0 {
+        println!("  WARNING: {} seq/par mismatches!", seq_par_mismatches);
+    }
+
+    // Run P2P queries for comparison (test PARALLEL path which is what we benchmark)
     let mut mismatches = 0;
     let mut checked = 0;
 
     for (si, &s) in val_sources.iter().enumerate() {
         for (ti, &t) in val_targets.iter().enumerate() {
-            let m2m_dist = m2m_matrix[si * 5 + ti];
+            let m2m_dist = par_matrix[si * 5 + ti];  // Use PARALLEL result
 
             // Run P2P query using the same algorithm as the server
             let p2p_dist = run_p2p_query(&topo, &weights, &down_rev, s, t);

@@ -503,6 +503,7 @@ impl SearchState {
 // =============================================================================
 
 /// Bucket item (8 bytes, aligned for fast access)
+/// Used by backward_join_prefix for sequential version
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct BucketEntry {
@@ -512,9 +513,10 @@ struct BucketEntry {
 }
 
 /// Reusable prefix-sum bucket structure with version stamping
-/// - O(1) lookup per node (no binary search)
-/// - No clearing between queries (stamp-based reset)
-/// - Buffers reused across all queries
+/// Uses Structure-of-Arrays (SoA) for better cache efficiency:
+/// - dists: Vec<u32> - distances, contiguous
+/// - source_indices: Vec<u16> - source indices, contiguous
+/// This saves 2 bytes per entry (no padding) and improves cache utilization
 struct PrefixSumBuckets {
     n_nodes: usize,
     /// Count of items per node (stamped)
@@ -525,7 +527,11 @@ struct PrefixSumBuckets {
     current_stamp: u32,
     /// Offsets into items array (n_nodes + 1)
     offsets: Vec<u32>,
-    /// Flat array of bucket entries
+    /// SoA: distances (4 bytes each)
+    dists: Vec<u32>,
+    /// SoA: source indices (2 bytes each)
+    source_indices: Vec<u16>,
+    /// Legacy AoS items for backward compatibility
     items: Vec<BucketEntry>,
     /// Temporary storage for nodes that have items (for offset building)
     active_nodes: Vec<u32>,
@@ -539,12 +545,15 @@ impl PrefixSumBuckets {
             count_stamps: vec![0; n_nodes],
             current_stamp: 0,
             offsets: vec![0; n_nodes + 1],
+            dists: Vec::new(),
+            source_indices: Vec::new(),
             items: Vec::new(),
             active_nodes: Vec::new(),
         }
     }
 
     /// Build buckets from collected items - O(items) time, no per-node clearing
+    /// Uses SoA layout for better cache efficiency
     fn build(&mut self, raw_items: &[(u32, u16, u32)]) {
         // Increment stamp (wrapping is fine, we compare equality)
         self.current_stamp = self.current_stamp.wrapping_add(1);
@@ -569,7 +578,6 @@ impl PrefixSumBuckets {
         }
 
         // Build offsets only for active nodes (sparse)
-        // First, set all offsets to 0 for active nodes
         let mut total = 0u32;
         for &node in &self.active_nodes {
             let n = node as usize;
@@ -577,8 +585,13 @@ impl PrefixSumBuckets {
             total += self.counts[n];
         }
 
-        // Resize items if needed
+        // Resize SoA arrays if needed
         let total_items = total as usize;
+        if self.dists.len() < total_items {
+            self.dists.resize(total_items, 0);
+            self.source_indices.resize(total_items, 0);
+        }
+        // Also keep legacy items for backward compatibility
         if self.items.len() < total_items {
             self.items.resize(total_items, BucketEntry { dist: 0, source_idx: 0, _pad: 0 });
         }
@@ -588,29 +601,40 @@ impl PrefixSumBuckets {
             self.counts[node as usize] = 0;
         }
 
-        // Second pass: place items
+        // Second pass: place items in both SoA and AoS
         for &(node, source_idx, dist) in raw_items {
             let n = node as usize;
-            let pos = self.offsets[n] + self.counts[n];
-            self.items[pos as usize] = BucketEntry { dist, source_idx, _pad: 0 };
+            let pos = (self.offsets[n] + self.counts[n]) as usize;
+            self.dists[pos] = dist;
+            self.source_indices[pos] = source_idx;
+            self.items[pos] = BucketEntry { dist, source_idx, _pad: 0 };
             self.counts[n] += 1;
         }
-
-        // Store end offset for last active node
-        // (We'll use counts[n] == items in bucket for end calculation)
     }
 
-    /// Get bucket entries for a node - O(k) where k is bucket size
+    /// Get bucket entries for a node (legacy AoS) - O(k) where k is bucket size
     #[inline]
     fn get(&self, node: u32) -> &[BucketEntry] {
         let n = node as usize;
         if self.count_stamps[n] != self.current_stamp {
-            // Node has no items in current build
             return &[];
         }
         let start = self.offsets[n] as usize;
         let len = self.counts[n] as usize;
         &self.items[start..start + len]
+    }
+
+    /// Get bucket data for a node using SoA layout
+    /// Returns (start_idx, len) for indexing into dists/source_indices arrays
+    #[inline]
+    fn get_range(&self, node: u32) -> (usize, usize) {
+        let n = node as usize;
+        if self.count_stamps[n] != self.current_stamp {
+            return (0, 0);
+        }
+        let start = self.offsets[n] as usize;
+        let len = self.counts[n] as usize;
+        (start, len)
     }
 
     fn total_items(&self) -> usize {
@@ -1175,9 +1199,10 @@ pub fn table_bucket_full_flat(
     stats.forward_visited = bucket_items.len();
     stats.forward_time_ms = forward_start.elapsed().as_millis() as u64;
 
-    // ========== PHASE 2: Sort buckets for binary search ==========
+    // ========== PHASE 2: Build prefix-sum buckets (O(1) lookup) ==========
     let sort_start = std::time::Instant::now();
-    let buckets = SortedBuckets::build(bucket_items);
+    let mut buckets = PrefixSumBuckets::new(n_nodes);
+    buckets.build(&bucket_items);
     stats.bucket_items = buckets.total_items();
     stats.bucket_nodes = buckets.n_nodes_with_buckets();
     stats.sort_time_ms = sort_start.elapsed().as_millis() as u64;
@@ -1190,7 +1215,7 @@ pub fn table_bucket_full_flat(
             continue;
         }
 
-        let (visited, joins) = backward_join_opt(
+        let (visited, joins) = backward_join_prefix(
             down_rev_flat,
             target,
             &buckets,
@@ -1401,22 +1426,28 @@ fn backward_join_prefix(
         // O(1) prefix-sum bucket lookup (no binary search)
         let bucket_entries = buckets.get(u);
         for entry in bucket_entries {
-            let total = entry.dist.saturating_add(d);
             let cell = entry.source_idx as usize * n_targets + target_idx;
-            if total < matrix[cell] {
+
+            // Bound-aware pruning: skip if current best can't be improved
+            let current_best = matrix[cell];
+            if current_best <= entry.dist {
+                continue; // Already have path at least as good
+            }
+
+            let total = entry.dist.saturating_add(d);
+            if total < current_best {
                 matrix[cell] = total;
             }
             joins += 1;
         }
 
         // Relax reversed DOWN edges using flat adjacency (no edge_idx indirection!)
-        // INF edges already filtered during build, so no need to check here
         let edge_start = down_rev_flat.offsets[u as usize] as usize;
         let edge_end = down_rev_flat.offsets[u as usize + 1] as usize;
 
         for i in edge_start..edge_end {
             let x = down_rev_flat.sources[i];
-            let w = down_rev_flat.weights[i]; // Direct access, no indirection!
+            let w = down_rev_flat.weights[i];
             let new_dist = d.saturating_add(w);
             state.relax(x, new_dist);
         }
@@ -1483,14 +1514,14 @@ pub fn table_bucket_parallel(
         .collect();
 
     // Merge all bucket chunks
-    let mut bucket_items: Vec<(u32, u16, u32)> = bucket_chunks.into_iter().flatten().collect();
+    let bucket_items: Vec<(u32, u16, u32)> = bucket_chunks.into_iter().flatten().collect();
     stats.forward_visited = bucket_items.len();
     stats.forward_time_ms = forward_start.elapsed().as_millis() as u64;
 
-    // ========== PHASE 2: Sort buckets (parallel sort) ==========
+    // ========== PHASE 2: Build prefix-sum buckets (O(1) lookup) ==========
     let sort_start = std::time::Instant::now();
-    bucket_items.par_sort_unstable_by_key(|(node, _, _)| *node);
-    let buckets = SortedBuckets::from_sorted(bucket_items);
+    let mut buckets = PrefixSumBuckets::new(n_nodes);
+    buckets.build(&bucket_items);
     stats.bucket_items = buckets.total_items();
     stats.bucket_nodes = buckets.n_nodes_with_buckets();
     stats.sort_time_ms = sort_start.elapsed().as_millis() as u64;
@@ -1513,7 +1544,7 @@ pub fn table_bucket_parallel(
             let avg_visited = (n_nodes / 400).max(500).min(20000);
             let mut state = SearchState::new(n_nodes, avg_visited);
 
-            backward_join_parallel(
+            backward_join_parallel_prefix(
                 down_rev_flat,
                 target,
                 &buckets,
@@ -1567,6 +1598,71 @@ fn backward_join_parallel(
 
             // Atomic min update
             matrix[idx].fetch_min(total_dist, Ordering::Relaxed);
+        }
+
+        // Relax DOWN-reverse edges
+        let edge_start = down_rev_flat.offsets[u as usize] as usize;
+        let edge_end = down_rev_flat.offsets[u as usize + 1] as usize;
+
+        for i in edge_start..edge_end {
+            let x = down_rev_flat.sources[i];
+            let w = down_rev_flat.weights[i];
+            let new_dist = d.saturating_add(w);
+            state.relax(x, new_dist);
+        }
+    }
+
+    (visited, joins)
+}
+
+/// Backward join for parallel execution using PrefixSumBuckets (O(1) lookup)
+/// With bound-aware pruning: skip joins where current best <= source distance
+/// Uses SoA layout for better cache efficiency
+fn backward_join_parallel_prefix(
+    down_rev_flat: &DownReverseAdjFlat,
+    target: u32,
+    buckets: &PrefixSumBuckets,
+    matrix: &[std::sync::atomic::AtomicU32],
+    n_targets: usize,
+    target_idx: usize,
+    state: &mut SearchState,
+) -> (usize, usize) {
+    use std::sync::atomic::Ordering;
+
+    state.start_search();
+    state.relax(target, 0);
+
+    let mut visited = 0usize;
+    let mut joins = 0usize;
+
+    while let Some((d, u)) = state.pop() {
+        visited += 1;
+
+        // O(1) prefix-sum bucket lookup using SoA layout
+        let (start, len) = buckets.get_range(u);
+        if len > 0 {
+            // Access SoA arrays directly for better cache behavior
+            let dists = &buckets.dists[start..start + len];
+            let source_indices = &buckets.source_indices[start..start + len];
+
+            for i in 0..len {
+                let entry_dist = dists[i];
+                let source_idx = source_indices[i];
+                let idx = source_idx as usize * n_targets + target_idx;
+
+                // Bound-aware pruning: skip if current best can't be improved
+                let current_best = matrix[idx].load(Ordering::Relaxed);
+                if current_best <= entry_dist {
+                    continue;
+                }
+
+                joins += 1;
+                let total_dist = entry_dist.saturating_add(d);
+
+                if total_dist < current_best {
+                    matrix[idx].fetch_min(total_dist, Ordering::Relaxed);
+                }
+            }
         }
 
         // Relax DOWN-reverse edges
