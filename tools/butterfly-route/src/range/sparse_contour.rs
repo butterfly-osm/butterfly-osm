@@ -337,23 +337,23 @@ pub struct SparseContourConfig {
 }
 
 impl SparseContourConfig {
-    /// Default car config - fast but coarse (100m cells, ~50-300 vertices)
+    /// Default car config (30m cells - better accuracy)
     pub fn for_car() -> Self {
         Self {
-            cell_size_m: 100.0,
-            dilation_rounds: 2,
+            cell_size_m: 30.0,
+            dilation_rounds: 2,  // Reduced to avoid over-expansion
             erosion_rounds: 1,
-            simplify_tolerance_m: 75.0,
+            simplify_tolerance_m: 30.0,
         }
     }
 
-    /// Default bike config (50m cells)
+    /// Default bike config (40m cells)
     pub fn for_bike() -> Self {
         Self {
-            cell_size_m: 50.0,
-            dilation_rounds: 2,
+            cell_size_m: 40.0,
+            dilation_rounds: 3,
             erosion_rounds: 1,
-            simplify_tolerance_m: 50.0,
+            simplify_tolerance_m: 40.0,
         }
     }
 
@@ -361,7 +361,7 @@ impl SparseContourConfig {
     pub fn for_foot() -> Self {
         Self {
             cell_size_m: 25.0,
-            dilation_rounds: 2,
+            dilation_rounds: 3,
             erosion_rounds: 1,
             simplify_tolerance_m: 25.0,
         }

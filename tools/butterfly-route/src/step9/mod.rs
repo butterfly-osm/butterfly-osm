@@ -24,6 +24,9 @@ pub mod spatial;
 pub mod state;
 pub mod unpack;
 
+#[cfg(test)]
+mod isochrone_test;
+
 use anyhow::Result;
 use std::net::TcpListener;
 use std::path::Path;
