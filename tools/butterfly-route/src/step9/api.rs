@@ -644,6 +644,12 @@ async fn table_stream(
     let src_tile_size = req.src_tile_size.min(n_total_sources).max(1);
     let dst_tile_size = req.dst_tile_size.min(n_total_targets).max(1);
 
+    // Calculate total tiles for progress tracking
+    let n_src_blocks = (n_total_sources + src_tile_size - 1) / src_tile_size;
+    let n_dst_blocks = (n_total_targets + dst_tile_size - 1) / dst_tile_size;
+    let n_total_tiles = n_src_blocks * n_dst_blocks;
+    let n_total_cells = n_total_sources * n_total_targets;
+
     // Create channel for streaming tiles
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(8);
 
@@ -770,6 +776,13 @@ async fn table_stream(
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+        // Progress tracking headers
+        .header("X-Total-Tiles", n_total_tiles.to_string())
+        .header("X-Total-Sources", n_total_sources.to_string())
+        .header("X-Total-Destinations", n_total_targets.to_string())
+        .header("X-Total-Cells", n_total_cells.to_string())
+        .header("X-Valid-Sources", n_valid_sources.to_string())
+        .header("X-Valid-Destinations", n_valid_targets.to_string())
         .body(Body::from_stream(stream))
         .unwrap()
         .into_response()
@@ -1044,6 +1057,8 @@ async fn isochrone_bulk(
         .collect();
 
     // Build response: concatenated length-prefixed WKB
+    let n_total_origins = req.origins.len();
+    let n_successful = results.len();
     let mut response = Vec::with_capacity(results.len() * 500);
     for (origin_idx, wkb) in results {
         response.extend_from_slice(&origin_idx.to_le_bytes());
@@ -1051,11 +1066,16 @@ async fn isochrone_bulk(
         response.extend_from_slice(&wkb);
     }
 
-    (
-        StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-        response,
-    ).into_response()
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        // Progress tracking headers
+        .header("X-Total-Origins", n_total_origins.to_string())
+        .header("X-Successful-Isochrones", n_successful.to_string())
+        .header("X-Failed-Isochrones", (n_total_origins - n_successful).to_string())
+        .body(Body::from(response))
+        .unwrap()
+        .into_response()
 }
 
 /// Bounded Dijkstra for isochrone computation (operates in filtered node space)
