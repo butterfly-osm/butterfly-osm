@@ -69,6 +69,8 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
         // Arrow streaming for large matrices (50k×50k+)
         .merge(stream_route)
         .route("/isochrone", get(isochrone))
+        .route("/isochrone/wkb", get(isochrone_wkb))
+        .route("/isochrone/bulk", post(isochrone_bulk))
         .route("/health", get(health))
         .route("/debug/compare", get(debug_compare))
         .layer(cors)
@@ -853,6 +855,166 @@ async fn isochrone(
         reachable_nodes: settled.len(),
     })
     .into_response()
+}
+
+/// GET /isochrone/wkb - Returns isochrone as WKB binary (faster than JSON)
+///
+/// Returns raw WKB polygon bytes with Content-Type: application/octet-stream
+/// Much faster for bulk processing - skips JSON serialization overhead
+async fn isochrone_wkb(
+    State(state): State<Arc<ServerState>>,
+    Query(req): Query<IsochroneRequest>,
+) -> impl IntoResponse {
+    use crate::range::contour::ContourResult;
+    use crate::range::wkb_stream::encode_polygon_wkb;
+
+    let mode = match parse_mode(&req.mode) {
+        Ok(m) => m,
+        Err(e) => return (StatusCode::BAD_REQUEST, e.into_bytes()).into_response(),
+    };
+
+    let mode_data = state.get_mode(mode);
+    let time_ds = req.time_s * 10;
+
+    // Snap center
+    let center_orig = match state.spatial_index.snap(req.lon, req.lat, &mode_data.mask, 10) {
+        Some(id) => id,
+        None => return (StatusCode::BAD_REQUEST, b"Could not snap".to_vec()).into_response(),
+    };
+
+    let center_filtered = mode_data.filtered_ebg.original_to_filtered[center_orig as usize];
+    if center_filtered == u32::MAX {
+        return (StatusCode::BAD_REQUEST, b"Not accessible".to_vec()).into_response();
+    }
+    let center_rank = mode_data.order.perm[center_filtered as usize];
+
+    // Run PHAST
+    let phast_settled = run_phast_bounded_fast(
+        &mode_data.cch_topo,
+        &mode_data.cch_weights,
+        center_rank,
+        time_ds,
+        mode,
+    );
+
+    // Convert to original IDs
+    let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());
+    for (rank, dist) in phast_settled {
+        let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
+        let original_id = mode_data.filtered_ebg.filtered_to_original[filtered_id as usize];
+        settled.push((original_id, dist));
+    }
+
+    // Build polygon as list of points
+    let points = build_isochrone_geometry(&settled, time_ds, &state.ebg_nodes, &state.nbg_geo);
+
+    // Convert to ContourResult format for WKB encoding
+    let outer_ring: Vec<(f64, f64)> = points.iter().map(|p| (p.lon, p.lat)).collect();
+    let contour = ContourResult {
+        outer_ring,
+        holes: vec![],
+        stats: Default::default(),
+    };
+
+    // Encode as WKB
+    match encode_polygon_wkb(&contour) {
+        Some(wkb) => (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+            wkb,
+        ).into_response(),
+        None => (StatusCode::NO_CONTENT, Vec::new()).into_response(),
+    }
+}
+
+/// Bulk isochrone request
+#[derive(Debug, Deserialize)]
+pub struct BulkIsochroneRequest {
+    /// List of origins as [lon, lat] pairs
+    origins: Vec<[f64; 2]>,
+    /// Time limit in seconds
+    time_s: u32,
+    /// Transport mode
+    mode: String,
+}
+
+/// POST /isochrone/bulk - Compute multiple isochrones in parallel, return WKB stream
+///
+/// Returns a binary stream of WKB polygons with length-prefixed format:
+/// For each isochrone: [4 bytes: origin_idx as u32][4 bytes: wkb_len as u32][wkb_len bytes: WKB]
+async fn isochrone_bulk(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<BulkIsochroneRequest>,
+) -> impl IntoResponse {
+    use crate::range::contour::ContourResult;
+    use crate::range::wkb_stream::encode_polygon_wkb;
+    use rayon::prelude::*;
+
+    let mode = match parse_mode(&req.mode) {
+        Ok(m) => m,
+        Err(e) => return (StatusCode::BAD_REQUEST, e.into_bytes()).into_response(),
+    };
+
+    let mode_data = state.get_mode(mode);
+    let time_ds = req.time_s * 10;
+
+    // Process all origins in parallel
+    let results: Vec<(u32, Vec<u8>)> = req.origins
+        .par_iter()
+        .enumerate()
+        .filter_map(|(idx, &[lon, lat])| {
+            // Snap origin
+            let center_orig = state.spatial_index.snap(lon, lat, &mode_data.mask, 10)?;
+            let center_filtered = mode_data.filtered_ebg.original_to_filtered[center_orig as usize];
+            if center_filtered == u32::MAX {
+                return None;
+            }
+            let center_rank = mode_data.order.perm[center_filtered as usize];
+
+            // Run PHAST - Note: thread-local state handles per-thread allocation
+            let phast_settled = run_phast_bounded_fast(
+                &mode_data.cch_topo,
+                &mode_data.cch_weights,
+                center_rank,
+                time_ds,
+                mode,
+            );
+
+            // Convert to original IDs
+            let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());
+            for (rank, dist) in phast_settled {
+                let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
+                let original_id = mode_data.filtered_ebg.filtered_to_original[filtered_id as usize];
+                settled.push((original_id, dist));
+            }
+
+            // Build polygon
+            let points = build_isochrone_geometry(&settled, time_ds, &state.ebg_nodes, &state.nbg_geo);
+            let outer_ring: Vec<(f64, f64)> = points.iter().map(|p| (p.lon, p.lat)).collect();
+            let contour = ContourResult {
+                outer_ring,
+                holes: vec![],
+                stats: Default::default(),
+            };
+
+            // Encode WKB
+            encode_polygon_wkb(&contour).map(|wkb| (idx as u32, wkb))
+        })
+        .collect();
+
+    // Build response: concatenated length-prefixed WKB
+    let mut response = Vec::with_capacity(results.len() * 500);
+    for (origin_idx, wkb) in results {
+        response.extend_from_slice(&origin_idx.to_le_bytes());
+        response.extend_from_slice(&(wkb.len() as u32).to_le_bytes());
+        response.extend_from_slice(&wkb);
+    }
+
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+        response,
+    ).into_response()
 }
 
 /// Bounded Dijkstra for isochrone computation (operates in filtered node space)
