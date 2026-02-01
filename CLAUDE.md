@@ -421,24 +421,26 @@ python3 scripts/osrm_matrix_bench.py
 - `forward_build_buckets()` - Forward phase only
 - `backward_join_with_buckets()` - Backward with prebuilt buckets
 
-### Isochrones 100K - CPU Profile (Still to optimize)
+### Isochrones 100K - Thread-Local PHAST ✅
 
-| Function | CPU % | Description |
-|----------|-------|-------------|
-| `run_phast_bounded` | **36-44%** | PHAST algorithm |
-| Axum HTTP handler | **35-37%** | Request/response overhead |
-| libc memset/alloc | 8-20% | 9.6MB `vec![MAX; n]` per query |
+**Before fix (9.6MB allocation per query):**
+- 1370/sec, 21.1ms avg latency
+- 68-71% cache miss rate
 
-**Cache miss rate:** 68-71% (memory-bandwidth dominated)
-**IPC:** 2.4-2.8 (memory-starved)
+**After fix (thread-local state + generation stamping):**
+- **1471/sec, 19.5ms avg latency**
+- **1.07x speedup**
 
-**Root cause:** Linear downward scan over 2.4M nodes with random `dist[v]` writes
+**Remaining bottleneck:** Downward scan still iterates 2.4M nodes
 
-### Remaining Optimization Priorities
+### Optimization Summary
 
-1. ✅ **Matrix:** Source-block tiling fix - DONE (1.56x)
-2. **Isochrones:** Thread-local dist + generation stamping (eliminate memset)
-3. **Isochrones:** Binary response (WKB) for bulk queries
+| Fix | Speedup | Status |
+|-----|---------|--------|
+| A1: Source-block outer loop (matrix) | **1.56x** | ✅ Done |
+| B1: Thread-local PHAST (isochrones) | **1.07x** | ✅ Done |
+| C1: Block-gated downward | TBD | Pending |
+| A2: Bucket structure optimization | TBD | Pending |
 
 ---
 
