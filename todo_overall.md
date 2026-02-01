@@ -167,16 +167,37 @@ butterfly-route serve --data-dir ./build/ --port 8080
 
 ---
 
+## Production Hardening
+
+### Trust Package ✅ COMPLETE (2026-02-01)
+
+| Item | Status | Result |
+|------|--------|--------|
+| OSRM Parity Suite | ✅ | 0.98 correlation, 9.5% mean drift |
+| Debug Fields | ✅ | `debug=true` returns snapped coords |
+| Duration Units | ✅ | All APIs use seconds |
+| **Critical Fix: Snap Radius** | ✅ | 5km max (was snapping 37km+ to France) |
+
+**Tools:**
+- `scripts/osrm_parity_suite.py` - 10K random route comparison vs OSRM
+
+### Next: Bulk-First APIs
+
+- [ ] Document bulk as primary path (README examples)
+- [ ] Add streaming progress indicators
+
+---
+
 ## Bulk Performance Optimization
 
 ### Current Status (2026-02-01)
 
-**Isochrones: SOLVED** - Block-gated PHAST achieves 5ms p50 latency, 815 queries/sec.
+**Isochrones: SOLVED** - Block-gated PHAST achieves 5ms p50 latency, 1526/sec bulk.
 
-**Matrices: 5x gap to OSRM** - Edge-based overhead + heap operations.
-- Small matrices (10×10 to 100×100): 5x slower than OSRM
-- Large matrices (10k×10k+): Only 1.4x slower (Arrow streaming)
-- The gap is fundamental to edge-based CH, not implementation
+**Matrices: WIN AT SCALE** - 1.8x FASTER than OSRM at 10k×10k.
+- Small matrices (100×100): 3x slower than OSRM (acceptable)
+- Large matrices (10k×10k+): **1.8x FASTER** (Arrow streaming)
+- The small-table gap is fundamental to edge-based CH
 
 ### Reality Checks
 

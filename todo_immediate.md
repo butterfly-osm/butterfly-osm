@@ -33,33 +33,28 @@ This is the **correct trade-off** for exact turn handling.
 
 ---
 
-## NEXT PRIORITIES (Production Hardening)
+## COMPLETED
 
-### A) Trust Package 🔴 HIGH PRIORITY
+### A) Trust Package ✅ COMPLETE
 
-Build confidence that results are correct:
+- [x] **A1: OSRM sanity parity suite** ✅
+  - `scripts/osrm_parity_suite.py` - 10K random route comparison
+  - Fixed critical snap bug: 5km max snap distance
+  - Results: **0.98 correlation**, 9.5% mean drift, 6.6% flagged
+  - Parity check: **PASSED**
 
-- [x] **A1: OSRM sanity parity suite** ✅ DONE
-  - Created `scripts/osrm_parity_suite.py`
-  - Fixed critical snap bug: added 5km max snap distance
-  - Results: 0.98 correlation, 9.5% mean drift, 6.6% flagged
-  - Status: PASSED ✓
+- [x] **A2: Debug fields in responses** ✅
+  - `debug=true` parameter on `/route`
+  - Returns snapped coords, snap distance, EBG node ID
 
-- [x] **A2: Debug fields in responses** ✅ DONE
-  - Added `debug=true` query parameter to `/route`
-  - Response includes `src_snapped` and `dst_snapped`:
-    - Snapped coordinates (lon, lat)
-    - Snap distance in meters
-    - Internal EBG node ID
+- [x] **A3: Duration units** ✅
+  - All APIs use SECONDS consistently
 
-- [x] **A3: Duration units enforcement** ✅ DONE (already consistent)
-  - All public APIs use SECONDS for durations
-  - `/route`: `duration_s` (seconds)
-  - `/table`: `durations` (seconds)
-  - `/isochrone`: `time_s` (seconds)
-  - Documented in OpenAPI spec
+---
 
-### B) Bulk-First APIs 🟡 MEDIUM PRIORITY
+## NEXT PRIORITIES
+
+### B) Bulk-First APIs 🔴 NOW HIGH PRIORITY
 
 Make bulk the default for high-volume workloads:
 
