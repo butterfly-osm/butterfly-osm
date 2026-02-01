@@ -577,83 +577,143 @@ pub fn generate_sparse_contour(
 ///
 /// This is O(perimeter), not O(area) - no densification needed.
 /// We trace the boundary between filled and empty cells directly on the sparse tile map.
+///
+/// For maps with multiple disconnected components, we trace ALL boundaries and return
+/// the LARGEST one (by vertex count). This handles cases where roads reach far-away
+/// areas without connecting to intermediate regions.
 fn extract_contour_sparse(map: &SparseTileMap) -> Vec<(f64, f64)> {
     if map.tiles.is_empty() {
         return vec![];
     }
 
-    // Find a starting boundary cell (filled cell with empty neighbor to the west or above)
-    // We want the topmost-leftmost boundary cell for consistent exterior tracing
-    let start = find_boundary_start(map);
-    let Some((start_col, start_row, start_edge)) = start else {
-        return vec![];
-    };
+    // Track which cells have been visited (as part of a boundary)
+    let mut visited_edges: HashSet<(i32, i32, u8)> = HashSet::new();
+    let mut all_contours: Vec<Vec<(f64, f64)>> = Vec::new();
 
-    // Trace the boundary using edge walking
-    // An edge is defined by a cell position and which edge (N=0, E=1, S=2, W=3)
-    // We walk clockwise around the filled region, keeping filled cells on our right
-    trace_boundary_edges(map, start_col, start_row, start_edge)
+    // Find all boundary starts and trace each component
+    let boundary_starts = find_all_boundary_starts(map);
+
+    for (start_col, start_row, start_edge) in boundary_starts {
+        // Skip if this edge was already traced
+        if visited_edges.contains(&(start_col, start_row, start_edge)) {
+            continue;
+        }
+
+        // Trace this boundary
+        let contour = trace_boundary_edges_with_visited(
+            map,
+            start_col,
+            start_row,
+            start_edge,
+            &mut visited_edges
+        );
+
+        if contour.len() >= 3 {
+            all_contours.push(contour);
+        }
+    }
+
+    // Return the largest contour (by vertex count)
+    all_contours.into_iter()
+        .max_by_key(|c| c.len())
+        .unwrap_or_default()
 }
 
-/// Find a boundary cell to start tracing from
-/// Returns (col, row, edge) where edge is the first boundary edge (0=N, 1=E, 2=S, 3=W)
-fn find_boundary_start(map: &SparseTileMap) -> Option<(i32, i32, u8)> {
-    // Find the minimum tile coordinates
-    let mut min_tx = i32::MAX;
-    let mut min_ty = i32::MAX;
+/// Find ALL boundary cells that could start a trace (for multi-component maps)
+/// Returns Vec of (col, row, edge) for each potential starting point
+fn find_all_boundary_starts(map: &SparseTileMap) -> Vec<(i32, i32, u8)> {
+    let mut starts = Vec::new();
 
-    for &coord in map.tiles.keys() {
-        min_tx = min_tx.min(coord.tx);
-        min_ty = min_ty.min(coord.ty);
-    }
-
-    if min_tx == i32::MAX {
-        return None;
-    }
-
-    // Scan tiles from top-left to find first boundary cell
-    // We want a cell that has an empty neighbor above or to the left (for exterior tracing)
-    let mut sorted_tiles: Vec<_> = map.tiles.keys().copied().collect();
-    sorted_tiles.sort_by_key(|c| (c.ty, c.tx));
-
-    for coord in sorted_tiles {
+    for (&coord, tile) in &map.tiles {
         let base_col = coord.tx * TILE_SIZE as i32;
         let base_row = coord.ty * TILE_SIZE as i32;
 
-        if let Some(tile) = map.tiles.get(&coord) {
-            for local_row in 0..TILE_SIZE {
-                let row_bits = tile.bits[local_row];
-                if row_bits == 0 {
+        for local_row in 0..TILE_SIZE {
+            let row_bits = tile.bits[local_row];
+            if row_bits == 0 {
+                continue;
+            }
+
+            for local_col in 0..TILE_SIZE {
+                if (row_bits >> local_col) & 1 == 0 {
                     continue;
                 }
 
-                for local_col in 0..TILE_SIZE {
-                    if (row_bits >> local_col) & 1 == 0 {
-                        continue;
-                    }
+                let col = base_col + local_col as i32;
+                let row = base_row + local_row as i32;
 
-                    let col = base_col + local_col as i32;
-                    let row = base_row + local_row as i32;
-
-                    // Check for boundary edges (prefer North or West for exterior)
-                    if !map.get_cell(col, row - 1) {
-                        return Some((col, row, 0)); // North edge
-                    }
-                    if !map.get_cell(col - 1, row) {
-                        return Some((col, row, 3)); // West edge
-                    }
-                    if !map.get_cell(col + 1, row) {
-                        return Some((col, row, 1)); // East edge
-                    }
-                    if !map.get_cell(col, row + 1) {
-                        return Some((col, row, 2)); // South edge
-                    }
+                // Check for boundary edges - add one start per boundary cell
+                // We only need one edge per cell to start tracing
+                if !map.get_cell(col, row - 1) {
+                    starts.push((col, row, 0)); // North edge
+                } else if !map.get_cell(col - 1, row) {
+                    starts.push((col, row, 3)); // West edge
+                } else if !map.get_cell(col + 1, row) {
+                    starts.push((col, row, 1)); // East edge
+                } else if !map.get_cell(col, row + 1) {
+                    starts.push((col, row, 2)); // South edge
                 }
             }
         }
     }
 
-    None
+    starts
+}
+
+/// Trace boundary edges, marking visited edges to avoid re-tracing the same component
+fn trace_boundary_edges_with_visited(
+    map: &SparseTileMap,
+    start_col: i32,
+    start_row: i32,
+    start_edge: u8,
+    visited: &mut HashSet<(i32, i32, u8)>,
+) -> Vec<(f64, f64)> {
+    let mut contour = Vec::new();
+
+    let mut col = start_col;
+    let mut row = start_row;
+    let mut edge = start_edge;
+
+    // Maximum iterations = perimeter bound
+    let max_iter = map.tiles.len() * TILE_SIZE * TILE_SIZE * 4;
+    let mut iter = 0;
+
+    loop {
+        iter += 1;
+        if iter > max_iter {
+            break;
+        }
+
+        // Mark this edge as visited
+        visited.insert((col, row, edge));
+
+        // Emit the corner vertex at the START of this edge (clockwise direction)
+        // Edge 0 (North): top-left corner (col, row)
+        // Edge 1 (East): top-right corner (col+1, row)
+        // Edge 2 (South): bottom-right corner (col+1, row+1)
+        // Edge 3 (West): bottom-left corner (col, row+1)
+        let (vx, vy) = match edge {
+            0 => (col as f64, row as f64),
+            1 => (col as f64 + 1.0, row as f64),
+            2 => (col as f64 + 1.0, row as f64 + 1.0),
+            _ => (col as f64, row as f64 + 1.0),
+        };
+        contour.push((vx, vy));
+
+        // Find next boundary edge
+        let (next_col, next_row, next_edge) = next_boundary_edge(map, col, row, edge);
+
+        // Check if we're back at start
+        if next_col == start_col && next_row == start_row && next_edge == start_edge {
+            break;
+        }
+
+        col = next_col;
+        row = next_row;
+        edge = next_edge;
+    }
+
+    contour
 }
 
 /// Trace boundary edges clockwise, emitting corner vertices
