@@ -32,6 +32,8 @@ use super::unpack::unpack_path;
     components(schemas(
         RouteRequest,
         RouteResponse,
+        SnapInfo,
+        RouteDebugInfo,
         TablePostRequest,
         TableResponse,
         IsochroneRequest,
@@ -96,6 +98,31 @@ pub struct RouteRequest {
     /// Transport mode: car, bike, or foot
     #[schema(example = "car")]
     mode: String,
+    /// Include debug information in response
+    #[serde(default)]
+    debug: bool,
+}
+
+/// Debug information about snapping
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SnapInfo {
+    /// Snapped longitude
+    pub lon: f64,
+    /// Snapped latitude
+    pub lat: f64,
+    /// Distance from original coordinate to snapped point (meters)
+    pub snap_distance_m: f64,
+    /// Internal EBG node ID (for debugging)
+    pub ebg_node_id: u32,
+}
+
+/// Debug information for route response
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RouteDebugInfo {
+    /// Where the source was snapped to
+    pub src_snapped: SnapInfo,
+    /// Where the destination was snapped to
+    pub dst_snapped: SnapInfo,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -106,6 +133,9 @@ pub struct RouteResponse {
     pub distance_m: f64,
     /// Route geometry
     pub geometry: RouteGeometry,
+    /// Debug information (only present if debug=true in request)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug: Option<RouteDebugInfo>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -141,12 +171,12 @@ async fn route(
 
     let mode_data = state.get_mode(mode);
 
-    // Snap source and destination (returns original EBG node IDs)
-    let src_orig = match state.spatial_index.snap(req.src_lon, req.src_lat, &mode_data.mask, 10) {
-        Some(id) => {
-            eprintln!("DEBUG: Snapped src ({}, {}) to original node {} for mode {:?}",
-                req.src_lon, req.src_lat, id, mode);
-            id
+    // Snap source and destination with debug info
+    let (src_orig, src_snap_info) = match state.spatial_index.snap_with_info(req.src_lon, req.src_lat, &mode_data.mask, 10) {
+        Some((id, lon, lat, dist)) => {
+            eprintln!("DEBUG: Snapped src ({}, {}) to ({}, {}) node {} dist={:.1}m for mode {:?}",
+                req.src_lon, req.src_lat, lon, lat, id, dist, mode);
+            (id, SnapInfo { lon, lat, snap_distance_m: dist, ebg_node_id: id })
         }
         None => {
             eprintln!("DEBUG: Failed to snap src ({}, {}) for mode {:?}",
@@ -161,8 +191,8 @@ async fn route(
         }
     };
 
-    let dst_orig = match state.spatial_index.snap(req.dst_lon, req.dst_lat, &mode_data.mask, 10) {
-        Some(id) => id,
+    let (dst_orig, dst_snap_info) = match state.spatial_index.snap_with_info(req.dst_lon, req.dst_lat, &mode_data.mask, 10) {
+        Some((id, lon, lat, dist)) => (id, SnapInfo { lon, lat, snap_distance_m: dist, ebg_node_id: id }),
         None => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -234,10 +264,21 @@ async fn route(
         src_orig, dst_orig, src_filtered, dst_filtered, result.distance, result.meeting_node,
         result.forward_parent.len(), result.backward_parent.len(), ebg_path.len());
 
+    // Build debug info if requested
+    let debug_info = if req.debug {
+        Some(RouteDebugInfo {
+            src_snapped: src_snap_info,
+            dst_snapped: dst_snap_info,
+        })
+    } else {
+        None
+    };
+
     Json(RouteResponse {
         duration_s: result.distance as f64 / 10.0, // deciseconds to seconds
         distance_m: geometry.distance_m,
         geometry,
+        debug: debug_info,
     })
     .into_response()
 }
