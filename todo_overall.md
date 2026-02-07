@@ -178,3 +178,75 @@ butterfly-route serve --data-dir ./build/ --port 8080
 docker build -t butterfly-route .
 docker run -d --name butterfly -p 3001:8080 -v "${PWD}/data/belgium:/data" butterfly-route
 ```
+
+---
+
+## Audit Findings (2026-02-07)
+
+Combined findings from Codex (gpt-5.3-codex) and Gemini (gemini-2.5-pro) repo-wide audits. Findings apply to the repository as of commit `05554e9`.
+
+### CRITICAL
+
+| # | Finding | Component | Location | Source |
+|---|---------|-----------|----------|--------|
+| C1 | **CI benchmark job is broken.** References non-existent `benchmarks/` directory and falls back to trivial command. No automated performance regression testing exists. For a performance-first project this is a critical gap. | CI | `.github/workflows/ci.yml` | Gemini |
+| C2 | **FFI: Unhandled panics across `extern "C"` boundary.** `.expect()` calls in `RUNTIME` initialization and `butterfly_version` will panic on failure. Panic unwinding across FFI = **Undefined Behavior** = crash. | butterfly-dl | `tools/butterfly-dl/src/ffi.rs` | Gemini |
+| C3 | **FFI: Use-after-free in progress callback.** `butterfly_download_with_progress` passes `user_data` pointer into an `async move` block. C caller may free data after function returns but before async completes. Comment claiming safety is incorrect. | butterfly-dl | `tools/butterfly-dl/src/ffi.rs` | Gemini |
+
+### HIGH
+
+| # | Finding | Component | Location | Source |
+|---|---------|-----------|----------|--------|
+| H1 | **FFI: Lossy error handling.** `convert_error` discards all specific error details (URL, I/O error kind), mapping to generic C error codes. No `butterfly_last_error_message()` for detailed retrieval. Debugging from C side is impossible. | butterfly-dl | `tools/butterfly-dl/src/ffi.rs` | Gemini |
+| H2 | **FFI: Naive threading model.** Single global Tokio runtime with `block_on` for every call. Concurrent C threads cause thread pool starvation. | butterfly-dl | `tools/butterfly-dl/src/ffi.rs` | Gemini |
+| H3 | **Feature-specific tests not in CI.** `c-bindings` feature flag tests are never executed, creating a gap for the entire FFI layer. | CI | `.github/workflows/ci.yml` | Gemini |
+| H4 | **Hardcoded static source list.** `VALID_SOURCES_CACHE` in fuzzy matching is a static list. Engine cannot adapt to new Geofabrik regions without recompilation. | butterfly-common | `butterfly-common/src/error.rs` | Gemini |
+| H5 | **Root Makefile is misleading.** Only covers `butterfly-dl` C library builds. Root Makefile should orchestrate the entire workspace or be renamed/moved. | Build | `Makefile` | Gemini |
+| H6 | **source_idx stored as `u16` in bucket M2M.** Limits matrix sources to 65,535 per computation. Silent truncation via `source_idx as u16` with no bounds check. | butterfly-route | `tools/butterfly-route/src/matrix/bucket_ch.rs:800,909,1002,1101,1198,1302` | Codex |
+| H7 | **`unwrap()` calls in production API code paths.** `api.rs` lines 1394, 1819, 2016, 2153 contain `.unwrap()` that can panic under unexpected input. CatchPanicLayer mitigates crash but returns opaque 500. | butterfly-route | `tools/butterfly-route/src/step9/api.rs:1394,1819,2016,2153` | Codex |
+| H8 | **8 `unsafe` blocks in step7 parallel edge filling.** Used for concurrent writes to shared `Vec` via raw pointer arithmetic. Each block assumes disjoint index ranges but lacks formal proof or `debug_assert` bounds verification. | butterfly-route | `tools/butterfly-route/src/step7.rs:651,658,727,754,1364,1371,1432,1456` | Codex |
+| H9 | **Fuzzy matching uses unexplained magic numbers.** Weights like `0.7`, `0.12` in `find_best_fuzzy_match` have no comments or tests justifying their values. Brittle and unmaintainable. | butterfly-common | `butterfly-common/src/error.rs` | Gemini |
+
+### MEDIUM
+
+| # | Finding | Component | Location | Source |
+|---|---------|-----------|----------|--------|
+| M1 | **Overly broad `unsafe` scopes in FFI.** Entire functions marked `unsafe` rather than minimizing to pointer dereferences. | butterfly-dl | `tools/butterfly-dl/src/ffi.rs` | Gemini |
+| M2 | **Non-UTF8 path handling in FFI.** Code assumes C file paths are valid UTF-8. Fails on valid non-UTF8 paths (common on Linux). | butterfly-dl | `tools/butterfly-dl/src/ffi.rs` | Gemini |
+| M3 | **Step 6 minimum-degree ordering is O(n^2).** Linear scan per elimination step in `minimum_degree_order()`. Should use a priority queue for O(n log n). Acceptable for small components but may bottleneck on large leaf partitions. | butterfly-route | `tools/butterfly-route/src/step6.rs:597-690` | Codex |
+| M4 | **Step 6 uses `HashSet<usize>` adjacency.** High memory overhead per node. `Vec` + sort for neighbor lookup would be more cache-friendly for the elimination game. | butterfly-route | `tools/butterfly-route/src/step6.rs:613` | Codex |
+| M5 | **`anyhow` used in library-level code.** `anyhow::Result` obscures specific error types. Should use typed errors (`thiserror`) in algorithmic code; reserve `anyhow` for application boundaries. | butterfly-dl, butterfly-route | `Cargo.toml` files | Gemini |
+| M6 | **Contour holes vector always empty.** `ContourResult.holes` is always `vec![]`. Multi-polygon support (e.g., islands within isochrone) is absent. | butterfly-route | `tools/butterfly-route/src/range/contour.rs:96,181,205` | Codex |
+| M7 | **No rate limiting or request size limits on non-streaming API routes.** A single client can overwhelm the server with expensive concurrent matrix computations. | butterfly-route | `tools/butterfly-route/src/step9/api.rs` | Codex |
+| M8 | **Cross-compilation setup could be more robust.** Using `cross` for containerized toolchains instead of raw `cargo build --target`. | CI | `.github/workflows/ci.yml` | Gemini |
+| M9 | **`Makefile` install target modifies system dirs with no `sudo` warning.** | Build | `Makefile` | Gemini |
+
+### LOW
+
+| # | Finding | Component | Location | Source |
+|---|---------|-----------|----------|--------|
+| L1 | **Windows DLL naming.** `butterfly_dl.dll` uses underscores; `butterfly-dl.dll` would match Cargo convention. | Build | `Makefile` | Gemini |
+| L2 | **CI target dir caching.** Caching entire `target/` can mask build issues. Prefer caching only cargo registry + git sources. | CI | `.github/workflows/ci.yml` | Gemini |
+| L3 | **Simplify tolerance conversion is approximate.** `config.simplify_tolerance_m / 111000.0` is a rough meters-to-degrees conversion. At Belgium latitudes (50°N), 1° longitude ≈ 71km, not 111km. Introduces ~36% error in east-west simplification. | butterfly-route | `tools/butterfly-route/src/range/contour.rs:197` | Codex |
+| L4 | **Pre-existing failing test in butterfly-dl.** `test_invalid_continent_fails_gracefully` fails consistently. Should be `#[ignore]` with issue link or fixed. | butterfly-dl | `tools/butterfly-dl/src/core/downloader.rs` | Known |
+| L5 | **`version = "2.0"` semver ambiguity.** butterfly-dl depends on butterfly-common `"2.0"` — should be `"2.0.0"` for precision. | butterfly-dl | `tools/butterfly-dl/Cargo.toml` | Gemini |
+
+### Remediation Priority
+
+**Immediate (before next release):**
+1. Fix C1: Add real benchmark CI job with performance regression gates
+2. Fix C2/C3: Wrap FFI entry points in `catch_unwind`, fix use-after-free with boxed callback context
+3. Fix H7: Replace `.unwrap()` in api.rs with proper error handling
+
+**Short-term (next sprint):**
+4. Fix H1/H2: Add `butterfly_last_error_message()`, improve runtime model
+5. Fix H6: Add bounds check or upgrade to `u32` for source_idx
+6. Fix H8: Add `debug_assert!` bounds checks in unsafe blocks
+7. Fix L3: Use latitude-aware degree conversion for simplification
+
+**Backlog:**
+8. H3: Add c-bindings feature tests to CI
+9. H4: Replace hardcoded sources with dynamic Geofabrik index fetch
+10. M3/M4: Optimize step6 elimination game (PQ + Vec adjacency)
+11. M6: Implement multi-polygon contour support (holes)
+12. M7: Add concurrency limiting / rate limiting middleware
