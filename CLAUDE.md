@@ -13,21 +13,21 @@ docker build -t butterfly-route .
 # Run the server (Belgium data on port 3001)
 docker run -d --name butterfly \
   -p 3001:8080 \
-  -v "${PWD}/data:/data" \
-  butterfly-route serve --data-dir /data/belgium --port 8080 --log-format json
+  -v "${PWD}/data/belgium:/data" \
+  butterfly-route
 
-# Run with text logging
+# Run with text logging (default is JSON)
 docker run -d --name butterfly \
   -p 3001:8080 \
-  -v "${PWD}/data:/data" \
-  butterfly-route serve --data-dir /data/belgium --port 8080 --log-format text
+  -v "${PWD}/data/belgium:/data" \
+  butterfly-route serve --data-dir /data --port 8080 --log-format text
 
 # Run with debug logging
 docker run -d --name butterfly \
   -p 3001:8080 \
-  -v "${PWD}/data:/data" \
+  -v "${PWD}/data/belgium:/data" \
   -e RUST_LOG=debug \
-  butterfly-route serve --data-dir /data/belgium --port 8080 --log-format json
+  butterfly-route
 
 # View logs
 docker logs -f butterfly
