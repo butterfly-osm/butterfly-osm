@@ -77,6 +77,8 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
         .merge(stream_route)
         .route("/isochrone", get(isochrone))
         .route("/isochrone/bulk", post(isochrone_bulk))
+        .route("/trip", post(super::trip::trip_handler))
+        .route("/height", get(height))
         .route("/health", get(health))
         .route("/debug/compare", get(debug_compare))
         .layer(cors)
@@ -118,6 +120,7 @@ pub struct RouteRequest {
 fn default_alternatives() -> u32 { 0 }
 
 fn default_geometries() -> String { "polyline6".to_string() }
+fn default_direction() -> String { "depart".to_string() }
 
 /// Debug information about snapping
 #[derive(Debug, Serialize, ToSchema)]
@@ -1311,6 +1314,9 @@ pub struct IsochroneRequest {
     time_s: u32,
     /// Transport mode (car, bike, foot)
     mode: String,
+    /// Direction: "depart" (default) or "arrive"
+    #[serde(default = "default_direction")]
+    direction: String,
     /// Geometry encoding: polyline6 (default), geojson, points
     #[serde(default = "default_geometries")]
     geometries: String,
@@ -1355,6 +1361,7 @@ pub struct IsochroneResponse {
         ("lat" = f64, Query, description = "Center latitude"),
         ("time_s" = u32, Query, description = "Time limit in seconds"),
         ("mode" = String, Query, description = "Transport mode (car, bike, foot)"),
+        ("direction" = Option<String>, Query, description = "Direction: 'depart' (default) or 'arrive'"),
         ("geometries" = Option<String>, Query, description = "Geometry encoding: polyline6 (default), geojson, points"),
         ("include" = Option<String>, Query, description = "Optional fields: 'network' for road geometries"),
     ),
@@ -1376,6 +1383,14 @@ async fn isochrone(
     let geom_format = match GeometryFormat::parse(&req.geometries) {
         Ok(f) => f,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
+    };
+
+    let reverse = match req.direction.as_str() {
+        "depart" => false,
+        "arrive" => true,
+        other => return (StatusCode::BAD_REQUEST, Json(ErrorResponse {
+            error: format!("Invalid direction: '{}'. Use 'depart' or 'arrive'.", other),
+        })).into_response(),
     };
 
     let mode_data = state.get_mode(mode);
@@ -1410,14 +1425,24 @@ async fn isochrone(
     }
     let center_rank = mode_data.order.perm[center_filtered as usize];
 
-    // Run PHAST
-    let phast_settled = run_phast_bounded_fast(
-        &mode_data.cch_topo,
-        &mode_data.cch_weights,
-        center_rank,
-        time_ds,
-        mode,
-    );
+    // Run PHAST (forward for depart, reverse for arrive)
+    let phast_settled = if reverse {
+        run_phast_bounded_fast_reverse(
+            &mode_data.up_adj_flat,
+            &mode_data.down_rev_flat,
+            center_rank,
+            time_ds,
+            mode,
+        )
+    } else {
+        run_phast_bounded_fast(
+            &mode_data.cch_topo,
+            &mode_data.cch_weights,
+            center_rank,
+            time_ds,
+            mode,
+        )
+    };
 
     // Convert to original IDs
     let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());
@@ -1947,6 +1972,114 @@ pub fn run_phast_bounded_fast(
     })
 }
 
+/// Run REVERSE PHAST bounded query — computes d(all → target) for reverse isochrones.
+///
+/// Swaps up/down adjacencies: upward uses DOWN-reverse edges, downward uses UP edges.
+/// Uses a PULL approach in the downward phase (for each node v, pull from higher-rank
+/// neighbors via up_adj_flat[v]) since we need reversed UP edges.
+pub fn run_phast_bounded_fast_reverse(
+    up_adj_flat: &crate::matrix::bucket_ch::UpAdjFlat,
+    down_rev_flat: &crate::matrix::bucket_ch::DownReverseAdjFlat,
+    target_rank: u32,
+    threshold: u32,
+    mode: crate::profile_abi::Mode,
+) -> Vec<(u32, u32)> {
+    use std::cmp::Reverse;
+    use crate::profile_abi::Mode;
+
+    let n_nodes = up_adj_flat.offsets.len() - 1;
+
+    let state_cell = match mode {
+        Mode::Car => &PHAST_STATE_CAR,
+        Mode::Bike => &PHAST_STATE_BIKE,
+        Mode::Foot => &PHAST_STATE_FOOT,
+    };
+
+    state_cell.with(|cell| {
+        let mut state_opt = cell.borrow_mut();
+        if state_opt.is_none() {
+            *state_opt = Some(PhastState::new(n_nodes));
+        }
+        let state = state_opt.as_mut().unwrap();
+        if state.dist.len() != n_nodes {
+            *state = PhastState::new(n_nodes);
+        }
+
+        state.start_query();
+        state.set_dist(target_rank as usize, 0);
+
+        // Phase 1: Upward search using DOWN-reverse edges (goes to higher rank nodes)
+        state.pq.push(Reverse((0, target_rank)));
+
+        while let Some(Reverse((d, u))) = state.pq.pop() {
+            if d > threshold {
+                break;
+            }
+            if d > state.get_dist(u as usize) {
+                continue;
+            }
+
+            // down_rev_flat[u] gives higher-rank neighbors with DOWN weights
+            let start = down_rev_flat.offsets[u as usize] as usize;
+            let end = down_rev_flat.offsets[u as usize + 1] as usize;
+
+            for i in start..end {
+                let v = down_rev_flat.sources[i] as usize; // v has higher rank
+                let w = down_rev_flat.weights[i];
+
+                if w == u32::MAX {
+                    continue;
+                }
+
+                let new_dist = d.saturating_add(w);
+                if new_dist < state.get_dist(v) {
+                    state.set_dist(v, new_dist);
+                    state.pq.push(Reverse((new_dist, v as u32)));
+                }
+            }
+        }
+
+        // Phase 2: Plain downward PULL scan using UP edges
+        // For each node v (decreasing rank), pull from higher-rank neighbors u
+        // via up_adj_flat[v].targets (which have higher rank).
+        //
+        // NOTE: Block-gating is NOT used here because PULL cannot propagate
+        // block activation downward (unlike PUSH in forward PHAST). A PUSH
+        // approach would need a reverse-UP adjacency we don't have.
+        for v in (0..n_nodes).rev() {
+            let up_start = up_adj_flat.offsets[v] as usize;
+            let up_end = up_adj_flat.offsets[v + 1] as usize;
+
+            for i in up_start..up_end {
+                let u = up_adj_flat.targets[i] as usize; // u has higher rank
+                let w = up_adj_flat.weights[i];
+
+                let d_u = state.get_dist(u);
+                if d_u == u32::MAX || d_u > threshold {
+                    continue;
+                }
+
+                let new_dist = d_u.saturating_add(w);
+                if new_dist < state.get_dist(v) {
+                    state.set_dist(v, new_dist);
+                }
+            }
+        }
+
+        // Collect settled nodes (full scan — no block-gating)
+        let mut result: Vec<(u32, u32)> = Vec::with_capacity(n_nodes / 10);
+        for rank in 0..n_nodes {
+            if state.version[rank] == state.current_gen {
+                let d = state.dist[rank];
+                if d <= threshold {
+                    result.push((rank as u32, d));
+                }
+            }
+        }
+        result
+    })
+}
+
 /// Run PHAST bounded query (in rank space) - LEGACY version with per-query allocation
 ///
 /// PHAST is a two-phase algorithm:
@@ -2035,6 +2168,26 @@ fn run_phast_bounded(
     }
 
     dist
+}
+
+// ============ Height Endpoint ============
+
+/// Query elevation for coordinates using SRTM data
+async fn height(
+    State(state): State<Arc<ServerState>>,
+    Query(req): Query<super::elevation::HeightRequest>,
+) -> impl IntoResponse {
+    let elevation = match &state.elevation {
+        Some(e) => e,
+        None => return (StatusCode::SERVICE_UNAVAILABLE, Json(ErrorResponse {
+            error: "Elevation data not loaded. Place SRTM .hgt files in data/srtm/".to_string(),
+        })).into_response(),
+    };
+
+    match super::elevation::handle_height_request(elevation, &req) {
+        Ok(resp) => Json(resp).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
+    }
 }
 
 // ============ Health Endpoint ============

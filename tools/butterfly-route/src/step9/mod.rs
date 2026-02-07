@@ -18,10 +18,12 @@
 //! - Geometry lookup via EBG -> NBG mapping
 
 pub mod api;
+pub mod elevation;
 pub mod geometry;
 pub mod query;
 pub mod spatial;
 pub mod state;
+pub mod trip;
 pub mod unpack;
 
 #[cfg(test)]
