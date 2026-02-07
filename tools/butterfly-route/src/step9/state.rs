@@ -15,6 +15,7 @@ pub use crate::formats::CchWeights;
 use crate::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
 use crate::profile_abi::Mode;
 
+use super::elevation::ElevationData;
 use super::spatial::SpatialIndex;
 
 /// Per-mode data including CCH topology (since each mode has its own filtered CCH)
@@ -63,6 +64,9 @@ pub struct ServerState {
 
     // Spatial index for snapping (operates in original EBG space)
     pub spatial_index: SpatialIndex,
+
+    // Elevation data (optional, loaded from SRTM .hgt files)
+    pub elevation: Option<ElevationData>,
 }
 
 impl ServerState {
@@ -100,6 +104,24 @@ impl ServerState {
         let spatial_index = SpatialIndex::build(&ebg_nodes, &nbg_geo);
         println!("  ✓ Indexed {} nodes", ebg_nodes.n_nodes);
 
+        // Try to load elevation data from srtm/ subdirectory
+        let srtm_dir = data_dir.join("srtm");
+        let elevation = if srtm_dir.is_dir() {
+            match ElevationData::load_from_dir(&srtm_dir) {
+                Ok(elev) => {
+                    println!("  ✓ Loaded {} SRTM tiles", elev.tile_count());
+                    Some(elev)
+                }
+                Err(e) => {
+                    println!("  ⚠ Could not load SRTM data: {}", e);
+                    None
+                }
+            }
+        } else {
+            println!("  ℹ No srtm/ directory found, /height endpoint disabled");
+            None
+        };
+
         Ok(Self {
             ebg_nodes,
             ebg_csr,
@@ -108,6 +130,7 @@ impl ServerState {
             bike,
             foot,
             spatial_index,
+            elevation,
         })
     }
 

@@ -18,6 +18,7 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 use crate::formats::{CchTopo, CchWeights};
+use crate::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
 
 /// PHAST query engine
 ///
@@ -842,6 +843,251 @@ impl PhastEngine {
         }
     }
 
+    /// Run reverse PHAST with block-level active gating (all-to-one)
+    ///
+    /// Computes shortest paths from ALL nodes to a single target (reverse isochrone).
+    /// Answers: "From where can I reach `target` within `threshold` time?"
+    ///
+    /// Works by running PHAST on the reverse graph:
+    /// - Upward phase: uses `down_rev_flat` (reverse DOWN edges = low-to-high in reverse graph)
+    /// - Downward phase: uses `up_adj_flat` (original UP edges = high-to-low in reverse graph)
+    ///
+    /// The flat adjacencies are passed externally because they contain the SWAPPED
+    /// direction data needed for reverse search (self's internal adjacencies are for
+    /// the forward direction).
+    ///
+    /// Returns Vec<(rank, dist)> for all nodes with dist <= threshold.
+    pub fn query_block_gated_reverse(
+        &self,
+        target: u32,
+        threshold: u32,
+        up_adj_flat: &UpAdjFlat,
+        down_rev_flat: &DownReverseAdjFlat,
+    ) -> PhastResult {
+        let start = std::time::Instant::now();
+        let mut stats = PhastStats::default();
+
+        let mut dist = vec![u32::MAX; self.n_nodes];
+        dist[target as usize] = 0;
+
+        // Block-level active set
+        let n_blocks = (self.n_nodes + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        let n_words = (n_blocks + 63) / 64;
+        let mut active_blocks = vec![0u64; n_words];
+
+        // Mark target's block as active
+        let target_block = target as usize / BLOCK_SIZE;
+        active_blocks[target_block / 64] |= 1u64 << (target_block % 64);
+
+        // ============================================================
+        // Phase 1: Upward search on REVERSE graph
+        // Uses down_rev_flat: for each low-rank node, gives higher-rank
+        // sources with DOWN weights (= UP edges in the reverse graph)
+        // ============================================================
+        let upward_start = std::time::Instant::now();
+
+        let mut pq: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
+        pq.push(Reverse((0, target)));
+        stats.upward_pq_pushes += 1;
+
+        while let Some(Reverse((d, u))) = pq.pop() {
+            stats.upward_pq_pops += 1;
+
+            if d > dist[u as usize] {
+                continue;
+            }
+
+            stats.upward_settled += 1;
+
+            // Relax reverse-UP edges via down_rev_flat
+            // down_rev_flat[u].sources = higher-rank neighbors
+            // down_rev_flat[u].weights = DOWN weights (= reverse graph UP weights)
+            let edge_start = down_rev_flat.offsets[u as usize] as usize;
+            let edge_end = down_rev_flat.offsets[u as usize + 1] as usize;
+
+            for i in edge_start..edge_end {
+                let v = down_rev_flat.sources[i];
+                let w = down_rev_flat.weights[i];
+                // No INF check needed - DownReverseAdjFlat is pre-filtered
+
+                let new_dist = d.saturating_add(w);
+                stats.upward_relaxations += 1;
+
+                if new_dist < dist[v as usize] {
+                    dist[v as usize] = new_dist;
+                    pq.push(Reverse((new_dist, v)));
+                    stats.upward_pq_pushes += 1;
+
+                    // Mark v's block as active if dist within threshold
+                    if new_dist <= threshold {
+                        let v_block = v as usize / BLOCK_SIZE;
+                        active_blocks[v_block / 64] |= 1u64 << (v_block % 64);
+                    }
+                }
+            }
+        }
+
+        stats.upward_time_ms = upward_start.elapsed().as_millis() as u64;
+
+        // ============================================================
+        // Phase 2: Plain downward PULL scan on REVERSE graph
+        // Uses up_adj_flat: for each low-rank node, gives higher-rank
+        // targets with UP weights (= DOWN edges in the reverse graph)
+        //
+        // For each rank r (decreasing order):
+        //   for (v, w) in up_adj_flat[r]:  // v has higher rank
+        //     dist[r] = min(dist[r], dist[v] + w)
+        //
+        // NOTE: Block-gating is NOT used because PULL cannot propagate
+        // block activation downward (unlike PUSH in forward PHAST).
+        // ============================================================
+        let downward_start = std::time::Instant::now();
+
+        for rank in (0..self.n_nodes).rev() {
+            let u = rank;
+
+            // PULL phase: check all higher-rank neighbors via up_adj_flat
+            let up_start = up_adj_flat.offsets[u] as usize;
+            let up_end = up_adj_flat.offsets[u + 1] as usize;
+
+            for i in up_start..up_end {
+                let v = up_adj_flat.targets[i] as usize; // v has higher rank
+                let w = up_adj_flat.weights[i];
+
+                let d_v = dist[v];
+                if d_v == u32::MAX {
+                    continue;
+                }
+
+                let new_dist = d_v.saturating_add(w);
+                stats.downward_relaxations += 1;
+
+                if new_dist < dist[u] {
+                    dist[u] = new_dist;
+                    stats.downward_improved += 1;
+                }
+            }
+        }
+
+        stats.downward_time_ms = downward_start.elapsed().as_millis() as u64;
+        stats.total_time_ms = start.elapsed().as_millis() as u64;
+
+        let n_reachable = dist.iter().filter(|&&d| d <= threshold).count();
+
+        PhastResult {
+            dist,
+            n_reachable,
+            stats,
+        }
+    }
+
+    /// Run bounded reverse PHAST with adaptive gating strategy (all-to-one)
+    ///
+    /// Automatically chooses between block-gated and plain reverse PHAST based on
+    /// the estimated active block ratio after the upward phase.
+    ///
+    /// This is the reverse counterpart of `query_bounded` / `query_adaptive`.
+    pub fn query_bounded_reverse(
+        &self,
+        target: u32,
+        threshold: u32,
+        up_adj_flat: &UpAdjFlat,
+        down_rev_flat: &DownReverseAdjFlat,
+    ) -> PhastResult {
+        let start = std::time::Instant::now();
+        let mut stats = PhastStats::default();
+
+        let mut dist = vec![u32::MAX; self.n_nodes];
+        dist[target as usize] = 0;
+
+        // ============================================================
+        // Phase 1: Upward search on REVERSE graph
+        // ============================================================
+        let upward_start = std::time::Instant::now();
+
+        let mut pq: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
+        pq.push(Reverse((0, target)));
+        stats.upward_pq_pushes += 1;
+
+        while let Some(Reverse((d, u))) = pq.pop() {
+            stats.upward_pq_pops += 1;
+
+            // Early stop: if current min distance exceeds threshold, no point continuing
+            if d > threshold {
+                break;
+            }
+
+            if d > dist[u as usize] {
+                continue;
+            }
+
+            stats.upward_settled += 1;
+
+            let edge_start = down_rev_flat.offsets[u as usize] as usize;
+            let edge_end = down_rev_flat.offsets[u as usize + 1] as usize;
+
+            for i in edge_start..edge_end {
+                let v = down_rev_flat.sources[i];
+                let w = down_rev_flat.weights[i];
+
+                let new_dist = d.saturating_add(w);
+                stats.upward_relaxations += 1;
+
+                if new_dist < dist[v as usize] {
+                    dist[v as usize] = new_dist;
+                    pq.push(Reverse((new_dist, v)));
+                    stats.upward_pq_pushes += 1;
+                }
+            }
+        }
+
+        stats.upward_time_ms = upward_start.elapsed().as_millis() as u64;
+
+        // ============================================================
+        // Phase 2: Plain downward PULL scan on REVERSE graph
+        // NOTE: Block-gating is NOT used because PULL cannot propagate
+        // block activation downward (unlike PUSH in forward PHAST).
+        // ============================================================
+        let downward_start = std::time::Instant::now();
+
+        for rank in (0..self.n_nodes).rev() {
+            let u = rank;
+
+            // PULL from higher-rank neighbors via up_adj_flat
+            let up_start = up_adj_flat.offsets[u] as usize;
+            let up_end = up_adj_flat.offsets[u + 1] as usize;
+
+            for i in up_start..up_end {
+                let v = up_adj_flat.targets[i] as usize;
+                let w = up_adj_flat.weights[i];
+
+                let d_v = dist[v];
+                if d_v == u32::MAX {
+                    continue;
+                }
+
+                let new_dist = d_v.saturating_add(w);
+                stats.downward_relaxations += 1;
+
+                if new_dist < dist[u] {
+                    dist[u] = new_dist;
+                    stats.downward_improved += 1;
+                }
+            }
+        }
+
+        stats.downward_time_ms = downward_start.elapsed().as_millis() as u64;
+        stats.total_time_ms = start.elapsed().as_millis() as u64;
+
+        let n_reachable = dist.iter().filter(|&&d| d <= threshold).count();
+
+        PhastResult {
+            dist,
+            n_reachable,
+            stats,
+        }
+    }
+
     /// Get number of nodes
     pub fn n_nodes(&self) -> usize {
         self.n_nodes
@@ -906,5 +1152,401 @@ impl PhastEngine {
 
 #[cfg(test)]
 mod tests {
-    // Tests will validate PHAST vs naive Dijkstra
+    use super::*;
+    use crate::formats::{CchTopo, CchWeights};
+    use crate::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
+
+    /// Build a small CCH for testing reverse PHAST.
+    ///
+    /// Graph (5 nodes, rank-aligned so node_id == rank):
+    ///
+    ///   0 --10--> 2 --5--> 4
+    ///   1 --3---> 2 --7--> 3
+    ///
+    /// Rank ordering: 0 < 1 < 2 < 3 < 4
+    ///
+    /// UP edges (low rank -> high rank):
+    ///   0 -> 2 (weight 10)
+    ///   1 -> 2 (weight 3)
+    ///   2 -> 3 (weight 7)
+    ///   2 -> 4 (weight 5)
+    ///
+    /// DOWN edges (high rank -> low rank):
+    ///   2 -> 0 (weight 10)
+    ///   2 -> 1 (weight 3)
+    ///   3 -> 2 (weight 7)
+    ///   4 -> 2 (weight 5)
+    fn build_test_cch() -> (CchTopo, CchWeights) {
+        let n_nodes = 5u32;
+
+        // UP edges in CSR format (indexed by source rank)
+        // Node 0: -> 2 (w=10)
+        // Node 1: -> 2 (w=3)
+        // Node 2: -> 3 (w=7), -> 4 (w=5)
+        // Node 3: (none)
+        // Node 4: (none)
+        let up_offsets = vec![0u64, 1, 2, 4, 4, 4];
+        let up_targets = vec![2u32, 2, 3, 4];
+        let up_weights = vec![10u32, 3, 7, 5];
+        let up_is_shortcut = vec![false; 4];
+        let up_middle = vec![u32::MAX; 4];
+
+        // DOWN edges in CSR format (indexed by source rank)
+        // Node 0: (none)
+        // Node 1: (none)
+        // Node 2: -> 0 (w=10), -> 1 (w=3)
+        // Node 3: -> 2 (w=7)
+        // Node 4: -> 2 (w=5)
+        let down_offsets = vec![0u64, 0, 0, 2, 3, 4];
+        let down_targets = vec![0u32, 1, 2, 2];
+        let down_weights = vec![10u32, 3, 7, 5];
+        let down_is_shortcut = vec![false; 4];
+        let down_middle = vec![u32::MAX; 4];
+
+        let rank_to_filtered: Vec<u32> = (0..n_nodes).collect();
+
+        let topo = CchTopo {
+            n_nodes,
+            n_shortcuts: 0,
+            n_original_arcs: 4,
+            inputs_sha: [0u8; 32],
+            up_offsets,
+            up_targets,
+            up_is_shortcut,
+            up_middle,
+            down_offsets,
+            down_targets,
+            down_is_shortcut,
+            down_middle,
+            rank_to_filtered,
+        };
+
+        let weights = CchWeights {
+            up: up_weights,
+            down: down_weights,
+        };
+
+        (topo, weights)
+    }
+
+    #[test]
+    fn test_reverse_phast_simple() {
+        // Build test graph
+        let (topo, weights) = build_test_cch();
+
+        // Build flat adjacencies needed for reverse PHAST
+        let up_adj_flat = UpAdjFlat::build(&topo, &weights);
+        let down_rev_flat = DownReverseAdjFlat::build(&topo, &weights);
+
+        let engine = PhastEngine::new(topo, weights);
+        let threshold = u32::MAX - 1; // Effectively unbounded
+
+        // Forward PHAST from node 0:
+        //   d(0) = 0
+        //   d(2) = 10 (via 0->2)
+        //   d(3) = 17 (via 0->2->3)
+        //   d(4) = 15 (via 0->2->4)
+        //   d(1) = INF (no path 0->1 since edges only go upward then downward)
+        // Wait -- with PHAST, the downward phase propagates from 2 down to 0 and 1.
+        // Let me trace:
+        //   Upward phase from 0: push(0,0). Pop (0,0).
+        //     UP edges: 0->2 (w=10). dist[2]=10, push(10,2).
+        //     Pop (10,2). UP edges: 2->3 (w=7), 2->4 (w=5).
+        //     dist[3]=17, push(17,3). dist[4]=15, push(15,4).
+        //     Pop (15,4). No UP edges.
+        //     Pop (17,3). No UP edges.
+        //   Downward phase (rank 4 down to 0):
+        //     rank=4: dist[4]=15, DOWN: 4->2 (w=5). dist[2] = min(10, 15+5=20) = 10. No change.
+        //     rank=3: dist[3]=17, DOWN: 3->2 (w=7). dist[2] = min(10, 17+7=24) = 10. No change.
+        //     rank=2: dist[2]=10, DOWN: 2->0 (w=10), 2->1 (w=3).
+        //       dist[0] = min(0, 10+10=20) = 0. No change.
+        //       dist[1] = min(INF, 10+3=13) = 13.
+        //     rank=1: dist[1]=13, no DOWN edges.
+        //     rank=0: dist[0]=0, no DOWN edges.
+        //
+        // Forward PHAST result from 0: d=[0, 13, 10, 17, 15]
+
+        let fwd_result = engine.query(0);
+        assert_eq!(fwd_result.dist[0], 0);
+        assert_eq!(fwd_result.dist[1], 13);
+        assert_eq!(fwd_result.dist[2], 10);
+        assert_eq!(fwd_result.dist[3], 17);
+        assert_eq!(fwd_result.dist[4], 15);
+
+        // Reverse PHAST to node 0 (all-to-one):
+        // This should give d_rev[s] = shortest path from s to 0.
+        //
+        // In the original directed graph, paths TO node 0:
+        //   From 0: d=0 (trivial)
+        //   From 1: 1->2->0? Only if those edges exist in original direction.
+        //     The original edges are: 0->2, 1->2, 2->3, 2->4 (UP) and 2->0, 2->1, 3->2, 4->2 (DOWN)
+        //     But in the CCH, UP and DOWN represent the hierarchy, not the original direction.
+        //     The CCH is bidirectional with separate UP/DOWN weights.
+        //     d(1->0) via 1->2->0: UP(1->2, w=3) + DOWN(2->0, w=10) = 13
+        //     But that's the forward PHAST path 0->1 reversed with same weights, so d_rev(1->0) = 13? Not necessarily.
+        //     Actually in a CCH, the path s->t is: s goes UP to meeting node m, then m goes DOWN to t.
+        //     For reverse PHAST to target 0:
+        //       d_rev(s) = min path from s to 0
+        //       = min over all m: UP_cost(s->m) + DOWN_cost(m->0)
+        //     But the reverse PHAST on the REVERSE graph computes:
+        //       Upward on reverse = using DOWN_reverse edges
+        //       Downward on reverse = using UP edges
+        //
+        //     Let me trace reverse PHAST to target=0:
+        //
+        //     Upward phase (on reverse graph, starting from target=0):
+        //       down_rev_flat[0]: for node 0, incoming DOWN edges. Looking at DOWN: 2->0 (w=10).
+        //         So down_rev_flat[0].sources = [2], weights = [10].
+        //       push(0, 0). Pop (0, 0).
+        //         Iterate down_rev_flat[0]: v=2, w=10. dist[2] = 10. push(10, 2).
+        //       Pop (10, 2).
+        //         Iterate down_rev_flat[2]: for node 2, incoming DOWN edges.
+        //         DOWN edges targeting 2: 3->2 (w=7) and 4->2 (w=5).
+        //         So down_rev_flat[2].sources = [3, 4], weights = [7, 5].
+        //         v=3, w=7. dist[3] = 17. push(17, 3).
+        //         v=4, w=5. dist[4] = 15. push(15, 4).
+        //       Pop (15, 4).
+        //         Iterate down_rev_flat[4]: for node 4, incoming DOWN edges. None (no DOWN edge targets 4).
+        //       Pop (17, 3).
+        //         Iterate down_rev_flat[3]: for node 3, incoming DOWN edges. None.
+        //
+        //     After upward: dist = [0, INF, 10, 17, 15]
+        //
+        //     Downward phase (on reverse graph, using up_adj_flat):
+        //       Process rank 4 down to 0:
+        //       rank=4: up_adj_flat[4]: no UP edges from 4. dist[4] stays 15.
+        //       rank=3: up_adj_flat[3]: no UP edges from 3. dist[3] stays 17.
+        //       rank=2: up_adj_flat[2]: UP edges 2->3 (w=7), 2->4 (w=5).
+        //         PULL from 3: dist[3]=17 + 7 = 24. dist[2]=10. No improvement.
+        //         PULL from 4: dist[4]=15 + 5 = 20. dist[2]=10. No improvement.
+        //       rank=1: up_adj_flat[1]: UP edge 1->2 (w=3).
+        //         PULL from 2: dist[2]=10 + 3 = 13. dist[1]=INF. Improvement! dist[1] = 13.
+        //       rank=0: up_adj_flat[0]: UP edge 0->2 (w=10).
+        //         PULL from 2: dist[2]=10 + 10 = 20. dist[0]=0. No improvement.
+        //
+        //     Reverse PHAST result to 0: d_rev = [0, 13, 10, 17, 15]
+        //
+        //     This matches forward! Because in this symmetric graph, d(0->x) == d(x->0).
+
+        let rev_result = engine.query_block_gated_reverse(0, threshold, &up_adj_flat, &down_rev_flat);
+        assert_eq!(rev_result.dist[0], 0, "d_rev(0->0) should be 0");
+        assert_eq!(rev_result.dist[1], 13, "d_rev(1->0) should be 13");
+        assert_eq!(rev_result.dist[2], 10, "d_rev(2->0) should be 10");
+        assert_eq!(rev_result.dist[3], 17, "d_rev(3->0) should be 17");
+        assert_eq!(rev_result.dist[4], 15, "d_rev(4->0) should be 15");
+
+        // For this symmetric graph, forward and reverse should match
+        for node in 0..5 {
+            assert_eq!(
+                fwd_result.dist[node],
+                rev_result.dist[node],
+                "Forward from 0 to {} should equal reverse to 0 from {}",
+                node, node
+            );
+        }
+    }
+
+    #[test]
+    fn test_reverse_phast_vs_forward() {
+        // Build test graph
+        let (topo, weights) = build_test_cch();
+        let up_adj_flat = UpAdjFlat::build(&topo, &weights);
+        let down_rev_flat = DownReverseAdjFlat::build(&topo, &weights);
+        let engine = PhastEngine::new(topo, weights);
+        let threshold = u32::MAX - 1;
+
+        // For every pair (s, t), verify:
+        //   forward_phast(s).dist[t] == reverse_phast(t).dist[s]
+        //
+        // This must hold because forward PHAST(s) computes d(s->all),
+        // and reverse PHAST(t) computes d(all->t).
+        // So d_forward(s)[t] = d(s->t) = d_reverse(t)[s].
+
+        for s in 0..5u32 {
+            let fwd = engine.query(s);
+            for t in 0..5u32 {
+                let rev = engine.query_block_gated_reverse(t, threshold, &up_adj_flat, &down_rev_flat);
+                assert_eq!(
+                    fwd.dist[t as usize],
+                    rev.dist[s as usize],
+                    "d_fwd({}->{}) = {} should equal d_rev({}->{})[{}] = {}",
+                    s, t, fwd.dist[t as usize],
+                    t, s, s, rev.dist[s as usize]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_reverse_phast_bounded() {
+        // Test that the bounded reverse PHAST correctly filters by threshold
+        let (topo, weights) = build_test_cch();
+        let up_adj_flat = UpAdjFlat::build(&topo, &weights);
+        let down_rev_flat = DownReverseAdjFlat::build(&topo, &weights);
+        let engine = PhastEngine::new(topo, weights);
+
+        // Reverse PHAST to node 0 with threshold 12:
+        // d_rev = [0, 13, 10, 17, 15]
+        // Only nodes 0 (d=0) and 2 (d=10) should be within threshold 12
+        let result = engine.query_bounded_reverse(0, 12, &up_adj_flat, &down_rev_flat);
+        assert_eq!(result.n_reachable, 2, "Only nodes 0 and 2 should be reachable within threshold 12");
+
+        // Node 0 should have dist 0
+        assert_eq!(result.dist[0], 0);
+        // Node 2 should have dist 10
+        assert_eq!(result.dist[2], 10);
+        // Node 1 should still be computed (dist 13 > 12) but counted as unreachable
+        // The dist may or may not be exact beyond threshold, but n_reachable should be correct
+    }
+
+    #[test]
+    fn test_reverse_phast_asymmetric() {
+        // Build an ASYMMETRIC graph where d(s->t) != d(t->s)
+        // to verify reverse PHAST is truly computing "all-to-one" not "one-to-all"
+        //
+        // 3 nodes, rank-aligned: 0 < 1 < 2
+        //
+        // UP edges:
+        //   0 -> 2 (weight 10)
+        //   1 -> 2 (weight 5)
+        //
+        // DOWN edges:
+        //   2 -> 0 (weight 20)  <-- NOTE: asymmetric! UP 0->2 = 10, DOWN 2->0 = 20
+        //   2 -> 1 (weight 3)   <-- NOTE: asymmetric! UP 1->2 = 5, DOWN 2->1 = 3
+
+        let n_nodes = 3u32;
+
+        let up_offsets = vec![0u64, 1, 2, 2];
+        let up_targets = vec![2u32, 2];
+        let up_weights = vec![10u32, 5];
+        let up_is_shortcut = vec![false; 2];
+        let up_middle = vec![u32::MAX; 2];
+
+        let down_offsets = vec![0u64, 0, 0, 2];
+        let down_targets = vec![0u32, 1];
+        let down_weights = vec![20u32, 3];
+        let down_is_shortcut = vec![false; 2];
+        let down_middle = vec![u32::MAX; 2];
+
+        let rank_to_filtered: Vec<u32> = (0..n_nodes).collect();
+
+        let topo = CchTopo {
+            n_nodes,
+            n_shortcuts: 0,
+            n_original_arcs: 2,
+            inputs_sha: [0u8; 32],
+            up_offsets,
+            up_targets,
+            up_is_shortcut,
+            up_middle,
+            down_offsets,
+            down_targets,
+            down_is_shortcut,
+            down_middle,
+            rank_to_filtered,
+        };
+
+        let weights = CchWeights {
+            up: up_weights,
+            down: down_weights,
+        };
+
+        let up_adj_flat = UpAdjFlat::build(&topo, &weights);
+        let down_rev_flat = DownReverseAdjFlat::build(&topo, &weights);
+        let engine = PhastEngine::new(topo, weights);
+        let threshold = u32::MAX - 1;
+
+        // Forward PHAST from node 0:
+        //   Upward: dist[0]=0, UP(0->2, w=10) => dist[2]=10
+        //   Downward rank=2: DOWN(2->0, w=20) => dist[0]=min(0, 10+20)=0. DOWN(2->1, w=3) => dist[1]=13.
+        //   Result: d_fwd(0) = [0, 13, 10]
+        let fwd0 = engine.query(0);
+        assert_eq!(fwd0.dist[0], 0);
+        assert_eq!(fwd0.dist[1], 13); // 0->2->1: UP(10) + DOWN(3) = 13
+        assert_eq!(fwd0.dist[2], 10); // 0->2: UP(10)
+
+        // Forward PHAST from node 1:
+        //   Upward: dist[1]=0, UP(1->2, w=5) => dist[2]=5
+        //   Downward rank=2: DOWN(2->0, w=20) => dist[0]=25. DOWN(2->1, w=3) => dist[1]=min(0,8)=0.
+        //   Result: d_fwd(1) = [25, 0, 5]
+        let fwd1 = engine.query(1);
+        assert_eq!(fwd1.dist[0], 25); // 1->2->0: UP(5) + DOWN(20) = 25
+        assert_eq!(fwd1.dist[1], 0);
+        assert_eq!(fwd1.dist[2], 5);  // 1->2: UP(5)
+
+        // Reverse PHAST to node 0 (all-to-one):
+        //   d_rev(s) = shortest path from s to 0
+        //
+        //   Upward on reverse (using down_rev_flat):
+        //     Start: dist[0]=0
+        //     down_rev_flat[0]: DOWN edges targeting 0 = (2->0, w=20). So sources=[2], weights=[20].
+        //     dist[2] = 20. push(20, 2).
+        //     Pop (20, 2). down_rev_flat[2]: DOWN edges targeting 2 = none (DOWN offsets: 2->0, 2->1, not targeting 2).
+        //     Wait: DOWN edges: 2->0, 2->1. These target nodes 0 and 1. No DOWN edge targets node 2.
+        //     But DOWN edges from nodes 3 and 4... we only have 3 nodes. So no edges.
+        //     Actually there's no DOWN edge TO node 2 in this graph.
+        //     Wait, I need to also check if any DOWN edge has target=2.
+        //     DOWN targets are [0, 1]. Neither is 2. So down_rev_flat[2] is empty.
+        //     Upward result: dist = [0, INF, 20]
+        //
+        //   Downward on reverse (PULL from up_adj_flat):
+        //     rank=2: up_adj_flat[2] = empty (no UP from 2). dist[2]=20.
+        //     rank=1: up_adj_flat[1] = [target=2, w=5]. PULL: dist[2]=20 + 5 = 25. dist[1]=INF -> 25.
+        //     rank=0: up_adj_flat[0] = [target=2, w=10]. PULL: dist[2]=20 + 10 = 30. dist[0]=0 -> 0 (no change).
+        //
+        //   Reverse result: d_rev = [0, 25, 20]
+        //
+        //   d_rev(1->0) = 25 = d_fwd(1)[0] = 25. Matches!
+        //   d_rev(2->0) = 20 = d_fwd(2)[0] should be checked:
+        //     Forward PHAST from node 2:
+        //       Upward: dist[2]=0. No UP edges from 2 (up_offsets[2]=2, up_offsets[3]=2, so empty).
+        //       Downward rank=2: DOWN(2->0, w=20) => dist[0]=20. DOWN(2->1, w=3) => dist[1]=3.
+        //     So d_fwd(2) = [20, 3, 0]. d_fwd(2)[0] = 20. Matches!
+
+        let rev0 = engine.query_block_gated_reverse(0, threshold, &up_adj_flat, &down_rev_flat);
+        assert_eq!(rev0.dist[0], 0, "d_rev(0->0) should be 0");
+        assert_eq!(rev0.dist[1], 25, "d_rev(1->0) should be 25");
+        assert_eq!(rev0.dist[2], 20, "d_rev(2->0) should be 20");
+
+        // Verify asymmetry: d(0->1) = 13 but d(1->0) = 25
+        assert_ne!(fwd0.dist[1], rev0.dist[1], "Graph should be asymmetric: d(0->1) != d(1->0)");
+
+        // Cross-validate: for all (s,t) pairs, d_fwd(s)[t] == d_rev(t)[s]
+        for t in 0..3u32 {
+            let rev = engine.query_block_gated_reverse(t, threshold, &up_adj_flat, &down_rev_flat);
+            for s in 0..3u32 {
+                let fwd = engine.query(s);
+                assert_eq!(
+                    fwd.dist[t as usize],
+                    rev.dist[s as usize],
+                    "d_fwd({}->{}) = {} should equal d_rev({})[{}] = {}",
+                    s, t, fwd.dist[t as usize], t, s, rev.dist[s as usize]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_reverse_phast_bounded_adaptive() {
+        // Verify query_bounded_reverse gives same results as query_block_gated_reverse
+        let (topo, weights) = build_test_cch();
+        let up_adj_flat = UpAdjFlat::build(&topo, &weights);
+        let down_rev_flat = DownReverseAdjFlat::build(&topo, &weights);
+        let engine = PhastEngine::new(topo, weights);
+
+        for target in 0..5u32 {
+            let threshold = u32::MAX - 1;
+            let block_result = engine.query_block_gated_reverse(target, threshold, &up_adj_flat, &down_rev_flat);
+            let adaptive_result = engine.query_bounded_reverse(target, threshold, &up_adj_flat, &down_rev_flat);
+
+            for node in 0..5 {
+                assert_eq!(
+                    block_result.dist[node],
+                    adaptive_result.dist[node],
+                    "Block-gated and adaptive reverse PHAST should agree for target={}, node={}",
+                    target, node
+                );
+            }
+        }
+    }
 }

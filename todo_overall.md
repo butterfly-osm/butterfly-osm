@@ -24,8 +24,8 @@ Build a routing engine with **exact turn-aware isochrones** and **OSRM-class spe
 | 5 | `w.*.u32`, `t.*.u32`, `mask.*.bitset`, `filtered.*.ebg` | Per-mode weights, masks, filtered EBGs | ✅ |
 | 6 | `order.{mode}.ebg` | Per-mode CCH ordering on filtered EBG | ✅ |
 | 7 | `cch.{mode}.topo` | Per-mode CCH contraction (shortcuts topology) | ✅ |
-| 8 | `cch.w.{mode}.u32` | Per-mode customized weights | ✅ |
-| 9 | HTTP server | Query server with /route, /matrix, /isochrone | ✅ |
+| 8 | `cch.w.{mode}.u32`, `cch.d.{mode}.u32` | Per-mode customized weights (duration + distance, parallel triangle relaxation) | ✅ |
+| 9 | HTTP server | Query server: /route (steps, alts, polyline6/geojson), /nearest, /table (duration+distance), /isochrone | ✅ |
 
 ---
 
@@ -58,8 +58,9 @@ Per-mode weights → cch.w.{mode}.u32
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /route` | P2P routing with geometry |
-| `POST /table` | Distance matrix (bucket M2M) |
+| `GET /route` | P2P routing with geometry (polyline6/geojson/points), steps, alternatives |
+| `GET /nearest` | Snap to nearest road segments with distance |
+| `POST /table` | Distance matrix with duration and/or distance annotations (bucket M2M) |
 | `POST /table/stream` | Arrow IPC streaming for large matrices (50k+) |
 | `GET /isochrone` | Areal polygon + optional network roads (`include=network`), WKB via Accept header |
 | `POST /isochrone/bulk` | Parallel batch isochrones (WKB stream) |
@@ -199,7 +200,7 @@ butterfly-route serve --data-dir ./build/ --port 8080
 Profiled ~100ms constant overhead from snapping + HTTP + tiling setup.
 Not worth dedicated fast path since we win at scale.
 
-## 🎉 PRODUCTION HARDENING COMPLETE 🎉
+## 🎉 PRODUCTION HARDENING + TIER 1 FEATURES COMPLETE 🎉
 
 ---
 
@@ -374,16 +375,17 @@ Major isochrone optimization achieving **18x latency improvement**.
 
 ---
 
-## CRITICAL PATH: Hybrid Exact Turn Model (2026-01-25)
+## DEFERRED: Hybrid Exact Turn Model
 
-### The Problem
+> Removed from immediate priorities. The 3x small-table gap vs OSRM is acceptable
+> given we win at 10k+ scale and have exact turn semantics. Revisit if small-table
+> performance becomes a blocker.
+
+### The Idea
 
 Current edge-based CCH has **2.6x state expansion** vs node-based:
 - NBG nodes: 1,907,111
 - EBG nodes: 5,018,890 (2.6x)
-- This directly causes the 3-6x performance gap vs OSRM
-
-### The Solution
 
 **Only 0.30% of intersections require edge-based state!**
 
@@ -585,15 +587,17 @@ After implementation:
 
 ### Feature Gap vs Competition
 
-#### Tier 1 — Core (table stakes for production API)
+#### Tier 1 — Core (table stakes for production API) ✅ COMPLETE
 
 | Feature | OSRM | Valhalla | GraphHopper | Butterfly |
 |---------|------|----------|-------------|-----------|
-| Turn-by-turn instructions | Yes | Yes (30 langs) | Yes | **TODO** |
-| Alternative routes | Yes (N alts) | Yes | Yes | **TODO** |
-| Nearest/snap endpoint | Yes (`/nearest`) | Yes (`/locate`) | implicit | **TODO** |
-| Distance matrix (meters) | Yes | Yes | Yes | **TODO** (time only) |
-| Geometry encoding (polyline6/geojson) | Yes | Yes | Yes | **TODO** (JSON points only) |
+| Turn-by-turn instructions | Yes | Yes (30 langs) | Yes | ✅ `steps=true` (E4) |
+| Alternative routes | Yes (N alts) | Yes | Yes | ✅ `alternatives=N` (E5) |
+| Nearest/snap endpoint | Yes (`/nearest`) | Yes (`/locate`) | implicit | ✅ `GET /nearest` (E3) |
+| Distance matrix (meters) | Yes | Yes | Yes | ✅ `annotations=distance` (E2) |
+| Geometry encoding (polyline6/geojson) | Yes | Yes | Yes | ✅ `geometries=polyline6\|geojson` (E1) |
+
+**Test coverage:** 75 unit tests (pure, instant) + 14 integration tests (Belgium data, `--test-threads=1`)
 
 #### Tier 2 — Important differentiators
 
@@ -621,7 +625,7 @@ After implementation:
 
 ### Implementation Roadmap
 
-1. **Phase 1 (Tier 1)**: Turn-by-turn, alternatives, nearest, distance matrix, geometry encoding
+1. ~~**Phase 1 (Tier 1)**~~: ✅ COMPLETE — Turn-by-turn, alternatives, nearest, distance matrix, geometry encoding
 2. **Phase 2 (Tier 2)**: Map matching, TSP, elevation, reverse isochrone
 3. **Phase 3 (Tier 3)**: Truck routing, custom models, expansion viz
 

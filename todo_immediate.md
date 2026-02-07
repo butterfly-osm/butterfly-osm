@@ -114,9 +114,9 @@ This is the **correct trade-off** for exact turn handling.
 
 ---
 
-## NEXT PRIORITIES
+## ✅ COMPLETED PRIORITIES
 
-### E) Tier 1: API Feature Parity ✅ COMPLETE
+### E) Tier 1: API Feature Parity ✅ COMPLETE (2026-02-07)
 
 Based on competitive analysis vs OSRM, Valhalla, and GraphHopper. These are table stakes.
 
@@ -174,8 +174,6 @@ Make bulk the default for high-volume workloads:
   - `/isochrone/bulk`: X-Total-Origins, X-Successful/Failed-Isochrones
   - Clients can show progress bars and detect snap failures
 
-### B) Bulk-First APIs ✅ COMPLETE
-
 ### C) Small-Table Fast Path 🟢 OPTIONAL - PROFILED
 
 **Profiling Results (2026-02-01):**
@@ -196,6 +194,27 @@ Not worth the complexity since we win at scale. **SKIPPING**.
 
 - [~] **C1: Profile 100×100** - Done, ~100ms base overhead identified
 - [ ] ~~C2: Dedicated small-table mode~~ - Skipping, not worth complexity
+
+---
+
+## NEXT PRIORITIES (2026-02-07)
+
+### F) Tier 2: Features
+
+| Priority | Feature | Complexity | Impact |
+|----------|---------|------------|--------|
+| **F1** | **Reverse isochrone** | Low | High — "where can reach X within T?", reuses PHAST |
+| **F2** | **TSP / trip optimization** | Medium | Medium — uses existing matrix endpoint |
+| **F3** | **Elevation / DEM integration** | Medium | Medium — SRTM data for bike/foot profiles |
+| **F4** | **Map matching (GPS trace → route)** | High | High — HMM on CCH, core fleet API |
+
+### G) Polish & Production
+
+| Task | Status |
+|------|--------|
+| G1: Road names in turn-by-turn (need OSM way name tags in query-time data) | ⬜ |
+| G2: Polygon output stability (deterministic epsilon, ring orientation) | ⬜ |
+| G3: Arrow streaming backpressure + cancellation | ⬜ |
 
 ---
 
