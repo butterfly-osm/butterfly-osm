@@ -90,7 +90,7 @@ impl SearchState {
 /// Sorted bucket structure for O(log n) lookup
 pub struct SortedBuckets {
     // Flat array of (node, source_idx, dist) sorted by node
-    items: Vec<(u32, u16, u32)>,
+    items: Vec<(u32, u32, u32)>,
 }
 
 impl Default for SortedBuckets {
@@ -108,7 +108,7 @@ impl SortedBuckets {
         self.items.clear();
     }
 
-    pub fn add(&mut self, node: u32, source_idx: u16, dist: u32) {
+    pub fn add(&mut self, node: u32, source_idx: u32, dist: u32) {
         self.items.push((node, source_idx, dist));
     }
 
@@ -118,7 +118,7 @@ impl SortedBuckets {
 
     /// Get all bucket entries for a node using binary search
     #[inline(always)]
-    pub fn get(&self, node: u32) -> &[(u32, u16, u32)] {
+    pub fn get(&self, node: u32) -> &[(u32, u32, u32)] {
         // Binary search for first occurrence
         let start = self.items.partition_point(|(n, _, _)| *n < node);
         let end = self.items[start..].partition_point(|(n, _, _)| *n == node) + start;
@@ -154,7 +154,7 @@ impl NbgBucketM2M {
         // Phase 1: Forward searches from sources
         let mut fwd_visited = 0u64;
         for (src_idx, &source) in sources.iter().enumerate() {
-            fwd_visited += self.forward_search(source, src_idx as u16, &mut state, &mut buckets) as u64;
+            fwd_visited += self.forward_search(source, src_idx as u32, &mut state, &mut buckets) as u64;
         }
 
         let fwd_time = start_time.elapsed().as_micros();
@@ -198,7 +198,7 @@ impl NbgBucketM2M {
     fn forward_search(
         &self,
         source: u32,
-        src_idx: u16,
+        src_idx: u32,
         state: &mut SearchState,
         buckets: &mut SortedBuckets,
     ) -> usize {

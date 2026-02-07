@@ -510,14 +510,13 @@ impl SearchState {
 #[repr(C)]
 struct BucketEntry {
     dist: u32,
-    source_idx: u16,
-    _pad: u16,
+    source_idx: u32,
 }
 
 /// Reusable prefix-sum bucket structure with version stamping
 /// Uses Structure-of-Arrays (SoA) for better cache efficiency:
 /// - dists: Vec<u32> - distances, contiguous
-/// - source_indices: Vec<u16> - source indices, contiguous
+/// - source_indices: Vec<u32> - source indices, contiguous
 ///
 /// This saves 2 bytes per entry (no padding) and improves cache utilization
 struct PrefixSumBuckets {
@@ -534,7 +533,7 @@ struct PrefixSumBuckets {
     /// SoA: distances (4 bytes each)
     dists: Vec<u32>,
     /// SoA: source indices (2 bytes each)
-    source_indices: Vec<u16>,
+    source_indices: Vec<u32>,
     /// Legacy AoS items for backward compatibility
     items: Vec<BucketEntry>,
     /// Temporary storage for nodes that have items (for offset building)
@@ -558,7 +557,7 @@ impl PrefixSumBuckets {
 
     /// Build buckets from collected items - O(items) time, no per-node clearing
     /// Uses SoA layout for better cache efficiency
-    fn build(&mut self, raw_items: &[(u32, u16, u32)]) {
+    fn build(&mut self, raw_items: &[(u32, u32, u32)]) {
         // Increment stamp (wrapping is fine, we compare equality)
         self.current_stamp = self.current_stamp.wrapping_add(1);
         if self.current_stamp == 0 {
@@ -597,7 +596,7 @@ impl PrefixSumBuckets {
         }
         // Also keep legacy items for backward compatibility
         if self.items.len() < total_items {
-            self.items.resize(total_items, BucketEntry { dist: 0, source_idx: 0, _pad: 0 });
+            self.items.resize(total_items, BucketEntry { dist: 0, source_idx: 0 });
         }
 
         // Reset counts for second pass (reuse as write cursors)
@@ -611,7 +610,7 @@ impl PrefixSumBuckets {
             let pos = (self.offsets[n] + self.counts[n]) as usize;
             self.dists[pos] = dist;
             self.source_indices[pos] = source_idx;
-            self.items[pos] = BucketEntry { dist, source_idx, _pad: 0 };
+            self.items[pos] = BucketEntry { dist, source_idx };
             self.counts[n] += 1;
         }
     }
@@ -654,23 +653,23 @@ impl PrefixSumBuckets {
 
 /// Sorted bucket layout with binary search (legacy, for comparison)
 struct SortedBuckets {
-    items: Vec<(u32, u16, u32)>, // (node, source_idx, dist)
+    items: Vec<(u32, u32, u32)>, // (node, source_idx, dist)
 }
 
 impl SortedBuckets {
-    fn build(mut items: Vec<(u32, u16, u32)>) -> Self {
+    fn build(mut items: Vec<(u32, u32, u32)>) -> Self {
         items.sort_unstable_by_key(|&(node, _, _)| node);
         Self { items }
     }
 
     /// Create from already-sorted items (for parallel sort case)
     #[allow(dead_code)]
-    fn from_sorted(items: Vec<(u32, u16, u32)>) -> Self {
+    fn from_sorted(items: Vec<(u32, u32, u32)>) -> Self {
         Self { items }
     }
 
     #[inline]
-    fn get(&self, node: u32) -> impl Iterator<Item = (u16, u32)> + '_ {
+    fn get(&self, node: u32) -> impl Iterator<Item = (u32, u32)> + '_ {
         let start = self.items.partition_point(|&(n, _, _)| n < node);
         let end = self.items.partition_point(|&(n, _, _)| n <= node);
         self.items[start..end].iter().map(|&(_, s, d)| (s, d))
@@ -679,7 +678,7 @@ impl SortedBuckets {
     /// Get bucket items as a slice (for parallel join)
     #[allow(dead_code)]
     #[inline]
-    fn get_slice(&self, node: u32) -> &[(u32, u16, u32)] {
+    fn get_slice(&self, node: u32) -> &[(u32, u32, u32)] {
         let start = self.items.partition_point(|&(n, _, _)| n < node);
         let end = self.items.partition_point(|&(n, _, _)| n <= node);
         &self.items[start..end]
@@ -700,7 +699,7 @@ impl SortedBuckets {
     }
 
     /// Consume self and return the items buffer for reuse
-    fn into_items(self) -> Vec<(u32, u16, u32)> {
+    fn into_items(self) -> Vec<(u32, u32, u32)> {
         self.items
     }
 }
@@ -788,7 +787,7 @@ pub fn table_bucket_optimized(
     let forward_start = std::time::Instant::now();
 
     // Collect bucket items: (node, source_idx, dist)
-    let mut bucket_items: Vec<(u32, u16, u32)> = Vec::with_capacity(n_sources * avg_visited);
+    let mut bucket_items: Vec<(u32, u32, u32)> = Vec::with_capacity(n_sources * avg_visited);
 
     for (source_idx, &source) in sources.iter().enumerate() {
         if source as usize >= n_nodes {
@@ -797,7 +796,7 @@ pub fn table_bucket_optimized(
         forward_fill_buckets_opt(
             topo,
             &weights.up,
-            source_idx as u16,
+            source_idx as u32,
             source,
             &mut state,
             &mut bucket_items,
@@ -850,7 +849,7 @@ pub fn table_bucket_optimized(
 pub struct BucketM2MEngine {
     n_nodes: usize,
     state: SearchState,
-    bucket_items: Vec<(u32, u16, u32)>,
+    bucket_items: Vec<(u32, u32, u32)>,
 }
 
 impl BucketM2MEngine {
@@ -906,7 +905,7 @@ impl BucketM2MEngine {
             forward_fill_buckets_opt(
                 topo,
                 &weights.up,
-                source_idx as u16,
+                source_idx as u32,
                 source,
                 &mut self.state,
                 &mut self.bucket_items,
@@ -999,7 +998,7 @@ impl BucketM2MEngine {
             }
             forward_fill_buckets_flat(
                 up_adj_flat,
-                source_idx as u16,
+                source_idx as u32,
                 source,
                 &mut self.state,
                 &mut self.bucket_items,
@@ -1098,7 +1097,7 @@ impl BucketM2MEngine {
             let (stalls, non_stalls) = forward_fill_buckets_with_stall(
                 up_adj_flat,
                 up_rev_flat,
-                source_idx as u16,
+                source_idx as u32,
                 source,
                 &mut self.state,
                 &mut self.bucket_items,
@@ -1187,7 +1186,7 @@ pub fn table_bucket_full_flat(
     let forward_start = std::time::Instant::now();
 
     // Collect bucket items: (node, source_idx, dist)
-    let mut bucket_items: Vec<(u32, u16, u32)> = Vec::with_capacity(n_sources * avg_visited);
+    let mut bucket_items: Vec<(u32, u32, u32)> = Vec::with_capacity(n_sources * avg_visited);
 
     for (source_idx, &source) in sources.iter().enumerate() {
         if source as usize >= n_nodes {
@@ -1195,7 +1194,7 @@ pub fn table_bucket_full_flat(
         }
         forward_fill_buckets_flat(
             up_adj_flat,
-            source_idx as u16,
+            source_idx as u32,
             source,
             &mut state,
             &mut bucket_items,
@@ -1291,7 +1290,7 @@ pub fn forward_build_buckets(
     let mut state = SearchState::new(n_nodes, avg_visited);
 
     // Collect bucket items: (node, source_idx, dist)
-    let mut bucket_items: Vec<(u32, u16, u32)> = Vec::with_capacity(n_sources * avg_visited);
+    let mut bucket_items: Vec<(u32, u32, u32)> = Vec::with_capacity(n_sources * avg_visited);
 
     for (source_idx, &source) in sources.iter().enumerate() {
         if source as usize >= n_nodes {
@@ -1299,7 +1298,7 @@ pub fn forward_build_buckets(
         }
         forward_fill_buckets_flat(
             up_adj_flat,
-            source_idx as u16,
+            source_idx as u32,
             source,
             &mut state,
             &mut bucket_items,
@@ -1359,10 +1358,10 @@ pub fn backward_join_with_buckets(
 /// Forward search using flat UP adjacency (no INF check in hot loop)
 fn forward_fill_buckets_flat(
     up_adj_flat: &UpAdjFlat,
-    source_idx: u16,
+    source_idx: u32,
     source: u32,
     state: &mut SearchState,
-    bucket_items: &mut Vec<(u32, u16, u32)>,
+    bucket_items: &mut Vec<(u32, u32, u32)>,
 ) {
     state.start_search();
     state.relax(source, 0);
@@ -1391,10 +1390,10 @@ fn forward_fill_buckets_flat(
 fn forward_fill_buckets_with_stall(
     up_adj_flat: &UpAdjFlat,
     up_rev_flat: &UpReverseAdjFlat,
-    source_idx: u16,
+    source_idx: u32,
     source: u32,
     state: &mut SearchState,
-    bucket_items: &mut Vec<(u32, u16, u32)>,
+    bucket_items: &mut Vec<(u32, u32, u32)>,
 ) -> (usize, usize) {
     state.start_search();
     state.relax(source, 0);
@@ -1447,10 +1446,10 @@ fn forward_fill_buckets_with_stall(
 fn forward_fill_buckets_opt(
     topo: &CchTopo,
     weights_up: &[u32],
-    source_idx: u16,
+    source_idx: u32,
     source: u32,
     state: &mut SearchState,
-    bucket_items: &mut Vec<(u32, u16, u32)>,
+    bucket_items: &mut Vec<(u32, u32, u32)>,
 ) {
     state.start_search();
     state.relax(source, 0);
@@ -1602,7 +1601,7 @@ pub fn table_bucket_parallel(
     let forward_start = std::time::Instant::now();
 
     // Each source produces its own bucket items
-    let bucket_chunks: Vec<Vec<(u32, u16, u32)>> = sources
+    let bucket_chunks: Vec<Vec<(u32, u32, u32)>> = sources
         .par_iter()
         .enumerate()
         .filter_map(|(source_idx, &source)| {
@@ -1617,7 +1616,7 @@ pub fn table_bucket_parallel(
 
             forward_fill_buckets_flat(
                 up_adj_flat,
-                source_idx as u16,
+                source_idx as u32,
                 source,
                 &mut state,
                 &mut bucket_items,
@@ -1628,7 +1627,7 @@ pub fn table_bucket_parallel(
         .collect();
 
     // Merge all bucket chunks
-    let bucket_items: Vec<(u32, u16, u32)> = bucket_chunks.into_iter().flatten().collect();
+    let bucket_items: Vec<(u32, u32, u32)> = bucket_chunks.into_iter().flatten().collect();
     stats.forward_visited = bucket_items.len();
     stats.forward_time_ms = forward_start.elapsed().as_millis() as u64;
 
@@ -1800,7 +1799,7 @@ fn backward_join_parallel_prefix(
 // =============================================================================
 
 pub struct BucketArena {
-    items: Vec<(u32, u16, u32)>,
+    items: Vec<(u32, u32, u32)>,
 }
 
 impl BucketArena {
@@ -1809,13 +1808,13 @@ impl BucketArena {
     }
 
     #[inline]
-    pub fn push(&mut self, node: u32, source_idx: u16, dist: u32) -> bool {
+    pub fn push(&mut self, node: u32, source_idx: u32, dist: u32) -> bool {
         self.items.push((node, source_idx, dist));
         true
     }
 
     #[inline]
-    pub fn get(&self, _node: u32) -> &[(u16, u32)] {
+    pub fn get(&self, _node: u32) -> &[(u32, u32)] {
         &[]
     }
 
