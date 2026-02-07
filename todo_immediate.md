@@ -116,7 +116,48 @@ This is the **correct trade-off** for exact turn handling.
 
 ## NEXT PRIORITIES
 
-### B) Bulk-First APIs 🔴 NOW HIGH PRIORITY
+### E) Tier 1: API Feature Parity ✅ COMPLETE
+
+Based on competitive analysis vs OSRM, Valhalla, and GraphHopper. These are table stakes.
+
+- [x] **E1: Geometry encoding (polyline6 + GeoJSON)** ✅
+  - `geometries` parameter: `polyline6` (default), `geojson` (GeoJSON LineString)
+  - Applied to `/route` geometry and `/isochrone` polygon
+  - polyline6 = Google encoded polyline with 6-digit precision
+
+- [x] **E2: Distance matrix (meters, not just time)** ✅
+  - `annotations` parameter: `duration` (default), `distance`, `duration,distance`
+  - Pre-computed distance CCH weights in step8 pipeline (parallel triangle relaxation)
+  - Separate `up_adj_flat_dist` / `down_rev_flat_dist` for distance metric
+  - Route ↔ Table distance consistency: 21/21 exact match (car/bike/foot)
+
+- [x] **E3: Nearest/snap endpoint** ✅
+  - `GET /nearest?lon=X&lat=Y&mode=car&number=N`
+  - Returns N nearest road segments with snapped location, distance
+  - Uses existing spatial index via `snap_k_with_info()`
+
+- [x] **E4: Turn-by-turn instructions** ✅
+  - `steps=true` parameter on `/route`
+  - Maneuver types: depart, arrive, turn (left/right/slight/sharp/uturn), continue
+  - Bearings computed from polyline geometry
+  - Road names not yet available (would need pipeline addition)
+
+- [x] **E5: Alternative routes** ✅
+  - `alternatives=N` parameter on `/route`
+  - Penalty-based algorithm: penalize used CCH edges by 3x, re-search
+  - Cap at 2x primary duration, max 5 alternatives
+  - Test: primary 3912ds vs alternative 5628ds (correctly different/longer)
+
+**Consistency Tests (all passing):**
+- Route ↔ Table duration: 21/21 exact match
+- Route ↔ Table distance: 21/21 exact match
+- Isochrone ↔ Route: 104/104 agreement
+- Path validity: 21/21 valid paths with correct geometry
+- Alternative routes: correctly different from primary
+
+---
+
+### B) Bulk-First APIs ✅ COMPLETE
 
 Make bulk the default for high-volume workloads:
 
