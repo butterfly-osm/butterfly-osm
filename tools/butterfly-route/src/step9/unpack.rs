@@ -4,14 +4,16 @@ use crate::formats::CchTopo;
 
 /// Unpack a path of CCH edges to original EBG edges
 ///
-/// Forward path: sequence of (node, edge_idx) where edge_idx encodes both the
-/// index and whether it's an UP or DOWN edge:
-///   - edge_idx < n_up_edges: UP edge at index edge_idx
-///   - edge_idx >= n_up_edges: DOWN edge at index (edge_idx - n_up_edges)
+/// The CCH bidirectional search produces:
+/// - forward_path: source → meeting via UP edges (each edge_idx is an UP edge index)
+/// - backward_path: target → meeting via reversed DOWN edges (each edge_idx is a DOWN edge index)
+///
+/// The actual route is: source →(UP)→ meeting →(DOWN)→ target
+/// So we process forward_path normally, then backward_path in REVERSE order.
 pub fn unpack_path(
     topo: &CchTopo,
-    forward_path: &[(u32, u32)],  // (node, encoded_edge_idx)
-    _backward_path: &[(u32, u32)], // Empty for plain Dijkstra
+    forward_path: &[(u32, u32)],  // (node, up_edge_idx) from source → meeting
+    backward_path: &[(u32, u32)], // (node, down_edge_idx) from target → meeting
     source: u32,
     _target: u32,
     _meeting_node: u32,
@@ -19,26 +21,23 @@ pub fn unpack_path(
     // Start with the source node (EBG edge)
     let mut result = vec![source];
 
-    let n_up = topo.up_targets.len() as u32;
-
-    // Unpack forward path
+    // === Forward part: source → meeting (UP edges) ===
     let mut current = source;
     for &(_node, edge_idx) in forward_path {
-        let (is_up, actual_idx) = if edge_idx < n_up {
-            (true, edge_idx as usize)
-        } else {
-            (false, (edge_idx - n_up) as usize)
-        };
+        let actual_idx = edge_idx as usize;
+        let edges = unpack_up_edge(topo, current, actual_idx);
+        result.extend(edges);
+        current = topo.up_targets[actual_idx];
+    }
 
-        if is_up {
-            let edges = unpack_up_edge(topo, current, actual_idx);
-            result.extend(edges);
-            current = topo.up_targets[actual_idx];
-        } else {
-            let edges = unpack_down_edge(topo, current, actual_idx);
-            result.extend(edges);
-            current = topo.down_targets[actual_idx];
-        }
+    // === Backward part reversed: meeting → target (DOWN edges) ===
+    // backward_path goes target→...→meeting, we reverse for meeting→target
+    // Each entry (node, edge_idx) has node = source of the DOWN edge
+    for &(node, edge_idx) in backward_path.iter().rev() {
+        let actual_idx = edge_idx as usize;
+        let edges = unpack_down_edge(topo, node, actual_idx);
+        result.extend(edges);
+        current = topo.down_targets[actual_idx];
     }
 
     result
