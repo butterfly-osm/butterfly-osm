@@ -1,6 +1,7 @@
 //! Step 8: CCH Customization
 //!
-//! Applies per-mode weights to the CCH shortcuts using bottom-up customization.
+//! Applies per-mode weights to the CCH shortcuts using bottom-up customization
+//! + parallel triangle relaxation.
 //!
 //! # Algorithm Overview
 //!
@@ -10,7 +11,7 @@
 //! - **Original edges**: weight = edge_weight[target] + turn_penalty[arc]
 //! - **Shortcuts u→w via m**: weight = weight(u→m) + weight(m→w)
 //!
-//! # Dependency Order (CRITICAL)
+//! # Dependency Order (CRITICAL for bottom-up)
 //!
 //! For each node u processed at rank r:
 //! 1. **DOWN edges must be processed FIRST**, in order of INCREASING target rank
@@ -21,19 +22,22 @@
 //!    - down_weights[u→m] computed in phase 1
 //!    - up_weights[m→v] computed when node m was processed (rank(m) < rank(u))
 //!
-//! # Performance
+//! # Triangle Relaxation (parallel)
 //!
-//! - Edge lookup uses binary search (CCH edges sorted by target in Step 7)
-//! - Original edge arc lookup uses binary search on sorted EBG adjacency
-//! - Parallel processing via Rayon for independent node batches
+//! After bottom-up, triangle relaxation discovers cheaper paths through alternative
+//! contracted nodes. Uses `AtomicU32::fetch_min` for lock-free parallel processing:
+//! - Relaxation only *decreases* weights (monotone)
+//! - Stale reads (Relaxed ordering) are safe: missed updates caught by next pass
+//! - Convergence check (0 updates) guarantees correctness
 
 use anyhow::Result;
 use rayon::prelude::*;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use crate::formats::{mod_turns, mod_weights, CchTopoFile, FilteredEbgFile, HybridStateFile, OrderEbgFile};
+use crate::formats::{mod_turns, mod_weights, CchTopo, CchTopoFile, EbgNodesFile, FilteredEbgFile, HybridStateFile, OrderEbgFile};
 use crate::profile_abi::Mode;
 
 /// Configuration for Step 8
@@ -43,6 +47,7 @@ pub struct Step8Config {
     pub weights_path: PathBuf, // w.*.u32
     pub turns_path: PathBuf,   // t.*.u32
     pub order_path: PathBuf,
+    pub ebg_nodes_path: PathBuf, // ebg.nodes from step4
     pub mode: Mode,
     pub outdir: PathBuf,
 }
@@ -51,6 +56,7 @@ pub struct Step8Config {
 #[derive(Debug)]
 pub struct Step8Result {
     pub output_path: PathBuf,
+    pub distance_output_path: PathBuf,
     pub mode: Mode,
     pub n_up_edges: u64,
     pub n_down_edges: u64,
@@ -71,7 +77,6 @@ impl SortedFilteredEbgAdj {
         let n_nodes = filtered_ebg.n_filtered_nodes as usize;
         let n_arcs = filtered_ebg.n_filtered_arcs as usize;
 
-        // Collect and sort edges per node in parallel
         let sorted_per_node: Vec<Vec<(u32, u32)>> = (0..n_nodes)
             .into_par_iter()
             .map(|u| {
@@ -85,7 +90,6 @@ impl SortedFilteredEbgAdj {
             })
             .collect();
 
-        // Flatten into CSR structure
         let mut offsets = Vec::with_capacity(n_nodes + 1);
         let mut sorted_heads = Vec::with_capacity(n_arcs);
         let mut sorted_orig_arc_idx = Vec::with_capacity(n_arcs);
@@ -101,30 +105,26 @@ impl SortedFilteredEbgAdj {
         }
         offsets.push(offset);
 
-        Self {
-            offsets,
-            sorted_heads,
-            sorted_orig_arc_idx,
-        }
+        Self { offsets, sorted_heads, sorted_orig_arc_idx }
     }
 
-    /// Find original arc index for filtered edge u→v using binary search
     #[inline]
     fn find_original_arc_index(&self, u: usize, v: u32) -> Option<u32> {
         let start = self.offsets[u] as usize;
         let end = self.offsets[u + 1] as usize;
-        if start >= end {
-            return None;
-        }
-        let slice = &self.sorted_heads[start..end];
-        match slice.binary_search(&v) {
+        if start >= end { return None; }
+        match self.sorted_heads[start..end].binary_search(&v) {
             Ok(idx) => Some(self.sorted_orig_arc_idx[start + idx]),
             Err(_) => None,
         }
     }
 }
 
-/// Customize CCH for a specific mode
+// ===================================================================
+// Main customization entry point
+// ===================================================================
+
+/// Customize CCH for a specific mode (time + distance weights, parallelized)
 pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     let start_time = std::time::Instant::now();
     let mode_name = match config.mode {
@@ -134,27 +134,18 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     };
     println!("\n🎨 Step 8: Customizing CCH for {}...\n", mode_name);
 
-    // Load CCH topology
+    // Load all data
     println!("Loading CCH topology...");
     let topo = CchTopoFile::read(&config.cch_topo_path)?;
     let n_nodes = topo.n_nodes as usize;
     let n_up = topo.up_targets.len();
     let n_down = topo.down_targets.len();
-    println!(
-        "  ✓ {} nodes, {} up edges, {} down edges",
-        n_nodes, n_up, n_down
-    );
+    println!("  ✓ {} nodes, {} up edges, {} down edges", n_nodes, n_up, n_down);
 
-    // Load filtered EBG (for arc→turn_idx mapping and node ID mapping)
     println!("Loading filtered EBG...");
     let filtered_ebg = FilteredEbgFile::read(&config.filtered_ebg_path)?;
     println!("  ✓ {} filtered nodes, {} arcs", filtered_ebg.n_filtered_nodes, filtered_ebg.n_filtered_arcs);
 
-    // Note: With rank-aligned CCH (Version 2), we no longer need the order file.
-    // The rank_to_filtered mapping is stored directly in the CCH topology.
-    // Keeping the order_path in config for backward compatibility but not loading it.
-
-    // Load weights and turn penalties
     println!("Loading weights ({})...", mode_name);
     let weights = mod_weights::read_all(&config.weights_path)?;
     println!("  ✓ {} node weights", weights.weights.len());
@@ -163,377 +154,113 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     let turns = mod_turns::read_all(&config.turns_path)?;
     println!("  ✓ {} arc penalties", turns.penalties.len());
 
-    // Allocate weight arrays
-    let mut up_weights = vec![u32::MAX; n_up];
-    let mut down_weights = vec![u32::MAX; n_down];
+    println!("Loading EBG nodes...");
+    let ebg_nodes = EbgNodesFile::read(&config.ebg_nodes_path)?;
+    println!("  ✓ {} EBG nodes", ebg_nodes.n_nodes);
 
-    // Build sorted filtered EBG adjacency for fast arc lookup
+    // Build shared structures
     println!("\nBuilding sorted filtered EBG adjacency (parallel)...");
     let sorted_ebg = SortedFilteredEbgAdj::build(&filtered_ebg);
     println!("  ✓ Built sorted adjacency");
 
-    // Note: We don't need ebg_csr.turn_idx - turn penalties are indexed by arc_idx directly
-
-    // Process in contraction order (bottom-up by rank)
-    // With rank-aligned CCH: node_id == rank, no inv_perm lookup needed!
-    println!("\nCustomizing weights (bottom-up)...");
-
-    // rank_to_filtered: convert rank position back to filtered_id for weight lookups
     let rank_to_filtered = &topo.rank_to_filtered;
 
-    let report_interval = (n_nodes / 20).max(1);
-
-    // Pre-compute sorted down edge indices for each node (sorted by target rank)
-    // With rank-aligned CCH, targets ARE already ranks - just sort directly
-    println!("  Pre-sorting down edges by target rank (parallel)...");
+    println!("Pre-sorting down edges by target rank (parallel)...");
     let sorted_down_indices: Vec<Vec<usize>> = (0..n_nodes)
         .into_par_iter()
         .map(|u| {
-            // u is the rank (node_id == rank in rank-aligned CCH)
             let start = topo.down_offsets[u] as usize;
             let end = topo.down_offsets[u + 1] as usize;
-            if start >= end {
-                return Vec::new();
-            }
+            if start >= end { return Vec::new(); }
             let mut indices: Vec<usize> = (start..end).collect();
-            // down_targets[i] is already the target's rank - no perm lookup needed!
             indices.sort_unstable_by_key(|&i| topo.down_targets[i]);
             indices
         })
         .collect();
     println!("  ✓ Pre-sorted down edges");
 
-    // Main customization loop
-    // With rank-aligned CCH: u IS the rank (node_id == rank)
-    for rank in 0..n_nodes {
-        if rank % report_interval == 0 {
-            let pct = (rank as f64 / n_nodes as f64) * 100.0;
-            println!("  {:5.1}% customized", pct);
-        }
+    println!("Building reverse DOWN adjacency...");
+    let rev_down = build_reverse_down_adj_for_relax(&topo);
+    println!("  ✓ {} entries", rev_down.sources.len());
 
-        // In rank-aligned CCH, node_id == rank (no inv_perm lookup!)
-        let u = rank;
-
-        // ===== PHASE 1: Process DOWN edges (sorted by target rank) =====
-        // This MUST come before UP edges because UP shortcuts depend on down_weights[u→m]
-        for &i in &sorted_down_indices[u] {
-            // v is the target's rank (rank-aligned CCH)
-            let v = topo.down_targets[i] as usize;
-
-            if !topo.down_is_shortcut[i] {
-                // Original edge: weight = w[original_v] + turn_penalty
-                // Need to convert rank -> filtered_id -> original_id for weight lookup
-                let weight = compute_original_weight_rank_aligned(
-                    u,
-                    v,
-                    &weights.weights,
-                    &turns.penalties,
-                    &sorted_ebg,
-                    &filtered_ebg.filtered_to_original,
-                    rank_to_filtered,
-                );
-                down_weights[i] = weight;
-            } else {
-                // Shortcut via m: weight = weight(u→m) + weight(m→v)
-                // rank(m) < rank(v) < rank(u)
-                // m is the middle node's rank (rank-aligned CCH)
-                let m = topo.down_middle[i] as usize;
-
-                // u→m: DOWN edge from u (rank(m) < rank(u))
-                // Already computed because we process by increasing target rank
-                let w_um = find_edge_weight(
-                    u,
-                    m,
-                    &topo.down_offsets,
-                    &topo.down_targets,
-                    &down_weights,
-                );
-
-                // m→v: UP edge from m (rank(v) > rank(m))
-                // Already computed because node m was processed earlier
-                let w_mv = find_edge_weight(
-                    m,
-                    v,
-                    &topo.up_offsets,
-                    &topo.up_targets,
-                    &up_weights,
-                );
-
-                down_weights[i] = w_um.saturating_add(w_mv);
-            }
-        }
-
-        // ===== PHASE 2: Process UP edges =====
-        // All down_weights[u→*] are now computed, so UP shortcuts can safely read them
-        let up_start = topo.up_offsets[u] as usize;
-        let up_end = topo.up_offsets[u + 1] as usize;
-
-        for i in up_start..up_end {
-            // v is the target's rank (rank-aligned CCH)
-            let v = topo.up_targets[i] as usize;
-
-            if !topo.up_is_shortcut[i] {
-                // Original edge: weight = w[original_v] + turn_penalty
-                let weight = compute_original_weight_rank_aligned(
-                    u,
-                    v,
-                    &weights.weights,
-                    &turns.penalties,
-                    &sorted_ebg,
-                    &filtered_ebg.filtered_to_original,
-                    rank_to_filtered,
-                );
-                up_weights[i] = weight;
-            } else {
-                // Shortcut via m: weight = weight(u→m) + weight(m→v)
-                // rank(m) < rank(u) < rank(v)
-                let m = topo.up_middle[i] as usize;
-
-                // u→m: DOWN edge from u (rank(m) < rank(u))
-                // Just computed in phase 1
-                let w_um = find_edge_weight(
-                    u,
-                    m,
-                    &topo.down_offsets,
-                    &topo.down_targets,
-                    &down_weights,
-                );
-
-                // m→v: UP edge from m (rank(v) > rank(m))
-                // Already computed because node m was processed earlier
-                let w_mv = find_edge_weight(
-                    m,
-                    v,
-                    &topo.up_offsets,
-                    &topo.up_targets,
-                    &up_weights,
-                );
-
-                up_weights[i] = w_um.saturating_add(w_mv);
-            }
-        }
-    }
-
-    println!("  ✓ Initial customization complete");
-
-    // ===== PASS 2: Triangle Relaxation =====
-    // Process nodes in apex-rank order (lowest to highest).
-    // For each apex m, relax edges x→y where:
-    //   - x→m is a DOWN edge from x (rank[x] > rank[m])
-    //   - m→y is an UP edge from m (rank[y] > rank[m])
-    //   - w(x,y) = min(w(x,y), w(x,m) + w(m,y))
+    // ===================================================================
+    // Bottom-up customization: TIME and DISTANCE in parallel
     //
-    // This finds cheaper paths through alternative contracted nodes.
+    // INVARIANT: Each bottom-up pass is internally sequential (rank order).
+    // But the two metrics are independent → run concurrently via rayon::join.
+    // ===================================================================
+    println!("\n⚡ Bottom-up customization (time + distance in parallel)...");
+    let bu_start = std::time::Instant::now();
 
-    // Build reverse DOWN adjacency: for each node m, list incoming DOWN edges x→m
-    println!("\nBuilding reverse DOWN adjacency...");
-    let mut down_rev_counts = vec![0u64; n_nodes];
-    for u in 0..n_nodes {
-        let start = topo.down_offsets[u] as usize;
-        let end = topo.down_offsets[u + 1] as usize;
-        for i in start..end {
-            let m = topo.down_targets[i] as usize;
-            down_rev_counts[m] += 1;
-        }
-    }
-
-    let mut down_rev_offsets = vec![0u64; n_nodes + 1];
-    for m in 0..n_nodes {
-        down_rev_offsets[m + 1] = down_rev_offsets[m] + down_rev_counts[m];
-    }
-
-    let total_down_rev = down_rev_offsets[n_nodes] as usize;
-    let mut down_rev_sources = vec![0u32; total_down_rev];
-    let mut down_rev_edge_idx = vec![0usize; total_down_rev];
-    let mut down_rev_insert = vec![0u64; n_nodes];
-
-    for u in 0..n_nodes {
-        let start = topo.down_offsets[u] as usize;
-        let end = topo.down_offsets[u + 1] as usize;
-        for i in start..end {
-            let m = topo.down_targets[i] as usize;
-            let pos = (down_rev_offsets[m] + down_rev_insert[m]) as usize;
-            down_rev_sources[pos] = u as u32;
-            down_rev_edge_idx[pos] = i;
-            down_rev_insert[m] += 1;
-        }
-    }
-    println!("  ✓ Built reverse DOWN adjacency ({} entries)", total_down_rev);
-
-    // Triangle relaxation by apex rank (lowest to highest)
-    // Iterate until convergence (no more updates)
-    println!("\nTriangle relaxation (iterating until convergence)...");
-    let mut total_relaxations = 0u64;
-    let mut pass = 0;
-
-    loop {
-        pass += 1;
-        let mut pass_relaxations = 0u64;
-
-        for rank in 0..n_nodes {
-            if pass == 1 && rank % report_interval == 0 {
-                let pct = (rank as f64 / n_nodes as f64) * 100.0;
-                println!("  Pass 1: {:5.1}% relaxed ({} updates so far)", pct, pass_relaxations);
-            }
-
-            // In rank-aligned CCH, node_id == rank (no inv_perm lookup!)
-            let m = rank; // Apex node (lowest rank in triangle)
-
-            // For each incoming DOWN edge x→m (i.e., edges from higher-rank nodes to m)
-            let rev_start = down_rev_offsets[m] as usize;
-            let rev_end = down_rev_offsets[m + 1] as usize;
-
-            for i_rev in rev_start..rev_end {
-                // x is a rank (rank-aligned CCH)
-                let x = down_rev_sources[i_rev] as usize;
-                let edge_idx_xm = down_rev_edge_idx[i_rev];
-                let w_xm = down_weights[edge_idx_xm];
-
-                if w_xm == u32::MAX {
-                    continue;
-                }
-
-                // For each UP edge m→y
-                let up_start = topo.up_offsets[m] as usize;
-                let up_end = topo.up_offsets[m + 1] as usize;
-
-                for i_my in up_start..up_end {
-                    // y is a rank (rank-aligned CCH)
-                    let y = topo.up_targets[i_my] as usize;
-
-                    if y == x {
-                        continue; // Skip self-loop
-                    }
-
-                    let w_my = up_weights[i_my];
-
-                    if w_my == u32::MAX {
-                        continue;
-                    }
-
-                    let new_weight = w_xm.saturating_add(w_my);
-
-                    // Check if x→y edge exists and relax
-                    // In rank-aligned CCH, x and y ARE already ranks
-                    let rank_x = x;
-                    let rank_y = y;
-
-                    if rank_y > rank_x {
-                        // UP edge from x
-                        if let Some(idx) = find_edge_index(x, y, &topo.up_offsets, &topo.up_targets) {
-                            if new_weight < up_weights[idx] {
-                                up_weights[idx] = new_weight;
-                                pass_relaxations += 1;
-                            }
-                        }
-                    } else {
-                        // DOWN edge from x
-                        if let Some(idx) = find_edge_index(x, y, &topo.down_offsets, &topo.down_targets) {
-                            if new_weight < down_weights[idx] {
-                                down_weights[idx] = new_weight;
-                                pass_relaxations += 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        println!("  Pass {}: {} updates", pass, pass_relaxations);
-        total_relaxations += pass_relaxations;
-
-        if pass_relaxations == 0 {
-            break; // Converged
-        }
-
-        if pass >= 100 {
-            println!("  WARNING: Did not converge after 100 passes!");
-            break;
-        }
-    }
-    println!("  ✓ Triangle relaxation complete: {} total updates in {} passes", total_relaxations, pass);
-
-    // Detailed sanity check
-    let mut up_orig_max = 0usize;
-    let mut up_short_max = 0usize;
-    let mut down_orig_max = 0usize;
-    let mut down_short_max = 0usize;
-    let mut up_orig_total = 0usize;
-    let mut up_short_total = 0usize;
-    let mut down_orig_total = 0usize;
-    let mut down_short_total = 0usize;
-
-    for i in 0..n_up {
-        if topo.up_is_shortcut[i] {
-            up_short_total += 1;
-            if up_weights[i] == u32::MAX {
-                up_short_max += 1;
-            }
-        } else {
-            up_orig_total += 1;
-            if up_weights[i] == u32::MAX {
-                up_orig_max += 1;
-            }
-        }
-    }
-
-    for i in 0..n_down {
-        if topo.down_is_shortcut[i] {
-            down_short_total += 1;
-            if down_weights[i] == u32::MAX {
-                down_short_max += 1;
-            }
-        } else {
-            down_orig_total += 1;
-            if down_weights[i] == u32::MAX {
-                down_orig_max += 1;
-            }
-        }
-    }
-
-    let up_max_count = up_orig_max + up_short_max;
-    let down_max_count = down_orig_max + down_short_max;
-    let total_max = up_max_count + down_max_count;
-    let total_edges = n_up + n_down;
-    let max_pct = (total_max as f64 / total_edges as f64) * 100.0;
-
-    println!("\n📊 Sanity check:");
-    println!(
-        "  Unreachable edges: {} / {} ({:.2}%)",
-        total_max, total_edges, max_pct
+    let ((time_up, time_down), (dist_up, dist_down)) = rayon::join(
+        || {
+            bottom_up_customize(&topo, &sorted_down_indices, |u_rank, v_rank| {
+                compute_original_weight_rank_aligned(
+                    u_rank, v_rank,
+                    &weights.weights, &turns.penalties,
+                    &sorted_ebg,
+                    &filtered_ebg.filtered_to_original,
+                    rank_to_filtered,
+                )
+            })
+        },
+        || {
+            bottom_up_customize(&topo, &sorted_down_indices, |_u_rank, v_rank| {
+                compute_distance_weight_rank_aligned(
+                    v_rank,
+                    &weights.weights,
+                    &ebg_nodes.nodes,
+                    &filtered_ebg.filtered_to_original,
+                    rank_to_filtered,
+                )
+            })
+        },
     );
-    println!("    Up original:  {} / {} ({:.2}%)", up_orig_max, up_orig_total,
-             up_orig_max as f64 / up_orig_total as f64 * 100.0);
-    println!("    Up shortcuts: {} / {} ({:.2}%)", up_short_max, up_short_total,
-             up_short_max as f64 / up_short_total as f64 * 100.0);
-    println!("    Down original:  {} / {} ({:.2}%)", down_orig_max, down_orig_total,
-             down_orig_max as f64 / down_orig_total as f64 * 100.0);
-    println!("    Down shortcuts: {} / {} ({:.2}%)", down_short_max, down_short_total,
-             down_short_max as f64 / down_short_total as f64 * 100.0);
 
-    // Note: High unreachable percentage is expected for modes with many restricted roads.
-    // Car mode in Belgium has ~52% inaccessible nodes (pedestrian paths, one-way, etc.)
-    // Shortcuts cascade: if either leg is unreachable, shortcut is unreachable.
-    // P(both legs reachable) ≈ 0.48² = 23%, so ~77% unreachable shortcuts is normal.
-    if max_pct > 95.0 {
-        anyhow::bail!(
-            "CRITICAL: {}% of edges are unreachable (u32::MAX). This indicates a bug!",
-            max_pct
-        );
-    }
+    println!("  ✓ Both bottom-up passes in {:.2}s", bu_start.elapsed().as_secs_f64());
 
-    // Write output
+    // ===================================================================
+    // Triangle relaxation (parallel internally via atomics)
+    //
+    // INVARIANT: relaxation only DECREASES weights (fetch_min).
+    // Run sequentially since each already saturates all cores.
+    // ===================================================================
+    println!("\n🔺 Triangle relaxation for TIME (parallel)...");
+    let tr_start = std::time::Instant::now();
+    let (time_up, time_down, time_relax_count, time_relax_passes) =
+        triangle_relax_parallel(&topo, time_up, time_down, &rev_down);
+    println!("  ✓ {:.2}s, {} updates in {} passes",
+        tr_start.elapsed().as_secs_f64(), time_relax_count, time_relax_passes);
+
+    println!("\n🔺 Triangle relaxation for DISTANCE (parallel)...");
+    let tr_start = std::time::Instant::now();
+    let (dist_up, dist_down, dist_relax_count, dist_relax_passes) =
+        triangle_relax_parallel(&topo, dist_up, dist_down, &rev_down);
+    println!("  ✓ {:.2}s, {} updates in {} passes",
+        tr_start.elapsed().as_secs_f64(), dist_relax_count, dist_relax_passes);
+
+    // Sanity checks
+    sanity_check_weights(&topo, &time_up, &time_down, "Time", 95.0)?;
+    sanity_check_weights_simple(&dist_up, &dist_down, "Distance", 95.0)?;
+
+    // Write outputs
     std::fs::create_dir_all(&config.outdir)?;
-    let output_path = config.outdir.join(format!("cch.w.{}.u32", mode_name));
 
-    println!("\nWriting output...");
-    write_cch_weights(&output_path, &up_weights, &down_weights, config.mode)?;
+    let output_path = config.outdir.join(format!("cch.w.{}.u32", mode_name));
+    println!("\nWriting time weights...");
+    write_cch_weights(&output_path, &time_up, &time_down, config.mode)?;
     println!("  ✓ Written {}", output_path.display());
+
+    let distance_output_path = config.outdir.join(format!("cch.d.{}.u32", mode_name));
+    println!("Writing distance weights...");
+    write_cch_weights(&distance_output_path, &dist_up, &dist_down, config.mode)?;
+    println!("  ✓ Written {}", distance_output_path.display());
 
     let customize_time_ms = start_time.elapsed().as_millis() as u64;
 
     Ok(Step8Result {
         output_path,
+        distance_output_path,
         mode: config.mode,
         n_up_edges: n_up as u64,
         n_down_edges: n_down as u64,
@@ -541,11 +268,209 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     })
 }
 
-/// Compute weight for an original edge (deprecated - use rank-aligned version)
+// ===================================================================
+// Reusable customization building blocks
+// ===================================================================
+
+/// Reverse DOWN adjacency for triangle relaxation.
+/// For each node m, stores all incoming DOWN edges x→m.
+struct ReverseDownAdj {
+    offsets: Vec<u64>,
+    sources: Vec<u32>,
+    edge_idx: Vec<usize>,
+}
+
+fn build_reverse_down_adj_for_relax(topo: &CchTopo) -> ReverseDownAdj {
+    let n_nodes = topo.n_nodes as usize;
+
+    let mut counts = vec![0u64; n_nodes];
+    for u in 0..n_nodes {
+        let start = topo.down_offsets[u] as usize;
+        let end = topo.down_offsets[u + 1] as usize;
+        for i in start..end {
+            counts[topo.down_targets[i] as usize] += 1;
+        }
+    }
+
+    let mut offsets = vec![0u64; n_nodes + 1];
+    for m in 0..n_nodes {
+        offsets[m + 1] = offsets[m] + counts[m];
+    }
+
+    let total = offsets[n_nodes] as usize;
+    let mut sources = vec![0u32; total];
+    let mut edge_idx = vec![0usize; total];
+    let mut insert = vec![0u64; n_nodes];
+
+    for u in 0..n_nodes {
+        let start = topo.down_offsets[u] as usize;
+        let end = topo.down_offsets[u + 1] as usize;
+        for i in start..end {
+            let m = topo.down_targets[i] as usize;
+            let pos = (offsets[m] + insert[m]) as usize;
+            sources[pos] = u as u32;
+            edge_idx[pos] = i;
+            insert[m] += 1;
+        }
+    }
+
+    ReverseDownAdj { offsets, sources, edge_idx }
+}
+
+/// Generic bottom-up CCH customization.
 ///
-/// CCH operates in filtered node space, but weights are indexed by original node ID.
-/// We map filtered_v → original_v for weight lookup.
-/// Turn penalties are indexed by original arc index (from filtered_ebg.original_arc_idx).
+/// INVARIANT: Processes ranks in ascending order (sequential, NOT parallel).
+/// For each rank u:
+///   1. DOWN edges sorted by target rank (ensures u→m done before u→v when rank(m) < rank(v))
+///   2. UP edges after DOWN (UP shortcuts need down_weights[u→m])
+///
+/// `orig_weight_fn(u_rank, v_rank) -> u32` provides original edge weight.
+/// Shortcuts always use: weight(u→m) + weight(m→v) via stored middle node.
+fn bottom_up_customize(
+    topo: &CchTopo,
+    sorted_down_indices: &[Vec<usize>],
+    orig_weight_fn: impl Fn(usize, usize) -> u32,
+) -> (Vec<u32>, Vec<u32>) {
+    let n_nodes = topo.n_nodes as usize;
+    let n_up = topo.up_targets.len();
+    let n_down = topo.down_targets.len();
+
+    let mut up_weights = vec![u32::MAX; n_up];
+    let mut down_weights = vec![u32::MAX; n_down];
+
+    for rank in 0..n_nodes {
+        let u = rank;
+
+        // PHASE 1: DOWN edges (sorted by target rank for correct dependency order)
+        for &i in &sorted_down_indices[u] {
+            let v = topo.down_targets[i] as usize;
+            if !topo.down_is_shortcut[i] {
+                down_weights[i] = orig_weight_fn(u, v);
+            } else {
+                let m = topo.down_middle[i] as usize;
+                let w_um = find_edge_weight(u, m, &topo.down_offsets, &topo.down_targets, &down_weights);
+                let w_mv = find_edge_weight(m, v, &topo.up_offsets, &topo.up_targets, &up_weights);
+                down_weights[i] = w_um.saturating_add(w_mv);
+            }
+        }
+
+        // PHASE 2: UP edges (all down_weights[u→*] are now computed)
+        let up_start = topo.up_offsets[u] as usize;
+        let up_end = topo.up_offsets[u + 1] as usize;
+        for i in up_start..up_end {
+            let v = topo.up_targets[i] as usize;
+            if !topo.up_is_shortcut[i] {
+                up_weights[i] = orig_weight_fn(u, v);
+            } else {
+                let m = topo.up_middle[i] as usize;
+                let w_um = find_edge_weight(u, m, &topo.down_offsets, &topo.down_targets, &down_weights);
+                let w_mv = find_edge_weight(m, v, &topo.up_offsets, &topo.up_targets, &up_weights);
+                up_weights[i] = w_um.saturating_add(w_mv);
+            }
+        }
+    }
+
+    (up_weights, down_weights)
+}
+
+/// Parallel triangle relaxation using atomic fetch_min.
+///
+/// For each apex m (processed in parallel), relaxes edges x→y where:
+///   - x→m is a DOWN edge from x (rank[x] > rank[m])
+///   - m→y is an UP edge from m (rank[y] > rank[m])
+///   - w(x,y) = min(w(x,y), w(x,m) + w(m,y))
+///
+/// INVARIANT: Only decreases weights (monotone via fetch_min).
+/// Relaxed ordering is safe: stale reads may miss an update in this pass,
+/// but the convergence check (0 updates) ensures all triangles are optimal.
+///
+/// Returns (up_weights, down_weights, total_relaxations, passes).
+fn triangle_relax_parallel(
+    topo: &CchTopo,
+    up_weights: Vec<u32>,
+    down_weights: Vec<u32>,
+    rev_down: &ReverseDownAdj,
+) -> (Vec<u32>, Vec<u32>, u64, u32) {
+    let n_nodes = topo.n_nodes as usize;
+
+    // Convert to atomic arrays for lock-free parallel relaxation
+    let atomic_up: Vec<AtomicU32> = up_weights.into_iter().map(AtomicU32::new).collect();
+    let atomic_down: Vec<AtomicU32> = down_weights.into_iter().map(AtomicU32::new).collect();
+
+    let mut total_relaxations = 0u64;
+    let mut pass = 0u32;
+
+    loop {
+        pass += 1;
+        let pass_updates = AtomicU64::new(0);
+
+        // Process all apexes in parallel
+        (0..n_nodes).into_par_iter().for_each(|m| {
+            let rev_start = rev_down.offsets[m] as usize;
+            let rev_end = rev_down.offsets[m + 1] as usize;
+
+            for i_rev in rev_start..rev_end {
+                let x = rev_down.sources[i_rev] as usize;
+                let edge_idx_xm = rev_down.edge_idx[i_rev];
+                let w_xm = atomic_down[edge_idx_xm].load(Ordering::Relaxed);
+
+                if w_xm == u32::MAX { continue; }
+
+                let up_start = topo.up_offsets[m] as usize;
+                let up_end = topo.up_offsets[m + 1] as usize;
+
+                for i_my in up_start..up_end {
+                    let y = topo.up_targets[i_my] as usize;
+                    if y == x { continue; }
+
+                    let w_my = atomic_up[i_my].load(Ordering::Relaxed);
+                    if w_my == u32::MAX { continue; }
+
+                    let new_weight = w_xm.saturating_add(w_my);
+
+                    if y > x {
+                        // UP edge from x
+                        if let Some(idx) = find_edge_index(x, y, &topo.up_offsets, &topo.up_targets) {
+                            let old = atomic_up[idx].fetch_min(new_weight, Ordering::Relaxed);
+                            if new_weight < old {
+                                pass_updates.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                    } else {
+                        // DOWN edge from x
+                        if let Some(idx) = find_edge_index(x, y, &topo.down_offsets, &topo.down_targets) {
+                            let old = atomic_down[idx].fetch_min(new_weight, Ordering::Relaxed);
+                            if new_weight < old {
+                                pass_updates.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let pu = pass_updates.into_inner();
+        println!("  Pass {}: {} updates", pass, pu);
+        total_relaxations += pu;
+
+        if pu == 0 { break; }
+        if pass >= 100 {
+            println!("  WARNING: Did not converge after 100 passes!");
+            break;
+        }
+    }
+
+    let up = atomic_up.into_iter().map(AtomicU32::into_inner).collect();
+    let down = atomic_down.into_iter().map(AtomicU32::into_inner).collect();
+
+    (up, down, total_relaxations, pass)
+}
+
+// ===================================================================
+// Original edge weight functions
+// ===================================================================
+
+/// Compute weight for an original edge (deprecated - use rank-aligned version)
 #[inline]
 #[allow(dead_code)]
 fn compute_original_weight(
@@ -556,34 +481,18 @@ fn compute_original_weight(
     sorted_ebg: &SortedFilteredEbgAdj,
     filtered_to_original: &[u32],
 ) -> u32 {
-    // Map filtered v to original v for weight lookup
     let original_v = filtered_to_original[v] as usize;
     let w_v = node_weights[original_v];
+    if w_v == 0 { return u32::MAX; }
 
-    // If target node is inaccessible, edge is inaccessible
-    if w_v == 0 {
-        return u32::MAX;
-    }
-
-    // Find original arc index to get turn penalty
-    // Turn penalties are indexed by original arc_idx
     match sorted_ebg.find_original_arc_index(u, v as u32) {
-        Some(orig_arc_idx) => {
-            let penalty = turn_penalties[orig_arc_idx as usize];
-            w_v.saturating_add(penalty)
-        }
-        None => {
-            // Edge not found in filtered EBG - should not happen for original edges
-            u32::MAX
-        }
+        Some(orig_arc_idx) => w_v.saturating_add(turn_penalties[orig_arc_idx as usize]),
+        None => u32::MAX,
     }
 }
 
-/// Compute weight for an original edge in rank-aligned CCH
-///
-/// In rank-aligned CCH, node IDs are rank positions, not filtered IDs.
-/// We need to convert: rank → filtered_id → original_id for weight lookup.
-/// Turn penalties are indexed by original arc index (from filtered_ebg.original_arc_idx).
+/// Compute time weight for an original edge in rank-aligned CCH.
+/// Converts rank → filtered_id → original_id for weight + turn penalty lookup.
 #[inline]
 fn compute_original_weight_rank_aligned(
     u_rank: usize,
@@ -594,34 +503,43 @@ fn compute_original_weight_rank_aligned(
     filtered_to_original: &[u32],
     rank_to_filtered: &[u32],
 ) -> u32 {
-    // Convert rank positions to filtered IDs
     let u_filtered = rank_to_filtered[u_rank] as usize;
     let v_filtered = rank_to_filtered[v_rank] as usize;
-
-    // Map filtered v to original v for weight lookup
     let original_v = filtered_to_original[v_filtered] as usize;
     let w_v = node_weights[original_v];
 
-    // If target node is inaccessible, edge is inaccessible
-    if w_v == 0 {
-        return u32::MAX;
-    }
+    if w_v == 0 { return u32::MAX; }
 
-    // Find original arc index to get turn penalty
-    // sorted_ebg uses filtered IDs, not ranks
     match sorted_ebg.find_original_arc_index(u_filtered, v_filtered as u32) {
-        Some(orig_arc_idx) => {
-            let penalty = turn_penalties[orig_arc_idx as usize];
-            w_v.saturating_add(penalty)
-        }
-        None => {
-            // Edge not found in filtered EBG - should not happen for original edges
-            u32::MAX
-        }
+        Some(orig_arc_idx) => w_v.saturating_add(turn_penalties[orig_arc_idx as usize]),
+        None => u32::MAX,
     }
 }
 
-/// Find edge weight using binary search in CCH CSR
+/// Compute distance weight for an original edge in rank-aligned CCH.
+/// Distance = length_mm (physical distance, mode-independent).
+/// Accessibility uses same check as time: node_weights[v] == 0 → inaccessible.
+/// No turn penalties for distance.
+#[inline]
+fn compute_distance_weight_rank_aligned(
+    v_rank: usize,
+    node_weights: &[u32], // Time weights, for accessibility check only
+    ebg_nodes: &[crate::formats::ebg_nodes::EbgNode],
+    filtered_to_original: &[u32],
+    rank_to_filtered: &[u32],
+) -> u32 {
+    let v_filtered = rank_to_filtered[v_rank] as usize;
+    let original_v = filtered_to_original[v_filtered] as usize;
+
+    if node_weights[original_v] == 0 { return u32::MAX; }
+
+    ebg_nodes[original_v].length_mm
+}
+
+// ===================================================================
+// CCH CSR lookup helpers
+// ===================================================================
+
 #[inline]
 fn find_edge_weight(
     u: usize,
@@ -632,22 +550,13 @@ fn find_edge_weight(
 ) -> u32 {
     let start = offsets[u] as usize;
     let end = offsets[u + 1] as usize;
-
-    if start >= end {
-        return u32::MAX;
-    }
-
-    let slice = &targets[start..end];
-    let v32 = v as u32;
-
-    match slice.binary_search(&v32) {
+    if start >= end { return u32::MAX; }
+    match targets[start..end].binary_search(&(v as u32)) {
         Ok(idx) => weights[start + idx],
         Err(_) => u32::MAX,
     }
 }
 
-/// Find edge index using binary search in CCH CSR
-/// Returns Some(global_index) if edge exists, None otherwise
 #[inline]
 fn find_edge_index(
     u: usize,
@@ -657,21 +566,98 @@ fn find_edge_index(
 ) -> Option<usize> {
     let start = offsets[u] as usize;
     let end = offsets[u + 1] as usize;
-
-    if start >= end {
-        return None;
-    }
-
-    let slice = &targets[start..end];
-    let v32 = v as u32;
-
-    match slice.binary_search(&v32) {
+    if start >= end { return None; }
+    match targets[start..end].binary_search(&(v as u32)) {
         Ok(idx) => Some(start + idx),
         Err(_) => None,
     }
 }
 
-/// Write CCH weights to file
+// ===================================================================
+// Sanity checks
+// ===================================================================
+
+fn sanity_check_weights(
+    topo: &CchTopo,
+    up_weights: &[u32],
+    down_weights: &[u32],
+    label: &str,
+    fail_threshold: f64,
+) -> Result<()> {
+    let n_up = up_weights.len();
+    let n_down = down_weights.len();
+
+    let mut up_orig_max = 0usize;
+    let mut up_short_max = 0usize;
+    let mut up_orig_total = 0usize;
+    let mut up_short_total = 0usize;
+    let mut down_orig_max = 0usize;
+    let mut down_short_max = 0usize;
+    let mut down_orig_total = 0usize;
+    let mut down_short_total = 0usize;
+
+    for i in 0..n_up {
+        if topo.up_is_shortcut[i] {
+            up_short_total += 1;
+            if up_weights[i] == u32::MAX { up_short_max += 1; }
+        } else {
+            up_orig_total += 1;
+            if up_weights[i] == u32::MAX { up_orig_max += 1; }
+        }
+    }
+    for i in 0..n_down {
+        if topo.down_is_shortcut[i] {
+            down_short_total += 1;
+            if down_weights[i] == u32::MAX { down_short_max += 1; }
+        } else {
+            down_orig_total += 1;
+            if down_weights[i] == u32::MAX { down_orig_max += 1; }
+        }
+    }
+
+    let total_max = up_orig_max + up_short_max + down_orig_max + down_short_max;
+    let total_edges = n_up + n_down;
+    let max_pct = (total_max as f64 / total_edges as f64) * 100.0;
+
+    println!("\n📊 {} sanity check:", label);
+    println!("  Unreachable: {} / {} ({:.2}%)", total_max, total_edges, max_pct);
+    println!("    Up original:  {} / {} ({:.2}%)", up_orig_max, up_orig_total,
+             if up_orig_total > 0 { up_orig_max as f64 / up_orig_total as f64 * 100.0 } else { 0.0 });
+    println!("    Up shortcuts: {} / {} ({:.2}%)", up_short_max, up_short_total,
+             if up_short_total > 0 { up_short_max as f64 / up_short_total as f64 * 100.0 } else { 0.0 });
+    println!("    Down original:  {} / {} ({:.2}%)", down_orig_max, down_orig_total,
+             if down_orig_total > 0 { down_orig_max as f64 / down_orig_total as f64 * 100.0 } else { 0.0 });
+    println!("    Down shortcuts: {} / {} ({:.2}%)", down_short_max, down_short_total,
+             if down_short_total > 0 { down_short_max as f64 / down_short_total as f64 * 100.0 } else { 0.0 });
+
+    if max_pct > fail_threshold {
+        anyhow::bail!("CRITICAL: {}% of {} edges are unreachable!", max_pct, label);
+    }
+    Ok(())
+}
+
+fn sanity_check_weights_simple(
+    up_weights: &[u32],
+    down_weights: &[u32],
+    label: &str,
+    fail_threshold: f64,
+) -> Result<()> {
+    let max_count = up_weights.iter().filter(|&&w| w == u32::MAX).count()
+        + down_weights.iter().filter(|&&w| w == u32::MAX).count();
+    let total = up_weights.len() + down_weights.len();
+    let pct = (max_count as f64 / total as f64) * 100.0;
+    println!("\n📊 {} sanity check:", label);
+    println!("  Unreachable: {} / {} ({:.2}%)", max_count, total, pct);
+    if pct > fail_threshold {
+        anyhow::bail!("CRITICAL: {}% of {} edges are unreachable!", pct, label);
+    }
+    Ok(())
+}
+
+// ===================================================================
+// File I/O
+// ===================================================================
+
 fn write_cch_weights(
     path: &std::path::Path,
     up_weights: &[u32],
@@ -693,7 +679,7 @@ fn write_cch_weights(
     let reserved = 0u8;
     let n_up = (up_weights.len() as u64).to_le_bytes();
     let n_down = (down_weights.len() as u64).to_le_bytes();
-    let padding = [0u8; 8]; // Pad to 32 bytes
+    let padding = [0u8; 8];
 
     writer.write_all(&magic_bytes)?;
     writer.write_all(&version_bytes)?;
@@ -709,21 +695,18 @@ fn write_cch_weights(
     crc_digest.update(&n_down);
     crc_digest.update(&padding);
 
-    // Up weights
     for &w in up_weights {
         let bytes = w.to_le_bytes();
         writer.write_all(&bytes)?;
         crc_digest.update(&bytes);
     }
 
-    // Down weights
     for &w in down_weights {
         let bytes = w.to_le_bytes();
         writer.write_all(&bytes)?;
         crc_digest.update(&bytes);
     }
 
-    // Footer
     let crc = crc_digest.finalize();
     writer.write_all(&crc.to_le_bytes())?;
     writer.write_all(&crc.to_le_bytes())?;
@@ -752,12 +735,10 @@ struct SortedHybridAdj {
 }
 
 impl SortedHybridAdj {
-    /// Build sorted adjacency from hybrid state graph
     fn build(hybrid: &crate::formats::HybridState) -> Self {
         let n_states = hybrid.n_states as usize;
         let n_arcs = hybrid.n_arcs as usize;
 
-        // Collect and sort edges per state in parallel
         let sorted_per_state: Vec<Vec<(u32, u32)>> = (0..n_states)
             .into_par_iter()
             .map(|u| {
@@ -771,7 +752,6 @@ impl SortedHybridAdj {
             })
             .collect();
 
-        // Flatten into CSR structure
         let mut offsets = Vec::with_capacity(n_states + 1);
         let mut sorted_targets = Vec::with_capacity(n_arcs);
         let mut sorted_weights = Vec::with_capacity(n_arcs);
@@ -787,33 +767,22 @@ impl SortedHybridAdj {
         }
         offsets.push(offset);
 
-        Self {
-            offsets,
-            sorted_targets,
-            sorted_weights,
-        }
+        Self { offsets, sorted_targets, sorted_weights }
     }
 
-    /// Find weight for hybrid edge u→v using binary search
     #[inline]
     fn find_weight(&self, u: usize, v: u32) -> Option<u32> {
         let start = self.offsets[u] as usize;
         let end = self.offsets[u + 1] as usize;
-        if start >= end {
-            return None;
-        }
-        let slice = &self.sorted_targets[start..end];
-        match slice.binary_search(&v) {
+        if start >= end { return None; }
+        match self.sorted_targets[start..end].binary_search(&v) {
             Ok(idx) => Some(self.sorted_weights[start + idx]),
             Err(_) => None,
         }
     }
 }
 
-/// Customize CCH for hybrid state graph
-///
-/// The hybrid state graph already has weights embedded (edge + turn costs combined),
-/// so customization is simpler - just apply triangle relaxation.
+/// Customize CCH for hybrid state graph (uses parallel triangle relaxation)
 pub fn customize_cch_hybrid(config: Step8HybridConfig) -> Result<Step8Result> {
     let start_time = std::time::Instant::now();
     let mode_name = match config.mode {
@@ -823,18 +792,13 @@ pub fn customize_cch_hybrid(config: Step8HybridConfig) -> Result<Step8Result> {
     };
     println!("\n🎨 Step 8: Customizing CCH for {} (HYBRID)...\n", mode_name);
 
-    // Load CCH topology
     println!("Loading CCH topology (hybrid)...");
     let topo = CchTopoFile::read(&config.cch_topo_path)?;
     let n_nodes = topo.n_nodes as usize;
     let n_up = topo.up_targets.len();
     let n_down = topo.down_targets.len();
-    println!(
-        "  ✓ {} nodes, {} up edges, {} down edges",
-        n_nodes, n_up, n_down
-    );
+    println!("  ✓ {} nodes, {} up edges, {} down edges", n_nodes, n_up, n_down);
 
-    // Load hybrid state graph
     println!("Loading hybrid state graph...");
     let hybrid = HybridStateFile::read(&config.hybrid_state_path)?;
     println!("  ✓ {} states, {} arcs", hybrid.n_states, hybrid.n_arcs);
@@ -842,40 +806,23 @@ pub fn customize_cch_hybrid(config: Step8HybridConfig) -> Result<Step8Result> {
     if hybrid.n_states != topo.n_nodes {
         anyhow::bail!(
             "State count mismatch: hybrid has {} states, CCH topo has {} nodes",
-            hybrid.n_states,
-            topo.n_nodes
+            hybrid.n_states, topo.n_nodes
         );
     }
 
-    // Allocate weight arrays
-    let mut up_weights = vec![u32::MAX; n_up];
-    let mut down_weights = vec![u32::MAX; n_down];
-
-    // Build sorted hybrid adjacency for fast edge lookup
     println!("\nBuilding sorted hybrid adjacency (parallel)...");
     let sorted_hybrid = SortedHybridAdj::build(&hybrid);
     println!("  ✓ Built sorted adjacency");
 
-    // Process in contraction order (bottom-up by rank)
-    // With rank-aligned CCH: node_id == rank, no inv_perm lookup needed!
-    println!("\nCustomizing weights (bottom-up)...");
-
-    // rank_to_filtered: convert rank position back to hybrid state ID
-    // In hybrid CCH, this maps rank -> hybrid state ID
     let rank_to_state = &topo.rank_to_filtered;
 
-    let report_interval = (n_nodes / 20).max(1);
-
-    // Pre-compute sorted down edge indices for each node (sorted by target rank)
-    println!("  Pre-sorting down edges by target rank (parallel)...");
+    println!("Pre-sorting down edges by target rank (parallel)...");
     let sorted_down_indices: Vec<Vec<usize>> = (0..n_nodes)
         .into_par_iter()
         .map(|u| {
             let start = topo.down_offsets[u] as usize;
             let end = topo.down_offsets[u + 1] as usize;
-            if start >= end {
-                return Vec::new();
-            }
+            if start >= end { return Vec::new(); }
             let mut indices: Vec<usize> = (start..end).collect();
             indices.sort_unstable_by_key(|&i| topo.down_targets[i]);
             indices
@@ -883,269 +830,29 @@ pub fn customize_cch_hybrid(config: Step8HybridConfig) -> Result<Step8Result> {
         .collect();
     println!("  ✓ Pre-sorted down edges");
 
-    // Main customization loop
-    for rank in 0..n_nodes {
-        if rank % report_interval == 0 {
-            let pct = (rank as f64 / n_nodes as f64) * 100.0;
-            println!("  {:5.1}% customized", pct);
-        }
-
-        let u = rank;
-
-        // ===== PHASE 1: Process DOWN edges (sorted by target rank) =====
-        for &i in &sorted_down_indices[u] {
-            let v = topo.down_targets[i] as usize;
-
-            if !topo.down_is_shortcut[i] {
-                // Original edge: weight comes directly from hybrid state graph
-                let weight = compute_hybrid_original_weight(u, v, &sorted_hybrid, rank_to_state);
-                down_weights[i] = weight;
-            } else {
-                // Shortcut via m: weight = weight(u→m) + weight(m→v)
-                let m = topo.down_middle[i] as usize;
-
-                let w_um = find_edge_weight(
-                    u,
-                    m,
-                    &topo.down_offsets,
-                    &topo.down_targets,
-                    &down_weights,
-                );
-
-                let w_mv = find_edge_weight(
-                    m,
-                    v,
-                    &topo.up_offsets,
-                    &topo.up_targets,
-                    &up_weights,
-                );
-
-                down_weights[i] = w_um.saturating_add(w_mv);
-            }
-        }
-
-        // ===== PHASE 2: Process UP edges =====
-        let up_start = topo.up_offsets[u] as usize;
-        let up_end = topo.up_offsets[u + 1] as usize;
-
-        for i in up_start..up_end {
-            let v = topo.up_targets[i] as usize;
-
-            if !topo.up_is_shortcut[i] {
-                // Original edge: weight comes directly from hybrid state graph
-                let weight = compute_hybrid_original_weight(u, v, &sorted_hybrid, rank_to_state);
-                up_weights[i] = weight;
-            } else {
-                // Shortcut via m: weight = weight(u→m) + weight(m→v)
-                let m = topo.up_middle[i] as usize;
-
-                let w_um = find_edge_weight(
-                    u,
-                    m,
-                    &topo.down_offsets,
-                    &topo.down_targets,
-                    &down_weights,
-                );
-
-                let w_mv = find_edge_weight(
-                    m,
-                    v,
-                    &topo.up_offsets,
-                    &topo.up_targets,
-                    &up_weights,
-                );
-
-                up_weights[i] = w_um.saturating_add(w_mv);
-            }
-        }
-    }
-
+    // Bottom-up customization (sequential, single metric for hybrid)
+    println!("\nCustomizing weights (bottom-up)...");
+    let (up_weights, down_weights) = bottom_up_customize(
+        &topo,
+        &sorted_down_indices,
+        |u_rank, v_rank| compute_hybrid_original_weight(u_rank, v_rank, &sorted_hybrid, rank_to_state),
+    );
     println!("  ✓ Initial customization complete");
 
-    // ===== PASS 2: Triangle Relaxation =====
+    // Parallel triangle relaxation
     println!("\nBuilding reverse DOWN adjacency...");
-    let mut down_rev_counts = vec![0u64; n_nodes];
-    for u in 0..n_nodes {
-        let start = topo.down_offsets[u] as usize;
-        let end = topo.down_offsets[u + 1] as usize;
-        for i in start..end {
-            let m = topo.down_targets[i] as usize;
-            down_rev_counts[m] += 1;
-        }
-    }
+    let rev_down = build_reverse_down_adj_for_relax(&topo);
+    println!("  ✓ {} entries", rev_down.sources.len());
 
-    let mut down_rev_offsets = vec![0u64; n_nodes + 1];
-    for m in 0..n_nodes {
-        down_rev_offsets[m + 1] = down_rev_offsets[m] + down_rev_counts[m];
-    }
+    println!("\n🔺 Triangle relaxation (parallel)...");
+    let tr_start = std::time::Instant::now();
+    let (up_weights, down_weights, relax_count, relax_passes) =
+        triangle_relax_parallel(&topo, up_weights, down_weights, &rev_down);
+    println!("  ✓ {:.2}s, {} updates in {} passes",
+        tr_start.elapsed().as_secs_f64(), relax_count, relax_passes);
 
-    let total_down_rev = down_rev_offsets[n_nodes] as usize;
-    let mut down_rev_sources = vec![0u32; total_down_rev];
-    let mut down_rev_edge_idx = vec![0usize; total_down_rev];
-    let mut down_rev_insert = vec![0u64; n_nodes];
+    sanity_check_weights(&topo, &up_weights, &down_weights, "Hybrid", 95.0)?;
 
-    for u in 0..n_nodes {
-        let start = topo.down_offsets[u] as usize;
-        let end = topo.down_offsets[u + 1] as usize;
-        for i in start..end {
-            let m = topo.down_targets[i] as usize;
-            let pos = (down_rev_offsets[m] + down_rev_insert[m]) as usize;
-            down_rev_sources[pos] = u as u32;
-            down_rev_edge_idx[pos] = i;
-            down_rev_insert[m] += 1;
-        }
-    }
-    println!("  ✓ Built reverse DOWN adjacency ({} entries)", total_down_rev);
-
-    // Triangle relaxation
-    println!("\nTriangle relaxation (iterating until convergence)...");
-    let mut total_relaxations = 0u64;
-    let mut pass = 0;
-
-    loop {
-        pass += 1;
-        let mut pass_relaxations = 0u64;
-
-        for rank in 0..n_nodes {
-            if pass == 1 && rank % report_interval == 0 {
-                let pct = (rank as f64 / n_nodes as f64) * 100.0;
-                println!("  Pass 1: {:5.1}% relaxed ({} updates so far)", pct, pass_relaxations);
-            }
-
-            let m = rank;
-
-            let rev_start = down_rev_offsets[m] as usize;
-            let rev_end = down_rev_offsets[m + 1] as usize;
-
-            for i_rev in rev_start..rev_end {
-                let x = down_rev_sources[i_rev] as usize;
-                let edge_idx_xm = down_rev_edge_idx[i_rev];
-                let w_xm = down_weights[edge_idx_xm];
-
-                if w_xm == u32::MAX {
-                    continue;
-                }
-
-                let up_start = topo.up_offsets[m] as usize;
-                let up_end = topo.up_offsets[m + 1] as usize;
-
-                for i_my in up_start..up_end {
-                    let y = topo.up_targets[i_my] as usize;
-
-                    if y == x {
-                        continue;
-                    }
-
-                    let w_my = up_weights[i_my];
-
-                    if w_my == u32::MAX {
-                        continue;
-                    }
-
-                    let new_weight = w_xm.saturating_add(w_my);
-
-                    let rank_x = x;
-                    let rank_y = y;
-
-                    if rank_y > rank_x {
-                        if let Some(idx) = find_edge_index(x, y, &topo.up_offsets, &topo.up_targets) {
-                            if new_weight < up_weights[idx] {
-                                up_weights[idx] = new_weight;
-                                pass_relaxations += 1;
-                            }
-                        }
-                    } else {
-                        if let Some(idx) = find_edge_index(x, y, &topo.down_offsets, &topo.down_targets) {
-                            if new_weight < down_weights[idx] {
-                                down_weights[idx] = new_weight;
-                                pass_relaxations += 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        println!("  Pass {}: {} updates", pass, pass_relaxations);
-        total_relaxations += pass_relaxations;
-
-        if pass_relaxations == 0 {
-            break;
-        }
-
-        if pass >= 100 {
-            println!("  WARNING: Did not converge after 100 passes!");
-            break;
-        }
-    }
-    println!("  ✓ Triangle relaxation complete: {} total updates in {} passes", total_relaxations, pass);
-
-    // Sanity check
-    let mut up_orig_max = 0usize;
-    let mut up_short_max = 0usize;
-    let mut down_orig_max = 0usize;
-    let mut down_short_max = 0usize;
-    let mut up_orig_total = 0usize;
-    let mut up_short_total = 0usize;
-    let mut down_orig_total = 0usize;
-    let mut down_short_total = 0usize;
-
-    for i in 0..n_up {
-        if topo.up_is_shortcut[i] {
-            up_short_total += 1;
-            if up_weights[i] == u32::MAX {
-                up_short_max += 1;
-            }
-        } else {
-            up_orig_total += 1;
-            if up_weights[i] == u32::MAX {
-                up_orig_max += 1;
-            }
-        }
-    }
-
-    for i in 0..n_down {
-        if topo.down_is_shortcut[i] {
-            down_short_total += 1;
-            if down_weights[i] == u32::MAX {
-                down_short_max += 1;
-            }
-        } else {
-            down_orig_total += 1;
-            if down_weights[i] == u32::MAX {
-                down_orig_max += 1;
-            }
-        }
-    }
-
-    let up_max_count = up_orig_max + up_short_max;
-    let down_max_count = down_orig_max + down_short_max;
-    let total_max = up_max_count + down_max_count;
-    let total_edges = n_up + n_down;
-    let max_pct = (total_max as f64 / total_edges as f64) * 100.0;
-
-    println!("\n📊 Sanity check:");
-    println!(
-        "  Unreachable edges: {} / {} ({:.2}%)",
-        total_max, total_edges, max_pct
-    );
-    println!("    Up original:  {} / {} ({:.2}%)", up_orig_max, up_orig_total,
-             if up_orig_total > 0 { up_orig_max as f64 / up_orig_total as f64 * 100.0 } else { 0.0 });
-    println!("    Up shortcuts: {} / {} ({:.2}%)", up_short_max, up_short_total,
-             if up_short_total > 0 { up_short_max as f64 / up_short_total as f64 * 100.0 } else { 0.0 });
-    println!("    Down original:  {} / {} ({:.2}%)", down_orig_max, down_orig_total,
-             if down_orig_total > 0 { down_orig_max as f64 / down_orig_total as f64 * 100.0 } else { 0.0 });
-    println!("    Down shortcuts: {} / {} ({:.2}%)", down_short_max, down_short_total,
-             if down_short_total > 0 { down_short_max as f64 / down_short_total as f64 * 100.0 } else { 0.0 });
-
-    if max_pct > 95.0 {
-        anyhow::bail!(
-            "CRITICAL: {}% of edges are unreachable (u32::MAX). This indicates a bug!",
-            max_pct
-        );
-    }
-
-    // Write output
     std::fs::create_dir_all(&config.outdir)?;
     let output_path = config.outdir.join(format!("cch.w.hybrid.{}.u32", mode_name));
 
@@ -1155,8 +862,12 @@ pub fn customize_cch_hybrid(config: Step8HybridConfig) -> Result<Step8Result> {
 
     let customize_time_ms = start_time.elapsed().as_millis() as u64;
 
+    // Hybrid mode doesn't produce distance weights (no EBG nodes available)
+    let distance_output_path = config.outdir.join(format!("cch.d.hybrid.{}.u32", mode_name));
+
     Ok(Step8Result {
         output_path,
+        distance_output_path,
         mode: config.mode,
         n_up_edges: n_up as u64,
         n_down_edges: n_down as u64,
@@ -1164,10 +875,6 @@ pub fn customize_cch_hybrid(config: Step8HybridConfig) -> Result<Step8Result> {
     })
 }
 
-/// Compute weight for an original edge in hybrid CCH
-///
-/// Weights are already embedded in the hybrid state graph (edge + turn costs combined).
-/// We just need to convert rank positions to hybrid state IDs for lookup.
 #[inline]
 fn compute_hybrid_original_weight(
     u_rank: usize,
@@ -1175,13 +882,10 @@ fn compute_hybrid_original_weight(
     sorted_hybrid: &SortedHybridAdj,
     rank_to_state: &[u32],
 ) -> u32 {
-    // Convert rank positions to hybrid state IDs
     let u_state = rank_to_state[u_rank] as usize;
     let v_state = rank_to_state[v_rank];
-
-    // Look up weight directly from hybrid state graph
     match sorted_hybrid.find_weight(u_state, v_state) {
         Some(w) => w,
-        None => u32::MAX, // Edge not found
+        None => u32::MAX,
     }
 }

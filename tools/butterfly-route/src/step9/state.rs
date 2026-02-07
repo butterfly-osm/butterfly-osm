@@ -30,9 +30,12 @@ pub struct ModeData {
     // Original node weights and mask (indexed by original EBG node ID)
     pub node_weights: Vec<u32>,
     pub mask: Vec<u64>,
-    // Flat adjacencies for bucket M2M (pre-built for performance)
+    // Flat adjacencies for bucket M2M - TIME metric (pre-built for performance)
     pub up_adj_flat: UpAdjFlat,
     pub down_rev_flat: DownReverseAdjFlat,
+    // Flat adjacencies for bucket M2M - DISTANCE metric (shortest-distance, independent of time)
+    pub up_adj_flat_dist: UpAdjFlat,
+    pub down_rev_flat_dist: DownReverseAdjFlat,
 }
 
 // CchWeights is imported from crate::formats
@@ -181,9 +184,16 @@ fn load_mode_data(
     let cch_weights_path = step8_dir.join(format!("cch.w.{}.u32", mode_name));
     let cch_weights = CchWeightsFile::read(&cch_weights_path)?;
 
-    // Build flat adjacencies for bucket M2M (pre-filtered for INF, embedded weights)
+    // Build flat adjacencies for bucket M2M - TIME metric (pre-filtered for INF, embedded weights)
     let up_adj_flat = UpAdjFlat::build(&cch_topo, &cch_weights);
     let down_rev_flat = DownReverseAdjFlat::build(&cch_topo, &cch_weights);
+
+    // Load pre-computed distance weights from step 8 (cch.d.{mode}.u32)
+    let cch_dist_weights_path = step8_dir.join(format!("cch.d.{}.u32", mode_name));
+    println!("    Loading distance weights for {}...", mode_name);
+    let cch_weights_dist = CchWeightsFile::read(&cch_dist_weights_path)?;
+    let up_adj_flat_dist = UpAdjFlat::build(&cch_topo, &cch_weights_dist);
+    let down_rev_flat_dist = DownReverseAdjFlat::build(&cch_topo, &cch_weights_dist);
 
     Ok(ModeData {
         mode,
@@ -196,6 +206,8 @@ fn load_mode_data(
         mask,
         up_adj_flat,
         down_rev_flat,
+        up_adj_flat_dist,
+        down_rev_flat_dist,
     })
 }
 
@@ -263,3 +275,6 @@ fn build_down_reverse_adj(topo: &CchTopo) -> DownReverseAdj {
         edge_idx,
     }
 }
+
+// Distance weights are now pre-computed in step8 pipeline (cch.d.{mode}.u32)
+// and loaded from file alongside time weights at startup.
