@@ -166,7 +166,7 @@ For computing many isochrones, use the bulk endpoint which processes origins in 
 
 ```bash
 # Compute 100 isochrones in one request
-curl -X POST http://localhost:8080/isochrone/bulk \
+curl -X POST http://localhost:3001/isochrone/bulk \
   -H "Content-Type: application/json" \
   -d '{
     "origins": [[4.35, 50.85], [4.40, 50.86], ...],
@@ -187,7 +187,7 @@ For large matrices (1000+ origins/destinations), use Arrow streaming:
 
 ```bash
 # Compute 10,000 × 10,000 matrix via Arrow IPC
-curl -X POST http://localhost:8080/table/stream \
+curl -X POST http://localhost:3001/table/stream \
   -H "Content-Type: application/json" \
   -d '{
     "sources": [[lon1,lat1], [lon2,lat2], ...],
@@ -207,40 +207,41 @@ For single queries or small workloads:
 
 ```bash
 # Single route with turn-by-turn steps (includes road names)
-curl "http://localhost:8080/route?src_lon=4.35&src_lat=50.85&dst_lon=4.40&dst_lat=50.86&mode=car&steps=true"
+curl "http://localhost:3001/route?src_lon=4.35&src_lat=50.85&dst_lon=4.40&dst_lat=50.86&mode=car&steps=true"
 
 # Single isochrone (GeoJSON, CCW polygons, 5-decimal precision)
-curl "http://localhost:8080/isochrone?lon=4.35&lat=50.85&time_s=1800&mode=car"
+curl "http://localhost:3001/isochrone?lon=4.35&lat=50.85&time_s=1800&mode=car"
 
 # Reverse isochrone (where can people reach me FROM within 30 min?)
-curl "http://localhost:8080/isochrone?lon=4.35&lat=50.85&time_s=1800&mode=car&direction=arrive"
+curl "http://localhost:3001/isochrone?lon=4.35&lat=50.85&time_s=1800&mode=car&direction=arrive"
 
 # TSP/trip optimization
-curl -X POST "http://localhost:8080/trip" -H "Content-Type: application/json" \
+curl -X POST "http://localhost:3001/trip" -H "Content-Type: application/json" \
   -d '{"locations": [[4.35,50.85],[4.40,50.86],[4.45,50.87]], "mode": "car"}'
 
 # Small matrix (OSRM-compatible)
-curl "http://localhost:8080/table/v1/driving/4.35,50.85;4.40,50.86;4.45,50.87"
+curl "http://localhost:3001/table/v1/driving/4.35,50.85;4.40,50.86;4.45,50.87"
 ```
 
-### Building the Routing Engine
+### Running the Routing Engine
 
 ```bash
-# Download Belgium data
-butterfly-dl europe/belgium
+# Build the Docker image
+docker build -t butterfly-route .
 
-# Build the routing graph (Steps 1-8)
-./target/release/butterfly-route step1-ingest ./data/belgium.pbf ./data/belgium
-./target/release/butterfly-route step2-profile ./data/belgium car,bike,foot
-# ... (steps 3-8)
+# Run the server (Belgium data)
+docker run -d --name butterfly \
+  -p 3001:8080 \
+  -v "${PWD}/data/belgium:/data" \
+  butterfly-route
 
-# Start the query server
-./target/release/butterfly-route serve --data-dir ./data/belgium --port 8080
+# Health check
+curl http://localhost:3001/health
 
-# Swagger UI at http://localhost:8080/swagger-ui/
+# Swagger UI at http://localhost:3001/swagger-ui/
 ```
 
-See [CLAUDE.md](CLAUDE.md) for detailed build instructions and algorithm documentation.
+See [CLAUDE.md](CLAUDE.md) for detailed build instructions, algorithm documentation, and local development setup.
 
 ## Installation
 
@@ -262,7 +263,10 @@ butterfly-dl --version
 git clone https://github.com/butterfly-osm/butterfly-osm
 cd butterfly-osm
 
-# Build all tools
+# Docker (recommended)
+docker build -t butterfly-route .
+
+# Local build
 cargo build --workspace --release
 
 # Run tests

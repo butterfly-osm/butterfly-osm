@@ -81,7 +81,7 @@ butterfly-osm/
 ├── butterfly-common/        # Shared error handling and utilities
 ├── tools/
 │   ├── butterfly-dl/        # OSM data downloader (production-ready)
-│   └── butterfly-route/     # Routing engine (in development)
+│   └── butterfly-route/     # Routing engine (production-ready)
 ```
 
 ### butterfly-dl
@@ -378,8 +378,8 @@ else:
 - `tools/butterfly-route/src/bench/main.rs` — Benchmark harness
 
 ### Planning Documents
-- `todo_overall.md` — Architecture and roadmap
-- `todo_immediate.md` — Current sprint tasks
+- `todo_overall.md` — Architecture, endpoints, and performance reference
+- `todo_immediate.md` — Completed sprint log and deferred items
 
 ---
 
