@@ -734,7 +734,7 @@ fn test_route_steps_have_depart_and_arrive() {
 
         let steps = build_steps(
             &ebg_path, &state.ebg_nodes, &state.nbg_geo,
-            &mode_data.node_weights, super::geometry::GeometryFormat::Polyline6,
+            &mode_data.node_weights, &state.way_names, super::geometry::GeometryFormat::Polyline6,
         );
 
         assert!(steps.len() >= 2, "pair {i}: need at least depart+arrive, got {} steps", steps.len());
@@ -803,7 +803,7 @@ fn test_route_steps_distances_sum_to_total() {
 
         let steps = build_steps(
             &ebg_path, &state.ebg_nodes, &state.nbg_geo,
-            &mode_data.node_weights, super::geometry::GeometryFormat::Polyline6,
+            &mode_data.node_weights, &state.way_names, super::geometry::GeometryFormat::Polyline6,
         );
 
         // Sum step distances
@@ -855,7 +855,7 @@ fn test_route_step_locations_on_route() {
 
     let steps = build_steps(
         &ebg_path, &state.ebg_nodes, &state.nbg_geo,
-        &mode_data.node_weights, super::geometry::GeometryFormat::Polyline6,
+        &mode_data.node_weights, &state.way_names, super::geometry::GeometryFormat::Polyline6,
     );
 
     // All maneuver locations should be in Belgium

@@ -4,11 +4,13 @@
 //! The spatial index operates in original EBG space, then maps to filtered space for query.
 
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::formats::{
     mod_mask, mod_weights, CchTopo, CchTopoFile, CchWeightsFile, EbgCsr, EbgCsrFile, EbgNodes,
     EbgNodesFile, FilteredEbg, FilteredEbgFile, NbgGeo, NbgGeoFile, OrderEbg, OrderEbgFile,
+    WaysFile,
 };
 // Re-export CchWeights for use by api.rs
 pub use crate::formats::CchWeights;
@@ -67,12 +69,16 @@ pub struct ServerState {
 
     // Elevation data (optional, loaded from SRTM .hgt files)
     pub elevation: Option<ElevationData>,
+
+    // Road names: OSM way_id → name string (for turn-by-turn instructions)
+    pub way_names: HashMap<i64, String>,
 }
 
 impl ServerState {
     /// Load all data from directory
     pub fn load(data_dir: &Path) -> Result<Self> {
         // Determine subdirectories
+        let step1_dir = find_step_dir(data_dir, "step1")?;
         let step3_dir = find_step_dir(data_dir, "step3")?;
         let step4_dir = find_step_dir(data_dir, "step4")?;
         let step5_dir = find_step_dir(data_dir, "step5")?;
@@ -104,6 +110,11 @@ impl ServerState {
         let spatial_index = SpatialIndex::build(&ebg_nodes, &nbg_geo);
         println!("  ✓ Indexed {} nodes", ebg_nodes.n_nodes);
 
+        // Load road names from ways.raw for turn-by-turn instructions
+        println!("Loading road names...");
+        let way_names = load_way_names(&step1_dir)?;
+        println!("  ✓ {} named roads", way_names.len());
+
         // Try to load elevation data from srtm/ subdirectory
         let srtm_dir = data_dir.join("srtm");
         let elevation = if srtm_dir.is_dir() {
@@ -131,6 +142,7 @@ impl ServerState {
             foot,
             spatial_index,
             elevation,
+            way_names,
         })
     }
 
@@ -297,6 +309,55 @@ fn build_down_reverse_adj(topo: &CchTopo) -> DownReverseAdj {
         sources,
         edge_idx,
     }
+}
+
+/// Load road names from ways.raw (step1 output).
+/// Uses streaming to avoid loading all way data into memory at once.
+/// Returns way_id → name mapping for all ways that have a "name" tag.
+fn load_way_names(step1_dir: &Path) -> Result<HashMap<i64, String>> {
+    let ways_path = step1_dir.join("ways.raw");
+    if !ways_path.exists() {
+        println!("  ⚠ ways.raw not found, road names unavailable");
+        return Ok(HashMap::new());
+    }
+
+    // Load dictionaries first
+    let (key_dict, val_dict, _, _) = WaysFile::read_dictionaries(&ways_path)?;
+
+    // Find key ID for "name"
+    let name_key_id = key_dict.iter()
+        .find(|(_, v)| v.as_str() == "name")
+        .map(|(k, _)| *k);
+
+    let name_key_id = match name_key_id {
+        Some(id) => id,
+        None => {
+            println!("  ⚠ No 'name' key in dictionary, road names unavailable");
+            return Ok(HashMap::new());
+        }
+    };
+
+    // Stream ways and extract names
+    let mut way_names = HashMap::new();
+    let way_stream = WaysFile::stream_ways(&ways_path)?;
+
+    for result in way_stream {
+        let (way_id, keys, vals, _nodes) = result?;
+
+        // Find "name" tag value for this way
+        for (i, &k) in keys.iter().enumerate() {
+            if k == name_key_id {
+                if let Some(name) = val_dict.get(&vals[i]) {
+                    if !name.is_empty() {
+                        way_names.insert(way_id, name.clone());
+                    }
+                }
+                break; // each way has at most one "name" tag
+            }
+        }
+    }
+
+    Ok(way_names)
 }
 
 // Distance weights are now pre-computed in step8 pipeline (cch.d.{mode}.u32)

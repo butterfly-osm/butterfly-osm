@@ -25,7 +25,7 @@ Build a routing engine with **exact turn-aware isochrones** and **OSRM-class spe
 | 6 | `order.{mode}.ebg` | Per-mode CCH ordering on filtered EBG | ✅ |
 | 7 | `cch.{mode}.topo` | Per-mode CCH contraction (shortcuts topology) | ✅ |
 | 8 | `cch.w.{mode}.u32`, `cch.d.{mode}.u32` | Per-mode customized weights (duration + distance, parallel triangle relaxation) | ✅ |
-| 9 | HTTP server | Query server: /route (steps, alts, polyline6/geojson), /nearest, /table (duration+distance), /isochrone | ✅ |
+| 9 | HTTP server | Query server: /route (steps w/ road names, alts, polyline6/geojson), /nearest, /table (duration+distance), /isochrone (CCW polygons), /trip, /height | ✅ |
 
 ---
 
@@ -62,8 +62,10 @@ Per-mode weights → cch.w.{mode}.u32
 | `GET /nearest` | Snap to nearest road segments with distance |
 | `POST /table` | Distance matrix with duration and/or distance annotations (bucket M2M) |
 | `POST /table/stream` | Arrow IPC streaming for large matrices (50k+) |
-| `GET /isochrone` | Areal polygon + optional network roads (`include=network`), WKB via Accept header |
+| `GET /isochrone` | Areal polygon + optional network roads, `direction=depart\|arrive`, WKB via Accept header |
 | `POST /isochrone/bulk` | Parallel batch isochrones (WKB stream) |
+| `POST /trip` | TSP/trip optimization (nearest-neighbor + 2-opt + or-opt) |
+| `GET /height` | Elevation lookup from SRTM DEM tiles |
 | `GET /health` | Server health check |
 | `GET /swagger-ui/` | OpenAPI documentation |
 
@@ -242,13 +244,13 @@ Not worth dedicated fast path since we win at scale.
 | Batched isochrones (K origins) | ✅ | 2.63x speedup |
 | Active-set gating (rPHAST-lite) | ✅ | 2.79x for bounded |
 
-### Phase C: Arrow Streaming Output ✅ PARTIAL
+### Phase C: Arrow Streaming Output ✅ DONE
 
 | Task | Status |
 |------|--------|
 | Content negotiation (JSON default, Arrow for bulk) | ✅ |
 | Tiled block schema for matrices | ✅ |
-| Backpressure + cancellation (bounded channel) | ⬜ |
+| Backpressure + cancellation (AtomicBool cooperative cancellation) | ✅ |
 | Streaming writer for long-running queries | ✅ |
 
 ### Phase D: Cache-Friendly Memory Access ✅ DONE
@@ -276,7 +278,7 @@ Not worth dedicated fast path since we win at scale.
 |------|--------|--------|
 | SoA dist layout (cache-line aligned) | ✅ | Implemented in batched PHAST |
 | Block-level active gating | ✅ | 2.58x for bounded queries |
-| Arrow IPC streaming for matrices | ✅ | Backpressure + cancellation |
+| Arrow IPC streaming for matrices | ✅ | Backpressure + cooperative cancellation (AtomicBool) |
 | K-lane block-gated PHAST | ✅ | Adaptive switching |
 
 ### Phase F: Many-to-Many CH for Matrix Queries ✅ ALGORITHM CORRECT

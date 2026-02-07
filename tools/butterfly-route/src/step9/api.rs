@@ -11,6 +11,7 @@ use axum::{
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_stream::StreamExt;
 use tower_http::cors::{Any, CorsLayer};
 use utoipa::{OpenApi, ToSchema};
@@ -205,6 +206,9 @@ pub struct StepManeuver {
     /// Turn modifier: left, right, slight left, slight right, sharp left, sharp right, uturn, straight
     #[serde(skip_serializing_if = "Option::is_none")]
     pub modifier: Option<String>,
+    /// Road name at this maneuver (e.g. "Rue de la Loi")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -320,7 +324,7 @@ async fn route(
         let duration_s = result.distance as f64 / 10.0;
         let distance_m = geometry.distance_m;
         let steps = if want_steps {
-            Some(build_steps(&ebg_path, &state.ebg_nodes, &state.nbg_geo, &mode_data.node_weights, format))
+            Some(build_steps(&ebg_path, &state.ebg_nodes, &state.nbg_geo, &mode_data.node_weights, &state.way_names, format))
         } else {
             None
         };
@@ -433,12 +437,31 @@ async fn route(
     .into_response()
 }
 
+/// Look up the road name for an EBG edge via geom_idx → NbgEdge.first_osm_way_id
+fn lookup_road_name(
+    edge_id: u32,
+    ebg_nodes: &crate::formats::EbgNodes,
+    nbg_geo: &crate::formats::NbgGeo,
+    way_names: &std::collections::HashMap<i64, String>,
+) -> Option<String> {
+    let node = &ebg_nodes.nodes[edge_id as usize];
+    let geom_idx = node.geom_idx as usize;
+    if geom_idx < nbg_geo.edges.len() {
+        let way_id = nbg_geo.edges[geom_idx].first_osm_way_id;
+        way_names.get(&way_id).cloned()
+    } else {
+        None
+    }
+}
+
+
 /// Build turn-by-turn step instructions from EBG path
 pub(crate) fn build_steps(
     ebg_path: &[u32],
     ebg_nodes: &crate::formats::EbgNodes,
     nbg_geo: &crate::formats::NbgGeo,
     node_weights: &[u32],
+    way_names: &std::collections::HashMap<i64, String>,
     format: GeometryFormat,
 ) -> Vec<RouteStep> {
     if ebg_path.len() < 2 {
@@ -471,6 +494,7 @@ pub(crate) fn build_steps(
             bearing_after: start_bearing,
             maneuver_type: "depart".to_string(),
             modifier: None,
+            name: lookup_road_name(ebg_path[0], ebg_nodes, nbg_geo, way_names),
         },
     });
 
@@ -513,6 +537,7 @@ pub(crate) fn build_steps(
                         bearing_after: seg_start_bearing,
                         maneuver_type: "continue".to_string(),
                         modifier: Some("straight".to_string()),
+                        name: lookup_road_name(segment_edges[0], ebg_nodes, nbg_geo, way_names),
                     },
                 });
                 accumulated_distance = 0.0;
@@ -534,6 +559,7 @@ pub(crate) fn build_steps(
                         bearing_after: 0,
                         maneuver_type: "arrive".to_string(),
                         modifier: None,
+                        name: lookup_road_name(edge_id, ebg_nodes, nbg_geo, way_names),
                     },
                 });
             } else {
@@ -553,6 +579,7 @@ pub(crate) fn build_steps(
                         bearing_after: cur_start_bearing,
                         maneuver_type: m_type.to_string(),
                         modifier: Some(turn_type.to_string()),
+                        name: lookup_road_name(edge_id, ebg_nodes, nbg_geo, way_names),
                     },
                 });
             }
@@ -1149,13 +1176,18 @@ async fn table_stream(
     // Create channel for streaming tiles
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(8);
 
+    // Cancellation flag: set when client disconnects (channel closed)
+    let cancelled = Arc::new(AtomicBool::new(false));
+
     // Clone what we need for the spawned task
     let up_adj_flat = mode_data.up_adj_flat.clone();
     let down_rev_flat = mode_data.down_rev_flat.clone();
+    let cancelled_outer = cancelled.clone();
 
     // Spawn compute task - SOURCE-BLOCK OUTER LOOP to avoid repeated forward computation
     // For 10k×10k with 1000×1000 tiles: forward computed 10x (once per src block) instead of 100x
     tokio::task::spawn_blocking(move || {
+        let cancelled = cancelled_outer;
         // Generate source and destination blocks
         let src_blocks: Vec<(usize, usize)> = (0..n_total_sources)
             .step_by(src_tile_size)
@@ -1167,8 +1199,41 @@ async fn table_stream(
             .map(|start| (start, (start + dst_tile_size).min(n_total_targets)))
             .collect();
 
+        // Helper: send a tile through the channel, returning false if cancelled
+        let send_tile = |tx: &tokio::sync::mpsc::Sender<Result<bytes::Bytes, std::io::Error>>,
+                         cancelled: &AtomicBool,
+                         tile: MatrixTile| -> bool {
+            match tiles_to_record_batch(&[tile]) {
+                Ok(batch) => match record_batch_to_bytes(&batch) {
+                    Ok(bytes) => {
+                        if tx.blocking_send(Ok(bytes)).is_err() {
+                            cancelled.store(true, Ordering::Relaxed);
+                            return false;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.blocking_send(Err(std::io::Error::new(
+                            std::io::ErrorKind::Other, e.to_string(),
+                        )));
+                        cancelled.store(true, Ordering::Relaxed);
+                        return false;
+                    }
+                },
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(std::io::Error::new(
+                        std::io::ErrorKind::Other, e.to_string(),
+                    )));
+                    cancelled.store(true, Ordering::Relaxed);
+                    return false;
+                }
+            }
+            true
+        };
+
         // Process source blocks in parallel (forward computed ONCE per source block)
         src_blocks.par_iter().for_each(|&(src_start, src_end)| {
+            if cancelled.load(Ordering::Relaxed) { return; }
+
             let tile_rows = src_end - src_start;
 
             // Extract sources for this block
@@ -1185,6 +1250,7 @@ async fn table_stream(
             if block_src_ranks.is_empty() {
                 // No valid sources in this block - emit empty tiles for all dst blocks
                 for &(dst_start, dst_end) in &dst_blocks {
+                    if cancelled.load(Ordering::Relaxed) { return; }
                     let tile_cols = dst_end - dst_start;
                     let durations_ms = vec![u32::MAX; tile_rows * tile_cols];
                     let tile = MatrixTile::from_flat(
@@ -1194,11 +1260,7 @@ async fn table_stream(
                         tile_cols as u16,
                         &durations_ms,
                     );
-                    if let Ok(batch) = tiles_to_record_batch(&[tile]) {
-                        if let Ok(bytes) = record_batch_to_bytes(&batch) {
-                            let _ = tx.blocking_send(Ok(bytes));
-                        }
-                    }
+                    if !send_tile(&tx, &cancelled, tile) { return; }
                 }
                 return;
             }
@@ -1209,6 +1271,8 @@ async fn table_stream(
             // BACKWARD PHASE: Process destination blocks in parallel
             // This maintains high parallelism while avoiding repeated forward work
             dst_blocks.par_iter().for_each(|&(dst_start, dst_end)| {
+                if cancelled.load(Ordering::Relaxed) { return; }
+
                 let source_buckets = source_buckets.clone();
                 let tile_cols = dst_end - dst_start;
 
@@ -1256,12 +1320,8 @@ async fn table_stream(
                     &durations_ms,
                 );
 
-                // Stream this tile immediately
-                if let Ok(batch) = tiles_to_record_batch(&[tile]) {
-                    if let Ok(bytes) = record_batch_to_bytes(&batch) {
-                        let _ = tx.blocking_send(Ok(bytes));
-                    }
-                }
+                // Stream this tile — stop computation if client disconnected
+                send_tile(&tx, &cancelled, tile);
             });  // end dst_blocks.par_iter()
         });  // end src_blocks.par_iter()
     });
@@ -1489,7 +1549,24 @@ async fn isochrone(
 
     let (poly_encoded, poly_geojson, poly_points) = match geom_format {
         GeometryFormat::Polyline6 => (Some(encode_polyline6(&polygon)), None, None),
-        GeometryFormat::GeoJson => (None, Some(polygon.iter().map(|p| [p.lon, p.lat]).collect()), None),
+        GeometryFormat::GeoJson => {
+            // Ensure CCW orientation, truncate to 5 decimal places (~1m), close ring
+            // Isochrone polygons come from a 30m raster grid — 5 decimals is honest precision
+            use crate::range::wkb_stream::ensure_ccw;
+            let trunc = |v: f64| (v * 1e5).round() / 1e5;
+            let mut coords: Vec<(f64, f64)> = polygon.iter()
+                .map(|p| (trunc(p.lon), trunc(p.lat)))
+                .collect();
+            ensure_ccw(&mut coords);
+            let mut ring: Vec<[f64; 2]> = coords.into_iter().map(|(x, y)| [x, y]).collect();
+            // Close ring if needed
+            if let (Some(first), Some(last)) = (ring.first().copied(), ring.last().copied()) {
+                if first != last {
+                    ring.push(first);
+                }
+            }
+            (None, Some(ring), None)
+        },
         GeometryFormat::Points => (None, None, Some(polygon)),
     };
 
