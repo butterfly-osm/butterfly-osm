@@ -128,7 +128,8 @@ Common patterns abstracted into `butterfly-common`:
 - **butterfly-route**: High-performance routing engine
   - Exact turn-aware routing (edge-based CCH)
   - **1.8x FASTER than OSRM** at scale (10k×10k matrices)
-  - Bulk APIs optimized for production workloads
+  - Production-hardened: structured logging, graceful shutdown, timeouts, compression, input validation, panic recovery, Prometheus metrics
+  - Audit-remediated: all butterfly-route HIGH findings resolved (source_idx overflow, unwrap panics, unsafe bounds checks)
   - See [Routing Engine](#routing-engine-butterfly-route) below
 
 ### 🚧 In Development
@@ -146,7 +147,7 @@ Common patterns abstracted into `butterfly-common`:
 
 ## Routing Engine (butterfly-route)
 
-High-performance routing engine with **exact turn-aware queries** using edge-based Customizable Contraction Hierarchies (CCH).
+High-performance routing engine with **exact turn-aware queries** using edge-based Customizable Contraction Hierarchies (CCH). Production-hardened with structured logging, graceful shutdown, request timeouts, response compression, input validation, panic recovery, and Prometheus metrics. Docker-ready.
 
 ### Performance
 
@@ -327,6 +328,18 @@ cargo install --path tools/butterfly-dl
 
 **Key insight**: Edge-based CH has ~2.5x more states than node-based (exact turn handling).
 The overhead is acceptable for small queries, and **Butterfly wins at scale**.
+
+### Production Features
+
+- **Structured logging**: `tracing` with text/JSON output (`--log-format json`)
+- **Graceful shutdown**: SIGINT + SIGTERM handling
+- **Request timeouts**: 120s for API routes, 600s for streaming
+- **Response compression**: gzip + brotli on API routes
+- **Input validation**: Coordinate bounds, time limits, size limits
+- **Panic recovery**: `CatchPanicLayer` returns 500 JSON instead of crashing
+- **Prometheus metrics**: Per-endpoint latency histograms at `/metrics`
+- **Health check**: `/health` with uptime, node/edge counts, mode list
+- **Swagger UI**: OpenAPI docs at `/swagger-ui/`
 
 ### butterfly-dl vs Industry Standard
 
