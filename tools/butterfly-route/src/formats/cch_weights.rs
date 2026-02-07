@@ -11,7 +11,7 @@ use std::path::Path;
 const MAGIC: u32 = 0x43434857; // "CCHW"
 
 /// CCH weights - stores weights for UP and DOWN edges
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CchWeights {
     pub up: Vec<u32>,
     pub down: Vec<u32>,

@@ -289,11 +289,15 @@ pub enum Commands {
         #[arg(long)]
         turns: PathBuf,
 
+        /// Path to ebg.nodes from Step 4 (for distance weights)
+        #[arg(long)]
+        ebg_nodes: PathBuf,
+
         /// Mode to customize for (car, bike, foot)
         #[arg(long)]
         mode: String,
 
-        /// Output directory for cch.w.*.u32
+        /// Output directory for cch.w.*.u32 and cch.d.*.u32
         #[arg(short, long)]
         outdir: PathBuf,
     },
@@ -1266,6 +1270,7 @@ impl Cli {
                 order,
                 weights,
                 turns,
+                ebg_nodes,
                 mode,
                 outdir,
             } => {
@@ -1283,6 +1288,7 @@ impl Cli {
                     order_path: order,
                     weights_path: weights,
                     turns_path: turns,
+                    ebg_nodes_path: ebg_nodes,
                     mode,
                     outdir: outdir.clone(),
                 };
@@ -1299,6 +1305,7 @@ impl Cli {
                 let lock = serde_json::json!({
                     "mode": mode_name,
                     "output_path": result.output_path.display().to_string(),
+                    "distance_output_path": result.distance_output_path.display().to_string(),
                     "n_up_edges": result.n_up_edges,
                     "n_down_edges": result.n_down_edges,
                     "customize_time_ms": result.customize_time_ms,
