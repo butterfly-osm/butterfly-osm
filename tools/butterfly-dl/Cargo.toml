@@ -33,6 +33,9 @@ default = []
 c-bindings = []
 ci-tests-disabled = []
 
+[lints]
+workspace = true
+
 [dependencies]
 butterfly-common = { path = "../../butterfly-common", version = "2.0", features = ["http"] }
 reqwest = { workspace = true, features = ["json", "gzip", "brotli", "stream", "rustls-tls"] }

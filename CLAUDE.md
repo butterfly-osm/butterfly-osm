@@ -22,8 +22,8 @@ cargo test -p butterfly-common
 # Run single test
 cargo test -p butterfly-route test_name
 
-# Lint and format
-cargo clippy --workspace --all-targets --all-features -- -D warnings -A clippy::redundant_closure
+# Lint and format (warnings are enforced as errors via workspace lints)
+cargo clippy --workspace --all-targets --all-features
 cargo fmt --all -- --check
 cargo fmt --all  # auto-fix
 
@@ -359,6 +359,21 @@ else:
 - ✅ Reverse isochrones (`direction=arrive`)
 - ✅ TSP/trip optimization (`POST /trip`)
 - ✅ Elevation/DEM integration (`GET /height`)
+
+**Production Hardening (H-Sprint) Complete** ✅
+
+- ✅ Upgraded all dependencies (axum 0.8, tower-http 0.6, rand 0.9, geo 0.29, arrow 54, utoipa 5)
+- ✅ Structured logging with `tracing` (text/JSON, `--log-format` flag)
+- ✅ Graceful shutdown (SIGINT/SIGTERM)
+- ✅ Request timeouts (120s API, 600s streaming)
+- ✅ Response compression (gzip + brotli)
+- ✅ Input validation (coordinate bounds, time_s 1-7200, number max 100)
+- ✅ Prometheus metrics (`GET /metrics`)
+- ✅ Enhanced health endpoint (uptime, node/edge counts)
+- ✅ Panic recovery (`CatchPanicLayer`)
+- ✅ Dockerfile (multi-stage, `debian:bookworm-slim`)
+- ✅ Workspace lints: warnings enforced as errors (`[workspace.lints]`)
+- ✅ ~300+ clippy lints fixed across ~50 files
 
 **Remaining deferred items:** Map matching (F4), two-resolution isochrone mask (D8)
 

@@ -528,6 +528,7 @@ pub fn export_geojson(cut_points: &[FrontierCutPoint], output_path: &Path) -> Re
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
     use super::*;
 
     #[test]

@@ -1,9 +1,9 @@
-///! hybrid_state.<mode> format - Hybrid state graph for per-mode CCH
-///!
-///! Stores the hybrid state graph with mixed node-states and edge-states.
-///! Provides 2.62x state reduction vs full EBG while maintaining exact turn cost semantics.
-///!
-///! Used by Step 6/7/8 to build per-mode CCH hierarchies with dramatically fewer nodes.
+//! hybrid_state.<mode> format - Hybrid state graph for per-mode CCH
+//!
+//! Stores the hybrid state graph with mixed node-states and edge-states.
+//! Provides 2.62x state reduction vs full EBG while maintaining exact turn cost semantics.
+//!
+//! Used by Step 6/7/8 to build per-mode CCH hierarchies with dramatically fewer nodes.
 
 use anyhow::{Context, Result};
 use std::fs::File;

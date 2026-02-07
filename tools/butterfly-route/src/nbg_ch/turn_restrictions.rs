@@ -22,7 +22,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::formats::{
-    turn_rules::{self, TurnRule},
+    turn_rules,
     NbgNodeMapFile, EbgNodesFile, EbgNodes,
 };
 use crate::profile_abi::TurnRuleKind;

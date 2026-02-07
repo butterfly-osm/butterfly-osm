@@ -51,7 +51,9 @@ use crate::formats::{mod_turns, mod_weights, CchTopo, CchTopoFile, FilteredEbgFi
 use crate::profile_abi::Mode;
 
 /// Witness search settings
+#[allow(dead_code)]
 const WITNESS_SETTLED_LIMIT: usize = 500;  // Max nodes to settle before giving up
+#[allow(dead_code)]
 const WITNESS_HOP_LIMIT: usize = 5;        // Max hops to explore
 
 /// Edge weight for weighted adjacency - stores (target, weight)
@@ -87,6 +89,7 @@ type WeightedAdj = Vec<FxHashMap<u32, u32>>;
 /// we return `false` (create shortcut). We only return `true` (skip shortcut) if
 /// we actually found a valid witness path.
 #[inline]
+#[allow(dead_code)]
 fn has_witness_dijkstra(
     u: usize,
     w: u32,
@@ -353,7 +356,7 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
 
     // Sequential contraction - MUST process one node at a time for correctness
     // Metric-aware witness search requires weights, so we compute shortcut costs
-    for rank in 0..n_nodes {
+    for (rank, &v_node) in inv_perm.iter().enumerate().take(n_nodes) {
         if rank - last_report >= report_interval {
             let pct = (rank as f64 / n_nodes as f64) * 100.0;
             println!(
@@ -363,7 +366,7 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
             last_report = rank;
         }
 
-        let v = inv_perm[rank] as usize;
+        let v = v_node as usize;
 
         let in_neighbors: Vec<u32> = std::mem::take(&mut in_higher[v]).into_iter().collect();
         let out_neighbors: Vec<u32> = std::mem::take(&mut out_higher[v]).into_iter().collect();
@@ -421,7 +424,7 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
                             }
 
                             // Get weight of v→w
-                            let w_vw = weighted_adj_ref[v as usize]
+                            let w_vw = weighted_adj_ref[v]
                                 .get(&w)
                                 .copied()
                                 .unwrap_or(u32::MAX);
@@ -898,9 +901,9 @@ fn remap_to_rank_space(
     let mut new_offsets = Vec::with_capacity(n_nodes + 1);
     let mut offset = 0u64;
 
-    for rank in 0..n_nodes {
+    for &inv in inv_perm.iter().take(n_nodes) {
         new_offsets.push(offset);
-        let filtered_id = inv_perm[rank] as usize;
+        let filtered_id = inv as usize;
         let count = offsets[filtered_id + 1] - offsets[filtered_id];
         offset += count;
     }
@@ -913,8 +916,8 @@ fn remap_to_rank_space(
 
     // Step 3: Copy and remap edges, reordered by source rank
     let mut write_pos = 0;
-    for rank in 0..n_nodes {
-        let filtered_id = inv_perm[rank] as usize;
+    for &inv in inv_perm.iter().take(n_nodes) {
+        let filtered_id = inv as usize;
         let old_start = offsets[filtered_id] as usize;
         let old_end = offsets[filtered_id + 1] as usize;
 
@@ -1106,7 +1109,7 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
     let mut weighted_adj = weighted_adj;
 
     // Sequential contraction
-    for rank in 0..n_nodes {
+    for (rank, &v_node) in inv_perm.iter().enumerate().take(n_nodes) {
         if rank - last_report >= report_interval {
             let pct = (rank as f64 / n_nodes as f64) * 100.0;
             println!(
@@ -1116,7 +1119,7 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
             last_report = rank;
         }
 
-        let v = inv_perm[rank] as usize;
+        let v = v_node as usize;
 
         let in_neighbors: Vec<u32> = std::mem::take(&mut in_higher[v]).into_iter().collect();
         let out_neighbors: Vec<u32> = std::mem::take(&mut out_higher[v]).into_iter().collect();
@@ -1165,7 +1168,7 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
                                 return None;
                             }
 
-                            let w_vw = weighted_adj_ref[v as usize]
+                            let w_vw = weighted_adj_ref[v]
                                 .get(&w)
                                 .copied()
                                 .unwrap_or(u32::MAX);

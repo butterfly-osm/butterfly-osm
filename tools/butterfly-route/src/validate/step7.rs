@@ -1,9 +1,8 @@
-///! Step 7 validation - CCH topology lock conditions (per-mode on filtered EBG)
+//! Step 7 validation - CCH topology lock conditions (per-mode on filtered EBG)
 
 use anyhow::Result;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::{BinaryHeap, HashSet};
 use std::path::Path;
 
 use crate::formats::{CchTopoFile, FilteredEbg, FilteredEbgFile, OrderEbgFile};
@@ -67,7 +66,7 @@ pub fn validate_step7(
     println!("  ✓ CCH reachability matches BFS on {} samples", 100);
 
     // Compute SHA-256
-    let inputs_sha256 = hex::encode(&topo.inputs_sha);
+    let inputs_sha256 = hex::encode(topo.inputs_sha);
     let topo_sha256 = compute_file_sha256(&result.topo_path)?;
 
     let shortcut_ratio = result.n_shortcuts as f64 / result.n_original_arcs as f64;

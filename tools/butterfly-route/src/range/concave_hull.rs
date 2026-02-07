@@ -109,8 +109,7 @@ pub fn generate_concave_hull(
     segments: &[ReachableSegment],
     config: &ConcaveHullConfig,
 ) -> ConcaveHullResult {
-    let mut stats = ConcaveHullStats::default();
-    stats.input_segments = segments.len();
+    let mut stats = ConcaveHullStats { input_segments: segments.len(), ..Default::default() };
 
     let total_start = std::time::Instant::now();
 

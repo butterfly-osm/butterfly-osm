@@ -24,7 +24,7 @@ use butterfly_route::range::wkb_stream::{encode_polygon_wkb, IsochroneRecord, wr
 use butterfly_route::matrix::batched_phast::{BatchedPhastEngine, BatchedPhastStats, K_LANES};
 use butterfly_route::formats::CchWeightsFile;
 use butterfly_route::step9::state::DownReverseAdj;
-use butterfly_route::matrix::bucket_ch::{table_bucket, table_bucket_optimized, table_bucket_full_flat, DownReverseAdjFlat, UpAdjFlat, UpReverseAdjFlat, BucketM2MStats, BucketM2MEngine};
+use butterfly_route::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat, UpReverseAdjFlat, BucketM2MEngine};
 
 #[derive(Parser)]
 #[command(name = "butterfly-bench")]
@@ -681,7 +681,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn run_isochrone_bench(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     mode: &str,
     threshold_ms: u32,
     n_origins: usize,
@@ -720,7 +720,7 @@ fn run_isochrone_bench(
     // Generate random origins
     let mut rng = StdRng::seed_from_u64(seed);
     let origins: Vec<u32> = (0..n_origins)
-        .map(|_| rng.gen_range(0..phast.n_nodes() as u32))
+        .map(|_| rng.random_range(0..phast.n_nodes() as u32))
         .collect();
 
     // Run benchmarks
@@ -795,7 +795,7 @@ fn run_isochrone_bench(
     println!();
 
     // Throughput
-    let total_time_sec = hist_total.mean() as f64 / 1_000_000.0 * n_origins as f64;
+    let total_time_sec = hist_total.mean() / 1_000_000.0 * n_origins as f64;
     let throughput = n_origins as f64 / total_time_sec;
     println!("  Throughput: {:.1} isochrones/sec", throughput);
     println!();
@@ -804,7 +804,7 @@ fn run_isochrone_bench(
 }
 
 fn run_batch_bench(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     mode: &str,
     threshold_ms: u32,
     batch_size: usize,
@@ -845,7 +845,7 @@ fn run_batch_bench(
 
     for batch in 0..n_batches {
         let origins: Vec<u32> = (0..batch_size)
-            .map(|_| rng.gen_range(0..phast.n_nodes() as u32))
+            .map(|_| rng.random_range(0..phast.n_nodes() as u32))
             .collect();
 
         let batch_start = Instant::now();
@@ -879,7 +879,7 @@ fn run_batch_bench(
 }
 
 fn run_phast_bench(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     mode: &str,
     n_queries: usize,
     seed: u64,
@@ -902,7 +902,7 @@ fn run_phast_bench(
     // Generate random origins
     let mut rng = StdRng::seed_from_u64(seed);
     let origins: Vec<u32> = (0..n_queries)
-        .map(|_| rng.gen_range(0..phast.n_nodes() as u32))
+        .map(|_| rng.random_range(0..phast.n_nodes() as u32))
         .collect();
 
     // Run queries
@@ -948,7 +948,7 @@ fn run_phast_bench(
     Ok(())
 }
 
-fn load_phast(data_dir: &PathBuf, mode: &str) -> anyhow::Result<PhastEngine> {
+fn load_phast(data_dir: &Path, mode: &str) -> anyhow::Result<PhastEngine> {
     // Support multiple directory layouts:
     // 1. All files in data_dir
     // 2. Split across step6/step7/step8 subdirectories
@@ -976,7 +976,7 @@ fn load_phast(data_dir: &PathBuf, mode: &str) -> anyhow::Result<PhastEngine> {
     PhastEngine::load(&topo_path, &weights_path, &order_path)
 }
 
-fn find_file(base: &PathBuf, candidates: &[String]) -> Option<PathBuf> {
+fn find_file(base: &Path, candidates: &[String]) -> Option<PathBuf> {
     for candidate in candidates {
         let path = base.join(candidate);
         if path.exists() {
@@ -993,7 +993,7 @@ fn find_file(base: &PathBuf, candidates: &[String]) -> Option<PathBuf> {
     None
 }
 
-fn load_extractor(data_dir: &PathBuf, mode: &str) -> anyhow::Result<FrontierExtractor> {
+fn load_extractor(data_dir: &Path, mode: &str) -> anyhow::Result<FrontierExtractor> {
     let filtered_path = find_file(data_dir, &[
         format!("filtered.{}.ebg", mode),
         format!("step5-debug/filtered.{}.ebg", mode),
@@ -1048,7 +1048,7 @@ fn format_number(n: u64) -> String {
 }
 
 fn run_batched_phast_bench(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     mode: &str,
     n_sources: usize,
     n_targets: usize,
@@ -1077,13 +1077,13 @@ fn run_batched_phast_bench(
     // Generate random sources and targets
     let mut rng = StdRng::seed_from_u64(seed);
     let sources: Vec<u32> = (0..n_sources)
-        .map(|_| rng.gen_range(0..single_phast.n_nodes() as u32))
+        .map(|_| rng.random_range(0..single_phast.n_nodes() as u32))
         .collect();
     let targets: Vec<u32> = if n_targets == 0 {
         Vec::new() // All nodes
     } else {
         (0..n_targets)
-            .map(|_| rng.gen_range(0..single_phast.n_nodes() as u32))
+            .map(|_| rng.random_range(0..single_phast.n_nodes() as u32))
             .collect()
     };
 
@@ -1091,7 +1091,7 @@ fn run_batched_phast_bench(
     let verification_targets: Vec<u32> = if targets.is_empty() {
         // Sample 1000 random targets for verification when no targets specified
         (0..1000.min(single_phast.n_nodes()))
-            .map(|_| rng.gen_range(0..single_phast.n_nodes() as u32))
+            .map(|_| rng.random_range(0..single_phast.n_nodes() as u32))
             .collect()
     } else {
         targets.clone()
@@ -1120,7 +1120,7 @@ fn run_batched_phast_bench(
 
     // ========== K-lane batched PHAST (AoS layout) ==========
     println!("[3/4] Running K-lane batched PHAST AoS ({} sources in {} batches)...",
-        n_sources, (n_sources + K_LANES - 1) / K_LANES);
+        n_sources, n_sources.div_ceil(K_LANES));
 
     let batched_start = Instant::now();
     let (batched_matrix, batched_stats) = batched_phast.compute_matrix_flat(&sources, &verification_targets);
@@ -1132,7 +1132,7 @@ fn run_batched_phast_bench(
 
     // ========== K-lane batched PHAST (SoA layout) ==========
     println!("[4/4] Running K-lane batched PHAST SoA ({} sources in {} batches)...",
-        n_sources, (n_sources + K_LANES - 1) / K_LANES);
+        n_sources, n_sources.div_ceil(K_LANES));
 
     let soa_start = Instant::now();
     let (soa_matrix, soa_stats) = batched_phast.compute_matrix_flat_soa(&sources, &verification_targets);
@@ -1223,7 +1223,7 @@ fn run_batched_phast_bench(
     Ok(())
 }
 
-fn load_batched_phast(data_dir: &PathBuf, mode: &str) -> anyhow::Result<BatchedPhastEngine> {
+fn load_batched_phast(data_dir: &Path, mode: &str) -> anyhow::Result<BatchedPhastEngine> {
     // Prioritize rank-aligned (version 2) over older versions
     let topo_path = find_file(data_dir, &[
         format!("cch.{}.topo", mode),
@@ -1247,7 +1247,7 @@ fn load_batched_phast(data_dir: &PathBuf, mode: &str) -> anyhow::Result<BatchedP
 }
 
 fn run_active_set_bench(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     mode: &str,
     threshold_ms: u32,
     n_queries: usize,
@@ -1272,7 +1272,7 @@ fn run_active_set_bench(
     // Generate random origins
     let mut rng = StdRng::seed_from_u64(seed);
     let origins: Vec<u32> = (0..n_queries)
-        .map(|_| rng.gen_range(0..phast.n_nodes() as u32))
+        .map(|_| rng.random_range(0..phast.n_nodes() as u32))
         .collect();
 
     // ========== Naive bounded PHAST ==========
@@ -1392,7 +1392,7 @@ fn run_active_set_bench(
 }
 
 fn run_batched_isochrone_bench(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     mode: &str,
     threshold_ms: u32,
     n_origins: usize,
@@ -1494,7 +1494,7 @@ fn run_batched_isochrone_bench(
     // Generate random origins
     let mut rng = StdRng::seed_from_u64(seed);
     let origins: Vec<u32> = (0..n_origins)
-        .map(|_| rng.gen_range(0..phast.n_nodes() as u32))
+        .map(|_| rng.random_range(0..phast.n_nodes() as u32))
         .collect();
 
     // ========== Run single-source baseline ==========
@@ -1531,8 +1531,8 @@ fn run_batched_isochrone_bench(
         }
         n_batches += 1;
 
-        if (batch_idx + 1) % 2 == 0 || batch_idx + 1 == (n_origins + K_LANES - 1) / K_LANES {
-            print!("  Progress: {}/{} batches\r", batch_idx + 1, (n_origins + K_LANES - 1) / K_LANES);
+        if (batch_idx + 1) % 2 == 0 || batch_idx + 1 == n_origins.div_ceil(K_LANES) {
+            print!("  Progress: {}/{} batches\r", batch_idx + 1, n_origins.div_ceil(K_LANES));
             std::io::Write::flush(&mut std::io::stdout())?;
         }
     }
@@ -1592,7 +1592,7 @@ fn run_batched_isochrone_bench(
 }
 
 fn run_blocked_relaxation_bench(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     mode: &str,
     n_sources: usize,
     n_targets: usize,
@@ -1620,16 +1620,16 @@ fn run_blocked_relaxation_bench(
     // Generate random sources and targets
     let mut rng = StdRng::seed_from_u64(seed);
     let sources: Vec<u32> = (0..n_sources)
-        .map(|_| rng.gen_range(0..engine.n_nodes() as u32))
+        .map(|_| rng.random_range(0..engine.n_nodes() as u32))
         .collect();
     let targets: Vec<u32> = if n_targets == 0 {
         // Sample 1000 targets for verification
         (0..1000.min(engine.n_nodes()))
-            .map(|_| rng.gen_range(0..engine.n_nodes() as u32))
+            .map(|_| rng.random_range(0..engine.n_nodes() as u32))
             .collect()
     } else {
         (0..n_targets)
-            .map(|_| rng.gen_range(0..engine.n_nodes() as u32))
+            .map(|_| rng.random_range(0..engine.n_nodes() as u32))
             .collect()
     };
 
@@ -1742,7 +1742,7 @@ fn run_blocked_relaxation_bench(
 }
 
 fn run_block_gated_bench(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     mode: &str,
     threshold_ms: u32,
     n_queries: usize,
@@ -1764,7 +1764,7 @@ fn run_block_gated_bench(
     let load_start = Instant::now();
     let phast = load_phast(data_dir, mode)?;
     let n_nodes = phast.n_nodes();
-    let n_blocks = (n_nodes + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    let n_blocks = n_nodes.div_ceil(BLOCK_SIZE);
     println!("  ✓ Loaded in {:.1}s ({} nodes, {} blocks)",
         load_start.elapsed().as_secs_f64(), n_nodes, n_blocks);
     println!();
@@ -1772,7 +1772,7 @@ fn run_block_gated_bench(
     // Generate random origins
     let mut rng = StdRng::seed_from_u64(seed);
     let origins: Vec<u32> = (0..n_queries)
-        .map(|_| rng.gen_range(0..n_nodes as u32))
+        .map(|_| rng.random_range(0..n_nodes as u32))
         .collect();
 
     // ========== Active-set gated PHAST ==========
@@ -1806,7 +1806,7 @@ fn run_block_gated_bench(
 
     let mut block_times: Vec<Duration> = Vec::with_capacity(n_queries);
     let mut block_relaxations: u64 = 0;
-    let mut block_reachable: u64 = 0;
+    let mut _block_reachable: u64 = 0;
     let mut total_blocks_processed: u64 = 0;
     let mut total_blocks_skipped: u64 = 0;
     let mut total_nodes_skipped_in_block: u64 = 0;
@@ -1816,7 +1816,7 @@ fn run_block_gated_bench(
         let result = phast.query_block_gated(origin, threshold_ms);
         block_times.push(start.elapsed());
         block_relaxations += result.stats.downward_relaxations as u64;
-        block_reachable += result.n_reachable as u64;
+        _block_reachable += result.n_reachable as u64;
         total_blocks_processed += result.stats.blocks_processed as u64;
         total_blocks_skipped += result.stats.blocks_skipped as u64;
         total_nodes_skipped_in_block += result.stats.nodes_skipped_in_block as u64;
@@ -1958,7 +1958,7 @@ fn run_block_gated_bench(
 }
 
 fn run_adaptive_bench(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     mode: &str,
     thresholds: &[u32],
     n_queries: usize,
@@ -1981,7 +1981,7 @@ fn run_adaptive_bench(
     let load_start = Instant::now();
     let phast = load_phast(data_dir, mode)?;
     let n_nodes = phast.n_nodes();
-    let n_blocks = (n_nodes + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    let n_blocks = n_nodes.div_ceil(BLOCK_SIZE);
     println!("  ✓ Loaded in {:.1}s ({} nodes, {} blocks)",
         load_start.elapsed().as_secs_f64(), n_nodes, n_blocks);
     println!();
@@ -1989,7 +1989,7 @@ fn run_adaptive_bench(
     // Generate random origins
     let mut rng = StdRng::seed_from_u64(seed);
     let origins: Vec<u32> = (0..n_queries)
-        .map(|_| rng.gen_range(0..n_nodes as u32))
+        .map(|_| rng.random_range(0..n_nodes as u32))
         .collect();
 
     println!("[2/2] Running benchmarks...");
@@ -2088,7 +2088,7 @@ fn run_adaptive_bench(
 }
 
 fn run_klane_bounded_bench(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     mode: &str,
     threshold_ms: u32,
     n_batches: usize,
@@ -2116,7 +2116,7 @@ fn run_klane_bounded_bench(
     // Generate random sources (K per batch)
     let mut rng = StdRng::seed_from_u64(seed);
     let sources: Vec<Vec<u32>> = (0..n_batches)
-        .map(|_| (0..K_LANES).map(|_| rng.gen_range(0..n_nodes as u32)).collect())
+        .map(|_| (0..K_LANES).map(|_| rng.random_range(0..n_nodes as u32)).collect())
         .collect();
 
     // ========== Regular batched PHAST (unbounded) ==========
@@ -2184,9 +2184,9 @@ fn run_klane_bounded_bench(
             let regular_reachable = regular_d <= threshold_ds;
             let gated_reachable = gated_d <= threshold_ds;
 
-            if regular_reachable != gated_reachable {
-                mismatches += 1;
-            } else if regular_reachable && gated_reachable && regular_d != gated_d {
+            if regular_reachable != gated_reachable
+                || (regular_reachable && gated_reachable && regular_d != gated_d)
+            {
                 mismatches += 1;
             }
         }
@@ -2208,10 +2208,10 @@ fn run_klane_bounded_bench(
     gated_times.sort();
 
     let regular_p50 = regular_times[n_batches / 2].as_millis();
-    let regular_p95 = regular_times[n_batches * 95 / 100.max(1)].as_millis();
+    let regular_p95 = regular_times[n_batches * 95 / 100].as_millis();
 
     let gated_p50 = gated_times[n_batches / 2].as_millis();
-    let gated_p95 = gated_times[n_batches * 95 / 100.max(1)].as_millis();
+    let gated_p95 = gated_times[n_batches * 95 / 100].as_millis();
 
     println!("  Regular batched (unbounded):");
     println!("    p50 batch:  {:>6}ms", regular_p50);
@@ -2263,7 +2263,7 @@ fn run_klane_bounded_bench(
 /// - If reachable fraction is high (>80-90%), rPHAST won't help much
 /// - If reachable fraction is moderate (<60%), rPHAST preprocessing may be worth it
 fn run_reachability_analysis(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     mode: &str,
     thresholds: &[u32],
     n_origins: usize,
@@ -2291,7 +2291,7 @@ fn run_reachability_analysis(
     // Generate random origins
     let mut rng = StdRng::seed_from_u64(seed);
     let origins: Vec<u32> = (0..n_origins)
-        .map(|_| rng.gen_range(0..n_nodes as u32))
+        .map(|_| rng.random_range(0..n_nodes as u32))
         .collect();
 
     // Run analysis
@@ -2411,7 +2411,7 @@ fn run_reachability_analysis(
 
 /// Benchmark matrix tile streaming (compute path only, no HTTP)
 fn run_matrix_stream_bench(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     mode: &str,
     n_sources: usize,
     n_targets: usize,
@@ -2444,10 +2444,10 @@ fn run_matrix_stream_bench(
     // Generate random sources and targets
     let mut rng = StdRng::seed_from_u64(seed);
     let sources: Vec<u32> = (0..n_sources)
-        .map(|_| rng.gen_range(0..n_nodes as u32))
+        .map(|_| rng.random_range(0..n_nodes as u32))
         .collect();
     let targets: Vec<u32> = (0..n_targets)
-        .map(|_| rng.gen_range(0..n_nodes as u32))
+        .map(|_| rng.random_range(0..n_nodes as u32))
         .collect();
 
     println!("───────────────────────────────────────────────────────────────");
@@ -2461,7 +2461,7 @@ fn run_matrix_stream_bench(
     let mut total_serialize_ms = 0u64;
 
     // Align src_tile_size to K_LANES
-    let effective_src_tile = ((src_tile_size + K_LANES - 1) / K_LANES) * K_LANES;
+    let effective_src_tile = src_tile_size.div_ceil(K_LANES) * K_LANES;
 
     for src_batch_start in (0..n_sources).step_by(effective_src_tile) {
         let src_batch_end = (src_batch_start + effective_src_tile).min(n_sources);
@@ -2547,7 +2547,7 @@ fn run_matrix_stream_bench(
 
 /// Benchmark bucket-based many-to-many CH algorithm
 fn run_bucket_m2m_bench(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     mode: &str,
     sizes: &[usize],
     parallel: bool,
@@ -2626,10 +2626,10 @@ fn run_bucket_m2m_bench(
     for &n in sizes {
         // Generate random sources and targets
         let sources: Vec<u32> = (0..n)
-            .map(|_| rng.gen_range(0..n_nodes as u32))
+            .map(|_| rng.random_range(0..n_nodes as u32))
             .collect();
         let targets: Vec<u32> = (0..n)
-            .map(|_| rng.gen_range(0..n_nodes as u32))
+            .map(|_| rng.random_range(0..n_nodes as u32))
             .collect();
 
         // Warmup run
@@ -2697,10 +2697,10 @@ fn run_bucket_m2m_bench(
     for &n in sizes {
         // Generate random sources and targets
         let sources: Vec<u32> = (0..n)
-            .map(|_| rng2.gen_range(0..n_nodes as u32))
+            .map(|_| rng2.random_range(0..n_nodes as u32))
             .collect();
         let targets: Vec<u32> = (0..n)
-            .map(|_| rng2.gen_range(0..n_nodes as u32))
+            .map(|_| rng2.random_range(0..n_nodes as u32))
             .collect();
 
         // Baseline (without stall)
@@ -2710,7 +2710,7 @@ fn run_bucket_m2m_bench(
 
         // With stall-on-demand
         let stall_start = Instant::now();
-        let (stall_matrix, stats, stalls, non_stalls) = engine.compute_with_stall(
+        let (stall_matrix, _stats, stalls, non_stalls) = engine.compute_with_stall(
             &up_adj_flat, &up_rev_flat, &down_rev_flat, &sources, &targets
         );
         let stall_time = stall_start.elapsed();
@@ -2760,8 +2760,8 @@ fn run_bucket_m2m_bench(
 
     // Use fresh random sources/targets for validation
     let mut val_rng = StdRng::seed_from_u64(12345);
-    let val_sources: Vec<u32> = (0..5).map(|_| val_rng.gen_range(0..n_nodes as u32)).collect();
-    let val_targets: Vec<u32> = (0..5).map(|_| val_rng.gen_range(0..n_nodes as u32)).collect();
+    let val_sources: Vec<u32> = (0..5).map(|_| val_rng.random_range(0..n_nodes as u32)).collect();
+    let val_targets: Vec<u32> = (0..5).map(|_| val_rng.random_range(0..n_nodes as u32)).collect();
 
     // Run SEQUENTIAL bucket M2M (engine.compute uses SortedBuckets)
     let (seq_matrix, _) = engine.compute(&topo, &weights, &down_rev_flat, &val_sources, &val_targets);
@@ -2964,7 +2964,7 @@ fn build_down_rev(topo: &butterfly_route::formats::CchTopo) -> DownReverseAdj {
 
 /// Compare dense vs sparse contour generation
 fn run_contour_compare_bench(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     mode: &str,
     threshold_ds: u32,
     n_queries: usize,
@@ -3018,7 +3018,7 @@ fn run_contour_compare_bench(
     println!("\n[2/3] Generating {} random origins...", n_queries);
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
     let origins: Vec<u32> = (0..n_queries)
-        .map(|_| rng.gen_range(0..n_nodes as u32))
+        .map(|_| rng.random_range(0..n_nodes as u32))
         .collect();
 
     // Run benchmarks
@@ -3172,7 +3172,7 @@ fn run_contour_compare_bench(
 /// End-to-end isochrone benchmark measuring full pipeline:
 /// compute → contour → WKB encode → serialize
 fn run_e2e_isochrone_bench(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     mode: &str,
     threshold_ms: u32,
     n_origins: usize,
@@ -3256,7 +3256,7 @@ fn run_e2e_isochrone_bench(
     // Generate random origins
     let mut rng = StdRng::seed_from_u64(seed);
     let origins: Vec<u32> = (0..n_origins)
-        .map(|_| rng.gen_range(0..n_nodes as u32))
+        .map(|_| rng.random_range(0..n_nodes as u32))
         .collect();
 
     // Timing breakdown accumulators
@@ -3420,7 +3420,7 @@ fn run_e2e_isochrone_bench(
 
 /// Pathological origins benchmark - tests worst-case scenarios
 fn run_pathological_origins_bench(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     mode: &str,
 ) -> anyhow::Result<()> {
     use butterfly_route::profile_abi::Mode;
@@ -3594,7 +3594,7 @@ fn run_pathological_origins_bench(
 
 /// Bulk pipeline benchmark
 fn run_bulk_pipeline_bench(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     mode: &str,
     threshold_ms: u32,
     n_origins: usize,
@@ -3656,7 +3656,7 @@ fn run_bulk_pipeline_bench(
 
     println!("[2/3] Processing...");
     let mut rng = StdRng::seed_from_u64(seed);
-    let origins: Vec<u32> = (0..n_origins).map(|_| rng.gen_range(0..n_nodes as u32)).collect();
+    let origins: Vec<u32> = (0..n_origins).map(|_| rng.random_range(0..n_nodes as u32)).collect();
 
     let mut writer: Option<BufWriter<File>> = output_path.map(|p|
         BufWriter::with_capacity(64 * 1024, File::create(p).unwrap())
@@ -3702,7 +3702,7 @@ fn run_bulk_pipeline_bench(
 
 fn base64_simple(data: &[u8]) -> String {
     const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut r = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut r = String::with_capacity(data.len().div_ceil(3) * 4);
     for c in data.chunks(3) {
         let (b0, b1, b2) = (c[0] as usize, c.get(1).copied().unwrap_or(0) as usize, c.get(2).copied().unwrap_or(0) as usize);
         r.push(A[b0 >> 2] as char);
@@ -3722,7 +3722,7 @@ fn get_rss_kb() -> usize {
 
 /// Monotonicity test: T1 < T2 ⇒ reachable(T1) ⊆ reachable(T2)
 fn run_monotonicity_test(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     mode: &str,
     n_origins: usize,
     seed: u64,
@@ -3752,7 +3752,7 @@ fn run_monotonicity_test(
 
     println!("[2/2] Testing monotonicity...");
     let mut rng = StdRng::seed_from_u64(seed);
-    let origins: Vec<u32> = (0..n_origins).map(|_| rng.gen_range(0..n_nodes as u32)).collect();
+    let origins: Vec<u32> = (0..n_origins).map(|_| rng.random_range(0..n_nodes as u32)).collect();
     let thresholds: Vec<u32> = vec![1000, 2000, 3000, 6000, 12000, 18000]; // deciseconds
 
     let mut tests = 0usize;
@@ -3765,7 +3765,7 @@ fn run_monotonicity_test(
             let result = phast.query_bounded(origin, t);
             let reach: usize = result.dist.iter().filter(|&&d| d <= t).count();
 
-            if let Some((prev_t, prev_reach)) = prev {
+            if let Some((_prev_t, prev_reach)) = prev {
                 tests += 1;
                 if reach < prev_reach {
                     violations += 1;
@@ -3794,7 +3794,7 @@ fn run_monotonicity_test(
 
 /// Compare polygon detail levels with different cell sizes
 fn run_detail_compare(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     mode: &str,
     threshold_min: u32,
 ) -> anyhow::Result<()> {
@@ -3948,7 +3948,7 @@ fn run_detail_compare(
     println!("│ Configuration            │ Points │ Verts  │ Time   │");
     println!("├──────────────────────────┼────────┼────────┼────────┤");
 
-    for (_i, (name, config)) in hull_configs.iter().enumerate() {
+    for (name, config) in hull_configs.iter() {
         let start = Instant::now();
         let result = generate_concave_hull(&frontier_segments, config);
         let elapsed = start.elapsed().as_millis();

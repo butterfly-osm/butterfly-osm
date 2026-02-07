@@ -91,7 +91,7 @@ pub fn analyze_equivalence_classes(
     let mut nodes_fully_collapsed = 0usize;
     let mut nodes_no_benefit = 0usize;
 
-    for (_nbg_node, incoming_edges) in &nbg_incoming {
+    for incoming_edges in nbg_incoming.values() {
         let indeg = incoming_edges.len();
         if indeg == 0 {
             continue;
@@ -180,8 +180,7 @@ fn compute_signature(
 
     let mut turn_cost_vec: Vec<(u32, u32)> = Vec::with_capacity(arc_end - arc_start);
 
-    for arc_idx in arc_start..arc_end {
-        let out_ebg = ebg_targets[arc_idx];
+    for (arc_idx, &out_ebg) in ebg_targets.iter().enumerate().take(arc_end).skip(arc_start) {
         let cost = turn_costs.get(arc_idx).copied().unwrap_or(0);
         turn_cost_vec.push((out_ebg, cost));
     }
@@ -306,8 +305,8 @@ pub fn analyze_densifiers(
     for state in 0..n_states {
         let start = offsets[state] as usize;
         let end = offsets[state + 1] as usize;
-        for i in start..end {
-            let tgt = targets[i] as usize;
+        for &tgt_val in &targets[start..end] {
+            let tgt = tgt_val as usize;
             if tgt < n_states {
                 in_degrees[tgt] += 1;
             }

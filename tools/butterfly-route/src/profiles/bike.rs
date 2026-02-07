@@ -1,4 +1,4 @@
-///! Bicycle routing profile - Tag semantics for bicycle routing
+//! Bicycle routing profile - Tag semantics for bicycle routing
 
 use crate::profile_abi::*;
 use crate::profiles::tag_lookup::TagLookup;

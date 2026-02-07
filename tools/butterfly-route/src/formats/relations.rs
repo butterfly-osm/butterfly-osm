@@ -1,4 +1,4 @@
-///! relations.raw format - turn restrictions and relevant relations
+//! relations.raw format - turn restrictions and relevant relations
 
 use anyhow::Result;
 use std::collections::HashMap;
@@ -345,6 +345,7 @@ impl RelationsFile {
     }
 
     /// Read dictionaries from relations.raw and return them with their SHA-256 hashes
+    #[allow(clippy::type_complexity)]
     pub fn read_dictionaries<P: AsRef<Path>>(path: P) -> Result<(HashMap<u32, String>, HashMap<u32, String>, [u8; 32], [u8; 32])> {
         let mut file = File::open(path)?;
         let file_len = file.metadata()?.len();
@@ -414,7 +415,7 @@ impl RelationsFile {
         keys.sort();
 
         for key in keys {
-            hasher.update(&key.to_le_bytes());
+            hasher.update(key.to_le_bytes());
             hasher.update(dict[key].as_bytes());
         }
 

@@ -1,21 +1,21 @@
-///! w.<mode>.u32 format - Per-mode node weights
-///!
-///! Format (little-endian, mmap-friendly):
-///!
-///! Header (32 bytes):
-///!   magic:       u32 = 0x574D4F44  // "WMOD"
-///!   version:     u16 = 1
-///!   mode:        u8  = {0=car,1=bike,2=foot}
-///!   reserved:    u8  = 0
-///!   count:       u32 = n_nodes
-///!   inputs_sha:  [16]u8  // truncated SHA-256 of inputs
-///!
-///! Body (count * u32):
-///!   u32 weight_ds[count]  // deciseconds (0 = inaccessible)
-///!
-///! Footer (16 bytes):
-///!   body_crc64:  u64
-///!   file_crc64:  u64
+//! w.<mode>.u32 format - Per-mode node weights
+//!
+//! Format (little-endian, mmap-friendly):
+//!
+//! Header (32 bytes):
+//!   magic:       u32 = 0x574D4F44  // "WMOD"
+//!   version:     u16 = 1
+//!   mode:        u8  = {0=car,1=bike,2=foot}
+//!   reserved:    u8  = 0
+//!   count:       u32 = n_nodes
+//!   inputs_sha:  [16]u8  // truncated SHA-256 of inputs
+//!
+//! Body (count * u32):
+//!   u32 weight_ds[count]  // deciseconds (0 = inaccessible)
+//!
+//! Footer (16 bytes):
+//!   body_crc64:  u64
+//!   file_crc64:  u64
 
 use anyhow::{Context, Result};
 use std::fs::File;

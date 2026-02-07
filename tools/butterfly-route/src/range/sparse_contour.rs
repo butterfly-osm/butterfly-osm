@@ -142,6 +142,7 @@ impl SparseTileMap {
     }
 
     /// Get all active tile coordinates
+    #[allow(dead_code)]
     fn active_tiles(&self) -> Vec<TileCoord> {
         self.tiles.keys().copied().collect()
     }
@@ -173,7 +174,7 @@ const EMPTY_TILE: [u64; TILE_SIZE] = [0u64; TILE_SIZE];
 
 /// Get a tile's bits as a slice, or empty slice if not present
 #[inline]
-fn get_tile_bits<'a>(map: &'a SparseTileMap, coord: TileCoord) -> &'a [u64; TILE_SIZE] {
+fn get_tile_bits(map: &SparseTileMap, coord: TileCoord) -> &[u64; TILE_SIZE] {
     map.tiles.get(&coord)
         .map(|t| t.bits.as_slice().try_into().unwrap())
         .unwrap_or(&EMPTY_TILE)
@@ -460,8 +461,7 @@ pub fn generate_sparse_contour(
     segments: &[ReachableSegment],
     config: &SparseContourConfig,
 ) -> Result<SparseContourResult> {
-    let mut stats = SparseContourStats::default();
-    stats.input_segments = segments.len();
+    let mut stats = SparseContourStats { input_segments: segments.len(), ..Default::default() };
 
     if segments.is_empty() {
         return Ok(SparseContourResult {
@@ -719,6 +719,7 @@ fn trace_boundary_edges_with_visited(
 /// Trace boundary edges clockwise, emitting corner vertices
 /// Edge encoding: 0=North, 1=East, 2=South, 3=West
 /// Walking clockwise means filled cells are on our right
+#[allow(dead_code)]
 fn trace_boundary_edges(
     map: &SparseTileMap,
     start_col: i32,
@@ -858,6 +859,7 @@ fn next_boundary_edge(map: &SparseTileMap, col: i32, row: i32, edge: u8) -> (i32
 }
 
 /// Marching squares on dense array with flood fill for exterior
+#[allow(dead_code)]
 fn marching_squares_dense(
     raster: &[bool],
     n_cols: usize,

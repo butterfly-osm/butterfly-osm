@@ -1,6 +1,6 @@
-///! Car routing profile - Tag semantics for automobile routing
-///!
-///! Implements access rules, speed limits, and preferences for cars.
+//! Car routing profile - Tag semantics for automobile routing
+//!
+//! Implements access rules, speed limits, and preferences for cars.
 
 use crate::profile_abi::*;
 use crate::profiles::tag_lookup::TagLookup;
@@ -101,11 +101,9 @@ impl Profile for CarProfile {
         }
 
         // Motorways and motorway_links are oneway by default
-        if highway == "motorway" || highway == "motorway_link" {
-            if output.oneway == 0 {
-                output.access_rev = false;
-                output.oneway = 1;
-            }
+        if (highway == "motorway" || highway == "motorway_link") && output.oneway == 0 {
+            output.access_rev = false;
+            output.oneway = 1;
         }
 
         // Convert speed to mm/s

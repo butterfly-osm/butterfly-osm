@@ -14,6 +14,9 @@ thiserror.workspace = true
 strsim.workspace = true
 reqwest = { workspace = true, optional = true }
 
+[lints]
+workspace = true
+
 [features]
 default = []
 http = ["reqwest"]

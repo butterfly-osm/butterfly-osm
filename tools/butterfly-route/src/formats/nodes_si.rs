@@ -1,24 +1,24 @@
-///! Two-level sparse index for nodes.sa
-///!
-///! Format: nodes.si (little-endian)
-///!
-///! Header (32 bytes):
-///!   magic:      u32 = 0x4E4F4458  // "NODX"
-///!   version:    u16 = 1
-///!   reserved:   u16 = 0
-///!   block_size: u32 = 2048
-///!   top_bits:   u8  = 16
-///!   reserved2:  [19]u8
-///!
-///! Level 1 (65536 entries for top_bits=16):
-///!   For each bucket k in [0..65535]:
-///!     start_idx: u64  // index into Level 2 for first sample
-///!     end_idx:   u64  // one past last (start=end if empty)
-///!
-///! Level 2 (M = ceil(count / block_size) samples):
-///!   For each sample j in [0..M-1]:
-///!     id_sample:  i64  // id at record j*block_size in nodes.sa
-///!     rec_index:  u64  // = j*block_size
+//! Two-level sparse index for nodes.sa
+//!
+//! Format: nodes.si (little-endian)
+//!
+//! Header (32 bytes):
+//!   magic:      u32 = 0x4E4F4458  // "NODX"
+//!   version:    u16 = 1
+//!   reserved:   u16 = 0
+//!   block_size: u32 = 2048
+//!   top_bits:   u8  = 16
+//!   reserved2:  [19]u8
+//!
+//! Level 1 (65536 entries for top_bits=16):
+//!   For each bucket k in [0..65535]:
+//!     start_idx: u64  // index into Level 2 for first sample
+//!     end_idx:   u64  // one past last (start=end if empty)
+//!
+//! Level 2 (M = ceil(count / block_size) samples):
+//!   For each sample j in [0..M-1]:
+//!     id_sample:  i64  // id at record j*block_size in nodes.sa
+//!     rec_index:  u64  // = j*block_size
 
 use anyhow::{Context, Result};
 use std::fs::File;

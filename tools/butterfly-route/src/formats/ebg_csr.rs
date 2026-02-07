@@ -1,4 +1,4 @@
-///! ebg.csr format - EBG adjacency (CSR over EBG nodes)
+//! ebg.csr format - EBG adjacency (CSR over EBG nodes)
 
 use anyhow::Result;
 use std::fs::File;

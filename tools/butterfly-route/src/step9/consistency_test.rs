@@ -19,6 +19,7 @@ use super::state::ServerState;
 use super::unpack::unpack_path;
 
 /// Test coordinate pairs across Belgium
+#[allow(clippy::type_complexity)]
 const TEST_PAIRS: &[((f64, f64), (f64, f64))] = &[
     // Brussels center → Parc du Cinquantenaire
     ((4.3517, 50.8503), (4.4017, 50.8603)),
@@ -213,7 +214,7 @@ fn test_route_table_distance_consistency() {
             let table_dist = if dist_matrix[0] == u32::MAX { None } else { Some(dist_matrix[0]) };
 
             // Get distance via P2P query with distance weights
-            let dist_query = CchQuery::with_custom_weights(
+            let _dist_query = CchQuery::with_custom_weights(
                 &mode_data.cch_topo,
                 &mode_data.down_rev,
                 // Note: we need distance weights for P2P too

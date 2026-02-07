@@ -1,4 +1,4 @@
-///! PBF ingestion pipeline - Step 1
+//! PBF ingestion pipeline - Step 1
 
 use anyhow::{Context, Result};
 use osmpbf::{Element, ElementReader};
@@ -41,7 +41,7 @@ pub fn run_ingest(config: IngestConfig) -> Result<IngestResult> {
     // Calculate input file SHA-256
     println!("Computing input file SHA-256...");
     let input_sha256 = compute_file_sha256(&config.input)?;
-    println!("  ✓ SHA-256: {}", hex::encode(&input_sha256));
+    println!("  ✓ SHA-256: {}", hex::encode(input_sha256));
 
     // Pass 1: Extract nodes (including traffic signals)
     println!("Pass 1/3: Processing nodes...");

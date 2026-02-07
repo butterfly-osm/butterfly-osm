@@ -1,28 +1,28 @@
-///! turn_rules.<mode>.bin format - Per-mode turn restrictions
-///!
-///! Format (little-endian):
-///!
-///! Header (80 bytes):
-///!   magic:         u32 = 0x5455524E  // "TURN"
-///!   version:       u16 = 1
-///!   mode:          u8  = {0,1,2}
-///!   reserved:      u8  = 0
-///!   count:         u64
-///!   rel_dict_k_sha: [32]u8
-///!   rel_dict_v_sha: [32]u8
-///!
-///! Body (count records, sorted by via_node_id, from_way_id, to_way_id):
-///!   via_node_id:   i64
-///!   from_way_id:   i64
-///!   to_way_id:     i64
-///!   kind:          u8  // 0=None,1=Ban,2=Only,3=Penalty
-///!   penalty_ds:    u32
-///!   is_time_dep:   u8  // 0/1/2 (2=needs_expansion for via=way)
-///!   reserved:      [6]u8
-///!
-///! Footer (16 bytes):
-///!   body_crc64:    u64
-///!   file_crc64:    u64
+//! turn_rules.<mode>.bin format - Per-mode turn restrictions
+//!
+//! Format (little-endian):
+//!
+//! Header (80 bytes):
+//!   magic:         u32 = 0x5455524E  // "TURN"
+//!   version:       u16 = 1
+//!   mode:          u8  = {0,1,2}
+//!   reserved:      u8  = 0
+//!   count:         u64
+//!   rel_dict_k_sha: [32]u8
+//!   rel_dict_v_sha: [32]u8
+//!
+//! Body (count records, sorted by via_node_id, from_way_id, to_way_id):
+//!   via_node_id:   i64
+//!   from_way_id:   i64
+//!   to_way_id:     i64
+//!   kind:          u8  // 0=None,1=Ban,2=Only,3=Penalty
+//!   penalty_ds:    u32
+//!   is_time_dep:   u8  // 0/1/2 (2=needs_expansion for via=way)
+//!   reserved:      [6]u8
+//!
+//! Footer (16 bytes):
+//!   body_crc64:    u64
+//!   file_crc64:    u64
 
 use anyhow::{Context, Result};
 use std::fs::File;
@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn test_turn_rule_ordering() {
-        let mut rules = vec![
+        let mut rules = [
             TurnRule {
                 via_node_id: 2,
                 from_way_id: 1,

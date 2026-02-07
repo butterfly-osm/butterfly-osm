@@ -1,7 +1,7 @@
-///! Profile ABI - Stable C-compatible interface for routing profiles
-///!
-///! This module defines the ABI between the routing engine and mode-specific profiles.
-///! Profiles can be compiled as cdylib or WASM with the same interface.
+//! Profile ABI - Stable C-compatible interface for routing profiles
+//!
+//! This module defines the ABI between the routing engine and mode-specific profiles.
+//! Profiles can be compiled as cdylib or WASM with the same interface.
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -17,7 +17,7 @@ pub struct WayInput<'a> {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct WayOutput {
     /// Can traverse forward (along way direction)
     pub access_fwd: bool,
@@ -39,21 +39,6 @@ pub struct WayOutput {
     pub const_penalty_ds: u32,
 }
 
-impl Default for WayOutput {
-    fn default() -> Self {
-        Self {
-            access_fwd: false,
-            access_rev: false,
-            oneway: 0,
-            base_speed_mmps: 0,
-            surface_class: 0,
-            highway_class: 0,
-            class_bits: 0,
-            per_km_penalty_ds: 0,
-            const_penalty_ds: 0,
-        }
-    }
-}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]

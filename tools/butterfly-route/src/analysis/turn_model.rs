@@ -8,13 +8,13 @@
 //! 2. How many junctions have non-trivial turn behavior?
 //! 3. What fraction of searches would need junction expansion?
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 use anyhow::Result;
 
 use crate::formats::{
-    EbgNodesFile, EbgCsrFile, TurnTableFile, turn_rules, TurnKind, TurnEntry,
-    NbgCsrFile, NbgGeoFile,
+    EbgNodesFile, EbgCsrFile, TurnTableFile, turn_rules, TurnKind,
+    NbgCsrFile,
 };
 
 /// Result of turn model analysis
@@ -342,8 +342,8 @@ pub fn analyze_turn_model(
         n_junctions_degree_4_plus: n_degree_4_plus,
 
         n_ebg_arcs: ebg_csr.n_arcs as usize,
-        n_arcs_with_ban: n_arcs_with_ban,
-        n_arcs_with_penalty: n_arcs_with_penalty,
+        n_arcs_with_ban,
+        n_arcs_with_penalty,
         n_arcs_allow_all_modes: n_arcs_allow_all,
 
         n_potential_uturns,

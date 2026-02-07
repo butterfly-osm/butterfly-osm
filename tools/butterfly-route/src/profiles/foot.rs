@@ -1,4 +1,4 @@
-///! Pedestrian routing profile - Tag semantics for walking
+//! Pedestrian routing profile - Tag semantics for walking
 
 use crate::profile_abi::*;
 use crate::profiles::tag_lookup::TagLookup;

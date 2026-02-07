@@ -1,7 +1,7 @@
-///! Turn rule processing - via=way expansion, merging, ONLY conversion
+//! Turn rule processing - via=way expansion, merging, ONLY conversion
 
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::formats::*;
@@ -132,6 +132,7 @@ fn process_rule(
 }
 
 /// Add or merge a canonical turn rule
+#[allow(clippy::too_many_arguments)]
 fn add_canonical_rule(
     via_node_osm: i64,
     from_way_id: i64,
@@ -188,6 +189,7 @@ fn add_canonical_rule(
 }
 
 /// Find all NBG nodes that are part of a given way
+#[allow(dead_code)]
 fn find_nodes_on_way(
     way_id: i64,
     nbg_geo: &NbgGeo,

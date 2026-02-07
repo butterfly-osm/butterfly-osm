@@ -1,13 +1,13 @@
-///! Step 6: Nested Dissection ordering on per-mode filtered EBG
-///!
-///! Computes a high-quality elimination order on the mode-filtered Edge-Based Graph.
-///! Each mode gets its own ordering computed on only the mode-accessible nodes.
+//! Step 6: Nested Dissection ordering on per-mode filtered EBG
+//!
+//! Computes a high-quality elimination order on the mode-filtered Edge-Based Graph.
+//! Each mode gets its own ordering computed on only the mode-accessible nodes.
 
 use anyhow::Result;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
-use crate::formats::{EbgCsrFile, EbgNodesFile, FilteredEbg, FilteredEbgFile, NbgGeoFile, OrderEbg, OrderEbgFile};
+use crate::formats::{EbgNodesFile, FilteredEbg, FilteredEbgFile, NbgGeoFile, OrderEbg, OrderEbgFile};
 use crate::profile_abi::Mode;
 
 /// Configuration for Step 6
@@ -133,6 +133,7 @@ pub fn generate_ordering(config: Step6Config) -> Result<Step6Result> {
 ///
 /// EBG node i represents a directed edge. We use the midpoint of the
 /// corresponding NBG edge's geometry as the coordinate for partitioning.
+#[allow(dead_code)]
 fn extract_ebg_coordinates(
     ebg_nodes: &crate::formats::EbgNodes,
     nbg_geo: &crate::formats::NbgGeo,
@@ -304,6 +305,7 @@ fn find_filtered_components(filtered_ebg: &FilteredEbg) -> Result<Vec<Vec<u32>>>
 }
 
 /// Find connected components using BFS on the EBG
+#[allow(dead_code)]
 fn find_components(csr: &crate::formats::EbgCsr) -> Result<Vec<Vec<u32>>> {
     let n = csr.n_nodes as usize;
     let mut visited = vec![false; n];
@@ -352,6 +354,7 @@ struct NdBuilder {
     inv_perm: Vec<u32>,
     next_rank: u32,
     leaf_threshold: usize,
+    #[allow(dead_code)]
     balance_eps: f32,
 }
 
@@ -366,6 +369,7 @@ impl NdBuilder {
         }
     }
 
+    #[allow(dead_code)]
     fn order_component(
         &mut self,
         csr: &crate::formats::EbgCsr,
@@ -386,6 +390,7 @@ impl NdBuilder {
         Ok(result.depth)
     }
 
+    #[allow(dead_code)]
     fn recursive_nd(
         &self,
         csr: &crate::formats::EbgCsr,
@@ -411,7 +416,7 @@ impl NdBuilder {
 
         // Quality check: if balance is very bad, fall back to leaf ordering
         // Be more permissive - only give up on very extreme imbalance
-        if balance < 0.2 || balance > 0.8 {
+        if !(0.2..=0.8).contains(&balance) {
             let ordering = self.minimum_degree_order(csr, nodes);
             return Ok(NdResult {
                 ordering,
@@ -449,6 +454,7 @@ impl NdBuilder {
         })
     }
 
+    #[allow(dead_code)]
     fn inertial_partition(
         &self,
         csr: &crate::formats::EbgCsr,
@@ -510,6 +516,7 @@ impl NdBuilder {
         Ok((part_a, part_b, separator))
     }
 
+    #[allow(dead_code)]
     fn extract_separator(
         &self,
         csr: &crate::formats::EbgCsr,
@@ -586,6 +593,7 @@ impl NdBuilder {
         separator
     }
 
+    #[allow(dead_code)]
     fn minimum_degree_order(&self, csr: &crate::formats::EbgCsr, nodes: &[u32]) -> Vec<u32> {
         if nodes.is_empty() {
             return vec![];
@@ -724,7 +732,7 @@ impl NdBuilder {
 
         let balance = part_a.len() as f32 / (part_a.len() + part_b.len()).max(1) as f32;
 
-        if balance < 0.2 || balance > 0.8 {
+        if !(0.2..=0.8).contains(&balance) {
             let ordering = self.minimum_degree_order_filtered(filtered_ebg, nodes);
             return Ok(NdResult { ordering, depth });
         }
@@ -1298,18 +1306,18 @@ fn extract_hybrid_coordinates(hybrid: &HybridState, nbg_geo: &crate::formats::Nb
             let poly = &nbg_geo.polylines[edge_idx];
             if !poly.lat_fxp.is_empty() && !poly.lon_fxp.is_empty() {
                 // Use first point for u_node (source)
-                if !nbg_node_coords.contains_key(&edge.u_node) {
+                nbg_node_coords.entry(edge.u_node).or_insert_with(|| {
                     let lat = poly.lat_fxp[0] as f64 * 1e-7;
                     let lon = poly.lon_fxp[0] as f64 * 1e-7;
-                    nbg_node_coords.insert(edge.u_node, (lon, lat));
-                }
+                    (lon, lat)
+                });
                 // Use last point for v_node (target)
-                if !nbg_node_coords.contains_key(&edge.v_node) {
+                nbg_node_coords.entry(edge.v_node).or_insert_with(|| {
                     let last = poly.lat_fxp.len() - 1;
                     let lat = poly.lat_fxp[last] as f64 * 1e-7;
                     let lon = poly.lon_fxp[last] as f64 * 1e-7;
-                    nbg_node_coords.insert(edge.v_node, (lon, lat));
-                }
+                    (lon, lat)
+                });
             }
         }
     }
@@ -1469,7 +1477,7 @@ impl NdBuilder {
 
         let balance = part_a.len() as f32 / (part_a.len() + part_b.len()).max(1) as f32;
 
-        if balance < 0.2 || balance > 0.8 {
+        if !(0.2..=0.8).contains(&balance) {
             let ordering = self.minimum_degree_order_hybrid(hybrid, nodes);
             return Ok(NdResult { ordering, depth });
         }
@@ -1711,9 +1719,7 @@ impl NdBuilder {
                 }
             } else if dist1[u] == u32::MAX {
                 part_b_local.push(u);
-            } else if dist2[u] == u32::MAX {
-                part_a_local.push(u);
-            } else if dist1[u] < dist2[u] {
+            } else if dist2[u] == u32::MAX || dist1[u] < dist2[u] {
                 part_a_local.push(u);
             } else if dist2[u] < dist1[u] {
                 part_b_local.push(u);
@@ -1813,7 +1819,7 @@ impl NdBuilder {
         let balance = part_a.len() as f32 / (part_a.len() + part_b.len()).max(1) as f32;
 
         // If partition is too unbalanced, fall back to minimum degree
-        if balance < 0.1 || balance > 0.9 || part_a.is_empty() || part_b.is_empty() {
+        if !(0.1..=0.9).contains(&balance) || part_a.is_empty() || part_b.is_empty() {
             let ordering = self.minimum_degree_order_hybrid(hybrid, nodes);
             return Ok(NdResult { ordering, depth });
         }

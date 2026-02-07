@@ -1,22 +1,22 @@
-///! mask.<mode>.bitset format - Per-mode node accessibility mask
-///!
-///! Format (little-endian, mmap-friendly):
-///!
-///! Header (24 bytes):
-///!   magic:       u32 = 0x4D41534B  // "MASK"
-///!   version:     u16 = 1
-///!   mode:        u8  = {0=car,1=bike,2=foot}
-///!   reserved:    u8  = 0
-///!   count:       u32 = n_nodes
-///!   inputs_sha:  [8]u8  // truncated SHA-256 of inputs
-///!   pad:         [4]u8
-///!
-///! Body (ceil(count/8) bytes):
-///!   bits[ceil(count/8)]  // 1 = traversable, 0 = not traversable
-///!
-///! Footer (16 bytes):
-///!   body_crc64:  u64
-///!   file_crc64:  u64
+//! mask.<mode>.bitset format - Per-mode node accessibility mask
+//!
+//! Format (little-endian, mmap-friendly):
+//!
+//! Header (24 bytes):
+//!   magic:       u32 = 0x4D41534B  // "MASK"
+//!   version:     u16 = 1
+//!   mode:        u8  = {0=car,1=bike,2=foot}
+//!   reserved:    u8  = 0
+//!   count:       u32 = n_nodes
+//!   inputs_sha:  [8]u8  // truncated SHA-256 of inputs
+//!   pad:         [4]u8
+//!
+//! Body (ceil(count/8) bytes):
+//!   bits[ceil(count/8)]  // 1 = traversable, 0 = not traversable
+//!
+//! Footer (16 bytes):
+//!   body_crc64:  u64
+//!   file_crc64:  u64
 
 use anyhow::{Context, Result};
 use std::fs::File;
@@ -40,7 +40,7 @@ pub struct ModMask {
 
 impl ModMask {
     pub fn new(mode: Mode, n_nodes: u32, inputs_sha: [u8; 8]) -> Self {
-        let byte_len = ((n_nodes + 7) / 8) as usize;
+        let byte_len = n_nodes.div_ceil(8) as usize;
         Self {
             mode,
             mask: vec![0u8; byte_len],
@@ -144,7 +144,7 @@ pub fn read_all<P: AsRef<Path>>(path: P) -> Result<ModMask> {
     inputs_sha.copy_from_slice(&header[12..20]);
 
     // Read mask
-    let byte_len = ((n_nodes + 7) / 8) as usize;
+    let byte_len = n_nodes.div_ceil(8) as usize;
     let mut mask = vec![0u8; byte_len];
     file.read_exact(&mut mask)?;
 
@@ -180,7 +180,7 @@ pub fn verify<P: AsRef<Path>>(path: P) -> Result<()> {
     }
 
     let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
-    let byte_len = ((n_nodes + 7) / 8) as u64;
+    let byte_len = n_nodes.div_ceil(8) as u64;
 
     // Verify file size
     let expected_size = HEADER_SIZE as u64 + byte_len + 16;

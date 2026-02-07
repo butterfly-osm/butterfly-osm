@@ -1,4 +1,4 @@
-///! CLI commands for butterfly-route
+//! CLI commands for butterfly-route
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -311,6 +311,10 @@ pub enum Commands {
         /// Port to listen on (default: find free port starting from 8080)
         #[arg(short, long)]
         port: Option<u16>,
+
+        /// Log format: "text" (default) or "json"
+        #[arg(long, default_value = "text")]
+        log_format: String,
     },
 
     /// Validate CCH correctness by comparing bidirectional CCH vs CCH-Dijkstra
@@ -1322,7 +1326,10 @@ impl Cli {
 
                 Ok(())
             }
-            Commands::Serve { data_dir, port } => {
+            Commands::Serve { data_dir, port, log_format } => {
+                // Initialize structured logging for the serve command
+                step9::init_tracing(&log_format);
+
                 // Create tokio runtime
                 let rt = tokio::runtime::Runtime::new()?;
                 rt.block_on(step9::serve(&data_dir, port))?;
@@ -1915,10 +1922,10 @@ impl Cli {
 
                 // Compute input hash
                 let mut hasher = Sha256::new();
-                hasher.update(&ebg_nodes.to_string_lossy().as_bytes());
-                hasher.update(&ebg_csr.to_string_lossy().as_bytes());
-                hasher.update(&weights.to_string_lossy().as_bytes());
-                hasher.update(&turns.to_string_lossy().as_bytes());
+                hasher.update(ebg_nodes.to_string_lossy().as_bytes());
+                hasher.update(ebg_csr.to_string_lossy().as_bytes());
+                hasher.update(weights.to_string_lossy().as_bytes());
+                hasher.update(turns.to_string_lossy().as_bytes());
                 let hash = hasher.finalize();
                 let mut inputs_sha = [0u8; 32];
                 inputs_sha.copy_from_slice(&hash[..32]);
@@ -2240,12 +2247,12 @@ impl Cli {
 
                     // Generate random source/target pairs
                     use rand::prelude::*;
-                    let mut rng = rand::thread_rng();
+                    let mut rng = rand::rng();
                     let n_nodes = topo.n_nodes;
 
                     for size in [10, 25, 50, 100] {
-                        let sources: Vec<u32> = (0..size).map(|_| rng.gen_range(0..n_nodes)).collect();
-                        let targets: Vec<u32> = (0..size).map(|_| rng.gen_range(0..n_nodes)).collect();
+                        let sources: Vec<u32> = (0..size).map(|_| rng.random_range(0..n_nodes)).collect();
+                        let targets: Vec<u32> = (0..size).map(|_| rng.random_range(0..n_nodes)).collect();
 
                         // Warmup
                         let _ = engine.compute(&sources, &targets);
@@ -2256,7 +2263,7 @@ impl Cli {
 
                         for _ in 0..n_runs {
                             let start = std::time::Instant::now();
-                            let (matrix, stats) = engine.compute(&sources, &targets);
+                            let (_matrix, _stats) = engine.compute(&sources, &targets);
                             let elapsed = start.elapsed().as_millis() as u64;
                             times.push(elapsed);
                         }

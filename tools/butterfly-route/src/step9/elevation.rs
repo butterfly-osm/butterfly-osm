@@ -75,7 +75,7 @@ impl SrtmTile {
         let frac_lon = lon - self.lon_sw as f64; // 0.0 at west, 1.0 at east
 
         // Check bounds: the tile covers [lat_sw, lat_sw+1] x [lon_sw, lon_sw+1]
-        if frac_lat < 0.0 || frac_lat > 1.0 || frac_lon < 0.0 || frac_lon > 1.0 {
+        if !(0.0..=1.0).contains(&frac_lat) || !(0.0..=1.0).contains(&frac_lon) {
             return None;
         }
 
@@ -247,12 +247,11 @@ impl ElevationData {
                 if let Some(ext) = path.extension() {
                     if ext.eq_ignore_ascii_case("hgt") {
                         let tile = load_tile_from_file(&path)?;
-                        println!(
-                            "  Loaded SRTM tile: {}x{} samples at ({}, {})",
-                            tile.samples_per_side,
-                            tile.samples_per_side,
-                            tile.lat_sw,
-                            tile.lon_sw
+                        tracing::info!(
+                            samples = tile.samples_per_side,
+                            lat_sw = tile.lat_sw,
+                            lon_sw = tile.lon_sw,
+                            "loaded SRTM tile"
                         );
                         tiles.insert((tile.lat_sw, tile.lon_sw), tile);
                     }

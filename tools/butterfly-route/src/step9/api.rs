@@ -2,7 +2,7 @@
 
 use axum::{
     body::Body,
-    extract::{DefaultBodyLimit, Path, Query, State},
+    extract::{DefaultBodyLimit, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -12,8 +12,12 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio_stream::StreamExt;
+use std::time::Duration;
+use tower_http::catch_panic::CatchPanicLayer;
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::timeout::TimeoutLayer;
+use tower_http::trace::TraceLayer;
 use utoipa::{OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -64,24 +68,37 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    // Streaming endpoint needs larger body limit for 50k+ coordinates
-    let stream_route = Router::new()
-        .route("/table/stream", post(table_stream))
-        .layer(DefaultBodyLimit::max(256 * 1024 * 1024)); // 256MB limit
+    // Prometheus metrics
+    let (prometheus_layer, metric_handle) = axum_prometheus::PrometheusMetricLayer::pair();
 
-    Router::new()
-        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
+    // API routes: normal endpoints with 120s timeout + response compression
+    let api_routes = Router::new()
         .route("/route", get(route))
         .route("/nearest", get(nearest))
         .route("/table", post(table_post))
-        // Arrow streaming for large matrices (50k×50k+)
-        .merge(stream_route)
         .route("/isochrone", get(isochrone))
-        .route("/isochrone/bulk", post(isochrone_bulk))
         .route("/trip", post(super::trip::trip_handler))
         .route("/height", get(height))
         .route("/health", get(health))
         .route("/debug/compare", get(debug_compare))
+        .layer(CompressionLayer::new())
+        .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(120)));
+
+    // Streaming routes: longer timeout, larger body limit, no compression
+    let stream_routes = Router::new()
+        .route("/table/stream", post(table_stream))
+        .route("/isochrone/bulk", post(isochrone_bulk))
+        .layer(DefaultBodyLimit::max(256 * 1024 * 1024)) // 256MB
+        .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(600)));
+
+    Router::new()
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
+        .merge(api_routes)
+        .merge(stream_routes)
+        .route("/metrics", get(|| async move { metric_handle.render() }))
+        .layer(CatchPanicLayer::new())
+        .layer(prometheus_layer)
+        .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state)
 }
@@ -243,6 +260,13 @@ async fn route(
     State(state): State<Arc<ServerState>>,
     Query(req): Query<RouteRequest>,
 ) -> impl IntoResponse {
+    if let Err(e) = validate_coord(req.src_lon, req.src_lat, "source") {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+    }
+    if let Err(e) = validate_coord(req.dst_lon, req.dst_lat, "destination") {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+    }
+
     let mode = match parse_mode(&req.mode) {
         Ok(m) => m,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
@@ -789,13 +813,22 @@ async fn nearest(
     State(state): State<Arc<ServerState>>,
     Query(req): Query<NearestRequest>,
 ) -> impl IntoResponse {
+    if let Err(e) = validate_coord(req.lon, req.lat, "query point") {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+    }
+    if req.number > 100 {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse {
+            error: format!("number {} exceeds maximum of 100", req.number),
+        })).into_response();
+    }
+
     let mode = match parse_mode(&req.mode) {
         Ok(m) => m,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
     };
 
     let mode_data = state.get_mode(mode);
-    let k = (req.number.max(1).min(10)) as usize;
+    let k = (req.number.clamp(1, 100)) as usize;
 
     let results = state.spatial_index.snap_k_with_info(req.lon, req.lat, &mode_data.mask, k);
 
@@ -890,6 +923,17 @@ async fn table_post(
     State(state): State<Arc<ServerState>>,
     Json(req): Json<TablePostRequest>,
 ) -> impl IntoResponse {
+    for (i, [lon, lat]) in req.sources.iter().enumerate() {
+        if let Err(e) = validate_coord(*lon, *lat, &format!("source[{}]", i)) {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+        }
+    }
+    for (i, [lon, lat]) in req.destinations.iter().enumerate() {
+        if let Err(e) = validate_coord(*lon, *lat, &format!("destination[{}]", i)) {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+        }
+    }
+
     let mode = match parse_mode(&req.mode) {
         Ok(m) => m,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
@@ -1118,6 +1162,17 @@ async fn table_stream(
     State(state): State<Arc<ServerState>>,
     Json(req): Json<TableStreamRequest>,
 ) -> impl IntoResponse {
+    for (i, [lon, lat]) in req.sources.iter().enumerate() {
+        if let Err(e) = validate_coord(*lon, *lat, &format!("source[{}]", i)) {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+        }
+    }
+    for (i, [lon, lat]) in req.destinations.iter().enumerate() {
+        if let Err(e) = validate_coord(*lon, *lat, &format!("destination[{}]", i)) {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+        }
+    }
+
     let mode = match parse_mode(&req.mode) {
         Ok(m) => m,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
@@ -1168,8 +1223,8 @@ async fn table_stream(
     let dst_tile_size = req.dst_tile_size.min(n_total_targets).max(1);
 
     // Calculate total tiles for progress tracking
-    let n_src_blocks = (n_total_sources + src_tile_size - 1) / src_tile_size;
-    let n_dst_blocks = (n_total_targets + dst_tile_size - 1) / dst_tile_size;
+    let n_src_blocks = n_total_sources.div_ceil(src_tile_size);
+    let n_dst_blocks = n_total_targets.div_ceil(dst_tile_size);
     let n_total_tiles = n_src_blocks * n_dst_blocks;
     let n_total_cells = n_total_sources * n_total_targets;
 
@@ -1212,17 +1267,13 @@ async fn table_stream(
                         }
                     }
                     Err(e) => {
-                        let _ = tx.blocking_send(Err(std::io::Error::new(
-                            std::io::ErrorKind::Other, e.to_string(),
-                        )));
+                        let _ = tx.blocking_send(Err(std::io::Error::other(e.to_string())));
                         cancelled.store(true, Ordering::Relaxed);
                         return false;
                     }
                 },
                 Err(e) => {
-                    let _ = tx.blocking_send(Err(std::io::Error::new(
-                        std::io::ErrorKind::Other, e.to_string(),
-                    )));
+                    let _ = tx.blocking_send(Err(std::io::Error::other(e.to_string())));
                     cancelled.store(true, Ordering::Relaxed);
                     return false;
                 }
@@ -1435,6 +1486,15 @@ async fn isochrone(
     Query(req): Query<IsochroneRequest>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
+    if let Err(e) = validate_coord(req.lon, req.lat, "center") {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+    }
+    if req.time_s == 0 || req.time_s > 7200 {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse {
+            error: format!("time_s must be between 1 and 7200, got {}", req.time_s),
+        })).into_response();
+    }
+
     let mode = match parse_mode(&req.mode) {
         Ok(m) => m,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
@@ -1668,6 +1728,18 @@ async fn isochrone_bulk(
     use crate::range::wkb_stream::encode_polygon_wkb;
     use rayon::prelude::*;
 
+    if req.origins.is_empty() {
+        return (StatusCode::BAD_REQUEST, "origins cannot be empty".as_bytes().to_vec()).into_response();
+    }
+    for (i, &[lon, lat]) in req.origins.iter().enumerate() {
+        if let Err(e) = validate_coord(lon, lat, &format!("origin[{}]", i)) {
+            return (StatusCode::BAD_REQUEST, e.into_bytes()).into_response();
+        }
+    }
+    if req.time_s == 0 || req.time_s > 7200 {
+        return (StatusCode::BAD_REQUEST, format!("time_s must be between 1 and 7200, got {}", req.time_s).into_bytes()).into_response();
+    }
+
     let mode = match parse_mode(&req.mode) {
         Ok(m) => m,
         Err(e) => return (StatusCode::BAD_REQUEST, e.into_bytes()).into_response(),
@@ -1749,6 +1821,7 @@ async fn isochrone_bulk(
 }
 
 /// Bounded Dijkstra for isochrone computation (operates in filtered node space)
+#[allow(dead_code)]
 fn bounded_dijkstra(
     state: &ServerState,
     mode: Mode,
@@ -1852,7 +1925,7 @@ struct PhastState {
 
 impl PhastState {
     fn new(n_nodes: usize) -> Self {
-        let n_blocks = (n_nodes + PHAST_BLOCK_SIZE - 1) / PHAST_BLOCK_SIZE;
+        let n_blocks = n_nodes.div_ceil(PHAST_BLOCK_SIZE);
         Self {
             dist: vec![u32::MAX; n_nodes],
             version: vec![0; n_nodes],
@@ -2277,11 +2350,36 @@ async fn height(
         (status = 200, description = "Server is healthy"),
     )
 )]
-async fn health() -> impl IntoResponse {
+async fn health(
+    State(state): State<Arc<ServerState>>,
+) -> impl IntoResponse {
+    let uptime = state.started_at.elapsed();
     Json(serde_json::json!({
         "status": "ok",
-        "version": env!("CARGO_PKG_VERSION")
+        "version": env!("CARGO_PKG_VERSION"),
+        "uptime_s": uptime.as_secs(),
+        "modes": ["car", "bike", "foot"],
+        "data_dir": state.data_dir,
+        "nodes_count": state.ebg_nodes.n_nodes,
+        "edges_count": state.ebg_csr.n_arcs,
+        "named_roads_count": state.way_names.len(),
     }))
+}
+
+// ============ Input Validation ============
+
+/// Validate that a coordinate is within valid bounds.
+fn validate_coord(lon: f64, lat: f64, label: &str) -> Result<(), String> {
+    if !(-180.0..=180.0).contains(&lon) {
+        return Err(format!("{} longitude {} is outside valid range [-180, 180]", label, lon));
+    }
+    if !(-90.0..=90.0).contains(&lat) {
+        return Err(format!("{} latitude {} is outside valid range [-90, 90]", label, lat));
+    }
+    if lon.is_nan() || lat.is_nan() {
+        return Err(format!("{} coordinates contain NaN", label));
+    }
+    Ok(())
 }
 
 /// Parse mode string to Mode enum
@@ -2324,9 +2422,6 @@ async fn debug_compare(
     State(state): State<Arc<ServerState>>,
     Query(req): Query<DebugCompareRequest>,
 ) -> impl IntoResponse {
-    use priority_queue::PriorityQueue;
-    use std::cmp::Reverse;
-
     let mode = match parse_mode(&req.mode) {
         Ok(m) => m,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
@@ -2352,7 +2447,7 @@ async fn debug_compare(
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Node not accessible".to_string() })).into_response();
     }
 
-    let n = mode_data.cch_topo.n_nodes as usize;
+    let _n = mode_data.cch_topo.n_nodes as usize;
     let perm = &mode_data.order.perm;
 
     // Get ranks
@@ -2488,7 +2583,7 @@ async fn debug_compare(
               best_meet);
 
     // Analyze the CCH Dijkstra path and verify edge weights
-    if !cch_path.is_empty() && cch_dijkstra_distance.is_some() {
+    if let Some(reported) = cch_dijkstra_distance.filter(|_| !cch_path.is_empty()) {
         eprintln!("\n  CCH Dijkstra path analysis ({} nodes):", cch_path.len());
 
         // Verify path weights sum to distance
@@ -2542,8 +2637,6 @@ async fn debug_compare(
                 }
             }
         }
-
-        let reported = cch_dijkstra_distance.unwrap();
         eprintln!("    Reported distance: {}", reported);
         eprintln!("    Sum of edge weights: {}", weight_sum);
         if weight_sum != reported {
@@ -2588,7 +2681,7 @@ async fn debug_compare(
         if valleys > 0 {
             eprintln!("\n    Checking shortcuts at valleys:");
             prev_rank = perm[cch_path[0] as usize];
-            going_up = true;
+            let mut _going_up2 = true;
             let mut valley_count = 0;
             for i in 1..cch_path.len().saturating_sub(1) {
                 let curr_rank = perm[cch_path[i] as usize];
@@ -2662,9 +2755,9 @@ async fn debug_compare(
                 }
 
                 if curr_rank > prev_rank {
-                    going_up = true;
+                    _going_up2 = true;
                 } else if curr_rank < prev_rank {
-                    going_up = false;
+                    _going_up2 = false;
                 }
                 prev_rank = curr_rank;
             }
@@ -2705,6 +2798,7 @@ fn count_incoming_up_edges(topo: &crate::formats::CchTopo, u: u32) -> usize {
 }
 
 /// Run Dijkstra on CCH UP+DOWN graphs combined
+#[allow(dead_code)]
 fn run_cch_dijkstra(
     topo: &crate::formats::CchTopo,
     weights: &super::state::CchWeights,
@@ -3041,7 +3135,7 @@ mod tests {
     #[test]
     fn test_compute_bearing_north() {
         let b = compute_bearing(50.0, 4.0, 51.0, 4.0);
-        assert!(b < 5 || b > 355, "North bearing should be ~0, got {}", b);
+        assert!(!(5..=355).contains(&b), "North bearing should be ~0, got {}", b);
     }
 
     #[test]

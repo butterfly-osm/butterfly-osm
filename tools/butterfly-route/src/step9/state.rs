@@ -72,6 +72,10 @@ pub struct ServerState {
 
     // Road names: OSM way_id → name string (for turn-by-turn instructions)
     pub way_names: HashMap<i64, String>,
+
+    // Server metadata
+    pub started_at: std::time::Instant,
+    pub data_dir: String,
 }
 
 impl ServerState {
@@ -86,50 +90,50 @@ impl ServerState {
         let step7_dir = find_step_dir(data_dir, "step7")?;
         let step8_dir = find_step_dir(data_dir, "step8")?;
 
-        println!("Loading EBG nodes...");
+        tracing::info!("Loading EBG nodes...");
         let ebg_nodes = EbgNodesFile::read(step4_dir.join("ebg.nodes"))?;
-        println!("  ✓ {} nodes", ebg_nodes.n_nodes);
+        tracing::info!(nodes = ebg_nodes.n_nodes, "loaded EBG nodes");
 
-        println!("Loading EBG CSR...");
+        tracing::info!("Loading EBG CSR...");
         let ebg_csr = EbgCsrFile::read(step4_dir.join("ebg.csr"))?;
-        println!("  ✓ {} arcs", ebg_csr.n_arcs);
+        tracing::info!(arcs = ebg_csr.n_arcs, "loaded EBG CSR");
 
-        println!("Loading NBG geo...");
+        tracing::info!("Loading NBG geo...");
         let nbg_geo = NbgGeoFile::read(step3_dir.join("nbg.geo"))?;
-        println!("  ✓ {} edges", nbg_geo.edges.len());
+        tracing::info!(edges = nbg_geo.edges.len(), "loaded NBG geo");
 
-        println!("Loading per-mode CCH data...");
+        tracing::info!("Loading per-mode CCH data...");
         let car = load_mode_data(Mode::Car, &step5_dir, &step6_dir, &step7_dir, &step8_dir)?;
-        println!("  ✓ car: {} filtered nodes, {} up edges", car.filtered_ebg.n_filtered_nodes, car.cch_topo.up_targets.len());
+        tracing::info!(mode = "car", filtered_nodes = car.filtered_ebg.n_filtered_nodes, up_edges = car.cch_topo.up_targets.len(), "loaded mode data");
         let bike = load_mode_data(Mode::Bike, &step5_dir, &step6_dir, &step7_dir, &step8_dir)?;
-        println!("  ✓ bike: {} filtered nodes, {} up edges", bike.filtered_ebg.n_filtered_nodes, bike.cch_topo.up_targets.len());
+        tracing::info!(mode = "bike", filtered_nodes = bike.filtered_ebg.n_filtered_nodes, up_edges = bike.cch_topo.up_targets.len(), "loaded mode data");
         let foot = load_mode_data(Mode::Foot, &step5_dir, &step6_dir, &step7_dir, &step8_dir)?;
-        println!("  ✓ foot: {} filtered nodes, {} up edges", foot.filtered_ebg.n_filtered_nodes, foot.cch_topo.up_targets.len());
+        tracing::info!(mode = "foot", filtered_nodes = foot.filtered_ebg.n_filtered_nodes, up_edges = foot.cch_topo.up_targets.len(), "loaded mode data");
 
-        println!("Building spatial index...");
+        tracing::info!("Building spatial index...");
         let spatial_index = SpatialIndex::build(&ebg_nodes, &nbg_geo);
-        println!("  ✓ Indexed {} nodes", ebg_nodes.n_nodes);
+        tracing::info!(nodes = ebg_nodes.n_nodes, "built spatial index");
 
         // Load road names from ways.raw for turn-by-turn instructions
-        println!("Loading road names...");
+        tracing::info!("Loading road names...");
         let way_names = load_way_names(&step1_dir)?;
-        println!("  ✓ {} named roads", way_names.len());
+        tracing::info!(named_roads = way_names.len(), "loaded road names");
 
         // Try to load elevation data from srtm/ subdirectory
         let srtm_dir = data_dir.join("srtm");
         let elevation = if srtm_dir.is_dir() {
             match ElevationData::load_from_dir(&srtm_dir) {
                 Ok(elev) => {
-                    println!("  ✓ Loaded {} SRTM tiles", elev.tile_count());
+                    tracing::info!(tiles = elev.tile_count(), "loaded SRTM elevation tiles");
                     Some(elev)
                 }
                 Err(e) => {
-                    println!("  ⚠ Could not load SRTM data: {}", e);
+                    tracing::warn!(error = %e, "could not load SRTM data");
                     None
                 }
             }
         } else {
-            println!("  ℹ No srtm/ directory found, /height endpoint disabled");
+            tracing::info!("no srtm/ directory found, /height endpoint disabled");
             None
         };
 
@@ -143,6 +147,8 @@ impl ServerState {
             spatial_index,
             elevation,
             way_names,
+            started_at: std::time::Instant::now(),
+            data_dir: data_dir.to_string_lossy().to_string(),
         })
     }
 
@@ -225,7 +231,7 @@ fn load_mode_data(
 
     // Load pre-computed distance weights from step 8 (cch.d.{mode}.u32)
     let cch_dist_weights_path = step8_dir.join(format!("cch.d.{}.u32", mode_name));
-    println!("    Loading distance weights for {}...", mode_name);
+    tracing::info!(mode = mode_name, "loading distance weights");
     let cch_weights_dist = CchWeightsFile::read(&cch_dist_weights_path)?;
     let up_adj_flat_dist = UpAdjFlat::build(&cch_topo, &cch_weights_dist);
     let down_rev_flat_dist = DownReverseAdjFlat::build(&cch_topo, &cch_weights_dist);
@@ -248,7 +254,7 @@ fn load_mode_data(
 
 /// Convert byte array to u64 word array for efficient bit testing
 fn bytes_to_u64_words(bytes: &[u8]) -> Vec<u64> {
-    let n_words = (bytes.len() + 7) / 8;
+    let n_words = bytes.len().div_ceil(8);
     let mut words = vec![0u64; n_words];
 
     for (i, &byte) in bytes.iter().enumerate() {
@@ -317,7 +323,7 @@ fn build_down_reverse_adj(topo: &CchTopo) -> DownReverseAdj {
 fn load_way_names(step1_dir: &Path) -> Result<HashMap<i64, String>> {
     let ways_path = step1_dir.join("ways.raw");
     if !ways_path.exists() {
-        println!("  ⚠ ways.raw not found, road names unavailable");
+        tracing::warn!("ways.raw not found, road names unavailable");
         return Ok(HashMap::new());
     }
 
@@ -332,7 +338,7 @@ fn load_way_names(step1_dir: &Path) -> Result<HashMap<i64, String>> {
     let name_key_id = match name_key_id {
         Some(id) => id,
         None => {
-            println!("  ⚠ No 'name' key in dictionary, road names unavailable");
+            tracing::warn!("no 'name' key in dictionary, road names unavailable");
             return Ok(HashMap::new());
         }
     };

@@ -1,4 +1,4 @@
-///! ebg.nodes format - EBG node table (directed NBG edges)
+//! ebg.nodes format - EBG node table (directed NBG edges)
 
 use anyhow::Result;
 use std::fs::File;

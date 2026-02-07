@@ -13,14 +13,21 @@ repository = "https://github.com/butterfly-osm/butterfly-osm"
 edition = "2021"
 
 [workspace.dependencies]
-tokio = { version = "1.45", features = ["full"] }
+tokio = { version = "1.49", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["stream"] }
 clap = { version = "4.5", features = ["derive"] }
-thiserror = "2.0"
+thiserror = "2.0.18"
 env_logger = "0.11"
 indicatif = "0.17"
 strsim = "0.11"
-tempfile = "3.3"
+tempfile = "3.24"
 # Dev dependencies
 wiremock = "0.6"
 ctor = "0.4"
+
+[workspace.lints.rust]
+warnings = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+redundant_closure = "allow"

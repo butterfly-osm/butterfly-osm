@@ -66,11 +66,11 @@ pub fn lift_ordering_to_ebg(
     let mut perm: Vec<u32> = vec![0; n_states];
     let mut inv_perm: Vec<u32> = vec![0; n_states];
 
-    for state_id in 0..n_states {
+    for (state_id, perm_entry) in perm.iter_mut().enumerate() {
         let head_node = ebg_nodes.nodes[state_id].head_nbg as usize;
         if head_node < n_nbg_nodes {
             let rank = base_offset[head_node] + local_idx[head_node] as u64;
-            perm[state_id] = rank as u32;
+            *perm_entry = rank as u32;
             inv_perm[rank as usize] = state_id as u32;
             local_idx[head_node] += 1;
         }
@@ -78,8 +78,8 @@ pub fn lift_ordering_to_ebg(
 
     // Verify
     let mut rank_check = vec![false; n_states];
-    for state_id in 0..n_states {
-        let rank = perm[state_id] as usize;
+    for &rank_val in &perm {
+        let rank = rank_val as usize;
         assert!(!rank_check[rank], "Duplicate rank {}", rank);
         rank_check[rank] = true;
     }

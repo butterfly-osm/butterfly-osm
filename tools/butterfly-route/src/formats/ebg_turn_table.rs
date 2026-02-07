@@ -1,4 +1,4 @@
-///! ebg.turn_table format - Deduplicated turn table with mode masks
+//! ebg.turn_table format - Deduplicated turn table with mode masks
 
 use anyhow::Result;
 use std::fs::File;

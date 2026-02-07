@@ -1,10 +1,10 @@
-///! Step 4 (EBG) validation lock conditions
-///!
-///! 14 lock conditions across categories A-F
+//! Step 4 (EBG) validation lock conditions
+//!
+//! 14 lock conditions across categories A-F
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 
 use crate::formats::*;
@@ -29,6 +29,7 @@ pub struct Step4LockFile {
 }
 
 /// Run all Step 4 validation checks
+#[allow(clippy::too_many_arguments)]
 pub fn validate_step4(
     ebg_nodes_path: &Path,
     ebg_csr_path: &Path,
@@ -194,7 +195,7 @@ fn verify_lock_condition_a_structural(
     // Verify heads are in bounds
     for &head in &ebg_csr.heads {
         anyhow::ensure!(
-            (head as u32) < ebg_csr.n_nodes,
+            head < ebg_csr.n_nodes,
             "CSR head {} out of bounds (n_nodes={})",
             head,
             ebg_csr.n_nodes
@@ -215,6 +216,7 @@ fn verify_lock_condition_a_structural(
 }
 
 /// Lock Condition B: Topology semantics
+#[allow(clippy::too_many_arguments)]
 fn verify_lock_condition_b_topology(
     ebg_nodes: &EbgNodes,
     ebg_csr: &EbgCsr,
@@ -230,7 +232,6 @@ fn verify_lock_condition_b_topology(
     turn_rules_foot_path: &Path,
 ) -> Result<(usize, usize, usize, usize)> {
     use crate::ebg::turn_processor::build_canonical_turn_rules;
-    use std::collections::HashMap;
 
     // Lock B.7: Sample arcs and verify they meet at correct NBG nodes (no stray arcs)
     let t0 = std::time::Instant::now();
@@ -531,7 +532,7 @@ fn verify_lock_condition_f_performance(ebg_csr: &EbgCsr) -> Result<f64> {
     let arcs_per_node = ebg_csr.n_arcs as f64 / ebg_csr.n_nodes as f64;
 
     anyhow::ensure!(
-        arcs_per_node >= 0.5 && arcs_per_node <= 50.0,
+        (0.5..=50.0).contains(&arcs_per_node),
         "Arc count sanity check failed: {:.2} arcs/node (expected 0.5-50)",
         arcs_per_node
     );
@@ -684,7 +685,7 @@ fn sample_only_rules(
 
     for i in 0..sample_size {
         let idx = (i * 7919) % groups.len();
-        let ((via_osm, from_way), only_rules) = groups[idx];
+        let ((_via_osm, _from_way), only_rules) = groups[idx];
 
         // Build allowed set per mode
         let mut allowed_by_mode: HashMap<u8, HashSet<i64>> = HashMap::new();

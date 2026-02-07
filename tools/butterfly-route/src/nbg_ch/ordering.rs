@@ -6,7 +6,7 @@
 use anyhow::Result;
 use rayon::prelude::*;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 use crate::formats::{NbgCsr, NbgGeo};
 
@@ -66,7 +66,7 @@ pub fn compute_nbg_ordering(
             let done = progress.fetch_add(component.len(), AtomicOrdering::Relaxed);
             if (done + component.len()) * 100 / total_nodes > done * 100 / total_nodes {
                 let pct = (done + component.len()) * 100 / total_nodes;
-                if pct % 10 == 0 {
+                if pct.is_multiple_of(10) {
                     eprintln!("    {}% complete", pct);
                 }
             }
@@ -105,10 +105,10 @@ fn build_adjacency(nbg_csr: &NbgCsr) -> Vec<Vec<u32>> {
     let n_nodes = nbg_csr.n_nodes as usize;
     let mut adj = vec![Vec::new(); n_nodes];
 
-    for u in 0..n_nodes {
+    for (u, adj_u) in adj.iter_mut().enumerate() {
         let start = nbg_csr.offsets[u] as usize;
         let end = nbg_csr.offsets[u + 1] as usize;
-        adj[u] = nbg_csr.heads[start..end].to_vec();
+        *adj_u = nbg_csr.heads[start..end].to_vec();
     }
 
     adj
@@ -351,7 +351,7 @@ fn find_components(nbg_csr: &NbgCsr) -> Result<Vec<Vec<u32>>> {
     }
 
     // Sort by size descending
-    components.sort_by(|a, b| b.len().cmp(&a.len()));
+    components.sort_by_key(|b| std::cmp::Reverse(b.len()));
 
     Ok(components)
 }

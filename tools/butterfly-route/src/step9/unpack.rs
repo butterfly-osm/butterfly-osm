@@ -37,7 +37,6 @@ pub fn unpack_path(
         let actual_idx = edge_idx as usize;
         let edges = unpack_down_edge(topo, node, actual_idx);
         result.extend(edges);
-        current = topo.down_targets[actual_idx];
     }
 
     result

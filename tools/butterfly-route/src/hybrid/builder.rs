@@ -86,8 +86,8 @@ impl HybridGraphBuilder {
         // First, find which NBG nodes are reachable (have at least one EBG edge arriving)
         // We only create node-states for simple NBG nodes that are REACHABLE via EBG
         let mut nbg_is_reachable = vec![false; n_nbg_nodes];
-        for ebg_id in 0..n_ebg_nodes {
-            let head_nbg = ebg_tail_head[ebg_id].1 as usize;
+        for &(_, head_nbg_raw) in ebg_tail_head.iter().take(n_ebg_nodes) {
+            let head_nbg = head_nbg_raw as usize;
             if head_nbg < n_nbg_nodes {
                 nbg_is_reachable[head_nbg] = true;
             }
@@ -142,7 +142,7 @@ impl HybridGraphBuilder {
 
         // Process all EBG arcs
         for src_ebg in 0..n_ebg_nodes {
-            let (tail_nbg, head_nbg) = ebg_tail_head[src_ebg];
+            let (_tail_nbg, head_nbg) = ebg_tail_head[src_ebg];
 
             // Determine the hybrid state for this EBG node
             let src_state = if is_complex[head_nbg as usize] {
@@ -237,9 +237,9 @@ impl HybridGraphBuilder {
         let mut ebg_arc_idx = Vec::with_capacity(n_hybrid_arcs);
 
         let mut offset = 0u64;
-        for state in 0..n_states as usize {
+        for adj_list in &adjacency {
             offsets.push(offset);
-            for &(tgt, w, arc_idx) in &adjacency[state] {
+            for &(tgt, w, arc_idx) in adj_list {
                 targets.push(tgt);
                 arc_weights.push(w);
                 ebg_arc_idx.push(arc_idx);

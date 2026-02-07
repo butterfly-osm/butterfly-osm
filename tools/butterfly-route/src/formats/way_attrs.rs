@@ -1,29 +1,29 @@
-///! way_attrs.<mode>.bin format - Per-mode way attributes
-///!
-///! Format (little-endian, mmap-friendly):
-///!
-///! Header (80 bytes):
-///!   magic:       u32 = 0x57415941  // "WAYA"
-///!   version:     u16 = 1
-///!   mode:        u8  = {0=car,1=bike,2=foot}
-///!   reserved:    u8  = 0
-///!   count:       u64
-///!   dict_k_sha:  [32]u8
-///!   dict_v_sha:  [32]u8
-///!
-///! Body (count records, sorted by way_id):
-///!   way_id:             i64
-///!   flags:              u32  // access + oneway + class bits
-///!   base_speed_mmps:    u32
-///!   highway_class:      u16
-///!   surface_class:      u16
-///!   per_km_penalty_ds:  u16
-///!   const_penalty_ds:   u32
-///!   reserved:           [6]u8  // padding to 32 bytes
-///!
-///! Footer (16 bytes):
-///!   body_crc64:  u64
-///!   file_crc64:  u64
+//! way_attrs.<mode>.bin format - Per-mode way attributes
+//!
+//! Format (little-endian, mmap-friendly):
+//!
+//! Header (80 bytes):
+//!   magic:       u32 = 0x57415941  // "WAYA"
+//!   version:     u16 = 1
+//!   mode:        u8  = {0=car,1=bike,2=foot}
+//!   reserved:    u8  = 0
+//!   count:       u64
+//!   dict_k_sha:  [32]u8
+//!   dict_v_sha:  [32]u8
+//!
+//! Body (count records, sorted by way_id):
+//!   way_id:             i64
+//!   flags:              u32  // access + oneway + class bits
+//!   base_speed_mmps:    u32
+//!   highway_class:      u16
+//!   surface_class:      u16
+//!   per_km_penalty_ds:  u16
+//!   const_penalty_ds:   u32
+//!   reserved:           [6]u8  // padding to 32 bytes
+//!
+//! Footer (16 bytes):
+//!   body_crc64:  u64
+//!   file_crc64:  u64
 
 use anyhow::{Context, Result};
 use std::fs::File;

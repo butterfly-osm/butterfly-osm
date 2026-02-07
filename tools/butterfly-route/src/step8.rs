@@ -37,7 +37,7 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use crate::formats::{mod_turns, mod_weights, CchTopo, CchTopoFile, EbgNodesFile, FilteredEbgFile, HybridStateFile, OrderEbgFile};
+use crate::formats::{mod_turns, mod_weights, CchTopo, CchTopoFile, EbgNodesFile, FilteredEbgFile, HybridStateFile};
 use crate::profile_abi::Mode;
 
 /// Configuration for Step 8
@@ -596,22 +596,22 @@ fn sanity_check_weights(
     let mut down_orig_total = 0usize;
     let mut down_short_total = 0usize;
 
-    for i in 0..n_up {
+    for (i, &w) in up_weights.iter().enumerate() {
         if topo.up_is_shortcut[i] {
             up_short_total += 1;
-            if up_weights[i] == u32::MAX { up_short_max += 1; }
+            if w == u32::MAX { up_short_max += 1; }
         } else {
             up_orig_total += 1;
-            if up_weights[i] == u32::MAX { up_orig_max += 1; }
+            if w == u32::MAX { up_orig_max += 1; }
         }
     }
-    for i in 0..n_down {
+    for (i, &w) in down_weights.iter().enumerate() {
         if topo.down_is_shortcut[i] {
             down_short_total += 1;
-            if down_weights[i] == u32::MAX { down_short_max += 1; }
+            if w == u32::MAX { down_short_max += 1; }
         } else {
             down_orig_total += 1;
-            if down_weights[i] == u32::MAX { down_orig_max += 1; }
+            if w == u32::MAX { down_orig_max += 1; }
         }
     }
 
