@@ -1,4 +1,4 @@
-///! CRC-64-ISO checksum utilities
+//! CRC-64-ISO checksum utilities
 
 use crc::{Crc, CRC_64_GO_ISO};
 

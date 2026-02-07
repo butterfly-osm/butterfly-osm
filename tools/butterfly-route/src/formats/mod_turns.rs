@@ -1,21 +1,21 @@
-///! t.<mode>.u32 format - Per-mode turn penalties
-///!
-///! Format (little-endian, mmap-friendly):
-///!
-///! Header (32 bytes):
-///!   magic:       u32 = 0x544D4F44  // "TMOD"
-///!   version:     u16 = 1
-///!   mode:        u8  = {0=car,1=bike,2=foot}
-///!   reserved:    u8  = 0
-///!   count:       u32 = n_arcs
-///!   inputs_sha:  [16]u8  // truncated SHA-256 of inputs
-///!
-///! Body (count * u32):
-///!   u32 penalty_ds[count]  // deciseconds (0 = no penalty or mode not allowed)
-///!
-///! Footer (16 bytes):
-///!   body_crc64:  u64
-///!   file_crc64:  u64
+//! t.<mode>.u32 format - Per-mode turn penalties
+//!
+//! Format (little-endian, mmap-friendly):
+//!
+//! Header (32 bytes):
+//!   magic:       u32 = 0x544D4F44  // "TMOD"
+//!   version:     u16 = 1
+//!   mode:        u8  = {0=car,1=bike,2=foot}
+//!   reserved:    u8  = 0
+//!   count:       u32 = n_arcs
+//!   inputs_sha:  [16]u8  // truncated SHA-256 of inputs
+//!
+//! Body (count * u32):
+//!   u32 penalty_ds[count]  // deciseconds (0 = no penalty or mode not allowed)
+//!
+//! Footer (16 bytes):
+//!   body_crc64:  u64
+//!   file_crc64:  u64
 
 use anyhow::{Context, Result};
 use std::fs::File;

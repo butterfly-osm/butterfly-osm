@@ -1,4 +1,4 @@
-///! Binary file formats for Step 1, Step 2, and Step 3 output
+//! Binary file formats for Step 1, Step 2, and Step 3 output
 
 // Step 1 formats
 pub mod crc;

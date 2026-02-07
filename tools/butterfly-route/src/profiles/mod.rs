@@ -1,6 +1,6 @@
-///! Built-in routing profiles for different travel modes
-///!
-///! Each profile implements tag semantics for access, speed, and preferences.
+//! Built-in routing profiles for different travel modes
+//!
+//! Each profile implements tag semantics for access, speed, and preferences.
 
 pub mod tag_lookup;
 pub mod car;

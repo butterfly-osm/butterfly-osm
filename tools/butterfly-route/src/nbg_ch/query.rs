@@ -93,6 +93,12 @@ pub struct SortedBuckets {
     items: Vec<(u32, u16, u32)>,
 }
 
+impl Default for SortedBuckets {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SortedBuckets {
     pub fn new() -> Self {
         Self { items: Vec::new() }
@@ -289,6 +295,7 @@ pub struct NbgM2MStats {
 }
 
 // Keep old interface for compatibility
+#[allow(dead_code)]
 pub struct NbgChQuery<'a> {
     topo: &'a NbgChTopo,
     state: SearchState,

@@ -108,7 +108,7 @@ pub fn encode_polyline6(points: &[Point]) -> String {
 }
 
 /// Encode a single signed integer as variable-length encoded characters
-fn encode_value(mut value: i64, out: &mut String) {
+fn encode_value(value: i64, out: &mut String) {
     // Left-shift and invert if negative
     let mut v = if value < 0 {
         (!value) << 1 | 1

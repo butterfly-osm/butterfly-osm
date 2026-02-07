@@ -16,6 +16,7 @@ const WITNESS_LIMIT: usize = 500;
 
 /// If a node has more than this many higher-ranked neighbors,
 /// skip witness search (too expensive)
+#[allow(dead_code)]
 const MAX_NEIGHBORS_FOR_WITNESS: usize = 10;
 
 /// NBG CH topology (contracted graph)
@@ -55,17 +56,17 @@ pub fn contract_nbg(
     println!("  Building initial adjacency...");
     let mut adj: Vec<Vec<(u32, u32)>> = vec![Vec::new(); n_nodes];
 
-    for u in 0..n_nodes {
+    for (u, adj_u) in adj.iter_mut().enumerate() {
         let start = nbg_csr.offsets[u] as usize;
         let end = nbg_csr.offsets[u + 1] as usize;
         for i in start..end {
             let v = nbg_csr.heads[i];
             let w = edge_weights[nbg_csr.edge_idx[i] as usize];
-            adj[u].push((v, w));
+            adj_u.push((v, w));
         }
         // Sort and dedup (keep min weight)
-        adj[u].sort_by_key(|(v, _)| *v);
-        adj[u].dedup_by(|a, b| {
+        adj_u.sort_by_key(|(v, _)| *v);
+        adj_u.dedup_by(|a, b| {
             if a.0 == b.0 { b.1 = b.1.min(a.1); true } else { false }
         });
     }
@@ -95,8 +96,7 @@ pub fn contract_nbg(
         if neighbors.len() >= 2 {
             for i in 0..neighbors.len() {
                 let (u, w_u) = neighbors[i];
-                for j in (i + 1)..neighbors.len() {
-                    let (v, w_v) = neighbors[j];
+                for &(v, w_v) in &neighbors[(i + 1)..] {
                     let shortcut_weight = w_u.saturating_add(w_v);
 
                     // Witness search: is there a path u→v not through node?
@@ -128,6 +128,7 @@ pub fn contract_nbg(
     // Build UP and DOWN adjacency
     println!("  Building UP/DOWN adjacency...");
 
+    #[allow(clippy::type_complexity)]
     let (up_adj, down_adj): (Vec<Vec<(u32, u32)>>, Vec<Vec<(u32, u32)>>) = (0..n_nodes)
         .into_par_iter()
         .map(|u| {
@@ -152,9 +153,9 @@ pub fn contract_nbg(
     let mut up_heads = Vec::new();
     let mut up_weights = Vec::new();
     let mut offset = 0u64;
-    for u in 0..n_nodes {
+    for up_adj_u in &up_adj {
         up_offsets.push(offset);
-        for &(v, w) in &up_adj[u] {
+        for &(v, w) in up_adj_u {
             up_heads.push(v);
             up_weights.push(w);
             offset += 1;
@@ -166,9 +167,9 @@ pub fn contract_nbg(
     let mut down_heads = Vec::new();
     let mut down_weights = Vec::new();
     let mut offset = 0u64;
-    for u in 0..n_nodes {
+    for down_adj_u in &down_adj {
         down_offsets.push(offset);
-        for &(v, w) in &down_adj[u] {
+        for &(v, w) in down_adj_u {
             down_heads.push(v);
             down_weights.push(w);
             offset += 1;
@@ -218,6 +219,7 @@ impl WitnessState {
     }
 
     /// Bounded Dijkstra witness search
+    #[allow(clippy::too_many_arguments)]
     fn search(
         &mut self,
         adj: &[Vec<(u32, u32)>],

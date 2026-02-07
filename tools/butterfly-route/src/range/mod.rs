@@ -13,7 +13,7 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::path::Path;
 
-use crate::formats::{CchTopoFile, CchWeightsFile, OrderEbgFile};
+use crate::formats::{CchTopoFile, CchWeightsFile};
 use crate::profile_abi::Mode;
 
 pub mod phast;
@@ -223,8 +223,7 @@ impl RangeEngine {
         let mut n_settled = 0;
         let mut frontier = Vec::new();
 
-        for u in 0..self.n_nodes {
-            let d_u = dist[u];
+        for (u, &d_u) in dist.iter().enumerate() {
             if d_u <= threshold_ms {
                 n_settled += 1;
 
@@ -503,7 +502,7 @@ pub mod validate {
     pub fn test_equivalence(result: &RangeResult, threshold: u32) -> EquivalenceResult {
         let mut mismatches = 0;
 
-        for (node, &d) in result.dist.iter().enumerate() {
+        for &d in result.dist.iter() {
             let in_reachable_by_dist = d <= threshold;
             let in_reachable_by_settled = d != u32::MAX && d <= threshold;
 
@@ -548,7 +547,7 @@ pub mod validate {
 
         // Sample and verify
         for _ in 0..n_samples.min(reachable.len()) {
-            let target = reachable[rng.gen_range(0..reachable.len())];
+            let target = reachable[rng.random_range(0..reachable.len())];
             let range_dist = range_result.dist[target as usize];
 
             // Run P2P query using bounded Dijkstra to same target
@@ -821,7 +820,7 @@ pub fn validate_block_gated_phast(
     println!("\nLoading CCH data...");
     let engine = PhastEngine::load(topo_path, weights_path, order_path)?;
     let n_nodes = engine.n_nodes();
-    let n_blocks = (n_nodes + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    let n_blocks = n_nodes.div_ceil(BLOCK_SIZE);
     println!("  ✓ {} nodes, {} blocks", n_nodes, n_blocks);
 
     let mut total_tests = 0;
@@ -939,6 +938,7 @@ pub fn validate_block_gated_phast(
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
     use super::*;
 
     // Test will be added when we have test fixtures

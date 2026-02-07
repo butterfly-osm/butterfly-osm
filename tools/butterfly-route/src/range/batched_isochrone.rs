@@ -21,7 +21,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use rayon::prelude::*;
 
-use crate::matrix::batched_phast::{BatchedPhastEngine, BatchedPhastResult, K_LANES};
+use crate::matrix::batched_phast::{BatchedPhastEngine, K_LANES};
 use crate::profile_abi::Mode;
 use super::frontier::{FrontierExtractor, ReachableSegment};
 use super::contour::{ContourResult, export_contour_geojson};
@@ -67,11 +67,13 @@ pub struct BatchedIsochroneEngine {
     /// Sparse contour config per mode
     config: SparseContourConfig,
     /// Mode
+    #[allow(dead_code)]
     mode: Mode,
 }
 
 impl BatchedIsochroneEngine {
     /// Create batched isochrone engine from file paths
+    #[allow(clippy::too_many_arguments)]
     pub fn load(
         cch_topo_path: &Path,
         cch_weights_path: &Path,
@@ -269,6 +271,7 @@ pub struct AdaptiveIsochroneEngine {
 
 impl AdaptiveIsochroneEngine {
     /// Load adaptive isochrone engine from file paths
+    #[allow(clippy::too_many_arguments)]
     pub fn load(
         cch_topo_path: &Path,
         cch_weights_path: &Path,

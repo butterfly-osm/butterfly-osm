@@ -1,4 +1,4 @@
-///! nbg.csr format - Compact CSR graph for undirected NBG topology
+//! nbg.csr format - Compact CSR graph for undirected NBG topology
 
 use anyhow::Result;
 use std::fs::File;

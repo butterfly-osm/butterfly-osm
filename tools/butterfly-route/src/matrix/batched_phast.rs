@@ -219,13 +219,7 @@ impl BatchedPhastEngine {
 
             // Check if ANY lane has finite distance from this node
             // This is a heuristic to skip entirely unreachable nodes
-            let mut any_reachable = false;
-            for lane in 0..k {
-                if dist[lane][u] != u32::MAX {
-                    any_reachable = true;
-                    break;
-                }
-            }
+            let any_reachable = dist[..k].iter().any(|d| d[u] != u32::MAX);
             if !any_reachable {
                 continue;
             }
@@ -244,12 +238,12 @@ impl BatchedPhastEngine {
 
                 // Update all K lanes (this is the K-lane inner loop)
                 // The key insight: v and w are loaded once, used K times
-                for lane in 0..k {
-                    let d_u = dist[lane][u];
+                for d_lane in &mut dist[..k] {
+                    let d_u = d_lane[u];
                     if d_u != u32::MAX {
                         let new_dist = d_u.saturating_add(w);
-                        if new_dist < dist[lane][v] {
-                            dist[lane][v] = new_dist;
+                        if new_dist < d_lane[v] {
+                            d_lane[v] = new_dist;
                             stats.downward_improved += 1;
                         }
                     }
@@ -298,14 +292,14 @@ impl BatchedPhastEngine {
 
         // Track which lanes are still active (have nodes within threshold)
         let mut lane_active = [true; K_LANES];
-        for i in k..K_LANES {
-            lane_active[i] = false;
+        for la in &mut lane_active[k..K_LANES] {
+            *la = false;
         }
 
         // Per-lane active block bitsets for downward gating
         const BLOCK_SIZE: usize = 512;
-        let n_blocks = (self.n_nodes + BLOCK_SIZE - 1) / BLOCK_SIZE;
-        let n_words = (n_blocks + 63) / 64;
+        let n_blocks = self.n_nodes.div_ceil(BLOCK_SIZE);
+        let n_words = n_blocks.div_ceil(64);
         let mut active_blocks: Vec<Vec<u64>> = (0..k)
             .map(|_| vec![0u64; n_words])
             .collect();
@@ -502,8 +496,7 @@ impl BatchedPhastEngine {
         // ============================================================
         let upward_start = std::time::Instant::now();
 
-        for lane in 0..k {
-            let origin = sources[lane];
+        for (lane, &origin) in sources[..k].iter().enumerate() {
             let mut pq: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
             pq.push(Reverse((0, origin)));
 
@@ -560,13 +553,7 @@ impl BatchedPhastEngine {
 
             // Check if ANY lane has finite distance (fast path to skip unreachable)
             // With SoA, we can check K consecutive u32s
-            let mut any_reachable = false;
-            for lane in 0..k {
-                if dist_soa[u_base + lane] != u32::MAX {
-                    any_reachable = true;
-                    break;
-                }
-            }
+            let any_reachable = dist_soa[u_base..u_base + k].iter().any(|&d| d != u32::MAX);
             if !any_reachable {
                 continue;
             }
@@ -575,9 +562,7 @@ impl BatchedPhastEngine {
             // This is the key win: all K values loaded together
             let du: [u32; K_LANES] = {
                 let mut arr = [u32::MAX; K_LANES];
-                for lane in 0..k {
-                    arr[lane] = dist_soa[u_base + lane];
-                }
+                arr[..k].copy_from_slice(&dist_soa[u_base..(k + u_base)]);
                 arr
             };
 
@@ -645,8 +630,10 @@ impl BatchedPhastEngine {
     where
         F: FnMut(usize, &[Vec<u32>], &[u32]),
     {
-        let mut total_stats = BatchedPhastStats::default();
-        total_stats.n_sources = sources.len();
+        let mut total_stats = BatchedPhastStats {
+            n_sources: sources.len(),
+            ..Default::default()
+        };
 
         // Process sources in batches of K
         for (batch_idx, chunk) in sources.chunks(K_LANES).enumerate() {
@@ -688,8 +675,10 @@ impl BatchedPhastEngine {
         let n_src = sources.len();
         let n_tgt = targets.len();
         let mut matrix = vec![u32::MAX; n_src * n_tgt];
-        let mut total_stats = BatchedPhastStats::default();
-        total_stats.n_sources = n_src;
+        let mut total_stats = BatchedPhastStats {
+            n_sources: n_src,
+            ..Default::default()
+        };
 
         // Process sources in batches of K
         for (batch_idx, chunk) in sources.chunks(K_LANES).enumerate() {
@@ -728,8 +717,10 @@ impl BatchedPhastEngine {
         let n_src = sources.len();
         let n_tgt = targets.len();
         let mut matrix = vec![u32::MAX; n_src * n_tgt];
-        let mut total_stats = BatchedPhastStats::default();
-        total_stats.n_sources = n_src;
+        let mut total_stats = BatchedPhastStats {
+            n_sources: n_src,
+            ..Default::default()
+        };
 
         // Process sources in batches of K
         for (batch_idx, chunk) in sources.chunks(K_LANES).enumerate() {
@@ -773,8 +764,10 @@ impl BatchedPhastEngine {
         let n_src = sources.len();
         let n_tgt = targets.len();
         let mut matrix = vec![u32::MAX; n_src * n_tgt];
-        let mut total_stats = BatchedPhastStats::default();
-        total_stats.n_sources = n_src;
+        let mut total_stats = BatchedPhastStats {
+            n_sources: n_src,
+            ..Default::default()
+        };
 
         // Process sources in batches of K using SoA layout
         for (batch_idx, chunk) in sources.chunks(K_LANES).enumerate() {
@@ -827,8 +820,7 @@ impl BatchedPhastEngine {
         // Phase 1: K parallel upward searches
         let upward_start = std::time::Instant::now();
 
-        for lane in 0..k {
-            let origin = sources[lane];
+        for (lane, &origin) in sources[..k].iter().enumerate() {
             let mut pq: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
             pq.push(Reverse((0, origin)));
 
@@ -880,13 +872,7 @@ impl BatchedPhastEngine {
             }
 
             // Check if ANY lane has finite distance
-            let mut any_reachable = false;
-            for lane in 0..k {
-                if dist_soa[u_base + lane] != u32::MAX {
-                    any_reachable = true;
-                    break;
-                }
-            }
+            let any_reachable = dist_soa[u_base..u_base + k].iter().any(|&d| d != u32::MAX);
             if !any_reachable {
                 continue;
             }
@@ -894,9 +880,7 @@ impl BatchedPhastEngine {
             // Load all K distances for node u
             let du: [u32; K_LANES] = {
                 let mut arr = [u32::MAX; K_LANES];
-                for lane in 0..k {
-                    arr[lane] = dist_soa[u_base + lane];
-                }
+                arr[..k].copy_from_slice(&dist_soa[u_base..(k + u_base)]);
                 arr
             };
 
@@ -942,6 +926,7 @@ impl BatchedPhastEngine {
 struct BatchedPhastResultSoa {
     /// Distance array in SoA layout: dist[node * K_LANES + lane]
     dist_soa: Vec<u32>,
+    #[allow(dead_code)]
     n_lanes: usize,
     stats: BatchedPhastStats,
 }
@@ -999,8 +984,8 @@ impl BatchedPhastEngine {
         }
 
         // Per-lane active block bitsets
-        let n_blocks = (self.n_nodes + KLANE_BLOCK_SIZE - 1) / KLANE_BLOCK_SIZE;
-        let n_words = (n_blocks + 63) / 64;
+        let n_blocks = self.n_nodes.div_ceil(KLANE_BLOCK_SIZE);
+        let n_words = n_blocks.div_ceil(64);
         let mut active_blocks: Vec<Vec<u64>> = (0..k)
             .map(|_| vec![0u64; n_words])
             .collect();
@@ -1064,8 +1049,8 @@ impl BatchedPhastEngine {
         // Compute combined active blocks (active if ANY lane has it active)
         // ============================================================
         let mut combined_active = vec![0u64; n_words];
-        for lane in 0..k {
-            for (i, &word) in active_blocks[lane].iter().enumerate() {
+        for ab in &active_blocks[..k] {
+            for (i, &word) in ab.iter().enumerate() {
                 combined_active[i] |= word;
             }
         }
@@ -1113,9 +1098,7 @@ impl BatchedPhastEngine {
                 // Load all K distances for node u
                 let du: [u32; K_LANES] = {
                     let mut arr = [u32::MAX; K_LANES];
-                    for lane in 0..k {
-                        arr[lane] = dist_soa[u_base + lane];
-                    }
+                    arr[..k].copy_from_slice(&dist_soa[u_base..(k + u_base)]);
                     arr
                 };
 
@@ -1254,8 +1237,10 @@ impl BatchedPhastEngine {
         let n_src = sources.len();
         let n_tgt = targets.len();
         let mut matrix = vec![u32::MAX; n_src * n_tgt];
-        let mut total_stats = BatchedPhastStats::default();
-        total_stats.n_sources = n_src;
+        let mut total_stats = BatchedPhastStats {
+            n_sources: n_src,
+            ..Default::default()
+        };
 
         // Process sources in batches of K
         for (batch_idx, chunk) in sources.chunks(K_LANES).enumerate() {
@@ -1290,8 +1275,6 @@ impl BatchedPhastEngine {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     // Tests comparing batched PHAST vs single-source PHAST
     // Will be added when test fixtures are available
 }

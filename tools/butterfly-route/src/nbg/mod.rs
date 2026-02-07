@@ -1,4 +1,4 @@
-///! Step 3: Node-based graph (NBG) construction
+//! Step 3: Node-based graph (NBG) construction
 
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
@@ -300,6 +300,7 @@ struct EdgeInfo {
     flags: u32,
 }
 
+#[allow(clippy::type_complexity)]
 fn emit_edges(
     ways_path: &PathBuf,
     included_ways: &HashSet<i64>,
@@ -355,7 +356,6 @@ fn emit_edges(
 
                     if lat_fxp.len() >= 2 && length_m > 0.0 {
                         let length_mm = (length_m * 1000.0).round() as u32;
-                        let length_mm = length_mm.min(u32::MAX);
                         // Saturate to minimum 1m as per spec (1m ≤ length_mm ≤ 500km)
                         let length_mm = length_mm.max(1000);
 
@@ -380,11 +380,11 @@ fn emit_edges(
                         // Add both directions to adjacency
                         adjacency
                             .entry(u_compact)
-                            .or_insert_with(Vec::new)
+                            .or_default()
                             .push((v_compact, edge_idx));
                         adjacency
                             .entry(v_compact)
-                            .or_insert_with(Vec::new)
+                            .or_default()
                             .push((u_compact, edge_idx));
                     }
                 }

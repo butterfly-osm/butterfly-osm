@@ -1,12 +1,12 @@
-///! Turn penalty cost model - OSRM-compatible sigmoid-based turn costs
-///!
-///! Implements OSRM's exact turn penalty formula from car.lua:
-///! - Sigmoid function mapping angle to penalty
-///! - turn_penalty = 7.5 seconds (max)
-///! - turn_bias = 1.075 (right-turn preference for right-hand traffic)
-///! - u_turn_penalty = 20 seconds additional
-///!
-///! Reference: https://github.com/Project-OSRM/osrm-backend/blob/master/profiles/car.lua
+//! Turn penalty cost model - OSRM-compatible sigmoid-based turn costs
+//!
+//! Implements OSRM's exact turn penalty formula from car.lua:
+//! - Sigmoid function mapping angle to penalty
+//! - turn_penalty = 7.5 seconds (max)
+//! - turn_bias = 1.075 (right-turn preference for right-hand traffic)
+//! - u_turn_penalty = 20 seconds additional
+//!
+//! Reference: https://github.com/Project-OSRM/osrm-backend/blob/master/profiles/car.lua
 
 /// Turn geometry for a single turn (a → b at intersection)
 #[derive(Debug, Clone)]
@@ -215,7 +215,7 @@ pub fn compute_turn_penalty(geom: &TurnGeometry, config: &TurnPenaltyConfig) -> 
     if config.class_change_penalty_ds_per_diff > 0 && geom.from_highway_class > 0 && geom.to_highway_class > 0 {
         let from_class = geom.from_highway_class as i32;
         let to_class = geom.to_highway_class as i32;
-        let class_diff = (from_class - to_class).unsigned_abs() as u32;
+        let class_diff = (from_class - to_class).unsigned_abs();
         let capped_diff = class_diff.min(config.max_class_diff_for_penalty as u32);
         let class_penalty = capped_diff * config.class_change_penalty_ds_per_diff;
         penalty = penalty.saturating_add(class_penalty);
@@ -246,7 +246,7 @@ mod tests {
         // 90 degree left turn: ~2s (crossing traffic)
         let geom = TurnGeometry::compute(0, 2700, false, 4, 5, 5);  // 270° bearing = -90° left turn
         let penalty = compute_turn_penalty(&geom, &config);
-        assert!(penalty >= 15 && penalty <= 30, "90° left should be ~2s, got {}ds", penalty);
+        assert!((15..=30).contains(&penalty), "90° left should be ~2s, got {}ds", penalty);
 
         // Left U-turn: ~7.5s + 20s = ~27.5s (maximum penalty)
         let geom = TurnGeometry::compute(0, 1800, false, 4, 5, 5);  // 180° = U-turn
@@ -357,7 +357,7 @@ mod tests {
         // Smaller class diff: motorway_link (2) -> trunk (3) = diff of 1
         let small_diff = TurnGeometry::compute(0, 0, false, 4, 2, 3);
         let penalty_small = compute_turn_penalty(&small_diff, &config);
-        let expected_small_penalty = 1 * config.class_change_penalty_ds_per_diff;
+        let expected_small_penalty = config.class_change_penalty_ds_per_diff;
         assert_eq!(
             penalty_small - penalty_same,
             expected_small_penalty,

@@ -1,16 +1,16 @@
-///! Step 3: NBG validation and lock conditions
-///!
-///! Implements all 18 lock conditions from TODO.md:
-///! A. Structural (4 conditions)
-///! B. Topology semantics (4 conditions)
-///! C. Metric correctness (3 conditions)
-///! D. End-to-end reachability (2 conditions)
-///! E. Performance & resource bounds (3 conditions)
-///! F. Failure handling (2 conditions)
+//! Step 3: NBG validation and lock conditions
+//!
+//! Implements all 18 lock conditions from TODO.md:
+//! A. Structural (4 conditions)
+//! B. Topology semantics (4 conditions)
+//! C. Metric correctness (3 conditions)
+//! D. End-to-end reachability (2 conditions)
+//! E. Performance & resource bounds (3 conditions)
+//! F. Failure handling (2 conditions)
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -208,7 +208,7 @@ fn verify_lock_condition_b_topology(csr_path: &Path, _geo_path: &Path) -> Result
 
 /// C. Metric correctness (3 conditions)
 fn verify_lock_condition_c_metrics(
-    csr_path: &Path,
+    _csr_path: &Path,
     geo_path: &Path,
     _node_map_path: &Path,
 ) -> Result<()> {
@@ -227,7 +227,7 @@ fn verify_lock_condition_c_metrics(
 }
 
 /// D. End-to-end reachability (2 conditions)
-fn verify_lock_condition_d_reachability(csr_path: &Path, geo_path: &Path) -> Result<()> {
+fn verify_lock_condition_d_reachability(csr_path: &Path, _geo_path: &Path) -> Result<()> {
     // D12: Dijkstra parity - sample 1000 pairs
     // This requires full Dijkstra implementation - skip for now
     println!("  ✓ Dijkstra parity (sampled 1000 pairs, within ±1m)");
@@ -284,7 +284,7 @@ fn read_csr_counts(path: &Path) -> Result<(u32, u64, usize, usize)> {
     ]);
 
     // Calculate array lengths
-    let offsets_len = (n_nodes as usize + 1) * 8;
+    let _offsets_len = (n_nodes as usize + 1) * 8;
     let heads_len = (2 * n_edges_und as usize) * 4;
     let edge_idx_len = (2 * n_edges_und as usize) * 8;
 
@@ -324,10 +324,10 @@ fn verify_csr_integrity(path: &Path, n_nodes: u32, n_edges_und: u64) -> Result<(
 
     // Read offsets
     let mut offsets = vec![0u64; n_nodes as usize + 1];
-    for i in 0..=n_nodes as usize {
+    for offset in offsets.iter_mut() {
         let mut buf = [0u8; 8];
         file.read_exact(&mut buf)?;
-        offsets[i] = u64::from_le_bytes(buf);
+        *offset = u64::from_le_bytes(buf);
     }
 
     // Check offsets[0] == 0
@@ -415,25 +415,25 @@ fn verify_symmetry(path: &Path) -> Result<()> {
 
     // Read offsets
     let mut offsets = vec![0u64; n_nodes as usize + 1];
-    for i in 0..=n_nodes as usize {
+    for offset in offsets.iter_mut() {
         let mut buf = [0u8; 8];
         file.read_exact(&mut buf)?;
-        offsets[i] = u64::from_le_bytes(buf);
+        *offset = u64::from_le_bytes(buf);
     }
 
     // Read heads and edge_idx
     let mut heads = vec![0u32; 2 * n_edges_und as usize];
-    for i in 0..(2 * n_edges_und as usize) {
+    for head in heads.iter_mut() {
         let mut buf = [0u8; 4];
         file.read_exact(&mut buf)?;
-        heads[i] = u32::from_le_bytes(buf);
+        *head = u32::from_le_bytes(buf);
     }
 
     let mut edge_idx = vec![0u64; 2 * n_edges_und as usize];
-    for i in 0..(2 * n_edges_und as usize) {
+    for eidx in edge_idx.iter_mut() {
         let mut buf = [0u8; 8];
         file.read_exact(&mut buf)?;
-        edge_idx[i] = u64::from_le_bytes(buf);
+        *eidx = u64::from_le_bytes(buf);
     }
 
     // Build adjacency map: (u, v) -> edge_idx
@@ -478,18 +478,18 @@ fn count_self_loops(path: &Path) -> Result<usize> {
 
     // Read offsets
     let mut offsets = vec![0u64; n_nodes as usize + 1];
-    for i in 0..=n_nodes as usize {
+    for offset in offsets.iter_mut() {
         let mut buf = [0u8; 8];
         file.read_exact(&mut buf)?;
-        offsets[i] = u64::from_le_bytes(buf);
+        *offset = u64::from_le_bytes(buf);
     }
 
     // Read heads
     let mut heads = vec![0u32; 2 * n_edges_und as usize];
-    for i in 0..(2 * n_edges_und as usize) {
+    for head in heads.iter_mut() {
         let mut buf = [0u8; 4];
         file.read_exact(&mut buf)?;
-        heads[i] = u32::from_le_bytes(buf);
+        *head = u32::from_le_bytes(buf);
     }
 
     // Count self-loops
@@ -497,8 +497,8 @@ fn count_self_loops(path: &Path) -> Result<usize> {
     for u in 0..n_nodes {
         let start = offsets[u as usize] as usize;
         let end = offsets[u as usize + 1] as usize;
-        for i in start..end {
-            if heads[i] == u {
+        for &head in &heads[start..end] {
+            if head == u {
                 count += 1;
             }
         }
@@ -529,7 +529,7 @@ fn verify_length_plausibility(path: &Path) -> Result<()> {
         let v_node = u32::from_le_bytes([record[4], record[5], record[6], record[7]]);
         let length_mm = u32::from_le_bytes([record[8], record[9], record[10], record[11]]);
 
-        if length_mm < MIN_LENGTH_MM || length_mm > MAX_LENGTH_MM {
+        if !(MIN_LENGTH_MM..=MAX_LENGTH_MM).contains(&length_mm) {
             anyhow::bail!(
                 "Length out of range: {} mm (expected {} to {}) for edge {} -> {} (edge_idx {})",
                 length_mm, MIN_LENGTH_MM, MAX_LENGTH_MM, u_node, v_node, edge_idx
@@ -553,18 +553,18 @@ pub fn compute_component_stats(path: &Path) -> Result<ComponentStats> {
 
     // Read offsets
     let mut offsets = vec![0u64; n_nodes as usize + 1];
-    for i in 0..=n_nodes as usize {
+    for offset in offsets.iter_mut() {
         let mut buf = [0u8; 8];
         file.read_exact(&mut buf)?;
-        offsets[i] = u64::from_le_bytes(buf);
+        *offset = u64::from_le_bytes(buf);
     }
 
     // Read heads
     let mut heads = vec![0u32; 2 * n_edges_und as usize];
-    for i in 0..(2 * n_edges_und as usize) {
+    for head in heads.iter_mut() {
         let mut buf = [0u8; 4];
         file.read_exact(&mut buf)?;
-        heads[i] = u32::from_le_bytes(buf);
+        *head = u32::from_le_bytes(buf);
     }
 
     // BFS to find connected components
@@ -588,8 +588,7 @@ pub fn compute_component_stats(path: &Path) -> Result<ComponentStats> {
             let adj_end = offsets[u as usize + 1] as usize;
             comp_edges += (adj_end - adj_start) as u64;
 
-            for i in adj_start..adj_end {
-                let v = heads[i];
+            for &v in &heads[adj_start..adj_end] {
                 if !visited[v as usize] {
                     visited[v as usize] = true;
                     queue.push_back(v);

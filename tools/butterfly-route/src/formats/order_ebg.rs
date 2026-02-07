@@ -1,4 +1,4 @@
-///! order.ebg format - CCH ordering permutation for EBG nodes
+//! order.ebg format - CCH ordering permutation for EBG nodes
 
 use anyhow::Result;
 use std::fs::File;

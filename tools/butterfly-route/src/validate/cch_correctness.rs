@@ -341,15 +341,15 @@ fn generate_query_pairs(
     let mut pairs = Vec::with_capacity(n_pairs);
 
     for _ in 0..n_pairs {
-        let (src, dst) = if rng.gen_bool(0.5) {
+        let (src, dst) = if rng.random_bool(0.5) {
             // Close pair: random walk from src
-            let src = routable_nodes[rng.gen_range(0..routable_nodes.len())];
-            let dst = random_walk_neighbor(topo, weights, src, rng.gen_range(1..10), &mut rng);
+            let src = routable_nodes[rng.random_range(0..routable_nodes.len())];
+            let dst = random_walk_neighbor(topo, weights, src, rng.random_range(1..10), &mut rng);
             (src, dst)
         } else {
             // Long range: uniform random
-            let src = routable_nodes[rng.gen_range(0..routable_nodes.len())];
-            let dst = routable_nodes[rng.gen_range(0..routable_nodes.len())];
+            let src = routable_nodes[rng.random_range(0..routable_nodes.len())];
+            let dst = routable_nodes[rng.random_range(0..routable_nodes.len())];
             (src, dst)
         };
         pairs.push(QueryPair { src, dst });
@@ -458,13 +458,14 @@ fn random_walk_neighbor(
             break;
         }
 
-        current = neighbors[rng.gen_range(0..neighbors.len())];
+        current = neighbors[rng.random_range(0..neighbors.len())];
     }
 
     current
 }
 
 /// Bidirectional CCH query with generation-based clearing
+#[allow(clippy::too_many_arguments)]
 fn bidi_cch_query(
     topo: &crate::formats::CchTopo,
     weights: &crate::formats::CchWeights,
@@ -573,6 +574,7 @@ fn bidi_cch_query(
 }
 
 /// CCH-Dijkstra (baseline) - explores both UP and DOWN in any order
+#[allow(clippy::too_many_arguments)]
 fn cch_dijkstra_query(
     topo: &crate::formats::CchTopo,
     weights: &crate::formats::CchWeights,

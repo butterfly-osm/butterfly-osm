@@ -73,7 +73,7 @@ pub fn solve_tsp(matrix: &[u32], n: usize, round_trip: bool) -> TspSolution {
         };
         return TspSolution {
             order: vec![0, 1],
-            total_cost: total as u64,
+            total_cost: total,
             improvement_pct: 0.0,
         };
     }
@@ -157,8 +157,8 @@ fn nearest_neighbor_greedy(matrix: &[u32], n: usize, start: usize) -> Vec<usize>
         let mut best_next = usize::MAX;
         let mut best_cost = u64::MAX;
 
-        for j in 0..n {
-            if !visited[j] {
+        for (j, &is_visited) in visited.iter().enumerate() {
+            if !is_visited {
                 let c = cost(matrix, n, current, j);
                 if c < best_cost {
                     best_cost = c;
@@ -170,9 +170,9 @@ fn nearest_neighbor_greedy(matrix: &[u32], n: usize, start: usize) -> Vec<usize>
         if best_next == usize::MAX {
             // All remaining nodes are unreachable from current.
             // Add them in order as a fallback.
-            for j in 0..n {
-                if !visited[j] {
-                    visited[j] = true;
+            for (j, is_visited) in visited.iter_mut().enumerate() {
+                if !*is_visited {
+                    *is_visited = true;
                     order.push(j);
                 }
             }
@@ -444,6 +444,20 @@ pub async fn trip_handler(
         }
     };
 
+    // Validate coordinates
+    for (i, &[lon, lat]) in req.coordinates.iter().enumerate() {
+        if !(-180.0..=180.0).contains(&lon) || !(-90.0..=90.0).contains(&lat) || lon.is_nan() || lat.is_nan() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "code": "InvalidValue",
+                    "message": format!("coordinate[{}] ({}, {}) is outside valid bounds", i, lon, lat)
+                })),
+            )
+                .into_response();
+        }
+    }
+
     // Validate waypoint count
     let n = req.coordinates.len();
     if n < 2 {
@@ -469,7 +483,7 @@ pub async fn trip_handler(
 
     // Parse annotations
     let annotations: Vec<&str> = req.annotations.split(',').map(|s| s.trim()).collect();
-    let want_duration = annotations.contains(&"duration") || (!annotations.contains(&"distance"));
+    let _want_duration = annotations.contains(&"duration") || (!annotations.contains(&"distance"));
     let want_distance = annotations.contains(&"distance");
 
     let mode_data = state.get_mode(mode);

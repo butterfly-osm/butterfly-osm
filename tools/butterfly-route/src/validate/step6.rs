@@ -1,4 +1,4 @@
-///! Step 6 validation - CCH ordering lock conditions (per-mode on filtered EBG)
+//! Step 6 validation - CCH ordering lock conditions (per-mode on filtered EBG)
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -46,7 +46,7 @@ pub fn validate_step6(
     println!("  ✓ node count matches filtered EBG");
 
     // Compute SHA-256
-    let inputs_sha256 = hex::encode(&order.inputs_sha);
+    let inputs_sha256 = hex::encode(order.inputs_sha);
     let order_sha256 = compute_file_sha256(&result.order_path)?;
 
     println!("\n✅ Step 6 validation passed for {} mode!", mode_name);

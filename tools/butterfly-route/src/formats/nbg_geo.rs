@@ -1,4 +1,4 @@
-///! nbg.geo format - Edge geometry and metrics for NBG
+//! nbg.geo format - Edge geometry and metrics for NBG
 
 use anyhow::Result;
 use std::fs::File;

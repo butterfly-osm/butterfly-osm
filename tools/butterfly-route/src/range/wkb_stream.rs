@@ -46,14 +46,14 @@ fn signed_area_2(ring: &[(f64, f64)]) -> f64 {
 /// Ensure a ring is counter-clockwise (CCW) per RFC 7946 GeoJSON convention.
 /// Positive signed area = CW → reverse to CCW.
 /// Negative signed area = already CCW → no change.
-pub fn ensure_ccw(ring: &mut Vec<(f64, f64)>) {
+pub fn ensure_ccw(ring: &mut [(f64, f64)]) {
     if signed_area_2(ring) > 0.0 {
         ring.reverse();
     }
 }
 
 /// Ensure a ring is clockwise (CW) — for WKB holes.
-pub fn ensure_cw(ring: &mut Vec<(f64, f64)>) {
+pub fn ensure_cw(ring: &mut [(f64, f64)]) {
     if signed_area_2(ring) < 0.0 {
         ring.reverse();
     }
@@ -208,7 +208,7 @@ impl IsochroneBatch {
 }
 
 /// Convert batch to Arrow RecordBatch
-#[cfg(feature = "arrow")]
+#[cfg(any())] // Arrow feature not enabled - keep code for reference
 pub fn batch_to_arrow(batch: &IsochroneBatch) -> Result<arrow::record_batch::RecordBatch, arrow::error::ArrowError> {
     use std::sync::Arc;
     use arrow::array::{ArrayRef, BinaryArray, UInt32Array, UInt64Array};
@@ -256,14 +256,14 @@ pub fn write_ndjson(records: &[IsochroneRecord]) -> Vec<u8> {
 /// Simple base64 encoding (no padding)
 fn base64_encode(data: &[u8]) -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut result = String::with_capacity(data.len().div_ceil(3) * 4);
 
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as usize;
         let b1 = chunk.get(1).copied().unwrap_or(0) as usize;
         let b2 = chunk.get(2).copied().unwrap_or(0) as usize;
 
-        result.push(ALPHABET[(b0 >> 2)] as char);
+        result.push(ALPHABET[b0 >> 2] as char);
         result.push(ALPHABET[((b0 & 0x03) << 4) | (b1 >> 4)] as char);
 
         if chunk.len() > 1 {

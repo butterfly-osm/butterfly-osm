@@ -41,12 +41,12 @@ impl UpAdjFlat {
 
         // First pass: count valid edges per node
         let mut counts = vec![0usize; n_nodes];
-        for source in 0..n_nodes {
+        for (source, count) in counts.iter_mut().enumerate() {
             let start = topo.up_offsets[source] as usize;
             let end = topo.up_offsets[source + 1] as usize;
             for i in start..end {
                 if weights.up[i] != u32::MAX {
-                    counts[source] += 1;
+                    *count += 1;
                 }
             }
         }
@@ -262,6 +262,7 @@ impl DAryHeap {
         self.heap.len()
     }
 
+    #[allow(dead_code)]
     #[inline]
     fn is_empty(&self) -> bool {
         self.heap.is_empty()
@@ -272,6 +273,7 @@ impl DAryHeap {
         self.heap.clear();
     }
 
+    #[allow(dead_code)]
     #[inline]
     fn top(&self) -> (u32, u32) {
         self.heap[0]
@@ -516,8 +518,10 @@ struct BucketEntry {
 /// Uses Structure-of-Arrays (SoA) for better cache efficiency:
 /// - dists: Vec<u32> - distances, contiguous
 /// - source_indices: Vec<u16> - source indices, contiguous
+///
 /// This saves 2 bytes per entry (no padding) and improves cache utilization
 struct PrefixSumBuckets {
+    #[allow(dead_code)]
     n_nodes: usize,
     /// Count of items per node (stamped)
     counts: Vec<u32>,
@@ -660,6 +664,7 @@ impl SortedBuckets {
     }
 
     /// Create from already-sorted items (for parallel sort case)
+    #[allow(dead_code)]
     fn from_sorted(items: Vec<(u32, u16, u32)>) -> Self {
         Self { items }
     }
@@ -672,6 +677,7 @@ impl SortedBuckets {
     }
 
     /// Get bucket items as a slice (for parallel join)
+    #[allow(dead_code)]
     #[inline]
     fn get_slice(&self, node: u32) -> &[(u32, u16, u32)] {
         let start = self.items.partition_point(|&(n, _, _)| n < node);
@@ -738,7 +744,7 @@ pub struct BucketM2MStats {
 pub fn table_bucket(
     topo: &CchTopo,
     weights: &CchWeights,
-    down_rev: &DownReverseAdj,
+    _down_rev: &DownReverseAdj,
     sources: &[u32],
     targets: &[u32],
 ) -> (Vec<u32>, BucketM2MStats) {
@@ -773,7 +779,7 @@ pub fn table_bucket_optimized(
     };
 
     // Estimate for pre-allocation
-    let avg_visited = (n_nodes / 400).max(500).min(20000);
+    let avg_visited = (n_nodes / 400).clamp(500, 20000);
 
     // Single reusable search state
     let mut state = SearchState::new(n_nodes, avg_visited);
@@ -850,7 +856,7 @@ pub struct BucketM2MEngine {
 impl BucketM2MEngine {
     /// Create a new engine for the given graph size
     pub fn new(n_nodes: usize) -> Self {
-        let avg_visited = (n_nodes / 400).max(500).min(20000);
+        let avg_visited = (n_nodes / 400).clamp(500, 20000);
         Self {
             n_nodes,
             state: SearchState::new(n_nodes, avg_visited),
@@ -1172,7 +1178,7 @@ pub fn table_bucket_full_flat(
     };
 
     // Estimate for pre-allocation
-    let avg_visited = (n_nodes / 400).max(500).min(20000);
+    let avg_visited = (n_nodes / 400).clamp(500, 20000);
 
     // Single reusable search state
     let mut state = SearchState::new(n_nodes, avg_visited);
@@ -1279,7 +1285,7 @@ pub fn forward_build_buckets(
     }
 
     // Estimate for pre-allocation
-    let avg_visited = (n_nodes / 400).max(500).min(20000);
+    let avg_visited = (n_nodes / 400).clamp(500, 20000);
 
     // Single reusable search state
     let mut state = SearchState::new(n_nodes, avg_visited);
@@ -1328,7 +1334,7 @@ pub fn backward_join_with_buckets(
     }
 
     // Estimate for pre-allocation
-    let avg_visited = (n_nodes / 400).max(500).min(20000);
+    let avg_visited = (n_nodes / 400).clamp(500, 20000);
     let mut state = SearchState::new(n_nodes, avg_visited);
 
     for (target_idx, &target) in targets.iter().enumerate() {
@@ -1456,10 +1462,7 @@ fn forward_fill_buckets_opt(
         let start = topo.up_offsets[u as usize] as usize;
         let end = topo.up_offsets[u as usize + 1] as usize;
 
-        for i in start..end {
-            let v = topo.up_targets[i];
-            let w = weights_up[i];
-
+        for (&v, &w) in topo.up_targets[start..end].iter().zip(&weights_up[start..end]) {
             if w == u32::MAX {
                 continue;
             }
@@ -1608,7 +1611,7 @@ pub fn table_bucket_parallel(
             }
 
             // Thread-local search state
-            let avg_visited = (n_nodes / 400).max(500).min(20000);
+            let avg_visited = (n_nodes / 400).clamp(500, 20000);
             let mut state = SearchState::new(n_nodes, avg_visited);
             let mut bucket_items = Vec::with_capacity(avg_visited);
 
@@ -1652,7 +1655,7 @@ pub fn table_bucket_parallel(
         .filter(|(_, &target)| (target as usize) < n_nodes)
         .map(|(target_idx, &target)| {
             // Thread-local search state
-            let avg_visited = (n_nodes / 400).max(500).min(20000);
+            let avg_visited = (n_nodes / 400).clamp(500, 20000);
             let mut state = SearchState::new(n_nodes, avg_visited);
 
             backward_join_parallel_prefix(
@@ -1681,6 +1684,7 @@ pub fn table_bucket_parallel(
 }
 
 /// Backward join for parallel execution (uses atomic matrix)
+#[allow(dead_code)]
 fn backward_join_parallel(
     down_rev_flat: &DownReverseAdjFlat,
     target: u32,

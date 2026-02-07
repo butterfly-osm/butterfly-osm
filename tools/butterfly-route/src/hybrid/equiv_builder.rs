@@ -66,8 +66,7 @@ impl EquivHybridBuilder {
         let mut nodes_with_reduction = 0usize;
         let mut nodes_fully_collapsed = 0usize;
 
-        for nbg_node in 0..n_nbg_nodes {
-            let incoming = &nbg_incoming[nbg_node];
+        for incoming in &nbg_incoming {
             if incoming.is_empty() {
                 equivalence_classes.push(Vec::new());
                 continue;
@@ -275,9 +274,9 @@ impl EquivHybridBuilder {
         let mut ebg_arc_idx = Vec::with_capacity(n_hybrid_arcs);
 
         let mut offset = 0u64;
-        for state in 0..n_states as usize {
+        for adj_list in &adjacency {
             offsets.push(offset);
-            for &(tgt, w, arc_idx) in &adjacency[state] {
+            for &(tgt, w, arc_idx) in adj_list {
                 targets.push(tgt);
                 arc_weights.push(w);
                 ebg_arc_idx.push(arc_idx);
@@ -354,8 +353,7 @@ fn compute_signature(
 
     let mut turn_cost_vec: Vec<(u32, u32)> = Vec::with_capacity(arc_end - arc_start);
 
-    for arc_idx in arc_start..arc_end {
-        let out_ebg = ebg_targets[arc_idx];
+    for (arc_idx, &out_ebg) in ebg_targets.iter().enumerate().take(arc_end).skip(arc_start) {
         let cost = turn_costs.get(arc_idx).copied().unwrap_or(0);
         turn_cost_vec.push((out_ebg, cost));
     }

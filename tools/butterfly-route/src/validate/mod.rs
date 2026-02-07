@@ -1,8 +1,8 @@
-///! Validation and lock file generation for Step 1, Step 2, and Step 3
+//! Validation and lock file generation for Step 1, Step 2, and Step 3
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;

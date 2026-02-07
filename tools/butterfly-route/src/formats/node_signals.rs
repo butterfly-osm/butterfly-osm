@@ -1,24 +1,24 @@
-///! Sorted array of OSM node IDs with traffic signals
-///!
-///! Format: node_signals.bin (little-endian, memory-mappable)
-///!
-///! Header (64 bytes):
-///!   magic:        u32 = 0x53494753  // "SIGS"
-///!   version:      u16 = 1
-///!   reserved:     u16 = 0
-///!   count:        u64
-///!   created_unix: u64
-///!   input_sha256: [32]u8
-///!   reserved2:    [8]u8
-///!
-///! Body (count records, sorted strictly ascending):
-///!   osm_node_id: i64
-///!
-///! Footer (16 bytes):
-///!   body_crc64: u64
-///!   file_crc64: u64
-///!
-///! Lookup: O(log n) binary search to check if a node has a traffic signal
+//! Sorted array of OSM node IDs with traffic signals
+//!
+//! Format: node_signals.bin (little-endian, memory-mappable)
+//!
+//! Header (64 bytes):
+//!   magic:        u32 = 0x53494753  // "SIGS"
+//!   version:      u16 = 1
+//!   reserved:     u16 = 0
+//!   count:        u64
+//!   created_unix: u64
+//!   input_sha256: [32]u8
+//!   reserved2:    [8]u8
+//!
+//! Body (count records, sorted strictly ascending):
+//!   osm_node_id: i64
+//!
+//! Footer (16 bytes):
+//!   body_crc64: u64
+//!   file_crc64: u64
+//!
+//! Lookup: O(log n) binary search to check if a node has a traffic signal
 
 use anyhow::{bail, Context, Result};
 use std::fs::File;

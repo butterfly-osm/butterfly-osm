@@ -1,29 +1,29 @@
-///! Sorted array format for nodes - replaces sparse bitmap approach
-///!
-///! Format: nodes.sa (little-endian, memory-mappable, fixed 16-byte records)
-///!
-///! Header (128 bytes):
-///!   magic:        u32 = 0x4E4F4453  // "NODS"
-///!   version:      u16 = 1
-///!   reserved:     u16 = 0
-///!   count:        u64
-///!   scale:        u32 = 10_000_000
-///!   bbox_min_lat: i32
-///!   bbox_min_lon: i32
-///!   bbox_max_lat: i32
-///!   bbox_max_lon: i32
-///!   created_unix: u64
-///!   input_sha256: [32]u8
-///!   reserved2:    [60]u8
-///!
-///! Body (count records, sorted strictly ascending by id):
-///!   id:      i64
-///!   lat_fxp: i32
-///!   lon_fxp: i32
-///!
-///! Footer (16 bytes):
-///!   body_crc64: u64
-///!   file_crc64: u64
+//! Sorted array format for nodes - replaces sparse bitmap approach
+//!
+//! Format: nodes.sa (little-endian, memory-mappable, fixed 16-byte records)
+//!
+//! Header (128 bytes):
+//!   magic:        u32 = 0x4E4F4453  // "NODS"
+//!   version:      u16 = 1
+//!   reserved:     u16 = 0
+//!   count:        u64
+//!   scale:        u32 = 10_000_000
+//!   bbox_min_lat: i32
+//!   bbox_min_lon: i32
+//!   bbox_max_lat: i32
+//!   bbox_max_lon: i32
+//!   created_unix: u64
+//!   input_sha256: [32]u8
+//!   reserved2:    [60]u8
+//!
+//! Body (count records, sorted strictly ascending by id):
+//!   id:      i64
+//!   lat_fxp: i32
+//!   lon_fxp: i32
+//!
+//! Footer (16 bytes):
+//!   body_crc64: u64
+//!   file_crc64: u64
 
 use anyhow::{Context, Result};
 use std::fs::File;

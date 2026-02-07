@@ -1,19 +1,19 @@
-///! cch.topo format - CCH shortcut topology (metric-independent)
-///!
-///! Stores which shortcuts exist, not their weights.
-///! Weights are computed per-mode in Step 8 (customization).
-///!
-///! # Rank-Aligned Storage (Version 2)
-///!
-///! All node IDs in this format are RANK POSITIONS, not filtered node IDs.
-///! This means: node_id = rank, where rank is the contraction order.
-///!
-///! Benefits:
-///! - `offsets[rank]` gives edges directly (no inv_perm lookup)
-///! - `dist[rank]` during PHAST is sequential memory access
-///! - 2-4x speedup expected from cache efficiency
-///!
-///! For path unpacking and geometry lookup, use `rank_to_filtered` mapping.
+//! cch.topo format - CCH shortcut topology (metric-independent)
+//!
+//! Stores which shortcuts exist, not their weights.
+//! Weights are computed per-mode in Step 8 (customization).
+//!
+//! # Rank-Aligned Storage (Version 2)
+//!
+//! All node IDs in this format are RANK POSITIONS, not filtered node IDs.
+//! This means: node_id = rank, where rank is the contraction order.
+//!
+//! Benefits:
+//! - `offsets[rank]` gives edges directly (no inv_perm lookup)
+//! - `dist[rank]` during PHAST is sequential memory access
+//! - 2-4x speedup expected from cache efficiency
+//!
+//! For path unpacking and geometry lookup, use `rank_to_filtered` mapping.
 
 use anyhow::Result;
 use std::fs::File;
@@ -85,8 +85,8 @@ impl CchTopoFile {
         let n_nodes_bytes = data.n_nodes.to_le_bytes();
         let n_shortcuts_bytes = data.n_shortcuts.to_le_bytes();
         let n_original_bytes = data.n_original_arcs.to_le_bytes();
-        let n_up_edges = (data.up_offsets.last().copied().unwrap_or(0)) as u64;
-        let n_down_edges = (data.down_offsets.last().copied().unwrap_or(0)) as u64;
+        let n_up_edges = data.up_offsets.last().copied().unwrap_or(0);
+        let n_down_edges = data.down_offsets.last().copied().unwrap_or(0);
         let n_up_bytes = n_up_edges.to_le_bytes();
         let n_down_bytes = n_down_edges.to_le_bytes();
 

@@ -1,9 +1,9 @@
-///! Edge-Based Graph (EBG) construction - Step 4
-///!
-///! Builds a turn-expanded graph where:
-///! - Nodes = directed NBG edges (u→v)
-///! - Arcs = legal turn transitions at intersections
-///! - Mode specificity encoded as bitmasks
+//! Edge-Based Graph (EBG) construction - Step 4
+//!
+//! Builds a turn-expanded graph where:
+//! - Nodes = directed NBG edges (u→v)
+//! - Arcs = legal turn transitions at intersections
+//! - Mode specificity encoded as bitmasks
 
 use anyhow::Result;
 use std::collections::HashMap;
@@ -222,6 +222,7 @@ fn enumerate_ebg_nodes(nbg_geo: &NbgGeo) -> Result<Vec<EbgNode>> {
 }
 
 /// Build adjacency lists with turn rule application and geometry-based penalties
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn build_adjacency(
     nbg_csr: &NbgCsr,
     nbg_geo: &NbgGeo,

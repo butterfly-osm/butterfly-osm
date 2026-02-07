@@ -179,7 +179,7 @@ impl<W: std::io::Write> ArrowMatrixWriter<W> {
 
     /// Write a single tile
     pub fn write_tile(&mut self, tile: &MatrixTile) -> anyhow::Result<()> {
-        self.write_tiles(&[tile.clone()])
+        self.write_tiles(std::slice::from_ref(tile))
     }
 
     /// Finish writing and close the stream

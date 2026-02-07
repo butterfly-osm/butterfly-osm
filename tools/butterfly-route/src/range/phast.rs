@@ -131,8 +131,8 @@ impl PhastEngine {
         let mut reachable_nodes = 0usize;
         let mut reachable_edges = 0usize;
 
-        for u in 0..self.n_nodes {
-            if dist[u] != u32::MAX && dist[u] <= threshold {
+        for (u, &d) in dist.iter().enumerate() {
+            if d != u32::MAX && d <= threshold {
                 reachable_nodes += 1;
                 // Count down-edges from this node
                 let down_start = self.topo.down_offsets[u] as usize;
@@ -284,8 +284,8 @@ impl PhastEngine {
         dist[origin as usize] = 0;
 
         // Block tracking for adaptive decision
-        let n_blocks = (self.n_nodes + BLOCK_SIZE - 1) / BLOCK_SIZE;
-        let n_words = (n_blocks + 63) / 64;
+        let n_blocks = self.n_nodes.div_ceil(BLOCK_SIZE);
+        let n_words = n_blocks.div_ceil(64);
         let mut active_blocks = vec![0u64; n_words];
 
         // Mark origin's block as active
@@ -468,7 +468,7 @@ impl PhastEngine {
 
         // Active set bitset: nodes that might contribute to paths ≤ threshold
         // Using u64 words for efficient bit operations
-        let n_words = (self.n_nodes + 63) / 64;
+        let n_words = self.n_nodes.div_ceil(64);
         let mut active = vec![0u64; n_words];
 
         // Mark origin as active
@@ -533,7 +533,7 @@ impl PhastEngine {
         let downward_start = std::time::Instant::now();
 
         // Count nodes skipped due to active-set gating
-        let mut nodes_skipped = 0usize;
+        let mut _nodes_skipped = 0usize;
 
         for rank in (0..self.n_nodes).rev() {
             // With rank-aligned CCH: u = rank (no inv_perm lookup!)
@@ -542,7 +542,7 @@ impl PhastEngine {
             // Check if node is in active set
             let is_active = (active[u / 64] >> (u % 64)) & 1 != 0;
             if !is_active {
-                nodes_skipped += 1;
+                _nodes_skipped += 1;
                 continue;
             }
 
@@ -714,8 +714,8 @@ impl PhastEngine {
         // Block-level active set
         // A block is active if it contains any node with dist ≤ threshold
         // OR could receive updates ≤ threshold
-        let n_blocks = (self.n_nodes + BLOCK_SIZE - 1) / BLOCK_SIZE;
-        let n_words = (n_blocks + 63) / 64;
+        let n_blocks = self.n_nodes.div_ceil(BLOCK_SIZE);
+        let n_words = n_blocks.div_ceil(64);
         let mut active_blocks = vec![0u64; n_words];
 
         // Mark origin's block as active
@@ -871,8 +871,8 @@ impl PhastEngine {
         dist[target as usize] = 0;
 
         // Block-level active set
-        let n_blocks = (self.n_nodes + BLOCK_SIZE - 1) / BLOCK_SIZE;
-        let n_words = (n_blocks + 63) / 64;
+        let n_blocks = self.n_nodes.div_ceil(BLOCK_SIZE);
+        let n_words = n_blocks.div_ceil(64);
         let mut active_blocks = vec![0u64; n_words];
 
         // Mark target's block as active

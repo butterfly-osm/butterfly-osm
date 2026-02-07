@@ -1,4 +1,4 @@
-///! nbg.node_map format - OSM node ID to compact node ID mapping
+//! nbg.node_map format - OSM node ID to compact node ID mapping
 
 use anyhow::Result;
 use std::collections::HashMap;

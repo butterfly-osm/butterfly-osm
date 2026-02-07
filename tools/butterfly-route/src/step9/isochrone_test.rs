@@ -8,14 +8,13 @@ use geo::{Contains, Coord, Point, Polygon};
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 
-use crate::formats::{EbgNodes, NbgGeo};
 use crate::profile_abi::Mode;
-use crate::range::ReachableSegment;
 
 use super::geometry::{build_isochrone_geometry_sparse, Point as IsoPoint};
 
 /// Test result for a single isochrone
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct IsochroneTestResult {
     pub origin: (f64, f64),
     pub threshold_s: u32,
@@ -30,13 +29,16 @@ pub struct IsochroneTestResult {
 
 #[derive(Debug, Clone)]
 pub struct ViolationInfo {
+    #[allow(dead_code)]
     pub sampled_point: (f64, f64),    // Original random sample
     pub snapped_point: (f64, f64),    // Snapped road point (used for containment check)
+    #[allow(dead_code)]
     pub snap_distance_m: f64,          // Distance from sampled to snapped
     pub drive_time_s: f32,
     pub threshold_s: u32,
 }
 
+#[allow(dead_code)]
 impl IsochroneTestResult {
     pub fn passed(&self) -> bool {
         self.inside_violations.is_empty() && self.outside_violations.is_empty()
@@ -61,7 +63,6 @@ pub fn points_to_polygon(points: &[IsoPoint]) -> Option<Polygon<f64>> {
     let poly = Polygon::new(coords.into(), vec![]);
 
     // Validate and fix if needed
-    use geo::algorithm::BooleanOps;
     if !poly.exterior().0.is_empty() {
         Some(poly)
     } else {
@@ -82,8 +83,8 @@ pub fn sample_points_in_bbox(
     let mut points = Vec::with_capacity(n_points);
 
     for _ in 0..n_points {
-        let lon = rng.gen_range(min_lon..max_lon);
-        let lat = rng.gen_range(min_lat..max_lat);
+        let lon = rng.random_range(min_lon..max_lon);
+        let lat = rng.random_range(min_lat..max_lat);
         points.push((lon, lat));
     }
 
@@ -145,7 +146,7 @@ mod tests {
         assert!((max_lat - 51.0).abs() < 0.001);
 
         // With buffer
-        let (min_lon, max_lon, min_lat, max_lat) = polygon_bbox_with_buffer(&points, 1.5);
+        let (min_lon, max_lon, _min_lat, _max_lat) = polygon_bbox_with_buffer(&points, 1.5);
         assert!(min_lon < 4.0);
         assert!(max_lon > 5.0);
     }
@@ -335,28 +336,26 @@ mod tests {
                                 inside_correct += 1;
                             }
                         }
+                    } else if time_s > threshold_s as f32 {
+                        outside_correct += 1;
                     } else {
-                        if time_s > threshold_s as f32 {
-                            outside_correct += 1;
+                        // Outside polygon but drive time within threshold
+                        // Allow 10% tolerance for boundary effects
+                        let margin_ratio = time_s / threshold_s as f32;
+                        if margin_ratio < 0.90 {
+                            outside_violations.push(ViolationInfo {
+                                sampled_point: (*lon, *lat),
+                                snapped_point: (snapped_lon, snapped_lat),
+                                snap_distance_m: snap_dist_m,
+                                drive_time_s: time_s,
+                                threshold_s,
+                            });
+                            eprintln!("OUTSIDE VIOLATION: snapped ({:.4}, {:.4}) drive time {:.1}s <= {}s ({}% under)",
+                                snapped_lon, snapped_lat, time_s, threshold_s,
+                                ((1.0 - margin_ratio) * 100.0) as u32);
                         } else {
-                            // Outside polygon but drive time within threshold
-                            // Allow 10% tolerance for boundary effects
-                            let margin_ratio = time_s / threshold_s as f32;
-                            if margin_ratio < 0.90 {
-                                outside_violations.push(ViolationInfo {
-                                    sampled_point: (*lon, *lat),
-                                    snapped_point: (snapped_lon, snapped_lat),
-                                    snap_distance_m: snap_dist_m,
-                                    drive_time_s: time_s,
-                                    threshold_s,
-                                });
-                                eprintln!("OUTSIDE VIOLATION: snapped ({:.4}, {:.4}) drive time {:.1}s <= {}s ({}% under)",
-                                    snapped_lon, snapped_lat, time_s, threshold_s,
-                                    ((1.0 - margin_ratio) * 100.0) as u32);
-                            } else {
-                                // Within 10% of threshold - boundary case, count as correct
-                                outside_correct += 1;
-                            }
+                            // Within 10% of threshold - boundary case, count as correct
+                            outside_correct += 1;
                         }
                     }
                 }

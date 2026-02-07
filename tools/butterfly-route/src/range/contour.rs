@@ -88,8 +88,7 @@ pub fn generate_contour(
     config: &GridConfig,
 ) -> Result<ContourResult> {
     let start = std::time::Instant::now();
-    let mut stats = ContourStats::default();
-    stats.input_segments = segments.len();
+    let mut stats = ContourStats { input_segments: segments.len(), ..Default::default() };
 
     if segments.is_empty() {
         return Ok(ContourResult {
@@ -209,6 +208,7 @@ pub fn generate_contour(
 }
 
 /// Stamp a line segment onto the raster grid using Bresenham's algorithm
+#[allow(clippy::too_many_arguments)]
 fn stamp_line(
     raster: &mut [bool],
     n_cols: usize,

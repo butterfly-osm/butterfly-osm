@@ -1,8 +1,8 @@
-///! Step 5 validation - Per-mode weights lock conditions
+//! Step 5 validation - Per-mode weights lock conditions
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::formats::*;
@@ -28,6 +28,7 @@ pub struct ModeLockData {
 }
 
 /// Validate Step 5 outputs and generate lock file
+#[allow(clippy::too_many_arguments)]
 pub fn validate_step5(
     result: &step5::Step5Result,
     ebg_nodes_path: &Path,
@@ -121,7 +122,7 @@ pub fn validate_step5(
     };
 
     Ok(Step5LockFile {
-        inputs_sha256: hex::encode(&ebg_nodes.inputs_sha),
+        inputs_sha256: hex::encode(ebg_nodes.inputs_sha),
         car: car_lock,
         bike: bike_lock,
         foot: foot_lock,
@@ -229,8 +230,8 @@ fn verify_lock_b_math(
         let length_mm = ebg_node.length_mm;
         let base_speed_mmps = way_attr.output.base_speed_mmps;
 
-        let travel_time_ds = ((length_mm as u64 * 10 + base_speed_mmps as u64 - 1) / base_speed_mmps as u64) as u32;
-        let per_km_extra_ds = ((length_mm as u64 * way_attr.output.per_km_penalty_ds as u64 + 1_000_000 - 1) / 1_000_000) as u32;
+        let travel_time_ds = (length_mm as u64 * 10).div_ceil(base_speed_mmps as u64) as u32;
+        let per_km_extra_ds = (length_mm as u64 * way_attr.output.per_km_penalty_ds as u64).div_ceil(1_000_000) as u32;
         let expected_weight = travel_time_ds
             .saturating_add(per_km_extra_ds)
             .saturating_add(way_attr.output.const_penalty_ds)

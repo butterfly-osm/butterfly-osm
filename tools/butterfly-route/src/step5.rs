@@ -1,6 +1,6 @@
-///! Step 5: Per-mode weights, masks, and filtered EBGs (car | bike | foot)
+//! Step 5: Per-mode weights, masks, and filtered EBGs (car | bike | foot)
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -27,6 +27,7 @@ pub struct Step5Result {
 }
 
 /// Generate per-mode weights, turns, and masks
+#[allow(clippy::too_many_arguments)]
 pub fn generate_weights(
     ebg_nodes_path: &Path,
     ebg_csr_path: &Path,
@@ -248,6 +249,7 @@ fn build_way_index(attrs: &[WayAttr]) -> HashMap<i64, WayAttr> {
 }
 
 /// Generate weights, turns, and mask for a single mode
+#[allow(clippy::too_many_arguments)]
 fn generate_mode_data(
     mode: Mode,
     ebg_nodes: &EbgNodes,
@@ -329,12 +331,12 @@ fn generate_mode_data(
         // Compute travel_time_ds using integer math (ceiling division)
         // travel_time_ds = ceil(length_mm / base_speed_mmps * 10)
         //                = (length_mm * 10 + base_speed_mmps - 1) / base_speed_mmps
-        let travel_time_ds = ((length_mm as u64 * 10 + base_speed_mmps as u64 - 1) / base_speed_mmps as u64) as u32;
+        let travel_time_ds = (length_mm as u64 * 10).div_ceil(base_speed_mmps as u64) as u32;
 
         // Compute per_km_extra_ds using integer math
         // per_km_extra_ds = ceil(length_km * per_km_penalty_ds)
         //                 = (length_mm * per_km_penalty_ds + 1_000_000 - 1) / 1_000_000
-        let per_km_extra_ds = ((length_mm as u64 * way_attr.output.per_km_penalty_ds as u64 + 1_000_000 - 1) / 1_000_000) as u32;
+        let per_km_extra_ds = (length_mm as u64 * way_attr.output.per_km_penalty_ds as u64).div_ceil(1_000_000) as u32;
 
         // Total weight = travel_time + per_km_extra + const_penalty (saturating)
         let weight_ds = travel_time_ds
@@ -354,14 +356,14 @@ fn generate_mode_data(
     let mut total_penalty_ds = 0u64;
     let mut arcs_with_penalty = 0usize;
 
-    for arc_idx in 0..n_arcs {
+    for (arc_idx, penalty) in penalties.iter_mut().enumerate() {
         let turn_idx = ebg_csr.turn_idx[arc_idx] as usize;
         let turn_entry = &turn_table.entries[turn_idx];
 
         // Check if this mode is allowed on this arc
         if (turn_entry.mode_mask & mode_bit) == 0 {
             // Mode not allowed - penalty is 0 (traversal forbidden by mask)
-            penalties[arc_idx] = 0;
+            *penalty = 0;
             continue;
         }
 
@@ -371,7 +373,7 @@ fn generate_mode_data(
             Mode::Bike => turn_entry.penalty_ds_bike,
             Mode::Foot => turn_entry.penalty_ds_foot,
         };
-        penalties[arc_idx] = penalty_ds;
+        *penalty = penalty_ds;
 
         if penalty_ds > 0 {
             total_penalty_ds += penalty_ds as u64;

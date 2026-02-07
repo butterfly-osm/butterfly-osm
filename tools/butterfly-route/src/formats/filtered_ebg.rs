@@ -1,9 +1,9 @@
-///! filtered_ebg.<mode> format - Mode-filtered EBG for per-mode CCH
-///!
-///! Stores the filtered subgraph containing only mode-accessible nodes and transitions.
-///! Used by Step 6/7/8 to build per-mode CCH hierarchies.
+//! filtered_ebg.<mode> format - Mode-filtered EBG for per-mode CCH
+//!
+//! Stores the filtered subgraph containing only mode-accessible nodes and transitions.
+//! Used by Step 6/7/8 to build per-mode CCH hierarchies.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
@@ -76,6 +76,7 @@ impl FilteredEbg {
     /// * `arc_mode_masks` - Mode mask for each unique turn entry (None to skip arc filtering)
     /// * `n_original_nodes` - Number of nodes in original EBG
     /// * `inputs_sha` - SHA-256 of input files
+    #[allow(clippy::too_many_arguments)]
     pub fn build_with_arc_filter(
         mode: Mode,
         ebg_offsets: &[u64],
@@ -143,8 +144,8 @@ impl FilteredEbg {
             let start = ebg_offsets[original_u as usize] as usize;
             let end = ebg_offsets[original_u as usize + 1] as usize;
 
-            for arc_idx in start..end {
-                let original_v = ebg_heads[arc_idx] as usize;
+            for (arc_idx, &head) in ebg_heads.iter().enumerate().take(end).skip(start) {
+                let original_v = head as usize;
                 // Check BOTH node accessibility AND arc accessibility
                 if is_node_accessible(original_v) && is_arc_accessible(arc_idx) {
                     let filtered_v = original_to_filtered[original_v];

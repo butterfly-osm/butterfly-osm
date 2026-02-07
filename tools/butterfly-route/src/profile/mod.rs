@@ -1,7 +1,7 @@
-///! Step 2: Modal profiling pipeline
-///!
-///! Processes ways.raw and relations.raw through routing profiles to generate
-///! per-mode attributes and turn restrictions.
+//! Step 2: Modal profiling pipeline
+//!
+//! Processes ways.raw and relations.raw through routing profiles to generate
+//! per-mode attributes and turn restrictions.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -171,7 +171,7 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
         });
 
         count += 1;
-        if count % 1_000_000 == 0 {
+        if count.is_multiple_of(1_000_000) {
             println!("  Processed {} ways...", count);
         }
     }
@@ -399,6 +399,7 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
 }
 
 /// Find ID by string in dictionary (reverse lookup)
+#[allow(dead_code)]
 fn find_id_by_string(dict: &HashMap<u32, String>, s: &str) -> Option<u32> {
     dict.iter().find(|(_, v)| v.as_str() == s).map(|(k, _)| *k)
 }

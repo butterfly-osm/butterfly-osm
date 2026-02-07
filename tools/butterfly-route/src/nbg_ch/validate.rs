@@ -74,8 +74,8 @@ pub fn validate_nbg_ch(
     println!("Validating {} random queries...", n_tests);
 
     for i in 0..n_tests {
-        let source = rng.gen_range(0..n_nodes);
-        let target = rng.gen_range(0..n_nodes);
+        let source = rng.random_range(0..n_nodes);
+        let target = rng.random_range(0..n_nodes);
 
         // Ground truth: Dijkstra
         let dijkstra_dist = dijkstra_nbg(nbg_csr, nbg_geo, source, target);
@@ -131,8 +131,8 @@ pub fn validate_matrix(
     let n_nodes = topo.n_nodes;
 
     // Generate random sources and targets
-    let sources: Vec<u32> = (0..matrix_size).map(|_| rng.gen_range(0..n_nodes)).collect();
-    let targets: Vec<u32> = (0..matrix_size).map(|_| rng.gen_range(0..n_nodes)).collect();
+    let sources: Vec<u32> = (0..matrix_size).map(|_| rng.random_range(0..n_nodes)).collect();
+    let targets: Vec<u32> = (0..matrix_size).map(|_| rng.random_range(0..n_nodes)).collect();
 
     println!("Validating {}x{} matrix...", matrix_size, matrix_size);
 

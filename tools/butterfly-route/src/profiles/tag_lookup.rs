@@ -1,6 +1,6 @@
-///! Tag lookup utility for profiles
-///!
-///! Provides convenient access to OSM tags from dictionary-encoded arrays.
+//! Tag lookup utility for profiles
+//!
+//! Provides convenient access to OSM tags from dictionary-encoded arrays.
 
 use std::collections::HashMap;
 

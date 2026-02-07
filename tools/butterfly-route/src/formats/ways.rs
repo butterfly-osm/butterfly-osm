@@ -1,4 +1,4 @@
-///! ways.raw format - way geometry and tags with dictionary encoding
+//! ways.raw format - way geometry and tags with dictionary encoding
 
 use anyhow::Result;
 use std::collections::HashMap;
@@ -269,6 +269,7 @@ impl WaysFile {
     }
 
     /// Read dictionaries from ways.raw and return them with their SHA-256 hashes
+    #[allow(clippy::type_complexity)]
     pub fn read_dictionaries<P: AsRef<Path>>(path: P) -> Result<(HashMap<u32, String>, HashMap<u32, String>, [u8; 32], [u8; 32])> {
         let mut file = File::open(path)?;
         let file_len = file.metadata()?.len();
@@ -331,13 +332,14 @@ impl WaysFile {
 
     /// Stream ways from file without loading all into memory
     /// Yields (way_id, tag_key_ids, tag_val_ids, nodes)
+    #[allow(clippy::type_complexity)]
     pub fn stream_ways<P: AsRef<Path>>(
         path: P,
     ) -> Result<impl Iterator<Item = Result<(i64, Vec<u32>, Vec<u32>, Vec<i64>)>>> {
         use std::io::{BufReader, Seek, SeekFrom};
 
         let mut file = File::open(path)?;
-        let file_len = file.metadata()?.len();
+        let _file_len = file.metadata()?.len();
 
         // Read header
         let mut header = [0u8; 32];
@@ -354,7 +356,7 @@ impl WaysFile {
         Ok(WayStreamIterator {
             reader,
             remaining: count,
-            end_offset: kdict_off,
+            _end_offset: kdict_off,
         })
     }
 
@@ -367,7 +369,7 @@ impl WaysFile {
         keys.sort();
 
         for key in keys {
-            hasher.update(&key.to_le_bytes());
+            hasher.update(key.to_le_bytes());
             hasher.update(dict[key].as_bytes());
         }
 
@@ -416,7 +418,7 @@ impl WaysFile {
 pub struct WayStreamIterator<R: Read> {
     reader: BufReader<R>,
     remaining: u64,
-    end_offset: u64,
+    _end_offset: u64,
 }
 
 impl<R: Read> Iterator for WayStreamIterator<R> {
