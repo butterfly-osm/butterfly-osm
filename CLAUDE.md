@@ -100,12 +100,15 @@ High-performance routing engine using **edge-based CCH** (Customizable Contracti
 #### Query Server API
 
 The Step 9 query server (`butterfly-route serve`) provides:
-- `GET /route` - Point-to-point routing with geometry
-- `GET /matrix` - One-to-many distance matrix
+- `GET /route` - Point-to-point routing with geometry, turn-by-turn steps with road names, alternatives
+- `GET /nearest` - Snap to nearest road segments with distance
+- `GET /matrix` - One-to-many distance matrix (duration and/or distance)
 - `POST /matrix/bulk` - Bulk many-to-many matrix (K-lane batched PHAST, Arrow streaming)
-- `POST /table/stream` - Arrow IPC streaming for large matrices (handles 50k×50k = 2.5B distances)
-- `GET /isochrone` - Reachability polygon for time threshold
-- `POST /isochrone/batch` - K-lane batched isochrones (up to 8 origins per request)
+- `POST /table/stream` - Arrow IPC streaming for large matrices (50k×50k, cooperative cancellation on disconnect)
+- `GET /isochrone` - Reachability polygon (GeoJSON/WKB, CCW outer rings, `direction=depart|arrive`)
+- `POST /isochrone/bulk` - Parallel batch isochrones (WKB stream)
+- `POST /trip` - TSP/trip optimization (nearest-neighbor + 2-opt + or-opt)
+- `GET /height` - Elevation lookup from SRTM DEM tiles
 - `GET /health` - Health check
 - Swagger UI at `/swagger-ui`
 
@@ -342,39 +345,22 @@ else:
 
 ---
 
-## Strategic Status (2026-02-01)
+## Strategic Status (2026-02-07)
 
-**Isochrone Geometry: CORRECT BUT NEEDS OPTIMIZATION** ⚠️
+**All Core Features Complete** ✅
 
-Sparse raster approach works but has two issues:
-1. **33ms latency** (stamps ALL 50k+ edges, needs frontier-local optimization)
-2. **4.8% test violations** (test semantics wrong - samples plane not roads)
-
-**Current Implementation:**
-- Sparse tile rasterization + Moore boundary tracing (correct approach)
-- 30m cells, 2 dilations, 1 erosion
-- Stamps ALL reachable edges (slow)
-
-**Optimization Plan (D6-D9):**
-1. Fix test: sample SNAPPED road points, not random plane
-2. Frontier-local stamping: only stamp edges in frontier tile halo (33ms → 5-12ms)
-3. Two-resolution: coarse interior (40m), fine frontier (15m)
-4. Reduce morphology: 1 dilation, 0-1 erosion
-
-**Correct isochrone definition:**
-- Point P is "reachable" iff snap(P) has route time ≤ threshold
-- Polygon = buffered reachable roads (not arbitrary 2-D area)
-
-Run test: `cargo test -p butterfly-route test_isochrone_consistency -- --ignored --nocapture`
-
-**Completed:**
-- ✅ Exact turn-aware single truth model
+- ✅ Exact turn-aware single truth model (edge-based CCH)
 - ✅ Matrices: **1.8x FASTER than OSRM at 10k+** scale
 - ✅ Trust Package (routes): OSRM parity 0.98 correlation
 - ✅ Bulk-First APIs with progress headers
-- ❌ **Isochrones: GEOMETRY BROKEN** - fast but incorrect
+- ✅ Isochrone geometry: CCW polygons, 5-decimal precision, ring closure
+- ✅ Road names in turn-by-turn instructions (754K named roads loaded from `ways.raw`)
+- ✅ Arrow streaming with cooperative cancellation on client disconnect
+- ✅ Reverse isochrones (`direction=arrive`)
+- ✅ TSP/trip optimization (`POST /trip`)
+- ✅ Elevation/DEM integration (`GET /height`)
 
-**Immediate priority: Fix isochrone geometry (D1-D3 in todo_immediate.md)**
+**Remaining deferred items:** Map matching (F4), two-resolution isochrone mask (D8)
 
 ---
 

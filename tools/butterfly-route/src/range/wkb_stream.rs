@@ -27,8 +27,41 @@
 use std::io::Write;
 use super::contour::ContourResult;
 
+/// Compute 2x signed area of a ring (handles both open and closed rings).
+/// Positive = CW, negative = CCW (in standard x-right, y-up coordinates).
+fn signed_area_2(ring: &[(f64, f64)]) -> f64 {
+    if ring.len() < 3 {
+        return 0.0;
+    }
+    let n = ring.len();
+    let mut sum = 0.0;
+    for i in 0..n {
+        let (x1, y1) = ring[i];
+        let (x2, y2) = ring[(i + 1) % n];
+        sum += (x2 - x1) * (y2 + y1);
+    }
+    sum
+}
+
+/// Ensure a ring is counter-clockwise (CCW) per RFC 7946 GeoJSON convention.
+/// Positive signed area = CW → reverse to CCW.
+/// Negative signed area = already CCW → no change.
+pub fn ensure_ccw(ring: &mut Vec<(f64, f64)>) {
+    if signed_area_2(ring) > 0.0 {
+        ring.reverse();
+    }
+}
+
+/// Ensure a ring is clockwise (CW) — for WKB holes.
+pub fn ensure_cw(ring: &mut Vec<(f64, f64)>) {
+    if signed_area_2(ring) < 0.0 {
+        ring.reverse();
+    }
+}
+
 /// Encode a polygon as WKB (Well-Known Binary)
 ///
+/// Outer ring is normalized to CCW (RFC 7946), holes to CW.
 /// Returns None if the polygon is empty.
 pub fn encode_polygon_wkb(contour: &ContourResult) -> Option<Vec<u8>> {
     if contour.outer_ring.is_empty() {
@@ -37,6 +70,9 @@ pub fn encode_polygon_wkb(contour: &ContourResult) -> Option<Vec<u8>> {
 
     let n_rings = 1 + contour.holes.len();
     let mut outer_ring = contour.outer_ring.clone();
+
+    // Normalize outer ring to CCW
+    ensure_ccw(&mut outer_ring);
 
     // Ensure ring is closed (first point == last point)
     if let (Some(first), Some(last)) = (outer_ring.first(), outer_ring.last()) {
@@ -72,9 +108,10 @@ pub fn encode_polygon_wkb(contour: &ContourResult) -> Option<Vec<u8>> {
         buf.write_all(&lat.to_le_bytes()).ok()?;
     }
 
-    // Write holes
+    // Write holes (CW orientation per convention)
     for hole in &contour.holes {
         let mut closed_hole = hole.clone();
+        ensure_cw(&mut closed_hole);
         if let (Some(first), Some(last)) = (closed_hole.first(), closed_hole.last()) {
             if first != last {
                 closed_hole.push(*first);
@@ -285,5 +322,82 @@ mod tests {
         assert_eq!(base64_encode(b"f"), "Zg");
         assert_eq!(base64_encode(b"fo"), "Zm8");
         assert_eq!(base64_encode(b"foo"), "Zm9v");
+    }
+
+    #[test]
+    fn test_ensure_ccw() {
+        // CW square: (0,0) → (0,1) → (1,1) → (1,0) → goes up, right, down = CW
+        let mut cw = vec![(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0)];
+        assert!(signed_area_2(&cw) > 0.0, "should be CW before ensure_ccw");
+        ensure_ccw(&mut cw);
+        assert!(signed_area_2(&cw) < 0.0, "should be CCW after ensure_ccw");
+
+        // Already CCW: reversed order
+        let mut ccw = vec![(1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)];
+        let ccw_original = ccw.clone();
+        assert!(signed_area_2(&ccw) < 0.0, "should already be CCW");
+        ensure_ccw(&mut ccw);
+        assert_eq!(ccw, ccw_original); // unchanged
+    }
+
+    #[test]
+    fn test_ensure_cw() {
+        // CCW ring → ensure_cw should reverse it
+        let mut ccw = vec![(1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)];
+        assert!(signed_area_2(&ccw) < 0.0, "should be CCW before ensure_cw");
+        ensure_cw(&mut ccw);
+        assert!(signed_area_2(&ccw) > 0.0, "should be CW after ensure_cw");
+    }
+
+    #[test]
+    fn test_wkb_determinism() {
+        // Same input twice should produce identical WKB bytes
+        let contour = ContourResult {
+            outer_ring: vec![
+                (4.3517, 50.8503),
+                (4.4017, 50.8503),
+                (4.4017, 50.8803),
+                (4.3517, 50.8803),
+            ],
+            holes: vec![],
+            stats: Default::default(),
+        };
+
+        let wkb1 = encode_polygon_wkb(&contour).unwrap();
+        let wkb2 = encode_polygon_wkb(&contour).unwrap();
+        assert_eq!(wkb1, wkb2, "WKB output must be deterministic");
+    }
+
+    #[test]
+    fn test_wkb_outer_ring_is_ccw() {
+        // Provide a CW ring (0,0)→(0,1)→(1,1)→(1,0) is CW, verify WKB output is CCW
+        let cw_ring = vec![
+            (0.0, 0.0),
+            (0.0, 1.0),
+            (1.0, 1.0),
+            (1.0, 0.0),
+        ];
+        assert!(signed_area_2(&cw_ring) > 0.0, "input ring must be CW for this test");
+        let contour = ContourResult {
+            outer_ring: cw_ring,
+            holes: vec![],
+            stats: Default::default(),
+        };
+
+        let wkb = encode_polygon_wkb(&contour).unwrap();
+
+        // Parse WKB: skip header (1+4+4=9 bytes), num_points (4 bytes), then read points
+        let n_pts = u32::from_le_bytes([wkb[9], wkb[10], wkb[11], wkb[12]]) as usize;
+        let mut ring: Vec<(f64, f64)> = Vec::new();
+        for i in 0..n_pts {
+            let off = 13 + i * 16;
+            let x = f64::from_le_bytes(wkb[off..off+8].try_into().unwrap());
+            let y = f64::from_le_bytes(wkb[off+8..off+16].try_into().unwrap());
+            ring.push((x, y));
+        }
+
+        // Verify CCW: signed area should be negative
+        let sa = signed_area_2(&ring);
+        assert!(sa < 0.0, "Outer ring must be CCW (signed_area_2={sa})");
     }
 }

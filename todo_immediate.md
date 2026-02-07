@@ -140,7 +140,7 @@ Based on competitive analysis vs OSRM, Valhalla, and GraphHopper. These are tabl
   - `steps=true` parameter on `/route`
   - Maneuver types: depart, arrive, turn (left/right/slight/sharp/uturn), continue
   - Bearings computed from polyline geometry
-  - Road names not yet available (would need pipeline addition)
+  - Road names loaded from `ways.raw` via streaming API (754K named roads in Belgium)
 
 - [x] **E5: Alternative routes** ✅
   - `alternatives=N` parameter on `/route`
@@ -201,20 +201,20 @@ Not worth the complexity since we win at scale. **SKIPPING**.
 
 ### F) Tier 2: Features
 
-| Priority | Feature | Complexity | Impact |
-|----------|---------|------------|--------|
-| **F1** | **Reverse isochrone** | Low | High — "where can reach X within T?", reuses PHAST |
-| **F2** | **TSP / trip optimization** | Medium | Medium — uses existing matrix endpoint |
-| **F3** | **Elevation / DEM integration** | Medium | Medium — SRTM data for bike/foot profiles |
-| **F4** | **Map matching (GPS trace → route)** | High | High — HMM on CCH, core fleet API |
+| Priority | Feature | Complexity | Impact | Status |
+|----------|---------|------------|--------|--------|
+| **F1** | **Reverse isochrone** | Low | High | ✅ `direction=arrive` param, plain linear scan reverse PHAST |
+| **F2** | **TSP / trip optimization** | Medium | Medium | ✅ `POST /trip`, nearest-neighbor + 2-opt + or-opt |
+| **F3** | **Elevation / DEM integration** | Medium | Medium | ✅ `GET /height`, SRTM .hgt parsing, bilinear interpolation |
+| **F4** | **Map matching (GPS trace → route)** | High | High | ⏳ DEFERRED |
 
-### G) Polish & Production
+### G) Polish & Production ✅ COMPLETE (2026-02-07)
 
 | Task | Status |
 |------|--------|
-| G1: Road names in turn-by-turn (need OSM way name tags in query-time data) | ⬜ |
-| G2: Polygon output stability (deterministic epsilon, ring orientation) | ⬜ |
-| G3: Arrow streaming backpressure + cancellation | ⬜ |
+| G1: Road names in turn-by-turn (loads OSM way names from `ways.raw` at startup) | ✅ COMPLETE |
+| G2: Polygon output stability (CCW ring orientation, 5-decimal precision, ring closure) | ✅ COMPLETE |
+| G3: Arrow streaming backpressure + cancellation (AtomicBool cooperative cancellation) | ✅ COMPLETE |
 
 ---
 

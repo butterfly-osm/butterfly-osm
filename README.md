@@ -206,11 +206,18 @@ curl -X POST http://localhost:8080/table/stream \
 For single queries or small workloads:
 
 ```bash
-# Single route with debug info
-curl "http://localhost:8080/route?src_lon=4.35&src_lat=50.85&dst_lon=4.40&dst_lat=50.86&mode=car&debug=true"
+# Single route with turn-by-turn steps (includes road names)
+curl "http://localhost:8080/route?src_lon=4.35&src_lat=50.85&dst_lon=4.40&dst_lat=50.86&mode=car&steps=true"
 
-# Single isochrone (GeoJSON)
+# Single isochrone (GeoJSON, CCW polygons, 5-decimal precision)
 curl "http://localhost:8080/isochrone?lon=4.35&lat=50.85&time_s=1800&mode=car"
+
+# Reverse isochrone (where can people reach me FROM within 30 min?)
+curl "http://localhost:8080/isochrone?lon=4.35&lat=50.85&time_s=1800&mode=car&direction=arrive"
+
+# TSP/trip optimization
+curl -X POST "http://localhost:8080/trip" -H "Content-Type: application/json" \
+  -d '{"locations": [[4.35,50.85],[4.40,50.86],[4.45,50.87]], "mode": "car"}'
 
 # Small matrix (OSRM-compatible)
 curl "http://localhost:8080/table/v1/driving/4.35,50.85;4.40,50.86;4.45,50.87"

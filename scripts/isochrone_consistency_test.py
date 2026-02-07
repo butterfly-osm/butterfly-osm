@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import List, Tuple, Optional
 from shapely.geometry import Point, Polygon
 from shapely.ops import unary_union
+from shapely.validation import make_valid
 import time
 
 BUTTERFLY_URL = "http://localhost:8080"
@@ -55,7 +56,20 @@ def get_isochrone(lon: float, lat: float, time_s: int, mode: str = "car") -> Opt
             return None
         # Convert to shapely polygon
         coords = [(p["lon"], p["lat"]) for p in polygon_coords]
-        return Polygon(coords)
+        poly = Polygon(coords)
+        # Handle self-intersecting polygons from boundary tracing
+        if not poly.is_valid:
+            poly = make_valid(poly)
+            # make_valid can return GeometryCollection, extract largest polygon
+            if poly.geom_type == 'MultiPolygon':
+                poly = max(poly.geoms, key=lambda p: p.area)
+            elif poly.geom_type == 'GeometryCollection':
+                polygons = [g for g in poly.geoms if g.geom_type == 'Polygon']
+                if polygons:
+                    poly = max(polygons, key=lambda p: p.area)
+                else:
+                    return None
+        return poly
     except Exception as e:
         print(f"  Isochrone error: {e}")
         return None
