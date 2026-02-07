@@ -202,9 +202,9 @@ Combined findings from Codex (gpt-5.3-codex) and Gemini (gemini-2.5-pro) repo-wi
 | H3 | **Feature-specific tests not in CI.** `c-bindings` feature flag tests are never executed, creating a gap for the entire FFI layer. | CI | `.github/workflows/ci.yml` | Gemini |
 | H4 | **Hardcoded static source list.** `VALID_SOURCES_CACHE` in fuzzy matching is a static list. Engine cannot adapt to new Geofabrik regions without recompilation. | butterfly-common | `butterfly-common/src/error.rs` | Gemini |
 | H5 | **Root Makefile is misleading.** Only covers `butterfly-dl` C library builds. Root Makefile should orchestrate the entire workspace or be renamed/moved. | Build | `Makefile` | Gemini |
-| H6 | **source_idx stored as `u16` in bucket M2M.** Limits matrix sources to 65,535 per computation. Silent truncation via `source_idx as u16` with no bounds check. | butterfly-route | `tools/butterfly-route/src/matrix/bucket_ch.rs:800,909,1002,1101,1198,1302` | Codex |
-| H7 | **`unwrap()` calls in production API code paths.** `api.rs` lines 1394, 1819, 2016, 2153 contain `.unwrap()` that can panic under unexpected input. CatchPanicLayer mitigates crash but returns opaque 500. | butterfly-route | `tools/butterfly-route/src/step9/api.rs:1394,1819,2016,2153` | Codex |
-| H8 | **8 `unsafe` blocks in step7 parallel edge filling.** Used for concurrent writes to shared `Vec` via raw pointer arithmetic. Each block assumes disjoint index ranges but lacks formal proof or `debug_assert` bounds verification. | butterfly-route | `tools/butterfly-route/src/step7.rs:651,658,727,754,1364,1371,1432,1456` | Codex |
+| H6 | ~~**source_idx stored as `u16` in bucket M2M.**~~ **FIXED** (commit `845bbcc`). Widened to `u32` across `bucket_ch.rs` and `nbg_ch/query.rs`. Zero memory cost. | butterfly-route | `tools/butterfly-route/src/matrix/bucket_ch.rs` | Codex |
+| H7 | ~~**`unwrap()` calls in production API code paths.**~~ **FIXED** (commit `845bbcc`). 2x `unwrap_or_else`, 2x `get_or_insert_with`. | butterfly-route | `tools/butterfly-route/src/step9/api.rs` | Codex |
+| H8 | ~~**8 `unsafe` blocks in step7 parallel edge filling.**~~ **FIXED** (commit `845bbcc`). 8 `debug_assert!` bounds checks added. Zero cost in release. | butterfly-route | `tools/butterfly-route/src/step7.rs` | Codex |
 | H9 | **Fuzzy matching uses unexplained magic numbers.** Weights like `0.7`, `0.12` in `find_best_fuzzy_match` have no comments or tests justifying their values. Brittle and unmaintainable. | butterfly-common | `butterfly-common/src/error.rs` | Gemini |
 
 ### MEDIUM
@@ -233,20 +233,22 @@ Combined findings from Codex (gpt-5.3-codex) and Gemini (gemini-2.5-pro) repo-wi
 
 ### Remediation Priority
 
+**DONE (butterfly-route HIGHs — commit `845bbcc`):**
+- ~~H6: Upgrade source_idx to u32~~ FIXED
+- ~~H7: Replace unwrap() in api.rs~~ FIXED
+- ~~H8: Add debug_assert! in step7 unsafe blocks~~ FIXED
+
 **Immediate (before next release):**
 1. Fix C1: Add real benchmark CI job with performance regression gates
 2. Fix C2/C3: Wrap FFI entry points in `catch_unwind`, fix use-after-free with boxed callback context
-3. Fix H7: Replace `.unwrap()` in api.rs with proper error handling
 
 **Short-term (next sprint):**
-4. Fix H1/H2: Add `butterfly_last_error_message()`, improve runtime model
-5. Fix H6: Add bounds check or upgrade to `u32` for source_idx
-6. Fix H8: Add `debug_assert!` bounds checks in unsafe blocks
-7. Fix L3: Use latitude-aware degree conversion for simplification
+3. Fix H1/H2: Add `butterfly_last_error_message()`, improve runtime model
+4. Fix L3: Use latitude-aware degree conversion for simplification
 
 **Backlog:**
-8. H3: Add c-bindings feature tests to CI
-9. H4: Replace hardcoded sources with dynamic Geofabrik index fetch
-10. M3/M4: Optimize step6 elimination game (PQ + Vec adjacency)
-11. M6: Implement multi-polygon contour support (holes)
-12. M7: Add concurrency limiting / rate limiting middleware
+5. H3: Add c-bindings feature tests to CI
+6. H4: Replace hardcoded sources with dynamic Geofabrik index fetch
+7. M3/M4: Optimize step6 elimination game (PQ + Vec adjacency)
+8. M6: Implement multi-polygon contour support (holes)
+9. M7: Add concurrency limiting / rate limiting middleware
