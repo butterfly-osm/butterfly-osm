@@ -20,7 +20,7 @@ use crate::profile_abi::Mode;
 use crate::matrix::bucket_ch::{table_bucket_parallel, table_bucket_full_flat, forward_build_buckets, backward_join_with_buckets};
 use crate::matrix::arrow_stream::{MatrixTile, tiles_to_record_batch, record_batch_to_bytes, ARROW_STREAM_CONTENT_TYPE};
 
-use super::geometry::{build_geometry, build_isochrone_geometry_concave, Point, RouteGeometry};
+use super::geometry::{build_geometry, build_isochrone_geometry_concave, encode_polyline6, GeometryFormat, Point, RouteGeometry};
 use super::query::CchQuery;
 use super::state::ServerState;
 use super::unpack::unpack_path;
@@ -28,18 +28,25 @@ use super::unpack::unpack_path;
 /// OpenAPI documentation
 #[derive(OpenApi)]
 #[openapi(
-    paths(route, table_osrm, table_post, isochrone, health),
+    paths(route, table_post, isochrone, nearest, health),
     components(schemas(
         RouteRequest,
         RouteResponse,
+        RouteAlternative,
         SnapInfo,
         RouteDebugInfo,
+        RouteStep,
+        StepManeuver,
         TablePostRequest,
         TableResponse,
         IsochroneRequest,
         IsochroneResponse,
+        NearestRequest,
+        NearestResponse,
+        NearestWaypoint,
         Point,
-        ErrorResponse
+        ErrorResponse,
+        Waypoint
     )),
     info(
         title = "Butterfly Route API",
@@ -64,14 +71,11 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
     Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .route("/route", get(route))
-        // OSRM-compatible table endpoint
-        .route("/table/v1/:profile/*coords", get(table_osrm))
-        // POST alternative for table (easier for large coordinate lists)
+        .route("/nearest", get(nearest))
         .route("/table", post(table_post))
         // Arrow streaming for large matrices (50k×50k+)
         .merge(stream_route)
         .route("/isochrone", get(isochrone))
-        .route("/isochrone/wkb", get(isochrone_wkb))
         .route("/isochrone/bulk", post(isochrone_bulk))
         .route("/health", get(health))
         .route("/debug/compare", get(debug_compare))
@@ -98,10 +102,22 @@ pub struct RouteRequest {
     /// Transport mode: car, bike, or foot
     #[schema(example = "car")]
     mode: String,
+    /// Geometry encoding: polyline6 (default), geojson, points
+    #[serde(default = "default_geometries")]
+    geometries: String,
+    /// Number of alternative routes (0 or 1 = single route, max 5)
+    #[serde(default = "default_alternatives")]
+    alternatives: u32,
+    /// Include turn-by-turn step instructions
+    #[serde(default)]
+    steps: bool,
     /// Include debug information in response
     #[serde(default)]
     debug: bool,
 }
+fn default_alternatives() -> u32 { 0 }
+
+fn default_geometries() -> String { "polyline6".to_string() }
 
 /// Debug information about snapping
 #[derive(Debug, Serialize, ToSchema)]
@@ -127,15 +143,65 @@ pub struct RouteDebugInfo {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RouteResponse {
+    /// Primary route duration in seconds
+    pub duration_s: f64,
+    /// Primary route distance in meters
+    pub distance_m: f64,
+    /// Primary route geometry
+    pub geometry: RouteGeometry,
+    /// Turn-by-turn steps (only if steps=true)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steps: Option<Vec<RouteStep>>,
+    /// Alternative routes (only if alternatives > 0)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alternatives: Option<Vec<RouteAlternative>>,
+    /// Debug information (only present if debug=true in request)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug: Option<RouteDebugInfo>,
+}
+
+/// An alternative route
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RouteAlternative {
     /// Duration in seconds
     pub duration_s: f64,
     /// Distance in meters
     pub distance_m: f64,
     /// Route geometry
     pub geometry: RouteGeometry,
-    /// Debug information (only present if debug=true in request)
+    /// Turn-by-turn steps (only if steps=true)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub debug: Option<RouteDebugInfo>,
+    pub steps: Option<Vec<RouteStep>>,
+}
+
+/// A step in turn-by-turn instructions
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RouteStep {
+    /// Distance of this step in meters
+    pub distance_m: f64,
+    /// Duration of this step in seconds
+    pub duration_s: f64,
+    /// Geometry of this step
+    pub geometry: RouteGeometry,
+    /// Maneuver at the start of this step
+    pub maneuver: StepManeuver,
+}
+
+/// Maneuver instruction
+#[derive(Debug, Serialize, ToSchema)]
+pub struct StepManeuver {
+    /// Location [lon, lat] of the maneuver
+    pub location: [f64; 2],
+    /// Bearing before the maneuver (0-360 degrees)
+    pub bearing_before: u16,
+    /// Bearing after the maneuver (0-360 degrees)
+    pub bearing_after: u16,
+    /// Turn type: depart, arrive, turn, continue, roundabout, fork, merge
+    #[serde(rename = "type")]
+    pub maneuver_type: String,
+    /// Turn modifier: left, right, slight left, slight right, sharp left, sharp right, uturn, straight
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modifier: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -144,6 +210,9 @@ pub struct ErrorResponse {
 }
 
 /// Calculate route between two points
+///
+/// Supports alternative routes via `alternatives` parameter
+/// and turn-by-turn instructions via `steps=true`.
 #[utoipa::path(
     get,
     path = "/route",
@@ -153,6 +222,9 @@ pub struct ErrorResponse {
         ("dst_lon" = f64, Query, description = "Destination longitude"),
         ("dst_lat" = f64, Query, description = "Destination latitude"),
         ("mode" = String, Query, description = "Transport mode: car, bike, foot"),
+        ("geometries" = Option<String>, Query, description = "Geometry encoding: polyline6 (default), geojson, points"),
+        ("alternatives" = Option<u32>, Query, description = "Number of alternative routes (0-5)"),
+        ("steps" = Option<bool>, Query, description = "Include turn-by-turn instructions"),
     ),
     responses(
         (status = 200, description = "Route found", body = RouteResponse),
@@ -169,18 +241,20 @@ async fn route(
         Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
     };
 
+    let geom_format = match GeometryFormat::parse(&req.geometries) {
+        Ok(f) => f,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
+    };
+
     let mode_data = state.get_mode(mode);
+    let num_alternatives = (req.alternatives.min(5)) as usize;
 
     // Snap source and destination with debug info
     let (src_orig, src_snap_info) = match state.spatial_index.snap_with_info(req.src_lon, req.src_lat, &mode_data.mask, 10) {
         Some((id, lon, lat, dist)) => {
-            eprintln!("DEBUG: Snapped src ({}, {}) to ({}, {}) node {} dist={:.1}m for mode {:?}",
-                req.src_lon, req.src_lat, lon, lat, id, dist, mode);
             (id, SnapInfo { lon, lat, snap_distance_m: dist, ebg_node_id: id })
         }
         None => {
-            eprintln!("DEBUG: Failed to snap src ({}, {}) for mode {:?}",
-                req.src_lon, req.src_lat, mode);
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
@@ -191,7 +265,7 @@ async fn route(
         }
     };
 
-    let (dst_orig, dst_snap_info) = match state.spatial_index.snap_with_info(req.dst_lon, req.dst_lat, &mode_data.mask, 10) {
+    let (_dst_orig, dst_snap_info) = match state.spatial_index.snap_with_info(req.dst_lon, req.dst_lat, &mode_data.mask, 10) {
         Some((id, lon, lat, dist)) => (id, SnapInfo { lon, lat, snap_distance_m: dist, ebg_node_id: id }),
         None => {
             return (
@@ -206,7 +280,7 @@ async fn route(
 
     // Convert to filtered node IDs for CCH query
     let src_filtered = mode_data.filtered_ebg.original_to_filtered[src_orig as usize];
-    let dst_filtered = mode_data.filtered_ebg.original_to_filtered[dst_orig as usize];
+    let dst_filtered = mode_data.filtered_ebg.original_to_filtered[_dst_orig as usize];
 
     if src_filtered == u32::MAX || dst_filtered == u32::MAX {
         return (
@@ -222,7 +296,35 @@ async fn route(
     let src_rank = mode_data.order.perm[src_filtered as usize];
     let dst_rank = mode_data.order.perm[dst_filtered as usize];
 
-    // Run query (in rank space)
+    // Helper: build route from query result
+    let build_route = |result: &super::query::QueryResult, format: GeometryFormat, want_steps: bool| -> (RouteGeometry, f64, f64, Option<Vec<RouteStep>>) {
+        let rank_path = unpack_path(
+            &mode_data.cch_topo,
+            &result.forward_parent,
+            &result.backward_parent,
+            src_rank,
+            dst_rank,
+            result.meeting_node,
+        );
+        let ebg_path: Vec<u32> = rank_path
+            .iter()
+            .map(|&rank| {
+                let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
+                mode_data.filtered_ebg.filtered_to_original[filtered_id as usize]
+            })
+            .collect();
+        let geometry = build_geometry(&ebg_path, &state.ebg_nodes, &state.nbg_geo, result.distance, format);
+        let duration_s = result.distance as f64 / 10.0;
+        let distance_m = geometry.distance_m;
+        let steps = if want_steps {
+            Some(build_steps(&ebg_path, &state.ebg_nodes, &state.nbg_geo, &mode_data.node_weights, format))
+        } else {
+            None
+        };
+        (geometry, duration_s, distance_m, steps)
+    };
+
+    // Run primary query
     let query = CchQuery::new(&state, mode);
     let result = match query.query(src_rank, dst_rank) {
         Some(r) => r,
@@ -237,32 +339,75 @@ async fn route(
         }
     };
 
-    // Unpack path (in rank space)
-    let rank_path = unpack_path(
-        &mode_data.cch_topo,
-        &result.forward_parent,
-        &result.backward_parent,
-        src_rank,
-        dst_rank,
-        result.meeting_node,
-    );
+    let (geometry, duration_s, distance_m, steps) = build_route(&result, geom_format, req.steps);
 
-    // Convert path from rank to filtered to original EBG node IDs for geometry
-    let ebg_path: Vec<u32> = rank_path
-        .iter()
-        .map(|&rank| {
-            let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-            mode_data.filtered_ebg.filtered_to_original[filtered_id as usize]
-        })
-        .collect();
+    // Compute alternative routes if requested
+    let alternatives = if num_alternatives > 0 {
+        let mut alt_routes = Vec::new();
+        let mut penalized_weights = mode_data.cch_weights.clone();
 
-    // Build geometry (uses original EBG node IDs)
-    let geometry = build_geometry(&ebg_path, &state.ebg_nodes, &state.nbg_geo, result.distance);
+        // Penalize edges of the primary route
+        for &(_node, edge_idx) in &result.forward_parent {
+            let idx = edge_idx as usize;
+            if idx < penalized_weights.up.len() {
+                penalized_weights.up[idx] = penalized_weights.up[idx].saturating_mul(3);
+            }
+        }
+        for &(_node, edge_idx) in &result.backward_parent {
+            let idx = edge_idx as usize;
+            if idx < penalized_weights.down.len() {
+                penalized_weights.down[idx] = penalized_weights.down[idx].saturating_mul(3);
+            }
+        }
 
-    // Debug info
-    eprintln!("DEBUG: src_orig={}, dst_orig={}, src_filt={}, dst_filt={}, distance={}, meeting_filt={}, fwd_len={}, bwd_len={}, ebg_path_len={}",
-        src_orig, dst_orig, src_filtered, dst_filtered, result.distance, result.meeting_node,
-        result.forward_parent.len(), result.backward_parent.len(), ebg_path.len());
+        for _alt_idx in 0..num_alternatives {
+            let alt_query = CchQuery::with_custom_weights(
+                &mode_data.cch_topo,
+                &mode_data.down_rev,
+                &penalized_weights,
+            );
+
+            if let Some(alt_result) = alt_query.query(src_rank, dst_rank) {
+                // Skip if same distance as primary (exact duplicate)
+                if alt_result.distance == result.distance {
+                    continue;
+                }
+                // Skip if distance is more than 2x primary (too indirect)
+                if alt_result.distance > result.distance.saturating_mul(2) {
+                    break;
+                }
+
+                let (alt_geom, alt_dur, alt_dist, alt_steps) = build_route(&alt_result, geom_format, req.steps);
+
+                // Penalize this alternative's edges for next iteration
+                for &(_node, edge_idx) in &alt_result.forward_parent {
+                    let idx = edge_idx as usize;
+                    if idx < penalized_weights.up.len() {
+                        penalized_weights.up[idx] = penalized_weights.up[idx].saturating_mul(3);
+                    }
+                }
+                for &(_node, edge_idx) in &alt_result.backward_parent {
+                    let idx = edge_idx as usize;
+                    if idx < penalized_weights.down.len() {
+                        penalized_weights.down[idx] = penalized_weights.down[idx].saturating_mul(3);
+                    }
+                }
+
+                alt_routes.push(RouteAlternative {
+                    duration_s: alt_dur,
+                    distance_m: alt_dist,
+                    geometry: alt_geom,
+                    steps: alt_steps,
+                });
+            } else {
+                break; // No more routes possible
+            }
+        }
+
+        if alt_routes.is_empty() { None } else { Some(alt_routes) }
+    } else {
+        None
+    };
 
     // Build debug info if requested
     let debug_info = if req.debug {
@@ -275,24 +420,377 @@ async fn route(
     };
 
     Json(RouteResponse {
-        duration_s: result.distance as f64 / 10.0, // deciseconds to seconds
-        distance_m: geometry.distance_m,
+        duration_s,
+        distance_m,
         geometry,
+        steps,
+        alternatives,
         debug: debug_info,
     })
     .into_response()
 }
 
-// ============ Table Endpoint (OSRM-compatible) ============
+/// Build turn-by-turn step instructions from EBG path
+pub(crate) fn build_steps(
+    ebg_path: &[u32],
+    ebg_nodes: &crate::formats::EbgNodes,
+    nbg_geo: &crate::formats::NbgGeo,
+    node_weights: &[u32],
+    format: GeometryFormat,
+) -> Vec<RouteStep> {
+    if ebg_path.len() < 2 {
+        return vec![];
+    }
 
-/// Query parameters for OSRM-style table endpoint
-#[derive(Debug, Deserialize)]
-pub struct TableQueryParams {
-    /// Source indices (semicolon-separated, e.g., "0;1;2"). If omitted, all coordinates are sources.
-    sources: Option<String>,
-    /// Destination indices (semicolon-separated). If omitted, all coordinates are destinations.
-    destinations: Option<String>,
+    let mut steps = Vec::new();
+
+    // Get start location for depart maneuver
+    let first_node = &ebg_nodes.nodes[ebg_path[0] as usize];
+    let start_loc = get_edge_start_location(first_node, nbg_geo);
+    let start_bearing = get_edge_bearing(first_node, nbg_geo, true);
+
+    // Depart step (first edge)
+    let first_distance = first_node.length_mm as f64 / 1000.0;
+    let first_duration = if (ebg_path[0] as usize) < node_weights.len() && node_weights[ebg_path[0] as usize] > 0 {
+        node_weights[ebg_path[0] as usize] as f64 / 10.0
+    } else {
+        0.0
+    };
+    let first_geom = build_edge_geometry(ebg_path[0], ebg_nodes, nbg_geo, format);
+
+    steps.push(RouteStep {
+        distance_m: first_distance,
+        duration_s: first_duration,
+        geometry: first_geom,
+        maneuver: StepManeuver {
+            location: start_loc,
+            bearing_before: 0,
+            bearing_after: start_bearing,
+            maneuver_type: "depart".to_string(),
+            modifier: None,
+        },
+    });
+
+    // Intermediate steps — group consecutive edges with same bearing direction
+    // For now, create one step per significant turn
+    let mut accumulated_distance = 0.0;
+    let mut accumulated_duration = 0.0;
+    let mut segment_edges: Vec<u32> = Vec::new();
+    let mut prev_end_bearing = get_edge_bearing(first_node, nbg_geo, false);
+
+    for i in 1..ebg_path.len() {
+        let edge_id = ebg_path[i];
+        let node = &ebg_nodes.nodes[edge_id as usize];
+        let edge_distance = node.length_mm as f64 / 1000.0;
+        let edge_duration = if (edge_id as usize) < node_weights.len() && node_weights[edge_id as usize] > 0 {
+            node_weights[edge_id as usize] as f64 / 10.0
+        } else {
+            0.0
+        };
+
+        let cur_start_bearing = get_edge_bearing(node, nbg_geo, true);
+        let turn_angle = bearing_diff(prev_end_bearing, cur_start_bearing);
+        let turn_type = classify_turn(turn_angle);
+
+        // If significant turn or last edge, emit a step
+        if turn_type != "straight" || i == ebg_path.len() - 1 {
+            if !segment_edges.is_empty() {
+                // Emit accumulated straight segment
+                let seg_geom = build_multi_edge_geometry(&segment_edges, ebg_nodes, nbg_geo, format);
+                let seg_start = get_edge_start_location(&ebg_nodes.nodes[segment_edges[0] as usize], nbg_geo);
+                let seg_start_bearing = get_edge_bearing(&ebg_nodes.nodes[segment_edges[0] as usize], nbg_geo, true);
+
+                steps.push(RouteStep {
+                    distance_m: accumulated_distance,
+                    duration_s: accumulated_duration,
+                    geometry: seg_geom,
+                    maneuver: StepManeuver {
+                        location: seg_start,
+                        bearing_before: prev_end_bearing,
+                        bearing_after: seg_start_bearing,
+                        maneuver_type: "continue".to_string(),
+                        modifier: Some("straight".to_string()),
+                    },
+                });
+                accumulated_distance = 0.0;
+                accumulated_duration = 0.0;
+                segment_edges.clear();
+            }
+
+            if i == ebg_path.len() - 1 {
+                // Arrive step
+                let arrive_loc = get_edge_end_location(node, nbg_geo);
+                let arrive_geom = build_edge_geometry(edge_id, ebg_nodes, nbg_geo, format);
+                steps.push(RouteStep {
+                    distance_m: edge_distance,
+                    duration_s: edge_duration,
+                    geometry: arrive_geom,
+                    maneuver: StepManeuver {
+                        location: arrive_loc,
+                        bearing_before: get_edge_bearing(node, nbg_geo, false),
+                        bearing_after: 0,
+                        maneuver_type: "arrive".to_string(),
+                        modifier: None,
+                    },
+                });
+            } else {
+                // Turn step
+                let turn_loc = get_edge_start_location(node, nbg_geo);
+                let is_roundabout = (node.class_bits & 0x08) != 0; // bit3 = roundabout
+                let m_type = if is_roundabout { "roundabout" } else { "turn" };
+
+                let turn_geom = build_edge_geometry(edge_id, ebg_nodes, nbg_geo, format);
+                steps.push(RouteStep {
+                    distance_m: edge_distance,
+                    duration_s: edge_duration,
+                    geometry: turn_geom,
+                    maneuver: StepManeuver {
+                        location: turn_loc,
+                        bearing_before: prev_end_bearing,
+                        bearing_after: cur_start_bearing,
+                        maneuver_type: m_type.to_string(),
+                        modifier: Some(turn_type.to_string()),
+                    },
+                });
+            }
+        } else {
+            // Accumulate straight segment
+            segment_edges.push(edge_id);
+            accumulated_distance += edge_distance;
+            accumulated_duration += edge_duration;
+        }
+
+        prev_end_bearing = get_edge_bearing(node, nbg_geo, false);
+    }
+
+    steps
 }
+
+/// Get start location of an EBG edge
+fn get_edge_start_location(node: &crate::formats::ebg_nodes::EbgNode, nbg_geo: &crate::formats::NbgGeo) -> [f64; 2] {
+    let geom_idx = node.geom_idx as usize;
+    if geom_idx < nbg_geo.polylines.len() {
+        let poly = &nbg_geo.polylines[geom_idx];
+        if !poly.lat_fxp.is_empty() {
+            return [poly.lon_fxp[0] as f64 / 1e7, poly.lat_fxp[0] as f64 / 1e7];
+        }
+    }
+    [0.0, 0.0]
+}
+
+/// Get end location of an EBG edge
+fn get_edge_end_location(node: &crate::formats::ebg_nodes::EbgNode, nbg_geo: &crate::formats::NbgGeo) -> [f64; 2] {
+    let geom_idx = node.geom_idx as usize;
+    if geom_idx < nbg_geo.polylines.len() {
+        let poly = &nbg_geo.polylines[geom_idx];
+        if !poly.lat_fxp.is_empty() {
+            let last = poly.lat_fxp.len() - 1;
+            return [poly.lon_fxp[last] as f64 / 1e7, poly.lat_fxp[last] as f64 / 1e7];
+        }
+    }
+    [0.0, 0.0]
+}
+
+/// Get bearing of an EBG edge (at start or end)
+fn get_edge_bearing(node: &crate::formats::ebg_nodes::EbgNode, nbg_geo: &crate::formats::NbgGeo, at_start: bool) -> u16 {
+    let geom_idx = node.geom_idx as usize;
+    if geom_idx < nbg_geo.polylines.len() {
+        let poly = &nbg_geo.polylines[geom_idx];
+        if poly.lat_fxp.len() >= 2 {
+            let (i0, i1) = if at_start {
+                (0, 1)
+            } else {
+                (poly.lat_fxp.len() - 2, poly.lat_fxp.len() - 1)
+            };
+            let lat1 = poly.lat_fxp[i0] as f64 / 1e7;
+            let lon1 = poly.lon_fxp[i0] as f64 / 1e7;
+            let lat2 = poly.lat_fxp[i1] as f64 / 1e7;
+            let lon2 = poly.lon_fxp[i1] as f64 / 1e7;
+            return compute_bearing(lat1, lon1, lat2, lon2);
+        }
+    }
+    0
+}
+
+/// Compute bearing between two points (degrees 0-359)
+fn compute_bearing(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> u16 {
+    let lat1_r = lat1.to_radians();
+    let lat2_r = lat2.to_radians();
+    let dlon = (lon2 - lon1).to_radians();
+
+    let y = dlon.sin() * lat2_r.cos();
+    let x = lat1_r.cos() * lat2_r.sin() - lat1_r.sin() * lat2_r.cos() * dlon.cos();
+    let bearing = y.atan2(x).to_degrees();
+    ((bearing + 360.0) % 360.0) as u16
+}
+
+/// Compute signed bearing difference (how much to turn from b1 to b2)
+/// Returns 0-360: 0=straight, 90=right, 180=uturn, 270=left
+fn bearing_diff(b1: u16, b2: u16) -> u16 {
+    ((b2 as i32 - b1 as i32 + 360) % 360) as u16
+}
+
+/// Classify turn by angle
+fn classify_turn(angle: u16) -> &'static str {
+    match angle {
+        0..=15 | 345..=360 => "straight",
+        16..=60 => "slight right",
+        61..=120 => "right",
+        121..=160 => "sharp right",
+        161..=200 => "uturn",
+        201..=240 => "sharp left",
+        241..=300 => "left",
+        301..=344 => "slight left",
+        _ => "straight",
+    }
+}
+
+/// Build geometry for a single edge
+fn build_edge_geometry(
+    edge_id: u32,
+    ebg_nodes: &crate::formats::EbgNodes,
+    nbg_geo: &crate::formats::NbgGeo,
+    format: GeometryFormat,
+) -> RouteGeometry {
+    let node = &ebg_nodes.nodes[edge_id as usize];
+    let geom_idx = node.geom_idx as usize;
+    let mut points = Vec::new();
+
+    if geom_idx < nbg_geo.polylines.len() {
+        let poly = &nbg_geo.polylines[geom_idx];
+        for j in 0..poly.lat_fxp.len() {
+            points.push(Point {
+                lon: poly.lon_fxp[j] as f64 / 1e7,
+                lat: poly.lat_fxp[j] as f64 / 1e7,
+            });
+        }
+    }
+
+    let distance_m = node.length_mm as f64 / 1000.0;
+    RouteGeometry::from_points(points, distance_m, 0, format)
+}
+
+/// Build geometry for multiple consecutive edges
+fn build_multi_edge_geometry(
+    edge_ids: &[u32],
+    ebg_nodes: &crate::formats::EbgNodes,
+    nbg_geo: &crate::formats::NbgGeo,
+    format: GeometryFormat,
+) -> RouteGeometry {
+    let mut points = Vec::new();
+    let mut total_distance_mm: u64 = 0;
+
+    for &edge_id in edge_ids {
+        let node = &ebg_nodes.nodes[edge_id as usize];
+        let geom_idx = node.geom_idx as usize;
+        total_distance_mm += node.length_mm as u64;
+
+        if geom_idx < nbg_geo.polylines.len() {
+            let poly = &nbg_geo.polylines[geom_idx];
+            let start = if points.is_empty() { 0 } else { 1 }; // skip duplicate at join
+            for j in start..poly.lat_fxp.len() {
+                points.push(Point {
+                    lon: poly.lon_fxp[j] as f64 / 1e7,
+                    lat: poly.lat_fxp[j] as f64 / 1e7,
+                });
+            }
+        }
+    }
+
+    RouteGeometry::from_points(points, total_distance_mm as f64 / 1000.0, 0, format)
+}
+
+// ============ Nearest Endpoint ============
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct NearestRequest {
+    /// Longitude to snap
+    #[schema(example = 4.3517)]
+    lon: f64,
+    /// Latitude to snap
+    #[schema(example = 50.8503)]
+    lat: f64,
+    /// Transport mode: car, bike, or foot
+    #[schema(example = "car")]
+    mode: String,
+    /// Number of nearest results (default 1, max 10)
+    #[serde(default = "default_number")]
+    number: u32,
+}
+
+fn default_number() -> u32 { 1 }
+
+/// A nearest waypoint result
+#[derive(Debug, Serialize, ToSchema)]
+pub struct NearestWaypoint {
+    /// Snapped location [lon, lat]
+    pub location: [f64; 2],
+    /// Distance from query point to snapped point in meters
+    pub distance: f64,
+    /// Edge length in meters
+    pub edge_length_m: f64,
+}
+
+/// Response for nearest endpoint
+#[derive(Debug, Serialize, ToSchema)]
+pub struct NearestResponse {
+    /// Status code
+    pub code: String,
+    /// Nearest waypoints
+    pub waypoints: Vec<NearestWaypoint>,
+}
+
+/// Find nearest road segments to a coordinate
+#[utoipa::path(
+    get,
+    path = "/nearest",
+    params(
+        ("lon" = f64, Query, description = "Longitude"),
+        ("lat" = f64, Query, description = "Latitude"),
+        ("mode" = String, Query, description = "Transport mode: car, bike, foot"),
+        ("number" = Option<u32>, Query, description = "Number of results (default 1, max 10)"),
+    ),
+    responses(
+        (status = 200, description = "Nearest roads found", body = NearestResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+    )
+)]
+async fn nearest(
+    State(state): State<Arc<ServerState>>,
+    Query(req): Query<NearestRequest>,
+) -> impl IntoResponse {
+    let mode = match parse_mode(&req.mode) {
+        Ok(m) => m,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
+    };
+
+    let mode_data = state.get_mode(mode);
+    let k = (req.number.max(1).min(10)) as usize;
+
+    let results = state.spatial_index.snap_k_with_info(req.lon, req.lat, &mode_data.mask, k);
+
+    if results.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse {
+            error: "No road found within snap distance".to_string(),
+        })).into_response();
+    }
+
+    let waypoints: Vec<NearestWaypoint> = results.iter().map(|&(ebg_id, snap_lon, snap_lat, dist_m)| {
+        let edge_length = state.ebg_nodes.nodes[ebg_id as usize].length_mm as f64 / 1000.0;
+        NearestWaypoint {
+            location: [snap_lon, snap_lat],
+            distance: dist_m,
+            edge_length_m: edge_length,
+        }
+    }).collect();
+
+    Json(NearestResponse {
+        code: "Ok".to_string(),
+        waypoints,
+    }).into_response()
+}
+
+// ============ Table Endpoint (OSRM-compatible) ============
 
 /// POST request for table computation
 #[derive(Debug, Deserialize, ToSchema)]
@@ -306,7 +804,13 @@ pub struct TablePostRequest {
     /// Transport mode: car, bike, or foot
     #[schema(example = "car")]
     pub mode: String,
+    /// Annotations to return: "duration" (default), "distance", or "duration,distance"
+    #[serde(default = "default_annotations")]
+    #[schema(example = "duration,distance")]
+    pub annotations: String,
 }
+
+fn default_annotations() -> String { "duration".to_string() }
 
 /// Response for table computation (OSRM-compatible format)
 #[derive(Debug, Serialize, ToSchema)]
@@ -314,7 +818,12 @@ pub struct TableResponse {
     /// Status code (always "Ok" on success)
     pub code: String,
     /// Row-major matrix of durations in seconds (null if unreachable)
-    pub durations: Vec<Vec<Option<f64>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub durations: Option<Vec<Vec<Option<f64>>>>,
+    /// Row-major matrix of distances in meters (null if unreachable)
+    /// Distances represent shortest-distance routes (independent of time optimization)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distances: Option<Vec<Vec<Option<f64>>>>,
     /// Source waypoints with snapped locations
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sources: Option<Vec<Waypoint>>,
@@ -331,86 +840,13 @@ pub struct Waypoint {
     pub name: String,
 }
 
-/// OSRM-compatible table endpoint: GET /table/v1/{profile}/{coordinates}
+/// POST /table - Distance/duration matrix computation
 ///
-/// Computes a distance matrix using bucket many-to-many algorithm.
-/// Coordinates are semicolon-separated "lon,lat" pairs.
-///
-/// Example: GET /table/v1/car/4.35,50.85;4.40,50.86;4.38,50.84?sources=0&destinations=1;2
-#[utoipa::path(
-    get,
-    path = "/table/v1/{profile}/{coords}",
-    params(
-        ("profile" = String, Path, description = "Transport mode: car, bike, foot"),
-        ("coords" = String, Path, description = "Semicolon-separated lon,lat pairs"),
-        ("sources" = Option<String>, Query, description = "Source indices (semicolon-separated)"),
-        ("destinations" = Option<String>, Query, description = "Destination indices (semicolon-separated)"),
-    ),
-    responses(
-        (status = 200, description = "Table computed", body = TableResponse),
-        (status = 400, description = "Bad request", body = ErrorResponse),
-    )
-)]
-async fn table_osrm(
-    State(state): State<Arc<ServerState>>,
-    Path((profile, coords)): Path<(String, String)>,
-    Query(params): Query<TableQueryParams>,
-) -> impl IntoResponse {
-    let mode = match parse_mode(&profile) {
-        Ok(m) => m,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
-    };
-
-    // Parse coordinates: "lon,lat;lon,lat;..."
-    let all_coords: Vec<(f64, f64)> = coords
-        .split(';')
-        .filter_map(|s| {
-            let parts: Vec<&str> = s.split(',').collect();
-            if parts.len() == 2 {
-                let lon = parts[0].trim().parse().ok()?;
-                let lat = parts[1].trim().parse().ok()?;
-                Some((lon, lat))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    if all_coords.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse {
-            error: "No valid coordinates provided".into()
-        })).into_response();
-    }
-
-    // Parse source/destination indices
-    let source_indices: Vec<usize> = match &params.sources {
-        Some(s) if !s.is_empty() => s.split(';').filter_map(|x| x.trim().parse().ok()).collect(),
-        _ => (0..all_coords.len()).collect(), // all coordinates are sources
-    };
-    let dest_indices: Vec<usize> = match &params.destinations {
-        Some(s) if !s.is_empty() => s.split(';').filter_map(|x| x.trim().parse().ok()).collect(),
-        _ => (0..all_coords.len()).collect(), // all coordinates are destinations
-    };
-
-    // Extract source and destination coordinates
-    let sources: Vec<[f64; 2]> = source_indices.iter()
-        .filter_map(|&i| all_coords.get(i).map(|&(lon, lat)| [lon, lat]))
-        .collect();
-    let destinations: Vec<[f64; 2]> = dest_indices.iter()
-        .filter_map(|&i| all_coords.get(i).map(|&(lon, lat)| [lon, lat]))
-        .collect();
-
-    if sources.is_empty() || destinations.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse {
-            error: "Invalid source or destination indices".into()
-        })).into_response();
-    }
-
-    // Compute table using bucket M2M
-    compute_table_bucket_m2m(&state, mode, &sources, &destinations).await
-}
-
-/// POST /table - Alternative table endpoint for easier large coordinate lists
+/// Returns a matrix of travel times and/or distances between sources and destinations.
+/// Use `annotations` to control which metrics are returned:
+/// - `"duration"` (default): travel times in seconds
+/// - `"distance"`: shortest distances in meters
+/// - `"duration,distance"`: both metrics
 #[utoipa::path(
     post,
     path = "/table",
@@ -440,7 +876,19 @@ async fn table_post(
         })).into_response();
     }
 
-    compute_table_bucket_m2m(&state, mode, &req.sources, &req.destinations).await
+    // Parse annotations
+    let annotations: Vec<&str> = req.annotations.split(',').map(|s| s.trim()).collect();
+    let want_duration = annotations.contains(&"duration");
+    let want_distance = annotations.contains(&"distance");
+
+    // Default: if neither specified, return duration
+    let (want_duration, want_distance) = if !want_duration && !want_distance {
+        (true, false)
+    } else {
+        (want_duration, want_distance)
+    };
+
+    compute_table_bucket_m2m(&state, mode, &req.sources, &req.destinations, want_duration, want_distance).await
 }
 
 /// Core table computation using bucket M2M algorithm
@@ -449,6 +897,8 @@ async fn compute_table_bucket_m2m(
     mode: Mode,
     sources: &[[f64; 2]],
     destinations: &[[f64; 2]],
+    want_duration: bool,
+    want_distance: bool,
 ) -> Response {
     let mode_data = state.get_mode(mode);
     let n_nodes = mode_data.cch_topo.n_nodes as usize;
@@ -463,11 +913,9 @@ async fn compute_table_bucket_m2m(
         if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &mode_data.mask, 10) {
             let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
             if filtered != u32::MAX {
-                // Convert filtered ID to rank position (same as /route endpoint)
                 let rank = mode_data.order.perm[filtered as usize];
                 sources_rank.push(rank);
                 source_valid.push(true);
-                // Get snapped location from EBG node
                 let snapped = get_node_location(state, orig_id);
                 source_waypoints.push(Waypoint { location: snapped, name: String::new() });
             } else {
@@ -491,7 +939,6 @@ async fn compute_table_bucket_m2m(
         if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &mode_data.mask, 10) {
             let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
             if filtered != u32::MAX {
-                // Convert filtered ID to rank position
                 let rank = mode_data.order.perm[filtered as usize];
                 targets_rank.push(rank);
                 target_valid.push(true);
@@ -509,56 +956,102 @@ async fn compute_table_bucket_m2m(
         }
     }
 
-    // Run bucket M2M algorithm
-    // Use sequential for small matrices (< 2500 cells) to avoid parallel overhead
-    // Use parallel for large matrices where thread amortization helps
-    let (matrix, _stats) = if sources_rank.len() * targets_rank.len() < 2500 {
-        table_bucket_full_flat(
-            n_nodes,
-            &mode_data.up_adj_flat,
-            &mode_data.down_rev_flat,
-            &sources_rank,
-            &targets_rank,
-        )
-    } else {
-        table_bucket_parallel(
-            n_nodes,
-            &mode_data.up_adj_flat,
-            &mode_data.down_rev_flat,
-            &sources_rank,
-            &targets_rank,
-        )
-    };
-
-    // Convert flat matrix to 2D array with nulls for invalid/unreachable
     let n_sources = sources.len();
     let n_targets = destinations.len();
-    let mut durations: Vec<Vec<Option<f64>>> = Vec::with_capacity(n_sources);
+    let use_parallel = sources_rank.len() * targets_rank.len() >= 2500;
 
+    // Compute duration matrix if requested
+    let durations = if want_duration {
+        let (matrix, _stats) = if use_parallel {
+            table_bucket_parallel(
+                n_nodes,
+                &mode_data.up_adj_flat,
+                &mode_data.down_rev_flat,
+                &sources_rank,
+                &targets_rank,
+            )
+        } else {
+            table_bucket_full_flat(
+                n_nodes,
+                &mode_data.up_adj_flat,
+                &mode_data.down_rev_flat,
+                &sources_rank,
+                &targets_rank,
+            )
+        };
+
+        Some(flat_matrix_to_2d(
+            &matrix, n_sources, n_targets, &source_valid, &target_valid,
+            |v| v as f64 / 10.0, // deciseconds → seconds
+        ))
+    } else {
+        None
+    };
+
+    // Compute distance matrix if requested (independent shortest-distance metric)
+    let distances = if want_distance {
+        let (matrix, _stats) = if use_parallel {
+            table_bucket_parallel(
+                n_nodes,
+                &mode_data.up_adj_flat_dist,
+                &mode_data.down_rev_flat_dist,
+                &sources_rank,
+                &targets_rank,
+            )
+        } else {
+            table_bucket_full_flat(
+                n_nodes,
+                &mode_data.up_adj_flat_dist,
+                &mode_data.down_rev_flat_dist,
+                &sources_rank,
+                &targets_rank,
+            )
+        };
+
+        Some(flat_matrix_to_2d(
+            &matrix, n_sources, n_targets, &source_valid, &target_valid,
+            |v| v as f64 / 1000.0, // millimeters → meters
+        ))
+    } else {
+        None
+    };
+
+    Json(TableResponse {
+        code: "Ok".into(),
+        durations,
+        distances,
+        sources: Some(source_waypoints),
+        destinations: Some(dest_waypoints),
+    }).into_response()
+}
+
+/// Convert flat u32 matrix to 2D Option<f64> matrix with null for invalid/unreachable
+fn flat_matrix_to_2d(
+    matrix: &[u32],
+    n_sources: usize,
+    n_targets: usize,
+    source_valid: &[bool],
+    target_valid: &[bool],
+    convert: impl Fn(u32) -> f64,
+) -> Vec<Vec<Option<f64>>> {
+    let mut result: Vec<Vec<Option<f64>>> = Vec::with_capacity(n_sources);
     for src_idx in 0..n_sources {
         let mut row: Vec<Option<f64>> = Vec::with_capacity(n_targets);
         for tgt_idx in 0..n_targets {
             if !source_valid[src_idx] || !target_valid[tgt_idx] {
                 row.push(None);
             } else {
-                let dist = matrix[src_idx * n_targets + tgt_idx];
-                if dist == u32::MAX {
+                let val = matrix[src_idx * n_targets + tgt_idx];
+                if val == u32::MAX {
                     row.push(None);
                 } else {
-                    // Convert deciseconds to seconds
-                    row.push(Some(dist as f64 / 10.0));
+                    row.push(Some(convert(val)));
                 }
             }
         }
-        durations.push(row);
+        result.push(row);
     }
-
-    Json(TableResponse {
-        code: "Ok".into(),
-        durations,
-        sources: Some(source_waypoints),
-        destinations: Some(dest_waypoints),
-    }).into_response()
+    result
 }
 
 // ============ Arrow Streaming Table Endpoint ============
@@ -816,19 +1309,44 @@ pub struct IsochroneRequest {
     lat: f64,
     /// Time limit in seconds
     time_s: u32,
-    /// Transport mode
+    /// Transport mode (car, bike, foot)
     mode: String,
+    /// Geometry encoding: polyline6 (default), geojson, points
+    #[serde(default = "default_geometries")]
+    geometries: String,
+    /// Optional fields to include: "network" adds reachable road geometries
+    #[serde(default)]
+    include: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct IsochroneResponse {
-    /// Isochrone polygon coordinates
-    pub polygon: Vec<Point>,
-    /// Number of reachable nodes
-    pub reachable_nodes: usize,
+    /// Polygon as encoded polyline6 string (default)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub polygon: Option<String>,
+    /// Polygon as GeoJSON coordinates [[lon, lat], ...]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<Vec<f64>>>)]
+    pub polygon_geojson: Option<Vec<[f64; 2]>>,
+    /// Polygon as point array [{lon, lat}, ...]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub polygon_points: Option<Vec<Point>>,
+    /// Number of reachable edges
+    pub reachable_edges: usize,
+    /// Network isochrone - reachable road segments (only if include=network)
+    /// Each segment is [[lon, lat], [lon, lat], ...]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<Vec<Vec<[f64; 2]>>>,
 }
 
 /// Calculate isochrone (reachable area within time limit)
+///
+/// Content negotiation:
+/// - Accept: application/json (default) → JSON response
+/// - Accept: application/octet-stream → WKB binary polygon
+///
+/// Optional fields via `include` parameter:
+/// - include=network → adds reachable road segments as polylines
 #[utoipa::path(
     get,
     path = "/isochrone",
@@ -836,7 +1354,9 @@ pub struct IsochroneResponse {
         ("lon" = f64, Query, description = "Center longitude"),
         ("lat" = f64, Query, description = "Center latitude"),
         ("time_s" = u32, Query, description = "Time limit in seconds"),
-        ("mode" = String, Query, description = "Transport mode"),
+        ("mode" = String, Query, description = "Transport mode (car, bike, foot)"),
+        ("geometries" = Option<String>, Query, description = "Geometry encoding: polyline6 (default), geojson, points"),
+        ("include" = Option<String>, Query, description = "Optional fields: 'network' for road geometries"),
     ),
     responses(
         (status = 200, description = "Isochrone computed", body = IsochroneResponse),
@@ -846,105 +1366,47 @@ pub struct IsochroneResponse {
 async fn isochrone(
     State(state): State<Arc<ServerState>>,
     Query(req): Query<IsochroneRequest>,
+    headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     let mode = match parse_mode(&req.mode) {
         Ok(m) => m,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
     };
 
-    let mode_data = state.get_mode(mode);
-    let time_ds = req.time_s * 10; // Convert to deciseconds
-
-    // Snap center (original EBG node ID)
-    let center_orig = match state.spatial_index.snap(req.lon, req.lat, &mode_data.mask, 10) {
-        Some(id) => id,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Could not snap center to road network".to_string(),
-                }),
-            )
-                .into_response()
-        }
-    };
-
-    // Convert to filtered space, then to rank space
-    let center_filtered = mode_data.filtered_ebg.original_to_filtered[center_orig as usize];
-    if center_filtered == u32::MAX {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Center not accessible for this mode".to_string(),
-            }),
-        )
-            .into_response();
-    }
-    let center_rank = mode_data.order.perm[center_filtered as usize];
-
-    // Run PHAST bounded query (in rank space) - uses thread-local state
-    // Returns Vec<(rank, dist)> of settled nodes only
-    let phast_settled = run_phast_bounded_fast(
-        &mode_data.cch_topo,
-        &mode_data.cch_weights,
-        center_rank,
-        time_ds,
-        mode,
-    );
-
-    // Convert settled nodes from rank to original EBG node IDs for geometry
-    let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());
-    for (rank, dist) in phast_settled {
-        // rank -> filtered -> original
-        let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-        let original_id = mode_data.filtered_ebg.filtered_to_original[filtered_id as usize];
-        settled.push((original_id, dist));
-    }
-
-    // Build isochrone geometry using frontier-based concave hull
-    let polygon = build_isochrone_geometry_concave(
-        &settled,
-        time_ds,
-        &mode_data.node_weights,
-        &state.ebg_nodes,
-        &state.nbg_geo,
-    );
-
-    Json(IsochroneResponse {
-        polygon,
-        reachable_nodes: settled.len(),
-    })
-    .into_response()
-}
-
-/// GET /isochrone/wkb - Returns isochrone as WKB binary (faster than JSON)
-///
-/// Returns raw WKB polygon bytes with Content-Type: application/octet-stream
-/// Much faster for bulk processing - skips JSON serialization overhead
-async fn isochrone_wkb(
-    State(state): State<Arc<ServerState>>,
-    Query(req): Query<IsochroneRequest>,
-) -> impl IntoResponse {
-    use crate::range::contour::ContourResult;
-    use crate::range::wkb_stream::encode_polygon_wkb;
-
-    let mode = match parse_mode(&req.mode) {
-        Ok(m) => m,
-        Err(e) => return (StatusCode::BAD_REQUEST, e.into_bytes()).into_response(),
+    let geom_format = match GeometryFormat::parse(&req.geometries) {
+        Ok(f) => f,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
     };
 
     let mode_data = state.get_mode(mode);
     let time_ds = req.time_s * 10;
 
+    // Parse include parameter
+    let include_network = req.include.as_ref()
+        .map(|s| s.split(',').any(|p| p.trim() == "network"))
+        .unwrap_or(false);
+
+    // Check Accept header for content negotiation
+    let wants_wkb = headers.get("accept")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.contains("application/octet-stream") || s.contains("application/wkb"))
+        .unwrap_or(false);
+
     // Snap center
     let center_orig = match state.spatial_index.snap(req.lon, req.lat, &mode_data.mask, 10) {
         Some(id) => id,
-        None => return (StatusCode::BAD_REQUEST, b"Could not snap".to_vec()).into_response(),
+        None => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse {
+                error: "Could not snap center to road network".to_string(),
+            })).into_response()
+        }
     };
 
     let center_filtered = mode_data.filtered_ebg.original_to_filtered[center_orig as usize];
     if center_filtered == u32::MAX {
-        return (StatusCode::BAD_REQUEST, b"Not accessible".to_vec()).into_response();
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse {
+            error: "Center not accessible for this mode".to_string(),
+        })).into_response();
     }
     let center_rank = mode_data.order.perm[center_filtered as usize];
 
@@ -965,8 +1427,8 @@ async fn isochrone_wkb(
         settled.push((original_id, dist));
     }
 
-    // Build polygon using frontier-based concave hull
-    let points = build_isochrone_geometry_concave(
+    // Build polygon
+    let polygon = build_isochrone_geometry_concave(
         &settled,
         time_ds,
         &mode_data.node_weights,
@@ -974,23 +1436,111 @@ async fn isochrone_wkb(
         &state.nbg_geo,
     );
 
-    // Convert to ContourResult format for WKB encoding
-    let outer_ring: Vec<(f64, f64)> = points.iter().map(|p| (p.lon, p.lat)).collect();
-    let contour = ContourResult {
-        outer_ring,
-        holes: vec![],
-        stats: Default::default(),
+    // WKB binary response (content negotiation via Accept header)
+    if wants_wkb {
+        use crate::range::wkb_stream::encode_polygon_wkb;
+        use crate::range::contour::ContourResult;
+        let coords: Vec<(f64, f64)> = polygon.iter().map(|p| (p.lon, p.lat)).collect();
+        let contour = ContourResult {
+            outer_ring: coords,
+            holes: vec![],
+            stats: Default::default(),
+        };
+        match encode_polygon_wkb(&contour) {
+            Some(wkb) => return (
+                [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                wkb
+            ).into_response(),
+            None => return (StatusCode::NO_CONTENT, Vec::<u8>::new()).into_response(),
+        }
+    }
+
+    // Build network if requested
+    let network = if include_network {
+        Some(build_network_geometry(&settled, time_ds, &mode_data.node_weights, &state.ebg_nodes, &state.nbg_geo))
+    } else {
+        None
     };
 
-    // Encode as WKB
-    match encode_polygon_wkb(&contour) {
-        Some(wkb) => (
-            StatusCode::OK,
-            [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-            wkb,
-        ).into_response(),
-        None => (StatusCode::NO_CONTENT, Vec::new()).into_response(),
+    let (poly_encoded, poly_geojson, poly_points) = match geom_format {
+        GeometryFormat::Polyline6 => (Some(encode_polyline6(&polygon)), None, None),
+        GeometryFormat::GeoJson => (None, Some(polygon.iter().map(|p| [p.lon, p.lat]).collect()), None),
+        GeometryFormat::Points => (None, None, Some(polygon)),
+    };
+
+    Json(IsochroneResponse {
+        polygon: poly_encoded,
+        polygon_geojson: poly_geojson,
+        polygon_points: poly_points,
+        reachable_edges: settled.len(),
+        network,
+    }).into_response()
+}
+
+/// Build network geometry - all reachable road segments as polylines
+fn build_network_geometry(
+    settled: &[(u32, u32)],
+    time_ds: u32,
+    node_weights: &[u32],
+    ebg_nodes: &crate::formats::EbgNodes,
+    nbg_geo: &crate::formats::NbgGeo,
+) -> Vec<Vec<[f64; 2]>> {
+    let mut network: Vec<Vec<[f64; 2]>> = Vec::with_capacity(settled.len());
+
+    for &(ebg_id, dist_ds) in settled {
+        if dist_ds > time_ds {
+            continue;
+        }
+
+        let weight_ds = if (ebg_id as usize) < node_weights.len() {
+            node_weights[ebg_id as usize]
+        } else {
+            continue;
+        };
+
+        if weight_ds == 0 || weight_ds == u32::MAX {
+            continue;
+        }
+
+        let node = &ebg_nodes.nodes[ebg_id as usize];
+        let geom_idx = node.geom_idx as usize;
+        if geom_idx >= nbg_geo.polylines.len() {
+            continue;
+        }
+        let polyline = &nbg_geo.polylines[geom_idx];
+        if polyline.lat_fxp.is_empty() {
+            continue;
+        }
+
+        let dist_end_ds = dist_ds.saturating_add(weight_ds);
+
+        if dist_end_ds <= time_ds {
+            // Fully reachable
+            let coords: Vec<[f64; 2]> = polyline.lon_fxp.iter()
+                .zip(polyline.lat_fxp.iter())
+                .map(|(&lon, &lat)| [lon as f64 / 1e7, lat as f64 / 1e7])
+                .collect();
+            if coords.len() >= 2 {
+                network.push(coords);
+            }
+        } else {
+            // Partially reachable - clip
+            let cut_fraction = (time_ds - dist_ds) as f32 / weight_ds as f32;
+            let n_pts = polyline.lat_fxp.len();
+            let cut_idx = ((n_pts - 1) as f32 * cut_fraction).ceil() as usize;
+            let cut_idx = cut_idx.min(n_pts - 1).max(1);
+
+            let coords: Vec<[f64; 2]> = polyline.lon_fxp[..=cut_idx].iter()
+                .zip(polyline.lat_fxp[..=cut_idx].iter())
+                .map(|(&lon, &lat)| [lon as f64 / 1e7, lat as f64 / 1e7])
+                .collect();
+            if coords.len() >= 2 {
+                network.push(coords);
+            }
+        }
     }
+
+    network
 }
 
 /// Bulk isochrone request
@@ -2250,4 +2800,154 @@ fn run_filtered_dijkstra(
     }
 
     (if dist[dst as usize] == u32::MAX { None } else { Some(dist[dst as usize]) }, settled)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // === E4: Bearing computation tests ===
+
+    #[test]
+    fn test_compute_bearing_north() {
+        let b = compute_bearing(50.0, 4.0, 51.0, 4.0);
+        assert!(b < 5 || b > 355, "North bearing should be ~0, got {}", b);
+    }
+
+    #[test]
+    fn test_compute_bearing_east() {
+        let b = compute_bearing(50.0, 4.0, 50.0, 5.0);
+        assert!((b as i16 - 90).unsigned_abs() < 5, "East bearing should be ~90, got {}", b);
+    }
+
+    #[test]
+    fn test_compute_bearing_south() {
+        let b = compute_bearing(51.0, 4.0, 50.0, 4.0);
+        assert!((b as i16 - 180).unsigned_abs() < 5, "South bearing should be ~180, got {}", b);
+    }
+
+    #[test]
+    fn test_compute_bearing_west() {
+        let b = compute_bearing(50.0, 5.0, 50.0, 4.0);
+        assert!((b as i16 - 270).unsigned_abs() < 5, "West bearing should be ~270, got {}", b);
+    }
+
+    #[test]
+    fn test_compute_bearing_northeast() {
+        let b = compute_bearing(50.0, 4.0, 50.5, 4.5);
+        assert!(b > 20 && b < 70, "NE bearing should be ~30-60, got {}", b);
+    }
+
+    // === E4: Bearing difference tests ===
+
+    #[test]
+    fn test_bearing_diff_straight() {
+        assert_eq!(bearing_diff(90, 90), 0);
+        assert_eq!(bearing_diff(0, 0), 0);
+        assert_eq!(bearing_diff(359, 359), 0);
+    }
+
+    #[test]
+    fn test_bearing_diff_right_turn() {
+        assert_eq!(bearing_diff(0, 90), 90);
+        assert_eq!(bearing_diff(270, 0), 90);
+    }
+
+    #[test]
+    fn test_bearing_diff_left_turn() {
+        assert_eq!(bearing_diff(90, 0), 270);
+        assert_eq!(bearing_diff(0, 270), 270);
+    }
+
+    #[test]
+    fn test_bearing_diff_uturn() {
+        assert_eq!(bearing_diff(0, 180), 180);
+        assert_eq!(bearing_diff(90, 270), 180);
+    }
+
+    #[test]
+    fn test_bearing_diff_wrap_around() {
+        assert_eq!(bearing_diff(350, 10), 20);
+        assert_eq!(bearing_diff(10, 350), 340);
+    }
+
+    // === E4: Turn classification tests ===
+
+    #[test]
+    fn test_classify_turn_straight() {
+        assert_eq!(classify_turn(0), "straight");
+        assert_eq!(classify_turn(10), "straight");
+        assert_eq!(classify_turn(350), "straight");
+        assert_eq!(classify_turn(360), "straight");
+    }
+
+    #[test]
+    fn test_classify_turn_slight_right() {
+        assert_eq!(classify_turn(20), "slight right");
+        assert_eq!(classify_turn(45), "slight right");
+        assert_eq!(classify_turn(60), "slight right");
+    }
+
+    #[test]
+    fn test_classify_turn_right() {
+        assert_eq!(classify_turn(90), "right");
+        assert_eq!(classify_turn(100), "right");
+        assert_eq!(classify_turn(120), "right");
+    }
+
+    #[test]
+    fn test_classify_turn_sharp_right() {
+        assert_eq!(classify_turn(130), "sharp right");
+        assert_eq!(classify_turn(150), "sharp right");
+    }
+
+    #[test]
+    fn test_classify_turn_uturn() {
+        assert_eq!(classify_turn(180), "uturn");
+        assert_eq!(classify_turn(170), "uturn");
+        assert_eq!(classify_turn(195), "uturn");
+    }
+
+    #[test]
+    fn test_classify_turn_sharp_left() {
+        assert_eq!(classify_turn(210), "sharp left");
+        assert_eq!(classify_turn(230), "sharp left");
+    }
+
+    #[test]
+    fn test_classify_turn_left() {
+        assert_eq!(classify_turn(270), "left");
+        assert_eq!(classify_turn(250), "left");
+        assert_eq!(classify_turn(300), "left");
+    }
+
+    #[test]
+    fn test_classify_turn_slight_left() {
+        assert_eq!(classify_turn(310), "slight left");
+        assert_eq!(classify_turn(330), "slight left");
+    }
+
+    #[test]
+    fn test_classify_turn_all_angles_classified() {
+        for angle in 0..=360u16 {
+            let result = classify_turn(angle);
+            assert!(
+                ["straight", "slight right", "right", "sharp right",
+                 "uturn", "sharp left", "left", "slight left"]
+                    .contains(&result),
+                "Angle {} classified as unexpected '{}'", angle, result
+            );
+        }
+    }
+
+    #[test]
+    fn test_bearing_reverse_is_180_off() {
+        let fwd = compute_bearing(50.0, 4.0, 51.0, 5.0);
+        let rev = compute_bearing(51.0, 5.0, 50.0, 4.0);
+        let diff = bearing_diff(fwd, rev);
+        assert!(
+            (diff as i16 - 180).unsigned_abs() < 5,
+            "Reverse bearing should differ by ~180, got diff={}", diff
+        );
+    }
 }

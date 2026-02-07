@@ -14,12 +14,120 @@ pub struct Point {
     pub lat: f64,
 }
 
-/// Route geometry with coordinates
+/// Geometry encoding format
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GeometryFormat {
+    /// Array of {lon, lat} objects (legacy)
+    Points,
+    /// Google Encoded Polyline with 6-digit precision
+    Polyline6,
+    /// GeoJSON LineString
+    GeoJson,
+}
+
+impl GeometryFormat {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s.to_lowercase().as_str() {
+            "polyline6" => Ok(GeometryFormat::Polyline6),
+            "geojson" => Ok(GeometryFormat::GeoJson),
+            "points" => Ok(GeometryFormat::Points),
+            other => Err(format!("Unknown geometry format '{}'. Use: polyline6, geojson, points", other)),
+        }
+    }
+}
+
+/// Route geometry — serialized differently based on format
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct RouteGeometry {
-    pub coordinates: Vec<Point>,
+    /// Encoded polyline string (only for polyline6 format)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub polyline: Option<String>,
+    /// GeoJSON coordinates [[lon, lat], ...] (only for geojson format)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<Vec<f64>>>)]
+    pub coordinates_geojson: Option<Vec<[f64; 2]>>,
+    /// Point array [{lon, lat}, ...] (only for points format)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coordinates: Option<Vec<Point>>,
+    /// Distance in meters
     pub distance_m: f64,
+    /// Duration in deciseconds
     pub duration_ds: u32,
+}
+
+impl RouteGeometry {
+    /// Create geometry in the requested format from raw coordinate list
+    pub fn from_points(points: Vec<Point>, distance_m: f64, duration_ds: u32, format: GeometryFormat) -> Self {
+        match format {
+            GeometryFormat::Polyline6 => RouteGeometry {
+                polyline: Some(encode_polyline6(&points)),
+                coordinates_geojson: None,
+                coordinates: None,
+                distance_m,
+                duration_ds,
+            },
+            GeometryFormat::GeoJson => RouteGeometry {
+                polyline: None,
+                coordinates_geojson: Some(points.iter().map(|p| [p.lon, p.lat]).collect()),
+                coordinates: None,
+                distance_m,
+                duration_ds,
+            },
+            GeometryFormat::Points => RouteGeometry {
+                polyline: None,
+                coordinates_geojson: None,
+                coordinates: Some(points),
+                distance_m,
+                duration_ds,
+            },
+        }
+    }
+}
+
+/// Encode coordinates as Google Encoded Polyline with 6-digit precision
+///
+/// Reference: https://developers.google.com/maps/documentation/utilities/polylinealgorithm
+/// Polyline6 uses 1e6 multiplier (6 decimal places) instead of the standard 1e5
+pub fn encode_polyline6(points: &[Point]) -> String {
+    let mut result = String::with_capacity(points.len() * 6);
+    let mut prev_lat: i64 = 0;
+    let mut prev_lon: i64 = 0;
+
+    for p in points {
+        let lat = (p.lat * 1e6).round() as i64;
+        let lon = (p.lon * 1e6).round() as i64;
+
+        encode_value(lat - prev_lat, &mut result);
+        encode_value(lon - prev_lon, &mut result);
+
+        prev_lat = lat;
+        prev_lon = lon;
+    }
+
+    result
+}
+
+/// Encode a single signed integer as variable-length encoded characters
+fn encode_value(mut value: i64, out: &mut String) {
+    // Left-shift and invert if negative
+    let mut v = if value < 0 {
+        (!value) << 1 | 1
+    } else {
+        value << 1
+    } as u64;
+
+    // Break into 5-bit chunks, set continuation bit on all but last
+    loop {
+        let mut chunk = (v & 0x1F) as u8;
+        v >>= 5;
+        if v > 0 {
+            chunk |= 0x20; // continuation bit
+        }
+        out.push((chunk + 63) as char);
+        if v == 0 {
+            break;
+        }
+    }
 }
 
 /// Build route geometry from EBG node sequence
@@ -28,6 +136,7 @@ pub fn build_geometry(
     ebg_nodes: &EbgNodes,
     nbg_geo: &NbgGeo,
     duration_ds: u32,
+    format: GeometryFormat,
 ) -> RouteGeometry {
     let mut coordinates = Vec::new();
     let mut total_distance_m = 0.0;
@@ -55,11 +164,7 @@ pub fn build_geometry(
     // Remove duplicate consecutive points
     coordinates.dedup_by(|a, b| (a.lon - b.lon).abs() < 1e-9 && (a.lat - b.lat).abs() < 1e-9);
 
-    RouteGeometry {
-        coordinates,
-        distance_m: total_distance_m,
-        duration_ds,
-    }
+    RouteGeometry::from_points(coordinates, total_distance_m, duration_ds, format)
 }
 
 /// Build isochrone geometry using frontier-based concave hull
@@ -340,4 +445,194 @@ fn convex_hull(points: &mut [Point]) -> Vec<Point> {
 
 fn cross_product(o: Point, a: Point, b: Point) -> f64 {
     (a.lon - o.lon) * (b.lat - o.lat) - (a.lat - o.lat) * (b.lon - o.lon)
+}
+
+/// Decode polyline6 back to coordinates (for testing round-trip)
+#[cfg(test)]
+pub fn decode_polyline6(encoded: &str) -> Vec<(f64, f64)> {
+    let mut result = Vec::new();
+    let mut lat: i64 = 0;
+    let mut lon: i64 = 0;
+    let chars: Vec<u8> = encoded.bytes().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        // Decode latitude
+        let mut shift = 0u32;
+        let mut value: i64 = 0;
+        loop {
+            let b = (chars[i] as i64) - 63;
+            i += 1;
+            value |= (b & 0x1F) << shift;
+            shift += 5;
+            if b < 0x20 { break; }
+        }
+        lat += if (value & 1) != 0 { !(value >> 1) } else { value >> 1 };
+
+        // Decode longitude
+        shift = 0;
+        value = 0;
+        loop {
+            let b = (chars[i] as i64) - 63;
+            i += 1;
+            value |= (b & 0x1F) << shift;
+            shift += 5;
+            if b < 0x20 { break; }
+        }
+        lon += if (value & 1) != 0 { !(value >> 1) } else { value >> 1 };
+
+        result.push((lat as f64 / 1e6, lon as f64 / 1e6));
+    }
+
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encode_polyline6_empty() {
+        let points: Vec<Point> = vec![];
+        let encoded = encode_polyline6(&points);
+        assert_eq!(encoded, "");
+    }
+
+    #[test]
+    fn test_encode_polyline6_single_point() {
+        let points = vec![Point { lon: 4.351700, lat: 50.850300 }];
+        let encoded = encode_polyline6(&points);
+        assert!(!encoded.is_empty());
+        let decoded = decode_polyline6(&encoded);
+        assert_eq!(decoded.len(), 1);
+        assert!((decoded[0].0 - 50.850300).abs() < 1e-6);
+        assert!((decoded[0].1 - 4.351700).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_encode_polyline6_round_trip() {
+        let points = vec![
+            Point { lon: 4.351700, lat: 50.850300 },
+            Point { lon: 4.401700, lat: 50.860300 },
+            Point { lon: 4.867100, lat: 50.467400 },
+        ];
+        let encoded = encode_polyline6(&points);
+        let decoded = decode_polyline6(&encoded);
+        assert_eq!(decoded.len(), 3);
+        for (i, pt) in points.iter().enumerate() {
+            assert!((decoded[i].0 - pt.lat).abs() < 1e-6, "lat mismatch at {}: {} vs {}", i, decoded[i].0, pt.lat);
+            assert!((decoded[i].1 - pt.lon).abs() < 1e-6, "lon mismatch at {}: {} vs {}", i, decoded[i].1, pt.lon);
+        }
+    }
+
+    #[test]
+    fn test_encode_polyline6_negative_coords() {
+        let points = vec![
+            Point { lon: -73.985428, lat: 40.748817 },  // NYC
+            Point { lon: -118.243685, lat: 34.052234 }, // LA
+        ];
+        let encoded = encode_polyline6(&points);
+        let decoded = decode_polyline6(&encoded);
+        assert_eq!(decoded.len(), 2);
+        for (i, pt) in points.iter().enumerate() {
+            assert!((decoded[i].0 - pt.lat).abs() < 1e-6, "lat mismatch at {}", i);
+            assert!((decoded[i].1 - pt.lon).abs() < 1e-6, "lon mismatch at {}", i);
+        }
+    }
+
+    #[test]
+    fn test_encode_polyline6_close_points() {
+        // Points separated by ~1 meter
+        let points = vec![
+            Point { lon: 4.351700, lat: 50.850300 },
+            Point { lon: 4.351714, lat: 50.850309 },
+        ];
+        let encoded = encode_polyline6(&points);
+        let decoded = decode_polyline6(&encoded);
+        assert_eq!(decoded.len(), 2);
+        for (i, pt) in points.iter().enumerate() {
+            assert!((decoded[i].0 - pt.lat).abs() < 1e-6);
+            assert!((decoded[i].1 - pt.lon).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_geometry_format_parse() {
+        assert_eq!(GeometryFormat::parse("polyline6").unwrap(), GeometryFormat::Polyline6);
+        assert_eq!(GeometryFormat::parse("POLYLINE6").unwrap(), GeometryFormat::Polyline6);
+        assert_eq!(GeometryFormat::parse("geojson").unwrap(), GeometryFormat::GeoJson);
+        assert_eq!(GeometryFormat::parse("GeoJson").unwrap(), GeometryFormat::GeoJson);
+        assert_eq!(GeometryFormat::parse("points").unwrap(), GeometryFormat::Points);
+        assert!(GeometryFormat::parse("invalid").is_err());
+        assert!(GeometryFormat::parse("").is_err());
+    }
+
+    #[test]
+    fn test_route_geometry_polyline6_format() {
+        let points = vec![
+            Point { lon: 4.3517, lat: 50.8503 },
+            Point { lon: 4.4017, lat: 50.8603 },
+        ];
+        let geom = RouteGeometry::from_points(points, 1234.5, 100, GeometryFormat::Polyline6);
+        assert!(geom.polyline.is_some());
+        assert!(geom.coordinates_geojson.is_none());
+        assert!(geom.coordinates.is_none());
+        assert!((geom.distance_m - 1234.5).abs() < 0.01);
+        assert_eq!(geom.duration_ds, 100);
+    }
+
+    #[test]
+    fn test_route_geometry_geojson_format() {
+        let points = vec![
+            Point { lon: 4.3517, lat: 50.8503 },
+            Point { lon: 4.4017, lat: 50.8603 },
+        ];
+        let geom = RouteGeometry::from_points(points, 1234.5, 100, GeometryFormat::GeoJson);
+        assert!(geom.polyline.is_none());
+        assert!(geom.coordinates_geojson.is_some());
+        assert!(geom.coordinates.is_none());
+        let coords = geom.coordinates_geojson.unwrap();
+        assert_eq!(coords.len(), 2);
+        assert!((coords[0][0] - 4.3517).abs() < 1e-10);
+        assert!((coords[0][1] - 50.8503).abs() < 1e-10);
+        assert!((coords[1][0] - 4.4017).abs() < 1e-10);
+        assert!((coords[1][1] - 50.8603).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_route_geometry_points_format() {
+        let points = vec![
+            Point { lon: 4.3517, lat: 50.8503 },
+            Point { lon: 4.4017, lat: 50.8603 },
+        ];
+        let geom = RouteGeometry::from_points(points, 1234.5, 100, GeometryFormat::Points);
+        assert!(geom.polyline.is_none());
+        assert!(geom.coordinates_geojson.is_none());
+        assert!(geom.coordinates.is_some());
+        let coords = geom.coordinates.unwrap();
+        assert_eq!(coords.len(), 2);
+        assert!((coords[0].lon - 4.3517).abs() < 1e-10);
+        assert!((coords[0].lat - 50.8503).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_polyline6_geojson_same_coordinates() {
+        let points = vec![
+            Point { lon: 4.3517, lat: 50.8503 },
+            Point { lon: 4.4017, lat: 50.8603 },
+            Point { lon: 4.8671, lat: 50.4674 },
+        ];
+        let poly_geom = RouteGeometry::from_points(points.clone(), 100.0, 50, GeometryFormat::Polyline6);
+        let json_geom = RouteGeometry::from_points(points.clone(), 100.0, 50, GeometryFormat::GeoJson);
+
+        // Decode polyline and compare to geojson coordinates
+        let decoded = decode_polyline6(poly_geom.polyline.as_ref().unwrap());
+        let geojson_coords = json_geom.coordinates_geojson.unwrap();
+
+        assert_eq!(decoded.len(), geojson_coords.len());
+        for i in 0..decoded.len() {
+            assert!((decoded[i].0 - geojson_coords[i][1]).abs() < 1e-6, "lat mismatch at {}", i);
+            assert!((decoded[i].1 - geojson_coords[i][0]).abs() < 1e-6, "lon mismatch at {}", i);
+        }
+    }
 }

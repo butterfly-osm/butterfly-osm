@@ -93,6 +93,20 @@ impl<'a> CchQuery<'a> {
         }
     }
 
+    /// Create a query with custom weights (for alternative routes with penalties)
+    pub fn with_custom_weights(
+        topo: &'a CchTopo,
+        down_rev: &'a DownReverseAdj,
+        weights: &'a CchWeights,
+    ) -> Self {
+        Self {
+            topo,
+            down_rev,
+            weights,
+            n_nodes: topo.n_nodes as usize,
+        }
+    }
+
     /// Run bidirectional query from source to target
     pub fn query(&self, source: u32, target: u32) -> Option<QueryResult> {
         self.query_with_debug(source, target, false)
