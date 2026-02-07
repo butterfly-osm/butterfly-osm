@@ -647,7 +647,9 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
 
             if rank_u < rank_v {
                 let pos = up_pos[u].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                // Safe: each thread writes to disjoint ranges
+                // SAFETY: each node u has a reserved range [up_offsets[u], up_offsets[u+1]).
+                // The atomic fetch_add ensures each thread gets a unique pos within that range.
+                debug_assert!(pos < up_targets.len(), "up pos {pos} out of bounds (len {})", up_targets.len());
                 unsafe {
                     *up_targets.as_ptr().add(pos).cast_mut() = v;
                     *up_is_shortcut.as_ptr().add(pos).cast_mut() = false;
@@ -655,6 +657,7 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
                 }
             } else {
                 let pos = down_pos[u].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                debug_assert!(pos < down_targets.len(), "down pos {pos} out of bounds (len {})", down_targets.len());
                 unsafe {
                     *down_targets.as_ptr().add(pos).cast_mut() = v;
                     *down_is_shortcut.as_ptr().add(pos).cast_mut() = false;
@@ -722,8 +725,9 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
             // Sort by target
             edges.sort_unstable_by_key(|e| e.target);
 
-            // Write back - safe because ranges are disjoint
+            // SAFETY: write back to disjoint range [start, end) — each node's range is exclusive
             for (i, edge) in edges.into_iter().enumerate() {
+                debug_assert!(start + i < end, "up sort writeback {0} >= end {end}", start + i);
                 unsafe {
                     *up_targets.as_ptr().add(start + i).cast_mut() = edge.target;
                     *up_is_shortcut.as_ptr().add(start + i).cast_mut() = edge.is_shortcut;
@@ -750,7 +754,9 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
 
             edges.sort_unstable_by_key(|e| e.target);
 
+            // SAFETY: write back to disjoint range [start, end)
             for (i, edge) in edges.into_iter().enumerate() {
+                debug_assert!(start + i < end, "down sort writeback {0} >= end {end}", start + i);
                 unsafe {
                     *down_targets.as_ptr().add(start + i).cast_mut() = edge.target;
                     *down_is_shortcut.as_ptr().add(start + i).cast_mut() = edge.is_shortcut;
@@ -1361,6 +1367,8 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
 
             if rank_u < rank_v {
                 let pos = up_pos[u].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // SAFETY: each node u has a reserved range [up_offsets[u], up_offsets[u+1]).
+                debug_assert!(pos < up_targets.len(), "hybrid up pos {pos} out of bounds (len {})", up_targets.len());
                 unsafe {
                     *up_targets.as_ptr().add(pos).cast_mut() = v;
                     *up_is_shortcut.as_ptr().add(pos).cast_mut() = false;
@@ -1368,6 +1376,7 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
                 }
             } else {
                 let pos = down_pos[u].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                debug_assert!(pos < down_targets.len(), "hybrid down pos {pos} out of bounds (len {})", down_targets.len());
                 unsafe {
                     *down_targets.as_ptr().add(pos).cast_mut() = v;
                     *down_is_shortcut.as_ptr().add(pos).cast_mut() = false;
@@ -1428,7 +1437,9 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
                 })
                 .collect();
             edges.sort_unstable_by_key(|e| e.target);
+            // SAFETY: write back to disjoint range [start, end)
             for (i, edge) in edges.into_iter().enumerate() {
+                debug_assert!(start + i < end, "hybrid up sort writeback {0} >= end {end}", start + i);
                 unsafe {
                     *up_targets.as_ptr().add(start + i).cast_mut() = edge.target;
                     *up_is_shortcut.as_ptr().add(start + i).cast_mut() = edge.is_shortcut;
@@ -1452,7 +1463,9 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
                 })
                 .collect();
             edges.sort_unstable_by_key(|e| e.target);
+            // SAFETY: write back to disjoint range [start, end)
             for (i, edge) in edges.into_iter().enumerate() {
+                debug_assert!(start + i < end, "hybrid down sort writeback {0} >= end {end}", start + i);
                 unsafe {
                     *down_targets.as_ptr().add(start + i).cast_mut() = edge.target;
                     *down_is_shortcut.as_ptr().add(start + i).cast_mut() = edge.is_shortcut;

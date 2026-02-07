@@ -1391,8 +1391,9 @@ async fn table_stream(
         .header("X-Valid-Sources", n_valid_sources.to_string())
         .header("X-Valid-Destinations", n_valid_targets.to_string())
         .body(Body::from_stream(stream))
-        .unwrap()
-        .into_response()
+        .unwrap_or_else(|_| {
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to build streaming response").into_response()
+        })
 }
 
 /// Get the location (lon, lat) of an EBG node
@@ -1816,8 +1817,9 @@ async fn isochrone_bulk(
         .header("X-Successful-Isochrones", n_successful.to_string())
         .header("X-Failed-Isochrones", (n_total_origins - n_successful).to_string())
         .body(Body::from(response))
-        .unwrap()
-        .into_response()
+        .unwrap_or_else(|_| {
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to build bulk isochrone response").into_response()
+        })
 }
 
 /// Bounded Dijkstra for isochrone computation (operates in filtered node space)
@@ -2009,11 +2011,8 @@ pub fn run_phast_bounded_fast(
     state_cell.with(|cell| {
         let mut state_opt = cell.borrow_mut();
 
-        // Initialize if needed (only first query per thread)
-        if state_opt.is_none() {
-            *state_opt = Some(PhastState::new(n_nodes));
-        }
-        let state = state_opt.as_mut().unwrap();
+        // Initialize or reinitialize if needed
+        let state = state_opt.get_or_insert_with(|| PhastState::new(n_nodes));
 
         // Verify size matches (in case different datasets)
         if state.dist.len() != n_nodes {
@@ -2147,10 +2146,9 @@ pub fn run_phast_bounded_fast_reverse(
 
     state_cell.with(|cell| {
         let mut state_opt = cell.borrow_mut();
-        if state_opt.is_none() {
-            *state_opt = Some(PhastState::new(n_nodes));
-        }
-        let state = state_opt.as_mut().unwrap();
+
+        // Initialize or reinitialize if needed
+        let state = state_opt.get_or_insert_with(|| PhastState::new(n_nodes));
         if state.dist.len() != n_nodes {
             *state = PhastState::new(n_nodes);
         }
