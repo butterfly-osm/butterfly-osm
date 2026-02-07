@@ -59,8 +59,10 @@ Per-mode weights → cch.w.{mode}.u32
 | Endpoint | Description |
 |----------|-------------|
 | `GET /route` | P2P routing with geometry |
-| `GET /matrix` | One-to-many distance matrix |
-| `GET /isochrone` | Reachable area within time limit |
+| `POST /table` | Distance matrix (bucket M2M) |
+| `POST /table/stream` | Arrow IPC streaming for large matrices (50k+) |
+| `GET /isochrone` | Areal polygon + optional network roads (`include=network`), WKB via Accept header |
+| `POST /isochrone/bulk` | Parallel batch isochrones (WKB stream) |
 | `GET /health` | Server health check |
 | `GET /swagger-ui/` | OpenAPI documentation |
 
@@ -572,18 +574,56 @@ After implementation:
 
 ---
 
-## Future Features
+## Competitive Analysis (2026-02-07)
 
-- [ ] Alternative routes
-- [ ] Traffic-aware routing (live weight updates)
-- [ ] Multi-modal routing (car + foot)
-- [ ] Turn-by-turn instructions
+### Butterfly's Unique Strengths
+- **Exact turn restrictions** in ALL query types (OSRM ignores in table)
+- **50k x 50k matrices** via Arrow streaming (OSRM crashes)
+- **Network isochrone** (road-level reachability via `include=network`)
+- **Single graph, single hierarchy** — internal consistency
+- **Content negotiation** — Accept header for JSON/WKB, `include=` for optional fields
 
-## Correctness
+### Feature Gap vs Competition
 
-- [ ] Validate routes against reference (OSRM/Valhalla)
-- [ ] Stress test with random queries
-- [ ] Edge case handling (ferries, toll roads, restricted areas)
+#### Tier 1 — Core (table stakes for production API)
+
+| Feature | OSRM | Valhalla | GraphHopper | Butterfly |
+|---------|------|----------|-------------|-----------|
+| Turn-by-turn instructions | Yes | Yes (30 langs) | Yes | **TODO** |
+| Alternative routes | Yes (N alts) | Yes | Yes | **TODO** |
+| Nearest/snap endpoint | Yes (`/nearest`) | Yes (`/locate`) | implicit | **TODO** |
+| Distance matrix (meters) | Yes | Yes | Yes | **TODO** (time only) |
+| Geometry encoding (polyline6/geojson) | Yes | Yes | Yes | **TODO** (JSON points only) |
+
+#### Tier 2 — Important differentiators
+
+| Feature | OSRM | Valhalla | GraphHopper | Butterfly |
+|---------|------|----------|-------------|-----------|
+| Map matching (GPS traces) | Yes (HMM) | Yes (HMM) | Yes (Viterbi) | - |
+| TSP / trip optimization | Yes (greedy) | Yes | Yes (VRP) | - |
+| Dynamic costing (per-request) | No (fixed) | Yes | Hybrid mode | - |
+| Elevation / DEM | No | Yes (`/height`) | Yes (SRTM) | - |
+| Reverse isochrone | No | Yes | Yes | - |
+| Time-dependent routing | No | Yes (traffic) | No (OSS) | - |
+
+#### Tier 3 — Advanced / niche
+
+| Feature | OSRM | Valhalla | GraphHopper | Butterfly |
+|---------|------|----------|-------------|-----------|
+| Vector tiles (debug graph) | Yes (MVT) | No | No | - |
+| Expansion visualization | No | Yes (`/expansion`) | No | - |
+| Truck routing (dimensions) | No | Yes (full) | Yes (full) | - |
+| Public transit (GTFS) | No | Yes | Yes | - |
+| Centroid / meeting point | No | Yes | No | - |
+| Custom models (per-request) | No | Dynamic costing | Yes (JSON rules) | - |
+| Round-trip routes | No | No | Yes | - |
+| SPT raw tree | No | No | Yes (CSV stream) | - |
+
+### Implementation Roadmap
+
+1. **Phase 1 (Tier 1)**: Turn-by-turn, alternatives, nearest, distance matrix, geometry encoding
+2. **Phase 2 (Tier 2)**: Map matching, TSP, elevation, reverse isochrone
+3. **Phase 3 (Tier 3)**: Truck routing, custom models, expansion viz
 
 ---
 
