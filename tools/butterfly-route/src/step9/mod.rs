@@ -26,6 +26,8 @@ pub mod unpack;
 
 #[cfg(test)]
 mod isochrone_test;
+#[cfg(test)]
+mod consistency_test;
 
 use anyhow::Result;
 use std::net::TcpListener;

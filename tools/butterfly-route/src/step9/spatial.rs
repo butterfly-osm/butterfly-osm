@@ -157,6 +157,38 @@ impl SpatialIndex {
         None
     }
 
+    /// Find K nearest accessible EBG nodes with full info
+    /// Returns Vec<(ebg_id, snapped_lon, snapped_lat, distance_m)> sorted by meter distance
+    pub fn snap_k_with_info(
+        &self,
+        lon: f64,
+        lat: f64,
+        mask: &[u64],
+        k: usize,
+    ) -> Vec<(u32, f64, f64, f64)> {
+        let mut result = Vec::with_capacity(k);
+
+        for point in self.tree.nearest_neighbor_iter(&[lon, lat]) {
+            let dist_m = Self::distance_meters(lon, lat, point.coords[0], point.coords[1]);
+            if dist_m > MAX_SNAP_DISTANCE_M {
+                break;
+            }
+
+            let word = point.ebg_id as usize / 64;
+            let bit = point.ebg_id as usize % 64;
+            if word < mask.len() && (mask[word] & (1u64 << bit)) != 0 {
+                result.push((point.ebg_id, point.coords[0], point.coords[1], dist_m));
+                if result.len() >= k {
+                    break;
+                }
+            }
+        }
+
+        // Sort by meter distance (R-tree orders by degree distance which differs from meters)
+        result.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
+        result
+    }
+
     /// Get coordinates for an EBG node
     pub fn get_coords(&self, ebg_id: u32, ebg_nodes: &EbgNodes, nbg_geo: &NbgGeo) -> (f64, f64) {
         let node = &ebg_nodes.nodes[ebg_id as usize];
