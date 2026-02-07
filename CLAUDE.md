@@ -2,7 +2,49 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Build & Test Commands
+## Build & Run (Docker-First)
+
+Docker is the primary build and deployment method. All builds, tests, and server runs use Docker.
+
+```bash
+# Build the Docker image
+docker build -t butterfly-route .
+
+# Run the server (Belgium data on port 3001)
+docker run -d --name butterfly \
+  -p 3001:8080 \
+  -v "${PWD}/data:/data" \
+  butterfly-route serve --data-dir /data/belgium --port 8080 --log-format json
+
+# Run with text logging
+docker run -d --name butterfly \
+  -p 3001:8080 \
+  -v "${PWD}/data:/data" \
+  butterfly-route serve --data-dir /data/belgium --port 8080 --log-format text
+
+# Run with debug logging
+docker run -d --name butterfly \
+  -p 3001:8080 \
+  -v "${PWD}/data:/data" \
+  -e RUST_LOG=debug \
+  butterfly-route serve --data-dir /data/belgium --port 8080 --log-format json
+
+# View logs
+docker logs -f butterfly
+
+# Stop gracefully (SIGTERM → graceful shutdown)
+docker stop butterfly
+
+# Health check
+curl http://localhost:3001/health
+
+# Prometheus metrics
+curl http://localhost:3001/metrics
+```
+
+## Local Development (cargo)
+
+For iterating on code without Docker rebuild:
 
 ```bash
 # Build entire workspace
@@ -26,10 +68,6 @@ cargo test -p butterfly-route test_name
 cargo clippy --workspace --all-targets --all-features
 cargo fmt --all -- --check
 cargo fmt --all  # auto-fix
-
-# Build specific tool
-cargo build --release -p butterfly-dl
-cargo build --release -p butterfly-route
 ```
 
 ## Architecture Overview
