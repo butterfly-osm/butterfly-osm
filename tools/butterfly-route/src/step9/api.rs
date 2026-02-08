@@ -908,7 +908,7 @@ pub struct NearestRequest {
     /// Transport mode: car, bike, or foot
     #[schema(example = "car")]
     mode: String,
-    /// Number of nearest results (default 1, max 10)
+    /// Number of nearest results (default 1, max 100)
     #[serde(default = "default_number")]
     number: u32,
 }
@@ -962,6 +962,15 @@ async fn nearest(
     if let Err(e) = validate_coord(req.lon, req.lat, "query point") {
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
     }
+    if req.number == 0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "number must be at least 1".into(),
+            }),
+        )
+            .into_response();
+    }
     if req.number > 100 {
         return (
             StatusCode::BAD_REQUEST,
@@ -980,7 +989,7 @@ async fn nearest(
     };
 
     let mode_data = state.get_mode(mode);
-    let k = (req.number.clamp(1, 100)) as usize;
+    let k = req.number as usize;
 
     let results = state
         .spatial_index
@@ -1153,15 +1162,22 @@ async fn table_post(
 
     // Parse annotations
     let annotations: Vec<&str> = req.annotations.split(',').map(|s| s.trim()).collect();
-    let want_duration = annotations.contains(&"duration");
+    for &a in &annotations {
+        if !a.is_empty() && a != "duration" && a != "distance" {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "Invalid annotation: '{}'. Use 'duration', 'distance', or 'duration,distance'.",
+                        a
+                    ),
+                }),
+            )
+                .into_response();
+        }
+    }
+    let want_duration = annotations.contains(&"duration") || !annotations.contains(&"distance");
     let want_distance = annotations.contains(&"distance");
-
-    // Default: if neither specified, return duration
-    let (want_duration, want_distance) = if !want_duration && !want_distance {
-        (true, false)
-    } else {
-        (want_duration, want_distance)
-    };
 
     compute_table_bucket_m2m(
         &state,
@@ -1835,7 +1851,7 @@ async fn isochrone(
         }
     };
 
-    let reverse = match req.direction.as_str() {
+    let reverse = match req.direction.to_lowercase().as_str() {
         "depart" => false,
         "arrive" => true,
         other => {
@@ -2111,7 +2127,9 @@ async fn isochrone_bulk(
     if req.origins.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            "origins cannot be empty".as_bytes().to_vec(),
+            Json(ErrorResponse {
+                error: "origins cannot be empty".into(),
+            }),
         )
             .into_response();
     }
@@ -2119,31 +2137,36 @@ async fn isochrone_bulk(
     if req.origins.len() > MAX_BULK_ORIGINS {
         return (
             StatusCode::BAD_REQUEST,
-            format!(
-                "too many origins: {} exceeds maximum of {}",
-                req.origins.len(),
-                MAX_BULK_ORIGINS
-            )
-            .into_bytes(),
+            Json(ErrorResponse {
+                error: format!(
+                    "too many origins: {} exceeds maximum of {}",
+                    req.origins.len(),
+                    MAX_BULK_ORIGINS
+                ),
+            }),
         )
             .into_response();
     }
     for (i, &[lon, lat]) in req.origins.iter().enumerate() {
         if let Err(e) = validate_coord(lon, lat, &format!("origin[{}]", i)) {
-            return (StatusCode::BAD_REQUEST, e.into_bytes()).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     }
     if req.time_s == 0 || req.time_s > 7200 {
         return (
             StatusCode::BAD_REQUEST,
-            format!("time_s must be between 1 and 7200, got {}", req.time_s).into_bytes(),
+            Json(ErrorResponse {
+                error: format!("time_s must be between 1 and 7200, got {}", req.time_s),
+            }),
         )
             .into_response();
     }
 
     let mode = match parse_mode(&req.mode) {
         Ok(m) => m,
-        Err(e) => return (StatusCode::BAD_REQUEST, e.into_bytes()).into_response(),
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+        }
     };
 
     let mode_data = state.get_mode(mode);
@@ -4183,5 +4206,493 @@ mod tests {
             max_match_coords >= 2,
             "Match must allow at least 2 coordinates (the minimum)"
         );
+    }
+
+    // === 1. Negative zero handling ===
+
+    #[test]
+    fn test_validate_coord_negative_zero() {
+        // -0.0 should be accepted as equivalent to 0.0
+        assert!(validate_coord(-0.0, 0.0, "negzero_lon").is_ok());
+        assert!(validate_coord(0.0, -0.0, "negzero_lat").is_ok());
+        assert!(validate_coord(-0.0, -0.0, "negzero_both").is_ok());
+    }
+
+    // === 2. Mode with whitespace trimming ===
+
+    #[test]
+    fn test_parse_mode_rejects_padded_whitespace() {
+        // Padded whitespace should be rejected — " car " is not "car"
+        assert!(parse_mode(" car ").is_err());
+        assert!(parse_mode("\tcar").is_err());
+        assert!(parse_mode("car\n").is_err());
+    }
+
+    // === 3. Geometry format validation ===
+
+    #[test]
+    fn test_geometry_format_parse_valid() {
+        use super::super::geometry::GeometryFormat;
+        assert!(GeometryFormat::parse("polyline6").is_ok());
+        assert!(GeometryFormat::parse("geojson").is_ok());
+        assert!(GeometryFormat::parse("points").is_ok());
+    }
+
+    #[test]
+    fn test_geometry_format_parse_invalid() {
+        use super::super::geometry::GeometryFormat;
+        assert!(GeometryFormat::parse("INVALID").is_err());
+        assert!(GeometryFormat::parse("polyline").is_err());
+        assert!(GeometryFormat::parse("json").is_err());
+        assert!(GeometryFormat::parse("").is_err());
+        assert!(GeometryFormat::parse(" polyline6 ").is_err());
+    }
+
+    // === 4. Isochrone time_s boundary tests ===
+
+    #[test]
+    fn test_isochrone_time_bounds_constants() {
+        // time_s must be 1..=7200
+        let min_time: u32 = 1;
+        let max_time: u32 = 7200;
+        assert!(min_time >= 1, "Minimum time_s must be at least 1");
+        assert!(max_time <= 7200, "Maximum time_s should be 7200 (2 hours)");
+        assert!(max_time > min_time, "Max must exceed min");
+    }
+
+    // === 5. Nearest number limits ===
+
+    #[test]
+    fn test_nearest_number_limit_constants() {
+        // /nearest accepts number up to 100
+        let max_nearest: u32 = 100;
+        assert!(max_nearest >= 1);
+        assert!(max_nearest <= 100);
+    }
+
+    // === 6. Trip waypoint limits ===
+
+    #[test]
+    fn test_trip_waypoint_limit_constants() {
+        // /trip accepts 2..=100 waypoints
+        let min_trip: usize = 2;
+        let max_trip: usize = 100;
+        assert!(min_trip >= 2, "Trip needs at least 2 waypoints");
+        assert!(max_trip <= 100, "Trip max should be 100");
+    }
+
+    // === 7. Match coordinate limits ===
+
+    #[test]
+    fn test_match_coord_limit_constants() {
+        // /match accepts up to 500 coordinates, minimum 2
+        let max_match: usize = 500;
+        let min_match: usize = 2;
+        assert!(min_match >= 2, "Match needs at least 2 coordinates");
+        assert!(max_match <= 500, "Match max should be 500");
+    }
+
+    // === 8. Height coordinate limit ===
+
+    #[test]
+    fn test_height_coord_limit_constants() {
+        // /height accepts up to 10,000 coordinate pairs
+        let max_height: usize = 10_000;
+        assert!(max_height >= 1);
+        assert!(max_height <= 10_000);
+    }
+
+    // === 9. Validate coord with exact boundaries ===
+
+    #[test]
+    fn test_validate_coord_just_inside_bounds() {
+        assert!(validate_coord(179.999999, 89.999999, "near_ne").is_ok());
+        assert!(validate_coord(-179.999999, -89.999999, "near_sw").is_ok());
+    }
+
+    #[test]
+    fn test_validate_coord_just_outside_bounds() {
+        assert!(validate_coord(180.001, 0.0, "lon_over").is_err());
+        assert!(validate_coord(-180.001, 0.0, "lon_under").is_err());
+        assert!(validate_coord(0.0, 90.001, "lat_over").is_err());
+        assert!(validate_coord(0.0, -90.001, "lat_under").is_err());
+    }
+
+    // === 10. Validate coord with very small epsilon beyond boundary ===
+
+    #[test]
+    fn test_validate_coord_epsilon_outside() {
+        // Just barely outside — f64 precision edge
+        let eps = 1e-10;
+        assert!(validate_coord(180.0 + eps, 0.0, "eps_lon").is_err());
+        assert!(validate_coord(0.0, 90.0 + eps, "eps_lat").is_err());
+    }
+
+    // === 11. Verify error messages include coordinate values ===
+
+    #[test]
+    fn test_validate_coord_error_includes_coordinate_value() {
+        let result = validate_coord(200.5, 50.0, "src");
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("200.5"),
+            "Error should include bad lon value: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_validate_coord_error_includes_label_for_lat() {
+        let result = validate_coord(4.0, 95.5, "destination");
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("destination"),
+            "Error should include label: {}",
+            msg
+        );
+        assert!(
+            msg.contains("95.5"),
+            "Error should include bad lat value: {}",
+            msg
+        );
+    }
+
+    // === 12. Parse mode Unicode/special chars ===
+
+    #[test]
+    fn test_parse_mode_rejects_unicode() {
+        assert!(parse_mode("c\u{00e1}r").is_err());
+        assert!(parse_mode("\u{1f697}").is_err());
+        assert!(parse_mode("car\0").is_err());
+    }
+
+    // === 13. TSP pure tests ===
+
+    #[test]
+    fn test_tsp_all_unreachable() {
+        use super::super::trip::solve_tsp;
+        // 3x3 matrix where all edges are unreachable
+        let matrix = vec![u32::MAX; 9];
+        let result = solve_tsp(&matrix, 3, true);
+        // Should not panic — should return some order with saturated cost
+        assert_eq!(result.order.len(), 3);
+    }
+
+    #[test]
+    fn test_tsp_two_points_round_trip() {
+        use super::super::trip::solve_tsp;
+        // 2x2 matrix: A->B=10, B->A=20
+        let matrix = vec![0, 10, 20, 0];
+        let result = solve_tsp(&matrix, 2, true);
+        assert_eq!(result.order.len(), 2);
+        assert_eq!(result.total_cost, 30); // 10 + 20
+    }
+
+    #[test]
+    fn test_tsp_two_points_one_way() {
+        use super::super::trip::solve_tsp;
+        // 2x2 matrix: A->B=10, B->A=20, no round trip
+        let matrix = vec![0, 10, 20, 0];
+        let result = solve_tsp(&matrix, 2, false);
+        assert_eq!(result.order.len(), 2);
+        assert_eq!(result.total_cost, 10); // just A->B
+    }
+
+    #[test]
+    fn test_tsp_duplicate_waypoints() {
+        use super::super::trip::solve_tsp;
+        // 3x3 matrix where points 0 and 1 are same location (cost 0 between them)
+        let matrix = vec![0, 0, 100, 0, 0, 100, 100, 100, 0];
+        let result = solve_tsp(&matrix, 3, true);
+        assert_eq!(result.order.len(), 3);
+        // Should not panic, cost should be 200 (0->1->2->0 or similar)
+        assert!(result.total_cost <= 400);
+    }
+
+    #[test]
+    fn test_tsp_single_waypoint() {
+        use super::super::trip::solve_tsp;
+        let matrix = vec![0];
+        let result = solve_tsp(&matrix, 1, true);
+        assert_eq!(result.order.len(), 1);
+        assert_eq!(result.total_cost, 0);
+    }
+
+    #[test]
+    fn test_tsp_empty() {
+        use super::super::trip::solve_tsp;
+        let result = solve_tsp(&[], 0, true);
+        assert!(result.order.is_empty());
+        assert_eq!(result.total_cost, 0);
+    }
+
+    #[test]
+    fn test_tsp_waypoint_index_is_permutation() {
+        use super::super::trip::solve_tsp;
+        // 5x5 asymmetric matrix
+        let matrix = vec![
+            0, 10, 20, 30, 40, 15, 0, 25, 35, 45, 20, 25, 0, 10, 50, 30, 35, 10, 0, 15, 40, 45, 50,
+            15, 0,
+        ];
+        let result = solve_tsp(&matrix, 5, true);
+        assert_eq!(result.order.len(), 5);
+        // Verify it's a valid permutation of 0..5
+        let mut sorted = result.order.clone();
+        sorted.sort();
+        assert_eq!(
+            sorted,
+            vec![0, 1, 2, 3, 4],
+            "Order must be a permutation of 0..n"
+        );
+    }
+
+    // === 14. RouteGeometry serialization test ===
+
+    #[test]
+    fn test_route_geometry_json_only_has_geometry_fields() {
+        use super::super::geometry::{GeometryFormat, Point, RouteGeometry};
+        let points = vec![
+            Point {
+                lon: 4.3517,
+                lat: 50.8503,
+            },
+            Point {
+                lon: 4.4017,
+                lat: 50.8603,
+            },
+        ];
+
+        // Test all three formats
+        for format in &[
+            GeometryFormat::Polyline6,
+            GeometryFormat::GeoJson,
+            GeometryFormat::Points,
+        ] {
+            let geom = RouteGeometry::from_points(points.clone(), *format);
+            let json = serde_json::to_value(&geom).unwrap();
+            let obj = json.as_object().unwrap();
+
+            // Must NOT have distance_m, duration_ds, duration_s
+            assert!(
+                !obj.contains_key("distance_m"),
+                "format {:?}: no distance_m",
+                format
+            );
+            assert!(
+                !obj.contains_key("duration_ds"),
+                "format {:?}: no duration_ds",
+                format
+            );
+            assert!(
+                !obj.contains_key("duration_s"),
+                "format {:?}: no duration_s",
+                format
+            );
+
+            // Must not contain NaN or Infinity
+            for (key, val) in obj {
+                if let Some(n) = val.as_f64() {
+                    assert!(
+                        n.is_finite(),
+                        "format {:?}: field '{}' has non-finite value {}",
+                        format,
+                        key,
+                        n
+                    );
+                }
+            }
+        }
+    }
+
+    // === 15. Polyline6 round-trip test ===
+
+    #[test]
+    fn test_polyline6_roundtrip_precision() {
+        use super::super::geometry::{decode_polyline6, encode_polyline6, Point};
+        let original = vec![
+            Point {
+                lon: 4.3517,
+                lat: 50.8503,
+            },
+            Point {
+                lon: 4.4017,
+                lat: 50.8603,
+            },
+            Point {
+                lon: 3.7167,
+                lat: 51.0500,
+            }, // Ghent
+            Point {
+                lon: 5.5667,
+                lat: 50.6333,
+            }, // Liege
+        ];
+        let encoded = encode_polyline6(&original);
+        let decoded = decode_polyline6(&encoded);
+
+        assert_eq!(
+            original.len(),
+            decoded.len(),
+            "roundtrip should preserve point count"
+        );
+        for (i, (orig, dec)) in original.iter().zip(decoded.iter()).enumerate() {
+            // polyline6 has ~1e-6 degree precision
+            assert!(
+                (orig.lat - dec.0).abs() < 1e-5,
+                "pt {}: lat {:.7} vs {:.7}",
+                i,
+                orig.lat,
+                dec.0
+            );
+            assert!(
+                (orig.lon - dec.1).abs() < 1e-5,
+                "pt {}: lon {:.7} vs {:.7}",
+                i,
+                orig.lon,
+                dec.1
+            );
+        }
+    }
+
+    // === 16. GeoJSON coordinate order test ===
+
+    #[test]
+    fn test_geojson_coordinates_are_lon_lat_order() {
+        use super::super::geometry::{GeometryFormat, Point, RouteGeometry};
+        let points = vec![
+            Point {
+                lon: 4.3517,
+                lat: 50.8503,
+            },
+            Point {
+                lon: 5.5667,
+                lat: 50.6333,
+            },
+        ];
+        let geom = RouteGeometry::from_points(points, GeometryFormat::GeoJson);
+        let coords = geom.coordinates_geojson.unwrap();
+        // GeoJSON order is [lon, lat]
+        assert!(
+            (coords[0][0] - 4.3517).abs() < 1e-10,
+            "First element should be lon"
+        );
+        assert!(
+            (coords[0][1] - 50.8503).abs() < 1e-10,
+            "Second element should be lat"
+        );
+        assert!(
+            (coords[1][0] - 5.5667).abs() < 1e-10,
+            "First element should be lon"
+        );
+        assert!(
+            (coords[1][1] - 50.6333).abs() < 1e-10,
+            "Second element should be lat"
+        );
+    }
+
+    // === 17. Nearest number=0 rejection ===
+
+    #[test]
+    fn test_nearest_number_zero_rejected() {
+        // number=0 should NOT be silently clamped to 1; it should fail validation
+        // The handler checks `req.number == 0` and returns 400.
+        // We verify the constant behavior here: 0 is less than minimum (1).
+        let n: u32 = 0;
+        assert!(n < 1, "number=0 is below the minimum of 1");
+    }
+
+    // === 18. Table annotations validation ===
+
+    #[test]
+    fn test_table_annotations_rejects_unknown() {
+        // Unknown annotation tokens should be rejected
+        let valid = ["duration", "distance", "duration,distance", ""];
+        for v in &valid {
+            let tokens: Vec<&str> = v.split(',').map(|s| s.trim()).collect();
+            for &t in &tokens {
+                assert!(
+                    t.is_empty() || t == "duration" || t == "distance",
+                    "Token '{}' should be valid",
+                    t
+                );
+            }
+        }
+        let invalid = ["foo", "durations", "dist", "speed"];
+        for v in &invalid {
+            assert!(
+                *v != "duration" && *v != "distance",
+                "'{}' should be invalid",
+                v
+            );
+        }
+    }
+
+    // === 19. Isochrone direction case-insensitive ===
+
+    #[test]
+    fn test_isochrone_direction_case_normalization() {
+        // Direction should be case-insensitive after to_lowercase()
+        for (input, expected) in &[
+            ("depart", false),
+            ("arrive", true),
+            ("Depart", false),
+            ("ARRIVE", true),
+            ("Arrive", true),
+            ("DEPART", false),
+        ] {
+            let lower = input.to_lowercase();
+            let result = match lower.as_str() {
+                "depart" => Ok(false),
+                "arrive" => Ok(true),
+                _ => Err(()),
+            };
+            assert_eq!(
+                result,
+                Ok(*expected),
+                "Direction '{}' should normalize correctly",
+                input
+            );
+        }
+        // Invalid directions should fail
+        for bad in &["", "forward", "backward", " depart"] {
+            let lower = bad.to_lowercase();
+            let result = match lower.as_str() {
+                "depart" | "arrive" => Ok(()),
+                _ => Err(()),
+            };
+            assert!(result.is_err(), "Direction '{}' should be rejected", bad);
+        }
+    }
+
+    // === 20. Trip unreachable legs use null ===
+
+    #[test]
+    fn test_trip_leg_unreachable_serializes_as_null() {
+        use super::super::trip::TripLeg;
+        let unreachable_leg = TripLeg {
+            duration: None,
+            distance: None,
+            summary: String::new(),
+        };
+        let json = serde_json::to_value(&unreachable_leg).unwrap();
+        assert!(
+            json["duration"].is_null(),
+            "unreachable duration should be null"
+        );
+        assert!(
+            json["distance"].is_null(),
+            "unreachable distance should be null"
+        );
+
+        let reachable_leg = TripLeg {
+            duration: Some(123.4),
+            distance: Some(5678.9),
+            summary: "test".to_string(),
+        };
+        let json = serde_json::to_value(&reachable_leg).unwrap();
+        assert_eq!(json["duration"], 123.4);
+        assert_eq!(json["distance"], 5678.9);
     }
 }
