@@ -5,8 +5,8 @@
 //! - Points OUTSIDE the polygon have drive time > threshold
 
 use geo::{Contains, Coord, Point, Polygon};
-use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 
 use crate::profile_abi::Mode;
 
@@ -19,7 +19,7 @@ pub struct IsochroneTestResult {
     pub origin: (f64, f64),
     pub threshold_s: u32,
     pub n_samples: usize,
-    pub n_snapped: usize,  // How many samples successfully snapped to roads
+    pub n_snapped: usize, // How many samples successfully snapped to roads
     pub inside_correct: usize,
     pub inside_violations: Vec<ViolationInfo>,
     pub outside_correct: usize,
@@ -30,10 +30,10 @@ pub struct IsochroneTestResult {
 #[derive(Debug, Clone)]
 pub struct ViolationInfo {
     #[allow(dead_code)]
-    pub sampled_point: (f64, f64),    // Original random sample
-    pub snapped_point: (f64, f64),    // Snapped road point (used for containment check)
+    pub sampled_point: (f64, f64), // Original random sample
+    pub snapped_point: (f64, f64), // Snapped road point (used for containment check)
     #[allow(dead_code)]
-    pub snap_distance_m: f64,          // Distance from sampled to snapped
+    pub snap_distance_m: f64, // Distance from sampled to snapped
     pub drive_time_s: f32,
     pub threshold_s: u32,
 }
@@ -98,9 +98,15 @@ pub fn polygon_bbox_with_buffer(points: &[IsoPoint], buffer_factor: f64) -> (f64
     }
 
     let min_lon = points.iter().map(|p| p.lon).fold(f64::INFINITY, f64::min);
-    let max_lon = points.iter().map(|p| p.lon).fold(f64::NEG_INFINITY, f64::max);
+    let max_lon = points
+        .iter()
+        .map(|p| p.lon)
+        .fold(f64::NEG_INFINITY, f64::max);
     let min_lat = points.iter().map(|p| p.lat).fold(f64::INFINITY, f64::min);
-    let max_lat = points.iter().map(|p| p.lat).fold(f64::NEG_INFINITY, f64::max);
+    let max_lat = points
+        .iter()
+        .map(|p| p.lat)
+        .fold(f64::NEG_INFINITY, f64::max);
 
     let width = max_lon - min_lon;
     let height = max_lat - min_lat;
@@ -133,10 +139,22 @@ mod tests {
     #[test]
     fn test_polygon_bbox_with_buffer() {
         let points = vec![
-            IsoPoint { lon: 4.0, lat: 50.0 },
-            IsoPoint { lon: 5.0, lat: 50.0 },
-            IsoPoint { lon: 5.0, lat: 51.0 },
-            IsoPoint { lon: 4.0, lat: 51.0 },
+            IsoPoint {
+                lon: 4.0,
+                lat: 50.0,
+            },
+            IsoPoint {
+                lon: 5.0,
+                lat: 50.0,
+            },
+            IsoPoint {
+                lon: 5.0,
+                lat: 51.0,
+            },
+            IsoPoint {
+                lon: 4.0,
+                lat: 51.0,
+            },
         ];
 
         let (min_lon, max_lon, min_lat, max_lat) = polygon_bbox_with_buffer(&points, 1.0);
@@ -154,11 +172,26 @@ mod tests {
     #[test]
     fn test_points_to_polygon() {
         let points = vec![
-            IsoPoint { lon: 4.0, lat: 50.0 },
-            IsoPoint { lon: 5.0, lat: 50.0 },
-            IsoPoint { lon: 5.0, lat: 51.0 },
-            IsoPoint { lon: 4.0, lat: 51.0 },
-            IsoPoint { lon: 4.0, lat: 50.0 }, // Close the ring
+            IsoPoint {
+                lon: 4.0,
+                lat: 50.0,
+            },
+            IsoPoint {
+                lon: 5.0,
+                lat: 50.0,
+            },
+            IsoPoint {
+                lon: 5.0,
+                lat: 51.0,
+            },
+            IsoPoint {
+                lon: 4.0,
+                lat: 51.0,
+            },
+            IsoPoint {
+                lon: 4.0,
+                lat: 50.0,
+            }, // Close the ring
         ];
 
         let poly = points_to_polygon(&points);
@@ -171,7 +204,10 @@ mod tests {
         let outside = Point::new(3.0, 50.5);
 
         assert!(poly.contains(&inside), "Point (4.5, 50.5) should be inside");
-        assert!(!poly.contains(&outside), "Point (3.0, 50.5) should be outside");
+        assert!(
+            !poly.contains(&outside),
+            "Point (3.0, 50.5) should be outside"
+        );
     }
 
     #[test]
@@ -180,8 +216,14 @@ mod tests {
         assert!(points_to_polygon(&points).is_none());
 
         let points = vec![
-            IsoPoint { lon: 4.0, lat: 50.0 },
-            IsoPoint { lon: 5.0, lat: 50.0 },
+            IsoPoint {
+                lon: 4.0,
+                lat: 50.0,
+            },
+            IsoPoint {
+                lon: 5.0,
+                lat: 50.0,
+            },
         ];
         assert!(points_to_polygon(&points).is_none());
     }
@@ -201,21 +243,21 @@ mod tests {
             "data/belgium",
         ];
 
-        let data_dir = possible_paths
-            .iter()
-            .map(Path::new)
-            .find(|p| p.exists());
+        let data_dir = possible_paths.iter().map(Path::new).find(|p| p.exists());
 
         let data_dir = match data_dir {
             Some(p) => p,
             None => {
-                eprintln!("Skipping: Belgium data not found in any of {:?}", possible_paths);
+                eprintln!(
+                    "Skipping: Belgium data not found in any of {:?}",
+                    possible_paths
+                );
                 return;
             }
         };
 
-        use crate::step9::state::ServerState;
         use crate::step9::query::CchQuery;
+        use crate::step9::state::ServerState;
 
         // Load server state
         let state = ServerState::load(data_dir).expect("Failed to load server state");
@@ -229,7 +271,9 @@ mod tests {
         let threshold_ds = threshold_s * 10;
 
         // Snap origin
-        let origin_ebg = state.spatial_index.snap(origin_lon, origin_lat, &mode_data.mask, 10)
+        let origin_ebg = state
+            .spatial_index
+            .snap(origin_lon, origin_lat, &mode_data.mask, 10)
             .expect("Failed to snap origin");
         let origin_filtered = mode_data.filtered_ebg.original_to_filtered[origin_ebg as usize];
         assert_ne!(origin_filtered, u32::MAX, "Origin not in filtered graph");
@@ -262,8 +306,14 @@ mod tests {
             mode,
         );
 
-        assert!(!polygon_points.is_empty(), "Isochrone polygon should not be empty");
-        assert!(polygon_points.len() >= 3, "Isochrone polygon should have at least 3 points");
+        assert!(
+            !polygon_points.is_empty(),
+            "Isochrone polygon should not be empty"
+        );
+        assert!(
+            polygon_points.len() >= 3,
+            "Isochrone polygon should have at least 3 points"
+        );
 
         let polygon = points_to_polygon(&polygon_points).expect("Failed to create polygon");
 
@@ -288,7 +338,9 @@ mod tests {
 
         for (lon, lat) in &sample_points {
             // Snap the random point to the nearest road
-            let snap_result = state.spatial_index.snap_with_info(*lon, *lat, &mode_data.mask, 10);
+            let snap_result = state
+                .spatial_index
+                .snap_with_info(*lon, *lat, &mode_data.mask, 10);
 
             let (dst_ebg, snapped_lon, snapped_lat, snap_dist_m) = match snap_result {
                 Some(result) => result,
@@ -369,9 +421,15 @@ mod tests {
         println!("  Samples attempted: {}", sample_points.len());
         println!("  Samples snapped to roads: {}", n_snapped);
         println!("  Inside correct: {}", inside_correct);
-        println!("  Inside violations (>10% over threshold): {}", inside_violations.len());
+        println!(
+            "  Inside violations (>10% over threshold): {}",
+            inside_violations.len()
+        );
         println!("  Outside correct: {}", outside_correct);
-        println!("  Outside violations (<90% of threshold): {}", outside_violations.len());
+        println!(
+            "  Outside violations (<90% of threshold): {}",
+            outside_violations.len()
+        );
         println!("  Unreachable (no route): {}", unreachable);
 
         // Print worst violations for debugging
@@ -380,10 +438,14 @@ mod tests {
             let mut sorted = inside_violations.clone();
             sorted.sort_by(|a, b| b.drive_time_s.partial_cmp(&a.drive_time_s).unwrap());
             for v in sorted.iter().take(3) {
-                println!("    snapped ({:.4}, {:.4}): {:.1}s > {}s ({:.0}% over)",
-                    v.snapped_point.0, v.snapped_point.1,
-                    v.drive_time_s, v.threshold_s,
-                    (v.drive_time_s / v.threshold_s as f32 - 1.0) * 100.0);
+                println!(
+                    "    snapped ({:.4}, {:.4}): {:.1}s > {}s ({:.0}% over)",
+                    v.snapped_point.0,
+                    v.snapped_point.1,
+                    v.drive_time_s,
+                    v.threshold_s,
+                    (v.drive_time_s / v.threshold_s as f32 - 1.0) * 100.0
+                );
             }
         }
 
@@ -392,27 +454,40 @@ mod tests {
             let mut sorted = outside_violations.clone();
             sorted.sort_by(|a, b| a.drive_time_s.partial_cmp(&b.drive_time_s).unwrap());
             for v in sorted.iter().take(3) {
-                println!("    snapped ({:.4}, {:.4}): {:.1}s <= {}s ({:.0}% under)",
-                    v.snapped_point.0, v.snapped_point.1,
-                    v.drive_time_s, v.threshold_s,
-                    (1.0 - v.drive_time_s / v.threshold_s as f32) * 100.0);
+                println!(
+                    "    snapped ({:.4}, {:.4}): {:.1}s <= {}s ({:.0}% under)",
+                    v.snapped_point.0,
+                    v.snapped_point.1,
+                    v.drive_time_s,
+                    v.threshold_s,
+                    (1.0 - v.drive_time_s / v.threshold_s as f32) * 100.0
+                );
             }
         }
 
         // Allow some tolerance - polygon is geographic approximation
         // Only count hard violations (>10% deviation from threshold)
         let total_violations = inside_violations.len() + outside_violations.len();
-        let total_tested = inside_correct + inside_violations.len() + outside_correct + outside_violations.len();
+        let total_tested =
+            inside_correct + inside_violations.len() + outside_correct + outside_violations.len();
 
         if total_tested == 0 {
             panic!("No samples could be tested - check data paths and snapping");
         }
 
         let violation_rate = total_violations as f32 / total_tested as f32;
-        println!("\n  Total violations: {}/{} ({:.1}%)", total_violations, total_tested, violation_rate * 100.0);
+        println!(
+            "\n  Total violations: {}/{} ({:.1}%)",
+            total_violations,
+            total_tested,
+            violation_rate * 100.0
+        );
 
-        assert!(violation_rate < 0.10,
-            "Violation rate {:.1}% exceeds 10% threshold", violation_rate * 100.0);
+        assert!(
+            violation_rate < 0.10,
+            "Violation rate {:.1}% exceeds 10% threshold",
+            violation_rate * 100.0
+        );
     }
 
     /// Compute drive time from origin EBG node to destination EBG node

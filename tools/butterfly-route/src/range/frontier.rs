@@ -6,10 +6,7 @@
 use anyhow::Result;
 use std::path::Path;
 
-use crate::formats::{
-    EbgNodesFile, FilteredEbgFile, NbgGeoFile,
-    EbgNodes, FilteredEbg, NbgGeo,
-};
+use crate::formats::{EbgNodes, EbgNodesFile, FilteredEbg, FilteredEbgFile, NbgGeo, NbgGeoFile};
 use crate::profile_abi::Mode;
 
 /// A frontier cut point on the base graph
@@ -215,7 +212,11 @@ impl FrontierExtractor {
     /// isochrone boundary. Use this for concave hull polygon generation.
     ///
     /// Returns polylines from start to cut point for each frontier edge.
-    pub fn extract_frontier_segments(&self, phast_dist: &[u32], threshold_ms: u32) -> Vec<ReachableSegment> {
+    pub fn extract_frontier_segments(
+        &self,
+        phast_dist: &[u32],
+        threshold_ms: u32,
+    ) -> Vec<ReachableSegment> {
         let mut segments = Vec::new();
 
         for filtered_id in 0..self.filtered_ebg.n_filtered_nodes {
@@ -268,7 +269,11 @@ impl FrontierExtractor {
     /// Returns polylines for:
     /// - Fully reachable edges: entire polyline
     /// - Frontier edges: from start to cut point
-    pub fn extract_reachable_segments(&self, phast_dist: &[u32], threshold_ms: u32) -> Vec<ReachableSegment> {
+    pub fn extract_reachable_segments(
+        &self,
+        phast_dist: &[u32],
+        threshold_ms: u32,
+    ) -> Vec<ReachableSegment> {
         let mut segments = Vec::new();
 
         for filtered_id in 0..self.filtered_ebg.n_filtered_nodes {
@@ -311,7 +316,8 @@ impl FrontierExtractor {
 
             if dist_end_ms <= threshold_ms {
                 // Fully reachable: include entire polyline
-                let points: Vec<(i32, i32)> = polyline.lat_fxp
+                let points: Vec<(i32, i32)> = polyline
+                    .lat_fxp
                     .iter()
                     .zip(polyline.lon_fxp.iter())
                     .map(|(&lat, &lon)| (lat, lon))
@@ -344,7 +350,8 @@ impl FrontierExtractor {
         }
 
         if fraction >= 1.0 {
-            return polyline.lat_fxp
+            return polyline
+                .lat_fxp
                 .iter()
                 .zip(polyline.lon_fxp.iter())
                 .map(|(&lat, &lon)| (lat, lon))
@@ -464,7 +471,11 @@ pub fn run_frontier_extraction(
     };
 
     println!("\n🔍 Base Graph Frontier Extraction ({} mode)", mode_name);
-    println!("  Threshold: {} ms ({:.1} min)", threshold, threshold as f64 / 60_000.0);
+    println!(
+        "  Threshold: {} ms ({:.1} min)",
+        threshold,
+        threshold as f64 / 60_000.0
+    );
 
     let extractor = FrontierExtractor::load(
         filtered_ebg_path,
@@ -481,8 +492,8 @@ pub fn run_frontier_extraction(
 
     if !cut_points.is_empty() {
         // Show some statistics
-        let avg_fraction: f32 = cut_points.iter().map(|p| p.cut_fraction).sum::<f32>()
-            / cut_points.len() as f32;
+        let avg_fraction: f32 =
+            cut_points.iter().map(|p| p.cut_fraction).sum::<f32>() / cut_points.len() as f32;
         println!("  Avg cut fraction: {:.3}", avg_fraction);
 
         // Geographic bounds
@@ -491,10 +502,16 @@ pub fn run_frontier_extraction(
         let min_lon = cut_points.iter().map(|p| p.lon_fxp).min().unwrap();
         let max_lon = cut_points.iter().map(|p| p.lon_fxp).max().unwrap();
 
-        println!("  Lat range: {:.6} to {:.6}",
-                 min_lat as f64 / 1e7, max_lat as f64 / 1e7);
-        println!("  Lon range: {:.6} to {:.6}",
-                 min_lon as f64 / 1e7, max_lon as f64 / 1e7);
+        println!(
+            "  Lat range: {:.6} to {:.6}",
+            min_lat as f64 / 1e7,
+            max_lat as f64 / 1e7
+        );
+        println!(
+            "  Lon range: {:.6} to {:.6}",
+            min_lon as f64 / 1e7,
+            max_lon as f64 / 1e7
+        );
     }
 
     Ok(cut_points)
@@ -517,8 +534,11 @@ pub fn export_geojson(cut_points: &[FrontierCutPoint], output_path: &Path) -> Re
             write!(file, ",")?;
         }
 
-        writeln!(file, r#"{{"type": "Feature", "geometry": {{"type": "Point", "coordinates": [{:.7}, {:.7}]}}, "properties": {{"ebg_id": {}, "dist_ms": {}, "weight_ms": {}, "cut_frac": {:.3}}}}}"#,
-                 lon, lat, pt.ebg_node_id, pt.dist_start, pt.edge_weight, pt.cut_fraction)?;
+        writeln!(
+            file,
+            r#"{{"type": "Feature", "geometry": {{"type": "Point", "coordinates": [{:.7}, {:.7}]}}, "properties": {{"ebg_id": {}, "dist_ms": {}, "weight_ms": {}, "cut_frac": {:.3}}}}}"#,
+            lon, lat, pt.ebg_node_id, pt.dist_start, pt.edge_weight, pt.cut_fraction
+        )?;
     }
 
     writeln!(file, "]}}")?;

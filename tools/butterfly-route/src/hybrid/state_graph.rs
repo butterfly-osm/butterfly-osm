@@ -174,22 +174,36 @@ impl HybridStateGraph {
         println!("  NBG nodes:        {:>12}", self.stats.n_nbg_nodes);
         println!("  EBG nodes:        {:>12}", self.stats.n_ebg_nodes);
         println!("  Hybrid states:    {:>12}", self.stats.n_hybrid_states);
-        println!("    Node-states:    {:>12} ({:.1}%)",
+        println!(
+            "    Node-states:    {:>12} ({:.1}%)",
             self.stats.n_node_states,
-            100.0 * self.stats.n_node_states as f64 / self.stats.n_hybrid_states as f64);
-        println!("    Edge-states:    {:>12} ({:.1}%)",
+            100.0 * self.stats.n_node_states as f64 / self.stats.n_hybrid_states as f64
+        );
+        println!(
+            "    Edge-states:    {:>12} ({:.1}%)",
             self.stats.n_edge_states,
-            100.0 * self.stats.n_edge_states as f64 / self.stats.n_hybrid_states as f64);
-        println!("  Simple nodes:     {:>12} ({:.2}%)",
+            100.0 * self.stats.n_edge_states as f64 / self.stats.n_hybrid_states as f64
+        );
+        println!(
+            "  Simple nodes:     {:>12} ({:.2}%)",
             self.stats.n_simple_nodes,
-            100.0 * self.stats.n_simple_nodes as f64 / self.stats.n_nbg_nodes as f64);
-        println!("  Complex nodes:    {:>12} ({:.2}%)",
+            100.0 * self.stats.n_simple_nodes as f64 / self.stats.n_nbg_nodes as f64
+        );
+        println!(
+            "  Complex nodes:    {:>12} ({:.2}%)",
             self.stats.n_complex_nodes,
-            100.0 * self.stats.n_complex_nodes as f64 / self.stats.n_nbg_nodes as f64);
+            100.0 * self.stats.n_complex_nodes as f64 / self.stats.n_nbg_nodes as f64
+        );
         println!("  Hybrid arcs:      {:>12}", self.stats.n_hybrid_arcs);
         println!("  EBG arcs:         {:>12}", self.stats.n_ebg_arcs);
-        println!("  State reduction:  {:>12.2}x", self.stats.state_reduction_ratio);
-        println!("  Arc reduction:    {:>12.2}x", self.stats.arc_reduction_ratio);
+        println!(
+            "  State reduction:  {:>12.2}x",
+            self.stats.state_reduction_ratio
+        );
+        println!(
+            "  Arc reduction:    {:>12.2}x",
+            self.stats.arc_reduction_ratio
+        );
     }
 
     /// Convert to format struct for serialization

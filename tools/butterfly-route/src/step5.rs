@@ -78,10 +78,22 @@ pub fn generate_weights(
     inputs_sha_8.copy_from_slice(&ebg_nodes.inputs_sha[0..8]);
 
     // Debug: check access flags in loaded way_attrs
-    let car_with_access = way_attrs_car.iter().filter(|a| a.output.access_fwd || a.output.access_rev).count();
-    let car_fwd_only = way_attrs_car.iter().filter(|a| a.output.access_fwd && !a.output.access_rev).count();
-    let car_rev_only = way_attrs_car.iter().filter(|a| !a.output.access_fwd && a.output.access_rev).count();
-    let car_both = way_attrs_car.iter().filter(|a| a.output.access_fwd && a.output.access_rev).count();
+    let car_with_access = way_attrs_car
+        .iter()
+        .filter(|a| a.output.access_fwd || a.output.access_rev)
+        .count();
+    let car_fwd_only = way_attrs_car
+        .iter()
+        .filter(|a| a.output.access_fwd && !a.output.access_rev)
+        .count();
+    let car_rev_only = way_attrs_car
+        .iter()
+        .filter(|a| !a.output.access_fwd && a.output.access_rev)
+        .count();
+    let car_both = way_attrs_car
+        .iter()
+        .filter(|a| a.output.access_fwd && a.output.access_rev)
+        .count();
     println!("  DEBUG: Car access flags:");
     println!("    With any access: {}", car_with_access);
     println!("    Fwd only: {}", car_fwd_only);
@@ -173,7 +185,10 @@ pub fn generate_weights(
     // Extract mode_masks from turn_table for arc filtering
     // This is CRITICAL for enforcing turn restrictions!
     let arc_mode_masks: Vec<u8> = turn_table.entries.iter().map(|e| e.mode_mask).collect();
-    println!("  Extracted {} turn entry mode masks for arc filtering", arc_mode_masks.len());
+    println!(
+        "  Extracted {} turn entry mode masks for arc filtering",
+        arc_mode_masks.len()
+    );
 
     // Car filtered EBG
     println!("  Building car filtered EBG...");
@@ -187,8 +202,10 @@ pub fn generate_weights(
         ebg_nodes.n_nodes,
         filtered_inputs_sha,
     );
-    println!("    ✓ {} nodes (of {}), {} arcs",
-        car_filtered.n_filtered_nodes, car_filtered.n_original_nodes, car_filtered.n_filtered_arcs);
+    println!(
+        "    ✓ {} nodes (of {}), {} arcs",
+        car_filtered.n_filtered_nodes, car_filtered.n_original_nodes, car_filtered.n_filtered_arcs
+    );
     FilteredEbgFile::write(&car_filtered_path, &car_filtered)?;
 
     // Bike filtered EBG
@@ -203,8 +220,12 @@ pub fn generate_weights(
         ebg_nodes.n_nodes,
         filtered_inputs_sha,
     );
-    println!("    ✓ {} nodes (of {}), {} arcs",
-        bike_filtered.n_filtered_nodes, bike_filtered.n_original_nodes, bike_filtered.n_filtered_arcs);
+    println!(
+        "    ✓ {} nodes (of {}), {} arcs",
+        bike_filtered.n_filtered_nodes,
+        bike_filtered.n_original_nodes,
+        bike_filtered.n_filtered_arcs
+    );
     FilteredEbgFile::write(&bike_filtered_path, &bike_filtered)?;
 
     // Foot filtered EBG
@@ -219,8 +240,12 @@ pub fn generate_weights(
         ebg_nodes.n_nodes,
         filtered_inputs_sha,
     );
-    println!("    ✓ {} nodes (of {}), {} arcs",
-        foot_filtered.n_filtered_nodes, foot_filtered.n_original_nodes, foot_filtered.n_filtered_arcs);
+    println!(
+        "    ✓ {} nodes (of {}), {} arcs",
+        foot_filtered.n_filtered_nodes,
+        foot_filtered.n_original_nodes,
+        foot_filtered.n_filtered_arcs
+    );
     FilteredEbgFile::write(&foot_filtered_path, &foot_filtered)?;
 
     println!("  ✓ Written 3 filtered EBG files");
@@ -296,7 +321,8 @@ fn generate_mode_data(
         };
 
         // Determine direction: forward or reverse
-        let is_forward = ebg_node.tail_nbg == nbg_edge.u_node && ebg_node.head_nbg == nbg_edge.v_node;
+        let is_forward =
+            ebg_node.tail_nbg == nbg_edge.u_node && ebg_node.head_nbg == nbg_edge.v_node;
 
         // Get access for this direction
         let has_access = if is_forward {
@@ -336,7 +362,8 @@ fn generate_mode_data(
         // Compute per_km_extra_ds using integer math
         // per_km_extra_ds = ceil(length_km * per_km_penalty_ds)
         //                 = (length_mm * per_km_penalty_ds + 1_000_000 - 1) / 1_000_000
-        let per_km_extra_ds = (length_mm as u64 * way_attr.output.per_km_penalty_ds as u64).div_ceil(1_000_000) as u32;
+        let per_km_extra_ds = (length_mm as u64 * way_attr.output.per_km_penalty_ds as u64)
+            .div_ceil(1_000_000) as u32;
 
         // Total weight = travel_time + per_km_extra + const_penalty (saturating)
         let weight_ds = travel_time_ds
@@ -383,10 +410,12 @@ fn generate_mode_data(
 
     // Print turn penalty statistics
     if arcs_with_penalty > 0 {
-        println!("  Turn penalties: {} arcs ({:.1}%), avg {:.1}s",
+        println!(
+            "  Turn penalties: {} arcs ({:.1}%), avg {:.1}s",
             arcs_with_penalty,
             arcs_with_penalty as f64 * 100.0 / n_arcs as f64,
-            total_penalty_ds as f64 / arcs_with_penalty as f64 / 10.0);
+            total_penalty_ds as f64 / arcs_with_penalty as f64 / 10.0
+        );
     }
 
     // Debug output
@@ -395,9 +424,15 @@ fn generate_mode_data(
         Mode::Bike => "bike",
         Mode::Foot => "foot",
     };
-    println!("  DEBUG {}: no_way={}, no_access={}, zero_speed={}, accessible={} ({:.1}%)",
-        mode_name, dbg_no_way, dbg_no_access, dbg_zero_speed, dbg_accessible,
-        dbg_accessible as f64 * 100.0 / n_nodes as f64);
+    println!(
+        "  DEBUG {}: no_way={}, no_access={}, zero_speed={}, accessible={} ({:.1}%)",
+        mode_name,
+        dbg_no_way,
+        dbg_no_access,
+        dbg_zero_speed,
+        dbg_accessible,
+        dbg_accessible as f64 * 100.0 / n_nodes as f64
+    );
 
     let weights_data = ModWeights {
         mode,

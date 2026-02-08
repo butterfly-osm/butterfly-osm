@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use std::fs::File;
-use std::io::{BufWriter, Write, Read, BufReader};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use super::crc;
@@ -12,12 +12,12 @@ const VERSION: u16 = 1;
 
 #[derive(Debug, Clone)]
 pub struct EbgNode {
-    pub tail_nbg: u32,      // compact NBG node id
-    pub head_nbg: u32,      // compact NBG node id
-    pub geom_idx: u32,      // index into nbg.geo record
-    pub length_mm: u32,     // copy of nbg.geo.length_mm
-    pub class_bits: u32,    // ferry, bridge, tunnel, roundabout, ford, etc.
-    pub primary_way: u32,   // lower 32 bits of first_osm_way_id
+    pub tail_nbg: u32,    // compact NBG node id
+    pub head_nbg: u32,    // compact NBG node id
+    pub geom_idx: u32,    // index into nbg.geo record
+    pub length_mm: u32,   // copy of nbg.geo.length_mm
+    pub class_bits: u32,  // ferry, bridge, tunnel, roundabout, ford, etc.
+    pub primary_way: u32, // lower 32 bits of first_osm_way_id
 }
 
 #[derive(Debug)]
@@ -102,8 +102,8 @@ impl EbgNodesFile {
 
         let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
         let created_unix = u64::from_le_bytes([
-            header[12], header[13], header[14], header[15],
-            header[16], header[17], header[18], header[19],
+            header[12], header[13], header[14], header[15], header[16], header[17], header[18],
+            header[19],
         ]);
         let mut inputs_sha = [0u8; 32];
         inputs_sha.copy_from_slice(&header[20..52]);

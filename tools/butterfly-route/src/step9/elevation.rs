@@ -360,11 +360,7 @@ impl ElevationData {
     /// Returns elevation points sampled at approximately `interval_m` spacing,
     /// plus the start and end points of each segment. Points where elevation
     /// data is unavailable are skipped.
-    pub fn elevation_profile(
-        &self,
-        path: &[[f64; 2]],
-        interval_m: f64,
-    ) -> Vec<ElevationPoint> {
+    pub fn elevation_profile(&self, path: &[[f64; 2]], interval_m: f64) -> Vec<ElevationPoint> {
         if path.is_empty() {
             return Vec::new();
         }
@@ -450,13 +446,7 @@ impl ElevationData {
     ///
     /// Returns true only if every 1x1 degree tile needed to cover the
     /// bounding box is loaded.
-    pub fn has_coverage(
-        &self,
-        min_lat: f64,
-        min_lon: f64,
-        max_lat: f64,
-        max_lon: f64,
-    ) -> bool {
+    pub fn has_coverage(&self, min_lat: f64, min_lon: f64, max_lat: f64, max_lon: f64) -> bool {
         let lat_start = min_lat.floor() as i16;
         let lat_end = max_lat.ceil() as i16;
         let lon_start = min_lon.floor() as i16;
@@ -809,10 +799,7 @@ mod tests {
         // row0=0, col0=0 => cells (0,0)=100, (0,1)=200, (1,0)=400, (1,1)=VOID
         // touches void => None
         let nw_area = elev.elevation_at(50.9, 4.0);
-        assert!(
-            nw_area.is_none(),
-            "NW area touching void should be None"
-        );
+        assert!(nw_area.is_none(), "NW area touching void should be None");
 
         // Point entirely in the SE quadrant: lat=50.1, lon=4.6
         // row_f = (1.0-0.1)*2 = 1.8, col_f = 0.6*2 = 1.2
@@ -837,11 +824,11 @@ mod tests {
         let elev = ElevationData::from_tiles(vec![tile]);
 
         let coords = [
-            [50.5, 4.5],   // inside tile: center = 500
-            [50.0, 4.0],   // SW corner = 700
-            [60.0, 4.0],   // outside tile (no tile at lat 60)
-            [50.5, 10.0],  // outside tile (no tile at lon 10)
-            [51.0, 5.0],   // NE corner = 300
+            [50.5, 4.5],  // inside tile: center = 500
+            [50.0, 4.0],  // SW corner = 700
+            [60.0, 4.0],  // outside tile (no tile at lat 60)
+            [50.5, 10.0], // outside tile (no tile at lon 10)
+            [51.0, 5.0],  // NE corner = 300
         ];
 
         let results = elev.elevations_batch(&coords);

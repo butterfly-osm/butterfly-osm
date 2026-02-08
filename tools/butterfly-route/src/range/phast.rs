@@ -100,7 +100,7 @@ impl PhastEngine {
     pub fn load(
         topo_path: &std::path::Path,
         weights_path: &std::path::Path,
-        _order_path: &std::path::Path,  // Unused with rank-aligned CCH
+        _order_path: &std::path::Path, // Unused with rank-aligned CCH
     ) -> anyhow::Result<Self> {
         use crate::formats::{CchTopoFile, CchWeightsFile};
 
@@ -124,7 +124,11 @@ impl PhastEngine {
     ///
     /// Returns (reachable_nodes, reachable_edges, total_nodes, total_edges)
     /// where reachable_edges are down-edges originating from nodes with dist <= threshold
-    pub fn compute_reachability(&self, dist: &[u32], threshold: u32) -> (usize, usize, usize, usize) {
+    pub fn compute_reachability(
+        &self,
+        dist: &[u32],
+        threshold: u32,
+    ) -> (usize, usize, usize, usize) {
         let total_nodes = self.n_nodes;
         let total_edges = self.topo.down_targets.len();
 
@@ -349,9 +353,7 @@ impl PhastEngine {
         // ============================================================
         // Adaptive decision: count active blocks and choose strategy
         // ============================================================
-        let active_block_count: usize = active_blocks.iter()
-            .map(|w| w.count_ones() as usize)
-            .sum();
+        let active_block_count: usize = active_blocks.iter().map(|w| w.count_ones() as usize).sum();
         let active_ratio = active_block_count as f64 / n_blocks as f64;
 
         // ============================================================
@@ -1328,7 +1330,8 @@ mod tests {
         //
         //     This matches forward! Because in this symmetric graph, d(0->x) == d(x->0).
 
-        let rev_result = engine.query_block_gated_reverse(0, threshold, &up_adj_flat, &down_rev_flat);
+        let rev_result =
+            engine.query_block_gated_reverse(0, threshold, &up_adj_flat, &down_rev_flat);
         assert_eq!(rev_result.dist[0], 0, "d_rev(0->0) should be 0");
         assert_eq!(rev_result.dist[1], 13, "d_rev(1->0) should be 13");
         assert_eq!(rev_result.dist[2], 10, "d_rev(2->0) should be 10");
@@ -1338,8 +1341,7 @@ mod tests {
         // For this symmetric graph, forward and reverse should match
         for node in 0..5 {
             assert_eq!(
-                fwd_result.dist[node],
-                rev_result.dist[node],
+                fwd_result.dist[node], rev_result.dist[node],
                 "Forward from 0 to {} should equal reverse to 0 from {}",
                 node, node
             );
@@ -1365,13 +1367,12 @@ mod tests {
         for s in 0..5u32 {
             let fwd = engine.query(s);
             for t in 0..5u32 {
-                let rev = engine.query_block_gated_reverse(t, threshold, &up_adj_flat, &down_rev_flat);
+                let rev =
+                    engine.query_block_gated_reverse(t, threshold, &up_adj_flat, &down_rev_flat);
                 assert_eq!(
-                    fwd.dist[t as usize],
-                    rev.dist[s as usize],
+                    fwd.dist[t as usize], rev.dist[s as usize],
                     "d_fwd({}->{}) = {} should equal d_rev({}->{})[{}] = {}",
-                    s, t, fwd.dist[t as usize],
-                    t, s, s, rev.dist[s as usize]
+                    s, t, fwd.dist[t as usize], t, s, s, rev.dist[s as usize]
                 );
             }
         }
@@ -1389,7 +1390,10 @@ mod tests {
         // d_rev = [0, 13, 10, 17, 15]
         // Only nodes 0 (d=0) and 2 (d=10) should be within threshold 12
         let result = engine.query_bounded_reverse(0, 12, &up_adj_flat, &down_rev_flat);
-        assert_eq!(result.n_reachable, 2, "Only nodes 0 and 2 should be reachable within threshold 12");
+        assert_eq!(
+            result.n_reachable, 2,
+            "Only nodes 0 and 2 should be reachable within threshold 12"
+        );
 
         // Node 0 should have dist 0
         assert_eq!(result.dist[0], 0);
@@ -1472,7 +1476,7 @@ mod tests {
         let fwd1 = engine.query(1);
         assert_eq!(fwd1.dist[0], 25); // 1->2->0: UP(5) + DOWN(20) = 25
         assert_eq!(fwd1.dist[1], 0);
-        assert_eq!(fwd1.dist[2], 5);  // 1->2: UP(5)
+        assert_eq!(fwd1.dist[2], 5); // 1->2: UP(5)
 
         // Reverse PHAST to node 0 (all-to-one):
         //   d_rev(s) = shortest path from s to 0
@@ -1509,7 +1513,10 @@ mod tests {
         assert_eq!(rev0.dist[2], 20, "d_rev(2->0) should be 20");
 
         // Verify asymmetry: d(0->1) = 13 but d(1->0) = 25
-        assert_ne!(fwd0.dist[1], rev0.dist[1], "Graph should be asymmetric: d(0->1) != d(1->0)");
+        assert_ne!(
+            fwd0.dist[1], rev0.dist[1],
+            "Graph should be asymmetric: d(0->1) != d(1->0)"
+        );
 
         // Cross-validate: for all (s,t) pairs, d_fwd(s)[t] == d_rev(t)[s]
         for t in 0..3u32 {
@@ -1517,8 +1524,7 @@ mod tests {
             for s in 0..3u32 {
                 let fwd = engine.query(s);
                 assert_eq!(
-                    fwd.dist[t as usize],
-                    rev.dist[s as usize],
+                    fwd.dist[t as usize], rev.dist[s as usize],
                     "d_fwd({}->{}) = {} should equal d_rev({})[{}] = {}",
                     s, t, fwd.dist[t as usize], t, s, rev.dist[s as usize]
                 );
@@ -1536,13 +1542,14 @@ mod tests {
 
         for target in 0..5u32 {
             let threshold = u32::MAX - 1;
-            let block_result = engine.query_block_gated_reverse(target, threshold, &up_adj_flat, &down_rev_flat);
-            let adaptive_result = engine.query_bounded_reverse(target, threshold, &up_adj_flat, &down_rev_flat);
+            let block_result =
+                engine.query_block_gated_reverse(target, threshold, &up_adj_flat, &down_rev_flat);
+            let adaptive_result =
+                engine.query_bounded_reverse(target, threshold, &up_adj_flat, &down_rev_flat);
 
             for node in 0..5 {
                 assert_eq!(
-                    block_result.dist[node],
-                    adaptive_result.dist[node],
+                    block_result.dist[node], adaptive_result.dist[node],
                     "Block-gated and adaptive reverse PHAST should agree for target={}, node={}",
                     target, node
                 );

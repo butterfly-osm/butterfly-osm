@@ -53,13 +53,19 @@ pub fn validate_step4(
     let ebg_nodes_data = EbgNodesFile::read(ebg_nodes_path)?;
     let ebg_csr = EbgCsrFile::read(ebg_csr_path)?;
     let turn_table_data = TurnTableFile::read(ebg_turn_table_path)?;
-    println!("  ✓ Loaded EBG: {} nodes, {} arcs", ebg_nodes_data.n_nodes, ebg_csr.n_arcs);
+    println!(
+        "  ✓ Loaded EBG: {} nodes, {} arcs",
+        ebg_nodes_data.n_nodes, ebg_csr.n_arcs
+    );
 
     println!("Loading NBG files...");
     let nbg_csr = NbgCsrFile::read(nbg_csr_path)?;
     let nbg_geo = NbgGeoFile::read(nbg_geo_path)?;
     let nbg_node_map = NbgNodeMapFile::read_map(nbg_node_map_path)?;
-    println!("  ✓ Loaded NBG: {} nodes, {} edges", nbg_csr.n_nodes, nbg_geo.n_edges_und);
+    println!(
+        "  ✓ Loaded NBG: {} nodes, {} edges",
+        nbg_csr.n_nodes, nbg_geo.n_edges_und
+    );
 
     println!();
 
@@ -67,58 +73,83 @@ pub fn validate_step4(
     println!("A. Structural integrity checks...");
     let t0 = std::time::Instant::now();
     verify_lock_condition_a_structural(&ebg_nodes_data, &ebg_csr, &nbg_geo, &turn_table_data)?;
-    println!("  ✓ Passed all structural checks ({:.3}s)", t0.elapsed().as_secs_f64());
+    println!(
+        "  ✓ Passed all structural checks ({:.3}s)",
+        t0.elapsed().as_secs_f64()
+    );
     println!();
 
     // Lock Condition B: Topology semantics
     println!("B. Topology semantics checks...");
     let t0 = std::time::Instant::now();
-    let (stray_arc_sampled, ban_sampled, only_sampled, mode_sampled) = verify_lock_condition_b_topology(
-        &ebg_nodes_data,
-        &ebg_csr,
-        &turn_table_data,
-        &nbg_csr,
-        &nbg_geo,
-        &nbg_node_map,
-        way_attrs_car_path,
-        way_attrs_bike_path,
-        way_attrs_foot_path,
-        turn_rules_car_path,
-        turn_rules_bike_path,
-        turn_rules_foot_path,
-    )?;
-    println!("  ✓ Passed topology checks ({} stray, {} bans, {} only, {} modes) ({:.3}s)", stray_arc_sampled, ban_sampled, only_sampled, mode_sampled, t0.elapsed().as_secs_f64());
+    let (stray_arc_sampled, ban_sampled, only_sampled, mode_sampled) =
+        verify_lock_condition_b_topology(
+            &ebg_nodes_data,
+            &ebg_csr,
+            &turn_table_data,
+            &nbg_csr,
+            &nbg_geo,
+            &nbg_node_map,
+            way_attrs_car_path,
+            way_attrs_bike_path,
+            way_attrs_foot_path,
+            turn_rules_car_path,
+            turn_rules_bike_path,
+            turn_rules_foot_path,
+        )?;
+    println!(
+        "  ✓ Passed topology checks ({} stray, {} bans, {} only, {} modes) ({:.3}s)",
+        stray_arc_sampled,
+        ban_sampled,
+        only_sampled,
+        mode_sampled,
+        t0.elapsed().as_secs_f64()
+    );
     println!();
 
     // Lock Condition C: Roundabouts test set
     println!("C. Roundabouts test set...");
     let t0 = std::time::Instant::now();
     verify_lock_condition_c_roundabouts()?;
-    println!("  ✓ Passed roundabouts checks (skipped - no test set) ({:.3}s)", t0.elapsed().as_secs_f64());
+    println!(
+        "  ✓ Passed roundabouts checks (skipped - no test set) ({:.3}s)",
+        t0.elapsed().as_secs_f64()
+    );
     println!();
 
     // Lock Condition D: Geometry & indices
     println!("D. Geometry & indices checks...");
     let t0 = std::time::Instant::now();
-    let (geom_sampled, class_sampled) = verify_lock_condition_d_geometry(
-        &ebg_nodes_data,
-        &nbg_geo,
-    )?;
-    println!("  ✓ Passed geometry checks ({} geom, {} class) ({:.3}s)", geom_sampled, class_sampled, t0.elapsed().as_secs_f64());
+    let (geom_sampled, class_sampled) =
+        verify_lock_condition_d_geometry(&ebg_nodes_data, &nbg_geo)?;
+    println!(
+        "  ✓ Passed geometry checks ({} geom, {} class) ({:.3}s)",
+        geom_sampled,
+        class_sampled,
+        t0.elapsed().as_secs_f64()
+    );
     println!();
 
     // Lock Condition E: Reachability sanity
     println!("E. Reachability sanity check...");
     let t0 = std::time::Instant::now();
     let reach_pairs = verify_lock_condition_e_reachability(&ebg_csr, &turn_table_data)?;
-    println!("  ✓ Passed reachability checks ({} pairs) ({:.3}s)", reach_pairs, t0.elapsed().as_secs_f64());
+    println!(
+        "  ✓ Passed reachability checks ({} pairs) ({:.3}s)",
+        reach_pairs,
+        t0.elapsed().as_secs_f64()
+    );
     println!();
 
     // Lock Condition F: Performance bounds
     println!("F. Performance bounds checks...");
     let t0 = std::time::Instant::now();
     let arcs_per_node = verify_lock_condition_f_performance(&ebg_csr)?;
-    println!("  ✓ Passed performance checks (avg {:.2} arcs/node) ({:.3}s)", arcs_per_node, t0.elapsed().as_secs_f64());
+    println!(
+        "  ✓ Passed performance checks (avg {:.2} arcs/node) ({:.3}s)",
+        arcs_per_node,
+        t0.elapsed().as_secs_f64()
+    );
     println!();
 
     // Compute SHA-256 hashes
@@ -243,7 +274,10 @@ fn verify_lock_condition_b_topology(
         let arc_idx = (i * 7919) % total_arcs;
 
         // Find which node this arc belongs to via binary search
-        let src_ebg_id = ebg_csr.offsets.partition_point(|&offset| offset as usize <= arc_idx) - 1;
+        let src_ebg_id = ebg_csr
+            .offsets
+            .partition_point(|&offset| offset as usize <= arc_idx)
+            - 1;
 
         let ebg_node_src = &ebg_nodes.nodes[src_ebg_id];
         let dst_ebg_id = ebg_csr.heads[arc_idx] as usize;
@@ -272,16 +306,19 @@ fn verify_lock_condition_b_topology(
         nbg_geo,
         nbg_node_map,
     )?;
-    println!("    Build canonical rules: {:.3}s", t0.elapsed().as_secs_f64());
+    println!(
+        "    Build canonical rules: {:.3}s",
+        t0.elapsed().as_secs_f64()
+    );
 
     // Build way_id → mode_mask lookup
     let t0 = std::time::Instant::now();
-    let way_mode_lookup = build_way_mode_lookup(
-        way_attrs_car_path,
-        way_attrs_bike_path,
-        way_attrs_foot_path,
-    )?;
-    println!("    Build way mode lookup: {:.3}s", t0.elapsed().as_secs_f64());
+    let way_mode_lookup =
+        build_way_mode_lookup(way_attrs_car_path, way_attrs_bike_path, way_attrs_foot_path)?;
+    println!(
+        "    Build way mode lookup: {:.3}s",
+        t0.elapsed().as_secs_f64()
+    );
 
     // Build EBG node index: (via_osm, from_way) → [ebg_ids]
     let t0 = std::time::Instant::now();
@@ -302,22 +339,17 @@ fn verify_lock_condition_b_topology(
 
     // Lock B.5: Sample ONLY rules
     let t0 = std::time::Instant::now();
-    let only_sampled = sample_only_rules(
-        &canonical_rules,
-        &ebg_index,
-    )?;
+    let only_sampled = sample_only_rules(&canonical_rules, &ebg_index)?;
     println!("    B.5 ONLY rules: {:.3}s", t0.elapsed().as_secs_f64());
 
     // Lock B.6: Sample mode propagation
     let t0 = std::time::Instant::now();
-    let mode_sampled = sample_mode_propagation(
-        ebg_nodes,
-        ebg_csr,
-        turn_table,
-        nbg_geo,
-        &way_mode_lookup,
-    )?;
-    println!("    B.6 mode propagation: {:.3}s", t0.elapsed().as_secs_f64());
+    let mode_sampled =
+        sample_mode_propagation(ebg_nodes, ebg_csr, turn_table, nbg_geo, &way_mode_lookup)?;
+    println!(
+        "    B.6 mode propagation: {:.3}s",
+        t0.elapsed().as_secs_f64()
+    );
 
     Ok((stray_arc_sampled, ban_sampled, only_sampled, mode_sampled))
 }
@@ -352,7 +384,8 @@ fn verify_lock_condition_d_geometry(
         let nbg_edge = &nbg_geo.edges[geom_idx];
 
         // Verify this NBG edge connects tail and head
-        let connects = (nbg_edge.u_node == ebg_node.tail_nbg && nbg_edge.v_node == ebg_node.head_nbg)
+        let connects = (nbg_edge.u_node == ebg_node.tail_nbg
+            && nbg_edge.v_node == ebg_node.head_nbg)
             || (nbg_edge.v_node == ebg_node.tail_nbg && nbg_edge.u_node == ebg_node.head_nbg);
 
         anyhow::ensure!(
@@ -374,10 +407,7 @@ fn verify_lock_condition_d_geometry(
 }
 
 /// Lock Condition E: Reachability sanity
-fn verify_lock_condition_e_reachability(
-    ebg_csr: &EbgCsr,
-    turn_table: &TurnTable,
-) -> Result<usize> {
+fn verify_lock_condition_e_reachability(ebg_csr: &EbgCsr, turn_table: &TurnTable) -> Result<usize> {
     anyhow::ensure!(ebg_csr.n_arcs > 0, "EBG has no arcs");
 
     let n_nodes = ebg_csr.n_nodes as usize;
@@ -480,7 +510,10 @@ fn find_largest_component(
     }
 
     // Return largest component
-    Ok(components.into_iter().max_by_key(|c| c.len()).unwrap_or_default())
+    Ok(components
+        .into_iter()
+        .max_by_key(|c| c.len())
+        .unwrap_or_default())
 }
 
 /// BFS to check if dst is reachable from src for a given mode
@@ -581,9 +614,7 @@ fn build_ebg_node_index(
         let via_osm = nbg_node_to_osm(ebg_node.head_nbg, nbg_node_map);
         let from_way = nbg_geo.edges[ebg_node.geom_idx as usize].first_osm_way_id;
 
-        index.entry((via_osm, from_way))
-            .or_default()
-            .push(ebg_id);
+        index.entry((via_osm, from_way)).or_default().push(ebg_id);
     }
 
     index
@@ -591,7 +622,10 @@ fn build_ebg_node_index(
 
 /// Lock B.4: Sample banned turns and verify no arcs exist
 fn sample_banned_turns(
-    canonical_rules: &std::collections::HashMap<crate::ebg::TurnRuleKey, crate::ebg::CanonicalTurnRule>,
+    canonical_rules: &std::collections::HashMap<
+        crate::ebg::TurnRuleKey,
+        crate::ebg::CanonicalTurnRule,
+    >,
     ebg_nodes: &EbgNodes,
     ebg_csr: &EbgCsr,
     turn_table: &TurnTable,
@@ -601,7 +635,8 @@ fn sample_banned_turns(
     use crate::formats::TurnKind;
 
     // Collect all Ban rules
-    let bans: Vec<_> = canonical_rules.iter()
+    let bans: Vec<_> = canonical_rules
+        .iter()
         .filter(|(_, rule)| rule.kind == TurnKind::Ban)
         .collect();
 
@@ -659,7 +694,10 @@ fn sample_banned_turns(
 
 /// Lock B.5: Sample ONLY rules and verify exclusivity
 fn sample_only_rules(
-    canonical_rules: &std::collections::HashMap<crate::ebg::TurnRuleKey, crate::ebg::CanonicalTurnRule>,
+    canonical_rules: &std::collections::HashMap<
+        crate::ebg::TurnRuleKey,
+        crate::ebg::CanonicalTurnRule,
+    >,
     _ebg_index: &HashMap<(i64, i64), Vec<usize>>,
 ) -> Result<usize> {
     use crate::formats::TurnKind;
@@ -669,7 +707,8 @@ fn sample_only_rules(
     let mut only_groups: HashMap<(i64, i64), Vec<_>> = HashMap::new();
     for (key, rule) in canonical_rules.iter() {
         if rule.kind == TurnKind::Only {
-            only_groups.entry((key.via_node_osm, key.from_way_id))
+            only_groups
+                .entry((key.via_node_osm, key.from_way_id))
                 .or_default()
                 .push((key, rule));
         }
@@ -693,7 +732,8 @@ fn sample_only_rules(
             for mode_shift in 0..3 {
                 let mode_bit = 1u8 << mode_shift;
                 if (rule.mode_mask & mode_bit) != 0 {
-                    allowed_by_mode.entry(mode_bit)
+                    allowed_by_mode
+                        .entry(mode_bit)
                         .or_default()
                         .insert(_key.to_way_id);
                 }
@@ -727,7 +767,8 @@ fn sample_mode_propagation(
         let mut src_node_id = 0;
         for node_id in 0..ebg_csr.n_nodes as usize {
             if ebg_csr.offsets[node_id] as usize <= arc_idx
-                && arc_idx < ebg_csr.offsets[node_id + 1] as usize {
+                && arc_idx < ebg_csr.offsets[node_id + 1] as usize
+            {
                 src_node_id = node_id;
                 break;
             }
@@ -773,14 +814,16 @@ fn sample_mode_propagation(
 
 /// Helper: Get OSM node ID from NBG compact node ID
 fn nbg_node_to_osm(nbg_node_id: u32, node_map: &NbgNodeMap) -> i64 {
-    node_map.mappings.get(nbg_node_id as usize)
+    node_map
+        .mappings
+        .get(nbg_node_id as usize)
         .map(|m| m.osm_node_id)
         .unwrap_or(0)
 }
 
 /// Compute SHA-256 of a file
 fn compute_file_sha256(path: &Path) -> Result<[u8; 32]> {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let bytes = std::fs::read(path)?;
     let hash = Sha256::digest(&bytes);
     let mut result = [0u8; 32];

@@ -26,7 +26,7 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-use crate::formats::{CchTopo, CchWeights, CchTopoFile, CchWeightsFile};
+use crate::formats::{CchTopo, CchTopoFile, CchWeights, CchWeightsFile};
 
 /// Lane width for batched PHAST (tunable based on cache line size)
 /// K=8 gives good balance between parallelism and register pressure
@@ -103,7 +103,7 @@ impl BatchedPhastEngine {
     pub fn load(
         topo_path: &std::path::Path,
         weights_path: &std::path::Path,
-        _order_path: &std::path::Path,  // Unused with rank-aligned CCH
+        _order_path: &std::path::Path, // Unused with rank-aligned CCH
     ) -> anyhow::Result<Self> {
         let topo = CchTopoFile::read(topo_path)?;
         let weights = CchWeightsFile::read(weights_path)?;
@@ -139,9 +139,7 @@ impl BatchedPhastEngine {
         };
 
         // Initialize K distance arrays
-        let mut dist: Vec<Vec<u32>> = (0..k)
-            .map(|_| vec![u32::MAX; self.n_nodes])
-            .collect();
+        let mut dist: Vec<Vec<u32>> = (0..k).map(|_| vec![u32::MAX; self.n_nodes]).collect();
 
         // Set origin distances
         for (lane, &src) in sources.iter().enumerate() {
@@ -281,9 +279,7 @@ impl BatchedPhastEngine {
         };
 
         // Initialize K distance arrays
-        let mut dist: Vec<Vec<u32>> = (0..k)
-            .map(|_| vec![u32::MAX; self.n_nodes])
-            .collect();
+        let mut dist: Vec<Vec<u32>> = (0..k).map(|_| vec![u32::MAX; self.n_nodes]).collect();
 
         // Set origin distances
         for (lane, &src) in sources.iter().enumerate() {
@@ -300,9 +296,7 @@ impl BatchedPhastEngine {
         const BLOCK_SIZE: usize = 512;
         let n_blocks = self.n_nodes.div_ceil(BLOCK_SIZE);
         let n_words = n_blocks.div_ceil(64);
-        let mut active_blocks: Vec<Vec<u64>> = (0..k)
-            .map(|_| vec![0u64; n_words])
-            .collect();
+        let mut active_blocks: Vec<Vec<u64>> = (0..k).map(|_| vec![0u64; n_words]).collect();
 
         // Mark origin blocks as active
         for (lane, &src) in sources.iter().enumerate() {
@@ -365,7 +359,8 @@ impl BatchedPhastEngine {
         // Count active blocks per lane and mark inactive lanes
         let mut lane_block_counts = [0usize; K_LANES];
         for lane in 0..k {
-            lane_block_counts[lane] = active_blocks[lane].iter()
+            lane_block_counts[lane] = active_blocks[lane]
+                .iter()
                 .map(|w| w.count_ones() as usize)
                 .sum();
             if lane_block_counts[lane] == 0 {
@@ -653,7 +648,9 @@ impl BatchedPhastEngine {
                 callback(batch_idx * K_LANES, &result.dist, chunk);
             } else {
                 // Extract only requested targets
-                let extracted: Vec<Vec<u32>> = result.dist.iter()
+                let extracted: Vec<Vec<u32>> = result
+                    .dist
+                    .iter()
                     .map(|d| targets.iter().map(|&t| d[t as usize]).collect())
                     .collect();
                 callback(batch_idx * K_LANES, &extracted, chunk);
@@ -789,7 +786,8 @@ impl BatchedPhastEngine {
                 }
                 for (tgt_idx, &tgt) in targets.iter().enumerate() {
                     // SoA access: dist[tgt * K_LANES + lane]
-                    matrix[src_idx * n_tgt + tgt_idx] = result.dist_soa[tgt as usize * K_LANES + lane];
+                    matrix[src_idx * n_tgt + tgt_idx] =
+                        result.dist_soa[tgt as usize * K_LANES + lane];
                 }
             }
         }
@@ -986,9 +984,7 @@ impl BatchedPhastEngine {
         // Per-lane active block bitsets
         let n_blocks = self.n_nodes.div_ceil(KLANE_BLOCK_SIZE);
         let n_words = n_blocks.div_ceil(64);
-        let mut active_blocks: Vec<Vec<u64>> = (0..k)
-            .map(|_| vec![0u64; n_words])
-            .collect();
+        let mut active_blocks: Vec<Vec<u64>> = (0..k).map(|_| vec![0u64; n_words]).collect();
 
         // Mark origin blocks as active
         for (lane, &src) in sources.iter().enumerate() {
@@ -1056,7 +1052,8 @@ impl BatchedPhastEngine {
         }
 
         // Count active blocks for adaptive decision
-        let active_block_count: usize = combined_active.iter()
+        let active_block_count: usize = combined_active
+            .iter()
             .map(|w| w.count_ones() as usize)
             .sum();
         let active_ratio = active_block_count as f64 / n_blocks as f64;

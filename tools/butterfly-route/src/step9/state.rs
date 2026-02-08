@@ -47,9 +47,9 @@ pub struct ModeData {
 /// For each node y, stores all nodes x that have DOWN edges x→y
 /// along with the original edge index (to look up weights)
 pub struct DownReverseAdj {
-    pub offsets: Vec<u64>,   // n_nodes + 1
-    pub sources: Vec<u32>,   // source node x for reverse edge
-    pub edge_idx: Vec<u32>,  // index into down_targets/down_weights for the original x→y edge
+    pub offsets: Vec<u64>,  // n_nodes + 1
+    pub sources: Vec<u32>,  // source node x for reverse edge
+    pub edge_idx: Vec<u32>, // index into down_targets/down_weights for the original x→y edge
 }
 
 /// Server state containing all loaded data
@@ -104,11 +104,26 @@ impl ServerState {
 
         tracing::info!("Loading per-mode CCH data...");
         let car = load_mode_data(Mode::Car, &step5_dir, &step6_dir, &step7_dir, &step8_dir)?;
-        tracing::info!(mode = "car", filtered_nodes = car.filtered_ebg.n_filtered_nodes, up_edges = car.cch_topo.up_targets.len(), "loaded mode data");
+        tracing::info!(
+            mode = "car",
+            filtered_nodes = car.filtered_ebg.n_filtered_nodes,
+            up_edges = car.cch_topo.up_targets.len(),
+            "loaded mode data"
+        );
         let bike = load_mode_data(Mode::Bike, &step5_dir, &step6_dir, &step7_dir, &step8_dir)?;
-        tracing::info!(mode = "bike", filtered_nodes = bike.filtered_ebg.n_filtered_nodes, up_edges = bike.cch_topo.up_targets.len(), "loaded mode data");
+        tracing::info!(
+            mode = "bike",
+            filtered_nodes = bike.filtered_ebg.n_filtered_nodes,
+            up_edges = bike.cch_topo.up_targets.len(),
+            "loaded mode data"
+        );
         let foot = load_mode_data(Mode::Foot, &step5_dir, &step6_dir, &step7_dir, &step8_dir)?;
-        tracing::info!(mode = "foot", filtered_nodes = foot.filtered_ebg.n_filtered_nodes, up_edges = foot.cch_topo.up_targets.len(), "loaded mode data");
+        tracing::info!(
+            mode = "foot",
+            filtered_nodes = foot.filtered_ebg.n_filtered_nodes,
+            up_edges = foot.cch_topo.up_targets.len(),
+            "loaded mode data"
+        );
 
         tracing::info!("Building spatial index...");
         let spatial_index = SpatialIndex::build(&ebg_nodes, &nbg_geo);
@@ -180,7 +195,11 @@ fn find_step_dir(data_dir: &Path, step: &str) -> Result<std::path::PathBuf> {
         }
     }
 
-    anyhow::bail!("Could not find {} directory in {}", step, data_dir.display());
+    anyhow::bail!(
+        "Could not find {} directory in {}",
+        step,
+        data_dir.display()
+    );
 }
 
 /// Load per-mode data (CCH topo, ordering, weights, filtered EBG)
@@ -331,7 +350,8 @@ fn load_way_names(step1_dir: &Path) -> Result<HashMap<i64, String>> {
     let (key_dict, val_dict, _, _) = WaysFile::read_dictionaries(&ways_path)?;
 
     // Find key ID for "name"
-    let name_key_id = key_dict.iter()
+    let name_key_id = key_dict
+        .iter()
         .find(|(_, v)| v.as_str() == "name")
         .map(|(k, _)| *k);
 

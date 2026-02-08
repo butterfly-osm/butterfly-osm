@@ -23,13 +23,13 @@ use std::path::Path;
 use super::crc;
 
 const MAGIC: u32 = 0x43434854; // "CCHT"
-const VERSION: u16 = 2;        // Version 2: rank-aligned storage
+const VERSION: u16 = 2; // Version 2: rank-aligned storage
 
 /// A shortcut in the CCH
 #[derive(Debug, Clone, Copy)]
 pub struct Shortcut {
-    pub target: u32,      // Target node (rank position)
-    pub middle: u32,      // Middle node for unpacking (rank position)
+    pub target: u32, // Target node (rank position)
+    pub middle: u32, // Middle node for unpacking (rank position)
 }
 
 /// CCH topology - stores the hierarchical graph structure
@@ -181,7 +181,11 @@ impl CchTopoFile {
 
         let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
         if magic != MAGIC {
-            anyhow::bail!("Invalid magic: expected 0x{:08X}, got 0x{:08X}", MAGIC, magic);
+            anyhow::bail!(
+                "Invalid magic: expected 0x{:08X}, got 0x{:08X}",
+                MAGIC,
+                magic
+            );
         }
 
         let version = u16::from_le_bytes([header[4], header[5]]);
@@ -194,20 +198,20 @@ impl CchTopoFile {
 
         let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
         let n_shortcuts = u64::from_le_bytes([
-            header[12], header[13], header[14], header[15],
-            header[16], header[17], header[18], header[19],
+            header[12], header[13], header[14], header[15], header[16], header[17], header[18],
+            header[19],
         ]);
         let n_original_arcs = u64::from_le_bytes([
-            header[20], header[21], header[22], header[23],
-            header[24], header[25], header[26], header[27],
+            header[20], header[21], header[22], header[23], header[24], header[25], header[26],
+            header[27],
         ]);
         let n_up_edges = u64::from_le_bytes([
-            header[28], header[29], header[30], header[31],
-            header[32], header[33], header[34], header[35],
+            header[28], header[29], header[30], header[31], header[32], header[33], header[34],
+            header[35],
         ]);
         let n_down_edges = u64::from_le_bytes([
-            header[36], header[37], header[38], header[39],
-            header[40], header[41], header[42], header[43],
+            header[36], header[37], header[38], header[39], header[40], header[41], header[42],
+            header[43],
         ]);
         let mut inputs_sha = [0u8; 32];
         inputs_sha.copy_from_slice(&header[44..76]);

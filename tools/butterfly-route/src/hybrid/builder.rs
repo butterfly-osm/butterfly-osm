@@ -2,9 +2,9 @@
 //!
 //! Constructs the hybrid state graph from EBG and turn rules.
 
-use std::collections::{HashMap, HashSet};
+use super::state_graph::{HybridGraphStats, HybridStateGraph};
 use crate::formats::{EbgCsr, EbgNodes, TurnRule};
-use super::state_graph::{HybridStateGraph, HybridGraphStats};
+use std::collections::{HashMap, HashSet};
 
 /// Builder for the hybrid state graph
 pub struct HybridGraphBuilder {
@@ -34,8 +34,10 @@ impl HybridGraphBuilder {
             }
         }
 
-        println!("  Classified {} nodes as complex (have turn restrictions)",
-            self.complex_nodes.len());
+        println!(
+            "  Classified {} nodes as complex (have turn restrictions)",
+            self.complex_nodes.len()
+        );
     }
 
     /// Build the hybrid state graph from EBG
@@ -59,7 +61,8 @@ impl HybridGraphBuilder {
         let n_ebg_arcs = ebg_csr.heads.len();
 
         // Extract (tail, head) from EBG nodes
-        let ebg_tail_head: Vec<(u32, u32)> = ebg_nodes.nodes
+        let ebg_tail_head: Vec<(u32, u32)> = ebg_nodes
+            .nodes
             .iter()
             .map(|n| (n.tail_nbg, n.head_nbg))
             .collect();
@@ -76,10 +79,16 @@ impl HybridGraphBuilder {
         let n_complex = self.complex_nodes.len();
         let n_simple = n_nbg_nodes - n_complex;
 
-        println!("  Simple nodes: {} ({:.2}%)", n_simple,
-            100.0 * n_simple as f64 / n_nbg_nodes as f64);
-        println!("  Complex nodes: {} ({:.2}%)", n_complex,
-            100.0 * n_complex as f64 / n_nbg_nodes as f64);
+        println!(
+            "  Simple nodes: {} ({:.2}%)",
+            n_simple,
+            100.0 * n_simple as f64 / n_nbg_nodes as f64
+        );
+        println!(
+            "  Complex nodes: {} ({:.2}%)",
+            n_complex,
+            100.0 * n_complex as f64 / n_nbg_nodes as f64
+        );
 
         // === Phase 1: Enumerate hybrid states ===
 
@@ -93,11 +102,16 @@ impl HybridGraphBuilder {
             }
         }
         let n_reachable_nbg = nbg_is_reachable.iter().filter(|&&x| x).count();
-        let n_reachable_simple = nbg_is_reachable.iter().enumerate()
+        let n_reachable_simple = nbg_is_reachable
+            .iter()
+            .enumerate()
             .filter(|(i, &x)| x && !is_complex[*i])
             .count();
-        println!("  Reachable NBG nodes: {} ({:.2}% of total)",
-            n_reachable_nbg, 100.0 * n_reachable_nbg as f64 / n_nbg_nodes as f64);
+        println!(
+            "  Reachable NBG nodes: {} ({:.2}% of total)",
+            n_reachable_nbg,
+            100.0 * n_reachable_nbg as f64 / n_nbg_nodes as f64
+        );
         println!("  Reachable simple nodes: {}", n_reachable_simple);
 
         // Node-states: one per REACHABLE simple NBG node
@@ -132,8 +146,14 @@ impl HybridGraphBuilder {
 
         println!("  Node-states: {}", n_node_states);
         println!("  Edge-states: {}", n_edge_states);
-        println!("  Total hybrid states: {} (was {} EBG nodes)", n_states, n_ebg_nodes);
-        println!("  State reduction: {:.2}x", n_ebg_nodes as f64 / n_states as f64);
+        println!(
+            "  Total hybrid states: {} (was {} EBG nodes)",
+            n_states, n_ebg_nodes
+        );
+        println!(
+            "  State reduction: {:.2}x",
+            n_ebg_nodes as f64 / n_states as f64
+        );
 
         // === Phase 2: Build hybrid adjacency ===
 
@@ -226,8 +246,14 @@ impl HybridGraphBuilder {
         // Count total arcs
         let n_hybrid_arcs: usize = adjacency.iter().map(|a| a.len()).sum();
 
-        println!("  Hybrid arcs: {} (was {} EBG arcs)", n_hybrid_arcs, n_ebg_arcs);
-        println!("  Arc reduction: {:.2}x", n_ebg_arcs as f64 / n_hybrid_arcs as f64);
+        println!(
+            "  Hybrid arcs: {} (was {} EBG arcs)",
+            n_hybrid_arcs, n_ebg_arcs
+        );
+        println!(
+            "  Arc reduction: {:.2}x",
+            n_ebg_arcs as f64 / n_hybrid_arcs as f64
+        );
 
         // === Phase 3: Materialize CSR ===
 

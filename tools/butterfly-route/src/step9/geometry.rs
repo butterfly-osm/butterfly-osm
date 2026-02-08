@@ -4,8 +4,8 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::formats::{EbgNodes, NbgGeo};
-use crate::range::{generate_sparse_contour, SparseContourConfig, ReachableSegment};
 use crate::profile_abi::Mode;
+use crate::range::{generate_sparse_contour, ReachableSegment, SparseContourConfig};
 
 /// A point in WGS84 coordinates
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]
@@ -31,7 +31,10 @@ impl GeometryFormat {
             "polyline6" => Ok(GeometryFormat::Polyline6),
             "geojson" => Ok(GeometryFormat::GeoJson),
             "points" => Ok(GeometryFormat::Points),
-            other => Err(format!("Unknown geometry format '{}'. Use: polyline6, geojson, points", other)),
+            other => Err(format!(
+                "Unknown geometry format '{}'. Use: polyline6, geojson, points",
+                other
+            )),
         }
     }
 }
@@ -57,7 +60,12 @@ pub struct RouteGeometry {
 
 impl RouteGeometry {
     /// Create geometry in the requested format from raw coordinate list
-    pub fn from_points(points: Vec<Point>, distance_m: f64, duration_ds: u32, format: GeometryFormat) -> Self {
+    pub fn from_points(
+        points: Vec<Point>,
+        distance_m: f64,
+        duration_ds: u32,
+        format: GeometryFormat,
+    ) -> Self {
         match format {
             GeometryFormat::Polyline6 => RouteGeometry {
                 polyline: Some(encode_polyline6(&points)),
@@ -204,11 +212,18 @@ pub fn build_isochrone_geometry(
 pub fn build_isochrone_geometry_concave(
     settled_nodes: &[(u32, u32)], // (original_ebg_id, distance_ds)
     max_time_ds: u32,
-    node_weights: &[u32],         // Edge costs indexed by original EBG node ID
+    node_weights: &[u32], // Edge costs indexed by original EBG node ID
     ebg_nodes: &EbgNodes,
     nbg_geo: &NbgGeo,
 ) -> Vec<Point> {
-    build_isochrone_geometry_sparse(settled_nodes, max_time_ds, node_weights, ebg_nodes, nbg_geo, Mode::Car)
+    build_isochrone_geometry_sparse(
+        settled_nodes,
+        max_time_ds,
+        node_weights,
+        ebg_nodes,
+        nbg_geo,
+        Mode::Car,
+    )
 }
 
 /// Build isochrone geometry with mode-specific configuration
@@ -219,7 +234,7 @@ pub fn build_isochrone_geometry_concave(
 pub fn build_isochrone_geometry_sparse(
     settled_nodes: &[(u32, u32)], // (original_ebg_id, distance_ds)
     max_time_ds: u32,
-    node_weights: &[u32],         // Edge costs indexed by original EBG node ID
+    node_weights: &[u32], // Edge costs indexed by original EBG node ID
     ebg_nodes: &EbgNodes,
     nbg_geo: &NbgGeo,
     mode: Mode,
@@ -262,7 +277,8 @@ pub fn build_isochrone_geometry_sparse(
 
         if dist_end_ds <= max_time_ds {
             // Fully reachable edge (near frontier)
-            let points: Vec<(i32, i32)> = polyline.lat_fxp
+            let points: Vec<(i32, i32)> = polyline
+                .lat_fxp
                 .iter()
                 .zip(polyline.lon_fxp.iter())
                 .map(|(&lat, &lon)| (lat, lon))
@@ -284,12 +300,11 @@ pub fn build_isochrone_geometry_sparse(
 
     // Generate contour using sparse tile rasterization + boundary tracing
     match generate_sparse_contour(&segments, &config) {
-        Ok(result) => {
-            result.outer_ring
-                .into_iter()
-                .map(|(lon, lat)| Point { lon, lat })
-                .collect()
-        }
+        Ok(result) => result
+            .outer_ring
+            .into_iter()
+            .map(|(lon, lat)| Point { lon, lat })
+            .collect(),
         Err(_) => vec![],
     }
 }
@@ -307,7 +322,8 @@ fn extract_partial_polyline(polyline: &crate::formats::PolyLine, fraction: f32) 
     }
 
     if fraction >= 1.0 {
-        return polyline.lat_fxp
+        return polyline
+            .lat_fxp
             .iter()
             .zip(polyline.lon_fxp.iter())
             .map(|(&lat, &lon)| (lat, lon))
@@ -427,8 +443,7 @@ fn convex_hull(points: &mut [Point]) -> Vec<Point> {
     // Build hull
     let mut hull = Vec::new();
     for &p in points.iter() {
-        while hull.len() >= 2
-            && cross_product(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0
+        while hull.len() >= 2 && cross_product(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0
         {
             hull.pop();
         }
@@ -465,9 +480,15 @@ pub fn decode_polyline6(encoded: &str) -> Vec<(f64, f64)> {
             i += 1;
             value |= (b & 0x1F) << shift;
             shift += 5;
-            if b < 0x20 { break; }
+            if b < 0x20 {
+                break;
+            }
         }
-        lat += if (value & 1) != 0 { !(value >> 1) } else { value >> 1 };
+        lat += if (value & 1) != 0 {
+            !(value >> 1)
+        } else {
+            value >> 1
+        };
 
         // Decode longitude
         shift = 0;
@@ -477,9 +498,15 @@ pub fn decode_polyline6(encoded: &str) -> Vec<(f64, f64)> {
             i += 1;
             value |= (b & 0x1F) << shift;
             shift += 5;
-            if b < 0x20 { break; }
+            if b < 0x20 {
+                break;
+            }
         }
-        lon += if (value & 1) != 0 { !(value >> 1) } else { value >> 1 };
+        lon += if (value & 1) != 0 {
+            !(value >> 1)
+        } else {
+            value >> 1
+        };
 
         result.push((lat as f64 / 1e6, lon as f64 / 1e6));
     }
@@ -500,7 +527,10 @@ mod tests {
 
     #[test]
     fn test_encode_polyline6_single_point() {
-        let points = vec![Point { lon: 4.351700, lat: 50.850300 }];
+        let points = vec![Point {
+            lon: 4.351700,
+            lat: 50.850300,
+        }];
         let encoded = encode_polyline6(&points);
         assert!(!encoded.is_empty());
         let decoded = decode_polyline6(&encoded);
@@ -512,31 +542,66 @@ mod tests {
     #[test]
     fn test_encode_polyline6_round_trip() {
         let points = vec![
-            Point { lon: 4.351700, lat: 50.850300 },
-            Point { lon: 4.401700, lat: 50.860300 },
-            Point { lon: 4.867100, lat: 50.467400 },
+            Point {
+                lon: 4.351700,
+                lat: 50.850300,
+            },
+            Point {
+                lon: 4.401700,
+                lat: 50.860300,
+            },
+            Point {
+                lon: 4.867100,
+                lat: 50.467400,
+            },
         ];
         let encoded = encode_polyline6(&points);
         let decoded = decode_polyline6(&encoded);
         assert_eq!(decoded.len(), 3);
         for (i, pt) in points.iter().enumerate() {
-            assert!((decoded[i].0 - pt.lat).abs() < 1e-6, "lat mismatch at {}: {} vs {}", i, decoded[i].0, pt.lat);
-            assert!((decoded[i].1 - pt.lon).abs() < 1e-6, "lon mismatch at {}: {} vs {}", i, decoded[i].1, pt.lon);
+            assert!(
+                (decoded[i].0 - pt.lat).abs() < 1e-6,
+                "lat mismatch at {}: {} vs {}",
+                i,
+                decoded[i].0,
+                pt.lat
+            );
+            assert!(
+                (decoded[i].1 - pt.lon).abs() < 1e-6,
+                "lon mismatch at {}: {} vs {}",
+                i,
+                decoded[i].1,
+                pt.lon
+            );
         }
     }
 
     #[test]
     fn test_encode_polyline6_negative_coords() {
         let points = vec![
-            Point { lon: -73.985428, lat: 40.748817 },  // NYC
-            Point { lon: -118.243685, lat: 34.052234 }, // LA
+            Point {
+                lon: -73.985428,
+                lat: 40.748817,
+            }, // NYC
+            Point {
+                lon: -118.243685,
+                lat: 34.052234,
+            }, // LA
         ];
         let encoded = encode_polyline6(&points);
         let decoded = decode_polyline6(&encoded);
         assert_eq!(decoded.len(), 2);
         for (i, pt) in points.iter().enumerate() {
-            assert!((decoded[i].0 - pt.lat).abs() < 1e-6, "lat mismatch at {}", i);
-            assert!((decoded[i].1 - pt.lon).abs() < 1e-6, "lon mismatch at {}", i);
+            assert!(
+                (decoded[i].0 - pt.lat).abs() < 1e-6,
+                "lat mismatch at {}",
+                i
+            );
+            assert!(
+                (decoded[i].1 - pt.lon).abs() < 1e-6,
+                "lon mismatch at {}",
+                i
+            );
         }
     }
 
@@ -544,8 +609,14 @@ mod tests {
     fn test_encode_polyline6_close_points() {
         // Points separated by ~1 meter
         let points = vec![
-            Point { lon: 4.351700, lat: 50.850300 },
-            Point { lon: 4.351714, lat: 50.850309 },
+            Point {
+                lon: 4.351700,
+                lat: 50.850300,
+            },
+            Point {
+                lon: 4.351714,
+                lat: 50.850309,
+            },
         ];
         let encoded = encode_polyline6(&points);
         let decoded = decode_polyline6(&encoded);
@@ -558,11 +629,26 @@ mod tests {
 
     #[test]
     fn test_geometry_format_parse() {
-        assert_eq!(GeometryFormat::parse("polyline6").unwrap(), GeometryFormat::Polyline6);
-        assert_eq!(GeometryFormat::parse("POLYLINE6").unwrap(), GeometryFormat::Polyline6);
-        assert_eq!(GeometryFormat::parse("geojson").unwrap(), GeometryFormat::GeoJson);
-        assert_eq!(GeometryFormat::parse("GeoJson").unwrap(), GeometryFormat::GeoJson);
-        assert_eq!(GeometryFormat::parse("points").unwrap(), GeometryFormat::Points);
+        assert_eq!(
+            GeometryFormat::parse("polyline6").unwrap(),
+            GeometryFormat::Polyline6
+        );
+        assert_eq!(
+            GeometryFormat::parse("POLYLINE6").unwrap(),
+            GeometryFormat::Polyline6
+        );
+        assert_eq!(
+            GeometryFormat::parse("geojson").unwrap(),
+            GeometryFormat::GeoJson
+        );
+        assert_eq!(
+            GeometryFormat::parse("GeoJson").unwrap(),
+            GeometryFormat::GeoJson
+        );
+        assert_eq!(
+            GeometryFormat::parse("points").unwrap(),
+            GeometryFormat::Points
+        );
         assert!(GeometryFormat::parse("invalid").is_err());
         assert!(GeometryFormat::parse("").is_err());
     }
@@ -570,8 +656,14 @@ mod tests {
     #[test]
     fn test_route_geometry_polyline6_format() {
         let points = vec![
-            Point { lon: 4.3517, lat: 50.8503 },
-            Point { lon: 4.4017, lat: 50.8603 },
+            Point {
+                lon: 4.3517,
+                lat: 50.8503,
+            },
+            Point {
+                lon: 4.4017,
+                lat: 50.8603,
+            },
         ];
         let geom = RouteGeometry::from_points(points, 1234.5, 100, GeometryFormat::Polyline6);
         assert!(geom.polyline.is_some());
@@ -584,8 +676,14 @@ mod tests {
     #[test]
     fn test_route_geometry_geojson_format() {
         let points = vec![
-            Point { lon: 4.3517, lat: 50.8503 },
-            Point { lon: 4.4017, lat: 50.8603 },
+            Point {
+                lon: 4.3517,
+                lat: 50.8503,
+            },
+            Point {
+                lon: 4.4017,
+                lat: 50.8603,
+            },
         ];
         let geom = RouteGeometry::from_points(points, 1234.5, 100, GeometryFormat::GeoJson);
         assert!(geom.polyline.is_none());
@@ -602,8 +700,14 @@ mod tests {
     #[test]
     fn test_route_geometry_points_format() {
         let points = vec![
-            Point { lon: 4.3517, lat: 50.8503 },
-            Point { lon: 4.4017, lat: 50.8603 },
+            Point {
+                lon: 4.3517,
+                lat: 50.8503,
+            },
+            Point {
+                lon: 4.4017,
+                lat: 50.8603,
+            },
         ];
         let geom = RouteGeometry::from_points(points, 1234.5, 100, GeometryFormat::Points);
         assert!(geom.polyline.is_none());
@@ -618,12 +722,23 @@ mod tests {
     #[test]
     fn test_polyline6_geojson_same_coordinates() {
         let points = vec![
-            Point { lon: 4.3517, lat: 50.8503 },
-            Point { lon: 4.4017, lat: 50.8603 },
-            Point { lon: 4.8671, lat: 50.4674 },
+            Point {
+                lon: 4.3517,
+                lat: 50.8503,
+            },
+            Point {
+                lon: 4.4017,
+                lat: 50.8603,
+            },
+            Point {
+                lon: 4.8671,
+                lat: 50.4674,
+            },
         ];
-        let poly_geom = RouteGeometry::from_points(points.clone(), 100.0, 50, GeometryFormat::Polyline6);
-        let json_geom = RouteGeometry::from_points(points.clone(), 100.0, 50, GeometryFormat::GeoJson);
+        let poly_geom =
+            RouteGeometry::from_points(points.clone(), 100.0, 50, GeometryFormat::Polyline6);
+        let json_geom =
+            RouteGeometry::from_points(points.clone(), 100.0, 50, GeometryFormat::GeoJson);
 
         // Decode polyline and compare to geojson coordinates
         let decoded = decode_polyline6(poly_geom.polyline.as_ref().unwrap());
@@ -631,8 +746,16 @@ mod tests {
 
         assert_eq!(decoded.len(), geojson_coords.len());
         for i in 0..decoded.len() {
-            assert!((decoded[i].0 - geojson_coords[i][1]).abs() < 1e-6, "lat mismatch at {}", i);
-            assert!((decoded[i].1 - geojson_coords[i][0]).abs() < 1e-6, "lon mismatch at {}", i);
+            assert!(
+                (decoded[i].0 - geojson_coords[i][1]).abs() < 1e-6,
+                "lat mismatch at {}",
+                i
+            );
+            assert!(
+                (decoded[i].1 - geojson_coords[i][0]).abs() < 1e-6,
+                "lon mismatch at {}",
+                i
+            );
         }
     }
 }

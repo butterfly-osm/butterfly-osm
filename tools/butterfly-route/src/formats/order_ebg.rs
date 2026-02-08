@@ -82,7 +82,11 @@ impl OrderEbgFile {
 
         let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
         if magic != MAGIC {
-            anyhow::bail!("Invalid magic: expected 0x{:08X}, got 0x{:08X}", MAGIC, magic);
+            anyhow::bail!(
+                "Invalid magic: expected 0x{:08X}, got 0x{:08X}",
+                MAGIC,
+                magic
+            );
         }
 
         let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);

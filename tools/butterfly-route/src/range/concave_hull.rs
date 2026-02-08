@@ -8,9 +8,7 @@
 //! - Frontier only: 2K-5K points (fast)
 
 use geo::{
-    algorithm::concave_hull::ConcaveHull,
-    algorithm::simplify::Simplify,
-    Coord, MultiPoint, Polygon,
+    algorithm::concave_hull::ConcaveHull, algorithm::simplify::Simplify, Coord, MultiPoint, Polygon,
 };
 
 use super::frontier::ReachableSegment;
@@ -39,7 +37,7 @@ impl Default for ConcaveHullConfig {
     fn default() -> Self {
         Self {
             concavity: 2.0,
-            simplify_tolerance: 0.0,  // No simplification by default
+            simplify_tolerance: 0.0, // No simplification by default
             include_intermediate_points: true,
         }
     }
@@ -50,7 +48,7 @@ impl ConcaveHullConfig {
     pub fn valhalla_default() -> Self {
         Self {
             concavity: 2.0,
-            simplify_tolerance: 0.00045,  // ~50m
+            simplify_tolerance: 0.00045, // ~50m
             include_intermediate_points: true,
         }
     }
@@ -68,7 +66,7 @@ impl ConcaveHullConfig {
     pub fn fast() -> Self {
         Self {
             concavity: 3.0,
-            simplify_tolerance: 0.001,  // ~110m
+            simplify_tolerance: 0.001, // ~110m
             include_intermediate_points: false,
         }
     }
@@ -109,7 +107,10 @@ pub fn generate_concave_hull(
     segments: &[ReachableSegment],
     config: &ConcaveHullConfig,
 ) -> ConcaveHullResult {
-    let mut stats = ConcaveHullStats { input_segments: segments.len(), ..Default::default() };
+    let mut stats = ConcaveHullStats {
+        input_segments: segments.len(),
+        ..Default::default()
+    };
 
     let total_start = std::time::Instant::now();
 
@@ -186,12 +187,7 @@ pub fn generate_concave_hull(
     stats.simplify_time_us = simplify_start.elapsed().as_micros() as u64;
 
     // Convert to output format
-    let outer_ring: Vec<(f64, f64)> = final_hull
-        .exterior()
-        .0
-        .iter()
-        .map(|c| (c.x, c.y))
-        .collect();
+    let outer_ring: Vec<(f64, f64)> = final_hull.exterior().0.iter().map(|c| (c.x, c.y)).collect();
 
     stats.total_time_us = total_start.elapsed().as_micros() as u64;
 

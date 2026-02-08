@@ -124,16 +124,15 @@ fn decode_record(record: &[u8]) -> Result<TurnRule> {
     anyhow::ensure!(record.len() >= RECORD_SIZE, "Record too small");
 
     let via_node_id = i64::from_le_bytes([
-        record[0], record[1], record[2], record[3],
-        record[4], record[5], record[6], record[7],
+        record[0], record[1], record[2], record[3], record[4], record[5], record[6], record[7],
     ]);
     let from_way_id = i64::from_le_bytes([
-        record[8], record[9], record[10], record[11],
-        record[12], record[13], record[14], record[15],
+        record[8], record[9], record[10], record[11], record[12], record[13], record[14],
+        record[15],
     ]);
     let to_way_id = i64::from_le_bytes([
-        record[16], record[17], record[18], record[19],
-        record[20], record[21], record[22], record[23],
+        record[16], record[17], record[18], record[19], record[20], record[21], record[22],
+        record[23],
     ]);
     let kind_byte = record[24];
     let penalty_ds = u32::from_le_bytes([record[25], record[26], record[27], record[28]]);
@@ -169,8 +168,8 @@ pub fn read_all<P: AsRef<Path>>(path: P) -> Result<Vec<TurnRule>> {
     file.read_exact(&mut header)?;
 
     let count = u64::from_le_bytes([
-        header[8], header[9], header[10], header[11],
-        header[12], header[13], header[14], header[15],
+        header[8], header[9], header[10], header[11], header[12], header[13], header[14],
+        header[15],
     ]);
 
     let mut rules = Vec::with_capacity(count as usize);
@@ -205,8 +204,8 @@ pub fn verify<P: AsRef<Path>>(path: P) -> Result<()> {
     }
 
     let count = u64::from_le_bytes([
-        header[8], header[9], header[10], header[11],
-        header[12], header[13], header[14], header[15],
+        header[8], header[9], header[10], header[11], header[12], header[13], header[14],
+        header[15],
     ]);
 
     // Verify file size

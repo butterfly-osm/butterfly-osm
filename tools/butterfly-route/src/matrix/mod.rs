@@ -23,16 +23,26 @@
 //! - **N×M > 10,000**: Use tiled PHAST streaming (throughput mode)
 //! - **Isochrones**: Always use PHAST (need all reachable nodes)
 
-pub mod batched_phast;
 pub mod arrow_stream;
+pub mod batched_phast;
 pub mod bucket_ch;
 
+pub use arrow_stream::{ArrowMatrixWriter, MatrixTile};
 pub use batched_phast::{BatchedPhastEngine, BatchedPhastResult, BatchedPhastStats};
-pub use arrow_stream::{MatrixTile, ArrowMatrixWriter};
 pub use bucket_ch::{
-    table_bucket, table_bucket_optimized, table_bucket_full_flat, table_bucket_parallel,
+    backward_join_with_buckets,
     // Source-block optimized API (avoids repeated forward computation)
-    forward_build_buckets, backward_join_with_buckets, SourceBuckets,
+    forward_build_buckets,
+    table_bucket,
+    table_bucket_full_flat,
+    table_bucket_optimized,
+    table_bucket_parallel,
+    BucketArena,
+    BucketM2MEngine,
+    BucketM2MStats,
     // Data structures
-    DownReverseAdjFlat, UpAdjFlat, UpReverseAdjFlat, BucketArena, BucketM2MStats, BucketM2MEngine,
+    DownReverseAdjFlat,
+    SourceBuckets,
+    UpAdjFlat,
+    UpReverseAdjFlat,
 };

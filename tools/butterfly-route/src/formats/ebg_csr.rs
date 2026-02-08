@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use std::fs::File;
-use std::io::{BufWriter, Write, Read, BufReader};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use super::crc;
@@ -16,9 +16,9 @@ pub struct EbgCsr {
     pub n_arcs: u64,
     pub created_unix: u64,
     pub inputs_sha: [u8; 32],
-    pub offsets: Vec<u64>,   // n_nodes + 1
-    pub heads: Vec<u32>,     // n_arcs
-    pub turn_idx: Vec<u32>,  // n_arcs - index into turn_table
+    pub offsets: Vec<u64>,  // n_nodes + 1
+    pub heads: Vec<u32>,    // n_arcs
+    pub turn_idx: Vec<u32>, // n_arcs - index into turn_table
 }
 
 pub struct EbgCsrFile;
@@ -95,12 +95,12 @@ impl EbgCsrFile {
 
         let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
         let n_arcs = u64::from_le_bytes([
-            header[12], header[13], header[14], header[15],
-            header[16], header[17], header[18], header[19],
+            header[12], header[13], header[14], header[15], header[16], header[17], header[18],
+            header[19],
         ]);
         let created_unix = u64::from_le_bytes([
-            header[20], header[21], header[22], header[23],
-            header[24], header[25], header[26], header[27],
+            header[20], header[21], header[22], header[23], header[24], header[25], header[26],
+            header[27],
         ]);
         let mut inputs_sha = [0u8; 32];
         inputs_sha.copy_from_slice(&header[28..60]);

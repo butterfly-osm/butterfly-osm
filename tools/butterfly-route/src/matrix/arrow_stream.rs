@@ -21,12 +21,12 @@
 //! 3. Client can cancel via channel drop
 //! 4. Backpressure via bounded channel
 
-use std::sync::Arc;
 use arrow::array::{ArrayRef, BinaryArray, UInt16Array, UInt32Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use bytes::Bytes;
+use std::sync::Arc;
 
 /// A single tile of the distance matrix
 #[derive(Debug, Clone)]
@@ -51,11 +51,7 @@ impl MatrixTile {
     /// * `src_start` - Starting source index
     /// * `dst_start` - Starting destination index
     /// * `distances` - 2D slice [src_offset..][dst_offset..] row-major u32
-    pub fn from_distances(
-        src_start: u32,
-        dst_start: u32,
-        distances: &[Vec<u32>],
-    ) -> Self {
+    pub fn from_distances(src_start: u32, dst_start: u32, distances: &[Vec<u32>]) -> Self {
         let src_len = distances.len();
         let dst_len = if src_len > 0 { distances[0].len() } else { 0 };
 
@@ -84,7 +80,10 @@ impl MatrixTile {
         dst_len: u16,
         flat_distances: &[u32],
     ) -> Self {
-        assert_eq!(flat_distances.len(), (src_len as usize) * (dst_len as usize));
+        assert_eq!(
+            flat_distances.len(),
+            (src_len as usize) * (dst_len as usize)
+        );
 
         let mut bytes = Vec::with_capacity(flat_distances.len() * 4);
         for &d in flat_distances {
@@ -117,19 +116,22 @@ pub fn tiles_to_record_batch(tiles: &[MatrixTile]) -> anyhow::Result<RecordBatch
     let schema = Arc::new(matrix_tile_schema());
 
     let src_starts: ArrayRef = Arc::new(UInt32Array::from(
-        tiles.iter().map(|t| t.src_block_start).collect::<Vec<_>>()
+        tiles.iter().map(|t| t.src_block_start).collect::<Vec<_>>(),
     ));
     let dst_starts: ArrayRef = Arc::new(UInt32Array::from(
-        tiles.iter().map(|t| t.dst_block_start).collect::<Vec<_>>()
+        tiles.iter().map(|t| t.dst_block_start).collect::<Vec<_>>(),
     ));
     let src_lens: ArrayRef = Arc::new(UInt16Array::from(
-        tiles.iter().map(|t| t.src_block_len).collect::<Vec<_>>()
+        tiles.iter().map(|t| t.src_block_len).collect::<Vec<_>>(),
     ));
     let dst_lens: ArrayRef = Arc::new(UInt16Array::from(
-        tiles.iter().map(|t| t.dst_block_len).collect::<Vec<_>>()
+        tiles.iter().map(|t| t.dst_block_len).collect::<Vec<_>>(),
     ));
     let durations: ArrayRef = Arc::new(BinaryArray::from(
-        tiles.iter().map(|t| t.durations_ms.as_slice()).collect::<Vec<_>>()
+        tiles
+            .iter()
+            .map(|t| t.durations_ms.as_slice())
+            .collect::<Vec<_>>(),
     ));
 
     let batch = RecordBatch::try_new(
@@ -214,10 +216,7 @@ mod tests {
 
     #[test]
     fn test_tile_creation() {
-        let distances = vec![
-            vec![0, 100, 200],
-            vec![100, 0, 150],
-        ];
+        let distances = vec![vec![0, 100, 200], vec![100, 0, 150]];
 
         let tile = MatrixTile::from_distances(0, 0, &distances);
 
@@ -230,10 +229,7 @@ mod tests {
 
     #[test]
     fn test_arrow_writer() {
-        let distances = vec![
-            vec![0, 100, 200],
-            vec![100, 0, 150],
-        ];
+        let distances = vec![vec![0, 100, 200], vec![100, 0, 150]];
         let tile = MatrixTile::from_distances(0, 0, &distances);
 
         let mut buf = Vec::new();

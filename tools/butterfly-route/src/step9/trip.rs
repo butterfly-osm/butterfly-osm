@@ -7,12 +7,7 @@
 //! The TSP solver operates on a precomputed N×N distance matrix from the
 //! bucket M2M algorithm.
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -95,7 +90,8 @@ pub fn solve_tsp(matrix: &[u32], n: usize, round_trip: bool) -> TspSolution {
         for start in 0..n {
             let greedy_order = nearest_neighbor_greedy(matrix, n, start);
             let greedy_cost = tour_cost(matrix, n, &greedy_order, round_trip);
-            let (mut opt_order, opt_cost) = two_opt_improve(matrix, n, greedy_order, greedy_cost, round_trip);
+            let (mut opt_order, opt_cost) =
+                two_opt_improve(matrix, n, greedy_order, greedy_cost, round_trip);
 
             // Rotate so waypoint 0 is first (cosmetic — same cycle cost)
             if let Some(pos) = opt_order.iter().position(|&x| x == 0) {
@@ -112,7 +108,8 @@ pub fn solve_tsp(matrix: &[u32], n: usize, round_trip: bool) -> TspSolution {
         // Open path: fixed start at waypoint 0
         let greedy_order = nearest_neighbor_greedy(matrix, n, 0);
         let greedy_cost = tour_cost(matrix, n, &greedy_order, round_trip);
-        let (opt_order, opt_cost) = two_opt_improve(matrix, n, greedy_order, greedy_cost, round_trip);
+        let (opt_order, opt_cost) =
+            two_opt_improve(matrix, n, greedy_order, greedy_cost, round_trip);
         best_order = opt_order;
         best_cost = opt_cost;
         best_greedy_cost = greedy_cost;
@@ -446,7 +443,11 @@ pub async fn trip_handler(
 
     // Validate coordinates
     for (i, &[lon, lat]) in req.coordinates.iter().enumerate() {
-        if !(-180.0..=180.0).contains(&lon) || !(-90.0..=90.0).contains(&lat) || lon.is_nan() || lat.is_nan() {
+        if !(-180.0..=180.0).contains(&lon)
+            || !(-90.0..=90.0).contains(&lat)
+            || lon.is_nan()
+            || lat.is_nan()
+        {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
@@ -561,11 +562,19 @@ pub async fn trip_handler(
 
     // Build legs from the optimized order
     let order = &tsp_result.order;
-    let mut legs: Vec<TripLeg> = Vec::with_capacity(if req.round_trip { order.len() } else { order.len() - 1 });
+    let mut legs: Vec<TripLeg> = Vec::with_capacity(if req.round_trip {
+        order.len()
+    } else {
+        order.len() - 1
+    });
     let mut total_duration_ds: u64 = 0;
     let mut total_distance_mm: u64 = 0;
 
-    let leg_count = if req.round_trip { order.len() } else { order.len() - 1 };
+    let leg_count = if req.round_trip {
+        order.len()
+    } else {
+        order.len() - 1
+    };
 
     for leg_idx in 0..leg_count {
         let from = order[leg_idx];
@@ -696,10 +705,7 @@ mod tests {
     #[test]
     fn test_tsp_trivial_two() {
         // 2 waypoints: A->B = 10, B->A = 20
-        let matrix = make_matrix(&[
-            &[0, 10],
-            &[20, 0],
-        ]);
+        let matrix = make_matrix(&[&[0, 10], &[20, 0]]);
 
         // Round trip: 10 + 20 = 30
         let result_rt = solve_tsp(&matrix, 2, true);
@@ -722,11 +728,7 @@ mod tests {
         // Greedy from 0: go to 1 (cost 5), then 2 (cost 3) = 5+3 = 8
         // Alternative: 0->2->1 = 20+3 = 23  (worse)
         // Round trip: 8 + 20 = 28  (return 2->0)
-        let matrix = make_matrix(&[
-            &[0,  5, 20],
-            &[5,  0,  3],
-            &[20, 3,  0],
-        ]);
+        let matrix = make_matrix(&[&[0, 5, 20], &[5, 0, 3], &[20, 3, 0]]);
 
         let result = solve_tsp(&matrix, 3, false);
         assert_eq!(result.order, vec![0, 1, 2]);
@@ -753,17 +755,20 @@ mod tests {
         //  2 [10,  10,   0,   1]
         //  3 [ 1,  10,  10,   0]
         let matrix = make_matrix(&[
-            &[ 0,  1, 10, 10],
-            &[10,  0,  2,  1],
-            &[10, 10,  0,  1],
-            &[ 1, 10, 10,  0],
+            &[0, 1, 10, 10],
+            &[10, 0, 2, 1],
+            &[10, 10, 0, 1],
+            &[1, 10, 10, 0],
         ]);
 
         let result = solve_tsp(&matrix, 4, false);
         // The optimal open path is 0->1->2->3 with cost 1+2+1 = 4
         let expected_cost = 4u64;
-        assert_eq!(result.total_cost, expected_cost,
-            "Expected cost {}, got {}. Order: {:?}", expected_cost, result.total_cost, result.order);
+        assert_eq!(
+            result.total_cost, expected_cost,
+            "Expected cost {}, got {}. Order: {:?}",
+            expected_cost, result.total_cost, result.order
+        );
         // Verify order gives the expected cost
         assert_eq!(tour_cost(&matrix, 4, &result.order, false), expected_cost);
     }
@@ -776,20 +781,24 @@ mod tests {
         // 3 waypoints with asymmetric costs:
         //   0->1 = 2, 1->2 = 3, 2->0 = 100
         //   (return is expensive)
-        let matrix = make_matrix(&[
-            &[  0,   2, 50],
-            &[ 50,   0,  3],
-            &[100, 50,  0],
-        ]);
+        let matrix = make_matrix(&[&[0, 2, 50], &[50, 0, 3], &[100, 50, 0]]);
 
         let open = solve_tsp(&matrix, 3, false);
         let round = solve_tsp(&matrix, 3, true);
 
         // Open: 0->1->2 = 2+3 = 5
-        assert_eq!(open.total_cost, 5, "Open cost: expected 5, got {}", open.total_cost);
+        assert_eq!(
+            open.total_cost, 5,
+            "Open cost: expected 5, got {}",
+            open.total_cost
+        );
 
         // Round: 0->1->2->0 = 2+3+100 = 105
-        assert_eq!(round.total_cost, 105, "Round trip cost: expected 105, got {}", round.total_cost);
+        assert_eq!(
+            round.total_cost, 105,
+            "Round trip cost: expected 105, got {}",
+            round.total_cost
+        );
 
         // Round trip cost must be >= open cost
         assert!(round.total_cost >= open.total_cost);
@@ -807,11 +816,7 @@ mod tests {
         //
         // Only feasible open path through all 3: 0->1->2 (cost 5+3 = 8)
         // Greedy from 0: go to 1 (5), then 2 (3) = 8
-        let matrix = make_matrix(&[
-            &[       0,        5, u32::MAX],
-            &[       5,        0,        3],
-            &[u32::MAX,        3,        0],
-        ]);
+        let matrix = make_matrix(&[&[0, 5, u32::MAX], &[5, 0, 3], &[u32::MAX, 3, 0]]);
 
         let result = solve_tsp(&matrix, 3, false);
         assert_eq!(result.order, vec![0, 1, 2]);
@@ -841,10 +846,10 @@ mod tests {
         //
         // Optimal open: 0->3->... or 0->1->2->3 = 10+1+1 = 12
         let matrix = make_matrix(&[
-            &[  0,  10,  50,   1],
-            &[100,   0,   1,  50],
-            &[ 50, 100,   0,   1],
-            &[  1,  50, 100,   0],
+            &[0, 10, 50, 1],
+            &[100, 0, 1, 50],
+            &[50, 100, 0, 1],
+            &[1, 50, 100, 0],
         ]);
 
         let result = solve_tsp(&matrix, 4, false);
@@ -855,12 +860,17 @@ mod tests {
         assert_eq!(visited, vec![0, 1, 2, 3]);
 
         // The optimal open tour is 0->1->2->3 = 10+1+1 = 12
-        assert_eq!(result.total_cost, 12,
+        assert_eq!(
+            result.total_cost, 12,
             "Expected optimal cost 12 for asymmetric case, got {}. Order: {:?}",
-            result.total_cost, result.order);
+            result.total_cost, result.order
+        );
 
         // Verify the cost matches what tour_cost computes
-        assert_eq!(tour_cost(&matrix, 4, &result.order, false), result.total_cost);
+        assert_eq!(
+            tour_cost(&matrix, 4, &result.order, false),
+            result.total_cost
+        );
     }
 
     #[test]
@@ -869,10 +879,10 @@ mod tests {
         // Everything else is MAX.
         let max = u32::MAX;
         let matrix = make_matrix(&[
-            &[  0,   5, max, max],
-            &[max,   0,   3, max],
-            &[max, max,   0,   7],
-            &[max, max, max,   0],
+            &[0, 5, max, max],
+            &[max, 0, 3, max],
+            &[max, max, 0, 7],
+            &[max, max, max, 0],
         ]);
 
         let result = solve_tsp(&matrix, 4, false);
@@ -903,26 +913,24 @@ mod tests {
         // A crossing tour: 0->2->1->3 = 14+10+14 = 38 open, +10 = 48 round trip
         // 2-opt should prefer the non-crossing tour.
         let matrix = make_matrix(&[
-            &[ 0, 10, 14, 10],
-            &[10,  0, 10, 14],
-            &[14, 10,  0, 10],
-            &[10, 14, 10,  0],
+            &[0, 10, 14, 10],
+            &[10, 0, 10, 14],
+            &[14, 10, 0, 10],
+            &[10, 14, 10, 0],
         ]);
 
         let result_rt = solve_tsp(&matrix, 4, true);
         // Optimal round trip around the square is 40
-        assert_eq!(result_rt.total_cost, 40,
+        assert_eq!(
+            result_rt.total_cost, 40,
             "Expected round trip cost 40, got {}. Order: {:?}",
-            result_rt.total_cost, result_rt.order);
+            result_rt.total_cost, result_rt.order
+        );
     }
 
     #[test]
     fn test_tour_cost_function() {
-        let matrix = make_matrix(&[
-            &[0,  5, 10],
-            &[5,  0,  3],
-            &[10, 3,  0],
-        ]);
+        let matrix = make_matrix(&[&[0, 5, 10], &[5, 0, 3], &[10, 3, 0]]);
 
         // Open: 0->1->2 = 5+3 = 8
         assert_eq!(tour_cost(&matrix, 3, &[0, 1, 2], false), 8);

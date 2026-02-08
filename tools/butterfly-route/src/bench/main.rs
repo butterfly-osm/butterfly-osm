@@ -15,16 +15,20 @@ use clap::{Parser, Subcommand};
 use hdrhistogram::Histogram;
 use rand::prelude::*;
 
-use butterfly_route::range::phast::{PhastEngine, PhastStats};
-use butterfly_route::range::frontier::FrontierExtractor;
-use butterfly_route::range::contour::{generate_contour, GridConfig};
-use butterfly_route::range::sparse_contour::{generate_sparse_contour, SparseContourConfig};
-use butterfly_route::range::batched_isochrone::{BatchedIsochroneEngine, AdaptiveIsochroneEngine, ADAPTIVE_THRESHOLD_DS};
-use butterfly_route::range::wkb_stream::{encode_polygon_wkb, IsochroneRecord, write_ndjson};
-use butterfly_route::matrix::batched_phast::{BatchedPhastEngine, BatchedPhastStats, K_LANES};
 use butterfly_route::formats::CchWeightsFile;
+use butterfly_route::matrix::batched_phast::{BatchedPhastEngine, BatchedPhastStats, K_LANES};
+use butterfly_route::matrix::bucket_ch::{
+    BucketM2MEngine, DownReverseAdjFlat, UpAdjFlat, UpReverseAdjFlat,
+};
+use butterfly_route::range::batched_isochrone::{
+    AdaptiveIsochroneEngine, BatchedIsochroneEngine, ADAPTIVE_THRESHOLD_DS,
+};
+use butterfly_route::range::contour::{generate_contour, GridConfig};
+use butterfly_route::range::frontier::FrontierExtractor;
+use butterfly_route::range::phast::{PhastEngine, PhastStats};
+use butterfly_route::range::sparse_contour::{generate_sparse_contour, SparseContourConfig};
+use butterfly_route::range::wkb_stream::{encode_polygon_wkb, write_ndjson, IsochroneRecord};
 use butterfly_route::step9::state::DownReverseAdj;
-use butterfly_route::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat, UpReverseAdjFlat, BucketM2MEngine};
 
 #[derive(Parser)]
 #[command(name = "butterfly-bench")]
@@ -620,7 +624,15 @@ fn main() -> anyhow::Result<()> {
             src_tile_size,
             dst_tile_size,
             seed,
-        } => run_matrix_stream_bench(&data_dir, &mode, n_sources, n_targets, src_tile_size, dst_tile_size, seed),
+        } => run_matrix_stream_bench(
+            &data_dir,
+            &mode,
+            n_sources,
+            n_targets,
+            src_tile_size,
+            dst_tile_size,
+            seed,
+        ),
 
         Commands::BucketM2M {
             data_dir,
@@ -651,10 +663,9 @@ fn main() -> anyhow::Result<()> {
             seed,
         } => run_e2e_isochrone_bench(&data_dir, &mode, threshold_ms, n_origins, seed),
 
-        Commands::PathologicalOrigins {
-            data_dir,
-            mode,
-        } => run_pathological_origins_bench(&data_dir, &mode),
+        Commands::PathologicalOrigins { data_dir, mode } => {
+            run_pathological_origins_bench(&data_dir, &mode)
+        }
 
         Commands::BulkPipeline {
             data_dir,
@@ -663,7 +674,14 @@ fn main() -> anyhow::Result<()> {
             n_origins,
             output,
             seed,
-        } => run_bulk_pipeline_bench(&data_dir, &mode, threshold_ms, n_origins, output.as_deref(), seed),
+        } => run_bulk_pipeline_bench(
+            &data_dir,
+            &mode,
+            threshold_ms,
+            n_origins,
+            output.as_deref(),
+            seed,
+        ),
 
         Commands::MonotonicityTest {
             data_dir,
@@ -691,7 +709,11 @@ fn run_isochrone_bench(
     println!("  ISOCHRONE BENCHMARK");
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}", mode);
-    println!("  Threshold: {} ms ({:.1} min)", threshold_ms, threshold_ms as f64 / 60000.0);
+    println!(
+        "  Threshold: {} ms ({:.1} min)",
+        threshold_ms,
+        threshold_ms as f64 / 60000.0
+    );
     println!("  Origins: {}", n_origins);
     println!("  Seed: {}", seed);
     println!();
@@ -783,15 +805,42 @@ fn run_isochrone_bench(
     println!("  COUNTERS (averages)");
     println!("───────────────────────────────────────────────────────────────");
     let avg = agg_stats.avg(n_origins);
-    println!("  Upward PQ pushes:     {:>12}", format_number(avg.upward_pq_pushes));
-    println!("  Upward PQ pops:       {:>12}", format_number(avg.upward_pq_pops));
-    println!("  Upward relaxations:   {:>12}", format_number(avg.upward_relaxations));
-    println!("  Upward settled:       {:>12}", format_number(avg.upward_settled));
-    println!("  Downward relaxations: {:>12}", format_number(avg.downward_relaxations));
-    println!("  Downward improved:    {:>12}", format_number(avg.downward_improved));
-    println!("  Frontier segments:    {:>12}", format_number(avg.frontier_edges));
-    println!("  Grid cells filled:    {:>12}", format_number(avg.grid_cells));
-    println!("  Contour vertices:     {:>12}", format_number(avg.contour_vertices));
+    println!(
+        "  Upward PQ pushes:     {:>12}",
+        format_number(avg.upward_pq_pushes)
+    );
+    println!(
+        "  Upward PQ pops:       {:>12}",
+        format_number(avg.upward_pq_pops)
+    );
+    println!(
+        "  Upward relaxations:   {:>12}",
+        format_number(avg.upward_relaxations)
+    );
+    println!(
+        "  Upward settled:       {:>12}",
+        format_number(avg.upward_settled)
+    );
+    println!(
+        "  Downward relaxations: {:>12}",
+        format_number(avg.downward_relaxations)
+    );
+    println!(
+        "  Downward improved:    {:>12}",
+        format_number(avg.downward_improved)
+    );
+    println!(
+        "  Frontier segments:    {:>12}",
+        format_number(avg.frontier_edges)
+    );
+    println!(
+        "  Grid cells filled:    {:>12}",
+        format_number(avg.grid_cells)
+    );
+    println!(
+        "  Contour vertices:     {:>12}",
+        format_number(avg.contour_vertices)
+    );
     println!();
 
     // Throughput
@@ -837,7 +886,10 @@ fn run_batch_bench(
     println!();
 
     // Run batches
-    println!("[2/2] Running {} batches of {} origins...", n_batches, batch_size);
+    println!(
+        "[2/2] Running {} batches of {} origins...",
+        n_batches, batch_size
+    );
 
     let mut rng = StdRng::seed_from_u64(seed);
     let mut batch_times: Vec<Duration> = Vec::with_capacity(n_batches);
@@ -858,8 +910,10 @@ fn run_batch_bench(
         }
 
         batch_times.push(batch_start.elapsed());
-        println!("  Batch {}/{}: {:.1}s ({:.0} iso/s)",
-            batch + 1, n_batches,
+        println!(
+            "  Batch {}/{}: {:.1}s ({:.0} iso/s)",
+            batch + 1,
+            n_batches,
             batch_times.last().unwrap().as_secs_f64(),
             batch_size as f64 / batch_times.last().unwrap().as_secs_f64()
         );
@@ -878,12 +932,7 @@ fn run_batch_bench(
     Ok(())
 }
 
-fn run_phast_bench(
-    data_dir: &Path,
-    mode: &str,
-    n_queries: usize,
-    seed: u64,
-) -> anyhow::Result<()> {
+fn run_phast_bench(data_dir: &Path, mode: &str, n_queries: usize, seed: u64) -> anyhow::Result<()> {
     println!("═══════════════════════════════════════════════════════════════");
     println!("  PHAST-ONLY BENCHMARK");
     println!("═══════════════════════════════════════════════════════════════");
@@ -895,8 +944,11 @@ fn run_phast_bench(
     println!("[1/2] Loading PHAST engine...");
     let load_start = Instant::now();
     let phast = load_phast(data_dir, mode)?;
-    println!("  ✓ Loaded in {:.1}s ({} nodes)",
-        load_start.elapsed().as_secs_f64(), phast.n_nodes());
+    println!(
+        "  ✓ Loaded in {:.1}s ({} nodes)",
+        load_start.elapsed().as_secs_f64(),
+        phast.n_nodes()
+    );
     println!();
 
     // Generate random origins
@@ -934,15 +986,36 @@ fn run_phast_bench(
     println!("  COUNTERS (averages)");
     println!("───────────────────────────────────────────────────────────────");
     let avg = agg_stats.avg(n_queries);
-    println!("  Upward PQ pushes:     {:>12}", format_number(avg.upward_pq_pushes));
-    println!("  Upward PQ pops:       {:>12}", format_number(avg.upward_pq_pops));
-    println!("  Upward relaxations:   {:>12}", format_number(avg.upward_relaxations));
-    println!("  Upward settled:       {:>12}", format_number(avg.upward_settled));
-    println!("  Downward relaxations: {:>12}", format_number(avg.downward_relaxations));
-    println!("  Downward improved:    {:>12}", format_number(avg.downward_improved));
+    println!(
+        "  Upward PQ pushes:     {:>12}",
+        format_number(avg.upward_pq_pushes)
+    );
+    println!(
+        "  Upward PQ pops:       {:>12}",
+        format_number(avg.upward_pq_pops)
+    );
+    println!(
+        "  Upward relaxations:   {:>12}",
+        format_number(avg.upward_relaxations)
+    );
+    println!(
+        "  Upward settled:       {:>12}",
+        format_number(avg.upward_settled)
+    );
+    println!(
+        "  Downward relaxations: {:>12}",
+        format_number(avg.downward_relaxations)
+    );
+    println!(
+        "  Downward improved:    {:>12}",
+        format_number(avg.downward_improved)
+    );
     println!();
     println!("  Total time: {:.1}s", total_time.as_secs_f64());
-    println!("  Throughput: {:.1} queries/sec", n_queries as f64 / total_time.as_secs_f64());
+    println!(
+        "  Throughput: {:.1} queries/sec",
+        n_queries as f64 / total_time.as_secs_f64()
+    );
     println!();
 
     Ok(())
@@ -955,23 +1028,35 @@ fn load_phast(data_dir: &Path, mode: &str) -> anyhow::Result<PhastEngine> {
     // 3. Split across step6-belgium-fixed, step7-belgium-fixed, etc.
 
     // Prioritize rank-aligned (version 2) over older versions
-    let topo_path = find_file(data_dir, &[
-        format!("cch.{}.topo", mode),
-        format!("step7-rank-aligned/cch.{}.topo", mode),
-        format!("step7-belgium-fixed/cch.{}.topo", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
+    let topo_path = find_file(
+        data_dir,
+        &[
+            format!("cch.{}.topo", mode),
+            format!("step7-rank-aligned/cch.{}.topo", mode),
+            format!("step7-belgium-fixed/cch.{}.topo", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
 
-    let weights_path = find_file(data_dir, &[
-        format!("cch.w.{}.u32", mode),
-        format!("step8-rank-aligned/cch.w.{}.u32", mode),
-        format!("step8-belgium-fixed/cch.w.{}.u32", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
+    let weights_path = find_file(
+        data_dir,
+        &[
+            format!("cch.w.{}.u32", mode),
+            format!("step8-rank-aligned/cch.w.{}.u32", mode),
+            format!("step8-belgium-fixed/cch.w.{}.u32", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
 
-    let order_path = find_file(data_dir, &[
-        format!("order.{}.ebg", mode),
-        format!("step6/order.{}.ebg", mode),
-        format!("step6-belgium-fixed/order.{}.ebg", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
+    let order_path = find_file(
+        data_dir,
+        &[
+            format!("order.{}.ebg", mode),
+            format!("step6/order.{}.ebg", mode),
+            format!("step6-belgium-fixed/order.{}.ebg", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
 
     PhastEngine::load(&topo_path, &weights_path, &order_path)
 }
@@ -994,31 +1079,52 @@ fn find_file(base: &Path, candidates: &[String]) -> Option<PathBuf> {
 }
 
 fn load_extractor(data_dir: &Path, mode: &str) -> anyhow::Result<FrontierExtractor> {
-    let filtered_path = find_file(data_dir, &[
-        format!("filtered.{}.ebg", mode),
-        format!("step5-debug/filtered.{}.ebg", mode),
-        format!("belgium/step5-debug/filtered.{}.ebg", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find filtered.{}.ebg", mode))?;
+    let filtered_path = find_file(
+        data_dir,
+        &[
+            format!("filtered.{}.ebg", mode),
+            format!("step5-debug/filtered.{}.ebg", mode),
+            format!("belgium/step5-debug/filtered.{}.ebg", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find filtered.{}.ebg", mode))?;
 
-    let ebg_nodes_path = find_file(data_dir, &[
-        "ebg.nodes".to_string(),
-        "step4/ebg.nodes".to_string(),
-        "belgium/step4/ebg.nodes".to_string(),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find ebg.nodes"))?;
+    let ebg_nodes_path = find_file(
+        data_dir,
+        &[
+            "ebg.nodes".to_string(),
+            "step4/ebg.nodes".to_string(),
+            "belgium/step4/ebg.nodes".to_string(),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find ebg.nodes"))?;
 
-    let nbg_geo_path = find_file(data_dir, &[
-        "nbg.geo".to_string(),
-        "step3/nbg.geo".to_string(),
-        "belgium/step3/nbg.geo".to_string(),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find nbg.geo"))?;
+    let nbg_geo_path = find_file(
+        data_dir,
+        &[
+            "nbg.geo".to_string(),
+            "step3/nbg.geo".to_string(),
+            "belgium/step3/nbg.geo".to_string(),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find nbg.geo"))?;
 
-    let weights_path = find_file(data_dir, &[
-        format!("w.{}.u32", mode),
-        format!("step5-debug/w.{}.u32", mode),
-        format!("belgium/step5-debug/w.{}.u32", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find w.{}.u32", mode))?;
+    let weights_path = find_file(
+        data_dir,
+        &[
+            format!("w.{}.u32", mode),
+            format!("step5-debug/w.{}.u32", mode),
+            format!("belgium/step5-debug/w.{}.u32", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find w.{}.u32", mode))?;
 
-    FrontierExtractor::load(&filtered_path, &ebg_nodes_path, &nbg_geo_path, &weights_path)
+    FrontierExtractor::load(
+        &filtered_path,
+        &ebg_nodes_path,
+        &nbg_geo_path,
+        &weights_path,
+    )
 }
 
 fn print_histogram_stats(name: &str, hist: &Histogram<u64>) {
@@ -1059,7 +1165,14 @@ fn run_batched_phast_bench(
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}", mode);
     println!("  Sources: {}", n_sources);
-    println!("  Targets: {}", if n_targets == 0 { "all".to_string() } else { n_targets.to_string() });
+    println!(
+        "  Targets: {}",
+        if n_targets == 0 {
+            "all".to_string()
+        } else {
+            n_targets.to_string()
+        }
+    );
     println!("  K-lanes: {}", K_LANES);
     println!();
 
@@ -1070,8 +1183,11 @@ fn run_batched_phast_bench(
     let single_phast = load_phast(data_dir, mode)?;
     let batched_phast = load_batched_phast(data_dir, mode)?;
 
-    println!("  ✓ Loaded in {:.1}s ({} nodes)",
-        load_start.elapsed().as_secs_f64(), single_phast.n_nodes());
+    println!(
+        "  ✓ Loaded in {:.1}s ({} nodes)",
+        load_start.elapsed().as_secs_f64(),
+        single_phast.n_nodes()
+    );
     println!();
 
     // Generate random sources and targets
@@ -1098,14 +1214,22 @@ fn run_batched_phast_bench(
     };
 
     // ========== Single-source PHAST baseline ==========
-    println!("[2/3] Running single-source PHAST baseline ({} queries)...", n_sources);
+    println!(
+        "[2/3] Running single-source PHAST baseline ({} queries)...",
+        n_sources
+    );
 
     let single_start = Instant::now();
     let mut single_results: Vec<Vec<u32>> = Vec::with_capacity(n_sources);
 
     for (i, &src) in sources.iter().enumerate() {
         let result = single_phast.query(src);
-        single_results.push(verification_targets.iter().map(|&t| result.dist[t as usize]).collect());
+        single_results.push(
+            verification_targets
+                .iter()
+                .map(|&t| result.dist[t as usize])
+                .collect(),
+        );
         if (i + 1) % 10 == 0 || i == n_sources - 1 {
             print!("\r  Progress: {}/{}", i + 1, n_sources);
             std::io::Write::flush(&mut std::io::stdout())?;
@@ -1113,34 +1237,48 @@ fn run_batched_phast_bench(
     }
     let single_time = single_start.elapsed();
     println!();
-    println!("  ✓ Single-source: {:.2}s ({:.1} queries/sec)",
+    println!(
+        "  ✓ Single-source: {:.2}s ({:.1} queries/sec)",
         single_time.as_secs_f64(),
-        n_sources as f64 / single_time.as_secs_f64());
+        n_sources as f64 / single_time.as_secs_f64()
+    );
     println!();
 
     // ========== K-lane batched PHAST (AoS layout) ==========
-    println!("[3/4] Running K-lane batched PHAST AoS ({} sources in {} batches)...",
-        n_sources, n_sources.div_ceil(K_LANES));
+    println!(
+        "[3/4] Running K-lane batched PHAST AoS ({} sources in {} batches)...",
+        n_sources,
+        n_sources.div_ceil(K_LANES)
+    );
 
     let batched_start = Instant::now();
-    let (batched_matrix, batched_stats) = batched_phast.compute_matrix_flat(&sources, &verification_targets);
+    let (batched_matrix, batched_stats) =
+        batched_phast.compute_matrix_flat(&sources, &verification_targets);
     let batched_time = batched_start.elapsed();
 
-    println!("  ✓ Batched AoS: {:.2}s ({:.1} queries/sec)",
+    println!(
+        "  ✓ Batched AoS: {:.2}s ({:.1} queries/sec)",
         batched_time.as_secs_f64(),
-        n_sources as f64 / batched_time.as_secs_f64());
+        n_sources as f64 / batched_time.as_secs_f64()
+    );
 
     // ========== K-lane batched PHAST (SoA layout) ==========
-    println!("[4/4] Running K-lane batched PHAST SoA ({} sources in {} batches)...",
-        n_sources, n_sources.div_ceil(K_LANES));
+    println!(
+        "[4/4] Running K-lane batched PHAST SoA ({} sources in {} batches)...",
+        n_sources,
+        n_sources.div_ceil(K_LANES)
+    );
 
     let soa_start = Instant::now();
-    let (soa_matrix, soa_stats) = batched_phast.compute_matrix_flat_soa(&sources, &verification_targets);
+    let (soa_matrix, soa_stats) =
+        batched_phast.compute_matrix_flat_soa(&sources, &verification_targets);
     let soa_time = soa_start.elapsed();
 
-    println!("  ✓ Batched SoA: {:.2}s ({:.1} queries/sec)",
+    println!(
+        "  ✓ Batched SoA: {:.2}s ({:.1} queries/sec)",
         soa_time.as_secs_f64(),
-        n_sources as f64 / soa_time.as_secs_f64());
+        n_sources as f64 / soa_time.as_secs_f64()
+    );
     println!();
 
     // ========== Verify correctness ==========
@@ -1173,10 +1311,18 @@ fn run_batched_phast_bench(
     }
 
     if aos_mismatches == 0 && soa_mismatches == 0 {
-        println!("  ✅ AoS: All {} × {} = {} distances match!",
-            n_sources, n_targets_actual, n_sources * n_targets_actual);
-        println!("  ✅ SoA: All {} × {} = {} distances match!",
-            n_sources, n_targets_actual, n_sources * n_targets_actual);
+        println!(
+            "  ✅ AoS: All {} × {} = {} distances match!",
+            n_sources,
+            n_targets_actual,
+            n_sources * n_targets_actual
+        );
+        println!(
+            "  ✅ SoA: All {} × {} = {} distances match!",
+            n_sources,
+            n_targets_actual,
+            n_sources * n_targets_actual
+        );
     } else {
         if aos_mismatches > 0 {
             println!("  ❌ AoS: {} mismatches", aos_mismatches);
@@ -1196,19 +1342,42 @@ fn run_batched_phast_bench(
     let soa_speedup = single_time.as_secs_f64() / soa_time.as_secs_f64();
     let soa_vs_aos = batched_time.as_secs_f64() / soa_time.as_secs_f64();
 
-    println!("  Single-source time:    {:>8.2}s", single_time.as_secs_f64());
-    println!("  K-lane AoS time:       {:>8.2}s ({:.2}x vs single)", batched_time.as_secs_f64(), aos_speedup);
-    println!("  K-lane SoA time:       {:>8.2}s ({:.2}x vs single)", soa_time.as_secs_f64(), soa_speedup);
+    println!(
+        "  Single-source time:    {:>8.2}s",
+        single_time.as_secs_f64()
+    );
+    println!(
+        "  K-lane AoS time:       {:>8.2}s ({:.2}x vs single)",
+        batched_time.as_secs_f64(),
+        aos_speedup
+    );
+    println!(
+        "  K-lane SoA time:       {:>8.2}s ({:.2}x vs single)",
+        soa_time.as_secs_f64(),
+        soa_speedup
+    );
     println!("  SoA vs AoS speedup:    {:>8.2}x", soa_vs_aos);
     println!();
 
     println!("  AoS stats:");
-    println!("    Upward time:          {:>12} ms", batched_stats.upward_time_ms);
-    println!("    Downward time:        {:>12} ms", batched_stats.downward_time_ms);
+    println!(
+        "    Upward time:          {:>12} ms",
+        batched_stats.upward_time_ms
+    );
+    println!(
+        "    Downward time:        {:>12} ms",
+        batched_stats.downward_time_ms
+    );
 
     println!("  SoA stats:");
-    println!("    Upward time:          {:>12} ms", soa_stats.upward_time_ms);
-    println!("    Downward time:        {:>12} ms", soa_stats.downward_time_ms);
+    println!(
+        "    Upward time:          {:>12} ms",
+        soa_stats.upward_time_ms
+    );
+    println!(
+        "    Downward time:        {:>12} ms",
+        soa_stats.downward_time_ms
+    );
     println!();
 
     if soa_vs_aos > 1.3 {
@@ -1225,23 +1394,35 @@ fn run_batched_phast_bench(
 
 fn load_batched_phast(data_dir: &Path, mode: &str) -> anyhow::Result<BatchedPhastEngine> {
     // Prioritize rank-aligned (version 2) over older versions
-    let topo_path = find_file(data_dir, &[
-        format!("cch.{}.topo", mode),
-        format!("step7-rank-aligned/cch.{}.topo", mode),
-        format!("step7-belgium-fixed/cch.{}.topo", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
+    let topo_path = find_file(
+        data_dir,
+        &[
+            format!("cch.{}.topo", mode),
+            format!("step7-rank-aligned/cch.{}.topo", mode),
+            format!("step7-belgium-fixed/cch.{}.topo", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
 
-    let weights_path = find_file(data_dir, &[
-        format!("cch.w.{}.u32", mode),
-        format!("step8-rank-aligned/cch.w.{}.u32", mode),
-        format!("step8-belgium-fixed/cch.w.{}.u32", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
+    let weights_path = find_file(
+        data_dir,
+        &[
+            format!("cch.w.{}.u32", mode),
+            format!("step8-rank-aligned/cch.w.{}.u32", mode),
+            format!("step8-belgium-fixed/cch.w.{}.u32", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
 
-    let order_path = find_file(data_dir, &[
-        format!("order.{}.ebg", mode),
-        format!("step6/order.{}.ebg", mode),
-        format!("step6-belgium-fixed/order.{}.ebg", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
+    let order_path = find_file(
+        data_dir,
+        &[
+            format!("order.{}.ebg", mode),
+            format!("step6/order.{}.ebg", mode),
+            format!("step6-belgium-fixed/order.{}.ebg", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
 
     BatchedPhastEngine::load(&topo_path, &weights_path, &order_path)
 }
@@ -1257,7 +1438,11 @@ fn run_active_set_bench(
     println!("  ACTIVE-SET GATING BENCHMARK");
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}", mode);
-    println!("  Threshold: {} ms ({:.1} min)", threshold_ms, threshold_ms as f64 / 60000.0);
+    println!(
+        "  Threshold: {} ms ({:.1} min)",
+        threshold_ms,
+        threshold_ms as f64 / 60000.0
+    );
     println!("  Queries: {}", n_queries);
     println!();
 
@@ -1265,8 +1450,11 @@ fn run_active_set_bench(
     println!("[1/3] Loading PHAST engine...");
     let load_start = Instant::now();
     let phast = load_phast(data_dir, mode)?;
-    println!("  ✓ Loaded in {:.1}s ({} nodes)",
-        load_start.elapsed().as_secs_f64(), phast.n_nodes());
+    println!(
+        "  ✓ Loaded in {:.1}s ({} nodes)",
+        load_start.elapsed().as_secs_f64(),
+        phast.n_nodes()
+    );
     println!();
 
     // Generate random origins
@@ -1298,9 +1486,11 @@ fn run_active_set_bench(
 
     let naive_total: Duration = naive_times.iter().sum();
     let naive_avg_ms = naive_total.as_millis() as f64 / n_queries as f64;
-    println!("  ✓ Naive: {:.1}ms avg, {:.1}M relaxations/query",
+    println!(
+        "  ✓ Naive: {:.1}ms avg, {:.1}M relaxations/query",
         naive_avg_ms,
-        naive_relaxations as f64 / n_queries as f64 / 1_000_000.0);
+        naive_relaxations as f64 / n_queries as f64 / 1_000_000.0
+    );
     println!();
 
     // ========== Active-set gated PHAST ==========
@@ -1326,9 +1516,11 @@ fn run_active_set_bench(
 
     let gated_total: Duration = gated_times.iter().sum();
     let gated_avg_ms = gated_total.as_millis() as f64 / n_queries as f64;
-    println!("  ✓ Active-set: {:.1}ms avg, {:.1}M relaxations/query",
+    println!(
+        "  ✓ Active-set: {:.1}ms avg, {:.1}M relaxations/query",
         gated_avg_ms,
-        gated_relaxations as f64 / n_queries as f64 / 1_000_000.0);
+        gated_relaxations as f64 / n_queries as f64 / 1_000_000.0
+    );
     println!();
 
     // ========== Verification ==========
@@ -1340,7 +1532,10 @@ fn run_active_set_bench(
     if naive_reachable == gated_reachable {
         println!("  ✅ Reachable counts match: {} total", naive_reachable);
     } else {
-        println!("  ❌ Reachable count mismatch: naive={}, gated={}", naive_reachable, gated_reachable);
+        println!(
+            "  ❌ Reachable count mismatch: naive={}, gated={}",
+            naive_reachable, gated_reachable
+        );
     }
 
     // Spot check a few queries for exact distance equality
@@ -1349,9 +1544,17 @@ fn run_active_set_bench(
         let naive_result = phast.query_bounded_naive(origin, threshold_ms);
         let gated_result = phast.query_active_set(origin, threshold_ms);
 
-        for (i, (&naive_d, &gated_d)) in naive_result.dist.iter().zip(gated_result.dist.iter()).enumerate() {
+        for (i, (&naive_d, &gated_d)) in naive_result
+            .dist
+            .iter()
+            .zip(gated_result.dist.iter())
+            .enumerate()
+        {
             if naive_d <= threshold_ms && gated_d <= threshold_ms && naive_d != gated_d {
-                println!("  ❌ Distance mismatch at node {}: naive={}, gated={}", i, naive_d, gated_d);
+                println!(
+                    "  ❌ Distance mismatch at node {}: naive={}, gated={}",
+                    i, naive_d, gated_d
+                );
                 spot_check_ok = false;
                 break;
             }
@@ -1374,8 +1577,14 @@ fn run_active_set_bench(
     println!("  Active-set avg time:   {:>8.1} ms", gated_avg_ms);
     println!("  Time speedup:          {:>8.2}x", time_speedup);
     println!();
-    println!("  Naive relaxations:     {:>12}", format_number(naive_relaxations / n_queries as u64));
-    println!("  Active-set relaxations:{:>12}", format_number(gated_relaxations / n_queries as u64));
+    println!(
+        "  Naive relaxations:     {:>12}",
+        format_number(naive_relaxations / n_queries as u64)
+    );
+    println!(
+        "  Active-set relaxations:{:>12}",
+        format_number(gated_relaxations / n_queries as u64)
+    );
     println!("  Relaxation reduction:  {:>8.1}%", relax_reduction * 100.0);
     println!();
 
@@ -1404,7 +1613,11 @@ fn run_batched_isochrone_bench(
     println!("  K-LANE BATCHED ISOCHRONE BENCHMARK");
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}", mode);
-    println!("  Threshold: {} ms ({:.1} min)", threshold_ms, threshold_ms as f64 / 60000.0);
+    println!(
+        "  Threshold: {} ms ({:.1} min)",
+        threshold_ms,
+        threshold_ms as f64 / 60000.0
+    );
     println!("  Origins: {} (in batches of {})", n_origins, K_LANES);
     println!();
 
@@ -1427,53 +1640,79 @@ fn run_batched_isochrone_bench(
         "foot" => SparseContourConfig::for_foot(),
         _ => SparseContourConfig::for_car(),
     };
-    println!("  ✓ Loaded in {:.1}s ({} nodes)", single_start.elapsed().as_secs_f64(), phast.n_nodes());
+    println!(
+        "  ✓ Loaded in {:.1}s ({} nodes)",
+        single_start.elapsed().as_secs_f64(),
+        phast.n_nodes()
+    );
 
     println!("\n[2/4] Loading K-lane batched engine...");
     let batched_start = Instant::now();
 
     // Find paths using the same discovery logic as single-source
     // Prioritize rank-aligned (version 2) over older versions
-    let topo_path = find_file(data_dir, &[
-        format!("cch.{}.topo", mode),
-        format!("step7-rank-aligned/cch.{}.topo", mode),
-        format!("step7/cch.{}.topo", mode),
-        format!("step7-new/cch.{}.topo", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
+    let topo_path = find_file(
+        data_dir,
+        &[
+            format!("cch.{}.topo", mode),
+            format!("step7-rank-aligned/cch.{}.topo", mode),
+            format!("step7/cch.{}.topo", mode),
+            format!("step7-new/cch.{}.topo", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
 
-    let weights_path = find_file(data_dir, &[
-        format!("cch.w.{}.u32", mode),
-        format!("step8-rank-aligned/cch.w.{}.u32", mode),
-        format!("step8/cch.w.{}.u32", mode),
-        format!("step8-new/cch.w.{}.u32", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
+    let weights_path = find_file(
+        data_dir,
+        &[
+            format!("cch.w.{}.u32", mode),
+            format!("step8-rank-aligned/cch.w.{}.u32", mode),
+            format!("step8/cch.w.{}.u32", mode),
+            format!("step8-new/cch.w.{}.u32", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
 
-    let order_path = find_file(data_dir, &[
-        format!("order.{}.ebg", mode),
-        format!("step6/order.{}.ebg", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
+    let order_path = find_file(
+        data_dir,
+        &[
+            format!("order.{}.ebg", mode),
+            format!("step6/order.{}.ebg", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
 
-    let filtered_path = find_file(data_dir, &[
-        format!("filtered.{}.ebg", mode),
-        format!("step5/filtered.{}.ebg", mode),
-        format!("step5-debug/filtered.{}.ebg", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find filtered.{}.ebg", mode))?;
+    let filtered_path = find_file(
+        data_dir,
+        &[
+            format!("filtered.{}.ebg", mode),
+            format!("step5/filtered.{}.ebg", mode),
+            format!("step5-debug/filtered.{}.ebg", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find filtered.{}.ebg", mode))?;
 
-    let ebg_nodes_path = find_file(data_dir, &[
-        "ebg.nodes".to_string(),
-        "step4/ebg.nodes".to_string(),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find ebg.nodes"))?;
+    let ebg_nodes_path = find_file(
+        data_dir,
+        &["ebg.nodes".to_string(), "step4/ebg.nodes".to_string()],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find ebg.nodes"))?;
 
-    let nbg_geo_path = find_file(data_dir, &[
-        "nbg.geo".to_string(),
-        "step3/nbg.geo".to_string(),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find nbg.geo"))?;
+    let nbg_geo_path = find_file(
+        data_dir,
+        &["nbg.geo".to_string(), "step3/nbg.geo".to_string()],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find nbg.geo"))?;
 
-    let base_weights_path = find_file(data_dir, &[
-        format!("w.{}.u32", mode),
-        format!("step5/w.{}.u32", mode),
-        format!("step5-debug/w.{}.u32", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find w.{}.u32", mode))?;
+    let base_weights_path = find_file(
+        data_dir,
+        &[
+            format!("w.{}.u32", mode),
+            format!("step5/w.{}.u32", mode),
+            format!("step5-debug/w.{}.u32", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find w.{}.u32", mode))?;
 
     let batched_engine = BatchedIsochroneEngine::load(
         &topo_path,
@@ -1485,7 +1724,10 @@ fn run_batched_isochrone_bench(
         &base_weights_path,
         mode_enum,
     )?;
-    println!("  ✓ Loaded in {:.1}s", batched_start.elapsed().as_secs_f64());
+    println!(
+        "  ✓ Loaded in {:.1}s",
+        batched_start.elapsed().as_secs_f64()
+    );
 
     // Convert ms to deciseconds (CCH weight units)
     // 1 decisecond = 100 milliseconds
@@ -1514,9 +1756,11 @@ fn run_batched_isochrone_bench(
         }
     }
     let single_time = single_run_start.elapsed();
-    println!("  ✓ Single: {:.2}s ({:.1} iso/s)",
+    println!(
+        "  ✓ Single: {:.2}s ({:.1} iso/s)",
         single_time.as_secs_f64(),
-        n_origins as f64 / single_time.as_secs_f64());
+        n_origins as f64 / single_time.as_secs_f64()
+    );
 
     // ========== Run K-lane batched ==========
     println!("\n[4/4] Running K-lane batched isochrones...");
@@ -1532,15 +1776,21 @@ fn run_batched_isochrone_bench(
         n_batches += 1;
 
         if (batch_idx + 1) % 2 == 0 || batch_idx + 1 == n_origins.div_ceil(K_LANES) {
-            print!("  Progress: {}/{} batches\r", batch_idx + 1, n_origins.div_ceil(K_LANES));
+            print!(
+                "  Progress: {}/{} batches\r",
+                batch_idx + 1,
+                n_origins.div_ceil(K_LANES)
+            );
             std::io::Write::flush(&mut std::io::stdout())?;
         }
     }
     let batched_time = batched_run_start.elapsed();
-    println!("  ✓ Batched: {:.2}s ({:.1} iso/s, {} batches)",
+    println!(
+        "  ✓ Batched: {:.2}s ({:.1} iso/s, {} batches)",
         batched_time.as_secs_f64(),
         n_origins as f64 / batched_time.as_secs_f64(),
-        n_batches);
+        n_batches
+    );
 
     // ========== Correctness verification ==========
     println!();
@@ -1549,13 +1799,18 @@ fn run_batched_isochrone_bench(
     println!("───────────────────────────────────────────────────────────────");
 
     // Rough check: vertex counts should be similar
-    let vertex_diff_pct = ((single_vertices as f64 - batched_vertices as f64).abs() / single_vertices as f64) * 100.0;
+    let vertex_diff_pct =
+        ((single_vertices as f64 - batched_vertices as f64).abs() / single_vertices as f64) * 100.0;
     if vertex_diff_pct < 5.0 {
-        println!("  ✅ Vertex counts similar: {} (single) vs {} (batched), diff {:.1}%",
-            single_vertices, batched_vertices, vertex_diff_pct);
+        println!(
+            "  ✅ Vertex counts similar: {} (single) vs {} (batched), diff {:.1}%",
+            single_vertices, batched_vertices, vertex_diff_pct
+        );
     } else {
-        println!("  ⚠️  Vertex counts differ: {} (single) vs {} (batched), diff {:.1}%",
-            single_vertices, batched_vertices, vertex_diff_pct);
+        println!(
+            "  ⚠️  Vertex counts differ: {} (single) vs {} (batched), diff {:.1}%",
+            single_vertices, batched_vertices, vertex_diff_pct
+        );
     }
 
     // ========== Performance comparison ==========
@@ -1569,11 +1824,19 @@ fn run_batched_isochrone_bench(
     let speedup = batched_throughput / single_throughput;
 
     println!("  Single-source:");
-    println!("    Time: {:.2}s for {} isochrones", single_time.as_secs_f64(), n_origins);
+    println!(
+        "    Time: {:.2}s for {} isochrones",
+        single_time.as_secs_f64(),
+        n_origins
+    );
     println!("    Throughput: {:.1} iso/sec", single_throughput);
     println!();
     println!("  K-lane batched (K={}):", K_LANES);
-    println!("    Time: {:.2}s for {} isochrones", batched_time.as_secs_f64(), n_origins);
+    println!(
+        "    Time: {:.2}s for {} isochrones",
+        batched_time.as_secs_f64(),
+        n_origins
+    );
     println!("    Throughput: {:.1} iso/sec", batched_throughput);
     println!();
     println!("  Speedup: {:.2}x", speedup);
@@ -1605,7 +1868,14 @@ fn run_blocked_relaxation_bench(
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}", mode);
     println!("  Sources: {}", n_sources);
-    println!("  Targets: {}", if n_targets == 0 { "all".to_string() } else { n_targets.to_string() });
+    println!(
+        "  Targets: {}",
+        if n_targets == 0 {
+            "all".to_string()
+        } else {
+            n_targets.to_string()
+        }
+    );
     println!("  K-lanes: {}", K_LANES);
     println!("  Block size: {} nodes", BLOCK_SIZE);
     println!();
@@ -1614,7 +1884,11 @@ fn run_blocked_relaxation_bench(
     println!("[1/4] Loading batched PHAST engine...");
     let load_start = Instant::now();
     let engine = load_batched_phast(data_dir, mode)?;
-    println!("  ✓ Loaded in {:.1}s ({} nodes)", load_start.elapsed().as_secs_f64(), engine.n_nodes());
+    println!(
+        "  ✓ Loaded in {:.1}s ({} nodes)",
+        load_start.elapsed().as_secs_f64(),
+        engine.n_nodes()
+    );
     println!();
 
     // Generate random sources and targets
@@ -1638,9 +1912,11 @@ fn run_blocked_relaxation_bench(
     let baseline_start = Instant::now();
     let (baseline_matrix, baseline_stats) = engine.compute_matrix_flat(&sources, &targets);
     let baseline_time = baseline_start.elapsed();
-    println!("  ✓ Non-blocked: {:.2}s ({:.1} queries/sec)",
+    println!(
+        "  ✓ Non-blocked: {:.2}s ({:.1} queries/sec)",
         baseline_time.as_secs_f64(),
-        n_sources as f64 / baseline_time.as_secs_f64());
+        n_sources as f64 / baseline_time.as_secs_f64()
+    );
     println!("    Downward time: {}ms", baseline_stats.downward_time_ms);
     println!();
 
@@ -1649,12 +1925,17 @@ fn run_blocked_relaxation_bench(
     let blocked_start = Instant::now();
     let (blocked_matrix, blocked_stats) = engine.compute_matrix_flat_blocked(&sources, &targets);
     let blocked_time = blocked_start.elapsed();
-    println!("  ✓ Blocked: {:.2}s ({:.1} queries/sec)",
+    println!(
+        "  ✓ Blocked: {:.2}s ({:.1} queries/sec)",
         blocked_time.as_secs_f64(),
-        n_sources as f64 / blocked_time.as_secs_f64());
+        n_sources as f64 / blocked_time.as_secs_f64()
+    );
     println!("    Downward time: {}ms", blocked_stats.downward_time_ms);
     println!("    Buffer flushes: {}", blocked_stats.buffer_flushes);
-    println!("    Buffered updates: {}", format_number(blocked_stats.buffered_updates as u64));
+    println!(
+        "    Buffered updates: {}",
+        format_number(blocked_stats.buffered_updates as u64)
+    );
     println!();
 
     // ========== Correctness verification ==========
@@ -1676,16 +1957,22 @@ fn run_blocked_relaxation_bench(
                 let diff = (expected as i64 - actual as i64).abs();
                 max_diff = max_diff.max(diff);
                 if mismatches <= 3 {
-                    println!("  Mismatch: src={} tgt={}: baseline={}, blocked={}",
-                        src_idx, tgt_idx, expected, actual);
+                    println!(
+                        "  Mismatch: src={} tgt={}: baseline={}, blocked={}",
+                        src_idx, tgt_idx, expected, actual
+                    );
                 }
             }
         }
     }
 
     if mismatches == 0 {
-        println!("  ✅ All {} × {} = {} distances match!",
-            n_sources, n_tgt, n_sources * n_tgt);
+        println!(
+            "  ✅ All {} × {} = {} distances match!",
+            n_sources,
+            n_tgt,
+            n_sources * n_tgt
+        );
     } else {
         println!("  ❌ {} mismatches (max diff: {})", mismatches, max_diff);
     }
@@ -1697,16 +1984,23 @@ fn run_blocked_relaxation_bench(
     println!("───────────────────────────────────────────────────────────────");
 
     let speedup = baseline_time.as_secs_f64() / blocked_time.as_secs_f64();
-    let downward_speedup = baseline_stats.downward_time_ms as f64 / blocked_stats.downward_time_ms.max(1) as f64;
+    let downward_speedup =
+        baseline_stats.downward_time_ms as f64 / blocked_stats.downward_time_ms.max(1) as f64;
 
     println!("  Non-blocked:");
     println!("    Total time:     {:>8.2}s", baseline_time.as_secs_f64());
-    println!("    Downward time:  {:>8}ms", baseline_stats.downward_time_ms);
+    println!(
+        "    Downward time:  {:>8}ms",
+        baseline_stats.downward_time_ms
+    );
     println!("    Upward time:    {:>8}ms", baseline_stats.upward_time_ms);
     println!();
     println!("  Blocked:");
     println!("    Total time:     {:>8.2}s", blocked_time.as_secs_f64());
-    println!("    Downward time:  {:>8}ms", blocked_stats.downward_time_ms);
+    println!(
+        "    Downward time:  {:>8}ms",
+        blocked_stats.downward_time_ms
+    );
     println!("    Upward time:    {:>8}ms", blocked_stats.upward_time_ms);
     println!();
     println!("  Total speedup:       {:>8.2}x", speedup);
@@ -1754,7 +2048,11 @@ fn run_block_gated_bench(
     println!("  BLOCK-GATED PHAST BENCHMARK");
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}", mode);
-    println!("  Threshold: {} ms ({:.1} min)", threshold_ms, threshold_ms as f64 / 60000.0);
+    println!(
+        "  Threshold: {} ms ({:.1} min)",
+        threshold_ms,
+        threshold_ms as f64 / 60000.0
+    );
     println!("  Queries: {}", n_queries);
     println!("  Block size: {} ranks", BLOCK_SIZE);
     println!();
@@ -1765,8 +2063,12 @@ fn run_block_gated_bench(
     let phast = load_phast(data_dir, mode)?;
     let n_nodes = phast.n_nodes();
     let n_blocks = n_nodes.div_ceil(BLOCK_SIZE);
-    println!("  ✓ Loaded in {:.1}s ({} nodes, {} blocks)",
-        load_start.elapsed().as_secs_f64(), n_nodes, n_blocks);
+    println!(
+        "  ✓ Loaded in {:.1}s ({} nodes, {} blocks)",
+        load_start.elapsed().as_secs_f64(),
+        n_nodes,
+        n_blocks
+    );
     println!();
 
     // Generate random origins
@@ -1882,7 +2184,10 @@ fn run_block_gated_bench(
     println!("    p95:  {:>6}ms", active_p95);
     println!("    p99:  {:>6}ms", active_p99);
     println!("    Avg:  {:>6.1}ms", active_avg_ms);
-    println!("    Relaxations/query: {:.2}M", active_relaxations as f64 / n_queries as f64 / 1_000_000.0);
+    println!(
+        "    Relaxations/query: {:.2}M",
+        active_relaxations as f64 / n_queries as f64 / 1_000_000.0
+    );
     println!();
 
     println!("  Block-level gating:");
@@ -1890,16 +2195,25 @@ fn run_block_gated_bench(
     println!("    p95:  {:>6}ms", block_p95);
     println!("    p99:  {:>6}ms", block_p99);
     println!("    Avg:  {:>6.1}ms", block_avg_ms);
-    println!("    Relaxations/query: {:.2}M", block_relaxations as f64 / n_queries as f64 / 1_000_000.0);
-    println!("    Blocks processed/query: {:.0} / {} ({:.1}%)",
+    println!(
+        "    Relaxations/query: {:.2}M",
+        block_relaxations as f64 / n_queries as f64 / 1_000_000.0
+    );
+    println!(
+        "    Blocks processed/query: {:.0} / {} ({:.1}%)",
         total_blocks_processed as f64 / n_queries as f64,
         n_blocks,
-        100.0 * total_blocks_processed as f64 / (n_queries as f64 * n_blocks as f64));
-    println!("    Blocks skipped/query: {:.0} ({:.1}%)",
+        100.0 * total_blocks_processed as f64 / (n_queries as f64 * n_blocks as f64)
+    );
+    println!(
+        "    Blocks skipped/query: {:.0} ({:.1}%)",
         total_blocks_skipped as f64 / n_queries as f64,
-        100.0 * total_blocks_skipped as f64 / (n_queries as f64 * n_blocks as f64));
-    println!("    Nodes skipped in active blocks/query: {:.0}",
-        total_nodes_skipped_in_block as f64 / n_queries as f64);
+        100.0 * total_blocks_skipped as f64 / (n_queries as f64 * n_blocks as f64)
+    );
+    println!(
+        "    Nodes skipped in active blocks/query: {:.0}",
+        total_nodes_skipped_in_block as f64 / n_queries as f64
+    );
     println!();
 
     // Speedup
@@ -1915,8 +2229,11 @@ fn run_block_gated_bench(
 
     // Reachable comparison
     let avg_reachable = active_reachable as f64 / n_queries as f64;
-    println!("  Avg reachable nodes: {:.0} ({:.2}% of graph)",
-        avg_reachable, 100.0 * avg_reachable / n_nodes as f64);
+    println!(
+        "  Avg reachable nodes: {:.0} ({:.2}% of graph)",
+        avg_reachable,
+        100.0 * avg_reachable / n_nodes as f64
+    );
     println!();
 
     // Analysis
@@ -1938,19 +2255,30 @@ fn run_block_gated_bench(
     println!("───────────────────────────────────────────────────────────────");
 
     let target_met = match (mode, threshold_ms) {
-        ("foot", 300000) => block_p95 <= 40,  // foot 5min: p95 < 20-40ms
-        ("bike", 600000) => block_p95 <= 80,  // bike 10min: p95 < 50-80ms
+        ("foot", 300000) => block_p95 <= 40, // foot 5min: p95 < 20-40ms
+        ("bike", 600000) => block_p95 <= 80, // bike 10min: p95 < 50-80ms
         _ => true,
     };
 
     if mode == "foot" && threshold_ms == 300000 {
         println!("  Foot 5min target: p95 < 20-40ms");
-        println!("  Actual p95: {}ms → {}", block_p95, if target_met { "✅ MET" } else { "❌ NOT MET" });
+        println!(
+            "  Actual p95: {}ms → {}",
+            block_p95,
+            if target_met { "✅ MET" } else { "❌ NOT MET" }
+        );
     } else if mode == "bike" && threshold_ms == 600000 {
         println!("  Bike 10min target: p95 < 50-80ms");
-        println!("  Actual p95: {}ms → {}", block_p95, if target_met { "✅ MET" } else { "❌ NOT MET" });
+        println!(
+            "  Actual p95: {}ms → {}",
+            block_p95,
+            if target_met { "✅ MET" } else { "❌ NOT MET" }
+        );
     } else {
-        println!("  (No specific target for mode={}, threshold={}ms)", mode, threshold_ms);
+        println!(
+            "  (No specific target for mode={}, threshold={}ms)",
+            mode, threshold_ms
+        );
     }
     println!();
 
@@ -1982,8 +2310,12 @@ fn run_adaptive_bench(
     let phast = load_phast(data_dir, mode)?;
     let n_nodes = phast.n_nodes();
     let n_blocks = n_nodes.div_ceil(BLOCK_SIZE);
-    println!("  ✓ Loaded in {:.1}s ({} nodes, {} blocks)",
-        load_start.elapsed().as_secs_f64(), n_nodes, n_blocks);
+    println!(
+        "  ✓ Loaded in {:.1}s ({} nodes, {} blocks)",
+        load_start.elapsed().as_secs_f64(),
+        n_nodes,
+        n_blocks
+    );
     println!();
 
     // Generate random origins
@@ -2011,7 +2343,11 @@ fn run_adaptive_bench(
         plain_times.sort();
         let plain_p50 = plain_times[n_queries / 2].as_millis();
         let plain_p95 = plain_times[n_queries * 95 / 100].as_millis();
-        let plain_avg: f64 = plain_times.iter().map(|d| d.as_millis() as f64).sum::<f64>() / n_queries as f64;
+        let plain_avg: f64 = plain_times
+            .iter()
+            .map(|d| d.as_millis() as f64)
+            .sum::<f64>()
+            / n_queries as f64;
 
         // Run adaptive PHAST
         let mut adaptive_times: Vec<Duration> = Vec::with_capacity(n_queries);
@@ -2035,7 +2371,11 @@ fn run_adaptive_bench(
         adaptive_times.sort();
         let adaptive_p50 = adaptive_times[n_queries / 2].as_millis();
         let adaptive_p95 = adaptive_times[n_queries * 95 / 100].as_millis();
-        let adaptive_avg: f64 = adaptive_times.iter().map(|d| d.as_millis() as f64).sum::<f64>() / n_queries as f64;
+        let adaptive_avg: f64 = adaptive_times
+            .iter()
+            .map(|d| d.as_millis() as f64)
+            .sum::<f64>()
+            / n_queries as f64;
 
         // Run block-gated PHAST (always gated)
         let mut gated_times: Vec<Duration> = Vec::with_capacity(n_queries);
@@ -2047,7 +2387,11 @@ fn run_adaptive_bench(
         gated_times.sort();
         let gated_p50 = gated_times[n_queries / 2].as_millis();
         let gated_p95 = gated_times[n_queries * 95 / 100].as_millis();
-        let gated_avg: f64 = gated_times.iter().map(|d| d.as_millis() as f64).sum::<f64>() / n_queries as f64;
+        let gated_avg: f64 = gated_times
+            .iter()
+            .map(|d| d.as_millis() as f64)
+            .sum::<f64>()
+            / n_queries as f64;
 
         let avg_reachable = total_reachable as f64 / n_queries as f64;
         let reachable_pct = 100.0 * avg_reachable / n_nodes as f64;
@@ -2059,13 +2403,21 @@ fn run_adaptive_bench(
         };
 
         // Print results
-        println!("│ {:>6}ms │ Plain    │ {:>8} │ {:>8} │ {:>9.1} │           │          │",
-            threshold_ms, plain_p50, plain_p95, plain_avg);
-        println!("│          │ Block    │ {:>8} │ {:>8} │ {:>9.1} │           │          │",
-            gated_p50, gated_p95, gated_avg);
-        println!("│          │ Adaptive │ {:>8} │ {:>8} │ {:>9.1} │ {:>9} │ {:>6.1}%  │",
-            adaptive_p50, adaptive_p95, adaptive_avg, strategy_desc, reachable_pct);
-        println!("├──────────┼──────────┼──────────┼──────────┼───────────┼───────────┼──────────┤");
+        println!(
+            "│ {:>6}ms │ Plain    │ {:>8} │ {:>8} │ {:>9.1} │           │          │",
+            threshold_ms, plain_p50, plain_p95, plain_avg
+        );
+        println!(
+            "│          │ Block    │ {:>8} │ {:>8} │ {:>9.1} │           │          │",
+            gated_p50, gated_p95, gated_avg
+        );
+        println!(
+            "│          │ Adaptive │ {:>8} │ {:>8} │ {:>9.1} │ {:>9} │ {:>6.1}%  │",
+            adaptive_p50, adaptive_p95, adaptive_avg, strategy_desc, reachable_pct
+        );
+        println!(
+            "├──────────┼──────────┼──────────┼──────────┼───────────┼───────────┼──────────┤"
+        );
     }
 
     println!("└──────────┴──────────┴──────────┴──────────┴───────────┴───────────┴──────────┘");
@@ -2101,8 +2453,18 @@ fn run_klane_bounded_bench(
     println!("  K-LANE BLOCK-GATED PHAST BENCHMARK");
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}", mode);
-    println!("  Threshold: {} ms = {} ds ({:.1} min)", threshold_ms, threshold_ds, threshold_ms as f64 / 60000.0);
-    println!("  Batches: {} × {} lanes = {} total sources", n_batches, K_LANES, n_batches * K_LANES);
+    println!(
+        "  Threshold: {} ms = {} ds ({:.1} min)",
+        threshold_ms,
+        threshold_ds,
+        threshold_ms as f64 / 60000.0
+    );
+    println!(
+        "  Batches: {} × {} lanes = {} total sources",
+        n_batches,
+        K_LANES,
+        n_batches * K_LANES
+    );
     println!();
 
     // Load batched PHAST engine
@@ -2110,13 +2472,21 @@ fn run_klane_bounded_bench(
     let load_start = Instant::now();
     let engine = load_batched_phast(data_dir, mode)?;
     let n_nodes = engine.n_nodes();
-    println!("  ✓ Loaded in {:.1}s ({} nodes)", load_start.elapsed().as_secs_f64(), n_nodes);
+    println!(
+        "  ✓ Loaded in {:.1}s ({} nodes)",
+        load_start.elapsed().as_secs_f64(),
+        n_nodes
+    );
     println!();
 
     // Generate random sources (K per batch)
     let mut rng = StdRng::seed_from_u64(seed);
     let sources: Vec<Vec<u32>> = (0..n_batches)
-        .map(|_| (0..K_LANES).map(|_| rng.random_range(0..n_nodes as u32)).collect())
+        .map(|_| {
+            (0..K_LANES)
+                .map(|_| rng.random_range(0..n_nodes as u32))
+                .collect()
+        })
         .collect();
 
     // ========== Regular batched PHAST (unbounded) ==========
@@ -2138,11 +2508,17 @@ fn run_klane_bounded_bench(
     let regular_total: Duration = regular_times.iter().sum();
     let regular_avg = regular_total.as_millis() as f64 / n_batches as f64;
     let regular_per_query = regular_avg / K_LANES as f64;
-    println!("  ✓ Regular: {:.1}ms/batch, {:.2}ms/query effective", regular_avg, regular_per_query);
+    println!(
+        "  ✓ Regular: {:.1}ms/batch, {:.2}ms/query effective",
+        regular_avg, regular_per_query
+    );
     println!();
 
     // ========== K-lane block-gated PHAST (bounded) ==========
-    println!("[3/3] Running K-lane block-gated PHAST (bounded T={} ds)...", threshold_ds);
+    println!(
+        "[3/3] Running K-lane block-gated PHAST (bounded T={} ds)...",
+        threshold_ds
+    );
 
     let mut gated_times: Vec<Duration> = Vec::with_capacity(n_batches);
     let mut gated_stats = BatchedPhastStats::default();
@@ -2155,14 +2531,17 @@ fn run_klane_bounded_bench(
         gated_stats.upward_relaxations += result.stats.upward_relaxations;
         gated_stats.downward_relaxations += result.stats.downward_relaxations;
         gated_stats.downward_improved += result.stats.downward_improved;
-        gated_stats.buffer_flushes += result.stats.buffer_flushes;  // blocks_skipped
-        gated_stats.buffered_updates += result.stats.buffered_updates;  // blocks_processed
+        gated_stats.buffer_flushes += result.stats.buffer_flushes; // blocks_skipped
+        gated_stats.buffered_updates += result.stats.buffered_updates; // blocks_processed
     }
 
     let gated_total: Duration = gated_times.iter().sum();
     let gated_avg = gated_total.as_millis() as f64 / n_batches as f64;
     let gated_per_query = gated_avg / K_LANES as f64;
-    println!("  ✓ K-lane gated: {:.1}ms/batch, {:.2}ms/query effective", gated_avg, gated_per_query);
+    println!(
+        "  ✓ K-lane gated: {:.1}ms/batch, {:.2}ms/query effective",
+        gated_avg, gated_per_query
+    );
     println!();
 
     // ========== Correctness check ==========
@@ -2218,7 +2597,10 @@ fn run_klane_bounded_bench(
     println!("    p95 batch:  {:>6}ms", regular_p95);
     println!("    Avg batch:  {:>6.1}ms", regular_avg);
     println!("    Effective/query: {:>6.2}ms", regular_per_query);
-    println!("    Relaxations/batch: {:.2}M", regular_stats.downward_relaxations as f64 / n_batches as f64 / 1_000_000.0);
+    println!(
+        "    Relaxations/batch: {:.2}M",
+        regular_stats.downward_relaxations as f64 / n_batches as f64 / 1_000_000.0
+    );
     println!();
 
     println!("  K-lane block-gated (T={}ms):", threshold_ms);
@@ -2226,9 +2608,18 @@ fn run_klane_bounded_bench(
     println!("    p95 batch:  {:>6}ms", gated_p95);
     println!("    Avg batch:  {:>6.1}ms", gated_avg);
     println!("    Effective/query: {:>6.2}ms", gated_per_query);
-    println!("    Relaxations/batch: {:.2}M", gated_stats.downward_relaxations as f64 / n_batches as f64 / 1_000_000.0);
-    println!("    Blocks processed/batch: {:.0}", gated_stats.buffered_updates as f64 / n_batches as f64);
-    println!("    Blocks skipped/batch: {:.0}", gated_stats.buffer_flushes as f64 / n_batches as f64);
+    println!(
+        "    Relaxations/batch: {:.2}M",
+        gated_stats.downward_relaxations as f64 / n_batches as f64 / 1_000_000.0
+    );
+    println!(
+        "    Blocks processed/batch: {:.0}",
+        gated_stats.buffered_updates as f64 / n_batches as f64
+    );
+    println!(
+        "    Blocks skipped/batch: {:.0}",
+        gated_stats.buffer_flushes as f64 / n_batches as f64
+    );
     println!();
 
     // Speedup
@@ -2237,7 +2628,10 @@ fn run_klane_bounded_bench(
     println!("  COMPARISON");
     println!("───────────────────────────────────────────────────────────────");
     println!("  Batch speedup: {:.2}x", speedup);
-    println!("  Effective per-query speedup: {:.2}x", regular_per_query / gated_per_query);
+    println!(
+        "  Effective per-query speedup: {:.2}x",
+        regular_per_query / gated_per_query
+    );
     println!();
 
     // Analysis
@@ -2273,7 +2667,13 @@ fn run_reachability_analysis(
     println!("  REACHABILITY ANALYSIS FOR rPHAST DECISION");
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}", mode);
-    println!("  Thresholds: {:?}", thresholds.iter().map(|t| format!("{:.1}min", *t as f64 / 60000.0)).collect::<Vec<_>>());
+    println!(
+        "  Thresholds: {:?}",
+        thresholds
+            .iter()
+            .map(|t| format!("{:.1}min", *t as f64 / 60000.0))
+            .collect::<Vec<_>>()
+    );
     println!("  Origins sampled: {}", n_origins);
     println!();
 
@@ -2285,7 +2685,10 @@ fn run_reachability_analysis(
     let total_edges = phast.total_down_edges();
     println!("  ✓ Loaded in {:.1}s", load_start.elapsed().as_secs_f64());
     println!("  Total nodes: {}", n_nodes);
-    println!("  Total down-edges: {:.2}M", total_edges as f64 / 1_000_000.0);
+    println!(
+        "  Total down-edges: {:.2}M",
+        total_edges as f64 / 1_000_000.0
+    );
     println!();
 
     // Generate random origins
@@ -2419,8 +2822,8 @@ fn run_matrix_stream_bench(
     dst_tile_size: usize,
     seed: u64,
 ) -> anyhow::Result<()> {
-    use butterfly_route::matrix::arrow_stream::{MatrixTile, tiles_to_record_batch};
     use arrow::ipc::writer::StreamWriter;
+    use butterfly_route::matrix::arrow_stream::{tiles_to_record_batch, MatrixTile};
 
     println!("═══════════════════════════════════════════════════════════════");
     println!("  MATRIX STREAMING BENCHMARK");
@@ -2430,7 +2833,12 @@ fn run_matrix_stream_bench(
     println!("  Targets: {}", n_targets);
     println!("  Src tile size: {}", src_tile_size);
     println!("  Dst tile size: {}", dst_tile_size);
-    println!("  Matrix size: {}x{} = {} cells", n_sources, n_targets, n_sources * n_targets);
+    println!(
+        "  Matrix size: {}x{} = {} cells",
+        n_sources,
+        n_targets,
+        n_sources * n_targets
+    );
     println!("───────────────────────────────────────────────────────────────");
     println!();
 
@@ -2517,13 +2925,22 @@ fn run_matrix_stream_bench(
     println!("  RESULTS");
     println!("───────────────────────────────────────────────────────────────");
     println!("  Total tiles: {}", total_tiles);
-    println!("  Total bytes: {:.2} MB", total_bytes as f64 / 1024.0 / 1024.0);
+    println!(
+        "  Total bytes: {:.2} MB",
+        total_bytes as f64 / 1024.0 / 1024.0
+    );
     println!("  Total time: {:?}", total_time);
     println!();
-    println!("  Compute time: {}ms ({:.1}%)", total_compute_ms,
-             total_compute_ms as f64 / total_time.as_millis() as f64 * 100.0);
-    println!("  Serialize time: {}ms ({:.1}%)", total_serialize_ms,
-             total_serialize_ms as f64 / total_time.as_millis() as f64 * 100.0);
+    println!(
+        "  Compute time: {}ms ({:.1}%)",
+        total_compute_ms,
+        total_compute_ms as f64 / total_time.as_millis() as f64 * 100.0
+    );
+    println!(
+        "  Serialize time: {}ms ({:.1}%)",
+        total_serialize_ms,
+        total_serialize_ms as f64 / total_time.as_millis() as f64 * 100.0
+    );
     println!();
 
     let cells = n_sources * n_targets;
@@ -2557,7 +2974,14 @@ fn run_bucket_m2m_bench(
     use butterfly_route::matrix::bucket_ch::table_bucket_parallel;
 
     println!("═══════════════════════════════════════════════════════════════");
-    println!("  BUCKET MANY-TO-MANY CH BENCHMARK {}", if parallel { "(PARALLEL)" } else { "(SEQUENTIAL)" });
+    println!(
+        "  BUCKET MANY-TO-MANY CH BENCHMARK {}",
+        if parallel {
+            "(PARALLEL)"
+        } else {
+            "(SEQUENTIAL)"
+        }
+    );
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}", mode);
     println!("  Sizes: {:?}", sizes);
@@ -2566,31 +2990,49 @@ fn run_bucket_m2m_bench(
     println!();
 
     // Load CCH data
-    let topo_path = find_file(data_dir, &[
-        format!("cch.{}.topo", mode),
-        format!("step7-rank-aligned/cch.{}.topo", mode),
-        format!("step7/cch.{}.topo", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
+    let topo_path = find_file(
+        data_dir,
+        &[
+            format!("cch.{}.topo", mode),
+            format!("step7-rank-aligned/cch.{}.topo", mode),
+            format!("step7/cch.{}.topo", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
 
-    let weights_path = find_file(data_dir, &[
-        format!("cch.w.{}.u32", mode),
-        format!("step8-rank-aligned/cch.w.{}.u32", mode),
-        format!("step8/cch.w.{}.u32", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
+    let weights_path = find_file(
+        data_dir,
+        &[
+            format!("cch.w.{}.u32", mode),
+            format!("step8-rank-aligned/cch.w.{}.u32", mode),
+            format!("step8/cch.w.{}.u32", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
 
     println!("Loading CCH topology from {:?}...", topo_path);
     let topo = CchTopoFile::read(&topo_path)?;
     let n_nodes = topo.n_nodes as usize;
-    println!("  ✓ {} nodes, {} up edges, {} down edges",
-             n_nodes, topo.up_targets.len(), topo.down_targets.len());
+    println!(
+        "  ✓ {} nodes, {} up edges, {} down edges",
+        n_nodes,
+        topo.up_targets.len(),
+        topo.down_targets.len()
+    );
 
     println!("Loading CCH weights from {:?}...", weights_path);
     let weights = CchWeightsFile::read(&weights_path)?;
     let up_inf = weights.up.iter().filter(|&&w| w == u32::MAX).count();
     let down_inf = weights.down.iter().filter(|&&w| w == u32::MAX).count();
-    println!("  ✓ {} up weights ({} INF = {:.1}%), {} down weights ({} INF = {:.1}%)",
-             weights.up.len(), up_inf, 100.0 * up_inf as f64 / weights.up.len() as f64,
-             weights.down.len(), down_inf, 100.0 * down_inf as f64 / weights.down.len() as f64);
+    println!(
+        "  ✓ {} up weights ({} INF = {:.1}%), {} down weights ({} INF = {:.1}%)",
+        weights.up.len(),
+        up_inf,
+        100.0 * up_inf as f64 / weights.up.len() as f64,
+        weights.down.len(),
+        down_inf,
+        100.0 * down_inf as f64 / weights.down.len() as f64
+    );
 
     println!("Building UpAdjFlat (optimized forward adjacency)...");
     let up_adj_flat = UpAdjFlat::build(&topo, &weights);
@@ -2614,8 +3056,10 @@ fn run_bucket_m2m_bench(
     println!("  BENCHMARK RESULTS");
     println!("───────────────────────────────────────────────────────────────");
     println!();
-    println!("{:>8} {:>12} {:>10} {:>12} {:>10} {:>10} {:>10} {:>10}",
-             "Size", "Cells", "Time(ms)", "Cells/sec", "Fwd Vis", "Bwd Vis", "Joins", "Stale%");
+    println!(
+        "{:>8} {:>12} {:>10} {:>12} {:>10} {:>10} {:>10} {:>10}",
+        "Size", "Cells", "Time(ms)", "Cells/sec", "Fwd Vis", "Bwd Vis", "Joins", "Stale%"
+    );
     println!("{}", "-".repeat(100));
 
     let mut rng = StdRng::seed_from_u64(seed);
@@ -2634,7 +3078,8 @@ fn run_bucket_m2m_bench(
 
         // Warmup run
         if parallel {
-            let _ = table_bucket_parallel(n_nodes, &up_adj_flat, &down_rev_flat, &sources, &targets);
+            let _ =
+                table_bucket_parallel(n_nodes, &up_adj_flat, &down_rev_flat, &sources, &targets);
         } else {
             let _ = engine.compute(&topo, &weights, &down_rev_flat, &sources, &targets);
         }
@@ -2669,17 +3114,21 @@ fn run_bucket_m2m_bench(
             0.0
         };
 
-        println!("{:>8} {:>12} {:>10.1} {:>12.0} {:>10} {:>10} {:>10} {:>9.1}%",
-                 format!("{}×{}", n, n),
-                 cells,
-                 avg_time_ms,
-                 cells_per_sec,
-                 fwd_vis_avg,
-                 bwd_vis_avg,
-                 stats.join_operations,
-                 stale_pct);
-        println!("         Fwd: {}ms, Sort: {}ms, Bwd: {}ms",
-                 stats.forward_time_ms, stats.sort_time_ms, stats.backward_time_ms);
+        println!(
+            "{:>8} {:>12} {:>10.1} {:>12.0} {:>10} {:>10} {:>10} {:>9.1}%",
+            format!("{}×{}", n, n),
+            cells,
+            avg_time_ms,
+            cells_per_sec,
+            fwd_vis_avg,
+            bwd_vis_avg,
+            stats.join_operations,
+            stale_pct
+        );
+        println!(
+            "         Fwd: {}ms, Sort: {}ms, Bwd: {}ms",
+            stats.forward_time_ms, stats.sort_time_ms, stats.backward_time_ms
+        );
     }
 
     // ========== Stall-on-Demand Benchmark ==========
@@ -2688,11 +3137,13 @@ fn run_bucket_m2m_bench(
     println!("  STALL-ON-DEMAND BENCHMARK");
     println!("───────────────────────────────────────────────────────────────");
     println!();
-    println!("{:>8} {:>12} {:>10} {:>10} {:>10} {:>10} {:>10}",
-             "Size", "Cells", "Time(ms)", "Stalls", "NonStall", "StallRate", "vs Base");
+    println!(
+        "{:>8} {:>12} {:>10} {:>10} {:>10} {:>10} {:>10}",
+        "Size", "Cells", "Time(ms)", "Stalls", "NonStall", "StallRate", "vs Base"
+    );
     println!("{}", "-".repeat(80));
 
-    let mut rng2 = StdRng::seed_from_u64(seed + 1000);  // Different seed for variety
+    let mut rng2 = StdRng::seed_from_u64(seed + 1000); // Different seed for variety
 
     for &n in sizes {
         // Generate random sources and targets
@@ -2705,13 +3156,18 @@ fn run_bucket_m2m_bench(
 
         // Baseline (without stall)
         let base_start = Instant::now();
-        let (base_matrix, _) = engine.compute_flat(&up_adj_flat, &down_rev_flat, &sources, &targets);
+        let (base_matrix, _) =
+            engine.compute_flat(&up_adj_flat, &down_rev_flat, &sources, &targets);
         let base_time = base_start.elapsed();
 
         // With stall-on-demand
         let stall_start = Instant::now();
         let (stall_matrix, _stats, stalls, non_stalls) = engine.compute_with_stall(
-            &up_adj_flat, &up_rev_flat, &down_rev_flat, &sources, &targets
+            &up_adj_flat,
+            &up_rev_flat,
+            &down_rev_flat,
+            &sources,
+            &targets,
         );
         let stall_time = stall_start.elapsed();
 
@@ -2731,14 +3187,16 @@ fn run_bucket_m2m_bench(
 
         let speedup = base_time.as_secs_f64() / stall_time.as_secs_f64();
 
-        println!("{:>8} {:>12} {:>10.1} {:>10} {:>10} {:>9.1}% {:>9.2}x",
-                 format!("{}×{}", n, n),
-                 n * n,
-                 stall_time.as_secs_f64() * 1000.0,
-                 stalls,
-                 non_stalls,
-                 stall_rate,
-                 speedup);
+        println!(
+            "{:>8} {:>12} {:>10.1} {:>10} {:>10} {:>9.1}% {:>9.2}x",
+            format!("{}×{}", n, n),
+            n * n,
+            stall_time.as_secs_f64() * 1000.0,
+            stalls,
+            non_stalls,
+            stall_rate,
+            speedup
+        );
 
         if mismatches > 0 {
             println!("         ⚠️  {} mismatches vs baseline!", mismatches);
@@ -2760,15 +3218,26 @@ fn run_bucket_m2m_bench(
 
     // Use fresh random sources/targets for validation
     let mut val_rng = StdRng::seed_from_u64(12345);
-    let val_sources: Vec<u32> = (0..5).map(|_| val_rng.random_range(0..n_nodes as u32)).collect();
-    let val_targets: Vec<u32> = (0..5).map(|_| val_rng.random_range(0..n_nodes as u32)).collect();
+    let val_sources: Vec<u32> = (0..5)
+        .map(|_| val_rng.random_range(0..n_nodes as u32))
+        .collect();
+    let val_targets: Vec<u32> = (0..5)
+        .map(|_| val_rng.random_range(0..n_nodes as u32))
+        .collect();
 
     // Run SEQUENTIAL bucket M2M (engine.compute uses SortedBuckets)
-    let (seq_matrix, _) = engine.compute(&topo, &weights, &down_rev_flat, &val_sources, &val_targets);
+    let (seq_matrix, _) =
+        engine.compute(&topo, &weights, &down_rev_flat, &val_sources, &val_targets);
 
     // Run PARALLEL bucket M2M (table_bucket_parallel uses PrefixSumBuckets with SoA)
     // This is what we're actually benchmarking, so we must validate this path!
-    let (par_matrix, _) = table_bucket_parallel(n_nodes, &up_adj_flat, &down_rev_flat, &val_sources, &val_targets);
+    let (par_matrix, _) = table_bucket_parallel(
+        n_nodes,
+        &up_adj_flat,
+        &down_rev_flat,
+        &val_sources,
+        &val_targets,
+    );
 
     // Compare parallel vs sequential
     let mut seq_par_mismatches = 0;
@@ -2776,7 +3245,10 @@ fn run_bucket_m2m_bench(
         if seq_matrix[i] != par_matrix[i] {
             seq_par_mismatches += 1;
             if seq_par_mismatches <= 3 {
-                println!("  SEQ/PAR mismatch at {}: seq={}, par={}", i, seq_matrix[i], par_matrix[i]);
+                println!(
+                    "  SEQ/PAR mismatch at {}: seq={}, par={}",
+                    i, seq_matrix[i], par_matrix[i]
+                );
             }
         }
     }
@@ -2790,7 +3262,7 @@ fn run_bucket_m2m_bench(
 
     for (si, &s) in val_sources.iter().enumerate() {
         for (ti, &t) in val_targets.iter().enumerate() {
-            let m2m_dist = par_matrix[si * 5 + ti];  // Use PARALLEL result
+            let m2m_dist = par_matrix[si * 5 + ti]; // Use PARALLEL result
 
             // Run P2P query using the same algorithm as the server
             let p2p_dist = run_p2p_query(&topo, &weights, &down_rev, s, t);
@@ -2799,10 +3271,21 @@ fn run_bucket_m2m_bench(
             if m2m_dist != p2p_dist {
                 mismatches += 1;
                 if mismatches <= 5 {
-                    println!("  MISMATCH: s={}, t={}: M2M={}, P2P={}",
-                             s, t,
-                             if m2m_dist == u32::MAX { "INF".to_string() } else { m2m_dist.to_string() },
-                             if p2p_dist == u32::MAX { "INF".to_string() } else { p2p_dist.to_string() });
+                    println!(
+                        "  MISMATCH: s={}, t={}: M2M={}, P2P={}",
+                        s,
+                        t,
+                        if m2m_dist == u32::MAX {
+                            "INF".to_string()
+                        } else {
+                            m2m_dist.to_string()
+                        },
+                        if p2p_dist == u32::MAX {
+                            "INF".to_string()
+                        } else {
+                            p2p_dist.to_string()
+                        }
+                    );
                 }
             }
         }
@@ -2867,14 +3350,18 @@ fn run_p2p_query(
             for i in start..end {
                 let v = topo.up_targets[i];
                 let w = weights.up[i];
-                if w == u32::MAX { continue; }
+                if w == u32::MAX {
+                    continue;
+                }
                 let new_d = d.saturating_add(w);
                 if new_d < dist_fwd[v as usize] {
                     dist_fwd[v as usize] = new_d;
                     pq_fwd.push(Reverse((new_d, v)));
                     if dist_bwd[v as usize] != u32::MAX {
                         let total = new_d.saturating_add(dist_bwd[v as usize]);
-                        if total < best_dist { best_dist = total; }
+                        if total < best_dist {
+                            best_dist = total;
+                        }
                     }
                 }
             }
@@ -2901,14 +3388,18 @@ fn run_p2p_query(
                 let x = down_rev.sources[i];
                 let edge_idx = down_rev.edge_idx[i] as usize;
                 let w = weights.down[edge_idx];
-                if w == u32::MAX { continue; }
+                if w == u32::MAX {
+                    continue;
+                }
                 let new_d = d.saturating_add(w);
                 if new_d < dist_bwd[x as usize] {
                     dist_bwd[x as usize] = new_d;
                     pq_bwd.push(Reverse((new_d, x)));
                     if dist_fwd[x as usize] != u32::MAX {
                         let total = new_d.saturating_add(dist_fwd[x as usize]);
-                        if total < best_dist { best_dist = total; }
+                        if total < best_dist {
+                            best_dist = total;
+                        }
                     }
                 }
             }
@@ -2959,7 +3450,11 @@ fn build_down_rev(topo: &butterfly_route::formats::CchTopo) -> DownReverseAdj {
         }
     }
 
-    DownReverseAdj { offsets, sources, edge_idx }
+    DownReverseAdj {
+        offsets,
+        sources,
+        edge_idx,
+    }
 }
 
 /// Compare dense vs sparse contour generation
@@ -2974,7 +3469,11 @@ fn run_contour_compare_bench(
     println!("  CONTOUR COMPARISON BENCHMARK (dense vs sparse)");
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}", mode);
-    println!("  Threshold: {} ds ({:.1} min)", threshold_ds, threshold_ds as f64 / 600.0);
+    println!(
+        "  Threshold: {} ds ({:.1} min)",
+        threshold_ds,
+        threshold_ds as f64 / 600.0
+    );
     println!("  Queries: {}", n_queries);
 
     // Load data
@@ -3134,33 +3633,60 @@ fn run_contour_compare_bench(
 
     println!();
     println!("  SPARSE TIMING BREAKDOWN (μs mean / p99):");
-    println!("    Stamp:    {:>8.0} / {:>8}", stamp_mean, sparse_stamp_times[p99]);
-    println!("    Morph:    {:>8.0} / {:>8}", morph_mean, sparse_morph_times[p99]);
-    println!("    Contour:  {:>8.0} / {:>8}", contour_mean, sparse_contour_times[p99]);
-    println!("    Simplify: {:>8.0} / {:>8}", simplify_mean, sparse_simplify_times[p99]);
+    println!(
+        "    Stamp:    {:>8.0} / {:>8}",
+        stamp_mean, sparse_stamp_times[p99]
+    );
+    println!(
+        "    Morph:    {:>8.0} / {:>8}",
+        morph_mean, sparse_morph_times[p99]
+    );
+    println!(
+        "    Contour:  {:>8.0} / {:>8}",
+        contour_mean, sparse_contour_times[p99]
+    );
+    println!(
+        "    Simplify: {:>8.0} / {:>8}",
+        simplify_mean, sparse_simplify_times[p99]
+    );
 
     println!();
     println!("───────────────────────────────────────────────────────────────");
     println!("  COMPARISON");
     println!("───────────────────────────────────────────────────────────────");
     println!("    Speedup (mean):  {:.2}x", dense_mean / sparse_mean);
-    println!("    Speedup (p50):   {:.2}x", dense_times[p50] as f64 / sparse_times[p50] as f64);
-    println!("    Speedup (p99):   {:.2}x", dense_times[p99] as f64 / sparse_times[p99].max(1) as f64);
+    println!(
+        "    Speedup (p50):   {:.2}x",
+        dense_times[p50] as f64 / sparse_times[p50] as f64
+    );
+    println!(
+        "    Speedup (p99):   {:.2}x",
+        dense_times[p99] as f64 / sparse_times[p99].max(1) as f64
+    );
 
     let dense_tiles_mean: f64 = dense_tiles.iter().sum::<usize>() as f64 / n as f64;
     let sparse_tiles_mean: f64 = sparse_tiles.iter().sum::<usize>() as f64 / n as f64;
     println!();
     println!("    Dense grid cells (mean):  {:.0}", dense_tiles_mean);
     println!("    Sparse grid cells (mean): {:.0}", sparse_tiles_mean);
-    println!("    Cell reduction:           {:.1}%", 100.0 * (1.0 - sparse_tiles_mean / dense_tiles_mean));
+    println!(
+        "    Cell reduction:           {:.1}%",
+        100.0 * (1.0 - sparse_tiles_mean / dense_tiles_mean)
+    );
 
     let vertex_diff_mean: f64 = vertex_diffs.iter().sum::<i64>() as f64 / n as f64;
     println!();
-    println!("    Vertex difference (mean): {:.1} (dense - sparse)", vertex_diff_mean);
+    println!(
+        "    Vertex difference (mean): {:.1} (dense - sparse)",
+        vertex_diff_mean
+    );
 
     if sparse_mean < dense_mean {
         println!();
-        println!("  ✅ SPARSE is {:.1}x FASTER on average!", dense_mean / sparse_mean);
+        println!(
+            "  ✅ SPARSE is {:.1}x FASTER on average!",
+            dense_mean / sparse_mean
+        );
     } else {
         println!();
         println!("  ⚠️  DENSE is faster (sparse overhead may dominate for small areas)");
@@ -3186,9 +3712,18 @@ fn run_e2e_isochrone_bench(
     println!("  END-TO-END ISOCHRONE BENCHMARK");
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}", mode);
-    println!("  Threshold: {} ms = {} ds ({:.1} min)", threshold_ms, threshold_ds, threshold_ms as f64 / 60000.0);
+    println!(
+        "  Threshold: {} ms = {} ds ({:.1} min)",
+        threshold_ms,
+        threshold_ds,
+        threshold_ms as f64 / 60000.0
+    );
     println!("  Origins: {}", n_origins);
-    println!("  Adaptive crossover: {} ds ({:.1} min)", ADAPTIVE_THRESHOLD_DS, ADAPTIVE_THRESHOLD_DS as f64 / 600.0);
+    println!(
+        "  Adaptive crossover: {} ds ({:.1} min)",
+        ADAPTIVE_THRESHOLD_DS,
+        ADAPTIVE_THRESHOLD_DS as f64 / 600.0
+    );
     println!();
 
     // Parse mode
@@ -3204,40 +3739,59 @@ fn run_e2e_isochrone_bench(
     let load_start = Instant::now();
 
     // Find file paths
-    let topo_path = find_file(data_dir, &[
-        format!("cch.{}.topo", mode),
-        format!("step7-rank-aligned/cch.{}.topo", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
+    let topo_path = find_file(
+        data_dir,
+        &[
+            format!("cch.{}.topo", mode),
+            format!("step7-rank-aligned/cch.{}.topo", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
 
-    let weights_path = find_file(data_dir, &[
-        format!("cch.w.{}.u32", mode),
-        format!("step8-rank-aligned/cch.w.{}.u32", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
+    let weights_path = find_file(
+        data_dir,
+        &[
+            format!("cch.w.{}.u32", mode),
+            format!("step8-rank-aligned/cch.w.{}.u32", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
 
-    let order_path = find_file(data_dir, &[
-        format!("order.{}.ebg", mode),
-        format!("step6/order.{}.ebg", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
+    let order_path = find_file(
+        data_dir,
+        &[
+            format!("order.{}.ebg", mode),
+            format!("step6/order.{}.ebg", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
 
-    let filtered_path = find_file(data_dir, &[
-        format!("filtered.{}.ebg", mode),
-        format!("step5/filtered.{}.ebg", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find filtered.{}.ebg", mode))?;
+    let filtered_path = find_file(
+        data_dir,
+        &[
+            format!("filtered.{}.ebg", mode),
+            format!("step5/filtered.{}.ebg", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find filtered.{}.ebg", mode))?;
 
-    let ebg_nodes_path = find_file(data_dir, &[
-        "ebg.nodes".to_string(),
-        "step4/ebg.nodes".to_string(),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find ebg.nodes"))?;
+    let ebg_nodes_path = find_file(
+        data_dir,
+        &["ebg.nodes".to_string(), "step4/ebg.nodes".to_string()],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find ebg.nodes"))?;
 
-    let nbg_geo_path = find_file(data_dir, &[
-        "nbg.geo".to_string(),
-        "step3/nbg.geo".to_string(),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find nbg.geo"))?;
+    let nbg_geo_path = find_file(
+        data_dir,
+        &["nbg.geo".to_string(), "step3/nbg.geo".to_string()],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find nbg.geo"))?;
 
-    let base_weights_path = find_file(data_dir, &[
-        format!("w.{}.u32", mode),
-        format!("step5/w.{}.u32", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find w.{}.u32", mode))?;
+    let base_weights_path = find_file(
+        data_dir,
+        &[format!("w.{}.u32", mode), format!("step5/w.{}.u32", mode)],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find w.{}.u32", mode))?;
 
     let engine = AdaptiveIsochroneEngine::load(
         &topo_path,
@@ -3250,7 +3804,11 @@ fn run_e2e_isochrone_bench(
         mode_enum,
     )?;
     let n_nodes = engine.n_nodes();
-    println!("  ✓ Loaded in {:.2}s ({} nodes)", load_start.elapsed().as_secs_f64(), n_nodes);
+    println!(
+        "  ✓ Loaded in {:.2}s ({} nodes)",
+        load_start.elapsed().as_secs_f64(),
+        n_nodes
+    );
     println!();
 
     // Generate random origins
@@ -3267,7 +3825,10 @@ fn run_e2e_isochrone_bench(
     let mut vertex_counts: Vec<usize> = Vec::with_capacity(n_origins);
     let mut records: Vec<IsochroneRecord> = Vec::with_capacity(n_origins);
 
-    println!("[2/3] Running {} end-to-end isochrone queries...", n_origins);
+    println!(
+        "[2/3] Running {} end-to-end isochrone queries...",
+        n_origins
+    );
 
     for (i, &origin) in origins.iter().enumerate() {
         let total_start = Instant::now();
@@ -3325,10 +3886,12 @@ fn run_e2e_isochrone_bench(
     let serialize_start = Instant::now();
     let ndjson_bytes = write_ndjson(&records);
     let serialize_time = serialize_start.elapsed();
-    println!("  ✓ Serialized {} records to {} KB NDJSON in {:.2}ms",
-             records.len(),
-             ndjson_bytes.len() / 1024,
-             serialize_time.as_secs_f64() * 1000.0);
+    println!(
+        "  ✓ Serialized {} records to {} KB NDJSON in {:.2}ms",
+        records.len(),
+        ndjson_bytes.len() / 1024,
+        serialize_time.as_secs_f64() * 1000.0
+    );
     println!();
 
     // Compute percentiles
@@ -3351,36 +3914,58 @@ fn run_e2e_isochrone_bench(
     println!("───────────────────────────────────────────────────────────────");
     println!("  TIMING BREAKDOWN (μs)");
     println!("───────────────────────────────────────────────────────────────");
-    println!("  {:12} {:>10} {:>10} {:>10} {:>10}", "", "p50", "p95", "p99", "mean");
-    println!("  {:12} {:>10} {:>10} {:>10} {:>10.0}",
-             "Compute:",
-             compute_times_us[p50],
-             compute_times_us[p95],
-             compute_times_us[p99],
-             compute_sum as f64 / n as f64);
-    println!("  {:12} {:>10} {:>10} {:>10} {:>10.0}",
-             "WKB encode:",
-             wkb_times_us[p50],
-             wkb_times_us[p95],
-             wkb_times_us[p99],
-             wkb_sum as f64 / n as f64);
-    println!("  {:12} {:>10} {:>10} {:>10} {:>10.0}",
-             "Total:",
-             total_times_us[p50],
-             total_times_us[p95],
-             total_times_us[p99],
-             total_sum as f64 / n as f64);
+    println!(
+        "  {:12} {:>10} {:>10} {:>10} {:>10}",
+        "", "p50", "p95", "p99", "mean"
+    );
+    println!(
+        "  {:12} {:>10} {:>10} {:>10} {:>10.0}",
+        "Compute:",
+        compute_times_us[p50],
+        compute_times_us[p95],
+        compute_times_us[p99],
+        compute_sum as f64 / n as f64
+    );
+    println!(
+        "  {:12} {:>10} {:>10} {:>10} {:>10.0}",
+        "WKB encode:",
+        wkb_times_us[p50],
+        wkb_times_us[p95],
+        wkb_times_us[p99],
+        wkb_sum as f64 / n as f64
+    );
+    println!(
+        "  {:12} {:>10} {:>10} {:>10} {:>10.0}",
+        "Total:",
+        total_times_us[p50],
+        total_times_us[p95],
+        total_times_us[p99],
+        total_sum as f64 / n as f64
+    );
     println!();
 
     println!("───────────────────────────────────────────────────────────────");
     println!("  OUTPUT SIZES");
     println!("───────────────────────────────────────────────────────────────");
-    println!("  WKB bytes (mean):     {:.0} bytes", wkb_size_sum as f64 / n as f64);
+    println!(
+        "  WKB bytes (mean):     {:.0} bytes",
+        wkb_size_sum as f64 / n as f64
+    );
     println!("  WKB bytes (p99):      {} bytes", wkb_sizes[p99]);
-    println!("  Vertices (mean):      {:.0}", vertex_counts.iter().sum::<usize>() as f64 / n as f64);
+    println!(
+        "  Vertices (mean):      {:.0}",
+        vertex_counts.iter().sum::<usize>() as f64 / n as f64
+    );
     println!("  Vertices (p99):       {}", vertex_counts[p99]);
-    println!("  NDJSON total:         {} KB for {} records", ndjson_bytes.len() / 1024, n);
-    println!("  NDJSON per record:    {:.0} bytes", ndjson_bytes.len() as f64 / n as f64);
+    println!(
+        "  NDJSON total:         {} KB for {} records",
+        ndjson_bytes.len() / 1024,
+        n
+    );
+    println!(
+        "  NDJSON per record:    {:.0} bytes",
+        ndjson_bytes.len() as f64 / n as f64
+    );
     println!();
 
     println!("───────────────────────────────────────────────────────────────");
@@ -3389,8 +3974,14 @@ fn run_e2e_isochrone_bench(
     let total_mean_ms = total_sum as f64 / n as f64 / 1000.0;
     let throughput = 1000.0 / total_mean_ms;
     println!("  Mean latency:         {:.2} ms", total_mean_ms);
-    println!("  p99 latency:          {:.2} ms", total_times_us[p99] as f64 / 1000.0);
-    println!("  Throughput:           {:.1} iso/sec (single-threaded)", throughput);
+    println!(
+        "  p99 latency:          {:.2} ms",
+        total_times_us[p99] as f64 / 1000.0
+    );
+    println!(
+        "  Throughput:           {:.1} iso/sec (single-threaded)",
+        throughput
+    );
     println!();
 
     // Time budget breakdown
@@ -3407,7 +3998,10 @@ fn run_e2e_isochrone_bench(
 
     if wkb_pct > 10.0 {
         println!();
-        println!("  ⚠️  WKB encoding is {:.1}% of total - consider streaming", wkb_pct);
+        println!(
+            "  ⚠️  WKB encoding is {:.1}% of total - consider streaming",
+            wkb_pct
+        );
     }
 
     if throughput > 100.0 {
@@ -3419,13 +4013,10 @@ fn run_e2e_isochrone_bench(
 }
 
 /// Pathological origins benchmark - tests worst-case scenarios
-fn run_pathological_origins_bench(
-    data_dir: &Path,
-    mode: &str,
-) -> anyhow::Result<()> {
+fn run_pathological_origins_bench(data_dir: &Path, mode: &str) -> anyhow::Result<()> {
+    use butterfly_route::formats::{EbgNodesFile, FilteredEbgFile, NbgGeoFile};
     use butterfly_route::profile_abi::Mode;
     use butterfly_route::step9::spatial::SpatialIndex;
-    use butterfly_route::formats::{EbgNodesFile, NbgGeoFile, FilteredEbgFile};
 
     println!("═══════════════════════════════════════════════════════════════");
     println!("  PATHOLOGICAL ORIGINS BENCHMARK");
@@ -3445,45 +4036,68 @@ fn run_pathological_origins_bench(
     println!("[1/3] Loading engine and spatial index...");
     let load_start = Instant::now();
 
-    let topo_path = find_file(data_dir, &[
-        format!("cch.{}.topo", mode),
-        format!("step7-rank-aligned/cch.{}.topo", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
+    let topo_path = find_file(
+        data_dir,
+        &[
+            format!("cch.{}.topo", mode),
+            format!("step7-rank-aligned/cch.{}.topo", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
 
-    let weights_path = find_file(data_dir, &[
-        format!("cch.w.{}.u32", mode),
-        format!("step8-rank-aligned/cch.w.{}.u32", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
+    let weights_path = find_file(
+        data_dir,
+        &[
+            format!("cch.w.{}.u32", mode),
+            format!("step8-rank-aligned/cch.w.{}.u32", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
 
-    let order_path = find_file(data_dir, &[
-        format!("order.{}.ebg", mode),
-        format!("step6/order.{}.ebg", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
+    let order_path = find_file(
+        data_dir,
+        &[
+            format!("order.{}.ebg", mode),
+            format!("step6/order.{}.ebg", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
 
-    let filtered_path = find_file(data_dir, &[
-        format!("filtered.{}.ebg", mode),
-        format!("step5/filtered.{}.ebg", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find filtered.{}.ebg", mode))?;
+    let filtered_path = find_file(
+        data_dir,
+        &[
+            format!("filtered.{}.ebg", mode),
+            format!("step5/filtered.{}.ebg", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find filtered.{}.ebg", mode))?;
 
-    let ebg_nodes_path = find_file(data_dir, &[
-        "ebg.nodes".to_string(),
-        "step4/ebg.nodes".to_string(),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find ebg.nodes"))?;
+    let ebg_nodes_path = find_file(
+        data_dir,
+        &["ebg.nodes".to_string(), "step4/ebg.nodes".to_string()],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find ebg.nodes"))?;
 
-    let nbg_geo_path = find_file(data_dir, &[
-        "nbg.geo".to_string(),
-        "step3/nbg.geo".to_string(),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find nbg.geo"))?;
+    let nbg_geo_path = find_file(
+        data_dir,
+        &["nbg.geo".to_string(), "step3/nbg.geo".to_string()],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find nbg.geo"))?;
 
-    let base_weights_path = find_file(data_dir, &[
-        format!("w.{}.u32", mode),
-        format!("step5/w.{}.u32", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find w.{}.u32", mode))?;
+    let base_weights_path = find_file(
+        data_dir,
+        &[format!("w.{}.u32", mode), format!("step5/w.{}.u32", mode)],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find w.{}.u32", mode))?;
 
-    let mask_path = find_file(data_dir, &[
-        format!("mask.{}.bitset", mode),
-        format!("step5/mask.{}.bitset", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find mask.{}.bitset", mode))?;
+    let mask_path = find_file(
+        data_dir,
+        &[
+            format!("mask.{}.bitset", mode),
+            format!("step5/mask.{}.bitset", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find mask.{}.bitset", mode))?;
 
     // Load spatial index components
     let ebg_nodes = EbgNodesFile::read(&ebg_nodes_path)?;
@@ -3543,7 +4157,10 @@ fn run_pathological_origins_bench(
             let filtered_id = filtered_ebg.original_to_filtered[orig_id as usize];
             if filtered_id != u32::MAX {
                 snapped_origins.push((name, filtered_id));
-                println!("  ✓ {} → filtered node {} (orig {})", name, filtered_id, orig_id);
+                println!(
+                    "  ✓ {} → filtered node {} (orig {})",
+                    name, filtered_id, orig_id
+                );
                 found = true;
                 break;
             }
@@ -3580,14 +4197,19 @@ fn run_pathological_origins_bench(
             }
             print!(" {:>5.0}ms│", ms);
             std::io::Write::flush(&mut std::io::stdout())?;
-            if ms > worst_ms { worst_ms = ms; worst_loc = name; }
+            if ms > worst_ms {
+                worst_ms = ms;
+                worst_loc = name;
+            }
         }
         println!(" {:>6} │ {:>6} │", before_verts, after_verts);
     }
     println!("└────────────────────┴────────┴────────┴────────┴────────┴────────┴────────┘");
     println!();
     println!("  Worst case: {} at {:.0}ms", worst_loc, worst_ms);
-    if worst_ms < 200.0 { println!("  ✅ All under 200ms"); }
+    if worst_ms < 200.0 {
+        println!("  ✅ All under 200ms");
+    }
 
     Ok(())
 }
@@ -3602,65 +4224,99 @@ fn run_bulk_pipeline_bench(
     seed: u64,
 ) -> anyhow::Result<()> {
     use butterfly_route::profile_abi::Mode;
-    use std::io::{BufWriter, Write};
     use std::fs::File;
+    use std::io::{BufWriter, Write};
 
     let threshold_ds = threshold_ms / 100;
 
     println!("═══════════════════════════════════════════════════════════════");
     println!("  BULK ISOCHRONE PIPELINE");
     println!("═══════════════════════════════════════════════════════════════");
-    println!("  Mode: {}, Threshold: {} min, Origins: {}", mode, threshold_ms / 60000, n_origins);
+    println!(
+        "  Mode: {}, Threshold: {} min, Origins: {}",
+        mode,
+        threshold_ms / 60000,
+        n_origins
+    );
     println!();
 
     let mode_enum = match mode.to_lowercase().as_str() {
-        "car" => Mode::Car, "bike" => Mode::Bike, "foot" => Mode::Foot, _ => Mode::Car,
+        "car" => Mode::Car,
+        "bike" => Mode::Bike,
+        "foot" => Mode::Foot,
+        _ => Mode::Car,
     };
 
     println!("[1/3] Loading engine...");
-    let topo_path = find_file(data_dir, &[
-        format!("cch.{}.topo", mode),
-        format!("step7-rank-aligned/cch.{}.topo", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
-    let weights_path = find_file(data_dir, &[
-        format!("cch.w.{}.u32", mode),
-        format!("step8-rank-aligned/cch.w.{}.u32", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
-    let order_path = find_file(data_dir, &[
-        format!("order.{}.ebg", mode),
-        format!("step6/order.{}.ebg", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
-    let filtered_path = find_file(data_dir, &[
-        format!("filtered.{}.ebg", mode),
-        format!("step5/filtered.{}.ebg", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find filtered.{}.ebg", mode))?;
-    let ebg_nodes_path = find_file(data_dir, &[
-        "ebg.nodes".to_string(),
-        "step4/ebg.nodes".to_string(),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find ebg.nodes"))?;
-    let nbg_geo_path = find_file(data_dir, &[
-        "nbg.geo".to_string(),
-        "step3/nbg.geo".to_string(),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find nbg.geo"))?;
-    let base_weights_path = find_file(data_dir, &[
-        format!("w.{}.u32", mode),
-        format!("step5/w.{}.u32", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find w.{}.u32", mode))?;
+    let topo_path = find_file(
+        data_dir,
+        &[
+            format!("cch.{}.topo", mode),
+            format!("step7-rank-aligned/cch.{}.topo", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
+    let weights_path = find_file(
+        data_dir,
+        &[
+            format!("cch.w.{}.u32", mode),
+            format!("step8-rank-aligned/cch.w.{}.u32", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
+    let order_path = find_file(
+        data_dir,
+        &[
+            format!("order.{}.ebg", mode),
+            format!("step6/order.{}.ebg", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
+    let filtered_path = find_file(
+        data_dir,
+        &[
+            format!("filtered.{}.ebg", mode),
+            format!("step5/filtered.{}.ebg", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find filtered.{}.ebg", mode))?;
+    let ebg_nodes_path = find_file(
+        data_dir,
+        &["ebg.nodes".to_string(), "step4/ebg.nodes".to_string()],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find ebg.nodes"))?;
+    let nbg_geo_path = find_file(
+        data_dir,
+        &["nbg.geo".to_string(), "step3/nbg.geo".to_string()],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find nbg.geo"))?;
+    let base_weights_path = find_file(
+        data_dir,
+        &[format!("w.{}.u32", mode), format!("step5/w.{}.u32", mode)],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find w.{}.u32", mode))?;
 
     let engine = AdaptiveIsochroneEngine::load(
-        &topo_path, &weights_path, &order_path, &filtered_path,
-        &ebg_nodes_path, &nbg_geo_path, &base_weights_path, mode_enum,
+        &topo_path,
+        &weights_path,
+        &order_path,
+        &filtered_path,
+        &ebg_nodes_path,
+        &nbg_geo_path,
+        &base_weights_path,
+        mode_enum,
     )?;
     let n_nodes = engine.n_nodes();
     println!("  ✓ Loaded ({} nodes)", n_nodes);
 
     println!("[2/3] Processing...");
     let mut rng = StdRng::seed_from_u64(seed);
-    let origins: Vec<u32> = (0..n_origins).map(|_| rng.random_range(0..n_nodes as u32)).collect();
+    let origins: Vec<u32> = (0..n_origins)
+        .map(|_| rng.random_range(0..n_nodes as u32))
+        .collect();
 
-    let mut writer: Option<BufWriter<File>> = output_path.map(|p|
-        BufWriter::with_capacity(64 * 1024, File::create(p).unwrap())
-    );
+    let mut writer: Option<BufWriter<File>> =
+        output_path.map(|p| BufWriter::with_capacity(64 * 1024, File::create(p).unwrap()));
 
     let start = Instant::now();
     let initial_rss = get_rss_kb();
@@ -3677,25 +4333,52 @@ fn run_bulk_pipeline_bench(
             if let Some(wkb) = encode_polygon_wkb(c) {
                 total_wkb += wkb.len();
                 if let Some(ref mut w) = writer {
-                    writeln!(w, r#"{{"origin":{},"wkb":"{}"}}"#, origin, base64_simple(&wkb))?;
+                    writeln!(
+                        w,
+                        r#"{{"origin":{},"wkb":"{}"}}"#,
+                        origin,
+                        base64_simple(&wkb)
+                    )?;
                 }
             }
         }
         if (i + 1) % 1000 == 0 {
-            print!("\r  {}/{} ({:.0}/s)", i + 1, n_origins, (i + 1) as f64 / start.elapsed().as_secs_f64());
+            print!(
+                "\r  {}/{} ({:.0}/s)",
+                i + 1,
+                n_origins,
+                (i + 1) as f64 / start.elapsed().as_secs_f64()
+            );
             std::io::Write::flush(&mut std::io::stdout())?;
         }
     }
-    if let Some(ref mut w) = writer { w.flush()?; }
+    if let Some(ref mut w) = writer {
+        w.flush()?;
+    }
     println!();
 
     let elapsed = start.elapsed();
     let final_rss = get_rss_kb();
 
     println!("[3/3] Results");
-    println!("  Time: {:.1}s, Rate: {:.0}/s", elapsed.as_secs_f64(), n_origins as f64 / elapsed.as_secs_f64());
-    println!("  Valid: {}/{}, Verts: {}, WKB: {} KB", valid, n_origins, total_verts, total_wkb / 1024);
-    println!("  RSS: {} → {} KB (Δ{:+})", initial_rss, final_rss, final_rss as i64 - initial_rss as i64);
+    println!(
+        "  Time: {:.1}s, Rate: {:.0}/s",
+        elapsed.as_secs_f64(),
+        n_origins as f64 / elapsed.as_secs_f64()
+    );
+    println!(
+        "  Valid: {}/{}, Verts: {}, WKB: {} KB",
+        valid,
+        n_origins,
+        total_verts,
+        total_wkb / 1024
+    );
+    println!(
+        "  RSS: {} → {} KB (Δ{:+})",
+        initial_rss,
+        final_rss,
+        final_rss as i64 - initial_rss as i64
+    );
 
     Ok(())
 }
@@ -3704,19 +4387,31 @@ fn base64_simple(data: &[u8]) -> String {
     const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut r = String::with_capacity(data.len().div_ceil(3) * 4);
     for c in data.chunks(3) {
-        let (b0, b1, b2) = (c[0] as usize, c.get(1).copied().unwrap_or(0) as usize, c.get(2).copied().unwrap_or(0) as usize);
+        let (b0, b1, b2) = (
+            c[0] as usize,
+            c.get(1).copied().unwrap_or(0) as usize,
+            c.get(2).copied().unwrap_or(0) as usize,
+        );
         r.push(A[b0 >> 2] as char);
         r.push(A[((b0 & 3) << 4) | (b1 >> 4)] as char);
-        if c.len() > 1 { r.push(A[((b1 & 0xF) << 2) | (b2 >> 6)] as char); }
-        if c.len() > 2 { r.push(A[b2 & 0x3F] as char); }
+        if c.len() > 1 {
+            r.push(A[((b1 & 0xF) << 2) | (b2 >> 6)] as char);
+        }
+        if c.len() > 2 {
+            r.push(A[b2 & 0x3F] as char);
+        }
     }
     r
 }
 
 fn get_rss_kb() -> usize {
-    std::fs::read_to_string("/proc/self/status").ok()
-        .and_then(|s| s.lines().find(|l| l.starts_with("VmRSS:"))
-            .and_then(|l| l.split_whitespace().nth(1)?.parse().ok()))
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("VmRSS:"))
+                .and_then(|l| l.split_whitespace().nth(1)?.parse().ok())
+        })
         .unwrap_or(0)
 }
 
@@ -3734,25 +4429,39 @@ fn run_monotonicity_test(
     println!();
 
     println!("[1/2] Loading PHAST...");
-    let topo_path = find_file(data_dir, &[
-        format!("cch.{}.topo", mode),
-        format!("step7-rank-aligned/cch.{}.topo", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
-    let weights_path = find_file(data_dir, &[
-        format!("cch.w.{}.u32", mode),
-        format!("step8-rank-aligned/cch.w.{}.u32", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
-    let order_path = find_file(data_dir, &[
-        format!("order.{}.ebg", mode),
-        format!("step6/order.{}.ebg", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
+    let topo_path = find_file(
+        data_dir,
+        &[
+            format!("cch.{}.topo", mode),
+            format!("step7-rank-aligned/cch.{}.topo", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
+    let weights_path = find_file(
+        data_dir,
+        &[
+            format!("cch.w.{}.u32", mode),
+            format!("step8-rank-aligned/cch.w.{}.u32", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
+    let order_path = find_file(
+        data_dir,
+        &[
+            format!("order.{}.ebg", mode),
+            format!("step6/order.{}.ebg", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
     let phast = PhastEngine::load(&topo_path, &weights_path, &order_path)?;
     let n_nodes = phast.n_nodes();
     println!("  ✓ Loaded ({} nodes)", n_nodes);
 
     println!("[2/2] Testing monotonicity...");
     let mut rng = StdRng::seed_from_u64(seed);
-    let origins: Vec<u32> = (0..n_origins).map(|_| rng.random_range(0..n_nodes as u32)).collect();
+    let origins: Vec<u32> = (0..n_origins)
+        .map(|_| rng.random_range(0..n_nodes as u32))
+        .collect();
     let thresholds: Vec<u32> = vec![1000, 2000, 3000, 6000, 12000, 18000]; // deciseconds
 
     let mut tests = 0usize;
@@ -3793,16 +4502,12 @@ fn run_monotonicity_test(
 }
 
 /// Compare polygon detail levels with different cell sizes
-fn run_detail_compare(
-    data_dir: &Path,
-    mode: &str,
-    threshold_min: u32,
-) -> anyhow::Result<()> {
+fn run_detail_compare(data_dir: &Path, mode: &str, threshold_min: u32) -> anyhow::Result<()> {
     use butterfly_route::profile_abi::Mode;
-    use butterfly_route::range::sparse_contour::{SparseContourConfig, generate_sparse_contour};
-    use butterfly_route::range::concave_hull::{ConcaveHullConfig, generate_concave_hull};
+    use butterfly_route::range::concave_hull::{generate_concave_hull, ConcaveHullConfig};
     use butterfly_route::range::frontier::FrontierExtractor;
     use butterfly_route::range::phast::PhastEngine;
+    use butterfly_route::range::sparse_contour::{generate_sparse_contour, SparseContourConfig};
 
     println!("═══════════════════════════════════════════════════════════════");
     println!("  POLYGON DETAIL COMPARISON: Sparse Contour vs Concave Hull");
@@ -3811,42 +4516,69 @@ fn run_detail_compare(
     println!();
 
     let _mode_enum = match mode.to_lowercase().as_str() {
-        "car" => Mode::Car, "bike" => Mode::Bike, "foot" => Mode::Foot, _ => Mode::Car,
+        "car" => Mode::Car,
+        "bike" => Mode::Bike,
+        "foot" => Mode::Foot,
+        _ => Mode::Car,
     };
 
     // Load PHAST and extractor
     println!("[1/3] Loading engine...");
-    let topo_path = find_file(data_dir, &[
-        format!("cch.{}.topo", mode),
-        format!("step7-rank-aligned/cch.{}.topo", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
-    let weights_path = find_file(data_dir, &[
-        format!("cch.w.{}.u32", mode),
-        format!("step8-rank-aligned/cch.w.{}.u32", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
-    let order_path = find_file(data_dir, &[
-        format!("order.{}.ebg", mode),
-        format!("step6/order.{}.ebg", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
-    let filtered_path = find_file(data_dir, &[
-        format!("filtered.{}.ebg", mode),
-        format!("step5/filtered.{}.ebg", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find filtered.{}.ebg", mode))?;
-    let ebg_nodes_path = find_file(data_dir, &[
-        "ebg.nodes".to_string(),
-        "step4/ebg.nodes".to_string(),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find ebg.nodes"))?;
-    let nbg_geo_path = find_file(data_dir, &[
-        "nbg.geo".to_string(),
-        "step3/nbg.geo".to_string(),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find nbg.geo"))?;
-    let base_weights_path = find_file(data_dir, &[
-        format!("w.{}.u32", mode),
-        format!("step5/w.{}.u32", mode),
-    ]).ok_or_else(|| anyhow::anyhow!("Cannot find w.{}.u32", mode))?;
+    let topo_path = find_file(
+        data_dir,
+        &[
+            format!("cch.{}.topo", mode),
+            format!("step7-rank-aligned/cch.{}.topo", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
+    let weights_path = find_file(
+        data_dir,
+        &[
+            format!("cch.w.{}.u32", mode),
+            format!("step8-rank-aligned/cch.w.{}.u32", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
+    let order_path = find_file(
+        data_dir,
+        &[
+            format!("order.{}.ebg", mode),
+            format!("step6/order.{}.ebg", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find order.{}.ebg", mode))?;
+    let filtered_path = find_file(
+        data_dir,
+        &[
+            format!("filtered.{}.ebg", mode),
+            format!("step5/filtered.{}.ebg", mode),
+        ],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find filtered.{}.ebg", mode))?;
+    let ebg_nodes_path = find_file(
+        data_dir,
+        &["ebg.nodes".to_string(), "step4/ebg.nodes".to_string()],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find ebg.nodes"))?;
+    let nbg_geo_path = find_file(
+        data_dir,
+        &["nbg.geo".to_string(), "step3/nbg.geo".to_string()],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find nbg.geo"))?;
+    let base_weights_path = find_file(
+        data_dir,
+        &[format!("w.{}.u32", mode), format!("step5/w.{}.u32", mode)],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Cannot find w.{}.u32", mode))?;
 
     let phast = PhastEngine::load(&topo_path, &weights_path, &order_path)?;
-    let extractor = FrontierExtractor::load(&filtered_path, &ebg_nodes_path, &nbg_geo_path, &base_weights_path)?;
+    let extractor = FrontierExtractor::load(
+        &filtered_path,
+        &ebg_nodes_path,
+        &nbg_geo_path,
+        &base_weights_path,
+    )?;
     println!("  ✓ Loaded");
 
     // Use middle node as test origin
@@ -3860,7 +4592,11 @@ fn run_detail_compare(
     // Extract segments
     let all_segments = extractor.extract_reachable_segments(&result.dist, threshold_ds * 100);
     let frontier_segments = extractor.extract_frontier_segments(&result.dist, threshold_ds * 100);
-    println!("  ✓ All segments: {}, Frontier segments: {}", all_segments.len(), frontier_segments.len());
+    println!(
+        "  ✓ All segments: {}, Frontier segments: {}",
+        all_segments.len(),
+        frontier_segments.len()
+    );
     println!();
 
     // ===== SPARSE CONTOUR (grid-based) =====
@@ -3895,8 +4631,10 @@ fn run_detail_compare(
                 } else {
                     0.0
                 };
-                println!("│ {:16} │ {:>6} │ {:>6} │ {:>5}ms│ {:>7.1}%   │",
-                    name, before, after, elapsed, reduction);
+                println!(
+                    "│ {:16} │ {:>6} │ {:>6} │ {:>5}ms│ {:>7.1}%   │",
+                    name, before, after, elapsed, reduction
+                );
             }
             Err(e) => {
                 println!("│ {:16} │ ERROR: {:?}", name, e);
@@ -3912,36 +4650,54 @@ fn run_detail_compare(
     println!("═══════════════════════════════════════════════════════════════");
 
     let hull_configs: Vec<(&str, ConcaveHullConfig)> = vec![
-        ("Frontier c=2.0", ConcaveHullConfig {
-            concavity: 2.0,
-            simplify_tolerance: 0.0,
-            include_intermediate_points: true,
-        }),
-        ("Frontier c=1.0", ConcaveHullConfig {
-            concavity: 1.0,
-            simplify_tolerance: 0.0,
-            include_intermediate_points: true,
-        }),
-        ("Frontier c=0.5", ConcaveHullConfig {
-            concavity: 0.5,
-            simplify_tolerance: 0.0,
-            include_intermediate_points: true,
-        }),
-        ("Frontier c=0.2", ConcaveHullConfig {
-            concavity: 0.2,
-            simplify_tolerance: 0.0,
-            include_intermediate_points: true,
-        }),
-        ("Frontier c=0.1", ConcaveHullConfig {
-            concavity: 0.1,
-            simplify_tolerance: 0.0,
-            include_intermediate_points: true,
-        }),
-        ("Frontier c=0.05", ConcaveHullConfig {
-            concavity: 0.05,
-            simplify_tolerance: 0.0,
-            include_intermediate_points: true,
-        }),
+        (
+            "Frontier c=2.0",
+            ConcaveHullConfig {
+                concavity: 2.0,
+                simplify_tolerance: 0.0,
+                include_intermediate_points: true,
+            },
+        ),
+        (
+            "Frontier c=1.0",
+            ConcaveHullConfig {
+                concavity: 1.0,
+                simplify_tolerance: 0.0,
+                include_intermediate_points: true,
+            },
+        ),
+        (
+            "Frontier c=0.5",
+            ConcaveHullConfig {
+                concavity: 0.5,
+                simplify_tolerance: 0.0,
+                include_intermediate_points: true,
+            },
+        ),
+        (
+            "Frontier c=0.2",
+            ConcaveHullConfig {
+                concavity: 0.2,
+                simplify_tolerance: 0.0,
+                include_intermediate_points: true,
+            },
+        ),
+        (
+            "Frontier c=0.1",
+            ConcaveHullConfig {
+                concavity: 0.1,
+                simplify_tolerance: 0.0,
+                include_intermediate_points: true,
+            },
+        ),
+        (
+            "Frontier c=0.05",
+            ConcaveHullConfig {
+                concavity: 0.05,
+                simplify_tolerance: 0.0,
+                include_intermediate_points: true,
+            },
+        ),
     ];
 
     println!("┌──────────────────────────┬────────┬────────┬────────┐");
@@ -3953,8 +4709,10 @@ fn run_detail_compare(
         let result = generate_concave_hull(&frontier_segments, config);
         let elapsed = start.elapsed().as_millis();
 
-        println!("│ {:24} │ {:>6} │ {:>6} │ {:>5}ms│",
-            name, result.stats.input_points, result.stats.final_vertices, elapsed);
+        println!(
+            "│ {:24} │ {:>6} │ {:>6} │ {:>5}ms│",
+            name, result.stats.input_points, result.stats.final_vertices, elapsed
+        );
     }
     println!("└──────────────────────────┴────────┴────────┴────────┘");
 

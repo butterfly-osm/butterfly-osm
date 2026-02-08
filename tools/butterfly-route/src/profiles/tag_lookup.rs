@@ -58,7 +58,8 @@ impl<'a> TagLookup<'a> {
         let val_dict = self.val_dict?;
 
         // Find the key ID
-        let key_id = key_dict.iter()
+        let key_id = key_dict
+            .iter()
             .find(|(_, v)| v.as_str() == key)
             .map(|(k, _)| *k)?;
 
@@ -80,7 +81,8 @@ impl<'a> TagLookup<'a> {
 
     /// Get a tag value by key ID (when working with IDs directly)
     pub fn get_by_id(&self, key_id: u32) -> Option<u32> {
-        self.keys.iter()
+        self.keys
+            .iter()
             .position(|k| *k == key_id)
             .map(|i| self.vals[i])
     }

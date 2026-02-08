@@ -152,7 +152,9 @@ impl NodeSignalsFile {
 
         for _ in 0..count {
             let mut buf = [0u8; 8];
-            reader.read_exact(&mut buf).context("Failed to read node ID")?;
+            reader
+                .read_exact(&mut buf)
+                .context("Failed to read node ID")?;
             body_digest.update(&buf);
             node_ids.push(i64::from_le_bytes(buf));
         }

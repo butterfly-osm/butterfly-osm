@@ -12,19 +12,21 @@
 //! - ~7 edges/node vs ~15 (2x fewer)
 //! - Combined: ~5x less work per search
 
-mod ordering;
 mod contraction;
-mod query;
-mod validate;
 mod lift_ordering;
+mod ordering;
+mod query;
 mod turn_restrictions;
+mod validate;
 
-pub use ordering::{NbgNdOrdering, compute_nbg_ordering};
-pub use contraction::{NbgChTopo, contract_nbg};
-pub use query::{NbgChQuery, NbgBucketM2M, NbgM2MStats, FlatUpAdj, SearchState, SortedBuckets};
-pub use validate::{dijkstra_nbg, validate_nbg_ch, validate_matrix, ValidationResult, ValidationError};
-pub use lift_ordering::{LiftedEbgOrdering, lift_ordering_to_ebg};
-pub use turn_restrictions::{TurnRestrictionIndex, NbgEdgeWayMap};
+pub use contraction::{contract_nbg, NbgChTopo};
+pub use lift_ordering::{lift_ordering_to_ebg, LiftedEbgOrdering};
+pub use ordering::{compute_nbg_ordering, NbgNdOrdering};
+pub use query::{FlatUpAdj, NbgBucketM2M, NbgChQuery, NbgM2MStats, SearchState, SortedBuckets};
+pub use turn_restrictions::{NbgEdgeWayMap, TurnRestrictionIndex};
+pub use validate::{
+    dijkstra_nbg, validate_matrix, validate_nbg_ch, ValidationError, ValidationResult,
+};
 
 /// Statistics from NBG CH construction
 #[derive(Debug, Clone)]

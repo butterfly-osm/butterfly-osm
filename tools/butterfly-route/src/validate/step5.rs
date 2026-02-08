@@ -70,7 +70,10 @@ pub fn validate_step5(
     verify_lock_a_structural(&ebg_nodes, &ebg_csr, &car_weights, &car_turns, &car_mask)?;
     verify_lock_a_structural(&ebg_nodes, &ebg_csr, &bike_weights, &bike_turns, &bike_mask)?;
     verify_lock_a_structural(&ebg_nodes, &ebg_csr, &foot_weights, &foot_turns, &foot_mask)?;
-    println!("  ✓ Passed structural checks ({:.3}s)", t0.elapsed().as_secs_f64());
+    println!(
+        "  ✓ Passed structural checks ({:.3}s)",
+        t0.elapsed().as_secs_f64()
+    );
 
     // Lock Condition B: Math parity
     println!("\nB. Math parity checks...");
@@ -79,10 +82,34 @@ pub fn validate_step5(
     let bike_index = build_way_index(&way_attrs_bike);
     let foot_index = build_way_index(&way_attrs_foot);
 
-    verify_lock_b_math(&ebg_nodes, &nbg_geo, &car_weights, &car_mask, &car_index, Mode::Car)?;
-    verify_lock_b_math(&ebg_nodes, &nbg_geo, &bike_weights, &bike_mask, &bike_index, Mode::Bike)?;
-    verify_lock_b_math(&ebg_nodes, &nbg_geo, &foot_weights, &foot_mask, &foot_index, Mode::Foot)?;
-    println!("  ✓ Passed math parity checks ({:.3}s)", t0.elapsed().as_secs_f64());
+    verify_lock_b_math(
+        &ebg_nodes,
+        &nbg_geo,
+        &car_weights,
+        &car_mask,
+        &car_index,
+        Mode::Car,
+    )?;
+    verify_lock_b_math(
+        &ebg_nodes,
+        &nbg_geo,
+        &bike_weights,
+        &bike_mask,
+        &bike_index,
+        Mode::Bike,
+    )?;
+    verify_lock_b_math(
+        &ebg_nodes,
+        &nbg_geo,
+        &foot_weights,
+        &foot_mask,
+        &foot_index,
+        Mode::Foot,
+    )?;
+    println!(
+        "  ✓ Passed math parity checks ({:.3}s)",
+        t0.elapsed().as_secs_f64()
+    );
 
     // Lock Condition C: Arc/turn consistency
     println!("\nC. Arc/turn consistency checks...");
@@ -90,7 +117,10 @@ pub fn validate_step5(
     verify_lock_c_turns(&ebg_csr, &turn_table, &car_turns, Mode::Car)?;
     verify_lock_c_turns(&ebg_csr, &turn_table, &bike_turns, Mode::Bike)?;
     verify_lock_c_turns(&ebg_csr, &turn_table, &foot_turns, Mode::Foot)?;
-    println!("  ✓ Passed turn consistency checks ({:.3}s)", t0.elapsed().as_secs_f64());
+    println!(
+        "  ✓ Passed turn consistency checks ({:.3}s)",
+        t0.elapsed().as_secs_f64()
+    );
 
     // Lock Condition D: Graph-level parity (SKIPPED - too expensive for now)
     println!("\nD. Graph-level parity (Dijkstra reachability)...");
@@ -102,7 +132,10 @@ pub fn validate_step5(
     verify_lock_e_bounds(&car_weights, &car_mask, 1, 10_000_000, "car")?;
     verify_lock_e_bounds(&bike_weights, &bike_mask, 1, 5_000_000, "bike")?;
     verify_lock_e_bounds(&foot_weights, &foot_mask, 1, 5_000_000, "foot")?;
-    println!("  ✓ Passed sanity & bounds checks ({:.3}s)", t0.elapsed().as_secs_f64());
+    println!(
+        "  ✓ Passed sanity & bounds checks ({:.3}s)",
+        t0.elapsed().as_secs_f64()
+    );
 
     // Calculate SHA-256 hashes for lock file
     let car_lock = ModeLockData {
@@ -200,7 +233,8 @@ fn verify_lock_b_math(
         };
 
         // Determine direction
-        let is_forward = ebg_node.tail_nbg == nbg_edge.u_node && ebg_node.head_nbg == nbg_edge.v_node;
+        let is_forward =
+            ebg_node.tail_nbg == nbg_edge.u_node && ebg_node.head_nbg == nbg_edge.v_node;
         let has_access = if is_forward {
             way_attr.output.access_fwd
         } else {
@@ -231,7 +265,8 @@ fn verify_lock_b_math(
         let base_speed_mmps = way_attr.output.base_speed_mmps;
 
         let travel_time_ds = (length_mm as u64 * 10).div_ceil(base_speed_mmps as u64) as u32;
-        let per_km_extra_ds = (length_mm as u64 * way_attr.output.per_km_penalty_ds as u64).div_ceil(1_000_000) as u32;
+        let per_km_extra_ds = (length_mm as u64 * way_attr.output.per_km_penalty_ds as u64)
+            .div_ceil(1_000_000) as u32;
         let expected_weight = travel_time_ds
             .saturating_add(per_km_extra_ds)
             .saturating_add(way_attr.output.const_penalty_ds)

@@ -4,18 +4,21 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 
-use crate::ingest::{run_ingest, IngestConfig};
-use crate::validate::{verify_lock_conditions, validate_step4, validate_step5, validate_step6, validate_step6_lifted, validate_step7, Counts, LockFile};
-use crate::profile::{run_profiling, ProfileConfig};
-use crate::nbg::{build_nbg, NbgConfig};
 use crate::ebg::{build_ebg, EbgConfig};
+use crate::ingest::{run_ingest, IngestConfig};
+use crate::nbg::{build_nbg, NbgConfig};
+use crate::profile::{run_profiling, ProfileConfig};
+use crate::profile_abi::Mode;
 use crate::step5;
 use crate::step6;
 use crate::step6_lifted;
 use crate::step7;
 use crate::step8;
 use crate::step9;
-use crate::profile_abi::Mode;
+use crate::validate::{
+    validate_step4, validate_step5, validate_step6, validate_step6_lifted, validate_step7,
+    verify_lock_conditions, Counts, LockFile,
+};
 
 #[derive(Parser)]
 #[command(name = "butterfly-route")]
@@ -903,7 +906,12 @@ impl Cli {
                     let ways_path = outdir.join("ways.raw");
                     let relations_path = outdir.join("relations.raw");
 
-                    verify_lock_conditions(&nodes_sa_path, &nodes_si_path, &ways_path, &relations_path)?;
+                    verify_lock_conditions(
+                        &nodes_sa_path,
+                        &nodes_si_path,
+                        &ways_path,
+                        &relations_path,
+                    )?;
                 } else {
                     // Ingest mode: run the pipeline
                     let config = IngestConfig {
@@ -1217,7 +1225,10 @@ impl Cli {
                 std::fs::write(&lock_path, lock_json)?;
 
                 println!();
-                println!("✅ Step 6 (Lifted) ordering complete for {} mode!", mode_name);
+                println!(
+                    "✅ Step 6 (Lifted) ordering complete for {} mode!",
+                    mode_name
+                );
                 println!("📋 Lock file: {}", lock_path.display());
 
                 Ok(())
@@ -1326,7 +1337,11 @@ impl Cli {
 
                 Ok(())
             }
-            Commands::Serve { data_dir, port, log_format } => {
+            Commands::Serve {
+                data_dir,
+                port,
+                log_format,
+            } => {
                 // Initialize structured logging for the serve command
                 step9::init_tracing(&log_format);
 
@@ -1368,8 +1383,15 @@ impl Cli {
                     writeln!(f, "src,dst,bidi_cost,baseline_cost,diff")?;
                     for failure in &failures {
                         let diff = (failure.bidi_cost as i64) - (failure.baseline_cost as i64);
-                        writeln!(f, "{},{},{},{},{}",
-                                 failure.src, failure.dst, failure.bidi_cost, failure.baseline_cost, diff)?;
+                        writeln!(
+                            f,
+                            "{},{},{},{},{}",
+                            failure.src,
+                            failure.dst,
+                            failure.bidi_cost,
+                            failure.baseline_cost,
+                            diff
+                        )?;
                     }
                     println!("\nFailures written to: {}", path.display());
                 }
@@ -1394,12 +1416,8 @@ impl Cli {
                     _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
                 };
 
-                let results = crate::validate::run_regression_tests(
-                    &cch_topo,
-                    &cch_weights,
-                    &order,
-                    mode,
-                )?;
+                let results =
+                    crate::validate::run_regression_tests(&cch_topo, &cch_weights, &order, mode)?;
 
                 let failed_count = results.iter().filter(|r| !r.passed).count();
                 if failed_count > 0 {
@@ -1422,15 +1440,14 @@ impl Cli {
                     _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
                 };
 
-                let result = crate::validate::validate_invariants(
-                    &cch_topo,
-                    &cch_weights,
-                    &order,
-                    mode,
-                )?;
+                let result =
+                    crate::validate::validate_invariants(&cch_topo, &cch_weights, &order, mode)?;
 
                 if !result.passed {
-                    anyhow::bail!("Invariant validation failed with {} errors", result.errors.len());
+                    anyhow::bail!(
+                        "Invariant validation failed with {} errors",
+                        result.errors.len()
+                    );
                 }
 
                 Ok(())
@@ -1461,10 +1478,14 @@ impl Cli {
                 )?;
 
                 // Success if no errors in verification
-                let engine = crate::range::RangeEngine::load(&cch_topo, &cch_weights, &order, mode)?;
+                let engine =
+                    crate::range::RangeEngine::load(&cch_topo, &cch_weights, &order, mode)?;
                 let errors = engine.verify(&result, origin_node, threshold_ms);
                 if !errors.is_empty() {
-                    anyhow::bail!("Range query verification failed with {} errors", errors.len());
+                    anyhow::bail!(
+                        "Range query verification failed with {} errors",
+                        errors.len()
+                    );
                 }
 
                 Ok(())
@@ -1600,10 +1621,13 @@ impl Cli {
 
                 // First run PHAST to get distances
                 println!("Running PHAST to compute distances...");
-                let phast_engine = crate::range::PhastEngine::load(&cch_topo, &cch_weights, &order)?;
+                let phast_engine =
+                    crate::range::PhastEngine::load(&cch_topo, &cch_weights, &order)?;
                 let phast_result = phast_engine.query_bounded(origin_node, threshold_ms);
-                println!("  ✓ PHAST complete: {} reachable nodes in {} ms",
-                         phast_result.n_reachable, phast_result.stats.total_time_ms);
+                println!(
+                    "  ✓ PHAST complete: {} reachable nodes in {} ms",
+                    phast_result.n_reachable, phast_result.stats.total_time_ms
+                );
 
                 // Then extract frontier on base graph
                 let cut_points = crate::range::run_frontier_extraction(
@@ -1616,7 +1640,10 @@ impl Cli {
                     mode,
                 )?;
 
-                println!("\n✅ Frontier extraction complete: {} cut points", cut_points.len());
+                println!(
+                    "\n✅ Frontier extraction complete: {} cut points",
+                    cut_points.len()
+                );
 
                 // Export to GeoJSON if requested
                 if let Some(geojson_path) = geojson_out {
@@ -1652,14 +1679,21 @@ impl Cli {
 
                 println!("\n🗺️  Isochrone Generation ({} mode)", mode_name);
                 println!("  Origin: node {}", origin_node);
-                println!("  Threshold: {} ms ({:.1} min)", threshold_ms, threshold_ms as f64 / 60_000.0);
+                println!(
+                    "  Threshold: {} ms ({:.1} min)",
+                    threshold_ms,
+                    threshold_ms as f64 / 60_000.0
+                );
 
                 // Step 1: PHAST distances
                 println!("\n[1/4] Running PHAST...");
-                let phast_engine = crate::range::PhastEngine::load(&cch_topo, &cch_weights, &order)?;
+                let phast_engine =
+                    crate::range::PhastEngine::load(&cch_topo, &cch_weights, &order)?;
                 let phast_result = phast_engine.query_bounded(origin_node, threshold_ms);
-                println!("  ✓ {} reachable nodes in {} ms",
-                         phast_result.n_reachable, phast_result.stats.total_time_ms);
+                println!(
+                    "  ✓ {} reachable nodes in {} ms",
+                    phast_result.n_reachable, phast_result.stats.total_time_ms
+                );
 
                 // Step 2: Extract reachable road segments
                 println!("\n[2/4] Extracting reachable road segments...");
@@ -1669,7 +1703,8 @@ impl Cli {
                     &nbg_geo,
                     &base_weights,
                 )?;
-                let segments = extractor.extract_reachable_segments(&phast_result.dist, threshold_ms);
+                let segments =
+                    extractor.extract_reachable_segments(&phast_result.dist, threshold_ms);
                 println!("  ✓ {} reachable road segments", segments.len());
 
                 // Step 3: Generate contour (grid fill + marching squares)
@@ -1688,26 +1723,38 @@ impl Cli {
                     }
                 };
 
-                println!("  Grid: {}m cells, {}m simplify, {} closing iterations",
-                         config.cell_size_m, config.simplify_tolerance_m, config.closing_iterations);
+                println!(
+                    "  Grid: {}m cells, {}m simplify, {} closing iterations",
+                    config.cell_size_m, config.simplify_tolerance_m, config.closing_iterations
+                );
 
                 let contour = crate::range::generate_contour(&segments, &config)?;
 
-                println!("  ✓ {}x{} grid, {} filled cells → {} vertices (before simplify: {})",
-                         contour.stats.grid_cols, contour.stats.grid_rows,
-                         contour.stats.filled_cells,
-                         contour.stats.contour_vertices_after_simplify,
-                         contour.stats.contour_vertices_before_simplify);
+                println!(
+                    "  ✓ {}x{} grid, {} filled cells → {} vertices (before simplify: {})",
+                    contour.stats.grid_cols,
+                    contour.stats.grid_rows,
+                    contour.stats.filled_cells,
+                    contour.stats.contour_vertices_after_simplify,
+                    contour.stats.contour_vertices_before_simplify
+                );
 
                 // Step 4: Export
                 println!("\n[4/4] Exporting GeoJSON...");
                 crate::range::export_contour_geojson(&contour, &output)?;
 
                 let file_size = std::fs::metadata(&output)?.len();
-                println!("  ✓ Saved to: {} ({:.1} KB)", output.display(), file_size as f64 / 1024.0);
+                println!(
+                    "  ✓ Saved to: {} ({:.1} KB)",
+                    output.display(),
+                    file_size as f64 / 1024.0
+                );
 
                 println!("\n=== ISOCHRONE COMPLETE ===");
-                println!("  Total vertices: {}", contour.stats.contour_vertices_after_simplify);
+                println!(
+                    "  Total vertices: {}",
+                    contour.stats.contour_vertices_after_simplify
+                );
                 println!("  Processing time: {} ms", contour.stats.elapsed_ms);
 
                 Ok(())
@@ -1720,7 +1767,9 @@ impl Cli {
                 weights,
                 turns,
             } => {
-                use crate::formats::{EbgNodesFile, EbgCsrFile, NbgNodeMapFile, turn_rules, mod_weights, mod_turns};
+                use crate::formats::{
+                    mod_turns, mod_weights, turn_rules, EbgCsrFile, EbgNodesFile, NbgNodeMapFile,
+                };
                 use crate::hybrid::HybridGraphBuilder;
 
                 println!("\n=== HYBRID STATE GRAPH ANALYSIS ===\n");
@@ -1741,7 +1790,9 @@ impl Cli {
                 println!("  ✓ {} OSM→NBG mappings", osm_to_nbg.len());
 
                 // Compute actual n_nbg_nodes from EBG node data (max NBG ID + 1)
-                let n_nbg_nodes = ebg_nodes_data.nodes.iter()
+                let n_nbg_nodes = ebg_nodes_data
+                    .nodes
+                    .iter()
                     .flat_map(|n| [n.tail_nbg, n.head_nbg])
                     .max()
                     .map(|m| m as usize + 1)
@@ -1781,8 +1832,14 @@ impl Cli {
                 println!("\n=== HYBRID ANALYSIS COMPLETE ===");
                 println!();
                 println!("Expected performance impact:");
-                println!("  State reduction: {:.2}x → proportional speedup in searches", hybrid_graph.stats.state_reduction_ratio);
-                println!("  Arc reduction: {:.2}x → proportional speedup in relaxations", hybrid_graph.stats.arc_reduction_ratio);
+                println!(
+                    "  State reduction: {:.2}x → proportional speedup in searches",
+                    hybrid_graph.stats.state_reduction_ratio
+                );
+                println!(
+                    "  Arc reduction: {:.2}x → proportional speedup in relaxations",
+                    hybrid_graph.stats.arc_reduction_ratio
+                );
                 println!();
                 println!("Next step: Build CCH on hybrid state graph for actual benchmark.");
 
@@ -1794,7 +1851,7 @@ impl Cli {
                 turns,
                 mode,
             } => {
-                use crate::formats::{EbgNodesFile, EbgCsrFile, mod_turns};
+                use crate::formats::{mod_turns, EbgCsrFile, EbgNodesFile};
                 use crate::hybrid::analyze_equivalence_classes;
 
                 let mode_name = mode.to_lowercase();
@@ -1803,7 +1860,9 @@ impl Cli {
                 // Load EBG nodes
                 println!("[1/3] Loading EBG nodes...");
                 let ebg_nodes_data = EbgNodesFile::read(&ebg_nodes)?;
-                let ebg_nodes_vec: Vec<(u32, u32)> = ebg_nodes_data.nodes.iter()
+                let ebg_nodes_vec: Vec<(u32, u32)> = ebg_nodes_data
+                    .nodes
+                    .iter()
                     .map(|n| (n.tail_nbg, n.head_nbg))
                     .collect();
                 println!("  ✓ {} EBG nodes", ebg_nodes_vec.len());
@@ -1831,10 +1890,7 @@ impl Cli {
 
                 Ok(())
             }
-            Commands::DensifierAnalysis {
-                hybrid_state,
-                mode,
-            } => {
+            Commands::DensifierAnalysis { hybrid_state, mode } => {
                 use crate::formats::HybridStateFile;
                 use crate::hybrid::analyze_densifiers;
 
@@ -1863,9 +1919,11 @@ impl Cli {
                 mode,
                 outdir,
             } => {
-                use crate::formats::{EbgNodesFile, EbgCsrFile, mod_weights, mod_turns, HybridStateFile};
+                use crate::formats::{
+                    mod_turns, mod_weights, EbgCsrFile, EbgNodesFile, HybridStateFile,
+                };
                 use crate::hybrid::EquivHybridBuilder;
-                use sha2::{Sha256, Digest as Sha2Digest};
+                use sha2::{Digest as Sha2Digest, Sha256};
 
                 // Parse mode
                 let mode_enum = match mode.to_lowercase().as_str() {
@@ -1876,7 +1934,10 @@ impl Cli {
                 };
                 let mode_name = mode.to_lowercase();
 
-                println!("\n=== STEP 5.5a: EQUIVALENCE-CLASS HYBRID STATE GRAPH ({}) ===\n", mode_name);
+                println!(
+                    "\n=== STEP 5.5a: EQUIVALENCE-CLASS HYBRID STATE GRAPH ({}) ===\n",
+                    mode_name
+                );
 
                 // Create output directory
                 std::fs::create_dir_all(&outdir)?;
@@ -1887,9 +1948,8 @@ impl Cli {
                 println!("  {} EBG nodes", ebg_nodes_data.nodes.len());
 
                 // Build ebg_head_nbg mapping
-                let ebg_head_nbg: Vec<u32> = ebg_nodes_data.nodes.iter()
-                    .map(|n| n.head_nbg)
-                    .collect();
+                let ebg_head_nbg: Vec<u32> =
+                    ebg_nodes_data.nodes.iter().map(|n| n.head_nbg).collect();
 
                 // Load EBG CSR
                 println!("[2/4] Loading EBG CSR...");
@@ -1935,11 +1995,16 @@ impl Cli {
                 let output_path = outdir.join(format!("hybrid.{}.state", mode_name));
                 println!("\n[Writing] {}...", output_path.display());
                 HybridStateFile::write(&output_path, &format_data)?;
-                println!("  Written: {} bytes", std::fs::metadata(&output_path)?.len());
+                println!(
+                    "  Written: {} bytes",
+                    std::fs::metadata(&output_path)?.len()
+                );
 
                 // Verify degree invariant
-                let ebg_avg_degree = ebg_csr_data.heads.len() as f64 / ebg_nodes_data.nodes.len() as f64;
-                let hybrid_avg_degree = hybrid_graph.stats.n_hybrid_arcs as f64 / hybrid_graph.stats.n_hybrid_states as f64;
+                let ebg_avg_degree =
+                    ebg_csr_data.heads.len() as f64 / ebg_nodes_data.nodes.len() as f64;
+                let hybrid_avg_degree = hybrid_graph.stats.n_hybrid_arcs as f64
+                    / hybrid_graph.stats.n_hybrid_states as f64;
                 let degree_ratio = hybrid_avg_degree / ebg_avg_degree;
 
                 println!("\n=== DEGREE INVARIANT CHECK ===");
@@ -1952,7 +2017,9 @@ impl Cli {
                     println!("\nNext step: Run step6-hybrid to build CCH ordering on this graph.");
                 } else {
                     println!("  WARNING: Degree ratio > 1.05, this should not happen!");
-                    println!("           Naive hybrid had 1.36x, equivalence-class should have ~1.0x");
+                    println!(
+                        "           Naive hybrid had 1.36x, equivalence-class should have ~1.0x"
+                    );
                 }
 
                 Ok(())
@@ -1967,9 +2034,12 @@ impl Cli {
                 mode,
                 outdir,
             } => {
-                use crate::formats::{EbgNodesFile, EbgCsrFile, NbgNodeMapFile, turn_rules as tr, mod_weights, mod_turns, HybridStateFile};
+                use crate::formats::{
+                    mod_turns, mod_weights, turn_rules as tr, EbgCsrFile, EbgNodesFile,
+                    HybridStateFile, NbgNodeMapFile,
+                };
                 use crate::hybrid::HybridGraphBuilder;
-                use sha2::{Sha256, Digest as Sha2Digest};
+                use sha2::{Digest as Sha2Digest, Sha256};
 
                 // Parse mode
                 let mode_enum = match mode.to_lowercase().as_str() {
@@ -1991,9 +2061,8 @@ impl Cli {
                 println!("  ✓ {} EBG nodes", ebg_nodes_data.nodes.len());
 
                 // Build ebg_head_nbg mapping
-                let ebg_head_nbg: Vec<u32> = ebg_nodes_data.nodes.iter()
-                    .map(|n| n.head_nbg)
-                    .collect();
+                let ebg_head_nbg: Vec<u32> =
+                    ebg_nodes_data.nodes.iter().map(|n| n.head_nbg).collect();
 
                 // Load EBG CSR
                 println!("[2/7] Loading EBG CSR...");
@@ -2006,7 +2075,9 @@ impl Cli {
                 println!("  ✓ {} OSM→NBG mappings", osm_to_nbg.len());
 
                 // Compute actual n_nbg_nodes from EBG node data (max NBG ID + 1)
-                let n_nbg_nodes = ebg_nodes_data.nodes.iter()
+                let n_nbg_nodes = ebg_nodes_data
+                    .nodes
+                    .iter()
                     .flat_map(|n| [n.tail_nbg, n.head_nbg])
                     .max()
                     .map(|m| m as usize + 1)
@@ -2063,13 +2134,23 @@ impl Cli {
                 HybridStateFile::write(&output_path, &format_data)?;
 
                 let file_size = std::fs::metadata(&output_path)?.len();
-                println!("  ✓ Wrote {} ({:.1} MB)", output_path.display(), file_size as f64 / 1_000_000.0);
+                println!(
+                    "  ✓ Wrote {} ({:.1} MB)",
+                    output_path.display(),
+                    file_size as f64 / 1_000_000.0
+                );
 
                 println!("\n=== STEP 5.5 COMPLETE ===");
                 println!();
                 println!("Output: {}", output_path.display());
-                println!("State reduction: {:.2}x", hybrid_graph.stats.state_reduction_ratio);
-                println!("Arc reduction: {:.2}x", hybrid_graph.stats.arc_reduction_ratio);
+                println!(
+                    "State reduction: {:.2}x",
+                    hybrid_graph.stats.state_reduction_ratio
+                );
+                println!(
+                    "Arc reduction: {:.2}x",
+                    hybrid_graph.stats.arc_reduction_ratio
+                );
                 println!();
                 println!("Next: Run Step 6 ordering on hybrid.{}.state", mode_name);
 
@@ -2187,15 +2268,20 @@ impl Cli {
                 validate_tests,
             } => {
                 use crate::formats::{NbgCsrFile, NbgGeoFile};
-                use crate::nbg_ch::{compute_nbg_ordering, contract_nbg, NbgBucketM2M, validate_nbg_ch, validate_matrix};
+                use crate::nbg_ch::{
+                    compute_nbg_ordering, contract_nbg, validate_matrix, validate_nbg_ch,
+                    NbgBucketM2M,
+                };
 
                 println!("\n=== BUILD NODE-BASED CH ===\n");
 
                 // Load NBG CSR
                 println!("[1/3] Loading NBG CSR...");
                 let nbg_csr_data = NbgCsrFile::read(&nbg_csr)?;
-                println!("  {} nodes, {} edges (undirected)",
-                         nbg_csr_data.n_nodes, nbg_csr_data.n_edges_und);
+                println!(
+                    "  {} nodes, {} edges (undirected)",
+                    nbg_csr_data.n_nodes, nbg_csr_data.n_edges_und
+                );
 
                 // Load NBG Geo
                 println!("[2/3] Loading NBG Geo...");
@@ -2212,8 +2298,10 @@ impl Cli {
                     balance_eps,
                 )?;
                 let order_time = start_order.elapsed().as_millis();
-                println!("  Ordering complete: {} nodes, {} components, max depth {}",
-                         ordering.n_nodes, ordering.n_components, ordering.max_depth);
+                println!(
+                    "  Ordering complete: {} nodes, {} components, max depth {}",
+                    ordering.n_nodes, ordering.n_components, ordering.max_depth
+                );
                 println!("  Ordering time: {} ms", order_time);
 
                 // Contract with witness search
@@ -2233,11 +2321,15 @@ impl Cli {
                 // Compare with EBG CCH
                 println!("\n=== COMPARISON WITH EBG CCH ===");
                 println!("  EBG CCH: ~5M nodes, ~30M shortcuts (typical)");
-                println!("  NBG CH:  {}M nodes, {}M shortcuts",
-                         topo.n_nodes as f64 / 1_000_000.0,
-                         topo.n_shortcuts as f64 / 1_000_000.0);
-                println!("  Expected speedup: ~{:.1}x fewer nodes to search",
-                         5_000_000.0 / topo.n_nodes as f64);
+                println!(
+                    "  NBG CH:  {}M nodes, {}M shortcuts",
+                    topo.n_nodes as f64 / 1_000_000.0,
+                    topo.n_shortcuts as f64 / 1_000_000.0
+                );
+                println!(
+                    "  Expected speedup: ~{:.1}x fewer nodes to search",
+                    5_000_000.0 / topo.n_nodes as f64
+                );
 
                 // Run benchmark if requested
                 if benchmark {
@@ -2251,8 +2343,10 @@ impl Cli {
                     let n_nodes = topo.n_nodes;
 
                     for size in [10, 25, 50, 100] {
-                        let sources: Vec<u32> = (0..size).map(|_| rng.random_range(0..n_nodes)).collect();
-                        let targets: Vec<u32> = (0..size).map(|_| rng.random_range(0..n_nodes)).collect();
+                        let sources: Vec<u32> =
+                            (0..size).map(|_| rng.random_range(0..n_nodes)).collect();
+                        let targets: Vec<u32> =
+                            (0..size).map(|_| rng.random_range(0..n_nodes)).collect();
 
                         // Warmup
                         let _ = engine.compute(&sources, &targets);
@@ -2272,8 +2366,10 @@ impl Cli {
                         let min = *times.iter().min().unwrap();
                         let max = *times.iter().max().unwrap();
 
-                        println!("  {}×{}: avg {}ms, min {}ms, max {}ms",
-                                 size, size, avg, min, max);
+                        println!(
+                            "  {}×{}: avg {}ms, min {}ms, max {}ms",
+                            size, size, avg, min, max
+                        );
                     }
 
                     println!("\n  Compare with OSRM (sequential CH):");
@@ -2293,7 +2389,7 @@ impl Cli {
                         &nbg_geo_data,
                         &topo,
                         validate_tests,
-                        42,  // Fixed seed for reproducibility
+                        42, // Fixed seed for reproducibility
                     );
                     result.print();
 

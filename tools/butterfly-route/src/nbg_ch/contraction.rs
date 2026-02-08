@@ -5,11 +5,11 @@
 
 use anyhow::Result;
 use rayon::prelude::*;
-use std::collections::BinaryHeap;
 use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 
-use crate::formats::{NbgCsr, NbgGeo};
 use super::ordering::NbgNdOrdering;
+use crate::formats::{NbgCsr, NbgGeo};
 
 /// Maximum nodes to settle in witness search
 const WITNESS_LIMIT: usize = 500;
@@ -67,7 +67,12 @@ pub fn contract_nbg(
         // Sort and dedup (keep min weight)
         adj_u.sort_by_key(|(v, _)| *v);
         adj_u.dedup_by(|a, b| {
-            if a.0 == b.0 { b.1 = b.1.min(a.1); true } else { false }
+            if a.0 == b.0 {
+                b.1 = b.1.min(a.1);
+                true
+            } else {
+                false
+            }
         });
     }
 
@@ -100,9 +105,8 @@ pub fn contract_nbg(
                     let shortcut_weight = w_u.saturating_add(w_v);
 
                     // Witness search: is there a path u→v not through node?
-                    let witness_dist = witness.search(
-                        &adj, ordering, u, v, node as u32, shortcut_weight, rank
-                    );
+                    let witness_dist =
+                        witness.search(&adj, ordering, u, v, node as u32, shortcut_weight, rank);
 
                     if witness_dist > shortcut_weight {
                         // No witness - need shortcut
@@ -118,12 +122,17 @@ pub fn contract_nbg(
 
         if rank > 0 && rank % report_interval == 0 {
             let pct = (rank * 100) / n_nodes;
-            println!("    {}% complete, {} shortcuts, {} witnessed",
-                     pct, n_shortcuts, n_witnessed);
+            println!(
+                "    {}% complete, {} shortcuts, {} witnessed",
+                pct, n_shortcuts, n_witnessed
+            );
         }
     }
 
-    println!("    100% complete, {} shortcuts, {} witnessed", n_shortcuts, n_witnessed);
+    println!(
+        "    100% complete, {} shortcuts, {} witnessed",
+        n_shortcuts, n_witnessed
+    );
 
     // Build UP and DOWN adjacency
     println!("  Building UP/DOWN adjacency...");
@@ -177,7 +186,11 @@ pub fn contract_nbg(
     }
     down_offsets.push(offset);
 
-    println!("    {} UP edges, {} DOWN edges", up_heads.len(), down_heads.len());
+    println!(
+        "    {} UP edges, {} DOWN edges",
+        up_heads.len(),
+        down_heads.len()
+    );
 
     Ok(NbgChTopo {
         n_nodes: n_nodes as u32,
@@ -198,7 +211,7 @@ pub fn contract_nbg(
 struct WitnessState {
     dist: Vec<u32>,
     heap: BinaryHeap<Reverse<(u32, u32)>>,
-    touched: Vec<u32>,  // Track which nodes we touched for fast reset
+    touched: Vec<u32>, // Track which nodes we touched for fast reset
 }
 
 impl WitnessState {

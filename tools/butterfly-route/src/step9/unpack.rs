@@ -12,7 +12,7 @@ use crate::formats::CchTopo;
 /// So we process forward_path normally, then backward_path in REVERSE order.
 pub fn unpack_path(
     topo: &CchTopo,
-    forward_path: &[(u32, u32)],  // (node, up_edge_idx) from source → meeting
+    forward_path: &[(u32, u32)], // (node, up_edge_idx) from source → meeting
     backward_path: &[(u32, u32)], // (node, down_edge_idx) from target → meeting
     source: u32,
     _target: u32,

@@ -76,7 +76,7 @@ impl Step3LockFile {
 }
 
 fn compute_file_sha256<P: AsRef<Path>>(path: P) -> Result<String> {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
 
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
@@ -84,7 +84,9 @@ fn compute_file_sha256<P: AsRef<Path>>(path: P) -> Result<String> {
 
     loop {
         let n = file.read(&mut buffer)?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hasher.update(&buffer[..n]);
     }
 
@@ -152,25 +154,32 @@ fn verify_lock_condition_a_structural(
     if csr_n_nodes != node_map_count {
         anyhow::bail!(
             "Node count mismatch: csr.n_nodes={} != node_map.count={}",
-            csr_n_nodes, node_map_count
+            csr_n_nodes,
+            node_map_count
         );
     }
 
     if 2 * csr_n_edges != csr_heads_len as u64 || 2 * csr_n_edges != csr_edge_idx_len as u64 {
         anyhow::bail!(
             "Edge count mismatch: 2*n_edges_und={} but heads.len={}, edge_idx.len={}",
-            2 * csr_n_edges, csr_heads_len, csr_edge_idx_len
+            2 * csr_n_edges,
+            csr_heads_len,
+            csr_edge_idx_len
         );
     }
 
     if geo_n_edges != csr_n_edges {
         anyhow::bail!(
             "Geo edge count mismatch: geo.n_edges_und={} != csr.n_edges_und={}",
-            geo_n_edges, csr_n_edges
+            geo_n_edges,
+            csr_n_edges
         );
     }
 
-    println!("  ✓ Counts match: {} nodes, {} undirected edges", csr_n_nodes, csr_n_edges);
+    println!(
+        "  ✓ Counts match: {} nodes, {} undirected edges",
+        csr_n_nodes, csr_n_edges
+    );
 
     // A3: CSR integrity
     verify_csr_integrity(csr_path, csr_n_nodes, csr_n_edges)?;
@@ -195,7 +204,10 @@ fn verify_lock_condition_b_topology(csr_path: &Path, _geo_path: &Path) -> Result
     // B7: No self-loops
     let self_loop_count = count_self_loops(csr_path)?;
     if self_loop_count > 0 {
-        println!("  ⚠ Warning: {} self-loops found (degenerate geometries)", self_loop_count);
+        println!(
+            "  ⚠ Warning: {} self-loops found (degenerate geometries)",
+            self_loop_count
+        );
     } else {
         println!("  ✓ No self-loops found");
     }
@@ -234,8 +246,10 @@ fn verify_lock_condition_d_reachability(csr_path: &Path, _geo_path: &Path) -> Re
 
     // D13: Component stats
     let components = compute_component_stats(csr_path)?;
-    println!("  ✓ Component stats: {} components, largest={} nodes/{} edges",
-        components.count, components.largest_nodes, components.largest_edges);
+    println!(
+        "  ✓ Component stats: {} components, largest={} nodes/{} edges",
+        components.count, components.largest_nodes, components.largest_edges
+    );
 
     Ok(())
 }
@@ -279,8 +293,8 @@ fn read_csr_counts(path: &Path) -> Result<(u32, u64, usize, usize)> {
 
     let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
     let n_edges_und = u64::from_le_bytes([
-        header[12], header[13], header[14], header[15],
-        header[16], header[17], header[18], header[19],
+        header[12], header[13], header[14], header[15], header[16], header[17], header[18],
+        header[19],
     ]);
 
     // Calculate array lengths
@@ -297,8 +311,8 @@ fn read_geo_count(path: &Path) -> Result<u64> {
     file.read_exact(&mut header)?;
 
     let n_edges_und = u64::from_le_bytes([
-        header[8], header[9], header[10], header[11],
-        header[12], header[13], header[14], header[15],
+        header[8], header[9], header[10], header[11], header[12], header[13], header[14],
+        header[15],
     ]);
 
     Ok(n_edges_und)
@@ -310,8 +324,8 @@ fn read_node_map_count(path: &Path) -> Result<u32> {
     file.read_exact(&mut header)?;
 
     let count = u64::from_le_bytes([
-        header[8], header[9], header[10], header[11],
-        header[12], header[13], header[14], header[15],
+        header[8], header[9], header[10], header[11], header[12], header[13], header[14],
+        header[15],
     ]);
 
     Ok(count as u32)
@@ -370,13 +384,13 @@ fn verify_geo_integrity(path: &Path) -> Result<()> {
     file.read_exact(&mut header)?;
 
     let n_edges_und = u64::from_le_bytes([
-        header[8], header[9], header[10], header[11],
-        header[12], header[13], header[14], header[15],
+        header[8], header[9], header[10], header[11], header[12], header[13], header[14],
+        header[15],
     ]);
 
     let poly_bytes = u64::from_le_bytes([
-        header[16], header[17], header[18], header[19],
-        header[20], header[21], header[22], header[23],
+        header[16], header[17], header[18], header[19], header[20], header[21], header[22],
+        header[23],
     ]);
 
     // Read edge records (36 bytes each: u32+u32+u32+u16+u16+u64+i64+u32)
@@ -386,15 +400,17 @@ fn verify_geo_integrity(path: &Path) -> Result<()> {
 
         let n_poly_pts = u16::from_le_bytes([record[14], record[15]]);
         let poly_off = u64::from_le_bytes([
-            record[16], record[17], record[18], record[19],
-            record[20], record[21], record[22], record[23],
+            record[16], record[17], record[18], record[19], record[20], record[21], record[22],
+            record[23],
         ]);
 
         let poly_size = n_poly_pts as u64 * 4 * 2; // lat + lon, 4 bytes each
         if poly_off + poly_size > poly_bytes {
             anyhow::bail!(
                 "Geo poly_off + size exceeds poly_bytes: {} + {} > {}",
-                poly_off, poly_size, poly_bytes
+                poly_off,
+                poly_size,
+                poly_bytes
             );
         }
     }
@@ -409,8 +425,8 @@ fn verify_symmetry(path: &Path) -> Result<()> {
 
     let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
     let n_edges_und = u64::from_le_bytes([
-        header[12], header[13], header[14], header[15],
-        header[16], header[17], header[18], header[19],
+        header[12], header[13], header[14], header[15], header[16], header[17], header[18],
+        header[19],
     ]);
 
     // Read offsets
@@ -454,11 +470,22 @@ fn verify_symmetry(path: &Path) -> Result<()> {
             if e != e_rev {
                 anyhow::bail!(
                     "Symmetry violation: edge ({}, {}) has edge_idx {} but ({}, {}) has {}",
-                    u, v, e, v, u, e_rev
+                    u,
+                    v,
+                    e,
+                    v,
+                    u,
+                    e_rev
                 );
             }
         } else {
-            anyhow::bail!("Symmetry violation: edge ({}, {}) exists but ({}, {}) missing", u, v, v, u);
+            anyhow::bail!(
+                "Symmetry violation: edge ({}, {}) exists but ({}, {}) missing",
+                u,
+                v,
+                v,
+                u
+            );
         }
     }
 
@@ -472,8 +499,8 @@ fn count_self_loops(path: &Path) -> Result<usize> {
 
     let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
     let n_edges_und = u64::from_le_bytes([
-        header[12], header[13], header[14], header[15],
-        header[16], header[17], header[18], header[19],
+        header[12], header[13], header[14], header[15], header[16], header[17], header[18],
+        header[19],
     ]);
 
     // Read offsets
@@ -514,8 +541,8 @@ fn verify_length_plausibility(path: &Path) -> Result<()> {
     file.read_exact(&mut header)?;
 
     let n_edges_und = u64::from_le_bytes([
-        header[8], header[9], header[10], header[11],
-        header[12], header[13], header[14], header[15],
+        header[8], header[9], header[10], header[11], header[12], header[13], header[14],
+        header[15],
     ]);
 
     const MIN_LENGTH_MM: u32 = 1_000; // 1 meter
@@ -532,7 +559,12 @@ fn verify_length_plausibility(path: &Path) -> Result<()> {
         if !(MIN_LENGTH_MM..=MAX_LENGTH_MM).contains(&length_mm) {
             anyhow::bail!(
                 "Length out of range: {} mm (expected {} to {}) for edge {} -> {} (edge_idx {})",
-                length_mm, MIN_LENGTH_MM, MAX_LENGTH_MM, u_node, v_node, edge_idx
+                length_mm,
+                MIN_LENGTH_MM,
+                MAX_LENGTH_MM,
+                u_node,
+                v_node,
+                edge_idx
             );
         }
     }
@@ -547,8 +579,8 @@ pub fn compute_component_stats(path: &Path) -> Result<ComponentStats> {
 
     let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
     let n_edges_und = u64::from_le_bytes([
-        header[12], header[13], header[14], header[15],
-        header[16], header[17], header[18], header[19],
+        header[12], header[13], header[14], header[15], header[16], header[17], header[18],
+        header[19],
     ]);
 
     // Read offsets

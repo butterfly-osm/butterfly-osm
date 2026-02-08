@@ -151,9 +151,9 @@ mod tests {
     #[test]
     fn test_bbox_calculation() {
         let nodes = vec![
-            (1, 50.8503, 4.3517),  // Brussels
-            (2, 51.2194, 4.4025),  // Antwerp
-            (3, 50.4501, 3.9520),  // Mons
+            (1, 50.8503, 4.3517), // Brussels
+            (2, 51.2194, 4.4025), // Antwerp
+            (3, 50.4501, 3.9520), // Mons
         ];
 
         let (min_lat, min_lon, max_lat, max_lon) = calculate_bbox(&nodes);

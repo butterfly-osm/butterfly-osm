@@ -16,18 +16,67 @@
 //! - 0: Success
 //! - 1: Invalid parameter
 //! - 2: Network error
-//! - 3: I/O error  
+//! - 3: I/O error
 //! - 4: Unknown error
+//!
+//! For detailed error messages, call `butterfly_last_error_message()` after any
+//! non-success result. The returned string must be freed with `butterfly_free_string()`.
+//!
+//! # Threading Model
+//!
+//! The library uses a single global Tokio runtime shared across all FFI calls.
+//! Each call to `butterfly_download` or `butterfly_download_with_progress` blocks
+//! the calling thread via `Runtime::block_on()` until the operation completes.
+//! This is safe for concurrent calls from multiple C threads — each thread blocks
+//! independently while the runtime's thread pool handles async I/O. The only
+//! restriction is that these functions must NOT be called from within an existing
+//! Tokio runtime context (which C callers do not do).
 
 use once_cell::sync::Lazy;
+use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
 use tokio::runtime::Runtime;
 
-/// Global async runtime for C FFI calls
-static RUNTIME: Lazy<Runtime> =
-    Lazy::new(|| Runtime::new().expect("Failed to create tokio runtime for FFI"));
+// Thread-local storage for the last error message.
+// After any FFI call returns a non-success code, the detailed error string
+// is available via `butterfly_last_error_message()`.
+thread_local! {
+    static LAST_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Store an error message in thread-local storage for later retrieval.
+fn set_last_error(msg: String) {
+    LAST_ERROR.with(|cell| {
+        *cell.borrow_mut() = Some(msg);
+    });
+}
+
+/// Clear the last error message.
+fn clear_last_error() {
+    LAST_ERROR.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+}
+
+/// Global async runtime for C FFI calls.
+///
+/// Initialized lazily on first use. If runtime creation fails (extremely rare —
+/// would require OS-level resource exhaustion), all FFI functions will return
+/// `ButterflyResult::UnknownError` rather than panicking across the FFI boundary.
+static RUNTIME: Lazy<Option<Runtime>> = Lazy::new(|| Runtime::new().ok());
+
+/// Get a reference to the runtime, or set an error and return None.
+fn get_runtime() -> Option<&'static Runtime> {
+    match RUNTIME.as_ref() {
+        Some(rt) => Some(rt),
+        None => {
+            set_last_error("Failed to initialize async runtime".to_string());
+            None
+        }
+    }
+}
 
 /// Result codes for C FFI
 #[repr(C)]
@@ -44,19 +93,59 @@ pub enum ButterflyResult {
 pub type ProgressCallback =
     extern "C" fn(downloaded: u64, total: u64, user_data: *mut std::ffi::c_void);
 
-/// Convert Rust Result to C result code
+/// Convert Rust Result to C result code, storing the detailed error message
+/// in thread-local storage for retrieval via `butterfly_last_error_message()`.
 fn convert_error(result: crate::Result<()>) -> ButterflyResult {
     match result {
-        Ok(()) => ButterflyResult::Success,
-        Err(crate::Error::SourceNotFound(_)) | Err(crate::Error::InvalidInput(_)) => {
-            ButterflyResult::InvalidParameter
+        Ok(()) => {
+            clear_last_error();
+            ButterflyResult::Success
         }
-        Err(crate::Error::NetworkError(_)) | Err(crate::Error::HttpError(_)) => {
-            ButterflyResult::NetworkError
+        Err(ref e) => {
+            // Store the full error Display output for detailed retrieval
+            set_last_error(e.to_string());
+            match e {
+                crate::Error::SourceNotFound(_) | crate::Error::InvalidInput(_) => {
+                    ButterflyResult::InvalidParameter
+                }
+                crate::Error::NetworkError(_) | crate::Error::HttpError(_) => {
+                    ButterflyResult::NetworkError
+                }
+                crate::Error::IoError(_) => ButterflyResult::IoError,
+                _ => ButterflyResult::UnknownError,
+            }
         }
-        Err(crate::Error::IoError(_)) => ButterflyResult::IoError,
-        _ => ButterflyResult::UnknownError,
     }
+}
+
+/// Get the last error message from the most recent FFI call.
+///
+/// Returns a detailed error string that must be freed with `butterfly_free_string()`,
+/// or NULL if no error has occurred on this thread.
+///
+/// # Example (C)
+/// ```c
+/// ButterflyResult res = butterfly_download("europe/belgium", NULL);
+/// if (res != BUTTERFLY_SUCCESS) {
+///     char* msg = butterfly_last_error_message();
+///     if (msg) {
+///         fprintf(stderr, "Error: %s\n", msg);
+///         butterfly_free_string(msg);
+///     }
+/// }
+/// ```
+#[no_mangle]
+pub extern "C" fn butterfly_last_error_message() -> *mut c_char {
+    LAST_ERROR.with(|cell| {
+        let borrow = cell.borrow();
+        match borrow.as_ref() {
+            Some(msg) => match CString::new(msg.as_str()) {
+                Ok(c_string) => c_string.into_raw(),
+                Err(_) => ptr::null_mut(),
+            },
+            None => ptr::null_mut(),
+        }
+    })
 }
 
 /// Download a file (simple version)
@@ -66,40 +155,57 @@ fn convert_error(result: crate::Result<()>) -> ButterflyResult {
 /// - `dest_path`: Destination file path (null-terminated string, or NULL for auto-generated)
 ///
 /// # Returns
-/// ButterflyResult code
+/// ButterflyResult code. On non-success, call `butterfly_last_error_message()` for details.
 ///
 /// # Safety
 ///
-/// This function is unsafe because it dereferences raw pointers.
+/// - `source` must be a valid, null-terminated C string or NULL (returns InvalidParameter).
+/// - `dest_path` must be a valid, null-terminated C string or NULL (auto-generated name).
 #[no_mangle]
 pub unsafe extern "C" fn butterfly_download(
     source: *const c_char,
     dest_path: *const c_char,
 ) -> ButterflyResult {
-    // Validate input parameters
-    if source.is_null() {
-        return ButterflyResult::InvalidParameter;
-    }
-
-    // Convert C strings to Rust strings
-    let source_str = match unsafe { CStr::from_ptr(source) }.to_str() {
-        Ok(s) => s,
-        Err(_) => return ButterflyResult::InvalidParameter,
-    };
-
-    let dest_str = if dest_path.is_null() {
-        None
-    } else {
-        match unsafe { CStr::from_ptr(dest_path) }.to_str() {
-            Ok(s) => Some(s),
-            Err(_) => return ButterflyResult::InvalidParameter,
+    // catch_unwind prevents any panic from unwinding across the FFI boundary (UB).
+    let result = std::panic::catch_unwind(|| {
+        if source.is_null() {
+            set_last_error("source parameter is NULL".to_string());
+            return ButterflyResult::InvalidParameter;
         }
-    };
 
-    // Execute the download
-    let result = RUNTIME.block_on(async { crate::get(source_str, dest_str).await });
+        let source_str = match unsafe { CStr::from_ptr(source) }.to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                set_last_error("source parameter is not valid UTF-8".to_string());
+                return ButterflyResult::InvalidParameter;
+            }
+        };
 
-    convert_error(result)
+        let dest_str = if dest_path.is_null() {
+            None
+        } else {
+            match unsafe { CStr::from_ptr(dest_path) }.to_str() {
+                Ok(s) => Some(s),
+                Err(_) => {
+                    set_last_error("dest_path parameter is not valid UTF-8".to_string());
+                    return ButterflyResult::InvalidParameter;
+                }
+            }
+        };
+
+        let rt = match get_runtime() {
+            Some(rt) => rt,
+            None => return ButterflyResult::UnknownError,
+        };
+
+        let result = rt.block_on(async { crate::get(source_str, dest_str).await });
+        convert_error(result)
+    });
+
+    result.unwrap_or_else(|_| {
+        set_last_error("internal panic caught in butterfly_download".to_string());
+        ButterflyResult::UnknownError
+    })
 }
 
 /// Download a file with progress callback
@@ -111,11 +217,16 @@ pub unsafe extern "C" fn butterfly_download(
 /// - `user_data`: User data pointer passed to progress callback
 ///
 /// # Returns
-/// ButterflyResult code
+/// ButterflyResult code. On non-success, call `butterfly_last_error_message()` for details.
 ///
 /// # Safety
 ///
-/// This function is unsafe because it dereferences raw pointers.
+/// - `source` must be a valid, null-terminated C string or NULL (returns InvalidParameter).
+/// - `dest_path` must be a valid, null-terminated C string or NULL (auto-generated name).
+/// - `user_data` must remain valid for the duration of the call. This is guaranteed because
+///   `block_on()` blocks the calling thread until the download completes — the C caller's
+///   stack frame (and thus `user_data`) remains alive for the entire operation.
+/// - `progress_callback`, if provided, must be safe to call from any thread.
 #[no_mangle]
 pub unsafe extern "C" fn butterfly_download_with_progress(
     source: *const c_char,
@@ -123,45 +234,64 @@ pub unsafe extern "C" fn butterfly_download_with_progress(
     progress_callback: Option<ProgressCallback>,
     user_data: *mut std::ffi::c_void,
 ) -> ButterflyResult {
-    // Validate input parameters
-    if source.is_null() {
-        return ButterflyResult::InvalidParameter;
-    }
-
-    // Convert C strings to Rust strings
-    let source_str = match unsafe { CStr::from_ptr(source) }.to_str() {
-        Ok(s) => s,
-        Err(_) => return ButterflyResult::InvalidParameter,
-    };
-
-    let dest_str = if dest_path.is_null() {
-        None
-    } else {
-        match unsafe { CStr::from_ptr(dest_path) }.to_str() {
-            Ok(s) => Some(s),
-            Err(_) => return ButterflyResult::InvalidParameter,
+    // catch_unwind prevents any panic from unwinding across the FFI boundary (UB).
+    let result = std::panic::catch_unwind(|| {
+        if source.is_null() {
+            set_last_error("source parameter is NULL".to_string());
+            return ButterflyResult::InvalidParameter;
         }
-    };
 
-    // Execute the download with optional progress callback
-    let result = if let Some(callback) = progress_callback {
-        // Convert the raw pointer to an integer to make it Send + Sync
-        // This is safe because the callback is extern "C" and the user_data
-        // lifetime is guaranteed by the C caller
-        let user_data_addr = user_data as usize;
+        let source_str = match unsafe { CStr::from_ptr(source) }.to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                set_last_error("source parameter is not valid UTF-8".to_string());
+                return ButterflyResult::InvalidParameter;
+            }
+        };
 
-        RUNTIME.block_on(async move {
-            crate::get_with_progress(source_str, dest_str, move |downloaded, total| {
-                let user_data_ptr = user_data_addr as *mut std::ffi::c_void;
-                callback(downloaded, total, user_data_ptr);
+        let dest_str = if dest_path.is_null() {
+            None
+        } else {
+            match unsafe { CStr::from_ptr(dest_path) }.to_str() {
+                Ok(s) => Some(s),
+                Err(_) => {
+                    set_last_error("dest_path parameter is not valid UTF-8".to_string());
+                    return ButterflyResult::InvalidParameter;
+                }
+            }
+        };
+
+        let rt = match get_runtime() {
+            Some(rt) => rt,
+            None => return ButterflyResult::UnknownError,
+        };
+
+        let result = if let Some(callback) = progress_callback {
+            // SAFETY: `user_data` is converted to usize to satisfy Send + Sync bounds
+            // on the async block. This is safe because `block_on()` blocks the calling
+            // C thread until the download completes, guaranteeing that `user_data`
+            // remains valid for the entire lifetime of this closure. The C caller
+            // cannot free `user_data` until this function returns.
+            let user_data_addr = user_data as usize;
+
+            rt.block_on(async move {
+                crate::get_with_progress(source_str, dest_str, move |downloaded, total| {
+                    let user_data_ptr = user_data_addr as *mut std::ffi::c_void;
+                    callback(downloaded, total, user_data_ptr);
+                })
+                .await
             })
-            .await
-        })
-    } else {
-        RUNTIME.block_on(async { crate::get(source_str, dest_str).await })
-    };
+        } else {
+            rt.block_on(async { crate::get(source_str, dest_str).await })
+        };
 
-    convert_error(result)
+        convert_error(result)
+    });
+
+    result.unwrap_or_else(|_| {
+        set_last_error("internal panic caught in butterfly_download_with_progress".to_string());
+        ButterflyResult::UnknownError
+    })
 }
 
 /// Get the auto-generated filename for a source
@@ -174,24 +304,28 @@ pub unsafe extern "C" fn butterfly_download_with_progress(
 ///
 /// # Safety
 ///
-/// This function is unsafe because it dereferences raw pointers.
+/// - `source` must be a valid, null-terminated C string or NULL (returns NULL).
 #[no_mangle]
 pub unsafe extern "C" fn butterfly_get_filename(source: *const c_char) -> *mut c_char {
-    if source.is_null() {
-        return ptr::null_mut();
-    }
+    let result = std::panic::catch_unwind(|| {
+        if source.is_null() {
+            return ptr::null_mut();
+        }
 
-    let source_str = match unsafe { CStr::from_ptr(source) }.to_str() {
-        Ok(s) => s,
-        Err(_) => return ptr::null_mut(),
-    };
+        let source_str = match unsafe { CStr::from_ptr(source) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return ptr::null_mut(),
+        };
 
-    let filename = crate::core::resolve_output_filename(source_str);
+        let filename = crate::core::resolve_output_filename(source_str);
 
-    match CString::new(filename) {
-        Ok(c_string) => c_string.into_raw(),
-        Err(_) => ptr::null_mut(),
-    }
+        match CString::new(filename) {
+            Ok(c_string) => c_string.into_raw(),
+            Err(_) => ptr::null_mut(),
+        }
+    });
+
+    result.unwrap_or(ptr::null_mut())
 }
 
 /// Free a string allocated by the library
@@ -201,7 +335,8 @@ pub unsafe extern "C" fn butterfly_get_filename(source: *const c_char) -> *mut c
 ///
 /// # Safety
 ///
-/// This function is unsafe because it dereferences raw pointers.
+/// - `ptr` must be a pointer previously returned by a butterfly_* function,
+///   or NULL (which is safely ignored).
 #[no_mangle]
 pub unsafe extern "C" fn butterfly_free_string(ptr: *mut c_char) {
     if !ptr.is_null() {
@@ -214,18 +349,16 @@ pub unsafe extern "C" fn butterfly_free_string(ptr: *mut c_char) {
 /// Get library version string
 ///
 /// # Returns
-/// Static string with version information (does not need to be freed)
+/// Static string with version information (does not need to be freed).
+/// Returns NULL only if the version string contains a null byte (should never happen).
 #[no_mangle]
 pub extern "C" fn butterfly_version() -> *const c_char {
-    use std::sync::OnceLock;
-    static VERSION_STRING: OnceLock<std::ffi::CString> = OnceLock::new();
-
-    VERSION_STRING
-        .get_or_init(|| {
-            std::ffi::CString::new(format!("butterfly-dl {}", env!("BUTTERFLY_VERSION")))
-                .expect("Version string contains null byte")
-        })
-        .as_ptr()
+    // Use a static byte string with embedded null terminator to avoid any
+    // possibility of panic from CString::new(). The concat! + \0 pattern
+    // is infallible at compile time.
+    static VERSION_BYTES: &[u8] =
+        concat!("butterfly-dl ", env!("BUTTERFLY_VERSION"), "\0").as_bytes();
+    VERSION_BYTES.as_ptr() as *const c_char
 }
 
 /// Initialize the library (optional, called automatically)
@@ -234,12 +367,16 @@ pub extern "C" fn butterfly_version() -> *const c_char {
 /// explicitly to initialize the async runtime early.
 ///
 /// # Returns
-/// ButterflyResult::Success on success
+/// ButterflyResult::Success on success, ButterflyResult::UnknownError if
+/// the runtime could not be created.
 #[no_mangle]
 pub extern "C" fn butterfly_init() -> ButterflyResult {
-    // Just access the runtime to ensure it's initialized
-    Lazy::force(&RUNTIME);
-    ButterflyResult::Success
+    let result = std::panic::catch_unwind(|| match get_runtime() {
+        Some(_) => ButterflyResult::Success,
+        None => ButterflyResult::UnknownError,
+    });
+
+    result.unwrap_or(ButterflyResult::UnknownError)
 }
 
 #[cfg(test)]
@@ -250,6 +387,7 @@ mod tests {
     #[test]
     fn test_butterfly_version() {
         let version = butterfly_version();
+        assert!(!version.is_null());
         let version_str = unsafe { CStr::from_ptr(version) }.to_str().unwrap();
         assert!(version_str.contains("butterfly-dl"));
         assert!(version_str.contains(env!("BUTTERFLY_VERSION")));
@@ -277,5 +415,40 @@ mod tests {
     fn test_invalid_parameters() {
         let result = unsafe { butterfly_download(std::ptr::null(), std::ptr::null()) };
         assert_eq!(result as u32, ButterflyResult::InvalidParameter as u32);
+    }
+
+    #[test]
+    fn test_last_error_message() {
+        // Trigger an error
+        let result = unsafe { butterfly_download(std::ptr::null(), std::ptr::null()) };
+        assert_eq!(result as u32, ButterflyResult::InvalidParameter as u32);
+
+        // Retrieve the error message
+        let msg_ptr = butterfly_last_error_message();
+        assert!(!msg_ptr.is_null());
+
+        let msg = unsafe { CStr::from_ptr(msg_ptr) }.to_str().unwrap();
+        assert!(msg.contains("NULL"), "Expected NULL mention, got: {msg}");
+
+        unsafe { butterfly_free_string(msg_ptr) };
+    }
+
+    #[test]
+    fn test_last_error_message_none() {
+        // Clear by calling init (success clears error)
+        butterfly_init();
+
+        // After success, last error should be None
+        clear_last_error();
+        let msg_ptr = butterfly_last_error_message();
+        assert!(msg_ptr.is_null());
+    }
+
+    #[test]
+    fn test_version_is_static() {
+        // Verify version can be called multiple times safely
+        let v1 = butterfly_version();
+        let v2 = butterfly_version();
+        assert_eq!(v1, v2); // Same pointer — truly static
     }
 }

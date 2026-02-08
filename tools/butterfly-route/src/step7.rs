@@ -52,9 +52,9 @@ use crate::profile_abi::Mode;
 
 /// Witness search settings
 #[allow(dead_code)]
-const WITNESS_SETTLED_LIMIT: usize = 500;  // Max nodes to settle before giving up
+const WITNESS_SETTLED_LIMIT: usize = 500; // Max nodes to settle before giving up
 #[allow(dead_code)]
-const WITNESS_HOP_LIMIT: usize = 5;        // Max hops to explore
+const WITNESS_HOP_LIMIT: usize = 5; // Max hops to explore
 
 /// Edge weight for weighted adjacency - stores (target, weight)
 type WeightedAdj = Vec<FxHashMap<u32, u32>>;
@@ -136,7 +136,7 @@ fn has_witness_dijkstra(
         // CONSERVATIVE: if we hit the settled limit, we did NOT find a witness
         // We must create the shortcut to be safe
         if settled > WITNESS_SETTLED_LIMIT {
-            return false;  // Conservative: create shortcut
+            return false; // Conservative: create shortcut
         }
 
         // Relax edges - only through nodes with rank > current_rank
@@ -187,8 +187,8 @@ fn has_witness_dijkstra(
 pub struct Step7Config {
     pub filtered_ebg_path: PathBuf,
     pub order_path: PathBuf,
-    pub weights_path: PathBuf,  // w.*.u32 from Step 5
-    pub turns_path: PathBuf,    // t.*.u32 from Step 5
+    pub weights_path: PathBuf, // w.*.u32 from Step 5
+    pub turns_path: PathBuf,   // t.*.u32 from Step 5
     pub mode: Mode,
     pub outdir: PathBuf,
 }
@@ -214,12 +214,18 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
         Mode::Bike => "bike",
         Mode::Foot => "foot",
     };
-    println!("\n🔨 Step 7: Building CCH topology for {} mode...\n", mode_name);
+    println!(
+        "\n🔨 Step 7: Building CCH topology for {} mode...\n",
+        mode_name
+    );
 
     // Load filtered EBG
     println!("Loading filtered EBG ({})...", mode_name);
     let filtered_ebg = FilteredEbgFile::read(&config.filtered_ebg_path)?;
-    println!("  ✓ {} nodes, {} arcs", filtered_ebg.n_filtered_nodes, filtered_ebg.n_filtered_arcs);
+    println!(
+        "  ✓ {} nodes, {} arcs",
+        filtered_ebg.n_filtered_nodes, filtered_ebg.n_filtered_arcs
+    );
 
     // Load ordering
     println!("Loading ordering ({})...", mode_name);
@@ -247,7 +253,9 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
 
     // Verify we have original_arc_idx in the filtered EBG to look up weights
     if filtered_ebg.original_arc_idx.is_empty() {
-        anyhow::bail!("Filtered EBG has no original_arc_idx - cannot look up weights for witness search");
+        anyhow::bail!(
+            "Filtered EBG has no original_arc_idx - cannot look up weights for witness search"
+        );
     }
 
     // Build weighted adjacency for witness search
@@ -424,10 +432,7 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
                             }
 
                             // Get weight of v→w
-                            let w_vw = weighted_adj_ref[v]
-                                .get(&w)
-                                .copied()
-                                .unwrap_or(u32::MAX);
+                            let w_vw = weighted_adj_ref[v].get(&w).copied().unwrap_or(u32::MAX);
 
                             // Compute shortcut cost
                             let shortcut_cost = w_uv.saturating_add(w_vw);
@@ -453,10 +458,7 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
                 let rank_u = perm[u_idx];
 
                 // Get weight of u→v
-                let w_uv = weighted_adj[u_idx]
-                    .get(&v_u32)
-                    .copied()
-                    .unwrap_or(u32::MAX);
+                let w_uv = weighted_adj[u_idx].get(&v_u32).copied().unwrap_or(u32::MAX);
 
                 for &w in &out_neighbors {
                     if u == w {
@@ -476,10 +478,7 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
                     }
 
                     // Get weight of v→w
-                    let w_vw = weighted_adj[v]
-                        .get(&w)
-                        .copied()
-                        .unwrap_or(u32::MAX);
+                    let w_vw = weighted_adj[v].get(&w).copied().unwrap_or(u32::MAX);
 
                     // Compute shortcut cost
                     let shortcut_cost = w_uv.saturating_add(w_vw);
@@ -573,8 +572,7 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
 
     // Count shortcuts - stream from file (sequential, but I/O bound)
     {
-        let mut reader =
-            BufReader::with_capacity(64 * 1024 * 1024, File::open(&shortcut_path)?);
+        let mut reader = BufReader::with_capacity(64 * 1024 * 1024, File::open(&shortcut_path)?);
         let mut buf = [0u8; 12];
         while reader.read_exact(&mut buf).is_ok() {
             let u = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
@@ -649,7 +647,11 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
                 let pos = up_pos[u].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 // SAFETY: each node u has a reserved range [up_offsets[u], up_offsets[u+1]).
                 // The atomic fetch_add ensures each thread gets a unique pos within that range.
-                debug_assert!(pos < up_targets.len(), "up pos {pos} out of bounds (len {})", up_targets.len());
+                debug_assert!(
+                    pos < up_targets.len(),
+                    "up pos {pos} out of bounds (len {})",
+                    up_targets.len()
+                );
                 unsafe {
                     *up_targets.as_ptr().add(pos).cast_mut() = v;
                     *up_is_shortcut.as_ptr().add(pos).cast_mut() = false;
@@ -657,7 +659,11 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
                 }
             } else {
                 let pos = down_pos[u].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                debug_assert!(pos < down_targets.len(), "down pos {pos} out of bounds (len {})", down_targets.len());
+                debug_assert!(
+                    pos < down_targets.len(),
+                    "down pos {pos} out of bounds (len {})",
+                    down_targets.len()
+                );
                 unsafe {
                     *down_targets.as_ptr().add(pos).cast_mut() = v;
                     *down_is_shortcut.as_ptr().add(pos).cast_mut() = false;
@@ -669,8 +675,7 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
 
     // Fill arrays - shortcuts from file (sequential, I/O bound)
     {
-        let mut reader =
-            BufReader::with_capacity(64 * 1024 * 1024, File::open(&shortcut_path)?);
+        let mut reader = BufReader::with_capacity(64 * 1024 * 1024, File::open(&shortcut_path)?);
         let mut buf = [0u8; 12];
         while reader.read_exact(&mut buf).is_ok() {
             let u = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
@@ -708,7 +713,12 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
 
     // Sort up edges in parallel - safe struct-based approach
     let up_ranges: Vec<(usize, usize)> = (0..n_nodes)
-        .map(|u| (up_offsets_clone[u] as usize, up_offsets_clone[u + 1] as usize))
+        .map(|u| {
+            (
+                up_offsets_clone[u] as usize,
+                up_offsets_clone[u + 1] as usize,
+            )
+        })
         .collect();
 
     up_ranges.par_iter().for_each(|&(start, end)| {
@@ -727,7 +737,11 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
 
             // SAFETY: write back to disjoint range [start, end) — each node's range is exclusive
             for (i, edge) in edges.into_iter().enumerate() {
-                debug_assert!(start + i < end, "up sort writeback {0} >= end {end}", start + i);
+                debug_assert!(
+                    start + i < end,
+                    "up sort writeback {0} >= end {end}",
+                    start + i
+                );
                 unsafe {
                     *up_targets.as_ptr().add(start + i).cast_mut() = edge.target;
                     *up_is_shortcut.as_ptr().add(start + i).cast_mut() = edge.is_shortcut;
@@ -739,7 +753,12 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
 
     // Sort down edges in parallel
     let down_ranges: Vec<(usize, usize)> = (0..n_nodes)
-        .map(|u| (down_offsets_clone[u] as usize, down_offsets_clone[u + 1] as usize))
+        .map(|u| {
+            (
+                down_offsets_clone[u] as usize,
+                down_offsets_clone[u + 1] as usize,
+            )
+        })
         .collect();
 
     down_ranges.par_iter().for_each(|&(start, end)| {
@@ -756,7 +775,11 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
 
             // SAFETY: write back to disjoint range [start, end)
             for (i, edge) in edges.into_iter().enumerate() {
-                debug_assert!(start + i < end, "down sort writeback {0} >= end {end}", start + i);
+                debug_assert!(
+                    start + i < end,
+                    "down sort writeback {0} >= end {end}",
+                    start + i
+                );
                 unsafe {
                     *down_targets.as_ptr().add(start + i).cast_mut() = edge.target;
                     *down_is_shortcut.as_ptr().add(start + i).cast_mut() = edge.is_shortcut;
@@ -897,8 +920,8 @@ fn remap_to_rank_space(
     targets: &[u32],
     is_shortcut: &[bool],
     middle: &[u32],
-    perm: &[u32],       // perm[filtered_id] = rank
-    inv_perm: &[u32],   // inv_perm[rank] = filtered_id
+    perm: &[u32],     // perm[filtered_id] = rank
+    inv_perm: &[u32], // inv_perm[rank] = filtered_id
     n_nodes: usize,
 ) -> (Vec<u64>, Vec<u32>, Vec<bool>, Vec<u32>) {
     let n_edges = targets.len();
@@ -997,7 +1020,10 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
         Mode::Bike => "bike",
         Mode::Foot => "foot",
     };
-    println!("\n🔨 Step 7: Building CCH topology for {} mode (HYBRID)...\n", mode_name);
+    println!(
+        "\n🔨 Step 7: Building CCH topology for {} mode (HYBRID)...\n",
+        mode_name
+    );
 
     // Load hybrid state graph
     println!("Loading hybrid state graph ({})...", mode_name);
@@ -1174,10 +1200,7 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
                                 return None;
                             }
 
-                            let w_vw = weighted_adj_ref[v]
-                                .get(&w)
-                                .copied()
-                                .unwrap_or(u32::MAX);
+                            let w_vw = weighted_adj_ref[v].get(&w).copied().unwrap_or(u32::MAX);
                             let shortcut_cost = w_uv.saturating_add(w_vw);
 
                             Some((u, w, shortcut_cost))
@@ -1190,10 +1213,7 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
             for &u in &in_neighbors {
                 let u_idx = u as usize;
                 let rank_u = perm[u_idx];
-                let w_uv = weighted_adj[u_idx]
-                    .get(&v_u32)
-                    .copied()
-                    .unwrap_or(u32::MAX);
+                let w_uv = weighted_adj[u_idx].get(&v_u32).copied().unwrap_or(u32::MAX);
 
                 for &w in &out_neighbors {
                     if u == w {
@@ -1211,10 +1231,7 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
                         continue;
                     }
 
-                    let w_vw = weighted_adj[v]
-                        .get(&w)
-                        .copied()
-                        .unwrap_or(u32::MAX);
+                    let w_vw = weighted_adj[v].get(&w).copied().unwrap_or(u32::MAX);
                     let shortcut_cost = w_uv.saturating_add(w_vw);
 
                     result.push((u, w, shortcut_cost));
@@ -1296,8 +1313,7 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
 
     // Count shortcuts from file
     {
-        let mut reader =
-            BufReader::with_capacity(64 * 1024 * 1024, File::open(&shortcut_path)?);
+        let mut reader = BufReader::with_capacity(64 * 1024 * 1024, File::open(&shortcut_path)?);
         let mut buf = [0u8; 12];
         while reader.read_exact(&mut buf).is_ok() {
             let u = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
@@ -1368,7 +1384,11 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
             if rank_u < rank_v {
                 let pos = up_pos[u].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 // SAFETY: each node u has a reserved range [up_offsets[u], up_offsets[u+1]).
-                debug_assert!(pos < up_targets.len(), "hybrid up pos {pos} out of bounds (len {})", up_targets.len());
+                debug_assert!(
+                    pos < up_targets.len(),
+                    "hybrid up pos {pos} out of bounds (len {})",
+                    up_targets.len()
+                );
                 unsafe {
                     *up_targets.as_ptr().add(pos).cast_mut() = v;
                     *up_is_shortcut.as_ptr().add(pos).cast_mut() = false;
@@ -1376,7 +1396,11 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
                 }
             } else {
                 let pos = down_pos[u].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                debug_assert!(pos < down_targets.len(), "hybrid down pos {pos} out of bounds (len {})", down_targets.len());
+                debug_assert!(
+                    pos < down_targets.len(),
+                    "hybrid down pos {pos} out of bounds (len {})",
+                    down_targets.len()
+                );
                 unsafe {
                     *down_targets.as_ptr().add(pos).cast_mut() = v;
                     *down_is_shortcut.as_ptr().add(pos).cast_mut() = false;
@@ -1388,8 +1412,7 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
 
     // Fill shortcuts from file
     {
-        let mut reader =
-            BufReader::with_capacity(64 * 1024 * 1024, File::open(&shortcut_path)?);
+        let mut reader = BufReader::with_capacity(64 * 1024 * 1024, File::open(&shortcut_path)?);
         let mut buf = [0u8; 12];
         while reader.read_exact(&mut buf).is_ok() {
             let u = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
@@ -1424,7 +1447,12 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
     }
 
     let up_ranges: Vec<(usize, usize)> = (0..n_nodes)
-        .map(|u| (up_offsets_clone[u] as usize, up_offsets_clone[u + 1] as usize))
+        .map(|u| {
+            (
+                up_offsets_clone[u] as usize,
+                up_offsets_clone[u + 1] as usize,
+            )
+        })
         .collect();
 
     up_ranges.par_iter().for_each(|&(start, end)| {
@@ -1439,7 +1467,11 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
             edges.sort_unstable_by_key(|e| e.target);
             // SAFETY: write back to disjoint range [start, end)
             for (i, edge) in edges.into_iter().enumerate() {
-                debug_assert!(start + i < end, "hybrid up sort writeback {0} >= end {end}", start + i);
+                debug_assert!(
+                    start + i < end,
+                    "hybrid up sort writeback {0} >= end {end}",
+                    start + i
+                );
                 unsafe {
                     *up_targets.as_ptr().add(start + i).cast_mut() = edge.target;
                     *up_is_shortcut.as_ptr().add(start + i).cast_mut() = edge.is_shortcut;
@@ -1450,7 +1482,12 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
     });
 
     let down_ranges: Vec<(usize, usize)> = (0..n_nodes)
-        .map(|u| (down_offsets_clone[u] as usize, down_offsets_clone[u + 1] as usize))
+        .map(|u| {
+            (
+                down_offsets_clone[u] as usize,
+                down_offsets_clone[u + 1] as usize,
+            )
+        })
         .collect();
 
     down_ranges.par_iter().for_each(|&(start, end)| {
@@ -1465,7 +1502,11 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
             edges.sort_unstable_by_key(|e| e.target);
             // SAFETY: write back to disjoint range [start, end)
             for (i, edge) in edges.into_iter().enumerate() {
-                debug_assert!(start + i < end, "hybrid down sort writeback {0} >= end {end}", start + i);
+                debug_assert!(
+                    start + i < end,
+                    "hybrid down sort writeback {0} >= end {end}",
+                    start + i
+                );
                 unsafe {
                     *down_targets.as_ptr().add(start + i).cast_mut() = edge.target;
                     *down_is_shortcut.as_ptr().add(start + i).cast_mut() = edge.is_shortcut;

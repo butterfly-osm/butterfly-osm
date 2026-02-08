@@ -37,7 +37,9 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use crate::formats::{mod_turns, mod_weights, CchTopo, CchTopoFile, EbgNodesFile, FilteredEbgFile, HybridStateFile};
+use crate::formats::{
+    mod_turns, mod_weights, CchTopo, CchTopoFile, EbgNodesFile, FilteredEbgFile, HybridStateFile,
+};
 use crate::profile_abi::Mode;
 
 /// Configuration for Step 8
@@ -67,7 +69,7 @@ pub struct Step8Result {
 /// Uses filtered node IDs but stores original arc indices for turn penalty lookup
 struct SortedFilteredEbgAdj {
     offsets: Vec<u64>,
-    sorted_heads: Vec<u32>,       // Filtered node IDs (targets)
+    sorted_heads: Vec<u32>,        // Filtered node IDs (targets)
     sorted_orig_arc_idx: Vec<u32>, // Original arc indices for turn penalty lookup
 }
 
@@ -105,14 +107,20 @@ impl SortedFilteredEbgAdj {
         }
         offsets.push(offset);
 
-        Self { offsets, sorted_heads, sorted_orig_arc_idx }
+        Self {
+            offsets,
+            sorted_heads,
+            sorted_orig_arc_idx,
+        }
     }
 
     #[inline]
     fn find_original_arc_index(&self, u: usize, v: u32) -> Option<u32> {
         let start = self.offsets[u] as usize;
         let end = self.offsets[u + 1] as usize;
-        if start >= end { return None; }
+        if start >= end {
+            return None;
+        }
         match self.sorted_heads[start..end].binary_search(&v) {
             Ok(idx) => Some(self.sorted_orig_arc_idx[start + idx]),
             Err(_) => None,
@@ -140,11 +148,17 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     let n_nodes = topo.n_nodes as usize;
     let n_up = topo.up_targets.len();
     let n_down = topo.down_targets.len();
-    println!("  ✓ {} nodes, {} up edges, {} down edges", n_nodes, n_up, n_down);
+    println!(
+        "  ✓ {} nodes, {} up edges, {} down edges",
+        n_nodes, n_up, n_down
+    );
 
     println!("Loading filtered EBG...");
     let filtered_ebg = FilteredEbgFile::read(&config.filtered_ebg_path)?;
-    println!("  ✓ {} filtered nodes, {} arcs", filtered_ebg.n_filtered_nodes, filtered_ebg.n_filtered_arcs);
+    println!(
+        "  ✓ {} filtered nodes, {} arcs",
+        filtered_ebg.n_filtered_nodes, filtered_ebg.n_filtered_arcs
+    );
 
     println!("Loading weights ({})...", mode_name);
     let weights = mod_weights::read_all(&config.weights_path)?;
@@ -171,7 +185,9 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
         .map(|u| {
             let start = topo.down_offsets[u] as usize;
             let end = topo.down_offsets[u + 1] as usize;
-            if start >= end { return Vec::new(); }
+            if start >= end {
+                return Vec::new();
+            }
             let mut indices: Vec<usize> = (start..end).collect();
             indices.sort_unstable_by_key(|&i| topo.down_targets[i]);
             indices
@@ -196,8 +212,10 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
         || {
             bottom_up_customize(&topo, &sorted_down_indices, |u_rank, v_rank| {
                 compute_original_weight_rank_aligned(
-                    u_rank, v_rank,
-                    &weights.weights, &turns.penalties,
+                    u_rank,
+                    v_rank,
+                    &weights.weights,
+                    &turns.penalties,
                     &sorted_ebg,
                     &filtered_ebg.filtered_to_original,
                     rank_to_filtered,
@@ -217,7 +235,10 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
         },
     );
 
-    println!("  ✓ Both bottom-up passes in {:.2}s", bu_start.elapsed().as_secs_f64());
+    println!(
+        "  ✓ Both bottom-up passes in {:.2}s",
+        bu_start.elapsed().as_secs_f64()
+    );
 
     // ===================================================================
     // Triangle relaxation (parallel internally via atomics)
@@ -229,15 +250,23 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     let tr_start = std::time::Instant::now();
     let (time_up, time_down, time_relax_count, time_relax_passes) =
         triangle_relax_parallel(&topo, time_up, time_down, &rev_down);
-    println!("  ✓ {:.2}s, {} updates in {} passes",
-        tr_start.elapsed().as_secs_f64(), time_relax_count, time_relax_passes);
+    println!(
+        "  ✓ {:.2}s, {} updates in {} passes",
+        tr_start.elapsed().as_secs_f64(),
+        time_relax_count,
+        time_relax_passes
+    );
 
     println!("\n🔺 Triangle relaxation for DISTANCE (parallel)...");
     let tr_start = std::time::Instant::now();
     let (dist_up, dist_down, dist_relax_count, dist_relax_passes) =
         triangle_relax_parallel(&topo, dist_up, dist_down, &rev_down);
-    println!("  ✓ {:.2}s, {} updates in {} passes",
-        tr_start.elapsed().as_secs_f64(), dist_relax_count, dist_relax_passes);
+    println!(
+        "  ✓ {:.2}s, {} updates in {} passes",
+        tr_start.elapsed().as_secs_f64(),
+        dist_relax_count,
+        dist_relax_passes
+    );
 
     // Sanity checks
     sanity_check_weights(&topo, &time_up, &time_down, "Time", 95.0)?;
@@ -314,7 +343,11 @@ fn build_reverse_down_adj_for_relax(topo: &CchTopo) -> ReverseDownAdj {
         }
     }
 
-    ReverseDownAdj { offsets, sources, edge_idx }
+    ReverseDownAdj {
+        offsets,
+        sources,
+        edge_idx,
+    }
 }
 
 /// Generic bottom-up CCH customization.
@@ -348,7 +381,8 @@ fn bottom_up_customize(
                 down_weights[i] = orig_weight_fn(u, v);
             } else {
                 let m = topo.down_middle[i] as usize;
-                let w_um = find_edge_weight(u, m, &topo.down_offsets, &topo.down_targets, &down_weights);
+                let w_um =
+                    find_edge_weight(u, m, &topo.down_offsets, &topo.down_targets, &down_weights);
                 let w_mv = find_edge_weight(m, v, &topo.up_offsets, &topo.up_targets, &up_weights);
                 down_weights[i] = w_um.saturating_add(w_mv);
             }
@@ -363,7 +397,8 @@ fn bottom_up_customize(
                 up_weights[i] = orig_weight_fn(u, v);
             } else {
                 let m = topo.up_middle[i] as usize;
-                let w_um = find_edge_weight(u, m, &topo.down_offsets, &topo.down_targets, &down_weights);
+                let w_um =
+                    find_edge_weight(u, m, &topo.down_offsets, &topo.down_targets, &down_weights);
                 let w_mv = find_edge_weight(m, v, &topo.up_offsets, &topo.up_targets, &up_weights);
                 up_weights[i] = w_um.saturating_add(w_mv);
             }
@@ -414,23 +449,30 @@ fn triangle_relax_parallel(
                 let edge_idx_xm = rev_down.edge_idx[i_rev];
                 let w_xm = atomic_down[edge_idx_xm].load(Ordering::Relaxed);
 
-                if w_xm == u32::MAX { continue; }
+                if w_xm == u32::MAX {
+                    continue;
+                }
 
                 let up_start = topo.up_offsets[m] as usize;
                 let up_end = topo.up_offsets[m + 1] as usize;
 
                 for i_my in up_start..up_end {
                     let y = topo.up_targets[i_my] as usize;
-                    if y == x { continue; }
+                    if y == x {
+                        continue;
+                    }
 
                     let w_my = atomic_up[i_my].load(Ordering::Relaxed);
-                    if w_my == u32::MAX { continue; }
+                    if w_my == u32::MAX {
+                        continue;
+                    }
 
                     let new_weight = w_xm.saturating_add(w_my);
 
                     if y > x {
                         // UP edge from x
-                        if let Some(idx) = find_edge_index(x, y, &topo.up_offsets, &topo.up_targets) {
+                        if let Some(idx) = find_edge_index(x, y, &topo.up_offsets, &topo.up_targets)
+                        {
                             let old = atomic_up[idx].fetch_min(new_weight, Ordering::Relaxed);
                             if new_weight < old {
                                 pass_updates.fetch_add(1, Ordering::Relaxed);
@@ -438,7 +480,9 @@ fn triangle_relax_parallel(
                         }
                     } else {
                         // DOWN edge from x
-                        if let Some(idx) = find_edge_index(x, y, &topo.down_offsets, &topo.down_targets) {
+                        if let Some(idx) =
+                            find_edge_index(x, y, &topo.down_offsets, &topo.down_targets)
+                        {
                             let old = atomic_down[idx].fetch_min(new_weight, Ordering::Relaxed);
                             if new_weight < old {
                                 pass_updates.fetch_add(1, Ordering::Relaxed);
@@ -453,7 +497,9 @@ fn triangle_relax_parallel(
         println!("  Pass {}: {} updates", pass, pu);
         total_relaxations += pu;
 
-        if pu == 0 { break; }
+        if pu == 0 {
+            break;
+        }
         if pass >= 100 {
             println!("  WARNING: Did not converge after 100 passes!");
             break;
@@ -483,7 +529,9 @@ fn compute_original_weight(
 ) -> u32 {
     let original_v = filtered_to_original[v] as usize;
     let w_v = node_weights[original_v];
-    if w_v == 0 { return u32::MAX; }
+    if w_v == 0 {
+        return u32::MAX;
+    }
 
     match sorted_ebg.find_original_arc_index(u, v as u32) {
         Some(orig_arc_idx) => w_v.saturating_add(turn_penalties[orig_arc_idx as usize]),
@@ -508,7 +556,9 @@ fn compute_original_weight_rank_aligned(
     let original_v = filtered_to_original[v_filtered] as usize;
     let w_v = node_weights[original_v];
 
-    if w_v == 0 { return u32::MAX; }
+    if w_v == 0 {
+        return u32::MAX;
+    }
 
     match sorted_ebg.find_original_arc_index(u_filtered, v_filtered as u32) {
         Some(orig_arc_idx) => w_v.saturating_add(turn_penalties[orig_arc_idx as usize]),
@@ -531,7 +581,9 @@ fn compute_distance_weight_rank_aligned(
     let v_filtered = rank_to_filtered[v_rank] as usize;
     let original_v = filtered_to_original[v_filtered] as usize;
 
-    if node_weights[original_v] == 0 { return u32::MAX; }
+    if node_weights[original_v] == 0 {
+        return u32::MAX;
+    }
 
     ebg_nodes[original_v].length_mm
 }
@@ -541,16 +593,12 @@ fn compute_distance_weight_rank_aligned(
 // ===================================================================
 
 #[inline]
-fn find_edge_weight(
-    u: usize,
-    v: usize,
-    offsets: &[u64],
-    targets: &[u32],
-    weights: &[u32],
-) -> u32 {
+fn find_edge_weight(u: usize, v: usize, offsets: &[u64], targets: &[u32], weights: &[u32]) -> u32 {
     let start = offsets[u] as usize;
     let end = offsets[u + 1] as usize;
-    if start >= end { return u32::MAX; }
+    if start >= end {
+        return u32::MAX;
+    }
     match targets[start..end].binary_search(&(v as u32)) {
         Ok(idx) => weights[start + idx],
         Err(_) => u32::MAX,
@@ -558,15 +606,12 @@ fn find_edge_weight(
 }
 
 #[inline]
-fn find_edge_index(
-    u: usize,
-    v: usize,
-    offsets: &[u64],
-    targets: &[u32],
-) -> Option<usize> {
+fn find_edge_index(u: usize, v: usize, offsets: &[u64], targets: &[u32]) -> Option<usize> {
     let start = offsets[u] as usize;
     let end = offsets[u + 1] as usize;
-    if start >= end { return None; }
+    if start >= end {
+        return None;
+    }
     match targets[start..end].binary_search(&(v as u32)) {
         Ok(idx) => Some(start + idx),
         Err(_) => None,
@@ -599,19 +644,27 @@ fn sanity_check_weights(
     for (i, &w) in up_weights.iter().enumerate() {
         if topo.up_is_shortcut[i] {
             up_short_total += 1;
-            if w == u32::MAX { up_short_max += 1; }
+            if w == u32::MAX {
+                up_short_max += 1;
+            }
         } else {
             up_orig_total += 1;
-            if w == u32::MAX { up_orig_max += 1; }
+            if w == u32::MAX {
+                up_orig_max += 1;
+            }
         }
     }
     for (i, &w) in down_weights.iter().enumerate() {
         if topo.down_is_shortcut[i] {
             down_short_total += 1;
-            if w == u32::MAX { down_short_max += 1; }
+            if w == u32::MAX {
+                down_short_max += 1;
+            }
         } else {
             down_orig_total += 1;
-            if w == u32::MAX { down_orig_max += 1; }
+            if w == u32::MAX {
+                down_orig_max += 1;
+            }
         }
     }
 
@@ -620,15 +673,50 @@ fn sanity_check_weights(
     let max_pct = (total_max as f64 / total_edges as f64) * 100.0;
 
     println!("\n📊 {} sanity check:", label);
-    println!("  Unreachable: {} / {} ({:.2}%)", total_max, total_edges, max_pct);
-    println!("    Up original:  {} / {} ({:.2}%)", up_orig_max, up_orig_total,
-             if up_orig_total > 0 { up_orig_max as f64 / up_orig_total as f64 * 100.0 } else { 0.0 });
-    println!("    Up shortcuts: {} / {} ({:.2}%)", up_short_max, up_short_total,
-             if up_short_total > 0 { up_short_max as f64 / up_short_total as f64 * 100.0 } else { 0.0 });
-    println!("    Down original:  {} / {} ({:.2}%)", down_orig_max, down_orig_total,
-             if down_orig_total > 0 { down_orig_max as f64 / down_orig_total as f64 * 100.0 } else { 0.0 });
-    println!("    Down shortcuts: {} / {} ({:.2}%)", down_short_max, down_short_total,
-             if down_short_total > 0 { down_short_max as f64 / down_short_total as f64 * 100.0 } else { 0.0 });
+    println!(
+        "  Unreachable: {} / {} ({:.2}%)",
+        total_max, total_edges, max_pct
+    );
+    println!(
+        "    Up original:  {} / {} ({:.2}%)",
+        up_orig_max,
+        up_orig_total,
+        if up_orig_total > 0 {
+            up_orig_max as f64 / up_orig_total as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
+    println!(
+        "    Up shortcuts: {} / {} ({:.2}%)",
+        up_short_max,
+        up_short_total,
+        if up_short_total > 0 {
+            up_short_max as f64 / up_short_total as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
+    println!(
+        "    Down original:  {} / {} ({:.2}%)",
+        down_orig_max,
+        down_orig_total,
+        if down_orig_total > 0 {
+            down_orig_max as f64 / down_orig_total as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
+    println!(
+        "    Down shortcuts: {} / {} ({:.2}%)",
+        down_short_max,
+        down_short_total,
+        if down_short_total > 0 {
+            down_short_max as f64 / down_short_total as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
 
     if max_pct > fail_threshold {
         anyhow::bail!("CRITICAL: {}% of {} edges are unreachable!", max_pct, label);
@@ -767,14 +855,20 @@ impl SortedHybridAdj {
         }
         offsets.push(offset);
 
-        Self { offsets, sorted_targets, sorted_weights }
+        Self {
+            offsets,
+            sorted_targets,
+            sorted_weights,
+        }
     }
 
     #[inline]
     fn find_weight(&self, u: usize, v: u32) -> Option<u32> {
         let start = self.offsets[u] as usize;
         let end = self.offsets[u + 1] as usize;
-        if start >= end { return None; }
+        if start >= end {
+            return None;
+        }
         match self.sorted_targets[start..end].binary_search(&v) {
             Ok(idx) => Some(self.sorted_weights[start + idx]),
             Err(_) => None,
@@ -790,14 +884,20 @@ pub fn customize_cch_hybrid(config: Step8HybridConfig) -> Result<Step8Result> {
         Mode::Bike => "bike",
         Mode::Foot => "foot",
     };
-    println!("\n🎨 Step 8: Customizing CCH for {} (HYBRID)...\n", mode_name);
+    println!(
+        "\n🎨 Step 8: Customizing CCH for {} (HYBRID)...\n",
+        mode_name
+    );
 
     println!("Loading CCH topology (hybrid)...");
     let topo = CchTopoFile::read(&config.cch_topo_path)?;
     let n_nodes = topo.n_nodes as usize;
     let n_up = topo.up_targets.len();
     let n_down = topo.down_targets.len();
-    println!("  ✓ {} nodes, {} up edges, {} down edges", n_nodes, n_up, n_down);
+    println!(
+        "  ✓ {} nodes, {} up edges, {} down edges",
+        n_nodes, n_up, n_down
+    );
 
     println!("Loading hybrid state graph...");
     let hybrid = HybridStateFile::read(&config.hybrid_state_path)?;
@@ -806,7 +906,8 @@ pub fn customize_cch_hybrid(config: Step8HybridConfig) -> Result<Step8Result> {
     if hybrid.n_states != topo.n_nodes {
         anyhow::bail!(
             "State count mismatch: hybrid has {} states, CCH topo has {} nodes",
-            hybrid.n_states, topo.n_nodes
+            hybrid.n_states,
+            topo.n_nodes
         );
     }
 
@@ -822,7 +923,9 @@ pub fn customize_cch_hybrid(config: Step8HybridConfig) -> Result<Step8Result> {
         .map(|u| {
             let start = topo.down_offsets[u] as usize;
             let end = topo.down_offsets[u + 1] as usize;
-            if start >= end { return Vec::new(); }
+            if start >= end {
+                return Vec::new();
+            }
             let mut indices: Vec<usize> = (start..end).collect();
             indices.sort_unstable_by_key(|&i| topo.down_targets[i]);
             indices
@@ -832,11 +935,10 @@ pub fn customize_cch_hybrid(config: Step8HybridConfig) -> Result<Step8Result> {
 
     // Bottom-up customization (sequential, single metric for hybrid)
     println!("\nCustomizing weights (bottom-up)...");
-    let (up_weights, down_weights) = bottom_up_customize(
-        &topo,
-        &sorted_down_indices,
-        |u_rank, v_rank| compute_hybrid_original_weight(u_rank, v_rank, &sorted_hybrid, rank_to_state),
-    );
+    let (up_weights, down_weights) =
+        bottom_up_customize(&topo, &sorted_down_indices, |u_rank, v_rank| {
+            compute_hybrid_original_weight(u_rank, v_rank, &sorted_hybrid, rank_to_state)
+        });
     println!("  ✓ Initial customization complete");
 
     // Parallel triangle relaxation
@@ -848,13 +950,19 @@ pub fn customize_cch_hybrid(config: Step8HybridConfig) -> Result<Step8Result> {
     let tr_start = std::time::Instant::now();
     let (up_weights, down_weights, relax_count, relax_passes) =
         triangle_relax_parallel(&topo, up_weights, down_weights, &rev_down);
-    println!("  ✓ {:.2}s, {} updates in {} passes",
-        tr_start.elapsed().as_secs_f64(), relax_count, relax_passes);
+    println!(
+        "  ✓ {:.2}s, {} updates in {} passes",
+        tr_start.elapsed().as_secs_f64(),
+        relax_count,
+        relax_passes
+    );
 
     sanity_check_weights(&topo, &up_weights, &down_weights, "Hybrid", 95.0)?;
 
     std::fs::create_dir_all(&config.outdir)?;
-    let output_path = config.outdir.join(format!("cch.w.hybrid.{}.u32", mode_name));
+    let output_path = config
+        .outdir
+        .join(format!("cch.w.hybrid.{}.u32", mode_name));
 
     println!("\nWriting output...");
     write_cch_weights(&output_path, &up_weights, &down_weights, config.mode)?;
@@ -863,7 +971,9 @@ pub fn customize_cch_hybrid(config: Step8HybridConfig) -> Result<Step8Result> {
     let customize_time_ms = start_time.elapsed().as_millis() as u64;
 
     // Hybrid mode doesn't produce distance weights (no EBG nodes available)
-    let distance_output_path = config.outdir.join(format!("cch.d.hybrid.{}.u32", mode_name));
+    let distance_output_path = config
+        .outdir
+        .join(format!("cch.d.hybrid.{}.u32", mode_name));
 
     Ok(Step8Result {
         output_path,

@@ -10,24 +10,24 @@ use std::path::Path;
 use crate::formats::{RelationsFile, WaysFile};
 
 pub mod step3;
-pub use step3::{Step3LockFile, ComponentStats, verify_step3_lock_conditions};
+pub use step3::{verify_step3_lock_conditions, ComponentStats, Step3LockFile};
 
 pub mod step4;
-pub use step4::{Step4LockFile, validate_step4};
+pub use step4::{validate_step4, Step4LockFile};
 
 pub mod step5;
-pub use step5::{Step5LockFile, validate_step5};
+pub use step5::{validate_step5, Step5LockFile};
 
 pub mod step6;
-pub use step6::{Step6LockFile, validate_step6, Step6LiftedLockFile, validate_step6_lifted};
+pub use step6::{validate_step6, validate_step6_lifted, Step6LiftedLockFile, Step6LockFile};
 
 pub mod step7;
-pub use step7::{Step7LockFile, validate_step7};
+pub use step7::{validate_step7, Step7LockFile};
 
 pub mod cch_correctness;
 pub use cch_correctness::{
-    validate_cch_correctness, ValidationResult, Failure,
-    run_regression_tests, RegressionCase, RegressionResult,
+    run_regression_tests, validate_cch_correctness, Failure, RegressionCase, RegressionResult,
+    ValidationResult,
 };
 
 pub mod invariants;
@@ -179,8 +179,8 @@ pub fn verify_lock_conditions(
 fn verify_nodes_sa(path: &Path) -> Result<()> {
     use std::io::{Seek, SeekFrom};
 
-    let mut file = File::open(path)
-        .with_context(|| format!("Failed to open {}", path.display()))?;
+    let mut file =
+        File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
 
     // Read header
     let mut header = vec![0u8; 128];
@@ -189,13 +189,17 @@ fn verify_nodes_sa(path: &Path) -> Result<()> {
     // Verify magic
     let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
     if magic != 0x4E4F4453 {
-        anyhow::bail!("Invalid magic number in {}: expected 0x4E4F4453, got 0x{:08x}", path.display(), magic);
+        anyhow::bail!(
+            "Invalid magic number in {}: expected 0x4E4F4453, got 0x{:08x}",
+            path.display(),
+            magic
+        );
     }
 
     // Read count
     let count = u64::from_le_bytes([
-        header[8], header[9], header[10], header[11],
-        header[12], header[13], header[14], header[15],
+        header[8], header[9], header[10], header[11], header[12], header[13], header[14],
+        header[15],
     ]);
 
     // Calculate expected file size
@@ -211,14 +215,19 @@ fn verify_nodes_sa(path: &Path) -> Result<()> {
         );
     }
 
-    println!("  ✓ {} verified ({} nodes, {} bytes)", path.display(), count, actual_size);
+    println!(
+        "  ✓ {} verified ({} nodes, {} bytes)",
+        path.display(),
+        count,
+        actual_size
+    );
     Ok(())
 }
 
 /// Verify nodes.si file structure
 fn verify_nodes_si(path: &Path) -> Result<()> {
-    let mut file = File::open(path)
-        .with_context(|| format!("Failed to open {}", path.display()))?;
+    let mut file =
+        File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
 
     // Read header
     let mut header = vec![0u8; 32];
@@ -227,7 +236,11 @@ fn verify_nodes_si(path: &Path) -> Result<()> {
     // Verify magic
     let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
     if magic != 0x4E4F4458 {
-        anyhow::bail!("Invalid magic number in {}: expected 0x4E4F4458, got 0x{:08x}", path.display(), magic);
+        anyhow::bail!(
+            "Invalid magic number in {}: expected 0x4E4F4458, got 0x{:08x}",
+            path.display(),
+            magic
+        );
     }
 
     let file_size = file.metadata()?.len();
@@ -248,7 +261,7 @@ pub struct ArtifactInfo {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Step2LockFile {
-    pub input_sha256: String,  // SHA-256 of original PBF (from step1.lock.json)
+    pub input_sha256: String, // SHA-256 of original PBF (from step1.lock.json)
     pub ways_sha256: String,
     pub relations_sha256: String,
     pub way_attrs: HashMap<String, ArtifactInfo>,
@@ -287,7 +300,11 @@ impl Step2LockFile {
             let (count, crc64) = read_way_attrs_info(path)?;
             way_attrs.insert(
                 mode.name().to_string(),
-                ArtifactInfo { sha256, count, crc64 }
+                ArtifactInfo {
+                    sha256,
+                    count,
+                    crc64,
+                },
             );
             println!("  ✓ way_attrs.{}.bin: {} ways", mode.name(), count);
         }
@@ -299,7 +316,11 @@ impl Step2LockFile {
             let (count, crc64) = read_turn_rules_info(path)?;
             turn_rules.insert(
                 mode.name().to_string(),
-                ArtifactInfo { sha256, count, crc64 }
+                ArtifactInfo {
+                    sha256,
+                    count,
+                    crc64,
+                },
             );
             println!("  ✓ turn_rules.{}.bin: {} rules", mode.name(), count);
         }
@@ -343,8 +364,8 @@ fn read_way_attrs_info(path: &Path) -> Result<(u64, String)> {
     file.read_exact(&mut header)?;
 
     let count = u64::from_le_bytes([
-        header[8], header[9], header[10], header[11],
-        header[12], header[13], header[14], header[15],
+        header[8], header[9], header[10], header[11], header[12], header[13], header[14],
+        header[15],
     ]);
 
     // Read CRC from footer (last 8 bytes of file)
@@ -364,8 +385,8 @@ fn read_turn_rules_info(path: &Path) -> Result<(u64, String)> {
     file.read_exact(&mut header)?;
 
     let count = u64::from_le_bytes([
-        header[8], header[9], header[10], header[11],
-        header[12], header[13], header[14], header[15],
+        header[8], header[9], header[10], header[11], header[12], header[13], header[14],
+        header[15],
     ]);
 
     // Read CRC from footer (last 8 bytes of file)
@@ -395,7 +416,12 @@ pub fn verify_step2_lock_conditions(
     println!();
 
     // A. Structural integrity
-    verify_lock_condition_a(step2_lock_path, ways_path, way_attrs_files, turn_rules_files)?;
+    verify_lock_condition_a(
+        step2_lock_path,
+        ways_path,
+        way_attrs_files,
+        turn_rules_files,
+    )?;
 
     // B. Profile semantics
     verify_lock_condition_b()?;
@@ -546,8 +572,8 @@ fn get_ways_count(ways_path: &Path) -> Result<u64> {
     file.read_exact(&mut header)?;
 
     let count = u64::from_le_bytes([
-        header[8], header[9], header[10], header[11],
-        header[12], header[13], header[14], header[15],
+        header[8], header[9], header[10], header[11], header[12], header[13], header[14],
+        header[15],
     ]);
 
     Ok(count)
@@ -603,8 +629,8 @@ fn verify_way_attrs_sorted(path: &Path) -> Result<()> {
     file.read_exact(&mut header)?;
 
     let count = u64::from_le_bytes([
-        header[8], header[9], header[10], header[11],
-        header[12], header[13], header[14], header[15],
+        header[8], header[9], header[10], header[11], header[12], header[13], header[14],
+        header[15],
     ]);
 
     let mut prev_way_id = 0i64;
@@ -613,8 +639,7 @@ fn verify_way_attrs_sorted(path: &Path) -> Result<()> {
         file.read_exact(&mut record)?;
 
         let way_id = i64::from_le_bytes([
-            record[0], record[1], record[2], record[3],
-            record[4], record[5], record[6], record[7],
+            record[0], record[1], record[2], record[3], record[4], record[5], record[6], record[7],
         ]);
 
         if way_id <= prev_way_id {
@@ -637,8 +662,8 @@ fn verify_turn_rules_sorted(path: &Path) -> Result<()> {
     file.read_exact(&mut header)?;
 
     let count = u64::from_le_bytes([
-        header[8], header[9], header[10], header[11],
-        header[12], header[13], header[14], header[15],
+        header[8], header[9], header[10], header[11], header[12], header[13], header[14],
+        header[15],
     ]);
 
     if count == 0 {
@@ -647,20 +672,19 @@ fn verify_turn_rules_sorted(path: &Path) -> Result<()> {
 
     let mut prev_triple = (0i64, 0i64, 0i64);
     for _ in 0..count {
-        let mut record = vec![0u8; 36];  // Record size: i64*3 + u8 + u32 + u8 + [6]u8 padding
+        let mut record = vec![0u8; 36]; // Record size: i64*3 + u8 + u32 + u8 + [6]u8 padding
         file.read_exact(&mut record)?;
 
         let via_node_id = i64::from_le_bytes([
-            record[0], record[1], record[2], record[3],
-            record[4], record[5], record[6], record[7],
+            record[0], record[1], record[2], record[3], record[4], record[5], record[6], record[7],
         ]);
         let from_way_id = i64::from_le_bytes([
-            record[8], record[9], record[10], record[11],
-            record[12], record[13], record[14], record[15],
+            record[8], record[9], record[10], record[11], record[12], record[13], record[14],
+            record[15],
         ]);
         let to_way_id = i64::from_le_bytes([
-            record[16], record[17], record[18], record[19],
-            record[20], record[21], record[22], record[23],
+            record[16], record[17], record[18], record[19], record[20], record[21], record[22],
+            record[23],
         ]);
 
         let triple = (via_node_id, from_way_id, to_way_id);
@@ -684,8 +708,8 @@ fn verify_access_class_consistency(path: &Path) -> Result<()> {
     file.read_exact(&mut header)?;
 
     let count = u64::from_le_bytes([
-        header[8], header[9], header[10], header[11],
-        header[12], header[13], header[14], header[15],
+        header[8], header[9], header[10], header[11], header[12], header[13], header[14],
+        header[15],
     ]);
 
     for _ in 0..count {
@@ -704,10 +728,7 @@ fn verify_access_class_consistency(path: &Path) -> Result<()> {
         // Check that highway_class is set (at offset 16-17)
         let highway_class = u16::from_le_bytes([record[16], record[17]]);
         if highway_class == 0 {
-            anyhow::bail!(
-                "{}: access granted but highway_class=0",
-                path.display()
-            );
+            anyhow::bail!("{}: access granted but highway_class=0", path.display());
         }
     }
 
@@ -720,14 +741,14 @@ fn verify_speed_bounds(path: &Path, mode: crate::profile_abi::Mode) -> Result<()
     file.read_exact(&mut header)?;
 
     let count = u64::from_le_bytes([
-        header[8], header[9], header[10], header[11],
-        header[12], header[13], header[14], header[15],
+        header[8], header[9], header[10], header[11], header[12], header[13], header[14],
+        header[15],
     ]);
 
     let (min_speed, max_speed) = match mode {
-        crate::profile_abi::Mode::Car => (1_000u32, 150_000u32),   // 1-150 km/h in mm/s
-        crate::profile_abi::Mode::Bike => (500u32, 40_000u32),     // 0.5-40 km/h in mm/s
-        crate::profile_abi::Mode::Foot => (500u32, 10_000u32),     // 0.5-10 km/h in mm/s
+        crate::profile_abi::Mode::Car => (1_000u32, 150_000u32), // 1-150 km/h in mm/s
+        crate::profile_abi::Mode::Bike => (500u32, 40_000u32),   // 0.5-40 km/h in mm/s
+        crate::profile_abi::Mode::Foot => (500u32, 10_000u32),   // 0.5-10 km/h in mm/s
     };
 
     for _ in 0..count {
@@ -759,13 +780,18 @@ fn verify_speed_bounds(path: &Path, mode: crate::profile_abi::Mode) -> Result<()
 fn verify_golden_tag_cases() -> Result<()> {
     // Golden test cases for profile semantics
     // Test that profiles produce sensible outputs for empty tags
-    use crate::profile_abi::{WayInput, Profile};
-    use crate::profiles::{CarProfile, BikeProfile, FootProfile};
+    use crate::profile_abi::{Profile, WayInput};
+    use crate::profiles::{BikeProfile, CarProfile, FootProfile};
 
     // Test case 1: Empty tags should produce no access
     let keys: Vec<u32> = vec![];
     let vals: Vec<u32> = vec![];
-    let input = WayInput { kv_keys: &keys, kv_vals: &vals, key_dict: None, val_dict: None };
+    let input = WayInput {
+        kv_keys: &keys,
+        kv_vals: &vals,
+        key_dict: None,
+        val_dict: None,
+    };
 
     let car_output = CarProfile::process_way(input);
     let bike_output = BikeProfile::process_way(input);

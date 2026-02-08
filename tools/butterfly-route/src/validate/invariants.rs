@@ -74,8 +74,12 @@ pub fn validate_invariants(
     let weights = CchWeightsFile::read(weights_path)?;
     let order = OrderEbgFile::read(order_path)?;
 
-    println!("  ✓ {} nodes, {} up edges, {} down edges",
-             topo.n_nodes, topo.up_targets.len(), topo.down_targets.len());
+    println!(
+        "  ✓ {} nodes, {} up edges, {} down edges",
+        topo.n_nodes,
+        topo.up_targets.len(),
+        topo.down_targets.len()
+    );
 
     let mut result = InvariantResult::new();
 
@@ -214,10 +218,14 @@ fn check_weight_domain(weights: &crate::formats::CchWeights, result: &mut Invari
     let inf_pct_up = (inf_up as f64 / total_up as f64) * 100.0;
     let inf_pct_down = (inf_down as f64 / total_down as f64) * 100.0;
 
-    println!("  UP edges:   max={} ms, INF={} ({:.2}%), zero={}",
-             max_up, inf_up, inf_pct_up, zero_up);
-    println!("  DOWN edges: max={} ms, INF={} ({:.2}%), zero={}",
-             max_down, inf_down, inf_pct_down, zero_down);
+    println!(
+        "  UP edges:   max={} ms, INF={} ({:.2}%), zero={}",
+        max_up, inf_up, inf_pct_up, zero_up
+    );
+    println!(
+        "  DOWN edges: max={} ms, INF={} ({:.2}%), zero={}",
+        max_down, inf_down, inf_pct_down, zero_down
+    );
 
     // Check for excessive values
     if excessive_up > 0 || excessive_down > 0 {
@@ -271,7 +279,10 @@ fn check_inf_consistency(
     }
 
     result.check_passed();
-    println!("  ✓ INF consistency checked ({} isolated nodes)", isolated_nodes);
+    println!(
+        "  ✓ INF consistency checked ({} isolated nodes)",
+        isolated_nodes
+    );
 }
 
 /// Check 4: CSR offsets are valid
@@ -285,7 +296,9 @@ fn check_csr_structure(topo: &crate::formats::CchTopo, result: &mut InvariantRes
             up_valid = false;
             result.check_failed(format!(
                 "UP offsets not monotonic at node {}: {} > {}",
-                i, topo.up_offsets[i], topo.up_offsets[i + 1]
+                i,
+                topo.up_offsets[i],
+                topo.up_offsets[i + 1]
             ));
             break;
         }
@@ -302,7 +315,9 @@ fn check_csr_structure(topo: &crate::formats::CchTopo, result: &mut InvariantRes
             down_valid = false;
             result.check_failed(format!(
                 "DOWN offsets not monotonic at node {}: {} > {}",
-                i, topo.down_offsets[i], topo.down_offsets[i + 1]
+                i,
+                topo.down_offsets[i],
+                topo.down_offsets[i + 1]
             ));
             break;
         }
@@ -417,12 +432,16 @@ fn check_overflow_potential(
     }
 
     // Find max finite weight
-    let max_finite_up = weights.up.iter()
+    let max_finite_up = weights
+        .up
+        .iter()
         .filter(|&&w| w != u32::MAX)
         .max()
         .copied()
         .unwrap_or(0);
-    let max_finite_down = weights.down.iter()
+    let max_finite_down = weights
+        .down
+        .iter()
         .filter(|&&w| w != u32::MAX)
         .max()
         .copied()
@@ -493,8 +512,10 @@ fn check_tie_breaking_readiness(
     }
 
     if nodes_with_ties > 0 {
-        println!("  ⚠ {} nodes have edges with identical weights ({} tie groups)",
-                 nodes_with_ties, total_tie_groups);
+        println!(
+            "  ⚠ {} nodes have edges with identical weights ({} tie groups)",
+            nodes_with_ties, total_tie_groups
+        );
         println!("    Ensure deterministic tie-breaking by node_id in queries");
         result.warn(format!(
             "{} nodes have weight ties - use node_id for deterministic tie-breaking",

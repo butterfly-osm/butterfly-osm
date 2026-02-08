@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::formats::{way_attrs, turn_rules, WayAttr, TurnRule};
-use crate::profile_abi::{Mode, Profile, WayInput, TurnInput, TurnRuleKind};
-use crate::profiles::{CarProfile, BikeProfile, FootProfile};
+use crate::formats::{turn_rules, way_attrs, TurnRule, WayAttr};
+use crate::profile_abi::{Mode, Profile, TurnInput, TurnRuleKind, WayInput};
+use crate::profiles::{BikeProfile, CarProfile, FootProfile};
 
 pub struct ProfileConfig {
     pub ways_path: PathBuf,
@@ -100,7 +100,7 @@ pub fn build_class_bits() -> HashMap<String, u32> {
 }
 
 fn compute_file_sha256<P: AsRef<std::path::Path>>(path: P) -> Result<String> {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     use std::fs::File;
     use std::io::Read;
 
@@ -110,7 +110,9 @@ fn compute_file_sha256<P: AsRef<std::path::Path>>(path: P) -> Result<String> {
 
     loop {
         let n = file.read(&mut buffer)?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hasher.update(&buffer[..n]);
     }
 
@@ -125,8 +127,7 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
     println!("📂 Output: {}", config.outdir.display());
     println!();
 
-    std::fs::create_dir_all(&config.outdir)
-        .context("Failed to create output directory")?;
+    std::fs::create_dir_all(&config.outdir).context("Failed to create output directory")?;
 
     // Load dictionaries from ways.raw
     println!("Loading dictionaries from ways.raw...");
@@ -208,8 +209,14 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
     println!("  ✓ Value dictionary: {} entries", rel_val_dict.len());
 
     // Build reverse indexes for relations
-    let rel_key_reverse: HashMap<&str, u32> = rel_key_dict.iter().map(|(id, s)| (s.as_str(), *id)).collect();
-    let rel_val_reverse: HashMap<&str, u32> = rel_val_dict.iter().map(|(id, s)| (s.as_str(), *id)).collect();
+    let rel_key_reverse: HashMap<&str, u32> = rel_key_dict
+        .iter()
+        .map(|(id, s)| (s.as_str(), *id))
+        .collect();
+    let rel_val_reverse: HashMap<&str, u32> = rel_val_dict
+        .iter()
+        .map(|(id, s)| (s.as_str(), *id))
+        .collect();
 
     // Load relations with resolved tags
     println!("Loading relations...");
@@ -226,7 +233,10 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
         let mut keys = Vec::new();
         let mut vals = Vec::new();
         for (k, v) in &relation.tags {
-            if let (Some(&k_id), Some(&v_id)) = (rel_key_reverse.get(k.as_str()), rel_val_reverse.get(v.as_str())) {
+            if let (Some(&k_id), Some(&v_id)) = (
+                rel_key_reverse.get(k.as_str()),
+                rel_val_reverse.get(v.as_str()),
+            ) {
                 keys.push(k_id);
                 vals.push(v_id);
             }
@@ -283,8 +293,12 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
         }
     }
 
-    println!("  ✓ Extracted turn restrictions: car={}, bike={}, foot={}",
-        turn_rules_car.len(), turn_rules_bike.len(), turn_rules_foot.len());
+    println!(
+        "  ✓ Extracted turn restrictions: car={}, bike={}, foot={}",
+        turn_rules_car.len(),
+        turn_rules_bike.len(),
+        turn_rules_foot.len()
+    );
 
     // Sort turn_rules by (via_node_id, from_way_id, to_way_id)
     turn_rules_car.sort_unstable();
@@ -330,11 +344,11 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
 
         way_attrs_sha256.insert(
             mode.name().to_string(),
-            compute_file_sha256(way_attrs_path)?
+            compute_file_sha256(way_attrs_path)?,
         );
         turn_rules_sha256.insert(
             mode.name().to_string(),
-            compute_file_sha256(turn_rules_path)?
+            compute_file_sha256(turn_rules_path)?,
         );
     }
 
@@ -361,7 +375,9 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
     println!("  ✓ Wrote profile_meta.json");
 
     // Generate step2.lock.json
-    let step1_lock_path = config.ways_path.parent()
+    let step1_lock_path = config
+        .ways_path
+        .parent()
         .ok_or_else(|| anyhow::anyhow!("ways_path has no parent directory"))?
         .join("step1.lock.json");
 
