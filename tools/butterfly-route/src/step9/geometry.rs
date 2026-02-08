@@ -190,6 +190,7 @@ pub fn build_isochrone_geometry(
     node_weights: &[u32], // Edge costs indexed by original EBG node ID
     ebg_nodes: &EbgNodes,
     nbg_geo: &NbgGeo,
+    mode: Mode,
 ) -> Vec<Point> {
     build_isochrone_geometry_sparse(
         settled_nodes,
@@ -197,7 +198,7 @@ pub fn build_isochrone_geometry(
         node_weights,
         ebg_nodes,
         nbg_geo,
-        Mode::Car,
+        mode,
     )
 }
 

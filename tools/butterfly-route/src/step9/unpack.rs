@@ -62,11 +62,19 @@ fn unpack_up_edge(topo: &CchTopo, _source: u32, edge_idx: usize) -> Vec<u32> {
     // Unpack source -> middle (DOWN edge from source)
     if let Some(down_idx) = find_down_edge(topo, _source as usize, middle) {
         result.extend(unpack_down_edge(topo, _source, down_idx));
+    } else {
+        tracing::trace!(
+            source = _source,
+            middle,
+            "unpack_up_edge: missing DOWN sub-edge"
+        );
     }
 
     // Unpack middle -> target (UP edge from middle)
     if let Some(up_idx) = find_up_edge(topo, middle as usize, target) {
         result.extend(unpack_up_edge(topo, middle, up_idx));
+    } else {
+        tracing::trace!(middle, target, "unpack_up_edge: missing UP sub-edge");
     }
 
     result
@@ -86,11 +94,15 @@ fn unpack_down_edge(topo: &CchTopo, source: u32, edge_idx: usize) -> Vec<u32> {
     // source -> middle (DOWN edge)
     if let Some(down_idx) = find_down_edge(topo, source as usize, middle) {
         result.extend(unpack_down_edge(topo, source, down_idx));
+    } else {
+        tracing::trace!(source, middle, "unpack_down_edge: missing DOWN sub-edge");
     }
 
     // middle -> target (UP edge from middle)
     if let Some(up_idx) = find_up_edge(topo, middle as usize, target) {
         result.extend(unpack_up_edge(topo, middle, up_idx));
+    } else {
+        tracing::trace!(middle, target, "unpack_down_edge: missing UP sub-edge");
     }
 
     result

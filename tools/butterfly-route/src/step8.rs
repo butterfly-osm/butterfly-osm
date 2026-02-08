@@ -501,8 +501,7 @@ fn triangle_relax_parallel(
             break;
         }
         if pass >= 100 {
-            println!("  WARNING: Did not converge after 100 passes!");
-            break;
+            panic!("CCH customization did not converge after 100 passes ({} updates in last pass). This indicates a bug in the contraction hierarchy.", pu);
         }
     }
 

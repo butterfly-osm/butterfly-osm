@@ -226,6 +226,13 @@ impl WaysFile {
         let mut pos = 32usize;
 
         for _ in 0..count {
+            if pos + 8 > all_bytes.len() {
+                anyhow::bail!(
+                    "ways.raw: truncated file at offset {}, need {} bytes",
+                    pos,
+                    pos + 8
+                );
+            }
             // way_id
             let way_id = i64::from_le_bytes(all_bytes[pos..pos + 8].try_into()?);
             pos += 8;

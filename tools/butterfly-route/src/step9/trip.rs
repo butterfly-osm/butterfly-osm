@@ -576,13 +576,15 @@ pub async fn trip_handler(
         order.len() - 1
     };
 
+    let mut has_unreachable = false;
     for leg_idx in 0..leg_count {
         let from = order[leg_idx];
         let to = order[(leg_idx + 1) % order.len()];
 
         let dur_ds = duration_matrix[from * n + to];
         let dur_s = if dur_ds == u32::MAX {
-            f64::NAN
+            has_unreachable = true;
+            0.0
         } else {
             total_duration_ds += dur_ds as u64;
             dur_ds as f64 / 10.0 // deciseconds -> seconds
@@ -591,7 +593,8 @@ pub async fn trip_handler(
         let dist_m = if let Some(ref dm) = distance_matrix {
             let d = dm[from * n + to];
             if d == u32::MAX {
-                f64::NAN
+                has_unreachable = true;
+                0.0
             } else {
                 total_distance_mm += d as u64;
                 d as f64 / 1000.0 // millimeters -> meters
@@ -633,7 +636,11 @@ pub async fn trip_handler(
     };
 
     Json(TripResponse {
-        code: "Ok".to_string(),
+        code: if has_unreachable {
+            "Partial".to_string()
+        } else {
+            "Ok".to_string()
+        },
         waypoints,
         trips: vec![trip],
     })
