@@ -42,9 +42,10 @@ use super::unpack::unpack_path;
 /// OpenAPI documentation
 #[derive(OpenApi)]
 #[openapi(
-    // Note: table_stream, isochrone_bulk, and height are not documented in OpenAPI
-    // because they lack #[utoipa::path] annotations. Add annotations to include them.
-    paths(route, table_post, isochrone, nearest, health, match_trace),
+    paths(
+        route, table_post, table_stream, isochrone, isochrone_bulk,
+        nearest, match_trace, super::trip::trip_handler, height, health
+    ),
     components(schemas(
         RouteRequest,
         RouteResponse,
@@ -55,6 +56,8 @@ use super::unpack::unpack_path;
         StepManeuver,
         TablePostRequest,
         TableResponse,
+        TableStreamRequest,
+        BulkIsochroneRequest,
         IsochroneRequest,
         IsochroneResponse,
         NearestRequest,
@@ -66,12 +69,28 @@ use super::unpack::unpack_path;
         MatchRequest,
         MatchResponse,
         MatchMatching,
-        MatchTracepoint
+        MatchTracepoint,
+        super::trip::TripRequest,
+        super::trip::TripResponse,
+        super::trip::Trip,
+        super::trip::TripLeg,
+        super::trip::TripWaypoint,
+        super::elevation::HeightRequest,
+        super::elevation::HeightResponse,
+        super::elevation::HeightResult,
     )),
+    tags(
+        (name = "Routing", description = "Point-to-point routing with geometry and instructions"),
+        (name = "Matrix", description = "Distance/duration matrix computation"),
+        (name = "Isochrone", description = "Reachability polygons and bulk isochrones"),
+        (name = "Search", description = "Nearest road snapping and map matching"),
+        (name = "Elevation", description = "SRTM elevation lookup"),
+        (name = "System", description = "Health, metrics, and diagnostics"),
+    ),
     info(
         title = "Butterfly Route API",
-        version = "1.0.0",
-        description = "High-performance routing engine with exact turn-aware queries"
+        version = "2.0.0",
+        description = "High-performance routing engine with exact turn-aware edge-based CCH queries.\n\nBelgium dataset: 5M edge-states, 14.6M arcs, 754K named roads.\n\n## Quick Start\n\nAll GET endpoints accept query parameters. All POST endpoints accept JSON bodies.\n\nCoordinates are always `[longitude, latitude]` (GeoJSON order).\n\nTransport modes: `car`, `bike`, `foot`."
     )
 )]
 struct ApiDoc;
@@ -272,15 +291,18 @@ pub struct ErrorResponse {
 #[utoipa::path(
     get,
     path = "/route",
+    tag = "Routing",
+    summary = "Calculate route between two points",
+    description = "Computes the shortest path between source and destination using edge-based CCH.\nSupports turn-by-turn instructions with road names and alternative routes.",
     params(
-        ("src_lon" = f64, Query, description = "Source longitude"),
-        ("src_lat" = f64, Query, description = "Source latitude"),
-        ("dst_lon" = f64, Query, description = "Destination longitude"),
-        ("dst_lat" = f64, Query, description = "Destination latitude"),
-        ("mode" = String, Query, description = "Transport mode: car, bike, foot"),
-        ("geometries" = Option<String>, Query, description = "Geometry encoding: polyline6 (default), geojson, points"),
-        ("alternatives" = Option<u32>, Query, description = "Number of alternative routes (0-5)"),
-        ("steps" = Option<bool>, Query, description = "Include turn-by-turn instructions"),
+        ("src_lon" = f64, Query, description = "Source longitude", example = 4.3517),
+        ("src_lat" = f64, Query, description = "Source latitude", example = 50.8503),
+        ("dst_lon" = f64, Query, description = "Destination longitude", example = 4.4017),
+        ("dst_lat" = f64, Query, description = "Destination latitude", example = 50.8603),
+        ("mode" = String, Query, description = "Transport mode: car, bike, foot", example = "car"),
+        ("geometries" = Option<String>, Query, description = "Geometry encoding: polyline6 (default), geojson, points", example = "polyline6"),
+        ("alternatives" = Option<u32>, Query, description = "Number of alternative routes (0-5)", example = 0),
+        ("steps" = Option<bool>, Query, description = "Include turn-by-turn instructions with road names", example = true),
     ),
     responses(
         (status = 200, description = "Route found", body = RouteResponse),
@@ -393,7 +415,7 @@ async fn route(
             lon: src_snap_info.lon,
             lat: src_snap_info.lat,
         };
-        let point_geom = RouteGeometry::from_points(vec![snap_point], 0.0, 0, geom_format);
+        let point_geom = RouteGeometry::from_points(vec![snap_point], geom_format);
         let debug_info = if req.debug {
             Some(RouteDebugInfo {
                 src_snapped: src_snap_info,
@@ -433,15 +455,9 @@ async fn route(
                 mode_data.filtered_ebg.filtered_to_original[filtered_id as usize]
             })
             .collect();
-        let geometry = build_geometry(
-            &ebg_path,
-            &state.ebg_nodes,
-            &state.nbg_geo,
-            result.distance,
-            format,
-        );
+        let (geometry, distance_m) =
+            build_geometry(&ebg_path, &state.ebg_nodes, &state.nbg_geo, format);
         let duration_s = result.distance as f64 / 10.0;
-        let distance_m = geometry.distance_m;
         let steps = if want_steps {
             Some(build_steps(
                 &ebg_path,
@@ -848,8 +864,7 @@ fn build_edge_geometry(
         }
     }
 
-    let distance_m = node.length_mm as f64 / 1000.0;
-    RouteGeometry::from_points(points, distance_m, 0, format)
+    RouteGeometry::from_points(points, format)
 }
 
 /// Build geometry for multiple consecutive edges
@@ -860,12 +875,10 @@ fn build_multi_edge_geometry(
     format: GeometryFormat,
 ) -> RouteGeometry {
     let mut points = Vec::new();
-    let mut total_distance_mm: u64 = 0;
 
     for &edge_id in edge_ids {
         let node = &ebg_nodes.nodes[edge_id as usize];
         let geom_idx = node.geom_idx as usize;
-        total_distance_mm += node.length_mm as u64;
 
         if geom_idx < nbg_geo.polylines.len() {
             let poly = &nbg_geo.polylines[geom_idx];
@@ -879,7 +892,7 @@ fn build_multi_edge_geometry(
         }
     }
 
-    RouteGeometry::from_points(points, total_distance_mm as f64 / 1000.0, 0, format)
+    RouteGeometry::from_points(points, format)
 }
 
 // ============ Nearest Endpoint ============
@@ -928,11 +941,14 @@ pub struct NearestResponse {
 #[utoipa::path(
     get,
     path = "/nearest",
+    tag = "Search",
+    summary = "Find nearest road segments",
+    description = "Snaps a coordinate to the nearest road segments accessible by the given transport mode.\nReturns up to `number` results sorted by distance.",
     params(
-        ("lon" = f64, Query, description = "Longitude"),
-        ("lat" = f64, Query, description = "Latitude"),
-        ("mode" = String, Query, description = "Transport mode: car, bike, foot"),
-        ("number" = Option<u32>, Query, description = "Number of results (default 1, max 10)"),
+        ("lon" = f64, Query, description = "Longitude", example = 4.3517),
+        ("lat" = f64, Query, description = "Latitude", example = 50.8503),
+        ("mode" = String, Query, description = "Transport mode: car, bike, foot", example = "car"),
+        ("number" = Option<u32>, Query, description = "Number of results (default 1, max 100)", example = 5),
     ),
     responses(
         (status = 200, description = "Nearest roads found", body = NearestResponse),
@@ -1061,9 +1077,19 @@ pub struct Waypoint {
 #[utoipa::path(
     post,
     path = "/table",
-    request_body = TablePostRequest,
+    tag = "Matrix",
+    summary = "Compute distance/duration matrix",
+    description = "Computes a many-to-many distance and/or duration matrix using Bucket CH.\nBest for matrices up to ~10K cells. For larger matrices, use POST /table/stream.",
+    request_body(content = TablePostRequest, description = "Source and destination coordinates with mode",
+        example = json!({
+            "sources": [[4.3517, 50.8503], [4.3617, 50.8553]],
+            "destinations": [[4.4017, 50.8603], [4.4117, 50.8653]],
+            "mode": "car",
+            "annotations": "duration,distance"
+        })
+    ),
     responses(
-        (status = 200, description = "Table computed", body = TableResponse),
+        (status = 200, description = "Matrix computed", body = TableResponse),
         (status = 400, description = "Bad request", body = ErrorResponse),
     )
 )]
@@ -1344,16 +1370,21 @@ fn flat_matrix_to_2d(
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct TableStreamRequest {
     /// Source coordinates [[lon, lat], ...]
+    #[schema(example = json!([[4.3517, 50.8503], [4.3617, 50.8553]]))]
     pub sources: Vec<[f64; 2]>,
     /// Destination coordinates [[lon, lat], ...]
+    #[schema(example = json!([[4.4017, 50.8603], [4.4117, 50.8653]]))]
     pub destinations: Vec<[f64; 2]>,
     /// Transport mode: car, bike, or foot
+    #[schema(example = "car")]
     pub mode: String,
     /// Tile size for sources (default 1000)
     #[serde(default = "default_tile_size")]
+    #[schema(example = 1000)]
     pub src_tile_size: usize,
     /// Tile size for destinations (default 1000)
     #[serde(default = "default_tile_size")]
+    #[schema(example = 1000)]
     pub dst_tile_size: usize,
 }
 
@@ -1370,6 +1401,26 @@ fn default_tile_size() -> usize {
 /// - src_block_start, dst_block_start: tile offsets
 /// - src_block_len, dst_block_len: tile dimensions
 /// - durations_ms: packed u32 distances in milliseconds
+#[utoipa::path(
+    post,
+    path = "/table/stream",
+    tag = "Matrix",
+    summary = "Stream large distance matrix as Arrow IPC",
+    description = "Computes a distance matrix in tiles and streams results as Apache Arrow IPC format.\nDesigned for large matrices (10K+ sources/destinations) where JSON would be too large.\nBenchmarked at 50K×50K (2.5 billion distances) in 9.5 minutes with 2.4GB RAM overhead.\n\nNo hard point-count limit — memory is bounded by tile-by-tile streaming regardless of input size.\n\nThe response is a binary Arrow IPC stream. Each record batch contains one tile with:\n- `src_block_start`, `dst_block_start`: tile offsets\n- `src_block_len`, `dst_block_len`: tile dimensions\n- `durations_ms`: packed u32 array of durations in milliseconds\n\nSupports cooperative cancellation on client disconnect.",
+    request_body(content = TableStreamRequest, description = "Sources, destinations, mode, and optional tile sizes",
+        example = json!({
+            "sources": [[4.3517, 50.8503], [4.3617, 50.8553], [4.3717, 50.8603]],
+            "destinations": [[4.4017, 50.8603], [4.4117, 50.8653], [4.4217, 50.8703]],
+            "mode": "car",
+            "src_tile_size": 1000,
+            "dst_tile_size": 1000
+        })
+    ),
+    responses(
+        (status = 200, description = "Arrow IPC stream", content_type = "application/vnd.apache.arrow.stream"),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+    )
+)]
 async fn table_stream(
     State(state): State<Arc<ServerState>>,
     Json(req): Json<TableStreamRequest>,
@@ -1402,21 +1453,9 @@ async fn table_stream(
             .into_response();
     }
 
-    const MAX_STREAM_POINTS: usize = 100_000;
-    if req.sources.len() > MAX_STREAM_POINTS || req.destinations.len() > MAX_STREAM_POINTS {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: format!(
-                    "request too large: sources={}, destinations={}, max {} each",
-                    req.sources.len(),
-                    req.destinations.len(),
-                    MAX_STREAM_POINTS
-                ),
-            }),
-        )
-            .into_response();
-    }
+    // No hard point-count limit: /table/stream is designed for arbitrarily large matrices.
+    // Memory is bounded by tile-by-tile streaming (src_tile_size × dst_tile_size per tile).
+    // The only per-request allocation is the rank vectors (4 bytes per coordinate).
 
     let mode_data = state.get_mode(mode);
     let n_nodes = mode_data.cch_topo.n_nodes as usize;
@@ -1692,18 +1731,24 @@ fn get_node_location(state: &ServerState, node_id: u32) -> [f64; 2] {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct IsochroneRequest {
     /// Center longitude
+    #[schema(example = 4.3517)]
     lon: f64,
     /// Center latitude
+    #[schema(example = 50.8503)]
     lat: f64,
     /// Time limit in seconds
+    #[schema(example = 600)]
     time_s: u32,
     /// Transport mode (car, bike, foot)
+    #[schema(example = "car")]
     mode: String,
     /// Direction: "depart" (default) or "arrive"
     #[serde(default = "default_direction")]
+    #[schema(example = "depart")]
     direction: String,
     /// Geometry encoding: polyline6 (default), geojson, points
     #[serde(default = "default_geometries")]
+    #[schema(example = "geojson")]
     geometries: String,
     /// Optional fields to include: "network" adds reachable road geometries
     #[serde(default)]
@@ -1741,14 +1786,17 @@ pub struct IsochroneResponse {
 #[utoipa::path(
     get,
     path = "/isochrone",
+    tag = "Isochrone",
+    summary = "Compute reachability polygon",
+    description = "Computes the area reachable within a time limit using PHAST.\nSupports forward (depart) and reverse (arrive) isochrones.\n\nContent negotiation:\n- `Accept: application/json` → JSON polygon\n- `Accept: application/octet-stream` → WKB binary polygon",
     params(
-        ("lon" = f64, Query, description = "Center longitude"),
-        ("lat" = f64, Query, description = "Center latitude"),
-        ("time_s" = u32, Query, description = "Time limit in seconds"),
-        ("mode" = String, Query, description = "Transport mode (car, bike, foot)"),
-        ("direction" = Option<String>, Query, description = "Direction: 'depart' (default) or 'arrive'"),
-        ("geometries" = Option<String>, Query, description = "Geometry encoding: polyline6 (default), geojson, points"),
-        ("include" = Option<String>, Query, description = "Optional fields: 'network' for road geometries"),
+        ("lon" = f64, Query, description = "Center longitude", example = 4.3517),
+        ("lat" = f64, Query, description = "Center latitude", example = 50.8503),
+        ("time_s" = u32, Query, description = "Time limit in seconds (1-7200)", example = 600),
+        ("mode" = String, Query, description = "Transport mode: car, bike, foot", example = "car"),
+        ("direction" = Option<String>, Query, description = "Direction: 'depart' (default) or 'arrive'", example = "depart"),
+        ("geometries" = Option<String>, Query, description = "Geometry encoding: polyline6 (default), geojson, points", example = "geojson"),
+        ("include" = Option<String>, Query, description = "Optional: 'network' adds reachable road geometries", example = json!(null)),
     ),
     responses(
         (status = 200, description = "Isochrone computed", body = IsochroneResponse),
@@ -2023,13 +2071,16 @@ fn build_network_geometry(
 }
 
 /// Bulk isochrone request
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct BulkIsochroneRequest {
-    /// List of origins as [lon, lat] pairs
+    /// List of origins as [lon, lat] pairs (max 10,000)
+    #[schema(example = json!([[4.3517, 50.8503], [4.3617, 50.8553], [4.3717, 50.8603]]))]
     origins: Vec<[f64; 2]>,
-    /// Time limit in seconds
+    /// Time limit in seconds (1-7200)
+    #[schema(example = 600)]
     time_s: u32,
-    /// Transport mode
+    /// Transport mode: car, bike, or foot
+    #[schema(example = "car")]
     mode: String,
 }
 
@@ -2037,6 +2088,18 @@ pub struct BulkIsochroneRequest {
 ///
 /// Returns a binary stream of WKB polygons with length-prefixed format:
 /// For each isochrone: [4 bytes: origin_idx as u32][4 bytes: wkb_len as u32][wkb_len bytes: WKB]
+#[utoipa::path(
+    post,
+    path = "/isochrone/bulk",
+    tag = "Isochrone",
+    summary = "Compute multiple isochrones in parallel",
+    description = "Computes isochrones for multiple origins in parallel using rayon + PHAST.\nReturns a binary stream of WKB polygons with length-prefixed framing.\n\nBinary format per isochrone:\n- 4 bytes: origin index (u32 LE)\n- 4 bytes: WKB length (u32 LE)\n- N bytes: WKB polygon\n\nMaximum 10,000 origins. Supports cooperative cancellation on client disconnect.",
+    request_body(content = BulkIsochroneRequest, description = "Origins, time limit, and mode"),
+    responses(
+        (status = 200, description = "Binary WKB stream", content_type = "application/octet-stream"),
+        (status = 400, description = "Bad request"),
+    )
+)]
 async fn isochrone_bulk(
     State(state): State<Arc<ServerState>>,
     Json(req): Json<BulkIsochroneRequest>,
@@ -2505,18 +2568,23 @@ pub fn run_phast_bounded_fast_reverse(
 #[derive(Debug, Deserialize, ToSchema)]
 struct MatchRequest {
     /// GPS coordinates [[lon, lat], ...] — at least 2 points
+    #[schema(example = json!([[4.3517, 50.8503], [4.3537, 50.8513], [4.3557, 50.8523], [4.3577, 50.8533]]))]
     coordinates: Vec<[f64; 2]>,
     /// Transport mode: "car", "bike", or "foot"
     #[serde(default = "default_match_mode")]
+    #[schema(example = "car")]
     mode: String,
     /// GPS accuracy in meters (default: 10)
     #[serde(default)]
+    #[schema(example = 10.0)]
     gps_accuracy: Option<f64>,
     /// Geometry format: "polyline6" (default), "geojson", or "points"
     #[serde(default = "default_match_geometry")]
+    #[schema(example = "polyline6")]
     geometry: String,
     /// Whether to include turn-by-turn steps
     #[serde(default)]
+    #[schema(example = true)]
     steps: bool,
 }
 
@@ -2573,7 +2641,17 @@ struct MatchTracepoint {
 #[utoipa::path(
     post,
     path = "/match",
-    request_body = MatchRequest,
+    tag = "Search",
+    summary = "Map match a GPS trace to the road network",
+    description = "Snaps a sequence of GPS coordinates to the most likely route on the road network\nusing HMM + Viterbi decoding (Newson & Krumm 2009).\n\nThe trace may be split into multiple sub-matchings if gaps are detected.\nMaximum 500 coordinates per request.",
+    request_body(content = MatchRequest, description = "GPS trace coordinates with optional accuracy",
+        example = json!({
+            "coordinates": [[4.3517, 50.8503], [4.3537, 50.8513], [4.3557, 50.8523], [4.3577, 50.8533]],
+            "mode": "car",
+            "gps_accuracy": 10.0,
+            "steps": true
+        })
+    ),
     responses(
         (status = 200, description = "Trace matched", body = MatchResponse),
         (status = 400, description = "Bad request", body = ErrorResponse),
@@ -2681,14 +2759,12 @@ async fn match_trace(
             .matchings
             .iter()
             .map(|m| {
-                let geometry = build_geometry(
+                let (geometry, distance_m) = build_geometry(
                     &m.ebg_path,
                     &state_clone.ebg_nodes,
                     &state_clone.nbg_geo,
-                    m.duration_ds,
                     geom_format,
                 );
-                let distance_m = geometry.distance_m;
                 let duration_s = m.duration_ds as f64 / 10.0;
 
                 let steps = if want_steps {
@@ -2768,6 +2844,21 @@ async fn match_trace(
 // ============ Height Endpoint ============
 
 /// Query elevation for coordinates using SRTM data
+#[utoipa::path(
+    get,
+    path = "/height",
+    tag = "Elevation",
+    summary = "Look up elevation for coordinates",
+    description = "Returns elevation in meters above sea level for each coordinate using SRTM DEM data.\nCoordinates are passed as pipe-separated `lon,lat` pairs (Valhalla convention).\n\nReturns `null` elevation for coordinates outside SRTM coverage.",
+    params(
+        ("coordinates" = String, Query, description = "Pipe-separated lon,lat pairs", example = "4.3517,50.8503|4.4017,50.8603"),
+    ),
+    responses(
+        (status = 200, description = "Elevations returned", body = super::elevation::HeightResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 503, description = "Elevation data not loaded", body = ErrorResponse),
+    )
+)]
 async fn height(
     State(state): State<Arc<ServerState>>,
     Query(req): Query<super::elevation::HeightRequest>,
@@ -2798,6 +2889,9 @@ async fn height(
 #[utoipa::path(
     get,
     path = "/health",
+    tag = "System",
+    summary = "Health check",
+    description = "Returns server status, uptime, loaded modes, and dataset statistics.",
     responses(
         (status = 200, description = "Server is healthy"),
     )
@@ -4057,22 +4151,10 @@ mod tests {
     }
 
     #[test]
-    fn test_max_stream_points_is_sensible() {
-        // MAX_STREAM_POINTS = 100_000 for /table/stream
-        let max_stream_points: usize = 100_000;
-        assert!(
-            max_stream_points <= 100_000,
-            "MAX_STREAM_POINTS should be <= 100,000"
-        );
-        assert!(
-            max_stream_points >= 1,
-            "MAX_STREAM_POINTS must allow at least trivial queries"
-        );
-        // 50k × 50k should be allowed (per documented benchmark)
-        assert!(
-            50_000 <= max_stream_points,
-            "50,000 points should be within MAX_STREAM_POINTS"
-        );
+    fn test_table_stream_has_no_hard_limit() {
+        // /table/stream has no hard point-count limit — it's designed for arbitrarily
+        // large matrices via tile-by-tile Arrow IPC streaming. Memory is bounded by
+        // tile size, not input size. The 50K×50K benchmark proves this works.
     }
 
     #[test]

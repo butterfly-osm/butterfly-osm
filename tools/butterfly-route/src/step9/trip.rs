@@ -10,6 +10,7 @@
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use utoipa::ToSchema;
 
 use crate::matrix::bucket_ch::table_bucket_full_flat;
 use crate::profile_abi::Mode;
@@ -341,18 +342,22 @@ fn brute_force_3(
 // ============ Trip Handler ============
 
 /// Request for trip/TSP optimization
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct TripRequest {
     /// Waypoint coordinates [[lon, lat], ...] - 2 to 100 waypoints
+    #[schema(example = json!([[4.3517, 50.8503], [4.4017, 50.8603], [4.3817, 50.8403], [4.3317, 50.8303]]))]
     pub coordinates: Vec<[f64; 2]>,
     /// Transport mode: "car", "bike", or "foot"
     #[serde(default = "default_mode")]
+    #[schema(example = "car")]
     pub mode: String,
     /// Whether to return to start (default: true)
     #[serde(default = "default_true")]
+    #[schema(example = true)]
     pub round_trip: bool,
     /// Annotations to return: "duration" (default), "distance", "duration,distance"
     #[serde(default = "default_annotations")]
+    #[schema(example = "duration,distance")]
     pub annotations: String,
 }
 
@@ -369,9 +374,10 @@ fn default_annotations() -> String {
 }
 
 /// Response for trip endpoint
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct TripResponse {
-    /// Status code
+    /// Status code: "Ok" or "Partial" (if some legs are unreachable)
+    #[schema(example = "Ok")]
     pub code: String,
     /// Original waypoints with their position in the optimized trip
     pub waypoints: Vec<TripWaypoint>,
@@ -380,9 +386,10 @@ pub struct TripResponse {
 }
 
 /// A waypoint in the trip response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct TripWaypoint {
     /// Snapped location [lon, lat]
+    #[schema(example = json!([4.3517, 50.8503]))]
     pub location: [f64; 2],
     /// This waypoint's position in the optimized visit order
     pub waypoint_index: usize,
@@ -393,38 +400,59 @@ pub struct TripWaypoint {
 }
 
 /// A complete optimized trip
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct Trip {
     /// Legs connecting consecutive waypoints in the optimized order
     pub legs: Vec<TripLeg>,
     /// Total trip duration in seconds
+    #[schema(example = 1234.5)]
     pub duration: f64,
     /// Total trip distance in meters (if distance annotation requested, else 0)
+    #[schema(example = 45678.0)]
     pub distance: f64,
     /// Optimization weight (same as duration)
     pub weight: f64,
     /// Weight metric name
+    #[schema(example = "duration")]
     pub weight_name: String,
     /// Percentage improvement from 2-opt over greedy
+    #[schema(example = 12.3)]
     pub improvement_pct: f64,
-    // NOTE: Route geometry concatenation across legs is a follow-up.
-    // For now, individual leg geometries are not included.
-    // To add geometry, compute P2P route for each consecutive pair in
-    // the optimized order and concatenate the polylines.
 }
 
 /// A leg connecting two consecutive waypoints in the trip
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct TripLeg {
     /// Leg duration in seconds
+    #[schema(example = 305.2)]
     pub duration: f64,
     /// Leg distance in meters
+    #[schema(example = 12345.0)]
     pub distance: f64,
     /// Summary (empty for now)
     pub summary: String,
 }
 
 /// Handler for POST /trip endpoint
+#[utoipa::path(
+    post,
+    path = "/trip",
+    tag = "Routing",
+    summary = "Optimize waypoint visiting order (TSP)",
+    description = "Takes 2-100 waypoints and returns the optimized visiting order that minimizes total travel time.\n\nAlgorithm: multi-start nearest-neighbor greedy + 2-opt + or-opt local search on an N×N duration matrix.\n\nSet `round_trip: false` for open-jaw trips (no return to start).",
+    request_body(content = TripRequest, description = "Waypoints, mode, and options",
+        example = json!({
+            "coordinates": [[4.3517, 50.8503], [4.4017, 50.8603], [4.3817, 50.8403], [4.3317, 50.8303]],
+            "mode": "car",
+            "round_trip": true,
+            "annotations": "duration,distance"
+        })
+    ),
+    responses(
+        (status = 200, description = "Optimized trip", body = TripResponse),
+        (status = 400, description = "Bad request"),
+    )
+)]
 pub async fn trip_handler(
     State(state): State<Arc<ServerState>>,
     Json(req): Json<TripRequest>,
