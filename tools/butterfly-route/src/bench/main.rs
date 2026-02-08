@@ -23,7 +23,6 @@ use butterfly_route::matrix::bucket_ch::{
 use butterfly_route::range::batched_isochrone::{
     AdaptiveIsochroneEngine, BatchedIsochroneEngine, ADAPTIVE_THRESHOLD_DS,
 };
-use butterfly_route::range::contour::{generate_contour, GridConfig};
 use butterfly_route::range::frontier::FrontierExtractor;
 use butterfly_route::range::phast::{PhastEngine, PhastStats};
 use butterfly_route::range::sparse_contour::{generate_sparse_contour, SparseContourConfig};
@@ -875,11 +874,11 @@ fn run_batch_bench(
 
     let phast = load_phast(data_dir, mode)?;
     let extractor = load_extractor(data_dir, mode)?;
-    let grid_config = match mode {
-        "car" => GridConfig::for_car(),
-        "bike" => GridConfig::for_bike(),
-        "foot" => GridConfig::for_foot(),
-        _ => GridConfig::for_bike(),
+    let sparse_config = match mode {
+        "car" => SparseContourConfig::for_car(),
+        "bike" => SparseContourConfig::for_bike(),
+        "foot" => SparseContourConfig::for_foot(),
+        _ => SparseContourConfig::for_bike(),
     };
 
     println!("  ✓ Loaded in {:.1}s", load_start.elapsed().as_secs_f64());
@@ -905,7 +904,7 @@ fn run_batch_bench(
         for &origin in &origins {
             let result = phast.query_bounded(origin, threshold_ms);
             let segments = extractor.extract_reachable_segments(&result.dist, threshold_ms);
-            let _ = generate_contour(&segments, &grid_config)?;
+            let _ = generate_sparse_contour(&segments, &sparse_config)?;
             total_isochrones += 1;
         }
 
@@ -3466,7 +3465,7 @@ fn run_contour_compare_bench(
     seed: u64,
 ) -> anyhow::Result<()> {
     println!("═══════════════════════════════════════════════════════════════");
-    println!("  CONTOUR COMPARISON BENCHMARK (dense vs sparse)");
+    println!("  SPARSE CONTOUR BENCHMARK");
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}", mode);
     println!(
@@ -3499,13 +3498,6 @@ fn run_contour_compare_bench(
     )?;
     println!("  ✓ Loaded frontier extractor");
 
-    // Config for both methods
-    let dense_config = match mode {
-        "car" => GridConfig::for_car(),
-        "bike" => GridConfig::for_bike(),
-        "foot" => GridConfig::for_foot(),
-        _ => GridConfig::for_bike(),
-    };
     let sparse_config = match mode {
         "car" => SparseContourConfig::for_car(),
         "bike" => SparseContourConfig::for_bike(),
@@ -3521,13 +3513,11 @@ fn run_contour_compare_bench(
         .collect();
 
     // Run benchmarks
-    println!("\n[3/3] Running comparison...\n");
+    println!("\n[3/3] Running benchmark...\n");
 
-    let mut dense_times: Vec<u64> = Vec::with_capacity(n_queries);
     let mut sparse_times: Vec<u64> = Vec::with_capacity(n_queries);
-    let mut dense_tiles: Vec<usize> = Vec::with_capacity(n_queries);
     let mut sparse_tiles: Vec<usize> = Vec::with_capacity(n_queries);
-    let mut vertex_diffs: Vec<i64> = Vec::with_capacity(n_queries);
+    let mut sparse_vertices: Vec<usize> = Vec::with_capacity(n_queries);
 
     // Track sparse timing breakdown
     let mut sparse_stamp_times: Vec<u64> = Vec::with_capacity(n_queries);
@@ -3539,7 +3529,6 @@ fn run_contour_compare_bench(
     let threshold_ms = threshold_ds * 100;
 
     for (i, &origin) in origins.iter().enumerate() {
-        // Run PHAST + frontier (same for both)
         let result = phast.query_active_set(origin, threshold_ds);
         let segments = extractor.extract_reachable_segments(&result.dist, threshold_ms);
 
@@ -3547,28 +3536,16 @@ fn run_contour_compare_bench(
             continue;
         }
 
-        // Dense contour
-        let dense_start = Instant::now();
-        let dense_result = generate_contour(&segments, &dense_config)?;
-        let dense_time = dense_start.elapsed().as_micros() as u64;
-        dense_times.push(dense_time);
-        dense_tiles.push(dense_result.stats.grid_cols * dense_result.stats.grid_rows);
-
-        // Sparse contour
         let sparse_start = Instant::now();
         let sparse_result = generate_sparse_contour(&segments, &sparse_config)?;
         let sparse_time = sparse_start.elapsed().as_micros() as u64;
         sparse_times.push(sparse_time);
         sparse_tiles.push(sparse_result.stats.active_tiles_after_morphology * 64 * 64);
+        sparse_vertices.push(sparse_result.stats.contour_vertices_after_simplify);
         sparse_stamp_times.push(sparse_result.stats.stamp_time_us);
         sparse_morph_times.push(sparse_result.stats.morphology_time_us);
         sparse_contour_times.push(sparse_result.stats.contour_time_us);
         sparse_simplify_times.push(sparse_result.stats.simplify_time_us);
-
-        // Track vertex difference
-        let dense_verts = dense_result.stats.contour_vertices_after_simplify as i64;
-        let sparse_verts = sparse_result.stats.contour_vertices_after_simplify as i64;
-        vertex_diffs.push(dense_verts - sparse_verts);
 
         if (i + 1) % 10 == 0 || i == n_queries - 1 {
             print!("\r  Progress: {}/{}", i + 1, n_queries);
@@ -3577,38 +3554,21 @@ fn run_contour_compare_bench(
     }
     println!("\n");
 
-    if dense_times.is_empty() {
+    if sparse_times.is_empty() {
         println!("  No valid queries (all origins had empty reachable sets)");
         return Ok(());
     }
 
-    // Sort for percentiles
-    dense_times.sort();
     sparse_times.sort();
 
-    let n = dense_times.len();
+    let n = sparse_times.len();
     let p50 = n / 2;
     let p90 = n * 90 / 100;
     let p95 = n * 95 / 100;
     let p99 = (n * 99 / 100).min(n - 1);
 
-    let dense_sum: u64 = dense_times.iter().sum();
-    let sparse_sum: u64 = sparse_times.iter().sum();
-    let dense_mean = dense_sum as f64 / n as f64;
-    let sparse_mean = sparse_sum as f64 / n as f64;
+    let sparse_mean = sparse_times.iter().sum::<u64>() as f64 / n as f64;
 
-    println!("───────────────────────────────────────────────────────────────");
-    println!("  DENSE CONTOUR (μs)");
-    println!("───────────────────────────────────────────────────────────────");
-    println!("    min:  {:>12}", dense_times[0]);
-    println!("    p50:  {:>12}", dense_times[p50]);
-    println!("    p90:  {:>12}", dense_times[p90]);
-    println!("    p95:  {:>12}", dense_times[p95]);
-    println!("    p99:  {:>12}", dense_times[p99]);
-    println!("    max:  {:>12}", dense_times[n - 1]);
-    println!("    mean: {:>12.1}", dense_mean);
-
-    println!();
     println!("───────────────────────────────────────────────────────────────");
     println!("  SPARSE CONTOUR (μs)");
     println!("───────────────────────────────────────────────────────────────");
@@ -3620,7 +3580,7 @@ fn run_contour_compare_bench(
     println!("    max:  {:>12}", sparse_times[n - 1]);
     println!("    mean: {:>12.1}", sparse_mean);
 
-    // Sparse timing breakdown
+    // Timing breakdown
     sparse_stamp_times.sort();
     sparse_morph_times.sort();
     sparse_contour_times.sort();
@@ -3632,7 +3592,7 @@ fn run_contour_compare_bench(
     let simplify_mean = sparse_simplify_times.iter().sum::<u64>() as f64 / n as f64;
 
     println!();
-    println!("  SPARSE TIMING BREAKDOWN (μs mean / p99):");
+    println!("  TIMING BREAKDOWN (μs mean / p99):");
     println!(
         "    Stamp:    {:>8.0} / {:>8}",
         stamp_mean, sparse_stamp_times[p99]
@@ -3650,47 +3610,11 @@ fn run_contour_compare_bench(
         simplify_mean, sparse_simplify_times[p99]
     );
 
+    let tiles_mean = sparse_tiles.iter().sum::<usize>() as f64 / n as f64;
+    let verts_mean = sparse_vertices.iter().sum::<usize>() as f64 / n as f64;
     println!();
-    println!("───────────────────────────────────────────────────────────────");
-    println!("  COMPARISON");
-    println!("───────────────────────────────────────────────────────────────");
-    println!("    Speedup (mean):  {:.2}x", dense_mean / sparse_mean);
-    println!(
-        "    Speedup (p50):   {:.2}x",
-        dense_times[p50] as f64 / sparse_times[p50] as f64
-    );
-    println!(
-        "    Speedup (p99):   {:.2}x",
-        dense_times[p99] as f64 / sparse_times[p99].max(1) as f64
-    );
-
-    let dense_tiles_mean: f64 = dense_tiles.iter().sum::<usize>() as f64 / n as f64;
-    let sparse_tiles_mean: f64 = sparse_tiles.iter().sum::<usize>() as f64 / n as f64;
-    println!();
-    println!("    Dense grid cells (mean):  {:.0}", dense_tiles_mean);
-    println!("    Sparse grid cells (mean): {:.0}", sparse_tiles_mean);
-    println!(
-        "    Cell reduction:           {:.1}%",
-        100.0 * (1.0 - sparse_tiles_mean / dense_tiles_mean)
-    );
-
-    let vertex_diff_mean: f64 = vertex_diffs.iter().sum::<i64>() as f64 / n as f64;
-    println!();
-    println!(
-        "    Vertex difference (mean): {:.1} (dense - sparse)",
-        vertex_diff_mean
-    );
-
-    if sparse_mean < dense_mean {
-        println!();
-        println!(
-            "  ✅ SPARSE is {:.1}x FASTER on average!",
-            dense_mean / sparse_mean
-        );
-    } else {
-        println!();
-        println!("  ⚠️  DENSE is faster (sparse overhead may dominate for small areas)");
-    }
+    println!("    Grid cells (mean):  {:.0}", tiles_mean);
+    println!("    Vertices (mean):    {:.0}", verts_mean);
 
     Ok(())
 }
@@ -4504,13 +4428,12 @@ fn run_monotonicity_test(
 /// Compare polygon detail levels with different cell sizes
 fn run_detail_compare(data_dir: &Path, mode: &str, threshold_min: u32) -> anyhow::Result<()> {
     use butterfly_route::profile_abi::Mode;
-    use butterfly_route::range::concave_hull::{generate_concave_hull, ConcaveHullConfig};
     use butterfly_route::range::frontier::FrontierExtractor;
     use butterfly_route::range::phast::PhastEngine;
     use butterfly_route::range::sparse_contour::{generate_sparse_contour, SparseContourConfig};
 
     println!("═══════════════════════════════════════════════════════════════");
-    println!("  POLYGON DETAIL COMPARISON: Sparse Contour vs Concave Hull");
+    println!("  POLYGON DETAIL COMPARISON: Sparse Contour Cell Sizes");
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}, Threshold: {} min", mode, threshold_min);
     println!();
@@ -4591,12 +4514,7 @@ fn run_detail_compare(data_dir: &Path, mode: &str, threshold_min: u32) -> anyhow
 
     // Extract segments
     let all_segments = extractor.extract_reachable_segments(&result.dist, threshold_ds * 100);
-    let frontier_segments = extractor.extract_frontier_segments(&result.dist, threshold_ds * 100);
-    println!(
-        "  ✓ All segments: {}, Frontier segments: {}",
-        all_segments.len(),
-        frontier_segments.len()
-    );
+    println!("  ✓ Reachable segments: {}", all_segments.len());
     println!();
 
     // ===== SPARSE CONTOUR (grid-based) =====
@@ -4642,91 +4560,6 @@ fn run_detail_compare(data_dir: &Path, mode: &str, threshold_min: u32) -> anyhow
         }
     }
     println!("└──────────────────┴────────┴────────┴────────┴────────────┘");
-    println!();
-
-    // ===== CONCAVE HULL (frontier-based) =====
-    println!("═══════════════════════════════════════════════════════════════");
-    println!("  CONCAVE HULL (frontier-based, uses actual road geometry)");
-    println!("═══════════════════════════════════════════════════════════════");
-
-    let hull_configs: Vec<(&str, ConcaveHullConfig)> = vec![
-        (
-            "Frontier c=2.0",
-            ConcaveHullConfig {
-                concavity: 2.0,
-                simplify_tolerance: 0.0,
-                include_intermediate_points: true,
-            },
-        ),
-        (
-            "Frontier c=1.0",
-            ConcaveHullConfig {
-                concavity: 1.0,
-                simplify_tolerance: 0.0,
-                include_intermediate_points: true,
-            },
-        ),
-        (
-            "Frontier c=0.5",
-            ConcaveHullConfig {
-                concavity: 0.5,
-                simplify_tolerance: 0.0,
-                include_intermediate_points: true,
-            },
-        ),
-        (
-            "Frontier c=0.2",
-            ConcaveHullConfig {
-                concavity: 0.2,
-                simplify_tolerance: 0.0,
-                include_intermediate_points: true,
-            },
-        ),
-        (
-            "Frontier c=0.1",
-            ConcaveHullConfig {
-                concavity: 0.1,
-                simplify_tolerance: 0.0,
-                include_intermediate_points: true,
-            },
-        ),
-        (
-            "Frontier c=0.05",
-            ConcaveHullConfig {
-                concavity: 0.05,
-                simplify_tolerance: 0.0,
-                include_intermediate_points: true,
-            },
-        ),
-    ];
-
-    println!("┌──────────────────────────┬────────┬────────┬────────┐");
-    println!("│ Configuration            │ Points │ Verts  │ Time   │");
-    println!("├──────────────────────────┼────────┼────────┼────────┤");
-
-    for (name, config) in hull_configs.iter() {
-        let start = Instant::now();
-        let result = generate_concave_hull(&frontier_segments, config);
-        let elapsed = start.elapsed().as_millis();
-
-        println!(
-            "│ {:24} │ {:>6} │ {:>6} │ {:>5}ms│",
-            name, result.stats.input_points, result.stats.final_vertices, elapsed
-        );
-    }
-    println!("└──────────────────────────┴────────┴────────┴────────┘");
-
-    println!();
-    println!("═══════════════════════════════════════════════════════════════");
-    println!("  SUMMARY");
-    println!("═══════════════════════════════════════════════════════════════");
-    println!("  Valhalla reference (30-min, 50m generalize): ~3600 vertices");
-    println!();
-    println!("  Sparse Contour: Correct shape but limited vertex count");
-    println!("  Concave Hull: Limited because isochrones are star-shaped");
-    println!();
-    println!("  KNOWN ISSUE: Grid-based approach limits vertex count.");
-    println!("  Fix requires marching squares on distance field (future work).");
     println!();
 
     Ok(())

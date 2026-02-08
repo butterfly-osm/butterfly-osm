@@ -609,9 +609,9 @@ pub enum Commands {
         #[arg(long)]
         output: PathBuf,
 
-        /// Grid cell size in meters (default: mode-dependent)
+        /// Cell size in meters (default: mode-dependent)
         #[arg(long)]
-        grid_size: Option<f64>,
+        cell_size: Option<f64>,
     },
 
     /// Analyze hybrid state graph (step towards beating OSRM)
@@ -1665,7 +1665,7 @@ impl Cli {
                 threshold_ms,
                 mode,
                 output,
-                grid_size,
+                cell_size,
             } => {
                 // Parse mode
                 let mode_enum = match mode.to_lowercase().as_str() {
@@ -1707,33 +1707,54 @@ impl Cli {
                     extractor.extract_reachable_segments(&phast_result.dist, threshold_ms);
                 println!("  ✓ {} reachable road segments", segments.len());
 
-                // Step 3: Generate contour (grid fill + marching squares)
+                // Step 3: Generate contour (sparse tile rasterization + boundary tracing)
                 println!("\n[3/4] Generating contour...");
-                let config = if let Some(size) = grid_size {
-                    crate::range::GridConfig {
-                        cell_size_m: size,
-                        simplify_tolerance_m: size,
-                        closing_iterations: 1,
-                    }
+                let config = if let Some(size) = cell_size {
+                    crate::range::SparseContourConfig::custom(size, size)
                 } else {
                     match mode_enum {
-                        Mode::Car => crate::range::GridConfig::for_car(),
-                        Mode::Bike => crate::range::GridConfig::for_bike(),
-                        Mode::Foot => crate::range::GridConfig::for_foot(),
+                        Mode::Car => crate::range::SparseContourConfig::for_car(),
+                        Mode::Bike => crate::range::SparseContourConfig::for_bike(),
+                        Mode::Foot => crate::range::SparseContourConfig::for_foot(),
                     }
                 };
 
                 println!(
-                    "  Grid: {}m cells, {}m simplify, {} closing iterations",
-                    config.cell_size_m, config.simplify_tolerance_m, config.closing_iterations
+                    "  Sparse: {}m cells, {}m simplify, {} dilation, {} erosion",
+                    config.cell_size_m,
+                    config.simplify_tolerance_m,
+                    config.dilation_rounds,
+                    config.erosion_rounds
                 );
 
-                let contour = crate::range::generate_contour(&segments, &config)?;
+                let sparse_result = crate::range::generate_sparse_contour(&segments, &config)?;
+                let active_tiles = sparse_result.stats.active_tiles_after_morphology;
+
+                let contour = crate::range::ContourResult {
+                    outer_ring: sparse_result.outer_ring,
+                    holes: sparse_result.holes,
+                    stats: crate::range::ContourStats {
+                        input_segments: sparse_result.stats.input_segments,
+                        grid_cols: 0,
+                        grid_rows: 0,
+                        filled_cells: sparse_result.stats.total_cells_set,
+                        contour_vertices_before_simplify: sparse_result
+                            .stats
+                            .contour_vertices_before_simplify,
+                        contour_vertices_after_simplify: sparse_result
+                            .stats
+                            .contour_vertices_after_simplify,
+                        elapsed_ms: (sparse_result.stats.stamp_time_us
+                            + sparse_result.stats.morphology_time_us
+                            + sparse_result.stats.contour_time_us
+                            + sparse_result.stats.simplify_time_us)
+                            / 1000,
+                    },
+                };
 
                 println!(
-                    "  ✓ {}x{} grid, {} filled cells → {} vertices (before simplify: {})",
-                    contour.stats.grid_cols,
-                    contour.stats.grid_rows,
+                    "  ✓ {} tiles, {} filled cells → {} vertices (before simplify: {})",
+                    active_tiles,
                     contour.stats.filled_cells,
                     contour.stats.contour_vertices_after_simplify,
                     contour.stats.contour_vertices_before_simplify

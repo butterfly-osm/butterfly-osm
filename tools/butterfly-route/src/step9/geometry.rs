@@ -175,41 +175,16 @@ pub fn build_geometry(
     RouteGeometry::from_points(coordinates, total_distance_m, duration_ds, format)
 }
 
-/// Build isochrone geometry using frontier-based concave hull
-///
-/// This extracts frontier segments (edges that cross the time threshold)
-/// and builds a concave hull polygon that accurately follows the road network.
-///
-/// # Arguments
-/// * `settled_nodes` - (original_ebg_id, distance_ds) pairs for all reachable edges
-/// * `max_time_ds` - Time threshold in deciseconds
-/// * `node_weights` - Edge traversal costs indexed by original EBG node ID (deciseconds)
-/// * `ebg_nodes` - EBG node metadata (for geometry lookup)
-/// * `nbg_geo` - Road geometry polylines
-///
-/// # Returns
-/// Polygon vertices as (lon, lat) points forming a closed ring
-pub fn build_isochrone_geometry(
-    settled_nodes: &[(u32, u32)], // (original_ebg_id, distance_ds)
-    max_time_ds: u32,
-    ebg_nodes: &EbgNodes,
-    nbg_geo: &NbgGeo,
-) -> Vec<Point> {
-    // Fallback to legacy convex hull for now
-    // TODO: Remove this once concave hull is validated
-    build_isochrone_geometry_convex(settled_nodes, max_time_ds, ebg_nodes, nbg_geo)
-}
-
 /// Build isochrone geometry using sparse tile rasterization + boundary tracing
 ///
-/// This is the correct algorithm that:
+/// This is the validated algorithm that:
 /// 1. Stamps reachable road segments into a sparse tile grid
 /// 2. For frontier edges: clips polyline at cut_fraction, stamps only reachable prefix
 /// 3. Applies local morphology (dilation/erosion) to create fillable regions
 /// 4. Extracts boundary via Moore-neighbor tracing (O(perimeter))
 ///
 /// This respects road network topology and produces geometrically correct isochrones.
-pub fn build_isochrone_geometry_concave(
+pub fn build_isochrone_geometry(
     settled_nodes: &[(u32, u32)], // (original_ebg_id, distance_ds)
     max_time_ds: u32,
     node_weights: &[u32], // Edge costs indexed by original EBG node ID
@@ -356,110 +331,6 @@ fn extract_partial_polyline(polyline: &crate::formats::PolyLine, fraction: f32) 
     }
 
     points
-}
-
-/// Legacy convex hull implementation (DEPRECATED - produces incorrect results)
-///
-/// This function is kept for backward compatibility but should not be used.
-/// Use `build_isochrone_geometry_concave` instead.
-fn build_isochrone_geometry_convex(
-    settled_nodes: &[(u32, u32)], // (node_id, distance)
-    max_time_ds: u32,
-    ebg_nodes: &EbgNodes,
-    nbg_geo: &NbgGeo,
-) -> Vec<Point> {
-    // Collect all points within time limit
-    let mut points: Vec<Point> = Vec::new();
-
-    for &(ebg_id, dist) in settled_nodes {
-        if dist <= max_time_ds {
-            let node = &ebg_nodes.nodes[ebg_id as usize];
-            let geom_idx = node.geom_idx as usize;
-
-            if geom_idx < nbg_geo.polylines.len() {
-                let polyline = &nbg_geo.polylines[geom_idx];
-
-                // Add edge endpoints
-                if !polyline.lat_fxp.is_empty() {
-                    // First point
-                    points.push(Point {
-                        lon: polyline.lon_fxp[0] as f64 / 1e7,
-                        lat: polyline.lat_fxp[0] as f64 / 1e7,
-                    });
-
-                    // Last point
-                    let last = polyline.lat_fxp.len() - 1;
-                    points.push(Point {
-                        lon: polyline.lon_fxp[last] as f64 / 1e7,
-                        lat: polyline.lat_fxp[last] as f64 / 1e7,
-                    });
-                }
-            }
-        }
-    }
-
-    // Compute convex hull (simple Graham scan)
-    if points.len() < 3 {
-        return points;
-    }
-
-    convex_hull(&mut points)
-}
-
-/// Simple convex hull using Graham scan
-fn convex_hull(points: &mut [Point]) -> Vec<Point> {
-    if points.len() < 3 {
-        return points.to_vec();
-    }
-
-    // Find lowest point
-    let mut min_idx = 0;
-    for (i, p) in points.iter().enumerate() {
-        if p.lat < points[min_idx].lat
-            || (p.lat == points[min_idx].lat && p.lon < points[min_idx].lon)
-        {
-            min_idx = i;
-        }
-    }
-    points.swap(0, min_idx);
-
-    let pivot = points[0];
-
-    // Sort by polar angle
-    points[1..].sort_by(|a, b| {
-        let cross = cross_product(pivot, *a, *b);
-        if cross.abs() < 1e-12 {
-            // Collinear - sort by distance
-            let dist_a = (a.lon - pivot.lon).powi(2) + (a.lat - pivot.lat).powi(2);
-            let dist_b = (b.lon - pivot.lon).powi(2) + (b.lat - pivot.lat).powi(2);
-            dist_a.partial_cmp(&dist_b).unwrap()
-        } else if cross > 0.0 {
-            std::cmp::Ordering::Less
-        } else {
-            std::cmp::Ordering::Greater
-        }
-    });
-
-    // Build hull
-    let mut hull = Vec::new();
-    for &p in points.iter() {
-        while hull.len() >= 2 && cross_product(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0
-        {
-            hull.pop();
-        }
-        hull.push(p);
-    }
-
-    // Close the polygon
-    if !hull.is_empty() {
-        hull.push(hull[0]);
-    }
-
-    hull
-}
-
-fn cross_product(o: Point, a: Point, b: Point) -> f64 {
-    (a.lon - o.lon) * (b.lat - o.lat) - (a.lat - o.lat) * (b.lon - o.lon)
 }
 
 /// Decode polyline6 back to coordinates (for testing round-trip)
