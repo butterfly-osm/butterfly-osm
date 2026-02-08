@@ -1,7 +1,5 @@
 # Butterfly-OSM 🦋
 
-[![CI](https://github.com/butterfly-osm/butterfly-osm/workflows/CI/badge.svg)](https://github.com/butterfly-osm/butterfly-osm/actions/workflows/ci.yml)
-
 Hurricane-fast drivetime engine and OSM toolkit built for modern performance requirements.
 
 ## Vision
@@ -16,16 +14,9 @@ A comprehensive ecosystem of OSM tools designed around **separation of concerns*
 
 ### Core Tools
 
-- **🚀 butterfly-dl**: Memory-efficient OSM data downloader (<1GB RAM for any file size), panic-safe C FFI with `butterfly_last_error_message()` for detailed error retrieval
-- **✂️ butterfly-shrink**: Polygon-based area extraction with geometric optimization  
-- **🔧 butterfly-extract**: Advanced filtering and transformation engine
-- **🌐 butterfly-serve**: High-performance HTTP tile server with caching
-
-### Shared Foundation
-
-- **📚 butterfly-common**: Shared utilities, error handling, and geographic algorithms
-- **🧠 Unified Intelligence**: Geographic fuzzy matching and semantic understanding
-- **⚡ Performance Primitives**: Memory-efficient data structures and async I/O
+- **butterfly-dl**: Memory-efficient OSM data downloader (<1GB RAM for any file size), panic-safe C FFI with `butterfly_last_error_message()` for detailed error retrieval
+- **butterfly-route**: High-performance routing engine with edge-based CCH, exact turn-aware queries, PHAST isochrones, and Arrow-streaming distance matrices
+- **butterfly-common**: Shared utilities, error handling, and geographic algorithms
 
 ## Why
 
@@ -50,8 +41,7 @@ Current OSM tools suffer from fundamental limitations:
 | Operation | Current Tools | Butterfly-OSM Target | Improvement |
 |-----------|---------------|---------------------|-------------|
 | Planet download | 2-4 hours | 20-40 minutes | **3-6x faster** |
-| Regional extraction | 5-15 minutes | 30-90 seconds | **10x faster** |
-| Tile serving (QPS) | 100-500 | 5,000+ | **10-50x faster** |
+| Matrix 10k×10k | 32.9s (OSRM) | 18.2s | **1.8x faster** |
 | Memory usage | 4-16GB | <1GB | **4-16x less** |
 
 ## How
@@ -62,28 +52,18 @@ Current OSM tools suffer from fundamental limitations:
 Each tool has a single, well-defined responsibility:
 ```
 butterfly-dl    → Data acquisition (download, streaming)
-butterfly-shrink → Geometric operations (extraction, clipping)  
-butterfly-extract → Data transformation (filtering, conversion)
-butterfly-serve  → Data serving (HTTP, caching, tiles)
+butterfly-route → Routing engine (CCH, isochrones, matrices)
+butterfly-common → Shared utilities and algorithms
 ```
 
-#### 2. Composable Pipeline Design
-Tools work together via standard streams and file formats:
-```bash
-# Download → Extract → Serve pipeline
-butterfly-dl planet - | \
-butterfly-extract --bbox 2.0,46.0,8.0,49.0 - france.pbf && \
-butterfly-serve france.pbf --port 8080
-```
-
-#### 3. Shared Intelligence
+#### 2. Composable Design
 Common patterns abstracted into `butterfly-common`:
 - Geographic algorithms (bounding boxes, projections)
 - Error handling with fuzzy matching
 - Memory-efficient data structures
 - Async I/O primitives
 
-#### 4. Performance-First Design
+#### 3. Performance-First Design
 
 **Memory efficiency:**
 - Streaming architecture - process data without loading entirely into memory
@@ -131,19 +111,6 @@ Common patterns abstracted into `butterfly-common`:
   - Production-hardened: structured logging, graceful shutdown, timeouts, compression, input validation, panic recovery, Prometheus metrics
   - Multi-round audit hardened: CRITICALs and HIGHs from Codex + Gemini audits resolved; remaining items tracked in todo_overall.md
   - See [Routing Engine](#routing-engine-butterfly-route) below
-
-### 🚧 In Development
-
-- **butterfly-shrink**: Polygon-based extraction engine
-- **butterfly-extract**: Advanced filtering and transformation
-- **butterfly-serve**: High-performance tile server
-
-### 🎯 Roadmap
-
-**Phase 1 (Current)**: Core data acquisition and workspace foundation  
-**Phase 2**: Geometric operations and extraction tools  
-**Phase 3**: Advanced transformation and filtering capabilities  
-**Phase 4**: High-performance serving and caching infrastructure  
 
 ## Routing Engine (butterfly-route)
 
@@ -218,10 +185,7 @@ curl "http://localhost:3001/isochrone?lon=4.35&lat=50.85&time_s=1800&mode=car&di
 
 # TSP/trip optimization
 curl -X POST "http://localhost:3001/trip" -H "Content-Type: application/json" \
-  -d '{"locations": [[4.35,50.85],[4.40,50.86],[4.45,50.87]], "mode": "car"}'
-
-# Small matrix (OSRM-compatible)
-curl "http://localhost:3001/table/v1/driving/4.35,50.85;4.40,50.86;4.45,50.87"
+  -d '{"coordinates": [[4.35,50.85],[4.40,50.86],[4.45,50.87]], "mode": "car"}'
 ```
 
 ### Running the Routing Engine
@@ -297,8 +261,6 @@ butterfly-osm/
 ├── scripts/             # Benchmarking and validation scripts
 └── data/                # Test data and examples
 ```
-
-**Note**: Additional tools (butterfly-shrink, butterfly-extract, butterfly-serve) are planned for future development.
 
 ### Building Individual Tools
 

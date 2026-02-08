@@ -378,7 +378,7 @@ fn emit_edges(
                             bearing_deci_deg: bearing,
                             polyline: PolyLine { lat_fxp, lon_fxp },
                             first_osm_way_id: way_id,
-                            flags: 0, // TODO: set flags based on tags
+                            flags: 0, // Reserved for future use (roundabout, ferry, tunnel, bridge); see NbgEdge definition in formats/nbg_geo.rs
                         };
 
                         edges.push(edge);

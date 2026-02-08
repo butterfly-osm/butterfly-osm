@@ -9,11 +9,19 @@ use reqwest::{Client, ClientBuilder};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 
 use crate::core::source::{DownloadSource, SourceConfig};
 use crate::core::stream::{create_http_stream, DownloadOptions, DownloadStream, OverwriteBehavior};
 use butterfly_common::{Error, Result};
+
+/// Supertrait combining [`AsyncWrite`](tokio::io::AsyncWrite) and
+/// [`AsyncSeek`](tokio::io::AsyncSeek) so we can use it in `dyn` trait
+/// objects. Rust trait objects only allow a single non-auto trait, so this
+/// wrapper is required for methods that need both write and seek capability
+/// (e.g. to reset the file position on a failed range resume -- Codex-C2).
+trait AsyncWriteSeek: tokio::io::AsyncWrite + tokio::io::AsyncSeek {}
+impl<T: tokio::io::AsyncWrite + tokio::io::AsyncSeek> AsyncWriteSeek for T {}
 
 /// Maximum number of retry attempts for network errors
 const MAX_RETRY_ATTEMPTS: u32 = 3;
@@ -250,7 +258,7 @@ impl Downloader {
         &self,
         client: &Client,
         url: &str,
-        mut writer: Box<dyn AsyncWrite + Send + Unpin>,
+        mut writer: Box<dyn AsyncWriteSeek + Send + Unpin>,
         total_size: u64,
         supports_ranges: bool,
         options: &DownloadOptions,
@@ -259,7 +267,7 @@ impl Downloader {
 
         while downloaded < total_size {
             let result = if downloaded == 0 {
-                // Initial request
+                // Initial request — no range header needed
                 retry_on_network_error(|| async {
                     let response = client.get(url).send().await?;
                     let stream = create_http_stream(response);
@@ -270,7 +278,24 @@ impl Downloader {
                 // Resume using range request
                 retry_on_network_error(|| async {
                     let range_header = format!("bytes={downloaded}-");
-                    let response = client.get(url).header("Range", range_header).send().await?;
+                    let response = client
+                        .get(url)
+                        .header("Range", &range_header)
+                        .send()
+                        .await?;
+
+                    // Codex-C2: Validate the server actually honoured the Range
+                    // header. A 206 Partial Content response means the server is
+                    // sending only the requested byte range. A 200 OK response
+                    // means the server ignored the Range header and is sending
+                    // the entire file from the beginning.
+                    if response.status() == reqwest::StatusCode::OK {
+                        return Err(Error::HttpError(format!(
+                            "Server returned 200 instead of 206 for range request \
+                             (bytes={downloaded}-). Server does not support byte-range resume."
+                        )));
+                    }
+
                     let stream = create_http_stream(response);
                     Ok(stream)
                 })
@@ -296,13 +321,34 @@ impl Downloader {
                     {
                         Ok(()) => break, // Download completed
                         Err(Error::NetworkError(_)) => {
-                            eprintln!("⚠️  Stream interrupted at {downloaded} bytes, resuming...");
+                            eprintln!("Stream interrupted at {downloaded} bytes, resuming...");
                             continue; // Retry from current position
                         }
                         Err(e) => return Err(e), // Non-network errors
                     }
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    // Codex-C2: If a range-resume request got 200 instead of
+                    // 206, the server does not truly support ranges. Reset the
+                    // writer to the beginning and restart the download from
+                    // byte 0. The HttpError from above is NOT a network error
+                    // so retry_on_network_error won't retry it — we handle the
+                    // restart here.
+                    if downloaded > 0 {
+                        if let Error::HttpError(ref msg) = e {
+                            if msg.contains("200 instead of 206") {
+                                eprintln!("WARNING: {msg} Restarting download from the beginning.");
+                                writer
+                                    .seek(std::io::SeekFrom::Start(0))
+                                    .await
+                                    .map_err(Error::IoError)?;
+                                downloaded = 0;
+                                continue;
+                            }
+                        }
+                    }
+                    return Err(e);
+                }
             }
         }
 
@@ -314,7 +360,7 @@ impl Downloader {
     async fn stream_to_writer_resilient(
         &self,
         mut stream: DownloadStream,
-        writer: &mut Box<dyn AsyncWrite + Send + Unpin>,
+        writer: &mut Box<dyn AsyncWriteSeek + Send + Unpin>,
         total_size: u64,
         downloaded: &mut u64,
         options: &DownloadOptions,
@@ -342,7 +388,16 @@ impl Downloader {
         Ok(())
     }
 
-    /// Resilient parallel download with per-chunk retry
+    /// Resilient parallel download with per-chunk retry.
+    ///
+    /// **Memory safety (Codex-C1):** Each in-flight chunk is buffered entirely
+    /// in memory before being written to disk (needed for ordered writeback via
+    /// the ring buffer). To prevent multi-GB allocations on very large files:
+    /// - Individual chunks are capped at `MAX_CHUNK_SIZE` (16 MB).
+    /// - At most `MAX_CONCURRENT_CHUNKS` (4) chunks are in-flight at once.
+    ///
+    /// This gives a worst-case memory ceiling of 4 * 16 MB = 64 MB for the
+    /// chunk buffers, regardless of total file size.
     async fn download_http_parallel_resilient(
         &self,
         client: &Client,
@@ -351,14 +406,29 @@ impl Downloader {
         total_size: u64,
         options: &DownloadOptions,
     ) -> Result<()> {
+        /// Maximum size of a single in-flight chunk (16 MB).
+        const MAX_CHUNK_SIZE: u64 = 16 * 1024 * 1024;
+
+        /// Maximum number of chunks downloaded concurrently. Together with
+        /// `MAX_CHUNK_SIZE` this bounds peak memory to 64 MB for chunk
+        /// buffers.
+        const MAX_CONCURRENT_CHUNKS: usize = 4;
+
         let connections = calculate_optimal_connections(total_size, options.max_connections);
-        let chunk_size = total_size / connections as u64;
+
+        // Cap chunk size so that each in-flight buffer stays within
+        // MAX_CHUNK_SIZE. If the naive per-connection chunk would exceed that
+        // limit, split into more (smaller) chunks and limit concurrency.
+        let naive_chunk_size = total_size / connections as u64;
+        let chunk_size = naive_chunk_size.min(MAX_CHUNK_SIZE);
+        let num_chunks = total_size.div_ceil(chunk_size) as usize;
+        let concurrency = connections.min(MAX_CONCURRENT_CHUNKS);
 
         // Generate ranges
-        let ranges: Vec<(u64, u64)> = (0..connections)
+        let ranges: Vec<(u64, u64)> = (0..num_chunks)
             .map(|i| {
                 let start = i as u64 * chunk_size;
-                let end = if i == connections - 1 {
+                let end = if i == num_chunks - 1 {
                     total_size - 1
                 } else {
                     start + chunk_size - 1
@@ -426,7 +496,7 @@ impl Downloader {
                     .await
                 }
             })
-            .buffer_unordered(connections);
+            .buffer_unordered(concurrency);
 
         tokio::pin!(stream);
 
@@ -802,5 +872,173 @@ mod tests {
         }
 
         println!("✅ New file test passed!");
+    }
+
+    /// Codex-L3: Verify that the Codex-C2 resume-integrity fix works correctly.
+    ///
+    /// Uses a raw TCP server so we have byte-level control over the HTTP
+    /// responses. The scenario:
+    ///
+    ///   1. HEAD: returns content-length=1024 and accept-ranges=bytes.
+    ///   2. First GET (no Range header): sends HTTP headers promising 1024
+    ///      bytes, but only writes 512 bytes of body and then *closes the
+    ///      connection*. reqwest surfaces this as a stream read error, which
+    ///      `stream_to_writer_resilient` maps to `NetworkError`.
+    ///      Now downloaded=512 and the resume loop continues.
+    ///   3. Second GET (Range: bytes=512-): server returns **200 OK** with
+    ///      the full 1024-byte body instead of 206 Partial Content. The
+    ///      Codex-C2 check detects the wrong status code.
+    ///   4. The error handler resets the writer to byte 0, sets downloaded=0.
+    ///   5. Third GET (no Range header): returns the full 1024-byte body
+    ///      with 200 OK. Download completes.
+    ///   6. File on disk must contain exactly the full test data.
+    #[tokio::test]
+    async fn test_resume_handles_200_instead_of_206() {
+        use tokio::io::AsyncWriteExt as TokioAsyncWriteExt;
+        use tokio::net::TcpListener;
+
+        // Full test payload: 1024 bytes (< 1MB => single-connection path)
+        let test_data: Vec<u8> = (0..1024).map(|i| (i % 256) as u8).collect();
+        let total_size = test_data.len();
+        let partial_size: usize = 512;
+
+        // Bind a TCP listener on a random port
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Spawn the mock server
+        let server_data = test_data.clone();
+        let get_call_count = Arc::new(AtomicUsize::new(0));
+        let get_count_server = Arc::clone(&get_call_count);
+
+        let server_handle = tokio::spawn(async move {
+            // We expect exactly 4 connections: 1 HEAD + 3 GETs
+            // (reqwest may reuse connections or not; we handle each
+            // connection independently by reading the request line)
+            for _ in 0..4 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+
+                // Read the request (we only need the first line + headers)
+                let mut buf = vec![0u8; 4096];
+                let n = socket.read(&mut buf).await.unwrap();
+                let request_str = String::from_utf8_lossy(&buf[..n]);
+
+                let first_line = request_str.lines().next().unwrap_or("");
+                let is_head = first_line.starts_with("HEAD");
+                let has_range = request_str
+                    .lines()
+                    .any(|l| l.to_lowercase().starts_with("range:"));
+
+                if is_head {
+                    // HEAD response
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\n\
+                         Content-Length: {total_size}\r\n\
+                         Accept-Ranges: bytes\r\n\
+                         Connection: close\r\n\
+                         \r\n"
+                    );
+                    socket.write_all(resp.as_bytes()).await.unwrap();
+                    socket.flush().await.unwrap();
+                } else {
+                    // GET
+                    let call_num = get_count_server.fetch_add(1, Ordering::SeqCst) + 1;
+                    println!("TCP mock: GET call #{call_num}, Range header: {has_range}");
+
+                    if call_num == 1 && !has_range {
+                        // Phase 1: promise total_size bytes but only send
+                        // partial_size, then close the connection.
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\n\
+                             Content-Length: {total_size}\r\n\
+                             Connection: close\r\n\
+                             \r\n"
+                        );
+                        socket.write_all(resp.as_bytes()).await.unwrap();
+                        socket
+                            .write_all(&server_data[..partial_size])
+                            .await
+                            .unwrap();
+                        socket.flush().await.unwrap();
+                        // Drop socket => connection close => premature EOF
+                        drop(socket);
+                    } else if call_num == 2 && has_range {
+                        // Phase 2: Range request but respond with 200 OK
+                        // (ignoring the Range header), full body.
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\n\
+                             Content-Length: {total_size}\r\n\
+                             Connection: close\r\n\
+                             \r\n"
+                        );
+                        socket.write_all(resp.as_bytes()).await.unwrap();
+                        socket.write_all(&server_data).await.unwrap();
+                        socket.flush().await.unwrap();
+                        drop(socket);
+                    } else {
+                        // Phase 3 (or any subsequent): full successful response
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\n\
+                             Content-Length: {total_size}\r\n\
+                             Connection: close\r\n\
+                             \r\n"
+                        );
+                        socket.write_all(resp.as_bytes()).await.unwrap();
+                        socket.write_all(&server_data).await.unwrap();
+                        socket.flush().await.unwrap();
+                        drop(socket);
+                    }
+                }
+            }
+        });
+
+        // --- Execute the download ---
+        let temp_file = NamedTempFile::new().unwrap();
+        let file_path = temp_file.path().to_str().unwrap();
+
+        let downloader = Downloader::new();
+        let options = DownloadOptions::default();
+        let url = format!("http://127.0.0.1:{}/resume-test.pbf", addr.port());
+
+        let result = downloader
+            .download_http_to_file(&url, file_path, &options)
+            .await;
+
+        // Wait for the server task (with a timeout so we don't hang)
+        let _ = tokio::time::timeout(Duration::from_secs(5), server_handle).await;
+
+        // --- Assertions ---
+        assert!(
+            result.is_ok(),
+            "Download should succeed after 200-restart: {result:?}"
+        );
+
+        // File must contain exactly the full test data
+        let on_disk = std::fs::read(file_path).unwrap();
+        assert_eq!(
+            on_disk.len(),
+            test_data.len(),
+            "File size must equal total_size ({})",
+            test_data.len()
+        );
+        assert_eq!(
+            on_disk, test_data,
+            "File contents must match original test data byte-for-byte"
+        );
+
+        // Exactly 3 GETs must have been made:
+        //   1. initial (truncated)  2. range (got 200)  3. restart (full)
+        let get_calls = get_call_count.load(Ordering::SeqCst);
+        assert_eq!(
+            get_calls, 3,
+            "Expected exactly 3 GET requests \
+             (initial-truncated + range-rejected + restart), got {get_calls}"
+        );
+
+        println!(
+            "Codex-L3: resume-integrity test passed. \
+             {get_calls} GETs, file = {} bytes",
+            on_disk.len()
+        );
     }
 }

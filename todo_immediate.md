@@ -1,10 +1,44 @@
 # Immediate Status
 
-No active sprint. All features, audit remediation, and production hardening complete. Nothing remaining.
+Second-pass audit remediation complete (N-Sprint, 2026-02-08). All 28 findings resolved — 5 CRITICALs, 7 HIGHs, 12 MEDIUMs, 3 LOWs, 1 COSMETIC. Nothing remaining.
 
 ---
 
 ## Previously Completed Sprints
+
+### N-Sprint: Second-Pass Audit Remediation (2026-02-08) — DONE
+
+All 28 Codex second-pass findings remediated in one sprint:
+
+| Task | ID | Fix |
+|------|----|-----|
+| Cap parallel download memory | Codex-C1 | MAX_CHUNK_SIZE=16MB, MAX_CONCURRENT_CHUNKS=4 → worst-case 64MB ceiling |
+| Validate HTTP range response | Codex-C2 | Detect 200-instead-of-206, seek back to 0, restart download. `AsyncWriteSeek` supertrait. |
+| Remove dead S3 FFI declaration | Codex-C3 | Removed `butterfly_has_s3_support()`, `BUTTERFLY_S3_ERROR` enum, all S3 claims in header/lib/pc |
+| Bound /isochrone/bulk origins | Codex-C4 | MAX_BULK_ORIGINS=10,000 guard with 400 error |
+| Remove /debug/compare from production | Codex-C5 | Route removed from `build_router()`, handler retained `#[allow(dead_code)]` for dev |
+| Reduce /match coordinate limit | Codex-H1 | 10,000 → 500 max coordinates |
+| spawn_blocking for /match and /trip | Codex-H3 | CPU-heavy handlers offloaded to blocking threads |
+| Guard /table/stream request size | Codex-H4 | MAX_STREAM_POINTS=100,000 per side |
+| Document alternatives weight clone | Codex-H5 | Comment explaining ~200MB clone is rare-path acceptable |
+| Deterministic step directory selection | Codex-H6 | Sort `read_dir` matches before picking first |
+| Document permissive CORS | Codex-H7 | Comment explaining deliberate choice, suggests reverse proxy |
+| Remove unused IngestConfig.threads | Codex-M1 | Field removed, CLI arg kept with `_` binding |
+| Document skipped step5 condition D | Codex-M2 | Explanation: requires CCH from steps 6-8, validated post-step8 |
+| Compute real step5 lock hashes | Codex-M3 | Replaced 9 `"TODO"` placeholders with `compute_sha256()` calls |
+| Clarify NBG edge flags=0 | Codex-M4 | Comment: reserved for future roundabout/ferry/tunnel/bridge bits |
+| Update step9 module header docs | Codex-M5 | Listed all 12+ endpoints |
+| Note undocumented OpenAPI endpoints | Codex-M6 | Comment listing endpoints missing `#[utoipa::path]` |
+| Add HTTP handler unit tests | Codex-M7 | 28 tests: validate_coord (16), parse_mode (8), constant sanity (4) |
+| Document shallow nodes.si validation | Codex-M8 | Doc comment: legacy format, no CRC, magic+size only |
+| Fix stale user-facing docs | Codex-M9 | Removed non-existent tools, fixed trip payload key, removed stale examples |
+| Docker packaging hardening | Codex-M10 | Pinned base images, non-root user, runtime comments |
+| Remove S3 claims from metadata | Codex-M11 | Updated lib.rs docstring, .pc.in description |
+| Overflow check in table_stream | Codex-M12 | `checked_mul` with 400 error on overflow |
+| Replace panic in find_free_port | Codex-L1 | Returns `Result<u16>` with `anyhow::bail!` |
+| Remove dead legacy helpers | Codex-L2 | Removed `bounded_dijkstra`, `run_phast_bounded`, `run_cch_dijkstra` (156 lines) |
+| Add resume-integrity test | Codex-L3 | Test: server returns 200 instead of 206, verifies restart-from-beginning logic |
+| Remove stale CI badge | Codex-X1 | Badge removed from README.md |
 
 ### L-Sprint: Deferred Architectural HIGHs (2026-02-08) — DONE
 

@@ -1,6 +1,7 @@
 # Multi-stage build for butterfly-route
 # Stage 1: Build
-FROM rust:bookworm AS builder
+# Pin to bookworm for reproducibility. For exact reproducibility, pin to a SHA digest.
+FROM rust:1.84-bookworm AS builder
 
 WORKDIR /build
 
@@ -34,8 +35,10 @@ RUN touch butterfly-common/src/lib.rs tools/butterfly-dl/src/lib.rs \
 RUN cargo build --release -p butterfly-route
 
 # Stage 2: Runtime
-FROM debian:bookworm-slim
+# Pin to bookworm for reproducibility. For exact reproducibility, pin to a SHA digest.
+FROM debian:bookworm-20250203-slim
 
+# curl needed for Docker HEALTHCHECK; ca-certificates for HTTPS
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
@@ -43,6 +46,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Copy the built binary
 COPY --from=builder /build/target/release/butterfly-route /usr/local/bin/butterfly-route
+
+# Run as non-root user for security
+RUN groupadd -r butterfly && useradd -r -g butterfly butterfly
+USER butterfly
 
 # Data volume
 VOLUME /data

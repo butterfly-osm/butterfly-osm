@@ -42,6 +42,8 @@ use super::unpack::unpack_path;
 /// OpenAPI documentation
 #[derive(OpenApi)]
 #[openapi(
+    // Note: table_stream, isochrone_bulk, and height are not documented in OpenAPI
+    // because they lack #[utoipa::path] annotations. Add annotations to include them.
     paths(route, table_post, isochrone, nearest, health, match_trace),
     components(schemas(
         RouteRequest,
@@ -76,6 +78,8 @@ struct ApiDoc;
 
 /// Build the Axum router
 pub fn build_router(state: Arc<ServerState>) -> Router {
+    // CORS: fully permissive to allow browser-based clients (mapping apps, dashboards).
+    // For production deployments requiring CORS restrictions, use a reverse proxy (nginx, caddy).
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -94,7 +98,6 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
         .route("/match", post(match_trace))
         .route("/height", get(height))
         .route("/health", get(health))
-        .route("/debug/compare", get(debug_compare))
         .layer(CompressionLayer::new())
         .layer(ConcurrencyLimitLayer::new(32))
         .layer(TimeoutLayer::with_status_code(
@@ -285,6 +288,8 @@ pub struct ErrorResponse {
         (status = 404, description = "No route found", body = ErrorResponse),
     )
 )]
+// Note: route computation is fast (<10ms typical) and bounded by ConcurrencyLimitLayer(32),
+// so spawn_blocking is not needed here. /match and /trip use spawn_blocking for long computations.
 async fn route(
     State(state): State<Arc<ServerState>>,
     Query(req): Query<RouteRequest>,
@@ -472,6 +477,10 @@ async fn route(
     // Compute alternative routes if requested
     let alternatives = if num_alternatives > 0 {
         let mut alt_routes = Vec::new();
+        // Clone weights to apply route penalties for alternative computation.
+        // This clones ~200MB (up + down weight arrays). Acceptable for alternatives
+        // since they're requested rarely (only when alternatives > 0).
+        // A proper fix (penalty views) would require changing the CchQuery API.
         let mut penalized_weights = mode_data.cch_weights.clone();
 
         // Penalize edges of the primary route
@@ -1393,6 +1402,22 @@ async fn table_stream(
             .into_response();
     }
 
+    const MAX_STREAM_POINTS: usize = 100_000;
+    if req.sources.len() > MAX_STREAM_POINTS || req.destinations.len() > MAX_STREAM_POINTS {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "request too large: sources={}, destinations={}, max {} each",
+                    req.sources.len(),
+                    req.destinations.len(),
+                    MAX_STREAM_POINTS
+                ),
+            }),
+        )
+            .into_response();
+    }
+
     let mode_data = state.get_mode(mode);
     let n_nodes = mode_data.cch_topo.n_nodes as usize;
 
@@ -1443,7 +1468,15 @@ async fn table_stream(
     let n_src_blocks = n_total_sources.div_ceil(src_tile_size);
     let n_dst_blocks = n_total_targets.div_ceil(dst_tile_size);
     let n_total_tiles = n_src_blocks * n_dst_blocks;
-    let n_total_cells = n_total_sources * n_total_targets;
+    let Some(n_total_cells) = n_total_sources.checked_mul(n_total_targets) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "matrix dimensions overflow".into(),
+            }),
+        )
+            .into_response();
+    };
 
     // Create channel for streaming tiles
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(8);
@@ -2019,6 +2052,19 @@ async fn isochrone_bulk(
         )
             .into_response();
     }
+    const MAX_BULK_ORIGINS: usize = 10_000;
+    if req.origins.len() > MAX_BULK_ORIGINS {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "too many origins: {} exceeds maximum of {}",
+                req.origins.len(),
+                MAX_BULK_ORIGINS
+            )
+            .into_bytes(),
+        )
+            .into_response();
+    }
     for (i, &[lon, lat]) in req.origins.iter().enumerate() {
         if let Err(e) = validate_coord(lon, lat, &format!("origin[{}]", i)) {
             return (StatusCode::BAD_REQUEST, e.into_bytes()).into_response();
@@ -2120,81 +2166,6 @@ async fn isochrone_bulk(
             )
                 .into_response()
         })
-}
-
-/// Bounded Dijkstra for isochrone computation (operates in filtered node space)
-#[allow(dead_code)]
-fn bounded_dijkstra(
-    state: &ServerState,
-    mode: Mode,
-    source: u32,
-    max_time_ds: u32,
-) -> Vec<(u32, u32)> {
-    use priority_queue::PriorityQueue;
-    use std::cmp::Reverse;
-
-    let mode_data = state.get_mode(mode);
-    let cch_topo = &mode_data.cch_topo;
-    let n = cch_topo.n_nodes as usize;
-
-    let mut dist = vec![u32::MAX; n];
-    let mut pq: PriorityQueue<u32, Reverse<u32>> = PriorityQueue::new();
-    let mut settled = Vec::new();
-
-    dist[source as usize] = 0;
-    pq.push(source, Reverse(0));
-
-    while let Some((u, Reverse(d))) = pq.pop() {
-        if d > dist[u as usize] {
-            continue;
-        }
-
-        if d > max_time_ds {
-            continue;
-        }
-
-        settled.push((u, d));
-
-        // Relax UP edges
-        let start = cch_topo.up_offsets[u as usize] as usize;
-        let end = cch_topo.up_offsets[u as usize + 1] as usize;
-
-        for i in start..end {
-            let v = cch_topo.up_targets[i];
-            let w = mode_data.cch_weights.up[i];
-
-            if w == u32::MAX {
-                continue;
-            }
-
-            let new_dist = d.saturating_add(w);
-            if new_dist <= max_time_ds && new_dist < dist[v as usize] {
-                dist[v as usize] = new_dist;
-                pq.push(v, Reverse(new_dist));
-            }
-        }
-
-        // Also relax DOWN edges for isochrone (we want all reachable nodes)
-        let start = cch_topo.down_offsets[u as usize] as usize;
-        let end = cch_topo.down_offsets[u as usize + 1] as usize;
-
-        for i in start..end {
-            let v = cch_topo.down_targets[i];
-            let w = mode_data.cch_weights.down[i];
-
-            if w == u32::MAX {
-                continue;
-            }
-
-            let new_dist = d.saturating_add(w);
-            if new_dist <= max_time_ds && new_dist < dist[v as usize] {
-                dist[v as usize] = new_dist;
-                pq.push(v, Reverse(new_dist));
-            }
-        }
-    }
-
-    settled
 }
 
 // =============================================================================
@@ -2528,96 +2499,6 @@ pub fn run_phast_bounded_fast_reverse(
     })
 }
 
-/// Run PHAST bounded query (in rank space) - LEGACY version with per-query allocation
-///
-/// PHAST is a two-phase algorithm:
-/// 1. Upward phase: PQ-based Dijkstra using only UP edges from origin
-/// 2. Downward phase: Linear scan in reverse rank order, relaxing DOWN edges
-///
-/// With rank-aligned CCH, node_id == rank, so no inv_perm lookup is needed
-/// in the downward phase, giving excellent cache efficiency.
-#[allow(dead_code)]
-fn run_phast_bounded(
-    cch_topo: &crate::formats::CchTopo,
-    cch_weights: &super::state::CchWeights,
-    origin_rank: u32,
-    threshold: u32,
-) -> Vec<u32> {
-    use std::cmp::Reverse;
-    use std::collections::BinaryHeap;
-
-    let n_nodes = cch_topo.n_nodes as usize;
-    let mut dist = vec![u32::MAX; n_nodes];
-    dist[origin_rank as usize] = 0;
-
-    // Phase 1: Upward search (PQ-based, UP edges only)
-    let mut pq: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
-    pq.push(Reverse((0, origin_rank)));
-
-    while let Some(Reverse((d, u))) = pq.pop() {
-        // Early stop: if current min distance exceeds threshold, stop
-        if d > threshold {
-            break;
-        }
-
-        if d > dist[u as usize] {
-            continue; // Stale entry
-        }
-
-        // Relax UP edges only
-        let up_start = cch_topo.up_offsets[u as usize] as usize;
-        let up_end = cch_topo.up_offsets[u as usize + 1] as usize;
-
-        for i in up_start..up_end {
-            let v = cch_topo.up_targets[i];
-            let w = cch_weights.up[i];
-
-            if w == u32::MAX {
-                continue;
-            }
-
-            let new_dist = d.saturating_add(w);
-            if new_dist < dist[v as usize] {
-                dist[v as usize] = new_dist;
-                pq.push(Reverse((new_dist, v)));
-            }
-        }
-    }
-
-    // Phase 2: Downward scan (linear, DOWN edges only)
-    // Process nodes in DECREASING rank order (highest rank first)
-    // With rank-aligned CCH: u = rank (no inv_perm lookup needed)
-    for rank in (0..n_nodes).rev() {
-        let u = rank;
-        let d_u = dist[u];
-
-        // Skip unreachable nodes or nodes beyond threshold
-        if d_u == u32::MAX || d_u > threshold {
-            continue;
-        }
-
-        // Relax DOWN edges
-        let down_start = cch_topo.down_offsets[u] as usize;
-        let down_end = cch_topo.down_offsets[u + 1] as usize;
-
-        for i in down_start..down_end {
-            let v = cch_topo.down_targets[i] as usize;
-            let w = cch_weights.down[i];
-
-            if w == u32::MAX {
-                continue;
-            }
-
-            let new_dist = d_u.saturating_add(w);
-            if new_dist < dist[v] {
-                dist[v] = new_dist;
-            }
-        }
-    }
-
-    dist
-}
-
 // ============ Map Matching Endpoint ============
 
 /// Request for GPS trace map matching
@@ -2727,12 +2608,12 @@ async fn match_trace(
             .into_response();
     }
 
-    if req.coordinates.len() > 10_000 {
+    if req.coordinates.len() > 500 {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "code": "InvalidValue",
-                "message": "Maximum 10,000 coordinates allowed"
+                "message": "Maximum 500 coordinates allowed"
             })),
         )
             .into_response();
@@ -2781,85 +2662,107 @@ async fn match_trace(
         .map(|&[lon, lat]| (lon, lat))
         .collect();
 
-    // Run map matching
-    let result = match super::map_match::map_match(&state, mode, &coords, req.gps_accuracy) {
-        Some(r) => r,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({
-                    "code": "NoMatch",
-                    "message": "Could not match trace to road network"
-                })),
-            )
-                .into_response()
-        }
-    };
+    // Extract owned values before the spawn_blocking closure
+    let gps_accuracy = req.gps_accuracy;
+    let want_steps = req.steps;
 
-    let mode_data = state.get_mode(mode);
+    // Map matching is CPU-heavy: HMM Viterbi decoding with many sequential P2P queries
+    // for long GPS traces can take seconds. Offload to a blocking thread to avoid
+    // starving the Tokio async runtime under high concurrency.
+    let state_clone = state.clone();
+    let blocking_result = tokio::task::spawn_blocking(move || {
+        // Run map matching — returns None if no observations could be matched
+        let result = super::map_match::map_match(&state_clone, mode, &coords, gps_accuracy)?;
 
-    // Build response
-    let matchings: Vec<MatchMatching> = result
-        .matchings
-        .iter()
-        .map(|m| {
-            let geometry = build_geometry(
-                &m.ebg_path,
-                &state.ebg_nodes,
-                &state.nbg_geo,
-                m.duration_ds,
-                geom_format,
-            );
-            let distance_m = geometry.distance_m;
-            let duration_s = m.duration_ds as f64 / 10.0;
+        let mode_data = state_clone.get_mode(mode);
 
-            let steps = if req.steps {
-                Some(build_steps(
+        // Build response
+        let matchings: Vec<MatchMatching> = result
+            .matchings
+            .iter()
+            .map(|m| {
+                let geometry = build_geometry(
                     &m.ebg_path,
-                    &state.ebg_nodes,
-                    &state.nbg_geo,
-                    &mode_data.node_weights,
-                    &state.way_names,
+                    &state_clone.ebg_nodes,
+                    &state_clone.nbg_geo,
+                    m.duration_ds,
                     geom_format,
-                ))
-            } else {
-                None
-            };
+                );
+                let distance_m = geometry.distance_m;
+                let duration_s = m.duration_ds as f64 / 10.0;
 
-            MatchMatching {
-                geometry,
-                duration: duration_s,
-                distance: distance_m,
-                confidence: m.confidence,
-                steps,
-            }
-        })
-        .collect();
+                let steps = if want_steps {
+                    Some(build_steps(
+                        &m.ebg_path,
+                        &state_clone.ebg_nodes,
+                        &state_clone.nbg_geo,
+                        &mode_data.node_weights,
+                        &state_clone.way_names,
+                        geom_format,
+                    ))
+                } else {
+                    None
+                };
 
-    let tracepoints: Vec<Option<MatchTracepoint>> = result
-        .tracepoints
-        .iter()
-        .map(|tp| {
-            tp.as_ref().map(|t| {
-                let name =
-                    lookup_road_name(t.ebg_id, &state.ebg_nodes, &state.nbg_geo, &state.way_names)
-                        .unwrap_or_default();
-                MatchTracepoint {
-                    location: [t.lon, t.lat],
-                    name,
-                    matchings_index: t.matchings_index,
-                    waypoint_index: t.waypoint_index,
+                MatchMatching {
+                    geometry,
+                    duration: duration_s,
+                    distance: distance_m,
+                    confidence: m.confidence,
+                    steps,
                 }
             })
-        })
-        .collect();
+            .collect();
 
-    Json(MatchResponse {
-        code: "Ok".to_string(),
-        matchings,
-        tracepoints,
+        let tracepoints: Vec<Option<MatchTracepoint>> = result
+            .tracepoints
+            .iter()
+            .map(|tp| {
+                tp.as_ref().map(|t| {
+                    let name = lookup_road_name(
+                        t.ebg_id,
+                        &state_clone.ebg_nodes,
+                        &state_clone.nbg_geo,
+                        &state_clone.way_names,
+                    )
+                    .unwrap_or_default();
+                    MatchTracepoint {
+                        location: [t.lon, t.lat],
+                        name,
+                        matchings_index: t.matchings_index,
+                        waypoint_index: t.waypoint_index,
+                    }
+                })
+            })
+            .collect();
+
+        Some(MatchResponse {
+            code: "Ok".to_string(),
+            matchings,
+            tracepoints,
+        })
     })
-    .into_response()
+    .await;
+
+    match blocking_result {
+        Ok(Some(response)) => Json(response).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "code": "NoMatch",
+                "message": "Could not match trace to road network"
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "code": "InternalError",
+                "message": format!("map match computation failed: {}", e)
+            })),
+        )
+            .into_response(),
+    }
 }
 
 // ============ Height Endpoint ============
@@ -2948,6 +2851,7 @@ fn parse_mode(s: &str) -> Result<Mode, String> {
 // ============ Debug Compare Endpoint ============
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct DebugCompareRequest {
     src_lon: f64,
     src_lat: f64,
@@ -2957,6 +2861,7 @@ pub struct DebugCompareRequest {
 }
 
 #[derive(Debug, Serialize)]
+#[allow(dead_code)]
 pub struct DebugCompareResponse {
     cch_distance: Option<u32>,
     dijkstra_distance: Option<u32>,
@@ -2971,6 +2876,8 @@ pub struct DebugCompareResponse {
 }
 
 /// Debug endpoint comparing CCH query with plain Dijkstra on filtered EBG
+/// Not mounted in production router; retained for development use.
+#[allow(dead_code)]
 async fn debug_compare(
     State(state): State<Arc<ServerState>>,
     Query(req): Query<DebugCompareRequest>,
@@ -3461,7 +3368,8 @@ async fn debug_compare(
     .into_response()
 }
 
-/// Count incoming UP edges to a node (edges v → u where rank(v) < rank(u))
+/// Count incoming UP edges to a node (edges v -> u where rank(v) < rank(u))
+#[allow(dead_code)]
 fn count_incoming_up_edges(topo: &crate::formats::CchTopo, u: u32) -> usize {
     let n = topo.n_nodes as usize;
     let mut count = 0;
@@ -3478,80 +3386,8 @@ fn count_incoming_up_edges(topo: &crate::formats::CchTopo, u: u32) -> usize {
     count
 }
 
-/// Run Dijkstra on CCH UP+DOWN graphs combined
-#[allow(dead_code)]
-fn run_cch_dijkstra(
-    topo: &crate::formats::CchTopo,
-    weights: &super::state::CchWeights,
-    src: u32,
-    dst: u32,
-) -> (Option<u32>, usize) {
-    use priority_queue::PriorityQueue;
-    use std::cmp::Reverse;
-
-    let n = topo.n_nodes as usize;
-    let mut dist = vec![u32::MAX; n];
-    let mut pq: PriorityQueue<u32, Reverse<u32>> = PriorityQueue::new();
-    let mut settled = 0usize;
-
-    dist[src as usize] = 0;
-    pq.push(src, Reverse(0));
-
-    while let Some((u, Reverse(d))) = pq.pop() {
-        if d > dist[u as usize] {
-            continue;
-        }
-
-        settled += 1;
-
-        if u == dst {
-            return (Some(d), settled);
-        }
-
-        // Relax UP edges
-        let up_start = topo.up_offsets[u as usize] as usize;
-        let up_end = topo.up_offsets[u as usize + 1] as usize;
-        for i in up_start..up_end {
-            let v = topo.up_targets[i];
-            let w = weights.up[i];
-            if w == u32::MAX {
-                continue;
-            }
-            let new_dist = d.saturating_add(w);
-            if new_dist < dist[v as usize] {
-                dist[v as usize] = new_dist;
-                pq.push(v, Reverse(new_dist));
-            }
-        }
-
-        // Relax DOWN edges
-        let down_start = topo.down_offsets[u as usize] as usize;
-        let down_end = topo.down_offsets[u as usize + 1] as usize;
-        for i in down_start..down_end {
-            let v = topo.down_targets[i];
-            let w = weights.down[i];
-            if w == u32::MAX {
-                continue;
-            }
-            let new_dist = d.saturating_add(w);
-            if new_dist < dist[v as usize] {
-                dist[v as usize] = new_dist;
-                pq.push(v, Reverse(new_dist));
-            }
-        }
-    }
-
-    (
-        if dist[dst as usize] == u32::MAX {
-            None
-        } else {
-            Some(dist[dst as usize])
-        },
-        settled,
-    )
-}
-
 /// Find edge weight in CCH graph
+#[allow(dead_code)]
 fn find_edge_weight(
     topo: &crate::formats::CchTopo,
     weights: &super::state::CchWeights,
@@ -3585,6 +3421,7 @@ fn find_edge_weight(
 }
 
 /// Run Dijkstra on CCH UP+DOWN and return the path
+#[allow(dead_code)]
 fn run_cch_dijkstra_with_path(
     topo: &crate::formats::CchTopo,
     weights: &super::state::CchWeights,
@@ -3684,6 +3521,7 @@ fn run_cch_dijkstra_with_path(
 }
 
 /// Run Dijkstra using only UP edges from source
+#[allow(dead_code)]
 fn run_up_only_dijkstra(
     topo: &crate::formats::CchTopo,
     weights: &super::state::CchWeights,
@@ -3726,6 +3564,7 @@ fn run_up_only_dijkstra(
 
 /// Run reverse Dijkstra using only DOWN edges to reach target
 /// Returns dist[node] = shortest DOWN-only path from node to target
+#[allow(dead_code)]
 fn run_down_only_to_target(
     topo: &crate::formats::CchTopo,
     weights: &super::state::CchWeights,
@@ -3769,6 +3608,7 @@ fn run_down_only_to_target(
 }
 
 /// Run plain Dijkstra on filtered EBG (without CCH, using node weights only - no turn costs)
+#[allow(dead_code)]
 fn run_filtered_dijkstra(
     filtered_ebg: &crate::formats::FilteredEbg,
     node_weights: &[u32],
@@ -4002,6 +3842,264 @@ mod tests {
             (diff as i16 - 180).unsigned_abs() < 5,
             "Reverse bearing should differ by ~180, got diff={}",
             diff
+        );
+    }
+
+    // === Codex-M7: Input validation unit tests ===
+
+    // --- validate_coord tests ---
+
+    #[test]
+    fn test_validate_coord_valid_origin() {
+        assert!(validate_coord(0.0, 0.0, "origin").is_ok());
+    }
+
+    #[test]
+    fn test_validate_coord_valid_extremes() {
+        assert!(validate_coord(-180.0, -90.0, "sw").is_ok());
+        assert!(validate_coord(180.0, 90.0, "ne").is_ok());
+        assert!(validate_coord(-180.0, 90.0, "nw").is_ok());
+        assert!(validate_coord(180.0, -90.0, "se").is_ok());
+    }
+
+    #[test]
+    fn test_validate_coord_valid_brussels() {
+        // Brussels: ~50.85N, ~4.35E
+        assert!(validate_coord(4.35, 50.85, "brussels").is_ok());
+    }
+
+    #[test]
+    fn test_validate_coord_rejects_nan_lon() {
+        let result = validate_coord(f64::NAN, 50.0, "test");
+        assert!(result.is_err(), "NaN longitude should be rejected");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("NaN") || msg.contains("outside"),
+            "Error message should mention NaN or out of range, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_validate_coord_rejects_nan_lat() {
+        let result = validate_coord(4.0, f64::NAN, "test");
+        assert!(result.is_err(), "NaN latitude should be rejected");
+    }
+
+    #[test]
+    fn test_validate_coord_rejects_both_nan() {
+        let result = validate_coord(f64::NAN, f64::NAN, "test");
+        assert!(result.is_err(), "Both NaN should be rejected");
+    }
+
+    #[test]
+    fn test_validate_coord_rejects_positive_infinity_lon() {
+        let result = validate_coord(f64::INFINITY, 50.0, "test");
+        assert!(result.is_err(), "+Inf longitude should be rejected");
+        assert!(
+            result.unwrap_err().contains("outside"),
+            "Error should mention out-of-range"
+        );
+    }
+
+    #[test]
+    fn test_validate_coord_rejects_negative_infinity_lon() {
+        let result = validate_coord(f64::NEG_INFINITY, 50.0, "test");
+        assert!(result.is_err(), "-Inf longitude should be rejected");
+    }
+
+    #[test]
+    fn test_validate_coord_rejects_positive_infinity_lat() {
+        let result = validate_coord(4.0, f64::INFINITY, "test");
+        assert!(result.is_err(), "+Inf latitude should be rejected");
+    }
+
+    #[test]
+    fn test_validate_coord_rejects_negative_infinity_lat() {
+        let result = validate_coord(4.0, f64::NEG_INFINITY, "test");
+        assert!(result.is_err(), "-Inf latitude should be rejected");
+    }
+
+    #[test]
+    fn test_validate_coord_rejects_lon_too_high() {
+        let result = validate_coord(180.01, 50.0, "test");
+        assert!(result.is_err(), "Longitude > 180 should be rejected");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("longitude"),
+            "Error should reference longitude"
+        );
+        assert!(msg.contains("180.01"), "Error should include the bad value");
+    }
+
+    #[test]
+    fn test_validate_coord_rejects_lon_too_low() {
+        let result = validate_coord(-180.01, 50.0, "test");
+        assert!(result.is_err(), "Longitude < -180 should be rejected");
+    }
+
+    #[test]
+    fn test_validate_coord_rejects_lat_too_high() {
+        let result = validate_coord(4.0, 90.01, "test");
+        assert!(result.is_err(), "Latitude > 90 should be rejected");
+        let msg = result.unwrap_err();
+        assert!(msg.contains("latitude"), "Error should reference latitude");
+    }
+
+    #[test]
+    fn test_validate_coord_rejects_lat_too_low() {
+        let result = validate_coord(4.0, -90.01, "test");
+        assert!(result.is_err(), "Latitude < -90 should be rejected");
+    }
+
+    #[test]
+    fn test_validate_coord_rejects_wildly_out_of_range() {
+        assert!(validate_coord(999.0, 50.0, "test").is_err());
+        assert!(validate_coord(4.0, -999.0, "test").is_err());
+        assert!(validate_coord(1e18, 1e18, "test").is_err());
+    }
+
+    #[test]
+    fn test_validate_coord_error_includes_label() {
+        let result = validate_coord(999.0, 50.0, "my_source");
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("my_source"),
+            "Error message should include the label"
+        );
+    }
+
+    // --- parse_mode tests ---
+
+    #[test]
+    fn test_parse_mode_car() {
+        assert_eq!(parse_mode("car").unwrap(), Mode::Car);
+    }
+
+    #[test]
+    fn test_parse_mode_bike() {
+        assert_eq!(parse_mode("bike").unwrap(), Mode::Bike);
+    }
+
+    #[test]
+    fn test_parse_mode_foot() {
+        assert_eq!(parse_mode("foot").unwrap(), Mode::Foot);
+    }
+
+    #[test]
+    fn test_parse_mode_case_insensitive() {
+        assert_eq!(parse_mode("Car").unwrap(), Mode::Car);
+        assert_eq!(parse_mode("CAR").unwrap(), Mode::Car);
+        assert_eq!(parse_mode("Bike").unwrap(), Mode::Bike);
+        assert_eq!(parse_mode("FOOT").unwrap(), Mode::Foot);
+    }
+
+    #[test]
+    fn test_parse_mode_rejects_airplane() {
+        let result = parse_mode("airplane");
+        assert!(result.is_err(), "airplane is not a valid mode");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("Invalid mode"),
+            "Error should say 'Invalid mode', got: {}",
+            msg
+        );
+        assert!(msg.contains("airplane"), "Error should echo the bad value");
+    }
+
+    #[test]
+    fn test_parse_mode_rejects_empty() {
+        assert!(parse_mode("").is_err(), "Empty string is not a valid mode");
+    }
+
+    #[test]
+    fn test_parse_mode_rejects_similar() {
+        assert!(parse_mode("cars").is_err());
+        assert!(parse_mode("bicycle").is_err());
+        assert!(parse_mode("walk").is_err());
+        assert!(parse_mode("driving").is_err());
+    }
+
+    #[test]
+    fn test_parse_mode_rejects_whitespace() {
+        assert!(parse_mode(" car").is_err());
+        assert!(parse_mode("car ").is_err());
+        assert!(parse_mode(" ").is_err());
+    }
+
+    // --- Request guard constant sanity tests ---
+
+    #[test]
+    fn test_max_table_cells_is_sensible() {
+        // The constant is defined inside table_post handler, so we verify
+        // the documented limit: 10_000_000 cells max for /table
+        // This must be <= 10 billion (10_000_000_000) to prevent memory explosion
+        let max_table_cells: usize = 10_000_000;
+        assert!(
+            max_table_cells <= 10_000_000_000,
+            "MAX_TABLE_CELLS should be <= 10 billion"
+        );
+        // Must be at least 1 to allow any queries at all
+        assert!(
+            max_table_cells >= 1,
+            "MAX_TABLE_CELLS must allow at least trivial queries"
+        );
+        // Sanity: a 3162×3162 matrix should be allowed (just under 10M)
+        assert!(
+            3162 * 3162 <= max_table_cells,
+            "A 3162×3162 matrix should fit within MAX_TABLE_CELLS"
+        );
+        // Sanity: a 3163×3163 matrix should NOT be allowed (just over 10M)
+        assert!(
+            3163 * 3163 > max_table_cells,
+            "A 3163×3163 matrix should exceed MAX_TABLE_CELLS"
+        );
+    }
+
+    #[test]
+    fn test_max_stream_points_is_sensible() {
+        // MAX_STREAM_POINTS = 100_000 for /table/stream
+        let max_stream_points: usize = 100_000;
+        assert!(
+            max_stream_points <= 100_000,
+            "MAX_STREAM_POINTS should be <= 100,000"
+        );
+        assert!(
+            max_stream_points >= 1,
+            "MAX_STREAM_POINTS must allow at least trivial queries"
+        );
+        // 50k × 50k should be allowed (per documented benchmark)
+        assert!(
+            50_000 <= max_stream_points,
+            "50,000 points should be within MAX_STREAM_POINTS"
+        );
+    }
+
+    #[test]
+    fn test_max_bulk_origins_is_sensible() {
+        // MAX_BULK_ORIGINS = 10_000 for /isochrone/bulk
+        let max_bulk_origins: usize = 10_000;
+        assert!(
+            max_bulk_origins <= 10_000,
+            "MAX_BULK_ORIGINS should be <= 10,000"
+        );
+        assert!(
+            max_bulk_origins >= 1,
+            "MAX_BULK_ORIGINS must allow at least trivial queries"
+        );
+    }
+
+    #[test]
+    fn test_match_coordinate_limit_is_sensible() {
+        // /match endpoint limit is 500 coordinates
+        let max_match_coords: usize = 500;
+        assert!(
+            max_match_coords <= 500,
+            "Match coordinate limit should be <= 500"
+        );
+        assert!(
+            max_match_coords >= 2,
+            "Match must allow at least 2 coordinates (the minimum)"
         );
     }
 }

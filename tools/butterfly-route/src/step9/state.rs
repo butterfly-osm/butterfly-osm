@@ -186,14 +186,19 @@ fn find_step_dir(data_dir: &Path, step: &str) -> Result<std::path::PathBuf> {
         return Ok(exact);
     }
 
-    // Try with suffix pattern
+    // Try with suffix pattern -- collect all matches and sort for determinism
+    let mut matches: Vec<std::path::PathBuf> = Vec::new();
     for entry in std::fs::read_dir(data_dir).context("Failed to read data directory")? {
         let entry = entry?;
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
         if name_str.starts_with(step) && entry.file_type()?.is_dir() {
-            return Ok(entry.path());
+            matches.push(entry.path());
         }
+    }
+    matches.sort();
+    if let Some(first) = matches.into_iter().next() {
+        return Ok(first);
     }
 
     anyhow::bail!(

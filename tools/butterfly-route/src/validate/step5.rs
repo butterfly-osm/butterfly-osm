@@ -122,9 +122,14 @@ pub fn validate_step5(
         t0.elapsed().as_secs_f64()
     );
 
-    // Lock Condition D: Graph-level parity (SKIPPED - too expensive for now)
+    // Lock Condition D: Graph-level parity (Dijkstra reachability)
+    // DEFERRED: This check would run full Dijkstra from sample origins and compare
+    // shortest-path distances against the weighted graph. It requires a fully built
+    // routing graph (CCH contraction + customization from steps 6-8) which is not
+    // yet available at step 5 validation time. The CCH correctness validator
+    // (validate/cch_correctness.rs) covers this after step 8.
     println!("\nD. Graph-level parity (Dijkstra reachability)...");
-    println!("  ⚠️  SKIPPED (too expensive, implement later if needed)");
+    println!("  -- Deferred: requires CCH from steps 6-8, validated post-step8 instead");
 
     // Lock Condition E: Sanity & bounds
     println!("\nE. Sanity & bounds checks...");
@@ -137,21 +142,21 @@ pub fn validate_step5(
         t0.elapsed().as_secs_f64()
     );
 
-    // Calculate SHA-256 hashes for lock file
+    // Calculate SHA-256 hashes for lock file (same pattern as step1/step2/step3)
     let car_lock = ModeLockData {
-        w_sha256: "TODO".to_string(),
-        t_sha256: "TODO".to_string(),
-        mask_sha256: "TODO".to_string(),
+        w_sha256: super::compute_sha256(&result.car_weights)?,
+        t_sha256: super::compute_sha256(&result.car_turns)?,
+        mask_sha256: super::compute_sha256(&result.car_mask)?,
     };
     let bike_lock = ModeLockData {
-        w_sha256: "TODO".to_string(),
-        t_sha256: "TODO".to_string(),
-        mask_sha256: "TODO".to_string(),
+        w_sha256: super::compute_sha256(&result.bike_weights)?,
+        t_sha256: super::compute_sha256(&result.bike_turns)?,
+        mask_sha256: super::compute_sha256(&result.bike_mask)?,
     };
     let foot_lock = ModeLockData {
-        w_sha256: "TODO".to_string(),
-        t_sha256: "TODO".to_string(),
-        mask_sha256: "TODO".to_string(),
+        w_sha256: super::compute_sha256(&result.foot_weights)?,
+        t_sha256: super::compute_sha256(&result.foot_turns)?,
+        mask_sha256: super::compute_sha256(&result.foot_mask)?,
     };
 
     Ok(Step5LockFile {
