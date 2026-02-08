@@ -485,6 +485,7 @@ pub struct ElevationPoint {
 // ============ Height Endpoint Types ============
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Request for the GET /height endpoint.
 ///
@@ -492,25 +493,28 @@ use serde::{Deserialize, Serialize};
 /// (matching Valhalla convention).
 ///
 /// Example: `?coordinates=4.3517,50.8503|4.4017,50.8603`
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct HeightRequest {
     /// Pipe-separated coordinate pairs: "lon,lat|lon,lat|..."
+    #[schema(example = "4.3517,50.8503|4.4017,50.8603")]
     pub coordinates: String,
 }
 
 /// Response from the /height endpoint.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct HeightResponse {
     /// One result per input coordinate, in order.
     pub heights: Vec<HeightResult>,
 }
 
 /// Elevation result for a single coordinate.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct HeightResult {
     /// The input coordinate as [lon, lat].
+    #[schema(example = json!([4.3517, 50.8503]))]
     pub location: [f64; 2],
     /// Elevation in meters above sea level, or null if no data.
+    #[schema(example = 42.5)]
     pub elevation: Option<f64>,
 }
 

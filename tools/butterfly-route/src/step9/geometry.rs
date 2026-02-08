@@ -52,41 +52,26 @@ pub struct RouteGeometry {
     /// Point array [{lon, lat}, ...] (only for points format)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coordinates: Option<Vec<Point>>,
-    /// Distance in meters
-    pub distance_m: f64,
-    /// Duration in deciseconds
-    pub duration_ds: u32,
 }
 
 impl RouteGeometry {
     /// Create geometry in the requested format from raw coordinate list
-    pub fn from_points(
-        points: Vec<Point>,
-        distance_m: f64,
-        duration_ds: u32,
-        format: GeometryFormat,
-    ) -> Self {
+    pub fn from_points(points: Vec<Point>, format: GeometryFormat) -> Self {
         match format {
             GeometryFormat::Polyline6 => RouteGeometry {
                 polyline: Some(encode_polyline6(&points)),
                 coordinates_geojson: None,
                 coordinates: None,
-                distance_m,
-                duration_ds,
             },
             GeometryFormat::GeoJson => RouteGeometry {
                 polyline: None,
                 coordinates_geojson: Some(points.iter().map(|p| [p.lon, p.lat]).collect()),
                 coordinates: None,
-                distance_m,
-                duration_ds,
             },
             GeometryFormat::Points => RouteGeometry {
                 polyline: None,
                 coordinates_geojson: None,
                 coordinates: Some(points),
-                distance_m,
-                duration_ds,
             },
         }
     }
@@ -143,9 +128,8 @@ pub fn build_geometry(
     ebg_path: &[u32],
     ebg_nodes: &EbgNodes,
     nbg_geo: &NbgGeo,
-    duration_ds: u32,
     format: GeometryFormat,
-) -> RouteGeometry {
+) -> (RouteGeometry, f64) {
     let mut coordinates = Vec::new();
     let mut total_distance_m = 0.0;
 
@@ -172,7 +156,10 @@ pub fn build_geometry(
     // Remove duplicate consecutive points
     coordinates.dedup_by(|a, b| (a.lon - b.lon).abs() < 1e-9 && (a.lat - b.lat).abs() < 1e-9);
 
-    RouteGeometry::from_points(coordinates, total_distance_m, duration_ds, format)
+    (
+        RouteGeometry::from_points(coordinates, format),
+        total_distance_m,
+    )
 }
 
 /// Build isochrone geometry using sparse tile rasterization + boundary tracing
@@ -537,12 +524,10 @@ mod tests {
                 lat: 50.8603,
             },
         ];
-        let geom = RouteGeometry::from_points(points, 1234.5, 100, GeometryFormat::Polyline6);
+        let geom = RouteGeometry::from_points(points, GeometryFormat::Polyline6);
         assert!(geom.polyline.is_some());
         assert!(geom.coordinates_geojson.is_none());
         assert!(geom.coordinates.is_none());
-        assert!((geom.distance_m - 1234.5).abs() < 0.01);
-        assert_eq!(geom.duration_ds, 100);
     }
 
     #[test]
@@ -557,7 +542,7 @@ mod tests {
                 lat: 50.8603,
             },
         ];
-        let geom = RouteGeometry::from_points(points, 1234.5, 100, GeometryFormat::GeoJson);
+        let geom = RouteGeometry::from_points(points, GeometryFormat::GeoJson);
         assert!(geom.polyline.is_none());
         assert!(geom.coordinates_geojson.is_some());
         assert!(geom.coordinates.is_none());
@@ -581,7 +566,7 @@ mod tests {
                 lat: 50.8603,
             },
         ];
-        let geom = RouteGeometry::from_points(points, 1234.5, 100, GeometryFormat::Points);
+        let geom = RouteGeometry::from_points(points, GeometryFormat::Points);
         assert!(geom.polyline.is_none());
         assert!(geom.coordinates_geojson.is_none());
         assert!(geom.coordinates.is_some());
@@ -607,10 +592,8 @@ mod tests {
                 lat: 50.4674,
             },
         ];
-        let poly_geom =
-            RouteGeometry::from_points(points.clone(), 100.0, 50, GeometryFormat::Polyline6);
-        let json_geom =
-            RouteGeometry::from_points(points.clone(), 100.0, 50, GeometryFormat::GeoJson);
+        let poly_geom = RouteGeometry::from_points(points.clone(), GeometryFormat::Polyline6);
+        let json_geom = RouteGeometry::from_points(points.clone(), GeometryFormat::GeoJson);
 
         // Decode polyline and compare to geojson coordinates
         let decoded = decode_polyline6(poly_geom.polyline.as_ref().unwrap());
@@ -629,5 +612,38 @@ mod tests {
                 i
             );
         }
+    }
+
+    #[test]
+    fn test_route_geometry_has_no_distance_or_duration() {
+        // RouteGeometry is pure geometry — distance and duration belong at the
+        // route/step/alternative level, not embedded in the geometry object.
+        let points = vec![
+            Point {
+                lon: 4.3517,
+                lat: 50.8503,
+            },
+            Point {
+                lon: 4.4017,
+                lat: 50.8603,
+            },
+        ];
+        let geom = RouteGeometry::from_points(points, GeometryFormat::GeoJson);
+        let json = serde_json::to_value(&geom).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(
+            !obj.contains_key("distance_m"),
+            "geometry should not contain distance_m"
+        );
+        assert!(
+            !obj.contains_key("duration_ds"),
+            "geometry should not contain duration_ds"
+        );
+        assert!(
+            !obj.contains_key("duration_s"),
+            "geometry should not contain duration_s"
+        );
+        // Should only have the geometry-related keys
+        assert!(obj.contains_key("coordinates_geojson"));
     }
 }

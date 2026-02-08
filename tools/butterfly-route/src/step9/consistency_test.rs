@@ -480,11 +480,10 @@ fn test_route_path_validity() {
                 .collect();
 
             // Verify geometry can be built without panic
-            let _geometry = super::geometry::build_geometry(
+            let (_geometry, _distance_m) = super::geometry::build_geometry(
                 &ebg_path,
                 &state.ebg_nodes,
                 &state.nbg_geo,
-                result.distance,
                 super::geometry::GeometryFormat::Polyline6,
             );
 
@@ -609,11 +608,10 @@ fn test_route_geometry_polyline6_round_trips() {
             .collect();
 
         // Build in polyline6
-        let poly_geom = super::geometry::build_geometry(
+        let (poly_geom, poly_dist) = super::geometry::build_geometry(
             &ebg_path,
             &state.ebg_nodes,
             &state.nbg_geo,
-            result.distance,
             super::geometry::GeometryFormat::Polyline6,
         );
         assert!(
@@ -635,11 +633,10 @@ fn test_route_geometry_polyline6_round_trips() {
         );
 
         // Build in GeoJSON
-        let json_geom = super::geometry::build_geometry(
+        let (json_geom, json_dist) = super::geometry::build_geometry(
             &ebg_path,
             &state.ebg_nodes,
             &state.nbg_geo,
-            result.distance,
             super::geometry::GeometryFormat::GeoJson,
         );
         let coords = json_geom.coordinates_geojson.as_ref().unwrap();
@@ -668,11 +665,10 @@ fn test_route_geometry_polyline6_round_trips() {
         }
 
         // Build in points format
-        let pts_geom = super::geometry::build_geometry(
+        let (pts_geom, _pts_dist) = super::geometry::build_geometry(
             &ebg_path,
             &state.ebg_nodes,
             &state.nbg_geo,
-            result.distance,
             super::geometry::GeometryFormat::Points,
         );
         let pts = pts_geom.coordinates.as_ref().unwrap();
@@ -684,14 +680,13 @@ fn test_route_geometry_polyline6_round_trips() {
             coords.len()
         );
 
-        // All three formats should agree on distance_m and duration_ds
+        // All three formats should agree on distance_m
         assert!(
-            (poly_geom.distance_m - json_geom.distance_m).abs() < 0.01,
+            (poly_dist - json_dist).abs() < 0.01,
             "pair {i}: distance mismatch poly={} json={}",
-            poly_geom.distance_m,
-            json_geom.distance_m
+            poly_dist,
+            json_dist
         );
-        assert_eq!(poly_geom.duration_ds, json_geom.duration_ds);
 
         eprintln!(
             "  PASS pair {i}: {}-point geometry, polyline6/geojson/points all agree",
@@ -1009,14 +1004,12 @@ fn test_route_steps_distances_sum_to_total() {
         let step_total: f64 = steps.iter().map(|s| s.distance_m).sum();
 
         // Get total route distance
-        let route_geom = super::geometry::build_geometry(
+        let (_route_geom, route_total) = super::geometry::build_geometry(
             &ebg_path,
             &state.ebg_nodes,
             &state.nbg_geo,
-            result.distance,
             super::geometry::GeometryFormat::Polyline6,
         );
-        let route_total = route_geom.distance_m;
 
         // Steps cover all edges: step distances should sum to >= 90% of route
         // Not exact because straight segments are accumulated into larger steps
