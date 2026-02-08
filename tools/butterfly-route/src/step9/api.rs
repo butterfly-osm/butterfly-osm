@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tower::limit::ConcurrencyLimitLayer;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
@@ -79,7 +80,7 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
     // Prometheus metrics
     let (prometheus_layer, metric_handle) = axum_prometheus::PrometheusMetricLayer::pair();
 
-    // API routes: normal endpoints with 120s timeout + response compression
+    // API routes: normal endpoints with 120s timeout + response compression + concurrency limit
     let api_routes = Router::new()
         .route("/route", get(route))
         .route("/nearest", get(nearest))
@@ -90,16 +91,19 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
         .route("/health", get(health))
         .route("/debug/compare", get(debug_compare))
         .layer(CompressionLayer::new())
+        .layer(ConcurrencyLimitLayer::new(32))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(120),
         ));
 
-    // Streaming routes: longer timeout, larger body limit, no compression
+    // Streaming routes: longer timeout, larger body limit, no compression, stricter concurrency
+    // Streaming routes are memory-intensive (Arrow IPC, bulk isochrones), so limit to 4 concurrent
     let stream_routes = Router::new()
         .route("/table/stream", post(table_stream))
         .route("/isochrone/bulk", post(isochrone_bulk))
         .layer(DefaultBodyLimit::max(256 * 1024 * 1024)) // 256MB
+        .layer(ConcurrencyLimitLayer::new(4))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(600),

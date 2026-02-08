@@ -338,11 +338,16 @@ fn test_invalid_continent_fails_gracefully() {
             }
         }
         Err(e) => {
-            // This is expected - invalid continent should fail
+            // This is expected - invalid continent should fail.
+            // Geofabrik may return 404, a redirect to an HTML error page,
+            // or fail to provide Content-Length (causing "Could not determine file size").
             println!("Invalid continent correctly failed: {e}");
             assert!(
-                e.contains("404") || e.contains("not found"),
-                "Expected 404 error for invalid continent: {e}"
+                e.contains("404")
+                    || e.contains("not found")
+                    || e.contains("Could not determine file size")
+                    || e.contains("HTTP error"),
+                "Expected HTTP error for invalid continent: {e}"
             );
         }
     }

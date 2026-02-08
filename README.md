@@ -129,7 +129,7 @@ Common patterns abstracted into `butterfly-common`:
   - Exact turn-aware routing (edge-based CCH)
   - **1.8x FASTER than OSRM** at scale (10k×10k matrices)
   - Production-hardened: structured logging, graceful shutdown, timeouts, compression, input validation, panic recovery, Prometheus metrics
-  - Audit-clean: all CRITICAL and HIGH findings from Codex + Gemini audit resolved (FFI safety, source_idx overflow, panic handling, CI gaps)
+  - Audit-clean: all CRITICAL, HIGH, and MEDIUM findings from Codex + Gemini audit resolved (FFI safety, concurrency limiting, optimized elimination ordering, contour hole detection, cross-compilation)
   - See [Routing Engine](#routing-engine-butterfly-route) below
 
 ### 🚧 In Development
@@ -334,6 +334,7 @@ The overhead is acceptable for small queries, and **Butterfly wins at scale**.
 - **Structured logging**: `tracing` with text/JSON output (`--log-format json`)
 - **Graceful shutdown**: SIGINT + SIGTERM handling
 - **Request timeouts**: 120s for API routes, 600s for streaming
+- **Concurrency limiting**: Max 32 concurrent API requests, max 4 streaming requests
 - **Response compression**: gzip + brotli on API routes
 - **Input validation**: Coordinate bounds, time limits, size limits
 - **Panic recovery**: `CatchPanicLayer` returns 500 JSON instead of crashing

@@ -159,8 +159,18 @@ pub extern "C" fn butterfly_last_error_message() -> *mut c_char {
 ///
 /// # Safety
 ///
-/// - `source` must be a valid, null-terminated C string or NULL (returns InvalidParameter).
-/// - `dest_path` must be a valid, null-terminated C string or NULL (auto-generated name).
+/// Caller must ensure:
+/// - `source` is a valid, null-terminated C string pointer, or NULL (returns InvalidParameter).
+/// - `dest_path` is a valid, null-terminated C string pointer, or NULL (auto-generated name).
+/// - Both pointers (if non-NULL) remain valid for the duration of this call.
+///   This is naturally satisfied since `block_on()` blocks the calling thread.
+///
+/// # Note on UTF-8
+///
+/// Both `source` and `dest_path` must be valid UTF-8. Non-UTF-8 paths (valid on Linux
+/// but uncommon) will return `InvalidParameter` with a descriptive error message.
+/// This is a known limitation (M2) — Rust's `Path` can handle `OsStr`, but the
+/// download API currently requires `&str`.
 #[no_mangle]
 pub unsafe extern "C" fn butterfly_download(
     source: *const c_char,
@@ -173,6 +183,8 @@ pub unsafe extern "C" fn butterfly_download(
             return ButterflyResult::InvalidParameter;
         }
 
+        // SAFETY: `source` is non-NULL and caller guarantees it points to a
+        // valid null-terminated C string that remains valid for this call.
         let source_str = match unsafe { CStr::from_ptr(source) }.to_str() {
             Ok(s) => s,
             Err(_) => {
@@ -184,6 +196,8 @@ pub unsafe extern "C" fn butterfly_download(
         let dest_str = if dest_path.is_null() {
             None
         } else {
+            // SAFETY: `dest_path` is non-NULL and caller guarantees it points to a
+            // valid null-terminated C string that remains valid for this call.
             match unsafe { CStr::from_ptr(dest_path) }.to_str() {
                 Ok(s) => Some(s),
                 Err(_) => {
@@ -221,12 +235,16 @@ pub unsafe extern "C" fn butterfly_download(
 ///
 /// # Safety
 ///
-/// - `source` must be a valid, null-terminated C string or NULL (returns InvalidParameter).
-/// - `dest_path` must be a valid, null-terminated C string or NULL (auto-generated name).
-/// - `user_data` must remain valid for the duration of the call. This is guaranteed because
-///   `block_on()` blocks the calling thread until the download completes — the C caller's
-///   stack frame (and thus `user_data`) remains alive for the entire operation.
-/// - `progress_callback`, if provided, must be safe to call from any thread.
+/// Caller must ensure:
+/// - `source` is a valid, null-terminated C string pointer, or NULL (returns InvalidParameter).
+/// - `dest_path` is a valid, null-terminated C string pointer, or NULL (auto-generated name).
+/// - `user_data` remains valid for the duration of the call. This is naturally guaranteed
+///   because `block_on()` blocks the calling thread — the C caller's stack frame (and thus
+///   `user_data`) remains alive for the entire operation.
+/// - `progress_callback`, if provided, must be safe to call from any thread (the Tokio
+///   runtime may invoke it from a worker thread).
+///
+/// See `butterfly_download` for notes on UTF-8 requirements (M2).
 #[no_mangle]
 pub unsafe extern "C" fn butterfly_download_with_progress(
     source: *const c_char,
@@ -241,6 +259,7 @@ pub unsafe extern "C" fn butterfly_download_with_progress(
             return ButterflyResult::InvalidParameter;
         }
 
+        // SAFETY: `source` is non-NULL and caller guarantees valid null-terminated C string.
         let source_str = match unsafe { CStr::from_ptr(source) }.to_str() {
             Ok(s) => s,
             Err(_) => {
@@ -252,6 +271,7 @@ pub unsafe extern "C" fn butterfly_download_with_progress(
         let dest_str = if dest_path.is_null() {
             None
         } else {
+            // SAFETY: `dest_path` is non-NULL and caller guarantees valid null-terminated C string.
             match unsafe { CStr::from_ptr(dest_path) }.to_str() {
                 Ok(s) => Some(s),
                 Err(_) => {
@@ -276,6 +296,8 @@ pub unsafe extern "C" fn butterfly_download_with_progress(
 
             rt.block_on(async move {
                 crate::get_with_progress(source_str, dest_str, move |downloaded, total| {
+                    // SAFETY: Reconstructing pointer from usize. Valid because block_on()
+                    // blocks the caller — user_data's lifetime spans this entire closure.
                     let user_data_ptr = user_data_addr as *mut std::ffi::c_void;
                     callback(downloaded, total, user_data_ptr);
                 })
@@ -300,11 +322,12 @@ pub unsafe extern "C" fn butterfly_download_with_progress(
 /// - `source`: Source identifier (null-terminated string)
 ///
 /// # Returns
-/// Allocated string that must be freed with `butterfly_free_string()`, or NULL on error
+/// Allocated string that must be freed with `butterfly_free_string()`, or NULL on error.
 ///
 /// # Safety
 ///
-/// - `source` must be a valid, null-terminated C string or NULL (returns NULL).
+/// Caller must ensure:
+/// - `source` is a valid, null-terminated C string pointer, or NULL (returns NULL).
 #[no_mangle]
 pub unsafe extern "C" fn butterfly_get_filename(source: *const c_char) -> *mut c_char {
     let result = std::panic::catch_unwind(|| {
@@ -312,6 +335,7 @@ pub unsafe extern "C" fn butterfly_get_filename(source: *const c_char) -> *mut c
             return ptr::null_mut();
         }
 
+        // SAFETY: `source` is non-NULL and caller guarantees valid null-terminated C string.
         let source_str = match unsafe { CStr::from_ptr(source) }.to_str() {
             Ok(s) => s,
             Err(_) => return ptr::null_mut(),
@@ -335,11 +359,16 @@ pub unsafe extern "C" fn butterfly_get_filename(source: *const c_char) -> *mut c
 ///
 /// # Safety
 ///
-/// - `ptr` must be a pointer previously returned by a butterfly_* function,
-///   or NULL (which is safely ignored).
+/// Caller must ensure:
+/// - `ptr` was previously returned by a `butterfly_*` function (e.g.,
+///   `butterfly_last_error_message` or `butterfly_get_filename`), or is NULL.
+/// - `ptr` has not already been freed (double-free is UB).
+/// - NULL is safely ignored (no-op).
 #[no_mangle]
 pub unsafe extern "C" fn butterfly_free_string(ptr: *mut c_char) {
     if !ptr.is_null() {
+        // SAFETY: Caller guarantees `ptr` was returned by `CString::into_raw()`
+        // from one of this module's functions, and has not been freed yet.
         unsafe {
             drop(CString::from_raw(ptr));
         }
