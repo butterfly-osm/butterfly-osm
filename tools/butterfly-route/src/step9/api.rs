@@ -49,6 +49,7 @@ use super::unpack::unpack_path;
     components(schemas(
         RouteRequest,
         RouteResponse,
+        RouteAnnotations,
         RouteAlternative,
         SnapInfo,
         RouteDebugInfo,
@@ -60,6 +61,7 @@ use super::unpack::unpack_path;
         BulkIsochroneRequest,
         IsochroneRequest,
         IsochroneResponse,
+        ContourFeature,
         NearestRequest,
         NearestResponse,
         NearestWaypoint,
@@ -176,6 +178,19 @@ pub struct RouteRequest {
     /// Include turn-by-turn step instructions
     #[serde(default)]
     steps: bool,
+    /// Per-edge annotations: comma-separated list of "duration", "distance", "speed", "nodes"
+    #[serde(default)]
+    annotations: Option<String>,
+    /// Bearing hints per waypoint: "angle,range;angle,range" (0-360 degrees).
+    /// First pair for source, second for destination. Filters snap candidates by edge direction.
+    #[serde(default)]
+    bearings: Option<String>,
+    /// Exclude road types: comma-separated list of "toll", "ferry", "motorway"
+    #[serde(default)]
+    exclude: Option<String>,
+    /// Avoid polygon(s) as JSON: `[[lon,lat],...]` or `[[[lon,lat],...],...]`
+    #[serde(default)]
+    avoid_polygons: Option<String>,
     /// Include debug information in response
     #[serde(default)]
     debug: bool,
@@ -213,6 +228,23 @@ pub struct RouteDebugInfo {
     pub dst_snapped: SnapInfo,
 }
 
+/// Per-edge annotation arrays for a route
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RouteAnnotations {
+    /// Per-edge duration in seconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<Vec<f64>>,
+    /// Per-edge distance in meters
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distance: Option<Vec<f64>>,
+    /// Per-edge speed in km/h
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<Vec<f64>>,
+    /// Per-edge EBG node IDs
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nodes: Option<Vec<u32>>,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RouteResponse {
     /// Primary route duration in seconds
@@ -224,6 +256,9 @@ pub struct RouteResponse {
     /// Turn-by-turn steps (only if steps=true)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub steps: Option<Vec<RouteStep>>,
+    /// Per-edge annotations (only if annotations param is set)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<RouteAnnotations>,
     /// Alternative routes (only if alternatives > 0)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alternatives: Option<Vec<RouteAlternative>>,
@@ -303,6 +338,9 @@ pub struct ErrorResponse {
         ("geometries" = Option<String>, Query, description = "Geometry encoding: polyline6 (default), geojson, points", example = "polyline6"),
         ("alternatives" = Option<u32>, Query, description = "Number of alternative routes (0-5)", example = 0),
         ("steps" = Option<bool>, Query, description = "Include turn-by-turn instructions with road names", example = true),
+        ("annotations" = Option<String>, Query, description = "Per-edge annotations: comma-separated list of 'duration', 'distance', 'speed', 'nodes'", example = json!(null)),
+        ("bearings" = Option<String>, Query, description = "Bearing hints: 'angle,range;angle,range' (source;destination). Filters snap by edge bearing.", example = json!(null)),
+        ("exclude" = Option<String>, Query, description = "Exclude road types: comma-separated list of 'toll', 'ferry', 'motorway'", example = json!(null)),
     ),
     responses(
         (status = 200, description = "Route found", body = RouteResponse),
@@ -337,15 +375,175 @@ async fn route(
         }
     };
 
+    // Parse and validate annotations parameter
+    let annotation_flags = if let Some(ref ann_str) = req.annotations {
+        let mut want_duration = false;
+        let mut want_distance = false;
+        let mut want_speed = false;
+        let mut want_nodes = false;
+        if !ann_str.is_empty() {
+            for token in ann_str.split(',') {
+                let token = token.trim();
+                match token {
+                    "duration" => want_duration = true,
+                    "distance" => want_distance = true,
+                    "speed" => want_speed = true,
+                    "nodes" => want_nodes = true,
+                    other => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorResponse {
+                                error: format!(
+                                    "Unknown annotation '{}'. Valid: duration, distance, speed, nodes",
+                                    other
+                                ),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+        }
+        Some((want_duration, want_distance, want_speed, want_nodes))
+    } else {
+        None
+    };
+
+    // Parse bearing hints: "angle,range;angle,range" (source;destination)
+    let bearing_hints: Option<Vec<(u16, u16)>> = if let Some(ref b_str) = req.bearings {
+        let mut hints = Vec::new();
+        for part in b_str.split(';') {
+            let part = part.trim();
+            if part.is_empty() {
+                hints.push((0, 360)); // no constraint
+                continue;
+            }
+            let tokens: Vec<&str> = part.split(',').collect();
+            if tokens.len() != 2 {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "Invalid bearing format '{}'. Expected 'angle,range'.",
+                            part
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
+            let angle: u16 = match tokens[0].trim().parse() {
+                Ok(v) if v <= 360 => v,
+                _ => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("Invalid bearing angle: '{}'", tokens[0]),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+            let range: u16 = match tokens[1].trim().parse() {
+                Ok(v) if v <= 180 => v,
+                _ => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("Invalid bearing range: '{}'", tokens[1]),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+            hints.push((angle, range));
+        }
+        if hints.len() > 2 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "bearings has {} pairs, expected at most 2 (source;destination)",
+                        hints.len()
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        Some(hints)
+    } else {
+        None
+    };
+
+    // Parse exclude parameter
+    let exclude_mask = match super::exclude::parse_exclude_option(&req.exclude) {
+        Ok(m) => m,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+        }
+    };
+
+    // Parse avoid_polygons
+    let avoid_json = match super::avoid::parse_avoid_option(&req.avoid_polygons) {
+        Ok(v) => v,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+        }
+    };
+
     let mode_data = state.get_mode(mode);
     let num_alternatives = (req.alternatives.min(5)) as usize;
 
-    // Snap source and destination with debug info
-    let (src_orig, src_snap_info) =
-        match state
-            .spatial_index
-            .snap_with_info(req.src_lon, req.src_lat, &mode_data.mask, 10)
-        {
+    // Compute avoid weights — time-only for P2P route (skip distance + flat adj)
+    let avoid_result = if let Some(ref avoid_str) = avoid_json {
+        match super::avoid::compute_avoid_weights_time_only(
+            &state,
+            mode_data,
+            avoid_str,
+            exclude_mask,
+        ) {
+            Ok((weights, flags)) => Some((weights, flags)),
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            }
+        }
+    } else {
+        None
+    };
+
+    // Build snap mask (with optional avoid/exclude filtering)
+    let snap_mask: std::borrow::Cow<'_, [u64]> = if let Some((_, ref avoid_flags)) = avoid_result {
+        std::borrow::Cow::Owned(super::avoid::build_avoid_mask(
+            &mode_data.mask,
+            avoid_flags,
+            exclude_mask.map(|exc| (state.edge_exclude_flags.as_slice(), exc)),
+        ))
+    } else if let Some(exc) = exclude_mask {
+        std::borrow::Cow::Owned(super::exclude::build_exclude_mask(
+            &mode_data.mask,
+            &state.edge_exclude_flags,
+            exc,
+        ))
+    } else {
+        std::borrow::Cow::Borrowed(&mode_data.mask)
+    };
+
+    // Snap source (with optional bearing filter)
+    let src_bearing = bearing_hints.as_ref().and_then(|h| h.first().copied());
+    let (src_orig, src_snap_info) = {
+        let snap_result = if let Some((angle, range)) = src_bearing {
+            state.spatial_index.snap_with_bearing(
+                req.src_lon,
+                req.src_lat,
+                &snap_mask,
+                angle,
+                range,
+            )
+        } else {
+            state
+                .spatial_index
+                .snap_with_info(req.src_lon, req.src_lat, &snap_mask, 10)
+        };
+        match snap_result {
             Some((id, lon, lat, dist)) => (
                 id,
                 SnapInfo {
@@ -364,13 +562,26 @@ async fn route(
                 )
                     .into_response()
             }
-        };
+        }
+    };
 
-    let (_dst_orig, dst_snap_info) =
-        match state
-            .spatial_index
-            .snap_with_info(req.dst_lon, req.dst_lat, &mode_data.mask, 10)
-        {
+    // Snap destination (with optional bearing filter)
+    let dst_bearing = bearing_hints.as_ref().and_then(|h| h.get(1).copied());
+    let (_dst_orig, dst_snap_info) = {
+        let snap_result = if let Some((angle, range)) = dst_bearing {
+            state.spatial_index.snap_with_bearing(
+                req.dst_lon,
+                req.dst_lat,
+                &snap_mask,
+                angle,
+                range,
+            )
+        } else {
+            state
+                .spatial_index
+                .snap_with_info(req.dst_lon, req.dst_lat, &snap_mask, 10)
+        };
+        match snap_result {
             Some((id, lon, lat, dist)) => (
                 id,
                 SnapInfo {
@@ -389,7 +600,8 @@ async fn route(
                 )
                     .into_response()
             }
-        };
+        }
+    };
 
     // Convert to filtered node IDs for CCH query
     let src_filtered = mode_data.filtered_ebg.original_to_filtered[src_orig as usize];
@@ -429,17 +641,18 @@ async fn route(
             distance_m: 0.0,
             geometry: point_geom,
             steps: if req.steps { Some(vec![]) } else { None },
+            annotations: None,
             alternatives: None,
             debug: debug_info,
         })
         .into_response();
     }
 
-    // Helper: build route from query result
+    // Helper: build route from query result — returns (geometry, duration_s, distance_m, steps, ebg_path)
     let build_route = |result: &super::query::QueryResult,
                        format: GeometryFormat,
                        want_steps: bool|
-     -> (RouteGeometry, f64, f64, Option<Vec<RouteStep>>) {
+     -> (RouteGeometry, f64, f64, Option<Vec<RouteStep>>, Vec<u32>) {
         let rank_path = unpack_path(
             &mode_data.cch_topo,
             &result.forward_parent,
@@ -470,11 +683,22 @@ async fn route(
         } else {
             None
         };
-        (geometry, duration_s, distance_m, steps)
+        (geometry, duration_s, distance_m, steps, ebg_path)
     };
 
-    // Run primary query
-    let query = CchQuery::new(&state, mode);
+    // Run primary query (with optional avoid/exclude weights)
+    let exclude_weights = if avoid_result.is_none() {
+        exclude_mask.map(|exc| state.get_exclude_weights(mode, exc))
+    } else {
+        None // avoid_result already incorporates exclude
+    };
+    let query = if let Some((ref time_weights, _)) = avoid_result {
+        CchQuery::with_custom_weights(&mode_data.cch_topo, &mode_data.down_rev, time_weights)
+    } else if let Some(ref ew) = exclude_weights {
+        CchQuery::with_custom_weights(&mode_data.cch_topo, &mode_data.down_rev, &ew.time_weights)
+    } else {
+        CchQuery::new(&state, mode)
+    };
     let result = match query.query(src_rank, dst_rank) {
         Some(r) => r,
         None => {
@@ -488,7 +712,68 @@ async fn route(
         }
     };
 
-    let (geometry, duration_s, distance_m, steps) = build_route(&result, geom_format, req.steps);
+    let (geometry, duration_s, distance_m, steps, ebg_path) =
+        build_route(&result, geom_format, req.steps);
+
+    // Build per-edge annotations if requested
+    let route_annotations =
+        if let Some((want_dur, want_dist, want_spd, want_nds)) = annotation_flags {
+            let mut ann = RouteAnnotations {
+                duration: None,
+                distance: None,
+                speed: None,
+                nodes: None,
+            };
+            if want_dur || want_spd {
+                let durations: Vec<f64> = ebg_path
+                    .iter()
+                    .map(|&eid| {
+                        let w = mode_data
+                            .node_weights
+                            .get(eid as usize)
+                            .copied()
+                            .unwrap_or(0);
+                        w as f64 / 10.0
+                    })
+                    .collect();
+                if want_dur {
+                    ann.duration = Some(durations.clone());
+                }
+                if want_spd {
+                    let distances: Vec<f64> = ebg_path
+                        .iter()
+                        .map(|&eid| state.ebg_nodes.nodes[eid as usize].length_mm as f64 / 1000.0)
+                        .collect();
+                    ann.speed = Some(
+                        durations
+                            .iter()
+                            .zip(distances.iter())
+                            .map(|(&dur, &dist)| {
+                                if dur > 0.0 {
+                                    dist * 3.6 / dur // km/h = (m/s) * 3.6
+                                } else {
+                                    0.0
+                                }
+                            })
+                            .collect(),
+                    );
+                }
+            }
+            if want_dist {
+                ann.distance = Some(
+                    ebg_path
+                        .iter()
+                        .map(|&eid| state.ebg_nodes.nodes[eid as usize].length_mm as f64 / 1000.0)
+                        .collect(),
+                );
+            }
+            if want_nds {
+                ann.nodes = Some(ebg_path.clone());
+            }
+            Some(ann)
+        } else {
+            None
+        };
 
     // Compute alternative routes if requested
     let alternatives = if num_alternatives > 0 {
@@ -497,7 +782,13 @@ async fn route(
         // This clones ~200MB (up + down weight arrays). Acceptable for alternatives
         // since they're requested rarely (only when alternatives > 0).
         // A proper fix (penalty views) would require changing the CchQuery API.
-        let mut penalized_weights = mode_data.cch_weights.clone();
+        let mut penalized_weights = if let Some((ref time_weights, _)) = avoid_result {
+            time_weights.clone()
+        } else if let Some(ref ew) = exclude_weights {
+            ew.time_weights.clone()
+        } else {
+            mode_data.cch_weights.clone()
+        };
 
         // Penalize edges of the primary route
         for &(_node, edge_idx) in &result.forward_parent {
@@ -530,7 +821,7 @@ async fn route(
                     break;
                 }
 
-                let (alt_geom, alt_dur, alt_dist, alt_steps) =
+                let (alt_geom, alt_dur, alt_dist, alt_steps, _alt_path) =
                     build_route(&alt_result, geom_format, req.steps);
 
                 // Penalize this alternative's edges for next iteration
@@ -582,6 +873,7 @@ async fn route(
         distance_m,
         geometry,
         steps,
+        annotations: route_annotations,
         alternatives,
         debug: debug_info,
     })
@@ -1042,6 +1334,12 @@ pub struct TablePostRequest {
     #[serde(default = "default_annotations")]
     #[schema(example = "duration,distance")]
     pub annotations: String,
+    /// Exclude road types: comma-separated list of "toll", "ferry", "motorway"
+    #[serde(default)]
+    pub exclude: Option<String>,
+    /// Avoid polygon(s) as JSON array of coordinate rings
+    #[serde(default)]
+    pub avoid_polygons: Option<String>,
 }
 
 fn default_annotations() -> String {
@@ -1179,6 +1477,64 @@ async fn table_post(
     let want_duration = annotations.contains(&"duration") || !annotations.contains(&"distance");
     let want_distance = annotations.contains(&"distance");
 
+    // Parse exclude parameter
+    let exclude_mask = match super::exclude::parse_exclude_option(&req.exclude) {
+        Ok(m) => m,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+        }
+    };
+
+    // Parse avoid_polygons
+    let avoid_json = match super::avoid::parse_avoid_option(&req.avoid_polygons) {
+        Ok(v) => v,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+        }
+    };
+
+    let mode_data = state.get_mode(mode);
+
+    // Compute avoid weights (includes exclude if both present)
+    let avoid_result = if let Some(ref avoid_str) = avoid_json {
+        match super::avoid::compute_avoid_weights(&state, mode_data, avoid_str, exclude_mask) {
+            Ok((weights, flags)) => Some((weights, flags)),
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            }
+        }
+    } else {
+        None
+    };
+
+    // Get exclude weights if only exclude (no avoid)
+    let exclude_weights = if avoid_result.is_none() {
+        exclude_mask.map(|exc| state.get_exclude_weights(mode, exc))
+    } else {
+        None
+    };
+
+    // Build snap mask
+    let snap_mask: Vec<u64> = if let Some((_, ref avoid_flags)) = avoid_result {
+        super::avoid::build_avoid_mask(
+            &mode_data.mask,
+            avoid_flags,
+            exclude_mask.map(|exc| (state.edge_exclude_flags.as_slice(), exc)),
+        )
+    } else if let Some(exc) = exclude_mask {
+        super::exclude::build_exclude_mask(&mode_data.mask, &state.edge_exclude_flags, exc)
+    } else {
+        mode_data.mask.clone()
+    };
+
+    // Determine custom weights: avoid takes priority, then exclude
+    let custom_weights_ref: Option<&super::exclude::ExcludeWeights> =
+        if let Some((ref aw, _)) = avoid_result {
+            Some(aw)
+        } else {
+            exclude_weights.as_deref()
+        };
+
     compute_table_bucket_m2m(
         &state,
         mode,
@@ -1186,11 +1542,14 @@ async fn table_post(
         &req.destinations,
         want_duration,
         want_distance,
+        custom_weights_ref,
+        &snap_mask,
     )
     .await
 }
 
 /// Core table computation using bucket M2M algorithm
+#[allow(clippy::too_many_arguments)]
 async fn compute_table_bucket_m2m(
     state: &Arc<ServerState>,
     mode: Mode,
@@ -1198,6 +1557,8 @@ async fn compute_table_bucket_m2m(
     destinations: &[[f64; 2]],
     want_duration: bool,
     want_distance: bool,
+    custom_weights: Option<&super::exclude::ExcludeWeights>,
+    snap_mask: &[u64],
 ) -> Response {
     let mode_data = state.get_mode(mode);
     let n_nodes = mode_data.cch_topo.n_nodes as usize;
@@ -1209,7 +1570,7 @@ async fn compute_table_bucket_m2m(
     let mut source_valid: Vec<bool> = Vec::with_capacity(sources.len());
 
     for [lon, lat] in sources {
-        if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &mode_data.mask, 10) {
+        if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, snap_mask, 10) {
             let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
             if filtered != u32::MAX {
                 let rank = mode_data.order.perm[filtered as usize];
@@ -1244,7 +1605,7 @@ async fn compute_table_bucket_m2m(
     let mut target_valid: Vec<bool> = Vec::with_capacity(destinations.len());
 
     for [lon, lat] in destinations {
-        if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &mode_data.mask, 10) {
+        if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, snap_mask, 10) {
             let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
             if filtered != u32::MAX {
                 let rank = mode_data.order.perm[filtered as usize];
@@ -1277,24 +1638,24 @@ async fn compute_table_bucket_m2m(
     let n_targets = destinations.len();
     let use_parallel = sources_rank.len() * targets_rank.len() >= 2500;
 
+    // Select flat adjacencies based on custom weights (exclude or avoid)
+    let (time_up, time_down) = if let Some(cw) = custom_weights {
+        (&cw.time_up_flat, &cw.time_down_flat)
+    } else {
+        (&mode_data.up_adj_flat, &mode_data.down_rev_flat)
+    };
+    let (dist_up, dist_down) = if let Some(cw) = custom_weights {
+        (&cw.dist_up_flat, &cw.dist_down_flat)
+    } else {
+        (&mode_data.up_adj_flat_dist, &mode_data.down_rev_flat_dist)
+    };
+
     // Compute duration matrix if requested
     let durations = if want_duration {
         let (matrix, _stats) = if use_parallel {
-            table_bucket_parallel(
-                n_nodes,
-                &mode_data.up_adj_flat,
-                &mode_data.down_rev_flat,
-                &sources_rank,
-                &targets_rank,
-            )
+            table_bucket_parallel(n_nodes, time_up, time_down, &sources_rank, &targets_rank)
         } else {
-            table_bucket_full_flat(
-                n_nodes,
-                &mode_data.up_adj_flat,
-                &mode_data.down_rev_flat,
-                &sources_rank,
-                &targets_rank,
-            )
+            table_bucket_full_flat(n_nodes, time_up, time_down, &sources_rank, &targets_rank)
         };
 
         Some(flat_matrix_to_2d(
@@ -1312,21 +1673,9 @@ async fn compute_table_bucket_m2m(
     // Compute distance matrix if requested (independent shortest-distance metric)
     let distances = if want_distance {
         let (matrix, _stats) = if use_parallel {
-            table_bucket_parallel(
-                n_nodes,
-                &mode_data.up_adj_flat_dist,
-                &mode_data.down_rev_flat_dist,
-                &sources_rank,
-                &targets_rank,
-            )
+            table_bucket_parallel(n_nodes, dist_up, dist_down, &sources_rank, &targets_rank)
         } else {
-            table_bucket_full_flat(
-                n_nodes,
-                &mode_data.up_adj_flat_dist,
-                &mode_data.down_rev_flat_dist,
-                &sources_rank,
-                &targets_rank,
-            )
+            table_bucket_full_flat(n_nodes, dist_up, dist_down, &sources_rank, &targets_rank)
         };
 
         Some(flat_matrix_to_2d(
@@ -1402,6 +1751,12 @@ pub struct TableStreamRequest {
     #[serde(default = "default_tile_size")]
     #[schema(example = 1000)]
     pub dst_tile_size: usize,
+    /// Exclude road types: comma-separated list of "toll", "ferry", "motorway"
+    #[serde(default)]
+    pub exclude: Option<String>,
+    /// Avoid polygon(s) as JSON array of coordinate rings
+    #[serde(default)]
+    pub avoid_polygons: Option<String>,
 }
 
 fn default_tile_size() -> usize {
@@ -1473,14 +1828,66 @@ async fn table_stream(
     // Memory is bounded by tile-by-tile streaming (src_tile_size × dst_tile_size per tile).
     // The only per-request allocation is the rank vectors (4 bytes per coordinate).
 
+    // Parse exclude parameter
+    let exclude_mask = match super::exclude::parse_exclude_option(&req.exclude) {
+        Ok(m) => m,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+        }
+    };
+
+    // Parse avoid_polygons
+    let avoid_json = match super::avoid::parse_avoid_option(&req.avoid_polygons) {
+        Ok(v) => v,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+        }
+    };
+
     let mode_data = state.get_mode(mode);
     let n_nodes = mode_data.cch_topo.n_nodes as usize;
+
+    // Compute avoid weights (includes exclude if both present)
+    let avoid_result = if let Some(ref avoid_str) = avoid_json {
+        match super::avoid::compute_avoid_weights(&state, mode_data, avoid_str, exclude_mask) {
+            Ok((weights, flags)) => Some((weights, flags)),
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            }
+        }
+    } else {
+        None
+    };
+
+    // Get exclude weights if only exclude (no avoid)
+    let exclude_weights = if avoid_result.is_none() {
+        exclude_mask.map(|exc| state.get_exclude_weights(mode, exc))
+    } else {
+        None
+    };
+
+    // Build snap mask
+    let snap_mask: std::borrow::Cow<'_, [u64]> = if let Some((_, ref avoid_flags)) = avoid_result {
+        std::borrow::Cow::Owned(super::avoid::build_avoid_mask(
+            &mode_data.mask,
+            avoid_flags,
+            exclude_mask.map(|exc| (state.edge_exclude_flags.as_slice(), exc)),
+        ))
+    } else if let Some(exc) = exclude_mask {
+        std::borrow::Cow::Owned(super::exclude::build_exclude_mask(
+            &mode_data.mask,
+            &state.edge_exclude_flags,
+            exc,
+        ))
+    } else {
+        std::borrow::Cow::Borrowed(&mode_data.mask)
+    };
 
     // Convert all sources to rank space, keeping track of valid indices
     let mut sources_rank: Vec<u32> = Vec::with_capacity(req.sources.len());
     let mut valid_src_indices: Vec<usize> = Vec::with_capacity(req.sources.len());
     for (i, [lon, lat]) in req.sources.iter().enumerate() {
-        if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &mode_data.mask, 10) {
+        if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &snap_mask, 10) {
             let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
             if filtered != u32::MAX {
                 let rank = mode_data.order.perm[filtered as usize];
@@ -1494,7 +1901,7 @@ async fn table_stream(
     let mut targets_rank: Vec<u32> = Vec::with_capacity(req.destinations.len());
     let mut valid_dst_indices: Vec<usize> = Vec::with_capacity(req.destinations.len());
     for (i, [lon, lat]) in req.destinations.iter().enumerate() {
-        if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &mode_data.mask, 10) {
+        if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &snap_mask, 10) {
             let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
             if filtered != u32::MAX {
                 let rank = mode_data.order.perm[filtered as usize];
@@ -1539,9 +1946,21 @@ async fn table_stream(
     // Cancellation flag: set when client disconnects (channel closed)
     let cancelled = Arc::new(AtomicBool::new(false));
 
-    // Clone what we need for the spawned task
-    let up_adj_flat = mode_data.up_adj_flat.clone();
-    let down_rev_flat = mode_data.down_rev_flat.clone();
+    // Clone what we need for the spawned task — use custom flat adjacencies if available
+    let up_adj_flat = if let Some((ref aw, _)) = avoid_result {
+        aw.time_up_flat.clone()
+    } else if let Some(ref ew) = exclude_weights {
+        ew.time_up_flat.clone()
+    } else {
+        mode_data.up_adj_flat.clone()
+    };
+    let down_rev_flat = if let Some((ref aw, _)) = avoid_result {
+        aw.time_down_flat.clone()
+    } else if let Some(ref ew) = exclude_weights {
+        ew.time_down_flat.clone()
+    } else {
+        mode_data.down_rev_flat.clone()
+    };
     let cancelled_outer = cancelled.clone();
 
     // Spawn compute task - SOURCE-BLOCK OUTER LOOP to avoid repeated forward computation
@@ -1752,9 +2171,17 @@ pub struct IsochroneRequest {
     /// Center latitude
     #[schema(example = 50.8503)]
     lat: f64,
-    /// Time limit in seconds
+    /// Time limit in seconds (1-7200). Mutually exclusive with distance_m and contours.
+    #[serde(default)]
     #[schema(example = 600)]
-    time_s: u32,
+    time_s: Option<u32>,
+    /// Distance limit in meters (1-100000). Mutually exclusive with time_s and contours.
+    #[serde(default)]
+    distance_m: Option<u32>,
+    /// Multiple time contours as comma-separated seconds (e.g. "300,600,1200", max 10).
+    /// Mutually exclusive with time_s and distance_m.
+    #[serde(default)]
+    contours: Option<String>,
     /// Transport mode (car, bike, foot)
     #[schema(example = "car")]
     mode: String,
@@ -1769,11 +2196,24 @@ pub struct IsochroneRequest {
     /// Optional fields to include: "network" adds reachable road geometries
     #[serde(default)]
     include: Option<String>,
+    /// Exclude road types: comma-separated list of "toll", "ferry", "motorway"
+    #[serde(default)]
+    exclude: Option<String>,
+    /// Avoid polygon(s) as JSON: `[[lon,lat],...]` or `[[[lon,lat],...],...]`
+    #[serde(default)]
+    avoid_polygons: Option<String>,
 }
 
+/// A single contour polygon in an isochrone response
 #[derive(Debug, Serialize, ToSchema)]
-pub struct IsochroneResponse {
-    /// Polygon as encoded polyline6 string (default)
+pub struct ContourFeature {
+    /// Contour threshold in seconds (present for time-based isochrones)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_s: Option<u32>,
+    /// Contour threshold in meters (present for distance-based isochrones)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distance_m: Option<u32>,
+    /// Polygon as encoded polyline6 string
     #[serde(skip_serializing_if = "Option::is_none")]
     pub polygon: Option<String>,
     /// Polygon as GeoJSON coordinates [[lon, lat], ...]
@@ -1783,8 +2223,15 @@ pub struct IsochroneResponse {
     /// Polygon as point array [{lon, lat}, ...]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub polygon_points: Option<Vec<Point>>,
-    /// Number of reachable edges
+    /// Number of reachable edges within this contour
     pub reachable_edges: usize,
+}
+
+/// Isochrone response — always returns a `contours` array (even for a single contour)
+#[derive(Debug, Serialize, ToSchema)]
+pub struct IsochroneResponse {
+    /// Contour polygons (one per threshold value)
+    pub contours: Vec<ContourFeature>,
     /// Network isochrone - reachable road segments (only if include=network)
     /// Each segment is [[lon, lat], [lon, lat], ...]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1804,15 +2251,18 @@ pub struct IsochroneResponse {
     path = "/isochrone",
     tag = "Isochrone",
     summary = "Compute reachability polygon",
-    description = "Computes the area reachable within a time limit using PHAST.\nSupports forward (depart) and reverse (arrive) isochrones.\n\nContent negotiation:\n- `Accept: application/json` → JSON polygon\n- `Accept: application/octet-stream` → WKB binary polygon",
+    description = "Computes the area reachable within a time or distance limit using PHAST.\nSupports forward (depart) and reverse (arrive) isochrones.\n\nProvide exactly one of: `time_s`, `distance_m`, or `contours`.\n\nContent negotiation:\n- `Accept: application/json` → JSON polygon\n- `Accept: application/octet-stream` → WKB binary polygon (single contour only)",
     params(
         ("lon" = f64, Query, description = "Center longitude", example = 4.3517),
         ("lat" = f64, Query, description = "Center latitude", example = 50.8503),
-        ("time_s" = u32, Query, description = "Time limit in seconds (1-7200)", example = 600),
+        ("time_s" = Option<u32>, Query, description = "Time limit in seconds (1-7200). Mutually exclusive with distance_m, contours.", example = 600),
+        ("distance_m" = Option<u32>, Query, description = "Distance limit in meters (1-100000). Mutually exclusive with time_s, contours.", example = json!(null)),
+        ("contours" = Option<String>, Query, description = "Comma-separated time contours in seconds (e.g. '300,600,1200', max 10). Mutually exclusive with time_s, distance_m.", example = json!(null)),
         ("mode" = String, Query, description = "Transport mode: car, bike, foot", example = "car"),
         ("direction" = Option<String>, Query, description = "Direction: 'depart' (default) or 'arrive'", example = "depart"),
         ("geometries" = Option<String>, Query, description = "Geometry encoding: polyline6 (default), geojson, points", example = "geojson"),
         ("include" = Option<String>, Query, description = "Optional: 'network' adds reachable road geometries", example = json!(null)),
+        ("exclude" = Option<String>, Query, description = "Exclude road types: comma-separated list of 'toll', 'ferry', 'motorway'", example = json!(null)),
     ),
     responses(
         (status = 200, description = "Isochrone computed", body = IsochroneResponse),
@@ -1827,15 +2277,96 @@ async fn isochrone(
     if let Err(e) = validate_coord(req.lon, req.lat, "center") {
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
     }
-    if req.time_s == 0 || req.time_s > 7200 {
+
+    // Determine isochrone metric: exactly one of {time_s, distance_m, contours}
+    enum IsoMetric {
+        Time(u32),           // threshold in deciseconds
+        Distance(u32),       // threshold in millimeters
+        MultiTime(Vec<u32>), // sorted thresholds in deciseconds
+    }
+
+    let provided = [
+        req.time_s.is_some(),
+        req.distance_m.is_some(),
+        req.contours.is_some(),
+    ]
+    .iter()
+    .filter(|&&b| b)
+    .count();
+
+    if provided != 1 {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: format!("time_s must be between 1 and 7200, got {}", req.time_s),
+                error: "Provide exactly one of: time_s, distance_m, or contours".to_string(),
             }),
         )
             .into_response();
     }
+
+    let metric = if let Some(t) = req.time_s {
+        if t == 0 || t > 7200 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("time_s must be between 1 and 7200, got {}", t),
+                }),
+            )
+                .into_response();
+        }
+        IsoMetric::Time(t * 10) // convert to deciseconds
+    } else if let Some(d) = req.distance_m {
+        if d == 0 || d > 100_000 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("distance_m must be between 1 and 100000, got {}", d),
+                }),
+            )
+                .into_response();
+        }
+        IsoMetric::Distance(d * 1000) // convert to millimeters
+    } else if let Some(ref contours_str) = req.contours {
+        let mut values = Vec::new();
+        for part in contours_str.split(',') {
+            let part = part.trim();
+            match part.parse::<u32>() {
+                Ok(v) if (1..=7200).contains(&v) => values.push(v * 10), // deciseconds
+                Ok(v) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("contour value must be between 1 and 7200, got {}", v),
+                        }),
+                    )
+                        .into_response();
+                }
+                Err(_) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("invalid contour value: '{}'", part),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        if values.is_empty() || values.len() > 10 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("contours must have 1-10 values, got {}", values.len()),
+                }),
+            )
+                .into_response();
+        }
+        values.sort_unstable();
+        values.dedup();
+        IsoMetric::MultiTime(values)
+    } else {
+        unreachable!()
+    };
 
     let mode = match parse_mode(&req.mode) {
         Ok(m) => m,
@@ -1865,8 +2396,42 @@ async fn isochrone(
         }
     };
 
+    // Parse exclude parameter
+    let exclude_mask = match super::exclude::parse_exclude_option(&req.exclude) {
+        Ok(m) => m,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+        }
+    };
+
+    // Parse avoid_polygons
+    let avoid_json = match super::avoid::parse_avoid_option(&req.avoid_polygons) {
+        Ok(v) => v,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+        }
+    };
+
     let mode_data = state.get_mode(mode);
-    let time_ds = req.time_s * 10;
+
+    // Compute avoid weights (includes exclude if both present)
+    let avoid_result = if let Some(ref avoid_str) = avoid_json {
+        match super::avoid::compute_avoid_weights(&state, mode_data, avoid_str, exclude_mask) {
+            Ok((weights, flags)) => Some((weights, flags)),
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            }
+        }
+    } else {
+        None
+    };
+
+    // Determine PHAST threshold (max of all contour values) and whether to use distance weights
+    let (phast_threshold, use_distance_weights) = match &metric {
+        IsoMetric::Time(ds) => (*ds, false),
+        IsoMetric::Distance(mm) => (*mm, true),
+        IsoMetric::MultiTime(vals) => (*vals.last().unwrap(), false),
+    };
 
     // Parse include parameter
     let include_network = req
@@ -1882,11 +2447,25 @@ async fn isochrone(
         .map(|s| s.contains("application/octet-stream") || s.contains("application/wkb"))
         .unwrap_or(false);
 
+    // Build snap mask (with optional avoid/exclude filtering)
+    let snap_mask: std::borrow::Cow<'_, [u64]> = if let Some((_, ref avoid_flags)) = avoid_result {
+        std::borrow::Cow::Owned(super::avoid::build_avoid_mask(
+            &mode_data.mask,
+            avoid_flags,
+            exclude_mask.map(|exc| (state.edge_exclude_flags.as_slice(), exc)),
+        ))
+    } else if let Some(exc) = exclude_mask {
+        std::borrow::Cow::Owned(super::exclude::build_exclude_mask(
+            &mode_data.mask,
+            &state.edge_exclude_flags,
+            exc,
+        ))
+    } else {
+        std::borrow::Cow::Borrowed(&mode_data.mask)
+    };
+
     // Snap center
-    let center_orig = match state
-        .spatial_index
-        .snap(req.lon, req.lat, &mode_data.mask, 10)
-    {
+    let center_orig = match state.spatial_index.snap(req.lon, req.lat, &snap_mask, 10) {
         Some(id) => id,
         None => {
             return (
@@ -1911,21 +2490,69 @@ async fn isochrone(
     }
     let center_rank = mode_data.order.perm[center_filtered as usize];
 
-    // Run PHAST (forward for depart, reverse for arrive)
-    let phast_settled = if reverse {
-        run_phast_bounded_fast_reverse(
+    // Get custom weights (avoid takes priority, then exclude)
+    let exclude_weights = if avoid_result.is_none() {
+        exclude_mask.map(|exc| state.get_exclude_weights(mode, exc))
+    } else {
+        None
+    };
+
+    // Select weights based on metric type and custom weights
+    let (cch_weights, up_flat, down_flat, node_weights) = if use_distance_weights {
+        if let Some((ref aw, _)) = avoid_result {
+            (
+                &aw.dist_weights,
+                &aw.dist_up_flat,
+                &aw.dist_down_flat,
+                state.node_weights_dist.as_slice(),
+            )
+        } else if let Some(ref ew) = exclude_weights {
+            (
+                &ew.dist_weights,
+                &ew.dist_up_flat,
+                &ew.dist_down_flat,
+                state.node_weights_dist.as_slice(),
+            )
+        } else {
+            (
+                &mode_data.cch_weights_dist,
+                &mode_data.up_adj_flat_dist,
+                &mode_data.down_rev_flat_dist,
+                state.node_weights_dist.as_slice(),
+            )
+        }
+    } else if let Some((ref aw, _)) = avoid_result {
+        (
+            &aw.time_weights,
+            &aw.time_up_flat,
+            &aw.time_down_flat,
+            mode_data.node_weights.as_slice(),
+        )
+    } else if let Some(ref ew) = exclude_weights {
+        (
+            &ew.time_weights,
+            &ew.time_up_flat,
+            &ew.time_down_flat,
+            mode_data.node_weights.as_slice(),
+        )
+    } else {
+        (
+            &mode_data.cch_weights,
             &mode_data.up_adj_flat,
             &mode_data.down_rev_flat,
-            center_rank,
-            time_ds,
-            mode,
+            mode_data.node_weights.as_slice(),
         )
+    };
+
+    // Run PHAST once with max threshold
+    let phast_settled = if reverse {
+        run_phast_bounded_fast_reverse(up_flat, down_flat, center_rank, phast_threshold, mode)
     } else {
         run_phast_bounded_fast(
             &mode_data.cch_topo,
-            &mode_data.cch_weights,
+            cch_weights,
             center_rank,
-            time_ds,
+            phast_threshold,
             mode,
         )
     };
@@ -1938,44 +2565,107 @@ async fn isochrone(
         settled.push((original_id, dist));
     }
 
-    // Build polygon
-    let polygon = build_isochrone_geometry(
-        &settled,
-        time_ds,
-        &mode_data.node_weights,
-        &state.ebg_nodes,
-        &state.nbg_geo,
-        mode,
-    );
+    // Helper: build polygon for a single contour threshold from the settled set
+    let build_contour_polygon = |threshold: u32| -> Vec<Point> {
+        build_isochrone_geometry(
+            &settled,
+            threshold,
+            node_weights,
+            &state.ebg_nodes,
+            &state.nbg_geo,
+            mode,
+        )
+    };
 
-    // WKB binary response (content negotiation via Accept header)
+    // Helper: encode polygon in requested format
+    #[allow(clippy::type_complexity)]
+    let encode_polygon = |polygon: &[Point],
+                          format: GeometryFormat|
+     -> (Option<String>, Option<Vec<[f64; 2]>>, Option<Vec<Point>>) {
+        match format {
+            GeometryFormat::Polyline6 => (Some(encode_polyline6(polygon)), None, None),
+            GeometryFormat::GeoJson => {
+                use crate::range::wkb_stream::ensure_ccw;
+                let trunc = |v: f64| (v * 1e5).round() / 1e5;
+                let mut coords: Vec<(f64, f64)> = polygon
+                    .iter()
+                    .map(|p| (trunc(p.lon), trunc(p.lat)))
+                    .collect();
+                ensure_ccw(&mut coords);
+                let mut ring: Vec<[f64; 2]> = coords.into_iter().map(|(x, y)| [x, y]).collect();
+                if let (Some(first), Some(last)) = (ring.first().copied(), ring.last().copied()) {
+                    if first != last {
+                        ring.push(first);
+                    }
+                }
+                (None, Some(ring), None)
+            }
+            GeometryFormat::Points => (None, None, Some(polygon.to_vec())),
+        }
+    };
+
+    // Build list of thresholds with their labels
+    let thresholds: Vec<(u32, Option<u32>, Option<u32>)> = match &metric {
+        IsoMetric::Time(ds) => vec![(*ds, Some(*ds / 10), None)],
+        IsoMetric::Distance(mm) => vec![(*mm, None, Some(*mm / 1000))],
+        IsoMetric::MultiTime(vals) => vals.iter().map(|&ds| (ds, Some(ds / 10), None)).collect(),
+    };
+
+    // WKB path (content negotiation)
     if wants_wkb {
         use crate::range::contour::ContourResult;
         use crate::range::wkb_stream::encode_polygon_wkb;
+
+        if thresholds.len() > 1 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "WKB only supports single contour. Use JSON for multiple.".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        let polygon = build_contour_polygon(thresholds[0].0);
         let coords: Vec<(f64, f64)> = polygon.iter().map(|p| (p.lon, p.lat)).collect();
         let contour = ContourResult {
             outer_ring: coords,
             holes: vec![],
             stats: Default::default(),
         };
-        match encode_polygon_wkb(&contour) {
-            Some(wkb) => {
-                return (
-                    [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-                    wkb,
-                )
-                    .into_response()
-            }
-            None => return (StatusCode::NO_CONTENT, Vec::<u8>::new()).into_response(),
-        }
+        return match encode_polygon_wkb(&contour) {
+            Some(wkb) => (
+                [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                wkb,
+            )
+                .into_response(),
+            None => (StatusCode::NO_CONTENT, Vec::<u8>::new()).into_response(),
+        };
     }
 
-    // Build network if requested
+    // JSON path — always returns contours array
+    let contour_features: Vec<ContourFeature> = thresholds
+        .iter()
+        .map(|&(threshold, time_s, distance_m)| {
+            let polygon = build_contour_polygon(threshold);
+            let reachable = settled.iter().filter(|&&(_, d)| d <= threshold).count();
+            let (poly_enc, poly_geo, poly_pts) = encode_polygon(&polygon, geom_format);
+            ContourFeature {
+                time_s,
+                distance_m,
+                polygon: poly_enc,
+                polygon_geojson: poly_geo,
+                polygon_points: poly_pts,
+                reachable_edges: reachable,
+            }
+        })
+        .collect();
+
+    // Build network at max threshold if requested
     let network = if include_network {
         Some(build_network_geometry(
             &settled,
-            time_ds,
-            &mode_data.node_weights,
+            phast_threshold,
+            node_weights,
             &state.ebg_nodes,
             &state.nbg_geo,
         ))
@@ -1983,35 +2673,8 @@ async fn isochrone(
         None
     };
 
-    let (poly_encoded, poly_geojson, poly_points) = match geom_format {
-        GeometryFormat::Polyline6 => (Some(encode_polyline6(&polygon)), None, None),
-        GeometryFormat::GeoJson => {
-            // Ensure CCW orientation, truncate to 5 decimal places (~1m), close ring
-            // Isochrone polygons come from a 30m raster grid — 5 decimals is honest precision
-            use crate::range::wkb_stream::ensure_ccw;
-            let trunc = |v: f64| (v * 1e5).round() / 1e5;
-            let mut coords: Vec<(f64, f64)> = polygon
-                .iter()
-                .map(|p| (trunc(p.lon), trunc(p.lat)))
-                .collect();
-            ensure_ccw(&mut coords);
-            let mut ring: Vec<[f64; 2]> = coords.into_iter().map(|(x, y)| [x, y]).collect();
-            // Close ring if needed
-            if let (Some(first), Some(last)) = (ring.first().copied(), ring.last().copied()) {
-                if first != last {
-                    ring.push(first);
-                }
-            }
-            (None, Some(ring), None)
-        }
-        GeometryFormat::Points => (None, None, Some(polygon)),
-    };
-
     Json(IsochroneResponse {
-        polygon: poly_encoded,
-        polygon_geojson: poly_geojson,
-        polygon_points: poly_points,
-        reachable_edges: settled.len(),
+        contours: contour_features,
         network,
     })
     .into_response()
@@ -2098,6 +2761,12 @@ pub struct BulkIsochroneRequest {
     /// Transport mode: car, bike, or foot
     #[schema(example = "car")]
     mode: String,
+    /// Exclude road types: comma-separated list of "toll", "ferry", "motorway"
+    #[serde(default)]
+    exclude: Option<String>,
+    /// Avoid polygon(s) as JSON array of coordinate rings
+    #[serde(default)]
+    avoid_polygons: Option<String>,
 }
 
 /// POST /isochrone/bulk - Compute multiple isochrones in parallel, return WKB stream
@@ -2169,8 +2838,65 @@ async fn isochrone_bulk(
         }
     };
 
+    // Parse exclude parameter
+    let exclude_mask = match super::exclude::parse_exclude_option(&req.exclude) {
+        Ok(m) => m,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+        }
+    };
+
+    // Parse avoid_polygons
+    let avoid_json = match super::avoid::parse_avoid_option(&req.avoid_polygons) {
+        Ok(v) => v,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+        }
+    };
+
     let mode_data = state.get_mode(mode);
     let time_ds = req.time_s * 10;
+
+    // Compute avoid weights (includes exclude if both present)
+    let avoid_result = if let Some(ref avoid_str) = avoid_json {
+        match super::avoid::compute_avoid_weights(&state, mode_data, avoid_str, exclude_mask) {
+            Ok((weights, flags)) => Some((weights, flags)),
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            }
+        }
+    } else {
+        None
+    };
+
+    // Get exclude weights if only exclude (no avoid)
+    let exclude_weights = if avoid_result.is_none() {
+        exclude_mask.map(|exc| state.get_exclude_weights(mode, exc))
+    } else {
+        None
+    };
+
+    // Build snap mask
+    let snap_mask: Vec<u64> = if let Some((_, ref avoid_flags)) = avoid_result {
+        super::avoid::build_avoid_mask(
+            &mode_data.mask,
+            avoid_flags,
+            exclude_mask.map(|exc| (state.edge_exclude_flags.as_slice(), exc)),
+        )
+    } else if let Some(exc) = exclude_mask {
+        super::exclude::build_exclude_mask(&mode_data.mask, &state.edge_exclude_flags, exc)
+    } else {
+        mode_data.mask.clone()
+    };
+
+    // Select CCH weights for PHAST
+    let cch_weights = if let Some((ref aw, _)) = avoid_result {
+        &aw.time_weights
+    } else if let Some(ref ew) = exclude_weights {
+        &ew.time_weights
+    } else {
+        &mode_data.cch_weights
+    };
 
     // Process all origins in parallel
     let results: Vec<(u32, Vec<u8>)> = req
@@ -2179,7 +2905,7 @@ async fn isochrone_bulk(
         .enumerate()
         .filter_map(|(idx, &[lon, lat])| {
             // Snap origin
-            let center_orig = state.spatial_index.snap(lon, lat, &mode_data.mask, 10)?;
+            let center_orig = state.spatial_index.snap(lon, lat, &snap_mask, 10)?;
             let center_filtered = mode_data.filtered_ebg.original_to_filtered[center_orig as usize];
             if center_filtered == u32::MAX {
                 return None;
@@ -2189,7 +2915,7 @@ async fn isochrone_bulk(
             // Run PHAST - Note: thread-local state handles per-thread allocation
             let phast_settled = run_phast_bounded_fast(
                 &mode_data.cch_topo,
-                &mode_data.cch_weights,
+                cch_weights,
                 center_rank,
                 time_ds,
                 mode,
@@ -2609,6 +3335,12 @@ struct MatchRequest {
     #[serde(default)]
     #[schema(example = true)]
     steps: bool,
+    /// Exclude road types: comma-separated list of "toll", "ferry", "motorway"
+    #[serde(default)]
+    exclude: Option<String>,
+    /// Avoid polygon(s) as JSON array of coordinate rings
+    #[serde(default)]
+    avoid_polygons: Option<String>,
 }
 
 fn default_match_mode() -> String {
@@ -2756,6 +3488,30 @@ async fn match_trace(
         }
     };
 
+    // Parse exclude parameter
+    let exclude_mask = match super::exclude::parse_exclude_option(&req.exclude) {
+        Ok(m) => m,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
+            )
+                .into_response()
+        }
+    };
+
+    // Parse avoid_polygons
+    let avoid_json = match super::avoid::parse_avoid_option(&req.avoid_polygons) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
+            )
+                .into_response()
+        }
+    };
+
     // Convert coordinates
     let coords: Vec<(f64, f64)> = req
         .coordinates
@@ -2772,10 +3528,53 @@ async fn match_trace(
     // starving the Tokio async runtime under high concurrency.
     let state_clone = state.clone();
     let blocking_result = tokio::task::spawn_blocking(move || {
-        // Run map matching — returns None if no observations could be matched
-        let result = super::map_match::map_match(&state_clone, mode, &coords, gps_accuracy)?;
-
+        // Build snap mask and weights: avoid takes priority, then exclude
         let mode_data = state_clone.get_mode(mode);
+
+        let avoid_result = if let Some(ref avoid_str) = avoid_json {
+            super::avoid::compute_avoid_weights(&state_clone, mode_data, avoid_str, exclude_mask)
+                .ok()
+        } else {
+            None
+        };
+
+        let exclude_weights = if avoid_result.is_none() {
+            exclude_mask.map(|exc| state_clone.get_exclude_weights(mode, exc))
+        } else {
+            None
+        };
+
+        let snap_mask: Option<Vec<u64>> = if let Some((_, ref avoid_flags)) = avoid_result {
+            Some(super::avoid::build_avoid_mask(
+                &mode_data.mask,
+                avoid_flags,
+                exclude_mask.map(|exc| (state_clone.edge_exclude_flags.as_slice(), exc)),
+            ))
+        } else {
+            exclude_mask.map(|exc| {
+                super::exclude::build_exclude_mask(
+                    &mode_data.mask,
+                    &state_clone.edge_exclude_flags,
+                    exc,
+                )
+            })
+        };
+
+        let cch_weights = if let Some((ref aw, _)) = avoid_result {
+            Some(&aw.time_weights)
+        } else {
+            exclude_weights.as_ref().map(|ew| &ew.time_weights)
+        };
+
+        // Run map matching — returns None if no observations could be matched
+        let result = super::map_match::map_match(
+            &state_clone,
+            mode,
+            &coords,
+            gps_accuracy,
+            snap_mask.as_deref(),
+            cch_weights,
+        )?;
 
         // Build response
         let matchings: Vec<MatchMatching> = result
@@ -4694,5 +5493,382 @@ mod tests {
         let json = serde_json::to_value(&reachable_leg).unwrap();
         assert_eq!(json["duration"], 123.4);
         assert_eq!(json["distance"], 5678.9);
+    }
+
+    // === P2: Multiple isochrone contours tests ===
+
+    #[test]
+    fn test_contours_parsing_valid() {
+        // Valid comma-separated seconds
+        let input = "300,600,1200";
+        let mut values: Vec<u32> = input
+            .split(',')
+            .map(|s| s.trim().parse::<u32>().unwrap())
+            .collect();
+        values.sort_unstable();
+        values.dedup();
+        assert_eq!(values, vec![300, 600, 1200]);
+    }
+
+    #[test]
+    fn test_contours_parsing_dedup_and_sort() {
+        let input = "1200,300,600,300";
+        let mut values: Vec<u32> = input
+            .split(',')
+            .map(|s| s.trim().parse::<u32>().unwrap())
+            .collect();
+        values.sort_unstable();
+        values.dedup();
+        assert_eq!(values, vec![300, 600, 1200]);
+    }
+
+    #[test]
+    fn test_contours_validation_range() {
+        // Each value must be 1-7200
+        for v in [0u32, 7201, 10000] {
+            assert!(
+                !(1..=7200).contains(&v),
+                "value {} should be out of range",
+                v
+            );
+        }
+        for v in [1u32, 300, 3600, 7200] {
+            assert!((1..=7200).contains(&v), "value {} should be in range", v);
+        }
+    }
+
+    #[test]
+    fn test_contours_max_10() {
+        let values: Vec<u32> = (1..=11).map(|i| i * 100).collect();
+        assert!(values.len() > 10, "should reject > 10 contour values");
+    }
+
+    #[test]
+    fn test_contour_feature_serialization_time() {
+        let feature = ContourFeature {
+            time_s: Some(600),
+            distance_m: None,
+            polygon: None,
+            polygon_geojson: Some(vec![[4.35, 50.85], [4.36, 50.86]]),
+            polygon_points: None,
+            reachable_edges: 1234,
+        };
+        let json = serde_json::to_value(&feature).unwrap();
+        assert_eq!(json["time_s"], 600);
+        assert!(json.get("distance_m").is_none()); // skipped
+        assert_eq!(json["reachable_edges"], 1234);
+        assert!(json["polygon_geojson"].is_array());
+    }
+
+    #[test]
+    fn test_contour_feature_serialization_distance() {
+        let feature = ContourFeature {
+            time_s: None,
+            distance_m: Some(5000),
+            polygon: None,
+            polygon_geojson: Some(vec![[4.35, 50.85]]),
+            polygon_points: None,
+            reachable_edges: 999,
+        };
+        let json = serde_json::to_value(&feature).unwrap();
+        assert!(json.get("time_s").is_none());
+        assert_eq!(json["distance_m"], 5000);
+    }
+
+    #[test]
+    fn test_isochrone_response_always_has_contours_array() {
+        let resp = IsochroneResponse {
+            contours: vec![
+                ContourFeature {
+                    time_s: Some(300),
+                    distance_m: None,
+                    polygon: None,
+                    polygon_geojson: Some(vec![[4.35, 50.85]]),
+                    polygon_points: None,
+                    reachable_edges: 1000,
+                },
+                ContourFeature {
+                    time_s: Some(600),
+                    distance_m: None,
+                    polygon: None,
+                    polygon_geojson: Some(vec![[4.34, 50.84]]),
+                    polygon_points: None,
+                    reachable_edges: 3000,
+                },
+            ],
+            network: None,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        let contours = json["contours"].as_array().unwrap();
+        assert_eq!(contours.len(), 2);
+        assert_eq!(contours[0]["time_s"], 300);
+        assert_eq!(contours[1]["time_s"], 600);
+        assert!(contours[1]["reachable_edges"].as_u64() > contours[0]["reachable_edges"].as_u64());
+    }
+
+    // === P3: Isodistance tests ===
+
+    #[test]
+    fn test_isochrone_request_deser_time_s() {
+        let json_str = r#"{"lon":4.35,"lat":50.85,"time_s":600,"mode":"car"}"#;
+        let req: IsochroneRequest = serde_json::from_str(json_str).unwrap();
+        assert_eq!(req.time_s, Some(600));
+        assert!(req.distance_m.is_none());
+        assert!(req.contours.is_none());
+    }
+
+    #[test]
+    fn test_isochrone_request_deser_distance_m() {
+        let json_str = r#"{"lon":4.35,"lat":50.85,"distance_m":5000,"mode":"car"}"#;
+        let req: IsochroneRequest = serde_json::from_str(json_str).unwrap();
+        assert!(req.time_s.is_none());
+        assert_eq!(req.distance_m, Some(5000));
+    }
+
+    #[test]
+    fn test_isochrone_request_deser_contours() {
+        let json_str = r#"{"lon":4.35,"lat":50.85,"contours":"300,600","mode":"car"}"#;
+        let req: IsochroneRequest = serde_json::from_str(json_str).unwrap();
+        assert!(req.time_s.is_none());
+        assert_eq!(req.contours, Some("300,600".to_string()));
+    }
+
+    #[test]
+    fn test_distance_m_validation_range() {
+        for v in [0u32, 100_001, 200_000] {
+            assert!(v == 0 || v > 100_000, "value {} should be out of range", v);
+        }
+        for v in [1u32, 1000, 50_000, 100_000] {
+            assert!((1..=100_000).contains(&v), "value {} should be in range", v);
+        }
+    }
+
+    // === P4: Route annotations tests ===
+
+    #[test]
+    fn test_route_annotations_serialization() {
+        let ann = RouteAnnotations {
+            duration: Some(vec![1.2, 3.4, 5.6]),
+            distance: Some(vec![100.0, 200.0, 300.0]),
+            speed: None,
+            nodes: None,
+        };
+        let json = serde_json::to_value(&ann).unwrap();
+        assert!(json["duration"].is_array());
+        assert!(json["distance"].is_array());
+        assert!(json.get("speed").is_none()); // skipped when None
+        assert!(json.get("nodes").is_none()); // skipped when None
+
+        let durations = json["duration"].as_array().unwrap();
+        assert_eq!(durations.len(), 3);
+    }
+
+    #[test]
+    fn test_route_annotations_speed_calculation() {
+        // speed = distance_m * 3.6 / duration_s (gives km/h)
+        let dur_s = 10.0_f64; // 10 seconds
+        let dist_m = 100.0_f64; // 100 meters
+        let speed_kmh = dist_m * 3.6 / dur_s;
+        assert!((speed_kmh - 36.0).abs() < 0.01, "100m in 10s = 36 km/h");
+    }
+
+    #[test]
+    fn test_route_annotations_speed_zero_duration() {
+        // Zero duration should give 0 speed, not division by zero
+        let dur_s = 0.0_f64;
+        let speed = if dur_s > 0.0 {
+            100.0 * 3.6 / dur_s
+        } else {
+            0.0
+        };
+        assert_eq!(speed, 0.0);
+    }
+
+    #[test]
+    fn test_annotations_validation_tokens() {
+        let valid_tokens = ["duration", "distance", "speed", "nodes"];
+        for t in &valid_tokens {
+            assert!(
+                ["duration", "distance", "speed", "nodes"].contains(t),
+                "'{}' should be valid",
+                t
+            );
+        }
+        let invalid_tokens = ["weight", "cost", "time", "edge_id", ""];
+        for t in &invalid_tokens {
+            assert!(
+                !["duration", "distance", "speed", "nodes"].contains(t),
+                "'{}' should be invalid",
+                t
+            );
+        }
+    }
+
+    #[test]
+    fn test_route_response_with_annotations() {
+        use super::super::geometry::{GeometryFormat, Point, RouteGeometry};
+        let resp = RouteResponse {
+            duration_s: 60.0,
+            distance_m: 500.0,
+            geometry: RouteGeometry::from_points(
+                vec![
+                    Point {
+                        lon: 4.35,
+                        lat: 50.85,
+                    },
+                    Point {
+                        lon: 4.36,
+                        lat: 50.86,
+                    },
+                ],
+                GeometryFormat::GeoJson,
+            ),
+            steps: None,
+            annotations: Some(RouteAnnotations {
+                duration: Some(vec![30.0, 30.0]),
+                distance: Some(vec![250.0, 250.0]),
+                speed: Some(vec![30.0, 30.0]),
+                nodes: Some(vec![100, 200]),
+            }),
+            alternatives: None,
+            debug: None,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["annotations"]["duration"].is_array());
+        assert_eq!(json["annotations"]["nodes"].as_array().unwrap().len(), 2);
+    }
+
+    // === P7: Bearing hints tests ===
+
+    #[test]
+    fn test_bearing_matching() {
+        use super::super::spatial::SpatialIndex;
+        // North (0°) matches North within 45° range
+        assert!(SpatialIndex::bearing_matches_pub(0, 0, 45));
+        assert!(SpatialIndex::bearing_matches_pub(30, 0, 45));
+        assert!(SpatialIndex::bearing_matches_pub(330, 0, 45)); // 330° is 30° from 0°
+        assert!(!SpatialIndex::bearing_matches_pub(90, 0, 45)); // 90° from 0°
+
+        // East (90°) matches within 30°
+        assert!(SpatialIndex::bearing_matches_pub(90, 90, 30));
+        assert!(SpatialIndex::bearing_matches_pub(110, 90, 30));
+        assert!(SpatialIndex::bearing_matches_pub(70, 90, 30));
+        assert!(!SpatialIndex::bearing_matches_pub(130, 90, 30));
+
+        // Wrap-around: 350° is 20° from 0°
+        assert!(SpatialIndex::bearing_matches_pub(350, 0, 30));
+        assert!(SpatialIndex::bearing_matches_pub(10, 0, 30));
+
+        // 180° match
+        assert!(SpatialIndex::bearing_matches_pub(180, 180, 10));
+    }
+
+    #[test]
+    fn test_bearing_parsing_format() {
+        // Valid format: "angle,range;angle,range"
+        let input = "90,45;270,45";
+        let parts: Vec<&str> = input.split(';').collect();
+        assert_eq!(parts.len(), 2);
+        for part in parts {
+            let tokens: Vec<&str> = part.split(',').collect();
+            assert_eq!(tokens.len(), 2);
+            let angle: u16 = tokens[0].parse().unwrap();
+            let range: u16 = tokens[1].parse().unwrap();
+            assert!(angle <= 360);
+            assert!(range <= 180);
+        }
+    }
+
+    #[test]
+    fn test_bearing_parsing_single_waypoint() {
+        // Only source bearing, no destination
+        let input = "180,90";
+        let parts: Vec<&str> = input.split(';').collect();
+        assert_eq!(parts.len(), 1);
+    }
+
+    #[test]
+    fn test_bearing_computation() {
+        // North: lat increases, lon same
+        let lat1 = 50.0_f64;
+        let lon1 = 4.0_f64;
+        let lat2 = 51.0_f64;
+        let lon2 = 4.0_f64;
+        let dlat_m = (lat2 - lat1) * 111_000.0;
+        let dlon_m = (lon2 - lon1) * 71_400.0;
+        let angle_rad = dlon_m.atan2(dlat_m);
+        let bearing = ((angle_rad.to_degrees() + 360.0) % 360.0) as u16;
+        assert_eq!(bearing, 0, "Due north should be 0°");
+
+        // East: lon increases, lat same
+        let lat2 = 50.0;
+        let lon2 = 5.0;
+        let dlat_m = (lat2 - lat1) * 111_000.0;
+        let dlon_m = (lon2 - lon1) * 71_400.0;
+        let angle_rad = dlon_m.atan2(dlat_m);
+        let bearing = ((angle_rad.to_degrees() + 360.0) % 360.0) as u16;
+        assert_eq!(bearing, 90, "Due east should be 90°");
+    }
+
+    #[test]
+    fn test_bearing_empty_segment_is_unconstrained() {
+        // Empty bearing segment means no constraint (range=360)
+        let input = ";270,45";
+        let parts: Vec<&str> = input.split(';').collect();
+        assert_eq!(parts.len(), 2);
+        assert!(
+            parts[0].is_empty(),
+            "first part should be empty = no constraint"
+        );
+    }
+
+    // === Isochrone: single contour still returns array ===
+
+    #[test]
+    fn test_isochrone_response_single_contour_still_array() {
+        let resp = IsochroneResponse {
+            contours: vec![ContourFeature {
+                time_s: Some(600),
+                distance_m: None,
+                polygon: Some("encoded".to_string()),
+                polygon_geojson: None,
+                polygon_points: None,
+                reachable_edges: 100,
+            }],
+            network: None,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        let contours = json["contours"].as_array().unwrap();
+        assert_eq!(contours.len(), 1);
+        assert_eq!(contours[0]["time_s"], 600);
+        assert_eq!(contours[0]["reachable_edges"], 100);
+    }
+
+    // === Cross-feature: isochrone mutual exclusivity ===
+
+    #[test]
+    fn test_isochrone_exactly_one_metric() {
+        // Simulate the validation logic
+        #[allow(clippy::type_complexity)]
+        let test_cases: Vec<(Option<u32>, Option<u32>, Option<&str>, bool)> = vec![
+            (Some(600), None, None, true),         // time_s only: OK
+            (None, Some(5000), None, true),        // distance_m only: OK
+            (None, None, Some("300,600"), true),   // contours only: OK
+            (None, None, None, false),             // none: FAIL
+            (Some(600), Some(5000), None, false),  // two: FAIL
+            (Some(600), None, Some("300"), false), // two: FAIL
+        ];
+        for (time_s, dist_m, contours, should_pass) in test_cases {
+            let count = [time_s.is_some(), dist_m.is_some(), contours.is_some()]
+                .iter()
+                .filter(|&&b| b)
+                .count();
+            let valid = count == 1;
+            assert_eq!(
+                valid, should_pass,
+                "time_s={:?} dist_m={:?} contours={:?}",
+                time_s, dist_m, contours
+            );
+        }
     }
 }

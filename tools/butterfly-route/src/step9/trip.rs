@@ -359,6 +359,12 @@ pub struct TripRequest {
     #[serde(default = "default_annotations")]
     #[schema(example = "duration,distance")]
     pub annotations: String,
+    /// Exclude road types: comma-separated list of "toll", "ferry", "motorway"
+    #[serde(default)]
+    pub exclude: Option<String>,
+    /// Avoid polygon(s) as JSON array of coordinate rings
+    #[serde(default)]
+    pub avoid_polygons: Option<String>,
 }
 
 fn default_mode() -> String {
@@ -529,6 +535,30 @@ pub async fn trip_handler(
     }
     let want_distance = annotations.contains(&"distance");
 
+    // Parse exclude parameter
+    let exclude_mask = match super::exclude::parse_exclude_option(&req.exclude) {
+        Ok(m) => m,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
+            )
+                .into_response()
+        }
+    };
+
+    // Parse avoid_polygons
+    let avoid_json = match super::avoid::parse_avoid_option(&req.avoid_polygons) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
+            )
+                .into_response()
+        }
+    };
+
     // Extract owned values before the spawn_blocking closure
     let coordinates = req.coordinates;
     let round_trip = req.round_trip;
@@ -542,16 +572,46 @@ pub async fn trip_handler(
         let mode_data = state_clone.get_mode(mode);
         let n_nodes = mode_data.cch_topo.n_nodes as usize;
 
+        // Compute avoid weights (includes exclude if both present)
+        let avoid_result = if let Some(ref avoid_str) = avoid_json {
+            super::avoid::compute_avoid_weights(&state_clone, mode_data, avoid_str, exclude_mask)
+                .ok()
+        } else {
+            None
+        };
+
+        // Get exclude weights if only exclude (no avoid)
+        let exclude_weights = if avoid_result.is_none() {
+            exclude_mask.map(|exc| state_clone.get_exclude_weights(mode, exc))
+        } else {
+            None
+        };
+
+        // Build snap mask
+        let snap_mask: std::borrow::Cow<'_, [u64]> =
+            if let Some((_, ref avoid_flags)) = avoid_result {
+                std::borrow::Cow::Owned(super::avoid::build_avoid_mask(
+                    &mode_data.mask,
+                    avoid_flags,
+                    exclude_mask.map(|exc| (state_clone.edge_exclude_flags.as_slice(), exc)),
+                ))
+            } else if let Some(exc) = exclude_mask {
+                std::borrow::Cow::Owned(super::exclude::build_exclude_mask(
+                    &mode_data.mask,
+                    &state_clone.edge_exclude_flags,
+                    exc,
+                ))
+            } else {
+                std::borrow::Cow::Borrowed(&mode_data.mask)
+            };
+
         // Snap all coordinates and convert to rank space
         let mut ranks: Vec<u32> = Vec::with_capacity(n);
         let mut snapped_locations: Vec<[f64; 2]> = Vec::with_capacity(n);
         let mut valid: Vec<bool> = Vec::with_capacity(n);
 
         for &[lon, lat] in &coordinates {
-            if let Some(orig_id) = state_clone
-                .spatial_index
-                .snap(lon, lat, &mode_data.mask, 10)
-            {
+            if let Some(orig_id) = state_clone.spatial_index.snap(lon, lat, &snap_mask, 10) {
                 let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
                 if filtered != u32::MAX {
                     let rank = mode_data.order.perm[filtered as usize];
@@ -588,27 +648,32 @@ pub async fn trip_handler(
             }
         }
 
+        // Select flat adjacencies (avoid takes priority, then exclude)
+        let (time_up, time_down) = if let Some((ref aw, _)) = avoid_result {
+            (&aw.time_up_flat, &aw.time_down_flat)
+        } else if let Some(ref ew) = exclude_weights {
+            (&ew.time_up_flat, &ew.time_down_flat)
+        } else {
+            (&mode_data.up_adj_flat, &mode_data.down_rev_flat)
+        };
+        let (dist_up, dist_down) = if let Some((ref aw, _)) = avoid_result {
+            (&aw.dist_up_flat, &aw.dist_down_flat)
+        } else if let Some(ref ew) = exclude_weights {
+            (&ew.dist_up_flat, &ew.dist_down_flat)
+        } else {
+            (&mode_data.up_adj_flat_dist, &mode_data.down_rev_flat_dist)
+        };
+
         // Compute N*N duration matrix (for TSP optimization, always on time)
-        let (duration_matrix, _stats) = table_bucket_full_flat(
-            n_nodes,
-            &mode_data.up_adj_flat,
-            &mode_data.down_rev_flat,
-            &ranks,
-            &ranks,
-        );
+        let (duration_matrix, _stats) =
+            table_bucket_full_flat(n_nodes, time_up, time_down, &ranks, &ranks);
 
         // Run TSP solver on the duration matrix
         let tsp_result = solve_tsp(&duration_matrix, n, round_trip);
 
         // Compute distance matrix if requested (for reporting leg distances)
         let distance_matrix = if want_distance {
-            let (dist_mat, _) = table_bucket_full_flat(
-                n_nodes,
-                &mode_data.up_adj_flat_dist,
-                &mode_data.down_rev_flat_dist,
-                &ranks,
-                &ranks,
-            );
+            let (dist_mat, _) = table_bucket_full_flat(n_nodes, dist_up, dist_down, &ranks, &ranks);
             Some(dist_mat)
         } else {
             None

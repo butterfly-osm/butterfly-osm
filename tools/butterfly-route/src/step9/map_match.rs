@@ -9,7 +9,7 @@ use crate::formats::NbgGeo;
 use crate::profile_abi::Mode;
 
 use super::query::CchQuery;
-use super::state::{ModeData, ServerState};
+use super::state::{CchWeights, ModeData, ServerState};
 
 /// Maximum candidates per GPS observation (after perpendicular-distance reranking)
 const MAX_CANDIDATES: usize = 8;
@@ -93,6 +93,8 @@ pub fn map_match(
     mode: Mode,
     coordinates: &[(f64, f64)], // (lon, lat)
     gps_accuracy: Option<f64>,
+    snap_mask: Option<&[u64]>,
+    exclude_weights: Option<&CchWeights>,
 ) -> Option<MatchResult> {
     let n = coordinates.len();
     if n < 2 {
@@ -101,11 +103,13 @@ pub fn map_match(
 
     let mode_data = state.get_mode(mode);
     let sigma = gps_accuracy.unwrap_or(DEFAULT_GPS_SIGMA).max(1.0);
+    let mask = snap_mask.unwrap_or(&mode_data.mask);
+    let weights = exclude_weights.unwrap_or(&mode_data.cch_weights);
 
     // Step 1: Generate candidates for each observation
     let candidates: Vec<Vec<Candidate>> = coordinates
         .iter()
-        .map(|&(lon, lat)| generate_candidates(state, mode_data, lon, lat))
+        .map(|&(lon, lat)| generate_candidates(state, mask, lon, lat))
         .collect();
 
     // Step 2: Find segments (split at gaps or unmatched observations)
@@ -130,11 +134,12 @@ pub fn map_match(
             &seg_coords,
             &seg_candidates,
             sigma,
+            weights,
         ) {
             // Build EBG path from matched candidate sequence
             let matching_idx = matchings.len();
             let ebg_path =
-                build_matched_path(state, mode, mode_data, &seg_candidates, &matched_indices);
+                build_matched_path(mode_data, &seg_candidates, &matched_indices, weights);
 
             let duration_ds = ebg_path
                 .iter()
@@ -188,16 +193,11 @@ pub fn map_match(
 // Candidate generation
 // ---------------------------------------------------------------------------
 
-fn generate_candidates(
-    state: &ServerState,
-    mode_data: &ModeData,
-    lon: f64,
-    lat: f64,
-) -> Vec<Candidate> {
+fn generate_candidates(state: &ServerState, mask: &[u64], lon: f64, lat: f64) -> Vec<Candidate> {
     // Use midpoint-based selection (topologically reliable), then refine with perpendicular projection
     let hits = state
         .spatial_index
-        .snap_k_with_info(lon, lat, &mode_data.mask, MAX_CANDIDATES);
+        .snap_k_with_info(lon, lat, mask, MAX_CANDIDATES);
 
     hits.into_iter()
         .filter_map(|(ebg_id, _midpoint_lon, _midpoint_lat, _midpoint_dist)| {
@@ -380,6 +380,7 @@ fn viterbi(
     coordinates: &[(f64, f64)],
     candidates: &[&Vec<Candidate>],
     sigma: f64,
+    cch_weights: &CchWeights,
 ) -> Option<Vec<usize>> {
     let n_obs = coordinates.len();
     if n_obs < 2 {
@@ -416,8 +417,13 @@ fn viterbi(
 
         // Compute transition costs: shortest-path distance from each prev candidate
         // to each current candidate
-        let transition_dists =
-            compute_transition_distances(mode_data, ebg_nodes, candidates[t - 1], candidates[t]);
+        let transition_dists = compute_transition_distances(
+            mode_data,
+            ebg_nodes,
+            candidates[t - 1],
+            candidates[t],
+            cch_weights,
+        );
 
         let mut curr_probs = vec![NEG_INF; n_curr];
         let mut curr_pred = vec![None; n_curr];
@@ -484,16 +490,14 @@ fn compute_transition_distances(
     ebg_nodes: &crate::formats::EbgNodes,
     from: &[Candidate],
     to: &[Candidate],
+    cch_weights: &CchWeights,
 ) -> Vec<f64> {
     let n_from = from.len();
     let n_to = to.len();
     let mut result = vec![f64::INFINITY; n_from * n_to];
 
-    let query = CchQuery::with_custom_weights(
-        &mode_data.cch_topo,
-        &mode_data.down_rev,
-        &mode_data.cch_weights,
-    );
+    let query =
+        CchQuery::with_custom_weights(&mode_data.cch_topo, &mode_data.down_rev, cch_weights);
 
     for (i, from_cand) in from.iter().enumerate() {
         let src_filtered = mode_data.filtered_ebg.original_to_filtered[from_cand.ebg_id as usize];
@@ -549,11 +553,10 @@ fn compute_transition_distances(
 
 /// Build the EBG path by connecting matched candidates with shortest paths.
 fn build_matched_path(
-    state: &ServerState,
-    mode: Mode,
     mode_data: &ModeData,
     candidates: &[&Vec<Candidate>],
     matched_indices: &[usize],
+    cch_weights: &CchWeights,
 ) -> Vec<u32> {
     let n_obs = matched_indices.len();
     let mut full_path: Vec<u32> = Vec::new();
@@ -572,7 +575,7 @@ fn build_matched_path(
         }
 
         // Find path between consecutive matched edges
-        let sub_path = find_path_between(state, mode, mode_data, prev_cand.ebg_id, cand.ebg_id);
+        let sub_path = find_path_between(mode_data, prev_cand.ebg_id, cand.ebg_id, cch_weights);
         match sub_path {
             Some(path) => {
                 // Skip first element (duplicate of previous edge)
@@ -601,11 +604,10 @@ fn build_matched_path(
 
 /// Find the EBG edge path between two edges using CCH P2P + unpack.
 fn find_path_between(
-    state: &ServerState,
-    mode: Mode,
     mode_data: &ModeData,
     from_ebg: u32,
     to_ebg: u32,
+    cch_weights: &CchWeights,
 ) -> Option<Vec<u32>> {
     let src_filtered = mode_data.filtered_ebg.original_to_filtered[from_ebg as usize];
     let dst_filtered = mode_data.filtered_ebg.original_to_filtered[to_ebg as usize];
@@ -617,7 +619,8 @@ fn find_path_between(
     let src_rank = mode_data.order.perm[src_filtered as usize];
     let dst_rank = mode_data.order.perm[dst_filtered as usize];
 
-    let query = CchQuery::new(state, mode);
+    let query =
+        CchQuery::with_custom_weights(&mode_data.cch_topo, &mode_data.down_rev, cch_weights);
     let result = query.query(src_rank, dst_rank)?;
 
     let rank_path = super::unpack::unpack_path(

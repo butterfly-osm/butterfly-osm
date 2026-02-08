@@ -12,11 +12,12 @@ const MAX_SNAP_DISTANCE_M: f64 = 5000.0;
 const METERS_PER_DEG_LAT: f64 = 111_000.0;
 const METERS_PER_DEG_LON_AT_50: f64 = 71_400.0; // 111km * cos(50°)
 
-/// Point with EBG node ID for R-tree
+/// Point with EBG node ID and bearing for R-tree
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct IndexedPoint {
     pub coords: [f64; 2], // [lon, lat]
     pub ebg_id: u32,
+    pub bearing: u16, // edge bearing in degrees (0=North, clockwise)
 }
 
 impl RTreeObject for IndexedPoint {
@@ -66,15 +67,44 @@ impl SpatialIndex {
             let lon = polyline.lon_fxp[mid_idx] as f64 / 1e7;
             let lat = polyline.lat_fxp[mid_idx] as f64 / 1e7;
 
+            // Compute edge bearing from first to last point (0=North, clockwise)
+            let n_pts = polyline.lat_fxp.len();
+            let bearing = if n_pts >= 2 {
+                let lat1 = polyline.lat_fxp[0] as f64 / 1e7;
+                let lon1 = polyline.lon_fxp[0] as f64 / 1e7;
+                let lat2 = polyline.lat_fxp[n_pts - 1] as f64 / 1e7;
+                let lon2 = polyline.lon_fxp[n_pts - 1] as f64 / 1e7;
+                Self::compute_bearing(lat1, lon1, lat2, lon2)
+            } else {
+                0
+            };
+
             points.push(IndexedPoint {
                 coords: [lon, lat],
                 ebg_id: ebg_id as u32,
+                bearing,
             });
         }
 
         Self {
             tree: RTree::bulk_load(points),
         }
+    }
+
+    /// Compute bearing in degrees (0=North, clockwise) from point 1 to point 2
+    fn compute_bearing(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> u16 {
+        let dlat_m = (lat2 - lat1) * METERS_PER_DEG_LAT;
+        let dlon_m = (lon2 - lon1) * METERS_PER_DEG_LON_AT_50;
+        let angle_rad = dlon_m.atan2(dlat_m); // North=0, East=π/2
+        let deg = angle_rad.to_degrees();
+        ((deg + 360.0) % 360.0) as u16
+    }
+
+    /// Check if a candidate bearing is within the specified range of the requested bearing
+    fn bearing_matches(candidate: u16, requested: u16, range: u16) -> bool {
+        let diff = (candidate as i32 - requested as i32).unsigned_abs() as u16;
+        let diff = diff.min(360 - diff); // shortest arc
+        diff <= range
     }
 
     /// Find nearest accessible EBG node for given mode
@@ -189,6 +219,41 @@ impl SpatialIndex {
         result
     }
 
+    /// Snap with bearing filter — returns (ebg_id, snapped_lon, snapped_lat, distance_m)
+    /// Only returns candidates whose edge bearing is within `range` degrees of `bearing`
+    pub fn snap_with_bearing(
+        &self,
+        lon: f64,
+        lat: f64,
+        mask: &[u64],
+        bearing: u16,
+        range: u16,
+    ) -> Option<(u32, f64, f64, f64)> {
+        for point in self.tree.nearest_neighbor_iter(&[lon, lat]) {
+            let dist_m = Self::distance_meters(lon, lat, point.coords[0], point.coords[1]);
+            if dist_m > MAX_SNAP_DISTANCE_M {
+                return None;
+            }
+
+            let word = point.ebg_id as usize / 64;
+            let bit = point.ebg_id as usize % 64;
+            if word < mask.len()
+                && (mask[word] & (1u64 << bit)) != 0
+                && Self::bearing_matches(point.bearing, bearing, range)
+            {
+                return Some((point.ebg_id, point.coords[0], point.coords[1], dist_m));
+            }
+        }
+
+        None
+    }
+
+    /// Public bearing match for testing
+    #[cfg(test)]
+    pub fn bearing_matches_pub(candidate: u16, requested: u16, range: u16) -> bool {
+        Self::bearing_matches(candidate, requested, range)
+    }
+
     /// Get coordinates for an EBG node
     pub fn get_coords(&self, ebg_id: u32, ebg_nodes: &EbgNodes, nbg_geo: &NbgGeo) -> (f64, f64) {
         let node = &ebg_nodes.nodes[ebg_id as usize];
@@ -206,5 +271,19 @@ impl SpatialIndex {
         }
 
         (0.0, 0.0)
+    }
+
+    /// Find all edge midpoints within a bounding box.
+    /// Returns an iterator of `&IndexedPoint` for edges whose midpoints fall
+    /// within `[min_lon, min_lat] .. [max_lon, max_lat]`.
+    pub fn edges_in_envelope(
+        &self,
+        min_lon: f64,
+        min_lat: f64,
+        max_lon: f64,
+        max_lat: f64,
+    ) -> impl Iterator<Item = &IndexedPoint> {
+        let envelope = AABB::from_corners([min_lon, min_lat], [max_lon, max_lat]);
+        self.tree.locate_in_envelope(&envelope)
     }
 }

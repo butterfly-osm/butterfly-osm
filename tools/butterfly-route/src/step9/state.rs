@@ -17,6 +17,8 @@ pub use crate::formats::CchWeights;
 use crate::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
 use crate::profile_abi::Mode;
 
+use super::exclude::{self, ExcludeWeights};
+
 use super::elevation::ElevationData;
 use super::spatial::SpatialIndex;
 
@@ -40,6 +42,8 @@ pub struct ModeData {
     // Flat adjacencies for bucket M2M - DISTANCE metric (shortest-distance, independent of time)
     pub up_adj_flat_dist: UpAdjFlat,
     pub down_rev_flat_dist: DownReverseAdjFlat,
+    // Cached exclude weight sets (keyed by exclude bitmask)
+    pub exclude_cache: parking_lot::RwLock<HashMap<u8, std::sync::Arc<ExcludeWeights>>>,
 }
 
 // CchWeights is imported from crate::formats
@@ -74,6 +78,13 @@ pub struct ServerState {
     // Road names: OSM way_id → name string (for turn-by-turn instructions)
     pub way_names: HashMap<i64, String>,
 
+    // Distance weights indexed by original EBG node ID (length_mm per edge)
+    // Used for isodistance isochrones — same role as ModeData.node_weights but in millimeters
+    pub node_weights_dist: Vec<u32>,
+
+    // Per-EBG-edge exclude flags (toll/ferry/motorway), indexed by original EBG edge ID
+    pub edge_exclude_flags: Vec<u8>,
+
     // Server metadata
     pub started_at: std::time::Instant,
     pub data_dir: String,
@@ -84,6 +95,7 @@ impl ServerState {
     pub fn load(data_dir: &Path) -> Result<Self> {
         // Determine subdirectories
         let step1_dir = find_step_dir(data_dir, "step1")?;
+        let step2_dir = find_step_dir(data_dir, "step2")?;
         let step3_dir = find_step_dir(data_dir, "step3")?;
         let step4_dir = find_step_dir(data_dir, "step4")?;
         let step5_dir = find_step_dir(data_dir, "step5")?;
@@ -135,6 +147,19 @@ impl ServerState {
         let way_names = load_way_names(&step1_dir)?;
         tracing::info!(named_roads = way_names.len(), "loaded road names");
 
+        // Build per-edge exclude flags from way_attrs.car.bin
+        tracing::info!("Loading edge exclude flags...");
+        let way_attrs_path = step2_dir.join("way_attrs.car.bin");
+        let edge_exclude_flags = exclude::build_edge_exclude_flags(&ebg_nodes, &way_attrs_path)?;
+
+        // Build distance-based node weights from EBG edge lengths (mm)
+        // Used for isodistance isochrones: same role as ModeData.node_weights but distance-based
+        let node_weights_dist: Vec<u32> = ebg_nodes.nodes.iter().map(|n| n.length_mm).collect();
+        tracing::info!(
+            edges = node_weights_dist.len(),
+            "built distance node weights"
+        );
+
         // Try to load elevation data from srtm/ subdirectory
         let srtm_dir = data_dir.join("srtm");
         let elevation = if srtm_dir.is_dir() {
@@ -163,6 +188,8 @@ impl ServerState {
             spatial_index,
             elevation,
             way_names,
+            node_weights_dist,
+            edge_exclude_flags,
             started_at: std::time::Instant::now(),
             data_dir: data_dir.to_string_lossy().to_string(),
         })
@@ -175,6 +202,49 @@ impl ServerState {
             Mode::Bike => &self.bike,
             Mode::Foot => &self.foot,
         }
+    }
+
+    /// Get or compute exclude weights for a mode and exclude mask.
+    /// Returns Arc<ExcludeWeights> from cache, computing on first access.
+    pub fn get_exclude_weights(
+        &self,
+        mode: Mode,
+        exclude_mask: u8,
+    ) -> std::sync::Arc<ExcludeWeights> {
+        let mode_data = self.get_mode(mode);
+
+        // Fast path: check cache with read lock
+        {
+            let cache = mode_data.exclude_cache.read();
+            if let Some(weights) = cache.get(&exclude_mask) {
+                return std::sync::Arc::clone(weights);
+            }
+        }
+
+        // Slow path: compute and insert with write lock
+        let mut cache = mode_data.exclude_cache.write();
+        // Double-check after acquiring write lock
+        if let Some(weights) = cache.get(&exclude_mask) {
+            return std::sync::Arc::clone(weights);
+        }
+
+        tracing::info!(
+            mode = ?mode,
+            exclude_mask,
+            "computing exclude weights (first request)"
+        );
+
+        let weights = std::sync::Arc::new(exclude::compute_exclude_weights(
+            &mode_data.cch_topo,
+            &mode_data.cch_weights,
+            &mode_data.cch_weights_dist,
+            &self.edge_exclude_flags,
+            exclude_mask,
+            &mode_data.filtered_ebg.filtered_to_original,
+        ));
+
+        cache.insert(exclude_mask, std::sync::Arc::clone(&weights));
+        weights
     }
 }
 
@@ -275,6 +345,7 @@ fn load_mode_data(
         down_rev_flat,
         up_adj_flat_dist,
         down_rev_flat_dist,
+        exclude_cache: parking_lot::RwLock::new(HashMap::new()),
     })
 }
 

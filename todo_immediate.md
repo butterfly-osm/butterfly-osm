@@ -800,3 +800,43 @@ Naming convention in this document:
 - isochrone/bulk errors: JSON ErrorResponse envelope (was raw bytes)
 - 35 new unit tests added (189 total, up from 154)
 
+---
+
+## P-Sprint: Feature Parity (2026-02-08) — COMPLETE
+
+All implementable P-Sprint features are done. P5 (truck profile) deferred.
+
+### P1: Exclude toll/ferry/motorway ✅
+- `exclude=toll,ferry,motorway` query param on all routing endpoints
+- Runtime CCH recustomization with edge penalty flags
+- New module: `step9/exclude.rs` with `ExcludeWeights`, `build_exclude_mask()`, `compute_exclude_weights()`
+- Sparse triangle relaxation for efficient weight propagation (~16s Belgium)
+
+### P2: Multiple isochrone contours ✅
+- `contours=300,600,1200` param on `/isochrone`
+- Single PHAST run, multiple contour polygons
+- Returns GeoJSON FeatureCollection with `contour_value` property
+
+### P3: Isodistance ✅
+- `distance_m=` param on `/isochrone` (alternative to `time_s`)
+- Uses distance CCH weights for PHAST
+
+### P4: Per-edge annotations ✅
+- `annotations=speed,duration,distance,nodes` on `/route`
+- Per-edge metadata arrays in response
+
+### P6: Avoid polygon areas ✅
+- `avoid_polygons=` query param with JSON polygon rings
+- R-tree spatial index for edge-in-polygon detection
+- New module: `step9/avoid.rs`
+- Time-only variant for P2P routes (~16s), full variant for PHAST endpoints (~28s)
+- Sparse triangle relaxation optimization (converges in ~30 passes)
+
+### P7: Bearing hints ✅
+- `bearings=angle,range` pairs per waypoint
+- OSRM-compatible format, filters snap candidates by bearing
+
+### P5: Truck profile — DEFERRED
+- Requires full pipeline re-run (steps 2-8) for truck mode
+- Low priority compared to other features
+
