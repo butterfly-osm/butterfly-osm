@@ -1,6 +1,6 @@
 # Immediate Status
 
-No active sprint. All features complete including map matching (F4), thread-local CCH query state (Codex-H2), and CRC validation across all format readers (Codex-H8).
+No active sprint. All features, audit remediation, and production hardening complete. Nothing remaining.
 
 ---
 
@@ -66,4 +66,4 @@ No active sprint. All features complete including map matching (F4), thread-loca
 | ~~Map matching (F4)~~ | DONE |
 | ~~L5 (semver precision)~~ | DONE — fixed `"2.0"` → `"2.0.0"` |
 | ~~L1 (Windows DLL naming)~~ | REMOVED — Linux/Docker only, no Windows/macOS builds |
-| Two-resolution isochrone mask (D8) | Current quality acceptable |
+| ~~Two-resolution isochrone mask (D8)~~ | WONTFIX — 30m grid + simplification is sufficient; fine grid near boundary adds complexity for cosmetic gain only |

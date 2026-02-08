@@ -150,7 +150,7 @@ else:
 | Feature | Complexity | Notes |
 |---------|------------|-------|
 | Map matching (GPS trace -> route) | High | HMM-based, needs Viterbi on CCH |
-| Two-resolution isochrone mask | Medium | Better boundary accuracy |
+| ~~Two-resolution isochrone mask~~ | ~~Medium~~ | WONTFIX — 30m grid + simplification pass is sufficient |
 | Truck routing (dimensions) | High | Needs vehicle profile system |
 | Time-dependent routing | Very High | Needs time-expanded graph |
 | Hybrid exact turn model | Abandoned | Equivalence-class hybrid incompatible with CCH separator quality |
