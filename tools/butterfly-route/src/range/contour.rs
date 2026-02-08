@@ -198,10 +198,10 @@ pub fn generate_contour(
 
     stats.filled_cells = closed.iter().filter(|&&b| b).count();
 
-    // Step 5: Marching squares to extract contour
-    let contour = marching_squares(&closed, n_cols, n_rows);
+    // Step 5: Marching squares to extract outer contour + hole contours
+    let ms_result = marching_squares_with_holes(&closed, n_cols, n_rows);
 
-    if contour.is_empty() {
+    if ms_result.outer.is_empty() {
         return Ok(ContourResult {
             outer_ring: vec![],
             holes: vec![],
@@ -216,25 +216,41 @@ pub fn generate_contour(
     // Grid coordinates are inherently Mercator, so tolerance in grid units
     // is uniform in all directions.
     let tolerance_grid = config.simplify_tolerance_m / config.cell_size_m;
-    let simplified = douglas_peucker(&contour, tolerance_grid);
-    stats.contour_vertices_before_simplify = contour.len();
+    let simplified = douglas_peucker(&ms_result.outer, tolerance_grid);
+    stats.contour_vertices_before_simplify = ms_result.outer.len();
     stats.contour_vertices_after_simplify = simplified.len();
 
+    // Helper: convert grid coordinates to WGS84
+    let grid_to_wgs84 = |points: &[(f64, f64)]| -> Vec<(f64, f64)> {
+        points
+            .iter()
+            .map(|&(col, row)| {
+                let x = min_x + col * config.cell_size_m;
+                let y = min_y + row * config.cell_size_m;
+                from_mercator(x, y)
+            })
+            .collect()
+    };
+
     // Step 7: Convert simplified grid coordinates back to WGS84
-    let wgs84_contour: Vec<(f64, f64)> = simplified
+    let wgs84_outer = grid_to_wgs84(&simplified);
+
+    // Step 8: Simplify and convert hole contours to WGS84
+    let wgs84_holes: Vec<Vec<(f64, f64)>> = ms_result
+        .holes
         .iter()
-        .map(|&(col, row)| {
-            let x = min_x + col * config.cell_size_m;
-            let y = min_y + row * config.cell_size_m;
-            from_mercator(x, y)
+        .map(|hole| {
+            let simplified_hole = douglas_peucker(hole, tolerance_grid);
+            grid_to_wgs84(&simplified_hole)
         })
+        .filter(|h| h.len() >= 3) // Discard degenerate holes after simplification
         .collect();
 
     stats.elapsed_ms = start.elapsed().as_millis() as u64;
 
     Ok(ContourResult {
-        outer_ring: wgs84_contour,
-        holes: vec![],
+        outer_ring: wgs84_outer,
+        holes: wgs84_holes,
         stats,
     })
 }
@@ -353,14 +369,35 @@ fn erode(raster: &[bool], n_cols: usize, n_rows: usize) -> Vec<bool> {
     result
 }
 
-/// Marching squares algorithm to extract OUTER contour from binary raster
-fn marching_squares(raster: &[bool], n_cols: usize, n_rows: usize) -> Vec<(f64, f64)> {
+/// Result of marching squares extraction: outer ring + hole rings
+struct MarchingSquaresResult {
+    outer: Vec<(f64, f64)>,
+    holes: Vec<Vec<(f64, f64)>>,
+}
+
+/// Marching squares algorithm to extract outer contour AND hole contours from binary raster.
+///
+/// Steps:
+/// 1. Flood fill from border to mark exterior cells
+/// 2. Build interior raster (filled OR not-exterior) → closes holes for outer boundary
+/// 3. Trace outer boundary on interior raster
+/// 4. Detect hole components: connected components of `!raster && !exterior`
+/// 5. Trace each hole boundary on a raster where the hole is "empty" and everything else is "filled"
+fn marching_squares_with_holes(
+    raster: &[bool],
+    n_cols: usize,
+    n_rows: usize,
+) -> MarchingSquaresResult {
+    let empty = MarchingSquaresResult {
+        outer: vec![],
+        holes: vec![],
+    };
+
     if n_cols < 2 || n_rows < 2 {
-        return vec![];
+        return empty;
     }
 
     // First, flood fill from corners to mark exterior cells
-    // This ensures we find the OUTER boundary, not internal holes
     let mut exterior = vec![false; n_cols * n_rows];
     let mut stack: Vec<(usize, usize)> = Vec::new();
 
@@ -404,32 +441,121 @@ fn marching_squares(raster: &[bool], n_cols: usize, n_rows: usize) -> Vec<(f64, 
         }
     }
 
-    // Create interior raster: filled OR not-exterior (to close internal holes)
+    // Create interior raster: filled OR not-exterior (to close internal holes for outer boundary)
     let interior: Vec<bool> = (0..n_cols * n_rows)
         .map(|i| raster[i] || !exterior[i])
         .collect();
 
-    // Find a starting boundary cell on the OUTER boundary
-    // Scan from outside inward to find where exterior meets interior
+    // Trace outer boundary
+    let outer = trace_contour(&interior, &exterior, n_cols, n_rows, true);
+
+    // Detect hole components: cells that are empty AND not exterior = interior holes
+    // Each connected component of such cells forms one hole ring.
+    let mut hole_visited = vec![false; n_cols * n_rows];
+    let mut holes = Vec::new();
+
+    for idx in 0..n_cols * n_rows {
+        if !raster[idx] && !exterior[idx] && !hole_visited[idx] {
+            // Found a new hole component — flood fill to find all cells in this hole
+            let mut hole_cells = Vec::new();
+            let mut hole_stack = vec![idx];
+
+            while let Some(i) = hole_stack.pop() {
+                if hole_visited[i] || raster[i] || exterior[i] {
+                    continue;
+                }
+                hole_visited[i] = true;
+                hole_cells.push(i);
+
+                let r = i / n_cols;
+                let c = i % n_cols;
+                if r > 0 {
+                    hole_stack.push((r - 1) * n_cols + c);
+                }
+                if r + 1 < n_rows {
+                    hole_stack.push((r + 1) * n_cols + c);
+                }
+                if c > 0 {
+                    hole_stack.push(r * n_cols + c - 1);
+                }
+                if c + 1 < n_cols {
+                    hole_stack.push(r * n_cols + c + 1);
+                }
+            }
+
+            // Skip trivially small holes (< 4 cells can't form a meaningful polygon)
+            if hole_cells.len() < 4 {
+                continue;
+            }
+
+            // Create a raster where this hole is "empty" and everything else is "filled"
+            // Then trace the boundary of this "filled" region around the hole
+            let mut hole_raster = vec![true; n_cols * n_rows];
+            for &ci in &hole_cells {
+                hole_raster[ci] = false;
+            }
+
+            // For the hole trace, "exterior" is the hole cells themselves
+            let mut hole_exterior = vec![false; n_cols * n_rows];
+            for &ci in &hole_cells {
+                hole_exterior[ci] = true;
+            }
+
+            let hole_contour = trace_contour(&hole_raster, &hole_exterior, n_cols, n_rows, false);
+            if hole_contour.len() >= 3 {
+                holes.push(hole_contour);
+            }
+        }
+    }
+
+    MarchingSquaresResult { outer, holes }
+}
+
+/// Trace a single contour ring on a binary raster using marching squares.
+///
+/// `raster`: true = filled, false = empty
+/// `exterior_hint`: cells known to be outside (used to find starting cell)
+/// `is_outer`: if true, look for boundary touching exterior_hint; if false, just find any boundary
+fn trace_contour(
+    raster: &[bool],
+    exterior_hint: &[bool],
+    n_cols: usize,
+    n_rows: usize,
+    is_outer: bool,
+) -> Vec<(f64, f64)> {
+    // Find a starting boundary cell
     let mut start_col = None;
     let mut start_row = None;
     let mut start_case = 0u8;
 
     'outer: for row in 0..n_rows - 1 {
         for col in 0..n_cols - 1 {
-            let case = get_case(&interior, n_cols, col, row);
-            // Only consider boundary cells that touch exterior
+            let case = get_case(raster, n_cols, col, row);
             if case != 0 && case != 15 {
-                // Verify at least one corner is actually exterior
-                let has_exterior = exterior[row * n_cols + col]
-                    || exterior[row * n_cols + col + 1]
-                    || exterior[(row + 1) * n_cols + col + 1]
-                    || exterior[(row + 1) * n_cols + col];
-                if has_exterior {
-                    start_col = Some(col);
-                    start_row = Some(row);
-                    start_case = case;
-                    break 'outer;
+                if is_outer {
+                    // Verify at least one corner touches exterior
+                    let has_exterior = exterior_hint[row * n_cols + col]
+                        || exterior_hint[row * n_cols + col + 1]
+                        || exterior_hint[(row + 1) * n_cols + col + 1]
+                        || exterior_hint[(row + 1) * n_cols + col];
+                    if has_exterior {
+                        start_col = Some(col);
+                        start_row = Some(row);
+                        start_case = case;
+                        break 'outer;
+                    }
+                } else {
+                    // For holes, any boundary cell adjacent to the hole exterior is valid
+                    let touches_hole = exterior_hint[row * n_cols + col]
+                        || exterior_hint[row * n_cols + col + 1]
+                        || exterior_hint[(row + 1) * n_cols + col + 1]
+                        || exterior_hint[(row + 1) * n_cols + col];
+                    if touches_hole {
+                        start_col = Some(col);
+                        start_row = Some(row);
+                        start_case = case;
+                        break 'outer;
+                    }
                 }
             }
         }
@@ -440,7 +566,6 @@ fn marching_squares(raster: &[bool], n_cols: usize, n_rows: usize) -> Vec<(f64, 
         _ => return vec![],
     };
 
-    // Track visited edges to avoid infinite loops
     let mut visited = std::collections::HashSet::new();
     let mut contour = Vec::new();
 
@@ -457,15 +582,13 @@ fn marching_squares(raster: &[bool], n_cols: usize, n_rows: usize) -> Vec<(f64, 
             break;
         }
 
-        let case = get_case(&interior, n_cols, col, row);
+        let case = get_case(raster, n_cols, col, row);
         if case == 0 || case == 15 {
             break;
         }
 
-        // Get edge crossing for this case
         let (edge_point, exit_dir) = get_edge_crossing(case, col, row, entry_dir);
 
-        // Check if we've visited this edge
         let edge_key = (col, row, entry_dir);
         if visited.contains(&edge_key) {
             break;
@@ -474,7 +597,6 @@ fn marching_squares(raster: &[bool], n_cols: usize, n_rows: usize) -> Vec<(f64, 
 
         contour.push(edge_point);
 
-        // Move to next cell
         let (next_col, next_row, next_entry) = match exit_dir {
             0 => (col + 1, row, 2),             // right -> enter from left
             1 => (col, row + 1, 3),             // up -> enter from bottom
@@ -483,12 +605,10 @@ fn marching_squares(raster: &[bool], n_cols: usize, n_rows: usize) -> Vec<(f64, 
             _ => break,
         };
 
-        // Bounds check
         if next_col >= n_cols - 1 || next_row >= n_rows - 1 {
             break;
         }
 
-        // Check if we're back at start with same entry
         if next_col == start_col
             && next_row == start_row
             && next_entry == determine_entry_direction(start_case)
@@ -703,5 +823,66 @@ mod tests {
         assert!(raster[0]); // (0, 0)
         assert!(raster[11]); // (1, 1)
         assert!(raster[22]); // (2, 2)
+    }
+
+    #[test]
+    fn test_hole_detection() {
+        // Create a 12x12 raster with a filled ring (donut shape) containing a hole
+        let n = 12;
+        let mut raster = vec![false; n * n];
+
+        // Fill a solid ring: outer 10x10 box minus inner 6x6 box
+        for row in 1..=10 {
+            for col in 1..=10 {
+                raster[row * n + col] = true;
+            }
+        }
+        // Carve out the hole: 6x6 empty center
+        for row in 3..=8 {
+            for col in 3..=8 {
+                raster[row * n + col] = false;
+            }
+        }
+
+        let result = marching_squares_with_holes(&raster, n, n);
+
+        // Should have an outer ring
+        assert!(!result.outer.is_empty(), "Expected outer ring, got empty");
+
+        // Should detect exactly one hole
+        assert_eq!(
+            result.holes.len(),
+            1,
+            "Expected 1 hole, got {}",
+            result.holes.len()
+        );
+
+        // Hole ring should have multiple vertices
+        assert!(
+            result.holes[0].len() >= 3,
+            "Hole ring too small: {} vertices",
+            result.holes[0].len()
+        );
+    }
+
+    #[test]
+    fn test_no_holes_for_solid_shape() {
+        // Create a 10x10 raster with a solid filled center (no hole)
+        let n = 10;
+        let mut raster = vec![false; n * n];
+        for row in 2..=7 {
+            for col in 2..=7 {
+                raster[row * n + col] = true;
+            }
+        }
+
+        let result = marching_squares_with_holes(&raster, n, n);
+
+        assert!(!result.outer.is_empty(), "Expected outer ring");
+        assert!(
+            result.holes.is_empty(),
+            "Expected no holes for solid shape, got {}",
+            result.holes.len()
+        );
     }
 }

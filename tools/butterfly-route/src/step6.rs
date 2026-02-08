@@ -4,13 +4,176 @@
 //! Each mode gets its own ordering computed on only the mode-accessible nodes.
 
 use anyhow::Result;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use crate::formats::{
     EbgNodesFile, FilteredEbg, FilteredEbgFile, NbgGeoFile, OrderEbg, OrderEbgFile,
 };
 use crate::profile_abi::Mode;
+
+// ---------------------------------------------------------------------------
+// Generic minimum-degree elimination ordering (M3/M4 optimization)
+// ---------------------------------------------------------------------------
+
+/// Trait abstracting CSR-like adjacency for the elimination game.
+/// Implemented by EbgCsr, FilteredEbg, and HybridState.
+trait CsrAdjacency {
+    /// Return the range of neighbor indices for `node` in the CSR arrays.
+    fn neighbor_range(&self, node: u32) -> (usize, usize);
+    /// Return the target node at position `idx` in the CSR heads/targets array.
+    fn target(&self, idx: usize) -> u32;
+}
+
+impl CsrAdjacency for crate::formats::EbgCsr {
+    fn neighbor_range(&self, node: u32) -> (usize, usize) {
+        let start = self.offsets[node as usize] as usize;
+        let end = self.offsets[node as usize + 1] as usize;
+        (start, end)
+    }
+    fn target(&self, idx: usize) -> u32 {
+        self.heads[idx]
+    }
+}
+
+impl CsrAdjacency for FilteredEbg {
+    fn neighbor_range(&self, node: u32) -> (usize, usize) {
+        let start = self.offsets[node as usize] as usize;
+        let end = self.offsets[node as usize + 1] as usize;
+        (start, end)
+    }
+    fn target(&self, idx: usize) -> u32 {
+        self.heads[idx]
+    }
+}
+
+impl CsrAdjacency for crate::formats::hybrid_state::HybridState {
+    fn neighbor_range(&self, node: u32) -> (usize, usize) {
+        let start = self.offsets[node as usize] as usize;
+        let end = self.offsets[node as usize + 1] as usize;
+        (start, end)
+    }
+    fn target(&self, idx: usize) -> u32 {
+        self.targets[idx]
+    }
+}
+
+/// Minimum-degree elimination ordering using a BinaryHeap (O(n log n) instead of O(n²)).
+///
+/// Uses sorted `Vec<usize>` adjacency instead of `HashSet<usize>` for better cache
+/// locality (M4). Uses `BinaryHeap` with lazy deletion for O(n log n) min-extraction
+/// instead of O(n²) linear scan (M3).
+///
+/// The elimination game: repeatedly remove the minimum-degree node, adding fill-in
+/// edges to form a clique among its remaining neighbors.
+fn minimum_degree_order_generic<G: CsrAdjacency>(graph: &G, nodes: &[u32]) -> Vec<u32> {
+    if nodes.is_empty() {
+        return vec![];
+    }
+
+    let n = nodes.len();
+    let mut local_id: HashMap<u32, usize> = HashMap::with_capacity(n);
+    let mut global_id: Vec<u32> = Vec::with_capacity(n);
+
+    for (i, &node) in nodes.iter().enumerate() {
+        local_id.insert(node, i);
+        global_id.push(node);
+    }
+
+    // Build adjacency lists using sorted Vec<usize> for cache-friendly access.
+    // Sorted order enables O(log n) contains check via binary_search.
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+
+    for &node in nodes {
+        let u = local_id[&node];
+        let (start, end) = graph.neighbor_range(node);
+
+        for i in start..end {
+            let neighbor = graph.target(i);
+            if let Some(&v) = local_id.get(&neighbor) {
+                if u != v {
+                    adj[u].push(v);
+                    adj[v].push(u);
+                }
+            }
+        }
+    }
+
+    // Deduplicate and sort adjacency lists
+    for list in &mut adj {
+        list.sort_unstable();
+        list.dedup();
+    }
+
+    // Track degrees and eliminated status
+    let mut degrees: Vec<usize> = adj.iter().map(|s| s.len()).collect();
+    let mut eliminated = vec![false; n];
+    let mut ordered = Vec::with_capacity(n);
+
+    // BinaryHeap with lazy deletion: store (Reverse(degree), Reverse(global_id), local_id)
+    // Using Reverse makes it a min-heap. Tie-break on smallest global_id.
+    let mut heap: BinaryHeap<std::cmp::Reverse<(usize, u32, usize)>> = BinaryHeap::with_capacity(n);
+
+    for u in 0..n {
+        heap.push(std::cmp::Reverse((degrees[u], global_id[u], u)));
+    }
+
+    for _ in 0..n {
+        // Pop minimum degree node, skipping stale/eliminated entries
+        let min_node = loop {
+            let std::cmp::Reverse((deg, _gid, u)) =
+                heap.pop().expect("heap empty before all nodes eliminated");
+            if !eliminated[u] && degrees[u] == deg {
+                break u;
+            }
+            // Stale entry (degree changed since insertion) — skip
+        };
+
+        eliminated[min_node] = true;
+        ordered.push(global_id[min_node]);
+
+        // Collect non-eliminated neighbors
+        let neighbors: Vec<usize> = adj[min_node]
+            .iter()
+            .filter(|&&v| !eliminated[v])
+            .copied()
+            .collect();
+
+        // Add fill-in edges (form clique among remaining neighbors)
+        for i in 0..neighbors.len() {
+            for j in (i + 1)..neighbors.len() {
+                let u = neighbors[i];
+                let v = neighbors[j];
+
+                // Check if edge already exists (binary search on sorted vec)
+                if adj[u].binary_search(&v).is_err() {
+                    // Insert maintaining sorted order
+                    let pos_u = adj[u].binary_search(&v).unwrap_err();
+                    adj[u].insert(pos_u, v);
+                    let pos_v = adj[v].binary_search(&u).unwrap_err();
+                    adj[v].insert(pos_v, u);
+                    degrees[u] += 1;
+                    degrees[v] += 1;
+                    // Push updated entries (old entries become stale)
+                    heap.push(std::cmp::Reverse((degrees[u], global_id[u], u)));
+                    heap.push(std::cmp::Reverse((degrees[v], global_id[v], v)));
+                }
+            }
+        }
+
+        // Remove eliminated node from neighbors' adjacency
+        for &v in &neighbors {
+            if let Ok(pos) = adj[v].binary_search(&min_node) {
+                adj[v].remove(pos);
+                degrees[v] = degrees[v].saturating_sub(1);
+                // Push updated entry
+                heap.push(std::cmp::Reverse((degrees[v], global_id[v], v)));
+            }
+        }
+    }
+
+    ordered
+}
 
 /// Configuration for Step 6
 pub struct Step6Config {
@@ -605,93 +768,7 @@ impl NdBuilder {
 
     #[allow(dead_code)]
     fn minimum_degree_order(&self, csr: &crate::formats::EbgCsr, nodes: &[u32]) -> Vec<u32> {
-        if nodes.is_empty() {
-            return vec![];
-        }
-
-        // Build local adjacency with node-local IDs
-        let n = nodes.len();
-        let mut local_id: HashMap<u32, usize> = HashMap::with_capacity(n);
-        let mut global_id: Vec<u32> = Vec::with_capacity(n);
-
-        for (i, &node) in nodes.iter().enumerate() {
-            local_id.insert(node, i);
-            global_id.push(node);
-        }
-
-        // Build adjacency lists (only edges within the subgraph)
-        let mut adj: Vec<HashSet<usize>> = vec![HashSet::new(); n];
-
-        for &node in nodes {
-            let u = local_id[&node];
-            let start = csr.offsets[node as usize] as usize;
-            let end = csr.offsets[node as usize + 1] as usize;
-
-            for i in start..end {
-                let neighbor = csr.heads[i];
-                if let Some(&v) = local_id.get(&neighbor) {
-                    if u != v {
-                        adj[u].insert(v);
-                        adj[v].insert(u); // Undirected for elimination
-                    }
-                }
-            }
-        }
-
-        // Track degrees and eliminated status
-        let mut degrees: Vec<usize> = adj.iter().map(|s| s.len()).collect();
-        let mut eliminated = vec![false; n];
-        let mut ordered = Vec::with_capacity(n);
-
-        for _ in 0..n {
-            // Find minimum degree node among remaining
-            let mut min_deg = usize::MAX;
-            let mut min_node = 0;
-
-            for u in 0..n {
-                if !eliminated[u]
-                    && (degrees[u] < min_deg
-                        || (degrees[u] == min_deg && global_id[u] < global_id[min_node]))
-                {
-                    min_deg = degrees[u];
-                    min_node = u;
-                }
-            }
-
-            // Eliminate this node
-            eliminated[min_node] = true;
-            ordered.push(global_id[min_node]);
-
-            // Get neighbors to form clique
-            let neighbors: Vec<usize> = adj[min_node]
-                .iter()
-                .filter(|&&v| !eliminated[v])
-                .copied()
-                .collect();
-
-            // Add fill-in edges (form clique among remaining neighbors)
-            for i in 0..neighbors.len() {
-                for j in (i + 1)..neighbors.len() {
-                    let u = neighbors[i];
-                    let v = neighbors[j];
-
-                    if !adj[u].contains(&v) {
-                        adj[u].insert(v);
-                        adj[v].insert(u);
-                        degrees[u] += 1;
-                        degrees[v] += 1;
-                    }
-                }
-            }
-
-            // Remove eliminated node from neighbors' adjacency
-            for &v in &neighbors {
-                adj[v].remove(&min_node);
-                degrees[v] = degrees[v].saturating_sub(1);
-            }
-        }
-
-        ordered
+        minimum_degree_order_generic(csr, nodes)
     }
 
     fn assign_rank(&mut self, node: u32) {
@@ -930,85 +1007,7 @@ impl NdBuilder {
     }
 
     fn minimum_degree_order_filtered(&self, filtered_ebg: &FilteredEbg, nodes: &[u32]) -> Vec<u32> {
-        if nodes.is_empty() {
-            return vec![];
-        }
-
-        let n = nodes.len();
-        let mut local_id: HashMap<u32, usize> = HashMap::with_capacity(n);
-        let mut global_id: Vec<u32> = Vec::with_capacity(n);
-
-        for (i, &node) in nodes.iter().enumerate() {
-            local_id.insert(node, i);
-            global_id.push(node);
-        }
-
-        let mut adj: Vec<HashSet<usize>> = vec![HashSet::new(); n];
-
-        for &node in nodes {
-            let u = local_id[&node];
-            let start = filtered_ebg.offsets[node as usize] as usize;
-            let end = filtered_ebg.offsets[node as usize + 1] as usize;
-
-            for i in start..end {
-                let neighbor = filtered_ebg.heads[i];
-                if let Some(&v) = local_id.get(&neighbor) {
-                    if u != v {
-                        adj[u].insert(v);
-                        adj[v].insert(u);
-                    }
-                }
-            }
-        }
-
-        let mut degrees: Vec<usize> = adj.iter().map(|s| s.len()).collect();
-        let mut eliminated = vec![false; n];
-        let mut ordered = Vec::with_capacity(n);
-
-        for _ in 0..n {
-            let mut min_deg = usize::MAX;
-            let mut min_node = 0;
-
-            for u in 0..n {
-                if !eliminated[u]
-                    && (degrees[u] < min_deg
-                        || (degrees[u] == min_deg && global_id[u] < global_id[min_node]))
-                {
-                    min_deg = degrees[u];
-                    min_node = u;
-                }
-            }
-
-            eliminated[min_node] = true;
-            ordered.push(global_id[min_node]);
-
-            let neighbors: Vec<usize> = adj[min_node]
-                .iter()
-                .filter(|&&v| !eliminated[v])
-                .copied()
-                .collect();
-
-            for i in 0..neighbors.len() {
-                for j in (i + 1)..neighbors.len() {
-                    let u = neighbors[i];
-                    let v = neighbors[j];
-
-                    if !adj[u].contains(&v) {
-                        adj[u].insert(v);
-                        adj[v].insert(u);
-                        degrees[u] += 1;
-                        degrees[v] += 1;
-                    }
-                }
-            }
-
-            for &v in &neighbors {
-                adj[v].remove(&min_node);
-                degrees[v] = degrees[v].saturating_sub(1);
-            }
-        }
-
-        ordered
+        minimum_degree_order_generic(filtered_ebg, nodes)
     }
 }
 
@@ -1938,84 +1937,6 @@ impl NdBuilder {
     }
 
     fn minimum_degree_order_hybrid(&self, hybrid: &HybridState, nodes: &[u32]) -> Vec<u32> {
-        if nodes.is_empty() {
-            return vec![];
-        }
-
-        let n = nodes.len();
-        let mut local_id: HashMap<u32, usize> = HashMap::with_capacity(n);
-        let mut global_id: Vec<u32> = Vec::with_capacity(n);
-
-        for (i, &node) in nodes.iter().enumerate() {
-            local_id.insert(node, i);
-            global_id.push(node);
-        }
-
-        let mut adj: Vec<HashSet<usize>> = vec![HashSet::new(); n];
-
-        for &node in nodes {
-            let u = local_id[&node];
-            let start = hybrid.offsets[node as usize] as usize;
-            let end = hybrid.offsets[node as usize + 1] as usize;
-
-            for i in start..end {
-                let neighbor = hybrid.targets[i];
-                if let Some(&v) = local_id.get(&neighbor) {
-                    if u != v {
-                        adj[u].insert(v);
-                        adj[v].insert(u);
-                    }
-                }
-            }
-        }
-
-        let mut degrees: Vec<usize> = adj.iter().map(|s| s.len()).collect();
-        let mut eliminated = vec![false; n];
-        let mut ordered = Vec::with_capacity(n);
-
-        for _ in 0..n {
-            let mut min_deg = usize::MAX;
-            let mut min_node = 0;
-
-            for u in 0..n {
-                if !eliminated[u]
-                    && (degrees[u] < min_deg
-                        || (degrees[u] == min_deg && global_id[u] < global_id[min_node]))
-                {
-                    min_deg = degrees[u];
-                    min_node = u;
-                }
-            }
-
-            eliminated[min_node] = true;
-            ordered.push(global_id[min_node]);
-
-            let neighbors: Vec<usize> = adj[min_node]
-                .iter()
-                .filter(|&&v| !eliminated[v])
-                .copied()
-                .collect();
-
-            for i in 0..neighbors.len() {
-                for j in (i + 1)..neighbors.len() {
-                    let u = neighbors[i];
-                    let v = neighbors[j];
-
-                    if !adj[u].contains(&v) {
-                        adj[u].insert(v);
-                        adj[v].insert(u);
-                        degrees[u] += 1;
-                        degrees[v] += 1;
-                    }
-                }
-            }
-
-            for &v in &neighbors {
-                adj[v].remove(&min_node);
-                degrees[v] = degrees[v].saturating_sub(1);
-            }
-        }
-
-        ordered
+        minimum_degree_order_generic(hybrid, nodes)
     }
 }

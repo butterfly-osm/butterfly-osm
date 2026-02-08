@@ -42,6 +42,9 @@ dynamic:
 	fi
 
 # Install libraries and headers system-wide
+# NOTE: Installing to system directories (e.g., /usr/local) typically requires
+# root privileges. Run with: sudo make install
+# Or install to a user directory: make install PREFIX=$HOME/.local
 install: install-libs install-headers install-pkgconfig
 	@echo "✅ Installation complete!"
 	@echo "📍 Libraries installed to: $(LIBDIR)"
@@ -50,7 +53,7 @@ install: install-libs install-headers install-pkgconfig
 
 install-libs: c-lib
 	@echo "📦 Installing libraries to $(LIBDIR)..."
-	@mkdir -p $(LIBDIR)
+	@mkdir -p $(LIBDIR) 2>/dev/null || { echo "❌ Cannot create $(LIBDIR). Try: sudo make install"; exit 1; }
 	@cp target/release/libbutterfly_dl.a $(LIBDIR)/ 2>/dev/null || true
 	@cp target/release/libbutterfly_dl.so $(LIBDIR)/ 2>/dev/null || true
 	@cp target/release/libbutterfly_dl.dylib $(LIBDIR)/ 2>/dev/null || true

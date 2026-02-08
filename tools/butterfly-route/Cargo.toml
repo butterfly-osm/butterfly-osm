@@ -11,6 +11,10 @@ edition.workspace = true
 clap = { workspace = true }
 
 # Error handling
+# `anyhow` is a deliberate choice for the application boundary (CLI, HTTP server).
+# Typed errors (`thiserror`) are used in library-level code (formats/, profiles/).
+# Migrating all of butterfly-route to thiserror would touch hundreds of functions
+# with zero practical benefit — anyhow's context chains are more useful for debugging.
 anyhow = "1.0.101"
 thiserror = { workspace = true }
 
@@ -51,6 +55,7 @@ tokio-stream = "0.1.18"
 tokio-util = "0.7.18"
 utoipa = { version = "5.4", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "9.0", features = ["axum"] }
+tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.6.8", features = ["cors", "trace", "timeout", "catch-panic", "compression-gzip", "compression-br"] }
 
 # Spatial indexing
