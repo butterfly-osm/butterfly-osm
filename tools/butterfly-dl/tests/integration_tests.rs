@@ -14,11 +14,7 @@ use std::time::{Duration, Instant};
 #[allow(dead_code)]
 fn test_download_starts(source: &str, timeout_secs: u64) -> Result<(String, String, bool), String> {
     // Use the pre-built binary to avoid Cargo lock contention in CI
-    let binary_name = if cfg!(windows) {
-        "butterfly-dl.exe"
-    } else {
-        "butterfly-dl"
-    };
+    let binary_name = "butterfly-dl";
 
     // Calculate workspace root (two levels up from package dir)
     let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -60,11 +56,7 @@ fn test_download_starts(source: &str, timeout_secs: u64) -> Result<(String, Stri
     let mut cmd = Command::new(&binary_path)
         .arg(source)
         .arg({
-            let temp_dir = if cfg!(windows) {
-                std::env::temp_dir()
-            } else {
-                std::path::PathBuf::from("/tmp")
-            };
+            let temp_dir = std::path::PathBuf::from("/tmp");
             temp_dir
                 .join(format!("test-{}.pbf", source.replace('/', "_")))
                 .to_string_lossy()
@@ -147,11 +139,7 @@ fn test_download_with_cargo_run(
         .arg("--")
         .arg(source)
         .arg({
-            let temp_dir = if cfg!(windows) {
-                std::env::temp_dir()
-            } else {
-                std::path::PathBuf::from("/tmp")
-            };
+            let temp_dir = std::path::PathBuf::from("/tmp");
             temp_dir
                 .join(format!("test-{}.pbf", source.replace('/', "_")))
                 .to_string_lossy()
@@ -222,7 +210,7 @@ fn test_download_with_cargo_run(
 }
 
 #[test]
-#[cfg(not(feature = "ci-tests-disabled"))]
+#[ignore] // Requires network access
 fn test_planet_download_starts() {
     println!("Testing planet download startup...");
 
@@ -250,7 +238,7 @@ fn test_planet_download_starts() {
 }
 
 #[test]
-#[cfg(not(feature = "ci-tests-disabled"))]
+#[ignore] // Requires network access
 fn test_europe_continent_download_starts() {
     println!("Testing Europe continent download startup...");
 
@@ -278,7 +266,7 @@ fn test_europe_continent_download_starts() {
 }
 
 #[test]
-#[cfg(not(feature = "ci-tests-disabled"))]
+#[ignore] // Requires network access
 fn test_monaco_country_download_starts() {
     println!("Testing Monaco country download startup...");
 
@@ -306,7 +294,7 @@ fn test_monaco_country_download_starts() {
 }
 
 #[test]
-#[cfg(not(feature = "ci-tests-disabled"))]
+#[ignore] // Requires network access
 fn test_invalid_continent_fails_gracefully() {
     println!("Testing invalid continent (invalid-continent) fails gracefully...");
 
@@ -354,7 +342,7 @@ fn test_invalid_continent_fails_gracefully() {
 }
 
 #[test]
-#[cfg(not(feature = "ci-tests-disabled"))]
+#[ignore] // Requires network access
 fn test_antarctica_continent_download_starts() {
     println!("Testing Antarctica continent download starts...");
 
@@ -384,7 +372,7 @@ fn test_antarctica_continent_download_starts() {
 }
 
 #[test]
-#[cfg(not(feature = "ci-tests-disabled"))]
+#[ignore] // Requires network access
 fn test_valid_country_belgium_download_starts() {
     println!("Testing Belgium country download startup...");
 
@@ -413,16 +401,12 @@ fn test_valid_country_belgium_download_starts() {
 
 /// Test dry run mode for all source types
 #[test]
-#[cfg(not(feature = "ci-tests-disabled"))]
+#[ignore] // Requires network access
 fn test_dry_run_mode() {
     println!("Testing dry run mode for different sources...");
 
     // Use the same binary detection logic as other tests
-    let binary_name = if cfg!(windows) {
-        "butterfly-dl.exe"
-    } else {
-        "butterfly-dl"
-    };
+    let binary_name = "butterfly-dl";
 
     // Calculate workspace root (two levels up from package dir)
     let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -495,11 +479,7 @@ mod cleanup {
 
     #[ctor::dtor]
     fn cleanup() {
-        let temp_dir = if cfg!(windows) {
-            std::env::temp_dir()
-        } else {
-            std::path::PathBuf::from("/tmp")
-        };
+        let temp_dir = std::path::PathBuf::from("/tmp");
 
         let _ = fs::remove_file(temp_dir.join("test-planet.pbf"));
         let _ = fs::remove_file(temp_dir.join("test-europe.pbf"));
