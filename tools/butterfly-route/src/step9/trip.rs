@@ -423,12 +423,12 @@ pub struct Trip {
 /// A leg connecting two consecutive waypoints in the trip
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TripLeg {
-    /// Leg duration in seconds
+    /// Leg duration in seconds (null if unreachable)
     #[schema(example = 305.2)]
-    pub duration: f64,
-    /// Leg distance in meters
+    pub duration: Option<f64>,
+    /// Leg distance in meters (null if unreachable)
     #[schema(example = 12345.0)]
-    pub distance: f64,
+    pub distance: Option<f64>,
     /// Summary (empty for now)
     pub summary: String,
 }
@@ -512,7 +512,21 @@ pub async fn trip_handler(
 
     // Parse annotations
     let annotations: Vec<&str> = req.annotations.split(',').map(|s| s.trim()).collect();
-    let _want_duration = annotations.contains(&"duration") || (!annotations.contains(&"distance"));
+    for &a in &annotations {
+        if !a.is_empty() && a != "duration" && a != "distance" {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "code": "InvalidValue",
+                    "message": format!(
+                        "Invalid annotation: '{}'. Use 'duration', 'distance', or 'duration,distance'.",
+                        a
+                    )
+                })),
+            )
+                .into_response();
+        }
+    }
     let want_distance = annotations.contains(&"distance");
 
     // Extract owned values before the spawn_blocking closure
@@ -624,23 +638,23 @@ pub async fn trip_handler(
             let dur_ds = duration_matrix[from * n + to];
             let dur_s = if dur_ds == u32::MAX {
                 has_unreachable = true;
-                0.0
+                None
             } else {
                 total_duration_ds += dur_ds as u64;
-                dur_ds as f64 / 10.0 // deciseconds -> seconds
+                Some(dur_ds as f64 / 10.0) // deciseconds -> seconds
             };
 
             let dist_m = if let Some(ref dm) = distance_matrix {
                 let d = dm[from * n + to];
                 if d == u32::MAX {
                     has_unreachable = true;
-                    0.0
+                    None
                 } else {
                     total_distance_mm += d as u64;
-                    d as f64 / 1000.0 // millimeters -> meters
+                    Some(d as f64 / 1000.0) // millimeters -> meters
                 }
             } else {
-                0.0
+                None
             };
 
             legs.push(TripLeg {
