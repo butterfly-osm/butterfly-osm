@@ -25,16 +25,11 @@ pub use frontier::{
 };
 
 pub mod contour;
-pub use contour::{export_contour_geojson, generate_contour, ContourResult, GridConfig};
+pub use contour::{export_contour_geojson, ContourResult, ContourStats};
 
 pub mod sparse_contour;
 pub use sparse_contour::{
     generate_sparse_contour, SparseContourConfig, SparseContourResult, SparseContourStats,
-};
-
-pub mod concave_hull;
-pub use concave_hull::{
-    generate_concave_hull, ConcaveHullConfig, ConcaveHullResult, ConcaveHullStats,
 };
 
 pub mod batched_isochrone;

@@ -32,7 +32,7 @@ use crate::matrix::bucket_ch::{
 use crate::profile_abi::Mode;
 
 use super::geometry::{
-    build_geometry, build_isochrone_geometry_concave, encode_polyline6, GeometryFormat, Point,
+    build_geometry, build_isochrone_geometry, encode_polyline6, GeometryFormat, Point,
     RouteGeometry,
 };
 use super::query::CchQuery;
@@ -1783,7 +1783,7 @@ async fn isochrone(
     }
 
     // Build polygon
-    let polygon = build_isochrone_geometry_concave(
+    let polygon = build_isochrone_geometry(
         &settled,
         time_ds,
         &mode_data.node_weights,
@@ -2012,7 +2012,7 @@ async fn isochrone_bulk(
             }
 
             // Build polygon using frontier-based concave hull
-            let points = build_isochrone_geometry_concave(
+            let points = build_isochrone_geometry(
                 &settled,
                 time_ds,
                 &mode_data.node_weights,
