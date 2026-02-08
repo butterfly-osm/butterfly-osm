@@ -1,0 +1,77 @@
+{
+  "name": "bike",
+  "version": 1,
+
+  "speed": {
+    "unit": "km/h",
+    "highway": {
+      "cycleway": 20,
+      "path": 15, "footway": 15,
+      "residential": 18, "unclassified": 18, "tertiary": 18, "secondary": 18, "primary": 18,
+      "service": 15, "living_street": 15,
+      "track": 12
+    },
+    "speed_cap_kmh": 60,
+    "overrides": []
+  },
+
+  "access": {
+    "highway": {
+      "cycleway": true,
+      "path": true, "footway": true,
+      "residential": true, "unclassified": true,
+      "tertiary": true, "secondary": true, "primary": true,
+      "tertiary_link": true, "secondary_link": true, "primary_link": true,
+      "service": true, "living_street": true,
+      "track": true,
+      "trunk": false, "trunk_link": false,
+      "motorway": false, "motorway_link": false,
+      "construction": false
+    },
+    "deny_if": [
+      { "tag": "bicycle", "values": ["no", "dismount"] }
+    ]
+  },
+
+  "oneway": {
+    "respect": false,
+    "tag": "oneway:bicycle",
+    "forward_values": ["yes"],
+    "reverse_values": [],
+    "default_oneway_highways": []
+  },
+
+  "priority": [],
+
+  "highway_class": {
+    "cycleway": 11,
+    "path": 20, "footway": 20,
+    "residential": 12, "unclassified": 12, "tertiary": 12, "secondary": 12, "primary": 12,
+    "tertiary_link": 12, "secondary_link": 12, "primary_link": 12,
+    "service": 13, "living_street": 13,
+    "track": 15,
+    "trunk": 1, "trunk_link": 1,
+    "motorway": 1, "motorway_link": 1
+  },
+
+  "class_bits": {
+    "cycleway": { "highway": "cycleway" }
+  },
+
+  "turn_penalties": {
+    "turn_penalty_ds": 40,
+    "turn_bias": 1.4,
+    "u_turn_penalty_ds": 50,
+    "min_degree_for_penalty": 3,
+    "signal_delay_ds": 50,
+    "class_change_penalty_ds_per_diff": 3,
+    "max_class_diff_for_penalty": 4
+  },
+
+  "turn_restrictions": {
+    "respect": true,
+    "restriction_tag": "restriction",
+    "mode_specific_tag": "restriction:bicycle",
+    "exception_values": ["bicycle"]
+  }
+}

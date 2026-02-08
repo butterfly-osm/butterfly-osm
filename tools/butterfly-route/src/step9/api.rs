@@ -334,7 +334,7 @@ pub struct ErrorResponse {
         ("src_lat" = f64, Query, description = "Source latitude", example = 50.8503),
         ("dst_lon" = f64, Query, description = "Destination longitude", example = 4.4017),
         ("dst_lat" = f64, Query, description = "Destination latitude", example = 50.8603),
-        ("mode" = String, Query, description = "Transport mode: car, bike, foot", example = "car"),
+        ("mode" = String, Query, description = "Transport mode (e.g. car, bike, foot — depends on available models)", example = "car"),
         ("geometries" = Option<String>, Query, description = "Geometry encoding: polyline6 (default), geojson, points", example = "polyline6"),
         ("alternatives" = Option<u32>, Query, description = "Number of alternative routes (0-5)", example = 0),
         ("steps" = Option<bool>, Query, description = "Include turn-by-turn instructions with road names", example = true),
@@ -361,7 +361,7 @@ async fn route(
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
     }
 
-    let mode = match parse_mode(&req.mode) {
+    let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
@@ -1239,7 +1239,7 @@ pub struct NearestResponse {
     params(
         ("lon" = f64, Query, description = "Longitude", example = 4.3517),
         ("lat" = f64, Query, description = "Latitude", example = 50.8503),
-        ("mode" = String, Query, description = "Transport mode: car, bike, foot", example = "car"),
+        ("mode" = String, Query, description = "Transport mode (e.g. car, bike, foot — depends on available models)", example = "car"),
         ("number" = Option<u32>, Query, description = "Number of results (default 1, max 100)", example = 5),
     ),
     responses(
@@ -1273,7 +1273,7 @@ async fn nearest(
             .into_response();
     }
 
-    let mode = match parse_mode(&req.mode) {
+    let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
@@ -1415,7 +1415,7 @@ async fn table_post(
         }
     }
 
-    let mode = match parse_mode(&req.mode) {
+    let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
@@ -1807,7 +1807,7 @@ async fn table_stream(
         }
     }
 
-    let mode = match parse_mode(&req.mode) {
+    let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
@@ -2258,7 +2258,7 @@ pub struct IsochroneResponse {
         ("time_s" = Option<u32>, Query, description = "Time limit in seconds (1-7200). Mutually exclusive with distance_m, contours.", example = 600),
         ("distance_m" = Option<u32>, Query, description = "Distance limit in meters (1-100000). Mutually exclusive with time_s, contours.", example = json!(null)),
         ("contours" = Option<String>, Query, description = "Comma-separated time contours in seconds (e.g. '300,600,1200', max 10). Mutually exclusive with time_s, distance_m.", example = json!(null)),
-        ("mode" = String, Query, description = "Transport mode: car, bike, foot", example = "car"),
+        ("mode" = String, Query, description = "Transport mode (e.g. car, bike, foot — depends on available models)", example = "car"),
         ("direction" = Option<String>, Query, description = "Direction: 'depart' (default) or 'arrive'", example = "depart"),
         ("geometries" = Option<String>, Query, description = "Geometry encoding: polyline6 (default), geojson, points", example = "geojson"),
         ("include" = Option<String>, Query, description = "Optional: 'network' adds reachable road geometries", example = json!(null)),
@@ -2368,7 +2368,7 @@ async fn isochrone(
         unreachable!()
     };
 
-    let mode = match parse_mode(&req.mode) {
+    let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
@@ -2573,7 +2573,7 @@ async fn isochrone(
             node_weights,
             &state.ebg_nodes,
             &state.nbg_geo,
-            mode,
+            &req.mode,
         )
     };
 
@@ -2831,7 +2831,7 @@ async fn isochrone_bulk(
             .into_response();
     }
 
-    let mode = match parse_mode(&req.mode) {
+    let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
@@ -2936,7 +2936,7 @@ async fn isochrone_bulk(
                 &mode_data.node_weights,
                 &state.ebg_nodes,
                 &state.nbg_geo,
-                mode,
+                &req.mode,
             );
             let outer_ring: Vec<(f64, f64)> = points.iter().map(|p| (p.lon, p.lat)).collect();
             let contour = ContourResult {
@@ -3062,12 +3062,11 @@ impl PhastState {
 }
 
 thread_local! {
-    /// Thread-local PHAST state for car mode (most common)
-    static PHAST_STATE_CAR: RefCell<Option<PhastState>> = const { RefCell::new(None) };
-    /// Thread-local PHAST state for bike mode
-    static PHAST_STATE_BIKE: RefCell<Option<PhastState>> = const { RefCell::new(None) };
-    /// Thread-local PHAST state for foot mode
-    static PHAST_STATE_FOOT: RefCell<Option<PhastState>> = const { RefCell::new(None) };
+    /// Thread-local PHAST state array, one slot per mode (indexed by mode.index())
+    static PHAST_STATES: RefCell<[Option<PhastState>; crate::profile_abi::MAX_MODES]> = const { RefCell::new([
+        None, None, None, None,
+        None, None, None, None,
+    ]) };
 }
 
 /// Run PHAST bounded query using thread-local state
@@ -3079,23 +3078,18 @@ pub fn run_phast_bounded_fast(
     threshold: u32,
     mode: crate::profile_abi::Mode,
 ) -> Vec<(u32, u32)> {
-    use crate::profile_abi::Mode;
     use std::cmp::Reverse;
 
     let n_nodes = cch_topo.n_nodes as usize;
+    let mode_idx = mode.index();
 
     // Get thread-local state for this mode
-    let state_cell = match mode {
-        Mode::Car => &PHAST_STATE_CAR,
-        Mode::Bike => &PHAST_STATE_BIKE,
-        Mode::Foot => &PHAST_STATE_FOOT,
-    };
-
-    state_cell.with(|cell| {
-        let mut state_opt = cell.borrow_mut();
+    PHAST_STATES.with(|cell| {
+        let mut states = cell.borrow_mut();
+        let state_slot = &mut states[mode_idx];
 
         // Initialize or reinitialize if needed
-        let state = state_opt.get_or_insert_with(|| PhastState::new(n_nodes));
+        let state = state_slot.get_or_insert_with(|| PhastState::new(n_nodes));
 
         // Verify size matches (in case different datasets)
         if state.dist.len() != n_nodes {
@@ -3204,6 +3198,15 @@ pub fn run_phast_bounded_fast(
     })
 }
 
+thread_local! {
+    /// Thread-local PHAST state array for REVERSE queries, one slot per mode (indexed by mode.index()).
+    /// Separate from PHAST_STATES to avoid conflicts when forward and reverse queries run on the same thread.
+    static PHAST_STATES_REV: RefCell<[Option<PhastState>; crate::profile_abi::MAX_MODES]> = const { RefCell::new([
+        None, None, None, None,
+        None, None, None, None,
+    ]) };
+}
+
 /// Run REVERSE PHAST bounded query — computes d(all → target) for reverse isochrones.
 ///
 /// Swaps up/down adjacencies: upward uses DOWN-reverse edges, downward uses UP edges.
@@ -3216,22 +3219,17 @@ pub fn run_phast_bounded_fast_reverse(
     threshold: u32,
     mode: crate::profile_abi::Mode,
 ) -> Vec<(u32, u32)> {
-    use crate::profile_abi::Mode;
     use std::cmp::Reverse;
 
     let n_nodes = up_adj_flat.offsets.len() - 1;
+    let mode_idx = mode.index();
 
-    let state_cell = match mode {
-        Mode::Car => &PHAST_STATE_CAR,
-        Mode::Bike => &PHAST_STATE_BIKE,
-        Mode::Foot => &PHAST_STATE_FOOT,
-    };
-
-    state_cell.with(|cell| {
-        let mut state_opt = cell.borrow_mut();
+    PHAST_STATES_REV.with(|cell| {
+        let mut states = cell.borrow_mut();
+        let state_slot = &mut states[mode_idx];
 
         // Initialize or reinitialize if needed
-        let state = state_opt.get_or_insert_with(|| PhastState::new(n_nodes));
+        let state = state_slot.get_or_insert_with(|| PhastState::new(n_nodes));
         if state.dist.len() != n_nodes {
             *state = PhastState::new(n_nodes);
         }
@@ -3319,7 +3317,7 @@ struct MatchRequest {
     /// GPS coordinates [[lon, lat], ...] — at least 2 points
     #[schema(example = json!([[4.3517, 50.8503], [4.3537, 50.8513], [4.3557, 50.8523], [4.3577, 50.8533]]))]
     coordinates: Vec<[f64; 2]>,
-    /// Transport mode: "car", "bike", or "foot"
+    /// Transport mode (e.g. "car", "bike", "foot" — depends on available models)
     #[serde(default = "default_match_mode")]
     #[schema(example = "car")]
     mode: String,
@@ -3418,7 +3416,7 @@ async fn match_trace(
     Json(req): Json<MatchRequest>,
 ) -> impl IntoResponse {
     // Validate mode
-    let mode = match parse_mode(&req.mode) {
+    let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
             return (
@@ -3724,7 +3722,7 @@ async fn health(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_s": uptime.as_secs(),
-        "modes": ["car", "bike", "foot"],
+        "modes": state.mode_names,
         "data_dir": state.data_dir,
         "nodes_count": state.ebg_nodes.n_nodes,
         "edges_count": state.ebg_csr.n_arcs,
@@ -3754,13 +3752,23 @@ fn validate_coord(lon: f64, lat: f64, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Parse mode string to Mode enum
-fn parse_mode(s: &str) -> Result<Mode, String> {
-    match s.to_lowercase().as_str() {
-        "car" => Ok(Mode::Car),
-        "bike" => Ok(Mode::Bike),
-        "foot" => Ok(Mode::Foot),
-        _ => Err(format!("Invalid mode: {}. Use car, bike, or foot.", s)),
+/// Parse mode string to Mode using dynamic lookup in state's mode_lookup table
+fn parse_mode(
+    s: &str,
+    mode_lookup: &std::collections::HashMap<String, u8>,
+) -> Result<Mode, String> {
+    let s_lower = s.to_lowercase();
+    match mode_lookup.get(&s_lower) {
+        Some(&idx) => Ok(Mode(idx)),
+        None => {
+            let mut available: Vec<&str> = mode_lookup.keys().map(|s| s.as_str()).collect();
+            available.sort(); // deterministic error message
+            Err(format!(
+                "Invalid mode: {}. Available: {}.",
+                s,
+                available.join(", ")
+            ))
+        }
     }
 }
 
@@ -3798,7 +3806,7 @@ async fn debug_compare(
     State(state): State<Arc<ServerState>>,
     Query(req): Query<DebugCompareRequest>,
 ) -> impl IntoResponse {
-    let mode = match parse_mode(&req.mode) {
+    let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
@@ -4887,32 +4895,46 @@ mod tests {
 
     // --- parse_mode tests ---
 
+    /// Helper: build a test mode_lookup table with the standard bike/car/foot modes
+    fn test_mode_lookup() -> std::collections::HashMap<String, u8> {
+        let mut lookup = std::collections::HashMap::new();
+        lookup.insert("bike".to_string(), 0);
+        lookup.insert("car".to_string(), 1);
+        lookup.insert("foot".to_string(), 2);
+        lookup
+    }
+
     #[test]
     fn test_parse_mode_car() {
-        assert_eq!(parse_mode("car").unwrap(), Mode::Car);
+        let lookup = test_mode_lookup();
+        assert_eq!(parse_mode("car", &lookup).unwrap(), Mode(1));
     }
 
     #[test]
     fn test_parse_mode_bike() {
-        assert_eq!(parse_mode("bike").unwrap(), Mode::Bike);
+        let lookup = test_mode_lookup();
+        assert_eq!(parse_mode("bike", &lookup).unwrap(), Mode(0));
     }
 
     #[test]
     fn test_parse_mode_foot() {
-        assert_eq!(parse_mode("foot").unwrap(), Mode::Foot);
+        let lookup = test_mode_lookup();
+        assert_eq!(parse_mode("foot", &lookup).unwrap(), Mode(2));
     }
 
     #[test]
     fn test_parse_mode_case_insensitive() {
-        assert_eq!(parse_mode("Car").unwrap(), Mode::Car);
-        assert_eq!(parse_mode("CAR").unwrap(), Mode::Car);
-        assert_eq!(parse_mode("Bike").unwrap(), Mode::Bike);
-        assert_eq!(parse_mode("FOOT").unwrap(), Mode::Foot);
+        let lookup = test_mode_lookup();
+        assert_eq!(parse_mode("Car", &lookup).unwrap(), Mode(1));
+        assert_eq!(parse_mode("CAR", &lookup).unwrap(), Mode(1));
+        assert_eq!(parse_mode("Bike", &lookup).unwrap(), Mode(0));
+        assert_eq!(parse_mode("FOOT", &lookup).unwrap(), Mode(2));
     }
 
     #[test]
     fn test_parse_mode_rejects_airplane() {
-        let result = parse_mode("airplane");
+        let lookup = test_mode_lookup();
+        let result = parse_mode("airplane", &lookup);
         assert!(result.is_err(), "airplane is not a valid mode");
         let msg = result.unwrap_err();
         assert!(
@@ -4925,22 +4947,28 @@ mod tests {
 
     #[test]
     fn test_parse_mode_rejects_empty() {
-        assert!(parse_mode("").is_err(), "Empty string is not a valid mode");
+        let lookup = test_mode_lookup();
+        assert!(
+            parse_mode("", &lookup).is_err(),
+            "Empty string is not a valid mode"
+        );
     }
 
     #[test]
     fn test_parse_mode_rejects_similar() {
-        assert!(parse_mode("cars").is_err());
-        assert!(parse_mode("bicycle").is_err());
-        assert!(parse_mode("walk").is_err());
-        assert!(parse_mode("driving").is_err());
+        let lookup = test_mode_lookup();
+        assert!(parse_mode("cars", &lookup).is_err());
+        assert!(parse_mode("bicycle", &lookup).is_err());
+        assert!(parse_mode("walk", &lookup).is_err());
+        assert!(parse_mode("driving", &lookup).is_err());
     }
 
     #[test]
     fn test_parse_mode_rejects_whitespace() {
-        assert!(parse_mode(" car").is_err());
-        assert!(parse_mode("car ").is_err());
-        assert!(parse_mode(" ").is_err());
+        let lookup = test_mode_lookup();
+        assert!(parse_mode(" car", &lookup).is_err());
+        assert!(parse_mode("car ", &lookup).is_err());
+        assert!(parse_mode(" ", &lookup).is_err());
     }
 
     // --- Request guard constant sanity tests ---
@@ -5022,9 +5050,16 @@ mod tests {
     #[test]
     fn test_parse_mode_rejects_padded_whitespace() {
         // Padded whitespace should be rejected — " car " is not "car"
-        assert!(parse_mode(" car ").is_err());
-        assert!(parse_mode("\tcar").is_err());
-        assert!(parse_mode("car\n").is_err());
+        let lookup: std::collections::HashMap<String, u8> = [
+            ("car".to_string(), 1u8),
+            ("bike".to_string(), 0u8),
+            ("foot".to_string(), 2u8),
+        ]
+        .into_iter()
+        .collect();
+        assert!(parse_mode(" car ", &lookup).is_err());
+        assert!(parse_mode("\tcar", &lookup).is_err());
+        assert!(parse_mode("car\n", &lookup).is_err());
     }
 
     // === 3. Geometry format validation ===
@@ -5162,9 +5197,11 @@ mod tests {
 
     #[test]
     fn test_parse_mode_rejects_unicode() {
-        assert!(parse_mode("c\u{00e1}r").is_err());
-        assert!(parse_mode("\u{1f697}").is_err());
-        assert!(parse_mode("car\0").is_err());
+        let lookup: std::collections::HashMap<String, u8> =
+            [("car".to_string(), 1u8)].into_iter().collect();
+        assert!(parse_mode("c\u{00e1}r", &lookup).is_err());
+        assert!(parse_mode("\u{1f697}", &lookup).is_err());
+        assert!(parse_mode("car\0", &lookup).is_err());
     }
 
     // === 13. TSP pure tests ===

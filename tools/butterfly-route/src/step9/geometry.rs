@@ -4,7 +4,6 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::formats::{EbgNodes, NbgGeo};
-use crate::profile_abi::Mode;
 use crate::range::{generate_sparse_contour, ReachableSegment, SparseContourConfig};
 
 /// A point in WGS84 coordinates
@@ -177,7 +176,7 @@ pub fn build_isochrone_geometry(
     node_weights: &[u32], // Edge costs indexed by original EBG node ID
     ebg_nodes: &EbgNodes,
     nbg_geo: &NbgGeo,
-    mode: Mode,
+    mode_name: &str,
 ) -> Vec<Point> {
     build_isochrone_geometry_sparse(
         settled_nodes,
@@ -185,7 +184,7 @@ pub fn build_isochrone_geometry(
         node_weights,
         ebg_nodes,
         nbg_geo,
-        mode,
+        mode_name,
     )
 }
 
@@ -200,13 +199,9 @@ pub fn build_isochrone_geometry_sparse(
     node_weights: &[u32], // Edge costs indexed by original EBG node ID
     ebg_nodes: &EbgNodes,
     nbg_geo: &NbgGeo,
-    mode: Mode,
+    mode_name: &str,
 ) -> Vec<Point> {
-    let config = match mode {
-        Mode::Car => SparseContourConfig::for_car(),
-        Mode::Bike => SparseContourConfig::for_bike(),
-        Mode::Foot => SparseContourConfig::for_foot(),
-    };
+    let config = SparseContourConfig::for_mode_name(mode_name);
 
     let mut segments: Vec<ReachableSegment> = Vec::new();
 

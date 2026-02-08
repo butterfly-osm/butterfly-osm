@@ -190,6 +190,7 @@ pub struct Step7Config {
     pub weights_path: PathBuf, // w.*.u32 from Step 5
     pub turns_path: PathBuf,   // t.*.u32 from Step 5
     pub mode: Mode,
+    pub mode_name: String,
     pub outdir: PathBuf,
 }
 
@@ -198,6 +199,7 @@ pub struct Step7Config {
 pub struct Step7Result {
     pub topo_path: PathBuf,
     pub mode: Mode,
+    pub mode_name: String,
     pub n_nodes: u32,
     pub n_original_arcs: u64,
     pub n_shortcuts: u64,
@@ -209,11 +211,7 @@ pub struct Step7Result {
 /// Build CCH topology via contraction on filtered EBG
 pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
     let start_time = std::time::Instant::now();
-    let mode_name = match config.mode {
-        Mode::Car => "car",
-        Mode::Bike => "bike",
-        Mode::Foot => "foot",
-    };
+    let mode_name = &config.mode_name;
     println!(
         "\n🔨 Step 7: Building CCH topology for {} mode...\n",
         mode_name
@@ -868,6 +866,7 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
     Ok(Step7Result {
         topo_path,
         mode: config.mode,
+        mode_name: config.mode_name.clone(),
         n_nodes: filtered_ebg.n_filtered_nodes,
         n_original_arcs: filtered_ebg.n_filtered_arcs,
         n_shortcuts,
@@ -1009,17 +1008,14 @@ pub struct Step7HybridConfig {
     pub hybrid_state_path: PathBuf,
     pub order_path: PathBuf,
     pub mode: Mode,
+    pub mode_name: String,
     pub outdir: PathBuf,
 }
 
 /// Build CCH topology via contraction on hybrid state graph
 pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Result> {
     let start_time = std::time::Instant::now();
-    let mode_name = match config.mode {
-        Mode::Car => "car",
-        Mode::Bike => "bike",
-        Mode::Foot => "foot",
-    };
+    let mode_name = &config.mode_name;
     println!(
         "\n🔨 Step 7: Building CCH topology for {} mode (HYBRID)...\n",
         mode_name
@@ -1586,6 +1582,7 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
     Ok(Step7Result {
         topo_path,
         mode: config.mode,
+        mode_name: config.mode_name.clone(),
         n_nodes: hybrid.n_states,
         n_original_arcs: hybrid.n_arcs,
         n_shortcuts,

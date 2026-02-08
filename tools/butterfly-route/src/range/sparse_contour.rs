@@ -496,6 +496,16 @@ impl SparseContourConfig {
         }
     }
 
+    /// Select config by mode name string
+    pub fn for_mode_name(name: &str) -> Self {
+        match name {
+            "car" => Self::for_car(),
+            "bike" => Self::for_bike(),
+            "foot" => Self::for_foot(),
+            _ => Self::for_car(), // fallback for unknown modes
+        }
+    }
+
     /// High-detail car config - more vertices, comparable to Valhalla (25m cells, ~2000+ vertices)
     pub fn for_car_hd() -> Self {
         Self {

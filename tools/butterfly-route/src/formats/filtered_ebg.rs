@@ -90,11 +90,7 @@ impl FilteredEbg {
         let n_orig = n_original_nodes as usize;
 
         // Mode bit for checking arc accessibility
-        let mode_bit = match mode {
-            Mode::Car => 1u8,
-            Mode::Bike => 2u8,
-            Mode::Foot => 4u8,
-        };
+        let mode_bit = mode.bit();
 
         // Helper to check node mask
         let is_node_accessible = |node: usize| -> bool {
@@ -201,7 +197,7 @@ impl FilteredEbgFile {
         let header = [
             &MAGIC.to_le_bytes()[..],
             &VERSION.to_le_bytes()[..],
-            &[data.mode as u8, 0u8][..],
+            &[data.mode.0, 0u8][..],
             &data.n_filtered_nodes.to_le_bytes()[..],
             &data.n_filtered_arcs.to_le_bytes()[..],
             &data.n_original_nodes.to_le_bytes()[..],
@@ -276,12 +272,12 @@ impl FilteredEbgFile {
             );
         }
 
-        let mode = match header[6] {
-            0 => Mode::Car,
-            1 => Mode::Bike,
-            2 => Mode::Foot,
-            m => anyhow::bail!("Invalid mode: {}", m),
-        };
+        anyhow::ensure!(
+            (header[6] as usize) < crate::profile_abi::MAX_MODES,
+            "Invalid mode: {}",
+            header[6]
+        );
+        let mode = Mode(header[6]);
 
         let n_filtered_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
         let n_filtered_arcs = u64::from_le_bytes([

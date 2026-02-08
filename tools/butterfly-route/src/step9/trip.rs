@@ -347,7 +347,7 @@ pub struct TripRequest {
     /// Waypoint coordinates [[lon, lat], ...] - 2 to 100 waypoints
     #[schema(example = json!([[4.3517, 50.8503], [4.4017, 50.8603], [4.3817, 50.8403], [4.3317, 50.8303]]))]
     pub coordinates: Vec<[f64; 2]>,
-    /// Transport mode: "car", "bike", or "foot"
+    /// Transport mode (e.g. "car", "bike", "foot" — depends on available models)
     #[serde(default = "default_mode")]
     #[schema(example = "car")]
     pub mode: String,
@@ -464,7 +464,7 @@ pub async fn trip_handler(
     Json(req): Json<TripRequest>,
 ) -> impl IntoResponse {
     // Validate mode
-    let mode = match parse_mode(&req.mode) {
+    let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
             return (
@@ -780,13 +780,23 @@ pub async fn trip_handler(
     }
 }
 
-/// Parse mode string into Mode enum
-fn parse_mode(s: &str) -> Result<Mode, String> {
-    match s.to_lowercase().as_str() {
-        "car" => Ok(Mode::Car),
-        "bike" => Ok(Mode::Bike),
-        "foot" => Ok(Mode::Foot),
-        _ => Err(format!("Invalid mode: {}. Use car, bike, or foot.", s)),
+/// Parse mode string into Mode using dynamic lookup
+fn parse_mode(
+    s: &str,
+    mode_lookup: &std::collections::HashMap<String, u8>,
+) -> Result<Mode, String> {
+    let s_lower = s.to_lowercase();
+    match mode_lookup.get(&s_lower) {
+        Some(&idx) => Ok(Mode(idx)),
+        None => {
+            let mut available: Vec<&str> = mode_lookup.keys().map(|s| s.as_str()).collect();
+            available.sort();
+            Err(format!(
+                "Invalid mode: {}. Available: {}.",
+                s,
+                available.join(", ")
+            ))
+        }
     }
 }
 

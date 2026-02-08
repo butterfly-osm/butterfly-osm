@@ -6,9 +6,10 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use super::crc;
+use crate::profile_abi::MAX_MODES;
 
 const MAGIC: u32 = 0x45424754; // "EBGT"
-const VERSION: u16 = 1;
+const VERSION: u16 = 2; // v2: dynamic penalty array [u32; MAX_MODES]
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TurnKind {
@@ -29,15 +30,15 @@ impl From<u8> for TurnKind {
     }
 }
 
+/// Turn table entry with dynamic per-mode penalty array.
+/// `penalty_ds[i]` = penalty in deciseconds for mode with index i.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TurnEntry {
-    pub mode_mask: u8, // bit0=car, bit1=bike, bit2=foot
+    pub mode_mask: u8, // bit i = mode i accessible
     pub kind: TurnKind,
     pub has_time_dep: bool,
-    pub penalty_ds_car: u32, // deciseconds, 0 if N/A
-    pub penalty_ds_bike: u32,
-    pub penalty_ds_foot: u32,
-    pub attrs_idx: u32, // future use (e.g., turn classes); 0 for now
+    pub penalty_ds: [u32; MAX_MODES], // indexed by mode index
+    pub attrs_idx: u32,               // future use; 0 for now
 }
 
 #[derive(Debug)]
@@ -49,13 +50,16 @@ pub struct TurnTable {
 
 pub struct TurnTableFile;
 
+/// Record size: mode_mask(1) + kind(1) + time_dep(1) + reserved(1) + penalty_ds(4*MAX_MODES) + attrs_idx(4)
+const RECORD_SIZE: usize = 4 + 4 * MAX_MODES + 4; // = 40 bytes
+
 impl TurnTableFile {
-    /// Write turn table to file
+    /// Write turn table to file (v2 format with dynamic penalty arrays)
     pub fn write<P: AsRef<Path>>(path: P, data: &TurnTable) -> Result<()> {
         let mut writer = BufWriter::new(File::create(path)?);
         let mut crc_digest = crc::Digest::new();
 
-        // Header (40 bytes)
+        // Header (44 bytes): magic(4) + version(2) + reserved(2) + n_entries(4) + inputs_sha(32)
         let magic_bytes = MAGIC.to_le_bytes();
         let version_bytes = VERSION.to_le_bytes();
         let reserved_bytes = 0u16.to_le_bytes();
@@ -73,47 +77,38 @@ impl TurnTableFile {
         crc_digest.update(&n_entries_bytes);
         crc_digest.update(&data.inputs_sha);
 
-        // Body: n_entries records (20 bytes each)
+        // Body: n_entries records (RECORD_SIZE bytes each)
         for entry in &data.entries {
-            let mode_byte = entry.mode_mask.to_le_bytes();
-            let kind_byte = (entry.kind as u8).to_le_bytes();
-            let time_dep_byte = (entry.has_time_dep as u8).to_le_bytes();
-            let reserved_byte = 0u8.to_le_bytes();
-            let car_bytes = entry.penalty_ds_car.to_le_bytes();
-            let bike_bytes = entry.penalty_ds_bike.to_le_bytes();
-            let foot_bytes = entry.penalty_ds_foot.to_le_bytes();
-            let attrs_bytes = entry.attrs_idx.to_le_bytes();
+            let mut record = [0u8; RECORD_SIZE];
+            record[0] = entry.mode_mask;
+            record[1] = entry.kind as u8;
+            record[2] = entry.has_time_dep as u8;
+            // record[3] = reserved
 
-            writer.write_all(&mode_byte)?;
-            writer.write_all(&kind_byte)?;
-            writer.write_all(&time_dep_byte)?;
-            writer.write_all(&reserved_byte)?;
-            writer.write_all(&car_bytes)?;
-            writer.write_all(&bike_bytes)?;
-            writer.write_all(&foot_bytes)?;
-            writer.write_all(&attrs_bytes)?;
+            // Write penalty_ds array: MAX_MODES u32s starting at offset 4
+            for (i, &p) in entry.penalty_ds.iter().enumerate() {
+                let off = 4 + i * 4;
+                record[off..off + 4].copy_from_slice(&p.to_le_bytes());
+            }
 
-            crc_digest.update(&mode_byte);
-            crc_digest.update(&kind_byte);
-            crc_digest.update(&time_dep_byte);
-            crc_digest.update(&reserved_byte);
-            crc_digest.update(&car_bytes);
-            crc_digest.update(&bike_bytes);
-            crc_digest.update(&foot_bytes);
-            crc_digest.update(&attrs_bytes);
+            // attrs_idx at offset 4 + MAX_MODES*4
+            let attrs_off = 4 + MAX_MODES * 4;
+            record[attrs_off..attrs_off + 4].copy_from_slice(&entry.attrs_idx.to_le_bytes());
+
+            writer.write_all(&record)?;
+            crc_digest.update(&record);
         }
 
         // Footer
         let body_crc = crc_digest.finalize();
-        let file_crc = body_crc;
         writer.write_all(&body_crc.to_le_bytes())?;
-        writer.write_all(&file_crc.to_le_bytes())?;
+        writer.write_all(&body_crc.to_le_bytes())?;
         writer.flush()?;
 
         Ok(())
     }
 
-    /// Read turn table from file
+    /// Read turn table from file (v2 format with dynamic penalty arrays)
     pub fn read<P: AsRef<Path>>(path: P) -> Result<TurnTable> {
         let mut reader = BufReader::new(File::open(path)?);
         let mut crc_digest = crc::Digest::new();
@@ -122,26 +117,55 @@ impl TurnTableFile {
         reader.read_exact(&mut header)?;
         crc_digest.update(&header);
 
+        let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+        anyhow::ensure!(
+            magic == MAGIC,
+            "Invalid magic in ebg.turn_table: expected 0x{:08X}, got 0x{:08X}",
+            MAGIC,
+            magic
+        );
+
+        let version = u16::from_le_bytes([header[4], header[5]]);
+        anyhow::ensure!(
+            version == VERSION,
+            "Unsupported turn_table version: {} (expected {}). Re-run pipeline.",
+            version,
+            VERSION
+        );
+
         let n_entries = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
         let mut inputs_sha = [0u8; 32];
         inputs_sha.copy_from_slice(&header[12..44]);
 
         let mut entries = Vec::with_capacity(n_entries as usize);
         for _ in 0..n_entries {
-            let mut record = [0u8; 20];
+            let mut record = [0u8; RECORD_SIZE];
             reader.read_exact(&mut record)?;
             crc_digest.update(&record);
 
+            let mut penalty_ds = [0u32; MAX_MODES];
+            for (i, slot) in penalty_ds.iter_mut().enumerate() {
+                let off = 4 + i * 4;
+                *slot = u32::from_le_bytes([
+                    record[off],
+                    record[off + 1],
+                    record[off + 2],
+                    record[off + 3],
+                ]);
+            }
+
+            let attrs_off = 4 + MAX_MODES * 4;
             entries.push(TurnEntry {
                 mode_mask: record[0],
                 kind: TurnKind::from(record[1]),
                 has_time_dep: record[2] != 0,
-                penalty_ds_car: u32::from_le_bytes([record[4], record[5], record[6], record[7]]),
-                penalty_ds_bike: u32::from_le_bytes([record[8], record[9], record[10], record[11]]),
-                penalty_ds_foot: u32::from_le_bytes([
-                    record[12], record[13], record[14], record[15],
+                penalty_ds,
+                attrs_idx: u32::from_le_bytes([
+                    record[attrs_off],
+                    record[attrs_off + 1],
+                    record[attrs_off + 2],
+                    record[attrs_off + 3],
                 ]),
-                attrs_idx: u32::from_le_bytes([record[16], record[17], record[18], record[19]]),
             });
         }
 

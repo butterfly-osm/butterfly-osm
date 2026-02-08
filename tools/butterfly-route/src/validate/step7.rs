@@ -29,11 +29,7 @@ pub fn validate_step7(
     filtered_ebg_path: &Path,
     order_path: &Path,
 ) -> Result<Step7LockFile> {
-    let mode_name = match result.mode {
-        crate::profile_abi::Mode::Car => "car",
-        crate::profile_abi::Mode::Bike => "bike",
-        crate::profile_abi::Mode::Foot => "foot",
-    };
+    let mode_name = &result.mode_name;
     println!("\n🔐 Running Step 7 validation for {} mode...\n", mode_name);
 
     // Load data

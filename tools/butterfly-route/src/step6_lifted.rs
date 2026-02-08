@@ -25,6 +25,7 @@ pub struct Step6LiftedConfig {
     pub ebg_csr_path: PathBuf,
     pub filtered_ebg_path: PathBuf,
     pub mode: Mode,
+    pub mode_name: String,
     pub outdir: PathBuf,
     pub leaf_threshold: usize,
 }
@@ -34,6 +35,7 @@ pub struct Step6LiftedConfig {
 pub struct Step6LiftedResult {
     pub order_path: PathBuf,
     pub mode: Mode,
+    pub mode_name: String,
     pub n_nbg_nodes: u32,
     pub n_ebg_states: u32,
     pub n_filtered_states: u32,
@@ -45,11 +47,7 @@ pub struct Step6LiftedResult {
 /// Generate CCH ordering via lifted NBG ordering
 pub fn generate_lifted_ordering(config: Step6LiftedConfig) -> Result<Step6LiftedResult> {
     let start_time = std::time::Instant::now();
-    let mode_name = match config.mode {
-        Mode::Car => "car",
-        Mode::Bike => "bike",
-        Mode::Foot => "foot",
-    };
+    let mode_name = &config.mode_name;
 
     println!(
         "\n📐 Step 6 (Lifted): CCH ordering for {} via NBG lift\n",
@@ -153,6 +151,7 @@ pub fn generate_lifted_ordering(config: Step6LiftedConfig) -> Result<Step6Lifted
     Ok(Step6LiftedResult {
         order_path,
         mode: config.mode,
+        mode_name: config.mode_name.clone(),
         n_nbg_nodes: nbg_ordering.n_nodes,
         n_ebg_states: lifted.n_states,
         n_filtered_states: n_filtered as u32,

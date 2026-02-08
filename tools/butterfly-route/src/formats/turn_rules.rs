@@ -67,7 +67,7 @@ pub fn write<P: AsRef<Path>>(
     let mut header = Vec::with_capacity(HEADER_SIZE);
     header.extend_from_slice(&MAGIC.to_le_bytes());
     header.extend_from_slice(&VERSION.to_le_bytes());
-    header.push(mode as u8);
+    header.push(mode.0);
     header.push(0); // reserved
     header.extend_from_slice(&(sorted_rules.len() as u64).to_le_bytes());
     header.extend_from_slice(rel_dict_k_sha256);
@@ -332,7 +332,7 @@ mod tests {
         let rules = make_test_rules();
         let tmp = tempfile::NamedTempFile::new()?;
         let sha = [0xAA; 32];
-        write(tmp.path(), Mode::Car, &rules, &sha, &sha)?;
+        write(tmp.path(), Mode(0), &rules, &sha, &sha)?;
         let loaded = read_all(tmp.path())?;
 
         assert_eq!(loaded.len(), 3);
@@ -355,7 +355,7 @@ mod tests {
         let rules = make_test_rules();
         let tmp = tempfile::NamedTempFile::new()?;
         let sha = [0xAA; 32];
-        write(tmp.path(), Mode::Car, &rules, &sha, &sha)?;
+        write(tmp.path(), Mode(0), &rules, &sha, &sha)?;
 
         // Corrupt a byte in the first record (offset = HEADER_SIZE = 80)
         {
@@ -381,7 +381,7 @@ mod tests {
         let rules = make_test_rules();
         let tmp = tempfile::NamedTempFile::new()?;
         let sha = [0xAA; 32];
-        write(tmp.path(), Mode::Car, &rules, &sha, &sha)?;
+        write(tmp.path(), Mode(0), &rules, &sha, &sha)?;
 
         // Corrupt a byte in the header (offset 10 = inside the count field)
         {

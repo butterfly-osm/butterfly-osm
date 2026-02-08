@@ -20,6 +20,49 @@ use crate::validate::{
     verify_lock_conditions, Counts, LockFile,
 };
 
+/// Parse MODE=PATH pairs from CLI arguments, sorted alphabetically by mode name.
+/// Returns (mode_name, mode_index, path) tuples with deterministic indices.
+fn parse_mode_path_pairs(args: &[String], arg_name: &str) -> Result<Vec<(String, u8, PathBuf)>> {
+    let mut pairs: Vec<(String, PathBuf)> = args
+        .iter()
+        .map(|s| {
+            let (mode, path) = s.split_once('=').ok_or_else(|| {
+                anyhow::anyhow!("Invalid --{} format '{}': expected MODE=PATH", arg_name, s)
+            })?;
+            Ok((mode.to_string(), PathBuf::from(path)))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(pairs
+        .into_iter()
+        .enumerate()
+        .map(|(i, (name, path))| (name, i as u8, path))
+        .collect())
+}
+
+/// Resolve a mode name to a Mode by discovering modes from a data directory.
+/// The data directory should contain `way_attrs.*.bin` files from Step 2.
+fn resolve_mode(mode_name: &str, data_dir: &Path) -> Result<Mode> {
+    let discovered = Mode::discover_from_dir(data_dir);
+    if discovered.is_empty() {
+        anyhow::bail!(
+            "No modes found in {}. Expected way_attrs.*.bin files from Step 2.",
+            data_dir.display()
+        );
+    }
+    match discovered.iter().find(|(name, _)| name == mode_name) {
+        Some((_, idx)) => Ok(Mode(*idx)),
+        None => {
+            let available: Vec<&str> = discovered.iter().map(|(n, _)| n.as_str()).collect();
+            anyhow::bail!(
+                "Unknown mode '{}'. Available modes: {:?}",
+                mode_name,
+                available
+            );
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "butterfly-route")]
 #[command(about = "High-performance OSM routing engine", long_about = None)]
@@ -59,6 +102,10 @@ pub enum Commands {
         #[arg(long)]
         relations: PathBuf,
 
+        /// Directory containing *.model.json files
+        #[arg(long)]
+        models_dir: PathBuf,
+
         /// Output directory for way_attrs.*.bin and turn_rules.*.bin
         #[arg(short, long)]
         outdir: PathBuf,
@@ -74,17 +121,9 @@ pub enum Commands {
         #[arg(long)]
         ways: PathBuf,
 
-        /// Path to way_attrs.car.bin from Step 2
-        #[arg(long)]
-        car: PathBuf,
-
-        /// Path to way_attrs.bike.bin from Step 2
-        #[arg(long)]
-        bike: PathBuf,
-
-        /// Path to way_attrs.foot.bin from Step 2
-        #[arg(long)]
-        foot: PathBuf,
+        /// Per-mode way_attrs paths as mode=path pairs (e.g. --way-attrs car=way_attrs.car.bin --way-attrs bike=way_attrs.bike.bin)
+        #[arg(long = "way-attrs", value_name = "MODE=PATH")]
+        way_attrs: Vec<String>,
 
         /// Output directory for nbg.csr, nbg.geo, nbg.node_map
         #[arg(short, long)]
@@ -109,29 +148,13 @@ pub enum Commands {
         #[arg(long)]
         node_signals: Option<PathBuf>,
 
-        /// Path to way_attrs.car.bin from Step 2
-        #[arg(long)]
-        way_attrs_car: PathBuf,
+        /// Per-mode way_attrs paths as mode=path pairs (e.g. --way-attrs car=way_attrs.car.bin)
+        #[arg(long = "way-attrs", value_name = "MODE=PATH")]
+        way_attrs: Vec<String>,
 
-        /// Path to way_attrs.bike.bin from Step 2
-        #[arg(long)]
-        way_attrs_bike: PathBuf,
-
-        /// Path to way_attrs.foot.bin from Step 2
-        #[arg(long)]
-        way_attrs_foot: PathBuf,
-
-        /// Path to turn_rules.car.bin from Step 2
-        #[arg(long)]
-        turn_rules_car: PathBuf,
-
-        /// Path to turn_rules.bike.bin from Step 2
-        #[arg(long)]
-        turn_rules_bike: PathBuf,
-
-        /// Path to turn_rules.foot.bin from Step 2
-        #[arg(long)]
-        turn_rules_foot: PathBuf,
+        /// Per-mode turn_rules paths as mode=path pairs (e.g. --turn-rules car=turn_rules.car.bin)
+        #[arg(long = "turn-rules", value_name = "MODE=PATH")]
+        turn_rules: Vec<String>,
 
         /// Output directory for ebg.nodes, ebg.csr, ebg.turn_table
         #[arg(short, long)]
@@ -156,17 +179,9 @@ pub enum Commands {
         #[arg(long)]
         nbg_geo: PathBuf,
 
-        /// Path to way_attrs.car.bin from Step 2
-        #[arg(long)]
-        way_attrs_car: PathBuf,
-
-        /// Path to way_attrs.bike.bin from Step 2
-        #[arg(long)]
-        way_attrs_bike: PathBuf,
-
-        /// Path to way_attrs.foot.bin from Step 2
-        #[arg(long)]
-        way_attrs_foot: PathBuf,
+        /// Per-mode way_attrs paths as mode=path pairs (e.g. --way-attrs car=way_attrs.car.bin)
+        #[arg(long = "way-attrs", value_name = "MODE=PATH")]
+        way_attrs: Vec<String>,
 
         /// Output directory for w.*.u32, t.*.u32, mask.*.bitset
         #[arg(short, long)]
@@ -187,7 +202,7 @@ pub enum Commands {
         #[arg(long)]
         nbg_geo: PathBuf,
 
-        /// Mode to generate ordering for (car, bike, foot)
+        /// Mode name (discovered from way_attrs.*.bin files in data dir)
         #[arg(long)]
         mode: String,
 
@@ -230,7 +245,7 @@ pub enum Commands {
         #[arg(long)]
         filtered_ebg: PathBuf,
 
-        /// Mode (car, bike, foot)
+        /// Mode name (discovered from way_attrs.*.bin files in data dir)
         #[arg(long)]
         mode: String,
 
@@ -261,7 +276,7 @@ pub enum Commands {
         #[arg(long)]
         turns: PathBuf,
 
-        /// Mode to build CCH for (car, bike, foot)
+        /// Mode name (discovered from way_attrs.*.bin files in data dir)
         #[arg(long)]
         mode: String,
 
@@ -296,7 +311,7 @@ pub enum Commands {
         #[arg(long)]
         ebg_nodes: PathBuf,
 
-        /// Mode to customize for (car, bike, foot)
+        /// Mode name (discovered from way_attrs.*.bin files in data dir)
         #[arg(long)]
         mode: String,
 
@@ -334,7 +349,7 @@ pub enum Commands {
         #[arg(long)]
         order: PathBuf,
 
-        /// Mode to validate (car, bike, foot)
+        /// Mode name (discovered from way_attrs.*.bin files in data dir)
         #[arg(long)]
         mode: String,
 
@@ -365,7 +380,7 @@ pub enum Commands {
         #[arg(long)]
         order: PathBuf,
 
-        /// Mode to test (car, bike, foot)
+        /// Mode name (discovered from way_attrs.*.bin files in data dir)
         #[arg(long)]
         mode: String,
     },
@@ -384,7 +399,7 @@ pub enum Commands {
         #[arg(long)]
         order: PathBuf,
 
-        /// Mode to validate (car, bike, foot)
+        /// Mode name (discovered from way_attrs.*.bin files in data dir)
         #[arg(long)]
         mode: String,
     },
@@ -411,7 +426,7 @@ pub enum Commands {
         #[arg(long)]
         threshold_ms: u32,
 
-        /// Mode (car, bike, foot)
+        /// Mode name (discovered from way_attrs.*.bin files in data dir)
         #[arg(long)]
         mode: String,
     },
@@ -434,7 +449,7 @@ pub enum Commands {
         #[arg(long)]
         origin_node: u32,
 
-        /// Mode (car, bike, foot)
+        /// Mode name (discovered from way_attrs.*.bin files in data dir)
         #[arg(long)]
         mode: String,
     },
@@ -461,7 +476,7 @@ pub enum Commands {
         #[arg(long)]
         threshold_ms: u32,
 
-        /// Mode (car, bike, foot)
+        /// Mode name (discovered from way_attrs.*.bin files in data dir)
         #[arg(long)]
         mode: String,
     },
@@ -488,7 +503,7 @@ pub enum Commands {
         #[arg(long)]
         threshold_ms: u32,
 
-        /// Mode (car, bike, foot)
+        /// Mode name (discovered from way_attrs.*.bin files in data dir)
         #[arg(long)]
         mode: String,
     },
@@ -554,7 +569,7 @@ pub enum Commands {
         #[arg(long)]
         threshold_ms: u32,
 
-        /// Mode (car, bike, foot)
+        /// Mode name (discovered from way_attrs.*.bin files in data dir)
         #[arg(long)]
         mode: String,
 
@@ -601,7 +616,7 @@ pub enum Commands {
         #[arg(long)]
         threshold_ms: u32,
 
-        /// Mode (car, bike, foot)
+        /// Mode name (discovered from way_attrs.*.bin files in data dir)
         #[arg(long)]
         mode: String,
 
@@ -655,7 +670,7 @@ pub enum Commands {
         #[arg(long)]
         turns: PathBuf,
 
-        /// Mode (car, bike, foot)
+        /// Mode name (discovered from way_attrs.*.bin files in data dir)
         #[arg(long)]
         mode: String,
     },
@@ -669,7 +684,7 @@ pub enum Commands {
         #[arg(long)]
         hybrid_state: PathBuf,
 
-        /// Mode (car, bike, foot)
+        /// Mode name (discovered from way_attrs.*.bin files in data dir)
         #[arg(long)]
         mode: String,
     },
@@ -699,7 +714,7 @@ pub enum Commands {
         #[arg(long)]
         n_nbg_nodes: usize,
 
-        /// Mode (car, bike, foot)
+        /// Mode name (discovered from way_attrs.*.bin files in data dir)
         #[arg(long)]
         mode: String,
 
@@ -734,7 +749,7 @@ pub enum Commands {
         #[arg(long)]
         turns: PathBuf,
 
-        /// Mode (car, bike, foot)
+        /// Mode name (discovered from way_attrs.*.bin files in data dir)
         #[arg(long)]
         mode: String,
 
@@ -753,7 +768,7 @@ pub enum Commands {
         #[arg(long)]
         nbg_geo: PathBuf,
 
-        /// Mode (car, bike, foot)
+        /// Mode name (discovered from way_attrs.*.bin files in data dir)
         #[arg(long)]
         mode: String,
 
@@ -791,7 +806,7 @@ pub enum Commands {
         #[arg(long)]
         order: PathBuf,
 
-        /// Mode (car, bike, foot)
+        /// Mode name (discovered from way_attrs.*.bin files in data dir)
         #[arg(long)]
         mode: String,
 
@@ -880,7 +895,7 @@ pub enum Commands {
         #[arg(long)]
         hybrid_state: PathBuf,
 
-        /// Mode (car, bike, foot)
+        /// Mode name (discovered from way_attrs.*.bin files in data dir)
         #[arg(long)]
         mode: String,
 
@@ -958,11 +973,13 @@ impl Cli {
             Commands::Step2Profile {
                 ways,
                 relations,
+                models_dir,
                 outdir,
             } => {
                 let config = ProfileConfig {
                     ways_path: ways,
                     relations_path: relations,
+                    models_dir,
                     outdir,
                 };
 
@@ -972,17 +989,19 @@ impl Cli {
             Commands::Step3Nbg {
                 nodes,
                 ways,
-                car,
-                bike,
-                foot,
+                way_attrs,
                 outdir,
             } => {
+                let wa_parsed = parse_mode_path_pairs(&way_attrs, "way-attrs")?;
+                let way_attrs_paths: Vec<(String, PathBuf)> = wa_parsed
+                    .into_iter()
+                    .map(|(name, _, path)| (name, path))
+                    .collect();
+
                 let config = NbgConfig {
                     nodes_sa_path: nodes,
                     ways_path: ways,
-                    way_attrs_car_path: car,
-                    way_attrs_bike_path: bike,
-                    way_attrs_foot_path: foot,
+                    way_attrs_paths,
                     outdir: outdir.clone(),
                 };
 
@@ -1027,14 +1046,24 @@ impl Cli {
                 nbg_geo,
                 nbg_node_map,
                 node_signals,
-                way_attrs_car,
-                way_attrs_bike,
-                way_attrs_foot,
-                turn_rules_car,
-                turn_rules_bike,
-                turn_rules_foot,
+                way_attrs,
+                turn_rules,
                 outdir,
             } => {
+                let wa_parsed = parse_mode_path_pairs(&way_attrs, "way-attrs")?;
+                let tr_parsed = parse_mode_path_pairs(&turn_rules, "turn-rules")?;
+
+                // Validate that way_attrs and turn_rules have the same set of modes
+                let wa_modes: Vec<&str> = wa_parsed.iter().map(|(n, _, _)| n.as_str()).collect();
+                let tr_modes: Vec<&str> = tr_parsed.iter().map(|(n, _, _)| n.as_str()).collect();
+                if wa_modes != tr_modes {
+                    anyhow::bail!(
+                        "Mismatched modes: --way-attrs has {:?}, --turn-rules has {:?}",
+                        wa_modes,
+                        tr_modes
+                    );
+                }
+
                 // Default to data directory sibling of nbg_csr if not provided
                 let signals_path = node_signals.clone().unwrap_or_else(|| {
                     nbg_csr
@@ -1043,17 +1072,26 @@ impl Cli {
                         .join("node_signals.bin")
                 });
 
+                // Build dynamic EbgModeConfig list
+                let modes: Vec<crate::ebg::EbgModeConfig> = wa_parsed
+                    .iter()
+                    .zip(tr_parsed.iter())
+                    .map(
+                        |((name, idx, wa_path), (_, _, tr_path))| crate::ebg::EbgModeConfig {
+                            mode_name: name.clone(),
+                            mode_index: *idx,
+                            way_attrs_path: wa_path.clone(),
+                            turn_rules_path: tr_path.clone(),
+                        },
+                    )
+                    .collect();
+
                 let config = EbgConfig {
                     nbg_csr_path: nbg_csr.clone(),
                     nbg_geo_path: nbg_geo.clone(),
                     nbg_node_map_path: nbg_node_map.clone(),
                     node_signals_path: signals_path,
-                    way_attrs_car_path: way_attrs_car.clone(),
-                    way_attrs_bike_path: way_attrs_bike.clone(),
-                    way_attrs_foot_path: way_attrs_foot.clone(),
-                    turn_rules_car_path: turn_rules_car.clone(),
-                    turn_rules_bike_path: turn_rules_bike.clone(),
-                    turn_rules_foot_path: turn_rules_foot.clone(),
+                    modes: modes.clone(),
                     outdir: outdir.clone(),
                 };
 
@@ -1061,6 +1099,18 @@ impl Cli {
 
                 // Run validation and generate lock file
                 println!();
+                let step4_mode_inputs: Vec<crate::validate::step4::Step4ModeInput> = modes
+                    .iter()
+                    .zip(tr_parsed.iter())
+                    .map(
+                        |(m, (_, _, tr_path))| crate::validate::step4::Step4ModeInput {
+                            mode_name: m.mode_name.clone(),
+                            mode_index: m.mode_index,
+                            way_attrs_path: m.way_attrs_path.clone(),
+                            turn_rules_path: tr_path.clone(),
+                        },
+                    )
+                    .collect();
                 let lock_file = validate_step4(
                     &result.nodes_path,
                     &result.csr_path,
@@ -1068,12 +1118,7 @@ impl Cli {
                     &nbg_csr,
                     &nbg_geo,
                     &nbg_node_map,
-                    &way_attrs_car,
-                    &way_attrs_bike,
-                    &way_attrs_foot,
-                    &turn_rules_car,
-                    &turn_rules_bike,
-                    &turn_rules_foot,
+                    &step4_mode_inputs,
                     result.build_time_ms,
                 )?;
 
@@ -1092,33 +1137,40 @@ impl Cli {
                 ebg_csr,
                 turn_table,
                 nbg_geo,
-                way_attrs_car,
-                way_attrs_bike,
-                way_attrs_foot,
+                way_attrs,
                 outdir,
             } => {
+                let wa_parsed = parse_mode_path_pairs(&way_attrs, "way-attrs")?;
+                let mode_inputs: Vec<step5::Step5ModeInput> = wa_parsed
+                    .iter()
+                    .map(|(name, idx, path)| step5::Step5ModeInput {
+                        mode_name: name.clone(),
+                        mode_index: *idx,
+                        way_attrs_path: path.clone(),
+                    })
+                    .collect();
                 let result = step5::generate_weights(
                     &ebg_nodes,
                     &ebg_csr,
                     &turn_table,
                     &nbg_geo,
-                    &way_attrs_car,
-                    &way_attrs_bike,
-                    &way_attrs_foot,
+                    &mode_inputs,
                     &outdir,
                 )?;
 
                 // Run validation and generate lock file
                 println!();
+                let way_attrs_by_name: std::collections::HashMap<String, PathBuf> = wa_parsed
+                    .iter()
+                    .map(|(name, _, path)| (name.clone(), path.clone()))
+                    .collect();
                 let lock_file = validate_step5(
                     &result,
                     &ebg_nodes,
                     &ebg_csr,
                     &turn_table,
                     &nbg_geo,
-                    &way_attrs_car,
-                    &way_attrs_bike,
-                    &way_attrs_foot,
+                    &way_attrs_by_name,
                 )?;
 
                 let lock_path = outdir.join("step5.lock.json");
@@ -1141,18 +1193,15 @@ impl Cli {
                 balance_eps,
             } => {
                 // Parse mode
-                let mode = match mode.to_lowercase().as_str() {
-                    "car" => Mode::Car,
-                    "bike" => Mode::Bike,
-                    "foot" => Mode::Foot,
-                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
-                };
+                let mode_name = mode.to_lowercase();
+                let mode = resolve_mode(&mode_name, &outdir)?;
 
                 let config = step6::Step6Config {
                     filtered_ebg_path: filtered_ebg.clone(),
                     ebg_nodes_path: ebg_nodes,
                     nbg_geo_path: nbg_geo,
                     mode,
+                    mode_name: mode_name.clone(),
                     outdir: outdir.clone(),
                     leaf_threshold,
                     balance_eps,
@@ -1164,11 +1213,7 @@ impl Cli {
                 println!();
                 let lock_file = validate_step6(&result, &filtered_ebg)?;
 
-                let mode_name = match result.mode {
-                    Mode::Car => "car",
-                    Mode::Bike => "bike",
-                    Mode::Foot => "foot",
-                };
+                let mode_name = &result.mode_name;
                 let lock_path = outdir.join(format!("step6.{}.lock.json", mode_name));
                 let lock_json = serde_json::to_string_pretty(&lock_file)?;
                 std::fs::write(&lock_path, lock_json)?;
@@ -1190,12 +1235,8 @@ impl Cli {
                 leaf_threshold,
             } => {
                 // Parse mode
-                let mode = match mode.to_lowercase().as_str() {
-                    "car" => Mode::Car,
-                    "bike" => Mode::Bike,
-                    "foot" => Mode::Foot,
-                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
-                };
+                let mode_name_str = mode.to_lowercase();
+                let mode = resolve_mode(&mode_name_str, &outdir)?;
 
                 let config = step6_lifted::Step6LiftedConfig {
                     nbg_csr_path: nbg_csr,
@@ -1204,6 +1245,7 @@ impl Cli {
                     ebg_csr_path: ebg_csr,
                     filtered_ebg_path: filtered_ebg.clone(),
                     mode,
+                    mode_name: mode_name_str,
                     outdir: outdir.clone(),
                     leaf_threshold,
                 };
@@ -1214,11 +1256,7 @@ impl Cli {
                 println!();
                 let lock_file = validate_step6_lifted(&result, &filtered_ebg)?;
 
-                let mode_name = match result.mode {
-                    Mode::Car => "car",
-                    Mode::Bike => "bike",
-                    Mode::Foot => "foot",
-                };
+                let mode_name = &result.mode_name;
                 let lock_path = outdir.join(format!("step6.lifted.{}.lock.json", mode_name));
                 let lock_json = serde_json::to_string_pretty(&lock_file)?;
                 std::fs::write(&lock_path, lock_json)?;
@@ -1241,12 +1279,8 @@ impl Cli {
                 outdir,
             } => {
                 // Parse mode
-                let mode = match mode.to_lowercase().as_str() {
-                    "car" => Mode::Car,
-                    "bike" => Mode::Bike,
-                    "foot" => Mode::Foot,
-                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
-                };
+                let mode_name_str = mode.to_lowercase();
+                let mode = resolve_mode(&mode_name_str, &outdir)?;
 
                 let config = step7::Step7Config {
                     filtered_ebg_path: filtered_ebg.clone(),
@@ -1254,6 +1288,7 @@ impl Cli {
                     weights_path: weights,
                     turns_path: turns,
                     mode,
+                    mode_name: mode_name_str,
                     outdir: outdir.clone(),
                 };
 
@@ -1263,11 +1298,7 @@ impl Cli {
                 println!();
                 let lock_file = validate_step7(&result, &filtered_ebg, &order)?;
 
-                let mode_name = match result.mode {
-                    Mode::Car => "car",
-                    Mode::Bike => "bike",
-                    Mode::Foot => "foot",
-                };
+                let mode_name = &result.mode_name;
                 let lock_path = outdir.join(format!("step7.{}.lock.json", mode_name));
                 let lock_json = serde_json::to_string_pretty(&lock_file)?;
                 std::fs::write(&lock_path, lock_json)?;
@@ -1289,12 +1320,8 @@ impl Cli {
                 outdir,
             } => {
                 // Parse mode
-                let mode = match mode.to_lowercase().as_str() {
-                    "car" => Mode::Car,
-                    "bike" => Mode::Bike,
-                    "foot" => Mode::Foot,
-                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
-                };
+                let mode_name_str = mode.to_lowercase();
+                let mode = resolve_mode(&mode_name_str, &outdir)?;
 
                 let config = step8::Step8Config {
                     cch_topo_path: cch_topo,
@@ -1304,17 +1331,14 @@ impl Cli {
                     turns_path: turns,
                     ebg_nodes_path: ebg_nodes,
                     mode,
+                    mode_name: mode_name_str,
                     outdir: outdir.clone(),
                 };
 
                 let result = step8::customize_cch(config)?;
 
                 // Generate lock file
-                let mode_name = match result.mode {
-                    Mode::Car => "car",
-                    Mode::Bike => "bike",
-                    Mode::Foot => "foot",
-                };
+                let mode_name = &result.mode_name;
 
                 let lock = serde_json::json!({
                     "mode": mode_name,
@@ -1359,12 +1383,7 @@ impl Cli {
                 failures_file,
             } => {
                 // Parse mode
-                let mode = match mode.to_lowercase().as_str() {
-                    "car" => Mode::Car,
-                    "bike" => Mode::Bike,
-                    "foot" => Mode::Foot,
-                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
-                };
+                let mode_name = mode.to_lowercase();
 
                 let (result, failures) = crate::validate::validate_cch_correctness(
                     &cch_topo,
@@ -1372,7 +1391,7 @@ impl Cli {
                     &order,
                     n_pairs,
                     seed,
-                    mode,
+                    &mode_name,
                 )?;
 
                 // Write failures to file if requested
@@ -1407,16 +1426,14 @@ impl Cli {
                 order,
                 mode,
             } => {
-                // Parse mode
-                let mode = match mode.to_lowercase().as_str() {
-                    "car" => Mode::Car,
-                    "bike" => Mode::Bike,
-                    "foot" => Mode::Foot,
-                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
-                };
+                let mode_name = mode.to_lowercase();
 
-                let results =
-                    crate::validate::run_regression_tests(&cch_topo, &cch_weights, &order, mode)?;
+                let results = crate::validate::run_regression_tests(
+                    &cch_topo,
+                    &cch_weights,
+                    &order,
+                    &mode_name,
+                )?;
 
                 let failed_count = results.iter().filter(|r| !r.passed).count();
                 if failed_count > 0 {
@@ -1431,16 +1448,14 @@ impl Cli {
                 order,
                 mode,
             } => {
-                // Parse mode
-                let mode = match mode.to_lowercase().as_str() {
-                    "car" => Mode::Car,
-                    "bike" => Mode::Bike,
-                    "foot" => Mode::Foot,
-                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
-                };
+                let mode_name = mode.to_lowercase();
 
-                let result =
-                    crate::validate::validate_invariants(&cch_topo, &cch_weights, &order, mode)?;
+                let result = crate::validate::validate_invariants(
+                    &cch_topo,
+                    &cch_weights,
+                    &order,
+                    &mode_name,
+                )?;
 
                 if !result.passed {
                     anyhow::bail!(
@@ -1459,13 +1474,9 @@ impl Cli {
                 threshold_ms,
                 mode,
             } => {
-                // Parse mode
-                let mode = match mode.to_lowercase().as_str() {
-                    "car" => Mode::Car,
-                    "bike" => Mode::Bike,
-                    "foot" => Mode::Foot,
-                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
-                };
+                let mode_name = mode.to_lowercase();
+                let data_dir = cch_topo.parent().unwrap_or(Path::new("."));
+                let mode = resolve_mode(&mode_name, data_dir)?;
 
                 let result = crate::range::run_range_query(
                     &cch_topo,
@@ -1496,13 +1507,9 @@ impl Cli {
                 origin_node,
                 mode,
             } => {
-                // Parse mode
-                let mode = match mode.to_lowercase().as_str() {
-                    "car" => Mode::Car,
-                    "bike" => Mode::Bike,
-                    "foot" => Mode::Foot,
-                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
-                };
+                let mode_name = mode.to_lowercase();
+                let data_dir = cch_topo.parent().unwrap_or(Path::new("."));
+                let mode = resolve_mode(&mode_name, data_dir)?;
 
                 crate::range::run_range_validation(
                     &cch_topo,
@@ -1522,13 +1529,9 @@ impl Cli {
                 threshold_ms,
                 mode,
             } => {
-                // Parse mode
-                let mode = match mode.to_lowercase().as_str() {
-                    "car" => Mode::Car,
-                    "bike" => Mode::Bike,
-                    "foot" => Mode::Foot,
-                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
-                };
+                let mode_name = mode.to_lowercase();
+                let data_dir = cch_topo.parent().unwrap_or(Path::new("."));
+                let mode = resolve_mode(&mode_name, data_dir)?;
 
                 crate::range::run_phast_query(
                     &cch_topo,
@@ -1549,13 +1552,9 @@ impl Cli {
                 threshold_ms,
                 mode,
             } => {
-                // Parse mode
-                let mode = match mode.to_lowercase().as_str() {
-                    "car" => Mode::Car,
-                    "bike" => Mode::Bike,
-                    "foot" => Mode::Foot,
-                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
-                };
+                let mode_name = mode.to_lowercase();
+                let data_dir = cch_topo.parent().unwrap_or(Path::new("."));
+                let mode = resolve_mode(&mode_name, data_dir)?;
 
                 crate::range::validate_phast(
                     &cch_topo,
@@ -1610,13 +1609,8 @@ impl Cli {
                 mode,
                 geojson_out,
             } => {
-                // Parse mode
-                let mode = match mode.to_lowercase().as_str() {
-                    "car" => Mode::Car,
-                    "bike" => Mode::Bike,
-                    "foot" => Mode::Foot,
-                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
-                };
+                // Accept any mode name — validation happens when loading data files
+                let mode_name = mode.to_lowercase();
 
                 // First run PHAST to get distances
                 println!("Running PHAST to compute distances...");
@@ -1636,7 +1630,7 @@ impl Cli {
                     &base_weights,
                     &phast_result.dist,
                     threshold_ms,
-                    mode,
+                    &mode_name,
                 )?;
 
                 println!(
@@ -1666,15 +1660,9 @@ impl Cli {
                 output,
                 cell_size,
             } => {
-                // Parse mode
-                let mode_enum = match mode.to_lowercase().as_str() {
-                    "car" => Mode::Car,
-                    "bike" => Mode::Bike,
-                    "foot" => Mode::Foot,
-                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
-                };
-
                 let mode_name = mode.to_lowercase();
+                let data_dir = cch_topo.parent().unwrap_or(Path::new("."));
+                let _mode = resolve_mode(&mode_name, data_dir)?;
 
                 println!("\n🗺️  Isochrone Generation ({} mode)", mode_name);
                 println!("  Origin: node {}", origin_node);
@@ -1711,11 +1699,7 @@ impl Cli {
                 let config = if let Some(size) = cell_size {
                     crate::range::SparseContourConfig::custom(size, size)
                 } else {
-                    match mode_enum {
-                        Mode::Car => crate::range::SparseContourConfig::for_car(),
-                        Mode::Bike => crate::range::SparseContourConfig::for_bike(),
-                        Mode::Foot => crate::range::SparseContourConfig::for_foot(),
-                    }
+                    crate::range::SparseContourConfig::for_mode_name(&mode_name)
                 };
 
                 println!(
@@ -1945,14 +1929,8 @@ impl Cli {
                 use crate::hybrid::EquivHybridBuilder;
                 use sha2::{Digest as Sha2Digest, Sha256};
 
-                // Parse mode
-                let mode_enum = match mode.to_lowercase().as_str() {
-                    "car" => Mode::Car,
-                    "bike" => Mode::Bike,
-                    "foot" => Mode::Foot,
-                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
-                };
                 let mode_name = mode.to_lowercase();
+                let mode_enum = resolve_mode(&mode_name, &outdir)?;
 
                 println!(
                     "\n=== STEP 5.5a: EQUIVALENCE-CLASS HYBRID STATE GRAPH ({}) ===\n",
@@ -2061,14 +2039,8 @@ impl Cli {
                 use crate::hybrid::HybridGraphBuilder;
                 use sha2::{Digest as Sha2Digest, Sha256};
 
-                // Parse mode
-                let mode_enum = match mode.to_lowercase().as_str() {
-                    "car" => Mode::Car,
-                    "bike" => Mode::Bike,
-                    "foot" => Mode::Foot,
-                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
-                };
                 let mode_name = mode.to_lowercase();
+                let mode_enum = resolve_mode(&mode_name, &outdir)?;
 
                 println!("\n=== STEP 5.5: HYBRID STATE GRAPH ({}) ===\n", mode_name);
 
@@ -2186,18 +2158,14 @@ impl Cli {
                 graph_partition,
                 densifier_threshold,
             } => {
-                // Parse mode
-                let mode_enum = match mode.to_lowercase().as_str() {
-                    "car" => Mode::Car,
-                    "bike" => Mode::Bike,
-                    "foot" => Mode::Foot,
-                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
-                };
+                let mode_name_str = mode.to_lowercase();
+                let mode_enum = resolve_mode(&mode_name_str, &outdir)?;
 
                 let config = step6::Step6HybridConfig {
                     hybrid_state_path: hybrid_state.clone(),
                     nbg_geo_path: nbg_geo,
                     mode: mode_enum,
+                    mode_name: mode_name_str,
                     outdir: outdir.clone(),
                     leaf_threshold,
                     balance_eps,
@@ -2208,7 +2176,7 @@ impl Cli {
                 let result = step6::generate_ordering_hybrid(config)?;
 
                 // Generate lock file
-                let mode_name = mode.to_lowercase();
+                let mode_name = &result.mode_name;
                 let lock = serde_json::json!({
                     "mode": mode_name,
                     "graph_type": "hybrid",
@@ -2236,25 +2204,21 @@ impl Cli {
                 mode,
                 outdir,
             } => {
-                // Parse mode
-                let mode_enum = match mode.to_lowercase().as_str() {
-                    "car" => Mode::Car,
-                    "bike" => Mode::Bike,
-                    "foot" => Mode::Foot,
-                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
-                };
+                let mode_name_str = mode.to_lowercase();
+                let mode_enum = resolve_mode(&mode_name_str, &outdir)?;
 
                 let config = step7::Step7HybridConfig {
                     hybrid_state_path: hybrid_state.clone(),
                     order_path: order.clone(),
                     mode: mode_enum,
+                    mode_name: mode_name_str,
                     outdir: outdir.clone(),
                 };
 
                 let result = step7::build_cch_topology_hybrid(config)?;
 
                 // Generate lock file
-                let mode_name = mode.to_lowercase();
+                let mode_name = &result.mode_name;
                 let lock = serde_json::json!({
                     "mode": mode_name,
                     "graph_type": "hybrid",
@@ -2466,25 +2430,21 @@ impl Cli {
                 mode,
                 outdir,
             } => {
-                // Parse mode
-                let mode_enum = match mode.to_lowercase().as_str() {
-                    "car" => Mode::Car,
-                    "bike" => Mode::Bike,
-                    "foot" => Mode::Foot,
-                    _ => anyhow::bail!("Invalid mode: {}. Use car, bike, or foot.", mode),
-                };
+                let mode_name_str = mode.to_lowercase();
+                let mode_enum = resolve_mode(&mode_name_str, &outdir)?;
 
                 let config = step8::Step8HybridConfig {
                     cch_topo_path: cch_topo,
                     hybrid_state_path: hybrid_state,
                     mode: mode_enum,
+                    mode_name: mode_name_str,
                     outdir: outdir.clone(),
                 };
 
                 let result = step8::customize_cch_hybrid(config)?;
 
                 // Generate lock file
-                let mode_name = mode.to_lowercase();
+                let mode_name = &result.mode_name;
                 let lock = serde_json::json!({
                     "mode": mode_name,
                     "graph_type": "hybrid",

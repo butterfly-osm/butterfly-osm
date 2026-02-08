@@ -12,9 +12,8 @@ use crate::formats::{
 pub struct NbgConfig {
     pub nodes_sa_path: PathBuf,
     pub ways_path: PathBuf,
-    pub way_attrs_car_path: PathBuf,
-    pub way_attrs_bike_path: PathBuf,
-    pub way_attrs_foot_path: PathBuf,
+    /// Per-mode way_attrs paths, keyed by mode name, in alphabetical order
+    pub way_attrs_paths: Vec<(String, PathBuf)>,
     pub outdir: PathBuf,
 }
 
@@ -58,17 +57,15 @@ pub fn compute_bearing(lat1_deg: f64, lon1_deg: f64, lat2_deg: f64, lon2_deg: f6
 }
 
 /// Check if a way has access in any mode
-fn has_any_access(way_attrs_car: &[u8], way_attrs_bike: &[u8], way_attrs_foot: &[u8]) -> bool {
-    // way_attrs record format: way_id(8) + access_fwd(1) + access_rev(1) + ...
-    // Check if any mode has access_fwd or access_rev
-    let car_fwd = way_attrs_car.get(8).copied().unwrap_or(0) != 0;
-    let car_rev = way_attrs_car.get(9).copied().unwrap_or(0) != 0;
-    let bike_fwd = way_attrs_bike.get(8).copied().unwrap_or(0) != 0;
-    let bike_rev = way_attrs_bike.get(9).copied().unwrap_or(0) != 0;
-    let foot_fwd = way_attrs_foot.get(8).copied().unwrap_or(0) != 0;
-    let foot_rev = way_attrs_foot.get(9).copied().unwrap_or(0) != 0;
-
-    car_fwd || car_rev || bike_fwd || bike_rev || foot_fwd || foot_rev
+fn has_any_access(records: &[&[u8]]) -> bool {
+    for rec in records {
+        let fwd = rec.get(8).copied().unwrap_or(0) != 0;
+        let rev = rec.get(9).copied().unwrap_or(0) != 0;
+        if fwd || rev {
+            return true;
+        }
+    }
+    false
 }
 
 /// Build NBG from Step 1 and Step 2 outputs
@@ -87,10 +84,15 @@ pub fn build_nbg(config: NbgConfig) -> Result<NbgResult> {
 
     // Step 1: Load way_attrs to determine included ways
     println!("Loading way_attrs to determine included ways...");
-    let way_attrs_car = load_way_attrs_index(&config.way_attrs_car_path)?;
-    let way_attrs_bike = load_way_attrs_index(&config.way_attrs_bike_path)?;
-    let way_attrs_foot = load_way_attrs_index(&config.way_attrs_foot_path)?;
-    println!("  ✓ Loaded way_attrs indices");
+    let way_attrs_by_mode: Vec<HashMap<i64, Vec<u8>>> = config
+        .way_attrs_paths
+        .iter()
+        .map(|(name, path)| {
+            println!("  Loading way_attrs for '{}'...", name);
+            load_way_attrs_index(path)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    println!("  ✓ Loaded way_attrs for {} modes", way_attrs_by_mode.len());
 
     // Step 2: Load nodes.sa for coordinate lookup
     println!("Loading nodes.sa...");
@@ -99,12 +101,8 @@ pub fn build_nbg(config: NbgConfig) -> Result<NbgResult> {
 
     // Step 3: Stream ways and collect decision nodes
     println!("Streaming ways to collect decision nodes...");
-    let (decision_nodes, included_ways) = collect_decision_nodes(
-        &config.ways_path,
-        &way_attrs_car,
-        &way_attrs_bike,
-        &way_attrs_foot,
-    )?;
+    let (decision_nodes, included_ways) =
+        collect_decision_nodes(&config.ways_path, &way_attrs_by_mode)?;
     println!("  ✓ Found {} decision nodes", decision_nodes.len());
     println!("  ✓ Found {} included ways", included_ways.len());
 
@@ -228,9 +226,7 @@ fn load_node_coordinates(path: &PathBuf) -> Result<HashMap<i64, (f64, f64)>> {
 
 fn collect_decision_nodes(
     ways_path: &PathBuf,
-    way_attrs_car: &HashMap<i64, Vec<u8>>,
-    way_attrs_bike: &HashMap<i64, Vec<u8>>,
-    way_attrs_foot: &HashMap<i64, Vec<u8>>,
+    way_attrs_by_mode: &[HashMap<i64, Vec<u8>>],
 ) -> Result<(HashSet<i64>, HashSet<i64>)> {
     let mut node_usage: HashMap<i64, usize> = HashMap::new();
     let mut decision_nodes = HashSet::new();
@@ -243,26 +239,25 @@ fn collect_decision_nodes(
         let (way_id, _keys, _vals, nodes) = result?;
 
         // Check if way is included (has access in any mode)
-        let car_rec = way_attrs_car.get(&way_id);
-        let bike_rec = way_attrs_bike.get(&way_id);
-        let foot_rec = way_attrs_foot.get(&way_id);
+        let records: Vec<&[u8]> = way_attrs_by_mode
+            .iter()
+            .filter_map(|attrs| attrs.get(&way_id).map(|v| v.as_slice()))
+            .collect();
 
-        if let (Some(car), Some(bike), Some(foot)) = (car_rec, bike_rec, foot_rec) {
-            if has_any_access(car, bike, foot) {
-                included_ways.insert(way_id);
+        if !records.is_empty() && has_any_access(&records) {
+            included_ways.insert(way_id);
 
-                // Mark endpoints as decision nodes
-                if let Some(&first) = nodes.first() {
-                    decision_nodes.insert(first);
-                }
-                if let Some(&last) = nodes.last() {
-                    decision_nodes.insert(last);
-                }
+            // Mark endpoints as decision nodes
+            if let Some(&first) = nodes.first() {
+                decision_nodes.insert(first);
+            }
+            if let Some(&last) = nodes.last() {
+                decision_nodes.insert(last);
+            }
 
-                // Count node usage for intersection detection
-                for &node_id in &nodes {
-                    *node_usage.entry(node_id).or_insert(0) += 1;
-                }
+            // Count node usage for intersection detection
+            for &node_id in &nodes {
+                *node_usage.entry(node_id).or_insert(0) += 1;
             }
         }
     }

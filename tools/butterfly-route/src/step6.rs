@@ -181,6 +181,7 @@ pub struct Step6Config {
     pub ebg_nodes_path: PathBuf,
     pub nbg_geo_path: PathBuf,
     pub mode: Mode,
+    pub mode_name: String,
     pub outdir: PathBuf,
     pub leaf_threshold: usize,
     pub balance_eps: f32,
@@ -191,6 +192,7 @@ pub struct Step6Config {
 pub struct Step6Result {
     pub order_path: PathBuf,
     pub mode: Mode,
+    pub mode_name: String,
     pub n_nodes: u32,
     pub n_components: usize,
     pub tree_depth: usize,
@@ -200,11 +202,7 @@ pub struct Step6Result {
 /// Generate nested dissection ordering on per-mode filtered EBG
 pub fn generate_ordering(config: Step6Config) -> Result<Step6Result> {
     let start_time = std::time::Instant::now();
-    let mode_name = match config.mode {
-        Mode::Car => "car",
-        Mode::Bike => "bike",
-        Mode::Foot => "foot",
-    };
+    let mode_name = &config.mode_name;
     println!(
         "\n📐 Step 6: Generating CCH ordering for {} mode...\n",
         mode_name
@@ -296,6 +294,7 @@ pub fn generate_ordering(config: Step6Config) -> Result<Step6Result> {
     Ok(Step6Result {
         order_path,
         mode: config.mode,
+        mode_name: config.mode_name.clone(),
         n_nodes: filtered_ebg.n_filtered_nodes,
         n_components,
         tree_depth: max_depth,
@@ -1129,6 +1128,7 @@ pub struct Step6HybridConfig {
     pub hybrid_state_path: PathBuf,
     pub nbg_geo_path: PathBuf,
     pub mode: Mode,
+    pub mode_name: String,
     pub outdir: PathBuf,
     pub leaf_threshold: usize,
     pub balance_eps: f32,
@@ -1145,11 +1145,7 @@ pub fn generate_ordering_hybrid(config: Step6HybridConfig) -> Result<Step6Result
     use crate::formats::HybridStateFile;
 
     let start_time = std::time::Instant::now();
-    let mode_name = match config.mode {
-        Mode::Car => "car",
-        Mode::Bike => "bike",
-        Mode::Foot => "foot",
-    };
+    let mode_name = &config.mode_name;
     println!(
         "\n📐 Step 6: Generating CCH ordering for {} mode (HYBRID)...\n",
         mode_name
@@ -1300,6 +1296,7 @@ pub fn generate_ordering_hybrid(config: Step6HybridConfig) -> Result<Step6Result
     Ok(Step6Result {
         order_path,
         mode: config.mode,
+        mode_name: config.mode_name.clone(),
         n_nodes: hybrid.n_states,
         n_components,
         tree_depth: max_depth,

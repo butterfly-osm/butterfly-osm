@@ -374,13 +374,7 @@ pub fn run_range_query(
     threshold_ms: u32,
     mode: Mode,
 ) -> Result<RangeResult> {
-    let mode_name = match mode {
-        Mode::Car => "car",
-        Mode::Bike => "bike",
-        Mode::Foot => "foot",
-    };
-
-    println!("\n🔍 Range Query ({} mode)", mode_name);
+    println!("\n🔍 Range Query (mode {})", mode.index());
     println!("  Origin: node {}", origin);
     println!(
         "  Threshold: {} ms ({:.1} min)",
@@ -586,13 +580,7 @@ pub fn run_range_validation(
     origin: u32,
     mode: Mode,
 ) -> Result<()> {
-    let mode_name = match mode {
-        Mode::Car => "car",
-        Mode::Bike => "bike",
-        Mode::Foot => "foot",
-    };
-
-    println!("\n🧪 Range Query Validation ({} mode)", mode_name);
+    println!("\n🧪 Range Query Validation (mode {})", mode.index());
     println!("  Origin: node {}", origin);
 
     println!("\nLoading CCH data...");
@@ -684,13 +672,7 @@ pub fn run_phast_query(
     threshold_ms: u32,
     mode: Mode,
 ) -> Result<PhastResult> {
-    let mode_name = match mode {
-        Mode::Car => "car",
-        Mode::Bike => "bike",
-        Mode::Foot => "foot",
-    };
-
-    println!("\n⚡ PHAST Range Query ({} mode)", mode_name);
+    println!("\n⚡ PHAST Range Query (mode {})", mode.index());
     println!("  Origin: node {}", origin);
     println!(
         "  Threshold: {} ms ({:.1} min)",
@@ -747,13 +729,7 @@ pub fn validate_phast(
     threshold_ms: u32,
     mode: Mode,
 ) -> Result<()> {
-    let mode_name = match mode {
-        Mode::Car => "car",
-        Mode::Bike => "bike",
-        Mode::Foot => "foot",
-    };
-
-    println!("\n🧪 PHAST Validation ({} mode)", mode_name);
+    println!("\n🧪 PHAST Validation (mode {})", mode.index());
     println!("  Origin: node {}", origin);
     println!("  Threshold: {} ms", threshold_ms);
 

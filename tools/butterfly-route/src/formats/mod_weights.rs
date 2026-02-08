@@ -46,7 +46,7 @@ pub fn write<P: AsRef<Path>>(path: P, data: &ModWeights) -> Result<()> {
     let mut header = Vec::with_capacity(HEADER_SIZE);
     header.extend_from_slice(&MAGIC.to_le_bytes());
     header.extend_from_slice(&VERSION.to_le_bytes());
-    header.push(data.mode as u8);
+    header.push(data.mode.0);
     header.push(0); // reserved
     header.extend_from_slice(&(data.weights.len() as u32).to_le_bytes());
     header.extend_from_slice(&data.inputs_sha);
@@ -110,12 +110,12 @@ pub fn read_all<P: AsRef<Path>>(path: P) -> Result<ModWeights> {
     );
 
     let mode_byte = header[6];
-    let mode = match mode_byte {
-        0 => Mode::Car,
-        1 => Mode::Bike,
-        2 => Mode::Foot,
-        _ => anyhow::bail!("Invalid mode: {}", mode_byte),
-    };
+    anyhow::ensure!(
+        (mode_byte as usize) < crate::profile_abi::MAX_MODES,
+        "Invalid mode: {}",
+        mode_byte
+    );
+    let mode = Mode(mode_byte);
 
     let count = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
 

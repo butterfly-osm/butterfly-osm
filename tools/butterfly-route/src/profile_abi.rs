@@ -1,7 +1,7 @@
 //! Profile ABI - Stable C-compatible interface for routing profiles
 //!
 //! This module defines the ABI between the routing engine and mode-specific profiles.
-//! Profiles can be compiled as cdylib or WASM with the same interface.
+//! Modes are discovered at runtime from `*.model.json` files — no hardcoded mode names.
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -66,7 +66,7 @@ pub enum TurnRuleKind {
 pub struct TurnOutput {
     /// Kind of turn rule
     pub kind: TurnRuleKind,
-    /// Bitmask of modes this applies to: bit0=car, bit1=bike, bit2=foot
+    /// Bitmask of modes this applies to
     pub applies: u8,
     /// Bitmask of exceptions (same encoding as applies)
     pub except_mask: u8,
@@ -88,35 +88,63 @@ impl Default for TurnOutput {
     }
 }
 
-/// Mode enumeration matching file formats
-#[repr(u8)]
+/// Maximum number of modes supported (hard limit for penalty arrays in turn table).
+pub const MAX_MODES: usize = 8;
+
+/// Dynamic mode identifier — a wrapper around the mode's alphabetical index (0..MAX_MODES-1).
+///
+/// Modes are discovered at pipeline time from `*.model.json` files, sorted alphabetically.
+/// Mode is just an index — it does NOT carry its name. Use external lookup for names
+/// (e.g., `state.mode_names[mode.index()]` in the server, or `modes[i].name` in the pipeline).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Mode {
-    Car = 0,
-    Bike = 1,
-    Foot = 2,
-}
+pub struct Mode(pub u8);
 
 impl Mode {
-    pub fn all() -> &'static [Mode] {
-        &[Mode::Car, Mode::Bike, Mode::Foot]
+    /// Bitmask for this mode: `1 << index`
+    #[inline]
+    pub fn bit(&self) -> u8 {
+        1u8 << self.0
     }
 
-    pub fn name(&self) -> &'static str {
-        match self {
-            Mode::Car => "car",
-            Mode::Bike => "bike",
-            Mode::Foot => "foot",
-        }
+    /// Index into arrays (0..MAX_MODES-1)
+    #[inline]
+    pub fn index(&self) -> usize {
+        self.0 as usize
     }
 
-    pub fn from_u8(v: u8) -> Option<Mode> {
-        match v {
-            0 => Some(Mode::Car),
-            1 => Some(Mode::Bike),
-            2 => Some(Mode::Foot),
-            _ => None,
+    /// Raw u8 value
+    #[inline]
+    pub fn as_u8(&self) -> u8 {
+        self.0
+    }
+
+    /// Construct from raw u8
+    #[inline]
+    pub fn from_u8(v: u8) -> Self {
+        Mode(v)
+    }
+
+    /// Discover modes from step2 output directory by scanning for `way_attrs.*.bin` files.
+    /// Returns (mode_name, mode_index) pairs sorted alphabetically.
+    pub fn discover_from_dir(dir: &std::path::Path) -> Vec<(String, u8)> {
+        let mut names: Vec<String> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let fname = entry.file_name();
+                let fname_str = fname.to_string_lossy();
+                if let Some(rest) = fname_str.strip_prefix("way_attrs.") {
+                    if let Some(mode_name) = rest.strip_suffix(".bin") {
+                        names.push(mode_name.to_string());
+                    }
+                }
+            }
         }
+        names.sort();
+        names
+            .into_iter()
+            .enumerate()
+            .map(|(idx, name)| (name, idx as u8))
+            .collect()
     }
 }
 
@@ -139,18 +167,6 @@ pub mod class_bits {
     pub const CONSTRUCTION: u32 = 15;
 }
 
-/// Profile trait that profiles must implement
-pub trait Profile {
-    /// Get profile version (increment on ABI changes)
-    fn version() -> u32;
-
-    /// Process a way and return mode-specific attributes
-    fn process_way(input: WayInput) -> WayOutput;
-
-    /// Process a turn restriction relation
-    fn process_turn(input: TurnInput) -> TurnOutput;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,17 +187,26 @@ mod tests {
     }
 
     #[test]
-    fn test_mode_names() {
-        assert_eq!(Mode::Car.name(), "car");
-        assert_eq!(Mode::Bike.name(), "bike");
-        assert_eq!(Mode::Foot.name(), "foot");
+    fn test_mode_struct() {
+        let m = Mode(1);
+        assert_eq!(m.index(), 1);
+        assert_eq!(m.bit(), 0b10);
+        assert_eq!(m.as_u8(), 1);
+        assert_eq!(Mode::from_u8(3), Mode(3));
     }
 
     #[test]
-    fn test_mode_from_u8() {
-        assert_eq!(Mode::from_u8(0), Some(Mode::Car));
-        assert_eq!(Mode::from_u8(1), Some(Mode::Bike));
-        assert_eq!(Mode::from_u8(2), Some(Mode::Foot));
-        assert_eq!(Mode::from_u8(3), None);
+    fn test_mode_bit_mask() {
+        assert_eq!(Mode(0).bit(), 1);
+        assert_eq!(Mode(1).bit(), 2);
+        assert_eq!(Mode(2).bit(), 4);
+        assert_eq!(Mode(7).bit(), 128);
+    }
+
+    #[test]
+    fn test_discover_from_dir_empty() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let modes = Mode::discover_from_dir(tmp.path());
+        assert!(modes.is_empty());
     }
 }

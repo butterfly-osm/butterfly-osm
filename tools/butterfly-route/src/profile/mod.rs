@@ -1,27 +1,54 @@
-//! Step 2: Modal profiling pipeline
+//! Step 2: Modal profiling pipeline (declarative model evaluation)
 //!
-//! Processes ways.raw and relations.raw through routing profiles to generate
-//! per-mode attributes and turn restrictions.
+//! Auto-discovers `*.model.json` files, compiles them against tag dictionaries,
+//! and evaluates every way/relation through each model. No hardcoded profiles.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::formats::{turn_rules, way_attrs, TurnRule, WayAttr};
-use crate::profile_abi::{Mode, Profile, TurnInput, TurnRuleKind, WayInput};
-use crate::profiles::{BikeProfile, CarProfile, FootProfile};
+use crate::model::{self, compile_model, evaluate_turn_full, evaluate_way, CompiledModel};
+use crate::profile_abi::{Mode, TurnRuleKind};
 
 pub struct ProfileConfig {
     pub ways_path: PathBuf,
     pub relations_path: PathBuf,
+    pub models_dir: PathBuf,
     pub outdir: PathBuf,
 }
 
+/// Per-mode output paths produced by Step 2
+#[derive(Debug)]
+pub struct ModeProfileOutput {
+    pub mode_name: String,
+    pub mode_index: u8,
+    pub way_attrs_path: PathBuf,
+    pub turn_rules_path: PathBuf,
+}
+
 pub struct ProfileResult {
-    pub way_attrs_files: HashMap<Mode, PathBuf>,
-    pub turn_rules_files: HashMap<Mode, PathBuf>,
+    pub modes: Vec<ModeProfileOutput>,
     pub profile_meta_path: PathBuf,
+}
+
+impl ProfileResult {
+    /// Build a HashMap<String, PathBuf> of way_attrs files keyed by mode name
+    pub fn way_attrs_by_name(&self) -> HashMap<String, PathBuf> {
+        self.modes
+            .iter()
+            .map(|m| (m.mode_name.clone(), m.way_attrs_path.clone()))
+            .collect()
+    }
+
+    /// Build a HashMap<String, PathBuf> of turn_rules files keyed by mode name
+    pub fn turn_rules_by_name(&self) -> HashMap<String, PathBuf> {
+        self.modes
+            .iter()
+            .map(|m| (m.mode_name.clone(), m.turn_rules_path.clone()))
+            .collect()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -83,7 +110,7 @@ pub fn build_class_bits() -> HashMap<String, u32> {
     let mut bits = HashMap::new();
     bits.insert("access_fwd".to_string(), 0);
     bits.insert("access_rev".to_string(), 1);
-    bits.insert("oneway_shift".to_string(), 2); // bits 2-3 encode oneway
+    bits.insert("oneway_shift".to_string(), 2);
     bits.insert("toll".to_string(), 4);
     bits.insert("ferry".to_string(), 5);
     bits.insert("tunnel".to_string(), 6);
@@ -99,7 +126,7 @@ pub fn build_class_bits() -> HashMap<String, u32> {
     bits
 }
 
-fn compute_file_sha256<P: AsRef<std::path::Path>>(path: P) -> Result<String> {
+fn compute_file_sha256<P: AsRef<Path>>(path: P) -> Result<String> {
     use sha2::{Digest, Sha256};
     use std::fs::File;
     use std::io::Read;
@@ -119,28 +146,55 @@ fn compute_file_sha256<P: AsRef<std::path::Path>>(path: P) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-/// Run Step 2 profiling pipeline
+/// Run Step 2 profiling pipeline using auto-discovered JSON model files
 pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
-    println!("🦋 Starting Step 2: Modal Profiling");
-    println!("📂 Ways: {}", config.ways_path.display());
-    println!("📂 Relations: {}", config.relations_path.display());
-    println!("📂 Output: {}", config.outdir.display());
+    println!("Starting Step 2: Modal Profiling (declarative models)");
+    println!("  Ways: {}", config.ways_path.display());
+    println!("  Relations: {}", config.relations_path.display());
+    println!("  Models: {}", config.models_dir.display());
+    println!("  Output: {}", config.outdir.display());
     println!();
 
     std::fs::create_dir_all(&config.outdir).context("Failed to create output directory")?;
+
+    // Discover models from *.model.json files
+    let modes = model::discover_modes(&config.models_dir)?;
+    println!("Discovered {} modes:", modes.len());
+    for m in &modes {
+        println!("  [{}] {}", m.index, m.name);
+    }
+    println!();
 
     // Load dictionaries from ways.raw
     println!("Loading dictionaries from ways.raw...");
     let (key_dict, val_dict, dict_k_sha256, dict_v_sha256) =
         crate::formats::WaysFile::read_dictionaries(&config.ways_path)?;
-    println!("  ✓ Key dictionary: {} entries", key_dict.len());
-    println!("  ✓ Value dictionary: {} entries", val_dict.len());
+    println!("  key dictionary: {} entries", key_dict.len());
+    println!("  value dictionary: {} entries", val_dict.len());
 
-    // Stream and process ways (no RAM loading!)
+    // Compile all models against the way dictionaries
+    let compiled_models: Vec<CompiledModel> = modes
+        .iter()
+        .map(|mode_info| {
+            let model_path = model::model_file_path(&config.models_dir, &mode_info.name);
+            let schema = model::load_model_schema(&model_path)?;
+            let sha256 = model::compute_model_sha256(&model_path)?;
+            Ok(compile_model(
+                &schema,
+                mode_info.index,
+                sha256,
+                &key_dict,
+                &val_dict,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    println!("  compiled {} models", compiled_models.len());
+
+    // Stream and process ways through all compiled models
+    println!();
     println!("Streaming and processing ways...");
-    let mut way_attrs_car = Vec::new();
-    let mut way_attrs_bike = Vec::new();
-    let mut way_attrs_foot = Vec::new();
+    let n_modes = modes.len();
+    let mut way_attrs_per_mode: Vec<Vec<WayAttr>> = vec![Vec::new(); n_modes];
 
     let way_stream = crate::formats::WaysFile::stream_ways(&config.ways_path)?;
     let mut count = 0u64;
@@ -148,65 +202,77 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
     for result in way_stream {
         let (way_id, keys, vals, _nodes) = result?;
 
-        let input = WayInput {
-            kv_keys: &keys,
-            kv_vals: &vals,
-            key_dict: Some(&key_dict),
-            val_dict: Some(&val_dict),
-        };
-
-        // Process through each profile
-        way_attrs_car.push(WayAttr {
-            way_id,
-            output: CarProfile::process_way(input),
-        });
-
-        way_attrs_bike.push(WayAttr {
-            way_id,
-            output: BikeProfile::process_way(input),
-        });
-
-        way_attrs_foot.push(WayAttr {
-            way_id,
-            output: FootProfile::process_way(input),
-        });
+        for (i, compiled) in compiled_models.iter().enumerate() {
+            let output = evaluate_way(compiled, &keys, &vals, &val_dict);
+            way_attrs_per_mode[i].push(WayAttr { way_id, output });
+        }
 
         count += 1;
         if count.is_multiple_of(1_000_000) {
-            println!("  Processed {} ways...", count);
+            println!("  processed {} ways...", count);
         }
     }
 
-    println!("  ✓ Processed {} ways", count);
+    println!("  processed {} ways across {} modes", count, n_modes);
 
     // Write way_attrs files
     println!();
     println!("Writing way_attrs files...");
-    let mut way_attrs_files = HashMap::new();
+    let mut mode_outputs: Vec<ModeProfileOutput> = Vec::new();
 
-    for mode in Mode::all() {
-        let attrs = match mode {
-            Mode::Car => &way_attrs_car,
-            Mode::Bike => &way_attrs_bike,
-            Mode::Foot => &way_attrs_foot,
-        };
-
-        let filename = format!("way_attrs.{}.bin", mode.name());
+    for (i, mode_info) in modes.iter().enumerate() {
+        let filename = format!("way_attrs.{}.bin", mode_info.name);
         let path = config.outdir.join(&filename);
+        let mode = Mode(mode_info.index);
 
-        way_attrs::write(&path, *mode, attrs, &dict_k_sha256, &dict_v_sha256)?;
-        println!("  ✓ Wrote {} ({} ways)", filename, attrs.len());
+        way_attrs::write(
+            &path,
+            mode,
+            &way_attrs_per_mode[i],
+            &dict_k_sha256,
+            &dict_v_sha256,
+        )?;
+        println!(
+            "  wrote {} ({} ways)",
+            filename,
+            way_attrs_per_mode[i].len()
+        );
 
-        way_attrs_files.insert(*mode, path);
+        mode_outputs.push(ModeProfileOutput {
+            mode_name: mode_info.name.clone(),
+            mode_index: mode_info.index,
+            way_attrs_path: path,
+            turn_rules_path: PathBuf::new(), // filled below
+        });
     }
+
+    // Drop way attrs to free memory before processing relations
+    drop(way_attrs_per_mode);
 
     // Load dictionaries from relations.raw
     println!();
     println!("Loading dictionaries from relations.raw...");
     let (rel_key_dict, rel_val_dict, rel_dict_k_sha256, rel_dict_v_sha256) =
         crate::formats::RelationsFile::read_dictionaries(&config.relations_path)?;
-    println!("  ✓ Key dictionary: {} entries", rel_key_dict.len());
-    println!("  ✓ Value dictionary: {} entries", rel_val_dict.len());
+    println!("  key dictionary: {} entries", rel_key_dict.len());
+    println!("  value dictionary: {} entries", rel_val_dict.len());
+
+    // Compile models against relation dictionaries for turn restriction evaluation
+    let compiled_turn_models: Vec<CompiledModel> = modes
+        .iter()
+        .map(|mode_info| {
+            let model_path = model::model_file_path(&config.models_dir, &mode_info.name);
+            let schema = model::load_model_schema(&model_path)?;
+            let sha256 = model::compute_model_sha256(&model_path)?;
+            Ok(compile_model(
+                &schema,
+                mode_info.index,
+                sha256,
+                &rel_key_dict,
+                &rel_val_dict,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     // Build reverse indexes for relations
     let rel_key_reverse: HashMap<&str, u32> = rel_key_dict
@@ -219,17 +285,15 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
         .collect();
 
     // Load relations with resolved tags
+    println!();
     println!("Loading relations...");
     let relations = crate::formats::RelationsFile::read(&config.relations_path)?;
-    println!("  ✓ Loaded {} relations", relations.len());
+    println!("  loaded {} relations", relations.len());
 
-    // Process turn restrictions
-    let mut turn_rules_car = Vec::new();
-    let mut turn_rules_bike = Vec::new();
-    let mut turn_rules_foot = Vec::new();
+    // Process turn restrictions through all models
+    let mut turn_rules_per_mode: Vec<Vec<TurnRule>> = vec![Vec::new(); n_modes];
 
     for relation in relations.iter() {
-        // Build tag ID arrays using O(1) reverse index lookups
         let mut keys = Vec::new();
         let mut vals = Vec::new();
         for (k, v) in &relation.tags {
@@ -242,88 +306,59 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
             }
         }
 
-        let input = TurnInput {
-            tags_keys: &keys,
-            tags_vals: &vals,
-            key_dict: Some(&rel_key_dict),
-            val_dict: Some(&rel_val_dict),
-        };
-
-        // Extract via_node, from_way, to_way from members
         let (via_node_id, from_way_id, to_way_id) = extract_turn_triple(&relation.members);
         if via_node_id == 0 || from_way_id == 0 || to_way_id == 0 {
-            continue; // Invalid or via=way (needs expansion)
+            continue;
         }
 
-        // Process through each profile
-        let car_output = CarProfile::process_turn(input);
-        if car_output.kind != TurnRuleKind::None {
-            turn_rules_car.push(TurnRule {
-                via_node_id,
-                from_way_id,
-                to_way_id,
-                kind: car_output.kind,
-                penalty_ds: car_output.penalty_ds,
-                is_time_dep: if car_output.is_time_dependent { 1 } else { 0 },
-            });
-        }
+        for (i, compiled) in compiled_turn_models.iter().enumerate() {
+            let (kind, applies, penalty_ds, is_time_dep) =
+                evaluate_turn_full(compiled, &keys, &vals, &rel_key_dict, &rel_val_dict);
 
-        let bike_output = BikeProfile::process_turn(input);
-        if bike_output.kind != TurnRuleKind::None {
-            turn_rules_bike.push(TurnRule {
-                via_node_id,
-                from_way_id,
-                to_way_id,
-                kind: bike_output.kind,
-                penalty_ds: bike_output.penalty_ds,
-                is_time_dep: if bike_output.is_time_dependent { 1 } else { 0 },
-            });
-        }
-
-        let foot_output = FootProfile::process_turn(input);
-        if foot_output.kind != TurnRuleKind::None {
-            turn_rules_foot.push(TurnRule {
-                via_node_id,
-                from_way_id,
-                to_way_id,
-                kind: foot_output.kind,
-                penalty_ds: foot_output.penalty_ds,
-                is_time_dep: if foot_output.is_time_dependent { 1 } else { 0 },
-            });
+            if applies && kind != TurnRuleKind::None {
+                turn_rules_per_mode[i].push(TurnRule {
+                    via_node_id,
+                    from_way_id,
+                    to_way_id,
+                    kind,
+                    penalty_ds,
+                    is_time_dep: if is_time_dep { 1 } else { 0 },
+                });
+            }
         }
     }
 
-    println!(
-        "  ✓ Extracted turn restrictions: car={}, bike={}, foot={}",
-        turn_rules_car.len(),
-        turn_rules_bike.len(),
-        turn_rules_foot.len()
-    );
-
-    // Sort turn_rules by (via_node_id, from_way_id, to_way_id)
-    turn_rules_car.sort_unstable();
-    turn_rules_bike.sort_unstable();
-    turn_rules_foot.sort_unstable();
+    for (i, mode_info) in modes.iter().enumerate() {
+        println!(
+            "  turn restrictions for {}: {} rules",
+            mode_info.name,
+            turn_rules_per_mode[i].len()
+        );
+        turn_rules_per_mode[i].sort_unstable();
+    }
 
     // Write turn_rules files
     println!();
     println!("Writing turn_rules files...");
-    let mut turn_rules_files = HashMap::new();
-
-    for mode in Mode::all() {
-        let rules = match mode {
-            Mode::Car => &turn_rules_car,
-            Mode::Bike => &turn_rules_bike,
-            Mode::Foot => &turn_rules_foot,
-        };
-
-        let filename = format!("turn_rules.{}.bin", mode.name());
+    for (i, mode_info) in modes.iter().enumerate() {
+        let filename = format!("turn_rules.{}.bin", mode_info.name);
         let path = config.outdir.join(&filename);
+        let mode = Mode(mode_info.index);
 
-        turn_rules::write(&path, *mode, rules, &rel_dict_k_sha256, &rel_dict_v_sha256)?;
-        println!("  ✓ Wrote {} ({} rules)", filename, rules.len());
+        turn_rules::write(
+            &path,
+            mode,
+            &turn_rules_per_mode[i],
+            &rel_dict_k_sha256,
+            &rel_dict_v_sha256,
+        )?;
+        println!(
+            "  wrote {} ({} rules)",
+            filename,
+            turn_rules_per_mode[i].len()
+        );
 
-        turn_rules_files.insert(*mode, path);
+        mode_outputs[i].turn_rules_path = path;
     }
 
     // Generate profile_meta.json
@@ -331,35 +366,29 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
     println!("Generating profile_meta.json...");
     let profile_meta_path = config.outdir.join("profile_meta.json");
 
-    // Compute SHA-256 for all artifacts
     let ways_sha256 = compute_file_sha256(&config.ways_path)?;
     let relations_sha256 = compute_file_sha256(&config.relations_path)?;
 
     let mut way_attrs_sha256 = HashMap::new();
     let mut turn_rules_sha256 = HashMap::new();
+    let mut profile_versions = HashMap::new();
 
-    for mode in Mode::all() {
-        let way_attrs_path = &way_attrs_files[mode];
-        let turn_rules_path = &turn_rules_files[mode];
-
+    for out in &mode_outputs {
         way_attrs_sha256.insert(
-            mode.name().to_string(),
-            compute_file_sha256(way_attrs_path)?,
+            out.mode_name.clone(),
+            compute_file_sha256(&out.way_attrs_path)?,
         );
         turn_rules_sha256.insert(
-            mode.name().to_string(),
-            compute_file_sha256(turn_rules_path)?,
+            out.mode_name.clone(),
+            compute_file_sha256(&out.turn_rules_path)?,
         );
+        let model_path = model::model_file_path(&config.models_dir, &out.mode_name);
+        let schema = model::load_model_schema(&model_path)?;
+        profile_versions.insert(out.mode_name.clone(), schema.version);
     }
 
-    // Build profile versions
-    let mut profile_versions = HashMap::new();
-    profile_versions.insert("car".to_string(), CarProfile::version());
-    profile_versions.insert("bike".to_string(), BikeProfile::version());
-    profile_versions.insert("foot".to_string(), FootProfile::version());
-
     let meta = ProfileMeta {
-        abi_version: 1,
+        abi_version: 2,
         profile_versions,
         highway_classes: build_highway_classes(),
         surface_classes: build_surface_classes(),
@@ -372,7 +401,29 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
 
     let meta_json = serde_json::to_string_pretty(&meta)?;
     std::fs::write(&profile_meta_path, meta_json)?;
-    println!("  ✓ Wrote profile_meta.json");
+    println!("  wrote profile_meta.json");
+
+    // Write build_manifest.json
+    let manifest = model::BuildManifest {
+        build_timestamp: chrono::Utc::now().to_rfc3339(),
+        pipeline_version: "3.0.0".to_string(),
+        modes: modes
+            .iter()
+            .map(|m| {
+                let model_path = model::model_file_path(&config.models_dir, &m.name);
+                let sha256 = model::compute_model_sha256(&model_path).unwrap_or([0u8; 32]);
+                model::ManifestMode {
+                    name: m.name.clone(),
+                    index: m.index,
+                    model_version: 1,
+                    model_sha256: hex::encode(sha256),
+                }
+            })
+            .collect(),
+    };
+    let manifest_path = config.outdir.join("build_manifest.json");
+    manifest.write_to(&manifest_path)?;
+    println!("  wrote build_manifest.json");
 
     // Generate step2.lock.json
     let step1_lock_path = config
@@ -381,43 +432,42 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
         .ok_or_else(|| anyhow::anyhow!("ways_path has no parent directory"))?
         .join("step1.lock.json");
 
+    let mut way_attrs_files_mode: HashMap<String, PathBuf> = HashMap::new();
+    let mut turn_rules_files_mode: HashMap<String, PathBuf> = HashMap::new();
+    for out in &mode_outputs {
+        way_attrs_files_mode.insert(out.mode_name.clone(), out.way_attrs_path.clone());
+        turn_rules_files_mode.insert(out.mode_name.clone(), out.turn_rules_path.clone());
+    }
+
     let step2_lock = crate::validate::Step2LockFile::create(
         &step1_lock_path,
         &config.ways_path,
         &config.relations_path,
-        &way_attrs_files,
-        &turn_rules_files,
+        &way_attrs_files_mode,
+        &turn_rules_files_mode,
         &profile_meta_path,
     )?;
 
     let step2_lock_path = config.outdir.join("step2.lock.json");
     step2_lock.write(&step2_lock_path)?;
 
-    // Verify all lock conditions (A-E)
     crate::validate::verify_step2_lock_conditions(
         &step2_lock_path,
         &config.ways_path,
         &config.relations_path,
-        &way_attrs_files,
-        &turn_rules_files,
+        &way_attrs_files_mode,
+        &turn_rules_files_mode,
         &profile_meta_path,
     )?;
 
     println!();
-    println!("✅ Profiling complete!");
-    println!("📋 Lock file: {}", step2_lock_path.display());
+    println!("Profiling complete!");
+    println!("  Lock file: {}", step2_lock_path.display());
 
     Ok(ProfileResult {
-        way_attrs_files,
-        turn_rules_files,
+        modes: mode_outputs,
         profile_meta_path,
     })
-}
-
-/// Find ID by string in dictionary (reverse lookup)
-#[allow(dead_code)]
-fn find_id_by_string(dict: &HashMap<u32, String>, s: &str) -> Option<u32> {
-    dict.iter().find(|(_, v)| v.as_str() == s).map(|(k, _)| *k)
 }
 
 fn extract_turn_triple(members: &[crate::formats::Member]) -> (i64, i64, i64) {

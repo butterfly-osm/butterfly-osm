@@ -28,6 +28,14 @@ pub struct Step4LockFile {
     pub build_time_ms: u64,
 }
 
+/// Per-mode input paths for Step 4 validation
+pub struct Step4ModeInput {
+    pub mode_name: String,
+    pub mode_index: u8,
+    pub way_attrs_path: std::path::PathBuf,
+    pub turn_rules_path: std::path::PathBuf,
+}
+
 /// Run all Step 4 validation checks
 #[allow(clippy::too_many_arguments)]
 pub fn validate_step4(
@@ -37,12 +45,7 @@ pub fn validate_step4(
     nbg_csr_path: &Path,
     nbg_geo_path: &Path,
     nbg_node_map_path: &Path,
-    way_attrs_car_path: &Path,
-    way_attrs_bike_path: &Path,
-    way_attrs_foot_path: &Path,
-    turn_rules_car_path: &Path,
-    turn_rules_bike_path: &Path,
-    turn_rules_foot_path: &Path,
+    mode_inputs: &[Step4ModeInput],
     build_time_ms: u64,
 ) -> Result<Step4LockFile> {
     println!("🔐 Running Step 4 validation lock conditions...");
@@ -90,12 +93,7 @@ pub fn validate_step4(
             &nbg_csr,
             &nbg_geo,
             &nbg_node_map,
-            way_attrs_car_path,
-            way_attrs_bike_path,
-            way_attrs_foot_path,
-            turn_rules_car_path,
-            turn_rules_bike_path,
-            turn_rules_foot_path,
+            mode_inputs,
         )?;
     println!(
         "  ✓ Passed topology checks ({} stray, {} bans, {} only, {} modes) ({:.3}s)",
@@ -255,12 +253,7 @@ fn verify_lock_condition_b_topology(
     nbg_csr: &NbgCsr,
     nbg_geo: &NbgGeo,
     nbg_node_map: &NbgNodeMap,
-    way_attrs_car_path: &Path,
-    way_attrs_bike_path: &Path,
-    way_attrs_foot_path: &Path,
-    turn_rules_car_path: &Path,
-    turn_rules_bike_path: &Path,
-    turn_rules_foot_path: &Path,
+    mode_inputs: &[Step4ModeInput],
 ) -> Result<(usize, usize, usize, usize)> {
     use crate::ebg::turn_processor::build_canonical_turn_rules;
 
@@ -298,14 +291,11 @@ fn verify_lock_condition_b_topology(
 
     // Rebuild canonical turn rules for validation
     let t0 = std::time::Instant::now();
-    let canonical_rules = build_canonical_turn_rules(
-        turn_rules_car_path,
-        turn_rules_bike_path,
-        turn_rules_foot_path,
-        nbg_csr,
-        nbg_geo,
-        nbg_node_map,
-    )?;
+    let turn_inputs: Vec<(u8, &Path)> = mode_inputs
+        .iter()
+        .map(|m| (m.mode_index, m.turn_rules_path.as_path()))
+        .collect();
+    let canonical_rules = build_canonical_turn_rules(&turn_inputs, nbg_csr, nbg_geo, nbg_node_map)?;
     println!(
         "    Build canonical rules: {:.3}s",
         t0.elapsed().as_secs_f64()
@@ -313,8 +303,11 @@ fn verify_lock_condition_b_topology(
 
     // Build way_id → mode_mask lookup
     let t0 = std::time::Instant::now();
-    let way_mode_lookup =
-        build_way_mode_lookup(way_attrs_car_path, way_attrs_bike_path, way_attrs_foot_path)?;
+    let way_attrs_inputs: Vec<(u8, &Path)> = mode_inputs
+        .iter()
+        .map(|m| (m.mode_index, m.way_attrs_path.as_path()))
+        .collect();
+    let way_mode_lookup = build_way_mode_lookup(&way_attrs_inputs)?;
     println!(
         "    Build way mode lookup: {:.3}s",
         t0.elapsed().as_secs_f64()
@@ -575,28 +568,19 @@ fn verify_lock_condition_f_performance(ebg_csr: &EbgCsr) -> Result<f64> {
 
 /// Build way_id → mode_mask lookup from way attributes
 fn build_way_mode_lookup(
-    way_attrs_car_path: &Path,
-    way_attrs_bike_path: &Path,
-    way_attrs_foot_path: &Path,
+    mode_way_attrs: &[(u8, &Path)],
 ) -> Result<std::collections::HashMap<i64, u8>> {
     use crate::formats::way_attrs;
+    use crate::profile_abi::Mode;
     use std::collections::HashMap;
 
     let mut lookup = HashMap::new();
 
-    // Load car attributes
-    for attr in way_attrs::read_all(way_attrs_car_path)? {
-        *lookup.entry(attr.way_id).or_insert(0u8) |= 0b001; // MODE_CAR
-    }
-
-    // Load bike attributes
-    for attr in way_attrs::read_all(way_attrs_bike_path)? {
-        *lookup.entry(attr.way_id).or_insert(0u8) |= 0b010; // MODE_BIKE
-    }
-
-    // Load foot attributes
-    for attr in way_attrs::read_all(way_attrs_foot_path)? {
-        *lookup.entry(attr.way_id).or_insert(0u8) |= 0b100; // MODE_FOOT
+    for &(mode_index, path) in mode_way_attrs {
+        let mode_bit = Mode(mode_index).bit();
+        for attr in way_attrs::read_all(path)? {
+            *lookup.entry(attr.way_id).or_insert(0u8) |= mode_bit;
+        }
     }
 
     Ok(lookup)
