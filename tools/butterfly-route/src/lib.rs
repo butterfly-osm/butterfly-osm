@@ -13,28 +13,28 @@
 //! Key principle: Edge-based graph is the single source of truth for routing.
 //! All queries (P2P, matrix, isochrone) use the same EBG-based CCH.
 
-pub mod formats;
-pub mod ingest;
-pub mod validate;
+pub mod analysis;
 pub mod cli;
+pub mod ebg;
+pub mod formats;
+pub mod hybrid;
+pub mod ingest;
+pub mod matrix;
+pub mod nbg;
+pub mod nbg_ch;
+pub mod profile;
 pub mod profile_abi;
 pub mod profiles;
-pub mod profile;
-pub mod nbg;
-pub mod ebg;
+pub mod range;
 pub mod step5;
 pub mod step6;
 pub mod step6_lifted;
 pub mod step7;
 pub mod step8;
 pub mod step9;
-pub mod range;
-pub mod matrix;
-pub mod hybrid;
-pub mod analysis;
-pub mod nbg_ch;
+pub mod validate;
 
-pub use formats::{WaysFile, RelationsFile};
+pub use formats::{RelationsFile, WaysFile};
+pub use profile_abi::{Mode, Profile, TurnInput, TurnOutput, TurnRuleKind, WayInput, WayOutput};
+pub use profiles::{BikeProfile, CarProfile, FootProfile};
 pub use validate::{LockFile, Step2LockFile};
-pub use profile_abi::{Mode, WayInput, WayOutput, TurnInput, TurnOutput, TurnRuleKind, Profile};
-pub use profiles::{CarProfile, BikeProfile, FootProfile};

@@ -1,7 +1,8 @@
-# Makefile for butterfly-dl library builds
+# Makefile for butterfly-dl C library builds
 #
-# This provides convenience targets for building different library types
-# and installing them for system-wide use.
+# Run from tools/butterfly-dl/ (this file's location).
+# Cargo discovers the workspace root automatically, so target/ paths
+# resolve to ../../target/ relative to this directory.
 
 CARGO := cargo
 PREFIX ?= /usr/local
@@ -17,7 +18,7 @@ all: rust-lib c-lib
 # Build Rust library (rlib) for Rust projects
 rust-lib:
 	@echo "🦀 Building Rust library..."
-	$(CARGO) build --release
+	$(CARGO) build --release -p butterfly-dl
 
 # Build C-compatible libraries (static and dynamic)
 c-lib: static dynamic
@@ -25,13 +26,13 @@ c-lib: static dynamic
 # Build static library (.a) for C/C++
 static:
 	@echo "📚 Building static library for C/C++..."
-	$(CARGO) build --release --features c-bindings
+	$(CARGO) build --release -p butterfly-dl --features c-bindings
 	@echo "✅ Static library: target/release/libbutterfly_dl.a"
 
 # Build dynamic library (.so/.dylib/.dll) for C/C++
 dynamic:
 	@echo "🔗 Building dynamic library for C/C++..."
-	$(CARGO) build --release --features c-bindings
+	$(CARGO) build --release -p butterfly-dl --features c-bindings
 	@if [ -f target/release/libbutterfly_dl.so ]; then \
 		echo "✅ Dynamic library: target/release/libbutterfly_dl.so"; \
 	elif [ -f target/release/libbutterfly_dl.dylib ]; then \
@@ -79,9 +80,9 @@ examples: c-lib
 # Run tests
 test:
 	@echo "🧪 Running Rust tests..."
-	$(CARGO) test
+	$(CARGO) test -p butterfly-dl
 	@echo "🧪 Running C FFI tests..."
-	$(CARGO) test --features c-bindings
+	$(CARGO) test -p butterfly-dl --features c-bindings
 
 # Clean build artifacts
 clean:
@@ -92,16 +93,16 @@ clean:
 # Development helpers
 dev-build:
 	@echo "🔧 Development build with all features..."
-	$(CARGO) build --all-features
+	$(CARGO) build --all-features -p butterfly-dl
 
 check:
 	@echo "🔍 Checking code..."
-	$(CARGO) check --all-features
-	$(CARGO) clippy --all-features
+	$(CARGO) check --all-features -p butterfly-dl
+	$(CARGO) clippy --all-features -p butterfly-dl
 
 fmt:
 	@echo "📐 Formatting code..."
-	$(CARGO) fmt
+	$(CARGO) fmt -p butterfly-dl
 
 # Show build information
 info:

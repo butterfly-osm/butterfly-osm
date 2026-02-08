@@ -69,10 +69,10 @@ pub struct EquivalenceAnalysis {
 ///
 /// For each node, computes K = number of unique behavior signatures among incoming edges.
 pub fn analyze_equivalence_classes(
-    ebg_nodes: &[(u32, u32)],   // (tail_nbg, head_nbg) for each EBG node
-    ebg_offsets: &[u64],        // CSR offsets for EBG adjacency
-    ebg_targets: &[u32],        // CSR targets (EBG node IDs)
-    turn_costs: &[u32],         // Turn cost for each EBG arc
+    ebg_nodes: &[(u32, u32)], // (tail_nbg, head_nbg) for each EBG node
+    ebg_offsets: &[u64],      // CSR offsets for EBG adjacency
+    ebg_targets: &[u32],      // CSR targets (EBG node IDs)
+    turn_costs: &[u32],       // Turn cost for each EBG arc
 ) -> EquivalenceAnalysis {
     use std::collections::HashSet;
 
@@ -101,12 +101,7 @@ pub fn analyze_equivalence_classes(
         let mut signatures: HashSet<BehaviorSignature> = HashSet::new();
 
         for &in_ebg in incoming_edges {
-            let sig = compute_signature(
-                in_ebg,
-                ebg_offsets,
-                ebg_targets,
-                turn_costs,
-            );
+            let sig = compute_signature(in_ebg, ebg_offsets, ebg_targets, turn_costs);
             signatures.insert(sig);
         }
 
@@ -218,28 +213,46 @@ impl EquivalenceAnalysis {
         println!("    max: {:>8}", self.indeg_max);
         println!("───────────────────────────────────────────────────────────────");
         println!("  Node breakdown:");
-        println!("    Fully collapsed (K=1):     {:>8} ({:.1}%)",
+        println!(
+            "    Fully collapsed (K=1):     {:>8} ({:.1}%)",
             self.nodes_fully_collapsed,
-            100.0 * self.nodes_fully_collapsed as f64 / self.n_nodes as f64);
-        println!("    Partial reduction (K<indeg): {:>6} ({:.1}%)",
+            100.0 * self.nodes_fully_collapsed as f64 / self.n_nodes as f64
+        );
+        println!(
+            "    Partial reduction (K<indeg): {:>6} ({:.1}%)",
             self.nodes_with_reduction,
-            100.0 * self.nodes_with_reduction as f64 / self.n_nodes as f64);
-        println!("    No benefit (K=indeg):      {:>8} ({:.1}%)",
+            100.0 * self.nodes_with_reduction as f64 / self.n_nodes as f64
+        );
+        println!(
+            "    No benefit (K=indeg):      {:>8} ({:.1}%)",
             self.nodes_no_benefit,
-            100.0 * self.nodes_no_benefit as f64 / self.n_nodes as f64);
+            100.0 * self.nodes_no_benefit as f64 / self.n_nodes as f64
+        );
         println!("───────────────────────────────────────────────────────────────");
 
         // Verdict
         if self.k_p50 <= 4 {
             println!("  ✅ VERDICT: Equivalence-class hybrid WILL HELP");
-            println!("     Median K={} is small → significant state reduction possible", self.k_p50);
-            println!("     Reduction ratio: {:.2}x fewer states than edge-based", self.reduction_ratio);
+            println!(
+                "     Median K={} is small → significant state reduction possible",
+                self.k_p50
+            );
+            println!(
+                "     Reduction ratio: {:.2}x fewer states than edge-based",
+                self.reduction_ratio
+            );
         } else if self.k_p50 <= 8 {
             println!("  ⚠️ VERDICT: Equivalence-class hybrid MAY HELP");
-            println!("     Median K={} is moderate → some reduction possible", self.k_p50);
+            println!(
+                "     Median K={} is moderate → some reduction possible",
+                self.k_p50
+            );
         } else {
             println!("  ❌ VERDICT: Equivalence-class hybrid UNLIKELY to help");
-            println!("     Median K={} is high → edge-based is likely optimal", self.k_p50);
+            println!(
+                "     Median K={} is high → edge-based is likely optimal",
+                self.k_p50
+            );
         }
 
         println!("═══════════════════════════════════════════════════════════════\n");
@@ -287,8 +300,8 @@ pub struct DensifierAnalysis {
 /// Densifier score = in-degree × out-degree
 /// High-score nodes cause fill-in explosion if contracted early
 pub fn analyze_densifiers(
-    offsets: &[u64],     // CSR offsets for hybrid graph
-    targets: &[u32],     // CSR targets
+    offsets: &[u64], // CSR offsets for hybrid graph
+    targets: &[u32], // CSR targets
 ) -> DensifierAnalysis {
     let n_states = offsets.len() - 1;
 
@@ -390,27 +403,51 @@ impl DensifierAnalysis {
         println!("    max:  {:>8}", self.inout_max);
         println!("───────────────────────────────────────────────────────────────");
         println!("  Out-degree distribution:");
-        println!("    p50: {:>8}  p90: {:>8}  p99: {:>8}  max: {:>8}",
-            self.outdeg_p50, self.outdeg_p90, self.outdeg_p99, self.outdeg_max);
+        println!(
+            "    p50: {:>8}  p90: {:>8}  p99: {:>8}  max: {:>8}",
+            self.outdeg_p50, self.outdeg_p90, self.outdeg_p99, self.outdeg_max
+        );
         println!("  In-degree distribution:");
-        println!("    p50: {:>8}  p90: {:>8}  p99: {:>8}  max: {:>8}",
-            self.indeg_p50, self.indeg_p90, self.indeg_p99, self.indeg_max);
+        println!(
+            "    p50: {:>8}  p90: {:>8}  p99: {:>8}  max: {:>8}",
+            self.indeg_p50, self.indeg_p90, self.indeg_p99, self.indeg_max
+        );
         println!("───────────────────────────────────────────────────────────────");
         println!("  Thresholds for constrained ordering:");
-        println!("    Top 1%  (force late): in×out > {:>6}", self.threshold_1pct);
-        println!("    Top 5%  (force late): in×out > {:>6}", self.threshold_5pct);
+        println!(
+            "    Top 1%  (force late): in×out > {:>6}",
+            self.threshold_1pct
+        );
+        println!(
+            "    Top 5%  (force late): in×out > {:>6}",
+            self.threshold_5pct
+        );
         println!("───────────────────────────────────────────────────────────────");
         println!("  States above thresholds:");
-        println!("    in×out > 100: {:>8} ({:.3}%)",
-            self.count_above_100, 100.0 * self.count_above_100 as f64 / self.n_states as f64);
-        println!("    in×out > 50:  {:>8} ({:.3}%)",
-            self.count_above_50, 100.0 * self.count_above_50 as f64 / self.n_states as f64);
-        println!("    in×out > 25:  {:>8} ({:.3}%)",
-            self.count_above_25, 100.0 * self.count_above_25 as f64 / self.n_states as f64);
+        println!(
+            "    in×out > 100: {:>8} ({:.3}%)",
+            self.count_above_100,
+            100.0 * self.count_above_100 as f64 / self.n_states as f64
+        );
+        println!(
+            "    in×out > 50:  {:>8} ({:.3}%)",
+            self.count_above_50,
+            100.0 * self.count_above_50 as f64 / self.n_states as f64
+        );
+        println!(
+            "    in×out > 25:  {:>8} ({:.3}%)",
+            self.count_above_25,
+            100.0 * self.count_above_25 as f64 / self.n_states as f64
+        );
         println!("───────────────────────────────────────────────────────────────");
         println!("  Top 20 densifiers:");
         for (i, (state, score)) in self.top_densifiers.iter().take(10).enumerate() {
-            println!("    #{:>2}: state {:>8} → in×out = {:>6}", i + 1, state, score);
+            println!(
+                "    #{:>2}: state {:>8} → in×out = {:>6}",
+                i + 1,
+                state,
+                score
+            );
         }
         if self.top_densifiers.len() > 10 {
             println!("    ... (showing top 10 of 20)");
@@ -419,12 +456,17 @@ impl DensifierAnalysis {
 
         // Recommendations
         if self.inout_max > 500 {
-            println!("  ⚠️  WARNING: Very high max densifier ({})", self.inout_max);
+            println!(
+                "  ⚠️  WARNING: Very high max densifier ({})",
+                self.inout_max
+            );
             println!("     These nodes MUST be contracted late to avoid fill-in explosion");
         }
         if self.count_above_100 > 0 {
-            println!("  → Recommendation: Force {} states with in×out > 100 to late ranks",
-                self.count_above_100);
+            println!(
+                "  → Recommendation: Force {} states with in×out > 100 to late ranks",
+                self.count_above_100
+            );
         }
         println!("═══════════════════════════════════════════════════════════════\n");
     }

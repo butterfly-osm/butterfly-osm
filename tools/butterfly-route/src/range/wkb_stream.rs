@@ -24,8 +24,8 @@
 //!     y: 8 bytes (f64, latitude)
 //! ```
 
-use std::io::Write;
 use super::contour::ContourResult;
+use std::io::Write;
 
 /// Compute 2x signed area of a ring (handles both open and closed rings).
 /// Positive = CW, negative = CCW (in standard x-right, y-up coordinates).
@@ -102,7 +102,8 @@ pub fn encode_polygon_wkb(contour: &ContourResult) -> Option<Vec<u8>> {
     buf.write_all(&(n_rings as u32).to_le_bytes()).ok()?;
 
     // Write outer ring
-    buf.write_all(&(outer_ring.len() as u32).to_le_bytes()).ok()?;
+    buf.write_all(&(outer_ring.len() as u32).to_le_bytes())
+        .ok()?;
     for &(lon, lat) in &outer_ring {
         buf.write_all(&lon.to_le_bytes()).ok()?;
         buf.write_all(&lat.to_le_bytes()).ok()?;
@@ -117,7 +118,8 @@ pub fn encode_polygon_wkb(contour: &ContourResult) -> Option<Vec<u8>> {
                 closed_hole.push(*first);
             }
         }
-        buf.write_all(&(closed_hole.len() as u32).to_le_bytes()).ok()?;
+        buf.write_all(&(closed_hole.len() as u32).to_le_bytes())
+            .ok()?;
         for &(lon, lat) in &closed_hole {
             buf.write_all(&lon.to_le_bytes()).ok()?;
             buf.write_all(&lat.to_le_bytes()).ok()?;
@@ -209,11 +211,13 @@ impl IsochroneBatch {
 
 /// Convert batch to Arrow RecordBatch
 #[cfg(any())] // Arrow feature not enabled - keep code for reference
-pub fn batch_to_arrow(batch: &IsochroneBatch) -> Result<arrow::record_batch::RecordBatch, arrow::error::ArrowError> {
-    use std::sync::Arc;
+pub fn batch_to_arrow(
+    batch: &IsochroneBatch,
+) -> Result<arrow::record_batch::RecordBatch, arrow::error::ArrowError> {
     use arrow::array::{ArrayRef, BinaryArray, UInt32Array, UInt64Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
+    use std::sync::Arc;
 
     let schema = Arc::new(Schema::new(vec![
         Field::new("origin_id", DataType::UInt32, false),
@@ -225,11 +229,16 @@ pub fn batch_to_arrow(batch: &IsochroneBatch) -> Result<arrow::record_batch::Rec
 
     let origin_ids: ArrayRef = Arc::new(UInt32Array::from(batch.origin_ids.clone()));
     let thresholds: ArrayRef = Arc::new(UInt32Array::from(batch.threshold_ds.clone()));
-    let wkb: ArrayRef = Arc::new(BinaryArray::from_iter_values(batch.wkb_data.iter().map(|v| v.as_slice())));
+    let wkb: ArrayRef = Arc::new(BinaryArray::from_iter_values(
+        batch.wkb_data.iter().map(|v| v.as_slice()),
+    ));
     let n_vertices: ArrayRef = Arc::new(UInt32Array::from(batch.n_vertices.clone()));
     let elapsed: ArrayRef = Arc::new(UInt64Array::from(batch.elapsed_us.clone()));
 
-    RecordBatch::try_new(schema, vec![origin_ids, thresholds, wkb, n_vertices, elapsed])
+    RecordBatch::try_new(
+        schema,
+        vec![origin_ids, thresholds, wkb, n_vertices, elapsed],
+    )
 }
 
 /// Write multiple isochrones to a bytes buffer in newline-delimited JSON (NDJSON) format
@@ -241,11 +250,7 @@ pub fn write_ndjson(records: &[IsochroneRecord]) -> Vec<u8> {
         let wkb_b64 = base64_encode(&record.wkb);
         let line = format!(
             r#"{{"origin_id":{},"threshold_ds":{},"wkb":"{}","n_vertices":{},"elapsed_us":{}}}"#,
-            record.origin_id,
-            record.threshold_ds,
-            wkb_b64,
-            record.n_vertices,
-            record.elapsed_us
+            record.origin_id, record.threshold_ds, wkb_b64, record.n_vertices, record.elapsed_us
         );
         buf.extend_from_slice(line.as_bytes());
         buf.push(b'\n');
@@ -285,11 +290,7 @@ mod tests {
     fn test_wkb_triangle() {
         // Create a simple triangle
         let contour = ContourResult {
-            outer_ring: vec![
-                (0.0, 0.0),
-                (1.0, 0.0),
-                (0.5, 1.0),
-            ],
+            outer_ring: vec![(0.0, 0.0), (1.0, 0.0), (0.5, 1.0)],
             holes: vec![],
             stats: Default::default(),
         };
@@ -371,13 +372,11 @@ mod tests {
     #[test]
     fn test_wkb_outer_ring_is_ccw() {
         // Provide a CW ring (0,0)→(0,1)→(1,1)→(1,0) is CW, verify WKB output is CCW
-        let cw_ring = vec![
-            (0.0, 0.0),
-            (0.0, 1.0),
-            (1.0, 1.0),
-            (1.0, 0.0),
-        ];
-        assert!(signed_area_2(&cw_ring) > 0.0, "input ring must be CW for this test");
+        let cw_ring = vec![(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0)];
+        assert!(
+            signed_area_2(&cw_ring) > 0.0,
+            "input ring must be CW for this test"
+        );
         let contour = ContourResult {
             outer_ring: cw_ring,
             holes: vec![],
@@ -391,8 +390,8 @@ mod tests {
         let mut ring: Vec<(f64, f64)> = Vec::new();
         for i in 0..n_pts {
             let off = 13 + i * 16;
-            let x = f64::from_le_bytes(wkb[off..off+8].try_into().unwrap());
-            let y = f64::from_le_bytes(wkb[off+8..off+16].try_into().unwrap());
+            let x = f64::from_le_bytes(wkb[off..off + 8].try_into().unwrap());
+            let y = f64::from_le_bytes(wkb[off + 8..off + 16].try_into().unwrap());
             ring.push((x, y));
         }
 

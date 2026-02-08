@@ -28,9 +28,9 @@ use crate::step9::state::DownReverseAdj;
 /// Filters out INF-weight edges at build time
 #[derive(Clone)]
 pub struct UpAdjFlat {
-    pub offsets: Vec<u64>,   // n_nodes + 1
-    pub targets: Vec<u32>,   // target node for edge
-    pub weights: Vec<u32>,   // weight of edge (embedded)
+    pub offsets: Vec<u64>, // n_nodes + 1
+    pub targets: Vec<u32>, // target node for edge
+    pub weights: Vec<u32>, // weight of edge (embedded)
 }
 
 impl UpAdjFlat {
@@ -98,9 +98,9 @@ impl UpAdjFlat {
 /// This eliminates one memory indirection in the hot path
 #[derive(Clone)]
 pub struct DownReverseAdjFlat {
-    pub offsets: Vec<u64>,   // n_nodes + 1
-    pub sources: Vec<u32>,   // source node x for reverse edge
-    pub weights: Vec<u32>,   // weight of edge x→y (embedded, not indirect)
+    pub offsets: Vec<u64>, // n_nodes + 1
+    pub sources: Vec<u32>, // source node x for reverse edge
+    pub weights: Vec<u32>, // weight of edge x→y (embedded, not indirect)
 }
 
 impl DownReverseAdjFlat {
@@ -170,9 +170,9 @@ impl DownReverseAdjFlat {
 /// Used for stall-on-demand optimization in forward search
 #[derive(Clone)]
 pub struct UpReverseAdjFlat {
-    pub offsets: Vec<u64>,   // n_nodes + 1
-    pub sources: Vec<u32>,   // source node p for reverse edge (p → u means p has UP edge to u)
-    pub weights: Vec<u32>,   // weight of UP edge p→u
+    pub offsets: Vec<u64>, // n_nodes + 1
+    pub sources: Vec<u32>, // source node p for reverse edge (p → u means p has UP edge to u)
+    pub weights: Vec<u32>, // weight of UP edge p→u
 }
 
 impl UpReverseAdjFlat {
@@ -294,7 +294,9 @@ impl DAryHeap {
         debug_assert!(
             pos < self.heap.len(),
             "decrease: handle {} out of bounds (heap len {}), index/node {}",
-            pos, self.heap.len(), index
+            pos,
+            self.heap.len(),
+            index
         );
         self.heap[pos] = (weight, index);
         self.heapify_up(pos, handles);
@@ -418,7 +420,13 @@ struct SearchState {
 impl SearchState {
     fn new(n_nodes: usize, heap_capacity: usize) -> Self {
         Self {
-            entries: vec![NodeEntry { dist: u32::MAX, version: 0 }; n_nodes],
+            entries: vec![
+                NodeEntry {
+                    dist: u32::MAX,
+                    version: 0
+                };
+                n_nodes
+            ],
             current_version: 0,
             heap: DAryHeap::new(heap_capacity),
             handles: vec![INVALID_HANDLE; n_nodes],
@@ -596,7 +604,13 @@ impl PrefixSumBuckets {
         }
         // Also keep legacy items for backward compatibility
         if self.items.len() < total_items {
-            self.items.resize(total_items, BucketEntry { dist: 0, source_idx: 0 });
+            self.items.resize(
+                total_items,
+                BucketEntry {
+                    dist: 0,
+                    source_idx: 0,
+                },
+            );
         }
 
         // Reset counts for second pass (reuse as write cursors)
@@ -641,7 +655,8 @@ impl PrefixSumBuckets {
     }
 
     fn total_items(&self) -> usize {
-        self.active_nodes.iter()
+        self.active_nodes
+            .iter()
             .map(|&n| self.counts[n as usize] as usize)
             .sum()
     }
@@ -689,11 +704,16 @@ impl SortedBuckets {
     }
 
     fn n_nodes_with_buckets(&self) -> usize {
-        if self.items.is_empty() { return 0; }
+        if self.items.is_empty() {
+            return 0;
+        }
         let mut count = 1;
         let mut prev = self.items[0].0;
         for &(n, _, _) in &self.items[1..] {
-            if n != prev { count += 1; prev = n; }
+            if n != prev {
+                count += 1;
+                prev = n;
+            }
         }
         count
     }
@@ -718,7 +738,7 @@ pub struct BucketM2MStats {
     pub bucket_items: usize,
     pub bucket_nodes: usize,
     pub join_operations: usize,
-    pub skipped_joins: usize,  // Bucket entries skipped due to bound-aware pruning
+    pub skipped_joins: usize, // Bucket entries skipped due to bound-aware pruning
     pub forward_time_ms: u64,
     pub sort_time_ms: u64,
     pub backward_time_ms: u64,
@@ -1309,10 +1329,7 @@ pub fn forward_build_buckets(
     let mut buckets = PrefixSumBuckets::new(n_nodes);
     buckets.build(&bucket_items);
 
-    SourceBuckets {
-        buckets,
-        n_sources,
-    }
+    SourceBuckets { buckets, n_sources }
 }
 
 /// Backward phase only: compute distances for targets using prebuilt source buckets
@@ -1422,7 +1439,7 @@ fn forward_fill_buckets_with_stall(
 
         if should_stall {
             stalls += 1;
-            continue;  // Skip relaxing outgoing edges
+            continue; // Skip relaxing outgoing edges
         }
 
         non_stalls += 1;
@@ -1461,7 +1478,10 @@ fn forward_fill_buckets_opt(
         let start = topo.up_offsets[u as usize] as usize;
         let end = topo.up_offsets[u as usize + 1] as usize;
 
-        for (&v, &w) in topo.up_targets[start..end].iter().zip(&weights_up[start..end]) {
+        for (&v, &w) in topo.up_targets[start..end]
+            .iter()
+            .zip(&weights_up[start..end])
+        {
             if w == u32::MAX {
                 continue;
             }
@@ -1481,7 +1501,8 @@ fn backward_join_opt(
     n_targets: usize,
     target_idx: usize,
     state: &mut SearchState,
-) -> (usize, usize) {  // (visited, joins)
+) -> (usize, usize) {
+    // (visited, joins)
     state.start_search();
     state.relax(target, 0);
 
@@ -1588,7 +1609,10 @@ pub fn table_bucket_parallel(
     let n_targets = targets.len();
 
     if n_sources == 0 || n_targets == 0 {
-        return (vec![u32::MAX; n_sources * n_targets], BucketM2MStats::default());
+        return (
+            vec![u32::MAX; n_sources * n_targets],
+            BucketM2MStats::default(),
+        );
     }
 
     let mut stats = BucketM2MStats {
@@ -1674,10 +1698,7 @@ pub fn table_bucket_parallel(
     stats.backward_time_ms = backward_start.elapsed().as_millis() as u64;
 
     // Convert atomic matrix to regular Vec
-    let result_matrix: Vec<u32> = matrix
-        .into_iter()
-        .map(|a| a.into_inner())
-        .collect();
+    let result_matrix: Vec<u32> = matrix.into_iter().map(|a| a.into_inner()).collect();
 
     (result_matrix, stats)
 }

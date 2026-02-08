@@ -6,9 +6,9 @@
 //!
 //! rank(edge_state) = base_rank(physical_node) * block_size + local_index
 
-use anyhow::Result;
-use crate::formats::{EbgCsr, EbgNodes};
 use super::ordering::NbgNdOrdering;
+use crate::formats::{EbgCsr, EbgNodes};
+use anyhow::Result;
 
 /// Lifted ordering for EBG
 pub struct LiftedEbgOrdering {
@@ -84,7 +84,10 @@ pub fn lift_ordering_to_ebg(
         rank_check[rank] = true;
     }
 
-    println!("  Lifted ordering: {} states, ranks 0..{}", n_states, n_states);
+    println!(
+        "  Lifted ordering: {} states, ranks 0..{}",
+        n_states, n_states
+    );
 
     Ok(LiftedEbgOrdering {
         n_states: n_states as u32,

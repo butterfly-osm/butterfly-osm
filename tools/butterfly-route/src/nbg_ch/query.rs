@@ -6,8 +6,8 @@
 //! 3. Sorted buckets with binary search
 //! 4. Reusable search state (zero allocation per query)
 
-use std::collections::BinaryHeap;
 use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 
 use super::NbgChTopo;
 
@@ -52,7 +52,13 @@ pub struct SearchState {
 impl SearchState {
     pub fn new(n_nodes: usize) -> Self {
         Self {
-            dist: vec![DistEntry { dist: u32::MAX, version: 0 }; n_nodes],
+            dist: vec![
+                DistEntry {
+                    dist: u32::MAX,
+                    version: 0
+                };
+                n_nodes
+            ],
             version: 0,
             heap: BinaryHeap::with_capacity(1024),
         }
@@ -83,7 +89,10 @@ impl SearchState {
 
     #[inline(always)]
     fn set_dist(&mut self, node: u32, dist: u32) {
-        self.dist[node as usize] = DistEntry { dist, version: self.version };
+        self.dist[node as usize] = DistEntry {
+            dist,
+            version: self.version,
+        };
     }
 }
 
@@ -154,7 +163,8 @@ impl NbgBucketM2M {
         // Phase 1: Forward searches from sources
         let mut fwd_visited = 0u64;
         for (src_idx, &source) in sources.iter().enumerate() {
-            fwd_visited += self.forward_search(source, src_idx as u32, &mut state, &mut buckets) as u64;
+            fwd_visited +=
+                self.forward_search(source, src_idx as u32, &mut state, &mut buckets) as u64;
         }
 
         let fwd_time = start_time.elapsed().as_micros();
@@ -171,7 +181,12 @@ impl NbgBucketM2M {
 
         for (tgt_idx, &target) in targets.iter().enumerate() {
             let (visited, j) = self.backward_search(
-                target, tgt_idx, &buckets, &mut matrix, n_targets, &mut state
+                target,
+                tgt_idx,
+                &buckets,
+                &mut matrix,
+                n_targets,
+                &mut state,
             );
             bwd_visited += visited as u64;
             joins += j;

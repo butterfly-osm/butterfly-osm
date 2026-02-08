@@ -8,14 +8,11 @@
 //! 2. How many junctions have non-trivial turn behavior?
 //! 3. What fraction of searches would need junction expansion?
 
+use anyhow::Result;
 use std::collections::HashSet;
 use std::path::Path;
-use anyhow::Result;
 
-use crate::formats::{
-    EbgNodesFile, EbgCsrFile, TurnTableFile, turn_rules, TurnKind,
-    NbgCsrFile,
-};
+use crate::formats::{turn_rules, EbgCsrFile, EbgNodesFile, NbgCsrFile, TurnKind, TurnTableFile};
 
 /// Result of turn model analysis
 #[derive(Debug, Clone)]
@@ -35,7 +32,7 @@ pub struct TurnModelAnalysis {
     // Junction analysis (NBG level)
     pub n_nbg_nodes: usize,
     pub n_junctions_with_restriction: usize,
-    pub n_junctions_multi_way: usize,  // degree > 2
+    pub n_junctions_multi_way: usize, // degree > 2
     pub n_junctions_degree_3: usize,
     pub n_junctions_degree_4_plus: usize,
 
@@ -63,12 +60,12 @@ pub struct TurnModelAnalysis {
 
 #[derive(Debug, Clone, Default)]
 pub struct JunctionBreakdown {
-    pub has_explicit_restriction: usize,  // OSM turn:restriction
-    pub has_uturn_ban: usize,             // Implicit U-turn prohibition
-    pub has_oneway_constraint: usize,     // Oneway roads
-    pub has_mode_restriction: usize,      // Different modes allowed on different exits
-    pub total_turn_relevant: usize,       // Union of above
-    pub turn_free: usize,                 // Junctions with no turn constraints
+    pub has_explicit_restriction: usize, // OSM turn:restriction
+    pub has_uturn_ban: usize,            // Implicit U-turn prohibition
+    pub has_oneway_constraint: usize,    // Oneway roads
+    pub has_mode_restriction: usize,     // Different modes allowed on different exits
+    pub total_turn_relevant: usize,      // Union of above
+    pub turn_free: usize,                // Junctions with no turn constraints
 }
 
 impl TurnModelAnalysis {
@@ -82,25 +79,49 @@ impl TurnModelAnalysis {
 
         println!("\nTurn Table Entries (deduplicated):");
         println!("  Total:   {} entries", self.n_turn_entries);
-        println!("  Ban:     {} ({:.1}%)", self.n_ban_entries,
-                 self.n_ban_entries as f64 * 100.0 / self.n_turn_entries.max(1) as f64);
-        println!("  Only:    {} ({:.1}%)", self.n_only_entries,
-                 self.n_only_entries as f64 * 100.0 / self.n_turn_entries.max(1) as f64);
-        println!("  Penalty: {} ({:.1}%)", self.n_penalty_entries,
-                 self.n_penalty_entries as f64 * 100.0 / self.n_turn_entries.max(1) as f64);
-        println!("  None:    {} ({:.1}%)", self.n_none_entries,
-                 self.n_none_entries as f64 * 100.0 / self.n_turn_entries.max(1) as f64);
+        println!(
+            "  Ban:     {} ({:.1}%)",
+            self.n_ban_entries,
+            self.n_ban_entries as f64 * 100.0 / self.n_turn_entries.max(1) as f64
+        );
+        println!(
+            "  Only:    {} ({:.1}%)",
+            self.n_only_entries,
+            self.n_only_entries as f64 * 100.0 / self.n_turn_entries.max(1) as f64
+        );
+        println!(
+            "  Penalty: {} ({:.1}%)",
+            self.n_penalty_entries,
+            self.n_penalty_entries as f64 * 100.0 / self.n_turn_entries.max(1) as f64
+        );
+        println!(
+            "  None:    {} ({:.1}%)",
+            self.n_none_entries,
+            self.n_none_entries as f64 * 100.0 / self.n_turn_entries.max(1) as f64
+        );
 
         println!("\nNBG Junction Analysis:");
         println!("  Total NBG nodes:        {}", self.n_nbg_nodes);
-        println!("  Multi-way (degree > 2): {} ({:.2}%)", self.n_junctions_multi_way,
-                 self.n_junctions_multi_way as f64 * 100.0 / self.n_nbg_nodes.max(1) as f64);
-        println!("  Degree = 3:             {} ({:.2}%)", self.n_junctions_degree_3,
-                 self.n_junctions_degree_3 as f64 * 100.0 / self.n_nbg_nodes.max(1) as f64);
-        println!("  Degree >= 4:            {} ({:.2}%)", self.n_junctions_degree_4_plus,
-                 self.n_junctions_degree_4_plus as f64 * 100.0 / self.n_nbg_nodes.max(1) as f64);
-        println!("  With explicit restrict: {} ({:.2}%)", self.n_junctions_with_restriction,
-                 self.n_junctions_with_restriction as f64 * 100.0 / self.n_nbg_nodes.max(1) as f64);
+        println!(
+            "  Multi-way (degree > 2): {} ({:.2}%)",
+            self.n_junctions_multi_way,
+            self.n_junctions_multi_way as f64 * 100.0 / self.n_nbg_nodes.max(1) as f64
+        );
+        println!(
+            "  Degree = 3:             {} ({:.2}%)",
+            self.n_junctions_degree_3,
+            self.n_junctions_degree_3 as f64 * 100.0 / self.n_nbg_nodes.max(1) as f64
+        );
+        println!(
+            "  Degree >= 4:            {} ({:.2}%)",
+            self.n_junctions_degree_4_plus,
+            self.n_junctions_degree_4_plus as f64 * 100.0 / self.n_nbg_nodes.max(1) as f64
+        );
+        println!(
+            "  With explicit restrict: {} ({:.2}%)",
+            self.n_junctions_with_restriction,
+            self.n_junctions_with_restriction as f64 * 100.0 / self.n_nbg_nodes.max(1) as f64
+        );
 
         println!("\nJunction Degree Distribution:");
         println!("  p50: {}", self.degree_p50);
@@ -111,48 +132,83 @@ impl TurnModelAnalysis {
 
         println!("\nEBG Arc Analysis:");
         println!("  Total arcs:        {}", self.n_ebg_arcs);
-        println!("  With ban:          {} ({:.2}%)", self.n_arcs_with_ban,
-                 self.n_arcs_with_ban as f64 * 100.0 / self.n_ebg_arcs.max(1) as f64);
-        println!("  With penalty:      {} ({:.2}%)", self.n_arcs_with_penalty,
-                 self.n_arcs_with_penalty as f64 * 100.0 / self.n_ebg_arcs.max(1) as f64);
-        println!("  Allow all modes:   {} ({:.2}%)", self.n_arcs_allow_all_modes,
-                 self.n_arcs_allow_all_modes as f64 * 100.0 / self.n_ebg_arcs.max(1) as f64);
+        println!(
+            "  With ban:          {} ({:.2}%)",
+            self.n_arcs_with_ban,
+            self.n_arcs_with_ban as f64 * 100.0 / self.n_ebg_arcs.max(1) as f64
+        );
+        println!(
+            "  With penalty:      {} ({:.2}%)",
+            self.n_arcs_with_penalty,
+            self.n_arcs_with_penalty as f64 * 100.0 / self.n_ebg_arcs.max(1) as f64
+        );
+        println!(
+            "  Allow all modes:   {} ({:.2}%)",
+            self.n_arcs_allow_all_modes,
+            self.n_arcs_allow_all_modes as f64 * 100.0 / self.n_ebg_arcs.max(1) as f64
+        );
 
         println!("\nU-Turn Analysis:");
         println!("  Potential U-turns:     {}", self.n_potential_uturns);
-        println!("  Allowed for car:       {} ({:.2}%)", self.n_uturns_allowed_car,
-                 self.n_uturns_allowed_car as f64 * 100.0 / self.n_potential_uturns.max(1) as f64);
+        println!(
+            "  Allowed for car:       {} ({:.2}%)",
+            self.n_uturns_allowed_car,
+            self.n_uturns_allowed_car as f64 * 100.0 / self.n_potential_uturns.max(1) as f64
+        );
         println!("  At dead-ends only:     {}", self.n_uturns_at_deadends);
 
         println!("\nTurn-Relevant Junction Breakdown:");
         let b = &self.junctions_by_reason;
-        println!("  Has explicit OSM restriction: {} ({:.2}%)", b.has_explicit_restriction,
-                 b.has_explicit_restriction as f64 * 100.0 / self.n_nbg_nodes.max(1) as f64);
+        println!(
+            "  Has explicit OSM restriction: {} ({:.2}%)",
+            b.has_explicit_restriction,
+            b.has_explicit_restriction as f64 * 100.0 / self.n_nbg_nodes.max(1) as f64
+        );
         println!("\n  (Informational - NOT counted as turn-relevant:)");
-        println!("  Multi-way junctions (U-turn policy): {} ({:.2}%)", b.has_uturn_ban,
-                 b.has_uturn_ban as f64 * 100.0 / self.n_nbg_nodes.max(1) as f64);
+        println!(
+            "  Multi-way junctions (U-turn policy): {} ({:.2}%)",
+            b.has_uturn_ban,
+            b.has_uturn_ban as f64 * 100.0 / self.n_nbg_nodes.max(1) as f64
+        );
         println!("  Note: U-turn bans are handled by search policy, not junction expansion");
 
         println!("\n  === SUMMARY ===");
-        println!("  TRUE turn-relevant junctions: {} ({:.2}%)", b.total_turn_relevant,
-                 b.total_turn_relevant as f64 * 100.0 / self.n_nbg_nodes.max(1) as f64);
-        println!("  Turn-free junctions:          {} ({:.2}%)", b.turn_free,
-                 b.turn_free as f64 * 100.0 / self.n_nbg_nodes.max(1) as f64);
+        println!(
+            "  TRUE turn-relevant junctions: {} ({:.2}%)",
+            b.total_turn_relevant,
+            b.total_turn_relevant as f64 * 100.0 / self.n_nbg_nodes.max(1) as f64
+        );
+        println!(
+            "  Turn-free junctions:          {} ({:.2}%)",
+            b.turn_free,
+            b.turn_free as f64 * 100.0 / self.n_nbg_nodes.max(1) as f64
+        );
 
         // Verdict
         println!("\n=== VERDICT FOR NODE-BASED CH + JUNCTION EXPANSION ===\n");
 
         let expansion_ratio = b.total_turn_relevant as f64 / self.n_nbg_nodes.max(1) as f64;
         if expansion_ratio < 0.05 {
-            println!("  EXCELLENT: Only {:.2}% of junctions need expansion", expansion_ratio * 100.0);
+            println!(
+                "  EXCELLENT: Only {:.2}% of junctions need expansion",
+                expansion_ratio * 100.0
+            );
             println!("  → Node-based CH + junction expansion is HIGHLY RECOMMENDED");
-            println!("  → Expected overhead: minimal (most searches never hit turn-relevant junctions)");
+            println!(
+                "  → Expected overhead: minimal (most searches never hit turn-relevant junctions)"
+            );
         } else if expansion_ratio < 0.15 {
-            println!("  GOOD: {:.2}% of junctions need expansion", expansion_ratio * 100.0);
+            println!(
+                "  GOOD: {:.2}% of junctions need expansion",
+                expansion_ratio * 100.0
+            );
             println!("  → Node-based CH + junction expansion is VIABLE");
             println!("  → Expected overhead: moderate (some searches will need expansion)");
         } else {
-            println!("  CAUTION: {:.2}% of junctions need expansion", expansion_ratio * 100.0);
+            println!(
+                "  CAUTION: {:.2}% of junctions need expansion",
+                expansion_ratio * 100.0
+            );
             println!("  → Node-based CH may lose most benefit");
             println!("  → Consider: edge-based CH might be necessary");
         }
@@ -231,7 +287,8 @@ pub fn analyze_turn_model(
             _ => {}
         }
 
-        if entry.mode_mask == 0b111 {  // All modes allowed
+        if entry.mode_mask == 0b111 {
+            // All modes allowed
             n_arcs_allow_all += 1;
         }
     }
@@ -284,7 +341,9 @@ pub fn analyze_turn_model(
             let target_node = &ebg_nodes_vec[target_ebg];
 
             // U-turn if we go back to where we came from
-            if ebg_node.tail_nbg == target_node.head_nbg && ebg_node.head_nbg == target_node.tail_nbg {
+            if ebg_node.tail_nbg == target_node.head_nbg
+                && ebg_node.head_nbg == target_node.tail_nbg
+            {
                 n_potential_uturns += 1;
 
                 // Check if car is allowed
@@ -316,9 +375,9 @@ pub fn analyze_turn_model(
 
     let breakdown = JunctionBreakdown {
         has_explicit_restriction: n_with_restriction,
-        has_uturn_ban: n_multi_way,  // Informational only - NOT counted as turn-relevant
-        has_oneway_constraint: 0,    // Would need way_attrs to compute
-        has_mode_restriction: 0,     // Would need full arc analysis
+        has_uturn_ban: n_multi_way, // Informational only - NOT counted as turn-relevant
+        has_oneway_constraint: 0,   // Would need way_attrs to compute
+        has_mode_restriction: 0,    // Would need full arc analysis
         // Only explicit restrictions truly need junction expansion!
         total_turn_relevant: n_with_restriction,
         turn_free: n_nbg.saturating_sub(n_with_restriction),

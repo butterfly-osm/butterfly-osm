@@ -171,8 +171,8 @@ pub fn read_all<P: AsRef<Path>>(path: P) -> Result<Vec<WayAttr>> {
     file.read_exact(&mut header)?;
 
     let count = u64::from_le_bytes([
-        header[8], header[9], header[10], header[11],
-        header[12], header[13], header[14], header[15],
+        header[8], header[9], header[10], header[11], header[12], header[13], header[14],
+        header[15],
     ]);
 
     let mut attrs = Vec::with_capacity(count as usize);
@@ -181,8 +181,7 @@ pub fn read_all<P: AsRef<Path>>(path: P) -> Result<Vec<WayAttr>> {
         file.read_exact(&mut record)?;
 
         let way_id = i64::from_le_bytes([
-            record[0], record[1], record[2], record[3],
-            record[4], record[5], record[6], record[7],
+            record[0], record[1], record[2], record[3], record[4], record[5], record[6], record[7],
         ]);
 
         attrs.push(decode_record(&record, way_id)?);
@@ -213,8 +212,8 @@ pub fn verify<P: AsRef<Path>>(path: P) -> Result<()> {
     }
 
     let count = u64::from_le_bytes([
-        header[8], header[9], header[10], header[11],
-        header[12], header[13], header[14], header[15],
+        header[8], header[9], header[10], header[11], header[12], header[13], header[14],
+        header[15],
     ]);
 
     // Verify file size

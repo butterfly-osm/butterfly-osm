@@ -29,9 +29,9 @@ pub struct HybridState {
     pub inputs_sha: [u8; 32],
 
     // CSR in hybrid state space
-    pub offsets: Vec<u64>,      // n_states + 1
-    pub targets: Vec<u32>,      // n_arcs (hybrid state IDs)
-    pub weights: Vec<u32>,      // n_arcs (edge weight + turn cost in deciseconds)
+    pub offsets: Vec<u64>, // n_states + 1
+    pub targets: Vec<u32>, // n_arcs (hybrid state IDs)
+    pub weights: Vec<u32>, // n_arcs (edge weight + turn cost in deciseconds)
 
     // State mappings
     // For states 0..n_node_states: maps to NBG node ID
@@ -180,7 +180,7 @@ impl HybridStateFile {
     pub fn read<P: AsRef<Path>>(path: P) -> Result<HybridState> {
         let mut reader = BufReader::new(
             File::open(path.as_ref())
-                .with_context(|| format!("Failed to open {}", path.as_ref().display()))?
+                .with_context(|| format!("Failed to open {}", path.as_ref().display()))?,
         );
 
         // Read header
@@ -189,7 +189,11 @@ impl HybridStateFile {
 
         let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
         if magic != MAGIC {
-            anyhow::bail!("Invalid magic: expected 0x{:08X} (HSTG), got 0x{:08X}", MAGIC, magic);
+            anyhow::bail!(
+                "Invalid magic: expected 0x{:08X} (HSTG), got 0x{:08X}",
+                MAGIC,
+                magic
+            );
         }
 
         let version = u16::from_le_bytes([header[4], header[5]]);
@@ -208,8 +212,8 @@ impl HybridStateFile {
         let n_node_states = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
         let n_edge_states = u32::from_le_bytes([header[16], header[17], header[18], header[19]]);
         let n_arcs = u64::from_le_bytes([
-            header[20], header[21], header[22], header[23],
-            header[24], header[25], header[26], header[27],
+            header[20], header[21], header[22], header[23], header[24], header[25], header[26],
+            header[27],
         ]);
         let n_nbg_nodes = u32::from_le_bytes([header[28], header[29], header[30], header[31]]);
         let n_ebg_nodes = u32::from_le_bytes([header[32], header[33], header[34], header[35]]);

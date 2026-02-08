@@ -12,8 +12,7 @@ use anyhow::Result;
 use std::path::PathBuf;
 
 use crate::formats::{
-    EbgNodesFile, EbgCsrFile, FilteredEbgFile, NbgCsrFile, NbgGeoFile,
-    OrderEbg, OrderEbgFile,
+    EbgCsrFile, EbgNodesFile, FilteredEbgFile, NbgCsrFile, NbgGeoFile, OrderEbg, OrderEbgFile,
 };
 use crate::nbg_ch::{compute_nbg_ordering, lift_ordering_to_ebg};
 use crate::profile_abi::Mode;
@@ -52,14 +51,20 @@ pub fn generate_lifted_ordering(config: Step6LiftedConfig) -> Result<Step6Lifted
         Mode::Foot => "foot",
     };
 
-    println!("\n📐 Step 6 (Lifted): CCH ordering for {} via NBG lift\n", mode_name);
+    println!(
+        "\n📐 Step 6 (Lifted): CCH ordering for {} via NBG lift\n",
+        mode_name
+    );
 
     // Step 1: Load NBG and compute ND ordering on physical graph
     println!("[1/3] Computing ND ordering on physical node graph (NBG)...");
     let nbg_start = std::time::Instant::now();
 
     let nbg_csr = NbgCsrFile::read(&config.nbg_csr_path)?;
-    println!("  Loaded NBG: {} nodes, {} edges", nbg_csr.n_nodes, nbg_csr.n_edges_und);
+    println!(
+        "  Loaded NBG: {} nodes, {} edges",
+        nbg_csr.n_nodes, nbg_csr.n_edges_und
+    );
 
     let nbg_geo = NbgGeoFile::read(&config.nbg_geo_path)?;
 
@@ -70,8 +75,10 @@ pub fn generate_lifted_ordering(config: Step6LiftedConfig) -> Result<Step6Lifted
         0.05, // balance_eps
     )?;
     let nbg_ordering_time = nbg_start.elapsed().as_millis() as u64;
-    println!("  NBG ordering: {} nodes, {} components, depth {}",
-             nbg_ordering.n_nodes, nbg_ordering.n_components, nbg_ordering.max_depth);
+    println!(
+        "  NBG ordering: {} nodes, {} components, depth {}",
+        nbg_ordering.n_nodes, nbg_ordering.n_components, nbg_ordering.max_depth
+    );
     println!("  Time: {} ms", nbg_ordering_time);
 
     // Step 2: Load EBG and lift ordering
@@ -80,7 +87,10 @@ pub fn generate_lifted_ordering(config: Step6LiftedConfig) -> Result<Step6Lifted
 
     let ebg_nodes = EbgNodesFile::read(&config.ebg_nodes_path)?;
     let ebg_csr = EbgCsrFile::read(&config.ebg_csr_path)?;
-    println!("  Loaded EBG: {} states, {} arcs", ebg_csr.n_nodes, ebg_csr.n_arcs);
+    println!(
+        "  Loaded EBG: {} states, {} arcs",
+        ebg_csr.n_nodes, ebg_csr.n_arcs
+    );
 
     let lifted = lift_ordering_to_ebg(&nbg_ordering, &ebg_nodes, &ebg_csr)?;
     let lift_time = lift_start.elapsed().as_millis() as u64;
@@ -91,8 +101,10 @@ pub fn generate_lifted_ordering(config: Step6LiftedConfig) -> Result<Step6Lifted
     println!("\n[3/3] Mapping to filtered EBG and writing output...");
 
     let filtered_ebg = FilteredEbgFile::read(&config.filtered_ebg_path)?;
-    println!("  Filtered EBG: {} nodes (of {} original)",
-             filtered_ebg.n_filtered_nodes, filtered_ebg.n_original_nodes);
+    println!(
+        "  Filtered EBG: {} nodes (of {} original)",
+        filtered_ebg.n_filtered_nodes, filtered_ebg.n_original_nodes
+    );
 
     // Create filtered ordering: only include nodes that pass the filter
     // filtered_to_orig maps filtered_id -> original_id
@@ -125,7 +137,9 @@ pub fn generate_lifted_ordering(config: Step6LiftedConfig) -> Result<Step6Lifted
         inv_perm: filtered_inv_perm,
     };
 
-    let order_path = config.outdir.join(format!("order.lifted.{}.bin", mode_name));
+    let order_path = config
+        .outdir
+        .join(format!("order.lifted.{}.bin", mode_name));
     OrderEbgFile::write(&order_path, &order)?;
     println!("  Written: {}", order_path.display());
 

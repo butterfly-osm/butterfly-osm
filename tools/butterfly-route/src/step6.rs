@@ -7,7 +7,9 @@ use anyhow::Result;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
-use crate::formats::{EbgNodesFile, FilteredEbg, FilteredEbgFile, NbgGeoFile, OrderEbg, OrderEbgFile};
+use crate::formats::{
+    EbgNodesFile, FilteredEbg, FilteredEbgFile, NbgGeoFile, OrderEbg, OrderEbgFile,
+};
 use crate::profile_abi::Mode;
 
 /// Configuration for Step 6
@@ -40,13 +42,18 @@ pub fn generate_ordering(config: Step6Config) -> Result<Step6Result> {
         Mode::Bike => "bike",
         Mode::Foot => "foot",
     };
-    println!("\n📐 Step 6: Generating CCH ordering for {} mode...\n", mode_name);
+    println!(
+        "\n📐 Step 6: Generating CCH ordering for {} mode...\n",
+        mode_name
+    );
 
     // Load filtered EBG
     println!("Loading filtered EBG ({})...", mode_name);
     let filtered_ebg = FilteredEbgFile::read(&config.filtered_ebg_path)?;
-    println!("  ✓ {} filtered nodes (of {} original), {} arcs",
-        filtered_ebg.n_filtered_nodes, filtered_ebg.n_original_nodes, filtered_ebg.n_filtered_arcs);
+    println!(
+        "  ✓ {} filtered nodes (of {} original), {} arcs",
+        filtered_ebg.n_filtered_nodes, filtered_ebg.n_original_nodes, filtered_ebg.n_filtered_arcs
+    );
 
     // Load EBG nodes (for geometry linkage)
     println!("Loading EBG nodes...");
@@ -87,7 +94,11 @@ pub fn generate_ordering(config: Step6Config) -> Result<Step6Result> {
     let mut max_depth = 0;
     for (comp_idx, component) in components.iter().enumerate() {
         if comp_idx % 100 == 0 && comp_idx > 0 {
-            println!("  Processing component {} / {}...", comp_idx, components.len());
+            println!(
+                "  Processing component {} / {}...",
+                comp_idx,
+                components.len()
+            );
         }
         let depth = builder.order_component_filtered(&filtered_ebg, &coords, component)?;
         max_depth = max_depth.max(depth);
@@ -403,10 +414,7 @@ impl NdBuilder {
         // Base case: small subgraph
         if n_sub <= self.leaf_threshold {
             let ordering = self.minimum_degree_order(csr, nodes);
-            return Ok(NdResult {
-                ordering,
-                depth,
-            });
+            return Ok(NdResult { ordering, depth });
         }
 
         // Inertial partitioning
@@ -418,27 +426,23 @@ impl NdBuilder {
         // Be more permissive - only give up on very extreme imbalance
         if !(0.2..=0.8).contains(&balance) {
             let ordering = self.minimum_degree_order(csr, nodes);
-            return Ok(NdResult {
-                ordering,
-                depth,
-            });
+            return Ok(NdResult { ordering, depth });
         }
 
         // Parallel recursion for large subgraphs
         const PARALLEL_THRESHOLD: usize = 50_000;
 
-        let (result_a, result_b) = if part_a.len() >= PARALLEL_THRESHOLD
-            && part_b.len() >= PARALLEL_THRESHOLD
-        {
-            rayon::join(
-                || self.recursive_nd(csr, coords, &part_a, depth + 1),
-                || self.recursive_nd(csr, coords, &part_b, depth + 1),
-            )
-        } else {
-            let a = self.recursive_nd(csr, coords, &part_a, depth + 1)?;
-            let b = self.recursive_nd(csr, coords, &part_b, depth + 1)?;
-            (Ok(a), Ok(b))
-        };
+        let (result_a, result_b) =
+            if part_a.len() >= PARALLEL_THRESHOLD && part_b.len() >= PARALLEL_THRESHOLD {
+                rayon::join(
+                    || self.recursive_nd(csr, coords, &part_a, depth + 1),
+                    || self.recursive_nd(csr, coords, &part_b, depth + 1),
+                )
+            } else {
+                let a = self.recursive_nd(csr, coords, &part_a, depth + 1)?;
+                let b = self.recursive_nd(csr, coords, &part_b, depth + 1)?;
+                (Ok(a), Ok(b))
+            };
 
         let result_a = result_a?;
         let result_b = result_b?;
@@ -510,8 +514,14 @@ impl NdBuilder {
 
         // Remove separator from partitions
         let sep_set: HashSet<u32> = separator.iter().copied().collect();
-        let part_a: Vec<u32> = part_a.into_iter().filter(|n| !sep_set.contains(n)).collect();
-        let part_b: Vec<u32> = part_b.into_iter().filter(|n| !sep_set.contains(n)).collect();
+        let part_a: Vec<u32> = part_a
+            .into_iter()
+            .filter(|n| !sep_set.contains(n))
+            .collect();
+        let part_b: Vec<u32> = part_b
+            .into_iter()
+            .filter(|n| !sep_set.contains(n))
+            .collect();
 
         Ok((part_a, part_b, separator))
     }
@@ -639,7 +649,10 @@ impl NdBuilder {
             let mut min_node = 0;
 
             for u in 0..n {
-                if !eliminated[u] && (degrees[u] < min_deg || (degrees[u] == min_deg && global_id[u] < global_id[min_node])) {
+                if !eliminated[u]
+                    && (degrees[u] < min_deg
+                        || (degrees[u] == min_deg && global_id[u] < global_id[min_node]))
+                {
                     min_deg = degrees[u];
                     min_node = u;
                 }
@@ -728,7 +741,8 @@ impl NdBuilder {
             return Ok(NdResult { ordering, depth });
         }
 
-        let (part_a, part_b, separator) = self.inertial_partition_filtered(filtered_ebg, coords, nodes)?;
+        let (part_a, part_b, separator) =
+            self.inertial_partition_filtered(filtered_ebg, coords, nodes)?;
 
         let balance = part_a.len() as f32 / (part_a.len() + part_b.len()).max(1) as f32;
 
@@ -739,18 +753,17 @@ impl NdBuilder {
 
         const PARALLEL_THRESHOLD: usize = 50_000;
 
-        let (result_a, result_b) = if part_a.len() >= PARALLEL_THRESHOLD
-            && part_b.len() >= PARALLEL_THRESHOLD
-        {
-            rayon::join(
-                || self.recursive_nd_filtered(filtered_ebg, coords, &part_a, depth + 1),
-                || self.recursive_nd_filtered(filtered_ebg, coords, &part_b, depth + 1),
-            )
-        } else {
-            let a = self.recursive_nd_filtered(filtered_ebg, coords, &part_a, depth + 1)?;
-            let b = self.recursive_nd_filtered(filtered_ebg, coords, &part_b, depth + 1)?;
-            (Ok(a), Ok(b))
-        };
+        let (result_a, result_b) =
+            if part_a.len() >= PARALLEL_THRESHOLD && part_b.len() >= PARALLEL_THRESHOLD {
+                rayon::join(
+                    || self.recursive_nd_filtered(filtered_ebg, coords, &part_a, depth + 1),
+                    || self.recursive_nd_filtered(filtered_ebg, coords, &part_b, depth + 1),
+                )
+            } else {
+                let a = self.recursive_nd_filtered(filtered_ebg, coords, &part_a, depth + 1)?;
+                let b = self.recursive_nd_filtered(filtered_ebg, coords, &part_b, depth + 1)?;
+                (Ok(a), Ok(b))
+            };
 
         let result_a = result_a?;
         let result_b = result_b?;
@@ -813,8 +826,14 @@ impl NdBuilder {
         let separator = self.extract_separator_filtered(filtered_ebg, &part_a, &part_b);
 
         let sep_set: HashSet<u32> = separator.iter().copied().collect();
-        let part_a: Vec<u32> = part_a.into_iter().filter(|n| !sep_set.contains(n)).collect();
-        let part_b: Vec<u32> = part_b.into_iter().filter(|n| !sep_set.contains(n)).collect();
+        let part_a: Vec<u32> = part_a
+            .into_iter()
+            .filter(|n| !sep_set.contains(n))
+            .collect();
+        let part_b: Vec<u32> = part_b
+            .into_iter()
+            .filter(|n| !sep_set.contains(n))
+            .collect();
 
         Ok((part_a, part_b, separator))
     }
@@ -951,7 +970,10 @@ impl NdBuilder {
             let mut min_node = 0;
 
             for u in 0..n {
-                if !eliminated[u] && (degrees[u] < min_deg || (degrees[u] == min_deg && global_id[u] < global_id[min_node])) {
+                if !eliminated[u]
+                    && (degrees[u] < min_deg
+                        || (degrees[u] == min_deg && global_id[u] < global_id[min_node]))
+                {
                     min_deg = degrees[u];
                     min_node = u;
                 }
@@ -1079,7 +1101,11 @@ fn histogram_partition(projections: &[(f64, u32)]) -> (Vec<u32>, Vec<u32>) {
     (part_a, part_b)
 }
 
-fn compute_inputs_sha(ebg_csr_path: &Path, ebg_nodes_path: &Path, nbg_geo_path: &Path) -> Result<[u8; 32]> {
+fn compute_inputs_sha(
+    ebg_csr_path: &Path,
+    ebg_nodes_path: &Path,
+    nbg_geo_path: &Path,
+) -> Result<[u8; 32]> {
     use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();
@@ -1125,13 +1151,18 @@ pub fn generate_ordering_hybrid(config: Step6HybridConfig) -> Result<Step6Result
         Mode::Bike => "bike",
         Mode::Foot => "foot",
     };
-    println!("\n📐 Step 6: Generating CCH ordering for {} mode (HYBRID)...\n", mode_name);
+    println!(
+        "\n📐 Step 6: Generating CCH ordering for {} mode (HYBRID)...\n",
+        mode_name
+    );
 
     // Load hybrid state graph
     println!("Loading hybrid state graph ({})...", mode_name);
     let hybrid = HybridStateFile::read(&config.hybrid_state_path)?;
-    println!("  ✓ {} hybrid states ({} node-states, {} edge-states), {} arcs",
-        hybrid.n_states, hybrid.n_node_states, hybrid.n_edge_states, hybrid.n_arcs);
+    println!(
+        "  ✓ {} hybrid states ({} node-states, {} edge-states), {} arcs",
+        hybrid.n_states, hybrid.n_node_states, hybrid.n_edge_states, hybrid.n_arcs
+    );
 
     // Load NBG geo (for coordinates)
     println!("Loading NBG geo...");
@@ -1157,16 +1188,22 @@ pub fn generate_ordering_hybrid(config: Step6HybridConfig) -> Result<Step6Result
 
     // Compute in×out scores if densifier threshold is set
     let densifiers: Vec<u32> = if config.densifier_threshold > 0 {
-        println!("\nIdentifying densifiers (in×out > {})...", config.densifier_threshold);
+        println!(
+            "\nIdentifying densifiers (in×out > {})...",
+            config.densifier_threshold
+        );
         let scores = compute_inout_scores(&hybrid);
-        let densifiers: Vec<u32> = scores.iter()
+        let densifiers: Vec<u32> = scores
+            .iter()
             .enumerate()
             .filter(|(_, &score)| score > config.densifier_threshold)
             .map(|(i, _)| i as u32)
             .collect();
-        println!("  ✓ {} densifiers identified ({:.3}% of states)",
+        println!(
+            "  ✓ {} densifiers identified ({:.3}% of states)",
             densifiers.len(),
-            100.0 * densifiers.len() as f64 / hybrid.n_states as f64);
+            100.0 * densifiers.len() as f64 / hybrid.n_states as f64
+        );
         densifiers
     } else {
         Vec::new()
@@ -1180,7 +1217,10 @@ pub fn generate_ordering_hybrid(config: Step6HybridConfig) -> Result<Step6Result
     } else {
         "GEOMETRY-BASED (inertial partitioning)"
     };
-    println!("\nBuilding nested dissection ordering ({})...", ordering_method);
+    println!(
+        "\nBuilding nested dissection ordering ({})...",
+        ordering_method
+    );
     let mut builder = NdBuilder::new(
         hybrid.n_states as usize,
         config.leaf_threshold,
@@ -1193,12 +1233,17 @@ pub fn generate_ordering_hybrid(config: Step6HybridConfig) -> Result<Step6Result
     let mut max_depth = 0;
     for (comp_idx, component) in components.iter().enumerate() {
         if comp_idx % 100 == 0 && comp_idx > 0 {
-            println!("  Processing component {} / {}...", comp_idx, components.len());
+            println!(
+                "  Processing component {} / {}...",
+                comp_idx,
+                components.len()
+            );
         }
 
         // Filter out densifiers from component if threshold is set
         let filtered_component: Vec<u32> = if config.densifier_threshold > 0 {
-            component.iter()
+            component
+                .iter()
                 .filter(|&state| !densifier_set.contains(state))
                 .copied()
                 .collect()
@@ -1220,7 +1265,10 @@ pub fn generate_ordering_hybrid(config: Step6HybridConfig) -> Result<Step6Result
 
     // Append densifiers at the end (highest ranks = contracted last)
     if !densifiers.is_empty() {
-        println!("  Appending {} densifiers at late ranks...", densifiers.len());
+        println!(
+            "  Appending {} densifiers at late ranks...",
+            densifiers.len()
+        );
         for &state in &densifiers {
             builder.assign_rank(state);
         }
@@ -1234,7 +1282,9 @@ pub fn generate_ordering_hybrid(config: Step6HybridConfig) -> Result<Step6Result
 
     // Write output
     std::fs::create_dir_all(&config.outdir)?;
-    let order_path = config.outdir.join(format!("order.hybrid.{}.ebg", mode_name));
+    let order_path = config
+        .outdir
+        .join(format!("order.hybrid.{}.ebg", mode_name));
 
     println!("\nWriting output...");
     let order = OrderEbg {
@@ -1293,7 +1343,10 @@ fn compute_inout_scores(hybrid: &HybridState) -> Vec<usize> {
 ///
 /// - Node-states: Use NBG node coordinates from edge geometry
 /// - Edge-states: Use head NBG node coordinates (where edge arrives)
-fn extract_hybrid_coordinates(hybrid: &HybridState, nbg_geo: &crate::formats::NbgGeo) -> Result<Vec<(f64, f64)>> {
+fn extract_hybrid_coordinates(
+    hybrid: &HybridState,
+    nbg_geo: &crate::formats::NbgGeo,
+) -> Result<Vec<(f64, f64)>> {
     use std::collections::HashMap;
 
     // Build map from NBG node ID to coordinate
@@ -1322,7 +1375,10 @@ fn extract_hybrid_coordinates(hybrid: &HybridState, nbg_geo: &crate::formats::Nb
         }
     }
 
-    println!("  Built coordinate map for {} NBG nodes", nbg_node_coords.len());
+    println!(
+        "  Built coordinate map for {} NBG nodes",
+        nbg_node_coords.len()
+    );
 
     // Now extract coordinates for each hybrid state
     let mut coords = Vec::with_capacity(hybrid.n_states as usize);
@@ -1346,11 +1402,17 @@ fn extract_hybrid_coordinates(hybrid: &HybridState, nbg_geo: &crate::formats::Nb
     }
 
     if fallback_count > 0 {
-        println!("  WARNING: {} states used fallback coordinates ({:.2}%)",
-            fallback_count, 100.0 * fallback_count as f64 / hybrid.n_states as f64);
+        println!(
+            "  WARNING: {} states used fallback coordinates ({:.2}%)",
+            fallback_count,
+            100.0 * fallback_count as f64 / hybrid.n_states as f64
+        );
     }
-    println!("  Found coordinates for {} states ({:.2}%)",
-        found_count, 100.0 * found_count as f64 / hybrid.n_states as f64);
+    println!(
+        "  Found coordinates for {} states ({:.2}%)",
+        found_count,
+        100.0 * found_count as f64 / hybrid.n_states as f64
+    );
 
     Ok(coords)
 }
@@ -1484,18 +1546,17 @@ impl NdBuilder {
 
         const PARALLEL_THRESHOLD: usize = 50_000;
 
-        let (result_a, result_b) = if part_a.len() >= PARALLEL_THRESHOLD
-            && part_b.len() >= PARALLEL_THRESHOLD
-        {
-            rayon::join(
-                || self.recursive_nd_hybrid(hybrid, coords, &part_a, depth + 1),
-                || self.recursive_nd_hybrid(hybrid, coords, &part_b, depth + 1),
-            )
-        } else {
-            let a = self.recursive_nd_hybrid(hybrid, coords, &part_a, depth + 1)?;
-            let b = self.recursive_nd_hybrid(hybrid, coords, &part_b, depth + 1)?;
-            (Ok(a), Ok(b))
-        };
+        let (result_a, result_b) =
+            if part_a.len() >= PARALLEL_THRESHOLD && part_b.len() >= PARALLEL_THRESHOLD {
+                rayon::join(
+                    || self.recursive_nd_hybrid(hybrid, coords, &part_a, depth + 1),
+                    || self.recursive_nd_hybrid(hybrid, coords, &part_b, depth + 1),
+                )
+            } else {
+                let a = self.recursive_nd_hybrid(hybrid, coords, &part_a, depth + 1)?;
+                let b = self.recursive_nd_hybrid(hybrid, coords, &part_b, depth + 1)?;
+                (Ok(a), Ok(b))
+            };
 
         let result_a = result_a?;
         let result_b = result_b?;
@@ -1558,8 +1619,14 @@ impl NdBuilder {
         let separator = self.extract_separator_hybrid(hybrid, &part_a, &part_b);
 
         let sep_set: HashSet<u32> = separator.iter().copied().collect();
-        let part_a: Vec<u32> = part_a.into_iter().filter(|n| !sep_set.contains(n)).collect();
-        let part_b: Vec<u32> = part_b.into_iter().filter(|n| !sep_set.contains(n)).collect();
+        let part_a: Vec<u32> = part_a
+            .into_iter()
+            .filter(|n| !sep_set.contains(n))
+            .collect();
+        let part_b: Vec<u32> = part_b
+            .into_iter()
+            .filter(|n| !sep_set.contains(n))
+            .collect();
 
         Ok((part_a, part_b, separator))
     }
@@ -1826,18 +1893,17 @@ impl NdBuilder {
 
         const PARALLEL_THRESHOLD: usize = 50_000;
 
-        let (result_a, result_b) = if part_a.len() >= PARALLEL_THRESHOLD
-            && part_b.len() >= PARALLEL_THRESHOLD
-        {
-            rayon::join(
-                || self.recursive_nd_hybrid_graph(hybrid, &part_a, depth + 1),
-                || self.recursive_nd_hybrid_graph(hybrid, &part_b, depth + 1),
-            )
-        } else {
-            let a = self.recursive_nd_hybrid_graph(hybrid, &part_a, depth + 1)?;
-            let b = self.recursive_nd_hybrid_graph(hybrid, &part_b, depth + 1)?;
-            (Ok(a), Ok(b))
-        };
+        let (result_a, result_b) =
+            if part_a.len() >= PARALLEL_THRESHOLD && part_b.len() >= PARALLEL_THRESHOLD {
+                rayon::join(
+                    || self.recursive_nd_hybrid_graph(hybrid, &part_a, depth + 1),
+                    || self.recursive_nd_hybrid_graph(hybrid, &part_b, depth + 1),
+                )
+            } else {
+                let a = self.recursive_nd_hybrid_graph(hybrid, &part_a, depth + 1)?;
+                let b = self.recursive_nd_hybrid_graph(hybrid, &part_b, depth + 1)?;
+                (Ok(a), Ok(b))
+            };
 
         let result_a = result_a?;
         let result_b = result_b?;
@@ -1912,7 +1978,10 @@ impl NdBuilder {
             let mut min_node = 0;
 
             for u in 0..n {
-                if !eliminated[u] && (degrees[u] < min_deg || (degrees[u] == min_deg && global_id[u] < global_id[min_node])) {
+                if !eliminated[u]
+                    && (degrees[u] < min_deg
+                        || (degrees[u] == min_deg && global_id[u] < global_id[min_node]))
+                {
                     min_deg = degrees[u];
                     min_node = u;
                 }

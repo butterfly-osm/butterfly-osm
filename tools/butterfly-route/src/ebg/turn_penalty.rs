@@ -11,9 +11,9 @@
 /// Turn geometry for a single turn (a → b at intersection)
 #[derive(Debug, Clone)]
 pub struct TurnGeometry {
-    pub from_bearing_deci: u16,  // 0-3599 (deci-degrees, 0 = North)
+    pub from_bearing_deci: u16, // 0-3599 (deci-degrees, 0 = North)
     pub to_bearing_deci: u16,
-    pub angle_deg: i16,          // Signed turn angle (-180 to +180)
+    pub angle_deg: i16, // Signed turn angle (-180 to +180)
     pub is_uturn: bool,
     pub via_degree: u8,          // Intersection complexity
     pub via_has_signal: bool,    // Traffic signal at intersection
@@ -118,25 +118,25 @@ impl TurnPenaltyConfig {
     /// Car mode turn penalties - matches OSRM car.lua exactly
     pub fn car() -> Self {
         Self {
-            turn_penalty_ds: 75,       // 7.5 seconds (OSRM default)
-            turn_bias: 1.075,          // Slight right-turn preference
-            u_turn_penalty_ds: 200,    // 20 seconds (OSRM default)
-            min_degree_for_penalty: 3, // Only at intersections (not straight roads)
-            signal_delay_ds: 80,       // 8 seconds average signal wait
-            class_change_penalty_ds_per_diff: 5,  // 0.5s per class difference
-            max_class_diff_for_penalty: 6,        // Max 3s penalty
+            turn_penalty_ds: 75,                 // 7.5 seconds (OSRM default)
+            turn_bias: 1.075,                    // Slight right-turn preference
+            u_turn_penalty_ds: 200,              // 20 seconds (OSRM default)
+            min_degree_for_penalty: 3,           // Only at intersections (not straight roads)
+            signal_delay_ds: 80,                 // 8 seconds average signal wait
+            class_change_penalty_ds_per_diff: 5, // 0.5s per class difference
+            max_class_diff_for_penalty: 6,       // Max 3s penalty
         }
     }
 
     /// Bike mode turn penalties
     pub fn bike() -> Self {
         Self {
-            turn_penalty_ds: 40,       // 4 seconds max
-            turn_bias: 1.4,            // Bikes prefer right turns more
-            u_turn_penalty_ds: 50,     // 5 seconds
+            turn_penalty_ds: 40,   // 4 seconds max
+            turn_bias: 1.4,        // Bikes prefer right turns more
+            u_turn_penalty_ds: 50, // 5 seconds
             min_degree_for_penalty: 3,
-            signal_delay_ds: 50,       // 5 seconds (bikes often filter)
-            class_change_penalty_ds_per_diff: 3,  // 0.3s per class difference (bikes care less)
+            signal_delay_ds: 50,                 // 5 seconds (bikes often filter)
+            class_change_penalty_ds_per_diff: 3, // 0.3s per class difference (bikes care less)
             max_class_diff_for_penalty: 4,
         }
     }
@@ -146,12 +146,12 @@ impl TurnPenaltyConfig {
     /// crossing penalties at intersections (modeled as small fixed cost)
     pub fn foot() -> Self {
         Self {
-            turn_penalty_ds: 20,       // 2 seconds for crossing intersection
-            turn_bias: 1.0,            // Symmetric - no left/right preference
-            u_turn_penalty_ds: 0,      // No U-turn penalty for walking
-            min_degree_for_penalty: 4, // Only at complex intersections
-            signal_delay_ds: 40,       // 4 seconds pedestrian signal wait
-            class_change_penalty_ds_per_diff: 0,  // Pedestrians don't care about road class
+            turn_penalty_ds: 20,                 // 2 seconds for crossing intersection
+            turn_bias: 1.0,                      // Symmetric - no left/right preference
+            u_turn_penalty_ds: 0,                // No U-turn penalty for walking
+            min_degree_for_penalty: 4,           // Only at complex intersections
+            signal_delay_ds: 40,                 // 4 seconds pedestrian signal wait
+            class_change_penalty_ds_per_diff: 0, // Pedestrians don't care about road class
             max_class_diff_for_penalty: 0,
         }
     }
@@ -212,7 +212,10 @@ pub fn compute_turn_penalty(geom: &TurnGeometry, config: &TurnPenaltyConfig) -> 
     }
 
     // Add road class transition penalty
-    if config.class_change_penalty_ds_per_diff > 0 && geom.from_highway_class > 0 && geom.to_highway_class > 0 {
+    if config.class_change_penalty_ds_per_diff > 0
+        && geom.from_highway_class > 0
+        && geom.to_highway_class > 0
+    {
         let from_class = geom.from_highway_class as i32;
         let to_class = geom.to_highway_class as i32;
         let class_diff = (from_class - to_class).unsigned_abs();
@@ -241,15 +244,23 @@ mod tests {
         // OSRM heavily favors right turns
         let geom = TurnGeometry::compute(0, 900, false, 4, 5, 5);
         let penalty = compute_turn_penalty(&geom, &config);
-        assert!(penalty < 10, "90° right should be ~0 in right-hand traffic, got {}ds", penalty);
+        assert!(
+            penalty < 10,
+            "90° right should be ~0 in right-hand traffic, got {}ds",
+            penalty
+        );
 
         // 90 degree left turn: ~2s (crossing traffic)
-        let geom = TurnGeometry::compute(0, 2700, false, 4, 5, 5);  // 270° bearing = -90° left turn
+        let geom = TurnGeometry::compute(0, 2700, false, 4, 5, 5); // 270° bearing = -90° left turn
         let penalty = compute_turn_penalty(&geom, &config);
-        assert!((15..=30).contains(&penalty), "90° left should be ~2s, got {}ds", penalty);
+        assert!(
+            (15..=30).contains(&penalty),
+            "90° left should be ~2s, got {}ds",
+            penalty
+        );
 
         // Left U-turn: ~7.5s + 20s = ~27.5s (maximum penalty)
-        let geom = TurnGeometry::compute(0, 1800, false, 4, 5, 5);  // 180° = U-turn
+        let geom = TurnGeometry::compute(0, 1800, false, 4, 5, 5); // 180° = U-turn
         let penalty = compute_turn_penalty(&geom, &config);
         // Note: 180° could be left or right depending on interpretation
         // The formula should give high penalty for any U-turn
@@ -266,10 +277,17 @@ mod tests {
         let config = TurnPenaltyConfig::foot();
 
         // Pedestrians get small crossing penalty at complex intersections
-        let geom = TurnGeometry::compute(0, 900, false, 5, 0, 0);  // 5-way intersection
+        let geom = TurnGeometry::compute(0, 900, false, 5, 0, 0); // 5-way intersection
         let penalty = compute_turn_penalty(&geom, &config);
-        assert!(penalty > 0, "pedestrians should get crossing penalty at complex intersections");
-        assert!(penalty <= 30, "pedestrian penalty should be small, got {}ds", penalty);
+        assert!(
+            penalty > 0,
+            "pedestrians should get crossing penalty at complex intersections"
+        );
+        assert!(
+            penalty <= 30,
+            "pedestrian penalty should be small, got {}ds",
+            penalty
+        );
 
         // No penalty at simple intersections
         let geom = TurnGeometry::compute(0, 900, false, 3, 0, 0);
@@ -290,9 +308,12 @@ mod tests {
         let left_penalty = compute_turn_penalty(&left, &config);
 
         // Left turns should cost more than right turns (right-hand traffic)
-        assert!(left_penalty > right_penalty,
+        assert!(
+            left_penalty > right_penalty,
             "left turn ({}ds) should cost more than right turn ({}ds)",
-            left_penalty, right_penalty);
+            left_penalty,
+            right_penalty
+        );
     }
 
     #[test]
@@ -335,7 +356,7 @@ mod tests {
         let config = TurnPenaltyConfig::car();
 
         // Same highway class: no class change penalty
-        let same_class = TurnGeometry::compute(0, 0, false, 4, 5, 5);  // primary -> primary
+        let same_class = TurnGeometry::compute(0, 0, false, 4, 5, 5); // primary -> primary
         let penalty_same = compute_turn_penalty(&same_class, &config);
 
         // Different highway class: class change penalty added
@@ -344,7 +365,8 @@ mod tests {
         let penalty_diff = compute_turn_penalty(&diff_class, &config);
 
         // Should add capped_diff * class_change_penalty_ds_per_diff
-        let expected_class_penalty = config.max_class_diff_for_penalty as u32 * config.class_change_penalty_ds_per_diff;
+        let expected_class_penalty =
+            config.max_class_diff_for_penalty as u32 * config.class_change_penalty_ds_per_diff;
         assert_eq!(
             penalty_diff - penalty_same,
             expected_class_penalty,
@@ -372,8 +394,7 @@ mod tests {
         let foot_penalty_same = compute_turn_penalty(&foot_same, &foot_config);
         let foot_penalty_diff = compute_turn_penalty(&foot_diff, &foot_config);
         assert_eq!(
-            foot_penalty_same,
-            foot_penalty_diff,
+            foot_penalty_same, foot_penalty_diff,
             "pedestrians should not get class change penalty"
         );
     }

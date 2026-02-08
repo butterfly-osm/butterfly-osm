@@ -36,14 +36,20 @@ pub fn validate_down_rev(
             if rank_x < rank_u {
                 violations += 1;
                 if violations <= 5 {
-                    eprintln!("  down_rev violation: edge {}→{} has rank {} < {} (should be >=)",
-                              x, u, rank_x, rank_u);
+                    eprintln!(
+                        "  down_rev violation: edge {}→{} has rank {} < {} (should be >=)",
+                        x, u, rank_x, rank_u
+                    );
                 }
             }
 
             // Verify edge_idx points to valid DOWN edge
             if edge_idx >= topo.down_targets.len() {
-                return Err(format!("Invalid edge_idx {} >= {}", edge_idx, topo.down_targets.len()));
+                return Err(format!(
+                    "Invalid edge_idx {} >= {}",
+                    edge_idx,
+                    topo.down_targets.len()
+                ));
             }
 
             // Verify the target of this DOWN edge is actually u
@@ -51,8 +57,10 @@ pub fn validate_down_rev(
             if stored_target != u as u32 {
                 violations += 1;
                 if violations <= 5 {
-                    eprintln!("  down_rev target mismatch: edge_idx {} has target {}, expected {}",
-                              edge_idx, stored_target, u);
+                    eprintln!(
+                        "  down_rev target mismatch: edge_idx {} has target {}, expected {}",
+                        edge_idx, stored_target, u
+                    );
                 }
             }
         }
@@ -171,7 +179,10 @@ impl<'a> CchQuery<'a> {
                         best_dist = total;
                         meeting_node = u;
                         if debug {
-                            eprintln!("  FWD meet at {}: dist_fwd={}, dist_bwd={}, total={}", u, d, dist_bwd[u as usize], total);
+                            eprintln!(
+                                "  FWD meet at {}: dist_fwd={}, dist_bwd={}, total={}",
+                                u, d, dist_bwd[u as usize], total
+                            );
                         }
                     }
                 }
@@ -225,7 +236,10 @@ impl<'a> CchQuery<'a> {
                         best_dist = total;
                         meeting_node = u;
                         if debug {
-                            eprintln!("  BWD meet at {}: dist_fwd={}, dist_bwd={}, total={}", u, dist_fwd[u as usize], d, total);
+                            eprintln!(
+                                "  BWD meet at {}: dist_fwd={}, dist_bwd={}, total={}",
+                                u, dist_fwd[u as usize], d, total
+                            );
                         }
                     }
                 }
@@ -269,9 +283,14 @@ impl<'a> CchQuery<'a> {
         }
 
         if debug {
-            eprintln!("  Search stats: fwd_settled={}, bwd_settled={}, fwd_relaxed={}, bwd_relaxed={}",
-                      fwd_settled, bwd_settled, fwd_relaxed, bwd_relaxed);
-            eprintln!("  Final: best_dist={}, meeting_node={}", best_dist, meeting_node);
+            eprintln!(
+                "  Search stats: fwd_settled={}, bwd_settled={}, fwd_relaxed={}, bwd_relaxed={}",
+                fwd_settled, bwd_settled, fwd_relaxed, bwd_relaxed
+            );
+            eprintln!(
+                "  Final: best_dist={}, meeting_node={}",
+                best_dist, meeting_node
+            );
         }
 
         if best_dist == u32::MAX {
@@ -292,11 +311,7 @@ impl<'a> CchQuery<'a> {
 }
 
 /// Reconstruct path from parent pointers
-fn reconstruct_path(
-    parent: &[Option<(u32, u32)>],
-    start: u32,
-    end: u32,
-) -> Vec<(u32, u32)> {
+fn reconstruct_path(parent: &[Option<(u32, u32)>], start: u32, end: u32) -> Vec<(u32, u32)> {
     let mut path = Vec::new();
     let mut current = end;
 

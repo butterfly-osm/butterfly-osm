@@ -183,7 +183,10 @@ fn verify_csr_structure(topo: &crate::formats::CchTopo) -> Result<()> {
     Ok(())
 }
 
-fn verify_upward_property(topo: &crate::formats::CchTopo, _order: &crate::formats::OrderEbg) -> Result<()> {
+fn verify_upward_property(
+    topo: &crate::formats::CchTopo,
+    _order: &crate::formats::OrderEbg,
+) -> Result<()> {
     let n = topo.n_nodes as usize;
 
     // Sample check: verify first 10000 nodes
@@ -213,7 +216,10 @@ fn verify_upward_property(topo: &crate::formats::CchTopo, _order: &crate::format
     Ok(())
 }
 
-fn verify_downward_property(topo: &crate::formats::CchTopo, _order: &crate::formats::OrderEbg) -> Result<()> {
+fn verify_downward_property(
+    topo: &crate::formats::CchTopo,
+    _order: &crate::formats::OrderEbg,
+) -> Result<()> {
     let n = topo.n_nodes as usize;
 
     // Sample check: verify first 10000 nodes
@@ -377,7 +383,11 @@ fn verify_query_correctness(
         anyhow::bail!(
             "Query correctness check failed ({} failures):\n  {}",
             failures.len(),
-            sample_failures.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n  ")
+            sample_failures
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join("\n  ")
         );
     }
 
@@ -416,7 +426,11 @@ fn bfs_distance(filtered_ebg: &FilteredEbg, src: usize, dst: usize) -> Option<u3
         }
     }
 
-    if dist[dst] == u32::MAX { None } else { Some(dist[dst]) }
+    if dist[dst] == u32::MAX {
+        None
+    } else {
+        Some(dist[dst])
+    }
 }
 
 /// CCH query: forward UP search from src, backward search using reversed DOWN edges from dst
@@ -486,5 +500,9 @@ fn cch_query_distance_with_rev(
         }
     }
 
-    if best == u32::MAX { None } else { Some(best) }
+    if best == u32::MAX {
+        None
+    } else {
+        Some(best)
+    }
 }

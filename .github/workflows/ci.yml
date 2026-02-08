@@ -32,16 +32,15 @@ jobs:
           toolchain: ${{ matrix.rust }}
           components: rustfmt, clippy
 
-      - name: Cache cargo registry
+      - name: Cache cargo registry and git
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-registry-
 
       - name: Build workspace
         run: cargo build --workspace --verbose
@@ -49,14 +48,43 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --verbose
 
+      - name: Run c-bindings tests
+        run: cargo test -p butterfly-dl --features c-bindings --verbose
+
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings -A clippy::redundant_closure
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+  build-release:
+    name: Release Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
       - name: Build release
-        run: cargo build --release --verbose
+        run: cargo build --workspace --release --verbose
+
+      - name: Verify butterfly-dl binary
+        run: ./target/release/butterfly-dl --help
+
+      - name: Verify butterfly-route binary
+        run: ./target/release/butterfly-route --help
 
   security-audit:
     name: Security Audit
@@ -105,63 +133,18 @@ jobs:
           echo "[target.aarch64-unknown-linux-gnu]" >> ~/.cargo/config.toml
           echo "linker = \"aarch64-linux-gnu-gcc\"" >> ~/.cargo/config.toml
 
-      - name: Cache cargo registry
+      - name: Cache cargo registry and git
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build for target
         run: |
           echo "Building for target: ${{ matrix.target }}"
           cargo build --target ${{ matrix.target }} --verbose
-
-  benchmark:
-    name: Performance Benchmarks
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-bench-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Build release for benchmarking
-        run: cargo build --release
-
-      - name: Install benchmark dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl time
-
-      - name: Verify benchmark script exists
-        run: |
-          ls -la benchmarks/ || echo "No benchmarks directory"
-          chmod +x benchmarks/bench.sh || echo "No benchmark script found"
-
-      - name: Run performance benchmark
-        run: |
-          # Test with small file to verify functionality
-          echo "🧪 Running benchmark with small test file..."
-          if [ -f "./benchmarks/bench.sh" ]; then
-            ./benchmarks/bench.sh europe/monaco || echo "⚠️ Benchmark completed with warnings"
-          else
-            echo "⚠️ Benchmark script not found, creating basic functionality test"
-            echo "Testing binary execution..."
-            ./target/release/butterfly-dl --help || echo "Binary help test completed"
-          fi
 
   documentation:
     name: Documentation
@@ -173,14 +156,13 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo registry
+      - name: Cache cargo registry and git
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-docs-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-docs-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Generate documentation
         run: cargo doc --no-deps --verbose

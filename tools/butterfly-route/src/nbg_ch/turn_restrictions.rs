@@ -21,10 +21,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::formats::{
-    turn_rules,
-    NbgNodeMapFile, EbgNodesFile, EbgNodes,
-};
+use crate::formats::{turn_rules, EbgNodes, EbgNodesFile, NbgNodeMapFile};
 use crate::profile_abi::TurnRuleKind;
 
 /// Index for fast turn restriction lookups during NBG CH queries
@@ -43,24 +40,20 @@ pub struct TurnRestrictionIndex {
 /// A turn restriction at a specific node
 #[derive(Debug, Clone)]
 struct NodeRestriction {
-    from_way: u32,  // lower 32 bits of OSM way ID
-    to_way: u32,    // lower 32 bits of OSM way ID
+    from_way: u32, // lower 32 bits of OSM way ID
+    to_way: u32,   // lower 32 bits of OSM way ID
     kind: TurnRuleKind,
 }
 
 impl TurnRestrictionIndex {
     /// Build turn restriction index from files
-    pub fn load(
-        turn_rules_path: &Path,
-        node_map_path: &Path,
-    ) -> Result<Self> {
+    pub fn load(turn_rules_path: &Path, node_map_path: &Path) -> Result<Self> {
         // Load OSM -> compact node ID mapping
-        let osm_to_compact = NbgNodeMapFile::read(node_map_path)
-            .context("Failed to load node map")?;
+        let osm_to_compact =
+            NbgNodeMapFile::read(node_map_path).context("Failed to load node map")?;
 
         // Load turn rules
-        let rules = turn_rules::read_all(turn_rules_path)
-            .context("Failed to load turn rules")?;
+        let rules = turn_rules::read_all(turn_rules_path).context("Failed to load turn rules")?;
 
         // Build restriction index
         let mut restricted_nodes = HashSet::new();
@@ -183,10 +176,7 @@ impl NbgEdgeWayMap {
 
         for node in &ebg_nodes.nodes {
             // Each EBG node represents a directed NBG edge
-            edge_to_way.insert(
-                (node.tail_nbg, node.head_nbg),
-                node.primary_way,
-            );
+            edge_to_way.insert((node.tail_nbg, node.head_nbg), node.primary_way);
         }
 
         Self { edge_to_way }
@@ -194,8 +184,7 @@ impl NbgEdgeWayMap {
 
     /// Load from EBG nodes file
     pub fn load(ebg_nodes_path: &Path) -> Result<Self> {
-        let ebg_nodes = EbgNodesFile::read(ebg_nodes_path)
-            .context("Failed to load EBG nodes")?;
+        let ebg_nodes = EbgNodesFile::read(ebg_nodes_path).context("Failed to load EBG nodes")?;
         Ok(Self::from_ebg_nodes(&ebg_nodes))
     }
 
@@ -222,13 +211,14 @@ mod tests {
         restricted_nodes.insert(100);
 
         let mut restrictions = HashMap::new();
-        restrictions.insert(100, vec![
-            NodeRestriction {
+        restrictions.insert(
+            100,
+            vec![NodeRestriction {
                 from_way: 1,
                 to_way: 2,
                 kind: TurnRuleKind::Ban,
-            }
-        ]);
+            }],
+        );
 
         let index = TurnRestrictionIndex {
             restricted_nodes,
@@ -250,13 +240,14 @@ mod tests {
         restricted_nodes.insert(100);
 
         let mut restrictions = HashMap::new();
-        restrictions.insert(100, vec![
-            NodeRestriction {
+        restrictions.insert(
+            100,
+            vec![NodeRestriction {
                 from_way: 1,
                 to_way: 2,
                 kind: TurnRuleKind::Only,
-            }
-        ]);
+            }],
+        );
 
         let mut only_allowed = HashMap::new();
         only_allowed.insert((100, 1), HashSet::from([2]));

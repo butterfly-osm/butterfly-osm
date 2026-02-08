@@ -24,8 +24,8 @@ pub struct FilteredEbg {
     pub inputs_sha: [u8; 32],
 
     // CSR in filtered space
-    pub offsets: Vec<u64>,      // n_filtered_nodes + 1
-    pub heads: Vec<u32>,        // n_filtered_arcs (filtered node IDs)
+    pub offsets: Vec<u64>,          // n_filtered_nodes + 1
+    pub heads: Vec<u32>,            // n_filtered_arcs (filtered node IDs)
     pub original_arc_idx: Vec<u32>, // n_filtered_arcs (original arc indices for turn penalties)
 
     // Node ID mappings
@@ -267,7 +267,11 @@ impl FilteredEbgFile {
 
         let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
         if magic != MAGIC {
-            anyhow::bail!("Invalid magic: expected 0x{:08X}, got 0x{:08X}", MAGIC, magic);
+            anyhow::bail!(
+                "Invalid magic: expected 0x{:08X}, got 0x{:08X}",
+                MAGIC,
+                magic
+            );
         }
 
         let mode = match header[6] {
@@ -279,8 +283,8 @@ impl FilteredEbgFile {
 
         let n_filtered_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
         let n_filtered_arcs = u64::from_le_bytes([
-            header[12], header[13], header[14], header[15],
-            header[16], header[17], header[18], header[19],
+            header[12], header[13], header[14], header[15], header[16], header[17], header[18],
+            header[19],
         ]);
         let n_original_nodes = u32::from_le_bytes([header[20], header[21], header[22], header[23]]);
 

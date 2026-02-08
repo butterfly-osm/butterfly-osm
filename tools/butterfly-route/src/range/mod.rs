@@ -20,27 +20,31 @@ pub mod phast;
 pub use phast::{PhastEngine, PhastResult, PhastStats, BLOCK_SIZE};
 
 pub mod frontier;
-pub use frontier::{FrontierExtractor, FrontierCutPoint, ReachablePoint, ReachableSegment, run_frontier_extraction};
+pub use frontier::{
+    run_frontier_extraction, FrontierCutPoint, FrontierExtractor, ReachablePoint, ReachableSegment,
+};
 
 pub mod contour;
-pub use contour::{GridConfig, ContourResult, generate_contour, export_contour_geojson};
+pub use contour::{export_contour_geojson, generate_contour, ContourResult, GridConfig};
 
 pub mod sparse_contour;
-pub use sparse_contour::{SparseContourConfig, SparseContourResult, SparseContourStats, generate_sparse_contour};
+pub use sparse_contour::{
+    generate_sparse_contour, SparseContourConfig, SparseContourResult, SparseContourStats,
+};
 
 pub mod concave_hull;
-pub use concave_hull::{ConcaveHullConfig, ConcaveHullResult, ConcaveHullStats, generate_concave_hull};
+pub use concave_hull::{
+    generate_concave_hull, ConcaveHullConfig, ConcaveHullResult, ConcaveHullStats,
+};
 
 pub mod batched_isochrone;
 pub use batched_isochrone::{
-    BatchedIsochroneEngine, BatchedIsochroneResult, BatchedIsochroneStats,
-    AdaptiveIsochroneEngine, ADAPTIVE_THRESHOLD_DS,
+    AdaptiveIsochroneEngine, BatchedIsochroneEngine, BatchedIsochroneResult, BatchedIsochroneStats,
+    ADAPTIVE_THRESHOLD_DS,
 };
 
 pub mod wkb_stream;
-pub use wkb_stream::{
-    encode_polygon_wkb, IsochroneRecord, IsochroneBatch, write_ndjson,
-};
+pub use wkb_stream::{encode_polygon_wkb, write_ndjson, IsochroneBatch, IsochroneRecord};
 
 /// Result of a range query
 #[derive(Debug)]
@@ -109,7 +113,7 @@ impl RangeEngine {
     pub fn load(
         topo_path: &Path,
         weights_path: &Path,
-        _order_path: &Path,  // Unused with rank-aligned CCH
+        _order_path: &Path, // Unused with rank-aligned CCH
         _mode: Mode,
     ) -> Result<Self> {
         let topo = CchTopoFile::read(topo_path)?;
@@ -383,23 +387,33 @@ pub fn run_range_query(
 
     println!("\n🔍 Range Query ({} mode)", mode_name);
     println!("  Origin: node {}", origin);
-    println!("  Threshold: {} ms ({:.1} min)", threshold_ms, threshold_ms as f64 / 60_000.0);
+    println!(
+        "  Threshold: {} ms ({:.1} min)",
+        threshold_ms,
+        threshold_ms as f64 / 60_000.0
+    );
 
     println!("\nLoading CCH data...");
     let engine = RangeEngine::load(topo_path, weights_path, order_path, mode)?;
     println!("  ✓ {} nodes loaded", engine.n_nodes());
 
     if origin as usize >= engine.n_nodes() {
-        anyhow::bail!("Origin node {} out of range (max: {})", origin, engine.n_nodes() - 1);
+        anyhow::bail!(
+            "Origin node {} out of range (max: {})",
+            origin,
+            engine.n_nodes() - 1
+        );
     }
 
     println!("\nRunning bounded Dijkstra...");
     let result = engine.query(origin, threshold_ms);
 
     println!("\n=== RANGE QUERY RESULTS ===");
-    println!("  Settled nodes:    {} ({:.2}% of graph)",
-             result.n_settled,
-             100.0 * result.n_settled as f64 / engine.n_nodes() as f64);
+    println!(
+        "  Settled nodes:    {} ({:.2}% of graph)",
+        result.n_settled,
+        100.0 * result.n_settled as f64 / engine.n_nodes() as f64
+    );
     println!("  Frontier edges:   {}", result.n_frontier);
     println!("  PQ pushes:        {}", result.stats.pq_pushes);
     println!("  PQ pops:          {}", result.stats.pq_pops);
@@ -464,13 +478,13 @@ pub mod validate {
             settled_counts.push(result.n_settled);
 
             // Build reachable set
-            let reachable: Vec<bool> = result.dist.iter()
-                .map(|&d| d <= threshold)
-                .collect();
+            let reachable: Vec<bool> = result.dist.iter().map(|&d| d <= threshold).collect();
 
             // Check monotonicity against previous result
             if let Some(ref prev) = prev_reachable {
-                for (node, (&was_reachable, &is_reachable)) in prev.iter().zip(reachable.iter()).enumerate() {
+                for (node, (&was_reachable, &is_reachable)) in
+                    prev.iter().zip(reachable.iter()).enumerate()
+                {
                     if was_reachable && !is_reachable {
                         violations.push(format!(
                             "Node {} was reachable at T={} but not at T={}",
@@ -529,13 +543,15 @@ pub mod validate {
         n_samples: usize,
         seed: u64,
     ) -> Vec<(u32, u32, u32)> {
-        use rand::{SeedableRng, Rng};
+        use rand::{Rng, SeedableRng};
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
 
         let mut mismatches = Vec::new();
 
         // Collect reachable nodes
-        let reachable: Vec<u32> = range_result.dist.iter()
+        let reachable: Vec<u32> = range_result
+            .dist
+            .iter()
             .enumerate()
             .filter(|(_, &d)| d <= threshold)
             .map(|(i, _)| i as u32)
@@ -589,7 +605,11 @@ pub fn run_range_validation(
     println!("  ✓ {} nodes loaded", engine.n_nodes());
 
     if origin as usize >= engine.n_nodes() {
-        anyhow::bail!("Origin node {} out of range (max: {})", origin, engine.n_nodes() - 1);
+        anyhow::bail!(
+            "Origin node {} out of range (max: {})",
+            origin,
+            engine.n_nodes() - 1
+        );
     }
 
     // Test 1: Monotonicity
@@ -616,26 +636,29 @@ pub fn run_range_validation(
     let equiv_result = validate::test_equivalence(&result, test_threshold);
 
     if equiv_result.passed {
-        println!("  ✓ Equivalence: PASSED ({} samples)", equiv_result.samples_tested);
+        println!(
+            "  ✓ Equivalence: PASSED ({} samples)",
+            equiv_result.samples_tested
+        );
     } else {
-        println!("  ✗ Equivalence: FAILED ({} mismatches)", equiv_result.mismatches);
+        println!(
+            "  ✗ Equivalence: FAILED ({} mismatches)",
+            equiv_result.mismatches
+        );
     }
 
     // Test 3: P2P consistency
     println!("\n3. Testing P2P consistency...");
-    let p2p_mismatches = validate::test_p2p_consistency(
-        &engine,
-        &result,
-        origin,
-        test_threshold,
-        100,
-        42,
-    );
+    let p2p_mismatches =
+        validate::test_p2p_consistency(&engine, &result, origin, test_threshold, 100, 42);
 
     if p2p_mismatches.is_empty() {
         println!("  ✓ P2P consistency: PASSED (100 samples)");
     } else {
-        println!("  ✗ P2P consistency: FAILED ({} mismatches)", p2p_mismatches.len());
+        println!(
+            "  ✗ P2P consistency: FAILED ({} mismatches)",
+            p2p_mismatches.len()
+        );
         for (target, range_d, p2p_d) in &p2p_mismatches {
             println!("    - Node {}: range={}, p2p={}", target, range_d, p2p_d);
         }
@@ -674,23 +697,33 @@ pub fn run_phast_query(
 
     println!("\n⚡ PHAST Range Query ({} mode)", mode_name);
     println!("  Origin: node {}", origin);
-    println!("  Threshold: {} ms ({:.1} min)", threshold_ms, threshold_ms as f64 / 60_000.0);
+    println!(
+        "  Threshold: {} ms ({:.1} min)",
+        threshold_ms,
+        threshold_ms as f64 / 60_000.0
+    );
 
     println!("\nLoading CCH data...");
     let engine = PhastEngine::load(topo_path, weights_path, order_path)?;
     println!("  ✓ {} nodes loaded", engine.n_nodes());
 
     if origin as usize >= engine.n_nodes() {
-        anyhow::bail!("Origin node {} out of range (max: {})", origin, engine.n_nodes() - 1);
+        anyhow::bail!(
+            "Origin node {} out of range (max: {})",
+            origin,
+            engine.n_nodes() - 1
+        );
     }
 
     println!("\nRunning PHAST...");
     let result = engine.query_bounded(origin, threshold_ms);
 
     println!("\n=== PHAST RESULTS ===");
-    println!("  Reachable nodes:  {} ({:.2}% of graph)",
-             result.n_reachable,
-             100.0 * result.n_reachable as f64 / engine.n_nodes() as f64);
+    println!(
+        "  Reachable nodes:  {} ({:.2}% of graph)",
+        result.n_reachable,
+        100.0 * result.n_reachable as f64 / engine.n_nodes() as f64
+    );
     println!("\n  Upward phase:");
     println!("    PQ pushes:      {}", result.stats.upward_pq_pushes);
     println!("    PQ pops:        {}", result.stats.upward_pq_pops);
@@ -781,7 +814,10 @@ pub fn validate_phast(
     println!("\n=== VALIDATION RESULTS ===");
     println!("  Naive time:   {} ms", naive_time);
     println!("  PHAST time:   {} ms", phast_time);
-    println!("  Speedup:      {:.1}x", naive_time as f64 / phast_time.max(1) as f64);
+    println!(
+        "  Speedup:      {:.1}x",
+        naive_time as f64 / phast_time.max(1) as f64
+    );
     println!();
     println!("  Naive reachable:  {}", naive_result.n_settled);
     println!("  PHAST reachable:  {}", phast_result.n_reachable);
@@ -793,7 +829,10 @@ pub fn validate_phast(
         println!("  ❌ FAILED: {} mismatches", mismatches);
         println!("  Max distance diff: {}", max_diff);
         if let Some((node, naive_d, phast_d)) = first_mismatch {
-            println!("  First mismatch: node {} (naive={}, phast={})", node, naive_d, phast_d);
+            println!(
+                "  First mismatch: node {} (naive={}, phast={})",
+                node, naive_d, phast_d
+            );
         }
         anyhow::bail!("PHAST validation failed with {} mismatches", mismatches);
     }

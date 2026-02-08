@@ -1,10 +1,26 @@
 # Immediate Status
 
-No active sprint. All butterfly-route work is complete.
+No active sprint. All audit findings remediated (butterfly-route HIGHs + CRITICALs + remaining HIGHs + L3).
 
 ---
 
 ## Previously Completed Sprints
+
+### J-Sprint: Audit Remediation — CRITICALs, remaining HIGHs, L3 (2026-02-08) — DONE
+
+| Task | ID | Fix |
+|------|----|-----|
+| Fix broken CI benchmark job | C1 | Removed fake benchmarks/ reference. Added real release build verification with binary `--help` checks. |
+| Add c-bindings tests to CI | H3 | Added `cargo test -p butterfly-dl --features c-bindings` to test matrix. |
+| Fix CI target dir caching | L2 | Cache only `~/.cargo/registry` + `~/.cargo/git`, not `target/`. |
+| FFI panic safety (`catch_unwind`) | C2 | Wrapped all 5 `extern "C"` functions in `catch_unwind`. `RUNTIME` changed from `.expect()` to `.ok()` returning `Option<Runtime>`. `butterfly_version()` uses static byte string (infallible). |
+| FFI use-after-free analysis | C3 | FALSE POSITIVE. `block_on()` blocks calling thread — `user_data` guaranteed valid. Added explicit safety comments. |
+| Add `butterfly_last_error_message()` | H1 | Thread-local `LAST_ERROR` stores full error `Display` output. New `butterfly_last_error_message()` returns detailed string (caller frees). |
+| Document FFI threading model | H2 | Added module-level doc comment explaining `block_on` semantics, concurrency safety, and Tokio context restriction. |
+| Document static source list | H4 | Added design rationale comment on `VALID_SOURCES_CACHE`: static list avoids Geofabrik API dependency, covers ~120 regions. |
+| Move Makefile to butterfly-dl | H5 | Moved `Makefile` to `tools/butterfly-dl/Makefile`. Updated all cargo commands to use `-p butterfly-dl`. |
+| Document fuzzy matching weights | H9 | Added inline comments for all weights: 0.7/0.3 JW/Lev split, +20% prefix, +12% substring, +10% length, -10% anti-bias, 0.65 threshold. |
+| Fix simplification tolerance | L3 | Simplify in grid coordinates (Mercator) before WGS84 conversion. Tolerance = `simplify_tolerance_m / cell_size_m`. Eliminates 36% lat/lon distortion. |
 
 ### I-Sprint: Audit Remediation — butterfly-route HIGHs (2026-02-07) — DONE
 
@@ -27,7 +43,12 @@ No active sprint. All butterfly-route work is complete.
 |------|--------|
 | Map matching (F4) | High complexity, needs HMM on CCH |
 | Two-resolution isochrone mask (D8) | Current quality acceptable |
-| Audit findings C1-C3 (CI benchmarks, FFI panics, FFI use-after-free) | butterfly-dl / CI scope, not butterfly-route |
-| Audit findings H1-H5, H9 (FFI errors, threading, CI gaps, sources, Makefile, magic numbers) | butterfly-dl / CI / butterfly-common scope |
-| Audit findings M1-M9 (unsafe scopes, step6 perf, anyhow, contour holes, rate limiting) | Backlog priority |
-| Audit findings L1-L5 (DLL naming, CI caching, simplify tolerance, failing test, semver) | Low priority |
+| M1-M2 (FFI unsafe scopes, non-UTF8 paths) | Low impact, butterfly-dl only |
+| M3-M4 (step6 perf: PQ + Vec adjacency) | Not a bottleneck in practice |
+| M5 (anyhow in library code) | Style issue, not a bug |
+| M6 (contour holes / multi-polygon) | No real-world impact |
+| M7 (rate limiting) | Deployment-level concern |
+| M8-M9 (cross-compile, Makefile install) | Low priority |
+| L1 (Windows DLL naming) | Low priority |
+| L4 (pre-existing failing test) | butterfly-dl, not our bug |
+| L5 (semver precision) | Low priority |

@@ -21,10 +21,7 @@ pub struct Step6LockFile {
 }
 
 /// Validate Step 6 outputs and generate lock file
-pub fn validate_step6(
-    result: &Step6Result,
-    filtered_ebg_path: &Path,
-) -> Result<Step6LockFile> {
+pub fn validate_step6(result: &Step6Result, filtered_ebg_path: &Path) -> Result<Step6LockFile> {
     let mode_name = match result.mode {
         crate::profile_abi::Mode::Car => "car",
         crate::profile_abi::Mode::Bike => "bike",
@@ -72,12 +69,15 @@ fn verify_permutation(order: &crate::formats::OrderEbg) -> Result<()> {
         anyhow::ensure!(
             (p as usize) < n,
             "perm[{}] = {} out of range [0, {})",
-            i, p, n
+            i,
+            p,
+            n
         );
         anyhow::ensure!(
             !seen[p as usize],
             "perm contains duplicate value {} at index {}",
-            p, i
+            p,
+            i
         );
         seen[p as usize] = true;
     }
@@ -95,7 +95,10 @@ fn verify_inverse(order: &crate::formats::OrderEbg) -> Result<()> {
         anyhow::ensure!(
             inv == i,
             "inv_perm mismatch: inv_perm[perm[{}]] = inv_perm[{}] = {}, expected {}",
-            i, p, inv, i
+            i,
+            p,
+            inv,
+            i
         );
     }
 
@@ -103,11 +106,15 @@ fn verify_inverse(order: &crate::formats::OrderEbg) -> Result<()> {
 }
 
 /// Verify node count matches filtered EBG
-fn verify_node_count(order: &crate::formats::OrderEbg, filtered_ebg: &crate::formats::FilteredEbg) -> Result<()> {
+fn verify_node_count(
+    order: &crate::formats::OrderEbg,
+    filtered_ebg: &crate::formats::FilteredEbg,
+) -> Result<()> {
     anyhow::ensure!(
         order.n_nodes == filtered_ebg.n_filtered_nodes,
         "order.n_nodes ({}) != filtered_ebg.n_filtered_nodes ({})",
-        order.n_nodes, filtered_ebg.n_filtered_nodes
+        order.n_nodes,
+        filtered_ebg.n_filtered_nodes
     );
     Ok(())
 }
@@ -143,7 +150,10 @@ pub fn validate_step6_lifted(
         crate::profile_abi::Mode::Bike => "bike",
         crate::profile_abi::Mode::Foot => "foot",
     };
-    println!("\n🔐 Running Step 6 (Lifted) validation for {} mode...\n", mode_name);
+    println!(
+        "\n🔐 Running Step 6 (Lifted) validation for {} mode...\n",
+        mode_name
+    );
 
     // Load data
     let order = OrderEbgFile::read(&result.order_path)?;
@@ -161,7 +171,10 @@ pub fn validate_step6_lifted(
     // Compute SHA-256
     let order_sha256 = compute_file_sha256(&result.order_path)?;
 
-    println!("\n✅ Step 6 (Lifted) validation passed for {} mode!", mode_name);
+    println!(
+        "\n✅ Step 6 (Lifted) validation passed for {} mode!",
+        mode_name
+    );
 
     Ok(Step6LiftedLockFile {
         mode: mode_name.to_string(),

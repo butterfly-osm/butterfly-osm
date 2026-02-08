@@ -25,15 +25,27 @@ pub struct GridConfig {
 
 impl GridConfig {
     pub fn for_car() -> Self {
-        Self { cell_size_m: 100.0, simplify_tolerance_m: 75.0, closing_iterations: 1 }
+        Self {
+            cell_size_m: 100.0,
+            simplify_tolerance_m: 75.0,
+            closing_iterations: 1,
+        }
     }
 
     pub fn for_bike() -> Self {
-        Self { cell_size_m: 50.0, simplify_tolerance_m: 50.0, closing_iterations: 1 }
+        Self {
+            cell_size_m: 50.0,
+            simplify_tolerance_m: 50.0,
+            closing_iterations: 1,
+        }
     }
 
     pub fn for_foot() -> Self {
-        Self { cell_size_m: 25.0, simplify_tolerance_m: 25.0, closing_iterations: 1 }
+        Self {
+            cell_size_m: 25.0,
+            simplify_tolerance_m: 25.0,
+            closing_iterations: 1,
+        }
     }
 }
 
@@ -70,7 +82,10 @@ pub struct ContourStats {
 fn to_mercator(lat: f64, lon: f64) -> MercatorPoint {
     const EARTH_RADIUS: f64 = 6378137.0;
     let x = lon.to_radians() * EARTH_RADIUS;
-    let y = ((std::f64::consts::PI / 4.0) + (lat.to_radians() / 2.0)).tan().ln() * EARTH_RADIUS;
+    let y = ((std::f64::consts::PI / 4.0) + (lat.to_radians() / 2.0))
+        .tan()
+        .ln()
+        * EARTH_RADIUS;
     MercatorPoint { x, y }
 }
 
@@ -88,7 +103,10 @@ pub fn generate_contour(
     config: &GridConfig,
 ) -> Result<ContourResult> {
     let start = std::time::Instant::now();
-    let mut stats = ContourStats { input_segments: segments.len(), ..Default::default() };
+    let mut stats = ContourStats {
+        input_segments: segments.len(),
+        ..Default::default()
+    };
 
     if segments.is_empty() {
         return Ok(ContourResult {
@@ -143,7 +161,16 @@ pub fn generate_contour(
         for window in seg.windows(2) {
             let p0 = &window[0];
             let p1 = &window[1];
-            stamp_line(&mut raster, n_cols, n_rows, min_x, min_y, config.cell_size_m, p0, p1);
+            stamp_line(
+                &mut raster,
+                n_cols,
+                n_rows,
+                min_x,
+                min_y,
+                config.cell_size_m,
+                p0,
+                p1,
+            );
         }
         // Also stamp individual points (for single-point segments)
         for pt in seg {
@@ -173,7 +200,6 @@ pub fn generate_contour(
 
     // Step 5: Marching squares to extract contour
     let contour = marching_squares(&closed, n_cols, n_rows);
-    stats.contour_vertices_before_simplify = contour.len();
 
     if contour.is_empty() {
         return Ok(ContourResult {
@@ -183,8 +209,19 @@ pub fn generate_contour(
         });
     }
 
-    // Step 6: Convert grid coordinates back to WGS84
-    let mut wgs84_contour: Vec<(f64, f64)> = contour
+    // Step 6: Simplify in grid coordinates (Mercator space).
+    // This avoids the lat/lon distortion that plagued the old approach
+    // (dividing by 111000.0 assumed 1° = 111km in both axes, but at 50°N
+    // 1° longitude is only ~71km — a 36% error in east-west tolerance).
+    // Grid coordinates are inherently Mercator, so tolerance in grid units
+    // is uniform in all directions.
+    let tolerance_grid = config.simplify_tolerance_m / config.cell_size_m;
+    let simplified = douglas_peucker(&contour, tolerance_grid);
+    stats.contour_vertices_before_simplify = contour.len();
+    stats.contour_vertices_after_simplify = simplified.len();
+
+    // Step 7: Convert simplified grid coordinates back to WGS84
+    let wgs84_contour: Vec<(f64, f64)> = simplified
         .iter()
         .map(|&(col, row)| {
             let x = min_x + col * config.cell_size_m;
@@ -192,11 +229,6 @@ pub fn generate_contour(
             from_mercator(x, y)
         })
         .collect();
-
-    // Step 7: Simplify polygon
-    let tolerance_deg = config.simplify_tolerance_m / 111000.0; // Rough conversion
-    wgs84_contour = douglas_peucker(&wgs84_contour, tolerance_deg);
-    stats.contour_vertices_after_simplify = wgs84_contour.len();
 
     stats.elapsed_ms = start.elapsed().as_millis() as u64;
 
@@ -334,12 +366,20 @@ fn marching_squares(raster: &[bool], n_cols: usize, n_rows: usize) -> Vec<(f64, 
 
     // Start from all border cells that are not filled
     for col in 0..n_cols {
-        if !raster[col] { stack.push((0, col)); }
-        if !raster[(n_rows - 1) * n_cols + col] { stack.push((n_rows - 1, col)); }
+        if !raster[col] {
+            stack.push((0, col));
+        }
+        if !raster[(n_rows - 1) * n_cols + col] {
+            stack.push((n_rows - 1, col));
+        }
     }
     for row in 0..n_rows {
-        if !raster[row * n_cols] { stack.push((row, 0)); }
-        if !raster[row * n_cols + n_cols - 1] { stack.push((row, n_cols - 1)); }
+        if !raster[row * n_cols] {
+            stack.push((row, 0));
+        }
+        if !raster[row * n_cols + n_cols - 1] {
+            stack.push((row, n_cols - 1));
+        }
     }
 
     // Flood fill exterior
@@ -350,10 +390,18 @@ fn marching_squares(raster: &[bool], n_cols: usize, n_rows: usize) -> Vec<(f64, 
         }
         exterior[idx] = true;
 
-        if r > 0 { stack.push((r - 1, c)); }
-        if r + 1 < n_rows { stack.push((r + 1, c)); }
-        if c > 0 { stack.push((r, c - 1)); }
-        if c + 1 < n_cols { stack.push((r, c + 1)); }
+        if r > 0 {
+            stack.push((r - 1, c));
+        }
+        if r + 1 < n_rows {
+            stack.push((r + 1, c));
+        }
+        if c > 0 {
+            stack.push((r, c - 1));
+        }
+        if c + 1 < n_cols {
+            stack.push((r, c + 1));
+        }
     }
 
     // Create interior raster: filled OR not-exterior (to close internal holes)
@@ -428,8 +476,8 @@ fn marching_squares(raster: &[bool], n_cols: usize, n_rows: usize) -> Vec<(f64, 
 
         // Move to next cell
         let (next_col, next_row, next_entry) = match exit_dir {
-            0 => (col + 1, row, 2),           // right -> enter from left
-            1 => (col, row + 1, 3),           // up -> enter from bottom
+            0 => (col + 1, row, 2),             // right -> enter from left
+            1 => (col, row + 1, 3),             // up -> enter from bottom
             2 => (col.wrapping_sub(1), row, 0), // left -> enter from right
             3 => (col, row.wrapping_sub(1), 1), // down -> enter from top
             _ => break,
@@ -441,7 +489,10 @@ fn marching_squares(raster: &[bool], n_cols: usize, n_rows: usize) -> Vec<(f64, 
         }
 
         // Check if we're back at start with same entry
-        if next_col == start_col && next_row == start_row && next_entry == determine_entry_direction(start_case) {
+        if next_col == start_col
+            && next_row == start_row
+            && next_entry == determine_entry_direction(start_case)
+        {
             break;
         }
 
@@ -457,22 +508,30 @@ fn marching_squares(raster: &[bool], n_cols: usize, n_rows: usize) -> Vec<(f64, 
 /// Bits: 0=bottom-left, 1=bottom-right, 2=top-right, 3=top-left
 fn get_case(raster: &[bool], n_cols: usize, col: usize, row: usize) -> u8 {
     let mut case = 0u8;
-    if raster[row * n_cols + col] { case |= 1; }           // bottom-left
-    if raster[row * n_cols + col + 1] { case |= 2; }       // bottom-right
-    if raster[(row + 1) * n_cols + col + 1] { case |= 4; } // top-right
-    if raster[(row + 1) * n_cols + col] { case |= 8; }     // top-left
+    if raster[row * n_cols + col] {
+        case |= 1;
+    } // bottom-left
+    if raster[row * n_cols + col + 1] {
+        case |= 2;
+    } // bottom-right
+    if raster[(row + 1) * n_cols + col + 1] {
+        case |= 4;
+    } // top-right
+    if raster[(row + 1) * n_cols + col] {
+        case |= 8;
+    } // top-left
     case
 }
 
 /// Determine initial entry direction based on case
 fn determine_entry_direction(case: u8) -> u8 {
     match case {
-        1 | 3 | 7 => 0,  // Enter from right
-        2 | 6 | 14 => 1, // Enter from top
+        1 | 3 | 7 => 0,   // Enter from right
+        2 | 6 | 14 => 1,  // Enter from top
         4 | 12 | 13 => 2, // Enter from left
-        8 | 9 | 11 => 3, // Enter from bottom
-        5 => 0,  // Saddle point, enter from right
-        10 => 1, // Saddle point, enter from top
+        8 | 9 | 11 => 3,  // Enter from bottom
+        5 => 0,           // Saddle point, enter from right
+        10 => 1,          // Saddle point, enter from top
         _ => 0,
     }
 }
@@ -488,36 +547,36 @@ fn get_edge_crossing(case: u8, col: usize, row: usize, entry_dir: u8) -> ((f64, 
     // Each case defines which edges are crossed and in what order
     match case {
         // Single corner cases
-        1 => ((c, r + 0.5), 3),           // bottom-left only: left edge -> down
-        2 => ((c + 0.5, r), 0),           // bottom-right only: bottom edge -> right
-        4 => ((c + 1.0, r + 0.5), 1),     // top-right only: right edge -> up
-        8 => ((c + 0.5, r + 1.0), 2),     // top-left only: top edge -> left
+        1 => ((c, r + 0.5), 3),       // bottom-left only: left edge -> down
+        2 => ((c + 0.5, r), 0),       // bottom-right only: bottom edge -> right
+        4 => ((c + 1.0, r + 0.5), 1), // top-right only: right edge -> up
+        8 => ((c + 0.5, r + 1.0), 2), // top-left only: top edge -> left
 
         // Two adjacent corners
-        3 => ((c + 1.0, r + 0.5), 0),     // bottom: right edge -> right
-        6 => ((c + 0.5, r + 1.0), 1),     // right side: top edge -> up
-        12 => ((c, r + 0.5), 2),          // top: left edge -> left
-        9 => ((c + 0.5, r), 3),           // left side: bottom edge -> down
+        3 => ((c + 1.0, r + 0.5), 0), // bottom: right edge -> right
+        6 => ((c + 0.5, r + 1.0), 1), // right side: top edge -> up
+        12 => ((c, r + 0.5), 2),      // top: left edge -> left
+        9 => ((c + 0.5, r), 3),       // left side: bottom edge -> down
 
         // Three corners (one missing)
-        7 => ((c + 0.5, r + 1.0), 1),     // missing top-left: top edge -> up
-        11 => ((c + 1.0, r + 0.5), 0),    // missing top-right: right edge -> right
-        13 => ((c + 0.5, r), 3),          // missing bottom-right: bottom edge -> down
-        14 => ((c, r + 0.5), 2),          // missing bottom-left: left edge -> left
+        7 => ((c + 0.5, r + 1.0), 1), // missing top-left: top edge -> up
+        11 => ((c + 1.0, r + 0.5), 0), // missing top-right: right edge -> right
+        13 => ((c + 0.5, r), 3),      // missing bottom-right: bottom edge -> down
+        14 => ((c, r + 0.5), 2),      // missing bottom-left: left edge -> left
 
         // Saddle points - direction depends on entry
         5 => {
             if entry_dir == 0 || entry_dir == 2 {
-                ((c + 0.5, r), 3)         // horizontal through: bottom -> down
+                ((c + 0.5, r), 3) // horizontal through: bottom -> down
             } else {
-                ((c + 0.5, r + 1.0), 1)   // vertical through: top -> up
+                ((c + 0.5, r + 1.0), 1) // vertical through: top -> up
             }
         }
         10 => {
             if entry_dir == 1 || entry_dir == 3 {
-                ((c, r + 0.5), 2)         // vertical through: left -> left
+                ((c, r + 0.5), 2) // vertical through: left -> left
             } else {
-                ((c + 1.0, r + 0.5), 0)   // horizontal through: right -> right
+                ((c + 1.0, r + 0.5), 0) // horizontal through: right -> right
             }
         }
 
@@ -584,7 +643,10 @@ pub fn export_contour_geojson(result: &ContourResult, output_path: &std::path::P
 
     let mut file = File::create(output_path)?;
 
-    write!(file, r#"{{"type": "Feature", "geometry": {{"type": "Polygon", "coordinates": [["#)?;
+    write!(
+        file,
+        r#"{{"type": "Feature", "geometry": {{"type": "Polygon", "coordinates": [["#
+    )?;
 
     for (i, &(lon, lat)) in result.outer_ring.iter().enumerate() {
         if i > 0 {
@@ -598,10 +660,13 @@ pub fn export_contour_geojson(result: &ContourResult, output_path: &std::path::P
         write!(file, ",[{:.7}, {:.7}]", lon, lat)?;
     }
 
-    writeln!(file, r#"]]}}, "properties": {{"vertices": {}, "cells": {}, "segments": {}}}}}"#,
-             result.stats.contour_vertices_after_simplify,
-             result.stats.filled_cells,
-             result.stats.input_segments)?;
+    writeln!(
+        file,
+        r#"]]}}, "properties": {{"vertices": {}, "cells": {}, "segments": {}}}}}"#,
+        result.stats.contour_vertices_after_simplify,
+        result.stats.filled_cells,
+        result.stats.input_segments
+    )?;
 
     Ok(())
 }
@@ -622,13 +687,7 @@ mod tests {
 
     #[test]
     fn test_douglas_peucker() {
-        let points = vec![
-            (0.0, 0.0),
-            (0.1, 0.01),
-            (0.2, 0.0),
-            (0.3, 0.02),
-            (1.0, 0.0),
-        ];
+        let points = vec![(0.0, 0.0), (0.1, 0.01), (0.2, 0.0), (0.3, 0.02), (1.0, 0.0)];
         let simplified = douglas_peucker(&points, 0.05);
         assert!(simplified.len() < points.len());
     }

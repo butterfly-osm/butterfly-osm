@@ -14,7 +14,7 @@ use crate::formats::*;
 pub mod turn_penalty;
 pub mod turn_processor;
 
-use turn_penalty::{TurnGeometry, TurnPenaltyConfig, compute_turn_penalty};
+use turn_penalty::{compute_turn_penalty, TurnGeometry, TurnPenaltyConfig};
 
 // Mode bit flags
 pub const MODE_CAR: u8 = 0b001;
@@ -58,7 +58,7 @@ pub struct TurnRuleKey {
 /// Canonical turn rule
 #[derive(Debug, Clone)]
 pub struct CanonicalTurnRule {
-    pub mode_mask: u8,      // Which modes this rule applies to
+    pub mode_mask: u8, // Which modes this rule applies to
     pub kind: TurnKind,
     pub penalty_ds_car: u32,
     pub penalty_ds_bike: u32,
@@ -81,7 +81,10 @@ pub fn build_ebg(config: EbgConfig) -> Result<EbgResult> {
     let nbg_csr = NbgCsrFile::read(&config.nbg_csr_path)?;
     let nbg_geo = NbgGeoFile::read(&config.nbg_geo_path)?;
     let nbg_node_map = NbgNodeMapFile::read_map(&config.nbg_node_map_path)?;
-    println!("  ✓ NBG loaded: {} nodes, {} edges", nbg_csr.n_nodes, nbg_geo.n_edges_und);
+    println!(
+        "  ✓ NBG loaded: {} nodes, {} edges",
+        nbg_csr.n_nodes, nbg_geo.n_edges_und
+    );
 
     // 1b. Load traffic signal nodes
     let node_signals = if config.node_signals_path.exists() {
@@ -110,7 +113,10 @@ pub fn build_ebg(config: EbgConfig) -> Result<EbgResult> {
         &nbg_geo,
         &nbg_node_map,
     )?;
-    println!("  ✓ Processed {} canonical turn rules", canonical_rules.len());
+    println!(
+        "  ✓ Processed {} canonical turn rules",
+        canonical_rules.len()
+    );
 
     // 4. Enumerate EBG nodes (2 per NBG edge)
     println!("Enumerating EBG nodes...");
@@ -131,7 +137,11 @@ pub fn build_ebg(config: EbgConfig) -> Result<EbgResult> {
         &way_attrs_foot,
     )?;
     let n_arcs: u64 = adjacency.values().map(|v| v.len() as u64).sum();
-    println!("  ✓ Generated {} arcs with {} turn table entries", n_arcs, turn_table.len());
+    println!(
+        "  ✓ Generated {} arcs with {} turn table entries",
+        n_arcs,
+        turn_table.len()
+    );
 
     // 6. Materialize CSR
     println!("Materializing CSR...");
@@ -327,8 +337,10 @@ fn build_adjacency(
                 }
 
                 // Filter by way accessibility
-                mode_mask &= get_way_mode_mask(from_way_id, way_attrs_car, way_attrs_bike, way_attrs_foot);
-                mode_mask &= get_way_mode_mask(to_way_id, way_attrs_car, way_attrs_bike, way_attrs_foot);
+                mode_mask &=
+                    get_way_mode_mask(from_way_id, way_attrs_car, way_attrs_bike, way_attrs_foot);
+                mode_mask &=
+                    get_way_mode_mask(to_way_id, way_attrs_car, way_attrs_bike, way_attrs_foot);
 
                 // Apply U-turn policy
                 if is_uturn && !is_dead_end {
@@ -412,8 +424,14 @@ fn build_adjacency(
                 // Get or create turn table entry
                 let turn_entry = TurnEntry {
                     mode_mask,
-                    kind: canonical_rules.get(&rule_key).map(|r| r.kind).unwrap_or(TurnKind::None),
-                    has_time_dep: canonical_rules.get(&rule_key).map(|r| r.has_time_dep).unwrap_or(false),
+                    kind: canonical_rules
+                        .get(&rule_key)
+                        .map(|r| r.kind)
+                        .unwrap_or(TurnKind::None),
+                    has_time_dep: canonical_rules
+                        .get(&rule_key)
+                        .map(|r| r.has_time_dep)
+                        .unwrap_or(false),
                     penalty_ds_car,
                     penalty_ds_bike,
                     penalty_ds_foot,
@@ -438,10 +456,7 @@ fn build_adjacency(
                 );
 
                 // Add arc
-                adjacency
-                    .entry(a_id)
-                    .or_default()
-                    .push((b_id, turn_idx));
+                adjacency.entry(a_id).or_default().push((b_id, turn_idx));
             }
         }
     }
@@ -449,12 +464,16 @@ fn build_adjacency(
     // Print turn penalty statistics
     println!("  Turn penalty statistics:");
     println!("    Total arcs: {}", total_arcs);
-    println!("    Arcs with car penalty: {} ({:.1}%)",
+    println!(
+        "    Arcs with car penalty: {} ({:.1}%)",
         arcs_with_car_penalty,
-        arcs_with_car_penalty as f64 * 100.0 / total_arcs.max(1) as f64);
+        arcs_with_car_penalty as f64 * 100.0 / total_arcs.max(1) as f64
+    );
     if arcs_with_car_penalty > 0 {
-        println!("    Avg car penalty: {:.1}s",
-            total_car_penalty_ds as f64 / arcs_with_car_penalty as f64 / 10.0);
+        println!(
+            "    Avg car penalty: {:.1}s",
+            total_car_penalty_ds as f64 / arcs_with_car_penalty as f64 / 10.0
+        );
     }
 
     Ok((adjacency, turn_table))
@@ -516,13 +535,25 @@ fn get_way_mode_mask(
 ) -> u8 {
     let mut mask = 0u8;
 
-    if car_attrs.get(&way_id).map(|a| a.output.access_fwd || a.output.access_rev).unwrap_or(false) {
+    if car_attrs
+        .get(&way_id)
+        .map(|a| a.output.access_fwd || a.output.access_rev)
+        .unwrap_or(false)
+    {
         mask |= MODE_CAR;
     }
-    if bike_attrs.get(&way_id).map(|a| a.output.access_fwd || a.output.access_rev).unwrap_or(false) {
+    if bike_attrs
+        .get(&way_id)
+        .map(|a| a.output.access_fwd || a.output.access_rev)
+        .unwrap_or(false)
+    {
         mask |= MODE_BIKE;
     }
-    if foot_attrs.get(&way_id).map(|a| a.output.access_fwd || a.output.access_rev).unwrap_or(false) {
+    if foot_attrs
+        .get(&way_id)
+        .map(|a| a.output.access_fwd || a.output.access_rev)
+        .unwrap_or(false)
+    {
         mask |= MODE_FOOT;
     }
 
@@ -531,7 +562,9 @@ fn get_way_mode_mask(
 
 /// Helper: Convert NBG compact node ID to OSM node ID
 fn nbg_node_to_osm_id(compact_id: u32, node_map: &NbgNodeMap) -> i64 {
-    node_map.mappings.get(compact_id as usize)
+    node_map
+        .mappings
+        .get(compact_id as usize)
         .map(|m| m.osm_node_id)
         .unwrap_or(0)
 }
@@ -548,7 +581,7 @@ fn load_way_attrs(path: &Path) -> Result<HashMap<i64, WayAttr>> {
 
 /// Compute combined SHA-256 of all inputs
 fn compute_inputs_sha(config: &EbgConfig) -> Result<[u8; 32]> {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();
 

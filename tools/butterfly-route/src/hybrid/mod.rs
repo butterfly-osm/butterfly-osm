@@ -36,12 +36,14 @@
 //! - Edge count: proportional reduction
 //! - Query performance: 2-3x faster (matching OSRM)
 
-pub mod state_graph;
 pub mod builder;
-pub mod equivalence;
 pub mod equiv_builder;
+pub mod equivalence;
+pub mod state_graph;
 
-pub use state_graph::{HybridStateGraph, HybridState, HybridArc};
 pub use builder::HybridGraphBuilder;
-pub use equivalence::{analyze_equivalence_classes, EquivalenceAnalysis, analyze_densifiers, DensifierAnalysis};
 pub use equiv_builder::EquivHybridBuilder;
+pub use equivalence::{
+    analyze_densifiers, analyze_equivalence_classes, DensifierAnalysis, EquivalenceAnalysis,
+};
+pub use state_graph::{HybridArc, HybridState, HybridStateGraph};

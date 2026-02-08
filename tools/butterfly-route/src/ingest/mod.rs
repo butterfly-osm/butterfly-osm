@@ -2,11 +2,11 @@
 
 use anyhow::{Context, Result};
 use osmpbf::{Element, ElementReader};
-use sha2::{Sha256, Digest as Sha2Digest};
+use sha2::{Digest as Sha2Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-use crate::formats::{Member, MemberKind, Relation, RelationsFile, Way, WaysFile};
 use crate::formats::{nodes_sa, nodes_si};
+use crate::formats::{Member, MemberKind, Relation, RelationsFile, Way, WaysFile};
 use crate::formats::{NodeSignals, NodeSignalsFile};
 
 pub struct IngestConfig {
@@ -35,8 +35,7 @@ pub fn run_ingest(config: IngestConfig) -> Result<IngestResult> {
     println!();
 
     // Create output directory
-    std::fs::create_dir_all(&config.outdir)
-        .context("Failed to create output directory")?;
+    std::fs::create_dir_all(&config.outdir).context("Failed to create output directory")?;
 
     // Calculate input file SHA-256
     println!("Computing input file SHA-256...");

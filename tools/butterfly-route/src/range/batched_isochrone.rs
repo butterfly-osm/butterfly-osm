@@ -21,12 +21,12 @@ use std::sync::Arc;
 use anyhow::Result;
 use rayon::prelude::*;
 
+use super::contour::{export_contour_geojson, ContourResult};
+use super::frontier::{FrontierExtractor, ReachableSegment};
+use super::phast::PhastEngine;
+use super::sparse_contour::{generate_sparse_contour, SparseContourConfig};
 use crate::matrix::batched_phast::{BatchedPhastEngine, K_LANES};
 use crate::profile_abi::Mode;
-use super::frontier::{FrontierExtractor, ReachableSegment};
-use super::contour::{ContourResult, export_contour_geojson};
-use super::sparse_contour::{SparseContourConfig, generate_sparse_contour};
-use super::phast::PhastEngine;
 
 /// Result of a batched isochrone query
 #[derive(Debug)]
@@ -191,8 +191,12 @@ impl BatchedIsochroneEngine {
                             grid_cols: 0,
                             grid_rows: 0,
                             filled_cells: sparse.stats.total_cells_set,
-                            contour_vertices_before_simplify: sparse.stats.contour_vertices_before_simplify,
-                            contour_vertices_after_simplify: sparse.stats.contour_vertices_after_simplify,
+                            contour_vertices_before_simplify: sparse
+                                .stats
+                                .contour_vertices_before_simplify,
+                            contour_vertices_after_simplify: sparse
+                                .stats
+                                .contour_vertices_after_simplify,
                             elapsed_ms: elapsed_us / 1000,
                         },
                     }
@@ -204,9 +208,7 @@ impl BatchedIsochroneEngine {
 
         // Compute average vertices
         if !contours.is_empty() {
-            let total_verts: usize = contours.iter()
-                .map(|c| c.outer_ring.len())
-                .sum();
+            let total_verts: usize = contours.iter().map(|c| c.outer_ring.len()).sum();
             stats.avg_vertices = total_verts / contours.len();
         }
 
@@ -229,11 +231,7 @@ impl BatchedIsochroneEngine {
     ///
     /// # Returns
     /// Vector of ContourResult, one per origin
-    pub fn query_many(
-        &self,
-        origins: &[u32],
-        threshold_ds: u32,
-    ) -> Result<Vec<ContourResult>> {
+    pub fn query_many(&self, origins: &[u32], threshold_ds: u32) -> Result<Vec<ContourResult>> {
         let mut all_contours = Vec::with_capacity(origins.len());
 
         // Process in batches of K
@@ -320,7 +318,9 @@ impl AdaptiveIsochroneEngine {
 
         // Always use single-source for single queries (no batching benefit)
         let phast_result = self.single_phast.query_bounded(origin, threshold_ds);
-        let segments = self.extractor.extract_reachable_segments(&phast_result.dist, threshold_ms);
+        let segments = self
+            .extractor
+            .extract_reachable_segments(&phast_result.dist, threshold_ms);
 
         if segments.is_empty() {
             return Ok(ContourResult {
@@ -346,8 +346,12 @@ impl AdaptiveIsochroneEngine {
                 grid_cols: 0,
                 grid_rows: 0,
                 filled_cells: sparse_result.stats.total_cells_set,
-                contour_vertices_before_simplify: sparse_result.stats.contour_vertices_before_simplify,
-                contour_vertices_after_simplify: sparse_result.stats.contour_vertices_after_simplify,
+                contour_vertices_before_simplify: sparse_result
+                    .stats
+                    .contour_vertices_before_simplify,
+                contour_vertices_after_simplify: sparse_result
+                    .stats
+                    .contour_vertices_after_simplify,
                 elapsed_ms: elapsed_us / 1000,
             },
         })
@@ -382,10 +386,8 @@ impl AdaptiveIsochroneEngine {
                 let contours: Vec<ContourResult> = (0..chunk.len())
                     .into_par_iter()
                     .filter_map(|lane| {
-                        let segments = extractor.extract_reachable_segments(
-                            &phast_result.dist[lane],
-                            threshold_ms,
-                        );
+                        let segments = extractor
+                            .extract_reachable_segments(&phast_result.dist[lane], threshold_ms);
                         if segments.is_empty() {
                             return Some(ContourResult {
                                 outer_ring: vec![],
@@ -393,25 +395,31 @@ impl AdaptiveIsochroneEngine {
                                 stats: super::contour::ContourStats::default(),
                             });
                         }
-                        generate_sparse_contour(&segments, &config).ok().map(|sparse| {
-                            let elapsed_us = sparse.stats.stamp_time_us
-                                + sparse.stats.morphology_time_us
-                                + sparse.stats.contour_time_us
-                                + sparse.stats.simplify_time_us;
-                            ContourResult {
-                                outer_ring: sparse.outer_ring,
-                                holes: sparse.holes,
-                                stats: super::contour::ContourStats {
-                                    input_segments: sparse.stats.input_segments,
-                                    grid_cols: 0,
-                                    grid_rows: 0,
-                                    filled_cells: sparse.stats.total_cells_set,
-                                    contour_vertices_before_simplify: sparse.stats.contour_vertices_before_simplify,
-                                    contour_vertices_after_simplify: sparse.stats.contour_vertices_after_simplify,
-                                    elapsed_ms: elapsed_us / 1000,
-                                },
-                            }
-                        })
+                        generate_sparse_contour(&segments, &config)
+                            .ok()
+                            .map(|sparse| {
+                                let elapsed_us = sparse.stats.stamp_time_us
+                                    + sparse.stats.morphology_time_us
+                                    + sparse.stats.contour_time_us
+                                    + sparse.stats.simplify_time_us;
+                                ContourResult {
+                                    outer_ring: sparse.outer_ring,
+                                    holes: sparse.holes,
+                                    stats: super::contour::ContourStats {
+                                        input_segments: sparse.stats.input_segments,
+                                        grid_cols: 0,
+                                        grid_rows: 0,
+                                        filled_cells: sparse.stats.total_cells_set,
+                                        contour_vertices_before_simplify: sparse
+                                            .stats
+                                            .contour_vertices_before_simplify,
+                                        contour_vertices_after_simplify: sparse
+                                            .stats
+                                            .contour_vertices_after_simplify,
+                                        elapsed_ms: elapsed_us / 1000,
+                                    },
+                                }
+                            })
                     })
                     .collect();
 
@@ -465,7 +473,8 @@ pub fn export_batch_geojson_collection(
         }
 
         // Build coordinates array
-        let coords: Vec<String> = contour.outer_ring
+        let coords: Vec<String> = contour
+            .outer_ring
             .iter()
             .map(|(lon, lat)| format!("[{:.6}, {:.6}]", lon, lat))
             .collect();

@@ -16,7 +16,7 @@ A comprehensive ecosystem of OSM tools designed around **separation of concerns*
 
 ### Core Tools
 
-- **🚀 butterfly-dl**: Memory-efficient OSM data downloader (<1GB RAM for any file size)
+- **🚀 butterfly-dl**: Memory-efficient OSM data downloader (<1GB RAM for any file size), panic-safe C FFI with `butterfly_last_error_message()` for detailed error retrieval
 - **✂️ butterfly-shrink**: Polygon-based area extraction with geometric optimization  
 - **🔧 butterfly-extract**: Advanced filtering and transformation engine
 - **🌐 butterfly-serve**: High-performance HTTP tile server with caching
@@ -129,7 +129,7 @@ Common patterns abstracted into `butterfly-common`:
   - Exact turn-aware routing (edge-based CCH)
   - **1.8x FASTER than OSRM** at scale (10k×10k matrices)
   - Production-hardened: structured logging, graceful shutdown, timeouts, compression, input validation, panic recovery, Prometheus metrics
-  - Audit-remediated: all butterfly-route HIGH findings resolved (source_idx overflow, unwrap panics, unsafe bounds checks)
+  - Audit-clean: all CRITICAL and HIGH findings from Codex + Gemini audit resolved (FFI safety, source_idx overflow, panic handling, CI gaps)
   - See [Routing Engine](#routing-engine-butterfly-route) below
 
 ### 🚧 In Development

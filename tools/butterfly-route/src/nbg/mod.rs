@@ -35,8 +35,8 @@ pub fn haversine_distance(lat1_deg: f64, lon1_deg: f64, lat2_deg: f64, lon2_deg:
     let delta_lat = (lat2_deg - lat1_deg).to_radians();
     let delta_lon = (lon2_deg - lon1_deg).to_radians();
 
-    let a = (delta_lat / 2.0).sin().powi(2)
-        + lat1.cos() * lat2.cos() * (delta_lon / 2.0).sin().powi(2);
+    let a =
+        (delta_lat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (delta_lon / 2.0).sin().powi(2);
     let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
 
     EARTH_RADIUS_M * c
@@ -132,7 +132,11 @@ pub fn build_nbg(config: NbgConfig) -> Result<NbgResult> {
 
     // Step 6: Assemble CSR
     println!("Assembling CSR...");
-    let csr = assemble_csr(&adjacency, node_map.mappings.len() as u32, edges.len() as u64)?;
+    let csr = assemble_csr(
+        &adjacency,
+        node_map.mappings.len() as u32,
+        edges.len() as u64,
+    )?;
     println!("  ✓ CSR assembled");
 
     // Step 7: Write outputs
@@ -360,8 +364,10 @@ fn emit_edges(
                         let length_mm = length_mm.max(1000);
 
                         // Compute bearing
-                        let (start_lat, start_lon) = node_coords.get(&start_osm).copied().unwrap_or((0.0, 0.0));
-                        let (end_lat, end_lon) = node_coords.get(&end_osm).copied().unwrap_or((0.0, 0.0));
+                        let (start_lat, start_lon) =
+                            node_coords.get(&start_osm).copied().unwrap_or((0.0, 0.0));
+                        let (end_lat, end_lon) =
+                            node_coords.get(&end_osm).copied().unwrap_or((0.0, 0.0));
                         let bearing = compute_bearing(start_lat, start_lon, end_lat, end_lon);
 
                         let edge_idx = edges.len() as u64;

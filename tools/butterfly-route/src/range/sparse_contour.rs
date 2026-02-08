@@ -8,8 +8,8 @@
 //! 3. Run morphology only on active tiles + their neighbors
 //! 4. Run marching squares per tile with seam stitching
 
-use std::collections::{HashMap, HashSet};
 use anyhow::Result;
+use std::collections::{HashMap, HashSet};
 
 use super::frontier::ReachableSegment;
 
@@ -102,7 +102,8 @@ impl SparseTileMap {
     /// Get a cell (returns false for non-existent tiles)
     fn get_cell(&self, col: i32, row: i32) -> bool {
         let (tile_coord, local_col, local_row) = self.cell_to_tile(col, row);
-        self.tiles.get(&tile_coord)
+        self.tiles
+            .get(&tile_coord)
             .map(|tile| tile.get(local_col, local_row))
             .unwrap_or(false)
     }
@@ -175,7 +176,8 @@ const EMPTY_TILE: [u64; TILE_SIZE] = [0u64; TILE_SIZE];
 /// Get a tile's bits as a slice, or empty slice if not present
 #[inline]
 fn get_tile_bits(map: &SparseTileMap, coord: TileCoord) -> &[u64; TILE_SIZE] {
-    map.tiles.get(&coord)
+    map.tiles
+        .get(&coord)
         .map(|t| t.bits.as_slice().try_into().unwrap())
         .unwrap_or(&EMPTY_TILE)
 }
@@ -194,14 +196,62 @@ fn dilate_sparse(map: &SparseTileMap) -> SparseTileMap {
     for coord in tiles_to_process {
         // Cache all 9 tile references (one HashMap lookup each)
         let center = get_tile_bits(map, coord);
-        let above = get_tile_bits(map, TileCoord { tx: coord.tx, ty: coord.ty - 1 });
-        let below = get_tile_bits(map, TileCoord { tx: coord.tx, ty: coord.ty + 1 });
-        let left = get_tile_bits(map, TileCoord { tx: coord.tx - 1, ty: coord.ty });
-        let right = get_tile_bits(map, TileCoord { tx: coord.tx + 1, ty: coord.ty });
-        let above_left = get_tile_bits(map, TileCoord { tx: coord.tx - 1, ty: coord.ty - 1 });
-        let above_right = get_tile_bits(map, TileCoord { tx: coord.tx + 1, ty: coord.ty - 1 });
-        let below_left = get_tile_bits(map, TileCoord { tx: coord.tx - 1, ty: coord.ty + 1 });
-        let below_right = get_tile_bits(map, TileCoord { tx: coord.tx + 1, ty: coord.ty + 1 });
+        let above = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx,
+                ty: coord.ty - 1,
+            },
+        );
+        let below = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx,
+                ty: coord.ty + 1,
+            },
+        );
+        let left = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx - 1,
+                ty: coord.ty,
+            },
+        );
+        let right = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx + 1,
+                ty: coord.ty,
+            },
+        );
+        let above_left = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx - 1,
+                ty: coord.ty - 1,
+            },
+        );
+        let above_right = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx + 1,
+                ty: coord.ty - 1,
+            },
+        );
+        let below_left = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx - 1,
+                ty: coord.ty + 1,
+            },
+        );
+        let below_right = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx + 1,
+                ty: coord.ty + 1,
+            },
+        );
 
         let mut new_tile = TileBitmap::new();
 
@@ -214,23 +264,37 @@ fn dilate_sparse(map: &SparseTileMap) -> SparseTileMap {
 
             // Get row above with edge bits
             let (above_row, above_left_row, above_right_row) = if local_row == 0 {
-                (above[TILE_SIZE - 1], above_left[TILE_SIZE - 1], above_right[TILE_SIZE - 1])
+                (
+                    above[TILE_SIZE - 1],
+                    above_left[TILE_SIZE - 1],
+                    above_right[TILE_SIZE - 1],
+                )
             } else {
-                (center[local_row - 1], left[local_row - 1], right[local_row - 1])
+                (
+                    center[local_row - 1],
+                    left[local_row - 1],
+                    right[local_row - 1],
+                )
             };
             let above_left_bit = (above_left_row >> 63) & 1;
             let above_right_bit = (above_right_row & 1) << 63;
-            let above_h = above_row | (above_row << 1) | (above_row >> 1) | above_left_bit | above_right_bit;
+            let above_h =
+                above_row | (above_row << 1) | (above_row >> 1) | above_left_bit | above_right_bit;
 
             // Get row below with edge bits
             let (below_row, below_left_row, below_right_row) = if local_row == TILE_SIZE - 1 {
                 (below[0], below_left[0], below_right[0])
             } else {
-                (center[local_row + 1], left[local_row + 1], right[local_row + 1])
+                (
+                    center[local_row + 1],
+                    left[local_row + 1],
+                    right[local_row + 1],
+                )
             };
             let below_left_bit = (below_left_row >> 63) & 1;
             let below_right_bit = (below_right_row & 1) << 63;
-            let below_h = below_row | (below_row << 1) | (below_row >> 1) | below_left_bit | below_right_bit;
+            let below_h =
+                below_row | (below_row << 1) | (below_row >> 1) | below_left_bit | below_right_bit;
 
             // Final dilation: OR all three rows
             new_tile.bits[local_row] = cur_h | above_h | below_h;
@@ -254,14 +318,62 @@ fn erode_sparse(map: &SparseTileMap) -> SparseTileMap {
     for &coord in map.tiles.keys() {
         // Cache all 9 tile references (one HashMap lookup each)
         let center = get_tile_bits(map, coord);
-        let above = get_tile_bits(map, TileCoord { tx: coord.tx, ty: coord.ty - 1 });
-        let below = get_tile_bits(map, TileCoord { tx: coord.tx, ty: coord.ty + 1 });
-        let left = get_tile_bits(map, TileCoord { tx: coord.tx - 1, ty: coord.ty });
-        let right = get_tile_bits(map, TileCoord { tx: coord.tx + 1, ty: coord.ty });
-        let above_left = get_tile_bits(map, TileCoord { tx: coord.tx - 1, ty: coord.ty - 1 });
-        let above_right = get_tile_bits(map, TileCoord { tx: coord.tx + 1, ty: coord.ty - 1 });
-        let below_left = get_tile_bits(map, TileCoord { tx: coord.tx - 1, ty: coord.ty + 1 });
-        let below_right = get_tile_bits(map, TileCoord { tx: coord.tx + 1, ty: coord.ty + 1 });
+        let above = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx,
+                ty: coord.ty - 1,
+            },
+        );
+        let below = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx,
+                ty: coord.ty + 1,
+            },
+        );
+        let left = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx - 1,
+                ty: coord.ty,
+            },
+        );
+        let right = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx + 1,
+                ty: coord.ty,
+            },
+        );
+        let above_left = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx - 1,
+                ty: coord.ty - 1,
+            },
+        );
+        let above_right = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx + 1,
+                ty: coord.ty - 1,
+            },
+        );
+        let below_left = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx - 1,
+                ty: coord.ty + 1,
+            },
+        );
+        let below_right = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx + 1,
+                ty: coord.ty + 1,
+            },
+        );
 
         let mut new_tile = TileBitmap::new();
 
@@ -278,23 +390,39 @@ fn erode_sparse(map: &SparseTileMap) -> SparseTileMap {
 
             // Build horizontal erosion for row above
             let (above_row, above_left_row, above_right_row) = if local_row == 0 {
-                (above[TILE_SIZE - 1], above_left[TILE_SIZE - 1], above_right[TILE_SIZE - 1])
+                (
+                    above[TILE_SIZE - 1],
+                    above_left[TILE_SIZE - 1],
+                    above_right[TILE_SIZE - 1],
+                )
             } else {
-                (center[local_row - 1], left[local_row - 1], right[local_row - 1])
+                (
+                    center[local_row - 1],
+                    left[local_row - 1],
+                    right[local_row - 1],
+                )
             };
             let above_left_bit = (above_left_row >> 63) & 1;
             let above_right_bit = (above_right_row & 1) << 63;
-            let above_h = above_row & ((above_row << 1) | above_left_bit) & ((above_row >> 1) | above_right_bit);
+            let above_h = above_row
+                & ((above_row << 1) | above_left_bit)
+                & ((above_row >> 1) | above_right_bit);
 
             // Build horizontal erosion for row below
             let (below_row, below_left_row, below_right_row) = if local_row == TILE_SIZE - 1 {
                 (below[0], below_left[0], below_right[0])
             } else {
-                (center[local_row + 1], left[local_row + 1], right[local_row + 1])
+                (
+                    center[local_row + 1],
+                    left[local_row + 1],
+                    right[local_row + 1],
+                )
             };
             let below_left_bit = (below_left_row >> 63) & 1;
             let below_right_bit = (below_right_row & 1) << 63;
-            let below_h = below_row & ((below_row << 1) | below_left_bit) & ((below_row >> 1) | below_right_bit);
+            let below_h = below_row
+                & ((below_row << 1) | below_left_bit)
+                & ((below_row >> 1) | below_right_bit);
 
             // Final erosion: AND all three horizontally-eroded rows
             new_tile.bits[local_row] = cur_h & above_h & below_h;
@@ -342,7 +470,7 @@ impl SparseContourConfig {
     pub fn for_car() -> Self {
         Self {
             cell_size_m: 30.0,
-            dilation_rounds: 2,  // Reduced to avoid over-expansion
+            dilation_rounds: 2, // Reduced to avoid over-expansion
             erosion_rounds: 1,
             simplify_tolerance_m: 30.0,
         }
@@ -461,7 +589,10 @@ pub fn generate_sparse_contour(
     segments: &[ReachableSegment],
     config: &SparseContourConfig,
 ) -> Result<SparseContourResult> {
-    let mut stats = SparseContourStats { input_segments: segments.len(), ..Default::default() };
+    let mut stats = SparseContourStats {
+        input_segments: segments.len(),
+        ..Default::default()
+    };
 
     if segments.is_empty() {
         return Ok(SparseContourResult {
@@ -605,7 +736,7 @@ fn extract_contour_sparse(map: &SparseTileMap) -> Vec<(f64, f64)> {
             start_col,
             start_row,
             start_edge,
-            &mut visited_edges
+            &mut visited_edges,
         );
 
         if contour.len() >= 3 {
@@ -614,7 +745,8 @@ fn extract_contour_sparse(map: &SparseTileMap) -> Vec<(f64, f64)> {
     }
 
     // Return the largest contour (by vertex count)
-    all_contours.into_iter()
+    all_contours
+        .into_iter()
         .max_by_key(|c| c.len())
         .unwrap_or_default()
 }
@@ -795,9 +927,10 @@ fn next_boundary_edge(map: &SparseTileMap, col: i32, row: i32, edge: u8) -> (i32
     //   3. Otherwise: turn left (concave corner)
 
     match edge {
-        0 => { // North edge, walking East toward (col+1, row)
+        0 => {
+            // North edge, walking East toward (col+1, row)
             let ahead_right = map.get_cell(col + 1, row - 1); // NE cell
-            let ahead = map.get_cell(col + 1, row);           // E cell
+            let ahead = map.get_cell(col + 1, row); // E cell
 
             if ahead_right {
                 // Turn right: go to NE cell's West edge
@@ -810,9 +943,10 @@ fn next_boundary_edge(map: &SparseTileMap, col: i32, row: i32, edge: u8) -> (i32
                 (col, row, 1)
             }
         }
-        1 => { // East edge, walking South toward (col+1, row+1)
+        1 => {
+            // East edge, walking South toward (col+1, row+1)
             let ahead_right = map.get_cell(col + 1, row + 1); // SE cell
-            let ahead = map.get_cell(col, row + 1);           // S cell
+            let ahead = map.get_cell(col, row + 1); // S cell
 
             if ahead_right {
                 // Turn right: go to SE cell's North edge
@@ -825,9 +959,10 @@ fn next_boundary_edge(map: &SparseTileMap, col: i32, row: i32, edge: u8) -> (i32
                 (col, row, 2)
             }
         }
-        2 => { // South edge, walking West toward (col, row+1)
+        2 => {
+            // South edge, walking West toward (col, row+1)
             let ahead_right = map.get_cell(col - 1, row + 1); // SW cell
-            let ahead = map.get_cell(col - 1, row);           // W cell
+            let ahead = map.get_cell(col - 1, row); // W cell
 
             if ahead_right {
                 // Turn right: go to SW cell's East edge
@@ -840,9 +975,10 @@ fn next_boundary_edge(map: &SparseTileMap, col: i32, row: i32, edge: u8) -> (i32
                 (col, row, 3)
             }
         }
-        _ => { // West edge (3), walking North toward (col, row)
+        _ => {
+            // West edge (3), walking North toward (col, row)
             let ahead_right = map.get_cell(col - 1, row - 1); // NW cell
-            let ahead = map.get_cell(col, row - 1);           // N cell
+            let ahead = map.get_cell(col, row - 1); // N cell
 
             if ahead_right {
                 // Turn right: go to NW cell's South edge
@@ -877,12 +1013,20 @@ fn marching_squares_dense(
 
     // Start flood fill from all border cells that are not set
     for col in 0..n_cols {
-        if !raster[col] { stack.push((col, 0)); }
-        if !raster[(n_rows - 1) * n_cols + col] { stack.push((col, n_rows - 1)); }
+        if !raster[col] {
+            stack.push((col, 0));
+        }
+        if !raster[(n_rows - 1) * n_cols + col] {
+            stack.push((col, n_rows - 1));
+        }
     }
     for row in 0..n_rows {
-        if !raster[row * n_cols] { stack.push((0, row)); }
-        if !raster[row * n_cols + n_cols - 1] { stack.push((n_cols - 1, row)); }
+        if !raster[row * n_cols] {
+            stack.push((0, row));
+        }
+        if !raster[row * n_cols + n_cols - 1] {
+            stack.push((n_cols - 1, row));
+        }
     }
 
     while let Some((col, row)) = stack.pop() {
@@ -892,10 +1036,18 @@ fn marching_squares_dense(
         }
         exterior[idx] = true;
 
-        if col > 0 { stack.push((col - 1, row)); }
-        if col + 1 < n_cols { stack.push((col + 1, row)); }
-        if row > 0 { stack.push((col, row - 1)); }
-        if row + 1 < n_rows { stack.push((col, row + 1)); }
+        if col > 0 {
+            stack.push((col - 1, row));
+        }
+        if col + 1 < n_cols {
+            stack.push((col + 1, row));
+        }
+        if row > 0 {
+            stack.push((col, row - 1));
+        }
+        if row + 1 < n_rows {
+            stack.push((col, row + 1));
+        }
     }
 
     // Find a starting edge (transition from exterior to interior)
@@ -930,10 +1082,26 @@ fn marching_squares_dense(
         }
 
         // Get 2x2 cell configuration
-        let tl = if row > 0 && col > 0 { raster[(row - 1) * n_cols + col - 1] && !exterior[(row - 1) * n_cols + col - 1] } else { false };
-        let tr = if row > 0 && col < n_cols { raster[(row - 1) * n_cols + col] && !exterior[(row - 1) * n_cols + col] } else { false };
-        let bl = if row < n_rows && col > 0 { raster[row * n_cols + col - 1] && !exterior[row * n_cols + col - 1] } else { false };
-        let br = if row < n_rows && col < n_cols { raster[row * n_cols + col] && !exterior[row * n_cols + col] } else { false };
+        let tl = if row > 0 && col > 0 {
+            raster[(row - 1) * n_cols + col - 1] && !exterior[(row - 1) * n_cols + col - 1]
+        } else {
+            false
+        };
+        let tr = if row > 0 && col < n_cols {
+            raster[(row - 1) * n_cols + col] && !exterior[(row - 1) * n_cols + col]
+        } else {
+            false
+        };
+        let bl = if row < n_rows && col > 0 {
+            raster[row * n_cols + col - 1] && !exterior[row * n_cols + col - 1]
+        } else {
+            false
+        };
+        let br = if row < n_rows && col < n_cols {
+            raster[row * n_cols + col] && !exterior[row * n_cols + col]
+        } else {
+            false
+        };
 
         let case = (tl as u8) | ((tr as u8) << 1) | ((bl as u8) << 2) | ((br as u8) << 3);
 
@@ -943,13 +1111,13 @@ fn marching_squares_dense(
         // Determine next direction based on marching squares case
         let next_dir = match (case, dir) {
             // Standard marching squares transitions
-            (1, _) | (14, _) => 3,  // up
-            (2, _) | (13, _) => 0,  // right
-            (3, _) | (12, _) => 0,  // right
-            (4, _) | (11, _) => 3,  // up
-            (6, 0) | (9, 2) => 3,   // saddle: prefer up
-            (6, _) | (9, _) => 1,   // saddle: prefer down
-            (7, _) | (8, _) => 3,   // up
+            (1, _) | (14, _) => 3,   // up
+            (2, _) | (13, _) => 0,   // right
+            (3, _) | (12, _) => 0,   // right
+            (4, _) | (11, _) => 3,   // up
+            (6, 0) | (9, 2) => 3,    // saddle: prefer up
+            (6, _) | (9, _) => 1,    // saddle: prefer down
+            (7, _) | (8, _) => 3,    // up
             (5, _) | (10, _) => dir, // straight through
             _ => {
                 // Move based on current direction
@@ -964,8 +1132,8 @@ fn marching_squares_dense(
 
         // Move to next cell
         match next_dir {
-            0 => col += 1, // right
-            1 => row += 1, // down
+            0 => col += 1,                    // right
+            1 => row += 1,                    // down
             2 => col = col.saturating_sub(1), // left
             _ => row = row.saturating_sub(1), // up
         }
@@ -1055,8 +1223,8 @@ mod tests {
 
         // Set cells across multiple tiles
         map.set_cell(0, 0);
-        map.set_cell(64, 0);  // Next tile
-        map.set_cell(0, 64);  // Different tile
+        map.set_cell(64, 0); // Next tile
+        map.set_cell(0, 64); // Different tile
 
         assert!(map.get_cell(0, 0));
         assert!(map.get_cell(64, 0));

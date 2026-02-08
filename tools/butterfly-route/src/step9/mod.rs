@@ -27,9 +27,9 @@ pub mod trip;
 pub mod unpack;
 
 #[cfg(test)]
-mod isochrone_test;
-#[cfg(test)]
 mod consistency_test;
+#[cfg(test)]
+mod isochrone_test;
 
 use anyhow::Result;
 use std::net::TcpListener;
@@ -57,10 +57,7 @@ pub fn init_tracing(log_format: &str) {
                 .init();
         }
         _ => {
-            fmt()
-                .with_env_filter(filter)
-                .with_target(false)
-                .init();
+            fmt().with_env_filter(filter).with_target(false).init();
         }
     }
 }
@@ -120,7 +117,11 @@ pub async fn serve(data_dir: &Path, port: Option<u16>) -> Result<()> {
     // Start server
     let addr = format!("0.0.0.0:{}", port);
     tracing::info!(port = port, "server listening on http://127.0.0.1:{}", port);
-    tracing::info!(port = port, "Swagger UI: http://127.0.0.1:{}/swagger-ui/", port);
+    tracing::info!(
+        port = port,
+        "Swagger UI: http://127.0.0.1:{}/swagger-ui/",
+        port
+    );
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app)

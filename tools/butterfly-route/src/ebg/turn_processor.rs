@@ -4,8 +4,8 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
 
+use super::{CanonicalTurnRule, TurnRuleKey, MODE_BIKE, MODE_CAR, MODE_FOOT};
 use crate::formats::*;
-use super::{TurnRuleKey, CanonicalTurnRule, MODE_CAR, MODE_BIKE, MODE_FOOT};
 
 /// Build canonical turn rule table from per-mode turn rules
 pub fn build_canonical_turn_rules(
@@ -28,17 +28,41 @@ pub fn build_canonical_turn_rules(
 
     // Process car rules
     for rule in car_rules {
-        process_rule(rule, MODE_CAR, &mut canonical_rules, nbg_csr, nbg_geo, nbg_node_map, &way_nodes_index)?;
+        process_rule(
+            rule,
+            MODE_CAR,
+            &mut canonical_rules,
+            nbg_csr,
+            nbg_geo,
+            nbg_node_map,
+            &way_nodes_index,
+        )?;
     }
 
     // Process bike rules
     for rule in bike_rules {
-        process_rule(rule, MODE_BIKE, &mut canonical_rules, nbg_csr, nbg_geo, nbg_node_map, &way_nodes_index)?;
+        process_rule(
+            rule,
+            MODE_BIKE,
+            &mut canonical_rules,
+            nbg_csr,
+            nbg_geo,
+            nbg_node_map,
+            &way_nodes_index,
+        )?;
     }
 
     // Process foot rules
     for rule in foot_rules {
-        process_rule(rule, MODE_FOOT, &mut canonical_rules, nbg_csr, nbg_geo, nbg_node_map, &way_nodes_index)?;
+        process_rule(
+            rule,
+            MODE_FOOT,
+            &mut canonical_rules,
+            nbg_csr,
+            nbg_geo,
+            nbg_node_map,
+            &way_nodes_index,
+        )?;
     }
 
     // Convert ONLY rules to implicit Bans
@@ -55,10 +79,14 @@ fn build_way_nodes_index(nbg_geo: &NbgGeo, nbg_node_map: &NbgNodeMap) -> HashMap
         let way_id = edge.first_osm_way_id;
 
         // Get OSM node IDs for both endpoints
-        let u_osm = nbg_node_map.mappings.get(edge.u_node as usize)
+        let u_osm = nbg_node_map
+            .mappings
+            .get(edge.u_node as usize)
             .map(|m| m.osm_node_id)
             .unwrap_or(0);
-        let v_osm = nbg_node_map.mappings.get(edge.v_node as usize)
+        let v_osm = nbg_node_map
+            .mappings
+            .get(edge.v_node as usize)
             .map(|m| m.osm_node_id)
             .unwrap_or(0);
 
@@ -98,7 +126,10 @@ fn process_rule(
         let via_way_id = rule.via_node_id; // Actually via_way_id in this case
 
         // O(1) lookup instead of O(n_edges) scan!
-        let via_nodes = way_nodes_index.get(&via_way_id).map(|v| v.as_slice()).unwrap_or(&[]);
+        let via_nodes = way_nodes_index
+            .get(&via_way_id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
 
         // Create a rule for each node on the via way
         for &via_node_osm in via_nodes {
@@ -177,34 +208,37 @@ fn add_canonical_rule(
             penalty_foot = penalty_ds;
         }
 
-        canonical_rules.insert(key, CanonicalTurnRule {
-            mode_mask: mode_bit,
-            kind,
-            penalty_ds_car: penalty_car,
-            penalty_ds_bike: penalty_bike,
-            penalty_ds_foot: penalty_foot,
-            has_time_dep,
-        });
+        canonical_rules.insert(
+            key,
+            CanonicalTurnRule {
+                mode_mask: mode_bit,
+                kind,
+                penalty_ds_car: penalty_car,
+                penalty_ds_bike: penalty_bike,
+                penalty_ds_foot: penalty_foot,
+                has_time_dep,
+            },
+        );
     }
 }
 
 /// Find all NBG nodes that are part of a given way
 #[allow(dead_code)]
-fn find_nodes_on_way(
-    way_id: i64,
-    nbg_geo: &NbgGeo,
-    nbg_node_map: &NbgNodeMap,
-) -> Result<Vec<i64>> {
+fn find_nodes_on_way(way_id: i64, nbg_geo: &NbgGeo, nbg_node_map: &NbgNodeMap) -> Result<Vec<i64>> {
     let mut nodes = Vec::new();
 
     // Scan all NBG edges to find those that belong to this way
     for edge in &nbg_geo.edges {
         if edge.first_osm_way_id == way_id {
             // Get OSM node IDs for both endpoints
-            let u_osm = nbg_node_map.mappings.get(edge.u_node as usize)
+            let u_osm = nbg_node_map
+                .mappings
+                .get(edge.u_node as usize)
                 .map(|m| m.osm_node_id)
                 .unwrap_or(0);
-            let v_osm = nbg_node_map.mappings.get(edge.v_node as usize)
+            let v_osm = nbg_node_map
+                .mappings
+                .get(edge.v_node as usize)
                 .map(|m| m.osm_node_id)
                 .unwrap_or(0);
 
@@ -228,7 +262,8 @@ fn convert_only_to_bans(
     nbg_node_map: &NbgNodeMap,
 ) -> Result<()> {
     // Collect all ONLY rules grouped by (via_node, from_way)
-    let mut only_groups: HashMap<(i64, i64), Vec<(TurnRuleKey, CanonicalTurnRule)>> = HashMap::new();
+    let mut only_groups: HashMap<(i64, i64), Vec<(TurnRuleKey, CanonicalTurnRule)>> =
+        HashMap::new();
 
     for (key, rule) in canonical_rules.iter() {
         if rule.kind == TurnKind::Only {
@@ -249,7 +284,8 @@ fn convert_only_to_bans(
         let via_node = via_node_compact.unwrap();
 
         // Find all possible to_ways at this intersection
-        let all_to_ways = find_outgoing_ways_from_intersection(via_node, from_way_id, nbg_csr, nbg_geo);
+        let all_to_ways =
+            find_outgoing_ways_from_intersection(via_node, from_way_id, nbg_csr, nbg_geo);
 
         // Collect allowed to_ways from ONLY rules, per mode
         let mut allowed_by_mode: HashMap<u8, std::collections::HashSet<i64>> = HashMap::new();
@@ -297,7 +333,9 @@ fn convert_only_to_bans(
 
 /// Convert OSM node ID to NBG compact node ID
 fn osm_node_to_compact(osm_id: i64, node_map: &NbgNodeMap) -> Option<u32> {
-    node_map.mappings.iter()
+    node_map
+        .mappings
+        .iter()
         .position(|m| m.osm_node_id == osm_id)
         .map(|idx| idx as u32)
 }

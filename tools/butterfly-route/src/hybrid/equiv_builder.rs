@@ -8,10 +8,10 @@
 //! - Median K=1, p99=2, max=10
 //! - We can collapse to nearly NBG size while preserving exact turn semantics
 
-use std::collections::HashMap;
-use crate::formats::{EbgCsr, EbgNodes};
 use super::equivalence::BehaviorSignature;
-use super::state_graph::{HybridStateGraph, HybridGraphStats};
+use super::state_graph::{HybridGraphStats, HybridStateGraph};
+use crate::formats::{EbgCsr, EbgNodes};
+use std::collections::HashMap;
 
 /// Equivalence-class hybrid graph builder
 pub struct EquivHybridBuilder;
@@ -39,14 +39,17 @@ impl EquivHybridBuilder {
         let n_ebg_arcs = ebg_csr.heads.len();
 
         // Extract (tail, head) from EBG nodes
-        let ebg_tail_head: Vec<(u32, u32)> = ebg_nodes.nodes
+        let ebg_tail_head: Vec<(u32, u32)> = ebg_nodes
+            .nodes
             .iter()
             .map(|n| (n.tail_nbg, n.head_nbg))
             .collect();
 
         println!("Building equivalence-class hybrid state graph...");
-        println!("  Input: {} NBG nodes, {} EBG nodes, {} arcs",
-            n_nbg_nodes, n_ebg_nodes, n_ebg_arcs);
+        println!(
+            "  Input: {} NBG nodes, {} EBG nodes, {} arcs",
+            n_nbg_nodes, n_ebg_nodes, n_ebg_arcs
+        );
 
         // === Phase 1: Build reverse mapping NBG → incoming EBG edges ===
         let mut nbg_incoming: Vec<Vec<u32>> = vec![Vec::new(); n_nbg_nodes];
@@ -107,11 +110,20 @@ impl EquivHybridBuilder {
 
         println!("  Equivalence class analysis:");
         println!("    Reachable NBG nodes: {}", n_reachable_nbg);
-        println!("    Total classes: {} (was {} EBG nodes)", total_classes, n_ebg_nodes);
-        println!("    Nodes fully collapsed (K=1): {} ({:.1}%)",
-            nodes_fully_collapsed, 100.0 * nodes_fully_collapsed as f64 / n_reachable_nbg as f64);
-        println!("    Nodes with reduction (K<indeg): {} ({:.1}%)",
-            nodes_with_reduction, 100.0 * nodes_with_reduction as f64 / n_reachable_nbg as f64);
+        println!(
+            "    Total classes: {} (was {} EBG nodes)",
+            total_classes, n_ebg_nodes
+        );
+        println!(
+            "    Nodes fully collapsed (K=1): {} ({:.1}%)",
+            nodes_fully_collapsed,
+            100.0 * nodes_fully_collapsed as f64 / n_reachable_nbg as f64
+        );
+        println!(
+            "    Nodes with reduction (K<indeg): {} ({:.1}%)",
+            nodes_with_reduction,
+            100.0 * nodes_with_reduction as f64 / n_reachable_nbg as f64
+        );
 
         // === Phase 3: Assign state IDs ===
         // Each equivalence class becomes one state
@@ -125,8 +137,8 @@ impl EquivHybridBuilder {
         // The distinction between "node-state" and "edge-state" becomes less meaningful.
         // We'll use n_node_states for K=1 nodes (compatible with existing format).
 
-        let mut node_state_to_nbg: Vec<u32> = Vec::new();  // For K=1 nodes: state → NBG
-        let mut edge_state_to_ebg: Vec<u32> = Vec::new();  // For K>1 classes: state → representative EBG
+        let mut node_state_to_nbg: Vec<u32> = Vec::new(); // For K=1 nodes: state → NBG
+        let mut edge_state_to_ebg: Vec<u32> = Vec::new(); // For K>1 classes: state → representative EBG
 
         let mut nbg_to_node_state: Vec<u32> = vec![u32::MAX; n_nbg_nodes];
         let mut ebg_to_edge_state: Vec<u32> = vec![u32::MAX; n_ebg_nodes];
@@ -181,8 +193,14 @@ impl EquivHybridBuilder {
         println!("  State assignment:");
         println!("    Node-states (K=1 nodes): {}", n_node_states);
         println!("    Edge-states (K>1 classes): {}", n_edge_states);
-        println!("    Total states: {} (was {} EBG nodes)", n_states, n_ebg_nodes);
-        println!("    State reduction: {:.2}x", n_ebg_nodes as f64 / n_states as f64);
+        println!(
+            "    Total states: {} (was {} EBG nodes)",
+            n_states, n_ebg_nodes
+        );
+        println!(
+            "    State reduction: {:.2}x",
+            n_ebg_nodes as f64 / n_states as f64
+        );
 
         // === Phase 4: Build adjacency ===
         // For each state, use the representative's outgoing edges
@@ -242,17 +260,35 @@ impl EquivHybridBuilder {
         for &tgt in &ebg_csr.heads {
             ebg_in_degree[tgt as usize] += 1;
         }
-        let ebg_avg_in_degree = ebg_in_degree.iter().map(|&d| d as f64).sum::<f64>() / n_ebg_nodes as f64;
+        let ebg_avg_in_degree =
+            ebg_in_degree.iter().map(|&d| d as f64).sum::<f64>() / n_ebg_nodes as f64;
         let ebg_max_in_degree = *ebg_in_degree.iter().max().unwrap_or(&0);
 
         println!("  Adjacency statistics:");
-        println!("    Hybrid arcs: {} (was {} EBG arcs)", n_hybrid_arcs, n_ebg_arcs);
-        println!("    Arc reduction: {:.2}x", n_ebg_arcs as f64 / n_hybrid_arcs as f64);
-        println!("    Out-degree: avg {:.2} (EBG was {:.2}), max {}", avg_out_degree, ebg_avg_degree, max_out_degree);
-        println!("    In-degree:  avg {:.2} (EBG was {:.2}), max {} (EBG was {})",
-            avg_in_degree, ebg_avg_in_degree, max_in_degree, ebg_max_in_degree);
-        println!("    Out-degree ratio: {:.2}x", avg_out_degree / ebg_avg_degree);
-        println!("    In-degree ratio:  {:.2}x", avg_in_degree / ebg_avg_in_degree);
+        println!(
+            "    Hybrid arcs: {} (was {} EBG arcs)",
+            n_hybrid_arcs, n_ebg_arcs
+        );
+        println!(
+            "    Arc reduction: {:.2}x",
+            n_ebg_arcs as f64 / n_hybrid_arcs as f64
+        );
+        println!(
+            "    Out-degree: avg {:.2} (EBG was {:.2}), max {}",
+            avg_out_degree, ebg_avg_degree, max_out_degree
+        );
+        println!(
+            "    In-degree:  avg {:.2} (EBG was {:.2}), max {} (EBG was {})",
+            avg_in_degree, ebg_avg_in_degree, max_in_degree, ebg_max_in_degree
+        );
+        println!(
+            "    Out-degree ratio: {:.2}x",
+            avg_out_degree / ebg_avg_degree
+        );
+        println!(
+            "    In-degree ratio:  {:.2}x",
+            avg_in_degree / ebg_avg_in_degree
+        );
 
         // Check the degree invariant - BOTH in and out degree matter for CCH!
         let out_deg_ratio = avg_out_degree / ebg_avg_degree;
@@ -261,10 +297,16 @@ impl EquivHybridBuilder {
         if out_deg_ratio <= 1.05 && in_deg_ratio <= 1.05 {
             println!("  VERIFIED: Both in/out degree invariants preserved");
         } else if out_deg_ratio <= 1.05 {
-            println!("  WARNING: In-degree increased by {:.2}x! This will hurt CCH contraction.", in_deg_ratio);
+            println!(
+                "  WARNING: In-degree increased by {:.2}x! This will hurt CCH contraction.",
+                in_deg_ratio
+            );
             println!("           Equivalence classes accumulate incoming edges from all members.");
         } else {
-            println!("  WARNING: Degree increased! Out: {:.2}x, In: {:.2}x", out_deg_ratio, in_deg_ratio);
+            println!(
+                "  WARNING: Degree increased! Out: {:.2}x, In: {:.2}x",
+                out_deg_ratio, in_deg_ratio
+            );
         }
 
         // === Phase 5: Materialize CSR ===
@@ -311,16 +353,28 @@ impl EquivHybridBuilder {
         };
 
         println!("\n  SUMMARY:");
-        println!("    States: {} → {} ({:.2}x reduction)",
-            n_ebg_nodes, n_states, stats.state_reduction_ratio);
-        println!("    Arcs: {} → {} ({:.2}x reduction)",
-            n_ebg_arcs, n_hybrid_arcs, stats.arc_reduction_ratio);
-        println!("    Out-degree: {:.2} → {:.2} ({:.2}x)",
-            ebg_avg_degree, avg_out_degree, out_deg_ratio);
-        println!("    In-degree:  {:.2} → {:.2} ({:.2}x)",
-            ebg_avg_in_degree, avg_in_degree, in_deg_ratio);
-        println!("    Max in-degree: {} → {} ({:.2}x)",
-            ebg_max_in_degree, max_in_degree, max_in_degree as f64 / ebg_max_in_degree as f64);
+        println!(
+            "    States: {} → {} ({:.2}x reduction)",
+            n_ebg_nodes, n_states, stats.state_reduction_ratio
+        );
+        println!(
+            "    Arcs: {} → {} ({:.2}x reduction)",
+            n_ebg_arcs, n_hybrid_arcs, stats.arc_reduction_ratio
+        );
+        println!(
+            "    Out-degree: {:.2} → {:.2} ({:.2}x)",
+            ebg_avg_degree, avg_out_degree, out_deg_ratio
+        );
+        println!(
+            "    In-degree:  {:.2} → {:.2} ({:.2}x)",
+            ebg_avg_in_degree, avg_in_degree, in_deg_ratio
+        );
+        println!(
+            "    Max in-degree: {} → {} ({:.2}x)",
+            ebg_max_in_degree,
+            max_in_degree,
+            max_in_degree as f64 / ebg_max_in_degree as f64
+        );
 
         HybridStateGraph {
             n_node_states,

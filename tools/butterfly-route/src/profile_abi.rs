@@ -39,7 +39,6 @@ pub struct WayOutput {
     pub const_penalty_ds: u32,
 }
 
-
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct TurnInput<'a> {

@@ -6,8 +6,8 @@
 
 use anyhow::Result;
 use priority_queue::PriorityQueue;
-use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use std::cmp::Reverse;
 use std::path::Path;
@@ -81,19 +81,30 @@ pub fn validate_cch_correctness(
     };
 
     let n_threads = rayon::current_num_threads();
-    println!("\n🔬 CCH Correctness Validation ({} mode) - {} threads", mode_name, n_threads);
+    println!(
+        "\n🔬 CCH Correctness Validation ({} mode) - {} threads",
+        mode_name, n_threads
+    );
     println!("   Pairs: {}", n_pairs);
     println!("   Seed: {}", seed);
 
     // Load data
     println!("\nLoading CCH topology...");
     let topo = CchTopoFile::read(topo_path)?;
-    println!("  ✓ {} nodes, {} up edges, {} down edges",
-             topo.n_nodes, topo.up_targets.len(), topo.down_targets.len());
+    println!(
+        "  ✓ {} nodes, {} up edges, {} down edges",
+        topo.n_nodes,
+        topo.up_targets.len(),
+        topo.down_targets.len()
+    );
 
     println!("Loading CCH weights...");
     let weights = CchWeightsFile::read(weights_path)?;
-    println!("  ✓ {} up weights, {} down weights", weights.up.len(), weights.down.len());
+    println!(
+        "  ✓ {} up weights, {} down weights",
+        weights.up.len(),
+        weights.down.len()
+    );
 
     println!("Loading ordering...");
     let order = OrderEbgFile::read(order_path)?;
@@ -144,39 +155,48 @@ pub fn validate_cch_correctness(
             let mut pq_bwd: PriorityQueue<u32, Reverse<u32>> = PriorityQueue::with_capacity(10000);
             let mut pq_dij: PriorityQueue<u32, Reverse<u32>> = PriorityQueue::with_capacity(10000);
 
-            let chunk_results: Vec<QueryResult> = chunk.iter().map(|pair| {
-                current_gen += 1;
+            let chunk_results: Vec<QueryResult> = chunk
+                .iter()
+                .map(|pair| {
+                    current_gen += 1;
 
-                // Run bidirectional CCH
-                let t0 = std::time::Instant::now();
-                let bidi_cost = bidi_cch_query(
-                    &topo, &weights, &down_rev,
-                    pair.src, pair.dst,
-                    &mut dist_fwd, &mut dist_bwd,
-                    &mut gen_fwd, &mut gen_bwd,
-                    current_gen,
-                    &mut pq_fwd, &mut pq_bwd,
-                );
-                let bidi_ns = t0.elapsed().as_nanos() as u64;
+                    // Run bidirectional CCH
+                    let t0 = std::time::Instant::now();
+                    let bidi_cost = bidi_cch_query(
+                        &topo,
+                        &weights,
+                        &down_rev,
+                        pair.src,
+                        pair.dst,
+                        &mut dist_fwd,
+                        &mut dist_bwd,
+                        &mut gen_fwd,
+                        &mut gen_bwd,
+                        current_gen,
+                        &mut pq_fwd,
+                        &mut pq_bwd,
+                    );
+                    let bidi_ns = t0.elapsed().as_nanos() as u64;
 
-                current_gen += 1;
+                    current_gen += 1;
 
-                // Run CCH-Dijkstra (baseline)
-                let t1 = std::time::Instant::now();
-                let baseline_cost = cch_dijkstra_query(
-                    &topo, &weights,
-                    pair.src, pair.dst,
-                    &mut dist_dij,
-                    &mut gen_dij,
-                    current_gen,
-                    &mut pq_dij,
-                );
-                let baseline_ns = t1.elapsed().as_nanos() as u64;
+                    // Run CCH-Dijkstra (baseline)
+                    let t1 = std::time::Instant::now();
+                    let baseline_cost = cch_dijkstra_query(
+                        &topo,
+                        &weights,
+                        pair.src,
+                        pair.dst,
+                        &mut dist_dij,
+                        &mut gen_dij,
+                        current_gen,
+                        &mut pq_dij,
+                    );
+                    let baseline_ns = t1.elapsed().as_nanos() as u64;
 
-                // Compare
-                match (bidi_cost, baseline_cost) {
-                    (Some(b), Some(d)) if b == d => {
-                        QueryResult {
+                    // Compare
+                    match (bidi_cost, baseline_cost) {
+                        (Some(b), Some(d)) if b == d => QueryResult {
                             routable: true,
                             unreachable: false,
                             mismatch: false,
@@ -184,27 +204,25 @@ pub fn validate_cch_correctness(
                             failure: None,
                             bidi_ns,
                             baseline_ns,
+                        },
+                        (Some(b), Some(d)) => {
+                            let diff = (b as i64) - (d as i64);
+                            QueryResult {
+                                routable: true,
+                                unreachable: false,
+                                mismatch: true,
+                                diff,
+                                failure: Some(Failure {
+                                    src: pair.src,
+                                    dst: pair.dst,
+                                    bidi_cost: b,
+                                    baseline_cost: d,
+                                }),
+                                bidi_ns,
+                                baseline_ns,
+                            }
                         }
-                    }
-                    (Some(b), Some(d)) => {
-                        let diff = (b as i64) - (d as i64);
-                        QueryResult {
-                            routable: true,
-                            unreachable: false,
-                            mismatch: true,
-                            diff,
-                            failure: Some(Failure {
-                                src: pair.src,
-                                dst: pair.dst,
-                                bidi_cost: b,
-                                baseline_cost: d,
-                            }),
-                            bidi_ns,
-                            baseline_ns,
-                        }
-                    }
-                    (None, None) => {
-                        QueryResult {
+                        (None, None) => QueryResult {
                             routable: false,
                             unreachable: true,
                             mismatch: false,
@@ -212,10 +230,8 @@ pub fn validate_cch_correctness(
                             failure: None,
                             bidi_ns,
                             baseline_ns,
-                        }
-                    }
-                    (Some(b), None) => {
-                        QueryResult {
+                        },
+                        (Some(b), None) => QueryResult {
                             routable: false,
                             unreachable: false,
                             mismatch: true,
@@ -228,10 +244,8 @@ pub fn validate_cch_correctness(
                             }),
                             bidi_ns,
                             baseline_ns,
-                        }
-                    }
-                    (None, Some(d)) => {
-                        QueryResult {
+                        },
+                        (None, Some(d)) => QueryResult {
                             routable: false,
                             unreachable: false,
                             mismatch: true,
@@ -244,10 +258,10 @@ pub fn validate_cch_correctness(
                             }),
                             bidi_ns,
                             baseline_ns,
-                        }
+                        },
                     }
-                }
-            }).collect();
+                })
+                .collect();
 
             // Update progress
             let done = completed.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
@@ -296,7 +310,11 @@ pub fn validate_cch_correctness(
     let avg_baseline_us = (total_baseline_ns as f64 / n_pairs as f64) / 1000.0;
 
     println!("\n=== VALIDATION COMPLETE ===");
-    println!("  Total time: {:.2}s ({:.0} q/s)", elapsed.as_secs_f64(), n_pairs as f64 / elapsed.as_secs_f64());
+    println!(
+        "  Total time: {:.2}s ({:.0} q/s)",
+        elapsed.as_secs_f64(),
+        n_pairs as f64 / elapsed.as_secs_f64()
+    );
     println!("  Total pairs: {}", n_pairs);
     println!("  Routable:    {}", routable_pairs);
     println!("  Unreachable: {}", unreachable_pairs);
@@ -306,8 +324,10 @@ pub fn validate_cch_correctness(
         println!("\n  First 5 failures:");
         for f in failures.iter().take(5) {
             let diff = (f.bidi_cost as i64) - (f.baseline_cost as i64);
-            println!("    src={} dst={} bidi={} baseline={} diff={}",
-                     f.src, f.dst, f.bidi_cost, f.baseline_cost, diff);
+            println!(
+                "    src={} dst={} bidi={} baseline={} diff={}",
+                f.src, f.dst, f.bidi_cost, f.baseline_cost, diff
+            );
         }
     }
     println!("  Avg bidi:    {:.1} µs", avg_bidi_us);
@@ -319,15 +339,18 @@ pub fn validate_cch_correctness(
         println!("\n❌ VALIDATION FAILED - {} mismatches", mismatches);
     }
 
-    Ok((ValidationResult {
-        total_pairs: n_pairs,
-        routable_pairs,
-        unreachable_pairs,
-        mismatches,
-        max_diff,
-        avg_bidi_us,
-        avg_baseline_us,
-    }, failures))
+    Ok((
+        ValidationResult {
+            total_pairs: n_pairs,
+            routable_pairs,
+            unreachable_pairs,
+            mismatches,
+            max_diff,
+            avg_bidi_us,
+            avg_baseline_us,
+        },
+        failures,
+    ))
 }
 
 fn generate_query_pairs(
@@ -358,7 +381,10 @@ fn generate_query_pairs(
     pairs
 }
 
-fn build_down_reverse(topo: &crate::formats::CchTopo, weights: &crate::formats::CchWeights) -> DownReverse {
+fn build_down_reverse(
+    topo: &crate::formats::CchTopo,
+    weights: &crate::formats::CchWeights,
+) -> DownReverse {
     let n = topo.n_nodes as usize;
 
     // Count incoming DOWN edges per node
@@ -400,10 +426,17 @@ fn build_down_reverse(topo: &crate::formats::CchTopo, weights: &crate::formats::
         }
     }
 
-    DownReverse { offsets, sources, weights: rev_weights }
+    DownReverse {
+        offsets,
+        sources,
+        weights: rev_weights,
+    }
 }
 
-fn find_routable_nodes(topo: &crate::formats::CchTopo, weights: &crate::formats::CchWeights) -> Vec<u32> {
+fn find_routable_nodes(
+    topo: &crate::formats::CchTopo,
+    weights: &crate::formats::CchWeights,
+) -> Vec<u32> {
     let n = topo.n_nodes as usize;
     let mut routable = Vec::with_capacity(n / 2);
 
@@ -512,11 +545,17 @@ fn bidi_cch_query(
                 for i in start..end {
                     let v = topo.up_targets[i];
                     let w = weights.up[i];
-                    if w == u32::MAX { continue; }
+                    if w == u32::MAX {
+                        continue;
+                    }
 
                     let v_idx = v as usize;
                     let nd = d.saturating_add(w);
-                    let old = if gen_fwd[v_idx] == gen { dist_fwd[v_idx] } else { u32::MAX };
+                    let old = if gen_fwd[v_idx] == gen {
+                        dist_fwd[v_idx]
+                    } else {
+                        u32::MAX
+                    };
 
                     if nd < old {
                         dist_fwd[v_idx] = nd;
@@ -549,11 +588,17 @@ fn bidi_cch_query(
                 for i in start..end {
                     let x = down_rev.sources[i];
                     let w = down_rev.weights[i];
-                    if w == u32::MAX { continue; }
+                    if w == u32::MAX {
+                        continue;
+                    }
 
                     let x_idx = x as usize;
                     let nd = d.saturating_add(w);
-                    let old = if gen_bwd[x_idx] == gen { dist_bwd[x_idx] } else { u32::MAX };
+                    let old = if gen_bwd[x_idx] == gen {
+                        dist_bwd[x_idx]
+                    } else {
+                        u32::MAX
+                    };
 
                     if nd < old {
                         dist_bwd[x_idx] = nd;
@@ -570,7 +615,11 @@ fn bidi_cch_query(
         }
     }
 
-    if best == u32::MAX { None } else { Some(best) }
+    if best == u32::MAX {
+        None
+    } else {
+        Some(best)
+    }
 }
 
 /// CCH-Dijkstra (baseline) - explores both UP and DOWN in any order
@@ -607,11 +656,17 @@ fn cch_dijkstra_query(
         for i in up_start..up_end {
             let v = topo.up_targets[i];
             let w = weights.up[i];
-            if w == u32::MAX { continue; }
+            if w == u32::MAX {
+                continue;
+            }
 
             let v_idx = v as usize;
             let nd = d.saturating_add(w);
-            let old = if gen[v_idx] == current_gen { dist[v_idx] } else { u32::MAX };
+            let old = if gen[v_idx] == current_gen {
+                dist[v_idx]
+            } else {
+                u32::MAX
+            };
 
             if nd < old {
                 dist[v_idx] = nd;
@@ -626,11 +681,17 @@ fn cch_dijkstra_query(
         for i in down_start..down_end {
             let v = topo.down_targets[i];
             let w = weights.down[i];
-            if w == u32::MAX { continue; }
+            if w == u32::MAX {
+                continue;
+            }
 
             let v_idx = v as usize;
             let nd = d.saturating_add(w);
-            let old = if gen[v_idx] == current_gen { dist[v_idx] } else { u32::MAX };
+            let old = if gen[v_idx] == current_gen {
+                dist[v_idx]
+            } else {
+                u32::MAX
+            };
 
             if nd < old {
                 dist[v_idx] = nd;
@@ -700,8 +761,12 @@ pub fn run_regression_tests(
     let _order = OrderEbgFile::read(order_path)?;
 
     let n = topo.n_nodes as usize;
-    println!("  Loaded: {} nodes, {} up + {} down edges",
-             n, topo.up_targets.len(), topo.down_targets.len());
+    println!(
+        "  Loaded: {} nodes, {} up + {} down edges",
+        n,
+        topo.up_targets.len(),
+        topo.down_targets.len()
+    );
 
     // Build reverse DOWN adjacency
     let down_rev = build_down_reverse(&topo, &weights);
@@ -732,20 +797,28 @@ pub fn run_regression_tests(
 
         // Run bidirectional CCH
         let bidi_cost = bidi_cch_query(
-            &topo, &weights, &down_rev,
-            case.src, case.dst,
-            &mut dist_fwd, &mut dist_bwd,
-            &mut gen_fwd, &mut gen_bwd,
+            &topo,
+            &weights,
+            &down_rev,
+            case.src,
+            case.dst,
+            &mut dist_fwd,
+            &mut dist_bwd,
+            &mut gen_fwd,
+            &mut gen_bwd,
             current_gen,
-            &mut pq_fwd, &mut pq_bwd,
+            &mut pq_fwd,
+            &mut pq_bwd,
         );
 
         current_gen += 1;
 
         // Run baseline
         let baseline_cost = cch_dijkstra_query(
-            &topo, &weights,
-            case.src, case.dst,
+            &topo,
+            &weights,
+            case.src,
+            case.dst,
             &mut dist_dij,
             &mut gen_dij,
             current_gen,
@@ -759,27 +832,43 @@ pub fn run_regression_tests(
             (None, None, false) => (true, None),
 
             // Cost mismatch
-            (Some(b), Some(d), _) if b != d => {
-                (false, Some(format!("Cost mismatch: bidi={} baseline={} diff={}", b, d, b as i64 - d as i64)))
-            }
+            (Some(b), Some(d), _) if b != d => (
+                false,
+                Some(format!(
+                    "Cost mismatch: bidi={} baseline={} diff={}",
+                    b,
+                    d,
+                    b as i64 - d as i64
+                )),
+            ),
 
             // Reachability mismatch
-            (Some(b), None, _) => {
-                (false, Some(format!("Bidi found route (cost={}) but baseline says unreachable", b)))
-            }
-            (None, Some(d), _) => {
-                (false, Some(format!("Bidi says unreachable but baseline found route (cost={})", d)))
-            }
+            (Some(b), None, _) => (
+                false,
+                Some(format!(
+                    "Bidi found route (cost={}) but baseline says unreachable",
+                    b
+                )),
+            ),
+            (None, Some(d), _) => (
+                false,
+                Some(format!(
+                    "Bidi says unreachable but baseline found route (cost={})",
+                    d
+                )),
+            ),
 
             // Expected reachable but both say unreachable
-            (None, None, true) => {
-                (false, Some("Expected reachable but both say unreachable".to_string()))
-            }
+            (None, None, true) => (
+                false,
+                Some("Expected reachable but both say unreachable".to_string()),
+            ),
 
             // Expected unreachable but both found route
-            (Some(b), Some(d), false) if b == d => {
-                (false, Some(format!("Expected unreachable but found route (cost={})", b)))
-            }
+            (Some(b), Some(d), false) if b == d => (
+                false,
+                Some(format!("Expected unreachable but found route (cost={})", b)),
+            ),
 
             _ => (true, None), // Catch-all for edge cases
         };
@@ -847,7 +936,9 @@ fn generate_regression_cases(
                 adjacent_count += 1;
             }
         }
-        if adjacent_count >= 10 { break; }
+        if adjacent_count >= 10 {
+            break;
+        }
     }
 
     // 3. Adjacent edges (single hop via DOWN edges)
@@ -866,7 +957,9 @@ fn generate_regression_cases(
                 down_count += 1;
             }
         }
-        if down_count >= 10 { break; }
+        if down_count >= 10 {
+            break;
+        }
     }
 
     // 4. High-degree nodes (potential roundabouts/intersections)
@@ -884,7 +977,7 @@ fn generate_regression_cases(
 
     // Test routes between high-degree nodes
     for i in 0..high_degree_nodes.len().min(5) {
-        for j in (i+1)..high_degree_nodes.len().min(10) {
+        for j in (i + 1)..high_degree_nodes.len().min(10) {
             cases.push(RegressionCase {
                 name: "high_degree_pair",
                 src: high_degree_nodes[i].0,
@@ -953,7 +1046,9 @@ fn generate_regression_cases(
         let up_end = topo.up_offsets[u + 1] as usize;
 
         for i in up_start..up_end {
-            if weights.up[i] == u32::MAX { continue; }
+            if weights.up[i] == u32::MAX {
+                continue;
+            }
             let v = topo.up_targets[i] as usize;
 
             let v_up_start = topo.up_offsets[v] as usize;
@@ -968,7 +1063,9 @@ fn generate_regression_cases(
                         expect_reachable: true,
                     });
                     two_hop_count += 1;
-                    if two_hop_count >= 10 { break 'outer; }
+                    if two_hop_count >= 10 {
+                        break 'outer;
+                    }
                 }
             }
         }

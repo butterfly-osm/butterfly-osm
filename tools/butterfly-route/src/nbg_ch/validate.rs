@@ -2,19 +2,14 @@
 //!
 //! Compares NBG CH distances against Dijkstra on the original graph.
 
-use std::collections::BinaryHeap;
 use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 
+use super::{NbgBucketM2M, NbgChTopo};
 use crate::formats::{NbgCsr, NbgGeo};
-use super::{NbgChTopo, NbgBucketM2M};
 
 /// Run Dijkstra on original NBG graph (ground truth)
-pub fn dijkstra_nbg(
-    nbg_csr: &NbgCsr,
-    nbg_geo: &NbgGeo,
-    source: u32,
-    target: u32,
-) -> u32 {
+pub fn dijkstra_nbg(nbg_csr: &NbgCsr, nbg_geo: &NbgGeo, source: u32, target: u32) -> u32 {
     let n_nodes = nbg_csr.n_nodes as usize;
     let mut dist = vec![u32::MAX; n_nodes];
     let mut heap: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
@@ -102,8 +97,13 @@ pub fn validate_nbg_ch(
         }
 
         if (i + 1) % 100 == 0 {
-            println!("  {}/{} queries, {} correct, {} incorrect",
-                     i + 1, n_tests, correct, incorrect);
+            println!(
+                "  {}/{} queries, {} correct, {} incorrect",
+                i + 1,
+                n_tests,
+                correct,
+                incorrect
+            );
         }
     }
 
@@ -131,8 +131,12 @@ pub fn validate_matrix(
     let n_nodes = topo.n_nodes;
 
     // Generate random sources and targets
-    let sources: Vec<u32> = (0..matrix_size).map(|_| rng.random_range(0..n_nodes)).collect();
-    let targets: Vec<u32> = (0..matrix_size).map(|_| rng.random_range(0..n_nodes)).collect();
+    let sources: Vec<u32> = (0..matrix_size)
+        .map(|_| rng.random_range(0..n_nodes))
+        .collect();
+    let targets: Vec<u32> = (0..matrix_size)
+        .map(|_| rng.random_range(0..n_nodes))
+        .collect();
 
     println!("Validating {}x{} matrix...", matrix_size, matrix_size);
 
@@ -170,8 +174,13 @@ pub fn validate_matrix(
         }
 
         if (i + 1) % 10 == 0 {
-            println!("  Row {}/{} complete, {} correct, {} incorrect",
-                     i + 1, matrix_size, correct, incorrect);
+            println!(
+                "  Row {}/{} complete, {} correct, {} incorrect",
+                i + 1,
+                matrix_size,
+                correct,
+                incorrect
+            );
         }
     }
 
@@ -197,17 +206,25 @@ impl ValidationResult {
     pub fn print(&self) {
         println!("\n=== VALIDATION RESULTS ===");
         println!("  Total tests:     {}", self.n_tests);
-        println!("  Correct:         {} ({:.2}%)",
-                 self.correct, self.correct as f64 * 100.0 / self.n_tests as f64);
-        println!("  Incorrect:       {} ({:.2}%)",
-                 self.incorrect, self.incorrect as f64 * 100.0 / self.n_tests as f64);
+        println!(
+            "  Correct:         {} ({:.2}%)",
+            self.correct,
+            self.correct as f64 * 100.0 / self.n_tests as f64
+        );
+        println!(
+            "  Incorrect:       {} ({:.2}%)",
+            self.incorrect,
+            self.incorrect as f64 * 100.0 / self.n_tests as f64
+        );
         println!("  Unreachable:     {}", self.unreachable_both);
 
         if !self.errors.is_empty() {
             println!("\n  Sample errors:");
             for err in &self.errors {
-                println!("    {} → {}: Dijkstra={}, CH={}",
-                         err.source, err.target, err.dijkstra_dist, err.ch_dist);
+                println!(
+                    "    {} → {}: Dijkstra={}, CH={}",
+                    err.source, err.target, err.dijkstra_dist, err.ch_dist
+                );
             }
         }
 

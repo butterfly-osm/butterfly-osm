@@ -15,16 +15,16 @@ pub struct NbgEdge {
     pub u_node: u32,
     pub v_node: u32,
     pub length_mm: u32,
-    pub bearing_deci_deg: u16,  // 0-3599, 65535 if NA
+    pub bearing_deci_deg: u16, // 0-3599, 65535 if NA
     pub n_poly_pts: u16,
     pub poly_off: u64,
     pub first_osm_way_id: i64,
-    pub flags: u32,  // bit0=ferry, bit1=bridge, bit2=tunnel, bit3=roundabout, bit4=ford, bit5=layer_boundary
+    pub flags: u32, // bit0=ferry, bit1=bridge, bit2=tunnel, bit3=roundabout, bit4=ford, bit5=layer_boundary
 }
 
 #[derive(Debug, Clone)]
 pub struct PolyLine {
-    pub lat_fxp: Vec<i32>,  // 1e-7 deg
+    pub lat_fxp: Vec<i32>, // 1e-7 deg
     pub lon_fxp: Vec<i32>,
 }
 
@@ -133,8 +133,8 @@ impl NbgGeoFile {
         reader.read_exact(&mut header)?;
 
         let n_edges_und = u64::from_le_bytes([
-            header[8], header[9], header[10], header[11],
-            header[12], header[13], header[14], header[15],
+            header[8], header[9], header[10], header[11], header[12], header[13], header[14],
+            header[15],
         ]);
 
         // Read edges (36 bytes each)
@@ -150,12 +150,12 @@ impl NbgGeoFile {
                 bearing_deci_deg: u16::from_le_bytes([record[12], record[13]]),
                 n_poly_pts: u16::from_le_bytes([record[14], record[15]]),
                 poly_off: u64::from_le_bytes([
-                    record[16], record[17], record[18], record[19],
-                    record[20], record[21], record[22], record[23],
+                    record[16], record[17], record[18], record[19], record[20], record[21],
+                    record[22], record[23],
                 ]),
                 first_osm_way_id: i64::from_le_bytes([
-                    record[24], record[25], record[26], record[27],
-                    record[28], record[29], record[30], record[31],
+                    record[24], record[25], record[26], record[27], record[28], record[29],
+                    record[30], record[31],
                 ]),
                 flags: u32::from_le_bytes([record[32], record[33], record[34], record[35]]),
             });

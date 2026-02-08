@@ -5,4 +5,4 @@
 
 pub mod turn_model;
 
-pub use turn_model::{TurnModelAnalysis, analyze_turn_model};
+pub use turn_model::{analyze_turn_model, TurnModelAnalysis};

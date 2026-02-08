@@ -256,7 +256,11 @@ impl RelationsFile {
 
         let magic = u32::from_le_bytes(header[0..4].try_into()?);
         if magic != MAGIC {
-            anyhow::bail!("Invalid magic number: expected 0x{:08x}, got 0x{:08x}", MAGIC, magic);
+            anyhow::bail!(
+                "Invalid magic number: expected 0x{:08x}, got 0x{:08x}",
+                MAGIC,
+                magic
+            );
         }
 
         let version = u16::from_le_bytes(header[4..6].try_into()?);
@@ -285,50 +289,49 @@ impl RelationsFile {
 
         for _ in 0..count {
             // rel_id
-            let rel_id = i64::from_le_bytes(all_bytes[pos..pos+8].try_into()?);
+            let rel_id = i64::from_le_bytes(all_bytes[pos..pos + 8].try_into()?);
             pos += 8;
 
             // n_members
-            let n_members = u16::from_le_bytes(all_bytes[pos..pos+2].try_into()?) as usize;
+            let n_members = u16::from_le_bytes(all_bytes[pos..pos + 2].try_into()?) as usize;
             pos += 2;
 
             // members
             let mut members = Vec::with_capacity(n_members);
             for _ in 0..n_members {
-                let role_id = u16::from_le_bytes(all_bytes[pos..pos+2].try_into()?) as u32;
-                let kind_byte = all_bytes[pos+2];
+                let role_id = u16::from_le_bytes(all_bytes[pos..pos + 2].try_into()?) as u32;
+                let kind_byte = all_bytes[pos + 2];
                 let kind = MemberKind::from_u8(kind_byte)
                     .ok_or_else(|| anyhow::anyhow!("Invalid member kind: {}", kind_byte))?;
                 // skip reserved byte at pos+3
-                let ref_id = i64::from_le_bytes(all_bytes[pos+4..pos+12].try_into()?);
+                let ref_id = i64::from_le_bytes(all_bytes[pos + 4..pos + 12].try_into()?);
                 pos += 12;
 
-                let role = val_dict.get(&role_id)
+                let role = val_dict
+                    .get(&role_id)
                     .ok_or_else(|| anyhow::anyhow!("Role ID {} not in dictionary", role_id))?
                     .clone();
 
-                members.push(Member {
-                    role,
-                    kind,
-                    ref_id,
-                });
+                members.push(Member { role, kind, ref_id });
             }
 
             // n_tags
-            let n_tags = u16::from_le_bytes(all_bytes[pos..pos+2].try_into()?) as usize;
+            let n_tags = u16::from_le_bytes(all_bytes[pos..pos + 2].try_into()?) as usize;
             pos += 2;
 
             // tags
             let mut tags = Vec::with_capacity(n_tags);
             for _ in 0..n_tags {
-                let k_id = u32::from_le_bytes(all_bytes[pos..pos+4].try_into()?);
-                let v_id = u32::from_le_bytes(all_bytes[pos+4..pos+8].try_into()?);
+                let k_id = u32::from_le_bytes(all_bytes[pos..pos + 4].try_into()?);
+                let v_id = u32::from_le_bytes(all_bytes[pos + 4..pos + 8].try_into()?);
                 pos += 8;
 
-                let key = key_dict.get(&k_id)
+                let key = key_dict
+                    .get(&k_id)
                     .ok_or_else(|| anyhow::anyhow!("Key ID {} not in dictionary", k_id))?
                     .clone();
-                let val = val_dict.get(&v_id)
+                let val = val_dict
+                    .get(&v_id)
                     .ok_or_else(|| anyhow::anyhow!("Value ID {} not in dictionary", v_id))?
                     .clone();
                 tags.push((key, val));
@@ -346,7 +349,14 @@ impl RelationsFile {
 
     /// Read dictionaries from relations.raw and return them with their SHA-256 hashes
     #[allow(clippy::type_complexity)]
-    pub fn read_dictionaries<P: AsRef<Path>>(path: P) -> Result<(HashMap<u32, String>, HashMap<u32, String>, [u8; 32], [u8; 32])> {
+    pub fn read_dictionaries<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<(
+        HashMap<u32, String>,
+        HashMap<u32, String>,
+        [u8; 32],
+        [u8; 32],
+    )> {
         let mut file = File::open(path)?;
         let file_len = file.metadata()?.len();
 
@@ -389,8 +399,8 @@ impl RelationsFile {
                 break; // Not enough bytes for id(4) + len(2)
             }
 
-            let id = u32::from_le_bytes(bytes[pos..pos+4].try_into()?);
-            let len = u16::from_le_bytes(bytes[pos+4..pos+6].try_into()?) as usize;
+            let id = u32::from_le_bytes(bytes[pos..pos + 4].try_into()?);
+            let len = u16::from_le_bytes(bytes[pos + 4..pos + 6].try_into()?) as usize;
             pos += 6;
 
             if pos + len > end {
@@ -398,7 +408,7 @@ impl RelationsFile {
             }
 
             // Use from_utf8_lossy to handle malformed UTF-8 in OSM data
-            let s = String::from_utf8_lossy(&bytes[pos..pos+len]).to_string();
+            let s = String::from_utf8_lossy(&bytes[pos..pos + len]).to_string();
             dict.insert(id, s);
             pos += len;
         }
@@ -408,7 +418,7 @@ impl RelationsFile {
 
     /// Compute SHA-256 of a dictionary
     fn compute_dict_sha256(dict: &HashMap<u32, String>) -> [u8; 32] {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
         let mut keys: Vec<_> = dict.keys().collect();

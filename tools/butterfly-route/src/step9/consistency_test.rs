@@ -10,7 +10,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::matrix::bucket_ch::{table_bucket_full_flat};
+use crate::matrix::bucket_ch::table_bucket_full_flat;
 use crate::profile_abi::Mode;
 
 use super::api::run_phast_bounded_fast;
@@ -53,12 +53,7 @@ fn load_state() -> Arc<ServerState> {
 }
 
 /// Snap a coordinate to rank space, returning (rank, original_ebg_id) or None
-fn snap_to_rank(
-    state: &ServerState,
-    mode: Mode,
-    lon: f64,
-    lat: f64,
-) -> Option<(u32, u32)> {
+fn snap_to_rank(state: &ServerState, mode: Mode, lon: f64, lat: f64) -> Option<(u32, u32)> {
     let mode_data = state.get_mode(mode);
     let orig_id = state.spatial_index.snap(lon, lat, &mode_data.mask, 10)?;
     let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
@@ -125,7 +120,11 @@ fn test_route_table_duration_consistency() {
                 &[src_rank],
                 &[dst_rank],
             );
-            let table_dist = if matrix[0] == u32::MAX { None } else { Some(matrix[0]) };
+            let table_dist = if matrix[0] == u32::MAX {
+                None
+            } else {
+                Some(matrix[0])
+            };
 
             // Compare
             match (route_dist, table_dist) {
@@ -136,7 +135,9 @@ fn test_route_table_duration_consistency() {
                     } else {
                         let msg = format!(
                             "{mode_name} pair {i}: route={} table={} diff={}",
-                            r, t, (r as i64 - t as i64).unsigned_abs()
+                            r,
+                            t,
+                            (r as i64 - t as i64).unsigned_abs()
                         );
                         eprintln!("  FAIL {msg}");
                         failures.push(msg);
@@ -196,11 +197,17 @@ fn test_route_table_distance_consistency() {
 
             let (src_rank, _) = match snap_to_rank(&state, mode, s_lon, s_lat) {
                 Some(r) => r,
-                None => { passed += 1; continue; }
+                None => {
+                    passed += 1;
+                    continue;
+                }
             };
             let (dst_rank, _) = match snap_to_rank(&state, mode, d_lon, d_lat) {
                 Some(r) => r,
-                None => { passed += 1; continue; }
+                None => {
+                    passed += 1;
+                    continue;
+                }
             };
 
             // Get distance via table (bucket M2M with distance weights)
@@ -211,7 +218,11 @@ fn test_route_table_distance_consistency() {
                 &[src_rank],
                 &[dst_rank],
             );
-            let table_dist = if dist_matrix[0] == u32::MAX { None } else { Some(dist_matrix[0]) };
+            let table_dist = if dist_matrix[0] == u32::MAX {
+                None
+            } else {
+                Some(dist_matrix[0])
+            };
 
             // Get distance via P2P query with distance weights
             let _dist_query = CchQuery::with_custom_weights(
@@ -232,12 +243,19 @@ fn test_route_table_distance_consistency() {
                 &[src_rank],
                 &[dst_rank],
             );
-            let table_dist2 = if dist_matrix2[0] == u32::MAX { None } else { Some(dist_matrix2[0]) };
+            let table_dist2 = if dist_matrix2[0] == u32::MAX {
+                None
+            } else {
+                Some(dist_matrix2[0])
+            };
 
             match (table_dist, table_dist2) {
                 (Some(d1), Some(d2)) => {
                     if d1 == d2 {
-                        eprintln!("  PASS {mode_name} pair {i}: dist={:.1}m", d1 as f64 / 1000.0);
+                        eprintln!(
+                            "  PASS {mode_name} pair {i}: dist={:.1}m",
+                            d1 as f64 / 1000.0
+                        );
                         passed += 1;
                     } else {
                         let msg = format!("{mode_name} pair {i}: dist1={} dist2={}", d1, d2);
@@ -346,7 +364,10 @@ fn test_isochrone_route_consistency() {
         }
     }
 
-    eprintln!("\n=== Isochrone ↔ Route: {passed}/{total_checks} passed, {} failures ===", failures.len());
+    eprintln!(
+        "\n=== Isochrone ↔ Route: {passed}/{total_checks} passed, {} failures ===",
+        failures.len()
+    );
     if !failures.is_empty() {
         eprintln!("Sample failures:");
         for f in failures.iter().take(10) {
@@ -356,8 +377,14 @@ fn test_isochrone_route_consistency() {
     assert!(
         failures.len() <= total_checks / 100, // Allow up to 1% disagreement
         "Isochrone ↔ Route inconsistencies: {} / {} (max 1% allowed)\n{}",
-        failures.len(), total_checks,
-        failures.iter().take(20).cloned().collect::<Vec<_>>().join("\n")
+        failures.len(),
+        total_checks,
+        failures
+            .iter()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }
 
@@ -387,17 +414,26 @@ fn test_route_path_validity() {
 
             let (src_rank, _) = match snap_to_rank(&state, mode, s_lon, s_lat) {
                 Some(r) => r,
-                None => { passed += 1; continue; }
+                None => {
+                    passed += 1;
+                    continue;
+                }
             };
             let (dst_rank, _) = match snap_to_rank(&state, mode, d_lon, d_lat) {
                 Some(r) => r,
-                None => { passed += 1; continue; }
+                None => {
+                    passed += 1;
+                    continue;
+                }
             };
 
             let query = CchQuery::new(&state, mode);
             let result = match query.query(src_rank, dst_rank) {
                 Some(r) => r,
-                None => { passed += 1; continue; }
+                None => {
+                    passed += 1;
+                    continue;
+                }
             };
 
             // Unpack path
@@ -452,8 +488,11 @@ fn test_route_path_validity() {
                 super::geometry::GeometryFormat::Polyline6,
             );
 
-            eprintln!("  PASS {mode_name} pair {i}: path_len={} dist={:.1}s",
-                ebg_path.len(), result.distance as f64 / 10.0);
+            eprintln!(
+                "  PASS {mode_name} pair {i}: path_len={} dist={:.1}s",
+                ebg_path.len(),
+                result.distance as f64 / 10.0
+            );
             passed += 1;
         }
     }
@@ -480,7 +519,9 @@ fn test_alternative_routes_differ() {
 
     // Primary route
     let query = CchQuery::new(&state, mode);
-    let primary = query.query(src_rank, dst_rank).expect("Primary route should exist");
+    let primary = query
+        .query(src_rank, dst_rank)
+        .expect("Primary route should exist");
 
     // Alternative with penalized weights
     let mut penalized = mode_data.cch_weights.clone();
@@ -497,18 +538,26 @@ fn test_alternative_routes_differ() {
         }
     }
 
-    let alt_query = CchQuery::with_custom_weights(
-        &mode_data.cch_topo,
-        &mode_data.down_rev,
-        &penalized,
-    );
+    let alt_query =
+        CchQuery::with_custom_weights(&mode_data.cch_topo, &mode_data.down_rev, &penalized);
 
-    let alt = alt_query.query(src_rank, dst_rank).expect("Alternative route should exist");
+    let alt = alt_query
+        .query(src_rank, dst_rank)
+        .expect("Alternative route should exist");
 
     // Alternative should have a different (likely longer) distance
-    eprintln!("Primary: {} ds, Alternative: {} ds", primary.distance, alt.distance);
-    assert_ne!(primary.distance, alt.distance, "Alternative should differ from primary");
-    assert!(alt.distance >= primary.distance, "Alternative should not be shorter than primary");
+    eprintln!(
+        "Primary: {} ds, Alternative: {} ds",
+        primary.distance, alt.distance
+    );
+    assert_ne!(
+        primary.distance, alt.distance,
+        "Alternative should differ from primary"
+    );
+    assert!(
+        alt.distance >= primary.distance,
+        "Alternative should not be shorter than primary"
+    );
     assert!(
         alt.distance <= primary.distance.saturating_mul(3),
         "Alternative should not be more than 3x primary"
@@ -529,75 +578,125 @@ fn test_route_geometry_polyline6_round_trips() {
 
     for (i, &((s_lon, s_lat), (d_lon, d_lat))) in TEST_PAIRS.iter().enumerate() {
         let (src_rank, _) = match snap_to_rank(&state, mode, s_lon, s_lat) {
-            Some(r) => r, None => continue,
+            Some(r) => r,
+            None => continue,
         };
         let (dst_rank, _) = match snap_to_rank(&state, mode, d_lon, d_lat) {
-            Some(r) => r, None => continue,
+            Some(r) => r,
+            None => continue,
         };
 
         let query = CchQuery::new(&state, mode);
         let result = match query.query(src_rank, dst_rank) {
-            Some(r) => r, None => continue,
+            Some(r) => r,
+            None => continue,
         };
 
         let rank_path = unpack_path(
-            &mode_data.cch_topo, &result.forward_parent, &result.backward_parent,
-            src_rank, dst_rank, result.meeting_node,
+            &mode_data.cch_topo,
+            &result.forward_parent,
+            &result.backward_parent,
+            src_rank,
+            dst_rank,
+            result.meeting_node,
         );
-        let ebg_path: Vec<u32> = rank_path.iter().map(|&rank| {
-            let fid = mode_data.cch_topo.rank_to_filtered[rank as usize];
-            mode_data.filtered_ebg.filtered_to_original[fid as usize]
-        }).collect();
+        let ebg_path: Vec<u32> = rank_path
+            .iter()
+            .map(|&rank| {
+                let fid = mode_data.cch_topo.rank_to_filtered[rank as usize];
+                mode_data.filtered_ebg.filtered_to_original[fid as usize]
+            })
+            .collect();
 
         // Build in polyline6
         let poly_geom = super::geometry::build_geometry(
-            &ebg_path, &state.ebg_nodes, &state.nbg_geo, result.distance,
+            &ebg_path,
+            &state.ebg_nodes,
+            &state.nbg_geo,
+            result.distance,
             super::geometry::GeometryFormat::Polyline6,
         );
-        assert!(poly_geom.polyline.is_some(), "pair {i}: polyline should be present");
+        assert!(
+            poly_geom.polyline.is_some(),
+            "pair {i}: polyline should be present"
+        );
         let encoded = poly_geom.polyline.as_ref().unwrap();
-        assert!(!encoded.is_empty(), "pair {i}: polyline should not be empty");
+        assert!(
+            !encoded.is_empty(),
+            "pair {i}: polyline should not be empty"
+        );
 
         // Round-trip decode
         let decoded = super::geometry::decode_polyline6(encoded);
-        assert!(decoded.len() >= 2, "pair {i}: decoded polyline should have >= 2 points, got {}", decoded.len());
+        assert!(
+            decoded.len() >= 2,
+            "pair {i}: decoded polyline should have >= 2 points, got {}",
+            decoded.len()
+        );
 
         // Build in GeoJSON
         let json_geom = super::geometry::build_geometry(
-            &ebg_path, &state.ebg_nodes, &state.nbg_geo, result.distance,
+            &ebg_path,
+            &state.ebg_nodes,
+            &state.nbg_geo,
+            result.distance,
             super::geometry::GeometryFormat::GeoJson,
         );
         let coords = json_geom.coordinates_geojson.as_ref().unwrap();
 
         // Polyline6 and GeoJSON should have same number of coordinates
-        assert_eq!(decoded.len(), coords.len(),
-            "pair {i}: polyline6 has {} points but geojson has {}", decoded.len(), coords.len());
+        assert_eq!(
+            decoded.len(),
+            coords.len(),
+            "pair {i}: polyline6 has {} points but geojson has {}",
+            decoded.len(),
+            coords.len()
+        );
 
         // Check coordinates match (polyline6 is lat,lon; geojson is [lon,lat])
         for j in 0..decoded.len() {
             let (dec_lat, dec_lon) = decoded[j];
             let (gj_lon, gj_lat) = (coords[j][0], coords[j][1]);
-            assert!((dec_lat - gj_lat).abs() < 1e-5,
-                "pair {i} pt {j}: lat {dec_lat} vs {gj_lat}");
-            assert!((dec_lon - gj_lon).abs() < 1e-5,
-                "pair {i} pt {j}: lon {dec_lon} vs {gj_lon}");
+            assert!(
+                (dec_lat - gj_lat).abs() < 1e-5,
+                "pair {i} pt {j}: lat {dec_lat} vs {gj_lat}"
+            );
+            assert!(
+                (dec_lon - gj_lon).abs() < 1e-5,
+                "pair {i} pt {j}: lon {dec_lon} vs {gj_lon}"
+            );
         }
 
         // Build in points format
         let pts_geom = super::geometry::build_geometry(
-            &ebg_path, &state.ebg_nodes, &state.nbg_geo, result.distance,
+            &ebg_path,
+            &state.ebg_nodes,
+            &state.nbg_geo,
+            result.distance,
             super::geometry::GeometryFormat::Points,
         );
         let pts = pts_geom.coordinates.as_ref().unwrap();
-        assert_eq!(pts.len(), coords.len(),
-            "pair {i}: points has {} but geojson has {}", pts.len(), coords.len());
+        assert_eq!(
+            pts.len(),
+            coords.len(),
+            "pair {i}: points has {} but geojson has {}",
+            pts.len(),
+            coords.len()
+        );
 
         // All three formats should agree on distance_m and duration_ds
-        assert!((poly_geom.distance_m - json_geom.distance_m).abs() < 0.01,
-            "pair {i}: distance mismatch poly={} json={}", poly_geom.distance_m, json_geom.distance_m);
+        assert!(
+            (poly_geom.distance_m - json_geom.distance_m).abs() < 0.01,
+            "pair {i}: distance mismatch poly={} json={}",
+            poly_geom.distance_m,
+            json_geom.distance_m
+        );
         assert_eq!(poly_geom.duration_ds, json_geom.duration_ds);
 
-        eprintln!("  PASS pair {i}: {}-point geometry, polyline6/geojson/points all agree", decoded.len());
+        eprintln!(
+            "  PASS pair {i}: {}-point geometry, polyline6/geojson/points all agree",
+            decoded.len()
+        );
     }
 }
 
@@ -612,29 +711,45 @@ fn test_nearest_returns_valid_results() {
     let state = load_state();
     let modes = [Mode::Car, Mode::Bike, Mode::Foot];
     let locations = [
-        (4.3517, 50.8503),  // Brussels center
-        (3.2247, 51.2093),  // Bruges
-        (5.5714, 50.6326),  // Liège
+        (4.3517, 50.8503), // Brussels center
+        (3.2247, 51.2093), // Bruges
+        (5.5714, 50.6326), // Liège
     ];
 
     for &mode in &modes {
         let mode_data = state.get_mode(mode);
         let mode_name = match mode {
-            Mode::Car => "car", Mode::Bike => "bike", Mode::Foot => "foot",
+            Mode::Car => "car",
+            Mode::Bike => "bike",
+            Mode::Foot => "foot",
         };
 
         for &(lon, lat) in &locations {
             // Single nearest
-            let result = state.spatial_index.snap_k_with_info(lon, lat, &mode_data.mask, 1);
-            assert!(!result.is_empty(), "{mode_name} ({lon},{lat}): no nearest found");
+            let result = state
+                .spatial_index
+                .snap_k_with_info(lon, lat, &mode_data.mask, 1);
+            assert!(
+                !result.is_empty(),
+                "{mode_name} ({lon},{lat}): no nearest found"
+            );
             let (ebg_id, snap_lon, snap_lat, dist_m) = result[0];
 
             // Snap distance should be reasonable (< 1km for city centers)
-            assert!(dist_m < 1000.0, "{mode_name} ({lon},{lat}): snap_dist={dist_m}m too far");
+            assert!(
+                dist_m < 1000.0,
+                "{mode_name} ({lon},{lat}): snap_dist={dist_m}m too far"
+            );
 
             // Snapped coordinates should be in Belgium bounding box
-            assert!(snap_lon > 2.5 && snap_lon < 6.5, "{mode_name}: snap_lon={snap_lon} outside Belgium");
-            assert!(snap_lat > 49.4 && snap_lat < 51.6, "{mode_name}: snap_lat={snap_lat} outside Belgium");
+            assert!(
+                snap_lon > 2.5 && snap_lon < 6.5,
+                "{mode_name}: snap_lon={snap_lon} outside Belgium"
+            );
+            assert!(
+                snap_lat > 49.4 && snap_lat < 51.6,
+                "{mode_name}: snap_lat={snap_lat} outside Belgium"
+            );
 
             // EBG node should have valid geometry
             let node = &state.ebg_nodes.nodes[ebg_id as usize];
@@ -655,13 +770,19 @@ fn test_nearest_results_ordered_by_distance() {
     let mode_data = state.get_mode(mode);
 
     let locations = [
-        (4.3517, 50.8503),  // Brussels
-        (4.7005, 50.8798),  // Leuven
+        (4.3517, 50.8503), // Brussels
+        (4.7005, 50.8798), // Leuven
     ];
 
     for &(lon, lat) in &locations {
-        let results = state.spatial_index.snap_k_with_info(lon, lat, &mode_data.mask, 5);
-        assert!(results.len() >= 2, "({lon},{lat}): need at least 2 results, got {}", results.len());
+        let results = state
+            .spatial_index
+            .snap_k_with_info(lon, lat, &mode_data.mask, 5);
+        assert!(
+            results.len() >= 2,
+            "({lon},{lat}): need at least 2 results, got {}",
+            results.len()
+        );
 
         // Verify distance ordering
         for i in 1..results.len() {
@@ -674,10 +795,18 @@ fn test_nearest_results_ordered_by_distance() {
         let mut ids: Vec<u32> = results.iter().map(|r| r.0).collect();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), results.len(), "({lon},{lat}): duplicate EBG IDs in nearest results");
+        assert_eq!(
+            ids.len(),
+            results.len(),
+            "({lon},{lat}): duplicate EBG IDs in nearest results"
+        );
 
-        eprintln!("  PASS ({lon},{lat}): {} results, dist range {:.1}m..{:.1}m",
-            results.len(), results[0].3, results.last().unwrap().3);
+        eprintln!(
+            "  PASS ({lon},{lat}): {} results, dist range {:.1}m..{:.1}m",
+            results.len(),
+            results[0].3,
+            results.last().unwrap().3
+        );
     }
 }
 
@@ -690,8 +819,14 @@ fn test_nearest_in_ocean_returns_empty() {
     let mode_data = state.get_mode(mode);
 
     // North Sea, far from any road
-    let results = state.spatial_index.snap_k_with_info(2.0, 52.0, &mode_data.mask, 1);
-    assert!(results.is_empty(), "Should find no road in the North Sea, got {} results", results.len());
+    let results = state
+        .spatial_index
+        .snap_k_with_info(2.0, 52.0, &mode_data.mask, 1);
+    assert!(
+        results.is_empty(),
+        "Should find no road in the North Sea, got {} results",
+        results.len()
+    );
     eprintln!("  PASS: no road found in ocean");
 }
 
@@ -711,60 +846,107 @@ fn test_route_steps_have_depart_and_arrive() {
 
     for (i, &((s_lon, s_lat), (d_lon, d_lat))) in TEST_PAIRS.iter().enumerate() {
         let (src_rank, _) = match snap_to_rank(&state, mode, s_lon, s_lat) {
-            Some(r) => r, None => continue,
+            Some(r) => r,
+            None => continue,
         };
         let (dst_rank, _) = match snap_to_rank(&state, mode, d_lon, d_lat) {
-            Some(r) => r, None => continue,
+            Some(r) => r,
+            None => continue,
         };
 
         let query = CchQuery::new(&state, mode);
         let result = match query.query(src_rank, dst_rank) {
-            Some(r) => r, None => continue,
+            Some(r) => r,
+            None => continue,
         };
 
         let rank_path = unpack_path(
-            &mode_data.cch_topo, &result.forward_parent, &result.backward_parent,
-            src_rank, dst_rank, result.meeting_node,
+            &mode_data.cch_topo,
+            &result.forward_parent,
+            &result.backward_parent,
+            src_rank,
+            dst_rank,
+            result.meeting_node,
         );
-        let ebg_path: Vec<u32> = rank_path.iter().map(|&rank| {
-            let fid = mode_data.cch_topo.rank_to_filtered[rank as usize];
-            mode_data.filtered_ebg.filtered_to_original[fid as usize]
-        }).collect();
+        let ebg_path: Vec<u32> = rank_path
+            .iter()
+            .map(|&rank| {
+                let fid = mode_data.cch_topo.rank_to_filtered[rank as usize];
+                mode_data.filtered_ebg.filtered_to_original[fid as usize]
+            })
+            .collect();
 
-        if ebg_path.len() < 2 { continue; }
+        if ebg_path.len() < 2 {
+            continue;
+        }
 
         let steps = build_steps(
-            &ebg_path, &state.ebg_nodes, &state.nbg_geo,
-            &mode_data.node_weights, &state.way_names, super::geometry::GeometryFormat::Polyline6,
+            &ebg_path,
+            &state.ebg_nodes,
+            &state.nbg_geo,
+            &mode_data.node_weights,
+            &state.way_names,
+            super::geometry::GeometryFormat::Polyline6,
         );
 
-        assert!(steps.len() >= 2, "pair {i}: need at least depart+arrive, got {} steps", steps.len());
+        assert!(
+            steps.len() >= 2,
+            "pair {i}: need at least depart+arrive, got {} steps",
+            steps.len()
+        );
 
         // First step must be depart
-        assert_eq!(steps[0].maneuver.maneuver_type, "depart",
-            "pair {i}: first step should be 'depart', got '{}'", steps[0].maneuver.maneuver_type);
+        assert_eq!(
+            steps[0].maneuver.maneuver_type, "depart",
+            "pair {i}: first step should be 'depart', got '{}'",
+            steps[0].maneuver.maneuver_type
+        );
 
         // Last step must be arrive
         let last = steps.last().unwrap();
-        assert_eq!(last.maneuver.maneuver_type, "arrive",
-            "pair {i}: last step should be 'arrive', got '{}'", last.maneuver.maneuver_type);
+        assert_eq!(
+            last.maneuver.maneuver_type, "arrive",
+            "pair {i}: last step should be 'arrive', got '{}'",
+            last.maneuver.maneuver_type
+        );
 
         // All steps should have valid maneuver types
-        let valid_types = ["depart", "arrive", "turn", "continue", "roundabout", "fork", "merge"];
+        let valid_types = [
+            "depart",
+            "arrive",
+            "turn",
+            "continue",
+            "roundabout",
+            "fork",
+            "merge",
+        ];
         for (j, step) in steps.iter().enumerate() {
-            assert!(valid_types.contains(&step.maneuver.maneuver_type.as_str()),
-                "pair {i} step {j}: invalid type '{}'", step.maneuver.maneuver_type);
+            assert!(
+                valid_types.contains(&step.maneuver.maneuver_type.as_str()),
+                "pair {i} step {j}: invalid type '{}'",
+                step.maneuver.maneuver_type
+            );
         }
 
         // Bearings should be in range 0..360
         for (j, step) in steps.iter().enumerate() {
-            assert!(step.maneuver.bearing_before <= 360,
-                "pair {i} step {j}: bearing_before={} > 360", step.maneuver.bearing_before);
-            assert!(step.maneuver.bearing_after <= 360,
-                "pair {i} step {j}: bearing_after={} > 360", step.maneuver.bearing_after);
+            assert!(
+                step.maneuver.bearing_before <= 360,
+                "pair {i} step {j}: bearing_before={} > 360",
+                step.maneuver.bearing_before
+            );
+            assert!(
+                step.maneuver.bearing_after <= 360,
+                "pair {i} step {j}: bearing_after={} > 360",
+                step.maneuver.bearing_after
+            );
         }
 
-        eprintln!("  PASS pair {i}: {} steps, depart → {} maneuvers → arrive", steps.len(), steps.len() - 2);
+        eprintln!(
+            "  PASS pair {i}: {} steps, depart → {} maneuvers → arrive",
+            steps.len(),
+            steps.len() - 2
+        );
     }
 }
 
@@ -780,31 +962,47 @@ fn test_route_steps_distances_sum_to_total() {
 
     for (i, &((s_lon, s_lat), (d_lon, d_lat))) in TEST_PAIRS.iter().enumerate() {
         let (src_rank, _) = match snap_to_rank(&state, mode, s_lon, s_lat) {
-            Some(r) => r, None => continue,
+            Some(r) => r,
+            None => continue,
         };
         let (dst_rank, _) = match snap_to_rank(&state, mode, d_lon, d_lat) {
-            Some(r) => r, None => continue,
+            Some(r) => r,
+            None => continue,
         };
 
         let query = CchQuery::new(&state, mode);
         let result = match query.query(src_rank, dst_rank) {
-            Some(r) => r, None => continue,
+            Some(r) => r,
+            None => continue,
         };
 
         let rank_path = unpack_path(
-            &mode_data.cch_topo, &result.forward_parent, &result.backward_parent,
-            src_rank, dst_rank, result.meeting_node,
+            &mode_data.cch_topo,
+            &result.forward_parent,
+            &result.backward_parent,
+            src_rank,
+            dst_rank,
+            result.meeting_node,
         );
-        let ebg_path: Vec<u32> = rank_path.iter().map(|&rank| {
-            let fid = mode_data.cch_topo.rank_to_filtered[rank as usize];
-            mode_data.filtered_ebg.filtered_to_original[fid as usize]
-        }).collect();
+        let ebg_path: Vec<u32> = rank_path
+            .iter()
+            .map(|&rank| {
+                let fid = mode_data.cch_topo.rank_to_filtered[rank as usize];
+                mode_data.filtered_ebg.filtered_to_original[fid as usize]
+            })
+            .collect();
 
-        if ebg_path.len() < 2 { continue; }
+        if ebg_path.len() < 2 {
+            continue;
+        }
 
         let steps = build_steps(
-            &ebg_path, &state.ebg_nodes, &state.nbg_geo,
-            &mode_data.node_weights, &state.way_names, super::geometry::GeometryFormat::Polyline6,
+            &ebg_path,
+            &state.ebg_nodes,
+            &state.nbg_geo,
+            &mode_data.node_weights,
+            &state.way_names,
+            super::geometry::GeometryFormat::Polyline6,
         );
 
         // Sum step distances
@@ -812,7 +1010,10 @@ fn test_route_steps_distances_sum_to_total() {
 
         // Get total route distance
         let route_geom = super::geometry::build_geometry(
-            &ebg_path, &state.ebg_nodes, &state.nbg_geo, result.distance,
+            &ebg_path,
+            &state.ebg_nodes,
+            &state.nbg_geo,
+            result.distance,
             super::geometry::GeometryFormat::Polyline6,
         );
         let route_total = route_geom.distance_m;
@@ -823,7 +1024,9 @@ fn test_route_steps_distances_sum_to_total() {
             let ratio = step_total / route_total;
             assert!(ratio > 0.5 && ratio < 2.0,
                 "pair {i}: step_total={step_total:.1}m route_total={route_total:.1}m ratio={ratio:.2} (expected ~1.0)");
-            eprintln!("  PASS pair {i}: steps={step_total:.0}m route={route_total:.0}m ratio={ratio:.3}");
+            eprintln!(
+                "  PASS pair {i}: steps={step_total:.0}m route={route_total:.0}m ratio={ratio:.3}"
+            );
         }
     }
 }
@@ -846,31 +1049,49 @@ fn test_route_step_locations_on_route() {
     let result = query.query(src_rank, dst_rank).expect("Route should exist");
 
     let rank_path = unpack_path(
-        &mode_data.cch_topo, &result.forward_parent, &result.backward_parent,
-        src_rank, dst_rank, result.meeting_node,
+        &mode_data.cch_topo,
+        &result.forward_parent,
+        &result.backward_parent,
+        src_rank,
+        dst_rank,
+        result.meeting_node,
     );
-    let ebg_path: Vec<u32> = rank_path.iter().map(|&rank| {
-        let fid = mode_data.cch_topo.rank_to_filtered[rank as usize];
-        mode_data.filtered_ebg.filtered_to_original[fid as usize]
-    }).collect();
+    let ebg_path: Vec<u32> = rank_path
+        .iter()
+        .map(|&rank| {
+            let fid = mode_data.cch_topo.rank_to_filtered[rank as usize];
+            mode_data.filtered_ebg.filtered_to_original[fid as usize]
+        })
+        .collect();
 
     let steps = build_steps(
-        &ebg_path, &state.ebg_nodes, &state.nbg_geo,
-        &mode_data.node_weights, &state.way_names, super::geometry::GeometryFormat::Polyline6,
+        &ebg_path,
+        &state.ebg_nodes,
+        &state.nbg_geo,
+        &mode_data.node_weights,
+        &state.way_names,
+        super::geometry::GeometryFormat::Polyline6,
     );
 
     // All maneuver locations should be in Belgium
     for (j, step) in steps.iter().enumerate() {
         let [lon, lat] = step.maneuver.location;
-        assert!(lon > 2.5 && lon < 6.5 && lat > 49.4 && lat < 51.6,
-            "step {j}: maneuver location ({lon},{lat}) outside Belgium");
+        assert!(
+            lon > 2.5 && lon < 6.5 && lat > 49.4 && lat < 51.6,
+            "step {j}: maneuver location ({lon},{lat}) outside Belgium"
+        );
 
         // Non-zero location (unless it's a fallback)
-        assert!(lon != 0.0 || lat != 0.0,
-            "step {j}: maneuver location is (0,0)");
+        assert!(
+            lon != 0.0 || lat != 0.0,
+            "step {j}: maneuver location is (0,0)"
+        );
     }
 
-    eprintln!("  PASS: {} steps, all maneuver locations within Belgium", steps.len());
+    eprintln!(
+        "  PASS: {} steps, all maneuver locations within Belgium",
+        steps.len()
+    );
 }
 
 // ============================================================
@@ -889,20 +1110,25 @@ fn test_alternative_routes_all_modes() {
     for &mode in &modes {
         let mode_data = state.get_mode(mode);
         let mode_name = match mode {
-            Mode::Car => "car", Mode::Bike => "bike", Mode::Foot => "foot",
+            Mode::Car => "car",
+            Mode::Bike => "bike",
+            Mode::Foot => "foot",
         };
 
         for (i, &((s_lon, s_lat), (d_lon, d_lat))) in TEST_PAIRS.iter().enumerate() {
             let (src_rank, _) = match snap_to_rank(&state, mode, s_lon, s_lat) {
-                Some(r) => r, None => continue,
+                Some(r) => r,
+                None => continue,
             };
             let (dst_rank, _) = match snap_to_rank(&state, mode, d_lon, d_lat) {
-                Some(r) => r, None => continue,
+                Some(r) => r,
+                None => continue,
             };
 
             let query = CchQuery::new(&state, mode);
             let primary = match query.query(src_rank, dst_rank) {
-                Some(r) => r, None => continue,
+                Some(r) => r,
+                None => continue,
             };
 
             total += 1;
@@ -922,24 +1148,33 @@ fn test_alternative_routes_all_modes() {
                 }
             }
 
-            let alt_query = CchQuery::with_custom_weights(
-                &mode_data.cch_topo, &mode_data.down_rev, &penalized,
-            );
+            let alt_query =
+                CchQuery::with_custom_weights(&mode_data.cch_topo, &mode_data.down_rev, &penalized);
 
             if let Some(alt) = alt_query.query(src_rank, dst_rank) {
                 // Alternative should exist
-                assert!(alt.distance >= primary.distance,
-                    "{mode_name} pair {i}: alt shorter than primary");
-                assert!(alt.distance <= primary.distance.saturating_mul(5),
-                    "{mode_name} pair {i}: alt {} > 5x primary {}", alt.distance, primary.distance);
+                assert!(
+                    alt.distance >= primary.distance,
+                    "{mode_name} pair {i}: alt shorter than primary"
+                );
+                assert!(
+                    alt.distance <= primary.distance.saturating_mul(5),
+                    "{mode_name} pair {i}: alt {} > 5x primary {}",
+                    alt.distance,
+                    primary.distance
+                );
 
                 if alt.distance != primary.distance {
                     with_alt += 1;
-                    eprintln!("  PASS {mode_name} pair {i}: primary={} alt={} (different)",
-                        primary.distance, alt.distance);
+                    eprintln!(
+                        "  PASS {mode_name} pair {i}: primary={} alt={} (different)",
+                        primary.distance, alt.distance
+                    );
                 } else {
-                    eprintln!("  PASS {mode_name} pair {i}: primary=alt={} (no alternative found)",
-                        primary.distance);
+                    eprintln!(
+                        "  PASS {mode_name} pair {i}: primary=alt={} (no alternative found)",
+                        primary.distance
+                    );
                 }
             }
         }
@@ -947,5 +1182,8 @@ fn test_alternative_routes_all_modes() {
 
     eprintln!("\n=== Alternatives: {with_alt}/{total} pairs had distinct alternatives ===");
     // At least some pairs should have real alternatives
-    assert!(with_alt > 0, "No alternative routes found in any mode — penalty logic may be broken");
+    assert!(
+        with_alt > 0,
+        "No alternative routes found in any mode — penalty logic may be broken"
+    );
 }

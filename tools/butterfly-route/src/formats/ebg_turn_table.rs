@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use std::fs::File;
-use std::io::{BufWriter, Write, Read, BufReader};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use super::crc;
@@ -31,13 +31,13 @@ impl From<u8> for TurnKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TurnEntry {
-    pub mode_mask: u8,          // bit0=car, bit1=bike, bit2=foot
+    pub mode_mask: u8, // bit0=car, bit1=bike, bit2=foot
     pub kind: TurnKind,
     pub has_time_dep: bool,
-    pub penalty_ds_car: u32,    // deciseconds, 0 if N/A
+    pub penalty_ds_car: u32, // deciseconds, 0 if N/A
     pub penalty_ds_bike: u32,
     pub penalty_ds_foot: u32,
-    pub attrs_idx: u32,         // future use (e.g., turn classes); 0 for now
+    pub attrs_idx: u32, // future use (e.g., turn classes); 0 for now
 }
 
 #[derive(Debug)]
@@ -134,7 +134,9 @@ impl TurnTableFile {
                 has_time_dep: record[2] != 0,
                 penalty_ds_car: u32::from_le_bytes([record[4], record[5], record[6], record[7]]),
                 penalty_ds_bike: u32::from_le_bytes([record[8], record[9], record[10], record[11]]),
-                penalty_ds_foot: u32::from_le_bytes([record[12], record[13], record[14], record[15]]),
+                penalty_ds_foot: u32::from_le_bytes([
+                    record[12], record[13], record[14], record[15],
+                ]),
                 attrs_idx: u32::from_le_bytes([record[16], record[17], record[18], record[19]]),
             });
         }
