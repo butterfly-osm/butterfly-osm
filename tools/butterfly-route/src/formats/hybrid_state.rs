@@ -96,7 +96,7 @@ impl HybridStateFile {
         let mut header = Vec::with_capacity(96);
         header.extend_from_slice(&MAGIC.to_le_bytes());
         header.extend_from_slice(&VERSION.to_le_bytes());
-        header.push(data.mode as u8);
+        header.push(data.mode.0);
         header.push(0u8); // reserved
         header.extend_from_slice(&data.n_states.to_le_bytes());
         header.extend_from_slice(&data.n_node_states.to_le_bytes());
@@ -203,12 +203,12 @@ impl HybridStateFile {
             anyhow::bail!("Unsupported version: {}", version);
         }
 
-        let mode = match header[6] {
-            0 => Mode::Car,
-            1 => Mode::Bike,
-            2 => Mode::Foot,
-            m => anyhow::bail!("Invalid mode: {}", m),
-        };
+        anyhow::ensure!(
+            (header[6] as usize) < crate::profile_abi::MAX_MODES,
+            "Invalid mode: {}",
+            header[6]
+        );
+        let mode = Mode(header[6]);
 
         let n_states = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
         let n_node_states = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);

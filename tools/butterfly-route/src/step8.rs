@@ -51,6 +51,7 @@ pub struct Step8Config {
     pub order_path: PathBuf,
     pub ebg_nodes_path: PathBuf, // ebg.nodes from step4
     pub mode: Mode,
+    pub mode_name: String,
     pub outdir: PathBuf,
 }
 
@@ -60,6 +61,7 @@ pub struct Step8Result {
     pub output_path: PathBuf,
     pub distance_output_path: PathBuf,
     pub mode: Mode,
+    pub mode_name: String,
     pub n_up_edges: u64,
     pub n_down_edges: u64,
     pub customize_time_ms: u64,
@@ -135,11 +137,7 @@ impl SortedFilteredEbgAdj {
 /// Customize CCH for a specific mode (time + distance weights, parallelized)
 pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     let start_time = std::time::Instant::now();
-    let mode_name = match config.mode {
-        Mode::Car => "car",
-        Mode::Bike => "bike",
-        Mode::Foot => "foot",
-    };
+    let mode_name = &config.mode_name;
     println!("\n🎨 Step 8: Customizing CCH for {}...\n", mode_name);
 
     // Load all data
@@ -291,6 +289,7 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
         output_path,
         distance_output_path,
         mode: config.mode,
+        mode_name: config.mode_name.clone(),
         n_up_edges: n_up as u64,
         n_down_edges: n_down as u64,
         customize_time_ms,
@@ -762,7 +761,7 @@ fn write_cch_weights(
     // Header (32 bytes)
     let magic_bytes = MAGIC.to_le_bytes();
     let version_bytes = VERSION.to_le_bytes();
-    let mode_byte = mode as u8;
+    let mode_byte = mode.0;
     let reserved = 0u8;
     let n_up = (up_weights.len() as u64).to_le_bytes();
     let n_down = (down_weights.len() as u64).to_le_bytes();
@@ -811,6 +810,7 @@ pub struct Step8HybridConfig {
     pub cch_topo_path: PathBuf,
     pub hybrid_state_path: PathBuf,
     pub mode: Mode,
+    pub mode_name: String,
     pub outdir: PathBuf,
 }
 
@@ -878,11 +878,7 @@ impl SortedHybridAdj {
 /// Customize CCH for hybrid state graph (uses parallel triangle relaxation)
 pub fn customize_cch_hybrid(config: Step8HybridConfig) -> Result<Step8Result> {
     let start_time = std::time::Instant::now();
-    let mode_name = match config.mode {
-        Mode::Car => "car",
-        Mode::Bike => "bike",
-        Mode::Foot => "foot",
-    };
+    let mode_name = &config.mode_name;
     println!(
         "\n🎨 Step 8: Customizing CCH for {} (HYBRID)...\n",
         mode_name
@@ -978,6 +974,7 @@ pub fn customize_cch_hybrid(config: Step8HybridConfig) -> Result<Step8Result> {
         output_path,
         distance_output_path,
         mode: config.mode,
+        mode_name: config.mode_name.clone(),
         n_up_edges: n_up as u64,
         n_down_edges: n_down as u64,
         customize_time_ms,

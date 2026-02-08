@@ -12,9 +12,7 @@ use crate::step5;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Step5LockFile {
     pub inputs_sha256: String,
-    pub car: ModeLockData,
-    pub bike: ModeLockData,
-    pub foot: ModeLockData,
+    pub modes: HashMap<String, ModeLockData>,
     pub node_count: u32,
     pub arc_count: u64,
     pub created_at_utc: String,
@@ -27,19 +25,18 @@ pub struct ModeLockData {
     pub mask_sha256: String,
 }
 
-/// Validate Step 5 outputs and generate lock file
-#[allow(clippy::too_many_arguments)]
+/// Validate Step 5 outputs and generate lock file.
+///
+/// `way_attrs_by_name` maps mode_name -> way_attrs path (e.g. "car" -> "/data/step2/way_attrs.car.bin").
 pub fn validate_step5(
     result: &step5::Step5Result,
     ebg_nodes_path: &Path,
     ebg_csr_path: &Path,
     turn_table_path: &Path,
     nbg_geo_path: &Path,
-    way_attrs_car_path: &Path,
-    way_attrs_bike_path: &Path,
-    way_attrs_foot_path: &Path,
+    way_attrs_by_name: &HashMap<String, std::path::PathBuf>,
 ) -> Result<Step5LockFile> {
-    println!("\n🔐 Running Step 5 validation lock conditions...\n");
+    println!("\n  Running Step 5 validation lock conditions...\n");
 
     // Load all data
     let ebg_nodes = EbgNodesFile::read(ebg_nodes_path)?;
@@ -47,123 +44,81 @@ pub fn validate_step5(
     let turn_table = TurnTableFile::read(turn_table_path)?;
     let nbg_geo = NbgGeoFile::read(nbg_geo_path)?;
 
-    let way_attrs_car = way_attrs::read_all(way_attrs_car_path)?;
-    let way_attrs_bike = way_attrs::read_all(way_attrs_bike_path)?;
-    let way_attrs_foot = way_attrs::read_all(way_attrs_foot_path)?;
+    let mut modes_lock = HashMap::new();
 
-    // Load generated weights/turns/masks
-    let car_weights = mod_weights::read_all(&result.car_weights)?;
-    let car_turns = mod_turns::read_all(&result.car_turns)?;
-    let car_mask = mod_mask::read_all(&result.car_mask)?;
+    for mode_output in &result.modes {
+        let mode_name = &mode_output.mode_name;
+        let mode = Mode(mode_output.mode_index);
 
-    let bike_weights = mod_weights::read_all(&result.bike_weights)?;
-    let bike_turns = mod_turns::read_all(&result.bike_turns)?;
-    let bike_mask = mod_mask::read_all(&result.bike_mask)?;
+        // Load generated weights/turns/masks for this mode
+        let weights = mod_weights::read_all(&mode_output.weights_path)?;
+        let turns = mod_turns::read_all(&mode_output.turns_path)?;
+        let mask = mod_mask::read_all(&mode_output.mask_path)?;
 
-    let foot_weights = mod_weights::read_all(&result.foot_weights)?;
-    let foot_turns = mod_turns::read_all(&result.foot_turns)?;
-    let foot_mask = mod_mask::read_all(&result.foot_mask)?;
+        // Lock Condition A: Structural integrity
+        println!("A. Structural integrity checks for '{}'...", mode_name);
+        let t0 = std::time::Instant::now();
+        verify_lock_a_structural(&ebg_nodes, &ebg_csr, &weights, &turns, &mask)?;
+        println!(
+            "  Passed structural checks for '{}' ({:.3}s)",
+            mode_name,
+            t0.elapsed().as_secs_f64()
+        );
 
-    // Lock Condition A: Structural integrity
-    println!("A. Structural integrity checks...");
-    let t0 = std::time::Instant::now();
-    verify_lock_a_structural(&ebg_nodes, &ebg_csr, &car_weights, &car_turns, &car_mask)?;
-    verify_lock_a_structural(&ebg_nodes, &ebg_csr, &bike_weights, &bike_turns, &bike_mask)?;
-    verify_lock_a_structural(&ebg_nodes, &ebg_csr, &foot_weights, &foot_turns, &foot_mask)?;
-    println!(
-        "  ✓ Passed structural checks ({:.3}s)",
-        t0.elapsed().as_secs_f64()
-    );
+        // Lock Condition B: Math parity
+        if let Some(way_attrs_path) = way_attrs_by_name.get(mode_name) {
+            println!("\nB. Math parity checks for '{}'...", mode_name);
+            let t0 = std::time::Instant::now();
+            let way_attrs_data = way_attrs::read_all(way_attrs_path)?;
+            let way_index = build_way_index(&way_attrs_data);
+            verify_lock_b_math(&ebg_nodes, &nbg_geo, &weights, &mask, &way_index, mode)?;
+            println!(
+                "  Passed math parity checks for '{}' ({:.3}s)",
+                mode_name,
+                t0.elapsed().as_secs_f64()
+            );
+        }
 
-    // Lock Condition B: Math parity
-    println!("\nB. Math parity checks...");
-    let t0 = std::time::Instant::now();
-    let car_index = build_way_index(&way_attrs_car);
-    let bike_index = build_way_index(&way_attrs_bike);
-    let foot_index = build_way_index(&way_attrs_foot);
+        // Lock Condition C: Arc/turn consistency
+        println!("\nC. Arc/turn consistency checks for '{}'...", mode_name);
+        let t0 = std::time::Instant::now();
+        verify_lock_c_turns(&ebg_csr, &turn_table, &turns, mode)?;
+        println!(
+            "  Passed turn consistency checks for '{}' ({:.3}s)",
+            mode_name,
+            t0.elapsed().as_secs_f64()
+        );
 
-    verify_lock_b_math(
-        &ebg_nodes,
-        &nbg_geo,
-        &car_weights,
-        &car_mask,
-        &car_index,
-        Mode::Car,
-    )?;
-    verify_lock_b_math(
-        &ebg_nodes,
-        &nbg_geo,
-        &bike_weights,
-        &bike_mask,
-        &bike_index,
-        Mode::Bike,
-    )?;
-    verify_lock_b_math(
-        &ebg_nodes,
-        &nbg_geo,
-        &foot_weights,
-        &foot_mask,
-        &foot_index,
-        Mode::Foot,
-    )?;
-    println!(
-        "  ✓ Passed math parity checks ({:.3}s)",
-        t0.elapsed().as_secs_f64()
-    );
+        // Lock Condition E: Sanity & bounds
+        println!("\nE. Sanity & bounds checks for '{}'...", mode_name);
+        let t0 = std::time::Instant::now();
+        let max_weight = match mode_name.as_str() {
+            "car" => 10_000_000u32,
+            _ => 5_000_000u32,
+        };
+        verify_lock_e_bounds(&weights, &mask, 1, max_weight, mode_name)?;
+        println!(
+            "  Passed sanity & bounds checks for '{}' ({:.3}s)",
+            mode_name,
+            t0.elapsed().as_secs_f64()
+        );
 
-    // Lock Condition C: Arc/turn consistency
-    println!("\nC. Arc/turn consistency checks...");
-    let t0 = std::time::Instant::now();
-    verify_lock_c_turns(&ebg_csr, &turn_table, &car_turns, Mode::Car)?;
-    verify_lock_c_turns(&ebg_csr, &turn_table, &bike_turns, Mode::Bike)?;
-    verify_lock_c_turns(&ebg_csr, &turn_table, &foot_turns, Mode::Foot)?;
-    println!(
-        "  ✓ Passed turn consistency checks ({:.3}s)",
-        t0.elapsed().as_secs_f64()
-    );
+        // Calculate SHA-256 hashes for lock file
+        let lock_data = ModeLockData {
+            w_sha256: super::compute_sha256(&mode_output.weights_path)?,
+            t_sha256: super::compute_sha256(&mode_output.turns_path)?,
+            mask_sha256: super::compute_sha256(&mode_output.mask_path)?,
+        };
+        modes_lock.insert(mode_name.clone(), lock_data);
+    }
 
     // Lock Condition D: Graph-level parity (Dijkstra reachability)
-    // DEFERRED: This check would run full Dijkstra from sample origins and compare
-    // shortest-path distances against the weighted graph. It requires a fully built
-    // routing graph (CCH contraction + customization from steps 6-8) which is not
-    // yet available at step 5 validation time. The CCH correctness validator
-    // (validate/cch_correctness.rs) covers this after step 8.
     println!("\nD. Graph-level parity (Dijkstra reachability)...");
     println!("  -- Deferred: requires CCH from steps 6-8, validated post-step8 instead");
 
-    // Lock Condition E: Sanity & bounds
-    println!("\nE. Sanity & bounds checks...");
-    let t0 = std::time::Instant::now();
-    verify_lock_e_bounds(&car_weights, &car_mask, 1, 10_000_000, "car")?;
-    verify_lock_e_bounds(&bike_weights, &bike_mask, 1, 5_000_000, "bike")?;
-    verify_lock_e_bounds(&foot_weights, &foot_mask, 1, 5_000_000, "foot")?;
-    println!(
-        "  ✓ Passed sanity & bounds checks ({:.3}s)",
-        t0.elapsed().as_secs_f64()
-    );
-
-    // Calculate SHA-256 hashes for lock file (same pattern as step1/step2/step3)
-    let car_lock = ModeLockData {
-        w_sha256: super::compute_sha256(&result.car_weights)?,
-        t_sha256: super::compute_sha256(&result.car_turns)?,
-        mask_sha256: super::compute_sha256(&result.car_mask)?,
-    };
-    let bike_lock = ModeLockData {
-        w_sha256: super::compute_sha256(&result.bike_weights)?,
-        t_sha256: super::compute_sha256(&result.bike_turns)?,
-        mask_sha256: super::compute_sha256(&result.bike_mask)?,
-    };
-    let foot_lock = ModeLockData {
-        w_sha256: super::compute_sha256(&result.foot_weights)?,
-        t_sha256: super::compute_sha256(&result.foot_turns)?,
-        mask_sha256: super::compute_sha256(&result.foot_mask)?,
-    };
-
     Ok(Step5LockFile {
         inputs_sha256: hex::encode(ebg_nodes.inputs_sha),
-        car: car_lock,
-        bike: bike_lock,
-        foot: foot_lock,
+        modes: modes_lock,
         node_count: result.n_nodes,
         arc_count: result.n_arcs,
         created_at_utc: chrono::Utc::now().to_rfc3339(),
@@ -305,11 +260,7 @@ fn verify_lock_c_turns(
     turns: &ModTurns,
     mode: Mode,
 ) -> Result<()> {
-    let mode_bit = match mode {
-        Mode::Car => 1u8 << 0,
-        Mode::Bike => 1u8 << 1,
-        Mode::Foot => 1u8 << 2,
-    };
+    let mode_bit = mode.bit();
 
     let n_arcs = ebg_csr.n_arcs as usize;
     let sample_size = std::cmp::min(100_000, n_arcs);
@@ -332,14 +283,8 @@ fn verify_lock_c_turns(
                 turns.penalties[arc_idx]
             );
         } else {
-            // Mode allowed - check penalty mapping
-            // All turns now have geometry-based penalties stored in the turn table
-            // regardless of kind (None, Ban, Only, or Penalty)
-            let expected_penalty = match mode {
-                Mode::Car => turn_entry.penalty_ds_car,
-                Mode::Bike => turn_entry.penalty_ds_bike,
-                Mode::Foot => turn_entry.penalty_ds_foot,
-            };
+            // Mode allowed - check penalty mapping via dynamic penalty_ds array
+            let expected_penalty = turn_entry.penalty_ds[mode.index()];
             anyhow::ensure!(
                 turns.penalties[arc_idx] == expected_penalty,
                 "Arc {} penalty mismatch: expected {} got {}",
@@ -392,7 +337,7 @@ fn verify_lock_e_bounds(
     Ok(())
 }
 
-/// Build way_id → WayAttr index
+/// Build way_id -> WayAttr index
 fn build_way_index(attrs: &[WayAttr]) -> HashMap<i64, WayAttr> {
     attrs.iter().map(|a| (a.way_id, a.clone())).collect()
 }

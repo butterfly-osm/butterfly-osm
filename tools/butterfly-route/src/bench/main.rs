@@ -723,12 +723,7 @@ fn run_isochrone_bench(
 
     let phast = load_phast(data_dir, mode)?;
     let extractor = load_extractor(data_dir, mode)?;
-    let sparse_config = match mode {
-        "car" => SparseContourConfig::for_car(),
-        "bike" => SparseContourConfig::for_bike(),
-        "foot" => SparseContourConfig::for_foot(),
-        _ => SparseContourConfig::for_bike(),
-    };
+    let sparse_config = SparseContourConfig::for_mode_name(mode);
 
     println!("  ✓ Loaded in {:.1}s", load_start.elapsed().as_secs_f64());
     println!("  ✓ PHAST nodes: {}", phast.n_nodes());
@@ -874,12 +869,7 @@ fn run_batch_bench(
 
     let phast = load_phast(data_dir, mode)?;
     let extractor = load_extractor(data_dir, mode)?;
-    let sparse_config = match mode {
-        "car" => SparseContourConfig::for_car(),
-        "bike" => SparseContourConfig::for_bike(),
-        "foot" => SparseContourConfig::for_foot(),
-        _ => SparseContourConfig::for_bike(),
-    };
+    let sparse_config = SparseContourConfig::for_mode_name(mode);
 
     println!("  ✓ Loaded in {:.1}s", load_start.elapsed().as_secs_f64());
     println!();
@@ -1606,8 +1596,6 @@ fn run_batched_isochrone_bench(
     n_origins: usize,
     seed: u64,
 ) -> anyhow::Result<()> {
-    use butterfly_route::profile_abi::Mode;
-
     println!("═══════════════════════════════════════════════════════════════");
     println!("  K-LANE BATCHED ISOCHRONE BENCHMARK");
     println!("═══════════════════════════════════════════════════════════════");
@@ -1620,25 +1608,12 @@ fn run_batched_isochrone_bench(
     println!("  Origins: {} (in batches of {})", n_origins, K_LANES);
     println!();
 
-    // Parse mode
-    let mode_enum = match mode.to_lowercase().as_str() {
-        "car" => Mode::Car,
-        "bike" => Mode::Bike,
-        "foot" => Mode::Foot,
-        _ => Mode::Car,
-    };
-
     // ========== Load data ==========
     println!("[1/4] Loading single-source engine...");
     let single_start = Instant::now();
     let phast = load_phast(data_dir, mode)?;
     let extractor = load_extractor(data_dir, mode)?;
-    let sparse_config = match mode {
-        "car" => SparseContourConfig::for_car(),
-        "bike" => SparseContourConfig::for_bike(),
-        "foot" => SparseContourConfig::for_foot(),
-        _ => SparseContourConfig::for_car(),
-    };
+    let sparse_config = SparseContourConfig::for_mode_name(mode);
     println!(
         "  ✓ Loaded in {:.1}s ({} nodes)",
         single_start.elapsed().as_secs_f64(),
@@ -1721,7 +1696,7 @@ fn run_batched_isochrone_bench(
         &ebg_nodes_path,
         &nbg_geo_path,
         &base_weights_path,
-        mode_enum,
+        mode,
     )?;
     println!(
         "  ✓ Loaded in {:.1}s",
@@ -3498,12 +3473,7 @@ fn run_contour_compare_bench(
     )?;
     println!("  ✓ Loaded frontier extractor");
 
-    let sparse_config = match mode {
-        "car" => SparseContourConfig::for_car(),
-        "bike" => SparseContourConfig::for_bike(),
-        "foot" => SparseContourConfig::for_foot(),
-        _ => SparseContourConfig::for_bike(),
-    };
+    let sparse_config = SparseContourConfig::for_mode_name(mode);
 
     // Generate random origins
     println!("\n[2/3] Generating {} random origins...", n_queries);
@@ -3628,8 +3598,6 @@ fn run_e2e_isochrone_bench(
     n_origins: usize,
     seed: u64,
 ) -> anyhow::Result<()> {
-    use butterfly_route::profile_abi::Mode;
-
     let threshold_ds = threshold_ms / 100;
 
     println!("═══════════════════════════════════════════════════════════════");
@@ -3649,14 +3617,6 @@ fn run_e2e_isochrone_bench(
         ADAPTIVE_THRESHOLD_DS as f64 / 600.0
     );
     println!();
-
-    // Parse mode
-    let mode_enum = match mode.to_lowercase().as_str() {
-        "car" => Mode::Car,
-        "bike" => Mode::Bike,
-        "foot" => Mode::Foot,
-        _ => Mode::Car,
-    };
 
     // Load adaptive engine
     println!("[1/3] Loading adaptive isochrone engine...");
@@ -3725,7 +3685,7 @@ fn run_e2e_isochrone_bench(
         &ebg_nodes_path,
         &nbg_geo_path,
         &base_weights_path,
-        mode_enum,
+        mode,
     )?;
     let n_nodes = engine.n_nodes();
     println!(
@@ -3939,7 +3899,6 @@ fn run_e2e_isochrone_bench(
 /// Pathological origins benchmark - tests worst-case scenarios
 fn run_pathological_origins_bench(data_dir: &Path, mode: &str) -> anyhow::Result<()> {
     use butterfly_route::formats::{EbgNodesFile, FilteredEbgFile, NbgGeoFile};
-    use butterfly_route::profile_abi::Mode;
     use butterfly_route::step9::spatial::SpatialIndex;
 
     println!("═══════════════════════════════════════════════════════════════");
@@ -3947,14 +3906,6 @@ fn run_pathological_origins_bench(data_dir: &Path, mode: &str) -> anyhow::Result
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}", mode);
     println!();
-
-    // Parse mode
-    let mode_enum = match mode.to_lowercase().as_str() {
-        "car" => Mode::Car,
-        "bike" => Mode::Bike,
-        "foot" => Mode::Foot,
-        _ => Mode::Car,
-    };
 
     // Load engine
     println!("[1/3] Loading engine and spatial index...");
@@ -4046,7 +3997,7 @@ fn run_pathological_origins_bench(data_dir: &Path, mode: &str) -> anyhow::Result
         &ebg_nodes_path,
         &nbg_geo_path,
         &base_weights_path,
-        mode_enum,
+        mode,
     )?;
 
     println!("  ✓ Loaded in {:.2}s", load_start.elapsed().as_secs_f64());
@@ -4147,7 +4098,6 @@ fn run_bulk_pipeline_bench(
     output_path: Option<&Path>,
     seed: u64,
 ) -> anyhow::Result<()> {
-    use butterfly_route::profile_abi::Mode;
     use std::fs::File;
     use std::io::{BufWriter, Write};
 
@@ -4163,13 +4113,6 @@ fn run_bulk_pipeline_bench(
         n_origins
     );
     println!();
-
-    let mode_enum = match mode.to_lowercase().as_str() {
-        "car" => Mode::Car,
-        "bike" => Mode::Bike,
-        "foot" => Mode::Foot,
-        _ => Mode::Car,
-    };
 
     println!("[1/3] Loading engine...");
     let topo_path = find_file(
@@ -4228,7 +4171,7 @@ fn run_bulk_pipeline_bench(
         &ebg_nodes_path,
         &nbg_geo_path,
         &base_weights_path,
-        mode_enum,
+        mode,
     )?;
     let n_nodes = engine.n_nodes();
     println!("  ✓ Loaded ({} nodes)", n_nodes);
@@ -4427,7 +4370,6 @@ fn run_monotonicity_test(
 
 /// Compare polygon detail levels with different cell sizes
 fn run_detail_compare(data_dir: &Path, mode: &str, threshold_min: u32) -> anyhow::Result<()> {
-    use butterfly_route::profile_abi::Mode;
     use butterfly_route::range::frontier::FrontierExtractor;
     use butterfly_route::range::phast::PhastEngine;
     use butterfly_route::range::sparse_contour::{generate_sparse_contour, SparseContourConfig};
@@ -4437,13 +4379,6 @@ fn run_detail_compare(data_dir: &Path, mode: &str, threshold_min: u32) -> anyhow
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}, Threshold: {} min", mode, threshold_min);
     println!();
-
-    let _mode_enum = match mode.to_lowercase().as_str() {
-        "car" => Mode::Car,
-        "bike" => Mode::Bike,
-        "foot" => Mode::Foot,
-        _ => Mode::Car,
-    };
 
     // Load PHAST and extractor
     println!("[1/3] Loading engine...");

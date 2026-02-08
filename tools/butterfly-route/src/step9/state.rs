@@ -64,10 +64,12 @@ pub struct ServerState {
     pub ebg_csr: EbgCsr,
     pub nbg_geo: NbgGeo,
 
-    // Per-mode data (each mode has its own CCH)
-    pub car: ModeData,
-    pub bike: ModeData,
-    pub foot: ModeData,
+    // Per-mode data (dynamically discovered, indexed by mode_index)
+    pub modes: Vec<ModeData>,
+    /// Mode names indexed by mode_index (alphabetically sorted)
+    pub mode_names: Vec<String>,
+    /// Mode name → mode index lookup
+    pub mode_lookup: HashMap<String, u8>,
 
     // Spatial index for snapping (operates in original EBG space)
     pub spatial_index: SpatialIndex,
@@ -115,28 +117,39 @@ impl ServerState {
         let nbg_geo = NbgGeoFile::read(step3_dir.join("nbg.geo"))?;
         tracing::info!(edges = nbg_geo.edges.len(), "loaded NBG geo");
 
+        // Discover available modes by scanning for w.*.u32 files in step5 directory
+        let discovered_modes = discover_modes(&step5_dir)?;
+        tracing::info!(modes = ?discovered_modes, "discovered transport modes");
+
+        if discovered_modes.is_empty() {
+            anyhow::bail!(
+                "No transport modes found in {}. Expected w.*.u32 files.",
+                step5_dir.display()
+            );
+        }
+
+        // Load per-mode CCH data
         tracing::info!("Loading per-mode CCH data...");
-        let car = load_mode_data(Mode::Car, &step5_dir, &step6_dir, &step7_dir, &step8_dir)?;
-        tracing::info!(
-            mode = "car",
-            filtered_nodes = car.filtered_ebg.n_filtered_nodes,
-            up_edges = car.cch_topo.up_targets.len(),
-            "loaded mode data"
-        );
-        let bike = load_mode_data(Mode::Bike, &step5_dir, &step6_dir, &step7_dir, &step8_dir)?;
-        tracing::info!(
-            mode = "bike",
-            filtered_nodes = bike.filtered_ebg.n_filtered_nodes,
-            up_edges = bike.cch_topo.up_targets.len(),
-            "loaded mode data"
-        );
-        let foot = load_mode_data(Mode::Foot, &step5_dir, &step6_dir, &step7_dir, &step8_dir)?;
-        tracing::info!(
-            mode = "foot",
-            filtered_nodes = foot.filtered_ebg.n_filtered_nodes,
-            up_edges = foot.cch_topo.up_targets.len(),
-            "loaded mode data"
-        );
+        let mut modes_data = Vec::with_capacity(discovered_modes.len());
+        let mut mode_names = Vec::with_capacity(discovered_modes.len());
+        let mut mode_lookup = HashMap::with_capacity(discovered_modes.len());
+
+        for (mode_index, mode_name) in discovered_modes.iter().enumerate() {
+            let mode = Mode(mode_index as u8);
+            let mode_data = load_mode_data(
+                mode_name, mode, &step5_dir, &step6_dir, &step7_dir, &step8_dir,
+            )?;
+            tracing::info!(
+                mode = mode_name.as_str(),
+                index = mode_index,
+                filtered_nodes = mode_data.filtered_ebg.n_filtered_nodes,
+                up_edges = mode_data.cch_topo.up_targets.len(),
+                "loaded mode data"
+            );
+            modes_data.push(mode_data);
+            mode_lookup.insert(mode_name.clone(), mode_index as u8);
+            mode_names.push(mode_name.clone());
+        }
 
         tracing::info!("Building spatial index...");
         let spatial_index = SpatialIndex::build(&ebg_nodes, &nbg_geo);
@@ -148,9 +161,15 @@ impl ServerState {
         tracing::info!(named_roads = way_names.len(), "loaded road names");
 
         // Build per-edge exclude flags from way_attrs.car.bin
+        // Try car first, then any available mode's way_attrs
         tracing::info!("Loading edge exclude flags...");
-        let way_attrs_path = step2_dir.join("way_attrs.car.bin");
-        let edge_exclude_flags = exclude::build_edge_exclude_flags(&ebg_nodes, &way_attrs_path)?;
+        let way_attrs_path = find_way_attrs_path(&step2_dir, &discovered_modes);
+        let edge_exclude_flags = if let Some(attrs_path) = way_attrs_path {
+            exclude::build_edge_exclude_flags(&ebg_nodes, &attrs_path)?
+        } else {
+            tracing::warn!("No way_attrs file found, exclude feature disabled");
+            vec![0u8; ebg_nodes.n_nodes as usize]
+        };
 
         // Build distance-based node weights from EBG edge lengths (mm)
         // Used for isodistance isochrones: same role as ModeData.node_weights but distance-based
@@ -182,9 +201,9 @@ impl ServerState {
             ebg_nodes,
             ebg_csr,
             nbg_geo,
-            car,
-            bike,
-            foot,
+            modes: modes_data,
+            mode_names,
+            mode_lookup,
             spatial_index,
             elevation,
             way_names,
@@ -195,13 +214,9 @@ impl ServerState {
         })
     }
 
-    /// Get mode data by mode
+    /// Get mode data by mode (index-based lookup)
     pub fn get_mode(&self, mode: Mode) -> &ModeData {
-        match mode {
-            Mode::Car => &self.car,
-            Mode::Bike => &self.bike,
-            Mode::Foot => &self.foot,
-        }
+        &self.modes[mode.index()]
     }
 
     /// Get or compute exclude weights for a mode and exclude mask.
@@ -228,8 +243,9 @@ impl ServerState {
             return std::sync::Arc::clone(weights);
         }
 
+        let mode_name = &self.mode_names[mode.index()];
         tracing::info!(
-            mode = ?mode,
+            mode = mode_name.as_str(),
             exclude_mask,
             "computing exclude weights (first request)"
         );
@@ -278,20 +294,62 @@ fn find_step_dir(data_dir: &Path, step: &str) -> Result<std::path::PathBuf> {
     );
 }
 
+/// Discover available modes by scanning for `w.*.u32` files in the step5 directory.
+/// Returns mode names sorted alphabetically for deterministic indexing.
+fn discover_modes(step5_dir: &Path) -> Result<Vec<String>> {
+    let mut mode_names: Vec<String> = Vec::new();
+
+    for entry in std::fs::read_dir(step5_dir).context("Failed to read step5 directory")? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+
+        // Pattern: w.{mode_name}.u32
+        if let Some(rest) = name_str.strip_prefix("w.") {
+            if let Some(mode_name) = rest.strip_suffix(".u32") {
+                if !mode_name.is_empty() {
+                    mode_names.push(mode_name.to_string());
+                }
+            }
+        }
+    }
+
+    // Sort alphabetically for deterministic indexing
+    mode_names.sort();
+    mode_names.dedup();
+
+    Ok(mode_names)
+}
+
+/// Find the best way_attrs file for exclude flags.
+/// Prefers "car" if available, otherwise uses the first available mode.
+fn find_way_attrs_path(step2_dir: &Path, modes: &[String]) -> Option<std::path::PathBuf> {
+    // Prefer car mode for exclude flags (toll/ferry/motorway are car-centric)
+    let car_path = step2_dir.join("way_attrs.car.bin");
+    if car_path.exists() {
+        return Some(car_path);
+    }
+
+    // Fall back to any available mode
+    for mode_name in modes {
+        let path = step2_dir.join(format!("way_attrs.{}.bin", mode_name));
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
 /// Load per-mode data (CCH topo, ordering, weights, filtered EBG)
 fn load_mode_data(
+    mode_name: &str,
     mode: Mode,
     step5_dir: &Path,
     step6_dir: &Path,
     step7_dir: &Path,
     step8_dir: &Path,
 ) -> Result<ModeData> {
-    let mode_name = match mode {
-        Mode::Car => "car",
-        Mode::Bike => "bike",
-        Mode::Foot => "foot",
-    };
-
     // Load filtered EBG from step 5
     let filtered_ebg_path = step5_dir.join(format!("filtered.{}.ebg", mode_name));
     let filtered_ebg = FilteredEbgFile::read(&filtered_ebg_path)?;

@@ -52,6 +52,27 @@ fn load_state() -> Arc<ServerState> {
     panic!("Belgium data not found — tried {:?}", candidates);
 }
 
+/// Return all discovered modes as (name, Mode) pairs from the loaded ServerState.
+fn all_modes(state: &ServerState) -> Vec<(String, Mode)> {
+    state
+        .mode_names
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| (name.clone(), Mode(idx as u8)))
+        .collect()
+}
+
+/// Look up a specific mode by name from the loaded ServerState.
+fn lookup_mode(state: &ServerState, name: &str) -> Mode {
+    let idx = state.mode_lookup.get(name).unwrap_or_else(|| {
+        panic!(
+            "Mode '{}' not found in data. Available: {:?}",
+            name, state.mode_names
+        )
+    });
+    Mode(*idx)
+}
+
 /// Snap a coordinate to rank space, returning (rank, original_ebg_id) or None
 fn snap_to_rank(state: &ServerState, mode: Mode, lon: f64, lat: f64) -> Option<(u32, u32)> {
     let mode_data = state.get_mode(mode);
@@ -73,25 +94,20 @@ fn snap_to_rank(state: &ServerState, mode: Mode, lon: f64, lat: f64) -> Option<(
 #[ignore] // Requires Belgium data
 fn test_route_table_duration_consistency() {
     let state = load_state();
-    let modes = [Mode::Car, Mode::Bike, Mode::Foot];
+    let discovered = all_modes(&state);
     let mut total_tests = 0;
     let mut passed = 0;
     let mut failures = Vec::new();
 
-    for &mode in &modes {
-        let mode_data = state.get_mode(mode);
+    for (mode_name, mode) in &discovered {
+        let mode_data = state.get_mode(*mode);
         let n_nodes = mode_data.cch_topo.n_nodes as usize;
-        let mode_name = match mode {
-            Mode::Car => "car",
-            Mode::Bike => "bike",
-            Mode::Foot => "foot",
-        };
 
         for (i, &((s_lon, s_lat), (d_lon, d_lat))) in TEST_PAIRS.iter().enumerate() {
             total_tests += 1;
 
             // Snap both endpoints
-            let (src_rank, _src_orig) = match snap_to_rank(&state, mode, s_lon, s_lat) {
+            let (src_rank, _src_orig) = match snap_to_rank(&state, *mode, s_lon, s_lat) {
                 Some(r) => r,
                 None => {
                     eprintln!("  SKIP {mode_name} pair {i}: source snap failed");
@@ -99,7 +115,7 @@ fn test_route_table_duration_consistency() {
                     continue;
                 }
             };
-            let (dst_rank, _dst_orig) = match snap_to_rank(&state, mode, d_lon, d_lat) {
+            let (dst_rank, _dst_orig) = match snap_to_rank(&state, *mode, d_lon, d_lat) {
                 Some(r) => r,
                 None => {
                     eprintln!("  SKIP {mode_name} pair {i}: dest snap failed");
@@ -109,7 +125,7 @@ fn test_route_table_duration_consistency() {
             };
 
             // Get route distance (P2P bidirectional CCH)
-            let query = CchQuery::new(&state, mode);
+            let query = CchQuery::new(&state, *mode);
             let route_dist = query.query(src_rank, dst_rank).map(|r| r.distance);
 
             // Get table distance (bucket M2M)
@@ -178,31 +194,26 @@ fn test_route_table_duration_consistency() {
 #[ignore] // Requires Belgium data
 fn test_route_table_distance_consistency() {
     let state = load_state();
-    let modes = [Mode::Car, Mode::Bike, Mode::Foot];
+    let discovered = all_modes(&state);
     let mut total_tests = 0;
     let mut passed = 0;
     let mut failures = Vec::new();
 
-    for &mode in &modes {
-        let mode_data = state.get_mode(mode);
+    for (mode_name, mode) in &discovered {
+        let mode_data = state.get_mode(*mode);
         let n_nodes = mode_data.cch_topo.n_nodes as usize;
-        let mode_name = match mode {
-            Mode::Car => "car",
-            Mode::Bike => "bike",
-            Mode::Foot => "foot",
-        };
 
         for (i, &((s_lon, s_lat), (d_lon, d_lat))) in TEST_PAIRS.iter().enumerate() {
             total_tests += 1;
 
-            let (src_rank, _) = match snap_to_rank(&state, mode, s_lon, s_lat) {
+            let (src_rank, _) = match snap_to_rank(&state, *mode, s_lon, s_lat) {
                 Some(r) => r,
                 None => {
                     passed += 1;
                     continue;
                 }
             };
-            let (dst_rank, _) = match snap_to_rank(&state, mode, d_lon, d_lat) {
+            let (dst_rank, _) = match snap_to_rank(&state, *mode, d_lon, d_lat) {
                 Some(r) => r,
                 None => {
                     passed += 1;
@@ -292,7 +303,7 @@ fn test_route_table_distance_consistency() {
 #[ignore] // Requires Belgium data
 fn test_isochrone_route_consistency() {
     let state = load_state();
-    let mode = Mode::Car;
+    let mode = lookup_mode(&state, "car");
     let mode_data = state.get_mode(mode);
     let threshold_s = 300; // 5 minutes
     let threshold_ds = threshold_s * 10;
@@ -396,30 +407,25 @@ fn test_isochrone_route_consistency() {
 #[ignore] // Requires Belgium data
 fn test_route_path_validity() {
     let state = load_state();
-    let modes = [Mode::Car, Mode::Bike, Mode::Foot];
+    let discovered = all_modes(&state);
     let mut total_tests = 0;
     let mut passed = 0;
     let mut failures = Vec::new();
 
-    for &mode in &modes {
-        let mode_data = state.get_mode(mode);
-        let mode_name = match mode {
-            Mode::Car => "car",
-            Mode::Bike => "bike",
-            Mode::Foot => "foot",
-        };
+    for (mode_name, mode) in &discovered {
+        let mode_data = state.get_mode(*mode);
 
         for (i, &((s_lon, s_lat), (d_lon, d_lat))) in TEST_PAIRS.iter().enumerate() {
             total_tests += 1;
 
-            let (src_rank, _) = match snap_to_rank(&state, mode, s_lon, s_lat) {
+            let (src_rank, _) = match snap_to_rank(&state, *mode, s_lon, s_lat) {
                 Some(r) => r,
                 None => {
                     passed += 1;
                     continue;
                 }
             };
-            let (dst_rank, _) = match snap_to_rank(&state, mode, d_lon, d_lat) {
+            let (dst_rank, _) = match snap_to_rank(&state, *mode, d_lon, d_lat) {
                 Some(r) => r,
                 None => {
                     passed += 1;
@@ -427,7 +433,7 @@ fn test_route_path_validity() {
                 }
             };
 
-            let query = CchQuery::new(&state, mode);
+            let query = CchQuery::new(&state, *mode);
             let result = match query.query(src_rank, dst_rank) {
                 Some(r) => r,
                 None => {
@@ -509,7 +515,7 @@ fn test_route_path_validity() {
 #[ignore] // Requires Belgium data
 fn test_alternative_routes_differ() {
     let state = load_state();
-    let mode = Mode::Car;
+    let mode = lookup_mode(&state, "car");
     let mode_data = state.get_mode(mode);
 
     // Use a pair with known routes
@@ -572,7 +578,7 @@ fn test_alternative_routes_differ() {
 #[ignore] // Requires Belgium data
 fn test_route_geometry_polyline6_round_trips() {
     let state = load_state();
-    let mode = Mode::Car;
+    let mode = lookup_mode(&state, "car");
     let mode_data = state.get_mode(mode);
 
     for (i, &((s_lon, s_lat), (d_lon, d_lat))) in TEST_PAIRS.iter().enumerate() {
@@ -704,20 +710,15 @@ fn test_route_geometry_polyline6_round_trips() {
 #[ignore] // Requires Belgium data
 fn test_nearest_returns_valid_results() {
     let state = load_state();
-    let modes = [Mode::Car, Mode::Bike, Mode::Foot];
+    let discovered = all_modes(&state);
     let locations = [
         (4.3517, 50.8503), // Brussels center
         (3.2247, 51.2093), // Bruges
         (5.5714, 50.6326), // Liège
     ];
 
-    for &mode in &modes {
-        let mode_data = state.get_mode(mode);
-        let mode_name = match mode {
-            Mode::Car => "car",
-            Mode::Bike => "bike",
-            Mode::Foot => "foot",
-        };
+    for (mode_name, mode) in &discovered {
+        let mode_data = state.get_mode(*mode);
 
         for &(lon, lat) in &locations {
             // Single nearest
@@ -761,7 +762,7 @@ fn test_nearest_returns_valid_results() {
 #[ignore] // Requires Belgium data
 fn test_nearest_results_ordered_by_distance() {
     let state = load_state();
-    let mode = Mode::Car;
+    let mode = lookup_mode(&state, "car");
     let mode_data = state.get_mode(mode);
 
     let locations = [
@@ -810,7 +811,7 @@ fn test_nearest_results_ordered_by_distance() {
 #[ignore] // Requires Belgium data
 fn test_nearest_in_ocean_returns_empty() {
     let state = load_state();
-    let mode = Mode::Car;
+    let mode = lookup_mode(&state, "car");
     let mode_data = state.get_mode(mode);
 
     // North Sea, far from any road
@@ -836,7 +837,7 @@ fn test_route_steps_have_depart_and_arrive() {
     use super::api::build_steps;
 
     let state = load_state();
-    let mode = Mode::Car;
+    let mode = lookup_mode(&state, "car");
     let mode_data = state.get_mode(mode);
 
     for (i, &((s_lon, s_lat), (d_lon, d_lat))) in TEST_PAIRS.iter().enumerate() {
@@ -952,7 +953,7 @@ fn test_route_steps_distances_sum_to_total() {
     use super::api::build_steps;
 
     let state = load_state();
-    let mode = Mode::Car;
+    let mode = lookup_mode(&state, "car");
     let mode_data = state.get_mode(mode);
 
     for (i, &((s_lon, s_lat), (d_lon, d_lat))) in TEST_PAIRS.iter().enumerate() {
@@ -1031,7 +1032,7 @@ fn test_route_step_locations_on_route() {
     use super::api::build_steps;
 
     let state = load_state();
-    let mode = Mode::Car;
+    let mode = lookup_mode(&state, "car");
     let mode_data = state.get_mode(mode);
 
     // Use a medium-length route: Brussels → Waterloo
@@ -1096,29 +1097,24 @@ fn test_route_step_locations_on_route() {
 #[ignore] // Requires Belgium data
 fn test_alternative_routes_all_modes() {
     let state = load_state();
-    let modes = [Mode::Car, Mode::Bike, Mode::Foot];
+    let discovered = all_modes(&state);
     let mut total = 0;
     let mut with_alt = 0;
 
-    for &mode in &modes {
-        let mode_data = state.get_mode(mode);
-        let mode_name = match mode {
-            Mode::Car => "car",
-            Mode::Bike => "bike",
-            Mode::Foot => "foot",
-        };
+    for (mode_name, mode) in &discovered {
+        let mode_data = state.get_mode(*mode);
 
         for (i, &((s_lon, s_lat), (d_lon, d_lat))) in TEST_PAIRS.iter().enumerate() {
-            let (src_rank, _) = match snap_to_rank(&state, mode, s_lon, s_lat) {
+            let (src_rank, _) = match snap_to_rank(&state, *mode, s_lon, s_lat) {
                 Some(r) => r,
                 None => continue,
             };
-            let (dst_rank, _) = match snap_to_rank(&state, mode, d_lon, d_lat) {
+            let (dst_rank, _) = match snap_to_rank(&state, *mode, d_lon, d_lat) {
                 Some(r) => r,
                 None => continue,
             };
 
-            let query = CchQuery::new(&state, mode);
+            let query = CchQuery::new(&state, *mode);
             let primary = match query.query(src_rank, dst_rank) {
                 Some(r) => r,
                 None => continue,

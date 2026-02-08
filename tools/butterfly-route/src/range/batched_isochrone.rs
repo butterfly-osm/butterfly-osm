@@ -26,8 +26,6 @@ use super::frontier::{FrontierExtractor, ReachableSegment};
 use super::phast::PhastEngine;
 use super::sparse_contour::{generate_sparse_contour, SparseContourConfig};
 use crate::matrix::batched_phast::{BatchedPhastEngine, K_LANES};
-use crate::profile_abi::Mode;
-
 /// Result of a batched isochrone query
 #[derive(Debug)]
 pub struct BatchedIsochroneResult {
@@ -66,9 +64,6 @@ pub struct BatchedIsochroneEngine {
     extractor: Arc<FrontierExtractor>,
     /// Sparse contour config per mode
     config: SparseContourConfig,
-    /// Mode
-    #[allow(dead_code)]
-    mode: Mode,
 }
 
 impl BatchedIsochroneEngine {
@@ -82,7 +77,7 @@ impl BatchedIsochroneEngine {
         ebg_nodes_path: &Path,
         nbg_geo_path: &Path,
         base_weights_path: &Path,
-        mode: Mode,
+        mode_name: &str,
     ) -> Result<Self> {
         // Load PHAST engine
         let phast = BatchedPhastEngine::load(cch_topo_path, cch_weights_path, order_path)?;
@@ -96,17 +91,12 @@ impl BatchedIsochroneEngine {
         )?;
 
         // Get sparse contour config for mode
-        let config = match mode {
-            Mode::Car => SparseContourConfig::for_car(),
-            Mode::Bike => SparseContourConfig::for_bike(),
-            Mode::Foot => SparseContourConfig::for_foot(),
-        };
+        let config = SparseContourConfig::for_mode_name(mode_name);
 
         Ok(Self {
             phast,
             extractor: Arc::new(extractor),
             config,
-            mode,
         })
     }
 
@@ -263,8 +253,6 @@ pub struct AdaptiveIsochroneEngine {
     extractor: Arc<FrontierExtractor>,
     /// Sparse contour config
     config: SparseContourConfig,
-    /// Mode
-    mode: Mode,
 }
 
 impl AdaptiveIsochroneEngine {
@@ -278,7 +266,7 @@ impl AdaptiveIsochroneEngine {
         ebg_nodes_path: &Path,
         nbg_geo_path: &Path,
         base_weights_path: &Path,
-        mode: Mode,
+        mode_name: &str,
     ) -> Result<Self> {
         // Load both PHAST engines (they share the same underlying data)
         let single_phast = PhastEngine::load(cch_topo_path, cch_weights_path, order_path)?;
@@ -292,18 +280,13 @@ impl AdaptiveIsochroneEngine {
             base_weights_path,
         )?;
 
-        let config = match mode {
-            Mode::Car => SparseContourConfig::for_car(),
-            Mode::Bike => SparseContourConfig::for_bike(),
-            Mode::Foot => SparseContourConfig::for_foot(),
-        };
+        let config = SparseContourConfig::for_mode_name(mode_name);
 
         Ok(Self {
             single_phast,
             batched_phast,
             extractor: Arc::new(extractor),
             config,
-            mode,
         })
     }
 
@@ -428,11 +411,6 @@ impl AdaptiveIsochroneEngine {
 
             Ok(all_contours)
         }
-    }
-
-    /// Get the mode being used
-    pub fn mode(&self) -> Mode {
-        self.mode
     }
 }
 

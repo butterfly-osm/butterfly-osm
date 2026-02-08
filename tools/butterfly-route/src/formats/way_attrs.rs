@@ -64,7 +64,7 @@ pub fn write<P: AsRef<Path>>(
     let mut header = Vec::with_capacity(HEADER_SIZE);
     header.extend_from_slice(&MAGIC.to_le_bytes());
     header.extend_from_slice(&VERSION.to_le_bytes());
-    header.push(mode as u8);
+    header.push(mode.0);
     header.push(0); // reserved
     header.extend_from_slice(&(sorted_attrs.len() as u64).to_le_bytes());
     header.extend_from_slice(dict_k_sha256);

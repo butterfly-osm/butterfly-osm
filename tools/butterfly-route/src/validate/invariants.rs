@@ -10,7 +10,6 @@ use anyhow::Result;
 use std::path::Path;
 
 use crate::formats::{CchTopoFile, CchWeightsFile, OrderEbgFile};
-use crate::profile_abi::Mode;
 
 /// Invariant check results
 #[derive(Debug, Default)]
@@ -58,14 +57,8 @@ pub fn validate_invariants(
     topo_path: &Path,
     weights_path: &Path,
     order_path: &Path,
-    mode: Mode,
+    mode_name: &str,
 ) -> Result<InvariantResult> {
-    let mode_name = match mode {
-        Mode::Car => "car",
-        Mode::Bike => "bike",
-        Mode::Foot => "foot",
-    };
-
     println!("\n🔍 Invariant Validation ({} mode)", mode_name);
 
     // Load data

@@ -261,7 +261,12 @@ mod tests {
 
         // Load server state
         let state = ServerState::load(data_dir).expect("Failed to load server state");
-        let mode = Mode::Car;
+        let mode_name = "car";
+        let mode_idx = *state
+            .mode_lookup
+            .get(mode_name)
+            .expect("car mode not found in data dir");
+        let mode = Mode(mode_idx);
         let mode_data = state.get_mode(mode);
 
         // Test case: Brussels center, 10 min isochrone
@@ -303,7 +308,7 @@ mod tests {
             &mode_data.node_weights,
             &state.ebg_nodes,
             &state.nbg_geo,
-            mode,
+            mode_name,
         );
 
         assert!(

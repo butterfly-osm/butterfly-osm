@@ -14,7 +14,6 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::formats::{CchTopoFile, CchWeightsFile, OrderEbgFile};
-use crate::profile_abi::Mode;
 
 /// Validation result
 #[derive(Debug)]
@@ -72,14 +71,8 @@ pub fn validate_cch_correctness(
     order_path: &Path,
     n_pairs: usize,
     seed: u64,
-    mode: Mode,
+    mode_name: &str,
 ) -> Result<(ValidationResult, Vec<Failure>)> {
-    let mode_name = match mode {
-        Mode::Car => "car",
-        Mode::Bike => "bike",
-        Mode::Foot => "foot",
-    };
-
     let n_threads = rayon::current_num_threads();
     println!(
         "\n🔬 CCH Correctness Validation ({} mode) - {} threads",
@@ -745,14 +738,8 @@ pub fn run_regression_tests(
     topo_path: &Path,
     weights_path: &Path,
     order_path: &Path,
-    mode: Mode,
+    mode_name: &str,
 ) -> Result<Vec<RegressionResult>> {
-    let mode_name = match mode {
-        Mode::Car => "car",
-        Mode::Bike => "bike",
-        Mode::Foot => "foot",
-    };
-
     println!("\n🧪 CCH Regression Tests ({} mode)", mode_name);
 
     // Load data

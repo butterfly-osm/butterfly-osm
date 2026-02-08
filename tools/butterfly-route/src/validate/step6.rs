@@ -22,11 +22,7 @@ pub struct Step6LockFile {
 
 /// Validate Step 6 outputs and generate lock file
 pub fn validate_step6(result: &Step6Result, filtered_ebg_path: &Path) -> Result<Step6LockFile> {
-    let mode_name = match result.mode {
-        crate::profile_abi::Mode::Car => "car",
-        crate::profile_abi::Mode::Bike => "bike",
-        crate::profile_abi::Mode::Foot => "foot",
-    };
+    let mode_name = &result.mode_name;
     println!("\n🔐 Running Step 6 validation for {} mode...\n", mode_name);
 
     // Load data
@@ -145,11 +141,7 @@ pub fn validate_step6_lifted(
     result: &Step6LiftedResult,
     filtered_ebg_path: &Path,
 ) -> Result<Step6LiftedLockFile> {
-    let mode_name = match result.mode {
-        crate::profile_abi::Mode::Car => "car",
-        crate::profile_abi::Mode::Bike => "bike",
-        crate::profile_abi::Mode::Foot => "foot",
-    };
+    let mode_name = &result.mode_name;
     println!(
         "\n🔐 Running Step 6 (Lifted) validation for {} mode...\n",
         mode_name

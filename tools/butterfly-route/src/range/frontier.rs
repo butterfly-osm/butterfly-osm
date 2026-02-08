@@ -7,8 +7,6 @@ use anyhow::Result;
 use std::path::Path;
 
 use crate::formats::{EbgNodes, EbgNodesFile, FilteredEbg, FilteredEbgFile, NbgGeo, NbgGeoFile};
-use crate::profile_abi::Mode;
-
 /// A frontier cut point on the base graph
 #[derive(Debug, Clone)]
 pub struct FrontierCutPoint {
@@ -462,14 +460,8 @@ pub fn run_frontier_extraction(
     weights_path: &Path,
     phast_dist: &[u32],
     threshold: u32,
-    mode: Mode,
+    mode_name: &str,
 ) -> Result<Vec<FrontierCutPoint>> {
-    let mode_name = match mode {
-        Mode::Car => "car",
-        Mode::Bike => "bike",
-        Mode::Foot => "foot",
-    };
-
     println!("\n🔍 Base Graph Frontier Extraction ({} mode)", mode_name);
     println!(
         "  Threshold: {} ms ({:.1} min)",

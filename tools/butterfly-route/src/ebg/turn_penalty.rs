@@ -8,6 +8,36 @@
 //!
 //! Reference: https://github.com/Project-OSRM/osrm-backend/blob/master/profiles/car.lua
 
+/// Schema for parsing model JSON files (turn_penalties section).
+#[derive(Debug, serde::Deserialize)]
+struct TurnPenaltySchema {
+    pub turn_penalty_ds: u32,
+    #[serde(default = "default_turn_bias")]
+    pub turn_bias: f64,
+    #[serde(default)]
+    pub u_turn_penalty_ds: u32,
+    #[serde(default = "default_min_degree")]
+    pub min_degree_for_penalty: u8,
+    #[serde(default)]
+    pub signal_delay_ds: u32,
+    #[serde(default)]
+    pub class_change_penalty_ds_per_diff: u32,
+    #[serde(default)]
+    pub max_class_diff_for_penalty: u8,
+}
+fn default_turn_bias() -> f64 {
+    1.0
+}
+fn default_min_degree() -> u8 {
+    3
+}
+
+/// Top-level model JSON schema (only the fields we need).
+#[derive(Debug, serde::Deserialize)]
+struct ModelSchema {
+    turn_penalties: TurnPenaltySchema,
+}
+
 /// Turn geometry for a single turn (a → b at intersection)
 #[derive(Debug, Clone)]
 pub struct TurnGeometry {
@@ -115,43 +145,82 @@ pub struct TurnPenaltyConfig {
 }
 
 impl TurnPenaltyConfig {
+    /// Identity/zero config — no penalties at all. Used as placeholder for inactive mode slots.
+    pub fn default_identity() -> Self {
+        Self {
+            turn_penalty_ds: 0,
+            turn_bias: 1.0,
+            u_turn_penalty_ds: 0,
+            min_degree_for_penalty: 255,
+            signal_delay_ds: 0,
+            class_change_penalty_ds_per_diff: 0,
+            max_class_diff_for_penalty: 0,
+        }
+    }
+
+    /// Load turn penalty config from a model JSON file.
+    /// Falls back to identity config if the model file doesn't exist.
+    pub fn for_mode(mode_name: &str) -> Self {
+        let models_dir =
+            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../models"));
+        let model_path = models_dir.join(format!("{}.model.json", mode_name));
+        if let Ok(content) = std::fs::read_to_string(&model_path) {
+            if let Ok(schema) = serde_json::from_str::<ModelSchema>(&content) {
+                return Self::from_model_schema(&schema.turn_penalties);
+            }
+        }
+        // No model file or parse error — return identity
+        Self::default_identity()
+    }
+
+    /// Build config from model schema turn_penalties section
+    fn from_model_schema(tp: &TurnPenaltySchema) -> Self {
+        Self {
+            turn_penalty_ds: tp.turn_penalty_ds,
+            turn_bias: tp.turn_bias,
+            u_turn_penalty_ds: tp.u_turn_penalty_ds,
+            min_degree_for_penalty: tp.min_degree_for_penalty,
+            signal_delay_ds: tp.signal_delay_ds,
+            class_change_penalty_ds_per_diff: tp.class_change_penalty_ds_per_diff,
+            max_class_diff_for_penalty: tp.max_class_diff_for_penalty,
+        }
+    }
+
     /// Car mode turn penalties - matches OSRM car.lua exactly
     pub fn car() -> Self {
         Self {
-            turn_penalty_ds: 75,                 // 7.5 seconds (OSRM default)
-            turn_bias: 1.075,                    // Slight right-turn preference
-            u_turn_penalty_ds: 200,              // 20 seconds (OSRM default)
-            min_degree_for_penalty: 3,           // Only at intersections (not straight roads)
-            signal_delay_ds: 80,                 // 8 seconds average signal wait
-            class_change_penalty_ds_per_diff: 5, // 0.5s per class difference
-            max_class_diff_for_penalty: 6,       // Max 3s penalty
+            turn_penalty_ds: 75,
+            turn_bias: 1.075,
+            u_turn_penalty_ds: 200,
+            min_degree_for_penalty: 3,
+            signal_delay_ds: 80,
+            class_change_penalty_ds_per_diff: 5,
+            max_class_diff_for_penalty: 6,
         }
     }
 
     /// Bike mode turn penalties
     pub fn bike() -> Self {
         Self {
-            turn_penalty_ds: 40,   // 4 seconds max
-            turn_bias: 1.4,        // Bikes prefer right turns more
-            u_turn_penalty_ds: 50, // 5 seconds
+            turn_penalty_ds: 40,
+            turn_bias: 1.4,
+            u_turn_penalty_ds: 50,
             min_degree_for_penalty: 3,
-            signal_delay_ds: 50,                 // 5 seconds (bikes often filter)
-            class_change_penalty_ds_per_diff: 3, // 0.3s per class difference (bikes care less)
+            signal_delay_ds: 50,
+            class_change_penalty_ds_per_diff: 3,
             max_class_diff_for_penalty: 4,
         }
     }
 
     /// Foot mode turn penalties
-    /// Pedestrians don't get angle-based turn penalties but do get
-    /// crossing penalties at intersections (modeled as small fixed cost)
     pub fn foot() -> Self {
         Self {
-            turn_penalty_ds: 20,                 // 2 seconds for crossing intersection
-            turn_bias: 1.0,                      // Symmetric - no left/right preference
-            u_turn_penalty_ds: 0,                // No U-turn penalty for walking
-            min_degree_for_penalty: 4,           // Only at complex intersections
-            signal_delay_ds: 40,                 // 4 seconds pedestrian signal wait
-            class_change_penalty_ds_per_diff: 0, // Pedestrians don't care about road class
+            turn_penalty_ds: 20,
+            turn_bias: 1.0,
+            u_turn_penalty_ds: 0,
+            min_degree_for_penalty: 4,
+            signal_delay_ds: 40,
+            class_change_penalty_ds_per_diff: 0,
             max_class_diff_for_penalty: 0,
         }
     }
