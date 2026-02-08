@@ -42,7 +42,7 @@ use super::unpack::unpack_path;
 /// OpenAPI documentation
 #[derive(OpenApi)]
 #[openapi(
-    paths(route, table_post, isochrone, nearest, health),
+    paths(route, table_post, isochrone, nearest, health, match_trace),
     components(schemas(
         RouteRequest,
         RouteResponse,
@@ -60,7 +60,11 @@ use super::unpack::unpack_path;
         NearestWaypoint,
         Point,
         ErrorResponse,
-        Waypoint
+        Waypoint,
+        MatchRequest,
+        MatchResponse,
+        MatchMatching,
+        MatchTracepoint
     )),
     info(
         title = "Butterfly Route API",
@@ -87,6 +91,7 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
         .route("/table", post(table_post))
         .route("/isochrone", get(isochrone))
         .route("/trip", post(super::trip::trip_handler))
+        .route("/match", post(match_trace))
         .route("/height", get(height))
         .route("/health", get(health))
         .route("/debug/compare", get(debug_compare))
@@ -2555,6 +2560,250 @@ fn run_phast_bounded(
     }
 
     dist
+}
+
+// ============ Map Matching Endpoint ============
+
+/// Request for GPS trace map matching
+#[derive(Debug, Deserialize, ToSchema)]
+struct MatchRequest {
+    /// GPS coordinates [[lon, lat], ...] — at least 2 points
+    coordinates: Vec<[f64; 2]>,
+    /// Transport mode: "car", "bike", or "foot"
+    #[serde(default = "default_match_mode")]
+    mode: String,
+    /// GPS accuracy in meters (default: 10)
+    #[serde(default)]
+    gps_accuracy: Option<f64>,
+    /// Geometry format: "polyline6" (default), "geojson", or "points"
+    #[serde(default = "default_match_geometry")]
+    geometry: String,
+    /// Whether to include turn-by-turn steps
+    #[serde(default)]
+    steps: bool,
+}
+
+fn default_match_mode() -> String {
+    "car".to_string()
+}
+
+fn default_match_geometry() -> String {
+    "polyline6".to_string()
+}
+
+/// Response for map matching
+#[derive(Debug, Serialize, ToSchema)]
+struct MatchResponse {
+    /// Status code
+    code: String,
+    /// Matched routes (trace may be split at gaps)
+    matchings: Vec<MatchMatching>,
+    /// Per-observation tracepoint info (null if observation couldn't be matched)
+    #[schema(value_type = Vec<Option<MatchTracepoint>>)]
+    tracepoints: Vec<Option<MatchTracepoint>>,
+}
+
+/// A matched sub-route
+#[derive(Debug, Serialize, ToSchema)]
+struct MatchMatching {
+    /// Route geometry
+    geometry: RouteGeometry,
+    /// Duration in seconds
+    duration: f64,
+    /// Distance in meters
+    distance: f64,
+    /// Confidence score (0.0 to 1.0)
+    confidence: f64,
+    /// Turn-by-turn steps (if requested)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    steps: Option<Vec<RouteStep>>,
+}
+
+/// Tracepoint in matched response
+#[derive(Debug, Clone, Serialize, ToSchema)]
+struct MatchTracepoint {
+    /// Snapped location [lon, lat]
+    location: [f64; 2],
+    /// Road name at this location (empty if unknown)
+    name: String,
+    /// Index into the matchings array
+    matchings_index: usize,
+    /// Index within the matching's waypoint sequence
+    waypoint_index: usize,
+}
+
+/// Map match a GPS trace to the road network
+#[utoipa::path(
+    post,
+    path = "/match",
+    request_body = MatchRequest,
+    responses(
+        (status = 200, description = "Trace matched", body = MatchResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 404, description = "No match found", body = ErrorResponse),
+    )
+)]
+async fn match_trace(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<MatchRequest>,
+) -> impl IntoResponse {
+    // Validate mode
+    let mode = match parse_mode(&req.mode) {
+        Ok(m) => m,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
+            )
+                .into_response()
+        }
+    };
+
+    // Validate coordinates
+    if req.coordinates.len() < 2 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "code": "InvalidValue",
+                "message": "At least 2 coordinates required"
+            })),
+        )
+            .into_response();
+    }
+
+    if req.coordinates.len() > 10_000 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "code": "InvalidValue",
+                "message": "Maximum 10,000 coordinates allowed"
+            })),
+        )
+            .into_response();
+    }
+
+    for (i, &[lon, lat]) in req.coordinates.iter().enumerate() {
+        if let Err(e) = validate_coord(lon, lat, &format!("coordinate[{}]", i)) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
+            )
+                .into_response();
+        }
+    }
+
+    // Validate GPS accuracy
+    if let Some(acc) = req.gps_accuracy {
+        if acc <= 0.0 || acc > 100.0 || acc.is_nan() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "code": "InvalidValue",
+                    "message": "gps_accuracy must be between 0 and 100 meters"
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    // Parse geometry format
+    let geom_format = match GeometryFormat::parse(&req.geometry) {
+        Ok(f) => f,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
+            )
+                .into_response()
+        }
+    };
+
+    // Convert coordinates
+    let coords: Vec<(f64, f64)> = req
+        .coordinates
+        .iter()
+        .map(|&[lon, lat]| (lon, lat))
+        .collect();
+
+    // Run map matching
+    let result = match super::map_match::map_match(&state, mode, &coords, req.gps_accuracy) {
+        Some(r) => r,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "code": "NoMatch",
+                    "message": "Could not match trace to road network"
+                })),
+            )
+                .into_response()
+        }
+    };
+
+    let mode_data = state.get_mode(mode);
+
+    // Build response
+    let matchings: Vec<MatchMatching> = result
+        .matchings
+        .iter()
+        .map(|m| {
+            let geometry = build_geometry(
+                &m.ebg_path,
+                &state.ebg_nodes,
+                &state.nbg_geo,
+                m.duration_ds,
+                geom_format,
+            );
+            let distance_m = geometry.distance_m;
+            let duration_s = m.duration_ds as f64 / 10.0;
+
+            let steps = if req.steps {
+                Some(build_steps(
+                    &m.ebg_path,
+                    &state.ebg_nodes,
+                    &state.nbg_geo,
+                    &mode_data.node_weights,
+                    &state.way_names,
+                    geom_format,
+                ))
+            } else {
+                None
+            };
+
+            MatchMatching {
+                geometry,
+                duration: duration_s,
+                distance: distance_m,
+                confidence: m.confidence,
+                steps,
+            }
+        })
+        .collect();
+
+    let tracepoints: Vec<Option<MatchTracepoint>> = result
+        .tracepoints
+        .iter()
+        .map(|tp| {
+            tp.as_ref().map(|t| {
+                let name =
+                    lookup_road_name(t.ebg_id, &state.ebg_nodes, &state.nbg_geo, &state.way_names)
+                        .unwrap_or_default();
+                MatchTracepoint {
+                    location: [t.lon, t.lat],
+                    name,
+                    matchings_index: t.matchings_index,
+                    waypoint_index: t.waypoint_index,
+                }
+            })
+        })
+        .collect();
+
+    Json(MatchResponse {
+        code: "Ok".to_string(),
+        matchings,
+        tracepoints,
+    })
+    .into_response()
 }
 
 // ============ Height Endpoint ============

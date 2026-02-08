@@ -28,6 +28,7 @@ pub struct ModeData {
     pub order: OrderEbg,
     pub down_rev: DownReverseAdj,
     pub cch_weights: CchWeights,
+    pub cch_weights_dist: CchWeights,
     // Filtered EBG for node ID mapping
     pub filtered_ebg: FilteredEbg,
     // Original node weights and mask (indexed by original EBG node ID)
@@ -261,6 +262,7 @@ fn load_mode_data(
         order,
         down_rev,
         cch_weights,
+        cch_weights_dist,
         filtered_ebg,
         node_weights: weights_data.weights,
         mask,

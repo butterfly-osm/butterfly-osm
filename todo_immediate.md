@@ -1,6 +1,6 @@
 # Immediate Status
 
-No active sprint. All audit findings (CRITICAL, HIGH, MEDIUM) remediated. L4 pre-existing test failure fixed.
+No active sprint. All features complete including map matching (F4).
 
 ---
 
@@ -56,7 +56,7 @@ No active sprint. All audit findings (CRITICAL, HIGH, MEDIUM) remediated. L4 pre
 
 | Item | Reason |
 |------|--------|
-| Map matching (F4) | High complexity, needs HMM on CCH |
+| ~~Map matching (F4)~~ | DONE (L-Sprint, 2026-02-08) |
 | Two-resolution isochrone mask (D8) | Current quality acceptable |
 | L1 (Windows DLL naming) | Low priority |
 | L5 (semver precision) | Low priority |
