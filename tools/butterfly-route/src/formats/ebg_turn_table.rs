@@ -116,8 +116,11 @@ impl TurnTableFile {
     /// Read turn table from file
     pub fn read<P: AsRef<Path>>(path: P) -> Result<TurnTable> {
         let mut reader = BufReader::new(File::open(path)?);
+        let mut crc_digest = crc::Digest::new();
+
         let mut header = vec![0u8; 44]; // magic(4) + version(2) + reserved(2) + n_entries(4) + inputs_sha(32)
         reader.read_exact(&mut header)?;
+        crc_digest.update(&header);
 
         let n_entries = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
         let mut inputs_sha = [0u8; 32];
@@ -127,6 +130,7 @@ impl TurnTableFile {
         for _ in 0..n_entries {
             let mut record = [0u8; 20];
             reader.read_exact(&mut record)?;
+            crc_digest.update(&record);
 
             entries.push(TurnEntry {
                 mode_mask: record[0],
@@ -140,6 +144,18 @@ impl TurnTableFile {
                 attrs_idx: u32::from_le_bytes([record[16], record[17], record[18], record[19]]),
             });
         }
+
+        // Verify CRC64
+        let computed_crc = crc_digest.finalize();
+        let mut footer = [0u8; 16];
+        reader.read_exact(&mut footer)?;
+        let stored_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+        anyhow::ensure!(
+            computed_crc == stored_crc,
+            "CRC64 mismatch in ebg.turn_table: computed 0x{:016X}, stored 0x{:016X}",
+            computed_crc,
+            stored_crc
+        );
 
         Ok(TurnTable {
             n_entries,

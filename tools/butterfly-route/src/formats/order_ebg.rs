@@ -75,10 +75,12 @@ impl OrderEbgFile {
     /// Read order.ebg from file
     pub fn read<P: AsRef<Path>>(path: P) -> Result<OrderEbg> {
         let mut reader = BufReader::new(File::open(path)?);
+        let mut crc_digest = crc::Digest::new();
 
         // Read header (48 bytes)
         let mut header = vec![0u8; 48];
         reader.read_exact(&mut header)?;
+        crc_digest.update(&header);
 
         let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
         if magic != MAGIC {
@@ -98,6 +100,7 @@ impl OrderEbgFile {
         for _ in 0..n_nodes {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             perm.push(u32::from_le_bytes(buf));
         }
 
@@ -106,8 +109,21 @@ impl OrderEbgFile {
         for _ in 0..n_nodes {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             inv_perm.push(u32::from_le_bytes(buf));
         }
+
+        // Verify CRC64
+        let computed_crc = crc_digest.finalize();
+        let mut footer = [0u8; 16];
+        reader.read_exact(&mut footer)?;
+        let stored_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+        anyhow::ensure!(
+            computed_crc == stored_crc,
+            "CRC64 mismatch in order.ebg: computed 0x{:016X}, stored 0x{:016X}",
+            computed_crc,
+            stored_crc
+        );
 
         Ok(OrderEbg {
             n_nodes,

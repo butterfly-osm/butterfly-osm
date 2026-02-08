@@ -123,14 +123,37 @@ pub fn read_all<P: AsRef<Path>>(path: P) -> Result<ModTurns> {
     inputs_sha.copy_from_slice(&header[12..28]);
 
     // Read penalties
+    let mut body_digest = Digest::new();
     let mut penalties = Vec::with_capacity(count as usize);
     for _ in 0..count {
         let mut bytes = [0u8; 4];
         file.read_exact(&mut bytes)?;
+        body_digest.update(&bytes);
         penalties.push(u32::from_le_bytes(bytes));
     }
 
-    // TODO: Verify CRCs
+    // Verify CRCs
+    let computed_body_crc = body_digest.finalize();
+
+    let mut file_digest = Digest::new();
+    file_digest.update(&header);
+    for &p in &penalties {
+        file_digest.update(&p.to_le_bytes());
+    }
+    let computed_file_crc = file_digest.finalize();
+
+    let mut footer = [0u8; 16];
+    file.read_exact(&mut footer)?;
+    let stored_body_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+    let stored_file_crc = u64::from_le_bytes(footer[8..16].try_into().unwrap());
+    anyhow::ensure!(
+        computed_body_crc == stored_body_crc && computed_file_crc == stored_file_crc,
+        "CRC64 mismatch in t.mod.u32: body 0x{:016X}/0x{:016X}, file 0x{:016X}/0x{:016X}",
+        computed_body_crc,
+        stored_body_crc,
+        computed_file_crc,
+        stored_file_crc
+    );
 
     Ok(ModTurns {
         mode,

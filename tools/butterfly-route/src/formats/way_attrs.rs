@@ -175,10 +175,12 @@ pub fn read_all<P: AsRef<Path>>(path: P) -> Result<Vec<WayAttr>> {
         header[15],
     ]);
 
+    let mut body_digest = Digest::new();
     let mut attrs = Vec::with_capacity(count as usize);
     for _ in 0..count {
         let mut record = vec![0u8; RECORD_SIZE];
         file.read_exact(&mut record)?;
+        body_digest.update(&record);
 
         let way_id = i64::from_le_bytes([
             record[0], record[1], record[2], record[3], record[4], record[5], record[6], record[7],
@@ -186,6 +188,29 @@ pub fn read_all<P: AsRef<Path>>(path: P) -> Result<Vec<WayAttr>> {
 
         attrs.push(decode_record(&record, way_id)?);
     }
+
+    // Verify CRCs
+    let computed_body_crc = body_digest.finalize();
+
+    let mut file_digest = Digest::new();
+    file_digest.update(&header);
+    for attr in &attrs {
+        file_digest.update(&encode_record(attr));
+    }
+    let computed_file_crc = file_digest.finalize();
+
+    let mut footer = [0u8; 16];
+    file.read_exact(&mut footer)?;
+    let stored_body_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+    let stored_file_crc = u64::from_le_bytes(footer[8..16].try_into().unwrap());
+    anyhow::ensure!(
+        computed_body_crc == stored_body_crc && computed_file_crc == stored_file_crc,
+        "CRC64 mismatch in way_attrs: body 0x{:016X}/0x{:016X}, file 0x{:016X}/0x{:016X}",
+        computed_body_crc,
+        stored_body_crc,
+        computed_file_crc,
+        stored_file_crc
+    );
 
     Ok(attrs)
 }

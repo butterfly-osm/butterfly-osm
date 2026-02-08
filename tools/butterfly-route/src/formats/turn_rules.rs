@@ -172,12 +172,37 @@ pub fn read_all<P: AsRef<Path>>(path: P) -> Result<Vec<TurnRule>> {
         header[15],
     ]);
 
+    let mut body_digest = Digest::new();
     let mut rules = Vec::with_capacity(count as usize);
     for _ in 0..count {
         let mut record = vec![0u8; RECORD_SIZE];
         file.read_exact(&mut record)?;
+        body_digest.update(&record);
         rules.push(decode_record(&record)?);
     }
+
+    // Verify CRCs
+    let computed_body_crc = body_digest.finalize();
+
+    let mut file_digest = Digest::new();
+    file_digest.update(&header);
+    for rule in &rules {
+        file_digest.update(&encode_record(rule));
+    }
+    let computed_file_crc = file_digest.finalize();
+
+    let mut footer = [0u8; 16];
+    file.read_exact(&mut footer)?;
+    let stored_body_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+    let stored_file_crc = u64::from_le_bytes(footer[8..16].try_into().unwrap());
+    anyhow::ensure!(
+        computed_body_crc == stored_body_crc && computed_file_crc == stored_file_crc,
+        "CRC64 mismatch in turn_rules: body 0x{:016X}/0x{:016X}, file 0x{:016X}/0x{:016X}",
+        computed_body_crc,
+        stored_body_crc,
+        computed_file_crc,
+        stored_file_crc
+    );
 
     Ok(rules)
 }
@@ -271,5 +296,104 @@ mod tests {
         rules.sort();
         assert_eq!(rules[0].via_node_id, 1);
         assert_eq!(rules[1].via_node_id, 2);
+    }
+
+    fn make_test_rules() -> Vec<TurnRule> {
+        vec![
+            TurnRule {
+                via_node_id: 100,
+                from_way_id: 200,
+                to_way_id: 300,
+                kind: TurnRuleKind::Ban,
+                penalty_ds: 0,
+                is_time_dep: 0,
+            },
+            TurnRule {
+                via_node_id: 100,
+                from_way_id: 200,
+                to_way_id: 400,
+                kind: TurnRuleKind::Penalty,
+                penalty_ds: 150,
+                is_time_dep: 1,
+            },
+            TurnRule {
+                via_node_id: 500,
+                from_way_id: 600,
+                to_way_id: 700,
+                kind: TurnRuleKind::Only,
+                penalty_ds: 0,
+                is_time_dep: 0,
+            },
+        ]
+    }
+
+    #[test]
+    fn test_roundtrip() -> Result<()> {
+        let rules = make_test_rules();
+        let tmp = tempfile::NamedTempFile::new()?;
+        let sha = [0xAA; 32];
+        write(tmp.path(), Mode::Car, &rules, &sha, &sha)?;
+        let loaded = read_all(tmp.path())?;
+
+        assert_eq!(loaded.len(), 3);
+        // Rules are sorted by (via_node_id, from_way_id, to_way_id)
+        assert_eq!(loaded[0].via_node_id, 100);
+        assert_eq!(loaded[0].to_way_id, 300);
+        assert_eq!(loaded[0].kind, TurnRuleKind::Ban);
+        assert_eq!(loaded[1].via_node_id, 100);
+        assert_eq!(loaded[1].to_way_id, 400);
+        assert_eq!(loaded[1].kind, TurnRuleKind::Penalty);
+        assert_eq!(loaded[1].penalty_ds, 150);
+        assert_eq!(loaded[2].via_node_id, 500);
+        assert_eq!(loaded[2].kind, TurnRuleKind::Only);
+        Ok(())
+    }
+
+    #[test]
+    fn test_body_crc_detects_corruption() -> Result<()> {
+        use std::io::{Seek, SeekFrom, Write as IoWrite};
+        let rules = make_test_rules();
+        let tmp = tempfile::NamedTempFile::new()?;
+        let sha = [0xAA; 32];
+        write(tmp.path(), Mode::Car, &rules, &sha, &sha)?;
+
+        // Corrupt a byte in the first record (offset = HEADER_SIZE = 80)
+        {
+            let mut file = std::fs::OpenOptions::new().write(true).open(tmp.path())?;
+            file.seek(SeekFrom::Start(HEADER_SIZE as u64 + 5))?;
+            file.write_all(&[0xFF])?;
+        }
+
+        let result = read_all(tmp.path());
+        assert!(result.is_err(), "corrupted body should fail CRC check");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("CRC64 mismatch"),
+            "error should mention CRC: {}",
+            err_msg
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_file_crc_detects_header_corruption() -> Result<()> {
+        use std::io::{Seek, SeekFrom, Write as IoWrite};
+        let rules = make_test_rules();
+        let tmp = tempfile::NamedTempFile::new()?;
+        let sha = [0xAA; 32];
+        write(tmp.path(), Mode::Car, &rules, &sha, &sha)?;
+
+        // Corrupt a byte in the header (offset 10 = inside the count field)
+        {
+            let mut file = std::fs::OpenOptions::new().write(true).open(tmp.path())?;
+            file.seek(SeekFrom::Start(10))?;
+            file.write_all(&[0xFF])?;
+        }
+
+        // This will fail with either CRC mismatch or a read error
+        // (wrong count leads to wrong number of records)
+        let result = read_all(tmp.path());
+        assert!(result.is_err(), "corrupted header should fail");
+        Ok(())
     }
 }

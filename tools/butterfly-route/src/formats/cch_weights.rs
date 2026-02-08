@@ -8,6 +8,8 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
 
+use super::crc;
+
 const MAGIC: u32 = 0x43434857; // "CCHW"
 
 /// CCH weights - stores weights for UP and DOWN edges
@@ -22,11 +24,13 @@ pub struct CchWeightsFile;
 impl CchWeightsFile {
     pub fn read<P: AsRef<Path>>(path: P) -> Result<CchWeights> {
         let mut reader = BufReader::new(File::open(path)?);
+        let mut crc_digest = crc::Digest::new();
 
         // Read header (32 bytes)
         // magic(4) + reserved(4) + n_up(8) + n_down(8) + reserved(8) = 32
         let mut header = [0u8; 32];
         reader.read_exact(&mut header)?;
+        crc_digest.update(&header);
 
         let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
         if magic != MAGIC {
@@ -51,6 +55,7 @@ impl CchWeightsFile {
         for _ in 0..n_up {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             up.push(u32::from_le_bytes(buf));
         }
 
@@ -59,8 +64,21 @@ impl CchWeightsFile {
         for _ in 0..n_down {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             down.push(u32::from_le_bytes(buf));
         }
+
+        // Verify CRC64
+        let computed_crc = crc_digest.finalize();
+        let mut footer = [0u8; 16];
+        reader.read_exact(&mut footer)?;
+        let stored_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+        anyhow::ensure!(
+            computed_crc == stored_crc,
+            "CRC64 mismatch in cch.weights: computed 0x{:016X}, stored 0x{:016X}",
+            computed_crc,
+            stored_crc
+        );
 
         Ok(CchWeights { up, down })
     }

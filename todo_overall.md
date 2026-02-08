@@ -239,6 +239,7 @@ Combined findings from Codex (gpt-5.3-codex) and Gemini (gemini-2.5-pro) repo-wi
 **I-Sprint (commit `845bbcc`, 2026-02-07):** H6, H7, H8 — butterfly-route HIGHs
 **J-Sprint (2026-02-08):** C1, C2, C3, H1, H2, H3, H4, H5, H9, L2, L3 — CRITICALs + remaining HIGHs + LOWs
 **K-Sprint (2026-02-08):** M1-M9, L4 — All MEDIUMs + pre-existing test failure
+**L-Sprint (2026-02-08):** Codex-H2, Codex-H8 — deferred architectural HIGHs (thread-local CCH query state, CRC validation across all format readers)
 
 **Remaining backlog (LOW only):**
 1. L1: Windows DLL naming convention
@@ -270,9 +271,8 @@ Combined findings from Codex (gpt-5.3-codex) and Gemini (gemini-2.5-pro) repo-wi
    - `tools/butterfly-route/src/step9/query.rs:164-166`
    - Direct throughput killer for `/route` and catastrophic for map-matching transition matrices.
 
-2. **CCH query allocates O(|V|) vectors per call**
-   - `tools/butterfly-route/src/step9/query.rs:137-142`
-   - In map matching (`map_match.rs:415-416` + `478-535`), invoked for each candidate-pair transition, multiplying allocation and scan cost by `O(obs * k^2)`.
+2. ~~**CCH query allocates O(|V|) vectors per call**~~ **FIXED** (L-Sprint). Thread-local generation-stamped state eliminates O(|V|) allocation per query. Distance/parent arrays allocated once per thread, reused via version stamps. O(1) query init.
+   - `tools/butterfly-route/src/step9/query.rs`
 
 3. **Map matching transition distance ignores snapped offsets on source/target edges**
    - `tools/butterfly-route/src/step9/map_match.rs:475-531`
@@ -296,10 +296,7 @@ Combined findings from Codex (gpt-5.3-codex) and Gemini (gemini-2.5-pro) repo-wi
    - `matrix/arrow_stream.rs:39-41`, `69-70`
    - Missing validation for `src_tile_size/dst_tile_size <= u16::MAX` can silently truncate dimensions and corrupt output.
 
-8. **Binary format readers skip CRC/magic/version validation**
-   - TODO CRC checks: `formats/mod_weights.rs:133`, `formats/mod_turns.rs:133`, `formats/mod_mask.rs:151`
-   - No magic/version/footer checks: `ebg_nodes.rs:98-131`, `ebg_csr.rs:91-141`, `nbg_csr.rs:92-144`, `nbg_geo.rs:128-199`, `order_ebg.rs:76-117`, `cch_topo.rs:173-300`
-   - Corrupted artifacts can load silently and produce wrong answers.
+8. ~~**Binary format readers skip CRC/magic/version validation**~~ **FIXED** (L-Sprint). CRC64 validation added to ALL 17 binary format readers. Pattern A (single CRC): cch_topo, cch_weights, ebg_csr, ebg_nodes, ebg_turn_table, filtered_ebg, hybrid_state, nbg_csr, nbg_geo, nbg_node_map, order_ebg. Pattern B (body+file CRC): mod_mask, mod_weights, mod_turns, turn_rules, way_attrs. Round-trip + corruption tests added.
 
 9. **Malformed-file panic/DoS risk in deserializers**
    - `formats/ways.rs:228-254`, `formats/relations.rs:290-327`

@@ -172,12 +172,14 @@ impl CchTopoFile {
 
     pub fn read<P: AsRef<Path>>(path: P) -> Result<CchTopo> {
         let mut reader = BufReader::new(File::open(path)?);
+        let mut crc_digest = crc::Digest::new();
 
         // Header (76 bytes)
         // magic(4) + version(2) + reserved(2) + n_nodes(4) + n_shortcuts(8) +
         // n_original(8) + n_up(8) + n_down(8) + sha256(32) = 76
         let mut header = vec![0u8; 76];
         reader.read_exact(&mut header)?;
+        crc_digest.update(&header);
 
         let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
         if magic != MAGIC {
@@ -221,6 +223,7 @@ impl CchTopoFile {
         for _ in 0..=n_nodes {
             let mut buf = [0u8; 8];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             up_offsets.push(u64::from_le_bytes(buf));
         }
 
@@ -228,6 +231,7 @@ impl CchTopoFile {
         for _ in 0..n_up_edges {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             up_targets.push(u32::from_le_bytes(buf));
         }
 
@@ -235,6 +239,7 @@ impl CchTopoFile {
         for _ in 0..n_up_edges {
             let mut buf = [0u8; 1];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             up_is_shortcut.push(buf[0] != 0);
         }
 
@@ -242,6 +247,7 @@ impl CchTopoFile {
         for _ in 0..n_up_edges {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             up_middle.push(u32::from_le_bytes(buf));
         }
 
@@ -250,6 +256,7 @@ impl CchTopoFile {
         for _ in 0..=n_nodes {
             let mut buf = [0u8; 8];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             down_offsets.push(u64::from_le_bytes(buf));
         }
 
@@ -257,6 +264,7 @@ impl CchTopoFile {
         for _ in 0..n_down_edges {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             down_targets.push(u32::from_le_bytes(buf));
         }
 
@@ -264,6 +272,7 @@ impl CchTopoFile {
         for _ in 0..n_down_edges {
             let mut buf = [0u8; 1];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             down_is_shortcut.push(buf[0] != 0);
         }
 
@@ -271,6 +280,7 @@ impl CchTopoFile {
         for _ in 0..n_down_edges {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             down_middle.push(u32::from_le_bytes(buf));
         }
 
@@ -279,8 +289,21 @@ impl CchTopoFile {
         for _ in 0..n_nodes {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             rank_to_filtered.push(u32::from_le_bytes(buf));
         }
+
+        // Verify CRC64 checksum
+        let computed_crc = crc_digest.finalize();
+        let mut footer = [0u8; 16];
+        reader.read_exact(&mut footer)?;
+        let stored_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+        anyhow::ensure!(
+            computed_crc == stored_crc,
+            "CRC64 mismatch in cch.topo: computed 0x{:016X}, stored 0x{:016X}",
+            computed_crc,
+            stored_crc
+        );
 
         Ok(CchTopo {
             n_nodes,
@@ -297,5 +320,73 @@ impl CchTopoFile {
             down_middle,
             rank_to_filtered,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Seek, SeekFrom, Write as IoWrite};
+    use tempfile::NamedTempFile;
+
+    fn make_test_topo() -> CchTopo {
+        CchTopo {
+            n_nodes: 4,
+            n_shortcuts: 1,
+            n_original_arcs: 3,
+            inputs_sha: [0xCD; 32],
+            up_offsets: vec![0, 1, 2, 3, 3],
+            up_targets: vec![1, 2, 3],
+            up_is_shortcut: vec![false, false, true],
+            up_middle: vec![u32::MAX, u32::MAX, 1],
+            down_offsets: vec![0, 0, 1, 2, 3],
+            down_targets: vec![0, 1, 2],
+            down_is_shortcut: vec![false, false, true],
+            down_middle: vec![u32::MAX, u32::MAX, 1],
+            rank_to_filtered: vec![10, 20, 30, 40],
+        }
+    }
+
+    #[test]
+    fn test_roundtrip() -> Result<()> {
+        let data = make_test_topo();
+        let tmp = NamedTempFile::new()?;
+        CchTopoFile::write(tmp.path(), &data)?;
+        let loaded = CchTopoFile::read(tmp.path())?;
+
+        assert_eq!(loaded.n_nodes, 4);
+        assert_eq!(loaded.n_shortcuts, 1);
+        assert_eq!(loaded.n_original_arcs, 3);
+        assert_eq!(loaded.inputs_sha, [0xCD; 32]);
+        assert_eq!(loaded.up_targets, vec![1, 2, 3]);
+        assert_eq!(loaded.up_is_shortcut, vec![false, false, true]);
+        assert_eq!(loaded.up_middle[2], 1);
+        assert_eq!(loaded.down_targets, vec![0, 1, 2]);
+        assert_eq!(loaded.rank_to_filtered, vec![10, 20, 30, 40]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_crc_detects_body_corruption() -> Result<()> {
+        let data = make_test_topo();
+        let tmp = NamedTempFile::new()?;
+        CchTopoFile::write(tmp.path(), &data)?;
+
+        // Corrupt a byte in the up_offsets section (just after the 76-byte header)
+        {
+            let mut file = std::fs::OpenOptions::new().write(true).open(tmp.path())?;
+            file.seek(SeekFrom::Start(80))?;
+            file.write_all(&[0xFF])?;
+        }
+
+        let result = CchTopoFile::read(tmp.path());
+        assert!(result.is_err(), "corrupted file should fail CRC check");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("CRC64 mismatch"),
+            "error should mention CRC: {}",
+            err_msg
+        );
+        Ok(())
     }
 }

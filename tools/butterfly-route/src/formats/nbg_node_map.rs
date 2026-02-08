@@ -71,8 +71,11 @@ impl NbgNodeMapFile {
     /// Read node map from file and build lookup HashMap
     pub fn read<P: AsRef<Path>>(path: P) -> Result<HashMap<i64, u32>> {
         let mut file = File::open(path)?;
+        let mut crc_digest = crc::Digest::new();
+
         let mut header = [0u8; 16];
         file.read_exact(&mut header)?;
+        crc_digest.update(&header);
 
         let count = u64::from_le_bytes(header[8..16].try_into()?);
 
@@ -81,12 +84,26 @@ impl NbgNodeMapFile {
             let mut osm_bytes = [0u8; 8];
             let mut compact_bytes = [0u8; 4];
             file.read_exact(&mut osm_bytes)?;
+            crc_digest.update(&osm_bytes);
             file.read_exact(&mut compact_bytes)?;
+            crc_digest.update(&compact_bytes);
 
             let osm_id = i64::from_le_bytes(osm_bytes);
             let compact_id = u32::from_le_bytes(compact_bytes);
             map.insert(osm_id, compact_id);
         }
+
+        // Verify CRC64
+        let computed_crc = crc_digest.finalize();
+        let mut footer = [0u8; 16];
+        file.read_exact(&mut footer)?;
+        let stored_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+        anyhow::ensure!(
+            computed_crc == stored_crc,
+            "CRC64 mismatch in nbg.node_map: computed 0x{:016X}, stored 0x{:016X}",
+            computed_crc,
+            stored_crc
+        );
 
         Ok(map)
     }
@@ -94,8 +111,11 @@ impl NbgNodeMapFile {
     /// Read node map from file as NbgNodeMap struct
     pub fn read_map<P: AsRef<Path>>(path: P) -> Result<NbgNodeMap> {
         let mut file = File::open(path)?;
+        let mut crc_digest = crc::Digest::new();
+
         let mut header = [0u8; 16];
         file.read_exact(&mut header)?;
+        crc_digest.update(&header);
 
         let count = u64::from_le_bytes(header[8..16].try_into()?);
 
@@ -104,7 +124,9 @@ impl NbgNodeMapFile {
             let mut osm_bytes = [0u8; 8];
             let mut _compact_bytes = [0u8; 4];
             file.read_exact(&mut osm_bytes)?;
+            crc_digest.update(&osm_bytes);
             file.read_exact(&mut _compact_bytes)?;
+            crc_digest.update(&_compact_bytes);
 
             let osm_node_id = i64::from_le_bytes(osm_bytes);
             mappings.push(NodeMapping {
@@ -112,6 +134,18 @@ impl NbgNodeMapFile {
                 compact_id: compact_id as u32,
             });
         }
+
+        // Verify CRC64
+        let computed_crc = crc_digest.finalize();
+        let mut footer = [0u8; 16];
+        file.read_exact(&mut footer)?;
+        let stored_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+        anyhow::ensure!(
+            computed_crc == stored_crc,
+            "CRC64 mismatch in nbg.node_map: computed 0x{:016X}, stored 0x{:016X}",
+            computed_crc,
+            stored_crc
+        );
 
         Ok(NbgNodeMap { mappings })
     }
