@@ -58,8 +58,9 @@ utoipa-swagger-ui = { version = "9.0", features = ["axum"] }
 tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.6.8", features = ["cors", "trace", "timeout", "catch-panic", "compression-gzip", "compression-br"] }
 
-# Spatial indexing
+# Spatial indexing & geometry
 rstar = "0.12.2"
+geo = "0.29"
 
 # Priority queue for Dijkstra
 priority-queue = "2.7"

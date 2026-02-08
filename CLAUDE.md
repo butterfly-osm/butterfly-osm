@@ -383,7 +383,7 @@ else:
 
 ---
 
-## Strategic Status (2026-02-07)
+## Strategic Status (2026-02-08)
 
 **All Core Features Complete** ✅
 
@@ -413,7 +413,16 @@ else:
 - ✅ Workspace lints: warnings enforced as errors (`[workspace.lints]`)
 - ✅ ~300+ clippy lints fixed across ~50 files
 
-**Remaining deferred items:** Map matching (F4), two-resolution isochrone mask (D8)
+**Feature Parity (P-Sprint) Complete** ✅
+
+- ✅ P1: Exclude toll/ferry/motorway (`exclude=toll,ferry,motorway`)
+- ✅ P2: Multiple isochrone contours (`contours=300,600,1200`)
+- ✅ P3: Isodistance (`distance_m=5000`)
+- ✅ P4: Per-edge annotations (`annotations=speed,duration,distance,nodes`)
+- ✅ P6: Avoid polygon areas (`avoid_polygons=[[lon,lat],...]`) — R-tree + sparse CCH recustomization
+- ✅ P7: Bearing hints (`bearings=angle,range`) — OSRM-compatible format
+
+**Remaining deferred items:** Truck profile (P5), two-resolution isochrone mask (D8)
 
 ---
 

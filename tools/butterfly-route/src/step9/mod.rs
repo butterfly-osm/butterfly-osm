@@ -25,7 +25,9 @@
 //! - Geometry lookup via EBG -> NBG mapping
 
 pub mod api;
+pub mod avoid;
 pub mod elevation;
+pub mod exclude;
 pub mod geometry;
 pub mod map_match;
 pub mod query;
