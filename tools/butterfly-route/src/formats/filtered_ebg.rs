@@ -260,10 +260,12 @@ impl FilteredEbgFile {
     /// Read filtered EBG from file
     pub fn read<P: AsRef<Path>>(path: P) -> Result<FilteredEbg> {
         let mut reader = BufReader::new(File::open(path.as_ref())?);
+        let mut crc_digest = crc::Digest::new();
 
         // Read header
         let mut header = [0u8; 64];
         reader.read_exact(&mut header)?;
+        crc_digest.update(&header);
 
         let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
         if magic != MAGIC {
@@ -296,6 +298,7 @@ impl FilteredEbgFile {
         for _ in 0..=n_filtered_nodes {
             let mut buf = [0u8; 8];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             offsets.push(u64::from_le_bytes(buf));
         }
 
@@ -304,6 +307,7 @@ impl FilteredEbgFile {
         for _ in 0..n_filtered_arcs {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             heads.push(u32::from_le_bytes(buf));
         }
 
@@ -312,6 +316,7 @@ impl FilteredEbgFile {
         for _ in 0..n_filtered_arcs {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             original_arc_idx.push(u32::from_le_bytes(buf));
         }
 
@@ -320,6 +325,7 @@ impl FilteredEbgFile {
         for _ in 0..n_filtered_nodes {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             filtered_to_original.push(u32::from_le_bytes(buf));
         }
 
@@ -328,8 +334,21 @@ impl FilteredEbgFile {
         for _ in 0..n_original_nodes {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             original_to_filtered.push(u32::from_le_bytes(buf));
         }
+
+        // Verify CRC64
+        let computed_crc = crc_digest.finalize();
+        let mut footer = [0u8; 16];
+        reader.read_exact(&mut footer)?;
+        let stored_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+        anyhow::ensure!(
+            computed_crc == stored_crc,
+            "CRC64 mismatch in filtered_ebg: computed 0x{:016X}, stored 0x{:016X}",
+            computed_crc,
+            stored_crc
+        );
 
         Ok(FilteredEbg {
             mode,

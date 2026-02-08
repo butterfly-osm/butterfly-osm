@@ -90,8 +90,11 @@ impl EbgCsrFile {
     /// Read EBG CSR from file
     pub fn read<P: AsRef<Path>>(path: P) -> Result<EbgCsr> {
         let mut reader = BufReader::new(File::open(path)?);
+        let mut crc_digest = crc::Digest::new();
+
         let mut header = vec![0u8; 64];
         reader.read_exact(&mut header)?;
+        crc_digest.update(&header);
 
         let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
         let n_arcs = u64::from_le_bytes([
@@ -110,6 +113,7 @@ impl EbgCsrFile {
         for _ in 0..=n_nodes {
             let mut buf = [0u8; 8];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             offsets.push(u64::from_le_bytes(buf));
         }
 
@@ -118,6 +122,7 @@ impl EbgCsrFile {
         for _ in 0..n_arcs {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             heads.push(u32::from_le_bytes(buf));
         }
 
@@ -126,8 +131,21 @@ impl EbgCsrFile {
         for _ in 0..n_arcs {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             turn_idx.push(u32::from_le_bytes(buf));
         }
+
+        // Verify CRC64
+        let computed_crc = crc_digest.finalize();
+        let mut footer = [0u8; 16];
+        reader.read_exact(&mut footer)?;
+        let stored_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+        anyhow::ensure!(
+            computed_crc == stored_crc,
+            "CRC64 mismatch in ebg.csr: computed 0x{:016X}, stored 0x{:016X}",
+            computed_crc,
+            stored_crc
+        );
 
         Ok(EbgCsr {
             n_nodes,

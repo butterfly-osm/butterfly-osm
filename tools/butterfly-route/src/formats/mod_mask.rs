@@ -148,7 +148,28 @@ pub fn read_all<P: AsRef<Path>>(path: P) -> Result<ModMask> {
     let mut mask = vec![0u8; byte_len];
     file.read_exact(&mut mask)?;
 
-    // TODO: Verify CRCs
+    // Verify CRCs
+    let mut body_digest = Digest::new();
+    body_digest.update(&mask);
+    let computed_body_crc = body_digest.finalize();
+
+    let mut file_digest = Digest::new();
+    file_digest.update(&header);
+    file_digest.update(&mask);
+    let computed_file_crc = file_digest.finalize();
+
+    let mut footer = [0u8; 16];
+    file.read_exact(&mut footer)?;
+    let stored_body_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+    let stored_file_crc = u64::from_le_bytes(footer[8..16].try_into().unwrap());
+    anyhow::ensure!(
+        computed_body_crc == stored_body_crc && computed_file_crc == stored_file_crc,
+        "CRC64 mismatch in mask.bitset: body 0x{:016X}/0x{:016X}, file 0x{:016X}/0x{:016X}",
+        computed_body_crc,
+        stored_body_crc,
+        computed_file_crc,
+        stored_file_crc
+    );
 
     Ok(ModMask {
         mode,
@@ -196,4 +217,80 @@ pub fn verify<P: AsRef<Path>>(path: P) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Seek, SeekFrom, Write as IoWrite};
+    use tempfile::NamedTempFile;
+
+    fn make_test_mask() -> ModMask {
+        let mut mask = ModMask::new(Mode::Car, 16, [0xDE; 8]);
+        mask.set(0);
+        mask.set(3);
+        mask.set(7);
+        mask.set(15);
+        mask
+    }
+
+    #[test]
+    fn test_roundtrip() -> Result<()> {
+        let data = make_test_mask();
+        let tmp = NamedTempFile::new()?;
+        write(tmp.path(), &data)?;
+        let loaded = read_all(tmp.path())?;
+
+        assert_eq!(loaded.n_nodes, 16);
+        assert!(loaded.get(0));
+        assert!(!loaded.get(1));
+        assert!(!loaded.get(2));
+        assert!(loaded.get(3));
+        assert!(loaded.get(7));
+        assert!(!loaded.get(8));
+        assert!(loaded.get(15));
+        Ok(())
+    }
+
+    #[test]
+    fn test_body_crc_detects_corruption() -> Result<()> {
+        let data = make_test_mask();
+        let tmp = NamedTempFile::new()?;
+        write(tmp.path(), &data)?;
+
+        // Corrupt a byte in the mask body (offset = HEADER_SIZE = 24)
+        {
+            let mut file = std::fs::OpenOptions::new().write(true).open(tmp.path())?;
+            file.seek(SeekFrom::Start(HEADER_SIZE as u64))?;
+            file.write_all(&[0xFF])?;
+        }
+
+        let result = read_all(tmp.path());
+        assert!(result.is_err(), "corrupted body should fail CRC check");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("CRC64 mismatch"),
+            "error should mention CRC: {}",
+            err_msg
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_file_crc_detects_header_corruption() -> Result<()> {
+        let data = make_test_mask();
+        let tmp = NamedTempFile::new()?;
+        write(tmp.path(), &data)?;
+
+        // Corrupt a byte in the header (inputs_sha area, offset 12)
+        {
+            let mut file = std::fs::OpenOptions::new().write(true).open(tmp.path())?;
+            file.seek(SeekFrom::Start(12))?;
+            file.write_all(&[0x00])?;
+        }
+
+        let result = read_all(tmp.path());
+        assert!(result.is_err(), "corrupted header should fail file CRC");
+        Ok(())
+    }
 }

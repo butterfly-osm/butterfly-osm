@@ -93,8 +93,11 @@ impl NbgCsrFile {
         use std::io::{BufReader, Read};
 
         let mut reader = BufReader::new(std::fs::File::open(path)?);
+        let mut crc_digest = crc::Digest::new();
+
         let mut header = vec![0u8; 64];
         reader.read_exact(&mut header)?;
+        crc_digest.update(&header);
 
         let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
         let n_edges_und = u64::from_le_bytes([
@@ -113,6 +116,7 @@ impl NbgCsrFile {
         for _ in 0..=n_nodes {
             let mut buf = [0u8; 8];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             offsets.push(u64::from_le_bytes(buf));
         }
 
@@ -121,6 +125,7 @@ impl NbgCsrFile {
         for _ in 0..(2 * n_edges_und) {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             heads.push(u32::from_le_bytes(buf));
         }
 
@@ -129,8 +134,21 @@ impl NbgCsrFile {
         for _ in 0..(2 * n_edges_und) {
             let mut buf = [0u8; 8];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             edge_idx.push(u64::from_le_bytes(buf));
         }
+
+        // Verify CRC64
+        let computed_crc = crc_digest.finalize();
+        let mut footer = [0u8; 16];
+        reader.read_exact(&mut footer)?;
+        let stored_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+        anyhow::ensure!(
+            computed_crc == stored_crc,
+            "CRC64 mismatch in nbg.csr: computed 0x{:016X}, stored 0x{:016X}",
+            computed_crc,
+            stored_crc
+        );
 
         Ok(NbgCsr {
             n_nodes,

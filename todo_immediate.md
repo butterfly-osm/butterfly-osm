@@ -1,10 +1,17 @@
 # Immediate Status
 
-No active sprint. All features complete including map matching (F4).
+No active sprint. All features complete including map matching (F4), thread-local CCH query state (Codex-H2), and CRC validation across all format readers (Codex-H8).
 
 ---
 
 ## Previously Completed Sprints
+
+### L-Sprint: Deferred Architectural HIGHs (2026-02-08) — DONE
+
+| Task | ID | Fix |
+|------|----|-----|
+| Thread-local CCH query state | Codex-H2 | `CchQueryState` with generation-stamped distance/parent arrays. Allocated once per thread (~160MB), reused via version stamps. O(1) query init instead of O(\|V\|). 8 unit tests added. |
+| CRC validation across all format readers | Codex-H8 | CRC64 verification added to all 17 binary format readers (11 Pattern A single-CRC, 6 Pattern B body+file CRC). Round-trip + corruption-detection tests for cch_topo, ebg_nodes, mod_mask, turn_rules. |
 
 ### K-Sprint: MEDIUM Audit Findings (2026-02-08) — DONE
 

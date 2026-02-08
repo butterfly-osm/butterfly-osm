@@ -182,10 +182,12 @@ impl HybridStateFile {
             File::open(path.as_ref())
                 .with_context(|| format!("Failed to open {}", path.as_ref().display()))?,
         );
+        let mut crc_digest = crc::Digest::new();
 
         // Read header
         let mut header = [0u8; 96];
         reader.read_exact(&mut header)?;
+        crc_digest.update(&header);
 
         let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
         if magic != MAGIC {
@@ -226,6 +228,7 @@ impl HybridStateFile {
         for _ in 0..=n_states {
             let mut buf = [0u8; 8];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             offsets.push(u64::from_le_bytes(buf));
         }
 
@@ -234,6 +237,7 @@ impl HybridStateFile {
         for _ in 0..n_arcs {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             targets.push(u32::from_le_bytes(buf));
         }
 
@@ -242,6 +246,7 @@ impl HybridStateFile {
         for _ in 0..n_arcs {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             weights.push(u32::from_le_bytes(buf));
         }
 
@@ -250,6 +255,7 @@ impl HybridStateFile {
         for _ in 0..n_node_states {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             node_state_to_nbg.push(u32::from_le_bytes(buf));
         }
 
@@ -258,6 +264,7 @@ impl HybridStateFile {
         for _ in 0..n_edge_states {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             edge_state_to_ebg.push(u32::from_le_bytes(buf));
         }
 
@@ -266,6 +273,7 @@ impl HybridStateFile {
         for _ in 0..n_nbg_nodes {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             nbg_to_node_state.push(u32::from_le_bytes(buf));
         }
 
@@ -274,6 +282,7 @@ impl HybridStateFile {
         for _ in 0..n_ebg_nodes {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             ebg_to_edge_state.push(u32::from_le_bytes(buf));
         }
 
@@ -282,8 +291,21 @@ impl HybridStateFile {
         for _ in 0..n_ebg_nodes {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
             ebg_head_nbg.push(u32::from_le_bytes(buf));
         }
+
+        // Verify CRC64
+        let computed_crc = crc_digest.finalize();
+        let mut footer = [0u8; 16];
+        reader.read_exact(&mut footer)?;
+        let stored_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+        anyhow::ensure!(
+            computed_crc == stored_crc,
+            "CRC64 mismatch in hybrid_state: computed 0x{:016X}, stored 0x{:016X}",
+            computed_crc,
+            stored_crc
+        );
 
         Ok(HybridState {
             mode,

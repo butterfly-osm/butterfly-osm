@@ -97,8 +97,11 @@ impl EbgNodesFile {
     /// Read EBG nodes from file
     pub fn read<P: AsRef<Path>>(path: P) -> Result<EbgNodes> {
         let mut reader = BufReader::new(File::open(path)?);
+        let mut crc_digest = crc::Digest::new();
+
         let mut header = vec![0u8; 64];
         reader.read_exact(&mut header)?;
+        crc_digest.update(&header);
 
         let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
         let created_unix = u64::from_le_bytes([
@@ -112,6 +115,7 @@ impl EbgNodesFile {
         for _ in 0..n_nodes {
             let mut record = [0u8; 24];
             reader.read_exact(&mut record)?;
+            crc_digest.update(&record);
 
             nodes.push(EbgNode {
                 tail_nbg: u32::from_le_bytes([record[0], record[1], record[2], record[3]]),
@@ -123,11 +127,124 @@ impl EbgNodesFile {
             });
         }
 
+        // Verify CRC64
+        let computed_crc = crc_digest.finalize();
+        let mut footer = [0u8; 16];
+        reader.read_exact(&mut footer)?;
+        let stored_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+        anyhow::ensure!(
+            computed_crc == stored_crc,
+            "CRC64 mismatch in ebg.nodes: computed 0x{:016X}, stored 0x{:016X}",
+            computed_crc,
+            stored_crc
+        );
+
         Ok(EbgNodes {
             n_nodes,
             created_unix,
             inputs_sha,
             nodes,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Seek, SeekFrom, Write as IoWrite};
+    use tempfile::NamedTempFile;
+
+    fn make_test_nodes() -> EbgNodes {
+        EbgNodes {
+            n_nodes: 3,
+            created_unix: 1700000000,
+            inputs_sha: [0xAB; 32],
+            nodes: vec![
+                EbgNode {
+                    tail_nbg: 0,
+                    head_nbg: 1,
+                    geom_idx: 100,
+                    length_mm: 5000,
+                    class_bits: 0,
+                    primary_way: 42,
+                },
+                EbgNode {
+                    tail_nbg: 1,
+                    head_nbg: 2,
+                    geom_idx: 101,
+                    length_mm: 3000,
+                    class_bits: 1,
+                    primary_way: 43,
+                },
+                EbgNode {
+                    tail_nbg: 2,
+                    head_nbg: 0,
+                    geom_idx: 102,
+                    length_mm: 7000,
+                    class_bits: 0,
+                    primary_way: 44,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn test_roundtrip() -> Result<()> {
+        let data = make_test_nodes();
+        let tmp = NamedTempFile::new()?;
+        EbgNodesFile::write(tmp.path(), &data)?;
+        let loaded = EbgNodesFile::read(tmp.path())?;
+
+        assert_eq!(loaded.n_nodes, 3);
+        assert_eq!(loaded.created_unix, 1700000000);
+        assert_eq!(loaded.inputs_sha, [0xAB; 32]);
+        assert_eq!(loaded.nodes.len(), 3);
+        assert_eq!(loaded.nodes[0].tail_nbg, 0);
+        assert_eq!(loaded.nodes[0].head_nbg, 1);
+        assert_eq!(loaded.nodes[1].length_mm, 3000);
+        assert_eq!(loaded.nodes[2].primary_way, 44);
+        Ok(())
+    }
+
+    #[test]
+    fn test_crc_detects_body_corruption() -> Result<()> {
+        let data = make_test_nodes();
+        let tmp = NamedTempFile::new()?;
+        EbgNodesFile::write(tmp.path(), &data)?;
+
+        // Corrupt a byte in the body (first node record, offset 64)
+        {
+            let mut file = std::fs::OpenOptions::new().write(true).open(tmp.path())?;
+            file.seek(SeekFrom::Start(64))?;
+            file.write_all(&[0xFF])?;
+        }
+
+        let result = EbgNodesFile::read(tmp.path());
+        assert!(result.is_err(), "corrupted file should fail CRC check");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("CRC64 mismatch"),
+            "error should mention CRC: {}",
+            err_msg
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_crc_detects_header_corruption() -> Result<()> {
+        let data = make_test_nodes();
+        let tmp = NamedTempFile::new()?;
+        EbgNodesFile::write(tmp.path(), &data)?;
+
+        // Corrupt a byte in the header (inputs_sha area, offset 30)
+        {
+            let mut file = std::fs::OpenOptions::new().write(true).open(tmp.path())?;
+            file.seek(SeekFrom::Start(30))?;
+            file.write_all(&[0x00])?;
+        }
+
+        let result = EbgNodesFile::read(tmp.path());
+        assert!(result.is_err(), "corrupted header should fail CRC check");
+        Ok(())
     }
 }
