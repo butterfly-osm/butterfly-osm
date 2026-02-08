@@ -20,6 +20,7 @@
 pub mod api;
 pub mod elevation;
 pub mod geometry;
+pub mod map_match;
 pub mod query;
 pub mod spatial;
 pub mod state;

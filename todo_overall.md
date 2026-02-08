@@ -61,6 +61,7 @@ Per-mode weights -> cch.w.{mode}.u32
 | `GET /isochrone` | Areal polygon + optional network roads, `direction=depart|arrive`, WKB via Accept header |
 | `POST /isochrone/bulk` | Parallel batch isochrones (WKB stream) |
 | `POST /trip` | TSP/trip optimization (nearest-neighbor + 2-opt + or-opt) |
+| `POST /match` | GPS trace map matching (HMM + Viterbi, local Dijkstra + CCH P2P transitions) |
 | `GET /height` | Elevation lookup from SRTM DEM tiles |
 | `GET /health` | Health check with uptime, node/edge counts, modes |
 | `GET /metrics` | Prometheus metrics (per-endpoint latency histograms) |
