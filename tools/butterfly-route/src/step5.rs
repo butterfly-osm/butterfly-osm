@@ -338,19 +338,19 @@ fn generate_mode_data(
             continue;
         }
 
-        // Node is accessible - set mask bit
-        mask.set(ebg_id as u32);
-
         // Compute weight
         let length_mm = ebg_node.length_mm;
         let base_speed_mmps = way_attr.output.base_speed_mmps;
 
         if base_speed_mmps == 0 {
-            // Inaccessible (zero speed)
+            // Inaccessible (zero speed) — do NOT set mask bit
             dbg_zero_speed += 1;
             weights[ebg_id] = 0;
             continue;
         }
+
+        // Node is accessible - set mask bit (after zero-speed check)
+        mask.set(ebg_id as u32);
 
         dbg_accessible += 1;
 

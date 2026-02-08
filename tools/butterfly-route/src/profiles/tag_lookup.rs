@@ -8,10 +8,9 @@ use std::collections::HashMap;
 pub struct TagLookup<'a> {
     keys: &'a [u32],
     vals: &'a [u32],
-    // For now, we'll need the actual dictionary strings to be passed in
-    // or we'll work with IDs only and resolve strings in the pipeline
-    key_dict: Option<&'a HashMap<u32, String>>,
     val_dict: Option<&'a HashMap<u32, String>>,
+    /// Reverse map: key string → key ID for O(1) lookup
+    rev_key: Option<HashMap<&'a str, u32>>,
 }
 
 impl<'a> TagLookup<'a> {
@@ -19,8 +18,8 @@ impl<'a> TagLookup<'a> {
         Self {
             keys,
             vals,
-            key_dict: None,
             val_dict: None,
+            rev_key: None,
         }
     }
 
@@ -30,11 +29,12 @@ impl<'a> TagLookup<'a> {
         key_dict: Option<&'a HashMap<u32, String>>,
         val_dict: Option<&'a HashMap<u32, String>>,
     ) -> Self {
+        let rev_key = key_dict.map(|kd| kd.iter().map(|(id, s)| (s.as_str(), *id)).collect());
         Self {
             keys,
             vals,
-            key_dict,
             val_dict,
+            rev_key,
         }
     }
 
@@ -44,26 +44,26 @@ impl<'a> TagLookup<'a> {
         key_dict: &'a HashMap<u32, String>,
         val_dict: &'a HashMap<u32, String>,
     ) -> Self {
+        let rev_key: HashMap<&str, u32> =
+            key_dict.iter().map(|(id, s)| (s.as_str(), *id)).collect();
         Self {
             keys,
             vals,
-            key_dict: Some(key_dict),
             val_dict: Some(val_dict),
+            rev_key: Some(rev_key),
         }
     }
 
-    /// Get a tag value by key name (requires dictionaries to be set)
+    /// Get a tag value by key name (requires dictionaries to be set).
+    /// Uses O(1) reverse-map lookup instead of linear scan.
     pub fn get_str(&self, key: &str) -> Option<&str> {
-        let key_dict = self.key_dict?;
         let val_dict = self.val_dict?;
+        let rev_key = self.rev_key.as_ref()?;
 
-        // Find the key ID
-        let key_id = key_dict
-            .iter()
-            .find(|(_, v)| v.as_str() == key)
-            .map(|(k, _)| *k)?;
+        // O(1) lookup for key ID
+        let key_id = *rev_key.get(key)?;
 
-        // Find the value ID
+        // Find the value ID in this tag set
         for (i, k) in self.keys.iter().enumerate() {
             if *k == key_id {
                 let val_id = self.vals[i];

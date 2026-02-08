@@ -161,9 +161,17 @@ impl<'a> CchQuery<'a> {
         let mut fwd_relaxed = 0usize;
         let mut bwd_relaxed = 0usize;
 
-        // Run both searches to completion (no early termination for now)
-        // This helps diagnose if the issue is in termination logic
+        // Bidirectional search with early termination:
+        // Both searches go UP the hierarchy. Once the minimum key from both queues
+        // exceeds best_dist, no shorter path can be found.
         while !pq_fwd.is_empty() || !pq_bwd.is_empty() {
+            // Early termination: if both queue minimums exceed best_dist, stop
+            let fwd_min = pq_fwd.peek().map(|(_, &Reverse(d))| d).unwrap_or(u32::MAX);
+            let bwd_min = pq_bwd.peek().map(|(_, &Reverse(d))| d).unwrap_or(u32::MAX);
+            if fwd_min >= best_dist && bwd_min >= best_dist {
+                break;
+            }
+
             // Forward step - search UP graph
             if let Some((u, Reverse(d))) = pq_fwd.pop() {
                 if d > dist_fwd[u as usize] {

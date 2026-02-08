@@ -117,12 +117,20 @@ impl EquivHybridBuilder {
         println!(
             "    Nodes fully collapsed (K=1): {} ({:.1}%)",
             nodes_fully_collapsed,
-            100.0 * nodes_fully_collapsed as f64 / n_reachable_nbg as f64
+            if n_reachable_nbg > 0 {
+                100.0 * nodes_fully_collapsed as f64 / n_reachable_nbg as f64
+            } else {
+                0.0
+            }
         );
         println!(
             "    Nodes with reduction (K<indeg): {} ({:.1}%)",
             nodes_with_reduction,
-            100.0 * nodes_with_reduction as f64 / n_reachable_nbg as f64
+            if n_reachable_nbg > 0 {
+                100.0 * nodes_with_reduction as f64 / n_reachable_nbg as f64
+            } else {
+                0.0
+            }
         );
 
         // === Phase 3: Assign state IDs ===

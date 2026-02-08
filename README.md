@@ -129,7 +129,7 @@ Common patterns abstracted into `butterfly-common`:
   - Exact turn-aware routing (edge-based CCH)
   - **1.8x FASTER than OSRM** at scale (10k×10k matrices)
   - Production-hardened: structured logging, graceful shutdown, timeouts, compression, input validation, panic recovery, Prometheus metrics
-  - Audit-clean: all CRITICAL, HIGH, and MEDIUM findings from Codex + Gemini audit resolved (FFI safety, concurrency limiting, optimized elimination ordering, contour hole detection, cross-compilation)
+  - Multi-round audit hardened: CRITICALs and HIGHs from Codex + Gemini audits resolved; remaining items tracked in todo_overall.md
   - See [Routing Engine](#routing-engine-butterfly-route) below
 
 ### 🚧 In Development

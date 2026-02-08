@@ -200,16 +200,20 @@ fn generate_candidates(
         .snap_k_with_info(lon, lat, &mode_data.mask, MAX_CANDIDATES);
 
     hits.into_iter()
-        .map(|(ebg_id, _midpoint_lon, _midpoint_lat, _midpoint_dist)| {
+        .filter_map(|(ebg_id, _midpoint_lon, _midpoint_lat, _midpoint_dist)| {
             // Compute perpendicular projection for better snap position and emission distance
             let (proj_lon, proj_lat, proj_dist) =
                 project_onto_edge(lon, lat, ebg_id, &state.ebg_nodes, &state.nbg_geo);
-            Candidate {
+            // Filter out candidates with no valid projection (fallback returns INFINITY)
+            if proj_dist.is_infinite() {
+                return None;
+            }
+            Some(Candidate {
                 ebg_id,
                 snapped_lon: proj_lon,
                 snapped_lat: proj_lat,
                 distance_m: proj_dist,
-            }
+            })
         })
         .collect()
 }
@@ -516,7 +520,11 @@ fn compute_transition_distances(
                     qr.meeting_node,
                 );
 
-                // Sum physical edge lengths (length_mm) along the path
+                // Sum physical edge lengths (length_mm) along the path.
+                // NOTE: This sums full edge lengths including the first and last edges,
+                // even though the snap point may be partway along them. The error is
+                // bounded by one edge length (~50-200m) and is consistent across all
+                // candidate pairs, so Viterbi selection is minimally affected.
                 let total_mm: u64 = rank_path
                     .iter()
                     .map(|&rank| {
@@ -573,7 +581,14 @@ fn build_matched_path(
                 }
             }
             None => {
-                // No path found — just append the target edge
+                // No path found — gap in topology. Include target edge to
+                // preserve snap point, but geometry will have a discontinuity.
+                tracing::warn!(
+                    from_ebg = prev_cand.ebg_id,
+                    to_ebg = cand.ebg_id,
+                    obs = t,
+                    "map match: no path between consecutive matched edges, inserting gap"
+                );
                 full_path.push(cand.ebg_id);
             }
         }

@@ -243,3 +243,126 @@ Combined findings from Codex (gpt-5.3-codex) and Gemini (gemini-2.5-pro) repo-wi
 **Remaining backlog (LOW only):**
 1. L1: Windows DLL naming convention
 2. L5: Semver precision in Cargo.toml
+
+---
+
+## Codex Audit (2026-02-08)
+
+### CRITICAL (correctness bugs, data corruption, wrong results)
+
+1. **Isochrone geometry hardcodes `Mode::Car`**
+   - `tools/butterfly-route/src/step9/geometry.rs:187` calls `build_isochrone_geometry_sparse(..., Mode::Car)`
+   - Expected: geometry config must respect request mode. Actual: bike/foot isochrone geometry is generated with car contour parameters.
+
+2. **Self-contradictory route output when source == target edge**
+   - `tools/butterfly-route/src/step9/query.rs:125-131` returns distance `0` when `source == target`.
+   - `tools/butterfly-route/src/step9/unpack.rs:22` always returns path starting with `source`.
+   - `tools/butterfly-route/src/step9/api.rs:405-414` builds geometry from that path and reports `distance_m = geometry.distance_m`, `duration_s = result.distance / 10`.
+   - Actual failure mode: same snapped edge can return `duration=0` with non-zero geometry distance (and full-edge geometry).
+
+3. **Trip endpoint returns `code: "Ok"` with unreachable legs containing NaN**
+   - `tools/butterfly-route/src/step9/trip.rs:583-639` — per-leg unreachable values become `NaN`, while totals still accumulate only reachable legs.
+   - Expected: explicit failure/degraded status. Actual: partial-invalid trip returned as success.
+
+### HIGH (performance bottlenecks, algorithmic inefficiency, security)
+
+1. **CCH query runs both searches to exhaustion with no early termination**
+   - `tools/butterfly-route/src/step9/query.rs:164-166`
+   - Direct throughput killer for `/route` and catastrophic for map-matching transition matrices.
+
+2. **CCH query allocates O(|V|) vectors per call**
+   - `tools/butterfly-route/src/step9/query.rs:137-142`
+   - In map matching (`map_match.rs:415-416` + `478-535`), invoked for each candidate-pair transition, multiplying allocation and scan cost by `O(obs * k^2)`.
+
+3. **Map matching transition distance ignores snapped offsets on source/target edges**
+   - `tools/butterfly-route/src/step9/map_match.rs:475-531`
+   - Sums full edge lengths over unpacked edge states, ignoring partial coverage at start/end edges. This biases HMM transitions and can pick wrong paths.
+
+4. **Map matching can emit disconnected paths**
+   - `tools/butterfly-route/src/step9/map_match.rs:575-578`
+   - On missing sub-path, code appends target edge anyway (`full_path.push(cand.ebg_id)`), producing invalid topology.
+
+5. **Sparse contour discards real components and holes**
+   - `tools/butterfly-route/src/range/sparse_contour.rs:700-704` returns `holes: vec![]`
+   - `tools/butterfly-route/src/range/sparse_contour.rs:747-751` keeps only largest contour.
+   - API/WKB pipeline also drops holes: `api.rs:1804-1807`, `api.rs:2028-2031`
+   - Under-reports reachable area and destroys multi-component correctness.
+
+6. **Integer overflow in streamed matrix distance conversion**
+   - `tools/butterfly-route/src/step9/api.rs:1543`: `d * 100` can wrap in release mode.
+
+7. **Tile-size truncation bug in streaming matrix**
+   - `api.rs:1481-1482`, `1551-1552` casts tile dimensions to `u16`
+   - `matrix/arrow_stream.rs:39-41`, `69-70`
+   - Missing validation for `src_tile_size/dst_tile_size <= u16::MAX` can silently truncate dimensions and corrupt output.
+
+8. **Binary format readers skip CRC/magic/version validation**
+   - TODO CRC checks: `formats/mod_weights.rs:133`, `formats/mod_turns.rs:133`, `formats/mod_mask.rs:151`
+   - No magic/version/footer checks: `ebg_nodes.rs:98-131`, `ebg_csr.rs:91-141`, `nbg_csr.rs:92-144`, `nbg_geo.rs:128-199`, `order_ebg.rs:76-117`, `cch_topo.rs:173-300`
+   - Corrupted artifacts can load silently and produce wrong answers.
+
+9. **Malformed-file panic/DoS risk in deserializers**
+   - `formats/ways.rs:228-254`, `formats/relations.rs:290-327`
+   - Use `all_bytes[pos..pos+N]` inside count-driven loops without prior bounds checks.
+
+10. **`/table` lacks matrix-size guardrails**
+    - `api.rs:1035-1097`, `1182-1287`
+    - Response memory can explode for large `sources × destinations`.
+
+11. **`/debug/compare` has a correctness bug and is mounted by default**
+    - `api.rs:2994` passes filtered IDs to `query_with_debug`, which expects rank IDs.
+    - Endpoint is mounted by default at `api.rs:97`.
+
+### MEDIUM (code quality, maintainability, missing tests)
+
+1. **`ModMask` sets accessibility bit before zero-speed rejection**
+   - `tools/butterfly-route/src/step5.rs:341-352`
+   - Zero-speed edges can remain marked accessible in mask.
+
+2. **CCH customization non-convergence is only logged, not failed**
+   - `tools/butterfly-route/src/step8.rs:503-506`
+   - Pipeline may ship non-converged weights.
+
+3. **`unpack` silently drops missing decomposition edges**
+   - `tools/butterfly-route/src/step9/unpack.rs:63-70`, `87-94`
+   - Missing link during shortcut expansion returns partial path with no error.
+
+4. **Large-latitude assumptions hardcoded into snapping/map-matching**
+   - `spatial.rs:11-13`, `map_match.rs:32-35`, `272-274`
+   - Distances/projections are tuned to ~50°N and degrade globally.
+
+5. **Sparse contour simplification uses fixed meter→degree conversion**
+   - `range/sparse_contour.rs:695` — latitude-dependent distortion remains.
+
+6. **Tests missing for regression-prone paths**
+   - No tests for: isochrone mode propagation, unreachable-trip API semantics, streaming matrix overflow/truncation, map-matching disconnected fallback, sparse multi-component/holes.
+
+7. **Provenance hashing is stubbed with zero bytes**
+   - `step6_lifted.rs:135`, `nbg/mod.rs:436`: `inputs_sha: [0u8; 32] // TODO`
+   - Pipeline reproducibility and mismatch detection weakened.
+
+8. **Tag lookup is O(dict_size) per lookup due to reverse scan**
+   - `profiles/tag_lookup.rs:61`: `key_dict.iter().find(|(_, v)| v.as_str() == key)`
+   - Avoidable hot-path overhead in profile processing.
+
+9. **Map-matching fallback candidate emits `(0,0,inf)` and is not filtered out**
+   - `map_match.rs:202`, `map_match.rs:297`
+   - Invalid state pollution increases transition work and instability.
+
+### LOW (style, documentation, minor improvements)
+
+1. **Documentation/claims mismatch**
+   - `README.md:132` claims audit-clean status, but unresolved correctness and integrity gaps remain.
+
+2. **Placeholder integrity metadata still present**
+   - `step6_lifted.rs:135`, `nbg/mod.rs:436`: `inputs_sha` TODO
+   - `validate/step5.rs:142-154`: hash fields set to `"TODO"`.
+
+3. **Comment drift**
+   - `nbg_geo.rs:140` says "40 bytes each" but record layout in code is 36 bytes.
+
+4. **Potential divide-by-zero in stats output**
+   - `hybrid/equiv_builder.rs:120`, `125`: percentages divide by `n_reachable_nbg` without zero guard.
+
+5. **Matrix tile dimensions truncated to `u16` without explicit request-size guard**
+   - `api.rs:1551`, `matrix/arrow_stream.rs:79`, `83`

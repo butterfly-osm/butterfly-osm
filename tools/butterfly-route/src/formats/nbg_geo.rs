@@ -70,7 +70,7 @@ impl NbgGeoFile {
         crc_digest.update(&poly_bytes_bytes);
         crc_digest.update(&padding);
 
-        // Edge records (40 bytes each)
+        // Edge records (36 bytes each)
         for edge in &geo.edges {
             let u_node_bytes = edge.u_node.to_le_bytes();
             let v_node_bytes = edge.v_node.to_le_bytes();

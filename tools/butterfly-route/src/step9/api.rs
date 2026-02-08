@@ -382,6 +382,32 @@ async fn route(
     let src_rank = mode_data.order.perm[src_filtered as usize];
     let dst_rank = mode_data.order.perm[dst_filtered as usize];
 
+    // Same-edge: return consistent zero-distance, zero-duration result
+    if src_rank == dst_rank {
+        let snap_point = Point {
+            lon: src_snap_info.lon,
+            lat: src_snap_info.lat,
+        };
+        let point_geom = RouteGeometry::from_points(vec![snap_point], 0.0, 0, geom_format);
+        let debug_info = if req.debug {
+            Some(RouteDebugInfo {
+                src_snapped: src_snap_info,
+                dst_snapped: dst_snap_info,
+            })
+        } else {
+            None
+        };
+        return Json(RouteResponse {
+            duration_s: 0.0,
+            distance_m: 0.0,
+            geometry: point_geom,
+            steps: if req.steps { Some(vec![]) } else { None },
+            alternatives: None,
+            debug: debug_info,
+        })
+        .into_response();
+    }
+
     // Helper: build route from query result
     let build_route = |result: &super::query::QueryResult,
                        format: GeometryFormat,
@@ -1063,6 +1089,23 @@ async fn table_post(
         )
             .into_response();
     }
+    // Guard against memory explosion: max 10,000 sources × destinations for /table
+    // (use /table/stream for larger matrices)
+    const MAX_TABLE_CELLS: usize = 10_000_000;
+    if req.sources.len() * req.destinations.len() > MAX_TABLE_CELLS {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "matrix too large: {}×{} = {} cells exceeds limit of {}. Use POST /table/stream for large matrices.",
+                    req.sources.len(), req.destinations.len(),
+                    req.sources.len() * req.destinations.len(),
+                    MAX_TABLE_CELLS
+                ),
+            }),
+        )
+            .into_response();
+    }
     if req.destinations.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -1385,8 +1428,16 @@ async fn table_stream(
     let n_valid_targets = targets_rank.len();
     let n_total_sources = req.sources.len();
     let n_total_targets = req.destinations.len();
-    let src_tile_size = req.src_tile_size.min(n_total_sources).max(1);
-    let dst_tile_size = req.dst_tile_size.min(n_total_targets).max(1);
+    let src_tile_size = req
+        .src_tile_size
+        .min(n_total_sources)
+        .min(u16::MAX as usize)
+        .max(1);
+    let dst_tile_size = req
+        .dst_tile_size
+        .min(n_total_targets)
+        .min(u16::MAX as usize)
+        .max(1);
 
     // Calculate total tiles for progress tracking
     let n_src_blocks = n_total_sources.div_ceil(src_tile_size);
@@ -1539,8 +1590,11 @@ async fn table_stream(
                             let out_col = orig_dst_idx - dst_start;
                             let d =
                                 tile_matrix[tile_src_idx * block_dst_ranks.len() + tile_dst_idx];
-                            durations_ms[out_row * tile_cols + out_col] =
-                                if d == u32::MAX { u32::MAX } else { d * 100 };
+                            durations_ms[out_row * tile_cols + out_col] = if d == u32::MAX {
+                                u32::MAX
+                            } else {
+                                d.saturating_mul(100)
+                            };
                         }
                     }
                 }
@@ -1794,6 +1848,7 @@ async fn isochrone(
         &mode_data.node_weights,
         &state.ebg_nodes,
         &state.nbg_geo,
+        mode,
     );
 
     // WKB binary response (content negotiation via Accept header)
@@ -2023,6 +2078,7 @@ async fn isochrone_bulk(
                 &mode_data.node_weights,
                 &state.ebg_nodes,
                 &state.nbg_geo,
+                mode,
             );
             let outer_ring: Vec<(f64, f64)> = points.iter().map(|p| (p.lon, p.lat)).collect();
             let contour = ContourResult {
@@ -2991,7 +3047,7 @@ async fn debug_compare(
     // ========== Run CCH Query ==========
     eprintln!("\nCCH BIDIR QUERY DEBUG:");
     let query = CchQuery::new(&state, mode);
-    let cch_result = query.query_with_debug(src_filtered, dst_filtered, true);
+    let cch_result = query.query_with_debug(src_rank, dst_rank, true);
     let cch_distance = cch_result.as_ref().map(|r| r.distance);
     let cch_meeting_rank = cch_result.as_ref().map(|r| perm[r.meeting_node as usize]);
     let cch_fwd_settled = 0usize; // We'd need to modify query to track this
