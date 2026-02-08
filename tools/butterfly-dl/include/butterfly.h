@@ -2,13 +2,12 @@
  * @file butterfly.h
  * @brief C header for butterfly-dl library
  * 
- * High-performance OpenStreetMap data downloader with S3 and HTTP support.
- * 
+ * High-performance OpenStreetMap data downloader with HTTP support.
+ *
  * # Features
- * - Smart source routing: S3 for planet files, HTTP for regional extracts
+ * - Smart source routing: HTTP for planet files and regional extracts
  * - Memory efficient: <1GB RAM usage regardless of file size
  * - Progress tracking with callbacks
- * - Cross-platform support
  * 
  * # Usage Example
  * 
@@ -73,8 +72,7 @@ typedef enum {
     BUTTERFLY_INVALID_PARAMETER = 1, /**< Invalid parameter provided */
     BUTTERFLY_NETWORK_ERROR = 2,   /**< Network-related error */
     BUTTERFLY_IO_ERROR = 3,        /**< File I/O error */
-    BUTTERFLY_S3_ERROR = 4,        /**< S3-specific error (if S3 support enabled) */
-    BUTTERFLY_UNKNOWN_ERROR = 5    /**< Unknown or unexpected error */
+    BUTTERFLY_UNKNOWN_ERROR = 4    /**< Unknown or unexpected error */
 } ButterflyResult;
 
 /**
@@ -169,15 +167,6 @@ const char* butterfly_version(void);
  * @note Safe to call multiple times
  */
 ButterflyResult butterfly_init(void);
-
-/**
- * @brief Check if S3 support is available
- * 
- * Returns whether the library was compiled with S3 support.
- * 
- * @return 1 if S3 support is available, 0 otherwise
- */
-int butterfly_has_s3_support(void);
 
 #ifdef __cplusplus
 }

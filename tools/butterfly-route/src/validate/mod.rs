@@ -130,7 +130,7 @@ impl LockFile {
 }
 
 /// Compute SHA-256 hash of a file
-fn compute_sha256<P: AsRef<Path>>(path: P) -> Result<String> {
+pub(crate) fn compute_sha256<P: AsRef<Path>>(path: P) -> Result<String> {
     use sha2::{Digest, Sha256};
 
     let mut file = File::open(path.as_ref())
@@ -224,7 +224,9 @@ fn verify_nodes_sa(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Verify nodes.si file structure
+/// Verify nodes.si file structure.
+/// Note: nodes.si does not have CRC validation (legacy format).
+/// Validation is limited to magic number and file size checks.
 fn verify_nodes_si(path: &Path) -> Result<()> {
     let mut file =
         File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;

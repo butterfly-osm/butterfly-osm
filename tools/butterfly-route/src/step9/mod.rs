@@ -4,11 +4,18 @@
 //!
 //! # Endpoints
 //!
-//! - `GET /route` - Point-to-point routing
-//! - `GET /matrix` - Distance matrix (one-to-many)
-//! - `GET /isochrone` - Reachability polygon
-//! - `GET /health` - Health check
-//! - `GET /swagger-ui` - OpenAPI documentation
+//! - `GET /route` - Point-to-point routing with geometry, steps, alternatives
+//! - `GET /nearest` - Snap to nearest road segments
+//! - `POST /table` - Distance matrix (bucket M2M)
+//! - `POST /table/stream` - Arrow IPC streaming for large matrices
+//! - `GET /isochrone` - Reachability polygon (GeoJSON/WKB)
+//! - `POST /isochrone/bulk` - Parallel batch isochrones (WKB stream)
+//! - `POST /trip` - TSP/trip optimization
+//! - `POST /match` - GPS trace map matching (HMM + Viterbi)
+//! - `GET /height` - Elevation lookup (SRTM DEM)
+//! - `GET /health` - Health check with uptime and stats
+//! - `GET /metrics` - Prometheus metrics
+//! - `GET /swagger-ui/` - OpenAPI documentation
 //!
 //! # Architecture
 //!
@@ -64,13 +71,13 @@ pub fn init_tracing(log_format: &str) {
 }
 
 /// Find a free port starting from the given port
-pub fn find_free_port(start: u16) -> u16 {
+pub fn find_free_port(start: u16) -> Result<u16> {
     for port in start..65535 {
         if TcpListener::bind(("127.0.0.1", port)).is_ok() {
-            return port;
+            return Ok(port);
         }
     }
-    panic!("No free port found");
+    anyhow::bail!("No free port found starting from {}", start);
 }
 
 /// Shutdown signal: waits for SIGINT (Ctrl-C) or SIGTERM.
@@ -110,7 +117,10 @@ pub async fn serve(data_dir: &Path, port: Option<u16>) -> Result<()> {
     let state = Arc::new(ServerState::load(data_dir)?);
 
     // Find free port
-    let port = port.unwrap_or_else(|| find_free_port(8080));
+    let port = match port {
+        Some(p) => p,
+        None => find_free_port(8080)?,
+    };
 
     // Build router
     let app = api::build_router(state);

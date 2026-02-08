@@ -487,164 +487,190 @@ pub async fn trip_handler(
     let _want_duration = annotations.contains(&"duration") || (!annotations.contains(&"distance"));
     let want_distance = annotations.contains(&"distance");
 
-    let mode_data = state.get_mode(mode);
-    let n_nodes = mode_data.cch_topo.n_nodes as usize;
+    // Extract owned values before the spawn_blocking closure
+    let coordinates = req.coordinates;
+    let round_trip = req.round_trip;
+    let mode_str = req.mode;
 
-    // Snap all coordinates and convert to rank space
-    let mut ranks: Vec<u32> = Vec::with_capacity(n);
-    let mut snapped_locations: Vec<[f64; 2]> = Vec::with_capacity(n);
-    let mut valid: Vec<bool> = Vec::with_capacity(n);
+    // TSP optimization is CPU-heavy: N*N distance matrix computation + multi-start
+    // nearest-neighbor + 2-opt/or-opt iterations. For many waypoints this can take
+    // seconds. Offload to a blocking thread to avoid starving the Tokio async runtime.
+    let state_clone = state.clone();
+    let blocking_result = tokio::task::spawn_blocking(move || {
+        let mode_data = state_clone.get_mode(mode);
+        let n_nodes = mode_data.cch_topo.n_nodes as usize;
 
-    for &[lon, lat] in &req.coordinates {
-        if let Some(orig_id) = state.spatial_index.snap(lon, lat, &mode_data.mask, 10) {
-            let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
-            if filtered != u32::MAX {
-                let rank = mode_data.order.perm[filtered as usize];
-                ranks.push(rank);
-                valid.push(true);
-                // Get snapped location
-                let snapped = get_node_location(&state, orig_id);
-                snapped_locations.push(snapped);
+        // Snap all coordinates and convert to rank space
+        let mut ranks: Vec<u32> = Vec::with_capacity(n);
+        let mut snapped_locations: Vec<[f64; 2]> = Vec::with_capacity(n);
+        let mut valid: Vec<bool> = Vec::with_capacity(n);
+
+        for &[lon, lat] in &coordinates {
+            if let Some(orig_id) = state_clone
+                .spatial_index
+                .snap(lon, lat, &mode_data.mask, 10)
+            {
+                let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
+                if filtered != u32::MAX {
+                    let rank = mode_data.order.perm[filtered as usize];
+                    ranks.push(rank);
+                    valid.push(true);
+                    // Get snapped location
+                    let snapped = get_node_location(&state_clone, orig_id);
+                    snapped_locations.push(snapped);
+                } else {
+                    ranks.push(0);
+                    valid.push(false);
+                    snapped_locations.push([lon, lat]);
+                }
             } else {
                 ranks.push(0);
                 valid.push(false);
                 snapped_locations.push([lon, lat]);
             }
-        } else {
-            ranks.push(0);
-            valid.push(false);
-            snapped_locations.push([lon, lat]);
         }
-    }
 
-    // Check that all waypoints snapped successfully
-    for (i, &v) in valid.iter().enumerate() {
-        if !v {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "code": "NoSegment",
-                    "message": format!(
-                        "Could not snap waypoint {} ([{}, {}]) to road network for mode '{}'",
-                        i, req.coordinates[i][0], req.coordinates[i][1], req.mode
-                    )
-                })),
-            )
-                .into_response();
+        // Check that all waypoints snapped successfully
+        for (i, &v) in valid.iter().enumerate() {
+            if !v {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    serde_json::json!({
+                        "code": "NoSegment",
+                        "message": format!(
+                            "Could not snap waypoint {} ([{}, {}]) to road network for mode '{}'",
+                            i, coordinates[i][0], coordinates[i][1], mode_str
+                        )
+                    }),
+                ));
+            }
         }
-    }
 
-    // Compute N×N duration matrix (for TSP optimization, always on time)
-    let (duration_matrix, _stats) = table_bucket_full_flat(
-        n_nodes,
-        &mode_data.up_adj_flat,
-        &mode_data.down_rev_flat,
-        &ranks,
-        &ranks,
-    );
-
-    // Run TSP solver on the duration matrix
-    let tsp_result = solve_tsp(&duration_matrix, n, req.round_trip);
-
-    // Compute distance matrix if requested (for reporting leg distances)
-    let distance_matrix = if want_distance {
-        let (dist_mat, _) = table_bucket_full_flat(
+        // Compute N*N duration matrix (for TSP optimization, always on time)
+        let (duration_matrix, _stats) = table_bucket_full_flat(
             n_nodes,
-            &mode_data.up_adj_flat_dist,
-            &mode_data.down_rev_flat_dist,
+            &mode_data.up_adj_flat,
+            &mode_data.down_rev_flat,
             &ranks,
             &ranks,
         );
-        Some(dist_mat)
-    } else {
-        None
-    };
 
-    // Build legs from the optimized order
-    let order = &tsp_result.order;
-    let mut legs: Vec<TripLeg> = Vec::with_capacity(if req.round_trip {
-        order.len()
-    } else {
-        order.len() - 1
-    });
-    let mut total_duration_ds: u64 = 0;
-    let mut total_distance_mm: u64 = 0;
+        // Run TSP solver on the duration matrix
+        let tsp_result = solve_tsp(&duration_matrix, n, round_trip);
 
-    let leg_count = if req.round_trip {
-        order.len()
-    } else {
-        order.len() - 1
-    };
-
-    let mut has_unreachable = false;
-    for leg_idx in 0..leg_count {
-        let from = order[leg_idx];
-        let to = order[(leg_idx + 1) % order.len()];
-
-        let dur_ds = duration_matrix[from * n + to];
-        let dur_s = if dur_ds == u32::MAX {
-            has_unreachable = true;
-            0.0
+        // Compute distance matrix if requested (for reporting leg distances)
+        let distance_matrix = if want_distance {
+            let (dist_mat, _) = table_bucket_full_flat(
+                n_nodes,
+                &mode_data.up_adj_flat_dist,
+                &mode_data.down_rev_flat_dist,
+                &ranks,
+                &ranks,
+            );
+            Some(dist_mat)
         } else {
-            total_duration_ds += dur_ds as u64;
-            dur_ds as f64 / 10.0 // deciseconds -> seconds
+            None
         };
 
-        let dist_m = if let Some(ref dm) = distance_matrix {
-            let d = dm[from * n + to];
-            if d == u32::MAX {
+        // Build legs from the optimized order
+        let order = &tsp_result.order;
+        let mut legs: Vec<TripLeg> = Vec::with_capacity(if round_trip {
+            order.len()
+        } else {
+            order.len() - 1
+        });
+        let mut total_duration_ds: u64 = 0;
+        let mut total_distance_mm: u64 = 0;
+
+        let leg_count = if round_trip {
+            order.len()
+        } else {
+            order.len() - 1
+        };
+
+        let mut has_unreachable = false;
+        for leg_idx in 0..leg_count {
+            let from = order[leg_idx];
+            let to = order[(leg_idx + 1) % order.len()];
+
+            let dur_ds = duration_matrix[from * n + to];
+            let dur_s = if dur_ds == u32::MAX {
                 has_unreachable = true;
                 0.0
             } else {
-                total_distance_mm += d as u64;
-                d as f64 / 1000.0 // millimeters -> meters
-            }
-        } else {
-            0.0
+                total_duration_ds += dur_ds as u64;
+                dur_ds as f64 / 10.0 // deciseconds -> seconds
+            };
+
+            let dist_m = if let Some(ref dm) = distance_matrix {
+                let d = dm[from * n + to];
+                if d == u32::MAX {
+                    has_unreachable = true;
+                    0.0
+                } else {
+                    total_distance_mm += d as u64;
+                    d as f64 / 1000.0 // millimeters -> meters
+                }
+            } else {
+                0.0
+            };
+
+            legs.push(TripLeg {
+                duration: dur_s,
+                distance: dist_m,
+                summary: String::new(),
+            });
+        }
+
+        // Build waypoint response: for each original waypoint, where does it appear in the trip?
+        // Create a reverse mapping: original_index -> position_in_optimized_order
+        let mut waypoint_index_map = vec![0usize; n];
+        for (position, &original_idx) in order.iter().enumerate() {
+            waypoint_index_map[original_idx] = position;
+        }
+
+        let waypoints: Vec<TripWaypoint> = (0..n)
+            .map(|i| TripWaypoint {
+                location: snapped_locations[i],
+                waypoint_index: waypoint_index_map[i],
+                trips_index: 0,
+                name: String::new(),
+            })
+            .collect();
+
+        let trip = Trip {
+            legs,
+            duration: total_duration_ds as f64 / 10.0,
+            distance: total_distance_mm as f64 / 1000.0,
+            weight: total_duration_ds as f64 / 10.0,
+            weight_name: "duration".to_string(),
+            improvement_pct: tsp_result.improvement_pct,
         };
 
-        legs.push(TripLeg {
-            duration: dur_s,
-            distance: dist_m,
-            summary: String::new(),
-        });
-    }
-
-    // Build waypoint response: for each original waypoint, where does it appear in the trip?
-    // Create a reverse mapping: original_index -> position_in_optimized_order
-    let mut waypoint_index_map = vec![0usize; n];
-    for (position, &original_idx) in order.iter().enumerate() {
-        waypoint_index_map[original_idx] = position;
-    }
-
-    let waypoints: Vec<TripWaypoint> = (0..n)
-        .map(|i| TripWaypoint {
-            location: snapped_locations[i],
-            waypoint_index: waypoint_index_map[i],
-            trips_index: 0,
-            name: String::new(),
+        Ok(TripResponse {
+            code: if has_unreachable {
+                "Partial".to_string()
+            } else {
+                "Ok".to_string()
+            },
+            waypoints,
+            trips: vec![trip],
         })
-        .collect();
-
-    let trip = Trip {
-        legs,
-        duration: total_duration_ds as f64 / 10.0,
-        distance: total_distance_mm as f64 / 1000.0,
-        weight: total_duration_ds as f64 / 10.0,
-        weight_name: "duration".to_string(),
-        improvement_pct: tsp_result.improvement_pct,
-    };
-
-    Json(TripResponse {
-        code: if has_unreachable {
-            "Partial".to_string()
-        } else {
-            "Ok".to_string()
-        },
-        waypoints,
-        trips: vec![trip],
     })
-    .into_response()
+    .await;
+
+    match blocking_result {
+        Ok(Ok(response)) => Json(response).into_response(),
+        Ok(Err((status, json_val))) => (status, Json(json_val)).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "code": "InternalError",
+                "message": format!("trip computation failed: {}", e)
+            })),
+        )
+            .into_response(),
+    }
 }
 
 /// Parse mode string into Mode enum

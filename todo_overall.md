@@ -361,3 +361,61 @@ Combined findings from Codex (gpt-5.3-codex) and Gemini (gemini-2.5-pro) repo-wi
 
 5. **Matrix tile dimensions truncated to `u16` without explicit request-size guard**
    - `api.rs:1551`, `matrix/arrow_stream.rs:79`, `83`
+
+---
+
+## Second-Pass Audit Findings (2026-02-08, Codex gpt-5.3-codex)
+
+Full repo-wide audit with read-only sandbox access. Findings are net-new relative to the first audit section above. Items that overlap existing findings are marked **(see above #ID)**.
+
+### CRITICAL
+
+| # | Finding | Location | Notes |
+|---|---------|----------|-------|
+| Codex-C1 | **Parallel downloader path violates <1GB memory guarantee.** Entire chunk payloads buffered concurrently before ordered writeback. | `tools/butterfly-dl/src/core/downloader.rs:388,416,421,429` | Can allocate multi-GB under concurrent chunks. |
+| Codex-C2 | **Resumable download does not validate HTTP range response semantics.** Server may respond `200` (full body) instead of `206` (partial), silently corrupting output by prepending already-downloaded data. | `tools/butterfly-dl/src/core/downloader.rs:271-274`, `stream.rs:76` | Must check for `206 Partial Content` status. |
+| Codex-C3 | **C FFI header declares `butterfly_has_s3_support()` with no implementation.** Linker error for any C consumer including this function. ABI/header drift. | `tools/butterfly-dl/include/butterfly.h:180`, `src/ffi.rs` (absent) | S3 was removed but header not updated. |
+| Codex-C4 | **`/isochrone/bulk` is unbounded — no origin count limit, fully buffers all results in memory before responding.** A single request with 100K origins will OOM the server. | `tools/butterfly-route/src/step9/api.rs:2015,2044,2098,2103,2115` | Only checks for empty, no max. |
+| Codex-C5 | **`/debug/compare` is mounted in production router.** Expensive diagnostic endpoint with no auth, no rate limit. | `tools/butterfly-route/src/step9/api.rs:97` | See also existing HIGH #11. |
+
+### HIGH
+
+| # | Finding | Location | Notes |
+|---|---------|----------|-------|
+| Codex-H1 | **`/match` allows up to 10K GPS points — worst-case compute explosion.** Viterbi transition work scales with O(n * candidates^2 * P2P queries). 10K points = minutes of CPU per request. | `api.rs:2730`, `map_match.rs:15,402,419,482` | Needs hard cap (~200 points). |
+| Codex-H3 | **CPU-heavy graph algorithms execute inline on async Tokio handlers.** Route computation, matrix, isochrone, trip all block the async runtime. Under load, async task starvation. | `api.rs:470,1231,1818,2785`, `trip.rs:537` | Should use `spawn_blocking` or rayon. |
+| Codex-H4 | **`/table/stream` lacks hard request-size guard.** `/table` has a 100K cap but `/table/stream` has none — a million-point request is unchecked. | `api.rs:1364,1446` vs `api.rs:1092,1095` | |
+| Codex-H5 | **`/route` alternatives clone full CCH weights per request.** Each alternative request deep-clones the weight array for penalty application. | `api.rs:475` | ~100MB clone per alt request. |
+| Codex-H6 | **Dataset step directory selection is nondeterministic.** `read_dir` iteration order is filesystem-dependent — different data directories could load different step versions on different systems. | `state.rs:190-195` | Should sort or use explicit version selection. |
+| Codex-H7 | **CORS is fully permissive (`allow_origin(Any)`, all methods, all headers).** For a public-facing production API, this is a security concern. | `api.rs:79-82` | Should be configurable or restricted. |
+
+### MEDIUM
+
+| # | Finding | Location | Notes |
+|---|---------|----------|-------|
+| Codex-M1 | **Ingest `threads` config field is unused; ingestion uses Mutex-heavy pattern.** `IngestConfig.threads` is declared but never passed to the parallel parser. Tight loops push to Mutex-protected Vecs. | `ingest/mod.rs:15,31,137,145,208,270` | |
+| Codex-M2 | **Step5 lock condition D (graph-level parity check) is explicitly skipped.** | `validate/step5.rs:125,127` | |
+| Codex-M3 | **Step5 lock hashes are `"TODO"` placeholders.** All weight/mask SHA fields hardcoded to `"TODO"` string. | `validate/step5.rs:142-154` | See also existing LOW #2. |
+| Codex-M4 | **NBG edge flags always zero (`flags: 0, // TODO`).** | `nbg/mod.rs:381` | |
+| Codex-M5 | **Step9 module header docs list only 5 endpoints; actual router has 12+.** | `step9/mod.rs:7-9` vs `api.rs:89-121` | |
+| Codex-M6 | **OpenAPI spec omits public endpoints.** `/trip`, `/match`, `/height`, `/debug/compare`, `/isochrone/bulk`, `/table/stream` missing from `#[openapi(paths(...))]`. | `api.rs:45` | Community users can't discover full API. |
+| Codex-M7 | **`api.rs` tests only cover bearing/distance math helpers — zero HTTP handler tests.** No integration tests for any endpoint. | `api.rs:3833-4007` | |
+| Codex-M8 | **`nodes.si` validation is shallow.** Only checks magic and sample ordering — no CRC, no record-count cross-check against `nodes.sa`. | `validate/mod.rs:228-246` | Only format file without CRC. |
+| Codex-M9 | **User-facing docs are stale/misleading.** README lists non-existent tools (butterfly-shrink, butterfly-tile, butterfly-serve). Trip example uses `locations` but code expects `coordinates`. `/table/v1/driving` example doesn't exist. CONTRIBUTING references unavailable tools. | `README.md:20-22,221,224`, `CONTRIBUTING.md:25-28` | Embarrassing for open-source launch. |
+| Codex-M10 | **Docker packaging gaps.** Floating base tags (no pinned hash). Runtime runs as root (no user drop). Expanded runtime package surface (deb packages installed in slim image). | `Dockerfile:3,37-42,58-59` | |
+| Codex-M11 | **Public metadata still claims S3 support.** lib.rs docstring, butterfly.h header, .pc.in description all mention S3 but implementation is HTTP-only. | `lib.rs:8`, `butterfly.h:5,8,174`, `butterfly-dl.pc.in:7` | Misleading for library consumers. |
+| Codex-M12 | **Potential unchecked multiplication overflow in streamed matrix accounting.** `n_sources * n_destinations` can overflow `usize` for very large inputs. | `api.rs:1446` | See also existing HIGH #6. |
+
+### LOW
+
+| # | Finding | Location | Notes |
+|---|---------|----------|-------|
+| Codex-L1 | **`find_free_port` has panic path + TOCTOU race.** `.expect()` on bind failure, and freed port can be taken before actual bind. | `step9/mod.rs:67-73,113` | |
+| Codex-L2 | **Dead legacy helpers in production API module.** `bounded_dijkstra`, `debug_compare` helper funcs, `#[allow(dead_code)]` annotations. | `api.rs:2126,2539,3482` | |
+| Codex-L3 | **Downloader test coverage misses resume-integrity edge cases.** Tests cover happy path and retry timing but not resume with wrong HTTP status (200 vs 206). | `downloader.rs:271-274,596,680` | |
+
+### COSMETIC
+
+| # | Finding | Location | Notes |
+|---|---------|----------|-------|
+| Codex-X1 | **README CI badge points to GitHub Actions workflow that no longer exists.** `.github/` directory was deleted. | `README.md:3` | Dead badge link. |

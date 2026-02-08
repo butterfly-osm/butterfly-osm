@@ -12,7 +12,6 @@ use crate::formats::{NodeSignals, NodeSignalsFile};
 pub struct IngestConfig {
     pub input: PathBuf,
     pub outdir: PathBuf,
-    pub threads: usize,
 }
 
 pub struct IngestResult {

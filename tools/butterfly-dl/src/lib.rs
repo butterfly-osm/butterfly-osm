@@ -5,11 +5,11 @@
 //!
 //! ## Features
 //!
-//! - **Smart source routing**: S3 for planet files, HTTP for regional extracts
+//! - **Smart source routing**: via Geofabrik HTTP mirrors
 //! - **Memory efficient**: <1GB RAM usage regardless of file size
 //! - **Streaming support**: Download directly to any AsyncWrite destination
 //! - **Progress tracking**: Optional progress callbacks for custom UIs
-//! - **Feature flags**: Optional S3 support to minimize dependencies
+//! - **Feature flags**: Optional C bindings via `c-bindings` feature
 //!
 //! ## Basic Usage
 //!
@@ -218,7 +218,7 @@ pub async fn get_with_options(
 
 /// Advanced API: Create a downloader with custom configuration
 ///
-/// For advanced users who need to customize source URLs, S3 buckets, etc.
+/// For advanced users who need to customize source URLs, mirror configuration, etc.
 ///
 /// # Examples
 /// ```rust,no_run

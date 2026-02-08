@@ -896,7 +896,7 @@ impl Cli {
             Commands::Step1Ingest {
                 input,
                 outdir,
-                threads,
+                threads: _,
                 verify_only,
             } => {
                 if verify_only {
@@ -917,7 +917,6 @@ impl Cli {
                     let config = IngestConfig {
                         input: input.clone(),
                         outdir: outdir.clone(),
-                        threads,
                     };
 
                     let result = run_ingest(config)?;
