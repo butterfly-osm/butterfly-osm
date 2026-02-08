@@ -226,11 +226,11 @@ Combined findings from Codex (gpt-5.3-codex) and Gemini (gemini-2.5-pro) repo-wi
 
 | # | Finding | Component | Location | Source |
 |---|---------|-----------|----------|--------|
-| L1 | **Windows DLL naming.** `butterfly_dl.dll` uses underscores; `butterfly-dl.dll` would match Cargo convention. | Build | `Makefile` | Gemini |
+| L1 | ~~**Windows DLL naming.**~~ **REMOVED** (L-Sprint). No Windows/macOS builds — Linux/Docker only. | Build | `Makefile` | Gemini |
 | L2 | ~~**CI target dir caching.**~~ **FIXED** (J-Sprint, bundled with C1). Now caches only `~/.cargo/registry` + `~/.cargo/git`. | CI | `.github/workflows/ci.yml` | Gemini |
 | L3 | ~~**Simplify tolerance conversion is approximate.**~~ **FIXED** (J-Sprint). Simplification now runs in grid coordinates (Mercator space) before WGS84 conversion. Eliminates lat/lon distortion entirely. | butterfly-route | `tools/butterfly-route/src/range/contour.rs` | Codex |
 | L4 | ~~**Pre-existing failing test in butterfly-dl.**~~ **FIXED** (K-Sprint). Widened assertion to accept "Could not determine file size" and "HTTP error" (Geofabrik doesn't always return 404 for invalid paths). | butterfly-dl | `tools/butterfly-dl/tests/integration_tests.rs` | Known |
-| L5 | **`version = "2.0"` semver ambiguity.** butterfly-dl depends on butterfly-common `"2.0"` — should be `"2.0.0"` for precision. | butterfly-dl | `tools/butterfly-dl/Cargo.toml` | Gemini |
+| L5 | ~~**`version = "2.0"` semver ambiguity.**~~ **FIXED** (L-Sprint). Changed to `"2.0.0"`. | butterfly-dl | `tools/butterfly-dl/Cargo.toml` | Gemini |
 
 ### Remediation Status
 
@@ -241,9 +241,7 @@ Combined findings from Codex (gpt-5.3-codex) and Gemini (gemini-2.5-pro) repo-wi
 **K-Sprint (2026-02-08):** M1-M9, L4 — All MEDIUMs + pre-existing test failure
 **L-Sprint (2026-02-08):** Codex-H2, Codex-H8 — deferred architectural HIGHs (thread-local CCH query state, CRC validation across all format readers)
 
-**Remaining backlog (LOW only):**
-1. L1: Windows DLL naming convention
-2. L5: Semver precision in Cargo.toml
+**Remaining backlog:** None (L1 removed — no Windows builds, L5 fixed).
 
 ---
 

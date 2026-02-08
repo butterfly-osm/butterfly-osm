@@ -63,7 +63,7 @@ No active sprint. All features complete including map matching (F4), thread-loca
 
 | Item | Reason |
 |------|--------|
-| ~~Map matching (F4)~~ | DONE (L-Sprint, 2026-02-08) |
+| ~~Map matching (F4)~~ | DONE |
+| ~~L5 (semver precision)~~ | DONE — fixed `"2.0"` → `"2.0.0"` |
+| ~~L1 (Windows DLL naming)~~ | REMOVED — Linux/Docker only, no Windows/macOS builds |
 | Two-resolution isochrone mask (D8) | Current quality acceptable |
-| L1 (Windows DLL naming) | Low priority |
-| L5 (semver precision) | Low priority |
