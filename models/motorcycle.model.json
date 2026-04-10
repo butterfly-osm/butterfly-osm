@@ -1,5 +1,5 @@
 {
-  "name": "car",
+  "name": "motorcycle",
   "version": 1,
 
   "speed": {
@@ -35,13 +35,10 @@
       "construction": false
     },
     "deny_if": [
+      { "tag": "motorcycle", "values": ["no", "private"] },
       { "tag": "motor_vehicle", "values": ["no", "private"] },
       { "tag": "vehicle", "values": ["no", "private"] },
       { "tag": "access", "values": ["no", "private"] }
-    ],
-    "allow_if": [
-      { "if": { "highway": "track", "tracktype": "grade1" }, "speed_kmh": 30 },
-      { "if": { "highway": "track", "tracktype": "grade2" }, "speed_kmh": 20 }
     ]
   },
 
@@ -79,11 +76,11 @@
   },
 
   "turn_penalties": {
-    "turn_penalty_ds": 75,
-    "turn_bias": 1.075,
-    "u_turn_penalty_ds": 200,
+    "turn_penalty_ds": 20,
+    "turn_bias": 1.05,
+    "u_turn_penalty_ds": 60,
     "min_degree_for_penalty": 3,
-    "signal_delay_ds": 80,
+    "signal_delay_ds": 60,
     "class_change_penalty_ds_per_diff": 5,
     "max_class_diff_for_penalty": 6
   },
@@ -91,7 +88,7 @@
   "turn_restrictions": {
     "respect": true,
     "restriction_tag": "restriction",
-    "mode_specific_tag": "restriction:motorcar",
-    "exception_values": ["motorcar", "motor_vehicle"]
+    "mode_specific_tag": "restriction:motorcycle",
+    "exception_values": ["motorcycle", "motor_vehicle"]
   }
 }

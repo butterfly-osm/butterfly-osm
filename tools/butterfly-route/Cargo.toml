@@ -73,9 +73,16 @@ hdrhistogram = "7.5.4"
 
 # Arrow streaming for bulk matrix output
 arrow = { version = "54", default-features = false, features = ["ipc"] }
+arrow-flight = "54"
 futures = "0.3.31"
+futures-util = "0.3"
 bytes = "1.11"
 parking_lot = "0.12.5"
+tonic = { version = "0.12", features = ["transport"] }
+prost = "0.13"
+
+# Base64 encoding for WKB in JSON responses
+base64 = "0.22"
 
 # Prometheus metrics
 axum-prometheus = "0.8"

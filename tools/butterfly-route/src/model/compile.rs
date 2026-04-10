@@ -37,6 +37,15 @@ pub struct CompiledPriorityRule {
     pub multiply_by: f64,
 }
 
+/// Compiled allow_if rule: grants access to otherwise-denied highway types
+#[derive(Debug, Clone)]
+pub struct CompiledAllowRule {
+    /// (key_id, value_id) pairs that must ALL match
+    pub conditions: Vec<(u32, u32)>,
+    /// Speed in mm/s to assign when this rule matches
+    pub speed_mmps: u32,
+}
+
 /// Compiled class bit rule
 #[derive(Debug, Clone)]
 pub enum CompiledClassBitRule {
@@ -62,6 +71,7 @@ pub struct CompiledModel {
     // Access: dense array indexed by highway value_id -> accessible
     pub access_table: Vec<bool>,
     pub deny_rules: Vec<CompiledDenyRule>,
+    pub allow_if_rules: Vec<CompiledAllowRule>,
 
     // Oneway
     pub respect_oneway: bool,
@@ -106,6 +116,7 @@ impl CompiledModel {
             speed_overrides: vec![],
             access_table: vec![],
             deny_rules: vec![],
+            allow_if_rules: vec![],
             respect_oneway: false,
             oneway_key_id: None,
             forward_value_ids: vec![],
@@ -194,6 +205,30 @@ pub fn compile_model(
                 key_id,
                 denied_values,
             })
+        })
+        .collect();
+
+    // --- Allow-if rules (conditional access overrides) ---
+    let allow_if_rules: Vec<CompiledAllowRule> = schema
+        .access
+        .allow_if
+        .iter()
+        .map(|rule| {
+            let conditions: Vec<(u32, u32)> = rule
+                .condition
+                .iter()
+                .filter_map(|(key, val)| {
+                    let kid = *rev_key.get(key.as_str())?;
+                    let val_str = val.as_str()?;
+                    let vid = *rev_val.get(val_str)?;
+                    Some((kid, vid))
+                })
+                .collect();
+            let speed_mmps = (rule.speed_kmh * 1_000_000.0 / 3_600.0) as u32;
+            CompiledAllowRule {
+                conditions,
+                speed_mmps,
+            }
         })
         .collect();
 
@@ -294,6 +329,7 @@ pub fn compile_model(
 
         access_table,
         deny_rules,
+        allow_if_rules,
 
         respect_oneway: schema.oneway.respect,
         oneway_key_id,

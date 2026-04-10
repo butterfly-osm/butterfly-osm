@@ -400,7 +400,13 @@ fn build_adjacency(
                 }
 
                 // === COMPUTE TURN GEOMETRY AND PENALTIES ===
-                let from_bearing = from_edge.bearing_deci_deg;
+                let from_bearing = if a_node.tail_nbg == from_edge.u_node {
+                    from_edge.bearing_deci_deg
+                } else if from_edge.bearing_deci_deg == 65535 {
+                    65535
+                } else {
+                    (from_edge.bearing_deci_deg + 1800) % 3600
+                };
 
                 let to_bearing = if b_node.tail_nbg == to_edge.u_node {
                     to_edge.bearing_deci_deg

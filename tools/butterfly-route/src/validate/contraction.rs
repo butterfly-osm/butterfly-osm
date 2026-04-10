@@ -5,8 +5,8 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+use crate::contraction::Step7Result;
 use crate::formats::{CchTopoFile, FilteredEbg, FilteredEbgFile, OrderEbgFile};
-use crate::step7::Step7Result;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Step7LockFile {

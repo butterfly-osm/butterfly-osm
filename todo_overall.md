@@ -34,13 +34,13 @@
 | Car | car | car | auto | car |
 | Bicycle | bike | bicycle | bicycle | bike |
 | Pedestrian | foot | foot | pedestrian | foot |
-| Truck | - | - | truck | truck, small_truck |
-| Bus | - | - | bus | bus |
-| Motorcycle | - | - | motorcycle | motorcycle |
-| Scooter | - | - | motor_scooter | scooter |
-| E-cargo bike | - | - | - | ecargobike |
+| Truck | truck | - | truck | truck, small_truck |
+| Bus | (add model JSON) | - | bus | bus |
+| Motorcycle | (add model JSON) | - | motorcycle | motorcycle |
+| Scooter | (add model JSON) | - | motor_scooter | scooter |
+| E-cargo bike | (add model JSON) | - | - | ecargobike |
 | Transit | - | - | multimodal | - |
-| Custom profiles | - | Lua scripts | costing options | custom models (JSON) |
+| Custom profiles | JSON models (declarative) | Lua scripts | costing options | custom models (JSON) |
 
 ### Routing Features
 
@@ -102,7 +102,7 @@
 
 ## P-Sprint: Feature Parity Implementation Plan
 
-**Status: ALL implemented features COMPLETE (P1-P4, P6-P7). P5 deferred (requires pipeline re-run).**
+**Status: ALL features COMPLETE (P1-P7). P5 (truck) implemented via Q-Sprint declarative model system.**
 
 ### P1: Avoid tolls/ferries/highways ✅
 **Files:** `api.rs`, `exclude.rs` (new), `state.rs`
@@ -125,8 +125,8 @@
 **Implementation:** `annotations=speed,duration,distance,nodes` param on `/route`. Returns per-edge metadata arrays matching geometry segments.
 **API:** `GET /route?...&annotations=speed,distance`
 
-### P5: Truck profile (Deferred)
-**Reason:** Requires full pipeline re-run (steps 2-8) for truck mode. Low priority compared to other features.
+### P5: Truck profile ✅ (via Q-Sprint)
+**Implementation:** `truck.model.json` with HGV speeds, `hgv=no/private` denial, `restriction:hgv` support. Pipeline re-run with `--way-attrs truck=...` builds truck data. Zero Rust code changes needed.
 
 ### P6: Avoid polygon areas ✅
 **Files:** `api.rs`, `avoid.rs` (new), `exclude.rs`
@@ -156,8 +156,8 @@ Requires GTFS data, entirely different graph model. Valhalla is the only OSS eng
 ### Time-dependent Routing
 Requires time-varying speed profiles (traffic data). Large scope, different weight model.
 
-### Custom Profiles (Lua/JSON DSL)
-OSRM uses Lua scripts, GraphHopper uses JSON custom models. Our Rust profiles are compiled in. Lower priority — truck/bus cover main use cases.
+### Custom Profiles (Lua/JSON DSL) — DONE (Q-Sprint)
+OSRM uses Lua scripts, GraphHopper uses JSON custom models. **Butterfly now uses declarative JSON model files** (`*.model.json`). Adding a new mode = drop a JSON file, re-run pipeline. Zero Rust code changes. Car, bike, foot, truck models included. Bus/motorcycle/scooter can be added by creating model files.
 
 ---
 
@@ -165,7 +165,7 @@ OSRM uses Lua scripts, GraphHopper uses JSON custom models. Our Rust profiles ar
 
 ### Global input invariants
 - Coordinates must be finite WGS84: lon `[-180,180]`, lat `[-90,90]`.
-- Mode: `car|bike|foot|truck` (case-insensitive, no whitespace trimming).
+- Mode: any discovered mode name (case-insensitive, no whitespace trimming). Default models: car, bike, foot, truck.
 - Endpoint limits enforced without panic:
   - `nearest.number in [1,100]`
   - `isochrone.time_s in [1,7200]`, `isochrone.distance_m in [1,100000]`
@@ -208,3 +208,98 @@ OSRM uses Lua scripts, GraphHopper uses JSON custom models. Our Rust profiles ar
 - `/health` always 200.
 - Concurrency limits + timeouts protect stability.
 - Streaming cancellation stops wasted compute.
+
+---
+
+## Q-Sprint: Declarative Custom Model System (2026-02-08) — COMPLETE
+
+Replace all hardcoded Rust profiles with JSON model files. Adding new transport modes requires zero Rust code changes.
+
+### Architecture
+- `models/*.model.json` — declarative model definitions (car, bike, foot, truck)
+- `src/model/` — schema.rs, compile.rs, evaluate.rs, mod.rs
+- `Mode(pub u8)` — pure index wrapper, no hardcoded constants
+- Deterministic mode indexing: sorted alphabetically by name (bike=0, car=1, foot=2, truck=3)
+- `TurnEntry.penalty_ds: [u32; MAX_MODES=8]` — dynamic per-mode penalties
+- CLI Steps 3/4/5 use `--way-attrs MODE=PATH` repeatable args
+- Server auto-discovers modes from `way_attrs.*.bin` files in data directory
+
+### What was deleted
+- `src/profiles/` directory (car.rs, bike.rs, foot.rs, mod.rs, tag_lookup.rs)
+- `Profile` trait, all `Mode::Car/Bike/Foot` constants
+- All `Mode::all()`, `Mode::name()`, `Mode::from_name()` methods
+
+### Adding a new mode (e.g. bus)
+1. Create `models/bus.model.json` (speeds, access, turn penalties, restrictions)
+2. Re-run pipeline: `step2-profile` discovers new model, `step4-ebg --way-attrs bus=... --turn-rules bus=...`
+3. Server auto-discovers bus mode on startup — all endpoints serve bus routes
+
+### Status
+- 52 files changed, 280 Mode enum usages replaced
+- 234 tests pass, zero clippy warnings, clean release build
+
+---
+
+## R-Sprint: Architecture Cleanup (2026-03-20) — COMPLETE
+
+Purely mechanical restructuring — zero behavioral changes. Fixes opaque `stepN` module names, 5,911-line `api.rs` monolith, and dead experimental code.
+
+### Phase 1: Delete Dead Code (~1,930 LOC) ✅
+- Deleted `hybrid/` module (1,505 LOC) — 5 files, 5 CLI commands removed
+- Deleted `analysis/` module (428 LOC) — 2 files, 1 CLI command removed
+- Kept `formats/hybrid_state.rs` (used by Step6/7/8 hybrid pipeline variant)
+- Kept Step6Hybrid/Step7Hybrid/Step8Hybrid CLI commands (use `formats::hybrid_state`, not `hybrid::`)
+
+### Phase 2: Rename Step Modules ✅
+| Old | New | LOC |
+|-----|-----|-----|
+| `step5.rs` | `weights.rs` | 383 |
+| `step6.rs` | `ordering.rs` | 1,939 |
+| `step6_lifted.rs` | `ordering_lifted.rs` | 162 |
+| `step7.rs` | `contraction.rs` | 1,593 |
+| `step8.rs` | `customization.rs` | 997 |
+
+Also renamed `validate/step5.rs` → `validate/weights.rs`, `validate/step6.rs` → `validate/ordering.rs`, `validate/step7.rs` → `validate/contraction.rs`.
+
+### Phase 3: Merge `profile_abi.rs` into `model/types.rs` ✅
+- Content moved to `model/types.rs`
+- `profile_abi.rs` is now a thin re-export shim (`pub use crate::model::types::*`)
+- All 33 import sites continue to work unchanged
+- Unified duplicate `MAX_MODES` constant
+
+### Phase 4: Rename `step9/` → `server/` + Split `api.rs` ✅
+- Directory renamed from `step9/` to `server/`
+- All external references updated (cli.rs, bench/main.rs, matrix/bucket_ch.rs)
+- `api.rs` split from 5,911 lines into 11 focused modules (largest: 1,221 lines)
+- New modules: `types.rs`, `route.rs`, `nearest.rs`, `table.rs`, `isochrone_handler.rs`, `matching.rs`, `health_handler.rs`, `height_handler.rs`, `debug.rs`, `api_tests.rs`
+
+### Phase 5: Merge `profile/` into `model/profiling.rs` ✅
+- Content moved to `model/profiling.rs`
+- `profile/mod.rs` is now a thin re-export shim (`pub use crate::model::profiling::*`)
+- All 4 import sites continue to work unchanged
+
+### Final Module Layout
+```
+lib.rs: cli, ebg, formats, ingest, matrix, model, nbg, nbg_ch, range,
+        weights, ordering, ordering_lifted, contraction, customization,
+        server, profile (shim), profile_abi (shim), validate
+
+model/: compile, evaluate, profiling, schema, types
+server/: api (router+OpenApi, 153 LOC), types, route, nearest, table,
+         isochrone_handler, matching, health_handler, height_handler,
+         debug, api_tests, avoid, elevation, exclude, geometry,
+         map_match, query, spatial, state, trip, unpack
+```
+
+---
+
+## Remaining Work
+
+### Pipeline Status (2026-02-08)
+- Steps 2-8: DONE for all 4 modes (bike, car, foot, truck)
+- Server verification with truck: PENDING (data exists, needs live test)
+
+### Deferred
+- Two-resolution isochrone mask (D8) — WONTFIX
+- Hybrid pipeline removal (~1,100 LOC in ordering/contraction/customization + 3 CLI commands) — separate decision
+- Remove re-export shims (`profile_abi.rs`, `profile/mod.rs`) once all imports migrated

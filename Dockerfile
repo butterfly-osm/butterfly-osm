@@ -54,7 +54,7 @@ USER butterfly
 # Data volume
 VOLUME /data
 
-EXPOSE 8080
+EXPOSE 8080 8081
 
 # JSON logging by default in containers
 ENV RUST_LOG=info,tower_http=debug

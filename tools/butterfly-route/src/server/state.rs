@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::formats::{
-    mod_mask, mod_weights, CchTopo, CchTopoFile, CchWeightsFile, EbgCsr, EbgCsrFile, EbgNodes,
+    mod_weights, CchTopo, CchTopoFile, CchWeightsFile, EbgCsr, EbgCsrFile, EbgNodes,
     EbgNodesFile, FilteredEbg, FilteredEbgFile, NbgGeo, NbgGeoFile, OrderEbg, OrderEbgFile,
     WaysFile,
 };
@@ -93,8 +93,8 @@ pub struct ServerState {
 }
 
 impl ServerState {
-    /// Load all data from directory
-    pub fn load(data_dir: &Path) -> Result<Self> {
+    /// Load all data from directory. If `mode_filter` is Some, only load those modes.
+    pub fn load(data_dir: &Path, mode_filter: Option<&[String]>) -> Result<Self> {
         // Determine subdirectories
         let step1_dir = find_step_dir(data_dir, "step1")?;
         let step2_dir = find_step_dir(data_dir, "step2")?;
@@ -117,8 +117,23 @@ impl ServerState {
         let nbg_geo = NbgGeoFile::read(step3_dir.join("nbg.geo"))?;
         tracing::info!(edges = nbg_geo.edges.len(), "loaded NBG geo");
 
-        // Discover available modes by scanning for w.*.u32 files in step5 directory
-        let discovered_modes = discover_modes(&step5_dir)?;
+        // Discover ALL available modes (for global index assignment), then filter
+        let all_modes = discover_modes(&step5_dir)?;
+        // Global index: position in alphabetically sorted all_modes list
+        let global_index: HashMap<String, u8> = all_modes
+            .iter()
+            .enumerate()
+            .map(|(i, name)| (name.clone(), i as u8))
+            .collect();
+
+        let discovered_modes: Vec<String> = if let Some(filter) = mode_filter {
+            all_modes
+                .into_iter()
+                .filter(|m| filter.iter().any(|f| f == m))
+                .collect()
+        } else {
+            all_modes
+        };
         tracing::info!(modes = ?discovered_modes, "discovered transport modes");
 
         if discovered_modes.is_empty() {
@@ -135,7 +150,8 @@ impl ServerState {
         let mut mode_lookup = HashMap::with_capacity(discovered_modes.len());
 
         for (mode_index, mode_name) in discovered_modes.iter().enumerate() {
-            let mode = Mode(mode_index as u8);
+            // Use GLOBAL index (from full alphabetical discovery) — must match step 4/5 indexing
+            let mode = Mode(global_index[mode_name]);
             let mode_data = load_mode_data(
                 mode_name, mode, &step5_dir, &step6_dir, &step7_dir, &step8_dir,
             )?;
@@ -369,10 +385,20 @@ fn load_mode_data(
     let weights_path = step5_dir.join(format!("w.{}.u32", mode_name));
     let weights_data = mod_weights::read_all(&weights_path)?;
 
-    // Load mask from step 5 and convert to u64 words
-    let mask_path = step5_dir.join(format!("mask.{}.bitset", mode_name));
-    let mask_data = mod_mask::read_all(&mask_path)?;
-    let mask = bytes_to_u64_words(&mask_data.mask);
+    // Build snap mask from the SCC-filtered EBG (only nodes in the largest
+    // strongly connected component are snappable). This ensures queries never
+    // snap to dead-end stubs or disconnected fragments.
+    let n_original = filtered_ebg.n_original_nodes as usize;
+    let mask = {
+        let n_words = (n_original + 63) / 64;
+        let mut m = vec![0u64; n_words];
+        for &orig_id in &filtered_ebg.filtered_to_original {
+            let word = orig_id as usize / 64;
+            let bit = orig_id as usize % 64;
+            m[word] |= 1u64 << bit;
+        }
+        m
+    };
 
     // Load CCH weights from step 8
     let cch_weights_path = step8_dir.join(format!("cch.w.{}.u32", mode_name));
@@ -405,20 +431,6 @@ fn load_mode_data(
         down_rev_flat_dist,
         exclude_cache: parking_lot::RwLock::new(HashMap::new()),
     })
-}
-
-/// Convert byte array to u64 word array for efficient bit testing
-fn bytes_to_u64_words(bytes: &[u8]) -> Vec<u64> {
-    let n_words = bytes.len().div_ceil(8);
-    let mut words = vec![0u64; n_words];
-
-    for (i, &byte) in bytes.iter().enumerate() {
-        let word_idx = i / 8;
-        let byte_offset = (i % 8) * 8;
-        words[word_idx] |= (byte as u64) << byte_offset;
-    }
-
-    words
 }
 
 /// Load CCH weights from file

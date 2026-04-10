@@ -13,7 +13,7 @@ use std::sync::Arc;
 use crate::matrix::bucket_ch::table_bucket_full_flat;
 use crate::profile_abi::Mode;
 
-use super::api::run_phast_bounded_fast;
+use super::isochrone_handler::run_phast_bounded_fast;
 use super::query::CchQuery;
 use super::state::ServerState;
 use super::unpack::unpack_path;
@@ -834,7 +834,7 @@ fn test_nearest_in_ocean_returns_empty() {
 #[test]
 #[ignore] // Requires Belgium data
 fn test_route_steps_have_depart_and_arrive() {
-    use super::api::build_steps;
+    use super::route::build_steps;
 
     let state = load_state();
     let mode = lookup_mode(&state, "car");
@@ -950,7 +950,7 @@ fn test_route_steps_have_depart_and_arrive() {
 #[test]
 #[ignore] // Requires Belgium data
 fn test_route_steps_distances_sum_to_total() {
-    use super::api::build_steps;
+    use super::route::build_steps;
 
     let state = load_state();
     let mode = lookup_mode(&state, "car");
@@ -1029,7 +1029,7 @@ fn test_route_steps_distances_sum_to_total() {
 #[test]
 #[ignore] // Requires Belgium data
 fn test_route_step_locations_on_route() {
-    use super::api::build_steps;
+    use super::route::build_steps;
 
     let state = load_state();
     let mode = lookup_mode(&state, "car");

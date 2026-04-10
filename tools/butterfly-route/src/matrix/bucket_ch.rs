@@ -18,7 +18,7 @@
 //! - **Version-stamped distances**: Amortized O(1) per-search initialization
 
 use crate::formats::{CchTopo, CchWeights};
-use crate::step9::state::DownReverseAdj;
+use crate::server::state::DownReverseAdj;
 
 // =============================================================================
 // FLAT ADJACENCY STRUCTURES - Pre-filtered INF edges

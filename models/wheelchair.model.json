@@ -1,0 +1,85 @@
+{
+  "name": "wheelchair",
+  "version": 1,
+
+  "speed": {
+    "unit": "km/h",
+    "highway": {
+      "footway": 4, "pedestrian": 4,
+      "path": 3, "cycleway": 3,
+      "residential": 3, "living_street": 4,
+      "service": 3, "unclassified": 3,
+      "tertiary": 0, "secondary": 0, "primary": 0,
+      "steps": 0, "track": 0
+    },
+    "speed_cap_kmh": 6,
+    "overrides": []
+  },
+
+  "access": {
+    "highway": {
+      "footway": true, "pedestrian": true,
+      "path": true, "cycleway": true,
+      "residential": true, "living_street": true,
+      "service": true, "unclassified": true,
+      "tertiary": false, "tertiary_link": false,
+      "secondary": false, "secondary_link": false,
+      "primary": false, "primary_link": false,
+      "trunk": false, "trunk_link": false,
+      "motorway": false, "motorway_link": false,
+      "steps": false, "track": false,
+      "construction": false
+    },
+    "deny_if": [
+      { "tag": "wheelchair", "values": ["no", "limited"] },
+      { "tag": "foot", "values": ["no", "private"] },
+      { "tag": "access", "values": ["no", "private"] }
+    ]
+  },
+
+  "oneway": {
+    "respect": false,
+    "tag": "oneway:foot",
+    "forward_values": [],
+    "reverse_values": [],
+    "default_oneway_highways": []
+  },
+
+  "priority": [
+    { "if": { "surface": ["unpaved", "gravel", "dirt", "grass", "sand", "mud"] }, "multiply_by": 0.3 },
+    { "if": { "smoothness": ["bad", "very_bad", "horrible", "very_horrible", "impassable"] }, "multiply_by": 0.2 }
+  ],
+
+  "highway_class": {
+    "footway": 11, "pedestrian": 11,
+    "path": 15, "cycleway": 15,
+    "residential": 12, "living_street": 12,
+    "service": 13, "unclassified": 13,
+    "tertiary": 9, "secondary": 9, "primary": 9,
+    "tertiary_link": 9, "secondary_link": 9, "primary_link": 9,
+    "trunk": 1, "trunk_link": 1,
+    "motorway": 1, "motorway_link": 1,
+    "steps": 20, "track": 20,
+    "construction": 99
+  },
+
+  "class_bits": {
+    "footway": { "highway_any": ["footway", "pedestrian"] }
+  },
+
+  "turn_penalties": {
+    "turn_penalty_ds": 10,
+    "turn_bias": 1.0,
+    "u_turn_penalty_ds": 0,
+    "min_degree_for_penalty": 4,
+    "signal_delay_ds": 30,
+    "class_change_penalty_ds_per_diff": 0,
+    "max_class_diff_for_penalty": 0
+  },
+
+  "turn_restrictions": {
+    "respect": false,
+    "restriction_tag": "restriction",
+    "exception_values": []
+  }
+}

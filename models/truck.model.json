@@ -39,6 +39,10 @@
       { "tag": "motor_vehicle", "values": ["no", "private"] },
       { "tag": "vehicle", "values": ["no", "private"] },
       { "tag": "access", "values": ["no", "private"] }
+    ],
+    "allow_if": [
+      { "if": { "highway": "track", "tracktype": "grade1" }, "speed_kmh": 20 },
+      { "if": { "highway": "track", "tracktype": "grade2" }, "speed_kmh": 15 }
     ]
   },
 
