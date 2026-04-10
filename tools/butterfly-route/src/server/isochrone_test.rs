@@ -256,8 +256,8 @@ mod tests {
             }
         };
 
-        use crate::step9::query::CchQuery;
-        use crate::step9::state::ServerState;
+        use crate::server::query::CchQuery;
+        use crate::server::state::ServerState;
 
         // Load server state
         let state = ServerState::load(data_dir).expect("Failed to load server state");
@@ -285,7 +285,7 @@ mod tests {
         let origin_rank = mode_data.order.perm[origin_filtered as usize];
 
         // Compute PHAST distances
-        let phast_settled = crate::step9::api::run_phast_bounded_fast(
+        let phast_settled = crate::server::isochrone_handler::run_phast_bounded_fast(
             &mode_data.cch_topo,
             &mode_data.cch_weights,
             origin_rank,
@@ -498,8 +498,8 @@ mod tests {
     /// Compute drive time from origin EBG node to destination EBG node
     /// Returns drive time in deciseconds (ds), or None if no route
     fn compute_drive_time_ebg(
-        mode_data: &crate::step9::state::ModeData,
-        query: &crate::step9::query::CchQuery,
+        mode_data: &crate::server::state::ModeData,
+        query: &crate::server::query::CchQuery,
         origin_ebg: u32,
         dst_ebg: u32,
     ) -> Option<u32> {

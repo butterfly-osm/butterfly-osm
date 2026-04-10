@@ -32,8 +32,22 @@ pub fn evaluate_way(
     let hw_idx = highway_val_id as usize;
 
     // Check access
-    if hw_idx >= model.access_table.len() || !model.access_table[hw_idx] {
-        return output; // Not accessible by default for this highway type
+    let highway_allowed = hw_idx < model.access_table.len() && model.access_table[hw_idx];
+
+    if !highway_allowed {
+        // Highway type denied by default — check allow_if overrides
+        let mut allowed_by_rule = false;
+        for rule in &model.allow_if_rules {
+            if check_all_conditions(&rule.conditions, kv_keys, kv_vals) {
+                allowed_by_rule = true;
+                // Override the speed for this allowed road
+                output.base_speed_mmps = rule.speed_mmps;
+                break;
+            }
+        }
+        if !allowed_by_rule {
+            return output; // Not accessible
+        }
     }
 
     // Check deny rules (explicit access tag overrides)
@@ -79,13 +93,15 @@ pub fn evaluate_way(
         }
     }
 
-    // Speed
-    let base_speed_mmps = if hw_idx < model.speed_table.len() {
-        model.speed_table[hw_idx]
-    } else {
-        0
-    };
-    output.base_speed_mmps = base_speed_mmps;
+    // Speed (skip if already set by allow_if rule)
+    if output.base_speed_mmps == 0 {
+        let base_speed_mmps = if hw_idx < model.speed_table.len() {
+            model.speed_table[hw_idx]
+        } else {
+            0
+        };
+        output.base_speed_mmps = base_speed_mmps;
+    }
 
     // Speed overrides
     for ovr in &model.speed_overrides {

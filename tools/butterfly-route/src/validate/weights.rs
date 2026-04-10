@@ -7,7 +7,7 @@ use std::path::Path;
 
 use crate::formats::*;
 use crate::profile_abi::Mode;
-use crate::step5;
+use crate::weights::Step5Result;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Step5LockFile {
@@ -29,7 +29,7 @@ pub struct ModeLockData {
 ///
 /// `way_attrs_by_name` maps mode_name -> way_attrs path (e.g. "car" -> "/data/step2/way_attrs.car.bin").
 pub fn validate_step5(
-    result: &step5::Step5Result,
+    result: &Step5Result,
     ebg_nodes_path: &Path,
     ebg_csr_path: &Path,
     turn_table_path: &Path,
@@ -202,7 +202,7 @@ fn verify_lock_b_math(
         };
 
         if !has_access || way_attr.output.base_speed_mmps == 0 {
-            // Should be inaccessible
+            // Should be inaccessible: weight must be 0 and mask bit must be clear
             anyhow::ensure!(
                 weights.weights[ebg_id] == 0 && !mask.get(ebg_id as u32),
                 "Node {} has no access but weight={} mask={}",
@@ -322,7 +322,7 @@ fn verify_lock_e_bounds(
                 max_weight
             );
         } else {
-            // Inaccessible node - must be 0
+            // Inaccessible node — must be 0
             anyhow::ensure!(
                 weight == 0,
                 "{} node {} inaccessible but weight={}",

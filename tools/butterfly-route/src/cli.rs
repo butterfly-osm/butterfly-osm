@@ -4,21 +4,21 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 
+use crate::contraction;
+use crate::customization;
 use crate::ebg::{build_ebg, EbgConfig};
 use crate::ingest::{run_ingest, IngestConfig};
 use crate::nbg::{build_nbg, NbgConfig};
+use crate::ordering;
+use crate::ordering_lifted;
 use crate::profile::{run_profiling, ProfileConfig};
 use crate::profile_abi::Mode;
-use crate::step5;
-use crate::step6;
-use crate::step6_lifted;
-use crate::step7;
-use crate::step8;
-use crate::step9;
+use crate::server;
 use crate::validate::{
     validate_step4, validate_step5, validate_step6, validate_step6_lifted, validate_step7,
     verify_lock_conditions, Counts, LockFile,
 };
+use crate::weights;
 
 /// Parse MODE=PATH pairs from CLI arguments, sorted alphabetically by mode name.
 /// Returns (mode_name, mode_index, path) tuples with deterministic indices.
@@ -41,12 +41,12 @@ fn parse_mode_path_pairs(args: &[String], arg_name: &str) -> Result<Vec<(String,
 }
 
 /// Resolve a mode name to a Mode by discovering modes from a data directory.
-/// The data directory should contain `way_attrs.*.bin` files from Step 2.
+/// The directory should contain mode-specific files (way_attrs.*.bin, w.*.u32, or filtered.*.ebg).
 fn resolve_mode(mode_name: &str, data_dir: &Path) -> Result<Mode> {
     let discovered = Mode::discover_from_dir(data_dir);
     if discovered.is_empty() {
         anyhow::bail!(
-            "No modes found in {}. Expected way_attrs.*.bin files from Step 2.",
+            "No modes found in {}. Expected way_attrs.*.bin, w.*.u32, or filtered.*.ebg files.",
             data_dir.display()
         );
     }
@@ -326,9 +326,22 @@ pub enum Commands {
         #[arg(short, long)]
         data_dir: PathBuf,
 
-        /// Port to listen on (default: find free port starting from 8080)
+        /// Port for REST/HTTP server (default: find free port starting from 8080)
         #[arg(short, long)]
         port: Option<u16>,
+
+        /// Port for Arrow Flight gRPC server (default: REST port + 1)
+        #[arg(long)]
+        grpc_port: Option<u16>,
+
+        /// Transport mode: rest, grpc, or both (default: both)
+        #[arg(long, default_value = "both")]
+        transport: String,
+
+        /// Load only specific modes (comma-separated). Default: all discovered modes.
+        /// Example: --modes car,bike
+        #[arg(long)]
+        modes: Option<String>,
 
         /// Log format: "text" (default) or "json"
         #[arg(long, default_value = "text")]
@@ -629,135 +642,6 @@ pub enum Commands {
         cell_size: Option<f64>,
     },
 
-    /// Analyze hybrid state graph (step towards beating OSRM)
-    HybridAnalysis {
-        /// Path to ebg.nodes from Step 4
-        #[arg(long)]
-        ebg_nodes: PathBuf,
-
-        /// Path to ebg.csr from Step 4
-        #[arg(long)]
-        ebg_csr: PathBuf,
-
-        /// Path to nbg.node_map from Step 3
-        #[arg(long)]
-        nbg_node_map: PathBuf,
-
-        /// Path to turn_rules.car.bin from Step 2
-        #[arg(long)]
-        turn_rules_car: PathBuf,
-
-        /// Path to w.car.u32 from Step 5
-        #[arg(long)]
-        weights: PathBuf,
-
-        /// Path to t.car.u32 from Step 5
-        #[arg(long)]
-        turns: PathBuf,
-    },
-
-    /// Analyze equivalence classes to determine if equivalence-class hybrid is worth building
-    EquivalenceAnalysis {
-        /// Path to ebg.nodes from Step 4
-        #[arg(long)]
-        ebg_nodes: PathBuf,
-
-        /// Path to ebg.csr from Step 4
-        #[arg(long)]
-        ebg_csr: PathBuf,
-
-        /// Path to t.<mode>.u32 from Step 5
-        #[arg(long)]
-        turns: PathBuf,
-
-        /// Mode name (discovered from way_attrs.*.bin files in data dir)
-        #[arg(long)]
-        mode: String,
-    },
-
-    /// Analyze densifier distribution (in×out) for hybrid CCH ordering
-    ///
-    /// Identifies high-degree nodes that cause fill-in explosion if contracted early.
-    /// Use results to constrain ordering: force densifiers to late ranks.
-    DensifierAnalysis {
-        /// Path to hybrid.<mode>.state from Step 5.5
-        #[arg(long)]
-        hybrid_state: PathBuf,
-
-        /// Mode name (discovered from way_attrs.*.bin files in data dir)
-        #[arg(long)]
-        mode: String,
-    },
-
-    /// Step 5.5a: Build equivalence-class hybrid state graph (RECOMMENDED)
-    ///
-    /// Uses behavior signatures to group incoming edges by identical patterns.
-    /// Only collapses edges with IDENTICAL behavior, preserving the degree invariant.
-    Step5EquivHybrid {
-        /// Path to ebg.nodes from Step 4
-        #[arg(long)]
-        ebg_nodes: PathBuf,
-
-        /// Path to ebg.csr from Step 4
-        #[arg(long)]
-        ebg_csr: PathBuf,
-
-        /// Path to w.<mode>.u32 from Step 5
-        #[arg(long)]
-        weights: PathBuf,
-
-        /// Path to t.<mode>.u32 from Step 5
-        #[arg(long)]
-        turns: PathBuf,
-
-        /// Number of NBG nodes (from step3.lock.json or nbg.geo header)
-        #[arg(long)]
-        n_nbg_nodes: usize,
-
-        /// Mode name (discovered from way_attrs.*.bin files in data dir)
-        #[arg(long)]
-        mode: String,
-
-        /// Output directory for hybrid.<mode>.state
-        #[arg(short, long)]
-        outdir: PathBuf,
-    },
-
-    /// Step 5.5b: Build naive hybrid state graph (for comparison only)
-    Step5Hybrid {
-        /// Path to ebg.nodes from Step 4
-        #[arg(long)]
-        ebg_nodes: PathBuf,
-
-        /// Path to ebg.csr from Step 4
-        #[arg(long)]
-        ebg_csr: PathBuf,
-
-        /// Path to nbg.node_map from Step 3
-        #[arg(long)]
-        nbg_node_map: PathBuf,
-
-        /// Path to turn_rules.<mode>.bin from Step 2
-        #[arg(long)]
-        turn_rules: PathBuf,
-
-        /// Path to w.<mode>.u32 from Step 5
-        #[arg(long)]
-        weights: PathBuf,
-
-        /// Path to t.<mode>.u32 from Step 5
-        #[arg(long)]
-        turns: PathBuf,
-
-        /// Mode name (discovered from way_attrs.*.bin files in data dir)
-        #[arg(long)]
-        mode: String,
-
-        /// Output directory for hybrid.<mode>.state
-        #[arg(short, long)]
-        outdir: PathBuf,
-    },
-
     /// Step 6 (Hybrid): Generate CCH ordering on hybrid state graph
     Step6Hybrid {
         /// Path to hybrid.<mode>.state from Step 5.5
@@ -849,40 +733,6 @@ pub enum Commands {
         /// Number of validation tests (default: 1000)
         #[arg(long, default_value = "1000")]
         validate_tests: usize,
-    },
-
-    /// Analyze turn model to understand when turns matter
-    ///
-    /// Answers: How many junctions need expansion for exact turn semantics?
-    /// Use this to decide if node-based CH + junction expansion is viable.
-    TurnModelAnalysis {
-        /// Path to ebg.nodes from Step 4
-        #[arg(long)]
-        ebg_nodes: PathBuf,
-
-        /// Path to ebg.csr from Step 4
-        #[arg(long)]
-        ebg_csr: PathBuf,
-
-        /// Path to ebg.turn_table from Step 4
-        #[arg(long)]
-        turn_table: PathBuf,
-
-        /// Path to nbg.csr from Step 3
-        #[arg(long)]
-        nbg_csr: PathBuf,
-
-        /// Path to turn_rules.car.bin from Step 2
-        #[arg(long)]
-        turn_rules_car: PathBuf,
-
-        /// Path to turn_rules.bike.bin from Step 2
-        #[arg(long)]
-        turn_rules_bike: PathBuf,
-
-        /// Path to turn_rules.foot.bin from Step 2
-        #[arg(long)]
-        turn_rules_foot: PathBuf,
     },
 
     /// Step 8 (Hybrid): Customize CCH with weights from hybrid state graph
@@ -1140,16 +990,59 @@ impl Cli {
                 way_attrs,
                 outdir,
             } => {
-                let wa_parsed = parse_mode_path_pairs(&way_attrs, "way-attrs")?;
-                let mode_inputs: Vec<step5::Step5ModeInput> = wa_parsed
+                // Parse mode=path pairs from CLI
+                let wa_raw: Vec<(String, PathBuf)> = way_attrs
                     .iter()
-                    .map(|(name, idx, path)| step5::Step5ModeInput {
-                        mode_name: name.clone(),
-                        mode_index: *idx,
-                        way_attrs_path: path.clone(),
+                    .map(|s| {
+                        let (mode, path) = s.split_once('=').ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Invalid --way-attrs format '{}': expected MODE=PATH",
+                                s
+                            )
+                        })?;
+                        Ok((mode.to_string(), PathBuf::from(path)))
                     })
-                    .collect();
-                let result = step5::generate_weights(
+                    .collect::<Result<Vec<_>>>()?;
+
+                // Discover ALL modes from the step2 directory to get correct global indices.
+                // The turn table (from step4) uses mode indices based on ALL modes sorted
+                // alphabetically. Step5 MUST use the same indices even when processing a
+                // subset of modes, otherwise the mode_mask bit check in the filtered EBG
+                // will use the wrong bit.
+                let step2_dir = wa_raw
+                    .first()
+                    .and_then(|(_, p)| p.parent())
+                    .ok_or_else(|| anyhow::anyhow!("Cannot determine step2 directory from way-attrs paths"))?;
+                let all_modes = Mode::discover_from_dir(step2_dir);
+                anyhow::ensure!(
+                    !all_modes.is_empty(),
+                    "No modes found in {}. Expected way_attrs.*.bin files.",
+                    step2_dir.display()
+                );
+
+                // Build mode inputs with GLOBAL indices from discovery
+                let mode_inputs: Vec<weights::Step5ModeInput> = wa_raw
+                    .iter()
+                    .map(|(name, path)| {
+                        let global_idx = all_modes
+                            .iter()
+                            .find(|(n, _)| n == name)
+                            .map(|(_, idx)| *idx)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "Mode '{}' not found in discovered modes {:?}",
+                                    name,
+                                    all_modes.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+                                )
+                            })?;
+                        Ok(weights::Step5ModeInput {
+                            mode_name: name.clone(),
+                            mode_index: global_idx,
+                            way_attrs_path: path.clone(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let result = weights::generate_weights(
                     &ebg_nodes,
                     &ebg_csr,
                     &turn_table,
@@ -1160,9 +1053,9 @@ impl Cli {
 
                 // Run validation and generate lock file
                 println!();
-                let way_attrs_by_name: std::collections::HashMap<String, PathBuf> = wa_parsed
+                let way_attrs_by_name: std::collections::HashMap<String, PathBuf> = wa_raw
                     .iter()
-                    .map(|(name, _, path)| (name.clone(), path.clone()))
+                    .map(|(name, path)| (name.clone(), path.clone()))
                     .collect();
                 let lock_file = validate_step5(
                     &result,
@@ -1192,11 +1085,12 @@ impl Cli {
                 leaf_threshold,
                 balance_eps,
             } => {
-                // Parse mode
+                // Parse mode — discover from filtered_ebg's parent (step5 dir)
                 let mode_name = mode.to_lowercase();
-                let mode = resolve_mode(&mode_name, &outdir)?;
+                let step5_dir = filtered_ebg.parent().unwrap_or(Path::new("."));
+                let mode = resolve_mode(&mode_name, step5_dir)?;
 
-                let config = step6::Step6Config {
+                let config = ordering::Step6Config {
                     filtered_ebg_path: filtered_ebg.clone(),
                     ebg_nodes_path: ebg_nodes,
                     nbg_geo_path: nbg_geo,
@@ -1207,7 +1101,7 @@ impl Cli {
                     balance_eps,
                 };
 
-                let result = step6::generate_ordering(config)?;
+                let result = ordering::generate_ordering(config)?;
 
                 // Run validation and generate lock file
                 println!();
@@ -1234,11 +1128,12 @@ impl Cli {
                 outdir,
                 leaf_threshold,
             } => {
-                // Parse mode
+                // Parse mode — discover from filtered_ebg's parent (step5 dir)
                 let mode_name_str = mode.to_lowercase();
-                let mode = resolve_mode(&mode_name_str, &outdir)?;
+                let step5_dir = filtered_ebg.parent().unwrap_or(Path::new("."));
+                let mode = resolve_mode(&mode_name_str, step5_dir)?;
 
-                let config = step6_lifted::Step6LiftedConfig {
+                let config = ordering_lifted::Step6LiftedConfig {
                     nbg_csr_path: nbg_csr,
                     nbg_geo_path: nbg_geo,
                     ebg_nodes_path: ebg_nodes,
@@ -1250,7 +1145,7 @@ impl Cli {
                     leaf_threshold,
                 };
 
-                let result = step6_lifted::generate_lifted_ordering(config)?;
+                let result = ordering_lifted::generate_lifted_ordering(config)?;
 
                 // Generate lock file (reuse step6 validation for ordering format)
                 println!();
@@ -1278,11 +1173,12 @@ impl Cli {
                 mode,
                 outdir,
             } => {
-                // Parse mode
+                // Parse mode — discover from filtered_ebg's parent (step5 dir)
                 let mode_name_str = mode.to_lowercase();
-                let mode = resolve_mode(&mode_name_str, &outdir)?;
+                let step5_dir = filtered_ebg.parent().unwrap_or(Path::new("."));
+                let mode = resolve_mode(&mode_name_str, step5_dir)?;
 
-                let config = step7::Step7Config {
+                let config = contraction::Step7Config {
                     filtered_ebg_path: filtered_ebg.clone(),
                     order_path: order.clone(),
                     weights_path: weights,
@@ -1292,7 +1188,7 @@ impl Cli {
                     outdir: outdir.clone(),
                 };
 
-                let result = step7::build_cch_topology(config)?;
+                let result = contraction::build_cch_topology(config)?;
 
                 // Run validation and generate lock file
                 println!();
@@ -1319,11 +1215,12 @@ impl Cli {
                 mode,
                 outdir,
             } => {
-                // Parse mode
+                // Parse mode — discover from filtered_ebg's parent (step5 dir)
                 let mode_name_str = mode.to_lowercase();
-                let mode = resolve_mode(&mode_name_str, &outdir)?;
+                let step5_dir = filtered_ebg.parent().unwrap_or(Path::new("."));
+                let mode = resolve_mode(&mode_name_str, step5_dir)?;
 
-                let config = step8::Step8Config {
+                let config = customization::Step8Config {
                     cch_topo_path: cch_topo,
                     filtered_ebg_path: filtered_ebg,
                     order_path: order,
@@ -1335,7 +1232,7 @@ impl Cli {
                     outdir: outdir.clone(),
                 };
 
-                let result = step8::customize_cch(config)?;
+                let result = customization::customize_cch(config)?;
 
                 // Generate lock file
                 let mode_name = &result.mode_name;
@@ -1363,14 +1260,31 @@ impl Cli {
             Commands::Serve {
                 data_dir,
                 port,
+                grpc_port,
+                transport,
+                modes,
                 log_format,
             } => {
                 // Initialize structured logging for the serve command
-                step9::init_tracing(&log_format);
+                server::init_tracing(&log_format);
+
+                let transport_mode = server::Transport::parse(&transport)?;
+                let mode_filter = modes.map(|s| {
+                    s.split(',')
+                        .map(|m| m.trim().to_lowercase())
+                        .filter(|m| !m.is_empty())
+                        .collect::<Vec<String>>()
+                });
 
                 // Create tokio runtime
                 let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(step9::serve(&data_dir, port))?;
+                rt.block_on(server::serve(
+                    &data_dir,
+                    port,
+                    grpc_port,
+                    transport_mode,
+                    mode_filter.as_deref(),
+                ))?;
                 Ok(())
             }
             Commands::ValidateCch {
@@ -1763,391 +1677,6 @@ impl Cli {
 
                 Ok(())
             }
-            Commands::HybridAnalysis {
-                ebg_nodes,
-                ebg_csr,
-                nbg_node_map,
-                turn_rules_car,
-                weights,
-                turns,
-            } => {
-                use crate::formats::{
-                    mod_turns, mod_weights, turn_rules, EbgCsrFile, EbgNodesFile, NbgNodeMapFile,
-                };
-                use crate::hybrid::HybridGraphBuilder;
-
-                println!("\n=== HYBRID STATE GRAPH ANALYSIS ===\n");
-
-                // Load EBG nodes
-                println!("[1/6] Loading EBG nodes...");
-                let ebg_nodes_data = EbgNodesFile::read(&ebg_nodes)?;
-                println!("  ✓ {} EBG nodes", ebg_nodes_data.nodes.len());
-
-                // Load EBG CSR
-                println!("[2/6] Loading EBG CSR...");
-                let ebg_csr_data = EbgCsrFile::read(&ebg_csr)?;
-                println!("  ✓ {} arcs", ebg_csr_data.heads.len());
-
-                // Load NBG node map (OSM ID → compact ID)
-                println!("[3/6] Loading NBG node map...");
-                let osm_to_nbg = NbgNodeMapFile::read(&nbg_node_map)?;
-                println!("  ✓ {} OSM→NBG mappings", osm_to_nbg.len());
-
-                // Compute actual n_nbg_nodes from EBG node data (max NBG ID + 1)
-                let n_nbg_nodes = ebg_nodes_data
-                    .nodes
-                    .iter()
-                    .flat_map(|n| [n.tail_nbg, n.head_nbg])
-                    .max()
-                    .map(|m| m as usize + 1)
-                    .unwrap_or(0);
-                println!("  ✓ {} NBG nodes (from EBG)", n_nbg_nodes);
-
-                // Load turn rules
-                println!("[4/6] Loading turn rules (car mode)...");
-                let turn_rules_data = turn_rules::read_all(&turn_rules_car)?;
-                println!("  ✓ {} turn rules", turn_rules_data.len());
-
-                // Load weights
-                println!("[5/6] Loading weights...");
-                let weights_data = mod_weights::read_all(&weights)?;
-                println!("  ✓ {} weights", weights_data.weights.len());
-
-                // Load turn costs
-                let turns_data = mod_turns::read_all(&turns)?;
-                println!("  ✓ {} turn costs", turns_data.penalties.len());
-
-                // Build hybrid state graph
-                println!("\n[6/6] Building hybrid state graph...");
-                let mut builder = HybridGraphBuilder::new();
-                builder.classify_nodes(&turn_rules_data, &osm_to_nbg);
-
-                let hybrid_graph = builder.build(
-                    &ebg_nodes_data,
-                    &ebg_csr_data,
-                    &weights_data.weights,
-                    &turns_data.penalties,
-                    n_nbg_nodes,
-                );
-
-                println!();
-                hybrid_graph.print_stats();
-
-                println!("\n=== HYBRID ANALYSIS COMPLETE ===");
-                println!();
-                println!("Expected performance impact:");
-                println!(
-                    "  State reduction: {:.2}x → proportional speedup in searches",
-                    hybrid_graph.stats.state_reduction_ratio
-                );
-                println!(
-                    "  Arc reduction: {:.2}x → proportional speedup in relaxations",
-                    hybrid_graph.stats.arc_reduction_ratio
-                );
-                println!();
-                println!("Next step: Build CCH on hybrid state graph for actual benchmark.");
-
-                Ok(())
-            }
-            Commands::EquivalenceAnalysis {
-                ebg_nodes,
-                ebg_csr,
-                turns,
-                mode,
-            } => {
-                use crate::formats::{mod_turns, EbgCsrFile, EbgNodesFile};
-                use crate::hybrid::analyze_equivalence_classes;
-
-                let mode_name = mode.to_lowercase();
-                println!("\n=== EQUIVALENCE CLASS ANALYSIS ({}) ===\n", mode_name);
-
-                // Load EBG nodes
-                println!("[1/3] Loading EBG nodes...");
-                let ebg_nodes_data = EbgNodesFile::read(&ebg_nodes)?;
-                let ebg_nodes_vec: Vec<(u32, u32)> = ebg_nodes_data
-                    .nodes
-                    .iter()
-                    .map(|n| (n.tail_nbg, n.head_nbg))
-                    .collect();
-                println!("  ✓ {} EBG nodes", ebg_nodes_vec.len());
-
-                // Load EBG CSR
-                println!("[2/3] Loading EBG CSR...");
-                let ebg_csr_data = EbgCsrFile::read(&ebg_csr)?;
-                println!("  ✓ {} arcs", ebg_csr_data.heads.len());
-
-                // Load turn costs
-                println!("[3/3] Loading turn costs...");
-                let turns_data = mod_turns::read_all(&turns)?;
-                println!("  ✓ {} turn costs", turns_data.penalties.len());
-
-                // Run equivalence analysis
-                println!("\nAnalyzing equivalence classes...");
-                let analysis = analyze_equivalence_classes(
-                    &ebg_nodes_vec,
-                    &ebg_csr_data.offsets,
-                    &ebg_csr_data.heads,
-                    &turns_data.penalties,
-                );
-
-                analysis.print();
-
-                Ok(())
-            }
-            Commands::DensifierAnalysis { hybrid_state, mode } => {
-                use crate::formats::HybridStateFile;
-                use crate::hybrid::analyze_densifiers;
-
-                let mode_name = mode.to_lowercase();
-                println!("\n=== DENSIFIER ANALYSIS ({}) ===\n", mode_name);
-
-                // Load hybrid state graph
-                println!("Loading hybrid state graph...");
-                let hybrid = HybridStateFile::read(&hybrid_state)?;
-                println!("  ✓ {} states, {} arcs", hybrid.n_states, hybrid.n_arcs);
-
-                // Run densifier analysis
-                println!("\nAnalyzing densifier distribution (in × out)...");
-                let analysis = analyze_densifiers(&hybrid.offsets, &hybrid.targets);
-
-                analysis.print();
-
-                Ok(())
-            }
-            Commands::Step5EquivHybrid {
-                ebg_nodes,
-                ebg_csr,
-                weights,
-                turns,
-                n_nbg_nodes,
-                mode,
-                outdir,
-            } => {
-                use crate::formats::{
-                    mod_turns, mod_weights, EbgCsrFile, EbgNodesFile, HybridStateFile,
-                };
-                use crate::hybrid::EquivHybridBuilder;
-                use sha2::{Digest as Sha2Digest, Sha256};
-
-                let mode_name = mode.to_lowercase();
-                let mode_enum = resolve_mode(&mode_name, &outdir)?;
-
-                println!(
-                    "\n=== STEP 5.5a: EQUIVALENCE-CLASS HYBRID STATE GRAPH ({}) ===\n",
-                    mode_name
-                );
-
-                // Create output directory
-                std::fs::create_dir_all(&outdir)?;
-
-                // Load EBG nodes
-                println!("[1/4] Loading EBG nodes...");
-                let ebg_nodes_data = EbgNodesFile::read(&ebg_nodes)?;
-                println!("  {} EBG nodes", ebg_nodes_data.nodes.len());
-
-                // Build ebg_head_nbg mapping
-                let ebg_head_nbg: Vec<u32> =
-                    ebg_nodes_data.nodes.iter().map(|n| n.head_nbg).collect();
-
-                // Load EBG CSR
-                println!("[2/4] Loading EBG CSR...");
-                let ebg_csr_data = EbgCsrFile::read(&ebg_csr)?;
-                println!("  {} arcs", ebg_csr_data.heads.len());
-
-                // Load weights
-                println!("[3/4] Loading weights...");
-                let weights_data = mod_weights::read_all(&weights)?;
-                println!("  {} edge weights", weights_data.weights.len());
-
-                // Load turn costs
-                println!("[4/4] Loading turn costs...");
-                let turns_data = mod_turns::read_all(&turns)?;
-                println!("  {} turn costs", turns_data.penalties.len());
-
-                // Build the equivalence-class hybrid state graph
-                println!("\n[Building] Equivalence-class hybrid state graph...\n");
-                let hybrid_graph = EquivHybridBuilder::build(
-                    &ebg_nodes_data,
-                    &ebg_csr_data,
-                    &weights_data.weights,
-                    &turns_data.penalties,
-                    n_nbg_nodes,
-                );
-
-                // Print stats
-                println!("\n");
-                hybrid_graph.print_stats();
-
-                // Compute input hash
-                let mut hasher = Sha256::new();
-                hasher.update(ebg_nodes.to_string_lossy().as_bytes());
-                hasher.update(ebg_csr.to_string_lossy().as_bytes());
-                hasher.update(weights.to_string_lossy().as_bytes());
-                hasher.update(turns.to_string_lossy().as_bytes());
-                let hash = hasher.finalize();
-                let mut inputs_sha = [0u8; 32];
-                inputs_sha.copy_from_slice(&hash[..32]);
-
-                // Convert to format and write
-                let format_data = hybrid_graph.to_format(mode_enum, ebg_head_nbg, inputs_sha);
-                let output_path = outdir.join(format!("hybrid.{}.state", mode_name));
-                println!("\n[Writing] {}...", output_path.display());
-                HybridStateFile::write(&output_path, &format_data)?;
-                println!(
-                    "  Written: {} bytes",
-                    std::fs::metadata(&output_path)?.len()
-                );
-
-                // Verify degree invariant
-                let ebg_avg_degree =
-                    ebg_csr_data.heads.len() as f64 / ebg_nodes_data.nodes.len() as f64;
-                let hybrid_avg_degree = hybrid_graph.stats.n_hybrid_arcs as f64
-                    / hybrid_graph.stats.n_hybrid_states as f64;
-                let degree_ratio = hybrid_avg_degree / ebg_avg_degree;
-
-                println!("\n=== DEGREE INVARIANT CHECK ===");
-                println!("  EBG avg degree:    {:.2}", ebg_avg_degree);
-                println!("  Hybrid avg degree: {:.2}", hybrid_avg_degree);
-                println!("  Degree ratio:      {:.2}x", degree_ratio);
-
-                if degree_ratio <= 1.05 {
-                    println!("  PASSED: Degree invariant preserved (ratio <= 1.05)");
-                    println!("\nNext step: Run step6-hybrid to build CCH ordering on this graph.");
-                } else {
-                    println!("  WARNING: Degree ratio > 1.05, this should not happen!");
-                    println!(
-                        "           Naive hybrid had 1.36x, equivalence-class should have ~1.0x"
-                    );
-                }
-
-                Ok(())
-            }
-            Commands::Step5Hybrid {
-                ebg_nodes,
-                ebg_csr,
-                nbg_node_map,
-                turn_rules,
-                weights,
-                turns,
-                mode,
-                outdir,
-            } => {
-                use crate::formats::{
-                    mod_turns, mod_weights, turn_rules as tr, EbgCsrFile, EbgNodesFile,
-                    HybridStateFile, NbgNodeMapFile,
-                };
-                use crate::hybrid::HybridGraphBuilder;
-                use sha2::{Digest as Sha2Digest, Sha256};
-
-                let mode_name = mode.to_lowercase();
-                let mode_enum = resolve_mode(&mode_name, &outdir)?;
-
-                println!("\n=== STEP 5.5: HYBRID STATE GRAPH ({}) ===\n", mode_name);
-
-                // Create output directory
-                std::fs::create_dir_all(&outdir)?;
-
-                // Load EBG nodes
-                println!("[1/7] Loading EBG nodes...");
-                let ebg_nodes_data = EbgNodesFile::read(&ebg_nodes)?;
-                println!("  ✓ {} EBG nodes", ebg_nodes_data.nodes.len());
-
-                // Build ebg_head_nbg mapping
-                let ebg_head_nbg: Vec<u32> =
-                    ebg_nodes_data.nodes.iter().map(|n| n.head_nbg).collect();
-
-                // Load EBG CSR
-                println!("[2/7] Loading EBG CSR...");
-                let ebg_csr_data = EbgCsrFile::read(&ebg_csr)?;
-                println!("  ✓ {} arcs", ebg_csr_data.heads.len());
-
-                // Load NBG node map (OSM ID → compact ID)
-                println!("[3/7] Loading NBG node map...");
-                let osm_to_nbg = NbgNodeMapFile::read(&nbg_node_map)?;
-                println!("  ✓ {} OSM→NBG mappings", osm_to_nbg.len());
-
-                // Compute actual n_nbg_nodes from EBG node data (max NBG ID + 1)
-                let n_nbg_nodes = ebg_nodes_data
-                    .nodes
-                    .iter()
-                    .flat_map(|n| [n.tail_nbg, n.head_nbg])
-                    .max()
-                    .map(|m| m as usize + 1)
-                    .unwrap_or(0);
-                println!("  ✓ {} NBG nodes (from EBG)", n_nbg_nodes);
-
-                // Load turn rules
-                println!("[4/7] Loading turn rules ({} mode)...", mode_name);
-                let turn_rules_data = tr::read_all(&turn_rules)?;
-                println!("  ✓ {} turn rules", turn_rules_data.len());
-
-                // Load weights
-                println!("[5/7] Loading weights...");
-                let weights_data = mod_weights::read_all(&weights)?;
-                println!("  ✓ {} weights", weights_data.weights.len());
-
-                // Load turn costs
-                let turns_data = mod_turns::read_all(&turns)?;
-                println!("  ✓ {} turn costs", turns_data.penalties.len());
-
-                // Build hybrid state graph
-                println!("\n[6/7] Building hybrid state graph...");
-                let mut builder = HybridGraphBuilder::new();
-                builder.classify_nodes(&turn_rules_data, &osm_to_nbg);
-
-                let hybrid_graph = builder.build(
-                    &ebg_nodes_data,
-                    &ebg_csr_data,
-                    &weights_data.weights,
-                    &turns_data.penalties,
-                    n_nbg_nodes,
-                );
-
-                println!();
-                hybrid_graph.print_stats();
-
-                // Compute inputs SHA for reproducibility
-                let mut hasher = Sha256::new();
-                hasher.update(ebg_nodes.to_string_lossy().as_bytes());
-                hasher.update(ebg_csr.to_string_lossy().as_bytes());
-                hasher.update(nbg_node_map.to_string_lossy().as_bytes());
-                hasher.update(turn_rules.to_string_lossy().as_bytes());
-                hasher.update(weights.to_string_lossy().as_bytes());
-                hasher.update(turns.to_string_lossy().as_bytes());
-                let hash = hasher.finalize();
-                let mut inputs_sha = [0u8; 32];
-                inputs_sha.copy_from_slice(&hash);
-
-                // Convert to format and serialize
-                println!("\n[7/7] Serializing hybrid state graph...");
-                let format_data = hybrid_graph.to_format(mode_enum, ebg_head_nbg, inputs_sha);
-
-                let output_path = outdir.join(format!("hybrid.{}.state", mode_name));
-                HybridStateFile::write(&output_path, &format_data)?;
-
-                let file_size = std::fs::metadata(&output_path)?.len();
-                println!(
-                    "  ✓ Wrote {} ({:.1} MB)",
-                    output_path.display(),
-                    file_size as f64 / 1_000_000.0
-                );
-
-                println!("\n=== STEP 5.5 COMPLETE ===");
-                println!();
-                println!("Output: {}", output_path.display());
-                println!(
-                    "State reduction: {:.2}x",
-                    hybrid_graph.stats.state_reduction_ratio
-                );
-                println!(
-                    "Arc reduction: {:.2}x",
-                    hybrid_graph.stats.arc_reduction_ratio
-                );
-                println!();
-                println!("Next: Run Step 6 ordering on hybrid.{}.state", mode_name);
-
-                Ok(())
-            }
             Commands::Step6Hybrid {
                 hybrid_state,
                 nbg_geo,
@@ -2159,9 +1688,10 @@ impl Cli {
                 densifier_threshold,
             } => {
                 let mode_name_str = mode.to_lowercase();
-                let mode_enum = resolve_mode(&mode_name_str, &outdir)?;
+                let hybrid_dir = hybrid_state.parent().unwrap_or(Path::new("."));
+                let mode_enum = resolve_mode(&mode_name_str, hybrid_dir)?;
 
-                let config = step6::Step6HybridConfig {
+                let config = ordering::Step6HybridConfig {
                     hybrid_state_path: hybrid_state.clone(),
                     nbg_geo_path: nbg_geo,
                     mode: mode_enum,
@@ -2173,7 +1703,7 @@ impl Cli {
                     densifier_threshold,
                 };
 
-                let result = step6::generate_ordering_hybrid(config)?;
+                let result = ordering::generate_ordering_hybrid(config)?;
 
                 // Generate lock file
                 let mode_name = &result.mode_name;
@@ -2205,9 +1735,10 @@ impl Cli {
                 outdir,
             } => {
                 let mode_name_str = mode.to_lowercase();
-                let mode_enum = resolve_mode(&mode_name_str, &outdir)?;
+                let hybrid_dir = hybrid_state.parent().unwrap_or(Path::new("."));
+                let mode_enum = resolve_mode(&mode_name_str, hybrid_dir)?;
 
-                let config = step7::Step7HybridConfig {
+                let config = contraction::Step7HybridConfig {
                     hybrid_state_path: hybrid_state.clone(),
                     order_path: order.clone(),
                     mode: mode_enum,
@@ -2215,7 +1746,7 @@ impl Cli {
                     outdir: outdir.clone(),
                 };
 
-                let result = step7::build_cch_topology_hybrid(config)?;
+                let result = contraction::build_cch_topology_hybrid(config)?;
 
                 // Generate lock file
                 let mode_name = &result.mode_name;
@@ -2399,31 +1930,6 @@ impl Cli {
 
                 Ok(())
             }
-            Commands::TurnModelAnalysis {
-                ebg_nodes,
-                ebg_csr,
-                turn_table,
-                nbg_csr,
-                turn_rules_car,
-                turn_rules_bike,
-                turn_rules_foot,
-            } => {
-                println!("\n=== TURN MODEL ANALYSIS ===\n");
-
-                let analysis = crate::analysis::analyze_turn_model(
-                    &ebg_nodes,
-                    &ebg_csr,
-                    &turn_table,
-                    &nbg_csr,
-                    &turn_rules_car,
-                    &turn_rules_bike,
-                    &turn_rules_foot,
-                )?;
-
-                analysis.print();
-
-                Ok(())
-            }
             Commands::Step8Hybrid {
                 cch_topo,
                 hybrid_state,
@@ -2431,9 +1937,10 @@ impl Cli {
                 outdir,
             } => {
                 let mode_name_str = mode.to_lowercase();
-                let mode_enum = resolve_mode(&mode_name_str, &outdir)?;
+                let hybrid_dir = hybrid_state.parent().unwrap_or(Path::new("."));
+                let mode_enum = resolve_mode(&mode_name_str, hybrid_dir)?;
 
-                let config = step8::Step8HybridConfig {
+                let config = customization::Step8HybridConfig {
                     cch_topo_path: cch_topo,
                     hybrid_state_path: hybrid_state,
                     mode: mode_enum,
@@ -2441,7 +1948,7 @@ impl Cli {
                     outdir: outdir.clone(),
                 };
 
-                let result = step8::customize_cch_hybrid(config)?;
+                let result = customization::customize_cch_hybrid(config)?;
 
                 // Generate lock file
                 let mode_name = &result.mode_name;

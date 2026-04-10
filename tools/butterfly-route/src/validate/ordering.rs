@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::formats::{FilteredEbgFile, OrderEbgFile};
-use crate::step6::Step6Result;
-use crate::step6_lifted::Step6LiftedResult;
+use crate::ordering::Step6Result;
+use crate::ordering_lifted::Step6LiftedResult;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Step6LockFile {

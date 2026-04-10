@@ -804,7 +804,7 @@ Naming convention in this document:
 
 ## P-Sprint: Feature Parity (2026-02-08) — COMPLETE
 
-All implementable P-Sprint features are done. P5 (truck profile) deferred.
+All P-Sprint features are done, including P5 (truck) via Q-Sprint.
 
 ### P1: Exclude toll/ferry/motorway ✅
 - `exclude=toll,ferry,motorway` query param on all routing endpoints
@@ -836,7 +836,8 @@ All implementable P-Sprint features are done. P5 (truck profile) deferred.
 - `bearings=angle,range` pairs per waypoint
 - OSRM-compatible format, filters snap candidates by bearing
 
-### P5: Truck profile — DEFERRED
-- Requires full pipeline re-run (steps 2-8) for truck mode
-- Low priority compared to other features
+### P5: Truck profile ✅ (via Q-Sprint)
+- `truck.model.json` with HGV speeds, `hgv=no/private` denial, `restriction:hgv` support
+- Pipeline steps 2-8 completed for truck mode (Feb 2026)
+- Zero Rust code changes needed
 

@@ -126,18 +126,22 @@ High-performance routing engine using **edge-based CCH** (Customizable Contracti
 #### Key Modules
 
 - `src/formats/` - Binary file format readers/writers (CRC-verified)
-- `src/profiles/` - Routing profiles (car, bike, foot)
+- `src/model/` - Declarative JSON model system (schema, compile, evaluate, profiling, types)
 - `src/ebg/` - Edge-Based Graph construction (THE routing graph)
 - `src/nbg/` - Node-Based Graph (intermediate only)
+- `src/weights.rs` - Step 5: per-mode weights & masks
+- `src/ordering.rs` - Step 6: CCH ordering via nested dissection
+- `src/contraction.rs` - Step 7: CCH contraction
+- `src/customization.rs` - Step 8: weight customization
 - `src/validate/` - Lock condition verification per step
 - `src/range/` - PHAST-based range queries for isochrones
 - `src/matrix/` - K-lane batched PHAST for bulk distance matrices
-- `src/step9/` - HTTP query server (Axum + Utoipa)
+- `src/server/` - HTTP query server (Axum + Utoipa)
 - `src/bench/` - Benchmark harness (`butterfly-bench` binary)
 
 #### Query Server API
 
-The Step 9 query server (`butterfly-route serve`) provides:
+The query server (`butterfly-route serve`) provides:
 - `GET /route` - Point-to-point routing with geometry, turn-by-turn steps with road names, alternatives
 - `GET /nearest` - Snap to nearest road segments with distance
 - `GET /matrix` - One-to-many distance matrix (duration and/or distance)
@@ -286,7 +290,7 @@ Expected behavior: [Target metrics, e.g., "50×50 matrix < 100ms"]
 
 Relevant files:
 - tools/butterfly-route/src/matrix/bucket_ch.rs
-- tools/butterfly-route/src/step9/query.rs
+- tools/butterfly-route/src/server/query.rs
 - [... all potentially involved files]
 
 Please review for:
@@ -355,13 +359,13 @@ else:
 ### CCH Core
 - `tools/butterfly-route/src/formats/cch_topo.rs` — CCH topology (UP/DOWN edges)
 - `tools/butterfly-route/src/formats/cch_weights.rs` — Customized edge weights
-- `tools/butterfly-route/src/step7.rs` — CCH contraction
-- `tools/butterfly-route/src/step8.rs` — Weight customization
+- `tools/butterfly-route/src/contraction.rs` — CCH contraction
+- `tools/butterfly-route/src/customization.rs` — Weight customization
 
 ### Query Engine
-- `tools/butterfly-route/src/step9/query.rs` — Bidirectional P2P search
-- `tools/butterfly-route/src/step9/state.rs` — Server state, DownReverseAdj
-- `tools/butterfly-route/src/step9/api.rs` — HTTP endpoints
+- `tools/butterfly-route/src/server/query.rs` — Bidirectional P2P search
+- `tools/butterfly-route/src/server/state.rs` — Server state, DownReverseAdj
+- `tools/butterfly-route/src/server/api.rs` — HTTP endpoints (router + handler modules)
 
 ### PHAST / Isochrones
 - `tools/butterfly-route/src/range/phast.rs` — Single-source PHAST

@@ -27,7 +27,7 @@ use butterfly_route::range::frontier::FrontierExtractor;
 use butterfly_route::range::phast::{PhastEngine, PhastStats};
 use butterfly_route::range::sparse_contour::{generate_sparse_contour, SparseContourConfig};
 use butterfly_route::range::wkb_stream::{encode_polygon_wkb, write_ndjson, IsochroneRecord};
-use butterfly_route::step9::state::DownReverseAdj;
+use butterfly_route::server::state::DownReverseAdj;
 
 #[derive(Parser)]
 #[command(name = "butterfly-bench")]
@@ -3899,7 +3899,7 @@ fn run_e2e_isochrone_bench(
 /// Pathological origins benchmark - tests worst-case scenarios
 fn run_pathological_origins_bench(data_dir: &Path, mode: &str) -> anyhow::Result<()> {
     use butterfly_route::formats::{EbgNodesFile, FilteredEbgFile, NbgGeoFile};
-    use butterfly_route::step9::spatial::SpatialIndex;
+    use butterfly_route::server::spatial::SpatialIndex;
 
     println!("═══════════════════════════════════════════════════════════════");
     println!("  PATHOLOGICAL ORIGINS BENCHMARK");

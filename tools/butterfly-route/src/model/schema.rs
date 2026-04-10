@@ -45,6 +45,20 @@ pub struct AccessConfig {
     pub highway: HashMap<String, bool>,
     #[serde(default)]
     pub deny_if: Vec<DenyRule>,
+    /// Conditional access overrides: grant access even if highway type is denied.
+    /// Evaluated after highway lookup but before deny_if.
+    /// Example: allow track if tracktype=grade1 or tracktype=grade2.
+    #[serde(default)]
+    pub allow_if: Vec<AllowRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AllowRule {
+    /// Tag conditions that must ALL match (AND logic)
+    #[serde(rename = "if")]
+    pub condition: HashMap<String, serde_json::Value>,
+    /// Speed to assign when this rule matches (km/h). Required for allowing otherwise-denied roads.
+    pub speed_kmh: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

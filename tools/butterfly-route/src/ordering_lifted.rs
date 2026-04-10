@@ -1,12 +1,21 @@
 //! Step 6 (Lifted): CCH ordering via NBG ND + lift to EBG
 //!
-//! Key insight from CCH theory:
+//! **WARNING**: The lifted ordering produces CATASTROPHIC contraction hierarchies
+//! for modes with many filtered-out edges (e.g., truck). The NBG ordering is
+//! mode-agnostic but lifting it to a mode-filtered EBG can break separator quality.
+//!
+//! Example on Belgium:
+//! - Car (regular step6 ordering): 27.6M shortcuts, ratio 7.4x, step7 in 15s
+//! - Truck (lifted ordering):      1,053M shortcuts, ratio 281x, step7 in 442s
+//! - Truck (regular step6 ordering): 27.6M shortcuts, ratio 7.4x, step7 in 15s
+//!
+//! **Always use regular step6 ordering (step6-order) for production builds.**
+//! The lifted ordering is experimental and should only be used for analysis.
+//!
+//! Original theory (not validated for filtered EBGs):
 //! - Compute ND ordering on the PHYSICAL node graph (NBG) - good separators
 //! - Lift to edge-state graph (EBG) with block ranks
 //! - All states of a physical node get consecutive ranks
-//!
-//! This avoids the problem of ND on the edge-state graph destroying
-//! separator quality due to turn-based cross-links.
 
 use anyhow::Result;
 use std::path::PathBuf;

@@ -1,29 +1,29 @@
 {
-  "name": "car",
+  "name": "scooter",
   "version": 1,
 
   "speed": {
     "unit": "km/h",
     "highway": {
-      "motorway": 110, "motorway_link": 60,
-      "trunk": 90, "trunk_link": 50,
-      "primary": 70, "primary_link": 40,
-      "secondary": 60, "secondary_link": 40,
-      "tertiary": 50, "tertiary_link": 30,
-      "unclassified": 50, "residential": 30,
-      "service": 20, "living_street": 10,
-      "track": 15
+      "motorway": 0, "motorway_link": 0,
+      "trunk": 0, "trunk_link": 0,
+      "primary": 40, "primary_link": 35,
+      "secondary": 35, "secondary_link": 30,
+      "tertiary": 30, "tertiary_link": 25,
+      "unclassified": 30, "residential": 25,
+      "service": 15, "living_street": 10,
+      "track": 10
     },
-    "speed_cap_kmh": 288,
+    "speed_cap_kmh": 45,
     "overrides": [
-      { "if": { "route": "ferry" }, "limit_to": 20 }
+      { "if": { "route": "ferry" }, "limit_to": 10 }
     ]
   },
 
   "access": {
     "highway": {
-      "motorway": true, "motorway_link": true,
-      "trunk": true, "trunk_link": true,
+      "motorway": false, "motorway_link": false,
+      "trunk": false, "trunk_link": false,
       "primary": true, "primary_link": true,
       "secondary": true, "secondary_link": true,
       "tertiary": true, "tertiary_link": true,
@@ -35,13 +35,11 @@
       "construction": false
     },
     "deny_if": [
+      { "tag": "moped", "values": ["no", "private"] },
+      { "tag": "mofa", "values": ["no", "private"] },
       { "tag": "motor_vehicle", "values": ["no", "private"] },
       { "tag": "vehicle", "values": ["no", "private"] },
       { "tag": "access", "values": ["no", "private"] }
-    ],
-    "allow_if": [
-      { "if": { "highway": "track", "tracktype": "grade1" }, "speed_kmh": 30 },
-      { "if": { "highway": "track", "tracktype": "grade2" }, "speed_kmh": 20 }
     ]
   },
 
@@ -50,10 +48,12 @@
     "tag": "oneway",
     "forward_values": ["yes", "1", "true"],
     "reverse_values": ["-1", "reverse"],
-    "default_oneway_highways": ["motorway", "motorway_link"]
+    "default_oneway_highways": []
   },
 
-  "priority": [],
+  "priority": [
+    { "if": { "surface": ["unpaved", "gravel", "dirt"] }, "multiply_by": 0.6 }
+  ],
 
   "highway_class": {
     "motorway": 1, "motorway_link": 2,
@@ -79,19 +79,19 @@
   },
 
   "turn_penalties": {
-    "turn_penalty_ds": 75,
-    "turn_bias": 1.075,
-    "u_turn_penalty_ds": 200,
+    "turn_penalty_ds": 30,
+    "turn_bias": 1.2,
+    "u_turn_penalty_ds": 60,
     "min_degree_for_penalty": 3,
-    "signal_delay_ds": 80,
-    "class_change_penalty_ds_per_diff": 5,
+    "signal_delay_ds": 50,
+    "class_change_penalty_ds_per_diff": 4,
     "max_class_diff_for_penalty": 6
   },
 
   "turn_restrictions": {
     "respect": true,
     "restriction_tag": "restriction",
-    "mode_specific_tag": "restriction:motorcar",
-    "exception_values": ["motorcar", "motor_vehicle"]
+    "mode_specific_tag": "restriction:moped",
+    "exception_values": ["moped", "mofa"]
   }
 }

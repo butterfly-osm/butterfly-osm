@@ -15,14 +15,14 @@ pub use step3::{verify_step3_lock_conditions, ComponentStats, Step3LockFile};
 pub mod step4;
 pub use step4::{validate_step4, Step4LockFile};
 
-pub mod step5;
-pub use step5::{validate_step5, Step5LockFile};
+pub mod weights;
+pub use weights::{validate_step5, Step5LockFile};
 
-pub mod step6;
-pub use step6::{validate_step6, validate_step6_lifted, Step6LiftedLockFile, Step6LockFile};
+pub mod ordering;
+pub use ordering::{validate_step6, validate_step6_lifted, Step6LiftedLockFile, Step6LockFile};
 
-pub mod step7;
-pub use step7::{validate_step7, Step7LockFile};
+pub mod contraction;
+pub use contraction::{validate_step7, Step7LockFile};
 
 pub mod cch_correctness;
 pub use cch_correctness::{

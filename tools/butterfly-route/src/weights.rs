@@ -234,7 +234,7 @@ fn generate_mode_data(
         let way_attr = match way_index.get(&way_id) {
             Some(attr) => attr,
             None => {
-                // Way not in this mode's index - inaccessible
+                // Way not in this mode's index — inaccessible
                 dbg_no_way += 1;
                 weights[ebg_id] = 0;
                 continue;
@@ -264,7 +264,7 @@ fn generate_mode_data(
         let base_speed_mmps = way_attr.output.base_speed_mmps;
 
         if base_speed_mmps == 0 {
-            // Inaccessible (zero speed) -- do NOT set mask bit
+            // Inaccessible (zero speed)
             dbg_zero_speed += 1;
             weights[ebg_id] = 0;
             continue;

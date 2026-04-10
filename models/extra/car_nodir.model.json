@@ -1,5 +1,5 @@
 {
-  "name": "car",
+  "name": "car_nodir",
   "version": 1,
 
   "speed": {
@@ -38,19 +38,15 @@
       { "tag": "motor_vehicle", "values": ["no", "private"] },
       { "tag": "vehicle", "values": ["no", "private"] },
       { "tag": "access", "values": ["no", "private"] }
-    ],
-    "allow_if": [
-      { "if": { "highway": "track", "tracktype": "grade1" }, "speed_kmh": 30 },
-      { "if": { "highway": "track", "tracktype": "grade2" }, "speed_kmh": 20 }
     ]
   },
 
   "oneway": {
-    "respect": true,
+    "respect": false,
     "tag": "oneway",
-    "forward_values": ["yes", "1", "true"],
-    "reverse_values": ["-1", "reverse"],
-    "default_oneway_highways": ["motorway", "motorway_link"]
+    "forward_values": [],
+    "reverse_values": [],
+    "default_oneway_highways": []
   },
 
   "priority": [],
@@ -89,9 +85,9 @@
   },
 
   "turn_restrictions": {
-    "respect": true,
+    "respect": false,
     "restriction_tag": "restriction",
-    "mode_specific_tag": "restriction:motorcar",
-    "exception_values": ["motorcar", "motor_vehicle"]
+    "mode_specific_tag": "",
+    "exception_values": []
   }
 }
