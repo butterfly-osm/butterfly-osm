@@ -12,18 +12,27 @@ use super::crc;
 
 const MAGIC: u32 = 0x43434857; // "CCHW"
 
-/// CCH weights - stores weights for UP and DOWN edges
+/// CCH weights - stores weights and relaxed middle nodes for UP and DOWN edges.
+/// The middle arrays are the post-triangle-relaxation middles — these are the
+/// correct middles for path unpacking (the topology's middles are from contraction
+/// and may be suboptimal).
 #[derive(Debug, Clone)]
 pub struct CchWeights {
     pub up: Vec<u32>,
     pub down: Vec<u32>,
+    /// Relaxed middle nodes for UP shortcuts (empty if not available — use topo middles)
+    pub up_middle: Vec<u32>,
+    /// Relaxed middle nodes for DOWN shortcuts (empty if not available — use topo middles)
+    pub down_middle: Vec<u32>,
 }
 
 pub struct CchWeightsFile;
 
 impl CchWeightsFile {
     pub fn read<P: AsRef<Path>>(path: P) -> Result<CchWeights> {
-        let mut reader = BufReader::new(File::open(path)?);
+        let file = File::open(path.as_ref())?;
+        let file_len = file.metadata()?.len() as usize;
+        let mut reader = BufReader::new(file);
         let mut crc_digest = crc::Digest::new();
 
         // Read header (32 bytes)
@@ -68,6 +77,38 @@ impl CchWeightsFile {
             down.push(u32::from_le_bytes(buf));
         }
 
+        let expected_v1_len = 32 + 4 * (n_up + n_down) + 16;
+        let expected_v2_len = expected_v1_len + 4 * (n_up + n_down);
+
+        let (up_middle, down_middle) = match file_len {
+            len if len == expected_v1_len => (Vec::new(), Vec::new()),
+            len if len == expected_v2_len => {
+                // Read relaxed middle arrays (v2: after weights, before CRC)
+                let mut up_middle = Vec::with_capacity(n_up);
+                for _ in 0..n_up {
+                    let mut buf = [0u8; 4];
+                    reader.read_exact(&mut buf)?;
+                    crc_digest.update(&buf);
+                    up_middle.push(u32::from_le_bytes(buf));
+                }
+                let mut down_middle = Vec::with_capacity(n_down);
+                for _ in 0..n_down {
+                    let mut buf = [0u8; 4];
+                    reader.read_exact(&mut buf)?;
+                    crc_digest.update(&buf);
+                    down_middle.push(u32::from_le_bytes(buf));
+                }
+                (up_middle, down_middle)
+            }
+            len => anyhow::bail!(
+                "Invalid cch.weights size for {}: got {}, expected {} (v1) or {} (v2)",
+                path.as_ref().display(),
+                len,
+                expected_v1_len,
+                expected_v2_len
+            ),
+        };
+
         // Verify CRC64
         let computed_crc = crc_digest.finalize();
         let mut footer = [0u8; 16];
@@ -80,6 +121,6 @@ impl CchWeightsFile {
             stored_crc
         );
 
-        Ok(CchWeights { up, down })
+        Ok(CchWeights { up, down, up_middle, down_middle })
     }
 }

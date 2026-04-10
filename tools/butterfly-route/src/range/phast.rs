@@ -1226,6 +1226,8 @@ mod tests {
         let weights = CchWeights {
             up: up_weights,
             down: down_weights,
+            up_middle: vec![],
+            down_middle: vec![],
         };
 
         (topo, weights)
@@ -1453,6 +1455,8 @@ mod tests {
         let weights = CchWeights {
             up: up_weights,
             down: down_weights,
+            up_middle: vec![],
+            down_middle: vec![],
         };
 
         let up_adj_flat = UpAdjFlat::build(&topo, &weights);

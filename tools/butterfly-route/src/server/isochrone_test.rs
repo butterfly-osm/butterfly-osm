@@ -260,7 +260,7 @@ mod tests {
         use crate::server::state::ServerState;
 
         // Load server state
-        let state = ServerState::load(data_dir).expect("Failed to load server state");
+        let state = ServerState::load(data_dir, None).expect("Failed to load server state");
         let mode_name = "car";
         let mode_idx = *state
             .mode_lookup

@@ -46,7 +46,7 @@ fn load_state() -> Arc<ServerState> {
     ];
     for data_dir in &candidates {
         if data_dir.join("step5").exists() {
-            return Arc::new(ServerState::load(data_dir).expect("Failed to load server state"));
+            return Arc::new(ServerState::load(data_dir, None).expect("Failed to load server state"));
         }
     }
     panic!("Belgium data not found — tried {:?}", candidates);
@@ -445,6 +445,7 @@ fn test_route_path_validity() {
             // Unpack path
             let rank_path = unpack_path(
                 &mode_data.cch_topo,
+                &mode_data.cch_weights,
                 &result.forward_parent,
                 &result.backward_parent,
                 src_rank,
@@ -508,6 +509,212 @@ fn test_route_path_validity() {
         "Path validity failures:\n{}",
         failures.join("\n")
     );
+}
+
+/// Focused regression for the Ghent → Liège path unpacking bug.
+///
+/// Validates that every unpacked rank hop maps to a real arc in the SCC-filtered EBG.
+#[test]
+#[ignore] // Requires Belgium data
+fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
+    let state = load_state();
+    let mode = lookup_mode(&state, "car");
+    let mode_data = state.get_mode(mode);
+
+    let (src_rank, src_orig) = snap_to_rank(&state, mode, 3.7174, 51.0543).expect("snap Ghent");
+    let (dst_rank, dst_orig) = snap_to_rank(&state, mode, 5.5796, 50.6326).expect("snap Liege");
+
+    let query = CchQuery::new(&state, mode);
+    let result = query
+        .query(src_rank, dst_rank)
+        .expect("Ghent -> Liege route should exist");
+
+    let rank_path = unpack_path(
+        &mode_data.cch_topo,
+        &mode_data.cch_weights,
+        &result.forward_parent,
+        &result.backward_parent,
+        src_rank,
+        dst_rank,
+        result.meeting_node,
+    );
+
+    let filtered_path: Vec<u32> = rank_path
+        .iter()
+        .map(|&rank| mode_data.cch_topo.rank_to_filtered[rank as usize])
+        .collect();
+    let ebg_path: Vec<u32> = filtered_path
+        .iter()
+        .map(|&filtered| mode_data.filtered_ebg.filtered_to_original[filtered as usize])
+        .collect();
+    let mut unpacked_dist_ds = 0u64;
+    let mut duplicate_cch_hops = 0usize;
+
+    eprintln!(
+        "Ghent->Liege src_rank={} dst_rank={} src_orig={} dst_orig={} query_dist_ds={} forward_len={} backward_len={} unpacked_len={}",
+        src_rank,
+        dst_rank,
+        src_orig,
+        dst_orig,
+        result.distance,
+        result.forward_parent.len(),
+        result.backward_parent.len(),
+        rank_path.len()
+    );
+
+    assert_eq!(rank_path.first().copied(), Some(src_rank));
+    assert_eq!(rank_path.last().copied(), Some(dst_rank));
+
+    for (i, pair) in filtered_path.windows(2).enumerate() {
+        let u = pair[0] as usize;
+        let v = pair[1];
+        let start = mode_data.filtered_ebg.offsets[u] as usize;
+        let end = mode_data.filtered_ebg.offsets[u + 1] as usize;
+        let exists = mode_data.filtered_ebg.heads[start..end].contains(&v);
+        assert!(
+            exists,
+            "invalid unpacked hop at index {}: rank {} -> {} / filtered {} -> {} / orig {} -> {}",
+            i,
+            rank_path[i],
+            rank_path[i + 1],
+            pair[0],
+            pair[1],
+            ebg_path[i],
+            ebg_path[i + 1]
+        );
+
+        let src_rank_hop = rank_path[i] as usize;
+        let dst_rank_hop = rank_path[i + 1];
+        let is_up = rank_path[i] < rank_path[i + 1];
+        let (start, end, targets, weights, is_shortcut) = if is_up {
+            (
+                mode_data.cch_topo.up_offsets[src_rank_hop] as usize,
+                mode_data.cch_topo.up_offsets[src_rank_hop + 1] as usize,
+                &mode_data.cch_topo.up_targets,
+                &mode_data.cch_weights.up,
+                &mode_data.cch_topo.up_is_shortcut,
+            )
+        } else {
+            (
+                mode_data.cch_topo.down_offsets[src_rank_hop] as usize,
+                mode_data.cch_topo.down_offsets[src_rank_hop + 1] as usize,
+                &mode_data.cch_topo.down_targets,
+                &mode_data.cch_weights.down,
+                &mode_data.cch_topo.down_is_shortcut,
+            )
+        };
+
+        let matches: Vec<usize> = (start..end).filter(|&idx| targets[idx] == dst_rank_hop).collect();
+        assert!(
+            !matches.is_empty(),
+            "missing CCH edge for unpacked hop at index {}: rank {} -> {}",
+            i,
+            rank_path[i],
+            rank_path[i + 1]
+        );
+        if matches.len() > 1 {
+            duplicate_cch_hops += 1;
+        }
+
+        let edge_idx = matches[0];
+        assert!(
+            !is_shortcut[edge_idx],
+            "unpacked hop at index {} still lands on shortcut edge {} -> {} (edge_idx={})",
+            i,
+            rank_path[i],
+            rank_path[i + 1],
+            edge_idx
+        );
+        unpacked_dist_ds += weights[edge_idx] as u64;
+    }
+
+    eprintln!(
+        "Ghent->Liege unpacked_dist_ds={} duplicate_cch_hops={}",
+        unpacked_dist_ds, duplicate_cch_hops
+    );
+
+    let path_dist_ds = |path: &[u32]| -> u64 {
+        let mut total = 0u64;
+        for pair in path.windows(2) {
+            let src = pair[0] as usize;
+            let dst = pair[1];
+            let is_up = pair[0] < pair[1];
+            let (start, end, targets, weights) = if is_up {
+                (
+                    mode_data.cch_topo.up_offsets[src] as usize,
+                    mode_data.cch_topo.up_offsets[src + 1] as usize,
+                    &mode_data.cch_topo.up_targets,
+                    &mode_data.cch_weights.up,
+                )
+            } else {
+                (
+                    mode_data.cch_topo.down_offsets[src] as usize,
+                    mode_data.cch_topo.down_offsets[src + 1] as usize,
+                    &mode_data.cch_topo.down_targets,
+                    &mode_data.cch_weights.down,
+                )
+            };
+            let edge_idx = (start..end)
+                .find(|&idx| targets[idx] == dst)
+                .expect("missing edge while summing path");
+            total += weights[edge_idx] as u64;
+        }
+        total
+    };
+
+    let mut current = src_rank;
+    for (step, &(_node, edge_idx_u32)) in result.forward_parent.iter().enumerate() {
+        let edge_idx = edge_idx_u32 as usize;
+        let target = mode_data.cch_topo.up_targets[edge_idx];
+        let edge_weight = mode_data.cch_weights.up[edge_idx];
+        let expanded = unpack_path(
+            &mode_data.cch_topo,
+            &mode_data.cch_weights,
+            &[(target, edge_idx_u32)],
+            &[],
+            current,
+            target,
+            target,
+        );
+        eprintln!(
+            "forward step {}: {} -> {} edge_idx={} shortcut={} weight_ds={} expanded_len={} expanded_ds={}",
+            step,
+            current,
+            target,
+            edge_idx,
+            mode_data.cch_topo.up_is_shortcut[edge_idx],
+            edge_weight,
+            expanded.len(),
+            path_dist_ds(&expanded)
+        );
+        current = target;
+    }
+
+    for (step, &(node, edge_idx_u32)) in result.backward_parent.iter().rev().enumerate() {
+        let edge_idx = edge_idx_u32 as usize;
+        let target = mode_data.cch_topo.down_targets[edge_idx];
+        let edge_weight = mode_data.cch_weights.down[edge_idx];
+        let expanded = unpack_path(
+            &mode_data.cch_topo,
+            &mode_data.cch_weights,
+            &[],
+            &[(node, edge_idx_u32)],
+            node,
+            target,
+            node,
+        );
+        eprintln!(
+            "backward step {}: {} -> {} edge_idx={} shortcut={} weight_ds={} expanded_len={} expanded_ds={}",
+            step,
+            node,
+            target,
+            edge_idx,
+            mode_data.cch_topo.down_is_shortcut[edge_idx],
+            edge_weight,
+            expanded.len(),
+            path_dist_ds(&expanded)
+        );
+    }
 }
 
 /// TEST: Alternative routes produce different geometries
@@ -599,6 +806,7 @@ fn test_route_geometry_polyline6_round_trips() {
 
         let rank_path = unpack_path(
             &mode_data.cch_topo,
+            &mode_data.cch_weights,
             &result.forward_parent,
             &result.backward_parent,
             src_rank,
@@ -858,6 +1066,7 @@ fn test_route_steps_have_depart_and_arrive() {
 
         let rank_path = unpack_path(
             &mode_data.cch_topo,
+            &mode_data.cch_weights,
             &result.forward_parent,
             &result.backward_parent,
             src_rank,
@@ -974,6 +1183,7 @@ fn test_route_steps_distances_sum_to_total() {
 
         let rank_path = unpack_path(
             &mode_data.cch_topo,
+            &mode_data.cch_weights,
             &result.forward_parent,
             &result.backward_parent,
             src_rank,
@@ -1044,6 +1254,7 @@ fn test_route_step_locations_on_route() {
 
     let rank_path = unpack_path(
         &mode_data.cch_topo,
+        &mode_data.cch_weights,
         &result.forward_parent,
         &result.backward_parent,
         src_rank,
