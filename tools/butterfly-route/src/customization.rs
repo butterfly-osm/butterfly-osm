@@ -35,7 +35,7 @@ use rayon::prelude::*;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::formats::{
     mod_turns, mod_weights, CchTopo, CchTopoFile, EbgNodesFile, FilteredEbgFile, HybridStateFile,
@@ -246,7 +246,7 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     // ===================================================================
     println!("\n🔺 Triangle relaxation for TIME (parallel)...");
     let tr_start = std::time::Instant::now();
-    let (time_up, time_down, time_relax_count, time_relax_passes) =
+    let (time_up, time_down, time_up_mid, time_down_mid, time_relax_count, time_relax_passes) =
         triangle_relax_parallel(&topo, time_up, time_down, &rev_down);
     println!(
         "  ✓ {:.2}s, {} updates in {} passes",
@@ -257,7 +257,7 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
 
     println!("\n🔺 Triangle relaxation for DISTANCE (parallel)...");
     let tr_start = std::time::Instant::now();
-    let (dist_up, dist_down, dist_relax_count, dist_relax_passes) =
+    let (dist_up, dist_down, _dist_up_mid, _dist_down_mid, dist_relax_count, dist_relax_passes) =
         triangle_relax_parallel(&topo, dist_up, dist_down, &rev_down);
     println!(
         "  ✓ {:.2}s, {} updates in {} passes",
@@ -275,12 +275,13 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
 
     let output_path = config.outdir.join(format!("cch.w.{}.u32", mode_name));
     println!("\nWriting time weights...");
-    write_cch_weights(&output_path, &time_up, &time_down, config.mode)?;
+    write_cch_weights(&output_path, &time_up, &time_down, &time_up_mid, &time_down_mid, config.mode)?;
     println!("  ✓ Written {}", output_path.display());
 
     let distance_output_path = config.outdir.join(format!("cch.d.{}.u32", mode_name));
     println!("Writing distance weights...");
-    write_cch_weights(&distance_output_path, &dist_up, &dist_down, config.mode)?;
+    // Distance uses topology middles (distance relaxation doesn't affect path unpacking)
+    write_cch_weights(&distance_output_path, &dist_up, &dist_down, &topo.up_middle, &topo.down_middle, config.mode)?;
     println!("  ✓ Written {}", distance_output_path.display());
 
     let customize_time_ms = start_time.elapsed().as_millis() as u64;
@@ -407,29 +408,54 @@ fn bottom_up_customize(
     (up_weights, down_weights)
 }
 
-/// Parallel triangle relaxation using atomic fetch_min.
+/// Pack (weight, middle_rank) into a single u64 for atomic fetch_min.
+/// Weight in high 32 bits so fetch_min minimizes by weight first.
+#[inline]
+fn pack_wm(weight: u32, middle: u32) -> u64 {
+    ((weight as u64) << 32) | (middle as u64)
+}
+
+#[inline]
+fn unpack_weight(packed: u64) -> u32 {
+    (packed >> 32) as u32
+}
+
+#[inline]
+fn unpack_middle(packed: u64) -> u32 {
+    packed as u32
+}
+
+/// Parallel triangle relaxation using atomic fetch_min on packed (weight, middle).
 ///
 /// For each apex m (processed in parallel), relaxes edges x→y where:
 ///   - x→m is a DOWN edge from x (rank[x] > rank[m])
 ///   - m→y is an UP edge from m (rank[y] > rank[m])
 ///   - w(x,y) = min(w(x,y), w(x,m) + w(m,y))
 ///
-/// INVARIANT: Only decreases weights (monotone via fetch_min).
-/// Relaxed ordering is safe: stale reads may miss an update in this pass,
-/// but the convergence check (0 updates) ensures all triangles are optimal.
+/// CRITICAL: When a better weight is found through apex m, the middle node is
+/// updated atomically alongside the weight. This ensures path unpacking follows
+/// the OPTIMAL middle, not the original contraction middle.
 ///
-/// Returns (up_weights, down_weights, total_relaxations, passes).
+/// Returns (up_weights, down_weights, up_middles, down_middles, total_relaxations, passes).
 fn triangle_relax_parallel(
     topo: &CchTopo,
     up_weights: Vec<u32>,
     down_weights: Vec<u32>,
     rev_down: &ReverseDownAdj,
-) -> (Vec<u32>, Vec<u32>, u64, u32) {
+) -> (Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>, u64, u32) {
     let n_nodes = topo.n_nodes as usize;
 
-    // Convert to atomic arrays for lock-free parallel relaxation
-    let atomic_up: Vec<AtomicU32> = up_weights.into_iter().map(AtomicU32::new).collect();
-    let atomic_down: Vec<AtomicU32> = down_weights.into_iter().map(AtomicU32::new).collect();
+    // Pack (weight, middle) into AtomicU64 for lock-free update of both
+    let atomic_up: Vec<AtomicU64> = up_weights
+        .iter()
+        .zip(topo.up_middle.iter())
+        .map(|(&w, &m)| AtomicU64::new(pack_wm(w, m)))
+        .collect();
+    let atomic_down: Vec<AtomicU64> = down_weights
+        .iter()
+        .zip(topo.down_middle.iter())
+        .map(|(&w, &m)| AtomicU64::new(pack_wm(w, m)))
+        .collect();
 
     let mut total_relaxations = 0u64;
     let mut pass = 0u32;
@@ -446,7 +472,7 @@ fn triangle_relax_parallel(
             for i_rev in rev_start..rev_end {
                 let x = rev_down.sources[i_rev] as usize;
                 let edge_idx_xm = rev_down.edge_idx[i_rev];
-                let w_xm = atomic_down[edge_idx_xm].load(Ordering::Relaxed);
+                let w_xm = unpack_weight(atomic_down[edge_idx_xm].load(Ordering::Relaxed));
 
                 if w_xm == u32::MAX {
                     continue;
@@ -461,19 +487,20 @@ fn triangle_relax_parallel(
                         continue;
                     }
 
-                    let w_my = atomic_up[i_my].load(Ordering::Relaxed);
+                    let w_my = unpack_weight(atomic_up[i_my].load(Ordering::Relaxed));
                     if w_my == u32::MAX {
                         continue;
                     }
 
                     let new_weight = w_xm.saturating_add(w_my);
+                    let new_packed = pack_wm(new_weight, m as u32);
 
                     if y > x {
                         // UP edge from x
                         if let Some(idx) = find_edge_index(x, y, &topo.up_offsets, &topo.up_targets)
                         {
-                            let old = atomic_up[idx].fetch_min(new_weight, Ordering::Relaxed);
-                            if new_weight < old {
+                            let old = atomic_up[idx].fetch_min(new_packed, Ordering::Relaxed);
+                            if new_packed < old {
                                 pass_updates.fetch_add(1, Ordering::Relaxed);
                             }
                         }
@@ -482,8 +509,8 @@ fn triangle_relax_parallel(
                         if let Some(idx) =
                             find_edge_index(x, y, &topo.down_offsets, &topo.down_targets)
                         {
-                            let old = atomic_down[idx].fetch_min(new_weight, Ordering::Relaxed);
-                            if new_weight < old {
+                            let old = atomic_down[idx].fetch_min(new_packed, Ordering::Relaxed);
+                            if new_packed < old {
                                 pass_updates.fetch_add(1, Ordering::Relaxed);
                             }
                         }
@@ -504,10 +531,12 @@ fn triangle_relax_parallel(
         }
     }
 
-    let up = atomic_up.into_iter().map(AtomicU32::into_inner).collect();
-    let down = atomic_down.into_iter().map(AtomicU32::into_inner).collect();
+    let up: Vec<u32> = atomic_up.iter().map(|a| unpack_weight(a.load(Ordering::Relaxed))).collect();
+    let down: Vec<u32> = atomic_down.iter().map(|a| unpack_weight(a.load(Ordering::Relaxed))).collect();
+    let up_mid: Vec<u32> = atomic_up.iter().map(|a| unpack_middle(a.load(Ordering::Relaxed))).collect();
+    let down_mid: Vec<u32> = atomic_down.iter().map(|a| unpack_middle(a.load(Ordering::Relaxed))).collect();
 
-    (up, down, total_relaxations, pass)
+    (up, down, up_mid, down_mid, total_relaxations, pass)
 }
 
 // ===================================================================
@@ -748,6 +777,8 @@ fn write_cch_weights(
     path: &std::path::Path,
     up_weights: &[u32],
     down_weights: &[u32],
+    up_middle: &[u32],
+    down_middle: &[u32],
     mode: Mode,
 ) -> Result<()> {
     use crate::formats::crc::Digest;
@@ -789,6 +820,18 @@ fn write_cch_weights(
 
     for &w in down_weights {
         let bytes = w.to_le_bytes();
+        writer.write_all(&bytes)?;
+        crc_digest.update(&bytes);
+    }
+
+    // Write relaxed middle arrays (after weights, before CRC)
+    for &m in up_middle {
+        let bytes = m.to_le_bytes();
+        writer.write_all(&bytes)?;
+        crc_digest.update(&bytes);
+    }
+    for &m in down_middle {
+        let bytes = m.to_le_bytes();
         writer.write_all(&bytes)?;
         crc_digest.update(&bytes);
     }
@@ -943,7 +986,7 @@ pub fn customize_cch_hybrid(config: Step8HybridConfig) -> Result<Step8Result> {
 
     println!("\n🔺 Triangle relaxation (parallel)...");
     let tr_start = std::time::Instant::now();
-    let (up_weights, down_weights, relax_count, relax_passes) =
+    let (up_weights, down_weights, _up_middles, _down_middles, relax_count, relax_passes) =
         triangle_relax_parallel(&topo, up_weights, down_weights, &rev_down);
     println!(
         "  ✓ {:.2}s, {} updates in {} passes",
@@ -960,7 +1003,7 @@ pub fn customize_cch_hybrid(config: Step8HybridConfig) -> Result<Step8Result> {
         .join(format!("cch.w.hybrid.{}.u32", mode_name));
 
     println!("\nWriting output...");
-    write_cch_weights(&output_path, &up_weights, &down_weights, config.mode)?;
+    write_cch_weights(&output_path, &up_weights, &down_weights, &topo.up_middle, &topo.down_middle, config.mode)?;
     println!("  ✓ Written {}", output_path.display());
 
     let customize_time_ms = start_time.elapsed().as_millis() as u64;

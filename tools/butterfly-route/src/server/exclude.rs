@@ -269,6 +269,8 @@ pub fn recustomize_weights(
     CchWeights {
         up: up_weights,
         down: down_weights,
+        up_middle: base_weights.up_middle.clone(),
+        down_middle: base_weights.down_middle.clone(),
     }
 }
 
@@ -376,6 +378,8 @@ fn recustomize_weights_sparse_triangle(
     CchWeights {
         up: up_weights,
         down: down_weights,
+        up_middle: base_weights.up_middle.clone(),
+        down_middle: base_weights.down_middle.clone(),
     }
 }
 

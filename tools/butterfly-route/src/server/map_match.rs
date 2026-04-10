@@ -517,6 +517,7 @@ fn compute_transition_distances(
                 // Unpack CCH path to get EBG edge sequence
                 let rank_path = super::unpack::unpack_path(
                     &mode_data.cch_topo,
+                    cch_weights,
                     &qr.forward_parent,
                     &qr.backward_parent,
                     src_rank,
@@ -625,6 +626,7 @@ fn find_path_between(
 
     let rank_path = super::unpack::unpack_path(
         &mode_data.cch_topo,
+        cch_weights,
         &result.forward_parent,
         &result.backward_parent,
         src_rank,

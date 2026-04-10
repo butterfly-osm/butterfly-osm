@@ -521,11 +521,13 @@ pub async fn route_handler(
 
     // Helper: build route from query result — returns (geometry, duration_s, distance_m, steps, ebg_path)
     let build_route = |result: &super::query::QueryResult,
+                       weights: &super::state::CchWeights,
                        format: GeometryFormat,
                        want_steps: bool|
      -> (RouteGeometry, f64, f64, Option<Vec<RouteStep>>, Vec<u32>) {
         let rank_path = unpack_path(
             &mode_data.cch_topo,
+            weights,
             &result.forward_parent,
             &result.backward_parent,
             src_rank,
@@ -583,8 +585,16 @@ pub async fn route_handler(
         }
     };
 
+    let active_weights = if let Some((ref time_weights, _)) = avoid_result {
+        time_weights
+    } else if let Some(ref ew) = exclude_weights {
+        &ew.time_weights
+    } else {
+        &mode_data.cch_weights
+    };
+
     let (geometry, duration_s, distance_m, steps, ebg_path) =
-        build_route(&result, geom_format, req.steps);
+        build_route(&result, active_weights, geom_format, req.steps);
 
     // GPX output: skip annotations, alternatives, debug — just emit track points
     if wants_gpx(&headers) {
@@ -699,7 +709,7 @@ pub async fn route_handler(
                 }
 
                 let (alt_geom, alt_dur, alt_dist, alt_steps, _alt_path) =
-                    build_route(&alt_result, geom_format, req.steps);
+                    build_route(&alt_result, &penalized_weights, geom_format, req.steps);
 
                 // Penalize this alternative's edges for next iteration
                 for &(_node, edge_idx) in &alt_result.forward_parent {

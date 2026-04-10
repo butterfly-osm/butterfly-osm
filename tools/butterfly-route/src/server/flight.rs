@@ -473,6 +473,7 @@ fn do_route_batch(
 
                                 let rank_path = unpack_path(
                                     &mode_data.cch_topo,
+                                    &mode_data.cch_weights,
                                     &result.forward_parent,
                                     &result.backward_parent,
                                     src_rank,

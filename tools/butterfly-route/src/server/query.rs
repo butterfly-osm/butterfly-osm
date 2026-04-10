@@ -538,6 +538,8 @@ mod tests {
         let weights = CchWeights {
             up: vec![10u32, 3, 7, 5],
             down: vec![10u32, 3, 7, 5],
+            up_middle: vec![],
+            down_middle: vec![],
         };
 
         // Build DownReverseAdj from topo
@@ -689,6 +691,8 @@ mod tests {
         let weights = CchWeights {
             up: vec![10, 3, 7, 5],
             down: vec![10, 3, 7, 5],
+            up_middle: vec![],
+            down_middle: vec![],
         };
 
         let down_rev = DownReverseAdj {
