@@ -30,20 +30,15 @@ impl AsyncRead for DownloadStream {
 pub type ProgressCallback = Arc<dyn Fn(u64, u64) + Send + Sync>;
 
 /// Overwrite behavior for existing files
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub enum OverwriteBehavior {
     /// Prompt user for confirmation (default)
+    #[default]
     Prompt,
     /// Force overwrite without prompting
     Force,
     /// Never overwrite, fail if file exists
     NeverOverwrite,
-}
-
-impl Default for OverwriteBehavior {
-    fn default() -> Self {
-        Self::Prompt
-    }
 }
 
 /// Options for download operations

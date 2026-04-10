@@ -990,8 +990,7 @@ fn compute_hybrid_original_weight(
 ) -> u32 {
     let u_state = rank_to_state[u_rank] as usize;
     let v_state = rank_to_state[v_rank];
-    match sorted_hybrid.find_weight(u_state, v_state) {
-        Some(w) => w,
-        None => u32::MAX,
-    }
+    sorted_hybrid
+        .find_weight(u_state, v_state)
+        .unwrap_or(u32::MAX)
 }

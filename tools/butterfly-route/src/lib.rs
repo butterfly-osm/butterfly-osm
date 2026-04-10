@@ -13,26 +13,24 @@
 //! Key principle: Edge-based graph is the single source of truth for routing.
 //! All queries (P2P, matrix, isochrone) use the same EBG-based CCH.
 
-pub mod analysis;
 pub mod cli;
+pub mod contraction;
+pub mod customization;
 pub mod ebg;
 pub mod formats;
-pub mod hybrid;
 pub mod ingest;
 pub mod matrix;
 pub mod model;
 pub mod nbg;
 pub mod nbg_ch;
+pub mod ordering;
+pub mod ordering_lifted;
 pub mod profile;
 pub mod profile_abi;
 pub mod range;
-pub mod step5;
-pub mod step6;
-pub mod step6_lifted;
-pub mod step7;
-pub mod step8;
-pub mod step9;
+pub mod server;
 pub mod validate;
+pub mod weights;
 
 pub use formats::{RelationsFile, WaysFile};
 pub use profile_abi::{Mode, TurnInput, TurnOutput, TurnRuleKind, WayInput, WayOutput};

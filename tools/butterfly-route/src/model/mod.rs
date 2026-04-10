@@ -12,7 +12,9 @@
 
 pub mod compile;
 pub mod evaluate;
+pub mod profiling;
 pub mod schema;
+pub mod types;
 
 pub use compile::{compile_model, CompiledModel};
 pub use evaluate::{evaluate_turn_full, evaluate_way};
@@ -22,9 +24,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Maximum number of modes supported.
-/// Turn table stores [u32; MAX_MODES] penalty arrays.
-pub const MAX_MODES: usize = 8;
+// MAX_MODES is defined in types.rs and re-exported
+pub use types::MAX_MODES;
 
 /// Mode information — dynamic replacement for the old Mode enum
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -157,16 +158,25 @@ mod tests {
         }
         let modes = discover_modes(&models_dir).unwrap();
 
-        // Should find bike, car, foot, truck (alphabetical)
-        assert_eq!(modes.len(), 4);
-        assert_eq!(modes[0].name, "bike");
-        assert_eq!(modes[0].index, 0);
-        assert_eq!(modes[1].name, "car");
-        assert_eq!(modes[1].index, 1);
-        assert_eq!(modes[2].name, "foot");
-        assert_eq!(modes[2].index, 2);
-        assert_eq!(modes[3].name, "truck");
-        assert_eq!(modes[3].index, 3);
+        // Should find all models alphabetically: bike, bus, car, foot, motorcycle, scooter, truck, wheelchair
+        assert_eq!(modes.len(), 8);
+        let names: Vec<&str> = modes.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "bike",
+                "bus",
+                "car",
+                "foot",
+                "motorcycle",
+                "scooter",
+                "truck",
+                "wheelchair"
+            ]
+        );
+        for (i, m) in modes.iter().enumerate() {
+            assert_eq!(m.index, i as u8);
+        }
     }
 
     #[test]

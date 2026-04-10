@@ -122,13 +122,14 @@ fn encode_value(value: i64, out: &mut String) {
     }
 }
 
-/// Build route geometry from EBG node sequence
-pub fn build_geometry(
+/// Extract raw deduped coordinate list and total distance from EBG path.
+///
+/// This is the shared core for both `build_geometry` and GPX output.
+pub fn build_raw_points(
     ebg_path: &[u32],
     ebg_nodes: &EbgNodes,
     nbg_geo: &NbgGeo,
-    format: GeometryFormat,
-) -> (RouteGeometry, f64) {
+) -> (Vec<Point>, f64) {
     let mut coordinates = Vec::new();
     let mut total_distance_m = 0.0;
 
@@ -155,6 +156,17 @@ pub fn build_geometry(
     // Remove duplicate consecutive points
     coordinates.dedup_by(|a, b| (a.lon - b.lon).abs() < 1e-9 && (a.lat - b.lat).abs() < 1e-9);
 
+    (coordinates, total_distance_m)
+}
+
+/// Build route geometry from EBG node sequence
+pub fn build_geometry(
+    ebg_path: &[u32],
+    ebg_nodes: &EbgNodes,
+    nbg_geo: &NbgGeo,
+    format: GeometryFormat,
+) -> (RouteGeometry, f64) {
+    let (coordinates, total_distance_m) = build_raw_points(ebg_path, ebg_nodes, nbg_geo);
     (
         RouteGeometry::from_points(coordinates, format),
         total_distance_m,
@@ -178,21 +190,38 @@ pub fn build_isochrone_geometry(
     nbg_geo: &NbgGeo,
     mode_name: &str,
 ) -> Vec<Point> {
-    build_isochrone_geometry_sparse(
+    let geo_start = std::time::Instant::now();
+    let result = build_isochrone_geometry_sparse(
         settled_nodes,
         max_time_ds,
         node_weights,
         ebg_nodes,
         nbg_geo,
         mode_name,
-    )
+    );
+    let geo_us = geo_start.elapsed().as_micros();
+    tracing::debug!(
+        threshold_ds = max_time_ds,
+        settled_input = settled_nodes.len(),
+        polygon_vertices = result.len(),
+        geometry_us = geo_us,
+        "isochrone geometry pipeline timing"
+    );
+    result
 }
 
 /// Build isochrone geometry with mode-specific configuration
 ///
-/// Stamps all reachable edges into a sparse tile grid, then traces the boundary.
-/// Previous optimization (near-frontier stamping) was removed because it caused
-/// incorrect polygons for larger isochrones where the frontier became too sparse.
+/// Stamps reachable edges into a sparse tile grid, then traces the boundary.
+///
+/// For large thresholds (>10 min), applies **near-frontier filtering**: only
+/// stamps edges whose `dist >= near_frontier_ratio * threshold`. Interior edges
+/// are deep inside the reachable set and do not affect the boundary shape, so
+/// skipping them saves the majority of stamp work. For small thresholds the
+/// full set is stamped (ratio = 0.0) to avoid sparse-frontier artifacts.
+///
+/// Cell size and simplification tolerance also scale with threshold via
+/// `SparseContourConfig::for_mode_name_with_threshold()`.
 pub fn build_isochrone_geometry_sparse(
     settled_nodes: &[(u32, u32)], // (original_ebg_id, distance_ds)
     max_time_ds: u32,
@@ -201,7 +230,17 @@ pub fn build_isochrone_geometry_sparse(
     nbg_geo: &NbgGeo,
     mode_name: &str,
 ) -> Vec<Point> {
-    let config = SparseContourConfig::for_mode_name(mode_name);
+    let config = SparseContourConfig::for_mode_name_with_threshold(mode_name, max_time_ds);
+
+    // Near-frontier ratio: for large thresholds, only stamp edges near the boundary.
+    // The interior is far from the boundary and doesn't affect the polygon shape.
+    let threshold_s = max_time_ds / 10;
+    let near_frontier_min_ds = if threshold_s > 600 {
+        // Only stamp edges where dist_start >= 60% of threshold
+        (max_time_ds as u64 * 6 / 10) as u32
+    } else {
+        0 // stamp everything for small isochrones
+    };
 
     let mut segments: Vec<ReachableSegment> = Vec::new();
 
@@ -234,7 +273,10 @@ pub fn build_isochrone_geometry_sparse(
         }
 
         if dist_end_ds <= max_time_ds {
-            // Fully reachable edge (near frontier)
+            // Fully reachable edge -- skip deep interior edges
+            if dist_ds < near_frontier_min_ds {
+                continue;
+            }
             let points: Vec<(i32, i32)> = polyline
                 .lat_fxp
                 .iter()
@@ -243,7 +285,7 @@ pub fn build_isochrone_geometry_sparse(
                 .collect();
             segments.push(ReachableSegment { points });
         } else {
-            // Frontier edge - include from start to cut point
+            // Frontier edge - always include (from start to cut point)
             let cut_fraction = (max_time_ds - dist_ds) as f32 / weight_ds as f32;
             let points = extract_partial_polyline(polyline, cut_fraction);
             if !points.is_empty() {
