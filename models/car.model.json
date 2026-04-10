@@ -83,9 +83,9 @@
     "turn_bias": 1.075,
     "u_turn_penalty_ds": 200,
     "min_degree_for_penalty": 3,
-    "signal_delay_ds": 80,
-    "class_change_penalty_ds_per_diff": 5,
-    "max_class_diff_for_penalty": 6
+    "signal_delay_ds": 20,
+    "class_change_penalty_ds_per_diff": 2,
+    "max_class_diff_for_penalty": 3
   },
 
   "turn_restrictions": {
