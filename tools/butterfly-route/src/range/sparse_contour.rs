@@ -804,8 +804,6 @@ fn extract_contour_sparse(map: &SparseTileMap) -> Vec<(f64, f64)> {
     }
 
     // Return the largest contour (by vertex count).
-    // Smaller disconnected components (islands) are intentionally discarded —
-    // multi-polygon output would require a different API contract.
     all_contours
         .into_iter()
         .max_by_key(|c| c.len())
