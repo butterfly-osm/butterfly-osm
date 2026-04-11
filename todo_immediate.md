@@ -1,19 +1,19 @@
 # Butterfly-route QA Adversarial Plan (Endpoint x Mode)
 
 ## Scope and code evidence reviewed
-- `tools/butterfly-route/src/step9/api.rs`
-- `tools/butterfly-route/src/step9/geometry.rs`
-- `tools/butterfly-route/src/step9/trip.rs`
-- `tools/butterfly-route/src/step9/elevation.rs`
-- `tools/butterfly-route/src/step9/map_match.rs`
-- `tools/butterfly-route/src/step9/query.rs`
-- `tools/butterfly-route/src/step9/state.rs`
-- `tools/butterfly-route/src/range/contour.rs`
-- `tools/butterfly-route/src/matrix/bucket_ch.rs`
+- `route/src/step9/api.rs`
+- `route/src/step9/geometry.rs`
+- `route/src/step9/trip.rs`
+- `route/src/step9/elevation.rs`
+- `route/src/step9/map_match.rs`
+- `route/src/step9/query.rs`
+- `route/src/step9/state.rs`
+- `route/src/range/contour.rs`
+- `route/src/matrix/bucket_ch.rs`
 
 Additional behavior-critical reads:
-- `tools/butterfly-route/src/step9/spatial.rs` (snap distance/radius behavior)
-- `tools/butterfly-route/src/range/wkb_stream.rs` (ring orientation/closure for WKB)
+- `route/src/step9/spatial.rs` (snap distance/radius behavior)
+- `route/src/range/wkb_stream.rs` (ring orientation/closure for WKB)
 
 ## Mode coverage policy
 For every mode-dependent endpoint, run each test with mode in `{car, bike, foot}` unless the test explicitly targets invalid mode handling.

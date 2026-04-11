@@ -162,7 +162,7 @@ impl TurnPenaltyConfig {
     /// Falls back to identity config if the model file doesn't exist.
     pub fn for_mode(mode_name: &str) -> Self {
         let models_dir =
-            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../models"));
+            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../models"));
         let model_path = models_dir.join(format!("{}.model.json", mode_name));
         if let Ok(content) = std::fs::read_to_string(&model_path) {
             if let Ok(schema) = serde_json::from_str::<ModelSchema>(&content) {
