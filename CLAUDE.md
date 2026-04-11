@@ -289,8 +289,8 @@ Current behavior: [What happens now, including benchmark numbers]
 Expected behavior: [Target metrics, e.g., "50×50 matrix < 100ms"]
 
 Relevant files:
-- tools/butterfly-route/src/matrix/bucket_ch.rs
-- tools/butterfly-route/src/server/query.rs
+- route/src/matrix/bucket_ch.rs
+- route/src/server/query.rs
 - [... all potentially involved files]
 
 Please review for:
@@ -357,29 +357,29 @@ else:
 ## Key File Paths by Component
 
 ### CCH Core
-- `tools/butterfly-route/src/formats/cch_topo.rs` — CCH topology (UP/DOWN edges)
-- `tools/butterfly-route/src/formats/cch_weights.rs` — Customized edge weights
-- `tools/butterfly-route/src/contraction.rs` — CCH contraction
-- `tools/butterfly-route/src/customization.rs` — Weight customization
+- `route/src/formats/cch_topo.rs` — CCH topology (UP/DOWN edges)
+- `route/src/formats/cch_weights.rs` — Customized edge weights
+- `route/src/contraction.rs` — CCH contraction
+- `route/src/customization.rs` — Weight customization
 
 ### Query Engine
-- `tools/butterfly-route/src/server/query.rs` — Bidirectional P2P search
-- `tools/butterfly-route/src/server/state.rs` — Server state, DownReverseAdj
-- `tools/butterfly-route/src/server/api.rs` — HTTP endpoints (router + handler modules)
+- `route/src/server/query.rs` — Bidirectional P2P search
+- `route/src/server/state.rs` — Server state, DownReverseAdj
+- `route/src/server/api.rs` — HTTP endpoints (router + handler modules)
 
 ### PHAST / Isochrones
-- `tools/butterfly-route/src/range/phast.rs` — Single-source PHAST
-- `tools/butterfly-route/src/range/batched_isochrone.rs` — K-lane batched PHAST
-- `tools/butterfly-route/src/range/frontier.rs` — Frontier extraction
-- `tools/butterfly-route/src/range/contour.rs` — Polygon generation
+- `route/src/range/phast.rs` — Single-source PHAST
+- `route/src/range/batched_isochrone.rs` — K-lane batched PHAST
+- `route/src/range/frontier.rs` — Frontier extraction
+- `route/src/range/contour.rs` — Polygon generation
 
 ### Matrix / Many-to-Many
-- `tools/butterfly-route/src/matrix/bucket_ch.rs` — Bucket M2M algorithm
-- `tools/butterfly-route/src/matrix/batched_phast.rs` — K-lane PHAST for matrices
-- `tools/butterfly-route/src/matrix/arrow_stream.rs` — Arrow IPC streaming
+- `route/src/matrix/bucket_ch.rs` — Bucket M2M algorithm
+- `route/src/matrix/batched_phast.rs` — K-lane PHAST for matrices
+- `route/src/matrix/arrow_stream.rs` — Arrow IPC streaming
 
 ### Benchmarking
-- `tools/butterfly-route/src/bench/main.rs` — Benchmark harness
+- `route/src/bench/main.rs` — Benchmark harness
 
 ### Planning Documents
 - `todo_overall.md` — Architecture, endpoints, and performance reference

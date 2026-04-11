@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn test_discover_modes_from_models_dir() {
-        let models_dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../models"));
+        let models_dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../models"));
         if !models_dir.exists() {
             return; // Skip if models dir not present
         }

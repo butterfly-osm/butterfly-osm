@@ -8,28 +8,28 @@ WORKDIR /build
 # Copy workspace manifests first for layer caching
 COPY Cargo.toml Cargo.lock ./
 COPY butterfly-common/Cargo.toml butterfly-common/Cargo.toml
-COPY tools/butterfly-dl/Cargo.toml tools/butterfly-dl/Cargo.toml
-COPY tools/butterfly-route/Cargo.toml tools/butterfly-route/Cargo.toml
+COPY dl/Cargo.toml dl/Cargo.toml
+COPY route/Cargo.toml route/Cargo.toml
 
 # Create dummy source files for dependency caching
-RUN mkdir -p butterfly-common/src tools/butterfly-dl/src tools/butterfly-route/src tools/butterfly-route/src/bench && \
+RUN mkdir -p butterfly-common/src dl/src route/src route/src/bench && \
     echo "fn main() {}" > butterfly-common/src/lib.rs && \
-    echo "fn main() {}" > tools/butterfly-dl/src/lib.rs && \
-    echo "fn main() {}" > tools/butterfly-route/src/lib.rs && \
-    echo "fn main() {}" > tools/butterfly-route/src/main.rs && \
-    echo "fn main() {}" > tools/butterfly-route/src/bench/main.rs
+    echo "fn main() {}" > dl/src/lib.rs && \
+    echo "fn main() {}" > route/src/lib.rs && \
+    echo "fn main() {}" > route/src/main.rs && \
+    echo "fn main() {}" > route/src/bench/main.rs
 
 # Build dependencies only (cached layer)
 RUN cargo build --release -p butterfly-route 2>/dev/null || true
 
 # Copy actual source code
 COPY butterfly-common/ butterfly-common/
-COPY tools/butterfly-dl/ tools/butterfly-dl/
-COPY tools/butterfly-route/ tools/butterfly-route/
+COPY dl/ dl/
+COPY route/ route/
 
 # Touch source files to invalidate the build cache for actual code
-RUN touch butterfly-common/src/lib.rs tools/butterfly-dl/src/lib.rs \
-    tools/butterfly-route/src/lib.rs tools/butterfly-route/src/main.rs
+RUN touch butterfly-common/src/lib.rs dl/src/lib.rs \
+    route/src/lib.rs route/src/main.rs
 
 # Build release binary
 RUN cargo build --release -p butterfly-route
