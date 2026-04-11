@@ -124,7 +124,7 @@ mod tests {
     fn test_parse_car_model() {
         let json = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../models/car.model.json"
+            "/../models/car.model.json"
         ))
         .unwrap();
         let model: ModelSchema = serde_json::from_str(&json).unwrap();
@@ -141,7 +141,7 @@ mod tests {
     fn test_parse_bike_model() {
         let json = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../models/bike.model.json"
+            "/../models/bike.model.json"
         ))
         .unwrap();
         let model: ModelSchema = serde_json::from_str(&json).unwrap();
@@ -154,7 +154,7 @@ mod tests {
     fn test_parse_foot_model() {
         let json = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../models/foot.model.json"
+            "/../models/foot.model.json"
         ))
         .unwrap();
         let model: ModelSchema = serde_json::from_str(&json).unwrap();
@@ -168,7 +168,7 @@ mod tests {
     fn test_parse_truck_model() {
         let json = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../models/truck.model.json"
+            "/../models/truck.model.json"
         ))
         .unwrap();
         let model: ModelSchema = serde_json::from_str(&json).unwrap();
