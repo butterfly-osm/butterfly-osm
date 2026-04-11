@@ -232,15 +232,10 @@ pub fn build_isochrone_geometry_sparse(
 ) -> Vec<Point> {
     let config = SparseContourConfig::for_mode_name_with_threshold(mode_name, max_time_ds);
 
-    // Near-frontier ratio: for large thresholds, only stamp edges near the boundary.
-    // The interior is far from the boundary and doesn't affect the polygon shape.
-    let threshold_s = max_time_ds / 10;
-    let near_frontier_min_ds = if threshold_s > 600 {
-        // Only stamp edges where dist_start >= 60% of threshold
-        (max_time_ds as u64 * 6 / 10) as u32
-    } else {
-        0 // stamp everything for small isochrones
-    };
+    // Stamp ALL reachable edges. Do NOT use near-frontier filtering — it creates
+    // holes in the polygon when the frontier has gaps in some directions.
+    // (Previously tried near_frontier_min_ds = 60% threshold; reverted because
+    // it produced missing polygon areas exactly like this.)
 
     let mut segments: Vec<ReachableSegment> = Vec::new();
 
@@ -273,10 +268,7 @@ pub fn build_isochrone_geometry_sparse(
         }
 
         if dist_end_ds <= max_time_ds {
-            // Fully reachable edge -- skip deep interior edges
-            if dist_ds < near_frontier_min_ds {
-                continue;
-            }
+            // Fully reachable edge — stamp it
             let points: Vec<(i32, i32)> = polyline
                 .lat_fxp
                 .iter()

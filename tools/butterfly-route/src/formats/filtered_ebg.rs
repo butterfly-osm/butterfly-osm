@@ -152,29 +152,20 @@ impl FilteredEbg {
         }
         offsets.push(heads.len() as u64);
 
-        // === SCC filtering: keep only the largest strongly connected component ===
-        // Uses Kosaraju's algorithm: two DFS passes.
-        let (scc_offsets, scc_heads, scc_original_arc_idx, scc_filtered_to_original, scc_original_to_filtered, scc_n_filtered) =
-            largest_scc_filter(
-                n_filtered,
-                &offsets,
-                &heads,
-                &original_arc_idx,
-                &filtered_to_original,
-                n_orig,
-            );
-
+        // No SCC filtering — keep all accessible nodes.
+        // Dead-end stubs and one-way fragments remain routable.
+        // The query handler returns "no route" for unreachable pairs.
         Self {
             mode,
-            n_filtered_nodes: scc_n_filtered as u32,
-            n_filtered_arcs: scc_heads.len() as u64,
+            n_filtered_nodes: n_filtered as u32,
+            n_filtered_arcs: heads.len() as u64,
             n_original_nodes,
             inputs_sha,
-            offsets: scc_offsets,
-            heads: scc_heads,
-            original_arc_idx: scc_original_arc_idx,
-            filtered_to_original: scc_filtered_to_original,
-            original_to_filtered: scc_original_to_filtered,
+            offsets,
+            heads,
+            original_arc_idx,
+            filtered_to_original,
+            original_to_filtered,
         }
     }
 
@@ -200,6 +191,7 @@ impl FilteredEbg {
 /// Uses Kosaraju's algorithm (iterative, stack-based — no recursion).
 ///
 /// Returns: (offsets, heads, original_arc_idx, filtered_to_original, original_to_filtered, n_scc_nodes)
+#[allow(dead_code)]
 fn largest_scc_filter(
     n: usize,
     offsets: &[u64],
