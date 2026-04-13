@@ -20,6 +20,7 @@ use crate::matrix::bucket_ch::{
     backward_join_with_buckets, forward_build_buckets, table_bucket_full_flat,
     table_bucket_parallel, DownReverseAdjFlat, UpAdjFlat,
 };
+use crate::matrix::neighbors::{auto_radius_km, build_neighbors, parse_radius, RadiusParam};
 use crate::profile_abi::Mode;
 
 use super::state::ServerState;
@@ -49,6 +50,11 @@ pub struct TablePostRequest {
     /// Avoid polygon(s) as JSON array of coordinate rings
     #[serde(default)]
     pub avoid_polygons: Option<String>,
+    /// Optional Euclidean pre-filter radius in kilometres.
+    /// Accepts a positive number, the string "auto" (server-computed p95 × 1.1),
+    /// or null/0 to disable. Pairs beyond the radius are returned as null.
+    #[serde(default)]
+    pub radius_km: Option<serde_json::Value>,
 }
 
 pub fn default_annotations() -> String {
@@ -101,6 +107,11 @@ pub struct TableStreamRequest {
     /// Avoid polygon(s) as JSON array of coordinate rings
     #[serde(default)]
     pub avoid_polygons: Option<String>,
+    /// Optional Euclidean pre-filter radius in kilometres.
+    /// Accepts a positive number, the string "auto" (server-computed p95 × 1.1),
+    /// or null/0 to disable. Pairs beyond the radius are emitted as u32::MAX.
+    #[serde(default)]
+    pub radius_km: Option<serde_json::Value>,
 }
 
 pub fn default_tile_size() -> usize {
@@ -270,6 +281,8 @@ pub async fn table_post_handler(
             exclude_weights.as_deref()
         };
 
+    let radius_param = parse_radius(req.radius_km.as_ref());
+
     compute_table_bucket_m2m(
         &state,
         mode,
@@ -279,6 +292,7 @@ pub async fn table_post_handler(
         want_distance,
         custom_weights_ref,
         &snap_mask,
+        radius_param,
     )
     .await
 }
@@ -294,6 +308,7 @@ pub async fn compute_table_bucket_m2m(
     want_distance: bool,
     custom_weights: Option<&super::exclude::ExcludeWeights>,
     snap_mask: &[u64],
+    radius_param: RadiusParam,
 ) -> Response {
     let mode_data = state.get_mode(mode);
     let n_nodes = mode_data.cch_topo.n_nodes as usize;
@@ -303,6 +318,7 @@ pub async fn compute_table_bucket_m2m(
     let mut sources_rank: Vec<u32> = Vec::with_capacity(sources.len());
     let mut source_waypoints: Vec<Waypoint> = Vec::with_capacity(sources.len());
     let mut source_valid: Vec<bool> = Vec::with_capacity(sources.len());
+    let mut sources_snapped: Vec<(f64, f64)> = Vec::with_capacity(sources.len());
 
     for [lon, lat] in sources {
         if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, snap_mask, 10) {
@@ -312,6 +328,7 @@ pub async fn compute_table_bucket_m2m(
                 sources_rank.push(rank);
                 source_valid.push(true);
                 let snapped = get_node_location(state, orig_id);
+                sources_snapped.push((snapped[0], snapped[1]));
                 source_waypoints.push(Waypoint {
                     location: snapped,
                     name: String::new(),
@@ -319,6 +336,7 @@ pub async fn compute_table_bucket_m2m(
             } else {
                 sources_rank.push(0);
                 source_valid.push(false);
+                sources_snapped.push((*lon, *lat));
                 source_waypoints.push(Waypoint {
                     location: [*lon, *lat],
                     name: String::new(),
@@ -327,6 +345,7 @@ pub async fn compute_table_bucket_m2m(
         } else {
             sources_rank.push(0);
             source_valid.push(false);
+            sources_snapped.push((*lon, *lat));
             source_waypoints.push(Waypoint {
                 location: [*lon, *lat],
                 name: String::new(),
@@ -338,6 +357,7 @@ pub async fn compute_table_bucket_m2m(
     let mut targets_rank: Vec<u32> = Vec::with_capacity(destinations.len());
     let mut dest_waypoints: Vec<Waypoint> = Vec::with_capacity(destinations.len());
     let mut target_valid: Vec<bool> = Vec::with_capacity(destinations.len());
+    let mut targets_snapped: Vec<(f64, f64)> = Vec::with_capacity(destinations.len());
 
     for [lon, lat] in destinations {
         if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, snap_mask, 10) {
@@ -347,6 +367,7 @@ pub async fn compute_table_bucket_m2m(
                 targets_rank.push(rank);
                 target_valid.push(true);
                 let snapped = get_node_location(state, orig_id);
+                targets_snapped.push((snapped[0], snapped[1]));
                 dest_waypoints.push(Waypoint {
                     location: snapped,
                     name: String::new(),
@@ -354,6 +375,7 @@ pub async fn compute_table_bucket_m2m(
             } else {
                 targets_rank.push(0);
                 target_valid.push(false);
+                targets_snapped.push((*lon, *lat));
                 dest_waypoints.push(Waypoint {
                     location: [*lon, *lat],
                     name: String::new(),
@@ -362,12 +384,33 @@ pub async fn compute_table_bucket_m2m(
         } else {
             targets_rank.push(0);
             target_valid.push(false);
+            targets_snapped.push((*lon, *lat));
             dest_waypoints.push(Waypoint {
                 location: [*lon, *lat],
                 name: String::new(),
             });
         }
     }
+
+    // Build the per-source neighbour mask if a radius was requested.
+    // NOTE: this is a correctness-preserving "mask-at-emit" integration — the
+    // full N×M bucket M2M still runs, and pruned pairs are nulled out below.
+    // Pruning the inner solver per source would require refactoring bucket_ch
+    // to accept per-source target slices without losing its amortised forward
+    // phase; that's a follow-up optimisation and is unnecessary for
+    // correctness.
+    let neighbor_mask: Option<Vec<Vec<u32>>> = match radius_param {
+        RadiusParam::None => None,
+        RadiusParam::Km(r) => Some(build_neighbors(&sources_snapped, &targets_snapped, r)),
+        RadiusParam::Auto => {
+            let r = auto_radius_km(&sources_snapped, &targets_snapped);
+            if r > 0.0 {
+                Some(build_neighbors(&sources_snapped, &targets_snapped, r))
+            } else {
+                None
+            }
+        }
+    };
 
     let n_sources = sources.len();
     let n_targets = destinations.len();
@@ -399,6 +442,7 @@ pub async fn compute_table_bucket_m2m(
             n_targets,
             &source_valid,
             &target_valid,
+            neighbor_mask.as_deref(),
             |v| v as f64 / 10.0, // deciseconds -> seconds
         ))
     } else {
@@ -419,6 +463,7 @@ pub async fn compute_table_bucket_m2m(
             n_targets,
             &source_valid,
             &target_valid,
+            neighbor_mask.as_deref(),
             |v| v as f64 / 1000.0, // millimeters -> meters
         ))
     } else {
@@ -435,28 +480,45 @@ pub async fn compute_table_bucket_m2m(
     .into_response()
 }
 
-/// Convert flat u32 matrix to 2D Option<f64> matrix with null for invalid/unreachable
+/// Convert flat u32 matrix to 2D Option<f64> matrix with null for invalid/unreachable.
+///
+/// If `neighbor_mask` is supplied, any (src, tgt) pair not present in
+/// `neighbor_mask[src]` is emitted as `None` regardless of the computed
+/// distance. The mask is indexed by the original source/target positions
+/// (i.e. the full `n_sources`/`n_targets`) so callers pre-filter using
+/// haversine distances on the original inputs.
+#[allow(clippy::too_many_arguments)]
 pub fn flat_matrix_to_2d(
     matrix: &[u32],
     n_sources: usize,
     n_targets: usize,
     source_valid: &[bool],
     target_valid: &[bool],
+    neighbor_mask: Option<&[Vec<u32>]>,
     convert: impl Fn(u32) -> f64,
 ) -> Vec<Vec<Option<f64>>> {
     let mut result: Vec<Vec<Option<f64>>> = Vec::with_capacity(n_sources);
     for src_idx in 0..n_sources {
         let mut row: Vec<Option<f64>> = Vec::with_capacity(n_targets);
+        // Neighbour mask for this source is a sorted Vec<u32>; use binary
+        // search so the inner loop is O(n_targets × log k).
+        let src_neighbors: Option<&[u32]> = neighbor_mask.map(|nm| nm[src_idx].as_slice());
         for tgt_idx in 0..n_targets {
             if !source_valid[src_idx] || !target_valid[tgt_idx] {
                 row.push(None);
-            } else {
-                let val = matrix[src_idx * n_targets + tgt_idx];
-                if val == u32::MAX {
+                continue;
+            }
+            if let Some(ns) = src_neighbors {
+                if ns.binary_search(&(tgt_idx as u32)).is_err() {
                     row.push(None);
-                } else {
-                    row.push(Some(convert(val)));
+                    continue;
                 }
+            }
+            let val = matrix[src_idx * n_targets + tgt_idx];
+            if val == u32::MAX {
+                row.push(None);
+            } else {
+                row.push(Some(convert(val)));
             }
         }
         result.push(row);
@@ -586,33 +648,76 @@ pub async fn table_stream_handler(
         std::borrow::Cow::Borrowed(&mode_data.mask)
     };
 
-    // Convert all sources to rank space, keeping track of valid indices
+    // Convert all sources to rank space, keeping track of valid indices.
+    // We also keep a full-length snapped coordinate vector (indexed by the
+    // original request order) for downstream haversine pre-filtering.
     let mut sources_rank: Vec<u32> = Vec::with_capacity(req.sources.len());
     let mut valid_src_indices: Vec<usize> = Vec::with_capacity(req.sources.len());
+    let mut sources_snapped: Vec<(f64, f64)> = Vec::with_capacity(req.sources.len());
     for (i, [lon, lat]) in req.sources.iter().enumerate() {
+        let mut matched = false;
         if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &snap_mask, 10) {
             let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
             if filtered != u32::MAX {
                 let rank = mode_data.order.perm[filtered as usize];
                 sources_rank.push(rank);
                 valid_src_indices.push(i);
+                let snapped = get_node_location(&state, orig_id);
+                sources_snapped.push((snapped[0], snapped[1]));
+                matched = true;
             }
+        }
+        if !matched {
+            sources_snapped.push((*lon, *lat));
         }
     }
 
     // Convert all destinations to rank space
     let mut targets_rank: Vec<u32> = Vec::with_capacity(req.destinations.len());
     let mut valid_dst_indices: Vec<usize> = Vec::with_capacity(req.destinations.len());
+    let mut targets_snapped: Vec<(f64, f64)> = Vec::with_capacity(req.destinations.len());
     for (i, [lon, lat]) in req.destinations.iter().enumerate() {
+        let mut matched = false;
         if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &snap_mask, 10) {
             let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
             if filtered != u32::MAX {
                 let rank = mode_data.order.perm[filtered as usize];
                 targets_rank.push(rank);
                 valid_dst_indices.push(i);
+                let snapped = get_node_location(&state, orig_id);
+                targets_snapped.push((snapped[0], snapped[1]));
+                matched = true;
             }
         }
+        if !matched {
+            targets_snapped.push((*lon, *lat));
+        }
     }
+
+    // Build the Euclidean neighbour mask once for the entire stream request.
+    // Pairs outside the radius will be emitted as u32::MAX by the tile
+    // assembler below (and by the small-matrix bucket path).
+    let radius_param = parse_radius(req.radius_km.as_ref());
+    let neighbor_mask: Option<Arc<Vec<Vec<u32>>>> = match radius_param {
+        RadiusParam::None => None,
+        RadiusParam::Km(r) => Some(Arc::new(build_neighbors(
+            &sources_snapped,
+            &targets_snapped,
+            r,
+        ))),
+        RadiusParam::Auto => {
+            let r = auto_radius_km(&sources_snapped, &targets_snapped);
+            if r > 0.0 {
+                Some(Arc::new(build_neighbors(
+                    &sources_snapped,
+                    &targets_snapped,
+                    r,
+                )))
+            } else {
+                None
+            }
+        }
+    };
 
     let n_valid_sources = sources_rank.len();
     let n_valid_targets = targets_rank.len();
@@ -668,6 +773,7 @@ pub async fn table_stream_handler(
             &targets_rank,
             &valid_src_indices,
             &valid_dst_indices,
+            neighbor_mask.as_ref().map(|v| v.as_slice()),
         );
     }
 
@@ -695,11 +801,13 @@ pub async fn table_stream_handler(
     let cancelled = Arc::new(AtomicBool::new(false));
 
     let cancelled_outer = cancelled.clone();
+    let neighbor_mask_for_phast = neighbor_mask.clone();
 
     // Spawn compute task - SOURCE-BLOCK OUTER LOOP to avoid repeated forward computation
     // For 10k x 10k with 1000 x 1000 tiles: forward computed 10x (once per src block) instead of 100x
     tokio::task::spawn_blocking(move || {
         let cancelled = cancelled_outer;
+        let neighbor_mask = neighbor_mask_for_phast;
         // Generate source and destination blocks
         let src_blocks: Vec<(usize, usize)> = (0..n_total_sources)
             .step_by(src_tile_size)
@@ -820,13 +928,26 @@ pub async fn table_stream_handler(
                         &block_dst_ranks,
                     );
 
-                    // Map computed distances to output positions
+                    // Map computed distances to output positions. When a
+                    // `neighbor_mask` is supplied, pairs not in the source's
+                    // neighbour list are skipped — they remain at the
+                    // initialised `u32::MAX` (== unreachable) value. The
+                    // mask-at-emit fallback is correct because bucket_ch has
+                    // already done the full work; avoiding the copy simply
+                    // enforces the contract that pruned pairs are null.
                     for (tile_src_idx, &orig_src_idx) in block_src_orig_indices.iter().enumerate() {
                         let out_row = orig_src_idx - src_start;
+                        let neighbors: Option<&[u32]> =
+                            neighbor_mask.as_ref().map(|nm| nm[orig_src_idx].as_slice());
 
                         for (tile_dst_idx, &orig_dst_idx) in
                             block_dst_orig_indices.iter().enumerate()
                         {
+                            if let Some(ns) = neighbors {
+                                if ns.binary_search(&(orig_dst_idx as u32)).is_err() {
+                                    continue;
+                                }
+                            }
                             let out_col = orig_dst_idx - dst_start;
                             let d =
                                 tile_matrix[tile_src_idx * block_dst_ranks.len() + tile_dst_idx];
@@ -897,6 +1018,7 @@ fn table_stream_bucket_path(
     targets_rank: &[u32],
     valid_src_indices: &[usize],
     valid_dst_indices: &[usize],
+    neighbor_mask: Option<&[Vec<u32>]>,
 ) -> Response {
     // Use parallel variant for matrices >= 2500 cells, sequential for smaller
     let use_parallel = sources_rank.len() * targets_rank.len() >= 2500;
@@ -926,7 +1048,13 @@ fn table_stream_bucket_path(
     let mut durations_ms = vec![u32::MAX; n_total_sources * n_total_targets];
 
     for (valid_src_idx, &orig_src_idx) in valid_src_indices.iter().enumerate() {
+        let neighbors: Option<&[u32]> = neighbor_mask.map(|nm| nm[orig_src_idx].as_slice());
         for (valid_dst_idx, &orig_dst_idx) in valid_dst_indices.iter().enumerate() {
+            if let Some(ns) = neighbors {
+                if ns.binary_search(&(orig_dst_idx as u32)).is_err() {
+                    continue;
+                }
+            }
             let d = bucket_matrix[valid_src_idx * targets_rank.len() + valid_dst_idx];
             durations_ms[orig_src_idx * n_total_targets + orig_dst_idx] = if d == u32::MAX {
                 u32::MAX

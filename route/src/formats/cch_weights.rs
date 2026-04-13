@@ -121,6 +121,11 @@ impl CchWeightsFile {
             stored_crc
         );
 
-        Ok(CchWeights { up, down, up_middle, down_middle })
+        Ok(CchWeights {
+            up,
+            down,
+            up_middle,
+            down_middle,
+        })
     }
 }

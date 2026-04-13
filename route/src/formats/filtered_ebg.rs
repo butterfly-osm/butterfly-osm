@@ -191,7 +191,7 @@ impl FilteredEbg {
 /// Uses Kosaraju's algorithm (iterative, stack-based — no recursion).
 ///
 /// Returns: (offsets, heads, original_arc_idx, filtered_to_original, original_to_filtered, n_scc_nodes)
-#[allow(dead_code)]
+#[allow(dead_code, clippy::type_complexity)]
 fn largest_scc_filter(
     n: usize,
     offsets: &[u64],
@@ -201,7 +201,14 @@ fn largest_scc_filter(
     n_original: usize,
 ) -> (Vec<u64>, Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>, usize) {
     if n == 0 {
-        return (vec![0], vec![], vec![], vec![], vec![u32::MAX; n_original], 0);
+        return (
+            vec![0],
+            vec![],
+            vec![],
+            vec![],
+            vec![u32::MAX; n_original],
+            0,
+        );
     }
 
     // Build reverse graph
@@ -360,7 +367,14 @@ fn largest_scc_filter(
         scc_o2f[oi as usize] = fi as u32;
     }
 
-    (scc_offsets, scc_heads, scc_arcs, scc_f2o, scc_o2f, largest_size)
+    (
+        scc_offsets,
+        scc_heads,
+        scc_arcs,
+        scc_f2o,
+        scc_o2f,
+        largest_size,
+    )
 }
 
 pub struct FilteredEbgFile;
