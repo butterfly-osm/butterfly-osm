@@ -275,13 +275,27 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
 
     let output_path = config.outdir.join(format!("cch.w.{}.u32", mode_name));
     println!("\nWriting time weights...");
-    write_cch_weights(&output_path, &time_up, &time_down, &time_up_mid, &time_down_mid, config.mode)?;
+    write_cch_weights(
+        &output_path,
+        &time_up,
+        &time_down,
+        &time_up_mid,
+        &time_down_mid,
+        config.mode,
+    )?;
     println!("  ✓ Written {}", output_path.display());
 
     let distance_output_path = config.outdir.join(format!("cch.d.{}.u32", mode_name));
     println!("Writing distance weights...");
     // Distance uses topology middles (distance relaxation doesn't affect path unpacking)
-    write_cch_weights(&distance_output_path, &dist_up, &dist_down, &topo.up_middle, &topo.down_middle, config.mode)?;
+    write_cch_weights(
+        &distance_output_path,
+        &dist_up,
+        &dist_down,
+        &topo.up_middle,
+        &topo.down_middle,
+        config.mode,
+    )?;
     println!("  ✓ Written {}", distance_output_path.display());
 
     let customize_time_ms = start_time.elapsed().as_millis() as u64;
@@ -531,10 +545,22 @@ fn triangle_relax_parallel(
         }
     }
 
-    let up: Vec<u32> = atomic_up.iter().map(|a| unpack_weight(a.load(Ordering::Relaxed))).collect();
-    let down: Vec<u32> = atomic_down.iter().map(|a| unpack_weight(a.load(Ordering::Relaxed))).collect();
-    let up_mid: Vec<u32> = atomic_up.iter().map(|a| unpack_middle(a.load(Ordering::Relaxed))).collect();
-    let down_mid: Vec<u32> = atomic_down.iter().map(|a| unpack_middle(a.load(Ordering::Relaxed))).collect();
+    let up: Vec<u32> = atomic_up
+        .iter()
+        .map(|a| unpack_weight(a.load(Ordering::Relaxed)))
+        .collect();
+    let down: Vec<u32> = atomic_down
+        .iter()
+        .map(|a| unpack_weight(a.load(Ordering::Relaxed)))
+        .collect();
+    let up_mid: Vec<u32> = atomic_up
+        .iter()
+        .map(|a| unpack_middle(a.load(Ordering::Relaxed)))
+        .collect();
+    let down_mid: Vec<u32> = atomic_down
+        .iter()
+        .map(|a| unpack_middle(a.load(Ordering::Relaxed)))
+        .collect();
 
     (up, down, up_mid, down_mid, total_relaxations, pass)
 }
@@ -1003,7 +1029,14 @@ pub fn customize_cch_hybrid(config: Step8HybridConfig) -> Result<Step8Result> {
         .join(format!("cch.w.hybrid.{}.u32", mode_name));
 
     println!("\nWriting output...");
-    write_cch_weights(&output_path, &up_weights, &down_weights, &topo.up_middle, &topo.down_middle, config.mode)?;
+    write_cch_weights(
+        &output_path,
+        &up_weights,
+        &down_weights,
+        &topo.up_middle,
+        &topo.down_middle,
+        config.mode,
+    )?;
     println!("  ✓ Written {}", output_path.display());
 
     let customize_time_ms = start_time.elapsed().as_millis() as u64;

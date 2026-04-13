@@ -8,9 +8,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::formats::{
-    mod_weights, CchTopo, CchTopoFile, CchWeightsFile, EbgCsr, EbgCsrFile, EbgNodes,
-    EbgNodesFile, FilteredEbg, FilteredEbgFile, NbgGeo, NbgGeoFile, OrderEbg, OrderEbgFile,
-    WaysFile,
+    mod_weights, CchTopo, CchTopoFile, CchWeightsFile, EbgCsr, EbgCsrFile, EbgNodes, EbgNodesFile,
+    FilteredEbg, FilteredEbgFile, NbgGeo, NbgGeoFile, OrderEbg, OrderEbgFile, WaysFile,
 };
 // Re-export CchWeights for use by api.rs
 pub use crate::formats::CchWeights;
@@ -86,6 +85,9 @@ pub struct ServerState {
 
     // Per-EBG-edge exclude flags (toll/ferry/motorway), indexed by original EBG edge ID
     pub edge_exclude_flags: Vec<u8>,
+
+    // Optional transit (public transport) state
+    pub transit: Option<crate::transit::TransitState>,
 
     // Server metadata
     pub started_at: std::time::Instant,
@@ -213,6 +215,13 @@ impl ServerState {
             None
         };
 
+        // Transit subsystem is loaded asynchronously by the outer
+        // `serve()` function (after `ServerState::load` returns), because
+        // downloading feeds and running reqwest requires an active Tokio
+        // runtime. We start with `None` here; the caller installs the
+        // transit state via `install_transit()` before accepting traffic.
+        let transit = None;
+
         Ok(Self {
             ebg_nodes,
             ebg_csr,
@@ -225,6 +234,7 @@ impl ServerState {
             way_names,
             node_weights_dist,
             edge_exclude_flags,
+            transit,
             started_at: std::time::Instant::now(),
             data_dir: data_dir.to_string_lossy().to_string(),
         })
@@ -233,6 +243,14 @@ impl ServerState {
     /// Get mode data by mode (index-based lookup)
     pub fn get_mode(&self, mode: Mode) -> &ModeData {
         &self.modes[mode.index()]
+    }
+
+    /// Install the transit subsystem after async bootstrap. Must be
+    /// called exactly once, before the server starts accepting traffic.
+    /// Returns an error if transit was already installed or if foot mode
+    /// is not available.
+    pub fn install_transit(&mut self, state: crate::transit::TransitState) {
+        self.transit = Some(state);
     }
 
     /// Get or compute exclude weights for a mode and exclude mask.
@@ -390,7 +408,7 @@ fn load_mode_data(
     // snap to dead-end stubs or disconnected fragments.
     let n_original = filtered_ebg.n_original_nodes as usize;
     let mask = {
-        let n_words = (n_original + 63) / 64;
+        let n_words = n_original.div_ceil(64);
         let mut m = vec![0u64; n_words];
         for &orig_id in &filtered_ebg.filtered_to_original {
             let word = orig_id as usize / 64;

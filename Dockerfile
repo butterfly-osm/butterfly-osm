@@ -1,7 +1,12 @@
 # Multi-stage build for butterfly-route
 # Stage 1: Build
 # Pin to bookworm for reproducibility. For exact reproducibility, pin to a SHA digest.
-FROM rust:1.84-bookworm AS builder
+FROM rust:1.88-bookworm AS builder
+
+# protoc required by `gtfs-rt` (prost-build codegen for GTFS-RT protobuf).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 
