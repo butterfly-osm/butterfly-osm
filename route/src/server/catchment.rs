@@ -12,6 +12,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::matrix::bucket_ch::table_bucket_full_flat;
+use crate::matrix::neighbors::{auto_radius_km, parse_radius, RadiusParam};
+use crate::nbg::haversine_distance;
 use crate::profile_abi::Mode;
 use crate::range::contour::ContourResult;
 use crate::range::wkb_stream::encode_polygon_wkb;
@@ -617,6 +619,12 @@ pub struct CatchmentRequest {
     pub remove_outliers: bool,
     pub stores: Vec<StoreInput>,
     pub clients: Vec<ClientInput>,
+    /// Optional Euclidean pre-filter radius in kilometres.
+    /// Accepts a positive number, the string "auto" (server-computed p95 × 1.1
+    /// per store), or null/0 to disable. Clients beyond the radius are
+    /// excluded from that store's matrix and catchment entirely.
+    #[serde(default)]
+    pub radius_km: Option<serde_json::Value>,
 }
 
 fn default_true() -> bool {
@@ -730,6 +738,10 @@ pub async fn catchment_handler(
 
     let mut all_results: Vec<CatchmentResultJson> = Vec::new();
 
+    // Parse the optional Euclidean pre-filter radius once per request. The
+    // actual radius is re-evaluated per store when `Auto`.
+    let radius_param = parse_radius(req.radius_km.as_ref());
+
     // For each store: compute 1-to-N matrix via Bucket M2M, then catchment
     for store_input in &req.stores {
         // Snap store
@@ -747,10 +759,41 @@ pub async fn catchment_handler(
         }
         let store_rank = mode_data.order.perm[store_filt as usize];
 
-        // Snap all clients
+        // Determine this store's effective radius (km) when requested. For
+        // `Auto`, we compute p95 × 1.1 over the Euclidean distances from the
+        // store to the *raw* client coordinates (pre-snap) — this is cheap
+        // and reflects the user's intent better than post-snap geometry.
+        let effective_radius_km: Option<f64> = match radius_param {
+            RadiusParam::None => None,
+            RadiusParam::Km(r) => Some(r),
+            RadiusParam::Auto => {
+                let store_coord = vec![(store_input.lon, store_input.lat)];
+                let client_coords: Vec<(f64, f64)> =
+                    req.clients.iter().map(|c| (c.lon, c.lat)).collect();
+                let r = auto_radius_km(&store_coord, &client_coords);
+                if r > 0.0 {
+                    Some(r)
+                } else {
+                    None
+                }
+            }
+        };
+        let effective_radius_m: Option<f64> = effective_radius_km.map(|km| km * 1000.0);
+
+        // Snap all clients. When a radius is active, clients farther than
+        // `effective_radius_m` from the store are dropped BEFORE the M2M
+        // call so the routing layer does proportionally less work. This is
+        // the "true" speedup path — no mask-at-emit is needed because the
+        // filtered list is the list that gets routed.
         let mut client_ranks: Vec<u32> = Vec::with_capacity(req.clients.len());
         let mut client_valid: Vec<usize> = Vec::with_capacity(req.clients.len());
         for (ci, c) in req.clients.iter().enumerate() {
+            if let Some(radius_m) = effective_radius_m {
+                let d = haversine_distance(store_input.lat, store_input.lon, c.lat, c.lon);
+                if d > radius_m {
+                    continue;
+                }
+            }
             if let Some(orig_id) = state.spatial_index.snap(c.lon, c.lat, &mode_data.mask, 10) {
                 let filt = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
                 if filt != u32::MAX {
