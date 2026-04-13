@@ -1,7 +1,7 @@
 # Multi-stage build for butterfly-route
 # Stage 1: Build
 # Pin to bookworm for reproducibility. For exact reproducibility, pin to a SHA digest.
-FROM rust:1.84-bookworm AS builder
+FROM rust:1.90-bookworm AS builder
 
 WORKDIR /build
 

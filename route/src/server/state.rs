@@ -8,9 +8,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::formats::{
-    mod_weights, CchTopo, CchTopoFile, CchWeightsFile, EbgCsr, EbgCsrFile, EbgNodes,
-    EbgNodesFile, FilteredEbg, FilteredEbgFile, NbgGeo, NbgGeoFile, OrderEbg, OrderEbgFile,
-    WaysFile,
+    mod_weights, CchTopo, CchTopoFile, CchWeightsFile, EbgCsr, EbgCsrFile, EbgNodes, EbgNodesFile,
+    FilteredEbg, FilteredEbgFile, NbgGeo, NbgGeoFile, OrderEbg, OrderEbgFile, WaysFile,
 };
 // Re-export CchWeights for use by api.rs
 pub use crate::formats::CchWeights;
@@ -390,7 +389,7 @@ fn load_mode_data(
     // snap to dead-end stubs or disconnected fragments.
     let n_original = filtered_ebg.n_original_nodes as usize;
     let mask = {
-        let n_words = (n_original + 63) / 64;
+        let n_words = n_original.div_ceil(64);
         let mut m = vec![0u64; n_words];
         for &orig_id in &filtered_ebg.filtered_to_original {
             let word = orig_id as usize / 64;
