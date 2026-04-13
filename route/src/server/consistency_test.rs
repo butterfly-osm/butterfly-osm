@@ -46,7 +46,9 @@ fn load_state() -> Arc<ServerState> {
     ];
     for data_dir in &candidates {
         if data_dir.join("step5").exists() {
-            return Arc::new(ServerState::load(data_dir, None).expect("Failed to load server state"));
+            return Arc::new(
+                ServerState::load(data_dir, None).expect("Failed to load server state"),
+            );
         }
     }
     panic!("Belgium data not found — tried {:?}", candidates);
@@ -604,7 +606,9 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
             )
         };
 
-        let matches: Vec<usize> = (start..end).filter(|&idx| targets[idx] == dst_rank_hop).collect();
+        let matches: Vec<usize> = (start..end)
+            .filter(|&idx| targets[idx] == dst_rank_hop)
+            .collect();
         assert!(
             !matches.is_empty(),
             "missing CCH edge for unpacked hop at index {}: rank {} -> {}",
