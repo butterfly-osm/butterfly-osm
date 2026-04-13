@@ -19,13 +19,13 @@ mod query;
 mod turn_restrictions;
 mod validate;
 
-pub use contraction::{contract_nbg, NbgChTopo};
-pub use lift_ordering::{lift_ordering_to_ebg, LiftedEbgOrdering};
-pub use ordering::{compute_nbg_ordering, NbgNdOrdering};
+pub use contraction::{NbgChTopo, contract_nbg};
+pub use lift_ordering::{LiftedEbgOrdering, lift_ordering_to_ebg};
+pub use ordering::{NbgNdOrdering, compute_nbg_ordering};
 pub use query::{FlatUpAdj, NbgBucketM2M, NbgChQuery, NbgM2MStats, SearchState, SortedBuckets};
 pub use turn_restrictions::{NbgEdgeWayMap, TurnRestrictionIndex};
 pub use validate::{
-    dijkstra_nbg, validate_matrix, validate_nbg_ch, ValidationError, ValidationResult,
+    ValidationError, ValidationResult, dijkstra_nbg, validate_matrix, validate_nbg_ch,
 };
 
 /// Statistics from NBG CH construction

@@ -90,7 +90,7 @@ fn compute_file_sha256<P: AsRef<Path>>(path: P) -> Result<String> {
         hasher.update(&buffer[..n]);
     }
 
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex::encode(hasher.finalize()))
 }
 
 /// Verify all Step 3 lock conditions

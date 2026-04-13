@@ -5,9 +5,9 @@ use osmpbf::{Element, ElementReader};
 use sha2::{Digest as Sha2Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-use crate::formats::{nodes_sa, nodes_si};
 use crate::formats::{Member, MemberKind, Relation, RelationsFile, Way, WaysFile};
 use crate::formats::{NodeSignals, NodeSignalsFile};
+use crate::formats::{nodes_sa, nodes_si};
 
 pub struct IngestConfig {
     pub input: PathBuf,

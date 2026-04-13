@@ -13,8 +13,8 @@
 
 use std::io::Write;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use arrow::array::*;
 use arrow::datatypes::*;
@@ -29,8 +29,8 @@ use arrow_flight::{
 // Rename arrow_flight::Result to avoid conflict with std::result::Result
 use arrow_flight::Result as FlightResult;
 use bytes::Bytes;
-use futures::stream;
 use futures::StreamExt;
+use futures::stream;
 use serde::Deserialize;
 use tonic::{Request, Response, Status, Streaming};
 
@@ -38,12 +38,12 @@ use crate::matrix::bucket_ch::{
     backward_join_with_buckets, forward_build_buckets, table_bucket_full_flat,
     table_bucket_parallel,
 };
-use crate::matrix::neighbors::{auto_radius_km, build_neighbors, parse_radius, RadiusParam};
+use crate::matrix::neighbors::{RadiusParam, auto_radius_km, build_neighbors, parse_radius};
 use crate::profile_abi::Mode;
 use crate::range::contour::ContourResult;
 use crate::range::wkb_stream::encode_polygon_wkb;
 
-use super::geometry::{build_isochrone_geometry, build_raw_points, Point};
+use super::geometry::{Point, build_isochrone_geometry, build_raw_points};
 use super::isochrone_handler::{run_phast_bounded_fast, run_phast_bounded_fast_reverse};
 use super::query::CchQuery;
 use super::state::ServerState;
@@ -761,13 +761,13 @@ type FlightDataStream =
     Pin<Box<dyn futures::Stream<Item = std::result::Result<FlightData, Status>> + Send>>;
 
 fn batches_to_flight_data(schema: SchemaRef, batch_stream: BatchStream) -> FlightDataStream {
-    let flight_stream = FlightDataEncoderBuilder::new()
-        .with_schema(schema)
-        .build(batch_stream.map(|r| r.map_err(|e| arrow_flight::error::FlightError::Tonic(e))));
+    let flight_stream = FlightDataEncoderBuilder::new().with_schema(schema).build(
+        batch_stream.map(|r| r.map_err(|e| arrow_flight::error::FlightError::Tonic(Box::new(e)))),
+    );
 
     Box::pin(flight_stream.map(|item| {
         item.map_err(|e| match e {
-            arrow_flight::error::FlightError::Tonic(s) => s,
+            arrow_flight::error::FlightError::Tonic(s) => *s,
             other => Status::internal(other.to_string()),
         })
     }))

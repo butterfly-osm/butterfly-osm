@@ -21,12 +21,12 @@ use butterfly_route::matrix::bucket_ch::{
     BucketM2MEngine, DownReverseAdjFlat, UpAdjFlat, UpReverseAdjFlat,
 };
 use butterfly_route::range::batched_isochrone::{
-    AdaptiveIsochroneEngine, BatchedIsochroneEngine, ADAPTIVE_THRESHOLD_DS,
+    ADAPTIVE_THRESHOLD_DS, AdaptiveIsochroneEngine, BatchedIsochroneEngine,
 };
 use butterfly_route::range::frontier::FrontierExtractor;
 use butterfly_route::range::phast::{PhastEngine, PhastStats};
-use butterfly_route::range::sparse_contour::{generate_sparse_contour, SparseContourConfig};
-use butterfly_route::range::wkb_stream::{encode_polygon_wkb, write_ndjson, IsochroneRecord};
+use butterfly_route::range::sparse_contour::{SparseContourConfig, generate_sparse_contour};
+use butterfly_route::range::wkb_stream::{IsochroneRecord, encode_polygon_wkb, write_ndjson};
 use butterfly_route::server::state::DownReverseAdj;
 
 #[derive(Parser)]
@@ -2003,7 +2003,9 @@ fn run_blocked_relaxation_bench(
 
     // Suggest perf stat
     println!("  💡 For accurate cache analysis, run:");
-    println!("     perf stat -e cache-misses,cache-references,LLC-load-misses butterfly-bench blocked-relaxation ...");
+    println!(
+        "     perf stat -e cache-misses,cache-references,LLC-load-misses butterfly-bench blocked-relaxation ..."
+    );
     println!();
 
     Ok(())
@@ -2797,7 +2799,7 @@ fn run_matrix_stream_bench(
     seed: u64,
 ) -> anyhow::Result<()> {
     use arrow::ipc::writer::StreamWriter;
-    use butterfly_route::matrix::arrow_stream::{tiles_to_record_batch, MatrixTile};
+    use butterfly_route::matrix::arrow_stream::{MatrixTile, tiles_to_record_batch};
 
     println!("═══════════════════════════════════════════════════════════════");
     println!("  MATRIX STREAMING BENCHMARK");
@@ -4372,7 +4374,7 @@ fn run_monotonicity_test(
 fn run_detail_compare(data_dir: &Path, mode: &str, threshold_min: u32) -> anyhow::Result<()> {
     use butterfly_route::range::frontier::FrontierExtractor;
     use butterfly_route::range::phast::PhastEngine;
-    use butterfly_route::range::sparse_contour::{generate_sparse_contour, SparseContourConfig};
+    use butterfly_route::range::sparse_contour::{SparseContourConfig, generate_sparse_contour};
 
     println!("═══════════════════════════════════════════════════════════════");
     println!("  POLYGON DETAIL COMPARISON: Sparse Contour Cell Sizes");

@@ -1675,7 +1675,7 @@ pub fn table_bucket_parallel(
     let (total_visited, total_joins): (usize, usize) = targets
         .par_iter()
         .enumerate()
-        .filter(|(_, &target)| (target as usize) < n_nodes)
+        .filter(|&(_, target)| (*target as usize) < n_nodes)
         .map(|(target_idx, &target)| {
             // Thread-local search state
             let avg_visited = (n_nodes / 400).clamp(500, 20000);

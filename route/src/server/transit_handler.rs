@@ -13,15 +13,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{
+    Json,
     extract::{Query, State},
     http::StatusCode,
-    Json,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::matrix::bucket_ch::table_bucket_parallel;
 use crate::transit::gtfs::haversine_m;
-use crate::transit::raptor::{run_raptor, RaptorLeg, RaptorQuery};
+use crate::transit::raptor::{RaptorLeg, RaptorQuery, run_raptor};
 use crate::transit::timetable::{StopIdx, Timetable};
 
 use super::state::ServerState;

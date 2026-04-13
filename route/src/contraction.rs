@@ -47,7 +47,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 
-use crate::formats::{mod_turns, mod_weights, CchTopo, CchTopoFile, FilteredEbgFile, OrderEbgFile};
+use crate::formats::{CchTopo, CchTopoFile, FilteredEbgFile, OrderEbgFile, mod_turns, mod_weights};
 use crate::profile_abi::Mode;
 
 /// Witness search settings
@@ -901,16 +901,24 @@ fn compute_inputs_sha_streaming(
     order_path: &std::path::Path,
 ) -> Result<[u8; 32]> {
     use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    fn feed(hasher: &mut Sha256, path: &std::path::Path) -> Result<()> {
+        let mut reader = BufReader::with_capacity(64 * 1024, File::open(path)?);
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = reader.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        Ok(())
+    }
 
     let mut hasher = Sha256::new();
-
-    // Stream first file
-    let mut file1 = BufReader::with_capacity(64 * 1024, File::open(filtered_ebg_path)?);
-    std::io::copy(&mut file1, &mut hasher)?;
-
-    // Stream second file
-    let mut file2 = BufReader::with_capacity(64 * 1024, File::open(order_path)?);
-    std::io::copy(&mut file2, &mut hasher)?;
+    feed(&mut hasher, filtered_ebg_path)?;
+    feed(&mut hasher, order_path)?;
 
     let result = hasher.finalize();
     let mut sha = [0u8; 32];

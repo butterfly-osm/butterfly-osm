@@ -299,7 +299,7 @@ fn largest_scc_filter(
     let largest_comp = comp_sizes
         .iter()
         .enumerate()
-        .max_by_key(|(_, &s)| s)
+        .max_by_key(|&(_, s)| *s)
         .map(|(i, _)| i as u32)
         .unwrap_or(0);
     let largest_size = comp_sizes[largest_comp as usize];

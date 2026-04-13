@@ -194,7 +194,8 @@ impl CchTopoFile {
         if version != VERSION {
             anyhow::bail!(
                 "Unsupported CCH topology version: expected {}, got {}. Please rebuild with step7-contract.",
-                VERSION, version
+                VERSION,
+                version
             );
         }
 

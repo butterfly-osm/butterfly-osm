@@ -496,9 +496,5 @@ fn cch_query_distance_with_rev(
         }
     }
 
-    if best == u32::MAX {
-        None
-    } else {
-        Some(best)
-    }
+    if best == u32::MAX { None } else { Some(best) }
 }

@@ -7,7 +7,7 @@
 //! The TSP solver operates on a precomputed N×N distance matrix from the
 //! bucket M2M algorithm.
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;
@@ -471,7 +471,7 @@ pub async fn trip_handler(
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -543,7 +543,7 @@ pub async fn trip_handler(
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -555,7 +555,7 @@ pub async fn trip_handler(
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
             )
-                .into_response()
+                .into_response();
         }
     };
 

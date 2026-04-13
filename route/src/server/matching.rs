@@ -1,12 +1,12 @@
 //! /match handler — GPS trace map matching (HMM + Viterbi)
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;
 
-use super::geometry::{build_geometry, GeometryFormat, RouteGeometry};
-use super::route::{build_steps, lookup_road_name, RouteStep};
+use super::geometry::{GeometryFormat, RouteGeometry, build_geometry};
+use super::route::{RouteStep, build_steps, lookup_road_name};
 use super::state::ServerState;
 use super::types::{parse_mode, validate_coord};
 
@@ -126,7 +126,7 @@ pub async fn match_trace_handler(
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -185,7 +185,7 @@ pub async fn match_trace_handler(
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -197,7 +197,7 @@ pub async fn match_trace_handler(
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -209,7 +209,7 @@ pub async fn match_trace_handler(
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
             )
-                .into_response()
+                .into_response();
         }
     };
 

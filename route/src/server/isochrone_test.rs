@@ -6,11 +6,12 @@
 
 use geo::{Contains, Coord, Point, Polygon};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+#[allow(unused_imports)]
+use rand::{Rng, RngExt, SeedableRng};
 
 use crate::profile_abi::Mode;
 
-use super::geometry::{build_isochrone_geometry_sparse, Point as IsoPoint};
+use super::geometry::{Point as IsoPoint, build_isochrone_geometry_sparse};
 
 /// Test result for a single isochrone
 #[derive(Debug)]
@@ -385,9 +386,14 @@ mod tests {
                                     drive_time_s: time_s,
                                     threshold_s,
                                 });
-                                eprintln!("INSIDE VIOLATION: snapped ({:.4}, {:.4}) drive time {:.1}s > {}s ({}% over)",
-                                    snapped_lon, snapped_lat, time_s, threshold_s,
-                                    ((excess_ratio - 1.0) * 100.0) as u32);
+                                eprintln!(
+                                    "INSIDE VIOLATION: snapped ({:.4}, {:.4}) drive time {:.1}s > {}s ({}% over)",
+                                    snapped_lon,
+                                    snapped_lat,
+                                    time_s,
+                                    threshold_s,
+                                    ((excess_ratio - 1.0) * 100.0) as u32
+                                );
                             } else {
                                 // Within 10% tolerance - count as correct for boundary
                                 inside_correct += 1;
@@ -407,9 +413,14 @@ mod tests {
                                 drive_time_s: time_s,
                                 threshold_s,
                             });
-                            eprintln!("OUTSIDE VIOLATION: snapped ({:.4}, {:.4}) drive time {:.1}s <= {}s ({}% under)",
-                                snapped_lon, snapped_lat, time_s, threshold_s,
-                                ((1.0 - margin_ratio) * 100.0) as u32);
+                            eprintln!(
+                                "OUTSIDE VIOLATION: snapped ({:.4}, {:.4}) drive time {:.1}s <= {}s ({}% under)",
+                                snapped_lon,
+                                snapped_lat,
+                                time_s,
+                                threshold_s,
+                                ((1.0 - margin_ratio) * 100.0) as u32
+                            );
                         } else {
                             // Within 10% of threshold - boundary case, count as correct
                             outside_correct += 1;

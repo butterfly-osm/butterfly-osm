@@ -8,4 +8,4 @@ pub mod stream;
 
 // Re-export main types for internal use
 pub use downloader::Downloader;
-pub use source::{resolve_output_filename, SourceConfig};
+pub use source::{SourceConfig, resolve_output_filename};

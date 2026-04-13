@@ -1191,7 +1191,7 @@ pub fn generate_ordering_hybrid(config: Step6HybridConfig) -> Result<Step6Result
         let densifiers: Vec<u32> = scores
             .iter()
             .enumerate()
-            .filter(|(_, &score)| score > config.densifier_threshold)
+            .filter(|&(_, score)| *score > config.densifier_threshold)
             .map(|(i, _)| i as u32)
             .collect();
         println!(

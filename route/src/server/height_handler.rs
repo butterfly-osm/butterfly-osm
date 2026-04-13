@@ -1,10 +1,10 @@
 //! /height handler — elevation lookup from SRTM DEM tiles
 
 use axum::{
+    Json,
     extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
 };
 use std::sync::Arc;
 
@@ -41,7 +41,7 @@ pub async fn height_handler(
                         .to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 

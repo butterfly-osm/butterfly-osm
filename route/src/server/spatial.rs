@@ -1,6 +1,6 @@
 //! Spatial index for snapping coordinates to EBG nodes
 
-use rstar::{PointDistance, RTree, RTreeObject, AABB};
+use rstar::{AABB, PointDistance, RTree, RTreeObject};
 
 use crate::formats::{EbgNodes, NbgGeo};
 

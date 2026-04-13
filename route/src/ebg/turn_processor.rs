@@ -6,7 +6,7 @@ use std::path::Path;
 
 use super::{CanonicalTurnRule, TurnRuleKey};
 use crate::formats::*;
-use crate::profile_abi::{Mode, MAX_MODES};
+use crate::profile_abi::{MAX_MODES, Mode};
 
 /// Build canonical turn rule table from dynamic per-mode turn rules.
 ///

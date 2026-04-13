@@ -1,6 +1,6 @@
 //! CRC-64-ISO checksum utilities
 
-use crc::{Crc, CRC_64_GO_ISO};
+use crc::{CRC_64_GO_ISO, Crc};
 
 /// CRC-64-ISO algorithm
 pub const CRC64: Crc<u64> = Crc::<u64>::new(&CRC_64_GO_ISO);

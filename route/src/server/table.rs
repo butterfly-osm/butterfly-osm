@@ -1,30 +1,30 @@
 //! /table and /table/stream handlers — distance/duration matrix computation
 
 use axum::{
+    Json,
     body::Body,
     extract::State,
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
-    Json,
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use utoipa::ToSchema;
 
 use crate::matrix::arrow_stream::{
-    record_batch_to_bytes, tiles_to_record_batch, MatrixTile, ARROW_STREAM_CONTENT_TYPE,
+    ARROW_STREAM_CONTENT_TYPE, MatrixTile, record_batch_to_bytes, tiles_to_record_batch,
 };
 use crate::matrix::bucket_ch::{
-    backward_join_with_buckets, forward_build_buckets, table_bucket_full_flat,
-    table_bucket_parallel, DownReverseAdjFlat, UpAdjFlat,
+    DownReverseAdjFlat, UpAdjFlat, backward_join_with_buckets, forward_build_buckets,
+    table_bucket_full_flat, table_bucket_parallel,
 };
-use crate::matrix::neighbors::{auto_radius_km, build_neighbors, parse_radius, RadiusParam};
+use crate::matrix::neighbors::{RadiusParam, auto_radius_km, build_neighbors, parse_radius};
 use crate::profile_abi::Mode;
 
 use super::state::ServerState;
-use super::types::{get_node_location, parse_mode, validate_coord, ErrorResponse, Waypoint};
+use super::types::{ErrorResponse, Waypoint, get_node_location, parse_mode, validate_coord};
 
 // ============ Types ============
 
@@ -164,7 +164,7 @@ pub async fn table_post_handler(
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
@@ -227,7 +227,7 @@ pub async fn table_post_handler(
     let exclude_mask = match super::exclude::parse_exclude_option(&req.exclude) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
@@ -235,7 +235,7 @@ pub async fn table_post_handler(
     let avoid_json = match super::avoid::parse_avoid_option(&req.avoid_polygons) {
         Ok(v) => v,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
@@ -246,7 +246,7 @@ pub async fn table_post_handler(
         match super::avoid::compute_avoid_weights(&state, mode_data, avoid_str, exclude_mask) {
             Ok((weights, flags)) => Some((weights, flags)),
             Err(e) => {
-                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
             }
         }
     } else {
@@ -575,7 +575,7 @@ pub async fn table_stream_handler(
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
@@ -597,7 +597,7 @@ pub async fn table_stream_handler(
     let exclude_mask = match super::exclude::parse_exclude_option(&req.exclude) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
@@ -605,7 +605,7 @@ pub async fn table_stream_handler(
     let avoid_json = match super::avoid::parse_avoid_option(&req.avoid_polygons) {
         Ok(v) => v,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
@@ -617,7 +617,7 @@ pub async fn table_stream_handler(
         match super::avoid::compute_avoid_weights(&state, mode_data, avoid_str, exclude_mask) {
             Ok((weights, flags)) => Some((weights, flags)),
             Err(e) => {
-                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
             }
         }
     } else {

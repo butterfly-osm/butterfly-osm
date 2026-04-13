@@ -204,7 +204,9 @@ async fn download_to_stdout(source: &str, verbose: bool) -> Result<()> {
 fn show_download_info(source: &str) {
     match source {
         "planet" => {
-            eprintln!("🌐 Downloading from HTTP: https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf");
+            eprintln!(
+                "🌐 Downloading from HTTP: https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf"
+            );
         }
         path if path.contains('/') => {
             eprintln!(
@@ -212,7 +214,9 @@ fn show_download_info(source: &str) {
             );
         }
         continent => {
-            eprintln!("🌐 Downloading from HTTP: https://download.geofabrik.de/{continent}-latest.osm.pbf");
+            eprintln!(
+                "🌐 Downloading from HTTP: https://download.geofabrik.de/{continent}-latest.osm.pbf"
+            );
         }
     }
 }

@@ -134,7 +134,7 @@ fn convert_error(result: crate::Result<()>) -> ButterflyResult {
 ///     }
 /// }
 /// ```
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn butterfly_last_error_message() -> *mut c_char {
     LAST_ERROR.with(|cell| {
         let borrow = cell.borrow();
@@ -171,7 +171,7 @@ pub extern "C" fn butterfly_last_error_message() -> *mut c_char {
 /// but uncommon) will return `InvalidParameter` with a descriptive error message.
 /// This is a known limitation (M2) — Rust's `Path` can handle `OsStr`, but the
 /// download API currently requires `&str`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn butterfly_download(
     source: *const c_char,
     dest_path: *const c_char,
@@ -245,7 +245,7 @@ pub unsafe extern "C" fn butterfly_download(
 ///   runtime may invoke it from a worker thread).
 ///
 /// See `butterfly_download` for notes on UTF-8 requirements (M2).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn butterfly_download_with_progress(
     source: *const c_char,
     dest_path: *const c_char,
@@ -328,7 +328,7 @@ pub unsafe extern "C" fn butterfly_download_with_progress(
 ///
 /// Caller must ensure:
 /// - `source` is a valid, null-terminated C string pointer, or NULL (returns NULL).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn butterfly_get_filename(source: *const c_char) -> *mut c_char {
     let result = std::panic::catch_unwind(|| {
         if source.is_null() {
@@ -364,7 +364,7 @@ pub unsafe extern "C" fn butterfly_get_filename(source: *const c_char) -> *mut c
 ///   `butterfly_last_error_message` or `butterfly_get_filename`), or is NULL.
 /// - `ptr` has not already been freed (double-free is UB).
 /// - NULL is safely ignored (no-op).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn butterfly_free_string(ptr: *mut c_char) {
     if !ptr.is_null() {
         // SAFETY: Caller guarantees `ptr` was returned by `CString::into_raw()`
@@ -380,7 +380,7 @@ pub unsafe extern "C" fn butterfly_free_string(ptr: *mut c_char) {
 /// # Returns
 /// Static string with version information (does not need to be freed).
 /// Returns NULL only if the version string contains a null byte (should never happen).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn butterfly_version() -> *const c_char {
     // Use a static byte string with embedded null terminator to avoid any
     // possibility of panic from CString::new(). The concat! + \0 pattern
@@ -398,7 +398,7 @@ pub extern "C" fn butterfly_version() -> *const c_char {
 /// # Returns
 /// ButterflyResult::Success on success, ButterflyResult::UnknownError if
 /// the runtime could not be created.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn butterfly_init() -> ButterflyResult {
     let result = std::panic::catch_unwind(|| match get_runtime() {
         Some(_) => ButterflyResult::Success,

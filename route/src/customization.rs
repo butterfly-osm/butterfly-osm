@@ -38,7 +38,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::formats::{
-    mod_turns, mod_weights, CchTopo, CchTopoFile, EbgNodesFile, FilteredEbgFile, HybridStateFile,
+    CchTopo, CchTopoFile, EbgNodesFile, FilteredEbgFile, HybridStateFile, mod_turns, mod_weights,
 };
 use crate::profile_abi::Mode;
 
@@ -541,7 +541,10 @@ fn triangle_relax_parallel(
             break;
         }
         if pass >= 100 {
-            panic!("CCH customization did not converge after 100 passes ({} updates in last pass). This indicates a bug in the contraction hierarchy.", pu);
+            panic!(
+                "CCH customization did not converge after 100 passes ({} updates in last pass). This indicates a bug in the contraction hierarchy.",
+                pu
+            );
         }
     }
 

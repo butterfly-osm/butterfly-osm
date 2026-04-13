@@ -51,7 +51,7 @@ pub fn parse_exclude(s: &str) -> Result<u8, String> {
                 return Err(format!(
                     "Unknown exclude token: '{}'. Valid: toll, ferry, motorway",
                     other
-                ))
+                ));
             }
         }
     }
@@ -62,13 +62,9 @@ pub fn parse_exclude(s: &str) -> Result<u8, String> {
 /// Returns `None` if the parameter is absent, empty, or all-whitespace.
 pub fn parse_exclude_option(exclude: &Option<String>) -> Result<Option<u8>, String> {
     match exclude {
-        Some(ref s) => {
+        Some(s) => {
             let mask = parse_exclude(s)?;
-            if mask == 0 {
-                Ok(None)
-            } else {
-                Ok(Some(mask))
-            }
+            if mask == 0 { Ok(None) } else { Ok(Some(mask)) }
         }
         None => Ok(None),
     }

@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::matrix::bucket_ch::table_bucket_full_flat;
-use crate::matrix::neighbors::{auto_radius_km, parse_radius, RadiusParam};
+use crate::matrix::neighbors::{RadiusParam, auto_radius_km, parse_radius};
 use crate::nbg::haversine_distance;
 use crate::profile_abi::Mode;
 use crate::range::contour::ContourResult;
@@ -663,11 +663,11 @@ pub struct CatchmentResultJson {
 // REST handler
 // ===========================================================================
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use std::sync::Arc;
 
-use super::types::{parse_mode, validate_coord, ErrorResponse};
+use super::types::{ErrorResponse, parse_mode, validate_coord};
 
 /// POST /catchment handler
 pub async fn catchment_handler(
@@ -678,7 +678,7 @@ pub async fn catchment_handler(
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
@@ -771,11 +771,7 @@ pub async fn catchment_handler(
                 let client_coords: Vec<(f64, f64)> =
                     req.clients.iter().map(|c| (c.lon, c.lat)).collect();
                 let r = auto_radius_km(&store_coord, &client_coords);
-                if r > 0.0 {
-                    Some(r)
-                } else {
-                    None
-                }
+                if r > 0.0 { Some(r) } else { None }
             }
         };
         let effective_radius_m: Option<f64> = effective_radius_km.map(|km| km * 1000.0);

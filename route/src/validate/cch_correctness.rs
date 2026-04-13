@@ -7,7 +7,8 @@
 use anyhow::Result;
 use priority_queue::PriorityQueue;
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+#[allow(unused_imports)]
+use rand::{Rng, RngExt, SeedableRng};
 use rayon::prelude::*;
 use std::cmp::Reverse;
 use std::path::Path;
@@ -502,7 +503,7 @@ fn bidi_cch_query(
     dist_bwd: &mut [u32],
     gen_fwd: &mut [u32],
     gen_bwd: &mut [u32],
-    gen: u32,
+    generation: u32,
     pq_fwd: &mut PriorityQueue<u32, Reverse<u32>>,
     pq_bwd: &mut PriorityQueue<u32, Reverse<u32>>,
 ) -> Option<u32> {
@@ -511,9 +512,9 @@ fn bidi_cch_query(
 
     // Initialize
     dist_fwd[src as usize] = 0;
-    gen_fwd[src as usize] = gen;
+    gen_fwd[src as usize] = generation;
     dist_bwd[dst as usize] = 0;
-    gen_bwd[dst as usize] = gen;
+    gen_bwd[dst as usize] = generation;
 
     pq_fwd.push(src, Reverse(0));
     pq_bwd.push(dst, Reverse(0));
@@ -524,11 +525,11 @@ fn bidi_cch_query(
         // Forward step - traverse UP edges
         if let Some((u, Reverse(d))) = pq_fwd.pop() {
             let u_idx = u as usize;
-            if gen_fwd[u_idx] != gen || d > dist_fwd[u_idx] {
+            if gen_fwd[u_idx] != generation || d > dist_fwd[u_idx] {
                 // Skip stale entries
             } else {
                 // Check meeting
-                if gen_bwd[u_idx] == gen {
+                if gen_bwd[u_idx] == generation {
                     best = best.min(d.saturating_add(dist_bwd[u_idx]));
                 }
 
@@ -544,7 +545,7 @@ fn bidi_cch_query(
 
                     let v_idx = v as usize;
                     let nd = d.saturating_add(w);
-                    let old = if gen_fwd[v_idx] == gen {
+                    let old = if gen_fwd[v_idx] == generation {
                         dist_fwd[v_idx]
                     } else {
                         u32::MAX
@@ -552,11 +553,11 @@ fn bidi_cch_query(
 
                     if nd < old {
                         dist_fwd[v_idx] = nd;
-                        gen_fwd[v_idx] = gen;
+                        gen_fwd[v_idx] = generation;
                         pq_fwd.push(v, Reverse(nd));
 
                         // Check meeting
-                        if gen_bwd[v_idx] == gen {
+                        if gen_bwd[v_idx] == generation {
                             best = best.min(nd.saturating_add(dist_bwd[v_idx]));
                         }
                     }
@@ -567,11 +568,11 @@ fn bidi_cch_query(
         // Backward step - traverse reversed DOWN edges
         if let Some((u, Reverse(d))) = pq_bwd.pop() {
             let u_idx = u as usize;
-            if gen_bwd[u_idx] != gen || d > dist_bwd[u_idx] {
+            if gen_bwd[u_idx] != generation || d > dist_bwd[u_idx] {
                 // Skip stale entries
             } else {
                 // Check meeting
-                if gen_fwd[u_idx] == gen {
+                if gen_fwd[u_idx] == generation {
                     best = best.min(dist_fwd[u_idx].saturating_add(d));
                 }
 
@@ -587,7 +588,7 @@ fn bidi_cch_query(
 
                     let x_idx = x as usize;
                     let nd = d.saturating_add(w);
-                    let old = if gen_bwd[x_idx] == gen {
+                    let old = if gen_bwd[x_idx] == generation {
                         dist_bwd[x_idx]
                     } else {
                         u32::MAX
@@ -595,11 +596,11 @@ fn bidi_cch_query(
 
                     if nd < old {
                         dist_bwd[x_idx] = nd;
-                        gen_bwd[x_idx] = gen;
+                        gen_bwd[x_idx] = generation;
                         pq_bwd.push(x, Reverse(nd));
 
                         // Check meeting
-                        if gen_fwd[x_idx] == gen {
+                        if gen_fwd[x_idx] == generation {
                             best = best.min(dist_fwd[x_idx].saturating_add(nd));
                         }
                     }
@@ -608,11 +609,7 @@ fn bidi_cch_query(
         }
     }
 
-    if best == u32::MAX {
-        None
-    } else {
-        Some(best)
-    }
+    if best == u32::MAX { None } else { Some(best) }
 }
 
 /// CCH-Dijkstra (baseline) - explores both UP and DOWN in any order
@@ -623,19 +620,19 @@ fn cch_dijkstra_query(
     src: u32,
     dst: u32,
     dist: &mut [u32],
-    gen: &mut [u32],
+    generation: &mut [u32],
     current_gen: u32,
     pq: &mut PriorityQueue<u32, Reverse<u32>>,
 ) -> Option<u32> {
     pq.clear();
 
     dist[src as usize] = 0;
-    gen[src as usize] = current_gen;
+    generation[src as usize] = current_gen;
     pq.push(src, Reverse(0));
 
     while let Some((u, Reverse(d))) = pq.pop() {
         let u_idx = u as usize;
-        if gen[u_idx] != current_gen || d > dist[u_idx] {
+        if generation[u_idx] != current_gen || d > dist[u_idx] {
             continue;
         }
 
@@ -655,7 +652,7 @@ fn cch_dijkstra_query(
 
             let v_idx = v as usize;
             let nd = d.saturating_add(w);
-            let old = if gen[v_idx] == current_gen {
+            let old = if generation[v_idx] == current_gen {
                 dist[v_idx]
             } else {
                 u32::MAX
@@ -663,7 +660,7 @@ fn cch_dijkstra_query(
 
             if nd < old {
                 dist[v_idx] = nd;
-                gen[v_idx] = current_gen;
+                generation[v_idx] = current_gen;
                 pq.push(v, Reverse(nd));
             }
         }
@@ -680,7 +677,7 @@ fn cch_dijkstra_query(
 
             let v_idx = v as usize;
             let nd = d.saturating_add(w);
-            let old = if gen[v_idx] == current_gen {
+            let old = if generation[v_idx] == current_gen {
                 dist[v_idx]
             } else {
                 u32::MAX
@@ -688,14 +685,14 @@ fn cch_dijkstra_query(
 
             if nd < old {
                 dist[v_idx] = nd;
-                gen[v_idx] = current_gen;
+                generation[v_idx] = current_gen;
                 pq.push(v, Reverse(nd));
             }
         }
     }
 
     let dst_idx = dst as usize;
-    if gen[dst_idx] == current_gen && dist[dst_idx] != u32::MAX {
+    if generation[dst_idx] == current_gen && dist[dst_idx] != u32::MAX {
         Some(dist[dst_idx])
     } else {
         None

@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::{compile_model, evaluate_turn_full, evaluate_way, CompiledModel};
-use crate::formats::{turn_rules, way_attrs, TurnRule, WayAttr};
+use super::{CompiledModel, compile_model, evaluate_turn_full, evaluate_way};
+use crate::formats::{TurnRule, WayAttr, turn_rules, way_attrs};
 use crate::profile_abi::{Mode, TurnRuleKind};
 
 pub struct ProfileConfig {
@@ -143,7 +143,7 @@ fn compute_file_sha256<P: AsRef<Path>>(path: P) -> Result<String> {
         hasher.update(&buffer[..n]);
     }
 
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex::encode(hasher.finalize()))
 }
 
 /// Run Step 2 profiling pipeline using auto-discovered JSON model files

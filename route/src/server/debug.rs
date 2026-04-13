@@ -1,17 +1,17 @@
 //! Debug compare endpoint (unmounted in production)
 
 use axum::{
+    Json,
     extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use super::query::CchQuery;
 use super::state::ServerState;
-use super::types::{parse_mode, ErrorResponse};
+use super::types::{ErrorResponse, parse_mode};
 
 // ============ Types ============
 
@@ -52,7 +52,7 @@ pub async fn debug_compare(
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
@@ -71,7 +71,7 @@ pub async fn debug_compare(
                     error: "Cannot snap source".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
     let dst_orig = match state
@@ -86,7 +86,7 @@ pub async fn debug_compare(
                     error: "Cannot snap dest".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -486,8 +486,10 @@ pub async fn debug_compare(
                                                 next_node as u32,
                                                 perm,
                                             );
-                                            eprintln!("        Shortcut path: w({}->{}){:?} + w({}->{}){:?}",
-                                                      prev_node, middle, w_um, middle, next_node, w_mv);
+                                            eprintln!(
+                                                "        Shortcut path: w({}->{}){:?} + w({}->{}){:?}",
+                                                prev_node, middle, w_um, middle, next_node, w_mv
+                                            );
                                             break;
                                         }
                                     }

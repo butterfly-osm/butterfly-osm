@@ -31,13 +31,6 @@ pub mod neighbors;
 pub use arrow_stream::{ArrowMatrixWriter, MatrixTile};
 pub use batched_phast::{BatchedPhastEngine, BatchedPhastResult, BatchedPhastStats};
 pub use bucket_ch::{
-    backward_join_with_buckets,
-    // Source-block optimized API (avoids repeated forward computation)
-    forward_build_buckets,
-    table_bucket,
-    table_bucket_full_flat,
-    table_bucket_optimized,
-    table_bucket_parallel,
     BucketArena,
     BucketM2MEngine,
     BucketM2MStats,
@@ -46,4 +39,11 @@ pub use bucket_ch::{
     SourceBuckets,
     UpAdjFlat,
     UpReverseAdjFlat,
+    backward_join_with_buckets,
+    // Source-block optimized API (avoids repeated forward computation)
+    forward_build_buckets,
+    table_bucket,
+    table_bucket_full_flat,
+    table_bucket_optimized,
+    table_bucket_parallel,
 };

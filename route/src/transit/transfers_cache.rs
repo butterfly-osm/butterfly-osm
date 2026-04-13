@@ -20,7 +20,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use crc::Crc;
 
 use super::timetable::StopIdx;

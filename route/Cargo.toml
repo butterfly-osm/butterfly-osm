@@ -15,7 +15,7 @@ clap = { workspace = true }
 # Typed errors (`thiserror`) are used in library-level code (formats/, profiles/).
 # Migrating all of butterfly-route to thiserror would touch hundreds of functions
 # with zero practical benefit — anyhow's context chains are more useful for debugging.
-anyhow = "1.0.101"
+anyhow = "1.0.102"
 thiserror = { workspace = true }
 
 # PBF parsing
@@ -33,59 +33,59 @@ env_logger = { workspace = true }
 
 # Structured logging (tracing)
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.22", features = ["json", "env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
 
 # SHA-256 hashing
-sha2 = "0.10.9"
-hex = "0.4"
+sha2 = "0.11"
+hex = "0.4.3"
 
 # Timestamps
-chrono = "0.4.43"
+chrono = "0.4.44"
 
 # Parallelization
 rayon = "1.11"
 
 # Fast hashing (FxHashSet for CCH contraction)
-rustc-hash = "2.1"
+rustc-hash = "2.1.2"
 
 # Step 9: Query server
-axum = "0.8"
-tokio = { version = "1.49", features = ["full"] }
+axum = "0.8.8"
+tokio = { workspace = true }
 tokio-stream = "0.1.18"
 tokio-util = "0.7.18"
 utoipa = { version = "5.4", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "9.0", features = ["axum"] }
-tower = { version = "0.5", features = ["limit"] }
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
+tower = { version = "0.5.3", features = ["limit"] }
 tower-http = { version = "0.6.8", features = ["cors", "trace", "timeout", "catch-panic", "compression-gzip", "compression-br"] }
 
 # Spatial indexing & geometry
 rstar = "0.12.2"
-geo = "0.29"
+geo = "0.32"
 
 # Priority queue for Dijkstra
-priority-queue = "2.7"
+priority-queue = "2.7.0"
 
 # Random number generation for validation
-rand = "0.9"
+rand = "0.10"
 
 # Benchmarking
 hdrhistogram = "7.5.4"
 
 # Arrow streaming for bulk matrix output
-arrow = { version = "54", default-features = false, features = ["ipc"] }
-arrow-flight = "54"
-futures = "0.3.31"
-futures-util = "0.3"
-bytes = "1.11"
+arrow = { version = "58", default-features = false, features = ["ipc"] }
+arrow-flight = "58"
+futures = "0.3.32"
+futures-util = "0.3.32"
+bytes = "1.11.1"
 parking_lot = "0.12.5"
-tonic = { version = "0.12", features = ["transport"] }
-prost = "0.13"
+tonic = { version = "0.14", features = ["transport"] }
+prost = "0.14"
 
 # Base64 encoding for WKB in JSON responses
-base64 = "0.22"
+base64 = "0.22.1"
 
 # Prometheus metrics
-axum-prometheus = "0.8"
+axum-prometheus = "0.10"
 
 # Transit: GTFS static feed parsing
 gtfs-structures = "0.47"
@@ -97,7 +97,7 @@ prost_011 = { package = "prost", version = "0.11" }
 # Transit: hot-swap of timetable snapshots
 arc-swap = "1.7"
 # Transit: HTTP client for feed downloads (rustls TLS)
-reqwest = { workspace = true, features = ["rustls-tls"] }
+reqwest = { workspace = true, features = ["rustls"] }
 # Transit: TOML config parsing
 toml = "0.8"
 
@@ -106,7 +106,7 @@ workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }
-geo = "0.29"
+geo = "0.32"
 wiremock = { workspace = true }
 
 [[bin]]

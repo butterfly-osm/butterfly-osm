@@ -10,28 +10,28 @@ use std::path::Path;
 use crate::formats::{RelationsFile, WaysFile};
 
 pub mod step3;
-pub use step3::{verify_step3_lock_conditions, ComponentStats, Step3LockFile};
+pub use step3::{ComponentStats, Step3LockFile, verify_step3_lock_conditions};
 
 pub mod step4;
-pub use step4::{validate_step4, Step4LockFile};
+pub use step4::{Step4LockFile, validate_step4};
 
 pub mod weights;
-pub use weights::{validate_step5, Step5LockFile};
+pub use weights::{Step5LockFile, validate_step5};
 
 pub mod ordering;
-pub use ordering::{validate_step6, validate_step6_lifted, Step6LiftedLockFile, Step6LockFile};
+pub use ordering::{Step6LiftedLockFile, Step6LockFile, validate_step6, validate_step6_lifted};
 
 pub mod contraction;
-pub use contraction::{validate_step7, Step7LockFile};
+pub use contraction::{Step7LockFile, validate_step7};
 
 pub mod cch_correctness;
 pub use cch_correctness::{
-    run_regression_tests, validate_cch_correctness, Failure, RegressionCase, RegressionResult,
-    ValidationResult,
+    Failure, RegressionCase, RegressionResult, ValidationResult, run_regression_tests,
+    validate_cch_correctness,
 };
 
 pub mod invariants;
-pub use invariants::{validate_invariants, InvariantResult};
+pub use invariants::{InvariantResult, validate_invariants};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BBox {
@@ -147,7 +147,7 @@ pub(crate) fn compute_sha256<P: AsRef<Path>>(path: P) -> Result<String> {
         hasher.update(&buffer[..n]);
     }
 
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex::encode(hasher.finalize()))
 }
 
 /// Verify all lock conditions

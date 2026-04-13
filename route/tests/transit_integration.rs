@@ -13,8 +13,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use butterfly_route::transit::gtfs::{load_zip, ServiceFilter};
-use butterfly_route::transit::raptor::{run_raptor, RaptorLeg, RaptorQuery};
+use butterfly_route::transit::gtfs::{ServiceFilter, load_zip};
+use butterfly_route::transit::raptor::{RaptorLeg, RaptorQuery, run_raptor};
 use butterfly_route::transit::transfers::TransferGraph;
 use chrono::{Datelike, Duration as ChronoDuration, Local, NaiveDate, Weekday};
 
@@ -26,11 +26,7 @@ fn belgium_data_root() -> PathBuf {
 
 fn gtfs_zip_path() -> Option<PathBuf> {
     let p = belgium_data_root().join("transit/gtfs/sncb.zip");
-    if p.exists() {
-        Some(p)
-    } else {
-        None
-    }
+    if p.exists() { Some(p) } else { None }
 }
 
 /// Find a weekday on or after `date` — SNCB weekday and weekend patterns
