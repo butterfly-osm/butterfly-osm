@@ -193,7 +193,7 @@ thread_local! {
 /// Reconstruct path from generation-stamped parent arrays
 fn reconstruct_path_versioned(
     parent: &[(u32, u32)],
-    gen: &[u32],
+    generation: &[u32],
     current_gen: u32,
     start: u32,
     end: u32,
@@ -202,7 +202,7 @@ fn reconstruct_path_versioned(
     let mut current = end;
 
     while current != start {
-        if gen[current as usize] == current_gen {
+        if generation[current as usize] == current_gen {
             let (prev, edge_idx) = parent[current as usize];
             path.push((current, edge_idx));
             current = prev;
@@ -626,10 +626,10 @@ mod tests {
     #[test]
     fn test_reconstruct_path_versioned_basic() {
         let parent = vec![(u32::MAX, 0), (0, 42), (1, 99)];
-        let gen = vec![5, 5, 5];
+        let generation = vec![5, 5, 5];
 
         // Path from 0 to 2: 0 → 1 (edge 42) → 2 (edge 99)
-        let path = reconstruct_path_versioned(&parent, &gen, 5, 0, 2);
+        let path = reconstruct_path_versioned(&parent, &generation, 5, 0, 2);
         assert_eq!(path.len(), 2);
         assert_eq!(path[0], (1, 42));
         assert_eq!(path[1], (2, 99));
@@ -638,19 +638,19 @@ mod tests {
     #[test]
     fn test_reconstruct_path_versioned_stale_gen() {
         let parent = vec![(u32::MAX, 0), (0, 42), (1, 99)];
-        let gen = vec![5, 5, 3]; // Node 2 has stale generation
+        let generation = vec![5, 5, 3]; // Node 2 has stale generation
 
-        // Should stop at node 2 because gen[2] != current_gen
-        let path = reconstruct_path_versioned(&parent, &gen, 5, 0, 2);
+        // Should stop at node 2 because generation[2] != current_gen
+        let path = reconstruct_path_versioned(&parent, &generation, 5, 0, 2);
         assert!(path.is_empty()); // Can't trace back from node 2
     }
 
     #[test]
     fn test_reconstruct_path_versioned_single_step() {
         let parent = vec![(u32::MAX, 0), (0, 7)];
-        let gen = vec![1, 1];
+        let generation = vec![1, 1];
 
-        let path = reconstruct_path_versioned(&parent, &gen, 1, 0, 1);
+        let path = reconstruct_path_versioned(&parent, &generation, 1, 0, 1);
         assert_eq!(path.len(), 1);
         assert_eq!(path[0], (1, 7));
     }

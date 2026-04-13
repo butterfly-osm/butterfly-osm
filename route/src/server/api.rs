@@ -4,10 +4,10 @@
 //! This module assembles the Axum router and OpenAPI spec.
 
 use axum::{
+    Router,
     extract::DefaultBodyLimit,
     http::StatusCode,
     routing::{get, post},
-    Router,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,7 +25,7 @@ use super::state::ServerState;
 
 // Re-export public items so that existing `super::api::` paths still work
 pub use super::isochrone_handler::{run_phast_bounded_fast, run_phast_bounded_fast_reverse};
-pub use super::types::{parse_mode, validate_coord, ErrorResponse, Waypoint};
+pub use super::types::{ErrorResponse, Waypoint, parse_mode, validate_coord};
 
 /// OpenAPI documentation
 #[derive(OpenApi)]

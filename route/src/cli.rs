@@ -6,17 +6,17 @@ use std::path::{Path, PathBuf};
 
 use crate::contraction;
 use crate::customization;
-use crate::ebg::{build_ebg, EbgConfig};
-use crate::ingest::{run_ingest, IngestConfig};
-use crate::nbg::{build_nbg, NbgConfig};
+use crate::ebg::{EbgConfig, build_ebg};
+use crate::ingest::{IngestConfig, run_ingest};
+use crate::nbg::{NbgConfig, build_nbg};
 use crate::ordering;
 use crate::ordering_lifted;
-use crate::profile::{run_profiling, ProfileConfig};
+use crate::profile::{ProfileConfig, run_profiling};
 use crate::profile_abi::Mode;
 use crate::server;
 use crate::validate::{
-    validate_step4, validate_step5, validate_step6, validate_step6_lifted, validate_step7,
-    verify_lock_conditions, Counts, LockFile,
+    Counts, LockFile, validate_step4, validate_step5, validate_step6, validate_step6_lifted,
+    validate_step7, verify_lock_conditions,
 };
 use crate::weights;
 
@@ -1789,8 +1789,8 @@ impl Cli {
             } => {
                 use crate::formats::{NbgCsrFile, NbgGeoFile};
                 use crate::nbg_ch::{
-                    compute_nbg_ordering, contract_nbg, validate_matrix, validate_nbg_ch,
-                    NbgBucketM2M,
+                    NbgBucketM2M, compute_nbg_ordering, contract_nbg, validate_matrix,
+                    validate_nbg_ch,
                 };
 
                 println!("\n=== BUILD NODE-BASED CH ===\n");

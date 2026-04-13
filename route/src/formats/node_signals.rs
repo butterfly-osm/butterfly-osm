@@ -20,7 +20,7 @@
 //!
 //! Lookup: O(log n) binary search to check if a node has a traffic signal
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;

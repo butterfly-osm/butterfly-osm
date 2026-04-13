@@ -963,8 +963,10 @@ fn test_nearest_returns_valid_results() {
             let node = &state.ebg_nodes.nodes[ebg_id as usize];
             assert!(node.length_mm > 0, "{mode_name}: snapped edge has 0 length");
 
-            eprintln!("  PASS {mode_name} ({lon},{lat}): ebg={ebg_id}, dist={dist_m:.1}m, edge_len={:.1}m",
-                node.length_mm as f64 / 1000.0);
+            eprintln!(
+                "  PASS {mode_name} ({lon},{lat}): ebg={ebg_id}, dist={dist_m:.1}m, edge_len={:.1}m",
+                node.length_mm as f64 / 1000.0
+            );
         }
     }
 }
@@ -994,9 +996,13 @@ fn test_nearest_results_ordered_by_distance() {
 
         // Verify distance ordering
         for i in 1..results.len() {
-            assert!(results[i].3 >= results[i-1].3,
+            assert!(
+                results[i].3 >= results[i - 1].3,
                 "({lon},{lat}): result {i} distance {:.1}m < result {} distance {:.1}m (not ordered)",
-                results[i].3, i-1, results[i-1].3);
+                results[i].3,
+                i - 1,
+                results[i - 1].3
+            );
         }
 
         // All results should be unique EBG IDs
@@ -1230,8 +1236,10 @@ fn test_route_steps_distances_sum_to_total() {
         // Not exact because straight segments are accumulated into larger steps
         if route_total > 0.0 {
             let ratio = step_total / route_total;
-            assert!(ratio > 0.5 && ratio < 2.0,
-                "pair {i}: step_total={step_total:.1}m route_total={route_total:.1}m ratio={ratio:.2} (expected ~1.0)");
+            assert!(
+                ratio > 0.5 && ratio < 2.0,
+                "pair {i}: step_total={step_total:.1}m route_total={route_total:.1}m ratio={ratio:.2} (expected ~1.0)"
+            );
             eprintln!(
                 "  PASS pair {i}: steps={step_total:.0}m route={route_total:.0}m ratio={ratio:.3}"
             );

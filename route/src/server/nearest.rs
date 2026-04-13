@@ -1,17 +1,17 @@
 //! /nearest handler — snap to nearest road segments
 
 use axum::{
+    Json,
     extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;
 
 use super::state::ServerState;
-use super::types::{parse_mode, validate_coord, ErrorResponse};
+use super::types::{ErrorResponse, parse_mode, validate_coord};
 
 // ============ Types ============
 
@@ -104,7 +104,7 @@ pub async fn nearest_handler(
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 

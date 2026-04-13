@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::formats::{
-    mod_weights, CchTopo, CchTopoFile, CchWeightsFile, EbgCsr, EbgCsrFile, EbgNodes, EbgNodesFile,
-    FilteredEbg, FilteredEbgFile, NbgGeo, NbgGeoFile, OrderEbg, OrderEbgFile, WaysFile,
+    CchTopo, CchTopoFile, CchWeightsFile, EbgCsr, EbgCsrFile, EbgNodes, EbgNodesFile, FilteredEbg,
+    FilteredEbgFile, NbgGeo, NbgGeoFile, OrderEbg, OrderEbgFile, WaysFile, mod_weights,
 };
 // Re-export CchWeights for use by api.rs
 pub use crate::formats::CchWeights;

@@ -17,29 +17,29 @@ use crate::formats::{CchTopoFile, CchWeightsFile};
 use crate::profile_abi::Mode;
 
 pub mod phast;
-pub use phast::{PhastEngine, PhastResult, PhastStats, BLOCK_SIZE};
+pub use phast::{BLOCK_SIZE, PhastEngine, PhastResult, PhastStats};
 
 pub mod frontier;
 pub use frontier::{
-    run_frontier_extraction, FrontierCutPoint, FrontierExtractor, ReachablePoint, ReachableSegment,
+    FrontierCutPoint, FrontierExtractor, ReachablePoint, ReachableSegment, run_frontier_extraction,
 };
 
 pub mod contour;
-pub use contour::{export_contour_geojson, ContourResult, ContourStats};
+pub use contour::{ContourResult, ContourStats, export_contour_geojson};
 
 pub mod sparse_contour;
 pub use sparse_contour::{
-    generate_sparse_contour, SparseContourConfig, SparseContourResult, SparseContourStats,
+    SparseContourConfig, SparseContourResult, SparseContourStats, generate_sparse_contour,
 };
 
 pub mod batched_isochrone;
 pub use batched_isochrone::{
-    AdaptiveIsochroneEngine, BatchedIsochroneEngine, BatchedIsochroneResult, BatchedIsochroneStats,
-    ADAPTIVE_THRESHOLD_DS,
+    ADAPTIVE_THRESHOLD_DS, AdaptiveIsochroneEngine, BatchedIsochroneEngine, BatchedIsochroneResult,
+    BatchedIsochroneStats,
 };
 
 pub mod wkb_stream;
-pub use wkb_stream::{encode_polygon_wkb, write_ndjson, IsochroneBatch, IsochroneRecord};
+pub use wkb_stream::{IsochroneBatch, IsochroneRecord, encode_polygon_wkb, write_ndjson};
 
 /// Result of a range query
 #[derive(Debug)]
@@ -532,7 +532,7 @@ pub mod validate {
         n_samples: usize,
         seed: u64,
     ) -> Vec<(u32, u32, u32)> {
-        use rand::{Rng, SeedableRng};
+        use rand::{RngExt, SeedableRng};
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
 
         let mut mismatches = Vec::new();
@@ -542,7 +542,7 @@ pub mod validate {
             .dist
             .iter()
             .enumerate()
-            .filter(|(_, &d)| d <= threshold)
+            .filter(|&(_, d)| *d <= threshold)
             .map(|(i, _)| i as u32)
             .collect();
 

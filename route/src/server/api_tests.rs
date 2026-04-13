@@ -1,7 +1,7 @@
 //! Unit tests extracted from the original api.rs
 
 use super::isochrone_handler::{ContourFeature, IsochroneResponse};
-use super::route::{bearing_diff, classify_turn, compute_bearing, RouteAnnotations, RouteResponse};
+use super::route::{RouteAnnotations, RouteResponse, bearing_diff, classify_turn, compute_bearing};
 use super::types::{parse_mode, validate_coord};
 
 use crate::profile_abi::Mode;
@@ -697,7 +697,7 @@ fn test_route_geometry_json_only_has_geometry_fields() {
 
 #[test]
 fn test_polyline6_roundtrip_precision() {
-    use super::geometry::{decode_polyline6, encode_polyline6, Point};
+    use super::geometry::{Point, decode_polyline6, encode_polyline6};
     let original = vec![
         Point {
             lon: 4.3517,

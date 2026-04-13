@@ -284,22 +284,22 @@ pub fn suggest_correction(source: &str) -> Option<String> {
         }
 
         // For longer inputs (likely continents), try continents first
-        if source.len() >= 6 {
-            if let Some(match_result) = find_best_fuzzy_match(source, &continent_level) {
-                return Some(match_result);
-            }
+        if source.len() >= 6
+            && let Some(match_result) = find_best_fuzzy_match(source, &continent_level)
+        {
+            return Some(match_result);
         }
 
         // For short inputs, also try continents first to catch "plant" -> "planet"
-        if source.len() <= 6 {
-            if let Some(match_result) = find_best_fuzzy_match(source, &continent_level) {
-                // Check if it's a really good match (high similarity)
-                let source_lower = source.to_lowercase();
-                let match_result_lower = match_result.to_lowercase();
-                let similarity = jaro_winkler(&source_lower, &match_result_lower);
-                if similarity > 0.8 {
-                    return Some(match_result);
-                }
+        if source.len() <= 6
+            && let Some(match_result) = find_best_fuzzy_match(source, &continent_level)
+        {
+            // Check if it's a really good match (high similarity)
+            let source_lower = source.to_lowercase();
+            let match_result_lower = match_result.to_lowercase();
+            let similarity = jaro_winkler(&source_lower, &match_result_lower);
+            if similarity > 0.8 {
+                return Some(match_result);
             }
         }
 
@@ -312,10 +312,10 @@ pub fn suggest_correction(source: &str) -> Option<String> {
         if let Some(best_country) = find_best_fuzzy_match(source, &country_names) {
             // Find the full path for this country
             for full_path in &country_level {
-                if let Some(country_part) = full_path.split('/').nth(1) {
-                    if country_part == best_country {
-                        return Some(full_path.clone());
-                    }
+                if let Some(country_part) = full_path.split('/').nth(1)
+                    && country_part == best_country
+                {
+                    return Some(full_path.clone());
                 }
             }
         }

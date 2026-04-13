@@ -10,12 +10,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::formats::*;
-use crate::profile_abi::{Mode, MAX_MODES};
+use crate::profile_abi::{MAX_MODES, Mode};
 
 pub mod turn_penalty;
 pub mod turn_processor;
 
-use turn_penalty::{compute_turn_penalty, TurnGeometry, TurnPenaltyConfig};
+use turn_penalty::{TurnGeometry, TurnPenaltyConfig, compute_turn_penalty};
 
 /// Per-mode input paths for EBG construction
 #[derive(Debug, Clone)]
