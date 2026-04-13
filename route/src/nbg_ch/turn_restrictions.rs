@@ -21,7 +21,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::formats::{turn_rules, EbgNodes, EbgNodesFile, NbgNodeMapFile};
+use crate::formats::{EbgNodes, EbgNodesFile, NbgNodeMapFile, turn_rules};
 use crate::profile_abi::TurnRuleKind;
 
 /// Index for fast turn restriction lookups during NBG CH queries

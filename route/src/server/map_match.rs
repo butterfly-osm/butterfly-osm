@@ -460,7 +460,7 @@ fn viterbi(
     let best_final = last_probs
         .iter()
         .enumerate()
-        .filter(|(_, &p)| p != NEG_INF)
+        .filter(|&(_, p)| *p != NEG_INF)
         .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(idx, _)| idx)?;
 

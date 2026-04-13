@@ -53,8 +53,8 @@ pub fn validate_nbg_ch(
     n_tests: usize,
     seed: u64,
 ) -> ValidationResult {
-    use rand::prelude::*;
     use rand::SeedableRng;
+    use rand::prelude::*;
 
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
     let n_nodes = topo.n_nodes;
@@ -124,8 +124,8 @@ pub fn validate_matrix(
     matrix_size: usize,
     seed: u64,
 ) -> ValidationResult {
-    use rand::prelude::*;
     use rand::SeedableRng;
+    use rand::prelude::*;
 
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
     let n_nodes = topo.n_nodes;

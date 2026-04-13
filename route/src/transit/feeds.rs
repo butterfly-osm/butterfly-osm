@@ -18,7 +18,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use chrono::Local;
 use sha2::{Digest, Sha256};
-use tokio::time::{interval, MissedTickBehavior};
+use tokio::time::{MissedTickBehavior, interval};
 
 use crate::server::spatial::SpatialIndex;
 use crate::server::state::{ModeData, ServerState};
@@ -57,7 +57,8 @@ pub async fn download_if_changed(
 
     let mut hasher = Sha256::new();
     hasher.update(&body);
-    let sha: [u8; 32] = hasher.finalize().into();
+    let mut sha = [0u8; 32];
+    sha.copy_from_slice(hasher.finalize().as_slice());
 
     if let Some(prev) = previous_sha {
         if prev == sha {

@@ -1,11 +1,11 @@
 //! /isochrone and /isochrone/bulk handlers — reachability polygons
 
 use axum::{
+    Json,
     body::Body,
     extract::{Query, State},
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
-    Json,
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -13,10 +13,10 @@ use std::cell::RefCell;
 use std::sync::Arc;
 use utoipa::ToSchema;
 
-use super::geometry::{build_isochrone_geometry, encode_polyline6, GeometryFormat, Point};
+use super::geometry::{GeometryFormat, Point, build_isochrone_geometry, encode_polyline6};
 use super::route::{default_direction, default_geometries};
 use super::state::ServerState;
-use super::types::{parse_mode, validate_coord, ErrorResponse};
+use super::types::{ErrorResponse, parse_mode, validate_coord};
 
 // ============ Types ============
 
@@ -620,14 +620,14 @@ pub async fn isochrone_handler(
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
     let geom_format = match GeometryFormat::parse(&req.geometries) {
         Ok(f) => f,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
@@ -641,7 +641,7 @@ pub async fn isochrone_handler(
                     error: format!("Invalid direction: '{}'. Use 'depart' or 'arrive'.", other),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -649,7 +649,7 @@ pub async fn isochrone_handler(
     let exclude_mask = match super::exclude::parse_exclude_option(&req.exclude) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
@@ -657,7 +657,7 @@ pub async fn isochrone_handler(
     let avoid_json = match super::avoid::parse_avoid_option(&req.avoid_polygons) {
         Ok(v) => v,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
@@ -668,7 +668,7 @@ pub async fn isochrone_handler(
         match super::avoid::compute_avoid_weights(&state, mode_data, avoid_str, exclude_mask) {
             Ok((weights, flags)) => Some((weights, flags)),
             Err(e) => {
-                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
             }
         }
     } else {
@@ -723,7 +723,7 @@ pub async fn isochrone_handler(
                     error: "Could not snap center to road network".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -1064,7 +1064,7 @@ pub async fn isochrone_bulk_handler(
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
@@ -1072,7 +1072,7 @@ pub async fn isochrone_bulk_handler(
     let exclude_mask = match super::exclude::parse_exclude_option(&req.exclude) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
@@ -1080,7 +1080,7 @@ pub async fn isochrone_bulk_handler(
     let avoid_json = match super::avoid::parse_avoid_option(&req.avoid_polygons) {
         Ok(v) => v,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
@@ -1092,7 +1092,7 @@ pub async fn isochrone_bulk_handler(
         match super::avoid::compute_avoid_weights(&state, mode_data, avoid_str, exclude_mask) {
             Ok((weights, flags)) => Some((weights, flags)),
             Err(e) => {
-                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
             }
         }
     } else {

@@ -4,7 +4,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::formats::{EbgNodes, NbgGeo};
-use crate::range::{generate_sparse_contour, ReachableSegment, SparseContourConfig};
+use crate::range::{ReachableSegment, SparseContourConfig, generate_sparse_contour};
 
 /// A point in WGS84 coordinates
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]

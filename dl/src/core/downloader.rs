@@ -6,13 +6,13 @@ use futures::StreamExt;
 use futures::TryStreamExt;
 use once_cell::sync::Lazy;
 use reqwest::{Client, ClientBuilder};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 
 use crate::core::source::{DownloadSource, SourceConfig};
-use crate::core::stream::{create_http_stream, DownloadOptions, DownloadStream, OverwriteBehavior};
+use crate::core::stream::{DownloadOptions, DownloadStream, OverwriteBehavior, create_http_stream};
 use butterfly_common::{Error, Result};
 
 /// Supertrait combining [`AsyncWrite`](tokio::io::AsyncWrite) and
@@ -620,8 +620,8 @@ fn create_helpful_http_error(url: &str, status: reqwest::StatusCode) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     use tempfile::NamedTempFile;
     use wiremock::matchers::{method, path};

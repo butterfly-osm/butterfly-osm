@@ -284,7 +284,7 @@ pub fn compute_avoid_weights(
 /// Returns `None` if the parameter is absent or empty.
 pub fn parse_avoid_option(avoid: &Option<String>) -> Result<Option<String>, String> {
     match avoid {
-        Some(ref s) if !s.trim().is_empty() => Ok(Some(s.clone())),
+        Some(s) if !s.trim().is_empty() => Ok(Some(s.clone())),
         _ => Ok(None),
     }
 }
@@ -341,9 +341,11 @@ mod tests {
     fn test_parse_avoid_option_empty() {
         assert!(parse_avoid_option(&None).unwrap().is_none());
         assert!(parse_avoid_option(&Some(String::new())).unwrap().is_none());
-        assert!(parse_avoid_option(&Some("  ".to_string()))
-            .unwrap()
-            .is_none());
+        assert!(
+            parse_avoid_option(&Some("  ".to_string()))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

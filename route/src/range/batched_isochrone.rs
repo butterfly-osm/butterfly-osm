@@ -21,10 +21,10 @@ use std::sync::Arc;
 use anyhow::Result;
 use rayon::prelude::*;
 
-use super::contour::{export_contour_geojson, ContourResult};
+use super::contour::{ContourResult, export_contour_geojson};
 use super::frontier::{FrontierExtractor, ReachableSegment};
 use super::phast::PhastEngine;
-use super::sparse_contour::{generate_sparse_contour, SparseContourConfig};
+use super::sparse_contour::{SparseContourConfig, generate_sparse_contour};
 use crate::matrix::batched_phast::{BatchedPhastEngine, K_LANES};
 /// Result of a batched isochrone query
 #[derive(Debug)]

@@ -16,7 +16,7 @@ pub mod profiling;
 pub mod schema;
 pub mod types;
 
-pub use compile::{compile_model, CompiledModel};
+pub use compile::{CompiledModel, compile_model};
 pub use evaluate::{evaluate_turn_full, evaluate_way};
 pub use schema::ModelSchema;
 

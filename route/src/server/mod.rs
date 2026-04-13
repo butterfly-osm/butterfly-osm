@@ -76,7 +76,7 @@ pub use state::ServerState;
 /// - `log_format`: "text" for human-readable, "json" for structured JSON lines.
 /// - Respects RUST_LOG env var for filtering (default: `info,tower_http=debug`).
 pub fn init_tracing(log_format: &str) {
-    use tracing_subscriber::{fmt, EnvFilter};
+    use tracing_subscriber::{EnvFilter, fmt};
 
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,tower_http=debug"));

@@ -1,19 +1,19 @@
 //! /route handler — point-to-point routing with geometry, steps, alternatives
 
 use axum::{
+    Json,
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;
 
-use super::geometry::{build_geometry, build_raw_points, GeometryFormat, Point, RouteGeometry};
+use super::geometry::{GeometryFormat, Point, RouteGeometry, build_geometry, build_raw_points};
 use super::query::CchQuery;
 use super::state::ServerState;
-use super::types::{parse_mode, validate_coord, ErrorResponse};
+use super::types::{ErrorResponse, parse_mode, validate_coord};
 use super::unpack::unpack_path;
 
 // ============ Types ============
@@ -230,14 +230,14 @@ pub async fn route_handler(
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
     let geom_format = match GeometryFormat::parse(&req.geometries) {
         Ok(f) => f,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
@@ -344,7 +344,7 @@ pub async fn route_handler(
     let exclude_mask = match super::exclude::parse_exclude_option(&req.exclude) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
@@ -352,7 +352,7 @@ pub async fn route_handler(
     let avoid_json = match super::avoid::parse_avoid_option(&req.avoid_polygons) {
         Ok(v) => v,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
@@ -369,7 +369,7 @@ pub async fn route_handler(
         ) {
             Ok((weights, flags)) => Some((weights, flags)),
             Err(e) => {
-                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response()
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
             }
         }
     } else {
@@ -426,7 +426,7 @@ pub async fn route_handler(
                         error: "Could not snap source to road network".to_string(),
                     }),
                 )
-                    .into_response()
+                    .into_response();
             }
         }
     };
@@ -464,7 +464,7 @@ pub async fn route_handler(
                         error: "Could not snap destination to road network".to_string(),
                     }),
                 )
-                    .into_response()
+                    .into_response();
             }
         }
     };
@@ -581,7 +581,7 @@ pub async fn route_handler(
                     error: "No route found".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
