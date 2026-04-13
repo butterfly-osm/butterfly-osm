@@ -29,6 +29,7 @@ pub mod profile;
 pub mod profile_abi;
 pub mod range;
 pub mod server;
+pub mod transit;
 pub mod validate;
 pub mod weights;
 

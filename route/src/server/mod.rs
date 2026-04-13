@@ -52,6 +52,7 @@ pub mod route;
 pub mod spatial;
 pub mod state;
 pub mod table;
+pub mod transit_handler;
 pub mod trip;
 pub mod types;
 pub mod unpack;
@@ -165,8 +166,44 @@ pub async fn serve(
 ) -> Result<()> {
     tracing::info!("Step 9: Starting query server...");
 
-    // Load server state
-    let state = Arc::new(ServerState::load(data_dir, mode_filter)?);
+    // Load server state (synchronous path — no network).
+    let mut state_owned = ServerState::load(data_dir, mode_filter)?;
+
+    // Bootstrap the transit subsystem (async: downloads feeds, builds
+    // transfer graph) before wrapping `ServerState` in `Arc`. Transit is
+    // optional: if no `transit/` directory is present the server runs in
+    // road-only mode.
+    if let Some(cfg) = crate::transit::config::load(data_dir)? {
+        let foot_idx = state_owned
+            .mode_lookup
+            .get("foot")
+            .copied()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "transit configured but foot mode is not loaded; add 'foot' to --modes"
+                )
+            })?;
+        crate::transit::feeds::ensure_static_feeds(&cfg).await?;
+        let foot = &state_owned.modes[foot_idx as usize];
+        let snapshot =
+            crate::transit::feeds::load_initial_snapshot(&cfg, foot, &state_owned.spatial_index)?;
+        tracing::info!(
+            stops = snapshot.timetable.n_stops(),
+            routes = snapshot.timetable.n_routes(),
+            trips = snapshot.timetable.n_total_trips,
+            "transit snapshot loaded"
+        );
+        state_owned.install_transit(crate::transit::TransitState::new(cfg, snapshot));
+    } else {
+        tracing::info!("no transit/ directory — running in road-only mode");
+    }
+
+    let state = Arc::new(state_owned);
+
+    // Start the transit feed manager if transit is configured.
+    if state.transit.is_some() {
+        crate::transit::feeds::spawn_manager(Arc::clone(&state));
+    }
 
     // Find free ports
     let http_port = match port {
