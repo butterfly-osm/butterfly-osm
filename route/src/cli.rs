@@ -1,6 +1,6 @@
 //! CLI commands for butterfly-route
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 
@@ -318,6 +318,25 @@ pub enum Commands {
         /// Output directory for cch.w.*.u32 and cch.d.*.u32
         #[arg(short, long)]
         outdir: PathBuf,
+    },
+
+    /// Download (refresh) GTFS transit feeds into `<data>/transit/gtfs/`.
+    ///
+    /// Transit feeds are refreshed at rebuild time — same model as the
+    /// OSM PBF. Run this on a cron or as part of a rebuild pipeline,
+    /// then restart the server.
+    ///
+    /// Reads `<data>/transit/transit.toml` if present; otherwise uses
+    /// the default Belgium feed set (SNCB, De Lijn, TEC, STIB).
+    TransitFetch {
+        /// Data directory (the one you pass to `serve --data-dir`).
+        #[arg(short, long)]
+        data_dir: PathBuf,
+
+        /// Also download one-shot GTFS-RT trip-updates snapshots for
+        /// every feed that configures an `rt_url`.
+        #[arg(long)]
+        realtime: bool,
     },
 
     /// Step 9: Start query server
@@ -1260,6 +1279,45 @@ impl Cli {
                 println!("✅ Step 8 CCH customization complete!");
                 println!("📋 Lock file: {}", lock_path.display());
 
+                Ok(())
+            }
+            Commands::TransitFetch { data_dir, realtime } => {
+                // Load the transit config (uses default Belgium feeds if
+                // no transit.toml is present, but still requires the
+                // `transit/` directory to exist so operators opt in).
+                let cfg_dir = data_dir.join("transit");
+                std::fs::create_dir_all(&cfg_dir)
+                    .with_context(|| format!("creating transit dir {}", cfg_dir.display()))?;
+                let cfg = crate::transit::config::load(&data_dir)?.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "could not load transit config under {} (did `mkdir -p transit` fail?)",
+                        data_dir.display()
+                    )
+                })?;
+                println!(
+                    "transit-fetch: {} feed(s) -> {}",
+                    cfg.feeds.len(),
+                    cfg.gtfs_dir().display()
+                );
+                for feed in &cfg.feeds {
+                    println!("  - {} ({})", feed.id, feed.url);
+                }
+
+                let rt = tokio::runtime::Runtime::new()?;
+                let reports = rt.block_on(crate::transit::feeds::fetch_all(&cfg, realtime))?;
+                let mut ok = 0usize;
+                let mut fail = 0usize;
+                for r in &reports {
+                    println!("  {}", crate::transit::feeds::format_report(r));
+                    match r.static_outcome {
+                        crate::transit::feeds::FeedFetchOutcome::Failed { .. } => fail += 1,
+                        _ => ok += 1,
+                    }
+                }
+                println!("transit-fetch: {ok} ok, {fail} failed");
+                if fail > 0 && ok == 0 {
+                    anyhow::bail!("every feed failed to download");
+                }
                 Ok(())
             }
             Commands::Serve {

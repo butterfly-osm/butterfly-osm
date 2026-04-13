@@ -1,0 +1,73 @@
+# butterfly-route transit configuration — example file
+#
+# Drop a copy of this file at `<data_dir>/transit/transit.toml` and edit
+# to match your needs, then run:
+#
+#     butterfly-route transit-fetch --data-dir <data_dir>
+#
+# to refresh the static feeds. Restart the server to pick up the new data.
+# The server itself does NOT poll feeds in the background — refresh is a
+# rebuild-time operation, exactly like the OSM PBF.
+
+# ============================================================================
+# Sizing knobs
+# ============================================================================
+
+# Maximum walking radius from origin / to destination (meters). Used as a
+# default by the /transit handler when access_mode = "foot". Per-request
+# `max_walk_m` query param overrides this.
+max_walk_m = 2000
+
+# Radius (meters) for the precomputed stop-to-stop walking transfer graph.
+# Wider values pick up more cross-operator interchanges at the cost of a
+# larger initial transfer build, but the ULTRA triangle dominance
+# restriction prunes the graph back so the runtime cost is small.
+# 2000 m is the recommended default for dense multi-operator regions.
+transfer_radius_m = 2000
+
+# Number of nearest transit stops to fan out to at the origin / destination.
+max_access_stops = 20
+
+# ============================================================================
+# Feeds
+# ============================================================================
+#
+# Each [[feeds]] entry describes one operator. `format` defaults to "gtfs".
+# Today the loader supports:
+#
+#   format = "gtfs"        — GTFS static (.zip) — fully implemented
+#   format = "netex-epip"  — NeTEx-EPIP profile (.xml) — pending #101
+#
+# A `rt_url` is an optional one-shot GTFS-RT trip-updates snapshot. It is
+# downloaded by `transit-fetch --realtime` and applied once at server
+# startup. There is no realtime polling loop.
+
+# ----- SNCB (Belgian national rail) -----------------------------------------
+[[feeds]]
+id  = "sncb"
+url = "https://gtfs.irail.be/nmbs/gtfs/latest.zip"
+
+# ----- De Lijn (Flanders bus / tram) ----------------------------------------
+[[feeds]]
+id  = "delijn"
+url = "https://gtfs.irail.be/de-lijn/de_lijn-gtfs.zip"
+
+# ----- TEC (Wallonia bus) ---------------------------------------------------
+[[feeds]]
+id  = "tec"
+url = "https://opendata.tec-wl.be/Current%20GTFS/TEC-GTFS.zip"
+
+# ----- STIB / MIVB (Brussels metro / bus / tram) ----------------------------
+#
+# STIB has deprecated GTFS in favour of NeTEx (the EU-mandated format under
+# Delegated Regulation 2017/1926). All public STIB GTFS endpoints either
+# return 404s or domain-squat HTML masquerading as application/zip.
+#
+# Once the EPIP NeTEx loader (issue #101) lands, uncomment the block below
+# to enable STIB. The URL is the canonical Belgian National Access Point
+# location for STIB's EPIP file (~722 MB, last updated May 2025).
+#
+# [[feeds]]
+# id     = "stib"
+# url    = "https://belgianmobility.blob.core.windows.net/epip-production/epip-stibmivb-bmc-latest.xml"
+# format = "netex-epip"

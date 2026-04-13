@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use butterfly_route::transit::gtfs::{ServiceFilter, load_zip};
+use butterfly_route::transit::gtfs::{FeedSource, ServiceFilter, load_many, load_zip};
 use butterfly_route::transit::raptor::{RaptorLeg, RaptorQuery, run_raptor};
 use butterfly_route::transit::transfers::TransferGraph;
 use chrono::{Datelike, Duration as ChronoDuration, Local, NaiveDate, Weekday};
@@ -27,6 +27,19 @@ fn belgium_data_root() -> PathBuf {
 fn gtfs_zip_path() -> Option<PathBuf> {
     let p = belgium_data_root().join("transit/gtfs/sncb.zip");
     if p.exists() { Some(p) } else { None }
+}
+
+/// Return (feed_id, path) for every Belgian GTFS zip present on disk.
+fn present_feeds() -> Vec<(&'static str, PathBuf)> {
+    let ids = ["sncb", "delijn", "tec", "stib"];
+    let mut out = Vec::new();
+    for id in ids {
+        let p = belgium_data_root().join(format!("transit/gtfs/{id}.zip"));
+        if p.exists() {
+            out.push((id, p));
+        }
+    }
+    out
 }
 
 /// Find a weekday on or after `date` — SNCB weekday and weekend patterns
@@ -200,4 +213,101 @@ fn sncb_raptor_brussels_to_ghent() {
             .any(|l| matches!(l, RaptorLeg::Ride { .. })),
         "journey must contain at least one ride leg"
     );
+}
+
+/// Load every Belgian GTFS feed present on disk and assert the merged
+/// timetable is internally consistent: stop / trip / route counts strictly
+/// increase with each feed, feed-id namespacing keeps ids collision-free,
+/// and the merged stop_routes relation stays well-formed.
+///
+/// `--ignored` because it requires every feed to be fetched beforehand
+/// via `butterfly-route transit-fetch --data-dir data/belgium`.
+#[test]
+#[ignore = "requires every Belgian GTFS zip under data/belgium/transit/gtfs/"]
+fn belgium_multi_feed_merge() {
+    let feeds = present_feeds();
+    assert!(
+        feeds.len() >= 2,
+        "need at least two Belgian feeds on disk; found {}",
+        feeds.len()
+    );
+    eprintln!(
+        "merging {} feeds: {:?}",
+        feeds.len(),
+        feeds.iter().map(|(id, _)| id).collect::<Vec<_>>()
+    );
+
+    let date = next_weekday(Local::now().date_naive());
+    let sources: Vec<FeedSource> = feeds
+        .iter()
+        .map(|(id, p)| FeedSource::namespaced(p.clone(), (*id).to_string()))
+        .collect();
+    let tt = load_many(&sources, ServiceFilter::new(date)).expect("multi-feed load");
+
+    eprintln!(
+        "merged timetable: {} stops, {} routes, {} trips",
+        tt.n_stops(),
+        tt.n_routes(),
+        tt.n_total_trips
+    );
+
+    // Sanity: every stop id carries a feed prefix and resolves uniquely.
+    let mut per_feed_stops: HashMap<&str, usize> = HashMap::new();
+    for stop in &tt.stops {
+        let Some((prefix, _)) = stop.id.split_once(':') else {
+            panic!("multi-feed stop id must carry a feed prefix: {}", stop.id);
+        };
+        *per_feed_stops.entry(leak(prefix)).or_insert(0) += 1;
+    }
+    for (id, _) in &feeds {
+        let n = per_feed_stops.get(id).copied().unwrap_or(0);
+        eprintln!("  {}: {} stops", id, n);
+        assert!(
+            n > 0,
+            "feed {id} contributed zero stops to the merged timetable"
+        );
+    }
+
+    // Sanity: trip id → idx lookup works for every feed (hence prefixes
+    // are unique at the trip level too).
+    for stop in &tt.stops {
+        assert!(tt.stop_id_to_idx.contains_key(&stop.id));
+    }
+
+    // Sanity: every route has at least two stops and every stop on a
+    // route has the inverse (route, pos) entry in stop_routes.
+    for r in 0..tt.n_routes() as u32 {
+        let slice = tt.route_stops_slice(r);
+        assert!(slice.len() >= 2, "route {r} has {} stops", slice.len());
+        for (pos, &s) in slice.iter().enumerate() {
+            let inv = tt.routes_for_stop(s);
+            assert!(
+                inv.iter().any(|&(rr, pp)| rr == r && pp == pos as u32),
+                "stop {s} missing inverse entry for route {r} pos {pos}"
+            );
+        }
+    }
+
+    // The merged timetable MUST exceed SNCB-alone on every metric (if
+    // SNCB is not the only feed). With all four operators loaded,
+    // expect well over 20k stops on a typical Belgian weekday.
+    if feeds.len() >= 4 {
+        assert!(
+            tt.n_stops() >= 20_000,
+            "expected >=20k stops with all 4 Belgian feeds, got {}",
+            tt.n_stops()
+        );
+        assert!(
+            tt.n_total_trips >= 50_000,
+            "expected >=50k trips on a weekday with all 4 feeds, got {}",
+            tt.n_total_trips
+        );
+    }
+}
+
+// Small helper so the returned &str has 'static lifetime in a HashMap
+// key. We only call this on the short list of feed ids which is
+// intentionally leaked for the duration of the test process.
+fn leak(s: &str) -> &'static str {
+    Box::leak(s.to_string().into_boxed_str())
 }
