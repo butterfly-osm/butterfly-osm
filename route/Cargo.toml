@@ -54,7 +54,11 @@ tokio = { workspace = true }
 tokio-stream = "0.1.18"
 tokio-util = "0.7.18"
 utoipa = { version = "5.4", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
+# `vendored` embeds the Swagger UI assets at compile time via the
+# `utoipa-swagger-ui-vendored` crate. Without it, the build script tries
+# to download swagger-ui from GitHub, which is a network dependency we
+# don't want at build time (and which sandboxed builds cannot satisfy).
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum", "vendored"] }
 tower = { version = "0.5.3", features = ["limit"] }
 tower-http = { version = "0.6.8", features = ["cors", "trace", "timeout", "catch-panic", "compression-gzip", "compression-br"] }
 
@@ -89,14 +93,13 @@ axum-prometheus = "0.10"
 
 # Transit: GTFS static feed parsing
 gtfs-structures = "0.47"
-# Transit: GTFS-RT protobuf ingestion.
+# Transit: GTFS-RT protobuf ingestion (one-shot snapshots applied at
+# startup — no polling loop).
 # gtfs-rt 0.5 depends on prost 0.11; we expose the matching `Message` trait
 # via a renamed `prost_011` dependency so call sites can decode FeedMessage.
 gtfs-rt = "0.5"
 prost_011 = { package = "prost", version = "0.11" }
-# Transit: hot-swap of timetable snapshots
-arc-swap = "1.7"
-# Transit: HTTP client for feed downloads (rustls TLS)
+# Transit: HTTP client for the `transit-fetch` scraper (rustls TLS)
 reqwest = { workspace = true, features = ["rustls"] }
 # Transit: TOML config parsing
 toml = "0.8"

@@ -1,12 +1,29 @@
-//! `GET /transit` — multimodal walk + transit routing.
+//! `GET /transit` — multimodal access + transit + egress routing.
+//!
+//! A query combines up to three legs on each side of the transit portion:
+//!
+//!   1. **Access leg** (origin → first boarding stop) using any loaded
+//!      road mode — typically `foot`, but `car` for park-and-ride,
+//!      `bike` for bike-and-ride, etc.
+//!   2. **Transit portion** — one or more rides on any merged GTFS feed
+//!      (SNCB, De Lijn, TEC, STIB for Belgium), with walking stop-to-stop
+//!      transfers between legs where needed.
+//!   3. **Egress leg** (last alighting stop → destination) again using
+//!      any loaded road mode.
+//!
+//! The access and egress modes are independent. This is what the
+//! standard "walk + car + train + bus + walk" multimodal pattern looks
+//! like to the server: `access_mode=car` for the drive-to-station leg,
+//! RAPTOR handles the train-to-bus transfer internally, `egress_mode=foot`
+//! for the walk-to-destination.
 //!
 //! Flow:
-//!   1. Snap the origin and destination to the foot CCH.
-//!   2. Select up to `max_access_stops` nearest transit stops within
-//!      `max_walk_m` of the origin, and similarly for the destination.
-//!   3. Compute walking times from origin → each access stop, and from
-//!      each egress stop → destination, using the foot CCH 1-to-N.
-//!   4. Run RAPTOR with these walks as access/egress offsets.
+//!   1. Resolve `access_mode` / `egress_mode` to loaded `ModeData`.
+//!   2. Select up to `max_access_stops` nearest transit stops within the
+//!      per-mode access radius of the origin, and similarly for egress.
+//!   3. Compute per-stop access/egress times from the origin/destination
+//!      using the selected mode's CCH (1-to-N via `table_bucket_parallel`).
+//!   4. Run RAPTOR with these times as access/egress offsets.
 //!   5. Reconstruct the journey and return it as JSON.
 
 use std::collections::HashMap;
@@ -20,12 +37,24 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::matrix::bucket_ch::table_bucket_parallel;
+use crate::server::state::ModeData;
 use crate::transit::gtfs::haversine_m;
 use crate::transit::raptor::{RaptorLeg, RaptorQuery, run_raptor};
 use crate::transit::timetable::{StopIdx, Timetable};
 
 use super::state::ServerState;
 use super::types::ErrorResponse;
+
+/// Per-mode defaults for access/egress fan-out. `(radius_m, max_stops, speed_mps)`.
+fn default_access_params(mode: &str) -> (u32, usize, f64) {
+    match mode {
+        "foot" => (2_000, 20, 1.3),
+        "bike" => (8_000, 60, 4.2),
+        "car" => (30_000, 200, 13.9),
+        // Any other mode (truck, bus, scooter…) treat as fast road mode.
+        _ => (20_000, 100, 11.1),
+    }
+}
 
 /// Query parameters for `GET /transit`.
 #[derive(Debug, Deserialize)]
@@ -37,14 +66,31 @@ pub struct TransitRequest {
     /// HH:MM or HH:MM:SS in service-local time. Default: "08:00:00".
     #[serde(default)]
     pub depart: Option<String>,
-    /// Max walking radius (meters) from origin / to destination.
-    /// Default: from config or 1000 m.
+    /// Road mode for the access leg (origin → first stop). Any loaded
+    /// mode is accepted (`foot`, `car`, `bike`, …). Default: `"foot"`.
+    #[serde(default)]
+    pub access_mode: Option<String>,
+    /// Road mode for the egress leg (last stop → destination). Default:
+    /// same as `access_mode` or `"foot"` if neither is given.
+    #[serde(default)]
+    pub egress_mode: Option<String>,
+    /// Max access radius (meters). Default: per-mode (foot=2000,
+    /// bike=8000, car=30000).
+    #[serde(default)]
+    pub max_access_m: Option<u32>,
+    /// Max egress radius (meters). Default: per-mode.
+    #[serde(default)]
+    pub max_egress_m: Option<u32>,
+    /// DEPRECATED alias for `max_access_m` + `max_egress_m` when both
+    /// modes are `foot`. Retained for backward compatibility with the
+    /// previous release; new callers should use the explicit fields.
     #[serde(default)]
     pub max_walk_m: Option<u32>,
-    /// Max number of access / egress stops. Default: 20.
+    /// Max number of access / egress stops. Default: per-mode.
     #[serde(default)]
     pub max_access_stops: Option<usize>,
-    /// Walking speed (m/s). Default: 1.3 (≈4.7 km/h).
+    /// Walking speed (m/s) — only used when `access_mode` is `foot`
+    /// and its CCH returns raw distances in mm. Default: 1.3.
     #[serde(default)]
     pub walk_speed_mps: Option<f64>,
 }
@@ -56,7 +102,26 @@ pub struct TransitRequest {
 // JSON output on a single response — allocations here are not hot.
 #[allow(clippy::large_enum_variant)]
 pub enum TransitLegOut {
+    /// Walking leg — either the foot-transfer between two transit stops
+    /// inside a RAPTOR round, or an access/egress leg when the selected
+    /// road mode is `foot`.
     Walk {
+        from: [f64; 2],
+        to: [f64; 2],
+        duration_s: u32,
+        distance_m: u32,
+    },
+    /// Driving leg — an access or egress leg whose road mode is `car`.
+    Drive {
+        from: [f64; 2],
+        to: [f64; 2],
+        duration_s: u32,
+        distance_m: u32,
+    },
+    /// Generic road leg for any non-foot, non-car mode (`bike`, `truck`…).
+    /// The `mode` field carries the loaded mode's name.
+    Road {
+        mode: String,
         from: [f64; 2],
         to: [f64; 2],
         duration_s: u32,
@@ -86,7 +151,42 @@ pub struct TransitResponse {
     pub depart_time: String,
     pub arrival_time: String,
     pub total_duration_s: u32,
+    /// Road mode used for the access (origin→first stop) leg.
+    pub access_mode: String,
+    /// Road mode used for the egress (last stop→destination) leg.
+    pub egress_mode: String,
     pub legs: Vec<TransitLegOut>,
+}
+
+/// Wrap a mode-name + coords into a road-leg JSON variant.
+fn road_leg(
+    mode: &str,
+    from: [f64; 2],
+    to: [f64; 2],
+    duration_s: u32,
+    distance_m: u32,
+) -> TransitLegOut {
+    match mode {
+        "foot" => TransitLegOut::Walk {
+            from,
+            to,
+            duration_s,
+            distance_m,
+        },
+        "car" => TransitLegOut::Drive {
+            from,
+            to,
+            duration_s,
+            distance_m,
+        },
+        other => TransitLegOut::Road {
+            mode: other.to_string(),
+            from,
+            to,
+            duration_s,
+            distance_m,
+        },
+    }
 }
 
 pub async fn transit_handler(
@@ -110,14 +210,96 @@ pub async fn transit_handler(
     {
         return Err(bad_request("invalid coordinates"));
     }
-    let max_walk_m = req
+
+    // Resolve access / egress road modes. Default both to "foot".
+    // The transit subsystem always requires at least `foot` because
+    // the inter-stop walking transfer graph is foot-only — but access
+    // and egress are independent and can use any loaded road mode.
+    let access_mode = req.access_mode.as_deref().unwrap_or("foot").to_lowercase();
+    let egress_mode = req
+        .egress_mode
+        .as_deref()
+        .unwrap_or(&access_mode)
+        .to_lowercase();
+
+    let Some(&foot_idx) = state.mode_lookup.get("foot") else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "foot mode is required for /transit (inter-stop transfers are always foot). Load it with --modes foot"
+                    .to_string(),
+            }),
+        ));
+    };
+    let foot = &state.modes[foot_idx as usize];
+
+    let Some(&access_idx) = state.mode_lookup.get(access_mode.as_str()) else {
+        return Err(bad_request(&format!(
+            "access_mode='{}' is not a loaded mode (add it with --modes, or drop the field to use foot)",
+            access_mode
+        )));
+    };
+    let access_mode_data: &ModeData = &state.modes[access_idx as usize];
+    let Some(&egress_idx) = state.mode_lookup.get(egress_mode.as_str()) else {
+        return Err(bad_request(&format!(
+            "egress_mode='{}' is not a loaded mode",
+            egress_mode
+        )));
+    };
+    let egress_mode_data: &ModeData = &state.modes[egress_idx as usize];
+
+    let (access_default_radius, access_default_stops, _access_speed) =
+        default_access_params(&access_mode);
+    let (egress_default_radius, egress_default_stops, _egress_speed) =
+        default_access_params(&egress_mode);
+
+    // Backward-compat: `max_walk_m` is an alias that applies only when
+    // the corresponding per-side override is absent AND the mode is foot.
+    let legacy_walk = req
         .max_walk_m
-        .unwrap_or(transit.config.max_walk_m)
-        .min(5_000);
+        .filter(|_| access_mode == "foot" || egress_mode == "foot");
+
+    let max_access_m = req
+        .max_access_m
+        .or_else(|| {
+            if access_mode == "foot" {
+                legacy_walk
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| {
+            if access_mode == "foot" {
+                transit.config.max_walk_m.max(access_default_radius)
+            } else {
+                access_default_radius
+            }
+        })
+        .min(60_000); // Absolute safety cap.
+
+    let max_egress_m = req
+        .max_egress_m
+        .or_else(|| {
+            if egress_mode == "foot" {
+                legacy_walk
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| {
+            if egress_mode == "foot" {
+                transit.config.max_walk_m.max(egress_default_radius)
+            } else {
+                egress_default_radius
+            }
+        })
+        .min(60_000);
+
     let max_access_stops = req
         .max_access_stops
-        .unwrap_or(transit.config.max_access_stops)
-        .clamp(1, 200);
+        .unwrap_or_else(|| access_default_stops.max(egress_default_stops))
+        .clamp(1, 500);
+
     let walk_speed_mps = req.walk_speed_mps.unwrap_or(1.3);
     if !(0.3..=3.0).contains(&walk_speed_mps) {
         return Err(bad_request("walk_speed_mps must be in 0.3..3.0"));
@@ -125,17 +307,6 @@ pub async fn transit_handler(
 
     let depart_s = parse_depart(req.depart.as_deref().unwrap_or("08:00:00"))
         .map_err(|e| bad_request(&format!("invalid depart: {e}")))?;
-
-    // Foot mode is required.
-    let Some(&foot_idx) = state.mode_lookup.get("foot") else {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse {
-                error: "foot mode is required for /transit (load it with --modes foot)".to_string(),
-            }),
-        ));
-    };
-    let foot = &state.modes[foot_idx as usize];
 
     let snapshot = transit.snapshot();
     let timetable = snapshot.timetable.as_ref();
@@ -155,45 +326,55 @@ pub async fn transit_handler(
         timetable,
         req.origin_lon,
         req.origin_lat,
-        max_walk_m,
+        max_access_m,
         max_access_stops,
     );
     let egress_candidates = candidate_stops(
         timetable,
         req.dest_lon,
         req.dest_lat,
-        max_walk_m,
+        max_egress_m,
         max_access_stops,
     );
 
     if access_candidates.is_empty() {
-        return Err(not_found("no transit stops within max_walk_m of origin"));
+        return Err(not_found(&format!(
+            "no transit stops within max_access_m ({max_access_m} m, mode={access_mode}) of origin"
+        )));
     }
     if egress_candidates.is_empty() {
-        return Err(not_found(
-            "no transit stops within max_walk_m of destination",
-        ));
+        return Err(not_found(&format!(
+            "no transit stops within max_egress_m ({max_egress_m} m, mode={egress_mode}) of destination"
+        )));
     }
 
-    // Snap origin and destination on the foot graph and compute walking
-    // times to/from each candidate stop via the foot CCH.
-    let origin_ranks = snap_stop_ranks(&access_candidates, timetable, state.as_ref(), foot_idx);
-    let dest_ranks = snap_stop_ranks(&egress_candidates, timetable, state.as_ref(), foot_idx);
+    // Snap origin and destination + every candidate stop on the
+    // *access/egress* mode graphs (not foot, unless the selected mode is
+    // foot). A stop may be reachable by car but not foot (e.g. a highway
+    // service area with a bus stop), or vice versa — we snap to whatever
+    // mode the user requested.
+    let origin_ranks =
+        snap_stop_ranks_on_mode(&access_candidates, timetable, state.as_ref(), access_idx);
+    let dest_ranks =
+        snap_stop_ranks_on_mode(&egress_candidates, timetable, state.as_ref(), egress_idx);
 
     let origin_source_rank =
-        match snap_to_rank(req.origin_lon, req.origin_lat, state.as_ref(), foot_idx) {
-            Some(r) => r,
-            None => return Err(not_found("origin could not snap to the foot network")),
-        };
-    let dest_source_rank = match snap_to_rank(req.dest_lon, req.dest_lat, state.as_ref(), foot_idx)
-    {
-        Some(r) => r,
-        None => return Err(not_found("destination could not snap to the foot network")),
-    };
+        snap_to_rank(req.origin_lon, req.origin_lat, state.as_ref(), access_idx).ok_or_else(
+            || {
+                not_found(&format!(
+                    "origin could not snap to the {access_mode} network"
+                ))
+            },
+        )?;
+    let dest_source_rank = snap_to_rank(req.dest_lon, req.dest_lat, state.as_ref(), egress_idx)
+        .ok_or_else(|| {
+            not_found(&format!(
+                "destination could not snap to the {egress_mode} network"
+            ))
+        })?;
 
-    let n_nodes = foot.cch_topo.n_nodes as usize;
-
-    // Origin → access stops (forward walk).
+    // Access 1-to-N CCH on the access mode.
+    let access_n_nodes = access_mode_data.cch_topo.n_nodes as usize;
     let orig_sources = [origin_source_rank];
     let origin_to_stop_ranks: Vec<u32> = origin_ranks.iter().filter_map(|r| *r).collect();
     let origin_to_stop_map: Vec<usize> = origin_ranks
@@ -202,20 +383,16 @@ pub async fn transit_handler(
         .filter_map(|(i, r)| r.map(|_| i))
         .collect();
     let (origin_ds, _) = table_bucket_parallel(
-        n_nodes,
-        &foot.up_adj_flat,
-        &foot.down_rev_flat,
+        access_n_nodes,
+        &access_mode_data.up_adj_flat,
+        &access_mode_data.down_rev_flat,
         &orig_sources,
         &origin_to_stop_ranks,
     );
 
-    // Egress stops → destination: we query forward from each egress stop
-    // to the destination (one row each). A single batched call uses
-    // dest_source as a target.
-    // To avoid building a separate reverse algorithm, we use the fact
-    // that walking is symmetric on the foot network in practice; a
-    // forward call from each egress stop to destination gives us the
-    // correct time.
+    // Egress 1-to-N CCH on the egress mode. Each egress stop is a
+    // source, destination is the sole target.
+    let egress_n_nodes = egress_mode_data.cch_topo.n_nodes as usize;
     let egress_sources: Vec<u32> = egress_candidates
         .iter()
         .zip(dest_ranks.iter())
@@ -228,17 +405,31 @@ pub async fn transit_handler(
         .collect();
     let dest_targets = [dest_source_rank];
     let (egress_ds, _) = table_bucket_parallel(
-        n_nodes,
-        &foot.up_adj_flat,
-        &foot.down_rev_flat,
+        egress_n_nodes,
+        &egress_mode_data.up_adj_flat,
+        &egress_mode_data.down_rev_flat,
         &egress_sources,
         &dest_targets,
     );
 
-    // Convert deciseconds → seconds (rounding up), apply max_walk_m cap
-    // indirectly via the walking-time cap derived from max_walk_m /
-    // walk_speed.
-    let max_access_s = ((max_walk_m as f64) / walk_speed_mps) as u32 + 30;
+    // A cheap-and-correct per-mode upper bound on the access time
+    // derived from the radius and the mode's canonical speed. Add a
+    // generous buffer for first-mile / last-mile variation.
+    let max_access_s = {
+        let (_, _, access_speed) = default_access_params(&access_mode);
+        let (_, _, egress_speed) = default_access_params(&egress_mode);
+        let a = ((max_access_m as f64) / access_speed) as u32 + 60;
+        let e = ((max_egress_m as f64) / egress_speed) as u32 + 60;
+        a.max(e)
+    };
+    // foot-only case: honour walk_speed_mps override if provided.
+    let max_access_s = if access_mode == "foot" && egress_mode == "foot" {
+        ((max_access_m.max(max_egress_m) as f64) / walk_speed_mps) as u32 + 60
+    } else {
+        max_access_s
+    };
+    // Suppress unused warning when foot is the default.
+    let _ = foot;
 
     let mut sources_for_raptor: Vec<(StopIdx, u32)> = Vec::new();
     // Map stop_idx → walking seconds (for the response).
@@ -310,19 +501,21 @@ pub async fn transit_handler(
 
     let mut legs: Vec<TransitLegOut> = Vec::new();
 
-    // Leg 0: walk from origin to the first transit boarding stop.
+    // Leg 0: access leg from origin to the first transit boarding stop,
+    // labelled with the access mode.
     let first_stop = &timetable.stops[journey.origin_stop as usize];
-    legs.push(TransitLegOut::Walk {
-        from: [req.origin_lon, req.origin_lat],
-        to: [first_stop.lon, first_stop.lat],
-        duration_s: origin_walk,
-        distance_m: haversine_m(
+    legs.push(road_leg(
+        &access_mode,
+        [req.origin_lon, req.origin_lat],
+        [first_stop.lon, first_stop.lat],
+        origin_walk,
+        haversine_m(
             req.origin_lon,
             req.origin_lat,
             first_stop.lon,
             first_stop.lat,
         ) as u32,
-    });
+    ));
 
     // Middle legs: decode the RaptorJourney.
     for leg in &journey.legs {
@@ -370,14 +563,16 @@ pub async fn transit_handler(
         }
     }
 
-    // Final leg: walk from the last stop to the destination.
+    // Final leg: egress from the last stop to the destination, labelled
+    // with the egress mode.
     let last_stop = &timetable.stops[journey.final_stop as usize];
-    legs.push(TransitLegOut::Walk {
-        from: [last_stop.lon, last_stop.lat],
-        to: [req.dest_lon, req.dest_lat],
-        duration_s: egress_walk,
-        distance_m: haversine_m(last_stop.lon, last_stop.lat, req.dest_lon, req.dest_lat) as u32,
-    });
+    legs.push(road_leg(
+        &egress_mode,
+        [last_stop.lon, last_stop.lat],
+        [req.dest_lon, req.dest_lat],
+        egress_walk,
+        haversine_m(last_stop.lon, last_stop.lat, req.dest_lon, req.dest_lat) as u32,
+    ));
 
     Ok(Json(TransitResponse {
         origin: [req.origin_lon, req.origin_lat],
@@ -385,6 +580,8 @@ pub async fn transit_handler(
         depart_time: format_hms(depart_s),
         arrival_time: format_hms(total_arrival_s),
         total_duration_s,
+        access_mode,
+        egress_mode,
         legs,
     }))
 }
@@ -472,34 +669,40 @@ fn candidate_stops(
     v
 }
 
-/// Snap each candidate stop to the foot CCH rank. Returns one entry
-/// per input candidate — `None` if the stop can't snap.
-fn snap_stop_ranks(
+/// Snap each candidate stop to the given mode's CCH rank. Returns one
+/// entry per input candidate — `None` if the stop can't snap on that
+/// mode's network (e.g. a bus stop on a restricted lane that foot can't
+/// walk to, or a pedestrian-only plaza that car can't drive on).
+fn snap_stop_ranks_on_mode(
     candidates: &[(StopIdx, f64)],
     tt: &Timetable,
     state: &ServerState,
-    foot_idx: u8,
+    mode_idx: u8,
 ) -> Vec<Option<u32>> {
     candidates
         .iter()
         .map(|(s, _)| {
             let stop = &tt.stops[*s as usize];
-            let r = snap_to_rank(stop.lon, stop.lat, state, foot_idx);
+            let r = snap_to_rank(stop.lon, stop.lat, state, mode_idx);
             if r.is_none() {
-                tracing::debug!(stop_id = stop.id.as_str(), "stop failed foot snap");
+                tracing::debug!(
+                    stop_id = stop.id.as_str(),
+                    mode = mode_idx,
+                    "stop failed snap for this mode"
+                );
             }
             r
         })
         .collect()
 }
 
-/// Snap a (lon,lat) to the foot CCH and return the rank.
-fn snap_to_rank(lon: f64, lat: f64, state: &ServerState, foot_idx: u8) -> Option<u32> {
-    let foot = &state.modes[foot_idx as usize];
-    let orig = state.spatial_index.snap(lon, lat, &foot.mask, 10)?;
-    let filtered = foot.filtered_ebg.original_to_filtered[orig as usize];
+/// Snap a (lon,lat) to the given mode's CCH and return the rank.
+fn snap_to_rank(lon: f64, lat: f64, state: &ServerState, mode_idx: u8) -> Option<u32> {
+    let mode_data = &state.modes[mode_idx as usize];
+    let orig = state.spatial_index.snap(lon, lat, &mode_data.mask, 10)?;
+    let filtered = mode_data.filtered_ebg.original_to_filtered[orig as usize];
     if filtered == u32::MAX {
         return None;
     }
-    Some(foot.order.perm[filtered as usize])
+    Some(mode_data.order.perm[filtered as usize])
 }

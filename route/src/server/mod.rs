@@ -169,10 +169,13 @@ pub async fn serve(
     // Load server state (synchronous path — no network).
     let mut state_owned = ServerState::load(data_dir, mode_filter)?;
 
-    // Bootstrap the transit subsystem (async: downloads feeds, builds
-    // transfer graph) before wrapping `ServerState` in `Arc`. Transit is
-    // optional: if no `transit/` directory is present the server runs in
-    // road-only mode.
+    // Bootstrap the transit subsystem. Transit is optional: if no
+    // `transit/` directory is present the server runs in road-only mode.
+    //
+    // The server does NOT download feeds at runtime. Feeds are refreshed
+    // at rebuild time via the `transit-fetch` CLI command (like the PBF),
+    // and the server loads whatever static GTFS zips are on disk at
+    // startup. Missing feeds are logged and skipped.
     if let Some(cfg) = crate::transit::config::load(data_dir)? {
         let foot_idx = state_owned
             .mode_lookup
@@ -183,27 +186,29 @@ pub async fn serve(
                     "transit configured but foot mode is not loaded; add 'foot' to --modes"
                 )
             })?;
-        crate::transit::feeds::ensure_static_feeds(&cfg).await?;
         let foot = &state_owned.modes[foot_idx as usize];
-        let snapshot =
-            crate::transit::feeds::load_initial_snapshot(&cfg, foot, &state_owned.spatial_index)?;
-        tracing::info!(
-            stops = snapshot.timetable.n_stops(),
-            routes = snapshot.timetable.n_routes(),
-            trips = snapshot.timetable.n_total_trips,
-            "transit snapshot loaded"
-        );
-        state_owned.install_transit(crate::transit::TransitState::new(cfg, snapshot));
+        match crate::transit::load_from_disk(&cfg, foot, &state_owned.spatial_index) {
+            Ok(snapshot) => {
+                tracing::info!(
+                    stops = snapshot.timetable.n_stops(),
+                    routes = snapshot.timetable.n_routes(),
+                    trips = snapshot.timetable.n_total_trips,
+                    "transit snapshot loaded"
+                );
+                state_owned.install_transit(crate::transit::TransitState::new(cfg, snapshot));
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "no usable transit feeds on disk — run `butterfly-route transit-fetch` to populate. Continuing in road-only mode."
+                );
+            }
+        }
     } else {
         tracing::info!("no transit/ directory — running in road-only mode");
     }
 
     let state = Arc::new(state_owned);
-
-    // Start the transit feed manager if transit is configured.
-    if state.transit.is_some() {
-        crate::transit::feeds::spawn_manager(Arc::clone(&state));
-    }
 
     // Find free ports
     let http_port = match port {
