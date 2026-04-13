@@ -1012,7 +1012,9 @@ impl Cli {
                 let step2_dir = wa_raw
                     .first()
                     .and_then(|(_, p)| p.parent())
-                    .ok_or_else(|| anyhow::anyhow!("Cannot determine step2 directory from way-attrs paths"))?;
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Cannot determine step2 directory from way-attrs paths")
+                    })?;
                 let all_modes = Mode::discover_from_dir(step2_dir);
                 anyhow::ensure!(
                     !all_modes.is_empty(),
@@ -1032,7 +1034,10 @@ impl Cli {
                                 anyhow::anyhow!(
                                     "Mode '{}' not found in discovered modes {:?}",
                                     name,
-                                    all_modes.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+                                    all_modes
+                                        .iter()
+                                        .map(|(n, _)| n.as_str())
+                                        .collect::<Vec<_>>()
                                 )
                             })?;
                         Ok(weights::Step5ModeInput {

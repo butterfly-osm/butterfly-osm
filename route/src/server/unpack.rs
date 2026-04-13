@@ -38,12 +38,7 @@ pub fn unpack_path(
 }
 
 /// Unpack a single UP edge to original edges
-fn unpack_up_edge(
-    topo: &CchTopo,
-    weights: &CchWeights,
-    source: u32,
-    edge_idx: usize,
-) -> Vec<u32> {
+fn unpack_up_edge(topo: &CchTopo, weights: &CchWeights, source: u32, edge_idx: usize) -> Vec<u32> {
     if !topo.up_is_shortcut[edge_idx] {
         return vec![topo.up_targets[edge_idx]];
     }

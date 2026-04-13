@@ -38,6 +38,7 @@ use crate::matrix::bucket_ch::{
     backward_join_with_buckets, forward_build_buckets, table_bucket_full_flat,
     table_bucket_parallel,
 };
+use crate::matrix::neighbors::{auto_radius_km, build_neighbors, parse_radius, RadiusParam};
 use crate::profile_abi::Mode;
 use crate::range::contour::ContourResult;
 use crate::range::wkb_stream::encode_polygon_wkb;
@@ -173,9 +174,10 @@ fn isochrone_schema() -> Schema {
 struct MatrixParams {
     sources: Vec<[f64; 2]>,
     destinations: Vec<[f64; 2]>,
+    /// Optional Euclidean pre-filter radius in kilometres. Accepts a
+    /// positive number, the string "auto", or null/0 to disable.
     #[serde(default)]
-    #[allow(dead_code)]
-    radius_km: f64,
+    radius_km: Option<serde_json::Value>,
 }
 
 /// Snap coordinates to ranks, returning (ranks, valid_indices).
@@ -199,7 +201,32 @@ fn snap_to_ranks(
     (ranks, valid)
 }
 
+/// Build a full-length (n = coords.len()) snapped coordinate vector. Points
+/// that fail to snap keep their original lon/lat — they will still be marked
+/// invalid in the matrix, but having them in the vector keeps indexing
+/// straightforward for the Euclidean pre-filter.
+fn snapped_coords_full(
+    coords: &[[f64; 2]],
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+) -> Vec<(f64, f64)> {
+    let mut out = Vec::with_capacity(coords.len());
+    for [lon, lat] in coords {
+        if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &mode_data.mask, 10) {
+            let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
+            if filtered != u32::MAX {
+                let loc = super::types::get_node_location(state, orig_id);
+                out.push((loc[0], loc[1]));
+                continue;
+            }
+        }
+        out.push((*lon, *lat));
+    }
+    out
+}
+
 /// Build matrix RecordBatch from flat u32 distances.
+#[allow(clippy::too_many_arguments)]
 fn build_matrix_batch(
     matrix: &[u32],
     n_valid_src: usize,
@@ -207,6 +234,7 @@ fn build_matrix_batch(
     valid_src_indices: &[usize],
     valid_dst_indices: &[usize],
     schema: Arc<Schema>,
+    neighbor_mask: Option<&[Vec<u32>]>,
 ) -> std::result::Result<RecordBatch, Status> {
     let capacity = n_valid_src * n_valid_dst;
     let mut src_idx = UInt32Builder::with_capacity(capacity);
@@ -215,8 +243,18 @@ fn build_matrix_batch(
     let mut dist_m = UInt32Builder::with_capacity(capacity);
 
     for (si, &orig_src) in valid_src_indices.iter().enumerate() {
+        let neighbors: Option<&[u32]> = neighbor_mask.map(|nm| nm[orig_src].as_slice());
         for (di, &orig_dst) in valid_dst_indices.iter().enumerate() {
-            let d = matrix[si * n_valid_dst + di];
+            let pruned = if let Some(ns) = neighbors {
+                ns.binary_search(&(orig_dst as u32)).is_err()
+            } else {
+                false
+            };
+            let d = if pruned {
+                u32::MAX
+            } else {
+                matrix[si * n_valid_dst + di]
+            };
             src_idx.append_value(orig_src as u32);
             tgt_idx.append_value(orig_dst as u32);
             if d == u32::MAX {
@@ -262,6 +300,32 @@ fn do_matrix(
         return Ok(Box::pin(stream::once(async move { Ok(empty) })));
     }
 
+    // Full-length snapped coordinates — for the Euclidean pre-filter.
+    let sources_snapped = snapped_coords_full(&params.sources, state, mode_data);
+    let targets_snapped = snapped_coords_full(&params.destinations, state, mode_data);
+
+    let radius_param = parse_radius(params.radius_km.as_ref());
+    let neighbor_mask: Option<Arc<Vec<Vec<u32>>>> = match radius_param {
+        RadiusParam::None => None,
+        RadiusParam::Km(r) => Some(Arc::new(build_neighbors(
+            &sources_snapped,
+            &targets_snapped,
+            r,
+        ))),
+        RadiusParam::Auto => {
+            let r = auto_radius_km(&sources_snapped, &targets_snapped);
+            if r > 0.0 {
+                Some(Arc::new(build_neighbors(
+                    &sources_snapped,
+                    &targets_snapped,
+                    r,
+                )))
+            } else {
+                None
+            }
+        }
+    };
+
     let n_src = params.sources.len();
     let n_dst = params.destinations.len();
     let n_valid_src = sources_rank.len();
@@ -289,6 +353,7 @@ fn do_matrix(
             &valid_src,
             &valid_dst,
             schema,
+            neighbor_mask.as_ref().map(|v| v.as_slice()),
         )?;
 
         Ok(Box::pin(stream::once(async move { Ok(batch) })))
@@ -301,6 +366,7 @@ fn do_matrix(
         let up_adj = mode_data.up_adj_flat.clone();
         let down_rev = mode_data.down_rev_flat.clone();
         let schema = Arc::new(matrix_schema());
+        let neighbor_mask_bg = neighbor_mask.clone();
 
         let src_tile_size = 1000usize.min(n_src).max(1);
 
@@ -344,8 +410,19 @@ fn do_matrix(
                 let mut dist_arr = UInt32Builder::with_capacity(capacity);
 
                 for (bsi, &orig_si) in block_src_orig.iter().enumerate() {
+                    let neighbors: Option<&[u32]> =
+                        neighbor_mask_bg.as_ref().map(|nm| nm[orig_si].as_slice());
                     for (bdi, &orig_di) in valid_dst.iter().enumerate() {
-                        let d = tile_matrix[bsi * n_block_dst + bdi];
+                        let pruned = if let Some(ns) = neighbors {
+                            ns.binary_search(&(orig_di as u32)).is_err()
+                        } else {
+                            false
+                        };
+                        let d = if pruned {
+                            u32::MAX
+                        } else {
+                            tile_matrix[bsi * n_block_dst + bdi]
+                        };
                         si_arr.append_value(orig_si as u32);
                         di_arr.append_value(orig_di as u32);
                         if d == u32::MAX {
