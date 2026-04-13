@@ -86,6 +86,9 @@ pub struct ServerState {
     // Per-EBG-edge exclude flags (toll/ferry/motorway), indexed by original EBG edge ID
     pub edge_exclude_flags: Vec<u8>,
 
+    // Optional transit (public transport) state
+    pub transit: Option<crate::transit::TransitState>,
+
     // Server metadata
     pub started_at: std::time::Instant,
     pub data_dir: String,
@@ -212,6 +215,13 @@ impl ServerState {
             None
         };
 
+        // Transit subsystem is loaded asynchronously by the outer
+        // `serve()` function (after `ServerState::load` returns), because
+        // downloading feeds and running reqwest requires an active Tokio
+        // runtime. We start with `None` here; the caller installs the
+        // transit state via `install_transit()` before accepting traffic.
+        let transit = None;
+
         Ok(Self {
             ebg_nodes,
             ebg_csr,
@@ -224,6 +234,7 @@ impl ServerState {
             way_names,
             node_weights_dist,
             edge_exclude_flags,
+            transit,
             started_at: std::time::Instant::now(),
             data_dir: data_dir.to_string_lossy().to_string(),
         })
@@ -232,6 +243,14 @@ impl ServerState {
     /// Get mode data by mode (index-based lookup)
     pub fn get_mode(&self, mode: Mode) -> &ModeData {
         &self.modes[mode.index()]
+    }
+
+    /// Install the transit subsystem after async bootstrap. Must be
+    /// called exactly once, before the server starts accepting traffic.
+    /// Returns an error if transit was already installed or if foot mode
+    /// is not available.
+    pub fn install_transit(&mut self, state: crate::transit::TransitState) {
+        self.transit = Some(state);
     }
 
     /// Get or compute exclude weights for a mode and exclude mask.

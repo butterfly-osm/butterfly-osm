@@ -87,12 +87,27 @@ base64 = "0.22"
 # Prometheus metrics
 axum-prometheus = "0.8"
 
+# Transit: GTFS static feed parsing
+gtfs-structures = "0.47"
+# Transit: GTFS-RT protobuf ingestion.
+# gtfs-rt 0.5 depends on prost 0.11; we expose the matching `Message` trait
+# via a renamed `prost_011` dependency so call sites can decode FeedMessage.
+gtfs-rt = "0.5"
+prost_011 = { package = "prost", version = "0.11" }
+# Transit: hot-swap of timetable snapshots
+arc-swap = "1.7"
+# Transit: HTTP client for feed downloads (rustls TLS)
+reqwest = { workspace = true, features = ["rustls-tls"] }
+# Transit: TOML config parsing
+toml = "0.8"
+
 [lints]
 workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }
 geo = "0.29"
+wiremock = { workspace = true }
 
 [[bin]]
 name = "butterfly-bench"
