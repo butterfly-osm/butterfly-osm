@@ -63,9 +63,17 @@ pub fn apply_trip_updates(base: &Timetable, feed: &FeedMessage) -> (Timetable, R
         let trip_base = base_offset + trip_in_route as u64 * n_stops as u64;
 
         // Build a working copy of this trip's stop_times so we can apply
-        // updates in-place, then write it back.
+        // updates in-place, then write it back. Reads from the two
+        // SoA arrays (#126) and reconstructs transient `StopTime`
+        // structs; the write-back loop below splits them again.
         let mut times: Vec<StopTime> = (0..n_stops)
-            .map(|i| out.stop_times[(trip_base + i as u64) as usize])
+            .map(|i| {
+                let idx = (trip_base + i as u64) as usize;
+                StopTime {
+                    arrival: out.arrivals[idx],
+                    departure: out.departures[idx],
+                }
+            })
             .collect();
 
         // Build a per-stop (arr_delay, dep_delay) delta table seeded
@@ -132,9 +140,11 @@ pub fn apply_trip_updates(base: &Timetable, feed: &FeedMessage) -> (Timetable, R
             st.departure = offset_time(st.departure, dep_deltas[pos]);
         }
 
-        // Write back.
+        // Write back to both SoA arrays (#126).
         for (i, st) in times.into_iter().enumerate() {
-            out.stop_times[(trip_base + i as u64) as usize] = st;
+            let idx = (trip_base + i as u64) as usize;
+            out.arrivals[idx] = st.arrival;
+            out.departures[idx] = st.departure;
         }
     }
 
