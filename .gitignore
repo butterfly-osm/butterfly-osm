@@ -85,3 +85,4 @@ releases/
 # External comparison data (Valhalla tiles)
 valhalla_tiles/
 .claude/
+.venv/
