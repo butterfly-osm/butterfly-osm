@@ -76,7 +76,7 @@ fn default_access_params(mode: &str) -> (u32, usize, f64) {
 }
 
 /// Query parameters for `GET /transit`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct TransitRequest {
     pub origin_lon: f64,
     pub origin_lat: f64,

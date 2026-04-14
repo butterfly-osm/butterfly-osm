@@ -138,11 +138,26 @@ impl Default for TransitConfig {
 ///
 /// **STIB (Brussels metro/bus/tram) is intentionally not in the default
 /// set.** STIB has deprecated GTFS and migrated to NeTEx (the EU-mandated
-/// format under Delegated Regulation 2017/1926). Their public GTFS
-/// endpoints all return either 404s or domain-squat HTML masquerading
-/// as `application/zip`. Loading STIB requires the EPIP NeTEx loader
-/// tracked in butterfly-osm/butterfly-osm#101. Once that lands, an
-/// operator can opt in by adding STIB to their `transit.toml` with
+/// format under Delegated Regulation 2017/1926). Verified 2026-04-14:
+///
+/// * `gtfs.irail.be/mivb/mivb-gtfs.zip` — HTTP 200 with
+///   `content-type: application/zip` but the 188 KB body is an HTML
+///   domain-squat ("This domain could not be found — Huwise"). Our
+///   `feeds::ContentChecks` magic-byte guard catches it correctly.
+/// * `data.stib-mivb.brussels` — redirects to `data.belgianmobility.io`;
+///   no direct GTFS zip download is exposed, the portal only lists
+///   query-able datasets requiring an API key.
+/// * `opendata-api.stib-mivb.be/Files/1.0/Gtfs` — requires a registered
+///   `Authorization: Bearer <key>` and is gated behind manual signup.
+///
+/// The working path is the **NeTEx-EPIP** publication on the Belgian
+/// National Access Point:
+/// `https://belgianmobility.blob.core.windows.net/epip-production/epip-stibmivb-bmc-latest.xml`
+/// (720 MB uncompressed XML as of 2026-04-14, published monthly).
+///
+/// Loading STIB from this file requires the EPIP NeTEx loader tracked
+/// in butterfly-osm/butterfly-osm#101. Once that lands, an operator
+/// opts in by adding STIB to their `transit.toml` with
 /// `format = "netex-epip"`.
 pub fn default_belgium_feeds() -> Vec<FeedConfig> {
     vec![
