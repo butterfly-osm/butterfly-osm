@@ -22,7 +22,7 @@
 //!   2. Select up to `max_access_stops` nearest transit stops within the
 //!      per-mode access radius of the origin, and similarly for egress.
 //!   3. Compute per-stop access/egress times from the origin/destination
-//!      using the selected mode's CCH (1-to-N via `table_bucket_parallel`).
+//!      using the selected mode's CCH via distance-only `CchQuery`.
 //!   4. Run RAPTOR with these times as access/egress offsets.
 //!   5. Reconstruct the journey and return it as JSON.
 
@@ -36,7 +36,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::matrix::bucket_ch::table_bucket_parallel;
+use crate::server::query::CchQuery;
 use crate::server::state::ModeData;
 use crate::transit::gtfs::haversine_m;
 use crate::transit::raptor::{RaptorLeg, RaptorQuery, run_raptor};
@@ -395,26 +395,38 @@ pub async fn transit_handler(
             ))
         })?;
 
-    // Access 1-to-N CCH on the access mode.
-    let access_n_nodes = access_mode_data.cch_topo.n_nodes as usize;
-    let orig_sources = [origin_source_rank];
+    // Access 1-to-N via the distance-only CchQuery. Issue #103: this
+    // replaces the old `table_bucket_parallel` call which allocated
+    // per-worker SearchState (~60 MB each on Belgium foot) and an
+    // atomic matrix for every request. `CchQuery::distance` reuses
+    // the thread-local `CCH_QUERY_STATE` with generation-stamped
+    // O(1) per-query reset and allocates nothing in the steady state.
+    let access_query = CchQuery::with_custom_weights(
+        &access_mode_data.cch_topo,
+        &access_mode_data.down_rev,
+        &access_mode_data.cch_weights,
+    );
     let origin_to_stop_ranks: Vec<u32> = origin_ranks.iter().filter_map(|r| *r).collect();
     let origin_to_stop_map: Vec<usize> = origin_ranks
         .iter()
         .enumerate()
         .filter_map(|(i, r)| r.map(|_| i))
         .collect();
-    let (origin_ds, _) = table_bucket_parallel(
-        access_n_nodes,
-        &access_mode_data.up_adj_flat,
-        &access_mode_data.down_rev_flat,
-        &orig_sources,
-        &origin_to_stop_ranks,
-    );
+    let origin_ds: Vec<u32> = access_query
+        .distances_one_to_many(origin_source_rank, &origin_to_stop_ranks)
+        .into_iter()
+        .map(|d| d.unwrap_or(u32::MAX))
+        .collect();
 
-    // Egress 1-to-N CCH on the egress mode. Each egress stop is a
-    // source, destination is the sole target.
-    let egress_n_nodes = egress_mode_data.cch_topo.n_nodes as usize;
+    // Egress 1-to-N via distance-only CchQuery. `K sources × 1 target`
+    // fans out as K independent bidirectional searches — one per
+    // egress stop to the destination snap. Reuses the same thread-
+    // local state across calls.
+    let egress_query = CchQuery::with_custom_weights(
+        &egress_mode_data.cch_topo,
+        &egress_mode_data.down_rev,
+        &egress_mode_data.cch_weights,
+    );
     let egress_sources: Vec<u32> = egress_candidates
         .iter()
         .zip(dest_ranks.iter())
@@ -425,14 +437,14 @@ pub async fn transit_handler(
         .enumerate()
         .filter_map(|(i, r)| r.map(|_| i))
         .collect();
-    let dest_targets = [dest_source_rank];
-    let (egress_ds, _) = table_bucket_parallel(
-        egress_n_nodes,
-        &egress_mode_data.up_adj_flat,
-        &egress_mode_data.down_rev_flat,
-        &egress_sources,
-        &dest_targets,
-    );
+    let egress_ds: Vec<u32> = egress_sources
+        .iter()
+        .map(|&src| {
+            egress_query
+                .distance(src, dest_source_rank)
+                .unwrap_or(u32::MAX)
+        })
+        .collect();
 
     // A cheap-and-correct per-mode upper bound on the access time
     // derived from the radius and the mode's canonical speed. Add a
