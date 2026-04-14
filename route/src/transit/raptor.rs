@@ -403,10 +403,11 @@ pub fn run_raptor(
                 let mut board_dep: u32 = 0;
 
                 for (pos, &stop) in route_stops.iter().enumerate().skip(start_pos as usize) {
-                    // Try to alight.
+                    // Try to alight. Hot path: arrival-only read
+                    // via the SoA fast accessor (#126) — skips the
+                    // departures array entirely at this stop.
                     if let Some(trip) = current_trip {
-                        let st_time = timetable.stop_time(route, trip, pos as u32);
-                        let arr = st_time.arrival;
+                        let arr = timetable.arrival_at(route, trip, pos as u32);
                         let min_tw = query.target_weights.get(&stop).copied().unwrap_or(0);
                         let curr_time = st.label(k, stop).time;
                         let best_time = st.best_at_stop[stop as usize];
@@ -457,8 +458,9 @@ pub fn run_raptor(
                         if should_switch {
                             current_trip = Some(candidate_trip);
                             board_stop = stop;
-                            let st_time = timetable.stop_time(route, candidate_trip, pos as u32);
-                            board_dep = st_time.departure;
+                            // Departure-only read (#126 fast path).
+                            board_dep =
+                                timetable.departure_at(route, candidate_trip, pos as u32);
                         }
                     }
                 }
