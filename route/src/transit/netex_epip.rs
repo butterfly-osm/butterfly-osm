@@ -706,10 +706,30 @@ fn emit_into_builder(
     };
 
     // Pass 1: register every ScheduledStopPoint as a stop in the
-    // TimetableBuilder. Resolve its name via the PSA chain
-    // (SSP → PassengerStopAssignment → StopPlace/Quay).
-    // Reproject coordinates to WGS84. Skip stops without coordinates.
+    // TimetableBuilder.
+    //
+    // Critical optimization: STIB's EPIP file emits **per-pattern** SSPs.
+    // A single physical Brussels stop served by 5 lines has 5+ SSP
+    // entries, all at the exact same Lambert-93 coordinates. If we
+    // registered each SSP as its own TimetableBuilder stop, the merged
+    // multi-feed timetable would have ~76k physical stops with many
+    // hundreds of duplicate-coordinate stops at major hubs — and the
+    // transfer build's 2 km neighbour grid would degenerate into a
+    // quadratic blowup at every dense cell.
+    //
+    // Instead, deduplicate by quantised (lon, lat). Two SSPs whose
+    // reprojected coordinates round to the same 6-decimal cell (~11 cm)
+    // collapse to a single TimetableBuilder stop. The
+    // `ssp_id_to_idx` table then maps every duplicate SSP id to that
+    // single StopIdx, so the per-trip pattern resolution still works
+    // (every pattern that visits this SSP threads through the same
+    // physical stop in the timetable).
+    //
+    // Effect on STIB: 11,757 raw SSPs → ~3,500–4,000 physical stops
+    // after dedup, matching the order of `Quay` (2,504) and
+    // `StopPlace` (1,994) counts in the source file.
     let mut ssp_id_to_idx: HashMap<String, u32> = HashMap::new();
+    let mut coord_to_idx: HashMap<(i64, i64), u32> = HashMap::new();
     let mut n_unresolved = 0usize;
 
     for (ssp_id, ssp_rec) in &state.scheduled_stop_points {
@@ -717,28 +737,31 @@ fn emit_into_builder(
             n_unresolved += 1;
             continue;
         };
-        // proj4rs::transform works on a mutable reference to an (x, y, z)
-        // tuple implementing the `proj4rs::proj::Point` trait; the
-        // easiest way is to use the shared tuple API.
         let mut coord = (x, y, 0.0_f64);
         proj4rs::transform::transform(&lambert, &wgs84, &mut coord)
             .with_context(|| format!("reprojecting SSP {ssp_id}"))?;
-        // Proj returns longitude/latitude in radians for geographic
-        // targets. Convert to degrees.
         let lon = coord.0.to_degrees();
         let lat = coord.1.to_degrees();
 
-        // Resolve a human name via PassengerStopAssignment → StopPlace/Quay.
-        let name = resolve_stop_name(&state, ssp_id);
-
-        // Resolve parent station via StopPlace's ParentSiteRef.
-        // For MVP we lift this indirectly: the containing StopPlace id
-        // is the parent-station candidate, and if it has a
-        // ParentSiteRef, we use THAT as the parent instead. The
-        // parent_station field needs a StopIdx, not a string, so we
-        // resolve to an idx in a second pass below.
-        let ns_id = namespaced(ssp_id);
-        let idx = builder.add_stop(&ns_id, &name, lon, lat, None);
+        // Quantise to ~11 cm. Two SSPs that land within this cell
+        // share a single TimetableBuilder stop.
+        let key = (
+            (lon * 1_000_000.0).round() as i64,
+            (lat * 1_000_000.0).round() as i64,
+        );
+        let idx = if let Some(&existing) = coord_to_idx.get(&key) {
+            existing
+        } else {
+            let name = resolve_stop_name(&state, ssp_id);
+            // The TimetableBuilder id is the namespaced SSP id of the
+            // *first* SSP at this coordinate; any subsequent
+            // duplicates fold into the same StopIdx via ssp_id_to_idx
+            // (so trip-time resolution still works for every SSP id).
+            let ns_id = namespaced(ssp_id);
+            let new_idx = builder.add_stop(&ns_id, &name, lon, lat, None);
+            coord_to_idx.insert(key, new_idx);
+            new_idx
+        };
         ssp_id_to_idx.insert(ssp_id.clone(), idx);
     }
 
@@ -748,6 +771,15 @@ fn emit_into_builder(
             "NeTEx-EPIP: {n_unresolved} ScheduledStopPoints have no Location — skipped"
         );
     }
+    tracing::info!(
+        ssps = ssp_id_to_idx.len(),
+        physical_stops = coord_to_idx.len(),
+        dedup_ratio = format!(
+            "{:.1}x",
+            ssp_id_to_idx.len() as f64 / coord_to_idx.len().max(1) as f64
+        ),
+        "NeTEx-EPIP: deduplicated per-pattern SSPs to physical stops"
+    );
 
     // Pass 2: emit every ServiceJourney as a trip via the builder.
     // The pattern_ref resolves to a JourneyPatternRec whose
