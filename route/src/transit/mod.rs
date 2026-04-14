@@ -34,6 +34,7 @@ pub mod feeds;
 pub mod gtfs;
 pub mod raptor;
 pub mod realtime;
+pub mod stop_index;
 pub mod timetable;
 pub mod transfers;
 pub mod transfers_cache;
@@ -42,23 +43,30 @@ use std::sync::Arc;
 
 pub use config::{FeedConfig, TransitConfig};
 pub use raptor::{RaptorJourney, RaptorLeg};
+pub use stop_index::StopSpatialIndex;
 pub use timetable::{RouteIdx, Stop, StopIdx, Timetable, TripIdx};
 pub use transfers::TransferGraph;
 
-/// A transit-enabled snapshot: timetable + transfer graph. Immutable for
-/// the lifetime of the process — to refresh, the operator runs
-/// `transit-fetch` and restarts the server.
+/// A transit-enabled snapshot: timetable + transfer graph + stop
+/// spatial index. Immutable for the lifetime of the process — to
+/// refresh, the operator runs `transit-fetch` and restarts the server.
 #[derive(Clone)]
 pub struct TransitSnapshot {
     pub timetable: Arc<Timetable>,
     pub transfers: Arc<TransferGraph>,
+    /// R-tree over transit stops for O(log N) `k_nearest` candidate
+    /// selection. Built once per snapshot, shared read-only across
+    /// every query. See issue #102.
+    pub stop_index: Arc<StopSpatialIndex>,
 }
 
 impl TransitSnapshot {
     pub fn new(timetable: Timetable, transfers: TransferGraph) -> Self {
+        let stop_index = StopSpatialIndex::build(&timetable);
         Self {
             timetable: Arc::new(timetable),
             transfers: Arc::new(transfers),
+            stop_index: Arc::new(stop_index),
         }
     }
 }

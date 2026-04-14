@@ -46,11 +46,36 @@ pub struct SpatialIndex {
 }
 
 impl SpatialIndex {
-    /// Build spatial index from EBG nodes
+    /// Build spatial index from EBG nodes (global — includes every node,
+    /// used by legacy callers that snap with a mode mask rejection loop).
     pub fn build(ebg_nodes: &EbgNodes, nbg_geo: &NbgGeo) -> Self {
+        Self::build_inner(ebg_nodes, nbg_geo, None)
+    }
+
+    /// Build a spatial index that contains **only nodes passing the
+    /// given mode mask**. This lets callers avoid the pathological
+    /// rejection-loop behavior of `snap()` in dense pedestrianised
+    /// areas where the global R-tree is dominated by foot-only nodes
+    /// and the car-accessible nearest is buried many candidates deep.
+    ///
+    /// See issue #116.
+    pub fn build_filtered(ebg_nodes: &EbgNodes, nbg_geo: &NbgGeo, mask: &[u64]) -> Self {
+        Self::build_inner(ebg_nodes, nbg_geo, Some(mask))
+    }
+
+    fn build_inner(ebg_nodes: &EbgNodes, nbg_geo: &NbgGeo, mask: Option<&[u64]>) -> Self {
         let mut points = Vec::with_capacity(ebg_nodes.n_nodes as usize);
 
         for (ebg_id, node) in ebg_nodes.nodes.iter().enumerate() {
+            // Per-mode filter: skip nodes whose mask bit is clear.
+            if let Some(mask_slice) = mask {
+                let word = ebg_id / 64;
+                let bit = ebg_id % 64;
+                if word >= mask_slice.len() || (mask_slice[word] & (1u64 << bit)) == 0 {
+                    continue;
+                }
+            }
+
             // Get geometry from NBG
             let geom_idx = node.geom_idx as usize;
             if geom_idx >= nbg_geo.polylines.len() {
@@ -89,6 +114,25 @@ impl SpatialIndex {
         Self {
             tree: RTree::bulk_load(points),
         }
+    }
+
+    /// Number of points in the index (for diagnostics and tests).
+    pub fn n_indexed(&self) -> usize {
+        self.tree.size()
+    }
+
+    /// Snap without mode-mask rejection. Safe to call on a
+    /// `build_filtered` index because every node in the index is
+    /// already mode-accessible by construction — the first
+    /// nearest-neighbour hit within `MAX_SNAP_DISTANCE_M` is the
+    /// answer, no rejection loop needed.
+    pub fn snap_unfiltered(&self, lon: f64, lat: f64) -> Option<u32> {
+        let point = self.tree.nearest_neighbor(&[lon, lat])?;
+        let dist_m = Self::distance_meters(lon, lat, point.coords[0], point.coords[1]);
+        if dist_m > MAX_SNAP_DISTANCE_M {
+            return None;
+        }
+        Some(point.ebg_id)
     }
 
     /// Compute bearing in degrees (0=North, clockwise) from point 1 to point 2

@@ -347,21 +347,17 @@ pub async fn transit_handler(
         ));
     }
 
-    // Pick candidate stops by great-circle distance (fast prefilter).
-    let access_candidates = candidate_stops(
-        timetable,
+    // Pick candidate stops via the precomputed R-tree. `k_nearest` is
+    // O(log N + k log k) — replaces the old O(N) linear scan (#102).
+    let stop_index = snapshot.stop_index.as_ref();
+    let access_candidates = stop_index.k_nearest(
         req.origin_lon,
         req.origin_lat,
         max_access_m,
         max_access_stops,
     );
-    let egress_candidates = candidate_stops(
-        timetable,
-        req.dest_lon,
-        req.dest_lat,
-        max_egress_m,
-        max_access_stops,
-    );
+    let egress_candidates =
+        stop_index.k_nearest(req.dest_lon, req.dest_lat, max_egress_m, max_access_stops);
 
     if access_candidates.is_empty() {
         return Err(not_found(&format!(
@@ -525,7 +521,10 @@ pub async fn transit_handler(
     let total_arrival_s = journey.arrival_time.saturating_add(egress_walk);
     let total_duration_s = total_arrival_s.saturating_sub(depart_s);
 
-    let mut legs: Vec<TransitLegOut> = Vec::new();
+    // +2 covers the access and egress legs wrapping the RAPTOR-found
+    // inner legs. Pre-sized so the hot-path response build never
+    // reallocates (#118).
+    let mut legs: Vec<TransitLegOut> = Vec::with_capacity(journey.legs.len() + 2);
 
     // Leg 0: access leg from origin to the first transit boarding stop,
     // labelled with the access mode.
@@ -668,33 +667,6 @@ fn format_hms(secs: u32) -> String {
     format!("{:02}:{:02}:{:02}", h, m, s)
 }
 
-/// Candidate stops within `max_walk_m` of a point, up to `k` of them,
-/// sorted by straight-line distance.
-fn candidate_stops(
-    tt: &Timetable,
-    lon: f64,
-    lat: f64,
-    max_walk_m: u32,
-    k: usize,
-) -> Vec<(StopIdx, f64)> {
-    let max_m = max_walk_m as f64;
-    let mut v: Vec<(StopIdx, f64)> = Vec::new();
-    for (i, stop) in tt.stops.iter().enumerate() {
-        // Skip pure station parents (no trips touching them) — they're
-        // covered via their children when those children are closer.
-        if tt.routes_for_stop(i as StopIdx).is_empty() && stop.parent_station.is_none() {
-            continue;
-        }
-        let d = haversine_m(lon, lat, stop.lon, stop.lat);
-        if d <= max_m {
-            v.push((i as StopIdx, d));
-        }
-    }
-    v.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-    v.truncate(k);
-    v
-}
-
 /// Snap each candidate stop to the given mode's CCH rank. Returns one
 /// entry per input candidate — `None` if the stop can't snap on that
 /// mode's network (e.g. a bus stop on a restricted lane that foot can't
@@ -723,9 +695,17 @@ fn snap_stop_ranks_on_mode(
 }
 
 /// Snap a (lon,lat) to the given mode's CCH and return the rank.
+///
+/// Uses the per-mode spatial index (#116) when available — a single
+/// R-tree walk with no rejection loop. Falls back to the global index
+/// with mask filtering if the mode wasn't pre-indexed (shouldn't
+/// happen in production but keeps the code safe against misconfiguration).
 fn snap_to_rank(lon: f64, lat: f64, state: &ServerState, mode_idx: u8) -> Option<u32> {
     let mode_data = &state.modes[mode_idx as usize];
-    let orig = state.spatial_index.snap(lon, lat, &mode_data.mask, 10)?;
+    let orig = match state.mode_spatial_indexes.get(&mode_idx) {
+        Some(mode_index) => mode_index.snap_unfiltered(lon, lat)?,
+        None => state.spatial_index.snap(lon, lat, &mode_data.mask, 10)?,
+    };
     let filtered = mode_data.filtered_ebg.original_to_filtered[orig as usize];
     if filtered == u32::MAX {
         return None;
