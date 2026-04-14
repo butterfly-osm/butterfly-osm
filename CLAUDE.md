@@ -78,10 +78,9 @@ cargo fmt --all  # auto-fix
 
 ```
 butterfly-osm/
-├── butterfly-common/        # Shared error handling and utilities
-├── tools/
-│   ├── butterfly-dl/        # OSM data downloader (production-ready)
-│   └── butterfly-route/     # Routing engine (production-ready)
+├── butterfly-common/    # Shared error handling and utilities
+├── dl/                  # butterfly-dl: OSM data downloader (production-ready)
+└── route/               # butterfly-route: road router + transit engine (production-ready)
 ```
 
 ### butterfly-dl
@@ -96,7 +95,7 @@ Key API: `butterfly_dl::get()`, `butterfly_dl::get_stream()`, `butterfly_dl::get
 
 ### butterfly-route
 
-High-performance routing engine using **edge-based CCH** (Customizable Contraction Hierarchies).
+High-performance road router **and** multimodal transit engine. Edge-based CCH for exact turn-aware driving/walking/cycling (sections below), plus a full RAPTOR-based public transport stack with multi-feed merging (GTFS + NeTEx-EPIP for STIB), ULTRA transfer-graph preprocessing, and both REST + gRPC Flight interfaces. See the **Transit Subsystem** subsection further down for the transit side.
 
 #### Core Principle
 
@@ -141,18 +140,32 @@ High-performance routing engine using **edge-based CCH** (Customizable Contracti
 
 #### Query Server API
 
-The query server (`butterfly-route serve`) provides:
-- `GET /route` - Point-to-point routing with geometry, turn-by-turn steps with road names, alternatives
-- `GET /nearest` - Snap to nearest road segments with distance
-- `GET /matrix` - One-to-many distance matrix (duration and/or distance)
-- `POST /matrix/bulk` - Bulk many-to-many matrix (K-lane batched PHAST, Arrow streaming)
-- `POST /table/stream` - Arrow IPC streaming for large matrices (50k×50k, cooperative cancellation on disconnect)
-- `GET /isochrone` - Reachability polygon (GeoJSON/WKB, CCW outer rings, `direction=depart|arrive`)
-- `POST /isochrone/bulk` - Parallel batch isochrones (WKB stream)
-- `POST /trip` - TSP/trip optimization (nearest-neighbor + 2-opt + or-opt)
-- `GET /height` - Elevation lookup from SRTM DEM tiles
-- `GET /health` - Health check
+The query server (`butterfly-route serve`) exposes **two transports**:
+
+**REST (Axum, port 3001)** — human-friendly JSON:
+- `GET /route` — Point-to-point routing with geometry, turn-by-turn steps with road names, alternatives
+- `GET /nearest` — Snap to nearest road segments with distance
+- `GET /matrix` — One-to-many distance matrix (duration and/or distance)
+- `POST /matrix/bulk` — Bulk many-to-many matrix (K-lane batched PHAST, Arrow streaming)
+- `POST /table/stream` — Arrow IPC streaming for large matrices (50k×50k, cooperative cancellation on disconnect)
+- `GET /isochrone` — Reachability polygon (GeoJSON/WKB, CCW outer rings, `direction=depart|arrive`)
+- `POST /isochrone/bulk` — Parallel batch isochrones (WKB stream)
+- `POST /trip` — TSP/trip optimization (nearest-neighbor + 2-opt + or-opt)
+- `GET /height` — Elevation lookup from SRTM DEM tiles
+- `GET /transit` — Single multimodal transit journey (access CCH + RAPTOR + egress CCH, returns JSON legs)
+- `POST /transit/bulk` — Batch multimodal transit (origin-grouped, rayon `par_iter`, up to 100k queries/call)
+- `GET /health` — Health check
 - Swagger UI at `/swagger-ui`
+
+**gRPC Flight (tonic, port 3002)** — machine-facing Arrow IPC, no transport mixing:
+- `matrix` — Distance/duration matrix action
+- `route_batch` — Batch P2P routing with WKB polyline
+- `isochrone` — Reachability polygons as WKB
+- `catchment` — Catchment hulls via DoExchange (store_id → polygon)
+- `transit_bulk` — Multimodal batch routing with per-query metadata columns + JSON legs (up to 500k queries/call)
+- `edges_batch` — **Unnested per-edge path output** with OSM node ids (flow analytics / traffic assignment / emissions inventory)
+
+**Architectural rule**: REST stays JSON, Flight stays Arrow. No hybrid Arrow-over-HTTP endpoints on the Axum server. `POST /table/stream` is a legacy exception from the pre-Flight era; new bulk Arrow endpoints land on Flight.
 
 #### Performance Optimizations
 
@@ -185,6 +198,64 @@ PHAST → Near-frontier filter → Sparse tile stamp → Moore boundary trace �
 - Near-frontier stamping: only stamp edges with dist >= 60% of threshold
 - Skips interior edges that don't affect boundary shape
 - Consistency test: 1.2% violation rate (snapped road point semantics)
+
+### Transit Subsystem (RAPTOR + CCH)
+
+butterfly-route ships a **full multimodal transit engine** alongside the road router. The two share the same `ServerState` — road and transit queries run on the same process, the same foot CCH, and the same spatial index.
+
+#### Pipeline shape
+
+```
+origin → access CCH 1-to-N (foot/bike/car) → RAPTOR rounds → egress CCH 1-to-N (foot) → response
+```
+
+- **Access leg**: `CchQuery::distances_one_to_many` on the selected access mode. Bounded by `max_access_m` radius + `max_access_stops` cap.
+- **RAPTOR rounds**: round-based earliest-arrival over the merged `Timetable`. Thread-local `RaptorState` with generation-stamped scratch arrays — O(1) per-query init.
+- **Transfer graph**: ULTRA-preprocessed, stop-to-stop, pure foot. Built once at startup via bounded multi-source Dijkstra over the foot CCH. Cached in `transit/transfers.bin` with provenance hashing (CCH fingerprint + feed hash + algo version).
+- **Egress leg**: same as access but destination-side, foot mode only.
+
+#### Multi-feed merge + format dispatch
+
+`transit::load_from_disk` dispatches on `FeedConfig.format`:
+- `Gtfs` → `gtfs::load_into_builder` (SNCB, De Lijn, TEC)
+- `NetexEpip` → `netex_epip::load_into_builder` (STIB — streaming `quick-xml` parser, Lambert-93 → WGS84 via `proj4rs`, per-pattern SSP dedup by quantised coordinate)
+
+Both loaders write into a **shared** `TimetableBuilder` so GTFS and NeTEx feeds merge into one `Timetable` with namespaced stop ids (`sncb:8814001`, `stib:FR:ScheduledStopPoint:...`).
+
+Cross-feed equivalence bridges (same-place different-operator, e.g. SNCB Brussels-Midi ↔ STIB Bruxelles-Midi metro) are injected into the transfer graph with a 30 s fixed cost; same-station child-pair bridges (multi-platform stations) with 60 s. Both run **before** ULTRA dominance restriction, so the restriction drops them cleanly if a shorter real walking transfer dominates.
+
+#### Key modules
+
+- `src/transit/timetable.rs` — `Timetable` + `TimetableBuilder` (SoA `stop_times` split is filed as #126)
+- `src/transit/gtfs.rs` — GTFS loader
+- `src/transit/netex_epip.rs` — NeTEx-EPIP streaming loader (STIB)
+- `src/transit/raptor.rs` — Round-based earliest-arrival with thread-local state
+- `src/transit/transfers.rs` — ULTRA transfer graph build (v7 — zero-cost edges preserved, see `ultra_restriction_keeps_zero_cost_cluster` test)
+- `src/transit/transfers_cache.rs` — Streaming on-disk cache with provenance
+- `src/transit/stop_index.rs` — R-tree spatial index over stops for O(log n) candidate selection
+- `src/server/transit_handler.rs` — REST `/transit` + `/transit/bulk` handlers, origin grouping for bulk
+- `src/server/flight.rs::do_transit_bulk` — Flight `transit_bulk` action
+
+#### Calendar handling
+
+NeTEx-EPIP publications can be weeks stale. `netex_epip::compute_active_day_types` tries today's date first; if the active set is empty (every period's `FromDate..ToDate` in the past), it remaps today to **the same weekday in the latest published period** so Tuesday-today maps to Tuesday-in-window. Preserves weekday/weekend semantics.
+
+GTFS calendar is applied normally via `ServiceFilter`.
+
+#### Performance (Belgium, 4 feeds merged)
+
+| Query | Metric |
+|---|---|
+| Single `/transit` warm | 35 ms p50 |
+| `/transit/bulk` 20 same-origin | 150 ms (7× vs serial) |
+| `/transit/bulk` 1000 varied | 311 q/s sustained |
+| Transfer graph | 66 512 stops, 668 k edges |
+
+#### Not in transit yet
+
+- Real-time (GTFS-RT in `realtime.rs` is plumbed but the statistical p50/p90 path in #122/#123 is deferred)
+- RAPTOR SoA/SIMD/delta-encoded stop_times (#126/#127/#128)
+- Source-batched `queries` shape for edges_batch / transit_bulk (MVP ships the flat shape)
 
 ### Binary File Formats
 
