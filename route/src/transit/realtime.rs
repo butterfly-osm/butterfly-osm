@@ -140,11 +140,20 @@ pub fn apply_trip_updates(base: &Timetable, feed: &FeedMessage) -> (Timetable, R
             st.departure = offset_time(st.departure, dep_deltas[pos]);
         }
 
-        // Write back to both SoA arrays (#126).
+        // Write back to both SoA arrays (#126) AND to the
+        // column-major mirror (#127). The mirror must stay in
+        // lockstep with the row-major `departures` array because
+        // `earliest_trip` reads from it directly. For a write at
+        // `(r, trip, pos)`, the mirror index is
+        // `col_base + pos * n_trips[r] + trip`.
+        let n_trips = out.n_trips[route_idx as usize] as u64;
+        let col_base = out.col_departures_route_offset[route_idx as usize];
         for (i, st) in times.into_iter().enumerate() {
             let idx = (trip_base + i as u64) as usize;
             out.arrivals[idx] = st.arrival;
             out.departures[idx] = st.departure;
+            let col_idx = (col_base + (i as u64) * n_trips + trip_in_route as u64) as usize;
+            out.col_departures[col_idx] = st.departure;
         }
     }
 
