@@ -273,4 +273,93 @@ mod tests {
         assert_eq!(patched.stop_time(route_b, 0, b_pos).arrival, 320);
         assert_eq!(patched.stop_time(route_b, 0, c_pos).arrival, 420);
     }
+
+    /// Regression for #111: GTFS-RT delay flips the relative order of
+    /// two trips on a route. The in-place patch does not re-sort the
+    /// underlying `stop_times` grid, so `earliest_trip` must be robust
+    /// to non-monotone trip order (subsumed by the #108 fix). Without
+    /// order-independent lookup, a scan of "first trip with dep ≥ t"
+    /// would pick the delayed trip instead of the actually-earliest one.
+    #[test]
+    fn gtfs_rt_delay_flips_trip_order_still_picks_earliest() {
+        let mut b = TimetableBuilder::new();
+        let a = b.add_stop("A", "A", 0.0, 0.0, None);
+        let bb = b.add_stop("B", "B", 1.0, 0.0, None);
+        // Two trips on the same A→B pattern. trip_early departs A at 500,
+        // trip_late departs A at 600. In the builder's natural order,
+        // trip_early is stored first.
+        b.add_trip(
+            "trip_early",
+            "R",
+            "R",
+            "h",
+            vec![a, bb],
+            vec![st(500, 500), st(560, 560)],
+        );
+        b.add_trip(
+            "trip_late",
+            "R",
+            "R",
+            "h",
+            vec![a, bb],
+            vec![st(600, 600), st(660, 660)],
+        );
+        let tt = b.build().unwrap();
+        let route_idx = tt.routes_for_stop(a)[0].0;
+        // Sanity: before the patch, earliest_trip(dep ≥ 0) at stop A is
+        // trip_early (position 0), and at dep ≥ 550 it's trip_late.
+        assert_eq!(tt.earliest_trip(route_idx, 0, 0), Some(0));
+        assert_eq!(tt.earliest_trip(route_idx, 0, 550), Some(1));
+
+        // GTFS-RT: delay trip_early by +300s at every stop. A is now
+        // 500 + 300 = 800, which is AFTER trip_late's 600. The storage
+        // order (trip_early first) is unchanged, but temporally
+        // trip_late is now earlier.
+        let feed = FeedMessage {
+            header: gtfs_rt::FeedHeader {
+                gtfs_realtime_version: "2.0".to_string(),
+                ..Default::default()
+            },
+            entity: vec![FeedEntity {
+                id: "e1".to_string(),
+                trip_update: Some(TripUpdate {
+                    trip: TripDescriptor {
+                        trip_id: Some("trip_early".to_string()),
+                        ..Default::default()
+                    },
+                    stop_time_update: vec![StopTimeUpdate {
+                        stop_sequence: Some(0),
+                        arrival: Some(StopTimeEvent {
+                            delay: Some(300),
+                            ..Default::default()
+                        }),
+                        departure: Some(StopTimeEvent {
+                            delay: Some(300),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+        };
+        let (patched, stats) = apply_trip_updates(&tt, &feed);
+        assert_eq!(stats.trips_matched, 1);
+
+        // Verify the patch: trip_early now departs A at 800.
+        assert_eq!(patched.stop_time(route_idx, 0, 0).departure, 800);
+        assert_eq!(patched.stop_time(route_idx, 1, 0).departure, 600);
+
+        // The critical assertion. `earliest_trip` at A with dep ≥ 0 must
+        // return trip_late (storage index 1), because temporally it is
+        // now the earliest. A naive "first trip with dep ≥ t in storage
+        // order" implementation would return trip_early (storage index 0)
+        // which departs at 800 — strictly later than trip_late's 600.
+        assert_eq!(patched.earliest_trip(route_idx, 0, 0), Some(1));
+
+        // Similarly, asking for dep ≥ 700 must return trip_early (800),
+        // because trip_late (600) is already gone.
+        assert_eq!(patched.earliest_trip(route_idx, 0, 700), Some(0));
+    }
 }
