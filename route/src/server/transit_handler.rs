@@ -145,18 +145,20 @@ pub enum TransitLegOut {
         distance_m: u32,
     },
     Transit {
-        from_stop_id: String,
-        from_stop_name: String,
+        /// `Arc<str>` cloned from the timetable — zero-copy on the hot
+        /// path and serialised as a plain JSON string (#118).
+        from_stop_id: Arc<str>,
+        from_stop_name: Arc<str>,
         from: [f64; 2],
-        to_stop_id: String,
-        to_stop_name: String,
+        to_stop_id: Arc<str>,
+        to_stop_name: Arc<str>,
         to: [f64; 2],
         board_time: String,
         alight_time: String,
         duration_s: u32,
-        route_short_name: String,
-        route_long_name: String,
-        headsign: String,
+        route_short_name: Arc<str>,
+        route_long_name: Arc<str>,
+        headsign: Arc<str>,
     },
 }
 
@@ -850,7 +852,7 @@ fn snap_stop_ranks_on_mode(
             let r = snap_to_rank(stop.lon, stop.lat, state, mode_idx);
             if r.is_none() {
                 tracing::debug!(
-                    stop_id = stop.id.as_str(),
+                    stop_id = &*stop.id,
                     mode = mode_idx,
                     "stop failed snap for this mode"
                 );
