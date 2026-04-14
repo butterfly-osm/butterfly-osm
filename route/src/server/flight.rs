@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use arrow::array::*;
 use arrow::datatypes::*;
+use rayon::prelude::*;
 use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use arrow_flight::encode::FlightDataEncoderBuilder;
@@ -166,6 +167,41 @@ fn isochrone_schema() -> Schema {
     ])
 }
 
+/// Schema for `transit_bulk` Flight action (#119).
+///
+/// One row per query in the batch. Successful queries carry the full
+/// transit response metadata and a JSON-encoded `legs` array; failed
+/// queries carry the HTTP-style `(status, error)` pair with the
+/// metadata columns null.
+///
+/// Why JSON for `legs_json` instead of native Arrow `List<Struct>`?
+/// The transit leg schema is a tagged enum with four variants
+/// (`walk` / `drive` / `road` / `transit`) and the `transit` variant
+/// has 12 nullable fields including `Arc<str>` references to stop
+/// names. Encoding that natively is a multi-week schema project. JSON
+/// is honest, dictionary-compresses well at scale, and round-trips
+/// through every Arrow consumer (pyarrow, polars, DuckDB) without
+/// custom decoding. The metadata columns are still natively typed,
+/// which is the actual win for query / aggregation workloads.
+pub fn transit_bulk_schema() -> Schema {
+    Schema::new(vec![
+        Field::new("query_idx", DataType::UInt32, false),
+        Field::new("status", DataType::Utf8, false), // "ok" | "err"
+        Field::new("http_status", DataType::UInt16, false), // 200 / 4xx / 5xx
+        Field::new("error", DataType::Utf8, true),
+        Field::new("origin_lon", DataType::Float64, false),
+        Field::new("origin_lat", DataType::Float64, false),
+        Field::new("dest_lon", DataType::Float64, false),
+        Field::new("dest_lat", DataType::Float64, false),
+        Field::new("depart_time", DataType::Utf8, true),
+        Field::new("arrival_time", DataType::Utf8, true),
+        Field::new("total_duration_s", DataType::UInt32, true),
+        Field::new("access_mode", DataType::Utf8, true),
+        Field::new("egress_mode", DataType::Utf8, true),
+        Field::new("legs_json", DataType::Utf8, true),
+    ])
+}
+
 // =============================================================================
 // Matrix endpoint
 // =============================================================================
@@ -279,7 +315,7 @@ fn build_matrix_batch(
     .map_err(|e| Status::internal(format!("Arrow error: {}", e)))
 }
 
-type BatchStream =
+pub type BatchStream =
     Pin<Box<dyn futures::Stream<Item = std::result::Result<RecordBatch, Status>> + Send>>;
 
 /// Execute the matrix Flight action.
@@ -754,6 +790,194 @@ fn do_isochrone(
 }
 
 // =============================================================================
+// transit_bulk endpoint (#119)
+// =============================================================================
+
+/// Parameters for the `transit_bulk` Flight action. Mirror the JSON
+/// shape of `TransitBulkRequest` from the Axum REST endpoint so REST
+/// and Flight clients share the same request schema.
+#[derive(Deserialize)]
+pub struct TransitBulkParams {
+    pub queries: Vec<super::transit_handler::TransitRequest>,
+    /// Optional batch defaults — applied to any query that omits the
+    /// field. Same semantics as `TransitBulkRequest`.
+    #[serde(default)]
+    pub max_walk_m: Option<u32>,
+    #[serde(default)]
+    pub access_mode: Option<String>,
+    #[serde(default)]
+    pub egress_mode: Option<String>,
+}
+
+pub fn do_transit_bulk(
+    state: &Arc<ServerState>,
+    params: TransitBulkParams,
+) -> std::result::Result<BatchStream, Status> {
+    if state.transit.is_none() {
+        return Err(Status::failed_precondition(
+            "transit subsystem is not loaded",
+        ));
+    }
+    if params.queries.is_empty() {
+        let schema = Arc::new(transit_bulk_schema());
+        let empty = RecordBatch::new_empty(schema);
+        return Ok(Box::pin(stream::once(async move { Ok(empty) })));
+    }
+    // Soft cap: 500k queries — Flight streaming has no URL-length
+    // bottleneck so we can go larger than the JSON `/transit/bulk`
+    // limit (100k).
+    if params.queries.len() > 500_000 {
+        return Err(Status::invalid_argument(
+            "max 500,000 queries per transit_bulk request",
+        ));
+    }
+
+    let state = Arc::clone(state);
+    let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<RecordBatch, Status>>(8);
+
+    tokio::task::spawn_blocking(move || {
+        // Apply per-batch defaults to every query that omits the field.
+        let mut queries = params.queries;
+        let batch_max_walk_m = params.max_walk_m;
+        let batch_access_mode = params.access_mode.clone();
+        let batch_egress_mode = params.egress_mode.clone();
+        for q in &mut queries {
+            if q.max_walk_m.is_none() && batch_max_walk_m.is_some() {
+                q.max_walk_m = batch_max_walk_m;
+            }
+            if q.access_mode.is_none() && batch_access_mode.is_some() {
+                q.access_mode = batch_access_mode.clone();
+            }
+            if q.egress_mode.is_none() && batch_egress_mode.is_some() {
+                q.egress_mode = batch_egress_mode.clone();
+            }
+        }
+
+        let schema = Arc::new(transit_bulk_schema());
+        // Chunk size: 1024 rows per RecordBatch is the sweet spot for
+        // Arrow streaming — small enough for low latency-to-first-byte
+        // on slow networks, large enough to amortise per-batch
+        // serialisation overhead.
+        const CHUNK: usize = 1024;
+
+        // Indexed parallel evaluation: every query keeps its position
+        // so the output rows are stable across Rayon thread reordering.
+        // Process one CHUNK at a time so we can stream RecordBatches
+        // incrementally instead of waiting for the whole batch.
+        for (chunk_start, chunk) in queries.chunks(CHUNK).enumerate().map(|(ci, c)| (ci * CHUNK, c)) {
+            // Per-query results in original order. Each entry is
+            // either Ok(response) or Err((http_status, error_msg)).
+            let chunk_results: Vec<std::result::Result<
+                super::transit_handler::TransitResponse,
+                (u16, String),
+            >> = chunk
+                .par_iter()
+                .map(|q| {
+                    super::transit_handler::compute_transit_journey(state.as_ref(), q).map_err(
+                        |(sc, err)| (sc.as_u16(), err.0.error.clone()),
+                    )
+                })
+                .collect();
+
+            let n = chunk_results.len();
+            let mut query_idx_b = UInt32Builder::with_capacity(n);
+            let mut status_b = StringBuilder::with_capacity(n, n * 4);
+            let mut http_status_b = UInt16Builder::with_capacity(n);
+            let mut error_b = StringBuilder::with_capacity(n, n * 16);
+            let mut origin_lon_b = Float64Builder::with_capacity(n);
+            let mut origin_lat_b = Float64Builder::with_capacity(n);
+            let mut dest_lon_b = Float64Builder::with_capacity(n);
+            let mut dest_lat_b = Float64Builder::with_capacity(n);
+            let mut depart_b = StringBuilder::with_capacity(n, n * 8);
+            let mut arrival_b = StringBuilder::with_capacity(n, n * 8);
+            let mut total_dur_b = UInt32Builder::with_capacity(n);
+            let mut access_mode_b = StringBuilder::with_capacity(n, n * 8);
+            let mut egress_mode_b = StringBuilder::with_capacity(n, n * 8);
+            let mut legs_json_b = StringBuilder::with_capacity(n, n * 256);
+
+            for (i, result) in chunk_results.iter().enumerate() {
+                let qi = (chunk_start + i) as u32;
+                let req = &chunk[i];
+                query_idx_b.append_value(qi);
+                origin_lon_b.append_value(req.origin_lon);
+                origin_lat_b.append_value(req.origin_lat);
+                dest_lon_b.append_value(req.dest_lon);
+                dest_lat_b.append_value(req.dest_lat);
+                match result {
+                    Ok(resp) => {
+                        status_b.append_value("ok");
+                        http_status_b.append_value(200);
+                        error_b.append_null();
+                        depart_b.append_value(&resp.depart_time);
+                        arrival_b.append_value(&resp.arrival_time);
+                        total_dur_b.append_value(resp.total_duration_s);
+                        access_mode_b.append_value(&resp.access_mode);
+                        egress_mode_b.append_value(&resp.egress_mode);
+                        // Serialize just the `legs` field — the
+                        // metadata columns above already carry the
+                        // top-level response fields. Falling back to
+                        // an empty array on a (theoretically
+                        // impossible) serde error so the row stays
+                        // emit-able.
+                        match serde_json::to_string(&resp.legs) {
+                            Ok(s) => legs_json_b.append_value(&s),
+                            Err(_) => legs_json_b.append_value("[]"),
+                        }
+                    }
+                    Err((sc, msg)) => {
+                        status_b.append_value("err");
+                        http_status_b.append_value(*sc);
+                        error_b.append_value(msg);
+                        depart_b.append_null();
+                        arrival_b.append_null();
+                        total_dur_b.append_null();
+                        access_mode_b.append_null();
+                        egress_mode_b.append_null();
+                        legs_json_b.append_null();
+                    }
+                }
+            }
+
+            let batch = match RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(query_idx_b.finish()) as ArrayRef,
+                    Arc::new(status_b.finish()),
+                    Arc::new(http_status_b.finish()),
+                    Arc::new(error_b.finish()),
+                    Arc::new(origin_lon_b.finish()),
+                    Arc::new(origin_lat_b.finish()),
+                    Arc::new(dest_lon_b.finish()),
+                    Arc::new(dest_lat_b.finish()),
+                    Arc::new(depart_b.finish()),
+                    Arc::new(arrival_b.finish()),
+                    Arc::new(total_dur_b.finish()),
+                    Arc::new(access_mode_b.finish()),
+                    Arc::new(egress_mode_b.finish()),
+                    Arc::new(legs_json_b.finish()),
+                ],
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(Status::internal(format!(
+                        "transit_bulk Arrow build: {e}"
+                    ))));
+                    return;
+                }
+            };
+
+            if tx.blocking_send(Ok(batch)).is_err() {
+                // Client disconnected — bail.
+                return;
+            }
+        }
+    });
+
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    Ok(Box::pin(stream))
+}
+
+// =============================================================================
 // Helper: encode RecordBatch stream to FlightData stream
 // =============================================================================
 
@@ -1096,8 +1320,25 @@ impl FlightService for ButterflyFlight {
                 let flight_stream = batches_to_flight_data(schema, batch_stream);
                 Ok(Response::new(flight_stream))
             }
+            "transit_bulk" => {
+                // The transit_bulk action ignores the `profile` part
+                // of the ticket — every query carries its own
+                // `access_mode` / `egress_mode`. The mode resolved
+                // above is unused but parsing it would be a hard
+                // error if the profile were missing, so we accept any
+                // valid loaded mode here.
+                let _ = mode;
+                let params: TransitBulkParams =
+                    serde_json::from_str(&parsed.params_json).map_err(|e| {
+                        Status::invalid_argument(format!("Invalid transit_bulk params: {}", e))
+                    })?;
+                let batch_stream = do_transit_bulk(&self.state, params)?;
+                let schema = Arc::new(transit_bulk_schema());
+                let flight_stream = batches_to_flight_data(schema, batch_stream);
+                Ok(Response::new(flight_stream))
+            }
             other => Err(Status::invalid_argument(format!(
-                "Unknown action '{}'. Available: matrix, route_batch, isochrone",
+                "Unknown action '{}'. Available: matrix, route_batch, isochrone, transit_bulk",
                 other
             ))),
         }
@@ -1116,9 +1357,10 @@ impl FlightService for ButterflyFlight {
             "route_batch" => route_batch_schema(),
             "isochrone" => isochrone_schema(),
             "catchment" => catchment_schema(),
+            "transit_bulk" => transit_bulk_schema(),
             other => {
                 return Err(Status::invalid_argument(format!(
-                    "Unknown action '{}'. Available: matrix, route_batch, isochrone, catchment",
+                    "Unknown action '{}'. Available: matrix, route_batch, isochrone, catchment, transit_bulk",
                     other
                 )));
             }
@@ -1152,9 +1394,10 @@ impl FlightService for ButterflyFlight {
             "route_batch" => route_batch_schema(),
             "isochrone" => isochrone_schema(),
             "catchment" => catchment_schema(),
+            "transit_bulk" => transit_bulk_schema(),
             other => {
                 return Err(Status::invalid_argument(format!(
-                    "Unknown action '{}'. Available: matrix, route_batch, isochrone, catchment",
+                    "Unknown action '{}'. Available: matrix, route_batch, isochrone, catchment, transit_bulk",
                     other
                 )));
             }
@@ -1186,6 +1429,10 @@ impl FlightService for ButterflyFlight {
             ActionType {
                 r#type: "catchment".into(),
                 description: "Catchment areas via DoExchange. Input: (store_id:utf8, store_lon:f64, store_lat:f64, client_lon:f64, client_lat:f64). Descriptor cmd: catchment:<profile>:{\"percentiles\":[50,80],\"hull_mode\":\"isochrone\",\"remove_outliers\":true}".into(),
+            },
+            ActionType {
+                r#type: "transit_bulk".into(),
+                description: "Multimodal transit batch routing with Arrow IPC streaming (#119). Ticket: transit_bulk:<profile>:{\"queries\":[{\"origin_lon\":...,\"origin_lat\":...,\"dest_lon\":...,\"dest_lat\":...,\"depart\":\"08:00:00\",...},...]}. The profile is ignored — every query carries its own access_mode/egress_mode. Schema: query_idx, status, http_status, error, origin/dest lon/lat, depart_time, arrival_time, total_duration_s, access/egress_mode, legs_json (JSON-encoded leg array). Up to 500k queries per call.".into(),
             },
         ];
 

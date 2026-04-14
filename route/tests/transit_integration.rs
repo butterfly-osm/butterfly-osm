@@ -1254,3 +1254,233 @@ fn belgium_bulk_same_origin_grouping_speedup() {
         speedup
     );
 }
+
+// =====================================================================
+// Flight gRPC transit_bulk Arrow IPC streaming (#119).
+//
+// Tests the `do_transit_bulk` Flight action by calling it directly
+// (without a tonic server in the loop) and consuming the produced
+// RecordBatch stream. Validates: schema shape, row count, status
+// column, error encoding, JSON-encoded legs, and that each row
+// matches the corresponding query.
+// =====================================================================
+
+#[test]
+#[ignore = "loads the full Belgium ServerState (~50 s)"]
+fn belgium_flight_transit_bulk_roundtrip() {
+    use butterfly_route::server::flight::{
+        TransitBulkParams, do_transit_bulk, transit_bulk_schema,
+    };
+    use futures::StreamExt;
+
+    let Some(state) = belgium_server_state() else {
+        return;
+    };
+
+    // 5 queries, mix of valid and invalid:
+    //   - 0: Brussels → Antwerp (valid)
+    //   - 1: Brussels → Liège (valid)
+    //   - 2: out-of-range origin (bad coords → 400)
+    //   - 3: ocean origin (no snap → 404)
+    //   - 4: Brussels → Gent (valid)
+    let queries: Vec<TransitRequest> = vec![
+        base_req((4.3517, 50.8466), (4.4025, 51.2194)),
+        base_req((4.3517, 50.8466), (5.5697, 50.6326)),
+        {
+            let mut r = base_req((4.3517, 50.8466), (4.4025, 51.2194));
+            r.origin_lon = 200.0;
+            r
+        },
+        base_req((0.0, 0.0), (4.4025, 51.2194)),
+        base_req((4.3517, 50.8466), (3.7250, 51.0543)),
+    ];
+
+    let params = TransitBulkParams {
+        queries,
+        max_walk_m: None,
+        access_mode: None,
+        egress_mode: None,
+    };
+    // do_transit_bulk uses `tokio::task::spawn_blocking` internally,
+    // which requires a Tokio runtime in scope at call time. Build a
+    // multi-thread runtime first, then invoke + drain the stream
+    // entirely inside `block_on`.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let batches: Vec<arrow::record_batch::RecordBatch> = rt.block_on(async {
+        let mut s = do_transit_bulk(&state, params).expect("do_transit_bulk should succeed");
+        let mut acc = Vec::new();
+        while let Some(item) = s.next().await {
+            acc.push(item.expect("RecordBatch should not error"));
+        }
+        acc
+    });
+
+    // 5 queries fit in a single CHUNK (1024).
+    assert_eq!(batches.len(), 1, "expected exactly one RecordBatch for 5 queries");
+    let batch = &batches[0];
+    assert_eq!(batch.num_rows(), 5, "5 rows expected, got {}", batch.num_rows());
+
+    // Schema sanity.
+    let expected_schema = transit_bulk_schema();
+    assert_eq!(
+        batch.schema().fields().len(),
+        expected_schema.fields().len(),
+        "field count mismatch with transit_bulk_schema()"
+    );
+
+    // Pull columns by name.
+    use arrow::array::*;
+    let qi = batch
+        .column_by_name("query_idx")
+        .expect("query_idx column")
+        .as_any()
+        .downcast_ref::<UInt32Array>()
+        .expect("query_idx must be UInt32");
+    let status = batch
+        .column_by_name("status")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    let http_status = batch
+        .column_by_name("http_status")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<UInt16Array>()
+        .unwrap();
+    let error = batch
+        .column_by_name("error")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    let total_dur = batch
+        .column_by_name("total_duration_s")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<UInt32Array>()
+        .unwrap();
+    let legs_json = batch
+        .column_by_name("legs_json")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+
+    // Check the query_idx column is exactly 0..5.
+    for i in 0..5 {
+        assert_eq!(qi.value(i), i as u32, "query_idx[{i}] must be {i}");
+    }
+
+    // Row 0 (Brussels → Antwerp) — must be ok with a positive duration.
+    assert_eq!(status.value(0), "ok", "row 0 should be ok");
+    assert_eq!(http_status.value(0), 200);
+    assert!(error.is_null(0), "ok row must have null error");
+    assert!(!total_dur.is_null(0), "ok row must have a duration");
+    assert!(total_dur.value(0) > 0);
+    assert!(!legs_json.is_null(0));
+    let legs_str = legs_json.value(0);
+    let legs_val: serde_json::Value =
+        serde_json::from_str(legs_str).expect("legs_json must parse");
+    assert!(legs_val.is_array(), "legs_json must encode an array");
+    assert!(
+        legs_val.as_array().unwrap().len() >= 3,
+        "Brussels → Antwerp must have ≥ 3 legs"
+    );
+
+    // Row 1 (Brussels → Liège) — ok.
+    assert_eq!(status.value(1), "ok");
+    assert!(total_dur.value(1) > 0);
+
+    // Row 2 (out-of-range coords) — err with http_status 400.
+    assert_eq!(status.value(2), "err");
+    assert_eq!(http_status.value(2), 400);
+    assert!(!error.is_null(2));
+    assert!(total_dur.is_null(2));
+    assert!(legs_json.is_null(2));
+
+    // Row 3 (ocean) — err with http_status 404.
+    assert_eq!(status.value(3), "err");
+    assert_eq!(http_status.value(3), 404);
+    assert!(!error.is_null(3));
+
+    // Row 4 (Brussels → Gent) — ok.
+    assert_eq!(status.value(4), "ok");
+    assert!(total_dur.value(4) > 0);
+
+    eprintln!(
+        "transit_bulk Flight: {} batches, {} total rows, schema OK",
+        batches.len(),
+        batch.num_rows()
+    );
+}
+
+#[test]
+#[ignore = "loads the full Belgium ServerState (~50 s)"]
+fn belgium_flight_transit_bulk_chunks_large_batches() {
+    // The Flight handler emits one RecordBatch per CHUNK (1024). For
+    // a batch larger than CHUNK we should see multiple batches and
+    // every query_idx should appear exactly once.
+    use butterfly_route::server::flight::{TransitBulkParams, do_transit_bulk};
+    use futures::StreamExt;
+
+    let Some(state) = belgium_server_state() else {
+        return;
+    };
+
+    // 1500 queries, all the same origin/destination — exercises the
+    // chunking (1500 > 1024) without needing distinct corridors.
+    let queries: Vec<TransitRequest> = (0..1500)
+        .map(|_| base_req((4.3517, 50.8466), (4.4025, 51.2194)))
+        .collect();
+
+    let params = TransitBulkParams {
+        queries,
+        max_walk_m: None,
+        access_mode: None,
+        egress_mode: None,
+    };
+    // Same runtime-in-scope dance as belgium_flight_transit_bulk_roundtrip.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let batches: Vec<arrow::record_batch::RecordBatch> = rt.block_on(async {
+        let mut s = do_transit_bulk(&state, params).unwrap();
+        let mut acc = Vec::new();
+        while let Some(item) = s.next().await {
+            acc.push(item.expect("batch must succeed"));
+        }
+        acc
+    });
+
+    assert!(batches.len() >= 2, "1500 rows must span ≥ 2 RecordBatches");
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(total_rows, 1500);
+
+    // Verify query_idx column is a contiguous 0..1500.
+    use arrow::array::UInt32Array;
+    let mut seen = vec![false; 1500];
+    for batch in &batches {
+        let qi = batch
+            .column_by_name("query_idx")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .unwrap();
+        for i in 0..batch.num_rows() {
+            let q = qi.value(i) as usize;
+            assert!(q < 1500, "query_idx out of range");
+            assert!(!seen[q], "duplicate query_idx {q}");
+            seen[q] = true;
+        }
+    }
+    assert!(seen.iter().all(|x| *x), "every query_idx 0..1500 must appear");
+    eprintln!(
+        "transit_bulk Flight chunking: {} batches across 1500 rows",
+        batches.len()
+    );
+}
