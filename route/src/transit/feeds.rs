@@ -520,6 +520,7 @@ mod tests {
                 id: "test".to_string(),
                 url: server.uri(),
                 rt_url: None,
+                format: Default::default(),
             }],
             ..TransitConfig::default()
         };

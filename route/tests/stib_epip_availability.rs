@@ -241,6 +241,90 @@ fn stib_epip_local_file() {
     );
 }
 
+/// End-to-end parse test: drive the real NeTEx-EPIP loader against
+/// the STIB file and assert the resulting Timetable has the shape
+/// we expect. This exercises `butterfly_route::transit::netex_epip::load_epip_xml`
+/// in its first real deployment target.
+#[test]
+#[ignore = "parses the 720 MB STIB NeTEx-EPIP file (~30 s) — \
+            set STIB_EPIP_PATH or place at data/belgium/transit/netex/stib-epip.xml"]
+fn stib_epip_loader_produces_timetable() {
+    use butterfly_route::transit::netex_epip::load_epip_xml;
+
+    let Some(path) = local_epip_path() else {
+        panic!(
+            "STIB NeTEx-EPIP file not found — see stib_epip_local_file for the download command"
+        );
+    };
+    eprintln!("parsing STIB EPIP from {}", path.display());
+
+    let t0 = Instant::now();
+    let tt = load_epip_xml(&path, Some("stib")).expect("EPIP load must succeed");
+    let dt = t0.elapsed().as_secs_f64();
+    eprintln!(
+        "parsed in {:.1}s: {} stops, {} routes, {} trips",
+        dt,
+        tt.n_stops(),
+        tt.n_routes(),
+        tt.n_total_trips,
+    );
+
+    // STIB shape expectations. Bounds are ±50 % of observed values
+    // so that a modest publication drift doesn't break the test.
+    assert!(
+        tt.n_stops() >= 5_000 && tt.n_stops() <= 20_000,
+        "expected 5k–20k stops, got {}",
+        tt.n_stops()
+    );
+    assert!(
+        tt.n_routes() >= 200 && tt.n_routes() <= 2_000,
+        "expected 200–2k routes (RAPTOR canonical patterns), got {}",
+        tt.n_routes()
+    );
+    assert!(
+        tt.n_total_trips >= 50_000 && tt.n_total_trips <= 250_000,
+        "expected 50k–250k trips, got {}",
+        tt.n_total_trips
+    );
+
+    // Every stop must carry the `stib:` feed prefix.
+    let mut n_bad_prefix = 0usize;
+    for stop in &tt.stops {
+        if !stop.id.starts_with("stib:") {
+            n_bad_prefix += 1;
+        }
+    }
+    assert_eq!(n_bad_prefix, 0, "stop id missing 'stib:' prefix");
+
+    // Coordinates must be Brussels-area after reprojection. Lambert-93
+    // → WGS84 for the STIB coverage should land lon ≈ 4.2–4.5,
+    // lat ≈ 50.75–50.95. Check the distribution.
+    let mut in_brussels = 0usize;
+    let mut out_of_bounds = 0usize;
+    for stop in &tt.stops {
+        let brussels = (4.0..=5.0).contains(&stop.lon) && (50.5..=51.1).contains(&stop.lat);
+        if brussels {
+            in_brussels += 1;
+        } else {
+            out_of_bounds += 1;
+        }
+    }
+    eprintln!(
+        "coordinates: {} in Brussels bbox, {} out of bounds",
+        in_brussels, out_of_bounds
+    );
+    // Allow a tiny fraction (< 5 %) to land outside for satellite
+    // bus stops or reprojection rounding at the edges — the vast
+    // majority must be inside.
+    let min_inside = (tt.n_stops() * 95) / 100;
+    assert!(
+        in_brussels >= min_inside,
+        "only {}/{} stops in Brussels bbox — reprojection may be broken",
+        in_brussels,
+        tt.n_stops()
+    );
+}
+
 #[test]
 #[ignore = "hits the live Belgian NAP (720 MB download) — \
             set STIB_EPIP_NETWORK=1 to enable"]
