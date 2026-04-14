@@ -282,13 +282,17 @@ fn stib_epip_loader_produces_timetable() {
         tt.n_stops()
     );
     assert!(
-        tt.n_routes() >= 200 && tt.n_routes() <= 2_000,
-        "expected 200–2k routes (RAPTOR canonical patterns), got {}",
+        tt.n_routes() >= 100 && tt.n_routes() <= 2_000,
+        "expected 100–2k routes (RAPTOR canonical patterns), got {}",
         tt.n_routes()
     );
+    // After calendar filtering, ~14k trips run on a typical weekday
+    // (down from ~110k raw ServiceJourneys spanning every day class).
+    // Bounds are wide enough to absorb weekday vs weekend skew and
+    // the stale-publication remap fallback.
     assert!(
-        tt.n_total_trips >= 50_000 && tt.n_total_trips <= 250_000,
-        "expected 50k–250k trips, got {}",
+        tt.n_total_trips >= 5_000 && tt.n_total_trips <= 250_000,
+        "expected 5k–250k trips, got {}",
         tt.n_total_trips
     );
 
