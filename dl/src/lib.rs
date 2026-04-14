@@ -57,6 +57,22 @@ pub use butterfly_common::{Error, Result};
 // Internal modules
 mod core;
 
+/// Generic verified download primitive (#100). Consolidates HTTP
+/// download logic that was previously duplicated across
+/// `butterfly-dl` and `butterfly-route::transit::feeds`. Library
+/// consumers call [`verified::download_verified`] with a
+/// [`verified::VerifiedOptions`] bag; every verification default
+/// (magic prefix, min bytes, sidecar) is filled automatically from
+/// the target path's extension via
+/// [`verified::VerifiedOptions::for_extension`].
+pub mod verified;
+
+/// Region-indexed parallel downloads (#100). One TOML per region
+/// (`dl/regions/<name>.toml`) enumerates every file the region's
+/// routing deployment needs; [`regions::fetch_region`] dispatches
+/// one verified download per entry concurrently.
+pub mod regions;
+
 // C-compatible FFI bindings (optional)
 #[cfg(feature = "c-bindings")]
 pub mod ffi;

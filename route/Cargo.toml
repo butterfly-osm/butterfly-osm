@@ -38,6 +38,7 @@ tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
 # SHA-256 hashing
 sha2 = "0.11"
 hex = "0.4.3"
+butterfly-dl = { path = "../dl" }
 
 # Timestamps
 chrono = "0.4.44"
@@ -107,8 +108,10 @@ gtfs-structures = "0.47"
 # via a renamed `prost_011` dependency so call sites can decode FeedMessage.
 gtfs-rt = "0.5"
 prost_011 = { package = "prost", version = "0.11" }
-# Transit: HTTP client for the `transit-fetch` scraper (rustls TLS)
-reqwest = { workspace = true, features = ["rustls"] }
+# Transit feed downloads now delegate to butterfly-dl's `verified`
+# module (#100). The HTTP stack lives there; route no longer needs
+# a direct reqwest dep. Feed config + orchestration + GTFS parsing
+# stay in this crate; bytes-off-the-wire live in butterfly-dl.
 # Transit: TOML config parsing
 toml = "0.8"
 
