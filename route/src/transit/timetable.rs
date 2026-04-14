@@ -167,22 +167,50 @@ impl Timetable {
     /// Earliest trip of route `r` departing stop-position `stop_in_route`
     /// at or after `earliest_dep`.
     ///
-    /// Trips within a route are sorted by departure-at-first-stop, and in
-    /// well-formed feeds this implies monotonic ordering at every stop — we
-    /// therefore use a linear scan (robust to any order deviation).
+    /// **Robust to non-monotone departures** (issue #108): trips within a
+    /// route are stored sorted by departure at the *first* stop, but
+    /// departures at later stops can be non-monotone across that ordering
+    /// because of overtakes (an express trip passing a local trip between
+    /// two stops) or GTFS-RT trip updates delaying one trip past another.
+    /// The previous implementation returned the first trip in first-stop
+    /// order whose departure at `stop_in_route` was in the future, which
+    /// is wrong whenever a later-in-first-stop-order trip departs earlier
+    /// at `stop_in_route`. SNCB has overtake patterns, so this bug
+    /// produces wrong-but-plausible journeys on real Belgian data.
+    ///
+    /// The corrected implementation scans every trip's departure at
+    /// `stop_in_route` and returns the trip with the **earliest**
+    /// departure that is still at or after `earliest_dep`. Ties are
+    /// broken by smaller `trip_in_route`. The complexity is O(T) per
+    /// call — identical to the previous implementation — so there is
+    /// no performance regression. For very large T, a per-stop
+    /// departure index with binary-search lookup is an orthogonal
+    /// future optimisation.
+    ///
+    /// This fix also subsumes the GTFS-RT re-sort issue (#111): because
+    /// the lookup is now order-independent, `apply_trip_updates` can
+    /// mutate stop_times in place without worrying about trip order.
     pub fn earliest_trip(&self, r: RouteIdx, stop_in_route: u32, earliest_dep: u32) -> Option<u32> {
         let n_trips = self.n_trips[r as usize];
         let n_stops = self.n_stops[r as usize];
         let base = self.stop_times_offset[r as usize];
 
+        let mut best: Option<(u32, u32)> = None; // (departure, trip_in_route)
         for t in 0..n_trips {
             let idx = (base + t as u64 * n_stops as u64 + stop_in_route as u64) as usize;
             let st = self.stop_times[idx];
             if st.departure >= earliest_dep {
-                return Some(t);
+                match best {
+                    None => best = Some((st.departure, t)),
+                    Some((cur_dep, cur_t)) => {
+                        if st.departure < cur_dep || (st.departure == cur_dep && t < cur_t) {
+                            best = Some((st.departure, t));
+                        }
+                    }
+                }
             }
         }
-        None
+        best.map(|(_, t)| t)
     }
 }
 
@@ -488,5 +516,72 @@ mod tests {
             .position(|&s| s == c)
             .unwrap() as u32;
         assert_eq!(tt.stop_time(route_abc, t, idx_c).arrival, 730);
+    }
+
+    #[test]
+    fn earliest_trip_robust_to_overtakes() {
+        // Regression test for issue #108. Two trips on the same
+        // 3-stop pattern, but they OVERTAKE between the first and
+        // middle stop:
+        //
+        //   trip A (local): dep A=600, arr B=800, dep B=810, arr C=1000
+        //   trip B (fast):  dep A=700, arr B=720, dep B=730, arr C=900
+        //
+        // Trips are stored in first-stop order (A before B). A query
+        // for "earliest trip departing B after 700" must return trip B
+        // (dep 730), NOT trip A (dep 810). The pre-#108 linear scan
+        // returned trip A because it was earlier in first-stop order
+        // and its B-departure (810) was already >= 700. The fix
+        // correctly returns trip B because its B-departure (730) is
+        // smaller.
+        let mut b = TimetableBuilder::new();
+        let a = b.add_stop("A", "A", 0.0, 0.0, None);
+        let bb = b.add_stop("B", "B", 0.1, 0.0, None);
+        let c = b.add_stop("C", "C", 0.2, 0.0, None);
+
+        b.add_trip(
+            "local",
+            "L",
+            "Local",
+            "To C",
+            vec![a, bb, c],
+            vec![stime(600, 600), stime(800, 810), stime(1000, 1000)],
+        );
+        b.add_trip(
+            "fast",
+            "F",
+            "Fast",
+            "To C",
+            vec![a, bb, c],
+            vec![stime(700, 700), stime(720, 730), stime(900, 900)],
+        );
+
+        let tt = b.build().unwrap();
+        // Both trips share the same pattern → one route, two trips.
+        assert_eq!(tt.n_total_trips, 2);
+
+        let (route, _) = tt.routes_for_stop(a).iter().next().copied().unwrap();
+        let idx_b = tt
+            .route_stops_slice(route)
+            .iter()
+            .position(|&s| s == bb)
+            .unwrap() as u32;
+
+        // Query: earliest departure from B at or after 700.
+        // Correct answer: trip index 1 ("fast"), dep 730.
+        // Buggy pre-#108 answer: trip index 0 ("local"), dep 810.
+        let t = tt
+            .earliest_trip(route, idx_b, 700)
+            .expect("some trip must be boardable");
+
+        // Trip indices are assigned in first-stop-departure order, so
+        // the local is at index 0 and the fast is at index 1. The
+        // robust `earliest_trip` must return 1.
+        let chosen_dep = tt.stop_time(route, t, idx_b).departure;
+        assert_eq!(
+            chosen_dep, 730,
+            "earliest_trip must return the overtake-aware minimum departure (fast trip's 730), not the first-stop-order hit (local trip's 810)"
+        );
+        assert_eq!(t, 1, "expected trip index 1 (fast)");
     }
 }

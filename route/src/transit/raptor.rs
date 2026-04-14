@@ -20,7 +20,8 @@
 //! destination — i.e. `label[dest_stop] + target_weight`) across all
 //! sources, and a reconstructable path.
 
-use std::collections::{BTreeMap, HashMap};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
 
 use super::timetable::{RouteIdx, StopIdx, Timetable};
 use super::transfers::TransferGraph;
@@ -80,12 +81,18 @@ struct StopLabel {
 enum Via {
     /// Origin injection at round 0.
     Origin,
-    /// Boarded `route` at `trip_in_route`, at `from_stop` (origin of this trip segment).
+    /// Boarded `route` at `trip_in_route`, at `from_stop` (origin of this
+    /// trip segment). `board_time` is the **trip's scheduled departure at
+    /// `from_stop`** — not the rider's arrival at that stop. This matters
+    /// whenever the rider waits on the platform for the trip to depart:
+    /// the leg's displayed board time must be the train's departure, not
+    /// the rider's (earlier) arrival. See issue #107.
     Trip {
         route: RouteIdx,
         trip_in_route: u32,
         from_stop: StopIdx,
         from_round: u8,
+        board_time: u32,
     },
     /// Walked from `from_stop`. Walks don't consume a RAPTOR round so no
     /// `from_round` is stored — path reconstruction looks up the `from_stop`
@@ -230,6 +237,10 @@ pub fn run_raptor(
             // trip when we reach a new "hop-on" stop later.
             let mut current_trip: Option<u32> = None;
             let mut board_stop: StopIdx = 0;
+            // Scheduled departure of `current_trip` at `board_stop`.
+            // Captured when we (re-)board so reconstruction doesn't have to
+            // guess from stale labels (issue #107).
+            let mut board_dep: u32 = 0;
 
             for (pos, &stop) in route_stops.iter().enumerate().skip(start_pos as usize) {
                 // If we have a running trip, try to alight at `stop`.
@@ -250,6 +261,7 @@ pub fn run_raptor(
                                 trip_in_route: trip,
                                 from_stop: board_stop,
                                 from_round: (k - 1) as u8,
+                                board_time: board_dep,
                             },
                         };
                         best_at_stop[stop as usize] = arr;
@@ -285,6 +297,10 @@ pub fn run_raptor(
                     if should_switch {
                         current_trip = Some(candidate_trip);
                         board_stop = stop;
+                        // Capture the trip's scheduled departure at this
+                        // boarding stop — the actual board_time. See #107.
+                        let st = timetable.stop_time(route, candidate_trip, pos as u32);
+                        board_dep = st.departure;
                     }
                 }
             }
@@ -318,12 +334,7 @@ pub fn run_raptor(
         return None;
     }
     // Reconstruct the path using the labels from `best_round`.
-    let legs = reconstruct(
-        &labels,
-        best_round,
-        final_stop,
-        &query.sources.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
-    );
+    let legs = reconstruct(&labels, best_round, final_stop);
     let origin_stop = legs
         .iter()
         .map(|l| match l {
@@ -341,33 +352,74 @@ pub fn run_raptor(
     })
 }
 
-/// Relax transfer edges from all stops currently "marked" in `labels` that
-/// were just updated. For each improved neighbour, mark it for the next round.
+/// Relax walking transfers to closure, starting from every stop currently
+/// marked as "just improved" in this round.
+///
+/// This is a **bounded multi-source Dijkstra** over the precomputed walking
+/// transfer graph. On entry, `marked[s] = true` iff stop `s` was just
+/// improved by this round's route-scan phase (the "frontier"). On exit,
+/// `marked[s] = true` for every stop whose label was improved by any chain
+/// of walking transfers starting from the frontier, and `labels[s]` holds
+/// the new arrival time reached via that chain.
+///
+/// ## Why closure is mandatory (issue #106)
+///
+/// The ULTRA triangle dominance restriction in `transfers::ultra_restrict_transfers`
+/// is only sound when RAPTOR is willing to traverse **chained walking
+/// transfers within a single round**. The previous single-hop relaxation
+/// failed the safety argument: ULTRA could drop a direct edge `u -> v`
+/// because `u -> w + w -> v <= u -> v`, and then RAPTOR would fail to
+/// reach `v` within the round because it only performed the first hop.
+/// Closure restores the invariant: if `u -> w -> v` is geometrically
+/// feasible, RAPTOR will walk it, so ULTRA's triangle rule is now safe to
+/// prune `u -> v`.
+///
+/// ## Cost
+///
+/// Standard Dijkstra complexity over a sparse graph: `O((n_frontier + E) log n)`
+/// where `E` is the number of transfer edges traversed. On Belgium (64k
+/// stops, ~480k ULTRA-restricted transfer edges), this is microseconds —
+/// the transfer graph is sparse enough that the closure cost is dominated
+/// by the per-round route-scan in practice.
+///
+/// ## Reconstruction note
+///
+/// Each relaxation records `Via::Walk { from_stop: u }`, i.e. the immediate
+/// predecessor. A 3-hop closure chain `u -> v -> w` reconstructs as three
+/// `Walk` legs when path extraction walks back through `Via::Walk`
+/// pointers. Collapsing consecutive walk legs into one is a response-layer
+/// cosmetic, not a correctness concern.
 fn apply_transfers(
     labels: &mut [StopLabel],
     transfers: &TransferGraph,
     marked: &mut [bool],
     best_at_stop: &mut [u32],
 ) {
-    // Snapshot labels before relaxation so transfers don't chain within one pass.
-    let snapshot: Vec<StopLabel> = labels.to_vec();
-    for (s_idx, label) in snapshot.iter().enumerate() {
-        if label.time == INF {
+    let mut heap: BinaryHeap<Reverse<(u32, StopIdx)>> = BinaryHeap::new();
+    for (s_idx, m) in marked.iter().enumerate() {
+        if *m && labels[s_idx].time != INF {
+            heap.push(Reverse((labels[s_idx].time, s_idx as StopIdx)));
+        }
+    }
+
+    while let Some(Reverse((d, u))) = heap.pop() {
+        // Stale PQ entry: a later relaxation improved this stop, skip.
+        if d > labels[u as usize].time {
             continue;
         }
-        let s = s_idx as StopIdx;
-        for (dest, walk_s) in transfers.neighbours(s) {
-            if dest == s {
+        for (v, walk_s) in transfers.neighbours(u) {
+            if v == u {
                 continue;
             }
-            let new_time = label.time.saturating_add(walk_s);
-            if new_time < labels[dest as usize].time && new_time < best_at_stop[dest as usize] {
-                labels[dest as usize] = StopLabel {
+            let new_time = d.saturating_add(walk_s);
+            if new_time < labels[v as usize].time && new_time < best_at_stop[v as usize] {
+                labels[v as usize] = StopLabel {
                     time: new_time,
-                    via: Via::Walk { from_stop: s },
+                    via: Via::Walk { from_stop: u },
                 };
-                best_at_stop[dest as usize] = new_time;
-                marked[dest as usize] = true;
+                best_at_stop[v as usize] = new_time;
+                marked[v as usize] = true;
+                heap.push(Reverse((new_time, v)));
             }
         }
     }
@@ -377,7 +429,6 @@ fn reconstruct(
     labels: &[Vec<StopLabel>],
     final_round: usize,
     final_stop: StopIdx,
-    _origin_candidates: &[StopIdx],
 ) -> Vec<RaptorLeg> {
     let mut legs: Vec<RaptorLeg> = Vec::new();
     let mut cur_stop = final_stop;
@@ -392,12 +443,9 @@ fn reconstruct(
                 trip_in_route,
                 from_stop,
                 from_round,
+                board_time,
             } => {
-                // Look up board_time and alight_time from label chain.
                 let alight_time = label.time;
-                // board_time = arrival time at `from_stop` before this trip,
-                // i.e. label at (from_stop, from_round).
-                let board_time = labels[from_round as usize][from_stop as usize].time;
                 legs.push(RaptorLeg::Ride {
                     route,
                     trip_in_route,
@@ -410,14 +458,16 @@ fn reconstruct(
                 cur_round = from_round as usize;
             }
             Via::Walk { from_stop } => {
-                let dur = label.time - labels[cur_round][from_stop as usize].time;
+                let dur = label
+                    .time
+                    .saturating_sub(labels[cur_round][from_stop as usize].time);
                 legs.push(RaptorLeg::Walk {
                     from_stop,
                     to_stop: cur_stop,
                     duration_s: dur,
                 });
                 cur_stop = from_stop;
-                // Walks are within the same round.
+                // Walks are within the same round — cur_round unchanged.
             }
         }
         if cur_round == 0 && matches!(labels[cur_round][cur_stop as usize].via, Via::Origin) {
@@ -446,6 +496,13 @@ mod tests {
         // Graph:
         //   A --[Route R, trip T, dep 600, arr 1200]--> B
         //   No transfers needed.
+        //
+        // Rider arrives at A at time 500 and waits 100 seconds for the
+        // train, which departs at 600. The reconstructed leg's board_time
+        // must be the train's departure (600), NOT the rider's arrival
+        // (500). This is the #107 fix: before it landed, the reconstruct
+        // code dug board_time out of the old label at `from_stop` and
+        // returned the rider's arrival, hiding the platform wait.
         let mut b = TimetableBuilder::new();
         let a = b.add_stop("A", "A", 0.0, 0.0, None);
         let bb = b.add_stop("B", "B", 0.1, 0.0, None);
@@ -480,7 +537,10 @@ mod tests {
         {
             assert_eq!(*from_stop, a);
             assert_eq!(*to_stop, bb);
-            assert_eq!(*board_time, 500);
+            assert_eq!(
+                *board_time, 600,
+                "board_time must be the trip's scheduled departure, not the rider's arrival at the boarding stop (issue #107)"
+            );
             assert_eq!(*alight_time, 1200);
         } else {
             panic!("expected Ride leg");
@@ -536,6 +596,91 @@ mod tests {
             .iter()
             .any(|l| matches!(l, RaptorLeg::Walk { from_stop, to_stop, .. } if *from_stop == bb && *to_stop == c));
         assert!(has_walk, "expected walking transfer");
+    }
+
+    #[test]
+    fn chained_walking_transfers_within_a_round() {
+        // Regression test for issue #106 (ULTRA transfer restriction
+        // safety). Topology:
+        //
+        //   Route R1: A --> B         (dep 600, arr 700)
+        //   Transfer graph:   B --> U (60 s),  U --> V (60 s)
+        //                     (No direct B --> V edge.)
+        //   Route R2: V --> D         (dep 900, arr 1000)
+        //
+        // The only way to board R2 is to walk B -> U -> V. The direct
+        // B->V edge is absent (as if ULTRA pruned it). With the old
+        // single-hop `apply_transfers`, V is never reached within round 1
+        // and the journey is lost. With the new bounded-Dijkstra closure
+        // in `apply_transfers`, V is reached via the U hop and RAPTOR
+        // finds the journey.
+        let mut b = TimetableBuilder::new();
+        let a = b.add_stop("A", "A", 0.0, 0.0, None);
+        let bb = b.add_stop("B", "B", 0.1, 0.0, None);
+        let u = b.add_stop("U", "U", 0.11, 0.0, None);
+        let v = b.add_stop("V", "V", 0.12, 0.0, None);
+        let d = b.add_stop("D", "D", 0.2, 0.0, None);
+
+        b.add_trip(
+            "T1",
+            "R1",
+            "R1",
+            "To B",
+            vec![a, bb],
+            vec![stime(600, 600), stime(700, 700)],
+        );
+        b.add_trip(
+            "T2",
+            "R2",
+            "R2",
+            "To D",
+            vec![v, d],
+            vec![stime(900, 900), stime(1000, 1000)],
+        );
+        let tt = b.build().unwrap();
+
+        // Transfer graph: B -> U (60s), U -> V (60s). Deliberately NO
+        // direct B -> V edge — this is the ULTRA-restricted state where
+        // the single-hop relaxation would fail.
+        let mut g = TransferGraph::empty(tt.n_stops());
+        g.add_edge(bb, u, 60);
+        g.add_edge(u, bb, 60);
+        g.add_edge(u, v, 60);
+        g.add_edge(v, u, 60);
+        g.finalise();
+
+        let mut targets = HashMap::new();
+        targets.insert(d, 0u32);
+        let sources = vec![(a, 0u32)];
+        let q = RaptorQuery {
+            sources: &sources,
+            target_weights: &targets,
+        };
+        let journey = run_raptor(&tt, &g, &q)
+            .expect("closure must find the B->U->V chained walk; single-hop relaxation would fail");
+        assert_eq!(journey.arrival_time, 1000);
+        // The journey must contain at least one walking transfer leg.
+        assert!(
+            journey
+                .legs
+                .iter()
+                .any(|l| matches!(l, RaptorLeg::Walk { .. })),
+            "expected at least one walking transfer leg"
+        );
+        // The journey must contain both R1 and R2 rides.
+        let ride_routes: Vec<RouteIdx> = journey
+            .legs
+            .iter()
+            .filter_map(|l| match l {
+                RaptorLeg::Ride { route, .. } => Some(*route),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            ride_routes.len(),
+            2,
+            "expected exactly two ride legs (R1 and R2)"
+        );
     }
 
     #[test]

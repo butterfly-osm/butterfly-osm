@@ -46,11 +46,28 @@ use super::state::ServerState;
 use super::types::ErrorResponse;
 
 /// Per-mode defaults for access/egress fan-out. `(radius_m, max_stops, speed_mps)`.
+///
+/// Notes on `max_stops`:
+///
+/// - **foot** — 20 is fine because walking access is bounded by a tight
+///   2 km radius and most European cities have dozens of stops in a
+///   2 km disc. Increasing K brings diminishing returns.
+/// - **bike** — 60 covers the longer 8 km radius; cyclists shouldn't
+///   care about stops farther than that.
+/// - **car** — 500 (not 200) because the 30 km car radius sweeps past
+///   hundreds of dense-urban local bus stops before reaching the
+///   sparse rail stations that are the real point of a park-and-ride.
+///   SNCB stops spacing is ~10 km in the commuter belt; bus stops are
+///   ~200 m apart. Without a big K, the car candidate set is all bus
+///   and no rail, which produces a worse journey. This is a band-aid
+///   for the O(N) linear-scan in `candidate_stops` — the proper fix
+///   is a spatial index plus mode-aware stop weighting (issue #102).
+/// - **other** — a reasonable middle (100).
 fn default_access_params(mode: &str) -> (u32, usize, f64) {
     match mode {
         "foot" => (2_000, 20, 1.3),
         "bike" => (8_000, 60, 4.2),
-        "car" => (30_000, 200, 13.9),
+        "car" => (30_000, 500, 13.9),
         // Any other mode (truck, bus, scooter…) treat as fast road mode.
         _ => (20_000, 100, 11.1),
     }
@@ -211,16 +228,18 @@ pub async fn transit_handler(
         return Err(bad_request("invalid coordinates"));
     }
 
-    // Resolve access / egress road modes. Default both to "foot".
-    // The transit subsystem always requires at least `foot` because
-    // the inter-stop walking transfer graph is foot-only — but access
-    // and egress are independent and can use any loaded road mode.
+    // Resolve access / egress road modes. Default BOTH sides to "foot"
+    // when unspecified. Notably, when `access_mode=car` is passed but
+    // `egress_mode` is omitted, we still default egress to foot — the
+    // real park-and-ride pattern is "drive to station, walk to office",
+    // not "drive from the destination side too". Symmetric-drive users
+    // can explicitly set `egress_mode=car`.
+    //
+    // The transit subsystem always requires `foot` as a loaded mode
+    // because the inter-stop walking transfer graph is foot-only — but
+    // access and egress are independent and can use any loaded road mode.
     let access_mode = req.access_mode.as_deref().unwrap_or("foot").to_lowercase();
-    let egress_mode = req
-        .egress_mode
-        .as_deref()
-        .unwrap_or(&access_mode)
-        .to_lowercase();
+    let egress_mode = req.egress_mode.as_deref().unwrap_or("foot").to_lowercase();
 
     let Some(&foot_idx) = state.mode_lookup.get("foot") else {
         return Err((
@@ -295,8 +314,15 @@ pub async fn transit_handler(
         })
         .min(60_000);
 
+    // Precedence: query param > transit.toml value > per-mode default.
+    // A config value of 0 is treated as "use the per-mode default"
+    // (see issue #110 — the config knob was previously dead).
     let max_access_stops = req
         .max_access_stops
+        .or_else(|| {
+            let cfg = transit.config.max_access_stops;
+            if cfg == 0 { None } else { Some(cfg) }
+        })
         .unwrap_or_else(|| access_default_stops.max(egress_default_stops))
         .clamp(1, 500);
 
