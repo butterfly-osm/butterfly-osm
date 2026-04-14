@@ -36,7 +36,9 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::server::geometry::build_raw_points;
 use crate::server::query::CchQuery;
+use crate::server::unpack::unpack_path;
 use crate::server::state::ModeData;
 use crate::transit::gtfs::haversine_m;
 use crate::transit::raptor::{RaptorLeg, RaptorQuery, run_raptor};
@@ -110,6 +112,17 @@ pub struct TransitRequest {
     /// and its CCH returns raw distances in mm. Default: 1.3.
     #[serde(default)]
     pub walk_speed_mps: Option<f64>,
+    /// Access / egress leg geometry mode (#114). Accepted values:
+    ///
+    /// - `"straight"` (default): legs carry only `from`/`to` endpoints
+    ///   with a haversine `distance_m`. Cheap.
+    /// - `"full"`: legs carry a routed polyline `geometry` produced
+    ///   by unpacking the CCH shortest path, and `distance_m` is the
+    ///   real summed road distance. Costs a few milliseconds per leg.
+    ///
+    /// Anything else is rejected with HTTP 400.
+    #[serde(default)]
+    pub geometry: Option<String>,
 }
 
 /// One leg of the returned transit plan.
@@ -127,6 +140,11 @@ pub enum TransitLegOut {
         to: [f64; 2],
         duration_s: u32,
         distance_m: u32,
+        /// Optional routed polyline for access/egress walks. Populated
+        /// when the request sets `geometry=full` (#114). Omitted from
+        /// the JSON response when `None`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        geometry: Option<Vec<[f64; 2]>>,
     },
     /// Driving leg — an access or egress leg whose road mode is `car`.
     Drive {
@@ -134,6 +152,9 @@ pub enum TransitLegOut {
         to: [f64; 2],
         duration_s: u32,
         distance_m: u32,
+        /// Optional routed polyline (#114).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        geometry: Option<Vec<[f64; 2]>>,
     },
     /// Generic road leg for any non-foot, non-car mode (`bike`, `truck`…).
     /// The `mode` field carries the loaded mode's name.
@@ -143,6 +164,9 @@ pub enum TransitLegOut {
         to: [f64; 2],
         duration_s: u32,
         distance_m: u32,
+        /// Optional routed polyline (#114).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        geometry: Option<Vec<[f64; 2]>>,
     },
     Transit {
         /// `Arc<str>` cloned from the timetable — zero-copy on the hot
@@ -184,6 +208,7 @@ fn road_leg(
     to: [f64; 2],
     duration_s: u32,
     distance_m: u32,
+    geometry: Option<Vec<[f64; 2]>>,
 ) -> TransitLegOut {
     match mode {
         "foot" => TransitLegOut::Walk {
@@ -191,12 +216,14 @@ fn road_leg(
             to,
             duration_s,
             distance_m,
+            geometry,
         },
         "car" => TransitLegOut::Drive {
             from,
             to,
             duration_s,
             distance_m,
+            geometry,
         },
         other => TransitLegOut::Road {
             mode: other.to_string(),
@@ -204,6 +231,7 @@ fn road_leg(
             to,
             duration_s,
             distance_m,
+            geometry,
         },
     }
 }
@@ -253,6 +281,21 @@ pub fn compute_transit_journey(
     // access and egress are independent and can use any loaded road mode.
     let access_mode = req.access_mode.as_deref().unwrap_or("foot").to_lowercase();
     let egress_mode = req.egress_mode.as_deref().unwrap_or("foot").to_lowercase();
+
+    // Resolve access/egress geometry mode (#114). Default: straight
+    // line endpoints + haversine distance (cheap). "full": run the
+    // CCH query, unpack the path, and return a routed polyline with
+    // real road distance. Anything else → 400.
+    let geometry_full = match req.geometry.as_deref() {
+        None | Some("") | Some("straight") => false,
+        Some("full") => true,
+        Some(other) => {
+            return Err(bad_request(&format!(
+                "geometry='{}' is invalid; accepted values are 'straight' (default) or 'full'",
+                other
+            )));
+        }
+    };
 
     let Some(&foot_idx) = state.mode_lookup.get("foot") else {
         return Err((
@@ -552,17 +595,36 @@ pub fn compute_transit_journey(
     // Leg 0: access leg from origin to the first transit boarding stop,
     // labelled with the access mode.
     let first_stop = &timetable.stops[journey.origin_stop as usize];
+    let access_from = [req.origin_lon, req.origin_lat];
+    let access_to = [first_stop.lon, first_stop.lat];
+    let (access_distance_m, access_geometry) = if geometry_full {
+        match build_routed_road_leg(
+            state,
+            access_idx,
+            access_from[0],
+            access_from[1],
+            access_to[0],
+            access_to[1],
+        ) {
+            Some((poly, dist)) => (dist, Some(poly)),
+            None => (
+                haversine_m(access_from[0], access_from[1], access_to[0], access_to[1]) as u32,
+                None,
+            ),
+        }
+    } else {
+        (
+            haversine_m(access_from[0], access_from[1], access_to[0], access_to[1]) as u32,
+            None,
+        )
+    };
     legs.push(road_leg(
         &access_mode,
-        [req.origin_lon, req.origin_lat],
-        [first_stop.lon, first_stop.lat],
+        access_from,
+        access_to,
         origin_walk,
-        haversine_m(
-            req.origin_lon,
-            req.origin_lat,
-            first_stop.lon,
-            first_stop.lat,
-        ) as u32,
+        access_distance_m,
+        access_geometry,
     ));
 
     // Middle legs: decode the RaptorJourney.
@@ -580,6 +642,7 @@ pub fn compute_transit_journey(
                     to: [t.lon, t.lat],
                     duration_s: *duration_s,
                     distance_m: haversine_m(f.lon, f.lat, t.lon, t.lat) as u32,
+                    geometry: None,
                 });
             }
             RaptorLeg::Ride {
@@ -614,12 +677,36 @@ pub fn compute_transit_journey(
     // Final leg: egress from the last stop to the destination, labelled
     // with the egress mode.
     let last_stop = &timetable.stops[journey.final_stop as usize];
+    let egress_from = [last_stop.lon, last_stop.lat];
+    let egress_to = [req.dest_lon, req.dest_lat];
+    let (egress_distance_m, egress_geometry) = if geometry_full {
+        match build_routed_road_leg(
+            state,
+            egress_idx,
+            egress_from[0],
+            egress_from[1],
+            egress_to[0],
+            egress_to[1],
+        ) {
+            Some((poly, dist)) => (dist, Some(poly)),
+            None => (
+                haversine_m(egress_from[0], egress_from[1], egress_to[0], egress_to[1]) as u32,
+                None,
+            ),
+        }
+    } else {
+        (
+            haversine_m(egress_from[0], egress_from[1], egress_to[0], egress_to[1]) as u32,
+            None,
+        )
+    };
     legs.push(road_leg(
         &egress_mode,
-        [last_stop.lon, last_stop.lat],
-        [req.dest_lon, req.dest_lat],
+        egress_from,
+        egress_to,
         egress_walk,
-        haversine_m(last_stop.lon, last_stop.lat, req.dest_lon, req.dest_lat) as u32,
+        egress_distance_m,
+        egress_geometry,
     ));
 
     Ok(TransitResponse {
@@ -868,6 +955,56 @@ fn snap_stop_ranks_on_mode(
 /// R-tree walk with no rejection loop. Falls back to the global index
 /// with mask filtering if the mode wasn't pre-indexed (shouldn't
 /// happen in production but keeps the code safe against misconfiguration).
+/// Compute the routed (polyline, distance_m) for a single access or
+/// egress leg in the given mode (#114). Returns `None` if either
+/// endpoint fails to snap or the CCH query reports no route. On any
+/// kind of failure the caller falls back to the straight-line leg
+/// shape — the journey duration from RAPTOR is already final, so the
+/// routed geometry is pure cosmetic metadata.
+fn build_routed_road_leg(
+    state: &ServerState,
+    mode_idx: u8,
+    from_lon: f64,
+    from_lat: f64,
+    to_lon: f64,
+    to_lat: f64,
+) -> Option<(Vec<[f64; 2]>, u32)> {
+    let src_rank = snap_to_rank(from_lon, from_lat, state, mode_idx)?;
+    let dst_rank = snap_to_rank(to_lon, to_lat, state, mode_idx)?;
+    if src_rank == dst_rank {
+        return Some((vec![[from_lon, from_lat], [to_lon, to_lat]], 0));
+    }
+    let mode_data = &state.modes[mode_idx as usize];
+    let query = CchQuery::with_custom_weights(
+        &mode_data.cch_topo,
+        &mode_data.down_rev,
+        &mode_data.cch_weights,
+    );
+    let result = query.query(src_rank, dst_rank)?;
+    let rank_path = unpack_path(
+        &mode_data.cch_topo,
+        &mode_data.cch_weights,
+        &result.forward_parent,
+        &result.backward_parent,
+        src_rank,
+        dst_rank,
+        result.meeting_node,
+    );
+    let ebg_path: Vec<u32> = rank_path
+        .iter()
+        .map(|&rank| {
+            let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
+            mode_data.filtered_ebg.filtered_to_original[filtered_id as usize]
+        })
+        .collect();
+    let (points, distance_m) = build_raw_points(&ebg_path, &state.ebg_nodes, &state.nbg_geo);
+    if points.is_empty() {
+        return None;
+    }
+    let polyline: Vec<[f64; 2]> = points.into_iter().map(|p| [p.lon, p.lat]).collect();
+    Some((polyline, distance_m.round() as u32))
+}
+
 fn snap_to_rank(lon: f64, lat: f64, state: &ServerState, mode_idx: u8) -> Option<u32> {
     let mode_data = &state.modes[mode_idx as usize];
     let orig = match state.mode_spatial_indexes.get(&mode_idx) {
