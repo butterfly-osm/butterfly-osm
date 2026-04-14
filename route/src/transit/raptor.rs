@@ -20,8 +20,9 @@
 //! destination — i.e. `label[dest_stop] + target_weight`) across all
 //! sources, and a reconstructable path.
 
+use std::cell::RefCell;
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap};
 
 use super::timetable::{RouteIdx, StopIdx, Timetable};
 use super::transfers::TransferGraph;
@@ -32,6 +33,179 @@ const INF: u32 = u32::MAX;
 /// Upper bound on rounds. RAPTOR rounds = max number of transit legs (+ 1
 /// for the foot prefix). Belgian networks rarely need more than 4–5.
 const MAX_ROUNDS: usize = 8;
+
+/// Sentinel used in the flat route queue (`queue_start_pos[r]`) to mean
+/// "route r is not in the queue this round". We pick a value that can
+/// never appear as a real route position.
+const QUEUE_EMPTY: u32 = u32::MAX;
+
+/// Thread-local scratch state reused across RAPTOR queries.
+///
+/// Issue #104: the previous implementation allocated 9 full label
+/// arrays, one `best_at_stop` array, one `marked` bitmap, and a fresh
+/// `BTreeMap` queue on every `/transit` request. For Belgium's 64k
+/// stops that was ~6 MB of zeroed allocation per query plus a fresh
+/// `BTreeMap` with log-cost inserts per round.
+///
+/// `RaptorState` holds **one** instance of each buffer, sized to the
+/// current timetable, and resets them in `start(...)` at the top of
+/// every query. The `labels` grid is a flat `Vec<StopLabel>` of
+/// `(MAX_ROUNDS + 1) * n_stops` cells, accessed row-major by round.
+/// The route queue is an indexed `Vec<u32>` of length `n_routes`, with
+/// a separate `queue_touched: Vec<RouteIdx>` tracking which entries
+/// are live so the per-round reset is O(touched) instead of O(n_routes).
+/// The marked frontier is a `Vec<bool>` plus a `Vec<StopIdx>` list of
+/// the actual marked stops, so transfer relaxation iterates only the
+/// frontier — not every stop in the timetable.
+struct RaptorState {
+    n_stops: usize,
+    n_routes: usize,
+    /// Row-major `[round][stop]` grid, flattened. Index:
+    /// `round * n_stops + stop`.
+    labels: Vec<StopLabel>,
+    /// `best_at_stop[s]` = earliest arrival across all rounds so far.
+    best_at_stop: Vec<u32>,
+    /// `marked[s]` = true iff `s` was improved in the current round's
+    /// route-scan or transfer-closure phase.
+    marked: Vec<bool>,
+    /// Live list of stops currently marked — the frontier. Walking
+    /// this is O(frontier size), not O(n_stops).
+    frontier: Vec<StopIdx>,
+    /// Indexed route queue: `queue_start_pos[route]` = earliest stop
+    /// position at which the route was touched this round, or
+    /// `QUEUE_EMPTY` if the route is not in the queue.
+    queue_start_pos: Vec<u32>,
+    /// List of routes currently in the queue — drives O(touched)
+    /// iteration and per-round reset.
+    queue_touched: Vec<RouteIdx>,
+    /// Scratch priority queue for transfer-closure Dijkstra. Cleared
+    /// at the top of every `apply_transfers` call.
+    xfer_heap: BinaryHeap<Reverse<(u32, StopIdx)>>,
+}
+
+impl RaptorState {
+    fn new() -> Self {
+        Self {
+            n_stops: 0,
+            n_routes: 0,
+            labels: Vec::new(),
+            best_at_stop: Vec::new(),
+            marked: Vec::new(),
+            frontier: Vec::new(),
+            queue_start_pos: Vec::new(),
+            queue_touched: Vec::new(),
+            xfer_heap: BinaryHeap::new(),
+        }
+    }
+
+    /// Reset the state to accept a new query against a timetable of
+    /// `n_stops` and `n_routes`. Resizes the scratch buffers if the
+    /// timetable shape changed; otherwise fills in-place via `fill`.
+    fn start(&mut self, n_stops: usize, n_routes: usize) {
+        let rounds = MAX_ROUNDS + 1;
+        let label_cells = rounds * n_stops;
+        if self.n_stops != n_stops || self.labels.len() != label_cells {
+            self.labels = vec![StopLabel::default(); label_cells];
+            self.best_at_stop = vec![INF; n_stops];
+            self.marked = vec![false; n_stops];
+            self.frontier = Vec::with_capacity(n_stops.min(1024));
+        } else {
+            // Fast reset: memset the labels (LLVM vectorises this).
+            self.labels.fill(StopLabel::default());
+            self.best_at_stop.fill(INF);
+            // `marked` is cleared via the frontier below.
+        }
+        if self.n_routes != n_routes {
+            self.queue_start_pos = vec![QUEUE_EMPTY; n_routes];
+            self.queue_touched = Vec::with_capacity(n_routes.min(1024));
+        } else {
+            // Walk the previous frontier to clear only live entries.
+            for &s in &self.frontier {
+                self.marked[s as usize] = false;
+            }
+            for &r in &self.queue_touched {
+                self.queue_start_pos[r as usize] = QUEUE_EMPTY;
+            }
+        }
+        self.frontier.clear();
+        self.queue_touched.clear();
+        self.xfer_heap.clear();
+        self.n_stops = n_stops;
+        self.n_routes = n_routes;
+    }
+
+    /// Index into the flat labels grid.
+    #[inline]
+    fn label_idx(&self, round: usize, stop: StopIdx) -> usize {
+        round * self.n_stops + stop as usize
+    }
+
+    #[inline]
+    fn label(&self, round: usize, stop: StopIdx) -> StopLabel {
+        self.labels[self.label_idx(round, stop)]
+    }
+
+    #[inline]
+    fn set_label(&mut self, round: usize, stop: StopIdx, label: StopLabel) {
+        let idx = self.label_idx(round, stop);
+        self.labels[idx] = label;
+    }
+
+    /// Copy round `k-1` labels into round `k` at the start of the
+    /// round (monotone invariant). Cheap: `copy_within`.
+    fn carry_forward(&mut self, k: usize) {
+        let n = self.n_stops;
+        let src = (k - 1) * n;
+        let dst = k * n;
+        self.labels.copy_within(src..src + n, dst);
+    }
+
+    /// Mark a stop as improved this round. Idempotent; only adds the
+    /// stop to the frontier list the first time.
+    #[inline]
+    fn mark(&mut self, stop: StopIdx) {
+        let s = stop as usize;
+        if !self.marked[s] {
+            self.marked[s] = true;
+            self.frontier.push(stop);
+        }
+    }
+
+    /// Reset the marked bitmap and frontier at the top of a round.
+    /// Walks only the frontier, not the whole bitmap.
+    fn clear_frontier(&mut self) {
+        for &s in &self.frontier {
+            self.marked[s as usize] = false;
+        }
+        self.frontier.clear();
+    }
+
+    /// Register a route as touched at `start_pos` (taking the min if
+    /// the route was already in the queue this round).
+    #[inline]
+    fn enqueue_route(&mut self, route: RouteIdx, start_pos: u32) {
+        let slot = &mut self.queue_start_pos[route as usize];
+        if *slot == QUEUE_EMPTY {
+            *slot = start_pos;
+            self.queue_touched.push(route);
+        } else if start_pos < *slot {
+            *slot = start_pos;
+        }
+    }
+
+    /// Reset the queue at the end of a round.
+    fn clear_queue(&mut self) {
+        for &r in &self.queue_touched {
+            self.queue_start_pos[r as usize] = QUEUE_EMPTY;
+        }
+        self.queue_touched.clear();
+    }
+}
+
+thread_local! {
+    /// One RAPTOR state per thread, reused across queries. See #104.
+    static RAPTOR_STATE: RefCell<RaptorState> = RefCell::new(RaptorState::new());
+}
 
 /// A single leg of a RAPTOR journey.
 #[derive(Debug, Clone)]
@@ -117,316 +291,278 @@ pub struct RaptorQuery<'a> {
 }
 
 /// Run a RAPTOR query and return the best journey, if any.
+///
+/// Uses a thread-local [`RaptorState`] reused across queries. The
+/// per-query reset is O(touched) in the live frontier + queue, plus a
+/// vectorised label-grid memset. See issue #104.
 pub fn run_raptor(
     timetable: &Timetable,
     transfers: &TransferGraph,
     query: &RaptorQuery<'_>,
 ) -> Option<RaptorJourney> {
     let n_stops = timetable.n_stops();
+    let n_routes = timetable.n_routes();
     if n_stops == 0 || query.sources.is_empty() || query.target_weights.is_empty() {
         return None;
     }
 
-    // labels[k][stop] = earliest arrival at `stop` in ≤ k rounds.
-    let mut labels: Vec<Vec<StopLabel>> = (0..MAX_ROUNDS + 1)
-        .map(|_| vec![StopLabel::default(); n_stops])
-        .collect();
+    RAPTOR_STATE.with(|cell| {
+        let mut st = cell.borrow_mut();
+        st.start(n_stops, n_routes);
 
-    // best_arrival_at_stop[stop] = earliest across all rounds (for pruning).
-    let mut best_at_stop: Vec<u32> = vec![INF; n_stops];
+        let mut best_absolute = INF;
+        let mut best_final_stop: Option<StopIdx> = None;
+        let mut best_round: usize = 0;
 
-    // best_absolute_arrival = best (label[stop] + target_weight[stop]) so far.
-    let mut best_absolute = INF;
-    let mut best_final_stop: Option<StopIdx> = None;
-    let mut best_round: usize = 0;
-
-    // Inject sources at round 0.
-    for &(stop, dep) in query.sources {
-        let idx = stop as usize;
-        if idx >= n_stops {
-            continue;
-        }
-        if dep < labels[0][idx].time {
-            labels[0][idx].time = dep;
-            labels[0][idx].via = Via::Origin;
-            best_at_stop[idx] = best_at_stop[idx].min(dep);
-        }
-        // Immediately seed the absolute best with origin stops that are also
-        // target stops (0-transit journey).
-        if let Some(&tw) = query.target_weights.get(&stop) {
-            let total = dep.saturating_add(tw);
-            if total < best_absolute {
-                best_absolute = total;
-                best_final_stop = Some(stop);
-                best_round = 0;
-            }
-        }
-    }
-
-    // marked[stop] = was `stop` improved in the last round?
-    let mut marked: Vec<bool> = vec![false; n_stops];
-    for &(stop, _dep) in query.sources {
-        if (stop as usize) < n_stops {
-            marked[stop as usize] = true;
-        }
-    }
-
-    // Pre-round-1: walking transfers from the origin-injected stops.
-    // These are "free" walks that happen before boarding any trip; they
-    // stay in round 0 because they don't consume a transfer.
-    apply_transfers(&mut labels[0], transfers, &mut marked, &mut best_at_stop);
-    // Re-check absolute best after initial walks.
-    for (stop_idx, label) in labels[0].iter().enumerate() {
-        if label.time == INF {
-            continue;
-        }
-        if let Some(&tw) = query.target_weights.get(&(stop_idx as u32)) {
-            let total = label.time.saturating_add(tw);
-            if total < best_absolute {
-                best_absolute = total;
-                best_final_stop = Some(stop_idx as u32);
-                best_round = 0;
-            }
-        }
-    }
-
-    for k in 1..=MAX_ROUNDS {
-        // Initialise round k with round k-1 labels (monotone).
-        let (prev_slice, curr_slice) = labels.split_at_mut(k);
-        let prev = &prev_slice[k - 1];
-        let curr: &mut Vec<StopLabel> = &mut curr_slice[0];
-        for (i, label) in prev.iter().enumerate() {
-            if label.time < curr[i].time {
-                curr[i] = *label;
-            }
-        }
-
-        // Collect queue: one (route, earliest stop index) entry per
-        // route touching a marked stop. If a route is touched by several
-        // marked stops, keep the earliest stop along the route.
-        let mut queue: BTreeMap<RouteIdx, u32> = BTreeMap::new();
-        for (s_idx, m) in marked.iter().enumerate() {
-            if !*m {
+        // ---- Round 0 seeding ----------------------------------------
+        for &(stop, dep) in query.sources {
+            let idx = stop as usize;
+            if idx >= n_stops {
                 continue;
             }
-            for &(route, pos_in_route) in timetable.routes_for_stop(s_idx as StopIdx) {
-                queue
-                    .entry(route)
-                    .and_modify(|p| {
-                        if pos_in_route < *p {
-                            *p = pos_in_route;
-                        }
-                    })
-                    .or_insert(pos_in_route);
+            let current = st.label(0, stop).time;
+            if dep < current {
+                st.set_label(
+                    0,
+                    stop,
+                    StopLabel {
+                        time: dep,
+                        via: Via::Origin,
+                    },
+                );
+                let bas = &mut st.best_at_stop[idx];
+                if dep < *bas {
+                    *bas = dep;
+                }
+                st.mark(stop);
+            }
+            if let Some(&tw) = query.target_weights.get(&stop) {
+                let total = dep.saturating_add(tw);
+                if total < best_absolute {
+                    best_absolute = total;
+                    best_final_stop = Some(stop);
+                    best_round = 0;
+                }
             }
         }
 
-        // Reset marks — they'll be repopulated for round k by trip/transfer scans.
-        for m in marked.iter_mut() {
-            *m = false;
+        // Pre-round-1 transfer closure from origin seeds.
+        apply_transfers_state(&mut st, 0, transfers);
+        // Re-check absolute best using transfer-relaxed labels.
+        // Walk only the live frontier — not the whole label grid.
+        for &stop in &st.frontier.clone() {
+            let label_time = st.label(0, stop).time;
+            if label_time == INF {
+                continue;
+            }
+            if let Some(&tw) = query.target_weights.get(&stop) {
+                let total = label_time.saturating_add(tw);
+                if total < best_absolute {
+                    best_absolute = total;
+                    best_final_stop = Some(stop);
+                    best_round = 0;
+                }
+            }
         }
 
-        let mut any_improvement = false;
+        // ---- Rounds 1..=MAX_ROUNDS ----------------------------------
+        for k in 1..=MAX_ROUNDS {
+            // Monotone carry: copy round k-1 into round k.
+            st.carry_forward(k);
 
-        for (route, start_pos) in queue {
-            let route_stops = timetable.route_stops_slice(route);
+            // Build the route queue from the current frontier. We
+            // consume `st.frontier` into `queue_touched` and reset it.
+            // The frontier collected during round k-1's transfer pass
+            // is what we iterate now.
+            let round_frontier: Vec<StopIdx> = st.frontier.clone();
+            st.clear_frontier();
 
-            // Walk the route from start_pos to the end, maintaining a
-            // "current trip": once we board, subsequent stops use the same
-            // trip — unless an earlier arrival lets us take an even earlier
-            // trip when we reach a new "hop-on" stop later.
-            let mut current_trip: Option<u32> = None;
-            let mut board_stop: StopIdx = 0;
-            // Scheduled departure of `current_trip` at `board_stop`.
-            // Captured when we (re-)board so reconstruction doesn't have to
-            // guess from stale labels (issue #107).
-            let mut board_dep: u32 = 0;
+            for s in round_frontier {
+                for &(route, pos_in_route) in timetable.routes_for_stop(s) {
+                    st.enqueue_route(route, pos_in_route);
+                }
+            }
 
-            for (pos, &stop) in route_stops.iter().enumerate().skip(start_pos as usize) {
-                // If we have a running trip, try to alight at `stop`.
-                if let Some(trip) = current_trip {
-                    let st = timetable.stop_time(route, trip, pos as u32);
-                    let arr = st.arrival;
-                    // Target pruning: an arrival that already exceeds the best
-                    // absolute known journey can't improve anything.
-                    let min_tw = query.target_weights.get(&stop).copied().unwrap_or(0);
-                    if arr.saturating_add(min_tw) < best_absolute
-                        && arr < curr[stop as usize].time
-                        && arr < best_at_stop[stop as usize]
-                    {
-                        curr[stop as usize] = StopLabel {
-                            time: arr,
-                            via: Via::Trip {
-                                route,
-                                trip_in_route: trip,
-                                from_stop: board_stop,
-                                from_round: (k - 1) as u8,
-                                board_time: board_dep,
-                            },
-                        };
-                        best_at_stop[stop as usize] = arr;
-                        marked[stop as usize] = true;
-                        any_improvement = true;
+            let mut any_improvement = false;
 
-                        if let Some(&tw) = query.target_weights.get(&stop) {
-                            let total = arr.saturating_add(tw);
-                            if total < best_absolute {
-                                best_absolute = total;
-                                best_final_stop = Some(stop);
-                                best_round = k;
+            // Iterate queued routes. Drain-style: take a snapshot so we
+            // can borrow `st` mutably inside the loop without a
+            // self-borrow conflict.
+            let queued: Vec<(RouteIdx, u32)> = st
+                .queue_touched
+                .iter()
+                .map(|&r| (r, st.queue_start_pos[r as usize]))
+                .collect();
+            st.clear_queue();
+
+            for (route, start_pos) in queued {
+                let route_stops = timetable.route_stops_slice(route);
+
+                let mut current_trip: Option<u32> = None;
+                let mut board_stop: StopIdx = 0;
+                let mut board_dep: u32 = 0;
+
+                for (pos, &stop) in route_stops.iter().enumerate().skip(start_pos as usize) {
+                    // Try to alight.
+                    if let Some(trip) = current_trip {
+                        let st_time = timetable.stop_time(route, trip, pos as u32);
+                        let arr = st_time.arrival;
+                        let min_tw = query.target_weights.get(&stop).copied().unwrap_or(0);
+                        let curr_time = st.label(k, stop).time;
+                        let best_time = st.best_at_stop[stop as usize];
+                        if arr.saturating_add(min_tw) < best_absolute
+                            && arr < curr_time
+                            && arr < best_time
+                        {
+                            st.set_label(
+                                k,
+                                stop,
+                                StopLabel {
+                                    time: arr,
+                                    via: Via::Trip {
+                                        route,
+                                        trip_in_route: trip,
+                                        from_stop: board_stop,
+                                        from_round: (k - 1) as u8,
+                                        board_time: board_dep,
+                                    },
+                                },
+                            );
+                            st.best_at_stop[stop as usize] = arr;
+                            st.mark(stop);
+                            any_improvement = true;
+                            if let Some(&tw) = query.target_weights.get(&stop) {
+                                let total = arr.saturating_add(tw);
+                                if total < best_absolute {
+                                    best_absolute = total;
+                                    best_final_stop = Some(stop);
+                                    best_round = k;
+                                }
                             }
                         }
                     }
-                }
 
-                // Can we (re-)board an earlier trip at this stop? Use the
-                // label at `stop` from the *previous* round (`prev`), which
-                // represents "already reachable by k-1 rounds and then
-                // boarding a new trip".
-                let prev_arr = prev[stop as usize].time;
-                if prev_arr == INF {
+                    // Can we (re-)board using the k-1 label at this stop?
+                    let prev_arr = st.label(k - 1, stop).time;
+                    if prev_arr == INF {
+                        continue;
+                    }
+                    if let Some(candidate_trip) =
+                        timetable.earliest_trip(route, pos as u32, prev_arr)
+                    {
+                        let should_switch = match current_trip {
+                            None => true,
+                            Some(t) => candidate_trip < t,
+                        };
+                        if should_switch {
+                            current_trip = Some(candidate_trip);
+                            board_stop = stop;
+                            let st_time = timetable.stop_time(route, candidate_trip, pos as u32);
+                            board_dep = st_time.departure;
+                        }
+                    }
+                }
+            }
+
+            if !any_improvement {
+                break;
+            }
+
+            // Transfer closure from newly-marked stops.
+            apply_transfers_state(&mut st, k, transfers);
+
+            // Re-check absolute best using the frontier (not the
+            // whole stop universe).
+            for &stop in &st.frontier.clone() {
+                let label_time = st.label(k, stop).time;
+                if label_time == INF {
                     continue;
                 }
-                // Board stop must have a departure; check if a trip
-                // departs at or after prev_arr.
-                if let Some(candidate_trip) = timetable.earliest_trip(route, pos as u32, prev_arr) {
-                    let should_switch = match current_trip {
-                        None => true,
-                        Some(t) => candidate_trip < t,
-                    };
-                    if should_switch {
-                        current_trip = Some(candidate_trip);
-                        board_stop = stop;
-                        // Capture the trip's scheduled departure at this
-                        // boarding stop — the actual board_time. See #107.
-                        let st = timetable.stop_time(route, candidate_trip, pos as u32);
-                        board_dep = st.departure;
+                if let Some(&tw) = query.target_weights.get(&stop) {
+                    let total = label_time.saturating_add(tw);
+                    if total < best_absolute {
+                        best_absolute = total;
+                        best_final_stop = Some(stop);
+                        best_round = k;
                     }
                 }
             }
         }
 
-        if !any_improvement {
-            break;
+        let final_stop = best_final_stop?;
+        if best_absolute == INF {
+            return None;
         }
 
-        // Apply foot transfers from newly-marked stops.
-        apply_transfers(curr, transfers, &mut marked, &mut best_at_stop);
+        // Reconstruct the journey from the flat label grid held by `st`.
+        let legs = reconstruct_from_state(&st, best_round, final_stop);
+        let origin_stop = legs
+            .iter()
+            .map(|l| match l {
+                RaptorLeg::Walk { from_stop, .. } => *from_stop,
+                RaptorLeg::Ride { from_stop, .. } => *from_stop,
+            })
+            .next()
+            .unwrap_or(final_stop);
 
-        // Re-check absolute best using transfer-relaxed labels.
-        for (stop_idx, label) in curr.iter().enumerate() {
-            if label.time == INF {
-                continue;
-            }
-            if let Some(&tw) = query.target_weights.get(&(stop_idx as u32)) {
-                let total = label.time.saturating_add(tw);
-                if total < best_absolute {
-                    best_absolute = total;
-                    best_final_stop = Some(stop_idx as u32);
-                    best_round = k;
-                }
-            }
-        }
-    }
-
-    let final_stop = best_final_stop?;
-    if best_absolute == INF {
-        return None;
-    }
-    // Reconstruct the path using the labels from `best_round`.
-    let legs = reconstruct(&labels, best_round, final_stop);
-    let origin_stop = legs
-        .iter()
-        .map(|l| match l {
-            RaptorLeg::Walk { from_stop, .. } => *from_stop,
-            RaptorLeg::Ride { from_stop, .. } => *from_stop,
+        Some(RaptorJourney {
+            arrival_time: st.label(best_round, final_stop).time,
+            final_stop,
+            origin_stop,
+            legs,
         })
-        .next()
-        .unwrap_or(final_stop);
-
-    Some(RaptorJourney {
-        arrival_time: labels[best_round][final_stop as usize].time,
-        final_stop,
-        origin_stop,
-        legs,
     })
 }
 
-/// Relax walking transfers to closure, starting from every stop currently
-/// marked as "just improved" in this round.
+/// Relax walking transfers to closure, starting from every stop
+/// currently marked as "just improved" in this round. Operates on the
+/// shared [`RaptorState`] so no heap reallocation happens per call.
 ///
-/// This is a **bounded multi-source Dijkstra** over the precomputed walking
-/// transfer graph. On entry, `marked[s] = true` iff stop `s` was just
-/// improved by this round's route-scan phase (the "frontier"). On exit,
-/// `marked[s] = true` for every stop whose label was improved by any chain
-/// of walking transfers starting from the frontier, and `labels[s]` holds
-/// the new arrival time reached via that chain.
+/// On entry, `state.frontier` contains the stops that were just improved
+/// by this round's route-scan phase. On exit, every stop whose label
+/// was improved by any chain of walking transfers from the frontier is
+/// now marked and on the frontier list.
 ///
-/// ## Why closure is mandatory (issue #106)
-///
-/// The ULTRA triangle dominance restriction in `transfers::ultra_restrict_transfers`
-/// is only sound when RAPTOR is willing to traverse **chained walking
-/// transfers within a single round**. The previous single-hop relaxation
-/// failed the safety argument: ULTRA could drop a direct edge `u -> v`
-/// because `u -> w + w -> v <= u -> v`, and then RAPTOR would fail to
-/// reach `v` within the round because it only performed the first hop.
-/// Closure restores the invariant: if `u -> w -> v` is geometrically
-/// feasible, RAPTOR will walk it, so ULTRA's triangle rule is now safe to
-/// prune `u -> v`.
-///
-/// ## Cost
-///
-/// Standard Dijkstra complexity over a sparse graph: `O((n_frontier + E) log n)`
-/// where `E` is the number of transfer edges traversed. On Belgium (64k
-/// stops, ~480k ULTRA-restricted transfer edges), this is microseconds —
-/// the transfer graph is sparse enough that the closure cost is dominated
-/// by the per-round route-scan in practice.
-///
-/// ## Reconstruction note
-///
-/// Each relaxation records `Via::Walk { from_stop: u }`, i.e. the immediate
-/// predecessor. A 3-hop closure chain `u -> v -> w` reconstructs as three
-/// `Walk` legs when path extraction walks back through `Via::Walk`
-/// pointers. Collapsing consecutive walk legs into one is a response-layer
-/// cosmetic, not a correctness concern.
-fn apply_transfers(
-    labels: &mut [StopLabel],
-    transfers: &TransferGraph,
-    marked: &mut [bool],
-    best_at_stop: &mut [u32],
-) {
-    let mut heap: BinaryHeap<Reverse<(u32, StopIdx)>> = BinaryHeap::new();
-    for (s_idx, m) in marked.iter().enumerate() {
-        if *m && labels[s_idx].time != INF {
-            heap.push(Reverse((labels[s_idx].time, s_idx as StopIdx)));
+/// See issue #106 for the correctness argument (closure is what makes
+/// the ULTRA triangle dominance restriction safe) and issue #104 for
+/// the allocation-free rewrite (the heap lives on the state).
+fn apply_transfers_state(state: &mut RaptorState, round: usize, transfers: &TransferGraph) {
+    state.xfer_heap.clear();
+    for &s in &state.frontier {
+        let t = state.label(round, s).time;
+        if t != INF {
+            state.xfer_heap.push(Reverse((t, s)));
         }
     }
 
-    while let Some(Reverse((d, u))) = heap.pop() {
-        // Stale PQ entry: a later relaxation improved this stop, skip.
-        if d > labels[u as usize].time {
-            continue;
+    while let Some(Reverse((d, u))) = state.xfer_heap.pop() {
+        if d > state.label(round, u).time {
+            continue; // stale entry
         }
         for (v, walk_s) in transfers.neighbours(u) {
             if v == u {
                 continue;
             }
             let new_time = d.saturating_add(walk_s);
-            if new_time < labels[v as usize].time && new_time < best_at_stop[v as usize] {
-                labels[v as usize] = StopLabel {
-                    time: new_time,
-                    via: Via::Walk { from_stop: u },
-                };
-                best_at_stop[v as usize] = new_time;
-                marked[v as usize] = true;
-                heap.push(Reverse((new_time, v)));
+            if new_time < state.label(round, v).time && new_time < state.best_at_stop[v as usize] {
+                state.set_label(
+                    round,
+                    v,
+                    StopLabel {
+                        time: new_time,
+                        via: Via::Walk { from_stop: u },
+                    },
+                );
+                state.best_at_stop[v as usize] = new_time;
+                state.mark(v);
+                state.xfer_heap.push(Reverse((new_time, v)));
             }
         }
     }
 }
 
-fn reconstruct(
-    labels: &[Vec<StopLabel>],
+fn reconstruct_from_state(
+    state: &RaptorState,
     final_round: usize,
     final_stop: StopIdx,
 ) -> Vec<RaptorLeg> {
@@ -435,7 +571,7 @@ fn reconstruct(
     let mut cur_round = final_round;
 
     loop {
-        let label = labels[cur_round][cur_stop as usize];
+        let label = state.label(cur_round, cur_stop);
         match label.via {
             Via::Origin => break,
             Via::Trip {
@@ -460,7 +596,7 @@ fn reconstruct(
             Via::Walk { from_stop } => {
                 let dur = label
                     .time
-                    .saturating_sub(labels[cur_round][from_stop as usize].time);
+                    .saturating_sub(state.label(cur_round, from_stop).time);
                 legs.push(RaptorLeg::Walk {
                     from_stop,
                     to_stop: cur_stop,
@@ -470,7 +606,7 @@ fn reconstruct(
                 // Walks are within the same round — cur_round unchanged.
             }
         }
-        if cur_round == 0 && matches!(labels[cur_round][cur_stop as usize].via, Via::Origin) {
+        if cur_round == 0 && matches!(state.label(cur_round, cur_stop).via, Via::Origin) {
             break;
         }
     }
