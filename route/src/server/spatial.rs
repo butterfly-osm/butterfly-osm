@@ -64,7 +64,27 @@ impl SpatialIndex {
     }
 
     fn build_inner(ebg_nodes: &EbgNodes, nbg_geo: &NbgGeo, mask: Option<&[u64]>) -> Self {
-        let mut points = Vec::with_capacity(ebg_nodes.n_nodes as usize);
+        // Densely index every polyline vertex (not just one midpoint per edge).
+        //
+        // Why: consolidated NBG edges can span hundreds of metres between
+        // decision nodes (e.g. Chemin de Bomal in Jodoigne is a single 644 m
+        // unclassified edge). Indexing only the polyline midpoint left a snap
+        // gap of >200 m along the rest of the edge, and a query near the
+        // edge's endpoint snapped to a *different* edge entirely — producing
+        // 5 km routes for 2 km trips (#88).
+        //
+        // We allocate up to one IndexedPoint per polyline vertex, deduplicating
+        // consecutive vertices that are within ~5 m of each other so that
+        // dense polylines on motorways/roundabouts don't blow up the R-tree.
+        // Memory cost on Belgium is ~3x the previous index (manageable, well
+        // within the existing dataset budget).
+        let mut points = Vec::with_capacity((ebg_nodes.n_nodes as usize) * 4);
+
+        // Squared distance threshold below which two consecutive vertices
+        // are considered the same indexed point (~5 m at Belgian latitudes).
+        // Uses the same lat/lon meter approximation as `distance_meters`.
+        let dedup_eps_m: f64 = 5.0;
+        let dedup_eps2 = dedup_eps_m * dedup_eps_m;
 
         for (ebg_id, node) in ebg_nodes.nodes.iter().enumerate() {
             // Per-mode filter: skip nodes whose mask bit is clear.
@@ -87,13 +107,11 @@ impl SpatialIndex {
                 continue;
             }
 
-            // Use midpoint of edge as representative point
-            let mid_idx = polyline.lat_fxp.len() / 2;
-            let lon = polyline.lon_fxp[mid_idx] as f64 / 1e7;
-            let lat = polyline.lat_fxp[mid_idx] as f64 / 1e7;
-
-            // Compute edge bearing from first to last point (0=North, clockwise)
             let n_pts = polyline.lat_fxp.len();
+
+            // Compute edge bearing from first to last point (0=North, clockwise).
+            // Same bearing applies to every indexed point along the edge in
+            // this direction — the bearing filter is a per-edge property.
             let bearing = if n_pts >= 2 {
                 let lat1 = polyline.lat_fxp[0] as f64 / 1e7;
                 let lon1 = polyline.lon_fxp[0] as f64 / 1e7;
@@ -104,11 +122,35 @@ impl SpatialIndex {
                 0
             };
 
-            points.push(IndexedPoint {
-                coords: [lon, lat],
-                ebg_id: ebg_id as u32,
-                bearing,
-            });
+            // Insert every polyline vertex, deduplicating co-located ones.
+            let mut last_kept_lon = f64::INFINITY;
+            let mut last_kept_lat = f64::INFINITY;
+            for i in 0..n_pts {
+                let lon = polyline.lon_fxp[i] as f64 / 1e7;
+                let lat = polyline.lat_fxp[i] as f64 / 1e7;
+
+                // Always keep the first vertex; skip subsequent ones that are
+                // near the previous kept vertex.
+                if last_kept_lon.is_finite() {
+                    let dlat = (lat - last_kept_lat) * METERS_PER_DEG_LAT;
+                    let dlon = (lon - last_kept_lon) * METERS_PER_DEG_LON_AT_50;
+                    if dlat * dlat + dlon * dlon < dedup_eps2 {
+                        // Force-keep the last vertex even if close, so the
+                        // edge is represented at both ends.
+                        if i + 1 < n_pts {
+                            continue;
+                        }
+                    }
+                }
+
+                points.push(IndexedPoint {
+                    coords: [lon, lat],
+                    ebg_id: ebg_id as u32,
+                    bearing,
+                });
+                last_kept_lon = lon;
+                last_kept_lat = lat;
+            }
         }
 
         Self {
@@ -182,9 +224,12 @@ impl SpatialIndex {
         (dlat * dlat + dlon * dlon).sqrt()
     }
 
-    /// Find K nearest accessible EBG nodes within max snap distance
+    /// Find K nearest accessible EBG nodes within max snap distance.
+    /// Dedupes by ebg_id since the dense vertex index can return the same
+    /// edge multiple times (once per polyline vertex).
     pub fn snap_k(&self, lon: f64, lat: f64, mask: &[u64], k: usize) -> Vec<u32> {
         let mut result = Vec::with_capacity(k);
+        let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::with_capacity(k);
 
         for point in self.tree.nearest_neighbor_iter(&[lon, lat]) {
             // Check distance in meters
@@ -195,7 +240,10 @@ impl SpatialIndex {
 
             let word = point.ebg_id as usize / 64;
             let bit = point.ebg_id as usize % 64;
-            if word < mask.len() && (mask[word] & (1u64 << bit)) != 0 {
+            if word < mask.len()
+                && (mask[word] & (1u64 << bit)) != 0
+                && seen.insert(point.ebg_id)
+            {
                 result.push(point.ebg_id);
                 if result.len() >= k {
                     break;
@@ -231,8 +279,11 @@ impl SpatialIndex {
         None
     }
 
-    /// Find K nearest accessible EBG nodes with full info
-    /// Returns Vec<(ebg_id, snapped_lon, snapped_lat, distance_m)> sorted by meter distance
+    /// Find K nearest accessible EBG nodes with full info.
+    /// Returns Vec<(ebg_id, snapped_lon, snapped_lat, distance_m)> sorted by
+    /// meter distance. Dedupes by ebg_id since the dense vertex index can
+    /// return the same edge multiple times (once per polyline vertex);
+    /// for each edge only the *closest* indexed vertex is kept.
     pub fn snap_k_with_info(
         &self,
         lon: f64,
@@ -241,6 +292,7 @@ impl SpatialIndex {
         k: usize,
     ) -> Vec<(u32, f64, f64, f64)> {
         let mut result = Vec::with_capacity(k);
+        let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::with_capacity(k);
 
         for point in self.tree.nearest_neighbor_iter(&[lon, lat]) {
             let dist_m = Self::distance_meters(lon, lat, point.coords[0], point.coords[1]);
@@ -250,7 +302,10 @@ impl SpatialIndex {
 
             let word = point.ebg_id as usize / 64;
             let bit = point.ebg_id as usize % 64;
-            if word < mask.len() && (mask[word] & (1u64 << bit)) != 0 {
+            if word < mask.len()
+                && (mask[word] & (1u64 << bit)) != 0
+                && seen.insert(point.ebg_id)
+            {
                 result.push((point.ebg_id, point.coords[0], point.coords[1], dist_m));
                 if result.len() >= k {
                     break;
@@ -317,9 +372,12 @@ impl SpatialIndex {
         (0.0, 0.0)
     }
 
-    /// Find all edge midpoints within a bounding box.
-    /// Returns an iterator of `&IndexedPoint` for edges whose midpoints fall
-    /// within `[min_lon, min_lat] .. [max_lon, max_lat]`.
+    /// Find all indexed polyline vertices within a bounding box.
+    /// Returns an iterator of `&IndexedPoint` for vertices that fall within
+    /// `[min_lon, min_lat] .. [max_lon, max_lat]`. Note: the index is dense
+    /// (one entry per polyline vertex), so the same edge may appear multiple
+    /// times in the iterator. Callers must dedupe by `ebg_id` if they care
+    /// about distinct edges.
     pub fn edges_in_envelope(
         &self,
         min_lon: f64,
