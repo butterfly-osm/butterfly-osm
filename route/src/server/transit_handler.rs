@@ -38,8 +38,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::server::geometry::build_raw_points;
 use crate::server::query::CchQuery;
-use crate::server::unpack::unpack_path;
 use crate::server::state::ModeData;
+use crate::server::unpack::unpack_path;
 use crate::transit::gtfs::haversine_m;
 use crate::transit::raptor::{RaptorLeg, RaptorQuery, run_raptor};
 use crate::transit::timetable::{StopIdx, Timetable};
@@ -431,10 +431,8 @@ pub fn compute_transit_journey(
     // foot). A stop may be reachable by car but not foot (e.g. a highway
     // service area with a bus stop), or vice versa — we snap to whatever
     // mode the user requested.
-    let origin_ranks =
-        snap_stop_ranks_on_mode(&access_candidates, timetable, state, access_idx);
-    let dest_ranks =
-        snap_stop_ranks_on_mode(&egress_candidates, timetable, state, egress_idx);
+    let origin_ranks = snap_stop_ranks_on_mode(&access_candidates, timetable, state, access_idx);
+    let dest_ranks = snap_stop_ranks_on_mode(&egress_candidates, timetable, state, egress_idx);
 
     let origin_source_rank = snap_to_rank(req.origin_lon, req.origin_lat, state, access_idx)
         .ok_or_else(|| {
@@ -442,8 +440,8 @@ pub fn compute_transit_journey(
                 "origin could not snap to the {access_mode} network"
             ))
         })?;
-    let dest_source_rank = snap_to_rank(req.dest_lon, req.dest_lat, state, egress_idx)
-        .ok_or_else(|| {
+    let dest_source_rank =
+        snap_to_rank(req.dest_lon, req.dest_lat, state, egress_idx).ok_or_else(|| {
             not_found(&format!(
                 "destination could not snap to the {egress_mode} network"
             ))
@@ -637,12 +635,28 @@ pub fn compute_transit_journey(
             } => {
                 let f = &timetable.stops[*from_stop as usize];
                 let t = &timetable.stops[*to_stop as usize];
+                // Middle walking transfers are foot-only by construction
+                // (the ULTRA transfer graph is built from the foot CCH).
+                // Under `geometry=full`, re-run the foot CCH between the
+                // two stop snaps and return the routed polyline (#121).
+                // Same-station zero-walk transfers (`duration_s == 0`)
+                // and synthetic injected edges with no road-network path
+                // fall back to the straight-line shape with haversine
+                // distance, matching the access/egress fallback above.
+                let (distance_m, geometry) = if geometry_full && *duration_s > 0 {
+                    match build_routed_road_leg(state, foot_idx, f.lon, f.lat, t.lon, t.lat) {
+                        Some((poly, dist)) => (dist, Some(poly)),
+                        None => (haversine_m(f.lon, f.lat, t.lon, t.lat) as u32, None),
+                    }
+                } else {
+                    (haversine_m(f.lon, f.lat, t.lon, t.lat) as u32, None)
+                };
                 legs.push(TransitLegOut::Walk {
                     from: [f.lon, f.lat],
                     to: [t.lon, t.lat],
                     duration_s: *duration_s,
-                    distance_m: haversine_m(f.lon, f.lat, t.lon, t.lat) as u32,
-                    geometry: None,
+                    distance_m,
+                    geometry,
                 });
             }
             RaptorLeg::Ride {

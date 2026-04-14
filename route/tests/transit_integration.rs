@@ -15,9 +15,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use butterfly_route::server::state::ServerState;
-use butterfly_route::server::transit_handler::{
-    TransitRequest, compute_transit_journey,
-};
+use butterfly_route::server::transit_handler::{TransitRequest, compute_transit_journey};
 use butterfly_route::transit::gtfs::{FeedSource, ServiceFilter, load_many, load_zip};
 use butterfly_route::transit::raptor::{RaptorLeg, RaptorQuery, run_raptor};
 use butterfly_route::transit::transfers::TransferGraph;
@@ -353,11 +351,7 @@ fn belgium_has_transit() -> bool {
     };
     entries
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .starts_with("step4")
-        })
+        .filter(|e| e.file_name().to_string_lossy().starts_with("step4"))
         .any(|e| e.path().join("ebg.nodes").is_file())
 }
 
@@ -379,7 +373,10 @@ fn belgium_server_state() -> Option<Arc<ServerState>> {
     }
     let state = SERVER_STATE.get_or_init(|| {
         let dir = belgium_data_root();
-        eprintln!("loading ServerState from {} (~50 s road-only + transit)", dir.display());
+        eprintln!(
+            "loading ServerState from {} (~50 s road-only + transit)",
+            dir.display()
+        );
         let t0 = std::time::Instant::now();
         let mut state = ServerState::load(&dir, None)
             .expect("ServerState::load must succeed on a provisioned Belgium data dir");
@@ -415,8 +412,7 @@ fn haversine_m(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
     let phi2 = lat2.to_radians();
     let dphi = (lat2 - lat1).to_radians();
     let dl = (lon2 - lon1).to_radians();
-    let a = (dphi / 2.0).sin().powi(2)
-        + phi1.cos() * phi2.cos() * (dl / 2.0).sin().powi(2);
+    let a = (dphi / 2.0).sin().powi(2) + phi1.cos() * phi2.cos() * (dl / 2.0).sin().powi(2);
     2.0 * R * a.sqrt().atan2((1.0 - a).sqrt())
 }
 
@@ -427,7 +423,9 @@ fn haversine_m(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
 #[test]
 #[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_transfer_graph_is_well_formed() {
-    let Some(state) = belgium_server_state() else { return };
+    let Some(state) = belgium_server_state() else {
+        return;
+    };
     let Some(transit) = state.transit.as_ref() else {
         panic!("ServerState::load succeeded but transit snapshot is missing");
     };
@@ -520,7 +518,9 @@ fn belgium_transfer_graph_is_well_formed() {
 #[test]
 #[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_same_station_transfers_are_wired() {
-    let Some(state) = belgium_server_state() else { return };
+    let Some(state) = belgium_server_state() else {
+        return;
+    };
     let transit = state
         .transit
         .as_ref()
@@ -612,7 +612,9 @@ fn belgium_same_station_transfers_are_wired() {
 #[test]
 #[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_cross_feed_bridges_are_wired() {
-    let Some(state) = belgium_server_state() else { return };
+    let Some(state) = belgium_server_state() else {
+        return;
+    };
     let transit = state
         .transit
         .as_ref()
@@ -725,7 +727,9 @@ fn base_req(origin: (f64, f64), dest: (f64, f64)) -> TransitRequest {
 #[test]
 #[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_compute_transit_journey_brussels_antwerp() {
-    let Some(state) = belgium_server_state() else { return };
+    let Some(state) = belgium_server_state() else {
+        return;
+    };
     let req = base_req((4.3517, 50.8466), (4.4025, 51.2194));
     let resp = compute_transit_journey(state.as_ref(), &req)
         .expect("Brussels → Antwerp must have a transit journey");
@@ -767,7 +771,11 @@ fn belgium_compute_transit_journey_brussels_antwerp() {
     let has_transit = resp.legs.iter().any(|l| {
         serde_json::to_value(l)
             .ok()
-            .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(|s| s.to_string()))
+            .and_then(|v| {
+                v.get("type")
+                    .and_then(|t| t.as_str())
+                    .map(|s| s.to_string())
+            })
             .as_deref()
             == Some("transit")
     });
@@ -783,7 +791,9 @@ fn belgium_compute_transit_journey_brussels_antwerp() {
 #[test]
 #[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_compute_transit_journey_is_deterministic() {
-    let Some(state) = belgium_server_state() else { return };
+    let Some(state) = belgium_server_state() else {
+        return;
+    };
     let req = base_req((4.3517, 50.8466), (4.4025, 51.2194));
     let base = compute_transit_journey(state.as_ref(), &req).expect("initial query");
     let base_json = serde_json::to_value(&base).unwrap();
@@ -808,7 +818,9 @@ fn belgium_compute_transit_journey_is_deterministic() {
 #[test]
 #[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_varied_transit_journeys_are_plausible() {
-    let Some(state) = belgium_server_state() else { return };
+    let Some(state) = belgium_server_state() else {
+        return;
+    };
     let pairs = [
         ("Brussels → Antwerp", (4.3517, 50.8466), (4.4025, 51.2194)),
         ("Brussels → Liège", (4.3517, 50.8466), (5.5697, 50.6326)),
@@ -856,11 +868,13 @@ fn belgium_varied_transit_journeys_are_plausible() {
 #[test]
 #[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_geometry_full_adds_polylines_without_changing_duration() {
-    let Some(state) = belgium_server_state() else { return };
+    let Some(state) = belgium_server_state() else {
+        return;
+    };
     let mut req_straight = base_req((4.3517, 50.8466), (4.4025, 51.2194));
     req_straight.geometry = Some("straight".to_string());
-    let resp_straight = compute_transit_journey(state.as_ref(), &req_straight)
-        .expect("straight query");
+    let resp_straight =
+        compute_transit_journey(state.as_ref(), &req_straight).expect("straight query");
 
     let mut req_full = req_straight.clone();
     req_full.geometry = Some("full".to_string());
@@ -883,11 +897,7 @@ fn belgium_geometry_full_adds_polylines_without_changing_duration() {
     let count_geom = |v: &serde_json::Value| -> usize {
         v.get("legs")
             .and_then(|l| l.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter(|l| l.get("geometry").is_some())
-                    .count()
-            })
+            .map(|arr| arr.iter().filter(|l| l.get("geometry").is_some()).count())
             .unwrap_or(0)
     };
     let n_full = count_geom(&full_json);
@@ -907,13 +917,128 @@ fn belgium_geometry_full_adds_polylines_without_changing_duration() {
 }
 
 // =====================================================================
+// Geometry round-trip (#121): under `geometry=full`, middle walking
+// legs (foot transfers between transit stops, NOT just the outer
+// access/egress wrappers) must also receive routed polylines via the
+// foot CCH. We probe a handful of Belgian corridors and accept the
+// first one that RAPTOR threads a non-zero foot transfer through —
+// some corridors land entirely on same-station equivalence injections
+// (zero-walk synthetic edges) which are by design straight-line, so we
+// can't pin to a single hard-coded query.
+// =====================================================================
+
+#[test]
+#[ignore = "loads the full Belgium ServerState (~50 s)"]
+fn belgium_geometry_full_covers_middle_walks() {
+    let Some(state) = belgium_server_state() else {
+        return;
+    };
+    let candidates = [
+        ("Brussels → Namur", (4.3517, 50.8466), (4.8697, 50.4669)),
+        ("Brussels → Liège", (4.3517, 50.8466), (5.5697, 50.6326)),
+        ("Brussels → Gent", (4.3517, 50.8466), (3.7250, 51.0543)),
+        ("Brussels → Antwerp", (4.3517, 50.8466), (4.4025, 51.2194)),
+    ];
+
+    let mut chosen: Option<(&str, serde_json::Value)> = None;
+    for (label, from, to) in candidates {
+        let mut req = base_req(from, to);
+        req.geometry = Some("full".to_string());
+        let resp = compute_transit_journey(state.as_ref(), &req)
+            .unwrap_or_else(|_| panic!("{label}: query failed"));
+        let resp_json = serde_json::to_value(&resp).unwrap();
+        let legs_arr = resp_json
+            .get("legs")
+            .and_then(|l| l.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if legs_arr.len() < 3 {
+            continue;
+        }
+        let has_real_middle_walk = legs_arr.iter().enumerate().any(|(i, leg)| {
+            if i == 0 || i == legs_arr.len() - 1 {
+                return false;
+            }
+            leg.get("type").and_then(|t| t.as_str()) == Some("walk")
+                && leg.get("duration_s").and_then(|d| d.as_u64()).unwrap_or(0) > 0
+        });
+        if has_real_middle_walk {
+            eprintln!("{label}: has a non-zero middle walk leg, using it");
+            chosen = Some((label, resp_json));
+            break;
+        }
+        eprintln!("{label}: no non-zero middle walk leg, trying next");
+    }
+
+    let (label, resp_json) = chosen.expect(
+        "no candidate corridor produced a non-zero middle walking leg — \
+         the GTFS feed shape may have changed; pick a new probe pair",
+    );
+    let legs = resp_json
+        .get("legs")
+        .and_then(|l| l.as_array())
+        .expect("response must have legs array");
+
+    // Count middle (non-first / non-last) walk legs that carry a
+    // > 2-point routed polyline and positive distance.
+    let middle = &legs[1..legs.len() - 1];
+    let mut middle_walks_with_geom = 0usize;
+    for leg in middle {
+        let leg_type = leg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if leg_type != "walk" {
+            continue;
+        }
+        let dur = leg.get("duration_s").and_then(|v| v.as_u64()).unwrap_or(0);
+        if dur == 0 {
+            // Same-station zero-walk transfer: by design straight-line
+            // with `geometry: None`. Not what this test is verifying.
+            continue;
+        }
+        let Some(geom) = leg.get("geometry").and_then(|g| g.as_array()) else {
+            continue;
+        };
+        let dist = leg.get("distance_m").and_then(|v| v.as_u64()).unwrap_or(0);
+        if geom.len() > 2 && dist > 0 {
+            middle_walks_with_geom += 1;
+        }
+    }
+    eprintln!(
+        "{label}: {} middle walk leg(s) with routed polylines",
+        middle_walks_with_geom
+    );
+    eprintln!("legs dump:");
+    for (i, leg) in legs.iter().enumerate() {
+        let t = leg.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+        let dur = leg.get("duration_s").and_then(|v| v.as_u64()).unwrap_or(0);
+        let dist = leg.get("distance_m").and_then(|v| v.as_u64()).unwrap_or(0);
+        let geom_pts = leg
+            .get("geometry")
+            .and_then(|g| g.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        eprintln!(
+            "  [{}] type={} dur={}s dist={}m geom_pts={}",
+            i, t, dur, dist, geom_pts
+        );
+    }
+    assert!(
+        middle_walks_with_geom >= 1,
+        "expected ≥ 1 middle walk leg with > 2-point routed polyline \
+         and positive distance, got {}",
+        middle_walks_with_geom
+    );
+}
+
+// =====================================================================
 // Invalid inputs → typed errors, not panics.
 // =====================================================================
 
 #[test]
 #[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_transit_rejects_bad_inputs() {
-    let Some(state) = belgium_server_state() else { return };
+    let Some(state) = belgium_server_state() else {
+        return;
+    };
 
     // Out-of-range coordinates → bad_request.
     let mut req = base_req((4.3517, 50.8466), (4.4025, 51.2194));
@@ -923,21 +1048,20 @@ fn belgium_transit_rejects_bad_inputs() {
 
     // Origin in the ocean (unreachable) → not_found.
     let req = base_req((0.0, 0.0), (4.4025, 51.2194));
-    let err = compute_transit_journey(state.as_ref(), &req)
-        .expect_err("origin in ocean should fail");
+    let err =
+        compute_transit_journey(state.as_ref(), &req).expect_err("origin in ocean should fail");
     assert_eq!(err.0.as_u16(), 404);
 
     // Unknown access mode → bad_request.
     let mut req = base_req((4.3517, 50.8466), (4.4025, 51.2194));
     req.access_mode = Some("teleport".to_string());
-    let err = compute_transit_journey(state.as_ref(), &req)
-        .expect_err("unknown mode should fail");
+    let err = compute_transit_journey(state.as_ref(), &req).expect_err("unknown mode should fail");
     assert_eq!(err.0.as_u16(), 400);
 
     // Invalid geometry value → bad_request.
     let mut req = base_req((4.3517, 50.8466), (4.4025, 51.2194));
     req.geometry = Some("bogus".to_string());
-    let err = compute_transit_journey(state.as_ref(), &req)
-        .expect_err("bogus geometry should fail");
+    let err =
+        compute_transit_journey(state.as_ref(), &req).expect_err("bogus geometry should fail");
     assert_eq!(err.0.as_u16(), 400);
 }
