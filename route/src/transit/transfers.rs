@@ -212,6 +212,22 @@ pub struct TransferBuildOptions {
     /// value prevents float/rounding ties from drop-flipping under
     /// rebuild noise. Default: 2 s.
     pub ultra_restriction_slack_s: u32,
+    /// Fixed walk cost (seconds) for a transfer between two stops that
+    /// share the same GTFS parent station (#112). GTFS models multiple
+    /// platforms of a station as children of a common `location_type=1`
+    /// parent, and the spec says those platforms are interchangeable:
+    /// a rider alighting on platform A can board the same trip at
+    /// platform B without any real walking. The foot CCH can't express
+    /// that — platforms that don't snap to a foot road, or that are
+    /// separated by a station building with no through-walking edge,
+    /// get either missing or wildly wrong transfer costs. This knob
+    /// short-circuits that by injecting a bidirectional edge between
+    /// every pair of same-parent children with this fixed cost,
+    /// *before* the ULTRA dominance restriction runs — so a genuine
+    /// shorter walking transfer still dominates when the CCH actually
+    /// has one. Default: 60 s (the conventional GTFS "min_transfer_time"
+    /// floor for same-station transfers).
+    pub same_station_transfer_s: u32,
 }
 
 impl Default for TransferBuildOptions {
@@ -226,6 +242,7 @@ impl Default for TransferBuildOptions {
             walk_speed_mps: 1.3,
             apply_ultra_restriction: true,
             ultra_restriction_slack_s: 2,
+            same_station_transfer_s: 60,
         }
     }
 }
@@ -240,7 +257,11 @@ impl Default for TransferBuildOptions {
 ///   - v3: order-invariant stop-id digest (sorted before hashing)
 ///   - v4: adds stop coordinates + foot-CCH fingerprint + RAPTOR transfer-
 ///     closure algorithm identity (issue #106 + #109).
-const TRANSFER_ALGO_VERSION: u32 = 4;
+///   - v5: adds same-station child-pair injection with a fixed cost
+///     (issue #112). The injected edges change the transfer graph even
+///     when all other parameters are identical, so any cache written
+///     under v4 is forcibly rejected.
+const TRANSFER_ALGO_VERSION: u32 = 5;
 
 /// Foot-CCH fingerprint: a stable identifier of the specific foot CCH
 /// graph that was used to compute the cached transfer edges. Derived
@@ -330,6 +351,7 @@ pub fn compute_provenance(
     h.update(opts.max_walk_s.to_le_bytes());
     h.update((opts.apply_ultra_restriction as u8).to_le_bytes());
     h.update(opts.ultra_restriction_slack_s.to_le_bytes());
+    h.update(opts.same_station_transfer_s.to_le_bytes());
 
     // Order-invariant digest: sort the (id, lon, lat) tuples by id, then
     // fold each into the hash. Any feed change, coordinate drift, or
@@ -555,7 +577,7 @@ pub fn build_transfer_graph(
     let down_rev = &foot.down_rev;
     let weights = &foot.cch_weights;
 
-    let triples: Vec<(u32, u32, u32)> = work
+    let mut triples: Vec<(u32, u32, u32)> = work
         .par_iter()
         .flat_map_iter(|w| {
             let query = CchQuery::with_custom_weights(topo, down_rev, weights);
@@ -576,6 +598,20 @@ pub fn build_transfer_graph(
             emitted.into_iter()
         })
         .collect();
+
+    // ---- 3b. Inject same-station child-pair edges (#112). ------------
+    let injected = inject_same_station_edges(
+        timetable,
+        opts.same_station_transfer_s,
+        &mut triples,
+    );
+    if injected > 0 {
+        tracing::info!(
+            same_station_edges = injected,
+            cost_s = opts.same_station_transfer_s,
+            "injected same-station transfer edges"
+        );
+    }
 
     let pre_restriction_edges = triples.len();
 
@@ -668,6 +704,42 @@ pub fn ultra_restrict_transfers(
     }
     keep.sort();
     keep
+}
+
+/// Inject a fixed-cost bidirectional transfer edge between every pair
+/// of stops that share a GTFS parent station (#112). Same-parent
+/// children are interchangeable platforms under the GTFS spec, and
+/// should be reachable with a fixed floor cost even when the foot CCH
+/// has no walking path between them (underground platforms, through-
+/// station passages, etc.). Returns the number of directed edges
+/// appended to `triples`.
+///
+/// `station_children` in `TimetableBuilder::build` includes the
+/// parent itself in the children list, so a platform ↔ parent edge is
+/// emitted and the parent `location_type=1` stop is first-class
+/// addressable as a transfer endpoint.
+pub(crate) fn inject_same_station_edges(
+    timetable: &Timetable,
+    cost_s: u32,
+    triples: &mut Vec<(u32, u32, u32)>,
+) -> usize {
+    let mut injected = 0usize;
+    for children in timetable.station_children.values() {
+        let n = children.len();
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let a = children[i];
+                let b = children[j];
+                if a == b {
+                    continue;
+                }
+                triples.push((a, b, cost_s));
+                triples.push((b, a, cost_s));
+                injected += 2;
+            }
+        }
+    }
+    injected
 }
 
 /// Load a cached transfer graph, or build it if the cache is missing /
@@ -834,6 +906,97 @@ mod tests {
         assert_ne!(
             h1, h2,
             "provenance must change when a stop's coordinates change"
+        );
+    }
+
+    /// Build a 5-stop timetable: parent station P with two child
+    /// platforms P_a and P_b, plus two free-standing stops X and Y.
+    /// Returns (timetable, P_a, P_b, X, Y, parent).
+    fn station_with_children() -> (Timetable, u32, u32, u32, u32, u32) {
+        let mut b = TimetableBuilder::new();
+        // Parent first so its index is stable.
+        let parent = b.add_stop("P", "Parent Station", 0.0, 0.0, None);
+        // Two platforms under the parent. add_stop requires the parent
+        // to already exist, so we pass it explicitly.
+        let p_a = b.add_stop("P_a", "Platform A", 0.0001, 0.0, Some(parent));
+        let p_b = b.add_stop("P_b", "Platform B", 0.0, 0.0001, Some(parent));
+        let x = b.add_stop("X", "X", 1.0, 0.0, None);
+        let y = b.add_stop("Y", "Y", 2.0, 0.0, None);
+        // One dummy trip touching every stop so the builder doesn't
+        // drop them during build().
+        b.add_trip(
+            "T",
+            "R",
+            "R",
+            "h",
+            vec![x, p_a, p_b, y],
+            vec![
+                StopTime { arrival: 0, departure: 0 },
+                StopTime { arrival: 60, departure: 60 },
+                StopTime { arrival: 120, departure: 120 },
+                StopTime { arrival: 180, departure: 180 },
+            ],
+        );
+        let tt = b.build().unwrap();
+        (tt, p_a, p_b, x, y, parent)
+    }
+
+    #[test]
+    fn inject_same_station_edges_emits_all_child_pairs() {
+        let (tt, p_a, p_b, _x, _y, parent) = station_with_children();
+        let mut triples: Vec<(u32, u32, u32)> = Vec::new();
+        let n = inject_same_station_edges(&tt, 60, &mut triples);
+
+        // station_children includes the parent itself, so n_children = 3
+        // (parent, P_a, P_b) and pairs = C(3, 2) = 3, giving 6 directed
+        // edges (2 per pair).
+        assert_eq!(n, 6);
+        assert_eq!(triples.len(), 6);
+
+        // Every emitted edge has cost 60.
+        for &(_, _, c) in &triples {
+            assert_eq!(c, 60);
+        }
+
+        // The P_a ↔ P_b pair is present in both directions.
+        assert!(triples.contains(&(p_a, p_b, 60)));
+        assert!(triples.contains(&(p_b, p_a, 60)));
+        // The parent ↔ children pairs are present in both directions.
+        assert!(triples.contains(&(parent, p_a, 60)));
+        assert!(triples.contains(&(p_a, parent, 60)));
+        assert!(triples.contains(&(parent, p_b, 60)));
+        assert!(triples.contains(&(p_b, parent, 60)));
+    }
+
+    #[test]
+    fn inject_same_station_edges_ignores_free_standing_stops() {
+        let (tt, _p_a, _p_b, x, y, _parent) = station_with_children();
+        let mut triples: Vec<(u32, u32, u32)> = Vec::new();
+        inject_same_station_edges(&tt, 60, &mut triples);
+        // Neither X nor Y has a parent, so no edge should mention them.
+        for &(u, v, _) in &triples {
+            assert_ne!(u, x);
+            assert_ne!(v, x);
+            assert_ne!(u, y);
+            assert_ne!(v, y);
+        }
+    }
+
+    #[test]
+    fn provenance_changes_when_same_station_cost_changes() {
+        // Bumping the fixed floor cost changes the transfer graph, so
+        // the provenance hash must pick it up (#112 cache correctness).
+        let tt = tiny_timetable(0.01, 0.0);
+        let fp: FootCchFingerprint = [0xAB; 32];
+        let mut o1 = TransferBuildOptions::default();
+        let mut o2 = TransferBuildOptions::default();
+        o1.same_station_transfer_s = 60;
+        o2.same_station_transfer_s = 30;
+        let h1 = compute_provenance(&tt, &o1, &fp);
+        let h2 = compute_provenance(&tt, &o2, &fp);
+        assert_ne!(
+            h1, h2,
+            "provenance must change when same_station_transfer_s changes"
         );
     }
 
