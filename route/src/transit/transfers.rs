@@ -228,6 +228,27 @@ pub struct TransferBuildOptions {
     /// has one. Default: 60 s (the conventional GTFS "min_transfer_time"
     /// floor for same-station transfers).
     pub same_station_transfer_s: u32,
+    /// Cross-feed equivalence radius (meters) — approach A for #113.
+    /// When multiple operators publish what is semantically the same
+    /// physical stop under different feed prefixes (SNCB
+    /// Bruxelles-Midi vs STIB Bruxelles-Midi metro entrance), the
+    /// multi-feed loader keeps them as distinct stops at slightly
+    /// different coordinates. This knob collapses that ambiguity by
+    /// injecting a bidirectional transfer edge between every pair of
+    /// stops whose GTFS id carries a *different* feed prefix and
+    /// whose great-circle distance is below the threshold. The cost
+    /// is [`Self::cross_feed_transfer_s`]. Default: 50 m, which
+    /// empirically hits intermodal hubs (SNCB↔STIB, SNCB↔De Lijn, …)
+    /// without false-positive merges on unrelated nearby stops. Set
+    /// to 0 to disable the sweep.
+    pub stop_merge_radius_m: u32,
+    /// Walk cost (seconds) applied to cross-feed equivalence edges
+    /// produced by the [`Self::stop_merge_radius_m`] sweep. Default:
+    /// 30 s — a conservative "same physical place, short in-station
+    /// walk to the other operator's platform" floor. Lower than the
+    /// GTFS same-station default (60 s) because cross-feed pairs
+    /// landed here already passed the strict distance check.
+    pub cross_feed_transfer_s: u32,
 }
 
 impl Default for TransferBuildOptions {
@@ -243,6 +264,8 @@ impl Default for TransferBuildOptions {
             apply_ultra_restriction: true,
             ultra_restriction_slack_s: 2,
             same_station_transfer_s: 60,
+            stop_merge_radius_m: 50,
+            cross_feed_transfer_s: 30,
         }
     }
 }
@@ -261,7 +284,10 @@ impl Default for TransferBuildOptions {
 ///     (issue #112). The injected edges change the transfer graph even
 ///     when all other parameters are identical, so any cache written
 ///     under v4 is forcibly rejected.
-const TRANSFER_ALGO_VERSION: u32 = 5;
+///   - v6: adds cross-feed equivalence edges (issue #113) driven by
+///     `stop_merge_radius_m` + `cross_feed_transfer_s`. Same
+///     invalidation rationale as v5.
+const TRANSFER_ALGO_VERSION: u32 = 6;
 
 /// Foot-CCH fingerprint: a stable identifier of the specific foot CCH
 /// graph that was used to compute the cached transfer edges. Derived
@@ -352,6 +378,8 @@ pub fn compute_provenance(
     h.update((opts.apply_ultra_restriction as u8).to_le_bytes());
     h.update(opts.ultra_restriction_slack_s.to_le_bytes());
     h.update(opts.same_station_transfer_s.to_le_bytes());
+    h.update(opts.stop_merge_radius_m.to_le_bytes());
+    h.update(opts.cross_feed_transfer_s.to_le_bytes());
 
     // Order-invariant digest: sort the (id, lon, lat) tuples by id, then
     // fold each into the hash. Any feed change, coordinate drift, or
@@ -613,6 +641,22 @@ pub fn build_transfer_graph(
         );
     }
 
+    // ---- 3c. Inject cross-feed equivalence edges (#113). -------------
+    let cross_feed_injected = inject_cross_feed_equivalence_edges(
+        timetable,
+        opts.stop_merge_radius_m,
+        opts.cross_feed_transfer_s,
+        &mut triples,
+    );
+    if cross_feed_injected > 0 {
+        tracing::info!(
+            cross_feed_edges = cross_feed_injected,
+            radius_m = opts.stop_merge_radius_m,
+            cost_s = opts.cross_feed_transfer_s,
+            "injected cross-feed equivalence edges"
+        );
+    }
+
     let pre_restriction_edges = triples.len();
 
     let final_triples = if opts.apply_ultra_restriction {
@@ -736,6 +780,99 @@ pub(crate) fn inject_same_station_edges(
                 triples.push((a, b, cost_s));
                 triples.push((b, a, cost_s));
                 injected += 2;
+            }
+        }
+    }
+    injected
+}
+
+/// Extract the feed prefix from a namespaced stop id.
+///
+/// The multi-feed GTFS loader namespaces stop ids as `"<feed>:<id>"`
+/// (see `gtfs::load_feed`). A stop loaded from a single-feed config
+/// has no prefix and is treated as its own singleton feed — it will
+/// never merge with anything.
+fn feed_prefix(id: &str) -> Option<&str> {
+    id.split_once(':').map(|(p, _)| p)
+}
+
+/// Inject a bidirectional transfer edge with fixed cost `cost_s`
+/// between every pair of stops whose GTFS ids carry a *different*
+/// feed prefix and whose great-circle distance is below
+/// `radius_m` (#113). Disabled when `radius_m == 0`.
+///
+/// Runs a one-pass 2D grid sweep sized at `radius_m` cell width so
+/// every candidate pair lands in the same cell or one of the 8
+/// immediate neighbours. Complexity: O(N · k) where `k` is the local
+/// cluster size. Returns the number of directed edges appended.
+///
+/// Intentionally independent of the foot-CCH snap state: cross-feed
+/// equivalence is a semantic bridge, not a road-network fact, so it
+/// works even when one or both stops failed to snap.
+pub(crate) fn inject_cross_feed_equivalence_edges(
+    timetable: &Timetable,
+    radius_m: u32,
+    cost_s: u32,
+    triples: &mut Vec<(u32, u32, u32)>,
+) -> usize {
+    if radius_m == 0 || timetable.n_stops() == 0 {
+        return 0;
+    }
+    let radius = radius_m as f64;
+    let cell_size = radius;
+    let cs_lat = cell_size / METERS_PER_DEG_LAT;
+    let cs_lon = cell_size / METERS_PER_DEG_LON_AT_50;
+
+    let mut grid: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
+    for (i, stop) in timetable.stops.iter().enumerate() {
+        let key = (
+            (stop.lat / cs_lat).floor() as i32,
+            (stop.lon / cs_lon).floor() as i32,
+        );
+        grid.entry(key).or_default().push(i as u32);
+    }
+
+    let r2 = radius * radius;
+    let mut injected = 0usize;
+    let mut seen: std::collections::HashSet<(u32, u32)> =
+        std::collections::HashSet::new();
+
+    for (&(cx, cy), members) in &grid {
+        let mut candidates: Vec<u32> = Vec::new();
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                if let Some(others) = grid.get(&(cx + dx, cy + dy)) {
+                    candidates.extend_from_slice(others);
+                }
+            }
+        }
+        for &i in members {
+            let src = &timetable.stops[i as usize];
+            let src_feed = feed_prefix(&src.id);
+            for &j in &candidates {
+                if i >= j {
+                    continue;
+                }
+                let dst = &timetable.stops[j as usize];
+                // Only bridge *cross*-feed pairs. Same-feed duplicates
+                // belong to #112 (station_children) or the regular
+                // foot-CCH transfer edges.
+                let dst_feed = feed_prefix(&dst.id);
+                match (src_feed, dst_feed) {
+                    (Some(a), Some(b)) if a == b => continue,
+                    (None, None) => continue,
+                    _ => {}
+                }
+                let dlat_m = (dst.lat - src.lat) * METERS_PER_DEG_LAT;
+                let dlon_m = (dst.lon - src.lon) * METERS_PER_DEG_LON_AT_50;
+                if dlat_m * dlat_m + dlon_m * dlon_m > r2 {
+                    continue;
+                }
+                if seen.insert((i, j)) {
+                    triples.push((i, j, cost_s));
+                    triples.push((j, i, cost_s));
+                    injected += 2;
+                }
             }
         }
     }
@@ -980,6 +1117,117 @@ mod tests {
             assert_ne!(u, y);
             assert_ne!(v, y);
         }
+    }
+
+    /// Timetable with four stops:
+    /// - `sncb:X` at (0.0, 0.0) — SNCB feed.
+    /// - `stib:X_metro` at (0.0, 0.0) — STIB feed, same lon/lat.
+    /// - `sncb:Y` at (0.0, 0.01) — SNCB feed, ~1.1 km north (outside 50 m).
+    /// - `delijn:Y_bus` at (0.0, 0.01) — De Lijn, same place as Y.
+    fn multi_feed_timetable() -> (Timetable, u32, u32, u32, u32) {
+        let mut b = TimetableBuilder::new();
+        let sx = b.add_stop("sncb:X", "Brussels Central SNCB", 0.0, 0.0, None);
+        let tx = b.add_stop("stib:X_metro", "Brussels Central metro", 0.0, 0.0, None);
+        let sy = b.add_stop("sncb:Y", "Gent Sint-Pieters SNCB", 0.0, 0.01, None);
+        let dy = b.add_stop("delijn:Y_bus", "Gent Sint-Pieters bus", 0.0, 0.01, None);
+        // One trip that touches every stop so the builder doesn't prune them.
+        b.add_trip(
+            "T",
+            "R",
+            "R",
+            "h",
+            vec![sx, tx, sy, dy],
+            vec![
+                StopTime { arrival: 0, departure: 0 },
+                StopTime { arrival: 60, departure: 60 },
+                StopTime { arrival: 600, departure: 600 },
+                StopTime { arrival: 660, departure: 660 },
+            ],
+        );
+        b.build().unwrap();
+        // Rebuild and return the stops in a stable order via the returned Timetable.
+        let mut b = TimetableBuilder::new();
+        let sx = b.add_stop("sncb:X", "Brussels Central SNCB", 0.0, 0.0, None);
+        let tx = b.add_stop("stib:X_metro", "Brussels Central metro", 0.0, 0.0, None);
+        let sy = b.add_stop("sncb:Y", "Gent Sint-Pieters SNCB", 0.0, 0.01, None);
+        let dy = b.add_stop("delijn:Y_bus", "Gent Sint-Pieters bus", 0.0, 0.01, None);
+        b.add_trip(
+            "T",
+            "R",
+            "R",
+            "h",
+            vec![sx, tx, sy, dy],
+            vec![
+                StopTime { arrival: 0, departure: 0 },
+                StopTime { arrival: 60, departure: 60 },
+                StopTime { arrival: 600, departure: 600 },
+                StopTime { arrival: 660, departure: 660 },
+            ],
+        );
+        (b.build().unwrap(), sx, tx, sy, dy)
+    }
+
+    #[test]
+    fn inject_cross_feed_bridges_colocated_different_feeds() {
+        let (tt, sx, tx, sy, dy) = multi_feed_timetable();
+        let mut triples: Vec<(u32, u32, u32)> = Vec::new();
+        inject_cross_feed_equivalence_edges(&tt, 50, 30, &mut triples);
+
+        // Brussels Central: sncb:X <-> stib:X_metro (different feeds,
+        // same coords) — expected.
+        assert!(triples.contains(&(sx, tx, 30)));
+        assert!(triples.contains(&(tx, sx, 30)));
+
+        // Gent Sint-Pieters: sncb:Y <-> delijn:Y_bus (different feeds,
+        // same coords) — expected.
+        assert!(triples.contains(&(sy, dy, 30)));
+        assert!(triples.contains(&(dy, sy, 30)));
+
+        // No cross-cluster bridge — Brussels and Gent are 1.1 km apart.
+        assert!(!triples.contains(&(sx, sy, 30)));
+        assert!(!triples.contains(&(sx, dy, 30)));
+        assert!(!triples.contains(&(tx, sy, 30)));
+        assert!(!triples.contains(&(tx, dy, 30)));
+
+        // Same-feed co-located pairs (none in this fixture, but double
+        // check we didn't emit any by scanning for sncb:X ↔ sncb:Y,
+        // which share a feed). Those are out of scope for #113.
+        assert!(!triples.contains(&(sx, sy, 30)));
+    }
+
+    #[test]
+    fn inject_cross_feed_disabled_by_zero_radius() {
+        let (tt, _, _, _, _) = multi_feed_timetable();
+        let mut triples: Vec<(u32, u32, u32)> = Vec::new();
+        let n = inject_cross_feed_equivalence_edges(&tt, 0, 30, &mut triples);
+        assert_eq!(n, 0);
+        assert!(triples.is_empty());
+    }
+
+    #[test]
+    fn inject_cross_feed_skips_same_feed_colocated_stops() {
+        // Two stops from the same feed at the exact same coordinate:
+        // #113 must not touch these — they're either duplicates to be
+        // cleaned up upstream, or already handled by #112.
+        let mut b = TimetableBuilder::new();
+        let a = b.add_stop("sncb:A", "A", 4.35, 50.84, None);
+        let b_ = b.add_stop("sncb:A_dup", "A dup", 4.35, 50.84, None);
+        // One trip so both stops survive build().
+        b.add_trip(
+            "T",
+            "R",
+            "R",
+            "h",
+            vec![a, b_],
+            vec![
+                StopTime { arrival: 0, departure: 0 },
+                StopTime { arrival: 60, departure: 60 },
+            ],
+        );
+        let tt = b.build().unwrap();
+        let mut triples: Vec<(u32, u32, u32)> = Vec::new();
+        let n = inject_cross_feed_equivalence_edges(&tt, 50, 30, &mut triples);
+        assert_eq!(n, 0);
     }
 
     #[test]
