@@ -79,7 +79,11 @@ fn default_transfer_radius() -> u32 {
     2_000
 }
 fn default_max_access_stops() -> usize {
-    20
+    // Sentinel: 0 means "use the per-mode default from the handler"
+    // (foot=20, bike=60, car=500). Operators who set a concrete value
+    // in `transit.toml` override it for every mode; operators who leave
+    // it out get mode-aware defaults automatically. See issue #110.
+    0
 }
 
 impl TransitConfig {
@@ -247,5 +251,16 @@ rt_url = "https://example.com/sncb.rt"
         // STIB is intentionally excluded — see default_belgium_feeds()
         // doc comment + butterfly-osm/butterfly-osm#101.
         assert_eq!(ids, vec!["sncb", "delijn", "tec"]);
+    }
+
+    #[test]
+    fn default_max_access_stops_is_sentinel_zero() {
+        // Issue #110: the default must be 0 so the handler picks the
+        // per-mode default (foot=20 / bike=60 / car=500). A concrete
+        // default here would silently shadow the per-mode values.
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("transit")).unwrap();
+        let cfg = load(dir.path()).unwrap().unwrap();
+        assert_eq!(cfg.max_access_stops, 0);
     }
 }
