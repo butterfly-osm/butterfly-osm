@@ -207,9 +207,69 @@ impl Default for TransferBuildOptions {
 /// Version tag for the provenance hash. Bumped whenever the transfer
 /// algorithm or hash format changes meaningfully so cached graphs built
 /// under an older version are forcibly rejected.
-const TRANSFER_ALGO_VERSION: u32 = 3;
+///
+/// History:
+///   - v1: initial (rejected by v2 bump)
+///   - v2: stop-id chain + build params
+///   - v3: order-invariant stop-id digest (sorted before hashing)
+///   - v4: adds stop coordinates + foot-CCH fingerprint + RAPTOR transfer-
+///     closure algorithm identity (issue #106 + #109).
+const TRANSFER_ALGO_VERSION: u32 = 4;
 
-/// Compute provenance hash for a (timetable, options) pair.
+/// Foot-CCH fingerprint: a stable identifier of the specific foot CCH
+/// graph that was used to compute the cached transfer edges. Derived
+/// from the topology's node / edge counts plus a sample of edge weights
+/// — see `foot_cch_fingerprint` below. This does NOT need to be
+/// cryptographically unique; it just needs to change whenever the foot
+/// CCH is rebuilt, so that a stale transfer cache is rejected after an
+/// OSM PBF refresh or a pipeline re-run.
+pub type FootCchFingerprint = [u8; 32];
+
+/// Compute a fingerprint for the foot CCH that the transfer build will
+/// use. Streams across the CCH topology and weights, producing a stable
+/// sha256 that changes whenever either side changes.
+///
+/// This is the bit of `compute_provenance` that depends on the road
+/// graph identity and is separated out so that the caller can compute
+/// it once and reuse it across cache writes / reads.
+pub fn foot_cch_fingerprint(foot: &ModeData) -> FootCchFingerprint {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"butterfly.foot-cch.v1");
+    h.update((foot.cch_topo.n_nodes as u64).to_le_bytes());
+    h.update((foot.cch_topo.up_targets.len() as u64).to_le_bytes());
+    h.update((foot.cch_topo.down_targets.len() as u64).to_le_bytes());
+    // Hash every up-weight and down-weight: any recustomization changes
+    // these, so the fingerprint is sensitive to CCH rebuilds. Cast the
+    // `[u32]` slice to `[u8]` via a safe byte view — u32 is trivially
+    // transmutable to four little-endian bytes on every supported
+    // target, and `Sha256::update` treats the input as an opaque byte
+    // stream. Runs once per server startup; the 91M-edge Belgium foot
+    // CCH hashes in ~200 ms.
+    //
+    // SAFETY: u32 is Plain Old Data, 4-byte aligned in the source slice,
+    // and the resulting byte slice has the same lifetime. We only read
+    // from it and never reinterpret the bytes as anything else.
+    let up_bytes = unsafe {
+        std::slice::from_raw_parts(
+            foot.cch_weights.up.as_ptr() as *const u8,
+            std::mem::size_of_val(foot.cch_weights.up.as_slice()),
+        )
+    };
+    let down_bytes = unsafe {
+        std::slice::from_raw_parts(
+            foot.cch_weights.down.as_ptr() as *const u8,
+            std::mem::size_of_val(foot.cch_weights.down.as_slice()),
+        )
+    };
+    h.update(up_bytes);
+    h.update(down_bytes);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(h.finalize().as_slice());
+    out
+}
+
+/// Compute provenance hash for a (timetable, options, foot-CCH) tuple.
 ///
 /// **Order-invariant**: the GTFS loader receives stops from
 /// `gtfs_structures::Gtfs.stops`, which is a `HashMap` whose iteration
@@ -217,15 +277,27 @@ const TRANSFER_ALGO_VERSION: u32 = 3;
 /// therefore has a different element order on every server start. To
 /// keep the on-disk transfer cache valid across restarts, the
 /// provenance hash must NOT depend on stop ordering — only on the
-/// underlying set of stop ids and the build parameters.
+/// underlying set of stop ids, stop coordinates, and the build
+/// parameters.
 ///
 /// We sort the stop ids before feeding them into the digest. Sorting
 /// 64k short strings is microsecond-cheap and guarantees a stable hash
 /// across HashMap re-orderings.
-pub fn compute_provenance(timetable: &Timetable, opts: &TransferBuildOptions) -> [u8; 32] {
+///
+/// **Includes stop coordinates and foot CCH fingerprint** (issue #109):
+/// without them, a stop that moves 200 m down the street keeps the same
+/// hash and the cached transfer edges reference the old snap rank. A
+/// foot CCH rebuilt from a new OSM PBF but with the same stop IDs also
+/// slips past the cache check. Both are real operational failures.
+pub fn compute_provenance(
+    timetable: &Timetable,
+    opts: &TransferBuildOptions,
+    foot_fingerprint: &FootCchFingerprint,
+) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(TRANSFER_ALGO_VERSION.to_le_bytes());
+    h.update(foot_fingerprint);
     h.update((timetable.n_stops() as u64).to_le_bytes());
     h.update((timetable.n_routes() as u64).to_le_bytes());
     h.update(opts.radius_m.to_le_bytes());
@@ -233,13 +305,25 @@ pub fn compute_provenance(timetable: &Timetable, opts: &TransferBuildOptions) ->
     h.update((opts.apply_ultra_restriction as u8).to_le_bytes());
     h.update(opts.ultra_restriction_slack_s.to_le_bytes());
 
-    // Order-invariant stop-id digest. Any feed change still invalidates
-    // the cache because adding/removing/renaming a stop changes the set.
-    let mut ids: Vec<&str> = timetable.stops.iter().map(|s| s.id.as_str()).collect();
-    ids.sort_unstable();
-    for id in &ids {
-        h.update((id.len() as u32).to_le_bytes());
-        h.update(id.as_bytes());
+    // Order-invariant digest: sort the (id, lon, lat) tuples by id, then
+    // fold each into the hash. Any feed change, coordinate drift, or
+    // re-ordering of the underlying stop set now invalidates the cache
+    // deterministically.
+    //
+    // Coordinates are rounded to 6 decimal places (~11 cm precision) to
+    // avoid float-precision drift from HashMap re-insertion changing the
+    // last digits between runs. This is stable enough to detect real
+    // stop moves (which happen in metres, not cm).
+    let mut stops_idx: Vec<usize> = (0..timetable.stops.len()).collect();
+    stops_idx.sort_by(|&a, &b| timetable.stops[a].id.cmp(&timetable.stops[b].id));
+    for idx in stops_idx {
+        let s = &timetable.stops[idx];
+        h.update((s.id.len() as u32).to_le_bytes());
+        h.update(s.id.as_bytes());
+        let lon_fixed = (s.lon * 1_000_000.0).round() as i64;
+        let lat_fixed = (s.lat * 1_000_000.0).round() as i64;
+        h.update(lon_fixed.to_le_bytes());
+        h.update(lat_fixed.to_le_bytes());
     }
 
     let mut out = [0u8; 32];
@@ -514,7 +598,8 @@ pub fn build_transfer_graph(
     let post_restriction_edges = final_triples.len();
 
     let mut graph = TransferGraph::from_triples(n_stops, final_triples);
-    graph.provenance = compute_provenance(timetable, opts);
+    let fingerprint = foot_cch_fingerprint(foot);
+    graph.provenance = compute_provenance(timetable, opts, &fingerprint);
     tracing::info!(
         edges = graph.n_edges(),
         pre_restriction = pre_restriction_edges,
@@ -605,7 +690,8 @@ pub fn load_or_build(
     opts: &TransferBuildOptions,
     cache_path: &Path,
 ) -> Result<TransferGraph> {
-    let provenance = compute_provenance(timetable, opts);
+    let fingerprint = foot_cch_fingerprint(foot);
+    let provenance = compute_provenance(timetable, opts, &fingerprint);
     if let Some(graph) = TransferGraph::load_cached(cache_path, provenance)
         .context("reading cached transfer graph")?
     {
@@ -711,11 +797,10 @@ mod tests {
         assert!(!restricted.iter().any(|&(u, v, _)| u == v));
     }
 
-    #[test]
-    fn provenance_is_stable() {
+    fn tiny_timetable(lon_b: f64, lat_b: f64) -> Timetable {
         let mut b = TimetableBuilder::new();
         let a = b.add_stop("A", "A", 0.0, 0.0, None);
-        let c = b.add_stop("B", "B", 0.01, 0.0, None);
+        let c = b.add_stop("B", "B", lon_b, lat_b, None);
         b.add_trip(
             "T",
             "R",
@@ -733,10 +818,50 @@ mod tests {
                 },
             ],
         );
-        let tt = b.build().unwrap();
+        b.build().unwrap()
+    }
+
+    #[test]
+    fn provenance_is_stable() {
+        let tt = tiny_timetable(0.01, 0.0);
         let opts = TransferBuildOptions::default();
-        let h1 = compute_provenance(&tt, &opts);
-        let h2 = compute_provenance(&tt, &opts);
+        let fp: FootCchFingerprint = [0xAB; 32];
+        let h1 = compute_provenance(&tt, &opts, &fp);
+        let h2 = compute_provenance(&tt, &opts, &fp);
         assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn provenance_changes_when_stop_moves() {
+        // Issue #109: moving a stop 10 m must invalidate the cached
+        // transfer graph because the cached edges reference a now-wrong
+        // snap rank.
+        let tt1 = tiny_timetable(0.01, 0.0);
+        let tt2 = tiny_timetable(0.0101, 0.0); // ~10 m east
+        let opts = TransferBuildOptions::default();
+        let fp: FootCchFingerprint = [0xAB; 32];
+        let h1 = compute_provenance(&tt1, &opts, &fp);
+        let h2 = compute_provenance(&tt2, &opts, &fp);
+        assert_ne!(
+            h1, h2,
+            "provenance must change when a stop's coordinates change"
+        );
+    }
+
+    #[test]
+    fn provenance_changes_when_foot_cch_changes() {
+        // Issue #109: rebuilding the foot CCH (same stops, different
+        // road graph) must invalidate the cache so stale transfer edges
+        // referencing the old CCH rank space are rejected.
+        let tt = tiny_timetable(0.01, 0.0);
+        let opts = TransferBuildOptions::default();
+        let fp1: FootCchFingerprint = [0xAB; 32];
+        let fp2: FootCchFingerprint = [0xCD; 32];
+        let h1 = compute_provenance(&tt, &opts, &fp1);
+        let h2 = compute_provenance(&tt, &opts, &fp2);
+        assert_ne!(
+            h1, h2,
+            "provenance must change when the foot CCH fingerprint changes"
+        );
     }
 }
