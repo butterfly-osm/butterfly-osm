@@ -41,15 +41,32 @@ use serde::{Deserialize, Serialize};
 /// not by the running server. Optional `rt_url` captures a one-shot
 /// GTFS-RT trip-update snapshot for the rebuild; the server applies it
 /// once at startup and never polls.
+/// On-disk file format for a transit feed. Operators who publish
+/// plain GTFS zips use `Gtfs` (the default); operators who have
+/// migrated to NeTEx-EPIP (notably STIB) use `NetexEpip`. The
+/// loader dispatches on this field.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FeedFormat {
+    #[default]
+    Gtfs,
+    NetexEpip,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedConfig {
-    /// Stable identifier (used as the local filename: `<id>.zip`).
+    /// Stable identifier (used as the local filename prefix, e.g.
+    /// `<id>.zip` for GTFS or `<id>.xml` for NeTEx-EPIP).
     pub id: String,
-    /// URL for the static GTFS zip.
+    /// URL for the static feed (zip for GTFS, XML for NeTEx-EPIP).
     pub url: String,
     /// Optional URL for a GTFS-RT trip-updates snapshot (protobuf).
     #[serde(default)]
     pub rt_url: Option<String>,
+    /// Feed format (`gtfs` or `netex-epip`). Defaults to `gtfs` for
+    /// backward compatibility with pre-#101 configs.
+    #[serde(default)]
+    pub format: FeedFormat,
 }
 
 /// Top-level transit configuration.
@@ -102,9 +119,17 @@ impl TransitConfig {
         self.transit_dir().join("transfers.bin")
     }
 
-    /// Local path for a particular feed's static zip.
+    /// Local path for a particular feed's static archive. GTFS feeds
+    /// land under `transit/gtfs/<id>.zip`; NeTEx-EPIP feeds under
+    /// `transit/netex/<id>-epip.xml`.
     pub fn feed_zip_path(&self, feed: &FeedConfig) -> PathBuf {
-        self.gtfs_dir().join(format!("{}.zip", feed.id))
+        match feed.format {
+            FeedFormat::Gtfs => self.gtfs_dir().join(format!("{}.zip", feed.id)),
+            FeedFormat::NetexEpip => self
+                .transit_dir()
+                .join("netex")
+                .join(format!("{}-epip.xml", feed.id)),
+        }
     }
 
     /// Local path for the one-shot GTFS-RT snapshot blob for a feed.
@@ -136,45 +161,55 @@ impl Default for TransitConfig {
 /// * **De Lijn** — Flanders bus + tram (~190 MB GTFS, ~30,500 stops)
 /// * **TEC** — Wallonia bus (~85 MB GTFS, ~31,200 stops)
 ///
-/// **STIB (Brussels metro/bus/tram) is intentionally not in the default
-/// set.** STIB has deprecated GTFS and migrated to NeTEx (the EU-mandated
-/// format under Delegated Regulation 2017/1926). Verified 2026-04-14:
+/// **STIB (Brussels metro/bus/tram) is loaded from NeTEx-EPIP.** STIB
+/// has deprecated GTFS and migrated to NeTEx under EU Delegated
+/// Regulation 2017/1926. Verified 2026-04-14 that no GTFS source
+/// works:
 ///
 /// * `gtfs.irail.be/mivb/mivb-gtfs.zip` — HTTP 200 with
 ///   `content-type: application/zip` but the 188 KB body is an HTML
-///   domain-squat ("This domain could not be found — Huwise"). Our
-///   `feeds::ContentChecks` magic-byte guard catches it correctly.
+///   domain-squat; `feeds::ContentChecks` magic-byte guard catches it.
 /// * `data.stib-mivb.brussels` — redirects to `data.belgianmobility.io`;
-///   no direct GTFS zip download is exposed, the portal only lists
-///   query-able datasets requiring an API key.
+///   no direct GTFS zip, only query-able datasets behind an API key.
 /// * `opendata-api.stib-mivb.be/Files/1.0/Gtfs` — requires a registered
-///   `Authorization: Bearer <key>` and is gated behind manual signup.
+///   `Authorization: Bearer <key>` and manual signup.
 ///
-/// The working path is the **NeTEx-EPIP** publication on the Belgian
+/// The working path is the NeTEx-EPIP publication on the Belgian
 /// National Access Point:
 /// `https://belgianmobility.blob.core.windows.net/epip-production/epip-stibmivb-bmc-latest.xml`
-/// (720 MB uncompressed XML as of 2026-04-14, published monthly).
-///
-/// Loading STIB from this file requires the EPIP NeTEx loader tracked
-/// in butterfly-osm/butterfly-osm#101. Once that lands, an operator
-/// opts in by adding STIB to their `transit.toml` with
-/// `format = "netex-epip"`.
+/// (~720 MB XML, published monthly). The EPIP loader in
+/// `crate::transit::netex_epip::load_epip_xml` (#101) parses it
+/// directly into a [`Timetable`] with the same shape as the GTFS
+/// loader output. The loader reprojects STIB's Lambert-93 coordinates
+/// to WGS84 via `proj4rs` at load time.
 pub fn default_belgium_feeds() -> Vec<FeedConfig> {
     vec![
         FeedConfig {
             id: "sncb".to_string(),
             url: "https://gtfs.irail.be/nmbs/gtfs/latest.zip".to_string(),
             rt_url: None,
+            format: FeedFormat::Gtfs,
         },
         FeedConfig {
             id: "delijn".to_string(),
             url: "https://gtfs.irail.be/de-lijn/de_lijn-gtfs.zip".to_string(),
             rt_url: None,
+            format: FeedFormat::Gtfs,
         },
         FeedConfig {
             id: "tec".to_string(),
             url: "https://opendata.tec-wl.be/Current%20GTFS/TEC-GTFS.zip".to_string(),
             rt_url: None,
+            format: FeedFormat::Gtfs,
+        },
+        FeedConfig {
+            id: "stib".to_string(),
+            // Belgian NAP publication (NeTEx-EPIP, ~720 MB XML, refreshed
+            // monthly). Download lands at transit/netex/stib-epip.xml and
+            // is loaded via the NeTEx-EPIP parser in #101.
+            url: "https://belgianmobility.blob.core.windows.net/epip-production/epip-stibmivb-bmc-latest.xml".to_string(),
+            rt_url: None,
+            format: FeedFormat::NetexEpip,
         },
     ]
 }
@@ -263,9 +298,24 @@ rt_url = "https://example.com/sncb.rt"
         std::fs::create_dir_all(dir.path().join("transit")).unwrap();
         let cfg = load(dir.path()).unwrap().unwrap();
         let ids: Vec<&str> = cfg.feeds.iter().map(|f| f.id.as_str()).collect();
-        // STIB is intentionally excluded — see default_belgium_feeds()
-        // doc comment + butterfly-osm/butterfly-osm#101.
-        assert_eq!(ids, vec!["sncb", "delijn", "tec"]);
+        // STIB is now included via its NeTEx-EPIP feed (#101 loader
+        // landed; `format = "netex-epip"`). The three GTFS operators
+        // keep their default shape.
+        assert_eq!(ids, vec!["sncb", "delijn", "tec", "stib"]);
+        // STIB must carry the NetexEpip format discriminator; the
+        // others must stay on Gtfs.
+        let stib = cfg
+            .feeds
+            .iter()
+            .find(|f| f.id == "stib")
+            .expect("stib feed present");
+        assert_eq!(stib.format, FeedFormat::NetexEpip);
+        let sncb = cfg
+            .feeds
+            .iter()
+            .find(|f| f.id == "sncb")
+            .expect("sncb feed present");
+        assert_eq!(sncb.format, FeedFormat::Gtfs);
     }
 
     #[test]
