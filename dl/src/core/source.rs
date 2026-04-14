@@ -30,8 +30,24 @@ impl Default for SourceConfig {
     }
 }
 
-/// Resolves a source string to a download source
+/// Resolves a source string to a download source.
+///
+/// Priority order:
+/// 1. **Raw URL pass-through**: a string starting with `http://` or
+///    `https://` is used verbatim. This is the path the generic
+///    `butterfly-dl fetch` subcommand and `verified::download_verified`
+///    take when a user / library caller already knows the exact URL.
+/// 2. **`"planet"`**: the planet-latest Geofabrik shortcut.
+/// 3. **Path-shaped presets** (`europe/belgium`, `north-america/us/california`, …):
+///    expanded against `SourceConfig::geofabrik_base_url`.
+/// 4. **Bare continent** (`europe`, `africa`, …): expanded against
+///    the same Geofabrik base URL.
 pub fn resolve_source(source: &str, config: &SourceConfig) -> Result<DownloadSource> {
+    if source.starts_with("http://") || source.starts_with("https://") {
+        return Ok(DownloadSource::Http {
+            url: source.to_string(),
+        });
+    }
     match source {
         "planet" => resolve_planet_source(config),
         path if path.contains('/') => Ok(DownloadSource::Http {
