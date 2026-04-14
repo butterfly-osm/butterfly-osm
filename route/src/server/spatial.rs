@@ -64,26 +64,31 @@ impl SpatialIndex {
     }
 
     fn build_inner(ebg_nodes: &EbgNodes, nbg_geo: &NbgGeo, mask: Option<&[u64]>) -> Self {
-        // Densely index every polyline vertex (not just one midpoint per edge).
+        // Index polyline vertices on a coarse grid (~50 m) instead of
+        // just one midpoint per edge.
         //
         // Why: consolidated NBG edges can span hundreds of metres between
-        // decision nodes (e.g. Chemin de Bomal in Jodoigne is a single 644 m
-        // unclassified edge). Indexing only the polyline midpoint left a snap
+        // decision nodes (e.g. Chemin de Bomal in Jodoigne is a single
+        // 644 m unclassified edge). Indexing only the midpoint left a snap
         // gap of >200 m along the rest of the edge, and a query near the
-        // edge's endpoint snapped to a *different* edge entirely — producing
-        // 5 km routes for 2 km trips (#88).
+        // endpoint snapped to a *different* edge entirely — producing 5 km
+        // routes for 2 km trips (#88).
         //
-        // We allocate up to one IndexedPoint per polyline vertex, deduplicating
-        // consecutive vertices that are within ~5 m of each other so that
-        // dense polylines on motorways/roundabouts don't blow up the R-tree.
-        // Memory cost on Belgium is ~3x the previous index (manageable, well
-        // within the existing dataset budget).
-        let mut points = Vec::with_capacity((ebg_nodes.n_nodes as usize) * 4);
+        // The earlier fix used a 5 m dedup epsilon which kept practically
+        // every polyline vertex; on Belgium that ballooned the per-mode
+        // R-tree to ~20 M points × 4 modes ≈ 30 GB RAM and turned a
+        // 50 s server start into 16+ minutes. The 50 m epsilon is the
+        // sweet spot: short edges (the ~30 m Belgian average) keep their
+        // single midpoint with no regression, while long edges get one
+        // indexed point every ~50 m so the worst-case snap gap stays
+        // bounded at ~25 m on either side. Memory growth is ~1.3x.
+        let mut points = Vec::with_capacity(ebg_nodes.n_nodes as usize);
 
         // Squared distance threshold below which two consecutive vertices
-        // are considered the same indexed point (~5 m at Belgian latitudes).
-        // Uses the same lat/lon meter approximation as `distance_meters`.
-        let dedup_eps_m: f64 = 5.0;
+        // are considered the same indexed point (~50 m at Belgian
+        // latitudes). Uses the same lat/lon meter approximation as
+        // `distance_meters`.
+        let dedup_eps_m: f64 = 50.0;
         let dedup_eps2 = dedup_eps_m * dedup_eps_m;
 
         for (ebg_id, node) in ebg_nodes.nodes.iter().enumerate() {

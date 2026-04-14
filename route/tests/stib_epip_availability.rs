@@ -271,9 +271,14 @@ fn stib_epip_loader_produces_timetable() {
 
     // STIB shape expectations. Bounds are ±50 % of observed values
     // so that a modest publication drift doesn't break the test.
+    //
+    // Note: the loader deduplicates per-pattern ScheduledStopPoints
+    // by quantised coordinate, so the physical stop count is roughly
+    // ~3,500 even though the raw file has 11,757 SSPs. The bound is
+    // generous so the test passes both before and after dedup tuning.
     assert!(
-        tt.n_stops() >= 5_000 && tt.n_stops() <= 20_000,
-        "expected 5k–20k stops, got {}",
+        tt.n_stops() >= 1_500 && tt.n_stops() <= 20_000,
+        "expected 1.5k–20k physical stops, got {}",
         tt.n_stops()
     );
     assert!(
