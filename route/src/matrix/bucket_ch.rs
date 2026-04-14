@@ -19,6 +19,23 @@
 
 use crate::formats::{CchTopo, CchWeights};
 use crate::server::state::DownReverseAdj;
+use std::cell::RefCell;
+
+// Thread-local `SearchState` scratch buffers for the parallel bucket M2M path.
+//
+// Rayon fans one closure invocation out per source/target. Allocating a
+// fresh `SearchState` (two `Vec`s sized to `n_nodes` = ~2.4 M on Belgium,
+// zero-filled = ~30 MB of memory traffic) inside each closure dominates
+// small-matrix latency — the routing work itself only touches a few
+// thousand nodes per search. We instead cache the state per rayon worker
+// thread and call `SearchState::start_search()` (O(1) via version
+// stamping) between invocations. Reinitialise lazily when `n_nodes`
+// changes, so swapping graphs across calls stays safe.
+thread_local! {
+    static FORWARD_STATE: RefCell<Option<SearchState>> = const { RefCell::new(None) };
+    static BACKWARD_STATE: RefCell<Option<SearchState>> = const { RefCell::new(None) };
+    static FORWARD_BUCKET_ITEMS: RefCell<Vec<(u32, u32, u32)>> = const { RefCell::new(Vec::new()) };
+}
 
 // =============================================================================
 // FLAT ADJACENCY STRUCTURES - Pre-filtered INF edges
@@ -1624,7 +1641,10 @@ pub fn table_bucket_parallel(
     // ========== PHASE 1: Parallel forward searches from SOURCES ==========
     let forward_start = std::time::Instant::now();
 
-    // Each source produces its own bucket items
+    // Each source produces its own bucket items. Both the `SearchState`
+    // and the per-call bucket `Vec` are cached in thread-local storage
+    // so rayon workers amortise the ~30 MB scratch allocation across
+    // every source they process, instead of paying it per iteration.
     let bucket_chunks: Vec<Vec<(u32, u32, u32)>> = sources
         .par_iter()
         .enumerate()
@@ -1633,20 +1653,35 @@ pub fn table_bucket_parallel(
                 return None;
             }
 
-            // Thread-local search state
             let avg_visited = (n_nodes / 400).clamp(500, 20000);
-            let mut state = SearchState::new(n_nodes, avg_visited);
-            let mut bucket_items = Vec::with_capacity(avg_visited);
 
-            forward_fill_buckets_flat(
-                up_adj_flat,
-                source_idx as u32,
-                source,
-                &mut state,
-                &mut bucket_items,
-            );
+            FORWARD_STATE.with(|state_cell| {
+                FORWARD_BUCKET_ITEMS.with(|items_cell| {
+                    let mut state_opt = state_cell.borrow_mut();
+                    let state = state_opt.get_or_insert_with(|| {
+                        SearchState::new(n_nodes, avg_visited)
+                    });
+                    if state.entries.len() != n_nodes {
+                        *state = SearchState::new(n_nodes, avg_visited);
+                    }
 
-            Some(bucket_items)
+                    let mut items = items_cell.borrow_mut();
+                    items.clear();
+
+                    forward_fill_buckets_flat(
+                        up_adj_flat,
+                        source_idx as u32,
+                        source,
+                        state,
+                        &mut items,
+                    );
+
+                    // Hand the items out of the thread-local by swapping
+                    // with an empty Vec; the next iteration on this
+                    // worker will get a fresh one back.
+                    Some(std::mem::take(&mut *items))
+                })
+            })
         })
         .collect();
 
@@ -1671,25 +1706,38 @@ pub fn table_bucket_parallel(
         .map(|_| std::sync::atomic::AtomicU32::new(u32::MAX))
         .collect();
 
-    // Parallel backward phase - each target can run independently
+    // Parallel backward phase - each target can run independently.
+    // Reuses a thread-local `SearchState` across every target the rayon
+    // worker processes (see `FORWARD_STATE` comment above — same
+    // rationale applies here, with an even tighter effect because the
+    // backward search on CCH visits a few hundred nodes while the
+    // allocation dwarfs that by four orders of magnitude).
     let (total_visited, total_joins): (usize, usize) = targets
         .par_iter()
         .enumerate()
         .filter(|&(_, target)| (*target as usize) < n_nodes)
         .map(|(target_idx, &target)| {
-            // Thread-local search state
             let avg_visited = (n_nodes / 400).clamp(500, 20000);
-            let mut state = SearchState::new(n_nodes, avg_visited);
 
-            backward_join_parallel_prefix(
-                down_rev_flat,
-                target,
-                &buckets,
-                &matrix,
-                n_targets,
-                target_idx,
-                &mut state,
-            )
+            BACKWARD_STATE.with(|state_cell| {
+                let mut state_opt = state_cell.borrow_mut();
+                let state = state_opt.get_or_insert_with(|| {
+                    SearchState::new(n_nodes, avg_visited)
+                });
+                if state.entries.len() != n_nodes {
+                    *state = SearchState::new(n_nodes, avg_visited);
+                }
+
+                backward_join_parallel_prefix(
+                    down_rev_flat,
+                    target,
+                    &buckets,
+                    &matrix,
+                    n_targets,
+                    target_idx,
+                    state,
+                )
+            })
         })
         .reduce(|| (0, 0), |(v1, j1), (v2, j2)| (v1 + v2, j1 + j2));
 
