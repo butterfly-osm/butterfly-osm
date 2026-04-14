@@ -1484,3 +1484,321 @@ fn belgium_flight_transit_bulk_chunks_large_batches() {
         batches.len()
     );
 }
+
+// =====================================================================
+// Flight gRPC edges_batch unnested per-edge output (#125).
+//
+// Tests the `do_edges_batch` Flight action against a live Belgium
+// ServerState. Verifies the three core acceptance criteria from #125:
+//   1. Continuity: osm_node_to[i] == osm_node_from[i+1] within a query
+//   2. Totals match: sum(duration_ms along path) ≈ matrix duration
+//   3. Null handling: unreachable pairs emit exactly one row with
+//      null edge columns (and query_idx / target_idx still set).
+// =====================================================================
+
+#[test]
+#[ignore = "loads the full Belgium ServerState (~50 s)"]
+fn belgium_flight_edges_batch_continuity_and_nulls() {
+    use butterfly_route::server::flight::{EdgesBatchParams, do_edges_batch};
+    use futures::StreamExt;
+
+    let Some(state) = belgium_server_state() else {
+        return;
+    };
+    let Some(&car_idx) = state.mode_lookup.get("car") else {
+        panic!("car mode must be loaded for edges_batch tests");
+    };
+    let mode = butterfly_route::Mode(car_idx);
+
+    // Four pairs: 3 valid Belgium corridors + 1 unreachable (origin
+    // dropped in the North Sea well outside any road snap radius).
+    let pairs: Vec<[f64; 4]> = vec![
+        [4.3517, 50.8466, 4.4025, 51.2194], // Brussels → Antwerp
+        [4.3517, 50.8466, 5.5697, 50.6326], // Brussels → Liège
+        [4.3517, 50.8466, 3.7250, 51.0543], // Brussels → Gent
+        [0.0, 0.0, 4.4025, 51.2194],        // ocean → Antwerp (unreachable)
+    ];
+    let n_pairs = pairs.len() as u32;
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let batches: Vec<arrow::record_batch::RecordBatch> = rt.block_on(async {
+        let mut s = do_edges_batch(&state, mode, EdgesBatchParams { pairs })
+            .expect("do_edges_batch should succeed");
+        let mut acc = Vec::new();
+        while let Some(item) = s.next().await {
+            acc.push(item.expect("batch must succeed"));
+        }
+        acc
+    });
+
+    assert!(!batches.is_empty(), "at least one RecordBatch expected");
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert!(
+        total_rows >= 30,
+        "expected ≥ 30 edge rows for 3 valid corridors + 1 null, got {}",
+        total_rows
+    );
+
+    // Flatten into one struct per row so we can scan continuity
+    // per query without a 7-tuple that trips clippy::type-complexity.
+    struct EdgeRow {
+        query_idx: u32,
+        _target_idx: u32,
+        edge_seq: Option<u32>,
+        osm_from: Option<i64>,
+        osm_to: Option<i64>,
+        _duration_ms: Option<u32>,
+        _distance_m: Option<u32>,
+    }
+    use arrow::array::*;
+    let mut rows: Vec<EdgeRow> = Vec::with_capacity(total_rows);
+    for batch in &batches {
+        let qi = batch
+            .column_by_name("query_idx")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .unwrap();
+        let ti = batch
+            .column_by_name("target_idx")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .unwrap();
+        let es = batch
+            .column_by_name("edge_seq")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .unwrap();
+        let of = batch
+            .column_by_name("osm_node_from")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let ot = batch
+            .column_by_name("osm_node_to")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let dm = batch
+            .column_by_name("duration_ms")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .unwrap();
+        let mm = batch
+            .column_by_name("distance_m")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .unwrap();
+        for i in 0..batch.num_rows() {
+            rows.push(EdgeRow {
+                query_idx: qi.value(i),
+                _target_idx: ti.value(i),
+                edge_seq: if es.is_null(i) { None } else { Some(es.value(i)) },
+                osm_from: if of.is_null(i) { None } else { Some(of.value(i)) },
+                osm_to: if ot.is_null(i) { None } else { Some(ot.value(i)) },
+                _duration_ms: if dm.is_null(i) { None } else { Some(dm.value(i)) },
+                _distance_m: if mm.is_null(i) { None } else { Some(mm.value(i)) },
+            });
+        }
+    }
+
+    // Every query index must appear at least once.
+    let mut seen_queries: Vec<bool> = vec![false; n_pairs as usize];
+    for r in &rows {
+        seen_queries[r.query_idx as usize] = true;
+    }
+    for (qi, seen) in seen_queries.iter().enumerate() {
+        assert!(*seen, "query {qi} must appear at least once in output");
+    }
+
+    // Query 3 (ocean origin) must be exactly one row with null edge
+    // columns — the null-handling contract from #125.
+    let ocean_rows: Vec<&EdgeRow> = rows.iter().filter(|r| r.query_idx == 3).collect();
+    assert_eq!(
+        ocean_rows.len(),
+        1,
+        "unreachable pair 3 must emit exactly 1 row, got {}",
+        ocean_rows.len()
+    );
+    let ocean = ocean_rows[0];
+    assert!(ocean.edge_seq.is_none(), "ocean row must have null edge_seq");
+    assert!(ocean.osm_from.is_none(), "ocean row must have null osm_node_from");
+    assert!(ocean.osm_to.is_none(), "ocean row must have null osm_node_to");
+
+    // Continuity check for each valid query:
+    // consecutive rows' osm_to[i] == osm_from[i+1].
+    for qi in 0..3u32 {
+        let q_rows: Vec<&EdgeRow> = rows.iter().filter(|r| r.query_idx == qi).collect();
+        assert!(
+            q_rows.len() >= 5,
+            "query {qi} must emit ≥ 5 edges on a Belgium inter-city corridor, got {}",
+            q_rows.len()
+        );
+        // Verify edge_seq starts at 0 and is monotonic + contiguous.
+        for (expected_seq, row) in q_rows.iter().enumerate() {
+            assert_eq!(
+                row.edge_seq,
+                Some(expected_seq as u32),
+                "query {qi}: edge_seq[{expected_seq}] must be {expected_seq}, got {:?}",
+                row.edge_seq
+            );
+        }
+        // Continuity: osm_to[i] == osm_from[i+1] for all consecutive
+        // edges. Both must be non-null (we're in a valid path).
+        for pair_idx in 0..(q_rows.len() - 1) {
+            let a = q_rows[pair_idx];
+            let b = q_rows[pair_idx + 1];
+            assert!(a.osm_to.is_some() && b.osm_from.is_some(), "non-null required");
+            assert_eq!(
+                a.osm_to, b.osm_from,
+                "continuity violation: query {qi} row {pair_idx} osm_to != row {} osm_from ({:?} vs {:?})",
+                pair_idx + 1,
+                a.osm_to,
+                b.osm_from
+            );
+        }
+    }
+
+    eprintln!(
+        "edges_batch: {} batches, {} total rows, {} valid queries, continuity OK",
+        batches.len(),
+        total_rows,
+        3
+    );
+}
+
+#[test]
+#[ignore = "loads the full Belgium ServerState (~50 s)"]
+fn belgium_flight_edges_batch_totals_match_matrix() {
+    // Acceptance criterion from #125: sum(duration_ms along path) must
+    // equal the matrix duration for the same (source, target) pair,
+    // within rounding. We compare against the actual /route endpoint
+    // (same underlying CchQuery) rather than spinning up the Flight
+    // matrix action because route's duration_s is the authoritative
+    // P2P source.
+    use butterfly_route::server::flight::{EdgesBatchParams, do_edges_batch};
+    use butterfly_route::server::query::CchQuery;
+    use futures::StreamExt;
+
+    let Some(state) = belgium_server_state() else {
+        return;
+    };
+    let Some(&car_idx) = state.mode_lookup.get("car") else {
+        return;
+    };
+    let mode = butterfly_route::Mode(car_idx);
+    let mode_data = state.get_mode(mode);
+
+    let pairs: Vec<[f64; 4]> =
+        vec![[4.3517, 50.8466, 4.4025, 51.2194]]; // Brussels → Antwerp
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let batches: Vec<arrow::record_batch::RecordBatch> = rt.block_on(async {
+        let mut s =
+            do_edges_batch(&state, mode, EdgesBatchParams { pairs: pairs.clone() }).unwrap();
+        let mut acc = Vec::new();
+        while let Some(item) = s.next().await {
+            acc.push(item.expect("batch must succeed"));
+        }
+        acc
+    });
+
+    // Sum duration_ms across all rows of query 0.
+    use arrow::array::*;
+    let mut sum_dur_ms: u64 = 0;
+    let mut sum_dist_m: u64 = 0;
+    let mut n_edges = 0usize;
+    for batch in &batches {
+        let dm = batch
+            .column_by_name("duration_ms")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .unwrap();
+        let mm = batch
+            .column_by_name("distance_m")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .unwrap();
+        for i in 0..batch.num_rows() {
+            if !dm.is_null(i) {
+                sum_dur_ms += dm.value(i) as u64;
+                n_edges += 1;
+            }
+            if !mm.is_null(i) {
+                sum_dist_m += mm.value(i) as u64;
+            }
+        }
+    }
+
+    // Independent CCH query for the same pair.
+    let src_snap = state
+        .spatial_index
+        .snap(pairs[0][0], pairs[0][1], &mode_data.mask, 10)
+        .expect("src snap");
+    let dst_snap = state
+        .spatial_index
+        .snap(pairs[0][2], pairs[0][3], &mode_data.mask, 10)
+        .expect("dst snap");
+    let src_filt = mode_data.filtered_ebg.original_to_filtered[src_snap as usize];
+    let dst_filt = mode_data.filtered_ebg.original_to_filtered[dst_snap as usize];
+    let src_rank = mode_data.order.perm[src_filt as usize];
+    let dst_rank = mode_data.order.perm[dst_filt as usize];
+    let query = CchQuery::with_custom_weights(
+        &mode_data.cch_topo,
+        &mode_data.down_rev,
+        &mode_data.cch_weights,
+    );
+    let result = query.query(src_rank, dst_rank).expect("valid CCH query");
+    // CchQuery result.distance is in deciseconds.
+    let expected_dur_ms = (result.distance as u64) * 100;
+
+    let dur_s = sum_dur_ms as f64 / 1000.0;
+    let dist_km = sum_dist_m as f64 / 1000.0;
+    eprintln!(
+        "edges_batch Brussels→Antwerp: {} edges, {:.1} km, {:.1} min (expected {:.1} min)",
+        n_edges,
+        dist_km,
+        dur_s / 60.0,
+        expected_dur_ms as f64 / 1000.0 / 60.0
+    );
+
+    // Allow ±1 % rounding (deciseconds → milliseconds is a 10× scale,
+    // and the per-edge weights may have sub-decisecond remainder
+    // that accumulates to a handful of ms over a long path).
+    let diff = sum_dur_ms.abs_diff(expected_dur_ms);
+    let tolerance = (expected_dur_ms / 100).max(1000); // 1% or 1 second, whichever is larger
+    assert!(
+        diff <= tolerance,
+        "duration mismatch: sum={} ms, expected={} ms, diff={} ms (tolerance={} ms)",
+        sum_dur_ms,
+        expected_dur_ms,
+        diff,
+        tolerance
+    );
+
+    // Sanity: distance should be well above haversine (roads are not
+    // straight). Brussels→Antwerp is ~45 km by road, 40 km straight.
+    assert!(
+        (30.0..=80.0).contains(&dist_km),
+        "Brussels→Antwerp distance {} km outside realistic bounds",
+        dist_km
+    );
+    assert!(
+        n_edges >= 10,
+        "Brussels→Antwerp path should traverse ≥ 10 edges, got {}",
+        n_edges
+    );
+}
