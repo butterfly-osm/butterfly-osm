@@ -9,7 +9,7 @@ members = [
 [workspace.package]
 version = "2.0.0"
 authors = ["Pierre <pierre@warnier.net>"]
-license = "MIT"
+license = "AGPL-3.0-or-later"
 repository = "https://github.com/butterfly-osm/butterfly-osm"
 edition = "2024"
 rust-version = "1.94"
