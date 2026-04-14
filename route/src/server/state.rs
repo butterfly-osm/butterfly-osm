@@ -9,7 +9,8 @@ use std::path::Path;
 
 use crate::formats::{
     CchTopo, CchTopoFile, CchWeightsFile, EbgCsr, EbgCsrFile, EbgNodes, EbgNodesFile, FilteredEbg,
-    FilteredEbgFile, NbgGeo, NbgGeoFile, OrderEbg, OrderEbgFile, WaysFile, mod_weights,
+    FilteredEbgFile, NbgGeo, NbgGeoFile, NbgNodeMapFile, OrderEbg, OrderEbgFile, WaysFile,
+    mod_weights,
 };
 // Re-export CchWeights for use by api.rs
 pub use crate::formats::CchWeights;
@@ -62,6 +63,12 @@ pub struct ServerState {
     pub ebg_nodes: EbgNodes,
     pub ebg_csr: EbgCsr,
     pub nbg_geo: NbgGeo,
+    /// NBG compact node id → OSM node id. Indexed by `compact_id`,
+    /// loaded once at startup from `step3*/nbg.node_map`. Used by the
+    /// Flight `edges_batch` action (#125) to expose per-edge OSM node
+    /// references in the unnested output schema. Memory cost on
+    /// Belgium: ~11 MB (≈1.4M nodes × 8 bytes).
+    pub nbg_node_to_osm: Vec<i64>,
 
     // Per-mode data (dynamically discovered, indexed by mode_index)
     pub modes: Vec<ModeData>,
@@ -131,6 +138,26 @@ impl ServerState {
         tracing::info!("Loading NBG geo...");
         let nbg_geo = NbgGeoFile::read(step3_dir.join("nbg.geo"))?;
         tracing::info!(edges = nbg_geo.edges.len(), "loaded NBG geo");
+
+        tracing::info!("Loading NBG node-id map (osm → compact)...");
+        let nbg_node_map = NbgNodeMapFile::read_map(step3_dir.join("nbg.node_map"))?;
+        // Invert into a Vec indexed by NBG compact_id so the Flight
+        // edges_batch action (#125) can do `osm_node_ids[u_node]` in
+        // O(1). Compact ids are dense and contiguous from 0.
+        let max_compact = nbg_node_map
+            .mappings
+            .iter()
+            .map(|m| m.compact_id)
+            .max()
+            .unwrap_or(0);
+        let mut nbg_node_to_osm: Vec<i64> = vec![0; (max_compact as usize) + 1];
+        for m in &nbg_node_map.mappings {
+            nbg_node_to_osm[m.compact_id as usize] = m.osm_node_id;
+        }
+        tracing::info!(
+            n_nbg_nodes = nbg_node_to_osm.len(),
+            "loaded NBG node id map"
+        );
 
         // Discover ALL available modes (for global index assignment), then filter
         let all_modes = discover_modes(&step5_dir)?;
@@ -258,6 +285,7 @@ impl ServerState {
             ebg_nodes,
             ebg_csr,
             nbg_geo,
+            nbg_node_to_osm,
             modes: modes_data,
             mode_names,
             mode_lookup,

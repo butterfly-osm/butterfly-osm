@@ -167,6 +167,34 @@ fn isochrone_schema() -> Schema {
     ])
 }
 
+/// Schema for `edges_batch` Flight action (#125).
+///
+/// One row per traversed edge per pair. Unnested on purpose — the
+/// output is meant for polars/duckdb/arrow-native flow analytics
+/// pipelines that `GROUP BY osm_node_to` or pipe to a traffic
+/// assignment solver. Nested `list<struct>` is explicitly rejected
+/// per the ticket: it fights every downstream tool.
+///
+/// Unreachable pairs emit a single row with `edge_seq` / `osm_node_*`
+/// / `duration_ms` / `distance_m` all null. Clients filter on
+/// `edge_seq IS NULL` cleanly. Sentinels like `u32::MAX` are the kind
+/// of decision that bites consumers six months later.
+///
+/// Continuity invariant: for every `(query_idx, target_idx)` pair,
+/// consecutive rows satisfy `osm_node_to[i] == osm_node_from[i+1]`.
+/// This is what flow-assignment pipelines rely on to walk paths.
+pub fn edges_batch_schema() -> Schema {
+    Schema::new(vec![
+        Field::new("query_idx", DataType::UInt32, false),
+        Field::new("target_idx", DataType::UInt32, false),
+        Field::new("edge_seq", DataType::UInt32, true),
+        Field::new("osm_node_from", DataType::Int64, true),
+        Field::new("osm_node_to", DataType::Int64, true),
+        Field::new("duration_ms", DataType::UInt32, true),
+        Field::new("distance_m", DataType::UInt32, true),
+    ])
+}
+
 /// Schema for `transit_bulk` Flight action (#119).
 ///
 /// One row per query in the batch. Successful queries carry the full
@@ -790,6 +818,252 @@ fn do_isochrone(
 }
 
 // =============================================================================
+// edges_batch endpoint (#125)
+// =============================================================================
+
+/// Parameters for the `edges_batch` Flight action. MVP accepts the
+/// flat `pairs` shape (same as `route_batch`). The source-batched
+/// `queries` shape from the ticket is a follow-up that depends on a
+/// predecessor-tracking batched PHAST variant.
+#[derive(Deserialize)]
+pub struct EdgesBatchParams {
+    pub pairs: Vec<[f64; 4]>, // [src_lon, src_lat, dst_lon, dst_lat]
+}
+
+pub fn do_edges_batch(
+    state: &Arc<ServerState>,
+    mode: Mode,
+    params: EdgesBatchParams,
+) -> std::result::Result<BatchStream, Status> {
+    if params.pairs.is_empty() {
+        let schema = Arc::new(edges_batch_schema());
+        let empty = RecordBatch::new_empty(schema);
+        return Ok(Box::pin(stream::once(async move { Ok(empty) })));
+    }
+    if params.pairs.len() > 500_000 {
+        return Err(Status::invalid_argument(
+            "max 500,000 pairs per edges_batch request",
+        ));
+    }
+    for (i, pair) in params.pairs.iter().enumerate() {
+        validate_coord(pair[0], pair[1], &format!("pair[{i}].src"))?;
+        validate_coord(pair[2], pair[3], &format!("pair[{i}].dst"))?;
+    }
+
+    let state = Arc::clone(state);
+    let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<RecordBatch, Status>>(8);
+
+    tokio::task::spawn_blocking(move || {
+        let mode_data = state.get_mode(mode);
+        let schema = Arc::new(edges_batch_schema());
+        // Chunk by PAIR count — each pair expands to ~20 edges on
+        // Belgium (average path length), so 256 pairs ≈ 5k rows per
+        // RecordBatch, a comfortable amortisation window.
+        const CHUNK_PAIRS: usize = 256;
+
+        for (chunk_start, chunk) in params
+            .pairs
+            .chunks(CHUNK_PAIRS)
+            .enumerate()
+            .map(|(ci, c)| (ci * CHUNK_PAIRS, c))
+        {
+            // Pre-size row builders generously; they grow as needed.
+            let estimated_rows = chunk.len() * 32;
+            let mut query_idx_b = UInt32Builder::with_capacity(estimated_rows);
+            let mut target_idx_b = UInt32Builder::with_capacity(estimated_rows);
+            let mut edge_seq_b = UInt32Builder::with_capacity(estimated_rows);
+            let mut osm_from_b = Int64Builder::with_capacity(estimated_rows);
+            let mut osm_to_b = Int64Builder::with_capacity(estimated_rows);
+            let mut dur_ms_b = UInt32Builder::with_capacity(estimated_rows);
+            let mut dist_m_b = UInt32Builder::with_capacity(estimated_rows);
+
+            for (local_i, pair) in chunk.iter().enumerate() {
+                let global_idx = (chunk_start + local_i) as u32;
+                let target_idx = 0u32; // placeholder for source-batched shape
+
+                // Emit an "unreachable" row by pushing one row with
+                // all edge columns null. Query_idx / target_idx are
+                // always non-null so the row is still uniquely
+                // identifiable.
+                let emit_unreachable =
+                    |query_idx_b: &mut UInt32Builder,
+                     target_idx_b: &mut UInt32Builder,
+                     edge_seq_b: &mut UInt32Builder,
+                     osm_from_b: &mut Int64Builder,
+                     osm_to_b: &mut Int64Builder,
+                     dur_ms_b: &mut UInt32Builder,
+                     dist_m_b: &mut UInt32Builder| {
+                        query_idx_b.append_value(global_idx);
+                        target_idx_b.append_value(target_idx);
+                        edge_seq_b.append_null();
+                        osm_from_b.append_null();
+                        osm_to_b.append_null();
+                        dur_ms_b.append_null();
+                        dist_m_b.append_null();
+                    };
+
+                // Snap both endpoints on the requested mode's network.
+                let src_snap = state
+                    .spatial_index
+                    .snap(pair[0], pair[1], &mode_data.mask, 10);
+                let dst_snap = state
+                    .spatial_index
+                    .snap(pair[2], pair[3], &mode_data.mask, 10);
+                let (Some(src_orig), Some(dst_orig)) = (src_snap, dst_snap) else {
+                    emit_unreachable(
+                        &mut query_idx_b,
+                        &mut target_idx_b,
+                        &mut edge_seq_b,
+                        &mut osm_from_b,
+                        &mut osm_to_b,
+                        &mut dur_ms_b,
+                        &mut dist_m_b,
+                    );
+                    continue;
+                };
+
+                let src_filt = mode_data.filtered_ebg.original_to_filtered[src_orig as usize];
+                let dst_filt = mode_data.filtered_ebg.original_to_filtered[dst_orig as usize];
+                if src_filt == u32::MAX || dst_filt == u32::MAX {
+                    emit_unreachable(
+                        &mut query_idx_b,
+                        &mut target_idx_b,
+                        &mut edge_seq_b,
+                        &mut osm_from_b,
+                        &mut osm_to_b,
+                        &mut dur_ms_b,
+                        &mut dist_m_b,
+                    );
+                    continue;
+                }
+                let src_rank = mode_data.order.perm[src_filt as usize];
+                let dst_rank = mode_data.order.perm[dst_filt as usize];
+
+                // Run CchQuery against the default time weights (no
+                // avoid/exclude support in MVP; add later as a param
+                // if the first consumer needs it).
+                let query = super::query::CchQuery::with_custom_weights(
+                    &mode_data.cch_topo,
+                    &mode_data.down_rev,
+                    &mode_data.cch_weights,
+                );
+                let Some(result) = query.query(src_rank, dst_rank) else {
+                    emit_unreachable(
+                        &mut query_idx_b,
+                        &mut target_idx_b,
+                        &mut edge_seq_b,
+                        &mut osm_from_b,
+                        &mut osm_to_b,
+                        &mut dur_ms_b,
+                        &mut dist_m_b,
+                    );
+                    continue;
+                };
+
+                // Unpack to the full EBG rank sequence.
+                let rank_path = super::unpack::unpack_path(
+                    &mode_data.cch_topo,
+                    &mode_data.cch_weights,
+                    &result.forward_parent,
+                    &result.backward_parent,
+                    src_rank,
+                    dst_rank,
+                    result.meeting_node,
+                );
+                // Convert rank path → original EBG node ids.
+                let ebg_path: Vec<u32> = rank_path
+                    .iter()
+                    .map(|&rank| {
+                        let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
+                        mode_data.filtered_ebg.filtered_to_original[filt_id as usize]
+                    })
+                    .collect();
+
+                if ebg_path.is_empty() {
+                    emit_unreachable(
+                        &mut query_idx_b,
+                        &mut target_idx_b,
+                        &mut edge_seq_b,
+                        &mut osm_from_b,
+                        &mut osm_to_b,
+                        &mut dur_ms_b,
+                        &mut dist_m_b,
+                    );
+                    continue;
+                }
+
+                // Emit one row per EBG node visited. Each EBG node
+                // represents a directed edge between two NBG nodes
+                // (tail → head), so `osm_node_from = osm(tail)`,
+                // `osm_node_to = osm(head)`. The continuity invariant
+                // `osm_to[i] == osm_from[i+1]` holds because
+                // consecutive EBG nodes in a path share a junction.
+                for (edge_seq, &ebg_id) in ebg_path.iter().enumerate() {
+                    let node = &state.ebg_nodes.nodes[ebg_id as usize];
+                    let osm_from = state
+                        .nbg_node_to_osm
+                        .get(node.tail_nbg as usize)
+                        .copied()
+                        .unwrap_or(0);
+                    let osm_to = state
+                        .nbg_node_to_osm
+                        .get(node.head_nbg as usize)
+                        .copied()
+                        .unwrap_or(0);
+                    // Per-edge duration: node_weights is in
+                    // deciseconds; convert to ms.
+                    let duration_ds = mode_data
+                        .node_weights
+                        .get(ebg_id as usize)
+                        .copied()
+                        .unwrap_or(0);
+                    let duration_ms = duration_ds.saturating_mul(100);
+                    // Per-edge distance: length_mm on the EbgNode is
+                    // a copy of nbg.geo.length_mm; convert to metres.
+                    let distance_m = node.length_mm / 1000;
+
+                    query_idx_b.append_value(global_idx);
+                    target_idx_b.append_value(target_idx);
+                    edge_seq_b.append_value(edge_seq as u32);
+                    osm_from_b.append_value(osm_from);
+                    osm_to_b.append_value(osm_to);
+                    dur_ms_b.append_value(duration_ms);
+                    dist_m_b.append_value(distance_m);
+                }
+            }
+
+            let batch = match RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(query_idx_b.finish()) as ArrayRef,
+                    Arc::new(target_idx_b.finish()),
+                    Arc::new(edge_seq_b.finish()),
+                    Arc::new(osm_from_b.finish()),
+                    Arc::new(osm_to_b.finish()),
+                    Arc::new(dur_ms_b.finish()),
+                    Arc::new(dist_m_b.finish()),
+                ],
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(Status::internal(format!(
+                        "edges_batch Arrow build: {e}"
+                    ))));
+                    return;
+                }
+            };
+
+            if tx.blocking_send(Ok(batch)).is_err() {
+                return; // Client disconnected.
+            }
+        }
+    });
+
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    Ok(Box::pin(stream))
+}
+
+// =============================================================================
 // transit_bulk endpoint (#119)
 // =============================================================================
 
@@ -1337,8 +1611,18 @@ impl FlightService for ButterflyFlight {
                 let flight_stream = batches_to_flight_data(schema, batch_stream);
                 Ok(Response::new(flight_stream))
             }
+            "edges_batch" => {
+                let params: EdgesBatchParams =
+                    serde_json::from_str(&parsed.params_json).map_err(|e| {
+                        Status::invalid_argument(format!("Invalid edges_batch params: {}", e))
+                    })?;
+                let batch_stream = do_edges_batch(&self.state, mode, params)?;
+                let schema = Arc::new(edges_batch_schema());
+                let flight_stream = batches_to_flight_data(schema, batch_stream);
+                Ok(Response::new(flight_stream))
+            }
             other => Err(Status::invalid_argument(format!(
-                "Unknown action '{}'. Available: matrix, route_batch, isochrone, transit_bulk",
+                "Unknown action '{}'. Available: matrix, route_batch, isochrone, transit_bulk, edges_batch",
                 other
             ))),
         }
@@ -1358,9 +1642,10 @@ impl FlightService for ButterflyFlight {
             "isochrone" => isochrone_schema(),
             "catchment" => catchment_schema(),
             "transit_bulk" => transit_bulk_schema(),
+            "edges_batch" => edges_batch_schema(),
             other => {
                 return Err(Status::invalid_argument(format!(
-                    "Unknown action '{}'. Available: matrix, route_batch, isochrone, catchment, transit_bulk",
+                    "Unknown action '{}'. Available: matrix, route_batch, isochrone, catchment, transit_bulk, edges_batch",
                     other
                 )));
             }
@@ -1395,9 +1680,10 @@ impl FlightService for ButterflyFlight {
             "isochrone" => isochrone_schema(),
             "catchment" => catchment_schema(),
             "transit_bulk" => transit_bulk_schema(),
+            "edges_batch" => edges_batch_schema(),
             other => {
                 return Err(Status::invalid_argument(format!(
-                    "Unknown action '{}'. Available: matrix, route_batch, isochrone, catchment, transit_bulk",
+                    "Unknown action '{}'. Available: matrix, route_batch, isochrone, catchment, transit_bulk, edges_batch",
                     other
                 )));
             }
@@ -1433,6 +1719,10 @@ impl FlightService for ButterflyFlight {
             ActionType {
                 r#type: "transit_bulk".into(),
                 description: "Multimodal transit batch routing with Arrow IPC streaming (#119). Ticket: transit_bulk:<profile>:{\"queries\":[{\"origin_lon\":...,\"origin_lat\":...,\"dest_lon\":...,\"dest_lat\":...,\"depart\":\"08:00:00\",...},...]}. The profile is ignored — every query carries its own access_mode/egress_mode. Schema: query_idx, status, http_status, error, origin/dest lon/lat, depart_time, arrival_time, total_duration_s, access/egress_mode, legs_json (JSON-encoded leg array). Up to 500k queries per call.".into(),
+            },
+            ActionType {
+                r#type: "edges_batch".into(),
+                description: "Unnested per-edge path output for bulk flow analytics (#125). Ticket: edges_batch:<profile>:{\"pairs\":[[src_lon,src_lat,dst_lon,dst_lat],...]}. Unlike route_batch (which returns WKB polyline geometry), edges_batch emits one row per traversed EBG edge with columns: query_idx, target_idx, edge_seq, osm_node_from, osm_node_to, duration_ms, distance_m. Unreachable pairs emit a single row with null edge columns. Continuity invariant: consecutive rows within a query satisfy osm_node_to[i] == osm_node_from[i+1]. Up to 500k pairs per call.".into(),
             },
         ];
 
