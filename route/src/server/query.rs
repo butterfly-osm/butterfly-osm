@@ -484,6 +484,145 @@ pub fn query_one_to_many(
         .collect()
 }
 
+impl CchQuery<'_> {
+    /// Distance-only bidirectional query.
+    ///
+    /// Same bidirectional bounded-search algorithm as `query()` but
+    /// **skips path reconstruction**. Used by the `/transit` handler's
+    /// access / egress 1-to-N loops where only the walking/driving
+    /// time is needed and the actual road path is never read.
+    ///
+    /// Replaces the use of `table_bucket_parallel()` for tiny `1 x k`
+    /// shapes — see issue #103. Bucket M2M allocates a per-worker
+    /// `SearchState` of ~60 MB on the foot CCH and a dense result
+    /// matrix for every call, which is catastrophically wasteful when
+    /// the real query is "1 source, 20 targets, no paths". This
+    /// variant reuses the existing thread-local `CCH_QUERY_STATE`
+    /// (O(1) per-query reset via generation stamps) and allocates
+    /// nothing.
+    pub fn distance(&self, source: u32, target: u32) -> Option<u32> {
+        if source == target {
+            return Some(0);
+        }
+        let n = self.n_nodes;
+        CCH_QUERY_STATE.with(|cell| {
+            let mut state_opt = cell.borrow_mut();
+            let state = state_opt.get_or_insert_with(|| CchQueryState::new(n));
+            if state.dist_fwd.len() != n {
+                *state = CchQueryState::new(n);
+            }
+            state.start_query();
+
+            state.set_fwd(source as usize, 0, (source, 0));
+            state.set_bwd(target as usize, 0, (target, 0));
+            state.pq_fwd.push(source, Reverse(0));
+            state.pq_bwd.push(target, Reverse(0));
+
+            let mut best_dist = u32::MAX;
+
+            while !state.pq_fwd.is_empty() || !state.pq_bwd.is_empty() {
+                let fwd_min = state
+                    .pq_fwd
+                    .peek()
+                    .map(|(_, &Reverse(d))| d)
+                    .unwrap_or(u32::MAX);
+                let bwd_min = state
+                    .pq_bwd
+                    .peek()
+                    .map(|(_, &Reverse(d))| d)
+                    .unwrap_or(u32::MAX);
+                if fwd_min >= best_dist && bwd_min >= best_dist {
+                    break;
+                }
+
+                // Forward step — UP graph.
+                if let Some((u, Reverse(d))) = state.pq_fwd.pop()
+                    && d <= state.get_fwd(u as usize)
+                {
+                    let bwd_d = state.get_bwd(u as usize);
+                    if bwd_d != u32::MAX {
+                        let total = d.saturating_add(bwd_d);
+                        if total < best_dist {
+                            best_dist = total;
+                        }
+                    }
+                    let start = self.topo.up_offsets[u as usize] as usize;
+                    let end = self.topo.up_offsets[u as usize + 1] as usize;
+                    for i in start..end {
+                        let v = self.topo.up_targets[i];
+                        let w = self.weights.up[i];
+                        if w == u32::MAX {
+                            continue;
+                        }
+                        let new_dist = d.saturating_add(w);
+                        if new_dist < state.get_fwd(v as usize) {
+                            state.set_fwd(v as usize, new_dist, (u, i as u32));
+                            state.pq_fwd.push(v, Reverse(new_dist));
+                            let bwd_v = state.get_bwd(v as usize);
+                            if bwd_v != u32::MAX {
+                                let total = new_dist.saturating_add(bwd_v);
+                                if total < best_dist {
+                                    best_dist = total;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Backward step — reversed DOWN graph.
+                if let Some((u, Reverse(d))) = state.pq_bwd.pop()
+                    && d <= state.get_bwd(u as usize)
+                {
+                    let fwd_d = state.get_fwd(u as usize);
+                    if fwd_d != u32::MAX {
+                        let total = d.saturating_add(fwd_d);
+                        if total < best_dist {
+                            best_dist = total;
+                        }
+                    }
+                    let start = self.down_rev.offsets[u as usize] as usize;
+                    let end = self.down_rev.offsets[u as usize + 1] as usize;
+                    for i in start..end {
+                        let x = self.down_rev.sources[i];
+                        let edge_idx = self.down_rev.edge_idx[i] as usize;
+                        let w = self.weights.down[edge_idx];
+                        if w == u32::MAX {
+                            continue;
+                        }
+                        let new_dist = d.saturating_add(w);
+                        if new_dist < state.get_bwd(x as usize) {
+                            state.set_bwd(x as usize, new_dist, (u, edge_idx as u32));
+                            state.pq_bwd.push(x, Reverse(new_dist));
+                            let fwd_x = state.get_fwd(x as usize);
+                            if fwd_x != u32::MAX {
+                                let total = new_dist.saturating_add(fwd_x);
+                                if total < best_dist {
+                                    best_dist = total;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if best_dist == u32::MAX {
+                None
+            } else {
+                Some(best_dist)
+            }
+        })
+    }
+
+    /// Distance-only 1-to-N query. Runs `distance()` for each target
+    /// against the same thread-local state. The thread-local's
+    /// generation-stamp reset is O(1) per call so this is genuinely
+    /// cheap — each target costs one bounded bidirectional search on
+    /// the CCH with no allocation in the steady state.
+    pub fn distances_one_to_many(&self, source: u32, targets: &[u32]) -> Vec<Option<u32>> {
+        targets.iter().map(|&t| self.distance(source, t)).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
