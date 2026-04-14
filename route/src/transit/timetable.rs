@@ -34,6 +34,7 @@
 //!     passing through a stop" relation.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use anyhow::Result;
 
@@ -45,10 +46,15 @@ pub type RouteIdx = u32;
 pub type TripIdx = u32;
 
 /// A single stop.
+///
+/// `id` and `name` are [`Arc<str>`] so the handler can clone them into
+/// response legs for ~1 ns (atomic refcount bump) instead of a heap
+/// allocation + memcpy (#118). Serialisation via serde still produces a
+/// plain JSON string — `Arc<str>: Serialize` delegates to `&str`.
 #[derive(Debug, Clone)]
 pub struct Stop {
-    pub id: String,
-    pub name: String,
+    pub id: Arc<str>,
+    pub name: Arc<str>,
     pub lon: f64,
     pub lat: f64,
     /// Parent station (GTFS `location_type=1`) — `None` for stand-alone stops.
@@ -63,17 +69,24 @@ pub struct StopTime {
 }
 
 /// A RAPTOR route (canonical stop pattern).
+///
+/// All three string fields are [`Arc<str>`] for the same reason as
+/// [`Stop`] (#118) — cheap per-response cloning, and strong dedup
+/// across the thousands of trips that share a route name. Belgian
+/// operators have on the order of ~10³ unique `short_name`/`long_name`
+/// combinations across ~10⁵ trips, so interning wins both on response
+/// time and steady-state memory.
 #[derive(Debug, Clone)]
 pub struct RouteMeta {
     /// GTFS route short name (e.g. "IC"), `""` if missing.
-    pub short_name: String,
+    pub short_name: Arc<str>,
     /// GTFS route long name, `""` if missing.
-    pub long_name: String,
+    pub long_name: Arc<str>,
     /// Headsign of the first trip in this route, `""` if missing.
     /// Real-world RAPTOR queries return the headsign of the *specific* trip
     /// the rider will board, but to keep the per-leg output simple we use
     /// the headsign common to this stop-pattern as a good default.
-    pub headsign: String,
+    pub headsign: Arc<str>,
 }
 
 /// An immutable RAPTOR-shaped timetable.
@@ -225,6 +238,24 @@ pub struct TimetableBuilder {
     pub stop_id_to_idx: HashMap<String, StopIdx>,
     /// Route key → (meta, stop_pattern, trips)
     pattern_groups: BTreeMap<Vec<StopIdx>, PatternGroup>,
+    /// Interner for hot response strings (#118). Stop ids are unique
+    /// so stop-id interning saves only the Arc header, but stop names,
+    /// route short/long names, and headsigns dedupe across thousands
+    /// of trips and are the real memory win.
+    interner: HashMap<String, Arc<str>>,
+}
+
+impl TimetableBuilder {
+    /// Get-or-insert an `Arc<str>` from the interner. One allocation
+    /// per unique string across the whole timetable build.
+    fn intern(&mut self, s: &str) -> Arc<str> {
+        if let Some(existing) = self.interner.get(s) {
+            return existing.clone();
+        }
+        let arc: Arc<str> = Arc::from(s);
+        self.interner.insert(s.to_string(), arc.clone());
+        arc
+    }
 }
 
 struct PatternGroup {
@@ -250,6 +281,7 @@ impl TimetableBuilder {
             stops: Vec::new(),
             stop_id_to_idx: HashMap::new(),
             pattern_groups: BTreeMap::new(),
+            interner: HashMap::new(),
         }
     }
 
@@ -266,9 +298,11 @@ impl TimetableBuilder {
             return idx;
         }
         let idx = self.stops.len() as StopIdx;
+        let id_arc = self.intern(gtfs_id);
+        let name_arc = self.intern(name);
         self.stops.push(Stop {
-            id: gtfs_id.to_string(),
-            name: name.to_string(),
+            id: id_arc,
+            name: name_arc,
             lon,
             lat,
             parent_station,
@@ -299,14 +333,17 @@ impl TimetableBuilder {
             stop_times.len(),
             "trip pattern/time mismatch"
         );
+        let short_arc = self.intern(short_name);
+        let long_arc = self.intern(long_name);
+        let headsign_arc = self.intern(headsign);
         let group = self
             .pattern_groups
             .entry(pattern)
             .or_insert_with(|| PatternGroup {
                 meta: RouteMeta {
-                    short_name: short_name.to_string(),
-                    long_name: long_name.to_string(),
-                    headsign: headsign.to_string(),
+                    short_name: short_arc,
+                    long_name: long_arc,
+                    headsign: headsign_arc,
                 },
                 trips: Vec::new(),
             });
@@ -322,6 +359,7 @@ impl TimetableBuilder {
             stops,
             stop_id_to_idx,
             pattern_groups,
+            interner: _,
         } = self;
 
         let n_stops_total = stops.len();
