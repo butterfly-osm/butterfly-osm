@@ -115,6 +115,32 @@ impl TransferGraph {
         &self.neighbours
     }
 
+    /// Build a [`TransferGraph`] directly from pre-built CSR parts.
+    /// Used by the cache reader (#117) to avoid the `from_triples`
+    /// round-trip: the on-disk layout is already CSR, so the reader
+    /// hands us the offsets and neighbours arrays and we wrap them
+    /// verbatim. Zero triples-to-CSR rebuild.
+    pub fn from_csr_parts(
+        n_stops: usize,
+        offsets: Vec<u32>,
+        neighbours: Vec<(StopIdx, u32)>,
+        provenance: [u8; 32],
+    ) -> Self {
+        debug_assert_eq!(offsets.len(), n_stops + 1);
+        debug_assert_eq!(
+            offsets.last().copied().unwrap_or(0) as usize,
+            neighbours.len(),
+            "offsets/neighbours length mismatch"
+        );
+        Self {
+            offsets,
+            neighbours,
+            n_stops,
+            staging: Vec::new(),
+            provenance,
+        }
+    }
+
     /// Build a [`TransferGraph`] from a flat `(from, to, walk_s)` list.
     ///
     /// Duplicates for the same `(from, to)` pair are collapsed to the

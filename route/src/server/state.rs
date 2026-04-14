@@ -70,8 +70,21 @@ pub struct ServerState {
     /// Mode name → mode index lookup
     pub mode_lookup: HashMap<String, u8>,
 
-    // Spatial index for snapping (operates in original EBG space)
+    // Spatial index for snapping (operates in original EBG space).
+    // Global index: includes every EBG node regardless of mode, used
+    // by legacy callers (nearest handler, table, etc.) that pass a
+    // mode mask for filtering at query time.
     pub spatial_index: SpatialIndex,
+
+    // Per-mode spatial indexes built at startup for every loaded mode.
+    // Each index contains ONLY nodes passing that mode's mask, so
+    // `snap_unfiltered` returns the correct mode-specific nearest in a
+    // single R-tree walk with no rejection loop. Indexed by mode index
+    // (same space as `modes` / `mode_lookup`).
+    //
+    // See issue #116. Used by `/transit` on the hot path; other
+    // endpoints continue to use the global index until migrated.
+    pub mode_spatial_indexes: HashMap<u8, SpatialIndex>,
 
     // Elevation data (optional, loaded from SRTM .hgt files)
     pub elevation: Option<ElevationData>,
@@ -173,6 +186,25 @@ impl ServerState {
         let spatial_index = SpatialIndex::build(&ebg_nodes, &nbg_geo);
         tracing::info!(nodes = ebg_nodes.n_nodes, "built spatial index");
 
+        // Per-mode spatial indexes: one R-tree per loaded mode,
+        // pre-filtered to that mode's accessible nodes. Built once at
+        // startup; queried via `snap_unfiltered` which skips the
+        // pathological rejection loop that the global index incurs.
+        // See issue #116.
+        tracing::info!("Building per-mode spatial indexes...");
+        let mut mode_spatial_indexes: HashMap<u8, SpatialIndex> =
+            HashMap::with_capacity(modes_data.len());
+        for (mode_index, mode_data) in modes_data.iter().enumerate() {
+            let idx = SpatialIndex::build_filtered(&ebg_nodes, &nbg_geo, &mode_data.mask);
+            tracing::info!(
+                mode = mode_names[mode_index].as_str(),
+                index = mode_index,
+                indexed_nodes = idx.n_indexed(),
+                "built per-mode spatial index"
+            );
+            mode_spatial_indexes.insert(mode_index as u8, idx);
+        }
+
         // Load road names from ways.raw for turn-by-turn instructions
         tracing::info!("Loading road names...");
         let way_names = load_way_names(&step1_dir)?;
@@ -230,6 +262,7 @@ impl ServerState {
             mode_names,
             mode_lookup,
             spatial_index,
+            mode_spatial_indexes,
             elevation,
             way_names,
             node_weights_dist,
