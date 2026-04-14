@@ -271,7 +271,7 @@ fn belgium_multi_feed_merge() {
     // Sanity: trip id → idx lookup works for every feed (hence prefixes
     // are unique at the trip level too).
     for stop in &tt.stops {
-        assert!(tt.stop_id_to_idx.contains_key(&stop.id));
+        assert!(tt.stop_id_to_idx.contains_key(&*stop.id));
     }
 
     // Sanity: every route has at least two stops and every stop on a
