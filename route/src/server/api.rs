@@ -117,6 +117,10 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
         .route("/height", get(super::height_handler::height_handler))
         .route("/catchment", post(super::catchment::catchment_handler))
         .route("/transit", get(super::transit_handler::transit_handler))
+        .route(
+            "/transit/bulk",
+            post(super::transit_handler::transit_bulk_handler),
+        )
         .route("/health", get(super::health_handler::health_handler))
         .layer(CompressionLayer::new())
         .layer(ConcurrencyLimitLayer::new(32))

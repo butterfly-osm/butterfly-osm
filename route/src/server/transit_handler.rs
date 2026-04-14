@@ -210,6 +210,17 @@ pub async fn transit_handler(
     State(state): State<Arc<ServerState>>,
     Query(req): Query<TransitRequest>,
 ) -> Result<Json<TransitResponse>, (StatusCode, Json<ErrorResponse>)> {
+    compute_transit_journey(state.as_ref(), &req).map(Json)
+}
+
+/// Single-query transit computation. Synchronous, stateless across
+/// calls (every scratch buffer lives in thread-locals from RAPTOR
+/// and CchQuery). Used by both the single-query `/transit` handler
+/// and the batch `/transit/bulk` handler (#105).
+pub fn compute_transit_journey(
+    state: &ServerState,
+    req: &TransitRequest,
+) -> Result<TransitResponse, (StatusCode, Json<ErrorResponse>)> {
     let Some(transit) = state.transit.as_ref() else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -376,19 +387,17 @@ pub async fn transit_handler(
     // service area with a bus stop), or vice versa — we snap to whatever
     // mode the user requested.
     let origin_ranks =
-        snap_stop_ranks_on_mode(&access_candidates, timetable, state.as_ref(), access_idx);
+        snap_stop_ranks_on_mode(&access_candidates, timetable, state, access_idx);
     let dest_ranks =
-        snap_stop_ranks_on_mode(&egress_candidates, timetable, state.as_ref(), egress_idx);
+        snap_stop_ranks_on_mode(&egress_candidates, timetable, state, egress_idx);
 
-    let origin_source_rank =
-        snap_to_rank(req.origin_lon, req.origin_lat, state.as_ref(), access_idx).ok_or_else(
-            || {
-                not_found(&format!(
-                    "origin could not snap to the {access_mode} network"
-                ))
-            },
-        )?;
-    let dest_source_rank = snap_to_rank(req.dest_lon, req.dest_lat, state.as_ref(), egress_idx)
+    let origin_source_rank = snap_to_rank(req.origin_lon, req.origin_lat, state, access_idx)
+        .ok_or_else(|| {
+            not_found(&format!(
+                "origin could not snap to the {access_mode} network"
+            ))
+        })?;
+    let dest_source_rank = snap_to_rank(req.dest_lon, req.dest_lat, state, egress_idx)
         .ok_or_else(|| {
             not_found(&format!(
                 "destination could not snap to the {egress_mode} network"
@@ -611,7 +620,7 @@ pub async fn transit_handler(
         haversine_m(last_stop.lon, last_stop.lat, req.dest_lon, req.dest_lat) as u32,
     ));
 
-    Ok(Json(TransitResponse {
+    Ok(TransitResponse {
         origin: [req.origin_lon, req.origin_lat],
         destination: [req.dest_lon, req.dest_lat],
         depart_time: format_hms(depart_s),
@@ -620,7 +629,152 @@ pub async fn transit_handler(
         access_mode,
         egress_mode,
         legs,
-    }))
+    })
+}
+
+// =====================================================================
+// Bulk endpoint: POST /transit/bulk (issue #105)
+// =====================================================================
+
+/// Request body for `POST /transit/bulk`. Carries a batch of
+/// independent transit queries and an optional per-batch override
+/// of the per-query parameters (applied as defaults to each query
+/// that doesn't set them explicitly).
+#[derive(Debug, Deserialize)]
+pub struct TransitBulkRequest {
+    pub queries: Vec<TransitRequest>,
+    /// Optional per-batch default: passed down to any query that
+    /// omits its own `max_walk_m`.
+    #[serde(default)]
+    pub max_walk_m: Option<u32>,
+    /// Optional per-batch default: passed down to any query that
+    /// omits its own `access_mode`.
+    #[serde(default)]
+    pub access_mode: Option<String>,
+    /// Optional per-batch default: passed down to any query that
+    /// omits its own `egress_mode`.
+    #[serde(default)]
+    pub egress_mode: Option<String>,
+}
+
+/// One result slot in a bulk response. Either a successful
+/// [`TransitResponse`] or a machine-readable error with HTTP status.
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TransitBulkResult {
+    Ok { journey: Box<TransitResponse> },
+    Err { status: u16, error: String },
+}
+
+#[derive(Debug, Serialize)]
+pub struct TransitBulkResponse {
+    pub count: usize,
+    pub results: Vec<TransitBulkResult>,
+}
+
+/// `POST /transit/bulk` — batch multimodal routing.
+///
+/// Runs every query in the batch in parallel via Rayon. Every worker
+/// thread reuses its `RAPTOR_STATE` and `CCH_QUERY_STATE` thread-
+/// locals across calls, so the per-query amortised cost drops
+/// significantly vs. cold single-query calls: zero per-request
+/// RAPTOR scratch allocation, zero per-request CCH query state
+/// allocation. For a batch of N queries on K cores, the throughput
+/// is roughly N × (single-query-cost / K) — linear in cores, with
+/// all the per-call fixed overhead eliminated.
+///
+/// Request and response are JSON. Arrow IPC streaming is a future
+/// enhancement (issue #105 originally proposed it); JSON first
+/// because it's simpler to validate correctness and because the
+/// per-query amortisation is the actual perf win regardless of wire
+/// format.
+///
+/// Cancellation: if the client disconnects, Axum drops the handler
+/// future. This is not yet plumbed through to a cooperative
+/// per-query cancellation flag — a follow-up.
+pub async fn transit_bulk_handler(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<TransitBulkRequest>,
+) -> Result<Json<TransitBulkResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Soft cap on batch size. 100k is generous for interactive use;
+    // operators doing matrix-style work should look at `/table/stream`
+    // for the road side and batch transit in chunks of ~10k.
+    const MAX_BATCH: usize = 100_000;
+    if req.queries.len() > MAX_BATCH {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(ErrorResponse {
+                error: format!(
+                    "bulk batch size {} exceeds MAX_BATCH {MAX_BATCH}",
+                    req.queries.len()
+                ),
+            }),
+        ));
+    }
+    if state.transit.is_none() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "transit subsystem is not loaded".to_string(),
+            }),
+        ));
+    }
+
+    // Apply per-batch defaults to every query that omits the field.
+    let batch_max_walk_m = req.max_walk_m;
+    let batch_access_mode = req.access_mode.clone();
+    let batch_egress_mode = req.egress_mode.clone();
+    let mut queries = req.queries;
+    for q in &mut queries {
+        if q.max_walk_m.is_none()
+            && let Some(m) = batch_max_walk_m
+        {
+            q.max_walk_m = Some(m);
+        }
+        if q.access_mode.is_none()
+            && let Some(ref s) = batch_access_mode
+        {
+            q.access_mode = Some(s.clone());
+        }
+        if q.egress_mode.is_none()
+            && let Some(ref s) = batch_egress_mode
+        {
+            q.egress_mode = Some(s.clone());
+        }
+    }
+    let count = queries.len();
+
+    // Move the actual work off the async executor onto the Rayon
+    // thread pool via `spawn_blocking` — single-query transit work
+    // is pure CPU and non-trivially long, so holding a Tokio worker
+    // for the whole batch is wrong.
+    let state_clone = Arc::clone(&state);
+    let results: Vec<TransitBulkResult> = tokio::task::spawn_blocking(move || {
+        use rayon::prelude::*;
+        queries
+            .par_iter()
+            .map(|q| match compute_transit_journey(state_clone.as_ref(), q) {
+                Ok(resp) => TransitBulkResult::Ok {
+                    journey: Box::new(resp),
+                },
+                Err((status, err)) => TransitBulkResult::Err {
+                    status: status.as_u16(),
+                    error: err.0.error,
+                },
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("bulk task panicked: {e}"),
+            }),
+        )
+    })?;
+
+    Ok(Json(TransitBulkResponse { count, results }))
 }
 
 fn bad_request(msg: &str) -> (StatusCode, Json<ErrorResponse>) {
