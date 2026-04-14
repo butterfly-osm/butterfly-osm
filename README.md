@@ -354,7 +354,13 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+AGPL-3.0-or-later — see [LICENSE](LICENSE) file for the canonical FSF text.
+
+[![License: AGPL v3+](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
+
+Network-deployed forks must publish their source code under AGPL §13. By
+submitting a pull request you agree your contribution is licensed under
+AGPL-3.0-or-later (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## Team
 
