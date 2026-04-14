@@ -61,16 +61,17 @@
 //! Memory cost for STIB: ~100 MB of aggregated records while parsing
 //! the 722 MB file, dropped after `TimetableBuilder::build()`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use chrono::{Datelike, Local, NaiveDate, NaiveDateTime};
 use quick_xml::Reader;
 use quick_xml::events::Event;
 
-use super::timetable::{StopTime, Timetable, TimetableBuilder};
+use super::timetable::{StopIdx, StopTime, Timetable, TimetableBuilder};
 
 /// Parse a STIB-shaped NeTEx-EPIP XML file into a [`Timetable`].
 ///
@@ -149,6 +150,11 @@ struct ParseState {
     lines: HashMap<String, LineRec>,
     journey_patterns: HashMap<String, JourneyPatternRec>,
     service_journeys: Vec<ServiceJourneyRec>,
+    /// Operating periods keyed by id (#101 calendar follow-up).
+    operating_periods: HashMap<String, UicOperatingPeriodRec>,
+    /// `(day_type_ref, operating_period_ref)` pairs from
+    /// `<DayTypeAssignment>` (#101 calendar follow-up).
+    day_type_assignments: Vec<(String, String)>,
 
     // Streaming cursor: we track the currently-open element stack so
     // that nested text events (<Name>, <gml:pos>, <ArrivalTime>, …)
@@ -171,6 +177,11 @@ struct ParseState {
     current_jp_stop_point_ref: Option<String>,
     current_sj: Option<ServiceJourneyRec>,
     current_passing_time: Option<PassingTimeRec>,
+    // Calendar parsing scratch (#101 follow-up).
+    current_op_id: Option<String>,
+    current_op: Option<UicOperatingPeriodRec>,
+    current_dta_day_type_ref: Option<String>,
+    current_dta_op_ref: Option<String>,
     // Pending text destination — when we see a `<Name>`, `<gml:pos>`,
     // `<ArrivalTime>`, etc., this tells the text handler which field
     // to populate on the current record.
@@ -188,6 +199,8 @@ enum ElementKind {
     StopPointInJourneyPattern,
     ServiceJourney,
     TimetabledPassingTime,
+    UicOperatingPeriod,
+    DayTypeAssignment,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -204,6 +217,9 @@ enum TextTarget {
     PtDepartureTime,
     PtArrivalDayOffset,
     PtDepartureDayOffset,
+    OpFromDate,
+    OpToDate,
+    OpValidDayBits,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -243,19 +259,37 @@ struct JourneyPatternRec {
     /// elements' document order (NeTEx also stamps an `order` attribute
     /// but document order is the canonical ordering in EPIP).
     stop_point_refs: Vec<String>,
-    // Line ref for this pattern is not strictly required for RAPTOR
-    // but makes RouteMeta useful. Resolved later.
-    // NOTE: EPIP pattern → line association is indirect (via Route →
-    // Line); for MVP we skip the indirection and give every pattern a
-    // generic name. Future work: parse Route elements too.
+    /// `<RouteRef ref="FR:Route:..."/>` from this pattern. Used to
+    /// resolve to a `Line` via id stem matching (the EPIP file has no
+    /// standalone `Route` declarations — the route id maps directly
+    /// to a `Line` id with the same stem, plus an optional `_R`
+    /// suffix for the reverse direction).
+    route_ref: Option<String>,
 }
 
 #[derive(Debug, Default, Clone)]
 struct ServiceJourneyRec {
     pattern_ref: Option<String>,
+    /// `<dayTypes>` references — one ServiceJourney can carry several
+    /// DayTypeRefs and is active when *any* of them resolves to a
+    /// running calendar day. Empty list = unknown / always active
+    /// (we treat this as active to avoid silently dropping trips).
+    day_type_refs: Vec<String>,
     // `passingTimes` ordered list. Each entry is a single stop on the
     // journey, matched positionally to `journey_patterns[pattern_ref].stop_point_refs[i]`.
     passing_times: Vec<PassingTimeRec>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct UicOperatingPeriodRec {
+    /// `FromDate` text, ISO-8601 e.g. `2025-03-07T00:00:00+00:00`.
+    from_date: Option<String>,
+    /// `ToDate` text.
+    to_date: Option<String>,
+    /// `ValidDayBits` text — a string of `'0'` and `'1'` characters
+    /// where each char represents one day starting at `FromDate`,
+    /// `'1'` meaning "active that day".
+    valid_day_bits: Option<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -331,6 +365,38 @@ fn handle_start(
         b"TimetabledPassingTime" => {
             state.current_passing_time = Some(PassingTimeRec::default());
             state.stack.push(ElementKind::TimetabledPassingTime);
+        }
+        b"UicOperatingPeriod" => {
+            let id = attr(e, b"id").unwrap_or_default();
+            state.current_op_id = Some(id);
+            state.current_op = Some(UicOperatingPeriodRec::default());
+            state.stack.push(ElementKind::UicOperatingPeriod);
+        }
+        b"DayTypeAssignment" => {
+            state.current_dta_day_type_ref = None;
+            state.current_dta_op_ref = None;
+            state.stack.push(ElementKind::DayTypeAssignment);
+        }
+        b"FromDate" => {
+            state.text_target = if state.stack.last() == Some(&ElementKind::UicOperatingPeriod) {
+                TextTarget::OpFromDate
+            } else {
+                TextTarget::None
+            };
+        }
+        b"ToDate" => {
+            state.text_target = if state.stack.last() == Some(&ElementKind::UicOperatingPeriod) {
+                TextTarget::OpToDate
+            } else {
+                TextTarget::None
+            };
+        }
+        b"ValidDayBits" => {
+            state.text_target = if state.stack.last() == Some(&ElementKind::UicOperatingPeriod) {
+                TextTarget::OpValidDayBits
+            } else {
+                TextTarget::None
+            };
         }
         b"Name" => {
             // Which record to attach this Name to depends on the
@@ -413,6 +479,33 @@ fn handle_start(
                 }
             }
         }
+        b"RouteRef" => {
+            if state.stack.last() == Some(&ElementKind::JourneyPattern) {
+                if let Some(jp) = state.current_jp.as_mut() {
+                    jp.route_ref = attr(e, b"ref");
+                }
+            }
+        }
+        b"DayTypeRef" => {
+            match state.stack.last() {
+                Some(ElementKind::ServiceJourney) => {
+                    if let Some(r) = attr(e, b"ref") {
+                        if let Some(sj) = state.current_sj.as_mut() {
+                            sj.day_type_refs.push(r);
+                        }
+                    }
+                }
+                Some(ElementKind::DayTypeAssignment) => {
+                    state.current_dta_day_type_ref = attr(e, b"ref");
+                }
+                _ => {}
+            }
+        }
+        b"OperatingPeriodRef" => {
+            if state.stack.last() == Some(&ElementKind::DayTypeAssignment) {
+                state.current_dta_op_ref = attr(e, b"ref");
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -468,6 +561,33 @@ fn handle_empty(
             // don't need to capture the ref value — the positional
             // matching is implicit via the document order of the
             // sibling <TimetabledPassingTime> elements.
+        }
+        b"RouteRef" => {
+            if state.stack.last() == Some(&ElementKind::JourneyPattern) {
+                if let Some(jp) = state.current_jp.as_mut() {
+                    jp.route_ref = attr(e, b"ref");
+                }
+            }
+        }
+        b"DayTypeRef" => {
+            match state.stack.last() {
+                Some(ElementKind::ServiceJourney) => {
+                    if let Some(r) = attr(e, b"ref") {
+                        if let Some(sj) = state.current_sj.as_mut() {
+                            sj.day_type_refs.push(r);
+                        }
+                    }
+                }
+                Some(ElementKind::DayTypeAssignment) => {
+                    state.current_dta_day_type_ref = attr(e, b"ref");
+                }
+                _ => {}
+            }
+        }
+        b"OperatingPeriodRef" => {
+            if state.stack.last() == Some(&ElementKind::DayTypeAssignment) {
+                state.current_dta_op_ref = attr(e, b"ref");
+            }
         }
         _ => {}
     }
@@ -558,6 +678,21 @@ fn handle_end(
             }
             pop_stack(state, ElementKind::TimetabledPassingTime);
         }
+        b"UicOperatingPeriod" => {
+            if let (Some(id), Some(rec)) = (state.current_op_id.take(), state.current_op.take()) {
+                state.operating_periods.insert(id, rec);
+            }
+            pop_stack(state, ElementKind::UicOperatingPeriod);
+        }
+        b"DayTypeAssignment" => {
+            if let (Some(dt), Some(op)) = (
+                state.current_dta_day_type_ref.take(),
+                state.current_dta_op_ref.take(),
+            ) {
+                state.day_type_assignments.push((dt, op));
+            }
+            pop_stack(state, ElementKind::DayTypeAssignment);
+        }
         _ => {}
     }
     Ok(())
@@ -625,6 +760,21 @@ fn handle_text(state: &mut ParseState, t: &quick_xml::events::BytesText<'_>) -> 
         TextTarget::PtDepartureDayOffset => {
             if let Some(pt) = state.current_passing_time.as_mut() {
                 pt.departure_day_offset = s.trim().parse().unwrap_or(0);
+            }
+        }
+        TextTarget::OpFromDate => {
+            if let Some(op) = state.current_op.as_mut() {
+                op.from_date = Some(s);
+            }
+        }
+        TextTarget::OpToDate => {
+            if let Some(op) = state.current_op.as_mut() {
+                op.to_date = Some(s);
+            }
+        }
+        TextTarget::OpValidDayBits => {
+            if let Some(op) = state.current_op.as_mut() {
+                op.valid_day_bits = Some(s);
             }
         }
         TextTarget::None => {}
@@ -781,6 +931,95 @@ fn emit_into_builder(
         "NeTEx-EPIP: deduplicated per-pattern SSPs to physical stops"
     );
 
+    // Pass 1b: parent station hierarchy. Walk every SSP we registered
+    // and resolve its parent StopPlace's `ParentSiteRef`. If the
+    // umbrella parent has its own representative SSP in the
+    // timetable (often the case when one of the umbrella's child
+    // stops shares the same coordinates), wire `parent_station` to
+    // that StopIdx. Otherwise, leave it None — #112's same-station
+    // bridges still cover most of the practical "transfer at the
+    // same station" benefit via the foot CCH.
+    //
+    // We also build a `stop_place_idx_table` keyed by StopPlace id
+    // so two SSPs that resolve to the same umbrella StopPlace land
+    // in a shared `parent_station`. The umbrella StopPlace itself
+    // is mapped to *one* of its child SSPs' StopIdx (the first one
+    // the iteration encounters).
+    let mut stop_place_to_idx: HashMap<&str, StopIdx> = HashMap::new();
+    for (ssp_id, &stop_idx) in &ssp_id_to_idx {
+        if let Some(psa) = state.passenger_stop_assignments.get(ssp_id) {
+            if let Some(spref) = psa.stop_place_ref.as_deref() {
+                stop_place_to_idx.entry(spref).or_insert(stop_idx);
+                if let Some(sp) = state.stop_places.get(spref) {
+                    if let Some(parent_ref) = sp.parent_site_ref.as_deref() {
+                        stop_place_to_idx.entry(parent_ref).or_insert(stop_idx);
+                    }
+                }
+            }
+        }
+    }
+    let mut n_parents_set = 0usize;
+    for (ssp_id, &stop_idx) in &ssp_id_to_idx {
+        if let Some(psa) = state.passenger_stop_assignments.get(ssp_id) {
+            if let Some(spref) = psa.stop_place_ref.as_deref() {
+                if let Some(sp) = state.stop_places.get(spref) {
+                    if let Some(parent_ref) = sp.parent_site_ref.as_deref() {
+                        if let Some(&parent_idx) = stop_place_to_idx.get(parent_ref) {
+                            if parent_idx != stop_idx {
+                                builder.set_parent_station(stop_idx, parent_idx);
+                                n_parents_set += 1;
+                                continue;
+                            }
+                        }
+                    }
+                    // No grandparent — but the immediate StopPlace
+                    // itself still acts as the umbrella for its
+                    // platform-level Quays. Use it as the parent
+                    // when it differs from this SSP's own StopIdx.
+                    if let Some(&umbrella_idx) = stop_place_to_idx.get(spref) {
+                        if umbrella_idx != stop_idx {
+                            builder.set_parent_station(stop_idx, umbrella_idx);
+                            n_parents_set += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    tracing::info!(
+        n_parents_set,
+        "NeTEx-EPIP: wired parent_station via StopPlace.ParentSiteRef hierarchy"
+    );
+
+    // Resolve calendar (#101 follow-up): build the set of DayType ids
+    // that are active for "today". When the publication is stale
+    // (the case for STIB whose 2025-03 file is loaded in 2026-04),
+    // remap today to the same weekday in the latest covered period
+    // so we still load a coherent weekday/weekend slice instead of
+    // dropping every trip.
+    let active_day_types = compute_active_day_types(&state);
+    let calendar_active = !active_day_types.is_empty();
+    if !calendar_active {
+        tracing::warn!(
+            "NeTEx-EPIP: no DayTypes active for today and no stale-window remap \
+             succeeded — falling back to loading every ServiceJourney unconditionally"
+        );
+    } else {
+        tracing::info!(
+            n_active_day_types = active_day_types.len(),
+            n_total_day_types = state.day_type_assignments.len(),
+            "NeTEx-EPIP: calendar resolved for service date"
+        );
+    }
+
+    // Resolve Pattern → Line metadata. STIB's EPIP file has no
+    // standalone `<Route>` declarations — the RouteRef id maps
+    // directly to a Line id with the same stem (with an optional
+    // `_R` suffix for the reverse direction). We compute that
+    // mapping once so each ServiceJourney can pull the line's
+    // public_code + name into the RAPTOR RouteMeta short / long
+    // name fields.
+
     // Pass 2: emit every ServiceJourney as a trip via the builder.
     // The pattern_ref resolves to a JourneyPatternRec whose
     // stop_point_refs list is the canonical SSP sequence. The
@@ -789,8 +1028,22 @@ fn emit_into_builder(
     let mut n_trips_skipped_no_pattern = 0usize;
     let mut n_trips_skipped_mismatch = 0usize;
     let mut n_trips_skipped_unknown_stop = 0usize;
+    let mut n_trips_skipped_calendar = 0usize;
 
     for (sj_idx, sj) in state.service_journeys.iter().enumerate() {
+        // Calendar filter — only when the calendar resolution
+        // produced a non-empty active set. Otherwise we load all
+        // journeys (the stale-publication fallback).
+        if calendar_active
+            && !sj.day_type_refs.is_empty()
+            && !sj
+                .day_type_refs
+                .iter()
+                .any(|d| active_day_types.contains(d.as_str()))
+        {
+            n_trips_skipped_calendar += 1;
+            continue;
+        }
         let Some(pattern_ref) = sj.pattern_ref.as_deref() else {
             n_trips_skipped_no_pattern += 1;
             continue;
@@ -831,10 +1084,8 @@ fn emit_into_builder(
             continue;
         }
         let trip_id = namespaced(&format!("sj{sj_idx}"));
-        // For MVP we don't parse line metadata per pattern — use a
-        // generic short_name. A follow-up can resolve `Line` via the
-        // pattern's `RouteRef` / `LineRef` chain.
-        builder.add_trip(&trip_id, "", "", "", pattern_idxs, stop_times);
+        let (short_name, long_name) = resolve_pattern_line_meta(&state, pattern);
+        builder.add_trip(&trip_id, &short_name, &long_name, "", pattern_idxs, stop_times);
         n_trips_ok += 1;
     }
 
@@ -843,13 +1094,153 @@ fn emit_into_builder(
         trips_skipped_no_pattern = n_trips_skipped_no_pattern,
         trips_skipped_mismatch = n_trips_skipped_mismatch,
         trips_skipped_unknown_stop = n_trips_skipped_unknown_stop,
-        "NeTEx-EPIP: service journeys emitted; calendar filtering is NOT applied \
-         (publication is typically stale — see #101 MVP note)"
+        trips_skipped_calendar = n_trips_skipped_calendar,
+        calendar_active,
+        "NeTEx-EPIP: service journeys emitted"
     );
     if n_trips_ok == 0 {
         bail!("NeTEx-EPIP: zero service journeys passed validation — file is malformed or schema changed");
     }
     Ok(())
+}
+
+/// Resolve the active DayType set for today, with a stale-publication
+/// fallback. STIB's EPIP file is republished monthly but the active
+/// window may be ~weeks behind the current calendar date, so a strict
+/// "today's date in this period" filter would drop every trip on most
+/// days. The fallback strategy: if today's date isn't covered by any
+/// `UicOperatingPeriod`, find the latest period whose ToDate is in the
+/// past and remap today to the **same weekday** inside that period.
+/// This preserves the weekday/weekend semantics the user actually cares
+/// about ("does the Tuesday timetable run today?") while still
+/// producing a coherent slice of trips.
+///
+/// Returns an empty set on any failure (the caller logs a warning and
+/// loads every trip unconditionally as the ultimate fallback).
+fn compute_active_day_types(state: &ParseState) -> HashSet<&str> {
+    let today = Local::now().date_naive();
+    let active = active_day_types_for_date(state, today);
+    if !active.is_empty() {
+        return active;
+    }
+    // Stale publication — find the latest period and remap by weekday.
+    let Some(remap_date) = remap_to_published_window(state, today) else {
+        return HashSet::new();
+    };
+    tracing::info!(
+        today = %today,
+        remap = %remap_date,
+        "NeTEx-EPIP: today's date is outside the published window; remapping to same-weekday in the latest period"
+    );
+    active_day_types_for_date(state, remap_date)
+}
+
+fn active_day_types_for_date<'a>(state: &'a ParseState, date: NaiveDate) -> HashSet<&'a str> {
+    let mut active: HashSet<&'a str> = HashSet::new();
+    for (dt_ref, op_ref) in &state.day_type_assignments {
+        let Some(op) = state.operating_periods.get(op_ref) else {
+            continue;
+        };
+        if period_covers_date(op, date) {
+            active.insert(dt_ref.as_str());
+        }
+    }
+    active
+}
+
+/// True if `op` covers `date` AND its ValidDayBits has a `'1'` at the
+/// offset `(date - from_date)` days.
+fn period_covers_date(op: &UicOperatingPeriodRec, date: NaiveDate) -> bool {
+    let Some(from) = op.from_date.as_deref().and_then(parse_iso_date) else {
+        return false;
+    };
+    let Some(to) = op.to_date.as_deref().and_then(parse_iso_date) else {
+        return false;
+    };
+    if date < from || date > to {
+        return false;
+    }
+    let bits = op.valid_day_bits.as_deref().unwrap_or("");
+    let offset = (date - from).num_days();
+    if offset < 0 {
+        return false;
+    }
+    let offset = offset as usize;
+    bits.as_bytes().get(offset) == Some(&b'1')
+}
+
+/// Parse the EPIP date format. STIB uses two shapes:
+///
+/// - `2025-03-07T00:00:00+00:00` (with timezone)
+/// - `2025-03-30T23:59:59` (without timezone)
+///
+/// We only need the date part.
+fn parse_iso_date(s: &str) -> Option<NaiveDate> {
+    if let Ok(d) = NaiveDate::parse_from_str(s.get(..10)?, "%Y-%m-%d") {
+        return Some(d);
+    }
+    if let Ok(dt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+        return Some(dt.date());
+    }
+    None
+}
+
+/// Find the latest published period and remap `today` to the same
+/// weekday inside it. Returns `None` when the file has no parseable
+/// operating periods.
+fn remap_to_published_window(state: &ParseState, today: NaiveDate) -> Option<NaiveDate> {
+    let mut latest_to: Option<NaiveDate> = None;
+    let mut latest_from: Option<NaiveDate> = None;
+    for op in state.operating_periods.values() {
+        let from = op.from_date.as_deref().and_then(parse_iso_date)?;
+        let to = op.to_date.as_deref().and_then(parse_iso_date)?;
+        if latest_to.is_none() || to > latest_to.unwrap() {
+            latest_to = Some(to);
+            latest_from = Some(from);
+        }
+    }
+    let to = latest_to?;
+    let from = latest_from?;
+    let target_weekday = today.weekday().num_days_from_monday();
+    // Walk the period from `to` backward to find a same-weekday date.
+    // Worst case: 7 days.
+    let mut cursor = to;
+    while cursor >= from {
+        if cursor.weekday().num_days_from_monday() == target_weekday {
+            return Some(cursor);
+        }
+        cursor = cursor.pred_opt()?;
+    }
+    None
+}
+
+/// Compute `(short_name, long_name)` for a `ServiceJourneyPattern` by
+/// resolving its `RouteRef` to the matching `Line` via id-stem
+/// matching.
+///
+/// STIB's EPIP file has no `<Route>` declarations — the RouteRef id
+/// `FR:Route:gr_stibmivb_14:` maps to Line id `FR:Line:gr_stibmivb_14:`
+/// (same stem). The reverse direction has a `_R` suffix
+/// (`FR:Route:gr_stibmivb_14_R:`) which we strip to find the line.
+fn resolve_pattern_line_meta(state: &ParseState, pattern: &JourneyPatternRec) -> (String, String) {
+    let Some(route_ref) = pattern.route_ref.as_deref() else {
+        return (String::new(), String::new());
+    };
+    // Replace `FR:Route:` with `FR:Line:` and strip an optional `_R`
+    // direction suffix.
+    let line_id = route_ref.replace(":Route:", ":Line:");
+    let stripped = line_id
+        .strip_suffix("_R:")
+        .map(|s| format!("{s}:"))
+        .unwrap_or(line_id);
+    let Some(line) = state.lines.get(&stripped) else {
+        return (String::new(), String::new());
+    };
+    // GTFS short_name is the public-facing line number (e.g. "1" for
+    // metro line 1, "T7" for tram 7); long_name is the descriptive
+    // route ("ERASME — STOCKEL"). EPIP encodes these as PublicCode
+    // and Name respectively.
+    (line.public_code.clone(), line.name.clone())
 }
 
 /// Resolve a ScheduledStopPoint's human-readable name via the
