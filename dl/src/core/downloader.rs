@@ -253,6 +253,42 @@ impl Downloader {
         Ok((stream, total_size))
     }
 
+    /// Open a raw HTTP streaming GET against a URL, **without** an
+    /// upfront HEAD request. Returns an `AsyncRead` stream and an
+    /// optional content-length derived from the GET response
+    /// headers (`None` when the server omits `content-length`, e.g.
+    /// chunked transfer-encoding).
+    ///
+    /// This is the primitive used by
+    /// [`crate::verified::download_verified`] — it avoids the HEAD
+    /// requirement of [`Self::download_stream`] (which matches the
+    /// OSM PBF workflow but trips on GTFS / NeTEx mirrors and on
+    /// wiremock servers that don't register HEAD handlers). Same
+    /// `GLOBAL_CLIENT`, same TLS config, same user-agent — only the
+    /// HEAD prelude is skipped.
+    pub async fn stream_url_raw(url: &str) -> Result<(DownloadStream, Option<u64>)> {
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err(Error::InvalidInput(format!(
+                "stream_url_raw expects a raw http(s) URL, got: {url}"
+            )));
+        }
+        let client = &*GLOBAL_CLIENT;
+        let response = client.get(url).send().await?;
+        if !response.status().is_success() {
+            let status = response.status();
+            return Err(Error::HttpError(format!(
+                "GET {url} returned HTTP {status}"
+            )));
+        }
+        let total_size = response
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+        let stream = create_http_stream(response);
+        Ok((stream, total_size))
+    }
+
     /// Resilient single connection download with range resume capability
     async fn download_single_resilient(
         &self,

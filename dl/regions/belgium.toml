@@ -1,0 +1,36 @@
+# Butterfly region index — Belgium
+#
+# Every file butterfly-route needs to route on Belgium. Fetched in
+# parallel by `butterfly-dl belgium` with extension-based verification
+# (magic prefix + min-bytes + sha256 sidecar + atomic .tmp → rename).
+#
+# Canonical target paths under the region's data root
+# (default: `./data/belgium`):
+#
+#   belgium.pbf                       ← [pbf]
+#   transit/gtfs/sncb.zip             ← [[gtfs]] id = "sncb"
+#   transit/gtfs/delijn.zip           ← [[gtfs]] id = "delijn"
+#   transit/gtfs/tec.zip              ← [[gtfs]] id = "tec"
+#   transit/netex/stib-epip.xml       ← [[netex_epip]] id = "stib"
+#
+# This matches the layout butterfly-route's server already loads
+# from — no migration, no config change downstream.
+
+[pbf]
+url = "https://download.geofabrik.de/europe/belgium-latest.osm.pbf"
+
+[[gtfs]]
+id  = "sncb"
+url = "https://gtfs.irail.be/nmbs/gtfs/latest.zip"
+
+[[gtfs]]
+id  = "delijn"
+url = "https://gtfs.irail.be/de-lijn/de_lijn-gtfs.zip"
+
+[[gtfs]]
+id  = "tec"
+url = "https://opendata.tec-wl.be/Current%20GTFS/TEC-GTFS.zip"
+
+[[netex_epip]]
+id  = "stib"
+url = "https://belgianmobility.blob.core.windows.net/epip-production/epip-stibmivb-bmc-latest.xml"
