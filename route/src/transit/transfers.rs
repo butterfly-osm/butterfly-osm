@@ -287,7 +287,12 @@ impl Default for TransferBuildOptions {
 ///   - v6: adds cross-feed equivalence edges (issue #113) driven by
 ///     `stop_merge_radius_m` + `cross_feed_transfer_s`. Same
 ///     invalidation rationale as v5.
-const TRANSFER_ALGO_VERSION: u32 = 6;
+///   - v7: fixes an ULTRA restriction bug where zero-cost edges
+///     (co-located platform stops that share a foot-CCH rank) were
+///     dropped via spurious zero-cost triangles, disconnecting
+///     whole stations from themselves. v6 caches silently held
+///     broken data for those stations; v7 rebuilds.
+const TRANSFER_ALGO_VERSION: u32 = 7;
 
 /// Foot-CCH fingerprint: a stable identifier of the specific foot CCH
 /// graph that was used to compute the cached transfer edges. Derived
@@ -726,6 +731,22 @@ pub fn ultra_restrict_transfers(
             if u as u32 == v {
                 continue;
             }
+            // **Zero-cost direct edges are never dominated.** A
+            // zero-walk edge represents two stops that coincide in
+            // the foot CCH rank space (typically co-located platform
+            // stops inside a station). Any triangle through another
+            // zero-walk node is also zero-cost (0 + 0 ≤ 0 + slack),
+            // which the naive rule would use to drop EVERY edge
+            // inside a zero-cost cluster — leaving the cluster
+            // internally disconnected. That breaks #112
+            // (same-station child-pair injection) on stations where
+            // all platforms snap to the same foot node. Keep all
+            // zero-cost edges unconditionally; the direct transfer
+            // is optimal by construction.
+            if walk_uv == 0 {
+                keep.push((u as u32, v, walk_uv));
+                continue;
+            }
             // Look for a dominating intermediate `w`.
             let mut dominated = false;
             for (&w, &walk_uw) in neighbours {
@@ -986,6 +1007,40 @@ mod tests {
         ];
         let restricted = ultra_restrict_transfers(5, triples.clone(), 2);
         assert_eq!(restricted.len(), triples.len());
+    }
+
+    /// Regression for the v7 fix: a cluster of zero-cost edges (all
+    /// pairs between three co-located platform stops) must survive
+    /// ULTRA restriction, not be shredded by spurious zero-zero
+    /// triangles.
+    #[test]
+    fn ultra_restriction_keeps_zero_cost_cluster() {
+        // Three stops A, B, C all at the same foot rank → every
+        // pair walks 0 seconds. The naive rule would drop every
+        // direct edge because (0 + 0) ≤ (0 + slack) for every
+        // possible triangle, leaving the cluster disconnected.
+        let triples = vec![
+            (0, 1, 0),
+            (1, 0, 0),
+            (0, 2, 0),
+            (2, 0, 0),
+            (1, 2, 0),
+            (2, 1, 0),
+        ];
+        let restricted = ultra_restrict_transfers(3, triples.clone(), 2);
+        // All six directed zero-cost edges must survive.
+        assert_eq!(
+            restricted.len(),
+            6,
+            "zero-cost cluster was shredded by ULTRA: {:?}",
+            restricted
+        );
+        for t in &triples {
+            assert!(
+                restricted.contains(t),
+                "missing zero-cost edge {t:?} in restricted set"
+            );
+        }
     }
 
     #[test]
