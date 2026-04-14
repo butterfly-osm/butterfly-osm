@@ -15,7 +15,7 @@ A comprehensive ecosystem of OSM tools designed around **separation of concerns*
 ### Core Tools
 
 - **butterfly-dl**: Memory-efficient OSM data downloader (<1GB RAM for any file size), panic-safe C FFI with `butterfly_last_error_message()` for detailed error retrieval
-- **butterfly-route**: High-performance routing engine with edge-based CCH, exact turn-aware queries, PHAST isochrones, and Arrow-streaming distance matrices
+- **butterfly-route**: High-performance road router **and** multimodal transit engine. Edge-based CCH for exact turn-aware driving/walking/cycling, PHAST isochrones, Arrow-streaming distance matrices, and a full RAPTOR-based public transport stack with multi-feed merging (SNCB, De Lijn, TEC, STIB via NeTEx-EPIP) and ULTRA transfer-graph preprocessing
 - **butterfly-common**: Shared utilities, error handling, and geographic algorithms
 
 ## Why
@@ -188,22 +188,82 @@ curl -X POST "http://localhost:3001/trip" -H "Content-Type: application/json" \
   -d '{"coordinates": [[4.35,50.85],[4.40,50.86],[4.45,50.87]], "mode": "car"}'
 ```
 
+## Multimodal Transit (RAPTOR + CCH)
+
+butterfly-route ships a production transit engine alongside the road router. Public transport queries thread a foot/bike/car **access leg** (CCH) + **RAPTOR rounds** over the merged timetable + foot **egress leg** (CCH), with ULTRA-preprocessed transfer graphs for sub-second stop-to-stop walking.
+
+### Feed coverage
+
+Out of the box on Belgium with **zero operator configuration**:
+
+- **SNCB** (national rail) — GTFS via iRail
+- **De Lijn** (Flanders bus + tram) — GTFS via iRail
+- **TEC** (Wallonia bus) — GTFS
+- **STIB** (Brussels metro/tram/bus) — **NeTEx-EPIP** via the Belgian National Access Point (no GTFS published — butterfly-route's streaming NeTEx parser handles the 720 MB EPIP file directly, reprojects Lambert-93 → WGS84, and merges with the GTFS feeds into one `Timetable`)
+
+Cross-feed equivalence bridges wire physically co-located stops (SNCB ↔ STIB at Brussels-Midi, SNCB ↔ De Lijn at suburban hubs), and same-station parent-child transfers (multiple platforms of the same station) are injected automatically into the foot-CCH transfer graph.
+
+### REST endpoints
+
+```bash
+# Single multimodal query (JSON)
+curl "http://localhost:3001/transit?origin_lon=4.3517&origin_lat=50.8466\
+&dest_lon=4.4025&dest_lat=51.2194&depart=08:00:00"
+
+# Batch routing: 100k queries in one call, rayon-amortised access CCH
+curl -X POST http://localhost:3001/transit/bulk \
+  -H 'content-type: application/json' \
+  -d '{"queries":[{"origin_lon":4.3517,"origin_lat":50.8466,"dest_lon":4.4025,"dest_lat":51.2194,"depart":"08:00:00"},...]}'
+
+# Opt-in routed polylines for access / egress / middle walking legs
+curl "http://localhost:3001/transit?...&geometry=full"
+```
+
+### Arrow Flight (gRPC, port 3002)
+
+For high-throughput analytics pipelines the **standalone gRPC Flight server** exposes Arrow IPC streaming on a separate port — no Arrow-over-HTTP hybrid, REST stays JSON and Flight stays Arrow:
+
+| Action | Ticket | Output shape |
+|---|---|---|
+| `matrix` | `matrix:<profile>:{"sources":[...],"destinations":[...]}` | One row per pair, duration + distance |
+| `route_batch` | `route_batch:<profile>:{"pairs":[[src,dst],...]}` | Pair-level duration + WKB polyline |
+| `isochrone` | `isochrone:<profile>:{"lon":...,"lat":...,"intervals":[...]}` | Polygons as WKB |
+| `catchment` | via DoExchange | Catchment hulls per store |
+| **`transit_bulk`** | `transit_bulk:<profile>:{"queries":[...]}` | Per-query row with metadata + JSON legs (up to 500 k queries/call) |
+| **`edges_batch`** | `edges_batch:<profile>:{"pairs":[...]}` | **Unnested per-edge path output** with OSM node ids — the flow-analytics primitive no other OSS router ships |
+
+The `edges_batch` action emits one Arrow row per traversed EBG edge with `(query_idx, target_idx, edge_seq, osm_node_from, osm_node_to, duration_ms, distance_m)` columns, unreachable pairs get a single row with null edge columns, and the continuity invariant `osm_node_to[i] == osm_node_from[i+1]` is enforced — ready to `GROUP BY osm_node_to` for traffic assignment, emissions inventory, or network vulnerability analysis.
+
+### Transit-specific perf (Belgium, 4 feeds merged)
+
+| Workload | Metric |
+|---|---|
+| Single `/transit` query, warm | **35 ms p50** |
+| Bulk 20 same-origin queries | **150 ms** (7× speedup vs serial) |
+| Bulk 1000 varied queries | **3.22 ms/query**, **311 queries/sec** |
+| Merged transfer graph | 66 512 stops, 668 k edges |
+| Cross-feed equivalence bridges | 986 post-ULTRA |
+| Same-station child-pair coverage | 94 % of multi-child parents |
+
 ### Running the Routing Engine
 
 ```bash
 # Build the Docker image
 docker build -t butterfly-route .
 
-# Run the server (Belgium data)
+# Run the server (Belgium data). Port 3001 = REST, 3002 = gRPC Flight.
 docker run -d --name butterfly \
-  -p 3001:8080 \
+  -p 3001:8080 -p 3002:3002 \
   -v "${PWD}/data/belgium:/data" \
   butterfly-route
 
-# Health check
+# Health check (REST)
 curl http://localhost:3001/health
 
 # Swagger UI at http://localhost:3001/swagger-ui/
+
+# gRPC Flight server at 0.0.0.0:3002 — list available actions:
+grpcurl -plaintext localhost:3002 arrow.flight.protocol.FlightService/ListActions
 ```
 
 See [CLAUDE.md](CLAUDE.md) for detailed build instructions, algorithm documentation, and local development setup.
@@ -238,7 +298,7 @@ cargo build --workspace --release
 cargo test --workspace
 
 # Install specific tool
-cargo install --path tools/butterfly-dl
+cargo install --path dl
 ```
 
 ### Pre-built Binaries
@@ -255,11 +315,10 @@ Download optimized binaries for your platform:
 ```
 butterfly-osm/
 ├── butterfly-common/     # Shared utilities and algorithms
-├── tools/
-│   ├── butterfly-dl/     # OSM data downloader (production-ready)
-│   └── butterfly-route/  # Routing engine (production-ready)
-├── scripts/             # Benchmarking and validation scripts
-└── data/                # Test data and examples
+├── dl/                   # butterfly-dl: OSM data downloader (production-ready)
+├── route/                # butterfly-route: routing engine (production-ready)
+├── scripts/              # Benchmarking and validation scripts
+└── data/                 # Test data and examples
 ```
 
 ### Building Individual Tools
@@ -272,7 +331,7 @@ cargo build --release -p butterfly-dl
 cargo test -p butterfly-dl
 
 # Install from workspace
-cargo install --path tools/butterfly-dl
+cargo install --path dl
 ```
 
 ## Performance Benchmarks
