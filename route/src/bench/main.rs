@@ -2225,9 +2225,9 @@ fn run_block_gated_bench(
     }
     println!();
 
-    // Target check from todo
+    // Target check from the PHAST isochrone perf goals.
     println!("───────────────────────────────────────────────────────────────");
-    println!("  TARGET CHECK (from todo_immediate.md)");
+    println!("  TARGET CHECK");
     println!("───────────────────────────────────────────────────────────────");
 
     let target_met = match (mode, threshold_ms) {

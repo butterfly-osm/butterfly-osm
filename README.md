@@ -105,11 +105,12 @@ Common patterns abstracted into `butterfly-common`:
   - 79% faster than aria2, 3x faster than curl on medium files
   - <1GB memory usage regardless of file size
 
-- **butterfly-route**: High-performance routing engine
+- **butterfly-route**: High-performance road router + multimodal transit engine
   - Exact turn-aware routing (edge-based CCH)
   - **1.8x FASTER than OSRM** at scale (10k×10k matrices)
+  - Full RAPTOR transit stack: multi-feed merging (GTFS + NeTEx-EPIP), ULTRA transfer preprocessing, `/transit` + `/transit/bulk` REST, `transit_bulk` + `edges_batch` Flight actions
   - Production-hardened: structured logging, graceful shutdown, timeouts, compression, input validation, panic recovery, Prometheus metrics
-  - Multi-round audit hardened: CRITICALs and HIGHs from Codex + Gemini audits resolved; remaining items tracked in todo_overall.md
+  - Open work tracked in GitHub issues (`gh issue list`); `competitive_landscape.md` captures where Butterfly wins vs OSRM / Valhalla / GraphHopper
   - See [Routing Engine](#routing-engine-butterfly-route) below
 
 ## Routing Engine (butterfly-route)

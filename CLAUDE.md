@@ -269,13 +269,18 @@ Each step produces a `stepN.lock.json` with SHA-256 checksums for reproducibilit
 
 ## Implementation Plan
 
-See **[todo_overall.md](todo_overall.md)** for the overall implementation plan, including:
-- Step-by-step pipeline specification
-- Algorithm details and lock conditions
-- Performance targets
-- "What NOT to do" constraints
+Planning lives in **GitHub issues**. Open tickets are the canonical list of in-flight and upcoming work — no `todo_*.md` sidekick files. The deleted historical ones (`todo_immediate.md`, `todo_overall.md`) were made obsolete by P/Q/R sprints landing and by the transit subsystem shipping; their useful content was either architectural invariants (merged into this file) or competitive analysis (merged into `competitive_landscape.md`).
 
-See **[todo_immediate.md](todo_immediate.md)** for immediate bugs and fixes that must be addressed before continuing.
+Pipeline / architecture specifics are in the sections above. Pending work items:
+
+```
+gh issue list --state open
+```
+
+Tickets are grouped informally by area:
+- **Transit perf:** #126 (SoA stop_times), #127 (SIMD earliest_trip), #128 (trip-table delta compression)
+- **Transit data:** #122 (GTFS-RT archive), #123 (statistical p50/p90 synthesis)
+- **Infrastructure:** #100 (consolidate HTTP into butterfly-dl)
 
 ## Testing
 
@@ -346,7 +351,7 @@ Always consult with Gemini and Codex **before making drastic changes** to:
    - **Request focus areas**: correctness, efficiency (CPU, RAM, disk), smart algorithms first, parallelism second
 
 4. **After review**:
-   - Reviewers update `todo_overall.md` and `todo_immediate.md` with findings
+   - Reviewers file GitHub issues for findings (`gh issue create`)
    - Implement fixes based on reviewer consensus
    - If reviewers disagree or you're stuck, **keep looping and iterating**
 
@@ -453,8 +458,9 @@ else:
 - `route/src/bench/main.rs` — Benchmark harness
 
 ### Planning Documents
-- `todo_overall.md` — Architecture, endpoints, and performance reference
-- `todo_immediate.md` — Completed sprint log and deferred items
+- GitHub issues (`gh issue list`) — canonical list of open/closed work
+- `competitive_landscape.md` — competitor analysis, feature matrix, and gaps
+- `CHANGELOG.md` — release notes
 
 ---
 

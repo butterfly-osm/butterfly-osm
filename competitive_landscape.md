@@ -719,13 +719,16 @@ Key insight: **CCH queries are as fast as CH** and **10x faster than CRP**, whil
 8. **Declarative profiles** — JSON model files, zero Rust changes for new modes
 9. **Customizable weights** — CCH re-customization in ~1s (vs OSRM's full re-preprocess)
 10. **Rust** — zero GC overhead, memory-safe, small binary, low resource footprint
+11. **Multimodal transit built in** — full RAPTOR stack with multi-feed merging (GTFS + NeTEx-EPIP for STIB) in the same process as the road router, sharing one foot CCH. No separate OTP/MOTIS service required. Brussels→Antwerp multimodal query in 35 ms p50; 311 transit queries/sec sustained via `/transit/bulk`. Cross-operator stop bridges, same-station hierarchy, ULTRA transfer preprocessing all wired automatically.
+12. **Unnested per-edge flow analytics** — the `edges_batch` Flight action emits `(query_idx, edge_seq, osm_node_from, osm_node_to, duration_ms, distance_m)` rows with continuity invariant. No other OSS router ships this as a first-class RPC. The primitive for traffic assignment, all-or-nothing loading, emissions inventory, edge betweenness, and network vulnerability analysis.
+13. **Two-transport architecture** — REST (Axum) for JSON-shaped human traffic, gRPC Flight for Arrow-shaped analytics traffic. No transport mixing. Clients pick the right tool.
 
 ### Gaps to Close (ordered by impact)
 
 | Gap | Impact | Competitor | Effort |
 |-----|--------|-----------|--------|
 | **Time-dependent routing** | Critical for logistics | Valhalla, commercial APIs | Very high — need piecewise-linear weight functions |
-| **Transit/multimodal** | High for urban planning | Valhalla, OTP, MOTIS | Very high — different problem domain (GTFS + RAPTOR) |
+| **Real-time transit (statistical p90 timetables)** | High for reliability | None ship this correctly | Medium-high — tracked in #122 (GTFS-RT archive) + #123 (stats synthesis) |
 | **More transport modes** | Medium-high | Valhalla (12 modes) | Low — add `.model.json` files |
 | **Wheelchair routing** | Niche but unique | GraphHopper, ORS | Low — add model JSON |
 | **GPX output** | Nice-to-have | GraphHopper | Low |
@@ -733,7 +736,9 @@ Key insight: **CCH queries are as fast as CH** and **10x faster than CRP**, whil
 | **Expansion visualization** | Debugging | Valhalla | Low-medium |
 | **Centroid API** | Niche | Valhalla | Low |
 | **Planet-scale validation** | Credibility | All | Medium — need hardware for planet preprocessing |
-| **VRP integration** | Ecosystem | GraphHopper/VROOM | Medium — integrate VROOM as consumer of `/table/stream` |
+| **VRP integration** | Ecosystem | GraphHopper/VROOM | Medium — integrate VROOM as consumer of `/table/stream` or the Flight `edges_batch` action |
+
+Transit/multimodal is no longer a gap: full RAPTOR + CCH multimodal with GTFS + NeTEx-EPIP merging shipped in 2026-04. See the **Where Butterfly Already Wins** list item 11 and `/src/transit/` for the implementation.
 
 ### Features That Require External Data (Commercial Moat)
 
@@ -752,9 +757,12 @@ These cannot be replicated with OSM data alone:
 - Add `bus.model.json`, `motorcycle.model.json`, `scooter.model.json` profiles
 - Add `wheelchair.model.json` with accessibility-focused speed/access rules
 - Add GPX output format for `/route`
+- Transit RAPTOR micro-optimisations (tickets #126 SoA `stop_times` → #127 SIMD `earliest_trip` → #128 trip-table delta compression). #126 is the smallest and unblocks the other two.
 
 **Phase 2 — Ecosystem (weeks):**
-- Document VROOM integration as VRP consumer of `/table/stream`
+- Statistical transit reliability (#122 GTFS-RT archive pipeline → #123 p50/p90 synthesis). Replaces the "real-time" framing with the correct "reproducible p90" model. No competitor ships this correctly.
+- Document VROOM integration as VRP consumer of `/table/stream` or the Flight `edges_batch` action
+- Consolidate HTTP download logic into butterfly-dl (#100)
 - Expansion API endpoint (GeoJSON visualization of CCH search)
 - Centroid API endpoint
 
@@ -764,7 +772,7 @@ These cannot be replicated with OSM data alone:
 - Live traffic ingestion pipeline (open traffic data sources)
 
 **Phase 4 — Moonshots (quarters):**
-- Transit/multimodal (GTFS + RAPTOR, separate service that calls Butterfly for street legs)
+- ~~Transit/multimodal~~ **DONE 2026-04** — full RAPTOR + CCH stack, multi-feed GTFS + NeTEx-EPIP, Brussels→Antwerp 35 ms p50
 - Toll cost integration (open toll databases)
 - EV routing with consumption models
 
