@@ -34,7 +34,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 
-use crate::matrix::bucket_ch::table_bucket_full_flat;
+use crate::server::query::CchQuery;
 use crate::server::spatial::SpatialIndex;
 use crate::server::state::ModeData;
 
@@ -494,121 +494,84 @@ pub fn build_transfer_graph(
         }
     }
 
-    // ---- 3. Spatially chunked CCH calls. -----------------------------
+    // ---- 3. Per-source bounded bidirectional CCH search ---------------
     //
-    // Chunking strategy:
+    // Issue #115: the previous chunked bucket-M2M loop paid catastrophic
+    // setup overhead (SearchState + PrefixSumBuckets + dense matrix +
+    // HashMap target-index per chunk × 2000 chunks). The correct shape
+    // is a **bounded bidirectional CCH distance-only query per
+    // (source, neighbour) pair**, running in parallel over sources
+    // with a thread-local state shared across pair calls.
     //
-    //   1. Each non-empty grid cell becomes one chunk. Cells with more
-    //      than `MAX_CHUNK_SOURCES` stops are split (rare — only urban
-    //      cores). Cells are spatially cohesive by construction, so the
-    //      union of all sources' neighbours stays small and dense.
+    // `CchQuery::distance` reuses the existing `CCH_QUERY_STATE`
+    // thread-local with generation-stamped O(1) reset. The existing
+    // early-termination (`fwd_min >= best_dist && bwd_min >= best_dist`)
+    // automatically bounds each search at the current-best candidate,
+    // which in a bounded radius setting is typically the neighbour's
+    // actual walking time — pruning the search to the local subgraph.
     //
-    //   2. Each chunk runs ONE call to the **non-parallel**
-    //      `table_bucket_full_flat`. Single-thread per chunk so the
-    //      outer Rayon `par_iter` over chunks is the only layer of
-    //      parallelism — no nested rayon contention.
+    // Memory: zero per-chunk scratch. The only allocation is the
+    // per-source triples emit list (`O(K)` where `K ≈ 20-60`).
     //
-    //   3. The dense per-chunk matrix is small (avg ~30 sources × ~70
-    //      targets ≈ 2000 cells ≈ 8 KB) so memory pressure is
-    //      negligible; the bottleneck is CPU work in the bucket M2M
-    //      itself, which scales linearly with the total number of
-    //      source-target queries.
-    //
-    // For Belgium (64k stops, 8-core foot CCH build): ~2000 chunks
-    // running ~50 in parallel at any given time, finishing in ~2 min
-    // on the first build. Subsequent restarts hit the on-disk cache
-    // (`transfers.bin`) and load instantly, so the build is genuinely
-    // one-shot per refresh of the source feeds.
+    // Parallelism: outer `par_iter` over stops drives the Rayon pool.
+    // Each thread touches its own `CCH_QUERY_STATE` cell with no
+    // cross-thread contention. No nested parallelism.
 
-    const MAX_CHUNK_SOURCES: usize = 512;
-    struct Chunk {
-        source_stops: Vec<u32>,              // stop indices
-        source_ranks: Vec<u32>,              // matching CCH ranks
-        targets: Vec<u32>,                   // unique neighbour CCH ranks (sorted)
-        target_idx_map: HashMap<u32, usize>, // rank -> column in matrix
+    let max_walk_s = opts.max_walk_s;
+    // Weights are deciseconds; convert the max walk time to the same
+    // unit for the early-termination check inside CchQuery::distance.
+    let max_walk_ds = max_walk_s.saturating_mul(10);
+
+    // Flatten sources so the parallel iterator sees a simple Vec.
+    struct SourceWork {
+        stop: u32,
+        source_rank: u32,
+        neighbours: Vec<(u32, u32)>,
     }
 
-    let mut chunks: Vec<Chunk> = Vec::new();
-    for members in grid.values() {
-        for sub in members.chunks(MAX_CHUNK_SOURCES) {
-            let mut source_stops = Vec::with_capacity(sub.len());
-            let mut source_ranks = Vec::with_capacity(sub.len());
-            let mut target_set: HashMap<u32, ()> = HashMap::new();
-            for &i in sub {
-                let neighbours = &neighbour_lists[i as usize];
-                if neighbours.is_empty() {
-                    continue;
-                }
-                source_stops.push(i);
-                source_ranks.push(snapped_rank[i as usize].unwrap());
-                for (_, r) in neighbours {
-                    target_set.insert(*r, ());
-                }
-            }
-            if source_stops.is_empty() {
-                continue;
-            }
-            let mut targets: Vec<u32> = target_set.into_keys().collect();
-            targets.sort_unstable();
-            let mut target_idx_map = HashMap::with_capacity(targets.len());
-            for (col, t) in targets.iter().enumerate() {
-                target_idx_map.insert(*t, col);
-            }
-            chunks.push(Chunk {
-                source_stops,
-                source_ranks,
-                targets,
-                target_idx_map,
+    let mut work: Vec<SourceWork> = Vec::with_capacity(n_stops);
+    for (i, nb) in neighbour_lists.iter().enumerate() {
+        if nb.is_empty() {
+            continue;
+        }
+        if let Some(rank) = snapped_rank[i] {
+            work.push(SourceWork {
+                stop: i as u32,
+                source_rank: rank,
+                neighbours: nb.clone(),
             });
         }
     }
     tracing::info!(
-        chunks = chunks.len(),
-        avg_sources_per_chunk = if chunks.is_empty() {
-            0
-        } else {
-            chunks.iter().map(|c| c.source_stops.len()).sum::<usize>() / chunks.len()
-        },
-        avg_targets_per_chunk = if chunks.is_empty() {
-            0
-        } else {
-            chunks.iter().map(|c| c.targets.len()).sum::<usize>() / chunks.len()
-        },
-        "transfer chunks prepared"
+        sources_with_neighbours = work.len(),
+        total_pairs = work.iter().map(|w| w.neighbours.len()).sum::<usize>(),
+        "per-source bounded bidirectional CCH pass starting"
     );
 
-    // ---- 4. Run chunks in parallel through bucket M2M. ---------------
-    let max_walk_s = opts.max_walk_s;
-    let n_cch_nodes = foot.cch_topo.n_nodes as usize;
+    // Borrow the foot CCH topology/weights once — CchQuery is a thin
+    // reference wrapper so construction inside the parallel closure
+    // is free.
+    let topo = &foot.cch_topo;
+    let down_rev = &foot.down_rev;
+    let weights = &foot.cch_weights;
 
-    let triples: Vec<(u32, u32, u32)> = chunks
+    let triples: Vec<(u32, u32, u32)> = work
         .par_iter()
-        .flat_map_iter(|chunk| {
-            let (matrix, _stats) = table_bucket_full_flat(
-                n_cch_nodes,
-                &foot.up_adj_flat,
-                &foot.down_rev_flat,
-                &chunk.source_ranks,
-                &chunk.targets,
-            );
-            let n_targets = chunk.targets.len();
-            let mut emitted = Vec::new();
-            for (row_idx, &src_stop) in chunk.source_stops.iter().enumerate() {
-                let row_base = row_idx * n_targets;
-                for (target_stop, target_rank) in &neighbour_lists[src_stop as usize] {
-                    let Some(&col) = chunk.target_idx_map.get(target_rank) else {
-                        continue;
-                    };
-                    let raw = matrix[row_base + col];
-                    if raw == u32::MAX {
-                        continue;
-                    }
-                    let walk_s = raw.div_ceil(10);
-                    if walk_s > max_walk_s {
-                        continue;
-                    }
-                    emitted.push((src_stop, *target_stop, walk_s));
+        .flat_map_iter(|w| {
+            let query = CchQuery::with_custom_weights(topo, down_rev, weights);
+            let mut emitted: Vec<(u32, u32, u32)> = Vec::with_capacity(w.neighbours.len());
+            for &(target_stop, target_rank) in &w.neighbours {
+                let Some(raw) = query.distance(w.source_rank, target_rank) else {
+                    continue;
+                };
+                if raw > max_walk_ds {
+                    continue;
                 }
+                let walk_s = raw.div_ceil(10);
+                if walk_s > max_walk_s {
+                    continue;
+                }
+                emitted.push((w.stop, target_stop, walk_s));
             }
             emitted.into_iter()
         })
