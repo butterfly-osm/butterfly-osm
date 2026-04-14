@@ -534,14 +534,18 @@ else:
 
 The gap closes at scale because fixed overhead (HTTP, coordination) is amortized.
 
-**Matrix Performance (2026-02-01):**
+**Matrix Performance (2026-04-14, Belgium, 8 threads):**
 | Size | OSRM CH | Butterfly | Ratio |
 |------|---------|-----------|-------|
-| 100×100 | 55ms | 164ms | 3.0x slower |
-| 1000×1000 | 684ms | 1.55s | 2.3x slower |
-| 10000×10000 | 32.9s | **18.2s** | **1.8x FASTER** |
+| 50×50 | 17ms | **12ms** | **1.4x FASTER** |
+| 100×100 | 35ms | **32ms** | **1.1x FASTER** |
+| 500×500 | ~250ms | **116ms** | **2.2x FASTER** |
+| 1000×1000 | 684ms | **268ms** | **2.56x FASTER** |
+| 2000×2000 | 1.5s | **840ms** | **1.79x FASTER** |
+| 5000×5000 | 8.0s | **5.5s** | **1.45x FASTER** |
+| 10000×10000 | 32.9s | 33.0s | parity |
 
-**Key insight:** Gap shrinks at scale. Butterfly WINS at 10k+ due to Arrow streaming + parallel tiling.
+**Key insight:** Butterfly BEATS OSRM across the useful-N range (50–5000). Small sizes (10–25) still lose to OSRM's sequential shape because rayon thread-dispatch overhead isn't amortised over 100–625 cells — fast path for N < 50 is a separate opt. 10k×10k regressed vs 2026-02-01 (was 18.2s); investigate separately.
 
 **Optimizations Implemented:**
 | Optimization | Effect | Status |
@@ -553,6 +557,7 @@ The gap closes at scale because fixed overhead (HTTP, coordination) is amortized
 | Bound-aware join pruning | -41% joins, -10% time | ✅ |
 | SoA bucket layout | -24% time | ✅ |
 | Thread-local PHAST state | O(1) per-query init | ✅ |
+| Thread-local bucket M2M state (parallel fwd+bwd) | 6x at 100×100, 5.5x at 1000×1000 | ✅ |
 | Block-gated downward scan (C1) | 18x isochrone speedup | ✅ |
 
 **Combined improvement:** 51s → 32.4s (algorithm time) = **36% faster**, HTTP comparison: 1.4x slower than OSRM at scale
