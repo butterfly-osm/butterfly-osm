@@ -32,6 +32,10 @@ const VERSION: u32 = 1;
 const CRC64: Crc<u64> = Crc::<u64>::new(&crc::CRC_64_XZ);
 
 /// Write a transfer graph to `path` using the binary format.
+///
+/// Streams the header + offsets + neighbours directly through a
+/// digest-updating BufWriter — no full-image memory copy. The CRC is
+/// computed incrementally as bytes pass through. See issue #117.
 pub fn write(path: &Path, graph: &TransferGraph) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -46,23 +50,44 @@ pub fn write(path: &Path, graph: &TransferGraph) -> Result<()> {
     let n_stops = (offsets.len() - 1) as u32;
     let n_edges = neighbours.len() as u64;
 
-    // Assemble the body in memory so we can CRC it in one pass.
-    let mut body: Vec<u8> =
-        Vec::with_capacity(8 + 4 + 4 + 8 + 32 + offsets.len() * 4 + neighbours.len() * 8);
-    body.extend_from_slice(&MAGIC);
-    body.extend_from_slice(&VERSION.to_le_bytes());
-    body.extend_from_slice(&n_stops.to_le_bytes());
-    body.extend_from_slice(&n_edges.to_le_bytes());
-    body.extend_from_slice(&graph.provenance);
-    for &o in offsets {
-        body.extend_from_slice(&o.to_le_bytes());
+    // Incremental CRC over the streamed body. Each byte range is both
+    // written to disk AND fed into the digest in the same step.
+    let mut digest = CRC64.digest();
+
+    fn emit<W: Write>(w: &mut W, d: &mut crc::Digest<'_, u64>, bytes: &[u8]) -> Result<()> {
+        w.write_all(bytes).context("writing transit cache body")?;
+        d.update(bytes);
+        Ok(())
     }
-    for &(stop, walk_s) in neighbours {
-        body.extend_from_slice(&stop.to_le_bytes());
-        body.extend_from_slice(&walk_s.to_le_bytes());
-    }
-    let crc = CRC64.checksum(&body);
-    w.write_all(&body).context("writing transit cache body")?;
+
+    emit(&mut w, &mut digest, &MAGIC)?;
+    emit(&mut w, &mut digest, &VERSION.to_le_bytes())?;
+    emit(&mut w, &mut digest, &n_stops.to_le_bytes())?;
+    emit(&mut w, &mut digest, &n_edges.to_le_bytes())?;
+    emit(&mut w, &mut digest, &graph.provenance)?;
+
+    // u32 offsets stream. Cast the slice to bytes via a safe byte view.
+    let offsets_bytes = unsafe {
+        std::slice::from_raw_parts(
+            offsets.as_ptr() as *const u8,
+            std::mem::size_of_val(offsets),
+        )
+    };
+    emit(&mut w, &mut digest, offsets_bytes)?;
+
+    // (u32, u32) neighbours stream. Same reinterpret trick: repr(Rust)
+    // tuple of two u32s is 8-byte aligned on every supported target
+    // and the resulting byte slice has identical content to a manual
+    // two-loop write.
+    let neighbours_bytes = unsafe {
+        std::slice::from_raw_parts(
+            neighbours.as_ptr() as *const u8,
+            std::mem::size_of_val(neighbours),
+        )
+    };
+    emit(&mut w, &mut digest, neighbours_bytes)?;
+
+    let crc = digest.finalize();
     w.write_all(&crc.to_le_bytes())
         .context("writing transit cache CRC")?;
     w.flush()?;
@@ -146,19 +171,13 @@ pub fn read(path: &Path, expected_provenance: [u8; 32]) -> Result<Option<Transfe
         return Ok(None);
     }
 
-    // Rebuild the graph through `from_triples` (reversing the CSR layout)
-    // so we only use the public API surface.
-    let mut triples: Vec<(u32, u32, u32)> = Vec::with_capacity(n_edges);
-    for s in 0..n_stops {
-        let start = offsets[s] as usize;
-        let end = offsets[s + 1] as usize;
-        for &(dst, w) in &neighbours[start..end] {
-            triples.push((s as u32, dst, w));
-        }
-    }
-    let mut graph = TransferGraph::from_triples(n_stops, triples);
-    graph.provenance = provenance;
-    Ok(Some(graph))
+    // The on-disk layout IS already CSR (offsets + neighbours), so we
+    // skip the triples round-trip that `from_triples` would impose and
+    // hand the arrays directly to the graph via `from_csr_parts`.
+    // See issue #117.
+    Ok(Some(TransferGraph::from_csr_parts(
+        n_stops, offsets, neighbours, provenance,
+    )))
 }
 
 #[cfg(test)]
