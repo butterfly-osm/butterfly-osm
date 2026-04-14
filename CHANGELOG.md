@@ -8,7 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For detailed tool-specific changes, see individual tool changelogs:
 - [butterfly-dl](./tools/butterfly-dl/CHANGELOG.md) - OSM data downloader
 
-## [Unreleased]
+## [Unreleased] — 2026-04-14
+
+### Changed
+
+- **License**: relicensed from MIT to AGPL-3.0-or-later. See
+  [#99](https://github.com/butterfly-osm/butterfly-osm/issues/99) for the
+  full rationale. Every workspace crate (`butterfly-common`,
+  `butterfly-dl`, `butterfly-route`) now ships under
+  AGPL-3.0-or-later. Network-deployed forks must publish source per the
+  AGPL §13 requirement. The `LICENSE` file now carries the canonical FSF
+  AGPL-3.0 text byte-for-byte. `CONTRIBUTING.md` documents the
+  submission-implies-agreement contributor grant.
 
 ### Removed
 - **butterfly-route**: Experimental PHAST routing implementation and related routing tools
