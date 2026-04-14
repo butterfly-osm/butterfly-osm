@@ -15,7 +15,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use butterfly_route::server::state::ServerState;
-use butterfly_route::server::transit_handler::{TransitRequest, compute_transit_journey};
+use butterfly_route::server::transit_handler::{
+    TransitBulkResult, TransitRequest, compute_transit_journey, run_bulk,
+};
 use butterfly_route::transit::gtfs::{FeedSource, ServiceFilter, load_many, load_zip};
 use butterfly_route::transit::raptor::{RaptorLeg, RaptorQuery, run_raptor};
 use butterfly_route::transit::transfers::TransferGraph;
@@ -979,8 +981,6 @@ fn belgium_geometry_full_covers_middle_walks() {
         .and_then(|l| l.as_array())
         .expect("response must have legs array");
 
-    // Count middle (non-first / non-last) walk legs that carry a
-    // > 2-point routed polyline and positive distance.
     let middle = &legs[1..legs.len() - 1];
     let mut middle_walks_with_geom = 0usize;
     for leg in middle {
@@ -990,8 +990,6 @@ fn belgium_geometry_full_covers_middle_walks() {
         }
         let dur = leg.get("duration_s").and_then(|v| v.as_u64()).unwrap_or(0);
         if dur == 0 {
-            // Same-station zero-walk transfer: by design straight-line
-            // with `geometry: None`. Not what this test is verifying.
             continue;
         }
         let Some(geom) = leg.get("geometry").and_then(|g| g.as_array()) else {
@@ -1006,21 +1004,6 @@ fn belgium_geometry_full_covers_middle_walks() {
         "{label}: {} middle walk leg(s) with routed polylines",
         middle_walks_with_geom
     );
-    eprintln!("legs dump:");
-    for (i, leg) in legs.iter().enumerate() {
-        let t = leg.get("type").and_then(|v| v.as_str()).unwrap_or("?");
-        let dur = leg.get("duration_s").and_then(|v| v.as_u64()).unwrap_or(0);
-        let dist = leg.get("distance_m").and_then(|v| v.as_u64()).unwrap_or(0);
-        let geom_pts = leg
-            .get("geometry")
-            .and_then(|g| g.as_array())
-            .map(|a| a.len())
-            .unwrap_or(0);
-        eprintln!(
-            "  [{}] type={} dur={}s dist={}m geom_pts={}",
-            i, t, dur, dist, geom_pts
-        );
-    }
     assert!(
         middle_walks_with_geom >= 1,
         "expected ≥ 1 middle walk leg with > 2-point routed polyline \
@@ -1064,4 +1047,202 @@ fn belgium_transit_rejects_bad_inputs() {
     let err =
         compute_transit_journey(state.as_ref(), &req).expect_err("bogus geometry should fail");
     assert_eq!(err.0.as_u16(), 400);
+}
+
+// =====================================================================
+// #120: origin grouping in /transit/bulk — same-origin queries share
+// one access-side computation.
+// =====================================================================
+
+/// Pull the access-leg (always leg 0) of a successful bulk result as a
+/// JSON `Value`. Panics on `Err` results — we want loud failures from
+/// the regression tests.
+fn bulk_access_leg(r: &TransitBulkResult) -> serde_json::Value {
+    match r {
+        TransitBulkResult::Ok { journey } => {
+            let v = serde_json::to_value(journey.as_ref()).unwrap();
+            v.get("legs")
+                .and_then(|l| l.as_array())
+                .and_then(|a| a.first())
+                .cloned()
+                .expect("response must have at least one leg")
+        }
+        TransitBulkResult::Err { status, error } => {
+            panic!("bulk query unexpectedly errored: status={status}, error={error}")
+        }
+    }
+}
+
+/// Two queries from the SAME origin to DIFFERENT destinations must
+/// produce a byte-identical access leg (#120). The grouping path
+/// shares the AccessContext across both, so the access walk distance,
+/// duration, and (if requested) geometry must all match exactly.
+#[test]
+#[ignore = "loads the full Belgium ServerState (~50 s)"]
+fn belgium_bulk_same_origin_shares_access_leg() {
+    let Some(state) = belgium_server_state() else {
+        return;
+    };
+
+    // Brussels-Centre origin, two distinct destinations: Antwerp and Liège.
+    let q_antwerp = base_req((4.3517, 50.8466), (4.4025, 51.2194));
+    let q_liege = base_req((4.3517, 50.8466), (5.5697, 50.6326));
+
+    let queries = vec![q_antwerp, q_liege];
+    let results = run_bulk(state.as_ref(), &queries);
+
+    assert_eq!(results.len(), 2);
+    for (i, r) in results.iter().enumerate() {
+        match r {
+            TransitBulkResult::Ok { .. } => {}
+            TransitBulkResult::Err { status, error } => {
+                panic!("bulk[{i}] errored: status={status}, error={error}");
+            }
+        }
+    }
+
+    let leg0_antwerp = bulk_access_leg(&results[0]);
+    let leg0_liege = bulk_access_leg(&results[1]);
+
+    eprintln!("access leg (Antwerp dest): {}", leg0_antwerp);
+    eprintln!("access leg (Liège dest):   {}", leg0_liege);
+
+    assert_eq!(
+        leg0_antwerp, leg0_liege,
+        "same-origin queries must produce byte-identical access legs (#120 grouping)"
+    );
+}
+
+/// Three queries from THREE DIFFERENT origins must be routed to three
+/// different access contexts. Each access leg must reflect its own
+/// origin coordinate (`from` ≈ origin) and not leak across groups.
+#[test]
+#[ignore = "loads the full Belgium ServerState (~50 s)"]
+fn belgium_bulk_distinct_origins_get_distinct_access() {
+    let Some(state) = belgium_server_state() else {
+        return;
+    };
+
+    // Three clearly separated origins; same destination is fine.
+    let dest = (4.4025, 51.2194); // Antwerp
+    let brussels = (4.3517, 50.8466);
+    let antwerp = (4.4150, 51.2300);
+    let ghent = (3.7250, 51.0543);
+
+    let queries = vec![
+        base_req(brussels, dest),
+        base_req(antwerp, dest),
+        base_req(ghent, dest),
+    ];
+    let results = run_bulk(state.as_ref(), &queries);
+    assert_eq!(results.len(), 3);
+
+    let leg0s: Vec<serde_json::Value> = results.iter().map(bulk_access_leg).collect();
+
+    // Sanity: each access leg must originate at its query origin.
+    let expected_origins = [brussels, antwerp, ghent];
+    for (i, (leg, (lon, lat))) in leg0s.iter().zip(expected_origins.iter()).enumerate() {
+        let from = leg
+            .get("from")
+            .and_then(|v| v.as_array())
+            .expect("access leg must have `from`");
+        let f_lon = from[0].as_f64().unwrap();
+        let f_lat = from[1].as_f64().unwrap();
+        // 1e-6 tolerance: the response echoes the request origin
+        // verbatim through `access.origin_lon/lat`.
+        assert!(
+            (f_lon - lon).abs() < 1e-6 && (f_lat - lat).abs() < 1e-6,
+            "leg[{i}] from {:?} expected ≈ ({lon}, {lat})",
+            from
+        );
+    }
+
+    // Distinct origins → distinct access legs.
+    assert_ne!(leg0s[0], leg0s[1], "Brussels and Antwerp must differ");
+    assert_ne!(leg0s[0], leg0s[2], "Brussels and Ghent must differ");
+    assert_ne!(leg0s[1], leg0s[2], "Antwerp and Ghent must differ");
+}
+
+/// Micro-benchmark guard (#120): 20 same-origin queries through the
+/// grouped bulk path must be at least 1.5x faster than 20 sequential
+/// `compute_transit_journey` calls. Anything less means the access
+/// context isn't being shared.
+#[test]
+#[ignore = "loads the full Belgium ServerState (~50 s)"]
+fn belgium_bulk_same_origin_grouping_speedup() {
+    let Some(state) = belgium_server_state() else {
+        return;
+    };
+
+    // A grid of plausible Belgian destinations; all share one origin.
+    let origin = (4.3517, 50.8466); // Brussels
+    let dests: [(f64, f64); 20] = [
+        (4.4025, 51.2194), // Antwerp
+        (5.5697, 50.6326), // Liège
+        (3.7250, 51.0543), // Gent
+        (4.8697, 50.4669), // Namur
+        (5.3389, 50.9326), // Hasselt
+        (3.2247, 51.2093), // Brugge
+        (4.0297, 50.6056), // Mons
+        (3.2667, 50.8278), // Kortrijk
+        (3.4214, 50.8214), // Tournai
+        (5.5800, 50.4117), // Verviers
+        (4.5167, 50.6033), // Charleroi
+        (4.4344, 50.4181), // Wavre
+        (5.4626, 50.4569), // Marche-en-Famenne
+        (5.8639, 50.0892), // Arlon
+        (3.5197, 50.7322), // Mouscron
+        (3.9300, 51.1500), // Sint-Niklaas
+        (4.6594, 50.6444), // Genappe
+        (4.7050, 51.0306), // Mechelen
+        (4.5111, 51.2778), // Schoten
+        (4.7339, 50.9319), // Aarschot
+    ];
+    let queries: Vec<TransitRequest> = dests.iter().map(|d| base_req(origin, *d)).collect();
+
+    // Warm any thread-locals so we measure steady-state cost.
+    let _ = compute_transit_journey(state.as_ref(), &queries[0]);
+    let _ = run_bulk(state.as_ref(), &queries[..2]);
+
+    // Sequential baseline.
+    let t0 = std::time::Instant::now();
+    let mut seq_results = Vec::with_capacity(queries.len());
+    for q in &queries {
+        seq_results.push(compute_transit_journey(state.as_ref(), q));
+    }
+    let seq_elapsed = t0.elapsed();
+
+    // Grouped bulk path.
+    let t1 = std::time::Instant::now();
+    let bulk_results = run_bulk(state.as_ref(), &queries);
+    let bulk_elapsed = t1.elapsed();
+
+    // Both must produce the same number of successful results.
+    let seq_ok = seq_results.iter().filter(|r| r.is_ok()).count();
+    let bulk_ok = bulk_results
+        .iter()
+        .filter(|r| matches!(r, TransitBulkResult::Ok { .. }))
+        .count();
+    assert_eq!(
+        seq_ok, bulk_ok,
+        "grouped bulk and sequential paths must agree on success count"
+    );
+    assert!(
+        seq_ok >= 15,
+        "expected most of 20 Belgian queries to succeed, got {seq_ok}"
+    );
+
+    let speedup = seq_elapsed.as_secs_f64() / bulk_elapsed.as_secs_f64();
+    eprintln!(
+        "#120 speedup: sequential={:.3}s, grouped={:.3}s, speedup={:.2}x",
+        seq_elapsed.as_secs_f64(),
+        bulk_elapsed.as_secs_f64(),
+        speedup
+    );
+
+    assert!(
+        speedup >= 1.5,
+        "grouped bulk should be ≥ 1.5x faster than sequential for same-origin batch (#120), got {:.2}x",
+        speedup
+    );
 }

@@ -243,13 +243,218 @@ pub async fn transit_handler(
     compute_transit_journey(state.as_ref(), &req).map(Json)
 }
 
-/// Single-query transit computation. Synchronous, stateless across
-/// calls (every scratch buffer lives in thread-locals from RAPTOR
-/// and CchQuery). Used by both the single-query `/transit` handler
-/// and the batch `/transit/bulk` handler (#105).
+/// Reusable access-side computation result for a transit query (#120).
+///
+/// The access fan-out (origin snap → candidate stops → CCH 1-to-N) is
+/// independent of the destination and depart time, so two queries from
+/// the same origin can share this. See [`OriginGroupKey`] and the bulk
+/// handler for how this is exploited.
+///
+/// The cached state stores per-stop *raw* walk seconds; the per-query
+/// `max_access_s` cap (which depends on the egress mode) is reapplied
+/// in [`compute_transit_journey_with_access`].
+pub struct AccessContext {
+    /// Resolved access mode name (lowercased).
+    pub access_mode: String,
+    /// Index into `state.modes` for the access mode.
+    pub access_idx: u8,
+    /// Resolved access radius (meters).
+    pub max_access_m: u32,
+    /// Resolved max number of access candidate stops.
+    pub max_access_stops: usize,
+    /// Resolved walking speed (m/s).
+    pub walk_speed_mps: f64,
+    /// Origin coordinates as supplied (used by the response builder).
+    pub origin_lon: f64,
+    pub origin_lat: f64,
+    /// Per-stop raw walk seconds from the origin to each candidate
+    /// access stop that snapped on the access mode's network. Already
+    /// deduped to fastest path per stop, NOT yet filtered by
+    /// `max_access_s` (that filter is per-query).
+    pub origin_walks: Vec<(StopIdx, u32)>,
+}
+
+/// Single-query transit computation. Thin wrapper over
+/// [`compute_access_context`] + [`compute_transit_journey_with_access`]
+/// — kept stable for the `/transit` handler and the integration tests.
+/// The bulk handler (#120) calls those two directly so it can share an
+/// access context across queries from the same origin.
 pub fn compute_transit_journey(
     state: &ServerState,
     req: &TransitRequest,
+) -> Result<TransitResponse, (StatusCode, Json<ErrorResponse>)> {
+    let access = compute_access_context(state, req)?;
+    compute_transit_journey_with_access(state, req, &access)
+}
+
+/// Compute the access-side context (#120): origin validation, mode
+/// resolution, candidate stop selection, per-stop access walk times.
+///
+/// This phase is the ~30–40 % of single-query cost that is identical
+/// across queries sharing the same origin / access_mode / radius.
+/// Two queries with different `depart` times or different destinations
+/// from the same origin produce the same `AccessContext`.
+pub fn compute_access_context(
+    state: &ServerState,
+    req: &TransitRequest,
+) -> Result<AccessContext, (StatusCode, Json<ErrorResponse>)> {
+    let Some(transit) = state.transit.as_ref() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "transit subsystem is not loaded (no transit/ directory)".to_string(),
+            }),
+        ));
+    };
+
+    // Origin-only coordinate validation. Destination bounds are checked
+    // in compute_transit_journey_with_access so a bad dest in a bulk
+    // group doesn't poison the shared access context.
+    if !(-180.0..=180.0).contains(&req.origin_lon) || !(-90.0..=90.0).contains(&req.origin_lat) {
+        return Err(bad_request("invalid coordinates"));
+    }
+
+    let access_mode = req.access_mode.as_deref().unwrap_or("foot").to_lowercase();
+    let Some(&access_idx) = state.mode_lookup.get(access_mode.as_str()) else {
+        return Err(bad_request(&format!(
+            "access_mode='{}' is not a loaded mode (add it with --modes, or drop the field to use foot)",
+            access_mode
+        )));
+    };
+    let access_mode_data: &ModeData = &state.modes[access_idx as usize];
+
+    let (access_default_radius, access_default_stops, _access_speed) =
+        default_access_params(&access_mode);
+
+    // Same legacy_walk semantics as the pre-#120 path: applies when the
+    // per-side override is absent and the mode is foot. We don't yet
+    // know egress_mode here, so we honour it whenever access_mode is
+    // foot. The egress side reapplies the same logic.
+    let legacy_walk = req.max_walk_m.filter(|_| access_mode == "foot");
+
+    let max_access_m = req
+        .max_access_m
+        .or(legacy_walk)
+        .unwrap_or_else(|| {
+            if access_mode == "foot" {
+                transit.config.max_walk_m.max(access_default_radius)
+            } else {
+                access_default_radius
+            }
+        })
+        .min(60_000); // Absolute safety cap.
+
+    let max_access_stops = req
+        .max_access_stops
+        .or_else(|| {
+            let cfg = transit.config.max_access_stops;
+            if cfg == 0 { None } else { Some(cfg) }
+        })
+        .unwrap_or(access_default_stops)
+        .clamp(1, 500);
+
+    let walk_speed_mps = req.walk_speed_mps.unwrap_or(1.3);
+    if !(0.3..=3.0).contains(&walk_speed_mps) {
+        return Err(bad_request("walk_speed_mps must be in 0.3..3.0"));
+    }
+
+    let snapshot = transit.snapshot();
+    let timetable = snapshot.timetable.as_ref();
+    if timetable.n_stops() == 0 {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "timetable has zero stops".to_string(),
+            }),
+        ));
+    }
+
+    // R-tree candidate-stop lookup — shared across same-origin queries.
+    let stop_index = snapshot.stop_index.as_ref();
+    let access_candidates = stop_index.k_nearest(
+        req.origin_lon,
+        req.origin_lat,
+        max_access_m,
+        max_access_stops,
+    );
+    if access_candidates.is_empty() {
+        return Err(not_found(&format!(
+            "no transit stops within max_access_m ({max_access_m} m, mode={access_mode}) of origin"
+        )));
+    }
+
+    let origin_ranks = snap_stop_ranks_on_mode(&access_candidates, timetable, state, access_idx);
+    let origin_source_rank = snap_to_rank(req.origin_lon, req.origin_lat, state, access_idx)
+        .ok_or_else(|| {
+            not_found(&format!(
+                "origin could not snap to the {access_mode} network"
+            ))
+        })?;
+
+    // Access 1-to-N via the distance-only CchQuery (#103). Reuses the
+    // thread-local `CCH_QUERY_STATE` with O(1) per-query reset.
+    let access_query = CchQuery::with_custom_weights(
+        &access_mode_data.cch_topo,
+        &access_mode_data.down_rev,
+        &access_mode_data.cch_weights,
+    );
+    let origin_to_stop_ranks: Vec<u32> = origin_ranks.iter().filter_map(|r| *r).collect();
+    let origin_to_stop_map: Vec<usize> = origin_ranks
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| r.map(|_| i))
+        .collect();
+    let origin_ds: Vec<u32> = access_query
+        .distances_one_to_many(origin_source_rank, &origin_to_stop_ranks)
+        .into_iter()
+        .map(|d| d.unwrap_or(u32::MAX))
+        .collect();
+
+    // Per-stop walk seconds (raw, not yet filtered by max_access_s).
+    // Dedup: keep the fastest path when multiple candidate snaps land
+    // on the same stop.
+    let mut walks: HashMap<StopIdx, u32> = HashMap::new();
+    for (k, idx) in origin_to_stop_map.iter().enumerate() {
+        let raw = origin_ds[k];
+        if raw == u32::MAX {
+            continue;
+        }
+        let walk_s = raw.div_ceil(10);
+        let stop = access_candidates[*idx].0;
+        let keep = walks
+            .get(&stop)
+            .map(|&existing| walk_s < existing)
+            .unwrap_or(true);
+        if keep {
+            walks.insert(stop, walk_s);
+        }
+    }
+    // Stable order: sort by stop index so two queries from the same
+    // origin produce byte-identical RAPTOR sources downstream.
+    let mut origin_walks: Vec<(StopIdx, u32)> = walks.into_iter().collect();
+    origin_walks.sort_by_key(|(s, _)| *s);
+
+    Ok(AccessContext {
+        access_mode,
+        access_idx,
+        max_access_m,
+        max_access_stops,
+        walk_speed_mps,
+        origin_lon: req.origin_lon,
+        origin_lat: req.origin_lat,
+        origin_walks,
+    })
+}
+
+/// Run RAPTOR + egress + response build for a single query, reusing
+/// the supplied [`AccessContext`] (#120). The caller is responsible
+/// for ensuring the context belongs to the same origin / access_mode /
+/// radius / max_stops / walk_speed as `req` — the bulk handler
+/// guarantees this via `OriginGroupKey`.
+pub fn compute_transit_journey_with_access(
+    state: &ServerState,
+    req: &TransitRequest,
+    access: &AccessContext,
 ) -> Result<TransitResponse, (StatusCode, Json<ErrorResponse>)> {
     let Some(transit) = state.transit.as_ref() else {
         return Err((
@@ -260,32 +465,17 @@ pub fn compute_transit_journey(
         ));
     };
 
-    // Input validation.
-    if !(-180.0..=180.0).contains(&req.origin_lon)
-        || !(-90.0..=90.0).contains(&req.origin_lat)
-        || !(-180.0..=180.0).contains(&req.dest_lon)
-        || !(-90.0..=90.0).contains(&req.dest_lat)
-    {
+    // Per-query destination validation (mirrors the pre-#120 single
+    // function: a bad dest is rejected without affecting any other
+    // query in the same bulk group).
+    if !(-180.0..=180.0).contains(&req.dest_lon) || !(-90.0..=90.0).contains(&req.dest_lat) {
         return Err(bad_request("invalid coordinates"));
     }
 
-    // Resolve access / egress road modes. Default BOTH sides to "foot"
-    // when unspecified. Notably, when `access_mode=car` is passed but
-    // `egress_mode` is omitted, we still default egress to foot — the
-    // real park-and-ride pattern is "drive to station, walk to office",
-    // not "drive from the destination side too". Symmetric-drive users
-    // can explicitly set `egress_mode=car`.
-    //
-    // The transit subsystem always requires `foot` as a loaded mode
-    // because the inter-stop walking transfer graph is foot-only — but
-    // access and egress are independent and can use any loaded road mode.
-    let access_mode = req.access_mode.as_deref().unwrap_or("foot").to_lowercase();
-    let egress_mode = req.egress_mode.as_deref().unwrap_or("foot").to_lowercase();
+    let access_mode = access.access_mode.as_str();
+    let access_idx = access.access_idx;
 
-    // Resolve access/egress geometry mode (#114). Default: straight
-    // line endpoints + haversine distance (cheap). "full": run the
-    // CCH query, unpack the path, and return a routed polyline with
-    // real road distance. Anything else → 400.
+    let egress_mode = req.egress_mode.as_deref().unwrap_or("foot").to_lowercase();
     let geometry_full = match req.geometry.as_deref() {
         None | Some("") | Some("straight") => false,
         Some("full") => true,
@@ -297,6 +487,9 @@ pub fn compute_transit_journey(
         }
     };
 
+    // foot is required to be a loaded mode — it's the inter-stop
+    // walking transfer base. Also used as the mode for routed
+    // middle-walk polylines under `geometry=full` (#121).
     let Some(&foot_idx) = state.mode_lookup.get("foot") else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -306,15 +499,7 @@ pub fn compute_transit_journey(
             }),
         ));
     };
-    let foot = &state.modes[foot_idx as usize];
 
-    let Some(&access_idx) = state.mode_lookup.get(access_mode.as_str()) else {
-        return Err(bad_request(&format!(
-            "access_mode='{}' is not a loaded mode (add it with --modes, or drop the field to use foot)",
-            access_mode
-        )));
-    };
-    let access_mode_data: &ModeData = &state.modes[access_idx as usize];
     let Some(&egress_idx) = state.mode_lookup.get(egress_mode.as_str()) else {
         return Err(bad_request(&format!(
             "egress_mode='{}' is not a loaded mode",
@@ -323,35 +508,16 @@ pub fn compute_transit_journey(
     };
     let egress_mode_data: &ModeData = &state.modes[egress_idx as usize];
 
-    let (access_default_radius, access_default_stops, _access_speed) =
-        default_access_params(&access_mode);
     let (egress_default_radius, egress_default_stops, _egress_speed) =
         default_access_params(&egress_mode);
 
-    // Backward-compat: `max_walk_m` is an alias that applies only when
-    // the corresponding per-side override is absent AND the mode is foot.
+    // legacy_walk takes effect when *either* mode is foot — same as
+    // the pre-#120 single function.
     let legacy_walk = req
         .max_walk_m
         .filter(|_| access_mode == "foot" || egress_mode == "foot");
 
-    let max_access_m = req
-        .max_access_m
-        .or_else(|| {
-            if access_mode == "foot" {
-                legacy_walk
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| {
-            if access_mode == "foot" {
-                transit.config.max_walk_m.max(access_default_radius)
-            } else {
-                access_default_radius
-            }
-        })
-        .min(60_000); // Absolute safety cap.
-
+    let max_access_m = access.max_access_m;
     let max_egress_m = req
         .max_egress_m
         .or_else(|| {
@@ -370,22 +536,18 @@ pub fn compute_transit_journey(
         })
         .min(60_000);
 
-    // Precedence: query param > transit.toml value > per-mode default.
-    // A config value of 0 is treated as "use the per-mode default"
-    // (see issue #110 — the config knob was previously dead).
+    // Mirror the pre-#120 max_access_stops resolution: query-level
+    // override > config > max(access_default, egress_default).
     let max_access_stops = req
         .max_access_stops
         .or_else(|| {
             let cfg = transit.config.max_access_stops;
             if cfg == 0 { None } else { Some(cfg) }
         })
-        .unwrap_or_else(|| access_default_stops.max(egress_default_stops))
+        .unwrap_or_else(|| access.max_access_stops.max(egress_default_stops))
         .clamp(1, 500);
 
-    let walk_speed_mps = req.walk_speed_mps.unwrap_or(1.3);
-    if !(0.3..=3.0).contains(&walk_speed_mps) {
-        return Err(bad_request("walk_speed_mps must be in 0.3..3.0"));
-    }
+    let walk_speed_mps = access.walk_speed_mps;
 
     let depart_s = parse_depart(req.depart.as_deref().unwrap_or("08:00:00"))
         .map_err(|e| bad_request(&format!("invalid depart: {e}")))?;
@@ -393,53 +555,17 @@ pub fn compute_transit_journey(
     let snapshot = transit.snapshot();
     let timetable = snapshot.timetable.as_ref();
     let transfers = snapshot.transfers.as_ref();
-
-    if timetable.n_stops() == 0 {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse {
-                error: "timetable has zero stops".to_string(),
-            }),
-        ));
-    }
-
-    // Pick candidate stops via the precomputed R-tree. `k_nearest` is
-    // O(log N + k log k) — replaces the old O(N) linear scan (#102).
     let stop_index = snapshot.stop_index.as_ref();
-    let access_candidates = stop_index.k_nearest(
-        req.origin_lon,
-        req.origin_lat,
-        max_access_m,
-        max_access_stops,
-    );
+
     let egress_candidates =
         stop_index.k_nearest(req.dest_lon, req.dest_lat, max_egress_m, max_access_stops);
-
-    if access_candidates.is_empty() {
-        return Err(not_found(&format!(
-            "no transit stops within max_access_m ({max_access_m} m, mode={access_mode}) of origin"
-        )));
-    }
     if egress_candidates.is_empty() {
         return Err(not_found(&format!(
             "no transit stops within max_egress_m ({max_egress_m} m, mode={egress_mode}) of destination"
         )));
     }
 
-    // Snap origin and destination + every candidate stop on the
-    // *access/egress* mode graphs (not foot, unless the selected mode is
-    // foot). A stop may be reachable by car but not foot (e.g. a highway
-    // service area with a bus stop), or vice versa — we snap to whatever
-    // mode the user requested.
-    let origin_ranks = snap_stop_ranks_on_mode(&access_candidates, timetable, state, access_idx);
     let dest_ranks = snap_stop_ranks_on_mode(&egress_candidates, timetable, state, egress_idx);
-
-    let origin_source_rank = snap_to_rank(req.origin_lon, req.origin_lat, state, access_idx)
-        .ok_or_else(|| {
-            not_found(&format!(
-                "origin could not snap to the {access_mode} network"
-            ))
-        })?;
     let dest_source_rank =
         snap_to_rank(req.dest_lon, req.dest_lat, state, egress_idx).ok_or_else(|| {
             not_found(&format!(
@@ -447,33 +573,7 @@ pub fn compute_transit_journey(
             ))
         })?;
 
-    // Access 1-to-N via the distance-only CchQuery. Issue #103: this
-    // replaces the old `table_bucket_parallel` call which allocated
-    // per-worker SearchState (~60 MB each on Belgium foot) and an
-    // atomic matrix for every request. `CchQuery::distance` reuses
-    // the thread-local `CCH_QUERY_STATE` with generation-stamped
-    // O(1) per-query reset and allocates nothing in the steady state.
-    let access_query = CchQuery::with_custom_weights(
-        &access_mode_data.cch_topo,
-        &access_mode_data.down_rev,
-        &access_mode_data.cch_weights,
-    );
-    let origin_to_stop_ranks: Vec<u32> = origin_ranks.iter().filter_map(|r| *r).collect();
-    let origin_to_stop_map: Vec<usize> = origin_ranks
-        .iter()
-        .enumerate()
-        .filter_map(|(i, r)| r.map(|_| i))
-        .collect();
-    let origin_ds: Vec<u32> = access_query
-        .distances_one_to_many(origin_source_rank, &origin_to_stop_ranks)
-        .into_iter()
-        .map(|d| d.unwrap_or(u32::MAX))
-        .collect();
-
-    // Egress 1-to-N via distance-only CchQuery. `K sources × 1 target`
-    // fans out as K independent bidirectional searches — one per
-    // egress stop to the destination snap. Reuses the same thread-
-    // local state across calls.
+    // Egress 1-to-N via distance-only CchQuery. K sources × 1 target.
     let egress_query = CchQuery::with_custom_weights(
         &egress_mode_data.cch_topo,
         &egress_mode_data.down_rev,
@@ -498,49 +598,35 @@ pub fn compute_transit_journey(
         })
         .collect();
 
-    // A cheap-and-correct per-mode upper bound on the access time
-    // derived from the radius and the mode's canonical speed. Add a
-    // generous buffer for first-mile / last-mile variation.
+    // Per-mode upper bound on access/egress walking time. Identical
+    // formula to the pre-#120 path; depends on both modes so it lives
+    // in the per-query path.
     let max_access_s = {
-        let (_, _, access_speed) = default_access_params(&access_mode);
+        let (_, _, access_speed) = default_access_params(access_mode);
         let (_, _, egress_speed) = default_access_params(&egress_mode);
         let a = ((max_access_m as f64) / access_speed) as u32 + 60;
         let e = ((max_egress_m as f64) / egress_speed) as u32 + 60;
         a.max(e)
     };
-    // foot-only case: honour walk_speed_mps override if provided.
     let max_access_s = if access_mode == "foot" && egress_mode == "foot" {
         ((max_access_m.max(max_egress_m) as f64) / walk_speed_mps) as u32 + 60
     } else {
         max_access_s
     };
-    // Suppress unused warning when foot is the default.
-    let _ = foot;
 
-    let mut sources_for_raptor: Vec<(StopIdx, u32)> = Vec::new();
-    // Map stop_idx → walking seconds (for the response).
-    let mut origin_walk_s: HashMap<StopIdx, u32> = HashMap::new();
-    for (k, idx) in origin_to_stop_map.iter().enumerate() {
-        let raw = origin_ds[k];
-        if raw == u32::MAX {
-            continue;
-        }
-        let walk_s = raw.div_ceil(10);
+    // Materialise per-query RAPTOR sources from the cached origin walks
+    // by applying the per-query `max_access_s` cap and folding in the
+    // per-query `depart_s`. Dedup is already done in the access context
+    // build, so the only filter here is the cap.
+    let mut sources_for_raptor: Vec<(StopIdx, u32)> = Vec::with_capacity(access.origin_walks.len());
+    let mut origin_walk_s: HashMap<StopIdx, u32> =
+        HashMap::with_capacity(access.origin_walks.len());
+    for &(stop, walk_s) in &access.origin_walks {
         if walk_s > max_access_s {
             continue;
         }
-        let stop = access_candidates[*idx].0;
-        let dep_at_stop = depart_s.saturating_add(walk_s);
-        // If multiple access paths hit the same stop, keep the fastest.
-        let keep = origin_walk_s
-            .get(&stop)
-            .map(|&existing| walk_s < existing)
-            .unwrap_or(true);
-        if keep {
-            origin_walk_s.insert(stop, walk_s);
-            sources_for_raptor.retain(|(s, _)| *s != stop);
-            sources_for_raptor.push((stop, dep_at_stop));
-        }
+        origin_walk_s.insert(stop, walk_s);
+        sources_for_raptor.push((stop, depart_s.saturating_add(walk_s)));
     }
 
     let mut target_weights: HashMap<StopIdx, u32> = HashMap::new();
@@ -593,7 +679,7 @@ pub fn compute_transit_journey(
     // Leg 0: access leg from origin to the first transit boarding stop,
     // labelled with the access mode.
     let first_stop = &timetable.stops[journey.origin_stop as usize];
-    let access_from = [req.origin_lon, req.origin_lat];
+    let access_from = [access.origin_lon, access.origin_lat];
     let access_to = [first_stop.lon, first_stop.lat];
     let (access_distance_m, access_geometry) = if geometry_full {
         match build_routed_road_leg(
@@ -617,7 +703,7 @@ pub fn compute_transit_journey(
         )
     };
     legs.push(road_leg(
-        &access_mode,
+        access_mode,
         access_from,
         access_to,
         origin_walk,
@@ -635,14 +721,12 @@ pub fn compute_transit_journey(
             } => {
                 let f = &timetable.stops[*from_stop as usize];
                 let t = &timetable.stops[*to_stop as usize];
-                // Middle walking transfers are foot-only by construction
-                // (the ULTRA transfer graph is built from the foot CCH).
-                // Under `geometry=full`, re-run the foot CCH between the
-                // two stop snaps and return the routed polyline (#121).
-                // Same-station zero-walk transfers (`duration_s == 0`)
-                // and synthetic injected edges with no road-network path
-                // fall back to the straight-line shape with haversine
-                // distance, matching the access/egress fallback above.
+                // Routed polyline for middle walking transfers (#121).
+                // Skip when geometry=straight, when duration_s == 0
+                // (same-station / synthetic injected edge with no
+                // road-network counterpart), or when the foot CCH
+                // can't bridge the two stops — fall back to straight
+                // line + haversine in those cases.
                 let (distance_m, geometry) = if geometry_full && *duration_s > 0 {
                     match build_routed_road_leg(state, foot_idx, f.lon, f.lat, t.lon, t.lat) {
                         Some((poly, dist)) => (dist, Some(poly)),
@@ -724,19 +808,19 @@ pub fn compute_transit_journey(
     ));
 
     Ok(TransitResponse {
-        origin: [req.origin_lon, req.origin_lat],
+        origin: [access.origin_lon, access.origin_lat],
         destination: [req.dest_lon, req.dest_lat],
         depart_time: format_hms(depart_s),
         arrival_time: format_hms(total_arrival_s),
         total_duration_s,
-        access_mode,
+        access_mode: access.access_mode.clone(),
         egress_mode,
         legs,
     })
 }
 
 // =====================================================================
-// Bulk endpoint: POST /transit/bulk (issue #105)
+// Bulk endpoint: POST /transit/bulk (issue #105, #120)
 // =====================================================================
 
 /// Request body for `POST /transit/bulk`. Carries a batch of
@@ -775,22 +859,74 @@ pub struct TransitBulkResponse {
     pub results: Vec<TransitBulkResult>,
 }
 
+/// Origin grouping key for `/transit/bulk` (#120).
+///
+/// Two queries that hash to the same key share the same access fan-out
+/// (origin snap + R-tree candidate stops + access CCH 1-to-N). The
+/// coordinate is quantised to 6 decimals (~11 cm) so two queries from
+/// literally the same origin point group, while two queries 2 m apart
+/// — which would produce a *different* origin snap and hence a
+/// different access tree — get their own group.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct OriginGroupKey {
+    /// Longitude × 1e6, rounded.
+    lon_q6: i64,
+    /// Latitude × 1e6, rounded.
+    lat_q6: i64,
+    /// Lowercased access mode name.
+    access_mode: String,
+    /// Resolved access radius (or `u32::MAX` sentinel for "use default").
+    /// We use the request value directly so that two queries with
+    /// different overrides go to different groups even if the resolved
+    /// value would coincide.
+    max_access_m: Option<u32>,
+    /// Same idea for `max_access_stops`.
+    max_access_stops: Option<usize>,
+    /// Walking speed quantised to centi-mm/s (1e-5 m/s) so two queries
+    /// with the same `walk_speed_mps` literal hash to the same key.
+    walk_speed_centimps: Option<u32>,
+    /// `max_walk_m` participates because it is folded into the access
+    /// radius via the legacy alias path.
+    max_walk_m: Option<u32>,
+}
+
+impl OriginGroupKey {
+    fn from_request(req: &TransitRequest) -> Self {
+        let access_mode = req.access_mode.as_deref().unwrap_or("foot").to_lowercase();
+        let walk_speed_centimps = req.walk_speed_mps.map(|v| (v * 100_000.0).round() as u32);
+        Self {
+            lon_q6: (req.origin_lon * 1_000_000.0).round() as i64,
+            lat_q6: (req.origin_lat * 1_000_000.0).round() as i64,
+            access_mode,
+            max_access_m: req.max_access_m,
+            max_access_stops: req.max_access_stops,
+            walk_speed_centimps,
+            max_walk_m: req.max_walk_m,
+        }
+    }
+}
+
 /// `POST /transit/bulk` — batch multimodal routing.
 ///
-/// Runs every query in the batch in parallel via Rayon. Every worker
-/// thread reuses its `RAPTOR_STATE` and `CCH_QUERY_STATE` thread-
-/// locals across calls, so the per-query amortised cost drops
-/// significantly vs. cold single-query calls: zero per-request
-/// RAPTOR scratch allocation, zero per-request CCH query state
-/// allocation. For a batch of N queries on K cores, the throughput
-/// is roughly N × (single-query-cost / K) — linear in cores, with
-/// all the per-call fixed overhead eliminated.
+/// Runs every query in the batch in parallel via Rayon. Two performance
+/// tricks compound here:
 ///
-/// Request and response are JSON. Arrow IPC streaming is a future
-/// enhancement (issue #105 originally proposed it); JSON first
-/// because it's simpler to validate correctness and because the
-/// per-query amortisation is the actual perf win regardless of wire
-/// format.
+/// 1. **Origin grouping (#120)** — queries are grouped by
+///    [`OriginGroupKey`] and the access fan-out (snap + R-tree + CCH
+///    1-to-N, ~30–40 % of single-query cost) is computed once per
+///    unique group, then shared across every query in the group via
+///    [`compute_transit_journey_with_access`].
+/// 2. **Thread-local scratch reuse** — each Rayon worker reuses its
+///    `RAPTOR_STATE` and `CCH_QUERY_STATE` thread-locals across calls.
+///
+/// For a workload of N queries with M ≪ N unique origins, the access
+/// phase amortises by a factor of N / M. For matrix-shaped workloads
+/// (every origin distinct), grouping is a no-op and the overhead is
+/// the cost of a single HashMap insert per query.
+///
+/// Validation runs **per query**, not per group — a malformed query in
+/// a group still yields a typed `TransitBulkResult::Err` instead of
+/// poisoning the rest.
 ///
 /// Cancellation: if the client disconnects, Axum drops the handler
 /// future. This is not yet plumbed through to a cooperative
@@ -852,32 +988,89 @@ pub async fn transit_bulk_handler(
     // is pure CPU and non-trivially long, so holding a Tokio worker
     // for the whole batch is wrong.
     let state_clone = Arc::clone(&state);
-    let results: Vec<TransitBulkResult> = tokio::task::spawn_blocking(move || {
-        use rayon::prelude::*;
-        queries
-            .par_iter()
-            .map(|q| match compute_transit_journey(state_clone.as_ref(), q) {
-                Ok(resp) => TransitBulkResult::Ok {
-                    journey: Box::new(resp),
-                },
-                Err((status, err)) => TransitBulkResult::Err {
-                    status: status.as_u16(),
-                    error: err.0.error,
-                },
-            })
-            .collect()
-    })
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("bulk task panicked: {e}"),
-            }),
-        )
-    })?;
+    let results: Vec<TransitBulkResult> =
+        tokio::task::spawn_blocking(move || run_bulk(state_clone.as_ref(), &queries))
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("bulk task panicked: {e}"),
+                    }),
+                )
+            })?;
 
     Ok(Json(TransitBulkResponse { count, results }))
+}
+
+/// Synchronous core of `transit_bulk_handler`. Exposed so tests can
+/// drive the grouped path without an axum runtime.
+///
+/// Groups queries by [`OriginGroupKey`], computes one
+/// [`AccessContext`] per unique group in parallel, then runs every
+/// query through [`compute_transit_journey_with_access`] reusing the
+/// cached context for its group.
+pub fn run_bulk(state: &ServerState, queries: &[TransitRequest]) -> Vec<TransitBulkResult> {
+    use rayon::prelude::*;
+
+    // 1. Group queries by origin key. Each entry holds the list of
+    //    indices that share the same access fan-out.
+    let mut groups: HashMap<OriginGroupKey, Vec<usize>> = HashMap::new();
+    for (i, q) in queries.iter().enumerate() {
+        groups
+            .entry(OriginGroupKey::from_request(q))
+            .or_default()
+            .push(i);
+    }
+
+    // 2. Compute one AccessContext per unique group, in parallel.
+    //    On error (bad origin, unsnappable mode, …) the group's queries
+    //    will all surface that error in step 3 — we record it once.
+    //
+    //    We pick an arbitrary representative query per group (the first
+    //    one) to drive the access build. All queries in the group share
+    //    the same key, so any of them works.
+    type GroupResult = Result<AccessContext, (StatusCode, ErrorResponse)>;
+    let group_results: HashMap<OriginGroupKey, GroupResult> = groups
+        .par_iter()
+        .map(|(key, idxs)| {
+            let rep = &queries[idxs[0]];
+            let res = compute_access_context(state, rep).map_err(|(sc, json)| (sc, json.0));
+            (key.clone(), res)
+        })
+        .collect();
+
+    // 3. Run every query through compute_transit_journey_with_access
+    //    using its group's cached AccessContext. If the access build
+    //    failed for the group, every query in it returns that same
+    //    error.
+    queries
+        .par_iter()
+        .map(|q| {
+            let key = OriginGroupKey::from_request(q);
+            match group_results.get(&key) {
+                Some(Ok(ctx)) => match compute_transit_journey_with_access(state, q, ctx) {
+                    Ok(resp) => TransitBulkResult::Ok {
+                        journey: Box::new(resp),
+                    },
+                    Err((status, err)) => TransitBulkResult::Err {
+                        status: status.as_u16(),
+                        error: err.0.error,
+                    },
+                },
+                Some(Err((status, err))) => TransitBulkResult::Err {
+                    status: status.as_u16(),
+                    error: err.error.clone(),
+                },
+                None => TransitBulkResult::Err {
+                    // Should be unreachable — every query inserted itself
+                    // into `groups`. Defensive fallback.
+                    status: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                    error: "bulk grouping bug: no access context for query".to_string(),
+                },
+            }
+        })
+        .collect()
 }
 
 fn bad_request(msg: &str) -> (StatusCode, Json<ErrorResponse>) {
