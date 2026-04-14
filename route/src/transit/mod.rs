@@ -32,6 +32,7 @@
 pub mod config;
 pub mod feeds;
 pub mod gtfs;
+pub mod netex_epip;
 pub mod raptor;
 pub mod realtime;
 pub mod stop_index;
@@ -114,41 +115,71 @@ pub fn load_from_disk(
 ) -> anyhow::Result<TransitSnapshot> {
     use chrono::Local;
 
+    use crate::transit::config::FeedFormat;
     use crate::transit::gtfs::{FeedSource, ServiceFilter};
+    use crate::transit::timetable::TimetableBuilder;
     use crate::transit::transfers::{TransferBuildOptions, load_or_build};
 
-    // Gather on-disk feeds.
-    let mut sources: Vec<FeedSource> = Vec::new();
+    // Gather on-disk feeds, split by format. GTFS feeds collect into
+    // a `Vec<FeedSource>` for the existing `gtfs::load_into_builder`
+    // path; NeTEx-EPIP feeds (#101, STIB) go through
+    // `netex_epip::load_into_builder`. Both sides write into the same
+    // `TimetableBuilder`, which is finalised once at the end so the
+    // resulting `Timetable` is a single merged multi-feed view.
+    let mut gtfs_sources: Vec<FeedSource> = Vec::new();
+    let mut epip_paths: Vec<(std::path::PathBuf, String)> = Vec::new();
     let mut present_feeds: Vec<&FeedConfig> = Vec::new();
     for feed in &config.feeds {
         let path = config.feed_zip_path(feed);
-        if path.exists() {
-            sources.push(FeedSource::namespaced(path, feed.id.clone()));
-            present_feeds.push(feed);
-        } else {
+        if !path.exists() {
             tracing::warn!(
                 feed = feed.id.as_str(),
+                format = ?feed.format,
                 path = %path.display(),
-                "GTFS feed not on disk — skipping (run `butterfly-route transit-fetch`)"
+                "transit feed not on disk — skipping (run `butterfly-route transit-fetch` or place manually)"
             );
+            continue;
+        }
+        present_feeds.push(feed);
+        match feed.format {
+            FeedFormat::Gtfs => {
+                gtfs_sources.push(FeedSource::namespaced(path, feed.id.clone()));
+            }
+            FeedFormat::NetexEpip => {
+                epip_paths.push((path, feed.id.clone()));
+            }
         }
     }
-    if sources.is_empty() {
+    if gtfs_sources.is_empty() && epip_paths.is_empty() {
         anyhow::bail!(
-            "no GTFS feeds present on disk under {}",
-            config.gtfs_dir().display()
+            "no transit feeds present on disk under {}",
+            config.transit_dir().display()
         );
     }
 
-    // When only a single feed is present, drop the namespace prefix so
-    // existing single-feed code paths and tests keep seeing raw GTFS ids.
-    if sources.len() == 1 {
-        sources[0].feed_id = None;
+    // When exactly one GTFS feed is present AND no NeTEx-EPIP feeds
+    // are loaded, drop the namespace prefix so existing single-feed
+    // code paths and tests keep seeing raw GTFS ids. With any mix of
+    // feeds, namespacing is required.
+    let multi_feed = gtfs_sources.len() + epip_paths.len() > 1;
+    if gtfs_sources.len() == 1 && epip_paths.is_empty() && !multi_feed {
+        gtfs_sources[0].feed_id = None;
     }
 
     let service_date = Local::now().date_naive();
     let filter = ServiceFilter::new(service_date);
-    let timetable = crate::transit::gtfs::load_many(&sources, filter)?;
+
+    let mut builder = TimetableBuilder::new();
+    if !gtfs_sources.is_empty() {
+        crate::transit::gtfs::load_into_builder(&gtfs_sources, filter, &mut builder)?;
+    }
+    for (path, feed_id) in &epip_paths {
+        let prefix = if multi_feed { Some(feed_id.as_str()) } else { None };
+        crate::transit::netex_epip::load_into_builder(path, prefix, &mut builder)?;
+    }
+    let timetable = builder
+        .build()
+        .map_err(|e| anyhow::anyhow!("building merged Timetable (GTFS + NeTEx-EPIP): {e}"))?;
 
     let opts = TransferBuildOptions {
         radius_m: config.transfer_radius_m,

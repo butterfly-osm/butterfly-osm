@@ -82,8 +82,27 @@ pub fn load_zip(path: &Path, filter: ServiceFilter) -> Result<Timetable> {
 /// merged into one namespace using `<feed_id>:<raw_id>` so collisions are
 /// impossible and per-stop provenance is recoverable from the id.
 pub fn load_many(sources: &[FeedSource], filter: ServiceFilter) -> Result<Timetable> {
+    let mut builder = TimetableBuilder::new();
+    load_into_builder(sources, filter, &mut builder)?;
+    builder.build()
+}
+
+/// Append one or more GTFS feeds into an existing [`TimetableBuilder`].
+///
+/// Like [`load_many`] but does not finalise the builder — used by
+/// `transit::load_from_disk` to merge GTFS feeds and NeTEx-EPIP feeds
+/// (#101) into the same timetable, since the two formats write into
+/// the same builder and we call `builder.build()` once at the end.
+pub fn load_into_builder(
+    sources: &[FeedSource],
+    filter: ServiceFilter,
+    builder: &mut TimetableBuilder,
+) -> Result<()> {
     if sources.is_empty() {
-        anyhow::bail!("load_many called with zero sources");
+        // Empty is fine — the caller may have NeTEx-EPIP feeds but
+        // zero GTFS feeds. The builder still yields a valid Timetable
+        // if the other loaders wrote stops into it.
+        return Ok(());
     }
     if sources.len() > 1 {
         for s in sources {
@@ -96,7 +115,6 @@ pub fn load_many(sources: &[FeedSource], filter: ServiceFilter) -> Result<Timeta
         }
     }
 
-    let mut builder = TimetableBuilder::new();
     let mut total_trips_kept = 0usize;
     let mut total_trips_seen = 0usize;
     let mut total_stops_seen = 0usize;
@@ -127,7 +145,7 @@ pub fn load_many(sources: &[FeedSource], filter: ServiceFilter) -> Result<Timeta
             filter.date
         );
 
-        let kept = compile_into(&gtfs, filter, prefix, &active_services, &mut builder)?;
+        let kept = compile_into(&gtfs, filter, prefix, &active_services, builder)?;
         total_trips_kept += kept;
     }
 
@@ -138,7 +156,7 @@ pub fn load_many(sources: &[FeedSource], filter: ServiceFilter) -> Result<Timeta
         total_trips_seen,
         "GTFS multi-feed load complete"
     );
-    builder.build()
+    Ok(())
 }
 
 /// Compile an in-memory [`Gtfs`] struct into a [`Timetable`] (single-feed

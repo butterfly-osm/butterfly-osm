@@ -42,6 +42,14 @@ hex = "0.4.3"
 # Timestamps
 chrono = "0.4.44"
 
+# Streaming XML parser for NeTEx-EPIP loader (#101, STIB)
+quick-xml = "0.38"
+
+# Coordinate reprojection for NeTEx-EPIP (STIB publishes in Lambert-93
+# EPSG:2154; butterfly uses WGS84 throughout). proj4rs is pure Rust,
+# no system PROJ dependency.
+proj4rs = "0.1"
+
 # Parallelization
 rayon = "1.11"
 
