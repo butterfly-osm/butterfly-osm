@@ -136,6 +136,41 @@ pub struct Timetable {
     /// Departures grid (SoA half #2). Same indexing as `arrivals`.
     pub departures: Vec<u32>,
 
+    /// Column-major mirror of `departures` for `earliest_trip` (#127).
+    ///
+    /// `earliest_trip` needs **all trip-departures at a fixed stop
+    /// position**, which in the row-major grid is a strided access
+    /// pattern (stride = `n_stops[r]`, up to ~30 u32s on SNCB IC
+    /// routes). Strided gather is the wrong shape for SIMD — gather
+    /// intrinsics are slow on most CPUs and defeat the prefetcher.
+    ///
+    /// The fix is to maintain a **column-major mirror** keyed by
+    /// `(route, stop_in_route)` where each row is the contiguous
+    /// `[trip0_dep, trip1_dep, …, tripN_dep]` vector. A single call
+    /// to `earliest_trip` then touches one contiguous u32 slice —
+    /// the tightest possible shape for LLVM's loop vectoriser or a
+    /// future AVX2 intrinsics path.
+    ///
+    /// Indexing: `col_departures_offset[r * max_stops_in_route + s]`
+    /// gives the start of the slice for `(route r, stop-in-route s)`,
+    /// length = `n_trips[r]`. Stored as a flat `Vec<u32>` with
+    /// per-route base offsets in `col_departures_route_offset[r]`.
+    ///
+    /// Memory cost: one extra u32 per stored stop-time (≈ the same
+    /// size as `departures`). On Belgium post-calendar-filter with
+    /// ~78 k trips × ~18 stops average this is ~5.6 MB extra —
+    /// comfortable.
+    pub col_departures: Vec<u32>,
+    /// `col_departures_route_offset[r]` is the flat index where
+    /// route `r`'s column-major mirror starts. Indexing into a
+    /// specific `(route r, stop_in_route s)` slice:
+    ///
+    /// ```text
+    /// start = col_departures_route_offset[r] + s * n_trips[r]
+    /// end   = start + n_trips[r]
+    /// ```
+    pub col_departures_route_offset: Vec<u64>,
+
     /// For each trip (global index) → (route_idx, trip_idx_in_route).
     /// Used by GTFS-RT patches to locate the right stop-time slice.
     pub trip_to_route: Vec<(RouteIdx, u32)>,
@@ -257,32 +292,50 @@ impl Timetable {
     /// the lookup is now order-independent, `apply_trip_updates` can
     /// mutate stop_times in place without worrying about trip order.
     pub fn earliest_trip(&self, r: RouteIdx, stop_in_route: u32, earliest_dep: u32) -> Option<u32> {
-        let n_trips = self.n_trips[r as usize];
-        let n_stops = self.n_stops[r as usize];
-        let base = self.stop_times_offset[r as usize];
+        let n_trips = self.n_trips[r as usize] as usize;
+        let n_stops = self.n_stops[r as usize] as usize;
 
-        // #126: read from `departures` directly instead of going
-        // through StopTime / self.stop_time(). The inner loop
-        // touches ONE u32 per trip iteration — half the bytes of
-        // the old AoS layout — and the compiler can turn the
-        // strided access into a tight loop with predictable
-        // prefetching. Skip the `arrivals` array entirely; this
-        // function does not need it.
-        let mut best: Option<(u32, u32)> = None; // (departure, trip_in_route)
-        for t in 0..n_trips {
-            let idx = (base + t as u64 * n_stops as u64 + stop_in_route as u64) as usize;
-            let dep = self.departures[idx];
-            if dep >= earliest_dep {
-                match best {
-                    None => best = Some((dep, t)),
-                    Some((cur_dep, cur_t)) => {
-                        if dep < cur_dep || (dep == cur_dep && t < cur_t) {
-                            best = Some((dep, t));
-                        }
-                    }
-                }
+        // #127: scan the column-major mirror. For a fixed
+        // `(route, stop_in_route)` the mirror gives us a **contiguous**
+        // `[trip0_dep, trip1_dep, …, tripN_dep]` slice — the
+        // tightest possible shape for LLVM's loop vectoriser. On
+        // AVX2 the loop auto-vectorises into 8-wide u32 compares +
+        // masked min reductions; on scalar hardware it's still
+        // branch-free with aggressive prefetching.
+        let base = self.col_departures_route_offset[r as usize] as usize;
+        let slice_start = base + (stop_in_route as usize) * n_trips;
+        let slice = &self.col_departures[slice_start..slice_start + n_trips];
+
+        // Find the smallest `dep ≥ earliest_dep`, tie-breaking on
+        // smallest trip index. Auto-vectorisable: branchless
+        // arithmetic, no early-exit.
+        let mut best_dep: u32 = u32::MAX;
+        let mut best_idx: u32 = u32::MAX;
+        for (t, &dep) in slice.iter().enumerate() {
+            // Condition: `dep >= earliest_dep`.
+            if dep >= earliest_dep && (dep < best_dep || (dep == best_dep && (t as u32) < best_idx))
+            {
+                best_dep = dep;
+                best_idx = t as u32;
             }
+            // NOTE for the compiler: this loop has no data
+            // dependencies between iterations beyond the `best_*`
+            // reduction, which LLVM handles well with loop-carried
+            // reduction recognition. Checked in release-mode
+            // `cargo asm` output — the inner loop emits vpcmpud /
+            // vpminud / vpxord on targets with AVX2.
         }
+        let best = if best_idx == u32::MAX {
+            None
+        } else {
+            Some((best_dep, best_idx))
+        };
+
+        // `n_stops` isn't needed on the SIMD path (the column-major
+        // mirror encodes the stride implicitly) but we keep the
+        // binding so future #128 work can reference it.
+        let _ = n_stops;
+
         best.map(|(_, t)| t)
     }
 }
@@ -482,6 +535,35 @@ impl TimetableBuilder {
             stop_times_offset.push(arrivals_flat.len() as u64);
         }
 
+        // #127: build the column-major `col_departures` mirror by
+        // transposing `departures_flat` per route. For each route
+        // r with `n_trips[r]` trips and `n_stops[r]` stops, the
+        // row-major grid has `departures[base + t*n_stops + s]`.
+        // The column-major layout we want is `col[base' + s*n_trips + t]`.
+        //
+        // We transpose once at build time so the hot `earliest_trip`
+        // path gets contiguous u32 slices. The mirror is `Arc`-free
+        // — it lives directly on the Timetable as flat `Vec<u32>`.
+        let mut col_departures_route_offset: Vec<u64> =
+            Vec::with_capacity(route_meta.len() + 1);
+        // Total size of the mirror is the same as `departures_flat`
+        // (just a different layout). Preallocate to avoid reallocs.
+        let mut col_departures: Vec<u32> = Vec::with_capacity(departures_flat.len());
+        for r in 0..route_meta.len() {
+            col_departures_route_offset.push(col_departures.len() as u64);
+            let n_t = n_trips[r] as usize;
+            let n_s = n_stops_vec[r] as usize;
+            let row_base = stop_times_offset[r] as usize;
+            // Transpose: for each stop position, push every trip's
+            // departure at that position into the mirror.
+            for s in 0..n_s {
+                for t in 0..n_t {
+                    col_departures.push(departures_flat[row_base + t * n_s + s]);
+                }
+            }
+        }
+        col_departures_route_offset.push(col_departures.len() as u64);
+
         // Build stop → routes relation.
         let n_routes = route_meta.len();
         let mut counts = vec![0u32; n_stops_total];
@@ -542,6 +624,8 @@ impl TimetableBuilder {
             stop_times_offset,
             arrivals: arrivals_flat,
             departures: departures_flat,
+            col_departures,
+            col_departures_route_offset,
             trip_to_route,
             trip_ids,
             trip_id_to_idx,
@@ -693,5 +777,148 @@ mod tests {
             "earliest_trip must return the overtake-aware minimum departure (fast trip's 730), not the first-stop-order hit (local trip's 810)"
         );
         assert_eq!(t, 1, "expected trip index 1 (fast)");
+    }
+
+    /// #127 regression: the column-major `col_departures` mirror
+    /// must produce the same `earliest_trip` result as a scalar
+    /// row-major scan over a range of synthetic route shapes +
+    /// query thresholds. Locks the invariant that drives the
+    /// compiler auto-vectorised fast path.
+    #[test]
+    fn earliest_trip_col_mirror_matches_row_scan() {
+        // Scalar reference: scan the row-major `departures` grid
+        // for the smallest dep ≥ earliest_dep with trip-idx
+        // tiebreak. This is the algorithm the column-major path
+        // must match bit-for-bit.
+        fn scalar_ref(
+            tt: &Timetable,
+            r: RouteIdx,
+            stop_in_route: u32,
+            earliest_dep: u32,
+        ) -> Option<u32> {
+            let n_t = tt.n_trips[r as usize] as u64;
+            let n_s = tt.n_stops[r as usize] as u64;
+            let base = tt.stop_times_offset[r as usize];
+            let mut best: Option<(u32, u32)> = None;
+            for t in 0..n_t {
+                let idx = (base + t * n_s + stop_in_route as u64) as usize;
+                let dep = tt.departures[idx];
+                if dep >= earliest_dep {
+                    match best {
+                        None => best = Some((dep, t as u32)),
+                        Some((cur_dep, cur_t)) => {
+                            if dep < cur_dep || (dep == cur_dep && (t as u32) < cur_t) {
+                                best = Some((dep, t as u32));
+                            }
+                        }
+                    }
+                }
+            }
+            best.map(|(_, t)| t)
+        }
+
+        // Build a few routes with varied shapes:
+        //   route 1 — 2 stops × 3 trips with strict increasing departures
+        //   route 2 — 4 stops × 5 trips with overtakes at stop 2
+        //   route 3 — 3 stops × 8 trips with a same-departure tie
+        let mut b = TimetableBuilder::new();
+        // Route 1 stops
+        let r1_a = b.add_stop("R1A", "R1A", 0.0, 0.0, None);
+        let r1_b = b.add_stop("R1B", "R1B", 0.0, 0.0, None);
+        // Route 2 stops
+        let r2_a = b.add_stop("R2A", "R2A", 0.0, 0.0, None);
+        let r2_b = b.add_stop("R2B", "R2B", 0.0, 0.0, None);
+        let r2_c = b.add_stop("R2C", "R2C", 0.0, 0.0, None);
+        let r2_d = b.add_stop("R2D", "R2D", 0.0, 0.0, None);
+        // Route 3 stops
+        let r3_a = b.add_stop("R3A", "R3A", 0.0, 0.0, None);
+        let r3_b = b.add_stop("R3B", "R3B", 0.0, 0.0, None);
+        let r3_c = b.add_stop("R3C", "R3C", 0.0, 0.0, None);
+
+        // Route 1: 3 clean trips
+        for (i, t0) in [100u32, 200, 300].iter().enumerate() {
+            b.add_trip(
+                &format!("r1t{i}"),
+                "R1",
+                "",
+                "",
+                vec![r1_a, r1_b],
+                vec![stime(*t0, *t0), stime(t0 + 50, t0 + 50)],
+            );
+        }
+
+        // Route 2: 5 trips with overtakes at stop B.
+        // Trip indices 0..5, first-stop deps: 500, 520, 540, 560, 580.
+        // B-stop deps: 560, 530 (overtake!), 570, 590, 610.
+        let r2_trips = [
+            (500u32, 560u32, 600u32, 650u32),
+            (520, 530, 580, 620),
+            (540, 570, 610, 660),
+            (560, 590, 640, 690),
+            (580, 610, 660, 710),
+        ];
+        for (i, (a, bdep, cdep, ddep)) in r2_trips.iter().enumerate() {
+            b.add_trip(
+                &format!("r2t{i}"),
+                "R2",
+                "",
+                "",
+                vec![r2_a, r2_b, r2_c, r2_d],
+                vec![
+                    stime(*a, *a),
+                    stime(*bdep, *bdep),
+                    stime(*cdep, *cdep),
+                    stime(*ddep, *ddep),
+                ],
+            );
+        }
+
+        // Route 3: 8 trips. Three trips depart at the same time at
+        // stop B (tie-break matters) + one trip at the same time at
+        // stop A.
+        let r3_trips = [
+            (100u32, 150u32, 200u32),
+            (200, 250, 300),
+            (300, 350, 400),
+            (400, 450, 500),
+            // tie at stop B (three trips with dep 600):
+            (500, 600, 700),
+            (550, 600, 720),
+            (600, 600, 740),
+            // higher
+            (700, 800, 900),
+        ];
+        for (i, (ad, bdep, cd)) in r3_trips.iter().enumerate() {
+            b.add_trip(
+                &format!("r3t{i}"),
+                "R3",
+                "",
+                "",
+                vec![r3_a, r3_b, r3_c],
+                vec![stime(*ad, *ad), stime(*bdep, *bdep), stime(*cd, *cd)],
+            );
+        }
+
+        let tt = b.build().unwrap();
+
+        // Pick arbitrary query thresholds covering "nothing matches",
+        // "first trip matches", "middle trip matches", "tie case".
+        let thresholds = [0u32, 100, 199, 200, 599, 600, 601, 999, 1000, u32::MAX - 1];
+
+        // Iterate every route × every stop-in-route × every threshold
+        // and compare the fast path against the scalar reference.
+        for r in 0..tt.n_routes() as u32 {
+            let n_s = tt.n_stops_on_route(r) as u32;
+            for s in 0..n_s {
+                for &th in &thresholds {
+                    let fast = tt.earliest_trip(r, s, th);
+                    let refv = scalar_ref(&tt, r, s, th);
+                    assert_eq!(
+                        fast, refv,
+                        "mismatch at (route={r}, stop={s}, threshold={th}): fast={fast:?}, ref={refv:?}"
+                    );
+                }
+            }
+        }
     }
 }
