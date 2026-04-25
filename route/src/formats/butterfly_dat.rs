@@ -434,8 +434,8 @@ impl Container {
     /// explicitly via [`Container::verify_file_crc`] when needed).
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
-        let mut file = File::open(path)
-            .with_context(|| format!("opening container {}", path.display()))?;
+        let mut file =
+            File::open(path).with_context(|| format!("opening container {}", path.display()))?;
         let total_len = file.metadata()?.len();
         anyhow::ensure!(
             total_len >= HEADER_SIZE + FOOTER_SIZE,
@@ -503,9 +503,8 @@ impl Container {
                 p + 34 <= dir_bytes.len(),
                 "directory truncated (entry header)"
             );
-            let kind = SectionKind::from_u32(u32::from_le_bytes(
-                dir_bytes[p..p + 4].try_into().unwrap(),
-            ));
+            let kind =
+                SectionKind::from_u32(u32::from_le_bytes(dir_bytes[p..p + 4].try_into().unwrap()));
             // p+4..p+8 reserved.
             let offset = u64::from_le_bytes(dir_bytes[p + 8..p + 16].try_into().unwrap());
             let len = u64::from_le_bytes(dir_bytes[p + 16..p + 24].try_into().unwrap());
@@ -673,9 +672,7 @@ mod tests {
         let car = c.get("weights/car").unwrap().clone();
         // Flip a byte inside the car payload.
         {
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .open(tmp.path())?;
+            let mut f = std::fs::OpenOptions::new().write(true).open(tmp.path())?;
             f.seek(SeekFrom::Start(car.offset))?;
             f.write_all(&[0xFF])?;
         }
@@ -698,9 +695,7 @@ mod tests {
         let c = Container::open(tmp.path())?;
         // Flip a byte inside the directory.
         {
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .open(tmp.path())?;
+            let mut f = std::fs::OpenOptions::new().write(true).open(tmp.path())?;
             f.seek(SeekFrom::Start(c.dir_offset + 4))?;
             f.write_all(&[0xAA])?;
         }
