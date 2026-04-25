@@ -247,6 +247,134 @@ pub fn pack(data_dir: &Path, out: &Path, step_prefix: Option<&str>) -> Result<()
     Ok(())
 }
 
+/// Map a `SectionEntry` back to the on-disk path inside a `step{N}/`
+/// tree, mirroring what `pack` consumed. Returns `None` for sections
+/// whose names do not match the standard layout.
+fn path_for_section(out_dir: &Path, name: &str) -> Option<PathBuf> {
+    // The mapping mirrors `pack` exactly. Any section we do not
+    // recognise is left out; `unpack` reports it as a warning.
+    if let Some(rest) = name.strip_prefix("step1/") {
+        return Some(out_dir.join("step1").join(rest));
+    }
+    if let Some(rest) = name.strip_prefix("step2/") {
+        // step2 sections are `way_attrs.<mode>` / `turn_rules.<mode>`;
+        // re-add the `.bin` suffix the input directory used.
+        if let Some(mode) = rest.strip_prefix("way_attrs.") {
+            return Some(
+                out_dir
+                    .join("step2")
+                    .join(format!("way_attrs.{}.bin", mode)),
+            );
+        }
+        if let Some(mode) = rest.strip_prefix("turn_rules.") {
+            return Some(
+                out_dir
+                    .join("step2")
+                    .join(format!("turn_rules.{}.bin", mode)),
+            );
+        }
+        return None;
+    }
+    if let Some(rest) = name.strip_prefix("step3/") {
+        return Some(out_dir.join("step3").join(rest));
+    }
+    if let Some(rest) = name.strip_prefix("step4/") {
+        return Some(out_dir.join("step4").join(rest));
+    }
+    if let Some(rest) = name.strip_prefix("step5/") {
+        // Restore the trailing extension: filtered.<mode> -> filtered.<mode>.ebg, etc.
+        if let Some(mode) = rest.strip_prefix("filtered.") {
+            return Some(
+                out_dir
+                    .join("step5")
+                    .join(format!("filtered.{}.ebg", mode)),
+            );
+        }
+        if let Some(mode) = rest.strip_prefix("w.") {
+            return Some(out_dir.join("step5").join(format!("w.{}.u32", mode)));
+        }
+        if let Some(mode) = rest.strip_prefix("t.") {
+            return Some(out_dir.join("step5").join(format!("t.{}.u32", mode)));
+        }
+        if let Some(mode) = rest.strip_prefix("mask.") {
+            return Some(
+                out_dir
+                    .join("step5")
+                    .join(format!("mask.{}.bitset", mode)),
+            );
+        }
+        return None;
+    }
+    if let Some(rest) = name.strip_prefix("step6/") {
+        if let Some(mode) = rest.strip_prefix("order.") {
+            return Some(out_dir.join("step6").join(format!("order.{}.ebg", mode)));
+        }
+        return None;
+    }
+    if let Some(rest) = name.strip_prefix("step7/") {
+        if let Some(mode) = rest.strip_prefix("cch.") {
+            return Some(out_dir.join("step7").join(format!("cch.{}.topo", mode)));
+        }
+        return None;
+    }
+    if let Some(rest) = name.strip_prefix("step8/") {
+        if let Some(mode) = rest.strip_prefix("cch.w.") {
+            return Some(out_dir.join("step8").join(format!("cch.w.{}.u32", mode)));
+        }
+        if let Some(mode) = rest.strip_prefix("cch.d.") {
+            return Some(out_dir.join("step8").join(format!("cch.d.{}.u32", mode)));
+        }
+        return None;
+    }
+    None
+}
+
+/// Implementation of the `unpack` subcommand. Inverse of `pack`: writes
+/// every section back to the canonical `step{N}/file` path under
+/// `out_dir`. Validates each section's CRC during the copy.
+///
+/// `out_dir` must not exist (so the inverse mapping is unambiguous).
+pub fn unpack(path: &Path, out_dir: &Path) -> Result<()> {
+    if out_dir.exists() {
+        anyhow::bail!(
+            "output directory {} already exists; refusing to overwrite",
+            out_dir.display()
+        );
+    }
+    std::fs::create_dir_all(out_dir)?;
+
+    let c = Container::open(path)?;
+    println!(
+        "unpacking {} ({} sections) → {}",
+        path.display(),
+        c.n_sections,
+        out_dir.display()
+    );
+
+    for sec in &c.sections {
+        let out_path = path_for_section(out_dir, &sec.name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "section '{}' does not match the standard step{{N}}/... layout; \
+                 cannot map back to a file path",
+                sec.name
+            )
+        })?;
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let bytes = c.read_section_verified(path, sec)?;
+        std::fs::write(&out_path, &bytes)?;
+        println!(
+            "  -> [{:>5} MiB] {:<32} -> {}",
+            bytes.len() / (1024 * 1024),
+            sec.name,
+            out_path.display()
+        );
+    }
+    println!("OK");
+    Ok(())
+}
+
 /// Implementation of the `inspect` subcommand.
 pub fn inspect(path: &Path, verify: bool, verify_full: bool) -> Result<()> {
     let c = Container::open(path)?;
@@ -412,6 +540,56 @@ mod tests {
         // No assertions on stdout here; we just want the call path to
         // not panic on a real pack output.
         inspect(&out, true, true)?;
+        Ok(())
+    }
+
+    #[test]
+    fn unpack_is_byte_for_byte_round_trip() -> Result<()> {
+        let tmp = synth_dir()?;
+        let container = tmp.path().join("rt.butterfly");
+        pack(tmp.path(), &container, None)?;
+
+        let unpacked = tmp.path().join("rt-out");
+        unpack(&container, &unpacked)?;
+
+        // Spot-check a handful of files for byte equality.
+        let pairs: &[(&str, &str)] = &[
+            ("step1/nodes.sa", "step1/nodes.sa"),
+            ("step1/ways.raw", "step1/ways.raw"),
+            ("step2/way_attrs.car.bin", "step2/way_attrs.car.bin"),
+            ("step2/turn_rules.bike.bin", "step2/turn_rules.bike.bin"),
+            ("step5/filtered.car.ebg", "step5/filtered.car.ebg"),
+            ("step6/order.bike.ebg", "step6/order.bike.ebg"),
+            ("step7/cch.car.topo", "step7/cch.car.topo"),
+            ("step8/cch.w.car.u32", "step8/cch.w.car.u32"),
+            ("step8/cch.w.car_p3.u32", "step8/cch.w.car_p3.u32"),
+        ];
+        for (src, dst) in pairs {
+            let original = fs::read(tmp.path().join(src))?;
+            let restored = fs::read(unpacked.join(dst))?;
+            assert_eq!(
+                original, restored,
+                "byte mismatch for {} ↔ {}",
+                src, dst
+            );
+        }
+
+        // Files that pack skipped (lifted) must NOT show up in the
+        // unpacked tree.
+        assert!(!unpacked.join("step6/order.lifted.car.ebg").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn unpack_refuses_existing_dir() -> Result<()> {
+        let tmp = synth_dir()?;
+        let container = tmp.path().join("rt.butterfly");
+        pack(tmp.path(), &container, None)?;
+
+        let existing = tmp.path().join("already-here");
+        fs::create_dir_all(&existing)?;
+        let res = unpack(&container, &existing);
+        assert!(res.is_err());
         Ok(())
     }
 }
