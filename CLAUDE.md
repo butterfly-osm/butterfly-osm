@@ -545,7 +545,7 @@ The gap closes at scale because fixed overhead (HTTP, coordination) is amortized
 | 5000×5000 | 8.0s | **5.5s** | **1.45x FASTER** |
 | 10000×10000 | 32.9s | 33.0s | parity |
 
-**Key insight:** Butterfly BEATS OSRM across the useful-N range (50–5000). Small sizes (10–25) still lose to OSRM's sequential shape because rayon thread-dispatch overhead isn't amortised over 100–625 cells — fast path for N < 50 is a separate opt. 10k×10k regressed vs 2026-02-01 (was 18.2s); investigate separately.
+**Key insight:** Butterfly BEATS OSRM across the useful-N range (50–5000). Small sizes (10–25) still lose to OSRM's sequential shape because rayon thread-dispatch overhead isn't amortised over 100–625 cells — partial mitigation in 8eb4799 (≤100-cell fast path, ~14% gain at 10×10), residual gap is graph-architectural. 10k×10k bench-only number sits at the DRAM-bandwidth floor (~30 s) when the bench drives `table_bucket_parallel` directly with the monolithic shape; production `/table/stream` tiles to 1000×1000 and stays L3-resident, so the bench number is **not** what users hit. See #130 for the full analysis.
 
 **Optimizations Implemented:**
 | Optimization | Effect | Status |
