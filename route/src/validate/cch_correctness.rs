@@ -957,7 +957,7 @@ fn generate_regression_cases(
             high_degree_nodes.push((u as u32, total_deg));
         }
     }
-    high_degree_nodes.sort_by(|a, b| b.1.cmp(&a.1));
+    high_degree_nodes.sort_by_key(|n| std::cmp::Reverse(n.1));
 
     // Test routes between high-degree nodes
     for i in 0..high_degree_nodes.len().min(5) {
