@@ -1,6 +1,7 @@
 //! Common utilities for the butterfly-osm toolkit
 
 pub mod error;
+pub mod fuzzy;
 
 pub use error::{Error, Result};
 

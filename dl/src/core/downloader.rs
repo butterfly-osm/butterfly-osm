@@ -29,14 +29,23 @@ const MAX_RETRY_ATTEMPTS: u32 = 3;
 /// Base delay for exponential backoff (in milliseconds)
 const BASE_RETRY_DELAY_MS: u64 = 1000;
 
-/// Global HTTP client with optimizations
+/// Global HTTP client with optimisations.
+///
+/// Timeout policy (#137):
+/// - **Connect**: 30 s — generous for slow DNS / first-byte from busy mirrors.
+/// - **Per-read**: 60 s — abort if any chunk takes longer than this; catches
+///   stalled mirrors without aborting healthy slow downloads.
+/// - **No overall request timeout** — the planet PBF is 81 GB and Belgium is
+///   ~600 MB; on a 5 Mbit/s link the request is many minutes long but every
+///   chunk arrives well within the read timeout. A wall-clock request timeout
+///   would abort large downloads mid-stream regardless of connection health.
 static GLOBAL_CLIENT: Lazy<Client> = Lazy::new(|| {
     ClientBuilder::new()
         .tcp_keepalive(Duration::from_secs(60))
         .pool_idle_timeout(Duration::from_secs(90))
         .pool_max_idle_per_host(20)
-        .timeout(Duration::from_secs(30)) // Overall request timeout
-        .connect_timeout(Duration::from_secs(10)) // Connection timeout
+        .read_timeout(Duration::from_secs(60))
+        .connect_timeout(Duration::from_secs(30))
         .user_agent(format!("butterfly-dl/{}", env!("BUTTERFLY_VERSION")))
         .build()
         .expect("Failed to create HTTP client")
@@ -628,7 +637,7 @@ fn create_helpful_http_error(url: &str, status: reqwest::StatusCode) -> Error {
         };
 
         if let Some(source) = source {
-            if let Some(suggestion) = butterfly_common::error::suggest_correction(&source) {
+            if let Some(suggestion) = butterfly_common::fuzzy::suggest_correction(&source) {
                 message = format!("Source '{source}' not found. Did you mean '{suggestion}'?");
             } else {
                 message = format!(

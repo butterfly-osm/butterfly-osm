@@ -1247,6 +1247,50 @@ mod tests {
         assert!(triples.is_empty());
     }
 
+    /// #132 — a cross-feed equivalence bridge (e.g. SNCB station ↔
+    /// STIB metro at the same coordinate, different operators) must
+    /// survive ULTRA dominance restriction when **no triangle
+    /// dominates it**. The earlier code path correctly injected the
+    /// bridges before ULTRA, but no test verified the survival
+    /// invariant — so a future change that re-orders injection vs.
+    /// restriction (or that tightens the dominance test in a way that
+    /// catches zero-walk duplicates) would silently drop bridges and
+    /// produce slow multimodal routes between operator pairs.
+    #[test]
+    fn cross_feed_bridges_survive_ultra_restriction() {
+        let (tt, sx, tx, sy, dy) = multi_feed_timetable();
+        let mut triples: Vec<(u32, u32, u32)> = Vec::new();
+
+        // Step 1: inject the cross-feed bridges (30 s flat cost).
+        let n_injected =
+            inject_cross_feed_equivalence_edges(&tt, 50, 30, &mut triples);
+        assert_eq!(n_injected, 4, "two pairs × two directions = four edges");
+
+        // Step 2: run ULTRA restriction. With no triangles in the
+        // synthetic graph, every direct edge is undominated and must
+        // be kept.
+        let n_stops = tt.stops.len();
+        let restricted = ultra_restrict_transfers(n_stops, triples, 2);
+
+        // All four cross-feed bridges still present after ULTRA.
+        assert!(
+            restricted.contains(&(sx, tx, 30)),
+            "Brussels SNCB → STIB metro bridge must survive ULTRA"
+        );
+        assert!(
+            restricted.contains(&(tx, sx, 30)),
+            "Brussels STIB metro → SNCB bridge must survive ULTRA"
+        );
+        assert!(
+            restricted.contains(&(sy, dy, 30)),
+            "Gent SNCB → De Lijn bus bridge must survive ULTRA"
+        );
+        assert!(
+            restricted.contains(&(dy, sy, 30)),
+            "Gent De Lijn bus → SNCB bridge must survive ULTRA"
+        );
+    }
+
     #[test]
     fn inject_cross_feed_skips_same_feed_colocated_stops() {
         // Two stops from the same feed at the exact same coordinate:
