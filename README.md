@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="images/butterfly_logo_900kb.jpg" width="240" alt="Butterfly-OSM logo" />
+  <img src="images/butterfly_logo_900kb.jpg" width="280" alt="Butterfly-OSM logo" />
 </p>
 
 # Butterfly-OSM 🦋
