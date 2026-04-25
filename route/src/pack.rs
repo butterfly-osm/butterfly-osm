@@ -109,10 +109,10 @@ pub fn pack(data_dir: &Path, out: &Path, step_prefix: Option<&str>) -> Result<()
     let step7 = find_step_dir(data_dir, step_prefix.unwrap_or("step7"))?;
     let step8 = find_step_dir(data_dir, step_prefix.unwrap_or("step8"))?;
 
-    if let Some(parent) = out.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = out.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
     }
     let mut w = ContainerWriter::create(out)?;
 
