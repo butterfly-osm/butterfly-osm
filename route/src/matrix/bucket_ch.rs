@@ -35,7 +35,23 @@ thread_local! {
     static FORWARD_STATE: RefCell<Option<SearchState>> = const { RefCell::new(None) };
     static BACKWARD_STATE: RefCell<Option<SearchState>> = const { RefCell::new(None) };
     static FORWARD_BUCKET_ITEMS: RefCell<Vec<(u32, u32, u32)>> = const { RefCell::new(Vec::new()) };
+
+    // Sequential engine for the small-N fast path (#129). At low cell
+    // counts (~≤ 1000) rayon's thread-dispatch + work-stealing overhead
+    // dwarfs the actual routing work, so we skip the parallel path
+    // entirely and run sequentially in a single thread-cached engine.
+    static SEQUENTIAL_ENGINE: RefCell<Option<BucketM2MEngine>> = const { RefCell::new(None) };
 }
+
+/// Cell-count threshold below which `table_bucket_parallel` dispatches
+/// to the sequential thread-local engine instead of fanning rayon out.
+///
+/// Picked empirically (#129): the only size where the sequential path
+/// beats the parallel path on Belgium is the 10×10 corner — at 25×25
+/// (625 cells) parallel already wins by ~6× because there's enough
+/// work to amortise rayon's thread-dispatch. We keep the threshold
+/// tight (≤ 100 cells, i.e. ≤ 10×10) to avoid regressing 25×25 and up.
+const SEQUENTIAL_FAST_PATH_CELL_THRESHOLD: usize = 100;
 
 // =============================================================================
 // FLAT ADJACENCY STRUCTURES - Pre-filtered INF edges
@@ -1630,6 +1646,24 @@ pub fn table_bucket_parallel(
             vec![u32::MAX; n_sources * n_targets],
             BucketM2MStats::default(),
         );
+    }
+
+    // Small-N fast path (#129): at low cell counts rayon's thread-dispatch
+    // and work-stealing overhead is larger than the actual routing work,
+    // so we run sequentially in a thread-cached engine. The crossover
+    // sits at ~1024 cells on Belgium — below that, OSRM CH's pure
+    // sequential shape wins; above, parallel rayon already beats it.
+    if n_sources * n_targets <= SEQUENTIAL_FAST_PATH_CELL_THRESHOLD {
+        return SEQUENTIAL_ENGINE.with(|cell| {
+            let mut engine_opt = cell.borrow_mut();
+            let engine = engine_opt.get_or_insert_with(|| BucketM2MEngine::new(n_nodes));
+            // Reinitialise on graph swap (e.g. switching data dirs across
+            // calls). Version-stamped state keeps subsequent calls O(1).
+            if engine.n_nodes != n_nodes {
+                *engine = BucketM2MEngine::new(n_nodes);
+            }
+            engine.compute_flat(up_adj_flat, down_rev_flat, sources, targets)
+        });
     }
 
     let mut stats = BucketM2MStats {

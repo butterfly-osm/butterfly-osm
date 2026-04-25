@@ -1,3 +1,10 @@
+// The XML state-tracking style here uses `match arm => { if state == X { ... } }`
+// throughout. Clippy's `collapsible_if` lint wants every site folded into a
+// `match arm if state == X => { ... }` guard, which obscures what the parser
+// is doing — the outer arm is "what tag did we see" and the inner `if`s are
+// "in what parent context"; keeping them separate reads top-down.
+#![allow(clippy::collapsible_if, clippy::collapsible_match)]
+
 //! NeTEx-EPIP loader for butterfly-route (#101, STIB).
 //!
 //! Streams an EPIP NeTEx XML file and compiles it into the same
