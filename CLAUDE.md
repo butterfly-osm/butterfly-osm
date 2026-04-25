@@ -89,7 +89,8 @@ Memory-efficient OSM downloader (<1GB RAM for any file size). Provides both CLI 
 
 - **Core modules**: `src/core/` - Downloader, source routing, streaming
 - **CLI**: `src/cli/` - Progress display, argument parsing
-- **FFI**: `src/ffi.rs` - C-compatible bindings (optional feature `c-bindings`)
+- **Verified primitive**: `src/verified.rs` - magic-byte + min-bytes + SHA-256 sidecar checks
+- **Region indexes**: `src/regions.rs` + `regions/<region>.toml` - parallel multi-file fetch
 
 Key API: `butterfly_dl::get()`, `butterfly_dl::get_stream()`, `butterfly_dl::get_with_progress()`
 
