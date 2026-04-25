@@ -23,7 +23,7 @@ use std::path::Path;
 use super::crc;
 
 const MAGIC: u32 = 0x43434854; // "CCHT"
-const VERSION: u16 = 2; // Version 2: rank-aligned storage
+const VERSION: u16 = 3; // Version 3 (#90 phase 4): bitset is_shortcut + unified topology
 
 /// A shortcut in the CCH
 #[derive(Debug, Clone, Copy)]
@@ -121,10 +121,13 @@ impl CchTopoFile {
             writer.write_all(&bytes)?;
             crc_digest.update(&bytes);
         }
-        for &is_sc in &data.up_is_shortcut {
-            let byte = if is_sc { 1u8 } else { 0u8 };
-            writer.write_all(&[byte])?;
-            crc_digest.update(&[byte]);
+        // Bitset on disk (#90 phase 4): pack 64 booleans per u64 so a
+        // 192M-edge Belgium build saves ~168 MB on this section alone.
+        let up_bits = pack_bools_to_bitset(&data.up_is_shortcut);
+        for &word in &up_bits {
+            let bytes = word.to_le_bytes();
+            writer.write_all(&bytes)?;
+            crc_digest.update(&bytes);
         }
         for &m in &data.up_middle {
             let bytes = m.to_le_bytes();
@@ -143,10 +146,11 @@ impl CchTopoFile {
             writer.write_all(&bytes)?;
             crc_digest.update(&bytes);
         }
-        for &is_sc in &data.down_is_shortcut {
-            let byte = if is_sc { 1u8 } else { 0u8 };
-            writer.write_all(&[byte])?;
-            crc_digest.update(&[byte]);
+        let down_bits = pack_bools_to_bitset(&data.down_is_shortcut);
+        for &word in &down_bits {
+            let bytes = word.to_le_bytes();
+            writer.write_all(&bytes)?;
+            crc_digest.update(&bytes);
         }
         for &m in &data.down_middle {
             let bytes = m.to_le_bytes();
@@ -236,13 +240,16 @@ impl CchTopoFile {
             up_targets.push(u32::from_le_bytes(buf));
         }
 
-        let mut up_is_shortcut = Vec::with_capacity(n_up_edges as usize);
-        for _ in 0..n_up_edges {
-            let mut buf = [0u8; 1];
+        // Bitset (#90 phase 4): read ceil(n_up / 64) u64 words.
+        let n_up_words = (n_up_edges as usize).div_ceil(64);
+        let mut up_bits = Vec::with_capacity(n_up_words);
+        for _ in 0..n_up_words {
+            let mut buf = [0u8; 8];
             reader.read_exact(&mut buf)?;
             crc_digest.update(&buf);
-            up_is_shortcut.push(buf[0] != 0);
+            up_bits.push(u64::from_le_bytes(buf));
         }
+        let up_is_shortcut = unpack_bitset_to_bools(&up_bits, n_up_edges as usize);
 
         let mut up_middle = Vec::with_capacity(n_up_edges as usize);
         for _ in 0..n_up_edges {
@@ -269,13 +276,15 @@ impl CchTopoFile {
             down_targets.push(u32::from_le_bytes(buf));
         }
 
-        let mut down_is_shortcut = Vec::with_capacity(n_down_edges as usize);
-        for _ in 0..n_down_edges {
-            let mut buf = [0u8; 1];
+        let n_down_words = (n_down_edges as usize).div_ceil(64);
+        let mut down_bits = Vec::with_capacity(n_down_words);
+        for _ in 0..n_down_words {
+            let mut buf = [0u8; 8];
             reader.read_exact(&mut buf)?;
             crc_digest.update(&buf);
-            down_is_shortcut.push(buf[0] != 0);
+            down_bits.push(u64::from_le_bytes(buf));
         }
+        let down_is_shortcut = unpack_bitset_to_bools(&down_bits, n_down_edges as usize);
 
         let mut down_middle = Vec::with_capacity(n_down_edges as usize);
         for _ in 0..n_down_edges {
@@ -324,6 +333,34 @@ impl CchTopoFile {
     }
 }
 
+/// Pack a `Vec<bool>` into a little-endian `Vec<u64>` bitset.
+///
+/// Bit `i` of word `i / 64` (LSB-first within each word) is set iff
+/// `bools[i] == true`. The output length is `ceil(n / 64)` words.
+fn pack_bools_to_bitset(bools: &[bool]) -> Vec<u64> {
+    let n_words = bools.len().div_ceil(64);
+    let mut out = vec![0u64; n_words];
+    for (i, &b) in bools.iter().enumerate() {
+        if b {
+            out[i / 64] |= 1u64 << (i % 64);
+        }
+    }
+    out
+}
+
+/// Inverse of `pack_bools_to_bitset`.
+///
+/// `n` is the original boolean count (the bitset may have trailing bits
+/// up to a word boundary that are not part of the logical content).
+fn unpack_bitset_to_bools(bits: &[u64], n: usize) -> Vec<bool> {
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let w = bits[i / 64];
+        out.push((w >> (i % 64)) & 1 == 1);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,6 +402,50 @@ mod tests {
         assert_eq!(loaded.down_targets, vec![0, 1, 2]);
         assert_eq!(loaded.rank_to_filtered, vec![10, 20, 30, 40]);
         Ok(())
+    }
+
+    #[test]
+    fn test_bitset_pack_unpack_roundtrip() {
+        // Empty
+        assert_eq!(pack_bools_to_bitset(&[]), Vec::<u64>::new());
+        assert_eq!(unpack_bitset_to_bools(&[], 0), Vec::<bool>::new());
+
+        // Single word, partial.
+        let pattern = vec![true, false, true, false, true, false, true, false];
+        let bits = pack_bools_to_bitset(&pattern);
+        assert_eq!(bits, vec![0b0101_0101u64]);
+        assert_eq!(unpack_bitset_to_bools(&bits, pattern.len()), pattern);
+
+        // Across a word boundary (n = 65).
+        let pattern: Vec<bool> = (0..65).map(|i: i32| i % 3 == 0).collect();
+        let bits = pack_bools_to_bitset(&pattern);
+        assert_eq!(bits.len(), 2);
+        assert_eq!(unpack_bitset_to_bools(&bits, 65), pattern);
+
+        // Byte-equivalent layout: writing the disk format and reading it
+        // back must reproduce the bool vector.
+        let n = 192_000usize;
+        let pattern: Vec<bool> = (0..n).map(|i| (i * 7919) % 13 == 0).collect();
+        let bits = pack_bools_to_bitset(&pattern);
+        let recovered = unpack_bitset_to_bools(&bits, n);
+        assert_eq!(recovered, pattern);
+        assert_eq!(bits.len(), n.div_ceil(64));
+    }
+
+    #[test]
+    fn test_bitset_savings() {
+        // Concrete sanity check: an N-bit vector takes N/8 bytes packed
+        // vs N bytes unpacked. Belgium's ~192M-edge build saves about
+        // 168 MB on this section alone (192M/8=24M packed vs 192M raw).
+        let n = 192_112_840usize; // Belgium step-7 unified n_up + n_down
+        let packed_bytes = n.div_ceil(64) * 8;
+        let unpacked_bytes = n;
+        let saved = unpacked_bytes - packed_bytes;
+        assert!(
+            saved > 165_000_000,
+            "expected >165 MB savings, got {} bytes",
+            saved
+        );
     }
 
     #[test]

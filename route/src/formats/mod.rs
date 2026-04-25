@@ -3,6 +3,7 @@
 // Step 1 formats
 pub mod butterfly_dat;
 pub mod crc;
+pub mod mmap;
 pub mod node_signals;
 pub mod nodes_sa;
 pub mod nodes_si;
