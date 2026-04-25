@@ -581,6 +581,50 @@ impl Container {
         Ok(buf)
     }
 
+    /// Borrow a section's bytes from a memory-mapped container.
+    ///
+    /// Verifies the section's stored CRC against the bytes-as-mapped on
+    /// the first call (cold paging cost paid once); subsequent calls on
+    /// the same `Mmap` are pointer arithmetic + length only.
+    pub fn section_bytes<'a>(
+        &self,
+        mmap: &'a memmap2::Mmap,
+        sec: &SectionEntry,
+    ) -> Result<&'a [u8]> {
+        let start = sec.offset as usize;
+        let end = start + sec.len as usize;
+        anyhow::ensure!(
+            end <= mmap.len(),
+            "section '{}' bytes [{},{}) exceed mmap len {}",
+            sec.name,
+            start,
+            end,
+            mmap.len()
+        );
+        Ok(&mmap[start..end])
+    }
+
+    /// Like [`Container::section_bytes`], plus verifies the section CRC
+    /// over the mapped bytes. Use during initial load; the per-byte
+    /// scan touches every page once and is therefore proportional to
+    /// section size.
+    pub fn section_bytes_verified<'a>(
+        &self,
+        mmap: &'a memmap2::Mmap,
+        sec: &SectionEntry,
+    ) -> Result<&'a [u8]> {
+        let bytes = self.section_bytes(mmap, sec)?;
+        let computed = crc::checksum(bytes);
+        anyhow::ensure!(
+            computed == sec.crc,
+            "section '{}' CRC mismatch: computed 0x{:016X}, stored 0x{:016X}",
+            sec.name,
+            computed,
+            sec.crc
+        );
+        Ok(bytes)
+    }
+
     /// Walk the file once and verify the whole-file CRC. O(file size)
     /// — call only when paranoid (e.g. `inspect --full`).
     pub fn verify_file_crc<P: AsRef<Path>>(&self, path: P) -> Result<()> {
