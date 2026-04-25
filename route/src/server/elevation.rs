@@ -243,9 +243,9 @@ impl ElevationData {
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
-            if path.is_file() {
-                if let Some(ext) = path.extension() {
-                    if ext.eq_ignore_ascii_case("hgt") {
+            if path.is_file()
+                && let Some(ext) = path.extension()
+                    && ext.eq_ignore_ascii_case("hgt") {
                         let tile = load_tile_from_file(&path)?;
                         tracing::info!(
                             samples = tile.samples_per_side,
@@ -255,8 +255,6 @@ impl ElevationData {
                         );
                         tiles.insert((tile.lat_sw, tile.lon_sw), tile);
                     }
-                }
-            }
         }
 
         Ok(Self { tiles })
@@ -301,41 +299,34 @@ impl ElevationData {
         let tile_lon = lon.floor() as i16;
 
         // Try the primary tile first
-        if let Some(tile) = self.tiles.get(&(tile_lat, tile_lon)) {
-            if let Some(elev) = tile.interpolate(lat, lon) {
+        if let Some(tile) = self.tiles.get(&(tile_lat, tile_lon))
+            && let Some(elev) = tile.interpolate(lat, lon) {
                 return Some(elev);
             }
-        }
 
         // If lat is exactly on a degree boundary, try the tile to the south
         // (which covers up to lat_sw + 1 inclusive)
         let try_lat_south = lat == lat.floor() && lat == tile_lat as f64;
         let try_lon_west = lon == lon.floor() && lon == tile_lon as f64;
 
-        if try_lat_south {
-            if let Some(tile) = self.tiles.get(&(tile_lat - 1, tile_lon)) {
-                if let Some(elev) = tile.interpolate(lat, lon) {
+        if try_lat_south
+            && let Some(tile) = self.tiles.get(&(tile_lat - 1, tile_lon))
+                && let Some(elev) = tile.interpolate(lat, lon) {
                     return Some(elev);
                 }
-            }
-        }
 
-        if try_lon_west {
-            if let Some(tile) = self.tiles.get(&(tile_lat, tile_lon - 1)) {
-                if let Some(elev) = tile.interpolate(lat, lon) {
+        if try_lon_west
+            && let Some(tile) = self.tiles.get(&(tile_lat, tile_lon - 1))
+                && let Some(elev) = tile.interpolate(lat, lon) {
                     return Some(elev);
                 }
-            }
-        }
 
         // If both lat and lon are on boundaries, try the diagonal tile (SW)
-        if try_lat_south && try_lon_west {
-            if let Some(tile) = self.tiles.get(&(tile_lat - 1, tile_lon - 1)) {
-                if let Some(elev) = tile.interpolate(lat, lon) {
+        if try_lat_south && try_lon_west
+            && let Some(tile) = self.tiles.get(&(tile_lat - 1, tile_lon - 1))
+                && let Some(elev) = tile.interpolate(lat, lon) {
                     return Some(elev);
                 }
-            }
-        }
 
         None
     }

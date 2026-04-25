@@ -400,13 +400,11 @@ fn discover_modes(step5_dir: &Path) -> Result<Vec<String>> {
         let name_str = name.to_string_lossy();
 
         // Pattern: w.{mode_name}.u32
-        if let Some(rest) = name_str.strip_prefix("w.") {
-            if let Some(mode_name) = rest.strip_suffix(".u32") {
-                if !mode_name.is_empty() {
+        if let Some(rest) = name_str.strip_prefix("w.")
+            && let Some(mode_name) = rest.strip_suffix(".u32")
+                && !mode_name.is_empty() {
                     mode_names.push(mode_name.to_string());
                 }
-            }
-        }
     }
 
     // Sort alphabetically for deterministic indexing
@@ -600,11 +598,10 @@ fn load_way_names(step1_dir: &Path) -> Result<HashMap<i64, String>> {
         // Find "name" tag value for this way
         for (i, &k) in keys.iter().enumerate() {
             if k == name_key_id {
-                if let Some(name) = val_dict.get(&vals[i]) {
-                    if !name.is_empty() {
+                if let Some(name) = val_dict.get(&vals[i])
+                    && !name.is_empty() {
                         way_names.insert(way_id, name.clone());
                     }
-                }
                 break; // each way has at most one "name" tag
             }
         }

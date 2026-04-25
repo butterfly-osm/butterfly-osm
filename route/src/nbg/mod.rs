@@ -130,11 +130,26 @@ pub fn build_nbg(config: NbgConfig) -> Result<NbgResult> {
 
     // Step 6: Assemble CSR
     println!("Assembling CSR...");
-    let csr = assemble_csr(
+    let mut csr = assemble_csr(
         &adjacency,
         node_map.mappings.len() as u32,
         edges.len() as u64,
     )?;
+    // Hash every input file the CSR was derived from so downstream
+    // steps can detect when an upstream artefact has changed.
+    csr.inputs_sha = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(std::fs::read(&config.nodes_sa_path)?);
+        hasher.update(std::fs::read(&config.ways_path)?);
+        for (_name, path) in &config.way_attrs_paths {
+            hasher.update(std::fs::read(path)?);
+        }
+        let result = hasher.finalize();
+        let mut sha = [0u8; 32];
+        sha.copy_from_slice(&result);
+        sha
+    };
     println!("  ✓ CSR assembled");
 
     // Step 7: Write outputs
@@ -424,11 +439,16 @@ fn assemble_csr(
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs();
 
+    // Caller (`build_nbg`) overwrites `inputs_sha` with a SHA-256 of
+    // every step-1/2 artefact used to derive the CSR (nodes.sa,
+    // ways.raw, every way_attrs.*) before writing to disk. Leaving it
+    // zero here keeps `assemble_csr` pure (no I/O); the stamp lives at
+    // the orchestration layer where the input paths are known.
     Ok(NbgCsr {
         n_nodes,
         n_edges_und,
         created_unix,
-        inputs_sha: [0u8; 32], // TODO: compute from inputs
+        inputs_sha: [0u8; 32],
         offsets,
         heads,
         edge_idx,

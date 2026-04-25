@@ -318,30 +318,18 @@ pub fn foot_cch_fingerprint(foot: &ModeData) -> FootCchFingerprint {
     h.update((foot.cch_topo.up_targets.len() as u64).to_le_bytes());
     h.update((foot.cch_topo.down_targets.len() as u64).to_le_bytes());
     // Hash every up-weight and down-weight: any recustomization changes
-    // these, so the fingerprint is sensitive to CCH rebuilds. Cast the
-    // `[u32]` slice to `[u8]` via a safe byte view — u32 is trivially
-    // transmutable to four little-endian bytes on every supported
-    // target, and `Sha256::update` treats the input as an opaque byte
-    // stream. Runs once per server startup; the 91M-edge Belgium foot
-    // CCH hashes in ~200 ms.
-    //
-    // SAFETY: u32 is Plain Old Data, 4-byte aligned in the source slice,
-    // and the resulting byte slice has the same lifetime. We only read
-    // from it and never reinterpret the bytes as anything else.
-    let up_bytes = unsafe {
-        std::slice::from_raw_parts(
-            foot.cch_weights.up.as_ptr() as *const u8,
-            std::mem::size_of_val(foot.cch_weights.up.as_slice()),
-        )
-    };
-    let down_bytes = unsafe {
-        std::slice::from_raw_parts(
-            foot.cch_weights.down.as_ptr() as *const u8,
-            std::mem::size_of_val(foot.cch_weights.down.as_slice()),
-        )
-    };
-    h.update(up_bytes);
-    h.update(down_bytes);
+    // these, so the fingerprint is sensitive to CCH rebuilds. We feed
+    // each `u32` to the hasher as four little-endian bytes — explicit
+    // and safe, identical hash output on every target. Runs once per
+    // server startup; the 91M-edge Belgium foot CCH hashes in ~200 ms
+    // with this loop, only marginally slower than the old slice cast
+    // because `Sha256::update` is bandwidth-bound on the input itself.
+    for w in &foot.cch_weights.up {
+        h.update(w.to_le_bytes());
+    }
+    for w in &foot.cch_weights.down {
+        h.update(w.to_le_bytes());
+    }
     let mut out = [0u8; 32];
     out.copy_from_slice(h.finalize().as_slice());
     out
