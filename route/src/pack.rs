@@ -30,8 +30,8 @@ fn find_step_dir(data_dir: &Path, step: &str) -> Result<PathBuf> {
         return Ok(exact);
     }
     let mut matches: Vec<PathBuf> = Vec::new();
-    for entry in std::fs::read_dir(data_dir)
-        .with_context(|| format!("reading {}", data_dir.display()))?
+    for entry in
+        std::fs::read_dir(data_dir).with_context(|| format!("reading {}", data_dir.display()))?
     {
         let entry = entry?;
         let name = entry.file_name();
@@ -79,9 +79,7 @@ fn glob_per_mode(dir: &Path, prefix: &str, suffix: &str) -> Result<Vec<(String, 
     }
     let mut out = Vec::new();
     let prefix = format!("{}.", prefix);
-    for entry in std::fs::read_dir(dir)
-        .with_context(|| format!("reading {}", dir.display()))?
-    {
+    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let entry = entry?;
         let n = entry.file_name();
         let s = n.to_string_lossy();
@@ -119,11 +117,36 @@ pub fn pack(data_dir: &Path, out: &Path, step_prefix: Option<&str>) -> Result<()
     let mut w = ContainerWriter::create(out)?;
 
     // ---- Step 1 (mode-agnostic global tables) -----------------------
-    maybe_append(&mut w, SectionKind::NodesSa, "step1/nodes.sa", &step1.join("nodes.sa"))?;
-    maybe_append(&mut w, SectionKind::NodesSi, "step1/nodes.si", &step1.join("nodes.si"))?;
-    maybe_append(&mut w, SectionKind::WaysRaw, "step1/ways.raw", &step1.join("ways.raw"))?;
-    maybe_append(&mut w, SectionKind::RelationsRaw, "step1/relations.raw", &step1.join("relations.raw"))?;
-    maybe_append(&mut w, SectionKind::NodeSignals, "step1/node_signals.bin", &step1.join("node_signals.bin"))?;
+    maybe_append(
+        &mut w,
+        SectionKind::NodesSa,
+        "step1/nodes.sa",
+        &step1.join("nodes.sa"),
+    )?;
+    maybe_append(
+        &mut w,
+        SectionKind::NodesSi,
+        "step1/nodes.si",
+        &step1.join("nodes.si"),
+    )?;
+    maybe_append(
+        &mut w,
+        SectionKind::WaysRaw,
+        "step1/ways.raw",
+        &step1.join("ways.raw"),
+    )?;
+    maybe_append(
+        &mut w,
+        SectionKind::RelationsRaw,
+        "step1/relations.raw",
+        &step1.join("relations.raw"),
+    )?;
+    maybe_append(
+        &mut w,
+        SectionKind::NodeSignals,
+        "step1/node_signals.bin",
+        &step1.join("node_signals.bin"),
+    )?;
 
     // ---- Step 2 per-mode --------------------------------------------
     for (mode, path) in glob_per_mode(&step2, "way_attrs", ".bin")? {
@@ -144,14 +167,44 @@ pub fn pack(data_dir: &Path, out: &Path, step_prefix: Option<&str>) -> Result<()
     }
 
     // ---- Step 3 (NBG, mode-agnostic) --------------------------------
-    maybe_append(&mut w, SectionKind::NbgCsr, "step3/nbg.csr", &step3.join("nbg.csr"))?;
-    maybe_append(&mut w, SectionKind::NbgGeo, "step3/nbg.geo", &step3.join("nbg.geo"))?;
-    maybe_append(&mut w, SectionKind::NbgNodeMap, "step3/nbg.node_map", &step3.join("nbg.node_map"))?;
+    maybe_append(
+        &mut w,
+        SectionKind::NbgCsr,
+        "step3/nbg.csr",
+        &step3.join("nbg.csr"),
+    )?;
+    maybe_append(
+        &mut w,
+        SectionKind::NbgGeo,
+        "step3/nbg.geo",
+        &step3.join("nbg.geo"),
+    )?;
+    maybe_append(
+        &mut w,
+        SectionKind::NbgNodeMap,
+        "step3/nbg.node_map",
+        &step3.join("nbg.node_map"),
+    )?;
 
     // ---- Step 4 (EBG, mode-agnostic) --------------------------------
-    maybe_append(&mut w, SectionKind::EbgNodes, "step4/ebg.nodes", &step4.join("ebg.nodes"))?;
-    maybe_append(&mut w, SectionKind::EbgCsr, "step4/ebg.csr", &step4.join("ebg.csr"))?;
-    maybe_append(&mut w, SectionKind::EbgTurnTable, "step4/ebg.turn_table", &step4.join("ebg.turn_table"))?;
+    maybe_append(
+        &mut w,
+        SectionKind::EbgNodes,
+        "step4/ebg.nodes",
+        &step4.join("ebg.nodes"),
+    )?;
+    maybe_append(
+        &mut w,
+        SectionKind::EbgCsr,
+        "step4/ebg.csr",
+        &step4.join("ebg.csr"),
+    )?;
+    maybe_append(
+        &mut w,
+        SectionKind::EbgTurnTable,
+        "step4/ebg.turn_table",
+        &step4.join("ebg.turn_table"),
+    )?;
 
     // ---- Step 5 per-mode (filtered EBG + weights + masks) -----------
     for (mode, path) in glob_per_mode(&step5, "filtered", ".ebg")? {
@@ -284,11 +337,7 @@ fn path_for_section(out_dir: &Path, name: &str) -> Option<PathBuf> {
     if let Some(rest) = name.strip_prefix("step5/") {
         // Restore the trailing extension: filtered.<mode> -> filtered.<mode>.ebg, etc.
         if let Some(mode) = rest.strip_prefix("filtered.") {
-            return Some(
-                out_dir
-                    .join("step5")
-                    .join(format!("filtered.{}.ebg", mode)),
-            );
+            return Some(out_dir.join("step5").join(format!("filtered.{}.ebg", mode)));
         }
         if let Some(mode) = rest.strip_prefix("w.") {
             return Some(out_dir.join("step5").join(format!("w.{}.u32", mode)));
@@ -297,11 +346,7 @@ fn path_for_section(out_dir: &Path, name: &str) -> Option<PathBuf> {
             return Some(out_dir.join("step5").join(format!("t.{}.u32", mode)));
         }
         if let Some(mode) = rest.strip_prefix("mask.") {
-            return Some(
-                out_dir
-                    .join("step5")
-                    .join(format!("mask.{}.bitset", mode)),
-            );
+            return Some(out_dir.join("step5").join(format!("mask.{}.bitset", mode)));
         }
         return None;
     }
@@ -469,7 +514,10 @@ mod tests {
         write_file(&root.join("step6").join("order.car.ebg"), b"o-car")?;
         write_file(&root.join("step6").join("order.bike.ebg"), b"o-bike")?;
         // Lifted variants must be skipped.
-        write_file(&root.join("step6").join("order.lifted.car.ebg"), b"o-lifted")?;
+        write_file(
+            &root.join("step6").join("order.lifted.car.ebg"),
+            b"o-lifted",
+        )?;
 
         write_file(&root.join("step7").join("cch.car.topo"), b"cch-car")?;
         write_file(&root.join("step7").join("cch.bike.topo"), b"cch-bike")?;
@@ -567,11 +615,7 @@ mod tests {
         for (src, dst) in pairs {
             let original = fs::read(tmp.path().join(src))?;
             let restored = fs::read(unpacked.join(dst))?;
-            assert_eq!(
-                original, restored,
-                "byte mismatch for {} ↔ {}",
-                src, dst
-            );
+            assert_eq!(original, restored, "byte mismatch for {} ↔ {}", src, dst);
         }
 
         // Files that pack skipped (lifted) must NOT show up in the
