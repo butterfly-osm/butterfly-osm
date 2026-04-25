@@ -22,7 +22,7 @@ mod validate;
 pub use contraction::{NbgChTopo, contract_nbg};
 pub use lift_ordering::{LiftedEbgOrdering, lift_ordering_to_ebg};
 pub use ordering::{NbgNdOrdering, compute_nbg_ordering};
-pub use query::{FlatUpAdj, NbgBucketM2M, NbgChQuery, NbgM2MStats, SearchState, SortedBuckets};
+pub use query::{FlatUpAdj, NbgBucketM2M, NbgM2MStats, SearchState, SortedBuckets};
 pub use turn_restrictions::{NbgEdgeWayMap, TurnRestrictionIndex};
 pub use validate::{
     ValidationError, ValidationResult, dijkstra_nbg, validate_matrix, validate_nbg_ch,

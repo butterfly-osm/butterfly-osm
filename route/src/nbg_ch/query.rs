@@ -309,18 +309,3 @@ pub struct NbgM2MStats {
     pub total_time_us: u64,
 }
 
-// Keep old interface for compatibility
-#[allow(dead_code)]
-pub struct NbgChQuery<'a> {
-    topo: &'a NbgChTopo,
-    state: SearchState,
-}
-
-impl<'a> NbgChQuery<'a> {
-    pub fn new(topo: &'a NbgChTopo) -> Self {
-        Self {
-            topo,
-            state: SearchState::new(topo.n_nodes as usize),
-        }
-    }
-}

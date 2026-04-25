@@ -14,11 +14,6 @@ use crate::formats::{NbgCsr, NbgGeo};
 /// Maximum nodes to settle in witness search
 const WITNESS_LIMIT: usize = 500;
 
-/// If a node has more than this many higher-ranked neighbors,
-/// skip witness search (too expensive)
-#[allow(dead_code)]
-const MAX_NEIGHBORS_FOR_WITNESS: usize = 10;
-
 /// NBG CH topology (contracted graph)
 #[derive(Debug, Clone)]
 pub struct NbgChTopo {

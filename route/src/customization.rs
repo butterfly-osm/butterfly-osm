@@ -572,29 +572,6 @@ fn triangle_relax_parallel(
 // Original edge weight functions
 // ===================================================================
 
-/// Compute weight for an original edge (deprecated - use rank-aligned version)
-#[inline]
-#[allow(dead_code)]
-fn compute_original_weight(
-    u: usize,
-    v: usize,
-    node_weights: &[u32],
-    turn_penalties: &[u32],
-    sorted_ebg: &SortedFilteredEbgAdj,
-    filtered_to_original: &[u32],
-) -> u32 {
-    let original_v = filtered_to_original[v] as usize;
-    let w_v = node_weights[original_v];
-    if w_v == 0 {
-        return u32::MAX;
-    }
-
-    match sorted_ebg.find_original_arc_index(u, v as u32) {
-        Some(orig_arc_idx) => w_v.saturating_add(turn_penalties[orig_arc_idx as usize]),
-        None => u32::MAX,
-    }
-}
-
 /// Compute time weight for an original edge in rank-aligned CCH.
 /// Converts rank → filtered_id → original_id for weight + turn penalty lookup.
 #[inline]

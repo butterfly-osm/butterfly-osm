@@ -19,7 +19,6 @@ pub enum MemberKind {
 }
 
 impl MemberKind {
-    #[allow(dead_code)]
     fn from_u8(v: u8) -> Option<Self> {
         match v {
             0 => Some(MemberKind::Node),

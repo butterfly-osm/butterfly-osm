@@ -33,7 +33,7 @@ use anyhow::Result;
 use butterfly_dl::verified::{Outcome, VerifiedOptions, download_verified};
 use futures::future::join_all;
 
-use super::config::{FeedConfig, FeedFormat, TransitConfig};
+use super::config::TransitConfig;
 
 /// Result of a single feed fetch attempt. Translated from
 /// `butterfly_dl::verified::Outcome` plus the error string.
@@ -208,15 +208,6 @@ pub fn format_report(report: &FeedFetchReport) -> String {
 /// identical primitive.
 pub fn hash_file_if_exists(path: &std::path::Path) -> Option<[u8; 32]> {
     butterfly_dl::verified::hash_file_if_exists(path)
-}
-
-// Suppress unused-import warnings for the `FeedConfig` / `FeedFormat`
-// types — they're still used by downstream callers of this module
-// (transit::load_from_disk). They stay re-exported via `super::config`.
-#[allow(dead_code)]
-fn _ensure_imports_used() {
-    let _: Option<&FeedConfig> = None;
-    let _: Option<FeedFormat> = None;
 }
 
 #[cfg(test)]

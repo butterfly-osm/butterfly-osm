@@ -1516,53 +1516,6 @@ pub fn table_bucket_parallel(
     (result_matrix, stats)
 }
 
-/// Backward join for parallel execution (uses atomic matrix)
-#[allow(dead_code)]
-fn backward_join_parallel(
-    down_rev_flat: &DownReverseAdjFlat,
-    target: u32,
-    buckets: &SortedBuckets,
-    matrix: &[std::sync::atomic::AtomicU32],
-    n_targets: usize,
-    target_idx: usize,
-    state: &mut SearchState,
-) -> (usize, usize) {
-    use std::sync::atomic::Ordering;
-
-    state.start_search();
-    state.relax(target, 0);
-
-    let mut visited = 0usize;
-    let mut joins = 0usize;
-
-    while let Some((d, u)) = state.pop() {
-        visited += 1;
-
-        // Join with buckets at this node
-        for (source_idx, dist_to_source) in buckets.get(u) {
-            joins += 1;
-            let total_dist = dist_to_source.saturating_add(d);
-            let idx = source_idx as usize * n_targets + target_idx;
-
-            // Atomic min update
-            matrix[idx].fetch_min(total_dist, Ordering::Relaxed);
-        }
-
-        // Relax DOWN-reverse edges
-        let edge_start = down_rev_flat.offsets[u as usize] as usize;
-        let edge_end = down_rev_flat.offsets[u as usize + 1] as usize;
-
-        for i in edge_start..edge_end {
-            let x = down_rev_flat.sources[i];
-            let w = down_rev_flat.weights[i];
-            let new_dist = d.saturating_add(w);
-            state.relax(x, new_dist);
-        }
-    }
-
-    (visited, joins)
-}
-
 /// Backward join for parallel execution using PrefixSumBuckets (O(1) lookup)
 /// With bound-aware pruning: skip joins where current best <= source distance
 /// Uses SoA layout for better cache efficiency
