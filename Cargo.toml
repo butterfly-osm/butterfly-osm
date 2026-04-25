@@ -38,9 +38,15 @@ unused_variables = "deny"
 unused_mut = "deny"
 unreachable_code = "deny"
 unreachable_patterns = "deny"
-# `unsafe_code` is denied workspace-wide. There are no exceptions: the C
-# FFI module that previously needed `unsafe extern "C"` was removed, so
-# every crate in the workspace must compile cleanly without `unsafe`.
+# `unsafe_code` is denied workspace-wide. **Sole carveout: file-backed
+# read-only memory mapping via `memmap2::Mmap::map`** (file's bytes can
+# mutate from outside the process, so Rust can't prove the lifetime
+# contract — the safety guarantee comes from how we use it: read-only,
+# Arc-owned, slices borrowed through accessor methods). That carveout
+# is implemented as a single, narrowly-scoped `#[allow(unsafe_code)]`
+# at the mmap call site (typically in a wrapper module), with a
+# documented SAFETY block. Everything else stays denied — no shared
+# raw pointer tricks, no `unsafe impl Send/Sync`, no inline-asm.
 unsafe_code = "deny"
 
 [workspace.lints.clippy]
