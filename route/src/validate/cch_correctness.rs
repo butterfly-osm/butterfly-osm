@@ -55,15 +55,16 @@ struct QueryResult {
     baseline_ns: u64,
 }
 
-/// Reverse DOWN adjacency: for each node, list of (source, weight) pairs
+/// Reverse DOWN adjacency: for each node, list of (source, weight) pairs.
+///
+/// Auto-derives `Send + Sync` from its `Vec<u64>` / `Vec<u32>` fields, so
+/// rayon workers can share `&DownReverse` for read-only access during
+/// parallel validation.
 struct DownReverse {
     offsets: Vec<u64>,
     sources: Vec<u32>,
     weights: Vec<u32>,
 }
-
-// Make DownReverse safe to share across threads (it's read-only after construction)
-unsafe impl Sync for DownReverse {}
 
 /// Run CCH correctness validation with parallel processing
 pub fn validate_cch_correctness(
@@ -289,11 +290,10 @@ pub fn validate_cch_correctness(
         if r.mismatch {
             mismatches += 1;
             max_diff = max_diff.max(r.diff.abs());
-            if let Some(f) = &r.failure {
-                if failures.len() < 1000 {
+            if let Some(f) = &r.failure
+                && failures.len() < 1000 {
                     failures.push(f.clone());
                 }
-            }
         }
         total_bidi_ns += r.bidi_ns;
         total_baseline_ns += r.baseline_ns;

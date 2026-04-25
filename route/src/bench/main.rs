@@ -17,9 +17,7 @@ use rand::prelude::*;
 
 use butterfly_route::formats::CchWeightsFile;
 use butterfly_route::matrix::batched_phast::{BatchedPhastEngine, BatchedPhastStats, K_LANES};
-use butterfly_route::matrix::bucket_ch::{
-    BucketM2MEngine, DownReverseAdjFlat, UpAdjFlat, UpReverseAdjFlat,
-};
+use butterfly_route::matrix::bucket_ch::{BucketM2MEngine, DownReverseAdjFlat, UpAdjFlat};
 use butterfly_route::range::batched_isochrone::{
     ADAPTIVE_THRESHOLD_DS, AdaptiveIsochroneEngine, BatchedIsochroneEngine,
 };
@@ -1058,11 +1056,10 @@ fn find_file(base: &Path, candidates: &[String]) -> Option<PathBuf> {
         }
         // Also try going up one level if base doesn't have the file
         let parent_path = base.parent().map(|p| p.join(candidate));
-        if let Some(p) = parent_path {
-            if p.exists() {
+        if let Some(p) = parent_path
+            && p.exists() {
                 return Some(p);
             }
-        }
     }
     None
 }
@@ -3018,10 +3015,6 @@ fn run_bucket_m2m_bench(
     let down_rev_flat = DownReverseAdjFlat::build(&topo, &weights);
     println!("  ✓ {} flat reverse entries", down_rev_flat.sources.len());
 
-    println!("Building UpReverseAdjFlat (for stall-on-demand)...");
-    let up_rev_flat = UpReverseAdjFlat::build(&topo, &weights);
-    println!("  ✓ {} incoming UP entries", up_rev_flat.sources.len());
-
     println!("Building DownReverseAdj (for P2P validation)...");
     let down_rev = build_down_rev(&topo);
     println!("  ✓ {} reverse entries", down_rev.sources.len());
@@ -3105,78 +3098,6 @@ fn run_bucket_m2m_bench(
             "         Fwd: {}ms, Sort: {}ms, Bwd: {}ms",
             stats.forward_time_ms, stats.sort_time_ms, stats.backward_time_ms
         );
-    }
-
-    // ========== Stall-on-Demand Benchmark ==========
-    println!();
-    println!("───────────────────────────────────────────────────────────────");
-    println!("  STALL-ON-DEMAND BENCHMARK");
-    println!("───────────────────────────────────────────────────────────────");
-    println!();
-    println!(
-        "{:>8} {:>12} {:>10} {:>10} {:>10} {:>10} {:>10}",
-        "Size", "Cells", "Time(ms)", "Stalls", "NonStall", "StallRate", "vs Base"
-    );
-    println!("{}", "-".repeat(80));
-
-    let mut rng2 = StdRng::seed_from_u64(seed + 1000); // Different seed for variety
-
-    for &n in sizes {
-        // Generate random sources and targets
-        let sources: Vec<u32> = (0..n)
-            .map(|_| rng2.random_range(0..n_nodes as u32))
-            .collect();
-        let targets: Vec<u32> = (0..n)
-            .map(|_| rng2.random_range(0..n_nodes as u32))
-            .collect();
-
-        // Baseline (without stall)
-        let base_start = Instant::now();
-        let (base_matrix, _) =
-            engine.compute_flat(&up_adj_flat, &down_rev_flat, &sources, &targets);
-        let base_time = base_start.elapsed();
-
-        // With stall-on-demand
-        let stall_start = Instant::now();
-        let (stall_matrix, _stats, stalls, non_stalls) = engine.compute_with_stall(
-            &up_adj_flat,
-            &up_rev_flat,
-            &down_rev_flat,
-            &sources,
-            &targets,
-        );
-        let stall_time = stall_start.elapsed();
-
-        // Verify correctness
-        let mut mismatches = 0;
-        for i in 0..(n * n) {
-            if base_matrix[i] != stall_matrix[i] {
-                mismatches += 1;
-            }
-        }
-
-        let stall_rate = if stalls + non_stalls > 0 {
-            100.0 * stalls as f64 / (stalls + non_stalls) as f64
-        } else {
-            0.0
-        };
-
-        let speedup = base_time.as_secs_f64() / stall_time.as_secs_f64();
-
-        println!(
-            "{:>8} {:>12} {:>10.1} {:>10} {:>10} {:>9.1}% {:>9.2}x",
-            format!("{}×{}", n, n),
-            n * n,
-            stall_time.as_secs_f64() * 1000.0,
-            stalls,
-            non_stalls,
-            stall_rate,
-            speedup
-        );
-
-        if mismatches > 0 {
-            println!("         ⚠️  {} mismatches vs baseline!", mismatches);
-        }
     }
 
     println!();

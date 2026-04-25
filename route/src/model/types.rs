@@ -140,11 +140,10 @@ impl Mode {
                 for entry in entries.flatten() {
                     let fname = entry.file_name();
                     let fname_str = fname.to_string_lossy();
-                    if let Some(rest) = fname_str.strip_prefix(prefix) {
-                        if let Some(mode_name) = rest.strip_suffix(suffix) {
+                    if let Some(rest) = fname_str.strip_prefix(prefix)
+                        && let Some(mode_name) = rest.strip_suffix(suffix) {
                             names.push(mode_name.to_string());
                         }
-                    }
                 }
             }
             if !names.is_empty() {

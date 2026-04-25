@@ -415,13 +415,11 @@ fn compile_tag_conditions(
 ) -> Vec<(u32, u32)> {
     let mut compiled = Vec::new();
     for (key_str, val_json) in conditions {
-        if let Some(&key_id) = rev_key.get(key_str.as_str()) {
-            if let Some(val_str) = val_json.as_str() {
-                if let Some(&val_id) = rev_val.get(val_str) {
+        if let Some(&key_id) = rev_key.get(key_str.as_str())
+            && let Some(val_str) = val_json.as_str()
+                && let Some(&val_id) = rev_val.get(val_str) {
                     compiled.push((key_id, val_id));
                 }
-            }
-        }
     }
     compiled
 }

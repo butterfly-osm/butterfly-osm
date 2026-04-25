@@ -164,8 +164,8 @@ pub async fn match_trace_handler(
     }
 
     // Validate GPS accuracy
-    if let Some(acc) = req.gps_accuracy {
-        if acc <= 0.0 || acc > 100.0 || acc.is_nan() {
+    if let Some(acc) = req.gps_accuracy
+        && (acc <= 0.0 || acc > 100.0 || acc.is_nan()) {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
@@ -175,7 +175,6 @@ pub async fn match_trace_handler(
             )
                 .into_response();
         }
-    }
 
     // Parse geometry format
     let geom_format = match GeometryFormat::parse(&req.geometry) {

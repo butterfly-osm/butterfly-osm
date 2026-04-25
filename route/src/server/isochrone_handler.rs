@@ -842,11 +842,10 @@ pub async fn isochrone_handler(
                     .collect();
                 ensure_ccw(&mut coords);
                 let mut ring: Vec<[f64; 2]> = coords.into_iter().map(|(x, y)| [x, y]).collect();
-                if let (Some(first), Some(last)) = (ring.first().copied(), ring.last().copied()) {
-                    if first != last {
+                if let (Some(first), Some(last)) = (ring.first().copied(), ring.last().copied())
+                    && first != last {
                         ring.push(first);
                     }
-                }
                 (None, Some(ring), None)
             }
             GeometryFormat::Points => (None, None, Some(polygon.to_vec())),

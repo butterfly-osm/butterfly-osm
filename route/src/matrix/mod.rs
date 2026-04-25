@@ -38,7 +38,6 @@ pub use bucket_ch::{
     DownReverseAdjFlat,
     SourceBuckets,
     UpAdjFlat,
-    UpReverseAdjFlat,
     backward_join_with_buckets,
     // Source-block optimized API (avoids repeated forward computation)
     forward_build_buckets,

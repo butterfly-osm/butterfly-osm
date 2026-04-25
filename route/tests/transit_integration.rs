@@ -133,11 +133,10 @@ fn sncb_raptor_brussels_to_ghent() {
             return children.clone();
         }
         // Otherwise add the stop + its siblings under the same parent.
-        if let Some(parent) = tt.stops[s as usize].parent_station {
-            if let Some(children) = tt.station_children.get(&parent) {
+        if let Some(parent) = tt.stops[s as usize].parent_station
+            && let Some(children) = tt.station_children.get(&parent) {
                 return children.clone();
             }
-        }
         vec![s]
     };
     let src_stops = expand(bxlm as u32);

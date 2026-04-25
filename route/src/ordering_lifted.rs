@@ -136,10 +136,26 @@ pub fn generate_lifted_ordering(config: Step6LiftedConfig) -> Result<Step6Lifted
         filtered_inv_perm[new_rank] = *filtered_id;
     }
 
-    // Write output
+    // SHA-256 over every input that determined this ordering. Lets
+    // downstream steps detect when an upstream artefact has changed
+    // and the cached order.lifted file must be rebuilt.
+    let inputs_sha = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(std::fs::read(&config.nbg_csr_path)?);
+        hasher.update(std::fs::read(&config.nbg_geo_path)?);
+        hasher.update(std::fs::read(&config.ebg_nodes_path)?);
+        hasher.update(std::fs::read(&config.ebg_csr_path)?);
+        hasher.update(std::fs::read(&config.filtered_ebg_path)?);
+        let result = hasher.finalize();
+        let mut sha = [0u8; 32];
+        sha.copy_from_slice(&result);
+        sha
+    };
+
     let order = OrderEbg {
         n_nodes: n_filtered as u32,
-        inputs_sha: [0u8; 32], // TODO: compute proper SHA
+        inputs_sha,
         perm: filtered_perm,
         inv_perm: filtered_inv_perm,
     };

@@ -198,77 +198,6 @@ impl DownReverseAdjFlat {
     }
 }
 
-/// Flat reverse adjacency for UP edges with embedded weights
-/// For each node, stores incoming UP edges (nodes that have an UP edge TO this node)
-/// Used for stall-on-demand optimization in forward search
-#[derive(Clone)]
-pub struct UpReverseAdjFlat {
-    pub offsets: Vec<u64>, // n_nodes + 1
-    pub sources: Vec<u32>, // source node p for reverse edge (p → u means p has UP edge to u)
-    pub weights: Vec<u32>, // weight of UP edge p→u
-}
-
-impl UpReverseAdjFlat {
-    /// Build flat reverse adjacency for UP edges from topology and weights
-    pub fn build(topo: &CchTopo, weights: &CchWeights) -> Self {
-        let n_nodes = topo.n_nodes as usize;
-
-        // First pass: count incoming UP edges per node (skip INF weights)
-        let mut counts = vec![0usize; n_nodes];
-        for source in 0..n_nodes {
-            let start = topo.up_offsets[source] as usize;
-            let end = topo.up_offsets[source + 1] as usize;
-            for i in start..end {
-                if weights.up[i] != u32::MAX {
-                    let target = topo.up_targets[i] as usize;
-                    counts[target] += 1;
-                }
-            }
-        }
-
-        // Build offsets (prefix sum)
-        let mut offsets = Vec::with_capacity(n_nodes + 1);
-        let mut offset = 0u64;
-        for &count in &counts {
-            offsets.push(offset);
-            offset += count as u64;
-        }
-        offsets.push(offset);
-
-        let total_edges = offset as usize;
-
-        // Allocate arrays
-        let mut sources = vec![0u32; total_edges];
-        let mut flat_weights = vec![0u32; total_edges];
-
-        // Second pass: fill in reverse edges with embedded weights
-        counts.fill(0);
-
-        for source in 0..n_nodes {
-            let start = topo.up_offsets[source] as usize;
-            let end = topo.up_offsets[source + 1] as usize;
-
-            for i in start..end {
-                let w = weights.up[i];
-                if w == u32::MAX {
-                    continue;
-                }
-                let target = topo.up_targets[i] as usize;
-                let pos = offsets[target] as usize + counts[target];
-                sources[pos] = source as u32;
-                flat_weights[pos] = w;
-                counts[target] += 1;
-            }
-        }
-
-        Self {
-            offsets,
-            sources,
-            weights: flat_weights,
-        }
-    }
-}
-
 // =============================================================================
 // 4-ARY HEAP WITH DECREASE-KEY (OSRM-style)
 // =============================================================================
@@ -295,21 +224,9 @@ impl DAryHeap {
         self.heap.len()
     }
 
-    #[allow(dead_code)]
-    #[inline]
-    fn is_empty(&self) -> bool {
-        self.heap.is_empty()
-    }
-
     #[inline]
     fn clear(&mut self) {
         self.heap.clear();
-    }
-
-    #[allow(dead_code)]
-    #[inline]
-    fn top(&self) -> (u32, u32) {
-        self.heap[0]
     }
 
     /// Insert new element and return its handle
@@ -487,16 +404,6 @@ impl SearchState {
         self.heap.clear();
     }
 
-    #[inline]
-    fn get_dist(&self, node: u32) -> u32 {
-        let e = &self.entries[node as usize];
-        if e.version == self.current_version {
-            e.dist
-        } else {
-            u32::MAX
-        }
-    }
-
     /// Relax an edge: insert new or decrease-key existing
     #[inline]
     fn relax(&mut self, node: u32, dist: u32) -> bool {
@@ -561,8 +468,6 @@ struct BucketEntry {
 ///
 /// This saves 2 bytes per entry (no padding) and improves cache utilization
 struct PrefixSumBuckets {
-    #[allow(dead_code)]
-    n_nodes: usize,
     /// Count of items per node (stamped)
     counts: Vec<u32>,
     /// Version stamps for counts (avoid clearing)
@@ -573,9 +478,11 @@ struct PrefixSumBuckets {
     offsets: Vec<u32>,
     /// SoA: distances (4 bytes each)
     dists: Vec<u32>,
-    /// SoA: source indices (2 bytes each)
+    /// SoA: source indices (4 bytes each)
     source_indices: Vec<u32>,
-    /// Legacy AoS items for backward compatibility
+    /// AoS view exposed via [`get`] for callers that prefer
+    /// `&[BucketEntry]` over the SoA `(dists, source_indices)` slices
+    /// returned by [`get_range`].
     items: Vec<BucketEntry>,
     /// Temporary storage for nodes that have items (for offset building)
     active_nodes: Vec<u32>,
@@ -584,7 +491,6 @@ struct PrefixSumBuckets {
 impl PrefixSumBuckets {
     fn new(n_nodes: usize) -> Self {
         Self {
-            n_nodes,
             counts: vec![0; n_nodes],
             count_stamps: vec![0; n_nodes],
             current_stamp: 0,
@@ -710,26 +616,11 @@ impl SortedBuckets {
         Self { items }
     }
 
-    /// Create from already-sorted items (for parallel sort case)
-    #[allow(dead_code)]
-    fn from_sorted(items: Vec<(u32, u32, u32)>) -> Self {
-        Self { items }
-    }
-
     #[inline]
     fn get(&self, node: u32) -> impl Iterator<Item = (u32, u32)> + '_ {
         let start = self.items.partition_point(|&(n, _, _)| n < node);
         let end = self.items.partition_point(|&(n, _, _)| n <= node);
         self.items[start..end].iter().map(|&(_, s, d)| (s, d))
-    }
-
-    /// Get bucket items as a slice (for parallel join)
-    #[allow(dead_code)]
-    #[inline]
-    fn get_slice(&self, node: u32) -> &[(u32, u32, u32)] {
-        let start = self.items.partition_point(|&(n, _, _)| n < node);
-        let end = self.items.partition_point(|&(n, _, _)| n <= node);
-        &self.items[start..end]
     }
 
     fn total_items(&self) -> usize {
@@ -1104,106 +995,6 @@ impl BucketM2MEngine {
         (matrix, stats)
     }
 
-    /// Compute with stall-on-demand optimization in forward search
-    /// Returns (matrix, stats, total_stalls, total_non_stalls)
-    pub fn compute_with_stall(
-        &mut self,
-        up_adj_flat: &UpAdjFlat,
-        up_rev_flat: &UpReverseAdjFlat,
-        down_rev_flat: &DownReverseAdjFlat,
-        sources: &[u32],
-        targets: &[u32],
-    ) -> (Vec<u32>, BucketM2MStats, usize, usize) {
-        let n_sources = sources.len();
-        let n_targets = targets.len();
-
-        let mut matrix = vec![u32::MAX; n_sources * n_targets];
-
-        if n_sources == 0 || n_targets == 0 {
-            return (matrix, BucketM2MStats::default(), 0, 0);
-        }
-
-        let mut stats = BucketM2MStats {
-            n_sources,
-            n_targets,
-            ..Default::default()
-        };
-
-        // Clear bucket items (reuse allocation)
-        self.bucket_items.clear();
-
-        // Reset counters for this computation
-        self.state.pushes = 0;
-        self.state.pops = 0;
-        self.state.stale_pops = 0;
-
-        // ========== PHASE 1: Forward searches with stall-on-demand ==========
-        let forward_start = std::time::Instant::now();
-
-        let mut total_stalls = 0usize;
-        let mut total_non_stalls = 0usize;
-
-        for (source_idx, &source) in sources.iter().enumerate() {
-            if source as usize >= self.n_nodes {
-                continue;
-            }
-            let (stalls, non_stalls) = forward_fill_buckets_with_stall(
-                up_adj_flat,
-                up_rev_flat,
-                source_idx as u32,
-                source,
-                &mut self.state,
-                &mut self.bucket_items,
-            );
-            total_stalls += stalls;
-            total_non_stalls += non_stalls;
-        }
-
-        stats.forward_visited = self.bucket_items.len();
-        stats.forward_time_ms = forward_start.elapsed().as_millis() as u64;
-
-        // ========== PHASE 2: Sort buckets for binary search ==========
-        let sort_start = std::time::Instant::now();
-        let bucket_items = std::mem::take(&mut self.bucket_items);
-        let buckets = SortedBuckets::build(bucket_items);
-        stats.bucket_items = buckets.total_items();
-        stats.bucket_nodes = buckets.n_nodes_with_buckets();
-        stats.sort_time_ms = sort_start.elapsed().as_millis() as u64;
-
-        // ========== PHASE 3: Backward searches from TARGETS ==========
-        let backward_start = std::time::Instant::now();
-
-        for (target_idx, &target) in targets.iter().enumerate() {
-            if target as usize >= self.n_nodes {
-                continue;
-            }
-
-            let (visited, joins) = backward_join_opt(
-                down_rev_flat,
-                target,
-                &buckets,
-                &mut matrix,
-                n_targets,
-                target_idx,
-                &mut self.state,
-            );
-
-            stats.backward_visited += visited;
-            stats.join_operations += joins;
-        }
-
-        stats.backward_time_ms = backward_start.elapsed().as_millis() as u64;
-
-        // Restore bucket_items for reuse
-        self.bucket_items = buckets.into_items();
-
-        // Collect stats
-        stats.heap_pushes = self.state.pushes;
-        stats.heap_pops = self.state.pops;
-        stats.stale_pops = self.state.stale_pops;
-
-        (matrix, stats, total_stalls, total_non_stalls)
-    }
 }
 
 /// Fully optimized version using pre-built flat adjacencies for both directions
@@ -1430,66 +1221,6 @@ fn forward_fill_buckets_flat(
             state.relax(v, new_dist);
         }
     }
-}
-
-/// Forward search with stall-on-demand optimization
-/// When we pop node u with distance du, check if there exists a settled node p
-/// with incoming UP edge (p → u) where dp + w(p→u) < du.
-/// If so, we can "stall" u (skip relaxing its outgoing edges).
-/// Returns (stalls, non_stalls) for instrumentation
-fn forward_fill_buckets_with_stall(
-    up_adj_flat: &UpAdjFlat,
-    up_rev_flat: &UpReverseAdjFlat,
-    source_idx: u32,
-    source: u32,
-    state: &mut SearchState,
-    bucket_items: &mut Vec<(u32, u32, u32)>,
-) -> (usize, usize) {
-    state.start_search();
-    state.relax(source, 0);
-
-    let mut stalls = 0usize;
-    let mut non_stalls = 0usize;
-
-    while let Some((du, u)) = state.pop() {
-        bucket_items.push((u, source_idx, du));
-
-        // Stall-on-demand check: can we reach u more cheaply via an incoming UP edge?
-        let mut should_stall = false;
-        let in_start = up_rev_flat.offsets[u as usize] as usize;
-        let in_end = up_rev_flat.offsets[u as usize + 1] as usize;
-
-        for i in in_start..in_end {
-            let p = up_rev_flat.sources[i];
-            let w = up_rev_flat.weights[i];
-            let dp = state.get_dist(p);
-            // If p is settled (dp < INF) and dp + w < du, we can stall u
-            if dp != u32::MAX && dp.saturating_add(w) < du {
-                should_stall = true;
-                break;
-            }
-        }
-
-        if should_stall {
-            stalls += 1;
-            continue; // Skip relaxing outgoing edges
-        }
-
-        non_stalls += 1;
-
-        // Relax UP edges (no INF check - pre-filtered)
-        let start = up_adj_flat.offsets[u as usize] as usize;
-        let end = up_adj_flat.offsets[u as usize + 1] as usize;
-
-        for i in start..end {
-            let v = up_adj_flat.targets[i];
-            let w = up_adj_flat.weights[i];
-            let new_dist = du.saturating_add(w);
-            state.relax(v, new_dist);
-        }
-    }
-
-    (stalls, non_stalls)
 }
 
 /// Forward search from source using UP edges, collecting bucket items

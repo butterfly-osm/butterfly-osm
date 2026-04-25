@@ -1482,8 +1482,8 @@ async fn do_exchange_catchment(
             }
         }
 
-        if store_idx_b.len() > 0 {
-            if let Ok(batch) = RecordBatch::try_new(
+        if store_idx_b.len() > 0
+            && let Ok(batch) = RecordBatch::try_new(
                 schema_clone,
                 vec![
                     Arc::new(store_idx_b.finish()),
@@ -1497,7 +1497,6 @@ async fn do_exchange_catchment(
             ) {
                 let _ = tx.blocking_send(Ok(batch));
             }
-        }
 
         tracing::info!(
             elapsed_s = start.elapsed().as_secs_f64(),
@@ -1765,11 +1764,10 @@ impl FlightService for ButterflyFlight {
         let mut descriptor_cmd: Vec<u8> = Vec::new();
 
         while let Some(fd) = stream.message().await? {
-            if descriptor_cmd.is_empty() {
-                if let Some(ref desc) = fd.flight_descriptor {
+            if descriptor_cmd.is_empty()
+                && let Some(ref desc) = fd.flight_descriptor {
                     descriptor_cmd = desc.cmd.to_vec();
                 }
-            }
             all_fds.push(fd);
         }
 

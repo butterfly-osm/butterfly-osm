@@ -126,11 +126,10 @@ fn has_witness_dijkstra(
         }
 
         // Check if this is a stale entry
-        if let Some(&best) = dist.get(&node) {
-            if d > best {
+        if let Some(&best) = dist.get(&node)
+            && d > best {
                 continue;
             }
-        }
 
         settled += 1;
         // CONSERVATIVE: if we hit the settled limit, we did NOT find a witness
@@ -623,21 +622,36 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
     down_offsets.push(offset);
     let n_down_edges = offset;
 
-    // Allocate edge arrays
-    let mut up_targets = vec![0u32; n_up_edges as usize];
-    let mut up_is_shortcut = vec![false; n_up_edges as usize];
-    let mut up_middle = vec![u32::MAX; n_up_edges as usize];
+    // Allocate edge arrays as atomics during the parallel phases.
+    // Disjoint per-node ranges plus an atomic-counter cursor make every
+    // store race-free; `Relaxed` ordering is the only synchronisation
+    // we need (single thread fences happen at the end of `for_each`),
+    // and `Relaxed` lowers to a plain MOV on x86/aarch64 — same code-gen
+    // as the previous `*ptr.cast_mut() = v` pattern, with zero unsafe.
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    let up_targets_atomic: Vec<AtomicU32> = (0..n_up_edges as usize)
+        .map(|_| AtomicU32::new(0))
+        .collect();
+    let up_is_shortcut_atomic: Vec<AtomicBool> = (0..n_up_edges as usize)
+        .map(|_| AtomicBool::new(false))
+        .collect();
+    let up_middle_atomic: Vec<AtomicU32> = (0..n_up_edges as usize)
+        .map(|_| AtomicU32::new(u32::MAX))
+        .collect();
+    let down_targets_atomic: Vec<AtomicU32> = (0..n_down_edges as usize)
+        .map(|_| AtomicU32::new(0))
+        .collect();
+    let down_is_shortcut_atomic: Vec<AtomicBool> = (0..n_down_edges as usize)
+        .map(|_| AtomicBool::new(false))
+        .collect();
+    let down_middle_atomic: Vec<AtomicU32> = (0..n_down_edges as usize)
+        .map(|_| AtomicU32::new(u32::MAX))
+        .collect();
 
-    let mut down_targets = vec![0u32; n_down_edges as usize];
-    let mut down_is_shortcut = vec![false; n_down_edges as usize];
-    let mut down_middle = vec![u32::MAX; n_down_edges as usize];
-
-    // Fill arrays - original edges (PARALLEL)
-    // Each node writes to its own disjoint range, so this is safe
     let up_offsets_clone = up_offsets.clone();
     let down_offsets_clone = down_offsets.clone();
 
-    // Use atomic counters for positions within each node's range
+    // Atomic counters: position within each node's reserved range.
     let up_pos: Vec<std::sync::atomic::AtomicUsize> = up_offsets
         .iter()
         .map(|&x| std::sync::atomic::AtomicUsize::new(x as usize))
@@ -661,36 +675,23 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
             let rank_v = perm[v as usize];
 
             if rank_u < rank_v {
-                let pos = up_pos[u].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                // SAFETY: each node u has a reserved range [up_offsets[u], up_offsets[u+1]).
-                // The atomic fetch_add ensures each thread gets a unique pos within that range.
-                debug_assert!(
-                    pos < up_targets.len(),
-                    "up pos {pos} out of bounds (len {})",
-                    up_targets.len()
-                );
-                unsafe {
-                    *up_targets.as_ptr().add(pos).cast_mut() = v;
-                    *up_is_shortcut.as_ptr().add(pos).cast_mut() = false;
-                    *up_middle.as_ptr().add(pos).cast_mut() = u32::MAX;
-                }
+                let pos = up_pos[u].fetch_add(1, Ordering::Relaxed);
+                up_targets_atomic[pos].store(v, Ordering::Relaxed);
+                up_is_shortcut_atomic[pos].store(false, Ordering::Relaxed);
+                up_middle_atomic[pos].store(u32::MAX, Ordering::Relaxed);
             } else {
-                let pos = down_pos[u].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                debug_assert!(
-                    pos < down_targets.len(),
-                    "down pos {pos} out of bounds (len {})",
-                    down_targets.len()
-                );
-                unsafe {
-                    *down_targets.as_ptr().add(pos).cast_mut() = v;
-                    *down_is_shortcut.as_ptr().add(pos).cast_mut() = false;
-                    *down_middle.as_ptr().add(pos).cast_mut() = u32::MAX;
-                }
+                let pos = down_pos[u].fetch_add(1, Ordering::Relaxed);
+                down_targets_atomic[pos].store(v, Ordering::Relaxed);
+                down_is_shortcut_atomic[pos].store(false, Ordering::Relaxed);
+                down_middle_atomic[pos].store(u32::MAX, Ordering::Relaxed);
             }
         }
     });
 
-    // Fill arrays - shortcuts from file (sequential, I/O bound)
+    // Fill arrays - shortcuts from file (sequential, I/O bound).
+    // Same atomic stores as the parallel pass above, just sequential
+    // here because we're consuming a file. `Relaxed` is still correct
+    // because there's only one writer.
     {
         let mut reader = BufReader::with_capacity(64 * 1024 * 1024, File::open(&shortcut_path)?);
         let mut buf = [0u8; 12];
@@ -701,15 +702,15 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
             let rank_u = perm[u];
             let rank_w = perm[w as usize];
             if rank_u < rank_w {
-                let pos = up_pos[u].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                up_targets[pos] = w;
-                up_is_shortcut[pos] = true;
-                up_middle[pos] = middle;
+                let pos = up_pos[u].fetch_add(1, Ordering::Relaxed);
+                up_targets_atomic[pos].store(w, Ordering::Relaxed);
+                up_is_shortcut_atomic[pos].store(true, Ordering::Relaxed);
+                up_middle_atomic[pos].store(middle, Ordering::Relaxed);
             } else {
-                let pos = down_pos[u].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                down_targets[pos] = w;
-                down_is_shortcut[pos] = true;
-                down_middle[pos] = middle;
+                let pos = down_pos[u].fetch_add(1, Ordering::Relaxed);
+                down_targets_atomic[pos].store(w, Ordering::Relaxed);
+                down_is_shortcut_atomic[pos].store(true, Ordering::Relaxed);
+                down_middle_atomic[pos].store(middle, Ordering::Relaxed);
             }
         }
     }
@@ -740,30 +741,26 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
 
     up_ranges.par_iter().for_each(|&(start, end)| {
         if end > start {
-            // Collect into struct vec
+            // Read the AoS view from the atomic SoA storage.
             let mut edges: Vec<EdgeData> = (start..end)
                 .map(|i| EdgeData {
-                    target: up_targets[i],
-                    is_shortcut: up_is_shortcut[i],
-                    middle: up_middle[i],
+                    target: up_targets_atomic[i].load(Ordering::Relaxed),
+                    is_shortcut: up_is_shortcut_atomic[i].load(Ordering::Relaxed),
+                    middle: up_middle_atomic[i].load(Ordering::Relaxed),
                 })
                 .collect();
 
             // Sort by target
             edges.sort_unstable_by_key(|e| e.target);
 
-            // SAFETY: write back to disjoint range [start, end) — each node's range is exclusive
+            // Disjoint per-node range, race-free by construction; we
+            // store back through the atomic API instead of casting raw
+            // pointers.
             for (i, edge) in edges.into_iter().enumerate() {
-                debug_assert!(
-                    start + i < end,
-                    "up sort writeback {0} >= end {end}",
-                    start + i
-                );
-                unsafe {
-                    *up_targets.as_ptr().add(start + i).cast_mut() = edge.target;
-                    *up_is_shortcut.as_ptr().add(start + i).cast_mut() = edge.is_shortcut;
-                    *up_middle.as_ptr().add(start + i).cast_mut() = edge.middle;
-                }
+                let pos = start + i;
+                up_targets_atomic[pos].store(edge.target, Ordering::Relaxed);
+                up_is_shortcut_atomic[pos].store(edge.is_shortcut, Ordering::Relaxed);
+                up_middle_atomic[pos].store(edge.middle, Ordering::Relaxed);
             }
         }
     });
@@ -782,29 +779,51 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
         if end > start {
             let mut edges: Vec<EdgeData> = (start..end)
                 .map(|i| EdgeData {
-                    target: down_targets[i],
-                    is_shortcut: down_is_shortcut[i],
-                    middle: down_middle[i],
+                    target: down_targets_atomic[i].load(Ordering::Relaxed),
+                    is_shortcut: down_is_shortcut_atomic[i].load(Ordering::Relaxed),
+                    middle: down_middle_atomic[i].load(Ordering::Relaxed),
                 })
                 .collect();
 
             edges.sort_unstable_by_key(|e| e.target);
 
-            // SAFETY: write back to disjoint range [start, end)
             for (i, edge) in edges.into_iter().enumerate() {
-                debug_assert!(
-                    start + i < end,
-                    "down sort writeback {0} >= end {end}",
-                    start + i
-                );
-                unsafe {
-                    *down_targets.as_ptr().add(start + i).cast_mut() = edge.target;
-                    *down_is_shortcut.as_ptr().add(start + i).cast_mut() = edge.is_shortcut;
-                    *down_middle.as_ptr().add(start + i).cast_mut() = edge.middle;
-                }
+                let pos = start + i;
+                down_targets_atomic[pos].store(edge.target, Ordering::Relaxed);
+                down_is_shortcut_atomic[pos].store(edge.is_shortcut, Ordering::Relaxed);
+                down_middle_atomic[pos].store(edge.middle, Ordering::Relaxed);
             }
         }
     });
+
+    // All parallel scatter phases done — convert atomics to plain Vecs
+    // for the rank-aligned transformation and downstream serialisation.
+    // `into_inner` is zero-cost; `AtomicU32`/`AtomicBool` are
+    // `repr(transparent)` over their primitives.
+    let up_targets: Vec<u32> = up_targets_atomic
+        .into_iter()
+        .map(AtomicU32::into_inner)
+        .collect();
+    let up_is_shortcut: Vec<bool> = up_is_shortcut_atomic
+        .into_iter()
+        .map(AtomicBool::into_inner)
+        .collect();
+    let up_middle: Vec<u32> = up_middle_atomic
+        .into_iter()
+        .map(AtomicU32::into_inner)
+        .collect();
+    let down_targets: Vec<u32> = down_targets_atomic
+        .into_iter()
+        .map(AtomicU32::into_inner)
+        .collect();
+    let down_is_shortcut: Vec<bool> = down_is_shortcut_atomic
+        .into_iter()
+        .map(AtomicBool::into_inner)
+        .collect();
+    let down_middle: Vec<u32> = down_middle_atomic
+        .into_iter()
+        .map(AtomicU32::into_inner)
+        .collect();
 
     println!(
         "  ✓ Up graph: {} edges ({} shortcuts)",
@@ -1370,16 +1389,30 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
     down_offsets.push(offset);
     let n_down_edges = offset;
 
-    // Allocate edge arrays
-    let mut up_targets = vec![0u32; n_up_edges as usize];
-    let mut up_is_shortcut = vec![false; n_up_edges as usize];
-    let mut up_middle = vec![u32::MAX; n_up_edges as usize];
+    // Allocate edge arrays as atomics for the parallel scatter phases
+    // (see the corresponding comment in `contract_filtered_ebg` above —
+    // same disjoint-by-construction pattern, same `Relaxed` lowering to
+    // plain MOVs on x86, no unsafe).
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    let up_targets_atomic: Vec<AtomicU32> = (0..n_up_edges as usize)
+        .map(|_| AtomicU32::new(0))
+        .collect();
+    let up_is_shortcut_atomic: Vec<AtomicBool> = (0..n_up_edges as usize)
+        .map(|_| AtomicBool::new(false))
+        .collect();
+    let up_middle_atomic: Vec<AtomicU32> = (0..n_up_edges as usize)
+        .map(|_| AtomicU32::new(u32::MAX))
+        .collect();
+    let down_targets_atomic: Vec<AtomicU32> = (0..n_down_edges as usize)
+        .map(|_| AtomicU32::new(0))
+        .collect();
+    let down_is_shortcut_atomic: Vec<AtomicBool> = (0..n_down_edges as usize)
+        .map(|_| AtomicBool::new(false))
+        .collect();
+    let down_middle_atomic: Vec<AtomicU32> = (0..n_down_edges as usize)
+        .map(|_| AtomicU32::new(u32::MAX))
+        .collect();
 
-    let mut down_targets = vec![0u32; n_down_edges as usize];
-    let mut down_is_shortcut = vec![false; n_down_edges as usize];
-    let mut down_middle = vec![u32::MAX; n_down_edges as usize];
-
-    // Fill arrays - original edges
     let up_offsets_clone = up_offsets.clone();
     let down_offsets_clone = down_offsets.clone();
 
@@ -1405,35 +1438,20 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
             let rank_v = perm[v as usize];
 
             if rank_u < rank_v {
-                let pos = up_pos[u].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                // SAFETY: each node u has a reserved range [up_offsets[u], up_offsets[u+1]).
-                debug_assert!(
-                    pos < up_targets.len(),
-                    "hybrid up pos {pos} out of bounds (len {})",
-                    up_targets.len()
-                );
-                unsafe {
-                    *up_targets.as_ptr().add(pos).cast_mut() = v;
-                    *up_is_shortcut.as_ptr().add(pos).cast_mut() = false;
-                    *up_middle.as_ptr().add(pos).cast_mut() = u32::MAX;
-                }
+                let pos = up_pos[u].fetch_add(1, Ordering::Relaxed);
+                up_targets_atomic[pos].store(v, Ordering::Relaxed);
+                up_is_shortcut_atomic[pos].store(false, Ordering::Relaxed);
+                up_middle_atomic[pos].store(u32::MAX, Ordering::Relaxed);
             } else {
-                let pos = down_pos[u].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                debug_assert!(
-                    pos < down_targets.len(),
-                    "hybrid down pos {pos} out of bounds (len {})",
-                    down_targets.len()
-                );
-                unsafe {
-                    *down_targets.as_ptr().add(pos).cast_mut() = v;
-                    *down_is_shortcut.as_ptr().add(pos).cast_mut() = false;
-                    *down_middle.as_ptr().add(pos).cast_mut() = u32::MAX;
-                }
+                let pos = down_pos[u].fetch_add(1, Ordering::Relaxed);
+                down_targets_atomic[pos].store(v, Ordering::Relaxed);
+                down_is_shortcut_atomic[pos].store(false, Ordering::Relaxed);
+                down_middle_atomic[pos].store(u32::MAX, Ordering::Relaxed);
             }
         }
     });
 
-    // Fill shortcuts from file
+    // Fill shortcuts from file (sequential, I/O-bound).
     {
         let mut reader = BufReader::with_capacity(64 * 1024 * 1024, File::open(&shortcut_path)?);
         let mut buf = [0u8; 12];
@@ -1444,15 +1462,15 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
             let rank_u = perm[u];
             let rank_w = perm[w as usize];
             if rank_u < rank_w {
-                let pos = up_pos[u].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                up_targets[pos] = w;
-                up_is_shortcut[pos] = true;
-                up_middle[pos] = middle;
+                let pos = up_pos[u].fetch_add(1, Ordering::Relaxed);
+                up_targets_atomic[pos].store(w, Ordering::Relaxed);
+                up_is_shortcut_atomic[pos].store(true, Ordering::Relaxed);
+                up_middle_atomic[pos].store(middle, Ordering::Relaxed);
             } else {
-                let pos = down_pos[u].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                down_targets[pos] = w;
-                down_is_shortcut[pos] = true;
-                down_middle[pos] = middle;
+                let pos = down_pos[u].fetch_add(1, Ordering::Relaxed);
+                down_targets_atomic[pos].store(w, Ordering::Relaxed);
+                down_is_shortcut_atomic[pos].store(true, Ordering::Relaxed);
+                down_middle_atomic[pos].store(middle, Ordering::Relaxed);
             }
         }
     }
@@ -1482,24 +1500,17 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
         if end > start {
             let mut edges: Vec<EdgeData> = (start..end)
                 .map(|i| EdgeData {
-                    target: up_targets[i],
-                    is_shortcut: up_is_shortcut[i],
-                    middle: up_middle[i],
+                    target: up_targets_atomic[i].load(Ordering::Relaxed),
+                    is_shortcut: up_is_shortcut_atomic[i].load(Ordering::Relaxed),
+                    middle: up_middle_atomic[i].load(Ordering::Relaxed),
                 })
                 .collect();
             edges.sort_unstable_by_key(|e| e.target);
-            // SAFETY: write back to disjoint range [start, end)
             for (i, edge) in edges.into_iter().enumerate() {
-                debug_assert!(
-                    start + i < end,
-                    "hybrid up sort writeback {0} >= end {end}",
-                    start + i
-                );
-                unsafe {
-                    *up_targets.as_ptr().add(start + i).cast_mut() = edge.target;
-                    *up_is_shortcut.as_ptr().add(start + i).cast_mut() = edge.is_shortcut;
-                    *up_middle.as_ptr().add(start + i).cast_mut() = edge.middle;
-                }
+                let pos = start + i;
+                up_targets_atomic[pos].store(edge.target, Ordering::Relaxed);
+                up_is_shortcut_atomic[pos].store(edge.is_shortcut, Ordering::Relaxed);
+                up_middle_atomic[pos].store(edge.middle, Ordering::Relaxed);
             }
         }
     });
@@ -1517,27 +1528,46 @@ pub fn build_cch_topology_hybrid(config: Step7HybridConfig) -> Result<Step7Resul
         if end > start {
             let mut edges: Vec<EdgeData> = (start..end)
                 .map(|i| EdgeData {
-                    target: down_targets[i],
-                    is_shortcut: down_is_shortcut[i],
-                    middle: down_middle[i],
+                    target: down_targets_atomic[i].load(Ordering::Relaxed),
+                    is_shortcut: down_is_shortcut_atomic[i].load(Ordering::Relaxed),
+                    middle: down_middle_atomic[i].load(Ordering::Relaxed),
                 })
                 .collect();
             edges.sort_unstable_by_key(|e| e.target);
-            // SAFETY: write back to disjoint range [start, end)
             for (i, edge) in edges.into_iter().enumerate() {
-                debug_assert!(
-                    start + i < end,
-                    "hybrid down sort writeback {0} >= end {end}",
-                    start + i
-                );
-                unsafe {
-                    *down_targets.as_ptr().add(start + i).cast_mut() = edge.target;
-                    *down_is_shortcut.as_ptr().add(start + i).cast_mut() = edge.is_shortcut;
-                    *down_middle.as_ptr().add(start + i).cast_mut() = edge.middle;
-                }
+                let pos = start + i;
+                down_targets_atomic[pos].store(edge.target, Ordering::Relaxed);
+                down_is_shortcut_atomic[pos].store(edge.is_shortcut, Ordering::Relaxed);
+                down_middle_atomic[pos].store(edge.middle, Ordering::Relaxed);
             }
         }
     });
+
+    // Convert atomics to plain Vecs for downstream rank-aligned remap.
+    let up_targets: Vec<u32> = up_targets_atomic
+        .into_iter()
+        .map(AtomicU32::into_inner)
+        .collect();
+    let up_is_shortcut: Vec<bool> = up_is_shortcut_atomic
+        .into_iter()
+        .map(AtomicBool::into_inner)
+        .collect();
+    let up_middle: Vec<u32> = up_middle_atomic
+        .into_iter()
+        .map(AtomicU32::into_inner)
+        .collect();
+    let down_targets: Vec<u32> = down_targets_atomic
+        .into_iter()
+        .map(AtomicU32::into_inner)
+        .collect();
+    let down_is_shortcut: Vec<bool> = down_is_shortcut_atomic
+        .into_iter()
+        .map(AtomicBool::into_inner)
+        .collect();
+    let down_middle: Vec<u32> = down_middle_atomic
+        .into_iter()
+        .map(AtomicU32::into_inner)
+        .collect();
 
     println!(
         "  ✓ Up graph: {} edges ({} shortcuts)",
