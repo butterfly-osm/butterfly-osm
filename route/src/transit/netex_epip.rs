@@ -1322,4 +1322,82 @@ mod tests {
         assert_eq!(element_local_name(b"Line"), b"Line");
         assert_eq!(element_local_name(b"ns0:StopPlace"), b"StopPlace");
     }
+
+    /// Helper for the calendar-fallback tests: build a `ParseState`
+    /// holding only the operating periods we care about, leaving the
+    /// rest of the parser machinery in its default state.
+    fn parse_state_with_periods(
+        periods: &[(&str, Option<&str>, Option<&str>)],
+    ) -> ParseState {
+        let mut state = ParseState::default();
+        for (id, from, to) in periods {
+            let rec = UicOperatingPeriodRec {
+                from_date: from.map(|s| s.to_string()),
+                to_date: to.map(|s| s.to_string()),
+                ..UicOperatingPeriodRec::default()
+            };
+            state.operating_periods.insert((*id).to_string(), rec);
+        }
+        state
+    }
+
+    /// #131 (skip-bad-entries fix): a single malformed date among
+    /// many operating periods must not zero out the entire fallback
+    /// remap. Earlier code used `?` inside the loop, so the first bad
+    /// entry returned `None` and the fallback path silently produced
+    /// no active services for the day.
+    #[test]
+    fn remap_skips_unparseable_periods_and_uses_remaining_window() {
+        let today = NaiveDate::from_ymd_opt(2026, 4, 25).unwrap(); // Saturday
+        let state = parse_state_with_periods(&[
+            // One malformed pair — must be skipped, not abort the loop.
+            ("malformed", Some("2025-13-99T00:00:00"), Some("nope")),
+            // One missing-date pair — also skipped.
+            ("missing", None, Some("2025-12-01T00:00:00")),
+            // The actual published window we want to remap into.
+            (
+                "good",
+                Some("2025-12-01T00:00:00"),
+                Some("2025-12-31T23:59:59"),
+            ),
+        ]);
+
+        let remapped = remap_to_published_window(&state, today)
+            .expect("fallback should succeed despite malformed entries");
+
+        // The window 2025-12-01 .. 2025-12-31 contains five Saturdays;
+        // the latest is 2025-12-27. The remap walks backward from
+        // `to_date` looking for the same weekday as `today` (Saturday),
+        // so it should land on 2025-12-27.
+        assert_eq!(
+            remapped,
+            NaiveDate::from_ymd_opt(2025, 12, 27).unwrap(),
+            "remap must land on the latest Saturday inside the surviving window"
+        );
+    }
+
+    /// All-bad input is still a hard failure: if no period is
+    /// parseable the fallback returns `None` and the caller produces
+    /// an empty active set (correct behaviour: the file is malformed,
+    /// services should not run on the basis of garbage).
+    #[test]
+    fn remap_returns_none_when_every_period_unparseable() {
+        let today = NaiveDate::from_ymd_opt(2026, 4, 25).unwrap();
+        let state = parse_state_with_periods(&[
+            ("a", Some("not-a-date"), Some("also-bad")),
+            ("b", None, None),
+            ("c", Some(""), Some("")),
+        ]);
+
+        assert_eq!(remap_to_published_window(&state, today), None);
+    }
+
+    /// Empty operating-period set → `None` (caller falls through to
+    /// "no services active").
+    #[test]
+    fn remap_returns_none_for_empty_state() {
+        let today = NaiveDate::from_ymd_opt(2026, 4, 25).unwrap();
+        let state = ParseState::default();
+        assert_eq!(remap_to_published_window(&state, today), None);
+    }
 }

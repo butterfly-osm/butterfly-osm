@@ -92,7 +92,7 @@ Memory-efficient OSM downloader (<1GB RAM for any file size). Provides both CLI 
 - **Verified primitive**: `src/verified.rs` - magic-byte + min-bytes + SHA-256 sidecar checks
 - **Region indexes**: `src/regions.rs` + `regions/<region>.toml` - parallel multi-file fetch
 
-Key API: `butterfly_dl::get()`, `butterfly_dl::get_stream()`, `butterfly_dl::get_with_progress()`
+Key API: `butterfly_dl::get()`, `butterfly_dl::get_stream()`, `butterfly_dl::get_with_options()` (progress callbacks pass through `DownloadOptions.progress`)
 
 ### butterfly-route
 

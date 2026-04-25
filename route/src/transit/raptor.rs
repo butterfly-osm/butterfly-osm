@@ -821,6 +821,121 @@ mod tests {
         );
     }
 
+    /// #133 — within-round earliest-arrival domination at a stop
+    /// reached by **two different routes in the same round**.
+    ///
+    /// In RAPTOR a "route" is a stop pattern; the `TimetableBuilder`
+    /// groups trips with identical stop sequences into a single
+    /// route, so to test domination we need patterns that differ but
+    /// share a tail stop. Topology:
+    ///
+    ///   Route FAST:  A → X → S    (dep 0, arrive S at 100)
+    ///   Route SLOW:  A → Y → S    (dep 0, arrive S at 200)
+    ///
+    /// Both routes are processed in round 1. Whichever the engine
+    /// processes second must not overwrite the round-1 state at S
+    /// with a worse arrival — RAPTOR monotonicity demands the
+    /// earliest is kept.
+    #[test]
+    fn within_round_keeps_earliest_arrival_at_a_shared_stop() {
+        let mut b = TimetableBuilder::new();
+        let a = b.add_stop("A", "A", 0.0, 0.0, None);
+        let x = b.add_stop("X", "X intermediate", 0.05, 0.0, None);
+        let y = b.add_stop("Y", "Y intermediate", 0.05, 0.001, None);
+        let s = b.add_stop("S", "S", 0.1, 0.0, None);
+
+        // FAST route via X, arrives S at 100.
+        b.add_trip(
+            "T_FAST",
+            "FAST",
+            "fast route",
+            "to S",
+            vec![a, x, s],
+            vec![stime(0, 0), stime(50, 50), stime(100, 100)],
+        );
+        // SLOW route via Y, arrives S at 200.
+        b.add_trip(
+            "T_SLOW",
+            "SLOW",
+            "slow route",
+            "to S",
+            vec![a, y, s],
+            vec![stime(0, 0), stime(50, 50), stime(200, 200)],
+        );
+
+        let tt = b.build().unwrap();
+        // Sanity: builder kept the two patterns as distinct routes.
+        assert_eq!(
+            tt.n_routes(),
+            2,
+            "fixture must produce two distinct RAPTOR routes"
+        );
+
+        let transfers = TransferGraph::empty(tt.n_stops());
+        let mut targets = HashMap::new();
+        targets.insert(s, 0u32);
+        let sources = vec![(a, 0u32)];
+        let q = RaptorQuery {
+            sources: &sources,
+            target_weights: &targets,
+        };
+
+        let journey = run_raptor(&tt, &transfers, &q).expect("journey should exist");
+
+        assert_eq!(
+            journey.arrival_time, 100,
+            "RAPTOR must keep the earliest arrival at S when two same-round routes \
+             reach it; got {} (would mean SLOW dominated FAST, breaking monotonicity)",
+            journey.arrival_time
+        );
+    }
+
+    /// #133 follow-up — same shape but trips registered in the
+    /// reverse order. Exercises the other code path in the
+    /// domination check (slow processed first, fast second).
+    #[test]
+    fn within_round_dominates_slow_route_processed_first() {
+        let mut b = TimetableBuilder::new();
+        let a = b.add_stop("A", "A", 0.0, 0.0, None);
+        let x = b.add_stop("X", "X intermediate", 0.05, 0.0, None);
+        let y = b.add_stop("Y", "Y intermediate", 0.05, 0.001, None);
+        let s = b.add_stop("S", "S", 0.1, 0.0, None);
+
+        // SLOW first.
+        b.add_trip(
+            "T_SLOW",
+            "SLOW",
+            "slow route",
+            "to S",
+            vec![a, y, s],
+            vec![stime(0, 0), stime(50, 50), stime(200, 200)],
+        );
+        b.add_trip(
+            "T_FAST",
+            "FAST",
+            "fast route",
+            "to S",
+            vec![a, x, s],
+            vec![stime(0, 0), stime(50, 50), stime(100, 100)],
+        );
+
+        let tt = b.build().unwrap();
+        let transfers = TransferGraph::empty(tt.n_stops());
+        let mut targets = HashMap::new();
+        targets.insert(s, 0u32);
+        let sources = vec![(a, 0u32)];
+        let q = RaptorQuery {
+            sources: &sources,
+            target_weights: &targets,
+        };
+
+        let journey = run_raptor(&tt, &transfers, &q).expect("journey should exist");
+        assert_eq!(
+            journey.arrival_time, 100,
+            "domination must work regardless of route processing order"
+        );
+    }
+
     #[test]
     fn no_journey_when_target_unreachable() {
         let mut b = TimetableBuilder::new();

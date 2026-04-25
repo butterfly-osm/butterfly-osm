@@ -32,16 +32,21 @@
 //! ## Progress Tracking
 //!
 //! ```rust,no_run
+//! use butterfly_dl::DownloadOptions;
+//! use std::sync::Arc;
+//!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     butterfly_dl::get_with_progress(
+//!     butterfly_dl::get_with_options(
 //!         "europe/belgium",
 //!         Some("belgium.pbf"),
-//!         |downloaded, total| {
-//!             println!("Progress: {}/{} bytes", downloaded, total);
-//!         }
+//!         DownloadOptions {
+//!             progress: Some(Arc::new(|downloaded, total| {
+//!                 println!("Progress: {}/{} bytes", downloaded, total);
+//!             })),
+//!             ..Default::default()
+//!         },
 //!     ).await?;
-//!     
 //!     Ok(())
 //! }
 //! ```
@@ -55,6 +60,31 @@ pub use butterfly_common::{Error, Result};
 
 // Internal modules
 mod core;
+
+/// Wrap a user-supplied progress callback so the library guarantees the
+/// contract documented on `get_with_options`: monotonic, clamped to
+/// `total`, single terminal call. Implemented via an `AtomicU64` for
+/// the last-reported tally and an `AtomicBool` to suppress duplicate
+/// terminal calls (#136).
+fn clamp_progress_arc(
+    callback: Arc<dyn Fn(u64, u64) + Send + Sync>,
+) -> Arc<dyn Fn(u64, u64) + Send + Sync> {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    let last_reported = Arc::new(AtomicU64::new(0));
+    let terminal_called = Arc::new(AtomicBool::new(false));
+    Arc::new(move |downloaded, total| {
+        let clamped = downloaded.min(total);
+        let prev = last_reported.fetch_max(clamped, Ordering::Relaxed);
+        let monotone = clamped.max(prev);
+        if monotone == total
+            && total > 0
+            && terminal_called.swap(true, Ordering::Relaxed)
+        {
+            return;
+        }
+        callback(monotone, total);
+    })
+}
 
 /// Generic verified download primitive (#100). Consolidates HTTP
 /// download logic that was previously duplicated across
@@ -136,54 +166,29 @@ pub async fn get_stream(source: &str) -> Result<impl AsyncRead + Send + Unpin> {
     Ok(stream)
 }
 
-/// Download with progress tracking
-///
-/// Downloads a file with a progress callback that receives (downloaded_bytes, total_bytes).
-///
-/// # Arguments
-/// * `source` - Source identifier (e.g., "planet", "europe", "europe/belgium")
-/// * `dest` - Optional destination file path. If None, auto-generates filename
-/// * `progress` - Callback function that receives (downloaded, total) bytes
-///
-/// # Examples
-/// ```rust,no_run
-/// # #[tokio::main]
-/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// butterfly_dl::get_with_progress(
-///     "europe/belgium",
-///     Some("belgium.pbf"),
-///     |downloaded, total| {
-///         let percent = (downloaded as f64 / total as f64) * 100.0;
-///         println!("Progress: {:.1}%", percent);
-///     }
-/// ).await?;
-/// # Ok(())
-/// # }
-/// ```
-pub async fn get_with_progress<F>(source: &str, dest: Option<&str>, progress: F) -> Result<()>
-where
-    F: Fn(u64, u64) + Send + Sync + 'static,
-{
-    let downloader = core::Downloader::new();
-    let options = DownloadOptions {
-        progress: Some(Arc::new(progress)),
-        ..Default::default()
-    };
-
-    let file_path = match dest {
-        Some(path) => path.to_string(),
-        None => core::resolve_output_filename(source),
-    };
-
-    downloader
-        .download_to_file(source, &file_path, &options)
-        .await
-}
-
 /// Download with custom options
 ///
 /// Provides full control over download options including buffer size,
 /// connection limits, and progress tracking.
+///
+/// # Progress callback contract
+///
+/// When `options.progress` is `Some(callback)`, the library wraps the
+/// callback so consumers can rely on the following invariants:
+///
+/// - `total` is the size announced by the server in `Content-Length` and
+///   does not change across calls within a single download.
+/// - `downloaded` is monotonically non-decreasing across calls.
+/// - `downloaded` is clamped so `downloaded <= total` is guaranteed.
+/// - On successful completion, the callback is called with
+///   `downloaded == total` **exactly once** before `get_with_options`
+///   returns; duplicate terminal calls are suppressed by the wrapper.
+/// - On error, no terminal call is guaranteed; the callback may stop
+///   being invoked mid-download.
+///
+/// Callbacks should be cheap (they run on the I/O hot path) and must
+/// not block — heavy work (UI repaint, IPC, network calls) should be
+/// marshalled to a separate task.
 ///
 /// # Arguments
 /// * `source` - Source identifier
@@ -213,9 +218,16 @@ where
 pub async fn get_with_options(
     source: &str,
     dest: Option<&str>,
-    options: DownloadOptions,
+    mut options: DownloadOptions,
 ) -> Result<()> {
     let downloader = core::Downloader::new();
+
+    // Wrap any user-supplied progress callback so the documented
+    // contract (monotonic, clamped, single-terminal) is enforced
+    // by the library rather than left to caller discipline.
+    if let Some(cb) = options.progress.take() {
+        options.progress = Some(clamp_progress_arc(cb));
+    }
 
     let file_path = match dest {
         Some(path) => path.to_string(),
