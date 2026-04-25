@@ -374,6 +374,21 @@ pub enum Commands {
         verify_full: bool,
     },
 
+    /// Inverse of `pack`: extract every section in a `*.butterfly`
+    /// container back to a `step{N}/<file>` tree under `--out`.
+    /// Useful for round-trip tests and for feeding `serve --data-dir`
+    /// with the unpacked tree until the in-place container loader
+    /// (Phase 5) lands.
+    Unpack {
+        /// Path to a `*.butterfly` container.
+        #[arg(short, long)]
+        path: PathBuf,
+
+        /// Output directory. Must not already exist.
+        #[arg(short, long)]
+        out: PathBuf,
+    },
+
     /// Step 9: Start query server
     Serve {
         /// Directory containing all step outputs (step3/, step4/, etc.)
@@ -1365,6 +1380,7 @@ impl Cli {
                 verify,
                 verify_full,
             } => crate::pack::inspect(&path, verify, verify_full),
+            Commands::Unpack { path, out } => crate::pack::unpack(&path, &out),
             Commands::Serve {
                 data_dir,
                 port,
