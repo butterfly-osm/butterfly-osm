@@ -912,11 +912,8 @@ impl BatchedPhastEngine {
         stats.downward_time_ms = downward_start.elapsed().as_millis() as u64;
         stats.total_time_ms = start.elapsed().as_millis() as u64;
 
-        BatchedPhastResultSoa {
-            dist_soa,
-            n_lanes: k,
-            stats,
-        }
+        let _ = k; // consumed only for parity with the public AoS path
+        BatchedPhastResultSoa { dist_soa, stats }
     }
 }
 
@@ -924,8 +921,6 @@ impl BatchedPhastEngine {
 struct BatchedPhastResultSoa {
     /// Distance array in SoA layout: dist[node * K_LANES + lane]
     dist_soa: Vec<u32>,
-    #[allow(dead_code)]
-    n_lanes: usize,
     stats: BatchedPhastStats,
 }
 
