@@ -34,32 +34,6 @@ pub struct FilteredEbg {
 }
 
 impl FilteredEbg {
-    /// Build filtered EBG from original EBG and mode mask
-    ///
-    /// DEPRECATED: Use build_with_arc_filter instead to properly enforce turn restrictions.
-    /// This function only checks node accessibility, not arc (turn) accessibility.
-    #[allow(dead_code)]
-    pub fn build(
-        mode: Mode,
-        ebg_offsets: &[u64],
-        ebg_heads: &[u32],
-        mask: &[u8],
-        n_original_nodes: u32,
-        inputs_sha: [u8; 32],
-    ) -> Self {
-        // Delegate to build_with_arc_filter with no arc filtering
-        Self::build_with_arc_filter(
-            mode,
-            ebg_offsets,
-            ebg_heads,
-            mask,
-            None, // No turn_idx
-            None, // No arc_mode_masks
-            n_original_nodes,
-            inputs_sha,
-        )
-    }
-
     /// Build filtered EBG from original EBG with both node and arc filtering.
     ///
     /// This function filters arcs based on:

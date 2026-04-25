@@ -39,10 +39,8 @@
 //! - Initial adjacency building, edge counting/filling, and sorting are fully parallel
 
 use anyhow::Result;
-use priority_queue::PriorityQueue;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::cmp::Reverse;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
@@ -50,137 +48,8 @@ use std::path::PathBuf;
 use crate::formats::{CchTopo, CchTopoFile, FilteredEbgFile, OrderEbgFile, mod_turns, mod_weights};
 use crate::profile_abi::Mode;
 
-/// Witness search settings
-#[allow(dead_code)]
-const WITNESS_SETTLED_LIMIT: usize = 500; // Max nodes to settle before giving up
-#[allow(dead_code)]
-const WITNESS_HOP_LIMIT: usize = 5; // Max hops to explore
-
 /// Edge weight for weighted adjacency - stores (target, weight)
 type WeightedAdj = Vec<FxHashMap<u32, u32>>;
-
-/// Bounded Dijkstra witness search with rank restriction.
-///
-/// Checks if there's an alternative path u → ... → w (not through v)
-/// with cost ≤ shortcut_cost, where ALL intermediate nodes have rank > current_rank.
-///
-/// This rank restriction is CRITICAL for correctness: during contraction of node v
-/// at rank r, we can only use nodes that haven't been contracted yet (rank > r)
-/// as intermediate nodes in witness paths. Without this, we might find "witnesses"
-/// through already-contracted nodes that won't exist in the final hierarchy.
-///
-/// # Arguments
-///
-/// * `u` - Source node
-/// * `w` - Target node
-/// * `v` - Node being contracted (excluded from search)
-/// * `shortcut_cost` - Cost of the shortcut u→v→w
-/// * `adj` - Adjacency list with weights: adj[node] = {neighbor -> weight}
-/// * `perm` - Rank assignment: perm[node] = rank
-/// * `current_rank` - Rank of the node being contracted
-///
-/// # Returns
-///
-/// `true` if witness found (skip shortcut), `false` if no witness (create shortcut)
-///
-/// # Conservative guarantee
-///
-/// This function is CONSERVATIVE: if ANY limit is hit (settled, hops, cost bound),
-/// we return `false` (create shortcut). We only return `true` (skip shortcut) if
-/// we actually found a valid witness path.
-#[inline]
-#[allow(dead_code)]
-fn has_witness_dijkstra(
-    u: usize,
-    w: u32,
-    v: u32,
-    shortcut_cost: u32,
-    adj: &[FxHashMap<u32, u32>],
-    perm: &[u32],
-    current_rank: usize,
-) -> bool {
-    // If shortcut cost is MAX, no witness can beat it
-    if shortcut_cost == u32::MAX {
-        return false;
-    }
-
-    // Bounded Dijkstra from u
-    let mut dist: FxHashMap<u32, u32> = FxHashMap::default();
-    let mut pq: PriorityQueue<u32, Reverse<u32>> = PriorityQueue::new();
-    let mut settled = 0usize;
-
-    dist.insert(u as u32, 0);
-    pq.push(u as u32, Reverse(0));
-
-    while let Some((node, Reverse(d))) = pq.pop() {
-        // Early termination: queue min-key exceeds shortcut cost
-        // This is a valid termination - no witness can be found with lower cost
-        if d > shortcut_cost {
-            break;
-        }
-
-        // Check if we've found a witness path to w
-        if node == w {
-            // Found alternative path with cost ≤ shortcut_cost
-            return true;
-        }
-
-        // Check if this is a stale entry
-        if let Some(&best) = dist.get(&node)
-            && d > best {
-                continue;
-            }
-
-        settled += 1;
-        // CONSERVATIVE: if we hit the settled limit, we did NOT find a witness
-        // We must create the shortcut to be safe
-        if settled > WITNESS_SETTLED_LIMIT {
-            return false; // Conservative: create shortcut
-        }
-
-        // Relax edges - only through nodes with rank > current_rank
-        if let Some(neighbors) = adj.get(node as usize) {
-            for (&neighbor, &weight) in neighbors {
-                // Skip the contracted node (explicitly excluded)
-                if neighbor == v {
-                    continue;
-                }
-
-                // CRITICAL: Only traverse through nodes that haven't been contracted yet
-                // Nodes with rank <= current_rank have already been removed from the graph
-                // and cannot be used as intermediate nodes in witness paths
-                let neighbor_rank = perm[neighbor as usize] as usize;
-                if neighbor_rank <= current_rank {
-                    continue;
-                }
-
-                if weight == u32::MAX {
-                    continue;
-                }
-
-                let new_dist = d.saturating_add(weight);
-
-                // Prune: don't explore paths costlier than shortcut
-                if new_dist > shortcut_cost {
-                    continue;
-                }
-
-                let should_update = match dist.get(&neighbor) {
-                    Some(&old) => new_dist < old,
-                    None => true,
-                };
-
-                if should_update {
-                    dist.insert(neighbor, new_dist);
-                    pq.push(neighbor, Reverse(new_dist));
-                }
-            }
-        }
-    }
-
-    // No witness found within bounds - create the shortcut (conservative)
-    false
-}
 
 /// Configuration for Step 7
 pub struct Step7Config {
