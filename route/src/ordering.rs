@@ -90,12 +90,11 @@ fn minimum_degree_order_generic<G: CsrAdjacency>(graph: &G, nodes: &[u32]) -> Ve
 
         for i in start..end {
             let neighbor = graph.target(i);
-            if let Some(&v) = local_id.get(&neighbor) {
-                if u != v {
+            if let Some(&v) = local_id.get(&neighbor)
+                && u != v {
                     adj[u].push(v);
                     adj[v].push(u);
                 }
-            }
         }
     }
 
@@ -1725,12 +1724,11 @@ impl NdBuilder {
 
             for i in start..end {
                 let neighbor = hybrid.targets[i];
-                if let Some(&v) = local_id.get(&neighbor) {
-                    if u != v && !adj[u].contains(&v) {
+                if let Some(&v) = local_id.get(&neighbor)
+                    && u != v && !adj[u].contains(&v) {
                         adj[u].push(v);
                         adj[v].push(u);
                     }
-                }
             }
         }
 

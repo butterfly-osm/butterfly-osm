@@ -66,26 +66,23 @@ pub fn write(path: &Path, graph: &TransferGraph) -> Result<()> {
     emit(&mut w, &mut digest, &n_edges.to_le_bytes())?;
     emit(&mut w, &mut digest, &graph.provenance)?;
 
-    // u32 offsets stream. Cast the slice to bytes via a safe byte view.
-    let offsets_bytes = unsafe {
-        std::slice::from_raw_parts(
-            offsets.as_ptr() as *const u8,
-            std::mem::size_of_val(offsets),
-        )
-    };
-    emit(&mut w, &mut digest, offsets_bytes)?;
+    // u32 offsets stream, explicit little-endian (file format is LE
+    // throughout — see header writes above). Buffered into a single
+    // `Vec<u8>` so we still call `emit` once per stream rather than
+    // hammering the digest 4 bytes at a time.
+    let mut offsets_bytes = Vec::with_capacity(offsets.len() * 4);
+    for off in offsets {
+        offsets_bytes.extend_from_slice(&off.to_le_bytes());
+    }
+    emit(&mut w, &mut digest, &offsets_bytes)?;
 
-    // (u32, u32) neighbours stream. Same reinterpret trick: repr(Rust)
-    // tuple of two u32s is 8-byte aligned on every supported target
-    // and the resulting byte slice has identical content to a manual
-    // two-loop write.
-    let neighbours_bytes = unsafe {
-        std::slice::from_raw_parts(
-            neighbours.as_ptr() as *const u8,
-            std::mem::size_of_val(neighbours),
-        )
-    };
-    emit(&mut w, &mut digest, neighbours_bytes)?;
+    // (u32, u32) neighbours stream, explicit little-endian.
+    let mut neighbours_bytes = Vec::with_capacity(neighbours.len() * 8);
+    for (a, b) in neighbours {
+        neighbours_bytes.extend_from_slice(&a.to_le_bytes());
+        neighbours_bytes.extend_from_slice(&b.to_le_bytes());
+    }
+    emit(&mut w, &mut digest, &neighbours_bytes)?;
 
     let crc = digest.finalize();
     w.write_all(&crc.to_le_bytes())

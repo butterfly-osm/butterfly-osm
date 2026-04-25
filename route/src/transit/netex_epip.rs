@@ -900,6 +900,17 @@ fn emit_into_builder(
         let lon = coord.0.to_degrees();
         let lat = coord.1.to_degrees();
 
+        // Reject non-finite reprojection results. Casting NaN/Inf to
+        // i64 below is implementation-defined (often saturates to 0 or
+        // i64::MIN), which would silently place stops at (0,0) or in
+        // a single bogus cluster. Skip the SSP and count it as
+        // unresolved so the operator notices a real reprojection
+        // failure instead of corrupted geometry.
+        if !lon.is_finite() || !lat.is_finite() {
+            n_unresolved += 1;
+            continue;
+        }
+
         // Quantise to ~11 cm. Two SSPs that land within this cell
         // share a single TimetableBuilder stop.
         let key = (
@@ -1199,9 +1210,17 @@ fn remap_to_published_window(state: &ParseState, today: NaiveDate) -> Option<Nai
     let mut latest_to: Option<NaiveDate> = None;
     let mut latest_from: Option<NaiveDate> = None;
     for op in state.operating_periods.values() {
-        let from = op.from_date.as_deref().and_then(parse_iso_date)?;
-        let to = op.to_date.as_deref().and_then(parse_iso_date)?;
-        if latest_to.is_none() || to > latest_to.unwrap() {
+        // Skip periods with missing or unparseable dates instead of
+        // bailing out the whole fallback. STIB EPIP files have
+        // hundreds of operating periods; one malformed entry must
+        // not zero out every service for the day.
+        let (Some(from), Some(to)) = (
+            op.from_date.as_deref().and_then(parse_iso_date),
+            op.to_date.as_deref().and_then(parse_iso_date),
+        ) else {
+            continue;
+        };
+        if latest_to.is_none_or(|prev| to > prev) {
             latest_to = Some(to);
             latest_from = Some(from);
         }

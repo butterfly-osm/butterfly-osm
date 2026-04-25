@@ -42,9 +42,12 @@ pub fn validate_down_rev(
             if rank_x < rank_u {
                 violations += 1;
                 if violations <= 5 {
-                    eprintln!(
-                        "  down_rev violation: edge {}→{} has rank {} < {} (should be >=)",
-                        x, u, rank_x, rank_u
+                    tracing::warn!(
+                        edge_from = x,
+                        edge_to = u,
+                        rank_x,
+                        rank_u,
+                        "down_rev violation: rank_x < rank_u (should be >=)"
                     );
                 }
             }
@@ -63,9 +66,11 @@ pub fn validate_down_rev(
             if stored_target != u as u32 {
                 violations += 1;
                 if violations <= 5 {
-                    eprintln!(
-                        "  down_rev target mismatch: edge_idx {} has target {}, expected {}",
-                        edge_idx, stored_target, u
+                    tracing::warn!(
+                        edge_idx,
+                        stored_target,
+                        expected = u,
+                        "down_rev target mismatch"
                     );
                 }
             }
@@ -326,10 +331,7 @@ impl<'a> CchQuery<'a> {
                                 best_dist = total;
                                 meeting_node = u;
                                 if debug {
-                                    eprintln!(
-                                        "  FWD meet at {}: dist_fwd={}, dist_bwd={}, total={}",
-                                        u, d, bwd_d, total
-                                    );
+                                    tracing::debug!(meet_node = u, dist_fwd = d, dist_bwd = bwd_d, total, "FWD meet");
                                 }
                             }
                         }
@@ -360,7 +362,7 @@ impl<'a> CchQuery<'a> {
                                         best_dist = total;
                                         meeting_node = v;
                                         if debug {
-                                            eprintln!("  FWD meet at {} (via edge): dist_fwd={}, dist_bwd={}, total={}", v, new_dist, bwd_v, total);
+                                            tracing::debug!(meet_node = v, dist_fwd = new_dist, dist_bwd = bwd_v, total, "FWD meet via edge");
                                         }
                                     }
                                 }
@@ -384,10 +386,7 @@ impl<'a> CchQuery<'a> {
                                 best_dist = total;
                                 meeting_node = u;
                                 if debug {
-                                    eprintln!(
-                                        "  BWD meet at {}: dist_fwd={}, dist_bwd={}, total={}",
-                                        u, fwd_d, d, total
-                                    );
+                                    tracing::debug!(meet_node = u, dist_fwd = fwd_d, dist_bwd = d, total, "BWD meet");
                                 }
                             }
                         }
@@ -419,7 +418,7 @@ impl<'a> CchQuery<'a> {
                                         best_dist = total;
                                         meeting_node = x;
                                         if debug {
-                                            eprintln!("  BWD meet at {} (via edge): dist_fwd={}, dist_bwd={}, total={}", x, fwd_x, new_dist, total);
+                                            tracing::debug!(meet_node = x, dist_fwd = fwd_x, dist_bwd = new_dist, total, "BWD meet via edge");
                                         }
                                     }
                                 }
@@ -430,13 +429,14 @@ impl<'a> CchQuery<'a> {
             }
 
             if debug {
-                eprintln!(
-                    "  Search stats: fwd_settled={}, bwd_settled={}, fwd_relaxed={}, bwd_relaxed={}",
-                    fwd_settled, bwd_settled, fwd_relaxed, bwd_relaxed
-                );
-                eprintln!(
-                    "  Final: best_dist={}, meeting_node={}",
-                    best_dist, meeting_node
+                tracing::debug!(
+                    fwd_settled,
+                    bwd_settled,
+                    fwd_relaxed,
+                    bwd_relaxed,
+                    best_dist,
+                    meeting_node,
+                    "CCH bidir final"
                 );
             }
 

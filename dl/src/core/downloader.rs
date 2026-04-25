@@ -370,18 +370,17 @@ impl Downloader {
                     // byte 0. The HttpError from above is NOT a network error
                     // so retry_on_network_error won't retry it — we handle the
                     // restart here.
-                    if downloaded > 0 {
-                        if let Error::HttpError(ref msg) = e {
-                            if msg.contains("200 instead of 206") {
-                                eprintln!("WARNING: {msg} Restarting download from the beginning.");
-                                writer
-                                    .seek(std::io::SeekFrom::Start(0))
-                                    .await
-                                    .map_err(Error::IoError)?;
-                                downloaded = 0;
-                                continue;
-                            }
-                        }
+                    if downloaded > 0
+                        && let Error::HttpError(ref msg) = e
+                        && msg.contains("200 instead of 206")
+                    {
+                        log::warn!("server ignored Range header ({msg}) — restarting download from byte 0");
+                        writer
+                            .seek(std::io::SeekFrom::Start(0))
+                            .await
+                            .map_err(Error::IoError)?;
+                        downloaded = 0;
+                        continue;
                     }
                     return Err(e);
                 }
@@ -591,23 +590,17 @@ async fn create_optimized_file(path: &str, _size_hint: Option<u64>) -> Result<to
         {
             use std::os::unix::fs::OpenOptionsExt;
 
-            if let Some(size) = _size_hint {
-                if size > 1024 * 1024 * 1024 {
-                    match std::fs::OpenOptions::new()
-                        .write(true)
-                        .create(true)
-                        .truncate(true)
-                        .custom_flags(libc::O_DIRECT)
-                        .open(path)
-                    {
-                        Ok(file) => {
-                            return Ok(tokio::fs::File::from_std(file));
-                        }
-                        Err(_) => {
-                            // Direct I/O failed, fall back to standard I/O
-                        }
-                    }
-                }
+            if let Some(size) = _size_hint
+                && size > 1024 * 1024 * 1024
+                && let Ok(file) = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .custom_flags(libc::O_DIRECT)
+                    .open(path)
+            {
+                return Ok(tokio::fs::File::from_std(file));
+                // Direct I/O failures fall through to standard I/O below.
             }
         }
     }
