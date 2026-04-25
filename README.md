@@ -18,7 +18,7 @@ A comprehensive ecosystem of OSM tools designed around **separation of concerns*
 
 ### Core Tools
 
-- **butterfly-dl**: Memory-efficient OSM data downloader (<1GB RAM for any file size), panic-safe C FFI with `butterfly_last_error_message()` for detailed error retrieval
+- **butterfly-dl**: Memory-efficient OSM data downloader (<1GB RAM for any file size) with verified content checks (magic-byte prefix, min-bytes floor, SHA-256 sidecar) and region-indexed parallel downloads
 - **butterfly-route**: High-performance road router **and** multimodal transit engine. Edge-based CCH for exact turn-aware driving/walking/cycling, PHAST isochrones, Arrow-streaming distance matrices, and a full RAPTOR-based public transport stack with multi-feed merging (SNCB, De Lijn, TEC, STIB via NeTEx-EPIP) and ULTRA transfer-graph preprocessing
 - **butterfly-common**: Shared utilities, error handling, and geographic algorithms
 

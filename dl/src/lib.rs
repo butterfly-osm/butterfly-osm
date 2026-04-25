@@ -9,7 +9,6 @@
 //! - **Memory efficient**: <1GB RAM usage regardless of file size
 //! - **Streaming support**: Download directly to any AsyncWrite destination
 //! - **Progress tracking**: Optional progress callbacks for custom UIs
-//! - **Feature flags**: Optional C bindings via `c-bindings` feature
 //!
 //! ## Basic Usage
 //!
@@ -72,10 +71,6 @@ pub mod verified;
 /// routing deployment needs; [`regions::fetch_region`] dispatches
 /// one verified download per entry concurrently.
 pub mod regions;
-
-// C-compatible FFI bindings (optional)
-#[cfg(feature = "c-bindings")]
-pub mod ffi;
 
 /// Download a file to a destination
 ///

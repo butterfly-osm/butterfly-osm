@@ -44,7 +44,7 @@ butterfly-dl = { path = "../dl" }
 chrono = "0.4.44"
 
 # Streaming XML parser for NeTEx-EPIP loader (#101, STIB)
-quick-xml = "0.38"
+quick-xml = "0.39"
 
 # Coordinate reprojection for NeTEx-EPIP (STIB publishes in Lambert-93
 # EPSG:2154; butterfly uses WGS84 throughout). proj4rs is pure Rust,
@@ -73,7 +73,7 @@ tower-http = { version = "0.6.8", features = ["cors", "trace", "timeout", "catch
 
 # Spatial indexing & geometry
 rstar = "0.12.2"
-geo = "0.32"
+geo = "0.33"
 
 # Priority queue for Dijkstra
 priority-queue = "2.7.0"
@@ -113,14 +113,14 @@ prost_011 = { package = "prost", version = "0.11" }
 # a direct reqwest dep. Feed config + orchestration + GTFS parsing
 # stay in this crate; bytes-off-the-wire live in butterfly-dl.
 # Transit: TOML config parsing
-toml = "0.8"
+toml = "1.1"
 
 [lints]
 workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }
-geo = "0.32"
+geo = "0.33"
 wiremock = { workspace = true }
 
 [[bin]]

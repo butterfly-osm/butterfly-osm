@@ -12,7 +12,7 @@ authors = ["Pierre <pierre@warnier.net>"]
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/butterfly-osm/butterfly-osm"
 edition = "2024"
-rust-version = "1.94"
+rust-version = "1.95"
 
 [workspace.dependencies]
 tokio = { version = "1.51", features = ["full"] }
@@ -28,12 +28,21 @@ wiremock = "0.6.5"
 ctor = "0.10"
 
 [workspace.lints.rust]
+# Ship-readiness policy: every warning is a build failure. `warnings = "deny"`
+# already covers `dead_code`, `unused_*`, etc., but we name the ones the audit
+# called out explicitly so they're not silently relaxed by a future edit.
 warnings = "deny"
+dead_code = "deny"
+unused_imports = "deny"
+unused_variables = "deny"
+unused_mut = "deny"
+unreachable_code = "deny"
+unreachable_patterns = "deny"
+# `unsafe_code` is denied workspace-wide. There are no exceptions: the C
+# FFI module that previously needed `unsafe extern "C"` was removed, so
+# every crate in the workspace must compile cleanly without `unsafe`.
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
 redundant_closure = "allow"
-# Rust 1.94 / clippy 1.94 suggests migrating nested `if let` to let-chain
-# syntax via `collapsible_if`. Pure style change, tracked separately from
-# the toolchain bump.
-collapsible_if = "allow"
