@@ -614,7 +614,23 @@ pub async fn isochrone_handler(
         values.dedup();
         IsoMetric::MultiTime(values)
     } else {
-        unreachable!()
+        // The `provided != 1` guard above already returns 400 when no
+        // metric is set, so this branch is unreachable today. We keep
+        // it as a structured 500 instead of `unreachable!()` so that a
+        // future edit which adds a fourth metric option to the
+        // `provided` count but forgets the matching arm degrades into
+        // a logged 500 instead of a process panic caught only by
+        // `CatchPanicLayer`. (#141)
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "isochrone metric dispatch fell through; this is a server bug \
+                        — the request validator and metric parser disagree about which \
+                        fields are accepted"
+                    .to_string(),
+            }),
+        )
+            .into_response();
     };
 
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {

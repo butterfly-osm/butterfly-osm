@@ -381,4 +381,113 @@ mod tests {
         // because trip_late (600) is already gone.
         assert_eq!(patched.earliest_trip(route_idx, 0, 700), Some(0));
     }
+
+    /// #134 — after applying a GTFS-RT delay, the row-major
+    /// `departures` array and the SIMD-friendly column-major
+    /// `col_departures` mirror must stay in lockstep. Without this
+    /// invariant, lookups via `earliest_trip` (which reads the
+    /// column-major mirror, see #127) would return stale values
+    /// while `stop_time()` (which reads row-major) returned fresh
+    /// ones — silently producing inconsistent journeys.
+    #[test]
+    fn rt_update_keeps_row_and_column_grids_in_sync() {
+        let mut b = TimetableBuilder::new();
+        let a = b.add_stop("A", "A", 0.0, 0.0, None);
+        let bb = b.add_stop("B", "B", 1.0, 0.0, None);
+        let c = b.add_stop("C", "C", 2.0, 0.0, None);
+        // Two trips on the same pattern so the column-major layout
+        // has stride > 1 (catches index-formula errors).
+        b.add_trip(
+            "trip_X",
+            "R",
+            "R",
+            "h",
+            vec![a, bb, c],
+            vec![st(100, 100), st(200, 210), st(300, 310)],
+        );
+        b.add_trip(
+            "trip_Y",
+            "R",
+            "R",
+            "h",
+            vec![a, bb, c],
+            vec![st(500, 500), st(600, 610), st(700, 710)],
+        );
+        let tt = b.build().unwrap();
+
+        // Apply a 60 s delay to trip_X at stop B (position 1). The
+        // delay propagates to C as well per GTFS-RT semantics.
+        let feed = FeedMessage {
+            header: gtfs_rt::FeedHeader {
+                gtfs_realtime_version: "2.0".to_string(),
+                ..Default::default()
+            },
+            entity: vec![FeedEntity {
+                id: "e1".to_string(),
+                trip_update: Some(TripUpdate {
+                    trip: TripDescriptor {
+                        trip_id: Some("trip_X".to_string()),
+                        ..Default::default()
+                    },
+                    stop_time_update: vec![StopTimeUpdate {
+                        stop_sequence: Some(1),
+                        arrival: Some(StopTimeEvent {
+                            delay: Some(60),
+                            ..Default::default()
+                        }),
+                        departure: Some(StopTimeEvent {
+                            delay: Some(60),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+        };
+        let (patched, _) = apply_trip_updates(&tt, &feed);
+
+        let route_idx = patched.routes_for_stop(a)[0].0;
+        let n_trips = patched.n_trips[route_idx as usize] as u64;
+        let n_stops = patched.n_stops[route_idx as usize] as u64;
+        let row_base = patched.stop_times_offset[route_idx as usize];
+        let col_base = patched.col_departures_route_offset[route_idx as usize];
+
+        // For every (trip, stop_pos) cell on the route, row-major
+        // `departures[row_base + trip*n_stops + pos]` must equal
+        // column-major `col_departures[col_base + pos*n_trips + trip]`.
+        for trip in 0..n_trips {
+            for pos in 0..n_stops {
+                let row_idx = (row_base + trip * n_stops + pos) as usize;
+                let col_idx = (col_base + pos * n_trips + trip) as usize;
+                assert_eq!(
+                    patched.departures[row_idx], patched.col_departures[col_idx],
+                    "row/col grids disagreed for trip={} pos={}: row={} col={}",
+                    trip, pos, patched.departures[row_idx], patched.col_departures[col_idx]
+                );
+            }
+        }
+
+        // Sanity on the actual delay: trip_X at B was 210, now 270;
+        // earliest_trip looking for dep≥260 at B (pos 1) must skip
+        // trip_X (now 270) and could either pick trip_Y (610). Both
+        // are >=260 so it should pick the earliest, which is trip_X.
+        let b_pos = patched
+            .route_stops_slice(route_idx)
+            .iter()
+            .position(|&s| s == bb)
+            .unwrap() as u32;
+        // After the delay, trip_X at B departs at 270, so earliest_trip
+        // for dep>=260 should return trip 0 (trip_X) at time 270.
+        assert_eq!(patched.earliest_trip(route_idx, b_pos, 260), Some(0));
+        // Confirm the actual cell value via row-major access (trip_X
+        // is trip 0 on this route, so its row offset is just `b_pos`).
+        let row_idx_x_b = (row_base + b_pos as u64) as usize;
+        assert_eq!(patched.departures[row_idx_x_b], 270);
+        // And via column-major (same reasoning: trip 0 is at the base
+        // of column `b_pos`).
+        let col_idx_x_b = (col_base + (b_pos as u64) * n_trips) as usize;
+        assert_eq!(patched.col_departures[col_idx_x_b], 270);
+    }
 }

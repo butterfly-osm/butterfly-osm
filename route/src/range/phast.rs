@@ -695,17 +695,34 @@ impl PhastEngine {
         }
     }
 
-    /// Run PHAST with block-level active gating
+    /// Run PHAST with block-level active gating.
     ///
-    /// **Key optimization over per-node active set:**
-    /// - Partitions ranks into blocks of BLOCK_SIZE (4096)
+    /// # ⚠️  CALLERS MUST READ — correctness caveat (#140)
+    ///
+    /// **Production code MUST go through [`Self::query_adaptive`] /
+    /// [`Self::query_bounded`], not this function directly.** Block
+    /// gating preserves correctness only when the active block ratio
+    /// stays low; above ~25 % active blocks the single-pass active-set
+    /// propagation can drop relaxations that would have improved later
+    /// nodes (a node's block can be re-activated after the downward
+    /// pass has already moved past it). `query_adaptive` falls back to
+    /// plain PHAST in that regime; this function does not.
+    ///
+    /// Kept `pub` because the bench harness in `range::mod` compares
+    /// it directly against `query_active_set` to characterise the
+    /// gating tradeoff. Outside of benchmarks and tests, route the
+    /// call through the adaptive dispatcher.
+    ///
+    /// **Key optimisation over per-node active set:**
+    /// - Partitions ranks into blocks of `BLOCK_SIZE` (4096)
     /// - Maintains a tiny block-level bitset (~75 bytes for 2.4M nodes)
     /// - Outer loop iterates blocks in descending order
     /// - Skips entire inactive blocks (not just individual nodes)
-    /// - Within active blocks, early-exit nodes with dist > threshold
+    /// - Within active blocks, early-exit nodes with `dist > threshold`
     ///
-    /// For bounded queries (isochrones), this can skip 80-95% of blocks,
-    /// giving order-of-magnitude speedups for small thresholds.
+    /// For bounded queries (isochrones) below the active-ratio
+    /// threshold, this can skip 80–95 % of blocks, giving
+    /// order-of-magnitude speedups.
     pub fn query_block_gated(&self, origin: u32, threshold: u32) -> PhastResult {
         let start = std::time::Instant::now();
         let mut stats = PhastStats::default();
