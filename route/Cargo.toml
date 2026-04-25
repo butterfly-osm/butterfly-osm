@@ -28,6 +28,12 @@ serde_json = "1.0.149"
 # Checksums
 crc = "3.4"
 
+# Memory-mapped IO (#90 phase 3): a single mmap of `belgium.butterfly`
+# replaces dozens of per-step file reads at startup. The unsafe call
+# site is the workspace's sole `unsafe_code` carveout — see
+# `route/src/formats/mmap.rs` for the documented SAFETY block.
+memmap2 = "0.9"
+
 # Logging
 env_logger = { workspace = true }
 
