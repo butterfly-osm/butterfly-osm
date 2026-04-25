@@ -1,6 +1,7 @@
 //! Binary file formats for Step 1, Step 2, and Step 3 output
 
 // Step 1 formats
+pub mod butterfly_dat;
 pub mod crc;
 pub mod node_signals;
 pub mod nodes_sa;

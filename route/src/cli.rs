@@ -339,6 +339,41 @@ pub enum Commands {
         realtime: bool,
     },
 
+    /// Pack a `data_dir/step{1..8}/` tree into a single `*.butterfly`
+    /// container. The container holds every per-step artefact plus a
+    /// section directory + per-section CRCs, ready for a single
+    /// `serve --data <file>` mmap load.
+    Pack {
+        /// Source data directory (the one with `step1/`, `step2/`, ... ).
+        #[arg(short, long)]
+        data_dir: PathBuf,
+
+        /// Output container path (e.g. `belgium.butterfly`).
+        #[arg(short, long)]
+        out: PathBuf,
+
+        /// Override which step subdir names to look for. Default uses
+        /// the same `find_step_dir`-style fuzzy match used by `serve`.
+        #[arg(long)]
+        step_prefix: Option<String>,
+    },
+
+    /// Show the section directory of a `*.butterfly` container.
+    /// Optionally re-verify per-section CRCs (`--verify`) or the full
+    /// file CRC (`--verify-full`).
+    Inspect {
+        /// Path to a `*.butterfly` container.
+        path: PathBuf,
+
+        /// Verify each section's CRC by reading the bytes back.
+        #[arg(long)]
+        verify: bool,
+
+        /// Verify the whole-file CRC. Slow on multi-GB containers.
+        #[arg(long)]
+        verify_full: bool,
+    },
+
     /// Step 9: Start query server
     Serve {
         /// Directory containing all step outputs (step3/, step4/, etc.)
@@ -1320,6 +1355,16 @@ impl Cli {
                 }
                 Ok(())
             }
+            Commands::Pack {
+                data_dir,
+                out,
+                step_prefix,
+            } => crate::pack::pack(&data_dir, &out, step_prefix.as_deref()),
+            Commands::Inspect {
+                path,
+                verify,
+                verify_full,
+            } => crate::pack::inspect(&path, verify, verify_full),
             Commands::Serve {
                 data_dir,
                 port,
