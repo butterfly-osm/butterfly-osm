@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/butterfly_logo_900kb.jpg" width="240" alt="Butterfly-OSM logo" />
+</p>
+
 # Butterfly-OSM 🦋
 
 Hurricane-fast drivetime engine and OSM toolkit built for modern performance requirements.
