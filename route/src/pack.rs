@@ -20,6 +20,11 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use crate::formats::butterfly_dat::{Container, ContainerWriter, SectionKind};
+use crate::formats::{CchTopoFile, CchWeightsFile};
+use crate::matrix::bucket_ch::{
+    DownAdjFlat, DownAdjFlatFile, DownReverseAdjFlat, DownReverseAdjFlatFile, UpAdjFlat,
+    UpAdjFlatFile,
+};
 
 /// Section name for the JSON manifest that lists modes + bundle ids.
 /// Lives at the top of the `shared/` namespace so legacy tooling can
@@ -73,6 +78,23 @@ fn maybe_append(
     w.append_file(kind, name, path)
         .with_context(|| format!("packing {} from {}", name, path.display()))?;
     Ok(true)
+}
+
+/// Append a section synthesised in memory (e.g. a packed flat). Logs
+/// the size and the section name so the operator sees what was packed.
+fn append_encoded(
+    w: &mut ContainerWriter,
+    kind: SectionKind,
+    name: &str,
+    bytes: Vec<u8>,
+) -> Result<()> {
+    println!(
+        "  + [{:>5} MiB] {:<28} <- (built in pack)",
+        bytes.len() / (1024 * 1024),
+        name,
+    );
+    w.append_bytes(kind, name, &bytes)
+        .with_context(|| format!("packing synthesised section {}", name))
 }
 
 /// Glob a directory for files matching `prefix.*.suffix`. Returns the
@@ -281,6 +303,102 @@ pub fn pack(data_dir: &Path, out: &Path, step_prefix: Option<&str>) -> Result<()
             &format!("mode/{}/weights.dist", mode),
             &cch_d,
         )?;
+
+        // ---- Pre-built flat adjacencies (#150) -----------------------
+        // Flats are built once at pack time from (cch_topo, cch_weights),
+        // serialised into the container, and mmap'd directly at server
+        // boot. This is the architectural pivot that bounds idle RSS to
+        // the working set rather than the dataset size.
+        //
+        // We build a mode at a time and drop the in-memory copies before
+        // moving to the next mode, so the pack memory footprint stays
+        // bounded by one mode's worth of flats (~1.5 GB peak on Belgium).
+        let topo_path = step7.join(format!("cch.{}.topo", mode));
+        let cch_w_path = step8.join(format!("cch.w.{}.u32", mode));
+        let cch_d_path = step8.join(format!("cch.d.{}.u32", mode));
+        if topo_path.exists() && cch_w_path.exists() && cch_d_path.exists() {
+            // Load topo + both weight metrics for this mode. If parsing
+            // fails (e.g. synthetic test inputs), log a warning and skip
+            // flats for this mode — pack still succeeds; the server can
+            // fall back to building flats at boot from these same files.
+            let topo_res = CchTopoFile::read(&topo_path);
+            let time_res = CchWeightsFile::read(&cch_w_path);
+            let dist_res = CchWeightsFile::read(&cch_d_path);
+            match (topo_res, time_res, dist_res) {
+                (Ok(cch_topo), Ok(cch_time), Ok(cch_dist)) => {
+                // TIME flats: UP and DOWN-REV carry topo_edge_idx (the
+                // routing hot path needs it for parent-pointer unpacking);
+                // forward-DOWN does not.
+                let up_time = UpAdjFlat::build_with(&cch_topo, &cch_time, true);
+                append_encoded(
+                    &mut w,
+                    SectionKind::UpAdjFlat,
+                    &format!("mode/{}/up_adj_flat.time", mode),
+                    UpAdjFlatFile::encode(&up_time),
+                )?;
+                drop(up_time);
+
+                let drev_time = DownReverseAdjFlat::build_with(&cch_topo, &cch_time, true);
+                append_encoded(
+                    &mut w,
+                    SectionKind::DownReverseAdjFlat,
+                    &format!("mode/{}/down_reverse_adj_flat.time", mode),
+                    DownReverseAdjFlatFile::encode(&drev_time),
+                )?;
+                drop(drev_time);
+
+                let dadj_time = DownAdjFlat::build(&cch_topo, &cch_time);
+                append_encoded(
+                    &mut w,
+                    SectionKind::DownAdjFlat,
+                    &format!("mode/{}/down_adj_flat.time", mode),
+                    DownAdjFlatFile::encode(&dadj_time),
+                )?;
+                drop(dadj_time);
+
+                // DIST flats: only PHAST forward + isodistance use them;
+                // no topo back-ref needed.
+                let up_dist = UpAdjFlat::build(&cch_topo, &cch_dist);
+                append_encoded(
+                    &mut w,
+                    SectionKind::UpAdjFlat,
+                    &format!("mode/{}/up_adj_flat.dist", mode),
+                    UpAdjFlatFile::encode(&up_dist),
+                )?;
+                drop(up_dist);
+
+                let drev_dist = DownReverseAdjFlat::build(&cch_topo, &cch_dist);
+                append_encoded(
+                    &mut w,
+                    SectionKind::DownReverseAdjFlat,
+                    &format!("mode/{}/down_reverse_adj_flat.dist", mode),
+                    DownReverseAdjFlatFile::encode(&drev_dist),
+                )?;
+                drop(drev_dist);
+
+                let dadj_dist = DownAdjFlat::build(&cch_topo, &cch_dist);
+                append_encoded(
+                    &mut w,
+                    SectionKind::DownAdjFlat,
+                    &format!("mode/{}/down_adj_flat.dist", mode),
+                    DownAdjFlatFile::encode(&dadj_dist),
+                )?;
+                drop(dadj_dist);
+                }
+                (topo_r, time_r, dist_r) => {
+                    let why = topo_r
+                        .err()
+                        .map(|e| format!("topo: {e}"))
+                        .or_else(|| time_r.err().map(|e| format!("weights.time: {e}")))
+                        .or_else(|| dist_r.err().map(|e| format!("weights.dist: {e}")))
+                        .unwrap_or_else(|| "unknown".to_string());
+                    eprintln!(
+                        "  ! [skip flats] mode={} ({}); server will rebuild on boot",
+                        mode, why
+                    );
+                }
+            }
+        }
     }
 
     // ---- Manifest ---------------------------------------------------
@@ -480,6 +598,17 @@ pub fn unpack(path: &Path, out_dir: &Path) -> Result<()> {
     );
 
     for sec in &c.sections {
+        // Flat adjacency sections (#150) are synthesised at pack time
+        // and don't round-trip through step{N}/ — the next pack will
+        // rebuild them from cch_topo + cch_weights. Skip them here so
+        // unpack stays a faithful inverse of the on-disk inputs.
+        if matches!(
+            sec.kind,
+            SectionKind::UpAdjFlat | SectionKind::DownAdjFlat | SectionKind::DownReverseAdjFlat
+        ) {
+            println!("  -- (skip synthesised) {}", sec.name);
+            continue;
+        }
         let out_path = path_for_section(out_dir, &sec.name).ok_or_else(|| {
             anyhow::anyhow!(
                 "section '{}' does not match the standard step{{N}}/... layout; \
