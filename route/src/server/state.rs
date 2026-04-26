@@ -207,6 +207,8 @@ impl ServerState {
         let mut mode_names = Vec::with_capacity(discovered_modes.len());
         let mut mode_lookup = HashMap::with_capacity(discovered_modes.len());
 
+        crate::server::rss::checkpoint("load.shared");
+
         for (mode_index, mode_name) in discovered_modes.iter().enumerate() {
             // Use GLOBAL index (from full alphabetical discovery) — must match step 4/5 indexing
             let mode = Mode(global_index[mode_name]);
@@ -223,11 +225,13 @@ impl ServerState {
             modes_data.push(mode_data);
             mode_lookup.insert(mode_name.clone(), mode_index as u8);
             mode_names.push(mode_name.clone());
+            crate::server::rss::checkpoint(&format!("load.mode.{}", mode_name));
         }
 
         tracing::info!("Building spatial index...");
         let spatial_index = SpatialIndex::build(&ebg_nodes, &nbg_geo);
         tracing::info!(nodes = ebg_nodes.n_nodes, "built spatial index");
+        crate::server::rss::checkpoint("spatial.global");
 
         // Per-mode spatial indexes: one R-tree per loaded mode,
         // pre-filtered to that mode's accessible nodes. Built once at
@@ -246,6 +250,7 @@ impl ServerState {
                 "built per-mode spatial index"
             );
             mode_spatial_indexes.insert(mode_index as u8, idx);
+            crate::server::rss::checkpoint(&format!("spatial.mode.{}", mode_names[mode_index]));
         }
 
         // Load road names from ways.raw for turn-by-turn instructions
@@ -384,14 +389,37 @@ impl ServerState {
         // numeric arrays (`nodes`, `offsets`, `heads`, `turn_idx`)
         // borrow straight from the mmap, so we save ~250 MB of heap
         // on Belgium that the legacy owning-Vec readers used to copy.
+        crate::server::rss::checkpoint("load.container.opened");
+
         tracing::info!("Loading EBG nodes (zero-copy)...");
         let ebg_nodes =
             EbgNodesFile::read_from_bytes_zero_copy(section_bytes("shared/ebg.nodes")?)?;
         tracing::info!(nodes = ebg_nodes.n_nodes, "loaded EBG nodes");
 
         tracing::info!("Loading EBG CSR (zero-copy)...");
-        let ebg_csr = EbgCsrFile::read_from_bytes_zero_copy(section_bytes("shared/ebg.csr")?)?;
+        let ebg_csr_section = section_bytes("shared/ebg.csr")?;
+        let ebg_csr = EbgCsrFile::read_from_bytes_zero_copy(ebg_csr_section)?;
         tracing::info!(arcs = ebg_csr.n_arcs, "loaded EBG CSR");
+        // #152: ebg.csr is build/validate-only at serve time. The only
+        // field any handler reads is `n_arcs` (a u64 in the header used
+        // by /health). The body arrays (offsets, heads, turn_idx) are
+        // touched by validate/step4 + ordering/contraction, none of
+        // which run on the serve path. Drop the file pages from RSS;
+        // the borrowed Cow slices stay valid and a rare cold reader
+        // pages them back at fault cost.
+        if let Err(e) = crate::formats::mmap::madvise_dontneed(ebg_csr_section) {
+            tracing::warn!(
+                section = "shared/ebg.csr",
+                error = %e,
+                "madvise(DONTNEED) on ebg.csr failed; ignoring"
+            );
+        } else {
+            tracing::info!(
+                section = "shared/ebg.csr",
+                bytes = ebg_csr_section.len(),
+                "madvise(DONTNEED) on cold ebg.csr section"
+            );
+        }
 
         tracing::info!("Loading NBG geo...");
         let nbg_geo = NbgGeoFile::read_from_bytes(section_bytes("shared/nbg.geo")?)?;
@@ -437,6 +465,8 @@ impl ServerState {
         }
         tracing::info!(modes = ?discovered_modes, "discovered transport modes");
 
+        crate::server::rss::checkpoint("load.shared");
+
         // ---- Per-mode bundle load -----------------------------------
         let mut modes_data = Vec::with_capacity(discovered_modes.len());
         let mut mode_names = Vec::with_capacity(discovered_modes.len());
@@ -455,17 +485,20 @@ impl ServerState {
             modes_data.push(mode_data);
             mode_lookup.insert(mode_name.clone(), mode_index as u8);
             mode_names.push(mode_name.clone());
+            crate::server::rss::checkpoint(&format!("load.mode.{}", mode_name));
         }
 
         // ---- Spatial indexes ----------------------------------------
         tracing::info!("Building spatial index...");
         let spatial_index = SpatialIndex::build(&ebg_nodes, &nbg_geo);
+        crate::server::rss::checkpoint("spatial.global");
 
         let mut mode_spatial_indexes: HashMap<u8, SpatialIndex> =
             HashMap::with_capacity(modes_data.len());
         for (mode_index, mode_data) in modes_data.iter().enumerate() {
             let idx = SpatialIndex::build_filtered(&ebg_nodes, &nbg_geo, &mode_data.mask);
             mode_spatial_indexes.insert(mode_index as u8, idx);
+            crate::server::rss::checkpoint(&format!("spatial.mode.{}", mode_names[mode_index]));
         }
 
         // #149: Now that every mode's flat adjacencies are built, hint
@@ -912,7 +945,28 @@ fn load_mode_data_from_bundle(
 
     // #152: zero-copy filtered_ebg — borrows arrays from the mmap
     // instead of copying ~80 MB/mode of CSR data into the heap.
-    let filtered_ebg = FilteredEbgFile::read_from_bytes_zero_copy(fetch("filtered_ebg")?)?;
+    // The reader returns the cold-after-parse byte range (offsets +
+    // heads + original_arc_idx) which we madvise(DONTNEED) right
+    // away: those arrays are build-time-only, none of the serve-path
+    // code reads them. Hot mappings (filtered_to_original /
+    // original_to_filtered) live after the cold prefix and stay
+    // resident on demand.
+    let filtered_section = fetch("filtered_ebg")?;
+    let (filtered_ebg, cold_filtered) =
+        FilteredEbgFile::read_from_bytes_zero_copy_with_cold(filtered_section)?;
+    if let Err(e) = crate::formats::mmap::madvise_dontneed(cold_filtered) {
+        tracing::warn!(
+            mode = mode_name,
+            error = %e,
+            "madvise(DONTNEED) on filtered_ebg cold prefix failed; ignoring"
+        );
+    } else {
+        tracing::info!(
+            mode = mode_name,
+            bytes = cold_filtered.len(),
+            "madvise(DONTNEED) on filtered_ebg cold prefix"
+        );
+    }
     let order = OrderEbgFile::read_from_bytes(fetch("order")?)?;
     let topo_section_bytes: &'static [u8] = fetch("topo")?;
     // #151: cch.topo is now v4. Header is 80 bytes (u64-aligned) and

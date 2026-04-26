@@ -380,6 +380,22 @@ impl FilteredEbgFile {
     /// 64-byte header keeps the offsets u64 array aligned. Every
     /// subsequent u32 array only needs 4-byte alignment.
     pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<FilteredEbg> {
+        Self::read_from_bytes_zero_copy_with_cold(bytes).map(|(out, _)| out)
+    }
+
+    /// Zero-copy reader that additionally returns the byte range of
+    /// the build-time-only cold prefix (`offsets`, `heads`,
+    /// `original_arc_idx`). Callers (`server/state.rs`) can pass this
+    /// range to `madvise(DONTNEED)` so the cold pages drop from RSS
+    /// — the borrowed Cow slices stay valid; the rare cold consumers
+    /// (build-only validators) page them back at fault cost.
+    ///
+    /// Hot serve-time arrays (`filtered_to_original`,
+    /// `original_to_filtered`) live AFTER the cold prefix and are
+    /// never advised away.
+    pub fn read_from_bytes_zero_copy_with_cold(
+        bytes: &'static [u8],
+    ) -> Result<(FilteredEbg, &'static [u8])> {
         anyhow::ensure!(
             bytes.len() >= HEADER_LEN + FOOTER_LEN,
             "filtered_ebg too short for header+footer: {} bytes",
@@ -472,7 +488,8 @@ impl FilteredEbgFile {
             stored
         );
 
-        Ok(FilteredEbg {
+        let cold = &bytes[off_start..oai_end];
+        let parsed = FilteredEbg {
             mode,
             n_filtered_nodes,
             n_filtered_arcs,
@@ -483,6 +500,7 @@ impl FilteredEbgFile {
             original_arc_idx: Cow::Borrowed(original_arc_idx),
             filtered_to_original: Cow::Borrowed(filtered_to_original),
             original_to_filtered: Cow::Borrowed(original_to_filtered),
-        })
+        };
+        Ok((parsed, cold))
     }
 }

@@ -48,6 +48,7 @@ pub mod matching;
 pub mod nearest;
 pub mod query;
 pub mod route;
+pub mod rss;
 pub mod spatial;
 pub mod state;
 pub mod table;
@@ -234,6 +235,13 @@ pub async fn serve(
     }
 
     let state = Arc::new(state_owned);
+
+    // #152: emit the final RSS checkpoint just before listeners come
+    // up. By the time `/health` first answers OK every demand-paged
+    // section is paged in once, every spatial index is built, and
+    // every transit table is populated. This is the steady-state
+    // baseline #153/#154/#155 will measure against.
+    crate::server::rss::checkpoint("health.ready");
 
     // Find free ports
     let http_port = match port {

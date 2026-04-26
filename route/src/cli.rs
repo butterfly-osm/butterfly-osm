@@ -421,6 +421,22 @@ pub enum Commands {
         /// Log format: "text" (default) or "json"
         #[arg(long, default_value = "text")]
         log_format: String,
+
+        /// Emit RSS / RssAnon / RssFile checkpoints (parsed from
+        /// `/proc/self/smaps_rollup`) at every boot phase: shared
+        /// section load, each per-mode bundle load, global spatial
+        /// index, each per-mode spatial index, and `/health` first
+        /// becomes ready. Lines are tagged `RSS_CHECKPOINT phase=...
+        /// total_kb=N anon_kb=M file_kb=K` so they can be grepped out
+        /// of the structured log stream.
+        ///
+        /// Also enabled by setting `BUTTERFLY_RSS_CHECKPOINTS=1`.
+        ///
+        /// This instrumentation is the foundation for the
+        /// #153/#154/#155 measurement discipline; it stays in the
+        /// codebase as a supported flag, not as a one-shot diagnostic.
+        #[arg(long, default_value = "false")]
+        rss_checkpoints: bool,
     },
 
     /// Validate CCH correctness by comparing bidirectional CCH vs CCH-Dijkstra
@@ -1395,9 +1411,21 @@ impl Cli {
                 transport,
                 modes,
                 log_format,
+                rss_checkpoints,
             } => {
                 // Initialize structured logging for the serve command
                 server::init_tracing(&log_format);
+
+                // Either CLI flag OR env var BUTTERFLY_RSS_CHECKPOINTS=1
+                // turns on the checkpoint instrumentation.
+                let rss_checkpoints = rss_checkpoints
+                    || std::env::var("BUTTERFLY_RSS_CHECKPOINTS")
+                        .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+                        .unwrap_or(false);
+                if rss_checkpoints {
+                    crate::server::rss::set_enabled(true);
+                    crate::server::rss::checkpoint("startup");
+                }
 
                 let transport_mode = server::Transport::parse(&transport)?;
                 let mode_filter = modes.map(|s| {
