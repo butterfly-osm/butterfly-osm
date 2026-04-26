@@ -735,6 +735,15 @@ pub async fn catchment_handler(
     // actual radius is re-evaluated per store when `Auto`.
     let radius_param = parse_radius(req.radius_km.as_ref());
 
+    // Hoist client coordinates out of the per-store loop. They're identical
+    // across iterations, so allocating them once amortises a Vec construction
+    // that was otherwise O(n_stores * n_clients).
+    let auto_client_coords: Vec<(f64, f64)> = if matches!(radius_param, RadiusParam::Auto) {
+        req.clients.iter().map(|c| (c.lon, c.lat)).collect()
+    } else {
+        Vec::new()
+    };
+
     // For each store: compute 1-to-N matrix via Bucket M2M, then catchment
     for store_input in &req.stores {
         // Snap store
@@ -758,10 +767,8 @@ pub async fn catchment_handler(
             RadiusParam::None => None,
             RadiusParam::Km(r) => Some(r),
             RadiusParam::Auto => {
-                let store_coord = vec![(store_input.lon, store_input.lat)];
-                let client_coords: Vec<(f64, f64)> =
-                    req.clients.iter().map(|c| (c.lon, c.lat)).collect();
-                let r = auto_radius_km(&store_coord, &client_coords);
+                let store_coord = (store_input.lon, store_input.lat);
+                let r = auto_radius_km(std::slice::from_ref(&store_coord), &auto_client_coords);
                 if r > 0.0 { Some(r) } else { None }
             }
         };
