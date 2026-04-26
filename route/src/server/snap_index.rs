@@ -40,10 +40,17 @@ pub const DEFAULT_CELL_LOG2: u8 = 17;
 /// to the legacy `SpatialIndex::build_inner` rule (#88's fix).
 const DEDUP_EPS_M: f64 = 50.0;
 
-/// Maximum bbox-expansion ring radius (in cells). Beyond this we bail
-/// out and return None — the corresponding metric coverage at
-/// cell_log2 = 17 is ~6.5 km, which exceeds MAX_SNAP_DISTANCE_M.
-const MAX_RING_RADIUS: i32 = 3;
+/// Maximum bbox-expansion ring radius (in cells). Capped large enough
+/// that MAX_SNAP_DISTANCE_M is fully covered along the *smallest* cell
+/// axis (longitude at 50°N — ~935 m per cell at cell_log2 = 17). The
+/// loop's metric early-exit ends scans much earlier than this in
+/// practice; this is just the worst-case ceiling for points where
+/// nothing snaps.
+///
+/// Math: ceil(MAX_SNAP_DISTANCE_M / cell_size_lon_m_at_50N) =
+/// ceil(5000 / 935) = 6. We round up to 8 for safety against the
+/// haversine approximation drift.
+const MAX_RING_RADIUS: i32 = 8;
 
 // ---------- Builder ---------------------------------------------------------
 
@@ -433,26 +440,27 @@ impl PackedSnapIndex {
         let mut best: Option<(u32, f64, f64, f64)> = None;
         let max2 = MAX_SNAP_DISTANCE_M * MAX_SNAP_DISTANCE_M;
 
-        self.iterate_rings(lon, lat, |sample_idx, p| {
+        self.iterate_rings(lon, lat, |sample_idx, p| -> Option<f64> {
             if !mask_bit_set(&mask.bits, sample_idx) {
-                return;
+                return None;
             }
             if let Some(ef) = edge_filter
                 && !mask_bit_set(ef, p.ebg_id as usize)
             {
-                return;
+                return None;
             }
             let (d2, plon, plat) = sample_distance2(lon, lat, p);
             if d2 > max2 {
-                return;
+                return None;
             }
-            if let Some(b) = best {
-                if d2 < b.3 * b.3 {
-                    best = Some((p.ebg_id, plon, plat, d2.sqrt()));
-                }
-            } else {
+            let beat = match best {
+                Some(b) => d2 < b.3 * b.3,
+                None => true,
+            };
+            if beat {
                 best = Some((p.ebg_id, plon, plat, d2.sqrt()));
             }
+            Some(d2)
         });
         best
     }
@@ -496,29 +504,30 @@ impl PackedSnapIndex {
         let mut best: Option<(u32, f64, f64, f64)> = None;
         let max2 = MAX_SNAP_DISTANCE_M * MAX_SNAP_DISTANCE_M;
 
-        self.iterate_rings(lon, lat, |sample_idx, p| {
+        self.iterate_rings(lon, lat, |sample_idx, p| -> Option<f64> {
             if !mask_bit_set(&mask.bits, sample_idx) {
-                return;
+                return None;
             }
             if let Some(ef) = edge_filter
                 && !mask_bit_set(ef, p.ebg_id as usize)
             {
-                return;
+                return None;
             }
             if !bearing_matches(p.bearing, bearing, range) {
-                return;
+                return None;
             }
             let (d2, plon, plat) = sample_distance2(lon, lat, p);
             if d2 > max2 {
-                return;
+                return None;
             }
-            if let Some(b) = best {
-                if d2 < b.3 * b.3 {
-                    best = Some((p.ebg_id, plon, plat, d2.sqrt()));
-                }
-            } else {
+            let beat = match best {
+                Some(b) => d2 < b.3 * b.3,
+                None => true,
+            };
+            if beat {
                 best = Some((p.ebg_id, plon, plat, d2.sqrt()));
             }
+            Some(d2)
         });
         best
     }
@@ -549,23 +558,33 @@ impl PackedSnapIndex {
         let Some(mask) = self.masks.get(mode_idx as usize) else {
             return Vec::new();
         };
-        // Collect candidates, then dedupe + truncate.
+        // For k-nearest, we need to keep expanding past the first hit
+        // because we need K distinct edges. The early-exit cutoff is
+        // tracked using the worst (largest) of our top-k accepted
+        // distances, but only after we've accumulated k DISTINCT-by-
+        // edge candidates (otherwise dedup might leave us short).
+        // To keep things simple, we collect all accepted samples up
+        // to MAX_SNAP_DISTANCE_M and let the post-loop sort + dedupe
+        // pick the best k.
         let mut cands: Vec<(u32, f64, f64, f64)> = Vec::with_capacity(k * 4);
         let max2 = MAX_SNAP_DISTANCE_M * MAX_SNAP_DISTANCE_M;
-        self.iterate_rings(lon, lat, |sample_idx, p| {
+        self.iterate_rings(lon, lat, |sample_idx, p| -> Option<f64> {
             if !mask_bit_set(&mask.bits, sample_idx) {
-                return;
+                return None;
             }
             if let Some(ef) = edge_filter
                 && !mask_bit_set(ef, p.ebg_id as usize)
             {
-                return;
+                return None;
             }
             let (d2, plon, plat) = sample_distance2(lon, lat, p);
             if d2 > max2 {
-                return;
+                return None;
             }
             cands.push((p.ebg_id, plon, plat, d2.sqrt()));
+            // Don't drive early-exit for k-nearest — return None so
+            // iterate_rings keeps expanding until MAX_RING_RADIUS.
+            None
         });
         cands.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -650,13 +669,18 @@ impl PackedSnapIndex {
         (off[cell_idx] as usize, off[cell_idx + 1] as usize)
     }
 
-    /// Walk concentric cell rings around the query point, calling
-    /// `visit` for every sample in the ring. Stops as soon as the
-    /// best-so-far metric distance is shorter than the metric distance
-    /// from the query point to the next ring's nearest cell boundary.
+    /// Walk concentric cell rings around the query point. The visitor
+    /// returns `Some(d2_m)` for samples it ACCEPTS (passing mode mask,
+    /// edge filter, bearing filter, etc.) and `None` for rejected
+    /// samples. iterate_rings tracks only the best ACCEPTED squared
+    /// distance for the early-exit cutoff. This is critical: if we
+    /// counted physically-close-but-rejected samples toward the cutoff,
+    /// the loop could terminate before reaching mode-eligible samples
+    /// in outer rings, and snap_filtered queries near pedestrianized
+    /// areas (or at bbox edges) would silently fail.
     fn iterate_rings<F>(&self, lon: f64, lat: f64, mut visit: F)
     where
-        F: FnMut(usize, &PackedPoint),
+        F: FnMut(usize, &PackedPoint) -> Option<f64>,
     {
         if self.points.points.is_empty() {
             return;
@@ -678,14 +702,9 @@ impl PackedSnapIndex {
         let cell_size_lon_m = cell_size as f64 / 1e7 * METERS_PER_DEG_LON_AT_50;
         let cell_size_lat_m = cell_size as f64 / 1e7 * METERS_PER_DEG_LAT;
 
-        // Track the best squared metric distance found so far so we
-        // can early-exit when the next ring can't possibly contain a
-        // closer sample.
-        let mut best_d2_m: Option<f64> = None;
+        let mut best_accepted_d2: Option<f64> = None;
 
         for ring in 0..=MAX_RING_RADIUS {
-            // For ring `r`, scan all cells with max(|dx|, |dy|) == r.
-            // Iterating ring by ring lets us early-exit cleanly.
             let cx_min = qcx - ring;
             let cx_max = qcx + ring;
             let cy_min = qcy - ring;
@@ -707,42 +726,26 @@ impl PackedSnapIndex {
                     let (start, end) = self.cell_range(cell_idx);
                     let pts = &self.points.points[start..end];
                     for (offset, p) in pts.iter().enumerate() {
-                        // Track best for early-exit gating
-                        let dlat_m = (p.lat_e7 as f64 - lat_e7 as f64) / 1e7 * METERS_PER_DEG_LAT;
-                        let dlon_m =
-                            (p.lon_e7 as f64 - lon_e7 as f64) / 1e7 * METERS_PER_DEG_LON_AT_50;
-                        let d2 = dlat_m * dlat_m + dlon_m * dlon_m;
-                        if best_d2_m.map(|b| d2 < b).unwrap_or(true) {
-                            best_d2_m = Some(d2);
+                        if let Some(d2) = visit(start + offset, p) {
+                            best_accepted_d2 = Some(match best_accepted_d2 {
+                                Some(b) => b.min(d2),
+                                None => d2,
+                            });
                         }
-                        visit(start + offset, p);
                     }
                 }
             }
 
-            // Early exit: if the best-so-far is closer than the
-            // distance from the query point to the inner edge of the
-            // *next* ring, no further sample can beat it.
-            if let Some(b) = best_d2_m {
-                // Distance from query to nearest cell-boundary of the
-                // *next* ring (ring + 1) is `ring + 1` cell-sizes
-                // shifted by the query's intra-cell offset. We use a
-                // conservative lower bound: `ring * cell_size` worth
-                // of metres in either axis. (Use the smaller of
-                // lat/lon metric for the bound to stay conservative.)
+            // Early exit: if the best ACCEPTED so far is closer than the
+            // distance from query to the next ring's inner edge, no
+            // further accepted sample can beat it.
+            if let Some(b) = best_accepted_d2 {
                 let next_ring = (ring + 1) as f64;
                 let inner_m_lon = next_ring * cell_size_lon_m;
                 let inner_m_lat = next_ring * cell_size_lat_m;
                 let inner_m = inner_m_lon.min(inner_m_lat);
                 if b < inner_m * inner_m {
                     return;
-                }
-                // Also cap at MAX_SNAP_DISTANCE_M.
-                if b > MAX_SNAP_DISTANCE_M * MAX_SNAP_DISTANCE_M {
-                    // best is too far anyway; keep expanding (the
-                    // caller will reject it). But continue rings since
-                    // a closer sample may lie outside the current
-                    // best's cell.
                 }
             }
         }
