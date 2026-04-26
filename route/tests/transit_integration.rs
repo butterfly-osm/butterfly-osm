@@ -1807,7 +1807,8 @@ fn belgium_flight_edges_batch_totals_match_matrix() {
     let dst_rank = mode_data.order.perm[dst_filt as usize];
     let query = CchQuery::with_custom_weights(
         &mode_data.cch_topo,
-        &mode_data.down_rev,
+        &mode_data.up_adj_flat,
+        &mode_data.down_rev_flat,
         &mode_data.cch_weights,
     );
     let result = query.query(src_rank, dst_rank).expect("valid CCH query");

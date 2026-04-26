@@ -31,7 +31,6 @@ pub struct ModeData {
     // CCH hierarchy for this mode
     pub cch_topo: CchTopo,
     pub order: OrderEbg,
-    pub down_rev: DownReverseAdj,
     pub cch_weights: CchWeights,
     pub cch_weights_dist: CchWeights,
     // Filtered EBG for node ID mapping
@@ -40,6 +39,14 @@ pub struct ModeData {
     pub node_weights: Vec<u32>,
     pub mask: Vec<u64>,
     // Flat adjacencies for bucket M2M - TIME metric (pre-built for performance)
+    //
+    // After #152, the time flats also serve as the topology back-end for
+    // the cold custom-weight `CchQuery` path (alternatives, exclude/avoid,
+    // transit access/egress, map matching). They carry `topo_edge_idx`,
+    // which custom callers use to index their per-call `CchWeights.up` /
+    // `CchWeights.down` arrays. The legacy `DownReverseAdj` Vec-of-Vec
+    // that previously lived here is gone (~320 MB heap reclaimed on
+    // Belgium across 4 modes).
     pub up_adj_flat: UpAdjFlat,
     pub down_rev_flat: DownReverseAdjFlat,
     /// Forward DOWN flat (TIME metric). Used by the isochrone forward
@@ -57,15 +64,6 @@ pub struct ModeData {
 }
 
 // CchWeights is imported from crate::formats
-
-/// Reverse adjacency for DOWN edges (used in backward search)
-/// For each node y, stores all nodes x that have DOWN edges x→y
-/// along with the original edge index (to look up weights)
-pub struct DownReverseAdj {
-    pub offsets: Vec<u64>,  // n_nodes + 1
-    pub sources: Vec<u32>,  // source node x for reverse edge
-    pub edge_idx: Vec<u32>, // index into down_targets/down_weights for the original x→y edge
-}
 
 /// Server state containing all loaded data
 pub struct ServerState {
@@ -723,9 +721,6 @@ fn load_mode_data(
     let topo_path = step7_dir.join(format!("cch.{}.topo", mode_name));
     let cch_topo = CchTopoFile::read(&topo_path)?;
 
-    // Build reverse DOWN adjacency for this mode's CCH
-    let down_rev = build_down_reverse_adj(&cch_topo);
-
     // Load node weights from step 5 (indexed by original EBG node ID)
     let weights_path = step5_dir.join(format!("w.{}.u32", mode_name));
     let weights_data = mod_weights::read_all(&weights_path)?;
@@ -768,7 +763,6 @@ fn load_mode_data(
         mode,
         cch_topo,
         order,
-        down_rev,
         cch_weights,
         cch_weights_dist,
         filtered_ebg,
@@ -782,57 +776,6 @@ fn load_mode_data(
         down_adj_flat_dist,
         exclude_cache: parking_lot::RwLock::new(HashMap::new()),
     })
-}
-
-/// Load CCH weights from file
-/// Build reverse adjacency for DOWN edges
-/// For each node y, we want to find all edges x→y in the DOWN graph
-/// This allows backward search to iterate over incoming edges efficiently
-fn build_down_reverse_adj(topo: &CchTopo) -> DownReverseAdj {
-    let n_nodes = topo.n_nodes as usize;
-    let n_down = topo.down_targets.len();
-
-    // First pass: count incoming edges per node
-    let mut counts = vec![0usize; n_nodes];
-    for &target in topo.down_targets.iter() {
-        counts[target as usize] += 1;
-    }
-
-    // Build offsets
-    let mut offsets = Vec::with_capacity(n_nodes + 1);
-    let mut offset = 0u64;
-    for &count in &counts {
-        offsets.push(offset);
-        offset += count as u64;
-    }
-    offsets.push(offset);
-
-    // Allocate arrays
-    let mut sources = vec![0u32; n_down];
-    let mut edge_idx = vec![0u32; n_down];
-
-    // Second pass: fill in reverse edges
-    // Reset counts to use as position trackers
-    counts.fill(0);
-
-    for source in 0..n_nodes {
-        let start = topo.down_offsets[source] as usize;
-        let end = topo.down_offsets[source + 1] as usize;
-
-        for i in start..end {
-            let target = topo.down_targets[i] as usize;
-            let pos = offsets[target] as usize + counts[target];
-            sources[pos] = source as u32;
-            edge_idx[pos] = i as u32;
-            counts[target] += 1;
-        }
-    }
-
-    DownReverseAdj {
-        offsets,
-        sources,
-        edge_idx,
-    }
 }
 
 /// Load road names from ways.raw (step1 output).
@@ -991,7 +934,6 @@ fn load_mode_data_from_bundle(
             "madvise(DONTNEED) on cch.topo section"
         );
     }
-    let down_rev = build_down_reverse_adj(&cch_topo);
 
     let weights_data = mod_weights::read_all_from_bytes(fetch("node_weights.time")?)?;
 
@@ -1079,7 +1021,6 @@ fn load_mode_data_from_bundle(
         mode,
         cch_topo,
         order,
-        down_rev,
         cch_weights,
         cch_weights_dist,
         filtered_ebg,

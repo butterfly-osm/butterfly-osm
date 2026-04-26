@@ -240,7 +240,8 @@ fn test_route_table_distance_consistency() {
             // Get distance via P2P query with distance weights
             let _dist_query = CchQuery::with_custom_weights(
                 &mode_data.cch_topo,
-                &mode_data.down_rev,
+                &mode_data.up_adj_flat,
+                &mode_data.down_rev_flat,
                 // Note: we need distance weights for P2P too
                 // For now, use table result as ground truth
                 &mode_data.cch_weights, // time weights (not ideal, see below)
@@ -756,8 +757,12 @@ fn test_alternative_routes_differ() {
         }
     }
 
-    let alt_query =
-        CchQuery::with_custom_weights(&mode_data.cch_topo, &mode_data.down_rev, &penalized);
+    let alt_query = CchQuery::with_custom_weights(
+        &mode_data.cch_topo,
+        &mode_data.up_adj_flat,
+        &mode_data.down_rev_flat,
+        &penalized,
+    );
 
     let alt = alt_query
         .query(src_rank, dst_rank)
@@ -1364,8 +1369,12 @@ fn test_alternative_routes_all_modes() {
                 }
             }
 
-            let alt_query =
-                CchQuery::with_custom_weights(&mode_data.cch_topo, &mode_data.down_rev, &penalized);
+            let alt_query = CchQuery::with_custom_weights(
+                &mode_data.cch_topo,
+                &mode_data.up_adj_flat,
+                &mode_data.down_rev_flat,
+                &penalized,
+            );
 
             if let Some(alt) = alt_query.query(src_rank, dst_rank) {
                 // Alternative should exist
