@@ -489,7 +489,7 @@ fn test_route_path_validity() {
             let (_geometry, _distance_m) = super::geometry::build_geometry(
                 &ebg_path,
                 &state.ebg_nodes,
-            &state.edge_geom,
+                &state.edge_geom,
                 super::geometry::GeometryFormat::Polyline6,
             );
 
@@ -1293,7 +1293,7 @@ fn test_route_step_locations_on_route() {
         &ebg_path,
         &state.ebg_nodes,
         &state.nbg_geo,
-            &state.edge_geom,
+        &state.edge_geom,
         &mode_data.node_weights,
         &state.way_names,
         super::geometry::GeometryFormat::Polyline6,

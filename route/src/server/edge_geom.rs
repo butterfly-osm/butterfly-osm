@@ -36,10 +36,7 @@ pub struct EdgeGeometry {
 impl EdgeGeometry {
     /// Build from on-disk sections (zero-copy or owning, depending on
     /// the `Cow` shape carried by the parsed structs).
-    pub fn from_sections(
-        off: EdgeGeomOffsets,
-        pts: EdgeGeomPoints,
-    ) -> anyhow::Result<Self> {
+    pub fn from_sections(off: EdgeGeomOffsets, pts: EdgeGeomPoints) -> anyhow::Result<Self> {
         anyhow::ensure!(
             off.n_points == pts.n_points,
             "edge_geom_offsets.n_points ({}) != edge_geom_points.n_points ({})",
@@ -339,8 +336,8 @@ mod tests {
     fn from_legacy_polylines_matches_from_sections() {
         // Build a legacy NbgGeo with the same content as the fixture
         // and confirm `polyline(i)` returns identical bytes.
-        use crate::formats::nbg_geo::{NbgEdge, PolyLine};
         use crate::formats::NbgGeo;
+        use crate::formats::nbg_geo::{NbgEdge, PolyLine};
 
         let polylines = vec![
             PolyLine {
@@ -406,9 +403,7 @@ mod tests {
         let off = EdgeGeomOffsets {
             n_edges: g.n_edges() as u32,
             n_points: g.n_points() as u32,
-            offsets: Cow::Owned((0..=g.n_edges())
-                .map(|i| g.offsets[i])
-                .collect()),
+            offsets: Cow::Owned((0..=g.n_edges()).map(|i| g.offsets[i]).collect()),
         };
         let pts = EdgeGeomPoints {
             n_points: g.n_points() as u32,

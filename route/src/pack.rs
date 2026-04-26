@@ -708,7 +708,11 @@ fn pack_edge_geometry(w: &mut ContainerWriter, step3: &Path) -> Result<()> {
     let n_edges = nbg_geo.polylines.len();
     let mut offsets: Vec<u32> = Vec::with_capacity(n_edges + 1);
     // Estimate: ~30 M vertices on Belgium → 240 MB. Pre-size conservatively.
-    let est_pts = nbg_geo.polylines.iter().map(|p| p.lat_fxp.len()).sum::<usize>();
+    let est_pts = nbg_geo
+        .polylines
+        .iter()
+        .map(|p| p.lat_fxp.len())
+        .sum::<usize>();
     let mut points: Vec<i32> = Vec::with_capacity(est_pts.checked_mul(2).unwrap_or(0));
 
     let mut cumulative: u32 = 0;

@@ -708,12 +708,13 @@ impl ServerState {
         // open time they're still there now, so the back-compat branch
         // is for old containers that loaded the full NbgGeo.
         let edge_geom = if has_flat_edge_geom {
-            let eg = try_load_edge_geometry(&container, static_mmap, static_bytes)?
-                .ok_or_else(|| {
+            let eg = try_load_edge_geometry(&container, static_mmap, static_bytes)?.ok_or_else(
+                || {
                     anyhow::anyhow!(
                         "edge_geom sections vanished between open and load — container corrupt?"
                     )
-                })?;
+                },
+            )?;
             tracing::info!(
                 n_edges = eg.n_edges(),
                 n_points = eg.n_points(),
@@ -1564,7 +1565,7 @@ fn try_load_edge_geometry(
     let pts = EdgeGeomPointsFile::read_from_bytes_zero_copy(pts_bytes)
         .with_context(|| "reading shared/edge_geom_points zero-copy")?;
 
-    let eg = EdgeGeometry::from_sections(off, pts)
-        .with_context(|| "stitching edge_geom sections")?;
+    let eg =
+        EdgeGeometry::from_sections(off, pts).with_context(|| "stitching edge_geom sections")?;
     Ok(Some(eg))
 }

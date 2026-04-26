@@ -56,6 +56,7 @@ pub use cch_weights::{CchWeights, CchWeightsFile};
 pub use ebg_csr::{EbgCsr, EbgCsrFile};
 pub use ebg_nodes::{EbgNode, EbgNodes, EbgNodesFile};
 pub use ebg_turn_table::{TurnEntry, TurnKind, TurnTable, TurnTableFile};
+pub use edge_geom::{EdgeGeomOffsets, EdgeGeomOffsetsFile, EdgeGeomPoints, EdgeGeomPointsFile};
 pub use filtered_ebg::{FilteredEbg, FilteredEbgFile};
 pub use hybrid_state::{HybridState, HybridStateFile};
 pub use mod_mask::ModMask;
@@ -70,9 +71,6 @@ pub use order_ebg::{OrderEbg, OrderEbgFile};
 pub use relations::{Member, MemberKind, Relation, RelationsFile};
 pub use snap_index::{
     PackedPoint, SnapGrid, SnapGridFile, SnapMask, SnapMaskFile, SnapPoints, SnapPointsFile,
-};
-pub use edge_geom::{
-    EdgeGeomOffsets, EdgeGeomOffsetsFile, EdgeGeomPoints, EdgeGeomPointsFile,
 };
 pub use turn_rules::TurnRule;
 pub use way_attrs::WayAttr;

@@ -5,8 +5,8 @@
 //! - Transition probability: exponential on |route_distance - great_circle_distance|
 //! - Route distance: sum of physical edge lengths (length_mm) along the fastest path
 
-use crate::server::edge_geom::EdgeGeometry;
 use crate::profile_abi::Mode;
+use crate::server::edge_geom::EdgeGeometry;
 
 use super::query::CchQuery;
 use super::state::{CchWeights, ModeData, ServerState};
