@@ -90,10 +90,19 @@ pub fn build_edge_exclude_flags(
     }
 
     let attrs = way_attrs::read_all(way_attrs_path)?;
+    build_edge_exclude_flags_from_attrs(ebg_nodes, &attrs)
+}
+
+/// Same as `build_edge_exclude_flags` but takes pre-loaded attrs (e.g.
+/// decoded from a mmap-backed `mode/<mode>/way_attrs` section).
+pub fn build_edge_exclude_flags_from_attrs(
+    ebg_nodes: &EbgNodes,
+    attrs: &[way_attrs::WayAttr],
+) -> anyhow::Result<Vec<u8>> {
 
     // Build lookup: way_id (lower 32 bits) → exclude flags
     let mut way_flags: rustc_hash::FxHashMap<u32, u8> = rustc_hash::FxHashMap::default();
-    for attr in &attrs {
+    for attr in attrs {
         let way_id_32 = (attr.way_id & 0xFFFF_FFFF) as u32;
         let mut flags = 0u8;
 

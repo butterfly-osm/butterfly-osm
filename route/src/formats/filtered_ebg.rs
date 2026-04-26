@@ -237,7 +237,14 @@ impl FilteredEbgFile {
 
     /// Read filtered EBG from file
     pub fn read<P: AsRef<Path>>(path: P) -> Result<FilteredEbg> {
-        let mut reader = BufReader::new(File::open(path.as_ref())?);
+        Self::read_from_reader(BufReader::new(File::open(path.as_ref())?))
+    }
+
+    pub fn read_from_bytes(bytes: &[u8]) -> Result<FilteredEbg> {
+        Self::read_from_reader(std::io::Cursor::new(bytes))
+    }
+
+    fn read_from_reader<R: Read>(mut reader: R) -> Result<FilteredEbg> {
         let mut crc_digest = crc::Digest::new();
 
         // Read header

@@ -74,7 +74,14 @@ impl OrderEbgFile {
 
     /// Read order.ebg from file
     pub fn read<P: AsRef<Path>>(path: P) -> Result<OrderEbg> {
-        let mut reader = BufReader::new(File::open(path)?);
+        Self::read_from_reader(BufReader::new(File::open(path)?))
+    }
+
+    pub fn read_from_bytes(bytes: &[u8]) -> Result<OrderEbg> {
+        Self::read_from_reader(std::io::Cursor::new(bytes))
+    }
+
+    fn read_from_reader<R: Read>(mut reader: R) -> Result<OrderEbg> {
         let mut crc_digest = crc::Digest::new();
 
         // Read header (48 bytes)

@@ -96,7 +96,14 @@ impl EbgNodesFile {
 
     /// Read EBG nodes from file
     pub fn read<P: AsRef<Path>>(path: P) -> Result<EbgNodes> {
-        let mut reader = BufReader::new(File::open(path)?);
+        Self::read_from_reader(BufReader::new(File::open(path)?))
+    }
+
+    pub fn read_from_bytes(bytes: &[u8]) -> Result<EbgNodes> {
+        Self::read_from_reader(std::io::Cursor::new(bytes))
+    }
+
+    fn read_from_reader<R: Read>(mut reader: R) -> Result<EbgNodes> {
         let mut crc_digest = crc::Digest::new();
 
         let mut header = vec![0u8; 64];

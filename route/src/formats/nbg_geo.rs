@@ -126,9 +126,15 @@ impl NbgGeoFile {
 
     /// Read NBG geo from file
     pub fn read<P: AsRef<Path>>(path: P) -> Result<NbgGeo> {
-        use std::io::{BufReader, Read};
+        use std::io::BufReader;
+        Self::read_from_reader(BufReader::new(std::fs::File::open(path)?))
+    }
 
-        let mut reader = BufReader::new(std::fs::File::open(path)?);
+    pub fn read_from_bytes(bytes: &[u8]) -> Result<NbgGeo> {
+        Self::read_from_reader(std::io::Cursor::new(bytes))
+    }
+
+    fn read_from_reader<R: std::io::Read>(mut reader: R) -> Result<NbgGeo> {
         let mut crc_digest = crc::Digest::new();
 
         let mut header = vec![0u8; 64];

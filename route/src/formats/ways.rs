@@ -291,30 +291,33 @@ impl WaysFile {
         [u8; 32],
         [u8; 32],
     )> {
-        let mut file = File::open(path)?;
-        let file_len = file.metadata()?.len();
+        let bytes = std::fs::read(path)?;
+        Self::read_dictionaries_from_bytes(&bytes)
+    }
 
-        if file_len < 32 + 16 {
+    /// Same as `read_dictionaries` but on an in-memory slice.
+    #[allow(clippy::type_complexity)]
+    pub fn read_dictionaries_from_bytes(
+        all_bytes: &[u8],
+    ) -> Result<(
+        HashMap<u32, String>,
+        HashMap<u32, String>,
+        [u8; 32],
+        [u8; 32],
+    )> {
+        if all_bytes.len() < 32 + 16 {
             anyhow::bail!("File too short");
         }
 
-        // Read header (32 bytes: magic(4) + version(2) + reserved(2) + count(8) + kdict_off(8) + vdict_off(8))
-        let mut header = [0u8; 32];
-        file.read_exact(&mut header)?;
-
+        let header = &all_bytes[..32];
         let kdict_off = u64::from_le_bytes(header[16..24].try_into()?);
         let vdict_off = u64::from_le_bytes(header[24..32].try_into()?);
 
-        // Read entire file
-        let mut all_bytes = vec![0u8; file_len as usize];
-        all_bytes[..32].copy_from_slice(&header);
-        file.read_exact(&mut all_bytes[32..])?;
-
         // Read key dictionary
-        let key_dict = Self::read_dict(&all_bytes, kdict_off as usize, vdict_off as usize)?;
+        let key_dict = Self::read_dict(all_bytes, kdict_off as usize, vdict_off as usize)?;
 
         // Read value dictionary
-        let val_dict = Self::read_dict(&all_bytes, vdict_off as usize, all_bytes.len() - 16)?;
+        let val_dict = Self::read_dict(all_bytes, vdict_off as usize, all_bytes.len() - 16)?;
 
         // Compute SHA-256 of dictionaries
         let key_sha256 = Self::compute_dict_sha256(&key_dict);
@@ -372,6 +375,34 @@ impl WaysFile {
         file.seek(SeekFrom::Start(32))?;
 
         let reader = BufReader::with_capacity(1024 * 1024, file); // 1MB buffer
+
+        Ok(WayStreamIterator {
+            reader,
+            remaining: count,
+            _end_offset: kdict_off,
+        })
+    }
+
+    /// Same as `stream_ways` but reads from an in-memory byte slice. The
+    /// returned iterator borrows from `bytes`; the caller must keep the
+    /// underlying buffer (e.g. mmap) alive for the iterator's lifetime.
+    #[allow(clippy::type_complexity)]
+    pub fn stream_ways_from_bytes(
+        bytes: &[u8],
+    ) -> Result<impl Iterator<Item = Result<(i64, Vec<u32>, Vec<u32>, Vec<i64>)>> + '_> {
+        if bytes.len() < 32 + 16 {
+            anyhow::bail!("ways.raw byte slice too short");
+        }
+        let header = &bytes[..32];
+        let count = u64::from_le_bytes(header[8..16].try_into()?);
+        let kdict_off = u64::from_le_bytes(header[16..24].try_into()?);
+
+        // Iterator works directly on a Cursor over the body slice.
+        // Cursor implements Read; no BufReader needed because the
+        // backing memory is already contiguous.
+        let body = &bytes[32..];
+        let cursor = std::io::Cursor::new(body);
+        let reader = std::io::BufReader::with_capacity(1, cursor);
 
         Ok(WayStreamIterator {
             reader,

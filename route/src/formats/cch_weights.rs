@@ -32,7 +32,16 @@ impl CchWeightsFile {
     pub fn read<P: AsRef<Path>>(path: P) -> Result<CchWeights> {
         let file = File::open(path.as_ref())?;
         let file_len = file.metadata()?.len() as usize;
-        let mut reader = BufReader::new(file);
+        Self::read_from_reader(BufReader::new(file), file_len)
+    }
+
+    /// Read directly from an in-memory byte slice (e.g. an mmap-backed
+    /// section of a `butterfly.dat` container).
+    pub fn read_from_bytes(bytes: &[u8]) -> Result<CchWeights> {
+        Self::read_from_reader(std::io::Cursor::new(bytes), bytes.len())
+    }
+
+    fn read_from_reader<R: Read>(mut reader: R, file_len: usize) -> Result<CchWeights> {
         let mut crc_digest = crc::Digest::new();
 
         // Read header (32 bytes)
@@ -101,8 +110,7 @@ impl CchWeightsFile {
                 (up_middle, down_middle)
             }
             len => anyhow::bail!(
-                "Invalid cch.weights size for {}: got {}, expected {} (v1) or {} (v2)",
-                path.as_ref().display(),
+                "Invalid cch.weights size: got {}, expected {} (v1) or {} (v2)",
                 len,
                 expected_v1_len,
                 expected_v2_len
