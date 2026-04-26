@@ -1057,9 +1057,10 @@ fn find_file(base: &Path, candidates: &[String]) -> Option<PathBuf> {
         // Also try going up one level if base doesn't have the file
         let parent_path = base.parent().map(|p| p.join(candidate));
         if let Some(p) = parent_path
-            && p.exists() {
-                return Some(p);
-            }
+            && p.exists()
+        {
+            return Some(p);
+        }
     }
     None
 }

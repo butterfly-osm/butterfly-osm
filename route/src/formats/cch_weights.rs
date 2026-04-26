@@ -81,10 +81,8 @@ impl CchWeightsFile {
             MAGIC,
             magic
         );
-        let n_up =
-            u64::from_le_bytes(header[8..16].try_into().unwrap()) as usize;
-        let n_down =
-            u64::from_le_bytes(header[16..24].try_into().unwrap()) as usize;
+        let n_up = u64::from_le_bytes(header[8..16].try_into().unwrap()) as usize;
+        let n_down = u64::from_le_bytes(header[16..24].try_into().unwrap()) as usize;
 
         // ----- Layout: header(32) | up(4*n_up) | down(4*n_down) |
         //               [v2: up_middle(4*n_up) | down_middle(4*n_down)] |
@@ -119,11 +117,7 @@ impl CchWeightsFile {
             let dnm: &'static [u32] = bytemuck::cast_slice(&bytes[dnm_off..dnm_end]);
             (Cow::Borrowed(upm), Cow::Borrowed(dnm), dnm_end)
         } else {
-            (
-                Cow::Borrowed(&[][..]),
-                Cow::Borrowed(&[][..]),
-                down_end,
-            )
+            (Cow::Borrowed(&[][..]), Cow::Borrowed(&[][..]), down_end)
         };
 
         // ----- CRC: covers everything before the 16-byte footer -----

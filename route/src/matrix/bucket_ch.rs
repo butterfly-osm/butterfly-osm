@@ -407,7 +407,11 @@ fn parse_adj_flat_header(
     Ok((has_topo_idx, n_nodes, n_edges))
 }
 
-fn body_layout(n_nodes: usize, n_edges: usize, has_topo_idx: bool) -> (usize, usize, usize, usize, usize) {
+fn body_layout(
+    n_nodes: usize,
+    n_edges: usize,
+    has_topo_idx: bool,
+) -> (usize, usize, usize, usize, usize) {
     // Returns (offsets_off, targets_off, weights_off, topo_off, body_end)
     // All offsets are absolute byte offsets from the start of the file
     // (i.e. inclusive of the header). The container guarantees the
@@ -460,8 +464,7 @@ fn verify_adj_flat_crcs(bytes: &[u8], body_end: usize) -> anyhow::Result<()> {
     );
     let body = &bytes[ADJ_FLAT_HEADER_SIZE..body_end];
     let computed_body = super::super::formats::crc::checksum(body);
-    let stored_body =
-        u64::from_le_bytes(bytes[body_end..body_end + 8].try_into().unwrap());
+    let stored_body = u64::from_le_bytes(bytes[body_end..body_end + 8].try_into().unwrap());
     anyhow::ensure!(
         computed_body == stored_body,
         "adj-flat body CRC mismatch: computed 0x{:016X}, stored 0x{:016X}",
@@ -469,8 +472,7 @@ fn verify_adj_flat_crcs(bytes: &[u8], body_end: usize) -> anyhow::Result<()> {
         stored_body
     );
     let computed_file = super::super::formats::crc::checksum(&bytes[..body_end]);
-    let stored_file =
-        u64::from_le_bytes(bytes[body_end + 8..body_end + 16].try_into().unwrap());
+    let stored_file = u64::from_le_bytes(bytes[body_end + 8..body_end + 16].try_into().unwrap());
     anyhow::ensure!(
         computed_file == stored_file,
         "adj-flat file CRC mismatch: computed 0x{:016X}, stored 0x{:016X}",
@@ -521,8 +523,7 @@ impl UpAdjFlatFile {
     /// file CRCs before returning. Section start MUST be 8-byte aligned
     /// (the container writer guarantees this).
     pub fn read_from_bytes(bytes: &'static [u8]) -> anyhow::Result<UpAdjFlat> {
-        let (has_topo_idx, n_nodes, n_edges) =
-            parse_adj_flat_header(bytes, UP_ADJ_FLAT_MAGIC)?;
+        let (has_topo_idx, n_nodes, n_edges) = parse_adj_flat_header(bytes, UP_ADJ_FLAT_MAGIC)?;
         let (offsets_off, targets_off, weights_off, topo_off, body_end) =
             body_layout(n_nodes, n_edges, has_topo_idx);
         anyhow::ensure!(
@@ -581,8 +582,7 @@ impl DownAdjFlatFile {
     }
 
     pub fn read_from_bytes(bytes: &'static [u8]) -> anyhow::Result<DownAdjFlat> {
-        let (has_topo_idx, n_nodes, n_edges) =
-            parse_adj_flat_header(bytes, DOWN_ADJ_FLAT_MAGIC)?;
+        let (has_topo_idx, n_nodes, n_edges) = parse_adj_flat_header(bytes, DOWN_ADJ_FLAT_MAGIC)?;
         anyhow::ensure!(
             !has_topo_idx,
             "DownAdjFlat must not carry topo_edge_idx (has_topo_idx=1)"
@@ -1471,7 +1471,6 @@ impl BucketM2MEngine {
 
         (matrix, stats)
     }
-
 }
 
 /// Fully optimized version using pre-built flat adjacencies for both directions
@@ -1900,9 +1899,8 @@ pub fn table_bucket_parallel(
             FORWARD_STATE.with(|state_cell| {
                 FORWARD_BUCKET_ITEMS.with(|items_cell| {
                     let mut state_opt = state_cell.borrow_mut();
-                    let state = state_opt.get_or_insert_with(|| {
-                        SearchState::new(n_nodes, avg_visited)
-                    });
+                    let state =
+                        state_opt.get_or_insert_with(|| SearchState::new(n_nodes, avg_visited));
                     if state.entries.len() != n_nodes {
                         *state = SearchState::new(n_nodes, avg_visited);
                     }
@@ -1963,9 +1961,7 @@ pub fn table_bucket_parallel(
 
             BACKWARD_STATE.with(|state_cell| {
                 let mut state_opt = state_cell.borrow_mut();
-                let state = state_opt.get_or_insert_with(|| {
-                    SearchState::new(n_nodes, avg_visited)
-                });
+                let state = state_opt.get_or_insert_with(|| SearchState::new(n_nodes, avg_visited));
                 if state.entries.len() != n_nodes {
                     *state = SearchState::new(n_nodes, avg_visited);
                 }
@@ -2095,9 +2091,9 @@ impl BucketArena {
 mod step_a_tests {
     use super::*;
     use crate::formats::BitsetField;
-    use std::borrow::Cow;
     #[allow(unused_imports)]
     use crate::formats::CchTopo;
+    use std::borrow::Cow;
 
     /// Build a small synthetic CCH with mixed original + shortcut edges
     /// and one INF entry, verify flat middles match the topo middles for
@@ -2175,7 +2171,10 @@ mod step_a_tests {
         let (topo, w) = make_cch();
         let flat = UpAdjFlat::build(&topo, &w);
         assert_eq!(flat.weights.len(), 3);
-        assert!(flat.topo_edge_idx.is_empty(), "default build skips topo back-ref");
+        assert!(
+            flat.topo_edge_idx.is_empty(),
+            "default build skips topo back-ref"
+        );
     }
 
     #[test]
@@ -2199,10 +2198,12 @@ mod step_a_tests {
                 let target = topo.down_targets[i];
                 let f_off = flat.offsets[source] as usize;
                 let f_end = flat.offsets[source + 1] as usize;
-                let found = (f_off..f_end).any(|slot| {
-                    flat.targets[slot] == target && flat.weights[slot] == w_topo
-                });
-                assert!(found, "edge {source}->{target} w={w_topo} missing in DownAdjFlat");
+                let found = (f_off..f_end)
+                    .any(|slot| flat.targets[slot] == target && flat.weights[slot] == w_topo);
+                assert!(
+                    found,
+                    "edge {source}->{target} w={w_topo} missing in DownAdjFlat"
+                );
             }
         }
     }
@@ -2320,11 +2321,7 @@ mod step_a_tests {
         let res = UpAdjFlatFile::read_from_bytes(leaked);
         assert!(res.is_err(), "corruption should fail CRC check");
         let msg = res.err().expect("expected error").to_string();
-        assert!(
-            msg.contains("CRC mismatch"),
-            "unexpected error: {}",
-            msg
-        );
+        assert!(msg.contains("CRC mismatch"), "unexpected error: {}", msg);
     }
 
     #[test]

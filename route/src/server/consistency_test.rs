@@ -744,13 +744,15 @@ fn test_alternative_routes_differ() {
     for &(_node, edge_idx) in &primary.forward_parent {
         let idx = edge_idx as usize;
         if idx < penalized.up.len() {
-            let new_val = penalized.up[idx].saturating_mul(3); penalized.up.to_mut()[idx] = new_val;
+            let new_val = penalized.up[idx].saturating_mul(3);
+            penalized.up.to_mut()[idx] = new_val;
         }
     }
     for &(_node, edge_idx) in &primary.backward_parent {
         let idx = edge_idx as usize;
         if idx < penalized.down.len() {
-            let new_val = penalized.down[idx].saturating_mul(3); penalized.down.to_mut()[idx] = new_val;
+            let new_val = penalized.down[idx].saturating_mul(3);
+            penalized.down.to_mut()[idx] = new_val;
         }
     }
 
@@ -1350,13 +1352,15 @@ fn test_alternative_routes_all_modes() {
             for &(_node, edge_idx) in &primary.forward_parent {
                 let idx = edge_idx as usize;
                 if idx < penalized.up.len() {
-                    let new_val = penalized.up[idx].saturating_mul(3); penalized.up.to_mut()[idx] = new_val;
+                    let new_val = penalized.up[idx].saturating_mul(3);
+                    penalized.up.to_mut()[idx] = new_val;
                 }
             }
             for &(_node, edge_idx) in &primary.backward_parent {
                 let idx = edge_idx as usize;
                 if idx < penalized.down.len() {
-                    let new_val = penalized.down[idx].saturating_mul(3); penalized.down.to_mut()[idx] = new_val;
+                    let new_val = penalized.down[idx].saturating_mul(3);
+                    penalized.down.to_mut()[idx] = new_val;
                 }
             }
 

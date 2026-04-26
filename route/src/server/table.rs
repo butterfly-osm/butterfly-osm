@@ -509,10 +509,11 @@ pub fn flat_matrix_to_2d(
                 continue;
             }
             if let Some(ns) = src_neighbors
-                && ns.binary_search(&(tgt_idx as u32)).is_err() {
-                    row.push(None);
-                    continue;
-                }
+                && ns.binary_search(&(tgt_idx as u32)).is_err()
+            {
+                row.push(None);
+                continue;
+            }
             let val = matrix[src_idx * n_targets + tgt_idx];
             if val == u32::MAX {
                 row.push(None);
@@ -943,9 +944,10 @@ pub async fn table_stream_handler(
                             block_dst_orig_indices.iter().enumerate()
                         {
                             if let Some(ns) = neighbors
-                                && ns.binary_search(&(orig_dst_idx as u32)).is_err() {
-                                    continue;
-                                }
+                                && ns.binary_search(&(orig_dst_idx as u32)).is_err()
+                            {
+                                continue;
+                            }
                             let out_col = orig_dst_idx - dst_start;
                             let d =
                                 tile_matrix[tile_src_idx * block_dst_ranks.len() + tile_dst_idx];
@@ -1049,9 +1051,10 @@ fn table_stream_bucket_path(
         let neighbors: Option<&[u32]> = neighbor_mask.map(|nm| nm[orig_src_idx].as_slice());
         for (valid_dst_idx, &orig_dst_idx) in valid_dst_indices.iter().enumerate() {
             if let Some(ns) = neighbors
-                && ns.binary_search(&(orig_dst_idx as u32)).is_err() {
-                    continue;
-                }
+                && ns.binary_search(&(orig_dst_idx as u32)).is_err()
+            {
+                continue;
+            }
             let d = bucket_matrix[valid_src_idx * targets_rank.len() + valid_dst_idx];
             durations_ms[orig_src_idx * n_total_targets + orig_dst_idx] = if d == u32::MAX {
                 u32::MAX

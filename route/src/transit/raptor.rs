@@ -459,8 +459,7 @@ pub fn run_raptor(
                             current_trip = Some(candidate_trip);
                             board_stop = stop;
                             // Departure-only read (#126 fast path).
-                            board_dep =
-                                timetable.departure_at(route, candidate_trip, pos as u32);
+                            board_dep = timetable.departure_at(route, candidate_trip, pos as u32);
                         }
                     }
                 }

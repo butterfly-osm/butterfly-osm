@@ -42,8 +42,8 @@ pub fn map_readonly(path: &Path) -> Result<Arc<Mmap>> {
     // POSIX). We treat the bytes as immutable for the lifetime of this
     // process — operators must publish a new path to roll a new build,
     // never mutate this file in place.
-    let mmap = unsafe { Mmap::map(&file) }
-        .with_context(|| format!("mmapping {}", path.display()))?;
+    let mmap =
+        unsafe { Mmap::map(&file) }.with_context(|| format!("mmapping {}", path.display()))?;
     Ok(Arc::new(mmap))
 }
 

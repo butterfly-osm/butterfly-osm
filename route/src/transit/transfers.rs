@@ -621,11 +621,7 @@ pub fn build_transfer_graph(
         .collect();
 
     // ---- 3b. Inject same-station child-pair edges (#112). ------------
-    let injected = inject_same_station_edges(
-        timetable,
-        opts.same_station_transfer_s,
-        &mut triples,
-    );
+    let injected = inject_same_station_edges(timetable, opts.same_station_transfer_s, &mut triples);
     if injected > 0 {
         tracing::info!(
             same_station_edges = injected,
@@ -843,8 +839,7 @@ pub(crate) fn inject_cross_feed_equivalence_edges(
 
     let r2 = radius * radius;
     let mut injected = 0usize;
-    let mut seen: std::collections::HashSet<(u32, u32)> =
-        std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
 
     for (&(cx, cy), members) in &grid {
         let mut candidates: Vec<u32> = Vec::new();
@@ -1111,10 +1106,22 @@ mod tests {
             "h",
             vec![x, p_a, p_b, y],
             vec![
-                StopTime { arrival: 0, departure: 0 },
-                StopTime { arrival: 60, departure: 60 },
-                StopTime { arrival: 120, departure: 120 },
-                StopTime { arrival: 180, departure: 180 },
+                StopTime {
+                    arrival: 0,
+                    departure: 0,
+                },
+                StopTime {
+                    arrival: 60,
+                    departure: 60,
+                },
+                StopTime {
+                    arrival: 120,
+                    departure: 120,
+                },
+                StopTime {
+                    arrival: 180,
+                    departure: 180,
+                },
             ],
         );
         let tt = b.build().unwrap();
@@ -1181,10 +1188,22 @@ mod tests {
             "h",
             vec![sx, tx, sy, dy],
             vec![
-                StopTime { arrival: 0, departure: 0 },
-                StopTime { arrival: 60, departure: 60 },
-                StopTime { arrival: 600, departure: 600 },
-                StopTime { arrival: 660, departure: 660 },
+                StopTime {
+                    arrival: 0,
+                    departure: 0,
+                },
+                StopTime {
+                    arrival: 60,
+                    departure: 60,
+                },
+                StopTime {
+                    arrival: 600,
+                    departure: 600,
+                },
+                StopTime {
+                    arrival: 660,
+                    departure: 660,
+                },
             ],
         );
         b.build().unwrap();
@@ -1201,10 +1220,22 @@ mod tests {
             "h",
             vec![sx, tx, sy, dy],
             vec![
-                StopTime { arrival: 0, departure: 0 },
-                StopTime { arrival: 60, departure: 60 },
-                StopTime { arrival: 600, departure: 600 },
-                StopTime { arrival: 660, departure: 660 },
+                StopTime {
+                    arrival: 0,
+                    departure: 0,
+                },
+                StopTime {
+                    arrival: 60,
+                    departure: 60,
+                },
+                StopTime {
+                    arrival: 600,
+                    departure: 600,
+                },
+                StopTime {
+                    arrival: 660,
+                    departure: 660,
+                },
             ],
         );
         (b.build().unwrap(), sx, tx, sy, dy)
@@ -1262,8 +1293,7 @@ mod tests {
         let mut triples: Vec<(u32, u32, u32)> = Vec::new();
 
         // Step 1: inject the cross-feed bridges (30 s flat cost).
-        let n_injected =
-            inject_cross_feed_equivalence_edges(&tt, 50, 30, &mut triples);
+        let n_injected = inject_cross_feed_equivalence_edges(&tt, 50, 30, &mut triples);
         assert_eq!(n_injected, 4, "two pairs × two directions = four edges");
 
         // Step 2: run ULTRA restriction. With no triangles in the
@@ -1307,8 +1337,14 @@ mod tests {
             "h",
             vec![a, b_],
             vec![
-                StopTime { arrival: 0, departure: 0 },
-                StopTime { arrival: 60, departure: 60 },
+                StopTime {
+                    arrival: 0,
+                    departure: 0,
+                },
+                StopTime {
+                    arrival: 60,
+                    departure: 60,
+                },
             ],
         );
         let tt = b.build().unwrap();

@@ -67,15 +67,16 @@ pub fn evaluate_way(
     // Handle oneway
     if model.respect_oneway {
         if let Some(oneway_key_id) = model.oneway_key_id
-            && let Some(oneway_val_id) = find_value_for_key(kv_keys, kv_vals, oneway_key_id) {
-                if model.forward_value_ids.contains(&oneway_val_id) {
-                    output.access_rev = false;
-                    output.oneway = 1;
-                } else if model.reverse_value_ids.contains(&oneway_val_id) {
-                    output.access_fwd = false;
-                    output.oneway = 2;
-                }
+            && let Some(oneway_val_id) = find_value_for_key(kv_keys, kv_vals, oneway_key_id)
+        {
+            if model.forward_value_ids.contains(&oneway_val_id) {
+                output.access_rev = false;
+                output.oneway = 1;
+            } else if model.reverse_value_ids.contains(&oneway_val_id) {
+                output.access_fwd = false;
+                output.oneway = 2;
             }
+        }
 
         // Default oneways (e.g., motorways)
         if output.oneway == 0 && model.default_oneway_highway_ids.contains(&highway_val_id) {
@@ -85,10 +86,11 @@ pub fn evaluate_way(
     } else if let Some(oneway_key_id) = model.oneway_key_id {
         // Mode doesn't respect car oneways but may have its own oneway tag (e.g., oneway:bicycle)
         if let Some(oneway_val_id) = find_value_for_key(kv_keys, kv_vals, oneway_key_id)
-            && model.forward_value_ids.contains(&oneway_val_id) {
-                output.access_rev = false;
-                output.oneway = 1;
-            }
+            && model.forward_value_ids.contains(&oneway_val_id)
+        {
+            output.access_rev = false;
+            output.oneway = 1;
+        }
     }
 
     // Speed (skip if already set by allow_if rule)
@@ -237,44 +239,47 @@ pub fn evaluate_turn_full(
     // Check mode-specific restriction tag first (takes precedence)
     if let Some(mode_key_id) = model.mode_restriction_key_id
         && let Some(restriction_val_id) = find_value_for_key(tags_keys, tags_vals, mode_key_id)
-            && let Some(val_str) = val_dict.get(&restriction_val_id) {
-                let kind = parse_restriction_kind(val_str);
-                if kind != TurnRuleKind::None {
-                    return (kind, true, 0, false);
-                }
-            }
+        && let Some(val_str) = val_dict.get(&restriction_val_id)
+    {
+        let kind = parse_restriction_kind(val_str);
+        if kind != TurnRuleKind::None {
+            return (kind, true, 0, false);
+        }
+    }
 
     // Fall back to generic restriction tag
     if let Some(restriction_key_id) = model.restriction_key_id
         && let Some(restriction_val_id) =
             find_value_for_key(tags_keys, tags_vals, restriction_key_id)
-            && let Some(val_str) = val_dict.get(&restriction_val_id) {
-                let kind = parse_restriction_kind(val_str);
-                if kind != TurnRuleKind::None {
-                    // Check for exceptions
-                    if let Some(&except_key_id) = rev_key.get("except")
-                        && let Some(except_val_id) =
-                            find_value_for_key(tags_keys, tags_vals, except_key_id)
-                            && let Some(except_str) = val_dict.get(&except_val_id) {
-                                for &exc_vid in &model.exception_value_ids {
-                                    if let Some(exc_str) = val_dict.get(&exc_vid)
-                                        && except_str.contains(exc_str.as_str()) {
-                                            return (TurnRuleKind::None, false, 0, false);
-                                        }
-                                }
-                            }
-
-                    // Non-motor-vehicle modes: generic restrictions don't apply
-                    if !is_motor_vehicle_mode(&model.name) {
+        && let Some(val_str) = val_dict.get(&restriction_val_id)
+    {
+        let kind = parse_restriction_kind(val_str);
+        if kind != TurnRuleKind::None {
+            // Check for exceptions
+            if let Some(&except_key_id) = rev_key.get("except")
+                && let Some(except_val_id) = find_value_for_key(tags_keys, tags_vals, except_key_id)
+                && let Some(except_str) = val_dict.get(&except_val_id)
+            {
+                for &exc_vid in &model.exception_value_ids {
+                    if let Some(exc_str) = val_dict.get(&exc_vid)
+                        && except_str.contains(exc_str.as_str())
+                    {
                         return (TurnRuleKind::None, false, 0, false);
                     }
-
-                    // Check conditional
-                    let is_time_dep = check_conditional_with_key_dict(tags_keys, key_dict);
-
-                    return (kind, true, 0, is_time_dep);
                 }
             }
+
+            // Non-motor-vehicle modes: generic restrictions don't apply
+            if !is_motor_vehicle_mode(&model.name) {
+                return (TurnRuleKind::None, false, 0, false);
+            }
+
+            // Check conditional
+            let is_time_dep = check_conditional_with_key_dict(tags_keys, key_dict);
+
+            return (kind, true, 0, is_time_dep);
+        }
+    }
 
     (TurnRuleKind::None, false, 0, false)
 }
@@ -286,9 +291,10 @@ fn check_conditional_with_key_dict(
 ) -> bool {
     for &kid in tags_keys {
         if let Some(key_str) = key_dict.get(&kid)
-            && key_str.contains("conditional") {
-                return true;
-            }
+            && key_str.contains("conditional")
+        {
+            return true;
+        }
     }
     false
 }

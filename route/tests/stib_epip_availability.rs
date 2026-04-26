@@ -117,9 +117,7 @@ fn count_elements(path: &std::path::Path) -> std::io::Result<ActualCounts> {
 fn tag_opens(haystack: &[u8], tag_name: &[u8]) -> bool {
     let mut i = 0;
     while i + 1 + tag_name.len() <= haystack.len() {
-        if haystack[i] == b'<'
-            && haystack[i + 1..i + 1 + tag_name.len()] == *tag_name
-        {
+        if haystack[i] == b'<' && haystack[i + 1..i + 1 + tag_name.len()] == *tag_name {
             let next = haystack.get(i + 1 + tag_name.len()).copied();
             if matches!(next, Some(b' ') | Some(b'>') | Some(b'/') | None) {
                 return true;

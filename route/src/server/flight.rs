@@ -18,7 +18,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use arrow::array::*;
 use arrow::datatypes::*;
-use rayon::prelude::*;
 use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use arrow_flight::encode::FlightDataEncoderBuilder;
@@ -27,6 +26,7 @@ use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
+use rayon::prelude::*;
 // Rename arrow_flight::Result to avoid conflict with std::result::Result
 use arrow_flight::Result as FlightResult;
 use bytes::Bytes;
@@ -1138,18 +1138,20 @@ pub fn do_transit_bulk(
         // so the output rows are stable across Rayon thread reordering.
         // Process one CHUNK at a time so we can stream RecordBatches
         // incrementally instead of waiting for the whole batch.
-        for (chunk_start, chunk) in queries.chunks(CHUNK).enumerate().map(|(ci, c)| (ci * CHUNK, c)) {
+        for (chunk_start, chunk) in queries
+            .chunks(CHUNK)
+            .enumerate()
+            .map(|(ci, c)| (ci * CHUNK, c))
+        {
             // Per-query results in original order. Each entry is
             // either Ok(response) or Err((http_status, error_msg)).
-            let chunk_results: Vec<std::result::Result<
-                super::transit_handler::TransitResponse,
-                (u16, String),
-            >> = chunk
+            let chunk_results: Vec<
+                std::result::Result<super::transit_handler::TransitResponse, (u16, String)>,
+            > = chunk
                 .par_iter()
                 .map(|q| {
-                    super::transit_handler::compute_transit_journey(state.as_ref(), q).map_err(
-                        |(sc, err)| (sc.as_u16(), err.0.error.clone()),
-                    )
+                    super::transit_handler::compute_transit_journey(state.as_ref(), q)
+                        .map_err(|(sc, err)| (sc.as_u16(), err.0.error.clone()))
                 })
                 .collect();
 
@@ -1494,9 +1496,10 @@ async fn do_exchange_catchment(
                     Arc::new(total_b.finish()),
                     Arc::new(wkb_b.finish()),
                 ],
-            ) {
-                let _ = tx.blocking_send(Ok(batch));
-            }
+            )
+        {
+            let _ = tx.blocking_send(Ok(batch));
+        }
 
         tracing::info!(
             elapsed_s = start.elapsed().as_secs_f64(),
@@ -1765,9 +1768,10 @@ impl FlightService for ButterflyFlight {
 
         while let Some(fd) = stream.message().await? {
             if descriptor_cmd.is_empty()
-                && let Some(ref desc) = fd.flight_descriptor {
-                    descriptor_cmd = desc.cmd.to_vec();
-                }
+                && let Some(ref desc) = fd.flight_descriptor
+            {
+                descriptor_cmd = desc.cmd.to_vec();
+            }
             all_fds.push(fd);
         }
 
