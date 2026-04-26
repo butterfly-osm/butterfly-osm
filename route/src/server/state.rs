@@ -477,9 +477,45 @@ impl ServerState {
             );
         }
 
-        tracing::info!("Loading NBG geo...");
-        let nbg_geo = NbgGeoFile::read_from_bytes(section_bytes("shared/nbg.geo")?)?;
+        // ---- NBG geo ----
+        // If the container carries the flat edge geometry sections (#155),
+        // we read NBG geo edges-only and let the polyline body stay on
+        // disk. The new sections back the serve-path geometry hot
+        // consumers; nothing downstream reads `nbg_geo.polylines` once
+        // EdgeGeometry is wired below.
+        let nbg_geo_section = section_bytes("shared/nbg.geo")?;
+        let has_flat_edge_geom = container.get("shared/edge_geom_offsets").is_some()
+            && container.get("shared/edge_geom_points").is_some();
+        let nbg_geo = if has_flat_edge_geom {
+            tracing::info!("Loading NBG geo (edges-only — polylines via flat sections)...");
+            NbgGeoFile::read_edges_only_from_bytes(nbg_geo_section)?
+        } else {
+            tracing::info!("Loading NBG geo (full polylines — no flat sections)...");
+            NbgGeoFile::read_from_bytes(nbg_geo_section)?
+        };
         tracing::info!(edges = nbg_geo.edges.len(), "loaded NBG geo");
+
+        // When we read edges-only, the polyline body bytes have been
+        // streamed through the CRC verifier but never copied onto the
+        // heap. Hint the kernel to drop those pages from RSS — the bytes
+        // are cold under steady-state operation (the flat sections carry
+        // the serve-path representation), so freeing them yields the
+        // bulk of #155's RSS win.
+        if has_flat_edge_geom {
+            if let Err(e) = crate::formats::mmap::madvise_dontneed(nbg_geo_section) {
+                tracing::warn!(
+                    section = "shared/nbg.geo",
+                    error = %e,
+                    "madvise(DONTNEED) on nbg.geo failed; ignoring"
+                );
+            } else {
+                tracing::info!(
+                    section = "shared/nbg.geo",
+                    bytes = nbg_geo_section.len(),
+                    "madvise(DONTNEED) on cold nbg.geo section (polylines live in flat sections)"
+                );
+            }
+        }
 
         tracing::info!("Loading NBG node-id map...");
         let nbg_node_map =
@@ -666,24 +702,31 @@ impl ServerState {
         // Prefer mmap-backed sections from the container; fall back to
         // building the flat layout from the heap NbgGeo polylines when
         // the container pre-dates #155.
-        let edge_geom =
-            match try_load_edge_geometry(&container, static_mmap, static_bytes)? {
-                Some(eg) => {
-                    tracing::info!(
-                        n_edges = eg.n_edges(),
-                        n_points = eg.n_points(),
-                        "loaded flat edge geometry zero-copy"
-                    );
-                    eg
-                }
-                None => {
-                    tracing::warn!(
-                        "flat edge geometry sections missing; building from heap polylines \
-                         at boot (this container pre-dates #155 — re-pack to drop ~544 MB anon)"
-                    );
-                    EdgeGeometry::from_legacy_polylines(&nbg_geo)
-                }
-            };
+        //
+        // The dispatch matches the `has_flat_edge_geom` check used above
+        // for the NBG geo edges-only loader: if the sections existed at
+        // open time they're still there now, so the back-compat branch
+        // is for old containers that loaded the full NbgGeo.
+        let edge_geom = if has_flat_edge_geom {
+            let eg = try_load_edge_geometry(&container, static_mmap, static_bytes)?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "edge_geom sections vanished between open and load — container corrupt?"
+                    )
+                })?;
+            tracing::info!(
+                n_edges = eg.n_edges(),
+                n_points = eg.n_points(),
+                "loaded flat edge geometry zero-copy"
+            );
+            eg
+        } else {
+            tracing::warn!(
+                "flat edge geometry sections missing; building from heap polylines \
+                 at boot (this container pre-dates #155 — re-pack to drop ~544 MB anon)"
+            );
+            EdgeGeometry::from_legacy_polylines(&nbg_geo)
+        };
         crate::server::rss::checkpoint("load.edge_geom");
 
         Ok(Self {
