@@ -861,10 +861,14 @@ fn load_mode_data_from_bundle(
 
     let filtered_ebg = FilteredEbgFile::read_from_bytes(fetch("filtered_ebg")?)?;
     let order = OrderEbgFile::read_from_bytes(fetch("order")?)?;
-    // #147: zero-copy CCH topology — borrows the on-disk u32/u64 arrays
-    // and packed `is_shortcut` bitset directly from the mmap. Saves
-    // ~3.4 GB of heap on Belgium 4-mode build.
-    let cch_topo = CchTopoFile::read_from_bytes_zero_copy(fetch("topo")?)?;
+    // #147: cch_topo's 76-byte header leaves the trailing u64 offsets
+    // table at a 4-byte boundary inside the file, which fails
+    // `bytemuck::cast_slice::<u64>` alignment. Until the on-disk
+    // header is bumped to 80 bytes (deferred — requires step7 rerun
+    // on every region), we keep the legacy owning read for `topo`.
+    // The much bigger `cch_weights` (6 GB on Belgium) IS zero-copied
+    // below, which is what the gate ultimately depends on.
+    let cch_topo = CchTopoFile::read_from_bytes(fetch("topo")?)?;
     let down_rev = build_down_reverse_adj(&cch_topo);
 
     let weights_data = mod_weights::read_all_from_bytes(fetch("node_weights.time")?)?;
