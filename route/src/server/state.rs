@@ -14,7 +14,7 @@ use crate::formats::{
 };
 // Re-export CchWeights for use by api.rs
 pub use crate::formats::CchWeights;
-use crate::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
+use crate::matrix::bucket_ch::{DownAdjFlat, DownReverseAdjFlat, UpAdjFlat};
 use crate::profile_abi::Mode;
 
 use super::exclude::{self, ExcludeWeights};
@@ -39,9 +39,16 @@ pub struct ModeData {
     // Flat adjacencies for bucket M2M - TIME metric (pre-built for performance)
     pub up_adj_flat: UpAdjFlat,
     pub down_rev_flat: DownReverseAdjFlat,
+    /// Forward DOWN flat (TIME metric). Used by the isochrone forward
+    /// PHAST downward scan after #149 — replaces direct
+    /// `cch_weights.down[i]` reads on the hot path.
+    pub down_adj_flat: DownAdjFlat,
     // Flat adjacencies for bucket M2M - DISTANCE metric (shortest-distance, independent of time)
     pub up_adj_flat_dist: UpAdjFlat,
     pub down_rev_flat_dist: DownReverseAdjFlat,
+    /// Forward DOWN flat (DISTANCE metric). Used by the isodistance
+    /// forward PHAST downward scan.
+    pub down_adj_flat_dist: DownAdjFlat,
     // Cached exclude weight sets (keyed by exclude bitmask)
     pub exclude_cache: parking_lot::RwLock<HashMap<u8, std::sync::Arc<ExcludeWeights>>>,
 }
@@ -709,6 +716,7 @@ fn load_mode_data(
     // Build flat adjacencies for bucket M2M - TIME metric (pre-filtered for INF, embedded weights)
     let up_adj_flat = UpAdjFlat::build(&cch_topo, &cch_weights);
     let down_rev_flat = DownReverseAdjFlat::build(&cch_topo, &cch_weights);
+    let down_adj_flat = DownAdjFlat::build(&cch_topo, &cch_weights);
 
     // Load pre-computed distance weights from step 8 (cch.d.{mode}.u32)
     let cch_dist_weights_path = step8_dir.join(format!("cch.d.{}.u32", mode_name));
@@ -716,6 +724,7 @@ fn load_mode_data(
     let cch_weights_dist = CchWeightsFile::read(&cch_dist_weights_path)?;
     let up_adj_flat_dist = UpAdjFlat::build(&cch_topo, &cch_weights_dist);
     let down_rev_flat_dist = DownReverseAdjFlat::build(&cch_topo, &cch_weights_dist);
+    let down_adj_flat_dist = DownAdjFlat::build(&cch_topo, &cch_weights_dist);
 
     Ok(ModeData {
         mode,
@@ -729,8 +738,10 @@ fn load_mode_data(
         mask,
         up_adj_flat,
         down_rev_flat,
+        down_adj_flat,
         up_adj_flat_dist,
         down_rev_flat_dist,
+        down_adj_flat_dist,
         exclude_cache: parking_lot::RwLock::new(HashMap::new()),
     })
 }
@@ -890,10 +901,12 @@ fn load_mode_data_from_bundle(
     let cch_weights = CchWeightsFile::read_from_bytes_zero_copy(fetch("weights.time")?)?;
     let up_adj_flat = UpAdjFlat::build(&cch_topo, &cch_weights);
     let down_rev_flat = DownReverseAdjFlat::build(&cch_topo, &cch_weights);
+    let down_adj_flat = DownAdjFlat::build(&cch_topo, &cch_weights);
 
     let cch_weights_dist = CchWeightsFile::read_from_bytes_zero_copy(fetch("weights.dist")?)?;
     let up_adj_flat_dist = UpAdjFlat::build(&cch_topo, &cch_weights_dist);
     let down_rev_flat_dist = DownReverseAdjFlat::build(&cch_topo, &cch_weights_dist);
+    let down_adj_flat_dist = DownAdjFlat::build(&cch_topo, &cch_weights_dist);
 
     Ok(ModeData {
         mode,
@@ -907,8 +920,10 @@ fn load_mode_data_from_bundle(
         mask,
         up_adj_flat,
         down_rev_flat,
+        down_adj_flat,
         up_adj_flat_dist,
         down_rev_flat_dist,
+        down_adj_flat_dist,
         exclude_cache: parking_lot::RwLock::new(HashMap::new()),
     })
 }

@@ -329,8 +329,8 @@ fn test_isochrone_route_consistency() {
 
         // Run PHAST to get all reachable nodes
         let phast_settled = run_phast_bounded_fast(
-            &mode_data.cch_topo,
-            &mode_data.cch_weights,
+            &mode_data.up_adj_flat,
+            &mode_data.down_adj_flat,
             center_rank,
             threshold_ds,
             mode,
