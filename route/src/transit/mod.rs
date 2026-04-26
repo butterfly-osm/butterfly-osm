@@ -174,7 +174,11 @@ pub fn load_from_disk(
         crate::transit::gtfs::load_into_builder(&gtfs_sources, filter, &mut builder)?;
     }
     for (path, feed_id) in &epip_paths {
-        let prefix = if multi_feed { Some(feed_id.as_str()) } else { None };
+        let prefix = if multi_feed {
+            Some(feed_id.as_str())
+        } else {
+            None
+        };
         crate::transit::netex_epip::load_into_builder(path, prefix, &mut builder)?;
     }
     let timetable = builder

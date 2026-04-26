@@ -172,9 +172,11 @@ pub fn build_avoid_mask(
                 }
                 // Also clear exclude bits if applicable
                 if let Some((exc_flags, exc_mask)) = exclude_flags
-                    && edge_id < exc_flags.len() && (exc_flags[edge_id] & exc_mask) != 0 {
-                        filtered &= !(1u64 << bit);
-                    }
+                    && edge_id < exc_flags.len()
+                    && (exc_flags[edge_id] & exc_mask) != 0
+                {
+                    filtered &= !(1u64 << bit);
+                }
             }
             filtered
         })

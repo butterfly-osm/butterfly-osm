@@ -119,7 +119,10 @@ pub fn load_into_builder(
     let mut buf = Vec::with_capacity(4096);
 
     loop {
-        match xml.read_event_into(&mut buf).context("reading EPIP XML event")? {
+        match xml
+            .read_event_into(&mut buf)
+            .context("reading EPIP XML event")?
+        {
             Event::Start(ref e) => handle_start(&mut state, e, &mut xml)?,
             Event::Empty(ref e) => handle_empty(&mut state, e)?,
             Event::End(ref e) => handle_end(&mut state, e)?,
@@ -455,20 +458,18 @@ fn handle_start(
                 }
             }
         }
-        b"ScheduledStopPointRef" => {
-            match state.stack.last() {
-                Some(ElementKind::StopPointInJourneyPattern) => {
-                    let r = attr(e, b"ref");
-                    if r.is_some() {
-                        state.current_jp_stop_point_ref = r;
-                    }
+        b"ScheduledStopPointRef" => match state.stack.last() {
+            Some(ElementKind::StopPointInJourneyPattern) => {
+                let r = attr(e, b"ref");
+                if r.is_some() {
+                    state.current_jp_stop_point_ref = r;
                 }
-                Some(ElementKind::PassengerStopAssignment) => {
-                    state.current_psa_ssp_ref = attr(e, b"ref");
-                }
-                _ => {}
             }
-        }
+            Some(ElementKind::PassengerStopAssignment) => {
+                state.current_psa_ssp_ref = attr(e, b"ref");
+            }
+            _ => {}
+        },
         b"StopPlaceRef" => {
             if state.stack.last() == Some(&ElementKind::PassengerStopAssignment) {
                 state.current_psa_stop_place_ref = attr(e, b"ref");
@@ -493,21 +494,19 @@ fn handle_start(
                 }
             }
         }
-        b"DayTypeRef" => {
-            match state.stack.last() {
-                Some(ElementKind::ServiceJourney) => {
-                    if let Some(r) = attr(e, b"ref") {
-                        if let Some(sj) = state.current_sj.as_mut() {
-                            sj.day_type_refs.push(r);
-                        }
+        b"DayTypeRef" => match state.stack.last() {
+            Some(ElementKind::ServiceJourney) => {
+                if let Some(r) = attr(e, b"ref") {
+                    if let Some(sj) = state.current_sj.as_mut() {
+                        sj.day_type_refs.push(r);
                     }
                 }
-                Some(ElementKind::DayTypeAssignment) => {
-                    state.current_dta_day_type_ref = attr(e, b"ref");
-                }
-                _ => {}
             }
-        }
+            Some(ElementKind::DayTypeAssignment) => {
+                state.current_dta_day_type_ref = attr(e, b"ref");
+            }
+            _ => {}
+        },
         b"OperatingPeriodRef" => {
             if state.stack.last() == Some(&ElementKind::DayTypeAssignment) {
                 state.current_dta_op_ref = attr(e, b"ref");
@@ -518,10 +517,7 @@ fn handle_start(
     Ok(())
 }
 
-fn handle_empty(
-    state: &mut ParseState,
-    e: &quick_xml::events::BytesStart<'_>,
-) -> Result<()> {
+fn handle_empty(state: &mut ParseState, e: &quick_xml::events::BytesStart<'_>) -> Result<()> {
     let qn = e.name();
     let name = element_local_name(qn.as_ref());
     match name {
@@ -532,20 +528,18 @@ fn handle_empty(
                 }
             }
         }
-        b"ScheduledStopPointRef" => {
-            match state.stack.last() {
-                Some(ElementKind::StopPointInJourneyPattern) => {
-                    let r = attr(e, b"ref");
-                    if r.is_some() {
-                        state.current_jp_stop_point_ref = r;
-                    }
+        b"ScheduledStopPointRef" => match state.stack.last() {
+            Some(ElementKind::StopPointInJourneyPattern) => {
+                let r = attr(e, b"ref");
+                if r.is_some() {
+                    state.current_jp_stop_point_ref = r;
                 }
-                Some(ElementKind::PassengerStopAssignment) => {
-                    state.current_psa_ssp_ref = attr(e, b"ref");
-                }
-                _ => {}
             }
-        }
+            Some(ElementKind::PassengerStopAssignment) => {
+                state.current_psa_ssp_ref = attr(e, b"ref");
+            }
+            _ => {}
+        },
         b"StopPlaceRef" => {
             if state.stack.last() == Some(&ElementKind::PassengerStopAssignment) {
                 state.current_psa_stop_place_ref = attr(e, b"ref");
@@ -576,21 +570,19 @@ fn handle_empty(
                 }
             }
         }
-        b"DayTypeRef" => {
-            match state.stack.last() {
-                Some(ElementKind::ServiceJourney) => {
-                    if let Some(r) = attr(e, b"ref") {
-                        if let Some(sj) = state.current_sj.as_mut() {
-                            sj.day_type_refs.push(r);
-                        }
+        b"DayTypeRef" => match state.stack.last() {
+            Some(ElementKind::ServiceJourney) => {
+                if let Some(r) = attr(e, b"ref") {
+                    if let Some(sj) = state.current_sj.as_mut() {
+                        sj.day_type_refs.push(r);
                     }
                 }
-                Some(ElementKind::DayTypeAssignment) => {
-                    state.current_dta_day_type_ref = attr(e, b"ref");
-                }
-                _ => {}
             }
-        }
+            Some(ElementKind::DayTypeAssignment) => {
+                state.current_dta_day_type_ref = attr(e, b"ref");
+            }
+            _ => {}
+        },
         b"OperatingPeriodRef" => {
             if state.stack.last() == Some(&ElementKind::DayTypeAssignment) {
                 state.current_dta_op_ref = attr(e, b"ref");
@@ -601,10 +593,7 @@ fn handle_empty(
     Ok(())
 }
 
-fn handle_end(
-    state: &mut ParseState,
-    e: &quick_xml::events::BytesEnd<'_>,
-) -> Result<()> {
+fn handle_end(state: &mut ParseState, e: &quick_xml::events::BytesEnd<'_>) -> Result<()> {
     let qn = e.name();
     let name = element_local_name(qn.as_ref());
     match name {
@@ -618,22 +607,23 @@ fn handle_end(
             pop_stack(state, ElementKind::StopPlace);
         }
         b"Quay" => {
-            if let (Some(id), Some(rec)) = (state.current_quay_id.take(), state.current_quay.take()) {
+            if let (Some(id), Some(rec)) = (state.current_quay_id.take(), state.current_quay.take())
+            {
                 state.quays.insert(id, rec);
             }
             pop_stack(state, ElementKind::Quay);
         }
         b"ScheduledStopPoint" => {
-            if let (Some(id), Some(rec)) = (state.current_ssp_id.take(), state.current_ssp.take())
-            {
+            if let (Some(id), Some(rec)) = (state.current_ssp_id.take(), state.current_ssp.take()) {
                 state.scheduled_stop_points.insert(id, rec);
             }
             pop_stack(state, ElementKind::ScheduledStopPoint);
         }
         b"PassengerStopAssignment" => {
-            if let (Some(_psa_id), Some(ssp)) =
-                (state.current_psa_id.take(), state.current_psa_ssp_ref.take())
-            {
+            if let (Some(_psa_id), Some(ssp)) = (
+                state.current_psa_id.take(),
+                state.current_psa_ssp_ref.take(),
+            ) {
                 let stop_place_ref = state.current_psa_stop_place_ref.take();
                 let quay_ref = state.current_psa_quay_ref.take();
                 state.passenger_stop_assignments.insert(
@@ -654,8 +644,7 @@ fn handle_end(
             pop_stack(state, ElementKind::Line);
         }
         b"ServiceJourneyPattern" => {
-            if let (Some(id), Some(rec)) = (state.current_jp_id.take(), state.current_jp.take())
-            {
+            if let (Some(id), Some(rec)) = (state.current_jp_id.take(), state.current_jp.take()) {
                 state.journey_patterns.insert(id, rec);
             }
             pop_stack(state, ElementKind::JourneyPattern);
@@ -850,10 +839,8 @@ fn emit_into_builder(
          +x_0=700000 +y_0=6600000 +ellps=GRS80 +units=m +no_defs +type=crs",
     )
     .context("building Lambert-93 projection")?;
-    let wgs84 = proj4rs::Proj::from_proj_string(
-        "+proj=longlat +datum=WGS84 +no_defs +type=crs",
-    )
-    .context("building WGS84 projection")?;
+    let wgs84 = proj4rs::Proj::from_proj_string("+proj=longlat +datum=WGS84 +no_defs +type=crs")
+        .context("building WGS84 projection")?;
 
     let namespaced = |raw: &str| -> String {
         match feed_id {
@@ -1103,7 +1090,14 @@ fn emit_into_builder(
         }
         let trip_id = namespaced(&format!("sj{sj_idx}"));
         let (short_name, long_name) = resolve_pattern_line_meta(&state, pattern);
-        builder.add_trip(&trip_id, &short_name, &long_name, "", pattern_idxs, stop_times);
+        builder.add_trip(
+            &trip_id,
+            &short_name,
+            &long_name,
+            "",
+            pattern_idxs,
+            stop_times,
+        );
         n_trips_ok += 1;
     }
 
@@ -1117,7 +1111,9 @@ fn emit_into_builder(
         "NeTEx-EPIP: service journeys emitted"
     );
     if n_trips_ok == 0 {
-        bail!("NeTEx-EPIP: zero service journeys passed validation — file is malformed or schema changed");
+        bail!(
+            "NeTEx-EPIP: zero service journeys passed validation — file is malformed or schema changed"
+        );
     }
     Ok(())
 }
@@ -1326,9 +1322,7 @@ mod tests {
     /// Helper for the calendar-fallback tests: build a `ParseState`
     /// holding only the operating periods we care about, leaving the
     /// rest of the parser machinery in its default state.
-    fn parse_state_with_periods(
-        periods: &[(&str, Option<&str>, Option<&str>)],
-    ) -> ParseState {
+    fn parse_state_with_periods(periods: &[(&str, Option<&str>, Option<&str>)]) -> ParseState {
         let mut state = ParseState::default();
         for (id, from, to) in periods {
             let rec = UicOperatingPeriodRec {
