@@ -15,7 +15,7 @@ use rayon::prelude::*;
 
 use crate::formats::way_attrs;
 use crate::formats::{CchTopo, CchWeights, EbgNodes};
-use crate::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
+use crate::matrix::bucket_ch::{DownAdjFlat, DownReverseAdjFlat, UpAdjFlat};
 use crate::profile_abi::class_bits;
 
 /// Exclude flags (bitmask, per EBG edge)
@@ -29,8 +29,10 @@ pub struct ExcludeWeights {
     pub dist_weights: CchWeights,
     pub time_up_flat: UpAdjFlat,
     pub time_down_flat: DownReverseAdjFlat,
+    pub time_down_fwd_flat: DownAdjFlat,
     pub dist_up_flat: UpAdjFlat,
     pub dist_down_flat: DownReverseAdjFlat,
+    pub dist_down_fwd_flat: DownAdjFlat,
 }
 
 /// Parse exclude parameter string into bitmask.
@@ -627,10 +629,12 @@ pub fn compute_exclude_weights(
         || UpAdjFlat::build(topo, &time_weights),
         || DownReverseAdjFlat::build(topo, &time_weights),
     );
+    let time_down_fwd_flat = DownAdjFlat::build(topo, &time_weights);
     let (dist_up_flat, dist_down_flat) = rayon::join(
         || UpAdjFlat::build(topo, &dist_weights),
         || DownReverseAdjFlat::build(topo, &dist_weights),
     );
+    let dist_down_fwd_flat = DownAdjFlat::build(topo, &dist_weights);
 
     tracing::info!(
         exclude_mask,
@@ -643,8 +647,10 @@ pub fn compute_exclude_weights(
         dist_weights,
         time_up_flat,
         time_down_flat,
+        time_down_fwd_flat,
         dist_up_flat,
         dist_down_flat,
+        dist_down_fwd_flat,
     }
 }
 
