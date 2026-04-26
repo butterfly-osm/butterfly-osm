@@ -280,9 +280,9 @@ pub fn pack(data_dir: &Path, out: &Path, step_prefix: Option<&str>) -> Result<()
             &format!("mode/{}/order", mode),
             &order,
         )?;
-        // step7 topology. Loaded with the legacy owning reader because
-        // alignment of the trailing u64 sections is data-dependent on
-        // n_up_edges parity; see state.rs for the deferred fix.
+        // step7 topology. As of #151 the v4 layout pads every variable-
+        // length u32 array to a u64 boundary, so the server reads it
+        // zero-copy out of the mmap'd container.
         let topo = step7.join(format!("cch.{}.topo", mode));
         maybe_append(
             &mut w,
@@ -328,64 +328,64 @@ pub fn pack(data_dir: &Path, out: &Path, step_prefix: Option<&str>) -> Result<()
             let dist_res = CchWeightsFile::read(&cch_d_path);
             match (topo_res, time_res, dist_res) {
                 (Ok(cch_topo), Ok(cch_time), Ok(cch_dist)) => {
-                // TIME flats: UP and DOWN-REV carry topo_edge_idx (the
-                // routing hot path needs it for parent-pointer unpacking);
-                // forward-DOWN does not.
-                let up_time = UpAdjFlat::build_with(&cch_topo, &cch_time, true);
-                append_encoded(
-                    &mut w,
-                    SectionKind::UpAdjFlat,
-                    &format!("mode/{}/up_adj_flat.time", mode),
-                    UpAdjFlatFile::encode(&up_time),
-                )?;
-                drop(up_time);
+                    // TIME flats: UP and DOWN-REV carry topo_edge_idx (the
+                    // routing hot path needs it for parent-pointer unpacking);
+                    // forward-DOWN does not.
+                    let up_time = UpAdjFlat::build_with(&cch_topo, &cch_time, true);
+                    append_encoded(
+                        &mut w,
+                        SectionKind::UpAdjFlat,
+                        &format!("mode/{}/up_adj_flat.time", mode),
+                        UpAdjFlatFile::encode(&up_time),
+                    )?;
+                    drop(up_time);
 
-                let drev_time = DownReverseAdjFlat::build_with(&cch_topo, &cch_time, true);
-                append_encoded(
-                    &mut w,
-                    SectionKind::DownReverseAdjFlat,
-                    &format!("mode/{}/down_reverse_adj_flat.time", mode),
-                    DownReverseAdjFlatFile::encode(&drev_time),
-                )?;
-                drop(drev_time);
+                    let drev_time = DownReverseAdjFlat::build_with(&cch_topo, &cch_time, true);
+                    append_encoded(
+                        &mut w,
+                        SectionKind::DownReverseAdjFlat,
+                        &format!("mode/{}/down_reverse_adj_flat.time", mode),
+                        DownReverseAdjFlatFile::encode(&drev_time),
+                    )?;
+                    drop(drev_time);
 
-                let dadj_time = DownAdjFlat::build(&cch_topo, &cch_time);
-                append_encoded(
-                    &mut w,
-                    SectionKind::DownAdjFlat,
-                    &format!("mode/{}/down_adj_flat.time", mode),
-                    DownAdjFlatFile::encode(&dadj_time),
-                )?;
-                drop(dadj_time);
+                    let dadj_time = DownAdjFlat::build(&cch_topo, &cch_time);
+                    append_encoded(
+                        &mut w,
+                        SectionKind::DownAdjFlat,
+                        &format!("mode/{}/down_adj_flat.time", mode),
+                        DownAdjFlatFile::encode(&dadj_time),
+                    )?;
+                    drop(dadj_time);
 
-                // DIST flats: only PHAST forward + isodistance use them;
-                // no topo back-ref needed.
-                let up_dist = UpAdjFlat::build(&cch_topo, &cch_dist);
-                append_encoded(
-                    &mut w,
-                    SectionKind::UpAdjFlat,
-                    &format!("mode/{}/up_adj_flat.dist", mode),
-                    UpAdjFlatFile::encode(&up_dist),
-                )?;
-                drop(up_dist);
+                    // DIST flats: only PHAST forward + isodistance use them;
+                    // no topo back-ref needed.
+                    let up_dist = UpAdjFlat::build(&cch_topo, &cch_dist);
+                    append_encoded(
+                        &mut w,
+                        SectionKind::UpAdjFlat,
+                        &format!("mode/{}/up_adj_flat.dist", mode),
+                        UpAdjFlatFile::encode(&up_dist),
+                    )?;
+                    drop(up_dist);
 
-                let drev_dist = DownReverseAdjFlat::build(&cch_topo, &cch_dist);
-                append_encoded(
-                    &mut w,
-                    SectionKind::DownReverseAdjFlat,
-                    &format!("mode/{}/down_reverse_adj_flat.dist", mode),
-                    DownReverseAdjFlatFile::encode(&drev_dist),
-                )?;
-                drop(drev_dist);
+                    let drev_dist = DownReverseAdjFlat::build(&cch_topo, &cch_dist);
+                    append_encoded(
+                        &mut w,
+                        SectionKind::DownReverseAdjFlat,
+                        &format!("mode/{}/down_reverse_adj_flat.dist", mode),
+                        DownReverseAdjFlatFile::encode(&drev_dist),
+                    )?;
+                    drop(drev_dist);
 
-                let dadj_dist = DownAdjFlat::build(&cch_topo, &cch_dist);
-                append_encoded(
-                    &mut w,
-                    SectionKind::DownAdjFlat,
-                    &format!("mode/{}/down_adj_flat.dist", mode),
-                    DownAdjFlatFile::encode(&dadj_dist),
-                )?;
-                drop(dadj_dist);
+                    let dadj_dist = DownAdjFlat::build(&cch_topo, &cch_dist);
+                    append_encoded(
+                        &mut w,
+                        SectionKind::DownAdjFlat,
+                        &format!("mode/{}/down_adj_flat.dist", mode),
+                        DownAdjFlatFile::encode(&dadj_dist),
+                    )?;
+                    drop(dadj_dist);
                 }
                 (topo_r, time_r, dist_r) => {
                     let why = topo_r
