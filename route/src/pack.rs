@@ -20,6 +20,9 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use crate::formats::butterfly_dat::{Container, ContainerWriter, SectionKind};
+use crate::formats::edge_geom::{
+    EdgeGeomOffsets, EdgeGeomOffsetsFile, EdgeGeomPoints, EdgeGeomPointsFile,
+};
 use crate::formats::mode_index::{ModeIndex, ModeIndexFile, ModeIndexKind};
 use crate::formats::snap_index::{SnapGridFile, SnapMaskFile, SnapPointsFile};
 use crate::formats::{
@@ -507,6 +510,20 @@ pub fn pack(data_dir: &Path, out: &Path, step_prefix: Option<&str>) -> Result<()
         );
     }
 
+    // ---- Flat edge geometry (#155) ---------------------------------
+    // Derive shared/edge_geom_offsets + shared/edge_geom_points from
+    // the heap nbg.geo polylines. This replaces the heap Vec<Vec<_>>
+    // shape on the serve path with mmap-backed flat arrays. If
+    // nbg.geo is missing or malformed we skip the section emission;
+    // the server falls back to building EdgeGeometry from the legacy
+    // heap polylines at boot.
+    if let Err(e) = pack_edge_geometry(&mut w, &step3) {
+        eprintln!(
+            "  ! [skip edge_geom] {}; server will build flat geometry from heap polylines at boot",
+            e
+        );
+    }
+
     // ---- Manifest ---------------------------------------------------
     // Lists the modes packed and their bundle ids. For now, every mode
     // is a singleton bundle (bundle_id == mode_name); the topology-
@@ -662,6 +679,184 @@ fn pack_snap_index(
         w.append_bytes(SectionKind::SnapModeMask, &section_name, &mask_bytes)
             .with_context(|| format!("packing {}", section_name))?;
     }
+
+    Ok(())
+}
+
+/// Build and append the flat edge geometry sections (#155):
+///
+/// * `shared/edge_geom_offsets` — `[u32; n_edges + 1]` cumulative
+///   point counts. CSR convention: `offsets[i]..offsets[i+1]` is the
+///   half-open vertex range for edge `i`.
+/// * `shared/edge_geom_points` — `[i32; 2 * n_points]` interleaved
+///   `(lon_e7, lat_e7)` pairs in `nbg.geo` source order. Bytes are
+///   stable byte-for-byte vs `nbg.geo`'s polyline blob.
+///
+/// Returns Err if the input file is missing or fails to parse — the
+/// caller logs and skips the section emission, leaving the container
+/// compatible with the back-compat fallback in `state.rs`.
+fn pack_edge_geometry(w: &mut ContainerWriter, step3: &Path) -> Result<()> {
+    let nbg_geo_path = step3.join("nbg.geo");
+    if !nbg_geo_path.exists() {
+        anyhow::bail!("nbg.geo missing at {}", nbg_geo_path.display());
+    }
+
+    let nbg_geo = NbgGeoFile::read(&nbg_geo_path)
+        .with_context(|| format!("reading {}", nbg_geo_path.display()))?;
+
+    // ---- 1. Build offsets + points in a single pass --------------------
+    let n_edges = nbg_geo.polylines.len();
+    let mut offsets: Vec<u32> = Vec::with_capacity(n_edges + 1);
+    // Estimate: ~30 M vertices on Belgium → 240 MB. Pre-size conservatively.
+    let est_pts = nbg_geo.polylines.iter().map(|p| p.lat_fxp.len()).sum::<usize>();
+    let mut points: Vec<i32> = Vec::with_capacity(est_pts.checked_mul(2).unwrap_or(0));
+
+    let mut cumulative: u32 = 0;
+    let mut bbox_min_lon = i32::MAX;
+    let mut bbox_min_lat = i32::MAX;
+    let mut bbox_max_lon = i32::MIN;
+    let mut bbox_max_lat = i32::MIN;
+
+    for poly in &nbg_geo.polylines {
+        offsets.push(cumulative);
+        let n = poly.lat_fxp.len();
+        // The legacy NbgGeo guarantees lat_fxp.len() == lon_fxp.len() per
+        // edge; defend against malformed data anyway.
+        anyhow::ensure!(
+            n == poly.lon_fxp.len(),
+            "polyline has mismatched lat/lon lengths ({} vs {})",
+            n,
+            poly.lon_fxp.len()
+        );
+        for i in 0..n {
+            let lon = poly.lon_fxp[i];
+            let lat = poly.lat_fxp[i];
+            points.push(lon);
+            points.push(lat);
+            if lon < bbox_min_lon {
+                bbox_min_lon = lon;
+            }
+            if lon > bbox_max_lon {
+                bbox_max_lon = lon;
+            }
+            if lat < bbox_min_lat {
+                bbox_min_lat = lat;
+            }
+            if lat > bbox_max_lat {
+                bbox_max_lat = lat;
+            }
+        }
+        cumulative = cumulative
+            .checked_add(n as u32)
+            .ok_or_else(|| anyhow::anyhow!("edge geometry total point count exceeds u32::MAX"))?;
+    }
+    offsets.push(cumulative);
+    let n_points: u32 = cumulative;
+
+    if points.is_empty() {
+        // No polylines anywhere — leave bbox at zero rather than the
+        // sentinel min/max values.
+        bbox_min_lon = 0;
+        bbox_min_lat = 0;
+        bbox_max_lon = 0;
+        bbox_max_lat = 0;
+    }
+
+    // ---- 2. Round-trip sanity check (build → parse) --------------------
+    // Catches encoder regressions before they hit serve callers. Cheap on
+    // pack time (one CRC pass) but invaluable when iterating on the
+    // format.
+    let off_struct = EdgeGeomOffsets {
+        n_edges: n_edges as u32,
+        n_points,
+        offsets: Cow::Owned(offsets),
+    };
+    let pts_struct = EdgeGeomPoints {
+        n_points,
+        bbox_min_lon,
+        bbox_min_lat,
+        bbox_max_lon,
+        bbox_max_lat,
+        points: Cow::Owned(points),
+    };
+
+    let off_bytes = EdgeGeomOffsetsFile::encode(&off_struct);
+    let pts_bytes = EdgeGeomPointsFile::encode(&pts_struct);
+
+    // Parse them back and confirm the polyline at one sample edge round-
+    // trips byte-identically vs the source.
+    let parsed_off = EdgeGeomOffsetsFile::read_from_bytes(&off_bytes)
+        .with_context(|| "edge_geom_offsets failed self-roundtrip")?;
+    let parsed_pts = EdgeGeomPointsFile::read_from_bytes(&pts_bytes)
+        .with_context(|| "edge_geom_points failed self-roundtrip")?;
+    anyhow::ensure!(
+        parsed_off.n_edges as usize == n_edges,
+        "edge_geom_offsets roundtrip n_edges mismatch"
+    );
+    anyhow::ensure!(
+        parsed_pts.points.len() == 2 * n_points as usize,
+        "edge_geom_points roundtrip point-count mismatch"
+    );
+    if !nbg_geo.polylines.is_empty() {
+        // Pick a non-empty polyline if any exist.
+        if let Some((edge_id, src_poly)) = nbg_geo
+            .polylines
+            .iter()
+            .enumerate()
+            .find(|(_, p)| !p.lat_fxp.is_empty())
+        {
+            let s = parsed_off.offsets[edge_id] as usize;
+            let e = parsed_off.offsets[edge_id + 1] as usize;
+            anyhow::ensure!(
+                e - s == src_poly.lat_fxp.len(),
+                "round-trip vertex count mismatch on edge {} ({} vs {})",
+                edge_id,
+                e - s,
+                src_poly.lat_fxp.len()
+            );
+            for i in 0..(e - s) {
+                let lon = parsed_pts.points[(s + i) * 2];
+                let lat = parsed_pts.points[(s + i) * 2 + 1];
+                anyhow::ensure!(
+                    lon == src_poly.lon_fxp[i] && lat == src_poly.lat_fxp[i],
+                    "round-trip vertex mismatch at edge {} vertex {}",
+                    edge_id,
+                    i
+                );
+            }
+        }
+    }
+
+    // ---- 3. Emit both sections -----------------------------------------
+    println!(
+        "  + [{:>5} MiB] {:<28} <- (edge_geom_offsets, n_edges={})",
+        off_bytes.len() / (1024 * 1024),
+        "shared/edge_geom_offsets",
+        n_edges,
+    );
+    w.append_bytes(
+        SectionKind::EdgeGeomOffsets,
+        "shared/edge_geom_offsets",
+        &off_bytes,
+    )
+    .with_context(|| "packing shared/edge_geom_offsets".to_string())?;
+
+    println!(
+        "  + [{:>5} MiB] {:<28} <- (edge_geom_points, n_points={}, bbox=[{},{}]..[{},{}])",
+        pts_bytes.len() / (1024 * 1024),
+        "shared/edge_geom_points",
+        n_points,
+        bbox_min_lon,
+        bbox_min_lat,
+        bbox_max_lon,
+        bbox_max_lat,
+    );
+    w.append_bytes(
+        SectionKind::EdgeGeomPoints,
+        "shared/edge_geom_points",
+        &pts_bytes,
+    )
+    .with_context(|| "packing shared/edge_geom_points".to_string())?;
 
     Ok(())
 }
