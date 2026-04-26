@@ -186,7 +186,10 @@ pub async fn serve(
             // GTFS zips/feeds.toml); for now `--data` mode runs without
             // transit. Caller can supply a `transit/` directory next to
             // the .butterfly file via the file's parent.
-            let parent = file.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+            let parent = file
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf();
             (state, parent)
         }
     };
