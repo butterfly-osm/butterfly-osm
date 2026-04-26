@@ -34,7 +34,7 @@ Both runs use the same `belgium-v4.butterfly` container, the same 30-route warmu
 The RssAnon delta (2.46 GB) decomposes as roughly:
 - ~320 MB from dropping `DownReverseAdj` Vec-of-Vec across 4 modes (part A).
 - ~520 MB from zero-copy `ebg.nodes` / `ebg.csr` / `filtered_ebg` arrays moving from heap to mmap (part B). On Belgium this counts double in the delta because `ebg.csr` body and the `filtered_ebg` cold prefix are *both* zero-copy AND madvised, so the file_kb side also shrinks.
-- The remainder (~1.6 GB) is mainly the file-backed pages that the part-C madvise(DONTNEED) calls dropped (cold ebg.csr body + per-mode filtered_ebg cold prefixes). These show up as a `file_kb` reduction from 6.94 GB at `spatial.mode.truck` to 2.28 GB at `health.ready`.
+- The remainder (~1.6 GB) is mainly the file-backed pages that the part-C madvise(DONTNEED) calls dropped (cold ebg.csr body + per-mode filtered_ebg cold prefixes). These show up as a `file_kb` reduction from 6.94 GB at `spatial.mode.truck` to 2.28 GB at `boot.complete`.
 
 ## RSS checkpoint timeline (work-152)
 
@@ -51,12 +51,12 @@ phase=spatial.mode.bike        total_kb= 9634996  anon_kb=2695592  file_kb=69394
 phase=spatial.mode.car         total_kb=10233364  anon_kb=3293960  file_kb=6939404  elapsed_s=89.904
 phase=spatial.mode.foot        total_kb=11264376  anon_kb=4324972  file_kb=6939404  elapsed_s=92.135
 phase=spatial.mode.truck       total_kb=11765076  anon_kb=4825672  file_kb=6939404  elapsed_s=93.205
-phase=health.ready             total_kb= 7195340  anon_kb=4919796  file_kb=2275544  elapsed_s=100.594
+phase=boot.complete             total_kb= 7195340  anon_kb=4919796  file_kb=2275544  elapsed_s=100.594
 ```
 
 Three observations:
 
-1. **The drop between `spatial.mode.truck` and `health.ready` is the madvise reclaim**: total falls 11.77 → 7.20 GB (−4.57 GB), mostly in `file_kb` (6.94 → 2.28 GB). Anon ticks up slightly (+95 MB) because the transit subsystem boots in this window and allocates its RAPTOR scratch.
+1. **The drop between `spatial.mode.truck` and `boot.complete` is the madvise reclaim**: total falls 11.77 → 7.20 GB (−4.57 GB), mostly in `file_kb` (6.94 → 2.28 GB). Anon ticks up slightly (+95 MB) because the transit subsystem boots in this window and allocates its RAPTOR scratch.
 2. **Per-mode loads scale linearly** in anon (~37 MB/mode for the heap-resident parts: `mask`, `node_weights`, transit transfer caches). This is now the floor we'd attack in #153.
 3. **Spatial indexes are anon-heavy** (~1.0 GB per per-mode rstar tree). Codex/issue body explicitly defer this to #154 — the spatial.mode.* checkpoints validate that this is exactly where the remaining anon sits, ready for #154 to attack.
 
@@ -122,8 +122,8 @@ cargo build --workspace --release
     --port 13001 --grpc-port 13002 \
     --rss-checkpoints 2>&1 | tee /tmp/butterfly-152.log
 
-# Wait for health.ready
-until grep -q "RSS_CHECKPOINT phase=health.ready" /tmp/butterfly-152.log; do sleep 3; done
+# Wait for boot.complete
+until grep -q "RSS_CHECKPOINT phase=boot.complete" /tmp/butterfly-152.log; do sleep 3; done
 
 # 30-route warmup, 100-route bench, 100-iso bench
 # (see /tmp/route-pairs.txt and /tmp/iso-pairs.txt for exact pairs)

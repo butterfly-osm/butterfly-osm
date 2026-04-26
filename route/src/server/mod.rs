@@ -236,12 +236,13 @@ pub async fn serve(
 
     let state = Arc::new(state_owned);
 
-    // #152: emit the final RSS checkpoint just before listeners come
-    // up. By the time `/health` first answers OK every demand-paged
-    // section is paged in once, every spatial index is built, and
-    // every transit table is populated. This is the steady-state
-    // baseline #153/#154/#155 will measure against.
-    crate::server::rss::checkpoint("health.ready");
+    // #152: emit the final RSS checkpoint after every initialization
+    // step is done but before REST/gRPC listeners bind. Every
+    // demand-paged section has been paged in once, every spatial
+    // index is built, and every transit table is populated. This is
+    // the steady-state baseline #153/#154/#155 will measure against,
+    // captured prior to observable readiness on `/health`.
+    crate::server::rss::checkpoint("boot.complete");
 
     // Find free ports
     let http_port = match port {

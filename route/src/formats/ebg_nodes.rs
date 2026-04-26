@@ -134,6 +134,19 @@ impl EbgNodesFile {
         reader.read_exact(&mut header)?;
         crc_digest.update(&header);
 
+        let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+        anyhow::ensure!(
+            magic == MAGIC,
+            "Invalid magic in ebg.nodes: expected 0x{:08X}, got 0x{:08X}",
+            MAGIC,
+            magic
+        );
+        let version = u16::from_le_bytes([header[4], header[5]]);
+        anyhow::ensure!(
+            version == VERSION,
+            "Unsupported ebg.nodes version {version}, expected {VERSION}",
+        );
+
         let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
         let created_unix = u64::from_le_bytes([
             header[12], header[13], header[14], header[15], header[16], header[17], header[18],

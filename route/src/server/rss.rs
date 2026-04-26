@@ -1,10 +1,11 @@
 //! RSS-checkpoint instrumentation (#152).
 //!
 //! Reads `/proc/self/smaps_rollup` (preferred — more accurate than
-//! `/proc/self/status` because it walks the process VMAs and gives a
-//! per-mapping breakdown) and emits a `tracing::info!` line tagged
-//! `RSS_CHECKPOINT` at every boot phase. Disabled by default; turned
-//! on by `--rss-checkpoints` or `BUTTERFLY_RSS_CHECKPOINTS=1`.
+//! `/proc/self/status` because it walks the process VMAs and aggregates
+//! the rollup fields, including the anon/file-backed RSS split we care
+//! about) and emits a `tracing::info!` line tagged `RSS_CHECKPOINT` at
+//! every boot phase. Disabled by default; turned on by
+//! `--rss-checkpoints` or `BUTTERFLY_RSS_CHECKPOINTS=1`.
 //!
 //! The lines are deterministic and grep-friendly:
 //!
@@ -16,9 +17,10 @@
 //! the #153/#154/#155 measurement discipline. It is NOT a one-shot
 //! diagnostic.
 //!
-//! `ps -o rss` is explicitly NOT used — codex flagged it: it reports
-//! the resident size at fork time, not the smaps-rollup post-mmap
-//! steady state we care about.
+//! `ps -o rss` is explicitly NOT used — codex flagged it: it only
+//! exposes a coarse current RSS value, whereas `smaps_rollup` provides
+//! the rollup fields and the anon/file-backed breakdown we need for
+//! post-mmap steady-state measurement.
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
