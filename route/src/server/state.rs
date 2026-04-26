@@ -441,8 +441,7 @@ impl ServerState {
 
         for (mode_index, mode_name) in discovered_modes.iter().enumerate() {
             let mode = Mode(global_index[mode_name]);
-            let mode_data =
-                load_mode_data_from_bundle(mode_name, mode, &container, static_mmap)?;
+            let mode_data = load_mode_data_from_bundle(mode_name, mode, &container, static_mmap)?;
             tracing::info!(
                 mode = mode_name.as_str(),
                 index = mode_index,
@@ -965,28 +964,33 @@ fn load_mode_data_from_bundle(
 
     let filtered_ebg = FilteredEbgFile::read_from_bytes(fetch("filtered_ebg")?)?;
     let order = OrderEbgFile::read_from_bytes(fetch("order")?)?;
-    // #150: cch_topo's 76-byte header would leave the trailing u64
-    // offsets table at a 4-byte section-internal offset, which fails
-    // `bytemuck::cast_slice::<u64>` alignment. Pack now prepends 4 zero
-    // bytes to the section payload (see pack.rs) so the real header
-    // lands at section-offset 4 and the offsets array at 80 — both
-    // u64-aligned. We detect the padding by sniffing the first 4 bytes:
-    // if they are zero we skip them and use the zero-copy reader; if
-    // the magic word is at offset 0 we fall back to the legacy owning
-    // reader (older containers).
     let topo_section_bytes: &'static [u8] = fetch("topo")?;
-    // #150: cch_topo's 76-byte header would put the trailing u64 offsets
-    // table at a u32-aligned (not u64-aligned) section-internal offset.
-    // Worse, even with the offsets fixed, the zero-copy reader's
-    // intermediate u64 sections (down_offsets, bitsets) would be
-    // misaligned whenever n_up_edges is odd — which is data-dependent
-    // (true for car on Belgium, false for bike). So we keep the legacy
-    // owning reader for cch_topo and rely on the heap savings from the
-    // flats themselves to bound RSS. Future work (deferred): bump the
-    // cch_topo on-disk header to 80 B and pad each variable-length
-    // u32 section to a u64 boundary at write time, which unlocks
-    // zero-copy and saves a further ~3-4 GB of heap on Belgium.
-    let cch_topo = CchTopoFile::read_from_bytes(topo_section_bytes)?;
+    // #151: cch.topo is now v4. Header is 80 bytes (u64-aligned) and
+    // every variable-length u32 array is padded to a u64 boundary, so
+    // the zero-copy reader works regardless of n_up_edges/n_down_edges
+    // parity. Saves ≈ 3-5 GB of heap on Belgium vs the v3 owning
+    // reader; the topo body now lives in mmap'd file pages and is
+    // demand-paged like the flats. The offsets/targets/middles/bitset
+    // slices are borrowed from the mmap with the same Box::leak'd
+    // 'static lifetime trick as the flats.
+    let cch_topo = CchTopoFile::read_from_bytes_zero_copy(topo_section_bytes)?;
+    // After CRC verification we hint the kernel that the topo bytes can
+    // be reclaimed. Hot routing pages page back in lazily; cold ones
+    // (e.g. `up_middle` bytes for shortcuts that no query ever unpacks)
+    // stay off RSS. Same mechanism the flats use.
+    if let Err(e) = crate::formats::mmap::madvise_dontneed(topo_section_bytes) {
+        tracing::warn!(
+            section = "topo",
+            error = %e,
+            "madvise(DONTNEED) on cch.topo section failed; ignoring"
+        );
+    } else {
+        tracing::info!(
+            section = "topo",
+            bytes = topo_section_bytes.len(),
+            "madvise(DONTNEED) on cch.topo section"
+        );
+    }
     let down_rev = build_down_reverse_adj(&cch_topo);
 
     let weights_data = mod_weights::read_all_from_bytes(fetch("node_weights.time")?)?;
