@@ -222,7 +222,7 @@ pub fn recustomize_weights(
         // DOWN edges (sorted by target rank)
         for &i in &sorted_down_indices[u] {
             let v = topo.down_targets[i] as usize;
-            if !topo.down_is_shortcut[i] {
+            if !topo.down_is_shortcut.bit(i) {
                 // Base edge: check target for exclusion
                 let v_filtered = topo.rank_to_filtered[v] as usize;
                 let v_orig = filtered_to_original[v_filtered] as usize;
@@ -247,7 +247,7 @@ pub fn recustomize_weights(
         let up_end = topo.up_offsets[u + 1] as usize;
         for i in up_start..up_end {
             let v = topo.up_targets[i] as usize;
-            if !topo.up_is_shortcut[i] {
+            if !topo.up_is_shortcut.bit(i) {
                 let v_filtered = topo.rank_to_filtered[v] as usize;
                 let v_orig = filtered_to_original[v_filtered] as usize;
 
@@ -271,8 +271,8 @@ pub fn recustomize_weights(
     triangle_relax(topo, &mut up_weights, &mut down_weights, &rev_down);
 
     CchWeights {
-        up: up_weights,
-        down: down_weights,
+        up: up_weights.into(),
+        down: down_weights.into(),
         up_middle: base_weights.up_middle.clone(),
         down_middle: base_weights.down_middle.clone(),
     }
@@ -325,7 +325,7 @@ fn recustomize_weights_sparse_triangle(
         // DOWN edges (sorted by target rank)
         for &i in &sorted_down_indices[u] {
             let v = topo.down_targets[i] as usize;
-            if !topo.down_is_shortcut[i] {
+            if !topo.down_is_shortcut.bit(i) {
                 let v_filtered = topo.rank_to_filtered[v] as usize;
                 let v_orig = filtered_to_original[v_filtered] as usize;
 
@@ -348,7 +348,7 @@ fn recustomize_weights_sparse_triangle(
         let up_end = topo.up_offsets[u + 1] as usize;
         for i in up_start..up_end {
             let v = topo.up_targets[i] as usize;
-            if !topo.up_is_shortcut[i] {
+            if !topo.up_is_shortcut.bit(i) {
                 let v_filtered = topo.rank_to_filtered[v] as usize;
                 let v_orig = filtered_to_original[v_filtered] as usize;
 
@@ -380,8 +380,8 @@ fn recustomize_weights_sparse_triangle(
     );
 
     CchWeights {
-        up: up_weights,
-        down: down_weights,
+        up: up_weights.into(),
+        down: down_weights.into(),
         up_middle: base_weights.up_middle.clone(),
         down_middle: base_weights.down_middle.clone(),
     }

@@ -16,10 +16,12 @@
 //! For path unpacking and geometry lookup, use `rank_to_filtered` mapping.
 
 use anyhow::Result;
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
+use super::bitset::BitsetField;
 use super::crc;
 
 const MAGIC: u32 = 0x43434854; // "CCHT"
@@ -53,22 +55,24 @@ pub struct CchTopo {
 
     // Upward graph in CSR format (indexed by rank)
     // For node at rank r, upward neighbors have rank > r
-    pub up_offsets: Vec<u64>,      // n_nodes + 1, indexed by rank
-    pub up_targets: Vec<u32>,      // Rank positions of targets
-    pub up_is_shortcut: Vec<bool>, // true if this is a shortcut, false if original
-    pub up_middle: Vec<u32>,       // Rank position of middle node (u32::MAX if original)
+    pub up_offsets: Cow<'static, [u64]>, // n_nodes + 1, indexed by rank
+    pub up_targets: Cow<'static, [u32]>, // Rank positions of targets
+    /// Bit-packed: bit `i` is true iff edge `i` is a shortcut. Use
+    /// `up_is_shortcut.bit(i)` instead of indexing — see #147.
+    pub up_is_shortcut: BitsetField,
+    pub up_middle: Cow<'static, [u32]>, // Rank position of middle node (u32::MAX if original)
 
     // Downward graph in CSR format (indexed by rank)
     // For node at rank r, downward neighbors have rank < r
-    pub down_offsets: Vec<u64>,
-    pub down_targets: Vec<u32>,
-    pub down_is_shortcut: Vec<bool>,
-    pub down_middle: Vec<u32>,
+    pub down_offsets: Cow<'static, [u64]>,
+    pub down_targets: Cow<'static, [u32]>,
+    pub down_is_shortcut: BitsetField,
+    pub down_middle: Cow<'static, [u32]>,
 
     // Mapping from rank position to filtered node ID
     // rank_to_filtered[rank] = filtered_id
     // Used for geometry lookup and path unpacking
-    pub rank_to_filtered: Vec<u32>,
+    pub rank_to_filtered: Cow<'static, [u32]>,
 }
 
 pub struct CchTopoFile;
@@ -111,55 +115,55 @@ impl CchTopoFile {
         crc_digest.update(&data.inputs_sha);
 
         // Up graph
-        for &off in &data.up_offsets {
+        for &off in data.up_offsets.iter() {
             let bytes = off.to_le_bytes();
             writer.write_all(&bytes)?;
             crc_digest.update(&bytes);
         }
-        for &t in &data.up_targets {
+        for &t in data.up_targets.iter() {
             let bytes = t.to_le_bytes();
             writer.write_all(&bytes)?;
             crc_digest.update(&bytes);
         }
         // Bitset on disk (#90 phase 4): pack 64 booleans per u64 so a
         // 192M-edge Belgium build saves ~168 MB on this section alone.
-        let up_bits = pack_bools_to_bitset(&data.up_is_shortcut);
-        for &word in &up_bits {
+        let up_bits: &[u64] = data.up_is_shortcut.as_words();
+        for &word in up_bits {
             let bytes = word.to_le_bytes();
             writer.write_all(&bytes)?;
             crc_digest.update(&bytes);
         }
-        for &m in &data.up_middle {
+        for &m in data.up_middle.iter() {
             let bytes = m.to_le_bytes();
             writer.write_all(&bytes)?;
             crc_digest.update(&bytes);
         }
 
         // Down graph
-        for &off in &data.down_offsets {
+        for &off in data.down_offsets.iter() {
             let bytes = off.to_le_bytes();
             writer.write_all(&bytes)?;
             crc_digest.update(&bytes);
         }
-        for &t in &data.down_targets {
+        for &t in data.down_targets.iter() {
             let bytes = t.to_le_bytes();
             writer.write_all(&bytes)?;
             crc_digest.update(&bytes);
         }
-        let down_bits = pack_bools_to_bitset(&data.down_is_shortcut);
-        for &word in &down_bits {
+        let down_bits: &[u64] = data.down_is_shortcut.as_words();
+        for &word in down_bits {
             let bytes = word.to_le_bytes();
             writer.write_all(&bytes)?;
             crc_digest.update(&bytes);
         }
-        for &m in &data.down_middle {
+        for &m in data.down_middle.iter() {
             let bytes = m.to_le_bytes();
             writer.write_all(&bytes)?;
             crc_digest.update(&bytes);
         }
 
         // Rank to filtered mapping (Version 2)
-        for &f in &data.rank_to_filtered {
+        for &f in data.rank_to_filtered.iter() {
             let bytes = f.to_le_bytes();
             writer.write_all(&bytes)?;
             crc_digest.update(&bytes);
@@ -260,7 +264,7 @@ impl CchTopoFile {
             crc_digest.update(&buf);
             up_bits.push(u64::from_le_bytes(buf));
         }
-        let up_is_shortcut = unpack_bitset_to_bools(&up_bits, n_up_edges as usize);
+        let up_is_shortcut = BitsetField::from_owned_words(up_bits, n_up_edges as usize);
 
         let mut up_middle = Vec::with_capacity(n_up_edges as usize);
         for _ in 0..n_up_edges {
@@ -295,7 +299,7 @@ impl CchTopoFile {
             crc_digest.update(&buf);
             down_bits.push(u64::from_le_bytes(buf));
         }
-        let down_is_shortcut = unpack_bitset_to_bools(&down_bits, n_down_edges as usize);
+        let down_is_shortcut = BitsetField::from_owned_words(down_bits, n_down_edges as usize);
 
         let mut down_middle = Vec::with_capacity(n_down_edges as usize);
         for _ in 0..n_down_edges {
@@ -331,15 +335,146 @@ impl CchTopoFile {
             n_shortcuts,
             n_original_arcs,
             inputs_sha,
-            up_offsets,
-            up_targets,
+            up_offsets: Cow::Owned(up_offsets),
+            up_targets: Cow::Owned(up_targets),
             up_is_shortcut,
-            up_middle,
-            down_offsets,
-            down_targets,
+            up_middle: Cow::Owned(up_middle),
+            down_offsets: Cow::Owned(down_offsets),
+            down_targets: Cow::Owned(down_targets),
             down_is_shortcut,
-            down_middle,
-            rank_to_filtered,
+            down_middle: Cow::Owned(down_middle),
+            rank_to_filtered: Cow::Owned(rank_to_filtered),
+        })
+    }
+
+    /// Zero-copy read over a `'static` byte slice — see #147.
+    ///
+    /// Constructs `CchTopo` whose numeric fields are `Cow::Borrowed`
+    /// slices into the input bytes, and whose `*_is_shortcut` bitsets
+    /// borrow the on-disk packed `u64` words directly. CRC is verified
+    /// before returning.
+    ///
+    /// Section start MUST be 8-byte aligned (the container writer
+    /// guarantees this for every section).
+    pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<CchTopo> {
+        anyhow::ensure!(
+            bytes.len() >= 76 + 16,
+            "cch.topo too short for header+footer: {} bytes",
+            bytes.len()
+        );
+
+        // ----- Header (76 bytes) -----
+        let h = &bytes[..76];
+        let magic = u32::from_le_bytes(h[0..4].try_into().unwrap());
+        anyhow::ensure!(
+            magic == MAGIC,
+            "Invalid magic: expected 0x{:08X}, got 0x{:08X}",
+            MAGIC,
+            magic
+        );
+        let version = u16::from_le_bytes(h[4..6].try_into().unwrap());
+        anyhow::ensure!(
+            version == VERSION,
+            "Unsupported CCH topology version: expected {}, got {}. Please rebuild with step7-contract.",
+            VERSION,
+            version
+        );
+        let n_nodes = u32::from_le_bytes(h[8..12].try_into().unwrap());
+        let n_shortcuts = u64::from_le_bytes(h[12..20].try_into().unwrap());
+        let n_original_arcs = u64::from_le_bytes(h[20..28].try_into().unwrap());
+        let n_up_edges = u64::from_le_bytes(h[28..36].try_into().unwrap()) as usize;
+        let n_down_edges = u64::from_le_bytes(h[36..44].try_into().unwrap()) as usize;
+        let mut inputs_sha = [0u8; 32];
+        inputs_sha.copy_from_slice(&h[44..76]);
+
+        let n_offsets = (n_nodes as usize) + 1;
+        let n_up_words = n_up_edges.div_ceil(64);
+        let n_down_words = n_down_edges.div_ceil(64);
+
+        // ----- Layout: header(76)
+        //  | up_offsets(8 * n_offsets)
+        //  | up_targets(4 * n_up)
+        //  | up_bits(8 * n_up_words)
+        //  | up_middle(4 * n_up)
+        //  | down_offsets(8 * n_offsets)
+        //  | down_targets(4 * n_down)
+        //  | down_bits(8 * n_down_words)
+        //  | down_middle(4 * n_down)
+        //  | rank_to_filtered(4 * n_nodes)
+        //  | footer(16)
+        let mut cur = 76usize;
+        let upo_end = cur + 8 * n_offsets;
+        let up_offsets: &'static [u64] = bytemuck::cast_slice(&bytes[cur..upo_end]);
+        cur = upo_end;
+
+        let upt_end = cur + 4 * n_up_edges;
+        let up_targets: &'static [u32] = bytemuck::cast_slice(&bytes[cur..upt_end]);
+        cur = upt_end;
+
+        let upb_end = cur + 8 * n_up_words;
+        let up_bits_words: &'static [u64] = bytemuck::cast_slice(&bytes[cur..upb_end]);
+        cur = upb_end;
+
+        let upm_end = cur + 4 * n_up_edges;
+        let up_middle: &'static [u32] = bytemuck::cast_slice(&bytes[cur..upm_end]);
+        cur = upm_end;
+
+        let dno_end = cur + 8 * n_offsets;
+        let down_offsets: &'static [u64] = bytemuck::cast_slice(&bytes[cur..dno_end]);
+        cur = dno_end;
+
+        let dnt_end = cur + 4 * n_down_edges;
+        let down_targets: &'static [u32] = bytemuck::cast_slice(&bytes[cur..dnt_end]);
+        cur = dnt_end;
+
+        let dnb_end = cur + 8 * n_down_words;
+        let down_bits_words: &'static [u64] = bytemuck::cast_slice(&bytes[cur..dnb_end]);
+        cur = dnb_end;
+
+        let dnm_end = cur + 4 * n_down_edges;
+        let down_middle: &'static [u32] = bytemuck::cast_slice(&bytes[cur..dnm_end]);
+        cur = dnm_end;
+
+        let rtf_end = cur + 4 * (n_nodes as usize);
+        let rank_to_filtered: &'static [u32] = bytemuck::cast_slice(&bytes[cur..rtf_end]);
+        cur = rtf_end;
+
+        // ----- CRC verification: all bytes before footer -----
+        anyhow::ensure!(
+            bytes.len() == cur + 16,
+            "cch.topo length mismatch: declared {}, expected body+footer {}",
+            bytes.len(),
+            cur + 16
+        );
+        let body = &bytes[..cur];
+        let computed_crc = {
+            let mut d = crc::Digest::new();
+            d.update(body);
+            d.finalize()
+        };
+        let footer = &bytes[cur..cur + 16];
+        let stored_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+        anyhow::ensure!(
+            computed_crc == stored_crc,
+            "CRC64 mismatch in cch.topo: computed 0x{:016X}, stored 0x{:016X}",
+            computed_crc,
+            stored_crc
+        );
+
+        Ok(CchTopo {
+            n_nodes,
+            n_shortcuts,
+            n_original_arcs,
+            inputs_sha,
+            up_offsets: Cow::Borrowed(up_offsets),
+            up_targets: Cow::Borrowed(up_targets),
+            up_is_shortcut: BitsetField::from_borrowed_words(up_bits_words, n_up_edges),
+            up_middle: Cow::Borrowed(up_middle),
+            down_offsets: Cow::Borrowed(down_offsets),
+            down_targets: Cow::Borrowed(down_targets),
+            down_is_shortcut: BitsetField::from_borrowed_words(down_bits_words, n_down_edges),
+            down_middle: Cow::Borrowed(down_middle),
+            rank_to_filtered: Cow::Borrowed(rank_to_filtered),
         })
     }
 }
@@ -348,6 +483,7 @@ impl CchTopoFile {
 ///
 /// Bit `i` of word `i / 64` (LSB-first within each word) is set iff
 /// `bools[i] == true`. The output length is `ceil(n / 64)` words.
+#[cfg(test)]
 fn pack_bools_to_bitset(bools: &[bool]) -> Vec<u64> {
     let n_words = bools.len().div_ceil(64);
     let mut out = vec![0u64; n_words];
@@ -363,6 +499,7 @@ fn pack_bools_to_bitset(bools: &[bool]) -> Vec<u64> {
 ///
 /// `n` is the original boolean count (the bitset may have trailing bits
 /// up to a word boundary that are not part of the logical content).
+#[cfg(test)]
 fn unpack_bitset_to_bools(bits: &[u64], n: usize) -> Vec<bool> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
@@ -384,15 +521,15 @@ mod tests {
             n_shortcuts: 1,
             n_original_arcs: 3,
             inputs_sha: [0xCD; 32],
-            up_offsets: vec![0, 1, 2, 3, 3],
-            up_targets: vec![1, 2, 3],
-            up_is_shortcut: vec![false, false, true],
-            up_middle: vec![u32::MAX, u32::MAX, 1],
-            down_offsets: vec![0, 0, 1, 2, 3],
-            down_targets: vec![0, 1, 2],
-            down_is_shortcut: vec![false, false, true],
-            down_middle: vec![u32::MAX, u32::MAX, 1],
-            rank_to_filtered: vec![10, 20, 30, 40],
+            up_offsets: vec![0u64, 1, 2, 3, 3].into(),
+            up_targets: vec![1u32, 2, 3].into(),
+            up_is_shortcut: BitsetField::from_bools(&[false, false, true]),
+            up_middle: vec![u32::MAX, u32::MAX, 1].into(),
+            down_offsets: vec![0u64, 0, 1, 2, 3].into(),
+            down_targets: vec![0u32, 1, 2].into(),
+            down_is_shortcut: BitsetField::from_bools(&[false, false, true]),
+            down_middle: vec![u32::MAX, u32::MAX, 1].into(),
+            rank_to_filtered: vec![10u32, 20, 30, 40].into(),
         }
     }
 
@@ -407,11 +544,14 @@ mod tests {
         assert_eq!(loaded.n_shortcuts, 1);
         assert_eq!(loaded.n_original_arcs, 3);
         assert_eq!(loaded.inputs_sha, [0xCD; 32]);
-        assert_eq!(loaded.up_targets, vec![1, 2, 3]);
-        assert_eq!(loaded.up_is_shortcut, vec![false, false, true]);
+        assert_eq!(&loaded.up_targets[..], &[1u32, 2, 3]);
+        assert_eq!(loaded.up_is_shortcut.len(), 3);
+        assert!(!loaded.up_is_shortcut.bit(0));
+        assert!(!loaded.up_is_shortcut.bit(1));
+        assert!(loaded.up_is_shortcut.bit(2));
         assert_eq!(loaded.up_middle[2], 1);
-        assert_eq!(loaded.down_targets, vec![0, 1, 2]);
-        assert_eq!(loaded.rank_to_filtered, vec![10, 20, 30, 40]);
+        assert_eq!(&loaded.down_targets[..], &[0u32, 1, 2]);
+        assert_eq!(&loaded.rank_to_filtered[..], &[10u32, 20, 30, 40]);
         Ok(())
     }
 

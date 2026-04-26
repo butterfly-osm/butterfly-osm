@@ -267,6 +267,18 @@ impl ContainerWriter {
             u16::MAX
         );
 
+        // Pad cursor up to an 8-byte boundary so every section starts
+        // u64-aligned in the file. Required by #147 zero-copy readers:
+        // they reinterpret section bytes as `&[u32]` / `&[u64]` via
+        // `bytemuck::cast_slice`, which fails on misaligned input.
+        // Padding bytes are zero and are NOT included in the section CRC
+        // (CRC covers the named payload exactly).
+        let pad = ((8 - (self.cursor % 8)) % 8) as usize;
+        if pad != 0 {
+            let zeros = [0u8; 8];
+            self.file.write_all(&zeros[..pad])?;
+            self.cursor += pad as u64;
+        }
         let offset = self.cursor;
         let mut sec_digest = crc::Digest::new();
         let mut buf = vec![0u8; 1 << 20]; // 1 MiB streaming buffer.

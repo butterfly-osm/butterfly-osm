@@ -3315,7 +3315,7 @@ fn build_down_rev(topo: &butterfly_route::formats::CchTopo) -> DownReverseAdj {
 
     // Count incoming DOWN edges for each node
     let mut counts = vec![0u32; n_nodes];
-    for &target in &topo.down_targets {
+    for &target in topo.down_targets.iter() {
         counts[target as usize] += 1;
     }
 

@@ -144,13 +144,13 @@ fn check_non_negative_weights(weights: &crate::formats::CchWeights, result: &mut
     let mut near_max_up = 0usize;
     let mut near_max_down = 0usize;
 
-    for &w in &weights.up {
+    for &w in weights.up.iter() {
         if w >= near_max_threshold && w != u32::MAX {
             near_max_up += 1;
         }
     }
 
-    for &w in &weights.down {
+    for &w in weights.down.iter() {
         if w >= near_max_threshold && w != u32::MAX {
             near_max_down += 1;
         }
@@ -178,7 +178,7 @@ fn check_weight_domain(weights: &crate::formats::CchWeights, result: &mut Invari
     let mut excessive_up = 0usize;
     let mut excessive_down = 0usize;
 
-    for &w in &weights.up {
+    for &w in weights.up.iter() {
         if w == u32::MAX {
             inf_up += 1;
         } else {
@@ -192,7 +192,7 @@ fn check_weight_domain(weights: &crate::formats::CchWeights, result: &mut Invari
         }
     }
 
-    for &w in &weights.down {
+    for &w in weights.down.iter() {
         if w == u32::MAX {
             inf_down += 1;
         } else {
@@ -322,14 +322,14 @@ fn check_csr_structure(topo: &crate::formats::CchTopo, result: &mut InvariantRes
 
     // Check target nodes are in range
     let mut targets_valid = true;
-    for &t in &topo.up_targets {
+    for &t in topo.up_targets.iter() {
         if t as usize >= n {
             targets_valid = false;
             result.check_failed(format!("UP target {} out of range (n={})", t, n));
             break;
         }
     }
-    for &t in &topo.down_targets {
+    for &t in topo.down_targets.iter() {
         if t as usize >= n {
             targets_valid = false;
             result.check_failed(format!("DOWN target {} out of range (n={})", t, n));
