@@ -559,6 +559,39 @@ impl Container {
         self.sections.iter().filter(move |s| s.kind == kind)
     }
 
+    /// Iterate all sections whose name starts with `prefix`. Order matches
+    /// insertion order. Useful for collecting a per-mode bundle (e.g.
+    /// `mode/car/`) or the shared section group (`shared/`).
+    pub fn sections_with_prefix<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = &'a SectionEntry> + 'a {
+        self.sections
+            .iter()
+            .filter(move |s| s.name.starts_with(prefix))
+    }
+
+    /// List every mode bundle present in this container. A mode bundle is
+    /// any subtree under `mode/<name>/...`. Returns the bundle names sorted
+    /// for determinism.
+    ///
+    /// Returns an empty vec for legacy containers that use the old flat
+    /// `stepN/...` naming (no `mode/...` prefix anywhere).
+    pub fn list_modes(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .sections
+            .iter()
+            .filter_map(|s| {
+                let rest = s.name.strip_prefix("mode/")?;
+                let slash = rest.find('/')?;
+                Some(rest[..slash].to_string())
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// Read a section's bytes off disk and verify its CRC. Suitable
     /// for one-shot loaders that copy the bytes into a `Vec`.
     pub fn read_section_verified<P: AsRef<Path>>(
@@ -760,6 +793,55 @@ mod tests {
         write_demo(tmp.path())?;
         let c = Container::open(tmp.path())?;
         assert!(c.get("nonexistent").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn list_modes_and_prefix_iter() -> Result<()> {
+        let tmp = NamedTempFile::new()?;
+        let mut w = ContainerWriter::create(tmp.path())?;
+        w.append_bytes(SectionKind::EbgNodes, "shared/ebg.nodes", b"x")?;
+        w.append_bytes(SectionKind::CchTopo, "mode/car/topo", b"car-topo")?;
+        w.append_bytes(SectionKind::CchWeightsTime, "mode/car/weights.time", b"ct")?;
+        w.append_bytes(SectionKind::CchTopo, "mode/bike/topo", b"bike-topo")?;
+        // Unknown manifest payload: must round-trip.
+        w.append_bytes(
+            SectionKind::Unknown,
+            "shared/manifest.json",
+            b"{\"version\":1,\"future\":\"field\"}",
+        )?;
+        w.finalize()?;
+
+        let c = Container::open(tmp.path())?;
+        assert_eq!(c.list_modes(), vec!["bike".to_string(), "car".to_string()]);
+
+        let car: Vec<&str> = c
+            .sections_with_prefix("mode/car/")
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(car, vec!["mode/car/topo", "mode/car/weights.time"]);
+
+        let shared: Vec<&str> = c
+            .sections_with_prefix("shared/")
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(shared, vec!["shared/ebg.nodes", "shared/manifest.json"]);
+
+        // Manifest unknown future field round-trips byte-for-byte.
+        let m = c.get("shared/manifest.json").unwrap();
+        let mb = c.read_section_verified(tmp.path(), m)?;
+        assert_eq!(&mb, b"{\"version\":1,\"future\":\"field\"}");
+        Ok(())
+    }
+
+    #[test]
+    fn list_modes_empty_for_legacy() -> Result<()> {
+        let tmp = NamedTempFile::new()?;
+        let mut w = ContainerWriter::create(tmp.path())?;
+        w.append_bytes(SectionKind::CchTopo, "step7/cch.car", b"legacy")?;
+        w.finalize()?;
+        let c = Container::open(tmp.path())?;
+        assert!(c.list_modes().is_empty());
         Ok(())
     }
 

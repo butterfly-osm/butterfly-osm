@@ -21,6 +21,11 @@ use std::path::{Path, PathBuf};
 
 use crate::formats::butterfly_dat::{Container, ContainerWriter, SectionKind};
 
+/// Section name for the JSON manifest that lists modes + bundle ids.
+/// Lives at the top of the `shared/` namespace so legacy tooling can
+/// ignore it (it has the synthetic `Unknown` kind on disk).
+const MANIFEST_NAME: &str = "shared/manifest.json";
+
 /// Resolve a step subdirectory the same way the server does:
 /// exact match first, then any directory whose name starts with
 /// `step{N}` (alphabetically lowest).
@@ -116,176 +121,175 @@ pub fn pack(data_dir: &Path, out: &Path, step_prefix: Option<&str>) -> Result<()
     }
     let mut w = ContainerWriter::create(out)?;
 
-    // ---- Step 1 (mode-agnostic global tables) -----------------------
+    // ---- Shared global tables (mode-agnostic) -----------------------
+    // Step 1 ingest output.
     maybe_append(
         &mut w,
         SectionKind::NodesSa,
-        "step1/nodes.sa",
+        "shared/step1.nodes.sa",
         &step1.join("nodes.sa"),
     )?;
     maybe_append(
         &mut w,
         SectionKind::NodesSi,
-        "step1/nodes.si",
+        "shared/step1.nodes.si",
         &step1.join("nodes.si"),
     )?;
     maybe_append(
         &mut w,
         SectionKind::WaysRaw,
-        "step1/ways.raw",
+        "shared/step1.ways.raw",
         &step1.join("ways.raw"),
     )?;
     maybe_append(
         &mut w,
         SectionKind::RelationsRaw,
-        "step1/relations.raw",
+        "shared/step1.relations.raw",
         &step1.join("relations.raw"),
     )?;
     maybe_append(
         &mut w,
         SectionKind::NodeSignals,
-        "step1/node_signals.bin",
+        "shared/step1.node_signals.bin",
         &step1.join("node_signals.bin"),
     )?;
-
-    // ---- Step 2 per-mode --------------------------------------------
-    for (mode, path) in glob_per_mode(&step2, "way_attrs", ".bin")? {
-        maybe_append(
-            &mut w,
-            SectionKind::WayAttrs,
-            &format!("step2/way_attrs.{}", mode),
-            &path,
-        )?;
-    }
-    for (mode, path) in glob_per_mode(&step2, "turn_rules", ".bin")? {
-        maybe_append(
-            &mut w,
-            SectionKind::TurnRules,
-            &format!("step2/turn_rules.{}", mode),
-            &path,
-        )?;
-    }
-
-    // ---- Step 3 (NBG, mode-agnostic) --------------------------------
+    // NBG (build-time intermediate, but the geo + node_map are read at
+    // server startup — keep them in `shared/`).
     maybe_append(
         &mut w,
         SectionKind::NbgCsr,
-        "step3/nbg.csr",
+        "shared/nbg.csr",
         &step3.join("nbg.csr"),
     )?;
     maybe_append(
         &mut w,
         SectionKind::NbgGeo,
-        "step3/nbg.geo",
+        "shared/nbg.geo",
         &step3.join("nbg.geo"),
     )?;
     maybe_append(
         &mut w,
         SectionKind::NbgNodeMap,
-        "step3/nbg.node_map",
+        "shared/nbg.node_map",
         &step3.join("nbg.node_map"),
     )?;
-
-    // ---- Step 4 (EBG, mode-agnostic) --------------------------------
+    // EBG (mode-agnostic).
     maybe_append(
         &mut w,
         SectionKind::EbgNodes,
-        "step4/ebg.nodes",
+        "shared/ebg.nodes",
         &step4.join("ebg.nodes"),
     )?;
     maybe_append(
         &mut w,
         SectionKind::EbgCsr,
-        "step4/ebg.csr",
+        "shared/ebg.csr",
         &step4.join("ebg.csr"),
     )?;
     maybe_append(
         &mut w,
         SectionKind::EbgTurnTable,
-        "step4/ebg.turn_table",
+        "shared/ebg.turn_table",
         &step4.join("ebg.turn_table"),
     )?;
 
-    // ---- Step 5 per-mode (filtered EBG + weights + masks) -----------
-    for (mode, path) in glob_per_mode(&step5, "filtered", ".ebg")? {
+    // ---- Per-mode bundles -------------------------------------------
+    // Modes are discovered from `step5/w.<mode>.u32` to match the
+    // server's `discover_modes()` rule. We keep step2 way_attrs +
+    // turn_rules under the per-mode bundle: they are consumed mode-
+    // by-mode at server startup (e.g. exclude flags for `car`).
+    let mut modes: Vec<String> = glob_per_mode(&step5, "w", ".u32")?
+        .into_iter()
+        .map(|(m, _)| m)
+        .collect();
+    modes.sort();
+    modes.dedup();
+
+    for mode in &modes {
+        // step2 attrs/rules live with the mode they belong to.
+        let way_attrs = step2.join(format!("way_attrs.{}.bin", mode));
+        maybe_append(
+            &mut w,
+            SectionKind::WayAttrs,
+            &format!("mode/{}/way_attrs", mode),
+            &way_attrs,
+        )?;
+        let turn_rules = step2.join(format!("turn_rules.{}.bin", mode));
+        maybe_append(
+            &mut w,
+            SectionKind::TurnRules,
+            &format!("mode/{}/turn_rules", mode),
+            &turn_rules,
+        )?;
+        // step5: filtered EBG, weights, mask.
+        let filtered = step5.join(format!("filtered.{}.ebg", mode));
         maybe_append(
             &mut w,
             SectionKind::FilteredEbg,
-            &format!("step5/filtered.{}", mode),
-            &path,
+            &format!("mode/{}/filtered_ebg", mode),
+            &filtered,
         )?;
-    }
-    for (mode, path) in glob_per_mode(&step5, "w", ".u32")? {
+        let weights_time = step5.join(format!("w.{}.u32", mode));
         maybe_append(
             &mut w,
             SectionKind::NodeWeightsTime,
-            &format!("step5/w.{}", mode),
-            &path,
+            &format!("mode/{}/node_weights.time", mode),
+            &weights_time,
         )?;
-    }
-    for (mode, path) in glob_per_mode(&step5, "t", ".u32")? {
+        let weights_turn = step5.join(format!("t.{}.u32", mode));
         maybe_append(
             &mut w,
             SectionKind::NodeWeightsTurn,
-            &format!("step5/t.{}", mode),
-            &path,
+            &format!("mode/{}/node_weights.turn", mode),
+            &weights_turn,
         )?;
-    }
-    for (mode, path) in glob_per_mode(&step5, "mask", ".bitset")? {
+        let mask = step5.join(format!("mask.{}.bitset", mode));
         maybe_append(
             &mut w,
             SectionKind::ModeMask,
-            &format!("step5/mask.{}", mode),
-            &path,
+            &format!("mode/{}/mask", mode),
+            &mask,
         )?;
-    }
-
-    // ---- Step 6 per-mode --------------------------------------------
-    for (mode, path) in glob_per_mode(&step6, "order", ".ebg")? {
-        // Skip lifted variants. Only the "regular" `order.<mode>.ebg`
-        // ships in the container; lifted orderings stay on disk.
-        if mode.starts_with("lifted.") {
-            continue;
-        }
+        // step6 ordering. Lifted variants are intentionally skipped.
+        let order = step6.join(format!("order.{}.ebg", mode));
         maybe_append(
             &mut w,
             SectionKind::OrderEbg,
-            &format!("step6/order.{}", mode),
-            &path,
+            &format!("mode/{}/order", mode),
+            &order,
         )?;
-    }
-
-    // ---- Step 7 per-mode --------------------------------------------
-    for (mode, path) in glob_per_mode(&step7, "cch", ".topo")? {
+        // step7 topology.
+        let topo = step7.join(format!("cch.{}.topo", mode));
         maybe_append(
             &mut w,
             SectionKind::CchTopo,
-            &format!("step7/cch.{}", mode),
-            &path,
+            &format!("mode/{}/topo", mode),
+            &topo,
         )?;
-    }
-
-    // ---- Step 8 per-mode (time + distance) --------------------------
-    // We accept any `cch.w.<X>.u32` / `cch.d.<X>.u32` filename, where
-    // <X> may be a base mode (`car`) or a base+scenario (`car_p3`)
-    // produced by future #84 traffic recustomisation. Pack does not
-    // interpret the suffix; the loader does.
-    for (mode, path) in glob_per_mode(&step8, "cch.w", ".u32")? {
+        // step8 customised weights.
+        let cch_w = step8.join(format!("cch.w.{}.u32", mode));
         maybe_append(
             &mut w,
             SectionKind::CchWeightsTime,
-            &format!("step8/cch.w.{}", mode),
-            &path,
+            &format!("mode/{}/weights.time", mode),
+            &cch_w,
         )?;
-    }
-    for (mode, path) in glob_per_mode(&step8, "cch.d", ".u32")? {
+        let cch_d = step8.join(format!("cch.d.{}.u32", mode));
         maybe_append(
             &mut w,
             SectionKind::CchWeightsDist,
-            &format!("step8/cch.d.{}", mode),
-            &path,
+            &format!("mode/{}/weights.dist", mode),
+            &cch_d,
         )?;
     }
+
+    // ---- Manifest ---------------------------------------------------
+    // Lists the modes packed and their bundle ids. For now, every mode
+    // is a singleton bundle (bundle_id == mode_name); the topology-
+    // groups follow-up (#146) will let multiple modes share one bundle.
+    // The manifest is a JSON object so future fields land cleanly.
+    let manifest = build_manifest(&modes);
+    w.append_bytes(SectionKind::Unknown, MANIFEST_NAME, manifest.as_bytes())?;
 
     let n_sec = w.len();
     w.finalize()?;
@@ -300,10 +304,89 @@ pub fn pack(data_dir: &Path, out: &Path, step_prefix: Option<&str>) -> Result<()
     Ok(())
 }
 
+/// Build the JSON manifest payload listing the packed modes. The JSON
+/// shape is deliberately small + extensible: arrays of strings, every
+/// mode mapped to a bundle id equal to its name (one bundle per mode is
+/// the only shape this ticket ships; #146 generalises to N-mode-per-
+/// bundle). Unknown JSON fields round-trip through `unpack` because the
+/// section is byte-copied.
+fn build_manifest(modes: &[String]) -> String {
+    use std::fmt::Write;
+    let mut s = String::from("{\n  \"version\": 1,\n  \"modes\": [");
+    for (i, m) in modes.iter().enumerate() {
+        if i > 0 {
+            s.push_str(", ");
+        }
+        let _ = write!(s, "\"{}\"", m.replace('"', "\\\""));
+    }
+    s.push_str("],\n  \"bundles\": {");
+    for (i, m) in modes.iter().enumerate() {
+        if i > 0 {
+            s.push_str(", ");
+        }
+        let esc = m.replace('"', "\\\"");
+        let _ = write!(s, "\"{0}\": [\"{0}\"]", esc);
+    }
+    s.push_str("}\n}\n");
+    s
+}
+
 /// Map a `SectionEntry` back to the on-disk path inside a `step{N}/`
-/// tree, mirroring what `pack` consumed. Returns `None` for sections
-/// whose names do not match the standard layout.
+/// tree, mirroring what `pack` consumed. Handles both the new
+/// `shared/`+`mode/<m>/...` schema and the legacy `stepN/...` schema
+/// from earlier container builds, so old containers still round-trip.
 fn path_for_section(out_dir: &Path, name: &str) -> Option<PathBuf> {
+    // ---- New schema -------------------------------------------------
+    if name == MANIFEST_NAME {
+        return Some(out_dir.join("manifest.json"));
+    }
+    if let Some(rest) = name.strip_prefix("shared/") {
+        // shared/step1.<file> → step1/<file>
+        if let Some(file) = rest.strip_prefix("step1.") {
+            return Some(out_dir.join("step1").join(file));
+        }
+        // shared/nbg.<x> → step3/nbg.<x>
+        if let Some(_n) = rest.strip_prefix("nbg.") {
+            return Some(out_dir.join("step3").join(rest));
+        }
+        // shared/ebg.<x> → step4/ebg.<x>
+        if let Some(_n) = rest.strip_prefix("ebg.") {
+            return Some(out_dir.join("step4").join(rest));
+        }
+        return None;
+    }
+    if let Some(rest) = name.strip_prefix("mode/") {
+        let slash = rest.find('/')?;
+        let mode = &rest[..slash];
+        let leaf = &rest[slash + 1..];
+        return match leaf {
+            "way_attrs" => Some(
+                out_dir
+                    .join("step2")
+                    .join(format!("way_attrs.{}.bin", mode)),
+            ),
+            "turn_rules" => Some(
+                out_dir
+                    .join("step2")
+                    .join(format!("turn_rules.{}.bin", mode)),
+            ),
+            "filtered_ebg" => Some(out_dir.join("step5").join(format!("filtered.{}.ebg", mode))),
+            "node_weights.time" => Some(out_dir.join("step5").join(format!("w.{}.u32", mode))),
+            "node_weights.turn" => Some(out_dir.join("step5").join(format!("t.{}.u32", mode))),
+            "mask" => Some(out_dir.join("step5").join(format!("mask.{}.bitset", mode))),
+            "order" => Some(out_dir.join("step6").join(format!("order.{}.ebg", mode))),
+            "topo" => Some(out_dir.join("step7").join(format!("cch.{}.topo", mode))),
+            "weights.time" => Some(out_dir.join("step8").join(format!("cch.w.{}.u32", mode))),
+            "weights.dist" => Some(out_dir.join("step8").join(format!("cch.d.{}.u32", mode))),
+            _ => None,
+        };
+    }
+
+    // ---- Legacy `stepN/...` schema (older containers) ---------------
+    legacy_path_for_section(out_dir, name)
+}
+
+fn legacy_path_for_section(out_dir: &Path, name: &str) -> Option<PathBuf> {
     // The mapping mirrors `pack` exactly. Any section we do not
     // recognise is left out; `unpack` reports it as a warning.
     if let Some(rest) = name.strip_prefix("step1/") {
@@ -539,41 +622,54 @@ mod tests {
         pack(tmp.path(), &out, None)?;
         let c = Container::open(&out)?;
 
-        // step1
-        assert!(c.get("step1/nodes.sa").is_some());
-        assert!(c.get("step1/nodes.si").is_some());
-        assert!(c.get("step1/ways.raw").is_some());
-        assert!(c.get("step1/relations.raw").is_some());
+        // shared global tables
+        assert!(c.get("shared/step1.nodes.sa").is_some());
+        assert!(c.get("shared/step1.nodes.si").is_some());
+        assert!(c.get("shared/step1.ways.raw").is_some());
+        assert!(c.get("shared/step1.relations.raw").is_some());
         // node_signals optional, missing is OK
-        assert!(c.get("step1/node_signals.bin").is_none());
+        assert!(c.get("shared/step1.node_signals.bin").is_none());
+        assert!(c.get("shared/nbg.csr").is_some());
+        assert!(c.get("shared/ebg.nodes").is_some());
 
-        // step2 per-mode (sorted)
-        let modes: Vec<&str> = c
+        // mode bundles (sorted alphabetically by mode)
+        assert_eq!(c.list_modes(), vec!["bike".to_string(), "car".to_string()]);
+        let way_attrs: Vec<&str> = c
             .iter_kind(SectionKind::WayAttrs)
             .map(|s| s.name.as_str())
             .collect();
-        assert_eq!(modes, vec!["step2/way_attrs.bike", "step2/way_attrs.car"]);
+        assert_eq!(way_attrs, vec!["mode/bike/way_attrs", "mode/car/way_attrs"]);
 
-        // step6 lifted skip
+        // Lifted ordering must NOT appear under any mode bundle.
         let orders: Vec<&str> = c
             .iter_kind(SectionKind::OrderEbg)
             .map(|s| s.name.as_str())
             .collect();
-        assert_eq!(orders, vec!["step6/order.bike", "step6/order.car"]);
+        assert_eq!(orders, vec!["mode/bike/order", "mode/car/order"]);
 
-        // step8 traffic-customised file is included (#84 compat)
-        let time_w: Vec<&str> = c
-            .iter_kind(SectionKind::CchWeightsTime)
+        // sections_with_prefix walks bundles cleanly.
+        let car_sections: Vec<&str> = c
+            .sections_with_prefix("mode/car/")
             .map(|s| s.name.as_str())
             .collect();
-        assert!(time_w.contains(&"step8/cch.w.car_p3"));
+        assert!(car_sections.contains(&"mode/car/topo"));
+        assert!(car_sections.contains(&"mode/car/weights.time"));
+        assert!(car_sections.contains(&"mode/car/order"));
 
-        // CRCs verify.
+        // Manifest is present and parseable as JSON-ish (we don't pull
+        // in serde_json just for this assertion; substring is enough).
+        let manifest = c.get(MANIFEST_NAME).expect("manifest missing");
+        let mbytes = c.read_section_verified(&out, manifest)?;
+        let mtxt = std::str::from_utf8(&mbytes).unwrap();
+        assert!(mtxt.contains("\"modes\""));
+        assert!(mtxt.contains("\"car\""));
+        assert!(mtxt.contains("\"bike\""));
+
+        // CRCs verify end-to-end.
         c.verify_file_crc(&out)?;
         for sec in &c.sections {
             let bytes = c.read_section_verified(&out, sec)?;
-            // Sanity-check known payloads.
-            if sec.name == "step1/nodes.sa" {
+            if sec.name == "shared/step1.nodes.sa" {
                 assert_eq!(&bytes, b"sa-bytes");
             }
         }
@@ -610,7 +706,6 @@ mod tests {
             ("step6/order.bike.ebg", "step6/order.bike.ebg"),
             ("step7/cch.car.topo", "step7/cch.car.topo"),
             ("step8/cch.w.car.u32", "step8/cch.w.car.u32"),
-            ("step8/cch.w.car_p3.u32", "step8/cch.w.car_p3.u32"),
         ];
         for (src, dst) in pairs {
             let original = fs::read(tmp.path().join(src))?;
