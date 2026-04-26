@@ -280,7 +280,9 @@ pub fn pack(data_dir: &Path, out: &Path, step_prefix: Option<&str>) -> Result<()
             &format!("mode/{}/order", mode),
             &order,
         )?;
-        // step7 topology.
+        // step7 topology. Loaded with the legacy owning reader because
+        // alignment of the trailing u64 sections is data-dependent on
+        // n_up_edges parity; see state.rs for the deferred fix.
         let topo = step7.join(format!("cch.{}.topo", mode));
         maybe_append(
             &mut w,
