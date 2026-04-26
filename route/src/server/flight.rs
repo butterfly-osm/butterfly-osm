@@ -749,8 +749,8 @@ fn do_isochrone(
         )
     } else {
         run_phast_bounded_fast(
-            &mode_data.cch_topo,
-            &mode_data.cch_weights,
+            &mode_data.up_adj_flat,
+            &mode_data.down_adj_flat,
             origin_rank,
             max_threshold_ds,
             mode,

@@ -268,8 +268,8 @@ mod tests {
 
         // Compute PHAST distances
         let phast_settled = crate::server::isochrone_handler::run_phast_bounded_fast(
-            &mode_data.cch_topo,
-            &mode_data.cch_weights,
+            &mode_data.up_adj_flat,
+            &mode_data.down_adj_flat,
             origin_rank,
             threshold_ds,
             mode,
