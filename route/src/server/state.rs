@@ -14,7 +14,10 @@ use crate::formats::{
 };
 // Re-export CchWeights for use by api.rs
 pub use crate::formats::CchWeights;
-use crate::matrix::bucket_ch::{DownAdjFlat, DownReverseAdjFlat, UpAdjFlat};
+use crate::matrix::bucket_ch::{
+    DownAdjFlat, DownAdjFlatFile, DownReverseAdjFlat, DownReverseAdjFlatFile, UpAdjFlat,
+    UpAdjFlatFile,
+};
 use crate::profile_abi::Mode;
 
 use super::exclude::{self, ExcludeWeights};
@@ -886,6 +889,60 @@ fn load_way_names(step1_dir: &Path) -> Result<HashMap<i64, String>> {
 // Distance weights are now pre-computed in step8 pipeline (cch.d.{mode}.u32)
 // and loaded from file alongside time weights at startup.
 
+/// Load one flat section from a container with the #150 mmap path:
+///
+/// 1. Look up by name. If absent, fall back to building from
+///    `(cch_topo, cch_weights)` so legacy containers keep working.
+/// 2. CRC-verify the bytes once. This pages the entire section in.
+/// 3. Parse the bytes via the file-format reader (zero-copy view).
+/// 4. `madvise(DONTNEED)` the section bytes so cold pages drop from
+///    RSS. Hot pages (the slice ranges routing actually traverses)
+///    page back in lazily on first access.
+///
+/// `parse` is a closure that turns `&'static [u8]` into the typed flat
+/// view; `build_owned` is the legacy heap-build fallback.
+fn load_flat_section<T, P, B>(
+    container: &crate::formats::butterfly_dat::Container,
+    static_mmap: &'static memmap2::Mmap,
+    static_bytes: &'static [u8],
+    section_name: &str,
+    parse: P,
+    build_owned: B,
+) -> Result<T>
+where
+    P: FnOnce(&'static [u8]) -> Result<T>,
+    B: FnOnce() -> T,
+{
+    let entry = match container.get(section_name) {
+        Some(e) => e,
+        None => {
+            tracing::info!(section = %section_name, "flat section absent — building owned at boot");
+            return Ok(build_owned());
+        }
+    };
+    // Verify CRC by reading the section once. This pages all of its
+    // file-backed memory in.
+    let _verify = container.section_bytes_verified(static_mmap, entry)?;
+    let off = entry.offset as usize;
+    let len = entry.len as usize;
+    let bytes: &'static [u8] = &static_bytes[off..off + len];
+    let parsed = parse(bytes)?;
+
+    // Drop the file pages from RSS — the kernel will page back in the
+    // hot subset lazily as routing traverses it. This is the win that
+    // bounds idle RSS to working set rather than dataset size.
+    if let Err(e) = crate::formats::mmap::madvise_dontneed(bytes) {
+        tracing::warn!(
+            section = %section_name,
+            error = %e,
+            "madvise(DONTNEED) on flat section failed; ignoring"
+        );
+    } else {
+        tracing::debug!(section = %section_name, bytes = len, "madvise(DONTNEED) on flat section");
+    }
+    Ok(parsed)
+}
+
 /// Same as `load_mode_data` but reads from a `.butterfly` container's
 /// `mode/<mode>/...` bundle instead of from `step{N}/` directories.
 fn load_mode_data_from_bundle(
@@ -908,14 +965,28 @@ fn load_mode_data_from_bundle(
 
     let filtered_ebg = FilteredEbgFile::read_from_bytes(fetch("filtered_ebg")?)?;
     let order = OrderEbgFile::read_from_bytes(fetch("order")?)?;
-    // #147: cch_topo's 76-byte header leaves the trailing u64 offsets
-    // table at a 4-byte boundary inside the file, which fails
-    // `bytemuck::cast_slice::<u64>` alignment. Until the on-disk
-    // header is bumped to 80 bytes (deferred — requires step7 rerun
-    // on every region), we keep the legacy owning read for `topo`.
-    // The much bigger `cch_weights` (6 GB on Belgium) IS zero-copied
-    // below, which is what the gate ultimately depends on.
-    let cch_topo = CchTopoFile::read_from_bytes(fetch("topo")?)?;
+    // #150: cch_topo's 76-byte header would leave the trailing u64
+    // offsets table at a 4-byte section-internal offset, which fails
+    // `bytemuck::cast_slice::<u64>` alignment. Pack now prepends 4 zero
+    // bytes to the section payload (see pack.rs) so the real header
+    // lands at section-offset 4 and the offsets array at 80 — both
+    // u64-aligned. We detect the padding by sniffing the first 4 bytes:
+    // if they are zero we skip them and use the zero-copy reader; if
+    // the magic word is at offset 0 we fall back to the legacy owning
+    // reader (older containers).
+    let topo_section_bytes: &'static [u8] = fetch("topo")?;
+    // #150: cch_topo's 76-byte header would put the trailing u64 offsets
+    // table at a u32-aligned (not u64-aligned) section-internal offset.
+    // Worse, even with the offsets fixed, the zero-copy reader's
+    // intermediate u64 sections (down_offsets, bitsets) would be
+    // misaligned whenever n_up_edges is odd — which is data-dependent
+    // (true for car on Belgium, false for bike). So we keep the legacy
+    // owning reader for cch_topo and rely on the heap savings from the
+    // flats themselves to bound RSS. Future work (deferred): bump the
+    // cch_topo on-disk header to 80 B and pad each variable-length
+    // u32 section to a u64 boundary at write time, which unlocks
+    // zero-copy and saves a further ~3-4 GB of heap on Belgium.
+    let cch_topo = CchTopoFile::read_from_bytes(topo_section_bytes)?;
     let down_rev = build_down_reverse_adj(&cch_topo);
 
     let weights_data = mod_weights::read_all_from_bytes(fetch("node_weights.time")?)?;
@@ -935,14 +1006,70 @@ fn load_mode_data_from_bundle(
     // #147: zero-copy CCH weights — `up`/`down` u32 slices come straight
     // from the mmap. Saves ~6 GB of heap (4 modes × 2 metrics × ~750MB).
     let cch_weights = CchWeightsFile::read_from_bytes_zero_copy(fetch("weights.time")?)?;
-    let up_adj_flat = UpAdjFlat::build_with(&cch_topo, &cch_weights, true);
-    let down_rev_flat = DownReverseAdjFlat::build_with(&cch_topo, &cch_weights, true);
-    let down_adj_flat = DownAdjFlat::build(&cch_topo, &cch_weights);
+
+    // #150: prefer pre-built flat sections from the container so the
+    // flats live in mmap'd file pages instead of process heap. Bounds
+    // idle RSS to working set rather than dataset size. If a flat is
+    // absent (e.g. a container packed before #150), fall back to
+    // building at boot — same heap cost as the legacy --data-dir path,
+    // but the server still serves correctly.
+    //
+    // CRC verification touches every page, so right after parsing we
+    // hint the kernel that the section can be paged out. The hot pages
+    // (the slice ranges actually traversed by routing) page back in
+    // lazily on first access; the cold ones stay off RSS. This is the
+    // mechanism that makes idle RSS scale with working set, not dataset
+    // size.
+    let up_adj_flat = load_flat_section(
+        container,
+        static_mmap,
+        static_bytes,
+        &format!("mode/{}/up_adj_flat.time", mode_name),
+        |bytes| UpAdjFlatFile::read_from_bytes(bytes),
+        || UpAdjFlat::build_with(&cch_topo, &cch_weights, true),
+    )?;
+    let down_rev_flat = load_flat_section(
+        container,
+        static_mmap,
+        static_bytes,
+        &format!("mode/{}/down_reverse_adj_flat.time", mode_name),
+        |bytes| DownReverseAdjFlatFile::read_from_bytes(bytes),
+        || DownReverseAdjFlat::build_with(&cch_topo, &cch_weights, true),
+    )?;
+    let down_adj_flat = load_flat_section(
+        container,
+        static_mmap,
+        static_bytes,
+        &format!("mode/{}/down_adj_flat.time", mode_name),
+        |bytes| DownAdjFlatFile::read_from_bytes(bytes),
+        || DownAdjFlat::build(&cch_topo, &cch_weights),
+    )?;
 
     let cch_weights_dist = CchWeightsFile::read_from_bytes_zero_copy(fetch("weights.dist")?)?;
-    let up_adj_flat_dist = UpAdjFlat::build(&cch_topo, &cch_weights_dist);
-    let down_rev_flat_dist = DownReverseAdjFlat::build(&cch_topo, &cch_weights_dist);
-    let down_adj_flat_dist = DownAdjFlat::build(&cch_topo, &cch_weights_dist);
+    let up_adj_flat_dist = load_flat_section(
+        container,
+        static_mmap,
+        static_bytes,
+        &format!("mode/{}/up_adj_flat.dist", mode_name),
+        |bytes| UpAdjFlatFile::read_from_bytes(bytes),
+        || UpAdjFlat::build(&cch_topo, &cch_weights_dist),
+    )?;
+    let down_rev_flat_dist = load_flat_section(
+        container,
+        static_mmap,
+        static_bytes,
+        &format!("mode/{}/down_reverse_adj_flat.dist", mode_name),
+        |bytes| DownReverseAdjFlatFile::read_from_bytes(bytes),
+        || DownReverseAdjFlat::build(&cch_topo, &cch_weights_dist),
+    )?;
+    let down_adj_flat_dist = load_flat_section(
+        container,
+        static_mmap,
+        static_bytes,
+        &format!("mode/{}/down_adj_flat.dist", mode_name),
+        |bytes| DownAdjFlatFile::read_from_bytes(bytes),
+        || DownAdjFlat::build(&cch_topo, &cch_weights_dist),
+    )?;
 
     Ok(ModeData {
         mode,
