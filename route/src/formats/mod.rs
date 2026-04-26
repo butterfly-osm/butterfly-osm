@@ -41,6 +41,9 @@ pub mod mode_index;
 // Server-only packed snap index sections (#154)
 pub mod snap_index;
 
+// Server-only flat edge geometry sections (#155)
+pub mod edge_geom;
+
 // Step 7 formats
 pub mod cch_topo;
 
@@ -67,6 +70,9 @@ pub use order_ebg::{OrderEbg, OrderEbgFile};
 pub use relations::{Member, MemberKind, Relation, RelationsFile};
 pub use snap_index::{
     PackedPoint, SnapGrid, SnapGridFile, SnapMask, SnapMaskFile, SnapPoints, SnapPointsFile,
+};
+pub use edge_geom::{
+    EdgeGeomOffsets, EdgeGeomOffsetsFile, EdgeGeomPoints, EdgeGeomPointsFile,
 };
 pub use turn_rules::TurnRule;
 pub use way_attrs::WayAttr;

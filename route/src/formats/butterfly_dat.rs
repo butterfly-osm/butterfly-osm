@@ -165,6 +165,17 @@ pub enum SectionKind {
     /// mode. Replaces the per-mode rstar tree at server boot.
     SnapModeMask = 0x000B_0003,
 
+    /// Shared CSR offset table for flat edge geometry (#155).
+    /// `[u32; n_edges + 1]` of cumulative POINT counts. Pairs with
+    /// `EdgeGeomPoints`. Replaces the heap `Vec<PolyLine>` shape on the
+    /// serve path; the bytes live as cold mmap pages and demand-page
+    /// only when a route response touches them.
+    EdgeGeomOffsets = 0x000C_0001,
+    /// Shared interleaved `(lon_e7, lat_e7)` point body for flat edge
+    /// geometry (#155). `[i32; 2 * n_points]`. Indexed via
+    /// `EdgeGeomOffsets`.
+    EdgeGeomPoints = 0x000C_0002,
+
     /// Future / unrecognised. Readers that see this should fall back
     /// to the section name string.
     Unknown = 0xFFFF_FFFF,
@@ -215,6 +226,9 @@ impl SectionKind {
             0x000B_0002 => Self::SnapGrid,
             0x000B_0003 => Self::SnapModeMask,
 
+            0x000C_0001 => Self::EdgeGeomOffsets,
+            0x000C_0002 => Self::EdgeGeomPoints,
+
             _ => Self::Unknown,
         }
     }
@@ -251,6 +265,8 @@ impl SectionKind {
             Self::SnapPoints => "shared/snap_points",
             Self::SnapGrid => "shared/snap_grid",
             Self::SnapModeMask => "mode/snap_mask",
+            Self::EdgeGeomOffsets => "shared/edge_geom_offsets",
+            Self::EdgeGeomPoints => "shared/edge_geom_points",
             Self::Unknown => "unknown",
         }
     }
