@@ -463,6 +463,40 @@ impl ServerState {
             mode_spatial_indexes.insert(mode_index as u8, idx);
         }
 
+        // #149: Now that every mode's flat adjacencies are built, hint
+        // the kernel that the cch_weights.{time,dist} byte ranges are
+        // cold. The routing hot path (CchQuery, isochrone PHAST,
+        // matrix bucket M2M) reads weights through the flats; the only
+        // remaining `cch_weights.up`/`.down` readers are
+        //   - the transit fingerprint hash (one-time, at startup)
+        //   - the per-call exclude/avoid recustomizers (cold)
+        //   - validators / bench harness (off the production path)
+        // so dropping these pages from RSS is a pure win. The Cow
+        // slices into them remain valid; subsequent rare reads page
+        // them back in at standard fault cost.
+        for mode_name in &discovered_modes {
+            for leaf in ["weights.time", "weights.dist"] {
+                let section = format!("mode/{}/{}", mode_name, leaf);
+                if let Some(entry) = container.get(&section) {
+                    let off = entry.offset as usize;
+                    let len = entry.len as usize;
+                    let range = &static_bytes[off..off + len];
+                    match crate::formats::mmap::madvise_dontneed(range) {
+                        Ok(()) => tracing::info!(
+                            section = %section,
+                            bytes = len,
+                            "madvise(DONTNEED) on cold weight section"
+                        ),
+                        Err(e) => tracing::warn!(
+                            section = %section,
+                            error = %e,
+                            "madvise(DONTNEED) failed, ignoring"
+                        ),
+                    }
+                }
+            }
+        }
+
         // ---- Road names from shared/step1.ways.raw ------------------
         tracing::info!("Loading road names from container...");
         let way_names = if let Some(ways_bytes) = optional_section("shared/step1.ways.raw")? {
