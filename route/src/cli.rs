@@ -391,9 +391,15 @@ pub enum Commands {
 
     /// Step 9: Start query server
     Serve {
-        /// Directory containing all step outputs (step3/, step4/, etc.)
-        #[arg(short, long)]
-        data_dir: PathBuf,
+        /// Directory containing all step outputs (step3/, step4/, etc.).
+        /// Mutually exclusive with `--data`.
+        #[arg(short, long, conflicts_with = "data")]
+        data_dir: Option<PathBuf>,
+
+        /// Path to a single `.butterfly` container produced by `pack`.
+        /// Loads via mmap; mutually exclusive with `--data-dir`.
+        #[arg(long, conflicts_with = "data_dir")]
+        data: Option<PathBuf>,
 
         /// Port for REST/HTTP server (default: find free port starting from 8080)
         #[arg(short, long)]
@@ -1383,6 +1389,7 @@ impl Cli {
             Commands::Unpack { path, out } => crate::pack::unpack(&path, &out),
             Commands::Serve {
                 data_dir,
+                data,
                 port,
                 grpc_port,
                 transport,
@@ -1400,10 +1407,28 @@ impl Cli {
                         .collect::<Vec<String>>()
                 });
 
+                let source_holder: PathBuf;
+                let source = match (data_dir, data) {
+                    (Some(dir), None) => {
+                        source_holder = dir;
+                        server::DataSource::Directory(&source_holder)
+                    }
+                    (None, Some(file)) => {
+                        source_holder = file;
+                        server::DataSource::Container(&source_holder)
+                    }
+                    (Some(_), Some(_)) => {
+                        anyhow::bail!("--data-dir and --data are mutually exclusive")
+                    }
+                    (None, None) => {
+                        anyhow::bail!("one of --data-dir or --data is required")
+                    }
+                };
+
                 // Create tokio runtime
                 let rt = tokio::runtime::Runtime::new()?;
                 rt.block_on(server::serve(
-                    &data_dir,
+                    source,
                     port,
                     grpc_port,
                     transport_mode,

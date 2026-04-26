@@ -155,9 +155,19 @@ impl Transport {
     }
 }
 
+/// Where the server's static data lives.
+pub enum DataSource<'a> {
+    /// Legacy directory layout with `step{N}/` subtrees.
+    Directory(&'a Path),
+    /// Single `.butterfly` container produced by `pack`. Loaded via
+    /// mmap; per-mode bundles + shared sections are read directly from
+    /// the mapped slice.
+    Container(&'a Path),
+}
+
 /// Load all data and start the server(s)
 pub async fn serve(
-    data_dir: &Path,
+    source: DataSource<'_>,
     port: Option<u16>,
     grpc_port: Option<u16>,
     transport: Transport,
@@ -166,7 +176,20 @@ pub async fn serve(
     tracing::info!("Step 9: Starting query server...");
 
     // Load server state (synchronous path — no network).
-    let mut state_owned = ServerState::load(data_dir, mode_filter)?;
+    let (mut state_owned, data_dir_for_transit): (ServerState, std::path::PathBuf) = match source {
+        DataSource::Directory(dir) => (ServerState::load(dir, mode_filter)?, dir.to_path_buf()),
+        DataSource::Container(file) => {
+            // Container path: mmap the file, parse sections, hand the
+            // parsed structures + the live mmap to ServerState.
+            let state = ServerState::load_from_container(file, mode_filter)?;
+            // Transit bootstrap still wants a directory layout (it reads
+            // GTFS zips/feeds.toml); for now `--data` mode runs without
+            // transit. Caller can supply a `transit/` directory next to
+            // the .butterfly file via the file's parent.
+            let parent = file.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+            (state, parent)
+        }
+    };
 
     // Bootstrap the transit subsystem. Transit is optional: if no
     // `transit/` directory is present the server runs in road-only mode.
@@ -175,7 +198,7 @@ pub async fn serve(
     // at rebuild time via the `transit-fetch` CLI command (like the PBF),
     // and the server loads whatever static GTFS zips are on disk at
     // startup. Missing feeds are logged and skipped.
-    if let Some(cfg) = crate::transit::config::load(data_dir)? {
+    if let Some(cfg) = crate::transit::config::load(&data_dir_for_transit)? {
         let foot_idx = state_owned
             .mode_lookup
             .get("foot")

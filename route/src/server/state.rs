@@ -112,6 +112,14 @@ pub struct ServerState {
     // Server metadata
     pub started_at: std::time::Instant,
     pub data_dir: String,
+
+    /// Live mmap kept alive for the server's lifetime when the data
+    /// source was a `.butterfly` container. Format readers in this
+    /// crate produce owning `Vec`s, so this is currently *not* required
+    /// for correctness — but holding the Arc keeps the OS file backing
+    /// pinned for any future zero-copy reader and for demand-paged
+    /// access patterns. `None` when loaded from a directory.
+    pub _mmap_arc: Option<std::sync::Arc<memmap2::Mmap>>,
 }
 
 impl ServerState {
@@ -298,6 +306,198 @@ impl ServerState {
             transit,
             started_at: std::time::Instant::now(),
             data_dir: data_dir.to_string_lossy().to_string(),
+            _mmap_arc: None,
+        })
+    }
+
+    /// Load all data from a `.butterfly` container produced by `pack`.
+    /// The file is mmapped read-only; per-mode bundles + shared sections
+    /// are parsed via the bytes APIs added in #90 phase 5b.
+    ///
+    /// Mirrors [`ServerState::load`] in every observable respect — the
+    /// resulting state is functionally equivalent to loading the same
+    /// data from a directory tree, the only difference is the input
+    /// format. Section CRCs are verified during the parse.
+    pub fn load_from_container(
+        container_path: &Path,
+        mode_filter: Option<&[String]>,
+    ) -> Result<Self> {
+        use crate::formats::butterfly_dat::Container;
+        use crate::formats::mmap;
+
+        tracing::info!(
+            container = %container_path.display(),
+            "loading server state from butterfly.dat container"
+        );
+        let mmap = mmap::map_readonly(container_path)?;
+        let container = Container::open(container_path)
+            .with_context(|| format!("opening container {}", container_path.display()))?;
+
+        // Convenience accessor: section name → CRC-verified bytes from
+        // the mapping.
+        let section_bytes = |name: &str| -> Result<&[u8]> {
+            let entry = container
+                .get(name)
+                .ok_or_else(|| anyhow::anyhow!("missing required section '{}'", name))?;
+            container.section_bytes_verified(&mmap, entry)
+        };
+        let optional_section = |name: &str| -> Result<Option<&[u8]>> {
+            match container.get(name) {
+                Some(entry) => Ok(Some(container.section_bytes_verified(&mmap, entry)?)),
+                None => Ok(None),
+            }
+        };
+
+        // ---- Shared graph tables ------------------------------------
+        tracing::info!("Loading EBG nodes...");
+        let ebg_nodes = EbgNodesFile::read_from_bytes(section_bytes("shared/ebg.nodes")?)?;
+        tracing::info!(nodes = ebg_nodes.n_nodes, "loaded EBG nodes");
+
+        tracing::info!("Loading EBG CSR...");
+        let ebg_csr = EbgCsrFile::read_from_bytes(section_bytes("shared/ebg.csr")?)?;
+        tracing::info!(arcs = ebg_csr.n_arcs, "loaded EBG CSR");
+
+        tracing::info!("Loading NBG geo...");
+        let nbg_geo = NbgGeoFile::read_from_bytes(section_bytes("shared/nbg.geo")?)?;
+        tracing::info!(edges = nbg_geo.edges.len(), "loaded NBG geo");
+
+        tracing::info!("Loading NBG node-id map...");
+        let nbg_node_map =
+            NbgNodeMapFile::read_map_from_bytes(section_bytes("shared/nbg.node_map")?)?;
+        let max_compact = nbg_node_map
+            .mappings
+            .iter()
+            .map(|m| m.compact_id)
+            .max()
+            .unwrap_or(0);
+        let mut nbg_node_to_osm: Vec<i64> = vec![0; (max_compact as usize) + 1];
+        for m in &nbg_node_map.mappings {
+            nbg_node_to_osm[m.compact_id as usize] = m.osm_node_id;
+        }
+
+        // ---- Mode discovery + filter --------------------------------
+        let all_modes = container.list_modes();
+        if all_modes.is_empty() {
+            anyhow::bail!(
+                "container {} has no `mode/<name>/...` bundles; cannot serve",
+                container_path.display()
+            );
+        }
+        let global_index: HashMap<String, u8> = all_modes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.clone(), i as u8))
+            .collect();
+        let discovered_modes: Vec<String> = if let Some(filter) = mode_filter {
+            all_modes
+                .into_iter()
+                .filter(|m| filter.iter().any(|f| f == m))
+                .collect()
+        } else {
+            all_modes
+        };
+        if discovered_modes.is_empty() {
+            anyhow::bail!("mode filter excluded every mode in the container");
+        }
+        tracing::info!(modes = ?discovered_modes, "discovered transport modes");
+
+        // ---- Per-mode bundle load -----------------------------------
+        let mut modes_data = Vec::with_capacity(discovered_modes.len());
+        let mut mode_names = Vec::with_capacity(discovered_modes.len());
+        let mut mode_lookup = HashMap::with_capacity(discovered_modes.len());
+
+        for (mode_index, mode_name) in discovered_modes.iter().enumerate() {
+            let mode = Mode(global_index[mode_name]);
+            let mode_data = load_mode_data_from_bundle(mode_name, mode, &container, &mmap)?;
+            tracing::info!(
+                mode = mode_name.as_str(),
+                index = mode_index,
+                filtered_nodes = mode_data.filtered_ebg.n_filtered_nodes,
+                up_edges = mode_data.cch_topo.up_targets.len(),
+                "loaded mode bundle"
+            );
+            modes_data.push(mode_data);
+            mode_lookup.insert(mode_name.clone(), mode_index as u8);
+            mode_names.push(mode_name.clone());
+        }
+
+        // ---- Spatial indexes ----------------------------------------
+        tracing::info!("Building spatial index...");
+        let spatial_index = SpatialIndex::build(&ebg_nodes, &nbg_geo);
+
+        let mut mode_spatial_indexes: HashMap<u8, SpatialIndex> =
+            HashMap::with_capacity(modes_data.len());
+        for (mode_index, mode_data) in modes_data.iter().enumerate() {
+            let idx = SpatialIndex::build_filtered(&ebg_nodes, &nbg_geo, &mode_data.mask);
+            mode_spatial_indexes.insert(mode_index as u8, idx);
+        }
+
+        // ---- Road names from shared/step1.ways.raw ------------------
+        tracing::info!("Loading road names from container...");
+        let way_names = if let Some(ways_bytes) = optional_section("shared/step1.ways.raw")? {
+            load_way_names_from_bytes(ways_bytes)?
+        } else {
+            tracing::warn!("ways.raw missing in container, road names unavailable");
+            HashMap::new()
+        };
+        tracing::info!(named_roads = way_names.len(), "loaded road names");
+
+        // ---- Edge exclude flags from one mode's way_attrs -----------
+        // Prefer car if available, otherwise the alphabetically first mode.
+        let attrs_mode = if discovered_modes.iter().any(|m| m == "car") {
+            "car".to_string()
+        } else {
+            discovered_modes[0].clone()
+        };
+        let attrs_section = format!("mode/{}/way_attrs", attrs_mode);
+        let edge_exclude_flags = if let Some(attr_bytes) = optional_section(&attrs_section)? {
+            let attrs = crate::formats::way_attrs::read_all_from_bytes(attr_bytes)?;
+            exclude::build_edge_exclude_flags_from_attrs(&ebg_nodes, &attrs)?
+        } else {
+            tracing::warn!(section = %attrs_section, "way_attrs absent, exclude feature disabled");
+            vec![0u8; ebg_nodes.n_nodes as usize]
+        };
+
+        let node_weights_dist: Vec<u32> = ebg_nodes.nodes.iter().map(|n| n.length_mm).collect();
+
+        // ---- Optional SRTM (looked up next to the container file) --
+        let srtm_dir = container_path
+            .parent()
+            .map(|p| p.join("srtm"))
+            .unwrap_or_else(|| std::path::PathBuf::from("srtm"));
+        let elevation = if srtm_dir.is_dir() {
+            match ElevationData::load_from_dir(&srtm_dir) {
+                Ok(elev) => {
+                    tracing::info!(tiles = elev.tile_count(), "loaded SRTM elevation tiles");
+                    Some(elev)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not load SRTM data");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        Ok(Self {
+            ebg_nodes,
+            ebg_csr,
+            nbg_geo,
+            nbg_node_to_osm,
+            modes: modes_data,
+            mode_names,
+            mode_lookup,
+            spatial_index,
+            mode_spatial_indexes,
+            elevation,
+            way_names,
+            node_weights_dist,
+            edge_exclude_flags,
+            transit: None,
+            started_at: std::time::Instant::now(),
+            data_dir: container_path.to_string_lossy().to_string(),
+            _mmap_arc: Some(mmap),
         })
     }
 
@@ -612,3 +812,94 @@ fn load_way_names(step1_dir: &Path) -> Result<HashMap<i64, String>> {
 
 // Distance weights are now pre-computed in step8 pipeline (cch.d.{mode}.u32)
 // and loaded from file alongside time weights at startup.
+
+/// Same as `load_mode_data` but reads from a `.butterfly` container's
+/// `mode/<mode>/...` bundle instead of from `step{N}/` directories.
+fn load_mode_data_from_bundle(
+    mode_name: &str,
+    mode: Mode,
+    container: &crate::formats::butterfly_dat::Container,
+    mmap: &memmap2::Mmap,
+) -> Result<ModeData> {
+    let fetch = |leaf: &str| -> Result<&[u8]> {
+        let name = format!("mode/{}/{}", mode_name, leaf);
+        let entry = container
+            .get(&name)
+            .ok_or_else(|| anyhow::anyhow!("missing mode bundle section '{}'", name))?;
+        container.section_bytes_verified(mmap, entry)
+    };
+
+    let filtered_ebg = FilteredEbgFile::read_from_bytes(fetch("filtered_ebg")?)?;
+    let order = OrderEbgFile::read_from_bytes(fetch("order")?)?;
+    let cch_topo = CchTopoFile::read_from_bytes(fetch("topo")?)?;
+    let down_rev = build_down_reverse_adj(&cch_topo);
+
+    let weights_data = mod_weights::read_all_from_bytes(fetch("node_weights.time")?)?;
+
+    let n_original = filtered_ebg.n_original_nodes as usize;
+    let mask = {
+        let n_words = n_original.div_ceil(64);
+        let mut m = vec![0u64; n_words];
+        for &orig_id in &filtered_ebg.filtered_to_original {
+            let word = orig_id as usize / 64;
+            let bit = orig_id as usize % 64;
+            m[word] |= 1u64 << bit;
+        }
+        m
+    };
+
+    let cch_weights = CchWeightsFile::read_from_bytes(fetch("weights.time")?)?;
+    let up_adj_flat = UpAdjFlat::build(&cch_topo, &cch_weights);
+    let down_rev_flat = DownReverseAdjFlat::build(&cch_topo, &cch_weights);
+
+    let cch_weights_dist = CchWeightsFile::read_from_bytes(fetch("weights.dist")?)?;
+    let up_adj_flat_dist = UpAdjFlat::build(&cch_topo, &cch_weights_dist);
+    let down_rev_flat_dist = DownReverseAdjFlat::build(&cch_topo, &cch_weights_dist);
+
+    Ok(ModeData {
+        mode,
+        cch_topo,
+        order,
+        down_rev,
+        cch_weights,
+        cch_weights_dist,
+        filtered_ebg,
+        node_weights: weights_data.weights,
+        mask,
+        up_adj_flat,
+        down_rev_flat,
+        up_adj_flat_dist,
+        down_rev_flat_dist,
+        exclude_cache: parking_lot::RwLock::new(HashMap::new()),
+    })
+}
+
+/// Same as `load_way_names` but reads from an in-memory ways.raw byte
+/// slice (mmap-backed container section).
+fn load_way_names_from_bytes(ways_bytes: &[u8]) -> Result<HashMap<i64, String>> {
+    let (key_dict, val_dict, _, _) = WaysFile::read_dictionaries_from_bytes(ways_bytes)?;
+    let name_key_id = key_dict
+        .iter()
+        .find(|(_, v)| v.as_str() == "name")
+        .map(|(k, _)| *k);
+    let name_key_id = match name_key_id {
+        Some(id) => id,
+        None => return Ok(HashMap::new()),
+    };
+
+    let mut way_names = HashMap::new();
+    for result in WaysFile::stream_ways_from_bytes(ways_bytes)? {
+        let (way_id, keys, vals, _nodes) = result?;
+        for (i, &k) in keys.iter().enumerate() {
+            if k == name_key_id {
+                if let Some(name) = val_dict.get(&vals[i])
+                    && !name.is_empty()
+                {
+                    way_names.insert(way_id, name.clone());
+                }
+                break;
+            }
+        }
+    }
+    Ok(way_names)
+}
