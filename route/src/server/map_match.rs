@@ -5,7 +5,7 @@
 //! - Transition probability: exponential on |route_distance - great_circle_distance|
 //! - Route distance: sum of physical edge lengths (length_mm) along the fastest path
 
-use crate::formats::NbgGeo;
+use crate::server::edge_geom::EdgeGeometry;
 use crate::profile_abi::Mode;
 
 use super::query::CchQuery;
@@ -210,7 +210,7 @@ fn generate_candidates(
         .filter_map(|(ebg_id, _midpoint_lon, _midpoint_lat, _midpoint_dist)| {
             // Compute perpendicular projection for better snap position and emission distance
             let (proj_lon, proj_lat, proj_dist) =
-                project_onto_edge(lon, lat, ebg_id, &state.ebg_nodes, &state.nbg_geo);
+                project_onto_edge(lon, lat, ebg_id, &state.ebg_nodes, &state.edge_geom);
             // Filter out candidates with no valid projection (fallback returns INFINITY)
             if proj_dist.is_infinite() {
                 return None;
@@ -232,39 +232,28 @@ fn project_onto_edge(
     lat: f64,
     ebg_id: u32,
     ebg_nodes: &crate::formats::EbgNodes,
-    nbg_geo: &NbgGeo,
+    edge_geom: &EdgeGeometry,
 ) -> (f64, f64, f64) {
     let node = &ebg_nodes.nodes[ebg_id as usize];
-    let geom_idx = node.geom_idx as usize;
-
-    if geom_idx >= nbg_geo.polylines.len() {
-        // Fallback: use edge endpoints from nbg_geo
-        return fallback_midpoint(ebg_id, ebg_nodes, nbg_geo);
-    }
-
-    let polyline = &nbg_geo.polylines[geom_idx];
-    let n_pts = polyline.lat_fxp.len();
+    let polyline = edge_geom.polyline(node.geom_idx);
+    let n_pts = polyline.len();
     if n_pts == 0 {
-        return fallback_midpoint(ebg_id, ebg_nodes, nbg_geo);
+        return fallback_midpoint();
     }
 
     if n_pts == 1 {
-        let pt_lon = polyline.lon_fxp[0] as f64 / 1e7;
-        let pt_lat = polyline.lat_fxp[0] as f64 / 1e7;
+        let (pt_lon, pt_lat) = polyline.at(0);
         let d = great_circle_m(lon, lat, pt_lon, pt_lat);
         return (pt_lon, pt_lat, d);
     }
 
     // Find closest point on any segment of the polyline
-    let mut best_lon = polyline.lon_fxp[0] as f64 / 1e7;
-    let mut best_lat = polyline.lat_fxp[0] as f64 / 1e7;
+    let (mut best_lon, mut best_lat) = polyline.at(0);
     let mut best_dist = f64::INFINITY;
 
     for i in 0..n_pts - 1 {
-        let ax = polyline.lon_fxp[i] as f64 / 1e7;
-        let ay = polyline.lat_fxp[i] as f64 / 1e7;
-        let bx = polyline.lon_fxp[i + 1] as f64 / 1e7;
-        let by = polyline.lat_fxp[i + 1] as f64 / 1e7;
+        let (ax, ay) = polyline.at(i);
+        let (bx, by) = polyline.at(i + 1);
 
         let (px, py) = project_point_onto_segment(lon, lat, ax, ay, bx, by);
         let d = great_circle_m(lon, lat, px, py);
@@ -300,11 +289,7 @@ fn project_point_onto_segment(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f
 }
 
 /// Fallback when polyline is unavailable
-fn fallback_midpoint(
-    _ebg_id: u32,
-    _ebg_nodes: &crate::formats::EbgNodes,
-    _nbg_geo: &NbgGeo,
-) -> (f64, f64, f64) {
+fn fallback_midpoint() -> (f64, f64, f64) {
     (0.0, 0.0, f64::INFINITY) // Infinite distance = unusable candidate
 }
 
