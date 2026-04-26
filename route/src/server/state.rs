@@ -380,12 +380,17 @@ impl ServerState {
         };
 
         // ---- Shared graph tables ------------------------------------
-        tracing::info!("Loading EBG nodes...");
-        let ebg_nodes = EbgNodesFile::read_from_bytes(section_bytes("shared/ebg.nodes")?)?;
+        // #152: ebg.nodes / ebg.csr are now read zero-copy. The
+        // numeric arrays (`nodes`, `offsets`, `heads`, `turn_idx`)
+        // borrow straight from the mmap, so we save ~250 MB of heap
+        // on Belgium that the legacy owning-Vec readers used to copy.
+        tracing::info!("Loading EBG nodes (zero-copy)...");
+        let ebg_nodes =
+            EbgNodesFile::read_from_bytes_zero_copy(section_bytes("shared/ebg.nodes")?)?;
         tracing::info!(nodes = ebg_nodes.n_nodes, "loaded EBG nodes");
 
-        tracing::info!("Loading EBG CSR...");
-        let ebg_csr = EbgCsrFile::read_from_bytes(section_bytes("shared/ebg.csr")?)?;
+        tracing::info!("Loading EBG CSR (zero-copy)...");
+        let ebg_csr = EbgCsrFile::read_from_bytes_zero_copy(section_bytes("shared/ebg.csr")?)?;
         tracing::info!(arcs = ebg_csr.n_arcs, "loaded EBG CSR");
 
         tracing::info!("Loading NBG geo...");
@@ -732,7 +737,7 @@ fn load_mode_data(
     let mask = {
         let n_words = n_original.div_ceil(64);
         let mut m = vec![0u64; n_words];
-        for &orig_id in &filtered_ebg.filtered_to_original {
+        for &orig_id in filtered_ebg.filtered_to_original.iter() {
             let word = orig_id as usize / 64;
             let bit = orig_id as usize % 64;
             m[word] |= 1u64 << bit;
@@ -905,7 +910,9 @@ fn load_mode_data_from_bundle(
         Ok(&static_bytes[off..off + len])
     };
 
-    let filtered_ebg = FilteredEbgFile::read_from_bytes(fetch("filtered_ebg")?)?;
+    // #152: zero-copy filtered_ebg — borrows arrays from the mmap
+    // instead of copying ~80 MB/mode of CSR data into the heap.
+    let filtered_ebg = FilteredEbgFile::read_from_bytes_zero_copy(fetch("filtered_ebg")?)?;
     let order = OrderEbgFile::read_from_bytes(fetch("order")?)?;
     let topo_section_bytes: &'static [u8] = fetch("topo")?;
     // #151: cch.topo is now v4. Header is 80 bytes (u64-aligned) and
@@ -941,7 +948,7 @@ fn load_mode_data_from_bundle(
     let mask = {
         let n_words = n_original.div_ceil(64);
         let mut m = vec![0u64; n_words];
-        for &orig_id in &filtered_ebg.filtered_to_original {
+        for &orig_id in filtered_ebg.filtered_to_original.iter() {
             let word = orig_id as usize / 64;
             let bit = orig_id as usize % 64;
             m[word] |= 1u64 << bit;

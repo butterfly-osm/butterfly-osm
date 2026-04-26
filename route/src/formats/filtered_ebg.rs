@@ -2,8 +2,21 @@
 //!
 //! Stores the filtered subgraph containing only mode-accessible nodes and transitions.
 //! Used by Step 6/7/8 to build per-mode CCH hierarchies.
+//!
+//! # Zero-copy reader (#152)
+//!
+//! Layout: header(64 bytes) | offsets((n_filt+1) × u64) | heads
+//! (n_arcs × u32) | original_arc_idx (n_arcs × u32) | filtered_to_original
+//! (n_filt × u32) | original_to_filtered (n_orig × u32) | footer(16 bytes).
+//!
+//! - The container guarantees 8-byte section alignment.
+//! - The 64-byte header keeps the offsets u64 array u64-aligned.
+//! - Every subsequent array is u32, which only needs 4-byte alignment;
+//!   any cursor that has consumed a multiple of 4 bytes (which all
+//!   prior arrays do) is sufficient.
 
 use anyhow::Result;
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
@@ -13,6 +26,8 @@ use crate::profile_abi::Mode;
 
 const MAGIC: u32 = 0x46454247; // "FEBG" = Filtered EBG
 const VERSION: u16 = 1;
+const HEADER_LEN: usize = 64;
+const FOOTER_LEN: usize = 16;
 
 /// Filtered EBG for a specific mode
 #[derive(Debug)]
@@ -24,13 +39,13 @@ pub struct FilteredEbg {
     pub inputs_sha: [u8; 32],
 
     // CSR in filtered space
-    pub offsets: Vec<u64>,          // n_filtered_nodes + 1
-    pub heads: Vec<u32>,            // n_filtered_arcs (filtered node IDs)
-    pub original_arc_idx: Vec<u32>, // n_filtered_arcs (original arc indices for turn penalties)
+    pub offsets: Cow<'static, [u64]>, // n_filtered_nodes + 1
+    pub heads: Cow<'static, [u32]>,   // n_filtered_arcs (filtered node IDs)
+    pub original_arc_idx: Cow<'static, [u32]>, // n_filtered_arcs
 
     // Node ID mappings
-    pub filtered_to_original: Vec<u32>, // n_filtered_nodes: filtered_id -> original_id
-    pub original_to_filtered: Vec<u32>, // n_original_nodes: original_id -> filtered_id (u32::MAX if not in filtered)
+    pub filtered_to_original: Cow<'static, [u32]>, // n_filtered_nodes
+    pub original_to_filtered: Cow<'static, [u32]>, // n_original_nodes (u32::MAX if not in filtered)
 }
 
 impl FilteredEbg {
@@ -135,11 +150,11 @@ impl FilteredEbg {
             n_filtered_arcs: heads.len() as u64,
             n_original_nodes,
             inputs_sha,
-            offsets,
-            heads,
-            original_arc_idx,
-            filtered_to_original,
-            original_to_filtered,
+            offsets: Cow::Owned(offsets),
+            heads: Cow::Owned(heads),
+            original_arc_idx: Cow::Owned(original_arc_idx),
+            filtered_to_original: Cow::Owned(filtered_to_original),
+            original_to_filtered: Cow::Owned(original_to_filtered),
         }
     }
 
@@ -192,35 +207,35 @@ impl FilteredEbgFile {
         crc_digest.update(&header);
 
         // Offsets
-        for &off in &data.offsets {
+        for &off in data.offsets.iter() {
             let bytes = off.to_le_bytes();
             writer.write_all(&bytes)?;
             crc_digest.update(&bytes);
         }
 
         // Heads
-        for &h in &data.heads {
+        for &h in data.heads.iter() {
             let bytes = h.to_le_bytes();
             writer.write_all(&bytes)?;
             crc_digest.update(&bytes);
         }
 
         // Original arc indices
-        for &idx in &data.original_arc_idx {
+        for &idx in data.original_arc_idx.iter() {
             let bytes = idx.to_le_bytes();
             writer.write_all(&bytes)?;
             crc_digest.update(&bytes);
         }
 
         // filtered_to_original
-        for &orig in &data.filtered_to_original {
+        for &orig in data.filtered_to_original.iter() {
             let bytes = orig.to_le_bytes();
             writer.write_all(&bytes)?;
             crc_digest.update(&bytes);
         }
 
         // original_to_filtered
-        for &filt in &data.original_to_filtered {
+        for &filt in data.original_to_filtered.iter() {
             let bytes = filt.to_le_bytes();
             writer.write_all(&bytes)?;
             crc_digest.update(&bytes);
@@ -341,11 +356,133 @@ impl FilteredEbgFile {
             n_filtered_arcs,
             n_original_nodes,
             inputs_sha,
-            offsets,
-            heads,
-            original_arc_idx,
-            filtered_to_original,
-            original_to_filtered,
+            offsets: Cow::Owned(offsets),
+            heads: Cow::Owned(heads),
+            original_arc_idx: Cow::Owned(original_arc_idx),
+            filtered_to_original: Cow::Owned(filtered_to_original),
+            original_to_filtered: Cow::Owned(original_to_filtered),
+        })
+    }
+
+    /// Zero-copy reader for `'static` byte slices (mmap-backed
+    /// container sections). Reinterprets the body arrays as borrowed
+    /// slices into the mapping; CRC is verified before returning.
+    ///
+    /// Layout (#152):
+    ///   header(64) | offsets((n_filt+1) × u64)
+    ///             | heads(n_arcs × u32)
+    ///             | original_arc_idx(n_arcs × u32)
+    ///             | filtered_to_original(n_filt × u32)
+    ///             | original_to_filtered(n_orig × u32)
+    ///             | footer(16)
+    ///
+    /// 8-byte section alignment guaranteed by the container; the
+    /// 64-byte header keeps the offsets u64 array aligned. Every
+    /// subsequent u32 array only needs 4-byte alignment.
+    pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<FilteredEbg> {
+        anyhow::ensure!(
+            bytes.len() >= HEADER_LEN + FOOTER_LEN,
+            "filtered_ebg too short for header+footer: {} bytes",
+            bytes.len()
+        );
+        debug_assert_eq!(
+            bytes.as_ptr() as usize % 8,
+            0,
+            "filtered_ebg section start must be 8-byte aligned"
+        );
+
+        let header = &bytes[..HEADER_LEN];
+        let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+        anyhow::ensure!(
+            magic == MAGIC,
+            "Invalid magic in filtered_ebg: expected 0x{:08X}, got 0x{:08X}",
+            MAGIC,
+            magic
+        );
+        let version = u16::from_le_bytes([header[4], header[5]]);
+        anyhow::ensure!(
+            version == VERSION,
+            "Unsupported filtered_ebg version {version}, expected {VERSION}",
+        );
+        anyhow::ensure!(
+            (header[6] as usize) < crate::profile_abi::MAX_MODES,
+            "Invalid mode in filtered_ebg: {}",
+            header[6]
+        );
+        let mode = Mode(header[6]);
+
+        let n_filtered_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
+        let n_filtered_arcs = u64::from_le_bytes([
+            header[12], header[13], header[14], header[15], header[16], header[17], header[18],
+            header[19],
+        ]);
+        let n_original_nodes = u32::from_le_bytes([header[20], header[21], header[22], header[23]]);
+        let mut inputs_sha = [0u8; 32];
+        inputs_sha.copy_from_slice(&header[24..56]);
+
+        let n_filt = n_filtered_nodes as usize;
+        let n_orig = n_original_nodes as usize;
+        let n_arcs = usize::try_from(n_filtered_arcs)
+            .map_err(|_| anyhow::anyhow!("filtered_ebg n_arcs > usize::MAX"))?;
+
+        let offsets_bytes = (n_filt + 1)
+            .checked_mul(8)
+            .ok_or_else(|| anyhow::anyhow!("filtered_ebg offsets size overflow"))?;
+        let heads_bytes = n_arcs
+            .checked_mul(4)
+            .ok_or_else(|| anyhow::anyhow!("filtered_ebg heads size overflow"))?;
+        let oai_bytes = heads_bytes;
+        let f2o_bytes = n_filt
+            .checked_mul(4)
+            .ok_or_else(|| anyhow::anyhow!("filtered_ebg f2o size overflow"))?;
+        let o2f_bytes = n_orig
+            .checked_mul(4)
+            .ok_or_else(|| anyhow::anyhow!("filtered_ebg o2f size overflow"))?;
+
+        let off_start = HEADER_LEN;
+        let off_end = off_start + offsets_bytes;
+        let heads_end = off_end + heads_bytes;
+        let oai_end = heads_end + oai_bytes;
+        let f2o_end = oai_end + f2o_bytes;
+        let o2f_end = f2o_end + o2f_bytes;
+        anyhow::ensure!(
+            bytes.len() == o2f_end + FOOTER_LEN,
+            "filtered_ebg length mismatch: declared {}, expected body+footer {}",
+            bytes.len(),
+            o2f_end + FOOTER_LEN
+        );
+
+        let offsets: &'static [u64] = bytemuck::cast_slice(&bytes[off_start..off_end]);
+        let heads: &'static [u32] = bytemuck::cast_slice(&bytes[off_end..heads_end]);
+        let original_arc_idx: &'static [u32] = bytemuck::cast_slice(&bytes[heads_end..oai_end]);
+        let filtered_to_original: &'static [u32] = bytemuck::cast_slice(&bytes[oai_end..f2o_end]);
+        let original_to_filtered: &'static [u32] = bytemuck::cast_slice(&bytes[f2o_end..o2f_end]);
+
+        // CRC over header + body
+        let mut crc_digest = crc::Digest::new();
+        crc_digest.update(header);
+        crc_digest.update(&bytes[off_start..o2f_end]);
+        let computed = crc_digest.finalize();
+        let footer = &bytes[o2f_end..o2f_end + FOOTER_LEN];
+        let stored = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+        anyhow::ensure!(
+            computed == stored,
+            "CRC64 mismatch in filtered_ebg: computed 0x{:016X}, stored 0x{:016X}",
+            computed,
+            stored
+        );
+
+        Ok(FilteredEbg {
+            mode,
+            n_filtered_nodes,
+            n_filtered_arcs,
+            n_original_nodes,
+            inputs_sha,
+            offsets: Cow::Borrowed(offsets),
+            heads: Cow::Borrowed(heads),
+            original_arc_idx: Cow::Borrowed(original_arc_idx),
+            filtered_to_original: Cow::Borrowed(filtered_to_original),
+            original_to_filtered: Cow::Borrowed(original_to_filtered),
         })
     }
 }

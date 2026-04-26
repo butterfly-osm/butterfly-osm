@@ -45,7 +45,7 @@ libc = "0.2"
 # wraps the only `unsafe` (slice-of-u8 → slice-of-u32) in its own well-
 # audited internal carveout. The workspace's `unsafe_code` lint stays
 # `deny` everywhere outside `formats/mmap.rs`.
-bytemuck = "1.16"
+bytemuck = { version = "1.16", features = ["derive"] }
 
 # Logging
 env_logger = { workspace = true }
