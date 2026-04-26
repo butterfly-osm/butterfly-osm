@@ -131,6 +131,16 @@ pub enum SectionKind {
     /// `step8/cch.d.<mode>.u32` — per-mode customised distance weights.
     CchWeightsDist = 0x0008_0002,
 
+    /// Pre-built flat UP adjacency for a (mode, metric). Built at pack
+    /// time from cch_topo + cch_weights. Mmapped at server boot — the
+    /// substrate that bounds idle RSS to working set rather than dataset
+    /// size (see #150).
+    UpAdjFlat = 0x0009_0001,
+    /// Pre-built flat forward DOWN adjacency for a (mode, metric).
+    DownAdjFlat = 0x0009_0002,
+    /// Pre-built flat reverse DOWN adjacency for a (mode, metric).
+    DownReverseAdjFlat = 0x0009_0003,
+
     /// Future / unrecognised. Readers that see this should fall back
     /// to the section name string.
     Unknown = 0xFFFF_FFFF,
@@ -170,6 +180,10 @@ impl SectionKind {
             0x0008_0001 => Self::CchWeightsTime,
             0x0008_0002 => Self::CchWeightsDist,
 
+            0x0009_0001 => Self::UpAdjFlat,
+            0x0009_0002 => Self::DownAdjFlat,
+            0x0009_0003 => Self::DownReverseAdjFlat,
+
             _ => Self::Unknown,
         }
     }
@@ -198,6 +212,9 @@ impl SectionKind {
             Self::CchTopo => "step7/cch.topo",
             Self::CchWeightsTime => "step8/cch.w.u32",
             Self::CchWeightsDist => "step8/cch.d.u32",
+            Self::UpAdjFlat => "flat/up_adj",
+            Self::DownAdjFlat => "flat/down_adj",
+            Self::DownReverseAdjFlat => "flat/down_reverse_adj",
             Self::Unknown => "unknown",
         }
     }
