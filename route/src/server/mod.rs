@@ -49,6 +49,7 @@ pub mod nearest;
 pub mod query;
 pub mod route;
 pub mod rss;
+pub mod snap_index;
 pub mod spatial;
 pub mod state;
 pub mod table;
