@@ -108,12 +108,11 @@ pub async fn nearest_handler(
         }
     };
 
-    let mode_data = state.get_mode(mode);
     let k = req.number as usize;
 
     let results = state
-        .spatial_index
-        .snap_k_with_info(req.lon, req.lat, &mode_data.mask, k);
+        .snap_index
+        .snap_k_with_info(req.lon, req.lat, mode.0, k);
 
     if results.is_empty() {
         return (

@@ -11,7 +11,7 @@ use geo::{Contains, Coord, Point, Polygon};
 use crate::formats::cch_weights::CchWeights;
 
 use super::exclude::{self, ExcludeWeights};
-use super::spatial::SpatialIndex;
+use super::snap_index::PackedSnapIndex;
 use super::state::{ModeData, ServerState};
 
 /// Bit flag for avoid-polygon edges (bit 3, distinct from toll/ferry/motorway bits 0-2).
@@ -123,18 +123,18 @@ fn parse_avoid_polygons(json_str: &str) -> Result<Vec<AvoidPolygon>, String> {
 /// Find all EBG edges whose midpoints fall inside the given avoid polygons.
 /// Returns a Vec<u8> indexed by original EBG edge ID, with AVOID_BIT set for avoided edges.
 fn find_avoided_edges(
-    spatial_index: &SpatialIndex,
+    snap_index: &PackedSnapIndex,
     polygons: &[AvoidPolygon],
     n_edges: usize,
 ) -> Vec<u8> {
     let mut flags = vec![0u8; n_edges];
 
     for poly in polygons {
-        // Query R-tree for edges in polygon bounding box
-        for point in
-            spatial_index.edges_in_envelope(poly.min_lon, poly.min_lat, poly.max_lon, poly.max_lat)
-        {
-            let ebg_id = point.ebg_id as usize;
+        // Query packed grid for samples in the polygon bounding box.
+        let samples =
+            snap_index.samples_in_envelope(poly.min_lon, poly.min_lat, poly.max_lon, poly.max_lat);
+        for s in samples {
+            let ebg_id = s.ebg_id as usize;
             if ebg_id >= n_edges {
                 continue;
             }
@@ -143,7 +143,7 @@ fn find_avoided_edges(
                 continue;
             }
             // Point-in-polygon test
-            let pt = Point::new(point.coords[0], point.coords[1]);
+            let pt = Point::new(s.lon, s.lat);
             if poly.poly.contains(&pt) {
                 flags[ebg_id] |= AVOID_BIT;
             }
@@ -194,7 +194,7 @@ fn prepare_avoid_flags(
     let polygons = parse_avoid_polygons(avoid_json)?;
 
     let n_edges = state.ebg_nodes.n_nodes as usize;
-    let mut avoid_flags = find_avoided_edges(&state.spatial_index, &polygons, n_edges);
+    let mut avoid_flags = find_avoided_edges(&state.snap_index, &polygons, n_edges);
 
     let avoided_count = avoid_flags.iter().filter(|&&f| f != 0).count();
     if avoided_count == 0 {

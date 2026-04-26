@@ -214,7 +214,7 @@ pub async fn serve(
                 )
             })?;
         let foot = &state_owned.modes[foot_idx as usize];
-        match crate::transit::load_from_disk(&cfg, foot, &state_owned.spatial_index) {
+        match crate::transit::load_from_disk(&cfg, foot, foot_idx, &state_owned.snap_index) {
             Ok(snapshot) => {
                 tracing::info!(
                     stops = snapshot.timetable.n_stops(),

@@ -413,12 +413,33 @@ impl PackedSnapIndex {
 
     /// Snap with full info: (ebg_id, snapped_lon, snapped_lat, dist_m).
     pub fn snap_with_info(&self, lon: f64, lat: f64, mode_idx: u8) -> Option<(u32, f64, f64, f64)> {
+        self.snap_with_info_filtered(lon, lat, mode_idx, None)
+    }
+
+    /// Snap with full info, additionally constrained by an optional
+    /// EBG-id-indexed `edge_filter` bitmap (used by exclude/avoid).
+    /// When `edge_filter` is None, this is identical to
+    /// [`snap_with_info`]. When Some, after passing the per-sample
+    /// mask, the candidate is also rejected if its EBG-id bit is clear
+    /// in `edge_filter`.
+    pub fn snap_with_info_filtered(
+        &self,
+        lon: f64,
+        lat: f64,
+        mode_idx: u8,
+        edge_filter: Option<&[u64]>,
+    ) -> Option<(u32, f64, f64, f64)> {
         let mask = self.masks.get(mode_idx as usize)?;
         let mut best: Option<(u32, f64, f64, f64)> = None;
         let max2 = MAX_SNAP_DISTANCE_M * MAX_SNAP_DISTANCE_M;
 
         self.iterate_rings(lon, lat, |sample_idx, p| {
             if !mask_bit_set(&mask.bits, sample_idx) {
+                return;
+            }
+            if let Some(ef) = edge_filter
+                && !mask_bit_set(ef, p.ebg_id as usize)
+            {
                 return;
             }
             let (d2, plon, plat) = sample_distance2(lon, lat, p);
@@ -436,6 +457,19 @@ impl PackedSnapIndex {
         best
     }
 
+    /// Convenience: like [`snap`] but also constrained by a dynamic
+    /// EBG-id-indexed `edge_filter` (exclude/avoid path).
+    pub fn snap_filtered(
+        &self,
+        lon: f64,
+        lat: f64,
+        mode_idx: u8,
+        edge_filter: Option<&[u64]>,
+    ) -> Option<u32> {
+        self.snap_with_info_filtered(lon, lat, mode_idx, edge_filter)
+            .map(|(id, _, _, _)| id)
+    }
+
     /// Snap with bearing filter. `bearing` and `range` are degrees.
     pub fn snap_with_bearing(
         &self,
@@ -445,12 +479,30 @@ impl PackedSnapIndex {
         bearing: u16,
         range: u16,
     ) -> Option<(u32, f64, f64, f64)> {
+        self.snap_with_bearing_filtered(lon, lat, mode_idx, bearing, range, None)
+    }
+
+    /// Snap with bearing filter + optional EBG-id-indexed edge filter.
+    pub fn snap_with_bearing_filtered(
+        &self,
+        lon: f64,
+        lat: f64,
+        mode_idx: u8,
+        bearing: u16,
+        range: u16,
+        edge_filter: Option<&[u64]>,
+    ) -> Option<(u32, f64, f64, f64)> {
         let mask = self.masks.get(mode_idx as usize)?;
         let mut best: Option<(u32, f64, f64, f64)> = None;
         let max2 = MAX_SNAP_DISTANCE_M * MAX_SNAP_DISTANCE_M;
 
         self.iterate_rings(lon, lat, |sample_idx, p| {
             if !mask_bit_set(&mask.bits, sample_idx) {
+                return;
+            }
+            if let Some(ef) = edge_filter
+                && !mask_bit_set(ef, p.ebg_id as usize)
+            {
                 return;
             }
             if !bearing_matches(p.bearing, bearing, range) {
@@ -480,6 +532,17 @@ impl PackedSnapIndex {
         mode_idx: u8,
         k: usize,
     ) -> Vec<(u32, f64, f64, f64)> {
+        self.snap_k_with_info_filtered(lon, lat, mode_idx, k, None)
+    }
+
+    pub fn snap_k_with_info_filtered(
+        &self,
+        lon: f64,
+        lat: f64,
+        mode_idx: u8,
+        k: usize,
+        edge_filter: Option<&[u64]>,
+    ) -> Vec<(u32, f64, f64, f64)> {
         if k == 0 {
             return Vec::new();
         }
@@ -491,6 +554,11 @@ impl PackedSnapIndex {
         let max2 = MAX_SNAP_DISTANCE_M * MAX_SNAP_DISTANCE_M;
         self.iterate_rings(lon, lat, |sample_idx, p| {
             if !mask_bit_set(&mask.bits, sample_idx) {
+                return;
+            }
+            if let Some(ef) = edge_filter
+                && !mask_bit_set(ef, p.ebg_id as usize)
+            {
                 return;
             }
             let (d2, plon, plat) = sample_distance2(lon, lat, p);

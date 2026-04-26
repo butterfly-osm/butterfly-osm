@@ -111,7 +111,8 @@ impl TransitState {
 pub fn load_from_disk(
     config: &TransitConfig,
     foot: &crate::server::state::ModeData,
-    spatial: &crate::server::spatial::SpatialIndex,
+    foot_mode_idx: u8,
+    spatial: &crate::server::snap_index::PackedSnapIndex,
 ) -> anyhow::Result<TransitSnapshot> {
     use chrono::Local;
 
@@ -190,7 +191,7 @@ pub fn load_from_disk(
         ..TransferBuildOptions::default()
     };
     let cache_path = config.transfers_cache_path();
-    let transfers = load_or_build(&timetable, foot, spatial, &opts, &cache_path)?;
+    let transfers = load_or_build(&timetable, foot, foot_mode_idx, spatial, &opts, &cache_path)?;
 
     // Apply GTFS-RT one-shot snapshots, if any. We never fail the load
     // on a bad RT blob — the static feed is still usable, and the

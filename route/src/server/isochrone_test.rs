@@ -259,8 +259,8 @@ mod tests {
 
         // Snap origin
         let origin_ebg = state
-            .spatial_index
-            .snap(origin_lon, origin_lat, &mode_data.mask, 10)
+            .snap_index
+            .snap(origin_lon, origin_lat, mode.0)
             .expect("Failed to snap origin");
         let origin_rank = mode_data.orig_to_rank[origin_ebg as usize];
         assert_ne!(origin_rank, u32::MAX, "Origin not in filtered graph");
@@ -324,9 +324,7 @@ mod tests {
 
         for (lon, lat) in &sample_points {
             // Snap the random point to the nearest road
-            let snap_result = state
-                .spatial_index
-                .snap_with_info(*lon, *lat, &mode_data.mask, 10);
+            let snap_result = state.snap_index.snap_with_info(*lon, *lat, mode.0);
 
             let (dst_ebg, snapped_lon, snapped_lat, snap_dist_m) = match snap_result {
                 Some(result) => result,
