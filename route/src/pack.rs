@@ -288,84 +288,80 @@ pub fn pack(data_dir: &Path, out: &Path, step_prefix: Option<&str>) -> Result<()
         // we just packed. They let the server drop both legacy structs
         // from RSS at boot time.
         //
-        // We only build them when both sources exist on disk and parse
-        // cleanly. If either is missing or malformed, we skip the
-        // sections — old containers without them still load via the
-        // legacy fallback path in `state.rs`.
+        // We only build them when both sources exist on disk. If they
+        // exist but parse fails we hard-fail the pack instead of
+        // silently shipping a "new" container that drops the server
+        // onto the legacy fallback — the regression would only surface
+        // at server boot. If the files are absent (older build), we
+        // skip the sections; the fallback path in `state.rs` keeps old
+        // containers working.
         let filtered_path = step5.join(format!("filtered.{}.ebg", mode));
         let order_path = step6.join(format!("order.{}.ebg", mode));
         if filtered_path.exists() && order_path.exists() {
-            match (
-                FilteredEbgFile::read(&filtered_path),
-                OrderEbgFile::read(&order_path),
-            ) {
-                (Ok(filtered_ebg), Ok(order_data)) => {
-                    let n_orig = filtered_ebg.n_original_nodes as usize;
-                    let n_filt = filtered_ebg.n_filtered_nodes as usize;
-                    anyhow::ensure!(
-                        order_data.n_nodes as usize == n_filt,
-                        "order.{0}.ebg n_nodes ({1}) != filtered.{0}.ebg n_filtered_nodes ({2})",
-                        mode,
-                        order_data.n_nodes,
-                        n_filt
-                    );
+            let filtered_ebg = FilteredEbgFile::read(&filtered_path).with_context(|| {
+                format!(
+                    "parsing filtered.{mode}.ebg for #153 mapping sections (file present but unreadable)"
+                )
+            })?;
+            let order_data = OrderEbgFile::read(&order_path).with_context(|| {
+                format!(
+                    "parsing order.{mode}.ebg for #153 mapping sections (file present but unreadable)"
+                )
+            })?;
+            {
+                let n_orig = filtered_ebg.n_original_nodes as usize;
+                let n_filt = filtered_ebg.n_filtered_nodes as usize;
+                anyhow::ensure!(
+                    order_data.n_nodes as usize == n_filt,
+                    "order.{0}.ebg n_nodes ({1}) != filtered.{0}.ebg n_filtered_nodes ({2})",
+                    mode,
+                    order_data.n_nodes,
+                    n_filt
+                );
 
-                    // orig_to_rank[orig_id] = perm[original_to_filtered[orig_id]]
-                    // or u32::MAX if the original node is not in the filtered subgraph.
-                    let mut orig_to_rank: Vec<u32> = vec![u32::MAX; n_orig];
-                    for (orig_id, &filt_id) in filtered_ebg.original_to_filtered.iter().enumerate()
-                    {
-                        if filt_id != u32::MAX {
-                            let rank = order_data.perm[filt_id as usize];
-                            orig_to_rank[orig_id] = rank;
-                        }
+                // orig_to_rank[orig_id] = perm[original_to_filtered[orig_id]]
+                // or u32::MAX if the original node is not in the filtered subgraph.
+                let mut orig_to_rank: Vec<u32> = vec![u32::MAX; n_orig];
+                for (orig_id, &filt_id) in filtered_ebg.original_to_filtered.iter().enumerate() {
+                    if filt_id != u32::MAX {
+                        let rank = order_data.perm[filt_id as usize];
+                        orig_to_rank[orig_id] = rank;
                     }
-
-                    let mode_byte = filtered_ebg.mode.0;
-                    let inputs_sha: [u8; 16] = filtered_ebg.inputs_sha[..16]
-                        .try_into()
-                        .expect("filtered_ebg inputs_sha is 32 bytes; first 16 used");
-
-                    let o2r = ModeIndex {
-                        kind: ModeIndexKind::OrigToRank,
-                        mode: mode_byte,
-                        inputs_sha,
-                        data: Cow::Owned(orig_to_rank),
-                    };
-                    append_encoded(
-                        &mut w,
-                        SectionKind::OrigToRank,
-                        &format!("mode/{}/orig_to_rank", mode),
-                        ModeIndexFile::encode(&o2r),
-                    )?;
-                    drop(o2r);
-
-                    // filtered_to_original — copy of filtered_ebg.filtered_to_original.
-                    let f2o_data: Vec<u32> = filtered_ebg.filtered_to_original.to_vec();
-                    let f2o = ModeIndex {
-                        kind: ModeIndexKind::FilteredToOriginal,
-                        mode: mode_byte,
-                        inputs_sha,
-                        data: Cow::Owned(f2o_data),
-                    };
-                    append_encoded(
-                        &mut w,
-                        SectionKind::FilteredToOriginal,
-                        &format!("mode/{}/filtered_to_original", mode),
-                        ModeIndexFile::encode(&f2o),
-                    )?;
                 }
-                (filt_r, ord_r) => {
-                    let why = filt_r
-                        .err()
-                        .map(|e| format!("filtered_ebg: {e}"))
-                        .or_else(|| ord_r.err().map(|e| format!("order: {e}")))
-                        .unwrap_or_else(|| "unknown".to_string());
-                    eprintln!(
-                        "  ! [skip orig_to_rank/filtered_to_original] mode={} ({}); server will fall back",
-                        mode, why
-                    );
-                }
+
+                let mode_byte = filtered_ebg.mode.0;
+                let inputs_sha: [u8; 16] = filtered_ebg.inputs_sha[..16]
+                    .try_into()
+                    .expect("filtered_ebg inputs_sha is 32 bytes; first 16 used");
+
+                let o2r = ModeIndex {
+                    kind: ModeIndexKind::OrigToRank,
+                    mode: mode_byte,
+                    inputs_sha,
+                    data: Cow::Owned(orig_to_rank),
+                };
+                append_encoded(
+                    &mut w,
+                    SectionKind::OrigToRank,
+                    &format!("mode/{}/orig_to_rank", mode),
+                    ModeIndexFile::encode(&o2r),
+                )?;
+                drop(o2r);
+
+                // filtered_to_original — copy of filtered_ebg.filtered_to_original.
+                let f2o_data: Vec<u32> = filtered_ebg.filtered_to_original.to_vec();
+                let f2o = ModeIndex {
+                    kind: ModeIndexKind::FilteredToOriginal,
+                    mode: mode_byte,
+                    inputs_sha,
+                    data: Cow::Owned(f2o_data),
+                };
+                append_encoded(
+                    &mut w,
+                    SectionKind::FilteredToOriginal,
+                    &format!("mode/{}/filtered_to_original", mode),
+                    ModeIndexFile::encode(&f2o),
+                )?;
             }
         }
 

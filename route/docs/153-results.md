@@ -176,6 +176,6 @@ diff -q /tmp/route-results.work153.txt /tmp/route-results.work152-rerun.txt
 The strict acceptance gates pass cleanly — every metric improves vs work-152 with byte-identical correctness. The aspirational targets (≤ 4.5 GB anon, ≤ 7.0 GB total) miss by 540 MB / 580 MB respectively. The remaining gap lives in:
 
 - The spatial index (≈ 4.0 GB cumulative anon across 4 modes, the dominant remaining heap consumer per the spatial.mode.* checkpoints) — addressed by #154.
-- The legacy `filtered_ebg` + `order` sections still on disk and CRC-verified at boot — they don't add to RSS at idle (we madvise them) but their CRC walk pages them in once during load, contributing the file_kb spike between `load.shared` and `load.mode.truck`. A format bump in a later ticket can drop them.
+- The legacy `filtered_ebg` + `order` sections still on disk for back-compat. On the new serve path they are *not* loaded or CRC-verified — `load_mode_data_from_bundle` only fetches the sections it actually consumes, so when `orig_to_rank` and `filtered_to_original` are present those legacy sections never page into `file_kb`. The only path that still touches them is the explicit fallback in `state.rs` for old containers; that path madvises both sections after consuming them. A format bump in a later ticket can drop the legacy sections from disk entirely, but they're already off the steady-state RSS budget on new builds.
 
 Net: #153 lands a small but real RSS reduction with zero-cost back-compat and zero correctness risk; the much larger spatial-index lever stays queued for #154.

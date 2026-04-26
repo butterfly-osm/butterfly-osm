@@ -1125,12 +1125,35 @@ fn load_mode_data_from_bundle(
                         "madvise(DONTNEED) on filtered_ebg cold prefix failed; ignoring"
                     );
                 }
-                let order_data = OrderEbgFile::read_from_bytes(fetch("order")?)?;
+                let order_section = fetch("order")?;
+                let order_data = OrderEbgFile::read_from_bytes(order_section)?;
 
                 let n_original_nodes = filtered_ebg.n_original_nodes;
                 let n_filtered_nodes = filtered_ebg.n_filtered_nodes;
                 let orig_to_rank = build_orig_to_rank(&filtered_ebg, &order_data);
                 let filtered_to_original: Vec<u32> = filtered_ebg.filtered_to_original.to_vec();
+
+                // Both legacy sections are now fully consumed onto the
+                // heap (orig_to_rank from order, filtered_to_original
+                // copied out). CRC verification paged them in; advise
+                // the kernel it can drop them so we don't carry the
+                // file_kb cost for the rest of the process lifetime.
+                drop(order_data);
+                drop(filtered_ebg);
+                if let Err(e) = crate::formats::mmap::madvise_dontneed(order_section) {
+                    tracing::warn!(
+                        mode = mode_name,
+                        error = %e,
+                        "madvise(DONTNEED) on order section failed; ignoring"
+                    );
+                }
+                if let Err(e) = crate::formats::mmap::madvise_dontneed(filtered_section) {
+                    tracing::warn!(
+                        mode = mode_name,
+                        error = %e,
+                        "madvise(DONTNEED) on filtered_ebg section failed; ignoring"
+                    );
+                }
                 (
                     Cow::Owned(orig_to_rank),
                     Cow::Owned(filtered_to_original),
