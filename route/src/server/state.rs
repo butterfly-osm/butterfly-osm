@@ -333,17 +333,40 @@ impl ServerState {
         let container = Container::open(container_path)
             .with_context(|| format!("opening container {}", container_path.display()))?;
 
-        // Convenience accessor: section name → CRC-verified bytes from
-        // the mapping.
-        let section_bytes = |name: &str| -> Result<&[u8]> {
+        // #147: leak a clone of the Arc so derived `&'static [u8]` views
+        // remain valid for process lifetime. Server lifetime IS process
+        // lifetime today, so the leak is one Arc per loaded container —
+        // negligible. Original `mmap` Arc still drops at end of scope;
+        // the leaked Arc keeps the mapping alive forever.
+        //
+        // SAFETY: `Box::leak` is safe; it returns `&'static T` from
+        // `Box<T>`. The `unsafe_code` carveout policy is unaffected —
+        // the only `unsafe` site remains `formats/mmap.rs::map_readonly`.
+        let leaked_arc: &'static std::sync::Arc<memmap2::Mmap> =
+            Box::leak(Box::new(std::sync::Arc::clone(&mmap)));
+        let static_mmap: &'static memmap2::Mmap = leaked_arc.as_ref();
+        let static_bytes: &'static [u8] = &static_mmap[..];
+
+        // Convenience accessor: section name → CRC-verified `'static` bytes
+        // from the leaked mapping.
+        let section_bytes = |name: &str| -> Result<&'static [u8]> {
             let entry = container
                 .get(name)
                 .ok_or_else(|| anyhow::anyhow!("missing required section '{}'", name))?;
-            container.section_bytes_verified(&mmap, entry)
+            // Verify CRC over the same bytes the caller will see.
+            let _verify = container.section_bytes_verified(static_mmap, entry)?;
+            let off = entry.offset as usize;
+            let len = entry.len as usize;
+            Ok(&static_bytes[off..off + len])
         };
-        let optional_section = |name: &str| -> Result<Option<&[u8]>> {
+        let optional_section = |name: &str| -> Result<Option<&'static [u8]>> {
             match container.get(name) {
-                Some(entry) => Ok(Some(container.section_bytes_verified(&mmap, entry)?)),
+                Some(entry) => {
+                    let _verify = container.section_bytes_verified(static_mmap, entry)?;
+                    let off = entry.offset as usize;
+                    let len = entry.len as usize;
+                    Ok(Some(&static_bytes[off..off + len]))
+                }
                 None => Ok(None),
             }
         };
@@ -408,7 +431,8 @@ impl ServerState {
 
         for (mode_index, mode_name) in discovered_modes.iter().enumerate() {
             let mode = Mode(global_index[mode_name]);
-            let mode_data = load_mode_data_from_bundle(mode_name, mode, &container, &mmap)?;
+            let mode_data =
+                load_mode_data_from_bundle(mode_name, mode, &container, static_mmap)?;
             tracing::info!(
                 mode = mode_name.as_str(),
                 index = mode_index,
@@ -721,7 +745,7 @@ fn build_down_reverse_adj(topo: &CchTopo) -> DownReverseAdj {
 
     // First pass: count incoming edges per node
     let mut counts = vec![0usize; n_nodes];
-    for &target in &topo.down_targets {
+    for &target in topo.down_targets.iter() {
         counts[target as usize] += 1;
     }
 
@@ -821,19 +845,26 @@ fn load_mode_data_from_bundle(
     mode_name: &str,
     mode: Mode,
     container: &crate::formats::butterfly_dat::Container,
-    mmap: &memmap2::Mmap,
+    static_mmap: &'static memmap2::Mmap,
 ) -> Result<ModeData> {
-    let fetch = |leaf: &str| -> Result<&[u8]> {
+    let static_bytes: &'static [u8] = &static_mmap[..];
+    let fetch = |leaf: &str| -> Result<&'static [u8]> {
         let name = format!("mode/{}/{}", mode_name, leaf);
         let entry = container
             .get(&name)
             .ok_or_else(|| anyhow::anyhow!("missing mode bundle section '{}'", name))?;
-        container.section_bytes_verified(mmap, entry)
+        let _verify = container.section_bytes_verified(static_mmap, entry)?;
+        let off = entry.offset as usize;
+        let len = entry.len as usize;
+        Ok(&static_bytes[off..off + len])
     };
 
     let filtered_ebg = FilteredEbgFile::read_from_bytes(fetch("filtered_ebg")?)?;
     let order = OrderEbgFile::read_from_bytes(fetch("order")?)?;
-    let cch_topo = CchTopoFile::read_from_bytes(fetch("topo")?)?;
+    // #147: zero-copy CCH topology — borrows the on-disk u32/u64 arrays
+    // and packed `is_shortcut` bitset directly from the mmap. Saves
+    // ~3.4 GB of heap on Belgium 4-mode build.
+    let cch_topo = CchTopoFile::read_from_bytes_zero_copy(fetch("topo")?)?;
     let down_rev = build_down_reverse_adj(&cch_topo);
 
     let weights_data = mod_weights::read_all_from_bytes(fetch("node_weights.time")?)?;
@@ -850,11 +881,13 @@ fn load_mode_data_from_bundle(
         m
     };
 
-    let cch_weights = CchWeightsFile::read_from_bytes(fetch("weights.time")?)?;
+    // #147: zero-copy CCH weights — `up`/`down` u32 slices come straight
+    // from the mmap. Saves ~6 GB of heap (4 modes × 2 metrics × ~750MB).
+    let cch_weights = CchWeightsFile::read_from_bytes_zero_copy(fetch("weights.time")?)?;
     let up_adj_flat = UpAdjFlat::build(&cch_topo, &cch_weights);
     let down_rev_flat = DownReverseAdjFlat::build(&cch_topo, &cch_weights);
 
-    let cch_weights_dist = CchWeightsFile::read_from_bytes(fetch("weights.dist")?)?;
+    let cch_weights_dist = CchWeightsFile::read_from_bytes_zero_copy(fetch("weights.dist")?)?;
     let up_adj_flat_dist = UpAdjFlat::build(&cch_topo, &cch_weights_dist);
     let down_rev_flat_dist = DownReverseAdjFlat::build(&cch_topo, &cch_weights_dist);
 

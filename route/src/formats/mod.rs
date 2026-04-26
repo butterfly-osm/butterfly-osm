@@ -1,6 +1,7 @@
 //! Binary file formats for Step 1, Step 2, and Step 3 output
 
 // Step 1 formats
+pub mod bitset;
 pub mod butterfly_dat;
 pub mod crc;
 pub mod mmap;
@@ -40,6 +41,7 @@ pub mod cch_topo;
 // Step 8 formats
 pub mod cch_weights;
 
+pub use bitset::BitsetField;
 pub use cch_topo::{CchTopo, CchTopoFile, Shortcut};
 pub use cch_weights::{CchWeights, CchWeightsFile};
 pub use ebg_csr::{EbgCsr, EbgCsrFile};
