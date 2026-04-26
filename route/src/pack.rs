@@ -20,11 +20,13 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use crate::formats::butterfly_dat::{Container, ContainerWriter, SectionKind};
-use crate::formats::{CchTopoFile, CchWeightsFile};
+use crate::formats::mode_index::{ModeIndex, ModeIndexFile, ModeIndexKind};
+use crate::formats::{CchTopoFile, CchWeightsFile, FilteredEbgFile, OrderEbgFile};
 use crate::matrix::bucket_ch::{
     DownAdjFlat, DownAdjFlatFile, DownReverseAdjFlat, DownReverseAdjFlatFile, UpAdjFlat,
     UpAdjFlatFile,
 };
+use std::borrow::Cow;
 
 /// Section name for the JSON manifest that lists modes + bundle ids.
 /// Lives at the top of the `shared/` namespace so legacy tooling can
@@ -280,6 +282,94 @@ pub fn pack(data_dir: &Path, out: &Path, step_prefix: Option<&str>) -> Result<()
             &format!("mode/{}/order", mode),
             &order,
         )?;
+        // ---- Server-only mapping sections (#153) -------------------
+        // `orig_to_rank` and `filtered_to_original` are derived from
+        // the per-step `filtered.<mode>.ebg` + `order.<mode>.ebg` files
+        // we just packed. They let the server drop both legacy structs
+        // from RSS at boot time.
+        //
+        // We only build them when both sources exist on disk and parse
+        // cleanly. If either is missing or malformed, we skip the
+        // sections — old containers without them still load via the
+        // legacy fallback path in `state.rs`.
+        let filtered_path = step5.join(format!("filtered.{}.ebg", mode));
+        let order_path = step6.join(format!("order.{}.ebg", mode));
+        if filtered_path.exists() && order_path.exists() {
+            match (
+                FilteredEbgFile::read(&filtered_path),
+                OrderEbgFile::read(&order_path),
+            ) {
+                (Ok(filtered_ebg), Ok(order_data)) => {
+                    let n_orig = filtered_ebg.n_original_nodes as usize;
+                    let n_filt = filtered_ebg.n_filtered_nodes as usize;
+                    anyhow::ensure!(
+                        order_data.n_nodes as usize == n_filt,
+                        "order.{0}.ebg n_nodes ({1}) != filtered.{0}.ebg n_filtered_nodes ({2})",
+                        mode,
+                        order_data.n_nodes,
+                        n_filt
+                    );
+
+                    // orig_to_rank[orig_id] = perm[original_to_filtered[orig_id]]
+                    // or u32::MAX if the original node is not in the filtered subgraph.
+                    let mut orig_to_rank: Vec<u32> = vec![u32::MAX; n_orig];
+                    for (orig_id, &filt_id) in
+                        filtered_ebg.original_to_filtered.iter().enumerate()
+                    {
+                        if filt_id != u32::MAX {
+                            let rank = order_data.perm[filt_id as usize];
+                            orig_to_rank[orig_id] = rank;
+                        }
+                    }
+
+                    let mode_byte = filtered_ebg.mode.0;
+                    let inputs_sha: [u8; 16] = filtered_ebg.inputs_sha[..16]
+                        .try_into()
+                        .expect("filtered_ebg inputs_sha is 32 bytes; first 16 used");
+
+                    let o2r = ModeIndex {
+                        kind: ModeIndexKind::OrigToRank,
+                        mode: mode_byte,
+                        inputs_sha,
+                        data: Cow::Owned(orig_to_rank),
+                    };
+                    append_encoded(
+                        &mut w,
+                        SectionKind::OrigToRank,
+                        &format!("mode/{}/orig_to_rank", mode),
+                        ModeIndexFile::encode(&o2r),
+                    )?;
+                    drop(o2r);
+
+                    // filtered_to_original — copy of filtered_ebg.filtered_to_original.
+                    let f2o_data: Vec<u32> = filtered_ebg.filtered_to_original.to_vec();
+                    let f2o = ModeIndex {
+                        kind: ModeIndexKind::FilteredToOriginal,
+                        mode: mode_byte,
+                        inputs_sha,
+                        data: Cow::Owned(f2o_data),
+                    };
+                    append_encoded(
+                        &mut w,
+                        SectionKind::FilteredToOriginal,
+                        &format!("mode/{}/filtered_to_original", mode),
+                        ModeIndexFile::encode(&f2o),
+                    )?;
+                }
+                (filt_r, ord_r) => {
+                    let why = filt_r
+                        .err()
+                        .map(|e| format!("filtered_ebg: {e}"))
+                        .or_else(|| ord_r.err().map(|e| format!("order: {e}")))
+                        .unwrap_or_else(|| "unknown".to_string());
+                    eprintln!(
+                        "  ! [skip orig_to_rank/filtered_to_original] mode={} ({}); server will fall back",
+                        mode, why
+                    );
+                }
+            }
+        }
+
         // step7 topology. As of #151 the v4 layout pads every variable-
         // length u32 array to a u64 boundary, so the server reads it
         // zero-copy out of the mmap'd container.
@@ -606,7 +696,11 @@ pub fn unpack(path: &Path, out_dir: &Path) -> Result<()> {
         // unpack stays a faithful inverse of the on-disk inputs.
         if matches!(
             sec.kind,
-            SectionKind::UpAdjFlat | SectionKind::DownAdjFlat | SectionKind::DownReverseAdjFlat
+            SectionKind::UpAdjFlat
+                | SectionKind::DownAdjFlat
+                | SectionKind::DownReverseAdjFlat
+                | SectionKind::OrigToRank
+                | SectionKind::FilteredToOriginal
         ) {
             println!("  -- (skip synthesised) {}", sec.name);
             continue;
