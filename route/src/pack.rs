@@ -696,6 +696,9 @@ pub fn unpack(path: &Path, out_dir: &Path) -> Result<()> {
                 | SectionKind::DownReverseAdjFlat
                 | SectionKind::OrigToRank
                 | SectionKind::FilteredToOriginal
+                | SectionKind::SnapPoints
+                | SectionKind::SnapGrid
+                | SectionKind::SnapModeMask
         ) {
             println!("  -- (skip synthesised) {}", sec.name);
             continue;
