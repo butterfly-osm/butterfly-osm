@@ -816,13 +816,7 @@ pub async fn isochrone_handler(
     let phast_settled = if reverse {
         run_phast_bounded_fast_reverse(up_flat, down_flat, center_rank, phast_threshold, mode)
     } else {
-        run_phast_bounded_fast(
-            up_flat,
-            down_fwd_flat,
-            center_rank,
-            phast_threshold,
-            mode,
-        )
+        run_phast_bounded_fast(up_flat, down_fwd_flat, center_rank, phast_threshold, mode)
     };
 
     // Convert to original IDs
@@ -862,9 +856,10 @@ pub async fn isochrone_handler(
                 ensure_ccw(&mut coords);
                 let mut ring: Vec<[f64; 2]> = coords.into_iter().map(|(x, y)| [x, y]).collect();
                 if let (Some(first), Some(last)) = (ring.first().copied(), ring.last().copied())
-                    && first != last {
-                        ring.push(first);
-                    }
+                    && first != last
+                {
+                    ring.push(first);
+                }
                 (None, Some(ring), None)
             }
             GeometryFormat::Points => (None, None, Some(polygon.to_vec())),
@@ -1161,13 +1156,8 @@ pub async fn isochrone_bulk_handler(
             let center_rank = mode_data.order.perm[center_filtered as usize];
 
             // Run PHAST - Note: thread-local state handles per-thread allocation
-            let phast_settled = run_phast_bounded_fast(
-                up_flat,
-                down_fwd_flat,
-                center_rank,
-                time_ds,
-                mode,
-            );
+            let phast_settled =
+                run_phast_bounded_fast(up_flat, down_fwd_flat, center_rank, time_ds, mode);
 
             // Convert to original IDs
             let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());

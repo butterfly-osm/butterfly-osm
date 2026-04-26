@@ -134,9 +134,10 @@ fn sncb_raptor_brussels_to_ghent() {
         }
         // Otherwise add the stop + its siblings under the same parent.
         if let Some(parent) = tt.stops[s as usize].parent_station
-            && let Some(children) = tt.station_children.get(&parent) {
-                return children.clone();
-            }
+            && let Some(children) = tt.station_children.get(&parent)
+        {
+            return children.clone();
+        }
         vec![s]
     };
     let src_stops = expand(bxlm as u32);
@@ -1318,9 +1319,18 @@ fn belgium_flight_transit_bulk_roundtrip() {
     });
 
     // 5 queries fit in a single CHUNK (1024).
-    assert_eq!(batches.len(), 1, "expected exactly one RecordBatch for 5 queries");
+    assert_eq!(
+        batches.len(),
+        1,
+        "expected exactly one RecordBatch for 5 queries"
+    );
     let batch = &batches[0];
-    assert_eq!(batch.num_rows(), 5, "5 rows expected, got {}", batch.num_rows());
+    assert_eq!(
+        batch.num_rows(),
+        5,
+        "5 rows expected, got {}",
+        batch.num_rows()
+    );
 
     // Schema sanity.
     let expected_schema = transit_bulk_schema();
@@ -1382,8 +1392,7 @@ fn belgium_flight_transit_bulk_roundtrip() {
     assert!(total_dur.value(0) > 0);
     assert!(!legs_json.is_null(0));
     let legs_str = legs_json.value(0);
-    let legs_val: serde_json::Value =
-        serde_json::from_str(legs_str).expect("legs_json must parse");
+    let legs_val: serde_json::Value = serde_json::from_str(legs_str).expect("legs_json must parse");
     assert!(legs_val.is_array(), "legs_json must encode an array");
     assert!(
         legs_val.as_array().unwrap().len() >= 3,
@@ -1477,7 +1486,10 @@ fn belgium_flight_transit_bulk_chunks_large_batches() {
             seen[q] = true;
         }
     }
-    assert!(seen.iter().all(|x| *x), "every query_idx 0..1500 must appear");
+    assert!(
+        seen.iter().all(|x| *x),
+        "every query_idx 0..1500 must appear"
+    );
     eprintln!(
         "transit_bulk Flight chunking: {} batches across 1500 rows",
         batches.len()
@@ -1601,11 +1613,31 @@ fn belgium_flight_edges_batch_continuity_and_nulls() {
             rows.push(EdgeRow {
                 query_idx: qi.value(i),
                 _target_idx: ti.value(i),
-                edge_seq: if es.is_null(i) { None } else { Some(es.value(i)) },
-                osm_from: if of.is_null(i) { None } else { Some(of.value(i)) },
-                osm_to: if ot.is_null(i) { None } else { Some(ot.value(i)) },
-                _duration_ms: if dm.is_null(i) { None } else { Some(dm.value(i)) },
-                _distance_m: if mm.is_null(i) { None } else { Some(mm.value(i)) },
+                edge_seq: if es.is_null(i) {
+                    None
+                } else {
+                    Some(es.value(i))
+                },
+                osm_from: if of.is_null(i) {
+                    None
+                } else {
+                    Some(of.value(i))
+                },
+                osm_to: if ot.is_null(i) {
+                    None
+                } else {
+                    Some(ot.value(i))
+                },
+                _duration_ms: if dm.is_null(i) {
+                    None
+                } else {
+                    Some(dm.value(i))
+                },
+                _distance_m: if mm.is_null(i) {
+                    None
+                } else {
+                    Some(mm.value(i))
+                },
             });
         }
     }
@@ -1629,9 +1661,18 @@ fn belgium_flight_edges_batch_continuity_and_nulls() {
         ocean_rows.len()
     );
     let ocean = ocean_rows[0];
-    assert!(ocean.edge_seq.is_none(), "ocean row must have null edge_seq");
-    assert!(ocean.osm_from.is_none(), "ocean row must have null osm_node_from");
-    assert!(ocean.osm_to.is_none(), "ocean row must have null osm_node_to");
+    assert!(
+        ocean.edge_seq.is_none(),
+        "ocean row must have null edge_seq"
+    );
+    assert!(
+        ocean.osm_from.is_none(),
+        "ocean row must have null osm_node_from"
+    );
+    assert!(
+        ocean.osm_to.is_none(),
+        "ocean row must have null osm_node_to"
+    );
 
     // Continuity check for each valid query:
     // consecutive rows' osm_to[i] == osm_from[i+1].
@@ -1656,9 +1697,13 @@ fn belgium_flight_edges_batch_continuity_and_nulls() {
         for pair_idx in 0..(q_rows.len() - 1) {
             let a = q_rows[pair_idx];
             let b = q_rows[pair_idx + 1];
-            assert!(a.osm_to.is_some() && b.osm_from.is_some(), "non-null required");
+            assert!(
+                a.osm_to.is_some() && b.osm_from.is_some(),
+                "non-null required"
+            );
             assert_eq!(
-                a.osm_to, b.osm_from,
+                a.osm_to,
+                b.osm_from,
                 "continuity violation: query {qi} row {pair_idx} osm_to != row {} osm_from ({:?} vs {:?})",
                 pair_idx + 1,
                 a.osm_to,
@@ -1697,15 +1742,20 @@ fn belgium_flight_edges_batch_totals_match_matrix() {
     let mode = butterfly_route::Mode(car_idx);
     let mode_data = state.get_mode(mode);
 
-    let pairs: Vec<[f64; 4]> =
-        vec![[4.3517, 50.8466, 4.4025, 51.2194]]; // Brussels → Antwerp
+    let pairs: Vec<[f64; 4]> = vec![[4.3517, 50.8466, 4.4025, 51.2194]]; // Brussels → Antwerp
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
     let batches: Vec<arrow::record_batch::RecordBatch> = rt.block_on(async {
-        let mut s =
-            do_edges_batch(&state, mode, EdgesBatchParams { pairs: pairs.clone() }).unwrap();
+        let mut s = do_edges_batch(
+            &state,
+            mode,
+            EdgesBatchParams {
+                pairs: pairs.clone(),
+            },
+        )
+        .unwrap();
         let mut acc = Vec::new();
         while let Some(item) = s.next().await {
             acc.push(item.expect("batch must succeed"));

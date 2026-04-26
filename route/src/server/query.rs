@@ -431,7 +431,13 @@ impl<'a> CchQuery<'a> {
                                 best_dist = total;
                                 meeting_node = u;
                                 if debug {
-                                    tracing::debug!(meet_node = u, dist_fwd = d, dist_bwd = bwd_d, total, "FWD meet");
+                                    tracing::debug!(
+                                        meet_node = u,
+                                        dist_fwd = d,
+                                        dist_bwd = bwd_d,
+                                        total,
+                                        "FWD meet"
+                                    );
                                 }
                             }
                         }
@@ -452,7 +458,13 @@ impl<'a> CchQuery<'a> {
                                         best_dist = total;
                                         meeting_node = v;
                                         if debug {
-                                            tracing::debug!(meet_node = v, dist_fwd = new_dist, dist_bwd = bwd_v, total, "FWD meet via edge");
+                                            tracing::debug!(
+                                                meet_node = v,
+                                                dist_fwd = new_dist,
+                                                dist_bwd = bwd_v,
+                                                total,
+                                                "FWD meet via edge"
+                                            );
                                         }
                                     }
                                 }
@@ -476,7 +488,13 @@ impl<'a> CchQuery<'a> {
                                 best_dist = total;
                                 meeting_node = u;
                                 if debug {
-                                    tracing::debug!(meet_node = u, dist_fwd = fwd_d, dist_bwd = d, total, "BWD meet");
+                                    tracing::debug!(
+                                        meet_node = u,
+                                        dist_fwd = fwd_d,
+                                        dist_bwd = d,
+                                        total,
+                                        "BWD meet"
+                                    );
                                 }
                             }
                         }
@@ -497,7 +515,13 @@ impl<'a> CchQuery<'a> {
                                         best_dist = total;
                                         meeting_node = x;
                                         if debug {
-                                            tracing::debug!(meet_node = x, dist_fwd = fwd_x, dist_bwd = new_dist, total, "BWD meet via edge");
+                                            tracing::debug!(
+                                                meet_node = x,
+                                                dist_fwd = fwd_x,
+                                                dist_bwd = new_dist,
+                                                total,
+                                                "BWD meet via edge"
+                                            );
                                         }
                                     }
                                 }
