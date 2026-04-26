@@ -174,8 +174,19 @@ impl CchTopoFile {
         Ok(())
     }
 
+    /// Read from any `Path`. Convenience wrapper that buffers the file.
     pub fn read<P: AsRef<Path>>(path: P) -> Result<CchTopo> {
-        let mut reader = BufReader::new(File::open(path)?);
+        Self::read_from_reader(BufReader::new(File::open(path)?))
+    }
+
+    /// Read directly from an in-memory byte slice (e.g. an mmap-backed
+    /// section of a `butterfly.dat` container). Same byte format as the
+    /// path API; CRC is checked here too.
+    pub fn read_from_bytes(bytes: &[u8]) -> Result<CchTopo> {
+        Self::read_from_reader(std::io::Cursor::new(bytes))
+    }
+
+    fn read_from_reader<R: Read>(mut reader: R) -> Result<CchTopo> {
         let mut crc_digest = crc::Digest::new();
 
         // Header (76 bytes)

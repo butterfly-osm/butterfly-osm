@@ -89,7 +89,14 @@ impl EbgCsrFile {
 
     /// Read EBG CSR from file
     pub fn read<P: AsRef<Path>>(path: P) -> Result<EbgCsr> {
-        let mut reader = BufReader::new(File::open(path)?);
+        Self::read_from_reader(BufReader::new(File::open(path)?))
+    }
+
+    pub fn read_from_bytes(bytes: &[u8]) -> Result<EbgCsr> {
+        Self::read_from_reader(std::io::Cursor::new(bytes))
+    }
+
+    fn read_from_reader<R: Read>(mut reader: R) -> Result<EbgCsr> {
         let mut crc_digest = crc::Digest::new();
 
         let mut header = vec![0u8; 64];
