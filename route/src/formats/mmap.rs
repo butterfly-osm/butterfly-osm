@@ -47,6 +47,50 @@ pub fn map_readonly(path: &Path) -> Result<Arc<Mmap>> {
     Ok(Arc::new(mmap))
 }
 
+/// Hint the kernel that we no longer need the given byte range to be
+/// resident. The call is a hint — the kernel may ignore it. On Linux,
+/// `MADV_DONTNEED` causes anonymous pages to be discarded; for
+/// file-backed read-only mappings it drops the page-cache reference,
+/// which lets the kernel reclaim the pages from RSS without invalidating
+/// the mapping. A subsequent read re-pages the bytes from disk at
+/// standard page-fault cost.
+///
+/// Used by #149 to reclaim the `cch_weights.up`/`.down` byte ranges
+/// after the routing hot path migrated off them onto the pre-built flat
+/// adjacency structures. The Cow slices that point into this byte range
+/// stay valid (the mmap itself is not unmapped); accessing them simply
+/// triggers a soft page fault, which is fine for cold consumers
+/// (validators, transit fingerprint hash, derived custom-weight builds).
+///
+/// SAFETY: the caller must guarantee that `range` is a sub-slice of a
+/// live `Mmap` whose lifetime exceeds this call. We document this in the
+/// workspace's `unsafe_code` carveout policy: `Mmap::map` and `madvise`
+/// against the same range are the only two carveouts. See
+/// `feedback_no_unsafe.md` and the module-level SAFETY block above.
+#[allow(unsafe_code)]
+pub fn madvise_dontneed(range: &[u8]) -> std::io::Result<()> {
+    if range.is_empty() {
+        return Ok(());
+    }
+    // SAFETY: `range` is guaranteed by the caller to be a sub-slice of a
+    // live mmap mapping (see doc comment). MADV_DONTNEED is a hint to
+    // the kernel; on Linux it drops the page-cache reference for
+    // file-backed ranges. The pointer is valid for `range.len()` bytes
+    // because we just dereferenced it through Rust's slice typing.
+    let rc = unsafe {
+        libc::madvise(
+            range.as_ptr() as *mut libc::c_void,
+            range.len(),
+            libc::MADV_DONTNEED,
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 /// Owned slice into a memory-mapped file.
 ///
 /// Holds an `Arc<Mmap>` so the mapping stays alive as long as any

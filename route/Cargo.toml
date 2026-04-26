@@ -33,6 +33,12 @@ crc = "3.4"
 # site is the workspace's sole `unsafe_code` carveout — see
 # `route/src/formats/mmap.rs` for the documented SAFETY block.
 memmap2 = "0.9"
+# `libc::madvise` against ranges of the mmap above. Same `unsafe_code`
+# carveout as `memmap2::Mmap::map` — see `formats/mmap.rs::madvise_dontneed`.
+# Used after #149 to drop the cch_weights.up/.down byte ranges from RSS
+# once the routing hot path stops reading them (the migration to flat
+# adjacencies in steps A–C kept the only remaining readers cold).
+libc = "0.2"
 
 # Safe POD slice reinterpretation for zero-copy mmap views (#147).
 # `bytemuck::cast_slice` performs alignment + size checks at runtime and
