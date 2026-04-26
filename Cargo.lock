@@ -604,6 +604,7 @@ dependencies = [
  "gtfs-structures",
  "hdrhistogram",
  "hex",
+ "libc",
  "memmap2 0.9.10",
  "osmpbf",
  "parking_lot",
