@@ -747,15 +747,17 @@ fn load_mode_data(
     let cch_weights_path = step8_dir.join(format!("cch.w.{}.u32", mode_name));
     let cch_weights = CchWeightsFile::read(&cch_weights_path)?;
 
-    // Build flat adjacencies for bucket M2M - TIME metric (pre-filtered for INF, embedded weights)
-    let up_adj_flat = UpAdjFlat::build(&cch_topo, &cch_weights);
-    let down_rev_flat = DownReverseAdjFlat::build(&cch_topo, &cch_weights);
+    // Build flat adjacencies for bucket M2M - TIME metric (pre-filtered for INF, embedded weights).
+    // TIME flats carry topo_edge_idx because CchQuery's parent pointers need it.
+    let up_adj_flat = UpAdjFlat::build_with(&cch_topo, &cch_weights, true);
+    let down_rev_flat = DownReverseAdjFlat::build_with(&cch_topo, &cch_weights, true);
     let down_adj_flat = DownAdjFlat::build(&cch_topo, &cch_weights);
 
     // Load pre-computed distance weights from step 8 (cch.d.{mode}.u32)
     let cch_dist_weights_path = step8_dir.join(format!("cch.d.{}.u32", mode_name));
     tracing::info!(mode = mode_name, "loading distance weights");
     let cch_weights_dist = CchWeightsFile::read(&cch_dist_weights_path)?;
+    // DIST flats: only PHAST forward + isodistance use them — no topo back-ref needed.
     let up_adj_flat_dist = UpAdjFlat::build(&cch_topo, &cch_weights_dist);
     let down_rev_flat_dist = DownReverseAdjFlat::build(&cch_topo, &cch_weights_dist);
     let down_adj_flat_dist = DownAdjFlat::build(&cch_topo, &cch_weights_dist);
@@ -933,8 +935,8 @@ fn load_mode_data_from_bundle(
     // #147: zero-copy CCH weights — `up`/`down` u32 slices come straight
     // from the mmap. Saves ~6 GB of heap (4 modes × 2 metrics × ~750MB).
     let cch_weights = CchWeightsFile::read_from_bytes_zero_copy(fetch("weights.time")?)?;
-    let up_adj_flat = UpAdjFlat::build(&cch_topo, &cch_weights);
-    let down_rev_flat = DownReverseAdjFlat::build(&cch_topo, &cch_weights);
+    let up_adj_flat = UpAdjFlat::build_with(&cch_topo, &cch_weights, true);
+    let down_rev_flat = DownReverseAdjFlat::build_with(&cch_topo, &cch_weights, true);
     let down_adj_flat = DownAdjFlat::build(&cch_topo, &cch_weights);
 
     let cch_weights_dist = CchWeightsFile::read_from_bytes_zero_copy(fetch("weights.dist")?)?;
