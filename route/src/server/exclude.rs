@@ -99,7 +99,6 @@ pub fn build_edge_exclude_flags_from_attrs(
     ebg_nodes: &EbgNodes,
     attrs: &[way_attrs::WayAttr],
 ) -> anyhow::Result<Vec<u8>> {
-
     // Build lookup: way_id (lower 32 bits) → exclude flags
     let mut way_flags: rustc_hash::FxHashMap<u32, u8> = rustc_hash::FxHashMap::default();
     for attr in attrs {
