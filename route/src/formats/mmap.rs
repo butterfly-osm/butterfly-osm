@@ -72,15 +72,34 @@ pub fn madvise_dontneed(range: &[u8]) -> std::io::Result<()> {
     if range.is_empty() {
         return Ok(());
     }
+
+    // `madvise(2)` on Linux requires the start address to be page-aligned
+    // and the length to be a whole number of pages. We round the start
+    // *up* to the next page boundary and the end *down*, advising only
+    // the inner whole-page span. The trimmed unaligned head and tail
+    // (≤ 1 page each) stay resident; for multi-GB weight sections this
+    // is rounding error.
+    let page_size = page_size();
+    let start_addr = range.as_ptr() as usize;
+    let end_addr = start_addr.saturating_add(range.len());
+    let aligned_start = start_addr.div_ceil(page_size) * page_size;
+    let aligned_end = (end_addr / page_size) * page_size;
+    if aligned_end <= aligned_start {
+        // Range smaller than one page after alignment; nothing to advise.
+        return Ok(());
+    }
+    let aligned_len = aligned_end - aligned_start;
+
     // SAFETY: `range` is guaranteed by the caller to be a sub-slice of a
-    // live mmap mapping (see doc comment). MADV_DONTNEED is a hint to
-    // the kernel; on Linux it drops the page-cache reference for
-    // file-backed ranges. The pointer is valid for `range.len()` bytes
-    // because we just dereferenced it through Rust's slice typing.
+    // live mmap mapping (see doc comment). The aligned subrange
+    // `[aligned_start, aligned_start + aligned_len)` lies entirely
+    // within `range` because we rounded inward on both ends.
+    // MADV_DONTNEED is a hint to the kernel; on Linux it drops the
+    // page-cache reference for file-backed ranges.
     let rc = unsafe {
         libc::madvise(
-            range.as_ptr() as *mut libc::c_void,
-            range.len(),
+            aligned_start as *mut libc::c_void,
+            aligned_len,
             libc::MADV_DONTNEED,
         )
     };
@@ -89,6 +108,15 @@ pub fn madvise_dontneed(range: &[u8]) -> std::io::Result<()> {
     } else {
         Err(std::io::Error::last_os_error())
     }
+}
+
+#[allow(unsafe_code)]
+fn page_size() -> usize {
+    // SAFETY: `sysconf(_SC_PAGESIZE)` is a thread-safe libc query with
+    // no preconditions. Returns -1 on error; we fall back to 4 KiB which
+    // matches every Linux/x86_64 deployment we ship to.
+    let rc = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if rc <= 0 { 4096 } else { rc as usize }
 }
 
 /// Owned slice into a memory-mapped file.

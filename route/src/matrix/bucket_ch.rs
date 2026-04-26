@@ -57,34 +57,28 @@ const SEQUENTIAL_FAST_PATH_CELL_THRESHOLD: usize = 100;
 // FLAT ADJACENCY STRUCTURES - Pre-filtered INF edges
 // =============================================================================
 
-/// Flat forward adjacency for UP edges with embedded weights and middles.
+/// Flat forward adjacency for UP edges with embedded weights.
 ///
-/// Filters out INF-weight edges at build time. Each entry carries:
-/// - `targets[i]` — target rank
-/// - `weights[i]` — finite edge weight
-/// - `middles[i]` — middle rank for shortcut unpacking, or `u32::MAX` for an
-///   original edge. Source: relaxed `cch_weights.up_middle` when populated,
-///   else `cch_topo.up_middle`.
-/// - `topo_edge_idx[i]` — original topo edge index, used by parent-pointer
-///   path reconstruction so `unpack_path` can keep operating in topo-edge
-///   space without an extra conversion table.
+/// Filters out INF-weight edges at build time. `topo_edge_idx[i]` is a
+/// back-reference to the original topo edge index — populated only for
+/// flats that feed `CchQuery` (so `unpack_path` can recover the topo
+/// edge from a parent pointer). Distance-metric flats and PHAST-only
+/// flats leave it empty to keep memory down.
 #[derive(Clone)]
 pub struct UpAdjFlat {
     pub offsets: Vec<u64>,        // n_nodes + 1
     pub targets: Vec<u32>,        // target node for edge
     pub weights: Vec<u32>,        // weight of edge (embedded)
-    pub middles: Vec<u32>,        // middle rank for shortcuts, u32::MAX otherwise
-    pub topo_edge_idx: Vec<u32>,  // back-reference to topo edge index for unpack
+    /// Back-reference to topo edge index per flat slot. Empty unless
+    /// this flat feeds the routing hot path (`CchQuery::new` / the
+    /// alternatives backend) where parent pointers reference topo edges.
+    pub topo_edge_idx: Vec<u32>,
 }
 
 impl UpAdjFlat {
     /// Build flat UP adjacency from topology and weights.
-    ///
-    /// Filters out INF-weight edges to avoid checking in hot loop. Embeds
-    /// the relaxed UP middles when `cch_weights.up_middle` is populated
-    /// (post-triangle-relaxation, the unpack-correct value); otherwise
-    /// falls back to topology middles.
-    pub fn build(topo: &CchTopo, weights: &CchWeights) -> Self {
+    /// `with_topo_idx` controls whether the back-reference is materialised.
+    pub fn build_with(topo: &CchTopo, weights: &CchWeights, with_topo_idx: bool) -> Self {
         let n_nodes = topo.n_nodes as usize;
 
         // First pass: count valid edges per node
@@ -113,10 +107,11 @@ impl UpAdjFlat {
         // Allocate arrays
         let mut targets = vec![0u32; total_edges];
         let mut flat_weights = vec![0u32; total_edges];
-        let mut middles = vec![u32::MAX; total_edges];
-        let mut topo_edge_idx = vec![0u32; total_edges];
-
-        let use_relaxed_mid = !weights.up_middle.is_empty();
+        let mut topo_edge_idx = if with_topo_idx {
+            vec![0u32; total_edges]
+        } else {
+            Vec::new()
+        };
 
         // Second pass: fill in edges (skip INF)
         counts.fill(0);
@@ -133,16 +128,9 @@ impl UpAdjFlat {
                 let pos = offsets[source] as usize + counts[source];
                 targets[pos] = target;
                 flat_weights[pos] = w;
-                topo_edge_idx[pos] = i as u32;
-                middles[pos] = if topo.up_is_shortcut.bit(i) {
-                    if use_relaxed_mid {
-                        weights.up_middle[i]
-                    } else {
-                        topo.up_middle[i]
-                    }
-                } else {
-                    u32::MAX
-                };
+                if with_topo_idx {
+                    topo_edge_idx[pos] = i as u32;
+                }
                 counts[source] += 1;
             }
         }
@@ -151,24 +139,28 @@ impl UpAdjFlat {
             offsets,
             targets,
             weights: flat_weights,
-            middles,
             topo_edge_idx,
         }
     }
+
+    /// Build flat UP adjacency without the topo back-reference.
+    /// Backwards-compatible default for matrix / PHAST callers.
+    pub fn build(topo: &CchTopo, weights: &CchWeights) -> Self {
+        Self::build_with(topo, weights, false)
+    }
 }
 
-/// Flat forward adjacency for DOWN edges with embedded weights and middles.
+/// Flat forward adjacency for DOWN edges with embedded weights.
 ///
-/// Source-keyed (mirror of `UpAdjFlat` but for DOWN). Required by the
-/// PHAST forward-isochrone downward scan, which iterates outgoing DOWN
-/// edges of each node in reverse rank order.
+/// Source-keyed mirror of `UpAdjFlat` but for DOWN. Required by the
+/// PHAST forward-isochrone downward scan; it lets that scan read off
+/// the flats so the underlying `cch_weights.down` mmap pages can be
+/// `madvise(DONTNEED)`-ed at startup.
 #[derive(Clone)]
 pub struct DownAdjFlat {
     pub offsets: Vec<u64>,
     pub targets: Vec<u32>,
     pub weights: Vec<u32>,
-    pub middles: Vec<u32>,
-    pub topo_edge_idx: Vec<u32>,
 }
 
 impl DownAdjFlat {
@@ -198,10 +190,6 @@ impl DownAdjFlat {
         let total_edges = offset as usize;
         let mut targets = vec![0u32; total_edges];
         let mut flat_weights = vec![0u32; total_edges];
-        let mut middles = vec![u32::MAX; total_edges];
-        let mut topo_edge_idx = vec![0u32; total_edges];
-
-        let use_relaxed_mid = !weights.down_middle.is_empty();
 
         counts.fill(0);
         for source in 0..n_nodes {
@@ -216,16 +204,6 @@ impl DownAdjFlat {
                 let pos = offsets[source] as usize + counts[source];
                 targets[pos] = target;
                 flat_weights[pos] = w;
-                topo_edge_idx[pos] = i as u32;
-                middles[pos] = if topo.down_is_shortcut.bit(i) {
-                    if use_relaxed_mid {
-                        weights.down_middle[i]
-                    } else {
-                        topo.down_middle[i]
-                    }
-                } else {
-                    u32::MAX
-                };
                 counts[source] += 1;
             }
         }
@@ -234,30 +212,29 @@ impl DownAdjFlat {
             offsets,
             targets,
             weights: flat_weights,
-            middles,
-            topo_edge_idx,
         }
     }
 }
 
-/// Flat reverse adjacency for DOWN edges with embedded weights and middles.
+/// Flat reverse adjacency for DOWN edges with embedded weights.
 ///
-/// Stores (source, weight, middle, topo_edge_idx) directly. Target-keyed:
-/// `offsets[u]..offsets[u+1]` lists all DOWN edges x→u that arrive at u.
-/// Used by the backward CCH search on the routing hot path.
+/// Target-keyed: `offsets[u]..offsets[u+1]` lists all DOWN edges x→u
+/// that arrive at u. Used by the backward CCH search on the routing
+/// hot path. `topo_edge_idx` is populated only when this flat feeds
+/// `CchQuery` (so unpack can recover topo edges from parent pointers).
 #[derive(Clone)]
 pub struct DownReverseAdjFlat {
     pub offsets: Vec<u64>,        // n_nodes + 1
     pub sources: Vec<u32>,        // source node x for reverse edge
-    pub weights: Vec<u32>,        // weight of edge x→y (embedded, not indirect)
-    pub middles: Vec<u32>,        // middle rank for shortcuts, u32::MAX otherwise
-    pub topo_edge_idx: Vec<u32>,  // back-reference to topo DOWN edge index
+    pub weights: Vec<u32>,        // weight of edge x→y (embedded)
+    /// Empty unless this flat feeds the routing hot path.
+    pub topo_edge_idx: Vec<u32>,
 }
 
 impl DownReverseAdjFlat {
     /// Build flat reverse adjacency from topology and weights.
-    /// Filters out INF-weight edges to avoid checking in hot loop.
-    pub fn build(topo: &CchTopo, weights: &CchWeights) -> Self {
+    /// `with_topo_idx` controls whether the back-reference is materialised.
+    pub fn build_with(topo: &CchTopo, weights: &CchWeights, with_topo_idx: bool) -> Self {
         let n_nodes = topo.n_nodes as usize;
 
         // First pass: count incoming VALID edges per node (skip INF weights)
@@ -273,7 +250,6 @@ impl DownReverseAdjFlat {
             }
         }
 
-        // Build offsets (prefix sum)
         let mut offsets = Vec::with_capacity(n_nodes + 1);
         let mut offset = 0u64;
         for &count in &counts {
@@ -284,40 +260,30 @@ impl DownReverseAdjFlat {
 
         let total_edges = offset as usize;
 
-        // Allocate arrays (only for valid edges)
         let mut sources = vec![0u32; total_edges];
         let mut flat_weights = vec![0u32; total_edges];
-        let mut middles = vec![u32::MAX; total_edges];
-        let mut topo_edge_idx = vec![0u32; total_edges];
+        let mut topo_edge_idx = if with_topo_idx {
+            vec![0u32; total_edges]
+        } else {
+            Vec::new()
+        };
 
-        let use_relaxed_mid = !weights.down_middle.is_empty();
-
-        // Second pass: fill in reverse edges with embedded weights (skip INF)
         counts.fill(0);
-
         for source in 0..n_nodes {
             let start = topo.down_offsets[source] as usize;
             let end = topo.down_offsets[source + 1] as usize;
-
             for i in start..end {
                 let w = weights.down[i];
                 if w == u32::MAX {
-                    continue; // Skip INF edges
+                    continue;
                 }
                 let target = topo.down_targets[i] as usize;
                 let pos = offsets[target] as usize + counts[target];
                 sources[pos] = source as u32;
                 flat_weights[pos] = w;
-                topo_edge_idx[pos] = i as u32;
-                middles[pos] = if topo.down_is_shortcut.bit(i) {
-                    if use_relaxed_mid {
-                        weights.down_middle[i]
-                    } else {
-                        topo.down_middle[i]
-                    }
-                } else {
-                    u32::MAX
-                };
+                if with_topo_idx {
+                    topo_edge_idx[pos] = i as u32;
+                }
                 counts[target] += 1;
             }
         }
@@ -326,9 +292,13 @@ impl DownReverseAdjFlat {
             offsets,
             sources,
             weights: flat_weights,
-            middles,
             topo_edge_idx,
         }
+    }
+
+    /// Build without back-references (matrix / PHAST callers).
+    pub fn build(topo: &CchTopo, weights: &CchWeights) -> Self {
+        Self::build_with(topo, weights, false)
     }
 }
 
@@ -1753,6 +1723,8 @@ mod step_a_tests {
     use super::*;
     use crate::formats::BitsetField;
     use std::borrow::Cow;
+    #[allow(unused_imports)]
+    use crate::formats::CchTopo;
 
     /// Build a small synthetic CCH with mixed original + shortcut edges
     /// and one INF entry, verify flat middles match the topo middles for
@@ -1810,87 +1782,83 @@ mod step_a_tests {
     }
 
     #[test]
-    fn up_adj_flat_middles_match_topo() {
+    fn up_adj_flat_with_topo_idx_back_reference() {
         let (topo, w) = make_cch();
-        let flat = UpAdjFlat::build(&topo, &w);
+        let flat = UpAdjFlat::build_with(&topo, &w, true);
 
         // 3 finite UP edges (idx 0,1,2 — idx 3 is INF and filtered)
         assert_eq!(flat.weights.len(), 3);
-        assert_eq!(flat.middles.len(), 3);
         assert_eq!(flat.topo_edge_idx.len(), 3);
 
         for (slot, &topo_idx) in flat.topo_edge_idx.iter().enumerate() {
             let i = topo_idx as usize;
             assert_eq!(flat.targets[slot], topo.up_targets[i]);
             assert_eq!(flat.weights[slot], w.up[i]);
-            let expected_middle = if topo.up_is_shortcut.bit(i) {
-                topo.up_middle[i]
-            } else {
-                u32::MAX
-            };
-            assert_eq!(flat.middles[slot], expected_middle, "slot {slot}");
         }
-
-        // Specifically: the shortcut at topo idx 2 has middle == 2.
-        let shortcut_slot = flat
-            .topo_edge_idx
-            .iter()
-            .position(|&i| i == 2)
-            .expect("shortcut topo idx 2 must be in flat");
-        assert_eq!(flat.middles[shortcut_slot], 2);
     }
 
     #[test]
-    fn down_adj_flat_middles_match_topo() {
+    fn up_adj_flat_default_skips_topo_idx() {
+        let (topo, w) = make_cch();
+        let flat = UpAdjFlat::build(&topo, &w);
+        assert_eq!(flat.weights.len(), 3);
+        assert!(flat.topo_edge_idx.is_empty(), "default build skips topo back-ref");
+    }
+
+    #[test]
+    fn down_adj_flat_targets_and_weights_filtered() {
         let (topo, w) = make_cch();
         let flat = DownAdjFlat::build(&topo, &w);
 
+        // 3 finite DOWN edges (idx 0,1,2; idx 3 is INF)
         assert_eq!(flat.weights.len(), 3);
 
-        for (slot, &topo_idx) in flat.topo_edge_idx.iter().enumerate() {
-            let i = topo_idx as usize;
-            assert_eq!(flat.targets[slot], topo.down_targets[i]);
-            assert_eq!(flat.weights[slot], w.down[i]);
-            let expected_middle = if topo.down_is_shortcut.bit(i) {
-                topo.down_middle[i]
-            } else {
-                u32::MAX
-            };
-            assert_eq!(flat.middles[slot], expected_middle);
+        // Walk the flat: each edge's target should appear with its
+        // (non-INF) weight at some slot under the right source.
+        for source in 0..topo.n_nodes as usize {
+            let s_off = topo.down_offsets[source] as usize;
+            let s_end = topo.down_offsets[source + 1] as usize;
+            for i in s_off..s_end {
+                let w_topo = w.down[i];
+                if w_topo == u32::MAX {
+                    continue;
+                }
+                let target = topo.down_targets[i];
+                let f_off = flat.offsets[source] as usize;
+                let f_end = flat.offsets[source + 1] as usize;
+                let found = (f_off..f_end).any(|slot| {
+                    flat.targets[slot] == target && flat.weights[slot] == w_topo
+                });
+                assert!(found, "edge {source}->{target} w={w_topo} missing in DownAdjFlat");
+            }
         }
     }
 
     #[test]
-    fn down_rev_adj_flat_carries_middles() {
+    fn down_rev_adj_flat_with_topo_idx() {
+        let (topo, w) = make_cch();
+        let flat = DownReverseAdjFlat::build_with(&topo, &w, true);
+
+        assert_eq!(flat.weights.len(), 3);
+        assert_eq!(flat.topo_edge_idx.len(), 3);
+
+        for (slot, &topo_idx) in flat.topo_edge_idx.iter().enumerate() {
+            let i = topo_idx as usize;
+            assert_eq!(flat.weights[slot], w.down[i]);
+        }
+    }
+
+    #[test]
+    fn down_rev_adj_flat_default_skips_topo_idx() {
         let (topo, w) = make_cch();
         let flat = DownReverseAdjFlat::build(&topo, &w);
-
         assert_eq!(flat.weights.len(), 3);
-
-        for (slot, &topo_idx) in flat.topo_edge_idx.iter().enumerate() {
-            let i = topo_idx as usize;
-            assert_eq!(flat.weights[slot], w.down[i]);
-            let expected_middle = if topo.down_is_shortcut.bit(i) {
-                topo.down_middle[i]
-            } else {
-                u32::MAX
-            };
-            assert_eq!(flat.middles[slot], expected_middle);
-        }
+        assert!(flat.topo_edge_idx.is_empty());
     }
 
+    // Suppress unused-import warning for `Cow` if no test uses it.
     #[test]
-    fn relaxed_middles_take_precedence() {
-        let (topo, mut w) = make_cch();
-        // Provide non-empty relaxed middles that DIFFER from topo middles for the shortcut.
-        w.up_middle = Cow::Owned(vec![u32::MAX, u32::MAX, 7, 7]);
-        let flat = UpAdjFlat::build(&topo, &w);
-        let shortcut_slot = flat
-            .topo_edge_idx
-            .iter()
-            .position(|&i| i == 2)
-            .expect("shortcut topo idx 2 must be in flat");
-        // relaxed middle 7 must win over topo middle 2.
-        assert_eq!(flat.middles[shortcut_slot], 7);
+    fn _cow_alias_used() {
+        let _: Cow<'static, [u32]> = Cow::Owned(vec![]);
     }
 }
