@@ -591,6 +591,7 @@ dependencies = [
  "axum-prometheus",
  "base64 0.22.1",
  "butterfly-dl",
+ "bytemuck",
  "bytes",
  "chrono",
  "clap",

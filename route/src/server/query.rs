@@ -663,22 +663,22 @@ mod tests {
             n_shortcuts: 0,
             n_original_arcs: 4,
             inputs_sha: [0u8; 32],
-            up_offsets,
-            up_targets,
-            up_is_shortcut,
-            up_middle,
-            down_offsets,
-            down_targets,
-            down_is_shortcut,
-            down_middle,
-            rank_to_filtered,
+            up_offsets: up_offsets.into(),
+            up_targets: up_targets.into(),
+            up_is_shortcut: crate::formats::BitsetField::from_bools(&up_is_shortcut),
+            up_middle: up_middle.into(),
+            down_offsets: down_offsets.into(),
+            down_targets: down_targets.into(),
+            down_is_shortcut: crate::formats::BitsetField::from_bools(&down_is_shortcut),
+            down_middle: down_middle.into(),
+            rank_to_filtered: rank_to_filtered.into(),
         };
 
         let weights = CchWeights {
-            up: vec![10u32, 3, 7, 5],
-            down: vec![10u32, 3, 7, 5],
-            up_middle: vec![],
-            down_middle: vec![],
+            up: vec![10u32, 3, 7, 5].into(),
+            down: vec![10u32, 3, 7, 5].into(),
+            up_middle: vec![].into(),
+            down_middle: vec![].into(),
         };
 
         // Build DownReverseAdj from topo
@@ -816,22 +816,22 @@ mod tests {
             n_shortcuts: 0,
             n_original_arcs: 4,
             inputs_sha: [0u8; 32],
-            up_offsets,
-            up_targets,
-            up_is_shortcut,
-            up_middle,
-            down_offsets,
-            down_targets,
-            down_is_shortcut,
-            down_middle,
-            rank_to_filtered: (0..n_nodes).collect(),
+            up_offsets: up_offsets.into(),
+            up_targets: up_targets.into(),
+            up_is_shortcut: crate::formats::BitsetField::from_bools(&up_is_shortcut),
+            up_middle: up_middle.into(),
+            down_offsets: down_offsets.into(),
+            down_targets: down_targets.into(),
+            down_is_shortcut: crate::formats::BitsetField::from_bools(&down_is_shortcut),
+            down_middle: down_middle.into(),
+            rank_to_filtered: (0..n_nodes).collect::<Vec<_>>().into(),
         };
 
         let weights = CchWeights {
-            up: vec![10, 3, 7, 5],
-            down: vec![10, 3, 7, 5],
-            up_middle: vec![],
-            down_middle: vec![],
+            up: vec![10u32, 3, 7, 5].into(),
+            down: vec![10u32, 3, 7, 5].into(),
+            up_middle: vec![].into(),
+            down_middle: vec![].into(),
         };
 
         let down_rev = DownReverseAdj {

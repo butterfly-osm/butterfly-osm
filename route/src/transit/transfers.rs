@@ -324,10 +324,10 @@ pub fn foot_cch_fingerprint(foot: &ModeData) -> FootCchFingerprint {
     // server startup; the 91M-edge Belgium foot CCH hashes in ~200 ms
     // with this loop, only marginally slower than the old slice cast
     // because `Sha256::update` is bandwidth-bound on the input itself.
-    for w in &foot.cch_weights.up {
+    for w in foot.cch_weights.up.iter() {
         h.update(w.to_le_bytes());
     }
-    for w in &foot.cch_weights.down {
+    for w in foot.cch_weights.down.iter() {
         h.update(w.to_le_bytes());
     }
     let mut out = [0u8; 32];

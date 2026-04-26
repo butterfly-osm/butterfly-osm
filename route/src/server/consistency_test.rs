@@ -622,7 +622,7 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
 
         let edge_idx = matches[0];
         assert!(
-            !is_shortcut[edge_idx],
+            !is_shortcut.bit(edge_idx),
             "unpacked hop at index {} still lands on shortcut edge {} -> {} (edge_idx={})",
             i,
             rank_path[i],
@@ -686,7 +686,7 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
             current,
             target,
             edge_idx,
-            mode_data.cch_topo.up_is_shortcut[edge_idx],
+            mode_data.cch_topo.up_is_shortcut.bit(edge_idx),
             edge_weight,
             expanded.len(),
             path_dist_ds(&expanded)
@@ -713,7 +713,7 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
             node,
             target,
             edge_idx,
-            mode_data.cch_topo.down_is_shortcut[edge_idx],
+            mode_data.cch_topo.down_is_shortcut.bit(edge_idx),
             edge_weight,
             expanded.len(),
             path_dist_ds(&expanded)
@@ -744,13 +744,13 @@ fn test_alternative_routes_differ() {
     for &(_node, edge_idx) in &primary.forward_parent {
         let idx = edge_idx as usize;
         if idx < penalized.up.len() {
-            penalized.up[idx] = penalized.up[idx].saturating_mul(3);
+            let new_val = penalized.up[idx].saturating_mul(3); penalized.up.to_mut()[idx] = new_val;
         }
     }
     for &(_node, edge_idx) in &primary.backward_parent {
         let idx = edge_idx as usize;
         if idx < penalized.down.len() {
-            penalized.down[idx] = penalized.down[idx].saturating_mul(3);
+            let new_val = penalized.down[idx].saturating_mul(3); penalized.down.to_mut()[idx] = new_val;
         }
     }
 
@@ -1350,13 +1350,13 @@ fn test_alternative_routes_all_modes() {
             for &(_node, edge_idx) in &primary.forward_parent {
                 let idx = edge_idx as usize;
                 if idx < penalized.up.len() {
-                    penalized.up[idx] = penalized.up[idx].saturating_mul(3);
+                    let new_val = penalized.up[idx].saturating_mul(3); penalized.up.to_mut()[idx] = new_val;
                 }
             }
             for &(_node, edge_idx) in &primary.backward_parent {
                 let idx = edge_idx as usize;
                 if idx < penalized.down.len() {
-                    penalized.down[idx] = penalized.down[idx].saturating_mul(3);
+                    let new_val = penalized.down[idx].saturating_mul(3); penalized.down.to_mut()[idx] = new_val;
                 }
             }
 

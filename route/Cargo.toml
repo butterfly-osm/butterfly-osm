@@ -34,6 +34,13 @@ crc = "3.4"
 # `route/src/formats/mmap.rs` for the documented SAFETY block.
 memmap2 = "0.9"
 
+# Safe POD slice reinterpretation for zero-copy mmap views (#147).
+# `bytemuck::cast_slice` performs alignment + size checks at runtime and
+# wraps the only `unsafe` (slice-of-u8 → slice-of-u32) in its own well-
+# audited internal carveout. The workspace's `unsafe_code` lint stays
+# `deny` everywhere outside `formats/mmap.rs`.
+bytemuck = "1.16"
+
 # Logging
 env_logger = { workspace = true }
 
