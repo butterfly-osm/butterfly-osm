@@ -313,8 +313,7 @@ pub fn pack(data_dir: &Path, out: &Path, step_prefix: Option<&str>) -> Result<()
                     // orig_to_rank[orig_id] = perm[original_to_filtered[orig_id]]
                     // or u32::MAX if the original node is not in the filtered subgraph.
                     let mut orig_to_rank: Vec<u32> = vec![u32::MAX; n_orig];
-                    for (orig_id, &filt_id) in
-                        filtered_ebg.original_to_filtered.iter().enumerate()
+                    for (orig_id, &filt_id) in filtered_ebg.original_to_filtered.iter().enumerate()
                     {
                         if filt_id != u32::MAX {
                             let rank = order_data.perm[filt_id as usize];

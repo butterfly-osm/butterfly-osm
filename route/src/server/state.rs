@@ -8,10 +8,11 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::formats::{
-    CchTopo, CchTopoFile, CchWeightsFile, EbgCsr, EbgCsrFile, EbgNodes, EbgNodesFile, FilteredEbg,
-    FilteredEbgFile, NbgGeo, NbgGeoFile, NbgNodeMapFile, OrderEbg, OrderEbgFile, WaysFile,
-    mod_weights,
+    CchTopo, CchTopoFile, CchWeightsFile, EbgCsr, EbgCsrFile, EbgNodes, EbgNodesFile,
+    FilteredEbgFile, NbgGeo, NbgGeoFile, NbgNodeMapFile, OrderEbgFile, WaysFile, mod_weights,
+    mode_index::{ModeIndexFile, ModeIndexKind},
 };
+use std::borrow::Cow;
 // Re-export CchWeights for use by api.rs
 pub use crate::formats::CchWeights;
 use crate::matrix::bucket_ch::{
@@ -30,11 +31,32 @@ pub struct ModeData {
     pub mode: Mode,
     // CCH hierarchy for this mode
     pub cch_topo: CchTopo,
-    pub order: OrderEbg,
     pub cch_weights: CchWeights,
     pub cch_weights_dist: CchWeights,
-    // Filtered EBG for node ID mapping
-    pub filtered_ebg: FilteredEbg,
+    // ---- Server-only per-mode mapping sections (#153) -------------
+    // These replace the build-time `OrderEbg` + `FilteredEbg` structs
+    // on the serve path. They are loaded from the container's
+    // `mode/<m>/orig_to_rank` and `mode/<m>/filtered_to_original`
+    // sections (zero-copy when reading from a packed container) or
+    // synthesised from the legacy structs as a back-compat fallback
+    // for old containers / `--data-dir` boot.
+    //
+    // `orig_to_rank[orig_ebg_id]` → CCH rank for this mode, or
+    // `u32::MAX` if the original node is not accessible in this mode.
+    // Replaces the two-step `original_to_filtered → perm` chain at
+    // every serve-path snap site.
+    pub orig_to_rank: Cow<'static, [u32]>,
+    /// `filtered_to_original[filtered_id]` → original EBG node id.
+    /// Used on the unpack/back-reference direction (route geometry,
+    /// road-name lookup, exclude/avoid recustomization).
+    pub filtered_to_original: Cow<'static, [u32]>,
+    /// Number of filtered (mode-accessible) EBG nodes. Equals
+    /// `filtered_to_original.len()`. Kept as a u32 for the few
+    /// metadata / log sites that read it directly.
+    pub n_filtered_nodes: u32,
+    /// Number of original EBG nodes. Equals `orig_to_rank.len()`.
+    /// Reported in /health and a couple of spot diagnostics.
+    pub n_original_nodes: u32,
     // Original node weights and mask (indexed by original EBG node ID)
     pub node_weights: Vec<u32>,
     pub mask: Vec<u64>,
@@ -61,6 +83,30 @@ pub struct ModeData {
     pub down_adj_flat_dist: DownAdjFlat,
     // Cached exclude weight sets (keyed by exclude bitmask)
     pub exclude_cache: parking_lot::RwLock<HashMap<u8, std::sync::Arc<ExcludeWeights>>>,
+}
+
+impl ModeData {
+    /// Borrow the `orig_to_rank` mapping as a flat slice. Equivalent
+    /// to `&mode_data.orig_to_rank[..]`.
+    #[inline]
+    pub fn orig_to_rank(&self) -> &[u32] {
+        &self.orig_to_rank
+    }
+
+    /// Borrow the `filtered_to_original` mapping as a flat slice.
+    #[inline]
+    pub fn filtered_to_original(&self) -> &[u32] {
+        &self.filtered_to_original
+    }
+
+    /// Look up the CCH rank for an original EBG node id, or `None` if
+    /// the node is not accessible in this mode. Replaces the
+    /// `original_to_filtered → perm` chain at every snap site.
+    #[inline]
+    pub fn rank_for_original(&self, orig_id: u32) -> Option<u32> {
+        let rank = *self.orig_to_rank.get(orig_id as usize)?;
+        if rank == u32::MAX { None } else { Some(rank) }
+    }
 }
 
 // CchWeights is imported from crate::formats
@@ -218,7 +264,7 @@ impl ServerState {
             tracing::info!(
                 mode = mode_name.as_str(),
                 index = mode_index,
-                filtered_nodes = mode_data.filtered_ebg.n_filtered_nodes,
+                filtered_nodes = mode_data.n_filtered_nodes,
                 up_edges = mode_data.cch_topo.up_targets.len(),
                 "loaded mode data"
             );
@@ -478,7 +524,7 @@ impl ServerState {
             tracing::info!(
                 mode = mode_name.as_str(),
                 index = mode_index,
-                filtered_nodes = mode_data.filtered_ebg.n_filtered_nodes,
+                filtered_nodes = mode_data.n_filtered_nodes,
                 up_edges = mode_data.cch_topo.up_targets.len(),
                 "loaded mode bundle"
             );
@@ -654,7 +700,7 @@ impl ServerState {
             &mode_data.cch_weights_dist,
             &self.edge_exclude_flags,
             exclude_mask,
-            &mode_data.filtered_ebg.filtered_to_original,
+            &mode_data.filtered_to_original,
         ));
 
         cache.insert(exclude_mask, std::sync::Arc::clone(&weights));
@@ -797,13 +843,24 @@ fn load_mode_data(
     let down_rev_flat_dist = DownReverseAdjFlat::build(&cch_topo, &cch_weights_dist);
     let down_adj_flat_dist = DownAdjFlat::build(&cch_topo, &cch_weights_dist);
 
+    // ---- Build server-only mappings (#153) ----------------------
+    // The `--data-dir` path always synthesises these from the legacy
+    // structs at boot. Container path prefers the dedicated sections;
+    // see `load_mode_data_from_bundle`.
+    let n_original_nodes = filtered_ebg.n_original_nodes;
+    let n_filtered_nodes = filtered_ebg.n_filtered_nodes;
+    let orig_to_rank = build_orig_to_rank(&filtered_ebg, &order);
+    let filtered_to_original: Vec<u32> = filtered_ebg.filtered_to_original.to_vec();
+
     Ok(ModeData {
         mode,
         cch_topo,
-        order,
         cch_weights,
         cch_weights_dist,
-        filtered_ebg,
+        orig_to_rank: Cow::Owned(orig_to_rank),
+        filtered_to_original: Cow::Owned(filtered_to_original),
+        n_filtered_nodes,
+        n_original_nodes,
         node_weights: weights_data.weights,
         mask,
         up_adj_flat,
@@ -814,6 +871,25 @@ fn load_mode_data(
         down_adj_flat_dist,
         exclude_cache: parking_lot::RwLock::new(HashMap::new()),
     })
+}
+
+/// Build the composed `orig_to_rank` array from a legacy
+/// `(FilteredEbg, OrderEbg)` pair. Used by:
+///   - the `--data-dir` loader (always),
+///   - the container loader when `mode/<m>/orig_to_rank` is absent
+///     (back-compat for pre-#153 containers).
+fn build_orig_to_rank(
+    filtered_ebg: &crate::formats::FilteredEbg,
+    order: &crate::formats::OrderEbg,
+) -> Vec<u32> {
+    let n_original = filtered_ebg.n_original_nodes as usize;
+    let mut out = vec![u32::MAX; n_original];
+    for (orig_id, &filt_id) in filtered_ebg.original_to_filtered.iter().enumerate() {
+        if filt_id != u32::MAX {
+            out[orig_id] = order.perm[filt_id as usize];
+        }
+    }
+    out
 }
 
 /// Load road names from ways.raw (step1 output).
@@ -943,31 +1019,126 @@ fn load_mode_data_from_bundle(
         Ok(&static_bytes[off..off + len])
     };
 
-    // #152: zero-copy filtered_ebg — borrows arrays from the mmap
-    // instead of copying ~80 MB/mode of CSR data into the heap.
-    // The reader returns the cold-after-parse byte range (offsets +
-    // heads + original_arc_idx) which we madvise(DONTNEED) right
-    // away: those arrays are build-time-only, none of the serve-path
-    // code reads them. Hot mappings (filtered_to_original /
-    // original_to_filtered) live after the cold prefix and stay
-    // resident on demand.
-    let filtered_section = fetch("filtered_ebg")?;
-    let (filtered_ebg, cold_filtered) =
-        FilteredEbgFile::read_from_bytes_zero_copy_with_cold(filtered_section)?;
-    if let Err(e) = crate::formats::mmap::madvise_dontneed(cold_filtered) {
-        tracing::warn!(
-            mode = mode_name,
-            error = %e,
-            "madvise(DONTNEED) on filtered_ebg cold prefix failed; ignoring"
-        );
-    } else {
-        tracing::info!(
-            mode = mode_name,
-            bytes = cold_filtered.len(),
-            "madvise(DONTNEED) on filtered_ebg cold prefix"
-        );
-    }
-    let order = OrderEbgFile::read_from_bytes(fetch("order")?)?;
+    // ---- Server-only mapping sections (#153) -------------------
+    // Preferred path: load `mode/<m>/orig_to_rank` and
+    // `mode/<m>/filtered_to_original` zero-copy from the container.
+    // Saves the entire `FilteredEbg` cold prefix (~80 MB/mode on
+    // Belgium) and the entire `OrderEbg` (~40 MB/mode) from RSS.
+    //
+    // Back-compat: if either section is absent, fall back to reading
+    // `FilteredEbg` + `OrderEbg` and synthesising the arrays at boot.
+    // The fallback path matches pre-#153 behaviour byte-for-byte.
+    let try_optional = |name: &str| -> Result<Option<&'static [u8]>> {
+        let section_name = format!("mode/{}/{}", mode_name, name);
+        match container.get(&section_name) {
+            Some(entry) => {
+                let _verify = container.section_bytes_verified(static_mmap, entry)?;
+                let off = entry.offset as usize;
+                let len = entry.len as usize;
+                Ok(Some(&static_bytes[off..off + len]))
+            }
+            None => Ok(None),
+        }
+    };
+
+    let o2r_section = try_optional("orig_to_rank")?;
+    let f2o_section = try_optional("filtered_to_original")?;
+
+    let (orig_to_rank, filtered_to_original, n_filtered_nodes, n_original_nodes) =
+        match (o2r_section, f2o_section) {
+            (Some(o2r_bytes), Some(f2o_bytes)) => {
+                let o2r = ModeIndexFile::read_from_bytes_zero_copy(o2r_bytes)?;
+                anyhow::ensure!(
+                    o2r.kind == ModeIndexKind::OrigToRank,
+                    "mode/{}/orig_to_rank has wrong kind discriminator: {:?}",
+                    mode_name,
+                    o2r.kind
+                );
+                let f2o = ModeIndexFile::read_from_bytes_zero_copy(f2o_bytes)?;
+                anyhow::ensure!(
+                    f2o.kind == ModeIndexKind::FilteredToOriginal,
+                    "mode/{}/filtered_to_original has wrong kind discriminator: {:?}",
+                    mode_name,
+                    f2o.kind
+                );
+
+                let n_original_nodes = o2r.data.len() as u32;
+                let n_filtered_nodes = f2o.data.len() as u32;
+                tracing::info!(
+                    mode = mode_name,
+                    n_original_nodes,
+                    n_filtered_nodes,
+                    "loaded mapping sections (zero-copy)"
+                );
+
+                // The legacy `mode/<m>/filtered_ebg` and
+                // `mode/<m>/order` sections are still in the container
+                // for back-compat (build/validation tools may read
+                // them). The serve path no longer reads them, but the
+                // CRC verifier the container loader uses page-faults
+                // through them when called against those sections.
+                // Since we are NOT calling section_bytes_verified on
+                // either of those, the file-backed pages are touched
+                // only if a future hot path reaches them. Defensive
+                // measure: if they are present in the directory, hint
+                // the kernel to drop them.
+                for legacy in ["filtered_ebg", "order"] {
+                    let nm = format!("mode/{}/{}", mode_name, legacy);
+                    if let Some(entry) = container.get(&nm) {
+                        let off = entry.offset as usize;
+                        let len = entry.len as usize;
+                        let range = &static_bytes[off..off + len];
+                        match crate::formats::mmap::madvise_dontneed(range) {
+                            Ok(()) => tracing::info!(
+                                section = %nm,
+                                bytes = len,
+                                "madvise(DONTNEED) on legacy section (#153 dropped from serve path)"
+                            ),
+                            Err(e) => tracing::warn!(
+                                section = %nm,
+                                error = %e,
+                                "madvise(DONTNEED) on legacy section failed, ignoring"
+                            ),
+                        }
+                    }
+                }
+
+                (o2r.data, f2o.data, n_filtered_nodes, n_original_nodes)
+            }
+            _ => {
+                // Back-compat fallback: read `FilteredEbg` + `OrderEbg`,
+                // synthesise the arrays at boot, drop the legacy
+                // structs. RSS cost: one heap copy of each array.
+                tracing::warn!(
+                    mode = mode_name,
+                    "mode/{0}/orig_to_rank or mode/{0}/filtered_to_original missing; \
+                     this build pre-dates #153, falling back to FilteredEbg/OrderEbg",
+                    mode_name
+                );
+                let filtered_section = fetch("filtered_ebg")?;
+                let (filtered_ebg, cold_filtered) =
+                    FilteredEbgFile::read_from_bytes_zero_copy_with_cold(filtered_section)?;
+                if let Err(e) = crate::formats::mmap::madvise_dontneed(cold_filtered) {
+                    tracing::warn!(
+                        mode = mode_name,
+                        error = %e,
+                        "madvise(DONTNEED) on filtered_ebg cold prefix failed; ignoring"
+                    );
+                }
+                let order_data = OrderEbgFile::read_from_bytes(fetch("order")?)?;
+
+                let n_original_nodes = filtered_ebg.n_original_nodes;
+                let n_filtered_nodes = filtered_ebg.n_filtered_nodes;
+                let orig_to_rank = build_orig_to_rank(&filtered_ebg, &order_data);
+                let filtered_to_original: Vec<u32> = filtered_ebg.filtered_to_original.to_vec();
+                (
+                    Cow::Owned(orig_to_rank),
+                    Cow::Owned(filtered_to_original),
+                    n_filtered_nodes,
+                    n_original_nodes,
+                )
+            }
+        };
     let topo_section_bytes: &'static [u8] = fetch("topo")?;
     // #151: cch.topo is now v4. Header is 80 bytes (u64-aligned) and
     // every variable-length u32 array is padded to a u64 boundary, so
@@ -998,11 +1169,11 @@ fn load_mode_data_from_bundle(
 
     let weights_data = mod_weights::read_all_from_bytes(fetch("node_weights.time")?)?;
 
-    let n_original = filtered_ebg.n_original_nodes as usize;
+    let n_original = n_original_nodes as usize;
     let mask = {
         let n_words = n_original.div_ceil(64);
         let mut m = vec![0u64; n_words];
-        for &orig_id in filtered_ebg.filtered_to_original.iter() {
+        for &orig_id in filtered_to_original.iter() {
             let word = orig_id as usize / 64;
             let bit = orig_id as usize % 64;
             m[word] |= 1u64 << bit;
@@ -1081,10 +1252,12 @@ fn load_mode_data_from_bundle(
     Ok(ModeData {
         mode,
         cch_topo,
-        order,
         cch_weights,
         cch_weights_dist,
-        filtered_ebg,
+        orig_to_rank,
+        filtered_to_original,
+        n_filtered_nodes,
+        n_original_nodes,
         node_weights: weights_data.weights,
         mask,
         up_adj_flat,

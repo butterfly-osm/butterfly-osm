@@ -187,11 +187,13 @@ impl ModeIndexFile {
     }
 }
 
+/// Result of parsing a `ModeIndex` header: discriminator, mode byte,
+/// inputs SHA, body element count, and the body byte slice.
+type ParsedHeader<'a> = (ModeIndexKind, u8, [u8; 16], usize, &'a [u8]);
+
 /// Parse the header, verify magic / version / CRCs, return the body
 /// byte slice. Common to both readers.
-fn parse_header_and_check(
-    bytes: &[u8],
-) -> Result<(ModeIndexKind, u8, [u8; 16], usize, &[u8])> {
+fn parse_header_and_check(bytes: &[u8]) -> Result<ParsedHeader<'_>> {
     anyhow::ensure!(
         bytes.len() >= HEADER_SIZE + FOOTER_SIZE,
         "ModeIndex too short for header+footer: {} bytes",
