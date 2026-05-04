@@ -342,16 +342,25 @@ pub async fn health(State(state): State<Arc<ServerState>>) -> Response {
 }
 
 fn _health(state: Arc<ServerState>) -> HealthResponse {
+    // The MVP server holds exactly one shard per `ServerState`. The
+    // `shard_count` field is plumbed through anyway so that when
+    // multi-shard support lands (#96) the wire format does not have to
+    // change — operators that scrape /health for monitoring won't see
+    // a breaking schema flip.
+    let countries: Vec<String> = state
+        .loaded_countries()
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
+    let total_records = state.total_record_count() as u64;
     HealthResponse {
         status: "ok",
         version: state.version,
         uptime_seconds: state.started_at.elapsed().as_secs(),
-        record_count: state.total_record_count() as u64,
-        countries: state
-            .loaded_countries()
-            .into_iter()
-            .map(|s| s.to_string())
-            .collect(),
+        record_count: total_records,
+        shard_count: countries.len() as u32,
+        total_records,
+        countries,
     }
 }
 
@@ -456,8 +465,14 @@ struct HealthResponse {
     status: &'static str,
     version: &'static str,
     uptime_seconds: u64,
-    /// Total addresses across every loaded shard.
+    /// Sum of records across every loaded shard. Retained as
+    /// `record_count` for backwards compatibility with single-shard
+    /// scrapers; `total_records` is the canonical multi-shard name.
     record_count: u64,
+    /// Number of country shards loaded.
+    shard_count: u32,
+    /// Sum of records across every loaded shard.
+    total_records: u64,
     /// ISO2 codes for every shard the server has open.
     countries: Vec<String>,
 }
