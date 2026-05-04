@@ -320,7 +320,7 @@ fn route_between(
         })
         .collect();
 
-    let (points, _distance_m) = build_raw_points(&ebg_path, &state.ebg_nodes, &state.nbg_geo);
+    let (points, _distance_m) = build_raw_points(&ebg_path, &state.ebg_nodes, &state.edge_geom);
     points.iter().map(|p| (p.lon, p.lat)).collect()
 }
 
@@ -377,7 +377,7 @@ pub fn isochrone_hull(
         threshold_ds,
         node_weights,
         &state.ebg_nodes,
-        &state.nbg_geo,
+        &state.edge_geom,
         mode_name,
     );
 

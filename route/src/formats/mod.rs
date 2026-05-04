@@ -41,6 +41,9 @@ pub mod mode_index;
 // Server-only packed snap index sections (#154)
 pub mod snap_index;
 
+// Server-only flat edge geometry sections (#155)
+pub mod edge_geom;
+
 // Step 7 formats
 pub mod cch_topo;
 
@@ -53,6 +56,7 @@ pub use cch_weights::{CchWeights, CchWeightsFile};
 pub use ebg_csr::{EbgCsr, EbgCsrFile};
 pub use ebg_nodes::{EbgNode, EbgNodes, EbgNodesFile};
 pub use ebg_turn_table::{TurnEntry, TurnKind, TurnTable, TurnTableFile};
+pub use edge_geom::{EdgeGeomOffsets, EdgeGeomOffsetsFile, EdgeGeomPoints, EdgeGeomPointsFile};
 pub use filtered_ebg::{FilteredEbg, FilteredEbgFile};
 pub use hybrid_state::{HybridState, HybridStateFile};
 pub use mod_mask::ModMask;

@@ -837,7 +837,7 @@ pub async fn isochrone_handler(
             threshold,
             node_weights,
             &state.ebg_nodes,
-            &state.nbg_geo,
+            &state.edge_geom,
             &req.mode,
         )
     };
@@ -932,7 +932,7 @@ pub async fn isochrone_handler(
             phast_threshold,
             node_weights,
             &state.ebg_nodes,
-            &state.nbg_geo,
+            &state.edge_geom,
         ))
     } else {
         None
@@ -951,7 +951,7 @@ pub fn build_network_geometry(
     time_ds: u32,
     node_weights: &[u32],
     ebg_nodes: &crate::formats::EbgNodes,
-    nbg_geo: &crate::formats::NbgGeo,
+    edge_geom: &crate::server::edge_geom::EdgeGeometry,
 ) -> Vec<Vec<[f64; 2]>> {
     let mut network: Vec<Vec<[f64; 2]>> = Vec::with_capacity(settled.len());
 
@@ -971,39 +971,31 @@ pub fn build_network_geometry(
         }
 
         let node = &ebg_nodes.nodes[ebg_id as usize];
-        let geom_idx = node.geom_idx as usize;
-        if geom_idx >= nbg_geo.polylines.len() {
-            continue;
-        }
-        let polyline = &nbg_geo.polylines[geom_idx];
-        if polyline.lat_fxp.is_empty() {
+        let polyline = edge_geom.polyline(node.geom_idx);
+        if polyline.is_empty() {
             continue;
         }
 
         let dist_end_ds = dist_ds.saturating_add(weight_ds);
 
         if dist_end_ds <= time_ds {
-            // Fully reachable
-            let coords: Vec<[f64; 2]> = polyline
-                .lon_fxp
-                .iter()
-                .zip(polyline.lat_fxp.iter())
-                .map(|(&lon, &lat)| [lon as f64 / 1e7, lat as f64 / 1e7])
-                .collect();
+            // Fully reachable — emit every (lon, lat) f64 pair.
+            let coords: Vec<[f64; 2]> = polyline.iter().map(|(lon, lat)| [lon, lat]).collect();
             if coords.len() >= 2 {
                 network.push(coords);
             }
         } else {
-            // Partially reachable - clip
+            // Partially reachable - clip to cut_idx (inclusive).
             let cut_fraction = (time_ds - dist_ds) as f32 / weight_ds as f32;
-            let n_pts = polyline.lat_fxp.len();
+            let n_pts = polyline.len();
             let cut_idx = ((n_pts - 1) as f32 * cut_fraction).ceil() as usize;
             let cut_idx = cut_idx.min(n_pts - 1).max(1);
 
-            let coords: Vec<[f64; 2]> = polyline.lon_fxp[..=cut_idx]
-                .iter()
-                .zip(polyline.lat_fxp[..=cut_idx].iter())
-                .map(|(&lon, &lat)| [lon as f64 / 1e7, lat as f64 / 1e7])
+            let coords: Vec<[f64; 2]> = (0..=cut_idx)
+                .map(|i| {
+                    let (lon, lat) = polyline.at(i);
+                    [lon, lat]
+                })
                 .collect();
             if coords.len() >= 2 {
                 network.push(coords);
@@ -1177,7 +1169,7 @@ pub async fn isochrone_bulk_handler(
                 time_ds,
                 &mode_data.node_weights,
                 &state.ebg_nodes,
-                &state.nbg_geo,
+                &state.edge_geom,
                 &req.mode,
             );
             let outer_ring: Vec<(f64, f64)> = points.iter().map(|p| (p.lon, p.lat)).collect();

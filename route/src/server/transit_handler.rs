@@ -1207,7 +1207,7 @@ fn build_routed_road_leg(
             mode_data.filtered_to_original[filtered_id as usize]
         })
         .collect();
-    let (points, distance_m) = build_raw_points(&ebg_path, &state.ebg_nodes, &state.nbg_geo);
+    let (points, distance_m) = build_raw_points(&ebg_path, &state.ebg_nodes, &state.edge_geom);
     if points.is_empty() {
         return None;
     }

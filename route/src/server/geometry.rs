@@ -3,8 +3,9 @@
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::formats::{EbgNodes, NbgGeo};
+use crate::formats::EbgNodes;
 use crate::range::{ReachableSegment, SparseContourConfig, generate_sparse_contour};
+use crate::server::edge_geom::EdgeGeometry;
 
 /// A point in WGS84 coordinates
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]
@@ -128,25 +129,18 @@ fn encode_value(value: i64, out: &mut String) {
 pub fn build_raw_points(
     ebg_path: &[u32],
     ebg_nodes: &EbgNodes,
-    nbg_geo: &NbgGeo,
+    edge_geom: &EdgeGeometry,
 ) -> (Vec<Point>, f64) {
     let mut coordinates = Vec::new();
     let mut total_distance_m = 0.0;
 
     for &ebg_id in ebg_path {
         let node = &ebg_nodes.nodes[ebg_id as usize];
-        let geom_idx = node.geom_idx as usize;
+        let polyline = edge_geom.polyline(node.geom_idx);
 
-        if geom_idx < nbg_geo.polylines.len() {
-            let polyline = &nbg_geo.polylines[geom_idx];
-
-            // Add geometry points from polyline
-            for i in 0..polyline.lat_fxp.len() {
-                coordinates.push(Point {
-                    lon: polyline.lon_fxp[i] as f64 / 1e7,
-                    lat: polyline.lat_fxp[i] as f64 / 1e7,
-                });
-            }
+        // Add geometry points from polyline (lazy iterator over (lon, lat) f64 pairs)
+        for (lon, lat) in polyline.iter() {
+            coordinates.push(Point { lon, lat });
         }
 
         // Accumulate distance
@@ -163,10 +157,10 @@ pub fn build_raw_points(
 pub fn build_geometry(
     ebg_path: &[u32],
     ebg_nodes: &EbgNodes,
-    nbg_geo: &NbgGeo,
+    edge_geom: &EdgeGeometry,
     format: GeometryFormat,
 ) -> (RouteGeometry, f64) {
-    let (coordinates, total_distance_m) = build_raw_points(ebg_path, ebg_nodes, nbg_geo);
+    let (coordinates, total_distance_m) = build_raw_points(ebg_path, ebg_nodes, edge_geom);
     (
         RouteGeometry::from_points(coordinates, format),
         total_distance_m,
@@ -187,7 +181,7 @@ pub fn build_isochrone_geometry(
     max_time_ds: u32,
     node_weights: &[u32], // Edge costs indexed by original EBG node ID
     ebg_nodes: &EbgNodes,
-    nbg_geo: &NbgGeo,
+    edge_geom: &EdgeGeometry,
     mode_name: &str,
 ) -> Vec<Point> {
     let geo_start = std::time::Instant::now();
@@ -196,7 +190,7 @@ pub fn build_isochrone_geometry(
         max_time_ds,
         node_weights,
         ebg_nodes,
-        nbg_geo,
+        edge_geom,
         mode_name,
     );
     let geo_us = geo_start.elapsed().as_micros();
@@ -227,7 +221,7 @@ pub fn build_isochrone_geometry_sparse(
     max_time_ds: u32,
     node_weights: &[u32], // Edge costs indexed by original EBG node ID
     ebg_nodes: &EbgNodes,
-    nbg_geo: &NbgGeo,
+    edge_geom: &EdgeGeometry,
     mode_name: &str,
 ) -> Vec<Point> {
     let config = SparseContourConfig::for_mode_name_with_threshold(mode_name, max_time_ds);
@@ -258,28 +252,20 @@ pub fn build_isochrone_geometry_sparse(
 
         // Get geometry
         let node = &ebg_nodes.nodes[ebg_id as usize];
-        let geom_idx = node.geom_idx as usize;
-        if geom_idx >= nbg_geo.polylines.len() {
-            continue;
-        }
-        let polyline = &nbg_geo.polylines[geom_idx];
-        if polyline.lat_fxp.is_empty() {
+        let polyline = edge_geom.polyline(node.geom_idx);
+        if polyline.is_empty() {
             continue;
         }
 
         if dist_end_ds <= max_time_ds {
-            // Fully reachable edge — stamp it
-            let points: Vec<(i32, i32)> = polyline
-                .lat_fxp
-                .iter()
-                .zip(polyline.lon_fxp.iter())
-                .map(|(&lat, &lon)| (lat, lon))
-                .collect();
+            // Fully reachable edge — stamp it (lat-first ordering for the
+            // sparse contour stamper, matching the legacy code).
+            let points: Vec<(i32, i32)> = polyline.iter_lat_lon_e7().collect();
             segments.push(ReachableSegment { points });
         } else {
             // Frontier edge - always include (from start to cut point)
             let cut_fraction = (max_time_ds - dist_ds) as f32 / weight_ds as f32;
-            let points = extract_partial_polyline(polyline, cut_fraction);
+            let points = extract_partial_polyline_view(&polyline, cut_fraction);
             if !points.is_empty() {
                 segments.push(ReachableSegment { points });
             }
@@ -301,25 +287,25 @@ pub fn build_isochrone_geometry_sparse(
     }
 }
 
-/// Extract partial polyline from start to given fraction
-fn extract_partial_polyline(polyline: &crate::formats::PolyLine, fraction: f32) -> Vec<(i32, i32)> {
-    let n_pts = polyline.lat_fxp.len();
+/// Extract partial polyline from start to given fraction (lat-first
+/// `(lat_e7, lon_e7)` output, matching the sparse contour stamper).
+fn extract_partial_polyline_view(
+    polyline: &crate::server::edge_geom::EdgePolyline<'_>,
+    fraction: f32,
+) -> Vec<(i32, i32)> {
+    let n_pts = polyline.len();
 
     if n_pts == 0 || fraction <= 0.0 {
         return vec![];
     }
 
     if n_pts == 1 {
-        return vec![(polyline.lat_fxp[0], polyline.lon_fxp[0])];
+        let (lon, lat) = polyline.at_e7(0);
+        return vec![(lat, lon)];
     }
 
     if fraction >= 1.0 {
-        return polyline
-            .lat_fxp
-            .iter()
-            .zip(polyline.lon_fxp.iter())
-            .map(|(&lat, &lon)| (lat, lon))
-            .collect();
+        return polyline.iter_lat_lon_e7().collect();
     }
 
     // Find the segment where the cut occurs
@@ -328,19 +314,18 @@ fn extract_partial_polyline(polyline: &crate::formats::PolyLine, fraction: f32) 
     let segment_idx = (segment_frac.floor() as usize).min(n_segments - 1);
     let local_frac = segment_frac - segment_idx as f32;
 
-    // Include all points up to and including the start of the cut segment
-    let mut points: Vec<(i32, i32)> = polyline.lat_fxp[..=segment_idx]
-        .iter()
-        .zip(polyline.lon_fxp[..=segment_idx].iter())
-        .map(|(&lat, &lon)| (lat, lon))
+    // Include all points up to and including the start of the cut segment.
+    let mut points: Vec<(i32, i32)> = (0..=segment_idx)
+        .map(|i| {
+            let (lon, lat) = polyline.at_e7(i);
+            (lat, lon)
+        })
         .collect();
 
     // Add the interpolated cut point
     if local_frac > 0.0 && segment_idx + 1 < n_pts {
-        let lat1 = polyline.lat_fxp[segment_idx];
-        let lon1 = polyline.lon_fxp[segment_idx];
-        let lat2 = polyline.lat_fxp[segment_idx + 1];
-        let lon2 = polyline.lon_fxp[segment_idx + 1];
+        let (lon1, lat1) = polyline.at_e7(segment_idx);
+        let (lon2, lat2) = polyline.at_e7(segment_idx + 1);
 
         let lat = lat1 + ((lat2 - lat1) as f32 * local_frac) as i32;
         let lon = lon1 + ((lon2 - lon1) as f32 * local_frac) as i32;
