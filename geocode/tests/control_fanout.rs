@@ -32,6 +32,7 @@ fn small_shard() -> (tempfile::TempDir, Shard) {
             locality: "Anderlecht".into(),
             lat: 50.834,
             lon: 4.314 + (i as f64) * 1e-5,
+            ..Default::default()
         });
     }
     build_shard(&path, butterfly_geocode::CountryId::BE, addrs).unwrap();

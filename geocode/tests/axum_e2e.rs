@@ -41,6 +41,7 @@ fn fixture_addresses() -> Vec<AddressRecord> {
             locality: "Anderlecht".into(),
             lat: 50.6883,
             lon: 4.3680,
+            ..Default::default()
         },
         AddressRecord {
             street: "Rue Wayez".into(),
@@ -49,6 +50,7 @@ fn fixture_addresses() -> Vec<AddressRecord> {
             locality: "Anderlecht".into(),
             lat: 50.6884,
             lon: 4.3681,
+            ..Default::default()
         },
         // Brussels-Bruxelles 1000
         AddressRecord {
@@ -58,6 +60,7 @@ fn fixture_addresses() -> Vec<AddressRecord> {
             locality: "Bruxelles".into(),
             lat: 50.8467,
             lon: 4.3673,
+            ..Default::default()
         },
         // Brussels Grand-Place
         AddressRecord {
@@ -67,6 +70,7 @@ fn fixture_addresses() -> Vec<AddressRecord> {
             locality: "Bruxelles".into(),
             lat: 50.8467,
             lon: 4.3525,
+            ..Default::default()
         },
         AddressRecord {
             street: "Grand-Place".into(),
@@ -75,6 +79,7 @@ fn fixture_addresses() -> Vec<AddressRecord> {
             locality: "Bruxelles".into(),
             lat: 50.8468,
             lon: 4.3526,
+            ..Default::default()
         },
         // Antwerpen Grote Markt
         AddressRecord {
@@ -84,6 +89,7 @@ fn fixture_addresses() -> Vec<AddressRecord> {
             locality: "Antwerpen".into(),
             lat: 51.2208,
             lon: 4.3997,
+            ..Default::default()
         },
         AddressRecord {
             street: "Grote Markt".into(),
@@ -92,6 +98,7 @@ fn fixture_addresses() -> Vec<AddressRecord> {
             locality: "Antwerpen".into(),
             lat: 51.2210,
             lon: 4.3995,
+            ..Default::default()
         },
         // Avenue Louise (for fuzzy test)
         AddressRecord {
@@ -101,6 +108,7 @@ fn fixture_addresses() -> Vec<AddressRecord> {
             locality: "Ixelles".into(),
             lat: 50.8323,
             lon: 4.3690,
+            ..Default::default()
         },
         AddressRecord {
             street: "Avenue Louise".into(),
@@ -109,6 +117,7 @@ fn fixture_addresses() -> Vec<AddressRecord> {
             locality: "Ixelles".into(),
             lat: 50.8295,
             lon: 4.3712,
+            ..Default::default()
         },
         // Gent Korenmarkt
         AddressRecord {
@@ -118,6 +127,7 @@ fn fixture_addresses() -> Vec<AddressRecord> {
             locality: "Gent".into(),
             lat: 51.0537,
             lon: 3.7239,
+            ..Default::default()
         },
     ]
 }

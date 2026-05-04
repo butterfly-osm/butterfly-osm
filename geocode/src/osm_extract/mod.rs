@@ -10,7 +10,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use osmpbf::{Element, ElementReader};
 
-use crate::shard::AddressRecord;
+use crate::shard::{AddressRecord, SourceTag};
 
 #[derive(Debug, Clone, Copy)]
 pub enum ExtractProgress {
@@ -114,6 +114,8 @@ where
         housenumber,
         postcode,
         locality,
+        source: SourceTag::Osm,
+        source_id: None,
     })
 }
 
@@ -147,6 +149,8 @@ fn way_to_address(
         housenumber,
         postcode,
         locality,
+        source: SourceTag::Osm,
+        source_id: None,
     })
 }
 

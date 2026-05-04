@@ -280,14 +280,70 @@ butterfly-geocode serve \
 
 ### Authoritative sources
 
-This release uses **OSM `addr:*` tags** as the source for every country. Authoritative-source ingestion (BOSA BeSt for BE, BAN for FR, BAG for NL, BD-Adresses for LU, BEV for AT, swisstopo for CH) is documented in `geocode-data/SOURCES.md` with field mappings ready, but the importers are filed as a follow-up ticket.
+Belgium ships with **first-class BOSA BeSt ingestion** as of 2026-05-04. Other countries still default to OSM `addr:*` tags pending their authoritative-source loaders (BAN for FR, BAG for NL, BD-Adresses for LU, BEV for AT, swisstopo for CH). See `geocode-data/SOURCES.md` for field mappings and the per-country importer roadmap.
 
-OSM coverage varies materially: Netherlands is dense (≈9.9 M `addr:*`-tagged objects), Belgium is dense (≈4.0 M), Luxembourg is sparse (≈170 K — most addresses live in BD-Adresses, not OSM). Operators with stricter coverage requirements should plan for the authoritative-ingest follow-up.
+OSM coverage varies materially: Netherlands is dense (≈9.9 M `addr:*`-tagged objects), Belgium OSM is dense (≈4.0 M), Luxembourg is sparse (≈170 K — most addresses live in BD-Adresses, not OSM). Operators with stricter coverage requirements should use the authoritative source where available.
+
+## Authoritative source: BOSA BeSt (Belgium)
+
+[BeSt Address](https://opendata.bosa.be/) is the Belgian Federal Public Service BOSA's open address dataset (~6.7 M physical addresses, monthly cadence, Belgian Open Data License — CC-BY-compatible). It has materially better coverage than OSM `addr:*` tags:
+
+| Shard | Records | Unique postcodes | Unique streets |
+|---|---|---|---|
+| OSM-only (PBF tags) | 4 026 754 | 1 723 | 87 903 |
+| BOSA-only (3 regional ZIPs merged, NL+FR aliases) | 10 667 558 | 1 145 | 95 704 |
+| BOSA + OSM merged | 13 263 831 | 1 751 | 105 082 |
+
+(BOSA's "1 145 unique postcodes" is the actual Belgian postcode universe; OSM's 1 723 includes typo'd / mis-tagged variants.)
+
+### Build a BOSA shard
+
+```bash
+# 1. Fetch all three BOSA regional ZIPs (Flanders / Wallonia / Brussels)
+butterfly-dl belgium --only addresses
+#   → data/belgium/addresses/bosa-bevlg.zip   (~152 MB)
+#   → data/belgium/addresses/bosa-bewal.zip   (~60 MB)
+#   → data/belgium/addresses/bosa-bebru.zip   (~17 MB)
+
+# 2. Build a per-region shard (~30 s each, opens the ZIP transparently)
+butterfly-geocode build-shard --csv data/belgium/addresses/bosa-bevlg.zip \
+    --out belgium-bosa-vlg.bfgs --country BE --source bosa
+butterfly-geocode build-shard --csv data/belgium/addresses/bosa-bewal.zip \
+    --out belgium-bosa-wal.bfgs --country BE --source bosa
+butterfly-geocode build-shard --csv data/belgium/addresses/bosa-bebru.zip \
+    --out belgium-bosa-bru.bfgs --country BE --source bosa
+
+# 3. Merge into a single Belgium-wide BOSA shard
+butterfly-geocode build-shard \
+    --merge belgium-bosa-vlg.bfgs \
+    --merge belgium-bosa-wal.bfgs \
+    --merge belgium-bosa-bru.bfgs \
+    --out belgium-bosa.bfgs --country BE
+```
+
+### Combine BOSA with OSM (merged shard)
+
+BOSA has the addresses BOSA knows about. OSM knows about new buildings, recently mapped places, and a few address conventions BOSA doesn't index. The `--merge` mode combines both: where they agree on (postcode, street, housenumber) within ~30 m, the BOSA record wins (it is authoritative); where they disagree or only one has the address, both survive.
+
+```bash
+butterfly-geocode build-shard \
+    --merge belgium-bosa.bfgs \
+    --merge belgium-osm.bfgs \
+    --out belgium-merged.bfgs --country BE
+```
+
+The per-record source byte (BFGS v4) survives the merge so `/geocode` results carry their provenance. Operators auditing geocode outputs can filter by source via the per-record source field.
+
+### How the loader works
+
+`geocode/src/sources/bosa.rs` streams the CSV directly out of the BOSA ZIP (no decompress-to-disk step). For each `current` row, it emits one `AddressRecord` per non-empty language (NL / FR / DE) — Brussels rows typically yield 2 records (FR + NL); Flanders yields 1 (NL); Wallonia 1 (FR); the German-Belgium DE column is set on the ~70 k records in the East-Cantons. Coordinates are read from `EPSG:4326_lat/lon` so no Lambert-72 reprojection is needed.
+
+The `box_number` column folds into `housenumber` as `"475 bte RDC"` — Belgian box-number convention (apartment / floor identifier) preserved without a separate field.
 
 ## What's deferred (still in #96/#97/#98)
 
 - **Byte-level transformer parser** (#96 §Tagger, #98 Phase 2) — the heuristic in `parser/heuristic.rs` is the deterministic Phase 0 baseline. The byte-level transformer + #98 Phase 1 retrieval-aware decoding ship in `parser/neural.rs`.
-- **Authoritative-source ingestion** (BOSA BeSt, BAN, BAG, BD-Adresses, BEV, swisstopo) — `geocode-data/SOURCES.md` has the URLs + field mappings ready; OSM `addr:*` is the source for all countries in this release.
+- **Authoritative-source ingestion** for **non-Belgium countries** (BAN for FR, BAG for NL, BD-Adresses for LU, BEV for AT, swisstopo for CH) — `geocode-data/SOURCES.md` has the URLs + field mappings ready. **Belgium BOSA BeSt ships in this release** (see "Authoritative source" section below).
 - **Cross-border shard co-location** (#96 §Cross-Border Shard Co-location) — separate per-country shards instead. The layout-merge is a future optimization for the BE-FR-NL-LU-DE cluster.
 - **Adapter layers (LoRA per region)** (#96 §Tagger) — needs trained models.
 - **Feedback operators** (`Downgrade`, `TopkMerge`, `Sample`) — types defined per #96, not invoked by the MVP executor.

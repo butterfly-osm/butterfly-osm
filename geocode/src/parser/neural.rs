@@ -130,6 +130,7 @@ mod tests {
                 locality: "Anderlecht".into(),
                 lat: 50.834,
                 lon: 4.314,
+                ..Default::default()
             },
             AddressRecord {
                 street: "Grote Markt".into(),
@@ -138,6 +139,7 @@ mod tests {
                 locality: "Antwerpen".into(),
                 lat: 51.221,
                 lon: 4.401,
+                ..Default::default()
             },
         ];
         build_shard(&path, crate::routing::CountryId::BE, addrs).unwrap();
