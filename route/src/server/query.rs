@@ -13,77 +13,7 @@ use crate::formats::CchTopo;
 use crate::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
 use crate::profile_abi::Mode;
 
-use super::state::{CchWeights, DownReverseAdj, ServerState};
-
-/// Validate backward adjacency invariant:
-/// For every entry in down_rev, the reversed edge must be "upward in reversed graph"
-/// i.e., for DOWN edge x→u (rank[x] >= rank[u]), reversed edge u→x has rank[u] <= rank[x]
-pub fn validate_down_rev(
-    topo: &CchTopo,
-    down_rev: &DownReverseAdj,
-    perm: &[u32],
-) -> Result<(), String> {
-    let n_nodes = topo.n_nodes as usize;
-    let mut violations = 0;
-
-    for u in 0..n_nodes {
-        let start = down_rev.offsets[u] as usize;
-        let end = down_rev.offsets[u + 1] as usize;
-
-        for i in start..end {
-            let x = down_rev.sources[i] as usize;
-            let edge_idx = down_rev.edge_idx[i] as usize;
-
-            // Verify this is a valid DOWN edge x→u
-            let rank_x = perm[x];
-            let rank_u = perm[u];
-
-            // DOWN edge: rank[x] >= rank[u]
-            // Reversed: u→x should be upward (rank[u] <= rank[x])
-            if rank_x < rank_u {
-                violations += 1;
-                if violations <= 5 {
-                    tracing::warn!(
-                        edge_from = x,
-                        edge_to = u,
-                        rank_x,
-                        rank_u,
-                        "down_rev violation: rank_x < rank_u (should be >=)"
-                    );
-                }
-            }
-
-            // Verify edge_idx points to valid DOWN edge
-            if edge_idx >= topo.down_targets.len() {
-                return Err(format!(
-                    "Invalid edge_idx {} >= {}",
-                    edge_idx,
-                    topo.down_targets.len()
-                ));
-            }
-
-            // Verify the target of this DOWN edge is actually u
-            let stored_target = topo.down_targets[edge_idx];
-            if stored_target != u as u32 {
-                violations += 1;
-                if violations <= 5 {
-                    tracing::warn!(
-                        edge_idx,
-                        stored_target,
-                        expected = u,
-                        "down_rev target mismatch"
-                    );
-                }
-            }
-        }
-    }
-
-    if violations > 0 {
-        Err(format!("{} down_rev violations found", violations))
-    } else {
-        Ok(())
-    }
-}
+use super::state::{CchWeights, ServerState};
 
 /// Query result
 #[derive(Debug, Clone)]
@@ -230,26 +160,39 @@ fn reconstruct_path_versioned(
 /// path, which is what makes `madvise(MADV_DONTNEED)` over those byte
 /// ranges actually reclaim RSS.
 ///
-/// `RawWeights` is the cold path used by `with_custom_weights`, i.e.
-/// alternative-route penalties and exclude/avoid recustomizations that
-/// build per-call weight arrays. Those paths do not benefit from the
-/// flat layout (no flats are built for the ephemeral weights) and
-/// running them off raw weights is correct — they just incur the INF
-/// branch in the hot loop.
+/// `CustomWeights` is the cold path used by `with_custom_weights`,
+/// i.e. alternative-route penalties and exclude/avoid recustomizations
+/// that build per-call weight arrays. After #152 it reuses the SAME
+/// `UpAdjFlat`/`DownReverseAdjFlat` topology that the hot path uses —
+/// the flats already carry `topo_edge_idx`, so we look up custom
+/// weights via `weights.up[topo_edge_idx]` / `weights.down[topo_edge_idx]`
+/// and ignore the flat's embedded weights. This eliminates the
+/// duplicate `DownReverseAdj` Vec-of-Vec topology that #149 left
+/// stranded on the heap (~320 MB on Belgium across 4 modes).
+///
+/// The custom-weight loop incurs an INF branch (custom weights may
+/// have INF entries from exclude/avoid recustomization); the hot
+/// path's flats backend has those edges filtered out at build time.
 enum Backend<'a> {
     Flats {
         up_adj_flat: &'a UpAdjFlat,
         down_rev_flat: &'a DownReverseAdjFlat,
     },
-    RawWeights {
+    CustomWeights {
         weights: &'a CchWeights,
-        down_rev: &'a DownReverseAdj,
+        up_adj_flat: &'a UpAdjFlat,
+        down_rev_flat: &'a DownReverseAdjFlat,
     },
 }
 
-/// Bidirectional CCH query
+/// Bidirectional CCH query.
+///
+/// After #152, the query reads its topology entirely through the flats
+/// (`UpAdjFlat` / `DownReverseAdjFlat`); the `CchTopo` reference is no
+/// longer plumbed through this type. Callers that need topology for
+/// non-query work (e.g. unpack) hold their own reference to the same
+/// `cch_topo` they passed when building the flats.
 pub struct CchQuery<'a> {
-    topo: &'a CchTopo,
     backend: Backend<'a>,
     n_nodes: usize,
 }
@@ -258,7 +201,6 @@ impl<'a> CchQuery<'a> {
     pub fn new(state: &'a ServerState, mode: Mode) -> Self {
         let mode_data = state.get_mode(mode);
         Self {
-            topo: &mode_data.cch_topo,
             backend: Backend::Flats {
                 up_adj_flat: &mode_data.up_adj_flat,
                 down_rev_flat: &mode_data.down_rev_flat,
@@ -270,12 +212,14 @@ impl<'a> CchQuery<'a> {
     /// Iterate UP edges out of node `u`, yielding (target, weight, parent_edge_idx).
     ///
     /// `parent_edge_idx` is whatever the unpack code expects in
-    /// `state.parent_fwd[v].1` — under the flats backend that's the topo
-    /// edge index recovered via `up_adj_flat.topo_edge_idx[slot]`, under
-    /// the raw backend that's the topo edge index `i` itself.
+    /// `state.parent_fwd[v].1` — the topo edge index recovered via
+    /// the flat's `topo_edge_idx[slot]`.
     ///
-    /// The flats backend never yields INF entries (filtered at build);
-    /// the raw backend filters inline.
+    /// The `Flats` backend never yields INF entries (filtered at
+    /// build time). The `CustomWeights` backend reuses the same flat
+    /// topology but reads weights from the caller-supplied
+    /// `CchWeights`, which can carry INF entries from exclude/avoid
+    /// recustomization — those are filtered inline.
     #[inline]
     fn for_up_edges<F: FnMut(u32, u32, u32)>(&self, u: u32, mut f: F) {
         match &self.backend {
@@ -289,16 +233,21 @@ impl<'a> CchQuery<'a> {
                     f(v, w, parent_idx);
                 }
             }
-            Backend::RawWeights { weights, .. } => {
-                let start = self.topo.up_offsets[u as usize] as usize;
-                let end = self.topo.up_offsets[u as usize + 1] as usize;
-                for i in start..end {
-                    let w = weights.up[i];
+            Backend::CustomWeights {
+                weights,
+                up_adj_flat,
+                ..
+            } => {
+                let start = up_adj_flat.offsets[u as usize] as usize;
+                let end = up_adj_flat.offsets[u as usize + 1] as usize;
+                for slot in start..end {
+                    let parent_idx = up_adj_flat.topo_edge_idx[slot];
+                    let w = weights.up[parent_idx as usize];
                     if w == u32::MAX {
                         continue;
                     }
-                    let v = self.topo.up_targets[i];
-                    f(v, w, i as u32);
+                    let v = up_adj_flat.targets[slot];
+                    f(v, w, parent_idx);
                 }
             }
         }
@@ -319,36 +268,55 @@ impl<'a> CchQuery<'a> {
                     f(x, w, parent_idx);
                 }
             }
-            Backend::RawWeights { weights, down_rev } => {
-                let start = down_rev.offsets[u as usize] as usize;
-                let end = down_rev.offsets[u as usize + 1] as usize;
-                for i in start..end {
-                    let x = down_rev.sources[i];
-                    let edge_idx = down_rev.edge_idx[i] as usize;
-                    let w = weights.down[edge_idx];
+            Backend::CustomWeights {
+                weights,
+                down_rev_flat,
+                ..
+            } => {
+                let start = down_rev_flat.offsets[u as usize] as usize;
+                let end = down_rev_flat.offsets[u as usize + 1] as usize;
+                for slot in start..end {
+                    let parent_idx = down_rev_flat.topo_edge_idx[slot];
+                    let w = weights.down[parent_idx as usize];
                     if w == u32::MAX {
                         continue;
                     }
-                    f(x, w, edge_idx as u32);
+                    let x = down_rev_flat.sources[slot];
+                    f(x, w, parent_idx);
                 }
             }
         }
     }
 
-    /// Create a query with custom weights (for alternative routes with penalties).
+    /// Create a query with custom weights (for alternative routes with
+    /// penalties, exclude/avoid recustomization, transit access/egress).
     ///
-    /// Cold path. Reads weights through the legacy `CchWeights` +
-    /// `DownReverseAdj` shape (with the INF branch in the hot loop).
-    /// New code on the routing hot path should go through `new()` /
-    /// the flats backend instead.
+    /// Cold path. Reuses the same flat topology that the hot path
+    /// uses (see #152) — `up_adj_flat` and `down_rev_flat` provide
+    /// `topo_edge_idx`, which is the index into the caller-supplied
+    /// `weights.up` / `weights.down`. The flat's embedded weights are
+    /// not read in this backend; only its topology is.
+    ///
+    /// Caller invariant: the custom `weights` are derived from the same
+    /// time metric as the flat (i.e. INF entries in `weights` are a
+    /// superset of INF entries in the flat's source). Every current
+    /// caller satisfies this — exclude/avoid only add INF, multiplicative
+    /// alternative-route penalties keep INF as INF (`saturating_mul`),
+    /// and the unmodified `cch_weights` paths are bytewise the flat's
+    /// source. This invariant is upheld by construction; we filter INF
+    /// entries inline in the hot loop as a defensive measure.
     pub fn with_custom_weights(
         topo: &'a CchTopo,
-        down_rev: &'a DownReverseAdj,
+        up_adj_flat: &'a UpAdjFlat,
+        down_rev_flat: &'a DownReverseAdjFlat,
         weights: &'a CchWeights,
     ) -> Self {
         Self {
-            topo,
-            backend: Backend::RawWeights { weights, down_rev },
+            backend: Backend::CustomWeights {
+                weights,
+                up_adj_flat,
+                down_rev_flat,
+            },
             n_nodes: topo.n_nodes as usize,
         }
     }
@@ -731,7 +699,7 @@ mod tests {
     ///     2 → 1 (w=3)
     ///     3 → 2 (w=7)
     ///     4 → 2 (w=5)
-    fn build_test_cch() -> (CchTopo, CchWeights, DownReverseAdj) {
+    fn build_test_cch() -> (CchTopo, CchWeights, UpAdjFlat, DownReverseAdjFlat) {
         let n_nodes = 5u32;
 
         let up_offsets = vec![0u64, 1, 2, 4, 4, 4];
@@ -769,27 +737,17 @@ mod tests {
             down_middle: vec![].into(),
         };
 
-        // Build DownReverseAdj from topo
-        // DOWN edges: 2→0 (idx=0), 2→1 (idx=1), 3→2 (idx=2), 4→2 (idx=3)
-        // Reversed (target → sources):
-        //   node 0: incoming from 2 (edge_idx=0)
-        //   node 1: incoming from 2 (edge_idx=1)
-        //   node 2: incoming from 3 (edge_idx=2), 4 (edge_idx=3)
-        //   node 3: none
-        //   node 4: none
-        let down_rev = DownReverseAdj {
-            offsets: vec![0u64, 1, 2, 4, 4, 4],
-            sources: vec![2u32, 2, 3, 4],
-            edge_idx: vec![0u32, 1, 2, 3],
-        };
+        // Build flats with topo_edge_idx populated (CchQuery hot path).
+        let up_adj_flat = UpAdjFlat::build_with(&topo, &weights, true);
+        let down_rev_flat = DownReverseAdjFlat::build_with(&topo, &weights, true);
 
-        (topo, weights, down_rev)
+        (topo, weights, up_adj_flat, down_rev_flat)
     }
 
     #[test]
     fn test_same_node_query() {
-        let (topo, weights, down_rev) = build_test_cch();
-        let query = CchQuery::with_custom_weights(&topo, &down_rev, &weights);
+        let (topo, weights, up_flat, down_rev_flat) = build_test_cch();
+        let query = CchQuery::with_custom_weights(&topo, &up_flat, &down_rev_flat, &weights);
 
         let result = query.query(0, 0).expect("same-node query should succeed");
         assert_eq!(result.distance, 0);
@@ -800,8 +758,8 @@ mod tests {
 
     #[test]
     fn test_basic_shortest_path() {
-        let (topo, weights, down_rev) = build_test_cch();
-        let query = CchQuery::with_custom_weights(&topo, &down_rev, &weights);
+        let (topo, weights, up_flat, down_rev_flat) = build_test_cch();
+        let query = CchQuery::with_custom_weights(&topo, &up_flat, &down_rev_flat, &weights);
 
         // Path 0 → 1: 0→UP→2→DOWN→1, cost = 10 + 3 = 13
         let result = query.query(0, 1).expect("path should exist");
@@ -818,8 +776,8 @@ mod tests {
 
     #[test]
     fn test_multi_hop_path() {
-        let (topo, weights, down_rev) = build_test_cch();
-        let query = CchQuery::with_custom_weights(&topo, &down_rev, &weights);
+        let (topo, weights, up_flat, down_rev_flat) = build_test_cch();
+        let query = CchQuery::with_custom_weights(&topo, &up_flat, &down_rev_flat, &weights);
 
         // Path 0 → 3: 0→UP→2→UP→3, cost = 10 + 7 = 17
         let result = query.query(0, 3).expect("path should exist");
@@ -838,8 +796,8 @@ mod tests {
     fn test_thread_local_state_reuse() {
         // Run many queries to verify thread-local state is correctly reused
         // across queries (generation stamping doesn't leak stale data)
-        let (topo, weights, down_rev) = build_test_cch();
-        let query = CchQuery::with_custom_weights(&topo, &down_rev, &weights);
+        let (topo, weights, up_flat, down_rev_flat) = build_test_cch();
+        let query = CchQuery::with_custom_weights(&topo, &up_flat, &down_rev_flat, &weights);
 
         for _ in 0..100 {
             assert_eq!(query.query(0, 1).unwrap().distance, 13);
@@ -922,13 +880,10 @@ mod tests {
             down_middle: vec![].into(),
         };
 
-        let down_rev = DownReverseAdj {
-            offsets: vec![0u64, 1, 2, 2, 3, 4, 4],
-            sources: vec![2u32, 2, 5, 5],
-            edge_idx: vec![0u32, 1, 2, 3],
-        };
+        let up_flat = UpAdjFlat::build_with(&topo, &weights, true);
+        let down_rev_flat = DownReverseAdjFlat::build_with(&topo, &weights, true);
 
-        let query = CchQuery::with_custom_weights(&topo, &down_rev, &weights);
+        let query = CchQuery::with_custom_weights(&topo, &up_flat, &down_rev_flat, &weights);
 
         // Same component works
         assert_eq!(query.query(0, 1).unwrap().distance, 13);

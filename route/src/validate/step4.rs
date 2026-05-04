@@ -222,7 +222,7 @@ fn verify_lock_condition_a_structural(
     }
 
     // Verify heads are in bounds
-    for &head in &ebg_csr.heads {
+    for &head in ebg_csr.heads.iter() {
         anyhow::ensure!(
             head < ebg_csr.n_nodes,
             "CSR head {} out of bounds (n_nodes={})",
@@ -232,7 +232,7 @@ fn verify_lock_condition_a_structural(
     }
 
     // Verify turn_idx are in bounds
-    for &tidx in &ebg_csr.turn_idx {
+    for &tidx in ebg_csr.turn_idx.iter() {
         anyhow::ensure!(
             (tidx as usize) < turn_table.n_entries as usize,
             "CSR turn_idx {} out of bounds (n_entries={})",

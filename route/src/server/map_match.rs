@@ -496,8 +496,12 @@ fn compute_transition_distances(
     let n_to = to.len();
     let mut result = vec![f64::INFINITY; n_from * n_to];
 
-    let query =
-        CchQuery::with_custom_weights(&mode_data.cch_topo, &mode_data.down_rev, cch_weights);
+    let query = CchQuery::with_custom_weights(
+        &mode_data.cch_topo,
+        &mode_data.up_adj_flat,
+        &mode_data.down_rev_flat,
+        cch_weights,
+    );
 
     for (i, from_cand) in from.iter().enumerate() {
         let src_filtered = mode_data.filtered_ebg.original_to_filtered[from_cand.ebg_id as usize];
@@ -620,8 +624,12 @@ fn find_path_between(
     let src_rank = mode_data.order.perm[src_filtered as usize];
     let dst_rank = mode_data.order.perm[dst_filtered as usize];
 
-    let query =
-        CchQuery::with_custom_weights(&mode_data.cch_topo, &mode_data.down_rev, cch_weights);
+    let query = CchQuery::with_custom_weights(
+        &mode_data.cch_topo,
+        &mode_data.up_adj_flat,
+        &mode_data.down_rev_flat,
+        cch_weights,
+    );
     let result = query.query(src_rank, dst_rank)?;
 
     let rank_path = super::unpack::unpack_path(

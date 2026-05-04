@@ -566,9 +566,19 @@ pub async fn route_handler(
         None // avoid_result already incorporates exclude
     };
     let query = if let Some((ref time_weights, _)) = avoid_result {
-        CchQuery::with_custom_weights(&mode_data.cch_topo, &mode_data.down_rev, time_weights)
+        CchQuery::with_custom_weights(
+            &mode_data.cch_topo,
+            &mode_data.up_adj_flat,
+            &mode_data.down_rev_flat,
+            time_weights,
+        )
     } else if let Some(ref ew) = exclude_weights {
-        CchQuery::with_custom_weights(&mode_data.cch_topo, &mode_data.down_rev, &ew.time_weights)
+        CchQuery::with_custom_weights(
+            &mode_data.cch_topo,
+            &mode_data.up_adj_flat,
+            &mode_data.down_rev_flat,
+            &ew.time_weights,
+        )
     } else {
         CchQuery::new(&state, mode)
     };
@@ -696,7 +706,8 @@ pub async fn route_handler(
         for _alt_idx in 0..num_alternatives {
             let alt_query = CchQuery::with_custom_weights(
                 &mode_data.cch_topo,
-                &mode_data.down_rev,
+                &mode_data.up_adj_flat,
+                &mode_data.down_rev_flat,
                 &penalized_weights,
             );
 
