@@ -1,0 +1,19 @@
+=== Australia (Macquarie Street, Sydney) ===
+{
+    "query": "1 Macquarie Street Sydney NSW 2000",
+    "country": "AU",
+    "confidence": "accept",
+    "count": 1,
+    "results": [
+        {
+            "lat": -33.86177,
+            "lon": 151.2084714,
+            "street": "Alfred Street",
+            "housenumber": "1",
+            "postcode": "2000",
+            "locality": "",
+            "country": "AU",
+            "score": 1.7
+        }
+    ]
+}

@@ -1,0 +1,134 @@
+# Japan country pack — butterfly-geocode #96 "serve the world".
+#
+# Japanese addresses are block-based, not street-based. Format:
+# 〒XXX-XXXX [Prefecture][City/Ward][District]NN-NN[building]
+# Example: 〒100-0001 東京都千代田区千代田1-1
+#
+# The "block" is captured in the housenumber field as "1-1" (chōme-banchi).
+# The street is usually empty in OSM Japan; admin hierarchy fills the
+# remainder.
+#
+# Authoritative dataset: Japan Post Code Database (free download),
+# OSM Japan. National address registry is partial.
+
+[country]
+iso2 = "JP"
+name = "Japan"
+
+[postcode]
+# 〒-prefixed 7-digit code: 3-digit area + dash + 4-digit street segment.
+# Both with and without 〒, both with and without dash are valid forms.
+# Examples: "100-0001", "1000001", "〒100-0001".
+regex = '\b\d{3}-?\d{4}\b'
+position = "leading"
+canonicalize = "collapse_whitespace"
+
+[scripts]
+dominant = ["Han", "Hiragana", "Katakana"]
+secondary = ["Latin"]
+
+# Japanese addressing keywords (kanji + their romanizations).
+[[lexical_cues.match]]
+substring = "都"     # "to" — metropolis (only Tokyo)
+boost = 2.5
+kind = "substring"
+[[lexical_cues.match]]
+substring = "府"     # "fu" — prefecture (Osaka, Kyoto)
+boost = 2.0
+kind = "substring"
+[[lexical_cues.match]]
+substring = "県"     # "ken" — most prefectures
+boost = 2.0
+kind = "substring"
+[[lexical_cues.match]]
+substring = "区"     # "ku" — special ward
+boost = 1.5
+kind = "substring"
+[[lexical_cues.match]]
+substring = "市"     # "shi" — city
+boost = 1.5
+kind = "substring"
+[[lexical_cues.match]]
+substring = "町"     # "chō/machi" — town
+boost = 1.0
+kind = "substring"
+[[lexical_cues.match]]
+substring = "丁目"    # "chōme" — block subdivision (very distinctive)
+boost = 2.5
+kind = "substring"
+[[lexical_cues.match]]
+substring = "番地"    # "banchi" — lot number
+boost = 1.5
+kind = "substring"
+# Major cities (Latin + kanji forms).
+[[lexical_cues.match]]
+substring = "東京"
+boost = 2.0
+kind = "substring"
+[[lexical_cues.match]]
+substring = "tokyo"
+boost = 1.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "大阪"
+boost = 2.0
+kind = "substring"
+[[lexical_cues.match]]
+substring = "osaka"
+boost = 1.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "京都"
+boost = 2.0
+kind = "substring"
+[[lexical_cues.match]]
+substring = "kyoto"
+boost = 1.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "横浜"
+boost = 2.0
+kind = "substring"
+[[lexical_cues.match]]
+substring = "yokohama"
+boost = 1.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "札幌"
+boost = 2.0
+kind = "substring"
+[[lexical_cues.match]]
+substring = "sapporo"
+boost = 1.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "名古屋"
+boost = 2.0
+kind = "substring"
+[[lexical_cues.match]]
+substring = "nagoya"
+boost = 1.5
+kind = "word"
+
+[bbox]
+# Main archipelago. Tip-of-Hokkaido in the north, southern Ryukyus in the south.
+min_lat = 24.00
+max_lat = 45.60
+min_lon = 122.90
+max_lon = 153.00
+
+[neighbours]
+codes = []
+
+[source_priors]
+osm = 0.6
+authoritative = 0.5
+
+# Japanese OSM tagging differs from the Western standard. The "street"
+# tag is typically empty (Japan doesn't number streets); city/ward/block
+# fill the structured fields.
+[osm_tags]
+postcode = "addr:postcode"
+street = "addr:full"
+housenumber = "addr:housenumber"
+city = "addr:city"

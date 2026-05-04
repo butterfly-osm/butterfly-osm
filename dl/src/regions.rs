@@ -50,6 +50,14 @@ const GERMANY_INDEX_TOML: &str = include_str!("../regions/germany.toml");
 const AUSTRIA_INDEX_TOML: &str = include_str!("../regions/austria.toml");
 const SWITZERLAND_INDEX_TOML: &str = include_str!("../regions/switzerland.toml");
 
+// Non-European regions for butterfly-geocode #96 "serve the world".
+// These ship a [pbf] section only — no transit feeds.
+const UNITED_STATES_INDEX_TOML: &str = include_str!("../regions/united-states.toml");
+const JAPAN_INDEX_TOML: &str = include_str!("../regions/japan.toml");
+const BRAZIL_INDEX_TOML: &str = include_str!("../regions/brazil.toml");
+const INDIA_INDEX_TOML: &str = include_str!("../regions/india.toml");
+const AUSTRALIA_INDEX_TOML: &str = include_str!("../regions/australia.toml");
+
 /// Parsed region index. Each field is an optional list so partial
 /// regions (e.g. one without transit feeds) are a valid shape.
 #[derive(Debug, Clone, Deserialize)]
@@ -133,6 +141,11 @@ impl RegionIndex {
             "germany" => GERMANY_INDEX_TOML,
             "austria" => AUSTRIA_INDEX_TOML,
             "switzerland" => SWITZERLAND_INDEX_TOML,
+            "united-states" | "us" => UNITED_STATES_INDEX_TOML,
+            "japan" => JAPAN_INDEX_TOML,
+            "brazil" => BRAZIL_INDEX_TOML,
+            "india" => INDIA_INDEX_TOML,
+            "australia" => AUSTRALIA_INDEX_TOML,
             other => bail!(
                 "unknown region '{other}'. Supported regions are bundled \
                  in `dl/regions/`. Add a new one with a new TOML file + \
@@ -368,6 +381,12 @@ pub fn shipped_regions() -> &'static [&'static str] {
         "luxembourg",
         "netherlands",
         "switzerland",
+        // #96 serve-the-world non-European set
+        "australia",
+        "brazil",
+        "india",
+        "japan",
+        "united-states",
     ]
 }
 

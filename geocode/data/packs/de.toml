@@ -1,0 +1,95 @@
+# Germany country pack — butterfly-geocode #96 "serve the world".
+
+[country]
+iso2 = "DE"
+name = "Germany"
+
+[postcode]
+# 5-digit, range 01000-99999. Deutsche Post / UPU.
+regex = '\b\d{5}\b'
+position = "leading"
+canonicalize = "none"
+
+[scripts]
+dominant = ["Latin"]
+secondary = []
+
+[[lexical_cues.match]]
+substring = "straße"
+boost = 1.7
+kind = "substring"
+[[lexical_cues.match]]
+substring = "strasse"
+boost = 1.5
+kind = "substring"
+[[lexical_cues.match]]
+substring = "str."
+boost = 1.2
+kind = "substring"
+[[lexical_cues.match]]
+substring = "platz"
+boost = 1.3
+kind = "substring"
+[[lexical_cues.match]]
+substring = "weg"
+boost = 0.7
+kind = "substring"
+[[lexical_cues.match]]
+substring = "allee"
+boost = 0.8
+kind = "substring"
+[[lexical_cues.match]]
+substring = "ufer"
+boost = 0.7
+kind = "substring"
+[[lexical_cues.match]]
+substring = "berlin"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "hamburg"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "münchen"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "munich"
+boost = 1.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "frankfurt"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "köln"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "cologne"
+boost = 1.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "düsseldorf"
+boost = 2.0
+kind = "word"
+
+[bbox]
+min_lat = 47.25
+max_lat = 55.10
+min_lon = 5.80
+max_lon = 15.10
+
+[neighbours]
+codes = ["FR", "BE", "NL", "LU", "AT", "CH"]
+
+[source_priors]
+osm = 0.7
+authoritative = 1.0
+
+[osm_tags]
+postcode = "addr:postcode"
+street = "addr:street"
+housenumber = "addr:housenumber"
+city = "addr:city"

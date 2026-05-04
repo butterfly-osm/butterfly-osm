@@ -422,16 +422,27 @@ fn build_shard_cmd(
     source: Option<&str>,
 ) -> Result<()> {
     let country = CountryId::from_iso2(country_iso2).ok_or_else(|| {
-        anyhow!(
-            "unknown country '{country_iso2}' (supported: {})",
-            CountryId::ALL
-                .iter()
-                .map(|c| c.iso2())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
+        anyhow!("'{country_iso2}' is not a valid ISO 3166-1 alpha-2 country code")
     })?;
-
+    if butterfly_geocode::routing::PackRegistry::shipped()
+        .ok()
+        .and_then(|r| r.get(country).cloned())
+        .is_none()
+    {
+        warn!(
+            country = country.iso2(),
+            "no shipped country pack for {} — building without pack-driven OSM tag overrides",
+            country.iso2()
+        );
+    }
+    info!(
+        pbf = ?pbf.map(|p| p.display().to_string()),
+        csv = ?csv.map(|p| p.display().to_string()),
+        merge_inputs = merge_inputs.len(),
+        out = %out.display(),
+        country = country.iso2(),
+        "building shard"
+    );
     let start = std::time::Instant::now();
 
     if let Some(parent) = out.parent()
@@ -630,9 +641,14 @@ fn build_shards_all_cmd(
             .collect()
     });
 
+    // Iterate every shipped country pack — adding a country to the
+    // build sweep is dropping a pack TOML, no Rust changes (#96 "serve
+    // the world").
+    let registry = butterfly_geocode::routing::PackRegistry::shipped()
+        .context("loading shipped country packs")?;
     let mut built = Vec::<CountryId>::new();
     let mut skipped = Vec::<(CountryId, String)>::new();
-    for &c in CountryId::ALL {
+    for c in registry.countries() {
         if let Some(ref a) = allowed
             && !a.contains(&c)
         {
@@ -674,16 +690,27 @@ fn build_shards_all_cmd(
 }
 
 fn candidate_pbf_names(c: CountryId) -> Vec<String> {
-    let long = match c {
-        CountryId::BE => "belgium",
-        CountryId::FR => "france",
-        CountryId::NL => "netherlands",
-        CountryId::LU => "luxembourg",
-        CountryId::DE => "germany",
-        CountryId::AT => "austria",
-        CountryId::CH => "switzerland",
-        // CountryId is `non_exhaustive`. New countries default to
-        // ISO2-only filename probing — add a friendlier name above.
+    // Friendly long names per country (matches the butterfly-dl
+    // region index naming). Adding a country: append a row here,
+    // it's the only ISO2 → long-name lookup the binary uses.
+    let long = match &c.as_bytes() {
+        b"BE" => "belgium",
+        b"FR" => "france",
+        b"NL" => "netherlands",
+        b"LU" => "luxembourg",
+        b"DE" => "germany",
+        b"AT" => "austria",
+        b"CH" => "switzerland",
+        b"GB" => "united-kingdom",
+        b"ES" => "spain",
+        b"IT" => "italy",
+        b"US" => "united-states",
+        b"JP" => "japan",
+        b"BR" => "brazil",
+        b"IN" => "india",
+        b"AU" => "australia",
+        // Any country without a long name falls through to ISO2-only
+        // filename probing.
         _ => "",
     };
     let mut v = Vec::new();

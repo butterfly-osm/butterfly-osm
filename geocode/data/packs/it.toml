@@ -1,0 +1,112 @@
+# Italy country pack — butterfly-geocode #96 "serve the world".
+
+[country]
+iso2 = "IT"
+name = "Italy"
+
+[postcode]
+# 5-digit CAP, range 00010-98168. Poste Italiane / UPU.
+regex = '\b\d{5}\b'
+position = "trailing"
+canonicalize = "none"
+
+[scripts]
+dominant = ["Latin"]
+secondary = []
+
+[[lexical_cues.match]]
+substring = "via"
+boost = 1.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "viale"
+boost = 1.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "piazza"
+boost = 1.4
+kind = "word"
+[[lexical_cues.match]]
+substring = "corso"
+boost = 1.4
+kind = "word"
+[[lexical_cues.match]]
+substring = "vicolo"
+boost = 1.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "largo"
+boost = 0.9
+kind = "word"
+[[lexical_cues.match]]
+substring = "roma"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "rome"
+boost = 1.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "milano"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "milan"
+boost = 1.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "napoli"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "naples"
+boost = 1.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "torino"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "turin"
+boost = 1.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "firenze"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "florence"
+boost = 1.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "venezia"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "venice"
+boost = 1.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "bologna"
+boost = 2.0
+kind = "word"
+
+[bbox]
+# Mainland Italy + Sicily + Sardinia.
+min_lat = 35.40
+max_lat = 47.10
+min_lon = 6.60
+max_lon = 18.55
+
+[neighbours]
+codes = ["FR", "CH", "AT", "SI"]
+
+[source_priors]
+osm = 0.7
+authoritative = 0.5
+
+[osm_tags]
+postcode = "addr:postcode"
+street = "addr:street"
+housenumber = "addr:housenumber"
+city = "addr:city"

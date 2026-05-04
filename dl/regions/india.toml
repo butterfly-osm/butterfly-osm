@@ -1,0 +1,16 @@
+# Butterfly region index — India
+#
+# OSM PBF for India from Geofabrik. ~700 MB compressed.
+#
+# Authoritative address dataset (NOT fetched here):
+#   - India Post PIN database — free download, contains 6-digit PINs
+#     and locality names but no street-level coordinates.
+#   - Survey of India (SoI) — government datasets are not
+#     systematically open-data; use OSM as the baseline.
+#
+# OSM coverage is dense in metros (Delhi, Mumbai, Bangalore, Chennai,
+# Kolkata, Hyderabad, Pune) and sparse in smaller cities and rural
+# areas. The shipped pack's `source_priors.osm = 0.7` reflects this.
+
+[pbf]
+url = "https://download.geofabrik.de/asia/india-latest.osm.pbf"

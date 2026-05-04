@@ -1,0 +1,13 @@
+# Butterfly region index — Brazil
+#
+# OSM PBF for Brazil from Geofabrik. ~2.5 GB compressed.
+#
+# Authoritative address dataset (NOT fetched here):
+#   - Correios CEP (Código de Endereçamento Postal) — paid product
+#     for the full dataset, but free CEP-prefix lookup APIs exist.
+#   - IBGE (Instituto Brasileiro de Geografia e Estatística) — admin
+#     boundaries and locality codes, public-domain.
+# The MVP geocode shard for Brazil uses OSM as the baseline.
+
+[pbf]
+url = "https://download.geofabrik.de/south-america/brazil-latest.osm.pbf"

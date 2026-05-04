@@ -1,0 +1,86 @@
+# Netherlands country pack — butterfly-geocode #96 "serve the world".
+# Authoritative dataset: BAG (Basisregistratie Adressen en Gebouwen),
+# 9M records, CC0. See geocode-data/SOURCES.md.
+
+[country]
+iso2 = "NL"
+name = "Netherlands"
+
+[postcode]
+# Distinctive 4-digit + space + 2-letter shape ("1011 AB"). PostNL/UPU.
+regex = '\b\d{4}\s?[A-Za-z]{2}\b'
+position = "trailing"
+canonicalize = "collapse_whitespace"
+
+[scripts]
+dominant = ["Latin"]
+secondary = []
+
+[[lexical_cues.match]]
+substring = "straat"
+boost = 1.6
+kind = "substring"
+[[lexical_cues.match]]
+substring = "laan"
+boost = 1.3
+kind = "substring"
+[[lexical_cues.match]]
+substring = "plein"
+boost = 1.3
+kind = "substring"
+[[lexical_cues.match]]
+substring = "gracht"
+boost = 1.3
+kind = "substring"
+[[lexical_cues.match]]
+substring = "weg"
+boost = 0.8
+kind = "substring"
+[[lexical_cues.match]]
+substring = "amsterdam"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "rotterdam"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "den haag"
+boost = 2.0
+kind = "substring"
+[[lexical_cues.match]]
+substring = "the hague"
+boost = 1.5
+kind = "substring"
+[[lexical_cues.match]]
+substring = "utrecht"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "eindhoven"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "groningen"
+boost = 2.0
+kind = "word"
+
+[bbox]
+# European Netherlands only.
+min_lat = 50.70
+max_lat = 53.60
+min_lon = 3.30
+max_lon = 7.30
+
+[neighbours]
+codes = ["BE", "DE"]
+
+[source_priors]
+osm = 0.5
+authoritative = 1.0
+
+[osm_tags]
+postcode = "addr:postcode"
+street = "addr:street"
+housenumber = "addr:housenumber"
+city = "addr:city"
