@@ -26,9 +26,10 @@ use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 
 use super::state::ServerState;
+use crate::confidence::Confidence;
 use crate::control::budget::compute_budget;
 use crate::geocoder::executor::{
-    GeocodedResult, build_nearest_result, execute_with_control, reason,
+    GeocodedResult, apply_rerank, build_nearest_result, execute_with_control, reason,
 };
 use crate::parser::heuristic::parse_heuristic;
 use crate::routing::CountryId;
@@ -100,21 +101,33 @@ pub async fn forward(
     // Per C6: geocode work is CPU-bound. Run on the blocking pool so
     // we don't starve the async runtime thread pool. Inside the blocking
     // task we (1) parse, (2) recompute the budget against live shard
-    // statistics per #97 §1, then (3) execute under the control-plane
-    // hooks so admission/fanout/recombination metrics fire.
+    // statistics per #97 §1, (3) execute under the control-plane hooks
+    // so admission/fanout/recombination metrics fire, and finally
+    // (4) layer the GBDT rerank + action-threshold pass on top of the
+    // control-plane results when a model is configured (#96 §Confidence
+    // Model). The rerank step is a no-op when `rerank_model` is None.
     let q_text = params.q.clone();
     let state_clone = Arc::clone(&state);
-    let exec_result: Result<Result<Vec<GeocodedResult>, _>, _> =
-        tokio::task::spawn_blocking(move || {
-            let mut parsed = parse_heuristic(&q_text, country);
-            let stats = state_clone.shard.stats();
-            parsed.execution_budget =
-                compute_budget(&parsed, stats, state_clone.control.budget_policy);
-            execute_with_control(&parsed, &state_clone.shard, limit, &state_clone.control)
-        })
-        .await;
-    let results = match exec_result {
-        Ok(Ok(r)) => r,
+    let exec_result: Result<
+        Result<(Vec<GeocodedResult>, Confidence), crate::control::AdmissionError>,
+        _,
+    > = tokio::task::spawn_blocking(move || {
+        let mut parsed = parse_heuristic(&q_text, country);
+        let stats = state_clone.shard.stats();
+        parsed.execution_budget = compute_budget(&parsed, stats, state_clone.control.budget_policy);
+        let raw = execute_with_control(&parsed, &state_clone.shard, limit, &state_clone.control)?;
+        let (ranked, action) = apply_rerank(
+            raw,
+            &parsed,
+            &state_clone.shard,
+            state_clone.rerank_model.as_ref(),
+            &state_clone.confidence_config,
+        );
+        Ok((ranked, action))
+    })
+    .await;
+    let (results, action) = match exec_result {
+        Ok(Ok(pair)) => pair,
         Ok(Err(e)) => {
             return error_response(StatusCode::PAYLOAD_TOO_LARGE, &e.to_string());
         }
@@ -129,11 +142,12 @@ pub async fn forward(
         .record_per_country_fanout(country.iso2(), results.len() as u32);
 
     if accept_geojson(&headers) {
-        geojson_response(&results, include_debug)
+        geojson_response(&results, include_debug, action)
     } else {
         Json(ForwardResponse {
             query: params.q,
             country: country.iso2(),
+            confidence: action.as_str(),
             count: results.len(),
             results: results
                 .iter()
@@ -194,7 +208,7 @@ pub async fn reverse(
     };
 
     if accept_geojson(&headers) {
-        geojson_response(&results, false)
+        geojson_response(&results, false, Confidence::Accept)
     } else {
         Json(ReverseResponse {
             count: results.len(),
@@ -232,8 +246,12 @@ fn accept_geojson(headers: &HeaderMap) -> bool {
 /// Content-Type (per C2). Axum's `Json(...)` always serves
 /// `application/json`, which violates RFC 7946 §12 for GeoJSON
 /// responses.
-fn geojson_response(results: &[GeocodedResult], include_debug: bool) -> Response {
-    let body = match serde_json::to_vec(&to_geojson(results, include_debug)) {
+fn geojson_response(
+    results: &[GeocodedResult],
+    include_debug: bool,
+    confidence: Confidence,
+) -> Response {
+    let body = match serde_json::to_vec(&to_geojson(results, include_debug, confidence)) {
         Ok(b) => b,
         Err(e) => {
             tracing::error!(error = %e, "failed to serialize geojson");
@@ -263,6 +281,10 @@ fn error_response(status: StatusCode, message: &str) -> Response {
 struct ForwardResponse {
     query: String,
     country: &'static str,
+    /// Action tier of the top-1 result per #96 §Confidence Model:
+    /// `accept` / `caution` / `review` / `reject`. Always `accept`
+    /// in the no-model fallback path.
+    confidence: &'static str,
     count: usize,
     results: Vec<ForwardItem>,
 }
@@ -318,7 +340,11 @@ struct ErrorResponse {
     error: String,
 }
 
-fn to_geojson(results: &[GeocodedResult], include_debug: bool) -> serde_json::Value {
+fn to_geojson(
+    results: &[GeocodedResult],
+    include_debug: bool,
+    confidence: Confidence,
+) -> serde_json::Value {
     let features: Vec<serde_json::Value> = results
         .iter()
         .map(|r| {
@@ -352,6 +378,7 @@ fn to_geojson(results: &[GeocodedResult], include_debug: bool) -> serde_json::Va
         .collect();
     serde_json::json!({
         "type": "FeatureCollection",
+        "confidence": confidence.as_str(),
         "features": features,
     })
 }
