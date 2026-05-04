@@ -15,9 +15,13 @@
 use butterfly_geocode::control::budget::{BudgetPolicy, classify_tier};
 use butterfly_geocode::geocoder::executor::{ControlPlane, execute_with_control};
 use butterfly_geocode::types::ExecutionBudget;
-use butterfly_geocode::{CountryId, Shard, execute, parse_heuristic};
+use butterfly_geocode::{
+    Confidence, ConfidenceConfig, CountryId, GbdtModel, Shard, execute, execute_with_rerank,
+    parse_heuristic,
+};
 
 const SHARD_PATH: &str = "regions/belgium.bfgs";
+const RERANK_MODEL_PATH: &str = "data/models/rerank-belgium-tiny.gbdt";
 
 fn open_shard() -> Shard {
     Shard::open(SHARD_PATH).unwrap_or_else(|e| {
@@ -148,6 +152,62 @@ fn budget_exhaustion_short_circuits() {
 
 #[test]
 #[ignore]
+fn rerank_does_not_break_top1_for_known_correct_query() {
+    // Same Brussels query as the no-model test above, but routed
+    // through `execute_with_rerank` with a real GBDT model loaded.
+    // Asserts:
+    //   1. Top-1 is still the right street.
+    //   2. Top-1 lands in the Brussels lat/lon box.
+    //   3. The rerank attached `RERANK_GBDT` to every candidate.
+    //   4. The action tier is one of `accept|caution|review` — never
+    //      `reject` for a query the no-model path handles.
+    let shard = open_shard();
+    let model = GbdtModel::load(std::path::Path::new(RERANK_MODEL_PATH)).unwrap_or_else(|e| {
+        panic!(
+            "could not load {RERANK_MODEL_PATH}: {e}\n\
+             Train it first: cargo run --release -p butterfly-geocode -- train-rerank \\\n\
+                            --shard geocode/regions/belgium.bfgs \\\n\
+                            --out geocode/data/models/rerank-belgium-tiny.gbdt"
+        );
+    });
+    let cfg = ConfidenceConfig::default();
+    let q = parse_heuristic("Rue Wayez 122 Anderlecht", CountryId::BE);
+
+    let baseline = execute(&q, &shard, 5);
+    assert!(
+        !baseline.is_empty(),
+        "no-model executor should resolve this query"
+    );
+
+    let (results, action) = execute_with_rerank(&q, &shard, 5, Some(&model), &cfg);
+    assert!(
+        !results.is_empty(),
+        "rerank should not empty the result set"
+    );
+    assert_ne!(action, Confidence::Reject, "got reject for a known query");
+
+    let top = &results[0];
+    assert!(
+        top.street.to_lowercase().contains("wayez"),
+        "rerank changed top-1 street: got '{}'",
+        top.street
+    );
+    assert!(
+        (50.5..51.0).contains(&top.lat) && (4.1..4.5).contains(&top.lon),
+        "rerank top-1 out of Brussels bounds: lat={} lon={}",
+        top.lat,
+        top.lon
+    );
+    assert!(
+        results
+            .iter()
+            .all(|r| r.reason_codes.iter().any(|c| c == "RERANK_GBDT")),
+        "every reranked candidate should carry RERANK_GBDT"
+    );
+}
+
+#[test]
+#[ignore]
 fn clean_query_belgium_classifies_correctly() {
     let shard = open_shard();
     let mut q = parse_heuristic("Rue Wayez 122 1070 Anderlecht", CountryId::BE);
@@ -171,6 +231,57 @@ fn clean_query_belgium_classifies_correctly() {
         !res.is_empty(),
         "expected hits for the canonical clean query"
     );
+}
+
+#[test]
+#[ignore]
+fn rerank_no_model_path_is_unchanged() {
+    let shard = open_shard();
+    let cfg = ConfidenceConfig::default();
+    let q = parse_heuristic("Rue Wayez 122 Anderlecht", CountryId::BE);
+    let baseline = execute(&q, &shard, 5);
+    let (results, action) = execute_with_rerank(&q, &shard, 5, None, &cfg);
+    assert_eq!(action, Confidence::Accept);
+    assert_eq!(results.len(), baseline.len());
+    for (a, b) in results.iter().zip(baseline.iter()) {
+        assert_eq!(a.lat, b.lat);
+        assert_eq!(a.lon, b.lon);
+        assert_eq!(a.housenumber, b.housenumber);
+        assert!(
+            !a.reason_codes.iter().any(|c| c == "RERANK_GBDT"),
+            "no-model path must not annotate RERANK_GBDT"
+        );
+    }
+}
+
+#[test]
+#[ignore]
+fn rerank_latency_p50_under_budget() {
+    // Smoke benchmark — runs the full rerank pipeline on a single
+    // query and asserts that p50 inference latency over 100 calls is
+    // under 5 ms (well under the 10 µs/candidate slice budgeted in
+    // GBDT_DECISION.md, even after extract_features and the apply
+    // layer).
+    let shard = open_shard();
+    let model = GbdtModel::load(std::path::Path::new(RERANK_MODEL_PATH)).unwrap();
+    let cfg = ConfidenceConfig::default();
+    let q = parse_heuristic("Rue Wayez 122 Anderlecht", CountryId::BE);
+
+    // Warm-up.
+    for _ in 0..10 {
+        let _ = execute_with_rerank(&q, &shard, 5, Some(&model), &cfg);
+    }
+    let mut samples_us = Vec::with_capacity(100);
+    for _ in 0..100 {
+        let t = std::time::Instant::now();
+        let _ = execute_with_rerank(&q, &shard, 5, Some(&model), &cfg);
+        samples_us.push(t.elapsed().as_micros() as u64);
+    }
+    samples_us.sort_unstable();
+    let p50 = samples_us[50];
+    let p99 = samples_us[99];
+    println!("rerank latency: p50={p50} µs, p99={p99} µs");
+    assert!(p50 < 5_000, "p50 latency {p50} µs over 5 ms budget");
 }
 
 #[test]

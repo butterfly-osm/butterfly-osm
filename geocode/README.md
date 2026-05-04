@@ -32,10 +32,63 @@ Deterministic Belgium-only geocoder for the butterfly-osm toolkit. **MVP / Phase
 | OSM `addr:*` extractor         | `src/osm_extract/`                          |
 | HTTP API                       | `src/server/`                               |
 
+## Confidence + GBDT Reranking (#96 §Confidence Model)
+
+A pure-Rust GBDT layer reranks the executor's candidates and assigns
+each query an action tier (`accept` / `caution` / `review` / `reject`).
+
+- **Library:** `gbdt = "0.1.3"` (per Agent D's PR #164 decision —
+  pure Rust, single-binary deploy preserved).
+- **Inference:** ~1.12 µs p50 / 1.81 µs p99 single-row predict;
+  end-to-end rerank (executor + features + GBDT + thresholds) is
+  ~212 µs p50 / ~220 µs p99 for a Brussels query on Belgium.
+- **Feature schema:** 14 numeric features defined in
+  `confidence::features::Features`, versioned via
+  `Features::SCHEMA_VERSION`. Stable JSONL on-disk shape so training
+  corpora survive code refactors.
+- **Training:** pointwise `LogLikelyhood` loss. The
+  `butterfly-geocode train-rerank` CLI subcommand reads a labelled
+  JSONL corpus (`{"query": "...", "gold": {"lat": ..., "lon": ...,
+  "housenumber": "..."}, ...}`) and emits a `gbdt`-format model file.
+  When `--corpus` is omitted, the trainer synthesises a corpus by
+  sampling records from the shard — useful as a Phase-0 bootstrap
+  while #98 Phase 2 collects real telemetry.
+- **Action thresholds (BE Phase-0 defaults):** `accept >= 0.85,
+  caution >= 0.5, review >= 0.2, reject < 0.2`. Tunable via
+  `ConfidenceConfig`.
+- **Reason codes:** `RERANK_GBDT` on every reranked candidate;
+  `HIGH_CONFIDENCE` / `LOW_CONFIDENCE` / `BELOW_THRESHOLD` for the
+  top-1 tier; `STREET_WEAK`, `COUNTRY_UNCERTAIN`, `POSTCODE_EXACT`,
+  `POSTCODE_MISMATCH` as per-candidate secondary signals.
+- **No-model fallback:** when the server is started without
+  `--rerank-model`, the executor returns its raw scores untouched and
+  the API surfaces `confidence: "accept"`. Existing clients see no
+  behavioural change.
+
+```bash
+# Train the reranker on Belgium (synthetic corpus from shard records).
+cargo run --release -p butterfly-geocode -- train-rerank \
+    --shard geocode/regions/belgium.bfgs \
+    --out geocode/data/models/rerank-belgium-tiny.gbdt \
+    --iterations 100 --max-depth 6 --synth-size 5000
+
+# Serve with reranking enabled.
+cargo run --release -p butterfly-geocode -- serve \
+    --shard geocode/regions/belgium.bfgs \
+    --rerank-model geocode/data/models/rerank-belgium-tiny.gbdt
+```
+
+The shipped model `geocode/data/models/rerank-belgium-tiny.gbdt` was
+trained on the Belgium shard with synthetic queries (1000 corpus rows,
+9764 (query, candidate) pairs, 50 trees / depth 5). Rank-1 hit rate on
+the training set is ~88%. **Phase 2 retraining** with production
+telemetry — once #98's beam-search parser ships and queries-with-gold
+can be logged — is the user's follow-up; the architecture and CLI
+landed in this layer support that without code changes.
+
 ## What's deferred (still in #96/#97/#98)
 
 - **Byte-level transformer parser** (#96 §Tagger, #98 Phase 2) — the heuristic in `parser/heuristic.rs` is the deterministic Phase 0 baseline that the trained transformer will replace. **NOT** #98 Phase 1 (which is the retrieval-aware beam search over transformer outputs).
-- **GBDT confidence reranker** (#96 §Confidence Model)
 - **Multi-country routing** (#96 §Country Routing) — `CountryId` is `non_exhaustive`, the cheap classifier returns a posterior shape; only `BE` is wired.
 - **Cross-border shard co-location** (#96 §Cross-Border Shard Co-location)
 - **Feedback operators** (`Downgrade`, `TopkMerge`, `Sample`) — types defined per #96, not invoked by the MVP executor

@@ -29,6 +29,11 @@ data/*/transit/
 
 # Project specific
 data/
+# Exception: geocode shipped tiny models (under 1 MB each, checked-in
+# Phase-0 baseline per #96 §Confidence Model).
+!geocode/data/
+!geocode/data/models/
+!geocode/data/models/*
 *.log
 .env.local
 
