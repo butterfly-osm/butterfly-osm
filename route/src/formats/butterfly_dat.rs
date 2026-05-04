@@ -141,6 +141,18 @@ pub enum SectionKind {
     /// Pre-built flat reverse DOWN adjacency for a (mode, metric).
     DownReverseAdjFlat = 0x0009_0003,
 
+    /// Per-mode `orig_to_rank` mapping (#153). Server-only flat
+    /// `[u32; n_original_nodes]`. Replaces the
+    /// `original_to_filtered → perm` composition at every snap site.
+    /// Sentinel `u32::MAX` = original node not in this mode's filtered
+    /// subgraph.
+    OrigToRank = 0x000A_0001,
+    /// Per-mode `filtered_to_original` mapping (#153). Server-only flat
+    /// `[u32; n_filtered_nodes]`. Same content as
+    /// `FilteredEbg.filtered_to_original`, packed standalone so the
+    /// loader can drop `FilteredEbg` from the serve path.
+    FilteredToOriginal = 0x000A_0002,
+
     /// Future / unrecognised. Readers that see this should fall back
     /// to the section name string.
     Unknown = 0xFFFF_FFFF,
@@ -184,6 +196,9 @@ impl SectionKind {
             0x0009_0002 => Self::DownAdjFlat,
             0x0009_0003 => Self::DownReverseAdjFlat,
 
+            0x000A_0001 => Self::OrigToRank,
+            0x000A_0002 => Self::FilteredToOriginal,
+
             _ => Self::Unknown,
         }
     }
@@ -215,6 +230,8 @@ impl SectionKind {
             Self::UpAdjFlat => "flat/up_adj",
             Self::DownAdjFlat => "flat/down_adj",
             Self::DownReverseAdjFlat => "flat/down_reverse_adj",
+            Self::OrigToRank => "mode/orig_to_rank",
+            Self::FilteredToOriginal => "mode/filtered_to_original",
             Self::Unknown => "unknown",
         }
     }

@@ -1801,10 +1801,10 @@ fn belgium_flight_edges_batch_totals_match_matrix() {
         .spatial_index
         .snap(pairs[0][2], pairs[0][3], &mode_data.mask, 10)
         .expect("dst snap");
-    let src_filt = mode_data.filtered_ebg.original_to_filtered[src_snap as usize];
-    let dst_filt = mode_data.filtered_ebg.original_to_filtered[dst_snap as usize];
-    let src_rank = mode_data.order.perm[src_filt as usize];
-    let dst_rank = mode_data.order.perm[dst_filt as usize];
+    let src_rank = mode_data.orig_to_rank[src_snap as usize];
+    let dst_rank = mode_data.orig_to_rank[dst_snap as usize];
+    assert_ne!(src_rank, u32::MAX);
+    assert_ne!(dst_rank, u32::MAX);
     let query = CchQuery::with_custom_weights(
         &mode_data.cch_topo,
         &mode_data.up_adj_flat,
