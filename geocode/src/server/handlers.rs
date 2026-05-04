@@ -31,7 +31,6 @@ use crate::control::budget::compute_budget;
 use crate::geocoder::executor::{
     GeocodedResult, apply_rerank, build_nearest_result, execute_with_control, reason,
 };
-use crate::parser::heuristic::parse_heuristic;
 use crate::routing::CountryId;
 use crate::shard::reader::haversine_m;
 
@@ -98,9 +97,20 @@ pub async fn forward(
         .map(|s| s.split(',').any(|t| t.trim().eq_ignore_ascii_case("debug")))
         .unwrap_or(false);
 
+    // Outcome enum for the blocking task: fold parser failures, admission
+    // rejections, and successful pipelines into a single result so the
+    // async caller can dispatch on each independently without nested
+    // `Result<Result<...>>` gymnastics.
+    enum Outcome {
+        Ok(Vec<GeocodedResult>, Confidence),
+        ParserFailed(String, &'static str),
+        Admission(crate::control::AdmissionError),
+    }
+
     // Per C6: geocode work is CPU-bound. Run on the blocking pool so
     // we don't starve the async runtime thread pool. Inside the blocking
-    // task we (1) parse, (2) recompute the budget against live shard
+    // task we (1) parse via the configured backend (heuristic / neural —
+    // #98 Phase 1), (2) recompute the budget against live shard
     // statistics per #97 §1, (3) execute under the control-plane hooks
     // so admission/fanout/recombination metrics fire, and finally
     // (4) layer the GBDT rerank + action-threshold pass on top of the
@@ -108,14 +118,23 @@ pub async fn forward(
     // Model). The rerank step is a no-op when `rerank_model` is None.
     let q_text = params.q.clone();
     let state_clone = Arc::clone(&state);
-    let exec_result: Result<
-        Result<(Vec<GeocodedResult>, Confidence), crate::control::AdmissionError>,
-        _,
-    > = tokio::task::spawn_blocking(move || {
-        let mut parsed = parse_heuristic(&q_text, country);
+    let join_result: Result<Outcome, _> = tokio::task::spawn_blocking(move || {
+        let mut parsed = match state_clone
+            .parser
+            .parse(&q_text, country, &state_clone.shard)
+        {
+            Ok(p) => p,
+            Err(e) => {
+                return Outcome::ParserFailed(e.to_string(), state_clone.parser.name());
+            }
+        };
         let stats = state_clone.shard.stats();
         parsed.execution_budget = compute_budget(&parsed, stats, state_clone.control.budget_policy);
-        let raw = execute_with_control(&parsed, &state_clone.shard, limit, &state_clone.control)?;
+        let raw =
+            match execute_with_control(&parsed, &state_clone.shard, limit, &state_clone.control) {
+                Ok(r) => r,
+                Err(e) => return Outcome::Admission(e),
+            };
         let (ranked, action) = apply_rerank(
             raw,
             &parsed,
@@ -123,12 +142,19 @@ pub async fn forward(
             state_clone.rerank_model.as_ref(),
             &state_clone.confidence_config,
         );
-        Ok((ranked, action))
+        Outcome::Ok(ranked, action)
     })
     .await;
-    let (results, action) = match exec_result {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => {
+    let (results, action) = match join_result {
+        Ok(Outcome::Ok(r, a)) => (r, a),
+        Ok(Outcome::ParserFailed(msg, name)) => {
+            tracing::error!(error = %msg, parser = %name, "parser failed");
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "parser failure (see server logs)",
+            );
+        }
+        Ok(Outcome::Admission(e)) => {
             return error_response(StatusCode::PAYLOAD_TOO_LARGE, &e.to_string());
         }
         Err(e) => {
