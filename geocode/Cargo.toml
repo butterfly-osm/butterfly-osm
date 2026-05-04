@@ -40,7 +40,8 @@ rand = { version = "0.9", features = ["std", "std_rng"] }
 
 axum = "0.8.8"
 tower = { version = "0.5.3", features = ["limit"] }
-tower-http = { version = "0.6.8", features = ["cors", "trace", "timeout", "catch-panic", "compression-gzip", "compression-br"] }
+tower-http = { version = "0.6.8", features = ["cors", "trace", "timeout", "catch-panic", "compression-gzip", "compression-br", "limit"] }
+tower_governor = { version = "0.8", default-features = false, features = ["axum"] }
 axum-prometheus = "0.10"
 metrics = "0.24"
 
