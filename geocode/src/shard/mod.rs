@@ -6,37 +6,36 @@
 //! zero-copy reads: every section is 4-byte aligned, every fixed-size
 //! array is laid out so it can be cast directly off the mmap with
 //! `bytemuck::cast_slice`. Pattern matches butterfly-route's "Pattern B"
-//! (body+file CRC):
+//! (body+file CRC).
 //!
-//! - **body_crc** = CRC over body bytes (everything between header and
-//!   footer)
-//! - **file_crc** = CRC over header + body bytes (everything except
-//!   the footer)
+//! ## Serve-the-world (#96)
 //!
-//! ## Multi-country (#96)
+//! v4 stores the country as a 2-byte ISO 3166-1 alpha-2 code
+//! (e.g. `b"BE"`, `b"JP"`) at header offset 6-7, replacing v3's single
+//! `u8` enum index. The bump unblocks "global address resolution at
+//! 50-100K+ addr/sec" — adding a country is now a TOML pack drop, no
+//! Rust changes, no per-country byte-code allocation.
 //!
-//! v3 introduced the per-shard country code (one shard per country,
-//! see #96 §"Per-Country Shard Contents") stored at header byte 6.
+//! ## Authoritative-source ingestion (#96 §"Data Sources")
 //!
-//! ## Authoritative-source ingestion (#96 §"Data Sources", v4)
-//!
-//! v4 extends the per-record layout with a single `source` byte
+//! v4 also extends the per-record layout with a single `source` byte
 //! (1 = OSM, 2 = BOSA BeSt, 3 = BAN, 4 = BAG, 5 = G-NAF, 6 = BEV,
 //! 7 = swisstopo). The byte answers the audit question "what shipped
 //! this record?" without forcing the reader to track provenance
 //! out-of-band. See [`SourceTag`] for the canonical encoding.
 //!
 //! Records went from 32 → 36 bytes (added `source` u8 + 3 reserved
-//! pad bytes for 4-byte alignment). The old 32-byte v3 layout fails
-//! to load (version mismatch); operators rebuild every shard with
-//! `build-shard --source <osm|bosa|...> --country <iso2>`.
+//! pad bytes for 4-byte alignment).
+//!
+//! v3 → v4 is a rebuild. The reader rejects old v1/v2/v3 shards with a
+//! clear error message; operators rebuild via `build-shard --country
+//! <ISO2> --source <osm|bosa|...>`.
 //!
 //! ```text
 //!   Header (64 bytes):
 //!     magic            "BFGS"        u32   (= 0x53464642)
 //!     version          u16           (= 4)
-//!     country_code     u8            (CountryId::to_u8 — 1=BE, 2=FR, ...)
-//!     _pad             u8
+//!     country_iso2     [u8; 2]       ASCII uppercase ISO 3166-1 alpha-2 ("BE", "JP", "US", ...)
 //!     record_count     u32
 //!     _pad             u32
 //!     strings_off      u64
@@ -78,22 +77,22 @@
 //!     u64 body_crc64
 //!     u64 file_crc64
 //! ```
-//!
-//! Old `BFGS v1`/v2/v3 shards fail to load against the v4 reader
-//! (version mismatch). They must be rebuilt — every shard must be
-//! re-run via `build-shard --country <iso2> --source <tag>`.
 
 pub mod builder;
 pub mod mmap;
 pub mod reader;
 
 pub const MAGIC: u32 = u32::from_le_bytes(*b"BFGS");
-/// Current on-disk version. v4 introduces the per-record source byte
-/// (#96 §"Data Sources" — OSM/BOSA/BAN/BAG/G-NAF/...). v3 introduced
-/// the per-shard country code. v2 was the Belgium-only MVP.
+/// Current on-disk version. v4 carries TWO additive changes from v3:
+/// (a) country stored as 2-byte ISO 3166-1 alpha-2 in header bytes 6-7
+/// (#96 serve-the-world); (b) per-record `source` byte (#96 §Data
+/// Sources — OSM/BOSA/BAN/...). v3 shards must be rebuilt.
 pub const VERSION: u16 = 4;
+/// Previous version, retained as a constant so the reader can produce
+/// a precise error when it encounters an old shard.
+pub const VERSION_V3: u16 = 3;
 pub const HEADER_BYTES: usize = 64;
-/// 32 byte v3 layout + `source` u8 + 3 pad bytes for 4-byte
+/// 32-byte v3 layout + `source` u8 + 3 pad bytes for 4-byte
 /// alignment = 36. The pad bytes are reserved for future per-record
 /// metadata (e.g. confidence score, quality flag) and MUST be zero
 /// at write time so the file CRC stays deterministic.

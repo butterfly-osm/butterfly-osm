@@ -1,114 +1,146 @@
 //! Country routing — first-class stage that runs BEFORE full parsing
 //! per #96.
+//!
+//! ## Serve-the-world (`butterfly-osm#96`)
+//!
+//! [`CountryId`] is a 2-byte ISO 3166-1 alpha-2 code, NOT an enum.
+//! Adding a country is dropping a TOML pack into
+//! `geocode/data/packs/<iso2>.toml` and rebuilding a shard — zero
+//! Rust changes. The constants on [`CountryId`] (`BE`, `FR`, `JP`,
+//! `US`, …) are sugar for the most common codes; the underlying
+//! type accepts any 2-uppercase-letter input via [`CountryId::from_iso2`].
+//!
+//! The previous enum (PR #169) had 7 hardcoded variants
+//! (BE/FR/NL/LU/DE/AT/CH). That model was inherently European.
+//! The newtype model unblocks #96 §"global address resolution at
+//! 50-100K+ addr/sec" — Japanese, Brazilian, Indian, US, Australian
+//! shards now sit symmetrically next to European ones.
 
 pub mod bbox;
 pub mod classifier;
+pub mod pack;
 
 pub use bbox::{country_for_point, supported_countries_for_point};
-pub use classifier::classify_country;
-use serde::{Deserialize, Serialize};
+pub use classifier::{Classifier, classify_country};
+pub use pack::{CountryPack, PackRegistry};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// Country identifier (ISO 3166-1 alpha-2).
-///
-/// The set of variants here is the set of countries the geocoder
-/// knows how to build a shard for. Adding a country is a 4-step
-/// change: extend this enum, add the lexical signals to
-/// [`classifier`], add the lat/lon bounding box to [`bbox`], and ship
-/// a shard built via `build-shard --country <code>`.
-///
-/// Per #96 cluster #1 (BE / FR / NL / LU / DE) and cluster #2
-/// (AT / DE / CH) is the multi-country MVP scope.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum CountryId {
-    /// Belgium.
-    BE,
-    /// France.
-    FR,
-    /// Netherlands.
-    NL,
-    /// Luxembourg.
-    LU,
-    /// Germany.
-    DE,
-    /// Austria.
-    AT,
-    /// Switzerland.
-    CH,
-}
+use std::sync::{OnceLock, RwLock};
+
+/// Country identifier — ISO 3166-1 alpha-2, stored as 2 ASCII uppercase
+/// bytes.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CountryId(pub [u8; 2]);
 
 impl CountryId {
-    /// All countries the geocoder is wired for.
-    pub const ALL: &'static [CountryId] = &[
-        CountryId::BE,
-        CountryId::FR,
-        CountryId::NL,
-        CountryId::LU,
-        CountryId::DE,
-        CountryId::AT,
-        CountryId::CH,
-    ];
+    // ---- European cluster (#96 cluster #1 + #2) ----
+    pub const BE: CountryId = CountryId(*b"BE");
+    pub const FR: CountryId = CountryId(*b"FR");
+    pub const NL: CountryId = CountryId(*b"NL");
+    pub const LU: CountryId = CountryId(*b"LU");
+    pub const DE: CountryId = CountryId(*b"DE");
+    pub const AT: CountryId = CountryId(*b"AT");
+    pub const CH: CountryId = CountryId(*b"CH");
 
-    /// ISO 3166-1 alpha-2 code, uppercase.
-    #[must_use]
-    pub fn iso2(self) -> &'static str {
-        match self {
-            CountryId::BE => "BE",
-            CountryId::FR => "FR",
-            CountryId::NL => "NL",
-            CountryId::LU => "LU",
-            CountryId::DE => "DE",
-            CountryId::AT => "AT",
-            CountryId::CH => "CH",
-        }
-    }
+    // ---- Other European packs shipped by default ----
+    pub const GB: CountryId = CountryId(*b"GB");
+    pub const ES: CountryId = CountryId(*b"ES");
+    pub const IT: CountryId = CountryId(*b"IT");
 
-    /// Parse an ISO 3166-1 alpha-2 code (case-insensitive). Returns
-    /// `None` for codes outside the supported set.
+    // ---- Non-European MVP set demonstrating "serve the world" ----
+    pub const US: CountryId = CountryId(*b"US");
+    pub const JP: CountryId = CountryId(*b"JP");
+    pub const BR: CountryId = CountryId(*b"BR");
+    pub const IN: CountryId = CountryId(*b"IN");
+    pub const AU: CountryId = CountryId(*b"AU");
+
+    /// Parse an ISO 3166-1 alpha-2 code (case-insensitive). Whitespace
+    /// is trimmed. Non-ASCII or non-alphabetic input → `None`.
     #[must_use]
     pub fn from_iso2(code: &str) -> Option<Self> {
-        match code.trim().to_ascii_uppercase().as_str() {
-            "BE" => Some(CountryId::BE),
-            "FR" => Some(CountryId::FR),
-            "NL" => Some(CountryId::NL),
-            "LU" => Some(CountryId::LU),
-            "DE" => Some(CountryId::DE),
-            "AT" => Some(CountryId::AT),
-            "CH" => Some(CountryId::CH),
-            _ => None,
+        let s = code.trim();
+        let bytes = s.as_bytes();
+        if bytes.len() != 2 {
+            return None;
         }
+        let a = bytes[0];
+        let b = bytes[1];
+        if !a.is_ascii_alphabetic() || !b.is_ascii_alphabetic() {
+            return None;
+        }
+        Some(CountryId([a.to_ascii_uppercase(), b.to_ascii_uppercase()]))
     }
 
-    /// Encode as a single byte for on-disk shard headers (BFGS v3).
-    /// Stable: never reuse a code for a different country across
-    /// versions.
+    /// Return the two-letter ISO code as a `&'static str`. Cached via
+    /// a small global intern map — first call per code allocates and
+    /// leaks 2 bytes; subsequent calls are an `RwLock` read. Bounded
+    /// at 26×26 = 676 codes total (~4 KB worst case leak).
     #[must_use]
-    pub fn to_u8(self) -> u8 {
-        match self {
-            CountryId::BE => 1,
-            CountryId::FR => 2,
-            CountryId::NL => 3,
-            CountryId::LU => 4,
-            CountryId::DE => 5,
-            CountryId::AT => 6,
-            CountryId::CH => 7,
-        }
+    pub fn iso2(self) -> &'static str {
+        iso2_intern(self.0)
     }
 
-    /// Decode a header byte to a country.
+    /// Same as [`Self::iso2`] but returns a `&str` borrowed from `self`.
+    /// Does not touch the intern table — useful in hot paths.
     #[must_use]
-    pub fn from_u8(b: u8) -> Option<Self> {
-        match b {
-            1 => Some(CountryId::BE),
-            2 => Some(CountryId::FR),
-            3 => Some(CountryId::NL),
-            4 => Some(CountryId::LU),
-            5 => Some(CountryId::DE),
-            6 => Some(CountryId::AT),
-            7 => Some(CountryId::CH),
-            _ => None,
-        }
+    pub fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.0).unwrap_or("??")
     }
+
+    /// The raw 2-byte representation. Used by the BFGS v4 shard header
+    /// (offset 6-7).
+    #[must_use]
+    pub fn as_bytes(self) -> [u8; 2] {
+        self.0
+    }
+
+    /// Construct directly from 2 bytes. Caller is responsible for
+    /// validating that bytes are uppercase ASCII alphabetic; use
+    /// [`Self::from_iso2`] for untrusted input.
+    #[must_use]
+    pub const fn from_bytes(b: [u8; 2]) -> Self {
+        CountryId(b)
+    }
+}
+
+impl std::fmt::Debug for CountryId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CountryId({})", self.as_str())
+    }
+}
+
+impl std::fmt::Display for CountryId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Serialize for CountryId {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for CountryId {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(de)?;
+        CountryId::from_iso2(&s)
+            .ok_or_else(|| serde::de::Error::custom(format!("invalid ISO 3166-1 alpha-2: '{s}'")))
+    }
+}
+
+fn iso2_intern(bytes: [u8; 2]) -> &'static str {
+    use std::collections::HashMap;
+    static TABLE: OnceLock<RwLock<HashMap<[u8; 2], &'static str>>> = OnceLock::new();
+    let table = TABLE.get_or_init(|| RwLock::new(HashMap::with_capacity(64)));
+    if let Some(s) = table.read().expect("iso2 table read poisoned").get(&bytes) {
+        return s;
+    }
+    let mut w = table.write().expect("iso2 table write poisoned");
+    w.entry(bytes).or_insert_with(|| {
+        let s = std::str::from_utf8(&bytes).expect("CountryId bytes must be UTF-8");
+        Box::leak(s.to_string().into_boxed_str())
+    })
 }
 
 #[cfg(test)]
@@ -116,8 +148,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn iso2_round_trip_all_countries() {
-        for &c in CountryId::ALL {
+    fn iso2_round_trip_constants() {
+        for c in [
+            CountryId::BE,
+            CountryId::FR,
+            CountryId::NL,
+            CountryId::LU,
+            CountryId::DE,
+            CountryId::AT,
+            CountryId::CH,
+            CountryId::GB,
+            CountryId::ES,
+            CountryId::IT,
+            CountryId::US,
+            CountryId::JP,
+            CountryId::BR,
+            CountryId::IN,
+            CountryId::AU,
+        ] {
             assert_eq!(CountryId::from_iso2(c.iso2()), Some(c));
         }
     }
@@ -127,29 +175,53 @@ mod tests {
         assert_eq!(CountryId::from_iso2("be"), Some(CountryId::BE));
         assert_eq!(CountryId::from_iso2(" Fr "), Some(CountryId::FR));
         assert_eq!(CountryId::from_iso2("Nl"), Some(CountryId::NL));
+        assert_eq!(CountryId::from_iso2("jp"), Some(CountryId::JP));
+        assert_eq!(CountryId::from_iso2("Us"), Some(CountryId::US));
     }
 
     #[test]
-    fn iso2_unknown_returns_none() {
-        assert_eq!(CountryId::from_iso2("XX"), None);
+    fn iso2_unknown_strings_rejected() {
         assert_eq!(CountryId::from_iso2(""), None);
         assert_eq!(CountryId::from_iso2("GBR"), None);
+        assert_eq!(CountryId::from_iso2("12"), None);
+        assert_eq!(CountryId::from_iso2("B1"), None);
     }
 
     #[test]
-    fn u8_round_trip_all_countries() {
-        for &c in CountryId::ALL {
-            assert_eq!(CountryId::from_u8(c.to_u8()), Some(c));
-        }
+    fn iso2_returns_static_str() {
+        let s1 = CountryId::JP.iso2();
+        let s2 = CountryId::JP.iso2();
+        assert_eq!(s1.as_ptr(), s2.as_ptr());
+        assert_eq!(s1, "JP");
     }
 
     #[test]
-    fn u8_codes_are_distinct_and_nonzero() {
-        let mut seen = std::collections::HashSet::new();
-        for &c in CountryId::ALL {
-            let b = c.to_u8();
-            assert_ne!(b, 0, "0 is reserved for 'unknown' on disk");
-            assert!(seen.insert(b), "duplicate u8 code for {:?}", c);
-        }
+    fn arbitrary_iso2_works_without_compile_time_constant() {
+        let zw = CountryId::from_iso2("ZW").expect("Zimbabwe is two letters");
+        assert_eq!(zw.iso2(), "ZW");
+        let by = zw.as_bytes();
+        assert_eq!(by, *b"ZW");
+        assert_eq!(CountryId::from_bytes(by), zw);
+    }
+
+    #[test]
+    fn serde_round_trip() {
+        let c = CountryId::FR;
+        let json = serde_json::to_string(&c).unwrap();
+        assert_eq!(json, "\"FR\"");
+        let back: CountryId = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn serde_rejects_invalid_iso2() {
+        let r: Result<CountryId, _> = serde_json::from_str("\"GBR\"");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn debug_display_show_iso2() {
+        assert_eq!(format!("{}", CountryId::DE), "DE");
+        assert_eq!(format!("{:?}", CountryId::DE), "CountryId(DE)");
     }
 }

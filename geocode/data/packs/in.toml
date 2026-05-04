@@ -1,0 +1,139 @@
+# India country pack — butterfly-geocode #96 "serve the world".
+#
+# Indian addresses are heterogeneous (22 official languages, mostly
+# rendered in Latin via OSM). PIN code is the most reliable signal.
+# Authoritative dataset: India Post PIN database, OSM (sparse outside
+# major metros). Note that OSM India coverage skews to major cities.
+
+[country]
+iso2 = "IN"
+name = "India"
+
+[postcode]
+# 6-digit PIN, leading non-zero (range 110001-855126). India Post.
+regex = '\b[1-8]\d{5}\b'
+position = "trailing"
+canonicalize = "none"
+
+[scripts]
+dominant = ["Latin"]
+# Devanagari/Tamil/Bengali/Telugu may appear in city names.
+secondary = ["Devanagari"]
+
+# Indian English street-type cues + admin keywords.
+[[lexical_cues.match]]
+substring = "road"
+boost = 1.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "marg"
+boost = 1.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "nagar"
+boost = 1.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "colony"
+boost = 1.2
+kind = "word"
+[[lexical_cues.match]]
+substring = "sector"
+boost = 1.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "block"
+boost = 0.8
+kind = "word"
+[[lexical_cues.match]]
+substring = "vihar"
+boost = 1.4
+kind = "substring"
+[[lexical_cues.match]]
+substring = "bagh"
+boost = 1.0
+kind = "substring"
+[[lexical_cues.match]]
+substring = "puram"
+boost = 1.4
+kind = "substring"
+[[lexical_cues.match]]
+substring = "gali"
+boost = 1.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "rajpath"
+boost = 2.0
+kind = "word"
+# Major cities.
+[[lexical_cues.match]]
+substring = "delhi"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "new delhi"
+boost = 2.0
+kind = "substring"
+[[lexical_cues.match]]
+substring = "mumbai"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "bangalore"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "bengaluru"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "chennai"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "hyderabad"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "kolkata"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "calcutta"
+boost = 1.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "ahmedabad"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "pune"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "jaipur"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "lucknow"
+boost = 2.0
+kind = "word"
+
+[bbox]
+min_lat = 6.74
+max_lat = 35.50
+min_lon = 68.16
+max_lon = 97.40
+
+[neighbours]
+codes = ["BD", "BT", "CN", "MM", "NP", "PK", "LK"]
+
+[source_priors]
+osm = 0.7
+authoritative = 0.4
+
+[osm_tags]
+postcode = "addr:postcode"
+street = "addr:street"
+housenumber = "addr:housenumber"
+city = "addr:city"

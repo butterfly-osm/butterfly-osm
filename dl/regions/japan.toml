@@ -1,0 +1,16 @@
+# Butterfly region index — Japan
+#
+# OSM PBF for Japan from Geofabrik. ~1.5 GB compressed.
+#
+# Authoritative address dataset (NOT fetched here):
+#   - Japan Post Code Database (free download from Japan Post)
+#     https://www.post.japanpost.jp/zipcode/dl/kogaki-zip.html
+#   - National Land Numerical Information address points
+#     https://nlftp.mlit.go.jp/ksj-e/jpgis/datalist/KsjTmplt-N03.html
+#
+# Japanese addresses are block-based (chōme-banchi), not street-based.
+# The geocode shard schema's `housenumber` field is repurposed to hold
+# the block number; the `street` field is empty for most records.
+
+[pbf]
+url = "https://download.geofabrik.de/asia/japan-latest.osm.pbf"

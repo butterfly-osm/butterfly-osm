@@ -1,0 +1,13 @@
+# Butterfly region index — Australia
+#
+# OSM PBF for Australia from Geofabrik. ~600 MB compressed.
+#
+# Authoritative address dataset (NOT fetched here):
+#   - G-NAF (Geocoded National Address File) — 15M records, CC BY 4.0,
+#     published by PSMA/Geoscape Australia.
+#     https://geoscape.com.au/data/g-naf/
+# G-NAF is the authoritative source; OSM Australia is dense in metros
+# and useful as a fallback for rural areas.
+
+[pbf]
+url = "https://download.geofabrik.de/australia-oceania/australia-latest.osm.pbf"

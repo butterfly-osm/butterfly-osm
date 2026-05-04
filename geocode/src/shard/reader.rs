@@ -33,7 +33,7 @@ use memmap2::Mmap;
 use rstar::{AABB, PointDistance, RTree, RTreeObject};
 
 use super::mmap::map_readonly;
-use super::{FOOTER_BYTES, HEADER_BYTES, MAGIC, RECORD_BYTES, SourceTag, VERSION};
+use super::{FOOTER_BYTES, HEADER_BYTES, MAGIC, RECORD_BYTES, SourceTag, VERSION, VERSION_V3};
 use crate::geocoder::cost::ShardStats;
 use crate::parser::normalize::normalize;
 use crate::routing::CountryId;
@@ -181,19 +181,33 @@ impl Shard {
             bail!("bad shard magic: {magic:#x} (expected {MAGIC:#x})");
         }
         let version = u16::from_le_bytes(header_bytes[4..6].try_into().expect("2 bytes"));
-        if version != VERSION {
-            bail!("unsupported shard version: {version} (expected {VERSION}). Rebuild the shard.");
-        }
-        let country_code = header_bytes[6];
-        let country = CountryId::from_u8(country_code).ok_or_else(|| {
-            anyhow!(
-                "unknown country code {country_code} in shard header at {} \
-                 (expected one of {:?}). Was the shard built with a newer geocode \
-                 version that introduced a country this build does not know?",
+        if version == VERSION_V3 {
+            bail!(
+                "shard at {} is BFGS v3 (pre-#96-serve-the-world). \
+                 Rebuild via `butterfly-geocode build-shard --country <ISO2>` to upgrade to v4. \
+                 v3 stored country as a 7-entry enum index; v4 stores ISO 3166-1 alpha-2.",
                 path.display(),
-                CountryId::ALL.iter().map(|c| c.iso2()).collect::<Vec<_>>(),
-            )
-        })?;
+            );
+        }
+        if version != VERSION {
+            bail!(
+                "unsupported shard version at {}: {version} (expected {VERSION}). Rebuild the shard.",
+                path.display(),
+            );
+        }
+        // BFGS v4: country is 2-byte ISO 3166-1 alpha-2 at header[6..8].
+        let country_bytes: [u8; 2] = header_bytes[6..8]
+            .try_into()
+            .expect("2 bytes — guaranteed by HEADER_BYTES");
+        if !country_bytes[0].is_ascii_uppercase() || !country_bytes[1].is_ascii_uppercase() {
+            bail!(
+                "shard at {} has invalid ISO 3166-1 alpha-2 in header: {:?} \
+                 (must be 2 uppercase ASCII letters)",
+                path.display(),
+                country_bytes,
+            );
+        }
+        let country = CountryId::from_bytes(country_bytes);
         let record_count =
             u32::from_le_bytes(header_bytes[8..12].try_into().expect("4 bytes")) as usize;
         let strings_off =

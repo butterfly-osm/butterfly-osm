@@ -1,0 +1,19 @@
+# Butterfly region index — United States
+#
+# OSM PBF for the US from Geofabrik. ~9 GB compressed — biggest single
+# regional extract. Geocode shard build is feasible on machines with
+# 32 GB RAM; for smaller machines see `us-northeast.toml`.
+#
+# Authoritative address dataset (NOT fetched here — see
+# geocode-data/SOURCES.md):
+#   - OpenAddresses US state files (per-state CSVs, public-domain or
+#     CC0)
+#   - Census TIGER/Line address ranges (public domain)
+#   - USPS ZIP database (commercial, but ZIP boundaries can be
+#     reconstructed from Census TIGER ZCTAs)
+#
+# No transit feeds in this index — US transit is fragmented across
+# hundreds of agencies and is out of scope for the geocode-prep pass.
+
+[pbf]
+url = "https://download.geofabrik.de/north-america/us-latest.osm.pbf"

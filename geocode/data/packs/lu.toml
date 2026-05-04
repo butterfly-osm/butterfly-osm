@@ -1,0 +1,67 @@
+# Luxembourg country pack — butterfly-geocode #96 "serve the world".
+
+[country]
+iso2 = "LU"
+name = "Luxembourg"
+
+[postcode]
+# 4-digit, optionally with the "L-" prefix (e.g. "L-2453"). Range 1000-9999.
+regex = '\b(?:L-)?[1-9]\d{3}\b'
+position = "trailing"
+canonicalize = "strip_country_prefix"
+
+[scripts]
+dominant = ["Latin"]
+secondary = []
+
+[[lexical_cues.match]]
+substring = "rue"
+boost = 1.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "avenue"
+boost = 1.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "strooss"
+boost = 1.5
+kind = "substring"
+[[lexical_cues.match]]
+substring = "luxembourg"
+boost = 1.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "lëtzebuerg"
+boost = 2.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "esch-sur-alzette"
+boost = 2.5
+kind = "substring"
+[[lexical_cues.match]]
+substring = "differdange"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "dudelange"
+boost = 2.0
+kind = "word"
+
+[bbox]
+min_lat = 49.42
+max_lat = 50.22
+min_lon = 5.70
+max_lon = 6.55
+
+[neighbours]
+codes = ["BE", "FR", "DE"]
+
+[source_priors]
+osm = 0.7
+authoritative = 1.0
+
+[osm_tags]
+postcode = "addr:postcode"
+street = "addr:street"
+housenumber = "addr:housenumber"
+city = "addr:city"

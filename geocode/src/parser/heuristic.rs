@@ -160,71 +160,30 @@ fn score_confidence(flags: &RecoveryFlags) -> f32 {
     s.min(1.0)
 }
 
-/// 4-digit postcode (BE, LU, AT, CH).
-fn pc_4digit_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\b[1-9][0-9]{3}\b").expect("valid regex"))
-}
-
-/// 5-digit postcode (FR, DE). FR: 01xxx-95xxx (Corsica is 200xx).
-/// DE: 01xxx-99xxx. We accept any 5 digits at word boundaries.
-fn pc_5digit_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\b\d{5}\b").expect("valid regex"))
-}
-
-/// NL postcode: 4-digit + 2-letter (e.g. `1011 AB`).
-fn pc_nl_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\b\d{4}\s?[A-Za-z]{2}\b").expect("valid regex"))
-}
-
-/// L-prefixed Luxembourg postcode (`L-2453`). When this matches, drop
-/// the prefix so the shard lookup uses the bare 4-digit form.
-fn pc_lu_prefixed_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\bL-(\d{4})\b").expect("valid regex"))
-}
-
+/// Per #96 "serve the world": postcode regex + canonicalization come
+/// from the country pack (data), not a hardcoded match (code). The
+/// pack-driven path means adding a country is a TOML drop, not a Rust
+/// edit.
 fn extract_postcode_for(text: &str, country: CountryId) -> Option<String> {
-    match country {
-        // 5-digit countries.
-        CountryId::FR | CountryId::DE => pc_5digit_re().find(text).map(|m| m.as_str().to_string()),
-        // NL = 4-digit + 2-letter.
-        CountryId::NL => pc_nl_re().find(text).map(|m| {
-            // Canonicalize: collapse internal whitespace so `1011 AB`
-            // and `1011AB` produce the same key.
-            m.as_str().split_whitespace().collect::<Vec<_>>().join("")
-        }),
-        // Luxembourg accepts either bare 4-digit or L-prefixed.
-        CountryId::LU => {
-            if let Some(c) = pc_lu_prefixed_re().captures(text) {
-                return c.get(1).map(|m| m.as_str().to_string());
-            }
-            pc_4digit_re().find(text).map(|m| m.as_str().to_string())
-        }
-        // 4-digit countries.
-        CountryId::BE | CountryId::AT | CountryId::CH => {
-            pc_4digit_re().find(text).map(|m| m.as_str().to_string())
-        }
-    }
+    let reg = crate::routing::Classifier::shipped().registry();
+    let pack = reg.get(country)?;
+    let re = pack.postcode_regex.as_ref()?;
+    let m = re.find(text)?;
+    Some(pack.canonicalize_postcode(m.as_str()))
 }
 
-/// Country-specific [`RetrievalPolicy`]. Per #96 §Channel Roles
-/// each country pack chooses its strongest evidence anchor; for the
-/// cluster #1 + #2 set (BE / FR / NL / LU / DE / AT / CH) the
-/// shape is uniform: postcode as Blocker, street as Reducer,
-/// house-number + locality as Scorers.
-fn retrieval_policy_for(country: CountryId) -> RetrievalPolicy {
-    match country {
-        CountryId::BE
-        | CountryId::FR
-        | CountryId::NL
-        | CountryId::LU
-        | CountryId::DE
-        | CountryId::AT
-        | CountryId::CH => RetrievalPolicy::european_postcode_anchor(),
-    }
+/// Per-country [`RetrievalPolicy`].
+///
+/// MVP: every country uses the European postcode-anchor shape
+/// (postcode = Blocker, street = Reducer, house-number / locality =
+/// Scorers). For US-style (street = Blocker) and Japanese-style
+/// (admin hierarchy = Blocker) we'd diverge here once those packs
+/// declare a `[retrieval_policy]` section. The shape is uniform for
+/// the postcode-anchored countries (BE/FR/NL/LU/DE/AT/CH/GB/ES/IT/AU)
+/// in the shipped set; US/JP/BR/IN inherit the same shape pending the
+/// per-pack policy override.
+fn retrieval_policy_for(_country: CountryId) -> RetrievalPolicy {
+    RetrievalPolicy::european_postcode_anchor()
 }
 
 fn house_number_re() -> &'static Regex {
