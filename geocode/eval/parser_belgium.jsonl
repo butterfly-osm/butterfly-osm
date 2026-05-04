@@ -1,0 +1,15 @@
+{"text":"Rue Wayez 122 1070 Anderlecht","country":"BE","spans":[{"field":"street","start":0,"end":9},{"field":"house","start":10,"end":13},{"field":"postcode","start":14,"end":18},{"field":"locality","start":19,"end":29}]}
+{"text":"Avenue Louise 100 1050 Bruxelles","country":"BE","spans":[{"field":"street","start":0,"end":13},{"field":"house","start":14,"end":17},{"field":"postcode","start":18,"end":22},{"field":"locality","start":23,"end":32}]}
+{"text":"Grote Markt 1 2000 Antwerpen","country":"BE","spans":[{"field":"street","start":0,"end":11},{"field":"house","start":12,"end":13},{"field":"postcode","start":14,"end":18},{"field":"locality","start":19,"end":28}]}
+{"text":"Meir 50 2000 Antwerpen","country":"BE","spans":[{"field":"street","start":0,"end":4},{"field":"house","start":5,"end":7},{"field":"postcode","start":8,"end":12},{"field":"locality","start":13,"end":22}]}
+{"text":"Korenmarkt 7 9000 Gent","country":"BE","spans":[{"field":"street","start":0,"end":10},{"field":"house","start":11,"end":12},{"field":"postcode","start":13,"end":17},{"field":"locality","start":18,"end":22}]}
+{"text":"Boulevard Anspach 80 1000 Bruxelles","country":"BE","spans":[{"field":"street","start":0,"end":17},{"field":"house","start":18,"end":20},{"field":"postcode","start":21,"end":25},{"field":"locality","start":26,"end":35}]}
+{"text":"Rue Royale 200 1000 Bruxelles","country":"BE","spans":[{"field":"street","start":0,"end":10},{"field":"house","start":11,"end":14},{"field":"postcode","start":15,"end":19},{"field":"locality","start":20,"end":29}]}
+{"text":"Chaussee de Wavre 1500 1160 Auderghem","country":"BE","spans":[{"field":"street","start":0,"end":17},{"field":"house","start":18,"end":22},{"field":"postcode","start":23,"end":27},{"field":"locality","start":28,"end":37}]}
+{"text":"Vrijheidstraat 12 3500 Hasselt","country":"BE","spans":[{"field":"street","start":0,"end":14},{"field":"house","start":15,"end":17},{"field":"postcode","start":18,"end":22},{"field":"locality","start":23,"end":30}]}
+{"text":"Sint-Pietersnieuwstraat 25 9000 Gent","country":"BE","spans":[{"field":"street","start":0,"end":23},{"field":"house","start":24,"end":26},{"field":"postcode","start":27,"end":31},{"field":"locality","start":32,"end":36}]}
+{"text":"1000 Bruxelles","country":"BE","spans":[{"field":"postcode","start":0,"end":4},{"field":"locality","start":5,"end":14}]}
+{"text":"2000 Antwerpen","country":"BE","spans":[{"field":"postcode","start":0,"end":4},{"field":"locality","start":5,"end":14}]}
+{"text":"9000 Gent","country":"BE","spans":[{"field":"postcode","start":0,"end":4},{"field":"locality","start":5,"end":9}]}
+{"text":"Rue de la Loi 16 1000","country":"BE","spans":[{"field":"street","start":0,"end":13},{"field":"house","start":14,"end":16},{"field":"postcode","start":17,"end":21}]}
+{"text":"Steenweg op Mol 200 2300 Turnhout","country":"BE","spans":[{"field":"street","start":0,"end":15},{"field":"house","start":16,"end":19},{"field":"postcode","start":20,"end":24},{"field":"locality","start":25,"end":33}]}

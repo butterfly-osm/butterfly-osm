@@ -30,6 +30,14 @@ memmap2 = "0.9"
 bytemuck = "1.18"
 gbdt = "0.1.3"
 
+# Neural parser (#96 §Tagger, #98 Phase 1).
+# candle: pure-Rust tensor + autograd. Apache-2.0 — AGPL-compatible.
+# Built without CUDA/MKL/Accelerate features → pure CPU, no FFI surface.
+candle-core = { version = "0.10", default-features = false }
+candle-nn = { version = "0.10", default-features = false }
+safetensors = "0.4"
+rand = { version = "0.9", features = ["std", "std_rng"] }
+
 axum = "0.8.8"
 tower = { version = "0.5.3", features = ["limit"] }
 tower-http = { version = "0.6.8", features = ["cors", "trace", "timeout", "catch-panic", "compression-gzip", "compression-br"] }

@@ -16,12 +16,27 @@ use butterfly_geocode::control::budget::{BudgetPolicy, classify_tier};
 use butterfly_geocode::geocoder::executor::{ControlPlane, execute_with_control};
 use butterfly_geocode::types::ExecutionBudget;
 use butterfly_geocode::{
-    Confidence, ConfidenceConfig, CountryId, GbdtModel, Shard, execute, execute_with_rerank,
-    parse_heuristic,
+    Confidence, ConfidenceConfig, CountryId, GbdtModel, NeuralParser, Shard, execute,
+    execute_with_rerank, parse_heuristic,
 };
 
 const SHARD_PATH: &str = "regions/belgium.bfgs";
 const RERANK_MODEL_PATH: &str = "data/models/rerank-belgium-tiny.gbdt";
+const TINY_MODEL_PATH: &str = "data/models/belgium-tiny.safetensors";
+
+fn open_model_if_present() -> Option<NeuralParser> {
+    if std::path::Path::new(TINY_MODEL_PATH).exists() {
+        match NeuralParser::load(TINY_MODEL_PATH) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                eprintln!("warning: model file present but failed to load: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    }
+}
 
 fn open_shard() -> Shard {
     Shard::open(SHARD_PATH).unwrap_or_else(|e| {
@@ -330,4 +345,58 @@ async fn axum_belgium_real_shard_smoke() {
     let body = std::str::from_utf8(&bytes).unwrap();
     let v: serde_json::Value = serde_json::from_str(body).unwrap();
     assert!(v["count"].as_u64().unwrap() > 0, "no hits: {body}");
+}
+
+#[test]
+#[ignore]
+fn neural_parser_resolves_rue_wayez_122_anderlecht() {
+    let Some(parser) = open_model_if_present() else {
+        eprintln!(
+            "skipping: {} not present. Train it first with `butterfly-geocode train --out {}`",
+            TINY_MODEL_PATH, TINY_MODEL_PATH
+        );
+        return;
+    };
+    let shard = open_shard();
+    let parsed = parser
+        .parse("Rue Wayez 122 Anderlecht", &shard)
+        .expect("neural parse");
+    let results = execute(&parsed, &shard, 5);
+    assert!(
+        !results.is_empty(),
+        "expected neural parser to recover Rue Wayez 122 Anderlecht; \
+         note: tiny model has limited capacity — failure is acceptable \
+         only if heuristic-fallback path were active, which it is not in this test."
+    );
+    let top = &results[0];
+    assert!(
+        top.street.to_lowercase().contains("wayez"),
+        "top hit street did not contain 'wayez': {}",
+        top.street
+    );
+}
+
+#[test]
+#[ignore]
+fn neural_parser_dedup_collapse_rate_is_observable() {
+    // Validates the #98 1.1 exit criterion: dedup collapse rate is
+    // measurable and non-negative. This exposes the canonicalization
+    // pipeline to an actual parser output rather than a synthetic test.
+    let Some(parser) = open_model_if_present() else {
+        eprintln!("skipping: {} not present", TINY_MODEL_PATH);
+        return;
+    };
+    let shard = open_shard();
+    let decoded = parser
+        .decode("Rue Wayez 122 1070 Anderlecht", &shard)
+        .expect("neural decode");
+    assert!(
+        decoded.dedup_collapse_rate >= 0.0 && decoded.dedup_collapse_rate <= 1.0,
+        "collapse rate {} out of [0,1]",
+        decoded.dedup_collapse_rate
+    );
+    assert!(
+        !decoded.programs.is_empty(),
+        "neural decoder produced zero programs"
+    );
 }
