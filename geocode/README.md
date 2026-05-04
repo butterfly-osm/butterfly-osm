@@ -1,6 +1,6 @@
 # butterfly-geocode
 
-Deterministic Belgium-only geocoder for the butterfly-osm toolkit. **MVP / Phase 0** of the architecture in [butterfly-osm#96](https://github.com/butterfly-osm/butterfly-osm/issues/96).
+Belgium-only geocoder for the butterfly-osm toolkit. Started as the deterministic Phase 0 baseline of [butterfly-osm#96](https://github.com/butterfly-osm/butterfly-osm/issues/96); now ships **two parser backends side-by-side** — the deterministic heuristic baseline AND a byte-level transformer with retrieval-aware decoding ([#98](https://github.com/butterfly-osm/butterfly-osm/issues/98) Phase 1).
 
 ## What this ships
 
@@ -31,6 +31,95 @@ Deterministic Belgium-only geocoder for the butterfly-osm toolkit. **MVP / Phase
 | Per-country shard              | `src/shard/`                                |
 | OSM `addr:*` extractor         | `src/osm_extract/`                          |
 | HTTP API                       | `src/server/`                               |
+| **Byte-level transformer (#96 §Tagger)** | **`src/tagger/`**                 |
+| **#98 Phase 1 retrieval-aware decoding** | **`src/parser/decoding.rs`, `src/parser/beam.rs`, `src/parser/anchor.rs`** |
+| **Neural parser backend**      | **`src/parser/neural.rs`**                  |
+| **Parser backend trait**       | **`src/parser/mod.rs::ParserBackend`**      |
+
+## Neural parser (#96 §Tagger + #98 Phase 1)
+
+A byte-level transformer encoder + BIO tagging head + country-posterior head, implemented from scratch on [`candle_core`] (Apache-2.0, AGPL-compatible). The shipped tiny architecture:
+
+| | |
+|---|---|
+| `d_model` | 64 |
+| `n_layers` | 2 |
+| `n_heads` | 4 (head_dim=16) |
+| `d_ff` | 256 |
+| Tokenizer | byte-level, vocab=260 (256 byte values + BOS/EOS/PAD/UNK) |
+| Total parameters | ~120k |
+| Safetensors size | 461 KB |
+
+**This is a proof-of-life model**, trained on a synthetic Belgium corpus to validate that the training loop converges and inference is wired correctly end-to-end. A production-quality model needs the shard-agnostic augmentation strategy from #96 §Tagger plus a real OSM-derived corpus — both filed for follow-up.
+
+#### #98 Phase 1: retrieval-aware decoding
+
+Each piece of #98 Phase 1 ships:
+
+| #98 Phase 1 sub-deliverable | Where it lives |
+|---|---|
+| **1.1** Hypothesis recombination via canonicalization | `src/parser/decoding.rs::decode` (calls `Op::canonicalize` from #96, dedups by canonical form, merges source-hypothesis scores via **max**) |
+| **1.2** Adaptive beam width | `src/parser/beam.rs::adaptive_beam_width` (varies with local entropy + accumulated static-cost fraction; suppresses expansion when `cost ≥ 0.7 × ceiling`) |
+| **1.3** Country-router prior | Consumed via `inference.country_posterior` in `src/parser/neural.rs::merge_country_candidates`; the beam does NOT re-derive country routing |
+| **1.4** Anchor pruning with role-smoothness | `src/parser/anchor.rs` + `src/parser/beam.rs::apply_anchor_pruning` (within ε of trust → downweight, outside ε → hard-prune; ε=0.15 by default) |
+| **1.5** Retrieval-utility heuristic scoring | `src/parser/decoding.rs::retrieval_utility_score` (penalizes high static cost, all-scorer policies, empty/oversized lookups; rewards strong blocker channels) |
+
+#### Training the proof-of-life model
+
+```bash
+# Synthetic-corpus training (~5 min for 25 epochs on the tiny config)
+cargo run --release -p butterfly-geocode -- train \
+    --out geocode/data/models/belgium-tiny.safetensors \
+    --synthetic 8192 --epochs 25 --batch-size 64 --learning-rate 0.003
+
+# Or with a real corpus
+cargo run --release -p butterfly-geocode -- train \
+    --out geocode/data/models/my-model.safetensors \
+    --corpus path/to/corpus.jsonl --epochs 50
+```
+
+Corpus JSONL format (one example per line):
+
+```json
+{"text":"Rue Wayez 122 1070 Anderlecht","country":"BE","spans":[
+  {"field":"street","start":0,"end":9},
+  {"field":"house","start":10,"end":13},
+  {"field":"postcode","start":14,"end":18},
+  {"field":"locality","start":19,"end":29}]}
+```
+
+Training emits a safetensors file plus a sidecar `<path>.config.json` carrying the architecture so the loader doesn't need hardcoded shapes.
+
+#### Serving with the neural parser
+
+```bash
+cargo run --release -p butterfly-geocode -- serve \
+    --shard geocode/regions/belgium.bfgs \
+    --parser neural \
+    --model geocode/data/models/belgium-tiny.safetensors
+```
+
+If the model file is missing or fails to load, the server **falls back to the heuristic backend with a warning**, so the neural path is never load-bearing for availability.
+
+#### Convergence (proof-of-life run, 8192 synthetic examples, 25 epochs)
+
+```
+epoch=0  train_loss=1.5840 eval_loss=1.1515 bio_acc=0.5995 country_acc=1.0000
+epoch=5  train_loss=0.7668 eval_loss=0.7466 bio_acc=0.7224 country_acc=1.0000
+epoch=10 train_loss=0.6916 eval_loss=0.6779 bio_acc=0.7418 country_acc=1.0000
+epoch=15 train_loss=0.6607 eval_loss=0.6507 bio_acc=0.7463 country_acc=1.0000
+epoch=20 train_loss=0.6440 eval_loss=0.6372 bio_acc=0.7480 country_acc=1.0000
+epoch=24 train_loss=0.6364 eval_loss=0.6289 bio_acc=0.7491 country_acc=1.0000
+```
+
+BIO accuracy plateaus around 75% on the synthetic corpus — that's the limit of a 120k-parameter architecture trained on 4 fixed sentence shapes without augmentation. Country accuracy is trivially 100% (only one country in the corpus). On Belgium e2e tests, the neural parser correctly resolves "Rue Wayez 122 Anderlecht" through the #98 Phase 1 decoding pipeline (see `tests/belgium_e2e.rs::neural_parser_resolves_rue_wayez_122_anderlecht`).
+
+#### What's still deferred
+
+- **#98 Phase 2 (learned objective)** — explicitly blocked on a labeled `(query → gold-address)` corpus; the spec itself defers it. Phase 2 will replace the Phase 1 heuristic retrieval-utility score with a learned function trained directly on geocode success.
+- **Production-grade trained model** — the shipped `belgium-tiny.safetensors` is a proof-of-life. A real model needs ~2-4M params, OSM-derived training data, and #96 §Tagger's shard-agnostic augmentation strategy.
+- **LoRA / regional adapters** — hooks noted in #96 §Tagger but not implemented.
+- **Multi-country routing** — `n_countries=1` in the shipped config; the country head trivially predicts BE. The architecture extends cleanly when more countries land.
 
 ## Confidence + GBDT Reranking (#96 §Confidence Model)
 

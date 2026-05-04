@@ -7,6 +7,7 @@ use crate::confidence::{ConfidenceConfig, GbdtModel};
 use crate::control::admission::AdmissionState;
 use crate::control::{AdmissionPolicy, BudgetPolicy, FanoutConfig, GeneralMetrics};
 use crate::geocoder::executor::ControlPlane;
+use crate::parser::{HeuristicBackend, ParserBackend};
 use crate::shard::reader::Shard;
 
 #[derive(Debug)]
@@ -21,6 +22,10 @@ pub struct ServerState {
     /// fallback path).
     pub rerank_model: Option<GbdtModel>,
     pub confidence_config: ConfidenceConfig,
+    /// Active parser backend. Defaults to [`HeuristicBackend`] when no
+    /// neural model is loaded; replaced via [`Self::with_parser`] to
+    /// dispatch through the neural pipeline (#96 §Tagger + #98 Phase 1).
+    pub parser: Arc<dyn ParserBackend>,
 }
 
 impl ServerState {
@@ -58,6 +63,7 @@ impl ServerState {
             admission,
             rerank_model: None,
             confidence_config: ConfidenceConfig::default(),
+            parser: Arc::new(HeuristicBackend),
         }
     }
 
@@ -72,6 +78,14 @@ impl ServerState {
     #[must_use]
     pub fn with_confidence_config(mut self, cfg: ConfidenceConfig) -> Self {
         self.confidence_config = cfg;
+        self
+    }
+
+    /// Replace the parser backend (e.g. with a [`crate::parser::NeuralBackend`]
+    /// constructed from a loaded safetensors file).
+    #[must_use]
+    pub fn with_parser(mut self, parser: Arc<dyn ParserBackend>) -> Self {
+        self.parser = parser;
         self
     }
 }
