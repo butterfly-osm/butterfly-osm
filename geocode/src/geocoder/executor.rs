@@ -38,6 +38,9 @@ use serde::{Deserialize, Serialize};
 use super::channels::{Channel, ChannelRole};
 use super::cost::static_cost;
 use super::program::{FilterPredicate, LookupKey, Op};
+use crate::confidence::{
+    Confidence, ConfidenceConfig, GbdtModel, apply_thresholds, extract_features, rerank,
+};
 use crate::control::budget::BudgetPolicy;
 use crate::control::{
     ChannelMetrics, CleanQueryMetrics, CostCalibrationMetrics, FanoutConfig, FanoutTracker,
@@ -104,6 +107,84 @@ impl ControlPlane {
     pub fn new() -> Self {
         Self::default()
     }
+}
+
+/// Execute a parsed query against a shard with optional GBDT
+/// reranking and action thresholds (#96 §Confidence Model).
+///
+/// When `model` is `None`, this delegates to [`execute`] and returns
+/// the action tier as `Confidence::Accept` unconditionally — the
+/// no-model fallback path. The Zero-Cost-on-Clean-Queries NFR is
+/// preserved: with no model, the call walks the same path as
+/// `execute()` with no extra allocation.
+///
+/// When `model` is `Some`:
+/// 1. Run the normal pipeline.
+/// 2. Extract features for each candidate.
+/// 3. Rerank by GBDT score.
+/// 4. Apply action thresholds (`accept` / `caution` / `review` /
+///    `reject`).
+///
+/// Returns `(candidates, top_action)`.
+pub fn execute_with_rerank(
+    query: &ParsedQuery,
+    shard: &Shard,
+    limit: usize,
+    model: Option<&GbdtModel>,
+    cfg: &ConfidenceConfig,
+) -> (Vec<GeocodedResult>, Confidence) {
+    let results = execute(query, shard, limit);
+    apply_rerank(results, query, shard, model, cfg)
+}
+
+/// Apply GBDT reranking + action-threshold classification to a
+/// pre-computed result list.
+///
+/// Used by the server handler so the control-plane execution path
+/// (`execute_with_control`) and the rerank layer compose without
+/// double-running retrieval. Public so binaries / tests can mix
+/// retrieval and rerank concerns explicitly.
+pub fn apply_rerank(
+    mut results: Vec<GeocodedResult>,
+    query: &ParsedQuery,
+    shard: &Shard,
+    model: Option<&GbdtModel>,
+    cfg: &ConfidenceConfig,
+) -> (Vec<GeocodedResult>, Confidence) {
+    let Some(model) = model else {
+        return (results, Confidence::Accept);
+    };
+    if results.is_empty() {
+        return (results, Confidence::Reject);
+    }
+
+    let stats = shard.stats();
+    let total = stats.total_addresses.max(1) as f32;
+    let cost_for = |c: &GeocodedResult| -> f32 {
+        let raw = if c.reason_codes.iter().any(|r| r == "POSTCODE_EXACT")
+            && c.reason_codes.iter().any(|r| r == "STREET_EXACT")
+        {
+            stats.avg_street_postings.min(8.0)
+        } else if c.reason_codes.iter().any(|r| r == "STREET_EXACT") {
+            stats.avg_street_postings
+        } else if c.reason_codes.iter().any(|r| r == "POSTCODE_EXACT") {
+            stats.avg_postcode_postings
+        } else {
+            stats.avg_locality_postings
+        };
+        (raw / total).clamp(0.0, 1.0)
+    };
+
+    let static_costs: Vec<f32> = results.iter().map(cost_for).collect();
+    let feats = extract_features(&results, query, &static_costs);
+    rerank(&mut results, &feats, model);
+
+    // Re-extract features after rerank so they line up with the new
+    // candidate order.
+    let static_costs: Vec<f32> = results.iter().map(cost_for).collect();
+    let feats = extract_features(&results, query, &static_costs);
+    let action = apply_thresholds(&mut results, &feats, cfg);
+    (results, action)
 }
 
 /// Execute a parsed query against a shard.

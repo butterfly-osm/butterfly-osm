@@ -44,6 +44,7 @@
 #![deny(unsafe_code)]
 #![deny(missing_debug_implementations)]
 
+pub mod confidence;
 pub mod control;
 pub mod geocoder;
 pub mod osm_extract;
@@ -53,7 +54,8 @@ pub mod server;
 pub mod shard;
 pub mod types;
 
-pub use geocoder::executor::{GeocodedResult, execute};
+pub use confidence::{Confidence, ConfidenceConfig, Features, GbdtModel};
+pub use geocoder::executor::{GeocodedResult, execute, execute_with_rerank};
 pub use parser::heuristic::parse_heuristic;
 pub use routing::{CountryId, classify_country};
 pub use shard::reader::Shard;
