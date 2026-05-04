@@ -1,0 +1,36 @@
+We are building a single-binary, all-Rust geocoder service (no Python at runtime, no Python ML deploy story).
+
+The component in question is a small byte-level transformer: 2-4 million parameters, max sequence length ~64 bytes (input is a raw UTF-8 address string, byte-tokenized), with two output heads:
+
+1. BIO sequence-tagging head over byte positions (street / house-number / postcode / locality / unit / etc.)
+2. A country posterior head that produces a softmax over O(200) country IDs.
+
+Constraints:
+
+- The whole geocoder service ships as one statically-linked Rust binary (no Python child process, no LibTorch DLL surprise on a customer box). Inference must be pure Rust, or pure-Rust + a small native library we can vendor.
+- Inference latency target: p99 well under 50 microseconds for one address on one CPU thread (we will sometimes batch, but the single-query path matters because admission control sometimes serializes queries).
+- Throughput target on the surrounding system: 50,000 to 100,000 addresses per second per machine.
+- Production model file should be small — target around 8 MB. We expect to apply post-training quantization (int8 or 4-bit) and we want the framework to actually have a quantization story we can rely on, not a "you can write your own" gesture.
+- The training pipeline runs offline, not in production. Training ergonomics matter, but they are second priority. We need: BIO tagging supervision, gradient accumulation (small GPU at first), a multi-task loss combining the two heads, and ideally mixed-precision training.
+- The license of the surrounding workspace is AGPL-3.0-or-later. Whatever framework we depend on must be MIT or Apache-2.0 (or BSD, or similarly permissive). LGPL or strong copyleft frameworks are problematic.
+- Maintenance velocity matters — we need a framework that is alive in 2026, fixing bugs, accepting patches, releasing.
+- Bonus, not required: WASM target, embedded deploy story.
+
+The two pure-Rust ML frameworks we are weighing:
+
+A. candle (huggingface/candle) — minimalist, HuggingFace-backed, leverages safetensors and HuggingFace ecosystem.
+B. burn (tracel-ai/burn) — independent project, generic over backends (ndarray, candle backend, wgpu, libtorch backend).
+
+Please give a blind technical recommendation. Cover:
+
+- Inference latency for our target scale (small transformer on CPU): which framework will be faster, why, and what it depends on (BLAS vendor, intrinsics, autovec).
+- Quantization story: which framework today actually supports int8 or 4-bit inference for a custom transformer? What are the gotchas?
+- Training ergonomics for our specific shape (multi-head, BIO loss, gradient accumulation, mixed precision): which is less painful?
+- Maintenance velocity over the past 6 months. Release cadence, issue responsiveness, governance, single points of failure.
+- License: confirm both are permissive (MIT / Apache-2.0) and compatible with an AGPL-3.0-or-later workspace.
+- Built-in transformer building blocks: does either ship a layer we can subclass, or do we hand-roll multi-head attention and the encoder block? Which path is less risky.
+- Any hidden gotchas you know about either project — e.g. compile times, target architecture quirks, PyTorch-state-dict compatibility, ONNX export pain, missing ops.
+
+Do not assume the answer. Where you do not know, say so. Where the two frameworks are roughly equivalent, say so. Where one has a clear edge for our specific workload (very small transformer, byte-level input, int8 quantization, CPU inference, AGPL workspace, single-binary deploy), call it.
+
+If you want to suggest a third option (tract, ort/ONNX Runtime, tch-rs, LibTorch via tch, custom code), say so explicitly and explain the cost of going off the candle/burn path.
