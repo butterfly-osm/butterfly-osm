@@ -23,6 +23,7 @@ use crate::profile_abi::Mode;
 
 use super::exclude::{self, ExcludeWeights};
 
+use super::edge_geom::EdgeGeometry;
 use super::elevation::ElevationData;
 use super::snap_index::{DEFAULT_CELL_LOG2, PackedSnapIndex, SnapBuilderMode, build_snap_index};
 
@@ -117,6 +118,19 @@ pub struct ServerState {
     pub ebg_nodes: EbgNodes,
     pub ebg_csr: EbgCsr,
     pub nbg_geo: NbgGeo,
+    /// Flat mmap-friendly per-edge geometry (#155). Replaces the
+    /// heap-resident `nbg_geo.polylines: Vec<PolyLine>` shape on the
+    /// serve path. All polyline-reading hot consumers (route geometry,
+    /// isochrone stamping, turn-by-turn locations / bearings, map
+    /// matching, transit legs) consult this field instead of
+    /// `nbg_geo.polylines`.
+    ///
+    /// On the container path with #155 sections present, this borrows
+    /// directly from the mmap. On the directory-tree path or for old
+    /// containers, this is built in-memory from `nbg_geo.polylines` via
+    /// `EdgeGeometry::from_legacy_polylines` at boot. The accessors are
+    /// identical either way.
+    pub edge_geom: EdgeGeometry,
     /// NBG compact node id → OSM node id. Indexed by `compact_id`,
     /// loaded once at startup from `step3*/nbg.node_map`. Used by the
     /// Flight `edges_batch` action (#125) to expose per-edge OSM node
@@ -331,10 +345,24 @@ impl ServerState {
         // transit state via `install_transit()` before accepting traffic.
         let transit = None;
 
+        // ---- Flat edge geometry (#155) ------------------------------
+        // Directory-tree path always synthesises from the heap NbgGeo.
+        // Containers packed with #155 will use the zero-copy path in
+        // `load_from_container` instead.
+        tracing::info!("Building flat edge geometry (in memory)...");
+        let edge_geom = EdgeGeometry::from_legacy_polylines(&nbg_geo);
+        tracing::info!(
+            n_edges = edge_geom.n_edges(),
+            n_points = edge_geom.n_points(),
+            "built edge geometry"
+        );
+        crate::server::rss::checkpoint("load.edge_geom");
+
         Ok(Self {
             ebg_nodes,
             ebg_csr,
             nbg_geo,
+            edge_geom,
             nbg_node_to_osm,
             modes: modes_data,
             mode_names,
@@ -449,9 +477,45 @@ impl ServerState {
             );
         }
 
-        tracing::info!("Loading NBG geo...");
-        let nbg_geo = NbgGeoFile::read_from_bytes(section_bytes("shared/nbg.geo")?)?;
+        // ---- NBG geo ----
+        // If the container carries the flat edge geometry sections (#155),
+        // we read NBG geo edges-only and let the polyline body stay on
+        // disk. The new sections back the serve-path geometry hot
+        // consumers; nothing downstream reads `nbg_geo.polylines` once
+        // EdgeGeometry is wired below.
+        let nbg_geo_section = section_bytes("shared/nbg.geo")?;
+        let has_flat_edge_geom = container.get("shared/edge_geom_offsets").is_some()
+            && container.get("shared/edge_geom_points").is_some();
+        let nbg_geo = if has_flat_edge_geom {
+            tracing::info!("Loading NBG geo (edges-only — polylines via flat sections)...");
+            NbgGeoFile::read_edges_only_from_bytes(nbg_geo_section)?
+        } else {
+            tracing::info!("Loading NBG geo (full polylines — no flat sections)...");
+            NbgGeoFile::read_from_bytes(nbg_geo_section)?
+        };
         tracing::info!(edges = nbg_geo.edges.len(), "loaded NBG geo");
+
+        // When we read edges-only, the polyline body bytes have been
+        // streamed through the CRC verifier but never copied onto the
+        // heap. Hint the kernel to drop those pages from RSS — the bytes
+        // are cold under steady-state operation (the flat sections carry
+        // the serve-path representation), so freeing them yields the
+        // bulk of #155's RSS win.
+        if has_flat_edge_geom {
+            if let Err(e) = crate::formats::mmap::madvise_dontneed(nbg_geo_section) {
+                tracing::warn!(
+                    section = "shared/nbg.geo",
+                    error = %e,
+                    "madvise(DONTNEED) on nbg.geo failed; ignoring"
+                );
+            } else {
+                tracing::info!(
+                    section = "shared/nbg.geo",
+                    bytes = nbg_geo_section.len(),
+                    "madvise(DONTNEED) on cold nbg.geo section (polylines live in flat sections)"
+                );
+            }
+        }
 
         tracing::info!("Loading NBG node-id map...");
         let nbg_node_map =
@@ -634,10 +698,43 @@ impl ServerState {
             None
         };
 
+        // ---- Flat edge geometry (#155) ------------------------------
+        // Prefer mmap-backed sections from the container; fall back to
+        // building the flat layout from the heap NbgGeo polylines when
+        // the container pre-dates #155.
+        //
+        // The dispatch matches the `has_flat_edge_geom` check used above
+        // for the NBG geo edges-only loader: if the sections existed at
+        // open time they're still there now, so the back-compat branch
+        // is for old containers that loaded the full NbgGeo.
+        let edge_geom = if has_flat_edge_geom {
+            let eg = try_load_edge_geometry(&container, static_mmap, static_bytes)?.ok_or_else(
+                || {
+                    anyhow::anyhow!(
+                        "edge_geom sections vanished between open and load — container corrupt?"
+                    )
+                },
+            )?;
+            tracing::info!(
+                n_edges = eg.n_edges(),
+                n_points = eg.n_points(),
+                "loaded flat edge geometry zero-copy"
+            );
+            eg
+        } else {
+            tracing::warn!(
+                "flat edge geometry sections missing; building from heap polylines \
+                 at boot (this container pre-dates #155 — re-pack to drop ~544 MB anon)"
+            );
+            EdgeGeometry::from_legacy_polylines(&nbg_geo)
+        };
+        crate::server::rss::checkpoint("load.edge_geom");
+
         Ok(Self {
             ebg_nodes,
             ebg_csr,
             nbg_geo,
+            edge_geom,
             nbg_node_to_osm,
             modes: modes_data,
             mode_names,
@@ -1434,4 +1531,41 @@ fn try_load_packed_snap_index(
         grid,
         masks,
     }))
+}
+
+/// Try to load the flat edge geometry sections (#155) zero-copy from a
+/// container. Returns `Ok(None)` if either section is missing — caller
+/// falls back to building from the heap polylines.
+fn try_load_edge_geometry(
+    container: &crate::formats::butterfly_dat::Container,
+    static_mmap: &'static memmap2::Mmap,
+    static_bytes: &'static [u8],
+) -> Result<Option<EdgeGeometry>> {
+    use crate::formats::edge_geom::{EdgeGeomOffsetsFile, EdgeGeomPointsFile};
+
+    let off_entry = match container.get("shared/edge_geom_offsets") {
+        Some(e) => e,
+        None => return Ok(None),
+    };
+    let pts_entry = match container.get("shared/edge_geom_points") {
+        Some(e) => e,
+        None => return Ok(None),
+    };
+    // Verify CRCs over the same byte ranges the zero-copy reader will see.
+    let _ = container.section_bytes_verified(static_mmap, off_entry)?;
+    let _ = container.section_bytes_verified(static_mmap, pts_entry)?;
+
+    let off_bytes = &static_bytes
+        [off_entry.offset as usize..off_entry.offset as usize + off_entry.len as usize];
+    let pts_bytes = &static_bytes
+        [pts_entry.offset as usize..pts_entry.offset as usize + pts_entry.len as usize];
+
+    let off = EdgeGeomOffsetsFile::read_from_bytes_zero_copy(off_bytes)
+        .with_context(|| "reading shared/edge_geom_offsets zero-copy")?;
+    let pts = EdgeGeomPointsFile::read_from_bytes_zero_copy(pts_bytes)
+        .with_context(|| "reading shared/edge_geom_points zero-copy")?;
+
+    let eg =
+        EdgeGeometry::from_sections(off, pts).with_context(|| "stitching edge_geom sections")?;
+    Ok(Some(eg))
 }

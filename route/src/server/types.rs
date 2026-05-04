@@ -72,17 +72,13 @@ pub fn bad_request(error: String) -> (axum::http::StatusCode, Json<ErrorResponse
 /// Get the location (lon, lat) of an EBG node
 pub fn get_node_location(state: &super::state::ServerState, node_id: u32) -> [f64; 2] {
     let node = &state.ebg_nodes.nodes[node_id as usize];
-    // EBG node has geom_idx pointing to NBG edge index
-    let edge_idx = node.geom_idx as usize;
-    // Polylines are indexed by edge index (same order as edges)
-    if edge_idx < state.nbg_geo.polylines.len() {
-        let polyline = &state.nbg_geo.polylines[edge_idx];
-        if !polyline.lon_fxp.is_empty() {
-            return [
-                polyline.lon_fxp[0] as f64 / 1e7,
-                polyline.lat_fxp[0] as f64 / 1e7,
-            ];
-        }
+    // EBG node has geom_idx pointing to NBG edge index. Read the first
+    // polyline vertex via the flat edge geometry (#155); falls back to
+    // [0.0, 0.0] for empty polylines, matching the legacy behaviour.
+    let polyline = state.edge_geom.polyline(node.geom_idx);
+    if !polyline.is_empty() {
+        let (lon, lat) = polyline.at(0);
+        return [lon, lat];
     }
     [0.0, 0.0]
 }
