@@ -232,14 +232,34 @@ async fn forward_empty_q_returns_400_with_envelope() {
 }
 
 #[tokio::test]
-async fn forward_unsupported_country_returns_400() {
+async fn forward_invalid_country_iso2_returns_400() {
+    // Per #96 serve-the-world: any 2-uppercase-letter input is a
+    // valid ISO 3166-1 alpha-2; the BAD_REQUEST path triggers when
+    // the input is malformed (length != 2 or non-alphabetic).
     let (_dir, app) = make_app();
     let req = Request::builder()
-        .uri("/geocode?q=test&country=US")
+        .uri("/geocode?q=test&country=GBR")
         .body(Body::empty())
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let v: serde_json::Value = serde_json::from_str(&body_to_string(resp).await).unwrap();
+    assert!(v["error"].is_string());
+}
+
+#[tokio::test]
+async fn forward_unloaded_country_returns_503() {
+    // A valid ISO2 for a country with no loaded shard returns 503
+    // (operator misconfiguration, not bad client input). With the
+    // BE-only fixture, asking for ZW (Zimbabwe — valid ISO2 but no
+    // shard) hits the SERVICE_UNAVAILABLE branch in the handler.
+    let (_dir, app) = make_app();
+    let req = Request::builder()
+        .uri("/geocode?q=test&country=ZW")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     let v: serde_json::Value = serde_json::from_str(&body_to_string(resp).await).unwrap();
     assert!(v["error"].is_string());
 }

@@ -1,0 +1,144 @@
+# United States country pack — butterfly-geocode #96 "serve the world".
+# Authoritative datasets: USPS ZIP database, OpenAddresses (US-state files),
+# Census TIGER/Line. OSM is dense in metro areas, sparser in rural ones.
+
+[country]
+iso2 = "US"
+name = "United States"
+
+[postcode]
+# 5-digit ZIP, optionally with -4 extension ("ZIP+4"). USPS.
+regex = '\b\d{5}(?:-\d{4})?\b'
+position = "trailing"
+canonicalize = "none"
+
+[scripts]
+dominant = ["Latin"]
+secondary = []
+
+# US street-type cues. Distinct from European ones — "Street", "Avenue",
+# "Boulevard" without article, plus directional prefix ("NW", "SE") and
+# state abbreviations.
+[[lexical_cues.match]]
+substring = "street"
+boost = 1.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "avenue"
+boost = 1.2
+kind = "word"
+[[lexical_cues.match]]
+substring = "boulevard"
+boost = 1.2
+kind = "word"
+[[lexical_cues.match]]
+substring = "drive"
+boost = 1.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "lane"
+boost = 0.7
+kind = "word"
+[[lexical_cues.match]]
+substring = "highway"
+boost = 1.2
+kind = "word"
+[[lexical_cues.match]]
+substring = "parkway"
+boost = 1.2
+kind = "word"
+[[lexical_cues.match]]
+substring = "court"
+boost = 0.8
+kind = "word"
+[[lexical_cues.match]]
+substring = "pennsylvania"
+boost = 1.5
+kind = "substring"
+[[lexical_cues.match]]
+substring = "washington"
+boost = 1.5
+kind = "word"
+[[lexical_cues.match]]
+substring = "new york"
+boost = 2.0
+kind = "substring"
+[[lexical_cues.match]]
+substring = "san francisco"
+boost = 2.0
+kind = "substring"
+[[lexical_cues.match]]
+substring = "los angeles"
+boost = 2.0
+kind = "substring"
+[[lexical_cues.match]]
+substring = "chicago"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "houston"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "boston"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "seattle"
+boost = 2.0
+kind = "word"
+# US state codes — strong evidence even without postcode.
+[[lexical_cues.match]]
+substring = " ny "
+boost = 1.0
+kind = "substring"
+[[lexical_cues.match]]
+substring = " ca "
+boost = 1.0
+kind = "substring"
+[[lexical_cues.match]]
+substring = " tx "
+boost = 1.0
+kind = "substring"
+[[lexical_cues.match]]
+substring = " dc"
+boost = 1.0
+kind = "substring"
+[[lexical_cues.match]]
+substring = " ma "
+boost = 1.0
+kind = "substring"
+[[lexical_cues.match]]
+substring = " fl "
+boost = 1.0
+kind = "substring"
+# Ordinal directional suffixes — distinctive of US addressing.
+[[lexical_cues.match]]
+substring = " nw"
+boost = 0.6
+kind = "substring"
+[[lexical_cues.match]]
+substring = " se"
+boost = 0.6
+kind = "substring"
+
+[bbox]
+# Continental US + Alaska + Hawaii. Wide bbox accepts everything.
+min_lat = 18.91
+max_lat = 71.50
+min_lon = -179.15
+max_lon = -66.93
+
+[neighbours]
+codes = ["CA", "MX"]
+
+[source_priors]
+osm = 0.7
+authoritative = 0.8
+
+# US OSM tagging is consistent.
+[osm_tags]
+postcode = "addr:postcode"
+street = "addr:street"
+housenumber = "addr:housenumber"
+city = "addr:city"

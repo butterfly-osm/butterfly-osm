@@ -1,10 +1,27 @@
 # butterfly-geocode
 
-Multi-country geocoder for the butterfly-osm toolkit. Started as the deterministic Phase 0 baseline of [butterfly-osm#96](https://github.com/butterfly-osm/butterfly-osm/issues/96); now ships **two parser backends side-by-side** — the deterministic heuristic baseline AND a byte-level transformer with retrieval-aware decoding ([#98](https://github.com/butterfly-osm/butterfly-osm/issues/98) Phase 1) — over **per-country shards** for cluster #1 + #2 (BE / FR / NL / LU / DE / AT / CH).
+Multi-country, **truly global** geocoder for the butterfly-osm toolkit. Started as the deterministic Phase 0 baseline of [butterfly-osm#96](https://github.com/butterfly-osm/butterfly-osm/issues/96); now ships **two parser backends side-by-side** — the deterministic heuristic baseline AND a byte-level transformer with retrieval-aware decoding ([#98](https://github.com/butterfly-osm/butterfly-osm/issues/98) Phase 1) — over **per-country shards driven by data-only country packs**. Adding a country is a TOML drop, not a Rust edit.
+
+## Serve the world
+
+The geocoder is **not** Europe-only. The `CountryId` type accepts any ISO 3166-1 alpha-2 code (`[u8; 2]`). 15 country packs ship by default:
+
+- **Europe**: BE, FR, NL, LU, DE, AT, CH, GB, ES, IT
+- **Non-Europe**: US, JP, BR, IN, AU
+
+Adding a country is three steps, **none of them touch Rust**:
+
+1. Drop `geocode/data/packs/<iso2>.toml` (postcode regex, lexical cues, bbox, source priors, OSM tag mapping). See [`geocode/data/packs/README.md`](data/packs/README.md).
+2. Build the shard: `butterfly-geocode build-shard --pbf <country>.pbf --out <dir>/<iso2>.bfgs --country <ISO2>`.
+3. Boot the multi-shard server: `butterfly-geocode serve --shard-dir <dir>`.
+
+The classifier reads every loaded pack at startup and produces a posterior over **all** of them. The reverse endpoint dispatches by bbox membership, also from the packs. Adding Zimbabwe, Mexico, or Thailand is an operator-level decision, not a code change.
+
+Live curl proofs across 6 countries (BE + 5 non-European) live in [`data/proof/`](data/proof/). Classifier achieves 100% top-1 accuracy on a 60-input mixed-country test set; see `tests/serve_the_world.rs::classifier_accuracy_60_inputs`.
 
 ## What this ships
 
-- **Per-country shards** (BFGS v3) for cluster #1 + #2 (BE / FR / NL / LU / DE / AT / CH) built from OSM `addr:*` tags via `butterfly-geocode build-shard --country <ISO2>`
+- **Per-country shards** (BFGS v4 — 2-byte ISO 3166-1 alpha-2 in the header) built from OSM `addr:*` tags via `butterfly-geocode build-shard --country <ISO2>`. Old v3 shards are rejected with a precise upgrade message.
 - **Multi-shard server**: `butterfly-geocode serve --shard-dir <dir>` loads every `*.bfgs` in `<dir>` and routes forward queries via the lexical country classifier (returns a `(country, weight)` posterior) and reverse queries via lat/lon bbox membership
 - **Cross-shard score normalization**: per-shard scores are scaled by the country posterior weight before merging, so an uncertain match against a "wrong" country is correctly demoted (see `executor::execute_across_shards`)
 - **Forward geocoding**: `GET /geocode?q=...[&country=BE]` — text → coordinates

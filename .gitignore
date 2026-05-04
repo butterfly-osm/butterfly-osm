@@ -110,3 +110,7 @@ bench/geocode/.venv/
 
 # AI consultation stderr (verbose progress logs; the .txt outputs are kept)
 geocode-research/*.err
+
+# Generated geocode shards (BFGS v4). 100MB+ per country — produced by
+# `butterfly-geocode build-shard` and rebuilt from PBFs as needed.
+geocode/regions/*/*.bfgs
