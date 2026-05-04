@@ -106,7 +106,9 @@ pub async fn reverse(
     let radius = params.radius_m.unwrap_or(200.0).clamp(1.0, 50_000.0);
     let limit = params.limit.unwrap_or(1).clamp(1, 50);
 
-    let hits = state.shard.nearest_within(params.lat, params.lon, radius, limit);
+    let hits = state
+        .shard
+        .nearest_within(params.lat, params.lon, radius, limit);
     let mut results: Vec<GeocodedResult> = Vec::with_capacity(hits.len());
     for (rec, dist) in &hits {
         let r = GeocodedResult {
@@ -152,13 +154,17 @@ pub async fn reverse(
     }
 }
 
-pub async fn health(State(state): State<Arc<ServerState>>) -> Json<HealthResponse> {
-    Json(HealthResponse {
+pub async fn health(State(state): State<Arc<ServerState>>) -> Response {
+    Json(_health(state)).into_response()
+}
+
+fn _health(state: Arc<ServerState>) -> HealthResponse {
+    HealthResponse {
         status: "ok",
         version: state.version,
         uptime_seconds: state.started_at.elapsed().as_secs(),
         record_count: state.shard.record_count() as u64,
-    })
+    }
 }
 
 fn accept_geojson(headers: &HeaderMap) -> bool {
@@ -249,9 +255,7 @@ fn to_geojson(results: &[GeocodedResult], include_debug: bool) -> serde_json::Va
                 "locality": r.locality,
                 "score": r.score,
             });
-            if include_debug
-                && let serde_json::Value::Object(ref mut m) = props
-            {
+            if include_debug && let serde_json::Value::Object(ref mut m) = props {
                 m.insert(
                     "reason_codes".to_string(),
                     serde_json::Value::Array(

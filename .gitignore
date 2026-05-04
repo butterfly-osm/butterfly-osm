@@ -86,3 +86,4 @@ releases/
 valhalla_tiles/
 .claude/
 .venv/
+.codex

@@ -121,10 +121,7 @@ fn execute_clean(h: &ParseHypothesis, shard: &Shard, limit: usize) -> Vec<Geocod
     let intersect_with_street = postcode.is_some()
         && street.is_some()
         && shard
-            .postings_for_postcode_and_street(
-                postcode.expect("Some"),
-                street.expect("Some"),
-            )
+            .postings_for_postcode_and_street(postcode.expect("Some"), street.expect("Some"))
             .is_empty();
 
     let street_norm = street.map(crate::parser::normalize::normalize);

@@ -14,9 +14,17 @@ use crate::shard::AddressRecord;
 
 #[derive(Debug, Clone, Copy)]
 pub enum ExtractProgress {
-    Phase { phase: &'static str },
-    NodePass { nodes_seen: u64, addresses_emitted: u64 },
-    WayPass { ways_seen: u64, addresses_emitted: u64 },
+    Phase {
+        phase: &'static str,
+    },
+    NodePass {
+        nodes_seen: u64,
+        addresses_emitted: u64,
+    },
+    WayPass {
+        ways_seen: u64,
+        addresses_emitted: u64,
+    },
 }
 
 pub fn extract_addresses<P: AsRef<Path>>(
@@ -29,8 +37,8 @@ pub fn extract_addresses<P: AsRef<Path>>(
         phase: "scanning nodes",
     });
 
-    let reader = ElementReader::from_path(path)
-        .with_context(|| format!("opening {}", path.display()))?;
+    let reader =
+        ElementReader::from_path(path).with_context(|| format!("opening {}", path.display()))?;
 
     let mut node_coords: HashMap<i64, (f64, f64)> = HashMap::with_capacity(2_000_000);
     let mut records: Vec<AddressRecord> = Vec::with_capacity(1_000_000);
@@ -67,8 +75,8 @@ pub fn extract_addresses<P: AsRef<Path>>(
     progress(ExtractProgress::Phase {
         phase: "scanning ways",
     });
-    let reader = ElementReader::from_path(path)
-        .with_context(|| format!("re-opening {}", path.display()))?;
+    let reader =
+        ElementReader::from_path(path).with_context(|| format!("re-opening {}", path.display()))?;
     let mut ways_seen = 0u64;
     let mut way_addr_records = 0u64;
     reader

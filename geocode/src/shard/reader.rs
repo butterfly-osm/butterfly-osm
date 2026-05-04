@@ -72,8 +72,8 @@ pub struct Shard {
 impl Shard {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
-        let mut f = File::open(path)
-            .with_context(|| format!("opening shard at {}", path.display()))?;
+        let mut f =
+            File::open(path).with_context(|| format!("opening shard at {}", path.display()))?;
         let mut buf = Vec::new();
         f.read_to_end(&mut buf)
             .with_context(|| format!("reading shard at {}", path.display()))?;
@@ -108,18 +108,12 @@ impl Shard {
             bail!("unsupported shard version: {version} (expected {VERSION})");
         }
         let record_count = u32::from_le_bytes(header[8..12].try_into().expect("4 bytes"));
-        let strings_off =
-            u64::from_le_bytes(header[16..24].try_into().expect("8 bytes")) as usize;
-        let strings_len =
-            u64::from_le_bytes(header[24..32].try_into().expect("8 bytes")) as usize;
-        let records_off =
-            u64::from_le_bytes(header[32..40].try_into().expect("8 bytes")) as usize;
-        let records_len =
-            u64::from_le_bytes(header[40..48].try_into().expect("8 bytes")) as usize;
-        let index_off =
-            u64::from_le_bytes(header[48..56].try_into().expect("8 bytes")) as usize;
-        let index_len =
-            u64::from_le_bytes(header[56..64].try_into().expect("8 bytes")) as usize;
+        let strings_off = u64::from_le_bytes(header[16..24].try_into().expect("8 bytes")) as usize;
+        let strings_len = u64::from_le_bytes(header[24..32].try_into().expect("8 bytes")) as usize;
+        let records_off = u64::from_le_bytes(header[32..40].try_into().expect("8 bytes")) as usize;
+        let records_len = u64::from_le_bytes(header[40..48].try_into().expect("8 bytes")) as usize;
+        let index_off = u64::from_le_bytes(header[48..56].try_into().expect("8 bytes")) as usize;
+        let index_len = u64::from_le_bytes(header[56..64].try_into().expect("8 bytes")) as usize;
 
         let strings_end = strings_off
             .checked_add(strings_len)
@@ -236,7 +230,6 @@ impl Shard {
         self.by_pc_street.get(&key).map_or(&[][..], Vec::as_slice)
     }
 
-    #[must_use]
     pub fn all_street_keys(&self) -> impl Iterator<Item = &str> {
         self.by_street.keys().map(String::as_str)
     }
@@ -301,8 +294,7 @@ pub fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let phi2 = lat2.to_radians();
     let dphi = (lat2 - lat1).to_radians();
     let dlam = (lon2 - lon1).to_radians();
-    let a = (dphi / 2.0).sin().powi(2)
-        + phi1.cos() * phi2.cos() * (dlam / 2.0).sin().powi(2);
+    let a = (dphi / 2.0).sin().powi(2) + phi1.cos() * phi2.cos() * (dlam / 2.0).sin().powi(2);
     let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
     R * c
 }

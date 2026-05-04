@@ -581,6 +581,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "butterfly-geocode"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "axum-prometheus",
+ "butterfly-common",
+ "clap",
+ "crc",
+ "once_cell",
+ "osmpbf",
+ "rapidfuzz",
+ "regex",
+ "reqwest",
+ "rstar",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "butterfly-route"
 version = "2.0.0"
 dependencies = [
@@ -2872,6 +2899,12 @@ checksum = "f703f4665700daf5512dcca5f43afa6af89f09db47fb56be587f80636bda2d41"
 dependencies = [
  "rand_core 0.9.5",
 ]
+
+[[package]]
+name = "rapidfuzz"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "270e04e5ea61d40841942bb15e451c29ee1618637bcf97fc7ede5dd4a9b1601b"
 
 [[package]]
 name = "raw-cpuid"

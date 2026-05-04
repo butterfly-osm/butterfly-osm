@@ -16,7 +16,10 @@ use butterfly_geocode::shard::builder::build_shard;
 use butterfly_geocode::shard::reader::Shard;
 
 #[derive(Parser, Debug)]
-#[command(name = "butterfly-geocode", about = "Geocoder for the butterfly-osm toolkit")]
+#[command(
+    name = "butterfly-geocode",
+    about = "Geocoder for the butterfly-osm toolkit"
+)]
 struct Cli {
     /// Logging format: `text` (default) or `json`.
     #[arg(long, default_value = "text", global = true)]
