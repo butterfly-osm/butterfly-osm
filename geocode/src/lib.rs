@@ -1,45 +1,62 @@
 //! butterfly-geocode — geocoder for the butterfly-osm toolkit.
 //!
-//! ## Status: MVP (Belgium-only, deterministic)
+//! ## Status: Belgium MVP + neural parser scaffold
 //!
-//! Phase 0 baseline of the architecture in
-//! [butterfly-osm#96](https://github.com/butterfly-osm/butterfly-osm/issues/96).
+//! Implements the architecture in
+//! [butterfly-osm#96](https://github.com/butterfly-osm/butterfly-osm/issues/96)
+//! and Phase 1 of
+//! [#98](https://github.com/butterfly-osm/butterfly-osm/issues/98)
+//! (retrieval-aware decoding).
+//!
+//! Two parser backends ship side-by-side:
+//!
+//! - [`parser::heuristic`] — deterministic regex-driven baseline (Phase
+//!   0 from PR #162). Single hypothesis, single country. Always
+//!   available, no model file required.
+//! - [`parser::neural`] — byte-level transformer ([`tagger`]) +
+//!   retrieval-aware decoding ([`parser::decoding`]) implementing all
+//!   five sub-deliverables of #98 Phase 1: canonicalization-based
+//!   recombination, adaptive beam, country-router prior, anchor
+//!   pruning with role-smoothness, and retrieval-utility scoring.
+//!
 //! The architectural type contracts (`ParsedQuery`, `ParseHypothesis`,
 //! `ExecutionBudget`, `Channel`, `ChannelRole`, `RetrievalPolicy`,
-//! retrieval operators) are all implemented to the design spec so
-//! that future phases (#97 execution control, #98 neural parser)
-//! extend cleanly without churning the public surface.
+//! retrieval operators) are common to both backends. The
+//! [`parser::ParserBackend`] trait dispatches between them at runtime;
+//! a missing model file falls back to the heuristic backend with a
+//! warning.
 //!
-//! What ships:
+//! ## #96 invariants honored
 //!
-//! - Belgium address shard built from OSM `addr:*` tags
-//! - Deterministic heuristic parser (regex postcode + numeric house
-//!   extraction + remainder-as-street). Single hypothesis, single
-//!   country. **This is NOT #98 Phase 1** — that is the transformer
-//!   path. This is the deterministic baseline that #98's beam search
-//!   replaces once the transformer is trained.
-//! - Multi-channel executor with `lookup`, `intersect`, `cap`,
-//!   `score` operators, the canonicalization-based **Recombination
-//!   Invariant**, and the **Zero-Cost-on-Clean-Queries** NFR (the
-//!   |hypotheses|==1 path does not re-canonicalize, dedup, or score
-//!   estimate).
-//! - REST API: `GET /geocode` (forward), `GET /geocode/reverse`,
-//!   `GET /health`, `GET /metrics` with content negotiation via the
-//!   `Accept` header (`application/json` default,
-//!   `application/geo+json` for the GeoJSON variant) per the
-//!   project's API design preference (Sirius Insight pattern).
+//! - **Recombination Invariant**: parser-side enforced in
+//!   [`parser::decoding::decode`] which canonicalizes every program
+//!   and dedups by canonical form before emitting `ParsedQuery`.
+//! - **Role-Smoothness Guarantee**: anchor pruning downweights within
+//!   ε of the boundary instead of hard-thresholding (see
+//!   [`parser::anchor::ANCHOR_EPSILON`]).
+//! - **Zero-Cost-on-Clean-Queries**: the `|hypotheses|==1` path in the
+//!   executor still skips canonicalization, dedup, and dynamic
+//!   dispatch — the neural parser produces a multi-hypothesis output
+//!   so it takes the fully-canonicalizing path, but a heuristic-parsed
+//!   single-hypothesis query is still O(1).
 //!
-//! What's deferred (tracked in #96/#97/#98):
+//! ## What's deferred (tracked in #96/#97/#98)
 //!
-//! - Byte-level transformer parser (#96 §Tagger, #98 Phase 2)
-//! - GBDT confidence reranker (#96 §Confidence Model)
-//! - Multi-country routing (#96 §Country Routing) — the `CountryId`
+//! - **#98 Phase 2 (learned decoding objective)** — explicitly blocked
+//!   on a labeled corpus; the spec itself defers it.
+//! - **Production-quality trained model** — the shipped tiny model is
+//!   a proof-of-life that the training loop converges and inference is
+//!   wired correctly. A real model needs the #96 §Tagger
+//!   shard-agnostic augmentation strategy.
+//! - **GBDT confidence reranker** (#96 §Confidence Model)
+//! - **Multi-country routing** (#96 §Country Routing) — the `CountryId`
 //!   enum is `non_exhaustive` for extension; only `BE` is wired.
-//! - Cross-border shard co-location (#96 §Cross-Border Shard
+//! - **Cross-border shard co-location** (#96 §Cross-Border Shard
 //!   Co-location)
-//! - Feedback operators (`Downgrade`, `TopkMerge`, `Sample`) — types
-//!   defined per #96 but not invoked by the MVP executor.
-//! - Admission-control fanout caps (#97 §5)
+//! - **Feedback operators** (`Downgrade`, `TopkMerge`, `Sample`) —
+//!   types defined per #96 but not invoked by the MVP executor.
+//! - **Admission-control fanout caps** (#97 §5)
+//! - **LoRA / regional adapters** — hooks noted in #96 §Tagger.
 
 #![deny(unsafe_code)]
 #![deny(missing_debug_implementations)]
@@ -52,11 +69,14 @@ pub mod parser;
 pub mod routing;
 pub mod server;
 pub mod shard;
+pub mod tagger;
 pub mod types;
 
 pub use confidence::{Confidence, ConfidenceConfig, Features, GbdtModel};
 pub use geocoder::executor::{GeocodedResult, execute, execute_with_rerank};
 pub use parser::heuristic::parse_heuristic;
+pub use parser::neural::NeuralParser;
+pub use parser::{HeuristicBackend, NeuralBackend, ParserBackend};
 pub use routing::{CountryId, classify_country};
 pub use shard::reader::Shard;
 pub use types::{
