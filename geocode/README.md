@@ -17,7 +17,66 @@ Multi-country geocoder for the butterfly-osm toolkit. Started as the determinist
 - **Static cost model** compositional over the operator tree
 - **REST API** with `Accept`-header content negotiation (`application/json` default, `application/geo+json` for the GeoJSON variant)
 - **Prometheus metrics** at `/metrics`
-- **Graceful shutdown** on SIGINT/SIGTERM
+- **Graceful shutdown** on SIGINT/SIGTERM with bounded drain timeout
+- **Per-IP rate limit** (`tower_governor`, defaults: 100 req/s, burst 200) on top of the #97 cost-based admission gate
+- **Permissive CORS** by default (operators behind a reverse proxy should narrow this)
+- **Response compression** (gzip + brotli) negotiated via `Accept-Encoding`
+- **Request body cap** (4 KB default — protects future POST endpoints)
+- **Multi-stage Dockerfile** (`debian:trixie-slim` runtime, ~110 MB image)
+
+## Docker
+
+```bash
+# Build (from the workspace root, NOT inside `geocode/`).
+docker build -t butterfly-geocode:latest -f geocode/Dockerfile .
+
+# Run with a shard mounted at /data/shard.bfgs. The image's CMD
+# defaults to JSON logs; override with `--log-format text` for
+# human-readable output.
+docker run -d --name butterfly-geocode \
+  -p 8080:8080 \
+  -v /host/path/to/belgium.bfgs:/data/shard.bfgs:ro \
+  butterfly-geocode:latest
+
+# Health check.
+curl http://localhost:8080/health
+
+# Forward query.
+curl 'http://localhost:8080/geocode?q=Rue+Wayez+122+Anderlecht&country=BE'
+
+# Prometheus scrape.
+curl http://localhost:8080/metrics
+
+# Stop gracefully (SIGTERM → drains in-flight requests, defaults to a
+# 30 s drain timeout — see `--shutdown-timeout-secs`).
+docker stop butterfly-geocode
+
+# Logs.
+docker logs -f butterfly-geocode
+```
+
+The image runs as a non-root `butterfly` user. Bind-mount the shard as read-only (`:ro`).
+
+## Production knobs (`butterfly-geocode serve`)
+
+| Flag                          | Default       | Purpose                                                    |
+|-------------------------------|---------------|------------------------------------------------------------|
+| `--shard <PATH>`              | —             | Path to the BFGS shard file.                               |
+| `--port <N>`                  | 3003          | TCP port to bind. Container defaults to 8080.              |
+| `--host <IP>`                 | 0.0.0.0       | Bind address.                                              |
+| `--log-format text\|json`     | text          | Tracing subscriber format. JSON in containers.             |
+| `--rate-limit-per-sec <N>`    | 100           | Per-IP requests-per-second steady state.                   |
+| `--rate-limit-burst <N>`      | 200           | Per-IP burst capacity.                                     |
+| `--request-timeout-secs <N>`  | 30            | Server-side per-request timeout.                           |
+| `--shutdown-timeout-secs <N>` | 30            | Max drain time after SIGTERM/SIGINT before forced exit.    |
+| `--max-body-bytes <N>`        | 4096          | POST/PUT body cap. GETs are unaffected.                    |
+| `--rerank-model <PATH>`       | — (off)       | Optional GBDT reranker model.                              |
+| `--parser heuristic\|neural`  | heuristic     | Parser backend.                                            |
+| `--model <PATH>`              | — (heuristic) | Required when `--parser=neural`.                           |
+
+The HTTP-level rate limit (`tower_governor`) sits in front of the #97 cost-based admission control: governor drops abusive clients on raw request rate, admission gates on per-query work. Both are needed.
+
+CORS is permissive by default (`Access-Control-Allow-Origin: *`, all methods, all headers). Production deployments with browser clients should narrow `Access-Control-Allow-Origin` via a reverse proxy that re-injects the policy.
 
 ## Architecture map (#96 → this crate)
 
@@ -355,9 +414,16 @@ cargo test --release -p butterfly-geocode --test belgium_e2e -- --ignored
   "status": "ok",
   "version": "2.0.0",
   "uptime_seconds": 12,
-  "record_count": 4026754
+  "record_count": 4026754,
+  "shard_count": 1,
+  "total_records": 4026754
 }
 ```
+
+`record_count` is retained for backwards compatibility and equals
+`total_records` in single-shard mode. `shard_count` is plumbed through
+ahead of multi-shard support so dashboards built today don't break
+when #96 lands.
 
 ### `GET /metrics`
 
