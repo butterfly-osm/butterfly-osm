@@ -79,7 +79,7 @@ fn make_shard_with_n_postcode_records(n: usize) -> (tempfile::TempDir, Shard) {
             lon: 4.3680 + (i as f64) * 1e-5,
         });
     }
-    build_shard(&path, addrs).expect("build shard");
+    build_shard(&path, butterfly_geocode::CountryId::BE, addrs).expect("build shard");
     let s = Shard::open(&path).expect("open shard");
     (dir, s)
 }

@@ -127,7 +127,8 @@ fn fixture_addresses() -> Vec<AddressRecord> {
 fn make_fixture_shard() -> (TempDir, Shard) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("fixture.bfgs");
-    build_shard(&path, fixture_addresses()).expect("build fixture shard");
+    build_shard(&path, butterfly_geocode::CountryId::BE, fixture_addresses())
+        .expect("build fixture shard");
     let s = Shard::open(&path).expect("open fixture shard");
     (dir, s)
 }
