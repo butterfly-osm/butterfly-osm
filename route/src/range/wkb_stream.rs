@@ -76,9 +76,10 @@ pub fn encode_polygon_wkb(contour: &ContourResult) -> Option<Vec<u8>> {
 
     // Ensure ring is closed (first point == last point)
     if let (Some(first), Some(last)) = (outer_ring.first(), outer_ring.last())
-        && first != last {
-            outer_ring.push(*first);
-        }
+        && first != last
+    {
+        outer_ring.push(*first);
+    }
 
     // Calculate buffer size
     let mut total_points = outer_ring.len();
@@ -113,9 +114,10 @@ pub fn encode_polygon_wkb(contour: &ContourResult) -> Option<Vec<u8>> {
         let mut closed_hole = hole.clone();
         ensure_cw(&mut closed_hole);
         if let (Some(first), Some(last)) = (closed_hole.first(), closed_hole.last())
-            && first != last {
-                closed_hole.push(*first);
-            }
+            && first != last
+        {
+            closed_hole.push(*first);
+        }
         buf.write_all(&(closed_hole.len() as u32).to_le_bytes())
             .ok()?;
         for &(lon, lat) in &closed_hole {

@@ -202,11 +202,19 @@ thread_local! {
     ]) };
 }
 
-/// Run PHAST bounded query using thread-local state
-/// Returns Vec<(rank, dist)> of settled nodes only - avoids 9.6MB output allocation
+/// Run PHAST bounded query using thread-local state.
+///
+/// Reads weights, targets, and offsets directly from the pre-built
+/// `UpAdjFlat` / `DownAdjFlat` flats — never touches `cch_weights.up/.down`
+/// on the inner loop. After #149, this is what makes
+/// `madvise(MADV_DONTNEED)` over the cch_weights byte ranges actually
+/// reclaim RSS.
+///
+/// Returns `Vec<(rank, dist)>` of settled nodes only — avoids the 9.6 MB
+/// output allocation a full distance vector would require.
 pub fn run_phast_bounded_fast(
-    cch_topo: &crate::formats::CchTopo,
-    cch_weights: &super::state::CchWeights,
+    up_adj_flat: &crate::matrix::bucket_ch::UpAdjFlat,
+    down_adj_flat: &crate::matrix::bucket_ch::DownAdjFlat,
     origin_rank: u32,
     threshold: u32,
     mode: crate::profile_abi::Mode,
@@ -214,7 +222,7 @@ pub fn run_phast_bounded_fast(
     use std::cmp::Reverse;
 
     let total_start = std::time::Instant::now();
-    let n_nodes = cch_topo.n_nodes as usize;
+    let n_nodes = up_adj_flat.offsets.len() - 1;
     let mode_idx = mode.index();
 
     // Get thread-local state for this mode
@@ -237,7 +245,9 @@ pub fn run_phast_bounded_fast(
         // Track settled nodes during upward phase
         let mut upward_settled: Vec<u32> = Vec::with_capacity(n_nodes / 100);
 
-        // Phase 1: Upward search (PQ-based, UP edges only)
+        // Phase 1: Upward search (PQ-based, UP edges only). Reads weights
+        // from `up_adj_flat` (pre-filtered for INF), so the hot loop is
+        // branch-free w.r.t. weight validity.
         let upward_start = std::time::Instant::now();
         state.pq.push(Reverse((0, origin_rank)));
 
@@ -252,17 +262,12 @@ pub fn run_phast_bounded_fast(
 
             upward_settled.push(u);
 
-            let up_start = cch_topo.up_offsets[u as usize] as usize;
-            let up_end = cch_topo.up_offsets[u as usize + 1] as usize;
+            let up_start = up_adj_flat.offsets[u as usize] as usize;
+            let up_end = up_adj_flat.offsets[u as usize + 1] as usize;
 
             for i in up_start..up_end {
-                let v = cch_topo.up_targets[i] as usize;
-                let w = cch_weights.up[i];
-
-                if w == u32::MAX {
-                    continue;
-                }
-
+                let v = up_adj_flat.targets[i] as usize;
+                let w = up_adj_flat.weights[i];
                 let new_dist = d.saturating_add(w);
                 if new_dist < state.get_dist(v) {
                     state.set_dist(v, new_dist);
@@ -272,9 +277,9 @@ pub fn run_phast_bounded_fast(
         }
         let upward_us = upward_start.elapsed().as_micros();
 
-        // Phase 2: Block-gated downward scan (linear, DOWN edges only)
-        // Only scan blocks that have active nodes - huge savings for bounded queries
-        // Process blocks in reverse order (highest rank first)
+        // Phase 2: Block-gated downward scan (linear, DOWN edges only).
+        // Reads from `down_adj_flat` — same shape as the legacy
+        // `cch_topo.down_*` + `cch_weights.down` pair, but pre-filtered.
         let downward_start = std::time::Instant::now();
         let mut blocks_active = 0usize;
         for block_idx in (0..state.n_blocks).rev() {
@@ -295,17 +300,12 @@ pub fn run_phast_bounded_fast(
                     continue;
                 }
 
-                let down_start = cch_topo.down_offsets[rank] as usize;
-                let down_end = cch_topo.down_offsets[rank + 1] as usize;
+                let down_start = down_adj_flat.offsets[rank] as usize;
+                let down_end = down_adj_flat.offsets[rank + 1] as usize;
 
                 for i in down_start..down_end {
-                    let v = cch_topo.down_targets[i] as usize;
-                    let w = cch_weights.down[i];
-
-                    if w == u32::MAX {
-                        continue;
-                    }
-
+                    let v = down_adj_flat.targets[i] as usize;
+                    let w = down_adj_flat.weights[i];
                     let new_dist = d_u.saturating_add(w);
                     if new_dist < state.get_dist(v) {
                         // set_dist marks the target block as active too
@@ -762,49 +762,52 @@ pub async fn isochrone_handler(
         None
     };
 
-    // Select weights based on metric type and custom weights
-    let (cch_weights, up_flat, down_flat, node_weights) = if use_distance_weights {
+    // Select weights based on metric type and custom weights.
+    // - `up_flat` / `down_flat` (target-keyed reverse): used by the
+    //   bounded-search reverse PHAST and as ambient state for snap path.
+    // - `down_fwd_flat`: used by the *forward* isochrone downward scan.
+    let (up_flat, down_flat, down_fwd_flat, node_weights) = if use_distance_weights {
         if let Some((ref aw, _)) = avoid_result {
             (
-                &aw.dist_weights,
                 &aw.dist_up_flat,
                 &aw.dist_down_flat,
+                &aw.dist_down_fwd_flat,
                 state.node_weights_dist.as_slice(),
             )
         } else if let Some(ref ew) = exclude_weights {
             (
-                &ew.dist_weights,
                 &ew.dist_up_flat,
                 &ew.dist_down_flat,
+                &ew.dist_down_fwd_flat,
                 state.node_weights_dist.as_slice(),
             )
         } else {
             (
-                &mode_data.cch_weights_dist,
                 &mode_data.up_adj_flat_dist,
                 &mode_data.down_rev_flat_dist,
+                &mode_data.down_adj_flat_dist,
                 state.node_weights_dist.as_slice(),
             )
         }
     } else if let Some((ref aw, _)) = avoid_result {
         (
-            &aw.time_weights,
             &aw.time_up_flat,
             &aw.time_down_flat,
+            &aw.time_down_fwd_flat,
             mode_data.node_weights.as_slice(),
         )
     } else if let Some(ref ew) = exclude_weights {
         (
-            &ew.time_weights,
             &ew.time_up_flat,
             &ew.time_down_flat,
+            &ew.time_down_fwd_flat,
             mode_data.node_weights.as_slice(),
         )
     } else {
         (
-            &mode_data.cch_weights,
             &mode_data.up_adj_flat,
             &mode_data.down_rev_flat,
+            &mode_data.down_adj_flat,
             mode_data.node_weights.as_slice(),
         )
     };
@@ -813,13 +816,7 @@ pub async fn isochrone_handler(
     let phast_settled = if reverse {
         run_phast_bounded_fast_reverse(up_flat, down_flat, center_rank, phast_threshold, mode)
     } else {
-        run_phast_bounded_fast(
-            &mode_data.cch_topo,
-            cch_weights,
-            center_rank,
-            phast_threshold,
-            mode,
-        )
+        run_phast_bounded_fast(up_flat, down_fwd_flat, center_rank, phast_threshold, mode)
     };
 
     // Convert to original IDs
@@ -859,9 +856,10 @@ pub async fn isochrone_handler(
                 ensure_ccw(&mut coords);
                 let mut ring: Vec<[f64; 2]> = coords.into_iter().map(|(x, y)| [x, y]).collect();
                 if let (Some(first), Some(last)) = (ring.first().copied(), ring.last().copied())
-                    && first != last {
-                        ring.push(first);
-                    }
+                    && first != last
+                {
+                    ring.push(first);
+                }
                 (None, Some(ring), None)
             }
             GeometryFormat::Points => (None, None, Some(polygon.to_vec())),
@@ -1134,13 +1132,13 @@ pub async fn isochrone_bulk_handler(
         mode_data.mask.clone()
     };
 
-    // Select CCH weights for PHAST
-    let cch_weights = if let Some((ref aw, _)) = avoid_result {
-        &aw.time_weights
+    // Select forward flat adjacencies for PHAST
+    let (up_flat, down_fwd_flat) = if let Some((ref aw, _)) = avoid_result {
+        (&aw.time_up_flat, &aw.time_down_fwd_flat)
     } else if let Some(ref ew) = exclude_weights {
-        &ew.time_weights
+        (&ew.time_up_flat, &ew.time_down_fwd_flat)
     } else {
-        &mode_data.cch_weights
+        (&mode_data.up_adj_flat, &mode_data.down_adj_flat)
     };
 
     // Process all origins in parallel
@@ -1158,13 +1156,8 @@ pub async fn isochrone_bulk_handler(
             let center_rank = mode_data.order.perm[center_filtered as usize];
 
             // Run PHAST - Note: thread-local state handles per-thread allocation
-            let phast_settled = run_phast_bounded_fast(
-                &mode_data.cch_topo,
-                cch_weights,
-                center_rank,
-                time_ds,
-                mode,
-            );
+            let phast_settled =
+                run_phast_bounded_fast(up_flat, down_fwd_flat, center_rank, time_ds, mode);
 
             // Convert to original IDs
             let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());

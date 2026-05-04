@@ -10,6 +10,7 @@ use std::cmp::Reverse;
 use priority_queue::PriorityQueue;
 
 use crate::formats::CchTopo;
+use crate::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
 use crate::profile_abi::Mode;
 
 use super::state::{CchWeights, DownReverseAdj, ServerState};
@@ -220,11 +221,36 @@ fn reconstruct_path_versioned(
     path
 }
 
+/// Backend selection for `CchQuery` weight reads.
+///
+/// `Flats` is the post-#149 hot path: the bidirectional search reads
+/// weights, parent middles, and topo back-references straight from the
+/// `UpAdjFlat`/`DownReverseAdjFlat` that the matrix subsystem already
+/// keeps in heap. `cch_weights.up`/`.down` is never touched on this
+/// path, which is what makes `madvise(MADV_DONTNEED)` over those byte
+/// ranges actually reclaim RSS.
+///
+/// `RawWeights` is the cold path used by `with_custom_weights`, i.e.
+/// alternative-route penalties and exclude/avoid recustomizations that
+/// build per-call weight arrays. Those paths do not benefit from the
+/// flat layout (no flats are built for the ephemeral weights) and
+/// running them off raw weights is correct — they just incur the INF
+/// branch in the hot loop.
+enum Backend<'a> {
+    Flats {
+        up_adj_flat: &'a UpAdjFlat,
+        down_rev_flat: &'a DownReverseAdjFlat,
+    },
+    RawWeights {
+        weights: &'a CchWeights,
+        down_rev: &'a DownReverseAdj,
+    },
+}
+
 /// Bidirectional CCH query
 pub struct CchQuery<'a> {
     topo: &'a CchTopo,
-    down_rev: &'a DownReverseAdj,
-    weights: &'a CchWeights,
+    backend: Backend<'a>,
     n_nodes: usize,
 }
 
@@ -233,13 +259,88 @@ impl<'a> CchQuery<'a> {
         let mode_data = state.get_mode(mode);
         Self {
             topo: &mode_data.cch_topo,
-            down_rev: &mode_data.down_rev,
-            weights: &mode_data.cch_weights,
+            backend: Backend::Flats {
+                up_adj_flat: &mode_data.up_adj_flat,
+                down_rev_flat: &mode_data.down_rev_flat,
+            },
             n_nodes: mode_data.cch_topo.n_nodes as usize,
         }
     }
 
-    /// Create a query with custom weights (for alternative routes with penalties)
+    /// Iterate UP edges out of node `u`, yielding (target, weight, parent_edge_idx).
+    ///
+    /// `parent_edge_idx` is whatever the unpack code expects in
+    /// `state.parent_fwd[v].1` — under the flats backend that's the topo
+    /// edge index recovered via `up_adj_flat.topo_edge_idx[slot]`, under
+    /// the raw backend that's the topo edge index `i` itself.
+    ///
+    /// The flats backend never yields INF entries (filtered at build);
+    /// the raw backend filters inline.
+    #[inline]
+    fn for_up_edges<F: FnMut(u32, u32, u32)>(&self, u: u32, mut f: F) {
+        match &self.backend {
+            Backend::Flats { up_adj_flat, .. } => {
+                let start = up_adj_flat.offsets[u as usize] as usize;
+                let end = up_adj_flat.offsets[u as usize + 1] as usize;
+                for slot in start..end {
+                    let v = up_adj_flat.targets[slot];
+                    let w = up_adj_flat.weights[slot];
+                    let parent_idx = up_adj_flat.topo_edge_idx[slot];
+                    f(v, w, parent_idx);
+                }
+            }
+            Backend::RawWeights { weights, .. } => {
+                let start = self.topo.up_offsets[u as usize] as usize;
+                let end = self.topo.up_offsets[u as usize + 1] as usize;
+                for i in start..end {
+                    let w = weights.up[i];
+                    if w == u32::MAX {
+                        continue;
+                    }
+                    let v = self.topo.up_targets[i];
+                    f(v, w, i as u32);
+                }
+            }
+        }
+    }
+
+    /// Iterate reversed DOWN edges arriving at node `u` from a higher-rank
+    /// source, yielding (source, weight, parent_edge_idx).
+    #[inline]
+    fn for_down_rev_edges<F: FnMut(u32, u32, u32)>(&self, u: u32, mut f: F) {
+        match &self.backend {
+            Backend::Flats { down_rev_flat, .. } => {
+                let start = down_rev_flat.offsets[u as usize] as usize;
+                let end = down_rev_flat.offsets[u as usize + 1] as usize;
+                for slot in start..end {
+                    let x = down_rev_flat.sources[slot];
+                    let w = down_rev_flat.weights[slot];
+                    let parent_idx = down_rev_flat.topo_edge_idx[slot];
+                    f(x, w, parent_idx);
+                }
+            }
+            Backend::RawWeights { weights, down_rev } => {
+                let start = down_rev.offsets[u as usize] as usize;
+                let end = down_rev.offsets[u as usize + 1] as usize;
+                for i in start..end {
+                    let x = down_rev.sources[i];
+                    let edge_idx = down_rev.edge_idx[i] as usize;
+                    let w = weights.down[edge_idx];
+                    if w == u32::MAX {
+                        continue;
+                    }
+                    f(x, w, edge_idx as u32);
+                }
+            }
+        }
+    }
+
+    /// Create a query with custom weights (for alternative routes with penalties).
+    ///
+    /// Cold path. Reads weights through the legacy `CchWeights` +
+    /// `DownReverseAdj` shape (with the INF branch in the hot loop).
+    /// New code on the routing hot path should go through `new()` /
+    /// the flats backend instead.
     pub fn with_custom_weights(
         topo: &'a CchTopo,
         down_rev: &'a DownReverseAdj,
@@ -247,8 +348,7 @@ impl<'a> CchQuery<'a> {
     ) -> Self {
         Self {
             topo,
-            down_rev,
-            weights,
+            backend: Backend::RawWeights { weights, down_rev },
             n_nodes: topo.n_nodes as usize,
         }
     }
@@ -331,27 +431,23 @@ impl<'a> CchQuery<'a> {
                                 best_dist = total;
                                 meeting_node = u;
                                 if debug {
-                                    tracing::debug!(meet_node = u, dist_fwd = d, dist_bwd = bwd_d, total, "FWD meet");
+                                    tracing::debug!(
+                                        meet_node = u,
+                                        dist_fwd = d,
+                                        dist_bwd = bwd_d,
+                                        total,
+                                        "FWD meet"
+                                    );
                                 }
                             }
                         }
 
                         // Relax UP edges
-                        let start = self.topo.up_offsets[u as usize] as usize;
-                        let end = self.topo.up_offsets[u as usize + 1] as usize;
-
-                        for i in start..end {
-                            let v = self.topo.up_targets[i];
-                            let w = self.weights.up[i];
-
-                            if w == u32::MAX {
-                                continue;
-                            }
-
+                        self.for_up_edges(u, |v, w, edge_idx| {
                             fwd_relaxed += 1;
                             let new_dist = d.saturating_add(w);
                             if new_dist < state.get_fwd(v as usize) {
-                                state.set_fwd(v as usize, new_dist, (u, i as u32));
+                                state.set_fwd(v as usize, new_dist, (u, edge_idx));
                                 state.pq_fwd.push(v, Reverse(new_dist));
 
                                 // Check meeting when updating
@@ -362,12 +458,18 @@ impl<'a> CchQuery<'a> {
                                         best_dist = total;
                                         meeting_node = v;
                                         if debug {
-                                            tracing::debug!(meet_node = v, dist_fwd = new_dist, dist_bwd = bwd_v, total, "FWD meet via edge");
+                                            tracing::debug!(
+                                                meet_node = v,
+                                                dist_fwd = new_dist,
+                                                dist_bwd = bwd_v,
+                                                total,
+                                                "FWD meet via edge"
+                                            );
                                         }
                                     }
                                 }
                             }
-                        }
+                        });
                     }
                 }
 
@@ -386,28 +488,23 @@ impl<'a> CchQuery<'a> {
                                 best_dist = total;
                                 meeting_node = u;
                                 if debug {
-                                    tracing::debug!(meet_node = u, dist_fwd = fwd_d, dist_bwd = d, total, "BWD meet");
+                                    tracing::debug!(
+                                        meet_node = u,
+                                        dist_fwd = fwd_d,
+                                        dist_bwd = d,
+                                        total,
+                                        "BWD meet"
+                                    );
                                 }
                             }
                         }
 
                         // Relax reverse DOWN edges
-                        let start = self.down_rev.offsets[u as usize] as usize;
-                        let end = self.down_rev.offsets[u as usize + 1] as usize;
-
-                        for i in start..end {
-                            let x = self.down_rev.sources[i];
-                            let edge_idx = self.down_rev.edge_idx[i] as usize;
-                            let w = self.weights.down[edge_idx];
-
-                            if w == u32::MAX {
-                                continue;
-                            }
-
+                        self.for_down_rev_edges(u, |x, w, edge_idx| {
                             bwd_relaxed += 1;
                             let new_dist = d.saturating_add(w);
                             if new_dist < state.get_bwd(x as usize) {
-                                state.set_bwd(x as usize, new_dist, (u, edge_idx as u32));
+                                state.set_bwd(x as usize, new_dist, (u, edge_idx));
                                 state.pq_bwd.push(x, Reverse(new_dist));
 
                                 // Check meeting when updating
@@ -418,12 +515,18 @@ impl<'a> CchQuery<'a> {
                                         best_dist = total;
                                         meeting_node = x;
                                         if debug {
-                                            tracing::debug!(meet_node = x, dist_fwd = fwd_x, dist_bwd = new_dist, total, "BWD meet via edge");
+                                            tracing::debug!(
+                                                meet_node = x,
+                                                dist_fwd = fwd_x,
+                                                dist_bwd = new_dist,
+                                                total,
+                                                "BWD meet via edge"
+                                            );
                                         }
                                     }
                                 }
                             }
-                        }
+                        });
                     }
                 }
             }
@@ -546,17 +649,10 @@ impl CchQuery<'_> {
                             best_dist = total;
                         }
                     }
-                    let start = self.topo.up_offsets[u as usize] as usize;
-                    let end = self.topo.up_offsets[u as usize + 1] as usize;
-                    for i in start..end {
-                        let v = self.topo.up_targets[i];
-                        let w = self.weights.up[i];
-                        if w == u32::MAX {
-                            continue;
-                        }
+                    self.for_up_edges(u, |v, w, edge_idx| {
                         let new_dist = d.saturating_add(w);
                         if new_dist < state.get_fwd(v as usize) {
-                            state.set_fwd(v as usize, new_dist, (u, i as u32));
+                            state.set_fwd(v as usize, new_dist, (u, edge_idx));
                             state.pq_fwd.push(v, Reverse(new_dist));
                             let bwd_v = state.get_bwd(v as usize);
                             if bwd_v != u32::MAX {
@@ -566,7 +662,7 @@ impl CchQuery<'_> {
                                 }
                             }
                         }
-                    }
+                    });
                 }
 
                 // Backward step — reversed DOWN graph.
@@ -580,18 +676,10 @@ impl CchQuery<'_> {
                             best_dist = total;
                         }
                     }
-                    let start = self.down_rev.offsets[u as usize] as usize;
-                    let end = self.down_rev.offsets[u as usize + 1] as usize;
-                    for i in start..end {
-                        let x = self.down_rev.sources[i];
-                        let edge_idx = self.down_rev.edge_idx[i] as usize;
-                        let w = self.weights.down[edge_idx];
-                        if w == u32::MAX {
-                            continue;
-                        }
+                    self.for_down_rev_edges(u, |x, w, edge_idx| {
                         let new_dist = d.saturating_add(w);
                         if new_dist < state.get_bwd(x as usize) {
-                            state.set_bwd(x as usize, new_dist, (u, edge_idx as u32));
+                            state.set_bwd(x as usize, new_dist, (u, edge_idx));
                             state.pq_bwd.push(x, Reverse(new_dist));
                             let fwd_x = state.get_fwd(x as usize);
                             if fwd_x != u32::MAX {
@@ -601,7 +689,7 @@ impl CchQuery<'_> {
                                 }
                             }
                         }
-                    }
+                    });
                 }
             }
 
@@ -663,22 +751,22 @@ mod tests {
             n_shortcuts: 0,
             n_original_arcs: 4,
             inputs_sha: [0u8; 32],
-            up_offsets,
-            up_targets,
-            up_is_shortcut,
-            up_middle,
-            down_offsets,
-            down_targets,
-            down_is_shortcut,
-            down_middle,
-            rank_to_filtered,
+            up_offsets: up_offsets.into(),
+            up_targets: up_targets.into(),
+            up_is_shortcut: crate::formats::BitsetField::from_bools(&up_is_shortcut),
+            up_middle: up_middle.into(),
+            down_offsets: down_offsets.into(),
+            down_targets: down_targets.into(),
+            down_is_shortcut: crate::formats::BitsetField::from_bools(&down_is_shortcut),
+            down_middle: down_middle.into(),
+            rank_to_filtered: rank_to_filtered.into(),
         };
 
         let weights = CchWeights {
-            up: vec![10u32, 3, 7, 5],
-            down: vec![10u32, 3, 7, 5],
-            up_middle: vec![],
-            down_middle: vec![],
+            up: vec![10u32, 3, 7, 5].into(),
+            down: vec![10u32, 3, 7, 5].into(),
+            up_middle: vec![].into(),
+            down_middle: vec![].into(),
         };
 
         // Build DownReverseAdj from topo
@@ -816,22 +904,22 @@ mod tests {
             n_shortcuts: 0,
             n_original_arcs: 4,
             inputs_sha: [0u8; 32],
-            up_offsets,
-            up_targets,
-            up_is_shortcut,
-            up_middle,
-            down_offsets,
-            down_targets,
-            down_is_shortcut,
-            down_middle,
-            rank_to_filtered: (0..n_nodes).collect(),
+            up_offsets: up_offsets.into(),
+            up_targets: up_targets.into(),
+            up_is_shortcut: crate::formats::BitsetField::from_bools(&up_is_shortcut),
+            up_middle: up_middle.into(),
+            down_offsets: down_offsets.into(),
+            down_targets: down_targets.into(),
+            down_is_shortcut: crate::formats::BitsetField::from_bools(&down_is_shortcut),
+            down_middle: down_middle.into(),
+            rank_to_filtered: (0..n_nodes).collect::<Vec<_>>().into(),
         };
 
         let weights = CchWeights {
-            up: vec![10, 3, 7, 5],
-            down: vec![10, 3, 7, 5],
-            up_middle: vec![],
-            down_middle: vec![],
+            up: vec![10u32, 3, 7, 5].into(),
+            down: vec![10u32, 3, 7, 5].into(),
+            up_middle: vec![].into(),
+            down_middle: vec![].into(),
         };
 
         let down_rev = DownReverseAdj {

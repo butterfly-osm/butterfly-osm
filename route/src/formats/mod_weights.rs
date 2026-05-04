@@ -83,11 +83,17 @@ pub fn write<P: AsRef<Path>>(path: P, data: &ModWeights) -> Result<()> {
 
 /// Read w.<mode>.u32 file
 pub fn read_all<P: AsRef<Path>>(path: P) -> Result<ModWeights> {
-    use std::io::Read;
-
-    let mut file = File::open(path.as_ref())
+    let file = File::open(path.as_ref())
         .with_context(|| format!("Failed to open {}", path.as_ref().display()))?;
+    read_all_from_reader(file).with_context(|| format!("reading {}", path.as_ref().display()))
+}
 
+/// Read w.<mode>.u32 from an in-memory byte slice (mmap-backed bundle).
+pub fn read_all_from_bytes(bytes: &[u8]) -> Result<ModWeights> {
+    read_all_from_reader(std::io::Cursor::new(bytes))
+}
+
+fn read_all_from_reader<R: std::io::Read>(mut file: R) -> Result<ModWeights> {
     // Read header
     let mut header = vec![0u8; HEADER_SIZE];
     file.read_exact(&mut header)?;
@@ -95,19 +101,13 @@ pub fn read_all<P: AsRef<Path>>(path: P) -> Result<ModWeights> {
     let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
     anyhow::ensure!(
         magic == MAGIC,
-        "Invalid magic in {}: expected 0x{:08x}, got 0x{:08x}",
-        path.as_ref().display(),
+        "Invalid magic: expected 0x{:08x}, got 0x{:08x}",
         MAGIC,
         magic
     );
 
     let version = u16::from_le_bytes([header[4], header[5]]);
-    anyhow::ensure!(
-        version == VERSION,
-        "Unsupported version in {}: {}",
-        path.as_ref().display(),
-        version
-    );
+    anyhow::ensure!(version == VERSION, "Unsupported version: {}", version);
 
     let mode_byte = header[6];
     anyhow::ensure!(

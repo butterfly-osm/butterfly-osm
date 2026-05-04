@@ -110,7 +110,15 @@ impl NbgNodeMapFile {
 
     /// Read node map from file as NbgNodeMap struct
     pub fn read_map<P: AsRef<Path>>(path: P) -> Result<NbgNodeMap> {
-        let mut file = File::open(path)?;
+        Self::read_map_from_reader(File::open(path)?)
+    }
+
+    /// Read node map from an in-memory byte slice (mmap-backed bundle).
+    pub fn read_map_from_bytes(bytes: &[u8]) -> Result<NbgNodeMap> {
+        Self::read_map_from_reader(std::io::Cursor::new(bytes))
+    }
+
+    fn read_map_from_reader<R: Read>(mut file: R) -> Result<NbgNodeMap> {
         let mut crc_digest = crc::Digest::new();
 
         let mut header = [0u8; 16];

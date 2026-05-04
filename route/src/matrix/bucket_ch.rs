@@ -19,6 +19,7 @@
 
 use crate::formats::{CchTopo, CchWeights};
 use crate::server::state::DownReverseAdj;
+use std::borrow::Cow;
 use std::cell::RefCell;
 
 // Thread-local `SearchState` scratch buffers for the parallel bucket M2M path.
@@ -57,19 +58,33 @@ const SEQUENTIAL_FAST_PATH_CELL_THRESHOLD: usize = 100;
 // FLAT ADJACENCY STRUCTURES - Pre-filtered INF edges
 // =============================================================================
 
-/// Flat forward adjacency for UP edges with embedded weights
-/// Filters out INF-weight edges at build time
+/// Flat forward adjacency for UP edges with embedded weights.
+///
+/// Filters out INF-weight edges at build time. `topo_edge_idx[i]` is a
+/// back-reference to the original topo edge index — populated only for
+/// flats that feed `CchQuery` (so `unpack_path` can recover the topo
+/// edge from a parent pointer). Distance-metric flats and PHAST-only
+/// flats leave it empty to keep memory down.
+/// Flat fields are `Cow<'static, [..]>` so a single struct can either
+/// own its arrays (legacy heap path: `UpAdjFlat::build`) or borrow them
+/// straight from a leaked `Arc<Mmap>` (the #150 mmap path:
+/// `UpAdjFlat::read_from_bytes`). All consumers index through the
+/// auto-deref to `&[u32]` / `&[u64]` and never see the Cow wrapper.
 #[derive(Clone)]
 pub struct UpAdjFlat {
-    pub offsets: Vec<u64>, // n_nodes + 1
-    pub targets: Vec<u32>, // target node for edge
-    pub weights: Vec<u32>, // weight of edge (embedded)
+    pub offsets: Cow<'static, [u64]>, // n_nodes + 1
+    pub targets: Cow<'static, [u32]>, // target node for edge
+    pub weights: Cow<'static, [u32]>, // weight of edge (embedded)
+    /// Back-reference to topo edge index per flat slot. Empty unless
+    /// this flat feeds the routing hot path (`CchQuery::new` / the
+    /// alternatives backend) where parent pointers reference topo edges.
+    pub topo_edge_idx: Cow<'static, [u32]>,
 }
 
 impl UpAdjFlat {
-    /// Build flat UP adjacency from topology and weights
-    /// Filters out INF-weight edges to avoid checking in hot loop
-    pub fn build(topo: &CchTopo, weights: &CchWeights) -> Self {
+    /// Build flat UP adjacency from topology and weights.
+    /// `with_topo_idx` controls whether the back-reference is materialised.
+    pub fn build_with(topo: &CchTopo, weights: &CchWeights, with_topo_idx: bool) -> Self {
         let n_nodes = topo.n_nodes as usize;
 
         // First pass: count valid edges per node
@@ -98,6 +113,11 @@ impl UpAdjFlat {
         // Allocate arrays
         let mut targets = vec![0u32; total_edges];
         let mut flat_weights = vec![0u32; total_edges];
+        let mut topo_edge_idx = if with_topo_idx {
+            vec![0u32; total_edges]
+        } else {
+            Vec::new()
+        };
 
         // Second pass: fill in edges (skip INF)
         counts.fill(0);
@@ -114,32 +134,113 @@ impl UpAdjFlat {
                 let pos = offsets[source] as usize + counts[source];
                 targets[pos] = target;
                 flat_weights[pos] = w;
+                if with_topo_idx {
+                    topo_edge_idx[pos] = i as u32;
+                }
                 counts[source] += 1;
             }
         }
 
         Self {
-            offsets,
-            targets,
-            weights: flat_weights,
+            offsets: Cow::Owned(offsets),
+            targets: Cow::Owned(targets),
+            weights: Cow::Owned(flat_weights),
+            topo_edge_idx: Cow::Owned(topo_edge_idx),
+        }
+    }
+
+    /// Build flat UP adjacency without the topo back-reference.
+    /// Backwards-compatible default for matrix / PHAST callers.
+    pub fn build(topo: &CchTopo, weights: &CchWeights) -> Self {
+        Self::build_with(topo, weights, false)
+    }
+}
+
+/// Flat forward adjacency for DOWN edges with embedded weights.
+///
+/// Source-keyed mirror of `UpAdjFlat` but for DOWN. Required by the
+/// PHAST forward-isochrone downward scan; it lets that scan read off
+/// the flats so the underlying `cch_weights.down` mmap pages can be
+/// `madvise(DONTNEED)`-ed at startup.
+#[derive(Clone)]
+pub struct DownAdjFlat {
+    pub offsets: Cow<'static, [u64]>,
+    pub targets: Cow<'static, [u32]>,
+    pub weights: Cow<'static, [u32]>,
+}
+
+impl DownAdjFlat {
+    /// Build flat forward DOWN adjacency from topology and weights.
+    pub fn build(topo: &CchTopo, weights: &CchWeights) -> Self {
+        let n_nodes = topo.n_nodes as usize;
+
+        let mut counts = vec![0usize; n_nodes];
+        for (source, count) in counts.iter_mut().enumerate() {
+            let start = topo.down_offsets[source] as usize;
+            let end = topo.down_offsets[source + 1] as usize;
+            for i in start..end {
+                if weights.down[i] != u32::MAX {
+                    *count += 1;
+                }
+            }
+        }
+
+        let mut offsets = Vec::with_capacity(n_nodes + 1);
+        let mut offset = 0u64;
+        for &count in &counts {
+            offsets.push(offset);
+            offset += count as u64;
+        }
+        offsets.push(offset);
+
+        let total_edges = offset as usize;
+        let mut targets = vec![0u32; total_edges];
+        let mut flat_weights = vec![0u32; total_edges];
+
+        counts.fill(0);
+        for source in 0..n_nodes {
+            let start = topo.down_offsets[source] as usize;
+            let end = topo.down_offsets[source + 1] as usize;
+            for i in start..end {
+                let w = weights.down[i];
+                if w == u32::MAX {
+                    continue;
+                }
+                let target = topo.down_targets[i];
+                let pos = offsets[source] as usize + counts[source];
+                targets[pos] = target;
+                flat_weights[pos] = w;
+                counts[source] += 1;
+            }
+        }
+
+        Self {
+            offsets: Cow::Owned(offsets),
+            targets: Cow::Owned(targets),
+            weights: Cow::Owned(flat_weights),
         }
     }
 }
 
-/// Flat reverse adjacency for DOWN edges with embedded weights
-/// Stores (source, weight) directly instead of (source, edge_idx)
-/// This eliminates one memory indirection in the hot path
+/// Flat reverse adjacency for DOWN edges with embedded weights.
+///
+/// Target-keyed: `offsets[u]..offsets[u+1]` lists all DOWN edges x→u
+/// that arrive at u. Used by the backward CCH search on the routing
+/// hot path. `topo_edge_idx` is populated only when this flat feeds
+/// `CchQuery` (so unpack can recover topo edges from parent pointers).
 #[derive(Clone)]
 pub struct DownReverseAdjFlat {
-    pub offsets: Vec<u64>, // n_nodes + 1
-    pub sources: Vec<u32>, // source node x for reverse edge
-    pub weights: Vec<u32>, // weight of edge x→y (embedded, not indirect)
+    pub offsets: Cow<'static, [u64]>, // n_nodes + 1
+    pub sources: Cow<'static, [u32]>, // source node x for reverse edge
+    pub weights: Cow<'static, [u32]>, // weight of edge x→y (embedded)
+    /// Empty unless this flat feeds the routing hot path.
+    pub topo_edge_idx: Cow<'static, [u32]>,
 }
 
 impl DownReverseAdjFlat {
-    /// Build flat reverse adjacency from topology and weights
-    /// Filters out INF-weight edges to avoid checking in hot loop
-    pub fn build(topo: &CchTopo, weights: &CchWeights) -> Self {
+    /// Build flat reverse adjacency from topology and weights.
+    /// `with_topo_idx` controls whether the back-reference is materialised.
+    pub fn build_with(topo: &CchTopo, weights: &CchWeights, with_topo_idx: bool) -> Self {
         let n_nodes = topo.n_nodes as usize;
 
         // First pass: count incoming VALID edges per node (skip INF weights)
@@ -155,7 +256,6 @@ impl DownReverseAdjFlat {
             }
         }
 
-        // Build offsets (prefix sum)
         let mut offsets = Vec::with_capacity(n_nodes + 1);
         let mut offset = 0u64;
         for &count in &counts {
@@ -166,35 +266,412 @@ impl DownReverseAdjFlat {
 
         let total_edges = offset as usize;
 
-        // Allocate arrays (only for valid edges)
         let mut sources = vec![0u32; total_edges];
         let mut flat_weights = vec![0u32; total_edges];
+        let mut topo_edge_idx = if with_topo_idx {
+            vec![0u32; total_edges]
+        } else {
+            Vec::new()
+        };
 
-        // Second pass: fill in reverse edges with embedded weights (skip INF)
         counts.fill(0);
-
         for source in 0..n_nodes {
             let start = topo.down_offsets[source] as usize;
             let end = topo.down_offsets[source + 1] as usize;
-
             for i in start..end {
                 let w = weights.down[i];
                 if w == u32::MAX {
-                    continue; // Skip INF edges
+                    continue;
                 }
                 let target = topo.down_targets[i] as usize;
                 let pos = offsets[target] as usize + counts[target];
                 sources[pos] = source as u32;
                 flat_weights[pos] = w;
+                if with_topo_idx {
+                    topo_edge_idx[pos] = i as u32;
+                }
                 counts[target] += 1;
             }
         }
 
         Self {
-            offsets,
-            sources,
-            weights: flat_weights,
+            offsets: Cow::Owned(offsets),
+            sources: Cow::Owned(sources),
+            weights: Cow::Owned(flat_weights),
+            topo_edge_idx: Cow::Owned(topo_edge_idx),
         }
+    }
+
+    /// Build without back-references (matrix / PHAST callers).
+    pub fn build(topo: &CchTopo, weights: &CchWeights) -> Self {
+        Self::build_with(topo, weights, false)
+    }
+}
+
+// =============================================================================
+// ON-DISK FORMAT FOR FLAT ADJACENCIES (#150)
+// =============================================================================
+//
+// Each flat is serialised as a self-describing little-endian binary file
+// with a CRC-checked body and full-file CRC, mirroring the cch_weights /
+// cch_topo formats. The pack step writes one section per (mode × flat)
+// into the butterfly.dat container; the server boot path mmaps the
+// container and parses the section bytes as a `*View` whose slices borrow
+// directly from the mapping.
+//
+// Layout (little-endian):
+//
+//   header (32 bytes):
+//     magic        : u32   (kind-specific tag, see consts below)
+//     version      : u16   = 1
+//     has_topo_idx : u8    (0 or 1; only meaningful for UP/DOWN-REV)
+//     _resv        : u8
+//     n_nodes      : u64
+//     n_edges      : u64
+//     _resv2       : u64   (reserved; written 0)
+//
+//   body:
+//     offsets        : (n_nodes + 1) × u64
+//     targets/sources: n_edges × u32
+//     weights        : n_edges × u32
+//     topo_edge_idx  : (n_edges or 0) × u32     -- present iff has_topo_idx
+//
+//   footer (16 bytes):
+//     body_crc : u64   (CRC-64 over the body section ONLY)
+//     file_crc : u64   (CRC-64 over header || body)
+//
+// The container writer pads every section start to 8 bytes, so the file
+// header (and therefore offsets) is always u64-aligned in memory. After
+// the offsets array the cursor is `32 + 8 * (n_nodes + 1)`, still a
+// multiple of 8, so the u32 arrays are at least 4-aligned for
+// `bytemuck::cast_slice::<u32>`.
+
+const ADJ_FLAT_VERSION: u16 = 1;
+const ADJ_FLAT_HEADER_SIZE: usize = 32;
+const ADJ_FLAT_FOOTER_SIZE: usize = 16;
+
+/// Magic for `UpAdjFlat` files. ASCII "UPAJ" (little-endian).
+const UP_ADJ_FLAT_MAGIC: u32 = 0x4A415055;
+/// Magic for `DownAdjFlat` files. ASCII "DAJF".
+const DOWN_ADJ_FLAT_MAGIC: u32 = 0x464A4144;
+/// Magic for `DownReverseAdjFlat` files. ASCII "DRJF".
+const DOWN_REV_ADJ_FLAT_MAGIC: u32 = 0x464A5244;
+
+fn write_adj_flat_header(
+    out: &mut Vec<u8>,
+    magic: u32,
+    has_topo_idx: bool,
+    n_nodes: u64,
+    n_edges: u64,
+) {
+    out.extend_from_slice(&magic.to_le_bytes());
+    out.extend_from_slice(&ADJ_FLAT_VERSION.to_le_bytes());
+    out.push(if has_topo_idx { 1 } else { 0 });
+    out.push(0); // _resv
+    out.extend_from_slice(&n_nodes.to_le_bytes());
+    out.extend_from_slice(&n_edges.to_le_bytes());
+    out.extend_from_slice(&0u64.to_le_bytes()); // _resv2
+    debug_assert!(out.len().is_multiple_of(ADJ_FLAT_HEADER_SIZE));
+}
+
+fn parse_adj_flat_header(
+    bytes: &[u8],
+    expected_magic: u32,
+) -> anyhow::Result<(bool, usize, usize)> {
+    anyhow::ensure!(
+        bytes.len() >= ADJ_FLAT_HEADER_SIZE + ADJ_FLAT_FOOTER_SIZE,
+        "adj-flat section too short: {} bytes",
+        bytes.len()
+    );
+    let magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+    anyhow::ensure!(
+        magic == expected_magic,
+        "adj-flat magic mismatch: got 0x{:08X}, expected 0x{:08X}",
+        magic,
+        expected_magic
+    );
+    let version = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
+    anyhow::ensure!(
+        version == ADJ_FLAT_VERSION,
+        "adj-flat version {} unsupported (expected {})",
+        version,
+        ADJ_FLAT_VERSION
+    );
+    let has_topo_idx = match bytes[6] {
+        0 => false,
+        1 => true,
+        v => anyhow::bail!("adj-flat has_topo_idx byte invalid: {}", v),
+    };
+    let n_nodes = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
+    let n_edges = u64::from_le_bytes(bytes[16..24].try_into().unwrap()) as usize;
+    Ok((has_topo_idx, n_nodes, n_edges))
+}
+
+fn body_layout(
+    n_nodes: usize,
+    n_edges: usize,
+    has_topo_idx: bool,
+) -> (usize, usize, usize, usize, usize) {
+    // Returns (offsets_off, targets_off, weights_off, topo_off, body_end)
+    // All offsets are absolute byte offsets from the start of the file
+    // (i.e. inclusive of the header). The container guarantees the
+    // section starts u64-aligned, and our header is exactly 32 B, so the
+    // u64 offsets array starts u64-aligned. After it, the cursor is
+    // 32 + 8*(n_nodes+1) which is still a multiple of 8.
+    let offsets_off = ADJ_FLAT_HEADER_SIZE;
+    let targets_off = offsets_off + 8 * (n_nodes + 1);
+    let weights_off = targets_off + 4 * n_edges;
+    let topo_off = weights_off + 4 * n_edges;
+    let body_end = if has_topo_idx {
+        topo_off + 4 * n_edges
+    } else {
+        topo_off
+    };
+    (offsets_off, targets_off, weights_off, topo_off, body_end)
+}
+
+fn write_adj_flat_body_and_footer(
+    out: &mut Vec<u8>,
+    offsets: &[u64],
+    a32: &[u32], // targets or sources
+    weights: &[u32],
+    topo_edge_idx: Option<&[u32]>,
+) {
+    debug_assert_eq!(out.len(), ADJ_FLAT_HEADER_SIZE);
+    out.extend_from_slice(bytemuck::cast_slice(offsets));
+    out.extend_from_slice(bytemuck::cast_slice(a32));
+    out.extend_from_slice(bytemuck::cast_slice(weights));
+    if let Some(t) = topo_edge_idx {
+        out.extend_from_slice(bytemuck::cast_slice(t));
+    }
+    let body = &out[ADJ_FLAT_HEADER_SIZE..];
+    let body_crc = super::super::formats::crc::checksum(body);
+    let file_crc = {
+        let mut d = super::super::formats::crc::Digest::new();
+        d.update(&out[..]);
+        d.finalize()
+    };
+    out.extend_from_slice(&body_crc.to_le_bytes());
+    out.extend_from_slice(&file_crc.to_le_bytes());
+}
+
+fn verify_adj_flat_crcs(bytes: &[u8], body_end: usize) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        bytes.len() == body_end + ADJ_FLAT_FOOTER_SIZE,
+        "adj-flat trailing bytes: file_len={} body_end={}",
+        bytes.len(),
+        body_end
+    );
+    let body = &bytes[ADJ_FLAT_HEADER_SIZE..body_end];
+    let computed_body = super::super::formats::crc::checksum(body);
+    let stored_body = u64::from_le_bytes(bytes[body_end..body_end + 8].try_into().unwrap());
+    anyhow::ensure!(
+        computed_body == stored_body,
+        "adj-flat body CRC mismatch: computed 0x{:016X}, stored 0x{:016X}",
+        computed_body,
+        stored_body
+    );
+    let computed_file = super::super::formats::crc::checksum(&bytes[..body_end]);
+    let stored_file = u64::from_le_bytes(bytes[body_end + 8..body_end + 16].try_into().unwrap());
+    anyhow::ensure!(
+        computed_file == stored_file,
+        "adj-flat file CRC mismatch: computed 0x{:016X}, stored 0x{:016X}",
+        computed_file,
+        stored_file
+    );
+    Ok(())
+}
+
+/// Serialiser / deserialiser for `UpAdjFlat`.
+pub struct UpAdjFlatFile;
+
+impl UpAdjFlatFile {
+    /// Encode `flat` into the on-disk binary representation. Returns the
+    /// owned byte vector ready to be appended to a container.
+    pub fn encode(flat: &UpAdjFlat) -> Vec<u8> {
+        let n_nodes = flat.offsets.len().saturating_sub(1);
+        let n_edges = flat.weights.len();
+        let has_topo_idx = !flat.topo_edge_idx.is_empty();
+        if has_topo_idx {
+            assert_eq!(
+                flat.topo_edge_idx.len(),
+                n_edges,
+                "topo_edge_idx must have length n_edges"
+            );
+        }
+        let (_, _, _, _, body_end) = body_layout(n_nodes, n_edges, has_topo_idx);
+        let mut out = Vec::with_capacity(body_end + ADJ_FLAT_FOOTER_SIZE);
+        write_adj_flat_header(
+            &mut out,
+            UP_ADJ_FLAT_MAGIC,
+            has_topo_idx,
+            n_nodes as u64,
+            n_edges as u64,
+        );
+        let topo: Option<&[u32]> = if has_topo_idx {
+            Some(&flat.topo_edge_idx)
+        } else {
+            None
+        };
+        write_adj_flat_body_and_footer(&mut out, &flat.offsets, &flat.targets, &flat.weights, topo);
+        debug_assert_eq!(out.len(), body_end + ADJ_FLAT_FOOTER_SIZE);
+        out
+    }
+
+    /// Zero-copy read over a `'static` byte slice. The returned flat
+    /// borrows its arrays straight from the input. Verifies both body and
+    /// file CRCs before returning. Section start MUST be 8-byte aligned
+    /// (the container writer guarantees this).
+    pub fn read_from_bytes(bytes: &'static [u8]) -> anyhow::Result<UpAdjFlat> {
+        let (has_topo_idx, n_nodes, n_edges) = parse_adj_flat_header(bytes, UP_ADJ_FLAT_MAGIC)?;
+        let (offsets_off, targets_off, weights_off, topo_off, body_end) =
+            body_layout(n_nodes, n_edges, has_topo_idx);
+        anyhow::ensure!(
+            bytes.len() == body_end + ADJ_FLAT_FOOTER_SIZE,
+            "adj-flat size mismatch: got {}, expected {}",
+            bytes.len(),
+            body_end + ADJ_FLAT_FOOTER_SIZE
+        );
+        // Alignment guard — bytemuck would panic otherwise.
+        anyhow::ensure!(
+            (bytes.as_ptr() as usize).is_multiple_of(8),
+            "adj-flat section bytes not 8-byte aligned (got pointer 0x{:x})",
+            bytes.as_ptr() as usize
+        );
+        verify_adj_flat_crcs(bytes, body_end)?;
+
+        let offsets: &'static [u64] =
+            bytemuck::cast_slice(&bytes[offsets_off..offsets_off + 8 * (n_nodes + 1)]);
+        let targets: &'static [u32] =
+            bytemuck::cast_slice(&bytes[targets_off..targets_off + 4 * n_edges]);
+        let weights: &'static [u32] =
+            bytemuck::cast_slice(&bytes[weights_off..weights_off + 4 * n_edges]);
+        let topo_edge_idx: &'static [u32] = if has_topo_idx {
+            bytemuck::cast_slice(&bytes[topo_off..topo_off + 4 * n_edges])
+        } else {
+            &[]
+        };
+        Ok(UpAdjFlat {
+            offsets: Cow::Borrowed(offsets),
+            targets: Cow::Borrowed(targets),
+            weights: Cow::Borrowed(weights),
+            topo_edge_idx: Cow::Borrowed(topo_edge_idx),
+        })
+    }
+}
+
+/// Serialiser / deserialiser for `DownAdjFlat`.
+pub struct DownAdjFlatFile;
+
+impl DownAdjFlatFile {
+    pub fn encode(flat: &DownAdjFlat) -> Vec<u8> {
+        let n_nodes = flat.offsets.len().saturating_sub(1);
+        let n_edges = flat.weights.len();
+        // DownAdjFlat never carries topo_edge_idx.
+        let (_, _, _, _, body_end) = body_layout(n_nodes, n_edges, false);
+        let mut out = Vec::with_capacity(body_end + ADJ_FLAT_FOOTER_SIZE);
+        write_adj_flat_header(
+            &mut out,
+            DOWN_ADJ_FLAT_MAGIC,
+            false,
+            n_nodes as u64,
+            n_edges as u64,
+        );
+        write_adj_flat_body_and_footer(&mut out, &flat.offsets, &flat.targets, &flat.weights, None);
+        out
+    }
+
+    pub fn read_from_bytes(bytes: &'static [u8]) -> anyhow::Result<DownAdjFlat> {
+        let (has_topo_idx, n_nodes, n_edges) = parse_adj_flat_header(bytes, DOWN_ADJ_FLAT_MAGIC)?;
+        anyhow::ensure!(
+            !has_topo_idx,
+            "DownAdjFlat must not carry topo_edge_idx (has_topo_idx=1)"
+        );
+        let (offsets_off, targets_off, weights_off, _, body_end) =
+            body_layout(n_nodes, n_edges, false);
+        anyhow::ensure!(
+            bytes.len() == body_end + ADJ_FLAT_FOOTER_SIZE,
+            "adj-flat size mismatch"
+        );
+        anyhow::ensure!(
+            (bytes.as_ptr() as usize).is_multiple_of(8),
+            "adj-flat section bytes not 8-byte aligned"
+        );
+        verify_adj_flat_crcs(bytes, body_end)?;
+        let offsets: &'static [u64] =
+            bytemuck::cast_slice(&bytes[offsets_off..offsets_off + 8 * (n_nodes + 1)]);
+        let targets: &'static [u32] =
+            bytemuck::cast_slice(&bytes[targets_off..targets_off + 4 * n_edges]);
+        let weights: &'static [u32] =
+            bytemuck::cast_slice(&bytes[weights_off..weights_off + 4 * n_edges]);
+        Ok(DownAdjFlat {
+            offsets: Cow::Borrowed(offsets),
+            targets: Cow::Borrowed(targets),
+            weights: Cow::Borrowed(weights),
+        })
+    }
+}
+
+/// Serialiser / deserialiser for `DownReverseAdjFlat`.
+pub struct DownReverseAdjFlatFile;
+
+impl DownReverseAdjFlatFile {
+    pub fn encode(flat: &DownReverseAdjFlat) -> Vec<u8> {
+        let n_nodes = flat.offsets.len().saturating_sub(1);
+        let n_edges = flat.weights.len();
+        let has_topo_idx = !flat.topo_edge_idx.is_empty();
+        if has_topo_idx {
+            assert_eq!(flat.topo_edge_idx.len(), n_edges);
+        }
+        let (_, _, _, _, body_end) = body_layout(n_nodes, n_edges, has_topo_idx);
+        let mut out = Vec::with_capacity(body_end + ADJ_FLAT_FOOTER_SIZE);
+        write_adj_flat_header(
+            &mut out,
+            DOWN_REV_ADJ_FLAT_MAGIC,
+            has_topo_idx,
+            n_nodes as u64,
+            n_edges as u64,
+        );
+        let topo: Option<&[u32]> = if has_topo_idx {
+            Some(&flat.topo_edge_idx)
+        } else {
+            None
+        };
+        write_adj_flat_body_and_footer(&mut out, &flat.offsets, &flat.sources, &flat.weights, topo);
+        out
+    }
+
+    pub fn read_from_bytes(bytes: &'static [u8]) -> anyhow::Result<DownReverseAdjFlat> {
+        let (has_topo_idx, n_nodes, n_edges) =
+            parse_adj_flat_header(bytes, DOWN_REV_ADJ_FLAT_MAGIC)?;
+        let (offsets_off, sources_off, weights_off, topo_off, body_end) =
+            body_layout(n_nodes, n_edges, has_topo_idx);
+        anyhow::ensure!(
+            bytes.len() == body_end + ADJ_FLAT_FOOTER_SIZE,
+            "adj-flat size mismatch"
+        );
+        anyhow::ensure!(
+            (bytes.as_ptr() as usize).is_multiple_of(8),
+            "adj-flat section bytes not 8-byte aligned"
+        );
+        verify_adj_flat_crcs(bytes, body_end)?;
+        let offsets: &'static [u64] =
+            bytemuck::cast_slice(&bytes[offsets_off..offsets_off + 8 * (n_nodes + 1)]);
+        let sources: &'static [u32] =
+            bytemuck::cast_slice(&bytes[sources_off..sources_off + 4 * n_edges]);
+        let weights: &'static [u32] =
+            bytemuck::cast_slice(&bytes[weights_off..weights_off + 4 * n_edges]);
+        let topo_edge_idx: &'static [u32] = if has_topo_idx {
+            bytemuck::cast_slice(&bytes[topo_off..topo_off + 4 * n_edges])
+        } else {
+            &[]
+        };
+        Ok(DownReverseAdjFlat {
+            offsets: Cow::Borrowed(offsets),
+            sources: Cow::Borrowed(sources),
+            weights: Cow::Borrowed(weights),
+            topo_edge_idx: Cow::Borrowed(topo_edge_idx),
+        })
     }
 }
 
@@ -994,7 +1471,6 @@ impl BucketM2MEngine {
 
         (matrix, stats)
     }
-
 }
 
 /// Fully optimized version using pre-built flat adjacencies for both directions
@@ -1423,9 +1899,8 @@ pub fn table_bucket_parallel(
             FORWARD_STATE.with(|state_cell| {
                 FORWARD_BUCKET_ITEMS.with(|items_cell| {
                     let mut state_opt = state_cell.borrow_mut();
-                    let state = state_opt.get_or_insert_with(|| {
-                        SearchState::new(n_nodes, avg_visited)
-                    });
+                    let state =
+                        state_opt.get_or_insert_with(|| SearchState::new(n_nodes, avg_visited));
                     if state.entries.len() != n_nodes {
                         *state = SearchState::new(n_nodes, avg_visited);
                     }
@@ -1486,9 +1961,7 @@ pub fn table_bucket_parallel(
 
             BACKWARD_STATE.with(|state_cell| {
                 let mut state_opt = state_cell.borrow_mut();
-                let state = state_opt.get_or_insert_with(|| {
-                    SearchState::new(n_nodes, avg_visited)
-                });
+                let state = state_opt.get_or_insert_with(|| SearchState::new(n_nodes, avg_visited));
                 if state.entries.len() != n_nodes {
                     *state = SearchState::new(n_nodes, avg_visited);
                 }
@@ -1611,5 +2084,266 @@ impl BucketArena {
 
     pub fn total_items(&self) -> usize {
         self.items.len()
+    }
+}
+
+#[cfg(test)]
+mod step_a_tests {
+    use super::*;
+    use crate::formats::BitsetField;
+    #[allow(unused_imports)]
+    use crate::formats::CchTopo;
+    use std::borrow::Cow;
+
+    /// Build a small synthetic CCH with mixed original + shortcut edges
+    /// and one INF entry, verify flat middles match the topo middles for
+    /// every finite edge and that the topo_edge_idx back-reference is
+    /// consistent.
+    ///
+    /// Topology: 4 nodes (rank 0..4).
+    ///   UP edges:
+    ///     0→2 (idx 0, original, w=10)
+    ///     1→2 (idx 1, original, w=3)
+    ///     2→3 (idx 2, shortcut via mid=2,  w=7)
+    ///     2→3 (idx 3, INF — filtered out)
+    ///   DOWN edges:
+    ///     2→0 (idx 0, original, w=10)
+    ///     2→1 (idx 1, original, w=3)
+    ///     3→2 (idx 2, shortcut via mid=2,  w=7)
+    ///     3→2 (idx 3, INF — filtered out)
+    fn make_cch() -> (CchTopo, CchWeights) {
+        let n_nodes = 4u32;
+        let up_offsets: Vec<u64> = vec![0, 1, 2, 4, 4];
+        let up_targets: Vec<u32> = vec![2, 2, 3, 3];
+        let up_is_shortcut_bools = vec![false, false, true, true];
+        let up_middle: Vec<u32> = vec![u32::MAX, u32::MAX, 2, 2];
+
+        let down_offsets: Vec<u64> = vec![0, 0, 0, 2, 4];
+        let down_targets: Vec<u32> = vec![0, 1, 2, 2];
+        let down_is_shortcut_bools = vec![false, false, true, true];
+        let down_middle: Vec<u32> = vec![u32::MAX, u32::MAX, 2, 2];
+
+        let topo = CchTopo {
+            n_nodes,
+            n_shortcuts: 2,
+            n_original_arcs: 2,
+            inputs_sha: [0u8; 32],
+            up_offsets: Cow::Owned(up_offsets),
+            up_targets: Cow::Owned(up_targets),
+            up_is_shortcut: BitsetField::from_bools(&up_is_shortcut_bools),
+            up_middle: Cow::Owned(up_middle),
+            down_offsets: Cow::Owned(down_offsets),
+            down_targets: Cow::Owned(down_targets),
+            down_is_shortcut: BitsetField::from_bools(&down_is_shortcut_bools),
+            down_middle: Cow::Owned(down_middle),
+            rank_to_filtered: Cow::Owned(vec![0u32, 1, 2, 3]),
+        };
+
+        let weights = CchWeights {
+            up: Cow::Owned(vec![10u32, 3, 7, u32::MAX]),
+            down: Cow::Owned(vec![10u32, 3, 7, u32::MAX]),
+            // empty relaxed middles → fall back to topo middles
+            up_middle: Cow::Owned(vec![]),
+            down_middle: Cow::Owned(vec![]),
+        };
+
+        (topo, weights)
+    }
+
+    #[test]
+    fn up_adj_flat_with_topo_idx_back_reference() {
+        let (topo, w) = make_cch();
+        let flat = UpAdjFlat::build_with(&topo, &w, true);
+
+        // 3 finite UP edges (idx 0,1,2 — idx 3 is INF and filtered)
+        assert_eq!(flat.weights.len(), 3);
+        assert_eq!(flat.topo_edge_idx.len(), 3);
+
+        for (slot, &topo_idx) in flat.topo_edge_idx.iter().enumerate() {
+            let i = topo_idx as usize;
+            assert_eq!(flat.targets[slot], topo.up_targets[i]);
+            assert_eq!(flat.weights[slot], w.up[i]);
+        }
+    }
+
+    #[test]
+    fn up_adj_flat_default_skips_topo_idx() {
+        let (topo, w) = make_cch();
+        let flat = UpAdjFlat::build(&topo, &w);
+        assert_eq!(flat.weights.len(), 3);
+        assert!(
+            flat.topo_edge_idx.is_empty(),
+            "default build skips topo back-ref"
+        );
+    }
+
+    #[test]
+    fn down_adj_flat_targets_and_weights_filtered() {
+        let (topo, w) = make_cch();
+        let flat = DownAdjFlat::build(&topo, &w);
+
+        // 3 finite DOWN edges (idx 0,1,2; idx 3 is INF)
+        assert_eq!(flat.weights.len(), 3);
+
+        // Walk the flat: each edge's target should appear with its
+        // (non-INF) weight at some slot under the right source.
+        for source in 0..topo.n_nodes as usize {
+            let s_off = topo.down_offsets[source] as usize;
+            let s_end = topo.down_offsets[source + 1] as usize;
+            for i in s_off..s_end {
+                let w_topo = w.down[i];
+                if w_topo == u32::MAX {
+                    continue;
+                }
+                let target = topo.down_targets[i];
+                let f_off = flat.offsets[source] as usize;
+                let f_end = flat.offsets[source + 1] as usize;
+                let found = (f_off..f_end)
+                    .any(|slot| flat.targets[slot] == target && flat.weights[slot] == w_topo);
+                assert!(
+                    found,
+                    "edge {source}->{target} w={w_topo} missing in DownAdjFlat"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn down_rev_adj_flat_with_topo_idx() {
+        let (topo, w) = make_cch();
+        let flat = DownReverseAdjFlat::build_with(&topo, &w, true);
+
+        assert_eq!(flat.weights.len(), 3);
+        assert_eq!(flat.topo_edge_idx.len(), 3);
+
+        for (slot, &topo_idx) in flat.topo_edge_idx.iter().enumerate() {
+            let i = topo_idx as usize;
+            assert_eq!(flat.weights[slot], w.down[i]);
+        }
+    }
+
+    #[test]
+    fn down_rev_adj_flat_default_skips_topo_idx() {
+        let (topo, w) = make_cch();
+        let flat = DownReverseAdjFlat::build(&topo, &w);
+        assert_eq!(flat.weights.len(), 3);
+        assert!(flat.topo_edge_idx.is_empty());
+    }
+
+    // Suppress unused-import warning for `Cow` if no test uses it.
+    #[test]
+    fn _cow_alias_used() {
+        let _: Cow<'static, [u32]> = Cow::Owned(vec![]);
+    }
+
+    // ----- #150 file format tests --------------------------------------
+
+    /// Leak a buffer to `&'static [u8]` and align its start to 8 bytes
+    /// so `read_from_bytes` can `bytemuck::cast_slice::<u64>` cleanly.
+    /// The container writer guarantees this alignment in production; we
+    /// reproduce it manually here because `Vec<u8>` has only 1-byte
+    /// alignment.
+    fn leak_aligned(bytes: Vec<u8>) -> &'static [u8] {
+        // Allocate `Vec<u64>` (8-byte aligned) of the right capacity and
+        // copy bytes into it, then reinterpret as &[u8].
+        let n_u64 = bytes.len().div_ceil(8);
+        let mut buf: Vec<u64> = vec![0u64; n_u64];
+        // SAFETY: bytemuck::cast_slice_mut on a u64 vec gives a u8 view
+        // that is exactly `n_u64 * 8` bytes long (>= bytes.len()).
+        let view: &mut [u8] = bytemuck::cast_slice_mut(&mut buf[..]);
+        view[..bytes.len()].copy_from_slice(&bytes);
+        let leaked: &'static [u64] = Box::leak(buf.into_boxed_slice());
+        let raw: &'static [u8] = bytemuck::cast_slice(leaked);
+        // Trim to exactly the encoded length.
+        &raw[..bytes.len()]
+    }
+
+    #[test]
+    fn up_adj_flat_file_roundtrip_with_topo_idx() {
+        let (topo, w) = make_cch();
+        let flat = UpAdjFlat::build_with(&topo, &w, true);
+        let encoded = UpAdjFlatFile::encode(&flat);
+        let leaked = leak_aligned(encoded);
+        let decoded = UpAdjFlatFile::read_from_bytes(leaked).expect("decode round-trip");
+        assert_eq!(&*decoded.offsets, &*flat.offsets);
+        assert_eq!(&*decoded.targets, &*flat.targets);
+        assert_eq!(&*decoded.weights, &*flat.weights);
+        assert_eq!(&*decoded.topo_edge_idx, &*flat.topo_edge_idx);
+    }
+
+    #[test]
+    fn up_adj_flat_file_roundtrip_no_topo_idx() {
+        let (topo, w) = make_cch();
+        let flat = UpAdjFlat::build(&topo, &w);
+        let encoded = UpAdjFlatFile::encode(&flat);
+        let leaked = leak_aligned(encoded);
+        let decoded = UpAdjFlatFile::read_from_bytes(leaked).expect("decode");
+        assert_eq!(&*decoded.offsets, &*flat.offsets);
+        assert_eq!(&*decoded.targets, &*flat.targets);
+        assert_eq!(&*decoded.weights, &*flat.weights);
+        assert!(decoded.topo_edge_idx.is_empty());
+    }
+
+    #[test]
+    fn down_adj_flat_file_roundtrip() {
+        let (topo, w) = make_cch();
+        let flat = DownAdjFlat::build(&topo, &w);
+        let encoded = DownAdjFlatFile::encode(&flat);
+        let leaked = leak_aligned(encoded);
+        let decoded = DownAdjFlatFile::read_from_bytes(leaked).expect("decode");
+        assert_eq!(&*decoded.offsets, &*flat.offsets);
+        assert_eq!(&*decoded.targets, &*flat.targets);
+        assert_eq!(&*decoded.weights, &*flat.weights);
+    }
+
+    #[test]
+    fn down_rev_adj_flat_file_roundtrip_with_topo_idx() {
+        let (topo, w) = make_cch();
+        let flat = DownReverseAdjFlat::build_with(&topo, &w, true);
+        let encoded = DownReverseAdjFlatFile::encode(&flat);
+        let leaked = leak_aligned(encoded);
+        let decoded = DownReverseAdjFlatFile::read_from_bytes(leaked).expect("decode");
+        assert_eq!(&*decoded.offsets, &*flat.offsets);
+        assert_eq!(&*decoded.sources, &*flat.sources);
+        assert_eq!(&*decoded.weights, &*flat.weights);
+        assert_eq!(&*decoded.topo_edge_idx, &*flat.topo_edge_idx);
+    }
+
+    #[test]
+    fn up_adj_flat_file_detects_corruption() {
+        let (topo, w) = make_cch();
+        let flat = UpAdjFlat::build(&topo, &w);
+        let mut encoded = UpAdjFlatFile::encode(&flat);
+        // Flip a byte in the body region.
+        let body_off = ADJ_FLAT_HEADER_SIZE + 8; // somewhere in offsets array
+        encoded[body_off] ^= 0xFF;
+        let leaked = leak_aligned(encoded);
+        let res = UpAdjFlatFile::read_from_bytes(leaked);
+        assert!(res.is_err(), "corruption should fail CRC check");
+        let msg = res.err().expect("expected error").to_string();
+        assert!(msg.contains("CRC mismatch"), "unexpected error: {}", msg);
+    }
+
+    #[test]
+    fn up_adj_flat_file_detects_misalignment() {
+        let (topo, w) = make_cch();
+        let flat = UpAdjFlat::build(&topo, &w);
+        let encoded = UpAdjFlatFile::encode(&flat);
+        // Build a 1-byte misaligned static slice by leaking a buffer with
+        // a leading byte then offsetting into it.
+        let mut padded = vec![0u64; encoded.len().div_ceil(8) + 1];
+        let view: &mut [u8] = bytemuck::cast_slice_mut(&mut padded[..]);
+        view[1..1 + encoded.len()].copy_from_slice(&encoded);
+        let leaked: &'static [u64] = Box::leak(padded.into_boxed_slice());
+        let raw: &'static [u8] = bytemuck::cast_slice(leaked);
+        let misaligned: &'static [u8] = &raw[1..1 + encoded.len()];
+        let res = UpAdjFlatFile::read_from_bytes(misaligned);
+        assert!(res.is_err(), "misaligned input must be rejected");
+        let msg = res.err().expect("expected error").to_string();
+        assert!(
+            msg.contains("not 8-byte aligned"),
+            "unexpected error: {}",
+            msg
+        );
     }
 }
