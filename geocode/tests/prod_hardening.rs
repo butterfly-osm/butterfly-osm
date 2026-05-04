@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use butterfly_geocode::CountryId;
 use butterfly_geocode::server::{ServerConfig, ServerState, build_router_with_config};
 use butterfly_geocode::shard::AddressRecord;
 use butterfly_geocode::shard::builder::build_shard;
@@ -38,6 +39,7 @@ fn fixture_addresses() -> Vec<AddressRecord> {
             locality: "Anderlecht".into(),
             lat: 50.6883,
             lon: 4.3680,
+            ..Default::default()
         },
         AddressRecord {
             street: "Grand-Place".into(),
@@ -46,6 +48,7 @@ fn fixture_addresses() -> Vec<AddressRecord> {
             locality: "Bruxelles".into(),
             lat: 50.8467,
             lon: 4.3525,
+            ..Default::default()
         },
     ]
 }
@@ -53,7 +56,7 @@ fn fixture_addresses() -> Vec<AddressRecord> {
 fn make_fixture_shard() -> (TempDir, Shard) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("fixture.bfgs");
-    build_shard(&path, fixture_addresses()).expect("build fixture shard");
+    build_shard(&path, CountryId::BE, fixture_addresses()).expect("build fixture shard");
     let s = Shard::open(&path).expect("open fixture shard");
     (dir, s)
 }
