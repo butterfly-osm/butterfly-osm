@@ -14,6 +14,7 @@ use std::sync::Arc;
 use utoipa::ToSchema;
 
 use super::geometry::{GeometryFormat, Point, build_isochrone_geometry, encode_polyline6};
+use super::regions::RegionsState;
 use super::route::{default_direction, default_geometries};
 use super::state::ServerState;
 use super::types::{ErrorResponse, parse_mode, validate_coord};
@@ -519,13 +520,26 @@ pub fn run_phast_bounded_fast_reverse(
     )
 )]
 pub async fn isochrone_handler(
-    State(state): State<Arc<ServerState>>,
+    State(regions): State<Arc<RegionsState>>,
     Query(req): Query<IsochroneRequest>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     if let Err(e) = validate_coord(req.lon, req.lat, "center") {
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
     }
+
+    // Region dispatch (#91): the isochrone origin determines the
+    // region. Reachable polygon stays inside that region — cross-
+    // region reachability is part of the cross-region overlay (PR C).
+    let started_dispatch = std::time::Instant::now();
+    let (state, region_id) = match regions.dispatch_single_id(req.lon, req.lat, &req.mode) {
+        Ok(pair) => pair,
+        Err(e) => {
+            let (code, body) = e.into_response_parts();
+            return (code, Json(body)).into_response();
+        }
+    };
+    let _: &Arc<ServerState> = &state;
 
     // Determine isochrone metric: exactly one of {time_s, distance_m, contours}
     enum IsoMetric {
@@ -897,6 +911,11 @@ pub async fn isochrone_handler(
             holes: vec![],
             stats: Default::default(),
         };
+        super::region_metrics::record_query(
+            &region_id,
+            "isochrone",
+            started_dispatch.elapsed().as_secs_f64(),
+        );
         return match encode_polygon_wkb(&contour) {
             Some(wkb) => (
                 [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
@@ -938,6 +957,11 @@ pub async fn isochrone_handler(
         None
     };
 
+    super::region_metrics::record_query(
+        &region_id,
+        "isochrone",
+        started_dispatch.elapsed().as_secs_f64(),
+    );
     Json(IsochroneResponse {
         contours: contour_features,
         network,
@@ -1025,7 +1049,7 @@ pub fn build_network_geometry(
     )
 )]
 pub async fn isochrone_bulk_handler(
-    State(state): State<Arc<ServerState>>,
+    State(regions): State<Arc<RegionsState>>,
     Json(req): Json<BulkIsochroneRequest>,
 ) -> impl IntoResponse {
     use crate::range::contour::ContourResult;
@@ -1068,6 +1092,26 @@ pub async fn isochrone_bulk_handler(
         )
             .into_response();
     }
+
+    // Region dispatch (#91): every origin must snap to the same
+    // region. Mixed-region bulk is rejected with 501 — same rule as
+    // single /isochrone.
+    let started_dispatch = std::time::Instant::now();
+    let coords_iter = req.origins.iter().map(|&[lon, lat]| (lon, lat));
+    let state = match regions.dispatch_many(coords_iter, &req.mode) {
+        Ok(s) => s,
+        Err(e) => {
+            let (code, body) = e.into_response_parts();
+            return (code, Json(body)).into_response();
+        }
+    };
+    // Lookup the region id once for metric labelling.
+    let region_id = regions
+        .regions
+        .iter()
+        .find(|r| Arc::ptr_eq(&r.state, &state))
+        .map(|r| r.id.clone())
+        .unwrap_or_default();
 
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
@@ -1193,6 +1237,12 @@ pub async fn isochrone_bulk_handler(
         response.extend_from_slice(&(wkb.len() as u32).to_le_bytes());
         response.extend_from_slice(&wkb);
     }
+
+    super::region_metrics::record_query(
+        &region_id,
+        "isochrone_bulk",
+        started_dispatch.elapsed().as_secs_f64(),
+    );
 
     Response::builder()
         .status(StatusCode::OK)

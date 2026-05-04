@@ -44,6 +44,7 @@ use crate::transit::gtfs::haversine_m;
 use crate::transit::raptor::{RaptorLeg, RaptorQuery, run_raptor};
 use crate::transit::timetable::{StopIdx, Timetable};
 
+use super::regions::RegionsState;
 use super::state::ServerState;
 use super::types::ErrorResponse;
 
@@ -237,9 +238,14 @@ fn road_leg(
 }
 
 pub async fn transit_handler(
-    State(state): State<Arc<ServerState>>,
+    State(regions): State<Arc<RegionsState>>,
     Query(req): Query<TransitRequest>,
 ) -> Result<Json<TransitResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Transit is single-region only in #91 Phase 1 (the timetable is
+    // loaded against the primary region's foot CCH at boot). For
+    // multi-region deployments the transit subsystem is not loaded;
+    // any /transit query returns 503 from the inner journey computer.
+    let state = regions.primary();
     compute_transit_journey(state.as_ref(), &req).map(Json)
 }
 
@@ -934,9 +940,12 @@ impl OriginGroupKey {
 /// future. This is not yet plumbed through to a cooperative
 /// per-query cancellation flag — a follow-up.
 pub async fn transit_bulk_handler(
-    State(state): State<Arc<ServerState>>,
+    State(regions): State<Arc<RegionsState>>,
     Json(req): Json<TransitBulkRequest>,
 ) -> Result<Json<TransitBulkResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Transit is single-region only in #91 Phase 1 (see comment in
+    // [`transit_handler`]). Use the primary region.
+    let state = Arc::clone(regions.primary());
     // Soft cap on batch size. 100k is generous for interactive use;
     // operators doing matrix-style work should look at `/table/stream`
     // for the road side and batch transit in chunks of ~10k.
