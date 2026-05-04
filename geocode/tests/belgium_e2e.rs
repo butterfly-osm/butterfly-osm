@@ -132,12 +132,12 @@ fn fuzzy_misspelling_recovers() {
     }));
 }
 
-#[test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
-fn axum_belgium_real_shard_smoke() {
+async fn axum_belgium_real_shard_smoke() {
     // Sanity check that the Axum router still works end-to-end against
-    // the full Belgium shard. Same shape as `axum_e2e.rs` but with
-    // the real shard.
+    // the full Belgium shard. Multi-thread runtime so `spawn_blocking`
+    // (used by handlers per C6) has a thread to park on.
     use std::sync::Arc;
 
     use axum::body::Body;
@@ -150,17 +150,14 @@ fn axum_belgium_real_shard_smoke() {
     let state = Arc::new(ServerState::new(shard));
     let app = build_router(state);
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async move {
-        let req = Request::builder()
-            .uri("/geocode?q=Rue%20Wayez%20122%20Anderlecht&country=BE")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let body = std::str::from_utf8(&bytes).unwrap();
-        let v: serde_json::Value = serde_json::from_str(body).unwrap();
-        assert!(v["count"].as_u64().unwrap() > 0, "no hits: {body}");
-    });
+    let req = Request::builder()
+        .uri("/geocode?q=Rue%20Wayez%20122%20Anderlecht&country=BE")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body = std::str::from_utf8(&bytes).unwrap();
+    let v: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert!(v["count"].as_u64().unwrap() > 0, "no hits: {body}");
 }
