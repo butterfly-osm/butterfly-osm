@@ -34,6 +34,11 @@
 //! 9. Admission (token-bucket cost-based gate) — only on `/geocode*`,
 //!    not on `/health` or `/metrics` so monitors are never throttled.
 
+// tonic::Status is 176 bytes — the canonical gRPC error type.
+// Every gRPC handler returns Result<_, Status>; boxing adds indirection
+// with no benefit. Suppression is module-scoped (mirrors butterfly-route).
+#[allow(clippy::result_large_err)]
+pub mod flight;
 pub mod handlers;
 pub mod state;
 
@@ -238,4 +243,53 @@ pub fn build_router_with_config(state: Arc<ServerState>, cfg: ServerConfig) -> R
         .layer(prometheus_layer)
         .layer(TraceLayer::new_for_http())
         .layer(cors)
+}
+
+// =============================================================================
+// Transport boot — REST / gRPC / both (#145)
+// =============================================================================
+
+/// Transport selection for the geocoder server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    /// REST/JSON only (Axum HTTP)
+    Rest,
+    /// gRPC Arrow Flight only (tonic)
+    Grpc,
+    /// Both REST and gRPC (default)
+    Both,
+}
+
+impl Transport {
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        match s.to_lowercase().as_str() {
+            "rest" => Ok(Transport::Rest),
+            "grpc" => Ok(Transport::Grpc),
+            "both" => Ok(Transport::Both),
+            other => anyhow::bail!("Invalid transport '{}'. Use: rest, grpc, both", other),
+        }
+    }
+}
+
+/// Default REST port (matches the legacy single-transport default).
+pub const DEFAULT_REST_PORT: u16 = 3003;
+/// Default gRPC Flight port. Mirrors butterfly-route's "REST + 1" rule.
+pub const DEFAULT_GRPC_PORT: u16 = 3004;
+
+/// Start the gRPC Arrow Flight server on `host:port` with a graceful
+/// shutdown trigger.
+pub async fn start_grpc_server(
+    state: Arc<ServerState>,
+    host: &str,
+    port: u16,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
+    let addr: SocketAddr = format!("{host}:{port}").parse()?;
+    tracing::info!(addr = %addr, "gRPC Flight server listening");
+    let svc = flight::build_flight_server(state);
+    tonic::transport::Server::builder()
+        .add_service(svc)
+        .serve_with_shutdown(addr, shutdown)
+        .await?;
+    Ok(())
 }
