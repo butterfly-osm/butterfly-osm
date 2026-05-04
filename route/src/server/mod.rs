@@ -49,6 +49,9 @@ pub mod matching;
 pub mod metrics;
 pub mod nearest;
 pub mod query;
+pub mod region_metrics;
+pub mod regions;
+pub mod regions_handler;
 pub mod route;
 pub mod rss;
 pub mod snap_index;
@@ -67,7 +70,7 @@ mod consistency_test;
 #[cfg(test)]
 mod isochrone_test;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::net::TcpListener;
 use std::path::Path;
 use std::sync::Arc;
@@ -161,11 +164,18 @@ impl Transport {
 
 /// Where the server's static data lives.
 pub enum DataSource<'a> {
-    /// Legacy directory layout with `step{N}/` subtrees.
+    /// Legacy directory layout with `step{N}/` subtrees, OR a
+    /// multi-region directory of `*.butterfly` containers (#91 Phase 1).
+    /// Detected at boot: if the directory contains at least one
+    /// `*.butterfly` file we treat it as a multi-region container
+    /// directory; otherwise we fall back to the legacy step-tree
+    /// loader for backwards compatibility.
     Directory(&'a Path),
     /// Single `.butterfly` container produced by `pack`. Loaded via
     /// mmap; per-mode bundles + shared sections are read directly from
-    /// the mapped slice.
+    /// the mapped slice. Wrapped as a one-region [`regions::RegionsState`]
+    /// so the dispatch + per-region metric paths run uniformly for
+    /// single-region deployments.
     Container(&'a Path),
 }
 
@@ -176,38 +186,92 @@ pub async fn serve(
     grpc_port: Option<u16>,
     transport: Transport,
     mode_filter: Option<&[String]>,
+    region_filter: Option<&[String]>,
     load_options: &crate::server::state::LoadOptions,
 ) -> Result<()> {
     tracing::info!("Step 9: Starting query server...");
 
-    // Load server state (synchronous path — no network).
-    let (mut state_owned, data_dir_for_transit): (ServerState, std::path::PathBuf) = match source {
-        DataSource::Directory(dir) => (ServerState::load(dir, mode_filter)?, dir.to_path_buf()),
-        DataSource::Container(file) => {
-            // Container path: mmap the file, parse sections, hand the
-            // parsed structures + the live mmap to ServerState.
-            let state =
-                ServerState::load_from_container_with_options(file, mode_filter, load_options)?;
-            // Transit bootstrap still wants a directory layout (it reads
-            // GTFS zips/feeds.toml); for now `--data` mode runs without
-            // transit. Caller can supply a `transit/` directory next to
-            // the .butterfly file via the file's parent.
-            let parent = file
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .to_path_buf();
-            (state, parent)
-        }
-    };
+    // ---- Load every region as its own ServerState ------------------
+    let (regions_state, data_dir_for_transit): (regions::RegionsState, std::path::PathBuf) =
+        match source {
+            DataSource::Directory(dir) => {
+                let has_container = std::fs::read_dir(dir)
+                    .with_context(|| format!("reading data dir {}", dir.display()))?
+                    .any(|e| {
+                        e.ok()
+                            .map(|e| {
+                                let p = e.path();
+                                let is_file =
+                                    std::fs::metadata(&p).map(|m| m.is_file()).unwrap_or(false);
+                                is_file
+                                    && p.extension()
+                                        .and_then(|e| e.to_str())
+                                        .map(|s| s.eq_ignore_ascii_case("butterfly"))
+                                        .unwrap_or(false)
+                            })
+                            .unwrap_or(false)
+                    });
+                if has_container {
+                    tracing::info!(dir = %dir.display(), "multi-region container directory detected");
+                    let regions_state =
+                        regions::RegionsState::load_from_dir(dir, region_filter, mode_filter)?;
+                    (regions_state, dir.to_path_buf())
+                } else {
+                    tracing::info!(dir = %dir.display(), "legacy step-tree directory detected");
+                    if region_filter.is_some() {
+                        anyhow::bail!(
+                            "--regions filter cannot be used with a legacy step-tree directory ({}); use a directory of *.butterfly containers instead",
+                            dir.display()
+                        );
+                    }
+                    let state = ServerState::load(dir, mode_filter)?;
+                    let region_id = crate::pack::DEFAULT_REGION_ID.to_string();
+                    let regions_state =
+                        regions::RegionsState::from_single(region_id, dir.to_path_buf(), state);
+                    (regions_state, dir.to_path_buf())
+                }
+            }
+            DataSource::Container(file) => {
+                if region_filter.is_some() {
+                    anyhow::bail!(
+                        "--regions filter cannot be used with --data (single container); use --data-dir for multi-region serve"
+                    );
+                }
+                // load_options carries #160 lazy-CRC + warmup config.
+                let state = ServerState::load_from_container_with_options(
+                    file,
+                    mode_filter,
+                    load_options,
+                )?;
+                let region_id = {
+                    use crate::formats::butterfly_dat::Container;
+                    let container = Container::open(file)
+                        .with_context(|| format!("opening container {}", file.display()))?;
+                    container.read_region_id(file).unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, "could not read region id; defaulting");
+                        crate::pack::DEFAULT_REGION_ID.to_string()
+                    })
+                };
+                let regions_state =
+                    regions::RegionsState::from_single(region_id, file.to_path_buf(), state);
+                let parent = file.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+                (regions_state, parent)
+            }
+        };
 
-    // Bootstrap the transit subsystem. Transit is optional: if no
-    // `transit/` directory is present the server runs in road-only mode.
-    //
-    // The server does NOT download feeds at runtime. Feeds are refreshed
-    // at rebuild time via the `transit-fetch` CLI command (like the PBF),
-    // and the server loads whatever static GTFS zips are on disk at
-    // startup. Missing feeds are logged and skipped.
-    if let Some(cfg) = crate::transit::config::load(&data_dir_for_transit)? {
+    // ---- Transit bootstrap (single-region only) --------------------
+    // Transit subsystem is loaded against the *primary* region's foot
+    // CCH. Multi-region transit (one timetable + ULTRA per region) is
+    // out of scope for #91 Phase 1.
+    let mut regions_state = regions_state;
+    if regions_state.len() == 1
+        && let Some(cfg) = crate::transit::config::load(&data_dir_for_transit)?
+    {
+        // Mutate the (only) ServerState in place via Arc::get_mut. This
+        // runs before any Arc clone leaks out of the function.
+        let primary_arc = &mut regions_state.regions[0].state;
+        let state_owned: &mut ServerState = Arc::get_mut(primary_arc)
+            .ok_or_else(|| anyhow::anyhow!("transit bootstrap: primary state already shared"))?;
         let foot_idx = state_owned
             .mode_lookup
             .get("foot")
@@ -235,11 +299,24 @@ pub async fn serve(
                 );
             }
         }
+    } else if regions_state.len() > 1 {
+        tracing::info!(
+            "multi-region serve — transit subsystem not loaded (out of scope for #91 Phase 1)"
+        );
     } else {
         tracing::info!("no transit/ directory — running in road-only mode");
     }
 
-    let state = Arc::new(state_owned);
+    // ---- Per-region size metrics -----------------------------------
+    for r in &regions_state.regions {
+        crate::server::region_metrics::register_region_size(
+            &r.id,
+            r.state.ebg_nodes.n_nodes as u64,
+            r.state.ebg_csr.n_arcs,
+        );
+    }
+
+    let state = Arc::new(regions_state);
 
     // #152: emit the final RSS checkpoint after every initialization
     // step is done but before REST/gRPC listeners bind. Every
@@ -293,7 +370,7 @@ pub async fn serve(
 }
 
 /// Start only the Axum REST/JSON server
-async fn start_rest_server(state: Arc<ServerState>, port: u16) -> Result<()> {
+async fn start_rest_server(state: Arc<regions::RegionsState>, port: u16) -> Result<()> {
     let app = api::build_router(state);
 
     let addr = format!("0.0.0.0:{}", port);
@@ -317,11 +394,22 @@ async fn start_rest_server(state: Arc<ServerState>, port: u16) -> Result<()> {
 }
 
 /// Start only the Arrow Flight gRPC server
-async fn start_grpc_server(state: Arc<ServerState>, port: u16) -> Result<()> {
+///
+/// gRPC Flight is single-region only in #91 Phase 1 — the per-method
+/// dispatchers in `server::flight` operate on `Arc<ServerState>` and
+/// were not rewritten for cross-region 501. We hand the *primary*
+/// region's state to Flight; multi-region gRPC is tracked for PR C.
+async fn start_grpc_server(state: Arc<regions::RegionsState>, port: u16) -> Result<()> {
     let grpc_addr: std::net::SocketAddr = format!("0.0.0.0:{}", port).parse()?;
     tracing::info!(port = port, "gRPC Flight server listening on {}", grpc_addr);
 
-    let flight_svc = flight::build_flight_server(state);
+    if state.len() > 1 {
+        tracing::warn!(
+            n_regions = state.len(),
+            "gRPC Flight will only serve the primary region in multi-region mode (PR C extends to multi-region)"
+        );
+    }
+    let flight_svc = flight::build_flight_server(Arc::clone(state.primary()));
 
     tonic::transport::Server::builder()
         .add_service(flight_svc)

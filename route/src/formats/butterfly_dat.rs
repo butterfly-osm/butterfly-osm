@@ -652,6 +652,39 @@ impl Container {
             .filter(move |s| s.name.starts_with(prefix))
     }
 
+    /// Read the `region_id` field from the container's
+    /// `shared/manifest.json`, if any. Returns the default region id
+    /// (`"BE"` per [`crate::pack::DEFAULT_REGION_ID`]) for legacy
+    /// containers that pre-date region tagging or whose manifest is
+    /// missing / unparseable.
+    ///
+    /// This reads the manifest section through the on-disk reader path
+    /// (CRC-verified) and so should be called once at boot, not in the
+    /// hot path. The cost is a single section read of <1 KiB.
+    pub fn read_region_id<P: AsRef<Path>>(&self, path: P) -> Result<String> {
+        match self.get("shared/manifest.json") {
+            Some(entry) => {
+                let bytes = self.read_section_verified(path, entry)?;
+                Ok(crate::pack::manifest_region_id(&bytes))
+            }
+            None => Ok(crate::pack::DEFAULT_REGION_ID.to_string()),
+        }
+    }
+
+    /// Like [`Container::read_region_id`] but reads from a memory-mapped
+    /// view. Verifies the manifest CRC against the mapped bytes; cheaper
+    /// than [`Container::read_region_id`] when the file is already
+    /// mmapped because no extra read syscall is needed.
+    pub fn region_id_from_mmap(&self, mmap: &memmap2::Mmap) -> Result<String> {
+        match self.get("shared/manifest.json") {
+            Some(entry) => {
+                let bytes = self.section_bytes_verified(mmap, entry)?;
+                Ok(crate::pack::manifest_region_id(bytes))
+            }
+            None => Ok(crate::pack::DEFAULT_REGION_ID.to_string()),
+        }
+    }
+
     /// List every mode bundle present in this container. A mode bundle is
     /// any subtree under `mode/<name>/...`. Returns the bundle names sorted
     /// for determinism.
