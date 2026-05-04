@@ -55,7 +55,7 @@ pub fn parse_heuristic(text: &str, country: CountryId) -> ParsedQuery {
     let remainder = clean_separators(&without_house);
     if !remainder.is_empty() {
         let words: Vec<&str> = remainder.split_whitespace().collect();
-        if flags.had_postcode && words.len() >= 3 {
+        if words.len() >= 3 {
             // With a postcode anchor, the LAST word is most likely the
             // locality (Belgian convention). Split it off the street
             // candidate so the executor's exact street index hits.
