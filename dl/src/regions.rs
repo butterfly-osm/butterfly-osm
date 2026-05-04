@@ -47,6 +47,7 @@ const FRANCE_INDEX_TOML: &str = include_str!("../regions/france.toml");
 const NETHERLANDS_INDEX_TOML: &str = include_str!("../regions/netherlands.toml");
 const LUXEMBOURG_INDEX_TOML: &str = include_str!("../regions/luxembourg.toml");
 const GERMANY_INDEX_TOML: &str = include_str!("../regions/germany.toml");
+const AUSTRIA_INDEX_TOML: &str = include_str!("../regions/austria.toml");
 
 /// Parsed region index. Each field is an optional list so partial
 /// regions (e.g. one without transit feeds) are a valid shape.
@@ -87,6 +88,7 @@ impl RegionIndex {
             "netherlands" => NETHERLANDS_INDEX_TOML,
             "luxembourg" => LUXEMBOURG_INDEX_TOML,
             "germany" => GERMANY_INDEX_TOML,
+            "austria" => AUSTRIA_INDEX_TOML,
             other => bail!(
                 "unknown region '{other}'. Supported regions are bundled \
                  in `dl/regions/`. Add a new one with a new TOML file + \
@@ -294,7 +296,14 @@ pub async fn fetch_region(
 /// Used by the CLI's error path ("unknown region X; known regions:
 /// [...]").
 pub fn shipped_regions() -> &'static [&'static str] {
-    &["belgium", "france", "germany", "luxembourg", "netherlands"]
+    &[
+        "austria",
+        "belgium",
+        "france",
+        "germany",
+        "luxembourg",
+        "netherlands",
+    ]
 }
 
 #[cfg(test)]
