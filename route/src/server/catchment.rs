@@ -660,13 +660,47 @@ use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use std::sync::Arc;
 
+use super::regions::RegionsState;
 use super::types::{ErrorResponse, parse_mode, validate_coord};
 
 /// POST /catchment handler
 pub async fn catchment_handler(
-    State(state): State<Arc<ServerState>>,
+    State(regions): State<Arc<RegionsState>>,
     Json(req): Json<CatchmentRequest>,
 ) -> impl IntoResponse {
+    // Region dispatch (#91): every store + every client must lie in
+    // the same region. Cross-region catchments require the overlay
+    // (PR C / Phase 2) and are 501 here.
+    if req.stores.is_empty() || req.clients.is_empty() {
+        // Fall through to existing validation below — empty stores
+        // will be caught and rejected with a clear message.
+    }
+    let started_dispatch = std::time::Instant::now();
+    let coords_iter = req
+        .stores
+        .iter()
+        .map(|s| (s.lon, s.lat))
+        .chain(req.clients.iter().map(|c| (c.lon, c.lat)));
+    let state: Arc<ServerState> = if !req.stores.is_empty() && !req.clients.is_empty() {
+        match regions.dispatch_many(coords_iter, &req.mode) {
+            Ok(s) => s,
+            Err(e) => {
+                let (code, body) = e.into_response_parts();
+                return (code, Json(body)).into_response();
+            }
+        }
+    } else {
+        // Catchment with empty stores/clients hits the validation path
+        // below; fall back to primary so the validation error fires.
+        Arc::clone(regions.primary())
+    };
+    let region_id = regions
+        .regions
+        .iter()
+        .find(|r| Arc::ptr_eq(&r.state, &state))
+        .map(|r| r.id.clone())
+        .unwrap_or_default();
+
     // Validate mode
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
@@ -849,6 +883,11 @@ pub async fn catchment_handler(
         }
     }
 
+    super::region_metrics::record_query(
+        &region_id,
+        "catchment",
+        started_dispatch.elapsed().as_secs_f64(),
+    );
     (
         StatusCode::OK,
         Json(CatchmentResponse {

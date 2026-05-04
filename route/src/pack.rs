@@ -133,8 +133,19 @@ fn glob_per_mode(dir: &Path, prefix: &str, suffix: &str) -> Result<Vec<(String, 
 }
 
 /// Implementation of the `pack` subcommand.
-pub fn pack(data_dir: &Path, out: &Path, step_prefix: Option<&str>) -> Result<()> {
-    println!("packing {} → {}", data_dir.display(), out.display());
+pub fn pack(
+    data_dir: &Path,
+    out: &Path,
+    step_prefix: Option<&str>,
+    region: Option<&str>,
+) -> Result<()> {
+    let region_id = normalize_region_id(region.unwrap_or(DEFAULT_REGION_ID))?;
+    println!(
+        "packing {} → {} (region={})",
+        data_dir.display(),
+        out.display(),
+        region_id
+    );
 
     let step1 = find_step_dir(data_dir, step_prefix.unwrap_or("step1"))?;
     let step2 = find_step_dir(data_dir, step_prefix.unwrap_or("step2"))?;
@@ -529,7 +540,7 @@ pub fn pack(data_dir: &Path, out: &Path, step_prefix: Option<&str>) -> Result<()
     // is a singleton bundle (bundle_id == mode_name); the topology-
     // groups follow-up (#146) will let multiple modes share one bundle.
     // The manifest is a JSON object so future fields land cleanly.
-    let manifest = build_manifest(&modes);
+    let manifest = build_manifest(&modes, &region_id);
     w.append_bytes(SectionKind::Unknown, MANIFEST_NAME, manifest.as_bytes())?;
 
     let n_sec = w.len();
@@ -865,15 +876,68 @@ fn pack_edge_geometry(w: &mut ContainerWriter, step3: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Build the JSON manifest payload listing the packed modes. The JSON
-/// shape is deliberately small + extensible: arrays of strings, every
-/// mode mapped to a bundle id equal to its name (one bundle per mode is
-/// the only shape this ticket ships; #146 generalises to N-mode-per-
-/// bundle). Unknown JSON fields round-trip through `unpack` because the
-/// section is byte-copied.
-fn build_manifest(modes: &[String]) -> String {
+/// Default region identifier when a container was packed without an
+/// explicit `--region` flag (or read from a legacy container that
+/// pre-dates region tagging).
+///
+/// Belgium was the canonical demonstration dataset before #91, so the
+/// fallback is `"BE"` — the only legacy `baseline.butterfly` files in
+/// existence are Belgium builds, and tagging them as such keeps the
+/// multi-region loader compatible without forcing a re-pack.
+pub const DEFAULT_REGION_ID: &str = "BE";
+
+/// Normalise a region id: trim whitespace, uppercase. Returns an error
+/// if the result is empty or contains characters outside the safe set
+/// `[A-Z0-9_-]`. Region ids are used as path-safe map keys and
+/// Prometheus label values, so the safe set is tight on purpose.
+pub fn normalize_region_id(raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    anyhow::ensure!(!trimmed.is_empty(), "region id must not be empty");
+    let upper = trimmed.to_ascii_uppercase();
+    for ch in upper.chars() {
+        let ok = ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_' || ch == '-';
+        anyhow::ensure!(
+            ok,
+            "region id '{}' contains illegal character '{}' (allowed: A-Z 0-9 _ -)",
+            raw,
+            ch
+        );
+    }
+    anyhow::ensure!(
+        upper.len() <= 16,
+        "region id '{}' too long ({} chars, max 16)",
+        raw,
+        upper.len()
+    );
+    Ok(upper)
+}
+
+/// Build the JSON manifest payload listing the packed modes + region id.
+/// The JSON shape is deliberately small + extensible: arrays of strings,
+/// every mode mapped to a bundle id equal to its name (one bundle per
+/// mode is the only shape this ticket ships; #146 generalises to
+/// N-mode-per- bundle). Unknown JSON fields round-trip through `unpack`
+/// because the section is byte-copied.
+///
+/// Schema (v1):
+/// ```json
+/// {
+///   "version": 1,
+///   "region_id": "BE",
+///   "modes": ["bike", "car", "foot", "truck"],
+///   "bundles": { "bike": ["bike"], "car": ["car"], ... }
+/// }
+/// ```
+///
+/// The `region_id` field is additive — readers that ignore it still
+/// parse the file correctly, and pre-#91 containers without the field
+/// fall back to [`DEFAULT_REGION_ID`] (`BE`).
+fn build_manifest(modes: &[String], region_id: &str) -> String {
     use std::fmt::Write;
-    let mut s = String::from("{\n  \"version\": 1,\n  \"modes\": [");
+    let region_esc = region_id.replace('"', "\\\"");
+    let mut s = String::from("{\n  \"version\": 1,\n  \"region_id\": \"");
+    s.push_str(&region_esc);
+    s.push_str("\",\n  \"modes\": [");
     for (i, m) in modes.iter().enumerate() {
         if i > 0 {
             s.push_str(", ");
@@ -890,6 +954,57 @@ fn build_manifest(modes: &[String]) -> String {
     }
     s.push_str("}\n}\n");
     s
+}
+
+/// Best-effort parse of `region_id` out of a container's
+/// `shared/manifest.json`. Returns [`DEFAULT_REGION_ID`] for legacy
+/// containers (no manifest, or manifest missing the field).
+///
+/// We deliberately do NOT pull in `serde_json` for this — the
+/// manifest is a tiny stable-shape JSON document, and the full
+/// `serde_json` round-trip dependency cost is not justified for one
+/// string field. The needle is `"region_id"\s*:\s*"<value>"`. Falls
+/// back to default on any parse failure rather than rejecting the
+/// container.
+pub fn manifest_region_id(manifest_bytes: &[u8]) -> String {
+    let text = match std::str::from_utf8(manifest_bytes) {
+        Ok(s) => s,
+        Err(_) => return DEFAULT_REGION_ID.to_string(),
+    };
+    if let Some(idx) = text.find("\"region_id\"") {
+        let rest = &text[idx + "\"region_id\"".len()..];
+        // Skip whitespace and the colon.
+        let rest = rest.trim_start();
+        let rest = match rest.strip_prefix(':') {
+            Some(r) => r.trim_start(),
+            None => return DEFAULT_REGION_ID.to_string(),
+        };
+        // Expect a quoted string.
+        let rest = match rest.strip_prefix('"') {
+            Some(r) => r,
+            None => return DEFAULT_REGION_ID.to_string(),
+        };
+        // Read until the next unescaped quote.
+        let mut out = String::new();
+        let chars = rest.chars();
+        let mut escaped = false;
+        for c in chars {
+            if escaped {
+                out.push(c);
+                escaped = false;
+                continue;
+            }
+            match c {
+                '\\' => escaped = true,
+                '"' => {
+                    return normalize_region_id(&out)
+                        .unwrap_or_else(|_| DEFAULT_REGION_ID.to_string());
+                }
+                _ => out.push(c),
+            }
+        }
+    }
+    DEFAULT_REGION_ID.to_string()
 }
 
 /// Map a `SectionEntry` back to the on-disk path inside a `step{N}/`
@@ -1250,7 +1365,7 @@ mod tests {
     fn pack_synth_then_inspect() -> Result<()> {
         let tmp = synth_dir()?;
         let out = tmp.path().join("test.butterfly");
-        pack(tmp.path(), &out, None)?;
+        pack(tmp.path(), &out, None, None)?;
         let c = Container::open(&out)?;
 
         // shared global tables
@@ -1311,7 +1426,7 @@ mod tests {
     fn inspect_runs_clean() -> Result<()> {
         let tmp = synth_dir()?;
         let out = tmp.path().join("test.butterfly");
-        pack(tmp.path(), &out, None)?;
+        pack(tmp.path(), &out, None, None)?;
         // No assertions on stdout here; we just want the call path to
         // not panic on a real pack output.
         inspect(&out, true, true)?;
@@ -1322,7 +1437,7 @@ mod tests {
     fn unpack_is_byte_for_byte_round_trip() -> Result<()> {
         let tmp = synth_dir()?;
         let container = tmp.path().join("rt.butterfly");
-        pack(tmp.path(), &container, None)?;
+        pack(tmp.path(), &container, None, None)?;
 
         let unpacked = tmp.path().join("rt-out");
         unpack(&container, &unpacked)?;
@@ -1354,7 +1469,7 @@ mod tests {
     fn unpack_refuses_existing_dir() -> Result<()> {
         let tmp = synth_dir()?;
         let container = tmp.path().join("rt.butterfly");
-        pack(tmp.path(), &container, None)?;
+        pack(tmp.path(), &container, None, None)?;
 
         let existing = tmp.path().join("already-here");
         fs::create_dir_all(&existing)?;

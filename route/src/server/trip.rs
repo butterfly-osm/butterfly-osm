@@ -15,6 +15,7 @@ use utoipa::ToSchema;
 use crate::matrix::bucket_ch::table_bucket_full_flat;
 use crate::profile_abi::Mode;
 
+use super::regions::RegionsState;
 use super::state::ServerState;
 
 // ============ TSP Solver (pure algorithm) ============
@@ -460,9 +461,45 @@ pub struct TripLeg {
     )
 )]
 pub async fn trip_handler(
-    State(state): State<Arc<ServerState>>,
+    State(regions): State<Arc<RegionsState>>,
     Json(req): Json<TripRequest>,
 ) -> impl IntoResponse {
+    // Region dispatch (#91): the trip's coordinate set must all snap
+    // into one region. Mixed-region trips require the cross-region
+    // overlay (PR C / Phase 2) and are rejected with 501 here.
+    if req.coordinates.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "code": "InvalidValue",
+                "message": "coordinates cannot be empty"
+            })),
+        )
+            .into_response();
+    }
+    let started_dispatch = std::time::Instant::now();
+    let coords_iter = req.coordinates.iter().map(|&[lon, lat]| (lon, lat));
+    let state: Arc<ServerState> = match regions.dispatch_many(coords_iter, &req.mode) {
+        Ok(s) => s,
+        Err(e) => {
+            let (code, body) = e.into_response_parts();
+            return (
+                code,
+                Json(serde_json::json!({
+                    "code": "InvalidValue",
+                    "message": body.error,
+                })),
+            )
+                .into_response();
+        }
+    };
+    let region_id = regions
+        .regions
+        .iter()
+        .find(|r| Arc::ptr_eq(&r.state, &state))
+        .map(|r| r.id.clone())
+        .unwrap_or_default();
+
     // Validate mode
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
@@ -769,7 +806,7 @@ pub async fn trip_handler(
     })
     .await;
 
-    match blocking_result {
+    let resp = match blocking_result {
         Ok(Ok(response)) => Json(response).into_response(),
         Ok(Err((status, json_val))) => (status, Json(json_val)).into_response(),
         Err(e) => (
@@ -780,7 +817,13 @@ pub async fn trip_handler(
             })),
         )
             .into_response(),
-    }
+    };
+    super::region_metrics::record_query(
+        &region_id,
+        "trip",
+        started_dispatch.elapsed().as_secs_f64(),
+    );
+    resp
 }
 
 /// Parse mode string into Mode using dynamic lookup

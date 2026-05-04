@@ -356,6 +356,14 @@ pub enum Commands {
         /// the same `find_step_dir`-style fuzzy match used by `serve`.
         #[arg(long)]
         step_prefix: Option<String>,
+
+        /// Region identifier embedded in the container manifest
+        /// (e.g. `BE`, `LU`, `FR`). Used by `serve --data-dir` to
+        /// dispatch queries across multiple regions. Default: `BE`
+        /// (the historical Belgium-only baseline). Allowed characters:
+        /// `[A-Z0-9_-]`, max 16 chars; lowercase input is upper-cased.
+        #[arg(long)]
+        region: Option<String>,
     },
 
     /// Show the section directory of a `*.butterfly` container.
@@ -417,6 +425,13 @@ pub enum Commands {
         /// Example: --modes car,bike
         #[arg(long)]
         modes: Option<String>,
+
+        /// Load only specific regions (comma-separated). Default: every
+        /// `*.butterfly` container in `--data-dir` is loaded.
+        /// Example: `--regions BE,LU`. Ignored when `--data` is used
+        /// (single-container mode is implicitly one region).
+        #[arg(long)]
+        regions: Option<String>,
 
         /// Log format: "text" (default) or "json"
         #[arg(long, default_value = "text")]
@@ -1412,7 +1427,8 @@ impl Cli {
                 data_dir,
                 out,
                 step_prefix,
-            } => crate::pack::pack(&data_dir, &out, step_prefix.as_deref()),
+                region,
+            } => crate::pack::pack(&data_dir, &out, step_prefix.as_deref(), region.as_deref()),
             Commands::Inspect {
                 path,
                 verify,
@@ -1426,6 +1442,7 @@ impl Cli {
                 grpc_port,
                 transport,
                 modes,
+                regions,
                 log_format,
                 rss_checkpoints,
                 eager_verify,
@@ -1452,6 +1469,18 @@ impl Cli {
                         .filter(|m| !m.is_empty())
                         .collect::<Vec<String>>()
                 });
+                let region_filter: Option<Vec<String>> = match regions {
+                    Some(s) => {
+                        let parts: Vec<String> = s
+                            .split(',')
+                            .map(|r| r.trim())
+                            .filter(|r| !r.is_empty())
+                            .map(crate::pack::normalize_region_id)
+                            .collect::<Result<Vec<_>, _>>()?;
+                        if parts.is_empty() { None } else { Some(parts) }
+                    }
+                    None => None,
+                };
 
                 let source_holder: PathBuf;
                 let source = match (data_dir, data) {
@@ -1484,6 +1513,7 @@ impl Cli {
                     grpc_port,
                     transport_mode,
                     mode_filter.as_deref(),
+                    region_filter.as_deref(),
                     &load_options,
                 ))?;
                 Ok(())
