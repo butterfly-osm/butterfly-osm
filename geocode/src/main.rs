@@ -16,7 +16,10 @@ use butterfly_geocode::confidence::{
     evaluate, load_corpus, synthesise_corpus_from_shard, train_pointwise,
 };
 use butterfly_geocode::osm_extract::{ExtractProgress, extract_addresses};
-use butterfly_geocode::server::{ServerConfig, ServerState, build_router_with_config};
+use butterfly_geocode::server::{
+    DEFAULT_GRPC_PORT, DEFAULT_REST_PORT, ServerConfig, ServerState, Transport,
+    build_router_with_config, start_grpc_server,
+};
 use butterfly_geocode::shard::builder::build_shard;
 use butterfly_geocode::shard::reader::Shard;
 use butterfly_geocode::shard::{AddressRecord, SourceTag};
@@ -141,7 +144,13 @@ enum Command {
         #[arg(long, default_value_t = 0xB17EBAD0)]
         seed: u64,
     },
-    /// Run the HTTP server.
+    /// Run the geocode server (REST and/or gRPC Arrow Flight).
+    ///
+    /// Per #145 (transport policy) the geocoder ships both transports.
+    /// Use `--transport=both` (default) for production, or pick one
+    /// for testing. The legacy `--port` flag still works as the REST
+    /// port; new deployments should set `--rest-port` and
+    /// `--grpc-port` explicitly.
     Serve {
         /// Single-shard mode: load this shard. Mutually exclusive
         /// with `--shard-dir`.
@@ -152,8 +161,21 @@ enum Command {
         /// header).
         #[arg(long, conflicts_with = "shard")]
         shard_dir: Option<PathBuf>,
+        /// Legacy alias for `--rest-port`. Kept so existing run scripts
+        /// keep working when transport defaults to `both`.
         #[arg(long, default_value_t = 3003)]
         port: u16,
+        /// REST port. Overrides `--port` when set. Used when transport
+        /// is `rest` or `both`.
+        #[arg(long)]
+        rest_port: Option<u16>,
+        /// gRPC Arrow Flight port (default 3004). Used when transport
+        /// is `grpc` or `both`.
+        #[arg(long)]
+        grpc_port: Option<u16>,
+        /// Transport selection: `rest`, `grpc`, or `both` (default).
+        #[arg(long, default_value = "both")]
+        transport: String,
         #[arg(long, default_value = "0.0.0.0")]
         host: String,
         /// Optional path to a trained GBDT confidence reranker
@@ -186,6 +208,34 @@ enum Command {
         /// future Flight endpoints will tighten this).
         #[arg(long, default_value_t = 4096)]
         max_body_bytes: usize,
+    },
+    /// Run a batch of queries against a remote geocoder via gRPC
+    /// Arrow Flight (#145). Reads JSONL queries (one per line) from
+    /// `--queries`, posts them as a single `geocode_batch` DoExchange
+    /// call, and writes the streamed Arrow output to `--output`.
+    ///
+    /// Each input line is either `{"query": "..."}` or
+    /// `{"query": "...", "country": "BE"}`.
+    FlightBatch {
+        /// Flight endpoint (e.g. `http://localhost:3004`).
+        #[arg(long)]
+        endpoint: String,
+        /// JSONL file with one query per line.
+        #[arg(long)]
+        queries: PathBuf,
+        /// Output file (Arrow IPC stream format).
+        #[arg(long)]
+        output: PathBuf,
+        /// Top-k limit per query (server-side).
+        #[arg(long, default_value_t = 5)]
+        limit: u32,
+        /// Include reason codes in the output.
+        #[arg(long)]
+        include_debug: bool,
+        /// Group by country before dispatching to rayon (improves
+        /// per-country cache locality).
+        #[arg(long)]
+        group_by_country: bool,
     },
     /// Train the GBDT confidence reranker (#96 §Confidence Model).
     ///
@@ -264,6 +314,9 @@ async fn main() -> Result<()> {
             shard,
             shard_dir,
             port,
+            rest_port,
+            grpc_port,
+            transport,
             host,
             rerank_model,
             parser,
@@ -280,16 +333,44 @@ async fn main() -> Result<()> {
                 request_timeout: std::time::Duration::from_secs(request_timeout_secs),
                 max_request_body_bytes: max_body_bytes,
             };
+            // Port resolution precedence:
+            // 1. explicit `--rest-port` / `--grpc-port`
+            // 2. legacy `--port` aliases the REST port (default 3003)
+            // 3. named defaults (DEFAULT_REST_PORT / DEFAULT_GRPC_PORT)
+            let rest = rest_port.unwrap_or(port);
+            let grpc = grpc_port.unwrap_or(DEFAULT_GRPC_PORT);
+            let _ = DEFAULT_REST_PORT; // referenced for doc/lint visibility
+            let transport_enum = Transport::parse(&transport).context("parsing --transport")?;
             serve_cmd(
                 shard.as_deref(),
                 shard_dir.as_deref(),
                 &host,
-                port,
+                rest,
+                grpc,
+                transport_enum,
                 rerank_model.as_deref(),
                 parser,
                 model.as_deref(),
                 server_cfg,
                 std::time::Duration::from_secs(shutdown_timeout_secs),
+            )
+            .await
+        }
+        Command::FlightBatch {
+            endpoint,
+            queries,
+            output,
+            limit,
+            include_debug,
+            group_by_country,
+        } => {
+            flight_batch_cmd(
+                &endpoint,
+                &queries,
+                &output,
+                limit,
+                include_debug,
+                group_by_country,
             )
             .await
         }
@@ -670,11 +751,14 @@ fn train_cmd(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 async fn serve_cmd(
     shard_path: Option<&std::path::Path>,
     shard_dir: Option<&std::path::Path>,
     host: &str,
-    port: u16,
+    rest_port: u16,
+    grpc_port: u16,
+    transport: Transport,
     rerank_model_path: Option<&std::path::Path>,
     parser_kind: ParserKind,
     model_path: Option<&std::path::Path>,
@@ -747,26 +831,38 @@ async fn serve_cmd(
         state = state.with_rerank_model(model);
     }
     let state = Arc::new(state);
-    let app = build_router_with_config(state, server_cfg);
 
-    let addr = format!("{host}:{port}");
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .with_context(|| format!("binding {addr}"))?;
-    info!(addr = %addr, "serving");
+    // Bind the REST listener up-front (when REST is enabled) so a port
+    // conflict surfaces before we spawn anything.
+    let rest_listener = if matches!(transport, Transport::Rest | Transport::Both) {
+        let addr = format!("{host}:{rest_port}");
+        let listener = tokio::net::TcpListener::bind(&addr)
+            .await
+            .with_context(|| format!("binding REST {addr}"))?;
+        info!(addr = %addr, "REST server listening");
+        Some(listener)
+    } else {
+        None
+    };
+
+    info!(
+        transport = ?transport,
+        rest_port = rest_port,
+        grpc_port = grpc_port,
+        "starting transports"
+    );
 
     // Graceful shutdown shape:
     //
     //   1. A single signal task awaits SIGINT/SIGTERM. When it fires,
     //      it logs "shutdown initiated", broadcasts via a `Notify`,
     //      then sleeps for `shutdown_timeout`.
-    //   2. axum::serve listens to the same `Notify` for graceful
-    //      shutdown — it stops accepting new connections and drains
-    //      in-flight requests.
+    //   2. Both axum::serve and tonic::serve_with_shutdown listen to
+    //      the same `Notify` for graceful shutdown — they stop
+    //      accepting new connections and drain in-flight requests.
     //   3. The deadline timer races the drain. If drain wins we log
     //      "shutdown complete (graceful)". If the timer wins we log a
-    //      warning and exit forcefully — a hung handler must not
-    //      wedge the process indefinitely.
+    //      warning and exit forcefully.
     let shutdown = Arc::new(tokio::sync::Notify::new());
 
     let signal_shutdown = Arc::clone(&shutdown);
@@ -781,28 +877,55 @@ async fn serve_cmd(
         tokio::time::sleep(shutdown_timeout).await;
     });
 
-    let serve_shutdown = Arc::clone(&shutdown);
-    // `axum::serve(...).with_graceful_shutdown(...)` returns
-    // `WithGracefulShutdown` which is `IntoFuture`, not `Future`.
-    // Wrap it in an async block so `tokio::select!` can drive it.
-    let serve_fut = async move {
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        )
-        .with_graceful_shutdown(async move {
-            serve_shutdown.notified().await;
-        })
-        .await
-    };
+    // REST future: only present when transport selects REST or Both.
+    let rest_fut: std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> =
+        if let Some(listener) = rest_listener {
+            let app = build_router_with_config(Arc::clone(&state), server_cfg);
+            let serve_shutdown = Arc::clone(&shutdown);
+            Box::pin(async move {
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .with_graceful_shutdown(async move {
+                    serve_shutdown.notified().await;
+                })
+                .await
+                .context("REST server crashed")
+            })
+        } else {
+            Box::pin(async { std::future::pending::<Result<()>>().await })
+        };
 
-    tokio::pin!(serve_fut);
+    // gRPC future: only present when transport selects gRPC or Both.
+    let grpc_fut: std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> =
+        if matches!(transport, Transport::Grpc | Transport::Both) {
+            let grpc_state = Arc::clone(&state);
+            let grpc_shutdown = Arc::clone(&shutdown);
+            let host = host.to_string();
+            Box::pin(async move {
+                start_grpc_server(grpc_state, &host, grpc_port, async move {
+                    grpc_shutdown.notified().await;
+                })
+                .await
+                .context("gRPC server crashed")
+            })
+        } else {
+            Box::pin(async { std::future::pending::<Result<()>>().await })
+        };
+
+    tokio::pin!(rest_fut);
+    tokio::pin!(grpc_fut);
     tokio::pin!(drain_deadline_task);
     tokio::select! {
-        result = &mut serve_fut => {
-            result.context("server crashed")?;
-            info!("shutdown complete (graceful)");
-            // Cancel the deadline task so we don't dangle a sleep.
+        result = &mut rest_fut => {
+            result?;
+            info!("REST shutdown complete (graceful)");
+            drain_deadline_task.abort();
+        }
+        result = &mut grpc_fut => {
+            result?;
+            info!("gRPC shutdown complete (graceful)");
             drain_deadline_task.abort();
         }
         _ = &mut drain_deadline_task => {
@@ -937,4 +1060,172 @@ async fn wait_for_shutdown_signal() {
             info!("received SIGTERM");
         },
     }
+}
+
+// =============================================================================
+// flight-batch CLI subcommand (#145)
+// =============================================================================
+
+async fn flight_batch_cmd(
+    endpoint: &str,
+    queries_path: &std::path::Path,
+    output_path: &std::path::Path,
+    limit: u32,
+    include_debug: bool,
+    group_by_country: bool,
+) -> Result<()> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader, BufWriter};
+
+    use arrow::ipc::writer::StreamWriter;
+    use arrow::record_batch::RecordBatch;
+    use arrow_flight::FlightDescriptor;
+    use arrow_flight::encode::FlightDataEncoderBuilder;
+    use arrow_flight::flight_service_client::FlightServiceClient;
+    use butterfly_geocode::server::flight::{
+        build_input_batch, decode_output_batch, geocode_batch_output_schema,
+    };
+    use futures::StreamExt;
+    use futures::stream;
+    use tonic::Request;
+    use tonic::transport::Channel;
+
+    info!(endpoint = %endpoint, queries = %queries_path.display(), "loading queries");
+
+    #[derive(serde::Deserialize)]
+    struct QLine {
+        query: String,
+        #[serde(default)]
+        country: Option<String>,
+    }
+
+    let f = File::open(queries_path)
+        .with_context(|| format!("opening {}", queries_path.display()))?;
+    let reader = BufReader::new(f);
+    let mut queries: Vec<(String, Option<String>)> = Vec::new();
+    for (i, line) in reader.lines().enumerate() {
+        let line = line.context("reading queries")?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let q: QLine = serde_json::from_str(&line)
+            .with_context(|| format!("parsing line {} as JSONL", i + 1))?;
+        queries.push((q.query, q.country));
+    }
+    info!(n_queries = queries.len(), "queries loaded");
+    if queries.is_empty() {
+        bail!("no queries to send");
+    }
+
+    let channel = Channel::from_shared(endpoint.to_string())
+        .with_context(|| format!("invalid endpoint {endpoint}"))?
+        .connect()
+        .await
+        .with_context(|| format!("connecting to {endpoint}"))?;
+    let mut client = FlightServiceClient::new(channel)
+        .max_encoding_message_size(64 * 1024 * 1024)
+        .max_decoding_message_size(64 * 1024 * 1024);
+
+    // Build input RecordBatches in 8192-row chunks so the upload
+    // streams instead of buffering the whole input client-side.
+    const CHUNK: usize = 8192;
+    let chunks: Vec<Vec<(String, Option<String>)>> =
+        queries.chunks(CHUNK).map(|c| c.to_vec()).collect();
+
+    let params_json = serde_json::json!({
+        "limit": limit,
+        "include_debug": include_debug,
+        "group_by_country": group_by_country,
+    })
+    .to_string();
+    let cmd = format!("geocode_batch:{params_json}");
+
+    let descriptor = FlightDescriptor::new_cmd(cmd.clone().into_bytes());
+    let mut input_batches: Vec<RecordBatch> = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        let batch = build_input_batch(&chunk).context("building input RecordBatch")?;
+        input_batches.push(batch);
+    }
+    let in_schema = input_batches[0].schema();
+    let batch_stream = stream::iter(
+        input_batches
+            .into_iter()
+            .map(Ok::<_, arrow_flight::error::FlightError>),
+    );
+    let encoded = FlightDataEncoderBuilder::new()
+        .with_schema(in_schema)
+        .build(batch_stream);
+    // Attach the descriptor to the first FlightData by mapping the
+    // stream — Arrow Flight convention.
+    let mut first = true;
+    let descriptor_for_stream = descriptor.clone();
+    let upload = encoded.map(move |fd_res| match fd_res {
+        Ok(mut fd) => {
+            if first {
+                fd.flight_descriptor = Some(descriptor_for_stream.clone());
+                first = false;
+            }
+            Ok::<_, arrow_flight::error::FlightError>(fd)
+        }
+        Err(e) => Err(e),
+    });
+    let upload = upload.filter_map(|x| async move {
+        match x {
+            Ok(fd) => Some(fd),
+            Err(e) => {
+                tracing::error!(error = %e, "upload encoding failed");
+                None
+            }
+        }
+    });
+
+    let request = Request::new(upload);
+    let t0 = std::time::Instant::now();
+    let response = client
+        .do_exchange(request)
+        .await
+        .context("DoExchange RPC failed")?;
+    let mut response_stream = response.into_inner();
+
+    let mut all_fds: Vec<arrow_flight::FlightData> = Vec::new();
+    while let Some(fd) = response_stream.next().await {
+        let fd = fd.context("decoding response stream")?;
+        all_fds.push(fd);
+    }
+    let result_batches = arrow_flight::utils::flight_data_to_batches(&all_fds)
+        .context("decoding response RecordBatches")?;
+
+    let total_rows: usize = result_batches.iter().map(|b| b.num_rows()).sum();
+    let elapsed = t0.elapsed();
+    info!(
+        rows = total_rows,
+        secs = elapsed.as_secs_f64(),
+        rps = if elapsed.as_secs_f64() > 0.0 {
+            total_rows as f64 / elapsed.as_secs_f64()
+        } else {
+            0.0
+        },
+        "flight batch complete"
+    );
+
+    // Write Arrow IPC stream output.
+    let out_schema = std::sync::Arc::new(geocode_batch_output_schema());
+    let f = File::create(output_path)
+        .with_context(|| format!("creating {}", output_path.display()))?;
+    let mut w = BufWriter::new(f);
+    {
+        let mut writer = StreamWriter::try_new(&mut w, &out_schema)
+            .context("creating IPC stream writer")?;
+        for batch in &result_batches {
+            writer.write(batch).context("writing batch")?;
+        }
+        writer.finish().context("finalising IPC stream")?;
+    }
+    info!(out = %output_path.display(), "results written");
+
+    if let Some(first_batch) = result_batches.first() {
+        let _decoded = decode_output_batch(first_batch).context("decoding first batch")?;
+    }
+
+    Ok(())
 }
