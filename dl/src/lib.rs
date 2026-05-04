@@ -76,10 +76,7 @@ fn clamp_progress_arc(
         let clamped = downloaded.min(total);
         let prev = last_reported.fetch_max(clamped, Ordering::Relaxed);
         let monotone = clamped.max(prev);
-        if monotone == total
-            && total > 0
-            && terminal_called.swap(true, Ordering::Relaxed)
-        {
+        if monotone == total && total > 0 && terminal_called.swap(true, Ordering::Relaxed) {
             return;
         }
         callback(monotone, total);
