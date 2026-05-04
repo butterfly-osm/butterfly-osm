@@ -26,6 +26,8 @@ rstar = "0.12.2"
 rapidfuzz = "0.5"
 regex = "1.11"
 crc = "3.4"
+memmap2 = "0.9"
+bytemuck = "1.18"
 
 axum = "0.8.8"
 tower = { version = "0.5.3", features = ["limit"] }
