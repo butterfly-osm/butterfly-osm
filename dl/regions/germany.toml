@@ -1,0 +1,26 @@
+# Butterfly region index — Germany
+#
+# OSM PBF for Germany from Geofabrik. ~4.5 GB compressed — the
+# largest single-country PBF in the cross-border cluster #1
+# (BE/FR/NL/LU/DE). NOT fetched in the initial geocode-prep pass;
+# the index is committed for completeness so any operator who wants
+# DE data can run `butterfly-dl germany --only pbf`.
+#
+# Authoritative address dataset:
+#   None nationally unified. Address data lives across 16 federal
+#   states (Bundesländer) with heterogeneous licensing; the
+#   geocode shard for Germany falls back to OSM addr:* tags
+#   (license: ODbL).
+#
+# State-level open address datasets exist (NRW, Berlin, Hamburg,
+# Brandenburg, Sachsen are notable open sources) and could be
+# layered later, but no single national mirror exists today.
+# See geocode-data/SOURCES.md for the per-state inventory once
+# that work begins.
+#
+# No transit feeds in this index — German GTFS is per-operator
+# (DELFI publishes a national merge but format/license is non-
+# trivial) and out of scope for the geocode-prep pass.
+
+[pbf]
+url = "https://download.geofabrik.de/europe/germany-latest.osm.pbf"
