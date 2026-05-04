@@ -46,6 +46,7 @@ pub mod height_handler;
 pub mod isochrone_handler;
 pub mod map_match;
 pub mod matching;
+pub mod metrics;
 pub mod nearest;
 pub mod query;
 pub mod route;
@@ -175,6 +176,7 @@ pub async fn serve(
     grpc_port: Option<u16>,
     transport: Transport,
     mode_filter: Option<&[String]>,
+    load_options: &crate::server::state::LoadOptions,
 ) -> Result<()> {
     tracing::info!("Step 9: Starting query server...");
 
@@ -184,7 +186,8 @@ pub async fn serve(
         DataSource::Container(file) => {
             // Container path: mmap the file, parse sections, hand the
             // parsed structures + the live mmap to ServerState.
-            let state = ServerState::load_from_container(file, mode_filter)?;
+            let state =
+                ServerState::load_from_container_with_options(file, mode_filter, load_options)?;
             // Transit bootstrap still wants a directory layout (it reads
             // GTFS zips/feeds.toml); for now `--data` mode runs without
             // transit. Caller can supply a `transit/` directory next to
