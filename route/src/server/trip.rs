@@ -612,9 +612,8 @@ pub async fn trip_handler(
 
         for &[lon, lat] in &coordinates {
             if let Some(orig_id) = state_clone.spatial_index.snap(lon, lat, &snap_mask, 10) {
-                let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
-                if filtered != u32::MAX {
-                    let rank = mode_data.order.perm[filtered as usize];
+                let rank = mode_data.orig_to_rank[orig_id as usize];
+                if rank != u32::MAX {
                     ranks.push(rank);
                     valid.push(true);
                     // Get snapped location

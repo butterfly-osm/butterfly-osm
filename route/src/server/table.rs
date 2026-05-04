@@ -322,9 +322,8 @@ pub async fn compute_table_bucket_m2m(
 
     for [lon, lat] in sources {
         if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, snap_mask, 10) {
-            let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
-            if filtered != u32::MAX {
-                let rank = mode_data.order.perm[filtered as usize];
+            let rank = mode_data.orig_to_rank[orig_id as usize];
+            if rank != u32::MAX {
                 sources_rank.push(rank);
                 source_valid.push(true);
                 let snapped = get_node_location(state, orig_id);
@@ -361,9 +360,8 @@ pub async fn compute_table_bucket_m2m(
 
     for [lon, lat] in destinations {
         if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, snap_mask, 10) {
-            let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
-            if filtered != u32::MAX {
-                let rank = mode_data.order.perm[filtered as usize];
+            let rank = mode_data.orig_to_rank[orig_id as usize];
+            if rank != u32::MAX {
                 targets_rank.push(rank);
                 target_valid.push(true);
                 let snapped = get_node_location(state, orig_id);
@@ -657,9 +655,8 @@ pub async fn table_stream_handler(
     for (i, [lon, lat]) in req.sources.iter().enumerate() {
         let mut matched = false;
         if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &snap_mask, 10) {
-            let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
-            if filtered != u32::MAX {
-                let rank = mode_data.order.perm[filtered as usize];
+            let rank = mode_data.orig_to_rank[orig_id as usize];
+            if rank != u32::MAX {
                 sources_rank.push(rank);
                 valid_src_indices.push(i);
                 let snapped = get_node_location(&state, orig_id);
@@ -679,9 +676,8 @@ pub async fn table_stream_handler(
     for (i, [lon, lat]) in req.destinations.iter().enumerate() {
         let mut matched = false;
         if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &snap_mask, 10) {
-            let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
-            if filtered != u32::MAX {
-                let rank = mode_data.order.perm[filtered as usize];
+            let rank = mode_data.orig_to_rank[orig_id as usize];
+            if rank != u32::MAX {
                 targets_rank.push(rank);
                 valid_dst_indices.push(i);
                 let snapped = get_node_location(&state, orig_id);

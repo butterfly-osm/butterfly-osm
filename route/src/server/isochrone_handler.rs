@@ -743,8 +743,8 @@ pub async fn isochrone_handler(
         }
     };
 
-    let center_filtered = mode_data.filtered_ebg.original_to_filtered[center_orig as usize];
-    if center_filtered == u32::MAX {
+    let center_rank = mode_data.orig_to_rank[center_orig as usize];
+    if center_rank == u32::MAX {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -753,7 +753,6 @@ pub async fn isochrone_handler(
         )
             .into_response();
     }
-    let center_rank = mode_data.order.perm[center_filtered as usize];
 
     // Get custom weights (avoid takes priority, then exclude)
     let exclude_weights = if avoid_result.is_none() {
@@ -823,7 +822,7 @@ pub async fn isochrone_handler(
     let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());
     for (rank, dist) in phast_settled {
         let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-        let original_id = mode_data.filtered_ebg.filtered_to_original[filtered_id as usize];
+        let original_id = mode_data.filtered_to_original[filtered_id as usize];
         settled.push((original_id, dist));
     }
 
@@ -1149,11 +1148,10 @@ pub async fn isochrone_bulk_handler(
         .filter_map(|(idx, &[lon, lat])| {
             // Snap origin
             let center_orig = state.spatial_index.snap(lon, lat, &snap_mask, 10)?;
-            let center_filtered = mode_data.filtered_ebg.original_to_filtered[center_orig as usize];
-            if center_filtered == u32::MAX {
+            let center_rank = mode_data.orig_to_rank[center_orig as usize];
+            if center_rank == u32::MAX {
                 return None;
             }
-            let center_rank = mode_data.order.perm[center_filtered as usize];
 
             // Run PHAST - Note: thread-local state handles per-thread allocation
             let phast_settled =
@@ -1163,7 +1161,7 @@ pub async fn isochrone_bulk_handler(
             let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());
             for (rank, dist) in phast_settled {
                 let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-                let original_id = mode_data.filtered_ebg.filtered_to_original[filtered_id as usize];
+                let original_id = mode_data.filtered_to_original[filtered_id as usize];
                 settled.push((original_id, dist));
             }
 

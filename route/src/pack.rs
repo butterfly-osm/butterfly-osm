@@ -20,11 +20,13 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use crate::formats::butterfly_dat::{Container, ContainerWriter, SectionKind};
-use crate::formats::{CchTopoFile, CchWeightsFile};
+use crate::formats::mode_index::{ModeIndex, ModeIndexFile, ModeIndexKind};
+use crate::formats::{CchTopoFile, CchWeightsFile, FilteredEbgFile, OrderEbgFile};
 use crate::matrix::bucket_ch::{
     DownAdjFlat, DownAdjFlatFile, DownReverseAdjFlat, DownReverseAdjFlatFile, UpAdjFlat,
     UpAdjFlatFile,
 };
+use std::borrow::Cow;
 
 /// Section name for the JSON manifest that lists modes + bundle ids.
 /// Lives at the top of the `shared/` namespace so legacy tooling can
@@ -280,6 +282,89 @@ pub fn pack(data_dir: &Path, out: &Path, step_prefix: Option<&str>) -> Result<()
             &format!("mode/{}/order", mode),
             &order,
         )?;
+        // ---- Server-only mapping sections (#153) -------------------
+        // `orig_to_rank` and `filtered_to_original` are derived from
+        // the per-step `filtered.<mode>.ebg` + `order.<mode>.ebg` files
+        // we just packed. They let the server drop both legacy structs
+        // from RSS at boot time.
+        //
+        // We only build them when both sources exist on disk. If they
+        // exist but parse fails we hard-fail the pack instead of
+        // silently shipping a "new" container that drops the server
+        // onto the legacy fallback — the regression would only surface
+        // at server boot. If the files are absent (older build), we
+        // skip the sections; the fallback path in `state.rs` keeps old
+        // containers working.
+        let filtered_path = step5.join(format!("filtered.{}.ebg", mode));
+        let order_path = step6.join(format!("order.{}.ebg", mode));
+        if filtered_path.exists() && order_path.exists() {
+            let filtered_ebg = FilteredEbgFile::read(&filtered_path).with_context(|| {
+                format!(
+                    "parsing filtered.{mode}.ebg for #153 mapping sections (file present but unreadable)"
+                )
+            })?;
+            let order_data = OrderEbgFile::read(&order_path).with_context(|| {
+                format!(
+                    "parsing order.{mode}.ebg for #153 mapping sections (file present but unreadable)"
+                )
+            })?;
+            {
+                let n_orig = filtered_ebg.n_original_nodes as usize;
+                let n_filt = filtered_ebg.n_filtered_nodes as usize;
+                anyhow::ensure!(
+                    order_data.n_nodes as usize == n_filt,
+                    "order.{0}.ebg n_nodes ({1}) != filtered.{0}.ebg n_filtered_nodes ({2})",
+                    mode,
+                    order_data.n_nodes,
+                    n_filt
+                );
+
+                // orig_to_rank[orig_id] = perm[original_to_filtered[orig_id]]
+                // or u32::MAX if the original node is not in the filtered subgraph.
+                let mut orig_to_rank: Vec<u32> = vec![u32::MAX; n_orig];
+                for (orig_id, &filt_id) in filtered_ebg.original_to_filtered.iter().enumerate() {
+                    if filt_id != u32::MAX {
+                        let rank = order_data.perm[filt_id as usize];
+                        orig_to_rank[orig_id] = rank;
+                    }
+                }
+
+                let mode_byte = filtered_ebg.mode.0;
+                let inputs_sha: [u8; 16] = filtered_ebg.inputs_sha[..16]
+                    .try_into()
+                    .expect("filtered_ebg inputs_sha is 32 bytes; first 16 used");
+
+                let o2r = ModeIndex {
+                    kind: ModeIndexKind::OrigToRank,
+                    mode: mode_byte,
+                    inputs_sha,
+                    data: Cow::Owned(orig_to_rank),
+                };
+                append_encoded(
+                    &mut w,
+                    SectionKind::OrigToRank,
+                    &format!("mode/{}/orig_to_rank", mode),
+                    ModeIndexFile::encode(&o2r),
+                )?;
+                drop(o2r);
+
+                // filtered_to_original — copy of filtered_ebg.filtered_to_original.
+                let f2o_data: Vec<u32> = filtered_ebg.filtered_to_original.to_vec();
+                let f2o = ModeIndex {
+                    kind: ModeIndexKind::FilteredToOriginal,
+                    mode: mode_byte,
+                    inputs_sha,
+                    data: Cow::Owned(f2o_data),
+                };
+                append_encoded(
+                    &mut w,
+                    SectionKind::FilteredToOriginal,
+                    &format!("mode/{}/filtered_to_original", mode),
+                    ModeIndexFile::encode(&f2o),
+                )?;
+            }
+        }
+
         // step7 topology. As of #151 the v4 layout pads every variable-
         // length u32 array to a u64 boundary, so the server reads it
         // zero-copy out of the mmap'd container.
@@ -606,7 +691,11 @@ pub fn unpack(path: &Path, out_dir: &Path) -> Result<()> {
         // unpack stays a faithful inverse of the on-disk inputs.
         if matches!(
             sec.kind,
-            SectionKind::UpAdjFlat | SectionKind::DownAdjFlat | SectionKind::DownReverseAdjFlat
+            SectionKind::UpAdjFlat
+                | SectionKind::DownAdjFlat
+                | SectionKind::DownReverseAdjFlat
+                | SectionKind::OrigToRank
+                | SectionKind::FilteredToOriginal
         ) {
             println!("  -- (skip synthesised) {}", sec.name);
             continue;
@@ -682,6 +771,10 @@ pub fn inspect(path: &Path, verify: bool, verify_full: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::formats::filtered_ebg::FilteredEbg;
+    use crate::formats::order_ebg::OrderEbg;
+    use crate::profile_abi::Mode;
+    use std::borrow::Cow;
     use std::fs;
     use tempfile::TempDir;
 
@@ -690,6 +783,49 @@ mod tests {
             fs::create_dir_all(parent)?;
         }
         fs::write(p, body)?;
+        Ok(())
+    }
+
+    /// Write a minimal but parse-valid filtered.<mode>.ebg.
+    ///
+    /// #157's Copilot fix turned the previous soft-skip on parse error
+    /// into a hard-fail (the soft-skip would silently produce a "new"
+    /// container that drops the server onto the legacy fallback at
+    /// boot — a regression that only surfaced at run time). The synth
+    /// fixture therefore has to write real headers, not byte-string
+    /// placeholders.
+    fn write_filtered_ebg(p: &Path, mode: Mode) -> Result<()> {
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let data = FilteredEbg {
+            mode,
+            n_filtered_nodes: 0,
+            n_filtered_arcs: 0,
+            n_original_nodes: 0,
+            inputs_sha: [0u8; 32],
+            offsets: Cow::Owned(vec![0u64]), // n_filtered_nodes + 1 = 1 entry
+            heads: Cow::Owned(vec![]),
+            original_arc_idx: Cow::Owned(vec![]),
+            filtered_to_original: Cow::Owned(vec![]),
+            original_to_filtered: Cow::Owned(vec![]),
+        };
+        crate::formats::FilteredEbgFile::write(p, &data)?;
+        Ok(())
+    }
+
+    /// Write a minimal but parse-valid order.<mode>.ebg.
+    fn write_order_ebg(p: &Path) -> Result<()> {
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let data = OrderEbg {
+            n_nodes: 0,
+            inputs_sha: [0u8; 32],
+            perm: vec![],
+            inv_perm: vec![],
+        };
+        crate::formats::OrderEbgFile::write(p, &data)?;
         Ok(())
     }
 
@@ -716,8 +852,13 @@ mod tests {
         write_file(&root.join("step2").join("turn_rules.car.bin"), b"tr-car")?;
         write_file(&root.join("step2").join("turn_rules.bike.bin"), b"tr-bike")?;
 
-        write_file(&root.join("step5").join("filtered.car.ebg"), b"fil-car")?;
-        write_file(&root.join("step5").join("filtered.bike.ebg"), b"fil-bike")?;
+        // filtered.<mode>.ebg + order.<mode>.ebg need real binary headers
+        // because #157 hard-fails the pack on parse error (see Copilot
+        // review on PR #157 — silent skip → legacy fallback at boot).
+        // Mode index here is arbitrary: synth fixtures don't run the
+        // model discovery path, the byte just gets round-tripped.
+        write_filtered_ebg(&root.join("step5").join("filtered.car.ebg"), Mode(1))?;
+        write_filtered_ebg(&root.join("step5").join("filtered.bike.ebg"), Mode(0))?;
         write_file(&root.join("step5").join("w.car.u32"), b"wcar")?;
         write_file(&root.join("step5").join("w.bike.u32"), b"wbike")?;
         write_file(&root.join("step5").join("t.car.u32"), b"tcar")?;
@@ -725,8 +866,8 @@ mod tests {
         write_file(&root.join("step5").join("mask.car.bitset"), b"mc")?;
         write_file(&root.join("step5").join("mask.bike.bitset"), b"mb")?;
 
-        write_file(&root.join("step6").join("order.car.ebg"), b"o-car")?;
-        write_file(&root.join("step6").join("order.bike.ebg"), b"o-bike")?;
+        write_order_ebg(&root.join("step6").join("order.car.ebg"))?;
+        write_order_ebg(&root.join("step6").join("order.bike.ebg"))?;
         // Lifted variants must be skipped.
         write_file(
             &root.join("step6").join("order.lifted.car.ebg"),
