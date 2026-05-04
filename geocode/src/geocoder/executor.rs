@@ -179,10 +179,7 @@ pub fn execute(query: &ParsedQuery, shard: &Shard, limit: usize) -> Vec<Geocoded
 /// MAY also explore the adjacent role assignment — the algebra is in
 /// place but the MVP heuristic parser produces only one hypothesis so
 /// we don't currently materialise the dual program.
-pub fn apply_role_smoothness(
-    h: &ParseHypothesis,
-    _budget: &ExecutionBudget,
-) -> RetrievalPolicy {
+pub fn apply_role_smoothness(h: &ParseHypothesis, _budget: &ExecutionBudget) -> RetrievalPolicy {
     let mut policy = h.retrieval_policy;
     let eps = policy.epsilon;
 
@@ -216,16 +213,16 @@ pub fn apply_role_smoothness(
         Channel::HouseNumber,
         Channel::Locality,
     ] {
-        let Some(role) = policy.role(ch) else { continue };
+        let Some(role) = policy.role(ch) else {
+            continue;
+        };
         let conf = chan_conf(ch);
         let near_boundary = match role {
             ChannelRole::Blocker => (conf - T_BLOCKER).abs() < eps,
             ChannelRole::Reducer => (conf - T_REDUCER).abs() < eps,
             ChannelRole::Scorer => false,
         };
-        if near_boundary
-            && let Some(weaker) = role.weaker()
-        {
+        if near_boundary && let Some(weaker) = role.weaker() {
             policy.roles[ch.index()] = Some(weaker);
         }
     }
@@ -319,8 +316,7 @@ fn execute_clean(h: &ParseHypothesis, shard: &Shard, limit: usize) -> Vec<Geocod
                 score += 0.7;
                 reasons.push(reason::HOUSE_EXACT);
             } else if !rec.housenumber.is_empty()
-                && let (Ok(a), Ok(b)) =
-                    (parse_leading_int(hn), parse_leading_int(&rec.housenumber))
+                && let (Ok(a), Ok(b)) = (parse_leading_int(hn), parse_leading_int(&rec.housenumber))
             {
                 let delta = (a - b).abs();
                 if delta <= 2 {
@@ -368,11 +364,7 @@ fn execute_clean(h: &ParseHypothesis, shard: &Shard, limit: usize) -> Vec<Geocod
 /// Convert a [`ShardRecord`] view into an owned [`GeocodedResult`].
 /// Strings come from the shard's interned `Arc<str>` pool — one
 /// `String::from(&str)` per field per result, bounded by `limit`.
-fn materialize_result(
-    rec: &ShardRecord,
-    score: f32,
-    reasons: Vec<&'static str>,
-) -> GeocodedResult {
+fn materialize_result(rec: &ShardRecord, score: f32, reasons: Vec<&'static str>) -> GeocodedResult {
     GeocodedResult {
         lat: rec.lat,
         lon: rec.lon,
@@ -382,18 +374,17 @@ fn materialize_result(
         locality: String::from(&*rec.locality),
         score,
         // Cow::Borrowed wraps the &'static str without allocation.
-        reason_codes: reasons.into_iter().map(std::borrow::Cow::Borrowed).collect(),
+        reason_codes: reasons
+            .into_iter()
+            .map(std::borrow::Cow::Borrowed)
+            .collect(),
     }
 }
 
 /// Materialize a result for the `NEAREST` reverse-lookup path. Public
 /// so [`crate::server::handlers::reverse`] can build results without
 /// duplicating the conversion.
-pub fn build_nearest_result(
-    rec: &ShardRecord,
-    score: f32,
-    reason: &'static str,
-) -> GeocodedResult {
+pub fn build_nearest_result(rec: &ShardRecord, score: f32, reason: &'static str) -> GeocodedResult {
     materialize_result(rec, score, vec![reason])
 }
 
@@ -562,8 +553,7 @@ fn build_program(h: &ParseHypothesis, policy: &RetrievalPolicy) -> (Op, f32) {
         && matches!(
             policy.role(Channel::HouseNumber),
             Some(ChannelRole::Blocker) | Some(ChannelRole::Reducer)
-        )
-    {
+        ) {
         Op::Filter {
             child: Box::new(tree),
             predicate: FilterPredicate::HouseNumberEq(hn.clone()),
@@ -642,12 +632,7 @@ fn execute_program(
 /// `Score` operators in the tree. A candidate gets a contribution
 /// from a Score node if it's in the score-channel's posting list for
 /// the parser's key on that channel. Set membership is unchanged.
-fn score_postings(
-    op: &Op,
-    shard: &Shard,
-    h: &ParseHypothesis,
-    ids: &[u32],
-) -> Vec<(u32, f32)> {
+fn score_postings(op: &Op, shard: &Shard, h: &ParseHypothesis, ids: &[u32]) -> Vec<(u32, f32)> {
     let mut contributors: Vec<(Vec<u32>, f32)> = Vec::new();
     collect_scorers(op, shard, h, &mut contributors);
     let mut out: Vec<(u32, f32)> = Vec::with_capacity(ids.len());
@@ -663,12 +648,7 @@ fn score_postings(
     out
 }
 
-fn collect_scorers(
-    op: &Op,
-    shard: &Shard,
-    h: &ParseHypothesis,
-    acc: &mut Vec<(Vec<u32>, f32)>,
-) {
+fn collect_scorers(op: &Op, shard: &Shard, h: &ParseHypothesis, acc: &mut Vec<(Vec<u32>, f32)>) {
     match op {
         Op::Score {
             child,

@@ -42,6 +42,8 @@ workspace = true
 [dev-dependencies]
 tempfile = { workspace = true }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+tower = { version = "0.5.3", features = ["util"] }
+http-body-util = "0.1"
 
 [lib]
 name = "butterfly_geocode"

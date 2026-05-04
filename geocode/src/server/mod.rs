@@ -14,12 +14,14 @@
 pub mod handlers;
 pub mod state;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use axum::Router;
 use axum::http::StatusCode;
 use axum::routing::get;
+use axum_prometheus::PrometheusMetricLayer;
+use axum_prometheus::metrics_exporter_prometheus::PrometheusHandle;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
@@ -28,8 +30,18 @@ use tower_http::trace::TraceLayer;
 
 pub use state::ServerState;
 
+/// Build the prometheus layer + handle exactly once per process.
+/// `PrometheusMetricLayer::pair()` calls into the `metrics` crate's
+/// global recorder, which can only be set once. The first call wins;
+/// subsequent calls (e.g. from tests that build multiple routers in
+/// the same process) reuse the cached pair.
+fn prometheus_pair() -> &'static (PrometheusMetricLayer<'static>, PrometheusHandle) {
+    static PAIR: OnceLock<(PrometheusMetricLayer<'static>, PrometheusHandle)> = OnceLock::new();
+    PAIR.get_or_init(PrometheusMetricLayer::pair)
+}
+
 pub fn build_router(state: Arc<ServerState>) -> Router {
-    let (prometheus_layer, metric_handle) = axum_prometheus::PrometheusMetricLayer::pair();
+    let (prometheus_layer, metric_handle) = prometheus_pair().clone();
 
     let cors = CorsLayer::new()
         .allow_origin(Any)

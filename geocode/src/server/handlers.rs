@@ -158,7 +158,11 @@ pub async fn reverse(
             && let Some(rec) = state_clone.shard.nearest(lat, lon)
         {
             let _dist = haversine_m(lat, lon, rec.lat, rec.lon);
-            results.push(build_nearest_result(&rec, 0.0, reason::NEAREST_OUT_OF_RADIUS));
+            results.push(build_nearest_result(
+                &rec,
+                0.0,
+                reason::NEAREST_OUT_OF_RADIUS,
+            ));
         }
 
         results

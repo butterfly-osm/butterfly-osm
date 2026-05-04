@@ -123,9 +123,7 @@ impl SectionFilter {
             "all" => Ok(Self::All),
             "pbf" => Ok(Self::PbfOnly),
             "transit" => Ok(Self::TransitOnly),
-            other => bail!(
-                "unknown --only value '{other}'. Accepted values: all, pbf, transit"
-            ),
+            other => bail!("unknown --only value '{other}'. Accepted values: all, pbf, transit"),
         }
     }
 
@@ -297,7 +295,10 @@ mod tests {
     fn belgium_index_parses() {
         let idx = RegionIndex::load("belgium").expect("belgium should load");
         // PBF
-        assert!(idx.pbf.is_some(), "belgium index must carry a [pbf] section");
+        assert!(
+            idx.pbf.is_some(),
+            "belgium index must carry a [pbf] section"
+        );
         // Four transit feeds
         assert_eq!(idx.gtfs.len(), 3, "SNCB + De Lijn + TEC");
         assert_eq!(idx.netex_epip.len(), 1, "STIB only");
@@ -327,10 +328,7 @@ mod tests {
             .iter()
             .find(|e| e.section == "gtfs" && e.id == "sncb")
             .unwrap();
-        assert_eq!(
-            sncb.target,
-            Path::new("/tmp/data/transit/gtfs/sncb.zip")
-        );
+        assert_eq!(sncb.target, Path::new("/tmp/data/transit/gtfs/sncb.zip"));
         let stib = entries
             .iter()
             .find(|e| e.section == "netex_epip" && e.id == "stib")
@@ -352,14 +350,21 @@ mod tests {
     #[test]
     fn entries_respects_transit_only_filter() {
         let idx = RegionIndex::load("belgium").unwrap();
-        let entries = idx.entries("belgium", Path::new("/tmp/data"), SectionFilter::TransitOnly);
+        let entries = idx.entries(
+            "belgium",
+            Path::new("/tmp/data"),
+            SectionFilter::TransitOnly,
+        );
         assert_eq!(entries.len(), 4);
         assert!(entries.iter().all(|e| e.section != "pbf"));
     }
 
     #[test]
     fn section_filter_parses() {
-        assert!(matches!(SectionFilter::parse("all"), Ok(SectionFilter::All)));
+        assert!(matches!(
+            SectionFilter::parse("all"),
+            Ok(SectionFilter::All)
+        ));
         assert!(matches!(
             SectionFilter::parse("pbf"),
             Ok(SectionFilter::PbfOnly)
