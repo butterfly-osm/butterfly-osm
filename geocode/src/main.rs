@@ -19,6 +19,8 @@ use butterfly_geocode::osm_extract::{ExtractProgress, extract_addresses};
 use butterfly_geocode::server::{ServerConfig, ServerState, build_router_with_config};
 use butterfly_geocode::shard::builder::build_shard;
 use butterfly_geocode::shard::reader::Shard;
+use butterfly_geocode::shard::{AddressRecord, SourceTag};
+use butterfly_geocode::sources::{SourceProgress, bosa::BosaCsvSource, collect_all, merge_records};
 use butterfly_geocode::{HeuristicBackend, NeuralBackend, NeuralParser, ParserBackend};
 
 #[derive(Parser, Debug)]
@@ -49,18 +51,49 @@ enum ParserKind {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Build a single-country shard from an OSM PBF.
+    /// Build a single-country shard from one or more authoritative
+    /// sources (OSM PBF tags, BOSA BeSt CSV, ...).
+    ///
+    /// Three usage modes:
+    ///
+    /// 1. Single OSM PBF:    `--pbf <PATH> [--source osm]`
+    /// 2. Single BOSA CSV:   `--csv <PATH> --source bosa`
+    /// 3. Merge two shards:  `--merge a.bfgs --merge b.bfgs`
+    ///
+    /// Modes 1+2 are mutually exclusive. Mode 3 reads existing BFGS
+    /// shards (built via mode 1 or 2) and merges them, deduping
+    /// records by spatial proximity + housenumber match. The
+    /// authoritative source wins on conflict (#96 §"Data Sources":
+    /// "country packs choose channel weighting and policy").
     BuildShard {
         /// Source PBF (any Geofabrik regional/country extract).
-        #[arg(long)]
-        pbf: PathBuf,
-        /// Output BFGS v3 shard file.
+        /// Mutually exclusive with `--csv` / `--merge`.
+        #[arg(long, conflicts_with_all = ["csv", "merge"])]
+        pbf: Option<PathBuf>,
+        /// Source CSV (BOSA BeSt openaddress-be{vlg,wal,bru}.zip
+        /// or unzipped CSV). Mutually exclusive with `--pbf` /
+        /// `--merge`.
+        #[arg(long, conflicts_with_all = ["pbf", "merge"])]
+        csv: Option<PathBuf>,
+        /// Merge multiple existing shards into one (deduped). Repeat
+        /// the flag for each input shard. Mutually exclusive with
+        /// `--pbf` / `--csv`.
+        #[arg(long, conflicts_with_all = ["pbf", "csv"])]
+        merge: Vec<PathBuf>,
+        /// Output BFGS v4 shard file.
         #[arg(long)]
         out: PathBuf,
         /// ISO 3166-1 alpha-2 country code for this shard. Stored
-        /// in the BFGS v3 header and verified at server load.
+        /// in the BFGS v4 header and verified at server load.
         #[arg(long)]
         country: String,
+        /// Authoritative-source tag for the records in this shard
+        /// (`osm`, `bosa`, `ban`, `bag`, `gnaf`, `bev`, `swisstopo`).
+        /// Required for `--csv`; optional for `--pbf` (defaults to
+        /// `osm`); ignored for `--merge` (each input shard already
+        /// carries its own per-record tag).
+        #[arg(long)]
+        source: Option<String>,
     },
     /// Build every country shard the server can deploy in one pass.
     /// Looks for `<country>.pbf` (or `<iso2>.pbf`) inside `--pbf-dir`
@@ -190,7 +223,21 @@ async fn main() -> Result<()> {
     init_logging(&cli.log_format);
 
     match cli.cmd {
-        Command::BuildShard { pbf, out, country } => build_shard_cmd(&pbf, &out, &country),
+        Command::BuildShard {
+            pbf,
+            csv,
+            merge,
+            out,
+            country,
+            source,
+        } => build_shard_cmd(
+            pbf.as_deref(),
+            csv.as_deref(),
+            &merge,
+            &out,
+            &country,
+            source.as_deref(),
+        ),
         Command::BuildShardsAll {
             pbf_dir,
             out_dir,
@@ -285,7 +332,14 @@ fn init_logging(format: &str) {
     }
 }
 
-fn build_shard_cmd(pbf: &std::path::Path, out: &std::path::Path, country_iso2: &str) -> Result<()> {
+fn build_shard_cmd(
+    pbf: Option<&std::path::Path>,
+    csv: Option<&std::path::Path>,
+    merge_inputs: &[PathBuf],
+    out: &std::path::Path,
+    country_iso2: &str,
+    source: Option<&str>,
+) -> Result<()> {
     let country = CountryId::from_iso2(country_iso2).ok_or_else(|| {
         anyhow!(
             "unknown country '{country_iso2}' (supported: {})",
@@ -296,31 +350,8 @@ fn build_shard_cmd(pbf: &std::path::Path, out: &std::path::Path, country_iso2: &
                 .join(", ")
         )
     })?;
-    info!(
-        pbf = %pbf.display(),
-        out = %out.display(),
-        country = country.iso2(),
-        "extracting OSM addresses"
-    );
+
     let start = std::time::Instant::now();
-
-    let addresses = extract_addresses(pbf, |evt| match evt {
-        ExtractProgress::Phase { phase } => info!("phase: {phase}"),
-        ExtractProgress::NodePass {
-            nodes_seen,
-            addresses_emitted,
-        } => info!(nodes_seen, addresses_emitted, "nodes pass complete"),
-        ExtractProgress::WayPass {
-            ways_seen,
-            addresses_emitted,
-        } => info!(ways_seen, addresses_emitted, "ways pass complete"),
-    })?;
-
-    info!(
-        count = addresses.len(),
-        secs = start.elapsed().as_secs_f64(),
-        "extracted addresses"
-    );
 
     if let Some(parent) = out.parent()
         && !parent.as_os_str().is_empty()
@@ -328,6 +359,78 @@ fn build_shard_cmd(pbf: &std::path::Path, out: &std::path::Path, country_iso2: &
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating output dir {}", parent.display()))?;
     }
+
+    // Branch on which input mode the user picked. clap conflicts_with
+    // already enforces mutual exclusion, but we still validate that
+    // exactly one mode is set so error messages are clean.
+    let addresses: Vec<AddressRecord> = if !merge_inputs.is_empty() {
+        info!(
+            shards = merge_inputs.len(),
+            country = country.iso2(),
+            "merging existing shards"
+        );
+        merge_existing_shards(merge_inputs, country)?
+    } else if let Some(csv_path) = csv {
+        let tag_str = source.ok_or_else(|| {
+            anyhow!("--csv requires --source <bosa|...> so the shard byte is set explicitly")
+        })?;
+        let tag = SourceTag::from_name(tag_str).ok_or_else(|| {
+            anyhow!(
+                "unknown --source '{tag_str}' (supported: osm, bosa, ban, bag, gnaf, bev, swisstopo)"
+            )
+        })?;
+        info!(
+            csv = %csv_path.display(),
+            country = country.iso2(),
+            source = tag.name(),
+            "loading authoritative-source CSV"
+        );
+        load_csv_source(csv_path, country, tag)?
+    } else if let Some(pbf_path) = pbf {
+        // OSM PBF path. `source` defaults to `osm`.
+        let tag_str = source.unwrap_or("osm");
+        let tag = SourceTag::from_name(tag_str).ok_or_else(|| {
+            anyhow!(
+                "unknown --source '{tag_str}' (supported: osm, bosa, ban, bag, gnaf, bev, swisstopo)"
+            )
+        })?;
+        if tag != SourceTag::Osm {
+            bail!(
+                "--pbf is OSM-only; pass --source osm (or omit --source). Got --source={}",
+                tag.name()
+            );
+        }
+        info!(
+            pbf = %pbf_path.display(),
+            out = %out.display(),
+            country = country.iso2(),
+            source = tag.name(),
+            "extracting OSM addresses"
+        );
+        extract_addresses(pbf_path, |evt| match evt {
+            ExtractProgress::Phase { phase } => info!("phase: {phase}"),
+            ExtractProgress::NodePass {
+                nodes_seen,
+                addresses_emitted,
+            } => info!(nodes_seen, addresses_emitted, "nodes pass complete"),
+            ExtractProgress::WayPass {
+                ways_seen,
+                addresses_emitted,
+            } => info!(ways_seen, addresses_emitted, "ways pass complete"),
+        })?
+    } else {
+        bail!(
+            "build-shard needs exactly one of --pbf, --csv, or --merge. \
+             For OSM tags use --pbf <PBF>; for BOSA BeSt use --csv <ZIP|CSV> --source bosa; \
+             for combining shards use --merge a.bfgs --merge b.bfgs."
+        );
+    };
+
+    info!(
+        count = addresses.len(),
+        secs = start.elapsed().as_secs_f64(),
+        "extracted addresses"
+    );
 
     let stats = build_shard(out, country, addresses).context("writing shard")?;
     info!(
@@ -353,6 +456,77 @@ fn build_shard_cmd(pbf: &std::path::Path, out: &std::path::Path, country_iso2: &
     info!("shard verified");
 
     Ok(())
+}
+
+/// Load a CSV authoritative source. Today only BOSA BeSt is wired
+/// (`SourceTag::Bosa`). Other CSV sources land here as new arms.
+fn load_csv_source(
+    path: &std::path::Path,
+    country: CountryId,
+    tag: SourceTag,
+) -> Result<Vec<AddressRecord>> {
+    match tag {
+        SourceTag::Bosa => {
+            let loader = BosaCsvSource::new(path, country);
+            collect_all(&loader, |evt| match evt {
+                SourceProgress::Phase { phase } => info!("phase: {phase}"),
+                SourceProgress::Records {
+                    rows_seen,
+                    records_emitted,
+                } => info!(rows_seen, records_emitted, "BOSA progress"),
+            })
+            .context("BOSA CSV ingest")
+        }
+        other => bail!(
+            "CSV ingest for source {} is not wired yet (only BOSA today). \
+             Add a loader to geocode/src/sources/ and a new arm here.",
+            other.name()
+        ),
+    }
+}
+
+/// Read existing BFGS shards, materialise their records into
+/// `AddressRecord`s (preserving each record's source byte), and merge
+/// via [`merge_records`].
+fn merge_existing_shards(inputs: &[PathBuf], country: CountryId) -> Result<Vec<AddressRecord>> {
+    let mut groups: Vec<Vec<AddressRecord>> = Vec::with_capacity(inputs.len());
+    for p in inputs {
+        info!(shard = %p.display(), "reading shard for merge");
+        let s = Shard::open(p).with_context(|| format!("opening merge input {}", p.display()))?;
+        if s.country() != country {
+            bail!(
+                "merge input {} has country {} but target shard is {}",
+                p.display(),
+                s.country().iso2(),
+                country.iso2()
+            );
+        }
+        let mut recs = Vec::with_capacity(s.record_count());
+        for i in 0..s.record_count() as u32 {
+            let Some(r) = s.record(i) else { continue };
+            recs.push(AddressRecord {
+                lat: r.lat,
+                lon: r.lon,
+                street: r.street.to_string(),
+                locality: r.locality.to_string(),
+                housenumber: r.housenumber.to_string(),
+                postcode: r.postcode.to_string(),
+                source: r.source,
+                source_id: None,
+            });
+        }
+        info!(records = recs.len(), shard = %p.display(), "shard records loaded");
+        groups.push(recs);
+    }
+    let total_in: usize = groups.iter().map(|g| g.len()).sum();
+    let merged = merge_records(groups);
+    info!(
+        in_records = total_in,
+        merged_records = merged.len(),
+        deduped = total_in - merged.len(),
+        "merge complete"
+    );
+    Ok(merged)
 }
 
 fn build_shards_all_cmd(
@@ -399,7 +573,7 @@ fn build_shards_all_cmd(
             continue;
         };
         let out = out_dir.join(format!("{}.bfgs", c.iso2().to_ascii_lowercase()));
-        match build_shard_cmd(&pbf, &out, c.iso2()) {
+        match build_shard_cmd(Some(&pbf), None, &[], &out, c.iso2(), Some("osm")) {
             Ok(_) => built.push(c),
             Err(e) => {
                 warn!(country = c.iso2(), error = %e, "shard build failed; continuing");

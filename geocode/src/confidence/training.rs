@@ -468,6 +468,7 @@ mod tests {
                 } else {
                     4.401 + i as f64 * 1e-4
                 },
+                ..Default::default()
             })
             .collect();
         build_shard(&path, crate::routing::CountryId::BE, addrs).unwrap();

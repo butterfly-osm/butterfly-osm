@@ -33,7 +33,7 @@ use memmap2::Mmap;
 use rstar::{AABB, PointDistance, RTree, RTreeObject};
 
 use super::mmap::map_readonly;
-use super::{FOOTER_BYTES, HEADER_BYTES, MAGIC, RECORD_BYTES, VERSION};
+use super::{FOOTER_BYTES, HEADER_BYTES, MAGIC, RECORD_BYTES, SourceTag, VERSION};
 use crate::geocoder::cost::ShardStats;
 use crate::parser::normalize::normalize;
 use crate::routing::CountryId;
@@ -59,6 +59,13 @@ pub struct ShardRecord {
     pub locality: Arc<str>,
     pub housenumber: Arc<str>,
     pub postcode: Arc<str>,
+    /// Authoritative-source tag (#96 §"Data Sources"). Decoded from
+    /// the per-record source byte (BFGS v4). Defaults to
+    /// [`SourceTag::Osm`] when the byte is unrecognised — the byte
+    /// is forward-compatible (a future shard may introduce new
+    /// codes), but the default lets older readers still surface a
+    /// value rather than panicking.
+    pub source: SourceTag,
 }
 
 impl fmt::Debug for ShardRecord {
@@ -71,6 +78,7 @@ impl fmt::Debug for ShardRecord {
             .field("locality", &&*self.locality)
             .field("housenumber", &&*self.housenumber)
             .field("postcode", &&*self.postcode)
+            .field("source", &self.source)
             .finish()
     }
 }
@@ -339,6 +347,8 @@ impl Shard {
         let h_len = u16::from_le_bytes(buf[base + 24..base + 26].try_into().ok()?);
         let p_off = u32::from_le_bytes(buf[base + 26..base + 30].try_into().ok()?);
         let p_len = u16::from_le_bytes(buf[base + 30..base + 32].try_into().ok()?);
+        // v4 source byte at offset 32. Bytes 33..36 are reserved pad.
+        let source_byte = buf[base + 32];
         Some(RawRecord {
             lat_e7,
             lon_e7,
@@ -350,6 +360,7 @@ impl Shard {
             h_len,
             p_off,
             p_len,
+            source_byte,
         })
     }
 
@@ -367,6 +378,7 @@ impl Shard {
             locality: self.intern(raw.l_off, raw.l_len),
             housenumber: self.intern(raw.h_off, raw.h_len),
             postcode: self.intern(raw.p_off, raw.p_len),
+            source: SourceTag::from_u8(raw.source_byte).unwrap_or(SourceTag::Osm),
         })
     }
 
@@ -500,6 +512,11 @@ struct RawRecord {
     h_len: u16,
     p_off: u32,
     p_len: u16,
+    /// BFGS v4 per-record source byte (#96 §"Data Sources"). 0 in
+    /// pre-v4 shards which we no longer accept; the version check at
+    /// open time rejects them so this is always a real `SourceTag`
+    /// code in practice.
+    source_byte: u8,
 }
 
 /// Iterator over street keys. Holds a sub-index view; each `next()`

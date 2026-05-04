@@ -77,6 +77,7 @@ fn make_shard_with_n_postcode_records(n: usize) -> (tempfile::TempDir, Shard) {
             locality: "Anderlecht".into(),
             lat: 50.6883 + (i as f64) * 1e-5,
             lon: 4.3680 + (i as f64) * 1e-5,
+            ..Default::default()
         });
     }
     build_shard(&path, butterfly_geocode::CountryId::BE, addrs).expect("build shard");

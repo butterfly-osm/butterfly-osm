@@ -69,6 +69,7 @@ pub mod parser;
 pub mod routing;
 pub mod server;
 pub mod shard;
+pub mod sources;
 pub mod tagger;
 pub mod types;
 
@@ -79,6 +80,8 @@ pub use parser::neural::NeuralParser;
 pub use parser::{HeuristicBackend, NeuralBackend, ParserBackend};
 pub use routing::{CountryId, classify_country, country_for_point, supported_countries_for_point};
 pub use shard::reader::Shard;
+pub use shard::{AddressRecord, SourceTag};
+pub use sources::{Source, SourceProgress, bosa::BosaCsvSource, merge_records, osm::OsmPbfSource};
 pub use types::{
     ExecutionBudget, FieldMask, ParseHypothesis, ParsedQuery, RecoveryFlags, RetrievalPolicy,
     Strictness,
