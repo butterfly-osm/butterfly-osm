@@ -48,6 +48,7 @@ fn fixture_addresses() -> Vec<AddressRecord> {
             locality: "Anderlecht".into(),
             lat: 50.6883,
             lon: 4.3680,
+            ..Default::default()
         },
         AddressRecord {
             street: "Rue Wayez".into(),
@@ -56,6 +57,7 @@ fn fixture_addresses() -> Vec<AddressRecord> {
             locality: "Anderlecht".into(),
             lat: 50.6884,
             lon: 4.3681,
+            ..Default::default()
         },
         AddressRecord {
             street: "Rue de la Loi".into(),
@@ -64,6 +66,7 @@ fn fixture_addresses() -> Vec<AddressRecord> {
             locality: "Bruxelles".into(),
             lat: 50.8467,
             lon: 4.3673,
+            ..Default::default()
         },
         AddressRecord {
             street: "Grand-Place".into(),
@@ -72,6 +75,7 @@ fn fixture_addresses() -> Vec<AddressRecord> {
             locality: "Bruxelles".into(),
             lat: 50.8467,
             lon: 4.3525,
+            ..Default::default()
         },
         AddressRecord {
             street: "Grand-Place".into(),
@@ -80,6 +84,7 @@ fn fixture_addresses() -> Vec<AddressRecord> {
             locality: "Bruxelles".into(),
             lat: 50.8468,
             lon: 4.3526,
+            ..Default::default()
         },
         AddressRecord {
             street: "Grote Markt".into(),
@@ -88,6 +93,7 @@ fn fixture_addresses() -> Vec<AddressRecord> {
             locality: "Antwerpen".into(),
             lat: 51.2215,
             lon: 4.3997,
+            ..Default::default()
         },
         AddressRecord {
             street: "Korenmarkt".into(),
@@ -96,6 +102,7 @@ fn fixture_addresses() -> Vec<AddressRecord> {
             locality: "Gent".into(),
             lat: 51.0540,
             lon: 3.7239,
+            ..Default::default()
         },
     ]
 }
@@ -296,9 +303,18 @@ async fn empty_input_returns_empty_output() {
 async fn group_by_country_preserves_input_order() {
     let (_dir, endpoint) = spawn_flight_server().await;
     let queries = vec![
-        ("Rue Wayez 122 Anderlecht".to_string(), Some("BE".to_string())),
-        ("Grote Markt 1 2000 Antwerpen".to_string(), Some("BE".to_string())),
-        ("Rue de la Loi 16 1000 Bruxelles".to_string(), Some("BE".to_string())),
+        (
+            "Rue Wayez 122 Anderlecht".to_string(),
+            Some("BE".to_string()),
+        ),
+        (
+            "Grote Markt 1 2000 Antwerpen".to_string(),
+            Some("BE".to_string()),
+        ),
+        (
+            "Rue de la Loi 16 1000 Bruxelles".to_string(),
+            Some("BE".to_string()),
+        ),
         ("Korenmarkt 1 9000 Gent".to_string(), None),
     ];
     let results = flight_geocode_batch(
@@ -320,12 +336,8 @@ async fn include_debug_emits_reason_codes() {
         "Rue Wayez 122 1070 Anderlecht".to_string(),
         Some("BE".to_string()),
     )];
-    let results = flight_geocode_batch(
-        &endpoint,
-        &queries,
-        r#"{"limit":3,"include_debug":true}"#,
-    )
-    .await;
+    let results =
+        flight_geocode_batch(&endpoint, &queries, r#"{"limit":3,"include_debug":true}"#).await;
     assert_eq!(results.len(), 1);
     let r = &results[0];
     assert!(
@@ -340,9 +352,11 @@ async fn null_country_in_input_is_accepted() {
     let in_schema = Arc::new(geocode_batch_input_schema());
     let queries: StringArray = vec![Some("Rue Wayez 122 Anderlecht")].into_iter().collect();
     let countries: StringArray = vec![None::<&str>].into_iter().collect();
-    let batch =
-        RecordBatch::try_new(in_schema.clone(), vec![Arc::new(queries), Arc::new(countries)])
-            .expect("build batch");
+    let batch = RecordBatch::try_new(
+        in_schema.clone(),
+        vec![Arc::new(queries), Arc::new(countries)],
+    )
+    .expect("build batch");
 
     let mut client = flight_client(&endpoint).await;
     let cmd = "geocode_batch:{}";
@@ -397,7 +411,10 @@ async fn large_batch_50k_streams_without_panic() {
     let n = 50_000usize;
     let mut queries: Vec<(String, Option<String>)> = Vec::with_capacity(n);
     for i in 0..n {
-        queries.push((templates[i % templates.len()].to_string(), Some("BE".to_string())));
+        queries.push((
+            templates[i % templates.len()].to_string(),
+            Some("BE".to_string()),
+        ));
     }
     let results = flight_geocode_batch(&endpoint, &queries, r#"{"limit":1}"#).await;
     assert_eq!(results.len(), n);
@@ -461,7 +478,10 @@ async fn client_disconnect_cancels_processing_quickly() {
         "test exceeded {deadline:?} budget — server may not be cancelling cleanly"
     );
 
-    let small = vec![("Rue Wayez 122 Anderlecht".to_string(), Some("BE".to_string()))];
+    let small = vec![(
+        "Rue Wayez 122 Anderlecht".to_string(),
+        Some("BE".to_string()),
+    )];
     let results = flight_geocode_batch(&endpoint, &small, r#"{"limit":1}"#).await;
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].confidence, "accept");
