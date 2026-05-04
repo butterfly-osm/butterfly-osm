@@ -136,8 +136,37 @@ fn extract_postcode(text: &str) -> Option<String> {
 }
 
 fn house_number_re() -> &'static Regex {
+    // Belgian house-number forms:
+    //   "12"            digits
+    //   "12A"           digit + letter
+    //   "12-14"         hyphenated range
+    //   "12/3"          slash unit
+    //   "12 bis"        space + bis/ter/quater (Belgium standard)
+    //   "12 ter"        space + ter
+    //   "12 bis A"      space + bis + space + letter (rare, supported)
+    //
+    // The pattern matches a leading digit core (optionally followed by
+    // a single letter), then optionally one of:
+    //   - hyphen/slash + digits (range or unit)
+    //   - space + bis/ter/quater/A-Z suffix
+    //
+    // [`extract_house_number`] runs a second pass on `bis`/`ter`/etc.
+    // that aren't on the same span as the digits to ensure they're
+    // captured as part of the number.
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\b\d+[A-Za-z]?(?:[-/]\d+[A-Za-z]?)?\b").expect("valid regex"))
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?ix)
+            \b
+            \d+ [A-Za-z]?
+            (?:
+                [-/] \d+ [A-Za-z]?
+              | \s+ (?:bis|ter|quater)
+            )?
+            \b",
+        )
+        .expect("valid regex")
+    })
 }
 
 fn extract_house_number(text: &str) -> Option<String> {
@@ -148,7 +177,11 @@ fn extract_house_number(text: &str) -> Option<String> {
     for m in matches.iter().rev() {
         let s = m.as_str();
         if !is_postcode_shape(s) {
-            return Some(s.to_string());
+            // Defensive: collapse whitespace inside the captured span
+            // so "12  bis" → "12 bis". Most regex hits are already
+            // well-formed; this is a no-op for them.
+            let collapsed = s.split_whitespace().collect::<Vec<_>>().join(" ");
+            return Some(collapsed);
         }
     }
     None
@@ -221,5 +254,31 @@ mod tests {
         let h = &q.hypotheses[0];
         assert!(h.street_candidates.is_empty());
         assert!(h.postcode_candidates.is_empty());
+    }
+
+    #[test]
+    fn parses_house_number_variants() {
+        // Per C5: cover Belgian house-number forms.
+        for (input, expected) in [
+            ("Rue Wayez 12 1070", "12"),
+            ("Rue Wayez 12A 1070", "12A"),
+            ("Rue Wayez 12-14 1070", "12-14"),
+            ("Rue Wayez 12/3 1070", "12/3"),
+            ("Rue Wayez 12 bis 1070", "12 bis"),
+            ("Rue Wayez 12 ter 1070", "12 ter"),
+            ("Rue Wayez 12 quater 1070", "12 quater"),
+        ] {
+            let q = parse_heuristic(input, CountryId::BE);
+            let h = &q.hypotheses[0];
+            assert!(
+                !h.house_candidates.is_empty(),
+                "no house candidate for {input:?}"
+            );
+            assert_eq!(
+                h.house_candidates[0].0, expected,
+                "input {input:?} produced {:?}, expected {expected:?}",
+                h.house_candidates[0].0
+            );
+        }
     }
 }

@@ -67,10 +67,36 @@ pub struct RecoveryFlags {
 /// Dense `[Option<ChannelRole>; N_CHANNELS]` layout — register-sized,
 /// no heap allocation, canonicalization on a single policy is one
 /// table lookup per the NFR.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// ## Role-Smoothness Guarantee (#96)
+///
+/// `epsilon` is the ε boundary in the per-channel confidence space.
+/// When channel confidence is within ε of a role threshold, the
+/// matcher applies the **weak-preference** (default) downgrade:
+/// `Blocker → Reducer → Scorer`. With `dual_evaluation_enabled` set
+/// in the budget AND budget headroom, the matcher MAY also evaluate
+/// the adjacent role assignment and merge results. Hard thresholding
+/// is forbidden — see `executor::apply_role_smoothness`.
+///
+/// Default ε = 0.10. Country packs override.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct RetrievalPolicy {
     pub roles: [Option<ChannelRole>; N_CHANNELS],
+    /// ε for the Role-Smoothness Guarantee (see struct docs).
+    pub epsilon: f32,
 }
+
+impl Default for RetrievalPolicy {
+    fn default() -> Self {
+        Self {
+            roles: [None; N_CHANNELS],
+            epsilon: DEFAULT_EPSILON,
+        }
+    }
+}
+
+/// Default ε for [`RetrievalPolicy`] (§Role-Smoothness Guarantee).
+pub const DEFAULT_EPSILON: f32 = 0.10;
 
 impl RetrievalPolicy {
     #[must_use]
@@ -79,7 +105,10 @@ impl RetrievalPolicy {
         for &(ch, role) in pairs {
             roles[ch.index()] = Some(role);
         }
-        Self { roles }
+        Self {
+            roles,
+            epsilon: DEFAULT_EPSILON,
+        }
     }
 
     /// Belgium default: postcode as blocker, street as reducer,
@@ -118,6 +147,11 @@ pub struct ExecutionBudget {
     pub max_fuzzy_expansions: u16,
     pub max_total_candidates: u32,
     pub static_cost_ceiling: f32,
+    /// Per #96 Role-Smoothness Guarantee: when set, AND budget has
+    /// headroom, evaluate both adjacent role assignments at ε-boundary
+    /// and merge results. When unset (default), fall back to weak-
+    /// preference (downgrade-only).
+    pub dual_evaluation_enabled: bool,
 }
 
 impl Default for ExecutionBudget {
@@ -128,6 +162,7 @@ impl Default for ExecutionBudget {
             max_fuzzy_expansions: 32,
             max_total_candidates: 50,
             static_cost_ceiling: 1024.0,
+            dual_evaluation_enabled: false,
         }
     }
 }

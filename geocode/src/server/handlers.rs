@@ -1,15 +1,32 @@
 //! HTTP request handlers.
+//!
+//! ## Concurrency model (C6)
+//!
+//! Geocode work is CPU-bound (binary searches over the inverted index,
+//! string normalization, fuzzy similarity scoring). All such work runs
+//! on the blocking thread pool via [`tokio::task::spawn_blocking`] so
+//! it doesn't starve the async request thread pool. Tokio's default
+//! blocking pool is 512 threads — large enough to absorb concurrent
+//! geocode requests at the throughput target without backpressure.
+//!
+//! ## Content negotiation (C2)
+//!
+//! `application/json` is the default. Clients that send
+//! `Accept: application/geo+json` get a GeoJSON `FeatureCollection`
+//! body with the **correct** `Content-Type: application/geo+json`
+//! response header. Axum's `Json(...)` responder always serves
+//! `application/json`, so the GeoJSON path bypasses it and builds a
+//! [`Response`] manually with the proper header.
 
 use std::sync::Arc;
 
-use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 
 use super::state::ServerState;
-use crate::geocoder::executor::{GeocodedResult, execute};
+use crate::geocoder::executor::{GeocodedResult, build_nearest_result, execute, reason};
 use crate::parser::heuristic::parse_heuristic;
 use crate::routing::CountryId;
 use crate::shard::reader::haversine_m;
@@ -43,8 +60,12 @@ pub async fn forward(
     if params.q.trim().is_empty() {
         return error_response(StatusCode::BAD_REQUEST, "q must be non-empty");
     }
-    if params.q.len() > 512 {
-        return error_response(StatusCode::BAD_REQUEST, "q too long (max 512 bytes)");
+    // Per C3: enforce a CHARACTER-count limit (max 512 chars), not a
+    // byte-count limit. UTF-8 chars are 1-4 bytes; the previous
+    // `String::len()` byte check let through long ASCII inputs and
+    // rejected short multi-byte ones.
+    if params.q.chars().count() > 512 {
+        return error_response(StatusCode::BAD_REQUEST, "q too long (max 512 characters)");
     }
     let limit = params.limit.unwrap_or(5).clamp(1, 50);
 
@@ -67,17 +88,31 @@ pub async fn forward(
         );
     }
 
-    let parsed = parse_heuristic(&params.q, country);
-    let results = execute(&parsed, &state.shard, limit);
-
     let include_debug = params
         .include
         .as_deref()
         .map(|s| s.split(',').any(|t| t.trim().eq_ignore_ascii_case("debug")))
         .unwrap_or(false);
 
+    // Per C6: geocode work is CPU-bound. Run on the blocking pool so
+    // we don't starve the async runtime thread pool.
+    let q_text = params.q.clone();
+    let state_clone = Arc::clone(&state);
+    let results = match tokio::task::spawn_blocking(move || {
+        let parsed = parse_heuristic(&q_text, country);
+        execute(&parsed, &state_clone.shard, limit)
+    })
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "spawn_blocking panicked in forward");
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        }
+    };
+
     if accept_geojson(&headers) {
-        Json(to_geojson(&results, include_debug)).into_response()
+        geojson_response(&results, include_debug)
     } else {
         Json(ForwardResponse {
             query: params.q,
@@ -105,43 +140,40 @@ pub async fn reverse(
     }
     let radius = params.radius_m.unwrap_or(200.0).clamp(1.0, 50_000.0);
     let limit = params.limit.unwrap_or(1).clamp(1, 50);
+    let lat = params.lat;
+    let lon = params.lon;
 
-    let hits = state
-        .shard
-        .nearest_within(params.lat, params.lon, radius, limit);
-    let mut results: Vec<GeocodedResult> = Vec::with_capacity(hits.len());
-    for (rec, dist) in &hits {
-        let r = GeocodedResult {
-            lat: rec.lat,
-            lon: rec.lon,
-            street: rec.street.to_string(),
-            housenumber: rec.housenumber.to_string(),
-            postcode: rec.postcode.to_string(),
-            locality: rec.locality.to_string(),
-            score: 1.0 - (dist / radius).clamp(0.0, 1.0) as f32,
-            reason_codes: vec!["NEAREST".to_string()],
-        };
-        results.push(r);
-    }
+    // Per C6: spatial query (R-tree traversal + haversine) is also
+    // CPU-bound — `spawn_blocking` keeps the async pool free.
+    let state_clone = Arc::clone(&state);
+    let results = match tokio::task::spawn_blocking(move || -> Vec<GeocodedResult> {
+        let hits = state_clone.shard.nearest_within(lat, lon, radius, limit);
+        let mut results: Vec<GeocodedResult> = Vec::with_capacity(hits.len());
+        for (rec, dist) in &hits {
+            let score = 1.0 - (dist / radius).clamp(0.0, 1.0) as f32;
+            results.push(build_nearest_result(rec, score, reason::NEAREST));
+        }
 
-    if results.is_empty()
-        && let Some(rec) = state.shard.nearest(params.lat, params.lon)
+        if results.is_empty()
+            && let Some(rec) = state_clone.shard.nearest(lat, lon)
+        {
+            let _dist = haversine_m(lat, lon, rec.lat, rec.lon);
+            results.push(build_nearest_result(&rec, 0.0, reason::NEAREST_OUT_OF_RADIUS));
+        }
+
+        results
+    })
+    .await
     {
-        let _dist = haversine_m(params.lat, params.lon, rec.lat, rec.lon);
-        results.push(GeocodedResult {
-            lat: rec.lat,
-            lon: rec.lon,
-            street: rec.street.to_string(),
-            housenumber: rec.housenumber.to_string(),
-            postcode: rec.postcode.to_string(),
-            locality: rec.locality.to_string(),
-            score: 0.0,
-            reason_codes: vec!["NEAREST_OUT_OF_RADIUS".to_string()],
-        });
-    }
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "spawn_blocking panicked in reverse");
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        }
+    };
 
     if accept_geojson(&headers) {
-        Json(to_geojson(&results, false)).into_response()
+        geojson_response(&results, false)
     } else {
         Json(ReverseResponse {
             count: results.len(),
@@ -173,6 +205,27 @@ fn accept_geojson(headers: &HeaderMap) -> bool {
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_ascii_lowercase().contains("geo+json"))
         .unwrap_or(false)
+}
+
+/// Build a GeoJSON response with the correct `application/geo+json`
+/// Content-Type (per C2). Axum's `Json(...)` always serves
+/// `application/json`, which violates RFC 7946 §12 for GeoJSON
+/// responses.
+fn geojson_response(results: &[GeocodedResult], include_debug: bool) -> Response {
+    let body = match serde_json::to_vec(&to_geojson(results, include_debug)) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to serialize geojson");
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        }
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/geo+json")
+        .body(body.into())
+        .unwrap_or_else(|_| {
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "response build failed")
+        })
 }
 
 fn error_response(status: StatusCode, message: &str) -> Response {
@@ -223,7 +276,7 @@ impl ForwardItem {
             locality: r.locality.clone(),
             score: r.score,
             reason_codes: if include_debug {
-                Some(r.reason_codes.clone())
+                Some(r.reason_codes.iter().map(|c| c.to_string()).collect())
             } else {
                 None
             },
@@ -261,7 +314,7 @@ fn to_geojson(results: &[GeocodedResult], include_debug: bool) -> serde_json::Va
                     serde_json::Value::Array(
                         r.reason_codes
                             .iter()
-                            .map(|s| serde_json::Value::String(s.clone()))
+                            .map(|s| serde_json::Value::String(s.to_string()))
                             .collect(),
                     ),
                 );
