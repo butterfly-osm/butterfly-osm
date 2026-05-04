@@ -44,6 +44,7 @@
 #![deny(unsafe_code)]
 #![deny(missing_debug_implementations)]
 
+pub mod control;
 pub mod geocoder;
 pub mod osm_extract;
 pub mod parser;

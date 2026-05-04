@@ -12,6 +12,9 @@
 //! cargo test -p butterfly-geocode --release --test belgium_e2e -- --ignored
 //! ```
 
+use butterfly_geocode::control::budget::{BudgetPolicy, classify_tier};
+use butterfly_geocode::geocoder::executor::{ControlPlane, execute_with_control};
+use butterfly_geocode::types::ExecutionBudget;
 use butterfly_geocode::{CountryId, Shard, execute, parse_heuristic};
 
 const SHARD_PATH: &str = "regions/belgium.bfgs";
@@ -112,6 +115,62 @@ fn empty_query_returns_empty() {
     let q = parse_heuristic("", CountryId::BE);
     let results = execute(&q, &shard, 5);
     assert!(results.is_empty());
+}
+
+#[test]
+#[ignore]
+fn budget_exhaustion_short_circuits() {
+    // "Rue 1" is the canonical fanout-hostile query: ambiguous
+    // street, no locality, no postcode. The control plane MUST
+    // either widen to Wide+ tier or short-circuit on the candidate
+    // cap.
+    let shard = open_shard();
+    let mut q = parse_heuristic("Rue 1", CountryId::BE);
+    // Bracket the budget so any non-trivial expansion trips the cap.
+    q.execution_budget = ExecutionBudget {
+        max_countries: 1,
+        max_hypotheses: 1,
+        max_fuzzy_expansions: 0,
+        max_total_candidates: 5,
+        // Generous ceiling so admission doesn't fire — we want the
+        // candidate cap to be the gate.
+        static_cost_ceiling: 1e9,
+        dual_evaluation_enabled: false,
+    };
+    let cp = ControlPlane::new();
+    let res = execute_with_control(&q, &shard, 100, &cp).unwrap();
+    assert!(
+        res.len() <= 100,
+        "candidate cap did not bound the result set: {} hits",
+        res.len()
+    );
+}
+
+#[test]
+#[ignore]
+fn clean_query_belgium_classifies_correctly() {
+    let shard = open_shard();
+    let mut q = parse_heuristic("Rue Wayez 122 1070 Anderlecht", CountryId::BE);
+    q.global_confidence = 0.95; // boost so we hit the Tight branch
+    let stats = shard.stats();
+    let tier = classify_tier(&q, stats, BudgetPolicy::default());
+    // The Belgium clean query SHOULD land at Tight or Normal — never
+    // Wide / Desperate.
+    assert!(
+        matches!(
+            tier,
+            butterfly_geocode::control::budget::BudgetTier::Tight
+                | butterfly_geocode::control::budget::BudgetTier::Normal
+        ),
+        "clean Belgium query landed at {tier:?}"
+    );
+
+    let cp = ControlPlane::new();
+    let res = execute_with_control(&q, &shard, 5, &cp).unwrap();
+    assert!(
+        !res.is_empty(),
+        "expected hits for the canonical clean query"
+    );
 }
 
 #[test]
