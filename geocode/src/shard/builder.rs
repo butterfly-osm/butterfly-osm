@@ -1,5 +1,5 @@
 //! Shard builder. Takes a stream of [`AddressRecord`]s and writes a
-//! `BFGS` v1 file.
+//! `BFGS` v2 file (see [`super`] for the format docs).
 
 use std::collections::BTreeMap;
 use std::io::{BufWriter, Write};
@@ -87,6 +87,7 @@ pub fn build_shard<P: AsRef<Path>>(
         let (house_off, house_len) = intern(&a.housenumber, &mut strings);
         let (pc_off, pc_len) = intern(&a.postcode, &mut strings);
 
+        // Record layout: 32 bytes, see `super` module docs.
         records_bytes.extend_from_slice(&lat_e7.to_le_bytes());
         records_bytes.extend_from_slice(&lon_e7.to_le_bytes());
         records_bytes.extend_from_slice(&street_off.to_le_bytes());
@@ -97,7 +98,6 @@ pub fn build_shard<P: AsRef<Path>>(
         records_bytes.extend_from_slice(&house_len.to_le_bytes());
         records_bytes.extend_from_slice(&pc_off.to_le_bytes());
         records_bytes.extend_from_slice(&pc_len.to_le_bytes());
-        records_bytes.extend_from_slice(&[0u8; 4]);
 
         if !a.postcode.is_empty() {
             by_postcode.entry(a.postcode.clone()).or_default().push(id);
@@ -118,12 +118,16 @@ pub fn build_shard<P: AsRef<Path>>(
 
     debug_assert_eq!(records_bytes.len(), RECORD_BYTES * addrs.len());
 
+    // Pad strings to 4-byte boundary so records section starts aligned.
+    pad_to_u32(&mut strings);
+
     let index_bytes = serialize_indices(&by_postcode, &by_locality, &by_street, &by_pc_street);
 
     let strings_off = HEADER_BYTES as u64;
     let strings_len = strings.len() as u64;
     let records_off = strings_off + strings_len;
     let records_len = records_bytes.len() as u64;
+    // records_len is a multiple of RECORD_BYTES (32) so already 4-aligned.
     let index_off = records_off + records_len;
     let index_len = index_bytes.len() as u64;
 
@@ -147,15 +151,20 @@ pub fn build_shard<P: AsRef<Path>>(
     w.write_all(&records_bytes)?;
     w.write_all(&index_bytes)?;
 
-    let mut body =
-        Vec::with_capacity(HEADER_BYTES + strings.len() + records_bytes.len() + index_bytes.len());
-    body.extend_from_slice(&header);
-    body.extend_from_slice(&strings);
-    body.extend_from_slice(&records_bytes);
-    body.extend_from_slice(&index_bytes);
+    // Pattern B: body_crc covers body only (everything after header,
+    // before footer). file_crc covers header + body.
+    let mut body_digest = CRC_ENGINE.digest();
+    body_digest.update(&strings);
+    body_digest.update(&records_bytes);
+    body_digest.update(&index_bytes);
+    let body_crc = body_digest.finalize();
 
-    let body_crc = CRC_ENGINE.checksum(&body);
-    let file_crc = CRC_ENGINE.checksum(&body);
+    let mut file_digest = CRC_ENGINE.digest();
+    file_digest.update(&header);
+    file_digest.update(&strings);
+    file_digest.update(&records_bytes);
+    file_digest.update(&index_bytes);
+    let file_crc = file_digest.finalize();
 
     w.write_all(&body_crc.to_le_bytes())?;
     w.write_all(&file_crc.to_le_bytes())?;
@@ -173,6 +182,12 @@ pub fn build_shard<P: AsRef<Path>>(
     })
 }
 
+fn pad_to_u32(buf: &mut Vec<u8>) {
+    while buf.len() % 4 != 0 {
+        buf.push(0);
+    }
+}
+
 fn serialize_indices(
     by_postcode: &BTreeMap<String, Vec<u32>>,
     by_locality: &BTreeMap<String, Vec<u32>>,
@@ -187,9 +202,24 @@ fn serialize_indices(
     buf
 }
 
+/// CSR sub-index layout (see [`super`] module docs):
+///   u32 num_keys
+///   u32 keys_data_len
+///   u32[num_keys+1] keys_offsets
+///   u8[keys_data_len] keys_data
+///   <pad to u32>
+///   u32[num_keys+1] postings_offsets (cumulative, in u32 units)
+///   u32[total_postings] postings_data
 fn serialize_index(buf: &mut Vec<u8>, idx: &BTreeMap<String, Vec<u32>>) {
-    let count: u32 = idx.len().try_into().expect("index size fits in u32");
-    buf.extend_from_slice(&count.to_le_bytes());
+    let num_keys: u32 = idx.len().try_into().expect("index size fits in u32");
+    let mut keys_data: Vec<u8> = Vec::new();
+    let mut keys_offsets: Vec<u32> = Vec::with_capacity(idx.len() + 1);
+    keys_offsets.push(0);
+    let mut postings_offsets: Vec<u32> = Vec::with_capacity(idx.len() + 1);
+    postings_offsets.push(0);
+    let mut postings_data: Vec<u32> = Vec::new();
+
+    let mut total_postings: u32 = 0;
     for (key, list) in idx {
         let key_bytes = key.as_bytes();
         let actual = if key_bytes.len() > u16::MAX as usize {
@@ -197,14 +227,41 @@ fn serialize_index(buf: &mut Vec<u8>, idx: &BTreeMap<String, Vec<u32>>) {
         } else {
             key_bytes
         };
-        let key_len: u16 = u16::try_from(actual.len()).unwrap_or(u16::MAX);
-        buf.extend_from_slice(&key_len.to_le_bytes());
-        buf.extend_from_slice(actual);
-        let list_len: u32 = list.len().try_into().expect("posting list fits in u32");
-        buf.extend_from_slice(&list_len.to_le_bytes());
-        for &id in list {
-            buf.extend_from_slice(&id.to_le_bytes());
-        }
+        keys_data.extend_from_slice(actual);
+        let next_off: u32 = keys_data
+            .len()
+            .try_into()
+            .expect("keys_data fits in u32");
+        keys_offsets.push(next_off);
+
+        let list_len_u32: u32 = list
+            .len()
+            .try_into()
+            .expect("posting list fits in u32");
+        total_postings = total_postings
+            .checked_add(list_len_u32)
+            .expect("total postings fits in u32");
+        postings_offsets.push(total_postings);
+        postings_data.extend_from_slice(list);
+    }
+
+    let keys_data_len: u32 = keys_data
+        .len()
+        .try_into()
+        .expect("keys_data fits in u32");
+
+    buf.extend_from_slice(&num_keys.to_le_bytes());
+    buf.extend_from_slice(&keys_data_len.to_le_bytes());
+    for off in &keys_offsets {
+        buf.extend_from_slice(&off.to_le_bytes());
+    }
+    buf.extend_from_slice(&keys_data);
+    pad_to_u32(buf);
+    for off in &postings_offsets {
+        buf.extend_from_slice(&off.to_le_bytes());
+    }
+    for id in &postings_data {
+        buf.extend_from_slice(&id.to_le_bytes());
     }
 }
 
@@ -242,5 +299,58 @@ mod tests {
         assert_eq!(s.record_count() as u32, 3);
         let pc_hits = s.postings_for_postcode("1070");
         assert_eq!(pc_hits.len(), 2);
+    }
+
+    #[test]
+    fn corrupted_body_fails_crc() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shard.bfgs");
+        let addrs = vec![rec(
+            "Rue Wayez",
+            "122",
+            "1070",
+            "Anderlecht",
+            50.834,
+            4.314,
+        )];
+        build_shard(&path, addrs).unwrap();
+
+        let mut buf = std::fs::read(&path).unwrap();
+        // Flip a byte in the body (after header, before footer).
+        let body_byte = HEADER_BYTES + 4;
+        buf[body_byte] ^= 0xFF;
+        std::fs::write(&path, &buf).unwrap();
+
+        let err = Shard::open(&path).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("CRC"), "expected CRC mismatch, got: {msg}");
+    }
+
+    #[test]
+    fn corrupted_header_fails_file_crc() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shard.bfgs");
+        let addrs = vec![rec(
+            "Rue Wayez",
+            "122",
+            "1070",
+            "Anderlecht",
+            50.834,
+            4.314,
+        )];
+        build_shard(&path, addrs).unwrap();
+
+        let mut buf = std::fs::read(&path).unwrap();
+        // Flip a reserved/_pad byte in the header that doesn't break
+        // the section-bound parser.
+        buf[12] ^= 0xFF;
+        std::fs::write(&path, &buf).unwrap();
+
+        let err = Shard::open(&path).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("CRC"),
+            "expected CRC mismatch when header bytes flipped, got: {msg}"
+        );
     }
 }
