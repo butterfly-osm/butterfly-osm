@@ -25,7 +25,6 @@ use butterfly_route::range::frontier::FrontierExtractor;
 use butterfly_route::range::phast::{PhastEngine, PhastStats};
 use butterfly_route::range::sparse_contour::{SparseContourConfig, generate_sparse_contour};
 use butterfly_route::range::wkb_stream::{IsochroneRecord, encode_polygon_wkb, write_ndjson};
-use butterfly_route::server::state::DownReverseAdj;
 
 #[derive(Parser)]
 #[command(name = "butterfly-bench")]
@@ -3016,9 +3015,9 @@ fn run_bucket_m2m_bench(
     let down_rev_flat = DownReverseAdjFlat::build(&topo, &weights);
     println!("  ✓ {} flat reverse entries", down_rev_flat.sources.len());
 
-    println!("Building DownReverseAdj (for P2P validation)...");
-    let down_rev = build_down_rev(&topo);
-    println!("  ✓ {} reverse entries", down_rev.sources.len());
+    println!("Building DownReverseAdjFlat with topo back-references (for P2P validation)...");
+    let down_rev_p2p = DownReverseAdjFlat::build_with(&topo, &weights, true);
+    println!("  ✓ {} reverse entries", down_rev_p2p.sources.len());
     println!();
 
     // Run benchmarks for each size
@@ -3163,7 +3162,7 @@ fn run_bucket_m2m_bench(
             let m2m_dist = par_matrix[si * 5 + ti]; // Use PARALLEL result
 
             // Run P2P query using the same algorithm as the server
-            let p2p_dist = run_p2p_query(&topo, &weights, &down_rev, s, t);
+            let p2p_dist = run_p2p_query(&topo, &weights, &down_rev_p2p, s, t);
 
             checked += 1;
             if m2m_dist != p2p_dist {
@@ -3200,11 +3199,17 @@ fn run_bucket_m2m_bench(
 }
 
 /// Run a single P2P query using bidirectional Dijkstra (same as server)
-/// Returns distance or u32::MAX if unreachable
+/// Returns distance or u32::MAX if unreachable.
+///
+/// After #152, the P2P validator reads its reverse-DOWN topology straight
+/// from the same `DownReverseAdjFlat` that production routing uses (built
+/// with `topo_edge_idx` so we can index `weights.down`). The legacy
+/// `DownReverseAdj` Vec-of-Vec was deleted along with its boot-path
+/// build site.
 fn run_p2p_query(
     topo: &butterfly_route::formats::CchTopo,
     weights: &butterfly_route::formats::CchWeights,
-    down_rev: &DownReverseAdj,
+    down_rev: &DownReverseAdjFlat,
     source: u32,
     target: u32,
 ) -> u32 {
@@ -3265,7 +3270,7 @@ fn run_p2p_query(
             }
         }
 
-        // Backward step - reversed DOWN edges
+        // Backward step - reversed DOWN edges (read from the flat).
         if let Some(Reverse((d, u))) = pq_bwd.pop() {
             if d > dist_bwd[u as usize] {
                 continue;
@@ -3279,16 +3284,15 @@ fn run_p2p_query(
                 }
             }
 
-            // Relax reversed DOWN edges
+            // Relax reversed DOWN edges via the flat. The flat already
+            // filtered INF entries at build time; `topo_edge_idx[slot]`
+            // recovers the original DOWN edge index for symmetry with the
+            // legacy implementation.
             let start = down_rev.offsets[u as usize] as usize;
             let end = down_rev.offsets[u as usize + 1] as usize;
-            for i in start..end {
-                let x = down_rev.sources[i];
-                let edge_idx = down_rev.edge_idx[i] as usize;
-                let w = weights.down[edge_idx];
-                if w == u32::MAX {
-                    continue;
-                }
+            for slot in start..end {
+                let x = down_rev.sources[slot];
+                let w = down_rev.weights[slot];
                 let new_d = d.saturating_add(w);
                 if new_d < dist_bwd[x as usize] {
                     dist_bwd[x as usize] = new_d;
@@ -3305,54 +3309,6 @@ fn run_p2p_query(
     }
 
     best_dist
-}
-
-/// Build reverse adjacency for DOWN edges
-///
-/// For each node u, collects all nodes x that have DOWN edges x→u.
-/// This enables reverse search: given target t, find all nodes that can reach t.
-fn build_down_rev(topo: &butterfly_route::formats::CchTopo) -> DownReverseAdj {
-    let n_nodes = topo.n_nodes as usize;
-
-    // Count incoming DOWN edges for each node
-    let mut counts = vec![0u32; n_nodes];
-    for &target in topo.down_targets.iter() {
-        counts[target as usize] += 1;
-    }
-
-    // Build offsets
-    let mut offsets = vec![0u64; n_nodes + 1];
-    for i in 0..n_nodes {
-        offsets[i + 1] = offsets[i] + counts[i] as u64;
-    }
-
-    let total_edges = offsets[n_nodes] as usize;
-    let mut sources = vec![0u32; total_edges];
-    let mut edge_idx = vec![0u32; total_edges];
-
-    // Reset counts for filling
-    counts.fill(0);
-
-    // Fill reverse edges
-    // For each source node src, iterate its outgoing DOWN edges
-    for src in 0..n_nodes {
-        let start = topo.down_offsets[src] as usize;
-        let end = topo.down_offsets[src + 1] as usize;
-
-        for i in start..end {
-            let target = topo.down_targets[i] as usize;
-            let pos = offsets[target] as usize + counts[target] as usize;
-            sources[pos] = src as u32;
-            edge_idx[pos] = i as u32;
-            counts[target] += 1;
-        }
-    }
-
-    DownReverseAdj {
-        offsets,
-        sources,
-        edge_idx,
-    }
 }
 
 /// Compare dense vs sparse contour generation

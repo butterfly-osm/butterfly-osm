@@ -1,6 +1,17 @@
 //! ebg.nodes format - EBG node table (directed NBG edges)
+//!
+//! # Zero-copy reader (#152)
+//!
+//! The body is a flat array of fixed-size 24-byte records. `EbgNode`
+//! is `#[repr(C)]` with six `u32` fields in declared order, so its
+//! in-memory layout matches the on-disk record byte-for-byte. The
+//! container guarantees 8-byte section alignment and the 64-byte
+//! header keeps the body 4-byte-aligned at the section-relative
+//! offset, so `bytemuck::cast_slice::<u8, EbgNode>` works from the
+//! mmap with no heap copy.
 
 use anyhow::Result;
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
@@ -9,8 +20,15 @@ use super::crc;
 
 const MAGIC: u32 = 0x4542474E; // "EBGN"
 const VERSION: u16 = 1;
+const HEADER_LEN: usize = 64;
+const FOOTER_LEN: usize = 16;
+const NODE_RECORD_LEN: usize = 24;
 
-#[derive(Debug, Clone)]
+/// One EBG node record. `#[repr(C)]` + all-u32 fields makes this Pod
+/// with no padding; on-disk layout is byte-identical to in-memory
+/// layout, which is what the zero-copy reader (#152) relies on.
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
 pub struct EbgNode {
     pub tail_nbg: u32,    // compact NBG node id
     pub head_nbg: u32,    // compact NBG node id
@@ -20,12 +38,18 @@ pub struct EbgNode {
     pub primary_way: u32, // lower 32 bits of first_osm_way_id
 }
 
+const _: () = assert!(std::mem::size_of::<EbgNode>() == NODE_RECORD_LEN);
+const _: () = assert!(std::mem::align_of::<EbgNode>() == 4);
+
 #[derive(Debug)]
 pub struct EbgNodes {
     pub n_nodes: u32,
     pub created_unix: u64,
     pub inputs_sha: [u8; 32],
-    pub nodes: Vec<EbgNode>,
+    /// Flat node array. Borrowed (zero-copy) when read from a
+    /// `'static` byte slice (mmap-backed container section), owned
+    /// otherwise. Indexed by `ebg_id`.
+    pub nodes: Cow<'static, [EbgNode]>,
 }
 
 pub struct EbgNodesFile;
@@ -61,7 +85,7 @@ impl EbgNodesFile {
         crc_digest.update(&padding);
 
         // Body: n_nodes records (24 bytes each)
-        for node in &data.nodes {
+        for node in data.nodes.iter() {
             let tail_bytes = node.tail_nbg.to_le_bytes();
             let head_bytes = node.head_nbg.to_le_bytes();
             let geom_bytes = node.geom_idx.to_le_bytes();
@@ -106,9 +130,22 @@ impl EbgNodesFile {
     fn read_from_reader<R: Read>(mut reader: R) -> Result<EbgNodes> {
         let mut crc_digest = crc::Digest::new();
 
-        let mut header = vec![0u8; 64];
+        let mut header = vec![0u8; HEADER_LEN];
         reader.read_exact(&mut header)?;
         crc_digest.update(&header);
+
+        let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+        anyhow::ensure!(
+            magic == MAGIC,
+            "Invalid magic in ebg.nodes: expected 0x{:08X}, got 0x{:08X}",
+            MAGIC,
+            magic
+        );
+        let version = u16::from_le_bytes([header[4], header[5]]);
+        anyhow::ensure!(
+            version == VERSION,
+            "Unsupported ebg.nodes version {version}, expected {VERSION}",
+        );
 
         let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
         let created_unix = u64::from_le_bytes([
@@ -118,25 +155,31 @@ impl EbgNodesFile {
         let mut inputs_sha = [0u8; 32];
         inputs_sha.copy_from_slice(&header[20..52]);
 
-        let mut nodes = Vec::with_capacity(n_nodes as usize);
-        for _ in 0..n_nodes {
-            let mut record = [0u8; 24];
-            reader.read_exact(&mut record)?;
-            crc_digest.update(&record);
+        // Read the body as one byte block, CRC it, then cast to
+        // `&[EbgNode]` and copy into an owned Vec. The cast is
+        // alignment-safe — the temporary buffer starts at an aligned
+        // address, but we copy into a new Vec anyway since the bytes
+        // here are not `'static`. Owned-path callers (e.g. directory
+        // load) end up with the same semantics as before.
+        let body_len = NODE_RECORD_LEN
+            .checked_mul(n_nodes as usize)
+            .ok_or_else(|| anyhow::anyhow!("ebg.nodes body size overflow for n_nodes={n_nodes}"))?;
+        let mut body = vec![0u8; body_len];
+        reader.read_exact(&mut body)?;
+        crc_digest.update(&body);
 
-            nodes.push(EbgNode {
-                tail_nbg: u32::from_le_bytes([record[0], record[1], record[2], record[3]]),
-                head_nbg: u32::from_le_bytes([record[4], record[5], record[6], record[7]]),
-                geom_idx: u32::from_le_bytes([record[8], record[9], record[10], record[11]]),
-                length_mm: u32::from_le_bytes([record[12], record[13], record[14], record[15]]),
-                class_bits: u32::from_le_bytes([record[16], record[17], record[18], record[19]]),
-                primary_way: u32::from_le_bytes([record[20], record[21], record[22], record[23]]),
-            });
+        let mut nodes: Vec<EbgNode> = Vec::with_capacity(n_nodes as usize);
+        // SAFETY-style note: bytemuck::pod_read_unaligned is safe and
+        // handles arbitrary alignment of the source bytes.
+        for chunk in body.chunks_exact(NODE_RECORD_LEN) {
+            let arr: [u8; NODE_RECORD_LEN] =
+                chunk.try_into().expect("chunks_exact yields full chunks");
+            nodes.push(bytemuck::pod_read_unaligned::<EbgNode>(&arr));
         }
 
         // Verify CRC64
         let computed_crc = crc_digest.finalize();
-        let mut footer = [0u8; 16];
+        let mut footer = [0u8; FOOTER_LEN];
         reader.read_exact(&mut footer)?;
         let stored_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
         anyhow::ensure!(
@@ -150,7 +193,89 @@ impl EbgNodesFile {
             n_nodes,
             created_unix,
             inputs_sha,
-            nodes,
+            nodes: Cow::Owned(nodes),
+        })
+    }
+
+    /// Zero-copy reader for `'static` byte slices (mmap-backed
+    /// container sections). The body is reinterpreted as
+    /// `&'static [EbgNode]` directly from the mapping — no heap
+    /// allocation. CRC is verified before returning.
+    ///
+    /// The caller (the container) guarantees that the section bytes
+    /// start at an 8-byte boundary; combined with the 64-byte header,
+    /// the body slice starts at a 4-byte boundary, which matches
+    /// `align_of::<EbgNode>() == 4`.
+    pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<EbgNodes> {
+        anyhow::ensure!(
+            bytes.len() >= HEADER_LEN + FOOTER_LEN,
+            "ebg.nodes too short for header+footer: {} bytes",
+            bytes.len()
+        );
+        debug_assert_eq!(
+            bytes.as_ptr() as usize % 8,
+            0,
+            "ebg.nodes section start must be 8-byte aligned"
+        );
+
+        let header = &bytes[..HEADER_LEN];
+        let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+        anyhow::ensure!(
+            magic == MAGIC,
+            "Invalid magic in ebg.nodes: expected 0x{:08X}, got 0x{:08X}",
+            MAGIC,
+            magic
+        );
+        let version = u16::from_le_bytes([header[4], header[5]]);
+        anyhow::ensure!(
+            version == VERSION,
+            "Unsupported ebg.nodes version {version}, expected {VERSION}",
+        );
+
+        let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
+        let created_unix = u64::from_le_bytes([
+            header[12], header[13], header[14], header[15], header[16], header[17], header[18],
+            header[19],
+        ]);
+        let mut inputs_sha = [0u8; 32];
+        inputs_sha.copy_from_slice(&header[20..52]);
+
+        let body_len = NODE_RECORD_LEN
+            .checked_mul(n_nodes as usize)
+            .ok_or_else(|| anyhow::anyhow!("ebg.nodes body size overflow for n_nodes={n_nodes}"))?;
+        let body_end = HEADER_LEN
+            .checked_add(body_len)
+            .ok_or_else(|| anyhow::anyhow!("ebg.nodes section size overflow"))?;
+        anyhow::ensure!(
+            bytes.len() == body_end + FOOTER_LEN,
+            "ebg.nodes length mismatch: declared {}, expected body+footer {}",
+            bytes.len(),
+            body_end + FOOTER_LEN
+        );
+
+        let body = &bytes[HEADER_LEN..body_end];
+        let footer = &bytes[body_end..body_end + FOOTER_LEN];
+
+        // CRC over header + body, mirroring the legacy reader.
+        let mut crc_digest = crc::Digest::new();
+        crc_digest.update(header);
+        crc_digest.update(body);
+        let computed = crc_digest.finalize();
+        let stored = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+        anyhow::ensure!(
+            computed == stored,
+            "CRC64 mismatch in ebg.nodes: computed 0x{:016X}, stored 0x{:016X}",
+            computed,
+            stored
+        );
+
+        let nodes: &'static [EbgNode] = bytemuck::cast_slice(body);
+
+        Ok(EbgNodes {
+            n_nodes,
+            created_unix,
+            inputs_sha,
+            nodes: Cow::Borrowed(nodes),
         })
     }
 }
@@ -166,7 +291,7 @@ mod tests {
             n_nodes: 3,
             created_unix: 1700000000,
             inputs_sha: [0xAB; 32],
-            nodes: vec![
+            nodes: Cow::Owned(vec![
                 EbgNode {
                     tail_nbg: 0,
                     head_nbg: 1,
@@ -191,7 +316,7 @@ mod tests {
                     class_bits: 0,
                     primary_way: 44,
                 },
-            ],
+            ]),
         }
     }
 

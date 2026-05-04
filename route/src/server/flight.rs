@@ -944,7 +944,8 @@ pub fn do_edges_batch(
                 // if the first consumer needs it).
                 let query = super::query::CchQuery::with_custom_weights(
                     &mode_data.cch_topo,
-                    &mode_data.down_rev,
+                    &mode_data.up_adj_flat,
+                    &mode_data.down_rev_flat,
                     &mode_data.cch_weights,
                 );
                 let Some(result) = query.query(src_rank, dst_rank) else {

@@ -31,7 +31,6 @@ pub struct ModeData {
     // CCH hierarchy for this mode
     pub cch_topo: CchTopo,
     pub order: OrderEbg,
-    pub down_rev: DownReverseAdj,
     pub cch_weights: CchWeights,
     pub cch_weights_dist: CchWeights,
     // Filtered EBG for node ID mapping
@@ -40,6 +39,14 @@ pub struct ModeData {
     pub node_weights: Vec<u32>,
     pub mask: Vec<u64>,
     // Flat adjacencies for bucket M2M - TIME metric (pre-built for performance)
+    //
+    // After #152, the time flats also serve as the topology back-end for
+    // the cold custom-weight `CchQuery` path (alternatives, exclude/avoid,
+    // transit access/egress, map matching). They carry `topo_edge_idx`,
+    // which custom callers use to index their per-call `CchWeights.up` /
+    // `CchWeights.down` arrays. The legacy `DownReverseAdj` Vec-of-Vec
+    // that previously lived here is gone (~320 MB heap reclaimed on
+    // Belgium across 4 modes).
     pub up_adj_flat: UpAdjFlat,
     pub down_rev_flat: DownReverseAdjFlat,
     /// Forward DOWN flat (TIME metric). Used by the isochrone forward
@@ -57,15 +64,6 @@ pub struct ModeData {
 }
 
 // CchWeights is imported from crate::formats
-
-/// Reverse adjacency for DOWN edges (used in backward search)
-/// For each node y, stores all nodes x that have DOWN edges x→y
-/// along with the original edge index (to look up weights)
-pub struct DownReverseAdj {
-    pub offsets: Vec<u64>,  // n_nodes + 1
-    pub sources: Vec<u32>,  // source node x for reverse edge
-    pub edge_idx: Vec<u32>, // index into down_targets/down_weights for the original x→y edge
-}
 
 /// Server state containing all loaded data
 pub struct ServerState {
@@ -209,6 +207,8 @@ impl ServerState {
         let mut mode_names = Vec::with_capacity(discovered_modes.len());
         let mut mode_lookup = HashMap::with_capacity(discovered_modes.len());
 
+        crate::server::rss::checkpoint("load.shared");
+
         for (mode_index, mode_name) in discovered_modes.iter().enumerate() {
             // Use GLOBAL index (from full alphabetical discovery) — must match step 4/5 indexing
             let mode = Mode(global_index[mode_name]);
@@ -225,11 +225,13 @@ impl ServerState {
             modes_data.push(mode_data);
             mode_lookup.insert(mode_name.clone(), mode_index as u8);
             mode_names.push(mode_name.clone());
+            crate::server::rss::checkpoint(&format!("load.mode.{}", mode_name));
         }
 
         tracing::info!("Building spatial index...");
         let spatial_index = SpatialIndex::build(&ebg_nodes, &nbg_geo);
         tracing::info!(nodes = ebg_nodes.n_nodes, "built spatial index");
+        crate::server::rss::checkpoint("spatial.global");
 
         // Per-mode spatial indexes: one R-tree per loaded mode,
         // pre-filtered to that mode's accessible nodes. Built once at
@@ -248,6 +250,7 @@ impl ServerState {
                 "built per-mode spatial index"
             );
             mode_spatial_indexes.insert(mode_index as u8, idx);
+            crate::server::rss::checkpoint(&format!("spatial.mode.{}", mode_names[mode_index]));
         }
 
         // Load road names from ways.raw for turn-by-turn instructions
@@ -382,13 +385,41 @@ impl ServerState {
         };
 
         // ---- Shared graph tables ------------------------------------
-        tracing::info!("Loading EBG nodes...");
-        let ebg_nodes = EbgNodesFile::read_from_bytes(section_bytes("shared/ebg.nodes")?)?;
+        // #152: ebg.nodes / ebg.csr are now read zero-copy. The
+        // numeric arrays (`nodes`, `offsets`, `heads`, `turn_idx`)
+        // borrow straight from the mmap, so we save ~250 MB of heap
+        // on Belgium that the legacy owning-Vec readers used to copy.
+        crate::server::rss::checkpoint("load.container.opened");
+
+        tracing::info!("Loading EBG nodes (zero-copy)...");
+        let ebg_nodes =
+            EbgNodesFile::read_from_bytes_zero_copy(section_bytes("shared/ebg.nodes")?)?;
         tracing::info!(nodes = ebg_nodes.n_nodes, "loaded EBG nodes");
 
-        tracing::info!("Loading EBG CSR...");
-        let ebg_csr = EbgCsrFile::read_from_bytes(section_bytes("shared/ebg.csr")?)?;
+        tracing::info!("Loading EBG CSR (zero-copy)...");
+        let ebg_csr_section = section_bytes("shared/ebg.csr")?;
+        let ebg_csr = EbgCsrFile::read_from_bytes_zero_copy(ebg_csr_section)?;
         tracing::info!(arcs = ebg_csr.n_arcs, "loaded EBG CSR");
+        // #152: ebg.csr is build/validate-only at serve time. The only
+        // field any handler reads is `n_arcs` (a u64 in the header used
+        // by /health). The body arrays (offsets, heads, turn_idx) are
+        // touched by validate/step4 + ordering/contraction, none of
+        // which run on the serve path. Drop the file pages from RSS;
+        // the borrowed Cow slices stay valid and a rare cold reader
+        // pages them back at fault cost.
+        if let Err(e) = crate::formats::mmap::madvise_dontneed(ebg_csr_section) {
+            tracing::warn!(
+                section = "shared/ebg.csr",
+                error = %e,
+                "madvise(DONTNEED) on ebg.csr failed; ignoring"
+            );
+        } else {
+            tracing::info!(
+                section = "shared/ebg.csr",
+                bytes = ebg_csr_section.len(),
+                "madvise(DONTNEED) on cold ebg.csr section"
+            );
+        }
 
         tracing::info!("Loading NBG geo...");
         let nbg_geo = NbgGeoFile::read_from_bytes(section_bytes("shared/nbg.geo")?)?;
@@ -434,6 +465,8 @@ impl ServerState {
         }
         tracing::info!(modes = ?discovered_modes, "discovered transport modes");
 
+        crate::server::rss::checkpoint("load.shared");
+
         // ---- Per-mode bundle load -----------------------------------
         let mut modes_data = Vec::with_capacity(discovered_modes.len());
         let mut mode_names = Vec::with_capacity(discovered_modes.len());
@@ -452,17 +485,20 @@ impl ServerState {
             modes_data.push(mode_data);
             mode_lookup.insert(mode_name.clone(), mode_index as u8);
             mode_names.push(mode_name.clone());
+            crate::server::rss::checkpoint(&format!("load.mode.{}", mode_name));
         }
 
         // ---- Spatial indexes ----------------------------------------
         tracing::info!("Building spatial index...");
         let spatial_index = SpatialIndex::build(&ebg_nodes, &nbg_geo);
+        crate::server::rss::checkpoint("spatial.global");
 
         let mut mode_spatial_indexes: HashMap<u8, SpatialIndex> =
             HashMap::with_capacity(modes_data.len());
         for (mode_index, mode_data) in modes_data.iter().enumerate() {
             let idx = SpatialIndex::build_filtered(&ebg_nodes, &nbg_geo, &mode_data.mask);
             mode_spatial_indexes.insert(mode_index as u8, idx);
+            crate::server::rss::checkpoint(&format!("spatial.mode.{}", mode_names[mode_index]));
         }
 
         // #149: Now that every mode's flat adjacencies are built, hint
@@ -723,9 +759,6 @@ fn load_mode_data(
     let topo_path = step7_dir.join(format!("cch.{}.topo", mode_name));
     let cch_topo = CchTopoFile::read(&topo_path)?;
 
-    // Build reverse DOWN adjacency for this mode's CCH
-    let down_rev = build_down_reverse_adj(&cch_topo);
-
     // Load node weights from step 5 (indexed by original EBG node ID)
     let weights_path = step5_dir.join(format!("w.{}.u32", mode_name));
     let weights_data = mod_weights::read_all(&weights_path)?;
@@ -737,7 +770,7 @@ fn load_mode_data(
     let mask = {
         let n_words = n_original.div_ceil(64);
         let mut m = vec![0u64; n_words];
-        for &orig_id in &filtered_ebg.filtered_to_original {
+        for &orig_id in filtered_ebg.filtered_to_original.iter() {
             let word = orig_id as usize / 64;
             let bit = orig_id as usize % 64;
             m[word] |= 1u64 << bit;
@@ -768,7 +801,6 @@ fn load_mode_data(
         mode,
         cch_topo,
         order,
-        down_rev,
         cch_weights,
         cch_weights_dist,
         filtered_ebg,
@@ -782,57 +814,6 @@ fn load_mode_data(
         down_adj_flat_dist,
         exclude_cache: parking_lot::RwLock::new(HashMap::new()),
     })
-}
-
-/// Load CCH weights from file
-/// Build reverse adjacency for DOWN edges
-/// For each node y, we want to find all edges x→y in the DOWN graph
-/// This allows backward search to iterate over incoming edges efficiently
-fn build_down_reverse_adj(topo: &CchTopo) -> DownReverseAdj {
-    let n_nodes = topo.n_nodes as usize;
-    let n_down = topo.down_targets.len();
-
-    // First pass: count incoming edges per node
-    let mut counts = vec![0usize; n_nodes];
-    for &target in topo.down_targets.iter() {
-        counts[target as usize] += 1;
-    }
-
-    // Build offsets
-    let mut offsets = Vec::with_capacity(n_nodes + 1);
-    let mut offset = 0u64;
-    for &count in &counts {
-        offsets.push(offset);
-        offset += count as u64;
-    }
-    offsets.push(offset);
-
-    // Allocate arrays
-    let mut sources = vec![0u32; n_down];
-    let mut edge_idx = vec![0u32; n_down];
-
-    // Second pass: fill in reverse edges
-    // Reset counts to use as position trackers
-    counts.fill(0);
-
-    for source in 0..n_nodes {
-        let start = topo.down_offsets[source] as usize;
-        let end = topo.down_offsets[source + 1] as usize;
-
-        for i in start..end {
-            let target = topo.down_targets[i] as usize;
-            let pos = offsets[target] as usize + counts[target];
-            sources[pos] = source as u32;
-            edge_idx[pos] = i as u32;
-            counts[target] += 1;
-        }
-    }
-
-    DownReverseAdj {
-        offsets,
-        sources,
-        edge_idx,
-    }
 }
 
 /// Load road names from ways.raw (step1 output).
@@ -962,7 +943,30 @@ fn load_mode_data_from_bundle(
         Ok(&static_bytes[off..off + len])
     };
 
-    let filtered_ebg = FilteredEbgFile::read_from_bytes(fetch("filtered_ebg")?)?;
+    // #152: zero-copy filtered_ebg — borrows arrays from the mmap
+    // instead of copying ~80 MB/mode of CSR data into the heap.
+    // The reader returns the cold-after-parse byte range (offsets +
+    // heads + original_arc_idx) which we madvise(DONTNEED) right
+    // away: those arrays are build-time-only, none of the serve-path
+    // code reads them. Hot mappings (filtered_to_original /
+    // original_to_filtered) live after the cold prefix and stay
+    // resident on demand.
+    let filtered_section = fetch("filtered_ebg")?;
+    let (filtered_ebg, cold_filtered) =
+        FilteredEbgFile::read_from_bytes_zero_copy_with_cold(filtered_section)?;
+    if let Err(e) = crate::formats::mmap::madvise_dontneed(cold_filtered) {
+        tracing::warn!(
+            mode = mode_name,
+            error = %e,
+            "madvise(DONTNEED) on filtered_ebg cold prefix failed; ignoring"
+        );
+    } else {
+        tracing::info!(
+            mode = mode_name,
+            bytes = cold_filtered.len(),
+            "madvise(DONTNEED) on filtered_ebg cold prefix"
+        );
+    }
     let order = OrderEbgFile::read_from_bytes(fetch("order")?)?;
     let topo_section_bytes: &'static [u8] = fetch("topo")?;
     // #151: cch.topo is now v4. Header is 80 bytes (u64-aligned) and
@@ -991,7 +995,6 @@ fn load_mode_data_from_bundle(
             "madvise(DONTNEED) on cch.topo section"
         );
     }
-    let down_rev = build_down_reverse_adj(&cch_topo);
 
     let weights_data = mod_weights::read_all_from_bytes(fetch("node_weights.time")?)?;
 
@@ -999,7 +1002,7 @@ fn load_mode_data_from_bundle(
     let mask = {
         let n_words = n_original.div_ceil(64);
         let mut m = vec![0u64; n_words];
-        for &orig_id in &filtered_ebg.filtered_to_original {
+        for &orig_id in filtered_ebg.filtered_to_original.iter() {
             let word = orig_id as usize / 64;
             let bit = orig_id as usize % 64;
             m[word] |= 1u64 << bit;
@@ -1079,7 +1082,6 @@ fn load_mode_data_from_bundle(
         mode,
         cch_topo,
         order,
-        down_rev,
         cch_weights,
         cch_weights_dist,
         filtered_ebg,
