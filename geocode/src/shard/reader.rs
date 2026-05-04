@@ -125,8 +125,8 @@ pub struct Shard {
 impl Shard {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
-        let mmap = map_readonly(path)
-            .with_context(|| format!("mapping shard at {}", path.display()))?;
+        let mmap =
+            map_readonly(path).with_context(|| format!("mapping shard at {}", path.display()))?;
 
         let buf: &[u8] = &mmap[..];
         if buf.len() < HEADER_BYTES + FOOTER_BYTES {
@@ -172,9 +172,7 @@ impl Shard {
         }
         let version = u16::from_le_bytes(header_bytes[4..6].try_into().expect("2 bytes"));
         if version != VERSION {
-            bail!(
-                "unsupported shard version: {version} (expected {VERSION}). Rebuild the shard."
-            );
+            bail!("unsupported shard version: {version} (expected {VERSION}). Rebuild the shard.");
         }
         let record_count =
             u32::from_le_bytes(header_bytes[8..12].try_into().expect("4 bytes")) as usize;
@@ -225,9 +223,7 @@ impl Shard {
         let by_street = parse_sub_index(buf, &mut cursor, index_end)?;
         let by_pc_street = parse_sub_index(buf, &mut cursor, index_end)?;
         if cursor > index_end {
-            bail!(
-                "index section overflow: cursor={cursor}, index_end={index_end}"
-            );
+            bail!("index section overflow: cursor={cursor}, index_end={index_end}");
         }
 
         // R-tree + intern table: single pass over records.
@@ -502,8 +498,7 @@ impl<'a> Iterator for StreetKeyIter<'a> {
             return None;
         }
         let buf = self.shard.buf();
-        let keys_offsets =
-            u32_slice(buf, self.sub.keys_offsets_off, self.sub.num_keys + 1);
+        let keys_offsets = u32_slice(buf, self.sub.keys_offsets_off, self.sub.num_keys + 1);
         let s = keys_offsets[self.i] as usize;
         let e = keys_offsets[self.i + 1] as usize;
         let key_bytes = &buf[self.sub.keys_data_off + s..self.sub.keys_data_off + e];
@@ -609,14 +604,11 @@ fn u32_slice(buf: &[u8], off: usize, count: usize) -> &[u32] {
     bytemuck::cast_slice::<u8, u32>(bytes)
 }
 
-fn u32_slice_range(
-    buf: &[u8],
-    base_off: usize,
-    start: usize,
-    end: usize,
-    cap: usize,
-) -> &[u32] {
-    debug_assert!(end <= cap, "postings slice [{start}..{end}] exceeds cap {cap}");
+fn u32_slice_range(buf: &[u8], base_off: usize, start: usize, end: usize, cap: usize) -> &[u32] {
+    debug_assert!(
+        end <= cap,
+        "postings slice [{start}..{end}] exceeds cap {cap}"
+    );
     let _ = cap;
     let bytes = &buf[base_off + start * 4..base_off + end * 4];
     bytemuck::cast_slice::<u8, u32>(bytes)

@@ -383,7 +383,9 @@ impl Downloader {
                         && let Error::HttpError(ref msg) = e
                         && msg.contains("200 instead of 206")
                     {
-                        log::warn!("server ignored Range header ({msg}) — restarting download from byte 0");
+                        log::warn!(
+                            "server ignored Range header ({msg}) — restarting download from byte 0"
+                        );
                         writer
                             .seek(std::io::SeekFrom::Start(0))
                             .await

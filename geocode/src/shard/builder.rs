@@ -228,16 +228,10 @@ fn serialize_index(buf: &mut Vec<u8>, idx: &BTreeMap<String, Vec<u32>>) {
             key_bytes
         };
         keys_data.extend_from_slice(actual);
-        let next_off: u32 = keys_data
-            .len()
-            .try_into()
-            .expect("keys_data fits in u32");
+        let next_off: u32 = keys_data.len().try_into().expect("keys_data fits in u32");
         keys_offsets.push(next_off);
 
-        let list_len_u32: u32 = list
-            .len()
-            .try_into()
-            .expect("posting list fits in u32");
+        let list_len_u32: u32 = list.len().try_into().expect("posting list fits in u32");
         total_postings = total_postings
             .checked_add(list_len_u32)
             .expect("total postings fits in u32");
@@ -245,10 +239,7 @@ fn serialize_index(buf: &mut Vec<u8>, idx: &BTreeMap<String, Vec<u32>>) {
         postings_data.extend_from_slice(list);
     }
 
-    let keys_data_len: u32 = keys_data
-        .len()
-        .try_into()
-        .expect("keys_data fits in u32");
+    let keys_data_len: u32 = keys_data.len().try_into().expect("keys_data fits in u32");
 
     buf.extend_from_slice(&num_keys.to_le_bytes());
     buf.extend_from_slice(&keys_data_len.to_le_bytes());
@@ -305,14 +296,7 @@ mod tests {
     fn corrupted_body_fails_crc() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shard.bfgs");
-        let addrs = vec![rec(
-            "Rue Wayez",
-            "122",
-            "1070",
-            "Anderlecht",
-            50.834,
-            4.314,
-        )];
+        let addrs = vec![rec("Rue Wayez", "122", "1070", "Anderlecht", 50.834, 4.314)];
         build_shard(&path, addrs).unwrap();
 
         let mut buf = std::fs::read(&path).unwrap();
@@ -330,14 +314,7 @@ mod tests {
     fn corrupted_header_fails_file_crc() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shard.bfgs");
-        let addrs = vec![rec(
-            "Rue Wayez",
-            "122",
-            "1070",
-            "Anderlecht",
-            50.834,
-            4.314,
-        )];
+        let addrs = vec![rec("Rue Wayez", "122", "1070", "Anderlecht", 50.834, 4.314)];
         build_shard(&path, addrs).unwrap();
 
         let mut buf = std::fs::read(&path).unwrap();

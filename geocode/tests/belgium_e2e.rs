@@ -131,3 +131,36 @@ fn fuzzy_misspelling_recovers() {
             .any(|c| c == "STREET_FUZZY" || c == "STREET_EXACT")
     }));
 }
+
+#[test]
+#[ignore]
+fn axum_belgium_real_shard_smoke() {
+    // Sanity check that the Axum router still works end-to-end against
+    // the full Belgium shard. Same shape as `axum_e2e.rs` but with
+    // the real shard.
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use butterfly_geocode::server::{ServerState, build_router};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let shard = open_shard();
+    let state = Arc::new(ServerState::new(shard));
+    let app = build_router(state);
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async move {
+        let req = Request::builder()
+            .uri("/geocode?q=Rue%20Wayez%20122%20Anderlecht&country=BE")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body = std::str::from_utf8(&bytes).unwrap();
+        let v: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert!(v["count"].as_u64().unwrap() > 0, "no hits: {body}");
+    });
+}

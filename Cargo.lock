@@ -591,6 +591,7 @@ dependencies = [
  "bytemuck",
  "clap",
  "crc",
+ "http-body-util",
  "memmap2 0.9.10",
  "once_cell",
  "osmpbf",
