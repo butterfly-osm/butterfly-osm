@@ -1,6 +1,6 @@
 //! Per-country address shard.
 //!
-//! ## Format (`BFGS` v2)
+//! ## Format (`BFGS` v3)
 //!
 //! Single binary file, mmap-friendly, little-endian. Designed for
 //! zero-copy reads: every section is 4-byte aligned, every fixed-size
@@ -13,11 +13,21 @@
 //! - **file_crc** = CRC over header + body bytes (everything except
 //!   the footer)
 //!
+//! ## Multi-country (#96)
+//!
+//! v3 is single-country (one shard per country, see #96 §"Per-Country
+//! Shard Contents") with the [`crate::routing::CountryId`] code stored
+//! in the header at byte 6. v2 is implicitly Belgium-only and treated
+//! as a v3 shard with `CountryId::BE` for one release as a
+//! backwards-compat path — operators rebuild Belgium at v3 alongside
+//! any new country shard they want to deploy.
+//!
 //! ```text
 //!   Header (64 bytes):
 //!     magic            "BFGS"        u32   (= 0x53464642)
-//!     version          u16           (= 2)
-//!     _pad             u16
+//!     version          u16           (= 3)
+//!     country_code     u8            (CountryId::to_u8 — 1=BE, 2=FR, ...)
+//!     _pad             u8
 //!     record_count     u32
 //!     _pad             u32
 //!     strings_off      u64
@@ -58,15 +68,19 @@
 //!     u64 file_crc64
 //! ```
 //!
-//! Old `BFGS v1` shards (with the broken duplicate CRC) fail to load
-//! against the v2 reader (version mismatch). They must be rebuilt.
+//! Old `BFGS v1` and `BFGS v2` shards fail to load against the v3
+//! reader (version mismatch). They must be rebuilt — Belgium MVP
+//! shards must be re-run via `build-shard --country BE`.
 
 pub mod builder;
 pub mod mmap;
 pub mod reader;
 
 pub const MAGIC: u32 = u32::from_le_bytes(*b"BFGS");
-pub const VERSION: u16 = 2;
+/// Current on-disk version. v3 introduces the per-shard country code
+/// (#96 multi-country shards). v2 was the single-country (Belgium)
+/// MVP layout.
+pub const VERSION: u16 = 3;
 pub const HEADER_BYTES: usize = 64;
 pub const RECORD_BYTES: usize = 32;
 pub const FOOTER_BYTES: usize = 16;

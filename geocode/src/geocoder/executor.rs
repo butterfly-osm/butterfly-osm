@@ -33,6 +33,8 @@
 //! confidence is within ε of a role threshold, the matcher downgrades
 //! that channel one step. Hard thresholding is forbidden by #96.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::channels::{Channel, ChannelRole};
@@ -46,6 +48,7 @@ use crate::control::{
     ChannelMetrics, CleanQueryMetrics, CostCalibrationMetrics, FanoutConfig, FanoutTracker,
     GeneralMetrics, RecombinationMetrics, classify_tier, pre_execution_check,
 };
+use crate::routing::CountryId;
 use crate::shard::reader::{Shard, ShardRecord};
 use crate::types::{ExecutionBudget, ParseHypothesis, ParsedQuery, RetrievalPolicy, Strictness};
 
@@ -82,6 +85,11 @@ pub struct GeocodedResult {
     pub postcode: String,
     pub locality: String,
     pub score: f32,
+    /// Country this result came from (the shard the executor pulled
+    /// it out of). Set by [`execute_multi`]; the single-shard
+    /// [`execute`] path leaves it `None`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub country: Option<&'static str>,
     /// Why this candidate scored as it did. Machine-readable.
     /// Vocabulary defined in [`reason`].
     pub reason_codes: Vec<std::borrow::Cow<'static, str>>,
@@ -278,6 +286,126 @@ pub fn execute(query: &ParsedQuery, shard: &Shard, limit: usize) -> Vec<Geocoded
 
     rerank_and_truncate(&mut results, limit);
     results
+}
+
+/// Multi-shard executor (#96 §Per-Country Shard Contents).
+///
+/// Walks `query.country_candidates` in posterior-confidence order,
+/// truncated to `query.execution_budget.max_countries`. For each
+/// country with a loaded shard, runs the per-shard [`execute`] and
+/// scales every result's score by the country posterior weight
+/// before merging. The merged set is reranked + truncated.
+///
+/// ## Score normalization across shards
+///
+/// Per-shard scores are produced by [`execute`] (and ultimately
+/// the per-shard clean / multi-hypothesis paths) on a relative
+/// scale dominated by additive-channel-evidence sums
+/// (postcode-exact = 1.0, street-exact = 1.0, etc.). The shard's
+/// fuzzy-match path scales by rapidfuzz `normalized_similarity` ∈
+/// [0, 1] which is comparable across shards by construction.
+///
+/// We multiply each shard's per-result score by the **country
+/// posterior weight** from the routing classifier. This is
+/// information-theoretically the right thing: the posterior is a
+/// probability that the input belongs to that country, and
+/// `score * P(country)` is the expected score under the routing
+/// uncertainty. It correctly demotes a high-but-uncertain match
+/// against (e.g.) the FR shard when the input is much more plausibly
+/// BE.
+///
+/// We considered two alternatives and rejected them:
+/// - **Per-shard min-max normalization**: rescale each shard's top-N
+///   scores into [0, 1] before merging. Rejected because it destroys
+///   absolute confidence — a shard with no good matches still
+///   produces a 1.0 top score, which is an antipattern for the
+///   reason-code-driven UX.
+/// - **Z-score normalization across shards**: rescale by mean/stddev
+///   of each shard's scores. Rejected for the same reason plus
+///   numerical instability when one shard returns 0-1 results.
+///
+/// The chosen approach (multiplicative country posterior) keeps
+/// reason codes meaningful, costs nothing (one f32 multiply per
+/// result), and falls out cleanly on clean queries (posterior=1.0 →
+/// pass-through).
+///
+/// ## Clean-query preservation (#96 §Zero-Cost-on-Clean-Queries)
+///
+/// Each per-shard call collapses `country_candidates` to a single
+/// entry before calling [`execute`]. That keeps `is_clean()` true
+/// for the per-shard query, so the executor takes its fast path on
+/// every shard visited.
+pub fn execute_across_shards(
+    query: &ParsedQuery,
+    shards: &HashMap<CountryId, Shard>,
+    limit: usize,
+) -> Vec<GeocodedResult> {
+    if shards.is_empty() {
+        return Vec::new();
+    }
+
+    // Routing list. The classifier returns sorted-descending posteriors.
+    let max_k = query.execution_budget.max_countries.max(1) as usize;
+    let mut targets: Vec<(CountryId, f32)> = query
+        .country_candidates
+        .iter()
+        .take(max_k)
+        .filter_map(|(c, w)| shards.get(c).map(|_| (*c, *w)))
+        .collect();
+
+    // If none of the top-K classifier candidates have a loaded shard,
+    // fall back to whichever country IS loaded with the highest
+    // posterior. Fail-closed would silently empty-set; fail-open hits
+    // one shard but with the right one.
+    if targets.is_empty() {
+        if let Some((c, w)) = query
+            .country_candidates
+            .iter()
+            .find(|(c, _)| shards.contains_key(c))
+        {
+            targets.push((*c, *w));
+        } else {
+            // No classifier overlap with loaded shards. Fan out to
+            // every loaded shard with uniform weight.
+            let n = shards.len() as f32;
+            for &c in shards.keys() {
+                targets.push((c, 1.0 / n));
+            }
+        }
+    }
+
+    let mut all: Vec<GeocodedResult> = Vec::new();
+    let n_targets = targets.len();
+    for (country, posterior) in targets {
+        let Some(shard) = shards.get(&country) else {
+            continue;
+        };
+        // Per-shard limit oversamples 2x so the cross-shard rerank
+        // has headroom — without this, the top-`limit` from one shard
+        // can squeeze the other shard out at the merge step.
+        let per_shard_limit = limit
+            .saturating_mul(2)
+            .max(limit + 1)
+            .max(8 / n_targets.max(1));
+        // Build a per-country view of the query: collapse the
+        // country_candidates list to a single entry so the per-shard
+        // executor takes the clean-query fast path
+        // (`ParsedQuery::is_clean()` requires len == 1). The original
+        // multi-country query is preserved at the call site; this is
+        // a per-iteration shadow.
+        let mut per_country_query = query.clone();
+        per_country_query.country_candidates = vec![(country, posterior)];
+        let mut results = execute(&per_country_query, shard, per_shard_limit);
+        // Multiplicative country posterior — see doc comment above.
+        for r in &mut results {
+            r.score *= posterior;
+        }
+        let results = tag_country(results, country);
+        all.extend(results);
+    }
+
+    rerank_and_truncate(&mut all, limit);
+    all
 }
 
 /// Apply the Role-Smoothness Guarantee (#96).
@@ -497,12 +625,22 @@ fn materialize_result(rec: &ShardRecord, score: f32, reasons: Vec<&'static str>)
         postcode: String::from(&*rec.postcode),
         locality: String::from(&*rec.locality),
         score,
+        country: None,
         // Cow::Borrowed wraps the &'static str without allocation.
         reason_codes: reasons
             .into_iter()
             .map(std::borrow::Cow::Borrowed)
             .collect(),
     }
+}
+
+/// Tag every result with `c`'s ISO2 code. Used by [`execute_multi`]
+/// to mark which shard each result came from.
+fn tag_country(mut results: Vec<GeocodedResult>, c: CountryId) -> Vec<GeocodedResult> {
+    for r in &mut results {
+        r.country = Some(c.iso2());
+    }
+    results
 }
 
 /// Materialize a result for the `NEAREST` reverse-lookup path. Public
@@ -1101,7 +1239,7 @@ mod tests {
                 lon: 4.401,
             },
         ];
-        build_shard(&path, addrs).unwrap();
+        build_shard(&path, crate::routing::CountryId::BE, addrs).unwrap();
         let s = Shard::open(&path).unwrap();
         (dir, s)
     }
@@ -1228,7 +1366,7 @@ mod tests {
                 lon: 4.35 + (i as f64) * 1e-5,
             });
         }
-        build_shard(&path, addrs).unwrap();
+        build_shard(&path, crate::routing::CountryId::BE, addrs).unwrap();
         let shard = Shard::open(&path).unwrap();
 
         let mut q = parse_heuristic("1000 Bruxelles", CountryId::BE);

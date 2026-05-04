@@ -420,6 +420,7 @@ mod tests {
             postcode: postcode.into(),
             locality: locality.into(),
             score,
+            country: None,
             reason_codes: vec!["POSTCODE_EXACT".into(), "STREET_EXACT".into()],
         }
     }

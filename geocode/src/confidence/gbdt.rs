@@ -247,6 +247,7 @@ mod tests {
                 postcode: "1000".into(),
                 locality: "loc".into(),
                 score: 0.5,
+                country: None,
                 reason_codes: vec![],
             })
             .collect();
