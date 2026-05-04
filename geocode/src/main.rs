@@ -131,10 +131,13 @@ async fn serve_cmd(shard_path: &PathBuf, host: &str, port: u16) -> Result<()> {
         .with_context(|| format!("binding {addr}"))?;
     info!(addr = %addr, "serving");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("server crashed")?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("server crashed")?;
     Ok(())
 }
 
