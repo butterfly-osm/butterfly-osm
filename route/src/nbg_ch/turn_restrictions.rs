@@ -174,7 +174,7 @@ impl NbgEdgeWayMap {
     pub fn from_ebg_nodes(ebg_nodes: &EbgNodes) -> Self {
         let mut edge_to_way = HashMap::with_capacity(ebg_nodes.n_nodes as usize);
 
-        for node in &ebg_nodes.nodes {
+        for node in ebg_nodes.nodes.iter() {
             // Each EBG node represents a directed NBG edge
             edge_to_way.insert((node.tail_nbg, node.head_nbg), node.primary_way);
         }

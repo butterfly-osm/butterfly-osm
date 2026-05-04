@@ -18,7 +18,6 @@
 //! - **Version-stamped distances**: Amortized O(1) per-search initialization
 
 use crate::formats::{CchTopo, CchWeights};
-use crate::server::state::DownReverseAdj;
 use std::borrow::Cow;
 use std::cell::RefCell;
 
@@ -1164,7 +1163,6 @@ pub struct BucketM2MStats {
 pub fn table_bucket(
     topo: &CchTopo,
     weights: &CchWeights,
-    _down_rev: &DownReverseAdj,
     sources: &[u32],
     targets: &[u32],
 ) -> (Vec<u32>, BucketM2MStats) {

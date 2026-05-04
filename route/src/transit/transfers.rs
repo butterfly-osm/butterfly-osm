@@ -595,13 +595,14 @@ pub fn build_transfer_graph(
     // reference wrapper so construction inside the parallel closure
     // is free.
     let topo = &foot.cch_topo;
-    let down_rev = &foot.down_rev;
+    let up_flat = &foot.up_adj_flat;
+    let down_rev_flat = &foot.down_rev_flat;
     let weights = &foot.cch_weights;
 
     let mut triples: Vec<(u32, u32, u32)> = work
         .par_iter()
         .flat_map_iter(|w| {
-            let query = CchQuery::with_custom_weights(topo, down_rev, weights);
+            let query = CchQuery::with_custom_weights(topo, up_flat, down_rev_flat, weights);
             let mut emitted: Vec<(u32, u32, u32)> = Vec::with_capacity(w.neighbours.len());
             for &(target_stop, target_rank) in &w.neighbours {
                 let Some(raw) = query.distance(w.source_rank, target_rank) else {

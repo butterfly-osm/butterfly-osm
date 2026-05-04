@@ -395,7 +395,8 @@ pub fn compute_access_context(
     // thread-local `CCH_QUERY_STATE` with O(1) per-query reset.
     let access_query = CchQuery::with_custom_weights(
         &access_mode_data.cch_topo,
-        &access_mode_data.down_rev,
+        &access_mode_data.up_adj_flat,
+        &access_mode_data.down_rev_flat,
         &access_mode_data.cch_weights,
     );
     let origin_to_stop_ranks: Vec<u32> = origin_ranks.iter().filter_map(|r| *r).collect();
@@ -576,7 +577,8 @@ pub fn compute_transit_journey_with_access(
     // Egress 1-to-N via distance-only CchQuery. K sources × 1 target.
     let egress_query = CchQuery::with_custom_weights(
         &egress_mode_data.cch_topo,
-        &egress_mode_data.down_rev,
+        &egress_mode_data.up_adj_flat,
+        &egress_mode_data.down_rev_flat,
         &egress_mode_data.cch_weights,
     );
     let egress_sources: Vec<u32> = egress_candidates
@@ -1184,7 +1186,8 @@ fn build_routed_road_leg(
     let mode_data = &state.modes[mode_idx as usize];
     let query = CchQuery::with_custom_weights(
         &mode_data.cch_topo,
-        &mode_data.down_rev,
+        &mode_data.up_adj_flat,
+        &mode_data.down_rev_flat,
         &mode_data.cch_weights,
     );
     let result = query.query(src_rank, dst_rank)?;
