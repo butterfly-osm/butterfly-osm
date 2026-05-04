@@ -485,6 +485,82 @@ when #96 lands.
 
 Prometheus exposition.
 
+## gRPC Arrow Flight (#145)
+
+The geocoder ships a **gRPC Arrow Flight** transport alongside REST, per the workspace transport policy ([#145](https://github.com/butterfly-osm/butterfly-osm/issues/145)). Bulk geocoding workloads — data-pipeline backfills, address-book uploads, ETL — hit REST limits hard (URL length, JSON parsing overhead, no native batching). Flight gives columnar Arrow IPC with backpressure, cancellation on disconnect, and a 10–100× throughput gain vs equivalent REST loops at scale.
+
+### Default ports + transport selection
+
+```bash
+# Both transports (default)
+butterfly-geocode serve --shard <path> --transport=both
+# REST  → 0.0.0.0:3003
+# gRPC  → 0.0.0.0:3004
+
+# REST only (back-compat with single-port deployments)
+butterfly-geocode serve --shard <path> --transport=rest --rest-port 3003
+
+# gRPC only
+butterfly-geocode serve --shard <path> --transport=grpc --grpc-port 3004
+```
+
+The legacy `--port` flag still works as the REST port (kept so existing run scripts keep working when transport defaults to `both`).
+
+### Action: `geocode_batch`
+
+Submit a batch via `DoExchange` — the canonical bulk path. The descriptor's `cmd` carries the action name + JSON params, and the request's FlightData stream carries the input RecordBatch:
+
+- **Descriptor cmd**: `geocode_batch[:<params_json>]`
+  - `limit` (u32, default 5) — top-K per query (only the top-1 is emitted in the output row today)
+  - `include_debug` (bool, default false) — emit `reason_codes`
+  - `group_by_country` (bool, default false) — group by country before rayon dispatch (improves per-country cache locality)
+- **Input schema**:
+  - `query: Utf8` (required, non-null)
+  - `country: Utf8` (nullable, ISO 3166-1 alpha-2)
+- **Output schema** (one row per input query, `query_idx` ascending):
+  - `query_idx: UInt32` — original input row index
+  - `lat: Float64` (nullable — null on no-result)
+  - `lon: Float64` (nullable)
+  - `score: Float32` (nullable)
+  - `confidence: Utf8` — one of `accept` / `caution` / `review` / `reject` / `empty`
+  - `street: Utf8` (nullable)
+  - `housenumber: Utf8` (nullable)
+  - `postcode: Utf8` (nullable)
+  - `locality: Utf8` (nullable)
+  - `country: Utf8` (nullable)
+  - `reason_codes: List<Utf8>` (always present; empty unless `include_debug=true`)
+
+Up to 500 000 queries per call. Output is streamed in 1024-row RecordBatch chunks so latency-to-first-byte is low and the server's resident set stays bounded under heavy load. Cooperative cancellation: when the client drops the response stream, processing stops within ~one chunk.
+
+### CLI: `flight-batch`
+
+A built-in client subcommand for ops + smoke testing:
+
+```bash
+# JSONL input: one {"query": "...", "country": "..."} per line
+echo '{"query":"Rue de la Loi 16, 1000 Bruxelles","country":"BE"}'  > queries.jsonl
+echo '{"query":"Grand-Place 1 Bruxelles"}'                          >> queries.jsonl
+
+butterfly-geocode flight-batch \
+  --endpoint http://localhost:3004 \
+  --queries  queries.jsonl \
+  --output   results.arrow \
+  --limit    3
+```
+
+The output is an **Arrow IPC stream** — load it directly with pyarrow / pandas / polars / DataFusion without a JSON parsing round-trip:
+
+```python
+import pyarrow.ipc as ipc
+with ipc.open_stream("results.arrow") as r:
+    table = r.read_all()
+    print(table.to_pandas())
+```
+
+### Why this is symmetric with REST
+
+Per the [#145 transport policy](https://github.com/butterfly-osm/butterfly-osm/issues/145), every server route must be reachable via REST OR gRPC. The geocoder's batch use case is bulk-Arrow-shaped — encoding 500 k JSON request bodies would dominate the response time — so Flight is the canonical bulk endpoint. Single-query lookups go through REST (`GET /geocode`); bulk goes through Flight. No transport mixing on either server: REST stays JSON, Flight stays Arrow.
+
 ## Performance (Belgium, 4 026 754 addresses)
 
 | Metric                                      | Value             |

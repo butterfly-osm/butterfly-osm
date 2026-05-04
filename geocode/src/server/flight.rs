@@ -165,11 +165,7 @@ pub fn geocode_batch_output_schema() -> Schema {
         Field::new("postcode", DataType::Utf8, true),
         Field::new("locality", DataType::Utf8, true),
         Field::new("country", DataType::Utf8, true),
-        Field::new(
-            "reason_codes",
-            DataType::List(Arc::new(reason_item)),
-            false,
-        ),
+        Field::new("reason_codes", DataType::List(Arc::new(reason_item)), false),
     ])
 }
 

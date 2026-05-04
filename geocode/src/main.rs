@@ -751,7 +751,6 @@ fn train_cmd(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 async fn serve_cmd(
     shard_path: Option<&std::path::Path>,
     shard_dir: Option<&std::path::Path>,
@@ -1099,8 +1098,8 @@ async fn flight_batch_cmd(
         country: Option<String>,
     }
 
-    let f = File::open(queries_path)
-        .with_context(|| format!("opening {}", queries_path.display()))?;
+    let f =
+        File::open(queries_path).with_context(|| format!("opening {}", queries_path.display()))?;
     let reader = BufReader::new(f);
     let mut queries: Vec<(String, Option<String>)> = Vec::new();
     for (i, line) in reader.lines().enumerate() {
@@ -1210,12 +1209,12 @@ async fn flight_batch_cmd(
 
     // Write Arrow IPC stream output.
     let out_schema = std::sync::Arc::new(geocode_batch_output_schema());
-    let f = File::create(output_path)
-        .with_context(|| format!("creating {}", output_path.display()))?;
+    let f =
+        File::create(output_path).with_context(|| format!("creating {}", output_path.display()))?;
     let mut w = BufWriter::new(f);
     {
-        let mut writer = StreamWriter::try_new(&mut w, &out_schema)
-            .context("creating IPC stream writer")?;
+        let mut writer =
+            StreamWriter::try_new(&mut w, &out_schema).context("creating IPC stream writer")?;
         for batch in &result_batches {
             writer.write(batch).context("writing batch")?;
         }
