@@ -1,0 +1,30 @@
+[package]
+name = "corpus-gen"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "AGPL-3.0-or-later"
+publish = false
+
+# Standalone — opt out of butterfly-osm workspace. Lives outside `geocode/`
+# (which is the parallel agent's territory) until the geocode crate is in.
+[workspace]
+
+[dependencies]
+osmpbf = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4.6", features = ["derive"] }
+rand = "0.9"
+rand_chacha = "0.9"
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = false
+
+[[bin]]
+name = "corpus-gen"
+path = "src/main.rs"
