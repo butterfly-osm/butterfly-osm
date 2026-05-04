@@ -771,6 +771,10 @@ pub fn inspect(path: &Path, verify: bool, verify_full: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::formats::filtered_ebg::FilteredEbg;
+    use crate::formats::order_ebg::OrderEbg;
+    use crate::profile_abi::Mode;
+    use std::borrow::Cow;
     use std::fs;
     use tempfile::TempDir;
 
@@ -779,6 +783,49 @@ mod tests {
             fs::create_dir_all(parent)?;
         }
         fs::write(p, body)?;
+        Ok(())
+    }
+
+    /// Write a minimal but parse-valid filtered.<mode>.ebg.
+    ///
+    /// #157's Copilot fix turned the previous soft-skip on parse error
+    /// into a hard-fail (the soft-skip would silently produce a "new"
+    /// container that drops the server onto the legacy fallback at
+    /// boot — a regression that only surfaced at run time). The synth
+    /// fixture therefore has to write real headers, not byte-string
+    /// placeholders.
+    fn write_filtered_ebg(p: &Path, mode: Mode) -> Result<()> {
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let data = FilteredEbg {
+            mode,
+            n_filtered_nodes: 0,
+            n_filtered_arcs: 0,
+            n_original_nodes: 0,
+            inputs_sha: [0u8; 32],
+            offsets: Cow::Owned(vec![0u64]), // n_filtered_nodes + 1 = 1 entry
+            heads: Cow::Owned(vec![]),
+            original_arc_idx: Cow::Owned(vec![]),
+            filtered_to_original: Cow::Owned(vec![]),
+            original_to_filtered: Cow::Owned(vec![]),
+        };
+        crate::formats::FilteredEbgFile::write(p, &data)?;
+        Ok(())
+    }
+
+    /// Write a minimal but parse-valid order.<mode>.ebg.
+    fn write_order_ebg(p: &Path) -> Result<()> {
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let data = OrderEbg {
+            n_nodes: 0,
+            inputs_sha: [0u8; 32],
+            perm: vec![],
+            inv_perm: vec![],
+        };
+        crate::formats::OrderEbgFile::write(p, &data)?;
         Ok(())
     }
 
@@ -805,8 +852,13 @@ mod tests {
         write_file(&root.join("step2").join("turn_rules.car.bin"), b"tr-car")?;
         write_file(&root.join("step2").join("turn_rules.bike.bin"), b"tr-bike")?;
 
-        write_file(&root.join("step5").join("filtered.car.ebg"), b"fil-car")?;
-        write_file(&root.join("step5").join("filtered.bike.ebg"), b"fil-bike")?;
+        // filtered.<mode>.ebg + order.<mode>.ebg need real binary headers
+        // because #157 hard-fails the pack on parse error (see Copilot
+        // review on PR #157 — silent skip → legacy fallback at boot).
+        // Mode index here is arbitrary: synth fixtures don't run the
+        // model discovery path, the byte just gets round-tripped.
+        write_filtered_ebg(&root.join("step5").join("filtered.car.ebg"), Mode(1))?;
+        write_filtered_ebg(&root.join("step5").join("filtered.bike.ebg"), Mode(0))?;
         write_file(&root.join("step5").join("w.car.u32"), b"wcar")?;
         write_file(&root.join("step5").join("w.bike.u32"), b"wbike")?;
         write_file(&root.join("step5").join("t.car.u32"), b"tcar")?;
@@ -814,8 +866,8 @@ mod tests {
         write_file(&root.join("step5").join("mask.car.bitset"), b"mc")?;
         write_file(&root.join("step5").join("mask.bike.bitset"), b"mb")?;
 
-        write_file(&root.join("step6").join("order.car.ebg"), b"o-car")?;
-        write_file(&root.join("step6").join("order.bike.ebg"), b"o-bike")?;
+        write_order_ebg(&root.join("step6").join("order.car.ebg"))?;
+        write_order_ebg(&root.join("step6").join("order.bike.ebg"))?;
         // Lifted variants must be skipped.
         write_file(
             &root.join("step6").join("order.lifted.car.ebg"),
