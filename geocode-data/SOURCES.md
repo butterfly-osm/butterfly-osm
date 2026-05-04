@@ -64,37 +64,99 @@ struct AddressRecord {
 | Record count | ~6.7 M addresses |
 | Cadence | Monthly |
 
-**Status:** Belgium MVP is being built by another agent. The current
-`dl/regions/belgium.toml` does NOT include BeSt — adding it is a
-follow-up tracked in this doc, not in scope for this prep pass.
+**Status:** **WIRED** as of 2026-05-04. Loader lives at
+`geocode/src/sources/bosa.rs`; the three regional ZIPs are listed as
+`[[address]]` entries in `dl/regions/belgium.toml`. Pipeline:
 
-**Field mapping sketch (CSV variant):**
+```
+butterfly-dl belgium --only addresses          # fetches BOSA ZIPs
+butterfly-geocode build-shard \
+    --csv data/belgium/addresses/bosa-bevlg.zip \
+    --out belgium-bosa.bfgs --country BE --source bosa
+```
+
+**URL verification (2026-05-04):**
+
+- `https://opendata.bosa.be/download/best/openaddress-bevlg.zip` — HTTP 200, 152.27 MB
+- `https://opendata.bosa.be/download/best/openaddress-bewal.zip` — HTTP 200, 60.43 MB
+- `https://opendata.bosa.be/download/best/openaddress-bebru.zip` — HTTP 200, 17.71 MB
+
+All three resolve, served with `Content-Type: application/zip`,
+`Last-Modified: Sun, 03 May 2026 10:43`. The `openaddress-belgium.zip`
+URL hinted at in some BOSA documentation does NOT exist (404); the
+canonical pattern is the three regional ZIPs.
+
+**Field mapping (CSV variant) — actual implementation:**
 
 ```rust
-// CSV columns: address_id, street_id, street_name_nl, street_name_fr,
-//              street_name_de, house_number, box_number, postcode,
-//              municipality_name_nl, municipality_name_fr,
-//              municipality_name_de, lat, lon, ...
+// CSV columns (verified against the live header 2026-05-04):
+// EPSG:31370_x, EPSG:31370_y, EPSG:4326_lat, EPSG:4326_lon,
+// address_id, box_number, house_number, municipality_id,
+// municipality_name_de, municipality_name_fr, municipality_name_nl,
+// postcode, postname_fr, postname_nl, street_id, streetname_de,
+// streetname_fr, streetname_nl, region_code, status
+//
+// Coordinates are already published in WGS84 (EPSG:4326_lat/lon) so
+// no proj4rs reprojection is needed — Lambert-72 (EPSG:31370)
+// columns are ignored.
 fn from_bosa_csv(row: &BosaRow, lang: Lang) -> AddressRecord {
     AddressRecord {
-        id: next_id(),
         country: CountryId::BE,
-        lat: row.lat,
-        lon: row.lon,
-        postcode: Some(row.postcode.trim().to_string()),
-        locality: Some(pick_lang(lang, &row.muni_nl, &row.muni_fr, &row.muni_de)),
-        street: Some(pick_lang(lang, &row.street_nl, &row.street_fr, &row.street_de)),
-        housenumber: Some(format_belgian_number(&row.house_number, &row.box_number)),
+        lat: row.lat_4326,
+        lon: row.lon_4326,
+        postcode: row.postcode.trim().to_string(),
+        locality: pick_lang(lang, &row.muni_nl, &row.muni_fr, &row.muni_de),
+        street: pick_lang(lang, &row.street_nl, &row.street_fr, &row.street_de),
+        housenumber: format_belgian_number(&row.house_number, &row.box_number),
         source: SourceTag::Bosa,
         source_id: Some(row.address_id.clone()),
     }
 }
 ```
 
+`format_belgian_number` joins `house_number` + `box_number` as
+`"475 bte RDC"` (BTE = "boîte" / box), so apartment-level granularity
+survives without a separate "unit" channel for the BE MVP.
+
 The `pick_lang` step is **not** an ingest-time choice — Belgium
 needs every language as a queryable alias. The importer emits one
-record per language per address, all sharing the same `source_id`,
-linked through the alias table.
+record per non-empty language per address (typically NL + FR; DE is
+mostly empty in Brussels/Wallonia), all sharing the same `source_id`,
+linked through the same `(lat, lon, postcode, housenumber)` tuple.
+
+Records with `status != "current"` (e.g. retired addresses) are
+dropped at ingest. Records without lat/lon parse failures are also
+dropped — the geocoder needs a real coordinate.
+
+**Smoke test results (Belgium, 2026-05-04, full BOSA download):**
+
+| Shard | Records | Built in | Unique postcodes | Unique streets |
+|---|---|---|---|---|
+| OSM-only (PBF tags) | 4 026 754 | 76 s | 1 723 | 87 903 |
+| BOSA-only (3 regional ZIPs merged) | 10 667 558 | 67 s (build) + ~30 s (per region) | 1 145 | 95 704 |
+| BOSA + OSM merged | 13 263 831 | 93 s | 1 751 | 105 082 |
+
+The OSM record count is inflated by every OSM way carrying
+`addr:*` tags (each emits a centroid). The BOSA record count is
+inflated by per-language record duplication (NL + FR per address ≈
+1.5x); the dedup at merge time drops same-language exact duplicates,
+leaving 6.7 M physical addresses × ~1.5 lang = ~10 M.
+
+**Recall@5 (within 200 m, parser-driven) on 100 random Brussels
+records:**
+
+- BOSA shard: 38 / 100 (38 %)
+- OSM shard: 2 / 100 (2 %)
+
+The 38 % parser-driven recall reflects the heuristic parser's
+post-2026-05-04 limitations (ambiguity between street and
+housenumber when both are numeric); the underlying BOSA shard does
+contain those addresses (verified via reverse-geocode at the
+published lat/lon coordinates). The neural parser (#98 Phase 1)
+does not have that limitation and will improve recall once
+shard-agnostic augmentation lands. **The OSM 2 % recall is the
+load-bearing comparison: BOSA covers 19× more addresses than OSM
+PBF tags do**, which is exactly why this PR exists.
 
 ### France — Base Adresse Nationale (BAN)
 

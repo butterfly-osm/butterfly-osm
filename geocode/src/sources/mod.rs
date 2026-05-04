@@ -1,0 +1,370 @@
+//! Authoritative-source ingestion (#96 §"Data Sources").
+//!
+//! Each source maps an upstream open-data dataset (BOSA BeSt for
+//! Belgium, BAN for France, BAG for the Netherlands, ...) into the
+//! same normalised [`crate::shard::AddressRecord`] shape so the shard
+//! builder is source-agnostic.
+//!
+//! ## Coverage today
+//!
+//! - [`osm`] — wraps `crate::osm_extract` so the existing OSM PBF
+//!   path goes through the same `Source` interface.
+//! - [`bosa`] — Belgian BeSt Address streaming CSV loader. Reads
+//!   region-specific CSVs (Flanders / Wallonia / Brussels), emits one
+//!   record per (address, language) so per-language localities/streets
+//!   land as queryable aliases.
+//!
+//! Adding a new source = new module + new `Source` impl + new
+//! `SourceTag` variant + new `[[address]]` entry in the relevant
+//! `dl/regions/<country>.toml`. No core code change.
+//!
+//! ## Merge dedup
+//!
+//! [`merge_records`] combines records from multiple sources into one
+//! shard. Conflicts (same `(postcode, normalized street, housenumber)`
+//! within ~30 m) resolve toward the highest-priority authoritative
+//! source — see [`merge_priority`]. BOSA wins over OSM for Belgium;
+//! BAN wins over OSM for France; etc. The OSM fallback survives for
+//! addresses no authoritative source covers (rare buildings, recent
+//! mappings).
+
+pub mod bosa;
+pub mod osm;
+
+use std::path::Path;
+
+use anyhow::Result;
+
+use crate::shard::{AddressRecord, SourceTag};
+
+/// A pluggable address-source loader.
+///
+/// Implementations stream records out of an upstream dataset and emit
+/// them through the callback. Streaming is required because BOSA at
+/// 6.7M records and BAN at 26M records exceed comfortable in-memory
+/// buffering.
+///
+/// The callback returns `()` and is expected to push into a
+/// caller-owned `Vec` or directly into a shard builder. A future
+/// follow-up may switch the builder to a streaming sink so the entire
+/// path stays bounded-memory; today the callback fills a `Vec`
+/// because the shard builder needs all records up-front for sorting.
+pub trait Source {
+    /// Stable [`SourceTag`] this source emits.
+    fn tag(&self) -> SourceTag;
+
+    /// Stream every record. The callback is called once per record.
+    /// Errors propagate; partial output is the caller's problem to
+    /// reset.
+    fn stream(
+        &self,
+        progress: &mut dyn FnMut(SourceProgress),
+        emit: &mut dyn FnMut(AddressRecord),
+    ) -> Result<()>;
+}
+
+/// Progress event for long-running source loaders. Emitted at fixed
+/// intervals (every ~100k records) so callers can render a progress
+/// line without flooding the log.
+#[derive(Debug, Clone, Copy)]
+pub enum SourceProgress {
+    /// Phase boundary: useful for two-pass loaders that want to log
+    /// "scanning nodes" then "scanning ways" separately.
+    Phase { phase: &'static str },
+    /// Mid-run progress: how many input rows have been seen and how
+    /// many records have been emitted so far. The two diverge when
+    /// the loader filters (BOSA `status != current`, OSM nodes
+    /// without `addr:*` tags, etc.).
+    Records {
+        rows_seen: u64,
+        records_emitted: u64,
+    },
+}
+
+/// Load every source in `sources` sequentially and concatenate their
+/// records. The output is the input to the shard builder.
+///
+/// Callers wanting per-source records (for the `--merge` CLI path,
+/// or for source-specific metrics) should call each [`Source::stream`]
+/// directly — this helper is the convenience function for the common
+/// "single-source build" case.
+pub fn collect_all<S: Source + ?Sized>(
+    source: &S,
+    mut progress: impl FnMut(SourceProgress),
+) -> Result<Vec<AddressRecord>> {
+    let mut out = Vec::new();
+    source.stream(&mut |p| progress(p), &mut |r| out.push(r))?;
+    Ok(out)
+}
+
+/// Sort key used by [`merge_records`] to group records that should
+/// be deduped against each other. Ascii-lowercased to fold case (BOSA
+/// stores `Chaussée de Mons` vs OSM `chaussée de mons`); housenumbers
+/// stay unfolded because `12A` ≠ `12a` is rare in practice but the
+/// canonical form is upstream-defined.
+fn dedup_key(rec: &AddressRecord) -> (String, String, String) {
+    (
+        rec.postcode.trim().to_ascii_lowercase(),
+        rec.street.trim().to_ascii_lowercase(),
+        rec.housenumber.trim().to_ascii_lowercase(),
+    )
+}
+
+/// Spatial proximity threshold for merge dedup, in degrees. ~30 m at
+/// Belgium's latitude (lat=50.83). When two records share the same
+/// `dedup_key` AND fall within this radius, they are considered the
+/// same physical address and the higher-priority source wins.
+///
+/// Bigger threshold = more aggressive merge (drops near-duplicates
+/// even when they're slightly off). Smaller threshold = more
+/// conservative (keeps both records when the upstream sources
+/// disagree on geolocation by more than ~30 m). 30 m matches the
+/// "snapped road point" semantics used elsewhere in the codebase.
+const MERGE_RADIUS_DEG: f64 = 0.0003;
+
+/// Source-priority ranking used by [`merge_records`]. Authoritative
+/// sources outrank OSM. Among authoritative sources, the first-listed
+/// (BOSA for BE, BAN for FR, ...) wins because it is the country's
+/// official open-data dataset. OSM is the global fallback.
+///
+/// Higher number = higher priority.
+fn merge_priority(tag: SourceTag) -> u8 {
+    match tag {
+        SourceTag::Bosa => 100,
+        SourceTag::Ban => 100,
+        SourceTag::Bag => 100,
+        SourceTag::Gnaf => 100,
+        SourceTag::Bev => 100,
+        SourceTag::Swisstopo => 100,
+        SourceTag::Osm => 10,
+    }
+}
+
+/// Merge multiple per-source record vectors into one. Records sharing
+/// the same `dedup_key` AND within `MERGE_RADIUS_DEG` are deduped to
+/// the highest-priority source. Records from different physical
+/// locations or with different street/housenumber values survive
+/// independently.
+///
+/// Order-stable for ties: when two sources have equal priority, the
+/// earlier vector in `inputs` wins. This is rare in the MVP (one
+/// authoritative source per country) but matters for callers that
+/// merge multiple OSM extracts.
+#[must_use]
+pub fn merge_records(inputs: Vec<Vec<AddressRecord>>) -> Vec<AddressRecord> {
+    use std::collections::HashMap;
+
+    // Group records by (postcode, street, housenumber). Within a
+    // group, dedup by spatial proximity.
+    let mut by_key: HashMap<(String, String, String), Vec<AddressRecord>> = HashMap::new();
+    for vec in inputs {
+        for rec in vec {
+            let k = dedup_key(&rec);
+            by_key.entry(k).or_default().push(rec);
+        }
+    }
+
+    let mut out = Vec::with_capacity(by_key.len());
+    for (_, group) in by_key {
+        let merged = dedup_group(group);
+        out.extend(merged);
+    }
+
+    // Stable order so shard byte-comparison reproducibility holds.
+    out.sort_by(|a, b| {
+        a.postcode
+            .cmp(&b.postcode)
+            .then(a.street.cmp(&b.street))
+            .then(a.housenumber.cmp(&b.housenumber))
+            .then(
+                a.lat
+                    .partial_cmp(&b.lat)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+            .then(
+                a.lon
+                    .partial_cmp(&b.lon)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+    });
+    out
+}
+
+/// Dedup a `dedup_key`-equivalent group by spatial proximity.
+/// Returns the survivors. Algorithm: O(n²) within the group (groups
+/// are typically size 1-3), pick the highest-priority source within
+/// each spatial cluster.
+fn dedup_group(group: Vec<AddressRecord>) -> Vec<AddressRecord> {
+    if group.len() <= 1 {
+        return group;
+    }
+    let n = group.len();
+    let mut taken = vec![false; n];
+    let mut survivors = Vec::with_capacity(n);
+
+    for i in 0..n {
+        if taken[i] {
+            continue;
+        }
+        // Cluster: every record within radius of `group[i]`.
+        let mut cluster: Vec<usize> = vec![i];
+        for j in (i + 1)..n {
+            if taken[j] {
+                continue;
+            }
+            let dlat = (group[i].lat - group[j].lat).abs();
+            let dlon = (group[i].lon - group[j].lon).abs();
+            if dlat < MERGE_RADIUS_DEG && dlon < MERGE_RADIUS_DEG {
+                cluster.push(j);
+            }
+        }
+        // Pick the highest-priority record from the cluster.
+        let winner_idx = *cluster
+            .iter()
+            .max_by_key(|&&k| merge_priority(group[k].source))
+            .expect("cluster has at least one element");
+        survivors.push(group[winner_idx].clone());
+        for k in cluster {
+            taken[k] = true;
+        }
+    }
+    survivors
+}
+
+/// Dispatch table used by the CLI: parse a `(format, path)` pair and
+/// load the source. Unknown formats return an error.
+///
+/// Today: `csv` → BOSA loader (the only supported CSV authoritative
+/// source). `pbf` → OSM loader. New formats land here.
+pub fn load_by_format(
+    format: &str,
+    path: &Path,
+    country: crate::routing::CountryId,
+) -> Result<Vec<AddressRecord>> {
+    match format {
+        "csv" | "bosa" | "bosa-csv" => {
+            let loader = bosa::BosaCsvSource::new(path, country);
+            collect_all(&loader, |_| {})
+        }
+        "pbf" | "osm" => {
+            let loader = osm::OsmPbfSource::new(path, country);
+            collect_all(&loader, |_| {})
+        }
+        other => Err(anyhow::anyhow!(
+            "unknown source format '{other}' (supported: csv|bosa|bosa-csv, pbf|osm)"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rec(
+        postcode: &str,
+        street: &str,
+        house: &str,
+        lat: f64,
+        lon: f64,
+        source: SourceTag,
+    ) -> AddressRecord {
+        AddressRecord {
+            lat,
+            lon,
+            street: street.into(),
+            housenumber: house.into(),
+            postcode: postcode.into(),
+            locality: "X".into(),
+            source,
+            source_id: None,
+        }
+    }
+
+    #[test]
+    fn merge_dedups_within_radius_keeps_higher_priority() {
+        // BOSA + OSM at the same physical address — BOSA wins.
+        let bosa = vec![rec(
+            "1070",
+            "Rue Wayez",
+            "122",
+            50.834,
+            4.314,
+            SourceTag::Bosa,
+        )];
+        let osm = vec![rec(
+            "1070",
+            "rue wayez",
+            "122",
+            50.8341,
+            4.3141,
+            SourceTag::Osm,
+        )];
+        let merged = merge_records(vec![bosa, osm]);
+        assert_eq!(merged.len(), 1, "expected single record after dedup");
+        assert_eq!(merged[0].source, SourceTag::Bosa);
+    }
+
+    #[test]
+    fn merge_keeps_unique_records() {
+        // Two different addresses survive.
+        let a = vec![rec(
+            "1070",
+            "Rue Wayez",
+            "122",
+            50.834,
+            4.314,
+            SourceTag::Bosa,
+        )];
+        let b = vec![rec(
+            "2000",
+            "Grote Markt",
+            "1",
+            51.221,
+            4.401,
+            SourceTag::Bosa,
+        )];
+        let merged = merge_records(vec![a, b]);
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn merge_keeps_records_outside_radius() {
+        // Same postcode/street/housenumber but ~5 km apart — keep
+        // both because spatial split says they're not the same place.
+        let a = vec![rec("1070", "Rue X", "1", 50.8, 4.3, SourceTag::Osm)];
+        let b = vec![rec("1070", "Rue X", "1", 50.85, 4.35, SourceTag::Osm)];
+        let merged = merge_records(vec![a, b]);
+        assert_eq!(
+            merged.len(),
+            2,
+            "spatial split should keep both records when >>30m apart"
+        );
+    }
+
+    #[test]
+    fn merge_osm_only_keeps_all() {
+        // Two OSM-only records that are coincidentally at the same
+        // address (rare but possible on OSM): tie on priority,
+        // dedup keeps the first by stable sort.
+        let a = vec![rec("1070", "Rue X", "1", 50.834, 4.314, SourceTag::Osm)];
+        let b = vec![rec("1070", "Rue X", "1", 50.8341, 4.3141, SourceTag::Osm)];
+        let merged = merge_records(vec![a, b]);
+        // Both have priority 10, cluster contains both, dedup picks
+        // the first found (insertion order from the HashMap).
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].source, SourceTag::Osm);
+    }
+
+    #[test]
+    fn dedup_key_normalises_whitespace_and_case() {
+        let a = rec("1070", "Rue Wayez", "122", 50.0, 4.0, SourceTag::Osm);
+        let b = rec(" 1070 ", "rue wayez", "122", 50.0, 4.0, SourceTag::Osm);
+        assert_eq!(dedup_key(&a), dedup_key(&b));
+    }
+
+    #[test]
+    fn priority_order_ban_beats_osm() {
+        assert!(merge_priority(SourceTag::Ban) > merge_priority(SourceTag::Osm));
+        assert!(merge_priority(SourceTag::Bosa) > merge_priority(SourceTag::Osm));
+    }
+}

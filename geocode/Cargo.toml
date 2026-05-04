@@ -47,6 +47,10 @@ metrics = "0.24"
 
 once_cell = "1.21"
 
+# BOSA BeSt CSV downloads ship as ZIPs containing one CSV. The
+# importer transparently opens either form; `zip` is pure Rust.
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+
 [lints]
 workspace = true
 
