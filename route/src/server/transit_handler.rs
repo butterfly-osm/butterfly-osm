@@ -1204,7 +1204,7 @@ fn build_routed_road_leg(
         .iter()
         .map(|&rank| {
             let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-            mode_data.filtered_ebg.filtered_to_original[filtered_id as usize]
+            mode_data.filtered_to_original[filtered_id as usize]
         })
         .collect();
     let (points, distance_m) = build_raw_points(&ebg_path, &state.ebg_nodes, &state.nbg_geo);
@@ -1221,9 +1221,5 @@ fn snap_to_rank(lon: f64, lat: f64, state: &ServerState, mode_idx: u8) -> Option
         Some(mode_index) => mode_index.snap_unfiltered(lon, lat)?,
         None => state.spatial_index.snap(lon, lat, &mode_data.mask, 10)?,
     };
-    let filtered = mode_data.filtered_ebg.original_to_filtered[orig as usize];
-    if filtered == u32::MAX {
-        return None;
-    }
-    Some(mode_data.order.perm[filtered as usize])
+    mode_data.rank_for_original(orig)
 }

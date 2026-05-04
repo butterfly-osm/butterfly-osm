@@ -289,15 +289,12 @@ fn route_between(
         _ => return vec![src, dst],
     };
 
-    let src_filt = mode_data.filtered_ebg.original_to_filtered[src_orig as usize];
-    let dst_filt = mode_data.filtered_ebg.original_to_filtered[dst_orig as usize];
+    let src_rank = mode_data.orig_to_rank[src_orig as usize];
+    let dst_rank = mode_data.orig_to_rank[dst_orig as usize];
 
-    if src_filt == u32::MAX || dst_filt == u32::MAX {
+    if src_rank == u32::MAX || dst_rank == u32::MAX {
         return vec![src, dst];
     }
-
-    let src_rank = mode_data.order.perm[src_filt as usize];
-    let dst_rank = mode_data.order.perm[dst_filt as usize];
 
     let query = CchQuery::new(state, mode);
     let result = match query.query(src_rank, dst_rank) {
@@ -319,7 +316,7 @@ fn route_between(
         .iter()
         .map(|&rank| {
             let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-            mode_data.filtered_ebg.filtered_to_original[filt_id as usize]
+            mode_data.filtered_to_original[filt_id as usize]
         })
         .collect();
 
@@ -351,11 +348,10 @@ pub fn isochrone_hull(
         None => return Vec::new(),
     };
 
-    let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
-    if filtered == u32::MAX {
+    let origin_rank = mode_data.orig_to_rank[orig_id as usize];
+    if origin_rank == u32::MAX {
         return Vec::new();
     }
-    let origin_rank = mode_data.order.perm[filtered as usize];
 
     let threshold_ds = (threshold_s * 10.0) as u32;
 
@@ -372,7 +368,7 @@ pub fn isochrone_hull(
         .iter()
         .map(|&(rank, dist)| {
             let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-            let orig_id = mode_data.filtered_ebg.filtered_to_original[filt_id as usize];
+            let orig_id = mode_data.filtered_to_original[filt_id as usize];
             (orig_id, dist)
         })
         .collect();
@@ -753,11 +749,10 @@ pub async fn catchment_handler(
             Some(id) => id,
             None => continue, // Skip unsnappable stores
         };
-        let store_filt = mode_data.filtered_ebg.original_to_filtered[store_orig as usize];
-        if store_filt == u32::MAX {
+        let store_rank = mode_data.orig_to_rank[store_orig as usize];
+        if store_rank == u32::MAX {
             continue;
         }
-        let store_rank = mode_data.order.perm[store_filt as usize];
 
         // Determine this store's effective radius (km) when requested. For
         // `Auto`, we compute p95 × 1.1 over the Euclidean distances from the
@@ -791,9 +786,8 @@ pub async fn catchment_handler(
                 }
             }
             if let Some(orig_id) = state.spatial_index.snap(c.lon, c.lat, &mode_data.mask, 10) {
-                let filt = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
-                if filt != u32::MAX {
-                    let rank = mode_data.order.perm[filt as usize];
+                let rank = mode_data.orig_to_rank[orig_id as usize];
+                if rank != u32::MAX {
                     client_ranks.push(rank);
                     client_valid.push(ci);
                 }

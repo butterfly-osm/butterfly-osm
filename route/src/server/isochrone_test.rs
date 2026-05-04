@@ -262,9 +262,8 @@ mod tests {
             .spatial_index
             .snap(origin_lon, origin_lat, &mode_data.mask, 10)
             .expect("Failed to snap origin");
-        let origin_filtered = mode_data.filtered_ebg.original_to_filtered[origin_ebg as usize];
-        assert_ne!(origin_filtered, u32::MAX, "Origin not in filtered graph");
-        let origin_rank = mode_data.order.perm[origin_filtered as usize];
+        let origin_rank = mode_data.orig_to_rank[origin_ebg as usize];
+        assert_ne!(origin_rank, u32::MAX, "Origin not in filtered graph");
 
         // Compute PHAST distances
         let phast_settled = crate::server::isochrone_handler::run_phast_bounded_fast(
@@ -279,7 +278,7 @@ mod tests {
         let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());
         for (rank, dist) in phast_settled {
             let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-            let original_id = mode_data.filtered_ebg.filtered_to_original[filtered_id as usize];
+            let original_id = mode_data.filtered_to_original[filtered_id as usize];
             settled.push((original_id, dist));
         }
 
@@ -493,17 +492,13 @@ mod tests {
         origin_ebg: u32,
         dst_ebg: u32,
     ) -> Option<u32> {
-        // Convert to filtered
-        let src_filtered = mode_data.filtered_ebg.original_to_filtered[origin_ebg as usize];
-        let dst_filtered = mode_data.filtered_ebg.original_to_filtered[dst_ebg as usize];
+        // Snap to rank space directly (#153)
+        let src_rank = mode_data.orig_to_rank[origin_ebg as usize];
+        let dst_rank = mode_data.orig_to_rank[dst_ebg as usize];
 
-        if src_filtered == u32::MAX || dst_filtered == u32::MAX {
+        if src_rank == u32::MAX || dst_rank == u32::MAX {
             return None;
         }
-
-        // Convert filtered to rank (CchQuery expects rank IDs)
-        let src_rank = mode_data.order.perm[src_filtered as usize];
-        let dst_rank = mode_data.order.perm[dst_filtered as usize];
 
         // Run bidirectional query in rank space
         let result = query.query(src_rank, dst_rank)?;

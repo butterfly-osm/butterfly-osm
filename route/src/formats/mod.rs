@@ -35,6 +35,9 @@ pub mod mod_weights;
 // Step 6 formats
 pub mod order_ebg;
 
+// Server-only per-mode mapping sections (#153)
+pub mod mode_index;
+
 // Step 7 formats
 pub mod cch_topo;
 
@@ -52,6 +55,7 @@ pub use hybrid_state::{HybridState, HybridStateFile};
 pub use mod_mask::ModMask;
 pub use mod_turns::ModTurns;
 pub use mod_weights::ModWeights;
+pub use mode_index::{ModeIndex, ModeIndexFile, ModeIndexKind};
 pub use nbg_csr::{NbgCsr, NbgCsrFile};
 pub use nbg_geo::{NbgEdge, NbgGeo, NbgGeoFile, PolyLine};
 pub use nbg_node_map::{NbgNodeMap, NbgNodeMapFile, NodeMapping};

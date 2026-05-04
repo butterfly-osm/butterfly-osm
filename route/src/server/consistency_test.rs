@@ -79,11 +79,7 @@ fn lookup_mode(state: &ServerState, name: &str) -> Mode {
 fn snap_to_rank(state: &ServerState, mode: Mode, lon: f64, lat: f64) -> Option<(u32, u32)> {
     let mode_data = state.get_mode(mode);
     let orig_id = state.spatial_index.snap(lon, lat, &mode_data.mask, 10)?;
-    let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
-    if filtered == u32::MAX {
-        return None;
-    }
-    let rank = mode_data.order.perm[filtered as usize];
+    let rank = mode_data.rank_for_original(orig_id)?;
     Some((rank, orig_id))
 }
 
@@ -485,7 +481,7 @@ fn test_route_path_validity() {
                 .iter()
                 .map(|&rank| {
                     let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-                    mode_data.filtered_ebg.filtered_to_original[filtered_id as usize]
+                    mode_data.filtered_to_original[filtered_id as usize]
                 })
                 .collect();
 
@@ -527,6 +523,15 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
     let (src_rank, src_orig) = snap_to_rank(&state, mode, 3.7174, 51.0543).expect("snap Ghent");
     let (dst_rank, dst_orig) = snap_to_rank(&state, mode, 5.5796, 50.6326).expect("snap Liege");
 
+    // Load FilteredEbg from disk for raw CSR introspection (#153
+    // dropped it from ServerState's ModeData on the serve path).
+    // Test-only side-load; never reached from production code.
+    let mode_name = state.mode_names[mode.index()].clone();
+    let step5_dir = std::path::Path::new(&state.data_dir).join("step5");
+    let filtered_ebg_path = step5_dir.join(format!("filtered.{}.ebg", mode_name));
+    let filtered_ebg = crate::formats::FilteredEbgFile::read(&filtered_ebg_path)
+        .expect("test requires step5/filtered.<mode>.ebg on disk");
+
     let query = CchQuery::new(&state, mode);
     let result = query
         .query(src_rank, dst_rank)
@@ -548,7 +553,7 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
         .collect();
     let ebg_path: Vec<u32> = filtered_path
         .iter()
-        .map(|&filtered| mode_data.filtered_ebg.filtered_to_original[filtered as usize])
+        .map(|&filtered| mode_data.filtered_to_original[filtered as usize])
         .collect();
     let mut unpacked_dist_ds = 0u64;
     let mut duplicate_cch_hops = 0usize;
@@ -571,9 +576,9 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
     for (i, pair) in filtered_path.windows(2).enumerate() {
         let u = pair[0] as usize;
         let v = pair[1];
-        let start = mode_data.filtered_ebg.offsets[u] as usize;
-        let end = mode_data.filtered_ebg.offsets[u + 1] as usize;
-        let exists = mode_data.filtered_ebg.heads[start..end].contains(&v);
+        let start = filtered_ebg.offsets[u] as usize;
+        let end = filtered_ebg.offsets[u + 1] as usize;
+        let exists = filtered_ebg.heads[start..end].contains(&v);
         assert!(
             exists,
             "invalid unpacked hop at index {}: rank {} -> {} / filtered {} -> {} / orig {} -> {}",
@@ -828,7 +833,7 @@ fn test_route_geometry_polyline6_round_trips() {
             .iter()
             .map(|&rank| {
                 let fid = mode_data.cch_topo.rank_to_filtered[rank as usize];
-                mode_data.filtered_ebg.filtered_to_original[fid as usize]
+                mode_data.filtered_to_original[fid as usize]
             })
             .collect();
 
@@ -1094,7 +1099,7 @@ fn test_route_steps_have_depart_and_arrive() {
             .iter()
             .map(|&rank| {
                 let fid = mode_data.cch_topo.rank_to_filtered[rank as usize];
-                mode_data.filtered_ebg.filtered_to_original[fid as usize]
+                mode_data.filtered_to_original[fid as usize]
             })
             .collect();
 
@@ -1211,7 +1216,7 @@ fn test_route_steps_distances_sum_to_total() {
             .iter()
             .map(|&rank| {
                 let fid = mode_data.cch_topo.rank_to_filtered[rank as usize];
-                mode_data.filtered_ebg.filtered_to_original[fid as usize]
+                mode_data.filtered_to_original[fid as usize]
             })
             .collect();
 
@@ -1284,7 +1289,7 @@ fn test_route_step_locations_on_route() {
         .iter()
         .map(|&rank| {
             let fid = mode_data.cch_topo.rank_to_filtered[rank as usize];
-            mode_data.filtered_ebg.filtered_to_original[fid as usize]
+            mode_data.filtered_to_original[fid as usize]
         })
         .collect();
 

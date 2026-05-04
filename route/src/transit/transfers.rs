@@ -454,14 +454,7 @@ pub fn build_transfer_graph(
     let mut n_snapped = 0usize;
     for stop in &timetable.stops {
         let orig = spatial.snap(stop.lon, stop.lat, &foot.mask, 10);
-        let rank = orig.and_then(|o| {
-            let filtered = foot.filtered_ebg.original_to_filtered[o as usize];
-            if filtered == u32::MAX {
-                None
-            } else {
-                Some(foot.order.perm[filtered as usize])
-            }
-        });
+        let rank = orig.and_then(|o| foot.rank_for_original(o));
         if rank.is_some() {
             n_snapped += 1;
         }

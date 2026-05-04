@@ -234,7 +234,7 @@ pub fn compute_avoid_weights_time_only(
         &mode_data.cch_weights,
         &avoid_flags,
         AVOID_BIT,
-        &mode_data.filtered_ebg.filtered_to_original,
+        &mode_data.filtered_to_original,
     );
 
     tracing::info!(
@@ -268,7 +268,7 @@ pub fn compute_avoid_weights(
         &mode_data.cch_weights_dist,
         &avoid_flags,
         AVOID_BIT,
-        &mode_data.filtered_ebg.filtered_to_original,
+        &mode_data.filtered_to_original,
     );
 
     tracing::info!(

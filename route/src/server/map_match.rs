@@ -504,18 +504,16 @@ fn compute_transition_distances(
     );
 
     for (i, from_cand) in from.iter().enumerate() {
-        let src_filtered = mode_data.filtered_ebg.original_to_filtered[from_cand.ebg_id as usize];
-        if src_filtered == u32::MAX {
+        let src_rank = mode_data.orig_to_rank[from_cand.ebg_id as usize];
+        if src_rank == u32::MAX {
             continue;
         }
-        let src_rank = mode_data.order.perm[src_filtered as usize];
 
         for (j, to_cand) in to.iter().enumerate() {
-            let dst_filtered = mode_data.filtered_ebg.original_to_filtered[to_cand.ebg_id as usize];
-            if dst_filtered == u32::MAX {
+            let dst_rank = mode_data.orig_to_rank[to_cand.ebg_id as usize];
+            if dst_rank == u32::MAX {
                 continue;
             }
-            let dst_rank = mode_data.order.perm[dst_filtered as usize];
 
             if let Some(qr) = query.query(src_rank, dst_rank) {
                 // Unpack CCH path to get EBG edge sequence
@@ -538,8 +536,7 @@ fn compute_transition_distances(
                     .iter()
                     .map(|&rank| {
                         let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-                        let original_id =
-                            mode_data.filtered_ebg.filtered_to_original[filtered_id as usize];
+                        let original_id = mode_data.filtered_to_original[filtered_id as usize];
                         ebg_nodes.nodes[original_id as usize].length_mm as u64
                     })
                     .sum();
@@ -614,15 +611,12 @@ fn find_path_between(
     to_ebg: u32,
     cch_weights: &CchWeights,
 ) -> Option<Vec<u32>> {
-    let src_filtered = mode_data.filtered_ebg.original_to_filtered[from_ebg as usize];
-    let dst_filtered = mode_data.filtered_ebg.original_to_filtered[to_ebg as usize];
+    let src_rank = mode_data.orig_to_rank[from_ebg as usize];
+    let dst_rank = mode_data.orig_to_rank[to_ebg as usize];
 
-    if src_filtered == u32::MAX || dst_filtered == u32::MAX {
+    if src_rank == u32::MAX || dst_rank == u32::MAX {
         return None;
     }
-
-    let src_rank = mode_data.order.perm[src_filtered as usize];
-    let dst_rank = mode_data.order.perm[dst_filtered as usize];
 
     let query = CchQuery::with_custom_weights(
         &mode_data.cch_topo,
@@ -646,7 +640,7 @@ fn find_path_between(
         .iter()
         .map(|&rank| {
             let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-            mode_data.filtered_ebg.filtered_to_original[filtered_id as usize]
+            mode_data.filtered_to_original[filtered_id as usize]
         })
         .collect();
 

@@ -254,9 +254,8 @@ fn snap_to_ranks(
     let mut valid = Vec::with_capacity(coords.len());
     for (i, [lon, lat]) in coords.iter().enumerate() {
         if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &mode_data.mask, 10) {
-            let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
-            if filtered != u32::MAX {
-                let rank = mode_data.order.perm[filtered as usize];
+            let rank = mode_data.orig_to_rank[orig_id as usize];
+            if rank != u32::MAX {
                 ranks.push(rank);
                 valid.push(i);
             }
@@ -277,8 +276,8 @@ fn snapped_coords_full(
     let mut out = Vec::with_capacity(coords.len());
     for [lon, lat] in coords {
         if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &mode_data.mask, 10) {
-            let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
-            if filtered != u32::MAX {
+            let rank = mode_data.orig_to_rank[orig_id as usize];
+            if rank != u32::MAX {
                 let loc = super::types::get_node_location(state, orig_id);
                 out.push((loc[0], loc[1]));
                 continue;
@@ -592,20 +591,15 @@ fn do_route_batch(
 
                 match (src_snap, dst_snap) {
                     (Some(src_orig), Some(dst_orig)) => {
-                        let src_filt =
-                            mode_data.filtered_ebg.original_to_filtered[src_orig as usize];
-                        let dst_filt =
-                            mode_data.filtered_ebg.original_to_filtered[dst_orig as usize];
+                        let src_rank = mode_data.orig_to_rank[src_orig as usize];
+                        let dst_rank = mode_data.orig_to_rank[dst_orig as usize];
 
-                        if src_filt == u32::MAX || dst_filt == u32::MAX {
+                        if src_rank == u32::MAX || dst_rank == u32::MAX {
                             dur_arr.append_value(f32::NAN);
                             dist_arr.append_value(f32::NAN);
                             geom_arr.append_value(&[] as &[u8]);
                             continue;
                         }
-
-                        let src_rank = mode_data.order.perm[src_filt as usize];
-                        let dst_rank = mode_data.order.perm[dst_filt as usize];
 
                         let query = CchQuery::new(&state, mode);
                         match query.query(src_rank, dst_rank) {
@@ -626,8 +620,7 @@ fn do_route_batch(
                                     .map(|&rank| {
                                         let filt_id =
                                             mode_data.cch_topo.rank_to_filtered[rank as usize];
-                                        mode_data.filtered_ebg.filtered_to_original
-                                            [filt_id as usize]
+                                        mode_data.filtered_to_original[filt_id as usize]
                                     })
                                     .collect();
 
@@ -727,13 +720,12 @@ fn do_isochrone(
         .spatial_index
         .snap(params.lon, params.lat, &mode_data.mask, 10)
         .ok_or_else(|| Status::not_found("Could not snap to road network"))?;
-    let filtered = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
-    if filtered == u32::MAX {
+    let origin_rank = mode_data.orig_to_rank[orig_id as usize];
+    if origin_rank == u32::MAX {
         return Err(Status::not_found(
             "Snapped node not accessible for this mode",
         ));
     }
-    let origin_rank = mode_data.order.perm[filtered as usize];
 
     let is_reverse = params.direction.to_lowercase() == "arrive";
     let max_interval = *params.intervals.iter().max().unwrap();
@@ -762,7 +754,7 @@ fn do_isochrone(
         .iter()
         .map(|&(rank, dist)| {
             let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-            let orig_id = mode_data.filtered_ebg.filtered_to_original[filt_id as usize];
+            let orig_id = mode_data.filtered_to_original[filt_id as usize];
             (orig_id, dist)
         })
         .collect();
@@ -922,9 +914,9 @@ pub fn do_edges_batch(
                     continue;
                 };
 
-                let src_filt = mode_data.filtered_ebg.original_to_filtered[src_orig as usize];
-                let dst_filt = mode_data.filtered_ebg.original_to_filtered[dst_orig as usize];
-                if src_filt == u32::MAX || dst_filt == u32::MAX {
+                let src_rank = mode_data.orig_to_rank[src_orig as usize];
+                let dst_rank = mode_data.orig_to_rank[dst_orig as usize];
+                if src_rank == u32::MAX || dst_rank == u32::MAX {
                     emit_unreachable(
                         &mut query_idx_b,
                         &mut target_idx_b,
@@ -936,8 +928,6 @@ pub fn do_edges_batch(
                     );
                     continue;
                 }
-                let src_rank = mode_data.order.perm[src_filt as usize];
-                let dst_rank = mode_data.order.perm[dst_filt as usize];
 
                 // Run CchQuery against the default time weights (no
                 // avoid/exclude support in MVP; add later as a param
@@ -976,7 +966,7 @@ pub fn do_edges_batch(
                     .iter()
                     .map(|&rank| {
                         let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-                        mode_data.filtered_ebg.filtered_to_original[filt_id as usize]
+                        mode_data.filtered_to_original[filt_id as usize]
                     })
                     .collect();
 
@@ -1415,20 +1405,18 @@ async fn do_exchange_catchment(
                 Some(id) => id,
                 None => continue,
             };
-            let store_filt = mode_data.filtered_ebg.original_to_filtered[store_orig as usize];
-            if store_filt == u32::MAX {
+            let store_rank = mode_data.orig_to_rank[store_orig as usize];
+            if store_rank == u32::MAX {
                 continue;
             }
-            let store_rank = mode_data.order.perm[store_filt as usize];
 
             // Snap all clients
             let mut client_ranks: Vec<u32> = Vec::with_capacity(client_coords.len());
             let mut client_valid: Vec<usize> = Vec::with_capacity(client_coords.len());
             for (ci, &(clon, clat)) in client_coords.iter().enumerate() {
                 if let Some(orig_id) = state.spatial_index.snap(clon, clat, &mode_data.mask, 10) {
-                    let filt = mode_data.filtered_ebg.original_to_filtered[orig_id as usize];
-                    if filt != u32::MAX {
-                        let rank = mode_data.order.perm[filt as usize];
+                    let rank = mode_data.orig_to_rank[orig_id as usize];
+                    if rank != u32::MAX {
                         client_ranks.push(rank);
                         client_valid.push(ci);
                     }

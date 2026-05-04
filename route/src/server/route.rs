@@ -469,11 +469,12 @@ pub async fn route_handler(
         }
     };
 
-    // Convert to filtered node IDs for CCH query
-    let src_filtered = mode_data.filtered_ebg.original_to_filtered[src_orig as usize];
-    let dst_filtered = mode_data.filtered_ebg.original_to_filtered[_dst_orig as usize];
+    // Convert to rank space directly (#153: collapses
+    // original_to_filtered → perm into a single mapping read).
+    let src_rank = mode_data.orig_to_rank[src_orig as usize];
+    let dst_rank = mode_data.orig_to_rank[_dst_orig as usize];
 
-    if src_filtered == u32::MAX || dst_filtered == u32::MAX {
+    if src_rank == u32::MAX || dst_rank == u32::MAX {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -482,10 +483,6 @@ pub async fn route_handler(
         )
             .into_response();
     }
-
-    // Convert to rank space (with rank-aligned CCH)
-    let src_rank = mode_data.order.perm[src_filtered as usize];
-    let dst_rank = mode_data.order.perm[dst_filtered as usize];
 
     // Same-edge: return consistent zero-distance, zero-duration result
     if src_rank == dst_rank {
@@ -538,7 +535,7 @@ pub async fn route_handler(
             .iter()
             .map(|&rank| {
                 let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-                mode_data.filtered_ebg.filtered_to_original[filtered_id as usize]
+                mode_data.filtered_to_original[filtered_id as usize]
             })
             .collect();
         let (geometry, distance_m) =
