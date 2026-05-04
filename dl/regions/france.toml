@@ -1,0 +1,24 @@
+# Butterfly region index — France
+#
+# OSM PBF for France from Geofabrik. butterfly-route consumes this as
+# `france.pbf` under `data/france/`; butterfly-geocode (#96) plans to
+# pair it with the BAN authoritative address dataset on the side.
+#
+# Authoritative address dataset (NOT fetched by butterfly-dl yet —
+# tracked separately in geocode-data/SOURCES.md, will land once the
+# geocode shard builder is ready):
+#
+#   Base Adresse Nationale (BAN)
+#   National full file: https://adresse.data.gouv.fr/data/ban/adresses/latest/csv/adresses-france.csv.gz
+#   Departmental files: https://adresse.data.gouv.fr/data/ban/adresses/latest/csv/adresses-<dep>.csv.gz
+#   Landing page:       https://adresse.data.gouv.fr/data/ban/adresses/latest/csv/
+#   License:            Licence Ouverte 2.0 (Etalab)
+#   Format:             gzip-compressed CSV, ~26 M records, ~1 GB compressed
+#   Cadence:            daily
+#
+# No transit feeds in this index — French transit data is fragmented
+# across regional operators (SNCF, RATP, regional STIFs) and out of
+# scope for the geocode-prep pass.
+
+[pbf]
+url = "https://download.geofabrik.de/europe/france-latest.osm.pbf"
