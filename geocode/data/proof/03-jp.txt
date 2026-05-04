@@ -1,0 +1,11 @@
+=== Japan (Tokyo / Imperial Palace area, by kanji address) ===
+# Note: Japanese OSM addr coverage is sparse. The classifier
+# correctly routes to JP, but the JP shard has only 23K records
+# (vs millions for European countries) so most queries miss.
+{
+    "query": "\u6771\u4eac\u90fd\u5343\u4ee3\u7530\u533a\u5343\u4ee3\u75301-1",
+    "country": "JP",
+    "confidence": "accept",
+    "count": 0,
+    "results": []
+}
