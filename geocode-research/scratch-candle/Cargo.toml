@@ -1,0 +1,21 @@
+[package]
+name = "scratch-candle"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "AGPL-3.0-or-later"
+publish = false
+
+# Standalone — opt out of butterfly-osm workspace.
+[workspace]
+
+[dependencies]
+candle-core = "0.10"
+candle-nn = "0.10"
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = false
