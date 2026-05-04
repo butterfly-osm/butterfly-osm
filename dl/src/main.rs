@@ -16,7 +16,8 @@ mod cli;
 #[derive(Parser)]
 #[command(name = "butterfly-dl")]
 #[command(about = "Optimized OpenStreetMap data downloader with HTTP support")]
-#[command(long_about = "Downloads single OpenStreetMap files efficiently, or a full region index:
+#[command(
+    long_about = "Downloads single OpenStreetMap files efficiently, or a full region index:
   butterfly-dl belgium             # Region index: PBF + GTFS + NeTEx in parallel
   butterfly-dl belgium --only pbf  # Only the PBF from the belgium index
   butterfly-dl planet              # Download planet file (81GB) from HTTP
@@ -27,7 +28,8 @@ mod cli;
 File Overwrite Behavior:
   By default, you'll be prompted if destination file exists
   --force                          # Overwrite without asking
-  --no-clobber                     # Never overwrite, fail if file exists")]
+  --no-clobber                     # Never overwrite, fail if file exists"
+)]
 #[command(version = env!("BUTTERFLY_VERSION"))]
 struct Cli {
     /// Source to download: a shipped region name (e.g. "belgium"),
@@ -256,21 +258,13 @@ async fn run_region(cli: &Cli) -> Result<()> {
             data_root.display()
         );
         for e in &entries {
-            eprintln!(
-                "  [{}] {} → {}",
-                e.section,
-                e.url,
-                e.target.display()
-            );
+            eprintln!("  [{}] {} → {}", e.section, e.url, e.target.display());
         }
         eprintln!("  total: {} file(s)", entries.len());
         return Ok(());
     }
 
-    eprintln!(
-        "🦋 Region fetch: '{region}' → {}",
-        data_root.display()
-    );
+    eprintln!("🦋 Region fetch: '{region}' → {}", data_root.display());
     let report = fetch_region(region, &data_root, filter)
         .await
         .map_err(|e| butterfly_dl::Error::HttpError(format!("{e:#}")))?;
