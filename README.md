@@ -193,6 +193,61 @@ curl -X POST "http://localhost:3001/trip" -H "Content-Type: application/json" \
   -d '{"coordinates": [[4.35,50.85],[4.40,50.86],[4.45,50.87]], "mode": "car"}'
 ```
 
+### Multi-region Serving (#91 Phase 1)
+
+butterfly-route can serve multiple country-sized regions from a single
+process. Each region is its own `*.butterfly` container, loaded
+independently with its own CCH hierarchy, weights, snap index, and
+edge geometry. Query dispatch is automatic: each request snaps its
+coordinates and is routed to the matching region.
+
+```bash
+# Pack each region with its identifier
+butterfly-route pack --region BE -d data/belgium    -o data/belgium/baseline.butterfly
+butterfly-route pack --region LU -d data/luxembourg -o data/luxembourg/luxembourg.butterfly
+
+# Serve a directory of containers
+mkdir -p /srv/regions
+ln -s /path/to/data/belgium/baseline.butterfly       /srv/regions/be.butterfly
+ln -s /path/to/data/luxembourg/luxembourg.butterfly  /srv/regions/lu.butterfly
+butterfly-route serve --data-dir /srv/regions --port 3001
+
+# Optional --regions filter loads a subset
+butterfly-route serve --data-dir /srv/regions --regions BE,LU --port 3001
+
+# Inspect what's loaded
+curl -s http://localhost:3001/regions
+# {"loaded":[
+#   {"id":"BE","container":".../be.butterfly","nodes":5019052,"edges":14649023,
+#    "verify_status":"verified","named_roads":754380,"modes":[...]},
+#   {"id":"LU","container":".../lu.butterfly","nodes":478552,"edges":1365815,
+#    "verify_status":"verified","named_roads":46287,"modes":[...]}
+# ]}
+
+# Same-region queries route as expected
+curl "http://localhost:3001/route?src_lon=4.35&src_lat=50.85&dst_lon=3.22&dst_lat=51.21&mode=car"
+
+# Cross-region queries return HTTP 501 with a clear error (Phase 2 will
+# add the cross-region overlay):
+curl -w "\n%{http_code}\n" \
+  "http://localhost:3001/route?src_lon=4.35&src_lat=50.85&dst_lon=6.13&dst_lat=49.61&mode=car"
+# {"error":"route spans regions BE → LU; cross-region overlay not yet implemented (#91 Phase 2)"}
+# 501
+```
+
+**Per-region Prometheus metrics** at `/metrics`:
+
+- `butterfly_route_region_nodes_total{region}` — graph size
+- `butterfly_route_region_edges_total{region}` — graph size
+- `butterfly_route_query_total{region,endpoint}` — request counter
+- `butterfly_route_query_duration_seconds{region,endpoint}` — latency histogram
+- `butterfly_route_query_cross_region_total{src,dst}` — 501 counter
+
+Single-region deployments (`serve --data <file>` or a step-tree
+`serve --data-dir <tree>`) work unchanged — they're transparently
+wrapped as a one-region multi-region state, so handlers, JSON shapes,
+and the Flight gRPC surface are identical.
+
 ## Multimodal Transit (RAPTOR + CCH)
 
 butterfly-route ships a production transit engine alongside the road router. Public transport queries thread a foot/bike/car **access leg** (CCH) + **RAPTOR rounds** over the merged timetable + foot **egress leg** (CCH), with ULTRA-preprocessed transfer graphs for sub-second stop-to-stop walking.

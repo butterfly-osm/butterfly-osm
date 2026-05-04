@@ -21,6 +21,8 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use super::geometry::Point;
+use super::regions::RegionsState;
+#[allow(unused_imports)]
 use super::state::ServerState;
 
 // Re-export public items so that existing `super::api::` paths still work
@@ -91,8 +93,13 @@ pub use super::types::{ErrorResponse, Waypoint, parse_mode, validate_coord};
 )]
 struct ApiDoc;
 
-/// Build the Axum router
-pub fn build_router(state: Arc<ServerState>) -> Router {
+/// Build the Axum router.
+///
+/// Accepts a multi-region [`RegionsState`]. Single-region deployments
+/// wrap their loaded `ServerState` in a one-region `RegionsState` via
+/// [`RegionsState::from_single`] before calling this; the router shape
+/// is identical either way.
+pub fn build_router(state: Arc<RegionsState>) -> Router {
     // CORS: fully permissive to allow browser-based clients (mapping apps, dashboards).
     // For production deployments requiring CORS restrictions, use a reverse proxy (nginx, caddy).
     let cors = CorsLayer::new()
@@ -122,6 +129,7 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
             post(super::transit_handler::transit_bulk_handler),
         )
         .route("/health", get(super::health_handler::health_handler))
+        .route("/regions", get(super::regions_handler::regions_handler))
         .layer(CompressionLayer::new())
         .layer(ConcurrencyLimitLayer::new(32))
         .layer(TimeoutLayer::with_status_code(

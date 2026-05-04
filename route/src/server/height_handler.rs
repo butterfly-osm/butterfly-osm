@@ -8,7 +8,7 @@ use axum::{
 };
 use std::sync::Arc;
 
-use super::state::ServerState;
+use super::regions::RegionsState;
 use super::types::ErrorResponse;
 
 /// Query elevation for coordinates using SRTM data
@@ -28,9 +28,13 @@ use super::types::ErrorResponse;
     )
 )]
 pub async fn height_handler(
-    State(state): State<Arc<ServerState>>,
+    State(regions): State<Arc<RegionsState>>,
     Query(req): Query<super::elevation::HeightRequest>,
 ) -> impl IntoResponse {
+    // Elevation data (SRTM tiles) is geographically global and lives
+    // on the primary region; height queries don't need per-region
+    // dispatch.
+    let state = regions.primary();
     let elevation = match &state.elevation {
         Some(e) => e,
         None => {

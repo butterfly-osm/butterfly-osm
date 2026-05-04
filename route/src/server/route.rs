@@ -12,6 +12,7 @@ use utoipa::ToSchema;
 
 use super::geometry::{GeometryFormat, Point, RouteGeometry, build_geometry, build_raw_points};
 use super::query::CchQuery;
+use super::regions::RegionsState;
 use super::state::ServerState;
 use super::types::{ErrorResponse, parse_mode, validate_coord};
 use super::unpack::unpack_path;
@@ -216,7 +217,7 @@ pub struct StepManeuver {
 // Note: route computation is fast (<10ms typical) and bounded by ConcurrencyLimitLayer(32),
 // so spawn_blocking is not needed here. /match and /trip use spawn_blocking for long computations.
 pub async fn route_handler(
-    State(state): State<Arc<ServerState>>,
+    State(regions): State<Arc<RegionsState>>,
     Query(req): Query<RouteRequest>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
@@ -226,6 +227,24 @@ pub async fn route_handler(
     if let Err(e) = validate_coord(req.dst_lon, req.dst_lat, "destination") {
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
     }
+
+    // Region dispatch (#91): both source and destination must snap to
+    // the same region. Different regions → 501 (cross-region overlay
+    // is PR C / Phase 2).
+    let started_dispatch = std::time::Instant::now();
+    let (state, region_id): (Arc<ServerState>, String) = match regions.dispatch_p2p_id(
+        req.src_lon,
+        req.src_lat,
+        req.dst_lon,
+        req.dst_lat,
+        &req.mode,
+    ) {
+        Ok(pair) => pair,
+        Err(e) => {
+            let (code, body) = e.into_response_parts();
+            return (code, Json(body)).into_response();
+        }
+    };
 
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
@@ -500,6 +519,11 @@ pub async fn route_handler(
         };
 
         if wants_gpx(&headers) {
+            super::region_metrics::record_query(
+                &region_id,
+                "route",
+                started_dispatch.elapsed().as_secs_f64(),
+            );
             return gpx_response(format_gpx(&[snap_point], "Route"));
         }
 
@@ -512,6 +536,11 @@ pub async fn route_handler(
         } else {
             None
         };
+        super::region_metrics::record_query(
+            &region_id,
+            "route",
+            started_dispatch.elapsed().as_secs_f64(),
+        );
         return Json(RouteResponse {
             duration_s: 0.0,
             distance_m: 0.0,
@@ -615,6 +644,11 @@ pub async fn route_handler(
     // GPX output: skip annotations, alternatives, debug — just emit track points
     if wants_gpx(&headers) {
         let (raw_points, _) = build_raw_points(&ebg_path, &state.ebg_nodes, &state.edge_geom);
+        super::region_metrics::record_query(
+            &region_id,
+            "route",
+            started_dispatch.elapsed().as_secs_f64(),
+        );
         return gpx_response(format_gpx(&raw_points, "Route"));
     }
 
@@ -776,6 +810,11 @@ pub async fn route_handler(
         None
     };
 
+    super::region_metrics::record_query(
+        &region_id,
+        "route",
+        started_dispatch.elapsed().as_secs_f64(),
+    );
     Json(RouteResponse {
         duration_s,
         distance_m,

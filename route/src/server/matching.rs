@@ -6,6 +6,7 @@ use std::sync::Arc;
 use utoipa::ToSchema;
 
 use super::geometry::{GeometryFormat, RouteGeometry, build_geometry};
+use super::regions::RegionsState;
 use super::route::{RouteStep, build_steps, lookup_road_name};
 use super::state::ServerState;
 use super::types::{parse_mode, validate_coord};
@@ -115,9 +116,46 @@ pub struct MatchTracepoint {
     )
 )]
 pub async fn match_trace_handler(
-    State(state): State<Arc<ServerState>>,
+    State(regions): State<Arc<RegionsState>>,
     Json(req): Json<MatchRequest>,
 ) -> impl IntoResponse {
+    if req.coordinates.len() < 2 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "code": "InvalidValue",
+                "message": "At least 2 coordinates required"
+            })),
+        )
+            .into_response();
+    }
+
+    // Region dispatch (#91): the GPS trace must lie inside a single
+    // region. Mixed-region traces require the cross-region overlay
+    // (PR C / Phase 2) and are rejected with 501.
+    let started_dispatch = std::time::Instant::now();
+    let coords_iter = req.coordinates.iter().map(|&[lon, lat]| (lon, lat));
+    let state: Arc<ServerState> = match regions.dispatch_many(coords_iter, &req.mode) {
+        Ok(s) => s,
+        Err(e) => {
+            let (code, body) = e.into_response_parts();
+            return (
+                code,
+                Json(serde_json::json!({
+                    "code": "InvalidValue",
+                    "message": body.error
+                })),
+            )
+                .into_response();
+        }
+    };
+    let region_id = regions
+        .regions
+        .iter()
+        .find(|r| Arc::ptr_eq(&r.state, &state))
+        .map(|r| r.id.clone())
+        .unwrap_or_default();
+
     // Validate mode
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
@@ -344,7 +382,7 @@ pub async fn match_trace_handler(
     })
     .await;
 
-    match blocking_result {
+    let resp = match blocking_result {
         Ok(Some(response)) => Json(response).into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -362,5 +400,11 @@ pub async fn match_trace_handler(
             })),
         )
             .into_response(),
-    }
+    };
+    super::region_metrics::record_query(
+        &region_id,
+        "match",
+        started_dispatch.elapsed().as_secs_f64(),
+    );
+    resp
 }

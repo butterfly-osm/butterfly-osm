@@ -23,6 +23,7 @@ use crate::matrix::bucket_ch::{
 use crate::matrix::neighbors::{RadiusParam, auto_radius_km, build_neighbors, parse_radius};
 use crate::profile_abi::Mode;
 
+use super::regions::RegionsState;
 use super::state::ServerState;
 use super::types::{ErrorResponse, Waypoint, get_node_location, parse_mode, validate_coord};
 
@@ -147,7 +148,7 @@ pub fn default_tile_size() -> usize {
     )
 )]
 pub async fn table_post_handler(
-    State(state): State<Arc<ServerState>>,
+    State(regions): State<Arc<RegionsState>>,
     Json(req): Json<TablePostRequest>,
 ) -> impl IntoResponse {
     for (i, [lon, lat]) in req.sources.iter().enumerate() {
@@ -160,6 +161,30 @@ pub async fn table_post_handler(
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     }
+
+    // Region dispatch (#91): every source + every destination must
+    // snap to the same region. Mixed-region matrices are rejected
+    // with 501 (cross-region matrix is part of the overlay design,
+    // PR C / Phase 2).
+    let started_dispatch = std::time::Instant::now();
+    let coords_iter = req
+        .sources
+        .iter()
+        .chain(req.destinations.iter())
+        .map(|&[lon, lat]| (lon, lat));
+    let state: Arc<ServerState> = match regions.dispatch_many(coords_iter, &req.mode) {
+        Ok(s) => s,
+        Err(e) => {
+            let (code, body) = e.into_response_parts();
+            return (code, Json(body)).into_response();
+        }
+    };
+    let region_id = regions
+        .regions
+        .iter()
+        .find(|r| Arc::ptr_eq(&r.state, &state))
+        .map(|r| r.id.clone())
+        .unwrap_or_default();
 
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
@@ -283,7 +308,7 @@ pub async fn table_post_handler(
 
     let radius_param = parse_radius(req.radius_km.as_ref());
 
-    compute_table_bucket_m2m(
+    let resp = compute_table_bucket_m2m(
         &state,
         mode,
         &req.sources,
@@ -294,7 +319,13 @@ pub async fn table_post_handler(
         &snap_mask,
         radius_param,
     )
-    .await
+    .await;
+    super::region_metrics::record_query(
+        &region_id,
+        "table",
+        started_dispatch.elapsed().as_secs_f64(),
+    );
+    resp
 }
 
 /// Core table computation using bucket M2M algorithm
@@ -562,7 +593,7 @@ pub fn flat_matrix_to_2d(
     )
 )]
 pub async fn table_stream_handler(
-    State(state): State<Arc<ServerState>>,
+    State(regions): State<Arc<RegionsState>>,
     Json(req): Json<TableStreamRequest>,
 ) -> impl IntoResponse {
     for (i, [lon, lat]) in req.sources.iter().enumerate() {
@@ -575,6 +606,28 @@ pub async fn table_stream_handler(
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     }
+
+    // Region dispatch (#91): every source + every destination must
+    // snap to the same region for the streaming matrix.
+    let started_dispatch = std::time::Instant::now();
+    let coords_iter = req
+        .sources
+        .iter()
+        .chain(req.destinations.iter())
+        .map(|&[lon, lat]| (lon, lat));
+    let state: Arc<ServerState> = match regions.dispatch_many(coords_iter, &req.mode) {
+        Ok(s) => s,
+        Err(e) => {
+            let (code, body) = e.into_response_parts();
+            return (code, Json(body)).into_response();
+        }
+    };
+    let region_id = regions
+        .regions
+        .iter()
+        .find(|r| Arc::ptr_eq(&r.state, &state))
+        .map(|r| r.id.clone())
+        .unwrap_or_default();
 
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
@@ -770,7 +823,7 @@ pub async fn table_stream_handler(
 
     if n_total_sources * n_total_targets <= BUCKET_M2M_THRESHOLD {
         // --- SMALL MATRIX PATH: Bucket M2M → single Arrow IPC tile ---
-        return table_stream_bucket_path(
+        let resp = table_stream_bucket_path(
             n_nodes,
             &up_adj_flat,
             &down_rev_flat,
@@ -785,6 +838,12 @@ pub async fn table_stream_handler(
             &valid_dst_indices,
             neighbor_mask.as_ref().map(|v| v.as_slice()),
         );
+        super::region_metrics::record_query(
+            &region_id,
+            "table_stream",
+            started_dispatch.elapsed().as_secs_f64(),
+        );
+        return resp;
     }
 
     // --- LARGE MATRIX PATH: PHAST tiling/streaming ---
@@ -987,6 +1046,11 @@ pub async fn table_stream_handler(
     // Convert receiver to stream
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
 
+    super::region_metrics::record_query(
+        &region_id,
+        "table_stream",
+        started_dispatch.elapsed().as_secs_f64(),
+    );
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
