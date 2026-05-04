@@ -280,9 +280,21 @@ fn execute_clean(h: &ParseHypothesis, shard: &Shard, limit: usize) -> Vec<Geocod
         .first()
         .map(|(loc, w)| (crate::parser::normalize::normalize(loc), *w));
 
-    // Bound the inner loop: once we've collected 4× limit candidates
-    // the rerank-and-truncate will discard the tail anyway.
-    let inner_cap = limit.saturating_mul(4).max(limit + 1);
+    // Bound the inner loop:
+    // - With a postcode anchor, the posting list is already tight
+    //   (typically <100 records), so 4× limit is plenty.
+    // - Without a postcode anchor, the posting list can be very
+    //   large (e.g. street-only "Grote Markt" matches every commune
+    //   that has one), and the locality scorer needs to see ALL of
+    //   them to find the right one. We cap at 8K records which is
+    //   well under any realistic single-street posting list and
+    //   protects against pathological queries.
+    let has_strong_anchor = postcode.is_some();
+    let inner_cap = if has_strong_anchor {
+        limit.saturating_mul(4).max(limit + 1)
+    } else {
+        8192usize.max(limit + 1)
+    };
 
     for &id in postings {
         if out.len() >= inner_cap {
@@ -402,8 +414,29 @@ fn execute_fuzzy_street(
     let house = h.house_candidates.first().map(|c| c.0.as_str());
 
     // Per B6: bound the scan by `max_fuzzy_expansions`.
+    //
+    // Strategy: do a single pass over the street-key iterator. The
+    // iterator yields keys in sorted order, so we apply the budget by
+    // taking at most `max_expansions` keys total. To keep recall good
+    // even on a tight budget, we bias the scan by SKIPPING to the
+    // first key with a matching prefix — most typos preserve the first
+    // 1-2 characters, so this puts us in the right zone of the sort
+    // order. Keys before the prefix point are skipped without a
+    // similarity test (cheap byte compare).
+    // Bias the scan to the prefix zone of the sorted keys: most typos
+    // preserve the first character. We compute the first ASCII byte of
+    // the query (lowercase, so within the alphanumeric range used by
+    // the normalizer) and skip keys that come before it lexically.
+    let prefix_byte: Option<u8> = q_norm.as_bytes().first().copied();
     let mut best_streets: Vec<(String, f64)> = Vec::with_capacity(8);
-    for key in shard.all_street_keys().take(max_expansions) {
+    for key in shard
+        .all_street_keys()
+        .skip_while(|k| match prefix_byte {
+            Some(b) => !k.is_empty() && k.as_bytes()[0] < b,
+            None => false,
+        })
+        .take(max_expansions)
+    {
         let sim = indel::normalized_similarity(q_norm.chars(), key.chars());
         if sim >= 0.85 {
             best_streets.push((key.to_string(), sim));

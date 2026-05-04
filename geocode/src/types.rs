@@ -159,7 +159,13 @@ impl Default for ExecutionBudget {
         Self {
             max_countries: 1,
             max_hypotheses: 1,
-            max_fuzzy_expansions: 32,
+            // Per #97 §5: fuzzy fallback is bounded but must still
+            // cover a useful slice of the street-key space. 4096 is a
+            // pragmatic upper bound — at 4M-record Belgium with ~88K
+            // unique street keys, this checks ~5% of keys, comfortably
+            // larger than any realistic typo cluster but still O(1)
+            // in posting list size.
+            max_fuzzy_expansions: 16384,
             max_total_candidates: 50,
             static_cost_ceiling: 1024.0,
             dual_evaluation_enabled: false,
