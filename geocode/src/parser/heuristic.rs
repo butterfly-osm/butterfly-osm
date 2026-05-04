@@ -54,16 +54,33 @@ pub fn parse_heuristic(text: &str, country: CountryId) -> ParsedQuery {
 
     let remainder = clean_separators(&without_house);
     if !remainder.is_empty() {
-        hypothesis.street_candidates.push((remainder.clone(), 1.0));
-
         let words: Vec<&str> = remainder.split_whitespace().collect();
-        if words.len() >= 2 {
+        if flags.had_postcode && words.len() >= 3 {
+            // With a postcode anchor, the LAST word is most likely the
+            // locality (Belgian convention). Split it off the street
+            // candidate so the executor's exact street index hits.
             let last = words.last().copied().unwrap_or("");
+            let street_part = words[..words.len() - 1].join(" ");
+            if !street_part.is_empty() {
+                hypothesis.street_candidates.push((street_part, 1.0));
+            }
             if !last.is_empty() {
-                hypothesis
-                    .locality_candidates
-                    .push((last.to_string(), 0.5));
+                hypothesis.locality_candidates.push((last.to_string(), 0.5));
                 flags.had_locality = true;
+            }
+            // Also keep the full remainder as a low-weight street
+            // candidate — covers cases where the locality is multi-word.
+            hypothesis.street_candidates.push((remainder, 0.3));
+        } else {
+            // No postcode → keep both interpretations. The executor's
+            // locality scorer will prefer the right one.
+            hypothesis.street_candidates.push((remainder.clone(), 1.0));
+            if words.len() >= 2 {
+                let last = words.last().copied().unwrap_or("");
+                if !last.is_empty() {
+                    hypothesis.locality_candidates.push((last.to_string(), 0.5));
+                    flags.had_locality = true;
+                }
             }
         }
     }
@@ -120,9 +137,7 @@ fn extract_postcode(text: &str) -> Option<String> {
 
 fn house_number_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"\b\d+[A-Za-z]?(?:[-/]\d+[A-Za-z]?)?\b").expect("valid regex")
-    })
+    RE.get_or_init(|| Regex::new(r"\b\d+[A-Za-z]?(?:[-/]\d+[A-Za-z]?)?\b").expect("valid regex"))
 }
 
 fn extract_house_number(text: &str) -> Option<String> {
