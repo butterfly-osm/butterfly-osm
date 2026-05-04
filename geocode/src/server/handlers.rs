@@ -17,6 +17,17 @@
 //! response header. Axum's `Json(...)` responder always serves
 //! `application/json`, so the GeoJSON path bypasses it and builds a
 //! [`Response`] manually with the proper header.
+//!
+//! ## Multi-country dispatch (#96)
+//!
+//! - **Forward**: caller may pin `country=<ISO2>` to bypass the
+//!   routing classifier; otherwise the classifier returns a posterior
+//!   and the handler picks the top country with a loaded shard. The
+//!   control-plane single-shard pipeline runs against that shard.
+//! - **Reverse**: lat/lon → [`crate::routing::country_for_point`]
+//!   picks the most-specific bbox-containing country; falls back to
+//!   the union of all loaded shards' nearest results if the point
+//!   sits outside every known bbox.
 
 use std::sync::Arc;
 
@@ -31,7 +42,7 @@ use crate::control::budget::compute_budget;
 use crate::geocoder::executor::{
     GeocodedResult, apply_rerank, build_nearest_result, execute_with_control, reason,
 };
-use crate::routing::CountryId;
+use crate::routing::{CountryId, classify_country, country_for_point};
 use crate::shard::reader::haversine_m;
 
 #[derive(Debug, Deserialize)]
@@ -53,6 +64,8 @@ pub struct ReverseParams {
     pub radius_m: Option<f64>,
     #[serde(default)]
     pub limit: Option<usize>,
+    #[serde(default)]
+    pub country: Option<String>,
 }
 
 pub async fn forward(
@@ -64,32 +77,51 @@ pub async fn forward(
         return error_response(StatusCode::BAD_REQUEST, "q must be non-empty");
     }
     // Per C3: enforce a CHARACTER-count limit (max 512 chars), not a
-    // byte-count limit. UTF-8 chars are 1-4 bytes; the previous
-    // `String::len()` byte check let through long ASCII inputs and
-    // rejected short multi-byte ones.
+    // byte-count limit.
     if params.q.chars().count() > 512 {
         return error_response(StatusCode::BAD_REQUEST, "q too long (max 512 characters)");
     }
     let limit = params.limit.unwrap_or(5).clamp(1, 50);
 
-    let country = match params.country.as_deref() {
+    let pinned_country = match params.country.as_deref() {
         Some(s) => match CountryId::from_iso2(s) {
-            Some(c) => c,
+            Some(c) => Some(c),
             None => {
                 return error_response(
                     StatusCode::BAD_REQUEST,
-                    "country must be an ISO 3166-1 alpha-2 code (MVP supports BE only)",
+                    "country must be an ISO 3166-1 alpha-2 code (supported: BE, FR, NL, LU, DE, AT, CH)",
                 );
             }
         },
-        None => CountryId::BE,
+        None => None,
     };
-    if country != CountryId::BE {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "MVP supports BE only — multi-country routing tracked in #96",
-        );
-    }
+
+    // Pick the dispatch country: either pinned (must have a loaded
+    // shard) or classifier top-1 with a loaded shard.
+    let dispatch_country = match pinned_country {
+        Some(c) => {
+            if !state.shards.contains_key(&c) {
+                return error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    &format!(
+                        "no shard loaded for country={} (loaded: {})",
+                        c.iso2(),
+                        state.loaded_countries().join(", ")
+                    ),
+                );
+            }
+            c
+        }
+        None => {
+            let posterior = classify_country(&params.q);
+            match state.pick_shard(&posterior) {
+                Some((c, _)) => c,
+                None => {
+                    return error_response(StatusCode::SERVICE_UNAVAILABLE, "no shards loaded");
+                }
+            }
+        }
+    };
 
     let include_debug = params
         .include
@@ -107,41 +139,49 @@ pub async fn forward(
         Admission(crate::control::AdmissionError),
     }
 
-    // Per C6: geocode work is CPU-bound. Run on the blocking pool so
-    // we don't starve the async runtime thread pool. Inside the blocking
-    // task we (1) parse via the configured backend (heuristic / neural —
-    // #98 Phase 1), (2) recompute the budget against live shard
-    // statistics per #97 §1, (3) execute under the control-plane hooks
-    // so admission/fanout/recombination metrics fire, and finally
-    // (4) layer the GBDT rerank + action-threshold pass on top of the
-    // control-plane results when a model is configured (#96 §Confidence
-    // Model). The rerank step is a no-op when `rerank_model` is None.
+    // Per C6: geocode work is CPU-bound. Run on the blocking pool.
+    // Inside the blocking task we (1) parse via the configured backend
+    // (heuristic / neural — #98 Phase 1), (2) recompute the budget
+    // against live shard statistics per #97 §1, (3) execute under the
+    // control-plane hooks so admission/fanout/recombination metrics
+    // fire, and finally (4) layer the GBDT rerank + action-threshold
+    // pass on top of the control-plane results when a model is
+    // configured. The rerank step is a no-op when `rerank_model` is
+    // None.
     let q_text = params.q.clone();
     let state_clone = Arc::clone(&state);
     let join_result: Result<Outcome, _> = tokio::task::spawn_blocking(move || {
-        let mut parsed = match state_clone
-            .parser
-            .parse(&q_text, country, &state_clone.shard)
-        {
+        let shard = state_clone
+            .shards
+            .get(&dispatch_country)
+            .expect("dispatch_country verified to be loaded above");
+        let mut parsed = match state_clone.parser.parse(&q_text, dispatch_country, shard) {
             Ok(p) => p,
             Err(e) => {
                 return Outcome::ParserFailed(e.to_string(), state_clone.parser.name());
             }
         };
-        let stats = state_clone.shard.stats();
+        // Collapse country_candidates to the dispatch country so the
+        // executor's clean-query fast path can fire (`is_clean()`
+        // requires len == 1).
+        parsed.country_candidates = vec![(dispatch_country, 1.0)];
+        let stats = shard.stats();
         parsed.execution_budget = compute_budget(&parsed, stats, state_clone.control.budget_policy);
-        let raw =
-            match execute_with_control(&parsed, &state_clone.shard, limit, &state_clone.control) {
-                Ok(r) => r,
-                Err(e) => return Outcome::Admission(e),
-            };
-        let (ranked, action) = apply_rerank(
+        let raw = match execute_with_control(&parsed, shard, limit, &state_clone.control) {
+            Ok(r) => r,
+            Err(e) => return Outcome::Admission(e),
+        };
+        let (mut ranked, action) = apply_rerank(
             raw,
             &parsed,
-            &state_clone.shard,
+            shard,
             state_clone.rerank_model.as_ref(),
             &state_clone.confidence_config,
         );
+        // Tag every result with the country it came from.
+        for r in &mut ranked {
+            r.country = Some(dispatch_country.iso2());
+        }
         Outcome::Ok(ranked, action)
     })
     .await;
@@ -165,14 +205,14 @@ pub async fn forward(
     state
         .control
         .general
-        .record_per_country_fanout(country.iso2(), results.len() as u32);
+        .record_per_country_fanout(dispatch_country.iso2(), results.len() as u32);
 
     if accept_geojson(&headers) {
         geojson_response(&results, include_debug, action)
     } else {
         Json(ForwardResponse {
             query: params.q,
-            country: country.iso2(),
+            country: dispatch_country.iso2(),
             confidence: action.as_str(),
             count: results.len(),
             results: results
@@ -200,29 +240,79 @@ pub async fn reverse(
     let lat = params.lat;
     let lon = params.lon;
 
-    // Per C6: spatial query (R-tree traversal + haversine) is also
-    // CPU-bound — `spawn_blocking` keeps the async pool free.
+    let pinned: Option<CountryId> = match params.country.as_deref() {
+        Some(s) => match CountryId::from_iso2(s) {
+            Some(c) => Some(c),
+            None => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "country must be an ISO 3166-1 alpha-2 code (supported: BE, FR, NL, LU, DE, AT, CH)",
+                );
+            }
+        },
+        None => None,
+    };
+    if let Some(c) = pinned
+        && !state.shards.contains_key(&c)
+    {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &format!(
+                "no shard loaded for country={} (loaded: {})",
+                c.iso2(),
+                state.loaded_countries().join(", ")
+            ),
+        );
+    }
+
     let state_clone = Arc::clone(&state);
     let results = match tokio::task::spawn_blocking(move || -> Vec<GeocodedResult> {
-        let hits = state_clone.shard.nearest_within(lat, lon, radius, limit);
-        let mut results: Vec<GeocodedResult> = Vec::with_capacity(hits.len());
-        for (rec, dist) in &hits {
-            let score = 1.0 - (dist / radius).clamp(0.0, 1.0) as f32;
-            results.push(build_nearest_result(rec, score, reason::NEAREST));
-        }
+        let target_country: Option<CountryId> = pinned.or_else(|| country_for_point(lat, lon));
 
-        if results.is_empty()
-            && let Some(rec) = state_clone.shard.nearest(lat, lon)
+        let query_shard =
+            |shard: &crate::shard::reader::Shard, c: CountryId| -> Vec<GeocodedResult> {
+                let hits = shard.nearest_within(lat, lon, radius, limit);
+                let mut results: Vec<GeocodedResult> = Vec::with_capacity(hits.len());
+                for (rec, dist) in &hits {
+                    let score = 1.0 - (dist / radius).clamp(0.0, 1.0) as f32;
+                    let mut r = build_nearest_result(rec, score, reason::NEAREST);
+                    r.country = Some(c.iso2());
+                    results.push(r);
+                }
+                results
+            };
+
+        // Path A: targeted country has a loaded shard.
+        if let Some(c) = target_country
+            && let Some(shard) = state_clone.shards.get(&c)
         {
-            let _dist = haversine_m(lat, lon, rec.lat, rec.lon);
-            results.push(build_nearest_result(
-                &rec,
-                0.0,
-                reason::NEAREST_OUT_OF_RADIUS,
-            ));
+            let results = query_shard(shard, c);
+            if !results.is_empty() {
+                return results;
+            }
+            // Out-of-radius fallback for the targeted shard.
+            if let Some(rec) = shard.nearest(lat, lon) {
+                let _dist = haversine_m(lat, lon, rec.lat, rec.lon);
+                let mut r = build_nearest_result(&rec, 0.0, reason::NEAREST_OUT_OF_RADIUS);
+                r.country = Some(c.iso2());
+                return vec![r];
+            }
         }
 
-        results
+        // Path B: no targeted country (point outside known bboxes) or
+        // targeted country has no shard. Query every loaded shard,
+        // merge, rerank.
+        let mut all: Vec<GeocodedResult> = Vec::new();
+        for (&c, shard) in &state_clone.shards {
+            all.extend(query_shard(shard, c));
+        }
+        all.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        all.truncate(limit);
+        all
     })
     .await
     {
@@ -256,7 +346,12 @@ fn _health(state: Arc<ServerState>) -> HealthResponse {
         status: "ok",
         version: state.version,
         uptime_seconds: state.started_at.elapsed().as_secs(),
-        record_count: state.shard.record_count() as u64,
+        record_count: state.total_record_count() as u64,
+        countries: state
+            .loaded_countries()
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect(),
     }
 }
 
@@ -329,6 +424,8 @@ struct ForwardItem {
     housenumber: String,
     postcode: String,
     locality: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    country: Option<String>,
     score: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason_codes: Option<Vec<String>>,
@@ -343,6 +440,7 @@ impl ForwardItem {
             housenumber: r.housenumber.clone(),
             postcode: r.postcode.clone(),
             locality: r.locality.clone(),
+            country: r.country.map(|s| s.to_string()),
             score: r.score,
             reason_codes: if include_debug {
                 Some(r.reason_codes.iter().map(|c| c.to_string()).collect())
@@ -358,7 +456,10 @@ struct HealthResponse {
     status: &'static str,
     version: &'static str,
     uptime_seconds: u64,
+    /// Total addresses across every loaded shard.
     record_count: u64,
+    /// ISO2 codes for every shard the server has open.
+    countries: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -381,16 +482,24 @@ fn to_geojson(
                 "locality": r.locality,
                 "score": r.score,
             });
-            if include_debug && let serde_json::Value::Object(ref mut m) = props {
-                m.insert(
-                    "reason_codes".to_string(),
-                    serde_json::Value::Array(
-                        r.reason_codes
-                            .iter()
-                            .map(|s| serde_json::Value::String(s.to_string()))
-                            .collect(),
-                    ),
-                );
+            if let serde_json::Value::Object(ref mut m) = props {
+                if let Some(c) = r.country {
+                    m.insert(
+                        "country".to_string(),
+                        serde_json::Value::String(c.to_string()),
+                    );
+                }
+                if include_debug {
+                    m.insert(
+                        "reason_codes".to_string(),
+                        serde_json::Value::Array(
+                            r.reason_codes
+                                .iter()
+                                .map(|s| serde_json::Value::String(s.to_string()))
+                                .collect(),
+                        ),
+                    );
+                }
             }
             serde_json::json!({
                 "type": "Feature",

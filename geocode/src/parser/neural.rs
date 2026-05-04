@@ -140,7 +140,7 @@ mod tests {
                 lon: 4.401,
             },
         ];
-        build_shard(&path, addrs).unwrap();
+        build_shard(&path, crate::routing::CountryId::BE, addrs).unwrap();
         (dir, Shard::open(&path).unwrap())
     }
 
@@ -162,6 +162,11 @@ mod tests {
             .parse("Rue Wayez 122 1070 Anderlecht", &shard)
             .unwrap();
         assert!(!parsed.hypotheses.is_empty());
-        assert_eq!(parsed.country_candidates.len(), 1);
+        // Multi-country classifier returns one entry per supported
+        // country. The merged neural posterior may stay flat for the
+        // shipped tiny model (single-country output head) — the
+        // top-1 country must still be Belgium given the input text.
+        assert!(!parsed.country_candidates.is_empty());
+        assert_eq!(parsed.country_candidates[0].0, CountryId::BE);
     }
 }

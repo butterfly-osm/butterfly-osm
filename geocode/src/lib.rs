@@ -73,11 +73,11 @@ pub mod tagger;
 pub mod types;
 
 pub use confidence::{Confidence, ConfidenceConfig, Features, GbdtModel};
-pub use geocoder::executor::{GeocodedResult, execute, execute_with_rerank};
-pub use parser::heuristic::parse_heuristic;
+pub use geocoder::executor::{GeocodedResult, execute, execute_across_shards, execute_with_rerank};
+pub use parser::heuristic::{parse_heuristic, parse_with_classifier};
 pub use parser::neural::NeuralParser;
 pub use parser::{HeuristicBackend, NeuralBackend, ParserBackend};
-pub use routing::{CountryId, classify_country};
+pub use routing::{CountryId, classify_country, country_for_point, supported_countries_for_point};
 pub use shard::reader::Shard;
 pub use types::{
     ExecutionBudget, FieldMask, ParseHypothesis, ParsedQuery, RecoveryFlags, RetrievalPolicy,
