@@ -593,6 +593,7 @@ dependencies = [
  "crc",
  "http-body-util",
  "memmap2 0.9.10",
+ "metrics",
  "once_cell",
  "osmpbf",
  "rapidfuzz",
