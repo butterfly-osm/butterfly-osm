@@ -342,10 +342,7 @@ pub async fn download_verified(
             pb.tick();
         }
     }
-    tmp_file
-        .flush()
-        .await
-        .context("flushing staging file")?;
+    tmp_file.flush().await.context("flushing staging file")?;
     drop(tmp_file);
     if let Some(pb) = progress {
         pb.finish_and_clear();
@@ -363,9 +360,7 @@ pub async fn download_verified(
              be returning a stub or squat page. Target left untouched."
         );
     }
-    if !magic_checked
-        && let Some(expected) = opts.magic_prefix
-    {
+    if !magic_checked && let Some(expected) = opts.magic_prefix {
         let _ = tokio::fs::remove_file(&tmp_path).await;
         bail!(
             "GET {url}: body ({total} bytes) smaller than required magic prefix ({} bytes). \
@@ -406,9 +401,15 @@ pub async fn download_verified(
     }
 
     if first_download {
-        Ok(Outcome::Downloaded { bytes: total, sha256: sha })
+        Ok(Outcome::Downloaded {
+            bytes: total,
+            sha256: sha,
+        })
     } else {
-        Ok(Outcome::Updated { bytes: total, sha256: sha })
+        Ok(Outcome::Updated {
+            bytes: total,
+            sha256: sha,
+        })
     }
 }
 
@@ -461,7 +462,6 @@ pub fn hash_file_if_exists(path: &Path) -> Option<[u8; 32]> {
     Some(out)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,14 +510,18 @@ mod tests {
         let target = dir.path().join("feed.zip");
         let opts = VerifiedOptions::for_extension(&target);
 
-        let first = download_verified(&server.uri(), &target, &opts).await.unwrap();
+        let first = download_verified(&server.uri(), &target, &opts)
+            .await
+            .unwrap();
         assert!(matches!(first, Outcome::Downloaded { .. }));
         assert_eq!(std::fs::read(&target).unwrap(), body);
         // Sidecar must exist.
         let sidecar = dir.path().join("feed.zip.sha256");
         assert!(sidecar.exists());
 
-        let second = download_verified(&server.uri(), &target, &opts).await.unwrap();
+        let second = download_verified(&server.uri(), &target, &opts)
+            .await
+            .unwrap();
         assert!(matches!(second, Outcome::Unchanged));
     }
 
@@ -541,14 +545,22 @@ mod tests {
         let sidecar = sidecar_path(&target);
         let opts = VerifiedOptions::for_extension(&target);
 
-        let err = download_verified(&server.uri(), &target, &opts).await.unwrap_err();
+        let err = download_verified(&server.uri(), &target, &opts)
+            .await
+            .unwrap_err();
         let msg = format!("{err:#}");
         assert!(
             msg.contains("magic prefix mismatch"),
             "expected magic-prefix error, got: {msg}"
         );
-        assert!(!target.exists(), "target must not exist after rejected download");
-        assert!(!sidecar.exists(), "sidecar must not exist after rejected download");
+        assert!(
+            !target.exists(),
+            "target must not exist after rejected download"
+        );
+        assert!(
+            !sidecar.exists(),
+            "sidecar must not exist after rejected download"
+        );
         assert!(!tmp.exists(), ".tmp must not linger");
     }
 
@@ -566,7 +578,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let target = dir.path().join("feed.zip");
         let opts = VerifiedOptions::for_extension(&target);
-        let err = download_verified(&server.uri(), &target, &opts).await.unwrap_err();
+        let err = download_verified(&server.uri(), &target, &opts)
+            .await
+            .unwrap_err();
         assert!(format!("{err:#}").contains("body too small"));
         assert!(!target.exists());
     }
@@ -584,7 +598,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let target = dir.path().join("payload.bin");
         let opts = VerifiedOptions::for_extension(&target);
-        let outcome = download_verified(&server.uri(), &target, &opts).await.unwrap();
+        let outcome = download_verified(&server.uri(), &target, &opts)
+            .await
+            .unwrap();
         assert!(matches!(outcome, Outcome::Downloaded { .. }));
         assert_eq!(std::fs::read(&target).unwrap(), body);
         // No sidecar for unknown extensions.
