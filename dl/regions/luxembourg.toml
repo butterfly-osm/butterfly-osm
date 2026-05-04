@@ -1,0 +1,27 @@
+# Butterfly region index — Luxembourg
+#
+# OSM PBF for Luxembourg from Geofabrik. butterfly-route consumes
+# this as `luxembourg.pbf` under `data/luxembourg/`; butterfly-geocode
+# (#96) plans to pair it with the BD-Adresses authoritative dataset
+# on the side.
+#
+# Authoritative address dataset (NOT fetched by butterfly-dl yet —
+# tracked separately in geocode-data/SOURCES.md):
+#
+#   Adresses géoréférencées — BD-L-AD (BD-Adresses)
+#   Landing page:  https://data.public.lu/en/datasets/adresses-georeferencees-bd-adresses/
+#   API (resource discovery): https://data.public.lu/api/1/datasets/adresses-georeferencees-bd-adresses/
+#   Publisher:     Administration du Cadastre et de la Topographie (ACT)
+#   License:       Creative Commons Attribution 4.0 (CC-BY 4.0)
+#   Format:        Shapefile / CSV / GeoJSON variants, ~250 k addresses
+#   Cadence:       roughly monthly
+#
+# Direct file URLs on data.public.lu are content-hashed and rotate
+# per release; the geocode importer will resolve them via the
+# datasets API (`/api/1/datasets/<slug>/`) at fetch time.
+#
+# No transit feeds in this index — Luxembourg's national GTFS
+# (mobiliteit.lu) is out of scope for the geocode-prep pass.
+
+[pbf]
+url = "https://download.geofabrik.de/europe/luxembourg-latest.osm.pbf"
