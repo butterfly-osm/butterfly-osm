@@ -48,6 +48,7 @@ const NETHERLANDS_INDEX_TOML: &str = include_str!("../regions/netherlands.toml")
 const LUXEMBOURG_INDEX_TOML: &str = include_str!("../regions/luxembourg.toml");
 const GERMANY_INDEX_TOML: &str = include_str!("../regions/germany.toml");
 const AUSTRIA_INDEX_TOML: &str = include_str!("../regions/austria.toml");
+const SWITZERLAND_INDEX_TOML: &str = include_str!("../regions/switzerland.toml");
 
 /// Parsed region index. Each field is an optional list so partial
 /// regions (e.g. one without transit feeds) are a valid shape.
@@ -89,6 +90,7 @@ impl RegionIndex {
             "luxembourg" => LUXEMBOURG_INDEX_TOML,
             "germany" => GERMANY_INDEX_TOML,
             "austria" => AUSTRIA_INDEX_TOML,
+            "switzerland" => SWITZERLAND_INDEX_TOML,
             other => bail!(
                 "unknown region '{other}'. Supported regions are bundled \
                  in `dl/regions/`. Add a new one with a new TOML file + \
@@ -303,6 +305,7 @@ pub fn shipped_regions() -> &'static [&'static str] {
         "germany",
         "luxembourg",
         "netherlands",
+        "switzerland",
     ]
 }
 
@@ -323,6 +326,51 @@ mod tests {
         assert!(gtfs_ids.contains(&"delijn"));
         assert!(gtfs_ids.contains(&"tec"));
         assert_eq!(idx.netex_epip[0].id, "stib");
+    }
+
+    #[test]
+    fn cross_border_region_indexes_parse_with_pbf_only() {
+        // Cross-border cluster #1 (BE/FR/NL/LU/DE) plus #2 (AT/DE/CH).
+        // Belgium is exercised separately; the rest carry only a [pbf]
+        // section in this pass — authoritative address datasets are
+        // documented in geocode-data/SOURCES.md and will be wired up
+        // by the geocode importer once it lands.
+        for region in [
+            "france",
+            "netherlands",
+            "luxembourg",
+            "germany",
+            "austria",
+            "switzerland",
+        ] {
+            let idx = RegionIndex::load(region)
+                .unwrap_or_else(|e| panic!("region '{region}' must load: {e:#}"));
+            assert!(
+                idx.pbf.is_some(),
+                "region '{region}' must carry a [pbf] section",
+            );
+            assert!(
+                idx.gtfs.is_empty(),
+                "region '{region}' is not expected to ship GTFS in this pass",
+            );
+            assert!(
+                idx.netex_epip.is_empty(),
+                "region '{region}' is not expected to ship NeTEx in this pass",
+            );
+            let pbf_url = &idx.pbf.as_ref().unwrap().url;
+            assert!(
+                pbf_url.starts_with("https://download.geofabrik.de/"),
+                "region '{region}' PBF URL should be Geofabrik: {pbf_url}",
+            );
+        }
+    }
+
+    #[test]
+    fn shipped_regions_lists_every_loadable_region() {
+        for name in shipped_regions() {
+            RegionIndex::load(name)
+                .unwrap_or_else(|e| panic!("shipped region '{name}' must load: {e:#}"));
+        }
     }
 
     #[test]

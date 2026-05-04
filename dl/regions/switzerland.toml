@@ -1,0 +1,31 @@
+# Butterfly region index — Switzerland
+#
+# OSM PBF for Switzerland from Geofabrik. butterfly-route consumes
+# this as `switzerland.pbf` under `data/switzerland/`;
+# butterfly-geocode (#96) plans to pair it with the swisstopo
+# building-address register on the side.
+#
+# Authoritative address dataset (NOT fetched by butterfly-dl yet —
+# tracked separately in geocode-data/SOURCES.md):
+#
+#   Amtliches Verzeichnis der Gebäudeadressen (swisstopo)
+#   Landing page (opendata.swiss):
+#     https://opendata.swiss/de/dataset/amtliches-verzeichnis-der-gebaudeadressen
+#   Product page (swisstopo):
+#     https://www.swisstopo.admin.ch/de/amtliches-verzeichnis-der-gebaeudeadressen
+#   STAC API root:  https://data.geo.admin.ch/api/stac/v0.9/collections/ch.swisstopo.amtliches-gebaeudeadressverzeichnis
+#   Publisher:      Bundesamt für Landestopografie (swisstopo)
+#   License:        Open Government Data (OGD) — free use, attribution
+#   Format:         CSV / GDB / Interlis (XTF), ~2.5 M addresses
+#   Cadence:        weekly
+#
+# Direct file URLs are STAC-asset-hashed and rotate per release;
+# the geocode importer will resolve them via the STAC API
+# (`/collections/<id>/items/<latest>`) at fetch time.
+#
+# No transit feeds in this index — Swiss GTFS (opentransportdata.swiss)
+# is excellent and a candidate for a future addition, but is out
+# of scope for the geocode-prep pass.
+
+[pbf]
+url = "https://download.geofabrik.de/europe/switzerland-latest.osm.pbf"
