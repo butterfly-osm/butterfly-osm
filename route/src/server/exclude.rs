@@ -15,7 +15,7 @@ use rayon::prelude::*;
 
 use crate::formats::way_attrs;
 use crate::formats::{CchTopo, CchWeights, EbgNodes};
-use crate::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
+use crate::matrix::bucket_ch::{DownAdjFlat, DownReverseAdjFlat, UpAdjFlat};
 use crate::profile_abi::class_bits;
 
 /// Exclude flags (bitmask, per EBG edge)
@@ -29,8 +29,10 @@ pub struct ExcludeWeights {
     pub dist_weights: CchWeights,
     pub time_up_flat: UpAdjFlat,
     pub time_down_flat: DownReverseAdjFlat,
+    pub time_down_fwd_flat: DownAdjFlat,
     pub dist_up_flat: UpAdjFlat,
     pub dist_down_flat: DownReverseAdjFlat,
+    pub dist_down_fwd_flat: DownAdjFlat,
 }
 
 /// Parse exclude parameter string into bitmask.
@@ -90,10 +92,18 @@ pub fn build_edge_exclude_flags(
     }
 
     let attrs = way_attrs::read_all(way_attrs_path)?;
+    build_edge_exclude_flags_from_attrs(ebg_nodes, &attrs)
+}
 
+/// Same as `build_edge_exclude_flags` but takes pre-loaded attrs (e.g.
+/// decoded from a mmap-backed `mode/<mode>/way_attrs` section).
+pub fn build_edge_exclude_flags_from_attrs(
+    ebg_nodes: &EbgNodes,
+    attrs: &[way_attrs::WayAttr],
+) -> anyhow::Result<Vec<u8>> {
     // Build lookup: way_id (lower 32 bits) → exclude flags
     let mut way_flags: rustc_hash::FxHashMap<u32, u8> = rustc_hash::FxHashMap::default();
-    for attr in &attrs {
+    for attr in attrs {
         let way_id_32 = (attr.way_id & 0xFFFF_FFFF) as u32;
         let mut flags = 0u8;
 
@@ -214,7 +224,7 @@ pub fn recustomize_weights(
         // DOWN edges (sorted by target rank)
         for &i in &sorted_down_indices[u] {
             let v = topo.down_targets[i] as usize;
-            if !topo.down_is_shortcut[i] {
+            if !topo.down_is_shortcut.bit(i) {
                 // Base edge: check target for exclusion
                 let v_filtered = topo.rank_to_filtered[v] as usize;
                 let v_orig = filtered_to_original[v_filtered] as usize;
@@ -239,7 +249,7 @@ pub fn recustomize_weights(
         let up_end = topo.up_offsets[u + 1] as usize;
         for i in up_start..up_end {
             let v = topo.up_targets[i] as usize;
-            if !topo.up_is_shortcut[i] {
+            if !topo.up_is_shortcut.bit(i) {
                 let v_filtered = topo.rank_to_filtered[v] as usize;
                 let v_orig = filtered_to_original[v_filtered] as usize;
 
@@ -263,8 +273,8 @@ pub fn recustomize_weights(
     triangle_relax(topo, &mut up_weights, &mut down_weights, &rev_down);
 
     CchWeights {
-        up: up_weights,
-        down: down_weights,
+        up: up_weights.into(),
+        down: down_weights.into(),
         up_middle: base_weights.up_middle.clone(),
         down_middle: base_weights.down_middle.clone(),
     }
@@ -317,7 +327,7 @@ fn recustomize_weights_sparse_triangle(
         // DOWN edges (sorted by target rank)
         for &i in &sorted_down_indices[u] {
             let v = topo.down_targets[i] as usize;
-            if !topo.down_is_shortcut[i] {
+            if !topo.down_is_shortcut.bit(i) {
                 let v_filtered = topo.rank_to_filtered[v] as usize;
                 let v_orig = filtered_to_original[v_filtered] as usize;
 
@@ -340,7 +350,7 @@ fn recustomize_weights_sparse_triangle(
         let up_end = topo.up_offsets[u + 1] as usize;
         for i in up_start..up_end {
             let v = topo.up_targets[i] as usize;
-            if !topo.up_is_shortcut[i] {
+            if !topo.up_is_shortcut.bit(i) {
                 let v_filtered = topo.rank_to_filtered[v] as usize;
                 let v_orig = filtered_to_original[v_filtered] as usize;
 
@@ -372,8 +382,8 @@ fn recustomize_weights_sparse_triangle(
     );
 
     CchWeights {
-        up: up_weights,
-        down: down_weights,
+        up: up_weights.into(),
+        down: down_weights.into(),
         up_middle: base_weights.up_middle.clone(),
         down_middle: base_weights.down_middle.clone(),
     }
@@ -619,10 +629,12 @@ pub fn compute_exclude_weights(
         || UpAdjFlat::build(topo, &time_weights),
         || DownReverseAdjFlat::build(topo, &time_weights),
     );
+    let time_down_fwd_flat = DownAdjFlat::build(topo, &time_weights);
     let (dist_up_flat, dist_down_flat) = rayon::join(
         || UpAdjFlat::build(topo, &dist_weights),
         || DownReverseAdjFlat::build(topo, &dist_weights),
     );
+    let dist_down_fwd_flat = DownAdjFlat::build(topo, &dist_weights);
 
     tracing::info!(
         exclude_mask,
@@ -635,8 +647,10 @@ pub fn compute_exclude_weights(
         dist_weights,
         time_up_flat,
         time_down_flat,
+        time_down_fwd_flat,
         dist_up_flat,
         dist_down_flat,
+        dist_down_fwd_flat,
     }
 }
 

@@ -291,9 +291,10 @@ pub fn validate_cch_correctness(
             mismatches += 1;
             max_diff = max_diff.max(r.diff.abs());
             if let Some(f) = &r.failure
-                && failures.len() < 1000 {
-                    failures.push(f.clone());
-                }
+                && failures.len() < 1000
+            {
+                failures.push(f.clone());
+            }
         }
         total_bidi_ns += r.bidi_ns;
         total_baseline_ns += r.baseline_ns;

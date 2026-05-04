@@ -170,8 +170,7 @@ async fn fetch_one(url: &str, target: &std::path::Path, is_realtime: bool) -> Fe
     // have it set (via `for_extension`), so the translation below
     // picks up the correct variant. For RT we disabled it, so we
     // treat every successful fetch as `Downloaded`.
-    let had_previous =
-        !is_realtime && butterfly_dl::verified::read_sidecar(target).is_some();
+    let had_previous = !is_realtime && butterfly_dl::verified::read_sidecar(target).is_some();
     match download_verified(url, target, &opts).await {
         Ok(outcome) => FeedFetchOutcome::from_verified(outcome, had_previous),
         Err(e) => FeedFetchOutcome::Failed {

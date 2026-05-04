@@ -1057,9 +1057,10 @@ fn find_file(base: &Path, candidates: &[String]) -> Option<PathBuf> {
         // Also try going up one level if base doesn't have the file
         let parent_path = base.parent().map(|p| p.join(candidate));
         if let Some(p) = parent_path
-            && p.exists() {
-                return Some(p);
-            }
+            && p.exists()
+        {
+            return Some(p);
+        }
     }
     None
 }
@@ -3315,7 +3316,7 @@ fn build_down_rev(topo: &butterfly_route::formats::CchTopo) -> DownReverseAdj {
 
     // Count incoming DOWN edges for each node
     let mut counts = vec![0u32; n_nodes];
-    for &target in &topo.down_targets {
+    for &target in topo.down_targets.iter() {
         counts[target as usize] += 1;
     }
 

@@ -360,8 +360,8 @@ pub fn isochrone_hull(
     let threshold_ds = (threshold_s * 10.0) as u32;
 
     let settled = run_phast_bounded_fast(
-        &mode_data.cch_topo,
-        &mode_data.cch_weights,
+        &mode_data.up_adj_flat,
+        &mode_data.down_adj_flat,
         origin_rank,
         threshold_ds,
         mode,

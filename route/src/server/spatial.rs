@@ -245,10 +245,7 @@ impl SpatialIndex {
 
             let word = point.ebg_id as usize / 64;
             let bit = point.ebg_id as usize % 64;
-            if word < mask.len()
-                && (mask[word] & (1u64 << bit)) != 0
-                && seen.insert(point.ebg_id)
-            {
+            if word < mask.len() && (mask[word] & (1u64 << bit)) != 0 && seen.insert(point.ebg_id) {
                 result.push(point.ebg_id);
                 if result.len() >= k {
                     break;
@@ -307,10 +304,7 @@ impl SpatialIndex {
 
             let word = point.ebg_id as usize / 64;
             let bit = point.ebg_id as usize % 64;
-            if word < mask.len()
-                && (mask[word] & (1u64 << bit)) != 0
-                && seen.insert(point.ebg_id)
-            {
+            if word < mask.len() && (mask[word] & (1u64 << bit)) != 0 && seen.insert(point.ebg_id) {
                 result.push((point.ebg_id, point.coords[0], point.coords[1], dist_m));
                 if result.len() >= k {
                     break;

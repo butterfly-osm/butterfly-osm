@@ -161,195 +161,10 @@ impl FilteredEbg {
     }
 }
 
-/// Filter a directed graph to its largest strongly connected component.
-/// Uses Kosaraju's algorithm (iterative, stack-based — no recursion).
-///
-/// Returns: (offsets, heads, original_arc_idx, filtered_to_original, original_to_filtered, n_scc_nodes)
-#[allow(dead_code, clippy::type_complexity)]
-fn largest_scc_filter(
-    n: usize,
-    offsets: &[u64],
-    heads: &[u32],
-    original_arc_idx: &[u32],
-    filtered_to_original: &[u32],
-    n_original: usize,
-) -> (Vec<u64>, Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>, usize) {
-    if n == 0 {
-        return (
-            vec![0],
-            vec![],
-            vec![],
-            vec![],
-            vec![u32::MAX; n_original],
-            0,
-        );
-    }
-
-    // Build reverse graph
-    let mut rev_offsets = vec![0u64; n + 1];
-    for u in 0..n {
-        let start = offsets[u] as usize;
-        let end = offsets[u + 1] as usize;
-        for &v in &heads[start..end] {
-            rev_offsets[v as usize + 1] += 1;
-        }
-    }
-    for i in 1..=n {
-        rev_offsets[i] += rev_offsets[i - 1];
-    }
-    let mut rev_heads = vec![0u32; heads.len()];
-    let mut rev_insert = rev_offsets[..n].to_vec();
-    for u in 0..n {
-        let start = offsets[u] as usize;
-        let end = offsets[u + 1] as usize;
-        for &v in &heads[start..end] {
-            let pos = rev_insert[v as usize] as usize;
-            rev_heads[pos] = u as u32;
-            rev_insert[v as usize] += 1;
-        }
-    }
-
-    // Pass 1: Forward DFS, record finish order
-    let mut visited = vec![false; n];
-    let mut finish_order = Vec::with_capacity(n);
-
-    for start in 0..n {
-        if visited[start] {
-            continue;
-        }
-        // Iterative DFS
-        let mut stack: Vec<(u32, u64)> = vec![(start as u32, offsets[start])];
-        visited[start] = true;
-        while let Some((u, next_arc)) = stack.last_mut() {
-            let u_idx = *u as usize;
-            let end = offsets[u_idx + 1];
-            if *next_arc < end {
-                let v = heads[*next_arc as usize];
-                *next_arc += 1;
-                if !visited[v as usize] {
-                    visited[v as usize] = true;
-                    stack.push((v, offsets[v as usize]));
-                }
-            } else {
-                finish_order.push(*u);
-                stack.pop();
-            }
-        }
-    }
-
-    // Pass 2: Reverse DFS in reverse finish order, find SCCs
-    let mut component = vec![u32::MAX; n];
-    let mut comp_id = 0u32;
-    let mut comp_sizes: Vec<usize> = Vec::new();
-
-    for &start in finish_order.iter().rev() {
-        if component[start as usize] != u32::MAX {
-            continue;
-        }
-        let mut size = 0usize;
-        let mut stack: Vec<(u32, u64)> = vec![(start, rev_offsets[start as usize])];
-        component[start as usize] = comp_id;
-        size += 1;
-        while let Some((u, next_arc)) = stack.last_mut() {
-            let u_idx = *u as usize;
-            let end = rev_offsets[u_idx + 1];
-            if *next_arc < end {
-                let v = rev_heads[*next_arc as usize];
-                *next_arc += 1;
-                if component[v as usize] == u32::MAX {
-                    component[v as usize] = comp_id;
-                    size += 1;
-                    stack.push((v, rev_offsets[v as usize]));
-                }
-            } else {
-                stack.pop();
-            }
-        }
-        comp_sizes.push(size);
-        comp_id += 1;
-    }
-
-    // Find largest SCC
-    let largest_comp = comp_sizes
-        .iter()
-        .enumerate()
-        .max_by_key(|&(_, s)| *s)
-        .map(|(i, _)| i as u32)
-        .unwrap_or(0);
-    let largest_size = comp_sizes[largest_comp as usize];
-    let total_removed = n - largest_size;
-
-    eprintln!(
-        "    SCC filter: {} components, largest has {} nodes ({:.1}%), removed {} nodes",
-        comp_sizes.len(),
-        largest_size,
-        largest_size as f64 / n as f64 * 100.0,
-        total_removed,
-    );
-
-    if total_removed == 0 {
-        // Already one big SCC — return as-is
-        return (
-            offsets.to_vec(),
-            heads.to_vec(),
-            original_arc_idx.to_vec(),
-            filtered_to_original.to_vec(),
-            {
-                let mut m = vec![u32::MAX; n_original];
-                for (fi, &oi) in filtered_to_original.iter().enumerate() {
-                    m[oi as usize] = fi as u32;
-                }
-                m
-            },
-            n,
-        );
-    }
-
-    // Rebuild CSR with only largest SCC nodes
-    let mut scc_f2o = Vec::with_capacity(largest_size);
-    let mut old_to_scc = vec![u32::MAX; n];
-    for old_fi in 0..n {
-        if component[old_fi] == largest_comp {
-            old_to_scc[old_fi] = scc_f2o.len() as u32;
-            scc_f2o.push(filtered_to_original[old_fi]);
-        }
-    }
-
-    let mut scc_offsets = Vec::with_capacity(largest_size + 1);
-    let mut scc_heads = Vec::new();
-    let mut scc_arcs = Vec::new();
-
-    for old_fi in 0..n {
-        if component[old_fi] != largest_comp {
-            continue;
-        }
-        scc_offsets.push(scc_heads.len() as u64);
-        let start = offsets[old_fi] as usize;
-        let end = offsets[old_fi + 1] as usize;
-        for ai in start..end {
-            let v = heads[ai] as usize;
-            if component[v] == largest_comp {
-                scc_heads.push(old_to_scc[v]);
-                scc_arcs.push(original_arc_idx[ai]);
-            }
-        }
-    }
-    scc_offsets.push(scc_heads.len() as u64);
-
-    let mut scc_o2f = vec![u32::MAX; n_original];
-    for (fi, &oi) in scc_f2o.iter().enumerate() {
-        scc_o2f[oi as usize] = fi as u32;
-    }
-
-    (
-        scc_offsets,
-        scc_heads,
-        scc_arcs,
-        scc_f2o,
-        scc_o2f,
-        largest_size,
-    )
-}
+// `largest_scc_filter` was removed when SCC filtering was disabled
+// (see comment above on `Self::build_with_arc_filter`). All accessible
+// nodes are kept; dead-end stubs and one-way fragments remain routable
+// and the query handler returns "no route" for unreachable pairs.
 
 pub struct FilteredEbgFile;
 
@@ -422,7 +237,14 @@ impl FilteredEbgFile {
 
     /// Read filtered EBG from file
     pub fn read<P: AsRef<Path>>(path: P) -> Result<FilteredEbg> {
-        let mut reader = BufReader::new(File::open(path.as_ref())?);
+        Self::read_from_reader(BufReader::new(File::open(path.as_ref())?))
+    }
+
+    pub fn read_from_bytes(bytes: &[u8]) -> Result<FilteredEbg> {
+        Self::read_from_reader(std::io::Cursor::new(bytes))
+    }
+
+    fn read_from_reader<R: Read>(mut reader: R) -> Result<FilteredEbg> {
         let mut crc_digest = crc::Digest::new();
 
         // Read header
