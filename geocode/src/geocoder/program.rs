@@ -176,9 +176,16 @@ fn cmp_op(a: &Op, b: &Op) -> Ordering {
             .cmp(&lb.channel.index())
             .then_with(|| la.key.cmp(&lb.key)),
         (Intersect(ca), Intersect(cb)) | (Union(ca), Union(cb)) => cmp_op_vec(ca, cb),
-        (TopkMerge { children: ca, k: ka }, TopkMerge { children: cb, k: kb }) => {
-            cmp_op_vec(ca, cb).then_with(|| ka.cmp(kb))
-        }
+        (
+            TopkMerge {
+                children: ca,
+                k: ka,
+            },
+            TopkMerge {
+                children: cb,
+                k: kb,
+            },
+        ) => cmp_op_vec(ca, cb).then_with(|| ka.cmp(kb)),
         (
             Filter {
                 child: ca,

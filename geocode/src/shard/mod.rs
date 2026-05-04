@@ -36,7 +36,7 @@ pub mod reader;
 pub const MAGIC: u32 = u32::from_le_bytes(*b"BFGS");
 pub const VERSION: u16 = 1;
 pub const HEADER_BYTES: usize = 64;
-pub const RECORD_BYTES: usize = 32;
+pub const RECORD_BYTES: usize = 36;
 pub const FOOTER_BYTES: usize = 16;
 
 #[derive(Debug, Clone)]

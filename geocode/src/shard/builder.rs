@@ -35,8 +35,16 @@ pub fn build_shard<P: AsRef<Path>>(
             .cmp(&b.postcode)
             .then_with(|| an.cmp(&bn))
             .then_with(|| a.housenumber.cmp(&b.housenumber))
-            .then_with(|| a.lat.partial_cmp(&b.lat).unwrap_or(std::cmp::Ordering::Equal))
-            .then_with(|| a.lon.partial_cmp(&b.lon).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| {
+                a.lat
+                    .partial_cmp(&b.lat)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                a.lon
+                    .partial_cmp(&b.lon)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
     });
 
     let mut strings: Vec<u8> = Vec::with_capacity(addrs.len() * 64);
@@ -139,9 +147,8 @@ pub fn build_shard<P: AsRef<Path>>(
     w.write_all(&records_bytes)?;
     w.write_all(&index_bytes)?;
 
-    let mut body = Vec::with_capacity(
-        HEADER_BYTES + strings.len() + records_bytes.len() + index_bytes.len(),
-    );
+    let mut body =
+        Vec::with_capacity(HEADER_BYTES + strings.len() + records_bytes.len() + index_bytes.len());
     body.extend_from_slice(&header);
     body.extend_from_slice(&strings);
     body.extend_from_slice(&records_bytes);
