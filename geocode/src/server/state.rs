@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::confidence::{ConfidenceConfig, GbdtModel};
 use crate::control::admission::AdmissionState;
 use crate::control::{AdmissionPolicy, BudgetPolicy, FanoutConfig, GeneralMetrics};
 use crate::geocoder::executor::ControlPlane;
@@ -15,6 +16,11 @@ pub struct ServerState {
     pub version: &'static str,
     pub control: Arc<ControlPlane>,
     pub admission: AdmissionState,
+    /// Optional GBDT confidence reranker (#96 §Confidence Model). When
+    /// `None`, the executor returns its raw scores untouched (no-model
+    /// fallback path).
+    pub rerank_model: Option<GbdtModel>,
+    pub confidence_config: ConfidenceConfig,
 }
 
 impl ServerState {
@@ -50,6 +56,22 @@ impl ServerState {
             version: env!("CARGO_PKG_VERSION"),
             control,
             admission,
+            rerank_model: None,
+            confidence_config: ConfidenceConfig::default(),
         }
+    }
+
+    /// Builder-style constructor for use with a trained reranker.
+    #[must_use]
+    pub fn with_rerank_model(mut self, model: GbdtModel) -> Self {
+        self.rerank_model = Some(model);
+        self
+    }
+
+    /// Override the threshold knobs (defaults are #96 BE Phase-0).
+    #[must_use]
+    pub fn with_confidence_config(mut self, cfg: ConfidenceConfig) -> Self {
+        self.confidence_config = cfg;
+        self
     }
 }
