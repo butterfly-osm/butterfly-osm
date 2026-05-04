@@ -53,7 +53,8 @@ struct Cli {
 
     /// For region-indexed downloads: restrict to a single section
     /// of the index. Accepted values: `all` (default), `pbf`,
-    /// `transit`. Ignored for Geofabrik single-file downloads.
+    /// `transit`, `addresses`. Ignored for Geofabrik single-file
+    /// downloads.
     #[arg(long, default_value = "all")]
     only: String,
 

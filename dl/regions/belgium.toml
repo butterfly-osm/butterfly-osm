@@ -1,17 +1,21 @@
 # Butterfly region index — Belgium
 #
-# Every file butterfly-route needs to route on Belgium. Fetched in
-# parallel by `butterfly-dl belgium` with extension-based verification
-# (magic prefix + min-bytes + sha256 sidecar + atomic .tmp → rename).
+# Every file butterfly-route + butterfly-geocode need for Belgium.
+# Fetched in parallel by `butterfly-dl belgium` with
+# extension-based verification (magic prefix + min-bytes + sha256
+# sidecar + atomic .tmp → rename).
 #
 # Canonical target paths under the region's data root
 # (default: `./data/belgium`):
 #
-#   belgium.pbf                       ← [pbf]
-#   transit/gtfs/sncb.zip             ← [[gtfs]] id = "sncb"
-#   transit/gtfs/delijn.zip           ← [[gtfs]] id = "delijn"
-#   transit/gtfs/tec.zip              ← [[gtfs]] id = "tec"
-#   transit/netex/stib-epip.xml       ← [[netex_epip]] id = "stib"
+#   belgium.pbf                                ← [pbf]
+#   transit/gtfs/sncb.zip                      ← [[gtfs]] id = "sncb"
+#   transit/gtfs/delijn.zip                    ← [[gtfs]] id = "delijn"
+#   transit/gtfs/tec.zip                       ← [[gtfs]] id = "tec"
+#   transit/netex/stib-epip.xml                ← [[netex_epip]] id = "stib"
+#   addresses/bosa-bevlg.zip                   ← [[address]] id = "bosa-bevlg"
+#   addresses/bosa-bewal.zip                   ← [[address]] id = "bosa-bewal"
+#   addresses/bosa-bebru.zip                   ← [[address]] id = "bosa-bebru"
 #
 # This matches the layout butterfly-route's server already loads
 # from — no migration, no config change downstream.
@@ -34,3 +38,29 @@ url = "https://opendata.tec-wl.be/Current%20GTFS/TEC-GTFS.zip"
 [[netex_epip]]
 id  = "stib"
 url = "https://belgianmobility.blob.core.windows.net/epip-production/epip-stibmivb-bmc-latest.xml"
+
+# Authoritative address sources (#96 §"Data Sources"). BOSA BeSt is
+# the Belgian Federal Public Service BOSA's open address dataset
+# (~6.7M records, monthly cadence, Belgian Open Data License). Three
+# regional ZIPs each containing one CSV; butterfly-geocode's
+# `--csv` build path opens either the ZIP or the unpacked CSV.
+#
+# Verified live 2026-05-04. See `geocode-data/SOURCES.md` for the
+# field mapping contract and update cadence.
+[[address]]
+id     = "bosa-bevlg"
+url    = "https://opendata.bosa.be/download/best/openaddress-bevlg.zip"
+format = "csv-zip"
+source = "bosa"
+
+[[address]]
+id     = "bosa-bewal"
+url    = "https://opendata.bosa.be/download/best/openaddress-bewal.zip"
+format = "csv-zip"
+source = "bosa"
+
+[[address]]
+id     = "bosa-bebru"
+url    = "https://opendata.bosa.be/download/best/openaddress-bebru.zip"
+format = "csv-zip"
+source = "bosa"
