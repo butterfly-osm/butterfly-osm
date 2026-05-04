@@ -26,7 +26,10 @@ use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 
 use super::state::ServerState;
-use crate::geocoder::executor::{GeocodedResult, build_nearest_result, execute, reason};
+use crate::control::budget::compute_budget;
+use crate::geocoder::executor::{
+    GeocodedResult, build_nearest_result, execute_with_control, reason,
+};
 use crate::parser::heuristic::parse_heuristic;
 use crate::routing::CountryId;
 use crate::shard::reader::haversine_m;
@@ -95,21 +98,35 @@ pub async fn forward(
         .unwrap_or(false);
 
     // Per C6: geocode work is CPU-bound. Run on the blocking pool so
-    // we don't starve the async runtime thread pool.
+    // we don't starve the async runtime thread pool. Inside the blocking
+    // task we (1) parse, (2) recompute the budget against live shard
+    // statistics per #97 §1, then (3) execute under the control-plane
+    // hooks so admission/fanout/recombination metrics fire.
     let q_text = params.q.clone();
     let state_clone = Arc::clone(&state);
-    let results = match tokio::task::spawn_blocking(move || {
-        let parsed = parse_heuristic(&q_text, country);
-        execute(&parsed, &state_clone.shard, limit)
-    })
-    .await
-    {
-        Ok(r) => r,
+    let exec_result: Result<Result<Vec<GeocodedResult>, _>, _> =
+        tokio::task::spawn_blocking(move || {
+            let mut parsed = parse_heuristic(&q_text, country);
+            let stats = state_clone.shard.stats();
+            parsed.execution_budget =
+                compute_budget(&parsed, stats, state_clone.control.budget_policy);
+            execute_with_control(&parsed, &state_clone.shard, limit, &state_clone.control)
+        })
+        .await;
+    let results = match exec_result {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            return error_response(StatusCode::PAYLOAD_TOO_LARGE, &e.to_string());
+        }
         Err(e) => {
             tracing::error!(error = %e, "spawn_blocking panicked in forward");
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
         }
     };
+    state
+        .control
+        .general
+        .record_per_country_fanout(country.iso2(), results.len() as u32);
 
     if accept_geojson(&headers) {
         geojson_response(&results, include_debug)

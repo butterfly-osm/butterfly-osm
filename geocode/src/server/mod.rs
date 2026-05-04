@@ -28,6 +28,8 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
+use crate::control::admission::mk_admission_layer;
+
 pub use state::ServerState;
 
 /// Build the prometheus layer + handle exactly once per process.
@@ -48,10 +50,21 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let api = Router::new()
+    // Admission control wraps the geocode endpoints only — health
+    // and metrics are intentionally excluded so monitors and probes
+    // are not rate-limited (#97 §4 standard practice).
+    let geocode_routes = Router::new()
         .route("/geocode", get(handlers::forward))
         .route("/geocode/reverse", get(handlers::reverse))
+        .with_state(state.clone());
+    let geocode_routes = mk_admission_layer(geocode_routes, state.admission.clone());
+
+    let unauth = Router::new()
         .route("/health", get(handlers::health))
+        .with_state(state.clone());
+
+    let api = geocode_routes
+        .merge(unauth)
         .layer(CompressionLayer::new())
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -71,5 +84,4 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
         .layer(prometheus_layer)
         .layer(TraceLayer::new_for_http())
         .layer(cors)
-        .with_state(state)
 }

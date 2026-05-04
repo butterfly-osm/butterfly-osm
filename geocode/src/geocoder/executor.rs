@@ -38,6 +38,11 @@ use serde::{Deserialize, Serialize};
 use super::channels::{Channel, ChannelRole};
 use super::cost::static_cost;
 use super::program::{FilterPredicate, LookupKey, Op};
+use crate::control::budget::BudgetPolicy;
+use crate::control::{
+    ChannelMetrics, CleanQueryMetrics, CostCalibrationMetrics, FanoutConfig, FanoutTracker,
+    GeneralMetrics, RecombinationMetrics, classify_tier, pre_execution_check,
+};
 use crate::shard::reader::{Shard, ShardRecord};
 use crate::types::{ExecutionBudget, ParseHypothesis, ParsedQuery, RetrievalPolicy, Strictness};
 
@@ -79,7 +84,33 @@ pub struct GeocodedResult {
     pub reason_codes: Vec<std::borrow::Cow<'static, str>>,
 }
 
+/// Bundle of control-plane handles consumed by [`execute_with_control`].
+///
+/// Cheap to construct (every field is `Copy` or `Default`). Built once
+/// per `ServerState` and reused for every request.
+#[derive(Debug, Default)]
+pub struct ControlPlane {
+    pub general: GeneralMetrics,
+    pub channels: ChannelMetrics,
+    pub cost_calib: CostCalibrationMetrics,
+    pub recomb: RecombinationMetrics,
+    pub clean: CleanQueryMetrics,
+    pub fanout: FanoutConfig,
+    pub budget_policy: BudgetPolicy,
+}
+
+impl ControlPlane {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 /// Execute a parsed query against a shard.
+///
+/// Backwards-compatible wrapper that runs without control-plane
+/// metric emission. Internal callers (and the server) should prefer
+/// [`execute_with_control`].
 pub fn execute(query: &ParsedQuery, shard: &Shard, limit: usize) -> Vec<GeocodedResult> {
     if query.hypotheses.is_empty() {
         return Vec::new();
@@ -816,6 +847,140 @@ fn walk_postings(op: &Op, shard: &Shard) -> Vec<u32> {
         }
         Op::Downgrade { child, .. } => walk_postings(child, shard),
     }
+}
+
+/// Execute with full control-plane wiring (#97).
+///
+/// 1. Defense-in-depth pre-execution check (#97 §3) — re-verifies
+///    the static cost ceiling before any work is done.
+/// 2. Emits clean-query overhead canary (#97 §7) for queries that
+///    take the `is_clean()` path.
+/// 3. Tracks recombination collapse rate, candidates, and budget tier
+///    for the general metrics surface (#97 §8).
+/// 4. Records static-vs-feedback ratio (feedback cost == 0 in MVP
+///    since `Downgrade` is not invoked).
+pub fn execute_with_control(
+    query: &ParsedQuery,
+    shard: &Shard,
+    limit: usize,
+    cp: &ControlPlane,
+) -> Result<Vec<GeocodedResult>, crate::control::AdmissionError> {
+    let stats = shard.stats();
+    let t_start = std::time::Instant::now();
+
+    // Tier label for general metrics.
+    let tier = classify_tier(query, stats, cp.budget_policy);
+    cp.general.record_tier(tier.label());
+
+    let pre_count =
+        u32::try_from(query.hypotheses.len().min(u32::MAX as usize)).unwrap_or(u32::MAX);
+
+    // Build canonical (program, src_score) pairs for the pre-execution
+    // check; on the clean path the executor still uses the hand-rolled
+    // fast path afterwards, but admission needs the canonical static
+    // cost. Per #96 Recombination Invariant, programs are deduped on
+    // canonical form with src_score max-merged.
+    let programs: Vec<(Op, f32)> = if query.hypotheses.is_empty() {
+        Vec::new()
+    } else {
+        let raw: Vec<(Op, f32)> = query
+            .hypotheses
+            .iter()
+            .map(|h| {
+                let policy = apply_role_smoothness(h, &query.execution_budget);
+                let (op, src_score) = build_program(h, &policy);
+                (op.canonicalize(), src_score)
+            })
+            .collect();
+        super::program::dedup_canonical(raw)
+    };
+
+    let ops_only: Vec<Op> = programs.iter().map(|(p, _)| p.clone()).collect();
+    let static_total: f32 = ops_only.iter().map(|p| static_cost(p, stats)).sum();
+    cp.cost_calib.record_static_cost(static_total);
+
+    // Defense-in-depth: re-verify against the budget on entry.
+    pre_execution_check(&ops_only, &query.execution_budget, stats)?;
+
+    let post_count = u32::try_from(programs.len().min(u32::MAX as usize)).unwrap_or(u32::MAX);
+    cp.recomb.record_dedup(pre_count, post_count);
+    cp.general.record_hypotheses(pre_count, post_count);
+    cp.general
+        .record_countries_explored(query.country_candidates.len() as u32);
+
+    // Run the fanout tracker so the executor (when it gains parallel
+    // multi-channel paths in #98) has a live counter to consult. The
+    // MVP path doesn't use it, but the snapshot is emitted regardless.
+    let _fanout = FanoutTracker::new(cp.fanout);
+
+    let results = if query.is_clean() {
+        let res = execute_clean(&query.hypotheses[0], shard, limit);
+        let overhead = t_start.elapsed();
+        // MVP: at the executor entry we cannot count heap allocations
+        // without an allocator hook; the strict zero-alloc test in
+        // tests/control_clean_query_alloc_test.rs proves the property
+        // on the hot path. Here we record overhead with alloc=0 as
+        // the "expected" value; the real per-query allocation count
+        // is enforced by that test.
+        cp.clean.record_clean(overhead, 0);
+        res
+    } else {
+        cp.clean.record_non_clean();
+        execute_multi(query, shard, limit, &programs)
+    };
+
+    // Per-query candidate count surfaces in general metrics + budget
+    // exhaustion if the cap fired exactly.
+    let n = u32::try_from(results.len()).unwrap_or(u32::MAX);
+    cp.general.record_candidates(n);
+    if n >= query.execution_budget.max_total_candidates {
+        cp.general.record_budget_exhaustion();
+    }
+
+    // Static vs feedback ratio. Feedback cost is observed post-hoc;
+    // MVP does not invoke `Downgrade` so the observed feedback cost
+    // is zero and the ratio is 0/static = 0.0. Recording it anyway
+    // lets dashboards plot the time series the moment the executor
+    // gains feedback operators.
+    let feedback_cost = 0.0_f32;
+    cp.cost_calib.record_feedback_cost(feedback_cost);
+    let ratio = if static_total > 0.0 {
+        f64::from(feedback_cost) / f64::from(static_total)
+    } else {
+        0.0
+    };
+    cp.cost_calib.record_static_vs_feedback_ratio(ratio);
+
+    Ok(results)
+}
+
+fn execute_multi(
+    query: &ParsedQuery,
+    shard: &Shard,
+    limit: usize,
+    programs: &[(Op, f32)],
+) -> Vec<GeocodedResult> {
+    let mut results: Vec<GeocodedResult> = Vec::new();
+    let mut total_used = 0u32;
+    // Per #96 Recombination Invariant, every deduped program is
+    // executed EXACTLY ONCE with hyps[0] as the representative
+    // hypothesis for scoring. The src_score (max-merged across
+    // equivalent hypotheses by `dedup_canonical`) is rolled into
+    // the per-result score.
+    let Some(rep) = query.hypotheses.first() else {
+        return Vec::new();
+    };
+    for (prog, src_score) in programs {
+        if total_used >= query.execution_budget.max_total_candidates {
+            break;
+        }
+        let cap = query.execution_budget.max_total_candidates - total_used;
+        let r = execute_program(prog, shard, *src_score, rep, cap);
+        total_used = total_used.saturating_add(r.len() as u32);
+        results.extend(r);
+    }
+    rerank_and_truncate(&mut results, limit);
+    results
 }
 
 #[cfg(test)]
