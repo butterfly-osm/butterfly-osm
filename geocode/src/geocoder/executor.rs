@@ -1221,6 +1221,7 @@ mod tests {
                 locality: "Anderlecht".into(),
                 lat: 50.834,
                 lon: 4.314,
+                ..Default::default()
             },
             AddressRecord {
                 street: "Rue Wayez".into(),
@@ -1229,6 +1230,7 @@ mod tests {
                 locality: "Anderlecht".into(),
                 lat: 50.834,
                 lon: 4.315,
+                ..Default::default()
             },
             AddressRecord {
                 street: "Grote Markt".into(),
@@ -1237,6 +1239,7 @@ mod tests {
                 locality: "Antwerpen".into(),
                 lat: 51.221,
                 lon: 4.401,
+                ..Default::default()
             },
         ];
         build_shard(&path, crate::routing::CountryId::BE, addrs).unwrap();
@@ -1364,6 +1367,7 @@ mod tests {
                 locality: "Bruxelles".into(),
                 lat: 50.85 + (i as f64) * 1e-5,
                 lon: 4.35 + (i as f64) * 1e-5,
+                ..Default::default()
             });
         }
         build_shard(&path, crate::routing::CountryId::BE, addrs).unwrap();

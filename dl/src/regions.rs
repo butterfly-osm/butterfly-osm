@@ -60,6 +60,12 @@ pub struct RegionIndex {
     pub gtfs: Vec<GtfsEntry>,
     #[serde(default)]
     pub netex_epip: Vec<NetexEpipEntry>,
+    /// Authoritative-source address datasets (#96 §"Data Sources":
+    /// BOSA BeSt for Belgium, BAN for France, BAG for the Netherlands,
+    /// ...). Consumed by butterfly-geocode; routing pipelines ignore
+    /// the section.
+    #[serde(default)]
+    pub address: Vec<AddressEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -77,6 +83,42 @@ pub struct GtfsEntry {
 pub struct NetexEpipEntry {
     pub id: String,
     pub url: String,
+}
+
+/// Authoritative-source address dataset entry. Lives under
+/// `addresses/<id>.<ext>` in the region data root; the extension
+/// derives from `format` (csv-zip → `.zip`, csv → `.csv`, xml → `.xml`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct AddressEntry {
+    pub id: String,
+    pub url: String,
+    /// Wire format: `"csv-zip"` (BOSA BeSt regional ZIPs containing
+    /// one CSV), `"csv"` (raw CSV), `"csv-gz"` (BAN gzipped CSV), or
+    /// `"xml-zip"` (BOSA full national XML). Drives the verification
+    /// preset (magic prefix + min bytes) at fetch time.
+    pub format: String,
+    /// `SourceTag` name (`"osm"`, `"bosa"`, `"ban"`, ...). Stored as
+    /// metadata only; the importer's CLI flag is the source of truth
+    /// for the per-shard byte. Carrying it here lets operators
+    /// inspect the index without a separate registry.
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+impl AddressEntry {
+    /// File extension on disk for the chosen wire format.
+    fn extension(&self) -> &'static str {
+        match self.format.as_str() {
+            "csv-zip" | "xml-zip" | "zip" => "zip",
+            "csv-gz" | "gz" => "csv.gz",
+            "csv" => "csv",
+            "xml" => "xml",
+            // Default to .bin for unknown formats. The verified
+            // download falls back to no magic-prefix check, which is
+            // safe — the importer will reject malformed payloads.
+            _ => "bin",
+        }
+    }
 }
 
 impl RegionIndex {
@@ -119,12 +161,13 @@ pub struct RegionEntry {
 }
 
 /// High-level filter for `--only <section>`. Matches the TOML section
-/// names or the aggregate `"transit"` / `"all"`.
+/// names or the aggregate `"transit"` / `"all"` / `"addresses"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SectionFilter {
     All,
     PbfOnly,
     TransitOnly,
+    AddressesOnly,
 }
 
 impl SectionFilter {
@@ -135,7 +178,10 @@ impl SectionFilter {
             "all" => Ok(Self::All),
             "pbf" => Ok(Self::PbfOnly),
             "transit" => Ok(Self::TransitOnly),
-            other => bail!("unknown --only value '{other}'. Accepted values: all, pbf, transit"),
+            "addresses" | "address" => Ok(Self::AddressesOnly),
+            other => bail!(
+                "unknown --only value '{other}'. Accepted values: all, pbf, transit, addresses"
+            ),
         }
     }
 
@@ -145,6 +191,10 @@ impl SectionFilter {
 
     fn keeps_transit(self) -> bool {
         matches!(self, Self::All | Self::TransitOnly)
+    }
+
+    fn keeps_addresses(self) -> bool {
+        matches!(self, Self::All | Self::AddressesOnly)
     }
 }
 
@@ -193,6 +243,20 @@ impl RegionIndex {
                     url: feed.url.clone(),
                     target,
                     section: "netex_epip",
+                });
+            }
+        }
+        if filter.keeps_addresses() {
+            for entry in &self.address {
+                let target =
+                    data_root
+                        .join("addresses")
+                        .join(format!("{}.{}", entry.id, entry.extension()));
+                out.push(RegionEntry {
+                    id: entry.id.clone(),
+                    url: entry.url.clone(),
+                    target,
+                    section: "address",
                 });
             }
         }
@@ -385,8 +449,8 @@ mod tests {
     fn entries_respects_all_filter() {
         let idx = RegionIndex::load("belgium").unwrap();
         let entries = idx.entries("belgium", Path::new("/tmp/data"), SectionFilter::All);
-        // 1 pbf + 3 gtfs + 1 netex = 5
-        assert_eq!(entries.len(), 5);
+        // 1 pbf + 3 gtfs + 1 netex + 3 address (BOSA bevlg/bewal/bebru) = 8
+        assert_eq!(entries.len(), 8);
         let pbf = entries.iter().find(|e| e.section == "pbf").unwrap();
         assert_eq!(pbf.target, Path::new("/tmp/data/belgium.pbf"));
         let sncb = entries
@@ -401,6 +465,47 @@ mod tests {
         assert_eq!(
             stib.target,
             Path::new("/tmp/data/transit/netex/stib-epip.xml")
+        );
+        let bosa_vlg = entries
+            .iter()
+            .find(|e| e.section == "address" && e.id == "bosa-bevlg")
+            .unwrap();
+        assert_eq!(
+            bosa_vlg.target,
+            Path::new("/tmp/data/addresses/bosa-bevlg.zip")
+        );
+        assert!(
+            bosa_vlg.url.contains("opendata.bosa.be"),
+            "BOSA URL drift: {}",
+            bosa_vlg.url
+        );
+    }
+
+    #[test]
+    fn entries_respects_addresses_only_filter() {
+        let idx = RegionIndex::load("belgium").unwrap();
+        let entries = idx.entries(
+            "belgium",
+            Path::new("/tmp/data"),
+            SectionFilter::AddressesOnly,
+        );
+        // 3 BOSA regional ZIPs.
+        assert_eq!(entries.len(), 3);
+        for e in &entries {
+            assert_eq!(e.section, "address");
+            assert!(e.id.starts_with("bosa-"), "unexpected id: {}", e.id);
+        }
+    }
+
+    #[test]
+    fn section_filter_addresses_parses() {
+        assert_eq!(
+            SectionFilter::parse("addresses").unwrap(),
+            SectionFilter::AddressesOnly
+        );
+        assert_eq!(
+            SectionFilter::parse("address").unwrap(),
+            SectionFilter::AddressesOnly
         );
     }
 

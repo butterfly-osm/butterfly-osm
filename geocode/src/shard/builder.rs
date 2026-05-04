@@ -1,5 +1,5 @@
 //! Shard builder. Takes a stream of [`AddressRecord`]s and writes a
-//! `BFGS` v3 file (see [`super`] for the format docs).
+//! `BFGS` v4 file (see [`super`] for the format docs).
 
 use std::collections::BTreeMap;
 use std::io::{BufWriter, Write};
@@ -96,7 +96,7 @@ pub fn build_shard<P: AsRef<Path>>(
         let (house_off, house_len) = intern(&a.housenumber, &mut strings);
         let (pc_off, pc_len) = intern(&a.postcode, &mut strings);
 
-        // Record layout: 32 bytes, see `super` module docs.
+        // Record layout: 36 bytes, see `super` module docs.
         records_bytes.extend_from_slice(&lat_e7.to_le_bytes());
         records_bytes.extend_from_slice(&lon_e7.to_le_bytes());
         records_bytes.extend_from_slice(&street_off.to_le_bytes());
@@ -107,6 +107,11 @@ pub fn build_shard<P: AsRef<Path>>(
         records_bytes.extend_from_slice(&house_len.to_le_bytes());
         records_bytes.extend_from_slice(&pc_off.to_le_bytes());
         records_bytes.extend_from_slice(&pc_len.to_le_bytes());
+        // v4: per-record source byte (#96 §"Data Sources") + 3 pad
+        // bytes for 4-byte alignment. Pad is always zero so the file
+        // CRC stays deterministic across runs.
+        records_bytes.push(a.source.to_u8());
+        records_bytes.extend_from_slice(&[0u8; 3]);
 
         if !a.postcode.is_empty() {
             by_postcode.entry(a.postcode.clone()).or_default().push(id);
@@ -282,6 +287,29 @@ mod tests {
             locality: loc.to_string(),
             lat,
             lon,
+            source: super::super::SourceTag::Osm,
+            source_id: None,
+        }
+    }
+
+    fn rec_with_source(
+        street: &str,
+        num: &str,
+        pc: &str,
+        loc: &str,
+        lat: f64,
+        lon: f64,
+        source: super::super::SourceTag,
+    ) -> AddressRecord {
+        AddressRecord {
+            street: street.to_string(),
+            housenumber: num.to_string(),
+            postcode: pc.to_string(),
+            locality: loc.to_string(),
+            lat,
+            lon,
+            source,
+            source_id: None,
         }
     }
 
@@ -342,6 +370,41 @@ mod tests {
             let s = Shard::open(&path).unwrap();
             assert_eq!(s.country(), country, "header country mismatch");
         }
+    }
+
+    #[test]
+    fn source_byte_round_trips_through_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shard.bfgs");
+        let addrs = vec![
+            rec_with_source(
+                "Rue Wayez",
+                "122",
+                "1070",
+                "Anderlecht",
+                50.834,
+                4.314,
+                super::super::SourceTag::Bosa,
+            ),
+            rec_with_source(
+                "Grote Markt",
+                "1",
+                "2000",
+                "Antwerpen",
+                51.221,
+                4.401,
+                super::super::SourceTag::Osm,
+            ),
+        ];
+        build_shard(&path, CountryId::BE, addrs).unwrap();
+        let s = Shard::open(&path).unwrap();
+        assert_eq!(s.record_count(), 2);
+        // Records are sorted by postcode then street; "1070|rue wayez"
+        // sorts before "2000|grote markt".
+        let r0 = s.record(0).unwrap();
+        let r1 = s.record(1).unwrap();
+        assert_eq!(r0.source, super::super::SourceTag::Bosa);
+        assert_eq!(r1.source, super::super::SourceTag::Osm);
     }
 
     #[test]
