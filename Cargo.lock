@@ -660,6 +660,7 @@ dependencies = [
  "hex",
  "libc",
  "memmap2 0.9.10",
+ "metrics",
  "osmpbf",
  "parking_lot",
  "priority-queue",
