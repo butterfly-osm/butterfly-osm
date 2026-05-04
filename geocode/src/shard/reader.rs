@@ -211,10 +211,10 @@ impl Shard {
             );
         }
 
-        if records_off % 4 != 0 {
+        if !records_off.is_multiple_of(4) {
             bail!("records section not 4-byte aligned: offset {records_off}");
         }
-        if index_off % 4 != 0 {
+        if !index_off.is_multiple_of(4) {
             bail!("index section not 4-byte aligned: offset {index_off}");
         }
 
@@ -535,7 +535,7 @@ fn parse_sub_index(buf: &[u8], cursor: &mut usize, end: usize) -> Result<SubInde
     *cursor += 8;
 
     let keys_offsets_off = *cursor;
-    if keys_offsets_off % 4 != 0 {
+    if !keys_offsets_off.is_multiple_of(4) {
         bail!("keys_offsets not 4-aligned at {keys_offsets_off}");
     }
     let keys_offsets_bytes = (num_keys + 1)
@@ -552,7 +552,7 @@ fn parse_sub_index(buf: &[u8], cursor: &mut usize, end: usize) -> Result<SubInde
     }
     *cursor += keys_data_len;
 
-    while *cursor % 4 != 0 {
+    while !(*cursor).is_multiple_of(4) {
         if *cursor >= end {
             bail!("keys_data padding overflows index region");
         }
@@ -560,7 +560,7 @@ fn parse_sub_index(buf: &[u8], cursor: &mut usize, end: usize) -> Result<SubInde
     }
 
     let postings_offsets_off = *cursor;
-    if postings_offsets_off % 4 != 0 {
+    if !postings_offsets_off.is_multiple_of(4) {
         bail!("postings_offsets not 4-aligned at {postings_offsets_off}");
     }
     let postings_offsets_bytes = (num_keys + 1)

@@ -2,13 +2,25 @@
 //!
 //! ## Canonicalization (#96 Recombination Invariant)
 //!
-//! [`Op::canonicalize`] applies:
+//! [`Op::canonicalize`] applies the full Recombination Invariant from
+//! #96:
 //!
-//! - Stable ordering of commutative operator operands (`Intersect`
+//! - **Stable ordering** of commutative operator operands (`Intersect`
 //!   and `Union` sort their children by canonical form)
-//! - Identity folding (`intersect(A, universe) → A`, `union(A, ∅) →
-//!   A`)
-//! - Redundancy collapse (`cap(cap(A, n), m) → cap(A, min(n, m))`)
+//! - **Identity folding**:
+//!     - `intersect(A, universe) → A` (universe = empty `Intersect`)
+//!     - `union(A, ∅) → A` (∅ = empty `Union`)
+//! - **Redundancy collapse**:
+//!     - `cap(cap(A, n), m) → cap(A, min(n, m))`
+//!     - `intersect(A, A) → A`
+//!     - `union(A, A) → A`
+//!     - `score(A, ∅) → A` (zero-weight score)
+//! - **Source-hypothesis score merge** when [`dedup_canonical`]
+//!   collapses equivalent programs. Per #96 the implementation choice
+//!   (max vs sum) is documented per release: **we use `max`**. Sum
+//!   over [0, 1] confidences is unbounded above and confounds
+//!   calibration with retrieval frequency; max preserves the strongest
+//!   hypothesis-source signal without distortion.
 //!
 //! ## Zero-Cost-on-Clean-Queries (#96 NFR)
 //!
@@ -84,8 +96,8 @@ impl Op {
     pub fn canonicalize(self) -> Op {
         match self {
             Op::Lookup(_) => self,
-            Op::Intersect(children) => canonicalize_commutative(children, Op::Intersect),
-            Op::Union(children) => canonicalize_commutative(children, Op::Union),
+            Op::Intersect(children) => canonicalize_intersect(children),
+            Op::Union(children) => canonicalize_union(children),
             Op::TopkMerge { children, k } => {
                 let mut children: Vec<Op> = children.into_iter().map(Op::canonicalize).collect();
                 children.sort_by(cmp_op);
@@ -99,11 +111,20 @@ impl Op {
                 child,
                 channel,
                 weight,
-            } => Op::Score {
-                child: Box::new(child.canonicalize()),
-                channel,
-                weight,
-            },
+            } => {
+                // score(A, ∅) → A: a Score with weight 0 contributes
+                // no rank evidence. Fold it away.
+                let inner = child.canonicalize();
+                if weight == 0.0 {
+                    inner
+                } else {
+                    Op::Score {
+                        child: Box::new(inner),
+                        channel,
+                        weight,
+                    }
+                }
+            }
             Op::Cap { child, n } => {
                 let inner = child.canonicalize();
                 if let Op::Cap {
@@ -141,13 +162,53 @@ impl Op {
     }
 }
 
-fn canonicalize_commutative(children: Vec<Op>, ctor: fn(Vec<Op>) -> Op) -> Op {
-    let mut children: Vec<Op> = children.into_iter().map(Op::canonicalize).collect();
+/// Canonicalize `Intersect`:
+///   - Recurse into children.
+///   - **Identity fold**: `intersect(A, universe) → A`. We treat an
+///     `Intersect` with zero children as the universe operand.
+///   - Sort children for stable canonical form.
+///   - **Redundancy collapse**: `intersect(A, A) → A` (dedup adjacent
+///     equal children after sort).
+///   - Single-child fold: `Intersect([A]) → A`.
+fn canonicalize_intersect(children: Vec<Op>) -> Op {
+    let mut children: Vec<Op> = children
+        .into_iter()
+        .map(Op::canonicalize)
+        // Identity fold: drop empty Intersect (universe) operands.
+        .filter(|c| !matches!(c, Op::Intersect(inner) if inner.is_empty()))
+        .collect();
+
+    children.sort_by(cmp_op);
+    children.dedup();
+
     if children.len() == 1 {
         return children.pop().expect("len == 1");
     }
+    Op::Intersect(children)
+}
+
+/// Canonicalize `Union`:
+///   - Recurse into children.
+///   - **Identity fold**: `union(A, ∅) → A`. We treat a `Union` with
+///     zero children as the empty set.
+///   - Sort children for stable canonical form.
+///   - **Redundancy collapse**: `union(A, A) → A`.
+///   - Single-child fold: `Union([A]) → A`.
+fn canonicalize_union(children: Vec<Op>) -> Op {
+    let mut children: Vec<Op> = children
+        .into_iter()
+        .map(Op::canonicalize)
+        // Identity fold: drop empty Union (∅) operands.
+        .filter(|c| !matches!(c, Op::Union(inner) if inner.is_empty()))
+        .collect();
+
     children.sort_by(cmp_op);
-    ctor(children)
+    children.dedup();
+
+    if children.len() == 1 {
+        return children.pop().expect("len == 1");
+    }
+    Op::Union(children)
 }
 
 fn cmp_op(a: &Op, b: &Op) -> Ordering {
@@ -250,21 +311,33 @@ fn cmp_op_vec(a: &[Op], b: &[Op]) -> Ordering {
     a.len().cmp(&b.len())
 }
 
-/// Dedup a list of programs by their canonical form.
+/// Dedup a list of `(program, source_score)` pairs by canonical form.
 ///
-/// On a single-element list this is a single canonicalize-and-return
-/// — no allocation, no comparison loop. That keeps the multi-hypothesis
-/// path cheap when the parser happens to emit one hypothesis (which
-/// is the MVP heuristic parser's only mode).
+/// Per the **Recombination Invariant** (#96):
+///   "When equivalent programs are merged, their source-hypothesis
+///    scores are combined (max or sum — implementation detail,
+///    documented per release)."
+///
+/// **This release uses `max`.** Sum over [0, 1] confidences is
+/// unbounded above and confounds calibration with retrieval frequency;
+/// max preserves the strongest hypothesis-source signal without
+/// distortion.
+///
+/// On a single-element list this is canonicalize-and-return — no
+/// comparison loop. That keeps the multi-hypothesis path cheap when
+/// the parser happens to emit one hypothesis (the MVP heuristic
+/// parser's only mode).
 ///
 /// Equality is structural via [`PartialEq`]. The O(N²) sweep is fine
 /// because hypothesis counts are tiny (≤ 5 per #97 budget tier).
-pub fn dedup_canonical(programs: Vec<Op>) -> Vec<Op> {
-    let mut out: Vec<Op> = Vec::with_capacity(programs.len());
-    for p in programs {
+pub fn dedup_canonical(programs: Vec<(Op, f32)>) -> Vec<(Op, f32)> {
+    let mut out: Vec<(Op, f32)> = Vec::with_capacity(programs.len());
+    for (p, score) in programs {
         let canon = p.canonicalize();
-        if !out.iter().any(|existing| existing == &canon) {
-            out.push(canon);
+        if let Some(existing) = out.iter_mut().find(|(o, _)| o == &canon) {
+            existing.1 = existing.1.max(score);
+        } else {
+            out.push((canon, score));
         }
     }
     out
@@ -327,14 +400,88 @@ mod tests {
             lookup(Channel::Street, "x"),
             lookup(Channel::Postcode, "1000"),
         ]);
-        let out = dedup_canonical(vec![p1, p2]);
+        let out = dedup_canonical(vec![(p1, 0.7), (p2, 0.9)]);
         assert_eq!(out.len(), 1);
+        // Source-hypothesis score merge via max (documented choice).
+        assert!((out[0].1 - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dedup_three_equivalent_collapses_to_one() {
+        // Per the Recombination Invariant test in B1: build N
+        // hypotheses that produce equivalent programs in different
+        // commutative orderings; dedup must yield exactly 1 program.
+        let h1 = Op::Intersect(vec![
+            lookup(Channel::Postcode, "1070"),
+            lookup(Channel::Street, "rue wayez"),
+            lookup(Channel::HouseNumber, "122"),
+        ]);
+        let h2 = Op::Intersect(vec![
+            lookup(Channel::Street, "rue wayez"),
+            lookup(Channel::HouseNumber, "122"),
+            lookup(Channel::Postcode, "1070"),
+        ]);
+        let h3 = Op::Intersect(vec![
+            lookup(Channel::HouseNumber, "122"),
+            lookup(Channel::Postcode, "1070"),
+            lookup(Channel::Street, "rue wayez"),
+        ]);
+        let out = dedup_canonical(vec![(h1, 0.5), (h2, 0.8), (h3, 0.3)]);
+        assert_eq!(out.len(), 1, "3 commutatively equivalent → 1 program");
+        assert!((out[0].1 - 0.8).abs() < 1e-6);
     }
 
     #[test]
     fn single_child_intersect_folds_to_child() {
         let a = lookup(Channel::Postcode, "1000");
         let p = Op::Intersect(vec![a.clone()]).canonicalize();
+        assert_eq!(p, a);
+    }
+
+    #[test]
+    fn intersect_with_universe_folds_to_other() {
+        // intersect(A, universe) → A. Universe is the empty Intersect.
+        let a = lookup(Channel::Street, "x");
+        let universe = Op::Intersect(vec![]);
+        let p = Op::Intersect(vec![a.clone(), universe]).canonicalize();
+        assert_eq!(p, a);
+    }
+
+    #[test]
+    fn union_with_empty_set_folds_to_other() {
+        // union(A, ∅) → A. ∅ is the empty Union.
+        let a = lookup(Channel::Street, "x");
+        let empty = Op::Union(vec![]);
+        let p = Op::Union(vec![a.clone(), empty]).canonicalize();
+        assert_eq!(p, a);
+    }
+
+    #[test]
+    fn intersect_dedup_collapses_equal_children() {
+        // intersect(A, A) → A (via sort + dedup).
+        let a = lookup(Channel::Street, "x");
+        let p = Op::Intersect(vec![a.clone(), a.clone()]).canonicalize();
+        assert_eq!(p, a);
+    }
+
+    #[test]
+    fn union_dedup_collapses_equal_children() {
+        // union(A, A) → A.
+        let a = lookup(Channel::Street, "x");
+        let p = Op::Union(vec![a.clone(), a.clone()]).canonicalize();
+        assert_eq!(p, a);
+    }
+
+    #[test]
+    fn score_with_zero_weight_folds_to_child() {
+        // score(A, ∅) → A, where ∅ is encoded as weight=0.
+        let a = lookup(Channel::Street, "x");
+        let p = Op::Score {
+            child: Box::new(a.clone()),
+            channel: Channel::HouseNumber,
+            weight: 0.0,
+        }
+        .canonicalize();
         assert_eq!(p, a);
     }
 }
