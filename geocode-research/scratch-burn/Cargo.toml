@@ -1,0 +1,25 @@
+[package]
+name = "scratch-burn"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "AGPL-3.0-or-later"
+publish = false
+
+# Standalone — opt out of butterfly-osm workspace.
+[workspace]
+
+[dependencies]
+# burn 0.20.1 with the ndarray (pure-Rust, no native BLAS) backend. We are
+# measuring the "single-binary, no native deps" worst case — if we want to
+# beat this number in production we can flip to the ndarray-blas-openblas
+# feature, but the framework comparison is against candle's default CPU
+# backend, which is also a pure-Rust matmul.
+burn = { version = "0.20", default-features = false, features = ["std", "ndarray"] }
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = false

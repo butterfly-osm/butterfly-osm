@@ -1,0 +1,53 @@
+# Nominatim baseline for butterfly-geocode comparison.
+#
+# Pinned image tag for reproducibility — bumping this is a deliberate change.
+# Belgium PBF expected at ./data/belgium.pbf (host); container mounts it as
+# /nominatim/data.osm.pbf and runs the import on first start.
+#
+# First start is SLOW (~30 minutes for Belgium on a laptop). After that the
+# `nominatim-data` volume holds the processed PostGIS tables.
+#
+# Validate with:
+#   docker compose -f docker-compose.yml config
+#
+# Run with:
+#   docker compose -f docker-compose.yml up -d
+#
+# Health check:
+#   curl 'http://localhost:8080/search?q=Rue%20Wayez%20122,%20Anderlecht&format=json'
+
+services:
+  nominatim:
+    # Pinned to mediagis/nominatim 4.5 (Nominatim 4.5.x) — most recent stable
+    # series with the Photon-compatible importer at the time of this writeup.
+    image: mediagis/nominatim:4.5
+    container_name: butterfly-bench-nominatim
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # PBF_PATH is interpreted RELATIVE TO THE CONTAINER. The volume mount
+      # below puts our host PBF at /nominatim/data.osm.pbf inside the container.
+      PBF_PATH: /nominatim/data.osm.pbf
+      # Match Geofabrik convention. If we move to a different region, change
+      # the URL too — the import scripts use it for the Wikipedia ranks.
+      REPLICATION_URL: https://download.geofabrik.de/europe/belgium-updates/
+      NOMINATIM_PASSWORD: butterfly-bench-readonly
+      # Reduce memory footprint — Belgium fits comfortably in 4-8 GB.
+      POSTGRES_SHARED_BUFFERS: 1GB
+      POSTGRES_MAINTENANCE_WORK_MEM: 512MB
+      POSTGRES_WORK_MEM: 64MB
+      POSTGRES_EFFECTIVE_CACHE_SIZE: 4GB
+      # Disable updates — this is a static benchmark, not a live mirror.
+      UPDATE_MODE: none
+    volumes:
+      # Host: the actual PBF the parallel data-prep agent maintains.
+      # Container: where the importer expects the source.
+      - ../../data/belgium.pbf:/nominatim/data.osm.pbf:ro
+      # PostGIS data persisted across restarts so we don't re-import on every up.
+      - nominatim-data:/var/lib/postgresql/14/main
+      - nominatim-flatnode:/nominatim/flatnode
+
+volumes:
+  nominatim-data:
+  nominatim-flatnode:
