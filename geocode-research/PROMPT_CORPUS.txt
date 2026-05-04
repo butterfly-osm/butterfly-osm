@@ -1,0 +1,32 @@
+We are building the training corpus generator for a small (2-4M param) byte-level transformer that does BIO address-tagging plus a country-posterior head. Inputs are raw UTF-8 address strings (max ~64 bytes). Supervision comes from authoritative open address shards: BOSA (Belgium), BAN (France), BAG (Netherlands), G-NAF (Australia), OpenAddresses (the rest), OSM `addr:*` tagged nodes/ways as a fallback.
+
+Each gold record gives us a structured tuple — (street, house, postcode, locality, country) — that we can render as a canonical address string and label with BIO byte spans.
+
+The architectural constraint we must preserve:
+
+The downstream geocoder is shard-aware. The parser must NOT memorize how a particular shard formats things (BOSA's abbreviation style, BAN's casing conventions, BAG's house-number letter conventions, G-NAF's locality casing). If it does, then on production traffic that doesn't match the training shard's conventions, the parser silently degrades — wrong country, wrong street type, wrong span boundaries. With a 2-4M-param model we have very limited capacity, so whatever we teach it will dominate behavior.
+
+The architectural mitigation is "retrieval-success-invariant augmentation": every gold record is rewritten into N parallel forms (typos, abbreviation expansions/contractions, reorderings, dropped fields, mixed languages where context allows, script variants). All N rewrites carry the same retrieval-success label. The parser learns what is semantically equivalent for retrieval, not what the source shard happens to store.
+
+Augmentation strategies we plan to apply:
+
+1. Reordering — postcode-first vs street-first vs city-first; dropping postcode entirely; dropping locality.
+2. Abbreviation flips — "Rue" ↔ "R.", "boulevard" ↔ "bd", "avenue" ↔ "av", "straat" ↔ "str.", in both directions.
+3. Typo injection — 1-2 character edits (insert/delete/transpose/substitute) at low probability per character. Applied after BIO labels are computed; offsets are then re-derived against the corrupted string.
+4. Case variation — UPPERCASE, lowercase, Title Case.
+5. Mixed language (Belgium specifically) — NL street type ↔ FR street type when the locality is in a known multilingual zone.
+6. Whitespace and punctuation noise — extra commas, missing spaces, rogue dashes.
+
+Held-out cross-shard regression canary: take some BE addresses, rewrite them with FR or NL conventions, and ensure the parser still tags them. This is the explicit "shard memorization" test.
+
+Please give a blind technical review of this corpus design. Specifically:
+
+- Is "retrieval-success-invariant augmentation" the right framing? Are we missing a class of augmentation?
+- For a 2-4M parameter byte-level transformer, what augmentation rate per gold address (N) gives meaningful generalization without saturating the model's capacity? Pick a number and defend it.
+- BIO label preservation under typo injection: how do you cleanly maintain the (text, BIO_labels) alignment when characters are inserted/deleted? Is there a standard technique we should be using (e.g. align+reproject, or "augment the label sequence in lockstep")? What goes wrong if we just regex our way through?
+- The cross-shard regression canary as proposed (BE-rewritten-as-FR) — is that the right test? Or are there better-known recipes for catching shard memorization in small parsers?
+- Country-posterior supervision — is it OK for that label to be the country we picked at sample time, or do we need explicit hard-negative country mining (rewrite a BE address with French conventions and then explicitly label it as "still BE" so the model learns geography over orthography)?
+- For under-represented countries (small shards, few records), what is the right oversample-vs-augment ratio? More copies of the same record, or more aggressive augmentation per record, or both?
+- Anything we are likely to silently get wrong in this corpus that would only show up as a production regression two months in.
+
+Do not assume our plan is correct. Push back on it where it deserves to be pushed back on. We have about a thousand-line sample of generated output we plan to inspect manually as a sanity check; what should we be looking for in that sample to catch bugs early?

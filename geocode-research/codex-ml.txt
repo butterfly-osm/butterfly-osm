@@ -1,0 +1,49 @@
+**Recommendation**
+
+For your exact workload, I would choose **Candle** for the deployment-critical path.
+
+If you force me to pick one framework end-to-end, the tradeoff is simple: **Candle wins inference and deploy risk; Burn wins training ergonomics**. Given your priorities, deploy risk matters more.
+
+**Why**
+
+- **Inference latency:** I did not find an official head-to-head benchmark for a tiny `seq<=64`, batch-1 CPU transformer. Blindly, I expect **direct Candle** to be faster or at least easier to make fast on this shape because it has a leaner CPU path, optional **MKL** on x86 and **Accelerate** on Apple, and a real quantized matmul path (`QMatMul`) already used in quantized model code. Sources: [Candle README](https://github.com/huggingface/candle), [Candle install/docs](https://huggingface.github.io/candle/guide/installation.html), [candle-core features](https://docs.rs/crate/candle-core/latest/features), [Candle quantized module](https://docs.rs/candle-core/latest/candle_core/quantized/index.html), [Candle quantized_nn](https://docs.rs/candle-transformers/latest/candle_transformers/quantized_nn/index.html).
+- For Burn, the choices are `burn-cpu`, `burn-ndarray`, or `burn-candle`. `burn-cpu` is newer and JIT/autotune-heavy; that can be good for throughput, but for **micro-latency on tiny kernels** it is not an obvious win. `burn-candle` is explicitly documented as **alpha** and “usable for some use cases, like inference,” with “not all operations supported.” Sources: [Burn README/docs](https://github.com/tracel-ai/burn), [burn-cpu crate](https://docs.rs/crate/burn-cpu/latest), [burn-candle crate](https://docs.rs/crate/burn-candle/latest).
+- For your SLA, performance will depend more on **small-GEMM/matvec quality, single-thread behavior, cache locality, and weight format** than on framework marketing. In practice: pin threads, benchmark with and without MKL/OpenBLAS/Accelerate, and avoid backends that need warm-up or compilation in the hot path.
+
+**Quantization**
+
+- **Candle has the more believable custom-transformer deploy story today**, but it is mostly a **weight-only** story. Its quantized machinery is built around `QTensor`/`QMatMul` and GGML/GGUF-style quantized weights; Candle’s own quantized layers keep linear weights quantized and often dequantize smaller parameters like norms/biases. For your 2-4M parameter model, that is probably fine because linears dominate size. Sources: [candle_core::quantized](https://docs.rs/candle-core/latest/candle_core/quantized/index.html), [QMatMul](https://docs.rs/candle-core/latest/candle_core/quantized/enum.QMatMul.html), [quantized_nn source](https://docs.rs/candle-transformers/latest/src/candle_transformers/quantized_nn.rs.html).
+- **Burn has the nicer API story**: PTQ is built in, docs explicitly mention **8-bit, 4-bit, and 2-bit** PTQ, and modules expose `quantize_weights`. But Burn also says quantization is **“currently in active development”** and only supported **“on some backends.”** That is the wrong sentence for a production-critical promise. Sources: [Burn quantization docs](https://docs.rs/burn/latest/index.html), [Quantizer](https://docs.rs/burn/latest/burn/module/struct.Quantizer.html).
+- So: if you want a framework that already looks like it knows how to run **q4/q8 CPU inference**, I trust **Candle** more. If you want the prettier quantization abstraction, **Burn**.
+
+**Training ergonomics**
+
+- **Burn is clearly less painful** for your model shape. It has built-in `TransformerEncoder`, `TransformerEncoderLayer`, attention/transformer modules, `CrossEntropyLoss`, a documented `GradientsAccumulator`, and a full training crate/book. Sources: [Burn transformer module](https://docs.rs/burn/latest/burn/nn/transformer/index.html), [Burn nn docs](https://docs.rs/burn-core/latest/burn_core/nn/index.html), [CrossEntropyLoss](https://docs.rs/burn/latest/burn/nn/loss/struct.CrossEntropyLoss.html), [GradientsAccumulator](https://docs.rs/burn/latest/burn/optim/struct.GradientsAccumulator.html), [Burn Book custom training loop](https://burn.dev/books/burn/custom-training-loop.html), [burn-train](https://docs.rs/crate/burn-train/latest).
+- **Candle can do it**, but you will mostly hand-roll the encoder block and training loop from primitives like `Embedding`, `Linear`, `LayerNorm`, `ops::sdpa`, and optimizer/backprop pieces. I did not find first-class AMP/autocast training docs. Sources: [candle-nn](https://docs.rs/candle-nn/latest/candle_nn/), [ops::sdpa](https://docs.rs/candle-nn/latest/candle_nn/ops/index.html), [optimizer API](https://docs.rs/candle-nn/latest/src/candle_nn/optim.rs.html), [GradStore](https://docs.rs/candle-core/latest/candle_core/backprop/struct.GradStore.html).
+- For your specific two-head loss, both can do it. In Burn it is cleaner.
+
+**Maintenance, license, and risk**
+
+- **Both are permissive**: dual **MIT / Apache-2.0**, so both are compatible with an **AGPL-3.0-or-later** workspace. Sources: [Candle repo](https://github.com/huggingface/candle), [Burn repo](https://github.com/tracel-ai/burn).
+- **Both are alive** between **November 4, 2025 and May 4, 2026**. Candle published `0.9.2` on **January 24, 2026** and `0.10.0`/`0.10.2` on **March 31 / April 1, 2026**. Burn published `0.19.1` on **November 6, 2025**, `0.20.0` on **January 15, 2026**, `0.20.1` on **January 23, 2026**, plus `0.21.0-pre.*` through **April 8, 2026**. Sources: [candle-core versions](https://docs.rs/crate/candle-core/latest), [candle-transformers versions](https://docs.rs/crate/candle-transformers/latest), [burn versions](https://docs.rs/crate/burn/latest), [burn-core versions](https://docs.rs/crate/burn-core/latest).
+- Burn looks **more release-disciplined and more documented**. Candle looks **very active**, but docs are thinner and more source-driven. Burn also shows **more architectural churn** right now, which is good for progress and bad for API stability. Sources: [Burn status](https://github.com/tracel-ai/burn), [recent Burn issue/proposal](https://github.com/tracel-ai/burn/issues/4879), [Candle PR queue](https://github.com/huggingface/candle/pulls), [Burn PR queue](https://github.com/tracel-ai/burn/pulls).
+
+**Built-in blocks and gotchas**
+
+- **Burn** ships the generic transformer building blocks you want. Less hand-rolling, lower implementation risk. Source: [Burn transformer module](https://docs.rs/burn/latest/burn/nn/transformer/index.html).
+- **Candle** does not appear to ship a clean generic encoder stack in `candle-nn`; it gives primitives and many model-specific implementations in `candle-transformers`. For your model, you would likely implement the encoder block yourself. Sources: [candle-nn](https://docs.rs/candle-nn/latest/candle_nn/), [candle-transformers](https://docs.rs/candle-transformers/latest/candle_transformers/).
+- Hidden gotchas:
+  - Candle docs coverage is thin, especially `candle-transformers`; expect source-diving.
+  - Burn quantization and ONNX support are explicitly still evolving. Sources: [Burn quantization docs](https://docs.rs/burn/latest/index.html), [Burn README ONNX note](https://github.com/tracel-ai/burn).
+  - `burn-candle` is alpha, so “Burn for training, Candle for inference” is conceptually nice but not a zero-risk unification path. Source: [burn-candle crate](https://docs.rs/crate/burn-candle/latest).
+  - I found active Burn issues around PyTorch/transformer import paths, so if you expect painless state-dict portability, validate early. Sources: [issue #4052](https://github.com/tracel-ai/burn/issues/4052), [issue #4896](https://github.com/tracel-ai/burn/issues/4896).
+
+**Third option**
+
+The serious third option is **custom Rust inference code**, with training done in Burn or Candle offline.
+
+For your target of **p99 well under 50 microseconds**, that may be the highest-confidence route: fixed-shape byte embeddings, hand-written encoder block, weight-only q4/q8 linear layers, and no framework overhead outside tensor math. Highest engineering cost, lowest deployment ambiguity.
+
+If you want an inference-only framework alternative, **tract** is the one worth mentioning: pure Rust, permissive, active, ONNX-focused. But it gives you **no training story**, and it moves you off the Candle/Burn path. Sources: [tract repo](https://github.com/sonos/tract), [tract-onnx crate](https://docs.rs/crate/tract-onnx/latest).
+
+Net: **pick Candle if deployment constraints are the real constraint. Pick Burn only if iteration speed in training is more important than deploy-side certainty.** For your stated priorities, that means **Candle**.

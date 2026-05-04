@@ -1,0 +1,1001 @@
+query_id	query_text	gold_lat	gold_lon	quality_class
+be-clean-00000	Sint-Maartenstraat 12/1, 3000 Leuven	50.8809999	4.7061231	clean
+be-clean-00001	Oude Veurnestraat 1A, 8900 Ieper	50.8586487	2.8768744	clean
+be-clean-00002	Meerlaarstraat 119, 2430 Laakdal	51.0861539	5.0705206	clean
+be-clean-00003	Bosstraat 85, 3680 Maaseik	51.0959561	5.7872675	clean
+be-clean-00004	Beisbroekdreef 2A, 8490 Jabbeke	51.1819066	3.1403112	clean
+be-clean-00005	Henegouwenstraat 9, 9000 Gent	51.0521856	3.7260086	clean
+be-clean-00006	Cadixstraat 3, 2000 Antwerpen	51.2334533	4.4096637	clean
+be-clean-00007	Grens 15, 5111EA Baarle-Nassau	51.4094333	4.9359291	clean
+be-clean-00008	Zeedijk-Heist 290, 8301 Knokke-Heist	51.3416180	3.2451424	clean
+be-clean-00009	Gierlestraat 3, 5111HM Baarle-Nassau	51.4306731	4.9334119	clean
+be-clean-00010	Aan de Maas 12b, 6243NA Geulle	50.9288532	5.7353560	clean
+be-clean-00011	Rue du Hôme Familial 33, 7110 Houdeng-Gœgnies	50.4931020	4.1600613	clean
+be-clean-00012	Zeelaan 227, 8670 Koksijde	51.1163788	2.6377189	clean
+be-clean-00013	Magdalenastraat 27, 4566BA Heikant	51.2463697	4.0236605	clean
+be-clean-00014	Rue Hamoir 21, 7100 La Louvière	50.4749345	4.1878933	clean
+be-clean-00015	Sint Denijsplaats 11, 8940 Geluwe	50.8098357	3.0760713	clean
+be-clean-00016	Rue de la Cayenne 5, 1360 Perwez	50.6203737	4.8159389	clean
+be-clean-00017	Ezelspad 21, 8520 Kuurne	50.8565060	3.2999124	clean
+be-clean-00018	Rue des Jardins 4, 7500 Tournai	50.6091132	3.3915157	clean
+be-clean-00019	Varsenareweg 33D, 8490 Jabbeke	51.1850059	3.1022118	clean
+be-clean-00020	Grand-Place 9, 6120 Ham-sur-Heure	50.3220533	4.3878078	clean
+be-clean-00021	Chaussée Roosevelt 98, 4540 Amay	50.5453094	5.3120428	clean
+be-clean-00022	Koolmijnlaan 62, 3580 Beringen /1B	51.0523245	5.2229463	clean
+be-clean-00023	Route de Ramillies 258, 5310 Eghezée	50.6233541	4.9173717	clean
+be-clean-00024	Technologiepark-Zwijnaarde 82, 9052 Gent	51.0083783	3.7115085	clean
+be-clean-00025	Essex Scottishlaan 2;4;6, 8434 Middelkerke	51.1578356	2.7657541	clean
+be-clean-00026	Heidestraat 8, 3971 Leopoldsburg	51.1098423	5.2264479	clean
+be-clean-00027	De Lichtert 17, 5111VX Baarle-Nassau	51.4457062	4.9293900	clean
+be-clean-00028	Rue Jean Doinet 52, 4140 Dolembreux	50.5323571	5.6224131	clean
+be-clean-00029	Rijksweg 549, 3630 Maasmechelen	50.9449120	5.6930891	clean
+be-clean-00030	Vroentestraat 2, 3290 Schaffen	50.9987637	5.0803891	clean
+be-clean-00031	Koninklijke Baan 134, 8670 Koksijde	51.1205708	2.6347479	clean
+be-clean-00032	Marché-aux-Légumes 17, 6700 Arlon	49.6839669	5.8134013	clean
+be-clean-00033	Chaussée de Bruxelles 178, 1400 Nivelles	50.6105976	4.3371612	clean
+be-clean-00034	Heimolen 6b-92, 5111EH Baarle-Nassau	51.4344756	4.9072909	clean
+be-clean-00035	Gentsestraat 18, 8530 Harelbeke	50.8576308	3.3133690	clean
+be-clean-00036	Ruiterpad 16, 5111BZ Baarle-Nassau	51.4502230	4.9260564	clean
+be-clean-00037	Nicolas Mengélaan 7, 8301 Knokke-Heist	51.3401646	3.2391033	clean
+be-clean-00038	Gasthuisstraat 3,3A, 8970 Poperinge	50.8559432	2.7251150	clean
+be-clean-00039	Paul de Smet de Naeyerstraat 33;35, 8430 Middelkerke	51.1889255	2.8171580	clean
+be-clean-00040	Rue du Fond Agny 18, 1380 Couture-St-Germain	50.6571979	4.4854764	clean
+be-clean-00041	Louisweg 60A, 8620 Nieuwpoort	51.1378434	2.7133645	clean
+be-clean-00042	Reigerlaan 1, 5111DH Baarle-Nassau	51.4480143	4.9247293	clean
+be-clean-00043	Rue Joseph Wauters 173, 7110 Strépy-Bracquegnies	50.4764586	4.1297309	clean
+be-clean-00044	Rue des Bouchers 16, 5000 Namur	50.4623102	4.8689265	clean
+be-clean-00045	Aire de Tignée Nord, 4632 Soumagne	50.6554652	5.7109804	clean
+be-clean-00046	J.B. Charlierlaan, 1560 Hoeilaart	50.7669881	4.4642176	clean
+be-clean-00047	Muizelaarstraat 28, 8740 Pittem	50.9724197	3.2453709	clean
+be-clean-00048	Kasteelstraat 36, 8860 Lendelede	50.8869513	3.2403369	clean
+be-clean-00049	Dunepark 452, 8670 Koksijde	51.1335874	2.7093919	clean
+be-clean-00050	IJzerstraat 6, 9880 Aalter	51.0901097	3.4460658	clean
+be-clean-00051	Chaussée de Louvain 380, 5004 Bouge	50.4802165	4.8820699	clean
+be-clean-00052	Rue de l'Hospitalité 13, 7110 Houdeng-Aimeries	50.4735487	4.1448340	clean
+be-clean-00053	Baroniestraat 1f, 5111AD Baarle-Nassau	51.4467426	4.9304818	clean
+be-clean-00054	Rue des Bonnes-Villes 52, 4020 Liège	50.6426630	5.5894647	clean
+be-clean-00055	Sint-Hubertusplein 24, 3290 Schaffen	50.9999209	5.0833666	clean
+be-clean-00056	Vullerstraat 1, 3680 Maaseik	51.0938650	5.7916920	clean
+be-clean-00057	Rue Havane 17, 5542 Hastière	50.2029506	4.8445790	clean
+be-clean-00058	Hasseltsebaan 17, 3290 Deurne-Diest	51.0348220	5.0987010	clean
+be-clean-00059	Rue Grande 32, 7330 Saint-Ghislain	50.4463953	3.8199711	clean
+be-clean-00060	Moorsemsestraat 6, 3128 Baal /001	50.9960583	4.7549305	clean
+be-clean-00061	Westdam 102, 4551GE Sas van Gent	51.2265274	3.7887806	clean
+be-clean-00062	Torhoutsesteenweg 258, 8400 Oostende	51.2168820	2.9072897	clean
+be-clean-00063	Nieuwstraat 82B, 2840 Rumst	51.0802554	4.4038500	clean
+be-clean-00064	Meir 40, 2000 Antwerpen	51.2180142	4.4061465	clean
+be-clean-00065	Theofiel Van Cauwenberghslei 110, 2900 Schoten	51.2523933	4.5066853	clean
+be-clean-00066	Beauvoislaan 98, 2920 Kalmthout	51.3699074	4.4899628	clean
+be-clean-00067	Rue Colonel Aviateur Daumerie 8, 7940 Brugelette	50.5946450	3.8520045	clean
+be-clean-00068	Bruggestraat 85, 8970 Poperinge	50.8560037	2.7362072	clean
+be-clean-00069	Kazernestraat 9B, 9630 Zwalm	50.8878817	3.7525133	clean
+be-clean-00070	Rue du Fort Mahon 34B, 7012 Jemappes	50.4470052	3.8926075	clean
+be-clean-00071	Place de Pierpont 1A, 5300 Namêche	50.4694483	4.9945905	clean
+be-clean-00072	Zuiderpromenade 45, 8790 Waregem	50.8839949	3.4351463	clean
+be-clean-00073	Potiérue 5, 4000 Liège	50.6458581	5.5794288	clean
+be-clean-00074	Grensstraat 12, 9620 Zottegem	50.8723727	3.8126560	clean
+be-clean-00075	Rue de l'Enfer 41C, 1350 Orp-Jauche	50.6933151	4.9221680	clean
+be-clean-00076	Dries 2, 8310 Assebroek	51.1933554	3.2480667	clean
+be-clean-00077	Rue Grande 25, 7330 Saint-Ghislain	50.4463604	3.8202805	clean
+be-clean-00078	Nieuwstraat 11a, 5111CV Baarle-Nassau	51.4431156	4.9293672	clean
+be-clean-00079	Berkenlaan 7, 8750 Zwevezele	51.0367305	3.2180718	clean
+be-clean-00080	Willem Alexanderstraat 11, 5111AA Baarle-Nassau	51.4470089	4.9296304	clean
+be-clean-00081	Koning Albertstraat 109, 3290 Diest	50.9874368	5.0560362	clean
+be-clean-00082	Rijselsestraat 33, 8500 Kortrijk	50.8273907	3.2631452	clean
+be-clean-00083	Engels Plein 41, 3000 Leuven	50.8883765	4.7011265	clean
+be-clean-00084	Schuttershofweg 10, 4576AP Koewacht	51.2269097	3.9724668	clean
+be-clean-00085	Kerkstraat 9, 3560 Lummen	50.9857755	5.1904792	clean
+be-clean-00086	Rotkreuzstraße 12A, 4700 Eupen	50.6330995	6.0227898	clean
+be-clean-00087	Turnhoutsebaan 5, 2110 Wijnegem	51.2227689	4.4997145	clean
+be-clean-00088	Zuiderlaan 31, 8790 Waregem	50.8819672	3.4288754	clean
+be-clean-00089	Christian De Duvestraat 20, 8830 Hooglede	50.9708095	3.1089395	clean
+be-clean-00090	Kerkstraat 3, 8680 Koekelare	51.0904291	2.9799730	clean
+be-clean-00091	Krakeelhoevestraat 33, 8501 Kortrijk	50.8414025	3.2268413	clean
+be-clean-00092	Aarschotsesteenweg 1, 3110 Rotselaar	50.9384261	4.7341342	clean
+be-clean-00093	Rue Basse 196, 7370 Wihéries	50.3749630	3.7623547	clean
+be-clean-00094	Grote Merestraat 12A, 9850 Deinze	51.0709898	3.5361315	clean
+be-clean-00095	Maasbanderkerkweg 13, 6171RS Stein	50.9753906	5.7385443	clean
+be-clean-00096	Cité Saint-Louis 18, 7012 Flénu	50.4297590	3.8929122	clean
+be-clean-00097	Eupener Straße 420, 52076 Aachen	50.7230584	6.0897160	clean
+be-clean-00098	Rue Sartiau 18, 6530 Thuin	50.3377681	4.2670571	clean
+be-clean-00099	Rue de Chièvres 450/6, 7332 Neufmaison	50.5337157	3.7950147	clean
+be-clean-00100	Kokelarestraat 78, 8870 Izegem	50.9103401	3.1888985	clean
+be-clean-00101	Campagne d'Énee 7, 5030 Gembloux	50.5759931	4.7038955	clean
+be-clean-00102	Koerselsesteenweg 35, 3580 Beringen	51.0491888	5.2284767	clean
+be-clean-00103	Rue Grande 31C, 7330 Saint-Ghislain	50.4461403	3.8203658	clean
+be-clean-00104	Kemmelbergstraat 15, 8400 Oostende	51.2288986	2.9094761	clean
+be-clean-00105	Rue Bernimolin 1, 4020 Liège	50.6275016	5.5864462	clean
+be-clean-00106	Parijsstraat 48, 3000 Leuven	50.8779559	4.6985976	clean
+be-clean-00107	Clos du Village 3, 7760 Molenbaix	50.6904889	3.4317798	clean
+be-clean-00108	Filips van Marnixstraat 1, 9000 Gent	51.0407415	3.7178903	clean
+be-clean-00109	Eksterlaan 12, 5111DE Baarle-Nassau	51.4481430	4.9231887	clean
+be-clean-00110	Paalsesteenweg 73, 3580 Beringen	51.0458476	5.2079768	clean
+be-clean-00111	Heldenlaan 60, 9620 Zottegem	50.8716099	3.8096306	clean
+be-clean-00112	Schermplantenstraat 36, 8400 Oostende	51.2128223	2.8792360	clean
+be-clean-00113	Rue de l'Industrie 128, 7080 Frameries	50.4097389	3.8772830	clean
+be-clean-00114	Rue de Herve 16, 4651 Battice	50.6475761	5.8196670	clean
+be-clean-00115	Avenue Léon Jourez 63, 1420 Braine-l'Alleud	50.6850259	4.3737642	clean
+be-clean-00116	Rue Eugène de Fraire 77, 5670 Treignes	50.0930949	4.6711991	clean
+be-clean-00117	Zonnebekestraat 52, 8920 Langemark-Poelkapelle	50.9097490	2.9267532	clean
+be-clean-00118	Zeelsebaan 25, 9200 Dendermonde	51.0428018	4.0986456	clean
+be-clean-00119	Rector van den Broekstraat 2, 5111VT Baarle-Nassau	51.4443295	4.9303581	clean
+be-clean-00120	Rue de Waltzing 73A, 8478 Eischen	49.6802519	5.8648439	clean
+be-clean-00121	Kwadestraat 149A, 8800 Roeselare	50.9197843	3.1740338	clean
+be-clean-00122	Dunepark 640;642, 8670 Koksijde	51.1333545	2.7120099	clean
+be-clean-00123	Rue de Belle-Vau 55, 7134 Épinois	50.4048106	4.2059787	clean
+be-clean-00124	Duivenhokstraat 66, 8400 Oostende	51.2195807	2.9028261	clean
+be-clean-00125	Etangs de la Julienne 1, 4601 Argenteau	50.6984244	5.6904345	clean
+be-clean-00126	Blokstraat 1, 3191 Hever	50.9815642	4.5439901	clean
+be-clean-00127	Veerledorp 12, 2431 Veerle-Laakdal	51.0687843	4.9829415	clean
+be-clean-00128	Markt 58;60, 9900 Eeklo	51.1850574	3.5648655	clean
+be-clean-00129	Sperwerstraat 26, 5111DM Baarle-Nassau	51.4475122	4.9205339	clean
+be-clean-00130	Rijksweg 3, 4529JA Eede	51.2419938	3.4481596	clean
+be-clean-00131	Sint-Paulusstraat 22, 8400 Oostende	51.2296719	2.9187895	clean
+be-clean-00132	Parkoever, 3910 Pelt	51.2295653	5.4137256	clean
+be-clean-00133	Rue Liébin 80, 7110 Houdeng-Aimeries	50.4821165	4.1449714	clean
+be-clean-00134	Lijnbaanstraat 22, 8400 Oostende	51.2306599	2.9181122	clean
+be-clean-00135	Molenstraat 6, 6015AC Neeritter	51.1632436	5.8059860	clean
+be-clean-00136	Sperwerstraat 44, 5111DL Baarle-Nassau	51.4482994	4.9195764	clean
+be-clean-00137	Parklaan 20, 1730 Asse	50.9055356	4.2050827	clean
+be-clean-00138	Beugelflesstraat 19, 5111WD Baarle-Nassau	51.4461402	4.9240455	clean
+be-clean-00139	Alphenseweg 4a, 5111NC Baarle-Nassau	51.4439213	4.9330992	clean
+be-clean-00140	Vredelaan 45, 3530 Houthalen-Helchteren	51.0320421	5.3745680	clean
+be-clean-00141	Rue de Ligney, 4252 Omal	50.6521000	5.1918727	clean
+be-clean-00142	Stationsstraat 81, 1840 Londerzeel	51.0075647	4.3005486	clean
+be-clean-00143	Rue du Cygne 40, 7500 Tournai	50.6088537	3.3868156	clean
+be-clean-00144	Rue des Mineurs 22, 6720 Habay-la-Neuve	49.7292808	5.6568528	clean
+be-clean-00145	Graaf Jansdijk 4, 4529JH Eede	51.2420367	3.4599670	clean
+be-clean-00146	Zandvoordsestraat 83, 8460 Oudenburg	51.1872190	2.9957662	clean
+be-clean-00147	Rekkemsestraat 306, 8510 Kortrijk	50.8008247	3.2168372	clean
+be-clean-00148	Voie de l'Air Pur 249, 4052 Beaufays (Chaudfontaine) /B	50.5615411	5.6369466	clean
+be-clean-00149	Wijnveld 157, 9112 Sinaai	51.1475788	4.0548140	clean
+be-clean-00150	Alexiastraat 2, 5111ZC Baarle-Nassau	51.4507398	4.9333992	clean
+be-clean-00151	Kerkhofstraat 13, 8377 Zuienkerke	51.2357215	3.1097746	clean
+be-clean-00152	Staatsbaan 261, 3210 Lubbeek	50.9014361	4.8466935	clean
+be-clean-00153	Place de la Station 1, 5000 Namur	50.4690936	4.8622221	clean
+be-clean-00154	Bavikhoofsestraat 69, 8531 Harelbeke	50.8735526	3.3092827	clean
+be-clean-00155	Kapellestraat 44, 2630 Aartselaar	51.1320309	4.3888281	clean
+be-clean-00156	Sint-Jansbergsesteenweg 405 405, 3001 Heverlee	50.8548872	4.6585874	clean
+be-clean-00157	Rue de l'Abbaye 89, 4040 Herstal	50.6925114	5.6351917	clean
+be-clean-00158	Roosakkerstraat 1e, 5111CL Baarle-Nassau	51.4431409	4.9290512	clean
+be-clean-00159	Avenue de Ragnies 22, 6530 Thuin	50.3391055	4.2828174	clean
+be-clean-00160	Hollestraat 2, 3300 Hakendover	50.7968459	4.9823826	clean
+be-clean-00161	Grensstraat 28, 4645BT Putte	51.3570470	4.3989766	clean
+be-clean-00162	Nieuwpoortsesteenweg 721, 8400 Oostende	51.2112099	2.8795464	clean
+be-clean-00163	Rue Grand'Rue 68, 1341 Céroux-Mousty	50.6614064	4.5252601	clean
+be-clean-00164	Rue de Trivières 2, 7134 Péronnes-lez-Binche	50.4421612	4.1560487	clean
+be-clean-00165	Rue Jules Antheunis 44B, 7030 Saint-Symphorien	50.4455417	4.0150481	clean
+be-clean-00166	Rue du Ruisseau 15, 7760 Molenbaix	50.6920086	3.4369283	clean
+be-clean-00167	Albert I-laan 286, 8620 Nieuwpoort	51.1456790	2.7093459	clean
+be-clean-00168	Plantijnstraat 12, 8400 Oostende	51.2122806	2.9397425	clean
+be-clean-00169	Dorpsplein 4, 3470 Kortenaken	50.9101081	5.0577271	clean
+be-clean-00170	Geenrode 5, 3980 Tessenderlo	51.0562959	5.1105198	clean
+be-clean-00171	Rue Auguste Vandekerkhove 38, 6030 Goutroux	50.4109777	4.3705151	clean
+be-clean-00172	Rue Basse Hermalle 3A, 4681 Hermalle-sous-Argenteau	50.7295418	5.6899530	clean
+be-clean-00173	Rathausplatz 8, 4700 Eupen	50.6318610	6.0292462	clean
+be-clean-00174	Scheldelaan 420, 2040 Antwerpen	51.2893007	4.3258568	clean
+be-clean-00175	Nieuwe Gentsesteenweg 6, 1702 Dilbeek	50.8745691	4.2849557	clean
+be-clean-00176	Binnenstraat 16, 9220 Moerzeke	51.0739670	4.1732149	clean
+be-clean-00177	Nijverheidslaan 148, 3620 Lanaken	50.8853808	5.6635304	clean
+be-clean-00178	Schaluinen 11b-137, 5111HB Baarle-Nassau	51.4186119	4.9361977	clean
+be-clean-00179	Rue Sondeville 3, 4680 Oupeye	50.7075948	5.6513757	clean
+be-clean-00180	Genkersteenweg 247, 3500 Hasselt	50.9428939	5.3685639	clean
+be-clean-00181	Rue Jules Tison 115, 6182 Souvret	50.4416174	4.3408981	clean
+be-clean-00182	Avenue Wanderpepen 5, 7130 Binche	50.4120458	4.1678792	clean
+be-clean-00183	Burgemeester Frans Desmidtplein 5, 8300 Knokke-Heist	51.3464728	3.2892129	clean
+be-clean-00184	Rue Chavée 28, 6990 Hotton	50.2551967	5.4637686	clean
+be-clean-00185	Rue Cochetay 2/4, 4140 Dolembreux	50.5391756	5.6531470	clean
+be-clean-00186	Rue de Valenciennes 23, 7301 Hornu	50.4361481	3.8247787	clean
+be-clean-00187	Cantecleerplein 5, 4568BG Nieuw Namen	51.2934152	4.1645675	clean
+be-clean-00188	Kraanstraat 12, 2800 Mechelen	51.0265156	4.4740326	clean
+be-clean-00189	Voormuide 9, 9000 Gent	51.0681269	3.7292542	clean
+be-clean-00190	Bremerbeemd 2, 5111CZ Baarle-Nassau	51.4465008	4.9171350	clean
+be-clean-00191	Rue de Straal 5B, 4450 Slins	50.7276558	5.5643267	clean
+be-clean-00192	Grand'Place 1, 7330 Saint-Ghislain	50.4473598	3.8198827	clean
+be-clean-00193	Waterhoekseweg 5, 4524KV Sluis	51.2952437	3.3759407	clean
+be-clean-00194	Bleekput 62, 8530 Harelbeke	50.8534083	3.3188439	clean
+be-clean-00195	Rue Godefroid 51, 5000 Namur	50.4678210	4.8623930	clean
+be-clean-00196	Haaipanderstraat 4, 8870 Izegem	50.9241336	3.2306650	clean
+be-clean-00197	Wevelgemstraat 13, 8930 Menen	50.7954456	3.1869511	clean
+be-clean-00198	Rue Mabîme 144, 4432 Alleur	50.6681681	5.5246440	clean
+be-clean-00199	Tarbotstraat 61C, 9000 Gent	51.0457890	3.7405938	clean
+be-abbreviated-00200	Paalsesteenweg 33, 3580 Beringen	51.0471020	5.2222016	abbreviated
+be-abbreviated-00201	Nieuwe Veldstraat 28, 8810 Lichtervelde	51.0320881	3.1458980	abbreviated
+be-abbreviated-00202	Titanenhof 15, 6215EA Maastricht	50.8422179	5.6427769	abbreviated
+be-abbreviated-00203	R. du Buisson, 6717 Post	49.7519356	5.7689734	abbreviated
+be-abbreviated-00204	Hovestraat 32, 2370 Arendonk	51.3200768	5.0908406	abbreviated
+be-abbreviated-00205	R. de la Sucrerie 4, 5030 Gembloux	50.5689139	4.6942250	abbreviated
+be-abbreviated-00206	Bospad 39, 5111XZ Baarle-Nassau	51.4503449	4.9230944	abbreviated
+be-abbreviated-00207	Schaarbeeklei 499, 1830 Vilvoorde	50.9122685	4.4195085	abbreviated
+be-abbreviated-00208	R. Cockroux 34, 4680 Oupeye	50.7105173	5.6539055	abbreviated
+be-abbreviated-00209	Smedenstraat 91, 8300 Knokke-Heist	51.3378389	3.2900301	abbreviated
+be-abbreviated-00210	Grand Place 22, 1360 Perwez	50.6238870	4.8147194	abbreviated
+be-abbreviated-00211	Noordstraat 12, 8930 Menen	50.7900304	3.1402772	abbreviated
+be-abbreviated-00212	Paalsesteenweg 336, 3583 Paal-Beringen	51.0400059	5.1747853	abbreviated
+be-abbreviated-00213	Vrijheid, 2320 Hoogstraten	51.4068390	4.7630626	abbreviated
+be-abbreviated-00214	Molenkouter 46, 9620 Zottegem	50.8702523	3.8060170	abbreviated
+be-abbreviated-00215	Henri Christiaenlaan 7, 8670 Koksijde	51.1099723	2.6114400	abbreviated
+be-abbreviated-00216	Meir 78, 2000 Antwerpen /109	51.2177609	4.4116416	abbreviated
+be-abbreviated-00217	Gasthuisstraat 22, 3200 Aarschot	50.9885687	4.8396149	abbreviated
+be-abbreviated-00218	R. du Perron 45, 4681 Hermalle-sous-Argenteau	50.7121894	5.6806023	abbreviated
+be-abbreviated-00219	R. Devant la Ville 20, 4680 Hermée	50.7099064	5.6223697	abbreviated
+be-abbreviated-00220	Sint Annaplein 22, 5111CA Baarle-Nassau	51.4436920	4.9325157	abbreviated
+be-abbreviated-00221	Schaluinen 11b-298, 5111HB Baarle-Nassau	51.4184658	4.9379242	abbreviated
+be-abbreviated-00222	Canadasquare 5, 8300 Knokke-Heist	51.3486892	3.2797168	abbreviated
+be-abbreviated-00223	Bd de la Constitution 61, 4020 Liège	50.6441649	5.5877968	abbreviated
+be-abbreviated-00224	Esplanade 2, 4050 Chaudfontaine	50.5862846	5.6442182	abbreviated
+be-abbreviated-00225	Sperwerstraat 9, 5111DM Baarle-Nassau	51.4470866	4.9220055	abbreviated
+be-abbreviated-00226	Essenseweg 59, 4709RB Nispen	51.4721483	4.4637303	abbreviated
+be-abbreviated-00227	Burgemeester de Grauwstraat 19, 5111VA Baarle-Nassau	51.4455522	4.9301557	abbreviated
+be-abbreviated-00228	R. du Perron 14A, 4681 Hermalle-sous-Argenteau	50.7116464	5.6805670	abbreviated
+be-abbreviated-00229	Pl. de la Cathédrale 6, 4000 Liège	50.6410716	5.5709202	abbreviated
+be-abbreviated-00230	Vliegplein 9, 9991 Adegem	51.1957416	3.4770401	abbreviated
+be-abbreviated-00231	Windhoek 29, 8790 Waregem	50.8957199	3.4272762	abbreviated
+be-abbreviated-00232	Bd du Prince Régent 2, 7900 Leuze	50.6022944	3.6405478	abbreviated
+be-abbreviated-00233	Vroentestraat 102 a, 3320 Hoegaarden	50.7755639	4.8983644	abbreviated
+be-abbreviated-00234	Pl. Masson 1C, 7387 Montignies-sur-Roc	50.3689450	3.7339283	abbreviated
+be-abbreviated-00235	Havermarkt 16, 3500 Hasselt	50.9291401	5.3354389	abbreviated
+be-abbreviated-00236	Schaluinen 11b-328, 5111HB Baarle-Nassau	51.4180087	4.9382881	abbreviated
+be-abbreviated-00237	Grensstraat 41, 4645BT Putte	51.3575346	4.4002869	abbreviated
+be-abbreviated-00238	Heldenlaan 88, 9620 Zottegem	50.8722048	3.8095409	abbreviated
+be-abbreviated-00239	Singel 8, 8970 Poperinge	50.8357755	2.7377380	abbreviated
+be-abbreviated-00240	Gistelhofstraat 130, 8920 Langemark-Poelkapelle	50.9366026	2.9164692	abbreviated
+be-abbreviated-00241	Pycke de ten Aerdelaan 54, 8400 Oostende	51.2108158	2.8890816	abbreviated
+be-abbreviated-00242	Prinses Clementinalaan 136, 9000 Gent	51.0359143	3.7128787	abbreviated
+be-abbreviated-00243	Willem Alexanderstraat 50, 5111AC Baarle-Nassau	51.4491286	4.9291919	abbreviated
+be-abbreviated-00244	Kapucijnenvoer 16, 3000 Leuven	50.8797191	4.6924812	abbreviated
+be-abbreviated-00245	Tulpenlaan 54, 2900 Schoten	51.2591273	4.5090611	abbreviated
+be-abbreviated-00246	Heimolen 6b-80, 5111EH Baarle-Nassau	51.4343552	4.9078694	abbreviated
+be-abbreviated-00247	R. Jules Cornet 66, 7000 Mons	50.4618981	3.9615969	abbreviated
+be-abbreviated-00248	Koolmijnlaan 237, 3582 Beringen	51.0730469	5.2204307	abbreviated
+be-abbreviated-00249	R. du Bosquet 8, 1370 Jodoigne /D	50.7239954	4.8721515	abbreviated
+be-abbreviated-00250	Bahnhofstraße 86, 4728 Kelmis - Hergenrath	50.7075442	6.0415129	abbreviated
+be-abbreviated-00251	Franslaan 56;58, 8620 Nieuwpoort	51.1483122	2.7184504	abbreviated
+be-abbreviated-00252	R. Grandvaux 86, 5190 Balâtre	50.4904905	4.6261938	abbreviated
+be-abbreviated-00253	Nassaulaan 65, 5111XD Baarle-Nassau	51.4525856	4.9305671	abbreviated
+be-abbreviated-00254	Parklaan 80, 2300 Turnhout	51.3126615	4.9524084	abbreviated
+be-abbreviated-00255	Molenstraat 72, 2450 Meerhout	51.1354061	5.0817741	abbreviated
+be-abbreviated-00256	Koninginnelaan 79, 8400 Oostende	51.2238627	2.9092017	abbreviated
+be-abbreviated-00257	Stationsstraat 4, 8770 Ingelmunster /0001	50.9203712	3.2530727	abbreviated
+be-abbreviated-00258	Stationsstraat 2, 2880 Bornem	51.0993707	4.2357541	abbreviated
+be-abbreviated-00259	Domein Westhinder II 20, 8670 Koksijde	51.1119549	2.6712700	abbreviated
+be-abbreviated-00260	Hundelgemsesteenweg 202, 9820 Merelbeke-Melle	51.0182515	3.7532947	abbreviated
+be-abbreviated-00261	Chaamseweg 14, 5111VM Baarle-Nassau	51.4445391	4.9257778	abbreviated
+be-abbreviated-00262	Wagenmakersstraat 1, 8300 Knokke-Heist	51.3188486	3.2938482	abbreviated
+be-abbreviated-00263	Av. des États-Unis 18, 7500 Tournai	50.6009963	3.3988215	abbreviated
+be-abbreviated-00264	Kleemgatstraatje 11, 9220 Moerzeke	51.0750246	4.1770727	abbreviated
+be-abbreviated-00265	Koninklijke Baan 153, 8670 Koksijde	51.1196753	2.6332337	abbreviated
+be-abbreviated-00266	R. Jules Cerexhe, 4800 Verviers	50.5937678	5.8509618	abbreviated
+be-abbreviated-00267	R. des Fossés 2, 1420 Braine-l'Alleud	50.6834439	4.3704495	abbreviated
+be-abbreviated-00268	Rigessel 23, 3111 Wezemaal	50.9445732	4.7510760	abbreviated
+be-abbreviated-00269	Nieuwstraat 12, 4576AL Koewacht	51.2255645	3.9770078	abbreviated
+be-abbreviated-00270	Torhoutsesteenweg 710, 8400 Oostende	51.1936586	2.9014732	abbreviated
+be-abbreviated-00271	Christinastraat 5, 5111AS Baarle-Nassau	51.4493126	4.9279960	abbreviated
+be-abbreviated-00272	Lagaeplein 13, 8501 Kortrijk	50.8441445	3.2344952	abbreviated
+be-abbreviated-00273	Antwerpse Steenweg 98, 9080 Lochristi	51.0889718	3.8076665	abbreviated
+be-abbreviated-00274	Cadixstraat 3, 2000 Antwerpen	51.2334533	4.4096637	abbreviated
+be-abbreviated-00275	R. Docteur Jacquerye 45, 7012 Jemappes	50.4478643	3.8897135	abbreviated
+be-abbreviated-00276	Koerselsesteenweg 30, 3580 Beringen	51.0488466	5.2272221	abbreviated
+be-abbreviated-00277	Elfde-Julistraat 37, 8530 Harelbeke	50.8477644	3.3006429	abbreviated
+be-abbreviated-00278	Liersebaan 93, 2240 Zandhoven	51.2082444	4.6533426	abbreviated
+be-abbreviated-00279	Tongersestraat 64, 3740 Bilzen	50.8646405	5.5063597	abbreviated
+be-abbreviated-00280	Botermijnstraat 1, 3580 Beringen	51.0484146	5.2228958	abbreviated
+be-abbreviated-00281	Dendermondesteenweg 694, 9070 Destelbergen	51.0596544	3.8253281	abbreviated
+be-abbreviated-00282	Bruul 11, 2800 Mechelen	51.0273548	4.4809065	abbreviated
+be-abbreviated-00283	Bremstraat 1, 3580 Beringen	51.0629743	5.2082230	abbreviated
+be-abbreviated-00284	Statiestraat 48, 8810 Lichtervelde	51.0257279	3.1362207	abbreviated
+be-abbreviated-00285	R. Haute 38, 5500 Falmignoul	50.2050074	4.8895959	abbreviated
+be-abbreviated-00286	Ieperstraat 76B, 8830 Hooglede	50.9759775	3.0782962	abbreviated
+be-abbreviated-00287	Féronstrée 58, 4000 Liège	50.6463591	5.5793036	abbreviated
+be-abbreviated-00288	Grande Avenue 22, 1341 Céroux-Mousty	50.6594617	4.5120438	abbreviated
+be-abbreviated-00289	Valmeerstraat 123, 3770 Riemst	50.7947652	5.5851248	abbreviated
+be-abbreviated-00290	Kalbergstraat 159, 8780 Oostrozebeke	50.9287575	3.3493019	abbreviated
+be-abbreviated-00291	Gentseweg 602, 8793 Sint-Eloois-Vijve	50.9028028	3.4100720	abbreviated
+be-abbreviated-00292	Braamstraat 10, 8400 Oostende	51.2405741	2.9403249	abbreviated
+be-abbreviated-00293	R. des Bouchers Saint-Jacques 14, 7500 Tournai	50.6077337	3.3839894	abbreviated
+be-abbreviated-00294	R. de la Fontaine 64, 7301 Hornu	50.4384397	3.8257358	abbreviated
+be-abbreviated-00295	R. de Namur 179, 1400 Nivelles	50.5995033	4.3335692	abbreviated
+be-abbreviated-00296	Caesarhof 20, 6215EM Maastricht	50.8404843	5.6450558	abbreviated
+be-abbreviated-00297	R. des Vieilles Prisons 15, 1400 Nivelles	50.5975086	4.3259498	abbreviated
+be-abbreviated-00298	Aartshertogstraat 1, 8400 Oostende	51.2152080	2.8868939	abbreviated
+be-abbreviated-00299	R. des Chapeliers 28, 7500 Tournai	50.6058814	3.3897146	abbreviated
+be-abbreviated-00300	Maaltemeers 88, 9051 Sint-Denijs-Westrem	51.0222654	3.6975708	abbreviated
+be-abbreviated-00301	Quai des Tanneries, 1300 Wavre	50.7137143	4.6097764	abbreviated
+be-abbreviated-00302	Hoogstraat 10, 9620 Zottegem	50.8691756	3.8101509	abbreviated
+be-abbreviated-00303	Koerselsesteenweg 50, 3580 Beringen	51.0497833	5.2292481	abbreviated
+be-abbreviated-00304	Oudstrijdersstraat 2, 3630 Maasmechelen	50.9671664	5.6886113	abbreviated
+be-abbreviated-00305	Kortrijkstraat 1, 8930 Menen	50.7961738	3.1217804	abbreviated
+be-abbreviated-00306	Hooplaan 20, 8670 Koksijde	51.1177257	2.6484942	abbreviated
+be-abbreviated-00307	Av. des Pâquerettes 55, 1410 Waterloo /BP 5	50.7196899	4.3856230	abbreviated
+be-abbreviated-00308	Dehemlaan 17A, 8900 Ieper	50.8665309	2.8865848	abbreviated
+be-abbreviated-00309	Huidevettersstraat 53, 2000 Antwerpen	51.2163582	4.4054929	abbreviated
+be-abbreviated-00310	R. Joffre 3, 4000 Liège	50.6441392	5.5725692	abbreviated
+be-abbreviated-00311	Claudiushof 10A, 6215EZ Maastricht	50.8396670	5.6451421	abbreviated
+be-abbreviated-00312	Chemin du Bois à Ban, 6856 Fays-Les-Veneurs	49.8603879	5.1592344	abbreviated
+be-abbreviated-00313	Willem Alexanderstraat 42, 5111AC Baarle-Nassau	51.4486175	4.9295279	abbreviated
+be-abbreviated-00314	Grand Rue 58, 6791 Athus	49.5630478	5.8330724	abbreviated
+be-abbreviated-00315	Daalstraat 44, 1790 Affligem	50.8928872	4.0943254	abbreviated
+be-abbreviated-00316	R. du Happart 49, 7332 Sirault	50.5045622	3.7454759	abbreviated
+be-abbreviated-00317	Sluisvijverstraat 19, 1742 Ternat	50.8821978	4.1168054	abbreviated
+be-abbreviated-00318	Heulsestraat 128, 8860 Lendelede	50.8725038	3.2391689	abbreviated
+be-abbreviated-00319	Rempart des Arquebusiers 41, 4600 Visé	50.7340763	5.6969616	abbreviated
+be-abbreviated-00320	R. Provinciale 577, 4458 Fexhe-Slins	50.7225726	5.5694488	abbreviated
+be-abbreviated-00321	Woluwestraat 12, 1830 Machelen	50.9122435	4.4329297	abbreviated
+be-abbreviated-00322	Route de Liers 125, 4041 Milmort	50.6891215	5.5791802	abbreviated
+be-abbreviated-00323	Weststraat 55, 8770 Ingelmunster	50.9214895	3.2474166	abbreviated
+be-abbreviated-00324	R. de la Pêcherie 9, 4140 Dolembreux	50.5348617	5.6374036	abbreviated
+be-abbreviated-00325	Stationsstraat 174, 9550 Herzele	50.8969229	3.8818595	abbreviated
+be-abbreviated-00326	Boomgaardstraat 1B, 8900 Ieper	50.8504244	2.8848861	abbreviated
+be-abbreviated-00327	R. Émile Lété 79, 7332 Sirault	50.5047624	3.7912146	abbreviated
+be-abbreviated-00328	Patrijzenlaan 20, 5111WE Baarle-Nassau	51.4470525	4.9237678	abbreviated
+be-abbreviated-00329	R. Piretfontaine 48, 4140 Dolembreux	50.5385591	5.6404953	abbreviated
+be-abbreviated-00330	Jan-Pieter Minckelersstraat 21, 3000 Leuven	50.8815881	4.7079088	abbreviated
+be-abbreviated-00331	Gistelse Steenweg 214, 8200 Sint-Andries	51.2010109	3.1982510	abbreviated
+be-abbreviated-00332	Dunedreve 7, 8670 Koksijde	51.1116693	2.6668224	abbreviated
+be-abbreviated-00333	R. de la Limite 2, 1341 Céroux-Mousty	50.6595979	4.5699235	abbreviated
+be-abbreviated-00334	Dorpsstraat 61, 3550 Heusden-Zolder	51.0230594	5.3145576	abbreviated
+be-abbreviated-00335	Serweytens de Mercxstraat 1, 8301 Knokke-Heist	51.3415663	3.2431248	abbreviated
+be-abbreviated-00336	Noordzandstraat 6, 8000 Brugge	51.2083135	3.2210159	abbreviated
+be-abbreviated-00337	Emiel De Smitlaan 2, 8400 Oostende	51.2069302	2.8692274	abbreviated
+be-abbreviated-00338	Oude Geelsebaan 1, 2431 Veerle	51.0683188	4.9808847	abbreviated
+be-abbreviated-00339	R. de Neufchâteau 48A, 6800 Libramont-Chevigny	49.9091108	5.3608318	abbreviated
+be-abbreviated-00340	Oude Markt 12, 3000 Leuven	50.8782118	4.6998179	abbreviated
+be-abbreviated-00341	Wedeplein 8, 8500 Kortrijk	50.7992548	3.2936105	abbreviated
+be-abbreviated-00342	Av. Léon Jourez 11b, 1420 Braine-l'Alleud	50.6843292	4.3714144	abbreviated
+be-abbreviated-00343	R. du Petit Chêne 75, 4000 Liège	50.6553293	5.6082515	abbreviated
+be-abbreviated-00344	Stationsstraat 164, 8790 Waregem	50.8922783	3.4270718	abbreviated
+be-abbreviated-00345	Oude Markt 43, 3000 Leuven	50.8782694	4.6993100	abbreviated
+be-abbreviated-00346	Strandlaan 286, 8670 Koksijde	51.1097884	2.6124525	abbreviated
+be-abbreviated-00347	R. Craesborn 58, 4608 Warsage	50.7314473	5.7638233	abbreviated
+be-abbreviated-00348	Klein Kolmenstraat 5, 3570 Alken	50.8909088	5.3025791	abbreviated
+be-abbreviated-00349	Doornikserijksweg 382, 8510 Kortrijk	50.7443707	3.3219471	abbreviated
+be-abbreviated-00350	R. Camille Dépinoy 25, 7520 Templeuve	50.6425732	3.2911493	abbreviated
+be-abbreviated-00351	Sportlaan 2, 5111BX Baarle-Nassau	51.4499182	4.9265657	abbreviated
+be-abbreviated-00352	R. Jean Doinet 36, 4140 Dolembreux	50.5343799	5.6227418	abbreviated
+be-abbreviated-00353	Kouter 8, 8970 Poperinge	50.8574146	2.7339433	abbreviated
+be-abbreviated-00354	Torhoutstraat 2, 8830 Hooglede	50.9972695	3.0964164	abbreviated
+be-abbreviated-00355	Delfzijllaan 10, 9060 Zelzate	51.1958005	3.8129806	abbreviated
+be-abbreviated-00356	Guido Gezellelaan 20, 3550 Heusden-Zolder	51.0323074	5.2791502	abbreviated
+be-abbreviated-00357	Ezelspad 31, 8520 Kuurne	50.8567445	3.2995290	abbreviated
+be-abbreviated-00358	Bronstraat 1, 2400 Mol	51.1883199	5.0796788	abbreviated
+be-abbreviated-00359	Rellestraat 5035, 3800 Sint-Truiden	50.8165545	5.2064681	abbreviated
+be-abbreviated-00360	Heerbaan 116, 3582 Koersel	51.0676701	5.2410986	abbreviated
+be-abbreviated-00361	Bredabaan 411, 2990 Wuustwezel	51.3915125	4.5938017	abbreviated
+be-abbreviated-00362	Isengrijnstraat 15, 8530 Harelbeke	50.8318410	3.3213164	abbreviated
+be-abbreviated-00363	Koning Albertstraat 34, 3290 Diest	50.9861489	5.0531323	abbreviated
+be-abbreviated-00364	Halmstraat 7, 3600 Genk	51.0004285	5.5102403	abbreviated
+be-abbreviated-00365	Commelo 17, 3580 Beringen	51.0466355	5.2142098	abbreviated
+be-abbreviated-00366	R. Notre-Dame 89/2, 7140 Morlanwelz-Mariemont	50.4550977	4.2515651	abbreviated
+be-abbreviated-00367	Bevrijdingsplein 11, 3970 Leopoldsburg	51.1181807	5.2634806	abbreviated
+be-abbreviated-00368	Koning Albertstraat 108, 3290 Diest	50.9876407	5.0562406	abbreviated
+be-abbreviated-00369	Kortrijksteenweg 43, 8750 Zwevezele	51.0252333	3.2305659	abbreviated
+be-abbreviated-00370	Oud-Zoute 8, 8300 Knokke-Heist	51.3526076	3.3039568	abbreviated
+be-abbreviated-00371	R. Saint-Piat 88a, 7500 Tournai	50.6037296	3.3946792	abbreviated
+be-abbreviated-00372	Tieltstraat 74, 8750 Wingene	51.0549383	3.2848989	abbreviated
+be-abbreviated-00373	R. du Château 13, 7760 Molenbaix	50.6962761	3.4256689	abbreviated
+be-abbreviated-00374	R. des Cerisiers 10, 4680 Oupeye	50.7110921	5.6306758	abbreviated
+be-abbreviated-00375	Chasse Montignies 25, 7000 Mons	50.4515951	3.9563090	abbreviated
+be-abbreviated-00376	Boekhandelstraat 5, 3000 Leuven	50.8786248	4.7017119	abbreviated
+be-abbreviated-00377	Groenveldstraat 81, 3001 Leuven	50.8706224	4.6848830	abbreviated
+be-abbreviated-00378	R. de l'Abattoir 3, 6700 Arlon	49.6863588	5.7993731	abbreviated
+be-abbreviated-00379	Grauwmeer 1, 3001 Heverlee	50.8489323	4.7212117	abbreviated
+be-abbreviated-00380	Blokstraat 1, 3191 Hever	50.9815642	4.5439901	abbreviated
+be-abbreviated-00381	Koninginnelaan 113, 8430 Middelkerke	51.1850519	2.8124208	abbreviated
+be-abbreviated-00382	Pl. de Molenbaix 10, 7760 Molenbaix	50.6936651	3.4305404	abbreviated
+be-abbreviated-00383	Albertwal 4, 3700 Tongeren	50.7780395	5.4606317	abbreviated
+be-abbreviated-00384	Schaluinen 11b-307, 5111HB Baarle-Nassau	51.4184430	4.9390170	abbreviated
+be-abbreviated-00385	Lauwbergstraat 35, 8930 Menen	50.7947195	3.1907194	abbreviated
+be-abbreviated-00386	R. des Récollets 19, 7130 Binche	50.4119866	4.1670326	abbreviated
+be-abbreviated-00387	Nelcastraat 4C, 8860 Lendelede	50.8863120	3.2489710	abbreviated
+be-abbreviated-00388	Loveren 8d, 5111TB Baarle-Nassau	51.4440781	4.9204252	abbreviated
+be-abbreviated-00389	Venlosesteenweg 82, 3640 Kinrooi	51.1257425	5.8022440	abbreviated
+be-abbreviated-00390	Zandvoordestraat 19, 8400 Oostende	51.2168754	2.9362015	abbreviated
+be-abbreviated-00391	Elsum 113, 2440 Geel	51.1642134	4.9787130	abbreviated
+be-abbreviated-00392	Berlarij 13, 2500 Lier	51.1289329	4.5780701	abbreviated
+be-abbreviated-00393	Tweebruggenstraat 5, 8400 Oostende	51.2208353	2.9397858	abbreviated
+be-abbreviated-00394	Grotestraat 15, 3380 Glabbeek	50.8701834	4.9572183	abbreviated
+be-abbreviated-00395	Cirkelpad 22, 5111BV Baarle-Nassau	51.4502801	4.9248789	abbreviated
+be-abbreviated-00396	Oude Markt 35, 3000 Leuven	50.8779163	4.6989758	abbreviated
+be-abbreviated-00397	Postweg 8, 52159 Roetgen	50.6463295	6.1846581	abbreviated
+be-abbreviated-00398	ferme smette 2, 1460 Ittre	50.6308506	4.3085462	abbreviated
+be-abbreviated-00399	Roosakkerstraat 5, 5111CL Baarle-Nassau	51.4428518	4.9285358	abbreviated
+be-typo-00400	Hugo Verrieststraat 148, 8550 Zweegem	50.8169107	3.3336683	typo
+be-typo-00401	Schiethoeok 2, 8920 Langemark-Poelkapelle	50.9171103	2.9525139	typo
+be-typo-00402	Avenue de l'Observatoire 337, 4000 Liège	50.6200646	5.5651335	typo
+be-typo-00403	Moerstraat 30, 9230 Wetteren	51.0070008	3.8809954	typo
+be-typo-00404	Damstraat 13, 9230 Wetiteren	51.0119760	3.8610011	typo
+be-typo-00405	Arthur Scheirisstraat 27, 9620 Zottegem	50.8696298	3.8090564	typo
+be-typo-00406	Avenue du Grand Vivier 13, 6041 Gosselies	50.4697200	4.4404692	typo
+be-typo-00407	Zonnebloemstraat 10, 9060 Zelzate	51.2014043	3.8247401	typo
+be-typo-00408	Cité Heureuse 25, 6200 Cshâtelet	50.4005250	4.5255517	typo
+be-typo-00409	Faunastxaat 10, 9840 De Pinte	50.9963249	3.6497931	typo
+be-typo-00410	Westering 13, 9700 Oudenaarde	50.8580998	3.5951516	typo
+be-typo-00411	Westelsebaan 154, 3271 Averbode	51.0281733	4.9812066	typo
+be-typo-00412	Engelselei 204, 2140 oBrgerhout	51.2099277	4.4416649	typo
+be-typo-00413	Moeder Magdalenastraat 11, 6109RC Ohé en Laak	51.1176922	5.8182247	typo
+be-typo-00414	Antwerpse Steenweg 98, 9080 Locthristi	51.0889718	3.8076665	typo
+be-typo-00415	Tessenderloseweg 80, 2431 Laakdal	51.0664446	4.9992604	typo
+be-typo-00416	Cité Parc de Nazareth 87, 7170 La Hestre	50.4733138	4.2268509	typo
+be-typo-00417	Nieuwstraat 30, 5111pW Baarle-Nassau	51.4438906	4.9275328	typo
+be-typo-00418	Rue de l'Hospitalité 13, 7110 Houdeng-Aimeries	50.4735487	4.1448340	typo
+be-typo-00419	Rue du Prt 44, 7330 Saint-Ghislain	50.4500168	3.8175047	typo
+be-typo-00420	Ieperseweg 34, 8970 Poperinge	50.8555093	2.7557567	typo
+be-typo-00421	Frederikstraat 8, 5111AT Baarle-Nassas	51.4490072	4.9280567	typo
+be-typo-00422	Heppensesteenweg 78, 3945 eHam	51.1044624	5.1861428	typo
+be-typo-00423	Meersstraat 12w, 8500 Kortrijk	50.8282525	3.2557781	typo
+be-typo-00424	Rue de la Sttion 6, 7800 Ath	50.6271987	3.7773665	typo
+be-typo-00425	Hoogstraat 30, 8470 Gistel	51.1563393	2.9648478	typo
+be-typo-00426	St.-Lambertuskerkstraat 2, 3680 Maaseik	51.0875148	5.7020218	typo
+be-typo-00427	Oude Markt 34, 3000 Leuven	50.8778667	4.6989536	typo
+be-typo-00428	Rue Fonds de Foret 33, 4623 Magnée	50.6019632	5.6856716	typo
+be-typo-00429	Dwarsstraat 9, 8400 Oostende	51.2320554	2.9205183	typo
+be-typo-00430	Heivled 27L, 3980 Tessenderlo	51.0262241	5.0618777	typo
+be-typo-00431	Lekkerbeetstraat 8, 8500 Kotrijk	50.8259626	3.2684125	typo
+be-typo-00432	Emiel Van Dorenlaan 144, 3600 Genk	50.9836974	5.5109892	typo
+be-typo-00433	Rue du Hautbois 37, 7000 Mons	50.4531962	3.9547341	typo
+be-typo-00434	Baron de Pélichystraat 28, 8870 Izegem	50.9166731	3.2123280	typo
+be-typo-00435	Rue des Capucins 5A4, 7000 Mons	50.4510591	3.9470462	typo
+be-typo-00436	Rue Nelson Mandela 59, 4600 Visé	50.7415189	5.7107953	typo
+be-typo-00437	Nicolaylaan 31, 3970 Leopoldsburg	51.1163719	5.2587587	typo
+be-typo-00438	Rue Jean-Pierre Hubert 3, 7110 Maurage	50.4552416	4.0958921	typo
+be-typo-00439	Heistraadt 20;22;24;26, 2610 Wilrijk	51.1714184	4.3947095	typo
+be-typo-00440	Rijselseweg 18B, 8900 Ieper	50.8421023	2.8887543	typo
+be-typo-00441	Rue Saint Vincent 78fA, 7062 Naast	50.5595227	4.1014309	typo
+be-typo-00442	Rue d'Italie 21, 7110 Maurage	50.4555921	4.0958897	typo
+be-typo-00443	Irenestraat 5, 5111A Baarle-Nassau	51.4472932	4.9287644	typo
+be-typo-00444	Rue Chapelle Marmion 30, 5030 Gembloux	50.5644827	4.6888806	typo
+be-typo-00445	Leopoldstraat 55, 2280 Gqobbendonk	51.1946961	4.7297979	typo
+be-typo-00446	Rollegem-Kapelsestraat 65A, 8880 Ledegem	50.8732400	3.1739763	typo
+be-typo-00447	Korenlei 14, 9000 Gent	51.0549262	3.7200034	typo
+be-typo-00448	Place de la Gare 12, 1420 Braine-l'Ahleud	50.6856291	4.3753991	typo
+be-typo-00449	Rue de Mons 301, 7011 Ghlin	50.4685430	3.9227208	typo
+be-typo-00450	Zandstraat 4, 3294 Moelnstede-Diest	51.0021136	5.0244075	typo
+be-typo-00451	Leuvenesstraat 11, 3300 Tienen	50.8084013	4.9355629	typo
+be-typo-00452	Rue Alphonyse Brenez 52, 7301 Hornu	50.4277257	3.8314804	typo
+be-typo-00453	Nederstraat 46, 9700 Oudenaarde	50.8451168	3.6029448	typo
+be-typo-00454	Kievitveldstraat 1, 3520 Zonhoven	50.9789680	5.3555426	typo
+be-typo-00455	Prins DeM erodelaan 33, 3271 Averbode	51.0268913	4.9848098	typo
+be-typo-00456	b-MINE 8, 3582 Beringen	51.0674091	5.2249675	typo
+be-typo-00457	Rue Godefroid 1B, 5000 Namur	50.4661767	4.8623390	typo
+be-typo-00458	Kerkstraat - Rue de l'Église 34B, 1630 iLnkebeek	50.7719242	4.3354693	typo
+be-typo-00459	Résidence des Comtes de Hainaut 20, 7033 Cuyesmes(7033)	50.4516153	3.9276572	typo
+be-typo-00460	Route d'Achêne 1, 5561 Celjles	50.2318734	5.0042596	typo
+be-typo-00461	Rue André Masquelier 5, 7000 Mons	50.4516555	3.9445005	typo
+be-typo-00462	Rue Saint-Léonard 500, 4000 Liège	50.6537416	5.6037738	typo
+be-typo-00463	Rue Hors-Château 43, 4000 Liège	50.6476540	5.5802602	typo
+be-typo-00464	Rue Wayez 34, 1420 Braine-l'Alleud	50.6847161	4.3691021	typo
+be-typo-00465	Heimolen 6b-94, 5111EH Baarle-Nasau	51.4342795	4.9069354	typo
+be-typo-00466	Moteweg 11, 8510 Kortrijk	50.8032000	3.2362790	typo
+be-typo-00467	Markt 22, 2430 Laakdal	51.0804876	5.0213221	typo
+be-typo-00468	Place des Wallons 24, 1348 Louvain-la-Neuve	50.6684501	4.6165498	typo
+be-typo-00469	Rue du Maïeur Jean Duhot 43, 7350 Thulin	50.4233922	3.7451274	typo
+be-typo-00470	Spninerijstraat 103, 8500 Kortrijk	50.8293490	3.3002809	typo
+be-typo-00471	Barisdamstraat 37A, 8610 Kortemark	51.0188606	2.9700032	typo
+be-typo-00472	Avenue Maréchal Foch 750A, 7012 Jemppes	50.4481162	3.8893535	typo
+be-typo-00473	Ieperseweg 17, 8970 Poperfinge	50.8549382	2.7495401	typo
+be-typo-00474	Antwerpsesteenweg 1136, 9041 Oostaker	51.0839732	3.7966013	typo
+be-typo-00475	Schoolwegel 1, 8610 Kortemark	51.0260915	3.0043719	typo
+be-typo-00476	Rue Émile Cambier 16, 7100 Haine-Saint-Pierre	50.4574921	4.1967291	typo
+be-typo-00477	Rue du Hôme Familial 35, 7110 Houdeng-Gœgnies	50.4931292	4.1601122	typo
+be-typo-00478	Zandharver 21, 8300 Knokke-Heist	51.3388507	3.2975681	typo
+be-typo-00479	Simenslaan 13, 8020 Oostkamp	51.1479517	3.2409440	typo
+be-typo-00480	Rue Mitant des Camps 84, 7100 La Louvière	50.4690745	4.1876508	typo
+be-typo-00481	lKeine Dorpsstraat 9, 3990 Peer	51.1547080	5.5055648	typo
+be-typo-00482	Advocaat De Backerstraat 9, 9450 Denderhoutem	50.8728627	4.0183366	typo
+be-typo-00483	uRe du Parc 60, 7100 La Louvière	50.4767300	4.1926392	typo
+be-typo-00484	Lepelstraat 2, 3920 Lommel	51.2308228	5.3100249	typo
+be-typo-00485	Leugenboomstraat 2, 8480 Ichtegxem	51.1205311	3.0004752	typo
+be-typo-00486	Lichtveld 88, 3980 Tessenderlo	51.0644233	5.0941920	typo
+be-typo-00487	Koninklijke Baan 6, 8434 Middelkerke	51.1640528	2.7625734	typo
+be-typo-00488	Kanaacdijk 26, 2380 Ravels	51.3615094	4.9819637	typo
+be-typo-00489	Biezensstraat 14, 8430 Middelkerke	51.1921814	2.8436193	typo
+be-typo-00490	Aubatrosstraat 23, 8301 Knokke-Heist	51.3409818	3.2424105	typo
+be-typo-00491	Valentin Coulierstraat 3, 8434 Middelkerke	51.1461201	2.7612865	typo
+be-typo-00492	Nijverheidsstraat 33, 3580 Beringen	51.0528985	5.2143242	typo
+be-typo-00493	Gospertstraße 24, 4700 Eupen	50.6319969	6.0345308	typo
+be-typo-00494	Boulevard Zénobe Gramme 21, 4040 Herstal	50.6608348	5.6307912	typo
+be-typo-00495	Rue de la Maladrerie 21, 6830 Buoillon	49.7956758	5.0716076	typo
+be-typo-00496	Smederijstraat 9, 5111Pc Baarle-Nassau	51.4441728	4.9400155	typo
+be-typo-00497	Bellestrsat 12, 8970 Poperinge	50.8487328	2.7250684	typo
+be-typo-00498	Place de Balâtre 123, 5190 Balâtre	50.4986723	4.6385503	typo
+be-typo-00499	Mraktplein 25, 8750 Zwevezele	51.0356799	3.2113406	typo
+be-typo-00500	Engecselei 245, 2140 Borgerhout	51.2125779	4.4446308	typo
+be-typo-00501	Koningsbos 17, 3460 Apsent	50.9471944	5.0330325	typo
+be-typo-00502	Brauereihof 2/1, 4700 Eupen	50.6311735	6.0297616	typo
+be-typo-00503	De Bqosschaertstraat 285, 2020 Antwerpen	51.1846153	4.3879035	typo
+be-typo-00504	Rue de Gougnies 31, 5640 Biesme	50.3398750	4.5976541	typo
+be-typo-00505	Leuvensesteenweg 5, 1932 Zaventem /A	50.8632946	4.4303041	typo
+be-typo-00506	Rue Châmont 4, 6980 La Roche-en-Ardenne	50.1829765	5.5759406	typo
+be-typo-00507	Duikerstarat 28, 8770 Ingelmunster	50.9038960	3.2503182	typo
+be-typo-00508	Sint-Jobswtraat 191, 3550 Heusden-Zolder	50.9803443	5.2740845	typo
+be-typo-00509	Botermarkt 24, 2800 Mechelen	51.0267059	4.4822301	typo
+be-typo-00510	Place du tilleul 10, 4500 Huy	50.5150134	5.2368872	typo
+be-typo-00511	Jan Pootlaan 39, 8670 Koksijde	51.1059440	2.6077458	typo
+be-typo-00512	Rue Daevant la Ville 12A, 4680 Hermée	50.7083529	5.6213286	typo
+be-typo-00513	Herentalse steenweg 34a, 2280 Grobbendonk	51.1742207	4.7538145	typo
+be-typo-00514	Oude Vestenstraat 2, 3300 bTienen	50.8090047	4.9349116	typo
+be-typo-00515	Goedpleven 11, 4508PE Waterlandkerkje	51.2945197	3.5847240	typo
+be-typo-00516	Rue Piretfontaine 114, 4140 Dolembrux	50.5392071	5.6499569	typo
+be-typo-00517	Moeder Magdalenastraat 11, 6109RC Ohé en Laakk	51.1176922	5.8182247	typo
+be-typo-00518	Willem Alexanderstraat 34, 5111AjB Baarle-Nassau	51.4482856	4.9297039	typo
+be-typo-00519	Albert I-laan 253, 8620 Nieuwpoort	51.1469736	2.7130486	typo
+be-typo-00520	Kanaalweg 28, 3980 Tessendelro	51.0725552	5.1366642	typo
+be-typo-00521	Molenhoesktraat 24, 8870 Izegem	50.9091488	3.2178726	typo
+be-typo-00522	Rue de l'Industrie 128, 7080 Frameries	50.4097389	3.8772830	typo
+be-typo-00523	Qaurtier d'Apt 8, 7301 Hornu	50.4297842	3.8233039	typo
+be-typo-00524	Lammerdries-Winkelstraat 4, 2250 Olen /E2	51.1512334	4.9022752	typo
+be-typo-00525	Rue des Cigognes 3, 6700 vrlon	49.6762185	5.7948421	typo
+be-typo-00526	Biestertstraat 4, 3740 Bilzen	50.8308068	5.5481517	typo
+be-typo-00527	Stationsstrhaat 73, 3545 Zelem	50.9771972	5.1200130	typo
+be-typo-00528	Westerring 45, 9700 Oudenaarde	50.8715972	3.6108023	typo
+be-typo-00529	Stoffelstraat 7, 8900 Ieper	50.8570151	2.8863231	typo
+be-typo-00530	Fabriekstraat 70, 9200 Dendermnde	51.0310338	4.1756362	typo
+be-typo-00531	Avxenue Cardinal Mercier 25, 5000 Namur	50.4654552	4.8518663	typo
+be-typo-00532	Basculestraat 38B, 8900 Ieper	50.8547300	2.8960682	typo
+be-typo-00533	Victorialaan 55, 8400 Oostende	51.2323352	2.9383079	typo
+be-typo-00534	Steenburg 17, 8930 Menen	50.7719983	3.1673884	typo
+be-typo-00535	Torhoutbaan 65, 8480 Ichtegem	51.0970389	3.0394392	typo
+be-typo-00536	Kerkhofstraat 13, 8377 Zuienkerqe	51.2357215	3.1097746	typo
+be-typo-00537	Rue des Cortils 2, 1350 Folx-les-Caves	50.6589492	4.9385390	typo
+be-typo-00538	Dunepark 220, 8670 Koksijde	51.1359960	2.7081899	typo
+be-typo-00539	Moulenveld 13, 2270 Herenthout	51.1429843	4.7646278	typo
+be-typo-00540	Domein Westhinder II 32, 8670 Koksijde	51.1123380	2.6711444	typo
+be-typo-00541	Dunedbeve 23B, 8670 Koksijde	51.1106960	2.6662954	typo
+be-typo-00542	Paradijsweg 18, 2500 Leir	51.1292157	4.5664394	typo
+be-typo-00543	Wevelrijstraat 15, 8900 Ieper	50.8559723	2.8856258	typo
+be-typo-00544	Rue des Chênes 29, 7760 Molenbaix	50.6908854	3.4279785	typo
+be-typo-00545	Avenue Albert 1er 76, 1420 Braine-l'Alleud	50.6800933	4.3759196	typo
+be-typo-00546	Marktplaats 14, 8810 Lichtervede	51.0270721	3.1402439	typo
+be-typo-00547	Hajenplein 10, 8500 Kortrijk	50.8155856	3.2763181	typo
+be-typo-00548	Rue Lamberts 46, 4840 Welkenraedt	50.6605317	5.9762902	typo
+be-typo-00549	Rue d'zEsneux 155, 4140 Esneux	50.5309038	5.6099972	typo
+be-typo-00550	Stationsstraat 105, 2250 Onze-Lieve-Vrouwe-Olen	51.1737401	4.9018997	typo
+be-typo-00551	Veldovenstraat 4, 8520 Kuurne	50.8578481	3.2997512	typo
+be-typo-00552	Statiestraat 7, 2400 Mol	51.1872408	5.1190597	typo
+be-typo-00553	Vlamingenstraat 13, 8940 Wervik	50.7792344	3.0440280	typo
+be-typo-00554	Avenue Hippolyte Dumont 3, 4540 Ampszn	50.5398065	5.2873651	typo
+be-typo-00555	Baroniestraat 12, 5111AE Baarle-Nasau	51.4471769	4.9312111	typo
+be-typo-00556	Varatkant links 43, 2960 Sint-Lenaarts	51.3373315	4.7180004	typo
+be-typo-00557	Avenue du Ry à Sorcières 7, 6031 Monceau-sur-Sambre	50.4230922	4.3774284	typo
+be-typo-00558	Rue des Sorbiers 4, 4680 Oupeye	50.7109167	5.6322982	typo
+be-typo-00559	Vijf Eikenstraat 1A, 8780 Ootrozebeke	50.9429295	3.3512225	typo
+be-typo-00560	Neuseplein 33, 9000 Gent	51.0670425	3.7277313	typo
+be-typo-00561	Aan de Maas 18a, 6243NA Geule	50.9269620	5.7337565	typo
+be-typo-00562	Koolmijnlaan 62, 3580 Beringen /1B	51.0523245	5.2229463	typo
+be-typo-00563	Rue des Arts, 7780 oCmines	50.7664279	3.0022093	typo
+be-typo-00564	Rue de Boussu 98B, 7370 Douur	50.4039590	3.7825955	typo
+be-typo-00565	Polderstraat 9, 2260 Wesetrlo	51.0858478	4.9164595	typo
+be-typo-00566	J.B. Charlierlaan, 1560 Hoeilaart	50.7670902	4.4650243	typo
+be-typo-00567	Chaussée Roosevelt 67, 4540 Amay	50.5462224	5.3146231	typo
+be-typo-00568	Henri Jasparlaan 177, 8434 Middeflkerke	51.1695841	2.7761314	typo
+be-typo-00569	Rue de Bitburg 120, 6700 Arln	49.6939187	5.8029015	typo
+be-typo-00570	Roeselarestraat 47, 8830 Hooglede	50.9755537	3.0849420	typo
+be-typo-00571	Dunepark 323, 8670 Koksijde	51.1338200	2.7104612	typo
+be-typo-00572	Rue du Géant 4, 1400 Nivellse /2	50.5982974	4.3262552	typo
+be-typo-00573	Thomas van Loostraat 39, 8400 Oostende	51.2304651	2.9436291	typo
+be-typo-00574	Bruul 74, 2800 Mehelen	51.0252107	4.4815386	typo
+be-typo-00575	Route du Condrz, 4120 Neupré	50.5399050	5.4554744	typo
+be-typo-00576	Ninovesteenweg 104, 9320 Aalst	50.9197889	4.0380235	typo
+be-typo-00577	Christinastraat 45, 8400 Oostende	51.2313669	2.9163862	typo
+be-typo-00578	Gistelse Steenweg 136, 8200 Sint-Andries	51.2019539	3.2026883	typo
+be-typo-00579	Slijpesteenweg 26, 8432 Middelkerke	51.1703456	2.8761676	typo
+be-typo-00580	Zeelaayn 275, 8670 Koksijde	51.1174965	2.6364988	typo
+be-typo-00581	Heimolen 2, 5111EH Baarle-Nassau	51.4355418	4.9144868	typo
+be-typo-00582	Rue de la Chapelle 68, 7370 Éleuges	50.4014034	3.7493079	typo
+be-typo-00583	Brugwesteenweg 223B, 8500 Kortrijk	50.8420327	3.2653050	typo
+be-typo-00584	Rue du Fayt 26C, 7350 Montroelu-sur-Haine	50.4412848	3.7089390	typo
+be-typo-00585	Plce Bara 19, 7640 Antoing	50.5656545	3.4489160	typo
+be-typo-00586	Rue de la Chapelle 50, 4850 Moresnte-Chapelle	50.7314208	5.9952908	typo
+be-typo-00587	Tongersesteenweg 24, 3770 Riemst /1	50.8106508	5.5917021	typo
+be-typo-00588	Gérard Willemotlana 49, 9030 Mariakerke	51.0718279	3.6886581	typo
+be-typo-00589	Place Jean Jaurès 4, 4540 Amay /1	50.5476128	5.3168125	typo
+be-typo-00590	Industrieweg, 9032 Gen	51.0912867	3.6904725	typo
+be-typo-00591	Hooxkstraße 64, 4700 Eupen	50.6329796	6.0383557	typo
+be-typo-00592	Vlasstraat 22, 9060 Zelzamte	51.1996916	3.8243684	typo
+be-typo-00593	Leopoldlaan 122, 8430 Middelkerke	51.1861870	2.8115602	typo
+be-typo-00594	Avenue Raymond Brassinne 18, 1420 Braine-l'Alleud	50.6828424	4.3791866	typo
+be-typo-00595	Withuis 30, 6245KB Eijjden	50.7632305	5.7191227	typo
+be-typo-00596	Dendermondsetseenweg 50, 9000 Gent	51.0553048	3.7417701	typo
+be-typo-00597	Ter Klippe 36;40;44, 8890 Moorslede	50.8526976	3.0991969	typo
+be-typo-00598	Roeselarestraat 71, 8830 Hooglede	50.9739103	3.0858347	typo
+be-typo-00599	Torhoutsesteenweg 649A, 8400 tostende	51.1991320	2.9012694	typo
+be-reordered-00600	9770 Kruisem René D'Huyvetterstraat 5c	50.9065175	3.5266739	reordered
+be-reordered-00601	8500 Kortrijk Oudenaardsesteenweg 303	50.8209353	3.2910458	reordered
+be-reordered-00602	3000 Leuven Engels Plein 37-39	50.8883853	4.7017942	reordered
+be-reordered-00603	8000 Brugge Steenstraat 45	51.2072591	3.2230227	reordered
+be-reordered-00604	7972 Aubechies Espace Pierre Descamps 1	50.5744268	3.6765980	reordered
+be-reordered-00605	7020 Nimy Résidence du Soleil 26	50.4767690	3.9601116	reordered
+be-reordered-00606	1341 Céroux-Mousty Grande Avenue 12	50.6596705	4.5132967	reordered
+be-reordered-00607	2440 Geel Pas 71	51.1593991	4.9895799	reordered
+be-reordered-00608	6720 Habay-la-Neuve Avenue de la Gare 1	49.7273914	5.6442024	reordered
+be-reordered-00609	8870 Izegem Sleedoornstraat 11	50.9110660	3.1873111	reordered
+be-reordered-00610	8670 Koksijde Strandlaan 202	51.1080201	2.6141921	reordered
+be-reordered-00611	3800 Sint-Truiden Rellestraat 5005	50.8175533	5.2069169	reordered
+be-reordered-00612	5000 Namur Rue de Fer 12	50.4652279	4.8652204	reordered
+be-reordered-00613	3370 Boutersem Kerkomsesteenweg 320	50.8557042	4.8765324	reordered
+be-reordered-00614	1300 Wavre Chaussée de Bruxelles 64	50.7208374	4.6085736	reordered
+be-reordered-00615	3560 Meldert-Lummen Heesstraat 20	50.9979824	5.1355512	reordered
+be-reordered-00616	4800 Verviers Rue Coronmeuse	50.5941847	5.8651752	reordered
+be-reordered-00617	5000 Namur Rue des Carmes 49	50.4666250	4.8637786	reordered
+be-reordered-00618	8620 Nieuwpoort Brugse Steenweg 42	51.1286382	2.7671421	reordered
+be-reordered-00619	5000 Namur Place du Théâtre 13	50.4638985	4.8680921	reordered
+be-reordered-00620	3700 Tongeren Maastrichtersteenweg 191	50.7840340	5.4825156	reordered
+be-reordered-00621	8890 Moorslede Iepersestraat 129	50.8840393	3.0487048	reordered
+be-reordered-00622	8790 Waregem Warandestraat 45	50.8890835	3.4452045	reordered
+be-reordered-00623	5000 Namur Avenue Arthur Procès 5	50.4720852	4.8691862	reordered
+be-reordered-00624	6250 Aiseau-Presles Rue du Campinaire 16	50.4068160	4.5385055	reordered
+be-reordered-00625	6182 Souvret Rue Louis de Brouckère 37	50.4409242	4.3426040	reordered
+be-reordered-00626	5111TA Baarle-Nassau Loveren 21	51.4440390	4.9174049	reordered
+be-reordered-00627	6023AC Budel-Schoot Lochterweg 7	51.2432976	5.5601312	reordered
+be-reordered-00628	5111CA Baarle-Nassau Sint Annaplein 27	51.4439108	4.9324660	reordered
+be-reordered-00629	3200 Aarschot August Reyerslaan 38	50.9903799	4.8417627	reordered
+be-reordered-00630	3000 Leuven Mechelsestraat 75	50.8819391	4.6989501	reordered
+be-reordered-00631	3980 Schoot Sint-Jozefsplein 2	51.0664755	5.0368190	reordered
+be-reordered-00632	1341 Céroux-Mousty Rue de la Palanche 6	50.6672295	4.5369368	reordered
+be-reordered-00633	4000 Liège Rue Fond Saint-Servais 2C	50.6471781	5.5719066	reordered
+be-reordered-00634	8501 Kortrijk Heulsekasteelstraat 1	50.8435680	3.2322888	reordered
+be-reordered-00635	7370 Wihéries Rue Basse 68	50.3828376	3.7551984	reordered
+be-reordered-00636	3950 Bocholt Giebelsstraat 7	51.1770837	5.5844605	reordered
+be-reordered-00637	8500 Kortrijk Nieuwstraat 17	50.8253103	3.2696094	reordered
+be-reordered-00638	7800 Ath Sentier des Trailleurs 4	50.6193997	3.7876109	reordered
+be-reordered-00639	8670 Koksijde Dunepark 313	51.1340284	2.7108988	reordered
+be-reordered-00640	9200 Dendermonde Steenkaaistraat 1	51.0321632	4.1736185	reordered
+be-reordered-00641	1341 Céroux-Mousty Rue Nicaise 2	50.6581067	4.5137925	reordered
+be-reordered-00642	8400 Oostende Wellingtonstraat 15	51.2260588	2.9064880	reordered
+be-reordered-00643	5111HB Baarle-Nassau Schaluinen 11b-358	51.4230627	4.9342271	reordered
+be-reordered-00644	7134 Ressaix Rue de Namur 204	50.4239372	4.1903508	reordered
+be-reordered-00645	6180 Courcelles Cité Spartacus Huart 25	50.4543033	4.3729289	reordered
+be-reordered-00646	8670 Koksijde Kursaallaan 65	51.1179701	2.6318184	reordered
+be-reordered-00647	7500 Tournai Rue Francois-Joseph Peterinck 2	50.6124789	3.3828349	reordered
+be-reordered-00648	8500 Kortrijk Schaapsdreef 64	50.8021649	3.2932885	reordered
+be-reordered-00649	7011 Ghlin Avenue du Régent 5E	50.4659721	3.9278344	reordered
+be-reordered-00650	8870 Izegem Roeselaarsestraat 39	50.9184782	3.2112256	reordered
+be-reordered-00651	8530 Harelbeke Zuidstraat 42	50.8580766	3.3195341	reordered
+be-reordered-00652	8500 Kortrijk Budastraat 12	50.8301465	3.2640482	reordered
+be-reordered-00653	4700 Eupen Loten 3b	50.6258482	6.0303095	reordered
+be-reordered-00654	2320 Hoogstraten Industrieweg	51.3909517	4.7397238	reordered
+be-reordered-00655	6182 Souvret Rue Alfred Musin 23	50.4470114	4.3514784	reordered
+be-reordered-00656	8400 Oostende Zandvoordestraat 500	51.2069390	2.9720393	reordered
+be-reordered-00657	5542 Hastière Rue Grisaille 4	50.2021080	4.8464366	reordered
+be-reordered-00658	6747 Saint-Léger Rue du Stade 1	49.6055480	5.6517763	reordered
+be-reordered-00659	4529JE Eede Brieversweg 27	51.2451112	3.5086955	reordered
+be-reordered-00660	5111XE Baarle-Nassau Nassaulaan 24	51.4495647	4.9326833	reordered
+be-reordered-00661	3560 Lummen Ringlaan 16	50.9844998	5.1945481	reordered
+be-reordered-00662	8610 Kortemark Hoogledestraat 15	51.0244309	3.0433188	reordered
+be-reordered-00663	2440 Geel Vossendaal	51.1254683	4.9425238	reordered
+be-reordered-00664	8900 Ieper Polenlaan 5B	50.8558045	2.8858655	reordered
+be-reordered-00665	7033 Cuesmes Rue Émile Vandervelde 25B	50.4384532	3.9291767	reordered
+be-reordered-00666	9080 Lochristi Antwerpse Steenweg 44;46	51.0923610	3.8155255	reordered
+be-reordered-00667	4610 Beyne-Heusay Rue du Heusay	50.6231914	5.6547078	reordered
+be-reordered-00668	3000 Leuven Craenendonck 3	50.8812899	4.6992181	reordered
+be-reordered-00669	3550 Heusden-Zolder Guido Gezellelaan 20	51.0323074	5.2791502	reordered
+be-reordered-00670	8920 Langemark-Poelkapelle Prinsenhofstraat 14A	50.8905752	2.9427617	reordered
+be-reordered-00671	6840 Neufchâteau Chaussée de Recogne 36	49.8540897	5.4348447	reordered
+be-reordered-00672	4140 Dolembreux Rue Piretfontaine 30	50.5374649	5.6375227	reordered
+be-reordered-00673	8670 Koksijde Domein Westhinder II 3	51.1113705	2.6716703	reordered
+be-reordered-00674	8810 Lichtervelde Hoogstraat 14	51.0278804	3.1414383	reordered
+be-reordered-00675	8301 Knokke-Heist Knokkestraat 20	51.3399346	3.2408016	reordered
+be-reordered-00676	2387 Baarle-Hertog Molenbaan 24	51.4356714	4.9187760	reordered
+be-reordered-00677	8900 Ieper Paddevijverstraat 54D	50.8661395	2.8864935	reordered
+be-reordered-00678	2270 Herenthout Herentalse Steenweg 100	51.1524574	4.8026361	reordered
+be-reordered-00679	8000 Brugge Simon Stevinplein 17-18	51.2064730	3.2224625	reordered
+be-reordered-00680	5111TA Baarle-Nassau Loveren 13	51.4437074	4.9198968	reordered
+be-reordered-00681	5500 Dinant Avenue des Combattants 2	50.2600431	4.9104184	reordered
+be-reordered-00682	8790 Waregem Warandestraat 45	50.8890835	3.4452045	reordered
+be-reordered-00683	6860 Ébly Bombois 48/3	49.8463424	5.5328321	reordered
+be-reordered-00684	5111CA Baarle-Nassau Sint Annaplein 24j	51.4437840	4.9328140	reordered
+be-reordered-00685	8400 Oostende Margrietplein 1	51.1999021	2.9749628	reordered
+be-reordered-00686	3980 Tessenderlo Diesterstraat 61-63	51.0644657	5.0886515	reordered
+be-reordered-00687	2140 Borgerhout Stenenbrug 136	51.2109904	4.4506340	reordered
+be-reordered-00688	3770 Vlijtingen Smisstraat 4	50.8344076	5.5908427	reordered
+be-reordered-00689	6464 Baileux Rue de Rocroi 14	50.0293910	4.3733893	reordered
+be-reordered-00690	9700 Oudenaarde Gentstraat 61	50.8519482	3.5999600	reordered
+be-reordered-00691	9120 Melsele Kapelstraat 10	51.2253682	4.2668698	reordered
+be-reordered-00692	7140 Morlanwelz-Mariemont Rue Valère Mabille 125	50.4558949	4.2226274	reordered
+be-reordered-00693	8792 Desselgem Liebaardstraat 140	50.8832073	3.3538631	reordered
+be-reordered-00694	4709RE Nispen Grensstraat 8	51.4704984	4.4606978	reordered
+be-reordered-00695	2000 Antwerpen Cadixstraat 7	51.2334516	4.4098425	reordered
+be-reordered-00696	7041 Havay Rue Derrière les Haies 1A	50.3630482	3.9835245	reordered
+be-reordered-00697	2330 Merksplas Steenweg op Beerse 70	51.3483729	4.8628363	reordered
+be-reordered-00698	9230 Wetteren Brusselsesteenweg 260	50.9836101	3.8455314	reordered
+be-reordered-00699	8400 Oostende Hendrik Serruyslaan 4	51.2304560	2.9149890	reordered
+be-reordered-00700	3000 Leuven Bondgenotenlaan 91	50.8802636	4.7086819	reordered
+be-reordered-00701	8970 Poperinge Goudenhoofdstraat 19C	50.8550464	2.7292701	reordered
+be-reordered-00702	8500 Kortrijk Johny Turboplein 5	50.8303305	3.2564646	reordered
+be-reordered-00703	4576AB Koewacht Schoolstraat 30	51.2264835	3.9735365	reordered
+be-reordered-00704	6031 Monceau-sur-Sambre Place Louis de Gonzague 21	50.4102832	4.3810197	reordered
+be-reordered-00705	8300 Knokke-Heist Paul Parmentierlaan 279	51.3520248	3.2862835	reordered
+be-reordered-00706	4890 Thimister-Clermont Route d'Aubel 69	50.6798727	5.8498424	reordered
+be-reordered-00707	7022 Hyon Place d'Hyon 14	50.4403442	3.9634577	reordered
+be-reordered-00708	6215EW Maastricht Nymphenhof 4	50.8417325	5.6439753	reordered
+be-reordered-00709	4040 Herstal Rue d'Abhooz 27	50.6934498	5.6204153	reordered
+be-reordered-00710	3620 Lanaken Europaplein 32	50.8876849	5.6510040	reordered
+be-reordered-00711	9840 De Pinte Baron de Gieylaan 32	50.9928587	3.6533862	reordered
+be-reordered-00712	3200 Aarschot Leuvensestraat 25	50.9839889	4.8325383	reordered
+be-reordered-00713	9750 Zingem Gentsesteenweg 23	50.9083447	3.6164642	reordered
+be-reordered-00714	9700 Oudenaarde Pamelekerkplein 2	50.8402169	3.6074254	reordered
+be-reordered-00715	2640 Mortsel Mechelsesteenweg 145	51.1655058	4.4547269	reordered
+be-reordered-00716	4400 Flémalle-Haute Rue du Beau Site 25	50.5972393	5.4471011	reordered
+be-reordered-00717	9051 Sint-Denijs-Westrem Kortrijksesteenweg 1182	51.0182228	3.6681502	reordered
+be-reordered-00718	9800 Deinze Tolpoortstraat 25	50.9817563	3.5288859	reordered
+be-reordered-00719	5111AR Baarle-Nassau Hertogenstraat 1d	51.4494700	4.9291453	reordered
+be-reordered-00720	6015RE Neeritter Rutjensstraat 10	51.1634793	5.7770342	reordered
+be-reordered-00721	7500 Tournai Place de Lille 11	50.6066056	3.3805559	reordered
+be-reordered-00722	7370 Wihéries Sentier de Montignies 7	50.3811687	3.7502779	reordered
+be-reordered-00723	6000 Charleroi Rue de France 26	50.4109270	4.4425912	reordered
+be-reordered-00724	4000 Liège Rue Hubert Coune 51	50.6458967	5.5429618	reordered
+be-reordered-00725	3290 Diest Felix Moonsstraat 4	50.9845803	5.0523853	reordered
+be-reordered-00726	3000 Leuven Oude Markt 44	50.8783080	4.6993449	reordered
+be-reordered-00727	6200 Châtelet Rue du Calvaire 60A	50.4037253	4.5261780	reordered
+be-reordered-00728	3980 Tessenderlo Geelsebaan 141	51.0765536	5.0786333	reordered
+be-reordered-00729	5111AE Baarle-Nassau Baroniestraat 12	51.4471769	4.9312111	reordered
+be-reordered-00730	7130 Binche Avenue de Burlet 21	50.4109809	4.1741064	reordered
+be-reordered-00731	8670 Koksijde Dunepark 690	51.1339438	2.7133312	reordered
+be-reordered-00732	3130 Begijnendijk Kerkstraat 24	51.0209013	4.7865941	reordered
+be-reordered-00733	5111HE Baarle-Nassau Nijhoven 1b	51.4410121	4.9461434	reordered
+be-reordered-00734	4031 Angleur Rue de la Dîme 10	50.6192323	5.5852811	reordered
+be-reordered-00735	6724 Marbehan Rue de l'Église 7	49.7247634	5.5358143	reordered
+be-reordered-00736	4052 Beaufays Voie de l'Air Pur 200	50.5655173	5.6321617	reordered
+be-reordered-00737	8400 Oostende Torhoutsesteenweg 88B	51.2238598	2.9091192	reordered
+be-reordered-00738	6700 Arlon Grand-Rue 21	49.6832106	5.8140455	reordered
+be-reordered-00739	8000 Brugge Vizierstraat 37	51.2059926	3.2346451	reordered
+be-reordered-00740	8460 Oudenburg Vijfwegstraat 47	51.1760015	3.0391316	reordered
+be-reordered-00741	2275 Lille Boskapelstraat 38	51.2357074	4.8221531	reordered
+be-reordered-00742	1755 Oetingen Kloosterstraat 6	50.7740056	4.0625299	reordered
+be-reordered-00743	9880 Aalter Hoefijzer 36	51.0922313	3.4458644	reordered
+be-reordered-00744	3680 Maaseik Markt 31	51.0943394	5.7908390	reordered
+be-reordered-00745	5111VE Baarle-Nassau Titus Brandsmastraat 2	51.4448990	4.9325572	reordered
+be-reordered-00746	4020 Liège Boulevard de la Constitution 61	50.6441649	5.5877968	reordered
+be-reordered-00747	8830 Hooglede Engelshofstraat 7C	50.9987608	3.1410612	reordered
+be-reordered-00748	8200 Sint-Andries Gistelse Steenweg 364	51.1992184	3.1901735	reordered
+be-reordered-00749	4528KR Sint Kruis Kruispolderweg 5	51.2906824	3.5260000	reordered
+be-reordered-00750	8720 Dentergem Oostdreef 28	50.9324691	3.3988845	reordered
+be-reordered-00751	7030 Saint-Symphorien Rue des Résistants 39B	50.4394247	4.0166914	reordered
+be-reordered-00752	8900 Ieper Grachtstraat 17	50.8493256	2.8755326	reordered
+be-reordered-00753	4140 Esneux Rue d'Esneux 117	50.5313216	5.6160163	reordered
+be-reordered-00754	8920 Langemark-Poelkapelle Schiethoek 24	50.9170168	2.9532657	reordered
+be-reordered-00755	3970 Leopoldsburg Dwarsstraat 24	51.1151608	5.2449102	reordered
+be-reordered-00756	9681 Maarkedal Heidje 11	50.7944152	3.5858946	reordered
+be-reordered-00757	6215EB Maastricht Cyclopenhof 2	50.8426489	5.6429582	reordered
+be-reordered-00758	7012 Jemappes Rue Mac Donald 38A	50.4500747	3.8910180	reordered
+be-reordered-00759	3000 Leuven Bondgenotenlaan 16-18	50.8793977	4.7046368	reordered
+be-reordered-00760	2200 Herentals Vennekenshoek 4	51.1240770	4.8144545	reordered
+be-reordered-00761	9000 Gent Seminariestraat 1	51.0514802	3.7310441	reordered
+be-reordered-00762	8930 Menen Hoornwerk 4	50.7866660	3.1273377	reordered
+be-reordered-00763	6200 Châtelet Rue du Marché 35	50.4058518	4.5226859	reordered
+be-reordered-00764	1410 Waterloo Chaussée de Bruxelles 233	50.7146176	4.3992832	reordered
+be-reordered-00765	6200 Châtelet Grand-Rue 29	50.4027422	4.5277155	reordered
+be-reordered-00766	7020 Nimy Résidence du Soleil 61	50.4773096	3.9600740	reordered
+be-reordered-00767	4576EN Koewacht Oudestraat 5	51.2411688	4.0027961	reordered
+be-reordered-00768	7500 Tournai Rue Sainte-Catherine 26	50.6029516	3.3959614	reordered
+be-reordered-00769	5111XP Baarle-Nassau Schoolstraat 13	51.4476049	4.9257548	reordered
+be-reordered-00770	7040 Asquillies Rue Émile Wauquier 32	50.4006114	3.9625731	reordered
+be-reordered-00771	8670 Koksijde Dunepark 619	51.1352854	2.7106336	reordered
+be-reordered-00772	3120 Tremelo Schrieksebaan 27	50.9921521	4.7053011	reordered
+be-reordered-00773	2500 Lier Frankenweg 6	51.1481853	4.5753473	reordered
+be-reordered-00774	8430 Middelkerke Zeedijk 296	51.1781379	2.7923790	reordered
+be-reordered-00775	8890 Moorslede Ledegemstraat 8	50.8520036	3.0978445	reordered
+be-reordered-00776	6291BS Vaals Gemmenicherweg 65	50.7534193	6.0000299	reordered
+be-reordered-00777	8770 Ingelmunster Bruggestraat 85	50.9248368	3.2536419	reordered
+be-reordered-00778	5111AG Baarle-Nassau Korenbloemstraat 27	51.4482030	4.9315604	reordered
+be-reordered-00779	5111DN Baarle-Nassau Beverdam 16	51.4466791	4.9212473	reordered
+be-reordered-00780	3800 Groot-Gelmen Klein-Gelmenstraat	50.7813494	5.2673371	reordered
+be-reordered-00781	6700 Arlon Rue de l'Hydrion 5	49.6802391	5.8042745	reordered
+be-reordered-00782	3971 Heppen Hamsesteenweg 119	51.1070884	5.2114818	reordered
+be-reordered-00783	8020 Oostkamp Veldhoekstraat 120	51.1108863	3.1989568	reordered
+be-reordered-00784	6880 Bertrix Route des Gohineaux 13	49.8748184	5.2465947	reordered
+be-reordered-00785	4600 Visé Rue Nelson Mandela 71	50.7416697	5.7108576	reordered
+be-reordered-00786	8670 Koksijde Pylyserlaan 59	51.1124161	2.6597591	reordered
+be-reordered-00787	3550 Heusden-Zolder Koolmijnlaan 171	51.0404214	5.3027210	reordered
+be-reordered-00788	6880 Bertrix Route des Gohineaux 2	49.8746390	5.2493641	reordered
+be-reordered-00789	9000 Gent Sint-Denijslaan 431	51.0358097	3.6953974	reordered
+be-reordered-00790	8400 Oostende Rogierlaan 2	51.2278332	2.9108456	reordered
+be-reordered-00791	9240 Zele Buffelstraat 25	51.0652683	4.0800505	reordered
+be-reordered-00792	6920 Wellin Avenue Fort Mahon 3	50.0807100	5.1105437	reordered
+be-reordered-00793	9060 Zelzate Sint-Sebastiaanstraat 25	51.1996467	3.8203104	reordered
+be-reordered-00794	8301 Knokke-Heist Westkapellestraat 32	51.3363124	3.2419462	reordered
+be-reordered-00795	5556VG Valkenswaard Peedijk 9A	51.2906522	5.4625195	reordered
+be-reordered-00796	1742 Ternat Sluisvijverstraat 19	50.8821978	4.1168054	reordered
+be-reordered-00797	5111AX Baarle-Nassau Emmastraat 8	51.4474523	4.9280867	reordered
+be-reordered-00798	1701 Itterbeek Ninoofsesteenweg 628	50.8408298	4.2285259	reordered
+be-reordered-00799	8501 Kortrijk Moravie 32	50.8122855	3.2229611	reordered
+be-partial-00800	Rue Laurent Delvaux 25, Nivelles	50.6007424	4.3290572	partial
+be-partial-00801	Koningsstraat 30, Leopoldsburg	51.1161189	5.2601930	partial
+be-partial-00802	Dunepark 314, Koksijde	51.1350711	2.7087760	partial
+be-partial-00803	Zeedijk 12;14, De Panne	51.1035607	2.5909591	partial
+be-partial-00804	Rue du Château 16, Beloeil	50.5493657	3.7333228	partial
+be-partial-00805	Graanmarkt 19, Kortrijk	50.8265367	3.2646913	partial
+be-partial-00806	Nymphenhof 8, Maastricht	50.8416775	5.6436541	partial
+be-partial-00807	Aalbeeksesteenweg 26, Kortrijk	50.8229527	3.2585508	partial
+be-partial-00808	Grand Marais 1, Ollignies	50.6885281	3.8546441	partial
+be-partial-00809	Kerkstraat 32, Oostende	51.2306554	2.9198764	partial
+be-partial-00810	Rijselsestraat 42, Kortrijk	50.8272286	3.2615140	partial
+be-partial-00811	Grensstraat 4, Koewacht	51.2258586	3.9715535	partial
+be-partial-00812	Gistelsesteenweg 101, Oostende	51.2115257	2.9294159	partial
+be-partial-00813	Rue Vénalte 4, Crupet	50.3439346	4.9196208	partial
+be-partial-00814	Kloostersteen 40, Kuurne	50.8576885	3.2993351	partial
+be-partial-00815	Aarschotsesteenweg 140, Betekom	50.9891208	4.7950139	partial
+be-partial-00816	Herseltsesteenweg 137, Aarschot	50.9970786	4.8342821	partial
+be-partial-00817	Liersesteenweg 76, Aarschot	51.0005592	4.8296734	partial
+be-partial-00818	Industrielaan 17, Brakel	50.7922920	3.7572765	partial
+be-partial-00819	Rue de la Maladrerie 32, Bouillon	49.7958874	5.0715374	partial
+be-partial-00820	Goedeboterstraat 10B, Oudenburg	51.1814355	3.0024910	partial
+be-partial-00821	Dunepark 838, Koksijde	51.1349729	2.7118145	partial
+be-partial-00822	Kapel ter Bede 90, Kortrijk	50.8225608	3.3052514	partial
+be-partial-00823	Hoornwerk 1, Menen	50.7864947	3.1272381	partial
+be-partial-00824	Allée des Sports 9, Thieu	50.4701175	4.0949202	partial
+be-partial-00825	Bredabaan 971, Schoten	51.2593286	4.4644504	partial
+be-partial-00826	Bruggestraat 193, Zwevezele	51.0433089	3.2229391	partial
+be-partial-00827	Weststraat 22, Damme	51.2343100	3.3226347	partial
+be-partial-00828	Boomsesteenweg 62, Aartselaar	51.1214737	4.3727571	partial
+be-partial-00829	Voormuide 9, Gent	51.0681269	3.7292542	partial
+be-partial-00830	Torhoutse Steenweg 317, Sint-Andries	51.1938999	3.1982605	partial
+be-partial-00831	Albert Claudestraat 25, Hooglede	50.9723034	3.1086784	partial
+be-partial-00832	Leffingestraat 91, Oostende	51.2190567	2.9098326	partial
+be-partial-00833	Rue Chevesne 78, Sars la Buissière	50.3376874	4.2218753	partial
+be-partial-00834	Pieter Vanhoudtstraat 2, Beringen	51.0582030	5.2716381	partial
+be-partial-00835	Rue de la Pêcherie 7, Dolembreux	50.5347000	5.6374465	partial
+be-partial-00836	Rue Commandant Lemaire 102, Cuesmes	50.4387399	3.9104595	partial
+be-partial-00837	Burgemeester van Gilsestraat 2, Baarle-Nassau	51.4443547	4.9244212	partial
+be-partial-00838	Rue de Pitteurs 24, Liège	50.6386845	5.5807197	partial
+be-partial-00839	Dunepark 559, Koksijde	51.1347178	2.7106176	partial
+be-partial-00840	Cijnsdreef 5, Oostkamp	51.0757959	3.1597902	partial
+be-partial-00841	Rue Jaune 19, Hastière	50.2013120	4.8427845	partial
+be-partial-00842	Rue des Guillemins 55, Liège	50.6283154	5.5676021	partial
+be-partial-00843	Zwingelaarsstraat 32, Izegem	50.9099837	3.2159485	partial
+be-partial-00844	Lammerdries-Zuid 17, Olen	51.1510667	4.9066358	partial
+be-partial-00845	Koolmijnlaan 43, Heusden-Zolder	51.0384903	5.2962383	partial
+be-partial-00846	Speistraat 4, Gent	51.0853955	3.6645781	partial
+be-partial-00847	Chaussée de Namur 436F, Warêt-la-Chaussée	50.5316347	4.9031214	partial
+be-partial-00848	Grand'Rue 7, Céroux-Mousty	50.6600321	4.5163774	partial
+be-partial-00849	Pieter Deswartelaan 1A, Nieuwpoort	51.1334136	2.7558155	partial
+be-partial-00850	Klosterstraße 5, Eupen	50.6317260	6.0304387	partial
+be-partial-00851	Staatsbaan 150, Bekkevoort	50.9443091	4.9741447	partial
+be-partial-00852	Chemin de la Guelenne 1D, Soignies	50.5852549	4.0729434	partial
+be-partial-00853	Dorpsplein 6, Kinrooi	51.1449674	5.7416096	partial
+be-partial-00854	Le Monti Djauquet 5/3, Respelt	49.8833611	5.4724987	partial
+be-partial-00855	Reigersmolenstraat 31, Vremde	51.1736089	4.5243293	partial
+be-partial-00856	Neerstraat 70, Asse	50.9085436	4.2022331	partial
+be-partial-00857	Eikenlaan 86D, Waregem	50.8942590	3.4111030	partial
+be-partial-00858	Park 7, Brugge	51.2073700	3.2304696	partial
+be-partial-00859	Stationsstraat 31, Waregem	50.8878291	3.4308888	partial
+be-partial-00860	Rue de la Gare 10, Messancy	49.5924508	5.8164230	partial
+be-partial-00861	Bredabaan 336, Brasschaat	51.2921511	4.4939240	partial
+be-partial-00862	Testeltsesteenweg 46, Langdorp	50.9994092	4.8783856	partial
+be-partial-00863	Rue de Courtrai 18, Tournai	50.6086027	3.3872492	partial
+be-partial-00864	Diestsestraat 144, Leuven	50.8813327	4.7095721	partial
+be-partial-00865	Sint-Pietersstraat 12, Izegem	50.9162065	3.2146426	partial
+be-partial-00866	Adelbergpark 2, Lommel	51.2318148	5.3082706	partial
+be-partial-00867	Aachener Straße 24, Eupen	50.6329672	6.0317864	partial
+be-partial-00868	Dunepark 434, Koksijde	51.1336921	2.7093337	partial
+be-partial-00869	Place des Combattants 2, Liège	50.6445641	5.6328785	partial
+be-partial-00870	Rue du Bois 91B, Chièvres	50.5494071	3.7878127	partial
+be-partial-00871	Kaulillerweg 161, Bocholt	51.1794210	5.5430307	partial
+be-partial-00872	Stationsstraat 100A, Maldegem	51.2043458	3.4509292	partial
+be-partial-00873	Oudepolderseweg 10, Zuiddorpe	51.2224416	3.8868856	partial
+be-partial-00874	Smissebeekstraat 68, Jabbeke	51.1935660	3.1430148	partial
+be-partial-00875	Lar 50, Kortrijk	50.7766655	3.2017799	partial
+be-partial-00876	Vossedaal 4, Baarle-Nassau	51.4488623	4.9209660	partial
+be-partial-00877	Blijkstraat 8, Beringen	51.0489570	5.2220807	partial
+be-partial-00878	Rue de la Hestre 159A, Haine-Saint-Pierre	50.4635580	4.2167370	partial
+be-partial-00879	Rue Pont Saint-Nicolas, Liège	50.6412341	5.5816098	partial
+be-partial-00880	Avenue du Monument 4, Marche-en-Famenne	50.2247455	5.3435668	partial
+be-partial-00881	Place Verte, Spa	50.4905324	5.8635399	partial
+be-partial-00882	Witte Torenwal 27, Bree	51.1422298	5.5963830	partial
+be-partial-00883	Rue du Ménil 69, Braine-l'Alleud	50.6874112	4.3809773	partial
+be-partial-00884	Leopold II Laan 276, Koksijde	51.1318807	2.6722221	partial
+be-partial-00885	Fraikinstraat 1-3, Herentals	51.1795206	4.8349498	partial
+be-partial-00886	Vogelstraat 8, Sint-Pieters-Leeuw	50.7870287	4.2573550	partial
+be-partial-00887	Rootenstraat 8, Genk	50.9650600	5.5036809	partial
+be-partial-00888	Rue Belvaux, Grivegnée	50.6218580	5.5995666	partial
+be-partial-00889	Ossenmarkt 21, Antwerpen	51.2215754	4.4136209	partial
+be-partial-00890	Pathoekeweg 120, Brugge	51.2377278	3.2195763	partial
+be-partial-00891	Zeedijk 59, Middelkerke	51.1891865	2.8177567	partial
+be-partial-00892	Hasseltsesteenweg 143, Beringen	51.0416492	5.2332982	partial
+be-partial-00893	Chaussée de Namur 122, Gembloux	50.5538626	4.7064809	partial
+be-partial-00894	Albert Bliecklaan 10, Koksijde	51.1160606	2.6372554	partial
+be-partial-00895	Rue des Bateliers 7, La Roche-en-Ardenne	50.1807548	5.5767254	partial
+be-partial-00896	Bredestraat 1, Huijbergen	51.4449771	4.3879429	partial
+be-partial-00897	Rue Hovémont 165, Theux	50.5314857	5.8155827	partial
+be-partial-00898	Industrielaan 52, Schoten	51.2388664	4.4795968	partial
+be-partial-00899	Vaartkom 17, Leuven	50.8878038	4.7022763	partial
+be-partial-00900	Molenstraat 94, Menen	50.7965838	3.1256332	partial
+be-partial-00901	Rue Monseigneur Descamps 1, Escanaffles	50.7536784	3.4483312	partial
+be-partial-00902	Lijnwaadstraat 8, Izegem	50.9043356	3.2038435	partial
+be-partial-00903	Nieuwstraat 51, Aalst	50.9384435	4.0349189	partial
+be-partial-00904	Gasthuisstraat 1, Beerse	51.3202746	4.8559514	partial
+be-partial-00905	Westerring 45, Oudenaarde	50.8716618	3.6104810	partial
+be-partial-00906	Rue Piretfontaine 128, Dolembreux	50.5392333	5.6513330	partial
+be-partial-00907	Rue Hubert Debauche 55, Gilly	50.4314171	4.4923430	partial
+be-partial-00908	Rue Fusch 3, Liège	50.6355030	5.5628419	partial
+be-partial-00909	Bredabaan 284, Brasschaat	51.2906055	4.4921660	partial
+be-partial-00910	Kruisstraat, Tremelo	50.9918653	4.7038263	partial
+be-partial-00911	Place de Molenbaix 26, Molenbaix	50.6937444	3.4309830	partial
+be-partial-00912	Rue de la Bossette 19, Olloy-sur-Viroin	50.0703216	4.6125960	partial
+be-partial-00913	Ellestraat 1, Gistel	51.1576440	2.9715872	partial
+be-partial-00914	Rouzéstraat 19, Koksijde	51.1190183	2.6354576	partial
+be-partial-00915	Stadionplein 7, Genk	51.0052924	5.5285509	partial
+be-partial-00916	Kloosterhof 39;40;41;42;43;44;45;46;47;48;49, Dentergem	50.9303255	3.3964612	partial
+be-partial-00917	Nationalestraat 63, Antwerpen	51.2154661	4.3990034	partial
+be-partial-00918	Goethalsstraat 6, Nieuwpoort	51.1486501	2.7172852	partial
+be-partial-00919	Grensstraat 6, Nispen	51.4705115	4.4607795	partial
+be-partial-00920	Roeselaarsestraat 58, Moorslede	50.8929839	3.0637389	partial
+be-partial-00921	Alexis Verbouwelaan 16A, Koksijde	51.1103418	2.6280576	partial
+be-partial-00922	Rue Camille Dépinoy 12, Templeuve	50.6426695	3.2915092	partial
+be-partial-00923	Verstellestraat 30, Oostende	51.2320063	2.9485266	partial
+be-partial-00924	Place Théodore Foguenne 18, Chaudfontaine	50.6006051	5.6333388	partial
+be-partial-00925	Rue Chapelle Langlet 1B, Saint-Vaast	50.4531695	4.1620527	partial
+be-partial-00926	Tessenstraat 1B, Leuven	50.8809918	4.6933077	partial
+be-partial-00927	Clos de la Ferme d'Aulne 20, La Louvière	50.4770288	4.1688751	partial
+be-partial-00928	Heiveld 27, Opwijk	50.9706707	4.1842966	partial
+be-partial-00929	Rue du Village 26, Libramont	49.9142122	5.3795929	partial
+be-partial-00930	Sint Denijsplaats 10, Geluwe	50.8099289	3.0764884	partial
+be-partial-00931	Baroeneput 1A, Heuvelland	50.7680429	2.7872232	partial
+be-partial-00932	Normandlaan 37, Middelkerke	51.1861881	2.8153706	partial
+be-partial-00933	Langestraat 8, Nieuwpoort	51.1317494	2.7569313	partial
+be-partial-00934	Dorpsplein 11, Kortenaken	50.9094811	5.0581205	partial
+be-partial-00935	Chaussée Olivier Dehasse 43B, Ramillies	50.6444728	4.9143766	partial
+be-partial-00936	Ankerstraat 23C, Nieuwpoort	51.1305790	2.7518793	partial
+be-partial-00937	Place Saint-Lambert 27, Liège	50.6443661	5.5733563	partial
+be-partial-00938	Hortensialaan 23, Knokke-Heist	51.3371401	3.3106698	partial
+be-partial-00939	Allée des Merisiers 13, Mons	50.4576740	4.0021358	partial
+be-partial-00940	Hillstraße 7, Eupen	50.6210708	6.0405813	partial
+be-partial-00941	Nieuwpoortsesteenweg 629, Oostende	51.2128007	2.8831433	partial
+be-partial-00942	Maarschalk Plumerplein 8, Mesen	50.7648077	2.8957476	partial
+be-partial-00943	Grand'Place 53, Nivelles	50.5973979	4.3224878	partial
+be-partial-00944	Watervlietseweg 38, IJzendijke	51.2971891	3.6210820	partial
+be-partial-00945	Grote Markt 41A-42, Westerlo	51.0883672	4.9194499	partial
+be-partial-00946	Rue Berward 11, Beauvechain	50.7771291	4.7603303	partial
+be-partial-00947	Op der Haart 10, Wemperhardt	50.1559631	6.0509349	partial
+be-partial-00948	Heirbaan, Ingooigem	50.8402995	3.4196377	partial
+be-partial-00949	Generaal Maczeklaan 2-14, Baarle-Nassau	51.4452423	4.9275778	partial
+be-partial-00950	Chaussée de Charleroi 172, Anderlues	50.4057288	4.2879750	partial
+be-partial-00951	Parc des Saules 20A, Wavre	50.7241069	4.6087872	partial
+be-partial-00952	Rue des Viaducs 239A, Nimy	50.4785380	3.9513871	partial
+be-partial-00953	Dunepark 569, Koksijde	51.1348883	2.7111982	partial
+be-partial-00954	Beddenstraat 2, Antwerpen	51.2190537	4.4031526	partial
+be-partial-00955	Avenue Cardinal Mercier 51, Namur	50.4650333	4.8506943	partial
+be-partial-00956	molendijk 45, Hamont-Achel	51.2725535	5.4987544	partial
+be-partial-00957	Heldenlaan 46, Zottegem	50.8711529	3.8097508	partial
+be-partial-00958	Boulevard Joseph Tirou 73, Charleroi	50.4086419	4.4412096	partial
+be-partial-00959	Grand'Place 1, Saint-Ghislain	50.4473598	3.8198827	partial
+be-partial-00960	Huisakker 43, Baarle-Nassau	51.4518241	4.9289059	partial
+be-partial-00961	Schiethoek 72, Langemark-Poelkapelle	50.9169556	2.9514252	partial
+be-partial-00962	Turnhoutsebaan 92, Scherpenheuvel-Zichem	51.0320932	5.0128886	partial
+be-partial-00963	Chaussée d'Ixelles - Elsense Steenweg 41, Ixelles - Elsene	50.8367564	4.3623689	partial
+be-partial-00964	Rue de la Limerie 23B, Mons	50.4468402	3.9536096	partial
+be-partial-00965	Vrijheid 178A, Hoogstraten	51.4011345	4.7607905	partial
+be-partial-00966	Quai du Marché au Poisson 28, Tournai	50.6075455	3.3940712	partial
+be-partial-00967	Rue des Ateliers 2, Angleur	50.6113154	5.5769057	partial
+be-partial-00968	Grens 1, Baarle-Nassau	51.4118413	4.9356753	partial
+be-partial-00969	Leuvensesteenweg 5, Roosbeek, Boutersem	50.8282577	4.8735469	partial
+be-partial-00970	Rue Marcel Tricot 15C, Écaussinnes-d'Enghien	50.5678739	4.1582537	partial
+be-partial-00971	Hoogstraat 4, Boom	51.0861532	4.3658788	partial
+be-partial-00972	Hoek 170, Boom	51.0837416	4.3845033	partial
+be-partial-00973	Chemin du Hays 8, Neufchâteau	49.8396253	5.4385344	partial
+be-partial-00974	Ambachtsstraat 17, Mol	51.1895261	5.0948415	partial
+be-partial-00975	Grensweg 3A, Stramproy	51.1837645	5.6960121	partial
+be-partial-00976	Kanaalstraat 6, Ingelmunster	50.9148177	3.2646936	partial
+be-partial-00977	Cederlaan - Avenue des Cèdres 1, Sint-Genesius-Rode - Rhode-Saint-Genèse	50.7562344	4.3812055	partial
+be-partial-00978	Veldstraat 83, Oostrozebeke	50.9220596	3.3452105	partial
+be-partial-00979	Chaussée de Nivelles 89, Flawinne	50.4749869	4.7917178	partial
+be-partial-00980	Emmastraat 9, Baarle-Nassau	51.4465968	4.9276926	partial
+be-partial-00981	Posthoornstraat 14, Ieper	50.8443288	2.8735994	partial
+be-partial-00982	Duinenwater 37, Knokke-Heist	51.3379847	3.2793655	partial
+be-partial-00983	Decauvillestraat 36, Kortrijk	50.7962139	3.2401618	partial
+be-partial-00984	Stadenstraat 8D, Kortemark	51.0173290	2.9576874	partial
+be-partial-00985	Butor 16, Molenbaix	50.6967663	3.4196454	partial
+be-partial-00986	Vijverstraat 1, Kampenhout	50.9304108	4.5213868	partial
+be-partial-00987	Kerklaan 65C, Machelen	50.9130632	4.4265974	partial
+be-partial-00988	Boulezlaan 53, Waregem	50.8913884	3.4193424	partial
+be-partial-00989	Deken Camerlyncklaan 76, Kortrijk	50.8189839	3.2837802	partial
+be-partial-00990	Zeedijk 366, Middelkerke	51.1721778	2.7779892	partial
+be-partial-00991	Grote Markt 22, Boom	51.0861605	4.3641236	partial
+be-partial-00992	Deken Camerlyncklaan 76, Kortrijk	50.8189576	3.2842022	partial
+be-partial-00993	Kortrijksesteenweg 1042, Sint-Denijs-Westrem	51.0224095	3.6957829	partial
+be-partial-00994	Cité de la Briqueterie 31, La Hestre	50.4788856	4.2435287	partial
+be-partial-00995	Rue du Progrès 12, Bois-d'Haine	50.4934894	4.2085631	partial
+be-partial-00996	Zeedijk 111, Middelkerke	51.1877970	2.8143971	partial
+be-partial-00997	Cipressenstraat 49, Knokke-Heist	51.3354889	3.2836845	partial
+be-partial-00998	Ambachtenstraat 27, Izegem	50.9214254	3.1786575	partial
+be-partial-00999	Rue du Premier Lanciers 14, Namur	50.4661003	4.8711953	partial
