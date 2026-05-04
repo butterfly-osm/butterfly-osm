@@ -73,6 +73,14 @@ impl CchWeightsFile {
             "cch.weights too short for header: {} bytes",
             bytes.len()
         );
+        // Container guarantees 8-byte section alignment, but `bytemuck::cast_slice`
+        // panics on misalignment. Validate explicitly so a misuse from tests/tools
+        // returns a typed error instead of aborting the process.
+        anyhow::ensure!(
+            (bytes.as_ptr() as usize).is_multiple_of(4),
+            "cch.weights section must start 4-byte aligned (got addr 0x{:x})",
+            bytes.as_ptr() as usize
+        );
         let header = &bytes[..32];
         let magic = u32::from_le_bytes(header[0..4].try_into().unwrap());
         anyhow::ensure!(

@@ -326,8 +326,14 @@ async fn run_region(cli: &Cli) -> Result<()> {
     // graph to build). Every other failure (one transit mirror dead,
     // NeTEx publication temporarily down) is survivable — the
     // operator sees the error line, the server still starts.
+    //
+    // Bubble fatal failures up via `Err` so the top-level `main` owns
+    // the process exit code; `process::exit` here would skip cleanup
+    // managed by the `main`/`run` boundary and is harder to test.
     if pbf_err {
-        std::process::exit(1);
+        return Err(butterfly_dl::Error::DownloadFailed(
+            "PBF download failed; routing build cannot proceed".into(),
+        ));
     }
     if any_err {
         // Survivable failures: exit 0 but make sure the error lines

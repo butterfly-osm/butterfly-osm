@@ -35,7 +35,7 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 
 use crate::server::query::CchQuery;
-use crate::server::spatial::SpatialIndex;
+use crate::server::snap_index::PackedSnapIndex;
 use crate::server::state::ModeData;
 
 use super::timetable::{StopIdx, Timetable};
@@ -435,7 +435,8 @@ pub fn compute_provenance(
 pub fn build_transfer_graph(
     timetable: &Timetable,
     foot: &ModeData,
-    spatial: &SpatialIndex,
+    foot_mode_idx: u8,
+    spatial: &PackedSnapIndex,
     opts: &TransferBuildOptions,
 ) -> Result<TransferGraph> {
     let n_stops = timetable.n_stops();
@@ -453,7 +454,7 @@ pub fn build_transfer_graph(
     let mut snapped_rank: Vec<Option<u32>> = Vec::with_capacity(n_stops);
     let mut n_snapped = 0usize;
     for stop in &timetable.stops {
-        let orig = spatial.snap(stop.lon, stop.lat, &foot.mask, 10);
+        let orig = spatial.snap(stop.lon, stop.lat, foot_mode_idx);
         let rank = orig.and_then(|o| foot.rank_for_original(o));
         if rank.is_some() {
             n_snapped += 1;
@@ -882,7 +883,8 @@ pub(crate) fn inject_cross_feed_equivalence_edges(
 pub fn load_or_build(
     timetable: &Timetable,
     foot: &ModeData,
-    spatial: &SpatialIndex,
+    foot_mode_idx: u8,
+    spatial: &PackedSnapIndex,
     opts: &TransferBuildOptions,
     cache_path: &Path,
 ) -> Result<TransferGraph> {
@@ -898,7 +900,7 @@ pub fn load_or_build(
         );
         return Ok(graph);
     }
-    let graph = build_transfer_graph(timetable, foot, spatial, opts)?;
+    let graph = build_transfer_graph(timetable, foot, foot_mode_idx, spatial, opts)?;
     if let Some(parent) = cache_path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating transit cache directory {}", parent.display()))?;
