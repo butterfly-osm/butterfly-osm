@@ -1,0 +1,54 @@
+[package]
+name = "butterfly-geocode"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+description = "Geocoder for the butterfly-osm toolkit (Belgium MVP, deterministic forward + reverse)"
+keywords = ["osm", "geocoder", "geocoding", "openstreetmap"]
+categories = ["api-bindings"]
+
+[dependencies]
+butterfly-common = { path = "../butterfly-common" }
+clap = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+anyhow = "1.0.102"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+
+osmpbf = "0.3.8"
+rstar = "0.12.2"
+rapidfuzz = "0.5"
+regex = "1.11"
+crc = "3.4"
+memmap2 = "0.9"
+bytemuck = "1.18"
+
+axum = "0.8.8"
+tower = { version = "0.5.3", features = ["limit"] }
+tower-http = { version = "0.6.8", features = ["cors", "trace", "timeout", "catch-panic", "compression-gzip", "compression-br"] }
+axum-prometheus = "0.10"
+
+once_cell = "1.21"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = { workspace = true }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+tower = { version = "0.5.3", features = ["util"] }
+http-body-util = "0.1"
+
+[lib]
+name = "butterfly_geocode"
+path = "src/lib.rs"
+
+[[bin]]
+name = "butterfly-geocode"
+path = "src/main.rs"
