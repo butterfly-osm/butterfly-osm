@@ -16,7 +16,7 @@ use butterfly_geocode::confidence::{
     evaluate, load_corpus, synthesise_corpus_from_shard, train_pointwise,
 };
 use butterfly_geocode::osm_extract::{ExtractProgress, extract_addresses};
-use butterfly_geocode::server::{ServerState, build_router};
+use butterfly_geocode::server::{ServerConfig, ServerState, build_router_with_config};
 use butterfly_geocode::shard::builder::build_shard;
 use butterfly_geocode::shard::reader::Shard;
 use butterfly_geocode::{HeuristicBackend, NeuralBackend, NeuralParser, ParserBackend};
@@ -135,6 +135,24 @@ enum Command {
         /// Path to the safetensors model. Required when `--parser=neural`.
         #[arg(long)]
         model: Option<PathBuf>,
+        /// Per-IP HTTP rate limit (requests per second steady state).
+        #[arg(long, default_value_t = 100)]
+        rate_limit_per_sec: u32,
+        /// Per-IP HTTP rate-limit burst size.
+        #[arg(long, default_value_t = 200)]
+        rate_limit_burst: u32,
+        /// Per-request server-side timeout (seconds).
+        #[arg(long, default_value_t = 30)]
+        request_timeout_secs: u64,
+        /// Maximum number of seconds to wait for in-flight requests
+        /// to complete after SIGTERM/SIGINT. Beyond this, the process
+        /// exits even if requests are still running.
+        #[arg(long, default_value_t = 30)]
+        shutdown_timeout_secs: u64,
+        /// Maximum POST/PUT body size in bytes (4 KB default —
+        /// future Flight endpoints will tighten this).
+        #[arg(long, default_value_t = 4096)]
+        max_body_bytes: usize,
     },
     /// Train the GBDT confidence reranker (#96 §Confidence Model).
     ///
@@ -203,7 +221,18 @@ async fn main() -> Result<()> {
             rerank_model,
             parser,
             model,
+            rate_limit_per_sec,
+            rate_limit_burst,
+            request_timeout_secs,
+            shutdown_timeout_secs,
+            max_body_bytes,
         } => {
+            let server_cfg = ServerConfig {
+                rate_limit_per_sec,
+                rate_limit_burst,
+                request_timeout: std::time::Duration::from_secs(request_timeout_secs),
+                max_request_body_bytes: max_body_bytes,
+            };
             serve_cmd(
                 shard.as_deref(),
                 shard_dir.as_deref(),
@@ -212,6 +241,8 @@ async fn main() -> Result<()> {
                 rerank_model.as_deref(),
                 parser,
                 model.as_deref(),
+                server_cfg,
+                std::time::Duration::from_secs(shutdown_timeout_secs),
             )
             .await
         }
@@ -473,6 +504,8 @@ async fn serve_cmd(
     rerank_model_path: Option<&std::path::Path>,
     parser_kind: ParserKind,
     model_path: Option<&std::path::Path>,
+    server_cfg: ServerConfig,
+    shutdown_timeout: std::time::Duration,
 ) -> Result<()> {
     // Pick the parser backend first — the neural parser is wired via
     // `ParserBackend` (#98 Phase 1), the heuristic backend is always
@@ -540,7 +573,7 @@ async fn serve_cmd(
         state = state.with_rerank_model(model);
     }
     let state = Arc::new(state);
-    let app = build_router(state);
+    let app = build_router_with_config(state, server_cfg);
 
     let addr = format!("{host}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -548,13 +581,63 @@ async fn serve_cmd(
         .with_context(|| format!("binding {addr}"))?;
     info!(addr = %addr, "serving");
 
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
-    .context("server crashed")?;
+    // Graceful shutdown shape:
+    //
+    //   1. A single signal task awaits SIGINT/SIGTERM. When it fires,
+    //      it logs "shutdown initiated", broadcasts via a `Notify`,
+    //      then sleeps for `shutdown_timeout`.
+    //   2. axum::serve listens to the same `Notify` for graceful
+    //      shutdown — it stops accepting new connections and drains
+    //      in-flight requests.
+    //   3. The deadline timer races the drain. If drain wins we log
+    //      "shutdown complete (graceful)". If the timer wins we log a
+    //      warning and exit forcefully — a hung handler must not
+    //      wedge the process indefinitely.
+    let shutdown = Arc::new(tokio::sync::Notify::new());
+
+    let signal_shutdown = Arc::clone(&shutdown);
+    let drain_deadline_secs = shutdown_timeout.as_secs();
+    let drain_deadline_task = tokio::spawn(async move {
+        wait_for_shutdown_signal().await;
+        info!(
+            shutdown_timeout_secs = drain_deadline_secs,
+            "shutdown initiated"
+        );
+        signal_shutdown.notify_waiters();
+        tokio::time::sleep(shutdown_timeout).await;
+    });
+
+    let serve_shutdown = Arc::clone(&shutdown);
+    // `axum::serve(...).with_graceful_shutdown(...)` returns
+    // `WithGracefulShutdown` which is `IntoFuture`, not `Future`.
+    // Wrap it in an async block so `tokio::select!` can drive it.
+    let serve_fut = async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            serve_shutdown.notified().await;
+        })
+        .await
+    };
+
+    tokio::pin!(serve_fut);
+    tokio::pin!(drain_deadline_task);
+    tokio::select! {
+        result = &mut serve_fut => {
+            result.context("server crashed")?;
+            info!("shutdown complete (graceful)");
+            // Cancel the deadline task so we don't dangle a sleep.
+            drain_deadline_task.abort();
+        }
+        _ = &mut drain_deadline_task => {
+            tracing::warn!(
+                shutdown_timeout_secs = shutdown_timeout.as_secs(),
+                "graceful shutdown deadline exceeded; exiting forcefully"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -653,7 +736,11 @@ fn train_rerank_cmd(
     Ok(())
 }
 
-async fn shutdown_signal() {
+/// Resolve on the first SIGINT or SIGTERM. Caller is responsible for
+/// any post-signal logging — we keep this function minimal so callers
+/// can broadcast the event through a `Notify` and start their drain
+/// budget at the right wall-clock moment.
+async fn wait_for_shutdown_signal() {
     use tokio::signal;
     let ctrl_c = async {
         signal::ctrl_c().await.expect("install Ctrl+C handler");
@@ -669,8 +756,11 @@ async fn shutdown_signal() {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
+        _ = ctrl_c => {
+            info!("received SIGINT");
+        },
+        _ = terminate => {
+            info!("received SIGTERM");
+        },
     }
-    info!("shutdown signal received");
 }
