@@ -67,6 +67,12 @@ pub fn map_readonly(path: &Path) -> Result<Arc<Mmap>> {
 /// workspace's `unsafe_code` carveout policy: `Mmap::map` and `madvise`
 /// against the same range are the only two carveouts. See
 /// `feedback_no_unsafe.md` and the module-level SAFETY block above.
+///
+/// On non-Linux targets the call is a no-op so the rest of the build
+/// stays portable; the optimisation is Linux-specific because the
+/// `MADV_DONTNEED` semantics we rely on (drop page-cache reference,
+/// re-page on fault) match Linux's behaviour, not BSD/macOS's.
+#[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 pub fn madvise_dontneed(range: &[u8]) -> std::io::Result<()> {
     if range.is_empty() {
@@ -110,6 +116,15 @@ pub fn madvise_dontneed(range: &[u8]) -> std::io::Result<()> {
     }
 }
 
+/// Stub for non-Linux targets. Returns `Ok(())` without advising.
+/// Production deployment is Linux-only (see `Dockerfile`); this exists
+/// so `cargo check` / IDE support work on macOS/Windows dev hosts.
+#[cfg(not(target_os = "linux"))]
+pub fn madvise_dontneed(_range: &[u8]) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 fn page_size() -> usize {
     // SAFETY: `sysconf(_SC_PAGESIZE)` is a thread-safe libc query with

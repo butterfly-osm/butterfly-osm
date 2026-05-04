@@ -24,7 +24,7 @@ use crate::profile_abi::Mode;
 use super::exclude::{self, ExcludeWeights};
 
 use super::elevation::ElevationData;
-use super::spatial::SpatialIndex;
+use super::snap_index::{DEFAULT_CELL_LOG2, PackedSnapIndex, SnapBuilderMode, build_snap_index};
 
 /// Per-mode data including CCH topology (since each mode has its own filtered CCH)
 pub struct ModeData {
@@ -131,21 +131,18 @@ pub struct ServerState {
     /// Mode name → mode index lookup
     pub mode_lookup: HashMap<String, u8>,
 
-    // Spatial index for snapping (operates in original EBG space).
-    // Global index: includes every EBG node regardless of mode, used
-    // by legacy callers (nearest handler, table, etc.) that pass a
-    // mode mask for filtering at query time.
-    pub spatial_index: SpatialIndex,
-
-    // Per-mode spatial indexes built at startup for every loaded mode.
-    // Each index contains ONLY nodes passing that mode's mask, so
-    // `snap_unfiltered` returns the correct mode-specific nearest in a
-    // single R-tree walk with no rejection loop. Indexed by mode index
-    // (same space as `modes` / `mode_lookup`).
-    //
-    // See issue #116. Used by `/transit` on the hot path; other
-    // endpoints continue to use the global index until migrated.
-    pub mode_spatial_indexes: HashMap<u8, SpatialIndex>,
+    /// Packed snap index (#154). One shared point array + uniform-grid
+    /// CSR + per-mode bitmaps. Replaces the legacy heap-resident
+    /// `SpatialIndex` (one global rstar + one per-mode rstar) which
+    /// dominated boot-time anon RSS.
+    ///
+    /// Loaded zero-copy from the container's `shared/snap_points`,
+    /// `shared/snap_grid`, and `mode/<m>/snap_mask` sections when
+    /// they're present (every container packed since #154). Old
+    /// containers that pre-date #154 fall back to building the same
+    /// structure in heap memory at boot via [`build_snap_index`] — no
+    /// caller-visible difference, only the storage backing.
+    pub snap_index: PackedSnapIndex,
 
     // Elevation data (optional, loaded from SRTM .hgt files)
     pub elevation: Option<ElevationData>,
@@ -274,29 +271,15 @@ impl ServerState {
             crate::server::rss::checkpoint(&format!("load.mode.{}", mode_name));
         }
 
-        tracing::info!("Building spatial index...");
-        let spatial_index = SpatialIndex::build(&ebg_nodes, &nbg_geo);
-        tracing::info!(nodes = ebg_nodes.n_nodes, "built spatial index");
+        // ---- Packed snap index (#154) -------------------------------
+        // Always build in memory for the directory path. The container
+        // path can read prebuilt sections zero-copy.
+        tracing::info!("Building packed snap index (in memory)...");
+        let snap_index =
+            build_packed_snap_index_inmem(&ebg_nodes, &nbg_geo, &modes_data, &mode_names);
         crate::server::rss::checkpoint("spatial.global");
-
-        // Per-mode spatial indexes: one R-tree per loaded mode,
-        // pre-filtered to that mode's accessible nodes. Built once at
-        // startup; queried via `snap_unfiltered` which skips the
-        // pathological rejection loop that the global index incurs.
-        // See issue #116.
-        tracing::info!("Building per-mode spatial indexes...");
-        let mut mode_spatial_indexes: HashMap<u8, SpatialIndex> =
-            HashMap::with_capacity(modes_data.len());
-        for (mode_index, mode_data) in modes_data.iter().enumerate() {
-            let idx = SpatialIndex::build_filtered(&ebg_nodes, &nbg_geo, &mode_data.mask);
-            tracing::info!(
-                mode = mode_names[mode_index].as_str(),
-                index = mode_index,
-                indexed_nodes = idx.n_indexed(),
-                "built per-mode spatial index"
-            );
-            mode_spatial_indexes.insert(mode_index as u8, idx);
-            crate::server::rss::checkpoint(&format!("spatial.mode.{}", mode_names[mode_index]));
+        for name in &mode_names {
+            crate::server::rss::checkpoint(&format!("spatial.mode.{}", name));
         }
 
         // Load road names from ways.raw for turn-by-turn instructions
@@ -356,8 +339,7 @@ impl ServerState {
             modes: modes_data,
             mode_names,
             mode_lookup,
-            spatial_index,
-            mode_spatial_indexes,
+            snap_index,
             elevation,
             way_names,
             node_weights_dist,
@@ -534,18 +516,41 @@ impl ServerState {
             crate::server::rss::checkpoint(&format!("load.mode.{}", mode_name));
         }
 
-        // ---- Spatial indexes ----------------------------------------
-        tracing::info!("Building spatial index...");
-        let spatial_index = SpatialIndex::build(&ebg_nodes, &nbg_geo);
-        crate::server::rss::checkpoint("spatial.global");
-
-        let mut mode_spatial_indexes: HashMap<u8, SpatialIndex> =
-            HashMap::with_capacity(modes_data.len());
-        for (mode_index, mode_data) in modes_data.iter().enumerate() {
-            let idx = SpatialIndex::build_filtered(&ebg_nodes, &nbg_geo, &mode_data.mask);
-            mode_spatial_indexes.insert(mode_index as u8, idx);
-            crate::server::rss::checkpoint(&format!("spatial.mode.{}", mode_names[mode_index]));
-        }
+        // ---- Packed snap index (#154) -------------------------------
+        // Prefer mmap-backed sections from the container; fall back to
+        // building the legacy rstar in heap memory when the container
+        // pre-dates #154.
+        let snap_index =
+            match try_load_packed_snap_index(&container, static_mmap, static_bytes, &mode_names)? {
+                Some(idx) => {
+                    tracing::info!(
+                        n_points = idx.n_indexed(),
+                        "loaded packed snap index zero-copy"
+                    );
+                    crate::server::rss::checkpoint("spatial.global");
+                    for name in &mode_names {
+                        crate::server::rss::checkpoint(&format!("spatial.mode.{}", name));
+                    }
+                    idx
+                }
+                None => {
+                    tracing::warn!(
+                        "packed snap index sections missing; building rstar at boot \
+                         (this container pre-dates #154 — re-pack to drop ~1 GB anon)"
+                    );
+                    let idx = build_packed_snap_index_inmem(
+                        &ebg_nodes,
+                        &nbg_geo,
+                        &modes_data,
+                        &mode_names,
+                    );
+                    crate::server::rss::checkpoint("spatial.global");
+                    for name in &mode_names {
+                        crate::server::rss::checkpoint(&format!("spatial.mode.{}", name));
+                    }
+                    idx
+                }
+            };
 
         // #149: Now that every mode's flat adjacencies are built, hint
         // the kernel that the cch_weights.{time,dist} byte ranges are
@@ -637,8 +642,7 @@ impl ServerState {
             modes: modes_data,
             mode_names,
             mode_lookup,
-            spatial_index,
-            mode_spatial_indexes,
+            snap_index,
             elevation,
             way_names,
             node_weights_dist,
@@ -1321,4 +1325,113 @@ fn load_way_names_from_bytes(ways_bytes: &[u8]) -> Result<HashMap<i64, String>> 
         }
     }
     Ok(way_names)
+}
+
+// ---------- Packed snap index helpers (#154) -------------------------------
+
+/// Build a packed snap index in heap memory from the loaded EBG + NBG
+/// + per-mode masks. Used by:
+///   - the directory-tree loader (always),
+///   - the container loader's back-compat path when the new sections
+///     are absent.
+///
+/// The resulting masks are aligned to `mode_names`, i.e. local-mode
+/// position in `modes_data`. On the container path with the prebuilt
+/// sections, `mode_names` order matches the container's mode-section
+/// emission order, which matches the global mode-byte alphabetical
+/// order — see [`try_load_packed_snap_index`] for the constraint.
+fn build_packed_snap_index_inmem(
+    ebg_nodes: &crate::formats::EbgNodes,
+    nbg_geo: &crate::formats::NbgGeo,
+    modes_data: &[ModeData],
+    mode_names: &[String],
+) -> PackedSnapIndex {
+    let builder_modes: Vec<SnapBuilderMode<'_>> = modes_data
+        .iter()
+        .map(|m| SnapBuilderMode {
+            mode_byte: m.mode.0,
+            mask: &m.mask,
+            inputs_sha: [0u8; 16],
+        })
+        .collect();
+    let built = build_snap_index(ebg_nodes, nbg_geo, &builder_modes, DEFAULT_CELL_LOG2);
+    tracing::info!(
+        n_points = built.points.points.len(),
+        n_cells = built.grid.n_cells_x as usize * built.grid.n_cells_y as usize,
+        n_modes = mode_names.len(),
+        "snap index built in memory"
+    );
+    PackedSnapIndex {
+        points: built.points,
+        grid: built.grid,
+        masks: built.masks,
+    }
+}
+
+/// Try to load a packed snap index zero-copy from a container.
+/// Returns `Ok(None)` if any of the required sections is missing —
+/// caller falls back to the in-memory builder.
+fn try_load_packed_snap_index(
+    container: &crate::formats::butterfly_dat::Container,
+    static_mmap: &'static memmap2::Mmap,
+    static_bytes: &'static [u8],
+    mode_names: &[String],
+) -> Result<Option<PackedSnapIndex>> {
+    use crate::formats::snap_index::{SnapGridFile, SnapMaskFile, SnapPointsFile};
+
+    let pts_entry = match container.get("shared/snap_points") {
+        Some(e) => e,
+        None => return Ok(None),
+    };
+    let grid_entry = match container.get("shared/snap_grid") {
+        Some(e) => e,
+        None => return Ok(None),
+    };
+    // Verify CRCs over the same byte ranges the zero-copy reader will
+    // see. (`section_bytes_verified` returns owning bytes; we use it
+    // for CRC validation only and then re-derive the static slice.)
+    let _ = container.section_bytes_verified(static_mmap, pts_entry)?;
+    let _ = container.section_bytes_verified(static_mmap, grid_entry)?;
+
+    let pts_bytes = &static_bytes
+        [pts_entry.offset as usize..pts_entry.offset as usize + pts_entry.len as usize];
+    let grid_bytes = &static_bytes
+        [grid_entry.offset as usize..grid_entry.offset as usize + grid_entry.len as usize];
+
+    let points = SnapPointsFile::read_from_bytes_zero_copy(pts_bytes)
+        .with_context(|| "reading shared/snap_points zero-copy")?;
+    let grid = SnapGridFile::read_from_bytes_zero_copy(grid_bytes)
+        .with_context(|| "reading shared/snap_grid zero-copy")?;
+
+    // Per-mode masks: for every loaded mode_name, look up
+    // `mode/<name>/snap_mask`. Caller may have filtered to a subset of
+    // modes — if any one is missing, fall back to the legacy build
+    // path (rather than partially-load the index).
+    let mut masks = Vec::with_capacity(mode_names.len());
+    for name in mode_names {
+        let key = format!("mode/{}/snap_mask", name);
+        let entry = match container.get(&key) {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+        let _ = container.section_bytes_verified(static_mmap, entry)?;
+        let mask_bytes =
+            &static_bytes[entry.offset as usize..entry.offset as usize + entry.len as usize];
+        let mask = SnapMaskFile::read_from_bytes_zero_copy(mask_bytes)
+            .with_context(|| format!("reading {} zero-copy", key))?;
+        // Sanity: mask sample count must match the shared point array.
+        anyhow::ensure!(
+            mask.n_points == points.n_points,
+            "{} n_points {} != snap_points n_points {}",
+            key,
+            mask.n_points,
+            points.n_points
+        );
+        masks.push(mask);
+    }
+    Ok(Some(PackedSnapIndex {
+        points,
+        grid,
+        masks,
+    }))
 }

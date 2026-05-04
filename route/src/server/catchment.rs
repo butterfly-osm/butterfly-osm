@@ -281,8 +281,8 @@ fn route_between(
     src: (f64, f64),
     dst: (f64, f64),
 ) -> Vec<(f64, f64)> {
-    let src_snap = state.spatial_index.snap(src.0, src.1, &mode_data.mask, 10);
-    let dst_snap = state.spatial_index.snap(dst.0, dst.1, &mode_data.mask, 10);
+    let src_snap = state.snap_index.snap(src.0, src.1, mode.0);
+    let dst_snap = state.snap_index.snap(dst.0, dst.1, mode.0);
 
     let (src_orig, dst_orig) = match (src_snap, dst_snap) {
         (Some(s), Some(d)) => (s, d),
@@ -340,10 +340,7 @@ pub fn isochrone_hull(
     let mode_data = state.get_mode(mode);
     let mode_name = &state.mode_names[mode.index()];
 
-    let orig_id = match state
-        .spatial_index
-        .snap(store_lon, store_lat, &mode_data.mask, 10)
-    {
+    let orig_id = match state.snap_index.snap(store_lon, store_lat, mode.0) {
         Some(id) => id,
         None => return Vec::new(),
     };
@@ -738,13 +735,21 @@ pub async fn catchment_handler(
     // actual radius is re-evaluated per store when `Auto`.
     let radius_param = parse_radius(req.radius_km.as_ref());
 
+    // Hoist client coordinates out of the per-store loop. They're identical
+    // across iterations, so allocating them once amortises a Vec construction
+    // that was otherwise O(n_stores * n_clients).
+    let auto_client_coords: Vec<(f64, f64)> = if matches!(radius_param, RadiusParam::Auto) {
+        req.clients.iter().map(|c| (c.lon, c.lat)).collect()
+    } else {
+        Vec::new()
+    };
+
     // For each store: compute 1-to-N matrix via Bucket M2M, then catchment
     for store_input in &req.stores {
         // Snap store
-        let store_snap =
-            state
-                .spatial_index
-                .snap(store_input.lon, store_input.lat, &mode_data.mask, 10);
+        let store_snap = state
+            .snap_index
+            .snap(store_input.lon, store_input.lat, mode.0);
         let store_orig = match store_snap {
             Some(id) => id,
             None => continue, // Skip unsnappable stores
@@ -762,10 +767,8 @@ pub async fn catchment_handler(
             RadiusParam::None => None,
             RadiusParam::Km(r) => Some(r),
             RadiusParam::Auto => {
-                let store_coord = vec![(store_input.lon, store_input.lat)];
-                let client_coords: Vec<(f64, f64)> =
-                    req.clients.iter().map(|c| (c.lon, c.lat)).collect();
-                let r = auto_radius_km(&store_coord, &client_coords);
+                let store_coord = (store_input.lon, store_input.lat);
+                let r = auto_radius_km(std::slice::from_ref(&store_coord), &auto_client_coords);
                 if r > 0.0 { Some(r) } else { None }
             }
         };
@@ -785,7 +788,7 @@ pub async fn catchment_handler(
                     continue;
                 }
             }
-            if let Some(orig_id) = state.spatial_index.snap(c.lon, c.lat, &mode_data.mask, 10) {
+            if let Some(orig_id) = state.snap_index.snap(c.lon, c.lat, mode.0) {
                 let rank = mode_data.orig_to_rank[orig_id as usize];
                 if rank != u32::MAX {
                     client_ranks.push(rank);

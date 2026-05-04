@@ -611,7 +611,11 @@ pub async fn trip_handler(
         let mut valid: Vec<bool> = Vec::with_capacity(n);
 
         for &[lon, lat] in &coordinates {
-            if let Some(orig_id) = state_clone.spatial_index.snap(lon, lat, &snap_mask, 10) {
+            if let Some(orig_id) =
+                state_clone
+                    .snap_index
+                    .snap_filtered(lon, lat, mode.0, Some(&snap_mask))
+            {
                 let rank = mode_data.orig_to_rank[orig_id as usize];
                 if rank != u32::MAX {
                     ranks.push(rank);

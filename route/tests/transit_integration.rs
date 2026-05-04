@@ -395,7 +395,7 @@ fn belgium_server_state() -> Option<Arc<ServerState>> {
         // takes a &mut self.
         let snapshot = {
             let foot = &state.modes[foot_idx as usize];
-            butterfly_route::transit::load_from_disk(&cfg, foot, &state.spatial_index)
+            butterfly_route::transit::load_from_disk(&cfg, foot, foot_idx, &state.snap_index)
                 .expect("transit snapshot load")
         };
         state.install_transit(butterfly_route::transit::TransitState::new(cfg, snapshot));
@@ -1794,12 +1794,12 @@ fn belgium_flight_edges_batch_totals_match_matrix() {
 
     // Independent CCH query for the same pair.
     let src_snap = state
-        .spatial_index
-        .snap(pairs[0][0], pairs[0][1], &mode_data.mask, 10)
+        .snap_index
+        .snap(pairs[0][0], pairs[0][1], mode.0)
         .expect("src snap");
     let dst_snap = state
-        .spatial_index
-        .snap(pairs[0][2], pairs[0][3], &mode_data.mask, 10)
+        .snap_index
+        .snap(pairs[0][2], pairs[0][3], mode.0)
         .expect("dst snap");
     let src_rank = mode_data.orig_to_rank[src_snap as usize];
     let dst_rank = mode_data.orig_to_rank[dst_snap as usize];
