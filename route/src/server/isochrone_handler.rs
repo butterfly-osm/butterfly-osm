@@ -730,18 +730,22 @@ pub async fn isochrone_handler(
     };
 
     // Snap center
-    let center_orig = match state.spatial_index.snap(req.lon, req.lat, &snap_mask, 10) {
-        Some(id) => id,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Could not snap center to road network".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
+    let center_orig =
+        match state
+            .snap_index
+            .snap_filtered(req.lon, req.lat, mode.0, Some(&snap_mask))
+        {
+            Some(id) => id,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "Could not snap center to road network".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
 
     let center_rank = mode_data.orig_to_rank[center_orig as usize];
     if center_rank == u32::MAX {
@@ -1147,7 +1151,9 @@ pub async fn isochrone_bulk_handler(
         .enumerate()
         .filter_map(|(idx, &[lon, lat])| {
             // Snap origin
-            let center_orig = state.spatial_index.snap(lon, lat, &snap_mask, 10)?;
+            let center_orig = state
+                .snap_index
+                .snap_filtered(lon, lat, mode.0, Some(&snap_mask))?;
             let center_rank = mode_data.orig_to_rank[center_orig as usize];
             if center_rank == u32::MAX {
                 return None;

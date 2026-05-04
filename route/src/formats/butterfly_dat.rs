@@ -153,6 +153,18 @@ pub enum SectionKind {
     /// loader can drop `FilteredEbg` from the serve path.
     FilteredToOriginal = 0x000A_0002,
 
+    /// Shared packed snap-index sample array (#154). 16-byte
+    /// `PackedPoint` records, Hilbert-sorted within each grid cell.
+    /// Replaces the heap rstar global tree at server boot.
+    SnapPoints = 0x000B_0001,
+    /// Shared snap-index grid CSR (#154). `offsets[n_cells + 1]` array
+    /// indexing the `SnapPoints` body.
+    SnapGrid = 0x000B_0002,
+    /// Per-mode snap-eligibility bitmap over the shared `SnapPoints`
+    /// array (#154). Bit `i` set ⇔ sample `i` is snap-eligible for the
+    /// mode. Replaces the per-mode rstar tree at server boot.
+    SnapModeMask = 0x000B_0003,
+
     /// Future / unrecognised. Readers that see this should fall back
     /// to the section name string.
     Unknown = 0xFFFF_FFFF,
@@ -199,6 +211,10 @@ impl SectionKind {
             0x000A_0001 => Self::OrigToRank,
             0x000A_0002 => Self::FilteredToOriginal,
 
+            0x000B_0001 => Self::SnapPoints,
+            0x000B_0002 => Self::SnapGrid,
+            0x000B_0003 => Self::SnapModeMask,
+
             _ => Self::Unknown,
         }
     }
@@ -232,6 +248,9 @@ impl SectionKind {
             Self::DownReverseAdjFlat => "flat/down_reverse_adj",
             Self::OrigToRank => "mode/orig_to_rank",
             Self::FilteredToOriginal => "mode/filtered_to_original",
+            Self::SnapPoints => "shared/snap_points",
+            Self::SnapGrid => "shared/snap_grid",
+            Self::SnapModeMask => "mode/snap_mask",
             Self::Unknown => "unknown",
         }
     }

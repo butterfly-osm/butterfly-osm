@@ -397,12 +397,14 @@ impl WaysFile {
         let count = u64::from_le_bytes(header[8..16].try_into()?);
         let kdict_off = u64::from_le_bytes(header[16..24].try_into()?);
 
-        // Iterator works directly on a Cursor over the body slice.
-        // Cursor implements Read; no BufReader needed because the
-        // backing memory is already contiguous.
+        // Iterator works on a Cursor over the body slice. The cursor
+        // already serves from contiguous memory, but `WayStreamIterator`
+        // is generic over `BufReader<R>`, so we wrap with a normal
+        // 64 KiB buffer to keep `Read` calls coalesced and avoid the
+        // pathological per-record overhead a 1-byte buffer caused.
         let body = &bytes[32..];
         let cursor = std::io::Cursor::new(body);
-        let reader = std::io::BufReader::with_capacity(1, cursor);
+        let reader = std::io::BufReader::with_capacity(64 * 1024, cursor);
 
         Ok(WayStreamIterator {
             reader,

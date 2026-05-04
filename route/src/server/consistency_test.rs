@@ -78,7 +78,7 @@ fn lookup_mode(state: &ServerState, name: &str) -> Mode {
 /// Snap a coordinate to rank space, returning (rank, original_ebg_id) or None
 fn snap_to_rank(state: &ServerState, mode: Mode, lon: f64, lat: f64) -> Option<(u32, u32)> {
     let mode_data = state.get_mode(mode);
-    let orig_id = state.spatial_index.snap(lon, lat, &mode_data.mask, 10)?;
+    let orig_id = state.snap_index.snap(lon, lat, mode.0)?;
     let rank = mode_data.rank_for_original(orig_id)?;
     Some((rank, orig_id))
 }
@@ -942,13 +942,11 @@ fn test_nearest_returns_valid_results() {
     ];
 
     for (mode_name, mode) in &discovered {
-        let mode_data = state.get_mode(*mode);
+        let _mode_data = state.get_mode(*mode);
 
         for &(lon, lat) in &locations {
             // Single nearest
-            let result = state
-                .spatial_index
-                .snap_k_with_info(lon, lat, &mode_data.mask, 1);
+            let result = state.snap_index.snap_k_with_info(lon, lat, mode.0, 1);
             assert!(
                 !result.is_empty(),
                 "{mode_name} ({lon},{lat}): no nearest found"
@@ -989,7 +987,7 @@ fn test_nearest_returns_valid_results() {
 fn test_nearest_results_ordered_by_distance() {
     let state = load_state();
     let mode = lookup_mode(&state, "car");
-    let mode_data = state.get_mode(mode);
+    let _mode_data = state.get_mode(mode);
 
     let locations = [
         (4.3517, 50.8503), // Brussels
@@ -997,9 +995,7 @@ fn test_nearest_results_ordered_by_distance() {
     ];
 
     for &(lon, lat) in &locations {
-        let results = state
-            .spatial_index
-            .snap_k_with_info(lon, lat, &mode_data.mask, 5);
+        let results = state.snap_index.snap_k_with_info(lon, lat, mode.0, 5);
         assert!(
             results.len() >= 2,
             "({lon},{lat}): need at least 2 results, got {}",
@@ -1042,12 +1038,10 @@ fn test_nearest_results_ordered_by_distance() {
 fn test_nearest_in_ocean_returns_empty() {
     let state = load_state();
     let mode = lookup_mode(&state, "car");
-    let mode_data = state.get_mode(mode);
+    let _mode_data = state.get_mode(mode);
 
     // North Sea, far from any road
-    let results = state
-        .spatial_index
-        .snap_k_with_info(2.0, 52.0, &mode_data.mask, 1);
+    let results = state.snap_index.snap_k_with_info(2.0, 52.0, mode.0, 1);
     assert!(
         results.is_empty(),
         "Should find no road in the North Sea, got {} results",

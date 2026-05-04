@@ -397,17 +397,21 @@ pub async fn route_handler(
     let src_bearing = bearing_hints.as_ref().and_then(|h| h.first().copied());
     let (src_orig, src_snap_info) = {
         let snap_result = if let Some((angle, range)) = src_bearing {
-            state.spatial_index.snap_with_bearing(
+            state.snap_index.snap_with_bearing_filtered(
                 req.src_lon,
                 req.src_lat,
-                &snap_mask,
+                mode.0,
                 angle,
                 range,
+                Some(&snap_mask),
             )
         } else {
-            state
-                .spatial_index
-                .snap_with_info(req.src_lon, req.src_lat, &snap_mask, 10)
+            state.snap_index.snap_with_info_filtered(
+                req.src_lon,
+                req.src_lat,
+                mode.0,
+                Some(&snap_mask),
+            )
         };
         match snap_result {
             Some((id, lon, lat, dist)) => (
@@ -435,17 +439,21 @@ pub async fn route_handler(
     let dst_bearing = bearing_hints.as_ref().and_then(|h| h.get(1).copied());
     let (_dst_orig, dst_snap_info) = {
         let snap_result = if let Some((angle, range)) = dst_bearing {
-            state.spatial_index.snap_with_bearing(
+            state.snap_index.snap_with_bearing_filtered(
                 req.dst_lon,
                 req.dst_lat,
-                &snap_mask,
+                mode.0,
                 angle,
                 range,
+                Some(&snap_mask),
             )
         } else {
-            state
-                .spatial_index
-                .snap_with_info(req.dst_lon, req.dst_lat, &snap_mask, 10)
+            state.snap_index.snap_with_info_filtered(
+                req.dst_lon,
+                req.dst_lat,
+                mode.0,
+                Some(&snap_mask),
+            )
         };
         match snap_result {
             Some((id, lon, lat, dist)) => (

@@ -38,6 +38,9 @@ pub mod order_ebg;
 // Server-only per-mode mapping sections (#153)
 pub mod mode_index;
 
+// Server-only packed snap index sections (#154)
+pub mod snap_index;
+
 // Step 7 formats
 pub mod cch_topo;
 
@@ -62,6 +65,9 @@ pub use nbg_node_map::{NbgNodeMap, NbgNodeMapFile, NodeMapping};
 pub use node_signals::{NodeSignals, NodeSignalsFile};
 pub use order_ebg::{OrderEbg, OrderEbgFile};
 pub use relations::{Member, MemberKind, Relation, RelationsFile};
+pub use snap_index::{
+    PackedPoint, SnapGrid, SnapGridFile, SnapMask, SnapMaskFile, SnapPoints, SnapPointsFile,
+};
 pub use turn_rules::TurnRule;
 pub use way_attrs::WayAttr;
 pub use ways::{Way, WaysFile};

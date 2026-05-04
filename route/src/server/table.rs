@@ -321,7 +321,10 @@ pub async fn compute_table_bucket_m2m(
     let mut sources_snapped: Vec<(f64, f64)> = Vec::with_capacity(sources.len());
 
     for [lon, lat] in sources {
-        if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, snap_mask, 10) {
+        if let Some(orig_id) = state
+            .snap_index
+            .snap_filtered(*lon, *lat, mode.0, Some(snap_mask))
+        {
             let rank = mode_data.orig_to_rank[orig_id as usize];
             if rank != u32::MAX {
                 sources_rank.push(rank);
@@ -359,7 +362,10 @@ pub async fn compute_table_bucket_m2m(
     let mut targets_snapped: Vec<(f64, f64)> = Vec::with_capacity(destinations.len());
 
     for [lon, lat] in destinations {
-        if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, snap_mask, 10) {
+        if let Some(orig_id) = state
+            .snap_index
+            .snap_filtered(*lon, *lat, mode.0, Some(snap_mask))
+        {
             let rank = mode_data.orig_to_rank[orig_id as usize];
             if rank != u32::MAX {
                 targets_rank.push(rank);
@@ -654,7 +660,11 @@ pub async fn table_stream_handler(
     let mut sources_snapped: Vec<(f64, f64)> = Vec::with_capacity(req.sources.len());
     for (i, [lon, lat]) in req.sources.iter().enumerate() {
         let mut matched = false;
-        if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &snap_mask, 10) {
+        if let Some(orig_id) =
+            state
+                .snap_index
+                .snap_filtered(*lon, *lat, mode.0, Some(&snap_mask[..]))
+        {
             let rank = mode_data.orig_to_rank[orig_id as usize];
             if rank != u32::MAX {
                 sources_rank.push(rank);
@@ -675,7 +685,11 @@ pub async fn table_stream_handler(
     let mut targets_snapped: Vec<(f64, f64)> = Vec::with_capacity(req.destinations.len());
     for (i, [lon, lat]) in req.destinations.iter().enumerate() {
         let mut matched = false;
-        if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &snap_mask, 10) {
+        if let Some(orig_id) =
+            state
+                .snap_index
+                .snap_filtered(*lon, *lat, mode.0, Some(&snap_mask[..]))
+        {
             let rank = mode_data.orig_to_rank[orig_id as usize];
             if rank != u32::MAX {
                 targets_rank.push(rank);

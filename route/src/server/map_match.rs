@@ -109,7 +109,7 @@ pub fn map_match(
     // Step 1: Generate candidates for each observation
     let candidates: Vec<Vec<Candidate>> = coordinates
         .iter()
-        .map(|&(lon, lat)| generate_candidates(state, mask, lon, lat))
+        .map(|&(lon, lat)| generate_candidates(state, mode.0, mask, lon, lat))
         .collect();
 
     // Step 2: Find segments (split at gaps or unmatched observations)
@@ -193,11 +193,18 @@ pub fn map_match(
 // Candidate generation
 // ---------------------------------------------------------------------------
 
-fn generate_candidates(state: &ServerState, mask: &[u64], lon: f64, lat: f64) -> Vec<Candidate> {
+fn generate_candidates(
+    state: &ServerState,
+    mode_idx: u8,
+    mask: &[u64],
+    lon: f64,
+    lat: f64,
+) -> Vec<Candidate> {
     // Use midpoint-based selection (topologically reliable), then refine with perpendicular projection
-    let hits = state
-        .spatial_index
-        .snap_k_with_info(lon, lat, mask, MAX_CANDIDATES);
+    let hits =
+        state
+            .snap_index
+            .snap_k_with_info_filtered(lon, lat, mode_idx, MAX_CANDIDATES, Some(mask));
 
     hits.into_iter()
         .filter_map(|(ebg_id, _midpoint_lon, _midpoint_lat, _midpoint_dist)| {

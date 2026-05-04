@@ -1217,9 +1217,6 @@ fn build_routed_road_leg(
 
 fn snap_to_rank(lon: f64, lat: f64, state: &ServerState, mode_idx: u8) -> Option<u32> {
     let mode_data = &state.modes[mode_idx as usize];
-    let orig = match state.mode_spatial_indexes.get(&mode_idx) {
-        Some(mode_index) => mode_index.snap_unfiltered(lon, lat)?,
-        None => state.spatial_index.snap(lon, lat, &mode_data.mask, 10)?,
-    };
+    let orig = state.snap_index.snap(lon, lat, mode_idx)?;
     mode_data.rank_for_original(orig)
 }

@@ -248,12 +248,13 @@ struct MatrixParams {
 fn snap_to_ranks(
     coords: &[[f64; 2]],
     state: &ServerState,
+    mode_idx: u8,
     mode_data: &super::state::ModeData,
 ) -> (Vec<u32>, Vec<usize>) {
     let mut ranks = Vec::with_capacity(coords.len());
     let mut valid = Vec::with_capacity(coords.len());
     for (i, [lon, lat]) in coords.iter().enumerate() {
-        if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &mode_data.mask, 10) {
+        if let Some(orig_id) = state.snap_index.snap(*lon, *lat, mode_idx) {
             let rank = mode_data.orig_to_rank[orig_id as usize];
             if rank != u32::MAX {
                 ranks.push(rank);
@@ -271,11 +272,12 @@ fn snap_to_ranks(
 fn snapped_coords_full(
     coords: &[[f64; 2]],
     state: &ServerState,
+    mode_idx: u8,
     mode_data: &super::state::ModeData,
 ) -> Vec<(f64, f64)> {
     let mut out = Vec::with_capacity(coords.len());
     for [lon, lat] in coords {
-        if let Some(orig_id) = state.spatial_index.snap(*lon, *lat, &mode_data.mask, 10) {
+        if let Some(orig_id) = state.snap_index.snap(*lon, *lat, mode_idx) {
             let rank = mode_data.orig_to_rank[orig_id as usize];
             if rank != u32::MAX {
                 let loc = super::types::get_node_location(state, orig_id);
@@ -354,8 +356,8 @@ fn do_matrix(
     let mode_data = state.get_mode(mode);
     let n_nodes = mode_data.cch_topo.n_nodes as usize;
 
-    let (sources_rank, valid_src) = snap_to_ranks(&params.sources, state, mode_data);
-    let (targets_rank, valid_dst) = snap_to_ranks(&params.destinations, state, mode_data);
+    let (sources_rank, valid_src) = snap_to_ranks(&params.sources, state, mode.0, mode_data);
+    let (targets_rank, valid_dst) = snap_to_ranks(&params.destinations, state, mode.0, mode_data);
 
     if sources_rank.is_empty() || targets_rank.is_empty() {
         let schema = Arc::new(matrix_schema());
@@ -364,8 +366,8 @@ fn do_matrix(
     }
 
     // Full-length snapped coordinates — for the Euclidean pre-filter.
-    let sources_snapped = snapped_coords_full(&params.sources, state, mode_data);
-    let targets_snapped = snapped_coords_full(&params.destinations, state, mode_data);
+    let sources_snapped = snapped_coords_full(&params.sources, state, mode.0, mode_data);
+    let targets_snapped = snapped_coords_full(&params.destinations, state, mode.0, mode_data);
 
     let radius_param = parse_radius(params.radius_km.as_ref());
     let neighbor_mask: Option<Arc<Vec<Vec<u32>>>> = match radius_param {
@@ -586,8 +588,8 @@ fn do_route_batch(
                 dst_lon_arr.append_value(dlon);
                 dst_lat_arr.append_value(dlat);
 
-                let src_snap = state.spatial_index.snap(slon, slat, &mode_data.mask, 10);
-                let dst_snap = state.spatial_index.snap(dlon, dlat, &mode_data.mask, 10);
+                let src_snap = state.snap_index.snap(slon, slat, mode.0);
+                let dst_snap = state.snap_index.snap(dlon, dlat, mode.0);
 
                 match (src_snap, dst_snap) {
                     (Some(src_orig), Some(dst_orig)) => {
@@ -717,8 +719,8 @@ fn do_isochrone(
     let mode_name = &state.mode_names[mode.index()];
 
     let orig_id = state
-        .spatial_index
-        .snap(params.lon, params.lat, &mode_data.mask, 10)
+        .snap_index
+        .snap(params.lon, params.lat, mode.0)
         .ok_or_else(|| Status::not_found("Could not snap to road network"))?;
     let origin_rank = mode_data.orig_to_rank[orig_id as usize];
     if origin_rank == u32::MAX {
@@ -895,12 +897,8 @@ pub fn do_edges_batch(
                     };
 
                 // Snap both endpoints on the requested mode's network.
-                let src_snap = state
-                    .spatial_index
-                    .snap(pair[0], pair[1], &mode_data.mask, 10);
-                let dst_snap = state
-                    .spatial_index
-                    .snap(pair[2], pair[3], &mode_data.mask, 10);
+                let src_snap = state.snap_index.snap(pair[0], pair[1], mode.0);
+                let dst_snap = state.snap_index.snap(pair[2], pair[3], mode.0);
                 let (Some(src_orig), Some(dst_orig)) = (src_snap, dst_snap) else {
                     emit_unreachable(
                         &mut query_idx_b,
@@ -1400,7 +1398,7 @@ async fn do_exchange_catchment(
             }
 
             // Snap store
-            let store_snap = state.spatial_index.snap(*slon, *slat, &mode_data.mask, 10);
+            let store_snap = state.snap_index.snap(*slon, *slat, mode.0);
             let store_orig = match store_snap {
                 Some(id) => id,
                 None => continue,
@@ -1414,7 +1412,7 @@ async fn do_exchange_catchment(
             let mut client_ranks: Vec<u32> = Vec::with_capacity(client_coords.len());
             let mut client_valid: Vec<usize> = Vec::with_capacity(client_coords.len());
             for (ci, &(clon, clat)) in client_coords.iter().enumerate() {
-                if let Some(orig_id) = state.spatial_index.snap(clon, clat, &mode_data.mask, 10) {
+                if let Some(orig_id) = state.snap_index.snap(clon, clat, mode.0) {
                     let rank = mode_data.orig_to_rank[orig_id as usize];
                     if rank != u32::MAX {
                         client_ranks.push(rank);

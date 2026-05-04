@@ -21,11 +21,15 @@ use std::path::{Path, PathBuf};
 
 use crate::formats::butterfly_dat::{Container, ContainerWriter, SectionKind};
 use crate::formats::mode_index::{ModeIndex, ModeIndexFile, ModeIndexKind};
-use crate::formats::{CchTopoFile, CchWeightsFile, FilteredEbgFile, OrderEbgFile};
+use crate::formats::snap_index::{SnapGridFile, SnapMaskFile, SnapPointsFile};
+use crate::formats::{
+    CchTopoFile, CchWeightsFile, EbgNodesFile, FilteredEbgFile, NbgGeoFile, OrderEbgFile,
+};
 use crate::matrix::bucket_ch::{
     DownAdjFlat, DownAdjFlatFile, DownReverseAdjFlat, DownReverseAdjFlatFile, UpAdjFlat,
     UpAdjFlatFile,
 };
+use crate::server::snap_index::{DEFAULT_CELL_LOG2, SnapBuilderMode, build_snap_index};
 use std::borrow::Cow;
 
 /// Section name for the JSON manifest that lists modes + bundle ids.
@@ -488,6 +492,21 @@ pub fn pack(data_dir: &Path, out: &Path, step_prefix: Option<&str>) -> Result<()
         }
     }
 
+    // ---- Packed snap index (#154) ----------------------------------
+    // Build the shared snap_points + snap_grid arrays from ebg_nodes +
+    // nbg_geo, plus one snap_mask per mode (derived from
+    // filtered_ebg.filtered_to_original). Emit all three section kinds.
+    //
+    // If any of the inputs is missing or malformed, the whole snap
+    // index emission is skipped — the server's back-compat path will
+    // build the legacy rstar at boot.
+    if let Err(e) = pack_snap_index(&mut w, &step3, &step4, &step5, &modes) {
+        eprintln!(
+            "  ! [skip snap_index] {}; server will build rstar at boot",
+            e
+        );
+    }
+
     // ---- Manifest ---------------------------------------------------
     // Lists the modes packed and their bundle ids. For now, every mode
     // is a singleton bundle (bundle_id == mode_name); the topology-
@@ -506,6 +525,144 @@ pub fn pack(data_dir: &Path, out: &Path, step_prefix: Option<&str>) -> Result<()
         final_size as f64 / (1024.0 * 1024.0 * 1024.0),
         out.display()
     );
+    Ok(())
+}
+
+/// Build and append the packed snap index sections (#154):
+///
+/// * `shared/snap_points` — flat array of `PackedPoint` derived from
+///   ebg_nodes + nbg_geo (same 50 m dedup rule as the legacy
+///   `SpatialIndex::build`).
+/// * `shared/snap_grid` — uniform-grid CSR over the points.
+/// * `mode/<m>/snap_mask` — one per mode, marking sample-array indices
+///   that are snap-eligible for that mode. Derived from
+///   `filtered.<mode>.ebg::filtered_to_original` (same SCC-filtered
+///   accessibility set the legacy `mode_data.mask` uses).
+///
+/// Returns Err if any required input file is missing or fails to parse —
+/// the caller logs and skips the section emission, which leaves the
+/// container compatible with the back-compat fallback in `state.rs`.
+fn pack_snap_index(
+    w: &mut ContainerWriter,
+    step3: &Path,
+    step4: &Path,
+    step5: &Path,
+    modes: &[String],
+) -> Result<()> {
+    let ebg_nodes_path = step4.join("ebg.nodes");
+    let nbg_geo_path = step3.join("nbg.geo");
+    if !ebg_nodes_path.exists() {
+        anyhow::bail!("ebg.nodes missing at {}", ebg_nodes_path.display());
+    }
+    if !nbg_geo_path.exists() {
+        anyhow::bail!("nbg.geo missing at {}", nbg_geo_path.display());
+    }
+
+    let ebg_nodes = EbgNodesFile::read(&ebg_nodes_path)
+        .with_context(|| format!("reading {}", ebg_nodes_path.display()))?;
+    let nbg_geo = NbgGeoFile::read(&nbg_geo_path)
+        .with_context(|| format!("reading {}", nbg_geo_path.display()))?;
+
+    // Build per-mode EBG-id-indexed `[u64]` masks from the SCC-filtered
+    // EBG. This is exactly what `state.rs::load_mode_data` does at boot
+    // for the legacy path; replicating it here so the packed snap_mask
+    // matches the legacy snap behaviour bit-for-bit.
+    let n_original = ebg_nodes.n_nodes as usize;
+    let n_words = n_original.div_ceil(64);
+
+    struct ModeWork {
+        name: String,
+        mode_byte: u8,
+        mask: Vec<u64>,
+        inputs_sha: [u8; 16],
+    }
+    let mut mode_work: Vec<ModeWork> = Vec::with_capacity(modes.len());
+    for mode in modes {
+        let filtered_path = step5.join(format!("filtered.{}.ebg", mode));
+        if !filtered_path.exists() {
+            anyhow::bail!(
+                "filtered.{}.ebg missing at {}",
+                mode,
+                filtered_path.display()
+            );
+        }
+        let filtered_ebg = FilteredEbgFile::read(&filtered_path)
+            .with_context(|| format!("reading {}", filtered_path.display()))?;
+        anyhow::ensure!(
+            filtered_ebg.n_original_nodes as usize == n_original,
+            "filtered.{}.ebg n_original_nodes ({}) != ebg.nodes n_nodes ({})",
+            mode,
+            filtered_ebg.n_original_nodes,
+            n_original
+        );
+        let mut bits = vec![0u64; n_words];
+        for &orig_id in filtered_ebg.filtered_to_original.iter() {
+            let word = orig_id as usize / 64;
+            let bit = orig_id as usize % 64;
+            bits[word] |= 1u64 << bit;
+        }
+        let mode_byte = filtered_ebg.mode.0;
+        let inputs_sha: [u8; 16] = filtered_ebg.inputs_sha[..16]
+            .try_into()
+            .expect("filtered_ebg inputs_sha has at least 16 bytes");
+        mode_work.push(ModeWork {
+            name: mode.clone(),
+            mode_byte,
+            mask: bits,
+            inputs_sha,
+        });
+    }
+
+    // Build snap_index from ebg_nodes + nbg_geo + the per-mode masks.
+    let builder_modes: Vec<SnapBuilderMode<'_>> = mode_work
+        .iter()
+        .map(|m| SnapBuilderMode {
+            mode_byte: m.mode_byte,
+            mask: &m.mask,
+            inputs_sha: m.inputs_sha,
+        })
+        .collect();
+    let built = build_snap_index(&ebg_nodes, &nbg_geo, &builder_modes, DEFAULT_CELL_LOG2);
+    println!(
+        "  + [{:>5} MiB] {:<28} <- (snap_points, {} samples, cell_log2={})",
+        SnapPointsFile::encode(&built.points).len() / (1024 * 1024),
+        "shared/snap_points",
+        built.points.points.len(),
+        built.points.cell_log2,
+    );
+
+    // Re-encode for emission. (`encode` is deterministic — re-encoding
+    // is cheap and avoids holding two copies in memory.)
+    let pts_bytes = SnapPointsFile::encode(&built.points);
+    w.append_bytes(SectionKind::SnapPoints, "shared/snap_points", &pts_bytes)
+        .with_context(|| "packing shared/snap_points".to_string())?;
+    drop(pts_bytes);
+
+    let grid_bytes = SnapGridFile::encode(&built.grid);
+    println!(
+        "  + [{:>5} MiB] {:<28} <- (snap_grid, {}x{} cells)",
+        grid_bytes.len() / (1024 * 1024),
+        "shared/snap_grid",
+        built.grid.n_cells_x,
+        built.grid.n_cells_y,
+    );
+    w.append_bytes(SectionKind::SnapGrid, "shared/snap_grid", &grid_bytes)
+        .with_context(|| "packing shared/snap_grid".to_string())?;
+    drop(grid_bytes);
+
+    for (mw, mask) in mode_work.iter().zip(built.masks.iter()) {
+        let mask_bytes = SnapMaskFile::encode(mask);
+        println!(
+            "  + [{:>5} KiB] {:<28} <- (snap_mask, {} samples)",
+            mask_bytes.len() / 1024,
+            format!("mode/{}/snap_mask", mw.name),
+            mask.n_points,
+        );
+        let section_name = format!("mode/{}/snap_mask", mw.name);
+        w.append_bytes(SectionKind::SnapModeMask, &section_name, &mask_bytes)
+            .with_context(|| format!("packing {}", section_name))?;
+    }
+
     Ok(())
 }
 
@@ -696,6 +853,9 @@ pub fn unpack(path: &Path, out_dir: &Path) -> Result<()> {
                 | SectionKind::DownReverseAdjFlat
                 | SectionKind::OrigToRank
                 | SectionKind::FilteredToOriginal
+                | SectionKind::SnapPoints
+                | SectionKind::SnapGrid
+                | SectionKind::SnapModeMask
         ) {
             println!("  -- (skip synthesised) {}", sec.name);
             continue;

@@ -1,7 +1,7 @@
 # Multi-stage build for butterfly-route
 # Stage 1: Build
-# Pin to bookworm for reproducibility. For exact reproducibility, pin to a SHA digest.
-FROM rust:1.94-bookworm AS builder
+# Pin to trixie for reproducibility. For exact reproducibility, pin to a SHA digest.
+FROM rust:1.95-trixie AS builder
 
 # protoc required by `gtfs-rt` (prost-build codegen for GTFS-RT protobuf).
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -40,8 +40,8 @@ RUN touch butterfly-common/src/lib.rs dl/src/lib.rs \
 RUN cargo build --release -p butterfly-route
 
 # Stage 2: Runtime
-# Pin to bookworm for reproducibility. For exact reproducibility, pin to a SHA digest.
-FROM debian:bookworm-20250203-slim
+# Pin to trixie for reproducibility. For exact reproducibility, pin to a SHA digest.
+FROM debian:trixie-slim
 
 # curl needed for Docker HEALTHCHECK; ca-certificates for HTTPS
 RUN apt-get update && apt-get install -y --no-install-recommends \
