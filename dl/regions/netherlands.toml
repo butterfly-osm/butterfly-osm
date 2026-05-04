@@ -1,0 +1,23 @@
+# Butterfly region index — Netherlands
+#
+# OSM PBF for the Netherlands from Geofabrik. butterfly-route
+# consumes this as `netherlands.pbf` under `data/netherlands/`;
+# butterfly-geocode (#96) plans to pair it with the BAG
+# authoritative address dataset on the side.
+#
+# Authoritative address dataset (NOT fetched by butterfly-dl yet —
+# tracked separately in geocode-data/SOURCES.md):
+#
+#   Basisregistratie Adressen en Gebouwen (BAG)
+#   Direct extract:  https://service.pdok.nl/kadaster/adressen/atom/v1_0/downloads/lvbag-extract-nl.zip
+#   Atom feed:       https://service.pdok.nl/kadaster/adressen/atom/v1_0/adressen.xml
+#   Landing page:    https://www.kadaster.nl/-/gratis-download-bag-extract
+#   License:         CC0 (public domain) for the open extract
+#   Format:          GML / XML inside ZIP, ~2.8 GB compressed, ~9 M addresses
+#   Cadence:         monthly (8th of the month)
+#
+# No transit feeds in this index — Dutch GTFS is published per
+# operator via OpenOV / NDOV.
+
+[pbf]
+url = "https://download.geofabrik.de/europe/netherlands-latest.osm.pbf"

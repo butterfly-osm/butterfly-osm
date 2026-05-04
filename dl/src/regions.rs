@@ -44,6 +44,7 @@ use crate::verified::{Outcome, VerifiedOptions, download_verified};
 /// new region = new file + new constant + new arm in `load_region`.
 const BELGIUM_INDEX_TOML: &str = include_str!("../regions/belgium.toml");
 const FRANCE_INDEX_TOML: &str = include_str!("../regions/france.toml");
+const NETHERLANDS_INDEX_TOML: &str = include_str!("../regions/netherlands.toml");
 
 /// Parsed region index. Each field is an optional list so partial
 /// regions (e.g. one without transit feeds) are a valid shape.
@@ -81,6 +82,7 @@ impl RegionIndex {
         let raw: &str = match name {
             "belgium" => BELGIUM_INDEX_TOML,
             "france" => FRANCE_INDEX_TOML,
+            "netherlands" => NETHERLANDS_INDEX_TOML,
             other => bail!(
                 "unknown region '{other}'. Supported regions are bundled \
                  in `dl/regions/`. Add a new one with a new TOML file + \
@@ -288,7 +290,7 @@ pub async fn fetch_region(
 /// Used by the CLI's error path ("unknown region X; known regions:
 /// [...]").
 pub fn shipped_regions() -> &'static [&'static str] {
-    &["belgium", "france"]
+    &["belgium", "france", "netherlands"]
 }
 
 #[cfg(test)]
