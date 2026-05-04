@@ -10,6 +10,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use tracing::{Level, info, warn};
 use tracing_subscriber::EnvFilter;
 
+use butterfly_geocode::CountryId;
 use butterfly_geocode::confidence::{
     GbdtModel, TrainConfig, build_training_groups, build_training_rows, dump_training_rows,
     evaluate, load_corpus, synthesise_corpus_from_shard, train_pointwise,
@@ -48,12 +49,35 @@ enum ParserKind {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Build a shard from an OSM PBF.
+    /// Build a single-country shard from an OSM PBF.
     BuildShard {
+        /// Source PBF (any Geofabrik regional/country extract).
         #[arg(long)]
         pbf: PathBuf,
+        /// Output BFGS v3 shard file.
         #[arg(long)]
         out: PathBuf,
+        /// ISO 3166-1 alpha-2 country code for this shard. Stored
+        /// in the BFGS v3 header and verified at server load.
+        #[arg(long)]
+        country: String,
+    },
+    /// Build every country shard the server can deploy in one pass.
+    /// Looks for `<country>.pbf` (or `<iso2>.pbf`) inside `--pbf-dir`
+    /// for each ISO2 in the supported list, and emits
+    /// `<out_dir>/<iso2>.bfgs`. Missing PBFs are skipped with a
+    /// warning — operators can deploy the subset they have data for.
+    BuildShardsAll {
+        /// Directory containing per-country PBFs.
+        #[arg(long)]
+        pbf_dir: PathBuf,
+        /// Output directory for BFGS shards.
+        #[arg(long)]
+        out_dir: PathBuf,
+        /// Limit to a comma-separated subset (e.g. `BE,FR,NL`). If
+        /// unset, every supported country is attempted.
+        #[arg(long)]
+        only: Option<String>,
     },
     /// Train a byte-level transformer tagger (#96 §Tagger). When
     /// `--corpus` is omitted, an inline synthetic Belgium corpus is
@@ -86,8 +110,15 @@ enum Command {
     },
     /// Run the HTTP server.
     Serve {
-        #[arg(long)]
-        shard: PathBuf,
+        /// Single-shard mode: load this shard. Mutually exclusive
+        /// with `--shard-dir`.
+        #[arg(long, conflicts_with = "shard_dir")]
+        shard: Option<PathBuf>,
+        /// Multi-shard mode: load every `*.bfgs` in this directory.
+        /// Each shard is keyed by its on-disk country code (BFGS v3
+        /// header).
+        #[arg(long, conflicts_with = "shard")]
+        shard_dir: Option<PathBuf>,
         #[arg(long, default_value_t = 3003)]
         port: u16,
         #[arg(long, default_value = "0.0.0.0")]
@@ -141,7 +172,12 @@ async fn main() -> Result<()> {
     init_logging(&cli.log_format);
 
     match cli.cmd {
-        Command::BuildShard { pbf, out } => build_shard_cmd(&pbf, &out),
+        Command::BuildShard { pbf, out, country } => build_shard_cmd(&pbf, &out, &country),
+        Command::BuildShardsAll {
+            pbf_dir,
+            out_dir,
+            only,
+        } => build_shards_all_cmd(&pbf_dir, &out_dir, only.as_deref()),
         Command::Train {
             out,
             corpus,
@@ -161,6 +197,7 @@ async fn main() -> Result<()> {
         ),
         Command::Serve {
             shard,
+            shard_dir,
             port,
             host,
             rerank_model,
@@ -168,7 +205,8 @@ async fn main() -> Result<()> {
             model,
         } => {
             serve_cmd(
-                &shard,
+                shard.as_deref(),
+                shard_dir.as_deref(),
                 &host,
                 port,
                 rerank_model.as_deref(),
@@ -216,8 +254,23 @@ fn init_logging(format: &str) {
     }
 }
 
-fn build_shard_cmd(pbf: &PathBuf, out: &PathBuf) -> Result<()> {
-    info!(pbf = %pbf.display(), out = %out.display(), "extracting OSM addresses");
+fn build_shard_cmd(pbf: &std::path::Path, out: &std::path::Path, country_iso2: &str) -> Result<()> {
+    let country = CountryId::from_iso2(country_iso2).ok_or_else(|| {
+        anyhow!(
+            "unknown country '{country_iso2}' (supported: {})",
+            CountryId::ALL
+                .iter()
+                .map(|c| c.iso2())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })?;
+    info!(
+        pbf = %pbf.display(),
+        out = %out.display(),
+        country = country.iso2(),
+        "extracting OSM addresses"
+    );
     let start = std::time::Instant::now();
 
     let addresses = extract_addresses(pbf, |evt| match evt {
@@ -238,7 +291,14 @@ fn build_shard_cmd(pbf: &PathBuf, out: &PathBuf) -> Result<()> {
         "extracted addresses"
     );
 
-    let stats = build_shard(out, addresses).context("writing shard")?;
+    if let Some(parent) = out.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating output dir {}", parent.display()))?;
+    }
+
+    let stats = build_shard(out, country, addresses).context("writing shard")?;
     info!(
         records = stats.record_count,
         unique_postcodes = stats.unique_postcodes,
@@ -246,14 +306,109 @@ fn build_shard_cmd(pbf: &PathBuf, out: &PathBuf) -> Result<()> {
         strings_bytes = stats.strings_bytes,
         records_bytes = stats.records_bytes,
         index_bytes = stats.index_bytes,
+        country = stats.country.iso2(),
         secs = start.elapsed().as_secs_f64(),
         "shard built"
     );
 
-    let _ = Shard::open(out).context("verifying shard CRC after build")?;
+    let s = Shard::open(out).context("verifying shard CRC after build")?;
+    if s.country() != country {
+        bail!(
+            "shard country mismatch after build: header says {} but we expected {}",
+            s.country().iso2(),
+            country.iso2()
+        );
+    }
     info!("shard verified");
 
     Ok(())
+}
+
+fn build_shards_all_cmd(
+    pbf_dir: &std::path::Path,
+    out_dir: &std::path::Path,
+    only: Option<&str>,
+) -> Result<()> {
+    if !pbf_dir.is_dir() {
+        bail!(
+            "pbf-dir does not exist or is not a directory: {}",
+            pbf_dir.display()
+        );
+    }
+    std::fs::create_dir_all(out_dir)
+        .with_context(|| format!("creating output dir {}", out_dir.display()))?;
+
+    let allowed: Option<Vec<CountryId>> = only.map(|s| {
+        s.split(',')
+            .filter_map(|t| CountryId::from_iso2(t.trim()))
+            .collect()
+    });
+
+    let mut built = Vec::<CountryId>::new();
+    let mut skipped = Vec::<(CountryId, String)>::new();
+    for &c in CountryId::ALL {
+        if let Some(ref a) = allowed
+            && !a.contains(&c)
+        {
+            continue;
+        }
+        let candidates = candidate_pbf_names(c);
+        let pbf = candidates
+            .iter()
+            .map(|n| pbf_dir.join(n))
+            .find(|p| p.is_file());
+        let Some(pbf) = pbf else {
+            warn!(
+                country = c.iso2(),
+                "no PBF found in {} (looked for {:?}); skipping",
+                pbf_dir.display(),
+                candidates
+            );
+            skipped.push((c, "no PBF".to_string()));
+            continue;
+        };
+        let out = out_dir.join(format!("{}.bfgs", c.iso2().to_ascii_lowercase()));
+        match build_shard_cmd(&pbf, &out, c.iso2()) {
+            Ok(_) => built.push(c),
+            Err(e) => {
+                warn!(country = c.iso2(), error = %e, "shard build failed; continuing");
+                skipped.push((c, e.to_string()));
+            }
+        }
+    }
+    info!(
+        built = built.len(),
+        skipped = skipped.len(),
+        "build-shards-all complete"
+    );
+    for (c, why) in &skipped {
+        info!(country = c.iso2(), reason = %why, "skipped");
+    }
+    Ok(())
+}
+
+fn candidate_pbf_names(c: CountryId) -> Vec<String> {
+    let long = match c {
+        CountryId::BE => "belgium",
+        CountryId::FR => "france",
+        CountryId::NL => "netherlands",
+        CountryId::LU => "luxembourg",
+        CountryId::DE => "germany",
+        CountryId::AT => "austria",
+        CountryId::CH => "switzerland",
+        // CountryId is `non_exhaustive`. New countries default to
+        // ISO2-only filename probing — add a friendlier name above.
+        _ => "",
+    };
+    let mut v = Vec::new();
+    if !long.is_empty() {
+        v.push(format!("{long}.pbf"));
+        v.push(format!("{long}.osm.pbf"));
+        v.push(format!("{long}-latest.osm.pbf"));
+    }
+    v.push(format!("{}.pbf", c.iso2().to_ascii_lowercase()));
+    v.push(format!("{}.osm.pbf", c.iso2().to_ascii_lowercase()));
+    v
 }
 
 fn train_cmd(
@@ -309,18 +464,16 @@ fn train_cmd(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_cmd(
-    shard_path: &PathBuf,
+    shard_path: Option<&std::path::Path>,
+    shard_dir: Option<&std::path::Path>,
     host: &str,
     port: u16,
     rerank_model_path: Option<&std::path::Path>,
     parser_kind: ParserKind,
     model_path: Option<&std::path::Path>,
 ) -> Result<()> {
-    info!(shard = %shard_path.display(), "loading shard");
-    let shard = Shard::open(shard_path).context("opening shard")?;
-    info!(record_count = shard.record_count(), "shard loaded");
-
     // Pick the parser backend first — the neural parser is wired via
     // `ParserBackend` (#98 Phase 1), the heuristic backend is always
     // available as a deterministic fallback (Phase 0 baseline). The
@@ -354,7 +507,33 @@ async fn serve_cmd(
         }
     };
 
-    let mut state = ServerState::new(shard).with_parser(parser_backend);
+    let mut state = match (shard_path, shard_dir) {
+        (Some(p), None) => {
+            info!(shard = %p.display(), "loading shard (single-country mode)");
+            let shard = Shard::open(p).context("opening shard")?;
+            info!(
+                country = shard.country().iso2(),
+                record_count = shard.record_count(),
+                "shard loaded"
+            );
+            ServerState::new(shard)
+        }
+        (None, Some(d)) => {
+            info!(dir = %d.display(), "loading shards from directory (multi-country mode)");
+            let s = ServerState::load_from_dir(d).context("loading shards")?;
+            info!(
+                countries = ?s.loaded_countries(),
+                total_records = s.total_record_count(),
+                "shards loaded"
+            );
+            s
+        }
+        (Some(_), Some(_)) => unreachable!("clap's conflicts_with prevents this"),
+        (None, None) => {
+            bail!("missing --shard <PATH> or --shard-dir <DIR>; specify one");
+        }
+    };
+    state = state.with_parser(parser_backend);
     if let Some(p) = rerank_model_path {
         info!(model = %p.display(), "loading GBDT reranker");
         let model = GbdtModel::load(p).context("loading reranker")?;

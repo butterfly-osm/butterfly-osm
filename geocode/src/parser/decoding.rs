@@ -671,7 +671,7 @@ mod tests {
                 lon: 4.401,
             },
         ];
-        crate::shard::builder::build_shard(&path, addrs).unwrap();
+        crate::shard::builder::build_shard(&path, crate::routing::CountryId::BE, addrs).unwrap();
         (dir, Shard::open(&path).unwrap())
     }
 

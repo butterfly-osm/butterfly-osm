@@ -183,6 +183,7 @@ mod tests {
             postcode: "1000".into(),
             locality: "loc".into(),
             score,
+            country: None,
             reason_codes: vec![],
         }
     }

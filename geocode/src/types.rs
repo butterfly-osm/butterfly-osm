@@ -122,6 +122,15 @@ impl RetrievalPolicy {
         ])
     }
 
+    /// Default policy for European postcode-anchored countries
+    /// (BE / FR / NL / LU / DE / AT / CH). Same shape as
+    /// [`Self::belgium_default`] — postcode is the strongest evidence
+    /// anchor across the whole cluster #1 + #2 set. US-style profiles
+    /// (street as blocker) will diverge in a follow-up country pack.
+    pub fn european_postcode_anchor() -> Self {
+        Self::belgium_default()
+    }
+
     #[must_use]
     pub fn role(&self, ch: Channel) -> Option<ChannelRole> {
         self.roles[ch.index()]
