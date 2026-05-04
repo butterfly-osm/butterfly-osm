@@ -98,16 +98,45 @@ fn execute_clean(h: &ParseHypothesis, shard: &Shard, limit: usize) -> Vec<Geocod
     let mut out: Vec<GeocodedResult> = Vec::new();
 
     let postcode = h.postcode_candidates.first().map(|c| c.0.as_str());
-    let street = h.street_candidates.first().map(|c| c.0.as_str());
     let house = h.house_candidates.first().map(|c| c.0.as_str());
 
+    // Try every street candidate in priority order. The heuristic
+    // parser may emit multiple — e.g. "<street_without_locality>, 1.0"
+    // and "<full_remainder>, 0.3". The first hit wins. If no candidate
+    // resolves, falls through to fuzzy below.
+    let street = h
+        .street_candidates
+        .iter()
+        .map(|c| c.0.as_str())
+        .find(|st| {
+            !shard.postings_for_street(st).is_empty()
+                || postcode
+                    .is_some_and(|pc| !shard.postings_for_postcode_and_street(pc, st).is_empty())
+        })
+        .or_else(|| h.street_candidates.first().map(|c| c.0.as_str()));
+
+    // Channel selection (#96 BE policy: postcode=blocker, street=reducer,
+    // house=scorer). With OSM-derived shards, postcode tagging is sparse
+    // (~5% of records on Belgium have explicit addr:postcode), so a hard
+    // postcode blocker would discard 95% of true matches. The Role-Smoothness
+    // Guarantee (#96) gives the answer: when the blocker channel would
+    // empty a candidate set that the weaker channel populates, downgrade
+    // postcode to a Reducer (preferred-but-not-required) — equivalent
+    // to attempting (postcode∩street) first, then fall through to street-only
+    // and let the postcode contribute as a scorer.
     let postings: &[u32] = match (postcode, street) {
         (Some(pc), Some(st)) => {
             let p = shard.postings_for_postcode_and_street(pc, st);
             if !p.is_empty() {
                 p
             } else {
-                shard.postings_for_postcode(pc)
+                // Downgrade: postcode → scorer, street stays as anchor.
+                let s = shard.postings_for_street(st);
+                if !s.is_empty() {
+                    s
+                } else {
+                    shard.postings_for_postcode(pc)
+                }
             }
         }
         (Some(pc), None) => shard.postings_for_postcode(pc),
@@ -118,12 +147,6 @@ fn execute_clean(h: &ParseHypothesis, shard: &Shard, limit: usize) -> Vec<Geocod
             .map_or(&[][..], |(loc, _)| shard.postings_for_locality(loc)),
     };
 
-    let intersect_with_street = postcode.is_some()
-        && street.is_some()
-        && shard
-            .postings_for_postcode_and_street(postcode.expect("Some"), street.expect("Some"))
-            .is_empty();
-
     let street_norm = street.map(crate::parser::normalize::normalize);
     let house_norm = house;
 
@@ -131,13 +154,6 @@ fn execute_clean(h: &ParseHypothesis, shard: &Shard, limit: usize) -> Vec<Geocod
         let Some(rec) = shard.record(id) else {
             continue;
         };
-
-        if intersect_with_street
-            && let Some(ref s) = street_norm
-            && &crate::parser::normalize::normalize(&rec.street) != s
-        {
-            continue;
-        }
 
         let mut score = 0.0_f32;
         let mut reasons: Vec<String> = Vec::new();
@@ -563,7 +579,8 @@ mod tests {
     #[test]
     fn forward_fuzzy_street_falls_back() {
         let (_dir, shard) = small_shard();
-        let q = parse_heuristic("Rue Waeyz 122 1070", CountryId::BE);
+        // No postcode anchor → exact street miss → fuzzy fallback fires.
+        let q = parse_heuristic("Rue Waeyz 122", CountryId::BE);
         let results = execute(&q, &shard, 5);
         assert!(!results.is_empty(), "fuzzy fallback should match Rue Wayez");
         assert!(
