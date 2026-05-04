@@ -627,7 +627,7 @@ fn do_route_batch(
                                     .collect();
 
                                 let (points, distance_m) =
-                                    build_raw_points(&ebg_path, &state.ebg_nodes, &state.nbg_geo);
+                                    build_raw_points(&ebg_path, &state.ebg_nodes, &state.edge_geom);
 
                                 let wkb = encode_linestring_wkb(&points);
 
@@ -774,7 +774,7 @@ fn do_isochrone(
             threshold_ds,
             node_weights,
             &state.ebg_nodes,
-            &state.nbg_geo,
+            &state.edge_geom,
             mode_name,
         );
 

@@ -33,6 +33,7 @@
 pub mod api;
 pub mod avoid;
 pub mod catchment;
+pub mod edge_geom;
 pub mod elevation;
 pub mod exclude;
 // tonic::Status is 176 bytes — the canonical gRPC error type.

@@ -285,7 +285,7 @@ pub async fn match_trace_handler(
                 let (geometry, distance_m) = build_geometry(
                     &m.ebg_path,
                     &state_clone.ebg_nodes,
-                    &state_clone.nbg_geo,
+                    &state_clone.edge_geom,
                     geom_format,
                 );
                 let duration_s = m.duration_ds as f64 / 10.0;
@@ -295,6 +295,7 @@ pub async fn match_trace_handler(
                         &m.ebg_path,
                         &state_clone.ebg_nodes,
                         &state_clone.nbg_geo,
+                        &state_clone.edge_geom,
                         &mode_data.node_weights,
                         &state_clone.way_names,
                         geom_format,

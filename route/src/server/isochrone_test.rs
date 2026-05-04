@@ -288,7 +288,7 @@ mod tests {
             threshold_ds,
             &mode_data.node_weights,
             &state.ebg_nodes,
-            &state.nbg_geo,
+            &state.edge_geom,
             mode_name,
         );
 

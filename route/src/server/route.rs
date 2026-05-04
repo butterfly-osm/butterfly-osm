@@ -547,13 +547,14 @@ pub async fn route_handler(
             })
             .collect();
         let (geometry, distance_m) =
-            build_geometry(&ebg_path, &state.ebg_nodes, &state.nbg_geo, format);
+            build_geometry(&ebg_path, &state.ebg_nodes, &state.edge_geom, format);
         let duration_s = result.distance as f64 / 10.0;
         let steps = if want_steps {
             Some(build_steps(
                 &ebg_path,
                 &state.ebg_nodes,
                 &state.nbg_geo,
+                &state.edge_geom,
                 &mode_data.node_weights,
                 &state.way_names,
                 format,
@@ -613,7 +614,7 @@ pub async fn route_handler(
 
     // GPX output: skip annotations, alternatives, debug — just emit track points
     if wants_gpx(&headers) {
-        let (raw_points, _) = build_raw_points(&ebg_path, &state.ebg_nodes, &state.nbg_geo);
+        let (raw_points, _) = build_raw_points(&ebg_path, &state.ebg_nodes, &state.edge_geom);
         return gpx_response(format_gpx(&raw_points, "Route"));
     }
 
@@ -871,6 +872,7 @@ pub(crate) fn build_steps(
     ebg_path: &[u32],
     ebg_nodes: &crate::formats::EbgNodes,
     nbg_geo: &crate::formats::NbgGeo,
+    edge_geom: &crate::server::edge_geom::EdgeGeometry,
     node_weights: &[u32],
     way_names: &std::collections::HashMap<i64, String>,
     format: GeometryFormat,
@@ -883,8 +885,8 @@ pub(crate) fn build_steps(
 
     // Get start location for depart maneuver
     let first_node = &ebg_nodes.nodes[ebg_path[0] as usize];
-    let start_loc = get_edge_start_location(first_node, nbg_geo);
-    let start_bearing = get_edge_bearing(first_node, nbg_geo, true);
+    let start_loc = get_edge_start_location(first_node, edge_geom);
+    let start_bearing = get_edge_bearing(first_node, edge_geom, true);
 
     // Depart step (first edge)
     let first_distance = first_node.length_mm as f64 / 1000.0;
@@ -894,7 +896,7 @@ pub(crate) fn build_steps(
         } else {
             0.0
         };
-    let first_geom = build_edge_geometry(ebg_path[0], ebg_nodes, nbg_geo, format);
+    let first_geom = build_edge_geometry(ebg_path[0], ebg_nodes, edge_geom, format);
 
     steps.push(RouteStep {
         distance_m: first_distance,
@@ -915,7 +917,7 @@ pub(crate) fn build_steps(
     let mut accumulated_distance = 0.0;
     let mut accumulated_duration = 0.0;
     let mut segment_edges: Vec<u32> = Vec::new();
-    let mut prev_end_bearing = get_edge_bearing(first_node, nbg_geo, false);
+    let mut prev_end_bearing = get_edge_bearing(first_node, edge_geom, false);
 
     for i in 1..ebg_path.len() {
         let edge_id = ebg_path[i];
@@ -928,7 +930,7 @@ pub(crate) fn build_steps(
                 0.0
             };
 
-        let cur_start_bearing = get_edge_bearing(node, nbg_geo, true);
+        let cur_start_bearing = get_edge_bearing(node, edge_geom, true);
         let turn_angle = bearing_diff(prev_end_bearing, cur_start_bearing);
         let turn_type = classify_turn(turn_angle);
 
@@ -937,11 +939,11 @@ pub(crate) fn build_steps(
             if !segment_edges.is_empty() {
                 // Emit accumulated straight segment
                 let seg_geom =
-                    build_multi_edge_geometry(&segment_edges, ebg_nodes, nbg_geo, format);
+                    build_multi_edge_geometry(&segment_edges, ebg_nodes, edge_geom, format);
                 let seg_start =
-                    get_edge_start_location(&ebg_nodes.nodes[segment_edges[0] as usize], nbg_geo);
+                    get_edge_start_location(&ebg_nodes.nodes[segment_edges[0] as usize], edge_geom);
                 let seg_start_bearing =
-                    get_edge_bearing(&ebg_nodes.nodes[segment_edges[0] as usize], nbg_geo, true);
+                    get_edge_bearing(&ebg_nodes.nodes[segment_edges[0] as usize], edge_geom, true);
 
                 steps.push(RouteStep {
                     distance_m: accumulated_distance,
@@ -963,15 +965,15 @@ pub(crate) fn build_steps(
 
             if i == ebg_path.len() - 1 {
                 // Arrive step
-                let arrive_loc = get_edge_end_location(node, nbg_geo);
-                let arrive_geom = build_edge_geometry(edge_id, ebg_nodes, nbg_geo, format);
+                let arrive_loc = get_edge_end_location(node, edge_geom);
+                let arrive_geom = build_edge_geometry(edge_id, ebg_nodes, edge_geom, format);
                 steps.push(RouteStep {
                     distance_m: edge_distance,
                     duration_s: edge_duration,
                     geometry: arrive_geom,
                     maneuver: StepManeuver {
                         location: arrive_loc,
-                        bearing_before: get_edge_bearing(node, nbg_geo, false),
+                        bearing_before: get_edge_bearing(node, edge_geom, false),
                         bearing_after: 0,
                         maneuver_type: "arrive".to_string(),
                         modifier: None,
@@ -980,11 +982,11 @@ pub(crate) fn build_steps(
                 });
             } else {
                 // Turn step
-                let turn_loc = get_edge_start_location(node, nbg_geo);
+                let turn_loc = get_edge_start_location(node, edge_geom);
                 let is_roundabout = (node.class_bits & 0x08) != 0; // bit3 = roundabout
                 let m_type = if is_roundabout { "roundabout" } else { "turn" };
 
-                let turn_geom = build_edge_geometry(edge_id, ebg_nodes, nbg_geo, format);
+                let turn_geom = build_edge_geometry(edge_id, ebg_nodes, edge_geom, format);
                 steps.push(RouteStep {
                     distance_m: edge_distance,
                     duration_s: edge_duration,
@@ -1006,7 +1008,7 @@ pub(crate) fn build_steps(
             accumulated_duration += edge_duration;
         }
 
-        prev_end_bearing = get_edge_bearing(node, nbg_geo, false);
+        prev_end_bearing = get_edge_bearing(node, edge_geom, false);
     }
 
     steps
@@ -1015,14 +1017,12 @@ pub(crate) fn build_steps(
 /// Get start location of an EBG edge
 fn get_edge_start_location(
     node: &crate::formats::ebg_nodes::EbgNode,
-    nbg_geo: &crate::formats::NbgGeo,
+    edge_geom: &crate::server::edge_geom::EdgeGeometry,
 ) -> [f64; 2] {
-    let geom_idx = node.geom_idx as usize;
-    if geom_idx < nbg_geo.polylines.len() {
-        let poly = &nbg_geo.polylines[geom_idx];
-        if !poly.lat_fxp.is_empty() {
-            return [poly.lon_fxp[0] as f64 / 1e7, poly.lat_fxp[0] as f64 / 1e7];
-        }
+    let poly = edge_geom.polyline(node.geom_idx);
+    if !poly.is_empty() {
+        let (lon, lat) = poly.at(0);
+        return [lon, lat];
     }
     [0.0, 0.0]
 }
@@ -1030,18 +1030,13 @@ fn get_edge_start_location(
 /// Get end location of an EBG edge
 fn get_edge_end_location(
     node: &crate::formats::ebg_nodes::EbgNode,
-    nbg_geo: &crate::formats::NbgGeo,
+    edge_geom: &crate::server::edge_geom::EdgeGeometry,
 ) -> [f64; 2] {
-    let geom_idx = node.geom_idx as usize;
-    if geom_idx < nbg_geo.polylines.len() {
-        let poly = &nbg_geo.polylines[geom_idx];
-        if !poly.lat_fxp.is_empty() {
-            let last = poly.lat_fxp.len() - 1;
-            return [
-                poly.lon_fxp[last] as f64 / 1e7,
-                poly.lat_fxp[last] as f64 / 1e7,
-            ];
-        }
+    let poly = edge_geom.polyline(node.geom_idx);
+    if !poly.is_empty() {
+        let last = poly.len() - 1;
+        let (lon, lat) = poly.at(last);
+        return [lon, lat];
     }
     [0.0, 0.0]
 }
@@ -1049,24 +1044,19 @@ fn get_edge_end_location(
 /// Get bearing of an EBG edge (at start or end)
 fn get_edge_bearing(
     node: &crate::formats::ebg_nodes::EbgNode,
-    nbg_geo: &crate::formats::NbgGeo,
+    edge_geom: &crate::server::edge_geom::EdgeGeometry,
     at_start: bool,
 ) -> u16 {
-    let geom_idx = node.geom_idx as usize;
-    if geom_idx < nbg_geo.polylines.len() {
-        let poly = &nbg_geo.polylines[geom_idx];
-        if poly.lat_fxp.len() >= 2 {
-            let (i0, i1) = if at_start {
-                (0, 1)
-            } else {
-                (poly.lat_fxp.len() - 2, poly.lat_fxp.len() - 1)
-            };
-            let lat1 = poly.lat_fxp[i0] as f64 / 1e7;
-            let lon1 = poly.lon_fxp[i0] as f64 / 1e7;
-            let lat2 = poly.lat_fxp[i1] as f64 / 1e7;
-            let lon2 = poly.lon_fxp[i1] as f64 / 1e7;
-            return compute_bearing(lat1, lon1, lat2, lon2);
-        }
+    let poly = edge_geom.polyline(node.geom_idx);
+    if poly.len() >= 2 {
+        let (i0, i1) = if at_start {
+            (0, 1)
+        } else {
+            (poly.len() - 2, poly.len() - 1)
+        };
+        let (lon1, lat1) = poly.at(i0);
+        let (lon2, lat2) = poly.at(i1);
+        return compute_bearing(lat1, lon1, lat2, lon2);
     }
     0
 }
@@ -1108,23 +1098,12 @@ pub fn classify_turn(angle: u16) -> &'static str {
 fn build_edge_geometry(
     edge_id: u32,
     ebg_nodes: &crate::formats::EbgNodes,
-    nbg_geo: &crate::formats::NbgGeo,
+    edge_geom: &crate::server::edge_geom::EdgeGeometry,
     format: GeometryFormat,
 ) -> RouteGeometry {
     let node = &ebg_nodes.nodes[edge_id as usize];
-    let geom_idx = node.geom_idx as usize;
-    let mut points = Vec::new();
-
-    if geom_idx < nbg_geo.polylines.len() {
-        let poly = &nbg_geo.polylines[geom_idx];
-        for j in 0..poly.lat_fxp.len() {
-            points.push(Point {
-                lon: poly.lon_fxp[j] as f64 / 1e7,
-                lat: poly.lat_fxp[j] as f64 / 1e7,
-            });
-        }
-    }
-
+    let poly = edge_geom.polyline(node.geom_idx);
+    let points: Vec<Point> = poly.iter().map(|(lon, lat)| Point { lon, lat }).collect();
     RouteGeometry::from_points(points, format)
 }
 
@@ -1132,24 +1111,18 @@ fn build_edge_geometry(
 fn build_multi_edge_geometry(
     edge_ids: &[u32],
     ebg_nodes: &crate::formats::EbgNodes,
-    nbg_geo: &crate::formats::NbgGeo,
+    edge_geom: &crate::server::edge_geom::EdgeGeometry,
     format: GeometryFormat,
 ) -> RouteGeometry {
     let mut points = Vec::new();
 
     for &edge_id in edge_ids {
         let node = &ebg_nodes.nodes[edge_id as usize];
-        let geom_idx = node.geom_idx as usize;
-
-        if geom_idx < nbg_geo.polylines.len() {
-            let poly = &nbg_geo.polylines[geom_idx];
-            let start = if points.is_empty() { 0 } else { 1 }; // skip duplicate at join
-            for j in start..poly.lat_fxp.len() {
-                points.push(Point {
-                    lon: poly.lon_fxp[j] as f64 / 1e7,
-                    lat: poly.lat_fxp[j] as f64 / 1e7,
-                });
-            }
+        let poly = edge_geom.polyline(node.geom_idx);
+        let start = if points.is_empty() { 0 } else { 1 }; // skip duplicate at join
+        for j in start..poly.len() {
+            let (lon, lat) = poly.at(j);
+            points.push(Point { lon, lat });
         }
     }
 

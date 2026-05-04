@@ -489,7 +489,7 @@ fn test_route_path_validity() {
             let (_geometry, _distance_m) = super::geometry::build_geometry(
                 &ebg_path,
                 &state.ebg_nodes,
-                &state.nbg_geo,
+                &state.edge_geom,
                 super::geometry::GeometryFormat::Polyline6,
             );
 
@@ -841,7 +841,7 @@ fn test_route_geometry_polyline6_round_trips() {
         let (poly_geom, poly_dist) = super::geometry::build_geometry(
             &ebg_path,
             &state.ebg_nodes,
-            &state.nbg_geo,
+            &state.edge_geom,
             super::geometry::GeometryFormat::Polyline6,
         );
         assert!(
@@ -866,7 +866,7 @@ fn test_route_geometry_polyline6_round_trips() {
         let (json_geom, json_dist) = super::geometry::build_geometry(
             &ebg_path,
             &state.ebg_nodes,
-            &state.nbg_geo,
+            &state.edge_geom,
             super::geometry::GeometryFormat::GeoJson,
         );
         let coords = json_geom.coordinates_geojson.as_ref().unwrap();
@@ -898,7 +898,7 @@ fn test_route_geometry_polyline6_round_trips() {
         let (pts_geom, _pts_dist) = super::geometry::build_geometry(
             &ebg_path,
             &state.ebg_nodes,
-            &state.nbg_geo,
+            &state.edge_geom,
             super::geometry::GeometryFormat::Points,
         );
         let pts = pts_geom.coordinates.as_ref().unwrap();
@@ -1105,6 +1105,7 @@ fn test_route_steps_have_depart_and_arrive() {
             &ebg_path,
             &state.ebg_nodes,
             &state.nbg_geo,
+            &state.edge_geom,
             &mode_data.node_weights,
             &state.way_names,
             super::geometry::GeometryFormat::Polyline6,
@@ -1222,6 +1223,7 @@ fn test_route_steps_distances_sum_to_total() {
             &ebg_path,
             &state.ebg_nodes,
             &state.nbg_geo,
+            &state.edge_geom,
             &mode_data.node_weights,
             &state.way_names,
             super::geometry::GeometryFormat::Polyline6,
@@ -1234,7 +1236,7 @@ fn test_route_steps_distances_sum_to_total() {
         let (_route_geom, route_total) = super::geometry::build_geometry(
             &ebg_path,
             &state.ebg_nodes,
-            &state.nbg_geo,
+            &state.edge_geom,
             super::geometry::GeometryFormat::Polyline6,
         );
 
@@ -1291,6 +1293,7 @@ fn test_route_step_locations_on_route() {
         &ebg_path,
         &state.ebg_nodes,
         &state.nbg_geo,
+        &state.edge_geom,
         &mode_data.node_weights,
         &state.way_names,
         super::geometry::GeometryFormat::Polyline6,

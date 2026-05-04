@@ -806,15 +806,10 @@ fn parse_mode(
 /// Get snapped location [lon, lat] for an original EBG node
 fn get_node_location(state: &ServerState, node_id: u32) -> [f64; 2] {
     let node = &state.ebg_nodes.nodes[node_id as usize];
-    let edge_idx = node.geom_idx as usize;
-    if edge_idx < state.nbg_geo.polylines.len() {
-        let polyline = &state.nbg_geo.polylines[edge_idx];
-        if !polyline.lon_fxp.is_empty() {
-            return [
-                polyline.lon_fxp[0] as f64 / 1e7,
-                polyline.lat_fxp[0] as f64 / 1e7,
-            ];
-        }
+    let polyline = state.edge_geom.polyline(node.geom_idx);
+    if !polyline.is_empty() {
+        let (lon, lat) = polyline.at(0);
+        return [lon, lat];
     }
     [0.0, 0.0]
 }
