@@ -1,0 +1,101 @@
+# United Kingdom country pack — butterfly-geocode #96 "serve the world".
+# Authoritative dataset: Ordnance Survey OS Open Names + Royal Mail PAF
+# (PAF requires a license — OSM is the practical baseline).
+
+[country]
+iso2 = "GB"
+name = "United Kingdom"
+
+[postcode]
+# UK postcodes are alphanumeric, distinctive, and well-defined:
+# Outward (1-2 letters + 1 digit + optional letter/digit) + space + 1 digit + 2 letters.
+# Examples: "SW1A 1AA", "EC1A 1BB", "M1 1AA", "B33 8TH".
+# Source: Royal Mail PAF specification.
+regex = '(?i)\b[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2}\b'
+position = "trailing"
+canonicalize = "collapse_whitespace"
+
+[scripts]
+dominant = ["Latin"]
+secondary = []
+
+[[lexical_cues.match]]
+substring = "street"
+boost = 1.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "road"
+boost = 1.2
+kind = "word"
+[[lexical_cues.match]]
+substring = "lane"
+boost = 0.8
+kind = "word"
+[[lexical_cues.match]]
+substring = "avenue"
+boost = 0.9
+kind = "word"
+[[lexical_cues.match]]
+substring = "close"
+boost = 1.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "crescent"
+boost = 1.2
+kind = "word"
+[[lexical_cues.match]]
+substring = "high street"
+boost = 1.5
+kind = "substring"
+[[lexical_cues.match]]
+substring = "london"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "manchester"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "edinburgh"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "glasgow"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "birmingham"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "liverpool"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "cardiff"
+boost = 2.0
+kind = "word"
+[[lexical_cues.match]]
+substring = "belfast"
+boost = 2.0
+kind = "word"
+
+[bbox]
+# UK mainland + Northern Ireland + outlying islands.
+min_lat = 49.85
+max_lat = 60.85
+min_lon = -8.65
+max_lon = 1.80
+
+[neighbours]
+codes = ["IE"]
+
+[source_priors]
+osm = 0.7
+authoritative = 1.0
+
+[osm_tags]
+postcode = "addr:postcode"
+street = "addr:street"
+housenumber = "addr:housenumber"
+city = "addr:city"
