@@ -447,12 +447,13 @@ fn build_adjacency(
 
                 // Add explicit penalties from turn rules if any
                 if let Some(rule) = canonical_rules.get(&rule_key)
-                    && rule.kind == TurnKind::Penalty {
-                        for mc in modes {
-                            let idx = mc.mode_index as usize;
-                            penalty_ds[idx] = penalty_ds[idx].saturating_add(rule.penalty_ds[idx]);
-                        }
+                    && rule.kind == TurnKind::Penalty
+                {
+                    for mc in modes {
+                        let idx = mc.mode_index as usize;
+                        penalty_ds[idx] = penalty_ds[idx].saturating_add(rule.penalty_ds[idx]);
                     }
+                }
 
                 // Statistics
                 total_arcs += 1;

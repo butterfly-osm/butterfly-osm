@@ -161,11 +161,17 @@ fn decode_record(record: &[u8], way_id: i64) -> Result<WayAttr> {
 
 /// Read all way_attrs from file
 pub fn read_all<P: AsRef<Path>>(path: P) -> Result<Vec<WayAttr>> {
-    use std::io::Read;
-
-    let mut file = File::open(path.as_ref())
+    let file = File::open(path.as_ref())
         .with_context(|| format!("Failed to open {}", path.as_ref().display()))?;
+    read_all_from_reader(file).with_context(|| format!("reading {}", path.as_ref().display()))
+}
 
+/// Read way_attrs from an in-memory byte slice (mmap-backed bundle).
+pub fn read_all_from_bytes(bytes: &[u8]) -> Result<Vec<WayAttr>> {
+    read_all_from_reader(std::io::Cursor::new(bytes))
+}
+
+fn read_all_from_reader<R: std::io::Read>(mut file: R) -> Result<Vec<WayAttr>> {
     // Read header
     let mut header = vec![0u8; HEADER_SIZE];
     file.read_exact(&mut header)?;

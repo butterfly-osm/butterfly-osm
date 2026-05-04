@@ -591,6 +591,7 @@ dependencies = [
  "axum-prometheus",
  "base64 0.22.1",
  "butterfly-dl",
+ "bytemuck",
  "bytes",
  "chrono",
  "clap",
@@ -603,6 +604,8 @@ dependencies = [
  "gtfs-structures",
  "hdrhistogram",
  "hex",
+ "libc",
+ "memmap2 0.9.10",
  "osmpbf",
  "parking_lot",
  "priority-queue",
@@ -2207,6 +2210,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "memmap2"
+version = "0.9.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "714098028fe011992e1c3962653c96b2d578c4b4bce9036e15ff220319b1e0e3"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "metrics"
 version = "0.24.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2388,7 +2400,7 @@ checksum = "5d689d6e9f254bbd63893ce00a27147e41fe94bf3abca70f85b5345afb3cb728"
 dependencies = [
  "byteorder",
  "flate2",
- "memmap2",
+ "memmap2 0.5.10",
  "protobuf",
  "protobuf-codegen",
  "rayon",

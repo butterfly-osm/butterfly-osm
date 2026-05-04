@@ -308,4 +308,3 @@ pub struct NbgM2MStats {
     pub bwd_time_us: u64,
     pub total_time_us: u64,
 }
-

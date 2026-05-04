@@ -28,6 +28,25 @@ serde_json = "1.0.149"
 # Checksums
 crc = "3.4"
 
+# Memory-mapped IO (#90 phase 3): a single mmap of `belgium.butterfly`
+# replaces dozens of per-step file reads at startup. The unsafe call
+# site is the workspace's sole `unsafe_code` carveout — see
+# `route/src/formats/mmap.rs` for the documented SAFETY block.
+memmap2 = "0.9"
+# `libc::madvise` against ranges of the mmap above. Same `unsafe_code`
+# carveout as `memmap2::Mmap::map` — see `formats/mmap.rs::madvise_dontneed`.
+# Used after #149 to drop the cch_weights.up/.down byte ranges from RSS
+# once the routing hot path stops reading them (the migration to flat
+# adjacencies in steps A–C kept the only remaining readers cold).
+libc = "0.2"
+
+# Safe POD slice reinterpretation for zero-copy mmap views (#147).
+# `bytemuck::cast_slice` performs alignment + size checks at runtime and
+# wraps the only `unsafe` (slice-of-u8 → slice-of-u32) in its own well-
+# audited internal carveout. The workspace's `unsafe_code` lint stays
+# `deny` everywhere outside `formats/mmap.rs`.
+bytemuck = "1.16"
+
 # Logging
 env_logger = { workspace = true }
 

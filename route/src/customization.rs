@@ -391,7 +391,7 @@ fn bottom_up_customize(
         // PHASE 1: DOWN edges (sorted by target rank for correct dependency order)
         for &i in &sorted_down_indices[u] {
             let v = topo.down_targets[i] as usize;
-            if !topo.down_is_shortcut[i] {
+            if !topo.down_is_shortcut.bit(i) {
                 down_weights[i] = orig_weight_fn(u, v);
             } else {
                 let m = topo.down_middle[i] as usize;
@@ -407,7 +407,7 @@ fn bottom_up_customize(
         let up_end = topo.up_offsets[u + 1] as usize;
         for i in up_start..up_end {
             let v = topo.up_targets[i] as usize;
-            if !topo.up_is_shortcut[i] {
+            if !topo.up_is_shortcut.bit(i) {
                 up_weights[i] = orig_weight_fn(u, v);
             } else {
                 let m = topo.up_middle[i] as usize;
@@ -675,7 +675,7 @@ fn sanity_check_weights(
     let mut down_short_total = 0usize;
 
     for (i, &w) in up_weights.iter().enumerate() {
-        if topo.up_is_shortcut[i] {
+        if topo.up_is_shortcut.bit(i) {
             up_short_total += 1;
             if w == u32::MAX {
                 up_short_max += 1;
@@ -688,7 +688,7 @@ fn sanity_check_weights(
         }
     }
     for (i, &w) in down_weights.iter().enumerate() {
-        if topo.down_is_shortcut[i] {
+        if topo.down_is_shortcut.bit(i) {
             down_short_total += 1;
             if w == u32::MAX {
                 down_short_max += 1;

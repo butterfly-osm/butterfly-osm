@@ -245,8 +245,8 @@ fn verify_downward_property(
 
 fn verify_original_edges(topo: &crate::formats::CchTopo, filtered_ebg: &FilteredEbg) -> Result<()> {
     // Count non-shortcut edges
-    let n_up_original = topo.up_is_shortcut.iter().filter(|&&x| !x).count();
-    let n_down_original = topo.down_is_shortcut.iter().filter(|&&x| !x).count();
+    let n_up_original = topo.up_is_shortcut.iter_bits().filter(|&x| !x).count();
+    let n_down_original = topo.down_is_shortcut.iter_bits().filter(|&x| !x).count();
     let total_original = n_up_original + n_down_original;
 
     // Count self-loops in EBG (which we exclude from CCH)

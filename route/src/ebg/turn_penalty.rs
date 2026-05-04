@@ -165,9 +165,10 @@ impl TurnPenaltyConfig {
             std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../models"));
         let model_path = models_dir.join(format!("{}.model.json", mode_name));
         if let Ok(content) = std::fs::read_to_string(&model_path)
-            && let Ok(schema) = serde_json::from_str::<ModelSchema>(&content) {
-                return Self::from_model_schema(&schema.turn_penalties);
-            }
+            && let Ok(schema) = serde_json::from_str::<ModelSchema>(&content)
+        {
+            return Self::from_model_schema(&schema.turn_penalties);
+        }
         // No model file or parse error — return identity
         Self::default_identity()
     }

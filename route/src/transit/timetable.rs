@@ -544,8 +544,7 @@ impl TimetableBuilder {
         // We transpose once at build time so the hot `earliest_trip`
         // path gets contiguous u32 slices. The mirror is `Arc`-free
         // — it lives directly on the Timetable as flat `Vec<u32>`.
-        let mut col_departures_route_offset: Vec<u64> =
-            Vec::with_capacity(route_meta.len() + 1);
+        let mut col_departures_route_offset: Vec<u64> = Vec::with_capacity(route_meta.len() + 1);
         // Total size of the mirror is the same as `departures_flat`
         // (just a different layout). Preallocate to avoid reallocs.
         let mut col_departures: Vec<u32> = Vec::with_capacity(departures_flat.len());
