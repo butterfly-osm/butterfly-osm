@@ -4,6 +4,7 @@
 pub mod bitset;
 pub mod butterfly_dat;
 pub mod crc;
+pub mod lazy_verify;
 pub mod mmap;
 pub mod node_signals;
 pub mod nodes_sa;

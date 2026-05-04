@@ -118,6 +118,11 @@ base64 = "0.22.1"
 
 # Prometheus metrics
 axum-prometheus = "0.10"
+# Direct `metrics` macros for app-level counters/gauges/histograms
+# (lazy CRC verification, #160). axum-prometheus installs the global
+# recorder; the macros below are picked up by the same `/metrics`
+# handler. Pinned to the same major as axum-prometheus's transitive dep.
+metrics = "0.24"
 
 # Transit: GTFS static feed parsing
 gtfs-structures = "0.47"

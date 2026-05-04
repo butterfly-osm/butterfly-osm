@@ -364,9 +364,10 @@ The overhead is acceptable for small queries, and **Butterfly wins at scale**.
 - **Response compression**: gzip + brotli on API routes
 - **Input validation**: Coordinate bounds, time limits, size limits
 - **Panic recovery**: `CatchPanicLayer` returns 500 JSON instead of crashing
-- **Prometheus metrics**: Per-endpoint latency histograms at `/metrics`
-- **Health check**: `/health` with uptime, node/edge counts, mode list
+- **Prometheus metrics**: Per-endpoint latency histograms at `/metrics`, plus per-section CRC verification counters (`butterfly_route_sections_verified_total`, `butterfly_route_sections_verify_pending`, `butterfly_route_section_verify_duration_seconds{section}`, `butterfly_route_section_verify_failed_total{section}`)
+- **Health check**: `/health` with uptime, node/edge counts, mode list, and per-section lazy-CRC verification status (`verify_status`, `verify.{n_sections,n_verified,n_unverified,n_verifying,n_failed,failed[]}`)
 - **Swagger UI**: OpenAPI docs at `/swagger-ui/`
+- **Lazy CRC verification (#160)**: When loaded from a `.butterfly` container (`--data <file>`), per-section CRC walks default to **on-first-access** rather than at boot — saves ~30 % wall-clock and ~30 % boot-transient peak RSS on Belgium. Use `--warmup-on-boot` for a background pass that walks every section in parallel after the listener binds (recommended for production). Use `--eager-verify` to restore the pre-#160 fail-fast-on-boot semantics.
 
 ### butterfly-dl vs Industry Standard
 

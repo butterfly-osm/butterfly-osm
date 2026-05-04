@@ -185,6 +185,37 @@ pub struct ServerState {
     /// pinned for any future zero-copy reader and for demand-paged
     /// access patterns. `None` when loaded from a directory.
     pub _mmap_arc: Option<std::sync::Arc<memmap2::Mmap>>,
+
+    /// Lazy-CRC handle (#160). Tracks per-section verification state and
+    /// gates request-time access for sections that have not yet had
+    /// their CRC walked. `None` when loaded from a directory tree (the
+    /// directory loader has no manifest CRCs to defer).
+    ///
+    /// The handle is read by:
+    /// - the `/health` handler, to report aggregate verification status,
+    /// - the corrupt-section integration test, to gate access on
+    ///   `Failed` and produce 503 responses,
+    /// - the `--warmup-on-boot` background task, to drive verification
+    ///   off the request path.
+    pub lazy: Option<std::sync::Arc<crate::formats::lazy_verify::LazyContainer>>,
+}
+
+/// Options controlling how a container is loaded. Lifted into a struct
+/// so we can extend without churning every call site.
+#[derive(Debug, Clone, Default)]
+pub struct LoadOptions {
+    /// If true, every section CRC is walked at boot (legacy behaviour).
+    /// If false (default after #160), CRC walks are deferred to first
+    /// access via the [`crate::formats::lazy_verify::LazyContainer`]
+    /// gate; an optional background warmup pass can be requested via
+    /// `warmup_on_boot`.
+    pub eager_verify: bool,
+
+    /// If true, schedule a background thread after boot to walk every
+    /// still-`Unverified` section's CRC in parallel. Matches pre-#160
+    /// total-coverage at the cost of a transient per-section page fault
+    /// burst, but does not block the listener.
+    pub warmup_on_boot: bool,
 }
 
 impl ServerState {
@@ -376,6 +407,7 @@ impl ServerState {
             started_at: std::time::Instant::now(),
             data_dir: data_dir.to_string_lossy().to_string(),
             _mmap_arc: None,
+            lazy: None,
         })
     }
 
@@ -386,21 +418,59 @@ impl ServerState {
     /// Mirrors [`ServerState::load`] in every observable respect — the
     /// resulting state is functionally equivalent to loading the same
     /// data from a directory tree, the only difference is the input
-    /// format. Section CRCs are verified during the parse.
+    /// format.
+    ///
+    /// Defaults to **lazy** CRC verification (#160): per-section CRC
+    /// walks are deferred to first access. To restore pre-#160 eager
+    /// behaviour, use [`Self::load_from_container_with_options`] with
+    /// `eager_verify=true`.
     pub fn load_from_container(
         container_path: &Path,
         mode_filter: Option<&[String]>,
     ) -> Result<Self> {
-        use crate::formats::butterfly_dat::Container;
-        use crate::formats::mmap;
+        Self::load_from_container_with_options(container_path, mode_filter, &LoadOptions::default())
+    }
+
+    /// Like [`Self::load_from_container`] but takes explicit
+    /// [`LoadOptions`]. The lazy / eager / warmup-on-boot toggles are
+    /// the entry point for #160's per-section verification policy.
+    pub fn load_from_container_with_options(
+        container_path: &Path,
+        mode_filter: Option<&[String]>,
+        opts: &LoadOptions,
+    ) -> Result<Self> {
+        use crate::formats::lazy_verify::LazyContainer;
 
         tracing::info!(
             container = %container_path.display(),
+            eager_verify = opts.eager_verify,
+            warmup_on_boot = opts.warmup_on_boot,
             "loading server state from butterfly.dat container"
         );
-        let mmap = mmap::map_readonly(container_path)?;
-        let container = Container::open(container_path)
-            .with_context(|| format!("opening container {}", container_path.display()))?;
+
+        // Open lazily by default; eager_verify forces a full CRC walk
+        // up front (matches pre-#160 behaviour).
+        let lazy = if opts.eager_verify {
+            tracing::info!("eager CRC verification enabled (legacy boot path)");
+            LazyContainer::open_eager(container_path)?
+        } else {
+            LazyContainer::open_lazy(container_path)?
+        };
+        let lazy_arc = std::sync::Arc::new(lazy);
+        // Register pending count for /metrics. This is the count of
+        // sections in `Unverified` state immediately after open. Eager
+        // open zeroes it; lazy open registers all sections.
+        crate::server::metrics::register_pending(
+            lazy_arc
+                .iter_runtimes()
+                .filter(|(_, rt)| {
+                    rt.state() == crate::formats::lazy_verify::SectionVerifyState::Unverified
+                })
+                .count(),
+        );
+
+        let mmap = std::sync::Arc::clone(lazy_arc.mmap_arc());
+        let container = lazy_arc.container().clone();
 
         // #147: leak a clone of the Arc so derived `&'static [u8]` views
         // remain valid for process lifetime. Server lifetime IS process
@@ -416,24 +486,45 @@ impl ServerState {
         let static_mmap: &'static memmap2::Mmap = leaked_arc.as_ref();
         let static_bytes: &'static [u8] = &static_mmap[..];
 
-        // Convenience accessor: section name → CRC-verified `'static` bytes
-        // from the leaked mapping.
+        // Convenience accessor: section name → `'static` bytes from the
+        // leaked mapping.
+        //
+        // #160: this is a lazy slice. Per-section CRC verification is
+        // gated by `LazyContainer` and runs on first access (or in the
+        // background warmup pass / via `eager_verify`). At this slice
+        // site we only resolve the byte range; we do **not** force the
+        // body pages to be paged in. The header-only zero-copy readers
+        // below (`*::read_from_bytes_zero_copy`) read at most ~80 bytes
+        // per section, so this loop touches headers only.
         let section_bytes = |name: &str| -> Result<&'static [u8]> {
             let entry = container
                 .get(name)
                 .ok_or_else(|| anyhow::anyhow!("missing required section '{}'", name))?;
-            // Verify CRC over the same bytes the caller will see.
-            let _verify = container.section_bytes_verified(static_mmap, entry)?;
             let off = entry.offset as usize;
             let len = entry.len as usize;
+            anyhow::ensure!(
+                off + len <= static_bytes.len(),
+                "section '{}' bytes [{},{}) exceed mmap len {}",
+                name,
+                off,
+                off + len,
+                static_bytes.len()
+            );
             Ok(&static_bytes[off..off + len])
         };
         let optional_section = |name: &str| -> Result<Option<&'static [u8]>> {
             match container.get(name) {
                 Some(entry) => {
-                    let _verify = container.section_bytes_verified(static_mmap, entry)?;
                     let off = entry.offset as usize;
                     let len = entry.len as usize;
+                    anyhow::ensure!(
+                        off + len <= static_bytes.len(),
+                        "section '{}' bytes [{},{}) exceed mmap len {}",
+                        name,
+                        off,
+                        off + len,
+                        static_bytes.len()
+                    );
                     Ok(Some(&static_bytes[off..off + len]))
                 }
                 None => Ok(None),
@@ -730,6 +821,15 @@ impl ServerState {
         };
         crate::server::rss::checkpoint("load.edge_geom");
 
+        // #160: optionally schedule a background warmup pass to walk
+        // every still-`Unverified` section's CRC in parallel. This
+        // matches pre-#160 total-coverage at the cost of a transient
+        // page-fault burst, but does NOT block the listener.
+        if opts.warmup_on_boot {
+            tracing::info!("scheduling background CRC warmup pass for unverified sections");
+            lazy_arc.spawn_warmup();
+        }
+
         Ok(Self {
             ebg_nodes,
             ebg_csr,
@@ -748,6 +848,7 @@ impl ServerState {
             started_at: std::time::Instant::now(),
             data_dir: container_path.to_string_lossy().to_string(),
             _mmap_arc: Some(mmap),
+            lazy: Some(lazy_arc),
         })
     }
 
@@ -1046,21 +1147,28 @@ fn load_way_names(step1_dir: &Path) -> Result<HashMap<i64, String>> {
 // Distance weights are now pre-computed in step8 pipeline (cch.d.{mode}.u32)
 // and loaded from file alongside time weights at startup.
 
-/// Load one flat section from a container with the #150 mmap path:
+/// Load one flat section from a container with the #150 mmap path.
+///
+/// #160: per-section CRC verification is no longer forced at this site —
+/// the [`crate::formats::lazy_verify::LazyContainer`] gate handles it
+/// either at first request-time access or via the optional
+/// `--warmup-on-boot` background pass. Here we only resolve the byte
+/// range and pass it to the parser. The parser reads the section header
+/// (typically ≤ 80 bytes) and constructs zero-copy views into the body;
+/// the body pages are not paged in until routing actually traverses
+/// them (or the warmup verifier touches them, whichever comes first).
 ///
 /// 1. Look up by name. If absent, fall back to building from
 ///    `(cch_topo, cch_weights)` so legacy containers keep working.
-/// 2. CRC-verify the bytes once. This pages the entire section in.
-/// 3. Parse the bytes via the file-format reader (zero-copy view).
-/// 4. `madvise(DONTNEED)` the section bytes so cold pages drop from
-///    RSS. Hot pages (the slice ranges routing actually traverses)
-///    page back in lazily on first access.
+/// 2. Parse the bytes via the file-format reader (zero-copy view).
+/// 3. `madvise(DONTNEED)` is unnecessary post-#160 because we never
+///    forced the body in to begin with.
 ///
 /// `parse` is a closure that turns `&'static [u8]` into the typed flat
 /// view; `build_owned` is the legacy heap-build fallback.
 fn load_flat_section<T, P, B>(
     container: &crate::formats::butterfly_dat::Container,
-    static_mmap: &'static memmap2::Mmap,
+    _static_mmap: &'static memmap2::Mmap,
     static_bytes: &'static [u8],
     section_name: &str,
     parse: P,
@@ -1077,31 +1185,29 @@ where
             return Ok(build_owned());
         }
     };
-    // Verify CRC by reading the section once. This pages all of its
-    // file-backed memory in.
-    let _verify = container.section_bytes_verified(static_mmap, entry)?;
     let off = entry.offset as usize;
     let len = entry.len as usize;
+    anyhow::ensure!(
+        off + len <= static_bytes.len(),
+        "flat section '{}' bytes [{},{}) exceed mmap len {}",
+        section_name,
+        off,
+        off + len,
+        static_bytes.len()
+    );
     let bytes: &'static [u8] = &static_bytes[off..off + len];
     let parsed = parse(bytes)?;
-
-    // Drop the file pages from RSS — the kernel will page back in the
-    // hot subset lazily as routing traverses it. This is the win that
-    // bounds idle RSS to working set rather than dataset size.
-    if let Err(e) = crate::formats::mmap::madvise_dontneed(bytes) {
-        tracing::warn!(
-            section = %section_name,
-            error = %e,
-            "madvise(DONTNEED) on flat section failed; ignoring"
-        );
-    } else {
-        tracing::debug!(section = %section_name, bytes = len, "madvise(DONTNEED) on flat section");
-    }
     Ok(parsed)
 }
 
 /// Same as `load_mode_data` but reads from a `.butterfly` container's
 /// `mode/<mode>/...` bundle instead of from `step{N}/` directories.
+///
+/// #160: per-section CRC verification is gated by the
+/// [`crate::formats::lazy_verify::LazyContainer`] held by the caller —
+/// **not** here. This function only resolves byte ranges. Body pages
+/// stay cold until routing traverses them (or the warmup pass /
+/// `--eager-verify` walks them off the request path).
 fn load_mode_data_from_bundle(
     mode_name: &str,
     mode: Mode,
@@ -1114,9 +1220,16 @@ fn load_mode_data_from_bundle(
         let entry = container
             .get(&name)
             .ok_or_else(|| anyhow::anyhow!("missing mode bundle section '{}'", name))?;
-        let _verify = container.section_bytes_verified(static_mmap, entry)?;
         let off = entry.offset as usize;
         let len = entry.len as usize;
+        anyhow::ensure!(
+            off + len <= static_bytes.len(),
+            "section '{}' bytes [{},{}) exceed mmap len {}",
+            name,
+            off,
+            off + len,
+            static_bytes.len()
+        );
         Ok(&static_bytes[off..off + len])
     };
 
@@ -1133,9 +1246,16 @@ fn load_mode_data_from_bundle(
         let section_name = format!("mode/{}/{}", mode_name, name);
         match container.get(&section_name) {
             Some(entry) => {
-                let _verify = container.section_bytes_verified(static_mmap, entry)?;
                 let off = entry.offset as usize;
                 let len = entry.len as usize;
+                anyhow::ensure!(
+                    off + len <= static_bytes.len(),
+                    "section '{}' bytes [{},{}) exceed mmap len {}",
+                    section_name,
+                    off,
+                    off + len,
+                    static_bytes.len()
+                );
                 Ok(Some(&static_bytes[off..off + len]))
             }
             None => Ok(None),
@@ -1468,9 +1588,14 @@ fn build_packed_snap_index_inmem(
 /// Try to load a packed snap index zero-copy from a container.
 /// Returns `Ok(None)` if any of the required sections is missing —
 /// caller falls back to the in-memory builder.
+///
+/// #160: per-section CRC verification is gated by the [`LazyContainer`]
+/// in [`ServerState`], not here. We only resolve byte ranges; body
+/// pages stay cold until snap-index queries traverse them (or warmup
+/// walks them off the request path).
 fn try_load_packed_snap_index(
     container: &crate::formats::butterfly_dat::Container,
-    static_mmap: &'static memmap2::Mmap,
+    _static_mmap: &'static memmap2::Mmap,
     static_bytes: &'static [u8],
     mode_names: &[String],
 ) -> Result<Option<PackedSnapIndex>> {
@@ -1484,11 +1609,6 @@ fn try_load_packed_snap_index(
         Some(e) => e,
         None => return Ok(None),
     };
-    // Verify CRCs over the same byte ranges the zero-copy reader will
-    // see. (`section_bytes_verified` returns owning bytes; we use it
-    // for CRC validation only and then re-derive the static slice.)
-    let _ = container.section_bytes_verified(static_mmap, pts_entry)?;
-    let _ = container.section_bytes_verified(static_mmap, grid_entry)?;
 
     let pts_bytes = &static_bytes
         [pts_entry.offset as usize..pts_entry.offset as usize + pts_entry.len as usize];
@@ -1511,7 +1631,6 @@ fn try_load_packed_snap_index(
             Some(e) => e,
             None => return Ok(None),
         };
-        let _ = container.section_bytes_verified(static_mmap, entry)?;
         let mask_bytes =
             &static_bytes[entry.offset as usize..entry.offset as usize + entry.len as usize];
         let mask = SnapMaskFile::read_from_bytes_zero_copy(mask_bytes)
@@ -1536,9 +1655,11 @@ fn try_load_packed_snap_index(
 /// Try to load the flat edge geometry sections (#155) zero-copy from a
 /// container. Returns `Ok(None)` if either section is missing — caller
 /// falls back to building from the heap polylines.
+///
+/// #160: per-section CRC verification is gated by [`LazyContainer`].
 fn try_load_edge_geometry(
     container: &crate::formats::butterfly_dat::Container,
-    static_mmap: &'static memmap2::Mmap,
+    _static_mmap: &'static memmap2::Mmap,
     static_bytes: &'static [u8],
 ) -> Result<Option<EdgeGeometry>> {
     use crate::formats::edge_geom::{EdgeGeomOffsetsFile, EdgeGeomPointsFile};
@@ -1551,9 +1672,6 @@ fn try_load_edge_geometry(
         Some(e) => e,
         None => return Ok(None),
     };
-    // Verify CRCs over the same byte ranges the zero-copy reader will see.
-    let _ = container.section_bytes_verified(static_mmap, off_entry)?;
-    let _ = container.section_bytes_verified(static_mmap, pts_entry)?;
 
     let off_bytes = &static_bytes
         [off_entry.offset as usize..off_entry.offset as usize + off_entry.len as usize];

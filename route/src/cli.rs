@@ -437,6 +437,22 @@ pub enum Commands {
         /// codebase as a supported flag, not as a one-shot diagnostic.
         #[arg(long, default_value = "false")]
         rss_checkpoints: bool,
+
+        /// #160: walk every section's CRC at boot (legacy behaviour).
+        /// Mutually exclusive with `--warmup-on-boot`. Default off, in
+        /// which case verification is deferred to first access of each
+        /// section via the lazy-CRC gate. Use this for environments
+        /// that prefer the pre-#160 fail-fast-on-boot semantics over a
+        /// fast first byte at the listener.
+        #[arg(long, default_value = "false", conflicts_with = "warmup_on_boot")]
+        eager_verify: bool,
+
+        /// #160: kick off a background CRC walk for every still-
+        /// `Unverified` section right after boot completes. Matches the
+        /// total-coverage of `--eager-verify` without blocking the
+        /// listener. Mutually exclusive with `--eager-verify`.
+        #[arg(long, default_value = "false")]
+        warmup_on_boot: bool,
     },
 
     /// Validate CCH correctness by comparing bidirectional CCH vs CCH-Dijkstra
@@ -1412,6 +1428,8 @@ impl Cli {
                 modes,
                 log_format,
                 rss_checkpoints,
+                eager_verify,
+                warmup_on_boot,
             } => {
                 // Initialize structured logging for the serve command
                 server::init_tracing(&log_format);
@@ -1453,6 +1471,11 @@ impl Cli {
                     }
                 };
 
+                let load_options = crate::server::state::LoadOptions {
+                    eager_verify,
+                    warmup_on_boot,
+                };
+
                 // Create tokio runtime
                 let rt = tokio::runtime::Runtime::new()?;
                 rt.block_on(server::serve(
@@ -1461,6 +1484,7 @@ impl Cli {
                     grpc_port,
                     transport_mode,
                     mode_filter.as_deref(),
+                    &load_options,
                 ))?;
                 Ok(())
             }
