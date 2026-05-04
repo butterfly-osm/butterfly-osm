@@ -25,12 +25,12 @@ pub struct BuildStats {
     pub country: CountryId,
 }
 
-/// Build a BFGS v3 shard tagged with `country`.
+/// Build a BFGS v4 shard tagged with `country`.
 ///
-/// `country` is written into the file header (byte 6) and verified
-/// on load by [`super::reader::Shard::open`]. Operators producing
-/// multi-country deployments build one shard per country and load
-/// them all at server boot.
+/// `country` is written into the file header (bytes 6-7, ISO 3166-1
+/// alpha-2) and verified on load by [`super::reader::Shard::open`].
+/// Operators producing multi-country deployments build one shard per
+/// country and load them all at server boot.
 pub fn build_shard<P: AsRef<Path>>(
     out_path: P,
     country: CountryId,
@@ -151,9 +151,9 @@ pub fn build_shard<P: AsRef<Path>>(
     let mut header = [0u8; HEADER_BYTES];
     header[0..4].copy_from_slice(&MAGIC.to_le_bytes());
     header[4..6].copy_from_slice(&VERSION.to_le_bytes());
-    // v3: country code (1=BE, 2=FR, ...). See `CountryId::to_u8`.
-    header[6] = country.to_u8();
-    // header[7] is _pad — kept zero.
+    // BFGS v4: country = 2-byte ISO 3166-1 alpha-2 at offset 6-7 (#96
+    // "serve the world"). v3's u8 enum index is gone.
+    header[6..8].copy_from_slice(&country.as_bytes());
     let count_u32: u32 = addrs.len().try_into().expect("record count fits in u32");
     header[8..12].copy_from_slice(&count_u32.to_le_bytes());
     header[16..24].copy_from_slice(&strings_off.to_le_bytes());

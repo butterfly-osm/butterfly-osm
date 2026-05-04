@@ -1,0 +1,26 @@
+55d5725c3000-7ffe91b99000 ---p 00000000 00:00 0                          [rollup]
+Rss:             2900220 kB
+Pss:             2898038 kB
+Pss_Dirty:       2184576 kB
+Pss_Anon:        1935208 kB
+Pss_File:         962830 kB
+Pss_Shmem:             0 kB
+Shared_Clean:       2264 kB
+Shared_Dirty:          0 kB
+Private_Clean:    713380 kB
+Private_Dirty:   2184576 kB
+Referenced:      2900220 kB
+Anonymous:       1935208 kB
+KSM:                   0 kB
+LazyFree:              0 kB
+AnonHugePages:         0 kB
+ShmemPmdMapped:        0 kB
+FilePmdMapped:         0 kB
+Shared_Hugetlb:        0 kB
+Private_Hugetlb:       0 kB
+Swap:                  0 kB
+SwapPss:               0 kB
+Locked:                0 kB
+---
+Loaded shards: 7 countries, 21,495,604 total records
+(BE=4M + LU=170K + AU=4.2M + BR=1.7M + IN=265K + JP=23K + US-NE=11.1M)

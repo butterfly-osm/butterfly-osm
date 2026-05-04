@@ -99,12 +99,37 @@ pub fn extract_addresses<P: AsRef<Path>>(
     Ok(records)
 }
 
+/// Decide whether a tag bag carries enough address signal to be worth
+/// storing.
+///
+/// Conventional address: street + housenumber must both be present
+/// (the European/US/AU pattern).
+///
+/// Block-based address (Japan, Korea, parts of Latin America): the
+/// `addr:full` tag carries the whole address as a single string and
+/// neither `addr:street` nor `addr:housenumber` is reliably set. We
+/// accept records where `addr:full` is non-empty as a pack-agnostic
+/// fallback; the geocoder treats the `street` field as the queryable
+/// canonical form regardless of which OSM tag fed it.
+fn has_minimum_signal(street: &str, housenumber: &str, postcode: &str, locality: &str) -> bool {
+    if !street.is_empty() && !housenumber.is_empty() {
+        return true;
+    }
+    // Block-based / place-based fallback: a non-empty `street` (which
+    // may have come from `addr:full` or `addr:place`) plus locality
+    // is enough to anchor a record.
+    if !street.is_empty() && (!postcode.is_empty() || !locality.is_empty()) {
+        return true;
+    }
+    false
+}
+
 fn tags_to_address<'a, I>(lat: f64, lon: f64, tags: I) -> Option<AddressRecord>
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
 {
     let (street, housenumber, postcode, locality) = pull_addr_tags(tags);
-    if housenumber.is_empty() || street.is_empty() {
+    if !has_minimum_signal(&street, &housenumber, &postcode, &locality) {
         return None;
     }
     Some(AddressRecord {
@@ -124,7 +149,7 @@ fn way_to_address(
     coords: &HashMap<i64, (f64, f64)>,
 ) -> Option<AddressRecord> {
     let (street, housenumber, postcode, locality) = pull_addr_tags(way.tags());
-    if housenumber.is_empty() || street.is_empty() {
+    if !has_minimum_signal(&street, &housenumber, &postcode, &locality) {
         return None;
     }
     let mut sum_lat = 0.0_f64;
@@ -160,21 +185,61 @@ where
 {
     let mut street = String::new();
     let mut place = String::new();
+    let mut full = String::new();
     let mut housenumber = String::new();
     let mut postcode = String::new();
     let mut city = String::new();
+    let mut province = String::new();
+    let mut quarter = String::new();
+    let mut block_number = String::new();
 
     for (k, v) in tags {
         match k {
             "addr:street" => street = v.to_string(),
             "addr:place" => place = v.to_string(),
+            // `addr:full` is the standard fallback for countries where
+            // street+number doesn't decompose cleanly (Japan blocks,
+            // Korean addresses, freeform rural addressing).
+            "addr:full" => full = v.to_string(),
             "addr:housenumber" => housenumber = v.to_string(),
+            // `addr:block_number` is the Japanese chōme block id —
+            // promoted into housenumber when housenumber is empty.
+            "addr:block_number" => block_number = v.to_string(),
             "addr:postcode" => postcode = v.to_string(),
             "addr:city" => city = v.to_string(),
+            // City fallbacks for Japanese / non-Western admin levels.
+            "addr:province" => province = v.to_string(),
+            "addr:quarter" => quarter = v.to_string(),
             _ => {}
         }
     }
 
-    let resolved_street = if street.is_empty() { place } else { street };
-    (resolved_street, housenumber, postcode, city)
+    // Resolve the canonical street: prefer the explicit street tag,
+    // then `addr:full`, then `addr:place`. The shard schema only has
+    // one street field, so this collapses the diversity at ingest.
+    let resolved_street = if !street.is_empty() {
+        street
+    } else if !full.is_empty() {
+        full
+    } else {
+        place
+    };
+    let resolved_housenumber = if !housenumber.is_empty() {
+        housenumber
+    } else {
+        block_number
+    };
+    let resolved_locality = if !city.is_empty() {
+        city
+    } else if !quarter.is_empty() {
+        quarter
+    } else {
+        province
+    };
+    (
+        resolved_street,
+        resolved_housenumber,
+        postcode,
+        resolved_locality,
+    )
 }

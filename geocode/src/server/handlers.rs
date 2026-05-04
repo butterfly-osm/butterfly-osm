@@ -89,7 +89,7 @@ pub async fn forward(
             None => {
                 return error_response(
                     StatusCode::BAD_REQUEST,
-                    "country must be an ISO 3166-1 alpha-2 code (supported: BE, FR, NL, LU, DE, AT, CH)",
+                    "country must be a 2-letter ISO 3166-1 alpha-2 code (e.g. BE, FR, JP, US)",
                 );
             }
         },
@@ -246,7 +246,7 @@ pub async fn reverse(
             None => {
                 return error_response(
                     StatusCode::BAD_REQUEST,
-                    "country must be an ISO 3166-1 alpha-2 code (supported: BE, FR, NL, LU, DE, AT, CH)",
+                    "country must be a 2-letter ISO 3166-1 alpha-2 code (e.g. BE, FR, JP, US)",
                 );
             }
         },
