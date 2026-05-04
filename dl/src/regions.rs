@@ -40,9 +40,10 @@ use serde::Deserialize;
 
 use crate::verified::{Outcome, VerifiedOptions, download_verified};
 
-/// The shipped Belgium index, embedded at compile time. Adding a new
-/// region = new file + new constant + new arm in `load_region`.
+/// The shipped region indexes, embedded at compile time. Adding a
+/// new region = new file + new constant + new arm in `load_region`.
 const BELGIUM_INDEX_TOML: &str = include_str!("../regions/belgium.toml");
+const FRANCE_INDEX_TOML: &str = include_str!("../regions/france.toml");
 
 /// Parsed region index. Each field is an optional list so partial
 /// regions (e.g. one without transit feeds) are a valid shape.
@@ -79,6 +80,7 @@ impl RegionIndex {
     pub fn load(name: &str) -> Result<Self> {
         let raw: &str = match name {
             "belgium" => BELGIUM_INDEX_TOML,
+            "france" => FRANCE_INDEX_TOML,
             other => bail!(
                 "unknown region '{other}'. Supported regions are bundled \
                  in `dl/regions/`. Add a new one with a new TOML file + \
@@ -286,7 +288,7 @@ pub async fn fetch_region(
 /// Used by the CLI's error path ("unknown region X; known regions:
 /// [...]").
 pub fn shipped_regions() -> &'static [&'static str] {
-    &["belgium"]
+    &["belgium", "france"]
 }
 
 #[cfg(test)]
