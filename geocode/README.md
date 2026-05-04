@@ -1,12 +1,15 @@
 # butterfly-geocode
 
-Belgium-only geocoder for the butterfly-osm toolkit. Started as the deterministic Phase 0 baseline of [butterfly-osm#96](https://github.com/butterfly-osm/butterfly-osm/issues/96); now ships **two parser backends side-by-side** — the deterministic heuristic baseline AND a byte-level transformer with retrieval-aware decoding ([#98](https://github.com/butterfly-osm/butterfly-osm/issues/98) Phase 1).
+Multi-country geocoder for the butterfly-osm toolkit. Started as the deterministic Phase 0 baseline of [butterfly-osm#96](https://github.com/butterfly-osm/butterfly-osm/issues/96); now ships **two parser backends side-by-side** — the deterministic heuristic baseline AND a byte-level transformer with retrieval-aware decoding ([#98](https://github.com/butterfly-osm/butterfly-osm/issues/98) Phase 1) — over **per-country shards** for cluster #1 + #2 (BE / FR / NL / LU / DE / AT / CH).
 
 ## What this ships
 
-- **Forward geocoding**: `GET /geocode?q=...&country=BE` — text → coordinates
-- **Reverse geocoding**: `GET /geocode/reverse?lat=...&lon=...` — coordinates → address
-- **Belgium address shard** (`BFGS` v1) built from OSM `addr:*` tags
+- **Per-country shards** (BFGS v3) for cluster #1 + #2 (BE / FR / NL / LU / DE / AT / CH) built from OSM `addr:*` tags via `butterfly-geocode build-shard --country <ISO2>`
+- **Multi-shard server**: `butterfly-geocode serve --shard-dir <dir>` loads every `*.bfgs` in `<dir>` and routes forward queries via the lexical country classifier (returns a `(country, weight)` posterior) and reverse queries via lat/lon bbox membership
+- **Cross-shard score normalization**: per-shard scores are scaled by the country posterior weight before merging, so an uncertain match against a "wrong" country is correctly demoted (see `executor::execute_across_shards`)
+- **Forward geocoding**: `GET /geocode?q=...[&country=BE]` — text → coordinates
+- **Reverse geocoding**: `GET /geocode/reverse?lat=...&lon=...[&country=BE]` — coordinates → address with bbox-based country dispatch
+- **Per-country shards** built from OSM `addr:*` tags
 - **Architectural type contracts from #96**: `ParsedQuery`, `ParseHypothesis`, `ExecutionBudget`, `Channel`, `ChannelRole`, `RetrievalPolicy`, retrieval operators (`Lookup`, `Intersect`, `Union`, `TopkMerge`, `Filter`, `Score`, `Cap`, `Sample`, `Downgrade`)
 - **Recombination Invariant** (#96): canonicalize + dedup with stable commutative ordering, identity folding, redundancy collapse — `op.canonicalize().canonicalize() == op.canonicalize()`
 - **Zero-Cost-on-Clean-Queries NFR** (#96): the `|hypotheses|==1, |countries|==1` path skips canonicalization, dedup, and dynamic dispatch
@@ -175,16 +178,62 @@ telemetry — once #98's beam-search parser ships and queries-with-gold
 can be logged — is the user's follow-up; the architecture and CLI
 landed in this layer support that without code changes.
 
+## Multi-country support
+
+The geocoder is built and deployed as **one shard per country**. Operators choose which country shards to build and which to serve.
+
+| Country | ISO2 | Postcode shape  | Status                    |
+|---------|------|-----------------|---------------------------|
+| Belgium       | `BE` | `\d{4}`              | Verified (test dataset) |
+| France        | `FR` | `\d{5}`              | OSM `addr:*` build-ready |
+| Netherlands   | `NL` | `\d{4}\s?[A-Z]{2}`   | Verified (1.4 GB PBF)    |
+| Luxembourg    | `LU` | `(L-)?\d{4}`         | Verified (47 MB PBF)     |
+| Germany       | `DE` | `\d{5}`              | OSM `addr:*` build-ready (5 GB PBF — operator-supplied) |
+| Austria       | `AT` | `\d{4}`              | OSM `addr:*` build-ready |
+| Switzerland   | `CH` | `\d{4}`              | OSM `addr:*` build-ready |
+
+### Build all shards in one pass
+
+```bash
+butterfly-geocode build-shards-all \
+    --pbf-dir data \
+    --out-dir geocode/regions/multi
+# Looks for <country>.pbf or <iso2>.pbf in --pbf-dir for each
+# supported country. Missing PBFs are skipped with a warning.
+```
+
+### Build one country at a time
+
+```bash
+butterfly-geocode build-shard \
+    --pbf data/netherlands.pbf \
+    --out geocode/regions/multi/nl.bfgs \
+    --country NL
+```
+
+### Serve a multi-country deployment
+
+```bash
+butterfly-geocode serve \
+    --shard-dir geocode/regions/multi \
+    --port 3033
+```
+
+### Authoritative sources
+
+This release uses **OSM `addr:*` tags** as the source for every country. Authoritative-source ingestion (BOSA BeSt for BE, BAN for FR, BAG for NL, BD-Adresses for LU, BEV for AT, swisstopo for CH) is documented in `geocode-data/SOURCES.md` with field mappings ready, but the importers are filed as a follow-up ticket.
+
+OSM coverage varies materially: Netherlands is dense (≈9.9 M `addr:*`-tagged objects), Belgium is dense (≈4.0 M), Luxembourg is sparse (≈170 K — most addresses live in BD-Adresses, not OSM). Operators with stricter coverage requirements should plan for the authoritative-ingest follow-up.
+
 ## What's deferred (still in #96/#97/#98)
 
-- **Byte-level transformer parser** (#96 §Tagger, #98 Phase 2) — the heuristic in `parser/heuristic.rs` is the deterministic Phase 0 baseline that the trained transformer will replace. **NOT** #98 Phase 1 (which is the retrieval-aware beam search over transformer outputs).
-- **Multi-country routing** (#96 §Country Routing) — `CountryId` is `non_exhaustive`, the cheap classifier returns a posterior shape; only `BE` is wired.
-- **Cross-border shard co-location** (#96 §Cross-Border Shard Co-location)
-- **Feedback operators** (`Downgrade`, `TopkMerge`, `Sample`) — types defined per #96, not invoked by the MVP executor
-- **Admission-control fanout caps** (#97 §5)
-- **mmap-backed reader** — current reader is heap-resident (~1.3 GB RSS for Belgium); a future ticket will switch to `memmap2` via butterfly-route's `formats/mmap.rs` wrappers (the only sanctioned `unsafe` carveout in the workspace)
+- **Byte-level transformer parser** (#96 §Tagger, #98 Phase 2) — the heuristic in `parser/heuristic.rs` is the deterministic Phase 0 baseline. The byte-level transformer + #98 Phase 1 retrieval-aware decoding ship in `parser/neural.rs`.
+- **Authoritative-source ingestion** (BOSA BeSt, BAN, BAG, BD-Adresses, BEV, swisstopo) — `geocode-data/SOURCES.md` has the URLs + field mappings ready; OSM `addr:*` is the source for all countries in this release.
+- **Cross-border shard co-location** (#96 §Cross-Border Shard Co-location) — separate per-country shards instead. The layout-merge is a future optimization for the BE-FR-NL-LU-DE cluster.
+- **Adapter layers (LoRA per region)** (#96 §Tagger) — needs trained models.
+- **Feedback operators** (`Downgrade`, `TopkMerge`, `Sample`) — types defined per #96, not invoked by the MVP executor.
 
-## Build and run
+## Build and run (Belgium-only)
 
 ```bash
 # 1. Get the Belgium PBF (if not already there)
@@ -193,9 +242,10 @@ butterfly-dl belgium --only pbf -o data/belgium.pbf
 # 2. Build the shard (~1 minute on Belgium scale)
 cargo run --release -p butterfly-geocode -- build-shard \
     --pbf data/belgium.pbf \
-    --out geocode/regions/belgium.bfgs
+    --out geocode/regions/belgium.bfgs \
+    --country BE
 
-# 3. Boot the server
+# 3. Boot the server (single-country mode)
 cargo run --release -p butterfly-geocode -- serve \
     --shard geocode/regions/belgium.bfgs \
     --port 3003
@@ -207,7 +257,45 @@ curl -H 'Accept: application/geo+json' \
     'http://localhost:3003/geocode?q=Grote+Markt+Antwerpen'
 ```
 
+## Build and run (multi-country)
+
+```bash
+# 1. Get one PBF per country you want to deploy
+curl -o data/luxembourg.pbf https://download.geofabrik.de/europe/luxembourg-latest.osm.pbf
+curl -o data/netherlands.pbf https://download.geofabrik.de/europe/netherlands-latest.osm.pbf
+
+# 2. Build a shard per country
+mkdir -p geocode/regions/multi
+butterfly-geocode build-shard --pbf data/belgium.pbf      --out geocode/regions/multi/be.bfgs --country BE
+butterfly-geocode build-shard --pbf data/luxembourg.pbf   --out geocode/regions/multi/lu.bfgs --country LU
+butterfly-geocode build-shard --pbf data/netherlands.pbf  --out geocode/regions/multi/nl.bfgs --country NL
+
+# Or build everything in one pass:
+butterfly-geocode build-shards-all --pbf-dir data --out-dir geocode/regions/multi
+
+# 3. Boot the multi-shard server
+butterfly-geocode serve --shard-dir geocode/regions/multi --port 3033
+
+# 4. Pinned country (clean-query path)
+curl 'http://localhost:3033/geocode?q=Damrak+1+1012+LP+Amsterdam&country=NL'
+
+# 5. Auto-routed (classifier picks NL from "Damrak ... Amsterdam")
+curl 'http://localhost:3033/geocode?q=Damrak+1+1012+LP+Amsterdam'
+
+# 6. Reverse with bbox dispatch (50.8467,4.3525 → BE)
+curl 'http://localhost:3033/geocode/reverse?lat=50.8467&lon=4.3525'
+
+# 7. Health endpoint lists loaded countries
+curl 'http://localhost:3033/health'
+# {"status":"ok",...,"countries":["BE","LU","NL"]}
+```
+
 ## Testing
+
+```bash
+# Multi-country end-to-end (requires shards in regions/multi/)
+cargo test --release -p butterfly-geocode --test multi_country_e2e -- --ignored
+```
 
 ```bash
 # Unit tests

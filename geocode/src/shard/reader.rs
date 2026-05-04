@@ -36,6 +36,7 @@ use super::mmap::map_readonly;
 use super::{FOOTER_BYTES, HEADER_BYTES, MAGIC, RECORD_BYTES, VERSION};
 use crate::geocoder::cost::ShardStats;
 use crate::parser::normalize::normalize;
+use crate::routing::CountryId;
 
 const CRC_ENGINE: Crc<u64> = Crc::<u64>::new(&CRC_64_XZ);
 
@@ -111,6 +112,7 @@ struct SubIndex {
 #[derive(Debug)]
 pub struct Shard {
     mmap: Arc<Mmap>,
+    country: CountryId,
     record_count: usize,
     records_off: usize,
     by_postcode: SubIndex,
@@ -174,6 +176,16 @@ impl Shard {
         if version != VERSION {
             bail!("unsupported shard version: {version} (expected {VERSION}). Rebuild the shard.");
         }
+        let country_code = header_bytes[6];
+        let country = CountryId::from_u8(country_code).ok_or_else(|| {
+            anyhow!(
+                "unknown country code {country_code} in shard header at {} \
+                 (expected one of {:?}). Was the shard built with a newer geocode \
+                 version that introduced a country this build does not know?",
+                path.display(),
+                CountryId::ALL.iter().map(|c| c.iso2()).collect::<Vec<_>>(),
+            )
+        })?;
         let record_count =
             u32::from_le_bytes(header_bytes[8..12].try_into().expect("4 bytes")) as usize;
         let strings_off =
@@ -269,6 +281,7 @@ impl Shard {
 
         Ok(Self {
             mmap,
+            country,
             record_count,
             records_off,
             by_postcode,
@@ -279,6 +292,14 @@ impl Shard {
             interned,
             empty_str,
         })
+    }
+
+    /// The country this shard was built for. Read from the BFGS v3
+    /// header at open time.
+    #[inline]
+    #[must_use]
+    pub fn country(&self) -> CountryId {
+        self.country
     }
 
     fn intern(&self, off: u32, len: u16) -> Arc<str> {

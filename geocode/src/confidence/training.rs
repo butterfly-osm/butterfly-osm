@@ -470,7 +470,7 @@ mod tests {
                 },
             })
             .collect();
-        build_shard(&path, addrs).unwrap();
+        build_shard(&path, crate::routing::CountryId::BE, addrs).unwrap();
         (dir, Shard::open(&path).unwrap())
     }
 
@@ -484,6 +484,7 @@ mod tests {
             postcode: "1070".into(),
             locality: "Anderlecht".into(),
             score: 1.0,
+            country: None,
             reason_codes: vec![],
         };
         let gold = GoldAddress {
@@ -505,6 +506,7 @@ mod tests {
             postcode: "1070".into(),
             locality: "Anderlecht".into(),
             score: 1.0,
+            country: None,
             reason_codes: vec![],
         };
         let gold = GoldAddress {
@@ -526,6 +528,7 @@ mod tests {
             postcode: "1070".into(),
             locality: "Anderlecht".into(),
             score: 1.0,
+            country: None,
             reason_codes: vec![],
         };
         // 100 km away.

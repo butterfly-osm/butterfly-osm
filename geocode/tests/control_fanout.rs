@@ -34,7 +34,7 @@ fn small_shard() -> (tempfile::TempDir, Shard) {
             lon: 4.314 + (i as f64) * 1e-5,
         });
     }
-    build_shard(&path, addrs).unwrap();
+    build_shard(&path, butterfly_geocode::CountryId::BE, addrs).unwrap();
     let s = Shard::open(&path).unwrap();
     (dir, s)
 }

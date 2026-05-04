@@ -1,5 +1,5 @@
 //! Shard builder. Takes a stream of [`AddressRecord`]s and writes a
-//! `BFGS` v2 file (see [`super`] for the format docs).
+//! `BFGS` v3 file (see [`super`] for the format docs).
 
 use std::collections::BTreeMap;
 use std::io::{BufWriter, Write};
@@ -8,6 +8,7 @@ use std::path::Path;
 use crc::{CRC_64_XZ, Crc};
 
 use crate::parser::normalize::normalize;
+use crate::routing::CountryId;
 
 use super::{AddressRecord, FOOTER_BYTES, HEADER_BYTES, MAGIC, RECORD_BYTES, VERSION};
 
@@ -21,10 +22,18 @@ pub struct BuildStats {
     pub index_bytes: u64,
     pub unique_postcodes: u32,
     pub unique_streets: u32,
+    pub country: CountryId,
 }
 
+/// Build a BFGS v3 shard tagged with `country`.
+///
+/// `country` is written into the file header (byte 6) and verified
+/// on load by [`super::reader::Shard::open`]. Operators producing
+/// multi-country deployments build one shard per country and load
+/// them all at server boot.
 pub fn build_shard<P: AsRef<Path>>(
     out_path: P,
+    country: CountryId,
     addresses: impl IntoIterator<Item = AddressRecord>,
 ) -> std::io::Result<BuildStats> {
     let mut addrs: Vec<AddressRecord> = addresses.into_iter().collect();
@@ -137,6 +146,9 @@ pub fn build_shard<P: AsRef<Path>>(
     let mut header = [0u8; HEADER_BYTES];
     header[0..4].copy_from_slice(&MAGIC.to_le_bytes());
     header[4..6].copy_from_slice(&VERSION.to_le_bytes());
+    // v3: country code (1=BE, 2=FR, ...). See `CountryId::to_u8`.
+    header[6] = country.to_u8();
+    // header[7] is _pad — kept zero.
     let count_u32: u32 = addrs.len().try_into().expect("record count fits in u32");
     header[8..12].copy_from_slice(&count_u32.to_le_bytes());
     header[16..24].copy_from_slice(&strings_off.to_le_bytes());
@@ -179,6 +191,7 @@ pub fn build_shard<P: AsRef<Path>>(
         index_bytes: index_bytes.len() as u64,
         unique_postcodes: by_postcode.len() as u32,
         unique_streets: by_street.len() as u32,
+        country,
     })
 }
 
@@ -281,8 +294,9 @@ mod tests {
             rec("Rue Wayez", "124", "1070", "Anderlecht", 50.834, 4.315),
             rec("Grote Markt", "1", "2000", "Antwerpen", 51.221, 4.401),
         ];
-        let stats = build_shard(&path, addrs).unwrap();
+        let stats = build_shard(&path, CountryId::BE, addrs).unwrap();
         assert_eq!(stats.record_count, 3);
+        assert_eq!(stats.country, CountryId::BE);
         assert!(stats.unique_postcodes >= 2);
         assert!(stats.unique_streets >= 2);
 
@@ -297,7 +311,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shard.bfgs");
         let addrs = vec![rec("Rue Wayez", "122", "1070", "Anderlecht", 50.834, 4.314)];
-        build_shard(&path, addrs).unwrap();
+        build_shard(&path, CountryId::BE, addrs).unwrap();
 
         let mut buf = std::fs::read(&path).unwrap();
         // Flip a byte in the body (after header, before footer).
@@ -311,11 +325,31 @@ mod tests {
     }
 
     #[test]
+    fn country_code_round_trips_through_header() {
+        let dir = tempfile::tempdir().unwrap();
+        for country in [
+            CountryId::BE,
+            CountryId::FR,
+            CountryId::NL,
+            CountryId::LU,
+            CountryId::DE,
+            CountryId::AT,
+            CountryId::CH,
+        ] {
+            let path = dir.path().join(format!("{}.bfgs", country.iso2()));
+            let addrs = vec![rec("X Street", "1", "1000", "Town", 50.0, 4.0)];
+            build_shard(&path, country, addrs).unwrap();
+            let s = Shard::open(&path).unwrap();
+            assert_eq!(s.country(), country, "header country mismatch");
+        }
+    }
+
+    #[test]
     fn corrupted_header_fails_file_crc() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shard.bfgs");
         let addrs = vec![rec("Rue Wayez", "122", "1070", "Anderlecht", 50.834, 4.314)];
-        build_shard(&path, addrs).unwrap();
+        build_shard(&path, CountryId::BE, addrs).unwrap();
 
         let mut buf = std::fs::read(&path).unwrap();
         // Flip a reserved/_pad byte in the header that doesn't break

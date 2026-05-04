@@ -5,8 +5,10 @@
 //! ## Algorithm
 //!
 //! 1. Run the cheap country classifier (#96 §Country Routing).
-//! 2. Extract a Belgian postcode (`[1-9][0-9]{3}` matched as a
-//!    standalone token).
+//! 2. Extract a postcode using the per-country regex
+//!    ([`extract_postcode_for`]). 4-digit ([1-9]\\d{3}) for BE, LU,
+//!    AT, CH; 5-digit (\\d{5}) for FR and DE; 4-digit + alpha
+//!    suffix for NL (`1011 AB`).
 //! 3. Extract a house number — leading or trailing numeric/alphanumeric
 //!    token (e.g. `122`, `122a`, `122-126`).
 //! 4. The remaining tokens are the street + locality.
@@ -22,15 +24,44 @@ use crate::types::{
     Strictness,
 };
 
+/// Parse a free-text address against a single, caller-asserted
+/// country. The returned [`ParsedQuery`] has exactly one country
+/// candidate (the one passed in, weight 1.0) and one hypothesis —
+/// this is the **clean-query** input shape per #96
+/// §Zero-Cost-on-Clean-Queries, and the executor's fast path will
+/// fire on it.
+///
+/// For multi-country routing where the country is unknown, use
+/// [`parse_with_classifier`].
 #[must_use]
 pub fn parse_heuristic(text: &str, country: CountryId) -> ParsedQuery {
-    debug_assert_eq!(country, CountryId::BE, "MVP only ships BE");
+    let mut q = parse_for_country(text, country);
+    q.country_candidates = vec![(country, 1.0)];
+    q
+}
 
+/// Parse against the cheap classifier's country posterior. Returns a
+/// query with `country_candidates` populated from
+/// [`classify_country`] (sorted descending by weight). The parser's
+/// per-country regex is run for the **top** country; the executor's
+/// multi-shard walk handles the remaining countries by re-using the
+/// same hypothesis (postcodes that don't match a shard's record set
+/// produce zero hits there).
+#[must_use]
+pub fn parse_with_classifier(text: &str) -> ParsedQuery {
+    let posterior = classify_country(text);
+    let primary = posterior.first().map(|(c, _)| *c).unwrap_or(CountryId::BE);
+    let mut q = parse_for_country(text, primary);
+    q.country_candidates = posterior;
+    q
+}
+
+fn parse_for_country(text: &str, country: CountryId) -> ParsedQuery {
     let original = text.to_string();
     let mut hypothesis = ParseHypothesis::default();
     let mut flags = RecoveryFlags::default();
 
-    let postcode = extract_postcode(text);
+    let postcode = extract_postcode_for(text, country);
     if let Some(ref pc) = postcode {
         hypothesis.postcode_candidates.push((pc.clone(), 1.0));
         flags.had_postcode = true;
@@ -86,14 +117,17 @@ pub fn parse_heuristic(text: &str, country: CountryId) -> ParsedQuery {
     }
 
     hypothesis.field_reliability = build_field_mask(&flags);
-    hypothesis.retrieval_policy = RetrievalPolicy::belgium_default();
+    hypothesis.retrieval_policy = retrieval_policy_for(country);
     hypothesis.strictness = Strictness::Exact;
 
     let confidence = score_confidence(&flags);
 
     ParsedQuery {
         original_text: original,
-        country_candidates: classify_country(text),
+        // `parse_heuristic` overrides this with `[(country, 1.0)]`
+        // for the clean-query path; `parse_with_classifier` keeps
+        // the full posterior. We populate a placeholder here.
+        country_candidates: vec![(country, 1.0)],
         hypotheses: vec![hypothesis],
         global_confidence: confidence,
         recovery_flags: flags,
@@ -126,13 +160,71 @@ fn score_confidence(flags: &RecoveryFlags) -> f32 {
     s.min(1.0)
 }
 
-fn postcode_re() -> &'static Regex {
+/// 4-digit postcode (BE, LU, AT, CH).
+fn pc_4digit_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"\b[1-9][0-9]{3}\b").expect("valid regex"))
 }
 
-fn extract_postcode(text: &str) -> Option<String> {
-    postcode_re().find(text).map(|m| m.as_str().to_string())
+/// 5-digit postcode (FR, DE). FR: 01xxx-95xxx (Corsica is 200xx).
+/// DE: 01xxx-99xxx. We accept any 5 digits at word boundaries.
+fn pc_5digit_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\b\d{5}\b").expect("valid regex"))
+}
+
+/// NL postcode: 4-digit + 2-letter (e.g. `1011 AB`).
+fn pc_nl_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\b\d{4}\s?[A-Za-z]{2}\b").expect("valid regex"))
+}
+
+/// L-prefixed Luxembourg postcode (`L-2453`). When this matches, drop
+/// the prefix so the shard lookup uses the bare 4-digit form.
+fn pc_lu_prefixed_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\bL-(\d{4})\b").expect("valid regex"))
+}
+
+fn extract_postcode_for(text: &str, country: CountryId) -> Option<String> {
+    match country {
+        // 5-digit countries.
+        CountryId::FR | CountryId::DE => pc_5digit_re().find(text).map(|m| m.as_str().to_string()),
+        // NL = 4-digit + 2-letter.
+        CountryId::NL => pc_nl_re().find(text).map(|m| {
+            // Canonicalize: collapse internal whitespace so `1011 AB`
+            // and `1011AB` produce the same key.
+            m.as_str().split_whitespace().collect::<Vec<_>>().join("")
+        }),
+        // Luxembourg accepts either bare 4-digit or L-prefixed.
+        CountryId::LU => {
+            if let Some(c) = pc_lu_prefixed_re().captures(text) {
+                return c.get(1).map(|m| m.as_str().to_string());
+            }
+            pc_4digit_re().find(text).map(|m| m.as_str().to_string())
+        }
+        // 4-digit countries.
+        CountryId::BE | CountryId::AT | CountryId::CH => {
+            pc_4digit_re().find(text).map(|m| m.as_str().to_string())
+        }
+    }
+}
+
+/// Country-specific [`RetrievalPolicy`]. Per #96 §Channel Roles
+/// each country pack chooses its strongest evidence anchor; for the
+/// cluster #1 + #2 set (BE / FR / NL / LU / DE / AT / CH) the
+/// shape is uniform: postcode as Blocker, street as Reducer,
+/// house-number + locality as Scorers.
+fn retrieval_policy_for(country: CountryId) -> RetrievalPolicy {
+    match country {
+        CountryId::BE
+        | CountryId::FR
+        | CountryId::NL
+        | CountryId::LU
+        | CountryId::DE
+        | CountryId::AT
+        | CountryId::CH => RetrievalPolicy::european_postcode_anchor(),
+    }
 }
 
 fn house_number_re() -> &'static Regex {
@@ -254,6 +346,53 @@ mod tests {
         let h = &q.hypotheses[0];
         assert!(h.street_candidates.is_empty());
         assert!(h.postcode_candidates.is_empty());
+    }
+
+    #[test]
+    fn parses_french_postcode() {
+        let q = parse_heuristic("10 rue de la Paix 75001 Paris", CountryId::FR);
+        let h = &q.hypotheses[0];
+        assert_eq!(h.postcode_candidates[0].0, "75001");
+        assert_eq!(h.house_candidates[0].0, "10");
+    }
+
+    #[test]
+    fn parses_dutch_postcode() {
+        let q = parse_heuristic("Damrak 1 1012 LP Amsterdam", CountryId::NL);
+        let h = &q.hypotheses[0];
+        // Whitespace is collapsed canonical: "1012LP".
+        assert_eq!(h.postcode_candidates[0].0, "1012LP");
+        assert_eq!(h.house_candidates[0].0, "1");
+    }
+
+    #[test]
+    fn parses_german_postcode() {
+        let q = parse_heuristic("Friedrichstraße 100 10117 Berlin", CountryId::DE);
+        let h = &q.hypotheses[0];
+        assert_eq!(h.postcode_candidates[0].0, "10117");
+        assert_eq!(h.house_candidates[0].0, "100");
+    }
+
+    #[test]
+    fn parses_austrian_postcode() {
+        let q = parse_heuristic("Stephansplatz 1 1010 Wien", CountryId::AT);
+        let h = &q.hypotheses[0];
+        assert_eq!(h.postcode_candidates[0].0, "1010");
+    }
+
+    #[test]
+    fn parses_swiss_postcode() {
+        let q = parse_heuristic("Bahnhofstrasse 1 8001 Zürich", CountryId::CH);
+        let h = &q.hypotheses[0];
+        assert_eq!(h.postcode_candidates[0].0, "8001");
+    }
+
+    #[test]
+    fn parses_luxembourg_lprefixed_postcode() {
+        let q = parse_heuristic("12 rue de la Gare L-2453 Luxembourg", CountryId::LU);
+        let h = &q.hypotheses[0];
+        // L-2453 is canonicalized to bare 2453 for shard lookup.
+        assert_eq!(h.postcode_candidates[0].0, "2453");
     }
 
     #[test]
