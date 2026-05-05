@@ -664,21 +664,21 @@ Tier selection inputs (see `BudgetPolicy` for the tunable thresholds):
 All defaults plus their valid ranges are documented inline on the
 config structs. Headline knobs:
 
-| Knob                                              | Default        | Range                |
-|---------------------------------------------------|----------------|----------------------|
-| `BudgetPolicy::tight_confidence`                  | 0.85           | 0.0 - 1.0            |
-| `BudgetPolicy::high_fanout_postings_threshold`    | 5 000          | 100 - 1 000 000      |
-| `BudgetPolicy::static_cost_ceilings`              | (256, 4 096, 65 536, 524 288) | tier-keyed |
-| `FanoutConfig::max_total_candidates`              | 5 000          | 100 - 100 000        |
-| `FanoutConfig::max_query_time_ms`                 | 500            | 10 - 60 000          |
-| `FanoutConfig::max_field_channels_per_hypothesis` | 4              | 1 - 6                |
-| `FanoutConfig::max_blocker_empty_downgrades`      | 6              | 1 - 64               |
-| `FanoutConfig::max_feedback_operator_firings`     | 8              | 1 - 64               |
-| `AdmissionPolicy::global_capacity`                | 1 000          | 1 - 1 000 000        |
-| `AdmissionPolicy::per_ip_capacity`                | 50             | 1 - 100 000          |
-| `MetricsAlertThresholds::clean_query_overhead_p99`| 500 ns         | -                    |
-| `MetricsAlertThresholds::clean_query_alloc_count` | 0              | exactly 0 — strict   |
-| `MetricsAlertThresholds::static_vs_feedback_ratio`| 2.0            | -                    |
+| Knob                                                          | Default        | Range                |
+|---------------------------------------------------------------|----------------|----------------------|
+| `BudgetPolicy::tight_confidence`                              | 0.85           | 0.0 - 1.0            |
+| `BudgetPolicy::high_fanout_postings_threshold`                | 5 000          | 100 - 1 000 000      |
+| `BudgetPolicy::static_cost_ceilings`                          | (256, 4 096, 65 536, 524 288) | tier-keyed |
+| `FanoutConfig::max_total_candidates`                          | 5 000          | 100 - 100 000        |
+| `FanoutConfig::max_query_time_ms`                             | 500            | 10 - 60 000          |
+| `FanoutConfig::max_field_channels_per_hypothesis`             | 4              | 1 - 6                |
+| `FanoutConfig::max_blocker_empty_downgrades_per_query`        | 6              | 1 - 64               |
+| `FanoutConfig::max_feedback_operator_firings_per_query`       | 8              | 1 - 64               |
+| `AdmissionPolicy::global_capacity`                            | 1 000          | 1 - 1 000 000        |
+| `AdmissionPolicy::per_ip_capacity`                            | 50             | 1 - 100 000          |
+| `MetricsAlertThresholds::clean_query_overhead_p99`            | 500 ns         | -                    |
+| `MetricsAlertThresholds::clean_query_alloc_count_max`         | 0              | exactly 0 — strict   |
+| `MetricsAlertThresholds::static_vs_feedback_ratio_max`        | 2.0            | -                    |
 
 ### Static-vs-feedback ratio (worked example)
 

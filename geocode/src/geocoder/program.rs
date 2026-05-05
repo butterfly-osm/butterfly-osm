@@ -32,6 +32,7 @@
 use std::cmp::Ordering;
 
 use super::channels::{Channel, ChannelRole};
+use crate::types::ParseHypothesis;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LookupKey {
@@ -323,14 +324,23 @@ fn cmp_op_vec(a: &[Op], b: &[Op]) -> Ordering {
 /// max preserves the strongest hypothesis-source signal without
 /// distortion.
 ///
-/// On a single-element list this is canonicalize-and-return — no
-/// comparison loop. That keeps the multi-hypothesis path cheap when
-/// the parser happens to emit one hypothesis (the MVP heuristic
-/// parser's only mode).
+/// Fast path: a single-element list is canonicalized once and returned
+/// without entering the comparison loop. That keeps the multi-hypothesis
+/// path cheap when the parser happens to emit one hypothesis (the MVP
+/// heuristic parser's only mode) and is part of the
+/// Zero-Cost-on-Clean-Queries NFR.
 ///
 /// Equality is structural via [`PartialEq`]. The O(N²) sweep is fine
 /// because hypothesis counts are tiny (≤ 5 per #97 budget tier).
 pub fn dedup_canonical(programs: Vec<(Op, f32)>) -> Vec<(Op, f32)> {
+    // Single-element fast path: skip the comparison loop entirely.
+    // The Vec is moved in and returned with one canonicalize call.
+    if programs.len() <= 1 {
+        return programs
+            .into_iter()
+            .map(|(p, s)| (p.canonicalize(), s))
+            .collect();
+    }
     let mut out: Vec<(Op, f32)> = Vec::with_capacity(programs.len());
     for (p, score) in programs {
         let canon = p.canonicalize();
@@ -338,6 +348,54 @@ pub fn dedup_canonical(programs: Vec<(Op, f32)>) -> Vec<(Op, f32)> {
             existing.1 = existing.1.max(score);
         } else {
             out.push((canon, score));
+        }
+    }
+    out
+}
+
+/// Dedup a list of `(program, hypothesis, final_logprob)` triples by
+/// canonical form, paired with their source [`ParseHypothesis`].
+///
+/// This is the primary multi-hypothesis dedup entry point. Per #96 the
+/// executor must run each canonical program ONCE against the hypothesis
+/// that produced it — NOT against the cross-product of programs ×
+/// hypotheses. When multiple hypotheses canonicalize to the same
+/// program, we merge them by:
+///
+/// - **`final_logprob`**: max across the group (consistent with the
+///   `max` source-score policy in [`dedup_canonical`]).
+/// - **Representative hypothesis**: the one with the highest input
+///   `final_logprob` — its parsed fields seed downstream scoring so the
+///   strongest signal wins.
+///
+/// The fast path (≤ 1 input) avoids the comparison loop; this matters
+/// because the heuristic parser emits a single hypothesis and that
+/// path must stay allocation-light per the Zero-Cost-on-Clean-Queries
+/// NFR.
+#[must_use]
+pub fn dedup_canonical_with_hyp(
+    programs: Vec<(Op, ParseHypothesis, f32)>,
+) -> Vec<(Op, ParseHypothesis, f32)> {
+    if programs.len() <= 1 {
+        return programs
+            .into_iter()
+            .map(|(p, h, lp)| (p.canonicalize(), h, lp))
+            .collect();
+    }
+    let mut out: Vec<(Op, ParseHypothesis, f32)> = Vec::with_capacity(programs.len());
+    for (p, h, lp) in programs {
+        let canon = p.canonicalize();
+        if let Some(idx) = out.iter().position(|(o, _, _)| o == &canon) {
+            // Merge into existing entry: keep the representative
+            // hypothesis with the higher source logprob, take max
+            // final_logprob.
+            let existing = &mut out[idx];
+            if lp > existing.2 {
+                existing.1 = h;
+                existing.2 = lp;
+            }
+        } else {
+            out.push((canon, h, lp));
         }
     }
     out
@@ -470,6 +528,77 @@ mod tests {
         let a = lookup(Channel::Street, "x");
         let p = Op::Union(vec![a.clone(), a.clone()]).canonicalize();
         assert_eq!(p, a);
+    }
+
+    #[test]
+    fn dedup_with_hyp_collapses_overlapping_fields() {
+        // Three hypotheses with different parsed-field overlap that
+        // canonicalize to the same Op tree → exactly 1 entry after
+        // dedup. The representative hypothesis must be the one with
+        // the highest final_logprob, and the merged final_logprob is
+        // the max of the three inputs.
+        let mk_hyp = |conf: f32| -> ParseHypothesis {
+            let mut h = ParseHypothesis::default();
+            h.postcode_candidates.push(("1070".to_string(), conf));
+            h.street_candidates.push(("rue wayez".to_string(), conf));
+            h
+        };
+        let p1 = Op::Intersect(vec![
+            lookup(Channel::Postcode, "1070"),
+            lookup(Channel::Street, "rue wayez"),
+        ]);
+        let p2 = Op::Intersect(vec![
+            lookup(Channel::Street, "rue wayez"),
+            lookup(Channel::Postcode, "1070"),
+        ]);
+        let p3 = p1.clone();
+        let triples = vec![
+            (p1, mk_hyp(0.7), -2.5_f32),
+            (p2, mk_hyp(0.95), -0.3_f32),
+            (p3, mk_hyp(0.5), -3.0_f32),
+        ];
+        let out = dedup_canonical_with_hyp(triples);
+        assert_eq!(out.len(), 1, "3 commutatively equivalent → 1 program");
+        // final_logprob is the max of the three (-0.3).
+        assert!((out[0].2 - (-0.3)).abs() < 1e-6);
+        // Representative hypothesis is the one with logprob -0.3
+        // (corresponding to confidence 0.95).
+        assert!((out[0].1.postcode_candidates[0].1 - 0.95).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dedup_with_hyp_preserves_distinct_programs() {
+        // Two hypotheses that produce different canonical programs
+        // must NOT collapse — both survive.
+        let h1 = ParseHypothesis {
+            postcode_candidates: vec![("1070".to_string(), 1.0)],
+            ..Default::default()
+        };
+        let h2 = ParseHypothesis {
+            postcode_candidates: vec![("2000".to_string(), 1.0)],
+            ..Default::default()
+        };
+        let p1 = Op::Lookup(LookupKey {
+            channel: Channel::Postcode,
+            key: "1070".to_string(),
+        });
+        let p2 = Op::Lookup(LookupKey {
+            channel: Channel::Postcode,
+            key: "2000".to_string(),
+        });
+        let out = dedup_canonical_with_hyp(vec![(p1, h1, -0.1), (p2, h2, -0.2)]);
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn dedup_with_hyp_single_element_fast_path() {
+        // Single-element input must take the fast path: canonicalize
+        // and return without entering the comparison loop.
+        let h = ParseHypothesis::default();
+        let p = lookup(Channel::Postcode, "1070");
+        let out = dedup_canonical_with_hyp(vec![(p.clone(), h, -0.5)]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, p);
     }
 
     #[test]
