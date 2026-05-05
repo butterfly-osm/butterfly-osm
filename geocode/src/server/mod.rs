@@ -301,10 +301,7 @@ impl PeerIpKey {
                         continue;
                     };
                     let value = value.trim_matches('"');
-                    // RFC 7239 also allows `for="[2001:db8::1]:8080"`.
-                    // Strip any port.
-                    let host = value.rsplit_once(':').map(|(h, _)| h).unwrap_or(value);
-                    let host = host.trim_matches('[').trim_matches(']');
+                    let host = parse_forwarded_host(value);
                     if let Ok(ip) = host.parse::<IpAddr>()
                         && !self.is_trusted(ip)
                     {
@@ -314,6 +311,57 @@ impl PeerIpKey {
             }
         }
         None
+    }
+}
+
+/// Parse the host portion of an RFC 7239 `for=` value. The grammar is
+/// `host = IP-literal / IPv4address / reg-name`, optionally followed
+/// by `:port`. The bracketed IP-literal form (`[2001:db8::1]`) is
+/// mandatory whenever a port follows an IPv6 address — without that
+/// rule there's no way to tell where the address ends and the port
+/// begins.
+///
+/// The previous implementation used `rsplit_once(':')` which split
+/// inside the IPv6 address itself for `[2001:db8::1]` (no port) —
+/// returning `[2001:db8:` as the host, which would never parse. Result:
+/// every IPv6 client behind a trusted proxy collapsed to `None` from
+/// the XFF lookup and the rate limiter then keyed on the proxy IP
+/// instead, putting every IPv6 client into one bucket.
+///
+/// Cases handled:
+///   `192.0.2.1`              → `192.0.2.1`
+///   `192.0.2.1:8080`         → `192.0.2.1`
+///   `[2001:db8::1]`          → `2001:db8::1`
+///   `[2001:db8::1]:8080`     → `2001:db8::1`
+///   `2001:db8::1`            → `2001:db8::1` (raw IPv6, no port — RFC
+///                              technically forbids this without
+///                              brackets, but real proxies sometimes
+///                              emit it; accept both shapes)
+fn parse_forwarded_host(value: &str) -> &str {
+    let v = value.trim();
+    if let Some(rest) = v.strip_prefix('[') {
+        // Bracketed: address is everything up to the first ']'.
+        if let Some(end) = rest.find(']') {
+            return &rest[..end];
+        }
+        // Malformed (`[` with no `]`); fall back to verbatim minus the
+        // bracket so the parse below has a fighting chance.
+        return rest;
+    }
+    // No brackets: count the ':' to disambiguate IPv4-with-port from
+    // raw IPv6.
+    let colons = v.bytes().filter(|b| *b == b':').count();
+    match colons {
+        0 => v,
+        1 => {
+            // IPv4 with port (`192.0.2.1:8080`). Split once.
+            v.rsplit_once(':').map(|(h, _)| h).unwrap_or(v)
+        }
+        _ => {
+            // Raw IPv6 (`2001:db8::1`) — no port can be appended
+            // without brackets per RFC 3986/7239, so keep verbatim.
+            v
+        }
     }
 }
 
@@ -352,28 +400,91 @@ fn prometheus_pair() -> &'static (PrometheusMetricLayer<'static>, PrometheusHand
 ///
 /// Tests and most call sites use this. Operators that need to override
 /// the rate-limit knobs reach for [`build_router_with_config`].
+///
+/// **Background lifecycle**: this constructor spawns the per-IP rate
+/// limiter garbage-collector itself (when called inside a Tokio
+/// runtime) and binds its lifetime to the returned [`Router`] via a
+/// hidden state extension. When the router is dropped the GC task is
+/// aborted automatically — the leak that an earlier refactor
+/// reintroduced (Copilot review on PR #183) is now structurally
+/// impossible at this entry point.
+///
+/// Production servers that need to control the GC's lifetime
+/// explicitly (e.g. for graceful shutdown coordination) use
+/// [`build_router_with_config`] and manage the [`GovernorGcHandle`]
+/// themselves.
 pub fn build_router(state: Arc<ServerState>) -> Router {
-    let (router, _gc) = build_router_with_config(state, ServerConfig::with_defaults());
-    router
+    let (router, gc) = build_router_with_config(state, ServerConfig::with_defaults());
+    // Tie the GC task's lifetime to the router by extending the
+    // router's state with the handle. When the last clone of the
+    // router is dropped the handle is dropped, which aborts the
+    // background task. Calling this outside a Tokio runtime is
+    // tolerated by `GovernorGcHandle::spawn_inside_runtime` — it
+    // skips the spawn (the rate-limiter map will simply never be
+    // pruned, which is the documented behaviour for non-runtime
+    // callers).
+    let started = gc.spawn_inside_runtime();
+    router.layer(axum::Extension(Arc::new(started)))
 }
 
-/// Handle returned alongside the router so callers can opt-in to
-/// driving the per-IP map garbage-collector. Returned by
-/// [`build_router_with_config`] separately from the router so router
-/// construction stays a pure synchronous fn — moving the
-/// `tokio::spawn` out of the build means `build_router_with_config`
-/// no longer panics when called outside a Tokio runtime, and tests
-/// that build multiple routers don't leak background tasks.
-///
-/// `serve_cmd` (the only production caller) drives this with
-/// [`spawn_governor_gc`]; tests typically drop the handle and never
-/// run GC.
+/// Background GC handle for the per-IP rate limiter map. Owns its
+/// own [`tokio::task::JoinHandle`] (when [`spawn_inside_runtime`]
+/// has been called) and aborts the task on `Drop`. There is NO
+/// process-wide singleton — every router gets its own handle, every
+/// limiter gets its own GC. The previous OnceLock-based singleton
+/// approach (Copilot review on PR #183) leaked the second router's
+/// limiter forever because only the first call ever spawned.
 pub struct GovernorGcHandle {
     /// Closures that prune (`retain_recent`) the limiter and report
     /// its current map size. Boxed so the handle's type isn't
     /// parameterised over the governor's generic key/state types.
     retain: Box<dyn Fn() + Send + Sync>,
     len: Box<dyn Fn() -> usize + Send + Sync>,
+}
+
+/// Started GC: owns a `JoinHandle` that is aborted on `Drop`. This is
+/// the form returned by [`GovernorGcHandle::spawn_inside_runtime`]
+/// and embedded in the router by [`build_router`].
+pub struct StartedGovernorGc {
+    /// `Some` while the task is alive; taken on `Drop` so the abort
+    /// happens exactly once.
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for StartedGovernorGc {
+    fn drop(&mut self) {
+        if let Some(t) = self.task.take() {
+            t.abort();
+        }
+    }
+}
+
+impl GovernorGcHandle {
+    /// Spawn the GC inside the current Tokio runtime. Returns a
+    /// [`StartedGovernorGc`] that aborts the spawned task on drop. If
+    /// no runtime is current (e.g. when called from a `#[test]`
+    /// without `#[tokio::test]`), the spawn is skipped and the
+    /// returned struct is a benign no-op.
+    #[must_use]
+    pub fn spawn_inside_runtime(self) -> StartedGovernorGc {
+        // `tokio::runtime::Handle::try_current` reports whether we're
+        // inside a runtime context. Outside one, `tokio::spawn` would
+        // panic — we'd rather skip GC quietly than crash the
+        // construction path.
+        if tokio::runtime::Handle::try_current().is_err() {
+            return StartedGovernorGc { task: None };
+        }
+        let GovernorGcHandle { retain, len } = self;
+        let task = tokio::spawn(async move {
+            let interval = Duration::from_secs(60);
+            loop {
+                tokio::time::sleep(interval).await;
+                tracing::trace!(rate_limit_storage_size = (len)(), "governor retain_recent");
+                (retain)();
+            }
+        });
+        StartedGovernorGc { task: Some(task) }
+    }
 }
 
 impl std::fmt::Debug for GovernorGcHandle {
@@ -384,28 +495,27 @@ impl std::fmt::Debug for GovernorGcHandle {
     }
 }
 
-/// Spawn a long-running task that periodically GCs the per-IP rate
-/// limiter map. Idempotent across `build_router_with_config` calls in
-/// the same process: only the first invocation per process actually
-/// spawns; subsequent calls drop the new handle. Pulled out of
-/// `build_router_with_config` so router construction stays
-/// runtime-agnostic.
-pub fn spawn_governor_gc(handle: GovernorGcHandle) {
-    static SPAWNED: OnceLock<()> = OnceLock::new();
-    if SPAWNED.set(()).is_err() {
-        return;
+impl std::fmt::Debug for StartedGovernorGc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StartedGovernorGc")
+            .field("alive", &self.task.is_some())
+            .finish()
     }
-    tokio::spawn(async move {
-        let interval = Duration::from_secs(60);
-        loop {
-            tokio::time::sleep(interval).await;
-            tracing::trace!(
-                rate_limit_storage_size = (handle.len)(),
-                "governor retain_recent"
-            );
-            (handle.retain)();
-        }
-    });
+}
+
+/// Spawn the GC task and return a [`StartedGovernorGc`] that aborts
+/// it on drop. This is a thin wrapper over
+/// [`GovernorGcHandle::spawn_inside_runtime`] kept for source
+/// compatibility with the previous (free-function) entry point —
+/// `serve_cmd` was already calling `spawn_governor_gc(handle)`.
+///
+/// Unlike the previous implementation, this is NOT idempotent across
+/// the process: every call gets its own `JoinHandle`, so a second
+/// router built later in the process gets its own GC and the first
+/// one doesn't leak when its router drops.
+#[must_use]
+pub fn spawn_governor_gc(handle: GovernorGcHandle) -> StartedGovernorGc {
+    handle.spawn_inside_runtime()
 }
 
 /// Construct the full HTTP router with an explicit [`ServerConfig`].
@@ -518,6 +628,52 @@ pub fn build_router_with_config(
 mod tests {
     use super::*;
     use axum::http::Request;
+
+    #[test]
+    fn forwarded_host_parser_ipv4_no_port() {
+        assert_eq!(parse_forwarded_host("192.0.2.1"), "192.0.2.1");
+    }
+
+    #[test]
+    fn forwarded_host_parser_ipv4_with_port() {
+        assert_eq!(parse_forwarded_host("192.0.2.1:8080"), "192.0.2.1");
+    }
+
+    #[test]
+    fn forwarded_host_parser_ipv6_bracketed_no_port() {
+        // Regression for the bug Copilot flagged on PR #183: the old
+        // rsplit_once(':') swallowed `:1]` and returned `[2001:db8:`.
+        assert_eq!(parse_forwarded_host("[2001:db8::1]"), "2001:db8::1");
+    }
+
+    #[test]
+    fn forwarded_host_parser_ipv6_bracketed_with_port() {
+        assert_eq!(parse_forwarded_host("[2001:db8::1]:8080"), "2001:db8::1");
+    }
+
+    #[test]
+    fn forwarded_host_parser_raw_ipv6_no_brackets() {
+        // RFC technically requires brackets when a port follows an
+        // IPv6, but proxies in the wild sometimes emit `for=` values
+        // with raw IPv6 and no port. Accept that shape.
+        assert_eq!(parse_forwarded_host("2001:db8::1"), "2001:db8::1");
+    }
+
+    #[test]
+    fn forwarded_host_parser_distinct_buckets_for_distinct_v6_clients() {
+        // The bug under fix collapsed every IPv6 client behind a
+        // trusted proxy into the same rate-limit bucket because the
+        // host parser failed and the limiter fell back to the proxy
+        // IP. This test pins the property: parsing two different
+        // `for=` values yields two different IPs.
+        let a = parse_forwarded_host("[2001:db8::1]")
+            .parse::<IpAddr>()
+            .unwrap();
+        let b = parse_forwarded_host("[2001:db8::2]")
+            .parse::<IpAddr>()
+            .unwrap();
+        assert_ne!(a, b, "distinct IPv6 clients must hash to distinct keys");
+    }
 
     #[test]
     fn cidr_v4_parses_and_contains() {
