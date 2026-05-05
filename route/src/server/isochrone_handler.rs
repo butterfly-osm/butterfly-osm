@@ -1098,20 +1098,13 @@ pub async fn isochrone_bulk_handler(
     // single /isochrone.
     let started_dispatch = std::time::Instant::now();
     let coords_iter = req.origins.iter().map(|&[lon, lat]| (lon, lat));
-    let state = match regions.dispatch_many(coords_iter, &req.mode) {
-        Ok(s) => s,
+    let (state, region_id) = match regions.dispatch_many(coords_iter, &req.mode) {
+        Ok(pair) => pair,
         Err(e) => {
             let (code, body) = e.into_response_parts();
             return (code, Json(body)).into_response();
         }
     };
-    // Lookup the region id once for metric labelling.
-    let region_id = regions
-        .regions
-        .iter()
-        .find(|r| Arc::ptr_eq(&r.state, &state))
-        .map(|r| r.id.clone())
-        .unwrap_or_default();
 
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,

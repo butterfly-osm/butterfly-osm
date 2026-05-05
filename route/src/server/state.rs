@@ -450,24 +450,37 @@ impl ServerState {
 
         // Open lazily by default; eager_verify forces a full CRC walk
         // up front (matches pre-#160 behaviour).
-        let lazy = if opts.eager_verify {
-            tracing::info!("eager CRC verification enabled (legacy boot path)");
-            LazyContainer::open_eager(container_path)?
-        } else {
-            LazyContainer::open_lazy(container_path)?
-        };
+        //
+        // #175: register_pending MUST run BEFORE any verification that
+        // calls record_section_verified/_failed, otherwise PENDING goes
+        // negative. We always open lazily first so every section is
+        // registered as Unverified, register the pending count, then
+        // optionally drive the eager full walk through the lazy gate.
+        let lazy = LazyContainer::open_lazy(container_path)?;
         let lazy_arc = std::sync::Arc::new(lazy);
-        // Register pending count for /metrics. This is the count of
-        // sections in `Unverified` state immediately after open. Eager
-        // open zeroes it; lazy open registers all sections.
-        crate::server::metrics::register_pending(
-            lazy_arc
-                .iter_runtimes()
-                .filter(|(_, rt)| {
-                    rt.state() == crate::formats::lazy_verify::SectionVerifyState::Unverified
-                })
-                .count(),
-        );
+        // Register pending count for /metrics. Every section starts in
+        // Unverified state (open_lazy never walks); the eager pass below
+        // (if enabled) drives them through the verify state machine and
+        // emits matching record_section_verified events.
+        crate::server::metrics::register_pending(lazy_arc.n_sections());
+
+        if opts.eager_verify {
+            tracing::info!("eager CRC verification enabled (legacy boot path)");
+            // Walk every section through `verify_now`, which transitions
+            // each runtime through the lazy state machine and emits the
+            // matching metric events. This keeps register_pending and
+            // the recorded counters in sync.
+            let names: Vec<String> = lazy_arc.iter_runtimes().map(|(n, _)| n.clone()).collect();
+            for name in &names {
+                lazy_arc.verify_now(name).with_context(|| {
+                    format!(
+                        "eager verification of section '{}' in {}",
+                        name,
+                        container_path.display()
+                    )
+                })?;
+            }
+        }
 
         let mmap = std::sync::Arc::clone(lazy_arc.mmap_arc());
         let container = lazy_arc.container().clone();
@@ -489,13 +502,47 @@ impl ServerState {
         // Convenience accessor: section name → `'static` bytes from the
         // leaked mapping.
         //
-        // #160: this is a lazy slice. Per-section CRC verification is
-        // gated by `LazyContainer` and runs on first access (or in the
-        // background warmup pass / via `eager_verify`). At this slice
-        // site we only resolve the byte range; we do **not** force the
-        // body pages to be paged in. The header-only zero-copy readers
-        // below (`*::read_from_bytes_zero_copy`) read at most ~80 bytes
-        // per section, so this loop touches headers only.
+        // #160 + #161: per-section CRC is verified through the
+        // [`LazyContainer`] gate held by `lazy_arc` — calling
+        // `verify_now` here transitions the section through the lazy
+        // state machine, drives the metrics counters, and returns once
+        // the section is `Verified`. Format readers below are then
+        // called via their `_unverified` entry points so the section
+        // body is walked exactly once on the container load path
+        // (LazyContainer's CRC walk replaces the per-format walk).
+        // For readers that lack an `_unverified` variant the format CRC
+        // is still walked, paging the body in twice for those sections;
+        // the readers we did upgrade are the largest by far (CCH
+        // weights, EBG nodes/CSR, snap index, edge geom, flats).
+        //
+        // Page-fault footprint per section after `section_bytes`
+        // returns — i.e. **after** LazyContainer's CRC walk:
+        //   - `EbgNodesFile::read_from_bytes_zero_copy_unverified`,
+        //     `EbgCsrFile::read_from_bytes_zero_copy_unverified`,
+        //     `SnapPointsFile::*_unverified`,
+        //     `SnapGridFile::*_unverified`,
+        //     `EdgeGeomOffsetsFile::*_unverified`,
+        //     `EdgeGeomPointsFile::*_unverified`,
+        //     `ModeIndexFile::*_unverified`,
+        //     `CchTopoFile::*_unverified` — these read only the section
+        //     header (~32–80 bytes) plus a handful of length fields and
+        //     return `Cow::Borrowed` slices into the mmap; body pages
+        //     are paged in lazily when the slices are subsequently read
+        //     by routing.
+        //   - `CchWeightsFile::*_unverified`,
+        //     `UpAdjFlatFile::read_from_bytes_unverified`,
+        //     `DownReverseAdjFlatFile::read_from_bytes_unverified`,
+        //     `DownAdjFlatFile::read_from_bytes_unverified`,
+        //     `SnapMaskFile::*_unverified` — these likewise return
+        //     `Cow::Borrowed` slices and only touch the header. The
+        //     subsequent `bytemuck::cast_slice` is a pointer-only cast
+        //     that does not touch body bytes.
+        //   - `NbgGeoFile::read_edges_only_from_bytes` does walk the
+        //     full body to populate the edges Vec; an explicit
+        //     `madvise(DONTNEED)` immediately after parsing returns
+        //     those pages to the kernel. Same for the legacy
+        //     `FilteredEbgFile` / `OrderEbgFile` fallback path.
+        let lazy_for_bytes = std::sync::Arc::clone(&lazy_arc);
         let section_bytes = |name: &str| -> Result<&'static [u8]> {
             let entry = container
                 .get(name)
@@ -510,8 +557,16 @@ impl ServerState {
                 off + len,
                 static_bytes.len()
             );
+            // Drive lazy CRC verification through LazyContainer. The
+            // first call to `verify_now` walks the section body once;
+            // subsequent calls observe `Verified` and short-circuit.
+            // This both updates `butterfly_route_sections_*` metrics
+            // and lets format readers skip their own body CRC walk
+            // via the `_unverified` entry points.
+            lazy_for_bytes.verify_now(name)?;
             Ok(&static_bytes[off..off + len])
         };
+        let lazy_for_optional = std::sync::Arc::clone(&lazy_arc);
         let optional_section = |name: &str| -> Result<Option<&'static [u8]>> {
             match container.get(name) {
                 Some(entry) => {
@@ -525,6 +580,7 @@ impl ServerState {
                         off + len,
                         static_bytes.len()
                     );
+                    lazy_for_optional.verify_now(name)?;
                     Ok(Some(&static_bytes[off..off + len]))
                 }
                 None => Ok(None),
@@ -539,13 +595,15 @@ impl ServerState {
         crate::server::rss::checkpoint("load.container.opened");
 
         tracing::info!("Loading EBG nodes (zero-copy)...");
+        // #161: LazyContainer already CRC-verified the section bytes;
+        // skip the per-format CRC walk to avoid paging the body twice.
         let ebg_nodes =
-            EbgNodesFile::read_from_bytes_zero_copy(section_bytes("shared/ebg.nodes")?)?;
+            EbgNodesFile::read_from_bytes_zero_copy_unverified(section_bytes("shared/ebg.nodes")?)?;
         tracing::info!(nodes = ebg_nodes.n_nodes, "loaded EBG nodes");
 
         tracing::info!("Loading EBG CSR (zero-copy)...");
         let ebg_csr_section = section_bytes("shared/ebg.csr")?;
-        let ebg_csr = EbgCsrFile::read_from_bytes_zero_copy(ebg_csr_section)?;
+        let ebg_csr = EbgCsrFile::read_from_bytes_zero_copy_unverified(ebg_csr_section)?;
         tracing::info!(arcs = ebg_csr.n_arcs, "loaded EBG CSR");
         // #152: ebg.csr is build/validate-only at serve time. The only
         // field any handler reads is `n_arcs` (a u64 in the header used
@@ -657,7 +715,8 @@ impl ServerState {
 
         for (mode_index, mode_name) in discovered_modes.iter().enumerate() {
             let mode = Mode(global_index[mode_name]);
-            let mode_data = load_mode_data_from_bundle(mode_name, mode, &container, static_mmap)?;
+            let mode_data =
+                load_mode_data_from_bundle(mode_name, mode, &container, static_mmap, &lazy_arc)?;
             tracing::info!(
                 mode = mode_name.as_str(),
                 index = mode_index,
@@ -675,37 +734,38 @@ impl ServerState {
         // Prefer mmap-backed sections from the container; fall back to
         // building the legacy rstar in heap memory when the container
         // pre-dates #154.
-        let snap_index =
-            match try_load_packed_snap_index(&container, static_mmap, static_bytes, &mode_names)? {
-                Some(idx) => {
-                    tracing::info!(
-                        n_points = idx.n_indexed(),
-                        "loaded packed snap index zero-copy"
-                    );
-                    crate::server::rss::checkpoint("spatial.global");
-                    for name in &mode_names {
-                        crate::server::rss::checkpoint(&format!("spatial.mode.{}", name));
-                    }
-                    idx
+        let snap_index = match try_load_packed_snap_index(
+            &container,
+            static_mmap,
+            static_bytes,
+            &mode_names,
+            &lazy_arc,
+        )? {
+            Some(idx) => {
+                tracing::info!(
+                    n_points = idx.n_indexed(),
+                    "loaded packed snap index zero-copy"
+                );
+                crate::server::rss::checkpoint("spatial.global");
+                for name in &mode_names {
+                    crate::server::rss::checkpoint(&format!("spatial.mode.{}", name));
                 }
-                None => {
-                    tracing::warn!(
-                        "packed snap index sections missing; building rstar at boot \
+                idx
+            }
+            None => {
+                tracing::warn!(
+                    "packed snap index sections missing; building rstar at boot \
                          (this container pre-dates #154 — re-pack to drop ~1 GB anon)"
-                    );
-                    let idx = build_packed_snap_index_inmem(
-                        &ebg_nodes,
-                        &nbg_geo,
-                        &modes_data,
-                        &mode_names,
-                    );
-                    crate::server::rss::checkpoint("spatial.global");
-                    for name in &mode_names {
-                        crate::server::rss::checkpoint(&format!("spatial.mode.{}", name));
-                    }
-                    idx
+                );
+                let idx =
+                    build_packed_snap_index_inmem(&ebg_nodes, &nbg_geo, &modes_data, &mode_names);
+                crate::server::rss::checkpoint("spatial.global");
+                for name in &mode_names {
+                    crate::server::rss::checkpoint(&format!("spatial.mode.{}", name));
                 }
-            };
+                idx
+            }
+        };
 
         // #149: Now that every mode's flat adjacencies are built, hint
         // the kernel that the cch_weights.{time,dist} byte ranges are
@@ -799,13 +859,12 @@ impl ServerState {
         // open time they're still there now, so the back-compat branch
         // is for old containers that loaded the full NbgGeo.
         let edge_geom = if has_flat_edge_geom {
-            let eg = try_load_edge_geometry(&container, static_mmap, static_bytes)?.ok_or_else(
-                || {
+            let eg = try_load_edge_geometry(&container, static_mmap, static_bytes, &lazy_arc)?
+                .ok_or_else(|| {
                     anyhow::anyhow!(
                         "edge_geom sections vanished between open and load — container corrupt?"
                     )
-                },
-            )?;
+                })?;
             tracing::info!(
                 n_edges = eg.n_edges(),
                 n_points = eg.n_points(),
@@ -1149,20 +1208,27 @@ fn load_way_names(step1_dir: &Path) -> Result<HashMap<i64, String>> {
 
 /// Load one flat section from a container with the #150 mmap path.
 ///
-/// #160: per-section CRC verification is no longer forced at this site —
-/// the [`crate::formats::lazy_verify::LazyContainer`] gate handles it
-/// either at first request-time access or via the optional
-/// `--warmup-on-boot` background pass. Here we only resolve the byte
-/// range and pass it to the parser. The parser reads the section header
-/// (typically ≤ 80 bytes) and constructs zero-copy views into the body;
-/// the body pages are not paged in until routing actually traverses
-/// them (or the warmup verifier touches them, whichever comes first).
+/// #161: per-section CRC verification is performed via the
+/// [`crate::formats::lazy_verify::LazyContainer`] gate — `verify_now`
+/// transitions the section through the lazy state machine and walks
+/// the body once. The format reader is then called via the
+/// `_unverified` entry point, so the per-format body CRC walk is
+/// elided.
 ///
 /// 1. Look up by name. If absent, fall back to building from
 ///    `(cch_topo, cch_weights)` so legacy containers keep working.
-/// 2. Parse the bytes via the file-format reader (zero-copy view).
-/// 3. `madvise(DONTNEED)` is unnecessary post-#160 because we never
-///    forced the body in to begin with.
+/// 2. Drive `lazy.verify_now(section_name)`, which walks the body once
+///    and updates the lazy CRC metrics.
+/// 3. Parse the bytes via the format reader's `_unverified` variant
+///    (zero-copy view).
+///
+/// Note: a `madvise(DONTNEED)` after parsing is **not** required here.
+/// The format reader's `_unverified` entry point only touches the
+/// header (~32–80 bytes) and returns `Cow::Borrowed` slices over the
+/// body; `bytemuck::cast_slice` is a pointer-only cast and does not
+/// page the body in. The body therefore stays cold in the page cache
+/// once LazyContainer's CRC walk has completed and any pages it pulled
+/// in are reclaimable by the kernel under memory pressure.
 ///
 /// `parse` is a closure that turns `&'static [u8]` into the typed flat
 /// view; `build_owned` is the legacy heap-build fallback.
@@ -1171,6 +1237,7 @@ fn load_flat_section<T, P, B>(
     _static_mmap: &'static memmap2::Mmap,
     static_bytes: &'static [u8],
     section_name: &str,
+    lazy: &std::sync::Arc<crate::formats::lazy_verify::LazyContainer>,
     parse: P,
     build_owned: B,
 ) -> Result<T>
@@ -1195,6 +1262,9 @@ where
         off + len,
         static_bytes.len()
     );
+    // #161: verify CRC via LazyContainer, then read with the unverified
+    // format reader to avoid paging the body in twice.
+    lazy.verify_now(section_name)?;
     let bytes: &'static [u8] = &static_bytes[off..off + len];
     let parsed = parse(bytes)?;
     Ok(parsed)
@@ -1213,6 +1283,7 @@ fn load_mode_data_from_bundle(
     mode: Mode,
     container: &crate::formats::butterfly_dat::Container,
     static_mmap: &'static memmap2::Mmap,
+    lazy: &std::sync::Arc<crate::formats::lazy_verify::LazyContainer>,
 ) -> Result<ModeData> {
     let static_bytes: &'static [u8] = &static_mmap[..];
     let fetch = |leaf: &str| -> Result<&'static [u8]> {
@@ -1230,6 +1301,8 @@ fn load_mode_data_from_bundle(
             off + len,
             static_bytes.len()
         );
+        // #161: drive lazy CRC verification before handing out bytes.
+        lazy.verify_now(&name)?;
         Ok(&static_bytes[off..off + len])
     };
 
@@ -1256,6 +1329,7 @@ fn load_mode_data_from_bundle(
                     off + len,
                     static_bytes.len()
                 );
+                lazy.verify_now(&section_name)?;
                 Ok(Some(&static_bytes[off..off + len]))
             }
             None => Ok(None),
@@ -1268,14 +1342,14 @@ fn load_mode_data_from_bundle(
     let (orig_to_rank, filtered_to_original, n_filtered_nodes, n_original_nodes) =
         match (o2r_section, f2o_section) {
             (Some(o2r_bytes), Some(f2o_bytes)) => {
-                let o2r = ModeIndexFile::read_from_bytes_zero_copy(o2r_bytes)?;
+                let o2r = ModeIndexFile::read_from_bytes_zero_copy_unverified(o2r_bytes)?;
                 anyhow::ensure!(
                     o2r.kind == ModeIndexKind::OrigToRank,
                     "mode/{}/orig_to_rank has wrong kind discriminator: {:?}",
                     mode_name,
                     o2r.kind
                 );
-                let f2o = ModeIndexFile::read_from_bytes_zero_copy(f2o_bytes)?;
+                let f2o = ModeIndexFile::read_from_bytes_zero_copy_unverified(f2o_bytes)?;
                 anyhow::ensure!(
                     f2o.kind == ModeIndexKind::FilteredToOriginal,
                     "mode/{}/filtered_to_original has wrong kind discriminator: {:?}",
@@ -1392,7 +1466,7 @@ fn load_mode_data_from_bundle(
     // demand-paged like the flats. The offsets/targets/middles/bitset
     // slices are borrowed from the mmap with the same Box::leak'd
     // 'static lifetime trick as the flats.
-    let cch_topo = CchTopoFile::read_from_bytes_zero_copy(topo_section_bytes)?;
+    let cch_topo = CchTopoFile::read_from_bytes_zero_copy_unverified(topo_section_bytes)?;
     // After CRC verification we hint the kernel that the topo bytes can
     // be reclaimed. Hot routing pages page back in lazily; cold ones
     // (e.g. `up_middle` bytes for shortcuts that no query ever unpacks)
@@ -1427,7 +1501,7 @@ fn load_mode_data_from_bundle(
 
     // #147: zero-copy CCH weights — `up`/`down` u32 slices come straight
     // from the mmap. Saves ~6 GB of heap (4 modes × 2 metrics × ~750MB).
-    let cch_weights = CchWeightsFile::read_from_bytes_zero_copy(fetch("weights.time")?)?;
+    let cch_weights = CchWeightsFile::read_from_bytes_zero_copy_unverified(fetch("weights.time")?)?;
 
     // #150: prefer pre-built flat sections from the container so the
     // flats live in mmap'd file pages instead of process heap. Bounds
@@ -1447,7 +1521,8 @@ fn load_mode_data_from_bundle(
         static_mmap,
         static_bytes,
         &format!("mode/{}/up_adj_flat.time", mode_name),
-        |bytes| UpAdjFlatFile::read_from_bytes(bytes),
+        lazy,
+        |bytes| UpAdjFlatFile::read_from_bytes_unverified(bytes),
         || UpAdjFlat::build_with(&cch_topo, &cch_weights, true),
     )?;
     let down_rev_flat = load_flat_section(
@@ -1455,7 +1530,8 @@ fn load_mode_data_from_bundle(
         static_mmap,
         static_bytes,
         &format!("mode/{}/down_reverse_adj_flat.time", mode_name),
-        |bytes| DownReverseAdjFlatFile::read_from_bytes(bytes),
+        lazy,
+        |bytes| DownReverseAdjFlatFile::read_from_bytes_unverified(bytes),
         || DownReverseAdjFlat::build_with(&cch_topo, &cch_weights, true),
     )?;
     let down_adj_flat = load_flat_section(
@@ -1463,17 +1539,20 @@ fn load_mode_data_from_bundle(
         static_mmap,
         static_bytes,
         &format!("mode/{}/down_adj_flat.time", mode_name),
-        |bytes| DownAdjFlatFile::read_from_bytes(bytes),
+        lazy,
+        |bytes| DownAdjFlatFile::read_from_bytes_unverified(bytes),
         || DownAdjFlat::build(&cch_topo, &cch_weights),
     )?;
 
-    let cch_weights_dist = CchWeightsFile::read_from_bytes_zero_copy(fetch("weights.dist")?)?;
+    let cch_weights_dist =
+        CchWeightsFile::read_from_bytes_zero_copy_unverified(fetch("weights.dist")?)?;
     let up_adj_flat_dist = load_flat_section(
         container,
         static_mmap,
         static_bytes,
         &format!("mode/{}/up_adj_flat.dist", mode_name),
-        |bytes| UpAdjFlatFile::read_from_bytes(bytes),
+        lazy,
+        |bytes| UpAdjFlatFile::read_from_bytes_unverified(bytes),
         || UpAdjFlat::build(&cch_topo, &cch_weights_dist),
     )?;
     let down_rev_flat_dist = load_flat_section(
@@ -1481,7 +1560,8 @@ fn load_mode_data_from_bundle(
         static_mmap,
         static_bytes,
         &format!("mode/{}/down_reverse_adj_flat.dist", mode_name),
-        |bytes| DownReverseAdjFlatFile::read_from_bytes(bytes),
+        lazy,
+        |bytes| DownReverseAdjFlatFile::read_from_bytes_unverified(bytes),
         || DownReverseAdjFlat::build(&cch_topo, &cch_weights_dist),
     )?;
     let down_adj_flat_dist = load_flat_section(
@@ -1489,7 +1569,8 @@ fn load_mode_data_from_bundle(
         static_mmap,
         static_bytes,
         &format!("mode/{}/down_adj_flat.dist", mode_name),
-        |bytes| DownAdjFlatFile::read_from_bytes(bytes),
+        lazy,
+        |bytes| DownAdjFlatFile::read_from_bytes_unverified(bytes),
         || DownAdjFlat::build(&cch_topo, &cch_weights_dist),
     )?;
 
@@ -1598,6 +1679,7 @@ fn try_load_packed_snap_index(
     _static_mmap: &'static memmap2::Mmap,
     static_bytes: &'static [u8],
     mode_names: &[String],
+    lazy: &std::sync::Arc<crate::formats::lazy_verify::LazyContainer>,
 ) -> Result<Option<PackedSnapIndex>> {
     use crate::formats::snap_index::{SnapGridFile, SnapMaskFile, SnapPointsFile};
 
@@ -1615,9 +1697,13 @@ fn try_load_packed_snap_index(
     let grid_bytes = &static_bytes
         [grid_entry.offset as usize..grid_entry.offset as usize + grid_entry.len as usize];
 
-    let points = SnapPointsFile::read_from_bytes_zero_copy(pts_bytes)
+    // #161: drive lazy CRC verification through LazyContainer; format
+    // readers below skip their own body walk.
+    lazy.verify_now("shared/snap_points")?;
+    lazy.verify_now("shared/snap_grid")?;
+    let points = SnapPointsFile::read_from_bytes_zero_copy_unverified(pts_bytes)
         .with_context(|| "reading shared/snap_points zero-copy")?;
-    let grid = SnapGridFile::read_from_bytes_zero_copy(grid_bytes)
+    let grid = SnapGridFile::read_from_bytes_zero_copy_unverified(grid_bytes)
         .with_context(|| "reading shared/snap_grid zero-copy")?;
 
     // Per-mode masks: for every loaded mode_name, look up
@@ -1633,7 +1719,8 @@ fn try_load_packed_snap_index(
         };
         let mask_bytes =
             &static_bytes[entry.offset as usize..entry.offset as usize + entry.len as usize];
-        let mask = SnapMaskFile::read_from_bytes_zero_copy(mask_bytes)
+        lazy.verify_now(&key)?;
+        let mask = SnapMaskFile::read_from_bytes_zero_copy_unverified(mask_bytes)
             .with_context(|| format!("reading {} zero-copy", key))?;
         // Sanity: mask sample count must match the shared point array.
         anyhow::ensure!(
@@ -1661,6 +1748,7 @@ fn try_load_edge_geometry(
     container: &crate::formats::butterfly_dat::Container,
     _static_mmap: &'static memmap2::Mmap,
     static_bytes: &'static [u8],
+    lazy: &std::sync::Arc<crate::formats::lazy_verify::LazyContainer>,
 ) -> Result<Option<EdgeGeometry>> {
     use crate::formats::edge_geom::{EdgeGeomOffsetsFile, EdgeGeomPointsFile};
 
@@ -1672,15 +1760,18 @@ fn try_load_edge_geometry(
         Some(e) => e,
         None => return Ok(None),
     };
+    // #161: drive lazy CRC verification through LazyContainer.
+    lazy.verify_now("shared/edge_geom_offsets")?;
+    lazy.verify_now("shared/edge_geom_points")?;
 
     let off_bytes = &static_bytes
         [off_entry.offset as usize..off_entry.offset as usize + off_entry.len as usize];
     let pts_bytes = &static_bytes
         [pts_entry.offset as usize..pts_entry.offset as usize + pts_entry.len as usize];
 
-    let off = EdgeGeomOffsetsFile::read_from_bytes_zero_copy(off_bytes)
+    let off = EdgeGeomOffsetsFile::read_from_bytes_zero_copy_unverified(off_bytes)
         .with_context(|| "reading shared/edge_geom_offsets zero-copy")?;
-    let pts = EdgeGeomPointsFile::read_from_bytes_zero_copy(pts_bytes)
+    let pts = EdgeGeomPointsFile::read_from_bytes_zero_copy_unverified(pts_bytes)
         .with_context(|| "reading shared/edge_geom_points zero-copy")?;
 
     let eg =
