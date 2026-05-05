@@ -98,6 +98,18 @@ impl GbdtModel {
                     .try_into()
                     .expect("4 bytes from a 16-byte buffer"),
             );
+            let reserved = u32::from_le_bytes(
+                head[12..16]
+                    .try_into()
+                    .expect("4 bytes from a 16-byte buffer"),
+            );
+            if reserved != 0 {
+                return Err(anyhow!(
+                    "GBDT model {} has non-zero reserved header field ({reserved:#010x}); \
+                     header bytes [12..16) must be zero — file is corrupt or from a future format",
+                    path.display()
+                ));
+            }
             if schema_version != Features::SCHEMA_VERSION {
                 return Err(anyhow!(
                     "GBDT model {} declares feature schema_version {} but this build expects {} — retrain the model",
@@ -161,19 +173,44 @@ impl GbdtModel {
             .map_err(|e| anyhow!("saving GBDT payload: {e}"))?;
         let payload = std::fs::read(tmp.path()).with_context(|| "reading GBDT payload tempfile")?;
 
-        let mut out = std::fs::File::create(path)
-            .with_context(|| format!("creating model file {}", path.display()))?;
+        // Crash-safe write: temp file in same directory, fsync, then
+        // atomic rename. A mid-write crash leaves either the old file
+        // intact or no temp file at all — never a corrupt destination.
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("model");
+        let tmp_name = format!("{file_name}.tmp.{}", std::process::id());
+        let tmp_path = parent.join(tmp_name);
+
+        let mut out = std::fs::File::create(&tmp_path)
+            .with_context(|| format!("creating temp file {}", tmp_path.display()))?;
         let mut header = [0u8; ENVELOPE_HEADER_BYTES];
         header[0..4].copy_from_slice(&ENVELOPE_MAGIC);
         header[4..8].copy_from_slice(&Features::SCHEMA_VERSION.to_le_bytes());
         header[8..12].copy_from_slice(&(ENVELOPE_HEADER_BYTES as u32).to_le_bytes());
-        // bytes 12..16 are reserved zeros.
-        out.write_all(&header)
-            .with_context(|| format!("writing envelope header to {}", path.display()))?;
-        out.write_all(&payload)
-            .with_context(|| format!("writing GBDT payload to {}", path.display()))?;
-        out.flush()
-            .with_context(|| format!("flushing {}", path.display()))?;
+        // bytes 12..16 are reserved zeros (left as the zero-init from above).
+        let write_result = (|| -> Result<()> {
+            out.write_all(&header)
+                .with_context(|| format!("writing envelope header to {}", tmp_path.display()))?;
+            out.write_all(&payload)
+                .with_context(|| format!("writing GBDT payload to {}", tmp_path.display()))?;
+            out.sync_all()
+                .with_context(|| format!("fsyncing {}", tmp_path.display()))?;
+            Ok(())
+        })();
+        if let Err(e) = write_result {
+            // Best-effort cleanup; ignore unlink failure (the temp file
+            // is harmless, and the original path is still untouched).
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e);
+        }
+        drop(out);
+        std::fs::rename(&tmp_path, path).with_context(|| {
+            format!(
+                "atomically renaming {} -> {}",
+                tmp_path.display(),
+                path.display()
+            )
+        })?;
         Ok(())
     }
 
@@ -395,6 +432,29 @@ mod tests {
         let a = model.predict_one(&f);
         let b = loaded.predict_one(&f);
         assert!((a - b).abs() < 1e-5, "{a} vs {b}");
+    }
+
+    #[test]
+    fn load_rejects_nonzero_reserved_bytes() {
+        // Build a model file with a corrupted reserved field.
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("good.gbdt");
+        let bad = dir.path().join("bad.gbdt");
+        let model = synthetic_model();
+        model.save(&good).unwrap();
+        let mut bytes = std::fs::read(&good).unwrap();
+        // Bytes [12..16) are the reserved field; flip them.
+        bytes[12] = 0xDE;
+        bytes[13] = 0xAD;
+        bytes[14] = 0xBE;
+        bytes[15] = 0xEF;
+        std::fs::write(&bad, &bytes).unwrap();
+        let err = GbdtModel::load(&bad).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("non-zero reserved"),
+            "expected 'non-zero reserved' diagnostic, got: {msg}"
+        );
     }
 
     #[test]
