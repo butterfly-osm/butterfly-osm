@@ -32,10 +32,13 @@
 
 pub mod api;
 pub mod avoid;
+pub mod border;
 pub mod catchment;
+pub mod cross_region;
 pub mod edge_geom;
 pub mod elevation;
 pub mod exclude;
+pub mod overlay;
 // tonic::Status is 176 bytes — the canonical gRPC error type.
 // Every gRPC function returns Result<_, Status>; boxing adds indirection with no benefit.
 #[allow(clippy::result_large_err)]
@@ -180,6 +183,7 @@ pub enum DataSource<'a> {
 }
 
 /// Load all data and start the server(s)
+#[allow(clippy::too_many_arguments)]
 pub async fn serve(
     source: DataSource<'_>,
     port: Option<u16>,
@@ -188,6 +192,7 @@ pub async fn serve(
     mode_filter: Option<&[String]>,
     region_filter: Option<&[String]>,
     load_options: &crate::server::state::LoadOptions,
+    overlay_path: Option<&Path>,
 ) -> Result<()> {
     tracing::info!("Step 9: Starting query server...");
 
@@ -238,11 +243,8 @@ pub async fn serve(
                     );
                 }
                 // load_options carries #160 lazy-CRC + warmup config.
-                let state = ServerState::load_from_container_with_options(
-                    file,
-                    mode_filter,
-                    load_options,
-                )?;
+                let state =
+                    ServerState::load_from_container_with_options(file, mode_filter, load_options)?;
                 let region_id = {
                     use crate::formats::butterfly_dat::Container;
                     let container = Container::open(file)
@@ -254,7 +256,10 @@ pub async fn serve(
                 };
                 let regions_state =
                     regions::RegionsState::from_single(region_id, file.to_path_buf(), state);
-                let parent = file.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+                let parent = file
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .to_path_buf();
                 (regions_state, parent)
             }
         };
@@ -314,6 +319,19 @@ pub async fn serve(
             r.state.ebg_nodes.n_nodes as u64,
             r.state.ebg_csr.n_arcs,
         );
+    }
+
+    // ---- Cross-region overlay (#91 Phase 2) ------------------------
+    if let Some(p) = overlay_path {
+        tracing::info!(path = %p.display(), "loading cross-region overlay");
+        let overlay = overlay::OverlayCluster::load(p)
+            .with_context(|| format!("loading cross-region overlay from {}", p.display()))?;
+        tracing::info!(
+            n_regions = overlay.n_regions(),
+            n_modes = overlay.modes.len(),
+            "overlay loaded"
+        );
+        regions_state.overlay = Some(overlay);
     }
 
     let state = Arc::new(regions_state);

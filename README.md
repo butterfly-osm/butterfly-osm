@@ -227,13 +227,47 @@ curl -s http://localhost:3001/regions
 # Same-region queries route as expected
 curl "http://localhost:3001/route?src_lon=4.35&src_lat=50.85&dst_lon=3.22&dst_lat=51.21&mode=car"
 
-# Cross-region queries return HTTP 501 with a clear error (Phase 2 will
-# add the cross-region overlay):
+# Cross-region queries return HTTP 501 with a clear error unless an
+# overlay is loaded (#91 Phase 2):
 curl -w "\n%{http_code}\n" \
   "http://localhost:3001/route?src_lon=4.35&src_lat=50.85&dst_lon=6.13&dst_lat=49.61&mode=car"
 # {"error":"route spans regions BE → LU; cross-region overlay not yet implemented (#91 Phase 2)"}
 # 501
 ```
+
+#### Cross-region overlay (#91 Phase 2)
+
+The overlay extends multi-region serving with precomputed border-node
+tables and per-(src, dst, mode) distance matrices, so a single P2P
+request can stitch a route across two regions:
+
+```bash
+# 1. Extract cross-region border crossings from per-region containers
+butterfly-route extract-borders \
+  --regions data/belgium/baseline.butterfly data/luxembourg/luxembourg.butterfly \
+  --out data/be-lu-borders.json
+# Real BE+LU output: 8010 crossings in ~67 s, mean edge distance 3.4 m
+
+# 2. Build the overlay container (offline batch — see route/docs/91-overlay-design.md
+#    for the cost analysis; the live BE+LU build needs the optimisations
+#    tracked as follow-ups).
+butterfly-route build-overlay \
+  --regions data/belgium/baseline.butterfly data/luxembourg/luxembourg.butterfly \
+  --modes car --out data/be-lu-overlay.butterfly
+
+# 3. Boot serve with --overlay
+butterfly-route serve --data-dir /srv/regions --overlay data/be-lu-overlay.butterfly
+```
+
+When `--overlay` is supplied, `dispatch_p2p_with_overlay` returns a
+`P2pPlan::CrossRegion` for cross-region queries instead of 501. The
+default `route_handler` continues to use the 501 path so existing
+non-overlay deployments are unchanged.
+
+Algorithm + on-disk format details: `route/docs/91-overlay-design.md`.
+Synthetic 2-region oracle test (verifies the combinator against
+brute-force Dijkstra on the union graph for all 81 src×tgt pairs):
+`route/tests/cross_region_synthetic.rs`.
 
 **Per-region Prometheus metrics** at `/metrics`:
 
