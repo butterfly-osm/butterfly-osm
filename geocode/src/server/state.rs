@@ -34,7 +34,7 @@ use crate::control::admission::AdmissionState;
 use crate::control::{AdmissionPolicy, BudgetPolicy, FanoutConfig, GeneralMetrics};
 use crate::geocoder::executor::ControlPlane;
 use crate::parser::{HeuristicBackend, ParserBackend};
-use crate::routing::CountryId;
+use crate::routing::{Classifier, CountryId, PackRegistry};
 use crate::shard::reader::Shard;
 
 #[derive(Debug)]
@@ -57,6 +57,12 @@ pub struct ServerState {
     /// neural model is loaded; replaced via [`Self::with_parser`] to
     /// dispatch through the neural pipeline (#96 §Tagger + #98 Phase 1).
     pub parser: Arc<dyn ParserBackend>,
+    /// Country classifier (forward routing) + bbox dispatcher
+    /// (reverse routing). Built from the [`PackRegistry`] passed at
+    /// construction time so `--pack-dir` overrides reach query-time
+    /// classification. Defaults to the shipped registry when the
+    /// constructor doesn't take an explicit one.
+    pub classifier: Arc<Classifier>,
 }
 
 impl ServerState {
@@ -109,6 +115,13 @@ impl ServerState {
             budget_policy,
         });
         let admission = AdmissionState::new(admission_policy, metrics);
+        // Default classifier wraps the process-wide singleton over the
+        // shipped registry. Callers that boot via `--pack-dir` replace
+        // this with `with_pack_registry(...)` so the override packs
+        // reach query-time dispatch.
+        let shipped_registry =
+            Arc::new(PackRegistry::shipped().expect("shipped country packs must compile"));
+        let classifier = Arc::new(Classifier::from_registry(shipped_registry));
         Self {
             shards,
             started_at: Instant::now(),
@@ -118,6 +131,7 @@ impl ServerState {
             rerank_model: None,
             confidence_config: ConfidenceConfig::default(),
             parser: Arc::new(HeuristicBackend),
+            classifier,
         }
     }
 
@@ -198,6 +212,15 @@ impl ServerState {
     #[must_use]
     pub fn with_parser(mut self, parser: Arc<dyn ParserBackend>) -> Self {
         self.parser = parser;
+        self
+    }
+
+    /// Replace the classifier with one backed by the supplied
+    /// [`PackRegistry`]. Used by the `serve --pack-dir` boot path so
+    /// override packs reach query-time forward + reverse dispatch.
+    #[must_use]
+    pub fn with_pack_registry(mut self, registry: Arc<PackRegistry>) -> Self {
+        self.classifier = Arc::new(Classifier::from_registry(registry));
         self
     }
 

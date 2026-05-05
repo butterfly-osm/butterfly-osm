@@ -58,12 +58,10 @@ pub fn parse_with_classifier(text: &str) -> ParsedQuery {
 
 fn parse_for_country(text: &str, country: CountryId) -> ParsedQuery {
     let original = text.to_string();
-    let mut hypothesis = ParseHypothesis::default();
     let mut flags = RecoveryFlags::default();
 
     let postcode = extract_postcode_for(text, country);
-    if let Some(ref pc) = postcode {
-        hypothesis.postcode_candidates.push((pc.clone(), 1.0));
+    if postcode.is_some() {
         flags.had_postcode = true;
     }
 
@@ -72,9 +70,23 @@ fn parse_for_country(text: &str, country: CountryId) -> ParsedQuery {
         .map(|pc| strip_token(text, pc))
         .unwrap_or_else(|| text.to_string());
 
+    // Detect whether the postcode appeared *before* or *after* the
+    // bulk of the address. Reordered queries put the postcode first
+    // (`9770 Kruisem René D'Huyvetterstraat 5c`); the standard form
+    // puts it after the street (`René D'Huyvetterstraat 5c, 9770
+    // Kruisem`). The heuristic used to assume the standard form
+    // exclusively — recall@1 on reordered queries cratered to ~2%
+    // because the locality was always taken from the *last* word.
+    let postcode_at_start = postcode
+        .as_ref()
+        .map(|pc| {
+            let trimmed = text.trim_start();
+            trimmed.starts_with(pc.as_str())
+        })
+        .unwrap_or(false);
+
     let house = extract_house_number(&without_postcode);
-    if let Some(ref h) = house {
-        hypothesis.house_candidates.push((h.clone(), 1.0));
+    if house.is_some() {
         flags.had_house_number = true;
     }
 
@@ -84,41 +96,169 @@ fn parse_for_country(text: &str, country: CountryId) -> ParsedQuery {
         .unwrap_or(without_postcode);
 
     let remainder = clean_separators(&without_house);
-    if !remainder.is_empty() {
-        let words: Vec<&str> = remainder.split_whitespace().collect();
-        if words.len() >= 3 {
-            // With a postcode anchor, the LAST word is most likely the
-            // locality (Belgian convention). Split it off the street
-            // candidate so the executor's exact street index hits.
-            let last = words.last().copied().unwrap_or("");
-            let street_part = words[..words.len() - 1].join(" ");
-            if !street_part.is_empty() {
-                hypothesis.street_candidates.push((street_part, 1.0));
-            }
-            if !last.is_empty() {
-                hypothesis.locality_candidates.push((last.to_string(), 0.5));
+    let remainder_words: Vec<String> = remainder
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+
+    // Emit one hypothesis per plausible (street, locality) split.
+    // Each variant becomes its own ParseHypothesis; the executor
+    // canonicalizes + dedups the resulting programs (one per unique
+    // canonical form), so identical splits collapse cleanly.
+    //
+    // Variants (in priority order — the first surviving one becomes
+    // the representative for any deduped equivalence class):
+    //
+    //   1. **last-word-locality** (standard postcode-suffix layout):
+    //       words[..-1] = street, words[-1] = locality.
+    //   2. **first-word-locality** (reordered / postcode-prefix
+    //       layout): words[0] = locality, words[1..] = street.
+    //   3. **two-word-locality** when the remainder has ≥ 4 words:
+    //       words[..-2] = street, words[-2..] = locality (covers
+    //       multi-word names like "La Louvière", "Sint Niklaas").
+    //   4. **whole-remainder-as-street** (low weight): handles
+    //       multi-word streets where the locality is implicit in
+    //       the postcode anchor.
+    //
+    // All variants share the same postcode + housenumber. The
+    // executor's recombination invariant collapses the canonical
+    // forms — we don't worry about over-emission here.
+    let mut hypotheses: Vec<ParseHypothesis> = Vec::new();
+    // Build a fresh hypothesis pre-seeded with the shared
+    // postcode/housenumber. We pass `flags` by reference rather than
+    // capturing — emitting locality variants below mutates `flags`,
+    // and a closure capturing `&flags` would block those edits.
+    fn base_hypothesis(
+        country: CountryId,
+        flags: &RecoveryFlags,
+        postcode: Option<&String>,
+        house: Option<&String>,
+    ) -> ParseHypothesis {
+        let mut h = ParseHypothesis {
+            field_reliability: build_field_mask(flags),
+            retrieval_policy: retrieval_policy_for(country),
+            strictness: Strictness::Exact,
+            ..ParseHypothesis::default()
+        };
+        if let Some(pc) = postcode {
+            h.postcode_candidates.push((pc.clone(), 1.0));
+        }
+        if let Some(hn) = house {
+            h.house_candidates.push((hn.clone(), 1.0));
+        }
+        h
+    }
+    let pc_ref = postcode.as_ref();
+    let hn_ref = house.as_ref();
+
+    if remainder_words.is_empty() {
+        // No remainder — postcode-only / postcode+housenumber-only
+        // query. One hypothesis covers it; the clean fast path
+        // applies.
+        hypotheses.push(base_hypothesis(country, &flags, pc_ref, hn_ref));
+    } else {
+        let n = remainder_words.len();
+
+        // **Primary hypothesis**: matches the original parser's
+        // behaviour exactly so the unambiguous case stays on the
+        // clean fast path AND the executor sees the same scoring
+        // shape it always did. Diversity variants below add
+        // additional hypotheses ONLY when there's positive signal
+        // for ambiguity.
+        //
+        // Splitting policy:
+        //   - n ≥ 3: words[..-1] = street, words[-1] = locality
+        //     (standard layout); add the full remainder as a
+        //     low-weight street candidate to cover multi-word
+        //     streets where the locality is implicit in the
+        //     postcode anchor.
+        //   - n == 2: keep both words as the street; the
+        //     postcode anchor handles disambiguation. The pre-#181
+        //     parser used this same shape and the
+        //     `extract_clean_query_features` regression proved any
+        //     other split produces a low fuzzy match at scoring
+        //     time.
+        //   - n == 1: take the single token as the locality
+        //     candidate.
+        {
+            let mut h = base_hypothesis(country, &flags, pc_ref, hn_ref);
+            if n >= 3 {
+                let last = remainder_words[n - 1].clone();
+                let street_part = remainder_words[..n - 1].join(" ");
+                if !street_part.is_empty() {
+                    h.street_candidates.push((street_part, 1.0));
+                }
+                h.locality_candidates.push((last, 0.5));
+                flags.had_locality = true;
+                // Whole-remainder fallback (low weight) for
+                // multi-word streets.
+                h.street_candidates.push((remainder.clone(), 0.3));
+            } else if n == 2 {
+                // Two tokens: keep them together as the street.
+                // Splitting into street+locality on n==2 produced
+                // low fuzzy match scores in `extract_features`.
+                h.street_candidates.push((remainder.clone(), 1.0));
+            } else {
+                // n == 1: single token after stripping
+                // postcode+house. Treat it as the locality.
+                h.locality_candidates
+                    .push((remainder_words[0].clone(), 0.5));
                 flags.had_locality = true;
             }
-            // Also keep the full remainder as a low-weight street
-            // candidate — covers cases where the locality is multi-word.
-            hypothesis.street_candidates.push((remainder, 0.3));
-        } else {
-            // No postcode → keep both interpretations. The executor's
-            // locality scorer will prefer the right one.
-            hypothesis.street_candidates.push((remainder.clone(), 1.0));
-            if words.len() >= 2 {
-                let last = words.last().copied().unwrap_or("");
-                if !last.is_empty() {
-                    hypothesis.locality_candidates.push((last.to_string(), 0.5));
-                    flags.had_locality = true;
-                }
+            hypotheses.push(h);
+        }
+
+        // **Ambiguity variant — postcode at start (reordered)**.
+        // Emit ONLY when we have explicit signal that the layout is
+        // reordered (`9770 Kruisem René D'Huyvetterstraat 5c`); the
+        // recall@1 on these queries was 2% before this variant
+        // existed because the locality was always taken from the
+        // last word (D'Huyvetterstraat), missing every Kruisem
+        // record. Skipping the variant when the signal is absent
+        // keeps the clean fast path warm for the typical layout.
+        if postcode_at_start && n >= 2 {
+            let first = remainder_words[0].clone();
+            let street_part = remainder_words[1..].join(" ");
+            let mut h = base_hypothesis(country, &flags, pc_ref, hn_ref);
+            if !street_part.is_empty() {
+                h.street_candidates.push((street_part, 1.0));
             }
+            h.locality_candidates.push((first, 0.8));
+            hypotheses.push(h);
+            flags.had_locality = true;
+        }
+
+        // **Ambiguity variant — two-word locality**. Belgian /
+        // French / Spanish localities frequently span two tokens
+        // ("La Louvière", "Saint Niklaas", "Las Rozas"). Without
+        // this hypothesis the street picks up the second locality
+        // word and the street index misses. Emit only when:
+        //   - the remainder has ≥ 4 words so the street fragment
+        //     carries real signal, AND
+        //   - we have a postcode anchor — without it, multiple
+        //     hypotheses widen the executor's budget tier without
+        //     adding signal (the postcode is the strongest blocker
+        //     and the two-word-locality variant only helps when
+        //     paired with it).
+        if n >= 4 && postcode.is_some() {
+            let last_two = remainder_words[n - 2..].join(" ");
+            let street_part = remainder_words[..n - 2].join(" ");
+            let mut h = base_hypothesis(country, &flags, pc_ref, hn_ref);
+            if !street_part.is_empty() {
+                h.street_candidates.push((street_part, 1.0));
+            }
+            h.locality_candidates.push((last_two, 0.4));
+            hypotheses.push(h);
         }
     }
 
-    hypothesis.field_reliability = build_field_mask(&flags);
-    hypothesis.retrieval_policy = retrieval_policy_for(country);
-    hypothesis.strictness = Strictness::Exact;
+    // Defensive: if we somehow emitted nothing (empty input), keep
+    // the ParsedQuery::is_clean() invariant alive with one empty
+    // hypothesis. The executor's empty-program check returns no
+    // results anyway.
+    if hypotheses.is_empty() {
+        hypotheses.push(base_hypothesis(country, &flags, pc_ref, hn_ref));
+    }
 
     let confidence = score_confidence(&flags);
 
@@ -128,7 +268,7 @@ fn parse_for_country(text: &str, country: CountryId) -> ParsedQuery {
         // for the clean-query path; `parse_with_classifier` keeps
         // the full posterior. We populate a placeholder here.
         country_candidates: vec![(country, 1.0)],
-        hypotheses: vec![hypothesis],
+        hypotheses,
         global_confidence: confidence,
         recovery_flags: flags,
         execution_budget: ExecutionBudget::default(),
@@ -352,6 +492,73 @@ mod tests {
         let h = &q.hypotheses[0];
         // L-2453 is canonicalized to bare 2453 for shard lookup.
         assert_eq!(h.postcode_candidates[0].0, "2453");
+    }
+
+    #[test]
+    fn reordered_query_emits_first_word_locality_hypothesis() {
+        // Bench shape: `9770 Kruisem René D'Huyvetterstraat 5c`.
+        // The standard (last-word-locality) hypothesis would label
+        // `D'Huyvetterstraat` as the locality and `Kruisem René` as
+        // the street, missing every Kruisem record. The
+        // postcode-at-start ambiguity variant emits a hypothesis
+        // with `Kruisem` as the locality.
+        let q = parse_heuristic("9770 Kruisem René D'Huyvetterstraat 5c", CountryId::BE);
+        assert!(
+            q.hypotheses.len() >= 2,
+            "reordered query must emit ≥ 2 hypotheses (got {})",
+            q.hypotheses.len()
+        );
+        let has_kruisem = q.hypotheses.iter().any(|h| {
+            h.locality_candidates
+                .iter()
+                .any(|(loc, _)| loc.eq_ignore_ascii_case("Kruisem"))
+        });
+        assert!(
+            has_kruisem,
+            "expected at least one hypothesis with locality=Kruisem; got: {:?}",
+            q.hypotheses
+                .iter()
+                .map(|h| h.locality_candidates.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn standard_query_keeps_clean_fast_path() {
+        // The Zero-Cost-on-Clean-Queries NFR depends on
+        // `is_clean()` being true for the typical postcode-suffix
+        // form. The hypothesis-diversity work must not regress this
+        // for the common shape — we only emit ≥ 2 hypotheses when we
+        // have positive signal that the layout is ambiguous.
+        let q = parse_heuristic("Rue Wayez 122 1070 Anderlecht", CountryId::BE);
+        assert!(
+            q.is_clean(),
+            "standard postcode-suffix layout must keep is_clean()==true; got {} hypotheses",
+            q.hypotheses.len()
+        );
+    }
+
+    #[test]
+    fn multi_word_locality_query_emits_two_word_locality_variant() {
+        // `Rue Hamoir 21, 7100 La Louvière` — the standard split
+        // names `Louvière` as the locality and `Rue Hamoir 21 La` as
+        // the street, missing the actual `La Louvière` locality.
+        // The two-word-locality variant labels `La Louvière` as
+        // locality.
+        let q = parse_heuristic("Rue Hamoir 21 7100 La Louvière", CountryId::BE);
+        let has_la_louviere = q.hypotheses.iter().any(|h| {
+            h.locality_candidates
+                .iter()
+                .any(|(loc, _)| loc.eq_ignore_ascii_case("La Louvière"))
+        });
+        assert!(
+            has_la_louviere,
+            "expected at least one hypothesis with locality='La Louvière'; got: {:?}",
+            q.hypotheses
+                .iter()
+                .map(|h| h.locality_candidates.clone())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

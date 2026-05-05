@@ -353,7 +353,7 @@ pub fn dedup_canonical(programs: Vec<(Op, f32)>) -> Vec<(Op, f32)> {
     out
 }
 
-/// Dedup a list of `(program, hypothesis, final_logprob)` triples by
+/// Dedup a list of `(program, hypothesis, src_score)` triples by
 /// canonical form, paired with their source [`ParseHypothesis`].
 ///
 /// This is the primary multi-hypothesis dedup entry point. Per #96 the
@@ -362,10 +362,13 @@ pub fn dedup_canonical(programs: Vec<(Op, f32)>) -> Vec<(Op, f32)> {
 /// hypotheses. When multiple hypotheses canonicalize to the same
 /// program, we merge them by:
 ///
-/// - **`final_logprob`**: max across the group (consistent with the
-///   `max` source-score policy in [`dedup_canonical`]).
-/// - **Representative hypothesis**: the one with the highest input
-///   `final_logprob` — its parsed fields seed downstream scoring so the
+/// - **`src_score`**: max across the group (consistent with the
+///   `max` source-score policy in [`dedup_canonical`]). Note: callers
+///   pass the hypothesis-derived **source score** (the value
+///   `build_program` returns), NOT the parser's raw `final_logprob`.
+///   The historical name was misleading; the contract is now explicit.
+/// - **Representative hypothesis**: the one with the higher input
+///   `src_score` — its parsed fields seed downstream scoring so the
 ///   strongest signal wins.
 ///
 /// The fast path (≤ 1 input) avoids the comparison loop; this matters
@@ -379,23 +382,53 @@ pub fn dedup_canonical_with_hyp(
     if programs.len() <= 1 {
         return programs
             .into_iter()
-            .map(|(p, h, lp)| (p.canonicalize(), h, lp))
+            .map(|(p, h, src_score)| (p.canonicalize(), h, src_score))
             .collect();
     }
     let mut out: Vec<(Op, ParseHypothesis, f32)> = Vec::with_capacity(programs.len());
-    for (p, h, lp) in programs {
+    for (p, h, src_score) in programs {
         let canon = p.canonicalize();
         if let Some(idx) = out.iter().position(|(o, _, _)| o == &canon) {
             // Merge into existing entry: keep the representative
-            // hypothesis with the higher source logprob, take max
-            // final_logprob.
+            // hypothesis with the higher source score, take max
+            // src_score.
             let existing = &mut out[idx];
-            if lp > existing.2 {
+            if src_score > existing.2 {
                 existing.1 = h;
-                existing.2 = lp;
+                existing.2 = src_score;
             }
         } else {
-            out.push((canon, h, lp));
+            out.push((canon, h, src_score));
+        }
+    }
+    out
+}
+
+/// Dedup variant for callers who have **already canonicalized** their
+/// programs and want to skip the second canonicalize pass inside the
+/// hot loop. Behavior is otherwise identical to
+/// [`dedup_canonical_with_hyp`].
+///
+/// The executor's main path uses this: `build_program` returns a raw
+/// op which is canonicalized once on the way in, and we don't need to
+/// canonicalize again here.
+#[must_use]
+pub fn dedup_already_canonical_with_hyp(
+    programs: Vec<(Op, ParseHypothesis, f32)>,
+) -> Vec<(Op, ParseHypothesis, f32)> {
+    if programs.len() <= 1 {
+        return programs;
+    }
+    let mut out: Vec<(Op, ParseHypothesis, f32)> = Vec::with_capacity(programs.len());
+    for (p, h, src_score) in programs {
+        if let Some(idx) = out.iter().position(|(o, _, _)| o == &p) {
+            let existing = &mut out[idx];
+            if src_score > existing.2 {
+                existing.1 = h;
+                existing.2 = src_score;
+            }
+        } else {
+            out.push((p, h, src_score));
         }
     }
     out

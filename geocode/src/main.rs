@@ -432,12 +432,12 @@ async fn main() -> Result<()> {
             // (default) or shipped + override directory. Done at CLI
             // level so a bad pack drop fails the boot loudly rather
             // than silently degrading classifier accuracy.
-            let pack_registry = match pack_dir.as_deref() {
+            let pack_registry = std::sync::Arc::new(match pack_dir.as_deref() {
                 Some(d) => butterfly_geocode::routing::PackRegistry::shipped_with_overrides(d)
                     .with_context(|| format!("loading pack overrides from {}", d.display()))?,
                 None => butterfly_geocode::routing::PackRegistry::shipped()
                     .context("loading shipped country packs")?,
-            };
+            });
             info!(
                 packs = pack_registry.len(),
                 pack_dir = ?pack_dir,
@@ -465,6 +465,7 @@ async fn main() -> Result<()> {
                 retrieval_utility_model.as_deref(),
                 server_cfg,
                 std::time::Duration::from_secs(shutdown_timeout_secs),
+                pack_registry,
             )
             .await
         }
@@ -576,12 +577,26 @@ fn build_shard_cmd(
     } else if let Some(csv_path) = csv {
         let tag_str = source.ok_or_else(|| {
             anyhow!(
-                "--csv requires --source <openaddresses|oa|osm> so the shard byte is set explicitly"
+                "--csv requires --source <openaddresses|oa> so the shard byte is set explicitly. \
+                 OSM data lives in PBF and is consumed via --pbf, not --csv — there is no \
+                 OSM-CSV ingest path."
             )
         })?;
         let tag = SourceTag::from_name(tag_str).ok_or_else(|| {
-            anyhow!("unknown --source '{tag_str}' (supported: osm, openaddresses (alias oa))")
+            anyhow!("unknown --source '{tag_str}' (supported: openaddresses (alias oa))")
         })?;
+        // The previous wording listed `osm` as a valid `--source` for
+        // `--csv`, but `load_addr_source` only knows OpenAddresses
+        // and aborts on every other tag. Rejecting the combination
+        // upfront produces a usable error before any work starts.
+        if tag != SourceTag::OpenAddresses {
+            bail!(
+                "--csv only supports --source openaddresses (or alias oa). \
+                 Got --source={}. For OSM data use --pbf <PATH> instead — there is no \
+                 OSM-CSV ingest path today.",
+                tag.name()
+            );
+        }
         info!(
             csv = %csv_path.display(),
             country = country.iso2(),
@@ -861,16 +876,64 @@ fn build_shards_all_cmd(
     Ok(())
 }
 
+/// Per-country coverage manifest: the set of `[[address]]` entry IDs
+/// that together provide complete national coverage. When `Some(ids)`
+/// is returned, `try_authoritative_build` REQUIRES every id to be
+/// staged on disk; otherwise the build falls back to PBF (which has
+/// always-complete national coverage).
+///
+/// `None` means "use whatever is staged" — historic behaviour for
+/// countries where the partial/full distinction doesn't apply.
+///
+/// Why declared in code rather than in `dl/regions/*.toml`:
+/// `butterfly-dl::regions` doesn't currently model coverage policy
+/// (issue out of scope here); the policy lives next to the build
+/// command that consumes it. When `dl/` grows a `coverage_complete`
+/// field per region this function becomes a one-line lookup.
+fn coverage_complete_ids(c: CountryId) -> Option<&'static [&'static str]> {
+    if c == CountryId::BE {
+        // BOSA / OpenAddresses: each region (Brussels, Flanders,
+        // Wallonia) is published in two languages — picking one
+        // language per region gives full national coverage. Any one
+        // of these IDs missing means the country is not fully
+        // represented; we'd silently drop entire regions if we built
+        // an authoritative-only shard.
+        Some(&["oa-be-bru-fr", "oa-be-vlg-nl", "oa-be-wal-fr"])
+    } else if c == CountryId::DE {
+        // 14 German state OA packs (Berlin and Bayern are not in the
+        // shipped index today — the OA upstream doesn't publish a
+        // single-pack feed for them, so the index treats their
+        // territory as PBF-only).
+        Some(&[
+            "oa-de-nw", "oa-de-bw", "oa-de-ni", "oa-de-he", "oa-de-rp", "oa-de-sn", "oa-de-bb",
+            "oa-de-sh", "oa-de-st", "oa-de-th", "oa-de-mv", "oa-de-sl", "oa-de-hh", "oa-de-hb",
+        ])
+    } else {
+        None
+    }
+}
+
 /// If the region index for `c` ships `[[address]]` entries with
 /// staged files under `<pbf_dir>/addresses/`, build the country shard
 /// from the authoritative source(s). Returns `Ok(true)` when a shard
-/// was written; `Ok(false)` when no authoritative source is available;
-/// `Err` on a build failure (caller should fall back to PBF/OSM).
+/// was written; `Ok(false)` when no authoritative source is available
+/// **or** when coverage is partial and the caller should fall back
+/// to PBF; `Err` on a build failure (caller should fall back to
+/// PBF/OSM).
 ///
-/// Today only BOSA (BE) is wired — the BOSA loader is the single
-/// authoritative source the geocode crate knows how to ingest. As
-/// BAN/BAG/etc. land they get a new arm here AND a new arm in
-/// `load_csv_source` (geocode/src/main.rs:`build_shard_cmd`).
+/// Coverage policy: when [`coverage_complete_ids`] declares a
+/// complete-coverage set for the country, EVERY id in that set must
+/// be staged on disk before we use the authoritative-only path —
+/// otherwise we'd silently drop entire regions (Belgium minus
+/// Wallonia, Germany minus 13 of 14 states, …). Partial sets log a
+/// WARN and return `Ok(false)` so the caller falls through to PBF.
+///
+/// Today only BOSA / OpenAddresses ingestion is wired — the BOSA
+/// loader is the authoritative source the geocode crate knows how
+/// to ingest, alongside the OpenAddresses streaming loader (#96
+/// §"Data Sources"). As BAN/BAG/etc. land they get a new arm here
+/// AND a new arm in `load_csv_source` (geocode/src/main.rs:
+/// `build_shard_cmd`).
 fn try_authoritative_build(
     c: CountryId,
     pbf_dir: &std::path::Path,
@@ -915,20 +978,48 @@ fn try_authoritative_build(
     // Walk the [[address]] section, collect every entry with both a
     // known loader AND a staged file on disk.
     let mut staged: Vec<(PathBuf, &'static str)> = Vec::new();
+    let mut staged_ids: Vec<String> = Vec::new();
     for entry in &region_index.address {
         let tag = entry.source.as_deref().unwrap_or("");
         let static_tag: &'static str = match tag {
             "bosa" => "bosa",
+            "openaddresses" | "oa" => "openaddresses",
             // BAN/BAG/G-NAF/BEV/swisstopo lack loaders today; ignore.
             _ => continue,
         };
         let candidate = addresses_dir.join(format!("{}.{}", entry.id, address_extension(entry)));
         if candidate.is_file() {
             staged.push((candidate, static_tag));
+            staged_ids.push(entry.id.clone());
         }
     }
     if staged.is_empty() {
         return Ok(false);
+    }
+
+    // Coverage policy: if the country has a declared complete-set, every
+    // ID in that set must be present on disk; otherwise we'd silently
+    // build an authoritative-only shard with regional gaps (e.g. all of
+    // Wallonia missing, or 13 of 14 German states missing). Falling
+    // back to PBF is the safe choice.
+    if let Some(required) = coverage_complete_ids(c) {
+        let staged_set: std::collections::HashSet<&str> =
+            staged_ids.iter().map(String::as_str).collect();
+        let missing: Vec<&&str> = required
+            .iter()
+            .filter(|id| !staged_set.contains(*id))
+            .collect();
+        if !missing.is_empty() {
+            warn!(
+                country = c.iso2(),
+                staged_ids = ?staged_ids,
+                missing_ids = ?missing,
+                required = ?required,
+                "authoritative-source coverage is incomplete for {}; falling back to PBF (set --pbf-dir/addresses with the full coverage set to use authoritative ingest)",
+                c.iso2()
+            );
+            return Ok(false);
+        }
     }
 
     let out = out_dir.join(format!("{}.bfgs", c.iso2().to_ascii_lowercase()));
@@ -1017,7 +1108,11 @@ fn candidate_pbf_names(c: CountryId) -> Vec<String> {
     } else if c == CountryId::IT {
         "italy"
     } else if c == CountryId::US {
-        "us"
+        // butterfly-dl's region index stages the file as
+        // `united-states.pbf`. The shorter `us.pbf` form was the old
+        // convention; keep both via the alias list below so manually
+        // staged files under either name still get picked up.
+        "united-states"
     } else if c == CountryId::JP {
         "japan"
     } else if c == CountryId::BR {
@@ -1034,6 +1129,15 @@ fn candidate_pbf_names(c: CountryId) -> Vec<String> {
         v.push(format!("{long}.pbf"));
         v.push(format!("{long}.osm.pbf"));
         v.push(format!("{long}-latest.osm.pbf"));
+    }
+    // Country-specific aliases for filenames that don't follow the
+    // single canonical Geofabrik long name. `united-states` is the
+    // butterfly-dl region index canonical; `us` is the historical
+    // operator shorthand. Keep both in the probe list.
+    if c == CountryId::US {
+        v.push("us.pbf".to_string());
+        v.push("us.osm.pbf".to_string());
+        v.push("us-latest.osm.pbf".to_string());
     }
     v.push(format!("{}.pbf", c.iso2().to_ascii_lowercase()));
     v.push(format!("{}.osm.pbf", c.iso2().to_ascii_lowercase()));
@@ -1108,6 +1212,7 @@ async fn serve_cmd(
     retrieval_utility_model_path: Option<&std::path::Path>,
     server_cfg: ServerConfig,
     shutdown_timeout: std::time::Duration,
+    pack_registry: Arc<butterfly_geocode::routing::PackRegistry>,
 ) -> Result<()> {
     // Resolve the retrieval-utility scorer first so we can plumb it
     // through to the neural parser at construction time. `learned`
@@ -1207,6 +1312,7 @@ async fn serve_cmd(
         }
     };
     state = state.with_parser(parser_backend);
+    state = state.with_pack_registry(pack_registry);
     if let Some(p) = rerank_model_path {
         info!(model = %p.display(), "loading GBDT reranker");
         let model = GbdtModel::load(p).context("loading reranker")?;
@@ -1263,14 +1369,16 @@ async fn serve_cmd(
     let rest_fut: std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> =
         if let Some(listener) = rest_listener {
             let (app, gc_handle) = build_router_with_config(Arc::clone(&state), server_cfg.clone());
-            // Spawn the per-IP map garbage-collector once we're inside
-            // a Tokio runtime context. `spawn_governor_gc` is
-            // idempotent across this fn — only the first call per
-            // process actually spawns.
-            butterfly_geocode::server::spawn_governor_gc(gc_handle);
+            // Spawn the per-IP map garbage-collector inside the Tokio
+            // runtime. The returned `StartedGovernorGc` aborts the GC
+            // task on drop, so we move it into the REST future so the
+            // task lives exactly as long as the server does. No more
+            // process-wide OnceLock — every router built in this
+            // process gets its own GC, every one cleans up on drop.
+            let started_gc = butterfly_geocode::server::spawn_governor_gc(gc_handle);
             let serve_shutdown = Arc::clone(&shutdown);
             Box::pin(async move {
-                axum::serve(
+                let result = axum::serve(
                     listener,
                     app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
                 )
@@ -1278,7 +1386,13 @@ async fn serve_cmd(
                     serve_shutdown.notified().await;
                 })
                 .await
-                .context("REST server crashed")
+                .context("REST server crashed");
+                // Drop the GC AFTER the server is fully shut down so
+                // we don't abort it mid-request. `drop` is explicit
+                // here for documentation, even though falling out of
+                // scope would do the same.
+                drop(started_gc);
+                result
             })
         } else {
             Box::pin(async { std::future::pending::<Result<()>>().await })

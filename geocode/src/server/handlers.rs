@@ -42,7 +42,7 @@ use crate::control::budget::compute_budget;
 use crate::geocoder::executor::{
     GeocodedResult, apply_rerank, build_nearest_result, execute_with_control, reason,
 };
-use crate::routing::{CountryId, classify_country, supported_countries_for_point};
+use crate::routing::CountryId;
 use crate::shard::reader::haversine_m;
 
 #[derive(Debug, Deserialize)]
@@ -113,7 +113,7 @@ pub async fn forward(
             c
         }
         None => {
-            let posterior = classify_country(&params.q);
+            let posterior = state.classifier.classify(&params.q);
             match state.pick_shard(&posterior) {
                 Some((c, _)) => c,
                 None => {
@@ -134,7 +134,8 @@ pub async fn forward(
     // async caller can dispatch on each independently without nested
     // `Result<Result<...>>` gymnastics.
     enum Outcome {
-        Ok(Vec<GeocodedResult>, Confidence),
+        // (final candidates, action, raw_count_pre_rerank)
+        Ok(Vec<GeocodedResult>, Confidence, usize),
         ParserFailed(String, &'static str),
         Admission(crate::control::AdmissionError),
     }
@@ -171,6 +172,7 @@ pub async fn forward(
             Ok(r) => r,
             Err(e) => return Outcome::Admission(e),
         };
+        let raw_count = raw.len();
         let (mut ranked, action) = apply_rerank(
             raw,
             &parsed,
@@ -182,11 +184,11 @@ pub async fn forward(
         for r in &mut ranked {
             r.country = Some(dispatch_country.iso2());
         }
-        Outcome::Ok(ranked, action)
+        Outcome::Ok(ranked, action, raw_count)
     })
     .await;
-    let (results, action) = match join_result {
-        Ok(Outcome::Ok(r, a)) => (r, a),
+    let (results, action, raw_count) = match join_result {
+        Ok(Outcome::Ok(r, a, c)) => (r, a, c),
         Ok(Outcome::ParserFailed(msg, name)) => {
             tracing::error!(error = %msg, parser = %name, "parser failed");
             return error_response(
@@ -211,10 +213,14 @@ pub async fn forward(
         geojson_response(&results, include_debug, action)
     } else {
         // On reject the rerank layer drops every candidate. Surface
-        // `BELOW_THRESHOLD` on the response envelope so clients can
-        // distinguish "no results" from "results below the action
-        // threshold" without re-deriving from the score.
-        let reason_codes = if matches!(action, Confidence::Reject) {
+        // `BELOW_THRESHOLD` ONLY when the executor produced ≥ 1
+        // candidate AND the rerank action threshold cleared them all
+        // — this is the case the code clients want to distinguish from
+        // "the executor genuinely found nothing". If `raw_count == 0`
+        // the rejection is empty-by-construction (no postings hit, no
+        // anchors satisfied) and we omit the reason code so clients
+        // see action=`reject` with no `BELOW_THRESHOLD` claim.
+        let reason_codes = if matches!(action, Confidence::Reject) && raw_count > 0 {
             Some(vec![crate::confidence::RC_BELOW_THRESHOLD.to_string()])
         } else {
             None
@@ -287,13 +293,13 @@ pub async fn reverse(
         let candidate_countries: Vec<CountryId> = if let Some(c) = pinned {
             vec![c]
         } else {
-            let mut candidates = supported_countries_for_point(lat, lon);
+            let mut candidates = state_clone.classifier.supported_for_point(lat, lon);
             // Sort by bbox area ascending = smallest-bbox-first
             // heuristic. The smallest containing bbox is most
             // commonly the right country (typical case: the point
             // lives squarely inside the smaller of two overlapping
             // bboxes).
-            let registry = crate::routing::Classifier::shipped().registry();
+            let registry = state_clone.classifier.registry();
             candidates.sort_by(|a, b| {
                 let area = |c: &CountryId| {
                     registry
