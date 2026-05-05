@@ -176,6 +176,26 @@ pub enum SectionKind {
     /// `EdgeGeomOffsets`.
     EdgeGeomPoints = 0x000C_0002,
 
+    /// Cross-region overlay manifest (#91 Phase 2). JSON metadata:
+    /// region order, mode list, border-crossing count, build provenance.
+    /// Section name is `overlay/manifest.json`.
+    OverlayManifest = 0x000D_0001,
+    /// Cross-region overlay border-node table (#91 Phase 2). Flat
+    /// `[BorderNodeRecord]` — one per (region, ebg_node) endpoint of an
+    /// extracted cross-region edge. Section name is `overlay/border_nodes`.
+    OverlayBorderNodes = 0x000D_0002,
+    /// Cross-region overlay border-to-border CCH P2P matrix (#91 Phase 2).
+    /// One section per (src_region, dst_region, mode) triple. Row-major
+    /// `[u32]` of size `n_src_borders * n_dst_borders`, weight in mode
+    /// units (deciseconds for time, mm for distance) with `u32::MAX` for
+    /// unreachable. Section name carries `(src, dst, mode)`.
+    OverlayMatrix = 0x000D_0003,
+    /// Cross-region overlay border-crossing edges (#91 Phase 2). Flat
+    /// `[BorderCrossingRecord]` — per-pair haversine distance + the two
+    /// endpoint indices into the `OverlayBorderNodes` table. Section name
+    /// is `overlay/crossings`.
+    OverlayCrossings = 0x000D_0004,
+
     /// Future / unrecognised. Readers that see this should fall back
     /// to the section name string.
     Unknown = 0xFFFF_FFFF,
@@ -229,6 +249,11 @@ impl SectionKind {
             0x000C_0001 => Self::EdgeGeomOffsets,
             0x000C_0002 => Self::EdgeGeomPoints,
 
+            0x000D_0001 => Self::OverlayManifest,
+            0x000D_0002 => Self::OverlayBorderNodes,
+            0x000D_0003 => Self::OverlayMatrix,
+            0x000D_0004 => Self::OverlayCrossings,
+
             _ => Self::Unknown,
         }
     }
@@ -267,6 +292,10 @@ impl SectionKind {
             Self::SnapModeMask => "mode/snap_mask",
             Self::EdgeGeomOffsets => "shared/edge_geom_offsets",
             Self::EdgeGeomPoints => "shared/edge_geom_points",
+            Self::OverlayManifest => "overlay/manifest.json",
+            Self::OverlayBorderNodes => "overlay/border_nodes",
+            Self::OverlayMatrix => "overlay/matrix",
+            Self::OverlayCrossings => "overlay/crossings",
             Self::Unknown => "unknown",
         }
     }
