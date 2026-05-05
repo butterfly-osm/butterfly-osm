@@ -42,7 +42,7 @@ use crate::control::budget::compute_budget;
 use crate::geocoder::executor::{
     GeocodedResult, apply_rerank, build_nearest_result, execute_with_control, reason,
 };
-use crate::routing::{CountryId, classify_country, country_for_point};
+use crate::routing::{CountryId, classify_country, supported_countries_for_point};
 use crate::shard::reader::haversine_m;
 
 #[derive(Debug, Deserialize)]
@@ -277,7 +277,36 @@ pub async fn reverse(
 
     let state_clone = Arc::clone(&state);
     let results = match tokio::task::spawn_blocking(move || -> Vec<GeocodedResult> {
-        let target_country: Option<CountryId> = pinned.or_else(|| country_for_point(lat, lon));
+        // Reverse dispatch: instead of picking the smallest-bbox
+        // country (which loses Aachen → DE because BE has the smaller
+        // bbox), gather every country whose bbox contains the point
+        // and try each loaded shard in order. Order: smallest-bbox
+        // first as a heuristic to try the most-specific country
+        // before fanning out. With a pinned country we still honour
+        // the pin.
+        let candidate_countries: Vec<CountryId> = if let Some(c) = pinned {
+            vec![c]
+        } else {
+            let mut candidates = supported_countries_for_point(lat, lon);
+            // Sort by bbox area ascending = smallest-bbox-first
+            // heuristic. The smallest containing bbox is most
+            // commonly the right country (typical case: the point
+            // lives squarely inside the smaller of two overlapping
+            // bboxes).
+            let registry = crate::routing::Classifier::shipped().registry();
+            candidates.sort_by(|a, b| {
+                let area = |c: &CountryId| {
+                    registry
+                        .get(*c)
+                        .map(|p| p.bbox.area_deg2())
+                        .unwrap_or(f64::INFINITY)
+                };
+                area(a)
+                    .partial_cmp(&area(b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            candidates
+        };
 
         let query_shard =
             |shard: &crate::shard::reader::Shard, c: CountryId| -> Vec<GeocodedResult> {
@@ -292,37 +321,61 @@ pub async fn reverse(
                 results
             };
 
-        // Path A: targeted country has a loaded shard.
-        if let Some(c) = target_country
-            && let Some(shard) = state_clone.shards.get(&c)
-        {
-            let results = query_shard(shard, c);
-            if !results.is_empty() {
-                return results;
-            }
-            // Out-of-radius fallback for the targeted shard.
-            if let Some(rec) = shard.nearest(lat, lon) {
-                let _dist = haversine_m(lat, lon, rec.lat, rec.lon);
-                let mut r = build_nearest_result(&rec, 0.0, reason::NEAREST_OUT_OF_RADIUS);
-                r.country = Some(c.iso2());
-                return vec![r];
+        // Path A: walk every loaded shard for the candidate countries
+        // (in order). Return the first non-empty within-radius set so
+        // the targeted shard (smallest bbox) wins when it has results.
+        for &c in &candidate_countries {
+            if let Some(shard) = state_clone.shards.get(&c) {
+                let results = query_shard(shard, c);
+                if !results.is_empty() {
+                    return results;
+                }
             }
         }
 
-        // Path B: no targeted country (point outside known bboxes) or
-        // targeted country has no shard. Query every loaded shard,
-        // merge, rerank.
-        let mut all: Vec<GeocodedResult> = Vec::new();
-        for (&c, shard) in &state_clone.shards {
-            all.extend(query_shard(shard, c));
+        // Path B: no in-radius hit anywhere. Out-of-radius fallback —
+        // try the candidate shards in order, then any other loaded
+        // shard the bbox didn't list. Surface the closest one. This
+        // handles the case where the bbox heuristic was wrong (e.g.
+        // a point right on the border) AND the case where the point
+        // sits outside every loaded bbox entirely.
+        let mut tried: std::collections::HashSet<CountryId> =
+            std::collections::HashSet::with_capacity(candidate_countries.len());
+        let mut best: Option<(f64, GeocodedResult)> = None;
+        // Helper closure body inlined twice to avoid sharing a mutable
+        // capture: `tried` is read in the second loop for membership
+        // and would conflict with the closure's mutable borrow.
+        for &c in &candidate_countries {
+            if let Some(shard) = state_clone.shards.get(&c) {
+                tried.insert(c);
+                if let Some(rec) = shard.nearest(lat, lon) {
+                    let dist = haversine_m(lat, lon, rec.lat, rec.lon);
+                    let mut r = build_nearest_result(&rec, 0.0, reason::NEAREST_OUT_OF_RADIUS);
+                    r.country = Some(c.iso2());
+                    if best.as_ref().map(|(d, _)| dist < *d).unwrap_or(true) {
+                        best = Some((dist, r));
+                    }
+                }
+            }
         }
-        all.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        all.truncate(limit);
-        all
+        for (&c, shard) in &state_clone.shards {
+            if tried.contains(&c) {
+                continue;
+            }
+            if let Some(rec) = shard.nearest(lat, lon) {
+                let dist = haversine_m(lat, lon, rec.lat, rec.lon);
+                let mut r = build_nearest_result(&rec, 0.0, reason::NEAREST_OUT_OF_RADIUS);
+                r.country = Some(c.iso2());
+                if best.as_ref().map(|(d, _)| dist < *d).unwrap_or(true) {
+                    best = Some((dist, r));
+                }
+            }
+        }
+        if let Some((_, r)) = best {
+            return vec![r];
+        }
+
+        Vec::new()
     })
     .await
     {
@@ -473,6 +526,16 @@ struct ForwardItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     reason_codes: Option<Vec<String>>,
 }
+
+// NOTE on per-record source field: PR #173 Copilot finding §5 asks
+// for a `source` field on this envelope mirroring the BFGS v4
+// per-record source byte. The byte IS persisted at shard build time
+// (handlers/executors honour it), but exposing it on the JSON
+// envelope requires plumbing `SourceTag` through `GeocodedResult`,
+// which lives in `geocoder/executor.rs` — outside this PR's
+// territory. Tracked as a follow-up against the executor module.
+// The README has been adjusted to describe the byte's audit role at
+// shard level rather than promising an API field.
 
 impl ForwardItem {
     fn from(r: &GeocodedResult, include_debug: bool) -> Self {

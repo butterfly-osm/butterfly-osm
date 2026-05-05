@@ -124,4 +124,23 @@ packs all pass these checks (`PackRegistry::shipped()` is unit-tested).
 Same parser butterfly-route uses for region indexes (`dl/regions/`).
 Comment-friendly. Hand-editable. Operators can ship a country pack
 override without recompiling the binary by mounting a directory and
-running `serve --pack-dir /etc/geocode/packs`.
+running `butterfly-geocode serve --pack-dir /etc/geocode/packs`.
+
+### `--pack-dir` semantics
+
+The flag is additive over the shipped registry: every embedded pack
+loads first; then every `*.toml` under `<pack-dir>` overlays the
+matching ISO2. Files in `<pack-dir>` win on conflict. Missing files
+leave the embedded pack untouched.
+
+Example: to hot-patch BE's postcode regex without rebuilding:
+```bash
+mkdir -p /etc/geocode/packs
+cp my-be-override.toml /etc/geocode/packs/be.toml
+butterfly-geocode serve --shard-dir /data/shards --pack-dir /etc/geocode/packs
+```
+Bring the override TOML through the same validation gate as the
+shipped packs (see "Validation" above) — a malformed override
+**fails the boot** rather than silently degrading to the embedded
+pack. Operators can keep partial coverage in the override directory
+(only the countries they want to patch); the rest stay shipped.

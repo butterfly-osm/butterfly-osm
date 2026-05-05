@@ -3,6 +3,18 @@
 //! Two-pass: first pass collects node coordinates and emits node
 //! addresses; second pass resolves way addresses by averaging
 //! resolved node coordinates (centroid proxy).
+//!
+//! ## Per-country OSM tag overrides (#96)
+//!
+//! Most countries follow the standard OSM tagging convention
+//! (`addr:street` + `addr:housenumber`). A few don't — Japan publishes
+//! whole addresses through `addr:full` because its addressing model is
+//! block-based; some countries override `addr:city` etc. The country
+//! pack carries those overrides via [`crate::routing::pack::OsmTags`];
+//! [`extract_addresses_with_tags`] threads them through.
+//!
+//! [`extract_addresses`] is the legacy zero-config entrypoint that
+//! uses the standard OSM keys.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -10,7 +22,19 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use osmpbf::{Element, ElementReader};
 
+use crate::routing::pack::OsmTags;
 use crate::shard::{AddressRecord, SourceTag};
+
+/// Standard OSM `addr:*` tag mapping. Used by [`extract_addresses`]
+/// when no country pack is provided.
+fn default_tags() -> OsmTags {
+    OsmTags {
+        postcode: "addr:postcode".to_string(),
+        street: "addr:street".to_string(),
+        housenumber: "addr:housenumber".to_string(),
+        city: "addr:city".to_string(),
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum ExtractProgress {
@@ -29,6 +53,20 @@ pub enum ExtractProgress {
 
 pub fn extract_addresses<P: AsRef<Path>>(
     pbf_path: P,
+    progress: impl FnMut(ExtractProgress),
+) -> Result<Vec<AddressRecord>> {
+    let tags = default_tags();
+    extract_addresses_with_tags(pbf_path, &tags, progress)
+}
+
+/// Like [`extract_addresses`] but consults `tags` (per-country pack
+/// override) when resolving the canonical street/postcode/etc. tags.
+/// `tags.street` falls back through `addr:full` and `addr:place`
+/// regardless of the override so block-based / place-based addresses
+/// continue to work.
+pub fn extract_addresses_with_tags<P: AsRef<Path>>(
+    pbf_path: P,
+    tags: &OsmTags,
     mut progress: impl FnMut(ExtractProgress),
 ) -> Result<Vec<AddressRecord>> {
     let path = pbf_path.as_ref();
@@ -50,7 +88,7 @@ pub fn extract_addresses<P: AsRef<Path>>(
             Element::Node(node) => {
                 nodes_seen += 1;
                 node_coords.insert(node.id(), (node.lat(), node.lon()));
-                if let Some(rec) = tags_to_address(node.lat(), node.lon(), node.tags()) {
+                if let Some(rec) = tags_to_address(node.lat(), node.lon(), node.tags(), tags) {
                     records.push(rec);
                     node_addr_records += 1;
                 }
@@ -58,7 +96,7 @@ pub fn extract_addresses<P: AsRef<Path>>(
             Element::DenseNode(node) => {
                 nodes_seen += 1;
                 node_coords.insert(node.id(), (node.lat(), node.lon()));
-                if let Some(rec) = tags_to_address(node.lat(), node.lon(), node.tags()) {
+                if let Some(rec) = tags_to_address(node.lat(), node.lon(), node.tags(), tags) {
                     records.push(rec);
                     node_addr_records += 1;
                 }
@@ -83,7 +121,7 @@ pub fn extract_addresses<P: AsRef<Path>>(
         .for_each(|el| {
             if let Element::Way(way) = el {
                 ways_seen += 1;
-                if let Some(rec) = way_to_address(&way, &node_coords) {
+                if let Some(rec) = way_to_address(&way, &node_coords, tags) {
                     records.push(rec);
                     way_addr_records += 1;
                 }
@@ -99,37 +137,57 @@ pub fn extract_addresses<P: AsRef<Path>>(
     Ok(records)
 }
 
+/// Where the resolved street value came from. The block-based
+/// fallback (`addr:full` / `addr:place`) is treated more permissively
+/// by [`has_minimum_signal`] — countries like Japan don't reliably
+/// carry housenumbers separately, so a non-empty `addr:full` plus
+/// locality OR postcode is enough to anchor a record. The strict
+/// `addr:street` path still requires a housenumber.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreetSource {
+    /// Came from the canonical street tag (`addr:street` or pack-overridden).
+    Strict,
+    /// Came from `addr:full` (block-based) or `addr:place` (place-based).
+    Fallback,
+    /// No street value resolved.
+    None,
+}
+
 /// Decide whether a tag bag carries enough address signal to be worth
 /// storing.
 ///
-/// Conventional address: street + housenumber must both be present
-/// (the European/US/AU pattern).
+/// Conventional (`Strict`) address: street + housenumber must both be
+/// present (the European/US/AU pattern).
 ///
-/// Block-based address (Japan, Korea, parts of Latin America): the
-/// `addr:full` tag carries the whole address as a single string and
-/// neither `addr:street` nor `addr:housenumber` is reliably set. We
-/// accept records where `addr:full` is non-empty as a pack-agnostic
-/// fallback; the geocoder treats the `street` field as the queryable
-/// canonical form regardless of which OSM tag fed it.
-fn has_minimum_signal(street: &str, housenumber: &str, postcode: &str, locality: &str) -> bool {
-    if !street.is_empty() && !housenumber.is_empty() {
-        return true;
+/// Block-based / place-based (`Fallback`) address (Japan, Korea, parts
+/// of Latin America): the `addr:full` tag carries the whole address as
+/// a single string and neither `addr:street` nor `addr:housenumber` is
+/// reliably set. We accept records where the fallback street is
+/// non-empty as long as locality OR postcode is also present.
+///
+/// The previous version conflated the two: a strict `addr:street`
+/// without a housenumber would slip through if locality or postcode
+/// was set, which let bare-street POIs leak into the shard. The
+/// `source` parameter restores the documented split.
+fn has_minimum_signal(
+    source: StreetSource,
+    housenumber: &str,
+    postcode: &str,
+    locality: &str,
+) -> bool {
+    match source {
+        StreetSource::None => false,
+        StreetSource::Strict => !housenumber.is_empty(),
+        StreetSource::Fallback => !postcode.is_empty() || !locality.is_empty(),
     }
-    // Block-based / place-based fallback: a non-empty `street` (which
-    // may have come from `addr:full` or `addr:place`) plus locality
-    // is enough to anchor a record.
-    if !street.is_empty() && (!postcode.is_empty() || !locality.is_empty()) {
-        return true;
-    }
-    false
 }
 
-fn tags_to_address<'a, I>(lat: f64, lon: f64, tags: I) -> Option<AddressRecord>
+fn tags_to_address<'a, I>(lat: f64, lon: f64, raw_tags: I, cfg: &OsmTags) -> Option<AddressRecord>
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
 {
-    let (street, housenumber, postcode, locality) = pull_addr_tags(tags);
-    if !has_minimum_signal(&street, &housenumber, &postcode, &locality) {
+    let (street, source, housenumber, postcode, locality) = pull_addr_tags(raw_tags, cfg);
+    if !has_minimum_signal(source, &housenumber, &postcode, &locality) {
         return None;
     }
     Some(AddressRecord {
@@ -147,9 +205,10 @@ where
 fn way_to_address(
     way: &osmpbf::Way<'_>,
     coords: &HashMap<i64, (f64, f64)>,
+    cfg: &OsmTags,
 ) -> Option<AddressRecord> {
-    let (street, housenumber, postcode, locality) = pull_addr_tags(way.tags());
-    if !has_minimum_signal(&street, &housenumber, &postcode, &locality) {
+    let (street, source, housenumber, postcode, locality) = pull_addr_tags(way.tags(), cfg);
+    if !has_minimum_signal(source, &housenumber, &postcode, &locality) {
         return None;
     }
     let mut sum_lat = 0.0_f64;
@@ -179,7 +238,7 @@ fn way_to_address(
     })
 }
 
-fn pull_addr_tags<'a, I>(tags: I) -> (String, String, String, String)
+fn pull_addr_tags<'a, I>(tags: I, cfg: &OsmTags) -> (String, StreetSource, String, String, String)
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
 {
@@ -193,20 +252,36 @@ where
     let mut quarter = String::new();
     let mut block_number = String::new();
 
+    // Pack-overridable keys. The pack carries country-specific tag
+    // names (e.g. JP packs use `addr:full` as the canonical street).
+    // Standard keys still flow through their dedicated arms — the
+    // pack overrides only change the "primary" channel for each field.
     for (k, v) in tags {
+        if k == cfg.street {
+            street = v.to_string();
+            continue;
+        }
+        if k == cfg.housenumber {
+            housenumber = v.to_string();
+            continue;
+        }
+        if k == cfg.postcode {
+            postcode = v.to_string();
+            continue;
+        }
+        if k == cfg.city {
+            city = v.to_string();
+            continue;
+        }
         match k {
-            "addr:street" => street = v.to_string(),
             "addr:place" => place = v.to_string(),
             // `addr:full` is the standard fallback for countries where
             // street+number doesn't decompose cleanly (Japan blocks,
             // Korean addresses, freeform rural addressing).
             "addr:full" => full = v.to_string(),
-            "addr:housenumber" => housenumber = v.to_string(),
             // `addr:block_number` is the Japanese chōme block id —
             // promoted into housenumber when housenumber is empty.
             "addr:block_number" => block_number = v.to_string(),
-            "addr:postcode" => postcode = v.to_string(),
-            "addr:city" => city = v.to_string(),
             // City fallbacks for Japanese / non-Western admin levels.
             "addr:province" => province = v.to_string(),
             "addr:quarter" => quarter = v.to_string(),
@@ -214,15 +289,17 @@ where
         }
     }
 
-    // Resolve the canonical street: prefer the explicit street tag,
-    // then `addr:full`, then `addr:place`. The shard schema only has
-    // one street field, so this collapses the diversity at ingest.
-    let resolved_street = if !street.is_empty() {
-        street
+    // Resolve the canonical street + remember which source it came
+    // from. The fallback path (`addr:full` / `addr:place`) drives the
+    // relaxed signal threshold below.
+    let (resolved_street, source) = if !street.is_empty() {
+        (street, StreetSource::Strict)
     } else if !full.is_empty() {
-        full
+        (full, StreetSource::Fallback)
+    } else if !place.is_empty() {
+        (place, StreetSource::Fallback)
     } else {
-        place
+        (String::new(), StreetSource::None)
     };
     let resolved_housenumber = if !housenumber.is_empty() {
         housenumber
@@ -238,8 +315,100 @@ where
     };
     (
         resolved_street,
+        source,
         resolved_housenumber,
         postcode,
         resolved_locality,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tags(pairs: &[(&'static str, &'static str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    fn run(
+        pairs: Vec<(String, String)>,
+        cfg: &OsmTags,
+    ) -> (String, StreetSource, String, String, String) {
+        let refs: Vec<(&str, &str)> = pairs
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        pull_addr_tags(refs, cfg)
+    }
+
+    #[test]
+    fn strict_path_requires_housenumber() {
+        let cfg = default_tags();
+        let (street, source, hn, pc, loc) = run(
+            tags(&[
+                ("addr:street", "Rue Wayez"),
+                ("addr:postcode", "1070"),
+                ("addr:city", "Anderlecht"),
+            ]),
+            &cfg,
+        );
+        assert_eq!(street, "Rue Wayez");
+        assert_eq!(source, StreetSource::Strict);
+        assert!(hn.is_empty());
+        assert!(!has_minimum_signal(source, &hn, &pc, &loc));
+    }
+
+    #[test]
+    fn fallback_path_accepts_postcode_only() {
+        let cfg = default_tags();
+        let (street, source, hn, pc, loc) = run(
+            tags(&[
+                ("addr:full", "東京都千代田区千代田1-1"),
+                ("addr:postcode", "100-0001"),
+            ]),
+            &cfg,
+        );
+        assert_eq!(street, "東京都千代田区千代田1-1");
+        assert_eq!(source, StreetSource::Fallback);
+        assert!(hn.is_empty());
+        assert!(has_minimum_signal(source, &hn, &pc, &loc));
+    }
+
+    #[test]
+    fn pack_override_for_japan_treats_addr_full_as_strict_only_when_specified() {
+        // JP pack publishes street=addr:full. Records arriving via
+        // that override are then classified as Strict (the pack
+        // declared this is the canonical channel for the country) and
+        // require a housenumber per the strict rule.
+        let cfg = OsmTags {
+            postcode: "addr:postcode".to_string(),
+            street: "addr:full".to_string(),
+            housenumber: "addr:housenumber".to_string(),
+            city: "addr:city".to_string(),
+        };
+        let (street, source, hn, _, _) = run(
+            tags(&[
+                ("addr:full", "東京都千代田区千代田1-1"),
+                ("addr:housenumber", "1"),
+            ]),
+            &cfg,
+        );
+        assert_eq!(street, "東京都千代田区千代田1-1");
+        assert_eq!(source, StreetSource::Strict);
+        assert_eq!(hn, "1");
+    }
+
+    #[test]
+    fn no_street_no_record() {
+        let cfg = default_tags();
+        let (_, source, _, _, _) = run(
+            tags(&[("addr:postcode", "1070"), ("addr:city", "Anderlecht")]),
+            &cfg,
+        );
+        assert_eq!(source, StreetSource::None);
+        assert!(!has_minimum_signal(source, "", "1070", "Anderlecht"));
+    }
 }

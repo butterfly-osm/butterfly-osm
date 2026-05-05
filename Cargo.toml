@@ -24,6 +24,10 @@ env_logger = "0.11.10"
 indicatif = "0.18"
 strsim = "0.11.1"
 tempfile = "3.27"
+# `toml` is API-stable across 0.8 → 1.x for our schema-parsing
+# workload (TOML region indexes + country packs). Pinning workspace-
+# wide so dl/route/geocode all link the same crate version.
+toml = "1.1"
 # Dev dependencies
 wiremock = "0.6.5"
 ctor = "0.10"
