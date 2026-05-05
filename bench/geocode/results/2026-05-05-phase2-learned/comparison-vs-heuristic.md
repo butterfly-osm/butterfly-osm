@@ -205,3 +205,23 @@ python3 bench.py --engine butterfly --queries queries/belgium.tsv \
 The qps-cap is required to stay under the per-IP admission bucket
 (25 req / s steady, 50 burst, hardcoded). Without it the bench
 collapses to ~5 % success rate even at concurrency 1.
+
+## Bench-harness consistency caveat (added in PR #179 follow-up)
+
+All rows in this report were generated through the butterfly bench
+adapter, which issues `GET /geocode?limit=5` to butterfly and forwards
+the same `limit=5` to Nominatim. Cross-engine comparisons across these
+configurations are therefore apples-to-apples.
+
+The earlier 2026-05-04 baseline at `bench/geocode/results/2026-05-04/`
+was produced before the butterfly adapter accepted a configurable
+`--limit` flag (added in #179) and before the Nominatim adapter
+forwarded that flag rather than hardcoding `limit=1`. Latency and
+throughput numbers from that baseline are therefore **not directly
+comparable** to the rows above — butterfly's executor scales work with
+`limit`, so a `limit=5` run does more work than the implicit `limit=1`
+behaviour of the older harness. **Recall@1 within 100 m is comparable
+across all rows** (every harness evaluates top-1 distance regardless
+of how wide the result set is). To reproduce a strict apples-to-apples
+re-bench against the 2026-05-04 baseline, re-run the current harness
+with `python3 bench.py ... --limit 1` for both engines.

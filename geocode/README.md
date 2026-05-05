@@ -218,7 +218,7 @@ Enable with:
 
 ```bash
 butterfly-geocode serve \
-  --shard geocode/regions/be.bfgs \
+  --shard geocode/regions/belgium.bfgs \
   --parser neural \
   --model geocode/data/models/belgium-tiny.safetensors \
   --retrieval-utility learned \

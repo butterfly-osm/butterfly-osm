@@ -75,6 +75,7 @@ pub mod types;
 
 pub use confidence::{Confidence, ConfidenceConfig, Features, GbdtModel};
 pub use geocoder::executor::{GeocodedResult, execute, execute_across_shards, execute_with_rerank};
+pub use parser::decoding::build_program_for_hypothesis;
 pub use parser::heuristic::{parse_heuristic, parse_with_classifier};
 pub use parser::neural::NeuralParser;
 pub use parser::phase2_features::{
