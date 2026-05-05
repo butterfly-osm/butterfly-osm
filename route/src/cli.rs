@@ -40,6 +40,166 @@ fn parse_mode_path_pairs(args: &[String], arg_name: &str) -> Result<Vec<(String,
         .collect())
 }
 
+/// Run the `extract-borders` subcommand: load each region's container,
+/// extract border crossings, write JSON.
+fn run_extract_borders(regions: &[PathBuf], out: &Path) -> Result<()> {
+    use crate::server::border::extract_border_crossings;
+    use crate::server::regions::RegionsState;
+
+    anyhow::ensure!(
+        regions.len() >= 2,
+        "extract-borders requires at least 2 regions, got {}",
+        regions.len()
+    );
+    tracing::info!(
+        n = regions.len(),
+        "extract-borders: loading {} regions",
+        regions.len()
+    );
+    let started = std::time::Instant::now();
+    let regions_state = RegionsState::load_from_paths(regions)?;
+    tracing::info!(
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        n_regions = regions_state.regions.len(),
+        "extract-borders: regions loaded"
+    );
+
+    let pairs: Vec<(String, std::sync::Arc<crate::server::ServerState>)> = regions_state
+        .regions
+        .iter()
+        .map(|r| (r.id.clone(), std::sync::Arc::clone(&r.state)))
+        .collect();
+
+    let extract_started = std::time::Instant::now();
+    let crossings = extract_border_crossings(&pairs);
+    tracing::info!(
+        n = crossings.len(),
+        elapsed_ms = extract_started.elapsed().as_millis() as u64,
+        "extract-borders: extracted crossings"
+    );
+
+    if let Some(first) = crossings.first() {
+        tracing::info!(
+            region_a = %first.region_a,
+            node_a = first.node_a,
+            lat_a = first.lat_a,
+            lon_a = first.lon_a,
+            region_b = %first.region_b,
+            node_b = first.node_b,
+            lat_b = first.lat_b,
+            lon_b = first.lon_b,
+            edge_distance_m = first.edge_distance_m,
+            "first border crossing sample"
+        );
+    }
+
+    #[derive(serde::Serialize)]
+    struct CrossingJson<'a> {
+        region_a: &'a str,
+        node_a: u32,
+        lat_a: f64,
+        lon_a: f64,
+        region_b: &'a str,
+        node_b: u32,
+        lat_b: f64,
+        lon_b: f64,
+        edge_distance_m: f64,
+    }
+    let json: Vec<CrossingJson<'_>> = crossings
+        .iter()
+        .map(|c| CrossingJson {
+            region_a: &c.region_a,
+            node_a: c.node_a,
+            lat_a: c.lat_a,
+            lon_a: c.lon_a,
+            region_b: &c.region_b,
+            node_b: c.node_b,
+            lat_b: c.lat_b,
+            lon_b: c.lon_b,
+            edge_distance_m: c.edge_distance_m,
+        })
+        .collect();
+    let bytes = serde_json::to_vec_pretty(&json)?;
+    std::fs::write(out, &bytes)
+        .with_context(|| format!("writing borders JSON to {}", out.display()))?;
+    println!(
+        "extract-borders: wrote {} crossings to {}",
+        crossings.len(),
+        out.display()
+    );
+    Ok(())
+}
+
+/// Run the `build-overlay` subcommand: load regions, extract borders,
+/// build the cross-region overlay, persist to a `.butterfly` container.
+fn run_build_overlay(regions: &[PathBuf], modes: Option<&str>, out: &Path) -> Result<()> {
+    use crate::server::border::extract_border_crossings;
+    use crate::server::overlay::build_overlay_in_memory;
+    use crate::server::regions::RegionsState;
+
+    anyhow::ensure!(
+        regions.len() >= 2,
+        "build-overlay requires at least 2 regions, got {}",
+        regions.len()
+    );
+    tracing::info!(n = regions.len(), "build-overlay: loading regions");
+    let regions_state = RegionsState::load_from_paths(regions)?;
+
+    let pairs: Vec<(String, std::sync::Arc<crate::server::ServerState>)> = regions_state
+        .regions
+        .iter()
+        .map(|r| (r.id.clone(), std::sync::Arc::clone(&r.state)))
+        .collect();
+
+    let mode_list: Vec<String> = match modes {
+        Some(s) => s
+            .split(',')
+            .map(|m| m.trim().to_lowercase())
+            .filter(|m| !m.is_empty())
+            .collect(),
+        None => {
+            let mut common: Vec<String> = pairs[0].1.mode_names.clone();
+            for (_id, st) in &pairs[1..] {
+                common.retain(|m| st.mode_names.contains(m));
+            }
+            common
+        }
+    };
+    anyhow::ensure!(
+        !mode_list.is_empty(),
+        "no modes selected for build-overlay (intersection of regions is empty)"
+    );
+    tracing::info!(modes = ?mode_list, "build-overlay: mode list");
+
+    tracing::info!("build-overlay: extracting borders");
+    let extract_started = std::time::Instant::now();
+    let crossings = extract_border_crossings(&pairs);
+    tracing::info!(
+        n = crossings.len(),
+        elapsed_ms = extract_started.elapsed().as_millis() as u64,
+        "build-overlay: borders extracted"
+    );
+
+    tracing::info!("build-overlay: building matrix (this is the slow step)");
+    let matrix_started = std::time::Instant::now();
+    let cluster = build_overlay_in_memory(&pairs, &crossings, &mode_list)?;
+    tracing::info!(
+        elapsed_s = matrix_started.elapsed().as_secs_f64(),
+        "build-overlay: matrix built"
+    );
+
+    tracing::info!(out = %out.display(), "build-overlay: writing container");
+    cluster.write_to_path(out)?;
+    println!(
+        "build-overlay: wrote overlay to {} ({} crossings, {} regions, modes {:?})",
+        out.display(),
+        crossings.len(),
+        cluster.region_order.len(),
+        cluster.modes
+    );
+    Ok(())
+}
+
 /// Resolve a mode name to a Mode by discovering modes from a data directory.
 /// The directory should contain mode-specific files (way_attrs.*.bin, w.*.u32, or filtered.*.ebg).
 fn resolve_mode(mode_name: &str, data_dir: &Path) -> Result<Mode> {
@@ -468,6 +628,47 @@ pub enum Commands {
         /// listener. Mutually exclusive with `--eager-verify`.
         #[arg(long, default_value = "false")]
         warmup_on_boot: bool,
+
+        /// #91 Phase 2: cross-region overlay container. When supplied,
+        /// cross-region P2P queries are served via the overlay matrix
+        /// instead of returning 501. Build the overlay with
+        /// `butterfly-route build-overlay`.
+        #[arg(long)]
+        overlay: Option<PathBuf>,
+    },
+
+    /// #91 Phase 2: extract cross-region border crossings from a list
+    /// of per-region containers. Writes a JSON file describing every
+    /// matched border-node pair (one EBG node id per region plus its
+    /// lat/lon and the haversine distance between the two endpoints).
+    /// Used as input to `build-overlay`.
+    ExtractBorders {
+        /// One or more `.butterfly` containers (one per region).
+        #[arg(long = "regions", value_name = "PATH", required = true, num_args = 1..)]
+        regions: Vec<PathBuf>,
+
+        /// Output JSON file.
+        #[arg(short, long)]
+        out: PathBuf,
+    },
+
+    /// #91 Phase 2: build a cross-region overlay container from a list
+    /// of per-region containers. Extracts border crossings, runs
+    /// per-region CCH P2P to populate the border-to-border matrix per
+    /// mode, and writes a single `.butterfly` overlay container.
+    BuildOverlay {
+        /// One or more `.butterfly` containers (one per region).
+        #[arg(long = "regions", value_name = "PATH", required = true, num_args = 1..)]
+        regions: Vec<PathBuf>,
+
+        /// Modes to include in the overlay (comma-separated). Default:
+        /// every mode that all regions carry.
+        #[arg(long)]
+        modes: Option<String>,
+
+        /// Output `.butterfly` overlay container.
+        #[arg(short, long)]
+        out: PathBuf,
     },
 
     /// Validate CCH correctness by comparing bidirectional CCH vs CCH-Dijkstra
@@ -1447,6 +1648,7 @@ impl Cli {
                 rss_checkpoints,
                 eager_verify,
                 warmup_on_boot,
+                overlay,
             } => {
                 // Initialize structured logging for the serve command
                 server::init_tracing(&log_format);
@@ -1515,9 +1717,16 @@ impl Cli {
                     mode_filter.as_deref(),
                     region_filter.as_deref(),
                     &load_options,
+                    overlay.as_deref(),
                 ))?;
                 Ok(())
             }
+            Commands::ExtractBorders { regions, out } => run_extract_borders(&regions, &out),
+            Commands::BuildOverlay {
+                regions,
+                modes,
+                out,
+            } => run_build_overlay(&regions, modes.as_deref(), &out),
             Commands::ValidateCch {
                 cch_topo,
                 cch_weights,

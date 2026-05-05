@@ -91,6 +91,12 @@ pub struct RegionsState {
     /// [`RegionEntry::id`] keeps the future overlay path's "stuff this
     /// query in region X" call site obvious).
     pub by_id: HashMap<String, usize>,
+    /// Cross-region overlay (#91 Phase 2). When `Some`, cross-region
+    /// queries are routed through [`Self::dispatch_p2p_with_overlay`]
+    /// instead of returning [`DispatchError::CrossRegion`]. When `None`
+    /// (default), cross-region queries continue to return 501 via the
+    /// existing [`Self::dispatch_p2p_id`] code path.
+    pub overlay: Option<Arc<super::overlay::OverlayCluster>>,
 }
 
 impl RegionsState {
@@ -111,7 +117,55 @@ impl RegionsState {
         Self {
             regions: vec![entry],
             by_id,
+            overlay: None,
         }
+    }
+
+    /// Load multiple regions from explicit container paths. Used by the
+    /// overlay test fixture and by `extract-borders` / `build-overlay`
+    /// CLI subcommands. Each path is opened, its `shared/manifest.json`
+    /// is read for the region id, and a per-region `ServerState` is
+    /// loaded. Region ids must be unique. The resulting `RegionsState`
+    /// has `overlay = None`; callers wire an overlay separately.
+    pub fn load_from_paths(paths: &[PathBuf]) -> Result<Self> {
+        anyhow::ensure!(
+            !paths.is_empty(),
+            "load_from_paths requires at least one container"
+        );
+        let mut entries: Vec<RegionEntry> = Vec::with_capacity(paths.len());
+        let mut seen: HashMap<String, PathBuf> = HashMap::new();
+        for path in paths {
+            let region_id = peek_region_id(path)
+                .with_context(|| format!("reading region id from {}", path.display()))?;
+            if let Some(prev) = seen.get(&region_id) {
+                anyhow::bail!(
+                    "duplicate region id '{}' across containers: {} and {}",
+                    region_id,
+                    prev.display(),
+                    path.display()
+                );
+            }
+            seen.insert(region_id.clone(), path.clone());
+            let state = ServerState::load_from_container(path, None).with_context(|| {
+                format!("loading region '{}' from {}", region_id, path.display())
+            })?;
+            entries.push(RegionEntry {
+                id: region_id,
+                container: path.clone(),
+                state: Arc::new(state),
+                verify_status: VerifyStatus::Verified,
+            });
+        }
+        entries.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut by_id = HashMap::new();
+        for (i, e) in entries.iter().enumerate() {
+            by_id.insert(e.id.clone(), i);
+        }
+        Ok(Self {
+            regions: entries,
+            by_id,
+            overlay: None,
+        })
     }
 
     /// Discover and load every `*.butterfly` container in `dir`. If
@@ -239,7 +293,11 @@ impl RegionsState {
             });
         }
 
-        Ok(Self { regions, by_id })
+        Ok(Self {
+            regions,
+            by_id,
+            overlay: None,
+        })
     }
 
     /// Number of loaded regions.
@@ -429,6 +487,84 @@ impl RegionsState {
     pub fn region_ids(&self) -> Vec<String> {
         self.regions.iter().map(|r| r.id.clone()).collect()
     }
+
+    /// Cross-region-aware P2P dispatch (#91 Phase 2).
+    ///
+    /// Like [`Self::dispatch_p2p_id`] but, when an overlay is wired up
+    /// and the source/target snap to *different* regions, returns a
+    /// [`P2pPlan::CrossRegion`] handle instead of an error. The
+    /// [`super::cross_region::solve_cross_region`] coordinator consumes
+    /// this handle.
+    ///
+    /// If no overlay is wired, behaviour is identical to `dispatch_p2p_id`
+    /// (cross-region → 501 via [`DispatchError::CrossRegion`]). This
+    /// keeps existing handlers that haven't been migrated correct.
+    pub fn dispatch_p2p_with_overlay(
+        &self,
+        src_lon: f64,
+        src_lat: f64,
+        dst_lon: f64,
+        dst_lat: f64,
+        mode_name: &str,
+    ) -> Result<P2pPlan, DispatchError> {
+        let src = self.snap_winner(src_lon, src_lat, mode_name);
+        let dst = self.snap_winner(dst_lon, dst_lat, mode_name);
+        match (src, dst) {
+            (Some((s_idx, _)), Some((d_idx, _))) if s_idx == d_idx => Ok(P2pPlan::SameRegion {
+                state: Arc::clone(&self.regions[s_idx].state),
+                region: self.regions[s_idx].id.clone(),
+            }),
+            (Some((s_idx, _)), Some((d_idx, _))) => {
+                let src_region = self.regions[s_idx].id.clone();
+                let dst_region = self.regions[d_idx].id.clone();
+                match &self.overlay {
+                    Some(o) => Ok(P2pPlan::CrossRegion {
+                        src_state: Arc::clone(&self.regions[s_idx].state),
+                        src_region,
+                        dst_state: Arc::clone(&self.regions[d_idx].state),
+                        dst_region,
+                        overlay: Arc::clone(o),
+                    }),
+                    None => {
+                        super::region_metrics::record_cross_region_reject(&src_region, &dst_region);
+                        Err(DispatchError::CrossRegion {
+                            src_region,
+                            dst_region,
+                        })
+                    }
+                }
+            }
+            _ => Err(DispatchError::NoRegion {
+                lon: src_lon,
+                lat: src_lat,
+                mode: mode_name.to_string(),
+                tried: self.region_ids().into_iter().collect(),
+            }),
+        }
+    }
+}
+
+/// Outcome of [`RegionsState::dispatch_p2p_with_overlay`].
+///
+/// `SameRegion` matches the existing [`RegionsState::dispatch_p2p_id`]
+/// behaviour: handlers run their existing intra-region path on `state`.
+///
+/// `CrossRegion` carries enough state for
+/// [`super::cross_region::solve_cross_region`] to compute access leg in
+/// `src_state`, look up the prebuilt overlay matrix, and run egress in
+/// `dst_state`.
+pub enum P2pPlan {
+    SameRegion {
+        state: Arc<ServerState>,
+        region: String,
+    },
+    CrossRegion {
+        src_state: Arc<ServerState>,
+        src_region: String,
+        dst_state: Arc<ServerState>,
+        dst_region: String,
+        overlay: Arc<super::overlay::OverlayCluster>,
+    },
 }
 
 /// What can go wrong dispatching a request to a region.
