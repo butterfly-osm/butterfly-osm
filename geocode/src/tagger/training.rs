@@ -114,20 +114,31 @@ fn default_country() -> String {
     "BE".to_string()
 }
 
-/// `(token_ids, mask, bio_labels, country_id)` returned by
-/// [`example_to_tensors`].
-pub type ExampleTensors = (Vec<u32>, Vec<u32>, Vec<u32>, u32);
+/// `(token_ids, attention_mask, loss_mask, bio_labels, country_id)`
+/// returned by [`example_to_tensors`].
+///
+/// - `attention_mask` is 1 for BOS, body bytes, and EOS, 0 for PAD —
+///   the transformer needs to attend over BOS/EOS for sequence-level
+///   pooling to be sensible.
+/// - `loss_mask` is 1 ONLY for body bytes — BIO-tagging supervision
+///   does not exist for the synthetic BOS/EOS positions, so they must
+///   be excluded from CE loss and accuracy. Including them inflates
+///   the metric and biases gradient updates toward "predict O at the
+///   sentinels".
+pub type ExampleTensors = (Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>, u32);
 
-/// Convert a corpus example to (token_ids, mask, bio_labels, country_id).
+/// Convert a corpus example to
+/// (token_ids, attention_mask, loss_mask, bio_labels, country_id).
 ///
 /// The BIO label tensor uses [`BIO_O`] for BOS, EOS, and pad positions
-/// — the cross-entropy mask zeroes those out, see [`bio_loss_masked`].
+/// — the cross-entropy mask (the dedicated `loss_mask`, NOT the
+/// attention `mask`) zeroes those out, see [`bio_loss_masked`].
 pub fn example_to_tensors(
     ex: &CorpusExample,
     pad_to: usize,
     n_countries: usize,
 ) -> Result<ExampleTensors> {
-    let (ids, mask) = ByteTokenizer.encode_padded(&ex.text, pad_to);
+    let (ids, attention_mask) = ByteTokenizer.encode_padded(&ex.text, pad_to);
 
     // Build per-byte BIO labels for the original text.
     let n_bytes = ex.text.len();
@@ -162,6 +173,17 @@ pub fn example_to_tensors(
         bio[body_start + i] = byte_labels[i] as u32;
     }
 
+    // Loss mask: 1 only for body byte positions [body_start, body_end).
+    // BOS at position 0, EOS at body_end, and any PAD beyond are zero.
+    let mut loss_mask = vec![0u32; ids.len()];
+    for slot in loss_mask
+        .iter_mut()
+        .take(body_end.min(ids.len()))
+        .skip(body_start)
+    {
+        *slot = 1;
+    }
+
     let country_id = match ex.country.to_uppercase().as_str() {
         "BE" => 0,
         _ => 0, // MVP only ships BE; multi-country is #96
@@ -170,7 +192,7 @@ pub fn example_to_tensors(
         bail!("country id {country_id} out of range for n_countries={n_countries}");
     }
 
-    Ok((ids, mask, bio, country_id))
+    Ok((ids, attention_mask, loss_mask, bio, country_id))
 }
 
 /// Read a JSONL corpus file.
@@ -281,12 +303,13 @@ pub fn train_and_save<P: AsRef<Path>>(
         let mut train_n = 0usize;
         for chunk in order.chunks(train_cfg.batch_size) {
             let batch: Vec<&CorpusExample> = chunk.iter().map(|&i| &corpus[i]).collect();
-            let (ids_t, mask_t, bio_t, country_t) =
+            let (ids_t, attn_t, loss_t, bio_t, country_t) =
                 build_batch(&batch, pad_to, cfg.n_countries, &device)?;
             let (bio_logits, country_logits) = model
-                .forward(&ids_t, &mask_t)
+                .forward(&ids_t, &attn_t)
                 .map_err(|e| anyhow!("forward: {e}"))?;
-            let l_bio = bio_loss_masked(&bio_logits, &bio_t, &mask_t)?;
+            // Loss mask excludes BOS/EOS; supervision is body-only.
+            let l_bio = bio_loss_masked(&bio_logits, &bio_t, &loss_t)?;
             let l_country = loss::cross_entropy(&country_logits, &country_t)
                 .map_err(|e| anyhow!("country ce: {e}"))?;
             let l_bio_w = (l_bio * train_cfg.bio_loss_weight as f64)
@@ -383,33 +406,42 @@ pub fn load_model<P: AsRef<Path>>(path: P) -> Result<(TaggerModel, ModelConfig, 
 }
 
 /// Build a batch tensor from references into the corpus.
+///
+/// Returns `(ids, attention_mask, loss_mask, bio, country)`.
+/// `attention_mask` is fed to the transformer; `loss_mask` excludes
+/// BOS/EOS as well as PAD from supervision.
 fn build_batch(
     batch: &[&CorpusExample],
     pad_to: usize,
     n_countries: usize,
     device: &Device,
-) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
+) -> Result<(Tensor, Tensor, Tensor, Tensor, Tensor)> {
     let b = batch.len();
     let mut ids_buf = Vec::with_capacity(b * pad_to);
-    let mut mask_buf = Vec::with_capacity(b * pad_to);
+    let mut attn_buf = Vec::with_capacity(b * pad_to);
+    let mut loss_buf = Vec::with_capacity(b * pad_to);
     let mut bio_buf = Vec::with_capacity(b * pad_to);
     let mut country_buf = Vec::with_capacity(b);
     for ex in batch {
-        let (ids, mask, bio, country) = example_to_tensors(ex, pad_to, n_countries)?;
+        let (ids, attn_mask, loss_mask, bio, country) =
+            example_to_tensors(ex, pad_to, n_countries)?;
         ids_buf.extend_from_slice(&ids);
-        mask_buf.extend_from_slice(&mask);
+        attn_buf.extend_from_slice(&attn_mask);
+        loss_buf.extend_from_slice(&loss_mask);
         bio_buf.extend_from_slice(&bio);
         country_buf.push(country);
     }
     let ids_t =
         Tensor::from_vec(ids_buf, (b, pad_to), device).map_err(|e| anyhow!("ids tensor: {e}"))?;
-    let mask_t =
-        Tensor::from_vec(mask_buf, (b, pad_to), device).map_err(|e| anyhow!("mask tensor: {e}"))?;
+    let attn_t = Tensor::from_vec(attn_buf, (b, pad_to), device)
+        .map_err(|e| anyhow!("attention mask tensor: {e}"))?;
+    let loss_t = Tensor::from_vec(loss_buf, (b, pad_to), device)
+        .map_err(|e| anyhow!("loss mask tensor: {e}"))?;
     let bio_t =
         Tensor::from_vec(bio_buf, (b, pad_to), device).map_err(|e| anyhow!("bio tensor: {e}"))?;
     let country_t =
         Tensor::from_vec(country_buf, (b,), device).map_err(|e| anyhow!("country tensor: {e}"))?;
-    Ok((ids_t, mask_t, bio_t, country_t))
+    Ok((ids_t, attn_t, loss_t, bio_t, country_t))
 }
 
 /// Cross-entropy loss over BIO with masking on padded tokens.
@@ -483,11 +515,12 @@ fn evaluate(
     for &i in eval_idx {
         let ex = &corpus[i];
         let batch = vec![ex];
-        let (ids_t, mask_t, bio_t, country_t) = build_batch(&batch, pad_to, n_countries, device)?;
+        let (ids_t, attn_t, loss_t, bio_t, country_t) =
+            build_batch(&batch, pad_to, n_countries, device)?;
         let (bio_logits, country_logits) = model
-            .forward(&ids_t, &mask_t)
+            .forward(&ids_t, &attn_t)
             .map_err(|e| anyhow!("eval forward: {e}"))?;
-        let l_bio = bio_loss_masked(&bio_logits, &bio_t, &mask_t)?;
+        let l_bio = bio_loss_masked(&bio_logits, &bio_t, &loss_t)?;
         let l_country = loss::cross_entropy(&country_logits, &country_t)
             .map_err(|e| anyhow!("eval country ce: {e}"))?;
         let total = (l_bio * bio_w as f64).map_err(|e| anyhow!("scale: {e}"))?
@@ -498,7 +531,10 @@ fn evaluate(
             .map_err(|e| anyhow!("scalar: {e}"))?;
         count += 1;
 
-        // Argmax of BIO + country head.
+        // Argmax of BIO + country head. BIO accuracy is computed
+        // against the loss mask (body bytes only), NOT the attention
+        // mask — synthetic BOS/EOS positions have no ground-truth
+        // tag so including them would inflate accuracy.
         let bio_argmax = bio_logits
             .argmax(candle_core::D::Minus1)
             .map_err(|e| anyhow!("argmax bio: {e}"))?
@@ -506,15 +542,15 @@ fn evaluate(
             .map_err(|e| anyhow!("dtype: {e}"))?
             .to_vec2::<u32>()
             .map_err(|e| anyhow!("to_vec2: {e}"))?;
-        let mask_v = mask_t
+        let loss_v = loss_t
             .to_vec2::<u32>()
-            .map_err(|e| anyhow!("mask to_vec2: {e}"))?;
+            .map_err(|e| anyhow!("loss mask to_vec2: {e}"))?;
         let bio_v = bio_t
             .to_vec2::<u32>()
             .map_err(|e| anyhow!("bio to_vec2: {e}"))?;
         for r in 0..bio_argmax.len() {
             for c in 0..bio_argmax[r].len() {
-                if mask_v[r][c] == 1 {
+                if loss_v[r][c] == 1 {
                     bio_total += 1;
                     if bio_argmax[r][c] == bio_v[r][c] {
                         bio_correct += 1;
@@ -786,7 +822,7 @@ mod tests {
                 },
             ],
         };
-        let (ids, _mask, bio, _) = example_to_tensors(&ex, 16, 1).unwrap();
+        let (ids, _attn, loss_mask, bio, _) = example_to_tensors(&ex, 16, 1).unwrap();
         // BOS is index 0 → BIO_O.
         assert_eq!(bio[0] as usize, BIO_O);
         assert_eq!(bio[1] as usize, BIO_B_STREET); // 'R'
@@ -800,6 +836,15 @@ mod tests {
         // Position 9 was where EOS lands → BIO_O.
         assert_eq!(ids[9], crate::tagger::tokenizer::EOS);
         assert_eq!(bio[9] as usize, BIO_O);
+        // Loss mask must exclude BOS (idx 0), EOS (idx 9), and PAD
+        // (10..16) — only body bytes (1..9) are supervised.
+        assert_eq!(loss_mask[0], 0, "BOS must not contribute to loss");
+        for (i, &m) in loss_mask.iter().enumerate().take(9).skip(1) {
+            assert_eq!(m, 1, "body byte {i} must contribute to loss");
+        }
+        for (i, &m) in loss_mask.iter().enumerate().take(16).skip(9) {
+            assert_eq!(m, 0, "EOS/PAD position {i} must not contribute to loss");
+        }
     }
 
     #[test]

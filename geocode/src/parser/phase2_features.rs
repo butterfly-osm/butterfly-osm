@@ -306,15 +306,16 @@ impl ProgramFeatures {
             n_scores: 0,
             n_filters: 0,
             n_lookups: 0,
-            has_blocker: policy
-                .roles
-                .iter()
-                .any(|r| matches!(r, Some(ChannelRole::Blocker))),
+            // Walked from the canonicalized program tree (set in
+            // `walk` below). Reading from `policy.roles` instead would
+            // give credit for blocker channels the parser DROPPED
+            // during program construction (Copilot review on #178/#168).
+            has_blocker: false,
             max_postings: 0,
             min_postings: usize::MAX,
             static_cost: static_cost(program, shard.stats()),
         };
-        walk(program, shard, &mut s);
+        walk(program, shard, policy, &mut s);
         if s.min_postings == usize::MAX {
             s.min_postings = 0;
         }
@@ -322,11 +323,18 @@ impl ProgramFeatures {
     }
 }
 
-fn walk(op: &Op, shard: &Shard, s: &mut ProgramFeatures) {
+fn walk(op: &Op, shard: &Shard, policy: &RetrievalPolicy, s: &mut ProgramFeatures) {
     s.op_count += 1;
     match op {
         Op::Lookup(k) => {
             s.n_lookups += 1;
+            // `has_blocker` is true iff the program contains at least
+            // one Lookup whose channel is policy-Blocker. Walking the
+            // tree (not the policy) is what the rest of the row
+            // describes, and is what the GBDT learns.
+            if matches!(policy.role(k.channel), Some(ChannelRole::Blocker)) {
+                s.has_blocker = true;
+            }
             let n = posting_list_size(shard, k);
             if n > s.max_postings {
                 s.max_postings = n;
@@ -338,30 +346,30 @@ fn walk(op: &Op, shard: &Shard, s: &mut ProgramFeatures) {
         Op::Intersect(c) => {
             s.n_intersects += 1;
             for child in c {
-                walk(child, shard, s);
+                walk(child, shard, policy, s);
             }
         }
         Op::Union(c) => {
             s.n_unions += 1;
             for child in c {
-                walk(child, shard, s);
+                walk(child, shard, policy, s);
             }
         }
         Op::TopkMerge { children, .. } => {
             for child in children {
-                walk(child, shard, s);
+                walk(child, shard, policy, s);
             }
         }
         Op::Filter { child, .. } => {
             s.n_filters += 1;
-            walk(child, shard, s);
+            walk(child, shard, policy, s);
         }
         Op::Score { child, .. } => {
             s.n_scores += 1;
-            walk(child, shard, s);
+            walk(child, shard, policy, s);
         }
         Op::Cap { child, .. } | Op::Sample { child, .. } | Op::Downgrade { child, .. } => {
-            walk(child, shard, s);
+            walk(child, shard, policy, s);
         }
     }
 }

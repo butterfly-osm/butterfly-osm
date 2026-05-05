@@ -184,7 +184,10 @@ impl FeaturesBatch {
 ///
 /// `static_cost` is a per-program cost the executor passes in (one
 /// value per candidate, or a shared value for clean-query results
-/// since they all come from the same program).
+/// since they all come from the same program). Internally calls
+/// [`extract_features_per_hypothesis`] with a `None` hypothesis-index
+/// slice, which selects the top hypothesis (`hypotheses[0]`) for every
+/// row — adequate for the single-hypothesis path.
 #[must_use]
 pub fn extract_features(
     candidates: &[GeocodedResult],
@@ -196,12 +199,55 @@ pub fn extract_features(
     out
 }
 
+/// Variant of [`extract_features`] that accepts a per-candidate
+/// hypothesis index. When `Some(idx)` is supplied for a candidate, the
+/// feature row is computed against `query.hypotheses[idx]` instead of
+/// always against `query.hypotheses[0]`.
+///
+/// Per #96, candidates from a multi-hypothesis parse may come from
+/// different parser hypotheses; reading the wrong source hypothesis
+/// yields wrong postcode/house/street agreement features. Always
+/// reading `query.hypotheses[0]` was a bug flagged by Copilot review
+/// on PR #167.
+///
+/// `hypothesis_indices` may be `None` (legacy path: every row uses
+/// hypotheses[0]) or `Some(slice)` of length `candidates.len()`. Out-of-range
+/// indices fall back to `hypotheses[0]`.
+#[must_use]
+pub fn extract_features_per_hypothesis(
+    candidates: &[GeocodedResult],
+    query: &ParsedQuery,
+    static_cost_per_candidate: &[f32],
+    hypothesis_indices: Option<&[u8]>,
+) -> Vec<Features> {
+    let mut out = Vec::with_capacity(candidates.len());
+    extract_features_into_per_hypothesis(
+        candidates,
+        query,
+        static_cost_per_candidate,
+        hypothesis_indices,
+        &mut out,
+    );
+    out
+}
+
 /// In-place variant — appends to a caller-owned buffer. Used by the
 /// executor hot path so the rerank step does not allocate.
 pub fn extract_features_into(
     candidates: &[GeocodedResult],
     query: &ParsedQuery,
     static_cost_per_candidate: &[f32],
+    out: &mut Vec<Features>,
+) {
+    extract_features_into_per_hypothesis(candidates, query, static_cost_per_candidate, None, out);
+}
+
+/// Per-hypothesis in-place variant. See [`extract_features_per_hypothesis`].
+pub fn extract_features_into_per_hypothesis(
+    candidates: &[GeocodedResult],
+    query: &ParsedQuery,
+    static_cost_per_candidate: &[f32],
+    hypothesis_indices: Option<&[u8]>,
     out: &mut Vec<Features>,
 ) {
     out.clear();
@@ -223,12 +269,23 @@ pub fn extract_features_into(
     let top_gap = top1 - top2;
     let n_log = (1.0 + n).ln();
 
-    let h = query.hypotheses.first();
     let parser_conf = query.global_confidence;
     let country_post = pick_country_posterior(query);
 
     for (idx, c) in candidates.iter().enumerate() {
         let static_cost = *static_cost_per_candidate.get(idx).unwrap_or(&0.0);
+        // Pick the hypothesis that produced this candidate. Default to
+        // hypotheses[0] when no per-candidate index is supplied, when
+        // the index is out of range, or when the hypothesis list is
+        // empty.
+        let h_idx = hypothesis_indices
+            .and_then(|idxs| idxs.get(idx).copied())
+            .map(|i| i as usize)
+            .unwrap_or(0);
+        let h = query
+            .hypotheses
+            .get(h_idx)
+            .or_else(|| query.hypotheses.first());
         let (postcode_exact, postcode_present) = compare_postcode(h, c);
         let (house_match, house_delta) = compare_housenumber(h, c);
         let locality_match = compare_locality(h, c);
@@ -507,5 +564,44 @@ mod tests {
         let q = parse_heuristic("nothing", CountryId::BE);
         let feats = extract_features(&[], &q, &[]);
         assert!(feats.is_empty());
+    }
+
+    #[test]
+    fn per_hypothesis_extraction_uses_indexed_source() {
+        // Build a multi-hypothesis query manually: one with postcode
+        // "1070", one with postcode "2000". A candidate from the
+        // second hypothesis must score `postcode_exact = 1.0` against
+        // the second hypothesis's postcode, NOT the first.
+        let mut q = parse_heuristic("Rue Wayez 122 1070", CountryId::BE);
+        let mut h2 = q.hypotheses[0].clone();
+        h2.postcode_candidates.clear();
+        h2.postcode_candidates.push(("2000".to_string(), 1.0));
+        q.hypotheses.push(h2);
+
+        // First candidate has postcode 1070 → matches hypotheses[0].
+        // Second candidate has postcode 2000 → matches hypotheses[1].
+        let cands = vec![
+            mk(2.7, "1070", "122", "Rue Wayez", "Anderlecht"),
+            mk(1.0, "2000", "1", "Grote Markt", "Antwerpen"),
+        ];
+        let costs = vec![100.0, 100.0];
+        let indices: Vec<u8> = vec![0, 1];
+
+        // With per-candidate indices, both must score postcode_exact = 1.0.
+        let feats = extract_features_per_hypothesis(&cands, &q, &costs, Some(&indices));
+        assert_eq!(feats.len(), 2);
+        assert!(
+            (feats[0].postcode_exact - 1.0).abs() < 1e-6,
+            "candidate 0 from hyp 0 should match postcode 1070"
+        );
+        assert!(
+            (feats[1].postcode_exact - 1.0).abs() < 1e-6,
+            "candidate 1 from hyp 1 should match postcode 2000 (not 1070)"
+        );
+
+        // Without per-candidate indices, candidate 1 is mis-attributed
+        // to hypotheses[0] and shows postcode_exact = 0.0.
+        let feats_legacy = extract_features(&cands, &q, &costs);
+        assert!((feats_legacy[1].postcode_exact - 0.0).abs() < 1e-6);
     }
 }

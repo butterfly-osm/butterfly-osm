@@ -91,17 +91,24 @@ pub fn detect_anchors(text: &str, shard: &Shard) -> Vec<Anchor> {
         });
     }
 
-    // House-number anchor: trailing numeric token.
-    if let Some(m) = trailing_house_re().find(text) {
+    // House-number anchor: a numeric/alphanumeric token. We scan all
+    // matches and pick the LAST that is not postcode-shaped — covers
+    // both "Rue X 122" and the postcode-first form
+    // "1070 Anderlecht, Rue Wayez 122" where `find` would otherwise
+    // catch the leading 1070 and discard the genuine house number
+    // (Copilot review on PR #168).
+    if let Some(m) = trailing_house_re()
+        .find_iter(text)
+        .filter(|m| !is_postcode_shape(m.as_str()))
+        .last()
+    {
         let v = m.as_str();
-        if !is_postcode_shape(v) {
-            out.push(Anchor {
-                field: AnchorField::HouseNumber,
-                value: v.to_string(),
-                confidence: 0.9,
-                byte_range: m.start()..m.end(),
-            });
-        }
+        out.push(Anchor {
+            field: AnchorField::HouseNumber,
+            value: v.to_string(),
+            confidence: 0.9,
+            byte_range: m.start()..m.end(),
+        });
     }
 
     // Locality anchor: walk the shard locality index for exact-match

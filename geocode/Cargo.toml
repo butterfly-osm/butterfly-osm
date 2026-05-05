@@ -32,7 +32,10 @@ gbdt = "0.1.3"
 
 # Neural parser (#96 §Tagger, #98 Phase 1).
 # candle: pure-Rust tensor + autograd. Apache-2.0 — AGPL-compatible.
-# Built without CUDA/MKL/Accelerate features → pure CPU, no FFI surface.
+# Built without CUDA/MKL/Accelerate features → pure-CPU compute. Note
+# that candle-nn pulls `tokenizers` (transitively, for tokenizer
+# I/O), which links against `onig_sys` (a small C regex library).
+# That's the only native FFI surface in the geocoder build today.
 candle-core = { version = "0.10", default-features = false }
 candle-nn = { version = "0.10", default-features = false }
 safetensors = "0.4"
@@ -57,8 +60,8 @@ bytes = "1.11.1"
 tokio-stream = "0.1.18"
 rayon = "1.11"
 
-once_cell = "1.21"
 toml = "0.8"
+tempfile = { workspace = true }
 
 # BOSA BeSt CSV downloads ship as ZIPs containing one CSV. The
 # importer transparently opens either form; `zip` is pure Rust.
@@ -68,7 +71,6 @@ zip = { version = "2.2", default-features = false, features = ["deflate"] }
 workspace = true
 
 [dev-dependencies]
-tempfile = { workspace = true }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 tower = { version = "0.5.3", features = ["util"] }
 http-body-util = "0.1"

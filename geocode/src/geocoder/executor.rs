@@ -224,34 +224,38 @@ pub fn execute(query: &ParsedQuery, shard: &Shard, limit: usize) -> Vec<Geocoded
         return Vec::new();
     }
 
-    // Build canonical (program, source_score) pairs.
-    let raw_programs: Vec<(Op, f32)> = hyps
+    // Build canonical (program, hypothesis, src_score) triples. Each
+    // program is paired with the hypothesis that produced it so the
+    // executor never crosses the product of programs × hypotheses
+    // (Copilot review on #178/#165/#162: cross-product was producing
+    // mixed-attribution false positives).
+    let raw_programs: Vec<(Op, ParseHypothesis, f32)> = hyps
         .iter()
         .map(|h| {
             let policy = apply_role_smoothness(h, budget);
             let (op, src_score) = build_program(h, &policy);
-            (op.canonicalize(), src_score)
+            (op.canonicalize(), (*h).clone(), src_score)
         })
         .collect();
 
     // Recombination Invariant: dedup programs by canonical form. After
-    // this step, every program is unique. Per #96, execution operates
-    // on deduplicated PROGRAMS, never on the cross-product of programs
-    // and raw hypotheses.
-    let mut programs = super::program::dedup_canonical(raw_programs);
+    // this step, every program is unique and is paired with the
+    // representative hypothesis (the one with the highest source
+    // logprob across the equivalence class).
+    let mut programs = super::program::dedup_canonical_with_hyp(raw_programs);
 
     // Static cost ceiling enforcement.
     let stats = shard.stats();
-    let total_static: f32 = programs.iter().map(|(p, _)| static_cost(p, stats)).sum();
+    let total_static: f32 = programs.iter().map(|(p, _, _)| static_cost(p, stats)).sum();
     if total_static > budget.static_cost_ceiling {
-        programs.sort_by(|(a, _), (b, _)| {
+        programs.sort_by(|(a, _, _), (b, _, _)| {
             static_cost(a, stats)
                 .partial_cmp(&static_cost(b, stats))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         let mut acc = 0.0_f32;
         let mut keep = 0usize;
-        for (p, _) in &programs {
+        for (p, _, _) in &programs {
             acc += static_cost(p, stats);
             if acc > budget.static_cost_ceiling {
                 break;
@@ -263,21 +267,19 @@ pub fn execute(query: &ParsedQuery, shard: &Shard, limit: usize) -> Vec<Geocoded
 
     let mut results: Vec<GeocodedResult> = Vec::new();
     let mut total_used = 0u32;
-    // Execute each deduped program EXACTLY ONCE — no cross-product
-    // with the raw hypothesis list.
-    for (prog, src_score) in &programs {
+    // Execute each deduped program EXACTLY ONCE against its PAIRED
+    // hypothesis — no cross-product. The src_score (max-merged across
+    // equivalent hypotheses) is rolled into the per-result score so
+    // dedup-collapsed hypotheses still contribute to ranking.
+    for (prog, hyp, src_score) in &programs {
         if total_used >= budget.max_total_candidates {
             break;
         }
-        // The "representative" hypothesis for scoring is hyps[0]; the
-        // src_score (max-merged across equivalent hypotheses) is rolled
-        // into the per-result score so dedup-collapsed hypotheses still
-        // contribute to ranking.
         let r = execute_program(
             prog,
             shard,
             *src_score,
-            hyps[0],
+            hyp,
             budget.max_total_candidates - total_used,
         );
         total_used = total_used.saturating_add(r.len() as u32);
@@ -1085,7 +1087,6 @@ pub fn execute_with_control(
     cp: &ControlPlane,
 ) -> Result<Vec<GeocodedResult>, crate::control::AdmissionError> {
     let stats = shard.stats();
-    let t_start = std::time::Instant::now();
 
     // Tier label for general metrics.
     let tier = classify_tier(query, stats, cp.budget_policy);
@@ -1094,27 +1095,28 @@ pub fn execute_with_control(
     let pre_count =
         u32::try_from(query.hypotheses.len().min(u32::MAX as usize)).unwrap_or(u32::MAX);
 
-    // Build canonical (program, src_score) pairs for the pre-execution
-    // check; on the clean path the executor still uses the hand-rolled
-    // fast path afterwards, but admission needs the canonical static
-    // cost. Per #96 Recombination Invariant, programs are deduped on
-    // canonical form with src_score max-merged.
-    let programs: Vec<(Op, f32)> = if query.hypotheses.is_empty() {
+    // Build canonical (program, hypothesis, src_score) triples for the
+    // pre-execution check; on the clean path the executor still uses
+    // the hand-rolled fast path afterwards, but admission needs the
+    // canonical static cost. Per #96 Recombination Invariant, programs
+    // are deduped on canonical form with the representative hypothesis
+    // chosen by max source-logprob.
+    let programs: Vec<(Op, ParseHypothesis, f32)> = if query.hypotheses.is_empty() {
         Vec::new()
     } else {
-        let raw: Vec<(Op, f32)> = query
+        let raw: Vec<(Op, ParseHypothesis, f32)> = query
             .hypotheses
             .iter()
             .map(|h| {
                 let policy = apply_role_smoothness(h, &query.execution_budget);
                 let (op, src_score) = build_program(h, &policy);
-                (op.canonicalize(), src_score)
+                (op.canonicalize(), h.clone(), src_score)
             })
             .collect();
-        super::program::dedup_canonical(raw)
+        super::program::dedup_canonical_with_hyp(raw)
     };
 
-    let ops_only: Vec<Op> = programs.iter().map(|(p, _)| p.clone()).collect();
+    let ops_only: Vec<Op> = programs.iter().map(|(p, _, _)| p.clone()).collect();
     let static_total: f32 = ops_only.iter().map(|p| static_cost(p, stats)).sum();
     cp.cost_calib.record_static_cost(static_total);
 
@@ -1132,27 +1134,37 @@ pub fn execute_with_control(
     // MVP path doesn't use it, but the snapshot is emitted regardless.
     let _fanout = FanoutTracker::new(cp.fanout);
 
-    let results = if query.is_clean() {
+    // Start the clean-path overhead timer immediately before
+    // `execute_clean`. The pre-execution checks above are not part of
+    // the clean-path NFR target, which governs the per-record
+    // canonicalize/dedup/cost-estimate algebra inside the hot loop.
+    let (results, exhausted) = if query.is_clean() {
+        let t_clean = std::time::Instant::now();
         let res = execute_clean(&query.hypotheses[0], shard, limit);
-        let overhead = t_start.elapsed();
+        let overhead = t_clean.elapsed();
         // MVP: at the executor entry we cannot count heap allocations
         // without an allocator hook; the strict zero-alloc test in
-        // tests/control_clean_query_alloc_test.rs proves the property
-        // on the hot path. Here we record overhead with alloc=0 as
-        // the "expected" value; the real per-query allocation count
-        // is enforced by that test.
+        // `tests/control_clean_query_alloc.rs` proves the property
+        // on the hot path. The runtime-supplied alloc count is
+        // currently always 0; the strict-zero NFR is enforced by that
+        // test, not by the runtime histogram below.
         cp.clean.record_clean(overhead, 0);
-        res
+        // Clean path does not enforce `max_total_candidates` directly
+        // (it caps at `limit`), so it cannot exhaust the candidate
+        // budget by construction.
+        (res, false)
     } else {
         cp.clean.record_non_clean();
         execute_multi(query, shard, limit, &programs)
     };
 
-    // Per-query candidate count surfaces in general metrics + budget
-    // exhaustion if the cap fired exactly.
+    // Per-query candidate count surfaces in general metrics. Budget
+    // exhaustion is emitted from the explicit flag returned by
+    // `execute_multi` so it tracks the actual cap firing, not the
+    // post-`limit` truncation.
     let n = u32::try_from(results.len()).unwrap_or(u32::MAX);
     cp.general.record_candidates(n);
-    if n >= query.execution_budget.max_total_candidates {
+    if exhausted {
         cp.general.record_budget_exhaustion();
     }
 
@@ -1173,33 +1185,48 @@ pub fn execute_with_control(
     Ok(results)
 }
 
+/// Executes deduped programs and returns `(results, cap_fired)`.
+///
+/// `cap_fired` is `true` iff the per-query candidate cap
+/// (`max_total_candidates`) was reached during execution. The control
+/// plane uses this flag to emit the `budget_exhaustion` metric — driving
+/// it from `results.len() >= cap` would mis-attribute clean truncations
+/// (results trimmed to `limit`) as exhaustion.
 fn execute_multi(
     query: &ParsedQuery,
     shard: &Shard,
     limit: usize,
-    programs: &[(Op, f32)],
-) -> Vec<GeocodedResult> {
+    programs: &[(Op, ParseHypothesis, f32)],
+) -> (Vec<GeocodedResult>, bool) {
     let mut results: Vec<GeocodedResult> = Vec::new();
     let mut total_used = 0u32;
+    let mut exhausted = false;
     // Per #96 Recombination Invariant, every deduped program is
-    // executed EXACTLY ONCE with hyps[0] as the representative
-    // hypothesis for scoring. The src_score (max-merged across
-    // equivalent hypotheses by `dedup_canonical`) is rolled into
-    // the per-result score.
-    let Some(rep) = query.hypotheses.first() else {
-        return Vec::new();
-    };
-    for (prog, src_score) in programs {
-        if total_used >= query.execution_budget.max_total_candidates {
+    // executed EXACTLY ONCE against its PAIRED hypothesis (no
+    // cross-product of programs × hypotheses). The src_score
+    // (max-merged across equivalent hypotheses by
+    // `dedup_canonical_with_hyp`) is rolled into the per-result score.
+    if query.hypotheses.is_empty() {
+        return (Vec::new(), false);
+    }
+    let cap_total = query.execution_budget.max_total_candidates;
+    for (prog, hyp, src_score) in programs {
+        if total_used >= cap_total {
+            exhausted = true;
             break;
         }
-        let cap = query.execution_budget.max_total_candidates - total_used;
-        let r = execute_program(prog, shard, *src_score, rep, cap);
-        total_used = total_used.saturating_add(r.len() as u32);
+        let cap = cap_total - total_used;
+        let r = execute_program(prog, shard, *src_score, hyp, cap);
+        let n = r.len() as u32;
+        total_used = total_used.saturating_add(n);
         results.extend(r);
+        if total_used >= cap_total {
+            exhausted = true;
+            break;
+        }
     }
     rerank_and_truncate(&mut results, limit);
-    results
+    (results, exhausted)
 }
 
 #[cfg(test)]
@@ -1352,6 +1379,125 @@ mod tests {
             !s1.is_disjoint(&s2),
             "near-identical inputs produced disjoint result sets — Role-Smoothness violation"
         );
+    }
+
+    #[test]
+    fn rerank_no_model_path_matches_execute() {
+        // With `model = None`, `execute_with_rerank` is a pass-through:
+        // results match `execute()` exactly and the action is
+        // `Confidence::Accept`.
+        let (_dir, shard) = small_shard();
+        let q = parse_heuristic("Rue Wayez 122 1070 Anderlecht", CountryId::BE);
+        let cfg = ConfidenceConfig::default();
+        let baseline = execute(&q, &shard, 5);
+        let (rerun, action) = execute_with_rerank(&q, &shard, 5, None, &cfg);
+        assert_eq!(
+            rerun.len(),
+            baseline.len(),
+            "no-model path must preserve cardinality"
+        );
+        for (a, b) in rerun.iter().zip(baseline.iter()) {
+            assert!((a.score - b.score).abs() < 1e-6, "scores diverged");
+            assert_eq!(a.street, b.street);
+        }
+        assert_eq!(action, Confidence::Accept);
+    }
+
+    #[test]
+    fn rerank_reject_path_returns_empty_with_below_threshold_action() {
+        // With a model that outputs near-zero scores for everything
+        // (synthesised here by training on a contradictory tiny
+        // dataset), every candidate falls below the review threshold
+        // and `apply_thresholds` clears the candidate list. The action
+        // is `Confidence::Reject`, and the handler layer surfaces
+        // `BELOW_THRESHOLD` on the response envelope.
+        // Use the smoke-tested synthetic model from the gbdt mod tests.
+        // We rely on the fact that with `accept_at = 0.99` (well above
+        // anything the synthetic model emits), all candidates fall to
+        // Review tier; with `review_at = 1.5` they fall to Reject.
+        let model = make_synthetic_gbdt_model();
+        let cfg = ConfidenceConfig {
+            accept_at: 1.5,  // unreachable
+            caution_at: 1.5, // unreachable
+            review_at: 1.5,  // unreachable → everything rejects
+        };
+        let (_dir, shard) = small_shard();
+        let q = parse_heuristic("Rue Wayez 122 1070 Anderlecht", CountryId::BE);
+        let (results, action) = execute_with_rerank(&q, &shard, 5, Some(&model), &cfg);
+        assert_eq!(action, Confidence::Reject);
+        assert!(
+            results.is_empty(),
+            "reject path must clear the candidate list"
+        );
+    }
+
+    #[test]
+    fn rerank_accept_path_preserves_all_candidates() {
+        // Mirror of the reject test: with permissive thresholds, every
+        // candidate stays in the result set after rerank.
+        let model = make_synthetic_gbdt_model();
+        let cfg = ConfidenceConfig {
+            accept_at: 0.0,
+            caution_at: 0.0,
+            review_at: 0.0,
+        };
+        let (_dir, shard) = small_shard();
+        let q = parse_heuristic("Rue Wayez 122 1070 Anderlecht", CountryId::BE);
+        let baseline_len = execute(&q, &shard, 5).len();
+        let (results, action) = execute_with_rerank(&q, &shard, 5, Some(&model), &cfg);
+        assert_eq!(action, Confidence::Accept);
+        assert_eq!(
+            results.len(),
+            baseline_len,
+            "accept path must preserve every candidate"
+        );
+    }
+
+    /// Build a tiny synthetic GBDT model usable from executor unit
+    /// tests. Mirrors `gbdt::tests::synthetic_model` but kept private
+    /// here so executor tests don't depend on `cfg(test)` symbols
+    /// from another module.
+    fn make_synthetic_gbdt_model() -> GbdtModel {
+        use gbdt::config::Config;
+        use gbdt::decision_tree::{Data, DataVec};
+        use gbdt::gradient_boost::GBDT;
+        // Tiny LCG so this test doesn't pull `rand` into the dep graph
+        // for tests that don't already use it.
+        fn lcg(state: &mut u64) -> f32 {
+            *state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((*state >> 33) as f32) / ((1u32 << 31) as f32)
+        }
+        let mut s: u64 = 0xBEE;
+        let mut data: DataVec = (0..200)
+            .map(|_| {
+                let feats: Vec<f32> = (0..crate::confidence::N_FEATURES)
+                    .map(|_| lcg(&mut s))
+                    .collect();
+                let label = if feats[0] + feats[8] > 1.0 { 1.0 } else { 0.0 };
+                Data {
+                    feature: feats,
+                    target: label,
+                    weight: 1.0,
+                    label,
+                    residual: 0.0,
+                    initial_guess: 0.0,
+                }
+            })
+            .collect();
+        let mut cfg = Config::new();
+        cfg.set_feature_size(crate::confidence::N_FEATURES);
+        cfg.set_max_depth(4);
+        cfg.set_iterations(20);
+        cfg.set_shrinkage(0.1);
+        cfg.set_loss("LogLikelyhood");
+        cfg.set_data_sample_ratio(1.0);
+        cfg.set_feature_sample_ratio(1.0);
+        cfg.set_training_optimization_level(2);
+        let mut g = GBDT::new(&cfg);
+        g.fit(&mut data);
+        GbdtModel::from_inner(g)
     }
 
     #[test]
