@@ -31,27 +31,32 @@ const LU_CONTAINER: &str = "data/luxembourg/luxembourg.butterfly";
 
 fn container_paths() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     // Tests run with CWD set to the package root (`route/`) by cargo,
-    // but the data lives at the workspace root one level up. Probe a
-    // few common locations: the repo root via `../`, the package root
-    // (in case the data is symlinked in), and an absolute fallback.
-    let candidates: &[(&str, &str)] = &[
-        (
-            "../data/belgium/baseline.butterfly",
-            "../data/luxembourg/luxembourg.butterfly",
-        ),
-        (BE_CONTAINER, LU_CONTAINER),
-        (
-            "/home/snape/projects/butterfly-osm/data/belgium/baseline.butterfly",
-            "/home/snape/projects/butterfly-osm/data/luxembourg/luxembourg.butterfly",
-        ),
-    ];
-    for (be, lu) in candidates {
-        let be_p = Path::new(be);
-        let lu_p = Path::new(lu);
+    // but the data lives at the workspace root one level up. Probe
+    // common locations: the repo root via `../`, the package root (in
+    // case the data is symlinked in), and an *opt-in* absolute base
+    // via `BUTTERFLY_TEST_DATA_DIR=/path/to/data` so contributors can
+    // point the test at a custom dataset without patching the source.
+    let mut candidates: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+    candidates.push((
+        std::path::PathBuf::from("../data/belgium/baseline.butterfly"),
+        std::path::PathBuf::from("../data/luxembourg/luxembourg.butterfly"),
+    ));
+    candidates.push((
+        std::path::PathBuf::from(BE_CONTAINER),
+        std::path::PathBuf::from(LU_CONTAINER),
+    ));
+    if let Ok(base) = std::env::var("BUTTERFLY_TEST_DATA_DIR") {
+        let base = std::path::PathBuf::from(base);
+        candidates.push((
+            base.join("belgium").join("baseline.butterfly"),
+            base.join("luxembourg").join("luxembourg.butterfly"),
+        ));
+    }
+    for (be_p, lu_p) in &candidates {
         if be_p.exists() && lu_p.exists() {
             return Some((
-                be_p.canonicalize().unwrap_or_else(|_| be_p.to_path_buf()),
-                lu_p.canonicalize().unwrap_or_else(|_| lu_p.to_path_buf()),
+                be_p.canonicalize().unwrap_or_else(|_| be_p.clone()),
+                lu_p.canonicalize().unwrap_or_else(|_| lu_p.clone()),
             ));
         }
     }

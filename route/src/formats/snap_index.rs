@@ -149,7 +149,7 @@ impl SnapPointsFile {
 
     /// Owning reader: copies the body into a `Vec<PackedPoint>`.
     pub fn read_from_bytes(bytes: &[u8]) -> Result<SnapPoints> {
-        let parsed = parse_snap_points_header_and_check(bytes)?;
+        let parsed = parse_snap_points_header_and_check(bytes, true)?;
         let body = parsed.body;
         let pts: &[PackedPoint] = bytemuck::cast_slice(body);
         Ok(SnapPoints {
@@ -165,7 +165,18 @@ impl SnapPointsFile {
 
     /// Zero-copy reader for a `'static` byte slice (mmap-backed).
     pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<SnapPoints> {
-        let parsed = parse_snap_points_header_and_check(bytes)?;
+        Self::read_from_bytes_zero_copy_inner(bytes, true)
+    }
+
+    /// Same as [`Self::read_from_bytes_zero_copy`] but elides the CRC
+    /// walk over the body. Caller MUST guarantee the bytes are
+    /// already verified upstream.
+    pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<SnapPoints> {
+        Self::read_from_bytes_zero_copy_inner(bytes, false)
+    }
+
+    fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<SnapPoints> {
+        let parsed = parse_snap_points_header_and_check(bytes, verify)?;
         debug_assert_eq!(
             parsed.body.as_ptr() as usize % std::mem::align_of::<PackedPoint>(),
             0,
@@ -194,7 +205,10 @@ struct ParsedSnapPoints<'a> {
     body: &'a [u8],
 }
 
-fn parse_snap_points_header_and_check(bytes: &[u8]) -> Result<ParsedSnapPoints<'_>> {
+fn parse_snap_points_header_and_check(
+    bytes: &[u8],
+    verify_crc: bool,
+) -> Result<ParsedSnapPoints<'_>> {
     anyhow::ensure!(
         bytes.len() >= HEADER_SIZE + FOOTER_SIZE,
         "snap_points too short: {} bytes",
@@ -234,7 +248,9 @@ fn parse_snap_points_header_and_check(bytes: &[u8]) -> Result<ParsedSnapPoints<'
 
     let body = &bytes[HEADER_SIZE..HEADER_SIZE + body_bytes];
     let footer = &bytes[HEADER_SIZE + body_bytes..];
-    verify_crcs(bytes, body, body_bytes, footer, "snap_points")?;
+    if verify_crc {
+        verify_crcs(bytes, body, body_bytes, footer, "snap_points")?;
+    }
 
     Ok(ParsedSnapPoints {
         n_points,
@@ -322,7 +338,7 @@ impl SnapGridFile {
     }
 
     pub fn read_from_bytes(bytes: &[u8]) -> Result<SnapGrid> {
-        let parsed = parse_snap_grid_header_and_check(bytes)?;
+        let parsed = parse_snap_grid_header_and_check(bytes, true)?;
         let off_slice: &[u32] = bytemuck::cast_slice(parsed.body);
         Ok(SnapGrid {
             n_cells_x: parsed.n_cells_x,
@@ -335,7 +351,18 @@ impl SnapGridFile {
     }
 
     pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<SnapGrid> {
-        let parsed = parse_snap_grid_header_and_check(bytes)?;
+        Self::read_from_bytes_zero_copy_inner(bytes, true)
+    }
+
+    /// Same as [`Self::read_from_bytes_zero_copy`] but elides the CRC
+    /// walk over the body. Caller MUST guarantee the bytes are
+    /// already verified upstream.
+    pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<SnapGrid> {
+        Self::read_from_bytes_zero_copy_inner(bytes, false)
+    }
+
+    fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<SnapGrid> {
+        let parsed = parse_snap_grid_header_and_check(bytes, verify)?;
         debug_assert_eq!(
             parsed.body.as_ptr() as usize % 4,
             0,
@@ -362,7 +389,7 @@ struct ParsedSnapGrid<'a> {
     body: &'a [u8],
 }
 
-fn parse_snap_grid_header_and_check(bytes: &[u8]) -> Result<ParsedSnapGrid<'_>> {
+fn parse_snap_grid_header_and_check(bytes: &[u8], verify_crc: bool) -> Result<ParsedSnapGrid<'_>> {
     anyhow::ensure!(
         bytes.len() >= HEADER_SIZE + FOOTER_SIZE,
         "snap_grid too short: {} bytes",
@@ -406,7 +433,9 @@ fn parse_snap_grid_header_and_check(bytes: &[u8]) -> Result<ParsedSnapGrid<'_>> 
     );
     let body = &bytes[HEADER_SIZE..HEADER_SIZE + body_bytes];
     let footer = &bytes[HEADER_SIZE + body_bytes..];
-    verify_crcs(bytes, body, body_bytes, footer, "snap_grid")?;
+    if verify_crc {
+        verify_crcs(bytes, body, body_bytes, footer, "snap_grid")?;
+    }
 
     Ok(ParsedSnapGrid {
         n_cells_x,
@@ -491,7 +520,7 @@ impl SnapMaskFile {
     }
 
     pub fn read_from_bytes(bytes: &[u8]) -> Result<SnapMask> {
-        let parsed = parse_snap_mask_header_and_check(bytes)?;
+        let parsed = parse_snap_mask_header_and_check(bytes, true)?;
         let bits: &[u64] = bytemuck::cast_slice(parsed.body);
         Ok(SnapMask {
             mode: parsed.mode,
@@ -502,7 +531,18 @@ impl SnapMaskFile {
     }
 
     pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<SnapMask> {
-        let parsed = parse_snap_mask_header_and_check(bytes)?;
+        Self::read_from_bytes_zero_copy_inner(bytes, true)
+    }
+
+    /// Same as [`Self::read_from_bytes_zero_copy`] but elides the CRC
+    /// walk over the body. Caller MUST guarantee bytes are already
+    /// verified upstream.
+    pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<SnapMask> {
+        Self::read_from_bytes_zero_copy_inner(bytes, false)
+    }
+
+    fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<SnapMask> {
+        let parsed = parse_snap_mask_header_and_check(bytes, verify)?;
         debug_assert_eq!(
             parsed.body.as_ptr() as usize % 8,
             0,
@@ -525,7 +565,7 @@ struct ParsedSnapMask<'a> {
     body: &'a [u8],
 }
 
-fn parse_snap_mask_header_and_check(bytes: &[u8]) -> Result<ParsedSnapMask<'_>> {
+fn parse_snap_mask_header_and_check(bytes: &[u8], verify_crc: bool) -> Result<ParsedSnapMask<'_>> {
     anyhow::ensure!(
         bytes.len() >= HEADER_SIZE + FOOTER_SIZE,
         "snap_mask too short: {} bytes",
@@ -570,7 +610,9 @@ fn parse_snap_mask_header_and_check(bytes: &[u8]) -> Result<ParsedSnapMask<'_>> 
     );
     let body = &bytes[HEADER_SIZE..HEADER_SIZE + body_bytes];
     let footer = &bytes[HEADER_SIZE + body_bytes..];
-    verify_crcs(bytes, body, body_bytes, footer, "snap_mask")?;
+    if verify_crc {
+        verify_crcs(bytes, body, body_bytes, footer, "snap_mask")?;
+    }
 
     Ok(ParsedSnapMask {
         mode,

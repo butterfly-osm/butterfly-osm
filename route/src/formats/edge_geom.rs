@@ -119,7 +119,7 @@ impl EdgeGeomOffsetsFile {
 
     /// Owning reader: copies the body into a `Vec<u32>`.
     pub fn read_from_bytes(bytes: &[u8]) -> Result<EdgeGeomOffsets> {
-        let parsed = parse_offsets_header_and_check(bytes)?;
+        let parsed = parse_offsets_header_and_check(bytes, true)?;
         let mut offsets = Vec::with_capacity(parsed.expected_entries);
         for chunk in parsed.body.chunks_exact(4) {
             offsets.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
@@ -134,7 +134,21 @@ impl EdgeGeomOffsetsFile {
 
     /// Zero-copy reader for a `'static` byte slice (mmap-backed).
     pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<EdgeGeomOffsets> {
-        let parsed = parse_offsets_header_and_check(bytes)?;
+        Self::read_from_bytes_zero_copy_inner(bytes, true)
+    }
+
+    /// Same as [`Self::read_from_bytes_zero_copy`] but elides the CRC
+    /// walk over the body. Caller MUST guarantee the bytes are
+    /// already verified upstream.
+    pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<EdgeGeomOffsets> {
+        Self::read_from_bytes_zero_copy_inner(bytes, false)
+    }
+
+    fn read_from_bytes_zero_copy_inner(
+        bytes: &'static [u8],
+        verify: bool,
+    ) -> Result<EdgeGeomOffsets> {
+        let parsed = parse_offsets_header_and_check(bytes, verify)?;
         debug_assert_eq!(
             parsed.body.as_ptr() as usize % 4,
             0,
@@ -157,7 +171,7 @@ struct ParsedOffsets<'a> {
     body: &'a [u8],
 }
 
-fn parse_offsets_header_and_check(bytes: &[u8]) -> Result<ParsedOffsets<'_>> {
+fn parse_offsets_header_and_check(bytes: &[u8], verify_crc: bool) -> Result<ParsedOffsets<'_>> {
     anyhow::ensure!(
         bytes.len() >= HEADER_SIZE + FOOTER_SIZE,
         "edge_geom_offsets too short: {} bytes",
@@ -195,7 +209,9 @@ fn parse_offsets_header_and_check(bytes: &[u8]) -> Result<ParsedOffsets<'_>> {
     );
     let body = &bytes[HEADER_SIZE..HEADER_SIZE + body_bytes];
     let footer = &bytes[HEADER_SIZE + body_bytes..];
-    verify_crcs(bytes, body, body_bytes, footer, "edge_geom_offsets")?;
+    if verify_crc {
+        verify_crcs(bytes, body, body_bytes, footer, "edge_geom_offsets")?;
+    }
 
     Ok(ParsedOffsets {
         n_edges,
@@ -305,7 +321,7 @@ impl EdgeGeomPointsFile {
     }
 
     pub fn read_from_bytes(bytes: &[u8]) -> Result<EdgeGeomPoints> {
-        let parsed = parse_points_header_and_check(bytes)?;
+        let parsed = parse_points_header_and_check(bytes, true)?;
         let mut points = Vec::with_capacity(parsed.expected_i32s);
         for chunk in parsed.body.chunks_exact(4) {
             points.push(i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
@@ -321,7 +337,21 @@ impl EdgeGeomPointsFile {
     }
 
     pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<EdgeGeomPoints> {
-        let parsed = parse_points_header_and_check(bytes)?;
+        Self::read_from_bytes_zero_copy_inner(bytes, true)
+    }
+
+    /// Same as [`Self::read_from_bytes_zero_copy`] but elides the CRC
+    /// walk over the body. Caller MUST guarantee the bytes are
+    /// already verified upstream.
+    pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<EdgeGeomPoints> {
+        Self::read_from_bytes_zero_copy_inner(bytes, false)
+    }
+
+    fn read_from_bytes_zero_copy_inner(
+        bytes: &'static [u8],
+        verify: bool,
+    ) -> Result<EdgeGeomPoints> {
+        let parsed = parse_points_header_and_check(bytes, verify)?;
         debug_assert_eq!(
             parsed.body.as_ptr() as usize % 4,
             0,
@@ -349,7 +379,7 @@ struct ParsedPoints<'a> {
     body: &'a [u8],
 }
 
-fn parse_points_header_and_check(bytes: &[u8]) -> Result<ParsedPoints<'_>> {
+fn parse_points_header_and_check(bytes: &[u8], verify_crc: bool) -> Result<ParsedPoints<'_>> {
     anyhow::ensure!(
         bytes.len() >= HEADER_SIZE + FOOTER_SIZE,
         "edge_geom_points too short: {} bytes",
@@ -390,7 +420,9 @@ fn parse_points_header_and_check(bytes: &[u8]) -> Result<ParsedPoints<'_>> {
     );
     let body = &bytes[HEADER_SIZE..HEADER_SIZE + body_bytes];
     let footer = &bytes[HEADER_SIZE + body_bytes..];
-    verify_crcs(bytes, body, body_bytes, footer, "edge_geom_points")?;
+    if verify_crc {
+        verify_crcs(bytes, body, body_bytes, footer, "edge_geom_points")?;
+    }
 
     Ok(ParsedPoints {
         n_points,
