@@ -15,7 +15,7 @@ use butterfly_geocode::confidence::{
     GbdtModel, TrainConfig, build_training_groups, build_training_rows, dump_training_rows,
     evaluate, load_corpus, synthesise_corpus_from_shard, train_pointwise,
 };
-use butterfly_geocode::osm_extract::{ExtractProgress, extract_addresses};
+use butterfly_geocode::osm_extract::{ExtractProgress, extract_addresses_with_tags};
 use butterfly_geocode::server::{
     DEFAULT_GRPC_PORT, DEFAULT_REST_PORT, ServerConfig, ServerState, Transport,
     build_router_with_config, start_grpc_server,
@@ -238,6 +238,22 @@ enum Command {
         /// future Flight endpoints will tighten this).
         #[arg(long, default_value_t = 4096)]
         max_body_bytes: usize,
+        /// Optional directory of country pack TOMLs that overlay
+        /// the shipped packs (#96 §"Country Routing"). Each TOML is
+        /// loaded after the shipped set and replaces the embedded
+        /// pack for that ISO2; missing files leave the shipped pack
+        /// in place. Useful for hot-patching a postcode regex or
+        /// adding lexical cues without rebuilding the binary.
+        #[arg(long)]
+        pack_dir: Option<PathBuf>,
+        /// Comma-separated CIDR allowlist of trusted reverse proxies.
+        /// When set, the per-IP rate limiter pulls the client IP
+        /// from `X-Forwarded-For` (rightmost non-trusted entry per
+        /// RFC 7239) for connections coming from these CIDRs.
+        /// Without it, all requests behind a reverse proxy share the
+        /// proxy IP and rate-limiting is global rather than per-client.
+        #[arg(long)]
+        trusted_proxies: Option<String>,
     },
     /// Run a batch of queries against a remote geocoder via gRPC
     /// Arrow Flight (#145). Reads JSONL queries (one per line) from
@@ -393,13 +409,34 @@ async fn main() -> Result<()> {
             request_timeout_secs,
             shutdown_timeout_secs,
             max_body_bytes,
+            pack_dir,
+            trusted_proxies,
         } => {
             let server_cfg = ServerConfig {
                 rate_limit_per_sec,
                 rate_limit_burst,
                 request_timeout: std::time::Duration::from_secs(request_timeout_secs),
                 max_request_body_bytes: max_body_bytes,
+                trusted_proxies: butterfly_geocode::server::parse_trusted_proxies(
+                    trusted_proxies.as_deref(),
+                )
+                .map_err(|e| anyhow!("parsing --trusted-proxies: {e}"))?,
             };
+            // Load + validate the pack registry. Either shipped-only
+            // (default) or shipped + override directory. Done at CLI
+            // level so a bad pack drop fails the boot loudly rather
+            // than silently degrading classifier accuracy.
+            let pack_registry = match pack_dir.as_deref() {
+                Some(d) => butterfly_geocode::routing::PackRegistry::shipped_with_overrides(d)
+                    .with_context(|| format!("loading pack overrides from {}", d.display()))?,
+                None => butterfly_geocode::routing::PackRegistry::shipped()
+                    .context("loading shipped country packs")?,
+            };
+            info!(
+                packs = pack_registry.len(),
+                pack_dir = ?pack_dir,
+                "country pack registry ready"
+            );
             // Port resolution precedence:
             // 1. explicit `--rest-port` / `--grpc-port`
             // 2. legacy `--port` aliases the REST port (default 3003)
@@ -560,14 +597,31 @@ fn build_shard_cmd(
                 tag.name()
             );
         }
+        // Per-country OSM tag overrides via the country pack
+        // (#96 §"Per-Country Shard Contents"). Falls back to the
+        // standard `addr:*` keys when no pack is shipped for `country`
+        // — every shipped pack today carries the [osm_tags] section,
+        // but we don't fail the build over a missing pack.
+        let pack_registry = butterfly_geocode::routing::PackRegistry::shipped()
+            .context("loading shipped country packs for OSM tag mapping")?;
+        let osm_tags = pack_registry
+            .get(country)
+            .map(|p| p.osm_tags.clone())
+            .unwrap_or_else(|| butterfly_geocode::routing::pack::OsmTags {
+                postcode: "addr:postcode".to_string(),
+                street: "addr:street".to_string(),
+                housenumber: "addr:housenumber".to_string(),
+                city: "addr:city".to_string(),
+            });
         info!(
             pbf = %pbf_path.display(),
             out = %out.display(),
             country = country.iso2(),
             source = tag.name(),
-            "extracting OSM addresses"
+            street_tag = osm_tags.street,
+            "extracting OSM addresses (pack-driven tag mapping)"
         );
-        extract_addresses(pbf_path, |evt| match evt {
+        extract_addresses_with_tags(pbf_path, &osm_tags, |evt| match evt {
             ExtractProgress::Phase { phase } => info!("phase: {phase}"),
             ExtractProgress::NodePass {
                 nodes_seen,
@@ -703,11 +757,36 @@ fn build_shards_all_cmd(
     std::fs::create_dir_all(out_dir)
         .with_context(|| format!("creating output dir {}", out_dir.display()))?;
 
-    let allowed: Option<Vec<CountryId>> = only.map(|s| {
-        s.split(',')
-            .filter_map(|t| CountryId::from_iso2(t.trim()))
-            .collect()
-    });
+    let allowed: Option<Vec<CountryId>> = match only {
+        Some(s) => {
+            let tokens: Vec<&str> = s
+                .split(',')
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .collect();
+            if tokens.is_empty() {
+                bail!(
+                    "--only is empty (got {:?}); pass a comma-separated list of ISO2 codes \
+                     like --only BE,FR,NL or omit the flag to build every shipped pack",
+                    s
+                );
+            }
+            let parsed: Result<Vec<CountryId>> = tokens
+                .iter()
+                .map(|t| {
+                    CountryId::from_iso2(t).ok_or_else(|| {
+                        anyhow!(
+                            "--only contains invalid ISO 3166-1 alpha-2 code '{}' \
+                             (must be exactly 2 letters)",
+                            t
+                        )
+                    })
+                })
+                .collect();
+            Some(parsed?)
+        }
+        None => None,
+    };
 
     let mut built = Vec::<CountryId>::new();
     let mut skipped = Vec::<(CountryId, String)>::new();
@@ -719,6 +798,26 @@ fn build_shards_all_cmd(
             && !a.contains(&c)
         {
             continue;
+        }
+        // Authoritative-source preference: if the region index ships
+        // any `[[address]]` entries for this country AND the operator
+        // has staged the corresponding files under `<pbf_dir>/addresses/`,
+        // prefer the authoritative source over OSM PBF tags. Belgium
+        // ships three regional BOSA ZIPs (Flanders/Wallonia/Brussels);
+        // when all three are present we build per-region shards in a
+        // tmp dir and merge them into the country shard. Other
+        // countries fall through to PBF/OSM until their loaders land.
+        match try_authoritative_build(c, pbf_dir, out_dir) {
+            Ok(true) => {
+                built.push(c);
+                continue;
+            }
+            Ok(false) => {
+                // No authoritative source available; fall through to PBF.
+            }
+            Err(e) => {
+                warn!(country = c.iso2(), error = %e, "authoritative-source build failed; falling back to PBF");
+            }
         }
         let candidates = candidate_pbf_names(c);
         let pbf = candidates
@@ -755,18 +854,173 @@ fn build_shards_all_cmd(
     Ok(())
 }
 
+/// If the region index for `c` ships `[[address]]` entries with
+/// staged files under `<pbf_dir>/addresses/`, build the country shard
+/// from the authoritative source(s). Returns `Ok(true)` when a shard
+/// was written; `Ok(false)` when no authoritative source is available;
+/// `Err` on a build failure (caller should fall back to PBF/OSM).
+///
+/// Today only BOSA (BE) is wired — the BOSA loader is the single
+/// authoritative source the geocode crate knows how to ingest. As
+/// BAN/BAG/etc. land they get a new arm here AND a new arm in
+/// `load_csv_source` (geocode/src/main.rs:`build_shard_cmd`).
+fn try_authoritative_build(
+    c: CountryId,
+    pbf_dir: &std::path::Path,
+    out_dir: &std::path::Path,
+) -> Result<bool> {
+    let addresses_dir = pbf_dir.join("addresses");
+    if !addresses_dir.is_dir() {
+        return Ok(false);
+    }
+    let region_name = if c == CountryId::BE {
+        "belgium"
+    } else if c == CountryId::FR {
+        "france"
+    } else if c == CountryId::NL {
+        "netherlands"
+    } else if c == CountryId::LU {
+        "luxembourg"
+    } else if c == CountryId::DE {
+        "germany"
+    } else if c == CountryId::AT {
+        "austria"
+    } else if c == CountryId::CH {
+        "switzerland"
+    } else if c == CountryId::US {
+        "united-states"
+    } else if c == CountryId::JP {
+        "japan"
+    } else if c == CountryId::BR {
+        "brazil"
+    } else if c == CountryId::IN {
+        "india"
+    } else if c == CountryId::AU {
+        "australia"
+    } else {
+        return Ok(false);
+    };
+    let region_index = match butterfly_dl::regions::RegionIndex::load(region_name) {
+        Ok(idx) => idx,
+        Err(_) => return Ok(false),
+    };
+
+    // Walk the [[address]] section, collect every entry with both a
+    // known loader AND a staged file on disk.
+    let mut staged: Vec<(PathBuf, &'static str)> = Vec::new();
+    for entry in &region_index.address {
+        let tag = entry.source.as_deref().unwrap_or("");
+        let static_tag: &'static str = match tag {
+            "bosa" => "bosa",
+            // BAN/BAG/G-NAF/BEV/swisstopo lack loaders today; ignore.
+            _ => continue,
+        };
+        let candidate = addresses_dir.join(format!("{}.{}", entry.id, address_extension(entry)));
+        if candidate.is_file() {
+            staged.push((candidate, static_tag));
+        }
+    }
+    if staged.is_empty() {
+        return Ok(false);
+    }
+
+    let out = out_dir.join(format!("{}.bfgs", c.iso2().to_ascii_lowercase()));
+
+    // Single staged file: build directly from it.
+    if staged.len() == 1 {
+        let (csv_path, tag) = &staged[0];
+        info!(
+            country = c.iso2(),
+            source = *tag,
+            csv = %csv_path.display(),
+            "using authoritative source for shard build"
+        );
+        build_shard_cmd(None, Some(csv_path), &[], &out, c.iso2(), Some(*tag))?;
+        return Ok(true);
+    }
+
+    // Multiple staged files (e.g. BE's three BOSA regional ZIPs):
+    // build a tmp shard per file, then merge into the country shard.
+    let tmp = tempfile::tempdir().context("creating tmp dir for authoritative-source build")?;
+    let mut per_region_shards: Vec<PathBuf> = Vec::with_capacity(staged.len());
+    for (i, (csv_path, tag)) in staged.iter().enumerate() {
+        let stem = csv_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("source");
+        let part = tmp.path().join(format!("{i:02}-{stem}.bfgs"));
+        info!(
+            country = c.iso2(),
+            source = *tag,
+            csv = %csv_path.display(),
+            tmp = %part.display(),
+            "ingesting authoritative-source shard fragment"
+        );
+        build_shard_cmd(None, Some(csv_path), &[], &part, c.iso2(), Some(*tag))?;
+        per_region_shards.push(part);
+    }
+    info!(
+        country = c.iso2(),
+        fragments = per_region_shards.len(),
+        out = %out.display(),
+        "merging authoritative-source fragments into country shard"
+    );
+    build_shard_cmd(None, None, &per_region_shards, &out, c.iso2(), None)?;
+    Ok(true)
+}
+
+/// Extension for an `AddressEntry`. Mirrors `RegionIndex` internals
+/// but locally-typed since the field is private upstream.
+fn address_extension(entry: &butterfly_dl::regions::AddressEntry) -> &'static str {
+    match entry.format.as_str() {
+        "csv-zip" | "xml-zip" | "zip" => "zip",
+        "csv-gz" | "gz" => "csv.gz",
+        "csv" => "csv",
+        "xml" => "xml",
+        _ => "bin",
+    }
+}
+
 fn candidate_pbf_names(c: CountryId) -> Vec<String> {
-    let long = match c {
-        CountryId::BE => "belgium",
-        CountryId::FR => "france",
-        CountryId::NL => "netherlands",
-        CountryId::LU => "luxembourg",
-        CountryId::DE => "germany",
-        CountryId::AT => "austria",
-        CountryId::CH => "switzerland",
-        // CountryId is `non_exhaustive`. New countries default to
-        // ISO2-only filename probing — add a friendlier name above.
-        _ => "",
+    // Map every shipped pack-country to the long Geofabrik filename
+    // form. CountryId is now a newtype (no enum), so we can't
+    // exhaustively match on the type itself; instead we list each code
+    // explicitly here. Adding a pack to PackRegistry::shipped() and
+    // forgetting to wire a long name lands the country at ISO2-only
+    // probing — still functional, just less likely to find user files
+    // named `<country-name>.osm.pbf`.
+    let long = if c == CountryId::BE {
+        "belgium"
+    } else if c == CountryId::FR {
+        "france"
+    } else if c == CountryId::NL {
+        "netherlands"
+    } else if c == CountryId::LU {
+        "luxembourg"
+    } else if c == CountryId::DE {
+        "germany"
+    } else if c == CountryId::AT {
+        "austria"
+    } else if c == CountryId::CH {
+        "switzerland"
+    } else if c == CountryId::GB {
+        "great-britain"
+    } else if c == CountryId::ES {
+        "spain"
+    } else if c == CountryId::IT {
+        "italy"
+    } else if c == CountryId::US {
+        "us"
+    } else if c == CountryId::JP {
+        "japan"
+    } else if c == CountryId::BR {
+        "brazil"
+    } else if c == CountryId::IN {
+        "india"
+    } else if c == CountryId::AU {
+        "australia"
+    } else {
+        ""
     };
     let mut v = Vec::new();
     if !long.is_empty() {
@@ -1001,7 +1255,12 @@ async fn serve_cmd(
     // REST future: only present when transport selects REST or Both.
     let rest_fut: std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> =
         if let Some(listener) = rest_listener {
-            let app = build_router_with_config(Arc::clone(&state), server_cfg);
+            let (app, gc_handle) = build_router_with_config(Arc::clone(&state), server_cfg.clone());
+            // Spawn the per-IP map garbage-collector once we're inside
+            // a Tokio runtime context. `spawn_governor_gc` is
+            // idempotent across this fn — only the first call per
+            // process actually spawns.
+            butterfly_geocode::server::spawn_governor_gc(gc_handle);
             let serve_shutdown = Arc::clone(&shutdown);
             Box::pin(async move {
                 axum::serve(

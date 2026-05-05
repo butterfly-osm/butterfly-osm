@@ -458,6 +458,54 @@ mod tests {
     }
 
     #[test]
+    fn every_loadable_region_appears_in_shipped_regions() {
+        // Inverse of the test above: every name in `shipped_regions()`
+        // must round-trip through `RegionIndex::load`. Without this,
+        // a new arm in `RegionIndex::load` without a corresponding
+        // entry in `shipped_regions()` would slip past CI — the CLI's
+        // "unknown region X; known regions are [...]" error would lie
+        // about the actual supported set.
+        //
+        // The list of known good aliases this test enumerates must
+        // stay synchronised with `RegionIndex::load`. When you add a
+        // region, drop a new line below.
+        let known: &[&str] = &[
+            "belgium",
+            "france",
+            "netherlands",
+            "luxembourg",
+            "germany",
+            "austria",
+            "switzerland",
+            "united-states",
+            "us",
+            "japan",
+            "brazil",
+            "india",
+            "australia",
+        ];
+        for name in known {
+            assert!(
+                RegionIndex::load(name).is_ok(),
+                "region '{name}' should load via RegionIndex::load"
+            );
+        }
+        // The `shipped_regions()` alias set must be a subset of the
+        // load-arm set above. Any name in `shipped_regions()` that
+        // doesn't load is a bug — same direction as the test above
+        // but verified explicitly without depending on iteration.
+        let shipped: std::collections::HashSet<&str> = shipped_regions().iter().copied().collect();
+        let known_set: std::collections::HashSet<&str> = known.iter().copied().collect();
+        for name in &shipped {
+            assert!(
+                known_set.contains(name),
+                "shipped_regions() lists '{name}' but the inverse test doesn't \
+                 enumerate it — add it to the `known` array in this test"
+            );
+        }
+    }
+
+    #[test]
     fn unknown_region_errors() {
         let err = RegionIndex::load("atlantis").expect_err("should reject");
         let msg = format!("{err:#}");

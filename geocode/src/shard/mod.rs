@@ -109,10 +109,14 @@ pub const FOOTER_BYTES: usize = 16;
 /// `Osm` is the default fallback for shards built from PBF tags. Every
 /// other variant tracks an authoritative open-data dataset. See
 /// `geocode-data/SOURCES.md` for the per-country importer contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum SourceTag {
     /// OpenStreetMap `addr:*` tags.
+    #[default]
     Osm,
     /// Belgian BeSt Address (BOSA).
     Bosa,

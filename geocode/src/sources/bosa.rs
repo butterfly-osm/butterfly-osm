@@ -4,8 +4,10 @@
 //! authoritative open-data address dataset (~6.7M records). It is
 //! published as three regional CSV downloads (Flanders / Wallonia /
 //! Brussels) plus a single national XML; this loader handles the CSV
-//! variant — it streams the rows as they come off the file, so memory
-//! stays bounded at a few KB regardless of dataset size.
+//! variant. Both the raw CSV and the ZIP-wrapped CSV branch stream
+//! rows row-by-row via `BufReader::read_line` — peak in-memory state
+//! is one row plus the streaming buffers (~1 MB), so memory stays
+//! bounded regardless of dataset size.
 //!
 //! The CSV header is:
 //!
@@ -44,7 +46,7 @@
 //! containing exactly one CSV).
 
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -91,12 +93,16 @@ impl Source for BosaCsvSource {
         }
 
         let path = &self.path;
-        let reader: Box<dyn Read> = if path
+        let is_zip = path
             .extension()
             .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
-        {
-            // ZIP: open the first .csv entry inside.
+            .is_some_and(|e| e.eq_ignore_ascii_case("zip"));
+
+        if is_zip {
+            // ZIP branch: stream the first .csv entry directly off
+            // the deflate decompressor. `ZipFile<'a>: Read` borrows
+            // the archive, which keeps the entire 60-130 MB CSV from
+            // having to be slurped into a Vec first.
             let f = File::open(path).with_context(|| format!("opening {}", path.display()))?;
             let mut zip = zip::ZipArchive::new(f)
                 .with_context(|| format!("zip archive {}", path.display()))?;
@@ -114,133 +120,141 @@ impl Source for BosaCsvSource {
             let (idx, name) = csv_idx.ok_or_else(|| {
                 anyhow::anyhow!("no .csv entry found inside zip {}", path.display())
             })?;
-            // We need to own the bytes — `ZipFile` borrows the
-            // archive. Read everything into memory; BOSA single-region
-            // CSVs are 60-130 MB unzipped, fits comfortably.
-            let mut entry = zip
+            let entry = zip
                 .by_index(idx)
                 .with_context(|| format!("re-opening zip entry {name} in {}", path.display()))?;
-            let mut buf = Vec::with_capacity(entry.size() as usize);
-            entry
-                .read_to_end(&mut buf)
-                .with_context(|| format!("reading zip entry {name} in {}", path.display()))?;
-            Box::new(std::io::Cursor::new(buf))
+            let buf_reader = BufReader::with_capacity(1 << 20, entry);
+            stream_csv(buf_reader, path, progress, emit)
         } else {
-            Box::new(File::open(path).with_context(|| format!("opening {}", path.display()))?)
+            let f = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+            let buf_reader = BufReader::with_capacity(1 << 20, f);
+            stream_csv(buf_reader, path, progress, emit)
+        }
+    }
+}
+
+/// Common CSV streaming logic. Generic over the underlying `Read`
+/// implementation so the ZIP path can pass a `ZipFile<'a>` directly
+/// without buffering its entire contents.
+fn stream_csv<R: BufRead>(
+    mut buf_reader: R,
+    path: &Path,
+    progress: &mut dyn FnMut(SourceProgress),
+    emit: &mut dyn FnMut(AddressRecord),
+) -> Result<()> {
+    progress(SourceProgress::Phase {
+        phase: "parsing BOSA CSV header",
+    });
+
+    // Read the header line and resolve column indices.
+    let mut header_line = String::new();
+    buf_reader
+        .read_line(&mut header_line)
+        .context("reading BOSA CSV header")?;
+    if header_line.trim().is_empty() {
+        bail!("BOSA CSV at {} has empty header", path.display());
+    }
+    let cols = parse_header(&header_line)?;
+
+    progress(SourceProgress::Phase {
+        phase: "streaming BOSA CSV rows",
+    });
+
+    let mut rows_seen: u64 = 0;
+    let mut records_emitted: u64 = 0;
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        let n = buf_reader
+            .read_line(&mut line)
+            .context("reading BOSA CSV row")?;
+        if n == 0 {
+            break;
+        }
+        rows_seen += 1;
+
+        let fields = split_csv_row(&line);
+        if fields.len() < cols.column_count {
+            // Truncated/malformed line: skip but don't fail the
+            // whole pass. BOSA is generally well-formed but we
+            // don't want one bad row to abort a 6.7M-row import.
+            continue;
+        }
+
+        let lat = parse_lat(fields[cols.lat]);
+        let lon = parse_lon(fields[cols.lon]);
+        let (Some(lat), Some(lon)) = (lat, lon) else {
+            continue;
         };
 
-        let mut buf_reader = BufReader::with_capacity(1 << 20, reader);
-
-        progress(SourceProgress::Phase {
-            phase: "parsing BOSA CSV header",
-        });
-
-        // Read the header line and resolve column indices.
-        let mut header_line = String::new();
-        buf_reader
-            .read_line(&mut header_line)
-            .context("reading BOSA CSV header")?;
-        if header_line.trim().is_empty() {
-            bail!("BOSA CSV at {} has empty header", path.display());
-        }
-        let cols = parse_header(&header_line)?;
-
-        progress(SourceProgress::Phase {
-            phase: "streaming BOSA CSV rows",
-        });
-
-        let mut rows_seen: u64 = 0;
-        let mut records_emitted: u64 = 0;
-        let mut line = String::new();
-
-        loop {
-            line.clear();
-            let n = buf_reader
-                .read_line(&mut line)
-                .context("reading BOSA CSV row")?;
-            if n == 0 {
-                break;
-            }
-            rows_seen += 1;
-
-            let fields = split_csv_row(&line);
-            if fields.len() < cols.column_count {
-                // Truncated/malformed line: skip but don't fail the
-                // whole pass. BOSA is generally well-formed but we
-                // don't want one bad row to abort a 6.7M-row import.
-                continue;
-            }
-
-            let lat = parse_lat(fields[cols.lat]);
-            let lon = parse_lon(fields[cols.lon]);
-            let (Some(lat), Some(lon)) = (lat, lon) else {
-                continue;
-            };
-
-            let status = fields[cols.status].trim();
-            // Accept "current" or empty (occasionally missing in
-            // older publications). Skip "retired" and any other
-            // non-current state.
-            if !status.is_empty() && !status.eq_ignore_ascii_case("current") {
-                continue;
-            }
-
-            let postcode = fields[cols.postcode].trim();
-            if postcode.is_empty() {
-                continue;
-            }
-
-            let house_number = fields[cols.house_number].trim();
-            let box_number = fields[cols.box_number].trim();
-            let house = format_belgian_number(house_number, box_number);
-            if house.is_empty() {
-                continue;
-            }
-
-            let address_id = fields[cols.address_id].trim();
-
-            // Per-language: BOSA Belgium publishes NL/FR/DE names.
-            // We emit one record per non-empty language so all three
-            // names are queryable. Same `source_id` so the merge dedup
-            // can collapse them when needed.
-            for lang in [LangCol::Nl, LangCol::Fr, LangCol::De] {
-                let muni = fields[cols.muni(lang)].trim();
-                let street = fields[cols.street(lang)].trim();
-                if muni.is_empty() && street.is_empty() {
-                    continue;
-                }
-                emit(AddressRecord {
-                    lat,
-                    lon,
-                    street: street.to_string(),
-                    locality: muni.to_string(),
-                    housenumber: house.clone(),
-                    postcode: postcode.to_string(),
-                    source: SourceTag::Bosa,
-                    source_id: if address_id.is_empty() {
-                        None
-                    } else {
-                        Some(address_id.to_string())
-                    },
-                });
-                records_emitted += 1;
-            }
-
-            if rows_seen.is_multiple_of(100_000) {
-                progress(SourceProgress::Records {
-                    rows_seen,
-                    records_emitted,
-                });
-            }
+        let status = fields[cols.status].trim();
+        // Accept "current" or empty (occasionally missing in
+        // older publications). Skip "retired" and any other
+        // non-current state.
+        if !status.is_empty() && !status.eq_ignore_ascii_case("current") {
+            continue;
         }
 
-        progress(SourceProgress::Records {
-            rows_seen,
-            records_emitted,
-        });
+        let postcode = fields[cols.postcode].trim();
+        if postcode.is_empty() {
+            continue;
+        }
 
-        Ok(())
+        let house_number = fields[cols.house_number].trim();
+        let box_number = cols
+            .box_number
+            .and_then(|i| fields.get(i))
+            .map(|s| s.trim())
+            .unwrap_or("");
+        let house = format_belgian_number(house_number, box_number);
+        if house.is_empty() {
+            continue;
+        }
+
+        let address_id = fields[cols.address_id].trim();
+
+        // Per-language: BOSA Belgium publishes NL/FR/DE names.
+        // We emit one record per non-empty language so all three
+        // names are queryable. Same `source_id` so the merge dedup
+        // can collapse them when needed.
+        for lang in [LangCol::Nl, LangCol::Fr, LangCol::De] {
+            let muni = fields[cols.muni(lang)].trim();
+            let street = fields[cols.street(lang)].trim();
+            if muni.is_empty() && street.is_empty() {
+                continue;
+            }
+            emit(AddressRecord {
+                lat,
+                lon,
+                street: street.to_string(),
+                locality: muni.to_string(),
+                housenumber: house.clone(),
+                postcode: postcode.to_string(),
+                source: SourceTag::Bosa,
+                source_id: if address_id.is_empty() {
+                    None
+                } else {
+                    Some(address_id.to_string())
+                },
+            });
+            records_emitted += 1;
+        }
+
+        if rows_seen.is_multiple_of(100_000) {
+            progress(SourceProgress::Records {
+                rows_seen,
+                records_emitted,
+            });
+        }
     }
+
+    progress(SourceProgress::Records {
+        rows_seen,
+        records_emitted,
+    });
+
+    Ok(())
 }
 
 /// Format a Belgian housenumber: `house[box]` with `bte` separator
@@ -273,7 +287,12 @@ struct ColumnIndices {
     lon: usize,
     address_id: usize,
     house_number: usize,
-    box_number: usize,
+    /// `None` when the BOSA snapshot doesn't carry a `box_number`
+    /// column. We optionally fold this into the housenumber when
+    /// present (Brussels/Wallonia/Flanders all do); older / regional
+    /// snapshots that omit it land with bare housenumbers and no
+    /// runtime panic.
+    box_number: Option<usize>,
     postcode: usize,
     muni_nl: usize,
     muni_fr: usize,
@@ -310,9 +329,10 @@ fn parse_header(line: &str) -> Result<ColumnIndices> {
     let lon = lookup("EPSG:4326_lon").context("BOSA CSV missing EPSG:4326_lon column")?;
     let address_id = lookup("address_id").context("BOSA CSV missing address_id column")?;
     let house_number = lookup("house_number").context("BOSA CSV missing house_number column")?;
-    // box_number is optional in some BOSA snapshots; default to the
-    // last column if missing so the indexing arithmetic stays safe.
-    let box_number = lookup("box_number").unwrap_or(usize::MAX);
+    // box_number is optional in some BOSA snapshots. Track presence
+    // explicitly so we can skip the box-number folding rather than
+    // index past the row's column count and panic.
+    let box_number = lookup("box_number");
     let postcode = lookup("postcode").context("BOSA CSV missing postcode column")?;
     let muni_nl =
         lookup("municipality_name_nl").context("BOSA CSV missing municipality_name_nl column")?;
@@ -505,6 +525,22 @@ mod tests {
         assert_eq!(format_belgian_number("475", "RDC"), "475 bte RDC");
         assert_eq!(format_belgian_number("475", ""), "475");
         assert_eq!(format_belgian_number(" ", "RDC"), "");
+    }
+
+    #[test]
+    fn header_without_box_number_skips_box_folding() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("nobox.csv");
+        // Header without `box_number`. Note: column count is one less.
+        let csv = "EPSG:31370_x,EPSG:31370_y,EPSG:4326_lat,EPSG:4326_lon,address_id,house_number,municipality_id,municipality_name_de,municipality_name_fr,municipality_name_nl,postcode,postname_fr,postname_nl,street_id,streetname_de,streetname_fr,streetname_nl,region_code,status\n\
+146321,169504,50.83595,4.31653,615867,475,21001,,Anderlecht,Anderlecht,1070,,,4568,,Chaussée de Mons,Bergense Steenweg,BE-BRU,current\n";
+        std::fs::write(&p, csv).unwrap();
+        let src = BosaCsvSource::new(&p, CountryId::BE);
+        let recs = super::super::collect_all(&src, |_| {}).unwrap();
+        assert!(!recs.is_empty(), "missing box_number column must not panic");
+        for r in &recs {
+            assert_eq!(r.housenumber, "475", "no box folding when column is absent");
+        }
     }
 
     #[test]

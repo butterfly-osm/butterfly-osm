@@ -98,15 +98,17 @@ pub fn collect_all<S: Source + ?Sized>(
 }
 
 /// Sort key used by [`merge_records`] to group records that should
-/// be deduped against each other. Ascii-lowercased to fold case (BOSA
-/// stores `Chaussée de Mons` vs OSM `chaussée de mons`); housenumbers
-/// stay unfolded because `12A` ≠ `12a` is rare in practice but the
-/// canonical form is upstream-defined.
+/// be deduped against each other. Goes through the shared
+/// [`crate::parser::normalize::normalize`] so accent folding,
+/// punctuation collapse, and whitespace collapse all match the
+/// shard's inverted-index keys. Without this, `Chaussée de Mons`
+/// (BOSA) and `Chaussee de Mons` (OSM) end up in different dedup
+/// groups and ship as duplicate records.
 fn dedup_key(rec: &AddressRecord) -> (String, String, String) {
     (
-        rec.postcode.trim().to_ascii_lowercase(),
-        rec.street.trim().to_ascii_lowercase(),
-        rec.housenumber.trim().to_ascii_lowercase(),
+        crate::parser::normalize::normalize(rec.postcode.trim()),
+        crate::parser::normalize::normalize(rec.street.trim()),
+        crate::parser::normalize::normalize(rec.housenumber.trim()),
     )
 }
 
@@ -219,10 +221,21 @@ fn dedup_group(group: Vec<AddressRecord>) -> Vec<AddressRecord> {
             }
         }
         // Pick the highest-priority record from the cluster.
-        let winner_idx = *cluster
-            .iter()
-            .max_by_key(|&&k| merge_priority(group[k].source))
-            .expect("cluster has at least one element");
+        // First-wins on tie: when two cluster members share the same
+        // priority (e.g. two OSM records, or two `--merge` inputs at
+        // equal authoritative priority), keep the one that arrived
+        // earliest in `inputs`. `max_by_key` returns the LAST equal
+        // max, so we can't use it directly; iterate manually keeping
+        // the first time the maximum priority is observed.
+        let mut winner_idx: usize = cluster[0];
+        let mut winner_prio: u8 = merge_priority(group[winner_idx].source);
+        for &k in cluster.iter().skip(1) {
+            let prio = merge_priority(group[k].source);
+            if prio > winner_prio {
+                winner_idx = k;
+                winner_prio = prio;
+            }
+        }
         survivors.push(group[winner_idx].clone());
         for k in cluster {
             taken[k] = true;
@@ -366,5 +379,49 @@ mod tests {
     fn priority_order_ban_beats_osm() {
         assert!(merge_priority(SourceTag::Ban) > merge_priority(SourceTag::Osm));
         assert!(merge_priority(SourceTag::Bosa) > merge_priority(SourceTag::Osm));
+    }
+
+    #[test]
+    fn dedup_key_normalizes_diacritics() {
+        // BOSA: "Chaussée de Mons", OSM: "Chaussee de Mons" — must
+        // land in the same group so the merge dedup sees them.
+        let bosa = rec(
+            "1070",
+            "Chaussée de Mons",
+            "122",
+            50.834,
+            4.314,
+            SourceTag::Bosa,
+        );
+        let osm = rec(
+            "1070",
+            "Chaussee de Mons",
+            "122",
+            50.8341,
+            4.3141,
+            SourceTag::Osm,
+        );
+        assert_eq!(dedup_key(&bosa), dedup_key(&osm));
+        let merged = merge_records(vec![vec![bosa], vec![osm]]);
+        assert_eq!(merged.len(), 1, "diacritic dedup should collapse the pair");
+        assert_eq!(merged[0].source, SourceTag::Bosa);
+    }
+
+    #[test]
+    fn winner_first_wins_on_priority_tie() {
+        // Two `--merge` inputs at equal priority. The earlier vector
+        // (representing the earlier `--merge` arg) must win.
+        let earlier = rec("1070", "Rue X", "1", 50.8340, 4.3140, SourceTag::Osm);
+        let later = rec("1070", "Rue X", "1", 50.83405, 4.31405, SourceTag::Osm);
+        // Tag the earlier with a stable distinguishing source_id to
+        // assert which one survived — both are OSM so source priority
+        // is identical.
+        let mut earlier_marked = earlier.clone();
+        earlier_marked.source_id = Some("EARLIER".to_string());
+        let mut later_marked = later.clone();
+        later_marked.source_id = Some("LATER".to_string());
+        let merged = merge_records(vec![vec![earlier_marked], vec![later_marked]]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].source_id.as_deref(), Some("EARLIER"));
     }
 }
