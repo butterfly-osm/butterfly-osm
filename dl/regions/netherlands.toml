@@ -1,23 +1,25 @@
 # Butterfly region index — Netherlands
 #
-# OSM PBF for the Netherlands from Geofabrik. butterfly-route
-# consumes this as `netherlands.pbf` under `data/netherlands/`;
-# butterfly-geocode (#96) plans to pair it with the BAG
-# authoritative address dataset on the side.
+# OSM PBF for the Netherlands from Geofabrik plus OpenAddresses
+# (#96 §"Data Sources").
 #
-# Authoritative address dataset (NOT fetched by butterfly-dl yet —
-# tracked separately in geocode-data/SOURCES.md):
+# OpenAddresses' Netherlands pack (`nl/countrywide`, ~296 MB
+# compressed) ingests BAG (Basisregistratie Adressen en Gebouwen)
+# into the OA normalised schema. butterfly-geocode reads it via the
+# OpenAddresses streaming loader (no per-source code path).
 #
-#   Basisregistratie Adressen en Gebouwen (BAG)
-#   Direct extract:  https://service.pdok.nl/kadaster/adressen/atom/v1_0/downloads/lvbag-extract-nl.zip
-#   Atom feed:       https://service.pdok.nl/kadaster/adressen/atom/v1_0/adressen.xml
-#   Landing page:    https://www.kadaster.nl/-/gratis-download-bag-extract
-#   License:         CC0 (public domain) for the open extract
-#   Format:          GML / XML inside ZIP, ~2.8 GB compressed, ~9 M addresses
-#   Cadence:         monthly (8th of the month)
+# Verified live 2026-05-05. Job IDs pin the snapshot — refresh by
+# querying `https://batch.openaddresses.io/api/data?source=nl` and
+# updating the job number.
 #
-# No transit feeds in this index — Dutch GTFS is published per
-# operator via OpenOV / NDOV.
+# No transit feeds — Dutch GTFS is published per operator via
+# OpenOV / NDOV and is out of scope here.
 
 [pbf]
 url = "https://download.geofabrik.de/europe/netherlands-latest.osm.pbf"
+
+[[address]]
+id     = "oa-nl-countrywide"
+url    = "https://v2.openaddresses.io/batch-prod/job/823433/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"

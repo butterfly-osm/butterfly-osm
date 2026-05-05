@@ -1,8 +1,11 @@
 # Butterfly region index — India
 #
-# OSM PBF for India from Geofabrik. ~700 MB compressed.
+# OSM PBF for India from Geofabrik. India is OSM-only —
+# OpenAddresses has no Indian source today (verified
+# `https://batch.openaddresses.io/api/data?source=in` 2026-05-05;
+# the request returns zero `addresses`-layer rows).
 #
-# Authoritative address dataset (NOT fetched here):
+# Authoritative open address datasets (NOT yet wired):
 #   - India Post PIN database — free download, contains 6-digit PINs
 #     and locality names but no street-level coordinates.
 #   - Survey of India (SoI) — government datasets are not

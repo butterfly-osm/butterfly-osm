@@ -13,9 +13,12 @@
 #   transit/gtfs/delijn.zip                    ← [[gtfs]] id = "delijn"
 #   transit/gtfs/tec.zip                       ← [[gtfs]] id = "tec"
 #   transit/netex/stib-epip.xml                ← [[netex_epip]] id = "stib"
-#   addresses/bosa-bevlg.zip                   ← [[address]] id = "bosa-bevlg"
-#   addresses/bosa-bewal.zip                   ← [[address]] id = "bosa-bewal"
-#   addresses/bosa-bebru.zip                   ← [[address]] id = "bosa-bebru"
+#   addresses/oa-be-bru-fr.geojson.gz          ← [[address]] id = "oa-be-bru-fr"
+#   addresses/oa-be-bru-nl.geojson.gz          ← [[address]] id = "oa-be-bru-nl"
+#   addresses/oa-be-vlg-fr.geojson.gz          ← [[address]] id = "oa-be-vlg-fr"
+#   addresses/oa-be-vlg-nl.geojson.gz          ← [[address]] id = "oa-be-vlg-nl"
+#   addresses/oa-be-wal-fr.geojson.gz          ← [[address]] id = "oa-be-wal-fr"
+#   addresses/oa-be-wal-de.geojson.gz          ← [[address]] id = "oa-be-wal-de"
 #
 # This matches the layout butterfly-route's server already loads
 # from — no migration, no config change downstream.
@@ -39,28 +42,51 @@ url = "https://opendata.tec-wl.be/Current%20GTFS/TEC-GTFS.zip"
 id  = "stib"
 url = "https://belgianmobility.blob.core.windows.net/epip-production/epip-stibmivb-bmc-latest.xml"
 
-# Authoritative address sources (#96 §"Data Sources"). BOSA BeSt is
-# the Belgian Federal Public Service BOSA's open address dataset
-# (~6.7M records, monthly cadence, Belgian Open Data License). Three
-# regional ZIPs each containing one CSV; butterfly-geocode's
-# `--csv` build path opens either the ZIP or the unpacked CSV.
+# Authoritative address sources (#96 §"Data Sources").
+# OpenAddresses (https://openaddresses.io) is the canonical layer:
+# ~600M addresses across ~40 countries via one normalised schema.
+# Belgium ships through 6 OpenAddresses sources — three regions
+# (Brussels / Flanders / Wallonia) × per-region languages — which OA
+# ingests upstream from the Belgian Federal Public Service BOSA's
+# BeSt Address dataset and republishes as gzipped GeoJSON-seq.
 #
-# Verified live 2026-05-04. See `geocode-data/SOURCES.md` for the
-# field mapping contract and update cadence.
-[[address]]
-id     = "bosa-bevlg"
-url    = "https://opendata.bosa.be/download/best/openaddress-bevlg.zip"
-format = "csv-zip"
-source = "bosa"
+# Job IDs pin the snapshot — refresh by re-querying
+# `https://batch.openaddresses.io/api/data?source=be` and updating the
+# job number. Verified live 2026-05-05. See `geocode-data/SOURCES.md`
+# for the schema contract and per-source URL discovery.
 
 [[address]]
-id     = "bosa-bewal"
-url    = "https://opendata.bosa.be/download/best/openaddress-bewal.zip"
-format = "csv-zip"
-source = "bosa"
+id     = "oa-be-bru-fr"
+url    = "https://v2.openaddresses.io/batch-prod/job/824413/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"
 
 [[address]]
-id     = "bosa-bebru"
-url    = "https://opendata.bosa.be/download/best/openaddress-bebru.zip"
-format = "csv-zip"
-source = "bosa"
+id     = "oa-be-bru-nl"
+url    = "https://v2.openaddresses.io/batch-prod/job/824412/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"
+
+[[address]]
+id     = "oa-be-vlg-fr"
+url    = "https://v2.openaddresses.io/batch-prod/job/824410/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"
+
+[[address]]
+id     = "oa-be-vlg-nl"
+url    = "https://v2.openaddresses.io/batch-prod/job/824409/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"
+
+[[address]]
+id     = "oa-be-wal-fr"
+url    = "https://v2.openaddresses.io/batch-prod/job/824406/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"
+
+[[address]]
+id     = "oa-be-wal-de"
+url    = "https://v2.openaddresses.io/batch-prod/job/824408/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"

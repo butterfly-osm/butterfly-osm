@@ -1,34 +1,49 @@
 //! Authoritative-source ingestion (#96 §"Data Sources").
 //!
-//! Each source maps an upstream open-data dataset (BOSA BeSt for
-//! Belgium, BAN for France, BAG for the Netherlands, ...) into the
-//! same normalised [`crate::shard::AddressRecord`] shape so the shard
+//! Each source maps an upstream open-data dataset to the same
+//! normalised [`crate::shard::AddressRecord`] shape so the shard
 //! builder is source-agnostic.
 //!
 //! ## Coverage today
 //!
 //! - [`osm`] — wraps `crate::osm_extract` so the existing OSM PBF
 //!   path goes through the same `Source` interface.
-//! - [`bosa`] — Belgian BeSt Address streaming CSV loader. Reads
-//!   region-specific CSVs (Flanders / Wallonia / Brussels), emits one
-//!   record per (address, language) so per-language localities/streets
-//!   land as queryable aliases.
+//! - [`openaddresses`] — OpenAddresses streaming loader. Reads the
+//!   canonical gzipped GeoJSON-seq published at
+//!   `https://v2.openaddresses.io/batch-prod/job/<id>/source.geojson.gz`,
+//!   plus zipped/CSV variants.
 //!
 //! Adding a new source = new module + new `Source` impl + new
 //! `SourceTag` variant + new `[[address]]` entry in the relevant
 //! `dl/regions/<country>.toml`. No core code change.
+//!
+//! ## Why OpenAddresses, not per-country authoritative datasets
+//!
+//! BOSA (Belgium), BAN (France), BAG (Netherlands), BD-Adresses
+//! (Luxembourg), BEV (Austria), G-NAF (Australia), and several dozen
+//! state-level datasets for the US/DE/AT/CH all live **upstream** of
+//! OpenAddresses. OA ingests each one via a per-source manifest and
+//! republishes a normalised feed with the same set of properties
+//! (`number`, `street`, `unit`, `city`, `postcode`, `id`, …). Going
+//! through OA gives butterfly-geocode one ingestion code path
+//! (instead of seven heterogeneous loaders), one normalised schema,
+//! and one update cadence (weekly).
+//!
+//! Operators wanting maximum recency for a single country can still
+//! point the loader directly at the upstream dataset (e.g. a fresh
+//! BOSA ZIP) — OA's CSV format intentionally mirrors BOSA's column
+//! names where they overlap, so the same loader works.
 //!
 //! ## Merge dedup
 //!
 //! [`merge_records`] combines records from multiple sources into one
 //! shard. Conflicts (same `(postcode, normalized street, housenumber)`
 //! within ~30 m) resolve toward the highest-priority authoritative
-//! source — see [`merge_priority`]. BOSA wins over OSM for Belgium;
-//! BAN wins over OSM for France; etc. The OSM fallback survives for
-//! addresses no authoritative source covers (rare buildings, recent
-//! mappings).
+//! source — see [`merge_priority`]. OpenAddresses wins over OSM. The
+//! OSM fallback survives for addresses no authoritative source covers
+//! (rare buildings, recent mappings, countries OA doesn't yet index).
 
-pub mod bosa;
+pub mod openaddresses;
 pub mod osm;
 
 use std::path::Path;
@@ -40,9 +55,9 @@ use crate::shard::{AddressRecord, SourceTag};
 /// A pluggable address-source loader.
 ///
 /// Implementations stream records out of an upstream dataset and emit
-/// them through the callback. Streaming is required because BOSA at
-/// 6.7M records and BAN at 26M records exceed comfortable in-memory
-/// buffering.
+/// them through the callback. Streaming is required because
+/// OpenAddresses at hundreds of millions of records exceeds
+/// comfortable in-memory buffering.
 ///
 /// The callback returns `()` and is expected to push into a
 /// caller-owned `Vec` or directly into a shard builder. A future
@@ -73,8 +88,8 @@ pub enum SourceProgress {
     Phase { phase: &'static str },
     /// Mid-run progress: how many input rows have been seen and how
     /// many records have been emitted so far. The two diverge when
-    /// the loader filters (BOSA `status != current`, OSM nodes
-    /// without `addr:*` tags, etc.).
+    /// the loader filters (OA rows missing street/housenumber, OSM
+    /// nodes without `addr:*` tags, etc.).
     Records {
         rows_seen: u64,
         records_emitted: u64,
@@ -102,8 +117,8 @@ pub fn collect_all<S: Source + ?Sized>(
 /// [`crate::parser::normalize::normalize`] so accent folding,
 /// punctuation collapse, and whitespace collapse all match the
 /// shard's inverted-index keys. Without this, `Chaussée de Mons`
-/// (BOSA) and `Chaussee de Mons` (OSM) end up in different dedup
-/// groups and ship as duplicate records.
+/// (OA, normalized via OSM upstream) and `Chaussee de Mons` (OSM)
+/// end up in different dedup groups and ship as duplicate records.
 fn dedup_key(rec: &AddressRecord) -> (String, String, String) {
     (
         crate::parser::normalize::normalize(rec.postcode.trim()),
@@ -125,19 +140,11 @@ fn dedup_key(rec: &AddressRecord) -> (String, String, String) {
 const MERGE_RADIUS_DEG: f64 = 0.0003;
 
 /// Source-priority ranking used by [`merge_records`]. Authoritative
-/// sources outrank OSM. Among authoritative sources, the first-listed
-/// (BOSA for BE, BAN for FR, ...) wins because it is the country's
-/// official open-data dataset. OSM is the global fallback.
-///
-/// Higher number = higher priority.
+/// sources (OpenAddresses) outrank OSM. Higher number = higher
+/// priority.
 fn merge_priority(tag: SourceTag) -> u8 {
     match tag {
-        SourceTag::Bosa => 100,
-        SourceTag::Ban => 100,
-        SourceTag::Bag => 100,
-        SourceTag::Gnaf => 100,
-        SourceTag::Bev => 100,
-        SourceTag::Swisstopo => 100,
+        SourceTag::OpenAddresses => 100,
         SourceTag::Osm => 10,
     }
 }
@@ -151,7 +158,7 @@ fn merge_priority(tag: SourceTag) -> u8 {
 /// Order-stable for ties: when two sources have equal priority, the
 /// earlier vector in `inputs` wins. This is rare in the MVP (one
 /// authoritative source per country) but matters for callers that
-/// merge multiple OSM extracts.
+/// merge multiple OSM extracts or multiple OA per-state shards.
 #[must_use]
 pub fn merge_records(inputs: Vec<Vec<AddressRecord>>) -> Vec<AddressRecord> {
     use std::collections::HashMap;
@@ -247,16 +254,17 @@ fn dedup_group(group: Vec<AddressRecord>) -> Vec<AddressRecord> {
 /// Dispatch table used by the CLI: parse a `(format, path)` pair and
 /// load the source. Unknown formats return an error.
 ///
-/// Today: `csv` → BOSA loader (the only supported CSV authoritative
-/// source). `pbf` → OSM loader. New formats land here.
+/// Today: `openaddresses` / `oa` / `csv` → OpenAddresses loader.
+/// `pbf` / `osm` → OSM loader. New formats land here.
 pub fn load_by_format(
     format: &str,
     path: &Path,
     country: crate::routing::CountryId,
 ) -> Result<Vec<AddressRecord>> {
     match format {
-        "csv" | "bosa" | "bosa-csv" => {
-            let loader = bosa::BosaCsvSource::new(path, country);
+        "openaddresses" | "open-addresses" | "oa" | "csv" | "geojson" | "geojsonseq"
+        | "geojson-gz" | "ndjson" => {
+            let loader = openaddresses::OpenAddressesSource::new(path, country);
             collect_all(&loader, |_| {})
         }
         "pbf" | "osm" => {
@@ -264,7 +272,7 @@ pub fn load_by_format(
             collect_all(&loader, |_| {})
         }
         other => Err(anyhow::anyhow!(
-            "unknown source format '{other}' (supported: csv|bosa|bosa-csv, pbf|osm)"
+            "unknown source format '{other}' (supported: openaddresses|oa|csv|geojson, pbf|osm)"
         )),
     }
 }
@@ -295,14 +303,14 @@ mod tests {
 
     #[test]
     fn merge_dedups_within_radius_keeps_higher_priority() {
-        // BOSA + OSM at the same physical address — BOSA wins.
-        let bosa = vec![rec(
+        // OA + OSM at the same physical address — OA wins.
+        let oa = vec![rec(
             "1070",
             "Rue Wayez",
             "122",
             50.834,
             4.314,
-            SourceTag::Bosa,
+            SourceTag::OpenAddresses,
         )];
         let osm = vec![rec(
             "1070",
@@ -312,9 +320,9 @@ mod tests {
             4.3141,
             SourceTag::Osm,
         )];
-        let merged = merge_records(vec![bosa, osm]);
+        let merged = merge_records(vec![oa, osm]);
         assert_eq!(merged.len(), 1, "expected single record after dedup");
-        assert_eq!(merged[0].source, SourceTag::Bosa);
+        assert_eq!(merged[0].source, SourceTag::OpenAddresses);
     }
 
     #[test]
@@ -326,7 +334,7 @@ mod tests {
             "122",
             50.834,
             4.314,
-            SourceTag::Bosa,
+            SourceTag::OpenAddresses,
         )];
         let b = vec![rec(
             "2000",
@@ -334,7 +342,7 @@ mod tests {
             "1",
             51.221,
             4.401,
-            SourceTag::Bosa,
+            SourceTag::OpenAddresses,
         )];
         let merged = merge_records(vec![a, b]);
         assert_eq!(merged.len(), 2);
@@ -357,13 +365,11 @@ mod tests {
     #[test]
     fn merge_osm_only_keeps_all() {
         // Two OSM-only records that are coincidentally at the same
-        // address (rare but possible on OSM): tie on priority,
-        // dedup keeps the first by stable sort.
+        // address: tie on priority, dedup keeps the first by stable
+        // sort.
         let a = vec![rec("1070", "Rue X", "1", 50.834, 4.314, SourceTag::Osm)];
         let b = vec![rec("1070", "Rue X", "1", 50.8341, 4.3141, SourceTag::Osm)];
         let merged = merge_records(vec![a, b]);
-        // Both have priority 10, cluster contains both, dedup picks
-        // the first found (insertion order from the HashMap).
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].source, SourceTag::Osm);
     }
@@ -376,22 +382,21 @@ mod tests {
     }
 
     #[test]
-    fn priority_order_ban_beats_osm() {
-        assert!(merge_priority(SourceTag::Ban) > merge_priority(SourceTag::Osm));
-        assert!(merge_priority(SourceTag::Bosa) > merge_priority(SourceTag::Osm));
+    fn priority_order_openaddresses_beats_osm() {
+        assert!(merge_priority(SourceTag::OpenAddresses) > merge_priority(SourceTag::Osm));
     }
 
     #[test]
     fn dedup_key_normalizes_diacritics() {
-        // BOSA: "Chaussée de Mons", OSM: "Chaussee de Mons" — must
-        // land in the same group so the merge dedup sees them.
-        let bosa = rec(
+        // OpenAddresses: "Chaussée de Mons", OSM: "Chaussee de Mons" —
+        // must land in the same group so the merge dedup sees them.
+        let oa = rec(
             "1070",
             "Chaussée de Mons",
             "122",
             50.834,
             4.314,
-            SourceTag::Bosa,
+            SourceTag::OpenAddresses,
         );
         let osm = rec(
             "1070",
@@ -401,10 +406,10 @@ mod tests {
             4.3141,
             SourceTag::Osm,
         );
-        assert_eq!(dedup_key(&bosa), dedup_key(&osm));
-        let merged = merge_records(vec![vec![bosa], vec![osm]]);
+        assert_eq!(dedup_key(&oa), dedup_key(&osm));
+        let merged = merge_records(vec![vec![oa], vec![osm]]);
         assert_eq!(merged.len(), 1, "diacritic dedup should collapse the pair");
-        assert_eq!(merged[0].source, SourceTag::Bosa);
+        assert_eq!(merged[0].source, SourceTag::OpenAddresses);
     }
 
     #[test]

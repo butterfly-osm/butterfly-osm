@@ -317,15 +317,33 @@ max_lon = 1.0
 }
 
 #[test]
-fn rejects_v4_shard_with_invalid_iso2() {
+fn rejects_v5_shard_with_invalid_iso2() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("invalid.bfgs");
-    // v4 header with lowercase letters where ISO2 belongs.
-    write_minimal_shard(&path, 4, *b"be");
+    // v5 header with lowercase letters where ISO2 belongs.
+    write_minimal_shard(&path, 5, *b"be");
     let err = Shard::open(&path).unwrap_err();
     let msg = format!("{err:#}");
     assert!(
         msg.contains("ISO 3166-1") || msg.contains("uppercase"),
         "expected ISO2 validation error, got: {msg}"
+    );
+}
+
+#[test]
+fn rejects_v4_shards_with_helpful_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v4.bfgs");
+    // v4 header (BOSA-as-byte-2) — must be rebuilt for v5 (OA-as-byte-2).
+    write_minimal_shard(&path, 4, *b"BE");
+    let err = Shard::open(&path).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("BFGS v4"),
+        "expected v4-rejection error, got: {msg}"
+    );
+    assert!(
+        msg.contains("openaddresses") || msg.contains("OpenAddresses"),
+        "expected upgrade hint mentioning OpenAddresses, got: {msg}"
     );
 }

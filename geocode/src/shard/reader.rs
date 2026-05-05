@@ -33,7 +33,9 @@ use memmap2::Mmap;
 use rstar::{AABB, PointDistance, RTree, RTreeObject};
 
 use super::mmap::map_readonly;
-use super::{FOOTER_BYTES, HEADER_BYTES, MAGIC, RECORD_BYTES, SourceTag, VERSION, VERSION_V3};
+use super::{
+    FOOTER_BYTES, HEADER_BYTES, MAGIC, RECORD_BYTES, SourceTag, VERSION, VERSION_V3, VERSION_V4,
+};
 use crate::geocoder::cost::ShardStats;
 use crate::parser::normalize::normalize;
 use crate::routing::CountryId;
@@ -60,7 +62,7 @@ pub struct ShardRecord {
     pub housenumber: Arc<str>,
     pub postcode: Arc<str>,
     /// Authoritative-source tag (#96 §"Data Sources"). Decoded from
-    /// the per-record source byte (BFGS v4). Defaults to
+    /// the per-record source byte (BFGS v5). Defaults to
     /// [`SourceTag::Osm`] when the byte is unrecognised — the byte
     /// is forward-compatible (a future shard may introduce new
     /// codes), but the default lets older readers still surface a
@@ -184,8 +186,18 @@ impl Shard {
         if version == VERSION_V3 {
             bail!(
                 "shard at {} is BFGS v3 (pre-#96-serve-the-world). \
-                 Rebuild via `butterfly-geocode build-shard --country <ISO2>` to upgrade to v4. \
-                 v3 stored country as a 7-entry enum index; v4 stores ISO 3166-1 alpha-2.",
+                 Rebuild via `butterfly-geocode build-shard --country <ISO2>` to upgrade to v{VERSION}. \
+                 v3 stored country as a 7-entry enum index; v4+ stores ISO 3166-1 alpha-2.",
+                path.display(),
+            );
+        }
+        if version == VERSION_V4 {
+            bail!(
+                "shard at {} is BFGS v4 (BOSA-as-byte-2 from PR #173). \
+                 Rebuild via `butterfly-geocode build-shard --country <ISO2> --source <osm|openaddresses>` \
+                 to upgrade to v{VERSION}. \
+                 v5 reassigns the per-record source byte 2 from BOSA to OpenAddresses, so v4 records would \
+                 mis-decode as OpenAddresses without a rebuild.",
                 path.display(),
             );
         }
@@ -361,7 +373,7 @@ impl Shard {
         let h_len = u16::from_le_bytes(buf[base + 24..base + 26].try_into().ok()?);
         let p_off = u32::from_le_bytes(buf[base + 26..base + 30].try_into().ok()?);
         let p_len = u16::from_le_bytes(buf[base + 30..base + 32].try_into().ok()?);
-        // v4 source byte at offset 32. Bytes 33..36 are reserved pad.
+        // v5 source byte at offset 32. Bytes 33..36 are reserved pad.
         let source_byte = buf[base + 32];
         Some(RawRecord {
             lat_e7,
@@ -526,8 +538,8 @@ struct RawRecord {
     h_len: u16,
     p_off: u32,
     p_len: u16,
-    /// BFGS v4 per-record source byte (#96 §"Data Sources"). 0 in
-    /// pre-v4 shards which we no longer accept; the version check at
+    /// BFGS v5 per-record source byte (#96 §"Data Sources"). 0 in
+    /// pre-v5 shards which we no longer accept; the version check at
     /// open time rejects them so this is always a real `SourceTag`
     /// code in practice.
     source_byte: u8,
