@@ -248,23 +248,20 @@ impl CountryPack {
             .as_ref()
             .map(|p| p.position)
             .unwrap_or_default();
-        let postcode_canonicalize = parsed
-            .postcode
-            .as_ref()
-            .map(|p| match p.canonicalize.as_str() {
+        let postcode_canonicalize = match parsed.postcode.as_ref() {
+            Some(p) => match p.canonicalize.as_str() {
                 "none" => PostcodeCanonicalize::None,
                 "collapse_whitespace" => PostcodeCanonicalize::CollapseWhitespace,
                 "strip_country_prefix" => PostcodeCanonicalize::StripCountryPrefix,
-                other => {
-                    tracing::warn!(
-                        country = %parsed.country.iso2,
-                        canonicalize = other,
-                        "unknown postcode canonicalize kind, defaulting to 'none'"
-                    );
-                    PostcodeCanonicalize::None
-                }
-            })
-            .unwrap_or_default();
+                other => bail!(
+                    "{}: unknown [postcode].canonicalize value '{}' \
+                     (expected: none, collapse_whitespace, strip_country_prefix)",
+                    parsed.country.iso2,
+                    other
+                ),
+            },
+            None => PostcodeCanonicalize::None,
+        };
 
         let lexical_cues: Vec<LexicalCue> = parsed
             .lexical_cues
@@ -285,13 +282,22 @@ impl CountryPack {
             dominant: vec![],
             secondary: vec![],
         });
-        let neighbours = parsed
+        let neighbours: Vec<CountryId> = parsed
             .neighbours
             .unwrap_or_default()
             .codes
             .into_iter()
-            .filter_map(|c| CountryId::from_iso2(&c))
-            .collect();
+            .map(|c| {
+                CountryId::from_iso2(&c).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "{}: [neighbours].codes contains invalid ISO 3166-1 alpha-2 code '{}' \
+                         (must be 2 alphabetic characters)",
+                        parsed.country.iso2,
+                        c
+                    )
+                })
+            })
+            .collect::<Result<_>>()?;
         let priors = parsed.source_priors.unwrap_or_default();
         let tags = parsed.osm_tags.unwrap_or_default();
 
@@ -455,23 +461,43 @@ fn strip_alpha_prefix(s: &str) -> Option<String> {
     Some(s[i + 1..].to_string())
 }
 
+/// Word-boundary substring scan over `text` for `word`. Boundaries
+/// are detected via [`char::is_alphanumeric`], so non-ASCII alphabetic
+/// characters (`münchen`, `liège`, `東京`) interact correctly with
+/// the boundary rule. Pure ASCII boundary checks would treat the
+/// `ü` in `münchen` as a non-letter, falsely matching `chen` against
+/// the word `chen`.
+///
+/// Both arguments are expected to already be normalised to the
+/// classifier's lowercase form by the caller.
 fn contains_word(text: &str, word: &str) -> bool {
-    let bytes = text.as_bytes();
-    let wbytes = word.as_bytes();
-    if wbytes.is_empty() || bytes.len() < wbytes.len() {
+    if word.is_empty() || text.len() < word.len() {
         return false;
     }
-    let mut i = 0;
-    while i + wbytes.len() <= bytes.len() {
-        if &bytes[i..i + wbytes.len()] == wbytes {
-            let before_ok = i == 0 || !bytes[i - 1].is_ascii_alphabetic();
-            let after_ok =
-                i + wbytes.len() == bytes.len() || !bytes[i + wbytes.len()].is_ascii_alphabetic();
-            if before_ok && after_ok {
-                return true;
-            }
+    let mut search_from = 0;
+    while let Some(rel) = text[search_from..].find(word) {
+        let start = search_from + rel;
+        let end = start + word.len();
+        let before_ok = match text[..start].chars().next_back() {
+            Some(c) => !c.is_alphanumeric(),
+            None => true,
+        };
+        let after_ok = match text[end..].chars().next() {
+            Some(c) => !c.is_alphanumeric(),
+            None => true,
+        };
+        if before_ok && after_ok {
+            return true;
         }
-        i += 1;
+        // Advance past this match attempt by one char so we don't
+        // get stuck when `word.len() == 0` is possible. Use char
+        // boundary safety: `find` always returns a char-boundary
+        // index; advancing by one char from `start` keeps us on a
+        // boundary too.
+        search_from = match text[start..].chars().next() {
+            Some(c) => start + c.len_utf8(),
+            None => break,
+        };
     }
     false
 }
@@ -647,6 +673,64 @@ impl PackRegistry {
     #[must_use]
     pub fn default_dir() -> PathBuf {
         PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/data/packs"))
+    }
+
+    /// Build the registry from the embedded shipped packs, then
+    /// overlay every `*.toml` found in `dir`. Directory entries WIN
+    /// — if `dir/be.toml` parses, it replaces the embedded `BE` pack.
+    /// Used by `serve --pack-dir <dir>` so operators can patch a
+    /// shipped pack without rebuilding the binary.
+    ///
+    /// The directory may contain partial coverage (e.g. only `de.toml`)
+    /// — every shipped pack the directory does NOT override stays
+    /// untouched. A non-existent or empty directory yields the same
+    /// result as [`Self::shipped`].
+    pub fn shipped_with_overrides<P: AsRef<Path>>(dir: P) -> Result<Self> {
+        let mut reg = Self::shipped()?;
+        let dir = dir.as_ref();
+        if !dir.is_dir() {
+            // No directory → no overlay. This matches the documented
+            // behaviour for `--pack-dir` pointing at a non-existent
+            // path: warn upstream, fall through to shipped.
+            return Ok(reg);
+        }
+        let entries = std::fs::read_dir(dir)
+            .with_context(|| format!("reading override pack directory {}", dir.display()))?;
+        let mut overlaid = 0usize;
+        let mut errors: Vec<String> = Vec::new();
+        for entry in entries {
+            let entry = entry.context("iterating override pack directory")?;
+            let path = entry.path();
+            if path
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.eq_ignore_ascii_case("toml"))
+                != Some(true)
+            {
+                continue;
+            }
+            match CountryPack::from_file(&path) {
+                Ok(pack) => {
+                    reg.insert(pack);
+                    overlaid += 1;
+                }
+                Err(e) => {
+                    errors.push(format!("{}: {:#}", path.display(), e));
+                }
+            }
+        }
+        if !errors.is_empty() {
+            for e in &errors {
+                tracing::warn!(error = %e, "override country pack failed to load");
+            }
+        }
+        tracing::info!(
+            dir = %dir.display(),
+            overlaid,
+            total_packs = reg.len(),
+            "country pack registry loaded with overrides"
+        );
+        Ok(reg)
     }
 }
 

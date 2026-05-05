@@ -42,8 +42,25 @@ struct AddressRecord {
 - Postcodes are stored as published, **without** country prefix. The
   parser knows postcode format per country at query time.
 - Multilingual aliases (e.g. Brussels = Bruxelles = Brussel = Brüssel)
-  are handled at the **alias-table** layer (one record per (canonical
-  locality, alias)), not by duplicating `AddressRecord`s.
+  are handled at the **alias-table** layer: one record per
+  `(canonical locality, alias)` pair. The canonical locality is the
+  `(country, postcode_first_two, locality_canonical_id)` tuple; each
+  alias adds one row pointing back to that canonical id. Worked
+  example for Brussels:
+  ```
+  canonical_locality: (BE, "10", id=42 → "Bruxelles")
+  alias:              (BE, "10", id=42, alias="Brussel",  lang="nl")
+  alias:              (BE, "10", id=42, alias="Brussels", lang="en")
+  alias:              (BE, "10", id=42, alias="Brüssel",  lang="de")
+  ```
+  Because BOSA publishes each address once with every-language
+  street + locality columns populated, the importer projects each
+  language column into one alias row, NOT one full `AddressRecord`
+  per language. The shard's per-language inverted-index lookups
+  resolve through this alias table, then materialise the canonical
+  record exactly once. (PR #166 originally said "one record per
+  language per address"; that contradicted the alias-table model
+  and is corrected here.)
 - House numbers stay strings. Numeric coercion is wrong — alphanumeric
   ("12A"), hyphenated ("10-12"), bis/ter/quater suffixes are all
   semantically real.
@@ -119,10 +136,15 @@ fn from_bosa_csv(row: &BosaRow, lang: Lang) -> AddressRecord {
 survives without a separate "unit" channel for the BE MVP.
 
 The `pick_lang` step is **not** an ingest-time choice — Belgium
-needs every language as a queryable alias. The importer emits one
-record per non-empty language per address (typically NL + FR; DE is
-mostly empty in Brussels/Wallonia), all sharing the same `source_id`,
-linked through the same `(lat, lon, postcode, housenumber)` tuple.
+needs every language as a queryable alias. The importer projects
+each non-empty language column (NL/FR/DE) into a separate row in
+the alias table per the model documented in §"Normalized record
+schema": one canonical `AddressRecord` per address, plus one alias
+row per non-empty language pointing at that canonical id. (The
+2026-05-04 BOSA loader currently emits one `AddressRecord` per
+language as a stopgap until the alias-table layer lands; the
+follow-up to switch to the alias-table model is filed as part of
+the geocode shard format work in `geocode-data/CLUSTERS.md`.)
 
 Records with `status != "current"` (e.g. retired addresses) are
 dropped at ingest. Records without lat/lon parse failures are also
