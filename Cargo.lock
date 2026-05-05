@@ -604,6 +604,7 @@ dependencies = [
  "candle-nn",
  "clap",
  "crc",
+ "flate2",
  "futures",
  "futures-util",
  "gbdt",
