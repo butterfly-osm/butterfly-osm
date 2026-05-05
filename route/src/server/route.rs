@@ -827,6 +827,197 @@ pub async fn route_handler(
     .into_response()
 }
 
+// ============ Cross-region handler (#91 Phase 2) ============
+
+/// Cross-region-aware variant of [`route_handler`] (additive — does
+/// not replace the regular handler).
+///
+/// Dispatches via [`RegionsState::dispatch_p2p_with_overlay`]. When the
+/// query is same-region, falls through to the regular handler so
+/// behaviour is identical for intra-region routes whether the overlay
+/// is wired or not.
+///
+/// When the query is cross-region and an overlay is loaded, runs
+/// [`super::cross_region::solve_cross_region`] and returns a JSON
+/// response that strings together the access leg, the inter-region
+/// "haversine bridge" cost, and the egress leg. Geometry is currently
+/// a 2-point straight line between the two snaps; full EBG-path
+/// concatenation is a follow-up.
+pub async fn cross_region_route_handler(
+    State(regions): State<Arc<RegionsState>>,
+    Query(req): Query<RouteRequest>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = validate_coord(req.src_lon, req.src_lat, "source") {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+    }
+    if let Err(e) = validate_coord(req.dst_lon, req.dst_lat, "destination") {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+    }
+
+    let plan = match regions.dispatch_p2p_with_overlay(
+        req.src_lon,
+        req.src_lat,
+        req.dst_lon,
+        req.dst_lat,
+        &req.mode,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            let (code, body) = e.into_response_parts();
+            return (code, Json(body)).into_response();
+        }
+    };
+
+    match plan {
+        super::regions::P2pPlan::SameRegion { .. } => {
+            route_handler(State(regions), Query(req), headers)
+                .await
+                .into_response()
+        }
+        super::regions::P2pPlan::CrossRegion {
+            src_state,
+            src_region,
+            dst_state,
+            dst_region,
+            overlay,
+        } => cross_region_route_inner(src_state, src_region, dst_state, dst_region, overlay, req)
+            .into_response(),
+    }
+}
+
+fn cross_region_route_inner(
+    src_state: Arc<ServerState>,
+    src_region: String,
+    dst_state: Arc<ServerState>,
+    dst_region: String,
+    overlay: Arc<super::overlay::OverlayCluster>,
+    req: RouteRequest,
+) -> axum::response::Response {
+    use super::cross_region::solve_cross_region;
+
+    let src_mode = match parse_mode(&req.mode, &src_state.mode_lookup) {
+        Ok(m) => m,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+        }
+    };
+    let dst_mode = match parse_mode(&req.mode, &dst_state.mode_lookup) {
+        Ok(m) => m,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+        }
+    };
+
+    let src_mode_data = src_state.get_mode(src_mode);
+    let dst_mode_data = dst_state.get_mode(dst_mode);
+
+    let (src_orig, src_snap) =
+        match src_state
+            .snap_index
+            .snap_with_info(req.src_lon, req.src_lat, src_mode.0)
+        {
+            Some(t) => (t.0, t),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("Could not snap source in region {}", src_region),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+    let (dst_orig, dst_snap) =
+        match dst_state
+            .snap_index
+            .snap_with_info(req.dst_lon, req.dst_lat, dst_mode.0)
+        {
+            Some(t) => (t.0, t),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("Could not snap destination in region {}", dst_region),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
+    let src_rank = src_mode_data.orig_to_rank[src_orig as usize];
+    let dst_rank = dst_mode_data.orig_to_rank[dst_orig as usize];
+    if src_rank == u32::MAX || dst_rank == u32::MAX {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Snapped node not accessible for this mode".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let solution = match solve_cross_region(
+        &src_state,
+        &src_region,
+        src_rank,
+        &dst_state,
+        &dst_region,
+        dst_rank,
+        &req.mode,
+        &overlay,
+    ) {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!(
+                        "No cross-region route found from {} to {}",
+                        src_region, dst_region
+                    ),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let total_dsec = solution.total_cost as f64;
+    let duration_s = total_dsec / 10.0;
+
+    let geom_format = match GeometryFormat::parse(&req.geometries) {
+        Ok(f) => f,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+        }
+    };
+
+    let pts = vec![
+        Point {
+            lon: src_snap.1,
+            lat: src_snap.2,
+        },
+        Point {
+            lon: dst_snap.1,
+            lat: dst_snap.2,
+        },
+    ];
+    let geom = RouteGeometry::from_points(pts, geom_format);
+
+    let distance_m = crate::nbg::haversine_distance(src_snap.2, src_snap.1, dst_snap.2, dst_snap.1);
+
+    Json(RouteResponse {
+        duration_s,
+        distance_m,
+        geometry: geom,
+        steps: None,
+        annotations: None,
+        alternatives: None,
+        debug: None,
+    })
+    .into_response()
+}
+
 // ============ GPX formatting ============
 
 /// Check whether the Accept header requests GPX output.
