@@ -128,6 +128,15 @@ impl Source for OpenAddressesSource {
                 let gz = GzDecoder::new(BufReader::with_capacity(1 << 20, f));
                 stream_geojson_seq(gz, progress, emit)?;
             }
+            InputKind::GzCsv => {
+                progress(SourceProgress::Phase {
+                    phase: "streaming gzipped CSV",
+                });
+                let f =
+                    File::open(path).with_context(|| format!("re-opening {}", path.display()))?;
+                let gz = GzDecoder::new(BufReader::with_capacity(1 << 20, f));
+                stream_csv(gz, progress, emit)?;
+            }
             InputKind::RawGeojsonSeq => {
                 progress(SourceProgress::Phase {
                     phase: "streaming raw GeoJSON-seq",
@@ -157,10 +166,15 @@ impl Source for OpenAddressesSource {
 }
 
 /// On-disk layout choice produced by [`detect_kind`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InputKind {
-    /// gzip-magic (1f 8b) — assume GeoJSON-seq inside.
+    /// gzip-magic (1f 8b) — GeoJSON-seq inside.
     GzGeojsonSeq,
+    /// gzip-magic (1f 8b) AND path extension marks the payload as
+    /// CSV (`.csv.gz`, `.csv.gzip`). BAN-style feeds use this shape;
+    /// the historical default of "gzip → GeoJSON-seq" mis-dispatched
+    /// them and parsed every CSV row as JSON.
+    GzCsv,
     /// zip-magic (50 4b 03 04) — find the first `.geojson*` or
     /// `.csv` entry inside.
     Zip,
@@ -171,11 +185,27 @@ enum InputKind {
 }
 
 /// Decide which streaming path to use based on magic bytes first,
-/// falling back to the file extension. Magic bytes win because some
-/// operators rename files (e.g. `belgium.dat` containing a `.geojson.gz`)
-/// and the magic stays load-bearing.
+/// falling back to the file extension. Magic bytes win for the broad
+/// "compressed/uncompressed/zip" decision; the file extension then
+/// disambiguates CSV-vs-GeoJSON inside a gzip stream (we cannot peek
+/// past the gzip header without spinning up an actual decoder, and
+/// the extension is the canonical way operators distinguish the two
+/// in OpenAddresses + BAN feeds).
 fn detect_kind(head: &[u8], path: &Path) -> InputKind {
-    if head.len() >= 2 && head[0] == 0x1f && head[1] == 0x8b {
+    let lower_path = path
+        .to_str()
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let is_gz = head.len() >= 2 && head[0] == 0x1f && head[1] == 0x8b;
+    if is_gz {
+        // Disambiguate gz-CSV from gz-GeoJSON-seq by the path
+        // extension. BAN ships `.csv.gz`; OpenAddresses ships
+        // `.geojson.gz`. Without this distinction the CSV path was
+        // dispatched to the GeoJSON-seq reader, which treats every
+        // CSV row as a JSON parse error and abort.
+        if lower_path.ends_with(".csv.gz") || lower_path.ends_with(".csv.gzip") {
+            return InputKind::GzCsv;
+        }
         return InputKind::GzGeojsonSeq;
     }
     if head.len() >= 4 && head[0] == 0x50 && head[1] == 0x4b && head[2] == 0x03 && head[3] == 0x04 {
@@ -335,7 +365,7 @@ fn stream_csv<R: Read>(
         let postcode = cols
             .postcode
             .and_then(|i| fields.get(i))
-            .map(|s| s.trim().to_string())
+            .map(|s| normalize_oa_postcode(s.trim()))
             .unwrap_or_default();
         let city = cols
             .city
@@ -508,12 +538,14 @@ fn feature_to_record(feat: &OaFeature) -> Option<AddressRecord> {
         // multi-building streets).
         return None;
     }
-    let postcode = feat
+    let postcode_raw = feat
         .properties
         .postcode
         .as_deref()
         .map(str::trim)
         .unwrap_or_default();
+    let postcode_owned = normalize_oa_postcode(postcode_raw);
+    let postcode = postcode_owned.as_str();
     let city = feat
         .properties
         .city
@@ -537,6 +569,40 @@ fn feature_to_record(feat: &OaFeature) -> Option<AddressRecord> {
         source: SourceTag::OpenAddresses,
         source_id,
     })
+}
+
+/// Normalise an OpenAddresses postcode value. Strips a trailing
+/// `.0` / `.00` / … suffix that appears when upstream tooling encodes
+/// numeric postcodes as JSON floats (cf. US-DC OA proof: `20001.0`).
+/// Without this, the postcode anchor index keys on `"20001.0"` and
+/// every query carrying the human form `20001` misses.
+///
+/// Decisions:
+///
+/// - Only strip when the suffix is `.0+` AND the remainder is all
+///   ASCII digits. We don't want to mangle alphanumeric postcodes
+///   like Canadian `K1A 0B1` or UK `SW1A 1AA`.
+/// - We don't apply the country-pack `canonicalize_postcode` rule
+///   here — the loader doesn't carry the pack, and the canonicalize
+///   pass is applied later (at shard-build / query time, on both
+///   sides of the comparison). This function only undoes the
+///   float-encoding round-trip damage so the canonicalize pass sees
+///   the operator-intended string.
+fn normalize_oa_postcode(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if let Some(idx) = trimmed.find('.') {
+        let (left, right) = trimmed.split_at(idx);
+        // `right` includes the leading dot; check the remainder.
+        let after_dot = &right[1..];
+        if !left.is_empty()
+            && left.bytes().all(|b| b.is_ascii_digit())
+            && !after_dot.is_empty()
+            && after_dot.bytes().all(|b| b == b'0')
+        {
+            return left.to_string();
+        }
+    }
+    trimmed.to_string()
 }
 
 /// Format an OpenAddresses housenumber: `number[ unit]` with a space
@@ -813,6 +879,44 @@ mod tests {
             detect_kind(&head, std::path::Path::new("x.json")),
             InputKind::RawGeojsonSeq
         ));
+    }
+
+    #[test]
+    fn detect_kind_dispatches_csv_gz_separately_from_geojson_gz() {
+        // gzip magic + .csv.gz extension → GzCsv (not GzGeojsonSeq).
+        // Regression for Copilot review on PR #184: BAN-style feeds
+        // were being routed to the GeoJSON-seq parser.
+        let head = [0x1f, 0x8b, 0x00, 0x00];
+        assert_eq!(
+            detect_kind(&head, std::path::Path::new("ban-fr-75.csv.gz")),
+            InputKind::GzCsv
+        );
+        assert_eq!(
+            detect_kind(&head, std::path::Path::new("foo.csv.gzip")),
+            InputKind::GzCsv
+        );
+        // .geojson.gz path stays on the GeoJSON-seq route.
+        assert_eq!(
+            detect_kind(&head, std::path::Path::new("oa-be-bru-fr.geojson.gz")),
+            InputKind::GzGeojsonSeq
+        );
+    }
+
+    #[test]
+    fn normalize_postcode_strips_trailing_zero_decimal() {
+        // US-DC OA proof: postcodes encoded as JSON floats round-trip
+        // to "20001.0" / "20001.00" / etc. Strip the suffix so the
+        // shard postcode index keys on the human form "20001".
+        assert_eq!(normalize_oa_postcode("20001.0"), "20001");
+        assert_eq!(normalize_oa_postcode("20001.00"), "20001");
+        assert_eq!(normalize_oa_postcode("20001.000"), "20001");
+        // Don't touch values that aren't numeric+.0 — Canadian
+        // alphanumeric, UK with internal whitespace, fully-numeric.
+        assert_eq!(normalize_oa_postcode("20001"), "20001");
+        assert_eq!(normalize_oa_postcode("K1A 0B1"), "K1A 0B1");
+        assert_eq!(normalize_oa_postcode("SW1A 1AA"), "SW1A 1AA");
+        assert_eq!(normalize_oa_postcode("1234.AB"), "1234.AB");
+        assert_eq!(normalize_oa_postcode(""), "");
     }
 
     #[test]
