@@ -383,7 +383,7 @@ butterfly-geocode build-shard \
     --out belgium-merged.bfgs --country BE
 ```
 
-The per-record source byte (BFGS v4) survives the merge so `/geocode` results carry their provenance. Operators auditing geocode outputs can filter by source via the per-record source field.
+The per-record source byte (BFGS v4) is persisted at build time and survives the merge. The byte is stored on every record in the shard, lets the merger pick the higher-priority source on conflict, and is available to anyone reading the shard directly. Surfacing it on the `/geocode` JSON envelope is a follow-up tracked against `geocoder/executor.rs::GeocodedResult` (the result type lives outside this layer's territory).
 
 ### How the loader works
 

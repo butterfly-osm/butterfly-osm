@@ -140,12 +140,28 @@ mod tests {
     }
 
     #[test]
-    fn aachen_overlap_picks_smallest_bbox() {
-        // Aachen Hbf: BE/NL/DE triangle. BE has the smallest bbox of
-        // the three, so it wins the country_for_point race.
+    fn aachen_overlap_returns_multi_country_candidates() {
+        // Aachen Hbf sits in the BE/NL/DE triangle. The previous test
+        // locked in the bug where `country_for_point` returns BE
+        // because BE has the smallest bbox; that choice was wrong for
+        // a Aachen-Hbf reverse-geocode (the point is German).
+        //
+        // The reverse handler now fans out across every bbox that
+        // contains the point (`supported_countries_for_point`), so
+        // this test asserts the multi-country candidate set instead
+        // of the smallest-bbox tie-breaker. The handler's order rule
+        // (smallest-bbox-first as a heuristic, fall back to others)
+        // is exercised in `multi_country_e2e.rs`.
         let all = supported_countries_for_point(50.7676, 6.0911);
-        assert!(all.contains(&CountryId::DE));
-        assert_eq!(country_for_point(50.7676, 6.0911), Some(CountryId::BE));
+        assert!(
+            all.contains(&CountryId::DE),
+            "DE should be in supported_countries_for_point at Aachen"
+        );
+        assert!(
+            all.len() >= 2,
+            "expected multiple bbox-containing countries at Aachen, got {:?}",
+            all
+        );
     }
 
     #[test]

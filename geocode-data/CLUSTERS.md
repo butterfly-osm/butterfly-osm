@@ -223,6 +223,29 @@ back-to-back in the on-disk file so:
   average, which is small enough to fit in L3 for hot fragments
   and page-fault cheaply for cold ones.
 
+### Postcode-less records
+
+Authoritative datasets sometimes ship records without a postcode
+(Germany OSM fallback in particular has `addr:postcode` Optional —
+rural addresses, some POIs, parts of older imports). The fragment
+key MUST partition every record, so postcode-less records land in a
+sentinel bucket with the literal two-byte string `"00"` as the
+`pc2` value:
+
+```
+key = (cluster_id, country, "00")  ← sentinel for missing postcode
+```
+
+`"00"` was chosen because no real-world postcode begins with two
+literal zeros: BE/LU/NL postcodes start at `1xxx`, German postcodes
+start at `01xxx` (so `pc2 = "01"`), French postcodes start at
+`01xxx` to `9xxxx`. The sentinel collides with no legitimate `pc2`.
+
+The query path treats `"00"` specially: a query with a confirmed
+postcode skips this fragment entirely; a query with NO postcode
+hits both the sentinel and (if locality narrows further) the
+postcode-bearing fragments.
+
 ### Why `pc2` and not country alone?
 
 Without `pc2`-level partitioning, a single-country query against
@@ -245,10 +268,22 @@ records.
 ```
 geocode-{cluster_id}.shard
 ├── header                        — magic, version, cluster id, table of contents
+├── strings table                 — concatenated UTF-8 bytes (street, locality, housenumber, postcode)
 ├── alias_table                   — multilingual locality + street aliases (cluster-wide)
 ├── per-country sections (sorted by ISO code)
-│   └── per-pc2 fragments (sorted by postcode prefix)
-│       ├── records slab          — [AddressRecord; n], packed, fixed stride
+│   └── per-pc2 fragments (sorted by postcode prefix; sentinel "00" first)
+│       ├── records slab          — fixed-stride per-record metadata (32-40 bytes per record)
+│       │                           NOT `[AddressRecord; n]` — `AddressRecord` has
+│       │                           `String` fields and is not mmap-safe. Each on-disk
+│       │                           record holds (lat_e7 i32, lon_e7 i32) + offsets
+│       │                           into the strings table:
+│       │                             street_off u32, street_len u16,
+│       │                             loc_off u32, loc_len u16,
+│       │                             house_off u32, house_len u16,
+│       │                             pc_off u32, pc_len u16,
+│       │                             source u8, _pad [u8; 3]
+│       │                           Strings are owned by the strings-table region, not
+│       │                           by the record row.
 │       ├── postcode index        — sparse FST or sorted-key array
 │       ├── locality index        — alias-id → record-offset adjacency
 │       ├── street trie           — fst::Map of canonical street name → offset list
