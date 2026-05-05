@@ -10,10 +10,11 @@
 use axum::{Json, extract::State, response::IntoResponse};
 use serde::Serialize;
 use std::sync::Arc;
+use utoipa::ToSchema;
 
 use super::regions::RegionsState;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct LoadedRegion {
     /// Region identifier (`BE`, `LU`, …) — same string used by the
     /// per-region metric labels and by 501 dispatch errors.
@@ -38,7 +39,7 @@ pub struct LoadedRegion {
     pub modes: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct RegionsResponse {
     /// All loaded regions, sorted by id. Empty list is impossible
     /// (constructor rejects zero-region states) — callers can rely on
@@ -51,6 +52,16 @@ pub struct RegionsResponse {
 /// Read-only metadata; no graph traversal, no allocation beyond the
 /// JSON serialisation buffer. Safe to hammer at high QPS — sub-microsecond
 /// in steady state.
+#[utoipa::path(
+    get,
+    path = "/regions",
+    tag = "System",
+    summary = "List loaded regions and their metadata",
+    description = "Lists every region currently mounted by the server, with the source container path, EBG node/edge counts, the boot-time CRC verification status, and the per-region mode list. Used by operators to confirm `--data-dir` discovery and by tests for the cross-region 501 path.",
+    responses(
+        (status = 200, description = "Loaded regions", body = RegionsResponse),
+    )
+)]
 pub async fn regions_handler(State(regions): State<Arc<RegionsState>>) -> impl IntoResponse {
     let loaded: Vec<LoadedRegion> = regions
         .regions

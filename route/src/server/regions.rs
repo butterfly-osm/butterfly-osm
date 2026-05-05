@@ -43,16 +43,26 @@ use super::types::ErrorResponse;
 /// One loaded region: container path, region id, and the per-region
 /// `ServerState`. `verify_status` records whether the per-section CRC
 /// walk completed cleanly during boot. (Boot today is eager-CRC; #160
-/// will introduce lazy CRC and split this into per-section state.)
+/// introduced lazy CRC and may extend `VerifyStatus` to a per-section
+/// shape.)
 pub struct RegionEntry {
     pub id: String,
     pub container: PathBuf,
     pub state: Arc<ServerState>,
-    /// `true` once every section read during boot CRC-verified
-    /// successfully. The boot path bails if any section fails, so a
-    /// `RegionEntry` only enters [`RegionsState`] in the "verified"
-    /// state. Field is kept so `/regions` can report it explicitly.
+    /// Snapshot of the section verification state for this region —
+    /// see [`VerifyStatus`]. Today this is always `Verified` once a
+    /// region is added to [`RegionsState`] because the boot path bails
+    /// on the first per-section CRC failure; the field is exposed so
+    /// the `/regions` endpoint can report it explicitly and so future
+    /// per-section variants don't break the JSON shape.
     pub verify_status: VerifyStatus,
+    /// Pre-allocated per-region metric handles. One Counter +
+    /// Histogram per (endpoint) entry from
+    /// [`super::region_metrics::ENDPOINTS`], plus the size gauges.
+    /// Hot path looks up the handle by endpoint key and increments /
+    /// observes on it directly — saves the `region.to_string()` +
+    /// `endpoint.to_string()` allocations the macro path imposed.
+    pub metrics: super::region_metrics::RegionMetrics,
 }
 
 /// State of a region's CRC-verification at boot.
@@ -77,8 +87,9 @@ impl VerifyStatus {
     }
 }
 
-/// Top-level multi-region server state. Holds every loaded region plus
-/// per-region metric handles. Cloned `Arc` views of an inner
+/// Top-level multi-region server state. Holds every loaded region in
+/// `regions` plus an `id → index` lookup in `by_id` and an optional
+/// cross-region overlay. Cloned `Arc` views of an inner
 /// [`ServerState`] are returned by [`RegionsState::dispatch_p2p`] /
 /// [`RegionsState::dispatch_single`] so request handlers can run their
 /// query body unchanged.
@@ -106,11 +117,13 @@ impl RegionsState {
     /// so handlers that take an `Arc<RegionsState>` work uniformly.
     pub fn from_single(id: impl Into<String>, container: PathBuf, state: ServerState) -> Self {
         let id = id.into();
+        let metrics = super::region_metrics::RegionMetrics::new(&id);
         let entry = RegionEntry {
             id: id.clone(),
             container,
             state: Arc::new(state),
             verify_status: VerifyStatus::Verified,
+            metrics,
         };
         let mut by_id = HashMap::new();
         by_id.insert(id, 0);
@@ -149,11 +162,13 @@ impl RegionsState {
             let state = ServerState::load_from_container(path, None).with_context(|| {
                 format!("loading region '{}' from {}", region_id, path.display())
             })?;
+            let metrics = super::region_metrics::RegionMetrics::new(&region_id);
             entries.push(RegionEntry {
                 id: region_id,
                 container: path.clone(),
                 state: Arc::new(state),
                 verify_status: VerifyStatus::Verified,
+                metrics,
             });
         }
         entries.sort_by(|a, b| a.id.cmp(&b.id));
@@ -285,11 +300,13 @@ impl RegionsState {
             );
             let idx = regions.len();
             by_id.insert(id.clone(), idx);
+            let metrics = super::region_metrics::RegionMetrics::new(&id);
             regions.push(RegionEntry {
                 id,
                 container: path,
                 state: Arc::new(state),
                 verify_status: VerifyStatus::Verified,
+                metrics,
             });
         }
 
@@ -311,10 +328,40 @@ impl RegionsState {
         self.regions.is_empty()
     }
 
-    /// Look up a region by id (case-insensitive on the user's input,
-    /// but ids in storage are already normalised upper-case).
+    /// Look up a region by id, case-insensitive on the user's input.
+    /// Ids in storage are already normalised upper-case (see
+    /// [`crate::pack::normalize_region_id`]), so we upper-case the
+    /// caller's input before the `by_id` lookup.
     pub fn get(&self, id: &str) -> Option<&RegionEntry> {
-        self.by_id.get(id).map(|&i| &self.regions[i])
+        let normalized = id.trim().to_ascii_uppercase();
+        self.by_id.get(&normalized).map(|&i| &self.regions[i])
+    }
+
+    /// `true` if at least one loaded region carries the given transport
+    /// mode. Handlers call this before [`Self::dispatch_p2p_id`] /
+    /// [`Self::dispatch_single_id`] / [`Self::dispatch_many`] to detect
+    /// a typo'd mode early, otherwise the dispatcher returns
+    /// `NoRegion` (because no region snaps the point on a mode that
+    /// doesn't exist) which the operator reads as "out of coverage"
+    /// rather than "wrong mode".
+    pub fn has_mode(&self, mode_name: &str) -> bool {
+        let lower = mode_name.to_lowercase();
+        self.regions
+            .iter()
+            .any(|r| r.state.mode_lookup.contains_key(&lower))
+    }
+
+    /// Sorted union of every mode name across loaded regions. Used by
+    /// the "Invalid mode" error to tell the caller what they could have
+    /// asked for.
+    pub fn available_modes(&self) -> Vec<String> {
+        let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for r in &self.regions {
+            for name in r.state.mode_lookup.keys() {
+                set.insert(name.clone());
+            }
+        }
+        set.into_iter().collect()
     }
 
     /// Borrow the first region's state. Used as a fallback by metadata
@@ -355,7 +402,8 @@ impl RegionsState {
 
     /// Pick the region for a single-coordinate request (e.g. `/nearest`,
     /// `/isochrone`, `/height`). Returns the per-region `Arc<ServerState>`
-    /// or a `DispatchError::NoRegion` payload (404 caller-side).
+    /// or a [`DispatchError::NoRegion`] payload (renders as **400**
+    /// caller-side via [`DispatchError::into_response_parts`]).
     pub fn dispatch_single(
         &self,
         lon: f64,
@@ -374,12 +422,19 @@ impl RegionsState {
         lat: f64,
         mode_name: &str,
     ) -> Result<(Arc<ServerState>, String), DispatchError> {
+        if !self.has_mode(mode_name) {
+            return Err(DispatchError::InvalidMode {
+                mode: mode_name.to_string(),
+                available: self.available_modes(),
+            });
+        }
         match self.snap_winner(lon, lat, mode_name) {
             Some((idx, _dist)) => Ok((
                 Arc::clone(&self.regions[idx].state),
                 self.regions[idx].id.clone(),
             )),
             None => Err(DispatchError::NoRegion {
+                endpoint: Endpoint::Single,
                 lon,
                 lat,
                 mode: mode_name.to_string(),
@@ -416,6 +471,12 @@ impl RegionsState {
         dst_lat: f64,
         mode_name: &str,
     ) -> Result<(Arc<ServerState>, String), DispatchError> {
+        if !self.has_mode(mode_name) {
+            return Err(DispatchError::InvalidMode {
+                mode: mode_name.to_string(),
+                available: self.available_modes(),
+            });
+        }
         let src = self.snap_winner(src_lon, src_lat, mode_name);
         let dst = self.snap_winner(dst_lon, dst_lat, mode_name);
         match (src, dst) {
@@ -432,9 +493,17 @@ impl RegionsState {
                     dst_region,
                 })
             }
-            _ => Err(DispatchError::NoRegion {
+            (None, _) => Err(DispatchError::NoRegion {
+                endpoint: Endpoint::Source,
                 lon: src_lon,
                 lat: src_lat,
+                mode: mode_name.to_string(),
+                tried: self.region_ids().into_iter().collect(),
+            }),
+            (_, None) => Err(DispatchError::NoRegion {
+                endpoint: Endpoint::Destination,
+                lon: dst_lon,
+                lat: dst_lat,
                 mode: mode_name.to_string(),
                 tried: self.region_ids().into_iter().collect(),
             }),
@@ -445,42 +514,64 @@ impl RegionsState {
     /// trace, `/trip`, `/table` with multiple sources + multiple
     /// targets). All points must snap to the same region; otherwise
     /// 501. Returns the per-region state plus the winning region id.
+    ///
+    /// On `CrossRegion` rejection, the
+    /// `butterfly_route_query_cross_region_total` counter is
+    /// incremented exactly once via
+    /// [`super::region_metrics::record_cross_region_reject`] —
+    /// callers don't need to bump it separately.
     pub fn dispatch_many<I>(
         &self,
         coords: I,
         mode_name: &str,
-    ) -> Result<Arc<ServerState>, DispatchError>
+    ) -> Result<(Arc<ServerState>, String), DispatchError>
     where
         I: IntoIterator<Item = (f64, f64)>,
     {
+        if !self.has_mode(mode_name) {
+            return Err(DispatchError::InvalidMode {
+                mode: mode_name.to_string(),
+                available: self.available_modes(),
+            });
+        }
         let mut iter = coords.into_iter();
         let first = iter.next().ok_or(DispatchError::Empty)?;
         let first_winner = self
             .snap_winner(first.0, first.1, mode_name)
             .ok_or_else(|| DispatchError::NoRegion {
+                endpoint: Endpoint::ManyAt(0),
                 lon: first.0,
                 lat: first.1,
                 mode: mode_name.to_string(),
                 tried: self.region_ids().into_iter().collect(),
             })?;
         let s_idx = first_winner.0;
-        for (lon, lat) in iter {
+        for (i, (lon, lat)) in iter.enumerate() {
+            // i counts from 0 over the *remaining* iterator, so the
+            // index in the original sequence is i + 1.
             let next =
                 self.snap_winner(lon, lat, mode_name)
                     .ok_or_else(|| DispatchError::NoRegion {
+                        endpoint: Endpoint::ManyAt(i + 1),
                         lon,
                         lat,
                         mode: mode_name.to_string(),
                         tried: self.region_ids().into_iter().collect(),
                     })?;
             if next.0 != s_idx {
+                let src_region = self.regions[s_idx].id.clone();
+                let dst_region = self.regions[next.0].id.clone();
+                super::region_metrics::record_cross_region_reject(&src_region, &dst_region);
                 return Err(DispatchError::CrossRegion {
-                    src_region: self.regions[s_idx].id.clone(),
-                    dst_region: self.regions[next.0].id.clone(),
+                    src_region,
+                    dst_region,
                 });
             }
         }
-        Ok(Arc::clone(&self.regions[s_idx].state))
+        Ok((
+            Arc::clone(&self.regions[s_idx].state),
+            self.regions[s_idx].id.clone(),
+        ))
     }
 
     /// Sorted list of all loaded region ids.
@@ -507,6 +598,12 @@ impl RegionsState {
         dst_lat: f64,
         mode_name: &str,
     ) -> Result<P2pPlan, DispatchError> {
+        if !self.has_mode(mode_name) {
+            return Err(DispatchError::InvalidMode {
+                mode: mode_name.to_string(),
+                available: self.available_modes(),
+            });
+        }
         let src = self.snap_winner(src_lon, src_lat, mode_name);
         let dst = self.snap_winner(dst_lon, dst_lat, mode_name);
         match (src, dst) {
@@ -534,9 +631,17 @@ impl RegionsState {
                     }
                 }
             }
-            _ => Err(DispatchError::NoRegion {
+            (None, _) => Err(DispatchError::NoRegion {
+                endpoint: Endpoint::Source,
                 lon: src_lon,
                 lat: src_lat,
+                mode: mode_name.to_string(),
+                tried: self.region_ids().into_iter().collect(),
+            }),
+            (_, None) => Err(DispatchError::NoRegion {
+                endpoint: Endpoint::Destination,
+                lon: dst_lon,
+                lat: dst_lat,
                 mode: mode_name.to_string(),
                 tried: self.region_ids().into_iter().collect(),
             }),
@@ -567,6 +672,35 @@ pub enum P2pPlan {
     },
 }
 
+/// Which side of a P2P request the failing coordinate is on. Carried
+/// by [`DispatchError::NoRegion`] so the error message points at the
+/// right input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Endpoint {
+    /// Source / origin coordinate (e.g. `src_lon`, `src_lat`).
+    Source,
+    /// Destination / target coordinate (e.g. `dst_lon`, `dst_lat`).
+    Destination,
+    /// Single-coordinate request (e.g. `/nearest`, `/isochrone`,
+    /// `/height`). The endpoint distinction does not apply.
+    Single,
+    /// One element of a many-coordinate request (`/match`, `/trip`,
+    /// `/table`). Carries the 0-based index so the error points at
+    /// the right input.
+    ManyAt(usize),
+}
+
+impl Endpoint {
+    fn label(&self) -> String {
+        match self {
+            Endpoint::Source => "source".to_string(),
+            Endpoint::Destination => "destination".to_string(),
+            Endpoint::Single => "point".to_string(),
+            Endpoint::ManyAt(i) => format!("coordinate[{}]", i),
+        }
+    }
+}
+
 /// What can go wrong dispatching a request to a region.
 #[derive(Debug, Clone)]
 pub enum DispatchError {
@@ -575,10 +709,18 @@ pub enum DispatchError {
     /// targeted error message; reuses the existing
     /// "No road found within snap distance" semantics.
     NoRegion {
+        endpoint: Endpoint,
         lon: f64,
         lat: f64,
         mode: String,
         tried: Vec<String>,
+    },
+    /// Mode is not loaded in any region. Renders as 400 with the union
+    /// of available modes so the caller can correct the typo without
+    /// guessing which region they were aiming at.
+    InvalidMode {
+        mode: String,
+        available: Vec<String>,
     },
     /// The points snapped into *different* regions — same-region
     /// dispatch can't service this. Renders as 501 with a clear
@@ -598,12 +740,31 @@ impl DispatchError {
     pub fn into_response_parts(self) -> (axum::http::StatusCode, ErrorResponse) {
         use axum::http::StatusCode;
         match self {
-            DispatchError::NoRegion { lon, lat, mode, .. } => (
+            DispatchError::NoRegion {
+                endpoint,
+                lon,
+                lat,
+                mode,
+                ..
+            } => (
                 StatusCode::BAD_REQUEST,
                 ErrorResponse {
                     error: format!(
-                        "No road found within snap distance for ({}, {}) mode={}",
-                        lon, lat, mode
+                        "No road found within snap distance for {} ({}, {}) mode={}",
+                        endpoint.label(),
+                        lon,
+                        lat,
+                        mode
+                    ),
+                },
+            ),
+            DispatchError::InvalidMode { mode, available } => (
+                StatusCode::BAD_REQUEST,
+                ErrorResponse {
+                    error: format!(
+                        "Invalid mode '{}'. Available across loaded regions: {}.",
+                        mode,
+                        available.join(", ")
                     ),
                 },
             ),
@@ -669,6 +830,7 @@ mod tests {
     #[test]
     fn dispatch_error_no_region_is_400() {
         let err = DispatchError::NoRegion {
+            endpoint: Endpoint::Single,
             lon: 0.0,
             lat: 0.0,
             mode: "car".into(),
@@ -676,5 +838,54 @@ mod tests {
         };
         let (code, _) = err.into_response_parts();
         assert_eq!(code, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn dispatch_error_no_region_distinguishes_source_vs_destination() {
+        let src_err = DispatchError::NoRegion {
+            endpoint: Endpoint::Source,
+            lon: 1.0,
+            lat: 2.0,
+            mode: "car".into(),
+            tried: vec!["BE".into()],
+        };
+        let (_, body_src) = src_err.into_response_parts();
+        assert!(body_src.error.contains("source"), "{}", body_src.error);
+
+        let dst_err = DispatchError::NoRegion {
+            endpoint: Endpoint::Destination,
+            lon: 3.0,
+            lat: 4.0,
+            mode: "car".into(),
+            tried: vec!["BE".into()],
+        };
+        let (_, body_dst) = dst_err.into_response_parts();
+        assert!(body_dst.error.contains("destination"), "{}", body_dst.error);
+    }
+
+    #[test]
+    fn dispatch_error_invalid_mode_is_400_and_lists_available() {
+        let err = DispatchError::InvalidMode {
+            mode: "ferry".into(),
+            available: vec!["bike".into(), "car".into(), "foot".into()],
+        };
+        let (code, body) = err.into_response_parts();
+        assert_eq!(code, axum::http::StatusCode::BAD_REQUEST);
+        assert!(body.error.contains("Invalid mode"), "{}", body.error);
+        assert!(body.error.contains("car"), "{}", body.error);
+    }
+
+    #[test]
+    fn dispatch_error_no_region_carries_endpoint_label() {
+        // Many-coordinate failure points at the index of the bad coord.
+        let err = DispatchError::NoRegion {
+            endpoint: Endpoint::ManyAt(7),
+            lon: 0.0,
+            lat: 0.0,
+            mode: "car".into(),
+            tried: vec!["BE".into()],
+        };
+        let (_, body) = err.into_response_parts();
+        assert!(body.error.contains("coordinate[7]"), "{}", body.error);
     }
 }

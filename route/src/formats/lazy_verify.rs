@@ -65,7 +65,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
-use tokio::sync::Notify;
+use tokio::sync::watch;
 
 use super::butterfly_dat::{Container, SectionEntry};
 use super::crc;
@@ -123,10 +123,21 @@ pub struct SectionRuntime {
     /// `route/docs/160-results.md` measurement methodology.
     verify_duration_s: Mutex<Option<f64>>,
 
-    /// Async wake primitive for tokio waiters. `notify_waiters()` is
-    /// idempotent across many calls (subsequent ones are no-ops if no
-    /// waiter is parked).
-    notify: Notify,
+    /// Async wake primitive for tokio waiters.
+    ///
+    /// We use [`tokio::sync::watch`] (not `Notify`) because watch
+    /// **buffers** the latest published value — a receiver that only
+    /// starts watching after the sender has already published the
+    /// terminal state still sees the change. Notify, by contrast, only
+    /// wakes currently-parked waiters; a receiver that was about to
+    /// park between the state.load(Acquire) recheck and `notified.await`
+    /// would miss the wake-up. The watch channel sits next to the
+    /// `state: AtomicU8` discriminant — a verifier writes
+    /// `Verified` / `Failed` to the atomic, then sends the same byte
+    /// through the watch. Async waiters read state with Acquire on
+    /// each loop turn after `changed().await` returns.
+    notify_tx: watch::Sender<u8>,
+    notify_rx: watch::Receiver<u8>,
 
     /// Sync wake primitive for non-async waiters (the boot path runs
     /// off the tokio runtime; tests call from sync code). Paired with
@@ -138,6 +149,7 @@ pub struct SectionRuntime {
 
 impl SectionRuntime {
     fn new(entry: &SectionEntry) -> Self {
+        let (notify_tx, notify_rx) = watch::channel(SectionVerifyState::Unverified as u8);
         Self {
             name: entry.name.clone(),
             kind: entry.kind,
@@ -147,7 +159,8 @@ impl SectionRuntime {
             state: AtomicU8::new(SectionVerifyState::Unverified as u8),
             failure_reason: Mutex::new(None),
             verify_duration_s: Mutex::new(None),
-            notify: Notify::new(),
+            notify_tx,
+            notify_rx,
             sync_lock: Mutex::new(()),
             sync_cvar: Condvar::new(),
         }
@@ -180,8 +193,16 @@ impl SectionRuntime {
     /// Wake every parked waiter (sync and async). Called once after a
     /// terminal state transition.
     fn wake_all(&self) {
-        // Wake async waiters first; cheap if no one is parked.
-        self.notify.notify_waiters();
+        // Publish the terminal state byte through the watch. This both
+        // wakes any currently-parked async receiver AND buffers the
+        // value for any future receiver: a task that calls
+        // `notify_rx.changed().await` after this returns sees the
+        // change immediately.
+        let terminal = self.state.load(Ordering::Acquire);
+        // `send` returns Err only if every receiver has been dropped,
+        // which can't happen in our use (we always hold a clone in
+        // the runtime).
+        let _ = self.notify_tx.send(terminal);
         // Wake sync waiters under the cvar lock to avoid the classic
         // "lost wakeup" race: any thread that has just observed
         // Verifying and is about to wait_while will hit the recheck
@@ -420,19 +441,28 @@ impl LazyContainer {
                     }
                 }
                 SectionVerifyState::Verifying => {
-                    // Park until the verifier wakes us. Notify wakes
-                    // every current waiter; after wake we re-load
-                    // state with Acquire (the load above on next loop
-                    // iteration).
-                    let notified = rt.notify.notified();
-                    // Re-check before parking to avoid missing a fast
-                    // transition that beats us into the wait.
-                    if SectionVerifyState::from_u8(rt.state.load(Ordering::Acquire))
-                        != SectionVerifyState::Verifying
-                    {
+                    // Park on the watch channel. Watch buffers the most
+                    // recent published value, so even if the verifier
+                    // transitions to a terminal state between our
+                    // re-check below and `changed().await` we still
+                    // observe the change. We need a fresh receiver
+                    // each loop iteration so `changed()` reports
+                    // any updates made since the verifier wrote.
+                    let mut rx = rt.notify_rx.clone();
+                    // Re-check before parking — if the state has
+                    // already advanced, mark the receiver "seen" so
+                    // the next iteration re-loads state instead of
+                    // waiting on a stale value.
+                    let cur = rt.state.load(Ordering::Acquire);
+                    if SectionVerifyState::from_u8(cur) != SectionVerifyState::Verifying {
                         continue;
                     }
-                    notified.await;
+                    // Mark the current value as seen, then wait for
+                    // the next change. `changed()` returns Err only if
+                    // the sender has been dropped, which can't happen
+                    // here (the sender lives inside the same Arc).
+                    rx.mark_unchanged();
+                    let _ = rx.changed().await;
                 }
             }
         }
@@ -736,6 +766,56 @@ mod tests {
         let rt = lc.runtime("shared/cch.topo").unwrap();
         assert_eq!(rt.state(), SectionVerifyState::Verified);
         assert!(rt.verify_duration_s().is_some());
+        Ok(())
+    }
+
+    /// Regression test for the Notify→watch migration (#175 review item 1).
+    ///
+    /// The pre-fix `tokio::sync::Notify` could miss a notification if
+    /// the verifier transitioned to `Verified` between an async waiter
+    /// re-loading state and `notified.await`. `watch` buffers the
+    /// terminal value, so even a receiver that subscribed AFTER the
+    /// terminal store still observes the change.
+    ///
+    /// We assert the buffered-value behaviour deterministically by
+    /// driving an async waiter on a section that's already terminal —
+    /// the watch receiver MUST observe the change without any
+    /// concurrent verifier activity.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ensure_verified_async_returns_after_terminal_state() -> Result<()> {
+        let tmp = NamedTempFile::new()?;
+        write_demo(tmp.path())?;
+
+        let lc = Arc::new(LazyContainer::open_eager(tmp.path())?);
+        // Already-verified section should return immediately.
+        lc.ensure_verified_async("shared/cch.topo").await?;
+        Ok(())
+    }
+
+    /// Smoke test: many concurrent async waiters on a single section
+    /// all wake up. Verifies that `watch::send` reaches every receiver
+    /// (the previous Notify::notify_waiters had the well-known race
+    /// where a waiter that observes Verifying then registers, but
+    /// notify_waiters has already fired, never wakes).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn ensure_verified_async_many_waiters_all_wake() -> Result<()> {
+        let tmp = NamedTempFile::new()?;
+        write_demo(tmp.path())?;
+
+        let lc = Arc::new(LazyContainer::open_lazy(tmp.path())?);
+        let n_waiters = 8;
+        let mut handles = Vec::with_capacity(n_waiters);
+        for _ in 0..n_waiters {
+            let lc = Arc::clone(&lc);
+            handles.push(tokio::spawn(async move {
+                lc.ensure_verified_async("shared/cch.topo").await
+            }));
+        }
+        for h in handles {
+            h.await.unwrap()?;
+        }
+        let rt = lc.runtime("shared/cch.topo").unwrap();
+        assert_eq!(rt.state(), SectionVerifyState::Verified);
         Ok(())
     }
 

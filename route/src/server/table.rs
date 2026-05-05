@@ -172,19 +172,14 @@ pub async fn table_post_handler(
         .iter()
         .chain(req.destinations.iter())
         .map(|&[lon, lat]| (lon, lat));
-    let state: Arc<ServerState> = match regions.dispatch_many(coords_iter, &req.mode) {
-        Ok(s) => s,
-        Err(e) => {
-            let (code, body) = e.into_response_parts();
-            return (code, Json(body)).into_response();
-        }
-    };
-    let region_id = regions
-        .regions
-        .iter()
-        .find(|r| Arc::ptr_eq(&r.state, &state))
-        .map(|r| r.id.clone())
-        .unwrap_or_default();
+    let (state, region_id): (Arc<ServerState>, String) =
+        match regions.dispatch_many(coords_iter, &req.mode) {
+            Ok(pair) => pair,
+            Err(e) => {
+                let (code, body) = e.into_response_parts();
+                return (code, Json(body)).into_response();
+            }
+        };
 
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
@@ -615,19 +610,14 @@ pub async fn table_stream_handler(
         .iter()
         .chain(req.destinations.iter())
         .map(|&[lon, lat]| (lon, lat));
-    let state: Arc<ServerState> = match regions.dispatch_many(coords_iter, &req.mode) {
-        Ok(s) => s,
-        Err(e) => {
-            let (code, body) = e.into_response_parts();
-            return (code, Json(body)).into_response();
-        }
-    };
-    let region_id = regions
-        .regions
-        .iter()
-        .find(|r| Arc::ptr_eq(&r.state, &state))
-        .map(|r| r.id.clone())
-        .unwrap_or_default();
+    let (state, region_id): (Arc<ServerState>, String) =
+        match regions.dispatch_many(coords_iter, &req.mode) {
+            Ok(pair) => pair,
+            Err(e) => {
+                let (code, body) = e.into_response_parts();
+                return (code, Json(body)).into_response();
+            }
+        };
 
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,

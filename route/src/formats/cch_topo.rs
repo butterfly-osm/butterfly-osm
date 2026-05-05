@@ -419,6 +419,22 @@ impl CchTopoFile {
     /// Section start MUST be 8-byte aligned (the container writer
     /// guarantees this for every section).
     pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<CchTopo> {
+        Self::read_from_bytes_zero_copy_inner(bytes, true)
+    }
+
+    /// Same as [`Self::read_from_bytes_zero_copy`] but elides the
+    /// internal CRC walk over the body bytes.
+    ///
+    /// Caller MUST guarantee the bytes have already been verified — for
+    /// example, the container loader (#160) drives `LazyContainer`
+    /// verification before reaching this entry point. Skipping the
+    /// per-format CRC here avoids paging the body in twice on the
+    /// container load path.
+    pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<CchTopo> {
+        Self::read_from_bytes_zero_copy_inner(bytes, false)
+    }
+
+    fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<CchTopo> {
         anyhow::ensure!(
             bytes.len() >= HEADER_LEN + FOOTER_LEN,
             "cch.topo too short for header+footer: {} bytes",
@@ -531,20 +547,22 @@ impl CchTopoFile {
             bytes.len(),
             cur + FOOTER_LEN
         );
-        let body = &bytes[..cur];
-        let computed_crc = {
-            let mut d = crc::Digest::new();
-            d.update(body);
-            d.finalize()
-        };
-        let footer = &bytes[cur..cur + FOOTER_LEN];
-        let stored_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
-        anyhow::ensure!(
-            computed_crc == stored_crc,
-            "CRC64 mismatch in cch.topo: computed 0x{:016X}, stored 0x{:016X}",
-            computed_crc,
-            stored_crc
-        );
+        if verify {
+            let body = &bytes[..cur];
+            let computed_crc = {
+                let mut d = crc::Digest::new();
+                d.update(body);
+                d.finalize()
+            };
+            let footer = &bytes[cur..cur + FOOTER_LEN];
+            let stored_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+            anyhow::ensure!(
+                computed_crc == stored_crc,
+                "CRC64 mismatch in cch.topo: computed 0x{:016X}, stored 0x{:016X}",
+                computed_crc,
+                stored_crc
+            );
+        }
 
         Ok(CchTopo {
             n_nodes,
@@ -561,6 +579,71 @@ impl CchTopoFile {
             down_middle: Cow::Borrowed(down_middle),
             rank_to_filtered: Cow::Borrowed(rank_to_filtered),
         })
+    }
+}
+
+#[cfg(test)]
+mod unverified_path_tests {
+    use super::*;
+
+    /// Regression for #161 review items 3-4: the `_unverified` reader
+    /// MUST skip the format's body CRC walk. We construct a valid
+    /// section, then corrupt the trailing CRC bytes; the verified
+    /// reader rejects, but the unverified reader returns the parsed
+    /// data because the body itself is intact.
+    #[test]
+    fn read_from_bytes_zero_copy_unverified_ignores_trailing_crc() {
+        // A minimal v4 header whose declared lengths are zero-sized
+        // arrays — the simplest valid topology for this test.
+        let header_len = HEADER_LEN;
+        let mut bytes = vec![0u8; header_len + FOOTER_LEN];
+        bytes[0..4].copy_from_slice(&MAGIC.to_le_bytes());
+        bytes[4..8].copy_from_slice(&VERSION.to_le_bytes());
+        // n_nodes = 1 → one offsets entry (n_nodes + 1 = 2)
+        bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
+        // n_shortcuts, n_original_arcs = 0
+        // n_up_edges = 0
+        // n_down_edges = 0
+        // Layout: header(80) + 2*u64 up_offsets + 2*u64 down_offsets +
+        //         1*u32 rank_to_filtered + 4 pad + footer(16)
+        let n_offsets = 2;
+        let body_len = 8 * n_offsets + 8 * n_offsets + 4 + 4;
+        let total = header_len + body_len + FOOTER_LEN;
+        let mut bytes = vec![0u8; total];
+        bytes[0..4].copy_from_slice(&MAGIC.to_le_bytes());
+        bytes[4..8].copy_from_slice(&VERSION.to_le_bytes());
+        bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
+        // n_up_edges = 0 (header[32..40]), n_down_edges = 0 (header[40..48])
+        // Compute the CRC of the body so the verified path passes too,
+        // for the baseline assertion.
+        let body = &bytes[..header_len + body_len];
+        let mut d = crc::Digest::new();
+        d.update(body);
+        let body_crc = d.finalize();
+        bytes[header_len + body_len..header_len + body_len + 8]
+            .copy_from_slice(&body_crc.to_le_bytes());
+        // Leak so `'static` slice can be constructed.
+        let leaked: &'static [u8] = Box::leak(bytes.clone().into_boxed_slice());
+        // Verified path succeeds.
+        assert!(
+            CchTopoFile::read_from_bytes_zero_copy(leaked).is_ok(),
+            "verified path should accept a clean section"
+        );
+
+        // Now corrupt the trailing CRC. The verified path must reject;
+        // the unverified path must accept (the body bytes are still
+        // valid; only the trailing CRC is bogus).
+        let mut corrupted = bytes.clone();
+        corrupted[header_len + body_len] ^= 0xFF;
+        let leaked2: &'static [u8] = Box::leak(corrupted.into_boxed_slice());
+        assert!(
+            CchTopoFile::read_from_bytes_zero_copy(leaked2).is_err(),
+            "verified path should reject corrupted CRC"
+        );
+        assert!(
+            CchTopoFile::read_from_bytes_zero_copy_unverified(leaked2).is_ok(),
+            "unverified path should ignore corrupted CRC"
+        );
     }
 }
 

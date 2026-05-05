@@ -18,8 +18,19 @@
 //! +-------------------------------------+
 //! | Section payloads                    |
 //! |   raw bytes for each section,       |
-//! |   in directory order, contiguous,   |
-//! |   no inter-section padding          |
+//! |   in directory order. Each section  |
+//! |   starts on an 8-byte boundary; up  |
+//! |   to 7 zero pad bytes are inserted  |
+//! |   before each section as needed so  |
+//! |   zero-copy `cast_slice` reads of   |
+//! |   `u32`/`u64` arrays don't trip on  |
+//! |   misalignment. The pad bytes are   |
+//! |   NOT covered by the section CRC    |
+//! |   (CRC covers only the named        |
+//! |   payload), but they ARE covered by |
+//! |   the file-level `file_crc` so that |
+//! |   any whole-file mutation is        |
+//! |   detected.                         |
 //! +-------------------------------------+ offset = dir_off
 //! | Section directory                   |
 //! |   for each section:                 |
