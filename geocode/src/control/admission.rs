@@ -4,8 +4,10 @@
 //! request. Implements:
 //!
 //! - **Token-bucket rate limiting** — global and per-IP
-//! - **Bounded queue** — short bursts smoothed via async waiting
-//! - **429 with `Retry-After`** when both buckets and queue are full
+//! - **429 with `Retry-After`** when buckets are exhausted (immediate
+//!   rejection — bounded queueing with async waiting is a future
+//!   extension; the current implementation is pure token-bucket
+//!   without queueing)
 //! - **Configurable thresholds per endpoint** — single vs bulk
 //!
 //! ## One-pass static decision (#97 §4)

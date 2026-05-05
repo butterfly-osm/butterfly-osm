@@ -20,12 +20,14 @@
 //! - `geocode_cleanquery_share` (gauge, fraction of traffic)
 //!
 //! The allocation count is captured per-call by the strict-allocator
-//! wrapper used in tests (see
-//! `tests/control_clean_query_alloc_test.rs`). At runtime the count
-//! is reported via [`CleanQueryMetrics::record_clean`] from the
-//! executor's clean-path entry/exit hooks; if a non-zero value ever
-//! reaches the histogram, the alert (config keys in
-//! [`MetricsAlertThresholds`]) fires.
+//! wrapper used in tests (see `tests/control_clean_query_alloc.rs`).
+//! The runtime-supplied alloc count is currently always 0 — the
+//! executor cannot count heap allocations without an allocator hook
+//! at runtime — so the strict-zero NFR is enforced by
+//! `tests/control_clean_query_alloc.rs`, not by the runtime histogram
+//! emitted via [`CleanQueryMetrics::record_clean`]. If a non-zero
+//! value ever reaches the histogram from a future hooked-allocator
+//! build, the alert (config keys in [`MetricsAlertThresholds`]) fires.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

@@ -131,6 +131,22 @@ impl ModelConfig {
     }
 
     pub fn validate(&self) -> CResult<()> {
+        if self.n_heads == 0 {
+            return Err(candle_core::Error::Msg("n_heads must be > 0".to_string()));
+        }
+        if self.d_model == 0 {
+            return Err(candle_core::Error::Msg("d_model must be > 0".to_string()));
+        }
+        if self.vocab_size == 0 {
+            return Err(candle_core::Error::Msg(
+                "vocab_size must be > 0".to_string(),
+            ));
+        }
+        if self.max_seq_len == 0 {
+            return Err(candle_core::Error::Msg(
+                "max_seq_len must be > 0".to_string(),
+            ));
+        }
         if !self.d_model.is_multiple_of(self.n_heads) {
             return Err(candle_core::Error::Msg(format!(
                 "d_model ({}) must be divisible by n_heads ({})",
@@ -378,6 +394,28 @@ mod tests {
         assert!(cfg.validate().is_ok());
         cfg.n_heads = 5;
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn config_rejects_zero_dimensions() {
+        let mut cfg = ModelConfig::tiny();
+        cfg.n_heads = 0;
+        assert!(cfg.validate().is_err(), "n_heads=0 must fail validation");
+
+        let mut cfg = ModelConfig::tiny();
+        cfg.d_model = 0;
+        assert!(cfg.validate().is_err(), "d_model=0 must fail validation");
+
+        let mut cfg = ModelConfig::tiny();
+        cfg.vocab_size = 0;
+        assert!(cfg.validate().is_err(), "vocab_size=0 must fail validation");
+
+        let mut cfg = ModelConfig::tiny();
+        cfg.max_seq_len = 0;
+        assert!(
+            cfg.validate().is_err(),
+            "max_seq_len=0 must fail validation"
+        );
     }
 
     #[test]

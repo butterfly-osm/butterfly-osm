@@ -30,7 +30,6 @@ import argparse
 import csv
 import json
 import math
-import os
 import statistics
 import sys
 import threading
@@ -341,7 +340,14 @@ def main():
                 f.write(json.dumps(r) + "\n")
         print(f"  wrote {out_path}")
         def _fmt(v):
-            return f"{v:.1f}" if isinstance(v, (int, float)) else "n/a"
+            # `summarize` returns None for percentiles when there were
+            # zero successful requests; printing those with `:.1f`
+            # would crash. Fall back to "n/a" instead.
+            if v is None:
+                return "n/a"
+            if isinstance(v, (int, float)):
+                return f"{v:.1f}"
+            return str(v)
 
         print(f"  recall@1 (100m): {s['recall_at_1_100m']:.3f}")
         print(f"  throughput: {throughput:.1f} qps")
@@ -355,7 +361,7 @@ def main():
             f"- recall@1 (100 m): {s['recall_at_1_100m']:.3f}\n"
             f"- latency p50 / p95 / p99: {_fmt(s['latency_ms_p50'])} / "
             f"{_fmt(s['latency_ms_p95'])} / {_fmt(s['latency_ms_p99'])} ms\n"
-            f"- distance p50 / p95: {s['distance_m_p50']} / {s['distance_m_p95']} m\n"
+            f"- distance p50 / p95: {_fmt(s['distance_m_p50'])} / {_fmt(s['distance_m_p95'])} m\n"
         )
     summary_path = args.output / f"{args.engine}-summary.md"
     summary_path.write_text("\n".join(summary_md), encoding="utf-8")

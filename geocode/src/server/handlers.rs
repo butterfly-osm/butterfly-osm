@@ -195,7 +195,7 @@ pub async fn forward(
             );
         }
         Ok(Outcome::Admission(e)) => {
-            return error_response(StatusCode::PAYLOAD_TOO_LARGE, &e.to_string());
+            return admission_rejection_response(&e.to_string());
         }
         Err(e) => {
             tracing::error!(error = %e, "spawn_blocking panicked in forward");
@@ -210,6 +210,15 @@ pub async fn forward(
     if accept_geojson(&headers) {
         geojson_response(&results, include_debug, action)
     } else {
+        // On reject the rerank layer drops every candidate. Surface
+        // `BELOW_THRESHOLD` on the response envelope so clients can
+        // distinguish "no results" from "results below the action
+        // threshold" without re-deriving from the score.
+        let reason_codes = if matches!(action, Confidence::Reject) {
+            Some(vec![crate::confidence::RC_BELOW_THRESHOLD.to_string()])
+        } else {
+            None
+        };
         Json(ForwardResponse {
             query: params.q,
             country: dispatch_country.iso2(),
@@ -219,6 +228,7 @@ pub async fn forward(
                 .iter()
                 .map(|r| ForwardItem::from(r, include_debug))
                 .collect(),
+            reason_codes,
         })
         .into_response()
     }
@@ -407,6 +417,24 @@ fn error_response(status: StatusCode, message: &str) -> Response {
         .into_response()
 }
 
+/// Build a 429 Too Many Requests response for a per-query admission
+/// rejection (#97 over-budget admission). The pre-execution check is
+/// not "Payload Too Large" (413); it's a rate/cost-based throttle, so
+/// the right status is 429 with `Retry-After`.
+fn admission_rejection_response(message: &str) -> Response {
+    let mut resp = (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(ErrorResponse {
+            error: message.to_string(),
+        }),
+    )
+        .into_response();
+    if let Ok(v) = header::HeaderValue::from_str("1") {
+        resp.headers_mut().insert(header::RETRY_AFTER, v);
+    }
+    resp
+}
+
 #[derive(Debug, Serialize)]
 struct ForwardResponse {
     query: String,
@@ -417,6 +445,12 @@ struct ForwardResponse {
     confidence: &'static str,
     count: usize,
     results: Vec<ForwardItem>,
+    /// Envelope-level reason codes. Populated with `BELOW_THRESHOLD`
+    /// on the reject path so clients can distinguish a true "no
+    /// matches" empty result from "matches existed but the reranker
+    /// suppressed them".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason_codes: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
