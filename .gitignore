@@ -101,6 +101,8 @@ geocode-research/scratch-*/Cargo.lock
 # Geocode training generator: target/, lockfile, and any non-fixture corpus output
 geocode-training/corpus-gen/target/
 geocode-training/corpus-gen/Cargo.lock
+geocode-training/phase2/target/
+geocode-training/phase2/Cargo.lock
 geocode-training/output/
 geocode-training/*.jsonl
 
@@ -113,4 +115,5 @@ geocode-research/*.err
 
 # Generated geocode shards (BFGS v4). 100MB+ per country — produced by
 # `butterfly-geocode build-shard` and rebuilt from PBFs as needed.
+geocode/regions/*.bfgs
 geocode/regions/*/*.bfgs

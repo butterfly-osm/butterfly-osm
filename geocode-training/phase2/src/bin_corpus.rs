@@ -22,15 +22,16 @@ use butterfly_geocode::{CountryId, Shard};
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use phase2_pipeline::augment::{DEFAULT_AUGMENTATIONS, Fields, apply, render_canonical};
-use phase2_pipeline::sample::{
-    AugmentationKind, PHASE2_SAMPLE_SCHEMA_VERSION, Phase2Sample,
-};
+use phase2_pipeline::sample::{AugmentationKind, PHASE2_SAMPLE_SCHEMA_VERSION, Phase2Sample};
 use rand::SeedableRng;
 use rand::seq::SliceRandom;
 use rand_chacha::ChaCha20Rng;
 
 #[derive(Parser, Debug)]
-#[command(name = "phase2-corpus", about = "Phase 2 retrieval-aware corpus generator")]
+#[command(
+    name = "phase2-corpus",
+    about = "Phase 2 retrieval-aware corpus generator"
+)]
 struct Args {
     /// Input BFGS shard path. The shard's country header is used as
     /// the country tag on every emitted sample.
@@ -145,8 +146,9 @@ fn main() -> Result<()> {
     let mut seen_aug_rows = 0u64;
 
     // Reservoir sample for (record_idx, kind).
-    let do_reservoir = target_size > 0 && target_size as u64
-        != (cap_records as u64).saturating_mul((args.augmentations + 1) as u64);
+    let do_reservoir = target_size > 0
+        && target_size as u64
+            != (cap_records as u64).saturating_mul((args.augmentations + 1) as u64);
     let mut reservoir: Vec<(u32, AugmentationKind)> = if do_reservoir {
         Vec::with_capacity(target_size)
     } else {
