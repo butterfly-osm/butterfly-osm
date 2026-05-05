@@ -207,6 +207,17 @@ impl EbgNodesFile {
     /// the body slice starts at a 4-byte boundary, which matches
     /// `align_of::<EbgNode>() == 4`.
     pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<EbgNodes> {
+        Self::read_from_bytes_zero_copy_inner(bytes, true)
+    }
+
+    /// Same as [`Self::read_from_bytes_zero_copy`] but elides the
+    /// internal CRC walk. Caller MUST guarantee the bytes are already
+    /// verified upstream (e.g. via the container's lazy CRC layer).
+    pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<EbgNodes> {
+        Self::read_from_bytes_zero_copy_inner(bytes, false)
+    }
+
+    fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<EbgNodes> {
         anyhow::ensure!(
             bytes.len() >= HEADER_LEN + FOOTER_LEN,
             "ebg.nodes too short for header+footer: {} bytes",
@@ -257,17 +268,21 @@ impl EbgNodesFile {
         let footer = &bytes[body_end..body_end + FOOTER_LEN];
 
         // CRC over header + body, mirroring the legacy reader.
-        let mut crc_digest = crc::Digest::new();
-        crc_digest.update(header);
-        crc_digest.update(body);
-        let computed = crc_digest.finalize();
-        let stored = u64::from_le_bytes(footer[0..8].try_into().unwrap());
-        anyhow::ensure!(
-            computed == stored,
-            "CRC64 mismatch in ebg.nodes: computed 0x{:016X}, stored 0x{:016X}",
-            computed,
-            stored
-        );
+        if verify {
+            let mut crc_digest = crc::Digest::new();
+            crc_digest.update(header);
+            crc_digest.update(body);
+            let computed = crc_digest.finalize();
+            let stored = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+            anyhow::ensure!(
+                computed == stored,
+                "CRC64 mismatch in ebg.nodes: computed 0x{:016X}, stored 0x{:016X}",
+                computed,
+                stored
+            );
+        } else {
+            let _ = footer; // unused without CRC walk
+        }
 
         let nodes: &'static [EbgNode] = bytemuck::cast_slice(body);
 

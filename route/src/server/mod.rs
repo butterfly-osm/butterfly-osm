@@ -114,6 +114,36 @@ pub fn find_free_port(start: u16) -> Result<u16> {
     anyhow::bail!("No free port found starting from {}", start);
 }
 
+/// Detect whether `dir` contains at least one `*.butterfly` container
+/// file. Used to dispatch between the legacy step-tree loader and the
+/// multi-region container loader. Errors propagate explicitly rather
+/// than getting swallowed into a stale `false` — operators noticing a
+/// permission issue at this site is more useful than silently falling
+/// back to the legacy path.
+fn directory_has_butterfly_container(dir: &Path) -> Result<bool> {
+    let read_dir =
+        std::fs::read_dir(dir).with_context(|| format!("reading data dir {}", dir.display()))?;
+    for entry in read_dir {
+        let entry =
+            entry.with_context(|| format!("iterating directory entries in {}", dir.display()))?;
+        let path = entry.path();
+        let metadata =
+            std::fs::metadata(&path).with_context(|| format!("stat {}", path.display()))?;
+        if !metadata.is_file() {
+            continue;
+        }
+        let is_butterfly = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.eq_ignore_ascii_case("butterfly"))
+            .unwrap_or(false);
+        if is_butterfly {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Shutdown signal: waits for SIGINT (Ctrl-C) or SIGTERM.
 async fn shutdown_signal() {
     use tokio::signal;
@@ -200,22 +230,7 @@ pub async fn serve(
     let (regions_state, data_dir_for_transit): (regions::RegionsState, std::path::PathBuf) =
         match source {
             DataSource::Directory(dir) => {
-                let has_container = std::fs::read_dir(dir)
-                    .with_context(|| format!("reading data dir {}", dir.display()))?
-                    .any(|e| {
-                        e.ok()
-                            .map(|e| {
-                                let p = e.path();
-                                let is_file =
-                                    std::fs::metadata(&p).map(|m| m.is_file()).unwrap_or(false);
-                                is_file
-                                    && p.extension()
-                                        .and_then(|e| e.to_str())
-                                        .map(|s| s.eq_ignore_ascii_case("butterfly"))
-                                        .unwrap_or(false)
-                            })
-                            .unwrap_or(false)
-                    });
+                let has_container = directory_has_butterfly_container(dir)?;
                 if has_container {
                     tracing::info!(dir = %dir.display(), "multi-region container directory detected");
                     let regions_state =
