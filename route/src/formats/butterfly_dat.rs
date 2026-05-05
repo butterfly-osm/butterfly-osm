@@ -206,6 +206,14 @@ pub enum SectionKind {
     /// endpoint indices into the `OverlayBorderNodes` table. Section name
     /// is `overlay/crossings`.
     OverlayCrossings = 0x000D_0004,
+    /// Cross-region overlay cluster-map (#91 Phase 2 optimization). For
+    /// each region, a `[u32]` of length `n_borders_in_region` mapping
+    /// each border node to the index (within the same region) of its
+    /// cluster representative. The matrix is only populated for
+    /// representatives; non-representatives are mapped to their
+    /// representative at lookup time. One section per region; section
+    /// name is `overlay/cluster_map/<region>`.
+    OverlayClusterMap = 0x000D_0005,
 
     /// Future / unrecognised. Readers that see this should fall back
     /// to the section name string.
@@ -264,6 +272,7 @@ impl SectionKind {
             0x000D_0002 => Self::OverlayBorderNodes,
             0x000D_0003 => Self::OverlayMatrix,
             0x000D_0004 => Self::OverlayCrossings,
+            0x000D_0005 => Self::OverlayClusterMap,
 
             _ => Self::Unknown,
         }
@@ -307,6 +316,7 @@ impl SectionKind {
             Self::OverlayBorderNodes => "overlay/border_nodes",
             Self::OverlayMatrix => "overlay/matrix",
             Self::OverlayCrossings => "overlay/crossings",
+            Self::OverlayClusterMap => "overlay/cluster_map",
             Self::Unknown => "unknown",
         }
     }

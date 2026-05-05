@@ -281,6 +281,12 @@ fn intersect_bbox(a: &Bbox, b: &Bbox) -> Option<Bbox> {
 /// Walk the region's snap-index points and emit one `Sample` per EBG
 /// node id whose first occurrence sits inside `bbox`. Picks the first
 /// occurrence so the returned set is small and deterministic.
+///
+/// The result is sorted by `ebg_id` — without this the iteration order
+/// of `HashMap::into_values` is non-deterministic across builds, which
+/// percolates into the on-disk overlay cluster's record order. Keeping
+/// the order ebg-stable means the clustering decisions and matrix
+/// indices are reproducible across runs (Copilot finding #12).
 fn collect_candidates_in_bbox(state: &ServerState, bbox: &Bbox) -> Vec<Sample> {
     let mut seen: HashMap<u32, Sample> = HashMap::new();
     for p in state.snap_index.points.points.as_ref() {
@@ -295,7 +301,102 @@ fn collect_candidates_in_bbox(state: &ServerState, bbox: &Bbox) -> Vec<Sample> {
             ebg_id: p.ebg_id,
         });
     }
-    seen.into_values().collect()
+    let mut out: Vec<Sample> = seen.into_values().collect();
+    out.sort_by_key(|s| s.ebg_id);
+    out
+}
+
+/// Cluster a list of border crossings into a smaller set of *representative*
+/// crossings, then return the representatives plus a per-input `cluster_map`
+/// telling the caller which representative each original crossing maps to.
+///
+/// # Why
+///
+/// The dense BE↔LU border set is ~8 k crossings, almost all of which are
+/// within a few hundred metres of one another along the same physical road
+/// (Athus, Pétange, etc). The overlay matrix is `n × m` border-to-border CCH
+/// distances; with `n = m = 8 k`, each (mode, direction) requires `~64 M`
+/// CCH P2P queries — about a week of wall-clock per mode per direction on
+/// commodity hardware.
+///
+/// Greedy spatial clustering keeps one representative per ~`merge_threshold_m`
+/// neighbourhood, which collapses the 8 k count to ~50–200 representatives
+/// without losing access to any border road, because every pruned crossing
+/// is within `merge_threshold_m` of a kept representative. The matrix-build
+/// cost shrinks by `(n / k)²` where `k` is the cluster count.
+///
+/// # Algorithm
+///
+/// Single-pass greedy clustering using haversine distance. For each input
+/// crossing in deterministic order:
+///
+/// 1. Walk the existing representatives and find the first one whose
+///    A-side (and B-side) sample is within `merge_threshold_m` of this
+///    crossing's A-side (resp. B-side) sample. If found, assign this
+///    crossing to that cluster.
+/// 2. Otherwise, this crossing becomes a new representative (it joins
+///    its own cluster).
+///
+/// We require **both** A-side and B-side proximity so two crossings that
+/// happen to share an A-side endpoint but live on different physical roads
+/// are not merged. The threshold is checked first by axis-aligned `|Δlat|`
+/// projection, which is the dominant rejection in the inner loop.
+///
+/// # Determinism
+///
+/// Inputs are pre-sorted by `(node_a, node_b)` (the existing canonical
+/// ordering of `extract_border_pair`) so the assigned cluster ids are
+/// stable across runs.
+///
+/// # Returned shape
+///
+/// `(representatives, cluster_map)` where:
+/// - `representatives` is a subset of the input list (in the same canonical
+///   order — earliest-seen wins).
+/// - `cluster_map[i]` is the index in `representatives` for `crossings[i]`.
+///   `cluster_map.len() == crossings.len()`.
+pub fn prune_border_set(
+    crossings: &[BorderCrossing],
+    merge_threshold_m: f64,
+) -> (Vec<BorderCrossing>, Vec<u32>) {
+    if crossings.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let mut reps: Vec<BorderCrossing> = Vec::new();
+    let mut cluster_map: Vec<u32> = Vec::with_capacity(crossings.len());
+
+    // Lat threshold (axis-aligned upper bound on haversine).
+    let lat_thresh = merge_threshold_m / 111_320.0;
+
+    for c in crossings {
+        let mut assigned: Option<u32> = None;
+        for (rep_idx, rep) in reps.iter().enumerate() {
+            // Cheap reject: |Δlat| on either side already exceeds threshold.
+            if (rep.lat_a - c.lat_a).abs() > lat_thresh || (rep.lat_b - c.lat_b).abs() > lat_thresh
+            {
+                continue;
+            }
+            let d_a = haversine_distance(rep.lat_a, rep.lon_a, c.lat_a, c.lon_a);
+            if d_a > merge_threshold_m {
+                continue;
+            }
+            let d_b = haversine_distance(rep.lat_b, rep.lon_b, c.lat_b, c.lon_b);
+            if d_b > merge_threshold_m {
+                continue;
+            }
+            assigned = Some(rep_idx as u32);
+            break;
+        }
+        match assigned {
+            Some(idx) => cluster_map.push(idx),
+            None => {
+                cluster_map.push(reps.len() as u32);
+                reps.push(c.clone());
+            }
+        }
+    }
+
+    (reps, cluster_map)
 }
 
 #[cfg(test)]
@@ -330,6 +431,112 @@ mod tests {
             max_lat: 3.0,
         };
         assert!(intersect_bbox(&a, &c).is_none());
+    }
+
+    #[test]
+    fn prune_empty_input_yields_empty_output() {
+        let (reps, map) = prune_border_set(&[], 250.0);
+        assert!(reps.is_empty());
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn prune_far_crossings_kept_separate() {
+        // Three crossings, far apart on the lat axis (> 250 m).
+        let cs = vec![
+            BorderCrossing {
+                region_a: "A".into(),
+                node_a: 1,
+                lat_a: 49.5000,
+                lon_a: 5.5,
+                region_b: "B".into(),
+                node_b: 100,
+                lat_b: 49.5001,
+                lon_b: 5.5,
+                edge_distance_m: 11.0,
+            },
+            BorderCrossing {
+                region_a: "A".into(),
+                node_a: 2,
+                lat_a: 49.6000, // ~11 km north
+                lon_a: 5.5,
+                region_b: "B".into(),
+                node_b: 101,
+                lat_b: 49.6001,
+                lon_b: 5.5,
+                edge_distance_m: 11.0,
+            },
+            BorderCrossing {
+                region_a: "A".into(),
+                node_a: 3,
+                lat_a: 49.7000, // another 11 km north
+                lon_a: 5.5,
+                region_b: "B".into(),
+                node_b: 102,
+                lat_b: 49.7001,
+                lon_b: 5.5,
+                edge_distance_m: 11.0,
+            },
+        ];
+        let (reps, map) = prune_border_set(&cs, 250.0);
+        assert_eq!(reps.len(), 3);
+        assert_eq!(map, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn prune_near_crossings_collapse() {
+        // Ten crossings within ~10 m of one another → all in cluster 0.
+        let mut cs = Vec::new();
+        for i in 0..10u32 {
+            let dlat = (i as f64) * 1e-6; // ~0.1 m per step
+            cs.push(BorderCrossing {
+                region_a: "A".into(),
+                node_a: 100 + i,
+                lat_a: 49.5 + dlat,
+                lon_a: 5.5,
+                region_b: "B".into(),
+                node_b: 200 + i,
+                lat_b: 49.5001 + dlat,
+                lon_b: 5.5,
+                edge_distance_m: 11.0,
+            });
+        }
+        let (reps, map) = prune_border_set(&cs, 250.0);
+        assert_eq!(reps.len(), 1, "near-collinear crossings should collapse");
+        assert!(map.iter().all(|&c| c == 0));
+    }
+
+    #[test]
+    fn prune_three_clusters_for_synthetic_overlay() {
+        // 10 source borders that fall into 3 well-separated lat clusters.
+        // Verifies cluster_map indices line up with cluster identity.
+        let lats = [
+            49.5000, 49.5001, 49.5002, // cluster 0 (within ~25 m)
+            49.6000, 49.6001, 49.6002, 49.6003, // cluster 1 (within ~33 m)
+            49.7000, 49.7001, 49.7002, // cluster 2 (within ~25 m)
+        ];
+        let cs: Vec<_> = lats
+            .iter()
+            .enumerate()
+            .map(|(i, &lat)| BorderCrossing {
+                region_a: "A".into(),
+                node_a: 100 + i as u32,
+                lat_a: lat,
+                lon_a: 5.5,
+                region_b: "B".into(),
+                node_b: 200 + i as u32,
+                lat_b: lat + 1e-4,
+                lon_b: 5.5,
+                edge_distance_m: 11.0,
+            })
+            .collect();
+        let (reps, map) = prune_border_set(&cs, 100.0);
+        assert_eq!(reps.len(), 3);
+        // Each cluster's members all share the same id.
+        for window in [&map[0..3], &map[3..7], &map[7..10]] {
+            let first = window[0];
+            assert!(window.iter().all(|&x| x == first));
+        }
     }
 
     #[test]
