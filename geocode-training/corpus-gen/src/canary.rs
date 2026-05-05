@@ -9,7 +9,6 @@
 //! The country label stays "BE" — that's the whole point. The parser must
 //! learn geography over orthography.
 
-use crate::bio::{Field, Labeled, Span, bio_from_spans};
 use crate::gold::GoldRecord;
 use crate::output::TrainRecord;
 use rand_chacha::ChaCha20Rng;
@@ -65,16 +64,6 @@ pub fn rewrite_be_as_nl(g: &GoldRecord, _rng: &mut ChaCha20Rng) -> Option<TrainR
 
 fn rendered_record(g: &GoldRecord, kind: &str) -> TrainRecord {
     let labeled = crate::bio::render_canonical(g);
-    let _ = (
-        Field::O,
-        Span {
-            field: Field::O,
-            start: 0,
-            end: 0,
-        },
-    );
-    let _ = bio_from_spans;
-    let _: Labeled = labeled.clone();
     TrainRecord {
         text: labeled.text,
         bio_labels: labeled.bio_labels,

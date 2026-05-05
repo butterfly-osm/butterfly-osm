@@ -19,7 +19,7 @@
 use crate::augment::{self, Augmented};
 use crate::bio::Labeled;
 use crate::gold::GoldRecord;
-use anyhow::Result;
+use anyhow::{Result, bail};
 use rand::Rng;
 use rand_chacha::ChaCha20Rng;
 use std::fs::File;
@@ -48,6 +48,14 @@ pub fn write_bench_tsv(
             g.lat.is_finite() && g.lon.is_finite() && g.city.is_some() && g.postcode.is_some()
         })
         .collect();
+
+    if usable.is_empty() {
+        bail!(
+            "no usable gold records (need finite lat/lon, city, and postcode); \
+             {} input records were filtered out",
+            golds.len()
+        );
+    }
 
     for (class_idx, class) in CLASSES.iter().enumerate() {
         let mut emitted = 0usize;
