@@ -187,7 +187,11 @@ pub fn build_training_rows(
 fn parse_country(s: Option<&str>) -> Result<CountryId> {
     match s {
         None => Ok(CountryId::BE),
-        Some(s) => CountryId::from_iso2(s).ok_or_else(|| anyhow!("unknown country '{s}'")),
+        Some(s) => CountryId::from_iso2(s).ok_or_else(|| {
+            anyhow!(
+                "malformed country code: {s:?} (expected exactly 2 ASCII letters, case-insensitive)"
+            )
+        }),
     }
 }
 

@@ -17,16 +17,34 @@
 //!
 //! Adding a country = drop a TOML pack. Zero classifier code changes.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use super::{CountryId, CountryPack, PackRegistry};
 
-/// Classifier holding a (lazily-initialised) [`PackRegistry`]. Cheap
-/// to clone (refcount-only) — the underlying `Arc<CountryPack>`s are
-/// shared across calls.
+/// Classifier holding a [`PackRegistry`]. Two construction modes are
+/// supported:
+///
+/// 1. [`Classifier::shipped`] — process-wide singleton backed by the
+///    binary's embedded shipped packs. Used by call sites that don't
+///    have access to a `ServerState` (heuristic parser tests, the
+///    legacy `classify_country()` free function, neural decoder
+///    fast-path lookup).
+/// 2. [`Classifier::from_registry`] — owned classifier backed by an
+///    arbitrary registry (typically built from
+///    `PackRegistry::shipped_with_overrides`). The HTTP server uses
+///    this so `--pack-dir` overrides actually reach query-time
+///    classification + bbox dispatch.
 #[derive(Debug)]
 pub struct Classifier {
-    registry: &'static PackRegistry,
+    registry: ClassifierRegistry,
+}
+
+#[derive(Debug)]
+enum ClassifierRegistry {
+    /// Borrowed from a process-wide static. The shipped singleton.
+    Static(&'static PackRegistry),
+    /// Owned by an `Arc`. The pack-dir-aware path.
+    Owned(Arc<PackRegistry>),
 }
 
 impl Classifier {
@@ -40,8 +58,20 @@ impl Classifier {
             let reg = REG.get_or_init(|| {
                 PackRegistry::shipped().expect("shipped country packs must compile")
             });
-            Classifier { registry: reg }
+            Classifier {
+                registry: ClassifierRegistry::Static(reg),
+            }
         })
+    }
+
+    /// Construct an owned classifier from an arbitrary registry. The
+    /// server uses this with `PackRegistry::shipped_with_overrides`
+    /// so `--pack-dir` overrides reach query-time classification.
+    #[must_use]
+    pub fn from_registry(registry: Arc<PackRegistry>) -> Self {
+        Self {
+            registry: ClassifierRegistry::Owned(registry),
+        }
     }
 
     /// Classify the country distribution implied by `text`. Returns a
@@ -54,7 +84,7 @@ impl Classifier {
     pub fn classify(&self, text: &str) -> Vec<(CountryId, f32)> {
         let lower = text.to_lowercase();
         let scores: Vec<(CountryId, f32)> = self
-            .registry
+            .registry()
             .iter()
             .map(|p: &std::sync::Arc<CountryPack>| (p.country, p.score(text, &lower)))
             .collect();
@@ -63,7 +93,40 @@ impl Classifier {
 
     #[must_use]
     pub fn registry(&self) -> &PackRegistry {
-        self.registry
+        match &self.registry {
+            ClassifierRegistry::Static(r) => r,
+            ClassifierRegistry::Owned(r) => r.as_ref(),
+        }
+    }
+
+    /// Return every country whose bbox contains the point. Mirrors the
+    /// free function [`super::supported_countries_for_point`] but uses
+    /// THIS classifier's registry — the difference matters when an
+    /// operator launched the server with `--pack-dir` overrides that
+    /// patch a shipped pack's bbox.
+    #[must_use]
+    pub fn supported_for_point(&self, lat: f64, lon: f64) -> Vec<CountryId> {
+        self.registry()
+            .iter()
+            .filter(|p| p.bbox.contains(lat, lon))
+            .map(|p| p.country)
+            .collect()
+    }
+
+    /// Smallest-bbox country containing the point. Mirrors the free
+    /// function [`super::country_for_point`].
+    #[must_use]
+    pub fn country_for_point(&self, lat: f64, lon: f64) -> Option<CountryId> {
+        self.registry()
+            .iter()
+            .filter(|p| p.bbox.contains(lat, lon))
+            .min_by(|a, b| {
+                a.bbox
+                    .area_deg2()
+                    .partial_cmp(&b.bbox.area_deg2())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|p| p.country)
     }
 }
 

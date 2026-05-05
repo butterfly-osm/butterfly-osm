@@ -308,12 +308,21 @@ max_lon = 1.0
 "#,
     )
     .unwrap();
-    // Malformed pack should not crash the loader. Since the bad pack
-    // never inserts, the shipped BE pack remains.
-    let reg = PackRegistry::shipped_with_overrides(dir.path()).unwrap();
-    let be = reg.get(CountryId::BE).expect("BE must remain");
-    // Original shipped name (whatever it is) — definitely NOT "BAD".
-    assert_ne!(be.name, "BAD");
+    // Production policy (Copilot review on PR #183): malformed
+    // override packs MUST fail boot. The earlier behaviour silently
+    // fell through to the shipped pack, leaving operators with the
+    // shipped classifier when they thought they had patched it.
+    let err = PackRegistry::shipped_with_overrides(dir.path())
+        .expect_err("malformed override pack must fail boot, not warn-and-fallthrough");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("malformed pack"),
+        "error message should mention 'malformed pack' (got: {msg})"
+    );
+    assert!(
+        msg.contains("be.toml"),
+        "error message should name the offending file (got: {msg})"
+    );
 }
 
 #[test]

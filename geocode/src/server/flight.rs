@@ -46,7 +46,7 @@ use tonic::{Request, Response, Status, Streaming};
 
 use crate::control::budget::compute_budget;
 use crate::geocoder::executor::{GeocodedResult, apply_rerank, execute_with_control};
-use crate::routing::{CountryId, classify_country};
+use crate::routing::CountryId;
 
 use super::state::ServerState;
 
@@ -317,7 +317,7 @@ fn resolve_dispatch(query: &str, pinned: Option<&str>, state: &ServerState) -> O
     {
         return Some(c);
     }
-    let posterior = classify_country(query);
+    let posterior = state.classifier.classify(query);
     state.pick_shard(&posterior).map(|(c, _)| c)
 }
 

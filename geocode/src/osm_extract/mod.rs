@@ -292,8 +292,24 @@ where
     // Resolve the canonical street + remember which source it came
     // from. The fallback path (`addr:full` / `addr:place`) drives the
     // relaxed signal threshold below.
+    //
+    // Country packs may override the canonical `street` key — Japan's
+    // pack remaps `street` to `addr:full` because Japanese addresses
+    // don't decompose into street + housenumber. When the pack's
+    // override IS one of the documented fallback tags, the captured
+    // value is semantically a Fallback signal even though it entered
+    // via the pack's `street` channel; treating it as Strict would
+    // require a housenumber and silently drop every JP record without
+    // a separate `addr:housenumber` tag (a vanishingly rare condition
+    // in OSM JP data, cf. Copilot review on PR #183).
+    let pack_street_is_fallback_tag = cfg.street == "addr:full" || cfg.street == "addr:place";
     let (resolved_street, source) = if !street.is_empty() {
-        (street, StreetSource::Strict)
+        let s = if pack_street_is_fallback_tag {
+            StreetSource::Fallback
+        } else {
+            StreetSource::Strict
+        };
+        (street, s)
     } else if !full.is_empty() {
         (full, StreetSource::Fallback)
     } else if !place.is_empty() {
@@ -378,27 +394,75 @@ mod tests {
     }
 
     #[test]
-    fn pack_override_for_japan_treats_addr_full_as_strict_only_when_specified() {
-        // JP pack publishes street=addr:full. Records arriving via
-        // that override are then classified as Strict (the pack
-        // declared this is the canonical channel for the country) and
-        // require a housenumber per the strict rule.
+    fn pack_override_to_addr_full_treats_value_as_fallback_signal() {
+        // JP pack publishes street=addr:full. The value DOES enter
+        // through the pack's `street` channel, but `addr:full` is
+        // semantically a fallback tag (block-based addressing) and
+        // must NOT be subjected to the strict-path housenumber
+        // requirement. Otherwise every JP record without a separate
+        // `addr:housenumber` is silently dropped — the bug Copilot
+        // flagged on PR #183.
         let cfg = OsmTags {
             postcode: "addr:postcode".to_string(),
             street: "addr:full".to_string(),
             housenumber: "addr:housenumber".to_string(),
             city: "addr:city".to_string(),
         };
-        let (street, source, hn, _, _) = run(
+        let (street, source, hn, pc, loc) = run(
             tags(&[
                 ("addr:full", "東京都千代田区千代田1-1"),
-                ("addr:housenumber", "1"),
+                ("addr:postcode", "100-0001"),
             ]),
             &cfg,
         );
         assert_eq!(street, "東京都千代田区千代田1-1");
+        assert_eq!(
+            source,
+            StreetSource::Fallback,
+            "pack-override of street to addr:full must surface as Fallback"
+        );
+        assert!(hn.is_empty());
+        assert!(
+            has_minimum_signal(source, &hn, &pc, &loc),
+            "JP-style addr:full + postcode must be accepted (relaxed signal)"
+        );
+    }
+
+    #[test]
+    fn pack_override_to_addr_place_treats_value_as_fallback_signal() {
+        // `addr:place` is the second documented fallback tag (used in
+        // some Latin American + rural contexts where the address has
+        // a place name but no street). Any pack that elects to remap
+        // `street` to `addr:place` must trigger the same relaxed
+        // signal path as a pack-overridden `addr:full`.
+        let cfg = OsmTags {
+            postcode: "addr:postcode".to_string(),
+            street: "addr:place".to_string(),
+            housenumber: "addr:housenumber".to_string(),
+            city: "addr:city".to_string(),
+        };
+        let (_, source, hn, pc, loc) = run(
+            tags(&[("addr:place", "Some Place"), ("addr:city", "City")]),
+            &cfg,
+        );
+        assert_eq!(source, StreetSource::Fallback);
+        assert!(hn.is_empty());
+        assert!(has_minimum_signal(source, &hn, &pc, &loc));
+    }
+
+    #[test]
+    fn standard_pack_with_addr_street_still_strict() {
+        // Sanity: the BE/FR/DE/etc. shipped packs use street=addr:street.
+        // Records via the standard channel must remain Strict and
+        // demand a housenumber.
+        let cfg = default_tags();
+        let (street, source, hn, _, _) = run(
+            tags(&[("addr:street", "Rue Wayez"), ("addr:housenumber", "122")]),
+            &cfg,
+        );
+        assert_eq!(street, "Rue Wayez");
         assert_eq!(source, StreetSource::Strict);
-        assert_eq!(hn, "1");
+        assert_eq!(hn, "122");
     }
 
     #[test]

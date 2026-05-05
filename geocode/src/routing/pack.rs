@@ -720,9 +720,23 @@ impl PackRegistry {
             }
         }
         if !errors.is_empty() {
+            // Production policy: malformed override packs are a hard
+            // boot failure. The CLI/README contract is that
+            // `--pack-dir` either fully replaces the targeted shipped
+            // packs or fails the boot — silently falling through to
+            // the shipped pack contradicts the declared intent and
+            // produces classifier results that mismatch what the
+            // operator expects.
             for e in &errors {
-                tracing::warn!(error = %e, "override country pack failed to load");
+                tracing::error!(error = %e, "override country pack failed to load");
             }
+            bail!(
+                "override pack directory {} contains {} malformed pack(s); fix or remove them, \
+                 then retry — failing boot to avoid silently degrading classifier accuracy: {:?}",
+                dir.display(),
+                errors.len(),
+                errors
+            );
         }
         tracing::info!(
             dir = %dir.display(),
