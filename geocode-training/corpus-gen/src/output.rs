@@ -3,7 +3,7 @@
 //! TrainRecord shape is the contract with the future Phase 2 trainer (#98).
 //! Don't change field names without also updating the trainer.
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use serde::Serialize;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -32,11 +32,15 @@ impl JsonlWriter {
     }
 
     pub fn write(&mut self, record: &TrainRecord) -> Result<()> {
-        // Sanity: bio_labels length must match text byte length.
-        debug_assert_eq!(
+        // Sanity: bio_labels length must match text byte length. This
+        // is a hard invariant — a label-byte mismatch would silently
+        // corrupt the training corpus, so use `ensure!` (always-on)
+        // instead of `debug_assert!` (release-mode no-op).
+        ensure!(
+            record.text.len() == record.bio_labels.len(),
+            "BIO label / byte length mismatch: text={} bytes, labels={}",
             record.text.len(),
-            record.bio_labels.len(),
-            "BIO label / byte length mismatch"
+            record.bio_labels.len()
         );
         let line = serde_json::to_string(record)?;
         self.inner.write_all(line.as_bytes())?;
