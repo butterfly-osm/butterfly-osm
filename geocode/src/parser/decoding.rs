@@ -530,7 +530,13 @@ pub fn build_hypothesis_from_labels(text: &str, labels: &[usize]) -> ParseHypoth
 }
 
 /// Build a retrieval program (Op tree) for a hypothesis under a policy.
-fn build_program_for_hypothesis(h: &ParseHypothesis, policy: &RetrievalPolicy) -> Op {
+///
+/// Public so external tooling (notably the Phase 2 labeler in
+/// `geocode-training/phase2/`) can build the same program shape the
+/// decoder uses. This avoids a duplicated builder that could silently
+/// drift away from the runtime path during refactors (Copilot review on
+/// PR #179, finding 2).
+pub fn build_program_for_hypothesis(h: &ParseHypothesis, policy: &RetrievalPolicy) -> Op {
     let mut blockers: Vec<Op> = Vec::new();
     let mut reducers: Vec<Op> = Vec::new();
     let mut scorers: Vec<Op> = Vec::new();

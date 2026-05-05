@@ -8,8 +8,10 @@ Usage:
 
 Engines:
     - nominatim: hits http://localhost:8080/search (Nominatim's API)
-    - butterfly: hits http://localhost:3001/geocode (future, not built yet)
-    - photon: hits http://localhost:2322/api (future)
+    - butterfly: hits http://localhost:3001/geocode (REST)
+
+Both engines accept a `--limit N` flag (default 5) which is forwarded
+verbatim. Use a non-localhost butterfly via `--base-url`.
 
 Metrics:
     - p50, p95, p99 latency
@@ -73,13 +75,20 @@ def load_queries(path: Path):
     return rows
 
 
-def query_nominatim(session: requests.Session, query_text: str, base_url: str) -> dict:
-    """Send one query to Nominatim. Returns dict with latency, top1 coords."""
+def query_nominatim(
+    session: requests.Session, query_text: str, base_url: str, limit: int
+) -> dict:
+    """Send one query to Nominatim. Returns dict with latency, top1 coords.
+
+    `limit` is forwarded verbatim to Nominatim's `limit` query parameter
+    so that recall/throughput numbers stay comparable to the butterfly
+    engine which scales executor work with the same flag.
+    """
     t0 = time.perf_counter()
     try:
         r = session.get(
             f"{base_url}/search",
-            params={"q": query_text, "format": "json", "limit": 1, "addressdetails": 0},
+            params={"q": query_text, "format": "json", "limit": limit, "addressdetails": 0},
             timeout=10.0,
         )
         r.raise_for_status()
@@ -89,29 +98,43 @@ def query_nominatim(session: requests.Session, query_text: str, base_url: str) -
             "latency_ms": (time.perf_counter() - t0) * 1000.0,
             "top1_lat": None,
             "top1_lon": None,
+            "topk": [],
             "error": str(e),
         }
     latency_ms = (time.perf_counter() - t0) * 1000.0
     if not data:
-        return {"latency_ms": latency_ms, "top1_lat": None, "top1_lon": None, "error": "no_result"}
+        return {
+            "latency_ms": latency_ms,
+            "top1_lat": None,
+            "top1_lon": None,
+            "topk": [],
+            "error": "no_result",
+        }
+    topk = [[float(it["lat"]), float(it["lon"])] for it in data[:limit]]
     return {
         "latency_ms": latency_ms,
-        "top1_lat": float(data[0]["lat"]),
-        "top1_lon": float(data[0]["lon"]),
+        "top1_lat": topk[0][0],
+        "top1_lon": topk[0][1],
+        "topk": topk,
         "error": None,
     }
 
 
-def query_butterfly(session: requests.Session, query_text: str, base_url: str) -> dict:
+def query_butterfly(
+    session: requests.Session, query_text: str, base_url: str, limit: int
+) -> dict:
     """Send one query to butterfly-geocode's REST API. Returns dict with
-    latency, top1 coords, and topk (top-5 lat/lon pairs for diagnostic
-    parity with the previously-shipped butterfly-run/ files).
+    latency, top1 coords, and topk (top-N lat/lon pairs).
+
+    `limit` is forwarded as the `limit` query parameter — butterfly's
+    executor caps candidate work at this value so the flag affects both
+    latency and recall.
     """
     t0 = time.perf_counter()
     try:
         r = session.get(
             f"{base_url}/geocode",
-            params={"q": query_text, "limit": 5},
+            params={"q": query_text, "limit": limit},
             timeout=10.0,
         )
         r.raise_for_status()
@@ -134,7 +157,7 @@ def query_butterfly(session: requests.Session, query_text: str, base_url: str) -
             "topk": [],
             "error": "no_result",
         }
-    topk = [[float(it["lat"]), float(it["lon"])] for it in results[:5]]
+    topk = [[float(it["lat"]), float(it["lon"])] for it in results[:limit]]
     return {
         "latency_ms": latency_ms,
         "top1_lat": topk[0][0],
@@ -144,7 +167,14 @@ def query_butterfly(session: requests.Session, query_text: str, base_url: str) -
     }
 
 
-def run_one_concurrency(engine_fn, queries, concurrency: int, base_url: str, qps_cap: float = 0.0):
+def run_one_concurrency(
+    engine_fn,
+    queries,
+    concurrency: int,
+    base_url: str,
+    qps_cap: float = 0.0,
+    limit: int = 5,
+):
     """Run all queries through `engine_fn` at the given concurrency.
 
     `qps_cap > 0` paces submission to that global QPS — needed when
@@ -184,7 +214,7 @@ def run_one_concurrency(engine_fn, queries, concurrency: int, base_url: str, qps
     def task(q):
         maybe_throttle()
         s = get_session()
-        out = engine_fn(s, q["query_text"], base_url)
+        out = engine_fn(s, q["query_text"], base_url, limit)
         out["query_id"] = q["query_id"]
         out["query_text"] = q["query_text"]
         out["quality_class"] = q["quality_class"]
@@ -196,7 +226,7 @@ def run_one_concurrency(engine_fn, queries, concurrency: int, base_url: str, qps
             out["distance_to_gold_m"] = None
         topk = out.get("topk")
         if topk:
-            out["best_distance_top5_m"] = min(
+            out["best_distance_topk_m"] = min(
                 haversine_m(q["gold_lat"], q["gold_lon"], lat, lon)
                 for (lat, lon) in topk
             )
@@ -265,7 +295,21 @@ def main():
             "set to 20 to stay under it."
         ),
     )
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=5,
+        help=(
+            "result-set size forwarded to the engine (default 5). For "
+            "Nominatim this maps to the `limit` query parameter; for "
+            "butterfly it caps executor work and so affects both latency "
+            "and recall. Use the SAME value across engines when comparing."
+        ),
+    )
     args = ap.parse_args()
+    if args.limit < 1:
+        print("error: --limit must be >= 1", file=sys.stderr)
+        sys.exit(1)
 
     args.output.mkdir(parents=True, exist_ok=True)
     queries = load_queries(args.queries)
@@ -281,7 +325,12 @@ def main():
     for c in [int(x) for x in args.concurrency.split(",")]:
         print(f"\n=== concurrency={c} ===")
         results, throughput = run_one_concurrency(
-            engine_fn, queries, c, base_url, qps_cap=args.qps_cap
+            engine_fn,
+            queries,
+            c,
+            base_url,
+            qps_cap=args.qps_cap,
+            limit=args.limit,
         )
         s = summarize(results)
         s["throughput_qps"] = throughput

@@ -34,6 +34,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use butterfly_geocode::{
     CountryId, GeocodedResult, HeuristicScorer, ParsedQuery, Phase2AnchorSummary, Phase2BeamStats,
     Phase2Features, Phase2LabeledRow, Phase2ProgramFeatures, RetrievalUtilityScorer, Shard,
+    build_program_for_hypothesis,
     parser::{anchor::detect_anchors, heuristic::parse_heuristic, phase2_features::extract},
 };
 use clap::Parser;
@@ -191,7 +192,11 @@ fn read_samples(path: &std::path::Path, limit: usize) -> Result<Vec<Phase2Sample
 }
 
 fn parse_country(iso2: &str) -> Result<CountryId> {
-    CountryId::from_iso2(iso2).ok_or_else(|| anyhow::anyhow!("unknown country code: {}", iso2))
+    CountryId::from_iso2(iso2).ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid ISO 3166-1 alpha-2 code: {iso2:?} (expected exactly 2 uppercase letters)"
+        )
+    })
 }
 
 fn haversine_m(a_lat: f64, a_lon: f64, b_lat: f64, b_lon: f64) -> f64 {
@@ -218,9 +223,10 @@ fn label_one(
     let h = &parsed.hypotheses[0];
     let policy = h.retrieval_policy;
 
-    // Build the program. We use the same builder the decoder calls so
-    // the runtime path matches; this is the legacy-private function
-    // exposed via the parser module.
+    // Build the program. We call the SAME builder the decoder uses
+    // (`butterfly_geocode::build_program_for_hypothesis`) so the runtime
+    // path matches the program shape the learned scorer is calibrated
+    // against. No duplication here — drift would silently mis-train.
     let program = build_program_for_hypothesis(h, &policy);
     let canon = program.canonicalize();
 
@@ -304,97 +310,4 @@ fn landed_on_gold(candidates: &[GeocodedResult], sample: &Phase2Sample, dist_tol
         }
     }
     false
-}
-
-// Re-implementation of the (currently private) `build_program_for_hypothesis`
-// from `parser/decoding.rs`. We duplicate it here because it isn't on
-// the public surface yet and we don't want to widen the API just for
-// a training binary. The semantics MUST match — when this drifts, the
-// learned scorer will be calibrated against a different program shape
-// than the runtime executes.
-//
-// IDENTITY check: this implementation must produce the exact same Op
-// tree as `parser::decoding::build_program_for_hypothesis`. Verified
-// in `phase2_label_program_matches_decoder` test (geocode/tests/).
-fn build_program_for_hypothesis(
-    h: &butterfly_geocode::ParseHypothesis,
-    policy: &butterfly_geocode::RetrievalPolicy,
-) -> butterfly_geocode::geocoder::program::Op {
-    use butterfly_geocode::geocoder::channels::{Channel, ChannelRole};
-    use butterfly_geocode::geocoder::program::{LookupKey, Op};
-
-    let mut blockers: Vec<Op> = Vec::new();
-    let mut reducers: Vec<Op> = Vec::new();
-    let mut scorers: Vec<Op> = Vec::new();
-
-    let mut push_for = |ch: Channel, key: &str| {
-        let lookup = Op::Lookup(LookupKey {
-            channel: ch,
-            key: key.to_string(),
-        });
-        match policy.role(ch) {
-            Some(ChannelRole::Blocker) => blockers.push(lookup),
-            Some(ChannelRole::Reducer) => reducers.push(lookup),
-            Some(ChannelRole::Scorer) => scorers.push(Op::Score {
-                child: Box::new(lookup),
-                channel: ch,
-                weight: 1.0,
-            }),
-            None => {}
-        }
-    };
-    if let Some((pc, _)) = h.postcode_candidates.first() {
-        push_for(Channel::Postcode, pc);
-    }
-    if let Some((st, _)) = h.street_candidates.first() {
-        push_for(Channel::Street, st);
-    }
-    if let Some((loc, _)) = h.locality_candidates.first() {
-        push_for(Channel::Locality, loc);
-    }
-
-    let base: Op = match (blockers.len(), reducers.len()) {
-        (0, 0) if !scorers.is_empty() => Op::Union(scorers.clone()),
-        (0, 0) => Op::Lookup(LookupKey {
-            channel: Channel::Locality,
-            key: String::new(),
-        }),
-        (0, _) => {
-            if reducers.len() == 1 {
-                reducers.into_iter().next().unwrap()
-            } else {
-                Op::Intersect(reducers)
-            }
-        }
-        (_, 0) => {
-            if blockers.len() == 1 {
-                blockers.into_iter().next().unwrap()
-            } else {
-                Op::Intersect(blockers)
-            }
-        }
-        (_, _) => {
-            let mut all = blockers;
-            all.extend(reducers);
-            if all.len() == 1 {
-                all.into_iter().next().unwrap()
-            } else {
-                Op::Intersect(all)
-            }
-        }
-    };
-    let after_filter = if let Some((hn, _)) = h.house_candidates.first() {
-        Op::Filter {
-            child: Box::new(base),
-            predicate: butterfly_geocode::geocoder::program::FilterPredicate::HouseNumberEq(
-                hn.clone(),
-            ),
-        }
-    } else {
-        base
-    };
-    Op::Cap {
-        child: Box::new(after_filter),
-        n: 64,
-    }
 }
