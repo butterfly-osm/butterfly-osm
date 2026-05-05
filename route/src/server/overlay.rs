@@ -9,24 +9,33 @@
 //!   the haversine distance between them. Section kind
 //!   [`SectionKind::OverlayCrossings`].
 //! - **Per-(src, dst, mode) matrix** — row-major `[u32]` of CCH P2P
-//!   weights from each border node in the src region to each border
-//!   node in the dst region. Section kind [`SectionKind::OverlayMatrix`].
+//!   weights from each *representative* border node in the src region
+//!   to each *representative* border node in the dst region. Section
+//!   kind [`SectionKind::OverlayMatrix`].
+//! - **Per-region cluster map** — mapping from every border in the region
+//!   to the index of its representative (within the same region). Used
+//!   at query time to translate the chosen border into a matrix row/
+//!   column. Section kind [`SectionKind::OverlayClusterMap`].
 //! - **Manifest** — JSON with the region list, mode list, build
-//!   provenance hash, and the per-matrix shape so a reader can locate
-//!   each section without scanning the directory. Section kind
-//!   [`SectionKind::OverlayManifest`].
+//!   provenance hash, the per-matrix shape, and the per-region count of
+//!   representatives so a reader can locate each section without
+//!   scanning the directory. Section kind [`SectionKind::OverlayManifest`].
 //!
 //! The container reuses [`crate::formats::butterfly_dat`] so it gets the
 //! same CRC, alignment, and mmap guarantees as the per-region road
 //! container.
 //!
-//! # In-memory representation
+//! # Two-level pruning
 //!
-//! [`OverlayCluster`] is the loaded shape. Border nodes are split per
-//! region for O(1) "give me region X's border nodes" lookups. The
-//! matrix is stored per `(src_region, dst_region, mode)` triple as a
-//! row-major flat `Vec<u32>` so the cross-region coordinator can pluck
-//! `dist[src_idx * n_dst_borders + dst_idx]` in cache-friendly order.
+//! Before #91 Phase 2's optimisation pass, the overlay matrix was an
+//! `n × m` grid where `n, m` were the full per-region border counts —
+//! ~8 010 for BE+LU. That sized the build at ~7 days/mode/direction.
+//! The optimisation pass clusters spatially-co-located borders into
+//! "representatives" via [`super::border::prune_border_set`]. The matrix
+//! is then `n_rep × m_rep` (typically ~50–200 representatives), and the
+//! cluster map records which representative each non-rep border maps
+//! to so the runtime coordinator can still answer queries that snap to
+//! any border node.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -35,9 +44,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::border::BorderCrossing;
-use super::query::CchQuery;
 use super::state::ServerState;
 use crate::formats::butterfly_dat::{Container, ContainerWriter, SectionKind};
+use crate::matrix::bucket_ch::table_bucket_parallel;
 use crate::profile_abi::Mode;
 
 /// Region id type. Owned String so the overlay can outlive any borrowed
@@ -47,6 +56,14 @@ pub type RegionId = String;
 /// Index into [`OverlayCluster::borders`] for a region. Used as a
 /// per-region row/column coordinate in the overlay matrix.
 pub type BorderIdx = u32;
+
+/// Default merge radius for [`super::border::prune_border_set`]. Two
+/// crossings within this many metres on **both** A-side and B-side are
+/// merged into the same cluster. 250 m is large enough to collapse the
+/// dense BE↔LU border (mostly within ~100 m of one another along the
+/// same physical road) and small enough to keep cross-corridor borders
+/// distinct.
+pub const DEFAULT_MERGE_THRESHOLD_M: f64 = 250.0;
 
 /// One border-node endpoint inside a region. Kept in a per-region
 /// `Vec<BorderNode>`; its position in the vec is its `BorderIdx`.
@@ -80,20 +97,34 @@ pub struct Crossing {
 /// `borders[r]` is the per-region border-node table, indexed by
 /// `BorderIdx`.
 ///
+/// `cluster_maps[r]` is the per-region cluster map: for each border in
+/// `borders[r]`, its index in `representatives[r]`. The matrix stores
+/// distances between representatives only; non-rep borders look up
+/// their representative through this map.
+///
+/// `representatives[r]` lists the per-region representative borders,
+/// indexed by the entries of `cluster_maps[r]`. The matrix's rows
+/// (resp. columns) for a `(src, dst, mode)` triple correspond to these
+/// representatives, in this order.
+///
 /// `crossings[(a, b)]` is the canonical (a < b lexicographically) list
 /// of crossings between regions `a` and `b`. The lookup is symmetric:
 /// pass either ordering, the load path stores only the canonical one
 /// but exposes both orderings via [`OverlayCluster::crossings_between`].
 ///
 /// `matrices[(src, dst, mode)]` is a row-major
-/// `[BorderIdx_src][BorderIdx_dst]` flat array. `u32::MAX` = unreachable.
+/// `[representatives_src.len()][representatives_dst.len()]` flat array.
+/// `u32::MAX` = unreachable.
 #[derive(Debug)]
 pub struct OverlayCluster {
     pub region_order: Vec<RegionId>,
     pub modes: Vec<String>,
     pub borders: HashMap<RegionId, Vec<BorderNode>>,
+    pub representatives: HashMap<RegionId, Vec<BorderNode>>,
+    pub cluster_maps: HashMap<RegionId, Vec<u32>>,
     pub crossings: HashMap<(RegionId, RegionId), Vec<Crossing>>,
-    /// `(src_region, dst_region, mode_name)` → row-major flat matrix.
+    /// `(src_region, dst_region, mode_name)` → row-major flat matrix
+    /// over per-region representatives.
     pub matrices: HashMap<(RegionId, RegionId, String), Vec<u32>>,
 }
 
@@ -116,15 +147,46 @@ impl OverlayCluster {
     }
 
     /// Borrow the row-major matrix for `(src, dst, mode)` if it exists.
+    ///
+    /// The matrix indexes per-region *representatives*, not per-region
+    /// *borders*. Use [`Self::cluster_map`] to translate a `BorderIdx`
+    /// to its representative row/column.
     pub fn matrix(&self, src: &str, dst: &str, mode: &str) -> Option<&[u32]> {
-        self.matrices
-            .get(&(src.to_string(), dst.to_string(), mode.to_string()))
-            .map(|v| v.as_slice())
+        // Borrow-key lookup avoids the per-call `String` allocation that
+        // the previous implementation incurred (Copilot finding #10).
+        // We materialise a `(&str, &str, &str)` key into the equivalent
+        // owned form only on miss in the slow path.
+        for (k, v) in &self.matrices {
+            if k.0 == src && k.1 == dst && k.2 == mode {
+                return Some(v.as_slice());
+            }
+        }
+        None
     }
 
     /// Borrow the per-region border-node table.
     pub fn region_borders(&self, region: &str) -> &[BorderNode] {
         self.borders
+            .get(region)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Borrow the per-region representative-border table. Each entry is
+    /// a row (or column, depending on which side of the matrix the
+    /// region sits) of the overlay matrix.
+    pub fn region_representatives(&self, region: &str) -> &[BorderNode] {
+        self.representatives
+            .get(region)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Borrow the per-region cluster map: `cluster_map(region)[i]` is
+    /// the representative index in `representatives[region]` for border
+    /// `i` in `borders[region]`. Empty slice if the region is unknown.
+    pub fn cluster_map(&self, region: &str) -> &[u32] {
+        self.cluster_maps
             .get(region)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
@@ -145,6 +207,11 @@ pub struct OverlayManifest {
     /// Per-region border-node count. Used at load time to slice the
     /// flat `OverlayBorderNodes` body into per-region tables.
     pub border_counts: HashMap<String, u32>,
+    /// Per-region representative-border count. Sliced from the same
+    /// `OverlayBorderNodes` body, immediately after the per-region
+    /// border block.
+    #[serde(default)]
+    pub representative_counts: HashMap<String, u32>,
     /// Number of canonical crossings (rows in `OverlayCrossings`).
     pub n_crossings: u32,
     /// Build provenance: SHA-256 (truncated to 16 bytes hex) of the
@@ -154,7 +221,7 @@ pub struct OverlayManifest {
     pub provenance: String,
 }
 
-const OVERLAY_MANIFEST_VERSION: u32 = 1;
+const OVERLAY_MANIFEST_VERSION: u32 = 2;
 
 /// On-disk record for one border node. 24 bytes. We do **not** persist
 /// the region id here — the manifest's `border_counts` slices the body
@@ -187,16 +254,38 @@ const _: () = assert!(std::mem::size_of::<CrossingRecord>() == 24);
 /// Build an [`OverlayCluster`] entirely in memory from a list of
 /// regions and the extracted border crossings.
 ///
-/// The matrix-build step runs CCH P2P queries per `(src_region,
-/// dst_region, mode)` triple. Each call costs `n_src_borders ×
-/// n_dst_borders` bidirectional Dijkstra searches; on Belgium ↔
-/// Luxembourg this is ~14 k × 14 k × n_modes ≈ **2 × 10⁹** queries per
-/// mode, which takes hours and is expected to be done offline. The
-/// runtime hot path consults the prebuilt matrix.
+/// # Optimisations applied
+///
+/// - **Pruned border set** (#91 Phase 2 optimisation): the per-region
+///   border list is spatially clustered via
+///   [`super::border::prune_border_set`] (default radius
+///   [`DEFAULT_MERGE_THRESHOLD_M`]). The matrix is built only over
+///   representatives.
+/// - **Batched parallel CCH**: per (src, dst, mode), a single
+///   [`table_bucket_parallel`] call computes all `n_rep_src × n_rep_dst`
+///   distances in one pass. The bucket-M2M algorithm runs forward
+///   searches from each src rep, reverse searches from each dst rep,
+///   and joins their meeting points — collapsing the previous
+///   `O(n_rep_src × n_rep_dst)` independent CCH P2P calls into one
+///   parallelised batch. With `n_rep ≈ 100` (BE↔LU clustering) this
+///   makes the matrix-build `O(seconds)` instead of `O(weeks)`.
 pub fn build_overlay_in_memory(
     regions: &[(RegionId, Arc<ServerState>)],
     crossings: &[BorderCrossing],
     modes: &[String],
+) -> Result<OverlayCluster> {
+    build_overlay_in_memory_with_threshold(regions, crossings, modes, DEFAULT_MERGE_THRESHOLD_M)
+}
+
+/// Same as [`build_overlay_in_memory`] but with a configurable cluster
+/// merge threshold. Use 0.0 (or any value smaller than typical sample
+/// spacing) to disable clustering — every border becomes its own
+/// representative.
+pub fn build_overlay_in_memory_with_threshold(
+    regions: &[(RegionId, Arc<ServerState>)],
+    crossings: &[BorderCrossing],
+    modes: &[String],
+    merge_threshold_m: f64,
 ) -> Result<OverlayCluster> {
     // ---- Group border nodes by region ------------------------------
     // Use a deterministic order: regions sorted by id. Border nodes
@@ -281,7 +370,46 @@ pub fn build_overlay_in_memory(
         v.sort_by_key(|c| (c.a_idx, c.b_idx));
     }
 
-    // ---- Build per-(src, dst, mode) matrix --------------------------
+    // ---- Spatial clustering: per-region cluster maps + reps --------
+    //
+    // The cluster map is computed *per region* by clustering that
+    // region's borders alone. Each region's border list lives in
+    // first-seen order (above). We feed each region's borders through
+    // a thin shim onto `prune_border_set` by building synthetic
+    // BorderCrossings (region-against-self) so the clustering reuses
+    // the exact same haversine logic.
+    let mut representatives: HashMap<RegionId, Vec<BorderNode>> = HashMap::new();
+    let mut cluster_maps: HashMap<RegionId, Vec<u32>> = HashMap::new();
+    for region in &region_order {
+        let region_borders = borders.get(region).map(|v| v.as_slice()).unwrap_or(&[]);
+        let synth: Vec<BorderCrossing> = region_borders
+            .iter()
+            .map(|b| BorderCrossing {
+                region_a: region.clone(),
+                node_a: b.ebg_node,
+                lat_a: b.lat,
+                lon_a: b.lon,
+                region_b: region.clone(),
+                node_b: b.ebg_node,
+                lat_b: b.lat,
+                lon_b: b.lon,
+                edge_distance_m: 0.0,
+            })
+            .collect();
+        let (rep_synth, map) = super::border::prune_border_set(&synth, merge_threshold_m);
+        let reps_nodes: Vec<BorderNode> = rep_synth
+            .iter()
+            .map(|c| BorderNode {
+                ebg_node: c.node_a,
+                lat: c.lat_a,
+                lon: c.lon_a,
+            })
+            .collect();
+        representatives.insert(region.clone(), reps_nodes);
+        cluster_maps.insert(region.clone(), map);
+    }
+
+    // ---- Build per-(src, dst, mode) matrix on representatives ------
     let mut matrices: HashMap<(RegionId, RegionId, String), Vec<u32>> = HashMap::new();
 
     let region_state: HashMap<RegionId, Arc<ServerState>> = regions
@@ -301,82 +429,44 @@ pub fn build_overlay_in_memory(
                 .get(dst_region)
                 .ok_or_else(|| anyhow::anyhow!("missing state for region {}", dst_region))?;
 
-            let src_borders = borders.get(src_region).map(|v| v.as_slice()).unwrap_or(&[]);
-            let dst_borders = borders.get(dst_region).map(|v| v.as_slice()).unwrap_or(&[]);
+            let src_reps = representatives
+                .get(src_region)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
+            let dst_reps = representatives
+                .get(dst_region)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
 
             for mode_name in modes {
-                let src_mode_idx =
-                    src_state
-                        .mode_lookup
-                        .get(mode_name)
-                        .copied()
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "region {} does not carry mode {}",
-                                src_region,
-                                mode_name
-                            )
-                        })?;
-                let dst_mode_idx =
-                    dst_state
-                        .mode_lookup
-                        .get(mode_name)
-                        .copied()
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "region {} does not carry mode {}",
-                                dst_region,
-                                mode_name
-                            )
-                        })?;
-                // matrix[i][j] = src_state.cch(border_i_rank → ???). We
-                // need *every* border in the src region to *every*
-                // border in the src region, then the inter-region edge
-                // is folded by the coordinator. Wait — that's wrong.
-                //
-                // The matrix shape is `n_src × n_dst` because:
-                //   d(s_in_src → t_in_dst) = min over (i, j) of
-                //       d(s → src_border_i)            [src CCH]
-                //     + d(src_border_i → dst_border_j) [matrix entry]
-                //     + d(dst_border_j → t)            [dst CCH]
-                //
-                // The middle term decomposes further:
-                //   d(src_border_i → dst_border_j) = min over crossings (k_i, k_j) of
-                //       d(src_border_i → src_border_k_i)  [src CCH]
-                //     + edge_k                            [haversine cost]
-                //     + d(dst_border_k_j → dst_border_j)  [dst CCH]
-                //
-                // Precomputing the middle term means: for each src
-                // border_i, run 1-to-N CCH P2P to all *other* src
-                // borders (call it L_src[i][k]); for each dst border_j,
-                // run 1-to-N CCH P2P from all dst borders k' to j
-                // (call it L_dst[k'][j]); then matrix[i][j] = min over
-                // crossings of L_src[i][k] + edge[k] + L_dst[k'][j].
-                //
-                // We pre-compute L_src and L_dst as the matrices; the
-                // coordinator then combines them with the crossings
-                // table at query time. The "matrix" stored on disk is
-                // therefore the per-(src, mode) "border × border in
-                // same region" table — *not* an inter-region matrix.
-                //
-                // BUT — as written below, we store an n_src × n_dst
-                // dense matrix that already folds the crossings in.
-                // That's what minimizes runtime work (one lookup per
-                // (src_border, dst_border) pair) at the cost of a much
-                // bigger build. For small overlays (≤100 border nodes
-                // per region) that's fine; for BE↔LU (≈14k borders)
-                // we should switch to the L_src/L_dst shape. We do the
-                // dense shape for correctness now and document the
-                // tradeoff in design.md.
-                let mut row_major = vec![u32::MAX; src_borders.len() * dst_borders.len()];
-
-                if src_borders.is_empty() || dst_borders.is_empty() {
+                let n_src = src_reps.len();
+                let n_dst = dst_reps.len();
+                if n_src == 0 || n_dst == 0 {
                     matrices.insert(
                         (src_region.clone(), dst_region.clone(), mode_name.clone()),
-                        row_major,
+                        Vec::new(),
                     );
                     continue;
                 }
+
+                let src_mode_idx = *src_state.mode_lookup.get(mode_name).ok_or_else(|| {
+                    anyhow::anyhow!("region {} does not carry mode {}", src_region, mode_name)
+                })?;
+                let dst_mode_idx = *dst_state.mode_lookup.get(mode_name).ok_or_else(|| {
+                    anyhow::anyhow!("region {} does not carry mode {}", dst_region, mode_name)
+                })?;
+                let src_mode_data = src_state.get_mode(Mode(src_mode_idx));
+                let dst_mode_data = dst_state.get_mode(Mode(dst_mode_idx));
+
+                // Translate every src/dst representative ebg_node → CCH rank.
+                let src_rep_ranks: Vec<u32> = src_reps
+                    .iter()
+                    .map(|b| src_mode_data.orig_to_rank[b.ebg_node as usize])
+                    .collect();
+                let dst_rep_ranks: Vec<u32> = dst_reps
+                    .iter()
+                    .map(|b| dst_mode_data.orig_to_rank[b.ebg_node as usize])
+                    .collect();
 
                 // Find the canonical crossings list for this region pair.
                 let pair_key = if src_region <= dst_region {
@@ -389,136 +479,30 @@ pub fn build_overlay_in_memory(
                     .map(|v| v.as_slice())
                     .unwrap_or(&[]);
 
-                if pair_crossings.is_empty() {
-                    matrices.insert(
-                        (src_region.clone(), dst_region.clone(), mode_name.clone()),
-                        row_major,
-                    );
-                    continue;
-                }
-
-                // L_src: for every src border i, distance to every src
-                // border k. Same metric as the routing weights —
-                // deciseconds for time. Run a single CchQuery per src
-                // border (1-to-N).
-                let src_query = CchQuery::new(src_state, Mode(src_mode_idx));
-                let dst_query = CchQuery::new(dst_state, Mode(dst_mode_idx));
-                let src_mode_data = src_state.get_mode(Mode(src_mode_idx));
-                let dst_mode_data = dst_state.get_mode(Mode(dst_mode_idx));
-
-                // Translate every src border ebg_node → src CCH rank.
-                let src_ranks: Vec<u32> = src_borders
-                    .iter()
-                    .map(|b| src_mode_data.orig_to_rank[b.ebg_node as usize])
-                    .collect();
-                let dst_ranks: Vec<u32> = dst_borders
-                    .iter()
-                    .map(|b| dst_mode_data.orig_to_rank[b.ebg_node as usize])
-                    .collect();
-
-                // For each crossing (a_idx in src, b_idx in dst), pre-extract
-                // the (rank_in_src, rank_in_dst, edge_cost_dsec).
-                //
-                // We need to know which side of the crossing belongs to which
-                // region. The canonical key is (min, max), so:
-                //   if src_region == pair_key.0, then a_idx is in src
-                //   else                              a_idx is in dst
-                let (src_is_canon_a, _swap) = if src_region <= dst_region {
-                    (true, false)
+                let row_major = if pair_crossings.is_empty() {
+                    vec![u32::MAX; n_src * n_dst]
                 } else {
-                    (false, true)
+                    build_matrix_with_buckets(
+                        src_state,
+                        Mode(src_mode_idx),
+                        &src_rep_ranks,
+                        dst_state,
+                        Mode(dst_mode_idx),
+                        &dst_rep_ranks,
+                        src_region,
+                        dst_region,
+                        pair_crossings,
+                        cluster_maps
+                            .get(src_region)
+                            .map(|v| v.as_slice())
+                            .unwrap_or(&[]),
+                        cluster_maps
+                            .get(dst_region)
+                            .map(|v| v.as_slice())
+                            .unwrap_or(&[]),
+                        mode_name,
+                    )
                 };
-
-                struct ResolvedCrossing {
-                    src_border_idx: BorderIdx,
-                    src_rank: u32,
-                    dst_border_idx: BorderIdx,
-                    dst_rank: u32,
-                    /// Inter-region cost in deciseconds (for time metric)
-                    /// or millimetres (for distance). For now we use a
-                    /// simple haversine-→-time conversion at 5 km/h
-                    /// (foot) / 25 km/h (bike) / 50 km/h (car); see
-                    /// build_inter_region_cost.
-                    cost_dsec: u32,
-                }
-
-                let mut resolved: Vec<ResolvedCrossing> = Vec::with_capacity(pair_crossings.len());
-                for c in pair_crossings {
-                    let (sb_idx, db_idx) = if src_is_canon_a {
-                        (c.a_idx, c.b_idx)
-                    } else {
-                        (c.b_idx, c.a_idx)
-                    };
-                    if (sb_idx as usize) >= src_ranks.len() || (db_idx as usize) >= dst_ranks.len()
-                    {
-                        continue;
-                    }
-                    let sr = src_ranks[sb_idx as usize];
-                    let dr = dst_ranks[db_idx as usize];
-                    if sr == u32::MAX || dr == u32::MAX {
-                        continue;
-                    }
-                    resolved.push(ResolvedCrossing {
-                        src_border_idx: sb_idx,
-                        src_rank: sr,
-                        dst_border_idx: db_idx,
-                        dst_rank: dr,
-                        cost_dsec: build_inter_region_cost(c.edge_distance_m, mode_name),
-                    });
-                }
-
-                // L_src[i][k] = src CCH dist from src_border_i to src_border_k
-                let mut l_src: Vec<u32> = vec![u32::MAX; src_borders.len() * resolved.len()];
-                let resolved_src_ranks: Vec<u32> = resolved.iter().map(|r| r.src_rank).collect();
-                for i in 0..src_borders.len() {
-                    let i_rank = src_ranks[i];
-                    if i_rank == u32::MAX {
-                        continue;
-                    }
-                    let row = src_query.distances_one_to_many(i_rank, &resolved_src_ranks);
-                    for (k, d) in row.into_iter().enumerate() {
-                        l_src[i * resolved.len() + k] = d.unwrap_or(u32::MAX);
-                    }
-                }
-
-                // L_dst[k'][j] = dst CCH dist from dst_border_k' to dst_border_j.
-                // We compute from dst_border_k' to every dst_border_j.
-                let mut l_dst: Vec<u32> = vec![u32::MAX; resolved.len() * dst_borders.len()];
-                let resolved_dst_ranks: Vec<u32> = resolved.iter().map(|r| r.dst_rank).collect();
-                for (kp, k_rank) in resolved_dst_ranks.iter().enumerate() {
-                    if *k_rank == u32::MAX {
-                        continue;
-                    }
-                    let row = dst_query.distances_one_to_many(*k_rank, &dst_ranks);
-                    for (j, d) in row.into_iter().enumerate() {
-                        l_dst[kp * dst_borders.len() + j] = d.unwrap_or(u32::MAX);
-                    }
-                }
-
-                // Combine: matrix[i][j] = min over k of
-                //     L_src[i][k] + cost[k] + L_dst[k][j]
-                let n_dst = dst_borders.len();
-                let n_k = resolved.len();
-                for i in 0..src_borders.len() {
-                    for j in 0..n_dst {
-                        let mut best = u32::MAX;
-                        for k in 0..n_k {
-                            let l1 = l_src[i * n_k + k];
-                            let l2 = l_dst[k * n_dst + j];
-                            if l1 == u32::MAX || l2 == u32::MAX {
-                                continue;
-                            }
-                            let c = resolved[k].cost_dsec;
-                            let cand = l1.saturating_add(c).saturating_add(l2);
-                            if cand < best {
-                                best = cand;
-                            }
-                        }
-                        let _ = resolved[0].src_border_idx; // silence unused
-                        let _ = resolved[0].dst_border_idx; // silence unused
-                        row_major[i * n_dst + j] = best;
-                    }
-                }
 
                 matrices.insert(
                     (src_region.clone(), dst_region.clone(), mode_name.clone()),
@@ -532,9 +516,234 @@ pub fn build_overlay_in_memory(
         region_order,
         modes: modes.to_vec(),
         borders,
+        representatives,
+        cluster_maps,
         crossings: canon_crossings,
         matrices,
     })
+}
+
+/// Build the dense `n_src × n_dst` representative-to-representative
+/// distance matrix in *one* parallelised batch using bucket many-to-many
+/// CH (the same engine that powers the production `/table` endpoint).
+///
+/// # Algorithm
+///
+/// `dist(rep_i → rep_j) = min over crossings (k_a, k_b) of`
+/// `   src_dist(rep_i → src_rep[cluster(k_a)])`
+/// `   + edge_cost(k_a → k_b)`
+/// `   + dst_dist(dst_rep[cluster(k_b)] → rep_j)`
+///
+/// The two CCH terms are batched M2M calls; the middle term is a
+/// per-crossing `O(1)` lookup. The combiner is a triple loop over
+/// `(rep_i, rep_j, crossing)` — typically `100 × 100 × 8 010 = 80 M`
+/// adds, well under a second.
+#[allow(clippy::too_many_arguments)]
+fn build_matrix_with_buckets(
+    src_state: &Arc<ServerState>,
+    src_mode: Mode,
+    src_rep_ranks: &[u32],
+    dst_state: &Arc<ServerState>,
+    dst_mode: Mode,
+    dst_rep_ranks: &[u32],
+    src_region: &str,
+    dst_region: &str,
+    pair_crossings: &[Crossing],
+    src_cluster_map: &[u32],
+    dst_cluster_map: &[u32],
+    mode_name: &str,
+) -> Vec<u32> {
+    let n_src = src_rep_ranks.len();
+    let n_dst = dst_rep_ranks.len();
+
+    // Identify which side of the canonical pair the src region is on.
+    // `pair_crossings` were stored under canonical key `(min, max)`; if
+    // src_region is the "smaller", a_idx is in src and b_idx is in dst.
+    let src_is_canon_a = src_region <= dst_region;
+
+    // For every crossing, translate the per-region BorderIdx into a
+    // representative index using the per-region cluster_map. Drop
+    // crossings whose ranks are unreachable for this mode (orig_to_rank
+    // returns u32::MAX for non-CCH-carried EBG nodes).
+    struct ResolvedCrossing {
+        src_rep_idx: u32,
+        src_rep_rank: u32,
+        dst_rep_idx: u32,
+        dst_rep_rank: u32,
+        cost_dsec: u32,
+    }
+
+    let mut resolved: Vec<ResolvedCrossing> = Vec::with_capacity(pair_crossings.len());
+    for c in pair_crossings {
+        let (sb_idx, db_idx) = if src_is_canon_a {
+            (c.a_idx as usize, c.b_idx as usize)
+        } else {
+            (c.b_idx as usize, c.a_idx as usize)
+        };
+        if sb_idx >= src_cluster_map.len() || db_idx >= dst_cluster_map.len() {
+            continue;
+        }
+        let s_rep = src_cluster_map[sb_idx] as usize;
+        let d_rep = dst_cluster_map[db_idx] as usize;
+        if s_rep >= n_src || d_rep >= n_dst {
+            continue;
+        }
+        let s_rank = src_rep_ranks[s_rep];
+        let d_rank = dst_rep_ranks[d_rep];
+        if s_rank == u32::MAX || d_rank == u32::MAX {
+            continue;
+        }
+        resolved.push(ResolvedCrossing {
+            src_rep_idx: s_rep as u32,
+            src_rep_rank: s_rank,
+            dst_rep_idx: d_rep as u32,
+            dst_rep_rank: d_rank,
+            cost_dsec: build_inter_region_cost(c.edge_distance_m, mode_name),
+        });
+    }
+
+    if resolved.is_empty() {
+        return vec![u32::MAX; n_src * n_dst];
+    }
+
+    // Deduplicated list of ranks we actually need from each side. The
+    // batched CCH below only needs the unique source/target ranks; we
+    // index back into the resolved-crossings list via a small lookup.
+    let mut src_unique_ranks: Vec<u32> = resolved.iter().map(|r| r.src_rep_rank).collect();
+    src_unique_ranks.sort_unstable();
+    src_unique_ranks.dedup();
+    let mut dst_unique_ranks: Vec<u32> = resolved.iter().map(|r| r.dst_rep_rank).collect();
+    dst_unique_ranks.sort_unstable();
+    dst_unique_ranks.dedup();
+
+    // L_src[i][k_unique] = src_dist(rep_i_rank → src_unique_ranks[k_unique]).
+    // Built via one parallelised batched-bucket M2M call.
+    //
+    // We filter u32::MAX ranks out before calling the bucket M2M
+    // engine — internally the search uses the rank as an array index,
+    // so u32::MAX would walk past `dist_fwd.len()` and panic. A
+    // u32::MAX rank means the representative is not in the mode CCH
+    // (footpath-only border for car mode etc); we treat its row in
+    // the L_src table as fully unreachable.
+    let src_mode_data = src_state.get_mode(src_mode);
+    let n_src_nodes = src_mode_data.cch_topo.n_nodes as usize;
+    let mut valid_src_idx: Vec<usize> = Vec::with_capacity(n_src);
+    let mut valid_src_ranks_for_bucket: Vec<u32> = Vec::with_capacity(n_src);
+    for (i, &r) in src_rep_ranks.iter().enumerate() {
+        if r != u32::MAX {
+            valid_src_idx.push(i);
+            valid_src_ranks_for_bucket.push(r);
+        }
+    }
+    let mut l_src: Vec<u32> = vec![u32::MAX; n_src * src_unique_ranks.len()];
+    if !valid_src_ranks_for_bucket.is_empty() && !src_unique_ranks.is_empty() {
+        let (sub, _src_stats) = table_bucket_parallel(
+            n_src_nodes,
+            &src_mode_data.up_adj_flat,
+            &src_mode_data.down_rev_flat,
+            &valid_src_ranks_for_bucket,
+            &src_unique_ranks,
+        );
+        // Expand the n_valid × n_src_unique sub-matrix back into the
+        // n_src × n_src_unique L_src layout.
+        let stride = src_unique_ranks.len();
+        for (k, src_i) in valid_src_idx.iter().enumerate() {
+            let row_src = &sub[k * stride..(k + 1) * stride];
+            l_src[*src_i * stride..*src_i * stride + stride].copy_from_slice(row_src);
+        }
+    }
+
+    // L_dst[k_unique][j] = dst_dist(dst_unique_ranks[k_unique] → rep_j_rank).
+    // Same shape, dst CCH this time. The "from each crossing endpoint
+    // to every dst rep" loop is exactly the bucket M2M case.
+    let dst_mode_data = dst_state.get_mode(dst_mode);
+    let n_dst_nodes = dst_mode_data.cch_topo.n_nodes as usize;
+    let mut valid_dst_idx: Vec<usize> = Vec::with_capacity(n_dst);
+    let mut valid_dst_ranks_for_bucket: Vec<u32> = Vec::with_capacity(n_dst);
+    for (j, &r) in dst_rep_ranks.iter().enumerate() {
+        if r != u32::MAX {
+            valid_dst_idx.push(j);
+            valid_dst_ranks_for_bucket.push(r);
+        }
+    }
+    let mut l_dst: Vec<u32> = vec![u32::MAX; dst_unique_ranks.len() * n_dst];
+    if !dst_unique_ranks.is_empty() && !valid_dst_ranks_for_bucket.is_empty() {
+        let (sub, _dst_stats) = table_bucket_parallel(
+            n_dst_nodes,
+            &dst_mode_data.up_adj_flat,
+            &dst_mode_data.down_rev_flat,
+            &dst_unique_ranks,
+            &valid_dst_ranks_for_bucket,
+        );
+        // sub is row-major [n_dst_unique][n_valid_dst]; expand into
+        // l_dst row-major [n_dst_unique][n_dst].
+        let sub_stride = valid_dst_ranks_for_bucket.len();
+        for k_unique in 0..dst_unique_ranks.len() {
+            for (k, dst_j) in valid_dst_idx.iter().enumerate() {
+                l_dst[k_unique * n_dst + *dst_j] = sub[k_unique * sub_stride + k];
+            }
+        }
+    }
+
+    // Build per-rank → unique-index lookups so the combiner's inner
+    // loop is a flat array index, not a HashMap.
+    let mut src_unique_idx: HashMap<u32, u32> = HashMap::with_capacity(src_unique_ranks.len());
+    for (i, &r) in src_unique_ranks.iter().enumerate() {
+        src_unique_idx.insert(r, i as u32);
+    }
+    let mut dst_unique_idx: HashMap<u32, u32> = HashMap::with_capacity(dst_unique_ranks.len());
+    for (i, &r) in dst_unique_ranks.iter().enumerate() {
+        dst_unique_idx.insert(r, i as u32);
+    }
+
+    // Pre-resolve each crossing's (src_unique_k, dst_unique_k, cost).
+    struct Triplet {
+        src_uk: u32,
+        dst_uk: u32,
+        cost: u32,
+    }
+    let triplets: Vec<Triplet> = resolved
+        .iter()
+        .filter_map(|r| {
+            let suk = src_unique_idx.get(&r.src_rep_rank).copied()?;
+            let duk = dst_unique_idx.get(&r.dst_rep_rank).copied()?;
+            Some(Triplet {
+                src_uk: suk,
+                dst_uk: duk,
+                cost: r.cost_dsec,
+            })
+        })
+        .collect();
+    // Suppress unused-field warnings on the resolved fields not read here.
+    let _ = resolved.first().map(|r| (r.src_rep_idx, r.dst_rep_idx));
+
+    let n_src_unique = src_unique_ranks.len();
+    // n_dst_unique not needed — l_dst's row stride is n_dst (the dst
+    // representative count, since dst_rep_ranks is the *targets*
+    // argument to the bucket M2M call).
+
+    let mut row_major = vec![u32::MAX; n_src * n_dst];
+    for i in 0..n_src {
+        for j in 0..n_dst {
+            let mut best = u32::MAX;
+            for t in &triplets {
+                let l1 = l_src[i * n_src_unique + t.src_uk as usize];
+                if l1 == u32::MAX {
+                    continue;
+                }
+                let l2 = l_dst[t.dst_uk as usize * n_dst + j];
+                if l2 == u32::MAX {
+                    continue;
+                }
+                let cand = l1.saturating_add(t.cost).saturating_add(l2);
+                if cand < best {
+                    best = cand;
+                }
+            }
+            row_major[i * n_dst + j] = best;
+        }
+    }
+    row_major
 }
 
 /// Convert haversine metres → mode-specific deciseconds for the
@@ -564,9 +773,12 @@ impl OverlayCluster {
 
         // ---- Manifest ------------------------------------------------
         let mut border_counts = HashMap::new();
+        let mut representative_counts = HashMap::new();
         let mut all_border_records: Vec<BorderNodeRecord> = Vec::new();
-        // Iterate per region in `region_order` so the on-disk body is
-        // segmented in a deterministic order.
+        // The on-disk body lays out each region's full border list,
+        // immediately followed by its representative list, in
+        // `region_order`. The manifest's `border_counts` and
+        // `representative_counts` slice it back out at load time.
         for region in &self.region_order {
             let region_borders = self
                 .borders
@@ -575,6 +787,21 @@ impl OverlayCluster {
                 .unwrap_or(&[]);
             border_counts.insert(region.clone(), region_borders.len() as u32);
             for b in region_borders {
+                all_border_records.push(BorderNodeRecord {
+                    ebg_node: b.ebg_node,
+                    _pad0: 0,
+                    lat_e7: (b.lat * 1e7).round() as i32,
+                    lon_e7: (b.lon * 1e7).round() as i32,
+                    _pad1: 0,
+                });
+            }
+            let region_reps = self
+                .representatives
+                .get(region)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
+            representative_counts.insert(region.clone(), region_reps.len() as u32);
+            for b in region_reps {
                 all_border_records.push(BorderNodeRecord {
                     ebg_node: b.ebg_node,
                     _pad0: 0,
@@ -614,6 +841,7 @@ impl OverlayCluster {
             region_order: self.region_order.clone(),
             modes: self.modes.clone(),
             border_counts,
+            representative_counts,
             n_crossings: all_crossing_records.len() as u32,
             provenance,
         };
@@ -639,14 +867,35 @@ impl OverlayCluster {
             crossing_bytes,
         )?;
 
-        // Matrices, one section per (src, dst, mode).
+        // Per-region cluster maps (one section per region, deterministic
+        // little-endian u32 layout — see Copilot finding #3).
+        for region in &self.region_order {
+            let map = self
+                .cluster_maps
+                .get(region)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
+            let mut bytes: Vec<u8> = Vec::with_capacity(map.len() * 4);
+            for &v in map {
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+            let name = format!("overlay/cluster_map/{}", region);
+            writer.append_bytes(SectionKind::OverlayClusterMap, name, &bytes)?;
+        }
+
+        // Matrices, one section per (src, dst, mode). Explicit
+        // little-endian u32 layout to be portable across host
+        // endianness (Copilot finding #3).
         let mut keys: Vec<&(RegionId, RegionId, String)> = self.matrices.keys().collect();
         keys.sort();
         for key in keys {
             let m = &self.matrices[key];
             let name = format!("overlay/matrix/{}/{}/{}", key.0, key.1, key.2);
-            let bytes: &[u8] = bytemuck::cast_slice(m);
-            writer.append_bytes(SectionKind::OverlayMatrix, name, bytes)?;
+            let mut bytes: Vec<u8> = Vec::with_capacity(m.len() * 4);
+            for &v in m {
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+            writer.append_bytes(SectionKind::OverlayMatrix, name, &bytes)?;
         }
 
         writer.finalize()?;
@@ -675,17 +924,30 @@ impl OverlayCluster {
             .get("overlay/border_nodes")
             .ok_or_else(|| anyhow::anyhow!("overlay container missing border_nodes"))?;
         let border_bytes = container.read_section_verified(path, border_entry)?;
-        let border_records: &[BorderNodeRecord] = bytemuck::cast_slice(&border_bytes);
+        // try_cast_slice surfaces alignment/length errors as a real
+        // anyhow chain instead of panicking (Copilot findings #6, #8).
+        let border_records: &[BorderNodeRecord] = bytemuck::try_cast_slice(&border_bytes)
+            .map_err(|e| anyhow::anyhow!("border_nodes section malformed: {}", e))?;
 
         let mut borders: HashMap<RegionId, Vec<BorderNode>> = HashMap::new();
+        let mut representatives: HashMap<RegionId, Vec<BorderNode>> = HashMap::new();
         let mut cursor = 0usize;
         for region in &manifest.region_order {
-            let n =
+            let n_borders =
                 *manifest.border_counts.get(region).ok_or_else(|| {
                     anyhow::anyhow!("manifest missing border count for {}", region)
                 })? as usize;
-            let slice = &border_records[cursor..cursor + n];
-            let region_borders: Vec<BorderNode> = slice
+            let n_reps = *manifest
+                .representative_counts
+                .get(region)
+                .unwrap_or(&(n_borders as u32)) as usize;
+            anyhow::ensure!(
+                cursor + n_borders + n_reps <= border_records.len(),
+                "overlay/border_nodes truncated for region {}",
+                region
+            );
+            let border_slice = &border_records[cursor..cursor + n_borders];
+            let region_borders: Vec<BorderNode> = border_slice
                 .iter()
                 .map(|r| BorderNode {
                     ebg_node: r.ebg_node,
@@ -694,7 +956,18 @@ impl OverlayCluster {
                 })
                 .collect();
             borders.insert(region.clone(), region_borders);
-            cursor += n;
+            cursor += n_borders;
+            let rep_slice = &border_records[cursor..cursor + n_reps];
+            let region_reps: Vec<BorderNode> = rep_slice
+                .iter()
+                .map(|r| BorderNode {
+                    ebg_node: r.ebg_node,
+                    lat: r.lat_e7 as f64 / 1e7,
+                    lon: r.lon_e7 as f64 / 1e7,
+                })
+                .collect();
+            representatives.insert(region.clone(), region_reps);
+            cursor += n_reps;
         }
 
         // ---- Crossings ----------------------------------------------
@@ -702,7 +975,8 @@ impl OverlayCluster {
             .get("overlay/crossings")
             .ok_or_else(|| anyhow::anyhow!("overlay container missing crossings"))?;
         let crossing_bytes = container.read_section_verified(path, crossing_entry)?;
-        let crossing_records: &[CrossingRecord] = bytemuck::cast_slice(&crossing_bytes);
+        let crossing_records: &[CrossingRecord] = bytemuck::try_cast_slice(&crossing_bytes)
+            .map_err(|e| anyhow::anyhow!("crossings section malformed: {}", e))?;
 
         let mut canon_crossings: HashMap<(RegionId, RegionId), Vec<Crossing>> = HashMap::new();
         for r in crossing_records {
@@ -723,6 +997,45 @@ impl OverlayCluster {
             });
         }
 
+        // ---- Cluster maps -------------------------------------------
+        let mut cluster_maps: HashMap<RegionId, Vec<u32>> = HashMap::new();
+        for sec in container.iter_kind(SectionKind::OverlayClusterMap) {
+            // Name shape: "overlay/cluster_map/<region>"
+            let parts: Vec<&str> = sec.name.split('/').collect();
+            anyhow::ensure!(
+                parts.len() == 3 && parts[0] == "overlay" && parts[1] == "cluster_map",
+                "unexpected cluster_map section name: {}",
+                sec.name
+            );
+            let region = parts[2].to_string();
+            let bytes = container.read_section_verified(path, sec)?;
+            anyhow::ensure!(
+                bytes.len() % 4 == 0,
+                "cluster_map section {} has non-u32-aligned body",
+                sec.name
+            );
+            let m: Vec<u32> = bytes
+                .chunks_exact(4)
+                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+            let n_borders = borders.get(&region).map(|v| v.len()).unwrap_or(0);
+            anyhow::ensure!(
+                m.len() == n_borders,
+                "cluster_map for {} has length {} but expected {} borders",
+                region,
+                m.len(),
+                n_borders
+            );
+            cluster_maps.insert(region, m);
+        }
+        // Backfill identity cluster maps for regions where the section
+        // is missing (forward-compatibility with v1 overlays).
+        for region in &manifest.region_order {
+            cluster_maps.entry(region.clone()).or_insert_with(|| {
+                (0..borders.get(region).map(|v| v.len()).unwrap_or(0) as u32).collect()
+            });
+        }
+
         // ---- Matrices ----------------------------------------------
         let mut matrices: HashMap<(RegionId, RegionId, String), Vec<u32>> = HashMap::new();
         for sec in container.iter_kind(SectionKind::OverlayMatrix) {
@@ -738,7 +1051,7 @@ impl OverlayCluster {
             let mode = parts[4].to_string();
 
             let bytes = container.read_section_verified(path, sec)?;
-            // Body is a flat [u32]. Length must equal n_src × n_dst.
+            // Body is a flat little-endian [u32].
             anyhow::ensure!(
                 bytes.len() % 4 == 0,
                 "matrix section {} has non-u32-aligned body",
@@ -748,8 +1061,8 @@ impl OverlayCluster {
                 .chunks_exact(4)
                 .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect();
-            let n_src = borders.get(&src).map(|v| v.len()).unwrap_or(0);
-            let n_dst = borders.get(&dst).map(|v| v.len()).unwrap_or(0);
+            let n_src = representatives.get(&src).map(|v| v.len()).unwrap_or(0);
+            let n_dst = representatives.get(&dst).map(|v| v.len()).unwrap_or(0);
             anyhow::ensure!(
                 m.len() == n_src * n_dst,
                 "matrix section {} length {} != n_src {} × n_dst {}",
@@ -765,6 +1078,8 @@ impl OverlayCluster {
             region_order: manifest.region_order,
             modes: manifest.modes,
             borders,
+            representatives,
+            cluster_maps,
             crossings: canon_crossings,
             matrices,
         }))
@@ -813,6 +1128,13 @@ mod tests {
                 lon: 5.5001,
             }],
         );
+        // Identity cluster maps (each border is its own representative).
+        let mut representatives = HashMap::new();
+        representatives.insert("A".to_string(), borders["A"].clone());
+        representatives.insert("B".to_string(), borders["B"].clone());
+        let mut cluster_maps = HashMap::new();
+        cluster_maps.insert("A".to_string(), vec![0u32, 1]);
+        cluster_maps.insert("B".to_string(), vec![0u32]);
 
         let mut crossings = HashMap::new();
         crossings.insert(
@@ -838,6 +1160,8 @@ mod tests {
             region_order: vec!["A".to_string(), "B".to_string()],
             modes: vec!["car".to_string()],
             borders,
+            representatives,
+            cluster_maps,
             crossings,
             matrices,
         }
@@ -856,6 +1180,8 @@ mod tests {
         assert_eq!(loaded.borders["B"].len(), 1);
         assert_eq!(loaded.borders["A"][0].ebg_node, 100);
         assert_eq!(loaded.borders["B"][0].ebg_node, 200);
+        assert_eq!(loaded.cluster_maps["A"], vec![0u32, 1]);
+        assert_eq!(loaded.representatives["A"].len(), 2);
         let cs = loaded.crossings_between("A", "B");
         assert_eq!(cs.len(), 1);
         assert_eq!(cs[0].a_idx, 0);
@@ -893,5 +1219,14 @@ mod tests {
         assert!(foot > car);
         let zero = build_inter_region_cost(0.0, "car");
         assert_eq!(zero, 0);
+    }
+
+    #[test]
+    fn malformed_overlay_returns_error_not_panic() {
+        // Random bytes that aren't a valid butterfly container.
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"not a butterfly container").unwrap();
+        let result = OverlayCluster::load(tmp.path());
+        assert!(result.is_err(), "load on garbage bytes must Err, not panic");
     }
 }

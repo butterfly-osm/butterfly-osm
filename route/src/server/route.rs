@@ -228,18 +228,31 @@ pub async fn route_handler(
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
     }
 
-    // Region dispatch (#91): both source and destination must snap to
-    // the same region. Different regions → 501 (cross-region overlay
-    // is PR C / Phase 2).
+    // Region dispatch (#91 Phase 2): when an overlay is loaded, hand
+    // cross-region queries off to the cross-region coordinator instead
+    // of returning 501. Same-region queries always fall through to the
+    // existing intra-region implementation below.
     let started_dispatch = std::time::Instant::now();
-    let (state, region_id): (Arc<ServerState>, String) = match regions.dispatch_p2p_id(
+    let (state, region_id): (Arc<ServerState>, String) = match regions.dispatch_p2p_with_overlay(
         req.src_lon,
         req.src_lat,
         req.dst_lon,
         req.dst_lat,
         &req.mode,
     ) {
-        Ok(pair) => pair,
+        Ok(super::regions::P2pPlan::SameRegion { state, region }) => (state, region),
+        Ok(super::regions::P2pPlan::CrossRegion {
+            src_state,
+            src_region,
+            dst_state,
+            dst_region,
+            overlay,
+        }) => {
+            return cross_region_route_inner(
+                src_state, src_region, dst_state, dst_region, overlay, req,
+            )
+            .into_response();
+        }
         Err(e) => {
             let (code, body) = e.into_response_parts();
             return (code, Json(body)).into_response();
@@ -829,61 +842,15 @@ pub async fn route_handler(
 
 // ============ Cross-region handler (#91 Phase 2) ============
 
-/// Cross-region-aware variant of [`route_handler`] (additive — does
-/// not replace the regular handler).
-///
-/// Dispatches via [`RegionsState::dispatch_p2p_with_overlay`]. When the
-/// query is same-region, falls through to the regular handler so
-/// behaviour is identical for intra-region routes whether the overlay
-/// is wired or not.
-///
-/// When the query is cross-region and an overlay is loaded, runs
-/// [`super::cross_region::solve_cross_region`] and returns a JSON
-/// response that strings together the access leg, the inter-region
-/// "haversine bridge" cost, and the egress leg. Geometry is currently
-/// a 2-point straight line between the two snaps; full EBG-path
-/// concatenation is a follow-up.
+/// Backwards-compatible alias for [`route_handler`]. Cross-region
+/// dispatch is now handled inline by `route_handler`; callers that
+/// previously imported this name continue to work.
 pub async fn cross_region_route_handler(
-    State(regions): State<Arc<RegionsState>>,
-    Query(req): Query<RouteRequest>,
+    state: State<Arc<RegionsState>>,
+    query: Query<RouteRequest>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(e) = validate_coord(req.src_lon, req.src_lat, "source") {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
-    }
-    if let Err(e) = validate_coord(req.dst_lon, req.dst_lat, "destination") {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
-    }
-
-    let plan = match regions.dispatch_p2p_with_overlay(
-        req.src_lon,
-        req.src_lat,
-        req.dst_lon,
-        req.dst_lat,
-        &req.mode,
-    ) {
-        Ok(p) => p,
-        Err(e) => {
-            let (code, body) = e.into_response_parts();
-            return (code, Json(body)).into_response();
-        }
-    };
-
-    match plan {
-        super::regions::P2pPlan::SameRegion { .. } => {
-            route_handler(State(regions), Query(req), headers)
-                .await
-                .into_response()
-        }
-        super::regions::P2pPlan::CrossRegion {
-            src_state,
-            src_region,
-            dst_state,
-            dst_region,
-            overlay,
-        } => cross_region_route_inner(src_state, src_region, dst_state, dst_region, overlay, req)
-            .into_response(),
-    }
+    route_handler(state, query, headers).await.into_response()
 }
 
 fn cross_region_route_inner(

@@ -281,6 +281,72 @@ fn picker_handles_unreachable_paths() {
 }
 
 #[test]
+fn pruning_collapses_dense_borders_without_breaking_picker() {
+    // Synthetic test for the pruned-border-set optimisation: 10 src
+    // borders that cluster down to 3 representatives, with the
+    // matrix indexed at the *representative* level. The picker must
+    // still pick the same minimum-cost border pair.
+    //
+    // Layout (per src cluster):
+    //   cluster 0: src borders 0..3 → rep 0, all share the same
+    //              `dist_src` (the access leg lands at the cluster).
+    //   cluster 1: src borders 3..7 → rep 1
+    //   cluster 2: src borders 7..10 → rep 2
+    //
+    // Per-rep dist_src: [10, 20, 30] (the "best" cluster is 0).
+    // Matrix (3 src reps × 2 dst reps): [[100, 200], [50, 60], [99, 99]]
+    // dist_tgt (per dst rep): [1, 2]
+    //
+    // Best at rep level: i=1, j=0, total = 20 + 50 + 1 = 71.
+    let dist_src = vec![10u32, 20, 30];
+    let matrix = vec![100u32, 200, 50, 60, 99, 99];
+    let dist_tgt = vec![1u32, 2];
+    let (total, i, j) = pick_best_border_pair(&dist_src, &matrix, 2, &dist_tgt).unwrap();
+    assert_eq!(i, 1);
+    assert_eq!(j, 0);
+    assert_eq!(total, 71);
+
+    // Sanity-check the cluster_map shape from prune_border_set against
+    // a hand-rolled set of 10 border crossings that fall into 3
+    // well-separated lat clusters. Verifies that the prune helper's
+    // determinism matches what the matrix builder expects.
+    use butterfly_route::server::border::{BorderCrossing, prune_border_set};
+    let lats = [
+        49.5000, 49.5001, 49.5002, // cluster 0 (~0–22 m apart)
+        49.6000, 49.6001, 49.6002, 49.6003, // cluster 1
+        49.7000, 49.7001, 49.7002, // cluster 2
+    ];
+    let cs: Vec<_> = lats
+        .iter()
+        .enumerate()
+        .map(|(i, &lat)| BorderCrossing {
+            region_a: "A".into(),
+            node_a: 100 + i as u32,
+            lat_a: lat,
+            lon_a: 5.5,
+            region_b: "B".into(),
+            node_b: 200 + i as u32,
+            lat_b: lat + 1e-4,
+            lon_b: 5.5,
+            edge_distance_m: 11.0,
+        })
+        .collect();
+    let (reps, map) = prune_border_set(&cs, 100.0);
+    assert_eq!(reps.len(), 3);
+    assert_eq!(map.len(), 10);
+    // Each cluster's members all share the same id.
+    for window in [&map[0..3], &map[3..7], &map[7..10]] {
+        let first = window[0];
+        assert!(window.iter().all(|&x| x == first));
+    }
+    // Cluster ids are dense 0..3.
+    let mut unique: Vec<u32> = map.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique, vec![0u32, 1, 2]);
+}
+
+#[test]
 fn picker_finds_the_minimum_combination() {
     // dist_src = [10, 20, 30]
     // dist_tgt = [1, 2, 3]
