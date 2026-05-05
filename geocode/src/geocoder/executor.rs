@@ -234,14 +234,17 @@ pub fn execute(query: &ParsedQuery, shard: &Shard, limit: usize) -> Vec<Geocoded
         .map(|h| {
             let policy = apply_role_smoothness(h, budget);
             let (op, src_score) = build_program(h, &policy);
-            (op.canonicalize(), (*h).clone(), src_score)
+            // Canonicalization happens exactly once, inside the deduper.
+            // Callers must NOT pre-canonicalize here — that would double
+            // the work on the heuristic parser's hot path.
+            (op, (*h).clone(), src_score)
         })
         .collect();
 
     // Recombination Invariant: dedup programs by canonical form. After
     // this step, every program is unique and is paired with the
-    // representative hypothesis (the one with the highest source
-    // logprob across the equivalence class).
+    // representative hypothesis (the one with the highest source score
+    // across the equivalence class).
     let mut programs = super::program::dedup_canonical_with_hyp(raw_programs);
 
     // Static cost ceiling enforcement.
@@ -1110,7 +1113,9 @@ pub fn execute_with_control(
             .map(|h| {
                 let policy = apply_role_smoothness(h, &query.execution_budget);
                 let (op, src_score) = build_program(h, &policy);
-                (op.canonicalize(), h.clone(), src_score)
+                // Single canonicalize pass inside the deduper; do not
+                // pre-canonicalize here.
+                (op, h.clone(), src_score)
             })
             .collect();
         super::program::dedup_canonical_with_hyp(raw)
