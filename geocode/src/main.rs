@@ -23,7 +23,9 @@ use butterfly_geocode::server::{
 use butterfly_geocode::shard::builder::build_shard;
 use butterfly_geocode::shard::reader::Shard;
 use butterfly_geocode::shard::{AddressRecord, SourceTag};
-use butterfly_geocode::sources::{SourceProgress, bosa::BosaCsvSource, collect_all, merge_records};
+use butterfly_geocode::sources::{
+    SourceProgress, collect_all, merge_records, openaddresses::OpenAddressesSource,
+};
 use butterfly_geocode::{
     HeuristicBackend, HeuristicScorer, LearnedScorer, NeuralBackend, NeuralParser, ParserBackend,
     Phase2TrainConfig, RetrievalUtilityScorer, phase2_evaluate, phase2_load_labels,
@@ -73,13 +75,13 @@ enum RetrievalUtilityKind {
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Build a single-country shard from one or more authoritative
-    /// sources (OSM PBF tags, BOSA BeSt CSV, ...).
+    /// sources (OSM PBF tags, OpenAddresses GeoJSON-seq, …).
     ///
     /// Three usage modes:
     ///
-    /// 1. Single OSM PBF:    `--pbf <PATH> [--source osm]`
-    /// 2. Single BOSA CSV:   `--csv <PATH> --source bosa`
-    /// 3. Merge two shards:  `--merge a.bfgs --merge b.bfgs`
+    /// 1. Single OSM PBF:        `--pbf <PATH> [--source osm]`
+    /// 2. Single OpenAddresses:  `--csv <PATH> --source openaddresses`
+    /// 3. Merge two shards:      `--merge a.bfgs --merge b.bfgs`
     ///
     /// Modes 1+2 are mutually exclusive. Mode 3 reads existing BFGS
     /// shards (built via mode 1 or 2) and merges them, deduping
@@ -91,9 +93,13 @@ enum Command {
         /// Mutually exclusive with `--csv` / `--merge`.
         #[arg(long, conflicts_with_all = ["csv", "merge"])]
         pbf: Option<PathBuf>,
-        /// Source CSV (BOSA BeSt openaddress-be{vlg,wal,bru}.zip
-        /// or unzipped CSV). Mutually exclusive with `--pbf` /
-        /// `--merge`.
+        /// Source OpenAddresses file. Accepts `.geojson.gz` (the
+        /// canonical processed format), `.zip` (legacy wrapping or
+        /// raw upstream pack), or `.csv` / `.geojson` /
+        /// `.geojsonseq` / `.ndjson`. Mutually exclusive with
+        /// `--pbf` / `--merge`. Despite the historical `--csv` flag
+        /// name, the loader auto-detects the format from the magic
+        /// bytes — gzip, zip, or raw — and dispatches accordingly.
         #[arg(long, conflicts_with_all = ["pbf", "merge"])]
         csv: Option<PathBuf>,
         /// Merge multiple existing shards into one (deduped). Repeat
@@ -101,18 +107,18 @@ enum Command {
         /// `--pbf` / `--csv`.
         #[arg(long, conflicts_with_all = ["pbf", "csv"])]
         merge: Vec<PathBuf>,
-        /// Output BFGS v4 shard file.
+        /// Output BFGS v5 shard file.
         #[arg(long)]
         out: PathBuf,
         /// ISO 3166-1 alpha-2 country code for this shard. Stored
-        /// in the BFGS v4 header and verified at server load.
+        /// in the BFGS v5 header and verified at server load.
         #[arg(long)]
         country: String,
         /// Authoritative-source tag for the records in this shard
-        /// (`osm`, `bosa`, `ban`, `bag`, `gnaf`, `bev`, `swisstopo`).
-        /// Required for `--csv`; optional for `--pbf` (defaults to
-        /// `osm`); ignored for `--merge` (each input shard already
-        /// carries its own per-record tag).
+        /// (`osm`, `openaddresses` / `oa`). Required for `--csv`;
+        /// optional for `--pbf` (defaults to `osm`); ignored for
+        /// `--merge` (each input shard already carries its own
+        /// per-record tag).
         #[arg(long)]
         source: Option<String>,
     },
@@ -569,27 +575,25 @@ fn build_shard_cmd(
         merge_existing_shards(merge_inputs, country)?
     } else if let Some(csv_path) = csv {
         let tag_str = source.ok_or_else(|| {
-            anyhow!("--csv requires --source <bosa|...> so the shard byte is set explicitly")
+            anyhow!(
+                "--csv requires --source <openaddresses|oa|osm> so the shard byte is set explicitly"
+            )
         })?;
         let tag = SourceTag::from_name(tag_str).ok_or_else(|| {
-            anyhow!(
-                "unknown --source '{tag_str}' (supported: osm, bosa, ban, bag, gnaf, bev, swisstopo)"
-            )
+            anyhow!("unknown --source '{tag_str}' (supported: osm, openaddresses (alias oa))")
         })?;
         info!(
             csv = %csv_path.display(),
             country = country.iso2(),
             source = tag.name(),
-            "loading authoritative-source CSV"
+            "loading authoritative-source feed"
         );
-        load_csv_source(csv_path, country, tag)?
+        load_addr_source(csv_path, country, tag)?
     } else if let Some(pbf_path) = pbf {
         // OSM PBF path. `source` defaults to `osm`.
         let tag_str = source.unwrap_or("osm");
         let tag = SourceTag::from_name(tag_str).ok_or_else(|| {
-            anyhow!(
-                "unknown --source '{tag_str}' (supported: osm, bosa, ban, bag, gnaf, bev, swisstopo)"
-            )
+            anyhow!("unknown --source '{tag_str}' (supported: osm, openaddresses (alias oa))")
         })?;
         if tag != SourceTag::Osm {
             bail!(
@@ -635,7 +639,8 @@ fn build_shard_cmd(
     } else {
         bail!(
             "build-shard needs exactly one of --pbf, --csv, or --merge. \
-             For OSM tags use --pbf <PBF>; for BOSA BeSt use --csv <ZIP|CSV> --source bosa; \
+             For OSM tags use --pbf <PBF>; for OpenAddresses use \
+             --csv <GZ|ZIP|CSV|GEOJSON> --source openaddresses; \
              for combining shards use --merge a.bfgs --merge b.bfgs."
         );
     };
@@ -672,27 +677,29 @@ fn build_shard_cmd(
     Ok(())
 }
 
-/// Load a CSV authoritative source. Today only BOSA BeSt is wired
-/// (`SourceTag::Bosa`). Other CSV sources land here as new arms.
-fn load_csv_source(
+/// Load an authoritative-source address feed. Today only
+/// OpenAddresses is wired (`SourceTag::OpenAddresses`); other
+/// authoritative sources land here as new arms once OpenAddresses no
+/// longer covers them adequately.
+fn load_addr_source(
     path: &std::path::Path,
     country: CountryId,
     tag: SourceTag,
 ) -> Result<Vec<AddressRecord>> {
     match tag {
-        SourceTag::Bosa => {
-            let loader = BosaCsvSource::new(path, country);
+        SourceTag::OpenAddresses => {
+            let loader = OpenAddressesSource::new(path, country);
             collect_all(&loader, |evt| match evt {
                 SourceProgress::Phase { phase } => info!("phase: {phase}"),
                 SourceProgress::Records {
                     rows_seen,
                     records_emitted,
-                } => info!(rows_seen, records_emitted, "BOSA progress"),
+                } => info!(rows_seen, records_emitted, "OpenAddresses progress"),
             })
-            .context("BOSA CSV ingest")
+            .context("OpenAddresses ingest")
         }
         other => bail!(
-            "CSV ingest for source {} is not wired yet (only BOSA today). \
+            "address-feed ingest for source {} is not wired yet (only OpenAddresses today). \
              Add a loader to geocode/src/sources/ and a new arm here.",
             other.name()
         ),

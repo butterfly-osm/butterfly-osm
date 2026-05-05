@@ -113,7 +113,19 @@ bench/geocode/.venv/
 # AI consultation stderr (verbose progress logs; the .txt outputs are kept)
 geocode-research/*.err
 
-# Generated geocode shards (BFGS v4). 100MB+ per country — produced by
-# `butterfly-geocode build-shard` and rebuilt from PBFs as needed.
+# Generated geocode shards (BFGS v5). 10-200 MB per country — produced
+# by `butterfly-geocode build-shard` and rebuilt from PBFs / OA feeds
+# as needed.
 geocode/regions/*.bfgs
 geocode/regions/*/*.bfgs
+
+# Per-region downloaded OpenAddresses payloads (under geocode/data/
+# when tests place fixtures there for `cargo test --test ...
+# --ignored`). The shipped tiny .gitkeep'd subdirs above
+# (geocode/data/models, geocode/data/packs, geocode/data/proof) are
+# explicitly NOT gitignored — only the address bulk downloads.
+geocode/data/belgium/
+geocode/data/us/
+geocode/data/au/
+geocode/data/jp/
+geocode/data/br/
