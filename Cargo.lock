@@ -609,7 +609,6 @@ dependencies = [
  "http-body-util",
  "memmap2 0.9.10",
  "metrics",
- "once_cell",
  "osmpbf",
  "prost 0.14.3",
  "rand 0.9.4",

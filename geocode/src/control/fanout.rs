@@ -222,10 +222,9 @@ impl FanoutTracker {
     }
 
     /// Validate posting-list size against the Blocker downgrade
-    /// threshold. Returns `Ok` if the channel may stay as a Blocker,
-    /// or `BlockerDowngradeStorm` if the caller should downgrade.
-    /// (Reusing the variant — same semantic: blocker forced to weaker
-    /// role.)
+    /// threshold. Returns `true` iff the channel may stay as a
+    /// Blocker; `false` signals the caller should downgrade the
+    /// channel to a weaker role.
     #[must_use]
     pub fn check_blocker_size(&self, posting_list_size: u32) -> bool {
         posting_list_size < self.config.max_posting_list_size_for_blocker

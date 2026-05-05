@@ -443,10 +443,11 @@ fn typo_injection(g: &GoldRecord, rng: &mut ChaCha20Rng) -> Augmented {
 }
 
 fn combined_case_abbr(g: &GoldRecord, rng: &mut ChaCha20Rng) -> Augmented {
-    // Apply contraction first, then random case.
-    let contracted = abbr_contract(g);
-    // Re-derive a temporary GoldRecord from contracted text — too lossy.
-    // Instead, take the canonical form, contract street, then case-flip.
+    // Pipeline: contract abbreviations on the GoldRecord, then run the
+    // result through case_transform. We mutate the GoldRecord directly
+    // (rather than going through `abbr_contract` which produces an
+    // `Augmented` we then have to discard) so the contraction state
+    // flows into the cased output instead of being thrown away.
     let style = if rng.random::<bool>() {
         CaseStyle::Upper
     } else {
@@ -462,7 +463,6 @@ fn combined_case_abbr(g: &GoldRecord, rng: &mut ChaCha20Rng) -> Augmented {
         }
     }
     let cased = case_transform(&g2, style);
-    let _ = contracted;
     Augmented {
         text: cased.text,
         bio_labels: cased.bio_labels,

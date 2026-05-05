@@ -26,13 +26,14 @@ const TINY_MODEL_PATH: &str = "data/models/belgium-tiny.safetensors";
 
 fn open_model_if_present() -> Option<NeuralParser> {
     if std::path::Path::new(TINY_MODEL_PATH).exists() {
-        match NeuralParser::load(TINY_MODEL_PATH) {
-            Ok(p) => Some(p),
-            Err(e) => {
-                eprintln!("warning: model file present but failed to load: {e}");
-                None
-            }
-        }
+        // A model file that exists but fails to load is a hard error
+        // — silently skipping the test would let a corrupt or
+        // schema-mismatched model ship without ever surfacing in CI
+        // (Copilot review on PR #168). Only "file absent" is a valid
+        // skip path.
+        Some(NeuralParser::load(TINY_MODEL_PATH).unwrap_or_else(|e| {
+            panic!("model file present at {TINY_MODEL_PATH} but failed to load: {e}")
+        }))
     } else {
         None
     }

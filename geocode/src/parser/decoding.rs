@@ -249,6 +249,12 @@ pub fn decode_with_scorer(
         .fold(0.0_f32, f32::max);
 
     // 6. Canonicalize + dedup. Merge source-hypothesis scores via max.
+    //    `hypothesis_rank` is assigned in log-prob descending order
+    //    (best hypothesis = rank 0). The beam may emit entries in
+    //    insertion order, but `apply_anchor_pruning` mutates per-hyp
+    //    log-probs, so without a sort here the rank feature ends up
+    //    in beam-output order — wrong (Copilot review on PR #178).
+    entries.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
     let mut by_canonical: HashMap<String, RankedProgram> = HashMap::new();
     for (rank, (canon, policy, hyp, lp)) in entries.into_iter().enumerate() {
         let key = format!("{canon:?}");
@@ -274,11 +280,20 @@ pub fn decode_with_scorer(
         let fields = field_mask_from_hypothesis(&hyp);
         match by_canonical.get_mut(&key) {
             Some(existing) => {
-                if lp > existing.source_logprob {
+                // Merge by max final_logprob: when two hypotheses
+                // canonicalize to the same program, the one with the
+                // higher (source + utility) wins, and we update ALL
+                // hypothesis-derived fields together so we never end
+                // up with mismatched (source_hypothesis, utility_logp,
+                // fields_present) drift across the merge boundary.
+                let candidate_final = lp + utility_logp;
+                if candidate_final > existing.final_logprob {
                     existing.source_logprob = lp;
+                    existing.utility_logp = utility_logp;
+                    existing.final_logprob = candidate_final;
                     existing.source_hypothesis = hyp;
+                    existing.fields_present = fields;
                 }
-                existing.final_logprob = existing.source_logprob + existing.utility_logp;
             }
             None => {
                 let final_logprob = lp + utility_logp;
@@ -369,16 +384,20 @@ pub fn to_parsed_query(
 ///
 /// Per-field policy:
 ///
-/// - **Postcode anchor** (high-conf only): pushed as the top postcode
-///   candidate if the hypothesis has none. If the hypothesis has a
-///   conflicting postcode, the anchor is added as a secondary
-///   candidate at lower weight (the executor can pick).
+/// - **Postcode anchor** (high-conf only): when the hypothesis has no
+///   postcode, the anchor is inserted as the top candidate at weight
+///   1.0. When the hypothesis already has a (different) postcode, the
+///   anchor is **appended as a secondary candidate** at weight 0.6 —
+///   the parsed value remains primary so the noisy 4-digit token does
+///   NOT silently override a confidently parsed neural value
+///   (Copilot review on PR #168). The executor evaluates the primary
+///   first; the secondary is available for retry / dual evaluation.
 /// - **House-number anchor**: pushed if the hypothesis didn't claim
 ///   any house number. House anchors have confidence < 1.0 by
 ///   default; we only inject when there's no alternative.
-/// - **Locality anchor**: pushed as the top locality candidate when
-///   the hypothesis didn't claim a locality. The anchor is "exact-match
-///   in shard" so it's almost always the right call.
+/// - **Locality anchor**: same dual policy as postcode — primary if
+///   the hypothesis lacks one, secondary at weight 0.6 if there is a
+///   conflicting parsed locality.
 ///
 /// Also: the locality anchor's bytes carve out a range that should
 /// NOT be confused with a street suffix. If the parser's street
@@ -387,6 +406,10 @@ pub fn to_parsed_query(
 /// fix the heuristic parser applies when it finds a postcode anchor
 /// — see `parse_heuristic`.
 fn merge_trusted_anchors(h: &mut ParseHypothesis, anchors: &[Anchor]) {
+    /// Weight applied when the anchor is appended as a secondary
+    /// candidate — well below 1.0 so the parsed primary keeps its
+    /// scoring lead, but high enough to surface in dual evaluation.
+    const SECONDARY_WEIGHT: f32 = 0.6;
     let trust = 1.0 - super::anchor::ANCHOR_EPSILON;
     for a in anchors {
         if a.confidence < trust {
@@ -395,8 +418,17 @@ fn merge_trusted_anchors(h: &mut ParseHypothesis, anchors: &[Anchor]) {
         match a.field {
             super::anchor::AnchorField::Postcode => {
                 let already = h.postcode_candidates.iter().any(|(v, _)| v == &a.value);
-                if !already {
+                if already {
+                    continue;
+                }
+                if h.postcode_candidates.is_empty() {
+                    // No parsed postcode → anchor is primary at weight 1.0.
                     h.postcode_candidates.insert(0, (a.value.clone(), 1.0));
+                } else {
+                    // Disagreement: append as a secondary candidate so
+                    // the parsed primary keeps its lead.
+                    h.postcode_candidates
+                        .push((a.value.clone(), SECONDARY_WEIGHT));
                 }
             }
             super::anchor::AnchorField::HouseNumber => {
@@ -410,7 +442,15 @@ fn merge_trusted_anchors(h: &mut ParseHypothesis, anchors: &[Anchor]) {
                     .iter()
                     .any(|(v, _)| v.eq_ignore_ascii_case(&a.value));
                 if !already {
-                    h.locality_candidates.insert(0, (a.value.clone(), 1.0));
+                    if h.locality_candidates.is_empty() {
+                        // No parsed locality → anchor is primary.
+                        h.locality_candidates.insert(0, (a.value.clone(), 1.0));
+                    } else {
+                        // Disagreement: append as secondary so the
+                        // parsed primary keeps its lead.
+                        h.locality_candidates
+                            .push((a.value.clone(), SECONDARY_WEIGHT));
+                    }
                 }
                 // Strip locality tail from street candidates if present.
                 let loc_norm = crate::parser::normalize::normalize(&a.value);
@@ -599,13 +639,54 @@ pub fn build_program_for_hypothesis(h: &ParseHypothesis, policy: &RetrievalPolic
         }
     };
 
+    // Wrap base in Score nodes — one per scorer-role channel — so
+    // scorers ALWAYS contribute to the program tree, not just when no
+    // blocker/reducer is present (Copilot review on PR #168 finding 4:
+    // a locality scorer used to silently disappear as soon as any
+    // blocker existed). Each Score wraps the prior tree, applying its
+    // weight as additive evidence at scoring time without mutating
+    // set membership.
+    let mut tree = base;
+    for scorer in scorers {
+        // `scorers` were built as `Op::Score { child: Lookup, .. }`;
+        // we re-wrap them to compose with the upstream `tree` so their
+        // posting list contributes ranking evidence to the same
+        // candidate set the blockers/reducers chose.
+        if let Op::Score {
+            channel, weight, ..
+        } = scorer
+        {
+            tree = Op::Score {
+                child: Box::new(tree),
+                channel,
+                weight,
+            };
+        }
+    }
+
     let after_filter = if let Some((hn, _)) = h.house_candidates.first() {
-        Op::Filter {
-            child: Box::new(base),
-            predicate: crate::geocoder::program::FilterPredicate::HouseNumberEq(hn.clone()),
+        // Honour the HouseNumber channel role from the policy. Phase 1
+        // unconditionally wrapped a `Filter(HouseNumberEq)` regardless
+        // of the role assignment; that violated the BE default
+        // (HouseNumber=Scorer). Now:
+        //   - Blocker / Reducer → hard `Filter(HouseNumberEq)`.
+        //   - Scorer → contribute via `Score(HouseNumber, 0.7)` (weight
+        //     mirrors the executor's hand-rolled clean-path score).
+        //   - None → no house-number constraint.
+        match policy.role(Channel::HouseNumber) {
+            Some(ChannelRole::Blocker) | Some(ChannelRole::Reducer) => Op::Filter {
+                child: Box::new(tree),
+                predicate: crate::geocoder::program::FilterPredicate::HouseNumberEq(hn.clone()),
+            },
+            Some(ChannelRole::Scorer) => Op::Score {
+                child: Box::new(tree),
+                channel: Channel::HouseNumber,
+                weight: 0.7,
+            },
+            None => tree,
         }
     } else {
-        base
+        tree
     };
 
     Op::Cap {
@@ -637,12 +718,16 @@ fn retrieval_utility_score(
     let cost_fraction = (cost / ceiling).clamp(0.0, 1.0);
     let mut score = -cost_fraction * cfg.static_cost_penalty;
 
-    // Count blockers in the policy.
-    let blocker_count = policy
-        .roles
-        .iter()
-        .filter(|r| matches!(r, Some(ChannelRole::Blocker)))
-        .count();
+    // Count blocker-role Lookups in the actual program tree, not in
+    // the policy. Reading the policy gives credit for blocker-role
+    // channels even when the parser dropped them from the program
+    // (Copilot review on PR #168 finding 5).
+    let mut blocker_count = 0u32;
+    walk_lookups(program, &mut |k| {
+        if matches!(policy.role(k.channel), Some(ChannelRole::Blocker)) {
+            blocker_count += 1;
+        }
+    });
     score += blocker_count as f32 * cfg.blocker_reward;
 
     if blocker_count == 0 {

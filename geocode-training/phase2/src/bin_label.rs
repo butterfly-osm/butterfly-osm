@@ -110,9 +110,17 @@ fn main() -> Result<()> {
     let out_f = File::create(&out_path)?;
     let writer = Arc::new(Mutex::new(BufWriter::with_capacity(1 << 20, out_f)));
 
+    // Captured I/O / mutex error from any worker. We propagate the
+    // first failure after the parallel loop drains so we don't lose
+    // user data to a silent `let _ =` swallow (Copilot review on
+    // PR #178).
+    let first_err: Arc<Mutex<Option<anyhow::Error>>> = Arc::new(Mutex::new(None));
+
     let dist_tol = args.distance_tolerance_m;
     let top_k = args.top_k;
 
+    let writer_for_workers = Arc::clone(&writer);
+    let err_for_workers = Arc::clone(&first_err);
     samples.par_iter().for_each(|sample| {
         match label_one(sample, &shard, dist_tol, top_k) {
             Ok(rows) => {
@@ -128,8 +136,21 @@ fn main() -> Result<()> {
                             n_neg.fetch_add(1, Ordering::Relaxed);
                         }
                     }
-                    if let Ok(mut w) = writer.lock() {
-                        let _ = w.write_all(buf.as_bytes());
+                    let mut guard = match writer_for_workers.lock() {
+                        Ok(g) => g,
+                        Err(e) => {
+                            record_first_err(
+                                &err_for_workers,
+                                anyhow!("output writer mutex poisoned: {e}"),
+                            );
+                            return;
+                        }
+                    };
+                    if let Err(e) = guard.write_all(buf.as_bytes()) {
+                        record_first_err(
+                            &err_for_workers,
+                            anyhow::Error::from(e).context("writing labeled rows to output"),
+                        );
                     }
                 }
             }
@@ -141,9 +162,22 @@ fn main() -> Result<()> {
     });
 
     pb.finish_and_clear();
-    if let Ok(mut w) = writer.lock() {
-        w.flush()?;
+
+    // Propagate any captured worker error before flushing — the user
+    // needs to see a partial output is invalid.
+    if let Some(err) = first_err
+        .lock()
+        .map_err(|e| anyhow!("error mutex poisoned: {e}"))?
+        .take()
+    {
+        return Err(err);
     }
+
+    let mut w = writer
+        .lock()
+        .map_err(|e| anyhow!("output writer mutex poisoned: {e}"))?;
+    w.flush()?;
+    drop(w);
     let pos = n_pos.load(Ordering::Relaxed);
     let neg = n_neg.load(Ordering::Relaxed);
     let failed = n_failed.load(Ordering::Relaxed);
@@ -161,6 +195,17 @@ fn main() -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Record the first error from a parallel worker. If a previous worker
+/// already recorded an error, the new one is dropped — there's no value
+/// in surfacing N copies of the same disk-full diagnostic.
+fn record_first_err(slot: &Arc<Mutex<Option<anyhow::Error>>>, err: anyhow::Error) {
+    if let Ok(mut g) = slot.lock()
+        && g.is_none()
+    {
+        *g = Some(err);
+    }
 }
 
 fn read_samples(path: &std::path::Path, limit: usize) -> Result<Vec<Phase2Sample>> {

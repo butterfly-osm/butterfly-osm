@@ -25,7 +25,10 @@ pub mod gbdt;
 pub mod thresholds;
 pub mod training;
 
-pub use features::{Features, FeaturesBatch, N_FEATURES, extract_features, extract_features_into};
+pub use features::{
+    Features, FeaturesBatch, N_FEATURES, extract_features, extract_features_into,
+    extract_features_into_per_hypothesis, extract_features_per_hypothesis,
+};
 pub use gbdt::{GbdtModel, rerank};
 pub use thresholds::{
     Confidence, ConfidenceConfig, RC_BELOW_THRESHOLD, RC_COUNTRY_UNCERTAIN, RC_HIGH_CONFIDENCE,

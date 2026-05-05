@@ -8,11 +8,23 @@
 //!
 //! ## Model file format
 //!
-//! We use the gbdt crate's native `save_model` / `load_model` JSON-ish
-//! format. Models are versioned in their directory name
-//! (`rerank-belgium-tiny.gbdt`). When the schema changes
-//! ([`crate::confidence::features::Features::SCHEMA_VERSION`] bump), we
-//! drop the old file and retrain.
+//! Models are wrapped in a small versioned envelope so a feature-schema
+//! bump does not silently load with the wrong column semantics:
+//!
+//! ```text
+//! [u32 LE: magic "BFGB"]
+//! [u32 LE: schema_version (matches Features::SCHEMA_VERSION)]
+//! [u32 LE: gbdt_payload_offset (bytes from start of file)]
+//! [u32 LE: reserved, must be 0]
+//! ... gbdt-crate native serialization at gbdt_payload_offset ...
+//! ```
+//!
+//! [`GbdtModel::load`] refuses to load a file with a mismatched
+//! `schema_version`. Older bare-payload files (no envelope) are
+//! transparently accepted for backwards compatibility — the file is
+//! treated as schema_version = `Features::SCHEMA_VERSION` if the
+//! magic header is absent. Once the schema bumps for the first time
+//! these legacy files become uninterpretable and must be retrained.
 //!
 //! ## Inference path
 //!
@@ -20,14 +32,28 @@
 //! one-element `DataVec`, which is the path benchmarked in
 //! `GBDT_DECISION.md`.
 
+use std::io::{Read, Write};
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use gbdt::decision_tree::{Data, DataVec};
 use gbdt::gradient_boost::GBDT;
 
 use super::features::Features;
 use crate::geocoder::executor::GeocodedResult;
+
+/// Magic bytes identifying a butterfly-geocode GBDT envelope.
+/// Spelled `BFGB` (Butterfly Geocode Boost) in little-endian.
+const ENVELOPE_MAGIC: [u8; 4] = *b"BFGB";
+
+/// Total length of the on-disk envelope header.
+///
+/// Layout:
+///   [0..4)  magic (`BFGB`)
+///   [4..8)  schema_version (u32 LE)
+///   [8..12) gbdt_payload_offset (u32 LE; always 16 in this version)
+///  [12..16) reserved, must be zero
+const ENVELOPE_HEADER_BYTES: usize = 16;
 
 /// Owned trained reranker.
 pub struct GbdtModel {
@@ -48,14 +74,73 @@ impl GbdtModel {
     }
 
     /// Load a trained model from disk.
+    ///
+    /// Recognises both the modern envelope format (16-byte
+    /// `BFGB`-prefixed header followed by the gbdt-crate native
+    /// payload) and the legacy bare-payload format. A modern envelope
+    /// with a mismatched `schema_version` is **rejected** to prevent
+    /// loading a model trained against a different feature schema.
     pub fn load(path: &Path) -> Result<Self> {
-        let s = path.to_str().context("model path is not valid UTF-8")?;
-        let inner = GBDT::load_model(s)
-            .map_err(|e| anyhow::anyhow!("loading GBDT model from {}: {}", path.display(), e))?;
-        Ok(Self { inner })
+        let mut f = std::fs::File::open(path)
+            .with_context(|| format!("opening GBDT model {}", path.display()))?;
+        let mut head = [0u8; ENVELOPE_HEADER_BYTES];
+        let nread = read_up_to(&mut f, &mut head)?;
+        let has_envelope = nread == ENVELOPE_HEADER_BYTES && head[0..4] == ENVELOPE_MAGIC;
+
+        if has_envelope {
+            let schema_version = u32::from_le_bytes(
+                head[4..8]
+                    .try_into()
+                    .expect("4 bytes from a 16-byte buffer"),
+            );
+            let payload_offset = u32::from_le_bytes(
+                head[8..12]
+                    .try_into()
+                    .expect("4 bytes from a 16-byte buffer"),
+            );
+            if schema_version != Features::SCHEMA_VERSION {
+                return Err(anyhow!(
+                    "GBDT model {} declares feature schema_version {} but this build expects {} — retrain the model",
+                    path.display(),
+                    schema_version,
+                    Features::SCHEMA_VERSION
+                ));
+            }
+            if payload_offset as usize != ENVELOPE_HEADER_BYTES {
+                return Err(anyhow!(
+                    "GBDT model {} has unexpected payload offset {}; expected {}",
+                    path.display(),
+                    payload_offset,
+                    ENVELOPE_HEADER_BYTES
+                ));
+            }
+            // Strip the envelope into a tempfile, then hand the payload
+            // path to the gbdt crate's loader (it only accepts paths).
+            let tmp = tempfile::NamedTempFile::new()
+                .with_context(|| "creating tempfile for GBDT payload")?;
+            let mut payload = Vec::new();
+            f.read_to_end(&mut payload)
+                .with_context(|| format!("reading GBDT payload from {}", path.display()))?;
+            std::fs::write(tmp.path(), &payload)
+                .with_context(|| "writing GBDT payload to tempfile")?;
+            let s = tmp
+                .path()
+                .to_str()
+                .context("tempfile path is not valid UTF-8")?;
+            let inner = GBDT::load_model(s)
+                .map_err(|e| anyhow!("loading GBDT model from {}: {}", path.display(), e))?;
+            Ok(Self { inner })
+        } else {
+            // Legacy bare-payload format. Treated as the current schema
+            // version. Once the schema bumps these will need retraining.
+            let s = path.to_str().context("model path is not valid UTF-8")?;
+            let inner = GBDT::load_model(s)
+                .map_err(|e| anyhow!("loading GBDT model from {}: {}", path.display(), e))?;
+            Ok(Self { inner })
+        }
     }
 
-    /// Persist a trained model to disk.
+    /// Persist a trained model to disk in the envelope format.
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
@@ -63,10 +148,32 @@ impl GbdtModel {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating model directory {}", parent.display()))?;
         }
-        let s = path.to_str().context("model path is not valid UTF-8")?;
+        // Write the gbdt payload to a tempfile, then concatenate
+        // [envelope header][payload] into the destination path.
+        let tmp =
+            tempfile::NamedTempFile::new().with_context(|| "creating tempfile for GBDT payload")?;
+        let payload_path = tmp
+            .path()
+            .to_str()
+            .context("tempfile path is not valid UTF-8")?;
         self.inner
-            .save_model(s)
-            .map_err(|e| anyhow::anyhow!("saving GBDT model to {}: {}", path.display(), e))?;
+            .save_model(payload_path)
+            .map_err(|e| anyhow!("saving GBDT payload: {e}"))?;
+        let payload = std::fs::read(tmp.path()).with_context(|| "reading GBDT payload tempfile")?;
+
+        let mut out = std::fs::File::create(path)
+            .with_context(|| format!("creating model file {}", path.display()))?;
+        let mut header = [0u8; ENVELOPE_HEADER_BYTES];
+        header[0..4].copy_from_slice(&ENVELOPE_MAGIC);
+        header[4..8].copy_from_slice(&Features::SCHEMA_VERSION.to_le_bytes());
+        header[8..12].copy_from_slice(&(ENVELOPE_HEADER_BYTES as u32).to_le_bytes());
+        // bytes 12..16 are reserved zeros.
+        out.write_all(&header)
+            .with_context(|| format!("writing envelope header to {}", path.display()))?;
+        out.write_all(&payload)
+            .with_context(|| format!("writing GBDT payload to {}", path.display()))?;
+        out.flush()
+            .with_context(|| format!("flushing {}", path.display()))?;
         Ok(())
     }
 
@@ -149,6 +256,21 @@ pub fn rerank(
 
     // Permute candidates into score order using the index permutation.
     apply_permutation(candidates, &indexed);
+}
+
+/// Read up to `buf.len()` bytes, tolerating short files. Returns the
+/// actual number of bytes read.
+fn read_up_to<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<usize> {
+    let mut total = 0;
+    while total < buf.len() {
+        match r.read(&mut buf[total..]) {
+            Ok(0) => break,
+            Ok(n) => total += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(total)
 }
 
 fn apply_permutation(candidates: &mut [GeocodedResult], indexed: &[(usize, f32)]) {

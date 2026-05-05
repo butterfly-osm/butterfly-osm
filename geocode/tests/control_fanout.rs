@@ -82,16 +82,29 @@ fn cost_ceiling_pre_execution_check_rejects_overrun() {
 
 #[test]
 fn candidate_cap_truncates_results() {
+    use butterfly_geocode::types::{ParseHypothesis, RetrievalPolicy};
+
     let (_dir, shard) = small_shard();
-    let q = parse_heuristic("1070", CountryId::BE);
-    // Confidence is medium with postcode-only — Normal tier.
+    // Build a multi-hypothesis query so the executor takes the
+    // multi-hypothesis path (where `max_total_candidates` is enforced
+    // and the budget-exhaustion flag fires). `parse_heuristic` always
+    // produces a single-hypothesis clean-query; we extend it with a
+    // contrived second hypothesis so `is_clean()` returns false.
+    let mut q = parse_heuristic("1070", CountryId::BE);
+    let mut h2 = ParseHypothesis::default();
+    h2.postcode_candidates.push(("1070".to_string(), 1.0));
+    h2.retrieval_policy = RetrievalPolicy::belgium_default();
+    q.hypotheses.push(h2);
+    assert!(!q.is_clean(), "two hypotheses must take the multi-path");
+
     let cp = ControlPlane::new();
 
     let mut q2 = q.clone();
-    // Tight `max_total_candidates` so the cap fires.
+    // Tight `max_total_candidates` so the cap fires. Static-cost
+    // ceiling is generous so the pre-execution check does not refuse.
     q2.execution_budget = ExecutionBudget {
         max_countries: 1,
-        max_hypotheses: 1,
+        max_hypotheses: 5,
         max_fuzzy_expansions: 0,
         max_total_candidates: 5,
         static_cost_ceiling: 1e9,
@@ -99,11 +112,13 @@ fn candidate_cap_truncates_results() {
     };
 
     let res = execute_with_control(&q2, &shard, 50, &cp).unwrap();
-    // Cap is enforced in the multi-hypothesis path; for clean
-    // queries, the executor still returns up to `limit` records.
-    // Either way, the shard has 200 records but we should not flood
-    // the result set beyond `limit`.
-    assert!(res.len() <= 50);
+    // Cap is enforced in the multi-hypothesis path; with 200 records
+    // in the shard and a 5-candidate cap, we MUST see the truncation.
+    assert!(
+        res.len() <= 5,
+        "candidate cap of 5 not enforced: got {} results",
+        res.len()
+    );
 }
 
 #[test]
@@ -137,9 +152,19 @@ fn admission_rejects_burst_then_refills() {
     assert!(s.try_admit(ip));
     // Burst exhausted.
     assert!(!s.try_admit(ip));
-    // Wait for refill (one token = 10 ms).
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    assert!(s.try_admit(ip));
+    // Retry until the refill produces a token. A fixed sleep is flaky
+    // on slow CI; a deadline-bounded retry loop is robust to scheduler
+    // jitter while still strictly bounding the wall-clock cost.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+    let mut admitted = false;
+    while std::time::Instant::now() < deadline {
+        if s.try_admit(ip) {
+            admitted = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(admitted, "token-bucket did not refill within 200 ms");
 }
 
 #[test]
