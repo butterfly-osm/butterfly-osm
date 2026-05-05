@@ -1,31 +1,17 @@
 # Butterfly region index — Austria
 #
-# OSM PBF for Austria from Geofabrik. butterfly-route consumes this
-# as `austria.pbf` under `data/austria/`; butterfly-geocode (#96)
-# plans to pair it with the BEV Adressregister on the side.
+# OSM PBF plus OpenAddresses (#96 §"Data Sources").
 #
-# Authoritative address dataset (NOT fetched by butterfly-dl yet —
-# tracked separately in geocode-data/SOURCES.md):
+# OpenAddresses' Austria pack (`at/countrywide`, ~71 MB compressed)
+# ingests the BEV Adressregister into the OA normalised schema.
 #
-#   Österreichisches Adressregister (BEV)
-#   Landing page:  https://www.data.gv.at/katalog/dataset/adressregister-tagesaktuell
-#   Metadata:      https://data.bev.gv.at/geonetwork/srv/api/records/37d564f9-5d63-4760-aae6-29d3f98ee1b4
-#   Product page:  https://www.bev.gv.at/Services/Produkte/Adressregister/Oesterreichisches-Adressregister.html
-#   Publisher:     Bundesamt für Eich- und Vermessungswesen (BEV)
-#   License:       Creative Commons Attribution 4.0 Austria (CC-BY 4.0 AT)
-#   Format:        Shop-mediated download (zipped CSV + INSPIRE
-#                  GML via WFS); ~2.3 M addresses
-#   Cadence:       continuously updated, full-snapshot quarterly
-#
-# Direct CSV download requires going through the BEV product
-# portal (registration but no fee). The historical OSM-wiki-
-# documented hardcoded CSV URL no longer resolves reliably as of
-# 2026; the geocode importer will go through the WFS or
-# adressregister.at static export at fetch time.
-#
-# No transit feeds in this index — Austrian GTFS (Mobilitätsverbünde
-# Österreich) is per-region and out of scope for the geocode-prep
-# pass.
+# Verified live 2026-05-05.
 
 [pbf]
 url = "https://download.geofabrik.de/europe/austria-latest.osm.pbf"
+
+[[address]]
+id     = "oa-at-countrywide"
+url    = "https://v2.openaddresses.io/batch-prod/job/824498/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"

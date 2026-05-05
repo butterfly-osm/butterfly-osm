@@ -67,9 +67,15 @@ rayon = "1.11"
 toml = { workspace = true }
 tempfile = { workspace = true }
 
-# BOSA BeSt CSV downloads ship as ZIPs containing one CSV. The
-# importer transparently opens either form; `zip` is pure Rust.
+# OpenAddresses publishes processed feeds as gzipped GeoJSON-seq
+# (one JSON Feature per line) — the canonical normalised format
+# across all ~600 M addresses in ~40 countries (#96 §"Data Sources").
+# Some upstream packs ship the same payload inside a `.zip` wrapper
+# (legacy results.openaddresses.io URL pattern); the loader auto-
+# detects ZIP vs GZ vs raw on the magic bytes. `flate2` is pure-Rust
+# (`miniz_oxide` backend) — no native gzip FFI.
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
+flate2 = { version = "1.0", default-features = false, features = ["rust_backend"] }
 
 [lints]
 workspace = true
@@ -78,6 +84,8 @@ workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 tower = { version = "0.5.3", features = ["util"] }
 http-body-util = "0.1"
+# Used by openaddresses_e2e tests to write fixture .geojson.gz files.
+flate2 = { version = "1.0", default-features = false, features = ["rust_backend"] }
 
 [lib]
 name = "butterfly_geocode"
