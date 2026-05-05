@@ -102,10 +102,61 @@ def query_nominatim(session: requests.Session, query_text: str, base_url: str) -
     }
 
 
-def run_one_concurrency(engine_fn, queries, concurrency: int, base_url: str):
-    """Run all queries through `engine_fn` at the given concurrency."""
+def query_butterfly(session: requests.Session, query_text: str, base_url: str) -> dict:
+    """Send one query to butterfly-geocode's REST API. Returns dict with
+    latency, top1 coords, and topk (top-5 lat/lon pairs for diagnostic
+    parity with the previously-shipped butterfly-run/ files).
+    """
+    t0 = time.perf_counter()
+    try:
+        r = session.get(
+            f"{base_url}/geocode",
+            params={"q": query_text, "limit": 5},
+            timeout=10.0,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        return {
+            "latency_ms": (time.perf_counter() - t0) * 1000.0,
+            "top1_lat": None,
+            "top1_lon": None,
+            "topk": [],
+            "error": str(e),
+        }
+    latency_ms = (time.perf_counter() - t0) * 1000.0
+    results = data.get("results") or []
+    if not results:
+        return {
+            "latency_ms": latency_ms,
+            "top1_lat": None,
+            "top1_lon": None,
+            "topk": [],
+            "error": "no_result",
+        }
+    topk = [[float(it["lat"]), float(it["lon"])] for it in results[:5]]
+    return {
+        "latency_ms": latency_ms,
+        "top1_lat": topk[0][0],
+        "top1_lon": topk[0][1],
+        "topk": topk,
+        "error": None,
+    }
+
+
+def run_one_concurrency(engine_fn, queries, concurrency: int, base_url: str, qps_cap: float = 0.0):
+    """Run all queries through `engine_fn` at the given concurrency.
+
+    `qps_cap > 0` paces submission to that global QPS — needed when
+    butterfly-geocode's admission layer enforces a per-IP token-bucket
+    that would otherwise reject the bench traffic with 429s. Set to
+    0 to disable pacing.
+    """
     results = []
     session_local = threading.local()
+    rate_lock = threading.Lock()
+    next_slot = [time.perf_counter()]
+    interval = 1.0 / qps_cap if qps_cap > 0 else 0.0
 
     def get_session():
         s = getattr(session_local, "s", None)
@@ -114,7 +165,24 @@ def run_one_concurrency(engine_fn, queries, concurrency: int, base_url: str):
             session_local.s = s
         return s
 
+    def maybe_throttle():
+        if interval <= 0.0:
+            return
+        # Block until our slot opens up. Holding the lock across the
+        # sleep is intentional: it serialises submission so concurrency
+        # > 1 still respects the global pacing cap (admission's
+        # token bucket is per-IP, not per-connection).
+        with rate_lock:
+            now = time.perf_counter()
+            slot = next_slot[0]
+            if now < slot:
+                wait_for = slot - now
+                time.sleep(wait_for)
+                now = time.perf_counter()
+            next_slot[0] = now + interval
+
     def task(q):
+        maybe_throttle()
         s = get_session()
         out = engine_fn(s, q["query_text"], base_url)
         out["query_id"] = q["query_id"]
@@ -126,6 +194,12 @@ def run_one_concurrency(engine_fn, queries, concurrency: int, base_url: str):
             )
         else:
             out["distance_to_gold_m"] = None
+        topk = out.get("topk")
+        if topk:
+            out["best_distance_top5_m"] = min(
+                haversine_m(q["gold_lat"], q["gold_lon"], lat, lon)
+                for (lat, lon) in topk
+            )
         return out
 
     t0 = time.perf_counter()
@@ -169,6 +243,7 @@ def summarize(results):
 
 ENGINES = {
     "nominatim": (query_nominatim, "http://localhost:8080"),
+    "butterfly": (query_butterfly, "http://localhost:3001"),
 }
 
 
@@ -179,6 +254,17 @@ def main():
     ap.add_argument("--concurrency", default="1,4,16")
     ap.add_argument("--output", type=Path, default=Path("results"))
     ap.add_argument("--base-url", default=None, help="override default base URL for engine")
+    ap.add_argument(
+        "--qps-cap",
+        type=float,
+        default=0.0,
+        help=(
+            "client-side pacing cap (queries per second). 0 disables pacing. "
+            "Required for the butterfly engine because the admission layer "
+            "applies a per-IP token bucket (default 25/s steady, 50 burst); "
+            "set to 20 to stay under it."
+        ),
+    )
     args = ap.parse_args()
 
     args.output.mkdir(parents=True, exist_ok=True)
@@ -194,7 +280,9 @@ def main():
     summary_md = [f"# {args.engine} bench results\n", f"Queries: {len(queries)}", ""]
     for c in [int(x) for x in args.concurrency.split(",")]:
         print(f"\n=== concurrency={c} ===")
-        results, throughput = run_one_concurrency(engine_fn, queries, c, base_url)
+        results, throughput = run_one_concurrency(
+            engine_fn, queries, c, base_url, qps_cap=args.qps_cap
+        )
         s = summarize(results)
         s["throughput_qps"] = throughput
         s["concurrency"] = c
@@ -203,14 +291,21 @@ def main():
             for r in results:
                 f.write(json.dumps(r) + "\n")
         print(f"  wrote {out_path}")
+        def _fmt(v):
+            return f"{v:.1f}" if isinstance(v, (int, float)) else "n/a"
+
         print(f"  recall@1 (100m): {s['recall_at_1_100m']:.3f}")
         print(f"  throughput: {throughput:.1f} qps")
-        print(f"  p50/p95/p99: {s['latency_ms_p50']:.1f} / {s['latency_ms_p95']:.1f} / {s['latency_ms_p99']:.1f} ms")
+        print(
+            f"  p50/p95/p99: {_fmt(s['latency_ms_p50'])} / {_fmt(s['latency_ms_p95'])} "
+            f"/ {_fmt(s['latency_ms_p99'])} ms"
+        )
         summary_md.append(
             f"## concurrency={c}\n"
             f"- throughput: {throughput:.1f} qps\n"
             f"- recall@1 (100 m): {s['recall_at_1_100m']:.3f}\n"
-            f"- latency p50 / p95 / p99: {s['latency_ms_p50']:.1f} / {s['latency_ms_p95']:.1f} / {s['latency_ms_p99']:.1f} ms\n"
+            f"- latency p50 / p95 / p99: {_fmt(s['latency_ms_p50'])} / "
+            f"{_fmt(s['latency_ms_p95'])} / {_fmt(s['latency_ms_p99'])} ms\n"
             f"- distance p50 / p95: {s['distance_m_p50']} / {s['distance_m_p95']} m\n"
         )
     summary_path = args.output / f"{args.engine}-summary.md"

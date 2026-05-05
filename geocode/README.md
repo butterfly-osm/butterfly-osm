@@ -195,10 +195,44 @@ BIO accuracy plateaus around 75% on the synthetic corpus — that's the limit of
 
 #### What's still deferred
 
-- **#98 Phase 2 (learned objective)** — explicitly blocked on a labeled `(query → gold-address)` corpus; the spec itself defers it. Phase 2 will replace the Phase 1 heuristic retrieval-utility score with a learned function trained directly on geocode success.
 - **Production-grade trained model** — the shipped `belgium-tiny.safetensors` is a proof-of-life. A real model needs ~2-4M params, OSM-derived training data, and #96 §Tagger's shard-agnostic augmentation strategy.
 - **LoRA / regional adapters** — hooks noted in #96 §Tagger but not implemented.
 - **Multi-country routing** — `n_countries=1` in the shipped config; the country head trivially predicts BE. The architecture extends cleanly when more countries land.
+
+### #98 Phase 2 — learned retrieval-utility scorer
+
+Phase 2 replaces the Phase 1 hand-crafted retrieval-utility score with a
+GBDT trained directly on geocode-success ground truth. A trained Belgium
+model ships as `geocode/data/models/retrieval-utility-belgium-tiny.gbdt`
+(2.2 MB, 150 trees @ depth 6, schema version 1).
+
+| Metric | Value |
+|---|---|
+| Training corpus | 500 000 (query, gold) rows from `phase2-corpus` against the BE OSM shard, 8 augmentations per record |
+| Held-out eval AUC | **0.9395** |
+| Held-out eval Brier | **0.0854** |
+| Accuracy @ 0.5 threshold | 0.864 |
+| Eval set size | 50 000 (10 % split) |
+
+Enable with:
+
+```bash
+butterfly-geocode serve \
+  --shard geocode/regions/be.bfgs \
+  --parser neural \
+  --model geocode/data/models/belgium-tiny.safetensors \
+  --retrieval-utility learned \
+  --retrieval-utility-model geocode/data/models/retrieval-utility-belgium-tiny.gbdt
+```
+
+The scorer is consulted **only** on the neural-parser path —
+`HeuristicBackend` emits a single hypothesis per query, so there is
+nothing to rerank. End-to-end Nominatim re-bench results live under
+`bench/geocode/results/2026-05-05-phase2-learned/`. With the current
+proof-of-life neural model (beam-width-1 in practice) the Phase 2
+scorer is a no-op at the bench level despite the strong eval AUC; the
+plumbing is validated end-to-end and the lift will materialise as soon
+as the neural parser produces ≥ 2 distinct hypotheses per query (#168).
 
 ## Confidence + GBDT Reranking (#96 §Confidence Model)
 
