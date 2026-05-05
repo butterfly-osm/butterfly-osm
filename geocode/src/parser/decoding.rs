@@ -55,6 +55,11 @@ use crate::types::{
 
 use super::anchor::{Anchor, detect_anchors};
 use super::beam::{BeamConfig, apply_anchor_pruning, beam_search, drop_pruned};
+use super::phase2_features::{
+    AnchorSummary, BeamStats, Features as Phase2Features, ProgramFeatures,
+    extract as extract_phase2,
+};
+use super::retrieval_utility::{HeuristicScorer, RetrievalUtilityScorer};
 
 /// Configuration knobs for the retrieval-utility scorer (#98 1.5).
 #[derive(Debug, Clone, Copy)]
@@ -123,12 +128,46 @@ pub struct RankedProgram {
 
 /// Top-level entry point: ingest the inference output + raw text +
 /// shard, return decoded programs.
+///
+/// This wraps [`decode_with_scorer`] using the Phase 1 [`HeuristicScorer`]
+/// derived from `util_cfg`. New call sites should prefer
+/// [`decode_with_scorer`] directly so they can inject a learned
+/// scorer (#98 Phase 2) without re-wrapping.
 pub fn decode(
     text: &str,
     inference: &InferenceOutput,
     shard: &Shard,
     beam_cfg: &BeamConfig,
     util_cfg: &UtilityConfig,
+) -> DecodedQuery {
+    let scorer = HeuristicScorer {
+        static_cost_penalty: util_cfg.static_cost_penalty,
+        blocker_reward: util_cfg.blocker_reward,
+        all_scorer_penalty: util_cfg.all_scorer_penalty,
+        empty_lookup_penalty: util_cfg.empty_lookup_penalty,
+        oversized_lookup_penalty: util_cfg.oversized_lookup_penalty,
+        // util_cfg's `oversized_fraction_threshold` is converted to a
+        // log-postings threshold inside the trait scorer. We pass the
+        // fraction in via the context (`shard.stats().total_addresses`)
+        // by computing the threshold log-value here.
+        oversized_log_threshold: {
+            let total = shard.stats().total_addresses.max(1) as f32;
+            let n = (total * util_cfg.oversized_fraction_threshold).max(1.0);
+            (1.0 + n).ln()
+        },
+    };
+    decode_with_scorer(text, inference, shard, beam_cfg, &scorer)
+}
+
+/// Phase 2 entry point: same as [`decode`], but with an injectable
+/// [`RetrievalUtilityScorer`]. Used by the neural parser when the
+/// server is configured with `--retrieval-utility learned`.
+pub fn decode_with_scorer(
+    text: &str,
+    inference: &InferenceOutput,
+    shard: &Shard,
+    beam_cfg: &BeamConfig,
+    scorer: &dyn RetrievalUtilityScorer,
 ) -> DecodedQuery {
     let stats = shard.stats();
 
@@ -195,11 +234,43 @@ pub fn decode(
         entries.push((canon, policy, parsed_hypothesis, hyp.log_prob));
     }
 
+    // Pre-compute beam aggregates needed for the cross-hypothesis
+    // features.
+    let beam_logprobs: Vec<f32> = entries.iter().map(|(_, _, _, lp)| *lp).collect();
+    let beam_stats = BeamStats::from_logprobs(&beam_logprobs);
+    // Country-posterior for the candidate country. We surface the
+    // top-1 country posterior — the executor selects per-shard
+    // routing later, so per-hypothesis country attribution is not
+    // available here.
+    let country_posterior_top = inference
+        .country_posterior
+        .iter()
+        .copied()
+        .fold(0.0_f32, f32::max);
+
     // 6. Canonicalize + dedup. Merge source-hypothesis scores via max.
     let mut by_canonical: HashMap<String, RankedProgram> = HashMap::new();
-    for (canon, policy, hyp, lp) in entries {
+    for (rank, (canon, policy, hyp, lp)) in entries.into_iter().enumerate() {
         let key = format!("{canon:?}");
-        let utility_logp = retrieval_utility_score(&canon, &policy, &hyp, shard, util_cfg);
+        // Phase 2 feature extraction — produces the row the scorer
+        // consumes. Computed even on the heuristic path so the
+        // scoring trait dispatch is uniform (the heuristic just
+        // ignores most of the row).
+        let prog_features = ProgramFeatures::from_program(&canon, &policy, shard);
+        let anchor_summary = AnchorSummary::from(&anchors, &hyp);
+        let phase2_row: Phase2Features = extract_phase2(
+            &hyp,
+            &canon,
+            &policy,
+            &prog_features,
+            &anchor_summary,
+            beam_stats,
+            rank,
+            lp,
+            country_posterior_top,
+            shard,
+        );
+        let utility_logp = scorer.score(&phase2_row);
         let fields = field_mask_from_hypothesis(&hyp);
         match by_canonical.get_mut(&key) {
             Some(existing) => {
@@ -537,10 +608,16 @@ fn build_program_for_hypothesis(h: &ParseHypothesis, policy: &RetrievalPolicy) -
     }
 }
 
-/// #98 1.5 — retrieval-utility heuristic scorer.
+/// #98 1.5 — legacy retrieval-utility heuristic scorer (pre-trait).
 ///
 /// Returns a log-probability adjustment (positive = reward, negative =
 /// penalty) to the hypothesis score.
+///
+/// Kept under `cfg(test)` so the existing decoding test suite that
+/// pre-dates the trait swap can still validate the scoring formula.
+/// New code must use [`super::retrieval_utility::HeuristicScorer`]
+/// (the trait-backed equivalent the production decoder calls).
+#[cfg(test)]
 fn retrieval_utility_score(
     program: &Op,
     policy: &RetrievalPolicy,
@@ -598,6 +675,7 @@ fn retrieval_utility_score(
     score
 }
 
+#[cfg(test)]
 fn walk_lookups<F: FnMut(&LookupKey)>(op: &Op, f: &mut F) {
     match op {
         Op::Lookup(k) => f(k),

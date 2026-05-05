@@ -20,6 +20,7 @@
 //! to the executor as `country_candidates`.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Result;
 use candle_core::Device;
@@ -30,12 +31,19 @@ use crate::tagger::transformer::{ModelConfig, TaggerModel};
 use crate::types::ParsedQuery;
 
 use super::beam::BeamConfig;
-use super::decoding::{DecodedQuery, UtilityConfig, decode, to_parsed_query};
+use super::decoding::{DecodedQuery, UtilityConfig, decode, decode_with_scorer, to_parsed_query};
+use super::retrieval_utility::RetrievalUtilityScorer;
 
 /// Loaded neural parser. Single-process, single-thread inference (no
 /// internal parallelism) — the server's request concurrency is what
 /// keeps cores busy.
-#[derive(Debug)]
+///
+/// The optional `retrieval_scorer` is the #98 Phase 2 trait-backed
+/// scorer. When `Some`, the decoder uses [`decode_with_scorer`] (the
+/// learned scorer takes precedence over the legacy [`UtilityConfig`]).
+/// When `None`, the decoder falls back to the Phase 1 heuristic via
+/// [`decode`] — this is the default `--retrieval-utility heuristic`
+/// path.
 pub struct NeuralParser {
     pub model_path: PathBuf,
     pub config: ModelConfig,
@@ -43,6 +51,28 @@ pub struct NeuralParser {
     device: Device,
     pub beam_cfg: BeamConfig,
     pub util_cfg: UtilityConfig,
+    /// Phase 2 scorer. When set, the decoder consults this trait
+    /// object instead of the heuristic-derived [`UtilityConfig`].
+    pub retrieval_scorer: Option<Arc<dyn RetrievalUtilityScorer>>,
+}
+
+impl std::fmt::Debug for NeuralParser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NeuralParser")
+            .field("model_path", &self.model_path)
+            .field("config", &self.config)
+            .field("beam_cfg", &self.beam_cfg)
+            .field("util_cfg", &self.util_cfg)
+            .field(
+                "retrieval_scorer",
+                &self
+                    .retrieval_scorer
+                    .as_ref()
+                    .map(|s| s.name())
+                    .unwrap_or("none"),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl NeuralParser {
@@ -58,14 +88,31 @@ impl NeuralParser {
             device,
             beam_cfg: BeamConfig::default(),
             util_cfg: UtilityConfig::default(),
+            retrieval_scorer: None,
         })
     }
 
+    /// Builder-style: install a Phase 2 retrieval-utility scorer.
+    /// `None` reverts to the Phase 1 heuristic path.
+    #[must_use]
+    pub fn with_retrieval_scorer(
+        mut self,
+        scorer: Option<Arc<dyn RetrievalUtilityScorer>>,
+    ) -> Self {
+        self.retrieval_scorer = scorer;
+        self
+    }
+
     /// Parse a query string into a [`ParsedQuery`] using the model
-    /// + #98 Phase 1 decoding.
+    /// + #98 Phase 1 (or Phase 2 if a scorer is installed) decoding.
     pub fn parse(&self, text: &str, shard: &Shard) -> Result<ParsedQuery> {
         let inference = crate::tagger::inference::infer(&self.model, text, &self.device)?;
-        let decoded = decode(text, &inference, shard, &self.beam_cfg, &self.util_cfg);
+        let decoded = match &self.retrieval_scorer {
+            Some(scorer) => {
+                decode_with_scorer(text, &inference, shard, &self.beam_cfg, scorer.as_ref())
+            }
+            None => decode(text, &inference, shard, &self.beam_cfg, &self.util_cfg),
+        };
         let country_candidates = merge_country_candidates(text, &inference.country_posterior);
         Ok(to_parsed_query(text, &decoded, country_candidates, 5))
     }
@@ -74,13 +121,12 @@ impl NeuralParser {
     /// to a [`ParsedQuery`]. Useful for tests + observability.
     pub fn decode(&self, text: &str, shard: &Shard) -> Result<DecodedQuery> {
         let inference = crate::tagger::inference::infer(&self.model, text, &self.device)?;
-        Ok(decode(
-            text,
-            &inference,
-            shard,
-            &self.beam_cfg,
-            &self.util_cfg,
-        ))
+        Ok(match &self.retrieval_scorer {
+            Some(scorer) => {
+                decode_with_scorer(text, &inference, shard, &self.beam_cfg, scorer.as_ref())
+            }
+            None => decode(text, &inference, shard, &self.beam_cfg, &self.util_cfg),
+        })
     }
 }
 

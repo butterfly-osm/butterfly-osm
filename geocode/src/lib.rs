@@ -77,6 +77,17 @@ pub use confidence::{Confidence, ConfidenceConfig, Features, GbdtModel};
 pub use geocoder::executor::{GeocodedResult, execute, execute_across_shards, execute_with_rerank};
 pub use parser::heuristic::{parse_heuristic, parse_with_classifier};
 pub use parser::neural::NeuralParser;
+pub use parser::phase2_features::{
+    AnchorSummary as Phase2AnchorSummary, BeamStats as Phase2BeamStats, Features as Phase2Features,
+    ProgramFeatures as Phase2ProgramFeatures,
+};
+pub use parser::phase2_training::{
+    EvalReport as Phase2EvalReport, LabeledRow as Phase2LabeledRow,
+    TrainConfig as Phase2TrainConfig, evaluate as phase2_evaluate,
+    load_labels as phase2_load_labels, save_labels as phase2_save_labels,
+    split_train_eval as phase2_split_train_eval, train_pointwise as phase2_train_pointwise,
+};
+pub use parser::retrieval_utility::{HeuristicScorer, LearnedScorer, RetrievalUtilityScorer};
 pub use parser::{HeuristicBackend, NeuralBackend, ParserBackend};
 pub use routing::{CountryId, classify_country, country_for_point, supported_countries_for_point};
 pub use shard::reader::Shard;
