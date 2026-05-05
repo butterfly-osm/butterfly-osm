@@ -14,9 +14,9 @@ use butterfly_geocode::CountryId;
 use butterfly_geocode::routing::{Classifier, PackRegistry};
 use butterfly_geocode::shard::reader::Shard;
 
-// `crc` crate is a transitive dev dep via butterfly-geocode itself, but
-// only used inside test helpers. Adding `crc` as a dev-dep in Cargo.toml
-// would be overkill since the lib already depends on it.
+// Test helpers below reach for `crc` via the parent crate's own
+// dependency on it (butterfly-geocode declares `crc` directly in
+// Cargo.toml).
 
 #[test]
 fn shipped_packs_compile_with_15_countries() {
@@ -220,6 +220,100 @@ fn rejects_v3_shards_with_helpful_error() {
         msg.contains("build-shard"),
         "expected upgrade hint, got: {msg}"
     );
+}
+
+#[test]
+fn shipped_with_overrides_overlays_be_pack() {
+    use std::fs;
+    let dir = tempfile::tempdir().unwrap();
+    // Override pack: same ISO2 as a shipped pack (BE), different name
+    // and different bbox so we can detect the overlay won.
+    let override_toml = r#"
+[country]
+iso2 = "BE"
+name = "Belgium-OVERRIDE"
+[postcode]
+regex = '\b[1-9]\d{3}\b'
+position = "anywhere"
+canonicalize = "none"
+[bbox]
+min_lat = 49.5
+max_lat = 51.5
+min_lon = 2.5
+max_lon = 6.4
+"#;
+    fs::write(dir.path().join("be.toml"), override_toml).unwrap();
+    let reg = PackRegistry::shipped_with_overrides(dir.path()).unwrap();
+    let be = reg.get(CountryId::BE).expect("BE should still be present");
+    assert_eq!(
+        be.name, "Belgium-OVERRIDE",
+        "directory entry should win over shipped pack"
+    );
+    // Other shipped packs survive the overlay.
+    assert!(reg.get(CountryId::FR).is_some());
+    assert!(reg.get(CountryId::JP).is_some());
+}
+
+#[test]
+fn shipped_with_overrides_partial_coverage_keeps_other_shipped_packs() {
+    use std::fs;
+    let dir = tempfile::tempdir().unwrap();
+    // Only override LU. Every other shipped pack must remain.
+    let override_toml = r#"
+[country]
+iso2 = "LU"
+name = "Luxembourg-OVERRIDE"
+[bbox]
+min_lat = 49.4
+max_lat = 50.2
+min_lon = 5.7
+max_lon = 6.6
+"#;
+    fs::write(dir.path().join("lu.toml"), override_toml).unwrap();
+    let reg = PackRegistry::shipped_with_overrides(dir.path()).unwrap();
+    assert_eq!(reg.len(), 15, "every shipped pack still loaded");
+    assert_eq!(reg.get(CountryId::LU).unwrap().name, "Luxembourg-OVERRIDE");
+    // Unaffected pack:
+    assert_ne!(reg.get(CountryId::BE).unwrap().name, "Luxembourg-OVERRIDE");
+}
+
+#[test]
+fn shipped_with_overrides_missing_directory_falls_back_to_shipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("does-not-exist");
+    let reg = PackRegistry::shipped_with_overrides(&missing).unwrap();
+    assert_eq!(
+        reg.len(),
+        15,
+        "non-existent --pack-dir should silently fall back to shipped"
+    );
+}
+
+#[test]
+fn shipped_with_overrides_rejects_malformed_pack() {
+    use std::fs;
+    let dir = tempfile::tempdir().unwrap();
+    // Bad: invalid bbox (min > max).
+    fs::write(
+        dir.path().join("be.toml"),
+        r#"
+[country]
+iso2 = "BE"
+name = "BAD"
+[bbox]
+min_lat = 60.0
+max_lat = 50.0
+min_lon = 0.0
+max_lon = 1.0
+"#,
+    )
+    .unwrap();
+    // Malformed pack should not crash the loader. Since the bad pack
+    // never inserts, the shipped BE pack remains.
+    let reg = PackRegistry::shipped_with_overrides(dir.path()).unwrap();
+    let be = reg.get(CountryId::BE).expect("BE must remain");
+    // Original shipped name (whatever it is) — definitely NOT "BAD".
+    assert_ne!(be.name, "BAD");
 }
 
 #[test]

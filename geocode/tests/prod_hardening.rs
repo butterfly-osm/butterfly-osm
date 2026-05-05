@@ -64,7 +64,9 @@ fn make_fixture_shard() -> (TempDir, Shard) {
 fn make_app_with(cfg: ServerConfig) -> (TempDir, axum::Router) {
     let (dir, shard) = make_fixture_shard();
     let state = Arc::new(ServerState::new(shard));
-    let app = build_router_with_config(state, cfg);
+    // Drop the GC handle: tests don't need the per-IP map pruner
+    // and we don't want to leak a background task per-test.
+    let (app, _gc) = build_router_with_config(state, cfg);
     (dir, app)
 }
 

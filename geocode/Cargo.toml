@@ -11,6 +11,10 @@ categories = ["api-bindings"]
 
 [dependencies]
 butterfly-common = { path = "../butterfly-common" }
+# `butterfly-dl::regions` provides the per-region TOML index that
+# `build-shards-all` consults to discover authoritative-source files
+# (BOSA BeSt for BE, etc.).
+butterfly-dl = { path = "../dl" }
 clap = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
@@ -60,7 +64,7 @@ bytes = "1.11.1"
 tokio-stream = "0.1.18"
 rayon = "1.11"
 
-toml = "0.8"
+toml = { workspace = true }
 tempfile = { workspace = true }
 
 # BOSA BeSt CSV downloads ship as ZIPs containing one CSV. The

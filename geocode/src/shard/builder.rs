@@ -67,8 +67,21 @@ pub fn build_shard<P: AsRef<Path>>(
             return entry;
         }
         let off = u32::try_from(strings.len()).expect("string table fits in u32");
+        // The shard schema stores string lengths as u16. If the
+        // input exceeds that, truncate — but on a UTF-8 char
+        // boundary, never mid-codepoint. A bare byte slice
+        // `s.as_bytes()[..u16::MAX]` would split a multi-byte
+        // sequence at the boundary and ship invalid UTF-8 into the
+        // strings table, panicking the reader on read-back.
         let truncated_bytes = if s.len() > u16::MAX as usize {
-            &s.as_bytes()[..u16::MAX as usize]
+            let cap = u16::MAX as usize;
+            let mut end = cap;
+            // `is_char_boundary(0)` always returns true so this
+            // loop terminates at worst at end=0.
+            while !s.is_char_boundary(end) {
+                end -= 1;
+            }
+            &s.as_bytes()[..end]
         } else {
             s.as_bytes()
         };
@@ -425,6 +438,54 @@ mod tests {
         assert!(
             msg.contains("CRC"),
             "expected CRC mismatch when header bytes flipped, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn intern_truncates_on_char_boundary_for_long_utf8_string() {
+        // Build a string that exceeds u16::MAX bytes AND has the
+        // u16::MAX'th byte fall in the middle of a multi-byte UTF-8
+        // codepoint. `é` is two bytes (`0xC3 0xA9`) — repeating it
+        // until > u16::MAX guarantees the boundary lands mid-char.
+        let mut s = String::new();
+        while s.len() <= u16::MAX as usize + 4 {
+            s.push('é');
+        }
+        let cap = u16::MAX as usize;
+        // Byte at `cap` must be a UTF-8 continuation byte (the second
+        // byte of an `é`); we want our truncation to back up by one
+        // and land on the `0xC3` start byte.
+        assert!(
+            !s.is_char_boundary(cap),
+            "test setup: cap should split the codepoint"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("long.bfgs");
+        let addrs = vec![rec(&s, "1", "1070", "X", 50.0, 4.0)];
+        // The build must complete — without char-boundary truncation
+        // this previously produced an invalid UTF-8 prefix in the
+        // strings table.
+        build_shard(&path, CountryId::BE, addrs).expect("build with mid-codepoint truncation");
+
+        // And the read-back must produce a valid (truncated) UTF-8
+        // street, NOT panic on `from_utf8` somewhere in the reader.
+        let shard = Shard::open(&path).expect("open shard with truncated string");
+        assert_eq!(shard.record_count(), 1);
+        // The shard's reader will panic on `from_utf8` somewhere in
+        // the strings table if we shipped invalid bytes — the read
+        // succeeding here is itself the load-bearing assertion.
+        let postings = shard.postings_for_postcode("1070");
+        assert_eq!(postings.len(), 1);
+        let rec = shard.record(postings[0]).expect("record should load");
+        let street_str: &str = &rec.street;
+        assert!(
+            street_str.len() <= u16::MAX as usize,
+            "truncated street must fit in u16 length"
+        );
+        assert!(
+            street_str.chars().all(|c| c == 'é'),
+            "truncated street must remain valid UTF-8 with only 'é' chars"
         );
     }
 }

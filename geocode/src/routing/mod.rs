@@ -133,10 +133,16 @@ fn iso2_intern(bytes: [u8; 2]) -> &'static str {
     use std::collections::HashMap;
     static TABLE: OnceLock<RwLock<HashMap<[u8; 2], &'static str>>> = OnceLock::new();
     let table = TABLE.get_or_init(|| RwLock::new(HashMap::with_capacity(64)));
-    if let Some(s) = table.read().expect("iso2 table read poisoned").get(&bytes) {
+    // Recover from poisoning rather than crashing the process: the
+    // intern table is an append-only cache, every entry is a stable
+    // 2-byte ASCII code → leaked `&'static str`. A panic in another
+    // thread leaves the data structurally valid; the worst case is a
+    // duplicate entry, which `or_insert_with` handles by returning the
+    // existing value.
+    if let Some(s) = table.read().unwrap_or_else(|e| e.into_inner()).get(&bytes) {
         return s;
     }
-    let mut w = table.write().expect("iso2 table write poisoned");
+    let mut w = table.write().unwrap_or_else(|e| e.into_inner());
     w.entry(bytes).or_insert_with(|| {
         let s = std::str::from_utf8(&bytes).expect("CountryId bytes must be UTF-8");
         Box::leak(s.to_string().into_boxed_str())
