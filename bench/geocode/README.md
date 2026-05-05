@@ -6,12 +6,15 @@ policy described in `CLAUDE.md` (section "Benchmark Comparison Policy").
 
 ## Status
 
-This is **scaffolding** — issued by the research / preparation agent track.
-The geocoder itself does not exist yet. The contents of this directory are:
+The bench harness is **wired** for both engines:
 
 - `docker-compose.yml` — pinned Nominatim image with Belgium PBF mount
 - `queries/belgium.tsv` — 1000-row reference query set (mixed quality)
-- `bench.py` — Python benchmark client (concurrency 1 / 4 / 16, recall@1 metric)
+- `bench.py` — Python benchmark client. Supports `--engine nominatim`
+  (hits `http://localhost:8080/search`) and `--engine butterfly` (hits
+  `http://localhost:3001/geocode`). Both engines accept `--limit N`
+  (default 5) which is forwarded verbatim so cross-engine comparisons
+  stay apples-to-apples.
 - `README.md` — this file
 
 ## Methodology
@@ -80,7 +83,33 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python bench.py --engine nominatim --concurrency 1,4,16 --queries queries/belgium.tsv
+
+# Same harness against butterfly-geocode (assumes butterfly-geocode is
+# serving Belgium on :3001). The --qps-cap pacing flag is required when
+# pointing at the local admission layer (per-IP token bucket: 25/s
+# steady, 50 burst); set --qps-cap 20 to stay under it.
+python bench.py --engine butterfly --concurrency 1,4,16 \
+    --queries queries/belgium.tsv --qps-cap 20
+
+# Point at a non-localhost butterfly host:
+python bench.py --engine butterfly --base-url http://geocode-host:3001 \
+    --concurrency 1,4,16 --queries queries/belgium.tsv
+
+# Match Nominatim's traditional limit=1 default explicitly when you
+# want cross-engine numbers comparable to pre-#179 baselines:
+python bench.py --engine nominatim --limit 1 \
+    --concurrency 1,4,16 --queries queries/belgium.tsv
 ```
+
+### Flags
+
+- `--engine {nominatim,butterfly}` — which adapter to use
+- `--limit N` — top-N forwarded to the engine (default 5). Always set
+  the SAME value across engines being compared.
+- `--qps-cap F` — client-side pacing in queries/sec (0 disables).
+  Required for `--engine butterfly` against a default localhost server.
+- `--base-url URL` — override the default endpoint per engine.
+- `--concurrency 1,4,16` — comma-separated levels to sweep.
 
 ## Future comparators
 
