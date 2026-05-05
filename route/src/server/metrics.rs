@@ -26,6 +26,28 @@ use std::sync::atomic::{AtomicI64, Ordering};
 /// the new absolute value on every change.
 static PENDING: AtomicI64 = AtomicI64::new(0);
 
+/// Decrement [`PENDING`] but clamp at 0 so it never goes negative.
+///
+/// Returns the new value. Uses `fetch_update` (compare-and-swap loop)
+/// rather than `fetch_sub` so we never observe a transient negative
+/// value: a racing reader of the gauge would otherwise see a `-1`
+/// blip if two threads decremented past zero.
+///
+/// Tests run [`register_pending`] + record_* on a process-global atomic
+/// and can collide when run in parallel; the clamp here keeps the
+/// semantics stable in that case too.
+fn saturating_dec_pending() -> i64 {
+    // fetch_update returns the PREVIOUS value on success. The new value
+    // is the clamped-decrement we returned from the closure, so compute
+    // it from `prev` once we know the CAS won.
+    let prev = PENDING
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+            Some((cur - 1).max(0))
+        })
+        .unwrap_or(0);
+    (prev - 1).max(0)
+}
+
 /// Register `n_sections` with the gauge; called once when the manifest
 /// is loaded. After this call, the gauge reflects the number of
 /// sections that have not yet reached a terminal state.
@@ -38,8 +60,7 @@ pub fn register_pending(n_sections: usize) {
 /// gauge, increments the `verified_total` counter, and observes the
 /// per-section duration histogram.
 pub fn record_section_verified(section: &str, duration_s: f64) {
-    let prev = PENDING.fetch_sub(1, Ordering::Relaxed);
-    let new = (prev - 1).max(0);
+    let new = saturating_dec_pending();
     metrics::gauge!("butterfly_route_sections_verify_pending").set(new as f64);
     metrics::counter!("butterfly_route_sections_verified_total").increment(1);
     metrics::histogram!(
@@ -54,8 +75,7 @@ pub fn record_section_verified(section: &str, duration_s: f64) {
 /// is intentionally NOT updated: a verification that did not produce
 /// trustworthy bytes shouldn't pollute the success-distribution.
 pub fn record_section_failed(section: &str) {
-    let prev = PENDING.fetch_sub(1, Ordering::Relaxed);
-    let new = (prev - 1).max(0);
+    let new = saturating_dec_pending();
     metrics::gauge!("butterfly_route_sections_verify_pending").set(new as f64);
     metrics::counter!(
         "butterfly_route_section_verify_failed_total",

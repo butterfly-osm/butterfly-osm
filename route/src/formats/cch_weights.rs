@@ -67,6 +67,20 @@ impl CchWeightsFile {
     /// aligned (the container writer ensures 8-byte alignment for every
     /// section, so this always holds for `.butterfly` files).
     pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<CchWeights> {
+        Self::read_from_bytes_zero_copy_inner(bytes, true)
+    }
+
+    /// Same as [`Self::read_from_bytes_zero_copy`] but elides the
+    /// internal CRC walk over the body bytes. Caller MUST guarantee
+    /// the bytes have already been verified upstream (e.g. via
+    /// [`crate::formats::lazy_verify::LazyContainer`]). Skipping the
+    /// per-format CRC here avoids paging the body in twice on the
+    /// container load path.
+    pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<CchWeights> {
+        Self::read_from_bytes_zero_copy_inner(bytes, false)
+    }
+
+    fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<CchWeights> {
         // ----- Header (32 bytes) -----
         anyhow::ensure!(
             bytes.len() >= 32,
@@ -129,20 +143,22 @@ impl CchWeightsFile {
         };
 
         // ----- CRC: covers everything before the 16-byte footer -----
-        let body = &bytes[..body_end];
-        let computed_crc = {
-            let mut d = crc::Digest::new();
-            d.update(body);
-            d.finalize()
-        };
-        let footer = &bytes[body_end..body_end + 16];
-        let stored_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
-        anyhow::ensure!(
-            computed_crc == stored_crc,
-            "CRC64 mismatch in cch.weights: computed 0x{:016X}, stored 0x{:016X}",
-            computed_crc,
-            stored_crc
-        );
+        if verify {
+            let body = &bytes[..body_end];
+            let computed_crc = {
+                let mut d = crc::Digest::new();
+                d.update(body);
+                d.finalize()
+            };
+            let footer = &bytes[body_end..body_end + 16];
+            let stored_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+            anyhow::ensure!(
+                computed_crc == stored_crc,
+                "CRC64 mismatch in cch.weights: computed 0x{:016X}, stored 0x{:016X}",
+                computed_crc,
+                stored_crc
+            );
+        }
 
         Ok(CchWeights {
             up: Cow::Borrowed(up),

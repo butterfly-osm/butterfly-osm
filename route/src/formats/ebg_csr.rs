@@ -211,6 +211,17 @@ impl EbgCsrFile {
     /// heads/turn_idx u32 arrays only need 4-byte alignment which
     /// any cursor reaches naturally.
     pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<EbgCsr> {
+        Self::read_from_bytes_zero_copy_inner(bytes, true)
+    }
+
+    /// Same as [`Self::read_from_bytes_zero_copy`] but elides the
+    /// internal CRC walk over the body. Caller MUST guarantee the
+    /// bytes have been verified upstream (e.g. via `LazyContainer`).
+    pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<EbgCsr> {
+        Self::read_from_bytes_zero_copy_inner(bytes, false)
+    }
+
+    fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<EbgCsr> {
         anyhow::ensure!(
             bytes.len() >= HEADER_LEN + FOOTER_LEN,
             "ebg.csr too short for header+footer: {} bytes",
@@ -278,18 +289,20 @@ impl EbgCsrFile {
         let turn_idx: &'static [u32] = bytemuck::cast_slice(&bytes[heads_end..turn_end]);
 
         // CRC over header + body
-        let mut crc_digest = crc::Digest::new();
-        crc_digest.update(header);
-        crc_digest.update(&bytes[off_start..turn_end]);
-        let computed = crc_digest.finalize();
-        let footer = &bytes[turn_end..turn_end + FOOTER_LEN];
-        let stored = u64::from_le_bytes(footer[0..8].try_into().unwrap());
-        anyhow::ensure!(
-            computed == stored,
-            "CRC64 mismatch in ebg.csr: computed 0x{:016X}, stored 0x{:016X}",
-            computed,
-            stored
-        );
+        if verify {
+            let mut crc_digest = crc::Digest::new();
+            crc_digest.update(header);
+            crc_digest.update(&bytes[off_start..turn_end]);
+            let computed = crc_digest.finalize();
+            let footer = &bytes[turn_end..turn_end + FOOTER_LEN];
+            let stored = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+            anyhow::ensure!(
+                computed == stored,
+                "CRC64 mismatch in ebg.csr: computed 0x{:016X}, stored 0x{:016X}",
+                computed,
+                stored
+            );
+        }
 
         Ok(EbgCsr {
             n_nodes,

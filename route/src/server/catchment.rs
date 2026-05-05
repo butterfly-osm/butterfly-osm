@@ -681,25 +681,21 @@ pub async fn catchment_handler(
         .iter()
         .map(|s| (s.lon, s.lat))
         .chain(req.clients.iter().map(|c| (c.lon, c.lat)));
-    let state: Arc<ServerState> = if !req.stores.is_empty() && !req.clients.is_empty() {
-        match regions.dispatch_many(coords_iter, &req.mode) {
-            Ok(s) => s,
-            Err(e) => {
-                let (code, body) = e.into_response_parts();
-                return (code, Json(body)).into_response();
+    let (state, region_id): (Arc<ServerState>, String) =
+        if !req.stores.is_empty() && !req.clients.is_empty() {
+            match regions.dispatch_many(coords_iter, &req.mode) {
+                Ok(pair) => pair,
+                Err(e) => {
+                    let (code, body) = e.into_response_parts();
+                    return (code, Json(body)).into_response();
+                }
             }
-        }
-    } else {
-        // Catchment with empty stores/clients hits the validation path
-        // below; fall back to primary so the validation error fires.
-        Arc::clone(regions.primary())
-    };
-    let region_id = regions
-        .regions
-        .iter()
-        .find(|r| Arc::ptr_eq(&r.state, &state))
-        .map(|r| r.id.clone())
-        .unwrap_or_default();
+        } else {
+            // Catchment with empty stores/clients hits the validation
+            // path below; fall back to primary so the validation error
+            // fires. Region label is the primary's id.
+            (Arc::clone(regions.primary()), regions.regions[0].id.clone())
+        };
 
     // Validate mode
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {

@@ -154,7 +154,7 @@ impl ModeIndexFile {
 
     /// Plain owning reader. Copies the body into a `Vec<u32>`.
     pub fn read_from_bytes(bytes: &[u8]) -> Result<ModeIndex> {
-        let (kind, mode, inputs_sha, count, body) = parse_header_and_check(bytes)?;
+        let (kind, mode, inputs_sha, count, body) = parse_header_and_check(bytes, true)?;
         let mut v: Vec<u32> = Vec::with_capacity(count);
         for chunk in body.chunks_exact(4) {
             v.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
@@ -171,7 +171,18 @@ impl ModeIndexFile {
     /// container sections). Reinterprets the body as `&'static [u32]`;
     /// CRCs are verified before returning.
     pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<ModeIndex> {
-        let (kind, mode, inputs_sha, _count, body) = parse_header_and_check(bytes)?;
+        Self::read_from_bytes_zero_copy_inner(bytes, true)
+    }
+
+    /// Same as [`Self::read_from_bytes_zero_copy`] but elides the CRC
+    /// walk over the body. Caller MUST guarantee bytes have already
+    /// been verified upstream.
+    pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<ModeIndex> {
+        Self::read_from_bytes_zero_copy_inner(bytes, false)
+    }
+
+    fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<ModeIndex> {
+        let (kind, mode, inputs_sha, _count, body) = parse_header_and_check(bytes, verify)?;
         debug_assert_eq!(
             body.as_ptr() as usize % 4,
             0,
@@ -191,9 +202,15 @@ impl ModeIndexFile {
 /// inputs SHA, body element count, and the body byte slice.
 type ParsedHeader<'a> = (ModeIndexKind, u8, [u8; 16], usize, &'a [u8]);
 
-/// Parse the header, verify magic / version / CRCs, return the body
-/// byte slice. Common to both readers.
-fn parse_header_and_check(bytes: &[u8]) -> Result<ParsedHeader<'_>> {
+/// Parse the header, optionally verify magic / version / CRCs, and
+/// return the body byte slice. Common to both readers.
+///
+/// When `verify_crc` is `false`, header sanity (magic / version /
+/// length) still runs but the per-section CRC walk over the body is
+/// skipped. Callers that pass `false` MUST guarantee the bytes have
+/// already been verified by an upstream layer (e.g. the container's
+/// `LazyContainer`).
+fn parse_header_and_check(bytes: &[u8], verify_crc: bool) -> Result<ParsedHeader<'_>> {
     anyhow::ensure!(
         bytes.len() >= HEADER_SIZE + FOOTER_SIZE,
         "ModeIndex too short for header+footer: {} bytes",
@@ -235,29 +252,31 @@ fn parse_header_and_check(bytes: &[u8]) -> Result<ParsedHeader<'_>> {
 
     let body = &bytes[HEADER_SIZE..HEADER_SIZE + body_bytes];
 
-    // Verify CRCs.
-    let mut body_digest = Digest::new();
-    body_digest.update(body);
-    let computed_body = body_digest.finalize();
-    let mut file_digest = Digest::new();
-    file_digest.update(&bytes[..HEADER_SIZE + body_bytes]);
-    let computed_file = file_digest.finalize();
+    // Verify CRCs (skipped when caller already verified upstream).
+    if verify_crc {
+        let mut body_digest = Digest::new();
+        body_digest.update(body);
+        let computed_body = body_digest.finalize();
+        let mut file_digest = Digest::new();
+        file_digest.update(&bytes[..HEADER_SIZE + body_bytes]);
+        let computed_file = file_digest.finalize();
 
-    let footer = &bytes[HEADER_SIZE + body_bytes..];
-    let stored_body = u64::from_le_bytes(footer[0..8].try_into().unwrap());
-    let stored_file = u64::from_le_bytes(footer[8..16].try_into().unwrap());
-    anyhow::ensure!(
-        computed_body == stored_body,
-        "ModeIndex body CRC mismatch: computed 0x{:016X}, stored 0x{:016X}",
-        computed_body,
-        stored_body
-    );
-    anyhow::ensure!(
-        computed_file == stored_file,
-        "ModeIndex file CRC mismatch: computed 0x{:016X}, stored 0x{:016X}",
-        computed_file,
-        stored_file
-    );
+        let footer = &bytes[HEADER_SIZE + body_bytes..];
+        let stored_body = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+        let stored_file = u64::from_le_bytes(footer[8..16].try_into().unwrap());
+        anyhow::ensure!(
+            computed_body == stored_body,
+            "ModeIndex body CRC mismatch: computed 0x{:016X}, stored 0x{:016X}",
+            computed_body,
+            stored_body
+        );
+        anyhow::ensure!(
+            computed_file == stored_file,
+            "ModeIndex file CRC mismatch: computed 0x{:016X}, stored 0x{:016X}",
+            computed_file,
+            stored_file
+        );
+    }
 
     Ok((kind, mode, inputs_sha, count, body))
 }

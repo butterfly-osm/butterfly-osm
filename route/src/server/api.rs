@@ -22,8 +22,6 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use super::geometry::Point;
 use super::regions::RegionsState;
-#[allow(unused_imports)]
-use super::state::ServerState;
 
 // Re-export public items so that existing `super::api::` paths still work
 pub use super::isochrone_handler::{run_phast_bounded_fast, run_phast_bounded_fast_reverse};
@@ -42,6 +40,7 @@ pub use super::types::{ErrorResponse, Waypoint, parse_mode, validate_coord};
         super::trip::trip_handler,
         super::height_handler::height_handler,
         super::health_handler::health_handler,
+        super::regions_handler::regions_handler,
     ),
     components(schemas(
         super::route::RouteRequest,
@@ -76,6 +75,8 @@ pub use super::types::{ErrorResponse, Waypoint, parse_mode, validate_coord};
         super::elevation::HeightRequest,
         super::elevation::HeightResponse,
         super::elevation::HeightResult,
+        super::regions_handler::LoadedRegion,
+        super::regions_handler::RegionsResponse,
     )),
     tags(
         (name = "Routing", description = "Point-to-point routing with geometry and instructions"),

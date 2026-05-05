@@ -22,9 +22,9 @@
 
 butterfly wins on **single-thread p50 latency** (7.2 ms vs 17.1 ms, 2.4× faster) but loses on every other axis.
 
-**Recall gap (47% vs 86%)**: butterfly's MVP shard is built from OSM `addr:*` tags (~170 k Belgian records). Nominatim aggregates additional ranks (admin, postcode, locality centroids) and does not require a precise housenumber match. The recall gap is expected to close substantially when BOSA BeSt (~6.7 M Belgian authoritative addresses) ingestion lands (#61 in flight) — the BOSA shard is ~24× larger and authoritative.
+**Recall gap (47% vs 86%)**: butterfly's MVP shard is built from OSM `addr:*` tags (~170 k Belgian records). Nominatim aggregates additional ranks (admin, postcode, locality centroids) and does not require a precise housenumber match. The recall gap is expected to close substantially when BOSA BeSt (~6.7 M Belgian authoritative addresses) ingestion lands (#173 (BOSA BeSt ingestion in PR #173)) — the BOSA shard is ~24× larger and authoritative.
 
-**Concurrency saturation (25 qps regardless of concurrency)**: butterfly's throughput is essentially identical at c=1, c=4, c=16. Latency p50 at c=16 is **1004 ms** — over 100× the c=1 number — indicating a serial bottleneck. The control plane's spawn_blocking pool, the global allocator counting middleware, or contention on the R-tree's sync internals are likely candidates. **Filed as a follow-up**: see new GitHub issue.
+**Concurrency saturation (25 qps regardless of concurrency)**: butterfly's throughput is essentially identical at c=1, c=4, c=16. Latency p50 at c=16 is **1004 ms** — over 100× the c=1 number — indicating a serial bottleneck. The control plane's spawn_blocking pool, the global allocator counting middleware, or contention on the R-tree's sync internals are likely candidates. **Filed as a follow-up**: [#172](https://github.com/butterfly-osm/butterfly-osm/issues/172).
 
 **Distance precision (0.0 m vs 66.9 m)**: Nominatim returns the exact gold coordinate for the median of the test corpus because the test queries were derived from OSM nodes that Nominatim also indexes. butterfly returns the nearest housenumber on the same street, which is on average 67 m from the gold (typical inter-housenumber spacing for Belgian streets). Once BOSA lands, butterfly's median distance should drop to <10 m for any address present in BeSt.
 
@@ -34,6 +34,6 @@ butterfly-geocode in its current MVP shape is **not yet competitive** with Nomin
 
 ## Next actions
 
-- Land #61 (BOSA BeSt ingestion) → expect recall@1 ≥ 0.85
+- Land #173 (BOSA BeSt ingestion in PR #173) → expect recall@1 ≥ 0.85
 - Investigate concurrency saturation — file GH issue with profiling data
 - Re-run this bench after both → expected outcome: butterfly within 2× of Nominatim on every axis, ahead on single-thread p50

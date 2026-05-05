@@ -147,14 +147,25 @@ pub fn pack(
         region_id
     );
 
-    let step1 = find_step_dir(data_dir, step_prefix.unwrap_or("step1"))?;
-    let step2 = find_step_dir(data_dir, step_prefix.unwrap_or("step2"))?;
-    let step3 = find_step_dir(data_dir, step_prefix.unwrap_or("step3"))?;
-    let step4 = find_step_dir(data_dir, step_prefix.unwrap_or("step4"))?;
-    let step5 = find_step_dir(data_dir, step_prefix.unwrap_or("step5"))?;
-    let step6 = find_step_dir(data_dir, step_prefix.unwrap_or("step6"))?;
-    let step7 = find_step_dir(data_dir, step_prefix.unwrap_or("step7"))?;
-    let step8 = find_step_dir(data_dir, step_prefix.unwrap_or("step8"))?;
+    // Resolve the per-step subdirectory name. When `--step-prefix <p>`
+    // is supplied, the operator's `<p>` is treated as a true prefix —
+    // i.e. step N is looked up under `<p><N>` (so `--step-prefix custom`
+    // means `custom1`, `custom2`, …). When unset, the default
+    // `step{N}` naming is used.
+    let resolve_step = |n: u8| -> String {
+        match step_prefix {
+            Some(p) => format!("{}{}", p, n),
+            None => format!("step{}", n),
+        }
+    };
+    let step1 = find_step_dir(data_dir, &resolve_step(1))?;
+    let step2 = find_step_dir(data_dir, &resolve_step(2))?;
+    let step3 = find_step_dir(data_dir, &resolve_step(3))?;
+    let step4 = find_step_dir(data_dir, &resolve_step(4))?;
+    let step5 = find_step_dir(data_dir, &resolve_step(5))?;
+    let step6 = find_step_dir(data_dir, &resolve_step(6))?;
+    let step7 = find_step_dir(data_dir, &resolve_step(7))?;
+    let step8 = find_step_dir(data_dir, &resolve_step(8))?;
 
     if let Some(parent) = out.parent()
         && !parent.as_os_str().is_empty()
