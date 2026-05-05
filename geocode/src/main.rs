@@ -24,7 +24,11 @@ use butterfly_geocode::shard::builder::build_shard;
 use butterfly_geocode::shard::reader::Shard;
 use butterfly_geocode::shard::{AddressRecord, SourceTag};
 use butterfly_geocode::sources::{SourceProgress, bosa::BosaCsvSource, collect_all, merge_records};
-use butterfly_geocode::{HeuristicBackend, NeuralBackend, NeuralParser, ParserBackend};
+use butterfly_geocode::{
+    HeuristicBackend, HeuristicScorer, LearnedScorer, NeuralBackend, NeuralParser, ParserBackend,
+    Phase2TrainConfig, RetrievalUtilityScorer, phase2_evaluate, phase2_load_labels,
+    phase2_split_train_eval, phase2_train_pointwise,
+};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -50,6 +54,20 @@ enum ParserKind {
     /// the `train` subcommand. If the model fails to load, the server
     /// falls back to the heuristic parser with a warning.
     Neural,
+}
+
+/// Retrieval-utility scorer selection (#98 Phase 1 / Phase 2).
+///
+/// `Heuristic` (default) — hand-crafted scoring from #168 (Phase 1).
+/// `Learned` — GBDT trained against geocode-success ground truth via
+/// `butterfly-geocode train-retrieval-utility`. Requires
+/// `--retrieval-utility-model <path>`. If the model fails to load,
+/// the server falls back to the heuristic scorer with a warning.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum RetrievalUtilityKind {
+    #[default]
+    Heuristic,
+    Learned,
 }
 
 #[derive(Subcommand, Debug)]
@@ -190,6 +208,18 @@ enum Command {
         /// Path to the safetensors model. Required when `--parser=neural`.
         #[arg(long)]
         model: Option<PathBuf>,
+        /// Retrieval-utility scorer (#98). `heuristic` (default) uses
+        /// the Phase 1 hand-crafted scoring; `learned` uses a GBDT
+        /// trained against geocode-success ground truth (#98 Phase 2).
+        /// Requires `--retrieval-utility-model` when set to `learned`.
+        /// Only consulted when `--parser=neural`; the heuristic parser
+        /// emits a single hypothesis and skips utility scoring.
+        #[arg(long, value_enum, default_value_t = RetrievalUtilityKind::Heuristic)]
+        retrieval_utility: RetrievalUtilityKind,
+        /// Path to a Phase 2 retrieval-utility GBDT model file. Required
+        /// when `--retrieval-utility=learned`.
+        #[arg(long)]
+        retrieval_utility_model: Option<PathBuf>,
         /// Per-IP HTTP rate limit (requests per second steady state).
         #[arg(long, default_value_t = 100)]
         rate_limit_per_sec: u32,
@@ -265,6 +295,41 @@ enum Command {
         #[arg(long)]
         dump_rows: Option<PathBuf>,
     },
+    /// Train the Phase 2 retrieval-utility GBDT (#98 §2.2).
+    ///
+    /// Reads a JSONL file of `(features, label)` rows produced by the
+    /// `phase2-label` binary in `geocode-training/`, splits 90/10
+    /// train/eval (deterministic with `--seed`), trains a pointwise
+    /// log-likelihood GBDT, evaluates AUC + Brier on the held-out
+    /// split, persists the model.
+    ///
+    /// Output is a `.gbdt` file consumable by
+    /// `butterfly-geocode serve --retrieval-utility=learned --retrieval-utility-model <path>`.
+    TrainRetrievalUtility {
+        /// JSONL file produced by `phase2-label`. Each line is a
+        /// `(features, label)` row (label = 1 if executed program
+        /// landed on gold, 0 otherwise).
+        #[arg(long)]
+        labels: PathBuf,
+        /// Output GBDT model path.
+        #[arg(long)]
+        out: PathBuf,
+        /// Number of boosting iterations (trees).
+        #[arg(long, default_value_t = 150)]
+        epochs: usize,
+        /// Tree max depth.
+        #[arg(long, default_value_t = 6)]
+        depth: u32,
+        /// Held-out eval split fraction in `[0, 1)`. `0.0` disables eval.
+        #[arg(long, default_value_t = 0.1)]
+        eval_split: f32,
+        /// Learning rate (shrinkage).
+        #[arg(long, default_value_t = 0.1)]
+        learning_rate: f32,
+        /// Random seed (for the train/eval split).
+        #[arg(long, default_value_t = 0xB17EBAD0)]
+        seed: u64,
+    },
 }
 
 #[tokio::main]
@@ -321,6 +386,8 @@ async fn main() -> Result<()> {
             rerank_model,
             parser,
             model,
+            retrieval_utility,
+            retrieval_utility_model,
             rate_limit_per_sec,
             rate_limit_burst,
             request_timeout_secs,
@@ -351,6 +418,8 @@ async fn main() -> Result<()> {
                 rerank_model.as_deref(),
                 parser,
                 model.as_deref(),
+                retrieval_utility,
+                retrieval_utility_model.as_deref(),
                 server_cfg,
                 std::time::Duration::from_secs(shutdown_timeout_secs),
             )
@@ -393,6 +462,23 @@ async fn main() -> Result<()> {
             synth_size,
             dump_rows.as_deref(),
         ),
+        Command::TrainRetrievalUtility {
+            labels,
+            out,
+            epochs,
+            depth,
+            eval_split,
+            learning_rate,
+            seed,
+        } => train_retrieval_utility_cmd(
+            &labels,
+            &out,
+            epochs,
+            depth,
+            eval_split,
+            learning_rate,
+            seed,
+        ),
     }
 }
 
@@ -424,25 +510,7 @@ fn build_shard_cmd(
     let country = CountryId::from_iso2(country_iso2).ok_or_else(|| {
         anyhow!("'{country_iso2}' is not a valid ISO 3166-1 alpha-2 country code")
     })?;
-    if butterfly_geocode::routing::PackRegistry::shipped()
-        .ok()
-        .and_then(|r| r.get(country).cloned())
-        .is_none()
-    {
-        warn!(
-            country = country.iso2(),
-            "no shipped country pack for {} — building without pack-driven OSM tag overrides",
-            country.iso2()
-        );
-    }
-    info!(
-        pbf = ?pbf.map(|p| p.display().to_string()),
-        csv = ?csv.map(|p| p.display().to_string()),
-        merge_inputs = merge_inputs.len(),
-        out = %out.display(),
-        country = country.iso2(),
-        "building shard"
-    );
+
     let start = std::time::Instant::now();
 
     if let Some(parent) = out.parent()
@@ -641,14 +709,12 @@ fn build_shards_all_cmd(
             .collect()
     });
 
-    // Iterate every shipped country pack — adding a country to the
-    // build sweep is dropping a pack TOML, no Rust changes (#96 "serve
-    // the world").
-    let registry = butterfly_geocode::routing::PackRegistry::shipped()
-        .context("loading shipped country packs")?;
     let mut built = Vec::<CountryId>::new();
     let mut skipped = Vec::<(CountryId, String)>::new();
-    for c in registry.countries() {
+    let pack_registry = butterfly_geocode::routing::PackRegistry::shipped()
+        .context("loading shipped country packs")?;
+    let all_countries: Vec<CountryId> = pack_registry.countries();
+    for &c in &all_countries {
         if let Some(ref a) = allowed
             && !a.contains(&c)
         {
@@ -690,27 +756,16 @@ fn build_shards_all_cmd(
 }
 
 fn candidate_pbf_names(c: CountryId) -> Vec<String> {
-    // Friendly long names per country (matches the butterfly-dl
-    // region index naming). Adding a country: append a row here,
-    // it's the only ISO2 → long-name lookup the binary uses.
-    let long = match &c.as_bytes() {
-        b"BE" => "belgium",
-        b"FR" => "france",
-        b"NL" => "netherlands",
-        b"LU" => "luxembourg",
-        b"DE" => "germany",
-        b"AT" => "austria",
-        b"CH" => "switzerland",
-        b"GB" => "united-kingdom",
-        b"ES" => "spain",
-        b"IT" => "italy",
-        b"US" => "united-states",
-        b"JP" => "japan",
-        b"BR" => "brazil",
-        b"IN" => "india",
-        b"AU" => "australia",
-        // Any country without a long name falls through to ISO2-only
-        // filename probing.
+    let long = match c {
+        CountryId::BE => "belgium",
+        CountryId::FR => "france",
+        CountryId::NL => "netherlands",
+        CountryId::LU => "luxembourg",
+        CountryId::DE => "germany",
+        CountryId::AT => "austria",
+        CountryId::CH => "switzerland",
+        // CountryId is `non_exhaustive`. New countries default to
+        // ISO2-only filename probing — add a friendlier name above.
         _ => "",
     };
     let mut v = Vec::new();
@@ -788,9 +843,47 @@ async fn serve_cmd(
     rerank_model_path: Option<&std::path::Path>,
     parser_kind: ParserKind,
     model_path: Option<&std::path::Path>,
+    retrieval_utility_kind: RetrievalUtilityKind,
+    retrieval_utility_model_path: Option<&std::path::Path>,
     server_cfg: ServerConfig,
     shutdown_timeout: std::time::Duration,
 ) -> Result<()> {
+    // Resolve the retrieval-utility scorer first so we can plumb it
+    // through to the neural parser at construction time. `learned`
+    // with a missing/broken file falls back to the heuristic with a
+    // warning, mirroring how the model file fall-back works.
+    let retrieval_scorer: Option<Arc<dyn RetrievalUtilityScorer>> = match retrieval_utility_kind {
+        RetrievalUtilityKind::Heuristic => {
+            info!("retrieval-utility scorer = heuristic (#98 Phase 1)");
+            Some(Arc::new(HeuristicScorer::default()))
+        }
+        RetrievalUtilityKind::Learned => {
+            let p = retrieval_utility_model_path.ok_or_else(|| {
+                anyhow!(
+                    "--retrieval-utility=learned requires --retrieval-utility-model <path/to/model.gbdt>"
+                )
+            })?;
+            match LearnedScorer::load(p) {
+                Ok(s) => {
+                    info!(
+                        model = %p.display(),
+                        schema_version = s.schema_version(),
+                        "learned retrieval-utility scorer loaded — using #98 Phase 2"
+                    );
+                    Some(Arc::new(s) as Arc<dyn RetrievalUtilityScorer>)
+                }
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        model = %p.display(),
+                        "learned retrieval-utility model failed to load; falling back to heuristic scorer"
+                    );
+                    Some(Arc::new(HeuristicScorer::default()))
+                }
+            }
+        }
+    };
+
     // Pick the parser backend first — the neural parser is wired via
     // `ParserBackend` (#98 Phase 1), the heuristic backend is always
     // available as a deterministic fallback (Phase 0 baseline). The
@@ -806,9 +899,11 @@ async fn serve_cmd(
             })?;
             match NeuralParser::load(model_path) {
                 Ok(p) => {
+                    let p = p.with_retrieval_scorer(retrieval_scorer.clone());
                     info!(
                         model = %model_path.display(),
-                        "neural parser loaded — using #98 Phase 1 retrieval-aware decoding"
+                        scorer = retrieval_scorer.as_ref().map(|s| s.name()).unwrap_or("none"),
+                        "neural parser loaded — using #98 retrieval-aware decoding"
                     );
                     Arc::new(NeuralBackend::new(p))
                 }
@@ -1055,6 +1150,99 @@ fn train_rerank_cmd(
 
     let _ = GbdtModel::load(out).context("verifying saved model loads cleanly")?;
     info!("saved model verified (load-back succeeded)");
+
+    Ok(())
+}
+
+/// Train the Phase 2 retrieval-utility GBDT.
+///
+/// Reads a JSONL labels file produced by `phase2-label`, splits
+/// train/eval, fits, evaluates, and persists the model.
+fn train_retrieval_utility_cmd(
+    labels_path: &std::path::Path,
+    out: &std::path::Path,
+    epochs: usize,
+    depth: u32,
+    eval_split: f32,
+    learning_rate: f32,
+    seed: u64,
+) -> Result<()> {
+    info!(labels = %labels_path.display(), "loading Phase 2 labels");
+    let rows = phase2_load_labels(labels_path).context("loading Phase 2 labels")?;
+    info!(n = rows.len(), "labels loaded");
+    if rows.is_empty() {
+        bail!("empty labels file — nothing to train on");
+    }
+    let n_pos = rows.iter().filter(|r| r.label > 0.5).count();
+    let n_neg = rows.len() - n_pos;
+    info!(positives = n_pos, negatives = n_neg, "label balance");
+    if n_pos == 0 || n_neg == 0 {
+        bail!(
+            "labels file is degenerate (all-pos or all-neg): pos={n_pos} neg={n_neg} — \
+             retrieval-utility model would not learn a decision boundary"
+        );
+    }
+
+    let cfg = Phase2TrainConfig {
+        n_trees: epochs,
+        max_depth: depth,
+        learning_rate,
+        feature_sample_ratio: 1.0,
+        data_sample_ratio: 1.0,
+        seed,
+        eval_split,
+    };
+
+    let (train, eval) = phase2_split_train_eval(&rows, &cfg);
+    info!(
+        n_train = train.len(),
+        n_eval = eval.len(),
+        "train/eval split (deterministic with --seed)"
+    );
+
+    let t0 = std::time::Instant::now();
+    let model = phase2_train_pointwise(&train, cfg).context("training Phase 2 GBDT")?;
+    info!(
+        secs = t0.elapsed().as_secs_f64(),
+        n_trees = epochs,
+        max_depth = depth,
+        "GBDT trained"
+    );
+
+    if !eval.is_empty() {
+        let report = phase2_evaluate(&model, &eval);
+        info!(
+            n_eval = report.n_eval,
+            n_positive = report.n_positive,
+            n_negative = report.n_negative,
+            auc = report.auc,
+            brier = report.brier,
+            accuracy_at_half = report.accuracy_at_half,
+            "Phase 2 held-out eval"
+        );
+        if report.auc < 0.5 {
+            warn!(
+                auc = report.auc,
+                "AUC < 0.5 — features carry no signal; the learned scorer is worse than random. \
+                 Investigate feature design before deploying."
+            );
+        } else if report.auc < 0.7 {
+            warn!(
+                auc = report.auc,
+                "AUC < 0.7 — features carry weak signal. Consider feature ablation or \
+                 enlarging the labels corpus."
+            );
+        } else {
+            info!(auc = report.auc, "AUC ≥ 0.7 — features carry usable signal");
+        }
+    }
+
+    model.save(out).context("saving Phase 2 GBDT")?;
+    info!(out = %out.display(), "Phase 2 GBDT model written");
+
+    // Round-trip verification.
+    let _ = LearnedScorer::load(out).context("verifying saved Phase 2 model loads cleanly")?;
+    info!("saved Phase 2 model verified (load-back succeeded)");
 
     Ok(())
 }

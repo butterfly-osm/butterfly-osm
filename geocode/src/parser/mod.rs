@@ -28,6 +28,9 @@ pub mod decoding;
 pub mod heuristic;
 pub mod neural;
 pub mod normalize;
+pub mod phase2_features;
+pub mod phase2_training;
+pub mod retrieval_utility;
 
 use crate::routing::CountryId;
 use crate::shard::reader::Shard;
