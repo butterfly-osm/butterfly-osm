@@ -1,16 +1,69 @@
 # Butterfly region index — Japan
 #
-# OSM PBF for Japan from Geofabrik. ~1.5 GB compressed.
+# OSM PBF for Japan from Geofabrik plus prefecture-level
+# OpenAddresses packs (#96 §"Data Sources"). Japan has no national
+# OpenAddresses pack; OA ingests prefecture-level open address data
+# from cities and prefectures that publish openly.
 #
-# Authoritative address dataset (NOT fetched here):
-#   - Japan Post Code Database (free download from Japan Post)
-#     https://www.post.japanpost.jp/zipcode/dl/kogaki-zip.html
-#   - National Land Numerical Information address points
-#     https://nlftp.mlit.go.jp/ksj-e/jpgis/datalist/KsjTmplt-N03.html
+# Japanese addresses are block-based (chōme-banchi), not street-
+# based. The geocode shard schema's `housenumber` field is repurposed
+# to hold the block number; the `street` field is empty for most
+# records.
 #
-# Japanese addresses are block-based (chōme-banchi), not street-based.
-# The geocode shard schema's `housenumber` field is repurposed to hold
-# the block number; the `street` field is empty for most records.
+# This index lists the top prefectures by OA coverage. Adding more
+# prefectures = more `[[address]]` blocks
+# (`https://batch.openaddresses.io/api/data?source=jp` enumerates
+# every available source).
+#
+# Verified live 2026-05-05.
 
 [pbf]
 url = "https://download.geofabrik.de/asia/japan-latest.osm.pbf"
+
+[[address]]
+id     = "oa-jp-aichi"
+url    = "https://v2.openaddresses.io/batch-prod/job/823591/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"
+
+[[address]]
+id     = "oa-jp-saitama"
+url    = "https://v2.openaddresses.io/batch-prod/job/823557/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"
+
+[[address]]
+id     = "oa-jp-chiba"
+url    = "https://v2.openaddresses.io/batch-prod/job/823588/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"
+
+[[address]]
+id     = "oa-jp-ibaraki"
+url    = "https://v2.openaddresses.io/batch-prod/job/823578/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"
+
+[[address]]
+id     = "oa-jp-shizuoka"
+url    = "https://v2.openaddresses.io/batch-prod/job/823554/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"
+
+[[address]]
+id     = "oa-jp-gifu"
+url    = "https://v2.openaddresses.io/batch-prod/job/823583/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"
+
+[[address]]
+id     = "oa-jp-hyogo"
+url    = "https://v2.openaddresses.io/batch-prod/job/823579/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"
+
+[[address]]
+id     = "oa-jp-fukuoka"
+url    = "https://v2.openaddresses.io/batch-prod/job/823585/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"

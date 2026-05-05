@@ -1,19 +1,77 @@
 # Butterfly region index — United States
 #
-# OSM PBF for the US from Geofabrik. ~9 GB compressed — biggest single
-# regional extract. Geocode shard build is feasible on machines with
-# 32 GB RAM; for smaller machines see `us-northeast.toml`.
+# OSM PBF for the US from Geofabrik plus state-level OpenAddresses
+# packs (#96 §"Data Sources"). The US has no nationally unified
+# authoritative open address dataset; OpenAddresses ingests state
+# and county datasets state-by-state.
 #
-# Authoritative address dataset (NOT fetched here — see
-# geocode-data/SOURCES.md):
-#   - OpenAddresses US state files (per-state CSVs, public-domain or
-#     CC0)
-#   - Census TIGER/Line address ranges (public domain)
-#   - USPS ZIP database (commercial, but ZIP boundaries can be
-#     reconstructed from Census TIGER ZCTAs)
+# This index lists the top statewide packs by size for "USA-wide
+# server" deployments. Operators wanting one state can fetch a
+# subset by editing the file. Adding more states = more
+# `[[address]]` blocks (the OA batch API at
+# `https://batch.openaddresses.io/api/data?source=us` enumerates
+# every available source).
 #
-# No transit feeds in this index — US transit is fragmented across
-# hundreds of agencies and is out of scope for the geocode-prep pass.
+# The full US is ~9 GB OSM PBF + ~5-7 GB OA addresses. Geocode shard
+# build is feasible on machines with 32+ GB RAM.
+#
+# Verified live 2026-05-05.
 
 [pbf]
 url = "https://download.geofabrik.de/north-america/us-latest.osm.pbf"
+
+# Smaller states first — easier smoke-test path.
+[[address]]
+id     = "oa-us-dc"
+url    = "https://v2.openaddresses.io/batch-prod/job/802939/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"
+
+[[address]]
+id     = "oa-us-de"
+url    = "https://v2.openaddresses.io/batch-prod/job/822656/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"
+
+[[address]]
+id     = "oa-us-ri"
+url    = "https://v2.openaddresses.io/batch-prod/job/475152/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"
+
+# Top-coverage statewide packs.
+[[address]]
+id     = "oa-us-tx"
+url    = "https://v2.openaddresses.io/batch-prod/job/820314/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"
+
+[[address]]
+id     = "oa-us-nc"
+url    = "https://v2.openaddresses.io/batch-prod/job/413823/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"
+
+[[address]]
+id     = "oa-us-ny"
+url    = "https://v2.openaddresses.io/batch-prod/job/821003/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"
+
+[[address]]
+id     = "oa-us-in"
+url    = "https://v2.openaddresses.io/batch-prod/job/821928/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"
+
+[[address]]
+id     = "oa-us-az"
+url    = "https://v2.openaddresses.io/batch-prod/job/823077/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"
+
+[[address]]
+id     = "oa-us-nj"
+url    = "https://v2.openaddresses.io/batch-prod/job/488124/source.geojson.gz"
+format = "geojson-gz"
+source = "openaddresses"

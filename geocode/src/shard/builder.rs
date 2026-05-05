@@ -1,5 +1,5 @@
 //! Shard builder. Takes a stream of [`AddressRecord`]s and writes a
-//! `BFGS` v4 file (see [`super`] for the format docs).
+//! `BFGS` v5 file (see [`super`] for the format docs).
 
 use std::collections::BTreeMap;
 use std::io::{BufWriter, Write};
@@ -25,7 +25,7 @@ pub struct BuildStats {
     pub country: CountryId,
 }
 
-/// Build a BFGS v4 shard tagged with `country`.
+/// Build a BFGS v5 shard tagged with `country`.
 ///
 /// `country` is written into the file header (bytes 6-7, ISO 3166-1
 /// alpha-2) and verified on load by [`super::reader::Shard::open`].
@@ -120,7 +120,7 @@ pub fn build_shard<P: AsRef<Path>>(
         records_bytes.extend_from_slice(&house_len.to_le_bytes());
         records_bytes.extend_from_slice(&pc_off.to_le_bytes());
         records_bytes.extend_from_slice(&pc_len.to_le_bytes());
-        // v4: per-record source byte (#96 §"Data Sources") + 3 pad
+        // v5: per-record source byte (#96 §"Data Sources") + 3 pad
         // bytes for 4-byte alignment. Pad is always zero so the file
         // CRC stays deterministic across runs.
         records_bytes.push(a.source.to_u8());
@@ -164,7 +164,7 @@ pub fn build_shard<P: AsRef<Path>>(
     let mut header = [0u8; HEADER_BYTES];
     header[0..4].copy_from_slice(&MAGIC.to_le_bytes());
     header[4..6].copy_from_slice(&VERSION.to_le_bytes());
-    // BFGS v4: country = 2-byte ISO 3166-1 alpha-2 at offset 6-7 (#96
+    // BFGS v5: country = 2-byte ISO 3166-1 alpha-2 at offset 6-7 (#96
     // "serve the world"). v3's u8 enum index is gone.
     header[6..8].copy_from_slice(&country.as_bytes());
     let count_u32: u32 = addrs.len().try_into().expect("record count fits in u32");
@@ -397,7 +397,7 @@ mod tests {
                 "Anderlecht",
                 50.834,
                 4.314,
-                super::super::SourceTag::Bosa,
+                super::super::SourceTag::OpenAddresses,
             ),
             rec_with_source(
                 "Grote Markt",
@@ -416,7 +416,7 @@ mod tests {
         // sorts before "2000|grote markt".
         let r0 = s.record(0).unwrap();
         let r1 = s.record(1).unwrap();
-        assert_eq!(r0.source, super::super::SourceTag::Bosa);
+        assert_eq!(r0.source, super::super::SourceTag::OpenAddresses);
         assert_eq!(r1.source, super::super::SourceTag::Osm);
     }
 

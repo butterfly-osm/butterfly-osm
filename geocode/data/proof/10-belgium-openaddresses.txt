@@ -1,0 +1,148 @@
+# Belgium OpenAddresses smoke test (2026-05-05)
+#
+# Shard: geocode/regions/be-oa-bru-fr.bfgs
+# Source: https://v2.openaddresses.io/batch-prod/job/824413/source.geojson.gz
+#         (be/bru/bosa-region-brussels-fr — OA-ingested upstream from BOSA)
+# Records: 841,990  postcodes: 26  streets: 4,706  build: 6.55s
+
+## /health
+{
+    "status": "ok",
+    "version": "2.0.0",
+    "uptime_seconds": 3,
+    "record_count": 841990,
+    "shard_count": 1,
+    "total_records": 841990,
+    "countries": [
+        "BE"
+    ]
+}
+
+## GET /geocode?q=Rue+Wayez+122+Anderlecht
+{
+    "query": "Rue Wayez 122 Anderlecht",
+    "country": "BE",
+    "confidence": "accept",
+    "count": 5,
+    "results": [
+        {
+            "lat": 50.83543,
+            "lon": 4.31111,
+            "street": "Rue Wayez",
+            "housenumber": "122",
+            "postcode": "1070",
+            "locality": "Anderlecht",
+            "country": "BE",
+            "score": 1.8000001
+        },
+        {
+            "lat": 50.83543,
+            "lon": 4.31111,
+            "street": "Rue Wayez",
+            "housenumber": "122 2eET",
+            "postcode": "1070",
+            "locality": "Anderlecht",
+            "country": "BE",
+            "score": 1.4
+        },
+        {
+            "lat": 50.83543,
+            "lon": 4.31111,
+            "street": "Rue Wayez",
+            "housenumber": "122 3eET",
+            "postcode": "1070",
+            "locality": "Anderlecht",
+            "country": "BE",
+            "score": 1.4
+        },
+        {
+            "lat": 50.83543,
+            "lon": 4.31111,
+            "street": "Rue Wayez",
+            "housenumber": "122 4eET",
+            "postcode": "1070",
+            "locality": "Anderlecht",
+            "country": "BE",
+            "score": 1.4
+        },
+        {
+            "lat": 50.83543,
+            "lon": 4.31111,
+            "street": "Rue Wayez",
+            "housenumber": "122 5eET",
+            "postcode": "1070",
+            "locality": "Anderlecht",
+            "country": "BE",
+            "score": 1.4
+        }
+    ]
+}
+
+## GET /geocode?q=Grand-Place+1+Bruxelles
+{
+    "query": "Grand-Place 1 Bruxelles",
+    "country": "BE",
+    "confidence": "accept",
+    "count": 0,
+    "results": []
+}
+
+## GET /geocode?q=Avenue+Louise+10+1050
+{
+    "query": "Avenue Louise 10 1050",
+    "country": "BE",
+    "confidence": "accept",
+    "count": 5,
+    "results": [
+        {
+            "lat": 50.83149,
+            "lon": 4.3601,
+            "street": "Avenue Louise",
+            "housenumber": "100",
+            "postcode": "1050",
+            "locality": "Bruxelles",
+            "country": "BE",
+            "score": 2.0
+        },
+        {
+            "lat": 50.83104,
+            "lon": 4.35942,
+            "street": "Avenue Louise",
+            "housenumber": "101",
+            "postcode": "1050",
+            "locality": "Bruxelles",
+            "country": "BE",
+            "score": 2.0
+        },
+        {
+            "lat": 50.83104,
+            "lon": 4.35942,
+            "street": "Avenue Louise",
+            "housenumber": "101 b002",
+            "postcode": "1050",
+            "locality": "Bruxelles",
+            "country": "BE",
+            "score": 2.0
+        },
+        {
+            "lat": 50.83104,
+            "lon": 4.35942,
+            "street": "Avenue Louise",
+            "housenumber": "101 b003",
+            "postcode": "1050",
+            "locality": "Bruxelles",
+            "country": "BE",
+            "score": 2.0
+        },
+        {
+            "lat": 50.83104,
+            "lon": 4.35942,
+            "street": "Avenue Louise",
+            "housenumber": "101 b004",
+            "postcode": "1050",
+            "locality": "Bruxelles",
+            "country": "BE",
+            "score": 2.0
+        }
+    ]
+}

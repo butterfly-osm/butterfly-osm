@@ -3,16 +3,95 @@
 Tracks: #96 (butterfly-geocode design), #91 (multi-region foundation).
 
 This is the **data-prep manifest** for butterfly-geocode. It catalogs the
-authoritative open-data address sources for each country in cross-border
-cluster #1 (BE / FR / NL / LU / DE) and cluster #2 (AT / DE / CH), the
-license each one ships under, and the field mapping each importer will
-use to land records into the geocode shard's normalized
-`AddressRecord` schema.
+authoritative open-data address sources for each country, their
+license, and how the importer maps them into the geocode shard's
+normalized `AddressRecord` schema.
 
-The shard importer itself lives in `geocode/` and is being scaffolded
-in parallel with this prep work. The intent here is that wiring an
-authoritative source into the geocoder is a copy-paste from the
-"Field mapping" sketches below, not a research task.
+## Canonical authoritative source: OpenAddresses
+
+[**OpenAddresses**](https://openaddresses.io) is butterfly-geocode's primary
+authoritative-source layer. OA federates ~600 M addresses across ~40
+countries through one normalised schema, weekly cadence, predominantly
+CC-BY / public-domain licensing.
+
+OA is **the** ingestion path for v5 shards (PR #96 §Data Sources). Country-
+specific authoritative datasets (BOSA for Belgium, BAN for France, BAG
+for the Netherlands, BD-Adresses for Luxembourg, BEV for Austria,
+swisstopo for Switzerland, G-NAF for Australia, …) ship **upstream** of
+OpenAddresses: the OA pipeline ingests each one via a per-source manifest
+and republishes a normalised feed. Going through OA gives butterfly-
+geocode one ingestion code path, one normalised schema, one update
+cadence — instead of N heterogeneous loaders.
+
+Operators wanting maximum recency for a single country can still point
+the loader directly at the upstream pack (e.g. a fresh BOSA ZIP); OA's
+schema is intentionally close to the upstream's so the same loader
+handles both.
+
+## Why OpenAddresses, not per-country datasets
+
+- **One code path.** v4 of butterfly-geocode shipped a Belgium-only
+  BOSA loader; the audit was unanimous that scaling that to FR/NL/LU/
+  DE/AT/CH/AU/US was N×Rust modules. OA collapses N to 1.
+- **Normalised schema.** Every OA feature has the same properties
+  (`number`, `street`, `unit`, `city`, `district`, `region`, `postcode`,
+  `id`, `accuracy`). Per-country quirks (BOSA's `box_number`, BAN's
+  `rep`, BAG's `huisletter`) are folded into `unit` upstream.
+- **Predictable cadence.** OA's CI re-ingests upstream weekly; operators
+  pin a job ID and refresh on a known schedule.
+- **License clarity.** OA filters out share-alike-restricted upstream
+  packs and surfaces only feeds that are unrestricted-use-with-
+  attribution. Operators can audit the per-source license through
+  the OA source manifests at <https://github.com/openaddresses/openaddresses>.
+
+## OpenAddresses URL discovery
+
+The current job ID for any country lives at:
+
+```
+https://batch.openaddresses.io/api/data?source=<cc>
+```
+
+This returns a JSON array of `{source, layer, job, size, ...}`. Filter
+where `layer == "addresses"` and `source` starts with `<cc>/` to find
+the country's packs. The download URL for a job is:
+
+```
+https://v2.openaddresses.io/batch-prod/job/<id>/source.geojson.gz
+```
+
+The on-disk format is gzipped GeoJSON-seq (one JSON Feature per line).
+butterfly-geocode's loader at `geocode/src/sources/openaddresses.rs`
+streams it row-by-row.
+
+## Per-country status (verified live 2026-05-05)
+
+| Country | OA national pack? | OA size (compressed) | Job ID | Upstream source(s) | Wired in `dl/regions/` |
+|---|---|---|---|---|---|
+| **BE** | per-region (3 × 2 lang) | 23 MB + 23 MB + 120 MB + 152 MB + 64 MB + 57 MB | 824413 / 824412 / 824410 / 824409 / 824406 / 824408 | BOSA BeSt | YES — `belgium.toml` |
+| **FR** | yes | ~795 MB | 743120 | BAN | YES — `france.toml` |
+| **NL** | yes | ~296 MB | 823433 | BAG | YES — `netherlands.toml` |
+| **LU** | yes | ~6 MB | 823471 | BD-Adresses | YES — `luxembourg.toml` |
+| **DE** | no — per-state | 14 packs, 6 MB to 120 MB each | 824008 + 13 others | various Bundesländer | YES — `germany.toml` |
+| **AT** | yes | ~71 MB | 824498 | BEV Adressregister | YES — `austria.toml` |
+| **CH** | yes | ~154 MB | 824053 | swisstopo | YES — `switzerland.toml` |
+| **US** | no — per-state | 50+ statewide, 4 MB to 337 MB each | 802939 / 822656 / 475152 / 820314 / 413823 / 821003 / 821928 / 823077 / 488124 | per-state open data | YES — `united-states.toml` |
+| **AU** | yes | ~833 MB | 824415 | G-NAF | YES — `australia.toml` |
+| **BR** | no — per-state | 8 statewide, 165 MB to 1.3 GB each | 824365 + 7 others | per-state | YES — `brazil.toml` |
+| **JP** | no — per-prefecture | 8 prefectures, 11 MB to 36 MB each | 823591 + 7 others | per-prefecture | YES — `japan.toml` |
+| **GB** | no | — | — | (no OA coverage; OSM-only) | only PBF |
+| **IN** | no | — | — | (no OA coverage; OSM-only) | only PBF — `india.toml` |
+
+To refresh job IDs:
+
+```bash
+# Pick a country and dump its OA inventory.
+curl -sL 'https://batch.openaddresses.io/api/data?source=be' \
+  | jq '.[] | select(.layer == "addresses" and (.source|startswith("be/"))) | {source, job, size}'
+```
+
+Update `dl/regions/<country>.toml` `[[address]]` blocks with the new
+`job/<id>/source.geojson.gz` URLs and re-run the download chain.
 
 ## Normalized record schema
 
@@ -21,24 +100,23 @@ is the geocode crate's storage shape:
 
 ```rust
 struct AddressRecord {
-    id: u64,                  // monotonic shard-local id
-    country: CountryId,       // ISO-3166-1 alpha-2 (BE, FR, NL, LU, DE, AT, CH)
-    lat: f64,                 // WGS84
-    lon: f64,                 // WGS84
-    postcode: Option<String>, // canonical postcode (no whitespace, no country prefix)
-    locality: Option<String>, // city / municipality name as published
-    street: Option<String>,   // canonical street name (no abbreviation expansion at ingest)
-    housenumber: Option<String>, // alphanumeric — "12", "12A", "12bis", "10-12"
-    source: SourceTag,        // BAN | BAG | BOSA | BD_ADRESSES | BEV | SWISSTOPO | OSM
-    source_id: Option<String>, // upstream stable id where the source provides one
+    lat: f64,                   // WGS84
+    lon: f64,                   // WGS84
+    street: String,             // canonical street name
+    locality: String,           // city / municipality name
+    housenumber: String,        // alphanumeric — "12", "12A", "12bis", "10-12"
+    postcode: String,           // canonical postcode (no whitespace, no country prefix)
+    source: SourceTag,          // OpenAddresses | Osm
+    source_id: Option<String>,  // upstream stable id; OA's `id` field where present
 }
 ```
 
 **Invariants:**
 
-- Coordinates are WGS84. Sources publishing in projected CRS
-  (Lambert-93 for BAN, RD New for BAG, MGI/Lambert for BEV,
-  LV95 for swisstopo) are reprojected at ingest with `proj4rs`.
+- Coordinates are WGS84. OpenAddresses does the reprojection upstream
+  for sources that publish in projected CRS (Lambert-93 for BAN, RD New
+  for BAG, MGI/Lambert for BEV, LV95 for swisstopo); butterfly-geocode
+  reads `[lon, lat]` straight off OA's published GeoJSON-seq.
 - Postcodes are stored as published, **without** country prefix. The
   parser knows postcode format per country at query time.
 - Multilingual aliases (e.g. Brussels = Bruxelles = Brussel = Brüssel)
@@ -53,405 +131,124 @@ struct AddressRecord {
   alias:              (BE, "10", id=42, alias="Brussels", lang="en")
   alias:              (BE, "10", id=42, alias="Brüssel",  lang="de")
   ```
-  Because BOSA publishes each address once with every-language
-  street + locality columns populated, the importer projects each
-  language column into one alias row, NOT one full `AddressRecord`
-  per language. The shard's per-language inverted-index lookups
-  resolve through this alias table, then materialise the canonical
-  record exactly once. (PR #166 originally said "one record per
-  language per address"; that contradicted the alias-table model
-  and is corrected here.)
+  OpenAddresses publishes per-language packs (e.g. `be/bru/bosa-region-brussels-fr` and `…-nl`); operators build per-language shards and merge them via `--merge`. The alias-table layer lands as a follow-up so the merger collapses these into one canonical row + N alias rows. Until then, the merger keeps both records per (#173 first-wins tie-break) and lookups resolve via the canonical row's inverted index.
 - House numbers stay strings. Numeric coercion is wrong — alphanumeric
   ("12A"), hyphenated ("10-12"), bis/ter/quater suffixes are all
   semantically real.
+- Multi-language records are emitted by language-tagged OA sources
+  (e.g. `be/bru/bosa-region-brussels-fr` and `…-nl`). Operators
+  build per-language shards and merge them via `--merge`.
 
-## Source inventory
+## OpenAddresses Feature schema
 
-### Belgium — BeSt Address (BOSA)
+Per <https://github.com/openaddresses/openaddresses/wiki/Conform>:
 
-| Property | Value |
-|---|---|
-| Dataset name | BeSt Address (Belgium Standard Address) |
-| Publisher | FPS BOSA — DG Digital Transformation |
-| Landing page | https://data.gov.be/en/datasets/fpsbosa-dis-best-csv-deriv |
-| Direct files (CSV, regional) | `https://opendata.bosa.be/download/best/openaddress-bevlg.zip` (Flanders), `openaddress-bewal.zip` (Wallonia), `openaddress-bebru.zip` (Brussels) |
-| Direct file (XML, full) | `https://opendata.bosa.be/download/best/best-full-latest.xml.zip` |
-| License | Belgian Open Data License (compatible with CC-BY) |
-| Format | CSV (derived) + XML (canonical) |
-| Record count | ~6.7 M addresses |
-| Cadence | Monthly |
-
-**Status:** **WIRED** as of 2026-05-04. Loader lives at
-`geocode/src/sources/bosa.rs`; the three regional ZIPs are listed as
-`[[address]]` entries in `dl/regions/belgium.toml`. Pipeline:
-
-```
-butterfly-dl belgium --only addresses          # fetches BOSA ZIPs
-butterfly-geocode build-shard \
-    --csv data/belgium/addresses/bosa-bevlg.zip \
-    --out belgium-bosa.bfgs --country BE --source bosa
-```
-
-**URL verification (2026-05-04):**
-
-- `https://opendata.bosa.be/download/best/openaddress-bevlg.zip` — HTTP 200, 152.27 MB
-- `https://opendata.bosa.be/download/best/openaddress-bewal.zip` — HTTP 200, 60.43 MB
-- `https://opendata.bosa.be/download/best/openaddress-bebru.zip` — HTTP 200, 17.71 MB
-
-All three resolve, served with `Content-Type: application/zip`,
-`Last-Modified: Sun, 03 May 2026 10:43`. The `openaddress-belgium.zip`
-URL hinted at in some BOSA documentation does NOT exist (404); the
-canonical pattern is the three regional ZIPs.
-
-**Field mapping (CSV variant) — actual implementation:**
-
-```rust
-// CSV columns (verified against the live header 2026-05-04):
-// EPSG:31370_x, EPSG:31370_y, EPSG:4326_lat, EPSG:4326_lon,
-// address_id, box_number, house_number, municipality_id,
-// municipality_name_de, municipality_name_fr, municipality_name_nl,
-// postcode, postname_fr, postname_nl, street_id, streetname_de,
-// streetname_fr, streetname_nl, region_code, status
-//
-// Coordinates are already published in WGS84 (EPSG:4326_lat/lon) so
-// no proj4rs reprojection is needed — Lambert-72 (EPSG:31370)
-// columns are ignored.
-fn from_bosa_csv(row: &BosaRow, lang: Lang) -> AddressRecord {
-    AddressRecord {
-        country: CountryId::BE,
-        lat: row.lat_4326,
-        lon: row.lon_4326,
-        postcode: row.postcode.trim().to_string(),
-        locality: pick_lang(lang, &row.muni_nl, &row.muni_fr, &row.muni_de),
-        street: pick_lang(lang, &row.street_nl, &row.street_fr, &row.street_de),
-        housenumber: format_belgian_number(&row.house_number, &row.box_number),
-        source: SourceTag::Bosa,
-        source_id: Some(row.address_id.clone()),
-    }
+```json
+{
+  "type": "Feature",
+  "properties": {
+    "hash": "e9bfa4b3f42f842d",
+    "number": "475",
+    "street": "Chaussée de Mons",
+    "unit": "RDC",
+    "city": "Anderlecht",
+    "district": "",
+    "region": "",
+    "postcode": "1070",
+    "id": "BE-BRU:615867",
+    "accuracy": ""
+  },
+  "geometry": {
+    "type": "Point",
+    "coordinates": [4.31653, 50.83595]
+  }
 }
 ```
 
-`format_belgian_number` joins `house_number` + `box_number` as
-`"475 bte RDC"` (BTE = "boîte" / box), so apartment-level granularity
-survives without a separate "unit" channel for the BE MVP.
+The loader maps:
 
-The `pick_lang` step is **not** an ingest-time choice — Belgium
-needs every language as a queryable alias. The importer projects
-each non-empty language column (NL/FR/DE) into a separate row in
-the alias table per the model documented in §"Normalized record
-schema": one canonical `AddressRecord` per address, plus one alias
-row per non-empty language pointing at that canonical id. (The
-2026-05-04 BOSA loader currently emits one `AddressRecord` per
-language as a stopgap until the alias-table layer lands; the
-follow-up to switch to the alias-table model is filed as part of
-the geocode shard format work in `geocode-data/CLUSTERS.md`.)
+- `street` → `AddressRecord.street`
+- `number` + (space + `unit` if non-empty) → `AddressRecord.housenumber`
+- `city` → `AddressRecord.locality`
+- `postcode` → `AddressRecord.postcode`
+- `coordinates[0]` → `AddressRecord.lon`, `coordinates[1]` → `AddressRecord.lat`
+- `id` → `AddressRecord.source_id`
 
-Records with `status != "current"` (e.g. retired addresses) are
-dropped at ingest. Records without lat/lon parse failures are also
-dropped — the geocoder needs a real coordinate.
+For languages: pick per-language packs at ingest time (`be/bru/bosa-region-brussels-fr` vs `…-nl`). The merger keeps both records until the alias-table layer lands.
 
-**Smoke test results (Belgium, 2026-05-04, full BOSA download):**
+Records with empty `street` or empty `housenumber` are dropped — they
+aren't addressable by the parser. Records with non-Point geometry
+(LineString, Polygon — rare in OA but possible if an operator points
+the loader at non-address OA data) are also dropped.
 
-| Shard | Records | Built in | Unique postcodes | Unique streets |
-|---|---|---|---|---|
-| OSM-only (PBF tags) | 4 026 754 | 76 s | 1 723 | 87 903 |
-| BOSA-only (3 regional ZIPs merged) | 10 667 558 | 67 s (build) + ~30 s (per region) | 1 145 | 95 704 |
-| BOSA + OSM merged | 13 263 831 | 93 s | 1 751 | 105 082 |
+## Smoke test results (2026-05-05)
 
-The OSM record count is inflated by every OSM way carrying
-`addr:*` tags (each emits a centroid). The BOSA record count is
-inflated by per-language record duplication (NL + FR per address ≈
-1.5x); the dedup at merge time drops same-language exact duplicates,
-leaving 6.7 M physical addresses × ~1.5 lang = ~10 M.
+| Shard | Source | Records | Build time | Unique postcodes | Unique streets |
+|---|---|---|---|---|---|
+| BE-BRU-FR | OA `be/bru/bosa-region-brussels-fr` (job 824413) | 841,990 | 6.55 s | 26 | 4,706 |
+| US-DC | OA `us/dc/statewide` (job 802939) | 142,820 | 0.88 s | 115 | 1,821 |
 
-**Recall@5 (within 200 m, parser-driven) on 100 random Brussels
-records:**
+Live geocode round trip:
 
-- BOSA shard: 38 / 100 (38 %)
-- OSM shard: 2 / 100 (2 %)
-
-The 38 % parser-driven recall reflects the heuristic parser's
-post-2026-05-04 limitations (ambiguity between street and
-housenumber when both are numeric); the underlying BOSA shard does
-contain those addresses (verified via reverse-geocode at the
-published lat/lon coordinates). The neural parser (#98 Phase 1)
-does not have that limitation and will improve recall once
-shard-agnostic augmentation lands. **The OSM 2 % recall is the
-load-bearing comparison: BOSA covers 19× more addresses than OSM
-PBF tags do**, which is exactly why this PR exists.
-
-### France — Base Adresse Nationale (BAN)
-
-| Property | Value |
-|---|---|
-| Dataset name | Base Adresse Nationale (BAN) |
-| Publisher | DINUM / Etalab + IGN + La Poste |
-| Landing page | https://adresse.data.gouv.fr/data/ban/adresses/latest/csv/ |
-| Direct file (national) | https://adresse.data.gouv.fr/data/ban/adresses/latest/csv/adresses-france.csv.gz |
-| Direct files (departmental) | https://adresse.data.gouv.fr/data/ban/adresses/latest/csv/adresses-{dep}.csv.gz |
-| License | Licence Ouverte 2.0 (Etalab, ≈ CC-BY) |
-| Format | gzip CSV, semicolon-separated, UTF-8, ~921 MB compressed |
-| Record count | ~26 M addresses |
-| Cadence | Daily |
-
-**Field mapping sketch:**
-
-```rust
-// CSV columns: id;id_fantoir;numero;rep;nom_voie;code_postal;
-//              code_insee;nom_commune;code_insee_ancienne_commune;
-//              nom_ancienne_commune;x;y;lon;lat;type_position;
-//              alias;nom_ld;libelle_acheminement;nom_afnor;source;
-//              date_der_maj;certification_commune
-fn from_ban(row: &BanRow) -> AddressRecord {
-    AddressRecord {
-        id: next_id(),
-        country: CountryId::FR,
-        lat: row.lat,
-        lon: row.lon,
-        postcode: Some(row.code_postal.clone()),
-        locality: Some(row.nom_commune.clone()),
-        street: Some(row.nom_voie.clone()),
-        housenumber: format_fr_number(&row.numero, &row.rep), // "rep" = bis/ter/quater
-        source: SourceTag::Ban,
-        source_id: Some(row.id.clone()),
-    }
+```
+$ curl 'http://localhost:3055/geocode?q=Rue+Wayez+122+Anderlecht'
+{
+  "query": "Rue Wayez 122 Anderlecht",
+  "country": "BE",
+  "confidence": "accept",
+  "count": 5,
+  "results": [
+    {
+      "lat": 50.83543,
+      "lon": 4.31111,
+      "street": "Rue Wayez",
+      "housenumber": "122",
+      "postcode": "1070",
+      "locality": "Anderlecht",
+      "country": "BE",
+      "score": 1.8000001
+    },
+    ...
+  ]
 }
 ```
 
-`type_position` is a quality flag (`entrance`, `building`, `parcel`,
-`interpolation`, `area`). The importer drops `area` (centroid-only)
-records since the geocoder needs a real coordinate.
+Full curl proofs in `geocode/data/proof/10-belgium-openaddresses.txt`
+and `geocode/data/proof/11-us-dc-openaddresses.txt`.
 
-### Netherlands — BAG (Basisregistratie Adressen en Gebouwen)
+## OSM fallback
 
-| Property | Value |
-|---|---|
-| Dataset name | BAG — Basic Registration Addresses and Buildings |
-| Publisher | Kadaster (via PDOK) |
-| Landing page | https://www.kadaster.nl/-/gratis-download-bag-extract |
-| Direct file | https://service.pdok.nl/kadaster/adressen/atom/v1_0/downloads/lvbag-extract-nl.zip |
-| Atom feed (programmatic) | https://service.pdok.nl/kadaster/adressen/atom/v1_0/adressen.xml |
-| License | CC0 (public domain) for the open extract |
-| Format | GML / XML inside ZIP, ~2.8 GB compressed |
-| Record count | ~9 M addresses |
-| Cadence | Monthly (8th of the month) |
-
-**Field mapping sketch (BAG GML, "verblijfsobject" object):**
-
-```rust
-// BAG ships as nested GML. The relevant entity for AddressRecord is
-// `nummeraanduiding` (street + housenumber + postcode) joined to
-// `verblijfsobject` (the unit, with geometry and locality via
-// `woonplaats`).
-fn from_bag(num: &Nummeraanduiding, obj: &Verblijfsobject, plaats: &Woonplaats) -> AddressRecord {
-    let (lon, lat) = rd_to_wgs84(obj.geometrie.point); // RD New EPSG:28992 -> WGS84
-    AddressRecord {
-        id: next_id(),
-        country: CountryId::NL,
-        lat, lon,
-        postcode: num.postcode.clone(),
-        locality: Some(plaats.naam.clone()),
-        street: Some(num.openbare_ruimte_naam.clone()),
-        housenumber: Some(format_nl_number(num.huisnummer, &num.huisletter, &num.huisnummertoevoeging)),
-        source: SourceTag::Bag,
-        source_id: Some(num.identificatie.clone()),
-    }
-}
-```
-
-### Luxembourg — BD-Adresses
-
-| Property | Value |
-|---|---|
-| Dataset name | Adresses géoréférencées (BD-L-AD / BD-Adresses) |
-| Publisher | Administration du Cadastre et de la Topographie (ACT) |
-| Landing page | https://data.public.lu/en/datasets/adresses-georeferencees-bd-adresses/ |
-| API discovery | https://data.public.lu/api/1/datasets/adresses-georeferencees-bd-adresses/ |
-| License | CC-BY 4.0 |
-| Format | Shapefile / GeoJSON / CSV |
-| Record count | ~250 k addresses |
-| Cadence | ≈ monthly |
-
-Direct file URLs on data.public.lu are content-hashed and rotate per
-release; the importer resolves them through the dataset API at
-fetch time.
-
-**Field mapping sketch (CSV variant):**
-
-```rust
-// Columns (typical export): id, id_caclr, rue, numero, code_postal,
-//                           localite, x_lambert, y_lambert
-fn from_bdadresses(row: &BdadressesRow) -> AddressRecord {
-    let (lon, lat) = lambert_lu_to_wgs84(row.x_lambert, row.y_lambert);
-    AddressRecord {
-        id: next_id(),
-        country: CountryId::LU,
-        lat, lon,
-        postcode: Some(row.code_postal.clone()),
-        locality: Some(row.localite.clone()),
-        street: Some(row.rue.clone()),
-        housenumber: Some(row.numero.clone()),
-        source: SourceTag::BdAdresses,
-        source_id: Some(row.id_caclr.clone()),
-    }
-}
-```
-
-### Germany — OSM fallback (no national authoritative source)
-
-| Property | Value |
-|---|---|
-| Dataset name | OSM `addr:*` tags (national merge) |
-| Publisher | OpenStreetMap contributors (via Geofabrik) |
-| Direct file | https://download.geofabrik.de/europe/germany-latest.osm.pbf |
-| License | ODbL 1.0 |
-| Format | OSM PBF |
-| Record count | ~25 M addr nodes (estimate) |
-| Cadence | Geofabrik refreshes daily |
-
-Germany has no nationally unified authoritative open address dataset.
-State-level open datasets exist (NRW Geobasis, Berlin FIS-Broker,
-Hamburg Transparenzportal, Brandenburg, Sachsen) but with
-heterogeneous licensing and schemas. The geocoder ships an OSM
-fallback for Germany; layering open state datasets on top is a
-follow-up.
-
-**Field mapping sketch (OSM `addr:*` extraction):**
-
-```rust
-// Filter PBF for nodes/ways with addr:housenumber set.
-fn from_osm(elem: &OsmElement) -> Option<AddressRecord> {
-    let tags = &elem.tags;
-    let housenumber = tags.get("addr:housenumber")?.clone();
-    let (lon, lat) = elem.centroid_wgs84();
-    Some(AddressRecord {
-        id: next_id(),
-        country: CountryId::DE,
-        lat, lon,
-        postcode: tags.get("addr:postcode").cloned(),
-        locality: tags.get("addr:city").cloned()
-            .or_else(|| tags.get("addr:town").cloned())
-            .or_else(|| tags.get("addr:village").cloned()),
-        street: tags.get("addr:street").cloned(),
-        housenumber: Some(housenumber),
-        source: SourceTag::Osm,
-        source_id: Some(format!("{}:{}", elem.kind, elem.id)),
-    })
-}
-```
-
-The same OSM extractor is the universal fallback for every country
-that has no authoritative source — it runs on every PBF, and the
-importer flags OSM-sourced records as lower-priority than
-authoritative records when both exist for the same country.
-
-### Austria — BEV Adressregister
-
-| Property | Value |
-|---|---|
-| Dataset name | Österreichisches Adressregister |
-| Publisher | Bundesamt für Eich- und Vermessungswesen (BEV) |
-| Landing page | https://www.data.gv.at/katalog/dataset/adressregister-tagesaktuell |
-| Metadata | https://data.bev.gv.at/geonetwork/srv/api/records/37d564f9-5d63-4760-aae6-29d3f98ee1b4 |
-| Product page | https://www.bev.gv.at/Services/Produkte/Adressregister/Oesterreichisches-Adressregister.html |
-| WFS | https://apps.bev.gv.at/bev.webservice/inspire?service=WFS&request=GetCapabilities&version=2.0.0 |
-| License | CC-BY 4.0 Austria |
-| Format | Zipped CSV (BEV shop, free with registration) + INSPIRE GML (WFS) |
-| Record count | ~2.3 M addresses |
-| Cadence | Continuous, full snapshot quarterly |
-
-**URL verification surprise:** The BEV CSV that historically lived
-at `bev.gv.at/pls/portal/.../Adresse_Relationale_Tabellen-Stichtagsdaten.zip`
-(documented in the OSM wiki) does not resolve reliably from outside
-the BEV portal as of 2026-05. The geocode importer will go through
-the WFS endpoint or the adressregister.at static export, which is
-the documented modern access path.
-
-**Field mapping sketch (BEV relational CSV — ADRESSE.csv):**
-
-```rust
-// Columns: ADRCD, GKZ, OKZ, PLZ, STRASSE, HAUSNRTEXT,
-//          HOFNAME, GADRID, RW, HW, EPSG, GEMNAM, ORTNAM
-fn from_bev(row: &BevRow) -> AddressRecord {
-    let (lon, lat) = mgi_to_wgs84(row.rw, row.hw, row.epsg);
-    AddressRecord {
-        id: next_id(),
-        country: CountryId::AT,
-        lat, lon,
-        postcode: Some(format!("{:04}", row.plz)),
-        locality: Some(row.ortnam.clone()), // "Ortschaft", more precise than Gemeinde
-        street: Some(row.strasse.clone()),
-        housenumber: Some(row.hausnrtext.clone()),
-        source: SourceTag::Bev,
-        source_id: Some(row.adrcd.clone()),
-    }
-}
-```
-
-### Switzerland — Amtliches Verzeichnis der Gebäudeadressen (swisstopo)
-
-| Property | Value |
-|---|---|
-| Dataset name | Amtliches Verzeichnis der Gebäudeadressen (AmtlicheGebäudeadressen) |
-| Publisher | Bundesamt für Landestopografie (swisstopo) |
-| Landing page | https://opendata.swiss/de/dataset/amtliches-verzeichnis-der-gebaudeadressen |
-| Product page | https://www.swisstopo.admin.ch/de/amtliches-verzeichnis-der-gebaeudeadressen |
-| STAC API | https://data.geo.admin.ch/api/stac/v0.9/collections/ch.swisstopo.amtliches-gebaeudeadressverzeichnis |
-| License | OGD (Open Government Data) — free use, attribution to swisstopo |
-| Format | CSV / GDB / Interlis (XTF) |
-| Record count | ~2.5 M addresses |
-| Cadence | Weekly |
-
-Direct file URLs are STAC-asset-hashed and rotate per release;
-the importer resolves them via the STAC API at fetch time
-(`/collections/<id>/items/<id>/assets/<asset>`).
-
-**Field mapping sketch (swisstopo CSV — `building-addresses.csv`):**
-
-```rust
-// Columns (per swisstopo Gebaeudeadressen Technical Documentation):
-//   EGAID, EDID, EGID, STN_LABEL, ADR_NUMBER, ZIP_LABEL,
-//   COM_NAME, COM_FOSNR, COM_CANTON, BDG_EPSG, BDG_EAST, BDG_NORTH
-fn from_swisstopo(row: &SwisstopoRow) -> AddressRecord {
-    let (lon, lat) = lv95_to_wgs84(row.bdg_east, row.bdg_north);
-    AddressRecord {
-        id: next_id(),
-        country: CountryId::CH,
-        lat, lon,
-        postcode: Some(row.zip_label.clone()),
-        locality: Some(row.com_name.clone()),
-        street: Some(row.stn_label.clone()),
-        housenumber: Some(row.adr_number.clone()),
-        source: SourceTag::Swisstopo,
-        source_id: Some(row.egaid.clone()),
-    }
-}
-```
-
-## Open data deferred to a follow-up
-
-These are out of scope for this prep pass but tracked here so the
-geocode shard builder can pick them up once it lands:
-
-- **Belgium BeSt CSV** — adding `[[addresses]] id="best-vlg" url="..."`
-  etc. to `dl/regions/belgium.toml` once the geocode TOML schema
-  knows how to parse address-source entries. Requires schema design
-  in the geocode crate, not in butterfly-dl.
-- **Germany state-level datasets** — NRW, Berlin, Hamburg, Brandenburg,
-  Sachsen. Per-state license review needed.
-- **Italy ANNCSU**, **Spain CNIG**, **Portugal CTT/INE** — cluster #3
-  (ES/PT) and Italian extension. Out of cluster #1 + cluster #2 scope.
-- **OpenAddresses** — global federation of state-by-state submissions,
-  useful as a coverage-fill layer on top of authoritative + OSM.
+Countries without OA coverage (today: GB, IN) fall back to OSM
+`addr:*` tags. The same `osm_extract` two-pass extractor handles
+every PBF, and the merge dedup picks OA records over OSM where both
+exist for the same physical address.
 
 ## License compatibility
 
-All listed authoritative sources are open data with attribution
-requirements at most. None are share-alike-restricted in a way that
-contaminates downstream geocode output. The OSM fallback (ODbL) is
-share-alike for substantial extracts but the geocoder consumes
-addr:* tags as factual data, which has been broadly understood as
-non-contaminating for derived databases under ODbL §4.4 (Produced
-Works exception). A formal license review is filed as a follow-up
+OpenAddresses publishes per-source license metadata at
+<https://github.com/openaddresses/openaddresses/tree/master/sources>.
+The OA pipeline filters out share-alike-restricted feeds — only
+unrestricted-use-with-attribution sources reach `v2.openaddresses.io`.
+
+For Belgium specifically: BOSA's BeSt is published under the Belgian
+Open Data License (CC-BY compatible). The OA-republished feeds inherit
+the upstream license; the OA contributor agreement requires upstream
+license preservation.
+
+A formal multi-jurisdiction license review is filed as a follow-up
 ticket — the engineering decision here is to proceed under the
-common interpretation while that review runs.
+OA-mediated license clarity while that review runs.
+
+## Future work: per-country authoritative source ingestion
+
+If an operator needs a feed OA does not yet ingest, or wants to bypass
+OA's update lag (typically days, occasionally weeks), the path forward
+is a new module under `geocode/src/sources/`. The existing
+[`Source`](../geocode/src/sources/mod.rs) trait was designed for this:
+implement `stream()` for the new format, add a new `SourceTag` variant
+(reserves a new code in the BFGS record byte — bumps the on-disk
+version), and wire the CLI's `--source` dispatch.
+
+This is filed as a post-#96 follow-up. The user-visible ergonomics
+goal is to keep OA as the default, deferring to per-country loaders
+only when OA is materially behind.
