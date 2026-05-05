@@ -34,10 +34,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use butterfly_geocode::{
     CountryId, GeocodedResult, HeuristicScorer, ParsedQuery, Phase2AnchorSummary, Phase2BeamStats,
     Phase2Features, Phase2LabeledRow, Phase2ProgramFeatures, RetrievalUtilityScorer, Shard,
-    parser::{
-        anchor::detect_anchors, decoding::build_hypothesis_from_labels, heuristic::parse_heuristic,
-        phase2_features::extract,
-    },
+    parser::{anchor::detect_anchors, heuristic::parse_heuristic, phase2_features::extract},
 };
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -88,8 +85,7 @@ fn main() -> Result<()> {
 
     eprintln!("[phase2-label] opening shard {}", args.shard.display());
     let shard = Arc::new(
-        Shard::open(&args.shard)
-            .with_context(|| format!("opening {}", args.shard.display()))?,
+        Shard::open(&args.shard).with_context(|| format!("opening {}", args.shard.display()))?,
     );
 
     let pb = ProgressBar::new(samples.len() as u64);
@@ -195,8 +191,7 @@ fn read_samples(path: &std::path::Path, limit: usize) -> Result<Vec<Phase2Sample
 }
 
 fn parse_country(iso2: &str) -> Result<CountryId> {
-    CountryId::from_iso2(iso2)
-        .ok_or_else(|| anyhow::anyhow!("unknown country code: {}", iso2))
+    CountryId::from_iso2(iso2).ok_or_else(|| anyhow::anyhow!("unknown country code: {}", iso2))
 }
 
 fn haversine_m(a_lat: f64, a_lon: f64, b_lat: f64, b_lon: f64) -> f64 {
@@ -266,8 +261,7 @@ fn label_one(
     // `execute` (not `execute_program`, which is private) — for the
     // single-hypothesis clean-query path this delegates to the fast
     // path that returns at most `top_k` candidates.
-    let candidates: Vec<GeocodedResult> =
-        butterfly_geocode::execute(&parsed, shard, top_k);
+    let candidates: Vec<GeocodedResult> = butterfly_geocode::execute(&parsed, shard, top_k);
     let label = if landed_on_gold(&candidates, sample, dist_tol_m) {
         1.0_f32
     } else {
@@ -288,11 +282,7 @@ fn label_one(
 
 /// Did any executor result land within `dist_tol_m` of the gold and
 /// (when the gold has a housenumber) match the housenumber?
-fn landed_on_gold(
-    candidates: &[GeocodedResult],
-    sample: &Phase2Sample,
-    dist_tol_m: f64,
-) -> bool {
+fn landed_on_gold(candidates: &[GeocodedResult], sample: &Phase2Sample, dist_tol_m: f64) -> bool {
     for c in candidates {
         let d = haversine_m(c.lat, c.lon, sample.gold_lat, sample.gold_lon);
         if d > dist_tol_m {
@@ -329,9 +319,9 @@ fn landed_on_gold(
 fn build_program_for_hypothesis(
     h: &butterfly_geocode::ParseHypothesis,
     policy: &butterfly_geocode::RetrievalPolicy,
-) -> butterfly_geocode::parser::decoding::Op {
-    use butterfly_geocode::parser::decoding::{LookupKey, Op};
-    use butterfly_geocode::{Channel, ChannelRole};
+) -> butterfly_geocode::geocoder::program::Op {
+    use butterfly_geocode::geocoder::channels::{Channel, ChannelRole};
+    use butterfly_geocode::geocoder::program::{LookupKey, Op};
 
     let mut blockers: Vec<Op> = Vec::new();
     let mut reducers: Vec<Op> = Vec::new();
@@ -396,7 +386,9 @@ fn build_program_for_hypothesis(
     let after_filter = if let Some((hn, _)) = h.house_candidates.first() {
         Op::Filter {
             child: Box::new(base),
-            predicate: butterfly_geocode::parser::decoding::FilterPredicate::HouseNumberEq(hn.clone()),
+            predicate: butterfly_geocode::geocoder::program::FilterPredicate::HouseNumberEq(
+                hn.clone(),
+            ),
         }
     } else {
         base
