@@ -245,8 +245,18 @@ pub async fn transit_handler(
     // loaded against the primary region's foot CCH at boot). For
     // multi-region deployments the transit subsystem is not loaded;
     // any /transit query returns 503 from the inner journey computer.
+    let started = std::time::Instant::now();
+    let primary_region_id = regions.regions[0].id.clone();
     let state = regions.primary();
-    compute_transit_journey(state.as_ref(), &req).map(Json)
+    let result = compute_transit_journey(state.as_ref(), &req).map(Json);
+    if result.is_ok() {
+        super::region_metrics::record_query(
+            &primary_region_id,
+            "transit",
+            started.elapsed().as_secs_f64(),
+        );
+    }
+    result
 }
 
 /// Reusable access-side computation result for a transit query (#120).
@@ -945,6 +955,8 @@ pub async fn transit_bulk_handler(
 ) -> Result<Json<TransitBulkResponse>, (StatusCode, Json<ErrorResponse>)> {
     // Transit is single-region only in #91 Phase 1 (see comment in
     // [`transit_handler`]). Use the primary region.
+    let started = std::time::Instant::now();
+    let primary_region_id = regions.regions[0].id.clone();
     let state = Arc::clone(regions.primary());
     // Soft cap on batch size. 100k is generous for interactive use;
     // operators doing matrix-style work should look at `/table/stream`
@@ -1011,6 +1023,11 @@ pub async fn transit_bulk_handler(
                 )
             })?;
 
+    super::region_metrics::record_query(
+        &primary_region_id,
+        "transit",
+        started.elapsed().as_secs_f64(),
+    );
     Ok(Json(TransitBulkResponse { count, results }))
 }
 

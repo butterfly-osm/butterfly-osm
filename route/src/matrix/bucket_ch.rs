@@ -522,6 +522,17 @@ impl UpAdjFlatFile {
     /// file CRCs before returning. Section start MUST be 8-byte aligned
     /// (the container writer guarantees this).
     pub fn read_from_bytes(bytes: &'static [u8]) -> anyhow::Result<UpAdjFlat> {
+        Self::read_from_bytes_inner(bytes, true)
+    }
+
+    /// Same as [`Self::read_from_bytes`] but elides the per-format CRC
+    /// walk over the body. Caller MUST guarantee the bytes have already
+    /// been verified upstream (e.g. via the container's lazy CRC layer).
+    pub fn read_from_bytes_unverified(bytes: &'static [u8]) -> anyhow::Result<UpAdjFlat> {
+        Self::read_from_bytes_inner(bytes, false)
+    }
+
+    fn read_from_bytes_inner(bytes: &'static [u8], verify: bool) -> anyhow::Result<UpAdjFlat> {
         let (has_topo_idx, n_nodes, n_edges) = parse_adj_flat_header(bytes, UP_ADJ_FLAT_MAGIC)?;
         let (offsets_off, targets_off, weights_off, topo_off, body_end) =
             body_layout(n_nodes, n_edges, has_topo_idx);
@@ -537,7 +548,9 @@ impl UpAdjFlatFile {
             "adj-flat section bytes not 8-byte aligned (got pointer 0x{:x})",
             bytes.as_ptr() as usize
         );
-        verify_adj_flat_crcs(bytes, body_end)?;
+        if verify {
+            verify_adj_flat_crcs(bytes, body_end)?;
+        }
 
         let offsets: &'static [u64] =
             bytemuck::cast_slice(&bytes[offsets_off..offsets_off + 8 * (n_nodes + 1)]);
@@ -581,6 +594,16 @@ impl DownAdjFlatFile {
     }
 
     pub fn read_from_bytes(bytes: &'static [u8]) -> anyhow::Result<DownAdjFlat> {
+        Self::read_from_bytes_inner(bytes, true)
+    }
+
+    /// Same as [`Self::read_from_bytes`] but elides the per-format CRC
+    /// walk. Caller MUST guarantee the bytes are already verified.
+    pub fn read_from_bytes_unverified(bytes: &'static [u8]) -> anyhow::Result<DownAdjFlat> {
+        Self::read_from_bytes_inner(bytes, false)
+    }
+
+    fn read_from_bytes_inner(bytes: &'static [u8], verify: bool) -> anyhow::Result<DownAdjFlat> {
         let (has_topo_idx, n_nodes, n_edges) = parse_adj_flat_header(bytes, DOWN_ADJ_FLAT_MAGIC)?;
         anyhow::ensure!(
             !has_topo_idx,
@@ -596,7 +619,9 @@ impl DownAdjFlatFile {
             (bytes.as_ptr() as usize).is_multiple_of(8),
             "adj-flat section bytes not 8-byte aligned"
         );
-        verify_adj_flat_crcs(bytes, body_end)?;
+        if verify {
+            verify_adj_flat_crcs(bytes, body_end)?;
+        }
         let offsets: &'static [u64] =
             bytemuck::cast_slice(&bytes[offsets_off..offsets_off + 8 * (n_nodes + 1)]);
         let targets: &'static [u32] =
@@ -641,6 +666,19 @@ impl DownReverseAdjFlatFile {
     }
 
     pub fn read_from_bytes(bytes: &'static [u8]) -> anyhow::Result<DownReverseAdjFlat> {
+        Self::read_from_bytes_inner(bytes, true)
+    }
+
+    /// Same as [`Self::read_from_bytes`] but elides the per-format CRC
+    /// walk. Caller MUST guarantee the bytes are already verified.
+    pub fn read_from_bytes_unverified(bytes: &'static [u8]) -> anyhow::Result<DownReverseAdjFlat> {
+        Self::read_from_bytes_inner(bytes, false)
+    }
+
+    fn read_from_bytes_inner(
+        bytes: &'static [u8],
+        verify: bool,
+    ) -> anyhow::Result<DownReverseAdjFlat> {
         let (has_topo_idx, n_nodes, n_edges) =
             parse_adj_flat_header(bytes, DOWN_REV_ADJ_FLAT_MAGIC)?;
         let (offsets_off, sources_off, weights_off, topo_off, body_end) =
@@ -653,7 +691,9 @@ impl DownReverseAdjFlatFile {
             (bytes.as_ptr() as usize).is_multiple_of(8),
             "adj-flat section bytes not 8-byte aligned"
         );
-        verify_adj_flat_crcs(bytes, body_end)?;
+        if verify {
+            verify_adj_flat_crcs(bytes, body_end)?;
+        }
         let offsets: &'static [u64] =
             bytemuck::cast_slice(&bytes[offsets_off..offsets_off + 8 * (n_nodes + 1)]);
         let sources: &'static [u32] =
