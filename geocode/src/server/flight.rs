@@ -44,8 +44,8 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::control::budget::compute_budget;
-use crate::geocoder::executor::{GeocodedResult, apply_rerank, execute_with_control};
+use crate::geocoder::executor::{GeocodedResult, recall_then_rerank};
+use crate::geocoder::recall::RecallBudget;
 use crate::routing::CountryId;
 
 use super::state::ServerState;
@@ -359,58 +359,40 @@ fn process_row(row: &InputRow, state: &ServerState, limit: u32, include_debug: b
     let shard = state
         .shards
         .get(&dispatch_country)
-        .expect("dispatch_country must be loaded");
+        .expect("dispatch_country must be loaded")
+        .clone();
 
-    let mut parsed = match state.parser.parse(&row.query, dispatch_country, shard) {
-        Ok(p) => p,
-        Err(_) => {
-            return OutputRow {
-                idx: row.idx,
-                top: None,
-                confidence: "reject",
-                country: Some(dispatch_country),
-                reason_codes: if include_debug {
-                    vec!["PARSER_ERROR".to_string()]
-                } else {
-                    Vec::new()
-                },
-            };
-        }
-    };
-    parsed.country_candidates = vec![(dispatch_country, 1.0)];
+    let signals = state.parser.signals(&row.query, &shard).unwrap_or_default();
 
-    let stats = shard.stats();
-    parsed.execution_budget = compute_budget(&parsed, stats, state.control.budget_policy);
-
-    let raw = match execute_with_control(&parsed, shard, limit_usize, &state.control) {
-        Ok(r) => r,
-        Err(_) => {
-            return OutputRow {
-                idx: row.idx,
-                top: None,
-                confidence: "reject",
-                country: Some(dispatch_country),
-                reason_codes: if include_debug {
-                    vec!["ADMISSION_REJECTED".to_string()]
-                } else {
-                    Vec::new()
-                },
-            };
-        }
+    let budget = match state.recaller.stats_for(dispatch_country) {
+        Some(s) => RecallBudget::default().adapt_to_stats(s.p95_postings),
+        None => RecallBudget::default(),
     };
 
-    let (mut ranked, action) = apply_rerank(
-        raw,
-        &parsed,
-        shard,
-        state.rerank_model.as_ref(),
-        &state.confidence_config,
+    let shard_for = {
+        let shards = state.shards.clone();
+        move |c: CountryId| shards.get(&c).cloned()
+    };
+    let mut ranked = recall_then_rerank(
+        &row.query,
+        &signals,
+        &[dispatch_country],
+        &state.recaller,
+        &state.reranker,
+        &budget,
+        shard_for,
+        limit_usize,
     );
 
     let top = if ranked.is_empty() {
         None
     } else {
         Some(ranked.swap_remove(0))
+    };
+
+    let confidence = match &top {
+        Some(t) => t.action.as_str(),
+        None => "empty",
     };
 
     let reason_codes = if include_debug {
@@ -420,12 +402,6 @@ fn process_row(row: &InputRow, state: &ServerState, limit: u32, include_debug: b
         }
     } else {
         Vec::new()
-    };
-
-    let confidence = if top.is_some() {
-        action.as_str()
-    } else {
-        "empty"
     };
 
     OutputRow {
@@ -465,14 +441,13 @@ fn encode_output_chunk(
         confidence_b.append_value(row.confidence);
 
         // The country column reflects the candidate's own country
-        // (set by `execute_multi` when results span multiple shards)
-        // when present, falling back to the dispatch country
-        // (which shard answered) otherwise. This way the column is
-        // populated whether or not a candidate was found.
-        let country_str = row
+        // (read from the [`RankedResult`]) when present, falling back
+        // to the dispatch country otherwise. The column is populated
+        // whether or not a candidate was found.
+        let country_str: Option<&'static str> = row
             .top
             .as_ref()
-            .and_then(|t| t.country)
+            .map(|t| t.country.iso2())
             .or_else(|| row.country.map(|c| c.iso2()));
         match country_str {
             Some(s) => country_b.append_value(s),
@@ -1125,6 +1100,10 @@ mod tests {
             OutputRow {
                 idx: 1,
                 top: Some(GeocodedResult {
+                    country: CountryId::BE,
+                    address_id: 0,
+                    record_id: 0,
+                    source: crate::SourceTag::OpenAddresses,
                     lat: 50.85,
                     lon: 4.35,
                     street: "Rue de la Loi".to_string(),
@@ -1132,8 +1111,9 @@ mod tests {
                     postcode: "1000".to_string(),
                     locality: "Bruxelles".to_string(),
                     score: 0.95,
-                    country: Some("BE"),
-                    reason_codes: vec![std::borrow::Cow::Borrowed("STREET_EXACT")],
+                    features: crate::geocoder::rerank::RerankFeatures::default(),
+                    action: crate::Confidence::Accept,
+                    reason_codes: vec!["STREET_EXACT"],
                 }),
                 confidence: "accept",
                 country: Some(CountryId::BE),
