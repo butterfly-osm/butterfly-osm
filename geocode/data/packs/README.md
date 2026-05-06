@@ -63,8 +63,9 @@ codes = []
 
 [source_priors]
 # Per-source weighting for the shard merger. `osm` is OSM
-# `addr:*` tags; `authoritative` is the country's official address
-# registry (BAN, BAG, BOSA, G-NAF, etc — see `geocode-data/SOURCES.md`).
+# `addr:*` tags; `authoritative` is OpenAddresses (which ingests
+# BAN / BAG / BeSt / G-NAF / state packs upstream — see
+# `geocode-data/SOURCES.md`).
 osm = 0.6
 authoritative = 0.5
 

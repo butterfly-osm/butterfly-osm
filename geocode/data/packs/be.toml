@@ -1,5 +1,5 @@
 # Belgium country pack — butterfly-geocode #96 "serve the world".
-# Authoritative dataset: BeSt Address (BOSA). See geocode-data/SOURCES.md.
+# Authoritative dataset: OpenAddresses (BE country pack).
 
 [country]
 iso2 = "BE"
