@@ -1,6 +1,6 @@
 {
   "label": "2026-05-06-gpu-prod",
-  "queries": "/home/snape/projects/butterfly-osm/bench/geocode/queries/belgium.tsv",
+  "queries": "bench/geocode/queries/belgium.tsv",
   "concurrency": 4,
   "limit": 5,
   "radius_m": 100.0,

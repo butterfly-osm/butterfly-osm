@@ -5,6 +5,7 @@
 #
 # Usage: build_multi_region_shard.sh <ISO2> <OUT_BFGS> <SRC1> <SRC2> ...
 set -euo pipefail
+cd "$(dirname "$0")/.."
 iso2="$1"; shift
 out="$1"; shift
 tmp=$(mktemp -d)

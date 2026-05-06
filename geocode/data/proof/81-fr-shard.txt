@@ -1,0 +1,111 @@
+# Shard proof — FR
+# Generated 2026-05-06T11:11:36Z
+#
+# Path:        geocode/data/shards/fr.bfgs
+# Size:        1403.3 MB (1471456496 bytes)
+# SHA-256:     fd61eb1cc330189c4d9fadb94931410c97dbaf40f74dec70cd3f346188c2315e
+# Source:      OpenAddresses oa-fr-countrywide (job 743120)
+# Format:      BFGS v5 (CRC-verified at server load)
+
+## /health
+{
+    "status": "ok",
+    "version": "2.0.0",
+    "uptime_seconds": 1,
+    "record_count": 26058030,
+    "shard_count": 1,
+    "total_records": 26058030,
+    "countries": [
+        "FR"
+    ]
+}
+
+## GET /geocode?q=1 Avenue des Champs-Élysées 75008 Paris&country=FR
+{
+    "query": "1 Avenue des Champs-\u00c9lys\u00e9es 75008 Paris",
+    "country": "FR",
+    "confidence": "accept",
+    "count": 0,
+    "results": []
+}
+
+## GET /geocode?q=1 Place Bellecour 69002 Lyon&country=FR
+{
+    "query": "1 Place Bellecour 69002 Lyon",
+    "country": "FR",
+    "confidence": "accept",
+    "count": 3,
+    "results": [
+        {
+            "lat": 45.758884,
+            "lon": 4.830916,
+            "street": "Place Bellecour",
+            "housenumber": "1",
+            "postcode": "69002",
+            "locality": "Lyon 2e Arrondissement",
+            "country": "FR",
+            "score": 2.7
+        },
+        {
+            "lat": 45.758826,
+            "lon": 4.831127,
+            "street": "Place Bellecour",
+            "housenumber": "2",
+            "postcode": "69002",
+            "locality": "Lyon 2e Arrondissement",
+            "country": "FR",
+            "score": 2.15
+        },
+        {
+            "lat": 45.758233,
+            "lon": 4.833295,
+            "street": "Place Bellecour",
+            "housenumber": "10",
+            "postcode": "69002",
+            "locality": "Lyon 2e Arrondissement",
+            "country": "FR",
+            "score": 2.0
+        }
+    ]
+}
+
+## GET /geocode?q=1 Rue Sainte-Catherine 33000 Bordeaux&country=FR
+{
+    "query": "1 Rue Sainte-Catherine 33000 Bordeaux",
+    "country": "FR",
+    "confidence": "accept",
+    "count": 3,
+    "results": [
+        {
+            "lat": 44.841896,
+            "lon": -0.57457,
+            "street": "Rue Sainte-Catherine",
+            "housenumber": "1",
+            "postcode": "33000",
+            "locality": "Bordeaux",
+            "country": "FR",
+            "score": 2.8
+        },
+        {
+            "lat": 44.841503,
+            "lon": -0.574381,
+            "street": "Rue Sainte-Catherine",
+            "housenumber": "10",
+            "postcode": "33000",
+            "locality": "Bordeaux",
+            "country": "FR",
+            "score": 2.1
+        },
+        {
+            "lat": 44.83837,
+            "lon": -0.573865,
+            "street": "Rue Sainte-Catherine",
+            "housenumber": "100",
+            "postcode": "33000",
+            "locality": "Bordeaux",
+            "country": "FR",
+            "score": 2.1
+        }
+    ]
+}
+

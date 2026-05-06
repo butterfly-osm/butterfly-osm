@@ -1,0 +1,111 @@
+# Shard proof — ES
+# Generated 2026-05-06T11:11:51Z
+#
+# Path:        geocode/data/shards/es.bfgs
+# Size:        832.6 MB (873025676 bytes)
+# SHA-256:     3effe10138c845f9ad4308569acf5172afcfef4a9110415cfaef0c5667641623
+# Source:      OpenAddresses oa-es-countrywide (job 823991)
+# Format:      BFGS v5 (CRC-verified at server load)
+
+## /health
+{
+    "status": "ok",
+    "version": "2.0.0",
+    "uptime_seconds": 1,
+    "record_count": 15656610,
+    "shard_count": 1,
+    "total_records": 15656610,
+    "countries": [
+        "ES"
+    ]
+}
+
+## GET /geocode?q=Gran Vía 1 28013 Madrid&country=ES
+{
+    "query": "Gran V\u00eda 1 28013 Madrid",
+    "country": "ES",
+    "confidence": "accept",
+    "count": 3,
+    "results": [
+        {
+            "lat": 40.4188465,
+            "lon": -3.7038927,
+            "street": "CALLE ABADA",
+            "housenumber": "1",
+            "postcode": "28013",
+            "locality": "Madrid",
+            "country": "ES",
+            "score": 1.8000001
+        },
+        {
+            "lat": 40.4190328,
+            "lon": -3.7037879,
+            "street": "CALLE ABADA",
+            "housenumber": "2",
+            "postcode": "28013",
+            "locality": "Madrid",
+            "country": "ES",
+            "score": 1.25
+        },
+        {
+            "lat": 40.418935,
+            "lon": -3.7039879,
+            "street": "CALLE ABADA",
+            "housenumber": "3",
+            "postcode": "28013",
+            "locality": "Madrid",
+            "country": "ES",
+            "score": 1.2
+        }
+    ]
+}
+
+## GET /geocode?q=Las Ramblas 1 08002 Barcelona&country=ES
+{
+    "query": "Las Ramblas 1 08002 Barcelona",
+    "country": "ES",
+    "confidence": "accept",
+    "count": 3,
+    "results": [
+        {
+            "lat": 41.384548,
+            "lon": 2.1752757,
+            "street": "AVINGUDA CATEDRAL",
+            "housenumber": "1",
+            "postcode": "08002",
+            "locality": "Barcelona",
+            "country": "ES",
+            "score": 1.8000001
+        },
+        {
+            "lat": 41.3845597,
+            "lon": 2.1740271,
+            "street": "AVINGUDA PORTAL DE L'ANGEL",
+            "housenumber": "1",
+            "postcode": "08002",
+            "locality": "Barcelona",
+            "country": "ES",
+            "score": 1.8000001
+        },
+        {
+            "lat": 41.3842195,
+            "lon": 2.1756391,
+            "street": "AVINGUDA CATEDRAL",
+            "housenumber": "2",
+            "postcode": "08002",
+            "locality": "Barcelona",
+            "country": "ES",
+            "score": 1.25
+        }
+    ]
+}
+
+## GET /geocode?q=Plaça de l'Ajuntament 1 46002 València&country=ES
+{
+    "query": "Pla\u00e7a de l'Ajuntament 1 46002 Val\u00e8ncia",
+    "country": "ES",
+    "confidence": "accept",
+    "count": 0,
+    "results": []
+}
+

@@ -1,0 +1,111 @@
+# Shard proof — CH
+# Generated 2026-05-06T10:48:54Z
+#
+# Path:        geocode/data/shards/ch.bfgs
+# Size:        170.9 MB (179215620 bytes)
+# SHA-256:     d775f3ca67829914fb77e585da66c52256f0fccfb55dd66004e24659a3f39e1d
+# Source:      OpenAddresses oa-ch-countrywide (job 824053)
+# Format:      BFGS v5 (CRC-verified at server load)
+
+## /health
+{
+    "status": "ok",
+    "version": "2.0.0",
+    "uptime_seconds": 0,
+    "record_count": 3268111,
+    "shard_count": 1,
+    "total_records": 3268111,
+    "countries": [
+        "CH"
+    ]
+}
+
+## GET /geocode?q=Bahnhofstrasse 1 Zürich&country=CH
+{
+    "query": "Bahnhofstrasse 1 Z\u00fcrich",
+    "country": "CH",
+    "confidence": "accept",
+    "count": 0,
+    "results": []
+}
+
+## GET /geocode?q=Place du Bourg-de-Four 1 Genève&country=CH
+{
+    "query": "Place du Bourg-de-Four 1 Gen\u00e8ve",
+    "country": "CH",
+    "confidence": "accept",
+    "count": 3,
+    "results": [
+        {
+            "lat": 46.200691,
+            "lon": 6.1494594,
+            "street": "Place du Bourg-de-Four",
+            "housenumber": "1",
+            "postcode": "1204",
+            "locality": "Gen\u00e8ve",
+            "country": "CH",
+            "score": 1.8000001
+        },
+        {
+            "lat": 46.2006781,
+            "lon": 6.1503832,
+            "street": "Place du Bourg-de-Four",
+            "housenumber": "1.1",
+            "postcode": "1204",
+            "locality": "Gen\u00e8ve",
+            "country": "CH",
+            "score": 1.4
+        },
+        {
+            "lat": 46.2004327,
+            "lon": 6.149593,
+            "street": "Place du Bourg-de-Four",
+            "housenumber": "1.2",
+            "postcode": "1204",
+            "locality": "Gen\u00e8ve",
+            "country": "CH",
+            "score": 1.4
+        }
+    ]
+}
+
+## GET /geocode?q=Rue du Marché 1 Lausanne&country=CH
+{
+    "query": "Rue du March\u00e9 1 Lausanne",
+    "country": "CH",
+    "confidence": "accept",
+    "count": 3,
+    "results": [
+        {
+            "lat": 46.2034699,
+            "lon": 6.1460163,
+            "street": "Rue du March\u00e9",
+            "housenumber": "1",
+            "postcode": "1204",
+            "locality": "Gen\u00e8ve",
+            "country": "CH",
+            "score": 1.7
+        },
+        {
+            "lat": 46.7083926,
+            "lon": 6.8386941,
+            "street": "Rue du March\u00e9",
+            "housenumber": "1",
+            "postcode": "1522",
+            "locality": "Lucens",
+            "country": "CH",
+            "score": 1.7
+        },
+        {
+            "lat": 46.4333866,
+            "lon": 6.9103777,
+            "street": "Rue du March\u00e9",
+            "housenumber": "1",
+            "postcode": "1820",
+            "locality": "Montreux",
+            "country": "CH",
+            "score": 1.7
+        }
+    ]
+}
+
