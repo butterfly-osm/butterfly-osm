@@ -1,0 +1,49 @@
+# Shard proof — AT
+# Generated 2026-05-06T10:48:45Z
+#
+# Path:        geocode/data/shards/at.bfgs
+# Size:        130.8 MB (137140052 bytes)
+# SHA-256:     a6f0240cd613138da6c4c76643ee81e254a3a9e4d89a0ff1ec08a15c70f66bb9
+# Source:      OpenAddresses oa-at-countrywide (job 824498)
+# Format:      BFGS v5 (CRC-verified at server load)
+
+## /health
+{
+    "status": "ok",
+    "version": "2.0.0",
+    "uptime_seconds": 0,
+    "record_count": 2516345,
+    "shard_count": 1,
+    "total_records": 2516345,
+    "countries": [
+        "AT"
+    ]
+}
+
+## GET /geocode?q=Stephansplatz 1 Wien&country=AT
+{
+    "query": "Stephansplatz 1 Wien",
+    "country": "AT",
+    "confidence": "accept",
+    "count": 0,
+    "results": []
+}
+
+## GET /geocode?q=Maria-Theresien-Straße 18 Innsbruck&country=AT
+{
+    "query": "Maria-Theresien-Stra\u00dfe 18 Innsbruck",
+    "country": "AT",
+    "confidence": "accept",
+    "count": 0,
+    "results": []
+}
+
+## GET /geocode?q=Mozartplatz 1 Salzburg&country=AT
+{
+    "query": "Mozartplatz 1 Salzburg",
+    "country": "AT",
+    "confidence": "accept",
+    "count": 0,
+    "results": []
+}
+
