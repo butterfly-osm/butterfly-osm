@@ -861,7 +861,7 @@ pub fn train_and_save_with_outcome<P: AsRef<Path>>(
         };
 
         // Eval.
-        let (eval_loss, eval_bio_acc, eval_country_acc) = evaluate(
+        let (eval_loss, eval_bio_acc, eval_country_acc, per_country_counts) = evaluate(
             &model,
             corpus,
             &eval_idx,
@@ -912,6 +912,24 @@ pub fn train_and_save_with_outcome<P: AsRef<Path>>(
 
         // JSONL telemetry — one row per epoch.
         if let Some(ref mut w) = metrics_writer {
+            // Per-country bio_acc breakdown — keys are ISO codes
+            // from the vocab, values are accuracy in [0, 1]. Empty
+            // (no eval examples for that country) → 0.0.
+            let mut per_country_bio = serde_json::Map::with_capacity(vocab.len());
+            for ci in 0..vocab.len() {
+                let total = per_country_counts.bio_total.get(ci).copied().unwrap_or(0);
+                let correct = per_country_counts.bio_correct.get(ci).copied().unwrap_or(0);
+                let acc = if total > 0 {
+                    correct as f32 / total as f32
+                } else {
+                    0.0
+                };
+                let iso = vocab.iso_of(ci).unwrap_or("");
+                per_country_bio.insert(
+                    iso.to_string(),
+                    serde_json::json!({"bio_acc": acc, "total": total}),
+                );
+            }
             let row = serde_json::json!({
                 "epoch": m.epoch,
                 "train_loss": m.train_loss,
@@ -933,6 +951,7 @@ pub fn train_and_save_with_outcome<P: AsRef<Path>>(
                 "n_countries": cfg.n_countries,
                 "d_model": cfg.d_model,
                 "n_layers": cfg.n_layers,
+                "per_country_bio_acc": per_country_bio,
             });
             writeln!(w, "{row}").context("writing metrics row")?;
             w.flush().ok();
@@ -1183,6 +1202,17 @@ fn bio_loss_masked(bio_logits: &Tensor, bio_targets: &Tensor, mask: &Tensor) -> 
     Ok(loss)
 }
 
+/// Per-country evaluation breakdown. `bio_correct[ci]` and
+/// `bio_total[ci]` index by the same country id encoded in
+/// `CountryVocab`. Returned alongside the aggregate metrics by
+/// [`evaluate`] so the trainer can log per-country bio_acc to the
+/// JSONL telemetry stream.
+#[derive(Debug, Clone, Default)]
+pub struct PerCountryEvalCounts {
+    pub bio_correct: Vec<u64>,
+    pub bio_total: Vec<u64>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn evaluate(
     model: &TaggerModel,
@@ -1193,9 +1223,14 @@ fn evaluate(
     bio_w: f32,
     country_w: f32,
     device: &Device,
-) -> Result<(f32, f32, f32)> {
+) -> Result<(f32, f32, f32, PerCountryEvalCounts)> {
+    let n_countries = vocab.len();
+    let mut per_country = PerCountryEvalCounts {
+        bio_correct: vec![0; n_countries],
+        bio_total: vec![0; n_countries],
+    };
     if eval_idx.is_empty() {
-        return Ok((f32::NAN, f32::NAN, f32::NAN));
+        return Ok((f32::NAN, f32::NAN, f32::NAN, per_country));
     }
     let mut total_loss = 0.0_f32;
     let mut count = 0usize;
@@ -1247,12 +1282,25 @@ fn evaluate(
         let bio_v = bio_t
             .to_vec2::<u32>()
             .map_err(|e| anyhow!("bio to_vec2: {e}"))?;
+        // Per-row country id (same length as the eval batch). Used
+        // to attribute BIO body-byte hits/misses to the source
+        // country for the per-country breakdown.
+        let row_country_v = country_t
+            .to_vec1::<u32>()
+            .map_err(|e| anyhow!("country target vec for bio breakdown: {e}"))?;
         for r in 0..bio_argmax.len() {
+            let ci = row_country_v.get(r).copied().unwrap_or(0) as usize;
             for c in 0..bio_argmax[r].len() {
                 if loss_v[r][c] == 1 {
                     bio_total += 1;
+                    if let Some(slot) = per_country.bio_total.get_mut(ci) {
+                        *slot += 1;
+                    }
                     if bio_argmax[r][c] == bio_v[r][c] {
                         bio_correct += 1;
+                        if let Some(slot) = per_country.bio_correct.get_mut(ci) {
+                            *slot += 1;
+                        }
                     }
                 }
             }
@@ -1290,7 +1338,7 @@ fn evaluate(
     } else {
         f32::NAN
     };
-    Ok((avg_loss, bio_acc, country_acc))
+    Ok((avg_loss, bio_acc, country_acc, per_country))
 }
 
 /// Belgium-only synthetic corpus generator.
