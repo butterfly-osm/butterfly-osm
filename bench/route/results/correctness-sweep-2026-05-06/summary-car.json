@@ -1,0 +1,55 @@
+{
+  "mode": "car",
+  "n_total": 10000,
+  "n_both_valid": 8437,
+  "n_osrm_only": 1563,
+  "n_butterfly_only": 0,
+  "n_both_failed": 0,
+  "distance_diff_pct": {
+    "p50": 1.8787614764348803,
+    "p95": 13.179577330532648,
+    "p99": 24.877119582861997,
+    "max": 229.3939527212752,
+    "mean": 3.687333858291528
+  },
+  "duration_diff_pct": {
+    "p50": 14.710605320114507,
+    "p95": 21.78399271935301,
+    "p99": 26.457538923316342,
+    "max": 131.53266331658295,
+    "mean": 14.486020563071243
+  },
+  "distance_diff_abs_m": {
+    "p50": 1898.293000000267,
+    "p95": 13749.938399999934,
+    "p99": 25525.99659999999,
+    "max": 55247.191999999864
+  },
+  "duration_diff_abs_s": {
+    "p50": 799.3999999999996,
+    "p95": 1508.9399999999998,
+    "p99": 1797.42,
+    "max": 2358.8999999999996
+  },
+  "n_in_distance_tolerance": 1796,
+  "n_in_duration_tolerance": 49,
+  "n_in_both_tolerance": 6,
+  "pct_in_both_tolerance": 0.07111532535261349,
+  "speed_profile_bias_ratio_osrm_over_bf": 1.1660492371807545,
+  "duration_diff_pct_corrected": {
+    "p50": 3.022693968868514,
+    "p95": 12.644314701638825,
+    "p99": 21.3224284537244,
+    "max": 169.97848544273,
+    "mean": 4.339884791069473
+  },
+  "n_in_duration_tolerance_corrected": 1571,
+  "pct_in_distance_tolerance": 21.287187388882305,
+  "pct_in_distance_and_corrected_duration": 5.120303425388171,
+  "n_flagged_distance_gt_5pct": 1911,
+  "n_flagged_duration_gt_5pct": 8082,
+  "osrm_distance_total_km": 1048169.4643999999,
+  "bf_distance_total_km": 1039087.290949,
+  "osrm_duration_total_h": 13349.308722222222,
+  "bf_duration_total_h": 11448.323361111112
+}

@@ -1,0 +1,55 @@
+{
+  "mode": "bike",
+  "n_total": 10000,
+  "n_both_valid": 10000,
+  "n_osrm_only": 0,
+  "n_butterfly_only": 0,
+  "n_both_failed": 0,
+  "distance_diff_pct": {
+    "p50": 0.9501593410099947,
+    "p95": 4.4617252302645145,
+    "p99": 9.86605158200634,
+    "max": 183.08849797023004,
+    "mean": 1.5548316947960212
+  },
+  "duration_diff_pct": {
+    "p50": 20.3200043836113,
+    "p95": 24.457516612914656,
+    "p99": 26.70075379347216,
+    "max": 97.65537774469671,
+    "mean": 20.282296572085517
+  },
+  "distance_diff_abs_m": {
+    "p50": 901.5394999998316,
+    "p95": 3823.4965000000298,
+    "p99": 5776.900419999926,
+    "max": 22533.68700000005
+  },
+  "duration_diff_abs_s": {
+    "p50": 5303.5,
+    "p95": 10816.184999999985,
+    "p99": 12954.141999999993,
+    "max": 15567.299999999996
+  },
+  "n_in_distance_tolerance": 2937,
+  "n_in_duration_tolerance": 0,
+  "n_in_both_tolerance": 0,
+  "pct_in_both_tolerance": 0.0,
+  "speed_profile_bias_ratio_osrm_over_bf": 1.2542253863730835,
+  "duration_diff_pct_corrected": {
+    "p50": 2.3595260880023954,
+    "p95": 6.578484407379417,
+    "p99": 11.082683153649292,
+    "max": 147.90439252055998,
+    "mean": 2.8237899800387094
+  },
+  "n_in_duration_tolerance_corrected": 2022,
+  "pct_in_distance_tolerance": 29.37,
+  "pct_in_distance_and_corrected_duration": 6.82,
+  "n_flagged_distance_gt_5pct": 399,
+  "n_flagged_duration_gt_5pct": 9991,
+  "osrm_distance_total_km": 1110882.2628,
+  "bf_distance_total_km": 1116471.908219,
+  "osrm_duration_total_h": 76423.30655555555,
+  "bf_duration_total_h": 60932.67397222223
+}
