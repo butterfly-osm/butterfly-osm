@@ -36,10 +36,17 @@ gbdt = "0.1.3"
 
 # Neural parser (#96 §Tagger, #98 Phase 1).
 # candle: pure-Rust tensor + autograd. Apache-2.0 — AGPL-compatible.
-# Built without CUDA/MKL/Accelerate features → pure-CPU compute. Note
-# that candle-nn pulls `tokenizers` (transitively, for tokenizer
-# I/O), which links against `onig_sys` (a small C regex library).
-# That's the only native FFI surface in the geocoder build today.
+#
+# CUDA is gated behind the local `cuda` cargo feature so CI environments
+# without an NVIDIA toolchain still build cleanly. When enabled, candle
+# 0.10 pulls in `cudarc` + `bindgen_cuda` and JIT-compiles kernels for
+# the local compute capability (e.g. `CUDA_COMPUTE_CAP=120` on a 5060
+# Ti). BF16 mixed-precision training requires the cuda feature too —
+# DType::BF16 only has fast paths on the GPU backend.
+#
+# Note: candle-nn transitively pulls `tokenizers`, which links against
+# `onig_sys` (a small C regex library). That's the only native FFI
+# surface in the default CPU-only build.
 candle-core = { version = "0.10", default-features = false }
 candle-nn = { version = "0.10", default-features = false }
 safetensors = "0.4"
@@ -81,6 +88,15 @@ tempfile = { workspace = true }
 # (`miniz_oxide` backend) — no native gzip FFI.
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 flate2 = { version = "1.0", default-features = false, features = ["rust_backend"] }
+
+[features]
+default = []
+# Enable NVIDIA CUDA acceleration for tagger training + inference.
+# Requires CUDA toolkit on PATH (`nvcc --version`) and a recent driver.
+# Set `CUDA_COMPUTE_CAP` to your GPU's compute capability (e.g. 120 for
+# RTX 5060 Ti / Ada Lovelace, 86 for RTX 30-series, 89 for RTX 40-series)
+# to skip kernel autodetect.
+cuda = ["candle-core/cuda", "candle-nn/cuda"]
 
 [lints]
 workspace = true
