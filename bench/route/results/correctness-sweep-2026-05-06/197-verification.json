@@ -1,0 +1,372 @@
+{
+  "issue": 197,
+  "results_file": "bench/route/results/correctness-sweep-2026-05-06/results-car.jsonl",
+  "port": 3010,
+  "n_pairs_previously_failing": 1563,
+  "n_fixed": 1543,
+  "n_still_failing": 20,
+  "fix_rate_pct": 98.72,
+  "elapsed_s": 4.7,
+  "still_failing_sample": [
+    {
+      "pair_idx": 1130,
+      "mode": "car",
+      "src_lon": 3.5192887,
+      "src_lat": 50.4924389,
+      "dst_lon": 3.3354592,
+      "dst_lat": 51.0608796,
+      "osrm_distance_m": 90422.7,
+      "osrm_duration_s": 4365.4,
+      "butterfly_distance_m": null,
+      "butterfly_duration_s": null,
+      "osrm_error": null,
+      "butterfly_error": "No route found",
+      "still_error": {
+        "error": "No route found",
+        "status": 404
+      }
+    },
+    {
+      "pair_idx": 1969,
+      "mode": "car",
+      "src_lon": 5.3908795,
+      "src_lat": 51.2146369,
+      "dst_lon": 3.7133361,
+      "dst_lat": 51.009585,
+      "osrm_distance_m": 135700.8,
+      "osrm_duration_s": 6079.2,
+      "butterfly_distance_m": null,
+      "butterfly_duration_s": null,
+      "osrm_error": null,
+      "butterfly_error": "No route found",
+      "still_error": {
+        "error": "No route found",
+        "status": 404
+      }
+    },
+    {
+      "pair_idx": 2771,
+      "mode": "car",
+      "src_lon": 4.5958526,
+      "src_lat": 50.3785185,
+      "dst_lon": 5.7393408,
+      "dst_lat": 50.9766853,
+      "osrm_distance_m": 129770.3,
+      "osrm_duration_s": 6702,
+      "butterfly_distance_m": null,
+      "butterfly_duration_s": null,
+      "osrm_error": null,
+      "butterfly_error": "No route found",
+      "still_error": {
+        "error": "No route found",
+        "status": 404
+      }
+    },
+    {
+      "pair_idx": 3107,
+      "mode": "car",
+      "src_lon": 3.8132375,
+      "src_lat": 51.1709958,
+      "dst_lon": 4.7832868,
+      "dst_lat": 51.0417361,
+      "osrm_distance_m": 98168.6,
+      "osrm_duration_s": 5203.6,
+      "butterfly_distance_m": null,
+      "butterfly_duration_s": null,
+      "osrm_error": null,
+      "butterfly_error": "No route found",
+      "still_error": {
+        "error": "No route found",
+        "status": 404
+      }
+    },
+    {
+      "pair_idx": 2336,
+      "mode": "car",
+      "src_lon": 5.1159335,
+      "src_lat": 51.0177744,
+      "dst_lon": 6.2364338,
+      "dst_lat": 50.500308,
+      "osrm_distance_m": 129447.8,
+      "osrm_duration_s": 6005.9,
+      "butterfly_distance_m": null,
+      "butterfly_duration_s": null,
+      "osrm_error": null,
+      "butterfly_error": "No route found",
+      "still_error": {
+        "error": "No route found",
+        "status": 404
+      }
+    },
+    {
+      "pair_idx": 3889,
+      "mode": "car",
+      "src_lon": 3.8372316,
+      "src_lat": 50.8881096,
+      "dst_lon": 5.8183339,
+      "dst_lat": 51.1179642,
+      "osrm_distance_m": 168968.2,
+      "osrm_duration_s": 7846.5,
+      "butterfly_distance_m": null,
+      "butterfly_duration_s": null,
+      "osrm_error": null,
+      "butterfly_error": "No route found",
+      "still_error": {
+        "error": "No route found",
+        "status": 404
+      }
+    },
+    {
+      "pair_idx": 3547,
+      "mode": "car",
+      "src_lon": 3.550717,
+      "src_lat": 51.1202144,
+      "dst_lon": 3.6418753,
+      "dst_lat": 51.0829196,
+      "osrm_distance_m": 9769.1,
+      "osrm_duration_s": 1017.7,
+      "butterfly_distance_m": null,
+      "butterfly_duration_s": null,
+      "osrm_error": null,
+      "butterfly_error": "No route found",
+      "still_error": {
+        "error": "No route found",
+        "status": 404
+      }
+    },
+    {
+      "pair_idx": 3614,
+      "mode": "car",
+      "src_lon": 3.297046,
+      "src_lat": 51.1016784,
+      "dst_lon": 4.3593501,
+      "dst_lat": 51.1463422,
+      "osrm_distance_m": 96901.3,
+      "osrm_duration_s": 4619.6,
+      "butterfly_distance_m": null,
+      "butterfly_duration_s": null,
+      "osrm_error": null,
+      "butterfly_error": "No route found",
+      "still_error": {
+        "error": "No route found",
+        "status": 404
+      }
+    },
+    {
+      "pair_idx": 3700,
+      "mode": "car",
+      "src_lon": 3.5314891,
+      "src_lat": 50.4918268,
+      "dst_lon": 4.3395749,
+      "dst_lat": 50.8014886,
+      "osrm_distance_m": 96853.8,
+      "osrm_duration_s": 4441.3,
+      "butterfly_distance_m": null,
+      "butterfly_duration_s": null,
+      "osrm_error": null,
+      "butterfly_error": "No route found",
+      "still_error": {
+        "error": "No route found",
+        "status": 404
+      }
+    },
+    {
+      "pair_idx": 4230,
+      "mode": "car",
+      "src_lon": 5.2111059,
+      "src_lat": 51.1775329,
+      "dst_lon": 5.1951674,
+      "dst_lat": 50.509509,
+      "osrm_distance_m": 123663.3,
+      "osrm_duration_s": 6128,
+      "butterfly_distance_m": null,
+      "butterfly_duration_s": null,
+      "osrm_error": null,
+      "butterfly_error": "No route found",
+      "still_error": {
+        "error": "No route found",
+        "status": 404
+      }
+    },
+    {
+      "pair_idx": 5032,
+      "mode": "car",
+      "src_lon": 3.2339957,
+      "src_lat": 51.2750953,
+      "dst_lon": 5.2731878,
+      "dst_lat": 50.5327257,
+      "osrm_distance_m": 198457.1,
+      "osrm_duration_s": 8845.9,
+      "butterfly_distance_m": null,
+      "butterfly_duration_s": null,
+      "osrm_error": null,
+      "butterfly_error": "No route found",
+      "still_error": {
+        "error": "No route found",
+        "status": 404
+      }
+    },
+    {
+      "pair_idx": 5303,
+      "mode": "car",
+      "src_lon": 3.4838366,
+      "src_lat": 51.0488128,
+      "dst_lon": 3.7076564,
+      "dst_lat": 51.0104901,
+      "osrm_distance_m": 20786.8,
+      "osrm_duration_s": 1243.3,
+      "butterfly_distance_m": null,
+      "butterfly_duration_s": null,
+      "osrm_error": null,
+      "butterfly_error": "No route found",
+      "still_error": {
+        "error": "No route found",
+        "status": 404
+      }
+    },
+    {
+      "pair_idx": 5889,
+      "mode": "car",
+      "src_lon": 6.1226765,
+      "src_lat": 50.2825383,
+      "dst_lon": 5.1943782,
+      "dst_lat": 50.5119059,
+      "osrm_distance_m": 121919.1,
+      "osrm_duration_s": 4979.1,
+      "butterfly_distance_m": null,
+      "butterfly_duration_s": null,
+      "osrm_error": null,
+      "butterfly_error": "No route found",
+      "still_error": {
+        "error": "No route found",
+        "status": 404
+      }
+    },
+    {
+      "pair_idx": 6025,
+      "mode": "car",
+      "src_lon": 4.6246069,
+      "src_lat": 50.3429369,
+      "dst_lon": 6.2259921,
+      "dst_lat": 50.5049918,
+      "osrm_distance_m": 157854.4,
+      "osrm_duration_s": 7512.2,
+      "butterfly_distance_m": null,
+      "butterfly_duration_s": null,
+      "osrm_error": null,
+      "butterfly_error": "No route found",
+      "still_error": {
+        "error": "No route found",
+        "status": 404
+      }
+    },
+    {
+      "pair_idx": 6175,
+      "mode": "car",
+      "src_lon": 3.3511303,
+      "src_lat": 50.560805,
+      "dst_lon": 3.8099644,
+      "dst_lat": 51.1701682,
+      "osrm_distance_m": 111248.8,
+      "osrm_duration_s": 6065.3,
+      "butterfly_distance_m": null,
+      "butterfly_duration_s": null,
+      "osrm_error": null,
+      "butterfly_error": "No route found",
+      "still_error": {
+        "error": "No route found",
+        "status": 404
+      }
+    },
+    {
+      "pair_idx": 5834,
+      "mode": "car",
+      "src_lon": 4.9281971,
+      "src_lat": 50.8964769,
+      "dst_lon": 5.8317341,
+      "dst_lat": 49.7476284,
+      "osrm_distance_m": 187483.8,
+      "osrm_duration_s": 8463.6,
+      "butterfly_distance_m": null,
+      "butterfly_duration_s": null,
+      "osrm_error": null,
+      "butterfly_error": "No route found",
+      "still_error": {
+        "error": "No route found",
+        "status": 404
+      }
+    },
+    {
+      "pair_idx": 8194,
+      "mode": "car",
+      "src_lon": 3.7934165,
+      "src_lat": 50.4524839,
+      "dst_lon": 6.1116836,
+      "dst_lat": 50.458514,
+      "osrm_distance_m": 203494.4,
+      "osrm_duration_s": 8256.3,
+      "butterfly_distance_m": null,
+      "butterfly_duration_s": null,
+      "osrm_error": null,
+      "butterfly_error": "No route found",
+      "still_error": {
+        "error": "No route found",
+        "status": 404
+      }
+    },
+    {
+      "pair_idx": 8691,
+      "mode": "car",
+      "src_lon": 4.9088284,
+      "src_lat": 50.2291765,
+      "dst_lon": 3.7584367,
+      "dst_lat": 51.253199,
+      "osrm_distance_m": 192935.1,
+      "osrm_duration_s": 8358.4,
+      "butterfly_distance_m": null,
+      "butterfly_duration_s": null,
+      "osrm_error": null,
+      "butterfly_error": "No route found",
+      "still_error": {
+        "error": "No route found",
+        "status": 404
+      }
+    },
+    {
+      "pair_idx": 8602,
+      "mode": "car",
+      "src_lon": 4.56173,
+      "src_lat": 50.6850884,
+      "dst_lon": 5.7995278,
+      "dst_lat": 51.0683363,
+      "osrm_distance_m": 134183.9,
+      "osrm_duration_s": 6017.6,
+      "butterfly_distance_m": null,
+      "butterfly_duration_s": null,
+      "osrm_error": null,
+      "butterfly_error": "No route found",
+      "still_error": {
+        "error": "No route found",
+        "status": 404
+      }
+    },
+    {
+      "pair_idx": 9153,
+      "mode": "car",
+      "src_lon": 4.8455386,
+      "src_lat": 49.8396018,
+      "dst_lon": 3.7920969,
+      "dst_lat": 50.9822971,
+      "osrm_distance_m": 201917.8,
+      "osrm_duration_s": 9036.9,
+      "butterfly_distance_m": null,
+      "butterfly_duration_s": null,
+      "osrm_error": null,
+      "butterfly_error": "No route found",
+      "still_error": {
+        "error": "No route found",
+        "status": 404
+      }
+    }
+  ]
+}

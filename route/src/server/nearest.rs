@@ -11,7 +11,7 @@ use std::sync::Arc;
 use utoipa::ToSchema;
 
 use super::regions::RegionsState;
-use super::types::{ErrorResponse, parse_mode, validate_coord};
+use super::types::{ErrorResponse, SnapRole, parse_mode, validate_coord};
 
 // ============ Types ============
 
@@ -29,6 +29,19 @@ pub struct NearestRequest {
     /// Number of nearest results (default 1, max 100)
     #[serde(default = "default_number")]
     number: u32,
+    /// Directional role (#197). `src` (default) returns only EBG
+    /// nodes that can start a route in this mode (have at least one
+    /// mode-valid outbound arc). `dst` returns only nodes that can
+    /// end a route (have at least one mode-valid inbound arc).
+    /// `either` disables the directional filter and behaves like the
+    /// pre-fix snap (still subject to the per-mode access mask).
+    /// Most callers want the default — bike/foot are effectively
+    /// undirected so all three roles converge on the same answer
+    /// there. Car (and other directed modes) need this to avoid
+    /// snapping a source coordinate to a one-way exit ramp's
+    /// "downstream" EBG node, which is a 404 source for /route.
+    #[serde(default)]
+    role: SnapRole,
 }
 
 pub fn default_number() -> u32 {
@@ -63,12 +76,13 @@ pub struct NearestResponse {
     path = "/nearest",
     tag = "Search",
     summary = "Find nearest road segments",
-    description = "Snaps a coordinate to the nearest road segments accessible by the given transport mode.\nReturns up to `number` results sorted by distance.",
+    description = "Snaps a coordinate to the nearest road segments accessible by the given transport mode.\nReturns up to `number` results sorted by distance.\n\n#197 directional snap: the optional `role` parameter controls which EBG candidates are eligible.\n  - `src` (default): only candidates with at least one mode-valid outbound arc — what you want when this point is a route source.\n  - `dst`: only candidates with at least one mode-valid inbound arc — what you want when this point is a route destination.\n  - `either`: disables the directional filter (legacy pre-fix behaviour, still subject to the per-mode access mask).",
     params(
         ("lon" = f64, Query, description = "Longitude", example = 4.3517),
         ("lat" = f64, Query, description = "Latitude", example = 50.8503),
         ("mode" = String, Query, description = "Transport mode (e.g. car, bike, foot — depends on available models)", example = "car"),
         ("number" = Option<u32>, Query, description = "Number of results (default 1, max 100)", example = 5),
+        ("role" = Option<SnapRole>, Query, description = "Directional snap role: src (default), dst, or either", example = "src"),
     ),
     responses(
         (status = 200, description = "Nearest roads found", body = NearestResponse),
@@ -122,9 +136,20 @@ pub async fn nearest_handler(
 
     let k = req.number as usize;
 
-    let results = state
-        .snap_index
-        .snap_k_with_info(req.lon, req.lat, mode.0, k);
+    // #197: role-aware snap. Default `src` filters to nodes that can
+    // start a route; `dst` to nodes that can terminate a route;
+    // `either` disables the directional filter for back-compat.
+    let mode_data = state.get_mode(mode);
+    let role_filter = req.role.role_filter(mode_data);
+
+    let results = state.snap_index.snap_k_with_info_filtered_role(
+        req.lon,
+        req.lat,
+        mode.0,
+        k,
+        None,
+        role_filter,
+    );
 
     if results.is_empty() {
         return (
