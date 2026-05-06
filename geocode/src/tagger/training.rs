@@ -924,7 +924,12 @@ pub fn train_and_save_with_outcome<P: AsRef<Path>>(
                 "plateau_streak": m.plateau_streak,
                 "best_eval_loss": m.best_eval_loss,
                 "global_step": global_step,
-                "device": format!("{:?}", train_cfg.device_pref),
+                "device": match &device {
+                    candle_core::Device::Cpu => "cpu",
+                    candle_core::Device::Cuda(_) => "cuda",
+                    candle_core::Device::Metal(_) => "metal",
+                },
+                "device_pref": format!("{:?}", train_cfg.device_pref),
                 "n_countries": cfg.n_countries,
                 "d_model": cfg.d_model,
                 "n_layers": cfg.n_layers,
