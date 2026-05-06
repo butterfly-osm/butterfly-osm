@@ -4,11 +4,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
-use fst::{IntoStreamer, Streamer};
+use fst::{Automaton, IntoStreamer, Streamer};
 use memmap2::Mmap;
 
+use crate::shard::mmap::map_readonly;
+
 use super::stats::ShardRecallStats;
-use super::{FST_EXT, POSTINGS_EXT, POSTING_OA_FLAG, POSTING_ID_MASK, STATS_EXT};
+use super::{FST_EXT, POSTING_ID_MASK, POSTING_OA_FLAG, POSTINGS_EXT, STATS_EXT};
 use crate::shard::SourceTag;
 
 /// One posting decoded from the recall payload.
@@ -20,16 +22,33 @@ pub struct Posting {
 
 /// Memory-mapped recall index for a single country shard.
 ///
-/// Both the FST file and the postings payload are mmap'd; the FST is
-/// owned via `fst::Map<Mmap>` and the postings as a `Arc<Mmap>`. Both
-/// are zero-copy: lookups read directly from the kernel's file cache.
+/// Both the FST file and the postings payload are mmap'd via the
+/// crate's single safe-mmap entry point (`shard::mmap::map_readonly`).
+/// Lookups are zero-copy: we read straight out of the kernel's file
+/// cache. The `unsafe` block needed for `memmap2::Mmap::map` lives
+/// in `shard::mmap` and is the crate's only carveout.
 #[derive(Debug)]
 pub struct RecallIndex {
-    map: fst::Map<Mmap>,
+    map: fst::Map<MmapOwned>,
     postings: Arc<Mmap>,
     stats: ShardRecallStats,
     /// Path to the source `.bfgs` shard (informational).
     pub shard_path: PathBuf,
+}
+
+/// Newtype wrapper around `Arc<Mmap>` that exposes `AsRef<[u8]>` so
+/// `fst::Map::new` accepts it as backing storage. We can't hand
+/// `Arc<Mmap>` to `fst::Map::new` directly because `fst::Map` requires
+/// `B: AsRef<[u8]>`, and `Arc<T>: AsRef<U>` only forwards when `T:
+/// AsRef<U>` directly — `Mmap` itself does, but the auto-deref through
+/// `Arc` doesn't satisfy the bound.
+#[derive(Debug, Clone)]
+pub struct MmapOwned(Arc<Mmap>);
+
+impl AsRef<[u8]> for MmapOwned {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
 }
 
 impl RecallIndex {
@@ -47,18 +66,12 @@ impl RecallIndex {
         let postings_path = parent.join(format!("{stripped}.{POSTINGS_EXT}"));
         let stats_path = parent.join(format!("{stripped}.{STATS_EXT}"));
 
-        let fst_file = std::fs::File::open(&fst_path)
-            .with_context(|| format!("opening recall FST at {}", fst_path.display()))?;
-        // SAFETY note: mmap is wrapped in `unsafe` upstream; we expose
-        // it through the safe Mmap type. The file is opened read-only.
-        let mmap = unsafe { Mmap::map(&fst_file) }
+        let fst_mmap = map_readonly(&fst_path)
             .with_context(|| format!("mmapping recall FST at {}", fst_path.display()))?;
-        let map = fst::Map::new(mmap)
+        let map = fst::Map::new(MmapOwned(fst_mmap))
             .map_err(|e| anyhow!("FST at {} is malformed: {e}", fst_path.display()))?;
 
-        let postings_file = std::fs::File::open(&postings_path)
-            .with_context(|| format!("opening recall postings at {}", postings_path.display()))?;
-        let postings_mmap = unsafe { Mmap::map(&postings_file) }
+        let postings_mmap = map_readonly(&postings_path)
             .with_context(|| format!("mmapping recall postings at {}", postings_path.display()))?;
 
         let stats_bytes = std::fs::read(&stats_path)
@@ -68,7 +81,7 @@ impl RecallIndex {
 
         Ok(Self {
             map,
-            postings: Arc::new(postings_mmap),
+            postings: postings_mmap,
             stats,
             shard_path: shard_path.to_path_buf(),
         })
@@ -157,12 +170,8 @@ impl RecallIndex {
         let mut out = Vec::with_capacity(count);
         for i in 0..count {
             let off = byte_start + i * 4;
-            let word = u32::from_le_bytes([
-                bytes[off],
-                bytes[off + 1],
-                bytes[off + 2],
-                bytes[off + 3],
-            ]);
+            let word =
+                u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]);
             let id = word & POSTING_ID_MASK;
             let source = if word & POSTING_OA_FLAG != 0 {
                 SourceTag::OpenAddresses

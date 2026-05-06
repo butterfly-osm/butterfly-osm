@@ -132,20 +132,23 @@ fn fixture_addresses() -> Vec<AddressRecord> {
     ]
 }
 
-/// Build a fixture shard in a tempdir and return the (TempDir, Shard).
-/// The TempDir keeps the shard file alive for the test's lifetime.
-fn make_fixture_shard() -> (TempDir, Shard) {
+/// Build a fixture shard + recall index in a tempdir and return
+/// the (TempDir, shard path, Shard).
+fn make_fixture_shard() -> (TempDir, std::path::PathBuf, Shard) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("fixture.bfgs");
     build_shard(&path, butterfly_geocode::CountryId::BE, fixture_addresses())
         .expect("build fixture shard");
     let s = Shard::open(&path).expect("open fixture shard");
-    (dir, s)
+    butterfly_geocode::build_recall_index(&path, &s, &butterfly_geocode::BuildOptions::default())
+        .expect("build recall index");
+    (dir, path, s)
 }
 
 fn make_app() -> (TempDir, axum::Router) {
-    let (dir, shard) = make_fixture_shard();
-    let state = Arc::new(ServerState::new(shard));
+    let (dir, path, _shard) = make_fixture_shard();
+    let state =
+        Arc::new(ServerState::new_with_recall_at(&path).expect("ServerState::new_with_recall_at"));
     let app = build_router(state);
     (dir, app)
 }

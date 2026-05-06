@@ -297,10 +297,20 @@ impl AdmissionState {
     }
 }
 
-/// Errors surfaced via [`pre_execution_check`].
+/// Errors surfaced when admission control rejects a request.
 ///
-/// Re-exported from [`crate::control::budget`] for convenience.
-pub use super::budget::AdmissionError;
+/// The legacy `pre_execution_check` lived in `control::budget` and is
+/// gone (#205). This enum stays — it's the body of the 429 response
+/// the middleware emits.
+#[derive(Debug, thiserror::Error, Clone)]
+pub enum AdmissionError {
+    #[error("global admission rate exceeded")]
+    GlobalRateLimit,
+    #[error("per-IP admission rate exceeded")]
+    PerIpRateLimit,
+    #[error("admission queue saturated")]
+    QueueFull,
+}
 
 #[derive(Debug, Serialize)]
 struct RejectionBody {

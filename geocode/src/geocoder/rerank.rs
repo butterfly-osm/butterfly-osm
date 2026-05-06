@@ -226,7 +226,9 @@ impl Reranker {
         // Materialise records + extract features.
         let mut rows: Vec<(RankedResult, RerankFeatures)> = Vec::with_capacity(candidates.len());
         for cand in candidates {
-            let Some(shard) = shard_for(cand.country) else { continue };
+            let Some(shard) = shard_for(cand.country) else {
+                continue;
+            };
             let Some(rec) = shard.record(cand.address_id as u32) else {
                 continue;
             };
@@ -277,11 +279,32 @@ impl Reranker {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        // Apply confidence thresholds + reason codes to each result.
-        for (result, _f) in rows.iter_mut() {
-            let (action, codes) = self.action_and_codes(result.score, &result.features);
-            result.action = action;
-            result.reason_codes = codes;
+        // Apply confidence thresholds + reason codes when a real GBDT
+        // is loaded. Without a model, the score is the recall score
+        // and the action stays at `Accept` (constructed default) —
+        // there's no GBDT-trained threshold to honour. We still
+        // surface a `RECALL_ONLY` marker so debug-mode clients can
+        // distinguish recall-only ranking from GBDT-reranked results.
+        if self.has_model() {
+            for (result, _f) in rows.iter_mut() {
+                let (action, codes) = self.action_and_codes(result.score, &result.features);
+                result.action = action;
+                result.reason_codes = codes;
+            }
+        } else {
+            for (result, _f) in rows.iter_mut() {
+                result.reason_codes.push("RECALL_ONLY");
+                if result.features.lexical_alignment_score >= 0.95 {
+                    result
+                        .reason_codes
+                        .push(crate::confidence::RC_HIGH_CONFIDENCE);
+                }
+                if result.features.postcode_regex_agreement >= 0.99 {
+                    result
+                        .reason_codes
+                        .push(crate::confidence::RC_POSTCODE_EXACT);
+                }
+            }
         }
 
         rows.into_iter().map(|(r, _)| r).collect()
@@ -292,11 +315,11 @@ impl Reranker {
         score: f32,
         features: &RerankFeatures,
     ) -> (Confidence, Vec<&'static str>) {
-        let action = if score >= self.cfg.accept_threshold {
+        let action = if score >= self.cfg.accept_at {
             Confidence::Accept
-        } else if score >= self.cfg.caution_threshold {
+        } else if score >= self.cfg.caution_at {
             Confidence::Caution
-        } else if score >= self.cfg.review_threshold {
+        } else if score >= self.cfg.review_at {
             Confidence::Review
         } else {
             Confidence::Reject
@@ -318,7 +341,7 @@ impl Reranker {
         if matches!(action, Confidence::Reject) {
             codes.push(crate::confidence::RC_BELOW_THRESHOLD);
         }
-        codes
+        (action, codes)
     }
 }
 
@@ -357,9 +380,12 @@ pub fn extract_postcode(input: &str) -> Option<String> {
     use std::sync::OnceLock;
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
-        // Matches: 4-7 alphanumerics, optionally split by a single space.
-        // Anchored on word boundaries to avoid catching parts of street numbers.
-        Regex::new(r"\b([A-Za-z0-9]{2,4}(?:[ -]?[A-Za-z0-9]{2,4})?)\b").unwrap()
+        // Two patterns:
+        //   - 4-7 alphanumerics (BE/FR/NL/DE-style — `1070`, `75001`, `12345`)
+        //   - UK-style outward+inward separated by exactly one space
+        //     (`SW1A 1AA`, `EC1A 1BB`)
+        // Word-boundary anchors prevent splicing across the input.
+        Regex::new(r"(?:\b[A-Za-z]{1,2}[0-9][A-Za-z0-9]?(?:[ ][0-9][A-Za-z]{2})\b)|(?:\b[0-9]{4,7}\b)|(?:\b[A-Za-z]{1,2}[0-9]{4}\b)").unwrap()
     });
     // Pick the longest digit-bearing match — heuristic that
     // separates postcodes from random tokens.
@@ -372,11 +398,7 @@ pub fn extract_postcode(input: &str) -> Option<String> {
         if s.len() < 3 || s.len() > 8 {
             continue;
         }
-        if best
-            .as_ref()
-            .map(|b| s.len() > b.len())
-            .unwrap_or(true)
-        {
+        if best.as_ref().map(|b| s.len() > b.len()).unwrap_or(true) {
             best = Some(s.to_string());
         }
     }
@@ -482,9 +504,7 @@ fn compute_bio_agreement(
         let (label, _) = row
             .iter()
             .enumerate()
-            .max_by(|a, b| {
-                a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)
-            })
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap_or((0, &0.0));
         if label == transformer::BIO_O {
             continue;

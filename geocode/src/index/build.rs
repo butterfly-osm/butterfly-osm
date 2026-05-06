@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow};
 
 use super::stats::ShardRecallStats;
-use super::{FST_EXT, POSTINGS_EXT, POSTING_OA_FLAG, STATS_EXT};
+use super::{FST_EXT, POSTING_OA_FLAG, POSTINGS_EXT, STATS_EXT};
 use crate::parser::normalize::normalize;
 use crate::shard::SourceTag;
 use crate::shard::reader::Shard;
@@ -72,9 +72,12 @@ pub fn build_recall_index(
     let mut buckets: BTreeMap<String, Vec<u32>> = BTreeMap::new();
 
     for id in 0..shard.record_count() as u32 {
-        let Some(rec) = shard.record(id) else { continue };
+        let Some(rec) = shard.record(id) else {
+            continue;
+        };
 
-        let key_addr = canonical_address_key(&rec.street, &rec.housenumber, &rec.postcode, &rec.locality);
+        let key_addr =
+            canonical_address_key(&rec.street, &rec.housenumber, &rec.postcode, &rec.locality);
         let posting = encode_posting(id, rec.source);
 
         if !key_addr.is_empty() || !opts.skip_empty_keys {
@@ -125,7 +128,7 @@ pub fn build_recall_index(
         // before the equality guard fired.
         postings.sort_unstable();
         postings.dedup();
-        if postings.len() > 0xFFFF_FF {
+        if postings.len() > 0x00FF_FFFF {
             return Err(anyhow!(
                 "recall key {:?} has {} postings; exceeds 24-bit count limit. \
                  Split the shard or increase POSTING_COUNT_BITS.",
@@ -178,8 +181,8 @@ pub fn build_recall_index(
         record_count: shard.record_count(),
     };
 
-    let stats_json = serde_json::to_vec_pretty(&stats)
-        .with_context(|| "serializing recall stats")?;
+    let stats_json =
+        serde_json::to_vec_pretty(&stats).with_context(|| "serializing recall stats")?;
     std::fs::write(&stats_path, &stats_json)
         .with_context(|| format!("writing {}", stats_path.display()))?;
 
@@ -230,9 +233,7 @@ fn sidecar_path(base: &Path, ext: &str) -> PathBuf {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("shard.bfgs");
-    let stripped = file_name
-        .strip_suffix(".bfgs")
-        .unwrap_or(file_name);
+    let stripped = file_name.strip_suffix(".bfgs").unwrap_or(file_name);
     parent.join(format!("{stripped}.{ext}"))
 }
 

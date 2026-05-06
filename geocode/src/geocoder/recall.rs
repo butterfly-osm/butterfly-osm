@@ -127,7 +127,7 @@ impl RecallBudget {
     /// long posting list.
     #[must_use]
     pub fn adapt_to_stats(mut self, p95_postings: u32) -> Self {
-        let target = (p95_postings as usize).max(64).min(4096);
+        let target = (p95_postings as usize).clamp(64, 4096);
         self.max_fanout = target;
         self
     }
@@ -155,10 +155,8 @@ impl Recaller {
 
     /// Insert a per-country recall handle.
     pub fn insert(&mut self, country: CountryId, index: RecallIndex) {
-        self.by_country.insert(
-            country,
-            CountryRecall { country, index },
-        );
+        self.by_country
+            .insert(country, CountryRecall { country, index });
     }
 
     #[must_use]
@@ -200,7 +198,9 @@ impl Recaller {
         let mut best: HashMap<(CountryId, u32), Candidate> = HashMap::new();
 
         for &c in countries {
-            let Some(handle) = self.by_country.get(&c) else { continue };
+            let Some(handle) = self.by_country.get(&c) else {
+                continue;
+            };
             self.query_one_country(handle, &normalized, signals, budget, &mut best);
             if best.len() >= budget.top_k {
                 break;
@@ -267,15 +267,17 @@ fn insert_candidate(
     p: Posting,
     score: f32,
 ) {
-    let entry = out.entry((country, p.record_id)).or_insert_with(|| Candidate {
-        country,
-        address_id: ((country.iso2().as_bytes()[0] as u64) << 56)
-            | ((country.iso2().as_bytes()[1] as u64) << 48)
-            | u64::from(p.record_id),
-        source_tag: p.source,
-        recall_score: score,
-        matched_key: matched_key.to_string(),
-    });
+    let entry = out
+        .entry((country, p.record_id))
+        .or_insert_with(|| Candidate {
+            country,
+            address_id: ((country.iso2().as_bytes()[0] as u64) << 56)
+                | ((country.iso2().as_bytes()[1] as u64) << 48)
+                | u64::from(p.record_id),
+            source_tag: p.source,
+            recall_score: score,
+            matched_key: matched_key.to_string(),
+        });
     if score > entry.recall_score {
         entry.recall_score = score;
         entry.matched_key = matched_key.to_string();
