@@ -8,7 +8,6 @@
       "cycleway": 16,
       "path": 12, "footway": 10,
       "residential": 15, "unclassified": 15, "tertiary": 15, "secondary": 15, "primary": 15,
-      "tertiary_link": 15, "secondary_link": 15, "primary_link": 15,
       "service": 14, "living_street": 12,
       "track": 10
     },
