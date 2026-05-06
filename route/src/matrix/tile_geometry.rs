@@ -283,7 +283,11 @@ mod tests {
         assert!(tile.is_some(), "10k×10k must tile");
         let t = tile.unwrap();
         assert!((1000..=4000).contains(&t), "tile {} out of range", t);
-        assert!(t.is_multiple_of(500), "tile {} should be a multiple of 500", t);
+        assert!(
+            t.is_multiple_of(500),
+            "tile {} should be a multiple of 500",
+            t
+        );
     }
 
     #[test]
