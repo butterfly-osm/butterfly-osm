@@ -195,6 +195,48 @@ enum Command {
         /// Random seed.
         #[arg(long, default_value_t = 0xB17EBAD0)]
         seed: u64,
+        /// Compute device. `auto` picks CUDA when available + the binary
+        /// was compiled with `--features cuda`, otherwise CPU. `cuda`
+        /// errors loudly if the GPU isn't reachable. `cpu` is the
+        /// CPU-only path.
+        #[arg(long, default_value = "auto")]
+        device: String,
+        /// Compute dtype. `f32` (default) or `bf16` (mixed precision —
+        /// requires CUDA + Ada/Ampere/Hopper). When dtype=bf16 the
+        /// trainer warns and falls back to F32 if the model layers
+        /// can't honour BF16 yet.
+        #[arg(long, default_value = "f32")]
+        dtype: String,
+        /// Wall-clock training budget (seconds). When elapsed exceeds
+        /// this at the start of an epoch, training writes a checkpoint
+        /// and exits with status code 2 (more work possible). `0` =
+        /// unlimited (default).
+        #[arg(long, default_value_t = 0)]
+        max_train_seconds: u64,
+        /// Stop if eval_loss has not improved by `--early-stop-min-delta`
+        /// for this many consecutive epochs. `0` disables (default).
+        #[arg(long, default_value_t = 0)]
+        early_stop_patience: usize,
+        /// Minimum eval_loss improvement (lower is better) considered
+        /// a real improvement for early stopping.
+        #[arg(long, default_value_t = 1e-3)]
+        early_stop_min_delta: f32,
+        /// Append per-epoch JSONL telemetry to this path. One row per
+        /// epoch with epoch, train_loss, eval_loss, bio_acc, country_acc,
+        /// lr, wall_seconds_elapsed, plateau_signal, plateau_streak,
+        /// best_eval_loss, global_step, device, n_countries, d_model,
+        /// n_layers.
+        #[arg(long)]
+        metrics_out: Option<PathBuf>,
+        /// Resume from an existing safetensors checkpoint. The
+        /// architecture must match.
+        #[arg(long)]
+        resume: Option<PathBuf>,
+        /// When resuming, the optimizer step count to start from for
+        /// the LR schedule. The previous run's last logged
+        /// `global_step` from `--metrics-out` is the right value.
+        #[arg(long, default_value_t = 0)]
+        resume_step: usize,
     },
     /// Run the geocode server (REST and/or gRPC Arrow Flight).
     ///
@@ -455,22 +497,38 @@ async fn main() -> Result<()> {
             warmup_steps,
             eval_split,
             seed,
-        } => train_cmd(
+            device,
+            dtype,
+            max_train_seconds,
+            early_stop_patience,
+            early_stop_min_delta,
+            metrics_out,
+            resume,
+            resume_step,
+        } => train_cmd(TrainCmdArgs {
             out,
-            corpus,
-            synthetic,
-            &countries,
-            &architecture,
+            corpus_path: corpus,
+            synthetic_n: synthetic,
+            countries_csv: countries,
+            architecture,
             epochs,
             batch_size,
             learning_rate,
-            &lr_schedule,
+            lr_schedule,
             weight_decay,
             gradient_clip,
             warmup_steps,
             eval_split,
             seed,
-        ),
+            device,
+            dtype,
+            max_train_seconds,
+            early_stop_patience,
+            early_stop_min_delta,
+            metrics_out,
+            resume,
+            resume_step,
+        }),
         Command::Serve {
             shard,
             shard_dir,
@@ -1242,29 +1300,67 @@ fn candidate_pbf_names(c: CountryId) -> Vec<String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn train_cmd(
+/// Bundle of `train` subcommand arguments. Beats a 22-positional fn
+/// signature and lets clippy's `too_many_arguments` lint stay on.
+struct TrainCmdArgs {
     out: PathBuf,
     corpus_path: Option<PathBuf>,
     synthetic_n: usize,
-    countries_csv: &str,
-    architecture: &str,
+    countries_csv: String,
+    architecture: String,
     epochs: usize,
     batch_size: usize,
     learning_rate: f64,
-    lr_schedule: &str,
+    lr_schedule: String,
     weight_decay: f64,
     gradient_clip: f64,
     warmup_steps: usize,
     eval_split: f32,
     seed: u64,
-) -> Result<()> {
+    device: String,
+    dtype: String,
+    max_train_seconds: u64,
+    early_stop_patience: usize,
+    early_stop_min_delta: f32,
+    metrics_out: Option<PathBuf>,
+    resume: Option<PathBuf>,
+    resume_step: usize,
+}
+
+fn train_cmd(args: TrainCmdArgs) -> Result<()> {
     use butterfly_geocode::tagger::training::{
-        CountryVocab, LrSchedule, TrainConfig, generate_belgium_synthetic, read_jsonl_corpus,
-        train_and_save,
+        CountryVocab, DevicePref, LrSchedule, StopReason, TrainConfig, generate_belgium_synthetic,
+        read_jsonl_corpus, train_and_save_with_outcome,
     };
     use butterfly_geocode::tagger::transformer::ModelConfig;
+    use candle_core::DType;
 
-    let vocab = CountryVocab::from_csv(countries_csv)?;
+    let TrainCmdArgs {
+        out,
+        corpus_path,
+        synthetic_n,
+        countries_csv,
+        architecture,
+        epochs,
+        batch_size,
+        learning_rate,
+        lr_schedule,
+        weight_decay,
+        gradient_clip,
+        warmup_steps,
+        eval_split,
+        seed,
+        device,
+        dtype,
+        max_train_seconds,
+        early_stop_patience,
+        early_stop_min_delta,
+        metrics_out,
+        resume,
+        resume_step,
+    } = args;
+
+    let vocab = CountryVocab::from_csv(&countries_csv)?;
     info!(
         countries = vocab.countries().join(",").as_str(),
         n = vocab.len(),
@@ -1298,10 +1394,14 @@ fn train_cmd(
             ModelConfig::tiny()
         }
         "production" => ModelConfig::production(vocab.len()),
-        other => bail!("unknown --architecture {:?} (use tiny|production)", other),
+        "large" => ModelConfig::large(vocab.len()),
+        other => bail!(
+            "unknown --architecture {:?} (use tiny|production|large)",
+            other
+        ),
     };
     info!(
-        architecture = architecture,
+        architecture = architecture.as_str(),
         d_model = cfg.d_model,
         n_layers = cfg.n_layers,
         n_heads = cfg.n_heads,
@@ -1311,11 +1411,22 @@ fn train_cmd(
         "model config"
     );
 
-    let schedule = LrSchedule::parse(lr_schedule)?;
+    let schedule = LrSchedule::parse(&lr_schedule)?;
     let grad_clip = if gradient_clip > 0.0 {
         Some(gradient_clip)
     } else {
         None
+    };
+    let device_pref = DevicePref::parse(&device)?;
+    let dtype_parsed = match dtype.trim().to_ascii_lowercase().as_str() {
+        "f32" | "fp32" => DType::F32,
+        "bf16" | "bfloat16" => DType::BF16,
+        other => bail!("unknown --dtype {:?} (use f32|bf16)", other),
+    };
+    let max_seconds = if max_train_seconds == 0 {
+        None
+    } else {
+        Some(max_train_seconds)
     };
 
     let train_cfg = TrainConfig {
@@ -1328,21 +1439,40 @@ fn train_cmd(
         lr_schedule: schedule,
         eval_split,
         seed,
+        device_pref,
+        dtype: dtype_parsed,
+        max_train_seconds: max_seconds,
+        early_stop_patience,
+        early_stop_min_delta,
+        metrics_out: metrics_out.clone(),
+        resume_from: resume.clone(),
+        resume_optimizer_step: resume_step,
         ..Default::default()
     };
 
-    let metrics = train_and_save(cfg, train_cfg, &vocab, &corpus, &out)?;
+    let outcome = train_and_save_with_outcome(cfg, train_cfg, &vocab, &corpus, &out)?;
     info!("training complete");
-    if let Some(last) = metrics.last() {
+    if let Some(last) = outcome.metrics.last() {
         info!(
             final_train_loss = last.train_loss,
             final_eval_loss = last.eval_loss,
             final_bio_acc = last.eval_bio_acc,
             final_country_acc = last.eval_country_acc,
+            wall_seconds = last.wall_seconds_elapsed,
+            best_eval_loss = last.best_eval_loss,
+            plateau_streak = last.plateau_streak,
+            stop_reason = ?outcome.stop_reason,
             "final metrics"
         );
     }
     info!(model_path = %out.display(), "model written");
+
+    // Status code 2 means "more work possible" — chunked training driver
+    // can pick the run back up with --resume + --resume-step.
+    if outcome.stop_reason == StopReason::WallClockBudgetExhausted {
+        info!("wall-clock budget hit; exiting with code 2 (more work possible)");
+        std::process::exit(2);
+    }
     Ok(())
 }
 

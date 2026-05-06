@@ -1,0 +1,18 @@
+{
+  "config": {
+    "d_model": 256,
+    "n_heads": 8,
+    "n_layers": 6,
+    "d_ff": 1024,
+    "max_seq_len": 128,
+    "vocab_size": 260,
+    "num_bio_labels": 9,
+    "n_countries": 1,
+    "layer_norm_eps": 0.00001
+  },
+  "country_vocab": {
+    "countries": [
+      "BE"
+    ]
+  }
+}
