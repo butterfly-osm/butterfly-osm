@@ -36,6 +36,12 @@ pub struct RouteRequest {
     /// Transport mode: car, bike, or foot
     #[schema(example = "car")]
     mode: String,
+    /// Optional traffic profile name. If set, the server routes against
+    /// the synthetic mode `<mode>_<traffic>` (e.g. `car` + `rush_hour` →
+    /// `car_rush_hour`). The variant must have been built by
+    /// `step8-customize --traffic ...` at pipeline time.
+    #[serde(default)]
+    traffic: Option<String>,
     /// Geometry encoding: polyline6 (default), geojson, points
     #[serde(default = "default_geometries")]
     geometries: String,
@@ -259,8 +265,30 @@ pub async fn route_handler(
         }
     };
 
-    let mode = match parse_mode(&req.mode, &state.mode_lookup) {
+    // Resolve the effective mode name. If `traffic=<v>` is set, synthesize
+    // `<mode>_<v>` and look that up — produced at pipeline time by
+    // `step8-customize --traffic ...`. Falling back to the base mode is
+    // intentionally disabled: a 400 is preferable to silently routing on
+    // freeflow weights when the caller asked for traffic.
+    let effective_mode_name = match &req.traffic {
+        Some(v) if !v.trim().is_empty() => format!("{}_{}", req.mode, v.trim()),
+        _ => req.mode.clone(),
+    };
+    let mode = match parse_mode(&effective_mode_name, &state.mode_lookup) {
         Ok(m) => m,
+        Err(_) if req.traffic.is_some() => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "Unknown traffic variant '{}' for mode '{}'. Build it with `step8-customize --traffic`.",
+                        req.traffic.as_deref().unwrap_or(""),
+                        req.mode
+                    ),
+                }),
+            )
+                .into_response();
+        }
         Err(e) => {
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
@@ -1023,13 +1051,17 @@ fn cross_region_route_inner(
 ) -> axum::response::Response {
     use super::cross_region::solve_cross_region;
 
-    let src_mode = match parse_mode(&req.mode, &src_state.mode_lookup) {
+    let effective_mode_name = match &req.traffic {
+        Some(v) if !v.trim().is_empty() => format!("{}_{}", req.mode, v.trim()),
+        _ => req.mode.clone(),
+    };
+    let src_mode = match parse_mode(&effective_mode_name, &src_state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
-    let dst_mode = match parse_mode(&req.mode, &dst_state.mode_lookup) {
+    let dst_mode = match parse_mode(&effective_mode_name, &dst_state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
