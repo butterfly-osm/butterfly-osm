@@ -130,6 +130,20 @@ fn main() -> Result<()> {
     let mut written = 0usize;
     let mut canary_written = 0usize;
 
+    // Hoist canary substitution-pair tables out of the per-record loop —
+    // rewrite_pairs allocates+sorts O(markers) per call, so without
+    // hoisting it is O(records × targets × markers) when it could be
+    // O(targets × markers + records × targets).
+    let canary_pair_tables: Vec<(String, Vec<(String, String)>)> = canary_targets
+        .iter()
+        .map(|tgt| {
+            (
+                tgt.country.iso2.clone(),
+                canary::build_rewrite_pairs(&source_morph, tgt),
+            )
+        })
+        .collect();
+
     // Fixed canary fraction — every Nth gold record gets the cross-shard rewrite
     // and is written to the canary file ONLY (it is a held-out test set, not
     // training data).
@@ -138,8 +152,14 @@ fn main() -> Result<()> {
     for (i, g) in golds.iter().enumerate() {
         // Skip the canary stride from the training corpus and route them to canary instead.
         if i % canary_stride == 0 {
-            for tgt in &canary_targets {
-                if let Some(record) = canary::rewrite_with(g, &source_morph, tgt, &mut rng) {
+            for (target_iso, pairs) in &canary_pair_tables {
+                if let Some(record) = canary::rewrite_with(
+                    g,
+                    &source_morph.country.iso2,
+                    target_iso,
+                    pairs,
+                    &mut rng,
+                ) {
                     canary_writer.write(&record)?;
                     canary_written += 1;
                 }

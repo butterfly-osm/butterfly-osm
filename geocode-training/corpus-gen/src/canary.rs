@@ -94,23 +94,35 @@ fn rewrite_street(s: &str, pairs: &[(String, String)]) -> Option<String> {
     None
 }
 
+/// Compute the (source, target) substitution pairs once per canary
+/// target morphology. Hoist this out of the per-record loop in callers
+/// — it allocates+sorts O(markers) on every call.
+pub fn build_rewrite_pairs(source: &Morphology, target: &Morphology) -> Vec<(String, String)> {
+    rewrite_pairs(source, target)
+}
+
 /// Rewrite a single gold record from the source country's idiom into
 /// the target country's idiom. Returns `None` if no marker matched —
 /// the record is just not relevant for this canary pair.
+///
+/// `pairs` is the precomputed substitution table from
+/// [`build_rewrite_pairs`]. Callers MUST hoist that out of any per-record
+/// loop, otherwise canary generation is O(records × markers) when it
+/// could be O(records + markers) per target.
 pub fn rewrite_with(
     g: &GoldRecord,
-    source: &Morphology,
-    target: &Morphology,
+    source_iso2: &str,
+    target_iso2: &str,
+    pairs: &[(String, String)],
     _rng: &mut ChaCha20Rng,
 ) -> Option<TrainRecord> {
-    let pairs = rewrite_pairs(source, target);
-    let new_street = rewrite_street(g.street.as_deref()?, &pairs)?;
+    let new_street = rewrite_street(g.street.as_deref()?, pairs)?;
     let mut g2 = g.clone();
     g2.street = Some(new_street);
     let kind = format!(
         "canary_{}_as_{}",
-        source.country.iso2.to_lowercase(),
-        target.country.iso2.to_lowercase()
+        source_iso2.to_lowercase(),
+        target_iso2.to_lowercase()
     );
     Some(rendered_record(&g2, &kind))
 }
@@ -155,7 +167,8 @@ mod tests {
             lon: 5.0,
         };
         let mut rng = ChaCha20Rng::from_seed([0u8; 32]);
-        let out = rewrite_with(&g, &be, &fr, &mut rng).unwrap();
+        let pairs = build_rewrite_pairs(&be, &fr);
+        let out = rewrite_with(&g, &be.country.iso2, &fr.country.iso2, &pairs, &mut rng).unwrap();
         assert_eq!(out.country, "BE", "country label must stay as source");
         assert!(
             !out.text.contains("straat"),
@@ -181,7 +194,8 @@ mod tests {
             lon: 0.0,
         };
         let mut rng = ChaCha20Rng::from_seed([0u8; 32]);
-        assert!(rewrite_with(&g, &be, &fr, &mut rng).is_none());
+        let pairs = build_rewrite_pairs(&be, &fr);
+        assert!(rewrite_with(&g, &be.country.iso2, &fr.country.iso2, &pairs, &mut rng).is_none());
     }
 }
 
