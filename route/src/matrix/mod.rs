@@ -27,6 +27,7 @@ pub mod arrow_stream;
 pub mod batched_phast;
 pub mod bucket_ch;
 pub mod neighbors;
+pub mod tile_geometry;
 
 pub use arrow_stream::{ArrowMatrixWriter, MatrixTile};
 pub use batched_phast::{BatchedPhastEngine, BatchedPhastResult, BatchedPhastStats};

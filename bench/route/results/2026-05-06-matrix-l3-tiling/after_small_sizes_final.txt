@@ -1,0 +1,48 @@
+═══════════════════════════════════════════════════════════════
+  BUCKET MANY-TO-MANY CH BENCHMARK (PARALLEL)
+═══════════════════════════════════════════════════════════════
+  Mode: car
+  Sizes: [50, 100, 500, 1000, 2000]
+  Parallel: true
+───────────────────────────────────────────────────────────────
+
+Loading CCH topology from "/home/snape/projects/butterfly-osm/data/belgium-bench-fixture/cch.car.topo"...
+  ✓ 2545589 nodes, 16669071 up edges, 16998933 down edges
+Loading CCH weights from "/home/snape/projects/butterfly-osm/data/belgium-bench-fixture/cch.w.car.u32"...
+  ✓ 16669071 up weights (0 INF = 0.0%), 16998933 down weights (0 INF = 0.0%)
+Building UpAdjFlat (optimized forward adjacency)...
+  ✓ 16669071 flat forward entries
+Building DownReverseAdjFlat (optimized backward adjacency)...
+  ✓ 16998933 flat reverse entries
+Building DownReverseAdjFlat with topo back-references (for P2P validation)...
+  ✓ 16998933 reverse entries
+
+───────────────────────────────────────────────────────────────
+  BENCHMARK RESULTS
+───────────────────────────────────────────────────────────────
+
+    Size        Cells   Time(ms)    Cells/sec    Fwd Vis    Bwd Vis      Joins     Stale%
+----------------------------------------------------------------------------------------------------
+[tile_geometry] detected: per_core_l2=3072 KiB, shared_l3=30 MiB, numa_nodes=1, n_cpus=20, numa_pinning=skipped (single-socket — no win from pinning)
+   50×50         2500       16.0       155803       2341       2410    1446316       0.0%
+         Fwd: 4ms, Sort: 1ms, Bwd: 8ms
+ 100×100        10000       20.1       497268       2450       2363    6098117       0.0%
+         Fwd: 7ms, Sort: 2ms, Bwd: 9ms
+ 500×500       250000      113.2      2209031       2438       2333  150060407       0.0%
+         Fwd: 36ms, Sort: 14ms, Bwd: 56ms
+1000×1000      1000000      272.2      3673592       2417       2327  597396044       0.0%
+         Fwd: 70ms, Sort: 28ms, Bwd: 165ms
+2000×2000      4000000      849.5      4708699       2395       2337 2370623597       0.0%
+         Fwd: 145ms, Sort: 60ms, Bwd: 664ms
+
+───────────────────────────────────────────────────────────────
+  TARGET COMPARISON
+───────────────────────────────────────────────────────────────
+  OSRM benchmark (CH, Belgium, sequential):
+    10×10: 6ms, 25×25: 10ms, 50×50: 17ms, 100×100: 35ms
+
+───────────────────────────────────────────────────────────────
+  CORRECTNESS VALIDATION (5×5 vs P2P)
+───────────────────────────────────────────────────────────────
+  ✓ All 25 queries match P2P results!
+
