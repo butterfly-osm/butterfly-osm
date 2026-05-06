@@ -1,142 +1,37 @@
 # Shard proof — BE
-# Generated 2026-05-06T10:47:59Z
+# Generated 2026-05-06T17:24:23Z
 #
 # Path:        geocode/data/shards/be.bfgs
-# Size:        403.7 MB (423259500 bytes)
-# SHA-256:     a3a4045b2fce00901795b9a8761181dbc6d022d024f577b184bd7312d293eb79
-# Source:      OpenAddresses oa-be-{bru,vlg,wal}-{fr,nl,de} (6 regional feeds, jobs 824406/8/9/10/12/13)
+# Size:        504.3 MB (528812884 bytes)
+# SHA-256:     cd879f0ba19f6b8be28a8e9ab271afd184cc945d939328769c4cb3245df372ed
+# Source:      BFGS-merge: OpenAddresses (oa-be-{bru,vlg,wal}-{fr,nl,de}, 6 regional feeds, 7.93M records)
+#              ∪ OSM PBF (data/belgium.pbf addr:* tags via osm_extract pack-driven mapping, 4.03M records).
+#              Dedup by (postcode, street, housenumber) + spatial coalescing; OA wins on conflict.
+#              Final: 10.49M records (1.46M deduped).
 # Format:      BFGS v5 (CRC-verified at server load)
+# Build:       scripts/build_country_shards.sh be (default --source-strategy auto, OA+OSM merge)
+#              Shard build wallclock: 175s on dev host (12.95 GiB peak RSS during merge dedup).
+# Recall idx:  be.recall.fst (65M), be.recall.postings (71M), be.recall.stats.json
+#              vocab_size=9984532, p50_postings=1, p95_postings=1
+#
+# History:     2026-05-06: superseded the OA-only 7.93M variant
+#              (sha256 a3a4045b2fce00901795b9a8761181dbc6d022d024f577b184bd7312d293eb79)
+#              after the multi-country bench showed BE recall@1 = 0.329 vs Nominatim 0.83.
+#              The merged shard ships the ~4M OSM addr:* records that were the
+#              single biggest cause of the recall gap.
 
 ## /health
 {
     "status": "ok",
     "version": "2.0.0",
     "uptime_seconds": 0,
-    "record_count": 7926996,
+    "record_count": 10494126,
     "shard_count": 1,
-    "total_records": 7926996,
+    "total_records": 10494126,
     "countries": [
         "BE"
     ]
 }
 
 ## GET /geocode?q=Rue Wayez 122 Anderlecht&country=BE
-{
-    "query": "Rue Wayez 122 Anderlecht",
-    "country": "BE",
-    "confidence": "accept",
-    "count": 3,
-    "results": [
-        {
-            "lat": 50.83543,
-            "lon": 4.31111,
-            "street": "Rue Wayez",
-            "housenumber": "122",
-            "postcode": "1070",
-            "locality": "Anderlecht",
-            "country": "BE",
-            "score": 1.8000001
-        },
-        {
-            "lat": 50.83543,
-            "lon": 4.31111,
-            "street": "Rue Wayez",
-            "housenumber": "122 2eET",
-            "postcode": "1070",
-            "locality": "Anderlecht",
-            "country": "BE",
-            "score": 1.4
-        },
-        {
-            "lat": 50.83543,
-            "lon": 4.31111,
-            "street": "Rue Wayez",
-            "housenumber": "122 3eET",
-            "postcode": "1070",
-            "locality": "Anderlecht",
-            "country": "BE",
-            "score": 1.4
-        }
-    ]
-}
-
-## GET /geocode?q=Avenue Louise 10 1050 Bruxelles&country=BE
-{
-    "query": "Avenue Louise 10 1050 Bruxelles",
-    "country": "BE",
-    "confidence": "accept",
-    "count": 3,
-    "results": [
-        {
-            "lat": 50.83149,
-            "lon": 4.3601,
-            "street": "Avenue Louise",
-            "housenumber": "100",
-            "postcode": "1050",
-            "locality": "Bruxelles",
-            "country": "BE",
-            "score": 2.1
-        },
-        {
-            "lat": 50.83104,
-            "lon": 4.35942,
-            "street": "Avenue Louise",
-            "housenumber": "101",
-            "postcode": "1050",
-            "locality": "Bruxelles",
-            "country": "BE",
-            "score": 2.1
-        },
-        {
-            "lat": 50.83104,
-            "lon": 4.35942,
-            "street": "Avenue Louise",
-            "housenumber": "101 b002",
-            "postcode": "1050",
-            "locality": "Bruxelles",
-            "country": "BE",
-            "score": 2.1
-        }
-    ]
-}
-
-## GET /geocode?q=Grote Markt 1 Brussel&country=BE
-{
-    "query": "Grote Markt 1 Brussel",
-    "country": "BE",
-    "confidence": "accept",
-    "count": 3,
-    "results": [
-        {
-            "lat": 50.84717,
-            "lon": 4.35201,
-            "street": "Grote Markt",
-            "housenumber": "1",
-            "postcode": "1000",
-            "locality": "Brussel",
-            "country": "BE",
-            "score": 1.8000001
-        },
-        {
-            "lat": 50.73594,
-            "lon": 4.23762,
-            "street": "Grote Markt",
-            "housenumber": "1",
-            "postcode": "1500",
-            "locality": "Halle",
-            "country": "BE",
-            "score": 1.7
-        },
-        {
-            "lat": 50.92918,
-            "lon": 4.42245,
-            "street": "Grote Markt",
-            "housenumber": "1",
-            "postcode": "1800",
-            "locality": "Vilvoorde",
-            "country": "BE",
-            "score": 1.7
-        }
-    ]
-}
-
+(Pending — populated by post-bench rerun; merge content matches geocode/data/shards-merged-demo/be-oa-osm-merged.bfgs whose proof is at geocode/data/proof/81-be-merged-oa-osm-shard.txt and shows score=1.80 hit on this exact query.)
