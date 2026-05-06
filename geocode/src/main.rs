@@ -232,6 +232,38 @@ enum Command {
         /// Per-IP HTTP rate-limit burst size.
         #[arg(long, default_value_t = 200)]
         rate_limit_burst: u32,
+        /// Disable admission control entirely. Use when a fronting
+        /// reverse proxy / load balancer handles rate limiting, or
+        /// for benchmarks that want raw service throughput. When
+        /// set, neither the global nor the per-IP token bucket is
+        /// consulted on the request path. Default: false.
+        #[arg(long, default_value_t = false)]
+        admission_disable: bool,
+        /// Per-IP admission token-bucket steady-state refill rate
+        /// (requests per second). Set to a high value (e.g.
+        /// 1_000_000) for benchmarks talking from a single client
+        /// IP. Default: 25, matching the production-hardening
+        /// preset. Range: 1 - 10_000_000.
+        #[arg(long, default_value_t = 25)]
+        admission_per_ip_per_sec: u32,
+        /// Per-IP admission token-bucket capacity (max burst).
+        /// Default: 50. Range: 1 - 10_000_000.
+        #[arg(long, default_value_t = 50)]
+        admission_per_ip_burst: u32,
+        /// Global admission token-bucket steady-state refill rate
+        /// (requests per second). Default: 500. Range: 1 -
+        /// 10_000_000.
+        #[arg(long, default_value_t = 500)]
+        admission_global_per_sec: u32,
+        /// Global admission token-bucket capacity (max burst).
+        /// Default: 1000. Range: 1 - 10_000_000.
+        #[arg(long, default_value_t = 1_000)]
+        admission_global_burst: u32,
+        /// Maximum simultaneously-tracked client IPs in the
+        /// admission table. Beyond this an amortised sweep evicts
+        /// idle entries. Default: 10_000.
+        #[arg(long, default_value_t = 10_000)]
+        admission_max_tracked_ips: usize,
         /// Per-request server-side timeout (seconds).
         #[arg(long, default_value_t = 30)]
         request_timeout_secs: u64,
@@ -412,6 +444,12 @@ async fn main() -> Result<()> {
             retrieval_utility_model,
             rate_limit_per_sec,
             rate_limit_burst,
+            admission_disable,
+            admission_per_ip_per_sec,
+            admission_per_ip_burst,
+            admission_global_per_sec,
+            admission_global_burst,
+            admission_max_tracked_ips,
             request_timeout_secs,
             shutdown_timeout_secs,
             max_body_bytes,
@@ -427,6 +465,22 @@ async fn main() -> Result<()> {
                     trusted_proxies.as_deref(),
                 )
                 .map_err(|e| anyhow!("parsing --trusted-proxies: {e}"))?,
+            };
+            // Admission policy is constructed here from CLI knobs
+            // and then plumbed through `serve_cmd` into
+            // `ServerState`. Defaults match the production-hardening
+            // preset (per_ip 50 burst / 25/sec). The `--admission-*`
+            // flags exist so deployments that front the geocoder
+            // with a reverse proxy (or single-tenant benchmarks) can
+            // relax or fully disable the gate without recompiling.
+            let admission_policy = butterfly_geocode::control::AdmissionPolicy {
+                disabled: admission_disable,
+                global_capacity: admission_global_burst,
+                global_refill_per_sec: admission_global_per_sec,
+                per_ip_capacity: admission_per_ip_burst,
+                per_ip_refill_per_sec: admission_per_ip_per_sec,
+                max_tracked_ips: admission_max_tracked_ips,
+                ..butterfly_geocode::control::AdmissionPolicy::default()
             };
             // Load + validate the pack registry. Either shipped-only
             // (default) or shipped + override directory. Done at CLI
@@ -464,6 +518,7 @@ async fn main() -> Result<()> {
                 retrieval_utility,
                 retrieval_utility_model.as_deref(),
                 server_cfg,
+                admission_policy,
                 std::time::Duration::from_secs(shutdown_timeout_secs),
                 pack_registry,
             )
@@ -1211,6 +1266,7 @@ async fn serve_cmd(
     retrieval_utility_kind: RetrievalUtilityKind,
     retrieval_utility_model_path: Option<&std::path::Path>,
     server_cfg: ServerConfig,
+    admission_policy: butterfly_geocode::control::AdmissionPolicy,
     shutdown_timeout: std::time::Duration,
     pack_registry: Arc<butterfly_geocode::routing::PackRegistry>,
 ) -> Result<()> {
@@ -1313,6 +1369,16 @@ async fn serve_cmd(
     };
     state = state.with_parser(parser_backend);
     state = state.with_pack_registry(pack_registry);
+    state = state.with_admission_policy(admission_policy);
+    info!(
+        admission_disabled = admission_policy.disabled,
+        per_ip_per_sec = admission_policy.per_ip_refill_per_sec,
+        per_ip_burst = admission_policy.per_ip_capacity,
+        global_per_sec = admission_policy.global_refill_per_sec,
+        global_burst = admission_policy.global_capacity,
+        max_tracked_ips = admission_policy.max_tracked_ips,
+        "admission policy applied"
+    );
     if let Some(p) = rerank_model_path {
         info!(model = %p.display(), "loading GBDT reranker");
         let model = GbdtModel::load(p).context("loading reranker")?;
