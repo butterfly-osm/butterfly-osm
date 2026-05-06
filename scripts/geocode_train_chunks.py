@@ -7,16 +7,22 @@ emitted via `--metrics-out` and decides whether to continue. The
 discipline is: never train more than one chunk without re-evaluating
 critically.
 
-Decision rules:
-- continue   : bio_acc improved by >= --min-bio-acc-delta over the
-               most-recent chunk.
-- continue   : eval_loss improved by >= --min-eval-loss-delta and
-               train_loss is still falling — gradient-quality healthy.
+Decision rules (match the implementation in `main()`):
+- continue   : bio_acc improved by >= --min-bio-acc-delta OR
+               eval_loss improved by >= --min-eval-loss-delta over
+               the most-recent chunk. Either signal resets the
+               plateau streak.
 - stop       : eval_loss has trended UP across the last two chunks
                (overfitting / divergence).
-- stop       : bio_acc plateaued for >= --plateau-chunks-stop
-               consecutive chunks.
+- stop       : bio_acc and eval_loss both plateaued for
+               >= --plateau-chunks-stop consecutive chunks.
+- stop       : trainer exited with returncode 0 (clean early-stop
+               or planned epochs completed).
 - stop       : total wall clock >= --max-total-seconds.
+
+Note: train_loss is logged for human inspection but is not consulted
+by the decision rules. Eval-set signals (eval_loss, bio_acc) drive
+all stop/continue decisions to avoid overfit-on-train edge cases.
 
 When the trainer exits with status code 2 (wall-clock budget
 exhausted, more work possible), this driver re-invokes it with
