@@ -1,0 +1,42 @@
+## Italy morphology table.
+##
+## Italian addresses use street type (toponimo) PREFIXED to name
+## ("Via Roma", "Piazza San Marco"). Postcode (CAP) is 5 digits and
+## leads the city. Cardinal direction or province may follow.
+
+[country]
+iso2 = "IT"
+name = "Italy"
+
+[render]
+field_separator_after_house = ", "
+postcode_city_separator = " "
+postcode_position = "leading"
+
+[postcode]
+## 5-digit Poste Italiane CAP.
+regex = '^[0-9]{5}$'
+format = "{}"
+
+[street_types]
+long_to_short = [
+    ["Via", "V."],
+    ["Viale", "V.le"],
+    ["Piazza", "P.za"],
+    ["Piazzale", "P.le"],
+    ["Vicolo", "Vic."],
+    ["Corso", "C.so"],
+    ["Largo", "Lgo."],
+    ["Strada", "Str."],
+    ["Galleria", "Gall."],
+    ["Lungomare", "L.mare"],
+    ["Salita", "Sal."],
+    ["San", "S."],
+    ["Santa", "Sta."],
+    ["Santo", "Sto."],
+    ["Santi", "SS."],
+]
+
+## Italian street types are PREFIXED to the name.
+[street_types.markers]
+it = ["via", "viale", "piazza", "piazzale", "vicolo", "corso", "largo", "strada", "galleria", "lungomare", "salita", "borgo"]

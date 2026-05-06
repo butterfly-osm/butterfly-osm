@@ -112,6 +112,12 @@ geocode-training/*.jsonl
 bench/geocode/results/
 !bench/geocode/results/2026-05-06-recall-rerank-fixture/
 !bench/geocode/results/2026-05-06-recall-rerank-fixture/summary.json
+# #88+#89 multi-country bench: keep summaries (markdown + JSON), drop
+# the per-query rows (large + can be regenerated from rerun).
+!bench/geocode/results/2026-05-06-multi-country-v2/
+bench/geocode/results/2026-05-06-multi-country-v2/server.log
+bench/geocode/results/2026-05-06-multi-country-v2/*/butterfly-rows.jsonl
+bench/geocode/results/2026-05-06-multi-country-v2/*/nominatim-rows.jsonl
 bench/geocode/.venv/
 
 # AI consultation stderr (verbose progress logs; the .txt outputs are kept)

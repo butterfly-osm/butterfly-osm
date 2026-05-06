@@ -1,0 +1,1001 @@
+query_id	query_text	gold_lat	gold_lon	quality_class
+be-clean-00000	Wickham Street 612, 4006 Brisbane	-27.4512419	153.0397798	clean
+be-clean-00001	Berrima Street 75, 4178 Brisbane	-27.4419771	153.1705224	clean
+be-clean-00002	Wellington Road;Manilla Street 189;62, 4169 Brisbane	-27.4796448	153.0419001	clean
+be-clean-00003	Rudd Street 215, 4077 Brisbane	-27.5778247	152.9735526	clean
+be-clean-00004	Nudgee Road 463, 4011 Brisbane	-27.4149044	153.0752810	clean
+be-clean-00005	McCullough Street 138, 4109 Brisbane	-27.5704704	153.0556358	clean
+be-clean-00006	Wickham Street 608, 4006 Brisbane	-27.4513316	153.0397078	clean
+be-clean-00007	Oxley Station Road 114, 4075 Brisbane	-27.5542144	152.9744431	clean
+be-clean-00008	Wellington Road;Manilla Street 189;62, 4169 Brisbane	-27.4796448	153.0419001	clean
+be-clean-00009	Oxley Station Road 114, 4075 Brisbane	-27.5542144	152.9744431	clean
+be-clean-00010	Manly Road 1029, 4173 Brisbane /19	-27.4756010	153.1340802	clean
+be-clean-00011	Ridley Road 30, 4035 Brisbane	-27.3522568	153.0038073	clean
+be-clean-00012	Oxley Station Road 114, 4075 Brisbane	-27.5542144	152.9744431	clean
+be-clean-00013	Wickham Street 612, 4006 Brisbane	-27.4512419	153.0397798	clean
+be-clean-00014	Brampton Street 72, 4113 Brisbane	-27.5722985	153.0986232	clean
+be-clean-00015	Beenleigh Road 1319, 4112 Brisbane	-27.6041947	153.0892818	clean
+be-clean-00016	Beenleigh Road 1319, 4112 Brisbane	-27.6041947	153.0892818	clean
+be-clean-00017	Moggill Road 427, 4068 Brisbane	-27.4990852	152.9676328	clean
+be-clean-00018	Beenleigh Road 1319, 4112 Brisbane	-27.6041947	153.0892818	clean
+be-clean-00019	Darwin Street 9, 4034 Brisbane	-27.3690859	153.0174832	clean
+be-clean-00020	Thynne Road 43, 4170 Brisbane	-27.4680224	153.0707089	clean
+be-clean-00021	McCullough Street 138, 4109 Brisbane	-27.5704704	153.0556358	clean
+be-clean-00022	Manly Road 1029, 4173 Brisbane /19	-27.4756010	153.1340802	clean
+be-clean-00023	Wynnum Road 706, 4170 Brisbane	-27.4663949	153.0744067	clean
+be-clean-00024	Manly Road 1029, 4173 Brisbane /19	-27.4756010	153.1340802	clean
+be-clean-00025	Waterworks Road 480, 4060 Brisbane /3	-27.4494003	152.9784464	clean
+be-clean-00026	Darwin Street 9, 4034 Brisbane	-27.3690859	153.0174832	clean
+be-clean-00027	Maundrell Terrace 146, 4032 Brisbane	-27.3804908	153.0123542	clean
+be-clean-00028	Thynne Road 43, 4170 Brisbane	-27.4680224	153.0707089	clean
+be-clean-00029	Wynnum Road 706, 4170 Brisbane	-27.4663949	153.0744067	clean
+be-clean-00030	Ridley Road 30, 4035 Brisbane	-27.3522568	153.0038073	clean
+be-clean-00031	Moggill Road 427, 4068 Brisbane	-27.4990852	152.9676328	clean
+be-clean-00032	Sturt Highway 94-96, 2715 Balranald	-34.6675607	143.5654064	clean
+be-clean-00033	James Street 39, 4006 Brisbane	-27.4572098	153.0397332	clean
+be-clean-00034	Shamrock Road 36A, 4076 Brisbane	-27.5635332	152.9538111	clean
+be-clean-00035	Wellington Road;Manilla Street 189;62, 4169 Brisbane	-27.4796448	153.0419001	clean
+be-clean-00036	Rode Road 66, 4012 Brisbane	-27.3974187	153.0552312	clean
+be-clean-00037	Byrne Street 14, 3732 Moyhu	-36.5768246	146.3789631	clean
+be-clean-00038	Berrima Street 75, 4178 Brisbane	-27.4419771	153.1705224	clean
+be-clean-00039	Darwin Street 9, 4034 Brisbane	-27.3690859	153.0174832	clean
+be-clean-00040	Brampton Street 72, 4113 Brisbane	-27.5722985	153.0986232	clean
+be-clean-00041	McCullough Street 138, 4109 Brisbane	-27.5704704	153.0556358	clean
+be-clean-00042	Nudgee Road 463, 4011 Brisbane	-27.4149044	153.0752810	clean
+be-clean-00043	Beenleigh Road 1319, 4112 Brisbane	-27.6041947	153.0892818	clean
+be-clean-00044	Leckie Road 75, 4031 Brisbane	-27.4075309	153.0347241	clean
+be-clean-00045	Lytton Road 3, 4169 Brisbane	-27.4792306	153.0416108	clean
+be-clean-00046	Darwin Street 9, 4034 Brisbane	-27.3690859	153.0174832	clean
+be-clean-00047	Thynne Road 43, 4170 Brisbane	-27.4680224	153.0707089	clean
+be-clean-00048	Sturt Highway 94-96, 2715 Balranald	-34.6675607	143.5654064	clean
+be-clean-00049	Maundrell Terrace 146, 4032 Brisbane	-27.3804908	153.0123542	clean
+be-clean-00050	Thynne Road 43, 4170 Brisbane	-27.4680224	153.0707089	clean
+be-clean-00051	Wynnum Road 706, 4170 Brisbane	-27.4663949	153.0744067	clean
+be-clean-00052	Maundrell Terrace 146, 4032 Brisbane	-27.3804908	153.0123542	clean
+be-clean-00053	Ridley Road 30, 4035 Brisbane	-27.3522568	153.0038073	clean
+be-clean-00054	Thynne Road 43, 4170 Brisbane	-27.4680224	153.0707089	clean
+be-clean-00055	Byrne Street 14, 3732 Moyhu	-36.5768246	146.3789631	clean
+be-clean-00056	Sturt Highway 94-96, 2715 Balranald	-34.6675607	143.5654064	clean
+be-clean-00057	James Street 39, 4006 Brisbane	-27.4572098	153.0397332	clean
+be-clean-00058	Wickham Street 612, 4006 Brisbane	-27.4512419	153.0397798	clean
+be-clean-00059	Wickham Street 612, 4006 Brisbane	-27.4512419	153.0397798	clean
+be-clean-00060	Berrima Street 75, 4178 Brisbane	-27.4419771	153.1705224	clean
+be-clean-00061	McCullough Street 138, 4109 Brisbane	-27.5704704	153.0556358	clean
+be-clean-00062	Shamrock Road 36A, 4076 Brisbane	-27.5635332	152.9538111	clean
+be-clean-00063	Maundrell Terrace 146, 4032 Brisbane	-27.3804908	153.0123542	clean
+be-clean-00064	Berrima Street 75, 4178 Brisbane	-27.4419771	153.1705224	clean
+be-clean-00065	Wellington Road;Manilla Street 189;62, 4169 Brisbane	-27.4796448	153.0419001	clean
+be-clean-00066	Waterworks Road 1104, 4061 Brisbane	-27.4435798	152.9445044	clean
+be-clean-00067	Oxford Street 74, 4171 Brisbane	-27.4506612	153.0555847	clean
+be-clean-00068	McCullough Street 138, 4109 Brisbane	-27.5704704	153.0556358	clean
+be-clean-00069	Waterworks Road 1104, 4061 Brisbane	-27.4435798	152.9445044	clean
+be-clean-00070	Oxley Station Road 114, 4075 Brisbane	-27.5542144	152.9744431	clean
+be-clean-00071	Wickham Street 608, 4006 Brisbane	-27.4513316	153.0397078	clean
+be-clean-00072	Waterworks Road 480, 4060 Brisbane /3	-27.4494003	152.9784464	clean
+be-clean-00073	Rudd Street 215, 4077 Brisbane	-27.5778247	152.9735526	clean
+be-clean-00074	James Street 39, 4006 Brisbane	-27.4572098	153.0397332	clean
+be-clean-00075	James Street 39, 4006 Brisbane	-27.4572098	153.0397332	clean
+be-clean-00076	Waterworks Road 480, 4060 Brisbane /3	-27.4494003	152.9784464	clean
+be-clean-00077	Shamrock Road 36A, 4076 Brisbane	-27.5635332	152.9538111	clean
+be-clean-00078	Lytton Road 3, 4169 Brisbane	-27.4792306	153.0416108	clean
+be-clean-00079	Rode Road 66, 4012 Brisbane	-27.3974187	153.0552312	clean
+be-clean-00080	Nudgee Road 463, 4011 Brisbane	-27.4149044	153.0752810	clean
+be-clean-00081	Byrne Street 14, 3732 Moyhu	-36.5768246	146.3789631	clean
+be-clean-00082	Shamrock Road 36A, 4076 Brisbane	-27.5635332	152.9538111	clean
+be-clean-00083	Waterworks Road 480, 4060 Brisbane /3	-27.4494003	152.9784464	clean
+be-clean-00084	Leckie Road 75, 4031 Brisbane	-27.4075309	153.0347241	clean
+be-clean-00085	Berrima Street 75, 4178 Brisbane	-27.4419771	153.1705224	clean
+be-clean-00086	Shamrock Road 36A, 4076 Brisbane	-27.5635332	152.9538111	clean
+be-clean-00087	Shamrock Road 36A, 4076 Brisbane	-27.5635332	152.9538111	clean
+be-clean-00088	Ridley Road 30, 4035 Brisbane	-27.3522568	153.0038073	clean
+be-clean-00089	Berrima Street 75, 4178 Brisbane	-27.4419771	153.1705224	clean
+be-clean-00090	Ridley Road 30, 4035 Brisbane	-27.3522568	153.0038073	clean
+be-clean-00091	Thynne Road 43, 4170 Brisbane	-27.4680224	153.0707089	clean
+be-clean-00092	Wickham Street 612, 4006 Brisbane	-27.4512419	153.0397798	clean
+be-clean-00093	Shamrock Road 36A, 4076 Brisbane	-27.5635332	152.9538111	clean
+be-clean-00094	Brampton Street 72, 4113 Brisbane	-27.5722985	153.0986232	clean
+be-clean-00095	Oxford Street 74, 4171 Brisbane	-27.4506612	153.0555847	clean
+be-clean-00096	Maundrell Terrace 146, 4032 Brisbane	-27.3804908	153.0123542	clean
+be-clean-00097	James Street 39, 4006 Brisbane	-27.4572098	153.0397332	clean
+be-clean-00098	James Street 39, 4006 Brisbane	-27.4572098	153.0397332	clean
+be-clean-00099	Beenleigh Road 1319, 4112 Brisbane	-27.6041947	153.0892818	clean
+be-clean-00100	Thynne Road 43, 4170 Brisbane	-27.4680224	153.0707089	clean
+be-clean-00101	Ridley Road 30, 4035 Brisbane	-27.3522568	153.0038073	clean
+be-clean-00102	Waterworks Road 480, 4060 Brisbane /3	-27.4494003	152.9784464	clean
+be-clean-00103	Moggill Road 427, 4068 Brisbane	-27.4990852	152.9676328	clean
+be-clean-00104	Rudd Street 215, 4077 Brisbane	-27.5778247	152.9735526	clean
+be-clean-00105	Brampton Street 72, 4113 Brisbane	-27.5722985	153.0986232	clean
+be-clean-00106	Rudd Street 215, 4077 Brisbane	-27.5778247	152.9735526	clean
+be-clean-00107	Maundrell Terrace 146, 4032 Brisbane	-27.3804908	153.0123542	clean
+be-clean-00108	Wellington Road;Manilla Street 189;62, 4169 Brisbane	-27.4796448	153.0419001	clean
+be-clean-00109	Wynnum Road 706, 4170 Brisbane	-27.4663949	153.0744067	clean
+be-clean-00110	Wickham Street 612, 4006 Brisbane	-27.4512419	153.0397798	clean
+be-clean-00111	Moggill Road 427, 4068 Brisbane	-27.4990852	152.9676328	clean
+be-clean-00112	Maundrell Terrace 146, 4032 Brisbane	-27.3804908	153.0123542	clean
+be-clean-00113	Beenleigh Road 1319, 4112 Brisbane	-27.6041947	153.0892818	clean
+be-clean-00114	Leckie Road 75, 4031 Brisbane	-27.4075309	153.0347241	clean
+be-clean-00115	Brampton Street 72, 4113 Brisbane	-27.5722985	153.0986232	clean
+be-clean-00116	Moggill Road 427, 4068 Brisbane	-27.4990852	152.9676328	clean
+be-clean-00117	Nudgee Road 463, 4011 Brisbane	-27.4149044	153.0752810	clean
+be-clean-00118	Moggill Road 427, 4068 Brisbane	-27.4990852	152.9676328	clean
+be-clean-00119	Wynnum Road 706, 4170 Brisbane	-27.4663949	153.0744067	clean
+be-clean-00120	Lytton Road 3, 4169 Brisbane	-27.4792306	153.0416108	clean
+be-clean-00121	Lytton Road 3, 4169 Brisbane	-27.4792306	153.0416108	clean
+be-clean-00122	Wellington Road;Manilla Street 189;62, 4169 Brisbane	-27.4796448	153.0419001	clean
+be-clean-00123	Wellington Road;Manilla Street 189;62, 4169 Brisbane	-27.4796448	153.0419001	clean
+be-clean-00124	Leckie Road 75, 4031 Brisbane	-27.4075309	153.0347241	clean
+be-clean-00125	Beenleigh Road 1319, 4112 Brisbane	-27.6041947	153.0892818	clean
+be-clean-00126	Oxley Station Road 114, 4075 Brisbane	-27.5542144	152.9744431	clean
+be-clean-00127	Wickham Street 608, 4006 Brisbane	-27.4513316	153.0397078	clean
+be-clean-00128	Shamrock Road 36A, 4076 Brisbane	-27.5635332	152.9538111	clean
+be-clean-00129	Wynnum Road 706, 4170 Brisbane	-27.4663949	153.0744067	clean
+be-clean-00130	Manly Road 1029, 4173 Brisbane /19	-27.4756010	153.1340802	clean
+be-clean-00131	Oxley Station Road 114, 4075 Brisbane	-27.5542144	152.9744431	clean
+be-clean-00132	Oxford Street 74, 4171 Brisbane	-27.4506612	153.0555847	clean
+be-clean-00133	Wynnum Road 706, 4170 Brisbane	-27.4663949	153.0744067	clean
+be-clean-00134	Wickham Street 612, 4006 Brisbane	-27.4512419	153.0397798	clean
+be-clean-00135	Oxley Station Road 114, 4075 Brisbane	-27.5542144	152.9744431	clean
+be-clean-00136	Nudgee Road 463, 4011 Brisbane	-27.4149044	153.0752810	clean
+be-clean-00137	Lytton Road 3, 4169 Brisbane	-27.4792306	153.0416108	clean
+be-clean-00138	Berrima Street 75, 4178 Brisbane	-27.4419771	153.1705224	clean
+be-clean-00139	Ridley Road 30, 4035 Brisbane	-27.3522568	153.0038073	clean
+be-clean-00140	Maundrell Terrace 146, 4032 Brisbane	-27.3804908	153.0123542	clean
+be-clean-00141	Lytton Road 3, 4169 Brisbane	-27.4792306	153.0416108	clean
+be-clean-00142	Maundrell Terrace 146, 4032 Brisbane	-27.3804908	153.0123542	clean
+be-clean-00143	Lytton Road 3, 4169 Brisbane	-27.4792306	153.0416108	clean
+be-clean-00144	James Street 39, 4006 Brisbane	-27.4572098	153.0397332	clean
+be-clean-00145	Manly Road 1029, 4173 Brisbane /19	-27.4756010	153.1340802	clean
+be-clean-00146	Wickham Street 612, 4006 Brisbane	-27.4512419	153.0397798	clean
+be-clean-00147	Beenleigh Road 1319, 4112 Brisbane	-27.6041947	153.0892818	clean
+be-clean-00148	Maundrell Terrace 146, 4032 Brisbane	-27.3804908	153.0123542	clean
+be-clean-00149	Berrima Street 75, 4178 Brisbane	-27.4419771	153.1705224	clean
+be-clean-00150	Darwin Street 9, 4034 Brisbane	-27.3690859	153.0174832	clean
+be-clean-00151	Sturt Highway 94-96, 2715 Balranald	-34.6675607	143.5654064	clean
+be-clean-00152	Wickham Street 608, 4006 Brisbane	-27.4513316	153.0397078	clean
+be-clean-00153	Rode Road 66, 4012 Brisbane	-27.3974187	153.0552312	clean
+be-clean-00154	Rudd Street 215, 4077 Brisbane	-27.5778247	152.9735526	clean
+be-clean-00155	Sturt Highway 94-96, 2715 Balranald	-34.6675607	143.5654064	clean
+be-clean-00156	Wickham Street 608, 4006 Brisbane	-27.4513316	153.0397078	clean
+be-clean-00157	Waterworks Road 1104, 4061 Brisbane	-27.4435798	152.9445044	clean
+be-clean-00158	McCullough Street 138, 4109 Brisbane	-27.5704704	153.0556358	clean
+be-clean-00159	Shamrock Road 36A, 4076 Brisbane	-27.5635332	152.9538111	clean
+be-clean-00160	Wellington Road;Manilla Street 189;62, 4169 Brisbane	-27.4796448	153.0419001	clean
+be-clean-00161	Waterworks Road 1104, 4061 Brisbane	-27.4435798	152.9445044	clean
+be-clean-00162	Wickham Street 608, 4006 Brisbane	-27.4513316	153.0397078	clean
+be-clean-00163	Shamrock Road 36A, 4076 Brisbane	-27.5635332	152.9538111	clean
+be-clean-00164	Byrne Street 14, 3732 Moyhu	-36.5768246	146.3789631	clean
+be-clean-00165	Ridley Road 30, 4035 Brisbane	-27.3522568	153.0038073	clean
+be-clean-00166	Wynnum Road 706, 4170 Brisbane	-27.4663949	153.0744067	clean
+be-clean-00167	Byrne Street 14, 3732 Moyhu	-36.5768246	146.3789631	clean
+be-clean-00168	Manly Road 1029, 4173 Brisbane /19	-27.4756010	153.1340802	clean
+be-clean-00169	Shamrock Road 36A, 4076 Brisbane	-27.5635332	152.9538111	clean
+be-clean-00170	Byrne Street 14, 3732 Moyhu	-36.5768246	146.3789631	clean
+be-clean-00171	James Street 39, 4006 Brisbane	-27.4572098	153.0397332	clean
+be-clean-00172	Ridley Road 30, 4035 Brisbane	-27.3522568	153.0038073	clean
+be-clean-00173	Wickham Street 608, 4006 Brisbane	-27.4513316	153.0397078	clean
+be-clean-00174	Manly Road 1029, 4173 Brisbane /19	-27.4756010	153.1340802	clean
+be-clean-00175	Lytton Road 3, 4169 Brisbane	-27.4792306	153.0416108	clean
+be-clean-00176	Rudd Street 215, 4077 Brisbane	-27.5778247	152.9735526	clean
+be-clean-00177	James Street 39, 4006 Brisbane	-27.4572098	153.0397332	clean
+be-clean-00178	Lytton Road 3, 4169 Brisbane	-27.4792306	153.0416108	clean
+be-clean-00179	Moggill Road 427, 4068 Brisbane	-27.4990852	152.9676328	clean
+be-clean-00180	Byrne Street 14, 3732 Moyhu	-36.5768246	146.3789631	clean
+be-clean-00181	Nudgee Road 463, 4011 Brisbane	-27.4149044	153.0752810	clean
+be-clean-00182	Moggill Road 427, 4068 Brisbane	-27.4990852	152.9676328	clean
+be-clean-00183	Oxford Street 74, 4171 Brisbane	-27.4506612	153.0555847	clean
+be-clean-00184	Berrima Street 75, 4178 Brisbane	-27.4419771	153.1705224	clean
+be-clean-00185	Leckie Road 75, 4031 Brisbane	-27.4075309	153.0347241	clean
+be-clean-00186	Oxley Station Road 114, 4075 Brisbane	-27.5542144	152.9744431	clean
+be-clean-00187	Thynne Road 43, 4170 Brisbane	-27.4680224	153.0707089	clean
+be-clean-00188	Wellington Road;Manilla Street 189;62, 4169 Brisbane	-27.4796448	153.0419001	clean
+be-clean-00189	Byrne Street 14, 3732 Moyhu	-36.5768246	146.3789631	clean
+be-clean-00190	Wickham Street 612, 4006 Brisbane	-27.4512419	153.0397798	clean
+be-clean-00191	Wynnum Road 706, 4170 Brisbane	-27.4663949	153.0744067	clean
+be-clean-00192	Oxford Street 74, 4171 Brisbane	-27.4506612	153.0555847	clean
+be-clean-00193	Lytton Road 3, 4169 Brisbane	-27.4792306	153.0416108	clean
+be-clean-00194	Shamrock Road 36A, 4076 Brisbane	-27.5635332	152.9538111	clean
+be-clean-00195	Darwin Street 9, 4034 Brisbane	-27.3690859	153.0174832	clean
+be-clean-00196	McCullough Street 138, 4109 Brisbane	-27.5704704	153.0556358	clean
+be-clean-00197	Waterworks Road 1104, 4061 Brisbane	-27.4435798	152.9445044	clean
+be-clean-00198	Beenleigh Road 1319, 4112 Brisbane	-27.6041947	153.0892818	clean
+be-clean-00199	Oxley Station Road 114, 4075 Brisbane	-27.5542144	152.9744431	clean
+be-abbreviated-00200	Darwin St 9, 4034 Brisbane	-27.3690859	153.0174832	abbreviated
+be-abbreviated-00201	Leckie Rd 75, 4031 Brisbane	-27.4075309	153.0347241	abbreviated
+be-abbreviated-00202	Wellington Road;Manilla St 189;62, 4169 Brisbane	-27.4796448	153.0419001	abbreviated
+be-abbreviated-00203	Sturt Hwy 94-96, 2715 Balranald	-34.6675607	143.5654064	abbreviated
+be-abbreviated-00204	Byrne St 14, 3732 Moyhu	-36.5768246	146.3789631	abbreviated
+be-abbreviated-00205	Berrima St 75, 4178 Brisbane	-27.4419771	153.1705224	abbreviated
+be-abbreviated-00206	Berrima St 75, 4178 Brisbane	-27.4419771	153.1705224	abbreviated
+be-abbreviated-00207	Wellington Road;Manilla St 189;62, 4169 Brisbane	-27.4796448	153.0419001	abbreviated
+be-abbreviated-00208	Byrne St 14, 3732 Moyhu	-36.5768246	146.3789631	abbreviated
+be-abbreviated-00209	Wickham St 608, 4006 Brisbane	-27.4513316	153.0397078	abbreviated
+be-abbreviated-00210	Maundrell Tce 146, 4032 Brisbane	-27.3804908	153.0123542	abbreviated
+be-abbreviated-00211	Shamrock Rd 36A, 4076 Brisbane	-27.5635332	152.9538111	abbreviated
+be-abbreviated-00212	Sturt Hwy 94-96, 2715 Balranald	-34.6675607	143.5654064	abbreviated
+be-abbreviated-00213	Nudgee Rd 463, 4011 Brisbane	-27.4149044	153.0752810	abbreviated
+be-abbreviated-00214	Wickham St 612, 4006 Brisbane	-27.4512419	153.0397798	abbreviated
+be-abbreviated-00215	Ridley Rd 30, 4035 Brisbane	-27.3522568	153.0038073	abbreviated
+be-abbreviated-00216	Rudd St 215, 4077 Brisbane	-27.5778247	152.9735526	abbreviated
+be-abbreviated-00217	Byrne St 14, 3732 Moyhu	-36.5768246	146.3789631	abbreviated
+be-abbreviated-00218	Ridley Rd 30, 4035 Brisbane	-27.3522568	153.0038073	abbreviated
+be-abbreviated-00219	Sturt Hwy 94-96, 2715 Balranald	-34.6675607	143.5654064	abbreviated
+be-abbreviated-00220	Waterworks Rd 1104, 4061 Brisbane	-27.4435798	152.9445044	abbreviated
+be-abbreviated-00221	Sturt Hwy 94-96, 2715 Balranald	-34.6675607	143.5654064	abbreviated
+be-abbreviated-00222	Darwin St 9, 4034 Brisbane	-27.3690859	153.0174832	abbreviated
+be-abbreviated-00223	Wickham St 612, 4006 Brisbane	-27.4512419	153.0397798	abbreviated
+be-abbreviated-00224	Maundrell Tce 146, 4032 Brisbane	-27.3804908	153.0123542	abbreviated
+be-abbreviated-00225	Beenleigh Rd 1319, 4112 Brisbane	-27.6041947	153.0892818	abbreviated
+be-abbreviated-00226	Brampton St 72, 4113 Brisbane	-27.5722985	153.0986232	abbreviated
+be-abbreviated-00227	Brampton St 72, 4113 Brisbane	-27.5722985	153.0986232	abbreviated
+be-abbreviated-00228	Oxford St 74, 4171 Brisbane	-27.4506612	153.0555847	abbreviated
+be-abbreviated-00229	Berrima St 75, 4178 Brisbane	-27.4419771	153.1705224	abbreviated
+be-abbreviated-00230	Beenleigh Rd 1319, 4112 Brisbane	-27.6041947	153.0892818	abbreviated
+be-abbreviated-00231	Waterworks Rd 1104, 4061 Brisbane	-27.4435798	152.9445044	abbreviated
+be-abbreviated-00232	Rode Rd 66, 4012 Brisbane	-27.3974187	153.0552312	abbreviated
+be-abbreviated-00233	Waterworks Rd 1104, 4061 Brisbane	-27.4435798	152.9445044	abbreviated
+be-abbreviated-00234	James St 39, 4006 Brisbane	-27.4572098	153.0397332	abbreviated
+be-abbreviated-00235	Sturt Hwy 94-96, 2715 Balranald	-34.6675607	143.5654064	abbreviated
+be-abbreviated-00236	Oxford St 74, 4171 Brisbane	-27.4506612	153.0555847	abbreviated
+be-abbreviated-00237	Shamrock Rd 36A, 4076 Brisbane	-27.5635332	152.9538111	abbreviated
+be-abbreviated-00238	Oxford St 74, 4171 Brisbane	-27.4506612	153.0555847	abbreviated
+be-abbreviated-00239	Oxley Station Rd 114, 4075 Brisbane	-27.5542144	152.9744431	abbreviated
+be-abbreviated-00240	Moggill Rd 427, 4068 Brisbane	-27.4990852	152.9676328	abbreviated
+be-abbreviated-00241	Wickham St 612, 4006 Brisbane	-27.4512419	153.0397798	abbreviated
+be-abbreviated-00242	Rode Rd 66, 4012 Brisbane	-27.3974187	153.0552312	abbreviated
+be-abbreviated-00243	Oxford St 74, 4171 Brisbane	-27.4506612	153.0555847	abbreviated
+be-abbreviated-00244	Maundrell Tce 146, 4032 Brisbane	-27.3804908	153.0123542	abbreviated
+be-abbreviated-00245	Sturt Hwy 94-96, 2715 Balranald	-34.6675607	143.5654064	abbreviated
+be-abbreviated-00246	Thynne Rd 43, 4170 Brisbane	-27.4680224	153.0707089	abbreviated
+be-abbreviated-00247	Wellington Road;Manilla St 189;62, 4169 Brisbane	-27.4796448	153.0419001	abbreviated
+be-abbreviated-00248	Wellington Road;Manilla St 189;62, 4169 Brisbane	-27.4796448	153.0419001	abbreviated
+be-abbreviated-00249	Leckie Rd 75, 4031 Brisbane	-27.4075309	153.0347241	abbreviated
+be-abbreviated-00250	Ridley Rd 30, 4035 Brisbane	-27.3522568	153.0038073	abbreviated
+be-abbreviated-00251	Oxley Station Rd 114, 4075 Brisbane	-27.5542144	152.9744431	abbreviated
+be-abbreviated-00252	Lytton Rd 3, 4169 Brisbane	-27.4792306	153.0416108	abbreviated
+be-abbreviated-00253	Rudd St 215, 4077 Brisbane	-27.5778247	152.9735526	abbreviated
+be-abbreviated-00254	Berrima St 75, 4178 Brisbane	-27.4419771	153.1705224	abbreviated
+be-abbreviated-00255	Lytton Rd 3, 4169 Brisbane	-27.4792306	153.0416108	abbreviated
+be-abbreviated-00256	Rudd St 215, 4077 Brisbane	-27.5778247	152.9735526	abbreviated
+be-abbreviated-00257	Beenleigh Rd 1319, 4112 Brisbane	-27.6041947	153.0892818	abbreviated
+be-abbreviated-00258	Rode Rd 66, 4012 Brisbane	-27.3974187	153.0552312	abbreviated
+be-abbreviated-00259	Brampton St 72, 4113 Brisbane	-27.5722985	153.0986232	abbreviated
+be-abbreviated-00260	Wynnum Rd 706, 4170 Brisbane	-27.4663949	153.0744067	abbreviated
+be-abbreviated-00261	Leckie Rd 75, 4031 Brisbane	-27.4075309	153.0347241	abbreviated
+be-abbreviated-00262	McCullough St 138, 4109 Brisbane	-27.5704704	153.0556358	abbreviated
+be-abbreviated-00263	Rode Rd 66, 4012 Brisbane	-27.3974187	153.0552312	abbreviated
+be-abbreviated-00264	McCullough St 138, 4109 Brisbane	-27.5704704	153.0556358	abbreviated
+be-abbreviated-00265	Manly Rd 1029, 4173 Brisbane /19	-27.4756010	153.1340802	abbreviated
+be-abbreviated-00266	Oxford St 74, 4171 Brisbane	-27.4506612	153.0555847	abbreviated
+be-abbreviated-00267	Lytton Rd 3, 4169 Brisbane	-27.4792306	153.0416108	abbreviated
+be-abbreviated-00268	Waterworks Rd 480, 4060 Brisbane /3	-27.4494003	152.9784464	abbreviated
+be-abbreviated-00269	McCullough St 138, 4109 Brisbane	-27.5704704	153.0556358	abbreviated
+be-abbreviated-00270	Sturt Hwy 94-96, 2715 Balranald	-34.6675607	143.5654064	abbreviated
+be-abbreviated-00271	Berrima St 75, 4178 Brisbane	-27.4419771	153.1705224	abbreviated
+be-abbreviated-00272	Leckie Rd 75, 4031 Brisbane	-27.4075309	153.0347241	abbreviated
+be-abbreviated-00273	Oxford St 74, 4171 Brisbane	-27.4506612	153.0555847	abbreviated
+be-abbreviated-00274	Byrne St 14, 3732 Moyhu	-36.5768246	146.3789631	abbreviated
+be-abbreviated-00275	Beenleigh Rd 1319, 4112 Brisbane	-27.6041947	153.0892818	abbreviated
+be-abbreviated-00276	Wellington Road;Manilla St 189;62, 4169 Brisbane	-27.4796448	153.0419001	abbreviated
+be-abbreviated-00277	Manly Rd 1029, 4173 Brisbane /19	-27.4756010	153.1340802	abbreviated
+be-abbreviated-00278	James St 39, 4006 Brisbane	-27.4572098	153.0397332	abbreviated
+be-abbreviated-00279	Sturt Hwy 94-96, 2715 Balranald	-34.6675607	143.5654064	abbreviated
+be-abbreviated-00280	Thynne Rd 43, 4170 Brisbane	-27.4680224	153.0707089	abbreviated
+be-abbreviated-00281	Wickham St 608, 4006 Brisbane	-27.4513316	153.0397078	abbreviated
+be-abbreviated-00282	Beenleigh Rd 1319, 4112 Brisbane	-27.6041947	153.0892818	abbreviated
+be-abbreviated-00283	Waterworks Rd 1104, 4061 Brisbane	-27.4435798	152.9445044	abbreviated
+be-abbreviated-00284	Wickham St 612, 4006 Brisbane	-27.4512419	153.0397798	abbreviated
+be-abbreviated-00285	Waterworks Rd 1104, 4061 Brisbane	-27.4435798	152.9445044	abbreviated
+be-abbreviated-00286	Moggill Rd 427, 4068 Brisbane	-27.4990852	152.9676328	abbreviated
+be-abbreviated-00287	Maundrell Tce 146, 4032 Brisbane	-27.3804908	153.0123542	abbreviated
+be-abbreviated-00288	Brampton St 72, 4113 Brisbane	-27.5722985	153.0986232	abbreviated
+be-abbreviated-00289	Sturt Hwy 94-96, 2715 Balranald	-34.6675607	143.5654064	abbreviated
+be-abbreviated-00290	Lytton Rd 3, 4169 Brisbane	-27.4792306	153.0416108	abbreviated
+be-abbreviated-00291	Byrne St 14, 3732 Moyhu	-36.5768246	146.3789631	abbreviated
+be-abbreviated-00292	Shamrock Rd 36A, 4076 Brisbane	-27.5635332	152.9538111	abbreviated
+be-abbreviated-00293	Beenleigh Rd 1319, 4112 Brisbane	-27.6041947	153.0892818	abbreviated
+be-abbreviated-00294	Wickham St 608, 4006 Brisbane	-27.4513316	153.0397078	abbreviated
+be-abbreviated-00295	Waterworks Rd 1104, 4061 Brisbane	-27.4435798	152.9445044	abbreviated
+be-abbreviated-00296	Lytton Rd 3, 4169 Brisbane	-27.4792306	153.0416108	abbreviated
+be-abbreviated-00297	Moggill Rd 427, 4068 Brisbane	-27.4990852	152.9676328	abbreviated
+be-abbreviated-00298	Wellington Road;Manilla St 189;62, 4169 Brisbane	-27.4796448	153.0419001	abbreviated
+be-abbreviated-00299	Brampton St 72, 4113 Brisbane	-27.5722985	153.0986232	abbreviated
+be-abbreviated-00300	Manly Rd 1029, 4173 Brisbane /19	-27.4756010	153.1340802	abbreviated
+be-abbreviated-00301	Byrne St 14, 3732 Moyhu	-36.5768246	146.3789631	abbreviated
+be-abbreviated-00302	Wellington Road;Manilla St 189;62, 4169 Brisbane	-27.4796448	153.0419001	abbreviated
+be-abbreviated-00303	Wellington Road;Manilla St 189;62, 4169 Brisbane	-27.4796448	153.0419001	abbreviated
+be-abbreviated-00304	McCullough St 138, 4109 Brisbane	-27.5704704	153.0556358	abbreviated
+be-abbreviated-00305	Moggill Rd 427, 4068 Brisbane	-27.4990852	152.9676328	abbreviated
+be-abbreviated-00306	Nudgee Rd 463, 4011 Brisbane	-27.4149044	153.0752810	abbreviated
+be-abbreviated-00307	Byrne St 14, 3732 Moyhu	-36.5768246	146.3789631	abbreviated
+be-abbreviated-00308	Wynnum Rd 706, 4170 Brisbane	-27.4663949	153.0744067	abbreviated
+be-abbreviated-00309	Wellington Road;Manilla St 189;62, 4169 Brisbane	-27.4796448	153.0419001	abbreviated
+be-abbreviated-00310	Lytton Rd 3, 4169 Brisbane	-27.4792306	153.0416108	abbreviated
+be-abbreviated-00311	Rudd St 215, 4077 Brisbane	-27.5778247	152.9735526	abbreviated
+be-abbreviated-00312	Shamrock Rd 36A, 4076 Brisbane	-27.5635332	152.9538111	abbreviated
+be-abbreviated-00313	Sturt Hwy 94-96, 2715 Balranald	-34.6675607	143.5654064	abbreviated
+be-abbreviated-00314	Sturt Hwy 94-96, 2715 Balranald	-34.6675607	143.5654064	abbreviated
+be-abbreviated-00315	Oxley Station Rd 114, 4075 Brisbane	-27.5542144	152.9744431	abbreviated
+be-abbreviated-00316	Oxley Station Rd 114, 4075 Brisbane	-27.5542144	152.9744431	abbreviated
+be-abbreviated-00317	Shamrock Rd 36A, 4076 Brisbane	-27.5635332	152.9538111	abbreviated
+be-abbreviated-00318	Oxford St 74, 4171 Brisbane	-27.4506612	153.0555847	abbreviated
+be-abbreviated-00319	Waterworks Rd 1104, 4061 Brisbane	-27.4435798	152.9445044	abbreviated
+be-abbreviated-00320	Rode Rd 66, 4012 Brisbane	-27.3974187	153.0552312	abbreviated
+be-abbreviated-00321	Sturt Hwy 94-96, 2715 Balranald	-34.6675607	143.5654064	abbreviated
+be-abbreviated-00322	Rode Rd 66, 4012 Brisbane	-27.3974187	153.0552312	abbreviated
+be-abbreviated-00323	Lytton Rd 3, 4169 Brisbane	-27.4792306	153.0416108	abbreviated
+be-abbreviated-00324	Wickham St 612, 4006 Brisbane	-27.4512419	153.0397798	abbreviated
+be-abbreviated-00325	Moggill Rd 427, 4068 Brisbane	-27.4990852	152.9676328	abbreviated
+be-abbreviated-00326	Wellington Road;Manilla St 189;62, 4169 Brisbane	-27.4796448	153.0419001	abbreviated
+be-abbreviated-00327	Shamrock Rd 36A, 4076 Brisbane	-27.5635332	152.9538111	abbreviated
+be-abbreviated-00328	Wickham St 612, 4006 Brisbane	-27.4512419	153.0397798	abbreviated
+be-abbreviated-00329	Manly Rd 1029, 4173 Brisbane /19	-27.4756010	153.1340802	abbreviated
+be-abbreviated-00330	Waterworks Rd 480, 4060 Brisbane /3	-27.4494003	152.9784464	abbreviated
+be-abbreviated-00331	Thynne Rd 43, 4170 Brisbane	-27.4680224	153.0707089	abbreviated
+be-abbreviated-00332	Brampton St 72, 4113 Brisbane	-27.5722985	153.0986232	abbreviated
+be-abbreviated-00333	Moggill Rd 427, 4068 Brisbane	-27.4990852	152.9676328	abbreviated
+be-abbreviated-00334	Oxford St 74, 4171 Brisbane	-27.4506612	153.0555847	abbreviated
+be-abbreviated-00335	Beenleigh Rd 1319, 4112 Brisbane	-27.6041947	153.0892818	abbreviated
+be-abbreviated-00336	Thynne Rd 43, 4170 Brisbane	-27.4680224	153.0707089	abbreviated
+be-abbreviated-00337	James St 39, 4006 Brisbane	-27.4572098	153.0397332	abbreviated
+be-abbreviated-00338	Berrima St 75, 4178 Brisbane	-27.4419771	153.1705224	abbreviated
+be-abbreviated-00339	Berrima St 75, 4178 Brisbane	-27.4419771	153.1705224	abbreviated
+be-abbreviated-00340	Wickham St 612, 4006 Brisbane	-27.4512419	153.0397798	abbreviated
+be-abbreviated-00341	Byrne St 14, 3732 Moyhu	-36.5768246	146.3789631	abbreviated
+be-abbreviated-00342	Wickham St 608, 4006 Brisbane	-27.4513316	153.0397078	abbreviated
+be-abbreviated-00343	Berrima St 75, 4178 Brisbane	-27.4419771	153.1705224	abbreviated
+be-abbreviated-00344	Waterworks Rd 480, 4060 Brisbane /3	-27.4494003	152.9784464	abbreviated
+be-abbreviated-00345	James St 39, 4006 Brisbane	-27.4572098	153.0397332	abbreviated
+be-abbreviated-00346	Thynne Rd 43, 4170 Brisbane	-27.4680224	153.0707089	abbreviated
+be-abbreviated-00347	Wellington Road;Manilla St 189;62, 4169 Brisbane	-27.4796448	153.0419001	abbreviated
+be-abbreviated-00348	Beenleigh Rd 1319, 4112 Brisbane	-27.6041947	153.0892818	abbreviated
+be-abbreviated-00349	Wynnum Rd 706, 4170 Brisbane	-27.4663949	153.0744067	abbreviated
+be-abbreviated-00350	Thynne Rd 43, 4170 Brisbane	-27.4680224	153.0707089	abbreviated
+be-abbreviated-00351	Berrima St 75, 4178 Brisbane	-27.4419771	153.1705224	abbreviated
+be-abbreviated-00352	Rode Rd 66, 4012 Brisbane	-27.3974187	153.0552312	abbreviated
+be-abbreviated-00353	Thynne Rd 43, 4170 Brisbane	-27.4680224	153.0707089	abbreviated
+be-abbreviated-00354	Wickham St 612, 4006 Brisbane	-27.4512419	153.0397798	abbreviated
+be-abbreviated-00355	Thynne Rd 43, 4170 Brisbane	-27.4680224	153.0707089	abbreviated
+be-abbreviated-00356	Wellington Road;Manilla St 189;62, 4169 Brisbane	-27.4796448	153.0419001	abbreviated
+be-abbreviated-00357	Moggill Rd 427, 4068 Brisbane	-27.4990852	152.9676328	abbreviated
+be-abbreviated-00358	Berrima St 75, 4178 Brisbane	-27.4419771	153.1705224	abbreviated
+be-abbreviated-00359	Oxford St 74, 4171 Brisbane	-27.4506612	153.0555847	abbreviated
+be-abbreviated-00360	Leckie Rd 75, 4031 Brisbane	-27.4075309	153.0347241	abbreviated
+be-abbreviated-00361	Thynne Rd 43, 4170 Brisbane	-27.4680224	153.0707089	abbreviated
+be-abbreviated-00362	Oxley Station Rd 114, 4075 Brisbane	-27.5542144	152.9744431	abbreviated
+be-abbreviated-00363	Thynne Rd 43, 4170 Brisbane	-27.4680224	153.0707089	abbreviated
+be-abbreviated-00364	Wickham St 612, 4006 Brisbane	-27.4512419	153.0397798	abbreviated
+be-abbreviated-00365	Sturt Hwy 94-96, 2715 Balranald	-34.6675607	143.5654064	abbreviated
+be-abbreviated-00366	Waterworks Rd 1104, 4061 Brisbane	-27.4435798	152.9445044	abbreviated
+be-abbreviated-00367	Waterworks Rd 1104, 4061 Brisbane	-27.4435798	152.9445044	abbreviated
+be-abbreviated-00368	Darwin St 9, 4034 Brisbane	-27.3690859	153.0174832	abbreviated
+be-abbreviated-00369	Moggill Rd 427, 4068 Brisbane	-27.4990852	152.9676328	abbreviated
+be-abbreviated-00370	Maundrell Tce 146, 4032 Brisbane	-27.3804908	153.0123542	abbreviated
+be-abbreviated-00371	McCullough St 138, 4109 Brisbane	-27.5704704	153.0556358	abbreviated
+be-abbreviated-00372	Byrne St 14, 3732 Moyhu	-36.5768246	146.3789631	abbreviated
+be-abbreviated-00373	Darwin St 9, 4034 Brisbane	-27.3690859	153.0174832	abbreviated
+be-abbreviated-00374	Wynnum Rd 706, 4170 Brisbane	-27.4663949	153.0744067	abbreviated
+be-abbreviated-00375	Wellington Road;Manilla St 189;62, 4169 Brisbane	-27.4796448	153.0419001	abbreviated
+be-abbreviated-00376	McCullough St 138, 4109 Brisbane	-27.5704704	153.0556358	abbreviated
+be-abbreviated-00377	Waterworks Rd 1104, 4061 Brisbane	-27.4435798	152.9445044	abbreviated
+be-abbreviated-00378	James St 39, 4006 Brisbane	-27.4572098	153.0397332	abbreviated
+be-abbreviated-00379	McCullough St 138, 4109 Brisbane	-27.5704704	153.0556358	abbreviated
+be-abbreviated-00380	Maundrell Tce 146, 4032 Brisbane	-27.3804908	153.0123542	abbreviated
+be-abbreviated-00381	Wellington Road;Manilla St 189;62, 4169 Brisbane	-27.4796448	153.0419001	abbreviated
+be-abbreviated-00382	Shamrock Rd 36A, 4076 Brisbane	-27.5635332	152.9538111	abbreviated
+be-abbreviated-00383	Thynne Rd 43, 4170 Brisbane	-27.4680224	153.0707089	abbreviated
+be-abbreviated-00384	Wickham St 612, 4006 Brisbane	-27.4512419	153.0397798	abbreviated
+be-abbreviated-00385	Wynnum Rd 706, 4170 Brisbane	-27.4663949	153.0744067	abbreviated
+be-abbreviated-00386	Oxford St 74, 4171 Brisbane	-27.4506612	153.0555847	abbreviated
+be-abbreviated-00387	Wynnum Rd 706, 4170 Brisbane	-27.4663949	153.0744067	abbreviated
+be-abbreviated-00388	Wickham St 608, 4006 Brisbane	-27.4513316	153.0397078	abbreviated
+be-abbreviated-00389	Rudd St 215, 4077 Brisbane	-27.5778247	152.9735526	abbreviated
+be-abbreviated-00390	Darwin St 9, 4034 Brisbane	-27.3690859	153.0174832	abbreviated
+be-abbreviated-00391	Leckie Rd 75, 4031 Brisbane	-27.4075309	153.0347241	abbreviated
+be-abbreviated-00392	Oxford St 74, 4171 Brisbane	-27.4506612	153.0555847	abbreviated
+be-abbreviated-00393	Lytton Rd 3, 4169 Brisbane	-27.4792306	153.0416108	abbreviated
+be-abbreviated-00394	Waterworks Rd 1104, 4061 Brisbane	-27.4435798	152.9445044	abbreviated
+be-abbreviated-00395	Waterworks Rd 1104, 4061 Brisbane	-27.4435798	152.9445044	abbreviated
+be-abbreviated-00396	Waterworks Rd 480, 4060 Brisbane /3	-27.4494003	152.9784464	abbreviated
+be-abbreviated-00397	Nudgee Rd 463, 4011 Brisbane	-27.4149044	153.0752810	abbreviated
+be-abbreviated-00398	Wellington Road;Manilla St 189;62, 4169 Brisbane	-27.4796448	153.0419001	abbreviated
+be-abbreviated-00399	Waterworks Rd 1104, 4061 Brisbane	-27.4435798	152.9445044	abbreviated
+be-typo-00400	Wickham Street 608, 4006 Brisbane	-27.4513316	153.0397078	typo
+be-typo-00401	Waterworks Road 1104, 4061 Brisane	-27.4435798	152.9445044	typo
+be-typo-00402	Sturt Highway 94-96, 2715 Ballranald	-34.6675607	143.5654064	typo
+be-typo-00403	Sturt Highway 94-96, 2715 Balranald	-34.6675607	143.5654064	typo
+be-typo-00404	Lytton Road 3, 4169 Brisbaqe	-27.4792306	153.0416108	typo
+be-typo-00405	Darwin Street 9, 4034 Brisbane	-27.3690859	153.0174832	typo
+be-typo-00406	Darwin Street 9, 4034 Brisbane	-27.3690859	153.0174832	typo
+be-typo-00407	Waterworks Road 480, 4060 Bricbane /3	-27.4494003	152.9784464	typo
+be-typo-00408	Oxford Street 74, 4171 Brisbanoe	-27.4506612	153.0555847	typo
+be-typo-00409	Wickham Street 608, 4006 Briebane	-27.4513316	153.0397078	typo
+be-typo-00410	Thynne Roa 43, 4170 Brisbane	-27.4680224	153.0707089	typo
+be-typo-00411	Lytton Road 3, 4169 Brisbane	-27.4792306	153.0416108	typo
+be-typo-00412	Wrynnum Road 706, 4170 Brisbane	-27.4663949	153.0744067	typo
+be-typo-00413	Wickham Street 608, 4006 Brisbane	-27.4513316	153.0397078	typo
+be-typo-00414	Lytton Road 3, 4169 Brisdane	-27.4792306	153.0416108	typo
+be-typo-00415	Maxundrell Terrace 146, 4032 Brisbane	-27.3804908	153.0123542	typo
+be-typo-00416	Darwin Street 9, 4034 Brisbsane	-27.3690859	153.0174832	typo
+be-typo-00417	Waterworks Road 1104, 4061 Brisbane	-27.4435798	152.9445044	typo
+be-typo-00418	Ridley Road 30, 4035 Brisbane	-27.3522568	153.0038073	typo
+be-typo-00419	Rudd Street 215, 4077 Brigsbane	-27.5778247	152.9735526	typo
+be-typo-00420	Wynnum Road 706, 4170 Brisbane	-27.4663949	153.0744067	typo
+be-typo-00421	Oxley Station Road 114, 4075 Brisbane	-27.5542144	152.9744431	typo
+be-typo-00422	Shamrock Road 3A6, 4076 Brisbane	-27.5635332	152.9538111	typo
+be-typo-00423	Nudgee Road 463, 4011 Brisbane	-27.4149044	153.0752810	typo
+be-typo-00424	Waterworks Road 480, 4060 Brisbane /3	-27.4494003	152.9784464	typo
+be-typo-00425	Waterworks Road 480, 4060 Brisbane /3	-27.4494003	152.9784464	typo
+be-typo-00426	Stturt Highway 94-96, 2715 Balranald	-34.6675607	143.5654064	typo
+be-typo-00427	Darwin Street 9, 4034 Brisbane	-27.3690859	153.0174832	typo
+be-typo-00428	Shamrock Road 36A, 4076 rBisbane	-27.5635332	152.9538111	typo
+be-typo-00429	Rudd Street 215, 4077 Brisbane	-27.5778247	152.9735526	typo
+be-typo-00430	Leckie Road 75, 4031 Brisban	-27.4075309	153.0347241	typo
+be-typo-00431	Wellington Road;Manilla Street 189;62, 4169 Brisbaxne	-27.4796448	153.0419001	typo
+be-typo-00432	Waterworks Road 1104, 4061 Brisbane	-27.4435798	152.9445044	typo
+be-typo-00433	Shamrock Road 36A, 4076 Brisbane	-27.5635332	152.9538111	typo
+be-typo-00434	McCullough Street 138, 4109 Brisbane	-27.5704704	153.0556358	typo
+be-typo-00435	Moggill Road 427, 4068 Brisbane	-27.4990852	152.9676328	typo
+be-typo-00436	Nudgee Road 463, 4011 Brisbane	-27.4149044	153.0752810	typo
+be-typo-00437	Shamrock Road 36A, 4076 Birsbane	-27.5635332	152.9538111	typo
+be-typo-00438	Ruld Street 215, 4077 Brisbane	-27.5778247	152.9735526	typo
+be-typo-00439	Oxley Station Road 114, 4075 Bkisbane	-27.5542144	152.9744431	typo
+be-typo-00440	Brampton Street 72, 4113 Brisbane	-27.5722985	153.0986232	typo
+be-typo-00441	Rode Road 66, 4012 Brisbane	-27.3974187	153.0552312	typo
+be-typo-00442	Thynne Road 43, 4170 Brisbane	-27.4680224	153.0707089	typo
+be-typo-00443	eShamrock Road 36A, 4076 Brisbane	-27.5635332	152.9538111	typo
+be-typo-00444	McCullough Street 138, 4109 Brisbane	-27.5704704	153.0556358	typo
+be-typo-00445	Lytton Road 3, 4169 Brisbane	-27.4792306	153.0416108	typo
+be-typo-00446	LyttonR oad 3, 4169 Brisbane	-27.4792306	153.0416108	typo
+be-typo-00447	Rudd Strete 215, 4077 Brisbane	-27.5778247	152.9735526	typo
+be-typo-00448	Maundrell Terarce 146, 4032 Brisbane	-27.3804908	153.0123542	typo
+be-typo-00449	Maundrell Terrace 146, 4032 Brisbane	-27.3804908	153.0123542	typo
+be-typo-00450	Byrne Steet 14, 3732 Moyhu	-36.5768246	146.3789631	typo
+be-typo-00451	Nudgee Road 463, 4011 Brisbane	-27.4149044	153.0752810	typo
+be-typo-00452	Rode aoad 66, 4012 Brisbane	-27.3974187	153.0552312	typo
+be-typo-00453	Shamrock Road 36A, 4076 Brisbane	-27.5635332	152.9538111	typo
+be-typo-00454	Lytton Road 3, 4169 Brisbane	-27.4792306	153.0416108	typo
+be-typo-00455	Oxford Stbeet 74, 4171 Brisbane	-27.4506612	153.0555847	typo
+be-typo-00456	Sturt Highway 94-96, 2715 Balranald	-34.6675607	143.5654064	typo
+be-typo-00457	oMggill Road 427, 4068 Brisbane	-27.4990852	152.9676328	typo
+be-typo-00458	Leckie Road 75, 4031 Brisbane	-27.4075309	153.0347241	typo
+be-typo-00459	Wickham Street 612, 4006 Brisbane	-27.4512419	153.0397798	typo
+be-typo-00460	Lytton joad 3, 4169 Brisbane	-27.4792306	153.0416108	typo
+be-typo-00461	Byrne Street 14, 3732 Moyhu	-36.5768246	146.3789631	typo
+be-typo-00462	Ridley Road 30, 4035 Brisbane	-27.3522568	153.0038073	typo
+be-typo-00463	Berrima Street 75, 4178 Brisbane	-27.4419771	153.1705224	typo
+be-typo-00464	McCullugh Street 138, 4109 Brisbane	-27.5704704	153.0556358	typo
+be-typo-00465	Darwin Street 9, 4034 Brisbane	-27.3690859	153.0174832	typo
+be-typo-00466	Nudgel Road 463, 4011 Brisbane	-27.4149044	153.0752810	typo
+be-typo-00467	Manly Road 1029, 4173 Brisbane /19	-27.4756010	153.1340802	typo
+be-typo-00468	James Street 39, 4006 Brisbane	-27.4572098	153.0397332	typo
+be-typo-00469	Manly Rnad 1029, 4173 Brisbane /19	-27.4756010	153.1340802	typo
+be-typo-00470	Ridley Road 30, 4035 Brisbanoe	-27.3522568	153.0038073	typo
+be-typo-00471	Oxford Street 74, 4171 Brisbane	-27.4506612	153.0555847	typo
+be-typo-00472	McCullough Street 138, 4109 Brisbane	-27.5704704	153.0556358	typo
+be-typo-00473	Brampotn Street 72, 4113 Brisbane	-27.5722985	153.0986232	typo
+be-typo-00474	Lytton Road 3, 4169 Brisbane	-27.4792306	153.0416108	typo
+be-typo-00475	Wellington Road;Manilla Street 189;62, 4169 Brisban	-27.4796448	153.0419001	typo
+be-typo-00476	Ridley Road 30, 4035 Brisbine	-27.3522568	153.0038073	typo
+be-typo-00477	Byrne Street 14, 3732 bMoyhu	-36.5768246	146.3789631	typo
+be-typo-00478	Moggill Road 427, 4068 Brusbane	-27.4990852	152.9676328	typo
+be-typo-00479	Shamrock Road 36A, 4076 Brisbane	-27.5635332	152.9538111	typo
+be-typo-00480	Wickham Street 612, 4006 Baisbane	-27.4512419	153.0397798	typo
+be-typo-00481	Darwhn Street 9, 4034 Brisbane	-27.3690859	153.0174832	typo
+be-typo-00482	Lytton Roazd 3, 4169 Brisbane	-27.4792306	153.0416108	typo
+be-typo-00483	Shamuock Road 36A, 4076 Brisbane	-27.5635332	152.9538111	typo
+be-typo-00484	Oxford Street 74, 4171 Brisbane	-27.4506612	153.0555847	typo
+be-typo-00485	Waterworks Road 480, 4060 Brisbane /3	-27.4494003	152.9784464	typo
+be-typo-00486	Waterworks Road 480, 4060 Brisbmane /3	-27.4494003	152.9784464	typo
+be-typo-00487	Rudd Street 215, 4077 Brisbane	-27.5778247	152.9735526	typo
+be-typo-00488	Rudd xStreet 215, 4077 Brisbane	-27.5778247	152.9735526	typo
+be-typo-00489	Wynnum Road 706, 4170 Brisbane	-27.4663949	153.0744067	typo
+be-typo-00490	Oxford Street 74, 4171 Brisbane	-27.4506612	153.0555847	typo
+be-typo-00491	SturtH ighway 94-96, 2715 Balranald	-34.6675607	143.5654064	typo
+be-typo-00492	Waterworks Roaf 1104, 4061 Brisbane	-27.4435798	152.9445044	typo
+be-typo-00493	Thyne Road 43, 4170 Brisbane	-27.4680224	153.0707089	typo
+be-typo-00494	aJmes Street 39, 4006 Brisbane	-27.4572098	153.0397332	typo
+be-typo-00495	Oxford Street 74, 4171 Bfisbane	-27.4506612	153.0555847	typo
+be-typo-00496	Berrima Street 75, 4178 Brijsbane	-27.4419771	153.1705224	typo
+be-typo-00497	Moggill Road 427, 4068 Brisbaee	-27.4990852	152.9676328	typo
+be-typo-00498	Byrne Strheet 14, 3732 Moyhu	-36.5768246	146.3789631	typo
+be-typo-00499	Sfturt Highway 94-96, 2715 Balranald	-34.6675607	143.5654064	typo
+be-typo-00500	Wynnum Road 706, 4170 Brisbane	-27.4663949	153.0744067	typo
+be-typo-00501	McCullough Street 138, 4109 Brisbane	-27.5704704	153.0556358	typo
+be-typo-00502	Rudd Stret 215, 4077 Brisbane	-27.5778247	152.9735526	typo
+be-typo-00503	Oxford Street 74, 4171 Brisbane	-27.4506612	153.0555847	typo
+be-typo-00504	Beenleigh Road 1319, 4112 Brisbne	-27.6041947	153.0892818	typo
+be-typo-00505	Waterworks Road 480, 4060 Brisbane /3	-27.4494003	152.9784464	typo
+be-typo-00506	Oxford Stremet 74, 4171 Brisbane	-27.4506612	153.0555847	typo
+be-typo-00507	Lytton Road 3, 4169 Brisbane	-27.4792306	153.0416108	typo
+be-typo-00508	Nudgee Road 463, 4011 Brisbane	-27.4149044	153.0752810	typo
+be-typo-00509	bBerrima Street 75, 4178 Brisbane	-27.4419771	153.1705224	typo
+be-typo-00510	Beenleigh Road 1319, 4112 Brisbane	-27.6041947	153.0892818	typo
+be-typo-00511	James Street 39, 4006 Brisbane	-27.4572098	153.0397332	typo
+be-typo-00512	Thynne Road 43, 4170 Brisbane	-27.4680224	153.0707089	typo
+be-typo-00513	Berrima Street 75, 4178 Brisbane	-27.4419771	153.1705224	typo
+be-typo-00514	Oxford Street 74, 4171 Brisbane	-27.4506612	153.0555847	typo
+be-typo-00515	Beenleigh Road 1319, 4112 Brisbane	-27.6041947	153.0892818	typo
+be-typo-00516	Oxley Station Road 114, 4075 Brisbane	-27.5542144	152.9744431	typo
+be-typo-00517	Leckie Road 75, 4031 yBrisbane	-27.4075309	153.0347241	typo
+be-typo-00518	Shamrock Road 36A, 4076 Brisbane	-27.5635332	152.9538111	typo
+be-typo-00519	Maundrell Terrace 146, 4032 Brisbane	-27.3804908	153.0123542	typo
+be-typo-00520	Wynnum Road 706, 4170 Brisbane	-27.4663949	153.0744067	typo
+be-typo-00521	Oxford Street 74, 4171 Brisbane	-27.4506612	153.0555847	typo
+be-typo-00522	Waterworks Road 1104, 4061 Brisbane	-27.4435798	152.9445044	typo
+be-typo-00523	Oxley Station Road 114, 4075 Brisabne	-27.5542144	152.9744431	typo
+be-typo-00524	Nudgee Road 463, 4011 Brisbane	-27.4149044	153.0752810	typo
+be-typo-00525	Manly Road 1029, 4173 Brisbane /19	-27.4756010	153.1340802	typo
+be-typo-00526	Oxley Station Road 114, 4075 Brisbane	-27.5542144	152.9744431	typo
+be-typo-00527	Wickham Street 612, 4006 Brisbane	-27.4512419	153.0397798	typo
+be-typo-00528	Darwin Street 9, 4034 Brisbane	-27.3690859	153.0174832	typo
+be-typo-00529	Shamrock Road 36yA, 4076 Brisbane	-27.5635332	152.9538111	typo
+be-typo-00530	Leckie Road 75, 4031 Brisbane	-27.4075309	153.0347241	typo
+be-typo-00531	Mogigll Road 427, 4068 Brisbane	-27.4990852	152.9676328	typo
+be-typo-00532	James Street 39, 4006 Brisbaen	-27.4572098	153.0397332	typo
+be-typo-00533	Nudgee Roat 463, 4011 Brisbane	-27.4149044	153.0752810	typo
+be-typo-00534	Rudd Street 215, 4077 Brisbane	-27.5778247	152.9735526	typo
+be-typo-00535	Brampton Streeet 72, 4113 Brisbane	-27.5722985	153.0986232	typo
+be-typo-00536	Wynnum Roat 706, 4170 Brisbane	-27.4663949	153.0744067	typo
+be-typo-00537	Oxley Station Road 114, 4075 Brwsbane	-27.5542144	152.9744431	typo
+be-typo-00538	Oxley Station Road 114, 4075 Brisbane	-27.5542144	152.9744431	typo
+be-typo-00539	Leckie Road 75, 4031 Brisbane	-27.4075309	153.0347241	typo
+be-typo-00540	ByrneS treet 14, 3732 Moyhu	-36.5768246	146.3789631	typo
+be-typo-00541	Shamrsck Road 36A, 4076 Brisbane	-27.5635332	152.9538111	typo
+be-typo-00542	Waterworks Road 1104, 4061 Brisbane	-27.4435798	152.9445044	typo
+be-typo-00543	Sturt Highway 94-96, 2715 Balranald	-34.6675607	143.5654064	typo
+be-typo-00544	Lyttoa Road 3, 4169 Brisbane	-27.4792306	153.0416108	typo
+be-typo-00545	Maundrell Terrace 146, 4032 Brisbanl	-27.3804908	153.0123542	typo
+be-typo-00546	Waterworks Road 1104, 4061 Brisabne	-27.4435798	152.9445044	typo
+be-typo-00547	Lytton Road 3, 4169 Brisbane	-27.4792306	153.0416108	typo
+be-typo-00548	Manly Roak 1029, 4173 Brisbane /19	-27.4756010	153.1340802	typo
+be-typo-00549	Thynne Road 43, 4170 vBrisbane	-27.4680224	153.0707089	typo
+be-typo-00550	Rode Road 66, 4012 Brisbane	-27.3974187	153.0552312	typo
+be-typo-00551	Oxford Street 74, 4171 Brisbane	-27.4506612	153.0555847	typo
+be-typo-00552	Rode Road 66, 4012 Brisbane	-27.3974187	153.0552312	typo
+be-typo-00553	Moggill Road 427, 4068 Brisbgane	-27.4990852	152.9676328	typo
+be-typo-00554	Rode oad 66, 4012 Brisbane	-27.3974187	153.0552312	typo
+be-typo-00555	Sturt Highway 94-96, 2715 Balranlad	-34.6675607	143.5654064	typo
+be-typo-00556	Nudgee Road 463, 4011 Brisbane	-27.4149044	153.0752810	typo
+be-typo-00557	Beenleigh Road 1319, 4112 Brisbane	-27.6041947	153.0892818	typo
+be-typo-00558	Thynne Road 43, 4170 Brisbane	-27.4680224	153.0707089	typo
+be-typo-00559	Waterworks Road 480, 4060 Brisbane /3	-27.4494003	152.9784464	typo
+be-typo-00560	Byrne Street 14, 3732 Moytu	-36.5768246	146.3789631	typo
+be-typo-00561	McCullough Street 138, 4109 Brisbane	-27.5704704	153.0556358	typo
+be-typo-00562	Beenleigh Rmoad 1319, 4112 Brisbane	-27.6041947	153.0892818	typo
+be-typo-00563	Nudgee Road 463, 4011 qrisbane	-27.4149044	153.0752810	typo
+be-typo-00564	Wcikham Street 612, 4006 Brisbane	-27.4512419	153.0397798	typo
+be-typo-00565	McCullough Street 138, 4109 Brisbane	-27.5704704	153.0556358	typo
+be-typo-00566	McCullough Street 138, 4109 Brsibane	-27.5704704	153.0556358	typo
+be-typo-00567	Moggill Road 427, 4068 Brisbane	-27.4990852	152.9676328	typo
+be-typo-00568	Wickham Street 608, 4006 Brisbane	-27.4513316	153.0397078	typo
+be-typo-00569	Shamrock Road 36A, 4076 Brisban	-27.5635332	152.9538111	typo
+be-typo-00570	Lytton xRoad 3, 4169 Brisbane	-27.4792306	153.0416108	typo
+be-typo-00571	Shamrock Road 36A, 4076 Brisbane	-27.5635332	152.9538111	typo
+be-typo-00572	Jaes Street 39, 4006 Brisbane	-27.4572098	153.0397332	typo
+be-typo-00573	Nudgee Road 463, 4011 Brisbane	-27.4149044	153.0752810	typo
+be-typo-00574	Shamrock Road 36A, 4076 rBisbane	-27.5635332	152.9538111	typo
+be-typo-00575	Brampton Street 72, 4113 Brisbyne	-27.5722985	153.0986232	typo
+be-typo-00576	WaterworksR oad 480, 4060 Brisbane /3	-27.4494003	152.9784464	typo
+be-typo-00577	Wickham Street 608, 4006 Brisbane	-27.4513316	153.0397078	typo
+be-typo-00578	Rode Road 66, 4012 Brisbane	-27.3974187	153.0552312	typo
+be-typo-00579	Rudd Street 215, 4077 Brisbane	-27.5778247	152.9735526	typo
+be-typo-00580	Sturt Highway 94-96, 2715 Balranad	-34.6675607	143.5654064	typo
+be-typo-00581	Wickham Street 608, 4006 Brisbane	-27.4513316	153.0397078	typo
+be-typo-00582	Moggill Road 427, 4068 Brisbane	-27.4990852	152.9676328	typo
+be-typo-00583	Byrne Street 14, 3732 Moyhu	-36.5768246	146.3789631	typo
+be-typo-00584	Waterworks Road 480, 4060 trisbane /3	-27.4494003	152.9784464	typo
+be-typo-00585	Darwin Struet 9, 4034 Brisbane	-27.3690859	153.0174832	typo
+be-typo-00586	Shamrock Road 36A, 4076 Brisbane	-27.5635332	152.9538111	typo
+be-typo-00587	Waterworks Road 480, 4060 Brisbane /3	-27.4494003	152.9784464	typo
+be-typo-00588	Maundrell Terrace 146, 4032 Bisbane	-27.3804908	153.0123542	typo
+be-typo-00589	Thynne Road 43, 4170 Brisbane	-27.4680224	153.0707089	typo
+be-typo-00590	Berrima Street 75, 4178 Brisbane	-27.4419771	153.1705224	typo
+be-typo-00591	Maundrell Terrace 146, 4032 Brisbaone	-27.3804908	153.0123542	typo
+be-typo-00592	Wellington Road;Manilta Street 189;62, 4169 Brisbane	-27.4796448	153.0419001	typo
+be-typo-00593	Brampton Street 72, 4113 Brisbane	-27.5722985	153.0986232	typo
+be-typo-00594	Beenleigh Road 1319, 4112 Brisbane	-27.6041947	153.0892818	typo
+be-typo-00595	yLtton Road 3, 4169 Brisbane	-27.4792306	153.0416108	typo
+be-typo-00596	James Street 39, 4006 Brisbane	-27.4572098	153.0397332	typo
+be-typo-00597	Maundrell Terrace 146, 4032 Brisbane	-27.3804908	153.0123542	typo
+be-typo-00598	aarwin Street 9, 4034 Brisbane	-27.3690859	153.0174832	typo
+be-typo-00599	Moggill Road 427, 4068 Brisbane	-27.4990852	152.9676328	typo
+be-reordered-00600	4076 Brisbane Shamrock Road 36A	-27.5635332	152.9538111	reordered
+be-reordered-00601	4006 Brisbane Wickham Street 608	-27.4513316	153.0397078	reordered
+be-reordered-00602	4006 Brisbane James Street 39	-27.4572098	153.0397332	reordered
+be-reordered-00603	2715 Balranald Sturt Highway 94-96	-34.6675607	143.5654064	reordered
+be-reordered-00604	4113 Brisbane Brampton Street 72	-27.5722985	153.0986232	reordered
+be-reordered-00605	4075 Brisbane Oxley Station Road 114	-27.5542144	152.9744431	reordered
+be-reordered-00606	4077 Brisbane Rudd Street 215	-27.5778247	152.9735526	reordered
+be-reordered-00607	2715 Balranald Sturt Highway 94-96	-34.6675607	143.5654064	reordered
+be-reordered-00608	4035 Brisbane Ridley Road 30	-27.3522568	153.0038073	reordered
+be-reordered-00609	4112 Brisbane Beenleigh Road 1319	-27.6041947	153.0892818	reordered
+be-reordered-00610	4006 Brisbane James Street 39	-27.4572098	153.0397332	reordered
+be-reordered-00611	4011 Brisbane Nudgee Road 463	-27.4149044	153.0752810	reordered
+be-reordered-00612	4169 Brisbane Wellington Road;Manilla Street 189;62	-27.4796448	153.0419001	reordered
+be-reordered-00613	4061 Brisbane Waterworks Road 1104	-27.4435798	152.9445044	reordered
+be-reordered-00614	4112 Brisbane Beenleigh Road 1319	-27.6041947	153.0892818	reordered
+be-reordered-00615	4012 Brisbane Rode Road 66	-27.3974187	153.0552312	reordered
+be-reordered-00616	4171 Brisbane Oxford Street 74	-27.4506612	153.0555847	reordered
+be-reordered-00617	4032 Brisbane Maundrell Terrace 146	-27.3804908	153.0123542	reordered
+be-reordered-00618	4169 Brisbane Lytton Road 3	-27.4792306	153.0416108	reordered
+be-reordered-00619	4170 Brisbane Wynnum Road 706	-27.4663949	153.0744067	reordered
+be-reordered-00620	4011 Brisbane Nudgee Road 463	-27.4149044	153.0752810	reordered
+be-reordered-00621	4109 Brisbane McCullough Street 138	-27.5704704	153.0556358	reordered
+be-reordered-00622	3732 Moyhu Byrne Street 14	-36.5768246	146.3789631	reordered
+be-reordered-00623	4006 Brisbane Wickham Street 612	-27.4512419	153.0397798	reordered
+be-reordered-00624	4032 Brisbane Maundrell Terrace 146	-27.3804908	153.0123542	reordered
+be-reordered-00625	4068 Brisbane Moggill Road 427	-27.4990852	152.9676328	reordered
+be-reordered-00626	4035 Brisbane Ridley Road 30	-27.3522568	153.0038073	reordered
+be-reordered-00627	4060 Brisbane Waterworks Road 480	-27.4494003	152.9784464	reordered
+be-reordered-00628	4061 Brisbane Waterworks Road 1104	-27.4435798	152.9445044	reordered
+be-reordered-00629	4006 Brisbane James Street 39	-27.4572098	153.0397332	reordered
+be-reordered-00630	4077 Brisbane Rudd Street 215	-27.5778247	152.9735526	reordered
+be-reordered-00631	4035 Brisbane Ridley Road 30	-27.3522568	153.0038073	reordered
+be-reordered-00632	4171 Brisbane Oxford Street 74	-27.4506612	153.0555847	reordered
+be-reordered-00633	4011 Brisbane Nudgee Road 463	-27.4149044	153.0752810	reordered
+be-reordered-00634	4170 Brisbane Thynne Road 43	-27.4680224	153.0707089	reordered
+be-reordered-00635	4035 Brisbane Ridley Road 30	-27.3522568	153.0038073	reordered
+be-reordered-00636	4169 Brisbane Wellington Road;Manilla Street 189;62	-27.4796448	153.0419001	reordered
+be-reordered-00637	4061 Brisbane Waterworks Road 1104	-27.4435798	152.9445044	reordered
+be-reordered-00638	4006 Brisbane Wickham Street 608	-27.4513316	153.0397078	reordered
+be-reordered-00639	4006 Brisbane James Street 39	-27.4572098	153.0397332	reordered
+be-reordered-00640	4171 Brisbane Oxford Street 74	-27.4506612	153.0555847	reordered
+be-reordered-00641	2715 Balranald Sturt Highway 94-96	-34.6675607	143.5654064	reordered
+be-reordered-00642	4170 Brisbane Wynnum Road 706	-27.4663949	153.0744067	reordered
+be-reordered-00643	4171 Brisbane Oxford Street 74	-27.4506612	153.0555847	reordered
+be-reordered-00644	4109 Brisbane McCullough Street 138	-27.5704704	153.0556358	reordered
+be-reordered-00645	4032 Brisbane Maundrell Terrace 146	-27.3804908	153.0123542	reordered
+be-reordered-00646	4178 Brisbane Berrima Street 75	-27.4419771	153.1705224	reordered
+be-reordered-00647	4060 Brisbane Waterworks Road 480	-27.4494003	152.9784464	reordered
+be-reordered-00648	4075 Brisbane Oxley Station Road 114	-27.5542144	152.9744431	reordered
+be-reordered-00649	4109 Brisbane McCullough Street 138	-27.5704704	153.0556358	reordered
+be-reordered-00650	4173 Brisbane Manly Road 1029	-27.4756010	153.1340802	reordered
+be-reordered-00651	4011 Brisbane Nudgee Road 463	-27.4149044	153.0752810	reordered
+be-reordered-00652	4170 Brisbane Thynne Road 43	-27.4680224	153.0707089	reordered
+be-reordered-00653	4075 Brisbane Oxley Station Road 114	-27.5542144	152.9744431	reordered
+be-reordered-00654	4169 Brisbane Lytton Road 3	-27.4792306	153.0416108	reordered
+be-reordered-00655	4031 Brisbane Leckie Road 75	-27.4075309	153.0347241	reordered
+be-reordered-00656	4112 Brisbane Beenleigh Road 1319	-27.6041947	153.0892818	reordered
+be-reordered-00657	4012 Brisbane Rode Road 66	-27.3974187	153.0552312	reordered
+be-reordered-00658	4011 Brisbane Nudgee Road 463	-27.4149044	153.0752810	reordered
+be-reordered-00659	4169 Brisbane Wellington Road;Manilla Street 189;62	-27.4796448	153.0419001	reordered
+be-reordered-00660	4169 Brisbane Lytton Road 3	-27.4792306	153.0416108	reordered
+be-reordered-00661	4113 Brisbane Brampton Street 72	-27.5722985	153.0986232	reordered
+be-reordered-00662	4170 Brisbane Wynnum Road 706	-27.4663949	153.0744067	reordered
+be-reordered-00663	4006 Brisbane Wickham Street 608	-27.4513316	153.0397078	reordered
+be-reordered-00664	4178 Brisbane Berrima Street 75	-27.4419771	153.1705224	reordered
+be-reordered-00665	4032 Brisbane Maundrell Terrace 146	-27.3804908	153.0123542	reordered
+be-reordered-00666	4006 Brisbane James Street 39	-27.4572098	153.0397332	reordered
+be-reordered-00667	4035 Brisbane Ridley Road 30	-27.3522568	153.0038073	reordered
+be-reordered-00668	4061 Brisbane Waterworks Road 1104	-27.4435798	152.9445044	reordered
+be-reordered-00669	3732 Moyhu Byrne Street 14	-36.5768246	146.3789631	reordered
+be-reordered-00670	4076 Brisbane Shamrock Road 36A	-27.5635332	152.9538111	reordered
+be-reordered-00671	4173 Brisbane Manly Road 1029	-27.4756010	153.1340802	reordered
+be-reordered-00672	4061 Brisbane Waterworks Road 1104	-27.4435798	152.9445044	reordered
+be-reordered-00673	4112 Brisbane Beenleigh Road 1319	-27.6041947	153.0892818	reordered
+be-reordered-00674	4011 Brisbane Nudgee Road 463	-27.4149044	153.0752810	reordered
+be-reordered-00675	4109 Brisbane McCullough Street 138	-27.5704704	153.0556358	reordered
+be-reordered-00676	4076 Brisbane Shamrock Road 36A	-27.5635332	152.9538111	reordered
+be-reordered-00677	4060 Brisbane Waterworks Road 480	-27.4494003	152.9784464	reordered
+be-reordered-00678	4006 Brisbane James Street 39	-27.4572098	153.0397332	reordered
+be-reordered-00679	2715 Balranald Sturt Highway 94-96	-34.6675607	143.5654064	reordered
+be-reordered-00680	4032 Brisbane Maundrell Terrace 146	-27.3804908	153.0123542	reordered
+be-reordered-00681	4031 Brisbane Leckie Road 75	-27.4075309	153.0347241	reordered
+be-reordered-00682	4171 Brisbane Oxford Street 74	-27.4506612	153.0555847	reordered
+be-reordered-00683	4031 Brisbane Leckie Road 75	-27.4075309	153.0347241	reordered
+be-reordered-00684	2715 Balranald Sturt Highway 94-96	-34.6675607	143.5654064	reordered
+be-reordered-00685	4075 Brisbane Oxley Station Road 114	-27.5542144	152.9744431	reordered
+be-reordered-00686	4173 Brisbane Manly Road 1029	-27.4756010	153.1340802	reordered
+be-reordered-00687	4109 Brisbane McCullough Street 138	-27.5704704	153.0556358	reordered
+be-reordered-00688	4068 Brisbane Moggill Road 427	-27.4990852	152.9676328	reordered
+be-reordered-00689	4034 Brisbane Darwin Street 9	-27.3690859	153.0174832	reordered
+be-reordered-00690	4178 Brisbane Berrima Street 75	-27.4419771	153.1705224	reordered
+be-reordered-00691	4109 Brisbane McCullough Street 138	-27.5704704	153.0556358	reordered
+be-reordered-00692	4169 Brisbane Wellington Road;Manilla Street 189;62	-27.4796448	153.0419001	reordered
+be-reordered-00693	4169 Brisbane Wellington Road;Manilla Street 189;62	-27.4796448	153.0419001	reordered
+be-reordered-00694	4068 Brisbane Moggill Road 427	-27.4990852	152.9676328	reordered
+be-reordered-00695	4061 Brisbane Waterworks Road 1104	-27.4435798	152.9445044	reordered
+be-reordered-00696	4006 Brisbane Wickham Street 612	-27.4512419	153.0397798	reordered
+be-reordered-00697	4032 Brisbane Maundrell Terrace 146	-27.3804908	153.0123542	reordered
+be-reordered-00698	4076 Brisbane Shamrock Road 36A	-27.5635332	152.9538111	reordered
+be-reordered-00699	4076 Brisbane Shamrock Road 36A	-27.5635332	152.9538111	reordered
+be-reordered-00700	4060 Brisbane Waterworks Road 480	-27.4494003	152.9784464	reordered
+be-reordered-00701	4173 Brisbane Manly Road 1029	-27.4756010	153.1340802	reordered
+be-reordered-00702	4061 Brisbane Waterworks Road 1104	-27.4435798	152.9445044	reordered
+be-reordered-00703	4113 Brisbane Brampton Street 72	-27.5722985	153.0986232	reordered
+be-reordered-00704	4061 Brisbane Waterworks Road 1104	-27.4435798	152.9445044	reordered
+be-reordered-00705	4061 Brisbane Waterworks Road 1104	-27.4435798	152.9445044	reordered
+be-reordered-00706	4006 Brisbane James Street 39	-27.4572098	153.0397332	reordered
+be-reordered-00707	4011 Brisbane Nudgee Road 463	-27.4149044	153.0752810	reordered
+be-reordered-00708	4035 Brisbane Ridley Road 30	-27.3522568	153.0038073	reordered
+be-reordered-00709	4170 Brisbane Wynnum Road 706	-27.4663949	153.0744067	reordered
+be-reordered-00710	4006 Brisbane James Street 39	-27.4572098	153.0397332	reordered
+be-reordered-00711	4035 Brisbane Ridley Road 30	-27.3522568	153.0038073	reordered
+be-reordered-00712	4006 Brisbane James Street 39	-27.4572098	153.0397332	reordered
+be-reordered-00713	4077 Brisbane Rudd Street 215	-27.5778247	152.9735526	reordered
+be-reordered-00714	4169 Brisbane Wellington Road;Manilla Street 189;62	-27.4796448	153.0419001	reordered
+be-reordered-00715	3732 Moyhu Byrne Street 14	-36.5768246	146.3789631	reordered
+be-reordered-00716	4006 Brisbane Wickham Street 612	-27.4512419	153.0397798	reordered
+be-reordered-00717	4169 Brisbane Wellington Road;Manilla Street 189;62	-27.4796448	153.0419001	reordered
+be-reordered-00718	4077 Brisbane Rudd Street 215	-27.5778247	152.9735526	reordered
+be-reordered-00719	2715 Balranald Sturt Highway 94-96	-34.6675607	143.5654064	reordered
+be-reordered-00720	4169 Brisbane Lytton Road 3	-27.4792306	153.0416108	reordered
+be-reordered-00721	4173 Brisbane Manly Road 1029	-27.4756010	153.1340802	reordered
+be-reordered-00722	4012 Brisbane Rode Road 66	-27.3974187	153.0552312	reordered
+be-reordered-00723	4006 Brisbane Wickham Street 612	-27.4512419	153.0397798	reordered
+be-reordered-00724	4169 Brisbane Lytton Road 3	-27.4792306	153.0416108	reordered
+be-reordered-00725	2715 Balranald Sturt Highway 94-96	-34.6675607	143.5654064	reordered
+be-reordered-00726	4061 Brisbane Waterworks Road 1104	-27.4435798	152.9445044	reordered
+be-reordered-00727	4032 Brisbane Maundrell Terrace 146	-27.3804908	153.0123542	reordered
+be-reordered-00728	4031 Brisbane Leckie Road 75	-27.4075309	153.0347241	reordered
+be-reordered-00729	4012 Brisbane Rode Road 66	-27.3974187	153.0552312	reordered
+be-reordered-00730	4075 Brisbane Oxley Station Road 114	-27.5542144	152.9744431	reordered
+be-reordered-00731	3732 Moyhu Byrne Street 14	-36.5768246	146.3789631	reordered
+be-reordered-00732	4112 Brisbane Beenleigh Road 1319	-27.6041947	153.0892818	reordered
+be-reordered-00733	4068 Brisbane Moggill Road 427	-27.4990852	152.9676328	reordered
+be-reordered-00734	4011 Brisbane Nudgee Road 463	-27.4149044	153.0752810	reordered
+be-reordered-00735	4061 Brisbane Waterworks Road 1104	-27.4435798	152.9445044	reordered
+be-reordered-00736	4031 Brisbane Leckie Road 75	-27.4075309	153.0347241	reordered
+be-reordered-00737	4113 Brisbane Brampton Street 72	-27.5722985	153.0986232	reordered
+be-reordered-00738	4077 Brisbane Rudd Street 215	-27.5778247	152.9735526	reordered
+be-reordered-00739	4012 Brisbane Rode Road 66	-27.3974187	153.0552312	reordered
+be-reordered-00740	4006 Brisbane Wickham Street 608	-27.4513316	153.0397078	reordered
+be-reordered-00741	4169 Brisbane Lytton Road 3	-27.4792306	153.0416108	reordered
+be-reordered-00742	4169 Brisbane Wellington Road;Manilla Street 189;62	-27.4796448	153.0419001	reordered
+be-reordered-00743	4034 Brisbane Darwin Street 9	-27.3690859	153.0174832	reordered
+be-reordered-00744	2715 Balranald Sturt Highway 94-96	-34.6675607	143.5654064	reordered
+be-reordered-00745	4169 Brisbane Lytton Road 3	-27.4792306	153.0416108	reordered
+be-reordered-00746	4032 Brisbane Maundrell Terrace 146	-27.3804908	153.0123542	reordered
+be-reordered-00747	4170 Brisbane Thynne Road 43	-27.4680224	153.0707089	reordered
+be-reordered-00748	4035 Brisbane Ridley Road 30	-27.3522568	153.0038073	reordered
+be-reordered-00749	4006 Brisbane Wickham Street 608	-27.4513316	153.0397078	reordered
+be-reordered-00750	4076 Brisbane Shamrock Road 36A	-27.5635332	152.9538111	reordered
+be-reordered-00751	4034 Brisbane Darwin Street 9	-27.3690859	153.0174832	reordered
+be-reordered-00752	4171 Brisbane Oxford Street 74	-27.4506612	153.0555847	reordered
+be-reordered-00753	4060 Brisbane Waterworks Road 480	-27.4494003	152.9784464	reordered
+be-reordered-00754	4170 Brisbane Thynne Road 43	-27.4680224	153.0707089	reordered
+be-reordered-00755	4012 Brisbane Rode Road 66	-27.3974187	153.0552312	reordered
+be-reordered-00756	4061 Brisbane Waterworks Road 1104	-27.4435798	152.9445044	reordered
+be-reordered-00757	4031 Brisbane Leckie Road 75	-27.4075309	153.0347241	reordered
+be-reordered-00758	4109 Brisbane McCullough Street 138	-27.5704704	153.0556358	reordered
+be-reordered-00759	4006 Brisbane Wickham Street 608	-27.4513316	153.0397078	reordered
+be-reordered-00760	4075 Brisbane Oxley Station Road 114	-27.5542144	152.9744431	reordered
+be-reordered-00761	4006 Brisbane James Street 39	-27.4572098	153.0397332	reordered
+be-reordered-00762	4113 Brisbane Brampton Street 72	-27.5722985	153.0986232	reordered
+be-reordered-00763	4011 Brisbane Nudgee Road 463	-27.4149044	153.0752810	reordered
+be-reordered-00764	4011 Brisbane Nudgee Road 463	-27.4149044	153.0752810	reordered
+be-reordered-00765	4032 Brisbane Maundrell Terrace 146	-27.3804908	153.0123542	reordered
+be-reordered-00766	4068 Brisbane Moggill Road 427	-27.4990852	152.9676328	reordered
+be-reordered-00767	4034 Brisbane Darwin Street 9	-27.3690859	153.0174832	reordered
+be-reordered-00768	4068 Brisbane Moggill Road 427	-27.4990852	152.9676328	reordered
+be-reordered-00769	4061 Brisbane Waterworks Road 1104	-27.4435798	152.9445044	reordered
+be-reordered-00770	4170 Brisbane Wynnum Road 706	-27.4663949	153.0744067	reordered
+be-reordered-00771	4006 Brisbane James Street 39	-27.4572098	153.0397332	reordered
+be-reordered-00772	4075 Brisbane Oxley Station Road 114	-27.5542144	152.9744431	reordered
+be-reordered-00773	4034 Brisbane Darwin Street 9	-27.3690859	153.0174832	reordered
+be-reordered-00774	4170 Brisbane Wynnum Road 706	-27.4663949	153.0744067	reordered
+be-reordered-00775	4113 Brisbane Brampton Street 72	-27.5722985	153.0986232	reordered
+be-reordered-00776	4032 Brisbane Maundrell Terrace 146	-27.3804908	153.0123542	reordered
+be-reordered-00777	4060 Brisbane Waterworks Road 480	-27.4494003	152.9784464	reordered
+be-reordered-00778	2715 Balranald Sturt Highway 94-96	-34.6675607	143.5654064	reordered
+be-reordered-00779	4060 Brisbane Waterworks Road 480	-27.4494003	152.9784464	reordered
+be-reordered-00780	4068 Brisbane Moggill Road 427	-27.4990852	152.9676328	reordered
+be-reordered-00781	4109 Brisbane McCullough Street 138	-27.5704704	153.0556358	reordered
+be-reordered-00782	2715 Balranald Sturt Highway 94-96	-34.6675607	143.5654064	reordered
+be-reordered-00783	4178 Brisbane Berrima Street 75	-27.4419771	153.1705224	reordered
+be-reordered-00784	4113 Brisbane Brampton Street 72	-27.5722985	153.0986232	reordered
+be-reordered-00785	4032 Brisbane Maundrell Terrace 146	-27.3804908	153.0123542	reordered
+be-reordered-00786	3732 Moyhu Byrne Street 14	-36.5768246	146.3789631	reordered
+be-reordered-00787	4060 Brisbane Waterworks Road 480	-27.4494003	152.9784464	reordered
+be-reordered-00788	4170 Brisbane Thynne Road 43	-27.4680224	153.0707089	reordered
+be-reordered-00789	4006 Brisbane James Street 39	-27.4572098	153.0397332	reordered
+be-reordered-00790	4075 Brisbane Oxley Station Road 114	-27.5542144	152.9744431	reordered
+be-reordered-00791	4173 Brisbane Manly Road 1029	-27.4756010	153.1340802	reordered
+be-reordered-00792	4061 Brisbane Waterworks Road 1104	-27.4435798	152.9445044	reordered
+be-reordered-00793	4006 Brisbane James Street 39	-27.4572098	153.0397332	reordered
+be-reordered-00794	4060 Brisbane Waterworks Road 480	-27.4494003	152.9784464	reordered
+be-reordered-00795	4006 Brisbane Wickham Street 612	-27.4512419	153.0397798	reordered
+be-reordered-00796	4077 Brisbane Rudd Street 215	-27.5778247	152.9735526	reordered
+be-reordered-00797	2715 Balranald Sturt Highway 94-96	-34.6675607	143.5654064	reordered
+be-reordered-00798	4032 Brisbane Maundrell Terrace 146	-27.3804908	153.0123542	reordered
+be-reordered-00799	4173 Brisbane Manly Road 1029	-27.4756010	153.1340802	reordered
+be-partial-00800	Manly Road 1029, Brisbane	-27.4756010	153.1340802	partial
+be-partial-00801	Darwin Street 9, Brisbane	-27.3690859	153.0174832	partial
+be-partial-00802	Rode Road 66, Brisbane	-27.3974187	153.0552312	partial
+be-partial-00803	Leckie Road 75, Brisbane	-27.4075309	153.0347241	partial
+be-partial-00804	Wynnum Road 706, Brisbane	-27.4663949	153.0744067	partial
+be-partial-00805	Manly Road 1029, Brisbane	-27.4756010	153.1340802	partial
+be-partial-00806	Thynne Road 43, Brisbane	-27.4680224	153.0707089	partial
+be-partial-00807	Darwin Street 9, Brisbane	-27.3690859	153.0174832	partial
+be-partial-00808	Waterworks Road 480, Brisbane	-27.4494003	152.9784464	partial
+be-partial-00809	Wynnum Road 706, Brisbane	-27.4663949	153.0744067	partial
+be-partial-00810	Leckie Road 75, Brisbane	-27.4075309	153.0347241	partial
+be-partial-00811	Beenleigh Road 1319, Brisbane	-27.6041947	153.0892818	partial
+be-partial-00812	Waterworks Road 480, Brisbane	-27.4494003	152.9784464	partial
+be-partial-00813	Brampton Street 72, Brisbane	-27.5722985	153.0986232	partial
+be-partial-00814	James Street 39, Brisbane	-27.4572098	153.0397332	partial
+be-partial-00815	Wickham Street 612, Brisbane	-27.4512419	153.0397798	partial
+be-partial-00816	Wickham Street 612, Brisbane	-27.4512419	153.0397798	partial
+be-partial-00817	Wynnum Road 706, Brisbane	-27.4663949	153.0744067	partial
+be-partial-00818	Nudgee Road 463, Brisbane	-27.4149044	153.0752810	partial
+be-partial-00819	Moggill Road 427, Brisbane	-27.4990852	152.9676328	partial
+be-partial-00820	Wellington Road;Manilla Street 189;62, Brisbane	-27.4796448	153.0419001	partial
+be-partial-00821	Maundrell Terrace 146, Brisbane	-27.3804908	153.0123542	partial
+be-partial-00822	Moggill Road 427, Brisbane	-27.4990852	152.9676328	partial
+be-partial-00823	Waterworks Road 1104, Brisbane	-27.4435798	152.9445044	partial
+be-partial-00824	Brampton Street 72, Brisbane	-27.5722985	153.0986232	partial
+be-partial-00825	Sturt Highway 94-96, Balranald	-34.6675607	143.5654064	partial
+be-partial-00826	Leckie Road 75, Brisbane	-27.4075309	153.0347241	partial
+be-partial-00827	Manly Road 1029, Brisbane	-27.4756010	153.1340802	partial
+be-partial-00828	Rudd Street 215, Brisbane	-27.5778247	152.9735526	partial
+be-partial-00829	Shamrock Road 36A, Brisbane	-27.5635332	152.9538111	partial
+be-partial-00830	Oxley Station Road 114, Brisbane	-27.5542144	152.9744431	partial
+be-partial-00831	Waterworks Road 1104, Brisbane	-27.4435798	152.9445044	partial
+be-partial-00832	Manly Road 1029, Brisbane	-27.4756010	153.1340802	partial
+be-partial-00833	Wellington Road;Manilla Street 189;62, Brisbane	-27.4796448	153.0419001	partial
+be-partial-00834	Brampton Street 72, Brisbane	-27.5722985	153.0986232	partial
+be-partial-00835	McCullough Street 138, Brisbane	-27.5704704	153.0556358	partial
+be-partial-00836	Sturt Highway 94-96, Balranald	-34.6675607	143.5654064	partial
+be-partial-00837	Oxford Street 74, Brisbane	-27.4506612	153.0555847	partial
+be-partial-00838	Leckie Road 75, Brisbane	-27.4075309	153.0347241	partial
+be-partial-00839	Rode Road 66, Brisbane	-27.3974187	153.0552312	partial
+be-partial-00840	James Street 39, Brisbane	-27.4572098	153.0397332	partial
+be-partial-00841	Ridley Road 30, Brisbane	-27.3522568	153.0038073	partial
+be-partial-00842	Waterworks Road 480, Brisbane	-27.4494003	152.9784464	partial
+be-partial-00843	Manly Road 1029, Brisbane	-27.4756010	153.1340802	partial
+be-partial-00844	Sturt Highway 94-96, Balranald	-34.6675607	143.5654064	partial
+be-partial-00845	McCullough Street 138, Brisbane	-27.5704704	153.0556358	partial
+be-partial-00846	Wickham Street 608, Brisbane	-27.4513316	153.0397078	partial
+be-partial-00847	Berrima Street 75, Brisbane	-27.4419771	153.1705224	partial
+be-partial-00848	Maundrell Terrace 146, Brisbane	-27.3804908	153.0123542	partial
+be-partial-00849	Nudgee Road 463, Brisbane	-27.4149044	153.0752810	partial
+be-partial-00850	Wellington Road;Manilla Street 189;62, Brisbane	-27.4796448	153.0419001	partial
+be-partial-00851	Ridley Road 30, Brisbane	-27.3522568	153.0038073	partial
+be-partial-00852	Brampton Street 72, Brisbane	-27.5722985	153.0986232	partial
+be-partial-00853	Manly Road 1029, Brisbane	-27.4756010	153.1340802	partial
+be-partial-00854	James Street 39, Brisbane	-27.4572098	153.0397332	partial
+be-partial-00855	Rode Road 66, Brisbane	-27.3974187	153.0552312	partial
+be-partial-00856	McCullough Street 138, Brisbane	-27.5704704	153.0556358	partial
+be-partial-00857	Brampton Street 72, Brisbane	-27.5722985	153.0986232	partial
+be-partial-00858	Leckie Road 75, Brisbane	-27.4075309	153.0347241	partial
+be-partial-00859	Leckie Road 75, Brisbane	-27.4075309	153.0347241	partial
+be-partial-00860	Waterworks Road 1104, Brisbane	-27.4435798	152.9445044	partial
+be-partial-00861	Wickham Street 612, Brisbane	-27.4512419	153.0397798	partial
+be-partial-00862	Thynne Road 43, Brisbane	-27.4680224	153.0707089	partial
+be-partial-00863	Leckie Road 75, Brisbane	-27.4075309	153.0347241	partial
+be-partial-00864	Beenleigh Road 1319, Brisbane	-27.6041947	153.0892818	partial
+be-partial-00865	Oxford Street 74, Brisbane	-27.4506612	153.0555847	partial
+be-partial-00866	Moggill Road 427, Brisbane	-27.4990852	152.9676328	partial
+be-partial-00867	Waterworks Road 1104, Brisbane	-27.4435798	152.9445044	partial
+be-partial-00868	McCullough Street 138, Brisbane	-27.5704704	153.0556358	partial
+be-partial-00869	Darwin Street 9, Brisbane	-27.3690859	153.0174832	partial
+be-partial-00870	Wellington Road;Manilla Street 189;62, Brisbane	-27.4796448	153.0419001	partial
+be-partial-00871	Leckie Road 75, Brisbane	-27.4075309	153.0347241	partial
+be-partial-00872	McCullough Street 138, Brisbane	-27.5704704	153.0556358	partial
+be-partial-00873	Maundrell Terrace 146, Brisbane	-27.3804908	153.0123542	partial
+be-partial-00874	Leckie Road 75, Brisbane	-27.4075309	153.0347241	partial
+be-partial-00875	Maundrell Terrace 146, Brisbane	-27.3804908	153.0123542	partial
+be-partial-00876	Wellington Road;Manilla Street 189;62, Brisbane	-27.4796448	153.0419001	partial
+be-partial-00877	Brampton Street 72, Brisbane	-27.5722985	153.0986232	partial
+be-partial-00878	Darwin Street 9, Brisbane	-27.3690859	153.0174832	partial
+be-partial-00879	McCullough Street 138, Brisbane	-27.5704704	153.0556358	partial
+be-partial-00880	Oxley Station Road 114, Brisbane	-27.5542144	152.9744431	partial
+be-partial-00881	Thynne Road 43, Brisbane	-27.4680224	153.0707089	partial
+be-partial-00882	Rode Road 66, Brisbane	-27.3974187	153.0552312	partial
+be-partial-00883	Lytton Road 3, Brisbane	-27.4792306	153.0416108	partial
+be-partial-00884	James Street 39, Brisbane	-27.4572098	153.0397332	partial
+be-partial-00885	Moggill Road 427, Brisbane	-27.4990852	152.9676328	partial
+be-partial-00886	Byrne Street 14, Moyhu	-36.5768246	146.3789631	partial
+be-partial-00887	McCullough Street 138, Brisbane	-27.5704704	153.0556358	partial
+be-partial-00888	Wickham Street 612, Brisbane	-27.4512419	153.0397798	partial
+be-partial-00889	Brampton Street 72, Brisbane	-27.5722985	153.0986232	partial
+be-partial-00890	Maundrell Terrace 146, Brisbane	-27.3804908	153.0123542	partial
+be-partial-00891	Wellington Road;Manilla Street 189;62, Brisbane	-27.4796448	153.0419001	partial
+be-partial-00892	Rudd Street 215, Brisbane	-27.5778247	152.9735526	partial
+be-partial-00893	Rode Road 66, Brisbane	-27.3974187	153.0552312	partial
+be-partial-00894	Berrima Street 75, Brisbane	-27.4419771	153.1705224	partial
+be-partial-00895	Manly Road 1029, Brisbane	-27.4756010	153.1340802	partial
+be-partial-00896	Wynnum Road 706, Brisbane	-27.4663949	153.0744067	partial
+be-partial-00897	Shamrock Road 36A, Brisbane	-27.5635332	152.9538111	partial
+be-partial-00898	Oxford Street 74, Brisbane	-27.4506612	153.0555847	partial
+be-partial-00899	Shamrock Road 36A, Brisbane	-27.5635332	152.9538111	partial
+be-partial-00900	Manly Road 1029, Brisbane	-27.4756010	153.1340802	partial
+be-partial-00901	Maundrell Terrace 146, Brisbane	-27.3804908	153.0123542	partial
+be-partial-00902	Manly Road 1029, Brisbane	-27.4756010	153.1340802	partial
+be-partial-00903	Maundrell Terrace 146, Brisbane	-27.3804908	153.0123542	partial
+be-partial-00904	James Street 39, Brisbane	-27.4572098	153.0397332	partial
+be-partial-00905	Oxford Street 74, Brisbane	-27.4506612	153.0555847	partial
+be-partial-00906	Oxford Street 74, Brisbane	-27.4506612	153.0555847	partial
+be-partial-00907	Wickham Street 612, Brisbane	-27.4512419	153.0397798	partial
+be-partial-00908	Manly Road 1029, Brisbane	-27.4756010	153.1340802	partial
+be-partial-00909	Shamrock Road 36A, Brisbane	-27.5635332	152.9538111	partial
+be-partial-00910	Oxford Street 74, Brisbane	-27.4506612	153.0555847	partial
+be-partial-00911	Wynnum Road 706, Brisbane	-27.4663949	153.0744067	partial
+be-partial-00912	Sturt Highway 94-96, Balranald	-34.6675607	143.5654064	partial
+be-partial-00913	Beenleigh Road 1319, Brisbane	-27.6041947	153.0892818	partial
+be-partial-00914	Rode Road 66, Brisbane	-27.3974187	153.0552312	partial
+be-partial-00915	Lytton Road 3, Brisbane	-27.4792306	153.0416108	partial
+be-partial-00916	Manly Road 1029, Brisbane	-27.4756010	153.1340802	partial
+be-partial-00917	Sturt Highway 94-96, Balranald	-34.6675607	143.5654064	partial
+be-partial-00918	Sturt Highway 94-96, Balranald	-34.6675607	143.5654064	partial
+be-partial-00919	Manly Road 1029, Brisbane	-27.4756010	153.1340802	partial
+be-partial-00920	Ridley Road 30, Brisbane	-27.3522568	153.0038073	partial
+be-partial-00921	Moggill Road 427, Brisbane	-27.4990852	152.9676328	partial
+be-partial-00922	Wellington Road;Manilla Street 189;62, Brisbane	-27.4796448	153.0419001	partial
+be-partial-00923	Waterworks Road 480, Brisbane	-27.4494003	152.9784464	partial
+be-partial-00924	Oxford Street 74, Brisbane	-27.4506612	153.0555847	partial
+be-partial-00925	Shamrock Road 36A, Brisbane	-27.5635332	152.9538111	partial
+be-partial-00926	Darwin Street 9, Brisbane	-27.3690859	153.0174832	partial
+be-partial-00927	Shamrock Road 36A, Brisbane	-27.5635332	152.9538111	partial
+be-partial-00928	Moggill Road 427, Brisbane	-27.4990852	152.9676328	partial
+be-partial-00929	Ridley Road 30, Brisbane	-27.3522568	153.0038073	partial
+be-partial-00930	Oxford Street 74, Brisbane	-27.4506612	153.0555847	partial
+be-partial-00931	Waterworks Road 1104, Brisbane	-27.4435798	152.9445044	partial
+be-partial-00932	Maundrell Terrace 146, Brisbane	-27.3804908	153.0123542	partial
+be-partial-00933	Thynne Road 43, Brisbane	-27.4680224	153.0707089	partial
+be-partial-00934	Wickham Street 612, Brisbane	-27.4512419	153.0397798	partial
+be-partial-00935	Berrima Street 75, Brisbane	-27.4419771	153.1705224	partial
+be-partial-00936	Berrima Street 75, Brisbane	-27.4419771	153.1705224	partial
+be-partial-00937	Moggill Road 427, Brisbane	-27.4990852	152.9676328	partial
+be-partial-00938	Ridley Road 30, Brisbane	-27.3522568	153.0038073	partial
+be-partial-00939	Waterworks Road 480, Brisbane	-27.4494003	152.9784464	partial
+be-partial-00940	Rode Road 66, Brisbane	-27.3974187	153.0552312	partial
+be-partial-00941	Sturt Highway 94-96, Balranald	-34.6675607	143.5654064	partial
+be-partial-00942	Wellington Road;Manilla Street 189;62, Brisbane	-27.4796448	153.0419001	partial
+be-partial-00943	Oxley Station Road 114, Brisbane	-27.5542144	152.9744431	partial
+be-partial-00944	Darwin Street 9, Brisbane	-27.3690859	153.0174832	partial
+be-partial-00945	Thynne Road 43, Brisbane	-27.4680224	153.0707089	partial
+be-partial-00946	Rudd Street 215, Brisbane	-27.5778247	152.9735526	partial
+be-partial-00947	Rudd Street 215, Brisbane	-27.5778247	152.9735526	partial
+be-partial-00948	Rudd Street 215, Brisbane	-27.5778247	152.9735526	partial
+be-partial-00949	Nudgee Road 463, Brisbane	-27.4149044	153.0752810	partial
+be-partial-00950	Oxley Station Road 114, Brisbane	-27.5542144	152.9744431	partial
+be-partial-00951	Maundrell Terrace 146, Brisbane	-27.3804908	153.0123542	partial
+be-partial-00952	Rode Road 66, Brisbane	-27.3974187	153.0552312	partial
+be-partial-00953	Leckie Road 75, Brisbane	-27.4075309	153.0347241	partial
+be-partial-00954	Wickham Street 608, Brisbane	-27.4513316	153.0397078	partial
+be-partial-00955	Ridley Road 30, Brisbane	-27.3522568	153.0038073	partial
+be-partial-00956	Ridley Road 30, Brisbane	-27.3522568	153.0038073	partial
+be-partial-00957	Waterworks Road 480, Brisbane	-27.4494003	152.9784464	partial
+be-partial-00958	Nudgee Road 463, Brisbane	-27.4149044	153.0752810	partial
+be-partial-00959	Sturt Highway 94-96, Balranald	-34.6675607	143.5654064	partial
+be-partial-00960	Moggill Road 427, Brisbane	-27.4990852	152.9676328	partial
+be-partial-00961	Oxford Street 74, Brisbane	-27.4506612	153.0555847	partial
+be-partial-00962	Wynnum Road 706, Brisbane	-27.4663949	153.0744067	partial
+be-partial-00963	Wynnum Road 706, Brisbane	-27.4663949	153.0744067	partial
+be-partial-00964	Lytton Road 3, Brisbane	-27.4792306	153.0416108	partial
+be-partial-00965	McCullough Street 138, Brisbane	-27.5704704	153.0556358	partial
+be-partial-00966	Rode Road 66, Brisbane	-27.3974187	153.0552312	partial
+be-partial-00967	Ridley Road 30, Brisbane	-27.3522568	153.0038073	partial
+be-partial-00968	Moggill Road 427, Brisbane	-27.4990852	152.9676328	partial
+be-partial-00969	Waterworks Road 1104, Brisbane	-27.4435798	152.9445044	partial
+be-partial-00970	Thynne Road 43, Brisbane	-27.4680224	153.0707089	partial
+be-partial-00971	Byrne Street 14, Moyhu	-36.5768246	146.3789631	partial
+be-partial-00972	Oxford Street 74, Brisbane	-27.4506612	153.0555847	partial
+be-partial-00973	Ridley Road 30, Brisbane	-27.3522568	153.0038073	partial
+be-partial-00974	Thynne Road 43, Brisbane	-27.4680224	153.0707089	partial
+be-partial-00975	Moggill Road 427, Brisbane	-27.4990852	152.9676328	partial
+be-partial-00976	Wellington Road;Manilla Street 189;62, Brisbane	-27.4796448	153.0419001	partial
+be-partial-00977	Waterworks Road 1104, Brisbane	-27.4435798	152.9445044	partial
+be-partial-00978	Moggill Road 427, Brisbane	-27.4990852	152.9676328	partial
+be-partial-00979	Maundrell Terrace 146, Brisbane	-27.3804908	153.0123542	partial
+be-partial-00980	Manly Road 1029, Brisbane	-27.4756010	153.1340802	partial
+be-partial-00981	Shamrock Road 36A, Brisbane	-27.5635332	152.9538111	partial
+be-partial-00982	Oxford Street 74, Brisbane	-27.4506612	153.0555847	partial
+be-partial-00983	Wellington Road;Manilla Street 189;62, Brisbane	-27.4796448	153.0419001	partial
+be-partial-00984	Waterworks Road 1104, Brisbane	-27.4435798	152.9445044	partial
+be-partial-00985	Ridley Road 30, Brisbane	-27.3522568	153.0038073	partial
+be-partial-00986	Manly Road 1029, Brisbane	-27.4756010	153.1340802	partial
+be-partial-00987	Beenleigh Road 1319, Brisbane	-27.6041947	153.0892818	partial
+be-partial-00988	Waterworks Road 480, Brisbane	-27.4494003	152.9784464	partial
+be-partial-00989	Berrima Street 75, Brisbane	-27.4419771	153.1705224	partial
+be-partial-00990	Brampton Street 72, Brisbane	-27.5722985	153.0986232	partial
+be-partial-00991	McCullough Street 138, Brisbane	-27.5704704	153.0556358	partial
+be-partial-00992	McCullough Street 138, Brisbane	-27.5704704	153.0556358	partial
+be-partial-00993	Beenleigh Road 1319, Brisbane	-27.6041947	153.0892818	partial
+be-partial-00994	Berrima Street 75, Brisbane	-27.4419771	153.1705224	partial
+be-partial-00995	Ridley Road 30, Brisbane	-27.3522568	153.0038073	partial
+be-partial-00996	Waterworks Road 1104, Brisbane	-27.4435798	152.9445044	partial
+be-partial-00997	Beenleigh Road 1319, Brisbane	-27.6041947	153.0892818	partial
+be-partial-00998	Brampton Street 72, Brisbane	-27.5722985	153.0986232	partial
+be-partial-00999	Ridley Road 30, Brisbane	-27.3522568	153.0038073	partial

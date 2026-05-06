@@ -1,0 +1,1001 @@
+query_id	query_text	gold_lat	gold_lon	quality_class
+be-clean-00000	Via del Porto 2, 38060 Aldeno	45.9786932	11.0932410	clean
+be-clean-00001	Vicolo Mincio 4, 20095 Cusano Milanino	45.5482221	9.1814047	clean
+be-clean-00002	Via Valparaiso 16, 20144 Milano	45.4571798	9.1630151	clean
+be-clean-00003	Via Pasubio 46, 36015 Schio	45.7141677	11.3560869	clean
+be-clean-00004	Via di Torre Rossa 94, 00165 Roma	41.8918075	12.4247457	clean
+be-clean-00005	Strada Statale di Val Trebbia 83, 29029 Rivergaro	44.9187470	9.6073720	clean
+be-clean-00006	Viale Castelli 70, 28868 Varzo	46.2065044	8.2470750	clean
+be-clean-00007	Viale di Trastevere 53, 00153 Roma	41.8882634	12.4737899	clean
+be-clean-00008	Via Appia 36, 40026 Imola	44.3546148	11.7149581	clean
+be-clean-00009	Via Edmondo De Amicis 2, 20092 Cinisello Balsamo	45.5610245	9.2285762	clean
+be-clean-00010	Via Siena 18, 53014 Monteroni d'Arbia	43.2322442	11.4214335	clean
+be-clean-00011	Viale Enrico Pedretti 20, 20095 Cusano Milanino	45.5525709	9.1836917	clean
+be-clean-00012	Via Casilina 122, 00182 Roma	41.8881386	12.5213985	clean
+be-clean-00013	Via Tiziano 50, 60125 Ancona	43.6085396	13.5113240	clean
+be-clean-00014	Via Giuseppe Garibaldi 17, 20080 Cisliano	45.4442020	8.9810876	clean
+be-clean-00015	Viale delle Prealpi 16a, 20095 Cusano Milanino	45.5478665	9.1905639	clean
+be-clean-00016	Via Giacomo Puccini 26, 20095 Cusano Milanino	45.5451571	9.1786719	clean
+be-clean-00017	Via Armando Diaz 40, 21054 Fagnano Olona	45.6655260	8.8677530	clean
+be-clean-00018	Viale Luigi Buffoli 27, 20095 Cusano Milanino	45.5555958	9.1919281	clean
+be-clean-00019	Via Monte Cervino 36, 20095 Cusano Milanino	45.5552691	9.1853811	clean
+be-clean-00020	Via Casal Tidei 61, 00156 Roma	41.9417738	12.5785202	clean
+be-clean-00021	Via Circonvallazione, 10048 Vinovo	44.9449369	7.6279592	clean
+be-clean-00022	Piazza Innovazione 1, 10020 Cambiano	44.9693559	7.7797548	clean
+be-clean-00023	Via Leone Tolstoi 12, 20146 Milano	45.4506627	9.1514413	clean
+be-clean-00024	Piazza del Duomo 1, 38122 Trento	46.0677606	11.1215778	clean
+be-clean-00025	Via Aldo Moro 17, 40013 Castel Maggiore	44.5765484	11.3578627	clean
+be-clean-00026	Via Tozzi 7, 53100 Siena	43.3222590	11.3277100	clean
+be-clean-00027	Via Digione 17, 40026 Imola	44.3566396	11.7082350	clean
+be-clean-00028	Via San Francesco 128, 55049 Viareggio	43.8675622	10.2523878	clean
+be-clean-00029	Piazza Napoli 9, 20146 Milano	45.4539600	9.1547341	clean
+be-clean-00030	Via Pietro Maroncelli 8, 20037 Paderno Dugnano	45.5568692	9.1713035	clean
+be-clean-00031	Via Monte Grappa 81, 31044 Montebelluna	45.7756090	12.0341984	clean
+be-clean-00032	Via per Novedrate 22, 22066 Mariano Comense	45.7059967	9.1656082	clean
+be-clean-00033	Via degli Ulivi 11, 23873 Missaglia	45.7062233	9.3542152	clean
+be-clean-00034	Via Marco Tullio Cicerone 25, 20092 Cinisello Balsamo	45.5594654	9.1976861	clean
+be-clean-00035	Via Melo da Bari;Via Prospero Petroni 209;22, 70121 Bari	41.1198677	16.8715803	clean
+be-clean-00036	Via Alcide De Gasperi 8, 21018 Cadrezzate con Osmate	45.7875510	8.6565823	clean
+be-clean-00037	Piazza Angelo Custode 13, 28822 Cannobio	46.0625720	8.6970486	clean
+be-clean-00038	Via Adige 17, 20095 Cusano Milanino	45.5497148	9.1839698	clean
+be-clean-00039	Via Erba 12, 20095 Cusano Milanino	45.5519647	9.1831829	clean
+be-clean-00040	Strada Cavallaro 11, 65125 Pescara	42.4750476	14.1874183	clean
+be-clean-00041	Via Tevere 110, 65010 Elice	42.4908666	14.0002602	clean
+be-clean-00042	Via Cesana, 10042 Nichelino	45.0047514	7.6257741	clean
+be-clean-00043	Via Giacomo Puccini 15, 20095 Cusano Milanino	45.5454919	9.1790719	clean
+be-clean-00044	Via Eleonora Duse 11, 37124 Verona	45.4584004	10.9736538	clean
+be-clean-00045	Via Ragen di Sopra 8, 39031 Bruneck - Brunico	46.7948987	11.9408573	clean
+be-clean-00046	Via Monte Cervino 33, 20095 Cusano Milanino	45.5555311	9.1847659	clean
+be-clean-00047	Calata Caio Duilio 106, 61121 Pesaro	43.9233020	12.9071479	clean
+be-clean-00048	Via Italia 21;23, 20017 Rho	45.5262254	9.0394746	clean
+be-clean-00049	Via Digione 28, 40026 Imola	44.3568876	11.7082518	clean
+be-clean-00050	Via Giuseppe Giusti 49, 38122 Trento	46.0586852	11.1188732	clean
+be-clean-00051	Strada di Sant'Eugenia 14, 53100 Siena	43.3163811	11.3456398	clean
+be-clean-00052	Via Giuseppe Garibaldi 55, 40026 Imola	44.3538779	11.7091117	clean
+be-clean-00053	Piazza Venticinque Aprile 9, 20095 Cusano Milanino	45.5510586	9.1851468	clean
+be-clean-00054	Via Fratelli Perini 141, 38122 Trento	46.0605048	11.1222715	clean
+be-clean-00055	Via Leonardo Petruzzi 140, 65013 Città Sant'Angelo	42.5201995	14.1278954	clean
+be-clean-00056	Via Nuova Valassina 133, 20832 Desio	45.6238996	9.2239554	clean
+be-clean-00057	Viale Pinturicchio 19/a, 00196 Roma	41.9323069	12.4666121	clean
+be-clean-00058	Via Don Savino Lilla, 28801 Cossogno	46.0030755	8.4916841	clean
+be-clean-00059	A10, 18011 Castellaro	43.8509229	7.9098407	clean
+be-clean-00060	Viale Roma 33, 70038 Terlizzi	41.1304069	16.5481484	clean
+be-clean-00061	Lungomare Amerigo Vespucci, 88040 Gizzeria	38.9684019	16.1499290	clean
+be-clean-00062	Via Vittorio Alfieri 4, 20092 Cinisello Balsamo	45.5558172	9.2039970	clean
+be-clean-00063	Via Dante 4, 37019 Peschiera del Garda	45.4389177	10.6929186	clean
+be-clean-00064	Via Carlo Sormani 24, 20095 Cusano Milanino	45.5505309	9.1863056	clean
+be-clean-00065	Viale Andrea Costa 22, 40026 Imola	44.3563632	11.7163743	clean
+be-clean-00066	Dachselweg - Via Dachsel 1, 39040 Aldein	46.3652561	11.3532760	clean
+be-clean-00067	Via Palmiro Togliatti 28, 20092 Cinisello Balsamo	45.5552358	9.2015360	clean
+be-clean-00068	Via Francesca Vecchia 11, 51017 Pescia	43.8782170	10.6922150	clean
+be-clean-00069	Viale Giovanni Bovio 71, 65124 Pescara	42.4735451	14.2016766	clean
+be-clean-00070	Via Capitan Ottobono 27, 00176 Roma	41.8871867	12.5359461	clean
+be-clean-00071	Corso Nuova Italia 121, 13048 Santhià	45.3661856	8.1742547	clean
+be-clean-00072	Via Papalina 1, 34072 Gradisca d'Isonzo	45.8902592	13.4942649	clean
+be-clean-00073	Via Gardenie 8, 20095 Cusano Milanino	45.5522328	9.1871001	clean
+be-clean-00074	Via San Nazzaro 2b, 38066 Riva del Garda	45.8965463	10.8519951	clean
+be-clean-00075	Via Giuseppe Verrotti 67, 65015 Montesilvano	42.4957970	14.1716454	clean
+be-clean-00076	Frazione Piazzo 51, 38047 Segonzano	46.1862908	11.2520623	clean
+be-clean-00077	Strada Provinciale 571 Helvia Recina, 62010 Montelupone	43.3722497	13.5805866	clean
+be-clean-00078	Piazza della Resistenza 2, 33043 Cividale del Friuli	46.0900843	13.4332744	clean
+be-clean-00079	Via Veneto 96, 36060 Romano d'Ezzelino	45.7803785	11.7764757	clean
+be-clean-00080	Viale Renato Serra, 20148 Milano	45.4837170	9.1428510	clean
+be-clean-00081	Viale Coni Zugna 50, 20144 Milano	45.4569421	9.1695263	clean
+be-clean-00082	Via Fratelli Bandiera 36, 40026 Imola	44.3543666	11.7082608	clean
+be-clean-00083	Via Arapietra 64, 65124 Pescara	42.4685987	14.1973487	clean
+be-clean-00084	Via Seveso 1a, 20095 Cusano Milanino	45.5546527	9.1736467	clean
+be-clean-00085	Via Carlo Sormani 101, 20095 Cusano Milanino	45.5566483	9.1859286	clean
+be-clean-00086	Via don Enrico Tazzoli 19, 20092 Cinisello Balsamo	45.5555873	9.1995149	clean
+be-clean-00087	Via Marco Tullio Cicerone 23, 20092 Cinisello Balsamo	45.5594730	9.1977324	clean
+be-clean-00088	Viale Giacomo Matteotti 10, 20095 Cusano Milanino	45.5507528	9.1836533	clean
+be-clean-00089	Via Adige 1, 20095 Cusano Milanino	45.5499867	9.1858679	clean
+be-clean-00090	Via Pietro Maroncelli 10, 20037 Paderno Dugnano	45.5567852	9.1710664	clean
+be-clean-00091	Corso Italia 202, 34170 Gorizia	45.9384500	13.6120245	clean
+be-clean-00092	Via Padovana, 34070 Arcole	45.3727262	11.2876137	clean
+be-clean-00093	Via Marco Tullio Cicerone 41, 20092 Cinisello Balsamo	45.5591616	9.1973936	clean
+be-clean-00094	Strada Cavallaro 14, 65125 Pescara	42.4752896	14.1871280	clean
+be-clean-00095	Via Monte Etna 20, 20092 Cinisello Balsamo	45.5597360	9.1998391	clean
+be-clean-00096	Via Digione 10, 40026 Imola	44.3566326	11.7080626	clean
+be-clean-00097	Via degli Ulivi 24, 23873 Missaglia	45.7063561	9.3547953	clean
+be-clean-00098	Area servizio Cinisello Nord, 20092 Cinisello Balsamo	45.5707713	9.1985386	clean
+be-clean-00099	Via Vincenzo Bellini 16, 20095 Cusano Milanino	45.5445777	9.1827936	clean
+be-clean-00100	Via Insorti d'Ungheria, 86100 Campobasso	41.5629410	14.6655426	clean
+be-clean-00101	Via Grigne 2, 20095 Cusano Milanino	45.5530321	9.1841567	clean
+be-clean-00102	Via Brescia 8, 38122 Trento	46.0707810	11.1122636	clean
+be-clean-00103	Via Torino 261, 10090 Castiglione Torinese	45.1234733	7.8176359	clean
+be-clean-00104	Via Primula 6a, 20095 Cusano Milanino	45.5541146	9.1917647	clean
+be-clean-00105	Strada Cavallaro 16, 65125 Pescara	42.4750231	14.1871604	clean
+be-clean-00106	Via delle Acacie 2a, 20095 Cusano Milanino	45.5523499	9.1923912	clean
+be-clean-00107	Strada Colle di Mezzo 9, 65125 Pescara	42.4689394	14.1895552	clean
+be-clean-00108	Via Corsica 1a, 16128 Genova	44.4021178	8.9372867	clean
+be-clean-00109	Via Giuseppe Verdi 111, 30016 Jesolo	45.4879696	12.5988472	clean
+be-clean-00110	Viale Antonio Fratti 36, 43121 Parma	44.8073113	10.3348490	clean
+be-clean-00111	Via Venti Settembre 84, 20025 Legnano	45.5844100	8.9107450	clean
+be-clean-00112	Via del Capitano 8, 53100 Siena	43.3165113	11.3297055	clean
+be-clean-00113	Via Carlo Sormani 21, 20095 Cusano Milanino	45.5477467	9.1859728	clean
+be-clean-00114	Via Maria Gaetana Agnesi 2i, 23873 Missaglia	45.7007390	9.3470926	clean
+be-clean-00115	Via Naraun 17, 39010 Tisens - Tesimo	46.5751549	11.1617147	clean
+be-clean-00116	Via Santa Geltrude - St.-Gertraud-Weg 32, 39100 Bolzano - Bozen	46.4872555	11.3476967	clean
+be-clean-00117	Via Cesana, 10042 Nichelino	45.0047514	7.6257741	clean
+be-clean-00118	Via Campiello, 36010 Tresché Conca	45.8371720	11.4320900	clean
+be-clean-00119	Via Leone Tolstoi 12, 20146 Milano	45.4506627	9.1514413	clean
+be-clean-00120	Viale Trieste 24, 33043 Cividale del Friuli	46.0888525	13.4332706	clean
+be-clean-00121	Oberbühel 10, 39030 Ahrntal - Valle Aurina	47.0115022	12.0122405	clean
+be-clean-00122	Viale Andrea Costa 24, 40026 Imola	44.3563958	11.7164016	clean
+be-clean-00123	Via dell'Autostrada 9, 65013 Città Sant'Angelo	42.5227118	14.1324710	clean
+be-clean-00124	Via San Giovanni alla Paglia 6, 20124 Milano	45.4797600	9.2028809	clean
+be-clean-00125	Via Caveto 10, 20095 Cusano Milanino	45.5455472	9.1824539	clean
+be-clean-00126	Piazza Cesare Augusto 5, 10122 Torino	45.0749835	7.6841844	clean
+be-clean-00127	Via Val di Setta 54/A, 40036 Monzuno	44.3153148	11.2561070	clean
+be-clean-00128	Via Marco Tullio Cicerone 79, 20092 Cinisello Balsamo	45.5580933	9.1977559	clean
+be-clean-00129	Via Silvio Trentin 3, 30016 Jesolo	45.4963123	12.6180590	clean
+be-clean-00130	Viale della Piramide Cestia 63;61, 00153 Roma	41.8775592	12.4822766	clean
+be-clean-00131	Via della Muratella 1059, 00054 Fiumicino	41.8746719	12.2401711	clean
+be-clean-00132	Via Giuseppe Parini 89, 20092 Cinisello Balsamo	45.5595105	9.2009526	clean
+be-clean-00133	Via Roncaglia 3, 20146 Milano	45.4587485	9.1540248	clean
+be-clean-00134	Viale dei Ginepri 115, 30028 San Michele al Tagliamento	45.6279294	12.9927901	clean
+be-clean-00135	Via Tosco Romagnola 236, 56012 Calcinaia	43.6706808	10.5804066	clean
+be-clean-00136	Autostrada del Brennero KM. 127,91, 38015 Lavis	46.1415285	11.0874507	clean
+be-clean-00137	Viale della Riviera 134, 65123 Pescara	42.4887134	14.1912329	clean
+be-clean-00138	Viale Monsignor Antonio Pacecco 36, 70038 Terlizzi	41.1338441	16.5470183	clean
+be-clean-00139	Viale Enrico Pedretti 33, 20095 Cusano Milanino	45.5522622	9.1831444	clean
+be-clean-00140	Via Venezia 9, 37019 Peschiera del Garda	45.4405688	10.6992425	clean
+be-clean-00141	Via Iseo, 65015 Montesilvano	42.4959394	14.1719297	clean
+be-clean-00142	Via Venticinque Aprile 23, 23873 Missaglia	45.7010048	9.3489898	clean
+be-clean-00143	Viale 20 Settembre, 34170 Gorizia	45.9533319	13.6162083	clean
+be-clean-00144	Via Paolo Boselli 24r, 17100 Savona	44.3099232	8.4781329	clean
+be-clean-00145	Contrada Abbadia di Fiastra 11, 62029 Tolentino	43.2213312	13.4041101	clean
+be-clean-00146	Via Flaminia 388a, 60126 Ancona	43.6179812	13.4253920	clean
+be-clean-00147	Via Alessandro Volta 59, 20092 Cinisello Balsamo	45.5469971	9.1922996	clean
+be-clean-00148	Via Ariano Irpino 34, 00176 Roma	41.8918519	12.5429863	clean
+be-clean-00149	Via Ticino 11, 20095 Cusano Milanino	45.5483442	9.1839362	clean
+be-clean-00150	Via Loretello 45, 60011 Arcevia	43.5683077	12.9453541	clean
+be-clean-00151	Via Cavour, 20843 Verano Brianza	45.6847258	9.2306434	clean
+be-clean-00152	Corso Giuseppe Verdi 91, 34170 Gorizia	45.9443343	13.6214373	clean
+be-clean-00153	Lungolago Regina Adelaide, 37016 Garda	45.5766126	10.7038405	clean
+be-clean-00154	Via Serenelle 3, 20095 Cusano Milanino	45.5506853	9.1882655	clean
+be-clean-00155	Viale Colli Aminei, 80131 Napoli	40.8684300	14.2327770	clean
+be-clean-00156	Via Giovanni Battista Berizzi 3, 24126 Bergamo	45.6852993	9.6632648	clean
+be-clean-00157	Viale Carlo Troya 2, 20144 Milano	45.4522227	9.1540376	clean
+be-clean-00158	Via Enrico Mattei 9, 40138 Bologna	44.4940202	11.3951337	clean
+be-clean-00159	Via Eleonora de Fonseca Pimentel 8, 20092 Cinisello Balsamo	45.5566912	9.1986614	clean
+be-clean-00160	Viale Andrea Costa 37, 40026 Imola	44.3568724	11.7172355	clean
+be-clean-00161	Via Roma 7, 34170 Gorizia	45.9432608	13.6234114	clean
+be-clean-00162	Via Casella 1, 37018 Malcesine	45.7650847	10.8074458	clean
+be-clean-00163	Via Bologna 110, 40017 San Giovanni in Persiceto	44.6305606	11.1926698	clean
+be-clean-00164	Via Gardesana 177, 37018 Malcesine	45.7782321	10.8162259	clean
+be-clean-00165	Viale Cooperazione 54, 20095 Cusano Milanino	45.5525384	9.1927587	clean
+be-clean-00166	Via Andrea Bafile 397, 30016 Jesolo	45.4974019	12.6214401	clean
+be-clean-00167	Via Carlo Ghega 8a, 34125 Trieste	45.6557166	13.7740377	clean
+be-clean-00168	Strada Buca di Forno, 13821 Callabiana	45.6643852	8.0710194	clean
+be-clean-00169	Via nove Febbraio 34, 40026 Imola	44.3546396	11.7089662	clean
+be-clean-00170	Via Mantova 51, 38122 Trento	46.0674124	11.1241882	clean
+be-clean-00171	Via della Repubblica, 50053 Empoli	43.7188710	10.9363988	clean
+be-clean-00172	Piazza XXV Aprile 1a, 20095 Cusano Milanino	45.5507246	9.1855492	clean
+be-clean-00173	Via dietro Castello 18, 25010 San Felice del Benaco	45.5864356	10.5482184	clean
+be-clean-00174	Via Bosco di Molassana 6, 16138 Genova	44.4551449	8.9860094	clean
+be-clean-00175	Corso Umberto Primo 448, 65015 Montesilvano	42.5020646	14.1671280	clean
+be-clean-00176	Viale Margherita 18, 20095 Cusano Milanino	45.5501406	9.1949435	clean
+be-clean-00177	Piazza della Repubblica 17, 20124 Milano	45.4797878	9.1963935	clean
+be-clean-00178	Via Fabio Severo 9a, 34133 Trieste	45.6552956	13.7778007	clean
+be-clean-00179	Via Alcide De Gasperi 5, 40065 Pianoro	44.4402887	11.3525498	clean
+be-clean-00180	Via Gardesana 378, 37018 Malcesine	45.7833386	10.8186429	clean
+be-clean-00181	Viale Andrea Palladio 9, 37138 Verona	45.4306060	10.9783100	clean
+be-clean-00182	Corso Vincenzo De Michiel 6, 16043 Chiavari	44.3137749	9.3261920	clean
+be-clean-00183	Via Monte Everest 26, 20092 Cinisello Balsamo	45.5595774	9.1998180	clean
+be-clean-00184	Vicolo Mincio 1a, 20095 Cusano Milanino	45.5484514	9.1814933	clean
+be-clean-00185	Via Maria Gaetana Agnesi 2b, 23873 Missaglia	45.7011378	9.3481773	clean
+be-clean-00186	Via Brigata Aosta 6, 37139 Verona	45.4385112	10.9459129	clean
+be-clean-00187	Corso Italia 26, 34170 Gorizia	45.9420497	13.6192408	clean
+be-clean-00188	Via Appia 96, 40026 Imola	44.3558385	11.7159477	clean
+be-clean-00189	Via Gabriello Chiabrera 121, 00145 Roma	41.8534150	12.4793038	clean
+be-clean-00190	Via Giuseppe Verdi 8, 21018 Cadrezzate con Osmate	45.7900046	8.6573715	clean
+be-clean-00191	Via Andrea Bafile 97, 30016 Jesolo	45.5049004	12.6420807	clean
+be-clean-00192	Via Adamello 7, 20092 Cinisello Balsamo	45.5584035	9.2025237	clean
+be-clean-00193	Via Appia 39a, 40026 Imola	44.3546782	11.7151922	clean
+be-clean-00194	Via don Enrico Tazzoli 16, 20092 Cinisello Balsamo	45.5555578	9.2000698	clean
+be-clean-00195	Via Giuseppe Zucchi 3a, 20095 Cusano Milanino	45.5487389	9.1754266	clean
+be-clean-00196	Strada Provinciale 2 Sirolo - Senigallia, 60020 Camerata Picena	43.5855232	13.3415569	clean
+be-clean-00197	Via Montalese 511, 59013 Montemurlo	43.9265132	11.0374714	clean
+be-clean-00198	Via Vittorio Veneto 1a, 20091 Bresso	45.5459687	9.1870332	clean
+be-clean-00199	Strada Marosticana 24, 36100 Vicenza	45.5722486	11.5495040	clean
+be-abbreviated-00200	V.le Armando Diaz 3, 53100 Siena	43.3240511	11.3238554	abbreviated
+be-abbreviated-00201	V. della Libertà 3, 20095 Cusano Milanino	45.5546103	9.1743539	abbreviated
+be-abbreviated-00202	Via dell'Autostr. 5, 65013 Città Sant'Angelo	42.5220002	14.1322705	abbreviated
+be-abbreviated-00203	V. Giuseppe Verdi 50, 90034 Corleone	37.8213033	13.2942268	abbreviated
+be-abbreviated-00204	V.le Verona 1, 38122 Trento	46.0587389	11.1274927	abbreviated
+be-abbreviated-00205	V. Adige 13, 20095 Cusano Milanino	45.5497362	9.1843760	abbreviated
+be-abbreviated-00206	V. Libertà 58, 40016 San Giorgio di Piano	44.6464286	11.3753187	abbreviated
+be-abbreviated-00207	V. Gino Graziani 6, 57121 Livorno	43.5507399	10.3396339	abbreviated
+be-abbreviated-00208	P.za Conciliazione 3, 23865 Vassena	45.9307082	9.2851528	abbreviated
+be-abbreviated-00209	V.le Cesare Maccari 3, 53100 Siena	43.3230560	11.3265855	abbreviated
+be-abbreviated-00210	V. Case di Dozza 10, 40026 Imola	44.3562691	11.7088025	abbreviated
+be-abbreviated-00211	V. privata Caro Tito Lucrezio 2, 20092 Cinisello Balsamo	45.5584182	9.1978702	abbreviated
+be-abbreviated-00212	V. del Mare 6, 35020 Candiana	45.2125082	11.9821952	abbreviated
+be-abbreviated-00213	V. Trento 9, 31050 Combài	45.9304142	12.0715413	abbreviated
+be-abbreviated-00214	St.-Georg-Straße - V. San Giorgio 38, 39050 Tiers	46.4670378	11.5272804	abbreviated
+be-abbreviated-00215	V. Monte Cervino 7, 20095 Cusano Milanino	45.5530153	9.1842266	abbreviated
+be-abbreviated-00216	V. delle Rose 18, 20095 Cusano Milanino	45.5537454	9.1898392	abbreviated
+be-abbreviated-00217	V. Museo del Confetto 12, 76123 Andria	41.2262599	16.2952115	abbreviated
+be-abbreviated-00218	V. Torquato Tasso 62, 21100 Varese	45.8009607	8.8237170	abbreviated
+be-abbreviated-00219	V. Noalese, 30036 Santa Maria di Sala	45.5069356	12.0236290	abbreviated
+be-abbreviated-00220	V. Francesco Algarotti 20, 20124 Milano	45.4887909	9.1966345	abbreviated
+be-abbreviated-00221	SS28 Sud, 12084 Mondovì	44.3623506	7.8336395	abbreviated
+be-abbreviated-00222	V. Giuseppe Zucchi 21, 20095 Cusano Milanino	45.5506499	9.1748774	abbreviated
+be-abbreviated-00223	St.-Georg-Straße - V. San Giorgio 38, 39050 Tiers	46.4670378	11.5272804	abbreviated
+be-abbreviated-00224	V. Adamello 14, 20092 Cinisello Balsamo	45.5578324	9.2024652	abbreviated
+be-abbreviated-00225	V. Adua 4, 20095 Cusano Milanino	45.5475913	9.1849125	abbreviated
+be-abbreviated-00226	V. Liri 2, 09045 Quartu Sant'Elena	39.2121284	9.3042335	abbreviated
+be-abbreviated-00227	V. Quattro Novembre 32, 34170 Gorizia	45.9419017	13.5973569	abbreviated
+be-abbreviated-00228	V. Venticinque Aprile 25, 20092 Cinisello Balsamo	45.5577181	9.2124898	abbreviated
+be-abbreviated-00229	V. C. Pieroni 13, 20095 Cusano Milanino	45.5487001	9.1809399	abbreviated
+be-abbreviated-00230	V. Alessandro Manzoni 38, 20095 Cusano Milanino	45.5452641	9.1761193	abbreviated
+be-abbreviated-00231	Hans-Wassermann-Straße - V. Hans Wassermann 8, 39039 Niederdorf - Villabassa	46.7382406	12.1675824	abbreviated
+be-abbreviated-00232	V. Lido 5, 17024 Finale Ligure	44.1721490	8.3567950	abbreviated
+be-abbreviated-00233	P.za Unità d'Italia 7, 34121 Trieste	45.6501065	13.7684164	abbreviated
+be-abbreviated-00234	V. San Francesco d'Assisi 28, 65015 Montesilvano	42.5135582	14.1502706	abbreviated
+be-abbreviated-00235	V. Corsica 46, 35016 Piazzola Sul Brenta	45.5382759	11.7749292	abbreviated
+be-abbreviated-00236	Vic. Venticinque Aprile 1, 20092 Cinisello Balsamo	45.5575459	9.2129742	abbreviated
+be-abbreviated-00237	V. privata Publio Ovidio Nasone 48, 20092 Cinisello Balsamo	45.5577460	9.1970129	abbreviated
+be-abbreviated-00238	V. Venticinque Aprile 25, 20092 Cinisello Balsamo	45.5577181	9.2124898	abbreviated
+be-abbreviated-00239	V. Bassanese 185a, 31010 Maser	45.8029524	11.9607900	abbreviated
+be-abbreviated-00240	V. Alcide De Gasperi, 15011 Acqui Terme	44.6731550	8.4773840	abbreviated
+be-abbreviated-00241	Altenmarktgasse - V. Mercato Vecchio 37, 39042 Brixen - Bressanone	46.7190610	11.6561384	abbreviated
+be-abbreviated-00242	V. Pietro Pomponazzi 11, 20141 Milano	45.4418665	9.1809262	abbreviated
+be-abbreviated-00243	V. Antonio Cantore 43, 20092 Cinisello Balsamo	45.5526638	9.2149208	abbreviated
+be-abbreviated-00244	P.le Aldo Moro 7, 00185 Roma	41.9007644	12.5125083	abbreviated
+be-abbreviated-00245	V. Vincenzo Bellini 27, 20096 Pioltello	45.5069726	9.3316484	abbreviated
+be-abbreviated-00246	V. Ragusa 8, 20125 Milano	45.4976408	9.1966853	abbreviated
+be-abbreviated-00247	V. Valparaiso 14, 20144 Milano	45.4572288	9.1631704	abbreviated
+be-abbreviated-00248	V.le Andrea Costa 49, 40026 Imola	44.3585086	11.7183620	abbreviated
+be-abbreviated-00249	V. della Libertà 31, 20095 Cusano Milanino	45.5554431	9.1740643	abbreviated
+be-abbreviated-00250	V. Grigne 13, 20095 Cusano Milanino	45.5528906	9.1832359	abbreviated
+be-abbreviated-00251	V. Durazzo 5, 20134 Milano	45.4878661	9.2407786	abbreviated
+be-abbreviated-00252	P.za Cesare Battisti 14, 38068 Rovereto	45.8900710	11.0439476	abbreviated
+be-abbreviated-00253	Via per Sta. Giuliana 13, 38056 Levico Terme	46.0047315	11.3111217	abbreviated
+be-abbreviated-00254	V. Alemanni 3/5, 20095 Cusano Milanino	45.5493533	9.1807812	abbreviated
+be-abbreviated-00255	C.so Cristoforo Colombo 3, 20144 Milano	45.4549451	9.1723688	abbreviated
+be-abbreviated-00256	V. Triumplina 103, 25123 Brescia	45.5719577	10.2312804	abbreviated
+be-abbreviated-00257	V. Caveto 6a, 20095 Cusano Milanino	45.5456116	9.1828801	abbreviated
+be-abbreviated-00258	V. Martin Luther King 114, 62010 Morrovalle	43.2956331	13.5819979	abbreviated
+be-abbreviated-00259	V. Giuseppe Garibaldi 1, 20080 Cisliano	45.4426266	8.9821807	abbreviated
+be-abbreviated-00260	V. Porrettana 158/4d, 40135 Bologna	44.4908792	11.3020866	abbreviated
+be-abbreviated-00261	V. Vittor Pisani 13, 20124 Milano	45.4819818	9.1998272	abbreviated
+be-abbreviated-00262	V. Enrico Mattei 9, 40138 Bologna	44.4940202	11.3951337	abbreviated
+be-abbreviated-00263	V. Ferrarese 12a, 40128 Bologna	44.5118564	11.3491144	abbreviated
+be-abbreviated-00264	V. Guicciardini, 51100 Pistoia	43.9219734	10.9208864	abbreviated
+be-abbreviated-00265	V. Teodosia 1, 16129 Genova	44.4032996	8.9534051	abbreviated
+be-abbreviated-00266	V. Venti Settembre 12, 70038 Terlizzi	41.1298742	16.5513607	abbreviated
+be-abbreviated-00267	V.le Andrea Costa 7, 40026 Imola	44.3560192	11.7165658	abbreviated
+be-abbreviated-00268	V. Piero della Francesca 47, 20154 Milano	45.4852331	9.1614442	abbreviated
+be-abbreviated-00269	Str. Statale 80 del Gran Sasso d'Italia, 67017 Cermone	42.4069220	13.3059510	abbreviated
+be-abbreviated-00270	V. Circonvallazione 26, 20882 Bellusco	45.6131290	9.4147790	abbreviated
+be-abbreviated-00271	V. Adige 3, 20095 Cusano Milanino	45.5499624	9.1857115	abbreviated
+be-abbreviated-00272	V. Venticinque Aprile 28, 23873 Missaglia	45.7018453	9.3471196	abbreviated
+be-abbreviated-00273	V.le dei Garofani, 70038 Terlizzi	41.1304968	16.5515843	abbreviated
+be-abbreviated-00274	V. Giovanni Tasso 1, 45025 Fratta Polesine	45.0301562	11.6403418	abbreviated
+be-abbreviated-00275	V. Alessandro Manzoni 35, 20095 Cusano Milanino	45.5443259	9.1765860	abbreviated
+be-abbreviated-00276	V.le Andrea Costa 10, 40026 Imola	44.3561353	11.7161826	abbreviated
+be-abbreviated-00277	V. Siena 389b, 53014 Monteroni d'Arbia	43.2348525	11.4186409	abbreviated
+be-abbreviated-00278	V. Bonascola 35, 54033 Carrara	44.0580358	10.0859691	abbreviated
+be-abbreviated-00279	Str. Provinciale 39 Via Cerca Km 13, 20060 Settala	45.4678766	9.4132130	abbreviated
+be-abbreviated-00280	V. Enrico Conci 35, 38123 Trento	46.0391967	11.1375700	abbreviated
+be-abbreviated-00281	V. del Porto 9, 25080 Padenghe	45.4963789	10.5127666	abbreviated
+be-abbreviated-00282	V.le Guglielmo Marconi 24, 20095 Cusano Milanino	45.5475160	9.1815870	abbreviated
+be-abbreviated-00283	V.le Venti Settembre 27, 34125 Trieste	45.6518798	13.7808581	abbreviated
+be-abbreviated-00284	V. Roma 41, 38060 Aldeno	45.9815303	11.0916582	abbreviated
+be-abbreviated-00285	Vic. del Monte 1, 56126 Pisa	43.7181380	10.4015262	abbreviated
+be-abbreviated-00286	V. Venti Settembre 84, 20025 Legnano	45.5844100	8.9107450	abbreviated
+be-abbreviated-00287	V. Di Stalloreggi 44, 53100 Siena	43.3154603	11.3289909	abbreviated
+be-abbreviated-00288	V. Gaetano Previati 200, 16033 Lavagna	44.3108025	9.3363084	abbreviated
+be-abbreviated-00289	V. Alessandro Manzoni 19, 62011 Cingoli	43.3778220	13.2558200	abbreviated
+be-abbreviated-00290	V. Fabio Severo 151, 34127 Trieste	45.6595903	13.7928900	abbreviated
+be-abbreviated-00291	P.za Zisa, 90135 Palermo	38.1166201	13.3410945	abbreviated
+be-abbreviated-00292	V. Omodei 3, 20095 Cusano Milanino	45.5486445	9.1767885	abbreviated
+be-abbreviated-00293	V. Vittorio Ansaloni 1a, 20095 Cusano Milanino	45.5477463	9.1743845	abbreviated
+be-abbreviated-00294	V. Guglielmo Marconi 4b, 67030 Campo di Giove	42.0105903	14.0441335	abbreviated
+be-abbreviated-00295	V. Francesco Algarotti 20, 20124 Milano	45.4887909	9.1966345	abbreviated
+be-abbreviated-00296	Kirchplatz - P.za Chiesa 2, 39037 Mühlbach - Rio di Pusteria	46.7960607	11.6663595	abbreviated
+be-abbreviated-00297	V. del Lavoro 21, 40127 Bologna	44.5060478	11.3588266	abbreviated
+be-abbreviated-00298	V. Appia 4, 40026 Imola	44.3537629	11.7143301	abbreviated
+be-abbreviated-00299	V. Eugenio Montale 17, 62100 Macerata	43.2836598	13.4311149	abbreviated
+be-abbreviated-00300	V. Siena 347a, 53014 Monteroni d'Arbia	43.2345503	11.4190457	abbreviated
+be-abbreviated-00301	V. Gardesana 195, 37018 Malcesine	45.7886608	10.8235550	abbreviated
+be-abbreviated-00302	V.le Andrea Costa 62, 40026 Imola	44.3572575	11.7169141	abbreviated
+be-abbreviated-00303	V. Casinella, 61020 Tavoleto	43.8525717	12.5979771	abbreviated
+be-abbreviated-00304	V. delle Ville 200, 55018 San Colombano	43.8823590	10.5759660	abbreviated
+be-abbreviated-00305	V.le della Pace, 36100 Vicenza	45.5416625	11.5745760	abbreviated
+be-abbreviated-00306	Autostr. Serenissima, 10036 Settimo Torinese	45.1379797	7.7420121	abbreviated
+be-abbreviated-00307	V.le Domenico Rivalta 99a, 40026 Imola	44.3523493	11.7111132	abbreviated
+be-abbreviated-00308	V. Cecco Angiolieri 32, 53100 Siena	43.3196130	11.3324176	abbreviated
+be-abbreviated-00309	V. Gole 90, 38025 Dimaro	46.3263804	10.8692858	abbreviated
+be-abbreviated-00310	V.le 20 Settembre, 34170 Gorizia	45.9532772	13.6159032	abbreviated
+be-abbreviated-00311	V. del Giglio 3, 20095 Cusano Milanino	45.5517421	9.1908210	abbreviated
+be-abbreviated-00312	V. Giovanni Verga 30, 20092 Cinisello Balsamo	45.5542785	9.2078155	abbreviated
+be-abbreviated-00313	SS28 Sud, 12084 Mondovì	44.3623506	7.8336395	abbreviated
+be-abbreviated-00314	V.le Colli Aminei, 80131 Napoli	40.8684300	14.2327770	abbreviated
+be-abbreviated-00315	V. Alcide De Gasperi 42, 01012 Capranica	42.2564992	12.1690543	abbreviated
+be-abbreviated-00316	V. Marco Tullio Cicerone 4, 20162 Milano	45.5162182	9.1944327	abbreviated
+be-abbreviated-00317	V. privata Publio Ovidio Nasone 24, 20092 Cinisello Balsamo	45.5573785	9.1971283	abbreviated
+be-abbreviated-00318	V. Appennini 11, 20092 Cinisello Balsamo	45.5590406	9.1991685	abbreviated
+be-abbreviated-00319	C.so Umberto Primo 450, 65015 Montesilvano	42.5018935	14.1674535	abbreviated
+be-abbreviated-00320	Schießstandweg - V. del Bersaglio 4, 39040 Aldein - Aldino	46.3657092	11.3546398	abbreviated
+be-abbreviated-00321	V. Nazionale 148, 35048 Stanghella	45.1306143	11.7599269	abbreviated
+be-abbreviated-00322	V. Roma 32, 21018 Cadrezzate con Osmate	45.7883808	8.6562879	abbreviated
+be-abbreviated-00323	V. alla Ca 71, 38123 Trento	46.0645666	11.0952081	abbreviated
+be-abbreviated-00324	V. Giuseppe Verdi 5, 21018 Cadrezzate con Osmate	45.7899574	8.6578899	abbreviated
+be-abbreviated-00325	V. Aurelia Sud 152, 55049 Viareggio	43.8672556	10.2605349	abbreviated
+be-abbreviated-00326	Circonvallazione Appia 44, 00179 Roma	41.8764462	12.5183672	abbreviated
+be-abbreviated-00327	V. Vittorio Alfieri 7, 20092 Cinisello Balsamo	45.5561709	9.2035592	abbreviated
+be-abbreviated-00328	V. Clementino Vannetti 5, 38122 Trento	46.0747162	11.1234445	abbreviated
+be-abbreviated-00329	V. privata Autari 27, 20143 Milano	45.4484945	9.1662164	abbreviated
+be-abbreviated-00330	V. Milano 14, 20021 Bollate	45.5412562	9.1009340	abbreviated
+be-abbreviated-00331	P.za Fontana 4, 20122 Milano	45.4631630	9.1940600	abbreviated
+be-abbreviated-00332	P.za Unità d'Italia 27, 33052 Cervignano del Friuli	45.8213494	13.3328946	abbreviated
+be-abbreviated-00333	Str. Padana Superiore, 20051 Cassina de' Pecchi	45.5182000	9.3575840	abbreviated
+be-abbreviated-00334	Vic. privato Giuseppe Parini 3, 20092 Cinisello Balsamo	45.5580515	9.2019441	abbreviated
+be-abbreviated-00335	V. Arno 3, 20095 Cusano Milanino	45.5476881	9.1782397	abbreviated
+be-abbreviated-00336	C.so Italia 40, 34170 Gorizia	45.9418810	13.6189411	abbreviated
+be-abbreviated-00337	P.za Napoli 38, 20146 Milano	45.4525138	9.1527860	abbreviated
+be-abbreviated-00338	V. Adda 17, 20095 Cusano Milanino	45.5489070	9.1829562	abbreviated
+be-abbreviated-00339	V. Carlo Sormani 93, 20095 Cusano Milanino	45.5562334	9.1859408	abbreviated
+be-abbreviated-00340	St.-Georg-Straße - V. San Giorgio 38, 39050 Tiers	46.4670378	11.5272804	abbreviated
+be-abbreviated-00341	V.le Domenico Rivalta 99a, 40026 Imola	44.3523493	11.7111132	abbreviated
+be-abbreviated-00342	V. Casella 1, 37018 Malcesine	45.7650847	10.8074458	abbreviated
+be-abbreviated-00343	V. Adda 22, 20095 Cusano Milanino	45.5491818	9.1831077	abbreviated
+be-abbreviated-00344	V. Bergamo 2, 24052 Azzano San Paolo	45.6646385	9.6716777	abbreviated
+be-abbreviated-00345	Via P.za Alta 26, 36030 Valli del Pasubio	45.7554245	11.2167210	abbreviated
+be-abbreviated-00346	V. San Francesco 30, 20096 Pioltello	45.5136183	9.3243129	abbreviated
+be-abbreviated-00347	V. Valparaiso 5, 20144 Milano	45.4574178	9.1643880	abbreviated
+be-abbreviated-00348	V. Cusani 9, 20095 Cusano Milanino	45.5482997	9.1785946	abbreviated
+be-abbreviated-00349	V. Piane, 63826 Moresco	43.0719434	13.7525486	abbreviated
+be-abbreviated-00350	V. Sticotta 3a, 38068 Rovereto	45.8949507	11.0439851	abbreviated
+be-abbreviated-00351	V. Sereno Tagliabue 17, 20095 Cusano Milanino	45.5487313	9.1828947	abbreviated
+be-abbreviated-00352	STRADA STATALE 115 KM 75+77, 91022 Castelvetrano	37.6569618	12.8173779	abbreviated
+be-abbreviated-00353	V. Lambro 5, 65015 Montesilvano	42.5044588	14.1662515	abbreviated
+be-abbreviated-00354	V. Vittorio Veneto 40, 21020 Cadrezzate con Osmate	45.7978040	8.6432748	abbreviated
+be-abbreviated-00355	V. Virginia Besozzi 11, 23876 Monticello Brianza	45.7088512	9.3206879	abbreviated
+be-abbreviated-00356	V. Appia 62, 40026 Imola	44.3551327	11.7153764	abbreviated
+be-abbreviated-00357	V. Quarto, 20861 Brugherio	45.5408790	9.3040680	abbreviated
+be-abbreviated-00358	P.za Giovanni Bausan 10, 20158 Milano	45.5026316	9.1652048	abbreviated
+be-abbreviated-00359	V. Appennini 2, 20092 Cinisello Balsamo	45.5585950	9.1996526	abbreviated
+be-abbreviated-00360	V. Giorgio Washington 66, 20146 Milano	45.4610914	9.1545030	abbreviated
+be-abbreviated-00361	V. Stazione 8, 21025 Comerio	45.8386832	8.7472941	abbreviated
+be-abbreviated-00362	V. Faentina 380b, 50133 Firenze	43.8004700	11.2771270	abbreviated
+be-abbreviated-00363	V. Clorinda Menguzzato "Veglia" 57, 38123 Trento	46.0411845	11.1323893	abbreviated
+be-abbreviated-00364	V. del Refe Nero 1, 53100 Siena	43.3205368	11.3317878	abbreviated
+be-abbreviated-00365	V. Borzoli 13R, 16153 Genova	44.4249843	8.8554914	abbreviated
+be-abbreviated-00366	C.so Umberto Primo 444, 65015 Montesilvano	42.5022472	14.1670189	abbreviated
+be-abbreviated-00367	V. Scarpanto, 16157 Genova	44.4328518	8.7978298	abbreviated
+be-abbreviated-00368	V. Piave 10, 20095 Cusano Milanino	45.5518613	9.1749401	abbreviated
+be-abbreviated-00369	V. Dalmazia 70, 25125 Brescia	45.5299181	10.1993818	abbreviated
+be-abbreviated-00370	V. Digione 17, 40026 Imola	44.3566396	11.7082350	abbreviated
+be-abbreviated-00371	Str. Statale 18 Tirrena Inferiore, 88040 Gizzeria	38.9390193	16.2032852	abbreviated
+be-abbreviated-00372	V. Valdastico, 36031 Dueville	45.6385273	11.5660602	abbreviated
+be-abbreviated-00373	V. Roma 5, 20056 Trezzo sull'Adda	45.6100115	9.5200028	abbreviated
+be-abbreviated-00374	Str. di Sant'Eugenia 14, 53100 Siena	43.3163811	11.3456398	abbreviated
+be-abbreviated-00375	V. privata Papa Giovanni XXIII 5, 23896 Sirtori	45.7333587	9.3333083	abbreviated
+be-abbreviated-00376	V. di Boccea 593, 00166 Roma	41.9185921	12.3775635	abbreviated
+be-abbreviated-00377	Contra' Porta Padova 63, 36100 Vicenza	45.5495625	11.5553504	abbreviated
+be-abbreviated-00378	Via Sta. Giulia 2m, 10124 Torino	45.0727368	7.6925746	abbreviated
+be-abbreviated-00379	V. Maffeo Bagarotti 14/A, 20152 Milano	45.4573990	9.0948830	abbreviated
+be-abbreviated-00380	V. Digione 8, 40026 Imola	44.3566006	11.7080396	abbreviated
+be-abbreviated-00381	V.le Andrea Costa 56, 40026 Imola	44.3569492	11.7168671	abbreviated
+be-abbreviated-00382	V. Giuseppe Parini 14, 20092 Cinisello Balsamo	45.5559713	9.2025258	abbreviated
+be-abbreviated-00383	V. Clorinda Menguzzato "Veglia" 55, 38123 Trento	46.0412421	11.1325156	abbreviated
+be-abbreviated-00384	C.so Umberto Primo 17, 65015 Montesilvano	42.5176553	14.1487464	abbreviated
+be-abbreviated-00385	V. Andrea Bafile 562, 30016 Jesolo	45.4975112	12.6211639	abbreviated
+be-abbreviated-00386	V. Adamello 9, 20092 Cinisello Balsamo	45.5582750	9.2025702	abbreviated
+be-abbreviated-00387	V. Aquileia 189/a, 30016 Jesolo	45.4989983	12.6213013	abbreviated
+be-abbreviated-00388	Frazione Ponte 2, 28863 Formazza	46.3767516	8.4266549	abbreviated
+be-abbreviated-00389	V. Serenelle 6, 20095 Cusano Milanino	45.5509278	9.1884023	abbreviated
+be-abbreviated-00390	V. Boncambi 37, 06121 Perugia	43.1109837	12.3876652	abbreviated
+be-abbreviated-00391	V. Carlo Tenca 7, 20124 Milano	45.4803275	9.2013489	abbreviated
+be-abbreviated-00392	V. Monte Etna 17, 20092 Cinisello Balsamo	45.5594365	9.2005815	abbreviated
+be-abbreviated-00393	V.le Michelangelo Grigoletti 72c, 33170 Pordenone	45.9662254	12.6444251	abbreviated
+be-abbreviated-00394	Jakob-Traunsteiner-Straße - V. Jakob Traunsteiner 1, 39039 Niederdorf - Villabassa	46.7378752	12.1696330	abbreviated
+be-abbreviated-00395	V. del Ponte 5, 34121 Trieste	45.6496794	13.7702279	abbreviated
+be-abbreviated-00396	V. dei Ventuno 1, 38122 Trento	46.0698291	11.1274108	abbreviated
+be-abbreviated-00397	V. Romita, 12073 Ceva	44.3862491	8.0204931	abbreviated
+be-abbreviated-00398	V. Papa Giovanni XXIII 19b, 20093 Cologno Monzese	45.5213970	9.2742009	abbreviated
+be-abbreviated-00399	V. Angelo Moro, 20097 San Donato Milanese	45.4299896	9.2664527	abbreviated
+be-typo-00400	Via Giovanni Battista Berizzi 39, 24126 Bergamo	45.6855462	9.6645891	typo
+be-typo-00401	Via Giacomo Watt 27, 20143 Milno	45.4435284	9.1511200	typo
+be-typo-00402	Via Risorgimento, 84043 Aglropoli	40.3545240	14.9973250	typo
+be-typo-00403	Via Goffredo Mameli, 37100 Verona	45.4580378	10.9775827	typo
+be-typo-00404	Viale della Riviera 144, 65123 Pescarq	42.4901300	14.1898289	typo
+be-typo-00405	Piazza Sempione 6, 00141 Roma	41.9359030	12.5348738	typo
+be-typo-00406	Via Salvatore Quasimodo 11, 70126 Bari	41.1058795	16.9193952	typo
+be-typo-00407	Via Enrico Fermi 14, 20080 Cisliano	45.4403758	8.9805958	typo
+be-typo-00408	Vcia Spluga 8, 20095 Cusano Milanino	45.5559364	9.1855021	typo
+be-typo-00409	Via Montevideo 7, 16129 Genova	44.4032667	8.9556877	typo
+be-typo-00410	Viale Andrea Costa 3, 40026 Imola	44.3558884	11.7164517	typo
+be-typo-00411	Vria Leone Tolstoi 10, 20146 Milano	45.4503896	9.1516000	typo
+be-typo-00412	S.S. 16 km. 832 225za, 70044 Polignano a Mare	41.0160127	17.1864367	typo
+be-typo-00413	Via dAige 4, 20095 Cusano Milanino	45.5501570	9.1854981	typo
+be-typo-00414	Via Venticinque Aprile 2, 21020 Barddllo	45.8348343	8.6979072	typo
+be-typo-00415	Vxia Digione 23, 40026 Imola	44.3570623	11.7085550	typo
+be-typo-00416	Via Ricasoli 89, 53100 Siesna	43.3250281	11.3242445	typo
+be-typo-00417	Via Jesolo 5, 71042 Cerignola	41.2649352	15.9096941	typo
+be-typo-00418	Viale Cooperazione 2b2, 20095 Cusano Milanino	45.5516686	9.1889078	typo
+be-typo-00419	Via privata Caro Tito Lucrezio 23, 20092 Cinisello Balsamo	45.5588551	9.1982254	typo
+be-typo-00420	Viale Carlo Troya 18, 20144 Milano	45.4507778	9.1549304	typo
+be-typo-00421	Campo San Fantin 1965, 30124 Venezia	45.4337096	12.3338572	typo
+be-typo-00422	Via privata Publio Ovidio Nasone 64, 20092 Cinisello Balsamo	45.5580489	9.1974563	typo
+be-typo-00423	Via Ryoncaglia 3, 20146 Milano	45.4587485	9.1540248	typo
+be-typo-00424	Via Cascina Paolina 4, 23873 Missagli	45.7078527	9.3569824	typo
+be-typo-00425	Via Insurrezione 16, 20866 Carnate	45.6479596	9.3800336	typo
+be-typo-00426	Via Marmolaxda 23a, 20095 Cusano Milanino	45.5540696	9.1714852	typo
+be-typo-00427	Ccrso Italia 245, 34170 Gorizia	45.9341888	13.6084231	typo
+be-typo-00428	Via del Governo Vecchio 114, 00186 Roma	41.8983047	12.4703507	typo
+be-typo-00429	Viale Goffredo Mameil 60;62, 53100 Siena	43.3298845	11.3176447	typo
+be-typo-00430	Via Santa Croce 16, 38122 Trento	46.0644782	11.1232307	typo
+be-typo-00431	Via Caduti di Cetfalonia 5, 40125 Bologna	44.4950937	11.3443021	typo
+be-typo-00432	Via Giuseppe Garibaldi 49, 40026 Iuola	44.3537999	11.7093354	typo
+be-typo-00433	Via Brianza 5, 20095 CusanoM ilanino	45.5485016	9.1922115	typo
+be-typo-00434	Via Appennini 19, 20092 Cinisello Balsamo	45.5594973	9.1990075	typo
+be-typo-00435	Piazza Napoli 11, 20146 Milao	45.4538641	9.1547904	typo
+be-typo-00436	Piazza Bacaoal 6, 37123 Verona	45.4429224	10.9762342	typo
+be-typo-00437	Via Torino, 10067 Vigone	44.8463916	7.4969403	typo
+be-typo-00438	Via Aquileia 53, 34074 Monfalcone	45.8081806	13.5214735	typo
+be-typo-00439	Via Luigi Cadorna 2, 34124 Trieste	45.6494025	13.7664345	typo
+be-typo-00440	Viale dew Navigatori 88, 48122 Ravenna	44.4391911	12.2903665	typo
+be-typo-00441	Via Mnontagnola 68a, 60127 Ancona	43.5961036	13.5129806	typo
+be-typo-00442	Corso Italia 9c0, 34170 Gorizia	45.9408480	13.6167390	typo
+be-typo-00443	Via Ventiquattro Maggio, 20030 Sengo	45.5754430	9.1162760	typo
+be-typo-00444	Contrada San Claudio 5, 62014 Corridoina	43.2758662	13.5132586	typo
+be-typo-00445	Via Enrico Fermi 13, 20080 Cisliano	45.4407242	8.9812139	typo
+be-typo-00446	Via Giuseppe Garibaldi 1, 40026 Imola	44.3522408	11.7132017	typo
+be-typo-00447	Via Cariano 24ga, 37029 San Pietro in Cariano	45.5115365	10.8624192	typo
+be-typo-00448	eVia Marco Tullio Cicerone 9, 20092 Cinisello Balsamo	45.5595254	9.1979910	typo
+be-typo-00449	Strada Statale 3 bis Tiberina, 47500 Cesena	44.1115543	12.2041476	typo
+be-typo-00450	Via Fabio Severo 142/2, 34127 Trieste	45.6602992	13.7914156	typo
+be-typo-00451	Piazza Donatori di Sangue 1, 25050 Sellero	46.0565666	10.3449143	typo
+be-typo-00452	Via Vtlontari della Libertà 5, 21061 Maccagno	46.0360360	8.7396341	typo
+be-typo-00453	Via Aubele Merli 1, 20095 Cusano Milanino	45.5473302	9.1845553	typo
+be-typo-00454	Schießstandweg - Via del Bersaglio 1, 39040 Aldein - Aldino	46.3655552	11.3536696	typo
+be-typo-00455	Vicolo Salomone Olper 44, 15033 Casale Monferrato	45.1354900	8.4497200	typo
+be-typo-00456	Via Resegone, 20015 Praabiago	45.5692182	8.9437599	typo
+be-typo-00457	Strada Provinciale Cassanese, 20052 cignate	45.5046250	9.3725720	typo
+be-typo-00458	Corso Giuseppe Verdi 57, 34170 Goirzia	45.9451801	13.6220588	typo
+be-typo-00459	Via Persico 63, 26100 Cremona	45.1489760	10.0489280	typo
+be-typo-00460	Via Andrea Bafikle 351, 30016 Jesolo	45.4983674	12.6245554	typo
+be-typo-00461	Via Monte Cervino 3, 20095 Cusano Milanino	45.5526440	9.1841302	typo
+be-typo-00462	Viale Giacomo Matteotti 7a, 20095 Cuwano Milanino	45.5505102	9.1843877	typo
+be-typo-00463	Piazza Duca d'Aosta, 20124 Milano	45.4840812	9.2047388	typo
+be-typo-00464	Via Trento 25, 33043 Cividale del Friuli	46.0879236	13.4324120	typo
+be-typo-00465	Piazza Giovanni Battista Garzetti 13, 38122 Trento	46.0656627	11.1238759	typo
+be-typo-00466	Via Giuseppe Mazzini 7, 20095 Cusano Milanino	45.5504688	9.1793163	typo
+be-typo-00467	Via Carlo Sormani 37, 20095 Cusano Milanino	45.5501018	9.1858582	typo
+be-typo-00468	Via Gioanni Gronchi 11, 56121 Pisa	43.6858565	10.4315667	typo
+be-typo-00469	Viale Armando Diaz 9, 53100 Siena	43.3242171	11.3247999	typo
+be-typo-00470	Via lrona 14/A, 20149 Milano	45.4832228	9.1593078	typo
+be-typo-00471	Via dell'Orso 1, 20121 cMilano	45.4690765	9.1878001	typo
+be-typo-00472	Località Bella Veduta 13, 34170 Gorizia	45.9606131	13.6138186	typo
+be-typo-00473	Piazza Napoli 38, 20146 Milano	45.4522581	9.1529094	typo
+be-typo-00474	Via Grigne 7, 20095 Cusano Milaninoo	45.5528360	9.1835836	typo
+be-typo-00475	Vicolo privato Stelvio 11, 20092 Cinisello Balsamo	45.5601462	9.2016163	typo
+be-typo-00476	Via Mazzini 124, 15067 Novi Ligure	44.7757430	8.7898350	typo
+be-typo-00477	Rione Capmo della Fiera 1, 67023 Castel del Monte	42.3645790	13.7242480	typo
+be-typo-00478	Viale Andrea Costa 19ja, 40026 Imola	44.3563242	11.7168323	typo
+be-typo-00479	Piazza Montecastrilli 27, 00181 Roia	41.8771999	12.5323284	typo
+be-typo-00480	Via Gardesana 348, 37018 bMalcesine	45.7748361	10.8144263	typo
+be-typo-00481	Viale di Porta Vercellina, 20123 Mulano	45.4656610	9.1657730	typo
+be-typo-00482	Via Omodei 7d, 20095 Cusano Milanino	45.5485162	9.1762022	typo
+be-typo-00483	Via Giuseppe Verdi 8, 21018 Cadaezzate con Osmate	45.7900046	8.6573715	typo
+be-typo-00484	Via Ciassi 17, 38067 Ledro	45.8958749	10.7184158	typo
+be-typo-00485	Piazza Buon Cozsiglio, 98073 Mistretta	37.9282174	14.3639159	typo
+be-typo-00486	Via Piave 8, 53100 Sijna	43.3266000	11.3240094	typo
+be-typo-00487	Serravalle Sud, 51034 Serravalle istoiese	43.8910863	10.8256770	typo
+be-typo-00488	Vyia Feronia 136, 00157 Roma	41.9188446	12.5459100	typo
+be-typo-00489	Piazza Castello 191, 10122 Torino	45.0721817	7.6865120	typo
+be-typo-00490	Via Ginestra 20, 20095 Cusano Milanino	45.5528228	9.1881938	typo
+be-typo-00491	Via Gxardenie 10, 20095 Cusano Milanino	45.5524184	9.1870255	typo
+be-typo-00492	Via Cecco Angiolieri 32, 53100 Siena	43.3196130	11.3324176	typo
+be-typo-00493	Via Monviso 15, 20092 Cinisello Balsamo	45.5565266	9.2063990	typo
+be-typo-00494	Asse Medianod i Scorrimento, 09134 Cagliari	39.2528680	9.1136360	typo
+be-typo-00495	Via Molinf, 38027 Malé	46.3508636	10.9103205	typo
+be-typo-00496	Viale Vittrio Emanuele II 52, 53100 Siena	43.3286116	11.3229130	typo
+be-typo-00497	iVa alle Valli 9, 23873 Missaglia	45.7111943	9.3354043	typo
+be-typo-00498	Via Monte Gran Sasso 9, 20092 Cifisello Balsamo	45.5588891	9.2019076	typo
+be-typo-00499	Via Sereno Tagliabue 12, 20095 Cusanjo Milanino	45.5492281	9.1822977	typo
+be-typo-00500	Via Armando Diaz 40, 21054 Fagnano Olena	45.6655260	8.8677530	typo
+be-typo-00501	Via Paihna 47, 37018 Malcesine	45.7690698	10.8108412	typo
+be-typo-00502	Via Alcixe De Gasperi 37, 37012 Bussolengo	45.4726268	10.8462526	typo
+be-typo-00503	Via Domenico Cimarosa 3, 20144 Milano	45.4661704	9.1594596	typo
+be-typo-00504	Viale Rovreto 39, 38066 Riva del Garda	45.8832053	10.8536661	typo
+be-typo-00505	Via Filippo Corridoni 10, 20095 Cusano Milanino	45.5504444	9.1874886	typo
+be-typo-00506	Via Gioachino Rossini 13, 23873 Missaglia	45.7007998	9.3444027	typo
+be-typo-00507	Via Davide Poggi 21, 16016 Cogoleto	44.3891875	8.6431673	typo
+be-typo-00508	Via Trento 23, 33043 Cividale del Friuli	46.0881548	13.4329049	typo
+be-typo-00509	Vwale Zara 131, 20159 Milano	45.4999659	9.1965393	typo
+be-typo-00510	Viale della Pace, 36100 Vicenza	45.5416625	11.5745760	typo
+be-typo-00511	Via IV Novefmbre, 60010 Castelleone di Suasa	43.6074842	12.9762863	typo
+be-typo-00512	Via Ninfea 21, 20095 Cusano Milanion	45.5507957	9.1886942	typo
+be-typo-00513	Vicolo privato Gitseppe Parini 9, 20092 Cinisello Balsamo	45.5580892	9.2021793	typo
+be-typo-00514	Via Palestro 5, 20121 Milao	45.4731250	9.1996010	typo
+be-typo-00515	Via nuicciardini, 51100 Pistoia	43.9219734	10.9208864	typo
+be-typo-00516	Via privata Caro Tito Lucrezio 32, 20092 Cinisell Balsamo	45.5585310	9.1984421	typo
+be-typo-00517	Piazza dell Vittoria 21, 33072 Casarsa della Delizia	45.9425798	12.8370648	typo
+be-typo-00518	Via Vincenzo Bellini 8, 20095 Cusano Milanino	45.5449162	9.1844961	typo
+be-typo-00519	Schlossergasse 40, 39040 Natz-Schabs - Naz-Sciaves	46.7540938	11.6846017	typo
+be-typo-00520	Via Adda 16, 20095 Cusano Milanino	45.5493182	9.1839181	typo
+be-typo-00521	iVale Andrea Costa 62, 40026 Imola	44.3572575	11.7169141	typo
+be-typo-00522	Via Francedsco Bentivegna 56, 90034 Corleone	37.8151139	13.2970873	typo
+be-typo-00523	Via Giovanni Verga 68, 20092 Cinisell Balsamo	45.5538724	9.2059914	typo
+be-typo-00524	Via Delle Donzelloe 1, 53100 Siena	43.3193377	11.3322536	typo
+be-typo-00525	Via Marco Tullio Cicerone 65, 20092 Cinisello Balsamo	45.5583246	9.1976781	typo
+be-typo-00526	Via delle Vigne 48, 21100 Varese	45.7835852	8.8518654	typo
+be-typo-00527	Via Piave 54, 24052 Azzano San Polo	45.6644452	9.6717941	typo
+be-typo-00528	Strada Contrada 127, 41126 Modena	44.6191149	10.9005968	typo
+be-typo-00529	Via Giuseppe Broggi 16, 20129 Milano	45.4774907	9.2115533	typo
+be-typo-00530	Via Nazionale - Staatsstraße 22, 39040 Salorno - Salurn	46.2561520	11.2263275	typo
+be-typo-00531	Via Luigi Cadorna 8, 20080 Csisliano	45.4432033	8.9804535	typo
+be-typo-00532	Via Giacomo Zxnella 11, 34127 Trieste	45.6585735	13.7965857	typo
+be-typo-00533	Via Fratelli D Grandi 21, 21100 Varese	45.7940973	8.8424969	typo
+be-typo-00534	Va Canicattì 48, 00132 Roma	41.8631140	12.6934218	typo
+be-typo-00535	Via Cagliari 1, 16142 Genova	44.4123784	8.9548068	typo
+be-typo-00536	Via Aurelio Saffi 6, 20123 Milano	45.4692748	9.1716393	typo
+be-typo-00537	Via Vincenzo Bellini 31/33, 20095 Cusano Milanino	45.5439967	9.1819476	typo
+be-typo-00538	Via delle Rose 13a, 20095 Cusano Milaino	45.5533072	9.1896340	typo
+be-typo-00539	Strada Statale 99 Altamura-Matera, 75100 Matea	40.7205582	16.5752448	typo
+be-typo-00540	Piazza Pecori Giraldi 15, 36030 Valli del Pasubio	45.7400464	11.2610702	typo
+be-typo-00541	Via privata Gaio Valerio Catullo 24, 20092 Cinisello Balsamo	45.5601651	9.1970081	typo
+be-typo-00542	Piazzalje Lido 6, 28838 Stresa	45.8911230	8.5247262	typo
+be-typo-00543	Straad Pianezza 387, 10151 Torino	45.0990410	7.6209120	typo
+be-typo-00544	Via dei Ferrari 1, 38066 Riva del Garad	45.9080772	10.8409241	typo
+be-typo-00545	SS42 (del Tonale e della Mendota) 30.330, 24060 San Paolo d'Argon /Km	45.6828522	9.7848111	typo
+be-typo-00546	Via del Giglio 12, 20095 Cusano Milanino	45.5516424	9.1911960	typo
+be-typo-00547	Via del San Michelee 140, 34170 Gorizia	45.9243744	13.6029715	typo
+be-typo-00548	Via Teodosit 52, 20131 Milano	45.4861944	9.2301411	typo
+be-typo-00549	Piazza Guglielmo Oberdan 2, 34133 Trweste	45.6539887	13.7754037	typo
+be-typo-00550	Via Principe Eugenio 19, 20155 Misano	45.4899287	9.1644384	typo
+be-typo-00551	Via Alessandrina 75, 20095 Cusano Milanino	45.5573330	9.1771229	typo
+be-typo-00552	VialeI talia 4, 25010 San Felice del Benaco	45.5861322	10.5494579	typo
+be-typo-00553	Via Giuseppe Parini 1, 20092 Cinisello Balsamo	45.5551882	9.2025150	typo
+be-typo-00554	Frau-Emma-Straße - Via Frau Emma 8, 39039 Niederdorf - Villabassa	46.7377400	12.1702176	typo
+be-typo-00555	Vi Gubbio 54, 00181 Roma	41.8777974	12.5268155	typo
+be-typo-00556	Strada Neva 28, 38039 Vigo di Fassa	46.4195711	11.6752260	typo
+be-typo-00557	iVale Previdenza 2bis, 20095 Cusano Milanino	45.5548443	9.1907602	typo
+be-typo-00558	Via Isola Guarnieri, 20063 Cernusco sul Naivglio	45.5403605	9.3367426	typo
+be-typo-00559	Via Stelvio 43, 20095 Cusano Milanino	45.5564800	9.1810980	typo
+be-typo-00560	Via Giuseppe Verdi 77, 38122 Tento	46.0669201	11.1206370	typo
+be-typo-00561	Via ai Bolleri 12/6, 38121 Martiganno	46.0939699	11.1305891	typo
+be-typo-00562	Viale 20 Settembre, 34170 Gorizia	45.9532085	13.6162204	typo
+be-typo-00563	Via delle Orfank 2, 38122 Trento	46.0694507	11.1197823	typo
+be-typo-00564	Via Clorinda Menguzzato "Veglia" 129, 38123 vTrento	46.0394601	11.1329564	typo
+be-typo-00565	Schießstandweg - Via del Bersaglio 4, 39040 Aldein - Aldino	46.3657092	11.3546398	typo
+be-typo-00566	Corso Umberto Primo 383, 65015 Montesilvano	42.5035868	14.1658370	typo
+be-typo-00567	Via Alcide De Gasperi 28, 21018 Cadrezzate con Osmate	45.7871193	8.6577859	typo
+be-typo-00568	Via Romea 62, 44022 Comaccghio	44.7207591	12.2134295	typo
+be-typo-00569	Via della forzesca 2, 00185 Roma	41.9048139	12.5090758	typo
+be-typo-00570	Via Aldo Manuzio 40h, 16143 Genoav	44.4088208	8.9656860	typo
+be-typo-00571	Via Fetlrina Sud 2, 31044 Montebelluna	45.7847887	12.0541425	typo
+be-typo-00572	Via Giacomo Puccini 16, 20095 Cusano Milanino	45.5458224	9.1786790	typo
+be-typo-00573	Via del Brennero 11, 38122 Trento	46.0755602	11.1244603	typo
+be-typo-00574	Via Giuseppe Verdi 40, 38122 Tprento	46.0667626	11.1209536	typo
+be-typo-00575	Via Dalmazia 70, 25125 Brescia	45.5299181	10.1993818	typo
+be-typo-00576	Via Solferino 29, 27100 Pavia	45.1925350	9.1812664	typo
+be-typo-00577	Tulfer 259, 39049 Pfitsch - ual di Vizze	46.9036797	11.5078840	typo
+be-typo-00578	Via del Biesenzio 273, 59024 Vernio	44.0474320	11.1529804	typo
+be-typo-00579	Via Durazzo 5, 20134 Milano	45.4878661	9.2407786	typo
+be-typo-00580	Corso Umberto Primo 329, 65015 kMontesilvano	42.5066100	14.1621433	typo
+be-typo-00581	Via rFabio Severo 27, 34133 Trieste	45.6562790	13.7812617	typo
+be-typo-00582	Via Maniago 28, 33080 redrano	46.0489086	12.6580934	typo
+be-typo-00583	Via Enrico Fermi 27, 20080 Chisliano	45.4403676	8.9806834	typo
+be-typo-00584	Piazza Napoli 38, 20146 iMlano	45.4522581	9.1529094	typo
+be-typo-00585	Via Dgiione 24, 40026 Imola	44.3571424	11.7086143	typo
+be-typo-00586	Hauptort yLochmann 98, 39010 Tisens - Tesimo	46.5647780	11.1696724	typo
+be-typo-00587	Via Giuseppe Verdi 12a, 20095 Cusano Milanino	45.5458704	9.1832522	typo
+be-typo-00588	Via Caveto 27a, 20095 Cusano Milanino	45.5451095	9.1812647	typo
+be-typo-00589	Via Monte Bianco 21, 20092 Cinisello Balsamo	45.5577544	9.2065306	typo
+be-typo-00590	Via Accademia delle Scienze 6, 10123 Torino	45.0684350	7.6843506	typo
+be-typo-00591	Via Giuseppe Zucchi 39i, 20095 Cusano Miglanino	45.5532969	9.1741226	typo
+be-typo-00592	Via Torricelle 22, 38123 Vcillazzano	46.0438669	11.1448775	typo
+be-typo-00593	Via Roma 109, 20051 Casmsina de' Pecchi	45.5226041	9.3767195	typo
+be-typo-00594	Via Giacomo guccini 22, 20095 Cusano Milanino	45.5453552	9.1788424	typo
+be-typo-00595	Via Piobesi, 10048 Vinovo	44.9402090	7.6240810	typo
+be-typo-00596	Viale Camillo Benso di Cavour 236, 53100 vSiena	43.3323063	11.3136881	typo
+be-typo-00597	Via Giuseppe Zucchi 17, 20095 Cuano Milanino	45.5501599	9.1750207	typo
+be-typo-00598	Piazza della Repubblica 1, 20056 Grezzago	45.5915307	9.4943738	typo
+be-typo-00599	Contrada Conatrini 4, 33057 Palmanova	45.9049267	13.3110498	typo
+be-reordered-00600	20092 Cinisello Balsamo Via privata Monte K2 9	45.5593807	9.2019058	reordered
+be-reordered-00601	20095 Cusano Milanino Via Giuseppe Mazzini 10	45.5511454	9.1797783	reordered
+be-reordered-00602	24021 Albino Via Lunga 14	45.7520146	9.8299874	reordered
+be-reordered-00603	20146 Milano Via Romolo Gessi 24	45.4578536	9.1530022	reordered
+be-reordered-00604	01100 Viterbo Via Alessandro Volta 22	42.4219668	12.0980527	reordered
+be-reordered-00605	20092 Cinisello Balsamo Via Marco Tullio Cicerone 95	45.5578923	9.1978277	reordered
+be-reordered-00606	34170 Gorizia Corso Italia 64	45.9414114	13.6179576	reordered
+be-reordered-00607	20095 Cusano Milanino Via Giuseppe Zucchi 18	45.5511356	9.1750328	reordered
+be-reordered-00608	20823 Lentate sul Seveso Via Nazionale dei Giovi 262	45.6911517	9.1052261	reordered
+be-reordered-00609	44121 Ferrara Corso Martiri della Libertà 12	44.8364875	11.6194597	reordered
+be-reordered-00610	20095 Cusano Milanino Viale Enrico Pedretti 17	45.5522153	9.1840031	reordered
+be-reordered-00611	20095 Cusano Milanino Viale Unione 3a	45.5484608	9.1875572	reordered
+be-reordered-00612	24052 Azzano San Paolo Via Bergamo 16	45.6656257	9.6732526	reordered
+be-reordered-00613	65015 Montesilvano Via Lambro 29	42.5048158	14.1673139	reordered
+be-reordered-00614	23865 Vassena Piazza Conciliazione 3	45.9307082	9.2851528	reordered
+be-reordered-00615	20092 Cinisello Balsamo Via Piero Frattini 14	45.5552922	9.1992835	reordered
+be-reordered-00616	53100 Siena Viale Camillo Benso di Cavour 136a	43.3312536	11.3168324	reordered
+be-reordered-00617	21100 Varese Via Talizia 33	45.8005965	8.8389615	reordered
+be-reordered-00618	20095 Cusano Milanino Via Pasubio 8	45.5557887	9.1719063	reordered
+be-reordered-00619	20092 Cinisello Balsamo Via Marco Tullio Cicerone 25	45.5594654	9.1976861	reordered
+be-reordered-00620	28868 Varzo Piazza Agnesetta 4	46.2067496	8.2552993	reordered
+be-reordered-00621	70038 Terlizzi Via Pistoia 13	41.1319836	16.5389903	reordered
+be-reordered-00622	24052 Azzano San Paolo Via della Pace 13	45.6630478	9.6766620	reordered
+be-reordered-00623	40026 Imola Viale Andrea Costa 37	44.3568724	11.7172355	reordered
+be-reordered-00624	00162 Roma Piazza Massa Carrara 9	41.9181612	12.5255840	reordered
+be-reordered-00625	40036 Monzuno Via Val di Setta 54/A	44.3153148	11.2561070	reordered
+be-reordered-00626	33028 Tolmezzo Via della Vittoria 2	46.4074067	13.0144123	reordered
+be-reordered-00627	40026 Imola Via Digione 40	44.3570330	11.7083605	reordered
+be-reordered-00628	14100 Asti Corso Alessandria 562	44.9070285	8.2614784	reordered
+be-reordered-00629	21020 Buguggiate Via Venticinque Aprile 20	45.7800643	8.8091558	reordered
+be-reordered-00630	39012 Meran - Merano Rennweg - Via delle Corse 98	46.6729503	11.1597650	reordered
+be-reordered-00631	20095 Cusano Milanino Via Como 18	45.5520774	9.1841919	reordered
+be-reordered-00632	20147 Milano Via delle Forze Armate 41	45.4630554	9.1352911	reordered
+be-reordered-00633	38060 Aldeno Viale Europa 5	45.9817767	11.0947470	reordered
+be-reordered-00634	60127 Ancona Via Montagnola	43.5988390	13.5087420	reordered
+be-reordered-00635	38123 Trento Strada delle Caserme 5	46.0205649	11.0422601	reordered
+be-reordered-00636	40026 Imola Piazzale Giovanni Dalle Bande Nere 5	44.3537885	11.7081999	reordered
+be-reordered-00637	40026 Imola Via Appia 70	44.3552650	11.7154988	reordered
+be-reordered-00638	40026 Imola Via Digione 15	44.3565584	11.7081800	reordered
+be-reordered-00639	16016 Cogoleto Via Enea Silvio Recagno 46	44.3904146	8.6428328	reordered
+be-reordered-00640	20099 Sesto San Giovanni Viale Ercole Marelli 79	45.5310952	9.2305058	reordered
+be-reordered-00641	40026 Imola Via Giovanni da Imola 6	44.3542926	11.7093397	reordered
+be-reordered-00642	37018 Malcesine Via Navene Vecchia 41-51	45.7684239	10.8138025	reordered
+be-reordered-00643	20092 Cinisello Balsamo Via Adamello 8	45.5582264	9.2023245	reordered
+be-reordered-00644	20095 Cusano Milanino Via Alessandro Manzoni 42	45.5450437	9.1761506	reordered
+be-reordered-00645	20092 Cinisello Balsamo Via Monte Etna 1	45.5587904	9.2008144	reordered
+be-reordered-00646	34170 Gorizia Località Bella Veduta 13	45.9606131	13.6138186	reordered
+be-reordered-00647	53100 Siena Viale Goffredo Mameli 26	43.3291957	11.3197634	reordered
+be-reordered-00648	16139 Genova Corso Alessandro De Stefanis 67 rosso	44.4165421	8.9547429	reordered
+be-reordered-00649	20095 Cusano Milanino Viale Giacomo Matteotti 27b	45.5503665	9.1825430	reordered
+be-reordered-00650	86035 Larino Via Cluenzio	41.7981779	14.9112070	reordered
+be-reordered-00651	20095 Cusano Milanino Via Adda 5	45.5493185	9.1853111	reordered
+be-reordered-00652	20144 Milano Viale Carlo Troya 2	45.4521915	9.1541093	reordered
+be-reordered-00653	20095 Cusano Milanino Via Marmolada 23f	45.5540313	9.1709715	reordered
+be-reordered-00654	39010 Tisens - Tesimo Prissian 75a	46.5559133	11.1785078	reordered
+be-reordered-00655	38122 Trento Via Santa Maria Maddalena 3	46.0686486	11.1255451	reordered
+be-reordered-00656	20095 Cusano Milanino Via Ciclamino 7	45.5573295	9.1926775	reordered
+be-reordered-00657	10122 Torino Corso San Martino 5	45.0751109	7.6692819	reordered
+be-reordered-00658	20095 Cusano Milanino Via Marmolada 33	45.5530768	9.1709509	reordered
+be-reordered-00659	38122 Trento Piazza della Mostra 13	46.0710994	11.1258433	reordered
+be-reordered-00660	20092 Cinisello Balsamo Via Monte Gran Sasso 12	45.5588196	9.2024747	reordered
+be-reordered-00661	34170 Gorizia Piazzale Umberto Saba 1	45.9347183	13.6088404	reordered
+be-reordered-00662	38122 Trento Piazza del Duomo 40	46.0677279	11.1210128	reordered
+be-reordered-00663	20095 Cusano Milanino Via Stelvio 67	45.5558401	9.1777197	reordered
+be-reordered-00664	20135 Milano Viale Monte Nero 84	45.4616401	9.2079373	reordered
+be-reordered-00665	40026 Imola Viale Andrea Costa 30a	44.3565260	11.7165112	reordered
+be-reordered-00666	20095 Cusano Milanino Via Reseda 7	45.5512299	9.1911844	reordered
+be-reordered-00667	34170 Gorizia Corso Italia 156	45.9392096	13.6133908	reordered
+be-reordered-00668	20146 Milano Via Massimo Gorki 2	45.4509287	9.1499989	reordered
+be-reordered-00669	20146 Milano Via Fra Bartolomeo 5	45.4570411	9.1539329	reordered
+be-reordered-00670	34123 Trieste Via Ottaviano Augusto 20	45.6458932	13.7551626	reordered
+be-reordered-00671	52031 Anghiari Via del Destino 6	43.5410391	12.0560443	reordered
+be-reordered-00672	21100 Varese Via Gavinana 14	45.8167536	8.7648886	reordered
+be-reordered-00673	20092 Cinisello Balsamo Via San Michele 2	45.5530390	9.2138292	reordered
+be-reordered-00674	65015 Montesilvano Via Giovanni Giolitti 1	42.5034072	14.1652473	reordered
+be-reordered-00675	20095 Cusano Milanino Viale Guglielmo Marconi 8	45.5480385	9.1847830	reordered
+be-reordered-00676	20095 Cusano Milanino Via Carlo Sormani 93	45.5562334	9.1859408	reordered
+be-reordered-00677	23873 Missaglia Via Maria Gaetana Agnesi 2m	45.7005325	9.3472561	reordered
+be-reordered-00678	28845 Domodossola Piazza Cavour 7	46.1172977	8.2926534	reordered
+be-reordered-00679	53100 Siena Viale Vittorio Emanuele Secondo 53	43.3280840	11.3238012	reordered
+be-reordered-00680	39031 Bruneck - Brunico Kapuzinerplatz - Piazza Cappuccini 10	46.7970704	11.9400888	reordered
+be-reordered-00681	21100 Varese Via Santa Maria Maddalena 54	45.7983161	8.8403004	reordered
+be-reordered-00682	71042 Cerignola Corso Aldo Moro 14	41.2639170	15.9060189	reordered
+be-reordered-00683	52031 Anghiari Via Martiri della Libbia 6	43.5405131	12.0507904	reordered
+be-reordered-00684	53100 Siena Viale Vittorio Veneto 1	43.3205029	11.3230158	reordered
+be-reordered-00685	10135 Torino Strada del Drosso 101a	45.0154760	7.6140350	reordered
+be-reordered-00686	65015 Montesilvano Corso Umberto Primo 16	42.5182243	14.1473981	reordered
+be-reordered-00687	36031 Dueville Via Dante 30	45.6351631	11.5494482	reordered
+be-reordered-00688	30021 Caorle Viale Luigi del Moro 2	45.5980160	12.8858259	reordered
+be-reordered-00689	53100 Siena Via Sallustio Bandini 45	43.3192575	11.3339878	reordered
+be-reordered-00690	24126 Bergamo Via Giovanni Battista Berizzi 27	45.6859272	9.6640747	reordered
+be-reordered-00691	62014 Corridonia Viale dell'Industria 243	43.2663740	13.4865918	reordered
+be-reordered-00692	20092 Cinisello Balsamo Via Monviso 37	45.5572941	9.2060842	reordered
+be-reordered-00693	40026 Imola Via Appia 58	44.3550643	11.7153184	reordered
+be-reordered-00694	20154 Milano Via Domenico Cucchiari 4	45.4879753	9.1645395	reordered
+be-reordered-00695	30016 Jesolo Via Andrea Bafile 377	45.4980326	12.6234194	reordered
+be-reordered-00696	10064 Pinerolo SS23	44.8772670	7.3531580	reordered
+be-reordered-00697	38068 Rovereto Via Sticotta 2a	45.8950241	11.0439043	reordered
+be-reordered-00698	16033 Lavagna Piazza Liberta 25	44.3076340	9.3449297	reordered
+be-reordered-00699	40026 Imola Via Appia 66	44.3552012	11.7154344	reordered
+be-reordered-00700	20095 Cusano Milanino Via Gardenie 4	45.5519974	9.1871887	reordered
+be-reordered-00701	16136 Genova Corso Dogali 18	44.4184435	8.9245283	reordered
+be-reordered-00702	70038 Terlizzi Largo Cavour	41.1299434	16.5429381	reordered
+be-reordered-00703	66010 Casacanditella Strada Val di Foro 99	42.2684033	14.1986211	reordered
+be-reordered-00704	20146 Milano Via Fra Bartolomeo 7	45.4570472	9.1536862	reordered
+be-reordered-00705	00175 Roma Viale Palmiro Togliatti 99	41.8573195	12.5706744	reordered
+be-reordered-00706	34170 Gorizia Corso Italia 90c	45.9408480	13.6167390	reordered
+be-reordered-00707	38122 Trento Galleria Tirrena 1	46.0685576	11.1213865	reordered
+be-reordered-00708	12045 Fossano Via Cuneo 28	44.5415440	7.7188580	reordered
+be-reordered-00709	36015 Schio Via Pietro Maraschin 10	45.7121535	11.3540241	reordered
+be-reordered-00710	20095 Cusano Milanino Via Alessandro Manzoni 27	45.5452521	9.1764727	reordered
+be-reordered-00711	20092 Cinisello Balsamo Via Monte Everest 3	45.5588058	9.1998108	reordered
+be-reordered-00712	20095 Cusano Milanino Via Grigne 2	45.5530321	9.1841567	reordered
+be-reordered-00713	60030 Serra de' Conti Piazza Giacomo Leopardi 2	43.5415065	13.0371874	reordered
+be-reordered-00714	91023 Favignana Contrada Arena	37.9240625	12.3419610	reordered
+be-reordered-00715	23873 Missaglia Via Venticinque Aprile 27	45.7008785	9.3491136	reordered
+be-reordered-00716	40026 Imola Via Giuseppe Garibaldi 23	44.3525545	11.7123676	reordered
+be-reordered-00717	00187 Roma Piazza Bucarest	41.9101982	12.4797871	reordered
+be-reordered-00718	40018 San Pietro in Casale Via Mario Stangolini 1676	44.7013540	11.4265970	reordered
+be-reordered-00719	61121 Pesaro Calata Caio Duilio 106	43.9233020	12.9071479	reordered
+be-reordered-00720	53100 Siena Via del Rialto 50	43.3175265	11.3345029	reordered
+be-reordered-00721	21100 Varese Via delle Vigne 30	45.7818488	8.8516453	reordered
+be-reordered-00722	39030 Ahrntal - Valle Aurina Oberbühel 10	47.0115022	12.0122405	reordered
+be-reordered-00723	01016 Tarquinia Viale Mediterraneo	42.2203157	11.7097619	reordered
+be-reordered-00724	28047 Oleggio Via Verbano	45.5894617	8.6425245	reordered
+be-reordered-00725	55049 Viareggio Via Giuseppe Mazzini 14	43.8710510	10.2444894	reordered
+be-reordered-00726	00169 Roma Via Edoardo Chiossone 29	41.8605394	12.5977014	reordered
+be-reordered-00727	23873 Missaglia Via Wolfgang Amadeus Mozart 6	45.7033663	9.3467383	reordered
+be-reordered-00728	40026 Imola Via Case di Dozza 2a	44.3559951	11.7085755	reordered
+be-reordered-00729	34170 Gorizia Corso Italia 19	45.9419653	13.6197008	reordered
+be-reordered-00730	53100 Siena Viale Camillo Benso di Cavour 78	43.3304049	11.3185648	reordered
+be-reordered-00731	20131 Milano Via Privata Adelchi 5	45.4857051	9.2315149	reordered
+be-reordered-00732	65015 Montesilvano Corso Umberto Primo 417	42.5011999	14.1687710	reordered
+be-reordered-00733	20095 Cusano Milanino Viale Enrico Pedretti 31	45.5522439	9.1832888	reordered
+be-reordered-00734	53100 Siena Strada di Sant'Eugenia 26	43.3161038	11.3465981	reordered
+be-reordered-00735	65015 Montesilvano Corso Umberto Primo 332	42.5083563	14.1591947	reordered
+be-reordered-00736	20095 Cusano Milanino Via Adua 6	45.5475427	9.1849212	reordered
+be-reordered-00737	38071 Bleggio Inferiore Val d'Algogne	46.1193080	10.8069690	reordered
+be-reordered-00738	37019 Peschiera del Garda Via Venezia 9	45.4405688	10.6992425	reordered
+be-reordered-00739	20092 Cinisello Balsamo Via Unità 8	45.5558705	9.2029873	reordered
+be-reordered-00740	10132 Torino Piazza Marco Aurelio	45.0704394	7.7271964	reordered
+be-reordered-00741	60015 Falconara Marittima Via del Consorzio 19	43.6166528	13.3721374	reordered
+be-reordered-00742	10045 Piossasco Via Nino Costa 2	44.9897789	7.4813114	reordered
+be-reordered-00743	65015 Montesilvano Via Bradano 2	42.5058106	14.1715816	reordered
+be-reordered-00744	20144 Milano Viale Carlo Troya 8	45.4517130	9.1543873	reordered
+be-reordered-00745	20080 Cisliano Via Giuseppe Garibaldi 15	45.4439268	8.9812785	reordered
+be-reordered-00746	98063 San Giorgio Via Pola 98	38.1693060	14.9488621	reordered
+be-reordered-00747	40026 Imola Piazzale Giovanni Dalle Bande Nere 6a	44.3537164	11.7081462	reordered
+be-reordered-00748	38121 Trento Via Bolzano 16	46.1000106	11.1117271	reordered
+be-reordered-00749	21100 Varese Via dei Cavalli 30	45.7939006	8.8430905	reordered
+be-reordered-00750	20095 Cusano Milanino Via Aprica 4	45.5564174	9.1857498	reordered
+be-reordered-00751	51037 Montale Via Giuseppe Garibaldi	43.9176073	11.0124213	reordered
+be-reordered-00752	20095 Cusano Milanino Via Lambro 4	45.5502169	9.1844371	reordered
+be-reordered-00753	23885 Calco Via Nazionale 5	45.7190350	9.4093390	reordered
+be-reordered-00754	33170 Pordenone Viale Venezia 95	45.9749276	12.6505677	reordered
+be-reordered-00755	28066 Galliate Via Novara 96	45.4696790	8.6859910	reordered
+be-reordered-00756	09127 Cagliari Viale San Vincenzo	39.2271340	9.1139530	reordered
+be-reordered-00757	40026 Imola Piazzale Giovanni Dalle Bande Nere 10	44.3533801	11.7078890	reordered
+be-reordered-00758	38010 Tassullo Via dei Brattia 4	46.3360357	11.0499795	reordered
+be-reordered-00759	65123 Pescara Viale della Riviera 134	42.4888022	14.1914049	reordered
+be-reordered-00760	20095 Cusano Milanino Via Ninfea 25	45.5507781	9.1892436	reordered
+be-reordered-00761	58022 Follonica Strada Provinciale 152 Aurelia Vecchia 91	42.9354034	10.7752578	reordered
+be-reordered-00762	35133 Padova Via del Plebiscito 1866 85	45.4365040	11.8952172	reordered
+be-reordered-00763	21040 Cislago Via Magenta 106	45.6567676	8.9716461	reordered
+be-reordered-00764	53100 Siena Via Piave 39	43.3262810	11.3236201	reordered
+be-reordered-00765	20080 Cisliano Via Giuseppe Mazzini 2	45.4424678	8.9818047	reordered
+be-reordered-00766	34073 Grado Viale dell'Orsa Maggiore 1	45.6801106	13.4251345	reordered
+be-reordered-00767	20095 Cusano Milanino Viale Cooperazione 11	45.5518694	9.1876707	reordered
+be-reordered-00768	40026 Imola Via Fratelli Bandiera 12a	44.3549583	11.7086580	reordered
+be-reordered-00769	34170 Gorizia Corso Giuseppe Verdi 24	45.9457630	13.6225214	reordered
+be-reordered-00770	60011 Arcevia Frazione Sant'Apollinare 91	43.5320417	12.9402436	reordered
+be-reordered-00771	20097 San Donato Milanese Strada Provinciale ex Strada Statale 415 Paullese	45.4271681	9.2720465	reordered
+be-reordered-00772	62100 Macerata Via Adriano Ariani 9	43.2963982	13.4551048	reordered
+be-reordered-00773	24051 Antegnate Via Cremona 2	45.4811921	9.7918505	reordered
+be-reordered-00774	20092 Cinisello Balsamo Via Carlo Armellini 13	45.5476583	9.1926085	reordered
+be-reordered-00775	58022 Follonica Strada Provinciale 152 Aurelia Vecchia 91	42.9354034	10.7752578	reordered
+be-reordered-00776	20095 Cusano Milanino Via Monte Grappa 19	45.5567384	9.1792754	reordered
+be-reordered-00777	20095 Cusano Milanino Viale Guglielmo Marconi 39	45.5469373	9.1799139	reordered
+be-reordered-00778	00179 Roma Via Appia Antica 126	41.8565410	12.5150282	reordered
+be-reordered-00779	20050 Liscate Via Don Giovanni Minzoni 1	45.4813614	9.4269510	reordered
+be-reordered-00780	20144 Milano Via Valparaiso 3	45.4575005	9.1646532	reordered
+be-reordered-00781	21020 Ranco Via Lungolago Dino Ciani	45.7965266	8.5684832	reordered
+be-reordered-00782	20095 Cusano Milanino Viale Guglielmo Marconi 40	45.5468319	9.1776844	reordered
+be-reordered-00783	53100 Siena Via San Pietro 4	43.3162011	11.3298408	reordered
+be-reordered-00784	20092 Cinisello Balsamo Via Monviso 35a	45.5572368	9.2059632	reordered
+be-reordered-00785	20092 Cinisello Balsamo Via Adamello 14	45.5578324	9.2024652	reordered
+be-reordered-00786	39024 Mals - Malles Venosta Burgeis 130	46.7097348	10.5263591	reordered
+be-reordered-00787	70038 Terlizzi Piazza Quattro Novembre	41.1303839	16.5424256	reordered
+be-reordered-00788	39012 Meran - Merano Reichstraße - Via Nazionale 6	46.6467544	11.1770771	reordered
+be-reordered-00789	35020 Legnaro Via Romea 21	45.3555368	11.9492205	reordered
+be-reordered-00790	20127 Milano Via Guido Guinizelli 4	45.4892089	9.2192387	reordered
+be-reordered-00791	24126 Bergamo Via Zanica 119	45.6650586	9.6781245	reordered
+be-reordered-00792	20122 Milano Via Santa Sofia 8	45.4575393	9.1923557	reordered
+be-reordered-00793	24065 Lovere Via Guglielmo Marconi 55	45.8210421	10.0795967	reordered
+be-reordered-00794	39040 Tramin an der Weinstraße - Termeno sulla Strada del Vino M.-R.-Von-Grabmayr-Straße - Via M. R. Von Grabmayr 4	46.3290514	11.2372834	reordered
+be-reordered-00795	20155 Milano Via Giuseppe Arimondi 12	45.4897311	9.1549824	reordered
+be-reordered-00796	65124 Pescara Viale Giovanni Bovio 71	42.4735451	14.2016766	reordered
+be-reordered-00797	23873 Missaglia Via alle Valli 35	45.7154240	9.3390096	reordered
+be-reordered-00798	20095 Cusano Milanino Via delle Rose 24	45.5542170	9.1896561	reordered
+be-reordered-00799	20095 Cusano Milanino Viale Cooperazione 11	45.5518694	9.1876707	reordered
+be-partial-00800	Via Monte Bianco 5, Cinisello Balsamo	45.5569577	9.2068943	partial
+be-partial-00801	Via Circonvallazione, Buriasco	44.8716587	7.4079406	partial
+be-partial-00802	Via Marsala 22, Roma	41.9030687	12.5015828	partial
+be-partial-00803	Via Grigne 8, Cusano Milanino	45.5531005	9.1837211	partial
+be-partial-00804	Via Antonio Giovanola 25, Cannobio	46.0613719	8.6969151	partial
+be-partial-00805	Rungger Straße 20, Lüsen - Luson	46.7462363	11.7764827	partial
+be-partial-00806	Piazzetta Virgilio Grassi 1, Siena	43.3188930	11.3344672	partial
+be-partial-00807	Vinschgaustraße - Via Venosta 8, Laas - Lasa	46.6169649	10.7032637	partial
+be-partial-00808	Via Appennini 16, Cinisello Balsamo	45.5592849	9.1994262	partial
+be-partial-00809	Via Claudia 6010, Savignano sul Panaro	44.4665542	11.0157890	partial
+be-partial-00810	Piazza Napoli 23, Milano	45.4526655	9.1553363	partial
+be-partial-00811	Viale dei Garofani 75-77, Terlizzi	41.1306316	16.5514182	partial
+be-partial-00812	Strada Provinciale 185 della Valle Orba, Alessandria	44.8884450	8.5985560	partial
+be-partial-00813	Via Giuseppe Garibaldi 49a, Imola	44.3538182	11.7092829	partial
+be-partial-00814	Via Adda 14, Cusano Milanino	45.5493457	9.1840770	partial
+be-partial-00815	Via San Nicolò 25, Trieste	45.6503305	13.7728250	partial
+be-partial-00816	Viale Bligny 47, Milano	45.4510613	9.1965810	partial
+be-partial-00817	Via Pietro Caligiuri, Lamezia Terme	38.9329910	16.2875100	partial
+be-partial-00818	Via Montevideo 7, Genova	44.4032667	8.9556877	partial
+be-partial-00819	Corso Savona 46 B, Moncalieri	44.9947845	7.6921369	partial
+be-partial-00820	Viale Verona 21, Trento	46.0576186	11.1281214	partial
+be-partial-00821	Strada Comunale Asse Nord-Sud 2, Ancona	43.5934460	13.5199640	partial
+be-partial-00822	Via Fabio Severo 63, Trieste	45.6562981	13.7863862	partial
+be-partial-00823	Via Leone Tolstoi 9, Milano	45.4502065	9.1513149	partial
+be-partial-00824	Via Alessandro Manzoni 23, Cusano Milanino	45.5457000	9.1764230	partial
+be-partial-00825	Via Alessandro Manzoni 17, Cadrezzate con Osmate	45.7846322	8.6570731	partial
+be-partial-00826	Via Duca degli Abruzzi 2, Vimercate	45.6200110	9.3711180	partial
+be-partial-00827	Via Roma - Romstraße, Bolzano - Bozen	46.4914710	11.3418925	partial
+be-partial-00828	Piazza Julia 47, Pozzuolo del Friuli	45.9865341	13.1957833	partial
+be-partial-00829	Via Gaetano Strambio 29, Milano	45.4736675	9.2342317	partial
+be-partial-00830	Piazza General Antonio Cantore 1, Trento	46.0769970	11.1191070	partial
+be-partial-00831	Via Casal Tidei 101, Roma	41.9413135	12.5799671	partial
+be-partial-00832	Via Melchiorre Gioia, Milano	45.4872513	9.1979770	partial
+be-partial-00833	Viale Goffredo Mameli 60;62, Siena	43.3298845	11.3176447	partial
+be-partial-00834	Via Giosuè Carducci 14a, Trieste	45.6519919	13.7772042	partial
+be-partial-00835	Via Giuseppe Mazzini 4, Cusano Milanino	45.5506119	9.1799143	partial
+be-partial-00836	Viale Enrico Berlinguer, Riccione	43.9897863	12.6438968	partial
+be-partial-00837	Via Monte Brione 5, Arco	45.8949163	10.8702292	partial
+be-partial-00838	Via Piero Frattini 12, Cinisello Balsamo	45.5549919	9.1994205	partial
+be-partial-00839	Piazza Albania;Viale della Piramide Cestia 1, Roma	41.8791560	12.4832979	partial
+be-partial-00840	Via Sergio Amidei 9, Roma	41.7907427	12.4643560	partial
+be-partial-00841	Via Carlo Sormani 21, Cusano Milanino	45.5477467	9.1859728	partial
+be-partial-00842	Corso Giacomo Matteotti 17u, Torino	45.0663034	7.6744244	partial
+be-partial-00843	Via Novi 4, Serravalle Scrivia	44.7306123	8.8492393	partial
+be-partial-00844	Via nove Febbraio 30, Imola	44.3547309	11.7092034	partial
+be-partial-00845	Via Paolo Oss Mazzurana 80, Trento	46.0681215	11.1224582	partial
+be-partial-00846	Via Luigi Porro Lambertenghi 28, Milano	45.4889444	9.1881683	partial
+be-partial-00847	Via Filippo Turati, Cerro Maggiore	45.6008367	8.9433812	partial
+be-partial-00848	Via Giuseppe Garibaldi 35, Imola	44.3528430	11.7116663	partial
+be-partial-00849	Via della Libertà 3, Cusano Milanino	45.5546103	9.1743539	partial
+be-partial-00850	Largo Alcide De Gasperi, Casciago	45.8349620	8.7818016	partial
+be-partial-00851	Piazzale dei Legnami 1, Trieste	45.6325474	13.7783162	partial
+be-partial-00852	Viale San Bartolomeo 859, La Spezia	44.0998900	9.8616361	partial
+be-partial-00853	Strada Comunale Asse Nord-Sud 2, Ancona	43.5934460	13.5199640	partial
+be-partial-00854	Piazza Albania;Viale della Piramide Cestia 1, Roma	41.8791560	12.4832979	partial
+be-partial-00855	Corso Tortona 61a, Torino	45.0747400	7.7048810	partial
+be-partial-00856	Viale Giotto, Abbiategrasso	45.4110357	8.9077902	partial
+be-partial-00857	Via Massimo D'Azeglio 2, Cusano Milanino	45.5504619	9.1811470	partial
+be-partial-00858	Via Adige 21, Cusano Milanino	45.5495923	9.1835485	partial
+be-partial-00859	Via di Sottomonte, Lucca	43.8175560	10.4933760	partial
+be-partial-00860	Via Appia 64, Imola	44.3551670	11.7154054	partial
+be-partial-00861	Via Lodovico il Moro 3, Milano	45.4474586	9.1553746	partial
+be-partial-00862	Viale Fratelli Casiraghi 493, Sesto San Giovanni	45.5488673	9.2362120	partial
+be-partial-00863	Frau-Emma-Straße - Via Frau Emma 12, Niederdorf - Villabassa	46.7375106	12.1708508	partial
+be-partial-00864	St.-Georg-Straße - Via San Giorgio 30, Tiers	46.4683807	11.5260287	partial
+be-partial-00865	Via Monte Cengio, Piovene Rocchette	45.7672648	11.4322110	partial
+be-partial-00866	Via Marco Tullio Cicerone 17, Cinisello Balsamo	45.5594892	9.1978208	partial
+be-partial-00867	Via Eleonora de Fonseca Pimentel 8, Cinisello Balsamo	45.5566912	9.1986614	partial
+be-partial-00868	Via Ca' Alta 13, Caldogno	45.6007663	11.5272245	partial
+be-partial-00869	Corso Dante Alighieri 23, Terlizzi	41.1288586	16.5423753	partial
+be-partial-00870	Via Sergio Amidei 7, Roma	41.7906659	12.4645941	partial
+be-partial-00871	Largo Pomeo 4c, Calco	45.7243277	9.4154109	partial
+be-partial-00872	Via Vincenzo Giordano Orsini 2, Milano	45.4619973	9.1359909	partial
+be-partial-00873	Piazza dei Signori, Vicenza	45.5470386	11.5465924	partial
+be-partial-00874	Via Raffaele Battistini 76, Roma	41.8638374	12.4463145	partial
+be-partial-00875	Lungomare Giuseppe Canepa 2/R, Genova	44.4070840	8.8981259	partial
+be-partial-00876	Via Monte Cervino 1c, Cusano Milanino	45.5525595	9.1841073	partial
+be-partial-00877	Via Andrea Bafile 321, Jesolo	45.4990131	12.6264634	partial
+be-partial-00878	Piazza Napoli 38, Milano	45.4522581	9.1529094	partial
+be-partial-00879	Via Monte Cervino 16, Cusano Milanino	45.5533049	9.1846532	partial
+be-partial-00880	Reintalstraße - Via Riva di Tures 153, Sand in Taufers - Campo Tures	46.9475212	12.0608995	partial
+be-partial-00881	Via Primula 26a, Cusano Milanino	45.5562182	9.1907406	partial
+be-partial-00882	Via Gino Graziani 6, Livorno	43.5507399	10.3396339	partial
+be-partial-00883	SP10 Km 1, Nurri	39.7217974	9.2274114	partial
+be-partial-00884	Viale Garibaldi 49, Siena	43.3247957	11.3308324	partial
+be-partial-00885	Via Trento - Trientstraße 4, Salorno - Salurn	46.2414913	11.2098275	partial
+be-partial-00886	Via Piave 6, Azzano San Paolo	45.6622028	9.6726314	partial
+be-partial-00887	Via Francesco Bentivegna 56, Corleone	37.8151139	13.2970873	partial
+be-partial-00888	Via San Cilino 6b, Trieste	45.6556515	13.7968701	partial
+be-partial-00889	Via XXIV Maggio 61, Calascio	42.3254315	13.6969095	partial
+be-partial-00890	Via Alcide De Gasperi 2, Cadrezzate con Osmate	45.7880933	8.6563595	partial
+be-partial-00891	Viale Garibaldi 51, Siena	43.3247862	11.3309421	partial
+be-partial-00892	Via Segherie 17, Tarvisio	46.5038059	13.5918471	partial
+be-partial-00893	Via Roma 5, Iseo	45.6538430	10.0496150	partial
+be-partial-00894	Via Ortica 19, Milano	45.4710863	9.2444431	partial
+be-partial-00895	Via Pollenza 54, Roma	41.9436118	12.5772553	partial
+be-partial-00896	Via Giuseppe Bottelli 3, Milano	45.5029136	9.2107939	partial
+be-partial-00897	Via Benaco 15, Torbole sul Garda	45.8687443	10.8755678	partial
+be-partial-00898	Via dell'Artigianato 21, Livorno	43.5651512	10.3418125	partial
+be-partial-00899	Via Fabio Filzi 14, Trieste	45.6547510	13.7747344	partial
+be-partial-00900	Via Vincenzo Bellini 26a, Cusano Milanino	45.5444081	9.1817349	partial
+be-partial-00901	Via Tromello 8, Garlasco	45.1973710	8.9160060	partial
+be-partial-00902	Strada Torino 9, Castellamonte	45.3739188	7.7139693	partial
+be-partial-00903	Frau-Emma-Straße - Via Frau Emma 8, Niederdorf - Villabassa	46.7377400	12.1702176	partial
+be-partial-00904	Via della Libertà 23, Cusano Milanino	45.5552116	9.1742154	partial
+be-partial-00905	Strada Cavallaro 8, Pescara	42.4754828	14.1873893	partial
+be-partial-00906	Viale dei Tigli 22b, Cusano Milanino	45.5534209	9.1910188	partial
+be-partial-00907	Lungolago Giuseppe Zanardelli 60, Salò	45.6066851	10.5291202	partial
+be-partial-00908	Casato di Sopra 75, Siena	43.3151686	11.3305945	partial
+be-partial-00909	Via Elio Riosa 9a, Cordenons	45.9870861	12.6916815	partial
+be-partial-00910	Viale Andrea Costa 47, Imola	44.3583075	11.7181943	partial
+be-partial-00911	Via Marmolada 16, Cusano Milanino	45.5541224	9.1701221	partial
+be-partial-00912	Piazza Duca degli Abruzzi 34, Pescara	42.4816063	14.1920977	partial
+be-partial-00913	Piazza della Resistenza 2, Cividale del Friuli	46.0900843	13.4332744	partial
+be-partial-00914	Via dell'Istria 16, Trieste	45.6416848	13.7814375	partial
+be-partial-00915	Via Tertulliano 68, Milano	45.4482227	9.2217984	partial
+be-partial-00916	Via Pietro Maroncelli 16, Paderno Dugnano	45.5566696	9.1707403	partial
+be-partial-00917	Località Sauch, Giovo	46.2159242	11.1943338	partial
+be-partial-00918	Via dei Solteri 39/9, Trento	46.0882875	11.1211946	partial
+be-partial-00919	Via Como 18, Cusano Milanino	45.5520774	9.1841919	partial
+be-partial-00920	Via Cascina Paolina 1, Missaglia	45.7079640	9.3566016	partial
+be-partial-00921	Rathausplatz - Piazza del Magistrato 8, Schluderns - Sluderno	46.6639493	10.5852842	partial
+be-partial-00922	Via Andrea Bafile 419, Jesolo	45.4969837	12.6200665	partial
+be-partial-00923	Via Romagna 21, Misano Adriatico	43.9790769	12.6960604	partial
+be-partial-00924	Corso Giuseppe Mazzini 175, Ascoli Piceno	42.8549769	13.5757893	partial
+be-partial-00925	Via Alessandrina 39, Cusano Milanino	45.5581191	9.1801856	partial
+be-partial-00926	Via Aurelia, Orbetello	42.5153930	11.1944697	partial
+be-partial-00927	Via Pier Andrea Mattioli 3, Siena	43.3140227	11.3314354	partial
+be-partial-00928	Strada statale 11, Bussolengo	45.4467990	10.8779789	partial
+be-partial-00929	Strada Provinciale 112 Molfetta -Terlizzi, Terlizzi	41.1363649	16.5451723	partial
+be-partial-00930	Scala Giuseppe Sforzi 2, Trieste	45.6750172	13.7579107	partial
+be-partial-00931	Via Molinara, Lugagnano	45.4405551	10.8624168	partial
+be-partial-00932	Via del Molino 46, Calenzano	43.8606363	11.1559733	partial
+be-partial-00933	Via Di Stalloreggi 44, Siena	43.3154603	11.3289909	partial
+be-partial-00934	Via Giordano Bruno 69, Alessandria	44.9199660	8.5951010	partial
+be-partial-00935	Via Giuseppe Zucchi 2b, Cusano Milanino	45.5496744	9.1755069	partial
+be-partial-00936	Via Bergamo 10, Montevecchia	45.6953463	9.3781009	partial
+be-partial-00937	Via Carlo Ghega 17, Trieste	45.6553331	13.7746377	partial
+be-partial-00938	Corso Stamira 14, Ancona	43.6179886	13.5104072	partial
+be-partial-00939	Via dell'Amba Aradam 5, Roma	41.8848147	12.5021976	partial
+be-partial-00940	Viale Murillo 9, Milano	45.4725392	9.1440243	partial
+be-partial-00941	Viale Armando Diaz 13, Siena	43.3243975	11.3250805	partial
+be-partial-00942	Piazza Napoli 35, Milano	45.4519851	9.1532251	partial
+be-partial-00943	Via Enrico Fermi 21, Cisliano	45.4406961	8.9810330	partial
+be-partial-00944	Via Monte Cengio, Piovene Rocchette	45.7672648	11.4322110	partial
+be-partial-00945	Via Trieste 14, San Giovanni al Natisone	45.9592762	13.4214456	partial
+be-partial-00946	Via Leonardo da Vinci 44, Lecco	45.8500107	9.3877004	partial
+be-partial-00947	Via Bergamo 28, Azzano San Paolo	45.6667075	9.6744944	partial
+be-partial-00948	Via Saluzzo 88, Casalgrasso	44.8130520	7.6167196	partial
+be-partial-00949	Via Aeroporto 20, Sommacampagna	45.4098682	10.9039657	partial
+be-partial-00950	Via Biella, Salussola	45.4554844	8.1087974	partial
+be-partial-00951	Piazza della Libertà 1, Varese	45.8167219	8.8126420	partial
+be-partial-00952	Via Giuseppe Mazzini 19, Cisliano	45.4433570	8.9809396	partial
+be-partial-00953	Via Egerio Levio 28, Roma	41.8613966	12.5508448	partial
+be-partial-00954	Via Giuseppe Mazzini 59, Palermo	38.1273102	13.3543356	partial
+be-partial-00955	Via Camillo Benso Cavour 1, Trento	46.0684658	11.1201696	partial
+be-partial-00956	Corso Italia 148, Gorizia	45.9393039	13.6135853	partial
+be-partial-00957	Via Sardegna 12, San Teodoro	40.7725623	9.6684969	partial
+be-partial-00958	Via Aurelio Saffi 6, Milano	45.4692748	9.1716393	partial
+be-partial-00959	Via Sant'Abbondio 1, Rignano Flaminio	42.2144682	12.4803403	partial
+be-partial-00960	Corso Giacomo Matteotti 213, Serravalle Sesia	45.6848067	8.3129788	partial
+be-partial-00961	Via alle Valli 27, Missaglia	45.7140195	9.3352367	partial
+be-partial-00962	Corso Umberto Primo 442, Montesilvano	42.5023280	14.1669286	partial
+be-partial-00963	Via Davide Poggi 21, Cogoleto	44.3891875	8.6431673	partial
+be-partial-00964	Via Ginestra 18, Cusano Milanino	45.5529646	9.1881407	partial
+be-partial-00965	Via Como, Olgiate Molgora	45.7286770	9.4007940	partial
+be-partial-00966	Cascina Brughiera 4, Missaglia	45.6917405	9.3625365	partial
+be-partial-00967	Via Prenestina Nuova 161, Palestrina	41.8307654	12.8805161	partial
+be-partial-00968	Via Roma 45, Azzano San Paolo	45.6609603	9.6741571	partial
+be-partial-00969	Via Aprica 11, Cusano Milanino	45.5562103	9.1853982	partial
+be-partial-00970	Via Johann Wolfgang Von Goethe - Johann-Wolfgang-Von-Goethe-Straße 3, Bolzano - Bozen	46.4990306	11.3525008	partial
+be-partial-00971	Via Borgo Italia 81, Pantelleria	36.8308023	11.9398821	partial
+be-partial-00972	Strada Zanni 3, Pescara	42.4802194	14.1897592	partial
+be-partial-00973	Via del Travai 34, Trento	46.0644994	11.1211949	partial
+be-partial-00974	Via Lodovico Ariosto 16, Milano	45.4690603	9.1660225	partial
+be-partial-00975	Via Marmolada 27a, Cusano Milanino	45.5534605	9.1706564	partial
+be-partial-00976	Via Alfredo Baccarini 31/a, Roma	41.8741688	12.5171203	partial
+be-partial-00977	Piazza Cesare Battisti 4, Trento	46.0695275	11.1234511	partial
+be-partial-00978	Via della Libertà 23, Cusano Milanino	45.5552116	9.1742154	partial
+be-partial-00979	Via Gioacchino Rossini 10, Cusano Milanino	45.5465950	9.1849202	partial
+be-partial-00980	Strada Statale 95 var Variante Tito-Brienza, Tito	40.5934957	15.6864320	partial
+be-partial-00981	Borgo Udine 2bis, Palmanova	45.9057065	13.3089309	partial
+be-partial-00982	Via alle Valli 2, Missaglia	45.7106361	9.3354473	partial
+be-partial-00983	Viale Europa 17, Aldeno	45.9811388	11.0953247	partial
+be-partial-00984	St.-Georg-Straße - Via San Giorgio 30, Tiers	46.4683807	11.5260287	partial
+be-partial-00985	Via Andrea Bafile 319, Jesolo	45.4990390	12.6265359	partial
+be-partial-00986	Corso Trieste, Moncalieri	45.0057725	7.6725398	partial
+be-partial-00987	Viale Edoardo Jenner 69, Milano	45.4964671	9.1730924	partial
+be-partial-00988	Via Appia 50, Imola	44.3549274	11.7152024	partial
+be-partial-00989	Via Giandonato Rogadeo 14, Bitonto	41.1067086	16.6908416	partial
+be-partial-00990	Via Torino 261, Castiglione Torinese	45.1234733	7.8176359	partial
+be-partial-00991	Via Stradascia 1, Settimo Milanese	45.4878241	9.0424522	partial
+be-partial-00992	Via Papa Giovanni Ventitreesimo 8, Azzano San Paolo	45.6615307	9.6786015	partial
+be-partial-00993	Via Torino, San Maurizio Canavese	45.1943640	7.6264369	partial
+be-partial-00994	Via Wolfgang Amadeus Mozart 8, Missaglia	45.7033789	9.3468112	partial
+be-partial-00995	Via Montevideo 17, Genova	44.4042259	8.9572246	partial
+be-partial-00996	Via Veneto 8a, Cusano Milanino	45.5462418	9.1879936	partial
+be-partial-00997	Via Piero Frattini 12, Cinisello Balsamo	45.5549919	9.1994205	partial
+be-partial-00998	Viale di Trastevere 53, Roma	41.8882634	12.4737899	partial
+be-partial-00999	Piazza Bacanal 6, Verona	45.4429224	10.9762342	partial

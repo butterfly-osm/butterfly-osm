@@ -1,0 +1,1001 @@
+query_id	query_text	gold_lat	gold_lon	quality_class
+be-clean-00000	Untertor 23, 8400 Winterthur	47.4991383	8.7251561	clean
+be-clean-00001	Lorrainestrasse 6, 3013 Bern	46.9552374	7.4454027	clean
+be-clean-00002	Weltistrasse 40, 3006 Bern	46.9460147	7.4753275	clean
+be-clean-00003	Oberfeldring 7, 8905 Arni AG	47.3171796	8.4234653	clean
+be-clean-00004	Gessnerallee 14, 8001 Zürich	47.3756281	8.5352614	clean
+be-clean-00005	Bahnhofstrasse 11, 5200 Brugg AG	47.4822186	8.2077595	clean
+be-clean-00006	Barfüsserplatz 15, 4051 Basel	47.5546633	7.5887902	clean
+be-clean-00007	Neustadtgasse 25, 8400 Winterthur	47.4994440	8.7325645	clean
+be-clean-00008	Wildermettweg 59, 3006 Bern	46.9341887	7.4714609	clean
+be-clean-00009	Walderstrasse 123, 8340 Hadlikon	47.2882156	8.8565371	clean
+be-clean-00010	Platanenweg 8, 3013 Bern	46.9574386	7.4436509	clean
+be-clean-00011	Waffenweg 6, 3014 Bern	46.9605009	7.4531267	clean
+be-clean-00012	Untertrübsee, 6390 Engelberg	46.8118547	8.3825683	clean
+be-clean-00013	Blumenweg 2, 4556 Bolken	47.1936561	7.6656649	clean
+be-clean-00014	Wiesenstrasse 70, 3014 Bern	46.9606331	7.4560818	clean
+be-clean-00015	Faubourg du Lac 43, 2000 Neuchâtel	46.9944381	6.9371212	clean
+be-clean-00016	Hofweg 5, 3013 Bern	46.9571974	7.4463515	clean
+be-clean-00017	Bachstrasse 29, 9008 St. Gallen	47.4356824	9.3920818	clean
+be-clean-00018	Bahnhofstrasse 41, 5000 Aarau	47.3914452	8.0480855	clean
+be-clean-00019	Zürcherstrasse 9, 8905 Arni AG	47.3189401	8.4211143	clean
+be-clean-00020	Altenbergstrasse 59, 3013 Bern	46.9505584	7.4489392	clean
+be-clean-00021	Zugerstrasse 23, 8820 Wädenswil	47.2295579	8.6702562	clean
+be-clean-00022	Wankdorffeldstrasse 111, 3014 Bern	46.9641358	7.4558907	clean
+be-clean-00023	Dietlerstrasse 52, 3008 Bern	46.9390291	7.4224911	clean
+be-clean-00024	Wylerstrasse 105, 3014 Bern	46.9611777	7.4473878	clean
+be-clean-00025	Herzogstrasse 19, 3400 Burgdorf	47.0636695	7.6158896	clean
+be-clean-00026	Kohlmatt 8, 8905 Arni AG	47.3143779	8.4228389	clean
+be-clean-00027	Amietstrasse 25, 3006 Bern	46.9418512	7.4753471	clean
+be-clean-00028	Stapfelberg 9, 4051 Basel	47.5576024	7.5896452	clean
+be-clean-00029	Fischmarkt 2, 6300 Zug	47.1662557	8.5144850	clean
+be-clean-00030	Flurstrasse 19, 3014 Bern	46.9608340	7.4502071	clean
+be-clean-00031	Schützengasse 32, 8001 Zürich	47.3771315	8.5375254	clean
+be-clean-00032	Klein Titlis-Titlis, 6390 Engelberg	46.7708546	8.4263881	clean
+be-clean-00033	Via Sempione 10, 6600 Muralto	46.1733364	8.7991446	clean
+be-clean-00034	Sonnenhofweg 15, 3006 Bern	46.9438529	7.4716466	clean
+be-clean-00035	Weltistrasse 46, 3006 Bern	46.9460064	7.4767943	clean
+be-clean-00036	Rodtmattstrasse 65, 3014 Bern	46.9597174	7.4600884	clean
+be-clean-00037	Frohburgstrasse 7, 4600 Olten	47.3519568	7.9036631	clean
+be-clean-00038	Trechselstrasse 8, 3005 Bern	46.9382296	7.4467079	clean
+be-clean-00039	Kuhnweg 4, 3006 Bern	46.9498681	7.4668030	clean
+be-clean-00040	Scheibenstrasse 35, 3014 Bern	46.9617833	7.4527466	clean
+be-clean-00041	Hardturmstrasse 126, 8005 Zürich	47.3937910	8.5132196	clean
+be-clean-00042	Jochstock, 6390 Engelberg	46.7724708	8.3948078	clean
+be-clean-00043	Via Giuseppe Cattori 6, 6600 Locarno	46.1683966	8.7996032	clean
+be-clean-00044	Tscharnerstrasse 39, 3007 Bern	46.9425076	7.4274354	clean
+be-clean-00045	Spelterinistrasse 1, 3006 Bern	46.9574094	7.4768930	clean
+be-clean-00046	Sonnacker 1, 8905 Arni AG	47.3205025	8.4162202	clean
+be-clean-00047	Faubourg du Lac 11, 2000 Neuchâtel	46.9922183	6.9332984	clean
+be-clean-00048	In Gassen 6, 8001 Zürich	47.3706846	8.5406432	clean
+be-clean-00049	Albishorn 1, 8915 Hausen am Albis	47.2509874	8.5446028	clean
+be-clean-00050	Einschlagweg 22, 3123 Belp	46.8955123	7.5075190	clean
+be-clean-00051	Kappelenring 50d, 3032 Hinterkappelen	46.9666013	7.3749534	clean
+be-clean-00052	Manuelstrasse 57, 3006 Bern	46.9357740	7.4689654	clean
+be-clean-00053	Tavelweg 18, 3006 Bern	46.9473906	7.4620218	clean
+be-clean-00054	Innere Margarethenstrasse 9, 4051 Basel	47.5500634	7.5867747	clean
+be-clean-00055	Schönriedstrasse 74, 3792 Saanen	46.4934019	7.2667919	clean
+be-clean-00056	Russikerstrasse 12, 8320 Fehraltorf	47.3851558	8.7587455	clean
+be-clean-00057	Kapellenstrasse 8, 3011 Bern	46.9443247	7.4367312	clean
+be-clean-00058	Blumenbergstrasse 47, 3013 Bern	46.9562635	7.4561579	clean
+be-clean-00059	Radarstrasse 1, 3013 Bern	46.9542130	7.4588227	clean
+be-clean-00060	Helvetiastrasse 23, 3005 Bern	46.9410167	7.4510035	clean
+be-clean-00061	Schützenstrasse 15, 6430 Schwyz	47.0192829	8.6553010	clean
+be-clean-00062	Moritzweg 16, 3006 Bern	46.9411163	7.4721525	clean
+be-clean-00063	Manuelstrasse 58, 3006 Bern	46.9357407	7.4686933	clean
+be-clean-00064	Kirchenfeldstrasse 37, 3005 Bern	46.9406414	7.4516768	clean
+be-clean-00065	Dunantstrasse 18, 3006 Bern	46.9358916	7.4760771	clean
+be-clean-00066	Frauenfelderstrasse 38, 8570 Weinfelden	47.5695661	9.1078807	clean
+be-clean-00067	Elfenauweg 50, 3006 Bern	46.9367706	7.4665145	clean
+be-clean-00068	Brünnmatt 2, 3045 Meikirch	47.0088407	7.3638002	clean
+be-clean-00069	Bahnhofstrasse 13, 8570 Weinfelden	47.5684161	9.1064648	clean
+be-clean-00070	Werkstrasse 12, 8400 Winterthur	47.4995463	8.7447027	clean
+be-clean-00071	Kohlenberg 4, 4051 Basel	47.5543086	7.5883008	clean
+be-clean-00072	Stauffacherstrasse 33, 3014 Bern	46.9618226	7.4545305	clean
+be-clean-00073	Rosenmattweg 48, 4456 Tenniken	47.4390784	7.8132942	clean
+be-clean-00074	Feldstrasse 127, 8004 Zürich	47.3802151	8.5239164	clean
+be-clean-00075	Sulgenrain 4, 3007 Bern	46.9419587	7.4373446	clean
+be-clean-00076	Affolternstrasse 148, 8050 Zürich	47.4112226	8.5323683	clean
+be-clean-00077	Laubeggstrasse 141, 3006 Bern	46.9450560	7.4713208	clean
+be-clean-00078	Spelterinistrasse 61, 3006 Bern	46.9584259	7.4779771	clean
+be-clean-00079	Breitenrainplatz 33, 3014 Bern	46.9582368	7.4544608	clean
+be-clean-00080	Industriestrasse 34, 8305 Dietlikon	47.4120630	8.6165907	clean
+be-clean-00081	Niederdorfstrasse 1, 8001 Zürich	47.3726619	8.5436085	clean
+be-clean-00082	Route André Piller 47, 1720 Corminboeuf	46.8123137	7.1142713	clean
+be-clean-00083	Herzogstrasse 11, 3400 Burgdorf	47.0635484	7.6161937	clean
+be-clean-00084	Unterer Graben 21, 9000 St. Gallen	47.4275336	9.3745034	clean
+be-clean-00085	Bernastrasse 10, 3005 Bern	46.9426616	7.4481049	clean
+be-clean-00086	Bürglenstrasse 31, 3006 Bern	46.9455547	7.4684244	clean
+be-clean-00087	Sonnenhofweg 11, 3006 Bern	46.9437423	7.4712454	clean
+be-clean-00088	Steigerweg 5, 3006 Bern	46.9487160	7.4635493	clean
+be-clean-00089	Jubiläumsstrasse 79, 3005 Bern	46.9364023	7.4476576	clean
+be-clean-00090	Flurstrasse 17, 3014 Bern	46.9609276	7.4503828	clean
+be-clean-00091	Rümelinsplatz 17, 4001 Basel	47.5567627	7.5872173	clean
+be-clean-00092	Waldhöheweg 7a, 3013 Bern	46.9567923	7.4531060	clean
+be-clean-00093	Burgernzielweg 8, 3006 Bern	46.9422681	7.4692977	clean
+be-clean-00094	Allmendstrasse 40, 3014 Bern	46.9607439	7.4510766	clean
+be-clean-00095	Willadingweg 34, 3006 Bern	46.9377137	7.4660804	clean
+be-clean-00096	Dorfstrasse 16, 9104 Waldstatt	47.3574037	9.2847714	clean
+be-clean-00097	Rue Bournot 19, 2400 Le Locle	47.0571058	6.7497660	clean
+be-clean-00098	Lommiserstrasse 1, 9545 Wängi	47.5011375	8.9548257	clean
+be-clean-00099	Brunnadernstrasse 30, 3006 Bern	46.9398801	7.4637736	clean
+be-clean-00100	Tscharnerstrasse 28, 3007 Bern	46.9420081	7.4280135	clean
+be-clean-00101	Hauptstrasse 17, 5312 Döttingen	47.5741296	8.2558575	clean
+be-clean-00102	Steinetli, 6174 Sörenberg	46.8080351	8.0355647	clean
+be-clean-00103	Avenue Léopold-Robert 13, 2300 La Chaux-de-Fonds	47.1026084	6.8303596	clean
+be-clean-00104	Seemattweg 8, 4456 Tenniken	47.4379904	7.8124986	clean
+be-clean-00105	Allmendstrasse 38, 3014 Bern	46.9607361	7.4510525	clean
+be-clean-00106	Hauptstrasse 34, 4456 Tenniken	47.4359098	7.8104613	clean
+be-clean-00107	Frikartweg 8a, 3006 Bern	46.9348725	7.4681612	clean
+be-clean-00108	Melchenbühlweg 6, 3006 Bern	46.9506468	7.4768143	clean
+be-clean-00109	Müllerstrasse 34a, 8004 Zürich	47.3749524	8.5305302	clean
+be-clean-00110	Funkerstrasse 13, 3013 Bern	46.9545701	7.4588666	clean
+be-clean-00111	Zürichstrasse 30, 8932 Mettmenstetten	47.2466719	8.4610784	clean
+be-clean-00112	Egghölzlistrasse 5, 3006 Bern	46.9368404	7.4747364	clean
+be-clean-00113	Staufferstrasse 4, 3006 Bern	46.9404703	7.4639416	clean
+be-clean-00114	Maulbeerstrasse 8, 3011 Bern	46.9464131	7.4368599	clean
+be-clean-00115	Kreuzstrasse 1, 8180 Bülach	47.5192705	8.5404534	clean
+be-clean-00116	Brunnenstrasse 9, 8610 Uster	47.3509670	8.7206281	clean
+be-clean-00117	Jochstock, 6390 Engelberg	46.7724708	8.3948078	clean
+be-clean-00118	Schifflände 30, 8001 Zürich	47.3691599	8.5440950	clean
+be-clean-00119	Dietlerstrasse 52, 3008 Bern	46.9390291	7.4224911	clean
+be-clean-00120	Spelterinistrasse 20, 3006 Bern	46.9579398	7.4784991	clean
+be-clean-00121	Mittelholzerstrasse 34, 3006 Bern	46.9592547	7.4783860	clean
+be-clean-00122	Muristrasse 172, 3006 Bern	46.9364343	7.4767652	clean
+be-clean-00123	Robinsonweg 77, 3006 Bern	46.9476023	7.4823512	clean
+be-clean-00124	Schwarztorstrasse 45, 3007 Bern	46.9441187	7.4328295	clean
+be-clean-00125	Rütschistrasse 29, 8037 Zürich	47.3938594	8.5311096	clean
+be-clean-00126	Zwillikerstrasse 4, 8908 Hedingen	47.2982564	8.4475792	clean
+be-clean-00127	Kornhausstrasse 14, 3013 Bern	46.9541368	7.4506371	clean
+be-clean-00128	Kasthoferstrasse 34, 3006 Bern	46.9419933	7.4711151	clean
+be-clean-00129	Rellikonstrasse 11, 8124 Maur	47.3393083	8.6714957	clean
+be-clean-00130	Lorrainestrasse 69, 3014 Bern	46.9598908	7.4453945	clean
+be-clean-00131	Klingenstrasse 33, 8005 Zürich	47.3819982	8.5336329	clean
+be-clean-00132	Lombachweg 28, 3006 Bern	46.9383725	7.4658264	clean
+be-clean-00133	Seestrasse 1, 8124 Maur	47.3379628	8.6737764	clean
+be-clean-00134	Sandgruebestrasse 4, 6210 Sursee	47.1763129	8.1099803	clean
+be-clean-00135	Baselstrasse 48, 4125 Riehen	47.5849133	7.6500952	clean
+be-clean-00136	Usseri Hauptstrasse 84, 3718 Kandersteg	46.4993657	7.6755614	clean
+be-clean-00137	Schönbergweg 17, 3006 Bern	46.9516036	7.4639008	clean
+be-clean-00138	Jubiläumsstrasse 49, 3005 Bern	46.9376409	7.4497482	clean
+be-clean-00139	Waffenweg 27, 3014 Bern	46.9615972	7.4518822	clean
+be-clean-00140	Frikartweg 11, 3006 Bern	46.9347731	7.4688328	clean
+be-clean-00141	Mittelholzerstrasse 40, 3006 Bern	46.9591120	7.4785832	clean
+be-clean-00142	Giacomettistrasse 6, 3006 Bern	46.9441287	7.4742541	clean
+be-clean-00143	Ochsenfeissi 1, 6314 Unterägeri	47.1070942	8.5693255	clean
+be-clean-00144	Avenue Trembley 14, 1209 Genève	46.2219241	6.1203074	clean
+be-clean-00145	Jurastrasse 63, 3013 Bern	46.9609157	7.4436264	clean
+be-clean-00146	Blumenweg 22, 4556 Bolken	47.1930955	7.6664932	clean
+be-clean-00147	Avenue de la Concorde 6, 1022 Chavannes-près-Renens	46.5336980	6.5724099	clean
+be-clean-00148	Alpenstrasse 14, 6300 Zug	47.1726777	8.5150340	clean
+be-clean-00149	Dittlingerweg 16, 3005 Bern	46.9395465	7.4477418	clean
+be-clean-00150	Gallenweg 8, 4133 Pratteln	47.5236294	7.6943285	clean
+be-clean-00151	Rue des Remparts 6, 1400 Yverdon-les-Bains	46.7792492	6.6414979	clean
+be-clean-00152	Falknerstrasse 16, 4001 Basel	47.5561084	7.5888737	clean
+be-clean-00153	Breitenrainstrasse 37, 3013 Bern	46.9572328	7.4501990	clean
+be-clean-00154	Rue du Seyon 32, 2000 Neuchâtel	46.9932610	6.9280494	clean
+be-clean-00155	Route de Lausanne 1, 1040 Echallens	46.6410014	6.6345900	clean
+be-clean-00156	Rheinsprung 5, 4051 Basel	47.5592764	7.5888256	clean
+be-clean-00157	Avenue de Cerjat 2b, 1510 Moudon	46.6688275	6.8005586	clean
+be-clean-00158	Turmstrasse 10, 8330 Pfäffikon ZH	47.3688870	8.7819351	clean
+be-clean-00159	Laubeggstrasse 117, 3006 Bern	46.9461610	7.4692677	clean
+be-clean-00160	Wildermettweg 34, 3006 Bern	46.9351043	7.4739334	clean
+be-clean-00161	Frauenfelderstrasse 20a, 8570 Weinfelden	47.5695572	9.1087437	clean
+be-clean-00162	Viktoriarain 2, 3013 Bern	46.9546902	7.4481883	clean
+be-clean-00163	Nünenenweg 29, 3006 Bern	46.9445677	7.4703922	clean
+be-clean-00164	Parkstrasse 1, 6440 Brunnen	46.9966737	8.6056362	clean
+be-clean-00165	Tavelweg 21, 3006 Bern	46.9472932	7.4629070	clean
+be-clean-00166	Nussbaumstrasse 60, 3006 Bern	46.9530577	7.4670413	clean
+be-clean-00167	Place de la Gare, 1800 Vevey	46.4623327	6.8420957	clean
+be-clean-00168	Elisabethenstrasse 53, 3014 Bern	46.9620308	7.4505659	clean
+be-clean-00169	Gantrischstrasse 50, 3006 Bern	46.9465619	7.4719320	clean
+be-clean-00170	Landstrasse 8, 8112 Otelfingen	47.4594060	8.3855961	clean
+be-clean-00171	Faubourg de l'Hôpital 1, 2000 Neuchâtel	46.9920746	6.9310300	clean
+be-clean-00172	Vennerweg 4, 3006 Bern	46.9480128	7.4622320	clean
+be-clean-00173	Blumenrain 20, 4051 Basel	47.5610411	7.5870192	clean
+be-clean-00174	Elisabethenstrasse 55, 3014 Bern	46.9621262	7.4504625	clean
+be-clean-00175	Biderstrasse 23, 3006 Bern	46.9588812	7.4781439	clean
+be-clean-00176	Josefstrasse 212, 8005 Zürich	47.3870756	8.5230308	clean
+be-clean-00177	Route d'Eclagnens 2, 1376 Goumoens-la-Ville	46.6581234	6.6047849	clean
+be-clean-00178	Mingerstrasse 12, 3014 Bern	46.9583091	7.4682301	clean
+be-clean-00179	Hauptstrasse 5, 6280 Hochdorf	47.1656305	8.2917405	clean
+be-clean-00180	Bergstrasse 8, 8712 Stäfa	47.2414461	8.7211652	clean
+be-clean-00181	Regensbergstrasse 186, 8050 Zürich	47.4097670	8.5374793	clean
+be-clean-00182	Untere Geerenstrasse 1, 8600 Dübendorf	47.3896784	8.6173594	clean
+be-clean-00183	Route du Grand-Saint-Bernard 18, 1945 Liddes	45.9927571	7.1838261	clean
+be-clean-00184	Lorrainestrasse 4a, 3013 Bern	46.9550877	7.4454513	clean
+be-clean-00185	Laupenstrasse 1, 3008 Bern	46.9470658	7.4376241	clean
+be-clean-00186	Rue de la Promenade 16, 2300 La Chaux-de-Fonds	47.1010710	6.8330834	clean
+be-clean-00187	Rheinsprung 24, 4051 Basel	47.5580510	7.5901662	clean
+be-clean-00188	Zeerlederstrasse 26, 3006 Bern	46.9349607	7.4759991	clean
+be-clean-00189	Dorfstrasse 4, 7563 Samnaun Dorf	46.9453797	10.3622602	clean
+be-clean-00190	Parkstrasse 1, 3014 Bern	46.9591646	7.4588960	clean
+be-clean-00191	Theatergässlein, 4051 Basel	47.5534184	7.5890581	clean
+be-clean-00192	Forrerstrasse 25, 3006 Bern	46.9342730	7.4660856	clean
+be-clean-00193	Libellenweg 8a, 3006 Bern	46.9552955	7.4716148	clean
+be-clean-00194	Bürglenstrasse 29, 3006 Bern	46.9454304	7.4687157	clean
+be-clean-00195	Chälmatt 29, 8905 Arni AG	47.3153834	8.4254381	clean
+be-clean-00196	Pestalozzistrasse 14, 8570 Weinfelden	47.5671664	9.1068511	clean
+be-clean-00197	Rathausstrasse 16, 8570 Weinfelden	47.5680661	9.1092396	clean
+be-clean-00198	Oberdorfstrasse 25, 3053 Münchenbuchsee	47.0204831	7.4472316	clean
+be-clean-00199	Technikumstrasse 56, 8400 Winterthur	47.4977995	8.7278351	clean
+be-abbreviated-00200	Rte de la Coula, 1618 Châtel-St-Denis	46.5275159	6.8997849	abbreviated
+be-abbreviated-00201	Bohl 2, 9000 St.Gallen	47.4261655	9.3763484	abbreviated
+be-abbreviated-00202	Obere Zollg. 86, 3006 Bern	46.9473923	7.4836870	abbreviated
+be-abbreviated-00203	Schaffhauserstr. 469, 8052 Zürich	47.4198706	8.5480159	abbreviated
+be-abbreviated-00204	Neumarkt 5, 8001 Zürich	47.3726451	8.5457546	abbreviated
+be-abbreviated-00205	Tillierstr. 36, 3005 Bern	46.9372135	7.4460777	abbreviated
+be-abbreviated-00206	Helvetiastr. 44, 3005 Bern	46.9394451	7.4511014	abbreviated
+be-abbreviated-00207	Robinsonwg. 57, 3006 Bern	46.9467684	7.4821697	abbreviated
+be-abbreviated-00208	Dorfstr. 24, 8310 Grafstal/Kempttal	47.4449031	8.7002374	abbreviated
+be-abbreviated-00209	Optingenstr. 4, 3013 Bern	46.9538609	7.4493902	abbreviated
+be-abbreviated-00210	Jupiterstr. 17, 3015 Bern	46.9394297	7.4817095	abbreviated
+be-abbreviated-00211	Burgernzielrain 6, 3006 Bern	46.9416224	7.4694433	abbreviated
+be-abbreviated-00212	Schulstr. 4, 6037 Root	47.1140544	8.3895046	abbreviated
+be-abbreviated-00213	Kornhauspl. 18, 3011 Bern	46.9489870	7.4473384	abbreviated
+be-abbreviated-00214	Waldhöhewg. 29, 3013 Bern	46.9573834	7.4546849	abbreviated
+be-abbreviated-00215	Erikawg. 7, 3006 Bern	46.9472765	7.4648343	abbreviated
+be-abbreviated-00216	Baumgarten 5b, 8905 Arni AG	47.3171888	8.4213788	abbreviated
+be-abbreviated-00217	Av. Léopold-Robert 64, 2300 La Chaux-de-Fonds	47.0997758	6.8244424	abbreviated
+be-abbreviated-00218	Erikawg. 12, 3006 Bern	46.9472183	7.4650607	abbreviated
+be-abbreviated-00219	Niederdorfstr. 76, 8001 Zürich	47.3759081	8.5441559	abbreviated
+be-abbreviated-00220	Zellgut 1, 6214 Schenkon	47.1777509	8.1254076	abbreviated
+be-abbreviated-00221	Ibelwg., 6300 Zug	47.1822238	8.5253895	abbreviated
+be-abbreviated-00222	Zürcherstr. 2, 8905 Arni AG	47.3185651	8.4205673	abbreviated
+be-abbreviated-00223	Waldhöhewg. 17, 3013 Bern	46.9570286	7.4536846	abbreviated
+be-abbreviated-00224	Kistlerwg. 32, 3006 Bern	46.9339697	7.4653281	abbreviated
+be-abbreviated-00225	Elfenstr. 17, 3006 Bern	46.9393253	7.4622198	abbreviated
+be-abbreviated-00226	Hauptstr. 21, 9402 Speicher	47.4110440	9.4428322	abbreviated
+be-abbreviated-00227	Turnwg. 4, 3013 Bern	46.9575152	7.4479131	abbreviated
+be-abbreviated-00228	Melchtalstr. 16, 3014 Bern	46.9616972	7.4564918	abbreviated
+be-abbreviated-00229	Jubiläumsstr. 21, 3005 Bern	46.9390002	7.4520164	abbreviated
+be-abbreviated-00230	Dalmaziquai 49, 3005 Bern	46.9420963	7.4460350	abbreviated
+be-abbreviated-00231	Pl. de l'Europe 9, 1003 Lausanne	46.5211647	6.6299392	abbreviated
+be-abbreviated-00232	Märitg. 1, 3052 Zollikofen	46.9971474	7.4587272	abbreviated
+be-abbreviated-00233	Lerchenberg 14, 8046 Zürich	47.4131146	8.5083006	abbreviated
+be-abbreviated-00234	Zähringerstr. 43, 3012 Bern	46.9553340	7.4336280	abbreviated
+be-abbreviated-00235	Postpl. 7, 4144 Arlesheim	47.4943127	7.6184992	abbreviated
+be-abbreviated-00236	Löwenstr. 28, 8953 Dietikon	47.4050955	8.4020814	abbreviated
+be-abbreviated-00237	Muristr. 63, 3006 Bern	46.9411295	7.4679150	abbreviated
+be-abbreviated-00238	Melchtalstr. 14, 3014 Bern	46.9617037	7.4566901	abbreviated
+be-abbreviated-00239	Rellikonstr. 11, 8124 Maur	47.3394256	8.6716598	abbreviated
+be-abbreviated-00240	Birmensdorferstr., 8055 Zürich	47.3679041	8.4954046	abbreviated
+be-abbreviated-00241	Blumenbergstr. 51, 3013 Bern	46.9565876	7.4563478	abbreviated
+be-abbreviated-00242	Wyttenbachstr. 34, 3013 Bern	46.9559291	7.4481719	abbreviated
+be-abbreviated-00243	Brunnadernstr. 64a, 3006 Bern	46.9362642	7.4657985	abbreviated
+be-abbreviated-00244	Ringoltingenstr. 15, 3006 Bern	46.9373192	7.4680340	abbreviated
+be-abbreviated-00245	Burgstr. 104, 9000 St.Gallen	47.4168532	9.3535296	abbreviated
+be-abbreviated-00246	Altenbergstr. 35, 3013 Bern	46.9504886	7.4522807	abbreviated
+be-abbreviated-00247	Buristr. 8, 3006 Bern	46.9453583	7.4743167	abbreviated
+be-abbreviated-00248	Alexandrawg. 4, 3006 Bern	46.9349807	7.4723030	abbreviated
+be-abbreviated-00249	Metzgerg. 3, 9000 St.Gallen	47.4265647	9.3756343	abbreviated
+be-abbreviated-00250	Steigerwg. 16, 3006 Bern	46.9480451	7.4641572	abbreviated
+be-abbreviated-00251	Grand-R. 18, 1630 Bulle	46.6184406	7.0576037	abbreviated
+be-abbreviated-00252	Zentwg. 21, 3006 Bern	46.9565501	7.4758300	abbreviated
+be-abbreviated-00253	Rosenmattwg. 60, 4456 Tenniken	47.4386041	7.8139690	abbreviated
+be-abbreviated-00254	Jubiläumsstr. 31, 3005 Bern	46.9384996	7.4511901	abbreviated
+be-abbreviated-00255	Biderstr. 29, 3006 Bern	46.9585226	7.4783810	abbreviated
+be-abbreviated-00256	Hauptstr. 50, 4456 Tenniken	47.4346932	7.8105047	abbreviated
+be-abbreviated-00257	Liebeggwg. 17, 3006 Bern	46.9456854	7.4597510	abbreviated
+be-abbreviated-00258	Rütlistr. 2, 3014 Bern	46.9588494	7.4571651	abbreviated
+be-abbreviated-00259	Attinghausenstr. 29, 3014 Bern	46.9608245	7.4550928	abbreviated
+be-abbreviated-00260	Reiterstr. 5, 3013 Bern	46.9539280	7.4605264	abbreviated
+be-abbreviated-00261	Mattenhofstr. 7, 3007 Bern	46.9425906	7.4322366	abbreviated
+be-abbreviated-00262	Turmstr. 10, 8330 Pfäffikon ZH	47.3688870	8.7819351	abbreviated
+be-abbreviated-00263	Wyttenbachstr. 18, 3013 Bern	46.9550632	7.4477737	abbreviated
+be-abbreviated-00264	Luzernerstr. 20, 6252 Dagmersellen	47.2110991	7.9933332	abbreviated
+be-abbreviated-00265	Haldenstr. 24b, 3014 Bern	46.9635677	7.4460224	abbreviated
+be-abbreviated-00266	Brunnadernstr. 71, 3006 Bern	46.9354162	7.4661446	abbreviated
+be-abbreviated-00267	Hauptstr. 95, 4147 Aesch BL	47.4691204	7.5954926	abbreviated
+be-abbreviated-00268	Tellstr. 28, 3014 Bern	46.9624889	7.4588377	abbreviated
+be-abbreviated-00269	Dorfstr. 107, 3818 Grindelwald	46.6242360	8.0359872	abbreviated
+be-abbreviated-00270	Binntalstr. 24, 3996 Binn	46.3636966	8.1845673	abbreviated
+be-abbreviated-00271	Jubiläumsstr. 88, 3005 Bern	46.9361498	7.4465931	abbreviated
+be-abbreviated-00272	Maulbeerstr. 9, 3011 Bern	46.9463541	7.4363542	abbreviated
+be-abbreviated-00273	Elfenauwg. 62, 3006 Bern	46.9359007	7.4648498	abbreviated
+be-abbreviated-00274	R. Louis-Favre 24, 2000 Neuchâtel	46.9949936	6.9308694	abbreviated
+be-abbreviated-00275	Thunstr. 14, 3005 Bern	46.9427232	7.4520274	abbreviated
+be-abbreviated-00276	Zollrain 9, 4310 Rheinfelden	47.5534467	7.7957902	abbreviated
+be-abbreviated-00277	Winkelriedstr. 38, 3014 Bern	46.9643812	7.4583360	abbreviated
+be-abbreviated-00278	Rainmattstr. 5, 3011 Bern	46.9445504	7.4394895	abbreviated
+be-abbreviated-00279	Rautistr. 12, 8047 Zürich	47.3802915	8.4940158	abbreviated
+be-abbreviated-00280	Oranienburgstr. 13, 3013 Bern	46.9516648	7.4565370	abbreviated
+be-abbreviated-00281	Viktoriarain 5, 3013 Bern	46.9544462	7.4477351	abbreviated
+be-abbreviated-00282	Dählhölzliwg. 19, 3005 Bern	46.9405530	7.4552824	abbreviated
+be-abbreviated-00283	Rte de Lavaux 216, 1095 Lutry	46.5022280	6.6884694	abbreviated
+be-abbreviated-00284	R. des Maisons-Familiales 30, 1018 Lausanne	46.5352103	6.6318814	abbreviated
+be-abbreviated-00285	Zürcherstr. 4, 5620 Bremgarten	47.3510911	8.3450924	abbreviated
+be-abbreviated-00286	Zürichstr. 30, 8932 Mettmenstetten	47.2466719	8.4610784	abbreviated
+be-abbreviated-00287	Mülinenstr. 28, 3006 Bern	46.9372003	7.4735488	abbreviated
+be-abbreviated-00288	Pappelwg. 24, 3013 Bern	46.9589382	7.4483875	abbreviated
+be-abbreviated-00289	Schmiedhofstr. 2, 5420 Ehrendingen	47.4947604	8.3420476	abbreviated
+be-abbreviated-00290	Mittelholzerstr. 76, 3006 Bern	46.9593769	7.4792703	abbreviated
+be-abbreviated-00291	V. Pessina 20, 6900 Lugano	46.0047176	8.9507101	abbreviated
+be-abbreviated-00292	Gantrischstr. 26, 3006 Bern	46.9447186	7.4701452	abbreviated
+be-abbreviated-00293	Weststr. 4, 3005 Bern	46.9433815	7.4476805	abbreviated
+be-abbreviated-00294	Spiegelg. 2, 4051 Basel	47.5605854	7.5869883	abbreviated
+be-abbreviated-00295	Zellfeld, 6214 Schenkon	47.1779153	8.1262972	abbreviated
+be-abbreviated-00296	Regensdorferstr. 22, 8108 Dällikon	47.4393236	8.4412764	abbreviated
+be-abbreviated-00297	Seefeldstr. 40, 8008 Zürich	47.3630112	8.5495281	abbreviated
+be-abbreviated-00298	Cyrostr. 5, 3006 Bern	46.9339773	7.4723346	abbreviated
+be-abbreviated-00299	Wylerstr. 43, 3014 Bern	46.9596989	7.4489099	abbreviated
+be-abbreviated-00300	Wankdorffeldstr. 96, 3014 Bern	46.9646818	7.4569846	abbreviated
+be-abbreviated-00301	Schiffbaustr. 4, 8005 Zürich	47.3886695	8.5191166	abbreviated
+be-abbreviated-00302	Merzenacker 63, 3006 Bern	46.9447611	7.4820515	abbreviated
+be-abbreviated-00303	Obere Zollg. 98, 3006 Bern	46.9465303	7.4835279	abbreviated
+be-abbreviated-00304	Hauptstr. 1, 5200 Brugg AG	47.4833307	8.2070448	abbreviated
+be-abbreviated-00305	Winterthurerstr. 2, 5080 Laufenburg	47.5602930	8.0612261	abbreviated
+be-abbreviated-00306	Oberstadt 16, 8260 Stein am Rhein	47.6591306	8.8609485	abbreviated
+be-abbreviated-00307	Wagenhauserstr. 5, 8260 Stein am Rhein	47.6563313	8.8571326	abbreviated
+be-abbreviated-00308	Bridelstr. 81, 3008 Bern	46.9392236	7.4231019	abbreviated
+be-abbreviated-00309	Wildermettwg. 53, 3006 Bern	46.9346087	7.4723662	abbreviated
+be-abbreviated-00310	Mittelholzerstr. 58, 3006 Bern	46.9593399	7.4787961	abbreviated
+be-abbreviated-00311	Rte de Pierre-à-Bot 30, 2000 Neuchâtel	47.0001023	6.9179792	abbreviated
+be-abbreviated-00312	Ostring 8, 3006 Bern	46.9421189	7.4675670	abbreviated
+be-abbreviated-00313	Luzernerstr. 12, 6343 Rotkreuz	47.1401134	8.4265064	abbreviated
+be-abbreviated-00314	Rte de Lausanne 1, 1040 Echallens	46.6410014	6.6345900	abbreviated
+be-abbreviated-00315	Dorfpl. 5, 4460 Gelterkinden	47.4649246	7.8569139	abbreviated
+be-abbreviated-00316	Grand-R. 65, 1630 Bulle	46.6209514	7.0579741	abbreviated
+be-abbreviated-00317	Mindstr. 9, 3006 Bern	46.9413527	7.4702947	abbreviated
+be-abbreviated-00318	Zürichstr. 30, 8610 Uster	47.3501094	8.7130392	abbreviated
+be-abbreviated-00319	Schlossg. 18, 8570 Weinfelden	47.5722124	9.1065192	abbreviated
+be-abbreviated-00320	Bahnhofstr. 4, 2575 Täuffelen	47.0668239	7.1994211	abbreviated
+be-abbreviated-00321	Birkenstr. 47, 6343 Rotkreuz	47.1467712	8.4330118	abbreviated
+be-abbreviated-00322	Militärstr. 16, 3014 Bern	46.9595073	7.4603814	abbreviated
+be-abbreviated-00323	Zentwg. 25c, 3006 Bern	46.9559488	7.4754929	abbreviated
+be-abbreviated-00324	Parkstr. 3, 3014 Bern	46.9592399	7.4588730	abbreviated
+be-abbreviated-00325	Dammwg. 9, 3013 Bern	46.9561025	7.4467039	abbreviated
+be-abbreviated-00326	Robinsonwg. 113, 3006 Bern	46.9478760	7.4817790	abbreviated
+be-abbreviated-00327	Moritzwg. 22, 3006 Bern	46.9412407	7.4724563	abbreviated
+be-abbreviated-00328	Schönburgstr. 46, 3013 Bern	46.9548463	7.4576551	abbreviated
+be-abbreviated-00329	Jurastr. 4a, 3013 Bern	46.9568308	7.4441620	abbreviated
+be-abbreviated-00330	Morgartenstr. 29, 3014 Bern	46.9630966	7.4579242	abbreviated
+be-abbreviated-00331	Feldstr. 23, 8816 Hirzel	47.2124782	8.6051967	abbreviated
+be-abbreviated-00332	Wylerstr. 19, 3014 Bern	46.9591334	7.4492366	abbreviated
+be-abbreviated-00333	Freiestr. 30, 8610 Uster	47.3477197	8.7236782	abbreviated
+be-abbreviated-00334	Elfenauwg. 14, 3006 Bern	46.9378664	7.4678288	abbreviated
+be-abbreviated-00335	Dalmazirain 12, 3005 Bern	46.9411807	7.4462030	abbreviated
+be-abbreviated-00336	Martinsg. 16, 4051 Basel	47.5578937	7.5894281	abbreviated
+be-abbreviated-00337	Belpstr. 11, 3007 Bern	46.9456158	7.4335238	abbreviated
+be-abbreviated-00338	Jubiläumsstr. 59, 3005 Bern	46.9372260	7.4490554	abbreviated
+be-abbreviated-00339	Bernastr. 24, 3005 Bern	46.9411424	7.4484160	abbreviated
+be-abbreviated-00340	Waldhöhewg. 21, 3013 Bern	46.9570391	7.4540977	abbreviated
+be-abbreviated-00341	Wagenhauserstr. 5, 8260 Stein am Rhein	47.6563313	8.8571326	abbreviated
+be-abbreviated-00342	Viktoriarain 2, 3013 Bern	46.9546902	7.4481883	abbreviated
+be-abbreviated-00343	Dittlingerwg. 10, 3005 Bern	46.9395666	7.4482272	abbreviated
+be-abbreviated-00344	Winkelriedstr. 23, 3014 Bern	46.9644754	7.4611034	abbreviated
+be-abbreviated-00345	Seilerstr. 23, 3011 Bern	46.9454766	7.4348855	abbreviated
+be-abbreviated-00346	Oranienburgstr. 11, 3013 Bern	46.9517425	7.4567580	abbreviated
+be-abbreviated-00347	Buristr. 18, 3006 Bern	46.9444922	7.4749749	abbreviated
+be-abbreviated-00348	Dalmaziquai 67, 3005 Bern	46.9402018	7.4455021	abbreviated
+be-abbreviated-00349	Wallstr. 9, 4051 Basel	47.5506144	7.5898118	abbreviated
+be-abbreviated-00350	Schlüsselberg 6, 4001 Basel	47.5571231	7.5897341	abbreviated
+be-abbreviated-00351	Dalmaziquai 105a, 3005 Bern	46.9370373	7.4454580	abbreviated
+be-abbreviated-00352	Pl. du Centenaire 3, 1860 Aigle	46.3191818	6.9697169	abbreviated
+be-abbreviated-00353	Altenbergstr. 50b, 3013 Bern	46.9506117	7.4558825	abbreviated
+be-abbreviated-00354	Militärstr. 24, 3014 Bern	46.9593404	7.4595354	abbreviated
+be-abbreviated-00355	Altenbergstr. 126, 3013 Bern	46.9508972	7.4480429	abbreviated
+be-abbreviated-00356	Dunantstr. 24, 3006 Bern	46.9354114	7.4763301	abbreviated
+be-abbreviated-00357	Rte de l'Ancienne Ciblerie 2, 1095 Lutry	46.5059315	6.6885514	abbreviated
+be-abbreviated-00358	Helvetiastr. 43, 3005 Bern	46.9397402	7.4516258	abbreviated
+be-abbreviated-00359	Willy-Spühler-Str. 5, 3954 Leukerbad	46.3779761	7.6274884	abbreviated
+be-abbreviated-00360	Mattenhofstr. 4, 3007 Bern	46.9425981	7.4328386	abbreviated
+be-abbreviated-00361	Altenbergstr. 50b, 3013 Bern	46.9506117	7.4558825	abbreviated
+be-abbreviated-00362	Schaffhauserstr. 122, 8302 Kloten	47.4514128	8.5817486	abbreviated
+be-abbreviated-00363	Sonnenbergrain 43, 3013 Bern	46.9512770	7.4525306	abbreviated
+be-abbreviated-00364	Rabbentalstr. 67, 3013 Bern	46.9516052	7.4496769	abbreviated
+be-abbreviated-00365	Holbeinstr. 4, 4051 Basel	47.5549330	7.5839972	abbreviated
+be-abbreviated-00366	Schlossg. 21, 8570 Weinfelden	47.5717871	9.1061631	abbreviated
+be-abbreviated-00367	Bahnhofstr. 5, 8570 Weinfelden	47.5675166	9.1062399	abbreviated
+be-abbreviated-00368	Spittelerstr. 18, 3006 Bern	46.9492824	7.4667750	abbreviated
+be-abbreviated-00369	Zürcherstr. 7, 8400 Winterthur	47.4983429	8.7206239	abbreviated
+be-abbreviated-00370	Amietstr. 29, 3006 Bern	46.9417043	7.4746608	abbreviated
+be-abbreviated-00371	Postpl. 4, 6430 Schwyz	47.0209670	8.6526500	abbreviated
+be-abbreviated-00372	Centralbahnpl. 1, 4051 Basel	47.5480755	7.5906998	abbreviated
+be-abbreviated-00373	Chälmatt 33, 8905 Arni AG	47.3155742	8.4253783	abbreviated
+be-abbreviated-00374	Kappelenring 50d, 3032 Hinterkappelen	46.9666013	7.3749534	abbreviated
+be-abbreviated-00375	Hessewg. 10, 3006 Bern	46.9483499	7.4756730	abbreviated
+be-abbreviated-00376	Postpl. 3, 8303 Bassersdorf	47.4430456	8.6305888	abbreviated
+be-abbreviated-00377	Bahnhofstr. 21, 8570 Weinfelden	47.5695904	9.1070157	abbreviated
+be-abbreviated-00378	Kapellenstr. 2, 3011 Bern	46.9441010	7.4377131	abbreviated
+be-abbreviated-00379	Cordulapl. 5, 5400 Baden	47.4723481	8.3065718	abbreviated
+be-abbreviated-00380	Hauptstr. 10, 9105 Schönengrund	47.3278038	9.2218825	abbreviated
+be-abbreviated-00381	Hiltystr. 15, 3006 Bern	46.9350464	7.4747841	abbreviated
+be-abbreviated-00382	Murifeldwg. 14, 3006 Bern	46.9400838	7.4711068	abbreviated
+be-abbreviated-00383	Sonnenbergrain 45, 3013 Bern	46.9512812	7.4524013	abbreviated
+be-abbreviated-00384	Waldhöhewg. 7, 3013 Bern	46.9567296	7.4531890	abbreviated
+be-abbreviated-00385	Bolligenstr. 48, 3006 Bern	46.9554850	7.4672317	abbreviated
+be-abbreviated-00386	Forrerstr. 24, 3006 Bern	46.9339988	7.4658951	abbreviated
+be-abbreviated-00387	Viaduktstr. 44, 4051 Basel	47.5493162	7.5847305	abbreviated
+be-abbreviated-00388	Weisse G. 3, 4001 Basel	47.5558845	7.5896014	abbreviated
+be-abbreviated-00389	Gotthardstr. 51, 6490 Andermatt	46.6345905	8.5966089	abbreviated
+be-abbreviated-00390	Alte Lunkhoferstr. 11, 8905 Arni AG	47.3173754	8.4159045	abbreviated
+be-abbreviated-00391	Kapellenstr. 15, 3011 Bern	46.9447205	7.4344852	abbreviated
+be-abbreviated-00392	Bahnhofstr. 20, 3400 Burgdorf	47.0598602	7.6235071	abbreviated
+be-abbreviated-00393	Balmeregg, 6068 Melchsee-Frutt	46.7535364	8.2829298	abbreviated
+be-abbreviated-00394	Im Zentrum 2, 9542 Münchwilen	47.4769533	8.9976519	abbreviated
+be-abbreviated-00395	Bachtobelstr. 9, 8570 Weinfelden	47.5716657	9.1056134	abbreviated
+be-abbreviated-00396	Wankdorffeldstr. 79, 3014 Bern	46.9656435	7.4626064	abbreviated
+be-abbreviated-00397	Zentrumstr. 2, 8717 Benken SG	47.1982959	9.0041562	abbreviated
+be-abbreviated-00398	Obere Zollg. 104, 3006 Bern	46.9460287	7.4835431	abbreviated
+be-abbreviated-00399	Obere Halde 33, 5400 Baden	47.4724571	8.3093355	abbreviated
+be-typo-00400	Eisengasse 12, 4051 Basel	47.5592429	7.5878000	typo
+be-typo-00401	Schwerzenbachstrasse 2, 8117 Fällnden	47.3709637	8.6393968	typo
+be-typo-00402	Motel Beauregard 2, 1040 Villalrs-le-Terroir	46.6478247	6.6383216	typo
+be-typo-00403	Bahnhaldenstrasse 2a, 8052 Zürich	47.4194842	8.5469086	typo
+be-typo-00404	Schönbergweg 9, 3006 Berq	46.9514594	7.4634061	typo
+be-typo-00405	Stockacker 5, 8905 Arni AG	47.3198544	8.4240637	typo
+be-typo-00406	Kohlmatt 22, 8905 Arni AG	47.3149064	8.4233760	typo
+be-typo-00407	Weingartstrasse 45, 3014 Bern	46.9617427	7.4539714	typo
+be-typo-00408	cBreite 7, 8905 Arni AG	47.3194337	8.4163659	typo
+be-typo-00409	Polygonstrasse 43, 3014 Bern	46.9625087	7.4453581	typo
+be-typo-00410	Bottigenstcasse 22, 3018 Bern	46.9397575	7.3888014	typo
+be-typo-00411	Austrasse 20, 4051 Basel	47.5529445	7.5835445	typo
+be-typo-00412	Elfenauweg 18, 3006 Bern	46.9377736	7.4680075	typo
+be-typo-00413	Seilergraben 69, 8001 Zürsich	47.3762729	8.5446666	typo
+be-typo-00414	Zürcherstrasse 5, 8953 Dietikon	47.4031872	8.4057500	typo
+be-typo-00415	Höheweg 26, 3006 Bern	46.9458158	7.4610437	typo
+be-typo-00416	Place Pestalozzi, 1400 Yverdon-gles-Bains	46.7786884	6.6415981	typo
+be-typo-00417	Bridelstrasse 10, 3008 Bern	46.9401149	7.4193853	typo
+be-typo-00418	Rue des Chavannes 15, 2000 Neuchâtel	46.9926447	6.9290506	typo
+be-typo-00419	Ginsterweg 16, 3006 Bern	46.9415222	7.4737507	typo
+be-typo-00420	Seeystrasse 1, 8124 Maur	47.3379628	8.6737764	typo
+be-typo-00421	Müslinweg 9, 3006 Ber	46.9354413	7.4655605	typo
+be-typo-00422	Muristrasse 97, 3006 Bern	46.9393379	7.4715458	typo
+be-typo-00423	Alte Lunkhoferstrasxse 5c, 8905 Arni AG	47.3169365	8.4144182	typo
+be-typo-00424	Alcenbergstrasse 16, 3013 Bern	46.9503356	7.4583776	typo
+be-typo-00425	Wankdorffeldstrasse 83, 3014 Bern	46.9654909	7.4615423	typo
+be-typo-00426	Kistlerwge 8, 3006 Bern	46.9360402	7.4671536	typo
+be-typo-00427	Bahnhofstrasse 85, 9240 Uzwil	47.4374301	9.1329937	typo
+be-typo-00428	Greyerzsttrasse 34, 3013 Bern	46.9558958	7.4491772	typo
+be-typo-00429	Matterstrasse 4, 3006 Burn	46.9355207	7.4703258	typo
+be-typo-00430	Weidenweg 24, 4310 Rheifnelden	47.5490913	7.7712298	typo
+be-typo-00431	Willadingweg 32, 3006 Bern	46.9378731	7.4663515	typo
+be-typo-00432	Alter Aargauerstalden 31, 3006 Ber	46.9513579	7.4610820	typo
+be-typo-00433	Schulstraose 1, 5621 Zufikon	47.3492259	8.3573462	typo
+be-typo-00434	Rheingasse 45, 4058 Basel	47.5592957	7.5932323	typo
+be-typo-00435	Pappelweg 9, 3013 Bern	46.9579538	7.4485905	typo
+be-typo-00436	Tellplatz 12, 4053 Basel	47.5428948	7.5939206	typo
+be-typo-00437	Seerosenstrasse 52, 3302 Moosseedorf	47.0230895	7.4740577	typo
+be-typo-00438	Wiesenstrasse 26, 3014 Bern	46.9610519	7.4583029	typo
+be-typo-00439	Manuelstrasse 71, 3006 Bern	46.9354463	7.4695920	typo
+be-typo-00440	Turnweg 25, 3013 Bern	46.9586392	7.4474421	typo
+be-typo-00441	Feldstrasse 30, 3073 Muri b. Bern	46.9263589	7.5037101	typo
+be-typo-00442	Gurtengasse 4, 3011 Bern	46.9471108	7.4416470	typo
+be-typo-00443	Frikartweg 25, 3006 Bern	46.9340444	7.4695309	typo
+be-typo-00444	Höheeg 211, 3800 Interlaken	46.6897010	7.8646528	typo
+be-typo-00445	Dufourstrasse 14, 8570 Weinfelden	47.5629712	9.1047017	typo
+be-typo-00446	Breitenraiastrasse 41, 3013 Bern	46.9571543	7.4498911	typo
+be-typo-00447	Bürglenstrasse 34, 3006 Bern	46.9455297	7.4693236	typo
+be-typo-00448	Zentweg 9, 3006 Bern	46.9577888	7.4743947	typo
+be-typo-00449	Wittigkofebweg 9, 3006 Bern	46.9397746	7.4728195	typo
+be-typo-00450	Chemin des Croisettes 2, 1066 Epalinges	46.5435104	6.6608376	typo
+be-typo-00451	Breitfeldstrasse 12, 3014 Bern	46.9607946	7.4597962	typo
+be-typo-00452	Stanserhorn, 6370 Stans	46.9304377	8.3423156	typo
+be-typo-00453	Pilatusstrase 46a, 6003 Luzern	47.0479093	8.3030885	typo
+be-typo-00454	Maurstrsase 3, 8117 Fällanden	47.3708561	8.6394754	typo
+be-typo-00455	St.Jakob-Strasse 55, 9000 St.Gallen	47.4310358	9.3804349	typo
+be-typo-00456	Nünenenewg 37, 3006 Bern	46.9447375	7.4706033	typo
+be-typo-00457	Vorstadt 11, 6130 Willisau	47.1210522	7.9949060	typo
+be-typo-00458	Boulevard Carl-Vogt 102, 1205 Genève	46.1953410	6.1403369	typo
+be-typo-00459	Wankodrffeldstrasse 98, 3014 Bern	46.9646210	7.4565554	typo
+be-typo-00460	Helvetiastrasse 43, 3005 Bfrn	46.9397402	7.4516258	typo
+be-typo-00461	Alte Aescherstrasse 1, 8905 Arni AG	47.3192533	8.4216637	typo
+be-typo-00462	Grand-Rue 31, 1618 Châtel-St-Denis	46.5276004	6.9014585	typo
+be-typo-00463	Turnweg 10a, 3013 Bern	46.9578340	7.4478240	typo
+be-typo-00464	Effingerstrasse 23, 3008 Bern	46.9457777	7.4339607	typo
+be-typo-00465	Laubeggstrasse 57, 3006 Beron	46.9483542	7.4645556	typo
+be-typo-00466	Lombachweg 38a, 3006 Bern	46.9375542	7.4648345	typo
+be-typo-00467	Hauptplatz 7, 6430 Schwyz	47.0211948	8.6540250	typo
+be-typo-00468	Lorrainestrasse 66, 3013 Bern	46.9591294	7.4449481	typo
+be-typo-00469	Adlismatt 1, 8905 Arni AG	47.3153846	8.4227268	typo
+be-typo-00470	Schützenwez 18, 3014 Bern	46.9598034	7.4522030	typo
+be-typo-00471	Stadelhoferstrsse 10, 8001 Zürich	47.3667726	8.5480794	typo
+be-typo-00472	Aeschenvorstadt 54, 4051 Bsael	47.5518980	7.5938680	typo
+be-typo-00473	Oberwiesenstrasse 74, 8050 Zürich	47.4127132	8.5320180	typo
+be-typo-00474	Sulgeneckstrasse 59eb, 3005 Bern	46.9419709	7.4398371	typo
+be-typo-00475	Herman-Gneulich-Strasse 56, 8004 Zürich	47.3783616	8.5206048	typo
+be-typo-00476	Setigerweg 22, 3006 Bern	46.9477771	7.4644248	typo
+be-typo-00477	Rathausstrasse 16, 8570 Weinfelnden	47.5680661	9.1092396	typo
+be-typo-00478	Bahnhofstrasse 4, 8570 Weinfelden	47.5660175	9.1074604	typo
+be-typo-00479	Quartiergasse 3, 3013 Ben	46.9580433	7.4465318	typo
+be-typo-00480	Byrambergstrasse, 6004 Luzern	47.0567299	8.3030725	typo
+be-typo-00481	Via Üerts 26, 7512 Champfèr	46.4772534	9.8119230	typo
+be-typo-00482	Baumgarten 19, 8905 Arni AG	47.3177949	8.4222457	typo
+be-typo-00483	Rosenxmattweg 50, 4456 Tenniken	47.4389424	7.8130993	typo
+be-typo-00484	Bridelstrasse 81, 3008 Bern	46.9392236	7.4231019	typo
+be-typo-00485	Nelkenweg 6, 3006 Bern	46.9402644	7.4736281	typo
+be-typo-00486	Wildermettweg 54, 3006 Bern	46.9342618	7.4721417	typo
+be-typo-00487	Kirchenfeldstrasse 42, 3005 Bern	46.9401340	7.4525512	typo
+be-typo-00488	Schaffhausertsrasse 460, 8052 Zürich	47.4184353	8.5471740	typo
+be-typo-00489	Jmrastrasse 19, 3013 Bern	46.9581014	7.4437272	typo
+be-typo-00490	Klösterlistutz 12, 3013 Bern	46.9488670	7.4589943	typo
+be-typo-00491	Rue Chaponnière 7, 1201 Genève	46.2095161	6.1447694	typo
+be-typo-00492	Albixstrasse 3, 8932 Mettmenstetten	47.2439416	8.4636498	typo
+be-typo-00493	Schulstrasse 12, 8542 Wiesendangen	47.5225212	8.7885679	typo
+be-typo-00494	Herzogstrsse 25, 3014 Bern	46.9583751	7.4549754	typo
+be-typo-00495	Sihlquai 240, 8005 Zürich	47.3874601	8.5302574	typo
+be-typo-00496	Mattenhofstrasse 13, 3007 Bern	46.9429205	7.4311732	typo
+be-typo-00497	Beundenfeldstrasse 7, 3013 Bern	46.9556289	7.4523878	typo
+be-typo-00498	Randweg 6, 3013 Bern	46.9565729	7.4436982	typo
+be-typo-00499	Schaffhauserstrasse 38, 8212 Neuhausen am Rheinfall	47.6861190	8.6214180	typo
+be-typo-00500	bAnshelmstrasse 22, 3005 Bern	46.9388515	7.4476467	typo
+be-typo-00501	Landstrasse 62.1, 5426 Lengnau AG	47.5252067	8.3238147	typo
+be-typo-00502	Pflanzschulstrasse 47, 8004 Zürich	47.3764393	8.5202361	typo
+be-typo-00503	Lerberstrasse 26, 3013 Bern	46.9515082	7.4568157	typo
+be-typo-00504	Viglia veia Gelgia 1, 7450 Tiefencastel	46.6622138	9.5768046	typo
+be-typo-00505	Alleeweg 14, 3006 Bern	46.9398160	7.4722562	typo
+be-typo-00506	Dorfstrasse 35, 4303 Kaiseraugst	47.5406967	7.7235959	typo
+be-typo-00507	Irisweg 10, 3280 Murten	46.9224732	7.1130209	typo
+be-typo-00508	Christoffelgasse 1, 3011 yBern	46.9471681	7.4409144	typo
+be-typo-00509	Muristrasse 55, 3006 Bern	46.9413327	7.4675263	typo
+be-typo-00510	Melchenbühlweg 137, 3006 Bern	46.9424921	7.4819659	typo
+be-typo-00511	Oltnerstrasse 18, 5012 Schönenwerd	47.3712024	8.0019754	typo
+be-typo-00512	Elfenauweg 50, 3006 Bern	46.9367706	7.4665145	typo
+be-typo-00513	Lerchenberg 20, 8046 Zürich	47.4130010	8.5081188	typo
+be-typo-00514	Rue du Maupas 1, 1004 Lausnane	46.5241961	6.6263569	typo
+be-typo-00515	Via dalla Staziun 2, 7180 Disentis/Mustér	46.7049341	8.8546387	typo
+be-typo-00516	Luzernerstrasse 8, 6045 Meggen	47.0457237	8.3708791	typo
+be-typo-00517	Zürichstrasse 9, 8124 Maur	47.3401095	8.6677246	typo
+be-typo-00518	Wernerstrasse 8, 3006 Bern	46.9403290	7.4651446	typo
+be-typo-00519	Ensingerstrasse 8, 3006 Bern	46.9431413	7.4627938	typo
+be-typo-00520	Hintere Bahnhofstrasse 17, 8853 Lachen	47.1905179	8.8506638	typo
+be-typo-00521	Wyttenbachstrasse 8, 3013 Brn	46.9542428	7.4473294	typo
+be-typo-00522	Hedingerstrasse 14, 8905 Arni AG	47.3173660	8.4205261	typo
+be-typo-00523	Jochpaps, 6390 Engelberg	46.7773814	8.3853556	typo
+be-typo-00524	Niederbottigenweg 95, 3018 Bern	46.9401891	7.3731365	typo
+be-typo-00525	Breitfeldstrsse 26, 3014 Bern	46.9606754	7.4591763	typo
+be-typo-00526	Via dal Bernina 2372, 7710 Ospizio Bernina	46.4105854	10.0227577	typo
+be-typo-00527	Pfäffikerstrasse 19, 8331 Auslikos	47.3436842	8.8073823	typo
+be-typo-00528	Militärstrasse 38, 3014 eBern	46.9589520	7.4578076	typo
+be-typo-00529	Pfluggässlein 8, 4001 Basel	47.5560554	7.5894383	typo
+be-typo-00530	Oberer Steisteg 2, 6430 mSchwyz	47.0202366	8.6516670	typo
+be-typo-00531	Landstrasse 8, 8112 Otelfingen	47.4594060	8.3855961	typo
+be-typo-00532	Wehntalerstrasse 549, 8046 Züirch	47.4188884	8.5056989	typo
+be-typo-00533	Muriseldweg 23, 3006 Bern	46.9403248	7.4712122	typo
+be-typo-00534	Forchstrasse 143, 8132 Egg b. Zürich	47.3012951	8.6894647	typo
+be-typo-00535	Zugerstrasse 25, 8820 Wädenswil	47.2295445	8.6701256	typo
+be-typo-00536	Zenaweg 13, 3006 Bern	46.9574762	7.4748922	typo
+be-typo-00537	Jupiterstrasse 25, 3015 Berl	46.9404410	7.4817231	typo
+be-typo-00538	Lerchenberg 4, 8046 Zürcih	47.4127576	8.5094982	typo
+be-typo-00539	Chemin du Cudeau-du-Haut 4, 2035 Corcelles-Cormondrèche	46.9837003	6.8719634	typo
+be-typo-00540	Wylerstrassk 65, 3014 Bern	46.9606843	7.4477868	typo
+be-typo-00541	Lerberstrasse 32, 3013 vBern	46.9512132	7.4555227	typo
+be-typo-00542	Via Nova 86, 7013 Domat/Ems	46.8368805	9.4518414	typo
+be-typo-00543	Brunnadernstrasse 57, 3006 Bern	46.9365615	7.4647675	typo
+be-typo-00544	Rodtmattstrasse 57, 3014 Bern	46.9598240	7.4606353	typo
+be-typo-00545	Beatengasse, 8001 Zürgich	47.3757612	8.5400722	typo
+be-typo-00546	Spitalackestrasse 62, 3013 Bern	46.9568879	7.4519901	typo
+be-typo-00547	Kastanienbaumstrasse 91, 6048 Howr	47.0212876	8.3256501	typo
+be-typo-00548	Martkgasse 7, 8180 Bülach	47.5187529	8.5408680	typo
+be-typo-00549	Junkholzweg 1, 4303 Kaiseraugst	47.5377262	7.7302290	typo
+be-typo-00550	Rittergasse 25, 4051 Basel	47.5552375	7.5935535	typo
+be-typo-00551	Dorfstrasse 39, 5425 Scphneisingen	47.5198452	8.3620303	typo
+be-typo-00552	Bernstrasse 398, 3148 cShwarzenburg	46.8630108	7.3626494	typo
+be-typo-00553	Zeughausgasse 9, 3011 Bern	46.9486987	7.4463572	typo
+be-typo-00554	Galgenfeldweg 9n, 3006 Bern	46.9544276	7.4712591	typo
+be-typo-00555	Mezenerweg 9mb, 3013 Bern	46.9563557	7.4554048	typo
+be-typo-00556	Freiestrasse 55, 8032 qürich	47.3697086	8.5557788	typo
+be-typo-00557	Rbabentalstrasse 51, 3013 Bern	46.9515549	7.4504896	typo
+be-typo-00558	Belpstrasse 43, 3007 Bern	46.9430340	7.4325447	typo
+be-typo-00559	Breitenbachstrasse 38, 4227 Büsserach	47.3946532	7.5419953	typo
+be-typo-00560	Riehenstrasse 52, 4058 Basel	47.5615058	7.5994793	typo
+be-typo-00561	Seestrasse 395, 8038 Zürich	47.3434473	8.5364251	typo
+be-typo-00562	Sonnenhofweg 34, 3006 Ber	46.9434852	7.4722605	typo
+be-typo-00563	Zentxweg 40, 3006 Bern	46.9559493	7.4767008	typo
+be-typo-00564	Laubeggstrasse 133, 3006 Bern	46.9455146	7.4705972	typo
+be-typo-00565	Monijoustrasse 26, 3011 Bern	46.9440109	7.4358726	typo
+be-typo-00566	Industriestrasse 33, 8305 Dietlikon	47.4112324	8.6177580	typo
+be-typo-00567	Mindstrasse 7, 3006 Bern	46.9411678	7.4699547	typo
+be-typo-00568	Breitfeldstrasse 34, 3014 Beyn	46.9603609	7.4581985	typo
+be-typo-00569	Papiermühlesrtasse 75, 3014 Bern	46.9626584	7.4660142	typo
+be-typo-00570	Kursaalstrasse 10, 3013 Bern	46.9544325	7.4489147	typo
+be-typo-00571	Militärstrasse 16, 3014 Bern	46.9595073	7.4603814	typo
+be-typo-00572	Lettenweg 28, 4456 Tenniken	47.4328861	7.8115936	typo
+be-typo-00573	Bolligenstrasse, 3000 Ber	46.9643915	7.4814324	typo
+be-typo-00574	Schänzlistrasse 57, 3013 Bern	46.9531087	7.4511835	typo
+be-typo-00575	Dorfstrasse 2, 3084 Wabern	46.9301011	7.4476937	typo
+be-typo-00576	Kalanderplatz 9, 8045 Zürich	47.3584830	8.5229939	typo
+be-typo-00577	Melchtalstrasse 29, 3014 Bern	46.9614414	7.4550113	typo
+be-typo-00578	Aimetstrasse 14, 3006 Bern	46.9420197	7.4748475	typo
+be-typo-00579	Limmatplatz 7, 8005 Zürich	47.3851076	8.5314772	typo
+be-typo-00580	Breitfeldstrasse 63, 3014 Brn	46.9598131	7.4559156	typo
+be-typo-00581	Staldenstrasse 14, 8905 Arni iG	47.3179294	8.4184784	typo
+be-typo-00582	Klösterlistutz 12, 3013 Bern	46.9488670	7.4589943	typo
+be-typo-00583	Bernastrasse 24, 3005 Bern	46.9411424	7.4484160	typo
+be-typo-00584	Schildknechtstrasse 8, 3006 Beron	46.9379209	7.4685041	typo
+be-typo-00585	Zeerledersttasse 21, 3006 Bern	46.9356439	7.4758237	typo
+be-typo-00586	Pappelweg 42, 3013 Bern	46.9596606	7.4478981	typo
+be-typo-00587	Dalmaziquai 47, 3005 Bern	46.9423417	7.4462727	typo
+be-typo-00588	Mtitelholzerstrasse 34, 3006 Bern	46.9592547	7.4783860	typo
+be-typo-00589	Sihlstrasse 6, 8001 Zürich	47.3738550	8.5370669	typo
+be-typo-00590	Jupiterstrasse 15, 3015 Berxn	46.9392553	7.4811017	typo
+be-typo-00591	Waffenweg 15, 3014 Bern	46.9609378	7.4524827	typo
+be-typo-00592	Wiesenskrasse 69, 3014 Bern	46.9604759	7.4561844	typo
+be-typo-00593	Brecte 21, 8905 Arni AG	47.3200604	8.4164380	typo
+be-typo-00594	Schiffsländi 10, 8260 Stein am Rhein	47.6602288	8.8570223	typo
+be-typo-00595	Budenerstrasse 542, 8048 Zürich	47.3835275	8.4991562	typo
+be-typo-00596	Rütlistrasse 22, 3014 eBrn	46.9605616	7.4567809	typo
+be-typo-00597	Weisse Gasse 15, 4001 Basel	47.5555413	7.5898108	typo
+be-typo-00598	Kugelgasse 11, 8708 Männedorf	47.2538901	8.6902208	typo
+be-typo-00599	Bellevueplatz 1, 8001 Zürich	47.3670907	8.5451486	typo
+be-reordered-00600	3014 Bern Waldstätterstrasse 22	46.9632719	7.4601609	reordered
+be-reordered-00601	8570 Weinfelden Bahnhofstrasse 13	47.5684161	9.1064648	reordered
+be-reordered-00602	3011 Bern Kapellenstrasse 7	46.9445159	7.4355216	reordered
+be-reordered-00603	8905 Arni AG Baumgarten 5e	47.3175565	8.4211519	reordered
+be-reordered-00604	3006 Bern Tavelweg 32	46.9469867	7.4629714	reordered
+be-reordered-00605	3014 Bern Melchtalstrasse 2	46.9617421	7.4578729	reordered
+be-reordered-00606	8001 Zürich Löwenstrasse 31-35	47.3752549	8.5361073	reordered
+be-reordered-00607	4001 Basel Freie Strasse 12	47.5572396	7.5888448	reordered
+be-reordered-00608	3006 Bern Laubeggstrasse 55	46.9484065	7.4646494	reordered
+be-reordered-00609	3006 Bern Merzenacker 41	46.9441398	7.4812169	reordered
+be-reordered-00610	3400 Burgdorf Kirchbergstrasse 235	47.0687548	7.6007489	reordered
+be-reordered-00611	3013 Bern Rabbentalstrasse 87e	46.9517371	7.4473858	reordered
+be-reordered-00612	3012 Bern Neubrückstrasse 8	46.9528647	7.4405862	reordered
+be-reordered-00613	1807 Blonay Route de Tercier 19	46.4637777	6.8960499	reordered
+be-reordered-00614	8092 Zürich Leonhardstrasse 34	47.3763026	8.5465369	reordered
+be-reordered-00615	8400 Winterthur Neumarkt 9	47.4986633	8.7261331	reordered
+be-reordered-00616	3006 Bern Elfenauweg 65	46.9357109	7.4642723	reordered
+be-reordered-00617	8570 Weinfelden Marktstrasse 2	47.5671735	9.1088659	reordered
+be-reordered-00618	3006 Bern Matterstrasse 5	46.9357590	7.4705986	reordered
+be-reordered-00619	8124 Maur Im Unterdorf 3	47.3408166	8.6705636	reordered
+be-reordered-00620	3014 Bern Attinghausenstrasse 9	46.9611667	7.4573692	reordered
+be-reordered-00621	8001 Zürich Pelikanplatz	47.3716325	8.5363568	reordered
+be-reordered-00622	3012 Bern Neubrückstrasse 204	46.9730715	7.4283784	reordered
+be-reordered-00623	3014 Bern Polygonstrasse 43	46.9625087	7.4453581	reordered
+be-reordered-00624	8718 Schänis Biltnerstrasse 34	47.1557884	9.0371644	reordered
+be-reordered-00625	4051 Basel Bäumleingasse 9	47.5550978	7.5927164	reordered
+be-reordered-00626	6472 Erstfeld Gotthardstrasse 93	46.8201371	8.6507955	reordered
+be-reordered-00627	3014 Bern Mingerstrasse 16	46.9578432	7.4670016	reordered
+be-reordered-00628	3011 Bern Kapellenstrasse 22	46.9451996	7.4342284	reordered
+be-reordered-00629	3005 Bern Weststrasse 31	46.9418478	7.4463688	reordered
+be-reordered-00630	8712 Stäfa Im Egghäldeli 5	47.2543343	8.7148068	reordered
+be-reordered-00631	1094 Paudex Route du Simplon 20	46.5062578	6.6733572	reordered
+be-reordered-00632	3006 Bern Giacomettistrasse 20	46.9454516	7.4734087	reordered
+be-reordered-00633	3006 Bern Mittelholzerstrasse 42	46.9590631	7.4786475	reordered
+be-reordered-00634	3014 Bern Wiesenstrasse 50	46.9609156	7.4573160	reordered
+be-reordered-00635	8400 Winterthur Marktgasse 57	47.4993465	8.7268733	reordered
+be-reordered-00636	4051 Basel Kohlenberg 8	47.5543186	7.5881957	reordered
+be-reordered-00637	3005 Bern Thormannstrasse 51	46.9397095	7.4505226	reordered
+be-reordered-00638	3006 Bern Kistlerweg 8	46.9360402	7.4671536	reordered
+be-reordered-00639	8037 Zürich Kornhausstrasse 21	47.3879763	8.5359014	reordered
+be-reordered-00640	3014 Bern Birkenweg 17	46.9604864	7.4518052	reordered
+be-reordered-00641	7014 Trin Via Visut 1	46.8281371	9.3625927	reordered
+be-reordered-00642	8103 Unterengstringen Rietstrasse 1	47.4139214	8.4486639	reordered
+be-reordered-00643	3006 Bern Laubeggstrasse 131	46.9455323	7.4705687	reordered
+be-reordered-00644	3013 Bern Jurastrasse 58	46.9619147	7.4439024	reordered
+be-reordered-00645	1207 Genève Rue du Clos 21	46.2052277	6.1629646	reordered
+be-reordered-00646	3006 Bern Staufferstrasse 4	46.9404703	7.4639416	reordered
+be-reordered-00647	8260 Stein am Rhein Bahnhofstrasse 13a	47.6555216	8.8561601	reordered
+be-reordered-00648	6430 Schwyz Oberer Steisteg 2	47.0202366	8.6516670	reordered
+be-reordered-00649	3006 Bern Gantrischstrasse 48	46.9461954	7.4717753	reordered
+be-reordered-00650	7032 Laax GR 2 Via Murschetg 41b	46.8199811	9.2639869	reordered
+be-reordered-00651	3011 Bern Rainmattstrasse 11	46.9443419	7.4391834	reordered
+be-reordered-00652	1206 Genève Route de Florissant 56	46.1933065	6.1612764	reordered
+be-reordered-00653	3006 Bern Scharnachtalstrasse 9	46.9358989	7.4715889	reordered
+be-reordered-00654	9000 St.Gallen Bohl 2	47.4261655	9.3763484	reordered
+be-reordered-00655	3006 Bern Brunnadernstrasse 68a	46.9358900	7.4662924	reordered
+be-reordered-00656	3007 Bern Mühlemattstrasse 12	46.9428844	7.4347784	reordered
+be-reordered-00657	8820 Wädenswil Oberdorfstrasse 21	47.2282697	8.6688260	reordered
+be-reordered-00658	1700 Fribourg Route des Arsenaux 3	46.8019900	7.1506700	reordered
+be-reordered-00659	3013 Bern Jurastrasse 58	46.9619147	7.4439024	reordered
+be-reordered-00660	4304 Giebenach Moosmattstrasse 4	47.5245553	7.7453786	reordered
+be-reordered-00661	8001 Zürich Freieckgasse 7	47.3673843	8.5458541	reordered
+be-reordered-00662	3006 Bern Schosshaldenstrasse 1	46.9447584	7.4609438	reordered
+be-reordered-00663	3005 Bern Tillierstrasse 6	46.9390065	7.4467672	reordered
+be-reordered-00664	8004 Zürich Stauffacherstrasse 26	47.3731732	8.5293204	reordered
+be-reordered-00665	3006 Bern Dunantstrasse 26	46.9352357	7.4765497	reordered
+be-reordered-00666	3006 Bern Aberlistrasse 54	46.9452456	7.4777383	reordered
+be-reordered-00667	2300 La Chaux-de-Fonds Rue du Marché 2	47.1036285	6.8300745	reordered
+be-reordered-00668	6300 Zug Bundesplatz 11	47.1714960	8.5145777	reordered
+be-reordered-00669	3013 Bern Waldhöheweg 29	46.9573834	7.4546849	reordered
+be-reordered-00670	3006 Bern Schiferliweg 14	46.9428169	7.4757546	reordered
+be-reordered-00671	3006 Bern Sonnenhofweg 9	46.9436539	7.4713798	reordered
+be-reordered-00672	3006 Bern Laubeggstrasse 117	46.9461610	7.4692677	reordered
+be-reordered-00673	3014 Bern Winkelriedstrasse 29	46.9643062	7.4604047	reordered
+be-reordered-00674	3013 Bern Jurastrasse 42	46.9603568	7.4437059	reordered
+be-reordered-00675	1207 Genève Rue du Clos 21	46.2052277	6.1629646	reordered
+be-reordered-00676	3013 Bern Breitenrainstrasse 12a	46.9582746	7.4530701	reordered
+be-reordered-00677	3400 Burgdorf Sägegasse 14	47.0569221	7.6293304	reordered
+be-reordered-00678	1800 Vevey Place de la Gare 4	46.4624687	6.8429142	reordered
+be-reordered-00679	6020 Emmenbrücke Gerliswilstrasse 74	47.0777867	8.2758092	reordered
+be-reordered-00680	8038 Zürich Kalchbühlstrasse 118	47.3345738	8.5342067	reordered
+be-reordered-00681	3011 Bern Nydeggstalden 3	46.9493231	7.4573644	reordered
+be-reordered-00682	3006 Bern Nussbaumstrasse 36	46.9537552	7.4684007	reordered
+be-reordered-00683	3008 Bern Effingerstrasse 25	46.9457642	7.4337758	reordered
+be-reordered-00684	6826 Riva San Vitale Piazza Grande 10	45.9060730	8.9714879	reordered
+be-reordered-00685	1095 Lutry Route de l'Ancienne Ciblerie	46.5054420	6.6883906	reordered
+be-reordered-00686	4456 Tenniken Mettelenweg 31	47.4372152	7.8140703	reordered
+be-reordered-00687	3006 Bern Robinsonweg 57	46.9467684	7.4821697	reordered
+be-reordered-00688	6901 Lugano Via Chiarina Stauffacher-Vedani 1	46.0039026	8.9551141	reordered
+be-reordered-00689	3013 Bern Sonnenbergrain 6	46.9518454	7.4507324	reordered
+be-reordered-00690	3006 Bern Königweg 4	46.9467418	7.4741626	reordered
+be-reordered-00691	8905 Arni AG Auwandel 33	47.3167130	8.4223804	reordered
+be-reordered-00692	8052 Zürich Schaffhauserstrasse 491	47.4211522	8.5493620	reordered
+be-reordered-00693	8006 Zürich Stampfenbachstrasse 102	47.3831180	8.5413332	reordered
+be-reordered-00694	3014 Bern Wylerstrasse 125	46.9614225	7.4464629	reordered
+be-reordered-00695	3014 Bern Papiermühlestrasse 17h	46.9586181	7.4624533	reordered
+be-reordered-00696	3013 Bern Sonnenbergrain 8	46.9516692	7.4509261	reordered
+be-reordered-00697	3006 Bern Chavezstrasse 6	46.9569676	7.4778801	reordered
+be-reordered-00698	5420 Ehrendingen Dorfstrasse 12	47.4938294	8.3409131	reordered
+be-reordered-00699	8570 Weinfelden Schlossgasse 15	47.5710914	9.1060548	reordered
+be-reordered-00700	3006 Bern Schildknechtstrasse 10	46.9379068	7.4685360	reordered
+be-reordered-00701	3007 Bern Brunnhofweg 41	46.9433834	7.4278476	reordered
+be-reordered-00702	3014 Bern Herzogstrasse 21	46.9582901	7.4552129	reordered
+be-reordered-00703	8003 Zürich Idaplatz 3	47.3740035	8.5142146	reordered
+be-reordered-00704	1800 Vevey Avenue du Général Guisan	46.4631973	6.8409780	reordered
+be-reordered-00705	3006 Bern Brunnadernstrasse 42	46.9387605	7.4630822	reordered
+be-reordered-00706	8005 Zürich Schiffbaustrasse 13	47.3891361	8.5167438	reordered
+be-reordered-00707	3360 Herzogenbuchsee Wangenstrasse 44	47.1919151	7.7038910	reordered
+be-reordered-00708	8132 Egg b. Zürich Forchstrasse 143	47.3012951	8.6894647	reordered
+be-reordered-00709	3011 Bern Bundesgasse 32	46.9461520	7.4386924	reordered
+be-reordered-00710	3014 Bern Jägerweg 15	46.9586584	7.4504822	reordered
+be-reordered-00711	4456 Tenniken Gisibergweg 41	47.4377916	7.8162793	reordered
+be-reordered-00712	3013 Bern Breitenrainstrasse 41	46.9571543	7.4498911	reordered
+be-reordered-00713	4058 Basel Webergasse 26	47.5621773	7.5916432	reordered
+be-reordered-00714	3006 Bern Mittelholzerstrasse 30	46.9589850	7.4778992	reordered
+be-reordered-00715	3006 Bern Wildermettweg 43	46.9349481	7.4732482	reordered
+be-reordered-00716	8905 Arni AG Kelleramtstrasse 16	47.3177380	8.4189490	reordered
+be-reordered-00717	6020 Emmenbrücke Erlenstrasse 4	47.0806330	8.2714359	reordered
+be-reordered-00718	3006 Bern Spelterinistrasse 61	46.9584259	7.4779771	reordered
+be-reordered-00719	3006 Bern Buchserstrasse 50	46.9432999	7.4762215	reordered
+be-reordered-00720	6343 Rotkreuz Dorfmatt 2a	47.1411617	8.4318788	reordered
+be-reordered-00721	3014 Bern Flurstrasse 14	46.9616867	7.4514281	reordered
+be-reordered-00722	4051 Basel Leonhardsberg 1	47.5552752	7.5885644	reordered
+be-reordered-00723	3006 Bern Ostring 60	46.9444368	7.4715343	reordered
+be-reordered-00724	8905 Arni AG Adlismatt 11	47.3159516	8.4232815	reordered
+be-reordered-00725	3006 Bern Müslinweg 10	46.9352595	7.4653431	reordered
+be-reordered-00726	8050 Zürich Kügeliloostrasse 34	47.4122507	8.5293555	reordered
+be-reordered-00727	4051 Basel St. Alban-Graben 3	47.5541634	7.5927302	reordered
+be-reordered-00728	3013 Bern Wyttenbachstrasse 16	46.9549846	7.4477332	reordered
+be-reordered-00729	8570 Weinfelden Frauenfelderstrasse 35	47.5692391	9.1079314	reordered
+be-reordered-00730	9000 St.Gallen Spitalgasse 3	47.4257827	9.3767052	reordered
+be-reordered-00731	1040 Echallens Place de la Gare 5	46.6395029	6.6332156	reordered
+be-reordered-00732	5034 Suhr Tramstrasse 21	47.3745445	8.0790389	reordered
+be-reordered-00733	8340 Hadlikon Walderstrasse 123	47.2882156	8.8565371	reordered
+be-reordered-00734	8134 Adliswil Wachtgasse 1	47.3111795	8.5273108	reordered
+be-reordered-00735	3014 Bern Scheibenstrasse 29	46.9613335	7.4530576	reordered
+be-reordered-00736	7180 Disentis/Mustér Via Lucmagn	46.7040598	8.8495467	reordered
+be-reordered-00737	3715 Adelboden Bellevuestrasse 15	46.4922042	7.5562312	reordered
+be-reordered-00738	3006 Bern Mülinenstrasse 28	46.9372003	7.4735488	reordered
+be-reordered-00739	8008 Zürich Färberstrasse 6	47.3617349	8.5485487	reordered
+be-reordered-00740	8905 Arni AG Chälmatt 26	47.3144188	8.4255754	reordered
+be-reordered-00741	8001 Zürich Rennweg 53	47.3736029	8.5389560	reordered
+be-reordered-00742	8046 Zürich Lerchenberg 29	47.4123242	8.5065755	reordered
+be-reordered-00743	3005 Bern Marzilistrasse 27a	46.9427105	7.4436653	reordered
+be-reordered-00744	3011 Bern Effingerstrasse 1	46.9456823	7.4368198	reordered
+be-reordered-00745	8400 Winterthur Stadthausstrasse 71	47.5001230	8.7291699	reordered
+be-reordered-00746	1670 Ursy Route de Romont	46.6340740	6.8373835	reordered
+be-reordered-00747	4153 Reinach BL Fleischbachstrasse 2	47.5104966	7.6015806	reordered
+be-reordered-00748	3014 Bern Wiesenstrasse 13	46.9609833	7.4593917	reordered
+be-reordered-00749	3006 Bern Buchserstrasse 44	46.9432642	7.4755295	reordered
+be-reordered-00750	3014 Bern Weingartstrasse 27	46.9620622	7.4554930	reordered
+be-reordered-00751	6343 Rotkreuz Kirchweg 10	47.1392706	8.4291431	reordered
+be-reordered-00752	3014 Bern Winkelriedstrasse 19	46.9645120	7.4619802	reordered
+be-reordered-00753	8001 Zürich Münsterhof 6	47.3700175	8.5403598	reordered
+be-reordered-00754	8002 Zürich Tessinerplatz 5	47.3643354	8.5321297	reordered
+be-reordered-00755	8620 Wetzikon Bahnhofstrasse 70	47.3219783	8.7973823	reordered
+be-reordered-00756	3005 Bern Thormannstrasse 64	46.9386355	7.4500051	reordered
+be-reordered-00757	3014 Bern Wiesenstrasse 49	46.9606728	7.4575569	reordered
+be-reordered-00758	3006 Bern Brunnadernstrasse 76	46.9356872	7.4666487	reordered
+be-reordered-00759	79540 Lörrach Hammerstraße 9a	47.5967292	7.6539505	reordered
+be-reordered-00760	8048 Zürich Hohlstrasse 517	47.3893349	8.4928321	reordered
+be-reordered-00761	4001 Basel Grünpfahlgasse 8	47.5566320	7.5878302	reordered
+be-reordered-00762	3011 Bern Sulgeneckstrasse 7	46.9449747	7.4385764	reordered
+be-reordered-00763	8124 Maur Zürichstrasse 9	47.3401095	8.6677246	reordered
+be-reordered-00764	3012 Bern Länggassstrasse 54	46.9549600	7.4300315	reordered
+be-reordered-00765	8570 Weinfelden Frauenfelderstrasse 23	47.5690977	9.1080072	reordered
+be-reordered-00766	3011 Bern Monbijoustrasse 24	46.9441142	7.4359281	reordered
+be-reordered-00767	3014 Bern Morgartenstrasse 2a	46.9633026	7.4619015	reordered
+be-reordered-00768	3013 Bern Beundenfeldstrasse 7	46.9556289	7.4523878	reordered
+be-reordered-00769	8905 Arni AG Oberfeldring 27	47.3179628	8.4234054	reordered
+be-reordered-00770	5200 Brugg AG Bahnhofplatz 1,5	47.4808606	8.2082092	reordered
+be-reordered-00771	3006 Bern Egghölzlistrasse 76	46.9346863	7.4713270	reordered
+be-reordered-00772	3014 Bern Haldenstrasse 24	46.9636793	7.4458666	reordered
+be-reordered-00773	3014 Bern Haldenstrasse 52	46.9661319	7.4473011	reordered
+be-reordered-00774	8905 Arni AG Breite 31	47.3202161	8.4163538	reordered
+be-reordered-00775	3013 Bern Optingenstrasse 33	46.9558496	7.4501544	reordered
+be-reordered-00776	3011 Bern Gutenbergstrasse 47	46.9427554	7.4340208	reordered
+be-reordered-00777	8400 Winterthur Marktgasse 41	47.4994516	8.7279484	reordered
+be-reordered-00778	3014 Bern Wylerstrasse 103	46.9612004	7.4474247	reordered
+be-reordered-00779	5210 Windisch Hauserstrasse 15	47.4769230	8.2161316	reordered
+be-reordered-00780	8905 Arni AG In den Reben 7	47.3158482	8.4132297	reordered
+be-reordered-00781	3014 Bern Wankdorffeldstrasse 60	46.9656943	7.4670871	reordered
+be-reordered-00782	3052 Zollikofen Bernstrasse 160	46.9979566	7.4603159	reordered
+be-reordered-00783	3011 Bern Bundesgasse 32	46.9461520	7.4386924	reordered
+be-reordered-00784	3006 Bern Beatusstrasse 32	46.9400560	7.4623442	reordered
+be-reordered-00785	3014 Bern Stauffacherstrasse 31	46.9616700	7.4545193	reordered
+be-reordered-00786	3014 Bern Breitfeldstrasse 11	46.9605867	7.4601704	reordered
+be-reordered-00787	3007 Bern Giessereiweg 4	46.9422491	7.4367325	reordered
+be-reordered-00788	1860 Aigle Chemin de Pré d'Emoz 12	46.3219056	6.9567464	reordered
+be-reordered-00789	3013 Bern Waldhöheweg 29	46.9573834	7.4546849	reordered
+be-reordered-00790	3006 Bern Nussbaumstrasse 46	46.9533379	7.4683288	reordered
+be-reordered-00791	9658 Wildhaus Vordere Schwendistrasse 62	47.1900671	9.3284232	reordered
+be-reordered-00792	1024 Ecublens (VD) Chemin du Croset 3	46.5345567	6.5652376	reordered
+be-reordered-00793	3006 Bern Dunantstrasse 22	46.9355798	7.4762082	reordered
+be-reordered-00794	3006 Bern Surbekstrasse 19	46.9424731	7.4770926	reordered
+be-reordered-00795	2300 La Chaux-de-Fonds Passage Léopold-Robert 2	47.1032835	6.8319749	reordered
+be-reordered-00796	7180 Disentis/Mustér Via Alpsu 51	46.6987731	8.8453387	reordered
+be-reordered-00797	3014 Bern Allmendstrasse 39	46.9604486	7.4508669	reordered
+be-reordered-00798	8332 Russikon Kronenweg 2	47.3960256	8.7730134	reordered
+be-reordered-00799	3014 Bern Allmendstrasse 9	46.9583100	7.4523100	reordered
+be-partial-00800	Polygonstrasse 53, Bern	46.9630672	7.4464071	partial
+be-partial-00801	Rue du Soleil / Sonnenstrasse 19, Biel/Bienne	47.1502921	7.2657349	partial
+be-partial-00802	Laubeggstrasse 129, Bern	46.9455778	7.4704955	partial
+be-partial-00803	Neustadtgasse 25, Winterthur	47.4994440	8.7325645	partial
+be-partial-00804	Schulstrasse 1, Zufikon	47.3492259	8.3573462	partial
+be-partial-00805	Uferweg 42, Bern	46.9542066	7.4424697	partial
+be-partial-00806	Giacomettistrasse 27, Bern	46.9463656	7.4729505	partial
+be-partial-00807	Wankdorfstrasse 10, Bern	46.9614056	7.4617922	partial
+be-partial-00808	Breitenbachstrasse 38, Büsserach	47.3946532	7.5419953	partial
+be-partial-00809	Route de Genève 4, Cheseaux-sur-Lausanne	46.5843458	6.6045565	partial
+be-partial-00810	Müslinweg 12, Bern	46.9352102	7.4654100	partial
+be-partial-00811	Christoffelgasse 7, Bern	46.9467643	7.4410524	partial
+be-partial-00812	Optingenstrasse 33, Bern	46.9558496	7.4501544	partial
+be-partial-00813	Stampfenbachstrasse 60, Zürich	47.3812767	8.5424243	partial
+be-partial-00814	Voräckerweg 8, Arni AG	47.3187987	8.4239223	partial
+be-partial-00815	Vorstadt 20, Zug	47.1691606	8.5145711	partial
+be-partial-00816	In der Ey 85, Zürich	47.3702753	8.4920191	partial
+be-partial-00817	Wasserwerkgasse, Bern	46.9477200	7.4580900	partial
+be-partial-00818	Riedbachstrasse 102, Bern	46.9438865	7.3720683	partial
+be-partial-00819	Schänzlihalde 19, Bern	46.9525362	7.4469803	partial
+be-partial-00820	Voia principala 132, Lantsch/Lenz	46.6989084	9.5582626	partial
+be-partial-00821	Manuelstrasse 55, Bern	46.9360077	7.4686787	partial
+be-partial-00822	Bahnhofstrasse 31, Baden	47.4777002	8.3082090	partial
+be-partial-00823	Manuelstrasse 85, Bern	46.9340656	7.4710791	partial
+be-partial-00824	Jonas-Furrer-Strasse 21, Zürich	47.4204198	8.5082174	partial
+be-partial-00825	Rütlistrasse 11, Bern	46.9596000	7.4566966	partial
+be-partial-00826	Haldenstrasse 24b, Bern	46.9635677	7.4460224	partial
+be-partial-00827	Seestrasse 45, Thun	46.7460775	7.6373887	partial
+be-partial-00828	Optingenstrasse 54, Bern	46.9567944	7.4508753	partial
+be-partial-00829	Güterstrasse 240, Basel	47.5419840	7.5968802	partial
+be-partial-00830	Turnweg 27, Bern	46.9588157	7.4473026	partial
+be-partial-00831	Allmendstrasse 11, Bern	46.9584795	7.4521935	partial
+be-partial-00832	Schwanengasse 10, Bern	46.9466363	7.4388976	partial
+be-partial-00833	Bachtobelstrasse 15, Weinfelden	47.5719348	9.1048017	partial
+be-partial-00834	Viktoriastrasse 36, Bern	46.9538902	7.4560250	partial
+be-partial-00835	Rue Vautier 27, Carouge GE	46.1841662	6.1422171	partial
+be-partial-00836	Mattenhofstrasse 10, Bern	46.9427511	7.4322845	partial
+be-partial-00837	Weststrasse 19, Bern	46.9421258	7.4476294	partial
+be-partial-00838	Murifeldweg 65, Bern	46.9409816	7.4724254	partial
+be-partial-00839	Falkenstrasse 27, Zürich	47.3661112	8.5486513	partial
+be-partial-00840	Schlossgasse 3, Weinfelden	47.5705449	9.1059391	partial
+be-partial-00841	Zeughausgasse 28, Bern	46.9492876	7.4446885	partial
+be-partial-00842	Zürcherstrasse 13, Arni AG	47.3190895	8.4218558	partial
+be-partial-00843	Buristrasse 49, Bern	46.9441470	7.4771056	partial
+be-partial-00844	Belpstrasse 17, Bern	46.9448926	7.4335595	partial
+be-partial-00845	Bahnhofstrasse 35, Fehraltorf	47.3853742	8.7507357	partial
+be-partial-00846	Hofmeisterstrasse 18, Bern	46.9366313	7.4704842	partial
+be-partial-00847	Belpstrasse 48, Bern	46.9424303	7.4312893	partial
+be-partial-00848	Scharnachtalstrasse 9, Bern	46.9358989	7.4715889	partial
+be-partial-00849	Buristrasse 6, Bern	46.9456009	7.4741752	partial
+be-partial-00850	Wiesenstrasse 79, Bern	46.9603653	7.4554112	partial
+be-partial-00851	Alte Lunkhoferstrasse 7a, Arni AG	47.3170590	8.4145438	partial
+be-partial-00852	Rossbergstrasse 51, Schindellegi	47.1711197	8.6931356	partial
+be-partial-00853	Hardturmstrasse 11, Zürich	47.3912062	8.5185804	partial
+be-partial-00854	Altenbergstrasse 92, Bern	46.9506242	7.4511368	partial
+be-partial-00855	Tircal 14, Domat/Ems	46.8348751	9.4524856	partial
+be-partial-00856	Ostermundigenstrasse 36, Bern	46.9523759	7.4675278	partial
+be-partial-00857	Lerchenberg 25, Zürich	47.4119992	8.5069555	partial
+be-partial-00858	Hochbergerstrasse 60, Basel	47.5777955	7.5964463	partial
+be-partial-00859	Grand Rue 38, Romont FR	46.6966708	6.9180421	partial
+be-partial-00860	Tannwaldstrasse 34, Olten	47.3507422	7.9082866	partial
+be-partial-00861	Viktoriaplatz 1, Bern	46.9549518	7.4516055	partial
+be-partial-00862	Greyerzstrasse 97, Bern	46.9599655	7.4482229	partial
+be-partial-00863	Jupiterstrasse 65, Bern	46.9403716	7.4852441	partial
+be-partial-00864	Aberlistrasse 60, Bern	46.9453641	7.4789844	partial
+be-partial-00865	Sangetenweg 21, Tenniken	47.4341718	7.8128558	partial
+be-partial-00866	Rodtmattstrasse 53, Bern	46.9598637	7.4608403	partial
+be-partial-00867	Via dal Farrer 2, Silvaplana	46.4601051	9.7958113	partial
+be-partial-00868	Standstrasse 50, Bern	46.9631477	7.4536335	partial
+be-partial-00869	Marktgasse 25, Winterthur	47.4995926	8.7289957	partial
+be-partial-00870	Murifeldweg 9, Bern	46.9401228	7.4706655	partial
+be-partial-00871	Müslinweg 5, Bern	46.9357112	7.4652095	partial
+be-partial-00872	Kellerstrasse 25a, Luzern	47.0422442	8.3125027	partial
+be-partial-00873	Jurastrasse 23, Bern	46.9583413	7.4434339	partial
+be-partial-00874	Mülinenstrasse 41, Bern	46.9373528	7.4746255	partial
+be-partial-00875	Wylerringstrasse 45, Bern	46.9633040	7.4507326	partial
+be-partial-00876	Ringoltingenstrasse 19, Bern	46.9374051	7.4679016	partial
+be-partial-00877	Rainmattstrasse 5, Bern	46.9445504	7.4394895	partial
+be-partial-00878	Willadingweg 38, Bern	46.9372619	7.4653420	partial
+be-partial-00879	Brunnadernstrasse 89, Bern	46.9343503	7.4676157	partial
+be-partial-00880	Beundenfeldstrasse 29a, Bern	46.9566573	7.4545650	partial
+be-partial-00881	Polygonstrasse 31, Bern	46.9617056	7.4447998	partial
+be-partial-00882	Sonnenhofweg 31, Bern	46.9434231	7.4726134	partial
+be-partial-00883	Mohrenplatz 10, Willisau	47.1206557	7.9926739	partial
+be-partial-00884	Neumarkt 9, Winterthur	47.4986633	8.7261331	partial
+be-partial-00885	Klein Titlis-Titlis, Engelberg	46.7708546	8.4263881	partial
+be-partial-00886	Staufferstrasse 10, Bern	46.9403340	7.4642270	partial
+be-partial-00887	Herzogstrasse 22, Bern	46.9584626	7.4553269	partial
+be-partial-00888	Galgenfeldweg 5, Bern	46.9541842	7.4706545	partial
+be-partial-00889	Haldenstrasse 25, Bern	46.9642382	7.4459352	partial
+be-partial-00890	Lettenmattstrasse, Birmensdorf (ZH)	47.3543280	8.4358565	partial
+be-partial-00891	Otto-Schütz-Weg 5, Zürich	47.4148171	8.5408969	partial
+be-partial-00892	Wylerstrasse 65, Bern	46.9606843	7.4477868	partial
+be-partial-00893	Schosshaldenstrasse 16, Bern	46.9454454	7.4629492	partial
+be-partial-00894	Dufourstrasse 4, Zürich	47.3642310	8.5471877	partial
+be-partial-00895	Robinsonweg 57, Bern	46.9467684	7.4821697	partial
+be-partial-00896	Papiermühlestrasse 77, Bern	46.9630681	7.4663276	partial
+be-partial-00897	Willadingweg 19, Bern	46.9383270	7.4663720	partial
+be-partial-00898	Muristrasse 79, Bern	46.9402571	7.4693568	partial
+be-partial-00899	Breite 37, Arni AG	47.3202727	8.4163316	partial
+be-partial-00900	Jolimontstrasse 1, Bern	46.9425804	7.4709324	partial
+be-partial-00901	Zollikerstrasse 6, Zürich	47.3640095	8.5544426	partial
+be-partial-00902	Steigerweg 7, Bern	46.9486475	7.4636465	partial
+be-partial-00903	Willadingweg 33, Bern	46.9376738	7.4656882	partial
+be-partial-00904	Untere Vogelsangstrasse 10, Winterthur	47.4979562	8.7220817	partial
+be-partial-00905	Egghölzlistrasse 3a, Bern	46.9366962	7.4749983	partial
+be-partial-00906	Spühlihalde 21, Schliern b. Köniz	46.9134153	7.4147022	partial
+be-partial-00907	Beundenfeldstrasse 13, Bern	46.9558408	7.4528532	partial
+be-partial-00908	Jubiläumsstrasse 44, Bern	46.9380290	7.4498159	partial
+be-partial-00909	Tillierstrasse 36, Bern	46.9372135	7.4460777	partial
+be-partial-00910	Oberdorfstrasse 2, Zürich	47.3683402	8.5458985	partial
+be-partial-00911	Route du Terravet 12, Veytaux	46.4161858	6.9482956	partial
+be-partial-00912	Weingartstrasse 28, Bern	46.9625282	7.4556127	partial
+be-partial-00913	Militärstrasse 56, Bern	46.9587988	7.4559189	partial
+be-partial-00914	Birchstrasse, Oberhasli	47.4681616	8.5006380	partial
+be-partial-00915	Giacomettistrasse 24, Bern	46.9459564	7.4733146	partial
+be-partial-00916	Bahnhofstrasse 1, Goldau	47.0490756	8.5492944	partial
+be-partial-00917	Alte Aescherstrasse 5, Arni AG	47.3195944	8.4213078	partial
+be-partial-00918	Freie Strasse 89, Basel	47.5550391	7.5911961	partial
+be-partial-00919	Place de la Gare 5, Corcelles	46.9830104	6.8808264	partial
+be-partial-00920	Rue de Morat - Murtenstrasse 18, Biel/Bienne	47.1351127	7.2464286	partial
+be-partial-00921	Oberfeldring 12, Arni AG	47.3166454	8.4238946	partial
+be-partial-00922	Wehntalerstrasse 18, Zürich	47.3980896	8.5399105	partial
+be-partial-00923	Riedikerstrasse 5, Uster	47.3416225	8.7155853	partial
+be-partial-00924	Jupiterstrasse 1, Bern	46.9388182	7.4804718	partial
+be-partial-00925	Rodtmattstrasse 101, Bern	46.9591407	7.4562544	partial
+be-partial-00926	Marzilistrasse 39, Bern	46.9416395	7.4427246	partial
+be-partial-00927	Greifengasse 38, Basel	47.5614055	7.5930530	partial
+be-partial-00928	Flurstrasse 13, Bern	46.9612182	7.4509423	partial
+be-partial-00929	Bubenbergplatz 11, Bern	46.9472219	7.4393276	partial
+be-partial-00930	Wankdorffeldstrasse 73, Bern	46.9659333	7.4636741	partial
+be-partial-00931	Bahnhofstrasse 21, Zürich	47.3692939	8.5392157	partial
+be-partial-00932	Schaffhauserstrasse 75, Zürich	47.3925525	8.5384284	partial
+be-partial-00933	Limmatquai 3, Zürich	47.3678872	8.5443882	partial
+be-partial-00934	Murifeldweg 81, Bern	46.9412390	7.4730659	partial
+be-partial-00935	Wallstrasse 9, Basel	47.5506144	7.5898118	partial
+be-partial-00936	Alter Seeweg 17, Maur	47.3401390	8.6748073	partial
+be-partial-00937	Libellenweg 21, Bern	46.9552908	7.4741531	partial
+be-partial-00938	Gutenbrunnenstrasse 48, Lenk im Simmental	46.4612226	7.4449543	partial
+be-partial-00939	Spitalackerstrasse 74, Bern	46.9573138	7.4513770	partial
+be-partial-00940	Stockerenweg 18, Bern	46.9589340	7.4526100	partial
+be-partial-00941	Seefeldstrasse 62, Zürich	47.3618394	8.5506873	partial
+be-partial-00942	Via Borgo 2, Ascona	46.1567452	8.7689353	partial
+be-partial-00943	Schlüsselberg 4, Basel	47.5572043	7.5896095	partial
+be-partial-00944	Via Dogana Vecchia 2, Lugano	46.0029400	8.9503163	partial
+be-partial-00945	Elfenauweg 51, Bern	46.9372689	7.4660985	partial
+be-partial-00946	Voräckerweg 8, Arni AG	47.3187987	8.4239223	partial
+be-partial-00947	Bäumleingasse 11, Basel	47.5551324	7.5928269	partial
+be-partial-00948	Kreuzplatz 5, Zürich	47.3651703	8.5545280	partial
+be-partial-00949	Zeerlederstrasse 21, Bern	46.9356439	7.4758237	partial
+be-partial-00950	Bachtobelstrasse 5, Weinfelden	47.5714576	9.1056878	partial
+be-partial-00951	Bernstrasse 2A, Kerzers	46.9734375	7.2007631	partial
+be-partial-00952	Weltpoststrasse 4, Bern	46.9390344	7.4731452	partial
+be-partial-00953	Wylerringstrasse 77, Bern	46.9639360	7.4531985	partial
+be-partial-00954	Laubeggstrasse 127, Bern	46.9457247	7.4702598	partial
+be-partial-00955	Brunnadernstrasse 64a, Bern	46.9362642	7.4657985	partial
+be-partial-00956	Buristrasse 15, Bern	46.9451028	7.4760212	partial
+be-partial-00957	Bahnhofstrasse 41, Weinfelden	47.5695348	9.1076028	partial
+be-partial-00958	Erikaweg 3, Bern	46.9471060	7.4645284	partial
+be-partial-00959	Schulweg 14a, Bern	46.9562617	7.4456382	partial
+be-partial-00960	Grotzenmühlestrasse 36, Einsiedeln	47.1208474	8.7343299	partial
+be-partial-00961	Parkstrasse 46, Bern	46.9615014	7.4594308	partial
+be-partial-00962	Anshelmstrasse 9, Bern	46.9391955	7.4486804	partial
+be-partial-00963	Flurstrasse 5, Bern	46.9617849	7.4520582	partial
+be-partial-00964	Spitalgasse 14, Zürich	47.3735537	8.5446241	partial
+be-partial-00965	Hochschulstrasse 4, Bern	46.9507025	7.4378847	partial
+be-partial-00966	Blumenweg 9, Bern	46.9577876	7.4459406	partial
+be-partial-00967	Mottastrasse 18, Bern	46.9417474	7.4513372	partial
+be-partial-00968	Flurstrasse 25, Bern	46.9605809	7.4497980	partial
+be-partial-00969	Seetalstrasse 2, Muri (AG)	47.2736129	8.3404870	partial
+be-partial-00970	Feldeggweg 10, Bern	46.9438719	7.4465834	partial
+be-partial-00971	Wiesenstrasse 80, Bern	46.9604523	7.4550135	partial
+be-partial-00972	Breitenrainplatz 40c, Bern	46.9590107	7.4540991	partial
+be-partial-00973	Lettenweg 11, Tenniken	47.4345781	7.8120968	partial
+be-partial-00974	Haldenstrasse 54, Bern	46.9661069	7.4474301	partial
+be-partial-00975	Rathausplatz, Stein am Rhein	47.6594624	8.8596540	partial
+be-partial-00976	Seestrasse 156, Küsnacht	47.3160213	8.5798679	partial
+be-partial-00977	Oberfeldring 4, Arni AG	47.3167618	8.4227450	partial
+be-partial-00978	Haldenstrasse 33, Bern	46.9650609	7.4464956	partial
+be-partial-00979	Spiegelgasse 6, Basel	47.5601599	7.5868209	partial
+be-partial-00980	Sulgeneckstrasse 7, Bern	46.9449747	7.4385764	partial
+be-partial-00981	Rue Louis-Favre 34, Neuchâtel	46.9947996	6.9301223	partial
+be-partial-00982	Riedbachstrasse 102, Bern	46.9438865	7.3720683	partial
+be-partial-00983	Untere Vogelsangstrasse 10, Winterthur	47.4979562	8.7220817	partial
+be-partial-00984	Dorfstrasse 22, Ehrendingen	47.4950852	8.3418364	partial
+be-partial-00985	Hedingerstrasse 8, Arni AG	47.3178686	8.4200858	partial
+be-partial-00986	Marktgasse 27, Bülach	47.5174001	8.5413684	partial
+be-partial-00987	Schillingstrasse 30, Bern	46.9372741	7.4482043	partial
+be-partial-00988	Ziegeleiweg 20, Biel/Bienne	47.1315724	7.2383676	partial
+be-partial-00989	Herzogstrasse 26, Bern	46.9585420	7.4551057	partial
+be-partial-00990	Tscharnerstrasse 32, Bern	46.9421747	7.4276806	partial
+be-partial-00991	Stadthausstrasse 20, Winterthur	47.4998045	8.7250404	partial
+be-partial-00992	Willadingweg 61, Bern	46.9359931	7.4631388	partial
+be-partial-00993	Avenue de la Gare 13, La Tour-de-Peilz	46.4553900	6.8594500	partial
+be-partial-00994	Rodtmattstrasse 86, Bern	46.9595702	7.4580605	partial
+be-partial-00995	Hauptstrasse 98, Aesch BL	47.4691898	7.5971688	partial
+be-partial-00996	Wyttenbachstrasse 15, Bern	46.9549591	7.4474377	partial
+be-partial-00997	Murtenstrasse 19, Aarberg	47.0423856	7.2712026	partial
+be-partial-00998	Avenue Bachelin 9, Saint-Blaise	47.0126195	6.9862197	partial
+be-partial-00999	Limmatquai 3, Zürich	47.3678872	8.5443882	partial

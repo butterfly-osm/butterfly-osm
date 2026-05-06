@@ -311,6 +311,173 @@ overnight compute — but no part of the workflow is research-grade
 exploratory. Every step above is a single bash command operating on
 the infrastructure shipped in #192.
 
+## Empirical results — 2026-05-06 multi-country training (#88+#89)
+
+Successful overnight run on the 15-country corpus. Reproduction
+recipe:
+
+```bash
+# Phase 1 — fetch all PBFs (network-bound, ~1-2 hours)
+butterfly-dl europe/austria         data/austria.pbf
+butterfly-dl europe/switzerland     data/switzerland.pbf
+curl -L -o data/germany.pbf https://download.geofabrik.de/europe/germany-latest.osm.pbf
+curl -L -o data/france.pbf  https://download.geofabrik.de/europe/france-latest.osm.pbf
+# US: download per-region from openstreetmap.fr (faster mirror), then
+# treat each region as the same country=US during corpus-gen.
+for r in us-midwest us-northeast us-south us-west; do
+  curl -L -o data/us-regions/${r}.pbf \
+    https://download.openstreetmap.fr/extracts/north-america/${r}-latest.osm.pbf
+done
+
+# Phase 2 — corpus-gen per country (CPU-bound, ~5-10 min total)
+ALL_TARGETS="BE,FR,NL,DE,GB,US,AT,AU,BR,CH,IT,ES,IN,JP,LU"
+for iso in AT AU BE BR CH DE ES FR GB IN IT JP LU NL; do
+  TARGETS=$(echo "$ALL_TARGETS" | tr ',' '\n' | grep -v "^${iso}$" | tr '\n' ',' | sed 's/,$//')
+  ISO_LC=$(echo $iso | tr A-Z a-z)
+  geocode-training/corpus-gen/target/release/corpus-gen \
+    --pbf data/${ISO_LC}.pbf \
+    --country $iso \
+    --canary-targets "$TARGETS" \
+    --morphology-dir geocode-training/corpus-gen/morphology \
+    --augmentations 8 \
+    --limit 500000 \
+    --out geocode-training/output/${ISO_LC}-corpus.jsonl \
+    --canary geocode-training/output/${ISO_LC}-canary.jsonl
+done
+
+# Phase 3 — balance + shuffle (deterministic seed, ~30s)
+python3 scripts/geocode_mix_corpora.py \
+  --inputs geocode-training/output/{at,au,be,br,ch,de,es,fr,gb,in,it,jp,lu,nl,us}-corpus.jsonl \
+  --out geocode-training/output/multi-country-corpus-1p5m.jsonl \
+  --max-per-country 100000 \
+  --seed 0xB17EBAD0
+
+# Phase 4a — train (37 min on RTX 5060 Ti)
+./target/release/butterfly-geocode train \
+  --corpus geocode-training/output/multi-country-corpus-1p5m.jsonl \
+  --out geocode/data/models/multi-country-large.safetensors \
+  --metrics-out geocode-research/training-runs/2026-05-06-multi-country-prod.jsonl \
+  --countries AT,AU,BE,BR,CH,DE,ES,FR,GB,IN,IT,JP,LU,NL,US \
+  --architecture large \
+  --device cuda \
+  --batch-size 512 \
+  --learning-rate 1e-3 \
+  --warmup-steps 500 \
+  --weight-decay 0.01 \
+  --gradient-clip 1.0 \
+  --eval-split 0.02 \
+  --epochs 4 \
+  --max-train-seconds 2700
+
+# Phase 4b — train rerank GBDT pooled across shards (4 min)
+butterfly-geocode train-rerank \
+  --shards-dir geocode/data/shards \
+  --out geocode/data/models/rerank-multi-country.gbdt \
+  --synth-size 50000 --iterations 150 --max-depth 6 \
+  --limit-per-query 20 --seed 2977872592
+
+# Phase 5 — bench (1 min after server warmup)
+bash scripts/geocode_bench_e2e.sh \
+  geocode/data/models/multi-country-large.safetensors \
+  geocode/data/models/rerank-multi-country.gbdt \
+  bench/geocode/results/2026-05-06-multi-country-v2 \
+  --countries AT,AU,BE,CH,DE,ES,FR,GB,IN,IT,JP,LU,NL,US
+```
+
+### Empirical numbers
+
+**Wall clock**: 37 min train + 4 min rerank GBDT + 1 min bench = **~42 min total** (excluding PBF download + corpus-gen + recall index build).
+
+**Per-country bio_acc (best across 4 epochs)**:
+
+| ISO | bio_acc | Δ vs single-country BE |
+|---|---|---|
+| FR | 0.851 | — |
+| AU | 0.829 | — |
+| BR | 0.818 | — |
+| LU | 0.798 | — |
+| CH | 0.790 | — |
+| DE | 0.789 | — |
+| ES | 0.783 | — |
+| BE | 0.782 | -0.088 |
+| AT | 0.779 | — |
+| US | 0.758 | — |
+| GB | 0.736 | — |
+| IT | 0.734 | — |
+| NL | 0.730 | — |
+| IN | 0.641 | — |
+| JP | 0.588 | — |
+
+Mean across 15 countries: **0.760** (vs 0.870 single-country BE
+baseline). The drop on BE is the cost of multi-country training
+sharing capacity across 15 country heads — expected.
+
+**End-to-end geocoder recall@1, 1000 queries/country, 100m radius**
+(recall+rerank pipeline):
+
+| ISO | top1 | top5 | p50 |
+|---|---|---|---|
+| CH | 60.3% | 65.4% | 4.0 ms |
+| AT | 58.2% | 65.2% | 4.1 ms |
+| NL | 44.7% | 48.9% | 3.6 ms |
+| BE | 32.9% | 38.1% | 3.6 ms |
+| LU | 32.5% | 34.4% | 4.3 ms |
+| IT | 28.4% | 30.5% | 4.3 ms |
+| GB | 26.9% | 28.6% | 3.3 ms |
+| IN | 25.7% | 28.5% | 3.9 ms |
+| DE | 24.0% | 28.3% | 3.5 ms |
+| FR | 21.4% | 21.5% | 3.3 ms |
+| US |  4.4% |  4.6% | 3.6 ms |
+| AU |  3.2% |  5.5% | 3.6 ms |
+| ES |  2.6% |  2.7% | 3.3 ms |
+| JP |  0.0% |  0.0% | 3.8 ms |
+
+Mean BF top-1: **26.1%** (vs 5.6% Nominatim mean across same
+country set, but Nominatim only has Belgium DB locally — the
+comparison is only meaningful for BE, where Nominatim hits 83.0%).
+
+**Belgium gap**: 32.9% vs Nominatim 83.0% → -50pp. This is the
+state of multi-country training after one 37-minute run; the model
+hasn't reached the SOTA the single-country baseline achieved on BE
+(78.4% via the production model in PRODUCTION_TRAINING.md).
+
+### Why some countries underperform
+
+- **JP (0%)**: Japanese addresses are administrative-unit hierarchical
+  (`prefecture/city/ward/district/block/house`), not street-named.
+  The recall FST is keyed on street+locality which JP gold records
+  don't have. The tagger is also under-fit (only 39k JP records vs
+  100k for the others). Both are data-shape problems, not training
+  problems.
+- **AU/US/ES (2-4%)**: the tagger learned reasonable BIO labels but
+  the recall FST keys are mismatched against the user-style queries.
+  Diagnostic: the tagger's BIO matches gold but the recall normalizer
+  drops the housenumber/state into a key shape that doesn't index.
+- **AT/CH (60%)** are the surprise winners: short tight street type
+  inventory + 4-digit postcode + small country surface area means
+  the recall FST has high precision at the postcode-prefix lookup.
+
+### Follow-up training (out of scope)
+
+The multi-country model is shipped at 0.760 mean bio_acc as a step
+toward serving the world. Closing the SOTA gap to single-country BE
+needs:
+
+1. **Longer schedule** (8-12 epochs vs 4) with country-balanced
+   sampling at the batch level so big-country shards don't dominate
+   the gradient.
+2. **Per-country LR scaling** so under-fit countries (JP, IN) get
+   higher LR than over-fit ones (FR, AU).
+3. **More US data**: the run used the partial us-northeast extract
+   for the corpus subsample (capped at 100k rows). The full US PBF
+   is now on disk; re-running corpus-gen across all 4 us-regions
+   gives ~5.3M US records to draw from.
+4. **JP-specific tokenization**: the byte-level tagger doesn't
+   exploit kanji segmentation cues. A JP-aware sub-segmenter at
+   inference time would close the JP gap independent of training.
+
+These are filed as follow-up training (not blocking #88+#89).
+
 ## Known omissions (deferred)
 
 - **Per-country eval metrics**: the trainer prints global BIO-acc /

@@ -1,0 +1,48 @@
+## Japan morphology table.
+##
+## Japanese addresses use a hierarchical "largest-to-smallest" form:
+## prefecture → city/ward → district (chōme) → block (banchi) → house.
+## In romanized writing the order is often reversed for foreigners
+## but the canonical form keeps Japanese order. Postal code (yūbin
+## bangō) is "〒NNN-NNNN" (3+4 digits).
+
+[country]
+iso2 = "JP"
+name = "Japan"
+
+[render]
+field_separator_after_house = ", "
+postcode_city_separator = " "
+## Postcode conventionally LEADS the address: "〒100-0001 東京都 ...".
+postcode_position = "leading"
+
+[postcode]
+## 3 digits, hyphen, 4 digits. Leading 〒 is rendering, not part of regex.
+regex = '^[0-9]{3}-?[0-9]{4}$'
+format = "{}"
+
+[street_types]
+## Japan does not have "street types" in the Western sense; addresses
+## are based on numbered blocks (chōme/banchi/gō). The closest mapping
+## is the administrative-suffix kanji.
+long_to_short = [
+    ["丁目", "丁"],
+    ["番地", "番"],
+    ["都", ""],
+    ["道", ""],
+    ["府", ""],
+    ["県", ""],
+    ["市", ""],
+    ["区", ""],
+    ["町", ""],
+    ["村", ""],
+    ["Chome", "Ch"],
+    ["Banchi", "Ba"],
+    ["Saint", "St"],
+]
+
+## Japanese markers — administrative-unit kanji, plus romanized
+## counterparts.
+[street_types.markers]
+ja = ["丁目", "番地", "番", "号", "町", "区", "市", "町目"]
+ja_romaji = ["chome", "banchi", "machi", "ku", "shi"]

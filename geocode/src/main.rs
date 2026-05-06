@@ -361,15 +361,30 @@ enum Command {
     },
     /// Train the rerank GBDT (#205 step 2).
     ///
-    /// Reads a shard + recall index, synthesises perturbed gold
-    /// queries, runs recall against the index, labels candidates by
-    /// proximity to the gold record, computes [`RerankFeatures`] and
-    /// trains a pointwise logistic-loss GBDT. Saves a versioned
+    /// Reads one or more shards + recall indexes, synthesises perturbed
+    /// gold queries from each shard, runs recall against the matching
+    /// index, labels candidates by proximity to the gold record,
+    /// computes [`RerankFeatures`] and trains a SINGLE pointwise
+    /// logistic-loss GBDT on the pooled rows. Saves a versioned
     /// envelope file the server loads with `--rerank-model`.
+    ///
+    /// Use `--shard` for single-country training (legacy / smoke).
+    /// Use `--shards-dir` to pool training rows across every shard
+    /// in a directory — this is the multi-country production path
+    /// (#89). The two flags are mutually exclusive.
     TrainRerank {
-        /// BFGS shard (with sibling `.recall.fst` / `.recall.postings`).
-        #[arg(long)]
-        shard: PathBuf,
+        /// Single BFGS shard (with sibling `.recall.fst` /
+        /// `.recall.postings`). Mutually exclusive with `--shards-dir`.
+        #[arg(long, conflicts_with = "shards_dir")]
+        shard: Option<PathBuf>,
+        /// Multi-shard mode: pool training rows from every `*.bfgs`
+        /// shard in this directory. Each shard must have sibling
+        /// `.recall.fst` / `.recall.postings` files. Synth rows are
+        /// drawn proportionally to shard size up to `--synth-size`
+        /// total queries, with a per-shard floor so even small
+        /// shards contribute. Mutually exclusive with `--shard`.
+        #[arg(long, conflicts_with = "shard")]
+        shards_dir: Option<PathBuf>,
         /// Output GBDT model path.
         #[arg(long)]
         out: PathBuf,
@@ -379,7 +394,10 @@ enum Command {
         /// Tree max depth.
         #[arg(long, default_value_t = 6)]
         max_depth: u32,
-        /// Number of synthetic queries to generate from the shard.
+        /// Number of synthetic queries to generate. In single-shard
+        /// mode this is the per-shard count. In multi-shard mode this
+        /// is the GLOBAL pooled count split proportionally across
+        /// shards (with a floor of 200 queries per shard).
         #[arg(long, default_value_t = 5000)]
         synth_size: usize,
         /// Top-K candidates from recall scored per query.
@@ -584,21 +602,48 @@ async fn main() -> Result<()> {
         }
         Command::TrainRerank {
             shard,
+            shards_dir,
             out,
             iterations,
             max_depth,
             synth_size,
             limit_per_query,
             seed,
-        } => train_rerank_cmd(
-            &shard,
-            &out,
-            iterations,
-            max_depth,
-            synth_size,
-            limit_per_query,
-            seed,
-        ),
+        } => match (shard, shards_dir) {
+            (Some(p), None) => train_rerank_cmd(
+                std::slice::from_ref(&p),
+                &out,
+                iterations,
+                max_depth,
+                synth_size,
+                limit_per_query,
+                seed,
+            ),
+            (None, Some(d)) => {
+                let mut shards: Vec<PathBuf> = std::fs::read_dir(&d)
+                    .with_context(|| format!("reading shards dir {}", d.display()))?
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("bfgs"))
+                    .collect();
+                shards.sort();
+                if shards.is_empty() {
+                    bail!("no *.bfgs shards found in {}", d.display());
+                }
+                info!(n = shards.len(), dir = %d.display(), "multi-shard rerank training");
+                train_rerank_cmd(
+                    &shards,
+                    &out,
+                    iterations,
+                    max_depth,
+                    synth_size,
+                    limit_per_query,
+                    seed,
+                )
+            }
+            (Some(_), Some(_)) => bail!("--shard and --shards-dir are mutually exclusive"),
+            (None, None) => bail!("specify exactly one of --shard or --shards-dir"),
+        },
         Command::BuildRecallIndex { shard } => build_recall_index_cmd(&shard),
     }
 }
@@ -1639,15 +1684,21 @@ async fn serve_cmd(
     Ok(())
 }
 
-/// Train the rerank GBDT (#205 step 2).
+/// Train the rerank GBDT (#205 step 2 / #89).
 ///
-/// Synthesises perturbed gold queries from the shard records, runs
-/// recall against the sibling FST, labels candidates by proximity to
-/// the gold record, computes [`butterfly_geocode::RerankFeatures`]
-/// per (query, candidate), and trains a pointwise log-likelihood GBDT.
+/// Pools synthetic perturbed-gold training rows across one or more
+/// shards, runs recall against each shard's sibling FST, labels
+/// candidates by proximity to the gold record, computes
+/// [`butterfly_geocode::RerankFeatures`] per (query, candidate), and
+/// trains a SINGLE pointwise log-likelihood GBDT on the pooled rows.
+///
+/// Multi-shard pooling: the `synth_size` budget is the GLOBAL query
+/// count, allocated proportionally to shard size with a 200-query
+/// floor per shard (so even small countries contribute training
+/// signal, while large countries get a representative slice).
 #[allow(clippy::too_many_arguments)]
 fn train_rerank_cmd(
-    shard_path: &std::path::Path,
+    shard_paths: &[PathBuf],
     out: &std::path::Path,
     iterations: usize,
     max_depth: u32,
@@ -1663,116 +1714,197 @@ fn train_rerank_cmd(
     use gbdt::decision_tree::{Data, DataVec};
     use gbdt::gradient_boost::GBDT;
 
-    info!(shard = %shard_path.display(), "loading shard + recall index");
-    let shard = Shard::open(shard_path).context("opening shard")?;
-    let recall_index = RecallIndex::open(shard_path).with_context(|| {
-        format!(
-            "opening recall index for shard at {} — rebuild via \
-             `butterfly-geocode build-recall-index --shard {}`",
-            shard_path.display(),
-            shard_path.display()
-        )
-    })?;
-    info!(
-        record_count = shard.record_count(),
-        recall_keys = recall_index.key_count(),
-        "shard + recall index loaded"
-    );
+    if shard_paths.is_empty() {
+        bail!("no shard paths provided to train_rerank_cmd");
+    }
 
-    let country = shard.country();
+    // Open every shard + its recall index up front. Pool record counts
+    // for proportional query allocation. Each shard contributes:
+    //   per_shard_budget = max(MIN_PER_SHARD,
+    //                          synth_size * shard_size / total_size)
+    // capped so the sum stays close to `synth_size`.
+    const MIN_PER_SHARD: usize = 200;
+    let mut shards: Vec<(butterfly_geocode::routing::CountryId, Shard)> = Vec::new();
+    let mut recall_indexes: Vec<(butterfly_geocode::routing::CountryId, RecallIndex)> = Vec::new();
+    for p in shard_paths {
+        info!(shard = %p.display(), "loading shard + recall index");
+        let shard = Shard::open(p).with_context(|| format!("opening shard {}", p.display()))?;
+        let ri = RecallIndex::open(p).with_context(|| {
+            format!(
+                "opening recall index for shard at {} — rebuild via \
+                 `butterfly-geocode build-recall-index --shard {}`",
+                p.display(),
+                p.display()
+            )
+        })?;
+        let c = shard.country();
+        info!(
+            country = c.iso2(),
+            record_count = shard.record_count(),
+            recall_keys = ri.key_count(),
+            "shard + recall index loaded"
+        );
+        shards.push((c, shard));
+        recall_indexes.push((c, ri));
+    }
+
+    // Build the multi-country recaller.
     let mut recaller = Recaller::new();
-    recaller.insert(country, recall_index);
+    for (c, ri) in recall_indexes {
+        recaller.insert(c, ri);
+    }
 
-    // Synthesise queries — each gold record contributes a clean query
-    // plus deterministic perturbations (typo, dropped field, swapped
-    // tokens, drop diacritics by lowercase). Seeded LCG for
-    // reproducibility.
-    let mut state: u64 = seed;
+    // Per-shard query budget allocation.
+    let total_records: usize = shards.iter().map(|(_, s)| s.record_count()).sum();
+    if total_records == 0 {
+        bail!("all shards have zero records — cannot train rerank");
+    }
+    // Apply the floor; if proportional + floor exceeds the budget we
+    // scale the proportional part back. The floor is honoured even
+    // when budget is tight (small shards still get MIN_PER_SHARD).
+    let mut per_shard_budgets: Vec<usize> = shards
+        .iter()
+        .map(|(_, s)| {
+            let p =
+                (synth_size as u128 * s.record_count() as u128 / total_records as u128) as usize;
+            p.max(MIN_PER_SHARD)
+        })
+        .collect();
+    // Clamp so the sum doesn't blow past 2x the requested size.
+    let sum: usize = per_shard_budgets.iter().sum();
+    let cap = synth_size
+        .saturating_mul(2)
+        .max(synth_size + MIN_PER_SHARD * shards.len());
+    if sum > cap {
+        let scale = cap as f64 / sum as f64;
+        for b in per_shard_budgets.iter_mut() {
+            *b = ((*b as f64) * scale).round().max(MIN_PER_SHARD as f64) as usize;
+        }
+    }
+
+    // Synthesise queries per shard, run recall, label, append to pool.
+    let signals = TaggerSignals::default();
+    let priors = SourcePriors::default();
+
     fn lcg(s: &mut u64) -> u32 {
         *s = s
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
         (*s >> 32) as u32
     }
-    let n = shard.record_count() as u32;
-    if n == 0 {
-        bail!("shard has zero records — cannot train rerank");
-    }
-    let mut queries: Vec<(u32, String)> = Vec::with_capacity(synth_size);
-    for _ in 0..synth_size {
-        let id = lcg(&mut state) % n;
-        let Some(rec) = shard.record(id) else {
-            continue;
-        };
-        // Generate one of: clean / drop-house / drop-postcode /
-        // typo-street / locality-only.
-        let mode = lcg(&mut state) % 5;
-        let q = match mode {
-            0 => format!(
-                "{} {} {} {}",
-                rec.street, rec.housenumber, rec.postcode, rec.locality
-            ),
-            1 => format!("{} {} {}", rec.street, rec.postcode, rec.locality),
-            2 => format!("{} {} {}", rec.street, rec.housenumber, rec.locality),
-            3 => {
-                // Typo: swap two adjacent characters in street.
-                let mut s = rec.street.to_string();
-                if s.len() >= 4 {
-                    let bytes = unsafe_safe_swap(&s, 1);
-                    s = bytes;
-                }
-                format!(
-                    "{} {} {} {}",
-                    s, rec.housenumber, rec.postcode, rec.locality
-                )
-            }
-            _ => rec.locality.to_string(),
-        };
-        queries.push((id, q));
-    }
-    info!(n = queries.len(), "synthetic queries generated");
+    // Initial state seeded once; per-shard streams are derived by
+    // mixing in the shard index so different shards produce different
+    // queries even for the same record id distribution.
+    let base_seed = seed;
 
-    // Run recall on each, label candidates by proximity to the gold
-    // record's lat/lon. Positive = within 50 m, negative otherwise.
     let mut rows: Vec<(Vec<f32>, f32)> = Vec::new();
-    let signals = TaggerSignals::default();
-    let budget = RecallBudget::default().adapt_to_stats(
-        recaller
-            .stats_for(country)
-            .map(|s| s.p95_postings)
-            .unwrap_or(256),
-    );
-    let priors = SourcePriors::default();
-
-    for (gold_id, q) in &queries {
-        let cands = recaller.query(q, &signals, &[country], &budget);
-        let cands_top: Vec<_> = cands.into_iter().take(limit_per_query).collect();
-        if cands_top.is_empty() {
+    let mut per_country_pos: Vec<(String, usize, usize)> = Vec::new();
+    for (idx, ((country, shard), budget)) in shards
+        .iter()
+        .zip(per_shard_budgets.iter().copied())
+        .enumerate()
+    {
+        let n = shard.record_count() as u32;
+        if n == 0 {
+            warn!(
+                country = country.iso2(),
+                "shard has zero records — skipping"
+            );
             continue;
         }
-        let Some(gold_rec) = shard.record(*gold_id) else {
-            continue;
-        };
-        let mut group_has_positive = false;
-        let mut group_rows: Vec<(Vec<f32>, f32)> = Vec::with_capacity(cands_top.len());
-        for cand in cands_top {
-            let Some(rec) = shard.record(cand.address_id as u32) else {
+        let mut state = base_seed.wrapping_add((idx as u64).wrapping_mul(0x9E3779B97F4A7C15));
+        let mut queries: Vec<(u32, String)> = Vec::with_capacity(budget);
+        for _ in 0..budget {
+            let id = lcg(&mut state) % n;
+            let Some(rec) = shard.record(id) else {
                 continue;
             };
-            let d = haversine_m(gold_rec.lat, gold_rec.lon, rec.lat, rec.lon);
-            let label = if d <= 50.0 { 1.0 } else { 0.0 };
-            if label > 0.5 {
-                group_has_positive = true;
+            let mode = lcg(&mut state) % 5;
+            let q = match mode {
+                0 => format!(
+                    "{} {} {} {}",
+                    rec.street, rec.housenumber, rec.postcode, rec.locality
+                ),
+                1 => format!("{} {} {}", rec.street, rec.postcode, rec.locality),
+                2 => format!("{} {} {}", rec.street, rec.housenumber, rec.locality),
+                3 => {
+                    let mut s = rec.street.to_string();
+                    if s.len() >= 4 {
+                        s = unsafe_safe_swap(&s, 1);
+                    }
+                    format!(
+                        "{} {} {} {}",
+                        s, rec.housenumber, rec.postcode, rec.locality
+                    )
+                }
+                _ => rec.locality.to_string(),
+            };
+            queries.push((id, q));
+        }
+        info!(
+            country = country.iso2(),
+            queries = queries.len(),
+            budget,
+            "synthetic queries generated for shard"
+        );
+        let budget_recall = RecallBudget::default().adapt_to_stats(
+            recaller
+                .stats_for(*country)
+                .map(|s| s.p95_postings)
+                .unwrap_or(256),
+        );
+
+        let pre_pos = rows.iter().filter(|r| r.1 > 0.5).count();
+        let pre_total = rows.len();
+        for (gold_id, q) in &queries {
+            let cands = recaller.query(q, &signals, &[*country], &budget_recall);
+            let cands_top: Vec<_> = cands.into_iter().take(limit_per_query).collect();
+            if cands_top.is_empty() {
+                continue;
             }
-            let feat = compute_rerank_row(q, &signals, &cand, &rec, &priors);
-            group_rows.push((feat, label));
+            let Some(gold_rec) = shard.record(*gold_id) else {
+                continue;
+            };
+            let mut group_has_positive = false;
+            let mut group_rows: Vec<(Vec<f32>, f32)> = Vec::with_capacity(cands_top.len());
+            for cand in cands_top {
+                let Some(rec) = shard.record(cand.address_id as u32) else {
+                    continue;
+                };
+                let d = haversine_m(gold_rec.lat, gold_rec.lon, rec.lat, rec.lon);
+                let label = if d <= 50.0 { 1.0 } else { 0.0 };
+                if label > 0.5 {
+                    group_has_positive = true;
+                }
+                let feat = compute_rerank_row(q, &signals, &cand, &rec, &priors);
+                group_rows.push((feat, label));
+            }
+            if group_has_positive {
+                rows.extend(group_rows);
+            }
         }
-        if group_has_positive {
-            rows.extend(group_rows);
-        }
+        let post_pos = rows.iter().filter(|r| r.1 > 0.5).count();
+        let post_total = rows.len();
+        per_country_pos.push((
+            country.iso2().to_string(),
+            post_pos - pre_pos,
+            post_total - pre_total,
+        ));
     }
 
-    info!(rows = rows.len(), "training rows materialised");
+    info!(
+        rows = rows.len(),
+        shards = shards.len(),
+        "pooled training rows materialised"
+    );
+    for (iso, pos, total) in &per_country_pos {
+        info!(
+            country = iso,
+            positives = pos,
+            total = total,
+            "per-country label contribution"
+        );
+    }
     if rows.is_empty() {
         bail!(
             "no training rows with positive labels produced — synth_size or recall budget too small"
@@ -1780,7 +1912,7 @@ fn train_rerank_cmd(
     }
     let n_pos = rows.iter().filter(|r| r.1 > 0.5).count();
     let n_neg = rows.len() - n_pos;
-    info!(positives = n_pos, negatives = n_neg, "label balance");
+    info!(positives = n_pos, negatives = n_neg, "pooled label balance");
     if n_pos == 0 || n_neg == 0 {
         bail!("degenerate labels: pos={n_pos} neg={n_neg}");
     }

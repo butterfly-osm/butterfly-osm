@@ -250,4 +250,52 @@ mod tests {
     fn unknown_country_errs() {
         assert!(Morphology::load_from_dir(morphology_dir(), "ZZ").is_err());
     }
+
+    #[test]
+    fn loads_all_15_country_packs() {
+        // Every country with a shipped data pack must have a morphology
+        // pack. This is the contract for multi-country training: if you
+        // ship a `geocode/data/packs/<iso>.toml`, you ship a morphology
+        // pack here.
+        let packs = [
+            "AT", "AU", "BE", "BR", "CH", "DE", "ES", "FR", "GB", "IN", "IT", "JP", "LU", "NL",
+            "US",
+        ];
+        for iso in packs {
+            let m = Morphology::load_from_dir(morphology_dir(), iso)
+                .unwrap_or_else(|e| panic!("loading morphology for {iso}: {e:?}"));
+            assert_eq!(m.country.iso2, iso, "iso2 mismatch for {iso}");
+            assert!(
+                !m.street_types.long_to_short.is_empty(),
+                "{iso} has empty long_to_short"
+            );
+            assert!(
+                !m.street_types.markers.is_empty(),
+                "{iso} has empty markers"
+            );
+        }
+    }
+
+    #[test]
+    fn loads_brazil_pack_with_pt_markers() {
+        let m = Morphology::load_from_dir(morphology_dir(), "BR").unwrap();
+        let markers = m.markers_for("pt").unwrap();
+        assert!(markers.iter().any(|s| s == "rua"));
+        assert!(markers.iter().any(|s| s == "avenida"));
+    }
+
+    #[test]
+    fn loads_switzerland_with_three_languages() {
+        let m = Morphology::load_from_dir(morphology_dir(), "CH").unwrap();
+        assert!(m.markers_for("de").is_some());
+        assert!(m.markers_for("fr").is_some());
+        assert!(m.markers_for("it").is_some());
+    }
+
+    #[test]
+    fn loads_japan_with_kanji_markers() {
+        let m = Morphology::load_from_dir(morphology_dir(), "JP").unwrap();
+        let markers = m.markers_for("ja").unwrap();
+        assert!(markers.iter().any(|s| s == "丁目"));
+    }
 }

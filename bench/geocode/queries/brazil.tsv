@@ -1,0 +1,1001 @@
+query_id	query_text	gold_lat	gold_lon	quality_class
+be-clean-00000	Rua 28 de Agosto 4014, 89270-000 Guaramirim	-26.4682656	-48.9769738	clean
+be-clean-00001	Avenida Dom Pedro I 639, 01552-001 São Paulo	-23.5710252	-46.6108837	clean
+be-clean-00002	Avenida Bráz Leme 2945, 02022-011 São Paulo	-23.5037136	-46.6315156	clean
+be-clean-00003	Rua Tonelero 1088, 05056-001 São Paulo	-23.5368904	-46.7064316	clean
+be-clean-00004	Praça João Acacinho 160, 29560-000 Guaçuí	-20.7725782	-41.6779516	clean
+be-clean-00005	Rua Intendente Amândio Lampert 4, 95790-000 Montenegro	-29.6752274	-51.4544668	clean
+be-clean-00006	Alameda dos Nhambiquaras 1355, 04090-012 São Paulo	-23.6101715	-46.6621481	clean
+be-clean-00007	Avenida Rangel Pestana 2248, 03002-000 São Paulo	-23.5414110	-46.6139299	clean
+be-clean-00008	Praça da Matriz, 45940-000 Ibirapuã	-17.6866106	-40.1043521	clean
+be-clean-00009	Avenida Mem de Sá 72B, 20202-020 Rio de Janeiro	-22.9130412	-43.1813390	clean
+be-clean-00010	Rua Carnot 661, 03032-030 São Paulo	-23.5290171	-46.6217176	clean
+be-clean-00011	Praça Doutor Souza Siqueira 2, 13073-370 Campinas	-22.8891189	-47.0658473	clean
+be-clean-00012	Rua da Ajuda 35B, 20040-000 Rio de Janeiro	-22.9071272	-43.1764678	clean
+be-clean-00013	Avenida Dom Pedro I 654, 01552-000 São Paulo	-23.5709808	-46.6113151	clean
+be-clean-00014	Rua Maria Augusta 32, 02214-100 São Paulo	-23.4955415	-46.5862014	clean
+be-clean-00015	Avenida Paes de Barros 2224, 03114-001 São Paulo	-23.5700392	-46.5876680	clean
+be-clean-00016	Avenida Paes de Barros 2479, 03115-001 São Paulo	-23.5725112	-46.5873406	clean
+be-clean-00017	Rodovia Federal Deputado Aloízio Santos km 46, 29255-000 Marechal Floriano	-20.4119169	-40.6797480	clean
+be-clean-00018	Rua Malibu 1355, 22793-295 Rio de Janeiro	-23.0019836	-43.3919096	clean
+be-clean-00019	Rua Ana Maria de Souza 26, 13084-758 Campinas	-22.8342328	-47.0784844	clean
+be-clean-00020	Rua Luísa Brilha Campos 3, 07600-000 Mairiporã	-23.3200248	-46.5846449	clean
+be-clean-00021	Rua Andrade Pertence 20, 22220-010 Rio de Janeiro	-22.9247392	-43.1775547	clean
+be-clean-00022	Rua Carnot 80, 03032-030 São Paulo	-23.5340725	-46.6230858	clean
+be-clean-00023	SP-284, km 483 SN, 19729-899 Paraguaçu Paulista	-22.3711999	-50.6261421	clean
+be-clean-00024	Rua Canindé 534, 03033-000 São Paulo	-23.5298786	-46.6228747	clean
+be-clean-00025	Rua Carnot 533, 03032-030 São Paulo	-23.5300907	-46.6220407	clean
+be-clean-00026	R. Simão Von Zuben, 13098-627 Campinas	-22.8002206	-47.0219476	clean
+be-clean-00027	Avenida Santarem, 29166-400 Serra	-20.1748158	-40.2438389	clean
+be-clean-00028	Rua Luísa Brilha Campos 3, 07600-000 Mairiporã	-23.3200248	-46.5846449	clean
+be-clean-00029	Rua João Maria de Freitas 1463, 62930-000 Limoeiro do Norte	-5.1566100	-38.0916045	clean
+be-clean-00030	Alameda Doutor Carlos de Carvalho 528, 80430-180 Curitiba	-25.4329710	-49.2801715	clean
+be-clean-00031	Rua Júlio de Castilhos 290, 98360-000 Rodeio Bonito	-27.4713597	-53.1687579	clean
+be-clean-00032	Rua Silveira Martins 164, 22221-000 Rio de Janeiro	-22.9257471	-43.1791425	clean
+be-clean-00033	SRES Q 12 bloco N, 70645-145 Brasília	-15.7814912	-47.9366019	clean
+be-clean-00034	Avenida Padre Arlindo Vieira 1305, 04166-000 São Paulo	-23.6322537	-46.6046353	clean
+be-clean-00035	Avenida Bráz Leme 2945, 02022-011 São Paulo	-23.5037136	-46.6315156	clean
+be-clean-00036	Rua Manifesto 686, 04209-000 São Paulo	-23.5793962	-46.6019530	clean
+be-clean-00037	Rua Manoel Vitorino, 20740-280 Rio de Janeiro	-22.8903992	-43.3096599	clean
+be-clean-00038	SQN 316, 70775-000 Brasília	-15.7394580	-47.8955262	clean
+be-clean-00039	Rua João Mafra 134, 04288-000 São Paulo	-23.6100776	-46.6150126	clean
+be-clean-00040	Rua Comendador Araújo 268, 80420-000 Curitiba	-25.4345182	-49.2793369	clean
+be-clean-00041	Avenida Visconde do Rio Branco 98A, 20040-030 Niterói	-22.9032752	-43.1776902	clean
+be-clean-00042	Rua do Catete 183, 22220-000 Rio de Janeiro	-22.9264932	-43.1764263	clean
+be-clean-00043	Avenida Presidente Vargas 345, 68625-130 Paragominas	-2.9927841	-47.3581424	clean
+be-clean-00044	Rua Inácio Pereira da Rocha 385, 05432-011 São Paulo	-23.5605800	-46.6903252	clean
+be-clean-00045	Rua João Alencar Guimarães 740, 81530-250 Curitiba	-25.4571137	-49.3106107	clean
+be-clean-00046	Rua Arthur Pilz 179, 95890-000 Teutônua	-29.4685737	-51.8122158	clean
+be-clean-00047	Avenida Presidente Franklin Roosevelt 2, 24360-060 Niterói	-22.9149079	-43.0940660	clean
+be-clean-00048	Rua Ferreira Viana 35, 22210-040 Rio de Janeiro	-22.9275653	-43.1748295	clean
+be-clean-00049	Avenida Angélica 1784, 01228-200 São Paulo	-23.5481362	-46.6590336	clean
+be-clean-00050	Marginal BR-101 Sul, 29135-320 Viana	-20.3536215	-40.4163123	clean
+be-clean-00051	Avenida Mato Grosso, 78370-000 Nova Olímpia	-14.7823523	-57.2892570	clean
+be-clean-00052	Avenida Senhora Santana, 46170-970 Rio de Contas	-13.5881591	-41.8180286	clean
+be-clean-00053	Avenida Brasil 800, 13073-012 Campinas	-22.8879928	-47.0658884	clean
+be-clean-00054	Rua Padre Vairo 141, 07600-000 Mairiporã	-23.3180020	-46.5836100	clean
+be-clean-00055	Avenida Pasteur 433, 22290-240 Rio de Janeiro	-22.9536555	-43.1686437	clean
+be-clean-00056	Rua Silveira Martins 135, 22221-000 Rio de Janeiro	-22.9240870	-43.1765891	clean
+be-clean-00057	Rua Marcílio Dias 1388, 93410-190 Novo Hamburgo	-29.6877388	-51.1281076	clean
+be-clean-00058	Rua Manifesto 198, 04209-000 São Paulo	-23.5750322	-46.6034559	clean
+be-clean-00059	Avenida Brigadeiro Luís Antônio 4346, 01402-002 São Paulo	-23.5804765	-46.6639136	clean
+be-clean-00060	Rua Butantã 390, 05424-000 São Paulo	-23.5705398	-46.6984329	clean
+be-clean-00061	Rua Boa Vista 363, 01014-001 São Paulo	-23.5445395	-46.6341018	clean
+be-clean-00062	Estrada do Sapé km 1, 19700-000 Paraguaçu Paulista	-22.4190123	-50.6054753	clean
+be-clean-00063	Edwy Taques de Araújo - Bairro Gleba Palhano 1100, 86047-500 Londrina - PR	-23.3465697	-51.1760873	clean
+be-clean-00064	Praça São Sebastião 9, 65800-000 Balsas	-7.5299532	-46.0344099	clean
+be-clean-00065	Rua Conego Higino 19, 46140-000 Livramento de Nossa Senhora	-13.6478622	-41.8418647	clean
+be-clean-00066	Rua Francisco Pereira Coutinho 151, 13087-120 Campinas	-22.8681974	-47.0455833	clean
+be-clean-00067	Rua Marco Aurélio de Miranda 14, 30575-210 Belo Horizonte	-19.9767820	-43.9656400	clean
+be-clean-00068	Rua João A. da Motta 390, 95790-000 Brochier	-29.5655607	-51.5812969	clean
+be-clean-00069	Rua Estácio Coimbra 84, 22260-010 Rio de Janeiro	-22.9508270	-43.1859350	clean
+be-clean-00070	Rua do Matoso 60, 20270-133 Rio de Janeiro	-22.9133383	-43.2132904	clean
+be-clean-00071	Avenida Jabaquara 1317, 04045-002 São Paulo	-23.6158443	-46.6384665	clean
+be-clean-00072	Rua Maria Augusta 132, 02214-100 São Paulo	-23.4949227	-46.5855477	clean
+be-clean-00073	Rua Baltazar Lisboa 303, 04110-061 São Paulo	-23.5851552	-46.6322982	clean
+be-clean-00074	Avenida Bom Jardim 2135, 93900-000 Ivoti	-29.6253449	-51.1437339	clean
+be-clean-00075	Rua Doutor Antônio Augusto de Almeida 1044, 13083-755 Campinas	-22.8245460	-47.0716473	clean
+be-clean-00076	Rua Bernardo Saião 80, 03022-070 São Paulo	-23.5268625	-46.6026296	clean
+be-clean-00077	Rua Paulo Barbosa 296, 25620100 petropolis	-22.5092195	-43.1696159	clean
+be-clean-00078	Avenida Ângelo Pretti, 29650-000 Santa Teresa	-19.9315706	-40.6044621	clean
+be-clean-00079	Rua Toniquinho Pereira, 37200-000 Lavras	-21.2457038	-45.0136688	clean
+be-clean-00080	Rua Pedro Américo 64B, 22211-200 Rio de Janeiro	-22.9238809	-43.1779895	clean
+be-clean-00081	Rua Paissandu 122, 22210-080 Rio de Janeiro	-22.9344208	-43.1773973	clean
+be-clean-00082	Rua 1, Quadra 01, Lotes 07-16, 73770-000 Alto Paraíso de Goiás	-14.1381837	-47.5229176	clean
+be-clean-00083	Rua Carnot 533, 03032-030 São Paulo	-23.5300907	-46.6220407	clean
+be-clean-00084	Rodovia BR-232 km 214, 5.200-000 pesqueira	-8.3676877	-36.6802307	clean
+be-clean-00085	Avenida Nazaré 38, 04262-000 São Paulo	-23.5843413	-46.6111167	clean
+be-clean-00086	Avenida Pedroso de Morais 604, 05420-001 São Paulo	-23.5647107	-46.6906477	clean
+be-clean-00087	Antônio Pádua Araújo 400, 35400-000 Ouro Preto	-20.4006651	-43.5060247	clean
+be-clean-00088	Rua Engenheiro Cândido Gomide 424, 13073-200 Campinas	-22.8947435	-47.0714839	clean
+be-clean-00089	Rua Doutor Ascânio Cerqueira 25, 04288-100 São Paulo	-23.6098949	-46.6126991	clean
+be-clean-00090	Alameda Doutor Carlos de Carvalho 528, 80430-180 Curitiba	-25.4329710	-49.2801715	clean
+be-clean-00091	Rua Miguel Jorge Cury 122, 07600-000 Mairiporã	-23.3220619	-46.5839761	clean
+be-clean-00092	Avenida Landulfo Alves 57, 48602-900 Paulo Afonso	-9.4002044	-38.2180827	clean
+be-clean-00093	Avenida Princesa Isabel, 29010-906 Vitória	-20.3210827	-40.3347690	clean
+be-clean-00094	Rua Doutor Mello Peixoto 24, 14930-000 Boa Esperança do Sul	-21.9924290	-48.3875155	clean
+be-clean-00095	Rua José Paulino 639, 01120-001 São Paulo	-23.5288839	-46.6402780	clean
+be-clean-00096	Rua Canuto do Val 97, 01224-040 São Paulo	-23.5404843	-46.6514020	clean
+be-clean-00097	SRES Q 12 bloco M, 70645-135 Brasília	-15.7820901	-47.9368026	clean
+be-clean-00098	Rua Purpurina 157, 05435-030 São Paulo	-23.5532711	-46.6899831	clean
+be-clean-00099	Avenida Porto Seguro, 45820-000 Eunápolis	-16.3744647	-39.5856946	clean
+be-clean-00100	Rua Cardoso de Almeida 1549, 05013-001 São Paulo	-23.5434518	-46.6726409	clean
+be-clean-00101	Rua Buarque de Macedo 695, 13073-010 Campinas	-22.8834338	-47.0657446	clean
+be-clean-00102	Rua Bernardo Saião 112, 03022-070 São Paulo	-23.5265581	-46.6028162	clean
+be-clean-00103	Rua Mateus Grou 15, 05415-040 São Paulo	-23.5657001	-46.6834399	clean
+be-clean-00104	Rua Baltazar Lisboa 555, 04110-061 São Paulo	-23.5842483	-46.6300203	clean
+be-clean-00105	Rua Doutor Mello Peixoto 24, 14930-000 Boa Esperança do Sul	-21.9924290	-48.3875155	clean
+be-clean-00106	Avenida Barão de Itapura 2784, 13073-300 Campinas	-22.8825662	-47.0560019	clean
+be-clean-00107	Avenida Engenheiro Luís Carlos Berrini 1500, 04571-000 São Paulo	-23.6097057	-46.6948427	clean
+be-clean-00108	Avenida Brasil 265, 37177-000 Guapé-MG	-20.7650557	-45.9181005	clean
+be-clean-00109	Rua Crasso 116, 05043-000 São Paulo	-23.5238256	-46.6897305	clean
+be-clean-00110	Rua Cândido Espinheira 444, 05004-000 São Paulo	-23.5329735	-46.6641078	clean
+be-clean-00111	Avenida Almirante Barroso 3251, 66613-710 Belém	-1.4228858	-48.4510889	clean
+be-clean-00112	Guará II Qi. 27 Bloco A Lojas 9/10, 71060-280 Guará	-15.8394126	-47.9779169	clean
+be-clean-00113	Praça Charles Miller, 01234-010 São Paulo	-23.5474227	-46.6654699	clean
+be-clean-00114	Rua Doutor Felix Engel Filho 312, 99200-000 Guaporé	-28.8516394	-51.8969991	clean
+be-clean-00115	Rua das Flores 151, 23968-000 Angra dos Reis	-23.1447009	-44.1671880	clean
+be-clean-00116	Rua Serra de Bragança 1179, 03318-000 São Paulo	-23.5440790	-46.5638623	clean
+be-clean-00117	Rua do Catete 183, 22220-000 Rio de Janeiro	-22.9264932	-43.1764263	clean
+be-clean-00118	Rua Azevedo Soares 1678, 03322-001 São Paulo	-23.5477413	-46.5605763	clean
+be-clean-00119	SP-284, km 483 SN, 19729-899 Paraguaçu Paulista	-22.3711999	-50.6261421	clean
+be-clean-00120	Avenida Getúlio Vargas 97, 29702-030 Colatina	-19.5366425	-40.6307567	clean
+be-clean-00121	Rua Filipinas 712, 82960-180 Curitiba	-25.4696706	-49.2085381	clean
+be-clean-00122	Rua Conego Higino 19, 46140-000 Livramento de Nossa Senhora	-13.6478622	-41.8418647	clean
+be-clean-00123	Libertad 539, 3357 San Javier	-27.8732090	-55.1361029	clean
+be-clean-00124	Avenida Mem de Sá 69, 20230-150 Rio de Janeiro	-22.9133320	-43.1814902	clean
+be-clean-00125	Avenida Primavera 50, 13140-366 Paulínia	-22.7686228	-47.1576465	clean
+be-clean-00126	Rua Corrêa Dutra 15, 22210-050 Rio de Janeiro	-22.9284346	-43.1745475	clean
+be-clean-00127	Rua das Rosas 216, 04048-000 São Paulo	-23.6079075	-46.6393892	clean
+be-clean-00128	Avenida Almirante Saldanha da Gama 89, 11030-401 Santos	-23.9903597	-46.3008931	clean
+be-clean-00129	Rua Quinze de Novembro 22, 07600-000 Mairiporã	-23.3191830	-46.5846998	clean
+be-clean-00130	Rua Antônio Bonito 123, 07033-180 Guarulhos	-23.5019681	-46.5581192	clean
+be-clean-00131	Rua Barão de Iguatemi 379, 20270060 Rio de Janeiro	-22.9136369	-43.2151712	clean
+be-clean-00132	9 de Julio, 3344 Alvear	-29.0959704	-56.5514895	clean
+be-clean-00133	Rodovia Josil Espíndula Agostini, 29185-000 Fundão	-19.9349597	-40.4159831	clean
+be-clean-00134	Rua Henrique Schaumann 668, 05413-011 São Paulo	-23.5591639	-46.6812024	clean
+be-clean-00135	Rua das Laranjeiras 218, 22240-003 Rio de Janeiro	-22.9335637	-43.1862952	clean
+be-clean-00136	Rua Antonio Alarcon 173, 05468-070 São Paulo	-23.5398138	-46.7172892	clean
+be-clean-00137	Avenida Ernani do Amaral Peixoto 551, 24020-076 Niterói	-22.8937141	-43.1211059	clean
+be-clean-00138	Largo do Cambuci 45, 01523-010 São Paulo	-23.5624510	-46.6211840	clean
+be-clean-00139	RS-239 5353, 95630-000 Parobé	-29.6383278	-50.8564839	clean
+be-clean-00140	Avenida Engenheiro Luís Carlos Berrini 1500, 04571-000 São Paulo	-23.6097057	-46.6948427	clean
+be-clean-00141	Avenida Serzedelo Corrêa 331, 66035-400 Belém	-1.4565438	-48.4908597	clean
+be-clean-00142	Rua Quiscalo 185, 86701-070 Arapongas	-23.4206939	-51.4294048	clean
+be-clean-00143	Avenida Nossa Senhora do Ó, 02715-000 São Paulo	-23.5038354	-46.6839923	clean
+be-clean-00144	Avenida Theodomiro Porto da Fonseca 1199, 93020-440 São Leopoldo	-29.7797317	-51.1476999	clean
+be-clean-00145	Rua António Bonito 178, 07033-180 Guarulhos	-23.5025126	-46.5580848	clean
+be-clean-00146	Avenida Dom Pedro I 654, 01552-000 São Paulo	-23.5709808	-46.6113151	clean
+be-clean-00147	Avenida Torres 77, 44075-465 Feira de Santana	-12.2571136	-38.9540227	clean
+be-clean-00148	Rua Eurico de Aguiar 888, 29055-280 Vitória	-20.3043481	-40.3000480	clean
+be-clean-00149	Rua Bom Pastor 3047, 04203-050 São Paulo	-23.6024773	-46.6022553	clean
+be-clean-00150	Rua João Mafra 510, 04288-000 São Paulo	-23.6127156	-46.6126751	clean
+be-clean-00151	Rua Andrade Pertence, 22221-000 Rio de Janeiro	-22.9254457	-43.1773025	clean
+be-clean-00152	Rua República, 92320-000 canoas	-29.9272024	-51.1939126	clean
+be-clean-00153	Rua Conselheiro Dantas 189, 03032-020 São Paulo	-23.5294993	-46.6210156	clean
+be-clean-00154	Rua do Colégio 1, 48540-000 Jeremoabo	-10.0678147	-38.3528758	clean
+be-clean-00155	Rua Andrade Pertence 37, 22220-010 Rio de Janeiro	-22.9252827	-43.1782038	clean
+be-clean-00156	Alameda dos Nhambiquaras 1876, 04090-004 São Paulo	-23.6136219	-46.6656718	clean
+be-clean-00157	Rua 4 3, 65051-300 São Luís	-2.5350360	-44.2170652	clean
+be-clean-00158	Rua Buarque de Macedo 850, 95790-000 Montenegro	-29.6774162	-51.4567622	clean
+be-clean-00159	Avenida Nove de Julho 3597, 01407-000 São Paulo	-23.5707865	-46.6624367	clean
+be-clean-00160	Libertad, 3357 San Javier	-27.8732946	-55.1364605	clean
+be-clean-00161	Avenida Paulista 1313, 01311-923 São Paulo	-23.5634874	-46.6543937	clean
+be-clean-00162	Rua Caramuru 641, 04138-002 São Paulo	-23.6096997	-46.6369155	clean
+be-clean-00163	Rua Lupércio Antônio dos Santos 31, 12245-521 São José dos Campos	-23.2022858	-45.8864057	clean
+be-clean-00164	Rua Capote Valente 500, 05409-001 São Paulo	-23.5572474	-46.6757033	clean
+be-clean-00165	Avenida Doutor Alberto Sarmento 775, 13070-711 Campinas	-22.8933413	-47.0786283	clean
+be-clean-00166	Avenida Waldemar César Santos 109, 39650-000 Minas Novas	-17.2172947	-42.5926347	clean
+be-clean-00167	Rua Marquês de São Vicente 238, 22451-042 Rio de Janeiro	-22.9781711	-43.2337248	clean
+be-clean-00168	Rua Conselheiro Dantas 50, 03032-020 São Paulo	-23.5293303	-46.6222758	clean
+be-clean-00169	Rua da Esperança 797, 02208-000 São Paulo	-23.4834279	-46.5901234	clean
+be-clean-00170	Rua Ébano 187, 20930-060 Rio de Janeiro	-22.8895870	-43.2362437	clean
+be-clean-00171	Rua Presidente Prudente de Moraes 530, 89218-000 Joinville	-26.2747447	-48.8554411	clean
+be-clean-00172	Avenida Doutor Alberto Sarmento 930, 13070-711 Campinas	-22.8923445	-47.0774646	clean
+be-clean-00173	Rua das Rosas 148, 04048-000 São Paulo	-23.6082799	-46.6389214	clean
+be-clean-00174	Rua Conselheiro Dantas 48, 03032-020 São Paulo	-23.5293161	-46.6223322	clean
+be-clean-00175	Avenida Domingos Perim 339, 29375-000 Venda Nova do Imigrante	-20.3360389	-41.1301945	clean
+be-clean-00176	Avenida Nossa Senhora de Fátima, 77900-000 Tocantinópolis	-6.3254285	-47.4248490	clean
+be-clean-00177	Rua Eugênio Schardong 232, 93040-380 São Leopoldo	-29.7706098	-51.1310016	clean
+be-clean-00178	Avenida Independência 1640, 14025-230 Ribeirão Preto	-21.1908266	-47.8098444	clean
+be-clean-00179	Avenida José Monteiro de Figueiredo - Doutor Zelito 500, 78043-300 Cuiabá	-15.5880697	-56.1127589	clean
+be-clean-00180	Rua Capote Valente 500, 05409-001 São Paulo	-23.5572474	-46.6757033	clean
+be-clean-00181	Rua do Catete 265, 22220-001 Rio de Janeiro	-22.9294940	-43.1773279	clean
+be-clean-00182	Rua Américo Crivilin 370, 29193-010 Aracruz	-19.8298920	-40.2795321	clean
+be-clean-00183	Rua Doutor Danilo Monteiro de Castro 90, 29230-000 Anchieta	-20.8308271	-40.6915294	clean
+be-clean-00184	Avenida Dom Pedro I 639, 01552-001 São Paulo	-23.5710252	-46.6108837	clean
+be-clean-00185	Rua Doutor Felix Engel Filho 48, 99200-000 Guaporé	-28.8487692	-51.8972169	clean
+be-clean-00186	Avenida Beira Mar, 44470-000 Vera Cruz	-13.0943801	-38.7489506	clean
+be-clean-00187	Avenida Olímpio Rafagnin, 85862-210 Foz do Iguaçu	-25.5003926	-54.5358108	clean
+be-clean-00188	Rua Doutor José André da Cruz 224, 45940-000 Ibirapuã	-17.6860560	-40.1045756	clean
+be-clean-00189	Praça Campo de Marte, 21710-270 Rio de Janeiro	-22.8747603	-43.4294083	clean
+be-clean-00190	Rua Leais Paulistanos 22, 04202-010 São Paulo	-23.5787467	-46.6090594	clean
+be-clean-00191	Rua Quinze de Novembro 156, 07600-000 Mairiporã	-23.3194559	-46.5857638	clean
+be-clean-00192	Avenida Mondardo 58, 88914-000 Balneário Arroio do Silva	-28.9875508	-49.4121738	clean
+be-clean-00193	Avenida Duque de Caxias, 95758-000 São Pedro da Serra	-29.4217988	-51.5122597	clean
+be-clean-00194	Rua Jardim Botânico 644, 22461-000 Rio de Janeiro	-22.9641950	-43.2176560	clean
+be-clean-00195	Rua Everaldo Melo Lopes 258, 45530-000 Itacaré	-14.2792833	-38.9956853	clean
+be-clean-00196	Rua dos Caripunas 1717, 66033-442 Belém	-1.4623340	-48.4873482	clean
+be-clean-00197	Rodovia do Vaqueiro, 48950-000 Uauá	-9.8337080	-39.4952888	clean
+be-clean-00198	Rua Sergipe 1833, 85960-000 Marechal Cândido Rondon	-24.5590973	-54.0483998	clean
+be-clean-00199	Rua Uruguai 380, 20510-060 Rio de Janeiro	-22.9307786	-43.2413996	clean
+be-abbreviated-00200	R. João Mafra 93, 04288-000 São Paulo	-23.6097096	-46.6151049	abbreviated
+be-abbreviated-00201	R. Doutor Felix Engel Filho 232, 99200-000 Guaporé	-28.8507706	-51.8970760	abbreviated
+be-abbreviated-00202	Libertad 539, 3357 San Javier	-27.8732090	-55.1361029	abbreviated
+be-abbreviated-00203	R. Andrade Pertence 21, 22220-010 Rio de Janeiro	-22.9250555	-43.1777465	abbreviated
+be-abbreviated-00204	Rua S. Pedro de Alcântara, 21615-310 Rio de Janeiro	-22.8625336	-43.4020334	abbreviated
+be-abbreviated-00205	Al. São Boaventura 626, 24120-191 Niterói	-22.8813355	-43.0940435	abbreviated
+be-abbreviated-00206	Av. Senador Queirós 594, 01026-000 São Paulo	-23.5399015	-46.6305363	abbreviated
+be-abbreviated-00207	Av. Brasil 5455, 21041-030 Rio de Janeiro	-22.8659406	-43.2482148	abbreviated
+be-abbreviated-00208	R. Quinze de Novembro 111, 01013-001 São Paulo	-23.5480436	-46.6340931	abbreviated
+be-abbreviated-00209	R. das Rosas 316, 04048-000 São Paulo	-23.6071625	-46.6401797	abbreviated
+be-abbreviated-00210	Pç. Pedro Vieira, 29470-000 São José do Calçado	-21.0252167	-41.6547002	abbreviated
+be-abbreviated-00211	Av. Ingá 92, 58038-250 João Pessoa	-7.1049842	-34.8302681	abbreviated
+be-abbreviated-00212	R. Andrade Pertence 15B, 22220-010 Rio de Janeiro	-22.9249764	-43.1774903	abbreviated
+be-abbreviated-00213	R. João Dranka 86, 80020-220 Curitiba	-25.4392757	-49.2367633	abbreviated
+be-abbreviated-00214	Calçadão do Parque, 95750-000 Salvador do Sul	-29.4384377	-51.5089289	abbreviated
+be-abbreviated-00215	R. João Santucci 270, 06754-090 Taboão da Serra	-23.6057419	-46.7505095	abbreviated
+be-abbreviated-00216	R. Mantiqueira 159, 04110-040 São Paulo	-23.5842749	-46.6318807	abbreviated
+be-abbreviated-00217	R. Ademar Cerpa, 20911-400 Rio de Janeiro	-22.8892597	-43.2421520	abbreviated
+be-abbreviated-00218	R. Dois de Julho 84, 45700-000 Itapetinga	-15.2455082	-40.2477811	abbreviated
+be-abbreviated-00219	R. Silveira Martins, 22221-000 Rio de Janeiro	-22.9256730	-43.1773616	abbreviated
+be-abbreviated-00220	Estr. da Maioba SN, 65054-030 São Luís	-2.5527719	-44.2149094	abbreviated
+be-abbreviated-00221	Praia do Flamengo 60, 22210-030 Rio de Janeiro	-22.9265870	-43.1738425	abbreviated
+be-abbreviated-00222	Av. Professor Luiz Ignácio Anhaia Mello 1501, 03135-010 São Paulo	-23.5843562	-46.5788145	abbreviated
+be-abbreviated-00223	Calçadão do Parque, 95750-000 Salvador do Sul	-29.4384377	-51.5089289	abbreviated
+be-abbreviated-00224	Av. Iriri 2, 29165-800 Serra	-20.1986648	-40.2605777	abbreviated
+be-abbreviated-00225	R. Daniela Peres 399, 89209-435 Joinville	-26.3580351	-48.8140790	abbreviated
+be-abbreviated-00226	R. Carnot 473, 03032-030 São Paulo	-23.5306309	-46.6222038	abbreviated
+be-abbreviated-00227	Av. Gerônimo Martins, 75905-790 Rio Verde	-17.7943827	-50.9173228	abbreviated
+be-abbreviated-00228	Av. Barão do Rio Branco 108, 95560-000 Torres	-29.3384413	-49.7284859	abbreviated
+be-abbreviated-00229	Av. Dom Pedro I, 01552-001 São Paulo	-23.5692635	-46.6110363	abbreviated
+be-abbreviated-00230	R. Professor Sabino Silva 1017, 40155-250 Salvador	-13.0066511	-38.5166643	abbreviated
+be-abbreviated-00231	R. Ipiranga 70, 22231-120 Rio de Janeiro	-22.9346091	-43.1828542	abbreviated
+be-abbreviated-00232	R. Leais Paulistanos 42, 04202-010 São Paulo	-23.5787338	-46.6089209	abbreviated
+be-abbreviated-00233	Av. Senador Salgado Filho 422, 93110-351 São Leopoldo	-29.7559662	-51.1524413	abbreviated
+be-abbreviated-00234	R. José Mecenas Filho, 49525-000 São Domingos	-10.7912201	-37.5652523	abbreviated
+be-abbreviated-00235	Praia do Flamengo 100, 22210-030 Rio de Janeiro	-22.9282076	-43.1741536	abbreviated
+be-abbreviated-00236	Av. Barão do Rio Branco 108, 95560-000 Torres	-29.3384413	-49.7284859	abbreviated
+be-abbreviated-00237	Av. Rio das Pedras 1712, 03452-100 São Paulo	-23.5690885	-46.5089382	abbreviated
+be-abbreviated-00238	Av. Barão do Rio Branco 108, 95560-000 Torres	-29.3384413	-49.7284859	abbreviated
+be-abbreviated-00239	R. Corrêa Dutra 33, 22210-050 Rio de Janeiro	-22.9282172	-43.1752985	abbreviated
+be-abbreviated-00240	R. Mem de Sá 187, 24220-260 Niterói	-22.9034171	-43.1085133	abbreviated
+be-abbreviated-00241	Av. Prefefeito Francisco Dias de Castro 723, 37472000 Carmo de Minas	-22.1207130	-45.1288702	abbreviated
+be-abbreviated-00242	Av. Vautier 388, 03032-000 São Paulo	-23.5319022	-46.6213133	abbreviated
+be-abbreviated-00243	R. Carlos Gomes 320, 98430-000 Palmitinho	-27.3565563	-53.5566017	abbreviated
+be-abbreviated-00244	Av. Jaguaré 239, 05346-000 São Paulo	-23.5573235	-46.7457770	abbreviated
+be-abbreviated-00245	R. Ferreira Viana 24, 22210-040 Rio de Janeiro	-22.9273182	-43.1744433	abbreviated
+be-abbreviated-00246	R. Padre Luiz 94, 07600-000 Mairiporã	-23.3212319	-46.5852684	abbreviated
+be-abbreviated-00247	R. General José Cristino 77, 20921-400 Rio de Janeiro	-22.8948859	-43.2254743	abbreviated
+be-abbreviated-00248	Av. Pedro Chies, 95758-000 São Pedro da Serra	-29.4211034	-51.5092122	abbreviated
+be-abbreviated-00249	Av. Austrália 90, 09861-390 São Bernardo do Campo	-23.7068559	-46.5866837	abbreviated
+be-abbreviated-00250	R. Padre Marinho 60, 30150-250 Belo Horizonte	-19.9259987	-43.9205729	abbreviated
+be-abbreviated-00251	R. Antônio de Camardo 678, 03309-060 São Paulo	-23.5489955	-46.5611292	abbreviated
+be-abbreviated-00252	Av. Cel. Lucas de Oliveira 995-Bela Vista, 90440-011 Porto Alegre	-30.0313042	-51.1948223	abbreviated
+be-abbreviated-00253	R. Baltazar Lisboa 360, 04110-061 São Paulo	-23.5851016	-46.6316714	abbreviated
+be-abbreviated-00254	R. Clímaco Barbosa 659, 01523-000 São Paulo	-23.5659265	-46.6146453	abbreviated
+be-abbreviated-00255	Av. Ângelo Pretti, 29650-000 Santa Teresa	-19.9317150	-40.6048121	abbreviated
+be-abbreviated-00256	Av. Barão de Itapura 2514, 13073-300 Campinas	-22.8844837	-47.0575670	abbreviated
+be-abbreviated-00257	Av. Primavera 50, 13140-366 Paulínia	-22.7686228	-47.1576465	abbreviated
+be-abbreviated-00258	Av. Governador José Malcher 592, 66035-100 Belém	-1.4516453	-48.4880159	abbreviated
+be-abbreviated-00259	R. Maria Augusta 26, 02214-100 São Paulo	-23.4956029	-46.5862667	abbreviated
+be-abbreviated-00260	R. Alpheu Luis Gasparini 116, 02281-110 São Paulo	-23.4513211	-46.5723470	abbreviated
+be-abbreviated-00261	Av. Paraguassu 681, 95555-000 Arroio Teixeira	-29.6429244	-49.9578220	abbreviated
+be-abbreviated-00262	R. Buarque de Macedo 850, 95790-000 Montenegro	-29.6774162	-51.4567622	abbreviated
+be-abbreviated-00263	R. Mineira, 45955-000 Cruzeiro do Sul	-16.9745293	-40.2393761	abbreviated
+be-abbreviated-00264	R. Andrade Pertence 33B, 22220-010 Rio de Janeiro	-22.9252333	-43.1781072	abbreviated
+be-abbreviated-00265	Av. Santana 937, 07033-010 Guarulhos	-23.5027478	-46.5576931	abbreviated
+be-abbreviated-00266	R. Stefano Broseghini 30, 29185-000 Fundão	-19.9342479	-40.4048620	abbreviated
+be-abbreviated-00267	Rod. Estadual Sebastião Alves de Lima, 29278-000 Domingos Martins	-20.3372783	-41.0434788	abbreviated
+be-abbreviated-00268	R. Carnot 458, 03032-030 São Paulo	-23.5307917	-46.6220877	abbreviated
+be-abbreviated-00269	Vigário João Crisóstomo 280, 99850-000 Paim Filho	-27.7053053	-51.7645429	abbreviated
+be-abbreviated-00270	R. Ferreira Viana 24, 22210-040 Rio de Janeiro	-22.9273182	-43.1744433	abbreviated
+be-abbreviated-00271	R. Doutor Ascânio Cerqueira 25, 04288-100 São Paulo	-23.6098949	-46.6126991	abbreviated
+be-abbreviated-00272	R. Doutor Felix Engel Filho 128, 99200-000 Guaporé	-28.8497526	-51.8971661	abbreviated
+be-abbreviated-00273	Av.Gerson Gonçalves de Lima (BR-232) 1787, 56640-000 Custódia	-8.0878060	-37.6333823	abbreviated
+be-abbreviated-00274	R. Coronel Tamarindo, 21840-440 Rio de Janeiro	-22.8752578	-43.4566788	abbreviated
+be-abbreviated-00275	R. Quinze de Novembro 517, 13920-000 Pedreira	-22.7414120	-46.9047057	abbreviated
+be-abbreviated-00276	Roque González 521, 3357 San Javier	-27.8718835	-55.1346424	abbreviated
+be-abbreviated-00277	R. Carnot 106, 03032-030 São Paulo	-23.5338438	-46.6230132	abbreviated
+be-abbreviated-00278	R. Tupinambá 54, 93310-220 Novo Hamburgo	-29.6856700	-51.1389729	abbreviated
+be-abbreviated-00279	R. Silveira Martins 129, 22221-000 Rio de Janeiro	-22.9260534	-43.1774581	abbreviated
+be-abbreviated-00280	R. Gustavo Haas 30, 98600-000 Três Passos	-27.4300815	-53.9495879	abbreviated
+be-abbreviated-00281	R. Bertioga 61, 04141-100 São Paulo	-23.6102244	-46.6363500	abbreviated
+be-abbreviated-00282	Av. do Rio Pequeno 96, 05379-000 São Paulo	-23.5629790	-46.7474680	abbreviated
+be-abbreviated-00283	Av. Angélica 2573, 01227-200 São Paulo	-23.5542828	-46.6627072	abbreviated
+be-abbreviated-00284	R. 28 de Agosto 2383, 89270-000 Guaramirim	-26.4724917	-48.9917988	abbreviated
+be-abbreviated-00285	Av. Getúlio Vargas 745, 88380-000 Balneário Piçarras	-26.7626134	-48.6857997	abbreviated
+be-abbreviated-00286	Av. Almirante Barroso 3251, 66613-710 Belém	-1.4228858	-48.4510889	abbreviated
+be-abbreviated-00287	Pç. Ciro Pontes 72, 03166-030 São Paulo	-23.5528370	-46.5992495	abbreviated
+be-abbreviated-00288	R. Benedito Conrado Filho 328, 09895-110 São Bernardo do Campo	-23.7025446	-46.5730492	abbreviated
+be-abbreviated-00289	Praia do Flamengo 100, 22210-030 Rio de Janeiro	-22.9282076	-43.1741536	abbreviated
+be-abbreviated-00290	Tv.  Aviz, 68600-000 Bragança	-1.0639675	-46.7821261	abbreviated
+be-abbreviated-00291	R. do Lavradio 56, 20230-070 Rio de Janeiro	-22.9092615	-43.1835253	abbreviated
+be-abbreviated-00292	R. Desembargador Praxedes 370, 60420-478 Fortaleza	-3.7591522	-38.5507257	abbreviated
+be-abbreviated-00293	R. Dezenove 87, 23970000 Paraty	-23.2190106	-44.7236813	abbreviated
+be-abbreviated-00294	R. das Rosas 148, 04048-000 São Paulo	-23.6082799	-46.6389214	abbreviated
+be-abbreviated-00295	Estr. da Maioba SN, 65054-030 São Luís	-2.5527719	-44.2149094	abbreviated
+be-abbreviated-00296	Av. Antonio Ferreira da Fonseca, 28250-000 Italva	-21.4325534	-41.6906974	abbreviated
+be-abbreviated-00297	R. do Catete 176, 22220-000 Rio de Janeiro	-22.9266549	-43.1767785	abbreviated
+be-abbreviated-00298	Av. Pedro Chies, 95758-000 São Pedro da Serra	-29.4206876	-51.5086865	abbreviated
+be-abbreviated-00299	Al. Augusto Stellfeld 799, 80410140 Curitiba	-25.4311693	-49.2815955	abbreviated
+be-abbreviated-00300	R. Carnot 119, 03032-030 São Paulo	-23.5337376	-46.6231462	abbreviated
+be-abbreviated-00301	R. Hilário de Gouveia 17, 22040-020 Rio de Janeiro	-22.9697258	-43.1831190	abbreviated
+be-abbreviated-00302	R. Riachuelo 208, 20230-015 Rio de Janeiro	-22.9148473	-43.1875853	abbreviated
+be-abbreviated-00303	Pç. João Marques, 46140-000 Livramento de Nossa Senhora	-13.6483683	-41.8417224	abbreviated
+be-abbreviated-00304	R. Intendente Amândio Lampert 226, 95790-000 Montenegro	-29.6748734	-51.4534210	abbreviated
+be-abbreviated-00305	R. Sete de Setembro 111B, 20050-006 Rio de Janeiro	-22.9054918	-43.1783482	abbreviated
+be-abbreviated-00306	R. do Catete 155, 22220-000 Rio de Janeiro	-22.9251768	-43.1765190	abbreviated
+be-abbreviated-00307	Estr. Urucânia, 23580-240 Rio de Janeiro	-22.9162516	-43.6324651	abbreviated
+be-abbreviated-00308	R. Quinze de Novembro 183, 07600-000 Mairiporã	-23.3196155	-46.5859782	abbreviated
+be-abbreviated-00309	Av. Pedro Chies, 95758-000 São Pedro da Serra	-29.4210707	-51.5083485	abbreviated
+be-abbreviated-00310	R. Winston Churchill 115, 27920-250 Macaé	-22.4040300	-41.7962730	abbreviated
+be-abbreviated-00311	Av. Paulista 854, 01310-100 São Paulo	-23.5658304	-46.6508381	abbreviated
+be-abbreviated-00312	Av. Meriti 1432, 21.221-006 Rio de Janeiro	-22.8452762	-43.3122158	abbreviated
+be-abbreviated-00313	Praia do Flamengo 60, 22210-030 Rio de Janeiro	-22.9265870	-43.1738425	abbreviated
+be-abbreviated-00314	R. Andrade Pertence 19, 22220-010 Rio de Janeiro	-22.9250357	-43.1776512	abbreviated
+be-abbreviated-00315	R. Corrêa Dutra 9B, 22210-050 Rio de Janeiro	-22.9284543	-43.1743759	abbreviated
+be-abbreviated-00316	Av. Celso Garcia 2477, 03015-000 São Paulo	-23.5363847	-46.5881544	abbreviated
+be-abbreviated-00317	Av. Anna Costa 484, 11060-002 Santos	-23.9657156	-46.3328744	abbreviated
+be-abbreviated-00318	R. Forte de Vila Bela 29, 04865-170 São Paulo	-23.7832947	-46.7124629	abbreviated
+be-abbreviated-00319	R. João Neves da Fontoura 520, 93010-050 São Leopoldo	-29.7647087	-51.1456400	abbreviated
+be-abbreviated-00320	Av. Robert Kennedy 1585, 09895-005 São Bernardo do Campo	-23.7042593	-46.5759776	abbreviated
+be-abbreviated-00321	R. Silveira Martins 124, 22221-000 Rio de Janeiro	-22.9256878	-43.1777478	abbreviated
+be-abbreviated-00322	R. dos Sorocabanos 567, 04202-001 São Paulo	-23.5796507	-46.6047016	abbreviated
+be-abbreviated-00323	Av. Cel. Lucas de Oliveira 995-Bela Vista, 90440-011 Porto Alegre	-30.0313042	-51.1948223	abbreviated
+be-abbreviated-00324	R. Leais Paulistanos 22, 04202-010 São Paulo	-23.5787467	-46.6090594	abbreviated
+be-abbreviated-00325	R. Bolívar 119, 22061-020 Rio de Janeiro	-22.9759282	-43.1916779	abbreviated
+be-abbreviated-00326	Tv. Padre Pedro Baldoncini 72, 88801-045 Criciúma	-28.6783988	-49.3704992	abbreviated
+be-abbreviated-00327	Estr. da Rocinha, 12500-000 Guaratinguetá	-22.9470279	-45.1022183	abbreviated
+be-abbreviated-00328	R. Glicério 498, 01514-001 São Paulo	-23.5566013	-46.6294893	abbreviated
+be-abbreviated-00329	R. Carnot 707, 03032-030 São Paulo	-23.5285704	-46.6215887	abbreviated
+be-abbreviated-00330	R. Camomil 92, 03032-010 São Paulo	-23.5303921	-46.6221553	abbreviated
+be-abbreviated-00331	R. Avelino O. Nascimento 129, 07600-000 Mairiporã	-23.3236137	-46.5913701	abbreviated
+be-abbreviated-00332	Al. Augusto Stellfeld 392, 80410-140 Curitiba	-25.4295272	-49.2779712	abbreviated
+be-abbreviated-00333	R. Álvaro Chaves 41, 22231-220 Rio de Janeiro	-22.9363279	-43.1847488	abbreviated
+be-abbreviated-00334	Belgrano, 3344 Alvear	-29.1132130	-56.5544415	abbreviated
+be-abbreviated-00335	R. Professor Sabino Silva 822, 40155-250 Salvador	-13.0056822	-38.5182356	abbreviated
+be-abbreviated-00336	Av. Ormezinda Ramos Loureiro 180, 96178-000 Arambaré	-30.9058774	-51.4944330	abbreviated
+be-abbreviated-00337	Pç. Prefeito João Lemes da Silva, 37655-000 Itapeva	-22.7681954	-46.2209874	abbreviated
+be-abbreviated-00338	R. Leais Paulistanos 701, 04202-010 São Paulo	-23.5780209	-46.6021453	abbreviated
+be-abbreviated-00339	Av. Presidente João Goulart 35, 88900-000 Araranguá	-28.9394353	-49.4967830	abbreviated
+be-abbreviated-00340	Calçadão do Parque, 95750-000 Salvador do Sul	-29.4384377	-51.5089289	abbreviated
+be-abbreviated-00341	Estr. Urucânia, 23580-240 Rio de Janeiro	-22.9162516	-43.6324651	abbreviated
+be-abbreviated-00342	R. Caramuru 641, 04138-002 São Paulo	-23.6096997	-46.6369155	abbreviated
+be-abbreviated-00343	Av. Doutor Gentil de Moura 253, 04278-080 São Paulo	-23.6023568	-46.6124285	abbreviated
+be-abbreviated-00344	R. Maria Augusta 263, 02214-100 São Paulo	-23.4940192	-46.5847080	abbreviated
+be-abbreviated-00345	R. México 148, 20031-142 Rio de Janeiro	-22.9080231	-43.1754605	abbreviated
+be-abbreviated-00346	R. Gustavo Haas 30, 98600-000 Três Passos	-27.4300815	-53.9495879	abbreviated
+be-abbreviated-00347	Pç. São Sebastião, 49490-000 Poço Verde	-10.7115030	-38.1756408	abbreviated
+be-abbreviated-00348	Av. Paes de Barros 3272, 03149-100 São Paulo	-23.5794776	-46.5868372	abbreviated
+be-abbreviated-00349	Av. Mato Grosso, 78370-000 Nova Olímpia	-14.7813925	-57.2886112	abbreviated
+be-abbreviated-00350	R. Olavo Bilac 348, 07600-000 Mairiporã	-23.3219436	-46.5836125	abbreviated
+be-abbreviated-00351	Av. Engenheiro Caetano Alvares 6200, 02413-200 São Paulo	-23.4824095	-46.6309071	abbreviated
+be-abbreviated-00352	Av. Apolônio Sales 925, 48608-901 Paulo Afonso	-9.3988991	-38.2269088	abbreviated
+be-abbreviated-00353	R. Dom José Mauricio da Rocha 12, 07600-000 Mairiporã	-23.3195167	-46.5830854	abbreviated
+be-abbreviated-00354	R. Guarda de Honra 167, 04201-070 São Paulo	-23.5734859	-46.6059704	abbreviated
+be-abbreviated-00355	R. dos Pinheiros 169, 05422-010 São Paulo	-23.5645066	-46.6799008	abbreviated
+be-abbreviated-00356	Rua Sta. Terezinha 21, 90040-180 Porto Alegre	-30.0373479	-51.2114383	abbreviated
+be-abbreviated-00357	Al. dos Crisântemos 265, 13566-586 São Carlos	-22.0004748	-47.8976083	abbreviated
+be-abbreviated-00358	R. Paschoal Bernardino 161, 36880-049 Muriaé	-21.1324008	-42.3616333	abbreviated
+be-abbreviated-00359	R. Quinzinho do Amaral, 18505-000 Laranjal Paulista	-22.9264248	-47.8946277	abbreviated
+be-abbreviated-00360	R. Ministro Sebastião Lacerda, 26600-001 Paracambi	-22.6112575	-43.7107102	abbreviated
+be-abbreviated-00361	R. Dom José Mauricio da Rocha 12, 07600-000 Mairiporã	-23.3195167	-46.5830854	abbreviated
+be-abbreviated-00362	R. Corrêa Dutra 88, 22210-050 Rio de Janeiro	-22.9275650	-43.1764787	abbreviated
+be-abbreviated-00363	Av. Santos Lopes 507, 44900-000 Irecê	-11.2981972	-41.8540793	abbreviated
+be-abbreviated-00364	R. Doutor Franco da Rocha 253, 05015-040 São Paulo	-23.5348965	-46.6715683	abbreviated
+be-abbreviated-00365	R. Ferreira Viana 59, 22210-040 Rio de Janeiro	-22.9272985	-43.1756342	abbreviated
+be-abbreviated-00366	Pç. Antônio Carlos Magalhães 30, 45.810-000 Porto Seguro	-16.4482024	-39.0644634	abbreviated
+be-abbreviated-00367	R. Minas Gerais 2222, 84070-040 Ponta Grossa	-25.0780426	-50.1865745	abbreviated
+be-abbreviated-00368	R. Floreal 616, 79064-110 Campo Grande/MS	-20.5529940	-54.5847224	abbreviated
+be-abbreviated-00369	R. Major Diogo 200, 01324-000 São Paulo	-23.5527785	-46.6433296	abbreviated
+be-abbreviated-00370	Av. Santarem, 29166-400 Serra	-20.1748158	-40.2438389	abbreviated
+be-abbreviated-00371	R. Boa Vista 363, 01014-001 São Paulo	-23.5445395	-46.6341018	abbreviated
+be-abbreviated-00372	R. Campo Grande, 23063-000 Rio de Janeiro	-22.9090062	-43.5950918	abbreviated
+be-abbreviated-00373	R. Rui Barbosa, 45530-000 Itacaré	-14.2783867	-38.9954989	abbreviated
+be-abbreviated-00374	Av. Mato Grosso, 78.370-000 Nova Olímpia	-14.7834980	-57.2898503	abbreviated
+be-abbreviated-00375	R1-S5 QI 7, 71020-216 Guará	-15.8167883	-47.9800771	abbreviated
+be-abbreviated-00376	Av. Professor Carlos Nelson Ferreira dos Santos 13, 24358-000 Niterói	-22.9508434	-43.0582559	abbreviated
+be-abbreviated-00377	R. Dr. Bayard de Toledo Mércio 85, 93548-011 Novo Hamburgo	-29.6962443	-51.1155492	abbreviated
+be-abbreviated-00378	R. Presidente Carlos Cavalcanti 533, 80020-280 Curitiba	-25.4263341	-49.2700223	abbreviated
+be-abbreviated-00379	R. Almirante Abreu 589, 96170-000 São Lourenço do Sul	-31.3649608	-51.9735289	abbreviated
+be-abbreviated-00380	R. Canuto do Val 115, 01211-040 São Paulo	-23.5404375	-46.6515966	abbreviated
+be-abbreviated-00381	Av. Pedro Chies, 95758-000 São Pedro da Serra	-29.4210950	-51.5079213	abbreviated
+be-abbreviated-00382	Av. Affonso Penna 309, 11020-001 Santos	-23.9653772	-46.3101032	abbreviated
+be-abbreviated-00383	Av. Santos Lopes 507, 44900-000 Irecê	-11.2981972	-41.8540793	abbreviated
+be-abbreviated-00384	Av. Landulfo Alves 57, 48602-900 Paulo Afonso	-9.4002044	-38.2180827	abbreviated
+be-abbreviated-00385	R. Monsenhor Valeriano Pereira, 58713000 Malta	-6.9046503	-37.5259117	abbreviated
+be-abbreviated-00386	Av. Mondardo 58, 88914-000 Balneário Arroio do Silva	-28.9875508	-49.4121738	abbreviated
+be-abbreviated-00387	R. Doutor José Fernandes Medina, 29470-000 São José do Calçado	-21.0233242	-41.6529168	abbreviated
+be-abbreviated-00388	Al. dos Nhambiquaras 1360, 04090-003 São Paulo	-23.6100417	-46.6622924	abbreviated
+be-abbreviated-00389	R. Nossa Senhora da Rosa Mística 4a, 48540-000 Jeremoabo	-10.0786763	-38.3519130	abbreviated
+be-abbreviated-00390	R. Augusto Édson Ehlke 40, 12243-110 São José dos Campos	-23.2022261	-45.9024071	abbreviated
+be-abbreviated-00391	R. Castro Alves 166, 93310-270 Novo Hamburgo	-29.6843759	-51.1402374	abbreviated
+be-abbreviated-00392	Av. Duque de Caxias, 87020-900 Maringa	-23.4140854	-51.9392297	abbreviated
+be-abbreviated-00393	Av. Evandi Américo Comarela 441, 29375-000 Venda Nova do Imigrante	-20.3294782	-41.1319237	abbreviated
+be-abbreviated-00394	Av. Presidente Getúlio Vargas 3350, 94818-000 Alvorada	-29.9954630	-51.0665662	abbreviated
+be-abbreviated-00395	R. João Manoel de Carvalho, 57210-000 Piaçabuçu	-10.4039821	-36.4314506	abbreviated
+be-abbreviated-00396	R. Bernardo Saião 58, 03022-070 São Paulo	-23.5270233	-46.6025311	abbreviated
+be-abbreviated-00397	R. das Laranjeiras 211, 22240004 Rio de Janeiro	-22.9336632	-43.1858830	abbreviated
+be-abbreviated-00398	Pç. João Marques, 46140-000 Livramento de Nossa Senhora	-13.6483683	-41.8417224	abbreviated
+be-abbreviated-00399	R. Tenente Joao Cicero 202, 51020-190 Recife	-8.1132894	-34.8938157	abbreviated
+be-typo-00400	Alameda dos Nhambiquaras 1835, 04090-013 São Paulo	-23.6133433	-46.6651479	typo
+be-typo-00401	Avenida da Liberdade 638, 01502-001 São aulo	-23.5582730	-46.6372529	typo
+be-typo-00402	Rua Silveira Martins 110, 22221-000 Rio de Janeir	-22.9254803	-43.1773723	typo
+be-typo-00403	Rua Andrade Pertence 25, 22220-010 Rio de Janeiro	-22.9251691	-43.1779302	typo
+be-typo-00404	Rua Visconde de Sepetiba 519, 24030-130 iNterói	-22.8938815	-43.1184289	typo
+be-typo-00405	Rua Pedro Américo 36n, 22211-200 Rio de Janeiro	-22.9237385	-43.1777234	typo
+be-typo-00406	Rua Maria Augusta 113, 02214-100 São Paulo	-23.4949611	-46.5857041	typo
+be-typo-00407	Avencida Francisco Glicério 1996, 13023-100 Campinas	-22.8978915	-47.0638230	typo
+be-typo-00408	Rua Arapuã 76, 07033-181 Guarulhos	-23.5028987	-46.5587175	typo
+be-typo-00409	Avenida Olcnda 235, 58039-120 João Pessoa	-7.1126692	-34.8249531	typo
+be-typo-00410	Alameda dos Nhambiquaras 1673, 04090-013 São Paulo	-23.6123515	-46.6642146	typo
+be-typo-00411	Belgrano, 3344 Alvear	-29.1132130	-56.5544415	typo
+be-typo-00412	Rua João Mafra 527, 04288-000 São Psaulo	-23.6135845	-46.6120593	typo
+be-typo-00413	Alameda Santos 466, 01418-000 São Paulo	-23.5694315	-46.6487549	typo
+be-typo-00414	Rua Lisboa 974, 05413-001 São Paulo	-23.5562021	-46.6819612	typo
+be-typo-00415	Travessa Padre Prudêncio 656, 66015-180 Beglém	-1.4550514	-48.4955119	typo
+be-typo-00416	Rua Celso Ribeiro Daltro 36, 44092-188 Feira de Santana	-12.3033961	-38.9503222	typo
+be-typo-00417	Rua Dona Veridiana 272, 01238-010 São Paulo	-23.5419732	-46.6511208	typo
+be-typo-00418	Avenida Doutor Epitácio Pessoa 372, 11030-600 Santos	-23.9779123	-46.3118920	typo
+be-typo-00419	Rodovia Josiyl Espíndula Agostini, 29185-000 Fundão	-19.9349597	-40.4159831	typo
+be-typo-00420	Rua Rui Barbosa 975, 15990-030 Matã	-21.6030265	-48.3644886	typo
+be-typo-00421	Avenida Bento Gonçalves 3460, 96015-140 Pelotas	-31.7614340	-52.3368223	typo
+be-typo-00422	Rua João Antônio Vasqxues 41, 29315-755 Cachoeiro de Itapemirim	-20.8544905	-41.1514349	typo
+be-typo-00423	Ruc Eichi Tahira 261, 07600-000 Mairiporã	-23.3225843	-46.5849778	typo
+be-typo-00424	Rua Bernardo Saião 48, 03022-070 São Paulo	-23.5270732	-46.6025005	typo
+be-typo-00425	Rodovia Estadual Gumercino Moura Nunse, 29300-000 Cachoeiro de Itapemirim	-20.7784791	-41.0680296	typo
+be-typo-00426	Avenida Pasteur 429, 22290-240 Rio de Janeiro	-22.9537169	-43.1691090	typo
+be-typo-00427	Rua Mendes Júnior 602, 03013-011 São Paulo	-23.5334363	-46.6150350	typo
+be-typo-00428	Rua Manoel Matias, 46140-000 Livlramento de Nossa Senhora	-13.6430364	-41.8401776	typo
+be-typo-00429	Rua Brilhante 2361, 79006-560 Campo Grande	-20.4771176	-54.6381768	typo
+be-typo-00430	Rua Barão Geraldo de Resende 21, 13020-440 Campinas	-22.8984275	-47.0650377	typo
+be-typo-00431	Rua do Catete, 22220-000 Rio de Janeiro	-22.9260172	-43.1767601	typo
+be-typo-00432	Rua José Bernardo Pinto 758, 02055-001 São Paulo	-23.5157320	-46.6045752	typo
+be-typo-00433	Rua João Mafra 201, 04288-000 São Paulo	-23.6105447	-46.6143342	typo
+be-typo-00434	Rua Brilhante 2361, 79006-560 Campo Grande	-20.4771176	-54.6381768	typo
+be-typo-00435	Rua Maria Augusta 92, 02214-100 São Paulo	-23.4951575	-46.5857946	typo
+be-typo-00436	Rua Anna Morena de Mello Menezes 250, 86060-020 Lodrina, Paraná	-23.3241823	-51.1733737	typo
+be-typo-00437	Avenida Senador Vergueiro, 09601-000 São Bernardo do Campo	-23.6646183	-46.5623779	typo
+be-typo-00438	Rua Luiza Bocchese 18, 95250-000 Antônio Prado	-28.8580839	-51.2837885	typo
+be-typo-00439	Rua Marquês do Herval 333, 95520-000 Osório	-29.8970387	-50.2487339	typo
+be-typo-00440	Avenida Rio Branco 25 A, 20090-020 Rio de Janeiro	-22.8983714	-43.1800346	typo
+be-typo-00441	Rua rPofessor Dias da Rocha 579, 60170-310 Fortaleza	-3.7347693	-38.4913186	typo
+be-typo-00442	Avenidua Jabaquara 1633, 04045-003 São Paulo	-23.6189661	-46.6391561	typo
+be-typo-00443	Rua Francisco Pereira Coutinho 151, 13087-120 Campinas	-22.8681974	-47.0455833	typo
+be-typo-00444	GO-507, 75695-000 Rio Quente - GO	-17.7648169	-48.7543642	typo
+be-typo-00445	Rua Buarque de Macedo 850, 95790-000 Montenegro	-29.6774162	-51.4567622	typo
+be-typo-00446	Avenida Doutor mNelson leal 491, 46140-000 Livramento de Nossa Senhora	-13.6463322	-41.8427651	typo
+be-typo-00447	Avenida Governador Carlos Gomes Bezerra, 78370-000 Nova Olímpia	-14.7763973	-57.2831532	typo
+be-typo-00448	Avenida Juriti 433, 04520-000 São Paulo	-23.6004532	-46.6634489	typo
+be-typo-00449	Avenida Barão Orlando Bonfim 1044, 29650-000 Santa Teresa	-19.9399189	-40.6099483	typo
+be-typo-00450	Rua Humberto de Campos 315, 22430-190 Rio de Janeiro	-22.9817530	-43.2186159	typo
+be-typo-00451	Estrada da Gávea 430, 22451-264 Rio de Janeiro	-22.9845034	-43.2442602	typo
+be-typo-00452	Rua Inácio Pereira da Rocha 295, 05432-010 São Paulo	-23.5601633	-46.6896157	typo
+be-typo-00453	Rua Andade Pertence 50, 22220-010 Rio de Janeiro	-22.9251444	-43.1785042	typo
+be-typo-00454	Rua João Mafra 568, 04288-000 São Paulo	-23.6131135	-46.6123272	typo
+be-typo-00455	Rua Doutor Edson de Melo 357, 02122-080 São Paulo	-23.5116453	-46.5837198	typo
+be-typo-00456	Avenida Getúlio Vargas 2450, 93020-450 São Leopoldo	-29.7807107	-51.1570949	typo
+be-typo-00457	Servidão das Pitangas 103, 88063-320 Florianópolios	-27.6857953	-48.4834086	typo
+be-typo-00458	Rua Doutor Francisco Timm 656, 98780-803 Santa Rosa	-27.8668307	-54.4855179	typo
+be-typo-00459	Rua Fernando Menezes de Góes 165, 41810700 Salvador	-13.0021677	-38.4519385	typo
+be-typo-00460	Rua José Beranrdo Pinto 502, 02055-001 São Paulo	-23.5146872	-46.6069718	typo
+be-typo-00461	Avenida Brigadeiro Luís Antônio 2375, 01401-971 São Paulo	-23.5684762	-46.6495509	typo
+be-typo-00462	Rua Mateus Grou 15, 05415-040 vão Paulo	-23.5657001	-46.6834399	typo
+be-typo-00463	Rua Doutor Feilx Engel Filho 74, 99200-000 Guaporé	-28.8492238	-51.8971888	typo
+be-typo-00464	Rua Bernardo Saião 72, 03022-070 São Paulo	-23.5269007	-46.6026062	typo
+be-typo-00465	Rua Paulo Zimmermann 56, 89107-000 Pomerode	-26.7375613	-49.1757675	typo
+be-typo-00466	Rua Silveira Martins 135, 22221-000 Rio de Janeiro	-22.9240870	-43.1765891	typo
+be-typo-00467	Rua Doutor Miguel Pneteado 487, 13070-118 Campinas	-22.8891641	-47.0736245	typo
+be-typo-00468	yua Trinta e Um de Março, 45530-000 Itacaré	-14.2784251	-38.9964597	typo
+be-typo-00469	Rua Bernarvdo Saião 93, 03022-070 São Paulo	-23.5268642	-46.6027635	typo
+be-typo-00470	Avenida Cruzeiro do Sul 20, 03033-020 São Paulro	-23.5318170	-46.6253519	typo
+be-typo-00471	Avenida C, 27570-000 Port Real	-22.4202760	-44.2936520	typo
+be-typo-00472	Rua arani 20, 22231-020 Rio de Janeiro	-22.9415752	-43.1811549	typo
+be-typo-00473	Rua Silveira Martins 150, 22221-000 Rio de Janeiro	-22.9257471	-43.1787563	typo
+be-typo-00474	Rua Andrade Pertence 49, 22220-010 Rio de Janeiro	-22.9253617	-43.1783969	typo
+be-typo-00475	Rua Corrêa Dutra 65, 22210-050 Rio de Janeiro	-22.9280295	-43.1760388	typo
+be-typo-00476	Avenida Atlântica 2064, 22021-001 Rio de Janeiro	-22.9689948	-43.1817135	typo
+be-typo-00477	Rua Corrêa utra 9A, 22210-050 Rio de Janeiro	-22.9284741	-43.1742364	typo
+be-typo-00478	Rua do Lavapés 444, 01519-000 São Paulo	-23.5617822	-46.6284390	typo
+be-typo-00479	Rua Andrxde Pertence, 22221-000 Rio de Janeiro	-22.9254457	-43.1773025	typo
+be-typo-00480	Estrada Velha do Barigui 1040, 81250-460 Curitiba	-25.4871812	-49.3426209	typo
+be-typo-00481	Rua Sete de Seembro 3170, 35010-172 Governador Valadares	-18.8546152	-41.9508398	typo
+be-typo-00482	Avenida Barão do Jeremoabo 27, 48540-000 Jeremoabo	-10.0662553	-38.3494013	typo
+be-typo-00483	General Madariaga 797, 3230 Paso de los Libres	-29.7138698	-57.0864207	typo
+be-typo-00484	Avenida Jabaquara 2010, 04640-400 São Paulo	-23.6218452	-46.6401116	typo
+be-typo-00485	Avenida Barão Orlando Bonfim 1044, 29650-000 Santa Teresa	-19.9399189	-40.6099483	typo
+be-typo-00486	Avenida Pedraso de Morais 171, 05419-000 São Paulo	-23.5681018	-46.6885698	typo
+be-typo-00487	Avenida Goverandor José Malcher 592, 66035-100 Belém	-1.4516453	-48.4880159	typo
+be-typo-00488	Praça Vinte e Cifco de Dezembro 35, 29560-000 Guaçuí	-20.7729961	-41.6768349	typo
+be-typo-00489	Rua Quiecalo 185, 86701-070 Arapongas	-23.4206939	-51.4294048	typo
+be-typo-00490	Avenida Primeiro de Março 3430, 93320-010 Novo Hamburgo	-29.7142359	-51.1340115	typo
+be-typo-00491	Rua Gustavo Haas 30, 98600-000 Três Passos	-27.4300815	-53.9495879	typo
+be-typo-00492	Praça Dr. Rockert 92, 39442-052 Janaúba	-15.7984066	-43.3070997	typo
+be-typo-00493	Rua João Lorenceti 93, 19300-000 Presidente Bernardes	-22.0077920	-51.5567417	typo
+be-typo-00494	Rua Francisco Machado de Souza 1135, 89240-000 São Francisco do Sul/SC	-26.2302296	-48.6273570	typo
+be-typo-00495	Rua Maria Angélica 113n, 22470-201 Rio de Janeiro	-22.9616522	-43.2080311	typo
+be-typo-00496	Rua das Rosas 300, 04048-000 São Paulo	-23.6073032	-46.6400387	typo
+be-typo-00497	Rua Luiza Bocchese 18, 95250-000 Antônio Prado	-28.8580839	-51.2837885	typo
+be-typo-00498	Rua Serra de Juréa 351, 03323-020 São Paqlo	-23.5471632	-46.5711911	typo
+be-typo-00499	Rua Carnot 361, 03032-030 São Paulo	-23.5315856	-46.6224843	typo
+be-typo-00500	Rua Carnot 70, 03032-030 São Paulo	-23.5341703	-46.6231168	typo
+be-typo-00501	Rua Nebraska 105, 04560-010 São Paulo	-23.6124290	-46.6791427	typo
+be-typo-00502	Rua dos Ituaons 193, 04203-030 São Paulo	-23.5809464	-46.6060139	typo
+be-typo-00503	Praça Ilo xttani 146, 03028-000 São Paulo	-23.5263775	-46.6108987	typo
+be-typo-00504	Avenida Madre Leôia Milito 446, 86050-270 Londrina, Paraná	-23.3349107	-51.1672612	typo
+be-typo-00505	Rua da Bahia 1172, 30160-011 Belo Horizonte	-19.9252730	-43.9376563	typo
+be-typo-00506	Rua Antônio Bonito 61, 07033-180 uGarulhos	-23.5014255	-46.5583064	typo
+be-typo-00507	Rua Correa Dutra 22, 22210-050 Rio de Janeiro	-22.9280591	-43.1746870	typo
+be-typo-00508	Avenida Sete de Setembro 4484, 80250-210 Curtitiba	-25.4431841	-49.2819653	typo
+be-typo-00509	Rua Doutor Barros Monteiro 108, 13073-240 Campinas	-22.8907057	-47.0677874	typo
+be-typo-00510	Rodovia BA-210, 48609-505 Paulo Afonso	-9.4377814	-38.2045911	typo
+be-typo-00511	Rua Silveira Martins 30, 22221-000 Rio de Janeiro	-22.9251938	-43.1741644	typo
+be-typo-00512	Rua Prefeito Passos 95, 13023-220 Campinas	-22.8937060	-47.0617794	typo
+be-typo-00513	Rua Manuel da Nóbrega 209, 04001-081 São Paulo	-23.5695453	-46.6494263	typo
+be-typo-00514	Rua Silveira Martins 138, 22221-000 Rio de Janeiso	-22.9257175	-43.1782199	typo
+be-typo-00515	Rua Mateus Leme 358, 80510-190 Ceuritiba	-25.4244592	-49.2711819	typo
+be-typo-00516	Avenida Cinquentenário 186, 45700-000 Itapetinga	-15.2510828	-40.2552131	typo
+be-typo-00517	Avenida Theodomiro Porto da Fonseca 1168, 93020-080 São Leopoldo	-29.7794388	-51.1474608	typo
+be-typo-00518	Avenida Independência 1640, 14025-230 Ribeirão Preto	-21.1908266	-47.8098444	typo
+be-typo-00519	Rua Berto Círio 521, 92420-030 Canoas	-29.8828811	-51.1835495	typo
+be-typo-00520	Avneida Fernando Machado - D 2580, 89805-902 Chapecó	-27.0813440	-52.6232430	typo
+be-typo-00521	Avenida Heráclito Graça 1500, 60140-032 Fortaleza	-3.7380239	-38.5118239	typo
+be-typo-00522	Rua Ferreira de Araújo 604, 05428-001 São Paulo	-23.5630934	-46.6981141	typo
+be-typo-00523	Rua Bernardo Saião 170, 03022-070 São Pauol	-23.5261349	-46.6030514	typo
+be-typo-00524	Rua Eurico de Aguiar 888, 29055-280 Vitória	-20.3043481	-40.3000480	typo
+be-typo-00525	Avenida José Carlos de Pinho 81, 39560-000 Saalinas	-16.1667515	-42.3105075	typo
+be-typo-00526	Rua Capitão Salomão 50, 22271-040 Rio de Janyiro	-22.9570995	-43.1964001	typo
+be-typo-00527	Rua Henrique Schaumann 668, 05413-011 SãoP aulo	-23.5591639	-46.6812024	typo
+be-typo-00528	Avenida Jabaquara 1812, 04046-300 São Pulo	-23.6202272	-46.6397646	typo
+be-typo-00529	Rua Augustinho Alves da Silva 15, 07600-000 Mairiporã	-23.3211803	-46.5837999	typo
+be-typo-00530	Rua Carnot 567, 03032-030 São Paulo	-23.5298451	-46.6219669	typo
+be-typo-00531	Rua Quinze de Novembro 123, 07600-000 bMairiporã	-23.3194630	-46.5853460	typo
+be-typo-00532	Avenida Jabaquara 1824, 04046-300 São Paulo	-23.6203306	-46.6397871	typo
+be-typo-00533	Rua do Ctete, 22220-000 Rio de Janeiro	-22.9261927	-43.1767661	typo
+be-typo-00534	Avenida Meriti 1432, 21.221-006 Rio e Janeiro	-22.8452762	-43.3122158	typo
+be-typo-00535	Rua Corrêa Dutra 9, 22210-050 Rio de Janeirl	-22.9284642	-43.1743008	typo
+be-typo-00536	Rua Quinze de Novembro 129, 07600-000 Mairiporã	-23.3194753	-46.5854097	typo
+be-typo-00537	Rua Aritiano Gonçalves 273, 88780-000 Imbituba	-28.2163131	-48.6715886	typo
+be-typo-00538	Avenida Central 1000, Loja 1/2, 71720-560 Núcleo Bandeirante	-15.8716157	-47.9703678	typo
+be-typo-00539	Avenida Jabaquara 1317, 04045-002 São Paulo	-23.6158443	-46.6384665	typo
+be-typo-00540	Rodovia Estadual João Izoton Filho, 29780-000 São Gabriel da aPlha	-19.0091228	-40.5308263	typo
+be-typo-00541	Avenida Barão de Studart 953, 60120-001 Fortaleza	-3.7326371	-38.5056041	typo
+be-typo-00542	Rua Arnaldo Alvernaz Nunes 320, 02969-100 São Paulo	-23.4856310	-46.7127935	typo
+be-typo-00543	Avenida Getúlio Vargas 2450, 93020-450 São Loepoldo	-29.7807107	-51.1570949	typo
+be-typo-00544	Rua Bento Lisboa 23, 22221-011 Rio de Janeiro	-22.9254308	-43.1793035	typo
+be-typo-00545	Los Ciento Ocho, 3230 Paso de ols Libres	-29.7142630	-57.0850678	typo
+be-typo-00546	Rua Antônio de Cammardo 678, 03309-060 São Paulo	-23.5489955	-46.5611292	typo
+be-typo-00547	Praça Presidente Tancredo Neves 111, 35420-970 Mariana	-20.3764992	-43.4178076	typo
+be-typo-00548	Avenida Cabo Branco 5100, 58045010 João Pessowa	-7.1457410	-34.8068762	typo
+be-typo-00549	Rua Duotor Ascânio Cerqueira 25, 04288-100 São Paulo	-23.6098949	-46.6126991	typo
+be-typo-00550	Alameda Tibiyriçá 230, 07600-000 Mairiporã	-23.3212759	-46.5852510	typo
+be-typo-00551	Rua Luís Otávaio 651, 13087-560 Campinas	-22.8637038	-47.0437965	typo
+be-typo-00552	Rua Miguel Jorge Cury 20, 07600-000 Mairiporã	-23.3212314	-46.5847330	typo
+be-typo-00553	Rua Líbero Badraó 353, 01009-000 São Paulo	-23.5465908	-46.6364418	typo
+be-typo-00554	Rua do Catete 127, 22220-000 iRo de Janeiro	-22.9249512	-43.1765885	typo
+be-typo-00555	Rodovia Governador Mário Covas, 29280-000 Iconha	-20.7754917	-40.7775500	typo
+be-typo-00556	Rua Monte Conselho 505, 41940-370 Salvador	-13.0152105	-38.4875307	typo
+be-typo-00557	Rua Ferreira Viana 29, 22210-040 Rio de Janero	-22.9277035	-43.1745722	typo
+be-typo-00558	Alameda dos Nhambiquaras 2075, 04090-013 São Paulo	-23.6148692	-46.6666565	typo
+be-typo-00559	Rua Henrique Justa 56, 53439-190 Paulista	-7.9452176	-34.8254553	typo
+be-typo-00560	Rua Quinze de Novembro 111, 01013-001 São Paulo	-23.5480436	-46.6340931	typo
+be-typo-00561	Rua Maria Augusta 129, 02214-100 São Paulo	-23.4948722	-46.5856102	typo
+be-typo-00562	Avendia Nove de Agosto 139, 29950-000 Jaguaré	-18.9076090	-40.0671465	typo
+be-typo-00563	Alameda Tibiriçá 886, 07600-000 Mairiporã	-23.3220537	-46.5910275	typo
+be-typo-00564	Avenida Bernardo Sayão, 77600-000 Paraíso d Tocantins	-10.1739376	-48.8846323	typo
+be-typo-00565	Avenida Benjamin Constant 1633, 13010-142 Campfinas	-22.9008803	-47.0567023	typo
+be-typo-00566	Estrada Fazenda Grande 625, 88543-000 Paiel	-27.9672390	-50.0803135	typo
+be-typo-00567	Rua Miguel Jorge Cury 122, 07600-000 Mairiporã	-23.3220619	-46.5839761	typo
+be-typo-00568	Praça Jose Belo Rezende, 04841-010 São Paulo	-23.7345824	-46.6889310	typo
+be-typo-00569	Avenida Fernandes Lima, 57055-000 Maceió	-9.6244851	-35.7388587	typo
+be-typo-00570	Rua Ministro Oliveira Salazar 1057, 31520-400 Belo Horizonte	-19.8191848	-43.9742021	typo
+be-typo-00571	Rua Condor 1100, 86701-210 Arapongas	-23.4102973	-51.4337876	typo
+be-typo-00572	Rua Doutor Felix Engel Filho 766, 99200-000 Guaporé	-28.8566530	-51.8969390	typo
+be-typo-00573	vAenida Doutor Pedro Lessa 2751, 11025-003 Santos	-23.9660929	-46.3164223	typo
+be-typo-00574	Rua Nereu Ramos 1200, 88930-000 Turvo	-28.9308669	-49.6836318	typo
+be-typo-00575	Rua Azevedo Soares 1637, 03322-001 São Paulo	-23.5479821	-46.5618221	typo
+be-typo-00576	Rua Duque de Caxias 34, 48540-000 Jeremoabo	-10.0715663	-38.3493217	typo
+be-typo-00577	Rua Maria Augusta 45, 02214-100 São Paulo	-23.4954345	-46.5861985	typo
+be-typo-00578	Rua João Scucato Coradin 2500, 83430000 Campina Grande do Sul	-25.3339700	-49.1162788	typo
+be-typo-00579	Rua Buarque de Macedo 60, 22220-030 Rio de Janeiro	-22.9287830	-43.1760511	typo
+be-typo-00580	Rua Coronel Vitorino 28, 29230-000 Anchieta	-20.8054222	-40.6499408	typo
+be-typo-00581	Avenida Brigadeiro Luís Antônio 2692, 01402-000 São saulo	-23.5704208	-46.6519091	typo
+be-typo-00582	Av.Gerson Gonçalves ed Lima (BR-232) 1787, 56640-000 Custódia	-8.0878060	-37.6333823	typo
+be-typo-00583	Praaça da Matriz Maestro Esaú Pinho, 46170-970 Rio de Contas	-13.5812320	-41.8124675	typo
+be-typo-00584	Linha residente Becker, 89896-000 Itapiranga	-27.1148084	-53.7730330	typo
+be-typo-00585	Rua dos tIuanos 93, 04203-030 São Paulo	-23.5810261	-46.6070340	typo
+be-typo-00586	Rua Maria Augusta 89, 02214-100 São Paulo	-23.4951136	-46.5858631	typo
+be-typo-00587	rPaça Charles Miller, 01234-010 São Paulo	-23.5474227	-46.6654699	typo
+be-typo-00588	Rua Bernardo Saião 186, 03022-070 São Paulo	-23.5259816	-46.6031172	typo
+be-typo-00589	Rua João Mafra 113, 04288-000 São Paulo	-23.6098207	-46.6149819	typo
+be-typo-00590	Rua Coronel Emídio Piedgde 279, 03018-010 São Paulo	-23.5305919	-46.6129243	typo
+be-typo-00591	Avenida ReitorM iguel Calmon - Vale do Canela 1080, 40110-000 Salvador	-12.9944638	-38.5175476	typo
+be-typo-00592	Avenida Getúlio Vargas 2450, 93020-450 São Leopoldo	-29.7807107	-51.1570949	typo
+be-typo-00593	Rua dos Sorocabanos 567, 04202-001 São Pgulo	-23.5796507	-46.6047016	typo
+be-typo-00594	Rua da República 3377, 79990-000 Amambai	-23.1019382	-55.2304540	typo
+be-typo-00595	Rua Conselheiro Dantas 189, 03032-020 São aPulo	-23.5294993	-46.6210156	typo
+be-typo-00596	Via Marginal RB-101 Sul, 29135-160 Viana	-20.3582425	-40.4234966	typo
+be-typo-00597	Alameda Doutor Carlos de Carvalho 528, 80430-180 Curiiba	-25.4329710	-49.2801715	typo
+be-typo-00598	Cesário Motta 468, 15990-050 Matãi	-21.6032719	-48.3692929	typo
+be-typo-00599	Rua Andrade Pertence 42A, 22220-010 Ri de Janeiro	-22.9250307	-43.1781984	typo
+be-reordered-00600	80420-000 Curitiba Rua Comendador Araújo 268	-25.4345182	-49.2793369	reordered
+be-reordered-00601	22290-190 Rio de Janeiro Rua Bartolomeu Portela 25B	-22.9509245	-43.1760709	reordered
+be-reordered-00602	05413-010 São Paulo Rua Henrique Schaumann 124	-23.5633723	-46.6782804	reordered
+be-reordered-00603	03166-030 São Paulo Praça Ciro Pontes 72	-23.5528370	-46.5992495	reordered
+be-reordered-00604	03319-001 São Paulo Rua Cantagalo 1391	-23.5444848	-46.5607826	reordered
+be-reordered-00605	09015-080 Santo André Praça IV Centenário	-23.6568867	-46.5324207	reordered
+be-reordered-00606	05805-000 São Paulo Avenida Maria Coelho Aguiar 920	-23.6524688	-46.7341461	reordered
+be-reordered-00607	95150-000 Nova Petrópolis Avenida 15 de Novembro 2470	-29.3691706	-51.1044231	reordered
+be-reordered-00608	35501-245 Divinópolis Rua Carbonita 1240	-20.1622674	-44.9137417	reordered
+be-reordered-00609	29200-260 Guarapari Rua Joaquim da Silva Lima 23	-20.6711852	-40.4970900	reordered
+be-reordered-00610	20011-030 Rio de Janeiro Rua da Quitanda 45	-22.9040380	-43.1766744	reordered
+be-reordered-00611	04288-000 São Paulo Rua João Mafra 567	-23.6130297	-46.6121206	reordered
+be-reordered-00612	62930-000 Limoeiro do Norte Rua João Maria de Freitas 1463	-5.1566100	-38.0916045	reordered
+be-reordered-00613	02214-100 São Paulo Rua Maria Augusta 106	-23.4950589	-46.5856890	reordered
+be-reordered-00614	91010-006 Porto Alegre Avenida Assis Brasil 2611	-30.0114027	-51.1611415	reordered
+be-reordered-00615	46170-970 Rio de Contas Largo do Rosário	-13.5789847	-41.8104120	reordered
+be-reordered-00616	22221-000 Rio de Janeiro Rua Silveira Martins	-22.9256582	-43.1769753	reordered
+be-reordered-00617	02214-100 São Paulo Rua Maria Augusta 262	-23.4940620	-46.5846410	reordered
+be-reordered-00618	03325-000 São Paulo Rua Aguapeí 20	-23.5523027	-46.5618240	reordered
+be-reordered-00619	01416-002 São Paulo Rua da Consolação 3610	-23.5630465	-46.6708263	reordered
+be-reordered-00620	22210-040 Rio de Janeiro Rua Ferreira Viana 50	-22.9269131	-43.1755055	reordered
+be-reordered-00621	04216-060 São Paulo Rua Clemente Pereira 58	-23.5984087	-46.6047377	reordered
+be-reordered-00622	02214-100 São Paulo Rua Maria Augusta 51	-23.4953784	-46.5861391	reordered
+be-reordered-00623	29297-000 Vargem Alta Avenida Eugenio Fassarella	-20.5211327	-40.9854559	reordered
+be-reordered-00624	20230-070 Rio de Janeiro Rua do Lavradio 56	-22.9092615	-43.1835253	reordered
+be-reordered-00625	03022-070 São Paulo Rua Bernardo Saião 128	-23.5264566	-46.6028767	reordered
+be-reordered-00626	07600-000 Mairiporã Rua Augustinho Alves da Silva 15	-23.3211803	-46.5837999	reordered
+be-reordered-00627	04003-010 São Paulo Rua Leôncio de Carvalho 102	-23.5707189	-46.6461329	reordered
+be-reordered-00628	22210-050 Rio de Janeiro Rua Correa Dutra 22	-22.9280591	-43.1746870	reordered
+be-reordered-00629	03022-070 São Paulo Rua Bernardo Saião 194	-23.5259430	-46.6031351	reordered
+be-reordered-00630	01311-000 São Paulo Avenida Paulista 509	-23.5682361	-46.6486354	reordered
+be-reordered-00631	93320-020 Novo Hamburgo Avenida Nações Unidas 2226	-29.6878101	-51.1323279	reordered
+be-reordered-00632	02214-100 São Paulo Rua Maria Augusta 178	-23.4945934	-46.5852057	reordered
+be-reordered-00633	04640-400 São Paulo Avenida Jabaquara 2010	-23.6218452	-46.6401116	reordered
+be-reordered-00634	78780-000 Alto Araguaia Rua João Segundo 691	-17.3126611	-53.2174052	reordered
+be-reordered-00635	22221-000 Rio de Janeiro Rua Silveira Martins 48	-22.9254210	-43.1745721	reordered
+be-reordered-00636	04852-320 São Paulo Avenida Carlos Barbosa Santos 50	-23.7846928	-46.6888050	reordered
+be-reordered-00637	07033-010 Guarulhos Avenida Santana 937	-23.5027478	-46.5576931	reordered
+be-reordered-00638	36440-000 Itaverava Praça José da Costa Carvalho 109	-20.6760662	-43.6088250	reordered
+be-reordered-00639	13020-432 Campinas Avenida Barão de Itapura 1167	-22.8940034	-47.0658431	reordered
+be-reordered-00640	39550-000 Taiobeiras Avenida da Liberdade 314	-15.8131883	-42.2324580	reordered
+be-reordered-00641	88220-000 Itapema Rua 600 270	-27.1055184	-48.6178217	reordered
+be-reordered-00642	63570000 Antonina do Norte Rua Antônio Mota 50	-6.7737350	-39.9868073	reordered
+be-reordered-00643	03033-000 São Paulo Rua Canindé 534	-23.5298786	-46.6228747	reordered
+be-reordered-00644	07600-000 Mairiporã Alameda Tibiriçá 869	-23.3221729	-46.5912414	reordered
+be-reordered-00645	13041-720 Campinas Avenida do Ipiranga 60	-22.9157824	-47.0576235	reordered
+be-reordered-00646	03022-070 São Paulo Rua Bernardo Saião 70	-23.5269408	-46.6025816	reordered
+be-reordered-00647	05305-002 São Paulo Avenida Imperatriz Leopoldina 1170	-23.5320927	-46.7300100	reordered
+be-reordered-00648	13070-001 Campinas Avenida Andrade Neves 2457	-22.8887921	-47.0780302	reordered
+be-reordered-00649	45820-131 Eunápolis Rua Maria Quitéria	-16.3773374	-39.5825327	reordered
+be-reordered-00650	02214-100 São Paulo Rua Maria Augusta 125	-23.4949115	-46.5856520	reordered
+be-reordered-00651	88317-615 Itajaí Rua Antônio José Cuco 619	-26.8996535	-48.7195260	reordered
+be-reordered-00652	04036-000 São Paulo Rua Domingos de Morais 1920	-23.5930986	-46.6370091	reordered
+be-reordered-00653	04205-001 São Paulo Rua Cipriano Barata 1913	-23.5866063	-46.6052946	reordered
+be-reordered-00654	95750-000 Salvador do Sul Calçadão do Parque	-29.4384377	-51.5089289	reordered
+be-reordered-00655	39650-000 Minas Novas Avenida Waldemar César Santos 109	-17.2172947	-42.5926347	reordered
+be-reordered-00656	22210-030;22220-030 Rio de Janeiro Praia do Flamengo;Rua Buarque de Macedo 144;2	-22.9294890	-43.1744697	reordered
+be-reordered-00657	03318-000 São Paulo Rua Serra de Bragança 1153	-23.5441239	-46.5641125	reordered
+be-reordered-00658	05416-001 São Paulo Rua Fradique Coutinho 1340	-23.5560324	-46.6914081	reordered
+be-reordered-00659	20230-070 Rio de Janeiro Rua do Lavradio 156	-22.9120053	-43.1824056	reordered
+be-reordered-00660	05415-040 São Paulo Rua Mateus Grou 15	-23.5657001	-46.6834399	reordered
+be-reordered-00661	04001-000 São Paulo Rua Manuel da Nóbrega 66	-23.5684650	-46.6491709	reordered
+be-reordered-00662	04045-002 São Paulo Avenida Jabaquara 1545	-23.6178929	-46.6389191	reordered
+be-reordered-00663	22220-020 Rio de Janeiro Travessa Carlos de Sá 15	-22.9253963	-43.1786705	reordered
+be-reordered-00664	99200-000 Guaporé Rua Doutor Felix Engel Filho 428	-28.8528826	-51.8969123	reordered
+be-reordered-00665	07033-181 Guarulhos Rua Arapuã 151	-23.5029215	-46.5584463	reordered
+be-reordered-00666	01153-000 São Paulo Rua Vitorino Carmilo 459	-23.5329683	-46.6514100	reordered
+be-reordered-00667	25610110 petropolis Rua Doutor Porciuncula 86	-22.5083594	-43.1701435	reordered
+be-reordered-00668	03002-000 São Paulo Avenida Rangel Pestana 2248	-23.5414110	-46.6139299	reordered
+be-reordered-00669	49100-000 São Cristóvão Avenida Governador João Alves Filho	-10.9245718	-37.1048626	reordered
+be-reordered-00670	03032-030 São Paulo Rua Carnot 353	-23.5316899	-46.6225162	reordered
+be-reordered-00671	03314-000 São Paulo Rua Vilela 710	-23.5406643	-46.5661623	reordered
+be-reordered-00672	09861-160 São Bernardo do Campo Avenida Moinho Fabrini 460	-23.6968965	-46.5816939	reordered
+be-reordered-00673	01045-000 São Paulo Praça da República 292	-23.5432822	-46.6411823	reordered
+be-reordered-00674	22210-040 Rio de Janeiro Rua Ferreira Viana 36	-22.9270712	-43.1748295	reordered
+be-reordered-00675	15990-050 Matão Cesário Motta 468	-21.6032719	-48.3692929	reordered
+be-reordered-00676	83005-450 São José dos Pinhais Avenida das Torres 2950	-25.5319516	-49.1955576	reordered
+be-reordered-00677	39550-000 Taiobeiras Avenida da Liberdade 314	-15.8131883	-42.2324580	reordered
+be-reordered-00678	93010-060 São Leopoldo Rua Presidente Roosevelt 409	-29.7655542	-51.1443917	reordered
+be-reordered-00679	22211-200 Rio de Janeiro Rua Pedro Américo 42A	-22.9237626	-43.1777657	reordered
+be-reordered-00680	03022-070 São Paulo Rua Bernardo Saião 93	-23.5268642	-46.6027635	reordered
+be-reordered-00681	03032-030 São Paulo Rua Carnot 361	-23.5315856	-46.6224843	reordered
+be-reordered-00682	22210-040 Rio de Janeiro Rua Ferreira Viana 20	-22.9274418	-43.1741429	reordered
+be-reordered-00683	22220-010 Rio de Janeiro Rua Andrade Pertence 39	-22.9253074	-43.1782574	reordered
+be-reordered-00684	01519-000 São Paulo Rua do Lavapés 108	-23.5598532	-46.6301447	reordered
+be-reordered-00685	44380-000 Cruz das Almas Rua Gerson Maia	-12.6576741	-39.1212807	reordered
+be-reordered-00686	46170-970 Rio de Contas Avenida Senhora Santana	-13.5881591	-41.8180286	reordered
+be-reordered-00687	22220-000 Rio de Janeiro Rua do Catete 22	-22.9218591	-43.1771536	reordered
+be-reordered-00688	79750-000 Nova Andradina Avenida Antônio Joaquim de Moura Andrade 1480	-22.2499752	-53.3501163	reordered
+be-reordered-00689	07012-020 Guarulhos Rua Doutor Ramos de Azevedo 88	-23.4711120	-46.5304244	reordered
+be-reordered-00690	74093-020 Goiânia Rua 90 775	-16.6979774	-49.2520676	reordered
+be-reordered-00691	07033-010 Guarulhos Avenida Santana 937	-23.5027478	-46.5576931	reordered
+be-reordered-00692	93010-060 São Leopoldo Rua Presidente Roosevelt 409	-29.7655542	-51.1443917	reordered
+be-reordered-00693	03011-001 São Paulo Rua Maria Marcolina 604	-23.5365916	-46.6163053	reordered
+be-reordered-00694	03307-005 São Paulo Rua Tuiuti 2469	-23.5472396	-46.5738229	reordered
+be-reordered-00695	03672-010 São Paulo Rua Eng. Luís Antônio Rantin Moutinho 296	-23.5154789	-46.5035269	reordered
+be-reordered-00696	99200-000 Guaporé Rua Doutor Felix Engel Filho 428	-28.8528826	-51.8969123	reordered
+be-reordered-00697	13070-001 Campinas Avenida Andrade Neves 2457	-22.8887921	-47.0780302	reordered
+be-reordered-00698	95330-000 Veranópolis Rua Saul Irineu Farina 160	-28.9269748	-51.5485730	reordered
+be-reordered-00699	01235-000 São Paulo Rua Traipu 479	-23.5362085	-46.6640755	reordered
+be-reordered-00700	29375-000 Venda Nova do Imigrante Avenida Prefeito Nicolau Falqueto 3240	-20.3301984	-41.1552533	reordered
+be-reordered-00701	58045010 João Pessoa Avenida Cabo Branco 5100	-7.1457410	-34.8068762	reordered
+be-reordered-00702	29927-000 Sooretama Rodovia Governador Mário Covas km 107	-19.0472689	-40.0274077	reordered
+be-reordered-00703	89228-001 Joinville Rua Prefeito Baltasar Buschle 2850	-26.2913637	-48.7806659	reordered
+be-reordered-00704	90610-270 Porto Alegre Rua Silva Só 300	-30.0412498	-51.2030143	reordered
+be-reordered-00705	93010-002 São Leopoldo Rua Independência 700	-29.7658056	-51.1457475	reordered
+be-reordered-00706	01001-001 São Paulo Praça da Sé 242	-23.5510786	-46.6346868	reordered
+be-reordered-00707	05174-000 São Paulo Avenida Agenor Couto de Magalhães 1601	-23.4724428	-46.7423819	reordered
+be-reordered-00708	46140-000 Livramento de Nossa Senhora Avenida Lindemberg cardoso n/s	-13.6585329	-41.8460933	reordered
+be-reordered-00709	04004-070 São Paulo Praça Oswaldo Cruz 153	-23.5713510	-46.6446144	reordered
+be-reordered-00710	95790-000 Montenegro Rua Buarque de Macedo 1170	-29.6753422	-51.4547291	reordered
+be-reordered-00711	71060-230 Brasília QI 23 Comércio Local	-15.8266011	-47.9820754	reordered
+be-reordered-00712	3230 Paso de los Libres General Madariaga 797	-29.7138698	-57.0864207	reordered
+be-reordered-00713	28051-250 Campos dos Goytacazes Rua Doutor Silvio Bastos Tavares 09	-21.7510846	-41.3381113	reordered
+be-reordered-00714	48410-000 Cícero Dantas Rua Expedicionário	-10.6024792	-38.3868281	reordered
+be-reordered-00715	02214-100 São Paulo Rua Maria Augusta 23	-23.4955425	-46.5863124	reordered
+be-reordered-00716	29315-730 Cachoeiro de Itapemirim Rua Domingos Alcíno Dadalto 262	-20.8544205	-41.1504165	reordered
+be-reordered-00717	95790-000 Montenegro Rua Buarque de Macedo 820	-29.6776446	-51.4569715	reordered
+be-reordered-00718	03064-000 São Paulo Avenida Celso Garcia 5000	-23.5332538	-46.5640031	reordered
+be-reordered-00719	07600-000 Mairiporã Rua Luísa Brilha Campos 91	-23.3206996	-46.5844461	reordered
+be-reordered-00720	09895-005 São Bernardo do Campo Avenida Robert Kennedy 1585	-23.7042593	-46.5759776	reordered
+be-reordered-00721	20230-151 Rio de Janeiro Avenida Mem de Sá 241	-22.9118815	-43.1892891	reordered
+be-reordered-00722	01401-971 São Paulo Avenida Brigadeiro Luís Antônio 2375	-23.5684762	-46.6495509	reordered
+be-reordered-00723	22231-220 Rio de Janeiro Rua Álvaro Chaves 41	-22.9363279	-43.1847488	reordered
+be-reordered-00724	90460-001 Porto Alegre Avenida Coronel Lucas de Oliveira 1671	-30.0373504	-51.1946487	reordered
+be-reordered-00725	13560-250 São Carlos Avenida Doutor Carlos Botelho 1737	-22.0113320	-47.8936847	reordered
+be-reordered-00726	04046-300 São Paulo Avenida Jabaquara 1734	-23.6194736	-46.6396028	reordered
+be-reordered-00727	02127-001 São Paulo Avenida Alberto Byington 1890	-23.5007861	-46.5882969	reordered
+be-reordered-00728	46300-000 Caculé Praça Miguel Fernandes 41	-14.5063796	-42.2218746	reordered
+be-reordered-00729	94075-500 Gravataí Rua Nutrella 557	-29.9513747	-51.0623206	reordered
+be-reordered-00730	88160-000 Biguaçu Avenida Nossa Senhora dos Navegantes 260	-27.5104317	-48.6397639	reordered
+be-reordered-00731	04226-000 São Paulo Avenida do Estado 7634	-23.5728900	-46.6043986	reordered
+be-reordered-00732	60025-205 Fortaleza Rua Padre Miguelino 2750	-3.7423063	-38.5350851	reordered
+be-reordered-00733	03032-030 São Paulo Rua Carnot 287	-23.5322455	-46.6226835	reordered
+be-reordered-00734	05305-002 São Paulo Avenida Imperatriz Leopoldina 1170	-23.5320927	-46.7300100	reordered
+be-reordered-00735	11045-201 Santos Rua Frei Francisco Sampaio 461	-23.9648635	-46.3191490	reordered
+be-reordered-00736	15991-585 Matão Avenida Alberto Benassi 2169	-21.6151737	-48.3662521	reordered
+be-reordered-00737	22460-010 Rio de Janeiro Rua Lopes Quintas 93	-22.9650110	-43.2194797	reordered
+be-reordered-00738	03032-030 São Paulo Rua Carnot 659	-23.5290669	-46.6217320	reordered
+be-reordered-00739	11680-000 ubatuba Rua Vereador Ary de Carvalho 136	-23.4927551	-45.0752981	reordered
+be-reordered-00740	03032-020 São Paulo Rua Conselheiro Dantas 36	-23.5292501	-46.6225954	reordered
+be-reordered-00741	36123-000 Simão Pereira Rodovia Presidente Juscelino Kubitschek	-22.0052776	-43.2634914	reordered
+be-reordered-00742	93310-220 Novo Hamburgo Rua Tupinambá 54	-29.6856700	-51.1389729	reordered
+be-reordered-00743	01125-001 São Paulo Rua da Graca 595	-23.5261733	-46.6404914	reordered
+be-reordered-00744	39560-000 Salinas Avenida José Carlos de Pinho 81	-16.1667515	-42.3105075	reordered
+be-reordered-00745	04203-050 São Paulo Rua Bom Pastor 275	-23.5788402	-46.6084790	reordered
+be-reordered-00746	07033-180 Guarulhos Rua Antônio Bonito 126	-23.5020184	-46.5582507	reordered
+be-reordered-00747	98700-000 Ijuí Rua Goíás	-28.3860212	-53.9023313	reordered
+be-reordered-00748	81690-100 Curitiba Linha Verde 10000	-25.4515376	-49.2428224	reordered
+be-reordered-00749	29560-000 Guaçuí Rua Murilo Emery Lucindo	-20.7704001	-41.6747369	reordered
+be-reordered-00750	22221-000 Rio de Janeiro Rua Silveira Martins 164	-22.9257471	-43.1791425	reordered
+be-reordered-00751	84010-680 Ponta Grossa Praça Marechal Floriano Peixoto 129	-25.0976081	-50.1593869	reordered
+be-reordered-00752	05443-010 São Paulo Rua Delfina 163	-23.5540368	-46.6942699	reordered
+be-reordered-00753	95758-000 São Pedro da Serra Estrada Urbano Rauber	-29.4303936	-51.5417647	reordered
+be-reordered-00754	59092-220 Natal Rua Praia de Guajirú 9219	-5.8817111	-35.1808356	reordered
+be-reordered-00755	22210-040 Rio de Janeiro Rua Ferreira Viana 20	-22.9274418	-43.1741429	reordered
+be-reordered-00756	22220-020 Rio de Janeiro Travessa Carlos de Sá 19	-22.9252135	-43.1787348	reordered
+be-reordered-00757	03022-070 São Paulo Rua Bernardo Saião 191	-23.5260883	-46.6032207	reordered
+be-reordered-00758	60160-194 Fortaleza Rua Pereira Filgueiras 2040	-3.7312206	-38.5045405	reordered
+be-reordered-00759	96180-000 Camaquã Rua Bento Gonçalves 1037	-30.8533686	-51.8057477	reordered
+be-reordered-00760	21041-030 Rio de Janeiro Avenida Brasil 5455	-22.8659406	-43.2482148	reordered
+be-reordered-00761	02214-100 São Paulo Rua Maria Augusta 266	-23.4940050	-46.5845811	reordered
+be-reordered-00762	01126-001 São Paulo Rua Júlio Conceição 141	-23.5258047	-46.6379581	reordered
+be-reordered-00763	11045-201 Santos Avenida Siqueira Campos 475	-23.9651673	-46.3191730	reordered
+be-reordered-00764	13020-432 Campinas Avenida Barão de Itapura 1167	-22.8940034	-47.0658431	reordered
+be-reordered-00765	22460-290 Rio de Janeiro Rua Marquês de Sabará 10 loja A	-22.9666306	-43.2316135	reordered
+be-reordered-00766	03321-001 São Paulo Rua Euclides Pacheco 1461	-23.5467748	-46.5608236	reordered
+be-reordered-00767	13073-200 Campinas Rua Engenheiro Cândido Gomide 424	-22.8947435	-47.0714839	reordered
+be-reordered-00768	01120-001 São Paulo Rua José Paulino 639	-23.5288839	-46.6402780	reordered
+be-reordered-00769	30170-110 Belo Horizonte R. Rio Grande do Sul, 714	-19.9226072	-43.9465927	reordered
+be-reordered-00770	58713-000 Malta Rua Leopoldino de Medeiros	-6.9060196	-37.5318665	reordered
+be-reordered-00771	14670-063 Nuporanga Rua Bernardino Pereira da Silva	-20.7324016	-47.7521679	reordered
+be-reordered-00772	04640-400 São Paulo Avenida Jabaquara 2004	-23.6221129	-46.6401697	reordered
+be-reordered-00773	01031-010 São Paulo Rua Dom Francisco de Sousa 39	-23.5407740	-46.6344738	reordered
+be-reordered-00774	24120-191 Niterói Alameda São Boaventura 626	-22.8813355	-43.0940435	reordered
+be-reordered-00775	03322-001 São Paulo Rua Azevedo Soares 1637	-23.5479821	-46.5618221	reordered
+be-reordered-00776	13070-118 Campinas Rua Doutor Miguel Penteado 487	-22.8891641	-47.0736245	reordered
+be-reordered-00777	35600-000 Bom Despacho BR-262	-19.7854908	-45.2363860	reordered
+be-reordered-00778	48601-208 Paulo Afonso Avenida Apolônio Sales 1064	-9.3982807	-38.2287382	reordered
+be-reordered-00779	22221-000 Rio de Janeiro Rua Silveira Martins 136	-22.9257076	-43.1780804	reordered
+be-reordered-00780	03311-001 São Paulo Rua Apucarana 1076	-23.5477663	-46.5631951	reordered
+be-reordered-00781	65631-240 Timon Avenida Francisco Carlos Jansen	-5.0901702	-42.8342196	reordered
+be-reordered-00782	13023-185 Campinas Rua Sacramento 685	-22.8975051	-47.0627898	reordered
+be-reordered-00783	27570-000 Porto Real Avenida Dom Pedro II 1988	-22.4116190	-44.2986820	reordered
+be-reordered-00784	48540-000 Jeremoabo Avenida Manoel José de Carvalho	-10.0683926	-38.3519585	reordered
+be-reordered-00785	35460-000 Brumadinho Rua Antônio Carlos de Oliveira 07	-20.2005440	-44.0233048	reordered
+be-reordered-00786	05508-901 São Paulo Avenida Professor Almeida Prado 532	-23.5567682	-46.7347478	reordered
+be-reordered-00787	22220-000 Rio de Janeiro Rua do Catete	-22.9261927	-43.1767661	reordered
+be-reordered-00788	82590-300 Curitiba Rua Padre Germano Mayer 679	-25.4298191	-49.2502430	reordered
+be-reordered-00789	29260-000 Domingos Martins Rodovia Federal Deputado Aloísio Santos	-20.3801335	-40.9000622	reordered
+be-reordered-00790	29101-330 Vila Velha Avenida Henrique Moscoso 256	-20.3360779	-40.2839656	reordered
+be-reordered-00791	13070-001 Campinas Avenida Andrade Neves 2286	-22.8896127	-47.0765339	reordered
+be-reordered-00792	04142-091 São Paulo Avenida Bosque da Saúde 761	-23.6112203	-46.6308665	reordered
+be-reordered-00793	80430-180 Curitiba Alameda Doutor Carlos de Carvalho 528	-25.4329710	-49.2801715	reordered
+be-reordered-00794	88040-600 Florianópolis Rua Capitão Romualdo de Barros 952	-27.6030597	-48.5269699	reordered
+be-reordered-00795	03022-070 São Paulo Rua Bernardo Saião 60	-23.5269793	-46.6025580	reordered
+be-reordered-00796	22220-000 Rio de Janeiro Rua do Catete 257	-22.9293000	-43.1772780	reordered
+be-reordered-00797	22221-000 Rio de Janeiro Rua Silveira Martins 181	-22.9260930	-43.1789816	reordered
+be-reordered-00798	22220-000 Rio de Janeiro Rua do Catete 176	-22.9266549	-43.1767785	reordered
+be-reordered-00799	88790-000 Laguna Travessa Itaparica 69	-28.4930209	-48.7769843	reordered
+be-partial-00800	Rua Quinze de Novembro 270, Mairiporã	-23.3197425	-46.5868807	partial
+be-partial-00801	Rua Odilon Duarte Braga 240, Rio de Janeiro	-23.0125210	-43.4463193	partial
+be-partial-00802	Rua Bernardino Pereira da Silva 323, Nuporanga	-20.7326110	-47.7510338	partial
+be-partial-00803	Rua Líbero Badaró 568, São Paulo	-23.5449645	-46.6352252	partial
+be-partial-00804	Rua Conde de Irajá 109, Rio de Janeiro	-22.9534439	-43.1958611	partial
+be-partial-00805	Rua Santos Saraiva 2158, Florianópolis	-27.5970894	-48.5904806	partial
+be-partial-00806	Rua do Catete 186, Rio de Janeiro	-22.9273152	-43.1768644	partial
+be-partial-00807	Rodovia Henrique Herwig, Guaratuba	-25.8538241	-48.9586872	partial
+be-partial-00808	Rua Olavo Bilac 348, Mairiporã	-23.3219436	-46.5836125	partial
+be-partial-00809	Rua Doutor Eugênio José Bocchi 1000, Ponta Grossa	-25.0685365	-50.1790003	partial
+be-partial-00810	Rua Fernando Sandreschi 95;103, São Paulo	-23.5031384	-46.6289694	partial
+be-partial-00811	Rua Pedro Américo 42A, Rio de Janeiro	-22.9237626	-43.1777657	partial
+be-partial-00812	Rua Monsenhor Valeriano Pereira, Malta	-6.9044748	-37.5243965	partial
+be-partial-00813	Rua Emílio Mallet 1229, São Paulo	-23.5457311	-46.5616548	partial
+be-partial-00814	Rua Santa Terezinha 21, Porto Alegre	-30.0373479	-51.2114383	partial
+be-partial-00815	Rua Manoel da Nóbrega 117, São Paulo	-23.5688603	-46.6490758	partial
+be-partial-00816	Avenida Marechal Floriano 79, Guaçuí	-20.7697146	-41.6724179	partial
+be-partial-00817	Rua Vinícius de Moraes 39, Rio de Janeiro	-22.9854705	-43.2029965	partial
+be-partial-00818	Rua Carnot 352, São Paulo	-23.5317490	-46.6223776	partial
+be-partial-00819	Rua Doutor Porciuncula 86, petropolis	-22.5083594	-43.1701435	partial
+be-partial-00820	Rua Carlos Gomes 320, Palmitinho	-27.3565563	-53.5566017	partial
+be-partial-00821	Rua Santo Antônio 5, Cícero Dantas	-10.5911416	-38.3712570	partial
+be-partial-00822	Rua Manoel da Nóbrega 89, São Paulo	-23.5684650	-46.6489945	partial
+be-partial-00823	Rua João Santucci 270, Taboão da Serra	-23.6057419	-46.7505095	partial
+be-partial-00824	Rua Carnot 716, São Paulo	-23.5285480	-46.6214213	partial
+be-partial-00825	Rua Sergipe 1833, Marechal Cândido Rondon	-24.5590973	-54.0483998	partial
+be-partial-00826	Rua Carnot 570, São Paulo	-23.5297643	-46.6217772	partial
+be-partial-00827	Avenida dos Imarés 680, São Paulo	-23.6145191	-46.6636074	partial
+be-partial-00828	Rua Jequitinhonha 240;204, São Paulo	-23.5306771	-46.5998954	partial
+be-partial-00829	Rua Fernandes Vieira 330, São Paulo	-23.5419650	-46.5897807	partial
+be-partial-00830	Rua Silva Paulet 769, Fortaleza	-3.7313731	-38.5040916	partial
+be-partial-00831	Rua Professor Sabino Silva 767, Salvador	-13.0054372	-38.5178177	partial
+be-partial-00832	Avenida Santos Dumont, Juazeiro	-9.4116284	-40.5053008	partial
+be-partial-00833	Travessa Bartholomeu de Gusmão 140, Salvador	-13.0091492	-38.4971777	partial
+be-partial-00834	Rua 4 3, São Luís	-2.5350360	-44.2170652	partial
+be-partial-00835	Rua Dezenove 87, Paraty	-23.2190106	-44.7236813	partial
+be-partial-00836	Rua Inácio Francisco de Souza 52, Penha	-26.7916376	-48.6061014	partial
+be-partial-00837	Rua Santos Saraiva 2142, Florianópolis	-27.5971088	-48.5903886	partial
+be-partial-00838	Avenida Barão de Itapura 2019, Campinas	-22.8879186	-47.0607503	partial
+be-partial-00839	Rua Nossa Senhora do Rosário 630, Serra Negra	-22.6088755	-46.6954387	partial
+be-partial-00840	Rua Bento Lisboa 23, Rio de Janeiro	-22.9254308	-43.1793035	partial
+be-partial-00841	Rua Padre Miguelino 2750, Fortaleza	-3.7423063	-38.5350851	partial
+be-partial-00842	Rua Mota Pais 43, São Paulo	-23.5361395	-46.7022208	partial
+be-partial-00843	Praça Monsenhor Izidro, Itaverava	-20.6773749	-43.6101304	partial
+be-partial-00844	Alameda dos Nhambiquaras 1443, São Paulo	-23.6107865	-46.6627418	partial
+be-partial-00845	Rua Leôncio de Carvalho 102, São Paulo	-23.5707189	-46.6461329	partial
+be-partial-00846	Rua Dom João VI, Rio de Janeiro	-22.9155501	-43.6840898	partial
+be-partial-00847	Rua Andrade Pertence 39, Rio de Janeiro	-22.9253074	-43.1782574	partial
+be-partial-00848	R. Rio Grande do Sul, 714, Belo Horizonte	-19.9226072	-43.9465927	partial
+be-partial-00849	Praia do Flamengo 100, Rio de Janeiro	-22.9282076	-43.1741536	partial
+be-partial-00850	Alameda dos Maracatins 1144, São Paulo	-23.6099207	-46.6637034	partial
+be-partial-00851	Rua do Catete, Rio de Janeiro	-22.9261426	-43.1767661	partial
+be-partial-00852	Avenida Julio de Castilhos 780, Jaguari	-29.5034779	-54.6790992	partial
+be-partial-00853	Estrada Municipal Arlindo Inácio Fernandes km 4.5, Santo Antônio do Pinhal	-22.8003737	-45.6998407	partial
+be-partial-00854	Rua Sete de Setembro 3170, Governador Valadares	-18.8546152	-41.9508398	partial
+be-partial-00855	Avenida Júlio de Castilhos 1250, Três Passos	-27.4527265	-53.9362443	partial
+be-partial-00856	Praça Pastor Miguel Martins da Silva, Itacurubi	-28.7339043	-55.3251026	partial
+be-partial-00857	Avenida Assis Brasil 95, Porto Alegre	-30.0080510	-51.1848535	partial
+be-partial-00858	Rua Corrêa Dutra 53, Rio de Janeiro	-22.9280937	-43.1756794	partial
+be-partial-00859	Rua Luciana de Abreu 500, Porto Alegre	-30.0255506	-51.2021697	partial
+be-partial-00860	Rua Silveira Martins 20, Rio de Janeiro	-22.9253222	-43.1736816	partial
+be-partial-00861	Rua Sapucaia, Cruzeiro do Sul	-16.9744677	-40.2384400	partial
+be-partial-00862	Rua Manoel Vitorino, Rio de Janeiro	-22.8903992	-43.3096599	partial
+be-partial-00863	Rua Luis Carlos Prestes, Rio de Janeiro	-22.8272070	-43.3947617	partial
+be-partial-00864	Rua do Catete 172, Rio de Janeiro	-22.9264561	-43.1767750	partial
+be-partial-00865	Avenida Doutor Nélson D'Ávila 1202, São José dos Campos	-23.1967217	-45.8864948	partial
+be-partial-00866	Avenida Nove de Julho 2600, Jundiaí	-23.1957809	-46.8896295	partial
+be-partial-00867	Rua Carnot 646, São Paulo	-23.5291566	-46.6216018	partial
+be-partial-00868	Rua Miller 63, São Paulo	-23.5408426	-46.6171290	partial
+be-partial-00869	Avenida Governador Carlos Gomes Bezerra, Nova Olímpia	-14.7763973	-57.2831532	partial
+be-partial-00870	Rua Doutor Miguel Penteado 440, Campinas	-22.8896151	-47.0733043	partial
+be-partial-00871	Avenida FAB 1854, Macapá	0.0414033	-51.0662291	partial
+be-partial-00872	Rua Independência 700, São Leopoldo	-29.7658056	-51.1457475	partial
+be-partial-00873	Avenida Primavera 50, Paulínia	-22.7686228	-47.1576465	partial
+be-partial-00874	Avenida Washington Soares 85, Fortaleza	-3.7570322	-38.4879566	partial
+be-partial-00875	Avenida do Forte 24, Porto Alegre	-30.0107281	-51.1530679	partial
+be-partial-00876	Rua Santo Irineu 912, São Paulo	-23.6080960	-46.6280159	partial
+be-partial-00877	Rua Marquês do Herval 333, Osório	-29.8970387	-50.2487339	partial
+be-partial-00878	Rua Henrique Schaumann 414, São Paulo	-23.5611256	-46.6799041	partial
+be-partial-00879	Avenida Antônio Joaquim de Moura Andrade 1480, Nova Andradina	-22.2499752	-53.3501163	partial
+be-partial-00880	Rua Bertioga 73, São Paulo	-23.6102183	-46.6362743	partial
+be-partial-00881	Rua Carlos Lucas Evangelista 580, Ribeirão Preto	-21.2011554	-47.7851700	partial
+be-partial-00882	Estrada do Lameirão 145, Rio de Janeiro	-22.8778477	-43.5237421	partial
+be-partial-00883	Praia do Flamengo 78, Rio de Janeiro	-22.9272194	-43.1738425	partial
+be-partial-00884	Rua Filipe de Oliveira 38, São Paulo	-23.5514209	-46.6336889	partial
+be-partial-00885	Rua Cascavel 930, Brasnorte	-12.1233749	-58.0050768	partial
+be-partial-00886	Rua Filipinas 712, Curitiba	-25.4696706	-49.2085381	partial
+be-partial-00887	Rua Henrique Schaumann 124, São Paulo	-23.5633723	-46.6782804	partial
+be-partial-00888	Avenida Paes de Barros 2224, São Paulo	-23.5700392	-46.5876680	partial
+be-partial-00889	Avenida Angélica 521, São Paulo	-23.5374012	-46.6543762	partial
+be-partial-00890	Travessa Abdon Afonso 9, Jeremoabo	-10.0724791	-38.3495970	partial
+be-partial-00891	Rua Nicolau Antônio Brilha 96, Mairiporã	-23.3180763	-46.5846096	partial
+be-partial-00892	Rua Independência 863, São Leopoldo	-29.7672289	-51.1455763	partial
+be-partial-00893	Alameda Tibiriçá 723, Mairiporã	-23.3222714	-46.5895687	partial
+be-partial-00894	Rua Gil Amora 1500, Fortaleza	-3.7351750	-38.5362250	partial
+be-partial-00895	SRES Q 12 bloco N, Brasília	-15.7814912	-47.9366019	partial
+be-partial-00896	Rua Presidente Roosevelt 409, São Leopoldo	-29.7655542	-51.1443917	partial
+be-partial-00897	Rodovia Presidente Juscelino Kubitschek de Oliveira km 60, Alto Garças	-16.9329077	-53.5377219	partial
+be-partial-00898	General Madariaga 797, Paso de los Libres	-29.7138698	-57.0864207	partial
+be-partial-00899	Largo dos Leões 35, Rio de Janeiro	-22.9531425	-43.1963130	partial
+be-partial-00900	Rua Coronel Emídio Piedade 279, São Paulo	-23.5305919	-46.6129243	partial
+be-partial-00901	Rua Corrêa Dutra 30, Rio de Janeiro	-22.9278812	-43.1749874	partial
+be-partial-00902	Rua José Mecenas Filho, São Domingos	-10.7912201	-37.5652523	partial
+be-partial-00903	Rua Silveira Martins 124, Rio de Janeiro	-22.9256878	-43.1777478	partial
+be-partial-00904	Avenida Dom Pedro II, Porto Real , RJ	-22.4169529	-44.2931747	partial
+be-partial-00905	Rua Mantiqueira, São Paulo	-23.5842307	-46.6314180	partial
+be-partial-00906	Rua do Catete, Rio de Janeiro	-22.9259560	-43.1767631	partial
+be-partial-00907	Avenida do Forte 24, Porto Alegre	-30.0107281	-51.1530679	partial
+be-partial-00908	Avenida Prefeito Gil Diniz 385, Contagem	-19.9147443	-44.0818310	partial
+be-partial-00909	Rua 28 de Agosto 4014, Guaramirim	-26.4682656	-48.9769738	partial
+be-partial-00910	Avenida Bosque da Saúde 561, São Paulo	-23.6115526	-46.6327752	partial
+be-partial-00911	Rua Maria Angélica 57, Rio de Janeiro	-22.9623734	-43.2078916	partial
+be-partial-00912	Rua Conselheiro Dantas 38, São Paulo	-23.5292619	-46.6225485	partial
+be-partial-00913	Rua Intendente Amândio Lampert 640, Montenegro	-29.6728668	-51.4497166	partial
+be-partial-00914	Rua Bernardo Saião 186, São Paulo	-23.5259816	-46.6031172	partial
+be-partial-00915	Rua Augustinho Alves da Silva 11, Mairiporã	-23.3208528	-46.5838111	partial
+be-partial-00916	Avenida Cabo Branco 5100, João Pessoa	-7.1457410	-34.8068762	partial
+be-partial-00917	Rua Joinville 3816, São José dos Pinhais	-25.5564649	-49.1872715	partial
+be-partial-00918	Primeira Travessa de Queluz 63, Belém	-1.4486694	-48.4651975	partial
+be-partial-00919	Rua Independência 730, São Leopoldo	-29.7660690	-51.1456418	partial
+be-partial-00920	BA-148, Livramento de Nossa Senhora	-13.6124154	-41.8188720	partial
+be-partial-00921	Rua Conselheiro Dantas 189, São Paulo	-23.5294993	-46.6210156	partial
+be-partial-00922	Rua Gaivota 1177, São Paulo	-23.6057531	-46.6694274	partial
+be-partial-00923	Rua Luís Coelho 162, São Paulo	-23.5568208	-46.6590068	partial
+be-partial-00924	Condomínio Ville de Montagne Quadra 18 29, Brasília	-15.8437683	-47.8038593	partial
+be-partial-00925	Rua Carnot 700, São Paulo	-23.5287194	-46.6214721	partial
+be-partial-00926	Alameda dos Nhambiquaras 1518, São Paulo	-23.6111263	-46.6633253	partial
+be-partial-00927	Rua Treze 43, Rio de Janeiro	-22.8452191	-43.4695710	partial
+be-partial-00928	Rua Aritiano Gonçalves 273, Imbituba	-28.2163131	-48.6715886	partial
+be-partial-00929	Rua do Lavapés 878, São Paulo	-23.5619819	-46.6241750	partial
+be-partial-00930	Avenida Nereu Ramos - E 125, Chapecó	-27.1031573	-52.6127861	partial
+be-partial-00931	Rua das Laranjeiras 197A, Rio de Janeiro	-22.9335147	-43.1855483	partial
+be-partial-00932	Avenida Jabaquara 1317, São Paulo	-23.6158443	-46.6384665	partial
+be-partial-00933	Avenida Dom Pedro I 594, São Paulo	-23.5705433	-46.6113572	partial
+be-partial-00934	Avenida 12 de Maio, Turvo	-25.0471476	-51.5388409	partial
+be-partial-00935	Rua Domingues de Sá 398, Niterói	-22.9020037	-43.1031332	partial
+be-partial-00936	Rua Bernardo Saião 126, São Paulo	-23.5265032	-46.6028493	partial
+be-partial-00937	Rua Santo Antônio 5, Cícero Dantas	-10.5911416	-38.3712570	partial
+be-partial-00938	Avenida Manoel José de Carvalho, Jeremoabo	-10.0683926	-38.3519585	partial
+be-partial-00939	Rua Buarque de Macedo 850, Montenegro	-29.6774162	-51.4567622	partial
+be-partial-00940	Rua Sacramento 685, Campinas	-22.8975051	-47.0627898	partial
+be-partial-00941	Rua Corrêa Dutra 16, Rio de Janeiro	-22.9281184	-43.1745046	partial
+be-partial-00942	Avenida Robert Kennedy 1306, São Bernardo do Campo	-23.7018046	-46.5771591	partial
+be-partial-00943	Rua Stefano Broseghini 30, Fundão	-19.9342479	-40.4048620	partial
+be-partial-00944	Rua Juaracê 48, São Paulo	-23.5841808	-46.6321381	partial
+be-partial-00945	General Madariaga 737, Paso de los Libres	-29.7141641	-57.0861546	partial
+be-partial-00946	Rua Portugal 320, Guaratuba	-25.9054753	-48.5724934	partial
+be-partial-00947	Rua Maria Antônia 378, São Paulo	-23.5456714	-46.6516841	partial
+be-partial-00948	Rua Mateus Leme 358, Curitiba	-25.4244592	-49.2711819	partial
+be-partial-00949	Bartolomé Mitre 998, Paso de los Libres	-29.7134069	-57.0863376	partial
+be-partial-00950	Rua Madre de Deus 1645, São Paulo	-23.5673847	-46.5885988	partial
+be-partial-00951	Rua Bernardo Saião 136, São Paulo	-23.5264193	-46.6028986	partial
+be-partial-00952	Rua Benedito Conrado Filho 328, São Bernardo do Campo	-23.7025446	-46.5730492	partial
+be-partial-00953	BA-001 km 46, Santa Cruz Cabrália	-16.2369742	-39.0065941	partial
+be-partial-00954	Rua Doutor Felix Engel Filho 456, Guaporé	-28.8532716	-51.8968923	partial
+be-partial-00955	Rua Júlio de Castilhos 1691, São Lourenço do Sul	-31.3685842	-51.9829077	partial
+be-partial-00956	Rua Joinville 3870, São José dos Pinhais	-25.5569612	-49.1873677	partial
+be-partial-00957	Rua Ademar Cerpa, Rio de Janeiro	-22.8892597	-43.2421520	partial
+be-partial-00958	Avenida Ipiranga 6681, Porto Alegre	-30.0586484	-51.1733862	partial
+be-partial-00959	Rua General Osório 19, Guarulhos	-23.4729890	-46.5323178	partial
+be-partial-00960	Rua Joaquim da Silva Murteira 117, Macaé	-22.4035745	-41.7979920	partial
+be-partial-00961	Avenida Moinho Fabrini 909, São Bernardo do Campo	-23.7008572	-46.5804302	partial
+be-partial-00962	Rua Antônio Bonito 126, Guarulhos	-23.5020184	-46.5582507	partial
+be-partial-00963	Rua Carnot 638, São Paulo	-23.5292358	-46.6216253	partial
+be-partial-00964	Alameda Tibiriçá 1118, Mairiporã	-23.3212258	-46.5932290	partial
+be-partial-00965	Alameda dos Nhambiquaras 1733, São Paulo	-23.6127203	-46.6646177	partial
+be-partial-00966	Avenida Orosimbo Maia 1150, Campinas	-22.8918238	-47.0586625	partial
+be-partial-00967	Rua Carnot 596., São Paulo	-23.5295566	-46.6217187	partial
+be-partial-00968	Rodriguez Peña 1517, Alvear	-29.0904613	-56.5457904	partial
+be-partial-00969	QE 15, Guará II	-15.8305417	-47.9772630	partial
+be-partial-00970	Avenida Suburbana, Rio de Janeiro	-22.8827346	-43.3280660	partial
+be-partial-00971	Rua Doutor Ramos de Azevedo 88, Guarulhos	-23.4711120	-46.5304244	partial
+be-partial-00972	Largo do Cambuci 45, São Paulo	-23.5624510	-46.6211840	partial
+be-partial-00973	Avenida 15 de Novembro 2470, Nova Petrópolis	-29.3691706	-51.1044231	partial
+be-partial-00974	Avenida Dom Pedro I 1091, São Paulo	-23.5748772	-46.6106408	partial
+be-partial-00975	Rua Coronel Tamarindo, Rio de Janeiro	-22.8752578	-43.4566788	partial
+be-partial-00976	Rua Doutor Eduardo Dotto 32, Salvador	-12.8405106	-38.4703995	partial
+be-partial-00977	Rua Santos Saraiva 2142, Florianópolis	-27.5971088	-48.5903886	partial
+be-partial-00978	Rodovia Federal Deputado Aloízio Santos km 46, Marechal Floriano	-20.4119169	-40.6797480	partial
+be-partial-00979	Rua Paulo Andrighetti 1476, São Paulo	-23.5240971	-46.6063856	partial
+be-partial-00980	Avenida José Bonifácio 605, Porto Alegre	-30.0372342	-51.2115333	partial
+be-partial-00981	Rua Bento Lisboa 23, Rio de Janeiro	-22.9254308	-43.1793035	partial
+be-partial-00982	Rua Maria Augusta 282, São Paulo	-23.4939054	-46.5844764	partial
+be-partial-00983	Rua Capitão Romualdo de Barros 883, Florianópolis	-27.6031692	-48.5276406	partial
+be-partial-00984	Avenida Doutor Nélson D'Ávila 1202, São José dos Campos	-23.1967217	-45.8864948	partial
+be-partial-00985	Rua Carnot 464, São Paulo	-23.5307378	-46.6220715	partial
+be-partial-00986	Rua Doutor Ascânio Cerqueira, São Paulo	-23.6101885	-46.6130797	partial
+be-partial-00987	Rua Portugal 320, Guaratuba	-25.9054753	-48.5724934	partial
+be-partial-00988	Avenida Celso Garcia 5000, São Paulo	-23.5332538	-46.5640031	partial
+be-partial-00989	Rua Carnot 645, São Paulo	-23.5291993	-46.6217688	partial
+be-partial-00990	Rua Almirante Alexandrino 2295, São José dos Pinhais	-25.5130017	-49.1886152	partial
+be-partial-00991	Avenida Governador Pedro de Toledo 1231, Campinas	-22.8994828	-47.0829025	partial
+be-partial-00992	Praça João Acacinho 180, Guaçuí	-20.7726549	-41.6780884	partial
+be-partial-00993	Avenida Dom Pedro II 1741, Porto Real	-22.4132497	-44.2970899	partial
+be-partial-00994	Avenida Eugênio Krause 2115, Penha	-26.7842298	-48.6334623	partial
+be-partial-00995	Rua Bernardo Saião 46, São Paulo	-23.5271208	-46.6024712	partial
+be-partial-00996	Rodovia Fernão Dias - Pista Lateral 3700, Contagem	-19.9574710	-44.0654595	partial
+be-partial-00997	Alameda Tibiriçá 1155, Mairiporã	-23.3211422	-46.5936019	partial
+be-partial-00998	Rua Luis Carlos Prestes, Rio de Janeiro	-22.8272070	-43.3947617	partial
+be-partial-00999	Rua Deputado João Lopes 75, Fortaleza	-3.7259891	-38.5223021	partial

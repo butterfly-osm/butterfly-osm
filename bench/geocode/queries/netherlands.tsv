@@ -1,0 +1,1001 @@
+query_id	query_text	gold_lat	gold_lon	quality_class
+be-clean-00000	Smetiusstraat 16, 6511ES Nijmegen	51.8440157	5.8592484	clean
+be-clean-00001	Aagje Dekenplein 7, 1628NX Hoorn	52.6517738	5.0861305	clean
+be-clean-00002	Oude Markt 10, 7511GA Enschede	52.2212624	6.8953000	clean
+be-clean-00003	Tongelresestraat 117, 5613DC Eindhoven	51.4405473	5.4967119	clean
+be-clean-00004	Tolsteegbarrière 2, 3511ZD Utrecht	52.0818883	5.1235891	clean
+be-clean-00005	Westelijke Randweg 6, 2163GA Lisse	52.2690490	4.5559492	clean
+be-clean-00006	Hoogstraat 4, 1391BS Abcoude	52.2716613	4.9743953	clean
+be-clean-00007	Tongerseweg 335, 6213GD Maastricht	50.8350325	5.6533456	clean
+be-clean-00008	Gedempte Neltjeshaven 11, 8601CM Sneek	53.0328480	5.6592878	clean
+be-clean-00009	Laan van Hoornwijck 156, 2497DG 's-Gravenhage	52.0418154	4.3654940	clean
+be-clean-00010	Wibautstraat 85, 1091GK Amsterdam	52.3566308	4.9111785	clean
+be-clean-00011	West aan Zee 140, 8881HB West-Terschelling	53.4003937	5.2626373	clean
+be-clean-00012	Noordeinde 27, 2311CB Leiden	52.1601455	4.4833845	clean
+be-clean-00013	Weteringstraat 60, 1017SP Amsterdam	52.3607475	4.8881220	clean
+be-clean-00014	Wittevrouwenstraat 2, 3512CT Utrecht	52.0952656	5.1236422	clean
+be-clean-00015	Heliniumweg 2a, 3133AX Vlaardingen	51.9007638	4.3336392	clean
+be-clean-00016	Oudestraat 2, 8261CP Kampen	52.5552760	5.9199240	clean
+be-clean-00017	Wesseler-nering 21, 7544JB Enschede	52.1916959	6.8786157	clean
+be-clean-00018	Middenweg 55, 1703RB Heerhugowaard	52.6617366	4.8300949	clean
+be-clean-00019	Hofweg 1A, 2511AA 's-Gravenhage	52.0785266	4.3117263	clean
+be-clean-00020	Van Echtenskanaal NZ 530, 7891AW Klazienaveen	52.7248803	6.9908850	clean
+be-clean-00021	Anthony Fokkerweg 8, 1059CM Amsterdam	52.3440743	4.8420173	clean
+be-clean-00022	Rijnstraat 59-A, 1078PZ Amsterdam	52.3466262	4.9053656	clean
+be-clean-00023	Lange Elisabethstraat 1, 3511JA Utrecht	52.0910217	5.1163851	clean
+be-clean-00024	Zijlweg 104, 2013DM Haarlem	52.3854861	4.6231870	clean
+be-clean-00025	Nassaulaan 37, 2011PB Haarlem	52.3838108	4.6327900	clean
+be-clean-00026	Kealledykje 7, 9081AX Lekkum	53.2234953	5.8434741	clean
+be-clean-00027	Baron G.A. Tindalplein 12, 1019TJ Amsterdam	52.3733594	4.9426116	clean
+be-clean-00028	Hoofdstraat 37, 5528AG Hoogeloon	51.3957025	5.2669726	clean
+be-clean-00029	Bakkerstraat 5, 3511JV Utrecht	52.0914593	5.1168607	clean
+be-clean-00030	Werfpad 2, 5212VJ 's-Hertogenbosch	51.6972157	5.3025141	clean
+be-clean-00031	Gindrapassage 18, 5531CP Bladel	51.3664869	5.2182279	clean
+be-clean-00032	Rijksweg 141, 6325AD Berg en Terblijt	50.8574189	5.8114830	clean
+be-clean-00033	Guispad 3, 1551SX Westzaan	52.4679024	4.7866239	clean
+be-clean-00034	Dorpsstraat 62, 5241ED Rosmalen	51.7149124	5.3628438	clean
+be-clean-00035	Roggeslootweg 12, 1795JV De Cocksdorp	53.1521091	4.8582440	clean
+be-clean-00036	Montaubanstraat 251, 3701HN Zeist	52.0864382	5.2386808	clean
+be-clean-00037	Struytse Hoeck 55, 3224HA Hellevoetsluis	51.8314105	4.1477457	clean
+be-clean-00038	Hoogstraat 17A, 1391BR Abcoude	52.2706741	4.9744284	clean
+be-clean-00039	von Clermontplein 32, 6291AV Vaals	50.7703103	6.0186437	clean
+be-clean-00040	Grote Markt 14, 2011RD Haarlem	52.3811824	4.6355253	clean
+be-clean-00041	Heiderik 2, 5427LD Boekel	51.5911396	5.7119638	clean
+be-clean-00042	Stadionweg 11, 8448EA Heerenveen	52.9651303	5.9316476	clean
+be-clean-00043	Kortestraat 2b, 7491AX Delden	52.2624293	6.7123246	clean
+be-clean-00044	Appelmarkt 10, 8701KH Bolsward	53.0618939	5.5215083	clean
+be-clean-00045	Beatrixplein 7, 7031AJ Wehl	51.9621573	6.2098484	clean
+be-clean-00046	Stationsweg 23, 2312AS Leiden	52.1648389	4.4842664	clean
+be-clean-00047	Peperstraat 19, 9711PC Groningen	53.2176654	6.5708303	clean
+be-clean-00048	Steenhoffstraat 46A, 3764BM Soest	52.1806769	5.3041247	clean
+be-clean-00049	Nassauplein 2, 2585EA 's-Gravenhage	52.0893477	4.3056907	clean
+be-clean-00050	Bierens de Haanweg 65-69, 3076DA Rotterdam	51.8786648	4.5172186	clean
+be-clean-00051	Diependaalsedijk 18, 3601GK Maarssen	52.1422121	5.0393048	clean
+be-clean-00052	Westerstraat 43, 4791HT Klundert	51.6624516	4.5332918	clean
+be-clean-00053	Raadhuisplein 130, 2922AL Krimpen aan den IJssel	51.9146799	4.5872323	clean
+be-clean-00054	Looiersplein 3, 1441DG Purmerend	52.5084395	4.9513771	clean
+be-clean-00055	Laan van Leeuwenstein 4, 4191NB Geldermalsen	51.8754226	5.2817040	clean
+be-clean-00056	Nieuwmarkt 26, 1012CS Amsterdam	52.3724981	4.8995992	clean
+be-clean-00057	Waaldijk 26a, 6681KJ Bemmel	51.8670191	5.8828654	clean
+be-clean-00058	Zeestraat 77, 1942AL Beverwijk	52.4825756	4.6514258	clean
+be-clean-00059	Vondellaan 60a-256, 2041BE Zandvoort	52.3813528	4.5422827	clean
+be-clean-00060	Voortsweg 3, 7523CB Enschede	52.2290999	6.8998318	clean
+be-clean-00061	Grebbeberglaan 4, 3527VX Utrecht	52.0794193	5.1001587	clean
+be-clean-00062	Kleine Houtstraat 74, 2011DR Haarlem	52.3776023	4.6355626	clean
+be-clean-00063	Oudorperplein 27, 1823HA Alkmaar	52.6343632	4.7660737	clean
+be-clean-00064	Eekboerstraat 58, 7575AZ Oldenzaal	52.2997458	6.9252639	clean
+be-clean-00065	Nieuwe Tiendweg 19, 2922EN Krimpen aan den IJssel	51.9179656	4.6014168	clean
+be-clean-00066	Parallelweg 22, 7442EA Nijverdal	52.3616856	6.4670304	clean
+be-clean-00067	De Tocht 10, 1611HT Bovenkarspel	52.6933411	5.2410380	clean
+be-clean-00068	Aarlanderveenseweg 4, 2445AR Aarlanderveen	52.1388050	4.7342429	clean
+be-clean-00069	Eerste Oosterparkstraat 230, 1091HM Amsterdam	52.3576477	4.9164538	clean
+be-clean-00070	Vredebest 1, 2801AS Gouda	52.0157140	4.7091116	clean
+be-clean-00071	Haverdijk 39, 4841AP Prinsenbeek	51.5983174	4.7195533	clean
+be-clean-00072	Jansweg 23-ZW, 2011KL Haarlem	52.3869323	4.6399745	clean
+be-clean-00073	Rijneiland 2, 3984MA Odijk	52.0470998	5.2335423	clean
+be-clean-00074	Brinkersweg 17, 8071GR Nunspeet	52.3771231	5.7817836	clean
+be-clean-00075	Utrechtsestraat 75, 1017VJ Amsterdam	52.3632827	4.8986443	clean
+be-clean-00076	Hortusplein 1, 2019XV Haarlem	52.3815001	4.6302056	clean
+be-clean-00077	Gedempte Zuiderdiep 78, 9711HL Groningen	53.2143120	6.5662813	clean
+be-clean-00078	Markt 26, 5541EA Reusel	51.3619684	5.1604416	clean
+be-clean-00079	Uilenweg 11, 8245AB Lelystad	52.4859152	5.4163631	clean
+be-clean-00080	Watermolen 2, 7461AZ Rijssen	52.3095770	6.5235971	clean
+be-clean-00081	Maria Gorettiplein 1, 6462XB Kerkrade	50.8589633	6.0670582	clean
+be-clean-00082	Zwaagweg 10, 9946RC Woldendorp	53.2725259	7.0303476	clean
+be-clean-00083	Gedempte Oude Gracht 48, 2011GS Haarlem	52.3808293	4.6321196	clean
+be-clean-00084	Van Baerlestraat 96, 1071BB Amsterdam	52.3568126	4.8792088	clean
+be-clean-00085	Van Aalstlaan 380, 2722RX Zoetermeer	52.0562039	4.5107707	clean
+be-clean-00086	Burgemeester Hoogklimmerstraat 2, 7591ET Denekamp	52.3744125	7.0042392	clean
+be-clean-00087	Valkenburgseweg 2, 2223KD Katwijk	52.1904249	4.4241262	clean
+be-clean-00088	Uitslagsweg 95-5, 7556LN Hengelo	52.2767857	6.7920559	clean
+be-clean-00089	Dorpsstraat 32, 4145KC Schoonrewoerd	51.9204509	5.1171116	clean
+be-clean-00090	Hennequinstraat 2, 5212NK 's-Hertogenbosch	51.6934285	5.3082219	clean
+be-clean-00091	Gulden Eind 9, 6096AG Grathem	51.1925161	5.8608100	clean
+be-clean-00092	Wijchenseweg 166, 6538SX Nijmegen	51.8249382	5.7993631	clean
+be-clean-00093	Doelenplein 10, 2871CV Schoonhoven	51.9468276	4.8526371	clean
+be-clean-00094	Nieuwenhuizenweg 15, 2314XP Leiden	52.1442487	4.5073086	clean
+be-clean-00095	Thorbeckelaan 361, 2564BN 's-Gravenhage	52.0647613	4.2533458	clean
+be-clean-00096	Jonckbloetplein 1, 2523AP 's-Gravenhage	52.0589846	4.3224935	clean
+be-clean-00097	Singel 429, 1012WP Amsterdam	52.3675169	4.8898660	clean
+be-clean-00098	Helmstraat 7A, 6211TA Maastricht	50.8506085	5.6890689	clean
+be-clean-00099	Woldweg 13, 9902AA Appingedam	53.3194210	6.8616526	clean
+be-clean-00100	Oosterwoldseweg 3, 8433PS Haulerwijk	53.0645567	6.3315372	clean
+be-clean-00101	Stadionweg 147, 1076NM Amsterdam	52.3459871	4.8646684	clean
+be-clean-00102	Haarlemmerdijk 122, 1013JH Amsterdam	52.3833438	4.8861470	clean
+be-clean-00103	Nijverheidsstraat 4, 6658EM Beneden-Leeuwen	51.8807655	5.5220796	clean
+be-clean-00104	Sweelinckplein 1, 5216EG 's-Hertogenbosch	51.6790698	5.3173658	clean
+be-clean-00105	Nieuwenhuizenweg 9, 2314XP Leiden	52.1439242	4.5076714	clean
+be-clean-00106	Papsouwselaan 123B, 2624AK Delft	51.9991447	4.3551246	clean
+be-clean-00107	Hof ter Bergen 20, 2861DR Bergambacht	51.9306369	4.7862250	clean
+be-clean-00108	Nieuwemeerdijk 98, 1171NE Badhoevedorp	52.3374409	4.7947296	clean
+be-clean-00109	Oudegracht 153, 3511AK Utrecht	52.0914760	5.1183003	clean
+be-clean-00110	Vondellaan 60a-116, 2041BE Zandvoort	52.3819359	4.5347650	clean
+be-clean-00111	Rimsky-Korssakovweg 9, 1323LP Almere	52.3669011	5.1906680	clean
+be-clean-00112	Denekamperstraat 11B, 7631AA Ootmarsum	52.4099412	6.8991864	clean
+be-clean-00113	Stationsplein 17, 6221BT Maastricht	50.8478179	5.7063182	clean
+be-clean-00114	Wendelaarstraat 1-3, 1814GR Alkmaar	52.6199522	4.7366211	clean
+be-clean-00115	Voorhaven 3, 3025HC Rotterdam	51.9082569	4.4480628	clean
+be-clean-00116	Hildo Kroplaan 145, 2552XR 's-Gravenhage	52.0542814	4.2499381	clean
+be-clean-00117	Stadionweg 11, 8448EA Heerenveen	52.9651303	5.9316476	clean
+be-clean-00118	Alexanderplein 1, 5768BE Meijel	51.3435550	5.8873211	clean
+be-clean-00119	Lange Elisabethstraat 1, 3511JA Utrecht	52.0910217	5.1163851	clean
+be-clean-00120	Rijnbeekstraat 1, 5913GA Venlo	51.3711996	6.1835355	clean
+be-clean-00121	Koningsplein 20, 1017BB Amsterdam	52.3669972	4.8884837	clean
+be-clean-00122	't Goylaan 66E, 3525AH Utrecht	52.0664633	5.1208440	clean
+be-clean-00123	Barbeellaan 7, 3984MD Odijk	52.0468349	5.2320563	clean
+be-clean-00124	Spoorstraat 10, 6602AZ Wijchen	51.8078244	5.7253862	clean
+be-clean-00125	Wageningselaan 22, 3903LA Veenendaal	52.0113001	5.5713007	clean
+be-clean-00126	Norderstedtplein 8, 3332GK Zwijndrecht	51.8225158	4.6538706	clean
+be-clean-00127	Vondellaan 60a-175, 2041BE Zandvoort	52.3797868	4.5385532	clean
+be-clean-00128	Vughterstraat 49, 5211EX 's-Hertogenbosch	51.6871170	5.3009158	clean
+be-clean-00129	Parklaan 47, 2011KR Haarlem	52.3859567	4.6383951	clean
+be-clean-00130	IJsselsingel 62-170, 5215CN 's-Hertogenbosch	51.6900700	5.3356513	clean
+be-clean-00131	Pynepoort 11, 2611MD Delft	52.0099708	4.3639453	clean
+be-clean-00132	Hambakenweg 3, 5231DA 's-Hertogenbosch	51.7099443	5.3002525	clean
+be-clean-00133	Lijnmarkt 50, 3511KJ Utrecht	52.0892175	5.1209677	clean
+be-clean-00134	Weverswei 6, 8711GP Workum	52.9781234	5.4515868	clean
+be-clean-00135	Oude Koemarkt 3, 8441EV Heerenveen	52.9606547	5.9218358	clean
+be-clean-00136	Nieuwstraat 370, 3201EG Spijkenisse	51.8495906	4.3311300	clean
+be-clean-00137	Neude 35, 3512AG Utrecht	52.0927956	5.1188088	clean
+be-clean-00138	Steenakkers 3, 8331TZ Steenwijk	52.7810045	6.1579597	clean
+be-clean-00139	West aan Zee 107, 8881HB West-Terschelling	53.3986167	5.2561330	clean
+be-clean-00140	Herenweg 35, 3602AN Maarssen	52.1430725	5.0719714	clean
+be-clean-00141	Rijnstraat 64-68, 1079HJ Amsterdam	52.3456734	4.9052030	clean
+be-clean-00142	Utrechtseweg 225, 3818EG Amersfoort	52.1432808	5.3648396	clean
+be-clean-00143	Oudkerkhof 20, 3512GK Utrecht	52.0918747	5.1209408	clean
+be-clean-00144	Dommelshei 4, 5508VG Veldhoven	51.4273107	5.3921851	clean
+be-clean-00145	Geerdinksweg 36, 7555DN Hengelo	52.2600694	6.7758316	clean
+be-clean-00146	Veerplein 1, 3351RW Papendrecht	51.8225622	4.6818625	clean
+be-clean-00147	Wiekslag 1, 8446KT Heerenveen	52.9525989	5.9154886	clean
+be-clean-00148	Hulst 126, 5662TK Geldrop	51.4314173	5.5417136	clean
+be-clean-00149	Grote Markt 37, 6511KB Nijmegen	51.8474892	5.8645118	clean
+be-clean-00150	Dissel 7A, 1671NG Medemblik	52.7640254	5.0949941	clean
+be-clean-00151	Rembrandtplein 11, 1017CT Amsterdam	52.3664188	4.8963193	clean
+be-clean-00152	Marie Curiestraat 80, 6533HZ Nijmegen	51.8130140	5.8367831	clean
+be-clean-00153	Zuiderpoort 8, 8239AD Lelystad	52.4911009	5.4812083	clean
+be-clean-00154	Langstraat 38, 2242KM Wassenaar	52.1440950	4.3931773	clean
+be-clean-00155	Hoogstraat 37, 1391BR Abcoude	52.2702489	4.9741141	clean
+be-clean-00156	Visstraat 7, 3311KX Dordrecht	51.8138184	4.6655859	clean
+be-clean-00157	Oudegracht 427, 3511PJ Utrecht	52.0817640	5.1229033	clean
+be-clean-00158	Herculesplein 290, 3584AA Utrecht	52.0781991	5.1434427	clean
+be-clean-00159	Energieweg 2, 3041JC Rotterdam	51.9271105	4.4417679	clean
+be-clean-00160	Zwartwatersweg 133, 9402SM Assen	53.0069056	6.5573874	clean
+be-clean-00161	Willem-Alexanderstraat 7, 7442MA Nijverdal	52.3643360	6.4617583	clean
+be-clean-00162	Vondellaan 60a-47, 2041BE Zandvoort	52.3798498	4.5336263	clean
+be-clean-00163	Mûnebuorren 14, 9133MB Eanjum	53.3744680	6.1277323	clean
+be-clean-00164	Arent Janszoon Ernststraat 260, 1082LT Amsterdam	52.3322534	4.8765096	clean
+be-clean-00165	Markt 8, 3621AB Breukelen	52.1709957	5.0036731	clean
+be-clean-00166	Oudkerkhof 13, 3512GH Utrecht	52.0915725	5.1206908	clean
+be-clean-00167	Ferdinand Bolstraat 119, 1072LG Amsterdam	52.3524527	4.8914420	clean
+be-clean-00168	Wolfskooi 39, 5345MH Oss	51.7660914	5.5011780	clean
+be-clean-00169	Antwerpsestraatweg 100, 4615AV Bergen op Zoom	51.4852396	4.2920216	clean
+be-clean-00170	Ceintuurbaan 59-H, 1072EV Amsterdam	52.3527305	4.8894261	clean
+be-clean-00171	Belkmerweg 79, 1753KD Sint Maartensvlotbrug	52.7861175	4.6977734	clean
+be-clean-00172	Sint Antoniusplein 34, 8601HK Sneek	53.0338750	5.6556737	clean
+be-clean-00173	Lijnbaansgracht 350, 1017XB Amsterdam	52.3600454	4.8938942	clean
+be-clean-00174	Huygensstraat 51, 1221AX Hilversum	52.2306823	5.1826520	clean
+be-clean-00175	Wijk aan Zeeërweg 55A, 1972NN IJmuiden	52.4606585	4.6171248	clean
+be-clean-00176	Alphenseweg 3, 2771XK Boskoop	52.0763927	4.6623165	clean
+be-clean-00177	Bisonspoor 1078, 3605KJ Maarssen	52.1346972	5.0306543	clean
+be-clean-00178	Vinkenburgstraat 20, 3512AB Utrecht	52.0924493	5.1178698	clean
+be-clean-00179	Nobellaan 259, 9406AJ Assen	53.0005483	6.5485314	clean
+be-clean-00180	Oude Doelenstraat 1, 1012ED Amsterdam	52.3717749	4.8963879	clean
+be-clean-00181	Floralaan 52, 2343VS Oegstgeest	52.1868057	4.4730815	clean
+be-clean-00182	Grote Waardweg 1a, 4251NV Werkendam	51.8007294	4.9044830	clean
+be-clean-00183	Binnenweg 67, 2101JC Heemstede	52.3522519	4.6214373	clean
+be-clean-00184	Aagje Dekenplein 29, 1628NX Hoorn	52.6515605	5.0861291	clean
+be-clean-00185	Haarlemmerdijk 81-85, 1013KC Amsterdam	52.3827605	4.8868401	clean
+be-clean-00186	Stadsplein 96, 1181ZM Amstelveen	52.3023576	4.8601794	clean
+be-clean-00187	Waterstraat 32, 3511BW Utrecht	52.0946544	5.1131209	clean
+be-clean-00188	Klaaskampen 16, 1251KP Laren	52.2556445	5.2235579	clean
+be-clean-00189	Dorpsplein 75, 1115CX Duivendrecht	52.3327384	4.9395639	clean
+be-clean-00190	Kerkstraat 1, 4196AA Tricht	51.8887891	5.2698650	clean
+be-clean-00191	Kerkplein 23, 3441BG Woerden	52.0856470	4.8834108	clean
+be-clean-00192	Groeneweg 17, 3851KA Ermelo	52.2981660	5.6208983	clean
+be-clean-00193	Gravinnesteeg 9, 2011DG Haarlem	52.3783516	4.6368390	clean
+be-clean-00194	Nicolaasplein 8, 7591MA Denekamp	52.3742138	7.0042715	clean
+be-clean-00195	Noordwal 98, 7571AM Oldenzaal	52.3143007	6.9262088	clean
+be-clean-00196	Schiehaven 15, 3024EC Rotterdam	51.9025340	4.4523723	clean
+be-clean-00197	Badweg 40A, 1976BZ IJmuiden	52.4559134	4.5722589	clean
+be-clean-00198	Rigel 13, 7891VH Klazienaveen	52.7332084	6.9841970	clean
+be-clean-00199	Meerndijk 59, 3454HP De Meern	52.0720029	5.0274489	clean
+be-abbreviated-00200	Groenstr. 19, 5386KW Geffen	51.7339964	5.4625649	abbreviated
+be-abbreviated-00201	Anna van den Vondelstr. 6, 1054GZ Amsterdam	52.3607582	4.8695022	abbreviated
+be-abbreviated-00202	Barbeelln. 7, 3984MD Odijk	52.0468349	5.2320563	abbreviated
+be-abbreviated-00203	Bijdorppl. 1, 3118JE Schiedam	51.9232091	4.3818575	abbreviated
+be-abbreviated-00204	Deurningerstr. 65, 7514BD Enschede	52.2260459	6.8908226	abbreviated
+be-abbreviated-00205	Kerkpl. 4, 1391GJ Abcoude	52.2719303	4.9743973	abbreviated
+be-abbreviated-00206	Kostverlorenhof 48, 1183HG Amstelveen	52.3131613	4.8753934	abbreviated
+be-abbreviated-00207	Hoofdwg. 202, 9765CK Paterswolde	53.1470797	6.5662773	abbreviated
+be-abbreviated-00208	Leidsestr. 96, 1017PE Amsterdam	52.3647338	4.8836169	abbreviated
+be-abbreviated-00209	Vondelln. 60a-6, 2041BE Zandvoort	52.3804705	4.5359737	abbreviated
+be-abbreviated-00210	Dorpsstr. 59, 7863PB Gees	52.7459243	6.6885284	abbreviated
+be-abbreviated-00211	Fuchsiastr. 14, 6542NX Nijmegen	51.8411930	5.8404136	abbreviated
+be-abbreviated-00212	Nieuwezijds Voorburgwal 33, 1012RD Amsterdam	52.3766377	4.8946387	abbreviated
+be-abbreviated-00213	Steenwg. 16, 4328RM Burgh-Haamstede	51.6723899	3.7064478	abbreviated
+be-abbreviated-00214	Hölterswg. 50, 7556BX Hengelo	52.2831863	6.7753852	abbreviated
+be-abbreviated-00215	Lijnbaan 119, 3012EN Rotterdam	51.9190917	4.4771958	abbreviated
+be-abbreviated-00216	Stationsstr. 24, 3451BX Vleuten	52.1048168	5.0123208	abbreviated
+be-abbreviated-00217	Grolloërstr. 46, 9451KC Rolde	52.9823456	6.6489540	abbreviated
+be-abbreviated-00218	Griendtsveenwg. 20b, 7901EA Hoogeveen	52.7228400	6.4674442	abbreviated
+be-abbreviated-00219	Nieuwe Doelenstr. 20, 1012CP Amsterdam	52.3680595	4.8953468	abbreviated
+be-abbreviated-00220	Adelaarstr. 30, 3514CE Utrecht	52.0993172	5.1155454	abbreviated
+be-abbreviated-00221	Rosmolenstr. 30, 6131HX Sittard	50.9965559	5.8694407	abbreviated
+be-abbreviated-00222	Lange Putstr. 4, 5211KN 's-Hertogenbosch	51.6870755	5.3054029	abbreviated
+be-abbreviated-00223	Huiswaarderwg. 7, 1825BA Alkmaar	52.6480876	4.7541609	abbreviated
+be-abbreviated-00224	Paterswoldsewg. 25, 9726BB Groningen	53.2123855	6.5553598	abbreviated
+be-abbreviated-00225	Rondwg. 10, 7255KW Hengelo (Gld)	52.0517728	6.3048708	abbreviated
+be-abbreviated-00226	Wijmerswg. 37, 9919BJ Loppersum	53.3291170	6.7447760	abbreviated
+be-abbreviated-00227	Rijkswg. 118d, 4255GN Nieuwendijk	51.7704724	4.9228475	abbreviated
+be-abbreviated-00228	Factorij 50, 3071AV Rotterdam	51.9108370	4.5011972	abbreviated
+be-abbreviated-00229	Westelijk Halfrond 70, 1183JG Amstelveen	52.3118649	4.8746519	abbreviated
+be-abbreviated-00230	Abeelstr. 15, 1115GW Duivendrecht	52.3301700	4.9414390	abbreviated
+be-abbreviated-00231	Picképl. 8, 2202CL Noordwijk	52.2417425	4.4317068	abbreviated
+be-abbreviated-00232	Slotln. 306a, 3701GX Zeist	52.0883840	5.2483733	abbreviated
+be-abbreviated-00233	Willem Kraanstr. 2, 1063MG Amsterdam	52.3796501	4.8232498	abbreviated
+be-abbreviated-00234	Mattenbiesln. 32, 3452AE Vleuten	52.0984306	4.9983209	abbreviated
+be-abbreviated-00235	Oude Boteringestr. 74, 9712GN Groningen	53.2210136	6.5628465	abbreviated
+be-abbreviated-00236	Dorpsstr. 2, 8152BL Lemelerveld	52.4456975	6.3414830	abbreviated
+be-abbreviated-00237	Schapenmarkt 18, 5211ET 's-Hertogenbosch	51.6880719	5.3024763	abbreviated
+be-abbreviated-00238	Factorij 50, 3071AV Rotterdam	51.9108370	4.5011972	abbreviated
+be-abbreviated-00239	Hoogstr. 129B, 3011PL Rotterdam	51.9215427	4.4885735	abbreviated
+be-abbreviated-00240	Kerkstr. 33b, 5411EA Zeeland	51.6957014	5.6727157	abbreviated
+be-abbreviated-00241	Prinsessewg. 37, 9717BB Groningen	53.2209411	6.5479534	abbreviated
+be-abbreviated-00242	Burg Seinenstr. 57, 9831PV Aduard	53.2570543	6.4588596	abbreviated
+be-abbreviated-00243	Hellendoornsewg. 3, 8148RH Lemele	52.4519898	6.4152761	abbreviated
+be-abbreviated-00244	Smaragdpl. 109, 3523ED Utrecht	52.0719923	5.1245016	abbreviated
+be-abbreviated-00245	Brink 30, 7991CH Dwingeloo	52.8345109	6.3653976	abbreviated
+be-abbreviated-00246	Kruiswg. 969C, 2132CE Hoofddorp	52.3034786	4.6970922	abbreviated
+be-abbreviated-00247	Korenbeurspl. 2a, 4001KX Tiel	51.8866596	5.4361048	abbreviated
+be-abbreviated-00248	Willemskade 10, 8911BA Leeuwarden	53.1987644	5.7924216	abbreviated
+be-abbreviated-00249	Kerkstr. 17, 5492AH Sint-Oedenrode	51.5624118	5.4597708	abbreviated
+be-abbreviated-00250	Bogaardpl. 22, 2284DM Rijswijk	52.0356642	4.3154023	abbreviated
+be-abbreviated-00251	Zuiderdorpstr. 15, 1981BG Velsen-Zuid	52.4617714	4.6470383	abbreviated
+be-abbreviated-00252	A de Koningstr. 5, 4434AG Kwadendamme	51.4333277	3.8772822	abbreviated
+be-abbreviated-00253	Burgwal 60, 8261EP Kampen	52.5566499	5.9155397	abbreviated
+be-abbreviated-00254	Importwg. 1, 2645EC Delfgauw	51.9974938	4.3971507	abbreviated
+be-abbreviated-00255	Bollenstr. 66, 1773AK Kreileroord	52.8438839	5.0835277	abbreviated
+be-abbreviated-00256	Orthen 24-26, 5231XS 's-Hertogenbosch	51.7046000	5.3027812	abbreviated
+be-abbreviated-00257	Tudderenderwg. 53, 6137CA Sittard	51.0008591	5.8770907	abbreviated
+be-abbreviated-00258	Gildepad 1, 7038CL Zeddam	51.9034210	6.2518734	abbreviated
+be-abbreviated-00259	Bovenste str. 46, 6101EL Echt	51.1035204	5.8660333	abbreviated
+be-abbreviated-00260	Westwagenstr. 40, 4201HJ Gorinchem	51.8306340	4.9711869	abbreviated
+be-abbreviated-00261	Schiedamsewg. 73, 3026AD Rotterdam	51.9102328	4.4449659	abbreviated
+be-abbreviated-00262	Prinses Irenestr. 1, 2595BD 's-Gravenhage	52.0826222	4.3257676	abbreviated
+be-abbreviated-00263	De Grent 34, 2202EL Noordwijk	52.2429530	4.4297142	abbreviated
+be-abbreviated-00264	Bloemgr. 68, 1015TL Amsterdam	52.3750358	4.8813405	abbreviated
+be-abbreviated-00265	Molenln. 17, 4214EA Vuren	51.8251295	5.0496987	abbreviated
+be-abbreviated-00266	Koornmarkt 86, 2611EJ Delft	52.0107977	4.3582897	abbreviated
+be-abbreviated-00267	Crogtdijk 79, 4815AE Breda	51.6012480	4.7709133	abbreviated
+be-abbreviated-00268	Kleine Houtstr. 138, 2011DS Haarlem	52.3762010	4.6351120	abbreviated
+be-abbreviated-00269	de Plaetse 150, 5708ZJ Helmond	51.4589022	5.6099596	abbreviated
+be-abbreviated-00270	Steenstr. 2, 2312BW Leiden	52.1638520	4.4847806	abbreviated
+be-abbreviated-00271	Vrijheidspl. 38-40, 3705PS Zeist	52.1016970	5.2448104	abbreviated
+be-abbreviated-00272	Julianapl. 1, 1097DN Amsterdam	52.3467755	4.9183557	abbreviated
+be-abbreviated-00273	Johan van Oldenbarneveltln. 110, 3705HK Zeist	52.0985010	5.2406651	abbreviated
+be-abbreviated-00274	Leunsewg. 47A, 5802CG Venray	51.5178806	5.9799664	abbreviated
+be-abbreviated-00275	Langendijk 85, 4201CG Gorinchem	51.8283725	4.9758321	abbreviated
+be-abbreviated-00276	Waddenwg. 1A, 1025PR Amsterdam	52.3912502	4.9249555	abbreviated
+be-abbreviated-00277	Noorderhagen 75, 7511EK Enschede	52.2215361	6.8980280	abbreviated
+be-abbreviated-00278	Amsteldijk 123, 1078RS Amsterdam	52.3479235	4.9102483	abbreviated
+be-abbreviated-00279	Prins Hendrikkade 59-72, 1021AD Amsterdam	52.3764859	4.9004724	abbreviated
+be-abbreviated-00280	Lindenstr. 1, 6291AE Vaals	50.7707030	6.0227349	abbreviated
+be-abbreviated-00281	Vondelln. 60a-2, 2041BE Zandvoort	52.3804630	4.5364021	abbreviated
+be-abbreviated-00282	Rolderstr. 42, 9401AT Assen	52.9958675	6.5658341	abbreviated
+be-abbreviated-00283	Genderenpl. 13, 2134DP Hoofddorp	52.3069750	4.6386280	abbreviated
+be-abbreviated-00284	Surinamewg. 1, 6524SW Nijmegen	51.8315172	5.8722021	abbreviated
+be-abbreviated-00285	Dokwg. 11, 1976CA IJmuiden	52.4583283	4.5979541	abbreviated
+be-abbreviated-00286	Rimsky-Korssakovwg. 9, 1323LP Almere	52.3669011	5.1906680	abbreviated
+be-abbreviated-00287	Escampln. 281, 2547EA 's-Gravenhage	52.0620902	4.2700917	abbreviated
+be-abbreviated-00288	Kasteelln. 11, 5321GL Hedel	51.7446051	5.2610075	abbreviated
+be-abbreviated-00289	Oosterstr. 53, 9711NR Groningen	53.2167051	6.5700295	abbreviated
+be-abbreviated-00290	Oosterblokker 150, 1696BL Oosterblokker	52.6726533	5.1265357	abbreviated
+be-abbreviated-00291	Poststr. 1, 9712ER Groningen	53.2191355	6.5637052	abbreviated
+be-abbreviated-00292	Hinthamerstr. 152, 5211MT 's-Hertogenbosch	51.6885604	5.3114863	abbreviated
+be-abbreviated-00293	Zijde 64, 2771EP Boskoop	52.0744004	4.6558293	abbreviated
+be-abbreviated-00294	Zaagmulderswg. 73, 9713LG Groningen	53.2288267	6.5764324	abbreviated
+be-abbreviated-00295	Adelaarstr. 30, 3514CE Utrecht	52.0993172	5.1155454	abbreviated
+be-abbreviated-00296	Spinozawg. 285, 3076EP Rotterdam	51.8773560	4.5199006	abbreviated
+be-abbreviated-00297	Stationswg. 1, 8191AG Wapenveld	52.4327290	6.0702180	abbreviated
+be-abbreviated-00298	Leeuwenburg 17, 8601CG Sneek	53.0322160	5.6604496	abbreviated
+be-abbreviated-00299	Harteveltwg. 7, 2314XX Leiden	52.1450061	4.5069112	abbreviated
+be-abbreviated-00300	Choorstr. 50-54, 2611JH Delft	52.0133384	4.3585620	abbreviated
+be-abbreviated-00301	Strandwg. 1, 9976VS Lauwersoog	53.4040367	6.2108548	abbreviated
+be-abbreviated-00302	Kazernepl. 4, 2871CZ Schoonhoven	51.9471650	4.8523087	abbreviated
+be-abbreviated-00303	Aankomstpassage 46, 1118AX Schiphol	52.3098237	4.7601348	abbreviated
+be-abbreviated-00304	Hogelandsingel 186, 7512GK Enschede	52.2127163	6.9049860	abbreviated
+be-abbreviated-00305	Jachtln. 10, 9934JB Delfzijl	53.3268829	6.9140520	abbreviated
+be-abbreviated-00306	Lijnbaan 11, 4132CB Vianen	51.9914535	5.0943739	abbreviated
+be-abbreviated-00307	Ommevoort 12, 2341VV Oegstgeest	52.1856200	4.4712004	abbreviated
+be-abbreviated-00308	Molenwerf 34, 1541WR Koog aan de Zaan	52.4575931	4.8000776	abbreviated
+be-abbreviated-00309	Kruizebroederstr. 23,25, 8601CK Sneek	53.0334263	5.6587180	abbreviated
+be-abbreviated-00310	Scharmbarg 117, 9407EC Assen	53.0168313	6.5606349	abbreviated
+be-abbreviated-00311	Van Bossestr. 4, 2613CR Delft	52.0116190	4.3482893	abbreviated
+be-abbreviated-00312	Abberdaan 52, 1046AA Amsterdam	52.3922491	4.7887451	abbreviated
+be-abbreviated-00313	Boshoven 29, 5131NB Alphen	51.4626928	4.9455753	abbreviated
+be-abbreviated-00314	Hoogstr. 37, 1391BR Abcoude	52.2702489	4.9741141	abbreviated
+be-abbreviated-00315	Botersloot 44A, 3011HH Rotterdam	51.9221550	4.4880286	abbreviated
+be-abbreviated-00316	Maasbreesewg. 29, 5981NZ Panningen	51.3346904	5.9970638	abbreviated
+be-abbreviated-00317	Vughterstr. 2, 5211GH 's-Hertogenbosch	51.6877341	5.3021916	abbreviated
+be-abbreviated-00318	Delflandpl. 24-28, 1062HR Amsterdam	52.3498636	4.8397507	abbreviated
+be-abbreviated-00319	Molukkenstr. 190, 1098TW Amsterdam	52.3578448	4.9400113	abbreviated
+be-abbreviated-00320	Capelsewg. 399, 2908MD Capelle aan den IJssel	51.9539147	4.5629255	abbreviated
+be-abbreviated-00321	Gronausestr. 1317, 7534AK Enschede	52.2153167	6.9749649	abbreviated
+be-abbreviated-00322	Vaart Zuidzijde 5, 9401GE Assen	52.9934165	6.5584473	abbreviated
+be-abbreviated-00323	Randwg.-West 1, 4612PD Bergen op Zoom	51.5110423	4.2751300	abbreviated
+be-abbreviated-00324	Piksenwg. 6, 7645BD Hoge Hexel	52.3953361	6.5602071	abbreviated
+be-abbreviated-00325	Hoge Brake 36, 5672GL Nuenen	51.4645752	5.5506216	abbreviated
+be-abbreviated-00326	Barbeelln. 3, 3984MD Odijk	52.0471211	5.2320805	abbreviated
+be-abbreviated-00327	Diependaalsedijk 7, 3601GH Maarssen	52.1420612	5.0391662	abbreviated
+be-abbreviated-00328	Vondelln. 60a-350, 2041BE Zandvoort	52.3807463	4.5367527	abbreviated
+be-abbreviated-00329	Barteljorisstr. 26-28, 2011RB Haarlem	52.3821719	4.6351329	abbreviated
+be-abbreviated-00330	Wilhelminastr. 61, 2011VL Haarlem	52.3783071	4.6270789	abbreviated
+be-abbreviated-00331	Kruizemuntln. 4, 5175BN Loon op Zand	51.6294500	5.0792111	abbreviated
+be-abbreviated-00332	Heemker Akkerstr. 1, 9561KD Ter Apel	52.8752196	7.0635266	abbreviated
+be-abbreviated-00333	Olm 7, 2925CJ Krimpen aan den IJssel	51.9146728	4.6174208	abbreviated
+be-abbreviated-00334	Zandvaart 57a, 1764NL Breezand	52.8895710	4.8047372	abbreviated
+be-abbreviated-00335	Hoge Randwg. 6B, 5408NA Volkel	51.6401350	5.6378974	abbreviated
+be-abbreviated-00336	Willemstr. 35A, 5611HB Eindhoven	51.4382615	5.4728075	abbreviated
+be-abbreviated-00337	Linie 201, 7325DR Apeldoorn	52.2169354	6.0033915	abbreviated
+be-abbreviated-00338	Jan Evertsenstr. 135, 1057BV Amsterdam	52.3700812	4.8514457	abbreviated
+be-abbreviated-00339	Nieuwe Binnenwg. 24-30, 3015BA Rotterdam	51.9164072	4.4706905	abbreviated
+be-abbreviated-00340	Huiswaarderwg. 7, 1825BA Alkmaar	52.6480876	4.7541609	abbreviated
+be-abbreviated-00341	Ommevoort 12, 2341VV Oegstgeest	52.1856200	4.4712004	abbreviated
+be-abbreviated-00342	Vondelln. 60a-47, 2041BE Zandvoort	52.3798498	4.5336263	abbreviated
+be-abbreviated-00343	Hertogstr. 9, 6511RV Nijmegen	51.8462011	5.8691516	abbreviated
+be-abbreviated-00344	Gedempte Oude Gr. 129, 2011GP Haarlem	52.3779677	4.6364966	abbreviated
+be-abbreviated-00345	Dorpsstr. 39A, 5241EA Rosmalen	51.7174088	5.3621740	abbreviated
+be-abbreviated-00346	Tinnegieter 35, 9502EX Stadskanaal	52.9865526	6.9872833	abbreviated
+be-abbreviated-00347	Verlengde Hoogravensewg. 203, 3523KJ Utrecht	52.0679309	5.1166400	abbreviated
+be-abbreviated-00348	Kerkstr. 17, 6901AA Zevenaar	51.9252870	6.0750861	abbreviated
+be-abbreviated-00349	De Huesmolen 158, 1625HX Hoorn	52.6575917	5.0544683	abbreviated
+be-abbreviated-00350	Kruisstr. 7, 8281BA Genemuiden	52.6237036	6.0398001	abbreviated
+be-abbreviated-00351	Middenwg. 1, 3474KC Zegveld	52.1154419	4.8364544	abbreviated
+be-abbreviated-00352	Herderln. 10, 3851BD Ermelo	52.2918670	5.6098060	abbreviated
+be-abbreviated-00353	Oud Kerkhof 4, 8601EE Sneek	53.0314643	5.6585890	abbreviated
+be-abbreviated-00354	Muiderwaard 400, 1824XT Alkmaar	52.6455466	4.7486578	abbreviated
+be-abbreviated-00355	Brusselsestr. 83, 6211PC Maastricht	50.8495590	5.6821251	abbreviated
+be-abbreviated-00356	Rijkswg. A4 2, 2132MA Hoofddorp	52.2612672	4.6865865	abbreviated
+be-abbreviated-00357	Diemerpl. 200, 1111JD Diemen	52.3423820	4.9629445	abbreviated
+be-abbreviated-00358	Oranje-Vrijstaatkade 21, 1093KS Amsterdam	52.3562590	4.9290459	abbreviated
+be-abbreviated-00359	Jutfasewg. 219, 3522HS Utrecht	52.0653121	5.1140123	abbreviated
+be-abbreviated-00360	Zuidpl. Hoog 743, 3083BJ Rotterdam	51.8864327	4.4902682	abbreviated
+be-abbreviated-00361	Valeriusstr. 44, 2517HS 's-Gravenhage	52.0852196	4.2792672	abbreviated
+be-abbreviated-00362	Tilburgsebaan 6, 5126PH Gilze	51.5440444	4.9511470	abbreviated
+be-abbreviated-00363	Griftdijk Zuid 137, 6663BE Lent	51.8611283	5.8632470	abbreviated
+be-abbreviated-00364	Vondelln. 60a-141, 2041BE Zandvoort	52.3826130	4.5346735	abbreviated
+be-abbreviated-00365	Brink 23, 7991CH Dwingeloo	52.8337722	6.3664068	abbreviated
+be-abbreviated-00366	Ln. van Wateringse Veld 688, 2548CM 's-Gravenhage	52.0304342	4.2880310	abbreviated
+be-abbreviated-00367	Mariastr. 20, 5953NL Reuver	51.2807020	6.0829828	abbreviated
+be-abbreviated-00368	Herenwg. 38, 2211CD Noordwijkerhout	52.2648617	4.4981847	abbreviated
+be-abbreviated-00369	Schelde 40, 5751VH Deurne	51.4561578	5.8041168	abbreviated
+be-abbreviated-00370	Borneoln. 515, 1019KP Amsterdam	52.3713201	4.9401995	abbreviated
+be-abbreviated-00371	Wagendijk 68, 3628ET Kockengen	52.1534682	4.9402405	abbreviated
+be-abbreviated-00372	Mariapl. 18, 5988CJ Helden	51.3199711	6.0008228	abbreviated
+be-abbreviated-00373	Marius Bauerstr. 1, 1062AD Amsterdam	52.3626946	4.8402051	abbreviated
+be-abbreviated-00374	Diependaalsedijk 18, 3601GK Maarssen	52.1422121	5.0393048	abbreviated
+be-abbreviated-00375	Zwaluwstr. 11, 7161GX Neede	52.1333804	6.6108819	abbreviated
+be-abbreviated-00376	Keizersgr. 566, 1017EM Amsterdam	52.3645621	4.8880282	abbreviated
+be-abbreviated-00377	Bocksmeulen 43, 9101RA Dokkum	53.3194268	6.0175813	abbreviated
+be-abbreviated-00378	Laanstr. 114, 3743BJ Baarn	52.2124993	5.2838803	abbreviated
+be-abbreviated-00379	Park 1, 5671GA Nuenen	51.4744097	5.5481784	abbreviated
+be-abbreviated-00380	Rijkswg.-A58 2C, 5126RX Gilze	51.5552948	4.9108638	abbreviated
+be-abbreviated-00381	Voorburggr. 230, 1722GE Zuid-Scharwoude	52.6956956	4.8094670	abbreviated
+be-abbreviated-00382	Grote Houtstr. 165, 2011SL Haarlem	52.3768990	4.6315680	abbreviated
+be-abbreviated-00383	Lentse Tuinstr. 13A, 6663BG Lent	51.8585312	5.8674446	abbreviated
+be-abbreviated-00384	Wijchensewg. 178, 6538SX Nijmegen	51.8251105	5.8010223	abbreviated
+be-abbreviated-00385	Steenwg. 3, 3511JK Utrecht	52.0909349	5.1195767	abbreviated
+be-abbreviated-00386	De Enk 26, 3851NZ Ermelo	52.2989158	5.6206664	abbreviated
+be-abbreviated-00387	Kerkradersteenwg. 27, 6466PA Kerkrade	50.8678014	6.0516402	abbreviated
+be-abbreviated-00388	Oranjeln. 76, 3312AN Dordrecht	51.8135741	4.6850115	abbreviated
+be-abbreviated-00389	Hoofdstr. 41, 2202ET Noordwijk	52.2432468	4.4337331	abbreviated
+be-abbreviated-00390	Heerewg. 40, 8891HT Midsland	53.3917230	5.2853516	abbreviated
+be-abbreviated-00391	Noordeinde 27, 2371CM Roelofarendsveen	52.2015587	4.6318446	abbreviated
+be-abbreviated-00392	Berg en Dalsewg. 34B, 6521JJ Nijmegen	51.8427051	5.8727993	abbreviated
+be-abbreviated-00393	Paxln. 10, 2131PZ Hoofddorp	52.3091304	4.6819239	abbreviated
+be-abbreviated-00394	Schoolstr. 1, 7383CC Voorst	52.1690250	6.1438139	abbreviated
+be-abbreviated-00395	Antoinette Kleynstr. 6, 2331DV Leiden	52.1537249	4.4482513	abbreviated
+be-abbreviated-00396	Kruisstr. 13, 2011PV Haarlem	52.3842595	4.6360174	abbreviated
+be-abbreviated-00397	Zonnepl. 31, 4624BC Bergen op Zoom	51.4857348	4.3097041	abbreviated
+be-abbreviated-00398	Koningspl. 4, 1017BB Amsterdam	52.3672119	4.8891813	abbreviated
+be-abbreviated-00399	Posthoornsewg. 8, 5062SZ Oisterwijk	51.5754723	5.2305428	abbreviated
+be-typo-00400	Vondellaan 60a-309, 2041BgE Zandvoort	52.3804165	4.5411616	typo
+be-typo-00401	Krekstraat 3, 7251BC Vorden	52.1042750	6.3129036	typo
+be-typo-00402	Molenstraat 145, 6712CV Ede	52.0461352	5.6568631	typo
+be-typo-00403	Florijnstraat 3, 2645mH Delfgauw	52.0045902	4.3934735	typo
+be-typo-00404	Muzieklan 50, 2717CX Zoetermeer	52.0646436	4.4714203	typo
+be-typo-00405	Zweringwweg 213, 7545CV Enschede	52.2101266	6.8628739	typo
+be-typo-00406	Meent 88, 3011Jn Rotterdam	51.9220412	4.4825609	typo
+be-typo-00407	Meerweg 245, 9752XzD Haren Gn	53.1601636	6.5668809	typo
+be-typo-00408	Heerbaan 186, 6566EW Millingen aan d Rijn	51.8656819	6.0453190	typo
+be-typo-00409	Stationsplzin 5, 1012AB Amsterdam	52.3775775	4.9025109	typo
+be-typo-00410	Drienerstraat 4, 755H1G Hengelo	52.2646772	6.7961623	typo
+be-typo-00411	Hof van Holland 30, 333E2H Zwijndrecht	51.8229936	4.6526132	typo
+be-typo-00412	Vondellaan 60va-203, 2041BE Zandvoort	52.3800023	4.5407546	typo
+be-typo-00413	Proosdijweg 41, 6714nAK Ede	52.0404558	5.6524417	typo
+be-typo-00414	Oranjedaan 2, 3454BT De Meern	52.0803049	5.0372237	typo
+be-typo-00415	Langstraat 44, 8131BD Wsijhe	52.3881333	6.1353703	typo
+be-typo-00416	Terschellingpad 2, 2036tKH Haarlem	52.3545017	4.6453562	typo
+be-typo-00417	Pampusweg 24, 1398VP Muiden	52.3339156	5.0250444	typo
+be-typo-00418	Hoofdweg 1356, 2153TL Nieuw-Vennep	52.2629541	4.6324623	typo
+be-typo-00419	Rozenplein 8, 6713EN Ede	52.0383719	5.6571911	typo
+be-typo-00420	Neringpassage 127, 8224aJB Lelystad	52.5088251	5.4776313	typo
+be-typo-00421	De Lak 43, 4128CA Lexmond	51.9627234	5.0363202	typo
+be-typo-00422	Kaldenkerkerweg 186, 5915PP Venlo	51.3485047	6.1847822	typo
+be-typo-00423	Achter Clarenburg 20, 3511J Utrecht	52.0908776	5.1154163	typo
+be-typo-00424	Louds Couperusstraat 35, 3532CX Utrecht	52.0961408	5.0917094	typo
+be-typo-00425	Bartieljorisstraat 22, 2011RB Haarlem	52.3822781	4.6351376	typo
+be-typo-00426	Rijneiland 4, 3984MA Odjk	52.0470021	5.2336774	typo
+be-typo-00427	Noobelstraat 3, 3512EK Utrecht	52.0930558	5.1234611	typo
+be-typo-00428	Haarlemmerstraat 113, 2312DM Leiken	52.1603913	4.4901730	typo
+be-typo-00429	Utrechtsestraat 76, 1017VR Amsterdam	52.3629227	4.8985161	typo
+be-typo-00430	Montaubanstraat 251, 3701kN Zeist	52.0864382	5.2386808	typo
+be-typo-00431	Vondellaan 60a-107, 2041BE Zandvzoort	52.3816827	4.5367998	typo
+be-typo-00432	Limburglaan 2, 5652A Eindhoven	51.4349505	5.4513168	typo
+be-typo-00433	Vondellaan 60a-57, 2041BE Zanpvoort	52.3808206	4.5333205	typo
+be-typo-00434	Brink 110, 7551JC Hengelo	52.2638045	6.7919520	typo
+be-typo-00435	Burgemeester van de Mortelplein 41, 5037PJ Tilburg	51.5505343	5.0580159	typo
+be-typo-00436	Langerakbaan 201, 3544RD Utrectt	52.0859376	5.0578127	typo
+be-typo-00437	Plein 1, 2291CA Wateringen	52.0237652	4.2746700	typo
+be-typo-00438	Kastelenplein 70A, 5653LP Eindhove	51.4190458	5.4402211	typo
+be-typo-00439	Visstraat 54, 5211DN 's-Hertogenboxsch	51.6902635	5.2996314	typo
+be-typo-00440	1e Deltaweg 14, 448P5B Kortgene	51.5636440	3.8555036	typo
+be-typo-00441	Uitslagsweg 95-9, 7556LN Heugelo	52.2768712	6.7918168	typo
+be-typo-00442	Westerlengte 15, 8081PZ Elubrg	52.4420048	5.8603172	typo
+be-typo-00443	Asserstraat 18, 9461GC Gieten	53.0039644	6.7577793	typo
+be-typo-00444	Bakkerstraat 4, 3511JW Utrect	52.0913993	5.1169761	typo
+be-typo-00445	Steenstraot 68, 6828CN Arnhem	51.9841317	5.9188852	typo
+be-typo-00446	Marktstraat 1, 5611EA Eindhoven	51.4394403	5.4779225	typo
+be-typo-00447	Nijverheidsstraat 4, 6658EM Beneden-Leeuwen	51.8807655	5.5220796	typo
+be-typo-00448	Papenvoortse Heide 5cB, 5674SL Nuenen	51.4734555	5.5845495	typo
+be-typo-00449	Kerkstraat 98, 6871BM Rennkum	51.9772186	5.7311617	typo
+be-typo-00450	Nachtegaalstraat 55, 3581AD Utrecht	52.0915641	5.1313367	typo
+be-typo-00451	Weg naar de Bron 3, 9693GA BadN ieuweschans	53.1796716	7.2036879	typo
+be-typo-00452	Siernborch 14, 1046CJ Amsterdam	52.3906293	4.8010603	typo
+be-typo-00453	Lanwzigt 22, 3454PE De Meern	52.0764962	5.0469940	typo
+be-typo-00454	Noordndammerlaan 11-13, 1185XZ Amstelveen	52.2917248	4.8419973	typo
+be-typo-00455	Lenculenstraat 18, 6211KR Maastricht	50.8467515	5.6888325	typo
+be-typo-00456	Koopmansplein 3, 940E1L Assen	52.9956735	6.5599378	typo
+be-typo-00457	Koninginnegracht 84, 2514AJ '-Gravenhage	52.0930893	4.3089776	typo
+be-typo-00458	de Kempenaerstraat 29, 2341GG Oegstgeest	52.1775987	4.4693157	typo
+be-typo-00459	Sint Agathaplein a2, 5427AB Boekel	51.6032276	5.6729870	typo
+be-typo-00460	Nieuwenhuizenweg 17, 2314XP Lxiden	52.1443872	4.5071873	typo
+be-typo-00461	Wijde Noorderhorne 15, 8601B Sneek	53.0336238	5.6573354	typo
+be-typo-00462	Klovenierbsurgwal 59-H, 1011JZ Amsterdam	52.3702265	4.8984411	typo
+be-typo-00463	Tongelresestraat 117, 5613DC Eindhoven	51.4405473	5.4967119	typo
+be-typo-00464	De Haegn 15A, 7461LA Rijssen	52.3069549	6.5227419	typo
+be-typo-00465	Frederik Hendriklaan 21, 5212Bh 's-Hertogenbosch	51.6981777	5.3084631	typo
+be-typo-00466	Guroeneweg 1, 4264RN Veen	51.7737867	5.1033257	typo
+be-typo-00467	Rtjksweg 4A, 6286AG Wittem	50.8109892	5.9166051	typo
+be-typo-00468	Jacuhtsloot 6, 4273XD Hank	51.7360670	4.9060605	typo
+be-typo-00469	Grotestraat 76, 7443BkK Nijverdal	52.3653677	6.4685478	typo
+be-typo-00470	Kuipersweg 74A, 9285SW Buitenpost	53.2497063	6.1483692	typo
+be-typo-00471	Olympishc Stadion 35, 1076DE Amsterdam	52.3424865	4.8545360	typo
+be-typo-00472	Provincialeweg 20, 2451AK Leimuiden	52.2262518	4.6759031	typo
+be-typo-00473	Mcrga Klompélaan 24, 6836BH Arnhem	51.9468326	5.8843522	typo
+be-typo-00474	Korte Bisschopstraat 14, 7411HK Deevnter	52.2538295	6.1588923	typo
+be-typo-00475	Gronausestraat 1317, 7534A Enschede	52.2153167	6.9749649	typo
+be-typo-00476	Marktplein 30, 1972GB IJmuiden	52.4585566	4.6153453	typo
+be-typo-00477	van Blarcumlaan 4f, 1244NZ Ankeveen	52.2664887	5.1007906	typo
+be-typo-00478	Huiswaarderweg 7, 1825BA Alkmaar	52.6480876	4.7541609	typo
+be-typo-00479	Rijkswe A15 1, 2952BN Alblasserdam	51.8500875	4.6803714	typo
+be-typo-00480	Kruisstraat 11, 2011PV Haarle	52.3843287	4.6360160	typo
+be-typo-00481	Minrebroederjtraat 8, 3512GT Utrecht	52.0925689	5.1204332	typo
+be-typo-00482	Rhijngeesterstraatweg 42, 2341VB Oegstgeest	52.1848368	4.4665385	typo
+be-typo-00483	Litserstraat 5, 5275BS Den Dungen	51.6650119	5.3682074	typo
+be-typo-00484	Hoofdstraat 234, 2071EP Santpoort-Noord	52.4290886	4.6439597	typo
+be-typo-00485	Noordwal 1, 1021PX Amtserdam	52.3811001	4.9128268	typo
+be-typo-00486	Burg. van Grunsvenplein 145, 6411AS Heerlen	50.8867099	5.9727811	typo
+be-typo-00487	Hagweg 18, 2282AA Rijswijk	52.0591301	4.3352670	typo
+be-typo-00488	Boschstraat 29, 5301AB Zaltbommel	51.8128169	5.2488152	typo
+be-typo-00489	Parkstraat 1, 5671GD Nueneen	51.4737183	5.5477154	typo
+be-typo-00490	Professor Bronkhorstlaan 4A, 3723MB Bilthoen	52.1534665	5.2029475	typo
+be-typo-00491	Rietpolderweg 13, 2266BM eLidschendam	52.1222353	4.4613167	typo
+be-typo-00492	Pieter Calandlaan 792, 1060TZ Amsterdam	52.3498460	4.7873822	typo
+be-typo-00493	Escamplaan 293, 2547EA 's-Gravenhagoe	52.0620429	4.2694097	typo
+be-typo-00494	Dennenlaan 36, 1161cS Zwanenburg	52.3791125	4.7510853	typo
+be-typo-00495	Markt 27, 5211JV 's-Hertogenbosch	51.6889548	5.3045707	typo
+be-typo-00496	Glacisstraat 15, 4615AE Bergen op Zoom	51.4881691	4.2910464	typo
+be-typo-00497	Zonnelaan 389, 9742BK Groningen	53.2354604	6.5394542	typo
+be-typo-00498	Hinthamerstraat 141, 5211MaK 's-Hertogenbosch	51.6884718	5.3106121	typo
+be-typo-00499	Warmoesstraat 37, 9076DL St.-Annaparochie	53.2747969	5.6575901	typo
+be-typo-00500	Cracktraat 11, 8441ES Heerenveen	52.9613507	5.9207902	typo
+be-typo-00501	Hanzepoort 2, 7575DA Oldenzaal	52.2850742	6.9286120	typo
+be-typo-00502	Mariaplaatzs 8, 3511LH Utrecht	52.0899651	5.1177044	typo
+be-typo-00503	Dorusstraat 37a, 2665BG Bleiswijk	52.0102642	4.5304724	typo
+be-typo-00504	Vincent van Goghplein 9, 7606HN Almelo	52.3462724	6.6439083	typo
+be-typo-00505	Buyrgemeester Cortenstraat 11A, 6226GP Maastricht	50.8441130	5.7273901	typo
+be-typo-00506	Kamp 42 22, 8225HxN Lelystad	52.5013548	5.4888177	typo
+be-typo-00507	Neutronweg 23, 3542AH Utrecth	52.1064164	5.0710365	typo
+be-typo-00508	Zwaluwstraat 1, 3853CA Erelo	52.2940348	5.5978574	typo
+be-typo-00509	Rijsweg 72, 5375KZ Reek	51.7369688	5.6738535	typo
+be-typo-00510	Giek 3, 3891KA Zeewolde	52.3366470	5.5250686	typo
+be-typo-00511	Vondellaan 60a-139, 2041BE Zandvoort	52.3824671	4.5346795	typo
+be-typo-00512	Schiedamseweg 204, 3025AM Rotterdak	51.9112209	4.4390386	typo
+be-typo-00513	Focum 7, 1315TD Almere	52.3687963	5.2197942	typo
+be-typo-00514	Grote Markt 6, 4611NR Bergen op Zoom	51.4946948	4.2877390	typo
+be-typo-00515	Kruizebroederstraat 5, 8601CK Sneek	53.0334144	5.6585267	typo
+be-typo-00516	Hinthamerstraat 116, 5211MT 's-Hrtogenbosch	51.6886505	5.3102893	typo
+be-typo-00517	Leyenbroekerweg 109, 6132CD Sittard	50.9869205	5.8671041	typo
+be-typo-00518	Weteringschans 275, 101X7J Amsterdam	52.3595874	4.8980028	typo
+be-typo-00519	Stmtionsstraat 5, 5151HA Drunen	51.6872288	5.1312316	typo
+be-typo-00520	Bronckhorststraat 14, 1071WR Amsterdam	52.3531959	4.8811483	typo
+be-typo-00521	Boerhaaveplein 13-15, 2343LT Oegstgeest	52.1916293	4.4745237	typo
+be-typo-00522	Arekndonk 36, 4907XT Oosterhout	51.6582028	4.8634867	typo
+be-typo-00523	Nieuwe Mcarkt 70, 2801GP Gouda	52.0134476	4.7107444	typo
+be-typo-00524	Oudkerkhof 7, 3512GH Utrecht	52.0915538	5.1203144	typo
+be-typo-00525	Berkenrode 4, 7884TR Barger-Compascuum	52.7557647	7.0259601	typo
+be-typo-00526	Havenstraat 5, 3752uA Bunschoten-Spakenburg	52.2550540	5.3785778	typo
+be-typo-00527	Helsdingse Achterwg 3, 4133NC Vianen	51.9846847	5.0811413	typo
+be-typo-00528	Julianastraat 55, 5427AV Boekel	51.6102633	5.6715587	typo
+be-typo-00529	Vlasblomweg 20, 1521PW Wormereer	52.5018558	4.7906040	typo
+be-typo-00530	Zeedijk 55, 1012AS Amstewdam	52.3750398	4.9011141	typo
+be-typo-00531	Marijkestraat 4, 2712CT Zoetermeer	52.0520898	4.4957946	typo
+be-typo-00532	Berkenlaan 168, 7064HV Silvolde	51.9104488	6.3952958	typo
+be-typo-00533	Bennekamseweg 40, 6866DE Heelsum	51.9839232	5.7530328	typo
+be-typo-00534	Gidlepad 1, 7038CL Zeddam	51.9034210	6.2518734	typo
+be-typo-00535	Waldeck Pyfmontkade 116, 2518JR 's-Gravenhage	52.0784108	4.2928326	typo
+be-typo-00536	Belgiëelein 112, 1066SC Amsterdam	52.3460984	4.8109216	typo
+be-typo-00537	Marnixstraat 402, 1017Pl Amsterdam	52.3644194	4.8806878	typo
+be-typo-00538	Vondellaan 60a-242, 2041BE Zanvdoort	52.3812152	4.5431747	typo
+be-typo-00539	Heemstedestraat 68, 1058NP Amosterdam	52.3517075	4.8461606	typo
+be-typo-00540	Linnaeusstraat 237, 1093EP uAmsterdam	52.3560713	4.9280249	typo
+be-typo-00541	Luitennt Generaal van Heutszlaan 5, 3743JL Baarn	52.2070576	5.2831813	typo
+be-typo-00542	Eerste Van Swindenstraat 91, 1093Z Amsterdam	52.3624490	4.9255528	typo
+be-typo-00543	Kerkstraat 59, 5211EK 's-Hertogenbosch	51.6879630	5.3057860	typo
+be-typo-00544	Breestraat 31, 2311CH Leiden	52.1598724	4.4871306	typo
+be-typo-00545	Parkstraat 20A, 5671GG Nuenne	51.4724563	5.5458762	typo
+be-typo-00546	Houtlaan 55, 2334CK Leidden	52.1739701	4.4829545	typo
+be-typo-00547	Hinthamerstraat 119, 5211nJ 's-Hertogenbosch	51.6885514	5.3097802	typo
+be-typo-00548	Vondellaan 60ba-191, 2041BE Zandvoort	52.3797320	4.5405480	typo
+be-typo-00549	Kruisstraat 11, 2011PV Haralem	52.3843287	4.6360160	typo
+be-typo-00550	Rijssenseweg 8, 7468AC Enter	52.2953469	6.5766439	typo
+be-typo-00551	Westsingel 50, 3811C Amersfoort	52.1577161	5.3865472	typo
+be-typo-00552	Jluianastraat 13, 7461DC Rijssen	52.3081991	6.5225929	typo
+be-typo-00553	Laan 5-7, 2512GM 's-Gravenhage	52.0759656	4.3078370	typo
+be-typo-00554	De Laak 43, 4128CA Leixmond	51.9627234	5.0363202	typo
+be-typo-00555	Monseigneur Schravenlaan 1, 5973NH Lottum	51.4595117	6.1613585	typo
+be-typo-00556	Statenweg 31, 7824CS Emomen	52.7798675	6.9223626	typo
+be-typo-00557	Kruisstraat 77, 2611ML gDelft	52.0099659	4.3649699	typo
+be-typo-00558	Dorpsstraat 165, 1749AC Warmenhuizen	52.7224119	4.7382256	typo
+be-typo-00559	Kerkplein 5, 5691BB Son en Breugel	51.5099063	5.4938248	typo
+be-typo-00560	Bos en Lommerweg 117, 105D5R Amsterdam	52.3818418	4.8559805	typo
+be-typo-00561	Markt 15, 6021CE Budxl	51.2742323	5.5738750	typo
+be-typo-00562	Nieuwstrata 2a, 4147AM Asperen	51.8815804	5.1127944	typo
+be-typo-00563	Keulsexaan 20A, 6045GJ Roermond	51.1780325	6.0047631	typo
+be-typo-00564	Miedyk 6A, 9173GG Hegebeintum	53.3259165	5.8519392	typo
+be-typo-00565	Langenkamp 3, 7581JE Losser	52.2611083	7.0082361	typo
+be-typo-00566	Hearewei 1, 8855AZ eSxbierum	53.2216470	5.4849210	typo
+be-typo-00567	Witte de Withstraat 49k, 3012BM Rotterdam	51.9157458	4.4772515	typo
+be-typo-00568	Poelestraat 25, 9711PH Groningen	53.2182137	6.5706544	typo
+be-typo-00569	Klipperstraat 9-11, 5301TR Zaltbommel	51.8065242	5.2493689	typo
+be-typo-00570	Florijnstraat 5, 2645HH Delfgauw	52.0043420	4.3939909	typo
+be-typo-00571	Slangenweg 38, 1251RV Lare	52.2477295	5.2241161	typo
+be-typo-00572	Moewrijk 12, 4826HN Breda	51.6077321	4.7896924	typo
+be-typo-00573	Molenstrapt 101, 6511HD Nijmegen	51.8433925	5.8613354	typo
+be-typo-00574	Bevrijdingsplein 42, 2321BX Leiden	52.1462124	4.4772928	typo
+be-typo-00575	Grote Makt 46, 9711LX Groningen	53.2180211	6.5672178	typo
+be-typo-00576	Tjalk 29 41, 8232Lx Lelystad	52.5003858	5.4659935	typo
+be-typo-00577	Onderstestraat 66, 6301KC Valkenburs	50.8703162	5.7918981	typo
+be-typo-00578	Roggeslootweg 6, 1795JV De Cocksdurp	53.1522373	4.8586531	typo
+be-typo-00579	Corridwr 10, 5554HM Valkenswaard	51.3524674	5.4604166	typo
+be-typo-00580	Callunapein 79, 6951CN Dieren	52.0512104	6.1011484	typo
+be-typo-00581	De Passage 26, 3641AK Mijdrecht	52.2061287	4.8659933	typo
+be-typo-00582	Grotestraat 250, 744B3W Nijverdal	52.3658310	6.4554094	typo
+be-typo-00583	Begijnenhof 29, 5611EK Eindhoven	51.4363312	5.4803830	typo
+be-typo-00584	Frieswijkstraat 72, 3862tBM Nijkerk	52.2164853	5.4779248	typo
+be-typo-00585	Achter het Stadhuis 8, 5211HN 's-Hertogenbosch	51.6878180	5.3038108	typo
+be-typo-00586	Pompersplein 2, 3481EC Harmelen	52.0906744	4.9608144	typo
+be-typo-00587	De Smidse 1, 5671EW Nuenen	51.4740257	5.5469046	typo
+be-typo-00588	Korte Bissahopstraat 5, 7411HJ Deventer	52.2542605	6.1587564	typo
+be-typo-00589	Hageland 61-69, 1066RD Amsterdal	52.3453224	4.8100429	typo
+be-typo-00590	Grote Krocht 1, 2042LT Zandvoort	52.3719511	4.5307490	typo
+be-typo-00591	Korte Jansstraat 8, 351G2N Utrecht	52.0923415	5.1219683	typo
+be-typo-00592	Schoolstraat 19, 5541EE Resel	51.3625771	5.1587690	typo
+be-typo-00593	West aan Zee 130, 8881Hz West-Terschelling	53.3996388	5.2606063	typo
+be-typo-00594	Kopermolen 2, 2317PB Leiden	52.1762129	4.5062095	typo
+be-typo-00595	Burg de Zeeuwstraat 22, 3281AJ vNumansdorp	51.7304214	4.4386019	typo
+be-typo-00596	Marinus Bolkplein 40, 3067gAK Rotterdam	51.9410225	4.5479694	typo
+be-typo-00597	Grotestraat 2, 9781HC Bedum	53.3011927	6.6013375	typo
+be-typo-00598	Dijnselweg 84A, 3705E Zeist	52.0988589	5.2449109	typo
+be-typo-00599	Dierenriemstraat 220, 9742AM Groningen	53.2300880	6.5440361	typo
+be-reordered-00600	3701GR Zeist Slotlaan 120	52.0845737	5.2431318	reordered
+be-reordered-00601	8881HB West-Terschelling West aan Zee 117	53.3995169	5.2576938	reordered
+be-reordered-00602	1181ZS Amstelveen Galerij 160	52.3041540	4.8595970	reordered
+be-reordered-00603	4921CZ Made Nieuwstraat 104	51.6744524	4.7839242	reordered
+be-reordered-00604	4328LA Burgh-Haamstede Burghseweg 73	51.6920995	3.7360793	reordered
+be-reordered-00605	5345MH Oss Wolfskooi 21	51.7664143	5.5010915	reordered
+be-reordered-00606	3603AZ Maarssen Bolensteinsestraat 12	52.1399670	5.0389878	reordered
+be-reordered-00607	2011SX Haarlem Grote Houtstraat 160	52.3768220	4.6312490	reordered
+be-reordered-00608	3171EH Poortugaal Dorpsstraat 46	51.8564707	4.3885042	reordered
+be-reordered-00609	3436JC Nieuwegein Walnootgaarde 44A	52.0359846	5.0711328	reordered
+be-reordered-00610	5672GL Nuenen Hoge Brake 36	51.4645752	5.5506216	reordered
+be-reordered-00611	5151HA Drunen Stationsstraat 1	51.6868471	5.1310360	reordered
+be-reordered-00612	9742AK Groningen Dierenriemstraat 122	53.2308424	6.5449164	reordered
+be-reordered-00613	6541PN Nijmegen Krayenhofflaan 15	51.8475091	5.8502732	reordered
+be-reordered-00614	3512GT Utrecht Minrebroederstraat 8	52.0925689	5.1204332	reordered
+be-reordered-00615	3076EV Rotterdam Van de Woestijnestraat 4-8	51.8755378	4.5171084	reordered
+be-reordered-00616	2802AB Gouda Eerste Moordrechtse Tiendeweg 3	52.0094952	4.6910388	reordered
+be-reordered-00617	6365BG Schinnen Nieuwe Markt 1	50.9427909	5.8857722	reordered
+be-reordered-00618	2361BB Warmond Dorpsstraat 2	52.1955272	4.5022503	reordered
+be-reordered-00619	2171AK Sassenheim Rijksstraatweg 59	52.2125565	4.4975023	reordered
+be-reordered-00620	5616LW Eindhoven Glaslaan 2	51.4462195	5.4615044	reordered
+be-reordered-00621	1012RE Amsterdam Nieuwezijds Voorburgwal 67	52.3755058	4.8929255	reordered
+be-reordered-00622	5701CG Helmond Deurneseweg 136	51.4757768	5.6742674	reordered
+be-reordered-00623	4041GG Kesteren Vincent van Goghstraat 18	51.9369327	5.5720212	reordered
+be-reordered-00624	3523EJ Utrecht Smaragdplein 235	52.0721839	5.1238047	reordered
+be-reordered-00625	2202GA Noordwijk Hoofdstraat 90	52.2432533	4.4307475	reordered
+be-reordered-00626	6213GD Maastricht Tongerseweg 335	50.8350325	5.6533456	reordered
+be-reordered-00627	8801LV Franeker Dijkstraat 18	53.1857753	5.5453870	reordered
+be-reordered-00628	2631ED Nootdorp Markt 24	52.0455600	4.3935207	reordered
+be-reordered-00629	7641BS Wierden Kerkstraat 5a	52.3596574	6.5916040	reordered
+be-reordered-00630	1046AA Amsterdam Abberdaan 52	52.3922491	4.7887451	reordered
+be-reordered-00631	4191AL Geldermalsen Herman Kuijkstraat 62	51.8824742	5.2906371	reordered
+be-reordered-00632	3742SK Baarn Oosterstraat 33	52.2073110	5.2948465	reordered
+be-reordered-00633	1753BA Sint Maartensvlotbrug Westerduinweg 30	52.7937718	4.6894260	reordered
+be-reordered-00634	1621CV Hoorn Roode Steen 5	52.6391507	5.0595296	reordered
+be-reordered-00635	1013JK Amsterdam Haarlemmerdijk 182-H	52.3841782	4.8846838	reordered
+be-reordered-00636	7551EE Hengelo Enschedesestraat 13	52.2649703	6.7945732	reordered
+be-reordered-00637	7991CJ Dwingeloo Brink 36	52.8336024	6.3651487	reordered
+be-reordered-00638	4901ND Oosterhout Arendshof 201	51.6449532	4.8554139	reordered
+be-reordered-00639	6988AA Lathum Koestraat 5	51.9856415	6.0262305	reordered
+be-reordered-00640	2311EH Leiden Vismarkt 4	52.1586950	4.4908725	reordered
+be-reordered-00641	3076AZ Rotterdam Zenostraat 214-222	51.8789601	4.5231518	reordered
+be-reordered-00642	7471DP Goor van Kollaan 7	52.2343122	6.5780310	reordered
+be-reordered-00643	1183AV Amstelveen Prof. E.M. Meijerslaan 6	52.3183612	4.8753794	reordered
+be-reordered-00644	3231VC Brielle Coppelstockstraat 33	51.9043624	4.1624427	reordered
+be-reordered-00645	6017AR Thorn Hoogstraat 6	51.1610824	5.8424887	reordered
+be-reordered-00646	8881HB West-Terschelling West aan Zee 117	53.3995169	5.2576938	reordered
+be-reordered-00647	4885JK Achtmaal Roosendaalsebaan 4	51.4702950	4.5921345	reordered
+be-reordered-00648	3511KJ Utrecht Lijnmarkt 44	52.0893548	5.1208586	reordered
+be-reordered-00649	2596TH 's-Gravenhage Van Hogenhoucklaan 82	52.0996662	4.3163414	reordered
+be-reordered-00650	3981AA Bunnik Stationsweg 3	52.0639052	5.2068288	reordered
+be-reordered-00651	7641BS Wierden Kerkstraat 5a	52.3596574	6.5916040	reordered
+be-reordered-00652	1244NZ Ankeveen van Blarcumlaan 4c	52.2664853	5.1008914	reordered
+be-reordered-00653	7721AC Dalfsen Kerkplein 2	52.5045031	6.2607820	reordered
+be-reordered-00654	2013DN Haarlem Zijlsingel 22	52.3826307	4.6285234	reordered
+be-reordered-00655	2411LG Bodegraven Vromade 3	52.0769886	4.7515062	reordered
+be-reordered-00656	3521CL Utrecht Croeselaan 244	52.0790358	5.1145823	reordered
+be-reordered-00657	3481EC Harmelen Pompersplein 2	52.0906744	4.9608144	reordered
+be-reordered-00658	6361CB Nuth Markt 21	50.9174759	5.8842540	reordered
+be-reordered-00659	8601EJ Sneek Oude Koemarkt 79	53.0296639	5.6597529	reordered
+be-reordered-00660	5671GA Nuenen Park 1	51.4744097	5.5481784	reordered
+be-reordered-00661	5211JV 's-Hertogenbosch Markt 15	51.6886778	5.3040919	reordered
+be-reordered-00662	7701GW Dedemsvaart Markt 32	52.6014493	6.4554839	reordered
+be-reordered-00663	1411HB Naarden Amersfoortsestraatweg 3B	52.2885068	5.1713525	reordered
+be-reordered-00664	8647SC Sibrandabuorren It Lange ein 46	53.0676815	5.7202686	reordered
+be-reordered-00665	2628AN Delft Rotterdamseweg 94	52.0051469	4.3633061	reordered
+be-reordered-00666	4661JD Halsteren Vogelenzang 95	51.5225790	4.2728666	reordered
+be-reordered-00667	47574 Goch Kendelweg 2	51.6483843	6.1185671	reordered
+be-reordered-00668	1012CR Amsterdam Nieuwmarkt 7	52.3725760	4.9010043	reordered
+be-reordered-00669	2651JX Berkel en Rodenrijs Berkelse Poort 85	51.9892892	4.4752837	reordered
+be-reordered-00670	4207NA Gorinchem Dr. H.B. Wiardi Beckmanplein 37	51.8368143	4.9926442	reordered
+be-reordered-00671	2011DM Haarlem Kleine Houtstraat 2-ZW	52.3794124	4.6368798	reordered
+be-reordered-00672	2511VS 's-Gravenhage Zwarteweg 40	52.0800074	4.3215357	reordered
+be-reordered-00673	2315AX Leiden Kooilaan 96	52.1658286	4.5062425	reordered
+be-reordered-00674	3701GA Zeist Slotlaan 119	52.0848877	5.2426348	reordered
+be-reordered-00675	4841AP Prinsenbeek Haverdijk 39	51.5983174	4.7195533	reordered
+be-reordered-00676	7575AZ Oldenzaal Eekboerstraat 58	52.2997458	6.9252639	reordered
+be-reordered-00677	1015LW Amsterdam Westerstraat 79	52.3784456	4.8844536	reordered
+be-reordered-00678	2041BE Zandvoort Vondellaan 60a-319	52.3807322	4.5399336	reordered
+be-reordered-00679	7671KB Vriezenveen Molenstraat 2	52.4017513	6.5980161	reordered
+be-reordered-00680	1071CX Amsterdam Paulus Potterstraat 3	52.3592873	4.8836658	reordered
+be-reordered-00681	1567JP Assendelft Kaaikhof 22	52.4883901	4.7521418	reordered
+be-reordered-00682	2041BE Zandvoort Vondellaan 60a-140	52.3825372	4.5346765	reordered
+be-reordered-00683	6367JB Voerendaal Kerkstraat 37	50.8532361	5.9474117	reordered
+be-reordered-00684	1076DE Amsterdam Olympisch Stadion 35	52.3424865	4.8545360	reordered
+be-reordered-00685	2628CT Delft Feldmannweg 17	51.9973116	4.3742002	reordered
+be-reordered-00686	7471DP Goor van Kollaan 7	52.2343337	6.5778995	reordered
+be-reordered-00687	3511DR Utrecht Godebaldkwartier 255	52.0891877	5.1135637	reordered
+be-reordered-00688	2011HM Haarlem Spekstraat 6	52.3807771	4.6361787	reordered
+be-reordered-00689	4271AV Dussen Wilhelminastraat 32	51.7314175	4.9622787	reordered
+be-reordered-00690	1948LC Beverwijk Stationsplein 49	52.4777915	4.6534402	reordered
+be-reordered-00691	1079HC Amsterdam Rijnstraat 139-155	52.3432081	4.9066964	reordered
+be-reordered-00692	6042JV Roermond Achilleslaan 2A	51.1940225	6.0097266	reordered
+be-reordered-00693	5341VE Oss Burchtplein 80	51.7722079	5.5264948	reordered
+be-reordered-00694	2311JP Leiden Levendaal 140	52.1550065	4.4989182	reordered
+be-reordered-00695	52072 Aachen Horbacher Straße 497	50.8450995	6.0201736	reordered
+be-reordered-00696	4147BM Asperen Leerdamseweg 44	51.8833760	5.1022909	reordered
+be-reordered-00697	1131ZD Volendam Zeestraat 21-1	52.4937923	5.0724307	reordered
+be-reordered-00698	3332GG Zwijndrecht Brabant 1	51.8221124	4.6508150	reordered
+be-reordered-00699	2011LH Haarlem Lange Herenstraat 6	52.3865397	4.6371183	reordered
+be-reordered-00700	7041KG 's-Heerenberg Drieheuvelenweg 1	51.8775191	6.2551121	reordered
+be-reordered-00701	3512GK Utrecht Oudkerkhof 6	52.0917952	5.1205094	reordered
+be-reordered-00702	2131AC Hoofddorp Graftermeerstraat 28	52.3127041	4.6932445	reordered
+be-reordered-00703	2101JP Heemstede Binnenweg 138	52.3534798	4.6216499	reordered
+be-reordered-00704	2011LD Haarlem Kruisweg 48	52.3868627	4.6364871	reordered
+be-reordered-00705	1251KP Laren Klaaskampen 6a	52.2558814	5.2235111	reordered
+be-reordered-00706	2341GK Oegstgeest de Kempenaerstraat 111	52.1770816	4.4735402	reordered
+be-reordered-00707	4471NG Wolphaartsdijk Zandkreekweg 3	51.5477578	3.8162359	reordered
+be-reordered-00708	1011DL Amsterdam Oosterdokskade 143	52.3762463	4.9081983	reordered
+be-reordered-00709	5953DX Reuver Het Vloot 18	51.2857677	6.0804634	reordered
+be-reordered-00710	7683PR Den Ham Zomerweg 56	52.4455801	6.4983753	reordered
+be-reordered-00711	9471AE Zuidlaren Brink Oostzijde 6	53.0938793	6.6879262	reordered
+be-reordered-00712	2013DH Haarlem Zijlweg 26	52.3839200	4.6278301	reordered
+be-reordered-00713	3544EB Utrecht Verlengde Houtrakgracht 349	52.0875837	5.0550820	reordered
+be-reordered-00714	2041BE Zandvoort Vondellaan 60a-35	52.3800976	4.5347071	reordered
+be-reordered-00715	6611BV Overasselt Hoogstraat 17	51.7611711	5.7886470	reordered
+be-reordered-00716	1060TZ Amsterdam Pieter Calandlaan 792	52.3498460	4.7873822	reordered
+be-reordered-00717	2628ZE Delft Van Embdenstraat 2	52.0008292	4.3790113	reordered
+be-reordered-00718	3544ED Utrecht Verlengde Houtrakgracht 421	52.0880367	5.0541292	reordered
+be-reordered-00719	9405NS Assen Het Sticht 5	52.9839001	6.5344080	reordered
+be-reordered-00720	5221BM 's-Hertogenbosch Graaf van Solmsweg 49	51.7211954	5.2723941	reordered
+be-reordered-00721	6436CB Amstenrade Hoofdstraat 45	50.9413770	5.9235920	reordered
+be-reordered-00722	2511CZ 's-Gravenhage Herenstraat 23	52.0803172	4.3176501	reordered
+be-reordered-00723	1058VC Amsterdam Theophile de Bockstraat 100C	52.3552067	4.8456694	reordered
+be-reordered-00724	3111HN Schiedam Hoogstraat 170	51.9173627	4.3974805	reordered
+be-reordered-00725	7329AB Apeldoorn Laan van Maten 187	52.2022939	5.9947641	reordered
+be-reordered-00726	2645AC Delfgauw Delftsestraatweg 152	52.0094497	4.3950743	reordered
+be-reordered-00727	2132CE Hoofddorp Kruisweg 969C	52.3034786	4.6970922	reordered
+be-reordered-00728	2014HG Haarlem Leidsevaart 254	52.3737764	4.6203395	reordered
+be-reordered-00729	6961CW Eerbeek Stuijvenburchstraat 66	52.1057064	6.0634823	reordered
+be-reordered-00730	3811BE Amersfoort Kleine Spui 18	52.1584936	5.3856051	reordered
+be-reordered-00731	3527HE Utrecht Hammarskjöldhof 64	52.0740418	5.0943877	reordered
+be-reordered-00732	3512GH Utrecht Oudkerkhof 19	52.0916932	5.1208959	reordered
+be-reordered-00733	2321CV Leiden Bevrijdingsplein 102	52.1472818	4.4773123	reordered
+be-reordered-00734	8243JE Lelystad Botter 44 17	52.5029631	5.4626093	reordered
+be-reordered-00735	3781AK Voorthuizen Hoofdstraat 202	52.1870873	5.6080290	reordered
+be-reordered-00736	5211ET 's-Hertogenbosch Schapenmarkt 10	51.6882146	5.3025772	reordered
+be-reordered-00737	1076DE Amsterdam Olympisch Stadion 35	52.3424865	4.8545360	reordered
+be-reordered-00738	5671GR Nuenen Sportlaan 6	51.4711688	5.5510394	reordered
+be-reordered-00739	6541SB Nijmegen Sperwerstraat 19	51.8449949	5.8502109	reordered
+be-reordered-00740	3723MB Bilthoven Professor Bronkhorstlaan 10G-96	52.1566561	5.2054337	reordered
+be-reordered-00741	4611TP Bergen op Zoom Kremerstraat 25	51.4954426	4.2868741	reordered
+be-reordered-00742	3062GS Rotterdam Kortekade 26	51.9250273	4.5169376	reordered
+be-reordered-00743	7475AX Markelo Grotestraat 10	52.2354063	6.4939205	reordered
+be-reordered-00744	7572ZA Oldenzaal Deken Scholtenstraat 38-44	52.3169280	6.9276369	reordered
+be-reordered-00745	8331TZ Steenwijk Steenakkers 3	52.7810045	6.1579597	reordered
+be-reordered-00746	2632GJ Nootdorp Telgang 4	52.0447134	4.3913569	reordered
+be-reordered-00747	2312KC Leiden Nieuwstraat 32	52.1573321	4.4944707	reordered
+be-reordered-00748	1092EZ Amsterdam Pretoriusstraat 41	52.3556072	4.9251045	reordered
+be-reordered-00749	1016ER Amsterdam Huidenstraat 25-H	52.3687823	4.8852325	reordered
+be-reordered-00750	9104AZ Damwâld Schwartzenbergloane 2a	53.2760568	5.9775828	reordered
+be-reordered-00751	7581JE Losser Langenkamp 8	52.2606948	7.0078390	reordered
+be-reordered-00752	7606HN Almelo Vincent van Goghplein 9	52.3462724	6.6439083	reordered
+be-reordered-00753	3235AD Rockanje Dorpsplein 22	51.8742591	4.0693088	reordered
+be-reordered-00754	4611PK Bergen op Zoom Wouwsestraat 13	51.4952505	4.2913029	reordered
+be-reordered-00755	9981AN Uithuizen Schoolstraat 34-36	53.4087984	6.6724115	reordered
+be-reordered-00756	5051NP Goirle De Hovel 16	51.5210373	5.0688720	reordered
+be-reordered-00757	9765GB Paterswolde Nieuwe Akkers 39	53.1483505	6.5636130	reordered
+be-reordered-00758	3701GR Zeist Slotlaan 120	52.0845737	5.2431318	reordered
+be-reordered-00759	1181ZS Amstelveen Galerij 152	52.3033601	4.8591875	reordered
+be-reordered-00760	1334NG Almere New Yorkweg 211	52.3953237	5.2732838	reordered
+be-reordered-00761	3028XX Rotterdam Pinkstraat 6	51.9181340	4.4180955	reordered
+be-reordered-00762	8501KC Joure Zuiderveldstraat 4	52.9569497	5.7973811	reordered
+be-reordered-00763	5441AS Oeffelt Lietingsestraat 8c	51.6978693	5.9362361	reordered
+be-reordered-00764	2514GP 's-Gravenhage Noordeinde 140	52.0823623	4.3055880	reordered
+be-reordered-00765	1021JK Amsterdam Meeuwenlaan 76	52.3847281	4.9181125	reordered
+be-reordered-00766	3025HB Rotterdam Aelbrechtskolk 29,31	51.9089877	4.4480842	reordered
+be-reordered-00767	3025TP Rotterdam Spanjaardstraat 10	51.9096545	4.4461498	reordered
+be-reordered-00768	2011LA Haarlem Kruisweg 53	52.3861933	4.6365698	reordered
+be-reordered-00769	3512JP Utrecht Achter de Dom 6	52.0912027	5.1228822	reordered
+be-reordered-00770	2411LG Bodegraven Vromade 3	52.0769886	4.7515062	reordered
+be-reordered-00771	2011PX Haarlem Kruisstraat 4	52.3846834	4.6358585	reordered
+be-reordered-00772	6102AA Echt Rijksweg Zuid 1B	51.0975705	5.8851743	reordered
+be-reordered-00773	7533BL Enschede Noord Esmarkerrondweg 421-8	52.2194083	6.9282550	reordered
+be-reordered-00774	7559PH Hengelo Topweg 44	52.2920101	6.8006720	reordered
+be-reordered-00775	5761BK Bakel Sint Wilbertsplein 8	51.5047537	5.7405370	reordered
+be-reordered-00776	2041BE Zandvoort Vondellaan 60a-22	52.3802516	4.5354289	reordered
+be-reordered-00777	1628NG Hoorn Betje Wolffplein 109	52.6523502	5.0851720	reordered
+be-reordered-00778	3823ER Amersfoort Emiclaerhof 134	52.1862601	5.3962431	reordered
+be-reordered-00779	8601CE Sneek Schaapmarktplein 17	53.0325910	5.6610258	reordered
+be-reordered-00780	4325EL Renesse Laone 32	51.7409551	3.7849180	reordered
+be-reordered-00781	1091HM Amsterdam Eerste Oosterparkstraat 230	52.3576477	4.9164538	reordered
+be-reordered-00782	3562KR Utrecht Seinedreef 52	52.1131952	5.1108502	reordered
+be-reordered-00783	1017RD Amsterdam Korte Leidsedwarsstraat 82-84	52.3628158	4.8852388	reordered
+be-reordered-00784	6535ZS Nijmegen Hatertseweg 813	51.8083017	5.8246758	reordered
+be-reordered-00785	3067AM Rotterdam Jan Kwakplaats 20	51.9414794	4.5485728	reordered
+be-reordered-00786	9611AP Sappemeer Noorderstraat 182	53.1638196	6.7854957	reordered
+be-reordered-00787	1012SG Amsterdam Nieuwezijds Voorburgwal 100	52.3756802	4.8923093	reordered
+be-reordered-00788	9401GE Assen Vaart Zuidzijde 5	52.9934165	6.5584473	reordered
+be-reordered-00789	3768EA Soest Soesterbergsestraat 31-04	52.1655667	5.3092063	reordered
+be-reordered-00790	8011MC Zwolle Melkmarkt 24	52.5129822	6.0915949	reordered
+be-reordered-00791	4797BE Willemstad Voorstraat 47-49	51.6927654	4.4391197	reordered
+be-reordered-00792	1073AC Amsterdam Eerste Van der Helststraat 27	52.3558663	4.8930524	reordered
+be-reordered-00793	8121CM Olst Jan Schamhartstraat 5a	52.3366943	6.1112899	reordered
+be-reordered-00794	1012LL Amsterdam Damrak 47-48	52.3754934	4.8957562	reordered
+be-reordered-00795	3768EJ Soest Soesterbergsestraat 46	52.1658018	5.3086227	reordered
+be-reordered-00796	1059CV Amsterdam Hoofddorpplein 1	52.3508915	4.8503270	reordered
+be-reordered-00797	7441EJ Nijverdal Smidsweg 9	52.3647033	6.4556424	reordered
+be-reordered-00798	1315TH Almere Forum 18	52.3686623	5.2189977	reordered
+be-reordered-00799	3768EM Soest Zuidpromenade 24	52.1639163	5.3081166	reordered
+be-partial-00800	Westvest 9, Delft	52.0088009	4.3571607	partial
+be-partial-00801	Schild 4, Rijssen	52.3079716	6.5220241	partial
+be-partial-00802	Plesmanweg 32, Almelo	52.3736474	6.6377805	partial
+be-partial-00803	Ceintuurbaan 53;53-H, Amsterdam	52.3526632	4.8889526	partial
+be-partial-00804	Lange Boonestraat 31, Maassluis	51.9236583	4.2556368	partial
+be-partial-00805	Alvarezlaan 32, Terneuzen	51.3195124	3.8453254	partial
+be-partial-00806	Lokerenpassage 130, 's-Hertogenbosch	51.7264891	5.3067990	partial
+be-partial-00807	Oudezijds Achterburgwal 93, Amsterdam	52.3725261	4.8982082	partial
+be-partial-00808	Steynlaan 96, Zeist	52.0918355	5.2426415	partial
+be-partial-00809	Dirksstraat 2, Voerendaal	50.8534820	5.9477184	partial
+be-partial-00810	Rivièradreef 9, Haarlem	52.3598183	4.6537044	partial
+be-partial-00811	Spaarne 48, Haarlem	52.3799853	4.6386212	partial
+be-partial-00812	Rijksweg 1, Dieverbrug	52.8479441	6.3423020	partial
+be-partial-00813	De Leim 7b, Maastricht	50.8430229	5.7285757	partial
+be-partial-00814	Vondellaan 60a-39, Zandvoort	52.3801221	4.5341152	partial
+be-partial-00815	Hoofdstraat 26, Gorssel	52.1990208	6.2006105	partial
+be-partial-00816	Vondellaan 60a-189, Zandvoort	52.3797393	4.5402294	partial
+be-partial-00817	Nieuweweg 4A, Marrum	53.3210640	5.8194683	partial
+be-partial-00818	Raadhuisplein 6, Panningen	51.3283715	5.9806827	partial
+be-partial-00819	Groensvoorde 2, Waddinxveen	52.0502359	4.6470353	partial
+be-partial-00820	Wilhelminapark 1, Oegstgeest	52.1777977	4.4660391	partial
+be-partial-00821	Bergerstraat 11, Maastricht	50.8512211	5.7308074	partial
+be-partial-00822	Oude Ebbingestraat 16, Groningen	53.2192636	6.5667646	partial
+be-partial-00823	Mariaplaats 13, Utrecht	52.0900493	5.1169375	partial
+be-partial-00824	Verlengde Hoogravenseweg 13, Utrecht	52.0601781	5.1125636	partial
+be-partial-00825	Dorpsstraat 63, Halsteren	51.5262088	4.2694047	partial
+be-partial-00826	Grote Markt 34, Goes	51.5042625	3.8908618	partial
+be-partial-00827	Doesburgsedijk 11, Dieren	52.0407855	6.1037969	partial
+be-partial-00828	Vijfhuizerweg 510, Vijfhuizen	52.3502347	4.6764492	partial
+be-partial-00829	Mariaplaats 49, Utrecht	52.0894792	5.1181276	partial
+be-partial-00830	Heulweg 2, Wateringen	52.0232420	4.2740183	partial
+be-partial-00831	Vughterstraat 39, 's-Hertogenbosch	51.6873449	5.3010971	partial
+be-partial-00832	Brusselsestraat 8, Maastricht	50.8497198	5.6850931	partial
+be-partial-00833	Kinkerstraat 227, Amsterdam	52.3652760	4.8654140	partial
+be-partial-00834	Jol 37 1, Lelystad	52.5099627	5.4477089	partial
+be-partial-00835	Grote Markt 9, Groningen	53.2189297	6.5660939	partial
+be-partial-00836	Napoleonsbaan Noord 10b, Baarlo	51.3373367	6.0975621	partial
+be-partial-00837	Wijnhaven 22, Delft	52.0114615	4.3573679	partial
+be-partial-00838	Gedempte Oude Gracht 139, Haarlem	52.3779165	4.6375951	partial
+be-partial-00839	Parallelweg 100, Beverwijk	52.4786269	4.6596758	partial
+be-partial-00840	Leidsestraat 96, Amsterdam	52.3647338	4.8836169	partial
+be-partial-00841	Speelheuvelstraat 5, Someren	51.3857295	5.7111734	partial
+be-partial-00842	De Leim 7A, Maastricht	50.8431179	5.7285527	partial
+be-partial-00843	Raadhuisplein 27, Hoogkarspel	52.6954059	5.1764878	partial
+be-partial-00844	Graafseweg 128, 's-Hertogenbosch	51.6945312	5.3216797	partial
+be-partial-00845	Dorpsstraat 54, Rosmalen	51.7157561	5.3631397	partial
+be-partial-00846	Industrieweg 41, Mijdrecht	52.2071702	4.8815119	partial
+be-partial-00847	Enschedesestraat 19, Hengelo	52.2648849	6.7948020	partial
+be-partial-00848	Vondellaan 60a-358, Zandvoort	52.3807332	4.5357318	partial
+be-partial-00849	Zwartwatersweg 133, Assen	53.0069056	6.5573874	partial
+be-partial-00850	Overwinningsplein 7, Groningen	53.1981789	6.5611472	partial
+be-partial-00851	Vondellaan 60a-182, Zandvoort	52.3798780	4.5393562	partial
+be-partial-00852	Ferdinand Bolstraat 70-H, Amsterdam	52.3552474	4.8899543	partial
+be-partial-00853	Burgemeester D. Kooimanweg 16, Purmerend	52.5099346	4.9595064	partial
+be-partial-00854	Bisschop Willebrandlaan 28, Zwolle	52.5172466	6.1063750	partial
+be-partial-00855	Vincent van Goghstraat 88, Nuenen	51.4740146	5.5524665	partial
+be-partial-00856	Schoonstraat 1, Heesch	51.7348801	5.5267673	partial
+be-partial-00857	Brinkweg 11, Zalk	52.5210062	6.0064938	partial
+be-partial-00858	Thiemsbrug 19, Hengelo	52.2668305	6.7937140	partial
+be-partial-00859	Josef Haydnlaan 35, Hengelo	52.2718916	6.8161223	partial
+be-partial-00860	Overtoom 454, Amsterdam	52.3596843	4.8621991	partial
+be-partial-00861	Vondellaan 60a-185, Zandvoort	52.3798569	4.5396907	partial
+be-partial-00862	A.E. Gorterweg 1, Woldendorp	53.2729063	7.0282814	partial
+be-partial-00863	Rembrandt van Rijnsingel 31, Roelofarendsveen	52.2081492	4.6411418	partial
+be-partial-00864	Borneolaan 515, Amsterdam	52.3713201	4.9401995	partial
+be-partial-00865	Ambachtsweg 24, Groesbeek	51.7779340	5.9436140	partial
+be-partial-00866	Schaarbroekerweg 44, Roermond	51.2111283	6.0196738	partial
+be-partial-00867	Duinroosweg 9, 's-Gravenhage	52.1044830	4.3024154	partial
+be-partial-00868	Hasebroekstraat 1, Utrecht	52.0938654	5.0965555	partial
+be-partial-00869	Noordeinde 32, Rijnsburg	52.1943204	4.4442292	partial
+be-partial-00870	Amersfoortseweg 12a, Doorn	52.0355346	5.3456977	partial
+be-partial-00871	Coehoornstraat 4-8, Arnhem	51.9831510	5.9011220	partial
+be-partial-00872	Molenstraat 11, Nederhemert	51.7652679	5.1674185	partial
+be-partial-00873	Proostwetering 80E, Utrecht	52.1151838	5.0340941	partial
+be-partial-00874	Haarlemmerdijk 25a, Amsterdam	52.3819157	4.8883395	partial
+be-partial-00875	De Passage 2, Heerenveen	52.9588371	5.9264362	partial
+be-partial-00876	Rijksweg A7 1, Scheemda	53.1821022	6.9331455	partial
+be-partial-00877	Ookmeerweg 271, Amsterdam	52.3629315	4.7849506	partial
+be-partial-00878	Voor Clarenburg 10, Utrecht	52.0907456	5.1161321	partial
+be-partial-00879	Overtoom 80-I, Amsterdam	52.3630002	4.8754645	partial
+be-partial-00880	Schiedamseweg 61, Rotterdam	51.9101694	4.4454924	partial
+be-partial-00881	Brouwhorst 1, Helmond	51.4690424	5.7030986	partial
+be-partial-00882	Vuurtorenweg 189, De Cocksdorp	53.1806171	4.8541704	partial
+be-partial-00883	Westerstraat 98-102, Amsterdam	52.3786438	4.8838068	partial
+be-partial-00884	Betje Wolffplein 216, Hoorn	52.6531833	5.0855762	partial
+be-partial-00885	Energieweg 9, Zwolle	52.4961894	6.1060338	partial
+be-partial-00886	Rijksweg 85A, Terschuur	52.1704626	5.5557803	partial
+be-partial-00887	Leeuwenburg 4, Sneek	53.0317940	5.6598134	partial
+be-partial-00888	Ceintuurbaan 137-H, Amsterdam	52.3532387	4.8932272	partial
+be-partial-00889	Koepoortstraat 2-4, Doesburg	52.0150995	6.1343621	partial
+be-partial-00890	Beverveen 501, Spijkenisse	51.8336206	4.3345943	partial
+be-partial-00891	Smaragdplein 245, Utrecht	52.0723262	5.1233359	partial
+be-partial-00892	Gouden Rijderplein 16, Delfgauw	52.0049278	4.3912423	partial
+be-partial-00893	Weegje 1, 's-Gravendeel	51.7772840	4.6160344	partial
+be-partial-00894	Szydlowskiplein 20, Axel	51.2665335	3.9083608	partial
+be-partial-00895	Provincialeweg 11, Dordrecht	51.8015619	4.6999076	partial
+be-partial-00896	Maasstraat 23, Amsterdam	52.3472523	4.8954131	partial
+be-partial-00897	Kleuvenstee 21, Assen	53.0175733	6.5869076	partial
+be-partial-00898	Imboslaan 73, Dieren	52.0604143	6.1027669	partial
+be-partial-00899	Hellendoornseweg 3, Lemele	52.4519898	6.4152761	partial
+be-partial-00900	De Promesse 3, Lelystad	52.5080537	5.4744834	partial
+be-partial-00901	Scheibaan 17, Oisterwijk	51.5667014	5.2363749	partial
+be-partial-00902	Nieuwe Binnenweg 24-30, Rotterdam	51.9164072	4.4706905	partial
+be-partial-00903	Herestraat 27, Groningen	53.2172521	6.5670810	partial
+be-partial-00904	Westkanaalweg 107, Ter Aar	52.1672638	4.7106549	partial
+be-partial-00905	Pompersplein 2, Harmelen	52.0906744	4.9608144	partial
+be-partial-00906	Lange Baan 9, Nootdorp	52.0451225	4.3915569	partial
+be-partial-00907	Oranjelaan 37, Diepenveen	52.2840726	6.1491235	partial
+be-partial-00908	Everlostraat 16, Rossum	52.3571801	6.9504929	partial
+be-partial-00909	Amstelveenseweg 155, Amsterdam	52.3505078	4.8574321	partial
+be-partial-00910	Kruisstraat 77, Delft	52.0099659	4.3649699	partial
+be-partial-00911	Händelstraat 63, Utrecht	52.0865952	5.0856999	partial
+be-partial-00912	Tussenweg 45, Hoofddorp	52.3036851	4.6953341	partial
+be-partial-00913	Jutfaseweg 224, Utrecht	52.0648160	5.1138383	partial
+be-partial-00914	Zandpad 23a, Maarssen	52.1516524	5.0357405	partial
+be-partial-00915	Vondellaan 60a-207, Zandvoort	52.3802194	4.5399771	partial
+be-partial-00916	Vondellaan 60a-307, Zandvoort	52.3804381	4.5409573	partial
+be-partial-00917	Lange Haven 24, Schiedam	51.9143730	4.4000874	partial
+be-partial-00918	Boterdijk 2, Paterswolde	53.1579144	6.5627599	partial
+be-partial-00919	Klaaskampen 19b, Laren	52.2543399	5.2242034	partial
+be-partial-00920	Dam 16, Amsterdam	52.3726379	4.8919039	partial
+be-partial-00921	Oudkerkhof 43, Utrecht	52.0918929	5.1219915	partial
+be-partial-00922	Händelplein 185, Nieuw-Vennep	52.2707268	4.6197822	partial
+be-partial-00923	Stuivenbergstraat 15, Genemuiden	52.6222546	6.0481929	partial
+be-partial-00924	Raadhuis 5, Hedel	51.7439141	5.2607748	partial
+be-partial-00925	Julianastraat 21, Noordwijk	52.2440784	4.4368414	partial
+be-partial-00926	Overboeicop 15, Schoonrewoerd	51.9381505	5.1026495	partial
+be-partial-00927	Burgemeester Stramanweg 98, Ouderkerk aan de Amstel	52.3050213	4.9228232	partial
+be-partial-00928	Ossestraat 11, Macharen	51.7933106	5.5417921	partial
+be-partial-00929	Geestbrugweg 5, Rijswijk	52.0571866	4.3380446	partial
+be-partial-00930	Mariaplaats 48, Utrecht	52.0894584	5.1180430	partial
+be-partial-00931	Johannes Kolfplein 1, Leeuwarden	53.2148027	5.8138964	partial
+be-partial-00932	Cortenstraat 2B, Maastricht	50.8470381	5.6926383	partial
+be-partial-00933	Asselsestraat 105, Apeldoorn	52.2121929	5.9536312	partial
+be-partial-00934	Lijnbaansgracht 219, Amsterdam	52.3651723	4.8814000	partial
+be-partial-00935	Vondellaan 60a-192, Zandvoort	52.3797145	4.5406534	partial
+be-partial-00936	Koestraat 27, Amersfoort	52.1535013	5.3886112	partial
+be-partial-00937	Beeklaan 1, Westerhaar-Vriezenveensewijk	52.4560930	6.6204717	partial
+be-partial-00938	Jodenbreestraat 23, Amsterdam	52.3687999	4.9038094	partial
+be-partial-00939	Opaalstraat 1, Leiden	52.1571589	4.4663599	partial
+be-partial-00940	Vrouwe Justitiaplein 1, Utrecht	52.0862072	5.1164423	partial
+be-partial-00941	Zuid Willemsvaart 2, 's-Hertogenbosch	51.6951219	5.3030750	partial
+be-partial-00942	Zevenbergsepoort 6, Klundert	51.6620394	4.5343895	partial
+be-partial-00943	Arnolduspark 10a, Hoofddorp	52.3092927	4.7046570	partial
+be-partial-00944	Korteweegje 75, Dirksland	51.7496007	4.1210375	partial
+be-partial-00945	Peperstraat 19, Groningen	53.2176654	6.5708303	partial
+be-partial-00946	Vondellaan 60a-57, Zandvoort	52.3808206	4.5333205	partial
+be-partial-00947	Amsterdamse Veerkade 30, 's-Gravenhage	52.0758023	4.3158942	partial
+be-partial-00948	Koningsplein 20, Amsterdam	52.3669972	4.8884837	partial
+be-partial-00949	De Hoge Heide 8, Vlijmen	51.6875307	5.1991232	partial
+be-partial-00950	Lange Voort 35, Oegstgeest	52.1861156	4.4707793	partial
+be-partial-00951	Wijdstraat 13, Gouda	52.0105498	4.7100652	partial
+be-partial-00952	Rijnzathe 16, De Meern	52.0728824	5.0446967	partial
+be-partial-00953	Boschstraat 29, Zaltbommel	51.8128169	5.2488152	partial
+be-partial-00954	Weijer 18, Mierlo	51.4231003	5.6269289	partial
+be-partial-00955	Raadhuisplein 2, Rucphen	51.5326957	4.5591270	partial
+be-partial-00956	De Leim 7b, Maastricht	50.8430229	5.7285757	partial
+be-partial-00957	Laan van Cattenbroeck 7, Zeist	52.0785731	5.2288327	partial
+be-partial-00958	Takspui 2, Roosendaal	51.5351483	4.4845812	partial
+be-partial-00959	West aan Zee 113, West-Terschelling	53.3989771	5.2569738	partial
+be-partial-00960	Hoofdstraat 234, Santpoort-Noord	52.4290886	4.6439597	partial
+be-partial-00961	Jan Smuldersstraat 24, Vessem	51.4193331	5.2889776	partial
+be-partial-00962	Prinsesseweg 41, Koekange	52.7100246	6.3136317	partial
+be-partial-00963	Reeweg 88, Hendrik-Ido-Ambacht	51.8452829	4.6302949	partial
+be-partial-00964	Troelstradreef 150, 's-Hertogenbosch	51.7270488	5.2983541	partial
+be-partial-00965	Grote Houtstraat 140, Haarlem	52.3775380	4.6316580	partial
+be-partial-00966	Mereveldplein 3, De Meern	52.0796008	5.0383549	partial
+be-partial-00967	Vondellaan 60a-215, Zandvoort	52.3801110	4.5411996	partial
+be-partial-00968	Kampsingel 7, Zevenaar	51.9314866	6.0781410	partial
+be-partial-00969	James Wattstraat 84, Amsterdam	52.3495366	4.9201537	partial
+be-partial-00970	Achter Clarenburg 22, Utrecht	52.0911184	5.1151361	partial
+be-partial-00971	Dorpsstraat 61, Zevenhuizen	52.0103926	4.5823897	partial
+be-partial-00972	Ganzenmarkt 14, Utrecht	52.0922123	5.1191869	partial
+be-partial-00973	Duinweg 22, 's-Gravenhage	52.1014619	4.2878181	partial
+be-partial-00974	Wieënpassage 40, Venlo	51.3682376	6.1499320	partial
+be-partial-00975	Industriestraat 29, Noordwolde	52.8920032	6.1420045	partial
+be-partial-00976	Nieuwezijds Voorburgwal 121, Amsterdam	52.3742722	4.8915479	partial
+be-partial-00977	Bredevoortsestraatweg 119, Aalten	51.9321534	6.5933551	partial
+be-partial-00978	Heerlerbaan 239A, Heerlen	50.8643399	6.0042347	partial
+be-partial-00979	Kostmand 2, Huizen	52.2919467	5.2544199	partial
+be-partial-00980	Haverkamp 10, Nunspeet	52.3753621	5.7812543	partial
+be-partial-00981	Raadhuislaan 48, Tegelen	51.3413158	6.1412117	partial
+be-partial-00982	Lindenburg 2, Roosendaal	51.5202988	4.4728880	partial
+be-partial-00983	Eikenlaan 19, Groningen	53.2336248	6.5535596	partial
+be-partial-00984	Koningstraat 14, Haarlem	52.3809465	4.6344773	partial
+be-partial-00985	Neude 31, Utrecht	52.0926935	5.1185866	partial
+be-partial-00986	Haarbrug 1-3, Bunschoten-Spakenburg	52.2303653	5.3766500	partial
+be-partial-00987	Damrak 95, Amsterdam	52.3736276	4.8934206	partial
+be-partial-00988	Vincent van Goghstraat 90, Nuenen	51.4739978	5.5525361	partial
+be-partial-00989	Wiekslag 261, Amersfoort	52.1664755	5.4087201	partial
+be-partial-00990	Vondellaan 60a-201, Zandvoort	52.3799457	4.5413016	partial
+be-partial-00991	Raadhuisplein 9, Hoofddorp	52.3014256	4.6971954	partial
+be-partial-00992	Grendelplein 18, Valkenburg	50.8626450	5.8294661	partial
+be-partial-00993	Stadhoudersplein 37, Wassenaar	52.1448042	4.4031878	partial
+be-partial-00994	Kiekendiefstraat 1, 's-Gravenhage	52.0514710	4.3852235	partial
+be-partial-00995	Ringweg 32, Spaarndam	52.4131946	4.6840657	partial
+be-partial-00996	Plantage Middenlaan 24, Amsterdam	52.3664388	4.9111540	partial
+be-partial-00997	Klaphekweg 16G, Ede	52.0353775	5.6527597	partial
+be-partial-00998	de Kempenaerstraat 37, Oegstgeest	52.1776219	4.4696980	partial
+be-partial-00999	Westkade 12, Sas van Gent	51.2125159	3.8008062	partial
