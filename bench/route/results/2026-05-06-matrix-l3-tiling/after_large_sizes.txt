@@ -1,0 +1,42 @@
+═══════════════════════════════════════════════════════════════
+  BUCKET MANY-TO-MANY CH BENCHMARK (PARALLEL)
+═══════════════════════════════════════════════════════════════
+  Mode: car
+  Sizes: [5000, 10000]
+  Parallel: true
+───────────────────────────────────────────────────────────────
+
+Loading CCH topology from "/home/snape/projects/butterfly-osm/data/belgium-bench-fixture/cch.car.topo"...
+  ✓ 2545589 nodes, 16669071 up edges, 16998933 down edges
+Loading CCH weights from "/home/snape/projects/butterfly-osm/data/belgium-bench-fixture/cch.w.car.u32"...
+  ✓ 16669071 up weights (0 INF = 0.0%), 16998933 down weights (0 INF = 0.0%)
+Building UpAdjFlat (optimized forward adjacency)...
+  ✓ 16669071 flat forward entries
+Building DownReverseAdjFlat (optimized backward adjacency)...
+  ✓ 16998933 flat reverse entries
+Building DownReverseAdjFlat with topo back-references (for P2P validation)...
+  ✓ 16998933 reverse entries
+
+───────────────────────────────────────────────────────────────
+  BENCHMARK RESULTS
+───────────────────────────────────────────────────────────────
+
+    Size        Cells   Time(ms)    Cells/sec    Fwd Vis    Bwd Vis      Joins     Stale%
+----------------------------------------------------------------------------------------------------
+[tile_geometry] detected: per_core_l2=3072 KiB, shared_l3=30 MiB, numa_nodes=1, n_cpus=20, numa_pinning=skipped (single-socket — no win from pinning)
+5000×5000     25000000     4987.5      5012499       2415       7014 14819382183       0.0%
+         Fwd: 374ms, Sort: 180ms, Bwd: 4464ms
+10000×10000    100000000    18340.5      5452418       2398      11700 58922227494       0.0%
+         Fwd: 783ms, Sort: 391ms, Bwd: 17188ms
+
+───────────────────────────────────────────────────────────────
+  TARGET COMPARISON
+───────────────────────────────────────────────────────────────
+  OSRM benchmark (CH, Belgium, sequential):
+    10×10: 6ms, 25×25: 10ms, 50×50: 17ms, 100×100: 35ms
+
+───────────────────────────────────────────────────────────────
+  CORRECTNESS VALIDATION (5×5 vs P2P)
+───────────────────────────────────────────────────────────────
+  ✓ All 25 queries match P2P results!
+
