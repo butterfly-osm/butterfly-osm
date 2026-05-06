@@ -2126,8 +2126,8 @@ fn table_bucket_parallel_l3_tiled(
                 FORWARD_STATE.with(|state_cell| {
                     FORWARD_BUCKET_ITEMS.with(|items_cell| {
                         let mut state_opt = state_cell.borrow_mut();
-                        let state = state_opt
-                            .get_or_insert_with(|| SearchState::new(n_nodes, avg_visited));
+                        let state =
+                            state_opt.get_or_insert_with(|| SearchState::new(n_nodes, avg_visited));
                         if state.entries.len() != n_nodes {
                             *state = SearchState::new(n_nodes, avg_visited);
                         }
@@ -2221,6 +2221,7 @@ fn table_bucket_parallel_l3_tiled(
 /// indices in arbitrary order), so the hardware prefetcher can't see the
 /// pattern. A `T0` prefetch issued ~8 iterations ahead overlaps the DRAM
 /// fetch with the current iteration's atomic load/store.
+#[allow(clippy::too_many_arguments)] // mirrors backward_join_parallel_prefix; splitting would add a struct just for argument grouping
 fn backward_join_tile(
     down_rev_flat: &DownReverseAdjFlat,
     target: u32,
@@ -2769,32 +2770,27 @@ mod step_a_tests {
         let targets: Vec<u32> = vec![3, 4, 5, 5, 4, 3]; // 6 targets
 
         // Monolithic reference (forces single-tile path because it's tiny).
-        let (mono, _) = table_bucket_parallel(
-            n_nodes, &up_adj, &down_rev, &sources, &targets,
-        );
+        let (mono, _) = table_bucket_parallel(n_nodes, &up_adj, &down_rev, &sources, &targets);
 
         // L3-tiled with tile=1 (one source per tile — most aggressive split).
-        let (tiled, _) = table_bucket_parallel_l3_tiled(
-            n_nodes, &up_adj, &down_rev, &sources, &targets, 1,
-        );
+        let (tiled, _) =
+            table_bucket_parallel_l3_tiled(n_nodes, &up_adj, &down_rev, &sources, &targets, 1);
         assert_eq!(
             tiled, mono,
             "L3-tiled (tile=1) must match monolithic byte-for-byte"
         );
 
         // Also exercise tile=3 (forces non-uniform last tile).
-        let (tiled3, _) = table_bucket_parallel_l3_tiled(
-            n_nodes, &up_adj, &down_rev, &sources, &targets, 3,
-        );
+        let (tiled3, _) =
+            table_bucket_parallel_l3_tiled(n_nodes, &up_adj, &down_rev, &sources, &targets, 3);
         assert_eq!(
             tiled3, mono,
             "L3-tiled (tile=3) must match monolithic byte-for-byte"
         );
 
         // And tile=8 (one tile, equivalent to monolithic shape).
-        let (tiled8, _) = table_bucket_parallel_l3_tiled(
-            n_nodes, &up_adj, &down_rev, &sources, &targets, 8,
-        );
+        let (tiled8, _) =
+            table_bucket_parallel_l3_tiled(n_nodes, &up_adj, &down_rev, &sources, &targets, 8);
         assert_eq!(
             tiled8, mono,
             "L3-tiled (tile=8 = whole problem) must match monolithic"

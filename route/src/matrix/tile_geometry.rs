@@ -188,7 +188,7 @@ fn read_size_file(path: &str) -> Option<usize> {
         (s, 1)
     };
     let n: usize = num.parse().ok()?;
-    Some(n.checked_mul(mult)?)
+    n.checked_mul(mult)
 }
 
 /// Pick the L3-aware source-tile size for monolithic matrix queries.
@@ -283,7 +283,7 @@ mod tests {
         assert!(tile.is_some(), "10k×10k must tile");
         let t = tile.unwrap();
         assert!((1000..=4000).contains(&t), "tile {} out of range", t);
-        assert!(t % 500 == 0, "tile {} should be a multiple of 500", t);
+        assert!(t.is_multiple_of(500), "tile {} should be a multiple of 500", t);
     }
 
     #[test]
