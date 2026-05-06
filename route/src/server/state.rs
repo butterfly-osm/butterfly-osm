@@ -61,6 +61,19 @@ pub struct ModeData {
     // Original node weights and mask (indexed by original EBG node ID)
     pub node_weights: Vec<u32>,
     pub mask: Vec<u64>,
+    /// Per-mode "has at least one outbound mode-valid arc" bitset
+    /// (indexed by original EBG node ID). Built at boot from the
+    /// filtered EBG. Used by role-aware snap (#197) so that snapping a
+    /// SOURCE point only returns EBG nodes that can actually start a
+    /// route in this mode (excludes one-way exit ramps where every
+    /// outbound transition is banned in this mode).
+    pub has_outbound: Vec<u64>,
+    /// Per-mode "has at least one inbound mode-valid arc" bitset
+    /// (indexed by original EBG node ID). Built at boot from the
+    /// filtered EBG. Used by role-aware snap (#197) so that snapping a
+    /// DESTINATION point only returns EBG nodes that can actually be
+    /// reached in this mode (excludes nodes only reachable backward).
+    pub has_inbound: Vec<u64>,
     // Flat adjacencies for bucket M2M - TIME metric (pre-built for performance)
     //
     // After #152, the time flats also serve as the topology back-end for
@@ -1113,6 +1126,13 @@ fn load_mode_data(
     let orig_to_rank = build_orig_to_rank(&filtered_ebg, &order);
     let filtered_to_original: Vec<u32> = filtered_ebg.filtered_to_original.to_vec();
 
+    // Build role-aware snap bitsets (#197) from the same filtered EBG.
+    // The filtered EBG already encodes both node-level mode access AND
+    // per-arc turn-table mode masking, so this is the exact ground
+    // truth for "can this node start a route" / "can this node end a
+    // route" in this mode.
+    let (has_outbound, has_inbound) = build_role_masks(&filtered_ebg);
+
     Ok(ModeData {
         mode,
         cch_topo,
@@ -1124,6 +1144,8 @@ fn load_mode_data(
         n_original_nodes,
         node_weights: weights_data.weights,
         mask,
+        has_outbound,
+        has_inbound,
         up_adj_flat,
         down_rev_flat,
         down_adj_flat,
@@ -1132,6 +1154,47 @@ fn load_mode_data(
         down_adj_flat_dist,
         exclude_cache: parking_lot::RwLock::new(HashMap::new()),
     })
+}
+
+/// Build per-mode `has_outbound` and `has_inbound` bitsets indexed by
+/// **original** EBG node id, from the mode's `FilteredEbg`. The
+/// filtered EBG already encodes both node-level mode accessibility and
+/// per-arc turn-table mode masking, so a node's outbound (or inbound)
+/// bit is set iff the node has at least one mode-valid arc out (or in).
+///
+/// Fixes #197: directional snap asymmetry. The legacy snap returned
+/// the geometrically-closest mode-eligible EBG node without checking
+/// whether that node could be a starting state (src role: needs
+/// outbound) or a terminal state (dst role: needs inbound). On
+/// directional roads (one-way exit ramps, motorway slip roads) the
+/// closest sample to a point can lie on the "wrong-side" EBG node,
+/// causing /route to 404 in one direction even though OSRM finds the
+/// route. Bike/foot are effectively undirected so they were unaffected
+/// in practice; car was 15.6 % broken on the Belgium correctness sweep.
+fn build_role_masks(filtered_ebg: &crate::formats::FilteredEbg) -> (Vec<u64>, Vec<u64>) {
+    let n_orig = filtered_ebg.n_original_nodes as usize;
+    let n_words = n_orig.div_ceil(64);
+    let mut has_outbound = vec![0u64; n_words];
+    let mut has_inbound = vec![0u64; n_words];
+
+    let f2o = filtered_ebg.filtered_to_original.as_ref();
+    let offsets = filtered_ebg.offsets.as_ref();
+    let heads = filtered_ebg.heads.as_ref();
+
+    for (filt_id, &orig_id) in f2o.iter().enumerate() {
+        let start = offsets[filt_id] as usize;
+        let end = offsets[filt_id + 1] as usize;
+        if end > start {
+            let oi = orig_id as usize;
+            has_outbound[oi / 64] |= 1u64 << (oi % 64);
+        }
+        for &head_filt in &heads[start..end] {
+            let head_orig = f2o[head_filt as usize] as usize;
+            has_inbound[head_orig / 64] |= 1u64 << (head_orig % 64);
+        }
+    }
+
+    (has_outbound, has_inbound)
 }
 
 /// Build the composed `orig_to_rank` array from a legacy
@@ -1339,8 +1402,22 @@ fn load_mode_data_from_bundle(
     let o2r_section = try_optional("orig_to_rank")?;
     let f2o_section = try_optional("filtered_to_original")?;
 
-    let (orig_to_rank, filtered_to_original, n_filtered_nodes, n_original_nodes) =
-        match (o2r_section, f2o_section) {
+    // #197: role-aware snap masks need the per-mode filtered EBG
+    // adjacency. We fetch it transiently, build the bitsets, then
+    // madvise the bytes back out (the serve hot path doesn't read
+    // them). Required regardless of whether the preferred (#153)
+    // mapping path is taken or the legacy fallback runs, so we hoist
+    // the read up here.
+    let filtered_ebg_section = try_optional("filtered_ebg")?;
+
+    let (
+        orig_to_rank,
+        filtered_to_original,
+        n_filtered_nodes,
+        n_original_nodes,
+        has_outbound,
+        has_inbound,
+    ) = match (o2r_section, f2o_section) {
             (Some(o2r_bytes), Some(f2o_bytes)) => {
                 let o2r = ModeIndexFile::read_from_bytes_zero_copy_unverified(o2r_bytes)?;
                 anyhow::ensure!(
@@ -1366,17 +1443,35 @@ fn load_mode_data_from_bundle(
                     "loaded mapping sections (zero-copy)"
                 );
 
+                // #197: build the role-aware snap bitsets from the
+                // filtered EBG section. The section is required because
+                // the in-memory `orig_to_rank`/`filtered_to_original`
+                // mappings discard arc-level connectivity info — they
+                // only say which nodes are mode-accessible, not whether
+                // each node has any mode-valid outbound/inbound arcs.
+                let (has_out, has_in) = match filtered_ebg_section {
+                    Some(bytes) => {
+                        let (filtered_ebg, _cold) =
+                            crate::formats::FilteredEbgFile::read_from_bytes_zero_copy_with_cold(
+                                bytes,
+                            )?;
+                        build_role_masks(&filtered_ebg)
+                    }
+                    None => {
+                        anyhow::bail!(
+                            "mode/{}/filtered_ebg section missing — required for #197 role-aware snap masks. \
+                             Re-pack the container with the current pack tool.",
+                            mode_name
+                        );
+                    }
+                };
+
                 // The legacy `mode/<m>/filtered_ebg` and
                 // `mode/<m>/order` sections are still in the container
                 // for back-compat (build/validation tools may read
-                // them). The serve path no longer reads them, but the
-                // CRC verifier the container loader uses page-faults
-                // through them when called against those sections.
-                // Since we are NOT calling section_bytes_verified on
-                // either of those, the file-backed pages are touched
-                // only if a future hot path reaches them. Defensive
-                // measure: if they are present in the directory, hint
-                // the kernel to drop them.
+                // them). The serve path no longer reads them after the
+                // role-mask build above, so we still madvise(DONTNEED)
+                // their bytes to keep them off RSS.
                 for legacy in ["filtered_ebg", "order"] {
                     let nm = format!("mode/{}/{}", mode_name, legacy);
                     if let Some(entry) = container.get(&nm) {
@@ -1398,7 +1493,14 @@ fn load_mode_data_from_bundle(
                     }
                 }
 
-                (o2r.data, f2o.data, n_filtered_nodes, n_original_nodes)
+                (
+                    o2r.data,
+                    f2o.data,
+                    n_filtered_nodes,
+                    n_original_nodes,
+                    has_out,
+                    has_in,
+                )
             }
             _ => {
                 // Back-compat fallback: read `FilteredEbg` + `OrderEbg`,
@@ -1428,6 +1530,10 @@ fn load_mode_data_from_bundle(
                 let orig_to_rank = build_orig_to_rank(&filtered_ebg, &order_data);
                 let filtered_to_original: Vec<u32> = filtered_ebg.filtered_to_original.to_vec();
 
+                // #197: build role-aware snap bitsets while the
+                // filtered EBG is still in scope.
+                let (has_out, has_in) = build_role_masks(&filtered_ebg);
+
                 // Both legacy sections are now fully consumed onto the
                 // heap (orig_to_rank from order, filtered_to_original
                 // copied out). CRC verification paged them in; advise
@@ -1454,6 +1560,8 @@ fn load_mode_data_from_bundle(
                     Cow::Owned(filtered_to_original),
                     n_filtered_nodes,
                     n_original_nodes,
+                    has_out,
+                    has_in,
                 )
             }
         };
@@ -1585,6 +1693,8 @@ fn load_mode_data_from_bundle(
         n_original_nodes,
         node_weights: weights_data.weights,
         mask,
+        has_outbound,
+        has_inbound,
         up_adj_flat,
         down_rev_flat,
         down_adj_flat,
