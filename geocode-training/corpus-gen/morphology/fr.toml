@@ -1,0 +1,31 @@
+## France morphology table.
+
+[country]
+iso2 = "FR"
+name = "France"
+
+[render]
+field_separator_after_house = ", "
+postcode_city_separator = " "
+postcode_position = "leading"
+
+[postcode]
+regex = '^[0-9]{5}$'
+format = "{}"
+
+[street_types]
+long_to_short = [
+    ["Rue", "R."],
+    ["Boulevard", "Bd"],
+    ["Avenue", "Av."],
+    ["Place", "Pl."],
+    ["Chaussée", "Ch."],
+    ["Impasse", "Imp."],
+    ["Allée", "All."],
+    ["Quai", "Q."],
+    ["Saint", "St"],
+    ["Sainte", "Ste"],
+]
+
+[street_types.markers]
+fr = ["rue", "avenue", "boulevard", "chaussée", "place", "impasse", "allée", "quai"]
