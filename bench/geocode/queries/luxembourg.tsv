@@ -1,0 +1,1001 @@
+query_id	query_text	gold_lat	gold_lon	quality_class
+be-clean-00000	Rue du Coin 10A, 3219 Bettembourg	49.5182414	6.1021784	clean
+be-clean-00001	Um Grousbuer 14, 5373 Schuttrange	49.6179255	6.2630184	clean
+be-clean-00002	Am Scheerleck 21, 6868 Wecker-Gare	49.7001937	6.3910370	clean
+be-clean-00003	Kräizgaass 4, 5485 Wormeldange-Haut	49.6103458	6.4005889	clean
+be-clean-00004	Route de l'Europe 11, 5531 Remich	49.5472594	6.3618458	clean
+be-clean-00005	Rue de l'Avenir 14, 7211 Helmsange	49.6607949	6.1395086	clean
+be-clean-00006	Haaptstrooss 29B, 9183 Schlindermanderscheid	49.9343972	6.0560945	clean
+be-clean-00007	Rue de Hollerich 89, 1741 Luxembourg	49.5989133	6.1226317	clean
+be-clean-00008	Rue de Luxembourg 117A, 8077 Bertrange	49.6092716	6.0660082	clean
+be-clean-00009	Place François-Joseph Dargent 11, 1413 Luxembourg	49.6277062	6.1297280	clean
+be-clean-00010	Haaptstrooss 48, 6869 Wecker	49.6951784	6.3893209	clean
+be-clean-00011	Bei der Kazebaach 50, 3945 Mondercange	49.5363268	5.9882699	clean
+be-clean-00012	Rue Joseph Massarette 11, 2137 Luxembourg	49.6173689	6.1615657	clean
+be-clean-00013	Rue André Duchscher 18, 1424 Luxembourg	49.6031816	6.1307158	clean
+be-clean-00014	Rue Simone de Beauvoir 3I, 1283 Luxembourg	49.6332820	6.1603495	clean
+be-clean-00015	Schoulstrooss 14, 5716 Aspelt	49.5232743	6.2261476	clean
+be-clean-00016	Luisgaass 4A, 5681 Dalheim	49.5446529	6.2560955	clean
+be-clean-00017	Rue d'Esch 113, 3922 Mondercange	49.5223830	5.9866339	clean
+be-clean-00018	Groussgaass 11, 5721 Aspelt	49.5253029	6.2260476	clean
+be-clean-00019	Rue Jean Engling 10, 1466 Luxembourg	49.6394874	6.1463744	clean
+be-clean-00020	Route d'Arlon 29, 8310 Capellen	49.6443506	5.9914254	clean
+be-clean-00021	Elterstrachen 17, 7260 Bereldange	49.6619557	6.1254165	clean
+be-clean-00022	Chemin des Douaniers 38, 9647 Doncols	49.9760638	5.8439173	clean
+be-clean-00023	Rue de la Libération 27, 8245 Mamer	49.6276523	6.0271274	clean
+be-clean-00024	Ellergronn 8, 4114 Esch-sur-Alzette	49.4745593	5.9759713	clean
+be-clean-00025	Rue Principale 38A, 9633 Baschleiden	49.8984521	5.8187665	clean
+be-clean-00026	Hënneschtgaass 4, 5485 Wormeldange-Haut	49.6091831	6.3994141	clean
+be-clean-00027	Rue du Canal 16, 4050 Esch-sur-Alzette	49.4952824	5.9789888	clean
+be-clean-00028	Rue Cunégonde 13, 8221 Mamer	49.6311692	6.0241600	clean
+be-clean-00029	Rue du Bärendall 8, 8212 Mamer	49.6310801	6.0264020	clean
+be-clean-00030	Bei der Kazebaach 17, 3945 Mondercange	49.5356184	5.9870696	clean
+be-clean-00031	Route de Luxembourg 57A, 4761 Pétange	49.5572106	5.8817289	clean
+be-clean-00032	Rue de l'Église 4, 3833 Schifflange	49.5039441	6.0099780	clean
+be-clean-00033	Rue de la Forêt 26, 1534 Luxembourg	49.5887964	6.1045952	clean
+be-clean-00034	Rue Jean Lemmer 19, 5232 Sandweiler	49.6153855	6.2136927	clean
+be-clean-00035	Rue de Hollenfels 1A, 7481 Tuntange	49.7185828	6.0119275	clean
+be-clean-00036	Boulevard Grande-Duchesse Charlotte 50, 1330 Luxembourg	49.6126591	6.1195229	clean
+be-clean-00037	Boulevard Jules Salentiny 91, 2511 Luxembourg	49.6166368	6.1557463	clean
+be-clean-00038	In der Grof 1A, 5322 Contern	49.5814463	6.2300761	clean
+be-clean-00039	Remeschter 14, 5482 Wormeldange	49.6127521	6.4074379	clean
+be-clean-00040	Route de Kautenbach 36, 9534 Wiltz	49.9676187	5.9380265	clean
+be-clean-00041	Rue Josy Welter 9, 7256 Walferdange	49.6585052	6.1317140	clean
+be-clean-00042	Rue Mauserueck 15, 3934 Mondercange	49.5405764	5.9895266	clean
+be-clean-00043	Baachhiel 10D, 5682 Dalheim	49.5445508	6.2579274	clean
+be-clean-00044	Rue des Champs 53, 8053 Bertrange	49.6102231	6.0435065	clean
+be-clean-00045	Rue de Dangé-Saint-Romain 85, 8261 Mamer	49.6237536	6.0279126	clean
+be-clean-00046	Rue Charles Darwin 18, 1433 Luxembourg	49.5850533	6.1243806	clean
+be-clean-00047	Rue de Luxembourg 57, 7733 Colmar-Berg	49.8072519	6.0945253	clean
+be-clean-00048	Rue de Strasbourg 45, 2561 Luxembourg	49.6003186	6.1282801	clean
+be-clean-00049	Rue Victor Hugo 74, 4141 Esch-sur-Alzette	49.4966283	5.9754423	clean
+be-clean-00050	Rue Grand-Duc Jean 5, 7727 Colmar-Berg	49.8079865	6.0994760	clean
+be-clean-00051	Rue Wieseck 3, 8269 Mamer	49.6269649	6.0245161	clean
+be-clean-00052	Rue Saint-Henri 4, 4135 Esch-sur-Alzette	49.5011081	5.9736597	clean
+be-clean-00053	Moselstraße 45, 54331 Oberbillig	49.7119992	6.5056286	clean
+be-clean-00054	Rue Klengliller 4, 8239 Mamer	49.6225379	6.0258169	clean
+be-clean-00055	Boulevard Jules Salentiny 155, 2511 Luxembourg	49.6176081	6.1580045	clean
+be-clean-00056	Rue Hiel 17, 8067 Bertrange	49.6129568	6.0543503	clean
+be-clean-00057	Avenue des Archiducs 21, 1135 Luxembourg	49.6112342	6.1122716	clean
+be-clean-00058	Boulevard de la Pétrusse 106, 2320 Luxembourg	49.6069044	6.1269023	clean
+be-clean-00059	Rue de Simmerschmelz 5, 8392 Nospelt	49.6766467	6.0066251	clean
+be-clean-00060	Rue Principale 24, 5460 Trintange	49.5692260	6.2814936	clean
+be-clean-00061	Route de Diekirch 18, 7220 Walferdange	49.6591495	6.1316580	clean
+be-clean-00062	Rue Jean-Pierre Michels 179, 4243 Esch-sur-Alzette	49.5054189	5.9872659	clean
+be-clean-00063	Rue de Belvaux 217, 4026 Esch-sur-Alzette	49.5045126	5.9628565	clean
+be-clean-00064	Rue de la Forge 3A, 5423 Ersange	49.5766721	6.2737924	clean
+be-clean-00065	Route d'Arlon 11, 8832 Rombach-Martelange	49.8316696	5.7436967	clean
+be-clean-00066	Rue de Luxembourg 237, 8077 Bertrange	49.6060334	6.0746832	clean
+be-clean-00067	Cité Émile Mayrisch 42A, 3855 Schifflange	49.5062881	6.0024194	clean
+be-clean-00068	Rue de Neuerburg 12, 2215 Luxembourg	49.6465005	6.1267752	clean
+be-clean-00069	Rue des Vergers 10, 7457 Lintgen	49.7199703	6.1268200	clean
+be-clean-00070	Boulevard Jules Salentiny 21, 2511 Luxembourg	49.6156698	6.1579633	clean
+be-clean-00071	Haaptstrooss 29A, 9183 Schlindermanderscheid	49.9342864	6.0563158	clean
+be-clean-00072	Rue Charles Kieffer 25, 8389 Grass	49.6359410	5.8932296	clean
+be-clean-00073	Rue Adolphe Fischer 75, 1520 Luxembourg	49.6018520	6.1273954	clean
+be-clean-00074	Rue de la Forêt 6, 1534 Luxembourg	49.5893939	6.1061261	clean
+be-clean-00075	Chemin de Roedgen 53, 2432 Luxembourg	49.5905957	6.1019217	clean
+be-clean-00076	Rue Belair 1, 4997 Schouweiler	49.5854837	5.9559520	clean
+be-clean-00077	Rue du Cimetière 49, 5214 Sandweiler	49.6201219	6.2182044	clean
+be-clean-00078	Rue de Dublin 2, 8224 Mamer	49.6311106	6.0187669	clean
+be-clean-00079	Cité Hooch 24, 9980 Wilwerdange	50.1412062	6.0204723	clean
+be-clean-00080	Rue Neuve 24, 3938 Mondercange	49.5372513	5.9882915	clean
+be-clean-00081	Rue Émile Mark 5, 4620 Differdange	49.5228462	5.8894217	clean
+be-clean-00082	Am Steffesgaart 32, 5222 Sandweiler	49.6133578	6.2237995	clean
+be-clean-00083	Rue Principale 45C, 9633 Baschleiden	49.8989434	5.8169837	clean
+be-clean-00084	Rue Dicks 21, 8085 Bertrange	49.6055281	6.0558307	clean
+be-clean-00085	Rue du Schlammestee 19, 5770 Weiler-la-Tour	49.5407879	6.1962398	clean
+be-clean-00086	Ënnert dem Bierg 2B, 5244 Sandweiler	49.6169553	6.2141091	clean
+be-clean-00087	Rue Jean Lemmer 11, 5232 Sandweiler	49.6150144	6.2138918	clean
+be-clean-00088	Avenue du 10 septembre 145, 2551 Luxembourg	49.6065410	6.1072538	clean
+be-clean-00089	Rue Paul Medinger 3, 5317 Contern	49.5829212	6.2194118	clean
+be-clean-00090	Bei der Kazebaach 16, 3945 Mondercange	49.5356230	5.9869455	clean
+be-clean-00091	Val Sainte-Croix 173, 1371 Luxembourg	49.6121693	6.1019303	clean
+be-clean-00092	Boulevard Franklin D. Roosevelt 33, 2450 Luxembourg	49.6096298	6.1300077	clean
+be-clean-00093	Op der Houscht 28, 5221 Sandweiler	49.6137900	6.2076703	clean
+be-clean-00094	Rue de la Gare 24, 9906 Troisvierges	50.1192895	5.9920094	clean
+be-clean-00095	Boulevard Grande-Duchesse Charlotte 62, 4351 Esch-sur-Alzette	49.5047880	5.9759584	clean
+be-clean-00096	Rue Victor Hugo 64, 4141 Esch-sur-Alzette	49.4967380	5.9757589	clean
+be-clean-00097	Rue de la Forêt 36, 1534 Luxembourg	49.5885318	6.1040164	clean
+be-clean-00098	Rue de Cessange 165, 1321 Luxembourg	49.5922458	6.1059838	clean
+be-clean-00099	Um Goldbierchen 19, 5720 Aspelt	49.5184303	6.2228897	clean
+be-clean-00100	Route d'Arlon 75, 8009 Strassen	49.6180861	6.0860851	clean
+be-clean-00101	Rue de Londres 4, 8223 Mamer	49.6317631	6.0177920	clean
+be-clean-00102	Op de Géieren 5, 4970 Sprinkange	49.5837903	5.9737474	clean
+be-clean-00103	Am Rousegärtchen 17, 3924 Mondercange	49.5271865	5.9868510	clean
+be-clean-00104	Rue de Redange 1, 8545 Niederpallen	49.7548149	5.9104077	clean
+be-clean-00105	Rue de la Gare 24, 9906 Troisvierges	50.1192895	5.9920094	clean
+be-clean-00106	Rue Principale 73, 8365 Hagen	49.6494384	5.9341003	clean
+be-clean-00107	Rue de Marcinelle 8, 4234 Esch-sur-Alzette	49.5039237	5.9635063	clean
+be-clean-00108	Rue de Strasbourg 97, 2561 Luxembourg	49.5995807	6.1250462	clean
+be-clean-00109	Rue des Romains 46, 8041 Strassen	49.6192137	6.0731670	clean
+be-clean-00110	Rue des Romains 42, 2444 Luxembourg	49.6005514	6.1406889	clean
+be-clean-00111	Cité Jacques Steichen 19A, 3944 Mondercange	49.5209946	5.9854637	clean
+be-clean-00112	Rue Léon Weirich 27, 4348 Esch-sur-Alzette	49.4975552	5.9760157	clean
+be-clean-00113	Um Flouer 3, 5711 Aspelt	49.5213486	6.2265864	clean
+be-clean-00114	Rue de Leudelange 82, 8079 Bertrange	49.6053841	6.0516673	clean
+be-clean-00115	Rue Woodrow Wilson 29, 2732 Luxembourg	49.6004480	6.1257543	clean
+be-clean-00116	Rue de Pontpierre 102, 3940 Mondercange	49.5345417	5.9999507	clean
+be-clean-00117	Rue Mauserueck 17, 3934 Mondercange	49.5404761	5.9897583	clean
+be-clean-00118	Op Dirbett 5, 3916 Mondercange	49.5285792	5.9845679	clean
+be-clean-00119	Rue de la Libération 27, 8245 Mamer	49.6276523	6.0271274	clean
+be-clean-00120	Schweecherdaulerstrooss 36, 8551 Noerdange	49.7385256	5.9233478	clean
+be-clean-00121	Rue Cunégonde 6, 8221 Mamer	49.6314886	6.0241856	clean
+be-clean-00122	Grand-Rue 34, 9710 Clervaux	50.0541306	6.0313288	clean
+be-clean-00123	Avenue du Parc des Sports 110, 4671 Oberkorn	49.5126412	5.8930679	clean
+be-clean-00124	Rue de Leudelange 22, 8079 Bertrange	49.6092580	6.0502465	clean
+be-clean-00125	Rue Victor Hugo 5, 5671 Altwies	49.5108436	6.2567531	clean
+be-clean-00126	Um Aale Wee 16, 9644 Dahl	49.9356706	5.9752100	clean
+be-clean-00127	Rue du Parc de Gerlache 7, 4574 Differdange	49.5233425	5.8892682	clean
+be-clean-00128	Cité de l'Aéroport 23, 1523 Findel	49.6270896	6.1969066	clean
+be-clean-00129	Rue Charles Schwall 3A, 8093 Bertrange	49.6142000	6.0458267	clean
+be-clean-00130	Rue Eugène Simon 53, 9079 Ettelbruck	49.8453204	6.0904250	clean
+be-clean-00131	Boulevard Jules Salentiny 8, 2511 Luxembourg	49.6164821	6.1585009	clean
+be-clean-00132	Place de la Paix 12, 4275 Esch-sur-Alzette	49.5046726	5.9834408	clean
+be-clean-00133	Route d'Arlon 83A, 8211 Mamer	49.6313667	6.0211977	clean
+be-clean-00134	Boulevard de la Pétrusse 148, 2330 Luxembourg	49.6045987	6.1330050	clean
+be-clean-00135	Avenue Pasteur 47, 2311 Luxembourg	49.6193900	6.1207023	clean
+be-clean-00136	Op Blach 15, 3934 Mondercange	49.5396210	5.9897948	clean
+be-clean-00137	Rue des Églantiers 30, 8227 Mamer	49.6319828	6.0148545	clean
+be-clean-00138	Schlassgewan 35, 5364 Schrassig	49.6171878	6.2579301	clean
+be-clean-00139	Bei der Kazebaach 45, 3945 Mondercange	49.5366863	5.9874123	clean
+be-clean-00140	Rue de Marcinelle 10, 4234 Esch-sur-Alzette	49.5040620	5.9633060	clean
+be-clean-00141	Rue du Commerce 32, 8220 Mamer	49.6291168	6.0209029	clean
+be-clean-00142	Am Burfeld 5B, 6850 Manternach	49.7061063	6.4272028	clean
+be-clean-00143	Cité Millewee 30, 8064 Bertrange	49.6189254	6.0513855	clean
+be-clean-00144	Route de Longwy 338, 1940 Luxembourg	49.6051645	6.0947054	clean
+be-clean-00145	Grand-Rue 6, 9050 Ettelbruck	49.8452440	6.0985706	clean
+be-clean-00146	Rue André Duchscher 2, 1424 Luxembourg	49.6024663	6.1310765	clean
+be-clean-00147	Péiter-vun-Uespelt-Strooss 7, 5710 Aspelt	49.5219377	6.2248815	clean
+be-clean-00148	Rue du Nord 42, 4260 Esch-sur-Alzette	49.4974128	5.9784454	clean
+be-clean-00149	Rue de Dalheim 6, 5899 Syren	49.5630952	6.2208209	clean
+be-clean-00150	Bourgaass 2, 5482 Wormeldange	49.6121959	6.4060338	clean
+be-clean-00151	Grand-Rue 29, 9530 Wiltz	49.9654337	5.9362755	clean
+be-clean-00152	Rue Henri Kirpach 5, 8237 Mamer	49.6301393	6.0206413	clean
+be-clean-00153	Duarrefstrooss 45, 9990 Weiswampach	50.1368329	6.0758740	clean
+be-clean-00154	Rue de Luxembourg 78, 8140 Bridel	49.6558203	6.0829893	clean
+be-clean-00155	Rue de Steinsel 82, 7254 Bereldange	49.6611366	6.1249585	clean
+be-clean-00156	Route de Diekirch 50, 7220 Helmsange	49.6628247	6.1335807	clean
+be-clean-00157	Rue Auguste Trémont 65, 2624 Luxembourg	49.6223802	6.1727829	clean
+be-clean-00158	Avenue de Luxembourg 149, 4940 Bascharage	49.5671814	5.9107587	clean
+be-clean-00159	Rue Principale 15, 5240 Sandweiler	49.6167843	6.2175200	clean
+be-clean-00160	Route d'Arlon 22B, 8210 Mamer	49.6259818	6.0347763	clean
+be-clean-00161	Rue de Luxembourg 225, 8077 Bertrange	49.6063554	6.0740278	clean
+be-clean-00162	Medernacherstrooss 7A, 9366 Ermsdorf	49.8276953	6.2220778	clean
+be-clean-00163	An de Steekaulen 21, 5243 Sandweiler	49.6164832	6.2259446	clean
+be-clean-00164	Rue de Luxembourg 187A, 7540 Rollingen	49.7308552	6.1258165	clean
+be-clean-00165	Boulevard Konrad Adenauer 98, 1115 Luxembourg	49.6219050	6.1392277	clean
+be-clean-00166	Route de Garnich 4, 8277 Holzem	49.6156883	5.9924269	clean
+be-clean-00167	Rue de Trèves 9, 2632 Findel	49.6299696	6.2056494	clean
+be-clean-00168	Résidence Belle-Vue 1, 3816 Schifflange	49.5048640	6.0059550	clean
+be-clean-00169	Rue d'Itzig 7, 5231 Sandweiler	49.6151680	6.2225087	clean
+be-clean-00170	Place Edmond Zinnen 8, 4405 Differdange	49.5202794	5.9158135	clean
+be-clean-00171	Rue Ausone 21, 1146 Luxembourg	49.5901862	6.1043622	clean
+be-clean-00172	Avenue du Rock'n'Roll 7, 4361 Esch-sur-Alzette	49.5006186	5.9456960	clean
+be-clean-00173	Rue de la Pétrusse 62B, 8084 Bertrange	49.6089404	6.0467790	clean
+be-clean-00174	Résidence Belle-Vue 19, 3816 Schifflange	49.5047810	6.0059071	clean
+be-clean-00175	Rue de la Gare 11, 8229 Mamer	49.6266151	6.0196348	clean
+be-clean-00176	Rue Lily Krier-Becker 5, 3389 Peppange	49.5261334	6.1353013	clean
+be-clean-00177	Rue Bour 22, 7216 Bereldange	49.6570965	6.1251623	clean
+be-clean-00178	Route d'Arlon 337, 8011 Strassen	49.6218957	6.0589689	clean
+be-clean-00179	Rue des Fleurs 12, 3925 Mondercange	49.5242944	5.9902045	clean
+be-clean-00180	Rue Gabriel Lippmann 55, 6947 Niederanven	49.6442259	6.2662547	clean
+be-clean-00181	Biedergaass 4, 3939 Mondercange	49.5371501	5.9914576	clean
+be-clean-00182	Rue de Neudorf 7A, 3937 Mondercange	49.5329393	5.9926125	clean
+be-clean-00183	Rue Docteur Michel Welter 64, 4347 Esch-sur-Alzette	49.5041143	5.9742910	clean
+be-clean-00184	Um Grousbuer 6, 5373 Schuttrange	49.6177012	6.2627490	clean
+be-clean-00185	Rue de Leudelange 46, 8079 Bertrange	49.6077908	6.0507861	clean
+be-clean-00186	Rue de Beggen 233-241, 1221 Luxembourg	49.6457669	6.1276687	clean
+be-clean-00187	Rue du Bärendall 9, 8212 Mamer	49.6310449	6.0256012	clean
+be-clean-00188	Am Grëndchen 16, 1655 Luxembourg	49.5930407	6.1089470	clean
+be-clean-00189	Boulevard Jules Salentiny 28, 2511 Luxembourg	49.6159793	6.1567461	clean
+be-clean-00190	Boulevard Royal 25A, 2449 Luxembourg	49.6134294	6.1271927	clean
+be-clean-00191	Cité Millewee 14, 8064 Bertrange	49.6193297	6.0523205	clean
+be-clean-00192	Rue Marie Muller-Tesch 15, 4250 Esch-sur-Alzette	49.5020453	5.9707079	clean
+be-clean-00193	Route de Holzem 69, 8232 Mamer	49.6232373	6.0117007	clean
+be-clean-00194	Ënnert dem Bierg 2A, 5244 Sandweiler	49.6170195	6.2143481	clean
+be-clean-00195	Rue Joseph Junck 12-18, 1839 Luxembourg	49.6005784	6.1319108	clean
+be-clean-00196	Rue des Merciers 2, 6464 Echternach	49.8132095	6.4191989	clean
+be-clean-00197	Rue de Luxembourg 191, 8077 Bertrange	49.6071766	6.0720164	clean
+be-clean-00198	Péiter-vun-Uespelt-Strooss 6, 5710 Aspelt	49.5215456	6.2250630	clean
+be-clean-00199	Rue Léon Kauffman 31, 1853 Luxembourg	49.6168508	6.1612111	clean
+be-abbreviated-00200	Rte du Vin 93, 5481 Wormeldange	49.6113122	6.4074688	abbreviated
+be-abbreviated-00201	R. Dicks 10B, 8085 Bertrange	49.6058240	6.0535516	abbreviated
+be-abbreviated-00202	Av. du Parc des Sports 106, 4671 Oberkorn	49.5127340	5.8929625	abbreviated
+be-abbreviated-00203	R. de Steinsel 96, 7254 Bereldange	49.6612096	6.1241771	abbreviated
+be-abbreviated-00204	Bd Jules Salentiny 65, 2511 Luxembourg	49.6155662	6.1558174	abbreviated
+be-abbreviated-00205	Bourgheid 15, 5312 Contern	49.5877688	6.2291613	abbreviated
+be-abbreviated-00206	R. d'Oetrange 51A, 5360 Schrassig	49.6112673	6.2545259	abbreviated
+be-abbreviated-00207	Rue St-Pierre 38, 4646 Niederkorn	49.5371565	5.8917858	abbreviated
+be-abbreviated-00208	R. John F. Kennedy 8, 4599 Differdange	49.5223817	5.8849778	abbreviated
+be-abbreviated-00209	R. de Medernach 8, 7619 Larochette	49.7846324	6.2207872	abbreviated
+be-abbreviated-00210	R. Ribeschpont 50, 3548 Dudelange	49.4929591	6.0797027	abbreviated
+be-abbreviated-00211	Op der Houscht 42, 5221 Sandweiler	49.6134946	6.2066791	abbreviated
+be-abbreviated-00212	R. de la Libération 27, 7263 Helmsange	49.6667607	6.1321229	abbreviated
+be-abbreviated-00213	Rte de Luxembourg 9, 4761 Pétange	49.5564818	5.8779929	abbreviated
+be-abbreviated-00214	R. Notre-Dame 29, 2240 Luxembourg	49.6098649	6.1286276	abbreviated
+be-abbreviated-00215	Grand-R. 68, 9051 Ettelbruck	49.8470104	6.1002755	abbreviated
+be-abbreviated-00216	Hiel 34, 5485 Wormeldange-Haut	49.6115859	6.3990667	abbreviated
+be-abbreviated-00217	All. du Carmel 7A, 1354 Luxembourg	49.6196411	6.1723018	abbreviated
+be-abbreviated-00218	Av. Pasteur 4, 2310 Luxembourg	49.6182840	6.1241633	abbreviated
+be-abbreviated-00219	R. des Marguerites 20, 1257 Luxembourg	49.6223964	6.1625556	abbreviated
+be-abbreviated-00220	All. du Carmel 21, 1354 Luxembourg	49.6208499	6.1735712	abbreviated
+be-abbreviated-00221	Rangwee 1, 2412 Howald	49.5889064	6.1417613	abbreviated
+be-abbreviated-00222	Gruuss-Str. 45, 9991 Weiswampach	50.1419870	6.0745241	abbreviated
+be-abbreviated-00223	R. Notre-Dame 27, 2240 Luxembourg	49.6098696	6.1287925	abbreviated
+be-abbreviated-00224	R. du Bois 12, 4036 Esch-sur-Alzette	49.5005512	5.9678168	abbreviated
+be-abbreviated-00225	Op der Sank 25, 5713 Aspelt	49.5219565	6.2199800	abbreviated
+be-abbreviated-00226	Gruuss-Str. 73, 9991 Weiswampach	50.1433534	6.0679663	abbreviated
+be-abbreviated-00227	Duarrefstr. 84, 9990 Weiswampach	50.1333670	6.0779335	abbreviated
+be-abbreviated-00228	R. de Montpellier 13, 4249 Esch-sur-Alzette	49.5113466	5.9912590	abbreviated
+be-abbreviated-00229	Léegrond 21B, 5359 Schuttrange	49.6188825	6.2618822	abbreviated
+be-abbreviated-00230	Av. Lou Hemmer 7, 5627 Mondorf-les-Bains	49.5053425	6.2765497	abbreviated
+be-abbreviated-00231	Op der Heed 22, 1747 Luxembourg	49.6210944	6.1781286	abbreviated
+be-abbreviated-00232	R. Jean-Pierre Brasseur 18, 1258 Luxembourg	49.6125770	6.1162969	abbreviated
+be-abbreviated-00233	R. Rham 47, 6142 Junglinster	49.7130215	6.2483094	abbreviated
+be-abbreviated-00234	Am Grëndchen 10, 1655 Luxembourg	49.5933713	6.1096555	abbreviated
+be-abbreviated-00235	Rte de Luxembourg 109, 6562 Echternach	49.8062423	6.4073551	abbreviated
+be-abbreviated-00236	R. de Montpellier 17, 4249 Esch-sur-Alzette	49.5114335	5.9913947	abbreviated
+be-abbreviated-00237	R. de Raemerich 12, 4310 Esch-sur-Alzette	49.5099495	5.9521307	abbreviated
+be-abbreviated-00238	R. de Montpellier 13, 4249 Esch-sur-Alzette	49.5113466	5.9912590	abbreviated
+be-abbreviated-00239	Av. Gaston Diderich 113, 1420 Luxembourg	49.6103284	6.1092963	abbreviated
+be-abbreviated-00240	R. de Pontpierre 35, 3940 Mondercange	49.5326854	5.9940906	abbreviated
+be-abbreviated-00241	Av. de la Liberté 4, 1930 Luxembourg	49.6067759	6.1280048	abbreviated
+be-abbreviated-00242	Dikricherstr. 1C, 9186 Stegen	49.8269910	6.1822347	abbreviated
+be-abbreviated-00243	Av. de la Résistance 22, 3880 Schifflange	49.5046734	6.0016697	abbreviated
+be-abbreviated-00244	R. Batty Weber 14, 4346 Esch-sur-Alzette	49.5032098	5.9664481	abbreviated
+be-abbreviated-00245	R. Joseph Junck 13, 1839 Luxembourg	49.6004826	6.1317017	abbreviated
+be-abbreviated-00246	R. des Romains 98, 8041 Strassen	49.6190033	6.0680010	abbreviated
+be-abbreviated-00247	R. de Gasperich 33, 5826 Hesperange	49.5755288	6.1357883	abbreviated
+be-abbreviated-00248	Reckenthal 63, 2410 Strassen	49.6239882	6.0979928	abbreviated
+be-abbreviated-00249	R. de Leudelange 85, 8079 Bertrange	49.6072063	6.0515686	abbreviated
+be-abbreviated-00250	R. de Lebork 21, 3584 Dudelange	49.4940614	6.0798812	abbreviated
+be-abbreviated-00251	Square General George S. Patton 5, 8443 Steinfort	49.6593873	5.9136580	abbreviated
+be-abbreviated-00252	Rte d'Arlon 63, 8009 Strassen	49.6178991	6.0871284	abbreviated
+be-abbreviated-00253	R. des Pommiers 22, 2343 Luxembourg	49.6108270	6.1502982	abbreviated
+be-abbreviated-00254	Léebierg 45B, 5359 Schuttrange	49.6188026	6.2571030	abbreviated
+be-abbreviated-00255	R. des Églantiers 36, 8227 Mamer	49.6317565	6.0145551	abbreviated
+be-abbreviated-00256	R. an der Messer 1, 4976 Bettange-sur-Mess	49.5742293	5.9815018	abbreviated
+be-abbreviated-00257	Péiter-vun-Uespelt-Str. 38, 5710 Aspelt	49.5256034	6.2243787	abbreviated
+be-abbreviated-00258	Pl. de la Résistance 2, 4041 Esch-sur-Alzette	49.4920470	5.9766248	abbreviated
+be-abbreviated-00259	R. Mathias Tresch 18, 2626 Luxembourg	49.6365932	6.1695718	abbreviated
+be-abbreviated-00260	R. de la Gare 147, 3355 Leudelange	49.5856665	6.0592811	abbreviated
+be-abbreviated-00261	R. Schauwenburg 8, 8092 Bertrange	49.6087809	6.0500925	abbreviated
+be-abbreviated-00262	R. de la Poste 10, 4939 Bascharage	49.5680091	5.9102542	abbreviated
+be-abbreviated-00263	Imp. du Berger 4B, 9146 Erpeldange-sur-Sûre	49.8640546	6.1114928	abbreviated
+be-abbreviated-00264	Rte de Luxembourg 48, 7240 Bereldange	49.6552569	6.1269591	abbreviated
+be-abbreviated-00265	R. Michel Rodange 16, 9061 Ettelbruck	49.8506367	6.0745985	abbreviated
+be-abbreviated-00266	R. Henri Dunant 9, 4085 Esch-sur-Alzette	49.5043575	5.9805598	abbreviated
+be-abbreviated-00267	R. Ermesinde 17, 8259 Mamer	49.6334904	6.0215817	abbreviated
+be-abbreviated-00268	R. Principale 45, 9633 Baschleiden	49.8985460	5.8172525	abbreviated
+be-abbreviated-00269	Uferstr. 5, 54453 Nittel	49.6542273	6.4417544	abbreviated
+be-abbreviated-00270	R. de Strasbourg 13, 2561 Luxembourg	49.6012049	6.1316097	abbreviated
+be-abbreviated-00271	R. des Prés 75A, 5316 Contern	49.5811229	6.2192156	abbreviated
+be-abbreviated-00272	R. de Leudelange 36, 8079 Bertrange	49.6082607	6.0506314	abbreviated
+be-abbreviated-00273	R. Nicolas Biever 13, 4033 Esch-sur-Alzette	49.5031712	5.9788004	abbreviated
+be-abbreviated-00274	Bd Jules Salentiny 61, 2511 Luxembourg	49.6152726	6.1559958	abbreviated
+be-abbreviated-00275	Rue St-Michel 7, 5637 Mondorf-les-Bains	49.5056702	6.2709474	abbreviated
+be-abbreviated-00276	Pl. de la Gare 26, 2965 Luxembourg	49.6001206	6.1330212	abbreviated
+be-abbreviated-00277	Duerfstr. 18C, 9689 Tarchamps	49.9495538	5.7956217	abbreviated
+be-abbreviated-00278	R. de la Fontaine 5, 8058 Bertrange	49.6114335	6.0510293	abbreviated
+be-abbreviated-00279	R. de Stavelot 20-22, 9280 Diekirch	49.8680438	6.1585528	abbreviated
+be-abbreviated-00280	R. de Dippach 33, 8055 Bertrange	49.6079798	6.0482059	abbreviated
+be-abbreviated-00281	Rte de Mondorf 186, 3260 Bettembourg	49.5124767	6.1114530	abbreviated
+be-abbreviated-00282	Waldbriedemeserstr. 30, 5680 Dalheim	49.5446834	6.2621670	abbreviated
+be-abbreviated-00283	Cité Princesse Amélie 13, 7262 Helmsange	49.6603501	6.1412270	abbreviated
+be-abbreviated-00284	R. Jean Antoine Zinnen 5, 3286 Bettembourg	49.5171340	6.1032674	abbreviated
+be-abbreviated-00285	R. François Hogenberg 4, 1735 Luxembourg	49.5885335	6.1193286	abbreviated
+be-abbreviated-00286	Cité Jacques Steichen 19A, 3944 Mondercange	49.5209946	5.9854637	abbreviated
+be-abbreviated-00287	R. Léon Weirich 53, 4348 Esch-sur-Alzette	49.4981721	5.9754780	abbreviated
+be-abbreviated-00288	Cité Steen 25, 9993 Weiswampach	50.1375718	6.0794586	abbreviated
+be-abbreviated-00289	All. du Carmel 9A, 1354 Luxembourg	49.6199992	6.1722970	abbreviated
+be-abbreviated-00290	R. de Bettembourg 23, 3346 Leudelange	49.5628835	6.0658336	abbreviated
+be-abbreviated-00291	All. du Carmel 9A, 1354 Luxembourg	49.6200978	6.1724029	abbreviated
+be-abbreviated-00292	R. Nicolas Welter 17, 5256 Sandweiler	49.6176414	6.2217375	abbreviated
+be-abbreviated-00293	Av. Marie-Adélaïde 7, 5635 Mondorf-les-Bains	49.5052967	6.2846519	abbreviated
+be-abbreviated-00294	R. du Cimetière 150, 8018 Strassen	49.6128603	6.0748699	abbreviated
+be-abbreviated-00295	All. du Carmel 21, 1354 Luxembourg	49.6208499	6.1735712	abbreviated
+be-abbreviated-00296	R. Lydie Schmit 4, 8242 Mamer	49.6236896	6.0117066	abbreviated
+be-abbreviated-00297	R. Kiemel 28, 3933 Mondercange	49.5270936	5.9825184	abbreviated
+be-abbreviated-00298	R. du Lavoir 5, 3358 Leudelange	49.5670991	6.0645578	abbreviated
+be-abbreviated-00299	R. de Wilwerdange 2, 9911 Troisvierges	50.1218628	6.0020351	abbreviated
+be-abbreviated-00300	Duerfstr. 6A, 9689 Tarchamps	49.9490830	5.7931678	abbreviated
+be-abbreviated-00301	Av. de la Porte-Neuve 11A, 2227 Luxembourg	49.6125195	6.1278937	abbreviated
+be-abbreviated-00302	Moettelsergaass 4, 9653 Goesdorf	49.9208831	5.9662374	abbreviated
+be-abbreviated-00303	R. Gaston Thorn 2, 4543 Differdange	49.5203335	5.8913764	abbreviated
+be-abbreviated-00304	R. Prince Henri 52, 7230 Helmsange	49.6593642	6.1391378	abbreviated
+be-abbreviated-00305	R. d'Esch 88A, 3921 Mondercange	49.5245995	5.9890428	abbreviated
+be-abbreviated-00306	R. Aloyse Kayser 1, 4743 Pétange	49.5571739	5.8797706	abbreviated
+be-abbreviated-00307	Bd Jules Salentiny 74, 2511 Luxembourg	49.6169288	6.1576453	abbreviated
+be-abbreviated-00308	R. des Roses 4, 3367 Leudelange	49.5635619	6.0640690	abbreviated
+be-abbreviated-00309	R. de la Gare 43A, 3377 Leudelange	49.5704208	6.0629518	abbreviated
+be-abbreviated-00310	R. de la Forêt 4, 3354 Leudelange	49.5704255	6.0616818	abbreviated
+be-abbreviated-00311	R. de Moutfort 2, 5310 Contern	49.5845612	6.2260777	abbreviated
+be-abbreviated-00312	R. d'Itzig 87, 5231 Sandweiler	49.6131334	6.2125820	abbreviated
+be-abbreviated-00313	R. du Cimetière 115, 1338 Luxembourg	49.5919464	6.1417741	abbreviated
+be-abbreviated-00314	R. de Steinsel 82, 7254 Bereldange	49.6611366	6.1249585	abbreviated
+be-abbreviated-00315	R. Tony Bourg 2, 1278 Luxembourg	49.5916137	6.1251381	abbreviated
+be-abbreviated-00316	All. Scheffer 9, 2520 Luxembourg	49.6172149	6.1224948	abbreviated
+be-abbreviated-00317	R. de Puteaux 7, 4282 Esch-sur-Alzette	49.5095139	5.9540326	abbreviated
+be-abbreviated-00318	R. des Fondeurs 14, 4121 Esch-sur-Alzette	49.5042944	5.9726284	abbreviated
+be-abbreviated-00319	R. de l'Église 3, 7446 Lintgen	49.7206222	6.1253835	abbreviated
+be-abbreviated-00320	Cité Hooch 19, 9980 Wilwerdange	50.1412339	6.0198880	abbreviated
+be-abbreviated-00321	R. de Strasbourg 9, 2561 Luxembourg	49.6012768	6.1319161	abbreviated
+be-abbreviated-00322	Bd de la Foire 2, 1528 Luxembourg	49.6133907	6.1202766	abbreviated
+be-abbreviated-00323	Rte d'Arlon 92, 8008 Strassen	49.6190664	6.0812649	abbreviated
+be-abbreviated-00324	Bd Royal 25B, 2449 Luxembourg	49.6133842	6.1269680	abbreviated
+be-abbreviated-00325	R. d'Esch 80, 3921 Mondercange	49.5251131	5.9896551	abbreviated
+be-abbreviated-00326	Av. du Parc des Sports 108, 4671 Oberkorn	49.5126869	5.8930282	abbreviated
+be-abbreviated-00327	R. Jean-Pierre Michels 173, 4243 Esch-sur-Alzette	49.5054162	5.9868287	abbreviated
+be-abbreviated-00328	Av. de la Gare 6, 1610 Luxembourg	49.6043581	6.1331584	abbreviated
+be-abbreviated-00329	Op der Alkërrech 20, 6776 Grevenmacher	49.6814078	6.4001972	abbreviated
+be-abbreviated-00330	R. de l'Étang 12, 9640 Boulaide	49.8860987	5.8063518	abbreviated
+be-abbreviated-00331	R. de la Libération 22A, 8245 Mamer	49.6278325	6.0275145	abbreviated
+be-abbreviated-00332	Tubeseck 1, 9912 Troisvierges	50.1216253	6.0022035	abbreviated
+be-abbreviated-00333	R. de Pontpierre 53, 3940 Mondercange	49.5332493	5.9954789	abbreviated
+be-abbreviated-00334	Av. de la Libération 155, 3850 Schifflange	49.5046222	6.0027514	abbreviated
+be-abbreviated-00335	Wénkelhiel 2D, 5680 Dalheim	49.5428120	6.2559724	abbreviated
+be-abbreviated-00336	R. de Madrid 8, 8223 Mamer	49.6300083	6.0167077	abbreviated
+be-abbreviated-00337	Cité Am Wénkel 34, 8086 Bertrange	49.6130079	6.0453400	abbreviated
+be-abbreviated-00338	R. de Hassel 44D, 5899 Syren	49.5619777	6.2194227	abbreviated
+be-abbreviated-00339	R. du Schlammestee 28, 5770 Weiler-la-Tour	49.5402997	6.1953567	abbreviated
+be-abbreviated-00340	R. Notre-Dame 27, 2240 Luxembourg	49.6098696	6.1287925	abbreviated
+be-abbreviated-00341	Bd Jules Salentiny 74, 2511 Luxembourg	49.6169288	6.1576453	abbreviated
+be-abbreviated-00342	Medernacherstr. 7A, 9366 Ermsdorf	49.8276953	6.2220778	abbreviated
+be-abbreviated-00343	R. de Dalheim 17, 5898 Syren	49.5629420	6.2232147	abbreviated
+be-abbreviated-00344	Grand-R. 61A, 6630 Wasserbillig	49.7147164	6.5051034	abbreviated
+be-abbreviated-00345	Cité Am Wénkel 31, 8086 Bertrange	49.6134068	6.0464509	abbreviated
+be-abbreviated-00346	Rte d'Arlon 203, 8011 Strassen	49.6201131	6.0719641	abbreviated
+be-abbreviated-00347	R. Pierre Wiser 1, 9092 Ettelbruck	49.8480158	6.1004773	abbreviated
+be-abbreviated-00348	Om Kläppchen 12, 5682 Dalheim	49.5432479	6.2572462	abbreviated
+be-abbreviated-00349	Tossenberg 94B, 8268 Bertrange	49.6233459	6.0381082	abbreviated
+be-abbreviated-00350	R. Léopold Hoffmann 3, 1753 Luxembourg	49.5927911	6.1161306	abbreviated
+be-abbreviated-00351	R. d'Oetrange 29, 5333 Moutfort	49.5897683	6.2565154	abbreviated
+be-abbreviated-00352	Bd de la Pétrusse 69, 2320 Luxembourg	49.6067541	6.1260863	abbreviated
+be-abbreviated-00353	R. des Prés 12, 5561 Remich	49.5478236	6.3664703	abbreviated
+be-abbreviated-00354	Bd Royal 25C, 2449 Luxembourg	49.6132595	6.1266468	abbreviated
+be-abbreviated-00355	Arelerstr. 8, 8550 Noerdange	49.7417280	5.9229412	abbreviated
+be-abbreviated-00356	R. de l'Industrie 3, 8069 Bertrange	49.6131739	6.0610416	abbreviated
+be-abbreviated-00357	Cité Jacques Steichen 46, 3944 Mondercange	49.5213168	5.9855795	abbreviated
+be-abbreviated-00358	R. d'Oetrange 28A, 5360 Schrassig	49.6085756	6.2588065	abbreviated
+be-abbreviated-00359	R. Docteur Michel Welter 2, 4347 Esch-sur-Alzette	49.5032752	5.9711143	abbreviated
+be-abbreviated-00360	R. des Aubépines 33, 8053 Bertrange	49.6102274	6.0463131	abbreviated
+be-abbreviated-00361	R. des Prés 12, 5561 Remich	49.5478236	6.3664703	abbreviated
+be-abbreviated-00362	R. du Verger 15, 2665 Luxembourg	49.6023217	6.1379594	abbreviated
+be-abbreviated-00363	Rte de Dippach 8, 8225 Mamer	49.6259653	6.0221113	abbreviated
+be-abbreviated-00364	Op der Bréck 2, 5427 Greiveldange	49.5877820	6.3642838	abbreviated
+be-abbreviated-00365	R. Glesener 7, 1631 Luxembourg	49.6022780	6.1313806	abbreviated
+be-abbreviated-00366	R. de l'Église 11, 7446 Lintgen	49.7207119	6.1268789	abbreviated
+be-abbreviated-00367	R. des Vergers 2, 7457 Lintgen	49.7203275	6.1269255	abbreviated
+be-abbreviated-00368	R. Principale 171, 5480 Wormeldange	49.6122985	6.4072703	abbreviated
+be-abbreviated-00369	Rte d'Arlon 2, 8008 Strassen	49.6178481	6.0957836	abbreviated
+be-abbreviated-00370	R. du Canal 22, 4050 Esch-sur-Alzette	49.4951857	5.9786606	abbreviated
+be-abbreviated-00371	Grand-R. 6, 9710 Clervaux	50.0534544	6.0301335	abbreviated
+be-abbreviated-00372	Bd Jules Salentiny 137, 2511 Luxembourg	49.6173683	6.1571431	abbreviated
+be-abbreviated-00373	Parc d'Activités Capellen 89D, 8308 Capellen	49.6401672	6.0074605	abbreviated
+be-abbreviated-00374	R. Wieseck 3, 8269 Mamer	49.6269649	6.0245161	abbreviated
+be-abbreviated-00375	R. du Parc 203, 3542 Dudelange	49.4857290	6.0979306	abbreviated
+be-abbreviated-00376	R. Jean Mercatoris 84, 7237 Helmsange	49.6649995	6.1432050	abbreviated
+be-abbreviated-00377	Rte de Fischbach 58, 7447 Lintgen	49.7223780	6.1301292	abbreviated
+be-abbreviated-00378	Av. des Archiducs 15, 1135 Luxembourg	49.6115097	6.1122934	abbreviated
+be-abbreviated-00379	R. de Pulvermühl 2, 2356 Luxembourg	49.6086518	6.1498060	abbreviated
+be-abbreviated-00380	R. Victor Hugo 60, 4141 Esch-sur-Alzette	49.4967793	5.9758778	abbreviated
+be-abbreviated-00381	Bd Royal 8, 2449 Luxembourg	49.6139710	6.1278441	abbreviated
+be-abbreviated-00382	R. Victor Ewen 4, 4113 Esch-sur-Alzette	49.5098080	5.9796065	abbreviated
+be-abbreviated-00383	Rte d'Arlon 128A, 8311 Capellen	49.6464578	5.9747535	abbreviated
+be-abbreviated-00384	R. de l'Ancien Athénée 2, 1144 Luxembourg	49.6098509	6.1302189	abbreviated
+be-abbreviated-00385	R. Josy Welter 36, 7256 Walferdange	49.6571433	6.1314348	abbreviated
+be-abbreviated-00386	R. Marie Muller-Tesch 19, 4250 Esch-sur-Alzette	49.5019850	5.9704440	abbreviated
+be-abbreviated-00387	R. de Bertrange 34, 8216 Mamer	49.6223412	6.0269843	abbreviated
+be-abbreviated-00388	Breedewues 2A, 1259 Senningerberg	49.6559625	6.2230321	abbreviated
+be-abbreviated-00389	Wäistr. 5D, 5450 Stadtbredimus	49.5633252	6.3706521	abbreviated
+be-abbreviated-00390	R. Waassertrap 254, 4408 Belvaux	49.5082876	5.9398259	abbreviated
+be-abbreviated-00391	R. des Champs 26C, 8053 Bertrange	49.6109888	6.0462252	abbreviated
+be-abbreviated-00392	R. General George S. Patton 23A, 4277 Esch-sur-Alzette	49.5026894	5.9760482	abbreviated
+be-abbreviated-00393	R. de Bruxelles 15, 8223 Mamer	49.6312791	6.0160934	abbreviated
+be-abbreviated-00394	Op der Heed 32, 1747 Luxembourg	49.6219218	6.1782377	abbreviated
+be-abbreviated-00395	R. de Diekirch 12, 7440 Lintgen	49.7218304	6.1243937	abbreviated
+be-abbreviated-00396	Op de Géieren 15, 4970 Sprinkange	49.5846880	5.9721333	abbreviated
+be-abbreviated-00397	R. Mauserueck 2, 3934 Mondercange	49.5409551	5.9878357	abbreviated
+be-abbreviated-00398	R. Marie Rausch-Weynand 4, 4544 Differdange	49.5200265	5.8915259	abbreviated
+be-abbreviated-00399	Op der Heed 3, 1747 Luxembourg	49.6199072	6.1778166	abbreviated
+be-typo-00400	Rue de l'Église 72, 4732 Pétange	49.5603521	5.8712526	typo
+be-typo-00401	Rue du Nord 82, 7242 Helmsnge	49.6641902	6.1375949	typo
+be-typo-00402	Rue du Commerce 15, 3540 Duldelange	49.4787936	6.0861406	typo
+be-typo-00403	Place d'Armes 5, 1136 Luxembourg	49.6110474	6.1297602	typo
+be-typo-00404	Route de Holzem 6, 8232 Mameq	49.6266851	6.0174162	typo
+be-typo-00405	Résidence Op der Héi 6, 9806 Hosingen	50.0088008	6.0880023	typo
+be-typo-00406	Wéngertswee 16, 5485 oWrmeldange-Haut	49.6081480	6.3998915	typo
+be-typo-00407	Rue Docteur Elvire Engel 5, 8346 Grass	49.6328364	5.8955145	typo
+be-typo-00408	Ruce Waassertrap 250, 4408 Belvaux	49.5078752	5.9399007	typo
+be-typo-00409	Rue Michel Weiler B1, 9091 Ettelbruck	49.8482592	6.1057944	typo
+be-typo-00410	np der Sank 4, 5713 Aspelt	49.5212533	6.2216933	typo
+be-typo-00411	Rue Michel aHck 8, 3240 Bettembourg	49.5171807	6.0950718	typo
+be-typo-00412	Op Blach 8, 3934 Mondercange	49.5401753	5.9892090	typo
+be-typo-00413	Rue de Luxembourg 16, 8184 Kopotal	49.6630379	6.0731277	typo
+be-typo-00414	Avenue du Swing 7, 4361 Belvaux	49.5019079	5.9415416	typo
+be-typo-00415	Rue de l'Étoile 21, 9229 Diekirch	49.8683134	6.1596943	typo
+be-typo-00416	Place de la Résistance 2, 4041 Esch-sur-Alzette	49.4920470	5.9766248	typo
+be-typo-00417	Place de l'Hôtel de Ville 39, 3590 Dudelange	49.4786757	6.0853242	typo
+be-typo-00418	Rue de Marcinelle 2, 4234 Esch-suf-Alzette	49.5036862	5.9639757	typo
+be-typo-00419	Alelée du Carmel 3, 1354 Luxembourg	49.6192007	6.1720511	typo
+be-typo-00420	Rue de Bourglinster 18, 6112 Jugnlinster	49.7157559	6.2471636	typo
+be-typo-00421	Esplanade 50, 9227 Diekirch	49.8695915	6.1620527	typo
+be-typo-00422	Rue de Kehlen 15, 8295 Keispelt	49.6924262	6.0664629	typo
+be-typo-00423	Rue de Belvaux 140, 4026 Esch-sur-Alzett	49.5036376	5.9696666	typo
+be-typo-00424	Rue Eugène Reichling 55, 4302 Esch-sur-Alzette	49.5133377	5.9848039	typo
+be-typo-00425	Grand-Ruxe 33, 1661 Luxembourg	49.6118662	6.1306623	typo
+be-typo-00426	Vac Sainte-Croix 155, 1371 Luxembourg	49.6121946	6.1029930	typo
+be-typo-00427	Route de Luxembourg 119, 4973 Dippach	49.5879845	5.9886436	typo
+be-typo-00428	Cité Joseph Brebsmo 39, 4046 Esch-sur-Alzette	49.5027620	5.9657587	typo
+be-typo-00429	Boulevard du Jazz 15, 4370 Belvaux	49.5032583	5.9408475	typo
+be-typo-00430	Schierenersttrooss 12, 9186 Stegen	49.8290904	6.1670603	typo
+be-typo-00431	Rue Léon Jouhaux 2, 4155 Esch-sur-Alzette	49.4996267	5.9728384	typo
+be-typo-00432	Boulevard Royal 59, 2449 Luxebmourg	49.6097437	6.1264557	typo
+be-typo-00433	Rue des Fondeurs 3, 4121 Esch-sur-Alzette	49.5040403	5.9724299	typo
+be-typo-00434	Rue des Artisans 17, 1141 Luxembourg	49.5951760	6.1089323	typo
+be-typo-00435	Rue Waasertrap 244, 4408 Belvaux	49.5072887	5.9408811	typo
+be-typo-00436	Rue Buour 2A, 7216 Bereldange	49.6575606	6.1267953	typo
+be-typo-00437	dKettegaass 24, 5680 Dalheim	49.5427384	6.2578816	typo
+be-typo-00438	Boulevard Plerre Dupong 1, 4086 Esch-sur-Alzette	49.5105714	5.9888010	typo
+be-typo-00439	Réimerwee 3, 3939 Mondercange	49.5375298	5.9918731	typo
+be-typo-00440	Duarrefstrooss 7, 9990 veiswampach	50.1394849	6.0788323	typo
+be-typo-00441	Rue Principale 89, 5367 Schuterange	49.6230483	6.2673524	typo
+be-typo-00442	Rue des Merciers 25, 6464 Echternach	49.8139369	6.4203631	typo
+be-typo-00443	Rue de Mondogf 2C, 5421 Erpeldange	49.5467342	6.3273990	typo
+be-typo-00444	Rue Robert Stumper 14, 2557 Luxemkbourg	49.5817677	6.1178664	typo
+be-typo-00445	Rue du Barrage 28, 9633 Baschleiden	49.8982927	5.8234353	typo
+be-typo-00446	Rqe John F. Kennedy 8, 4599 Differdange	49.5223817	5.8849778	typo
+be-typo-00447	Rue Dicks 19, 8085 Bertrange	49.6054402	6.0557597	typo
+be-typo-00448	Route de Kehlen 48, 8235 aMmer	49.6369712	6.0209770	typo
+be-typo-00449	Rue de l'Églcse 6, 3723 Rumelange	49.4612940	6.0277795	typo
+be-typo-00450	Rue de Montpellier 8, 4249 Esch-sur-Alzette	49.5107855	5.9907873	typo
+be-typo-00451	Avenue Nicolas Kreins 17, 9536 Wiltz	49.9671693	5.9332606	typo
+be-typo-00452	Avenue Grande-Duchesse Charlotte 84, 3440 Dudelange	49.4799890	6.0851989	typo
+be-typo-00453	Route d'Arlon 46, 8210 Mmer	49.6284139	6.0298961	typo
+be-typo-00454	Gässcheen 1, 9990 Weiswampach	50.1351513	6.0722888	typo
+be-typo-00455	Aveune du 10 septembre 14, 2550 Luxembourg	49.6094094	6.1181331	typo
+be-typo-00456	Op uder Sank 7, 5713 Aspelt	49.5216915	6.2208532	typo
+be-typo-00457	Rue de Luxembourg 237, 8077 Bertrange	49.6060334	6.0746832	typo
+be-typo-00458	Rue du Château 3, 8358 Koerich	49.6687500	5.9493500	typo
+be-typo-00459	Avenue de Luxembourg 130, 4940 Bascharage	49.5666527	5.9102676	typo
+be-typo-00460	Rue des Mérmovingiens 15, 8070 Strassen	49.6110217	6.0800326	typo
+be-typo-00461	Rue de Dangé-Saint-Romain 46y, 8260 Mamer	49.6250521	6.0314691	typo
+be-typo-00462	Am Eck 8f, 9351 Bastendorf	49.8920828	6.1655724	typo
+be-typo-00463	Rue Notre-Dame 27, 2240 Luxembourg	49.6098696	6.1287925	typo
+be-typo-00464	Rue des Égljntiers 43, 8227 Mamer	49.6310503	6.0143354	typo
+be-typo-00465	Route d'Arlon 118, 8311 Capellen	49.6464453	5.9767142	typo
+be-typo-00466	Bei der Kazebaach 25, 3945 Mondercange	49.5358440	5.9876290	typo
+be-typo-00467	Rue d'Oetrange 13, 5333 Moutfort	49.5887402	6.2554242	typo
+be-typo-00468	Allé des Charmes 3, 1372 Luxembourg	49.6325788	6.1626646	typo
+be-typo-00469	Ru Émile Reding 8, 7739 Colmar-Berg	49.8116216	6.0881652	typo
+be-typo-00470	Route de Diekirch 14, 7220 Walferdange	49.6590984	6.1312478	typo
+be-typo-00471	Rue des Trévires 61A, 2628 Luxembourg	49.6004442	6.1406627	typo
+be-typo-00472	Batzens 13, 8551 Noerdange	49.7437128	5.9188695	typo
+be-typo-00473	Op Feileschter 16, 3931 Mondercange	49.5383060	5.9837514	typo
+be-typo-00474	Op Fmileschter 14, 3931 Mondercange	49.5384634	5.9838379	typo
+be-typo-00475	Huelstrooss 28, 4980 Reckange-sur-Mess	49.5662785	6.0046692	typo
+be-typo-00476	Krautemergaass C3, 5686 Dalheim	49.5429276	6.2592212	typo
+be-typo-00477	Bohey 24, 9647 Donicols	49.9755821	5.8445521	typo
+be-typo-00478	Rue de Neuerburg 4, 2215 Luxembourg	49.6464956	6.1273467	typo
+be-typo-00479	Rue des Franciscains 24, 4125 Esch-sur-Alzette	49.5004419	5.9732348	typo
+be-typo-00480	Rue Monseigneur Fallize 15, 9655 bHarlange	49.9320858	5.7863547	typo
+be-typo-00481	Rue de Pontpierre 95, 3940 Monuercange	49.5341573	5.9995730	typo
+be-typo-00482	Rue d'Oetrange 20, 5236 Sandweiler	49.6131234	6.2276700	typo
+be-typo-00483	Boulevard Royal 17, 2449 Laxembourg	49.6136328	6.1281791	typo
+be-typo-00484	Résidence p der Héi 4, 9806 Hosingen	50.0088010	6.0878001	typo
+be-typo-00485	Rue Mauserueck 23, 3934 Mondercange	49.5401531	5.9905480	typo
+be-typo-00486	Rue d'Esch 29, 3835 Schifflange	49.5028757	5.9998669	typo
+be-typo-00487	Op der Héicht 5, 9644 Dalh	49.9348444	5.9776462	typo
+be-typo-00488	Chaussée Blanche 12A, 8014 Strssen	49.6233059	6.0645333	typo
+be-typo-00489	Rue Josep Massarette 23, 2137 Luxembourg	49.6171461	6.1607623	typo
+be-typo-00490	Rue des Martyrs 61, 3739 Rumelange	49.4539621	6.0278964	typo
+be-typo-00491	Rue de Steinsel 31, 7254 Bereldange	49.6588364	6.1270305	typo
+be-typo-00492	Allée Léopold Goebel 105, 1635 Luxembourg	49.6120592	6.1079994	typo
+be-typo-00493	Avenue John F. Kennedy 29, 1855 Luxembourg	49.6256298	6.1599534	typo
+be-typo-00494	Avenue Vkictor Hugo 30, 1750 Luxembourg	49.6195948	6.1237214	typo
+be-typo-00495	Rue Auguste Charles 21, 1326 Luxembourg	49.5986184	6.1392633	typo
+be-typo-00496	Graxd-Rue 31, 9530 Wiltz	49.9653353	5.9361146	typo
+be-typo-00497	Rue Auguste Trémont 55, 2624 Luxembourg	49.6221132	6.1722066	typo
+be-typo-00498	Route de Thioville 361, 5885 Hesperange	49.5738258	6.1547960	typo
+be-typo-00499	Rue Saint-Michel 9, 5637 Mondorf-les-Bains	49.5057364	6.2710229	typo
+be-typo-00500	Avenue Frantz Clément 38, 5612 Mondorf-les-Bains	49.5042906	6.2752992	typo
+be-typo-00501	Um Goldbierchen 1, 5720 Aspelt	49.5189557	6.2240794	typo
+be-typo-00502	Rue de Dippach 155, 8055 Bertrange	49.6002045	6.0507789	typo
+be-typo-00503	Rue Schauwenburg 15, 8092 Bertraneg	49.6079057	6.0493978	typo
+be-typo-00504	Allée Léopold Goebel 101, 1635 Luxembour	49.6120751	6.1081745	typo
+be-typo-00505	Rue de Londres 9, 8223 Mamer	49.6312602	6.0174760	typo
+be-typo-00506	Rue de Linger 10, 4755 Pétange	49.5610189	5.8740700	typo
+be-typo-00507	bRue du Chemin de Fer 15, 5351 Oetrange	49.6017007	6.2574992	typo
+be-typo-00508	Schoulstrooss 16, 5716 Aspelt	49.5233847	6.2261414	typo
+be-typo-00509	Rue des Prunelles 29, 2353 Luxembourg	49.5890824	6.1041744	typo
+be-typo-00510	Rue de Dippach 31, 8055 Bertrange	49.6080428	6.0482021	typo
+be-typo-00511	Um Grousbuer 38, 5373 Schuttrange	49.6185128	6.2637216	typo
+be-typo-00512	Rue Eugène Reichling 27, 4302 Esch-sur-Alzette	49.5123494	5.9855390	typo
+be-typo-00513	Groussgaass 1, 5721 Aspelt	49.5245555	6.2240372	typo
+be-typo-00514	Rue du Château 24B, 9146 Erpeldange-suw-Sûre	49.8635455	6.1117968	typo
+be-typo-00515	Rue de Luxembourg 12, 3360 eLudelange	49.5625645	6.0676008	typo
+be-typo-00516	Moetnelsergaass 4, 9653 Goesdorf	49.9208831	5.9662374	typo
+be-typo-00517	Rue de Steinsel 90, 7254 Bereldange	49.6611718	6.1245273	typo
+be-typo-00518	Rue de Longwy 33y, 4610 Niederkorn	49.5343882	5.8886754	typo
+be-typo-00519	Rue de la Fontaine 4A, 4996 Schouweiler	49.5813681	5.9544817	typo
+be-typo-00520	Rue de Trèves 13, 2632 Findel	49.6300916	6.2058620	typo
+be-typo-00521	Rue Bierg 15, 9656 Harlange	49.9301434	5.7924284	typo
+be-typo-00522	Bohey 24, 9647 Doncols	49.9755567	5.8445479	typo
+be-typo-00523	Grand-Rue 6, 5671 Altwies	49.5112950	6.2559816	typo
+be-typo-00524	Rue de Raemerich 18, 4310 Esch-sur-Alzette	49.5101467	5.9520436	typo
+be-typo-00525	Rue Glesener 55, 1631 Luxembourg	49.6015110	6.1288000	typo
+be-typo-00526	Boulevxard Jules Salentiny 23, 2511 Luxembourg	49.6156227	6.1577775	typo
+be-typo-00527	Route de Longwy 80, 8060 Bertrange	49.6020832	6.0653463	typo
+be-typo-00528	Am Duerf 24, 9838 Eisenbach	50.0009230	6.1445197	typo
+be-typo-00529	Rue d'Oetrange 84, 5411 Cnaach	49.6082895	6.3161928	typo
+be-typo-00530	Rue de la Tour Jacob 147, 1831 Luxmbourg	49.6112063	6.1409694	typo
+be-typo-00531	Rue Iecker 15, 8074 Bertrange	49.6078980	6.0503131	typo
+be-typo-00532	Rue Jos Paquet 5, 5872 Alzingein	49.5737183	6.1642884	typo
+be-typo-00533	Gradn-Rue 35, 8510 Redange	49.7638501	5.8862663	typo
+be-typo-00534	Rue Mauserupck 13, 3934 Mondercange	49.5406710	5.9892863	typo
+be-typo-00535	Rue du Nord 24qA, 3261 Bettembourg	49.5210871	6.1010250	typo
+be-typo-00536	Rue Neuvt 16, 3938 Mondercange	49.5366330	5.9886606	typo
+be-typo-00537	Rue d'Oetrange 14, 5360 Schrassig	49.6078543	6.2583037	typo
+be-typo-00538	Cité Steeen 4, 9993 Weiswampach	50.1365525	6.0791992	typo
+be-typo-00539	Rue de Luxembourt 47, 3360 Leudelange	49.5639382	6.0717299	typo
+be-typo-00540	Rue Mathias Hertert 1, 1729 Luxwmbourg	49.6469829	6.1274446	typo
+be-typo-00541	Boulevard des Lumières 4, 4360 Esch-sus-Alzette	49.5042299	5.9475081	typo
+be-typo-00542	Cité Jean François Léonard Alexandre de Colnet 12, 8061 Bertrange	49.6017102	6.0514966	typo
+be-typo-00543	Rue de Lxuembourg 3, 8440 Steinfort	49.6597810	5.9154444	typo
+be-typo-00544	Rue Vsctor Ewen 6, 4113 Esch-sur-Alzette	49.5096582	5.9804191	typo
+be-typo-00545	Op der Heed 36, 1747 Luxembourg	49.6221717	6.1781613	typo
+be-typo-00546	Route de Luxembourg 7, 6210 Consdorf	49.7788877	6.3377963	typo
+be-typo-00547	Roqte d'Arlon 61A, 8009 Strassen	49.6178801	6.0872126	typo
+be-typo-00548	Op de Géieren 17, 4970 Srinkange	49.5847402	5.9720270	typo
+be-typo-00549	Rue Rham 13, 6134 Junglisnter	49.7109514	6.2491394	typo
+be-typo-00550	Cité Millewee 29, 8064 Bertrange	49.6189308	6.0515151	typo
+be-typo-00551	Biirkelterstroosk 11, 6552 Berdorf	49.8251142	6.3549779	typo
+be-typo-00552	Rue de Leudelange 89A, 8079 vBertrange	49.6069719	6.0515474	typo
+be-typo-00553	Cité Hooch 10, 9980 Wilwerdange	50.1414966	6.0191088	typo
+be-typo-00554	Résidence Michel Rasquin 4, 4301 Esch-sur-Alzette	49.5109249	5.9930069	typo
+be-typo-00555	Reckenthal 101, 2410 Srtassen	49.6243123	6.0944092	typo
+be-typo-00556	Rue Adolphe Weis 36, 7260 Bereldaneg	49.6617638	6.1231304	typo
+be-typo-00557	Rue du Saint-Esprit 7, 1475 Luxembourg	49.6085585	6.1334382	typo
+be-typo-00558	Rue d'Esch 80, 3921 sMondercange	49.5251131	5.9896551	typo
+be-typo-00559	Avenue Gordon T. Smith 3, 7740 Colmar-Berg	49.8111055	6.0965817	typo
+be-typo-00560	Rue du Cietière 2, 9356 Bettendorf	49.8768313	6.2167350	typo
+be-typo-00561	Route de Diekirch 132A, 7220 Helmsagne	49.6677562	6.1351764	typo
+be-typo-00562	Am Rousgeärtchen 32, 3924 Mondercange	49.5268320	5.9871897	typo
+be-typo-00563	Engelsgaass 10, 5681 Dalheim	49.5441378	6.2570777	typo
+be-typo-00564	Route d'Arlon 87, 8211 Mamer	49.6322056	6.0200028	typo
+be-typo-00565	Esplanade 14, 9227 Diekirch	49.8699578	6.1593715	typo
+be-typo-00566	Rue de la Gare 65, 4999 Sprinkange	49.5743586	5.9613195	typo
+be-typo-00567	Val Sainte-Croix 3A, 1371 Luxeubourg	49.6131150	6.1161774	typo
+be-typo-00568	Rue du eNord 3, 7242 Helmsange	49.6597546	6.1369480	typo
+be-typo-00569	Grand-Rue 59, 6310 Beaufort	49.8370721	6.2904665	typo
+be-typo-00570	Parc d'Activités Capellen 89F, 8308 kCapellen	49.6402258	6.0080328	typo
+be-typo-00571	An Ditetr 10B, 8076 Bertrange	49.6008596	6.0713851	typo
+be-typo-00572	Allée du Carmel 23, 1354 Lrxembourg	49.6212063	6.1742544	typo
+be-typo-00573	Boulevard Pierre Frieden 12, 1543 Luhxembourg	49.6354448	6.1607799	typo
+be-typo-00574	Cité Am Wénkel 27, 8086 Bretrange	49.6132703	6.0453929	typo
+be-typo-00575	Rue du aCanal 3, 4050 Esch-sur-Alzette	49.4952929	5.9803685	typo
+be-typo-00576	Am Happgaart 39, 5239 Sandweile	49.6157688	6.2128453	typo
+be-typo-00577	Route d'Axrlon 184, 8010 Strassen	49.6211535	6.0680059	typo
+be-typo-00578	Rue du Cimetière 3, 5214 Sandweiler	49.6170642	6.2185122	typo
+be-typo-00579	Rue deo Artisans 3, 1141 Luxembourg	49.5947487	6.1096684	typo
+be-typo-00580	Rue de Luxembourg 237, 4222 Esch-sur-Alzette	49.5097019	5.9897495	typo
+be-typo-00581	Avenue des Bains 17, 5610 Mondorf-les-Bains	49.5031350	6.2802555	typo
+be-typo-00582	Rue Waassertrap 123, 4408 Belvgaux	49.5084195	5.9367628	typo
+be-typo-00583	Rue Marie-Jeanne Birckel 18, 8241 cMamer	49.6234608	6.0094701	typo
+be-typo-00584	Route de Diekirch 130B, 7220 Helmsunge	49.6671690	6.1352923	typo
+be-typo-00585	Rue de l'École 7, 5465 Waldbredimus	49.5561845	6.2880208	typo
+be-typo-00586	Place des Sacrifiés 1940-1945 1, 4115 Esch-sur-Alzette	49.4995462	5.9774544	typo
+be-typo-00587	Rue Schauwenburg 52, 8092 Bertrange	49.6072795	6.0491204	typo
+be-typo-00588	Um Bëschelkchen 2, 8362 Grass	49.6310720	5.8931653	typo
+be-typo-00589	Avenue de la Liberté 167, 4602 Niederkorn	49.5323732	5.8912107	typo
+be-typo-00590	Rue des Champs 29, 3912 Mondercange	49.5269962	5.9916893	typo
+be-typo-00591	Rue Émile Mark 35, 4620 Differdange	49.5228864	5.8910662	typo
+be-typo-00592	Rue Gustave Loosé 23, 8346 Grass	49.6321382	5.8926094	typo
+be-typo-00593	Reu du Canal 22, 4050 Esch-sur-Alzette	49.4951857	5.9786606	typo
+be-typo-00594	Avenue de Luxembourg 38A, 4950 Bascharage	49.5629718	5.9022026	typo
+be-typo-00595	Rue du Château 28, 9516 Witz	49.9663117	5.9353652	typo
+be-typo-00596	Rue Waassertrap 84, 4408 Belvfaux	49.5082096	5.9347860	typo
+be-typo-00597	Rue de Koerich 2, 8399 Windof	49.6478612	5.9556822	typo
+be-typo-00598	Val Sainte-Croix 171, 1371 Luxembourg	49.6121712	6.1020542	typo
+be-typo-00599	Rue de Belvaux 203, 4026 Esch-sur-Alzette	49.5041913	5.9637314	typo
+be-reordered-00600	1521 Luxembourg Rue Adolphe Fischer 110	49.6006313	6.1277329	reordered
+be-reordered-00601	4222 Esch-sur-Alzette Rue de Luxembourg 195	49.5083726	5.9892024	reordered
+be-reordered-00602	8067 Bertrange Rue Hiel 18	49.6122811	6.0543585	reordered
+be-reordered-00603	9205 Diekirch Rue Saint-Antoine 5	49.8693225	6.1592591	reordered
+be-reordered-00604	8279 Holzem Neiewee 6	49.6144911	5.9880830	reordered
+be-reordered-00605	1159 Luxembourg Rue d'Avalon 2	49.6318513	6.1609722	reordered
+be-reordered-00606	2557 Luxembourg Rue Robert Stumper 10	49.5823633	6.1175979	reordered
+be-reordered-00607	9990 Weiswampach Bréidelterweeg 24	50.1334461	6.0704020	reordered
+be-reordered-00608	8069 Bertrange Rue de l'Industrie 3A	49.6131388	6.0611559	reordered
+be-reordered-00609	6794 Grevenmacher Route du Vin 20	49.6767802	6.4430469	reordered
+be-reordered-00610	6460 Echternach Place du Marché 38	49.8128594	6.4202613	reordered
+be-reordered-00611	4601 Differdange Avenue de la Liberté 13	49.5235187	5.8886715	reordered
+be-reordered-00612	5423 Ersange Route de Remich 19	49.5753648	6.2784030	reordered
+be-reordered-00613	8393 Olm Rue de Capellen 55	49.6505655	5.9941790	reordered
+be-reordered-00614	5481 Wormeldange Rue du Cimetière 5	49.6113547	6.4062926	reordered
+be-reordered-00615	8215 Mamer Rue Bellevue 10	49.6244959	6.0266643	reordered
+be-reordered-00616	8260 Mamer Rue de Dangé-Saint-Romain 32	49.6252226	6.0327334	reordered
+be-reordered-00617	7260 Bereldange Rue Adolphe Weis 13	49.6624249	6.1240504	reordered
+be-reordered-00618	4646 Niederkorn Rue Saint-Pierre 1A	49.5373129	5.8896400	reordered
+be-reordered-00619	5628 Mondorf-les-Bains Avenue Frères Wiesenbach 1	49.5046377	6.2766707	reordered
+be-reordered-00620	4347 Esch-sur-Alzette Rue Docteur Michel Welter 12	49.5034704	5.9717003	reordered
+be-reordered-00621	1855 Luxembourg Avenue John F. Kennedy 44	49.6314382	6.1716648	reordered
+be-reordered-00622	2311 Luxembourg Avenue Pasteur 49A	49.6190120	6.1192609	reordered
+be-reordered-00623	2632 Findel Route de Trèves	49.6332429	6.2099375	reordered
+be-reordered-00624	9452 Bettel Kierchestrooss 69B	49.9127681	6.2264511	reordered
+be-reordered-00625	4155 Esch-sur-Alzette Rue Léon Jouhaux 16	49.5007119	5.9726379	reordered
+be-reordered-00626	2630 Luxembourg Rue de Trèves 238	49.6161742	6.1641649	reordered
+be-reordered-00627	7249 Bereldange Rue des Roses 13	49.6576645	6.1231494	reordered
+be-reordered-00628	7733 Colmar-Berg Rue de Luxembourg 57	49.8072519	6.0945253	reordered
+be-reordered-00629	8184 Kopstal Rue de Luxembourg 16	49.6630379	6.0731277	reordered
+be-reordered-00630	5711 Aspelt Um Flouer 18A	49.5221397	6.2299639	reordered
+be-reordered-00631	8221 Mamer Rue Cunégonde 6	49.6314886	6.0241856	reordered
+be-reordered-00632	8310 Capellen Route d'Arlon 11	49.6435536	5.9945692	reordered
+be-reordered-00633	3833 Schifflange Rue de l'Église 6	49.5040639	6.0101596	reordered
+be-reordered-00634	4046 Esch-sur-Alzette Cité Joseph Brebsom 19	49.5032405	5.9656138	reordered
+be-reordered-00635	1131 Luxembourg Rue Antoine 5	49.5855591	6.0997528	reordered
+be-reordered-00636	8055 Bertrange Rue de Dippach 126	49.6030901	6.0497395	reordered
+be-reordered-00637	4818 Rodange Avenue Docteur Gaasch 39	49.5486567	5.8429055	reordered
+be-reordered-00638	8551 Noerdange Schweecherdaulerstrooss 10	49.7401430	5.9242081	reordered
+be-reordered-00639	4980 Reckange-sur-Mess Huelstrooss 36	49.5665086	6.0042817	reordered
+be-reordered-00640	9906 Troisvierges Rue de la Gare 26	50.1192672	5.9918421	reordered
+be-reordered-00641	9993 Weiswampach Cité Kiämmel 6	50.1379982	6.0787931	reordered
+be-reordered-00642	3945 Mondercange Bei der Kazebaach 46	49.5366817	5.9875365	reordered
+be-reordered-00643	8260 Mamer Rue de Dangé-Saint-Romain 6	49.6256322	6.0343405	reordered
+be-reordered-00644	2511 Luxembourg Boulevard Jules Salentiny 115	49.6170399	6.1564410	reordered
+be-reordered-00645	5712 Aspelt Kierfechtstrooss 11B	49.5218991	6.2223843	reordered
+be-reordered-00646	1321 Luxembourg Rue de Cessange 265	49.5862000	6.1006231	reordered
+be-reordered-00647	4234 Esch-sur-Alzette Rue de Marcinelle 10	49.5040620	5.9633060	reordered
+be-reordered-00648	4110 Esch-sur-Alzette Place de l'Exposition 7	49.5091952	5.9842259	reordered
+be-reordered-00649	3929 Mondercange An der Kehl 8	49.5272756	5.9836581	reordered
+be-reordered-00650	1146 Luxembourg Rue Ausone 4	49.5906726	6.1045819	reordered
+be-reordered-00651	3924 Mondercange Am Rousegärtchen 3	49.5277213	5.9860357	reordered
+be-reordered-00652	8008 Strassen Route d'Arlon 118	49.6196419	6.0785886	reordered
+be-reordered-00653	8014 Strassen Chaussée Blanche 63A	49.6281224	6.0619301	reordered
+be-reordered-00654	2626 Luxembourg Rue Mathias Tresch 20	49.6365879	6.1699241	reordered
+be-reordered-00655	8443 Steinfort Square General George S. Patton 5	49.6592815	5.9133553	reordered
+be-reordered-00656	4125 Esch-sur-Alzette Rue des Franciscains 24	49.5004419	5.9732348	reordered
+be-reordered-00657	3928 Mondercange An Arzemt 1	49.5286071	5.9857696	reordered
+be-reordered-00658	5481 Wormeldange Krunnergaass 4	49.6117988	6.4065957	reordered
+be-reordered-00659	4408 Belvaux Rue Waassertrap 227	49.5074101	5.9401655	reordered
+be-reordered-00660	1839 Luxembourg Rue Joseph Junck 29	49.6007023	6.1305748	reordered
+be-reordered-00661	5312 Contern Rue du Kroentgeshof 18	49.5878683	6.2237774	reordered
+be-reordered-00662	3944 Mondercange Cité Jacques Steichen 4	49.5199820	5.9859737	reordered
+be-reordered-00663	2215 Luxembourg Rue de Neuerburg 16	49.6465320	6.1262031	reordered
+be-reordered-00664	3936 Mondercange Op Féilëschterkëppchen 33	49.5399360	5.9842533	reordered
+be-reordered-00665	3940 Mondercange Rue de Pontpierre 70	49.5338723	5.9973960	reordered
+be-reordered-00666	5231 Sandweiler Rue d'Itzig 25A	49.6150365	6.2215317	reordered
+be-reordered-00667	8389 Grass Rue Luss Arendt 16	49.6325942	5.8903699	reordered
+be-reordered-00668	8227 Mamer Rue des Églantiers 32	49.6319374	6.0147659	reordered
+be-reordered-00669	57570 Mondorff Rue Saint-Christophe 9	49.5041905	6.2742515	reordered
+be-reordered-00670	6440 Echternach Rue de la Gare 49	49.8149549	6.4174483	reordered
+be-reordered-00671	2160 Luxembourg Rue Munster 1	49.6085014	6.1351604	reordered
+be-reordered-00672	3676 Kayl Rue de Schifflange 175	49.4994735	6.0370623	reordered
+be-reordered-00673	4602 Niederkorn Avenue de la Liberté 165	49.5323110	5.8912270	reordered
+be-reordered-00674	1283 Luxembourg Rue Simone de Beauvoir 5C	49.6334388	6.1607736	reordered
+be-reordered-00675	2412 Howald Rangwee 3	49.5888527	6.1414753	reordered
+be-reordered-00676	1750 Luxembourg Avenue Victor Hugo 36	49.6198258	6.1233399	reordered
+be-reordered-00677	5222 Sandweiler Am Steffesgaart 35	49.6138899	6.2239587	reordered
+be-reordered-00678	8069 Bertrange Rue de l'Industrie 28A	49.6110861	6.0727379	reordered
+be-reordered-00679	1131 Luxembourg Rue Antoine 1	49.5858634	6.0998896	reordered
+be-reordered-00680	3510 Dudelange Rue de la Libération 4	49.4778135	6.0846504	reordered
+be-reordered-00681	9991 Weiswampach Gruuss-Strooss 3	50.1375118	6.0811622	reordered
+be-reordered-00682	2665 Luxembourg Rue du Verger 20	49.6022407	6.1383650	reordered
+be-reordered-00683	5710 Aspelt Péiter-vun-Uespelt-Strooss 22A	49.5232003	6.2240850	reordered
+be-reordered-00684	6440 Echternach Rue de la Gare 49	49.8150385	6.4173213	reordered
+be-reordered-00685	3364 Leudelange Rue de la Poudrerie 21	49.5637592	6.0782593	reordered
+be-reordered-00686	5680 Dalheim Kloosgaass 14	49.5452638	6.2607208	reordered
+be-reordered-00687	1321 Luxembourg Rue de Cessange 237	49.5867616	6.1026819	reordered
+be-reordered-00688	3910 Mondercange Rue des Bois 26	49.5409723	5.9865764	reordered
+be-reordered-00689	6868 Wecker-Gare Am Scheerleck 19	49.7000123	6.3911061	reordered
+be-reordered-00690	1747 Luxembourg Op der Heed 19	49.6207353	6.1777090	reordered
+be-reordered-00691	5741 Filsdorf Lëtzebuergerstrooss 23	49.5356150	6.2441533	reordered
+be-reordered-00692	6170 Godbrange Rue du Village 24	49.7339767	6.2290251	reordered
+be-reordered-00693	4086 Esch-sur-Alzette Boulevard Pierre Dupong 4	49.5108303	5.9894639	reordered
+be-reordered-00694	4036 Esch-sur-Alzette Rue du Bois 14	49.5005921	5.9677459	reordered
+be-reordered-00695	2510 Strassen Rue Kaltacht 5	49.6194536	6.0912550	reordered
+be-reordered-00696	3373 Leudelange Domaine Schmiseleck 15	49.5690941	6.0659085	reordered
+be-reordered-00697	3939 Mondercange Parkstrooss 11	49.5383105	5.9903072	reordered
+be-reordered-00698	7218 Helmsange Rue des Champs 56	49.6583027	6.1399868	reordered
+be-reordered-00699	2511 Luxembourg Boulevard Jules Salentiny 86	49.6172016	6.1583455	reordered
+be-reordered-00700	2733 Luxembourg Rue Wiltheim 10	49.6118031	6.1340678	reordered
+be-reordered-00701	4346 Esch-sur-Alzette Rue Batty Weber 13	49.5031942	5.9667077	reordered
+be-reordered-00702	3944 Mondercange Cité Jacques Steichen 28	49.5206976	5.9852941	reordered
+be-reordered-00703	9806 Hosingen Résidence Al Post 10	50.0133543	6.0894748	reordered
+be-reordered-00704	6645 Wasserbillig Rue des Pépinières 4	49.7148155	6.5037503	reordered
+be-reordered-00705	7457 Lintgen Rue des Vergers 10	49.7199703	6.1268200	reordered
+be-reordered-00706	1738 Luxembourg Rue Luc Housse 13	49.5959251	6.1094540	reordered
+be-reordered-00707	5485 Wormeldange-Haut Hiel 26A	49.6111158	6.3999867	reordered
+be-reordered-00708	1750 Luxembourg Avenue Victor Hugo 36	49.6198258	6.1233399	reordered
+be-reordered-00709	4201 Esch-sur-Alzette Rue de Lallange 10	49.5109129	5.9913756	reordered
+be-reordered-00710	3939 Mondercange Réimerwee 21	49.5388156	5.9903585	reordered
+be-reordered-00711	1882 Luxembourg Rue Guillaume J. Kroll 12A	49.5792025	6.1118605	reordered
+be-reordered-00712	1534 Luxembourg Rue de la Forêt 62	49.5874779	6.1002886	reordered
+be-reordered-00713	4361 Belvaux Avenue du Swing 7	49.5019079	5.9415416	reordered
+be-reordered-00714	7741 Colmar-Berg Rue Schantz 9A	49.8158626	6.0870885	reordered
+be-reordered-00715	9964 Huldange Op d'Schmëtt 16	50.1817160	6.0239049	reordered
+be-reordered-00716	1934 Luxembourg Rue de Leudelange 1	49.5854254	6.0990214	reordered
+be-reordered-00717	4013 Esch-sur-Alzette Rue de l'Acier 6	49.5038968	5.9717793	reordered
+be-reordered-00718	2310 Luxembourg Avenue Pasteur 66	49.6203728	6.1191395	reordered
+be-reordered-00719	8210 Mamer Route d'Arlon 92	49.6307666	6.0240700	reordered
+be-reordered-00720	4033 Esch-sur-Alzette Rue Nicolas Biever 8	49.5031455	5.9792126	reordered
+be-reordered-00721	7242 Helmsange Rue du Nord 26	49.6611750	6.1371330	reordered
+be-reordered-00722	4135 Esch-sur-Alzette Rue Saint-Henri 6	49.5011500	5.9735760	reordered
+be-reordered-00723	5899 Syren Rue de Hassel 3	49.5649252	6.2196031	reordered
+be-reordered-00724	1132 Luxembourg Place Jeanne d'Arc 1	49.5969232	6.1485072	reordered
+be-reordered-00725	2137 Luxembourg Rue Joseph Massarette 28	49.6173631	6.1602587	reordered
+be-reordered-00726	2215 Luxembourg Rue de Neuerburg 12	49.6465005	6.1267752	reordered
+be-reordered-00727	9091 Ettelbruck Rue Michel Weiler 1B	49.8482592	6.1057944	reordered
+be-reordered-00728	3936 Mondercange Op Féilëschterkëppchen 28	49.5406599	5.9842394	reordered
+be-reordered-00729	8241 Mamer Rue Marie-Jeanne Birckel 23	49.6227674	6.0095290	reordered
+be-reordered-00730	1243 Luxembourg Rue Félix de Blochausen 1	49.6008114	6.1383291	reordered
+be-reordered-00731	8046 Strassen Rue de la Vallée 2A	49.6198325	6.0789969	reordered
+be-reordered-00732	8086 Bertrange Cité Am Wénkel 43	49.6127811	6.0455626	reordered
+be-reordered-00733	5627 Mondorf-les-Bains Avenue Lou Hemmer 11	49.5057513	6.2756935	reordered
+be-reordered-00734	1371 Luxembourg Val Sainte-Croix 3	49.6131110	6.1159020	reordered
+be-reordered-00735	3943 Mondercange Rue de Reckange 31	49.5353153	5.9905545	reordered
+be-reordered-00736	4508 Differdange Place des Alliés 10	49.5203464	5.8990762	reordered
+be-reordered-00737	8245 Mamer Rue de la Libération 40	49.6284684	6.0258615	reordered
+be-reordered-00738	1283 Luxembourg Rue Simone de Beauvoir 9A	49.6341434	6.1609114	reordered
+be-reordered-00739	8217 Mamer Rue Op Bierg 67	49.6238726	6.0301586	reordered
+be-reordered-00740	1259 Senningerberg Breedewues 8	49.6549155	6.2200131	reordered
+be-reordered-00741	5328 Medingen Rue de la Chapelle 18	49.5756324	6.2467466	reordered
+be-reordered-00742	4046 Esch-sur-Alzette Cité Joseph Brebsom 39	49.5027620	5.9657587	reordered
+be-reordered-00743	1534 Luxembourg Rue de la Forêt 25	49.5885892	6.1050156	reordered
+be-reordered-00744	3945 Mondercange Bei der Kazebaach 28	49.5358679	5.9867455	reordered
+be-reordered-00745	1220 Luxembourg Rue de Beggen 208	49.6474778	6.1281286	reordered
+be-reordered-00746	6550 Berdorf Rue d'Echternach 89	49.8198964	6.3591142	reordered
+be-reordered-00747	5240 Sandweiler Rue Principale 35A	49.6163144	6.2199688	reordered
+be-reordered-00748	9079 Ettelbruck Rue Eugène Simon 15	49.8447649	6.0868936	reordered
+be-reordered-00749	1729 Luxembourg Rue Mathias Hertert 11	49.6474014	6.1272273	reordered
+be-reordered-00750	5711 Aspelt Um Flouer 3	49.5213486	6.2265864	reordered
+be-reordered-00751	3943 Mondercange Rue de Reckange 37	49.5361960	5.9909268	reordered
+be-reordered-00752	1469 Luxembourg Rue Ermesinde 90	49.6217990	6.1217018	reordered
+be-reordered-00753	5241 Sandweiler Rue Principale 54C	49.6138195	6.2254536	reordered
+be-reordered-00754	2680 Luxembourg Rue de Vianden 40	49.6048610	6.1149539	reordered
+be-reordered-00755	8077 Bertrange Rue de Luxembourg 18	49.6112121	6.0534760	reordered
+be-reordered-00756	7526 Mersch Allée John W. Leonard 13	49.7572242	6.1028820	reordered
+be-reordered-00757	4243 Esch-sur-Alzette Rue Jean-Pierre Michels 26	49.5016181	5.9773672	reordered
+be-reordered-00758	8085 Bertrange Rue Dicks 10A	49.6058314	6.0534525	reordered
+be-reordered-00759	3855 Schifflange Cité Émile Mayrisch 18A	49.5055307	6.0028835	reordered
+be-reordered-00760	8053 Bertrange Rue des Aubépines 25	49.6101993	6.0457991	reordered
+be-reordered-00761	8057 Bertrange Rue du Chemin de Fer 21	49.6145197	6.0572576	reordered
+be-reordered-00762	1243 Luxembourg Rue Félix de Blochausen 1	49.6008114	6.1383291	reordered
+be-reordered-00763	9079 Ettelbruck Rue Eugène Simon 15	49.8447649	6.0868936	reordered
+be-reordered-00764	1831 Luxembourg Rue de la Tour Jacob 145	49.6112327	6.1413496	reordered
+be-reordered-00765	3933 Mondercange Rue Kiemel 16	49.5276507	5.9826558	reordered
+be-reordered-00766	5482 Wormeldange Remeschter 2	49.6122837	6.4065059	reordered
+be-reordered-00767	5366 Munsbach Rue Principale 158	49.6283329	6.2684854	reordered
+be-reordered-00768	7230 Helmsange Rue Prince Henri 49	49.6595787	6.1395984	reordered
+be-reordered-00769	8069 Bertrange Rue de l'Industrie 3	49.6131739	6.0610416	reordered
+be-reordered-00770	6834 Biwer Kiirchestrooss 33B	49.7063297	6.3716288	reordered
+be-reordered-00771	3922 Mondercange Rue d'Esch 141	49.5203299	5.9862614	reordered
+be-reordered-00772	1747 Luxembourg Op der Heed 40	49.6222189	6.1775901	reordered
+be-reordered-00773	2240 Luxembourg Rue Notre-Dame 29	49.6098649	6.1286276	reordered
+be-reordered-00774	4150 Esch-sur-Alzette Rue de l'Industrie 20	49.4925204	5.9787415	reordered
+be-reordered-00775	5239 Sandweiler Am Happgaart 8A	49.6138758	6.2112243	reordered
+be-reordered-00776	5239 Sandweiler Am Happgaart 45	49.6158775	6.2132856	reordered
+be-reordered-00777	6630 Wasserbillig Grand-Rue 3	49.7135060	6.4987362	reordered
+be-reordered-00778	6450 Echternach Route de Luxembourg 37	49.8097708	6.4143574	reordered
+be-reordered-00779	1729 Luxembourg Rue Mathias Hertert 13	49.6475456	6.1271630	reordered
+be-reordered-00780	9770 Rumlange Op der Baach 40A	50.0786577	5.9785790	reordered
+be-reordered-00781	2624 Luxembourg Rue Auguste Trémont 49	49.6220437	6.1719155	reordered
+be-reordered-00782	1220 Luxembourg Rue de Beggen 216	49.6478234	6.1281044	reordered
+be-reordered-00783	1146 Luxembourg Rue Ausone 55	49.5897873	6.1020465	reordered
+be-reordered-00784	5445 Schengen Wäistrooss 76	49.4704156	6.3634459	reordered
+be-reordered-00785	8510 Redange Grand-Rue 37	49.7638716	5.8858720	reordered
+be-reordered-00786	8277 Holzem Route de Garnich 37	49.6129272	5.9887276	reordered
+be-reordered-00787	8086 Bertrange Cité Am Wénkel 28	49.6132939	6.0455719	reordered
+be-reordered-00788	8233 Mamer Rue des Jardins 16B	49.6251721	6.0196627	reordered
+be-reordered-00789	7232 Bereldange Rue des Jardins 15	49.6500270	6.1240729	reordered
+be-reordered-00790	3943 Mondercange Rue de Reckange 25	49.5349355	5.9899162	reordered
+be-reordered-00791	4646 Niederkorn Rue Saint-Pierre 38	49.5371565	5.8917858	reordered
+be-reordered-00792	1545 Luxembourg Rue Henri Frommes 4	49.6164757	6.1575484	reordered
+be-reordered-00793	8079 Bertrange Rue de Leudelange 54A	49.6074148	6.0509879	reordered
+be-reordered-00794	1617 Luxembourg Rue de Gasperich 66	49.5928889	6.1203525	reordered
+be-reordered-00795	5485 Wormeldange-Haut Op der Uet 4	49.6109724	6.4005607	reordered
+be-reordered-00796	7254 Bereldange Rue de Steinsel 90	49.6611718	6.1245273	reordered
+be-reordered-00797	3348 Leudelange Rue des Champs 21	49.5715532	6.0665011	reordered
+be-reordered-00798	6833 Biwer Haaptstrooss 72	49.7040480	6.3742361	reordered
+be-reordered-00799	1528 Luxembourg Boulevard de la Foire 36	49.6163482	6.1251757	reordered
+be-partial-00800	Rue de Leudelange 54B, Bertrange	49.6073290	6.0510185	partial
+be-partial-00801	Rue de Dangé-Saint-Romain 109, Mamer	49.6229205	6.0265307	partial
+be-partial-00802	Rue Principale 40, Folschette	49.8146742	5.8732359	partial
+be-partial-00803	Route Principale 12, Lintgen	49.7197816	6.1257495	partial
+be-partial-00804	Cité Joseph Brebsom 9, Esch-sur-Alzette	49.5033544	5.9656245	partial
+be-partial-00805	Cité Am Wénkel 69, Bertrange	49.6117533	6.0457024	partial
+be-partial-00806	Rue de Contern 8A, Itzig	49.5855162	6.1727715	partial
+be-partial-00807	Allée Léopold Goebel 73, Luxembourg	49.6122512	6.1101283	partial
+be-partial-00808	Route d'Esch 70, Luxembourg	49.6016688	6.1194622	partial
+be-partial-00809	Op Laangert 21A, Aspelt	49.5174737	6.2245107	partial
+be-partial-00810	Rue d'Esch 127, Mondercange	49.5211116	5.9865366	partial
+be-partial-00811	Route de Luxembourg 47, Pétange	49.5571272	5.8812729	partial
+be-partial-00812	Op der Heed 36, Luxembourg	49.6221717	6.1781613	partial
+be-partial-00813	Rue Auguste Liesch 19, Bertrange	49.6080929	6.0575929	partial
+be-partial-00814	An der Bréck 24A, Erpeldange	49.9796543	5.9477785	partial
+be-partial-00815	Rue des Champs 37, Kehlen	49.6634042	6.0369796	partial
+be-partial-00816	Cité Steen 42, Weiswampach	50.1379576	6.0795992	partial
+be-partial-00817	Rue de Luxembourg 2, Steinfort	49.6594803	5.9148033	partial
+be-partial-00818	Rue du Baumbusch 71, Mamer	49.6244536	6.0064376	partial
+be-partial-00819	Reckenthal 23, Strassen	49.6245268	6.1022325	partial
+be-partial-00820	Rue Waassertrap 83, Belvaux	49.5082633	5.9347941	partial
+be-partial-00821	Grand-Rue 84, Luxembourg	49.6122734	6.1271705	partial
+be-partial-00822	Rue de Dublin 3, Mamer	49.6311396	6.0186359	partial
+be-partial-00823	Rue Zénon Bernard 52, Esch-sur-Alzette	49.4921364	5.9788024	partial
+be-partial-00824	Rue de Luxembourg 5, Colmar-Berg	49.8122536	6.0978732	partial
+be-partial-00825	Bei der Kazebaach 15, Mondercange	49.5356292	5.9867782	partial
+be-partial-00826	Place de l'Hôtel de Ville 4, Ettelbruck	49.8462382	6.0992831	partial
+be-partial-00827	Am Steffesgaart 57, Sandweiler	49.6123647	6.2262917	partial
+be-partial-00828	Om Wandhof 10, Wormeldange-Haut	49.6090023	6.3974950	partial
+be-partial-00829	Rue de Belvaux 128, Esch-sur-Alzette	49.5033438	5.9704735	partial
+be-partial-00830	Rue de la Résistance 26A, Schouweiler	49.5814787	5.9561251	partial
+be-partial-00831	Rue Lydie Schmit 19, Mamer	49.6242309	6.0102499	partial
+be-partial-00832	Porte des Ardennes 35, Erpeldange-sur-Sûre	49.8629592	6.1127916	partial
+be-partial-00833	Rue de Luxembourg 242, Bertrange	49.6047709	6.0750373	partial
+be-partial-00834	Rue Jean-François-Joseph d'Huart 11, Bertrange	49.6024986	6.0509391	partial
+be-partial-00835	Rue de Steinsel 100, Bereldange	49.6612672	6.1236540	partial
+be-partial-00836	Rue Chimay 5, Luxembourg	49.6107106	6.1297366	partial
+be-partial-00837	Place François-Joseph Dargent 11, Luxembourg	49.6277062	6.1297280	partial
+be-partial-00838	Rue de Cessange 277, Luxembourg	49.5859754	6.0999538	partial
+be-partial-00839	Rue des Tondeurs 30A, Wiltz	49.9653252	5.9354966	partial
+be-partial-00840	Op Féilëschterkëppchen 8, Mondercange	49.5408730	5.9858669	partial
+be-partial-00841	Montée du Grund 22, Luxembourg	49.6085366	6.1348129	partial
+be-partial-00842	Rue Léon Weirich 53, Esch-sur-Alzette	49.4981721	5.9754780	partial
+be-partial-00843	Rue de Pontpierre 48, Mondercange	49.5334554	5.9951956	partial
+be-partial-00844	Route de Luxembourg 89, Schieren	49.8291844	6.0964903	partial
+be-partial-00845	Cité Jacques Steichen 10, Mondercange	49.5201396	5.9858231	partial
+be-partial-00846	Rue de Bourglinster 16, Junglinster	49.7156872	6.2474262	partial
+be-partial-00847	Route de Longwy 85, Bertrange	49.6006033	6.0679581	partial
+be-partial-00848	Cité Henri Dunant 23, Bertrange	49.6138929	6.0491520	partial
+be-partial-00849	Rue Cents 24, Luxembourg	49.6168520	6.1672127	partial
+be-partial-00850	Bourgaass 3, Wormeldange	49.6122463	6.4058058	partial
+be-partial-00851	Rue Cunégonde 17, Mamer	49.6312800	6.0237911	partial
+be-partial-00852	Rue Docteur Elvire Engel 8, Grass	49.6337406	5.8945023	partial
+be-partial-00853	Rue Dicks 42, Esch-sur-Alzette	49.4925037	5.9789525	partial
+be-partial-00854	Rue des Champs 12, Grass	49.6303657	5.8931801	partial
+be-partial-00855	Am Bongert 1, Bertrange	49.6157843	6.0463270	partial
+be-partial-00856	Rue des Jardins 4A, Wasserbillig	49.7146512	6.5023832	partial
+be-partial-00857	Op Dirbett 8, Mondercange	49.5281948	5.9846538	partial
+be-partial-00858	Rue Batty Weber 3, Luxembourg	49.6214939	6.1151947	partial
+be-partial-00859	Rue de Strasbourg 41, Luxembourg	49.6003609	6.1284780	partial
+be-partial-00860	Am Kundel 12, Medingen	49.5745393	6.2482032	partial
+be-partial-00861	Rue Anne Beffort 21, Luxembourg	49.6345824	6.1606756	partial
+be-partial-00862	Cité Joseph Brebsom 41, Esch-sur-Alzette	49.5027637	5.9656742	partial
+be-partial-00863	Allée du Carmel 7, Luxembourg	49.6195670	6.1721945	partial
+be-partial-00864	Rue de Landiras 1, Schouweiler	49.5799441	5.9566700	partial
+be-partial-00865	Val Sainte-Croix 135, Luxembourg	49.6123249	6.1044248	partial
+be-partial-00866	Rue de Luxembourg 39, Bertrange	49.6120781	6.0582626	partial
+be-partial-00867	Avenue Gaston Diderich 89, Luxembourg	49.6102524	6.1111204	partial
+be-partial-00868	Domaine des Bleuets 9, Senningerberg	49.6464484	6.2253877	partial
+be-partial-00869	Route de Longwy 12, Bertrange	49.6036343	6.0746224	partial
+be-partial-00870	Rue des Artisans 1, Luxembourg	49.5946571	6.1097976	partial
+be-partial-00871	Rue des Vignes 2, Wasserbillig	49.7187516	6.4973830	partial
+be-partial-00872	Place de Clairefontaine 1, Luxembourg	49.6101173	6.1325390	partial
+be-partial-00873	Hiel 37, Wormeldange-Haut	49.6113078	6.3988455	partial
+be-partial-00874	Place de l'Église 10, Schuttrange	49.6243438	6.2682318	partial
+be-partial-00875	Rue des Martyrs 6, Esch-sur-Alzette	49.4974338	5.9754019	partial
+be-partial-00876	Rue Abbé Joseph Flies 47A, Ettelbruck	49.8511700	6.0728354	partial
+be-partial-00877	Rue Guillaume 32, Ettelbruck	49.8479294	6.1006462	partial
+be-partial-00878	Avenue de la Libération 24, Schifflange	49.5056238	6.0107220	partial
+be-partial-00879	Op der Tomm 2A, Bastendorf	49.8916832	6.1631424	partial
+be-partial-00880	Rue des Aubépines 39, Bertrange	49.6101915	6.0468915	partial
+be-partial-00881	Rue Op Bierg 53, Mamer	49.6233780	6.0297846	partial
+be-partial-00882	Rue d'Oetrange 13C, Canach	49.6089576	6.3230535	partial
+be-partial-00883	Boulevard John F. Kennedy 12, Bascharage	49.5659634	5.9135240	partial
+be-partial-00884	Rue Waassertrap 180, Belvaux	49.5078938	5.9389466	partial
+be-partial-00885	Rue de la Résistance 15, Schouweiler	49.5802392	5.9555019	partial
+be-partial-00886	Rue de Dangé-Saint-Romain 56, Mamer	49.6249329	6.0304550	partial
+be-partial-00887	Rue Auguste Liesch 19, Bertrange	49.6080929	6.0575929	partial
+be-partial-00888	Op Waasserkierten 12, Aspelt	49.5209136	6.2206956	partial
+be-partial-00889	Rue Charles Kieffer 5, Grass	49.6349187	5.8892234	partial
+be-partial-00890	Rue de Strasbourg 12, Luxembourg	49.6013945	6.1314218	partial
+be-partial-00891	Rue du 9 septembre 1867 31, Luxembourg	49.5904121	6.1029262	partial
+be-partial-00892	Rue Michel Hack 86, Bettembourg	49.5143934	6.0943530	partial
+be-partial-00893	Rue Notre-Dame 29, Luxembourg	49.6098649	6.1286276	partial
+be-partial-00894	Route de Capellen 11A, Holzem	49.6159552	5.9872642	partial
+be-partial-00895	Op Feileschter 3, Mondercange	49.5394071	5.9838445	partial
+be-partial-00896	Rue de Pontpierre 43, Mondercange	49.5329318	5.9945605	partial
+be-partial-00897	Rue Hiel 26, Bertrange	49.6125505	6.0550187	partial
+be-partial-00898	Rue Zénon Bernard 50, Esch-sur-Alzette	49.4921658	5.9788715	partial
+be-partial-00899	Am Rousegärtchen 17, Mondercange	49.5271865	5.9868510	partial
+be-partial-00900	Rue Schantz 5, Colmar-Berg	49.8155116	6.0866679	partial
+be-partial-00901	Duerfstrooss 25A, Eschweiler	49.9962695	5.9477472	partial
+be-partial-00902	Route d'Esch 31, Bettembourg	49.5184177	6.0982503	partial
+be-partial-00903	Rue de Dippach 140, Bertrange	49.6016430	6.0502846	partial
+be-partial-00904	Rue Prince Henri 25, Ettelbruck	49.8472492	6.1046321	partial
+be-partial-00905	Rue de l'École 32A, Pontpierre	49.5363529	6.0296673	partial
+be-partial-00906	Rue Principale 35, Sandweiler	49.6163461	6.2198203	partial
+be-partial-00907	Rue de Hollerich 89, Luxembourg	49.5989133	6.1226317	partial
+be-partial-00908	Allée du Carmel 26, Luxembourg	49.6214354	6.1753556	partial
+be-partial-00909	Stengige Besch 9, Liefrange	49.9108348	5.8789215	partial
+be-partial-00910	Rue du Puits Romain 29, Strassen	49.6083512	6.0802773	partial
+be-partial-00911	Boulevard Docteur Charles Marx 21, Luxembourg	49.6007919	6.1246689	partial
+be-partial-00912	Avenue de Luxembourg 117, Bascharage	49.5661216	5.9086276	partial
+be-partial-00913	Rue de Strasbourg 23, Luxembourg	49.6010537	6.1310012	partial
+be-partial-00914	Rue de Belvaux 128, Esch-sur-Alzette	49.5033438	5.9704735	partial
+be-partial-00915	Rue de l'Industrie 30, Strassen	49.6116664	6.0754786	partial
+be-partial-00916	Op der Tomm 2A, Bastendorf	49.8916832	6.1631424	partial
+be-partial-00917	Rue de Schmitshausen 8, Bereldange	49.6548237	6.1163739	partial
+be-partial-00918	Rue Micky Bintz-Erpelding 8, Esch-sur-Alzette	49.5065562	5.9872456	partial
+be-partial-00919	Rue des Écoles 48B, Schouweiler	49.5831148	5.9612942	partial
+be-partial-00920	Rue Bierg 15, Harlange	49.9301434	5.7924284	partial
+be-partial-00921	Rue Louis Pasteur 60, Dudelange	49.4890456	6.0926762	partial
+be-partial-00922	Rue de Steinsel 28, Bereldange	49.6593483	6.1275565	partial
+be-partial-00923	Beim Schlass 5, Bertrange	49.6114993	6.0493283	partial
+be-partial-00924	Rue Principale 56, Schuttrange	49.6207388	6.2658312	partial
+be-partial-00925	Rue Saint-Henri 4, Esch-sur-Alzette	49.5011081	5.9736597	partial
+be-partial-00926	Rue de Neudorf 8A, Mondercange	49.5327276	5.9923207	partial
+be-partial-00927	Rue Schléiwenhaff 6, Leudelange	49.5772691	6.0587041	partial
+be-partial-00928	Rue Emmanuel Servais 3, Mersch	49.7508363	6.1076587	partial
+be-partial-00929	Grand-Rue 37-39, Wiltz	49.9652847	5.9361288	partial
+be-partial-00930	Rue Michel Rodange 16, Ettelbruck	49.8506367	6.0745985	partial
+be-partial-00931	Rue de Schmitshausen 2, Bereldange	49.6549141	6.1170046	partial
+be-partial-00932	An der Eech 1, Lieler	50.1263508	6.1143992	partial
+be-partial-00933	Rue de Neuerburg 20, Luxembourg	49.6464039	6.1260999	partial
+be-partial-00934	Kiricheneck 31A, Weiswampach	50.1362798	6.0732614	partial
+be-partial-00935	Rue de Dippach 140, Bertrange	49.6016430	6.0502846	partial
+be-partial-00936	Rue Auguste Liesch 17, Bertrange	49.6080596	6.0577155	partial
+be-partial-00937	Rue de l'Église 4, Lintgen	49.7208955	6.1256929	partial
+be-partial-00938	Grand-Rue 47, Diekirch	49.8672084	6.1601188	partial
+be-partial-00939	Rue Aloyse Hentgen 24, Roedgen	49.5757913	6.0350841	partial
+be-partial-00940	Rue Schauwenburg 16, Bertrange	49.6087855	6.0495333	partial
+be-partial-00941	Route de Remich 26, Mondorf-les-Bains	49.5053092	6.2804065	partial
+be-partial-00942	Place de l'Exposition 1, Esch-sur-Alzette	49.5100483	5.9851170	partial
+be-partial-00943	Am Rousegärtchen 5, Mondercange	49.5276935	5.9862931	partial
+be-partial-00944	Route de Fischbach 2A, Lintgen	49.7232008	6.1250519	partial
+be-partial-00945	Rue de Beggen 159, Luxembourg	49.6416625	6.1300550	partial
+be-partial-00946	Rue Jean Engling 2, Luxembourg	49.6390045	6.1450310	partial
+be-partial-00947	Ënnert den Héichiewen 6, Esch-sur-Alzette	49.5021808	5.9480891	partial
+be-partial-00948	Rue des Champs 54, Bertrange	49.6107608	6.0447288	partial
+be-partial-00949	Rue du Pont 12, Echternach	49.8131160	6.4237942	partial
+be-partial-00950	Rue Marie Muller-Tesch 67, Esch-sur-Alzette	49.5019141	5.9674005	partial
+be-partial-00951	Rue Iecker 14, Bertrange	49.6079675	6.0498289	partial
+be-partial-00952	Rue Jean-Pierre Michels 24, Esch-sur-Alzette	49.5015982	5.9773206	partial
+be-partial-00953	Route de Bascharage 151, Niederkorn	49.5443849	5.8945184	partial
+be-partial-00954	Rue Mathias Tresch 28, Luxembourg	49.6370800	6.1699700	partial
+be-partial-00955	Rue Waassertrap 256, Belvaux	49.5084677	5.9397519	partial
+be-partial-00956	Route d'Echternach 120, Luxembourg	49.6400943	6.1531182	partial
+be-partial-00957	Rue Adolphe 6, Luxembourg	49.6056931	6.1168010	partial
+be-partial-00958	Schweecherdaulerstrooss 50, Noerdange	49.7367539	5.9208749	partial
+be-partial-00959	Cité Hooch 21, Wilwerdange	50.1415381	6.0202474	partial
+be-partial-00960	Rue des Églantiers 48, Mamer	49.6311376	6.0136422	partial
+be-partial-00961	Rue Neuve 6, Junglinster	49.7162492	6.2536194	partial
+be-partial-00962	Rue de Pontpierre 51, Mondercange	49.5331992	5.9953587	partial
+be-partial-00963	Rue de la Gare 12, Echternach	49.8134259	6.4189006	partial
+be-partial-00964	Rue du Chemin de Fer 19, Walferdange	49.6580013	6.1354743	partial
+be-partial-00965	Boulevard de la Pétrusse 118, Luxembourg	49.6070235	6.1290970	partial
+be-partial-00966	Gruuss-Strooss 32, Weiswampach	50.1408231	6.0786939	partial
+be-partial-00967	Kierchestrooss 34A, Bettel	49.9140484	6.2256385	partial
+be-partial-00968	Rue Josy Welter 19, Walferdange	49.6581101	6.1314929	partial
+be-partial-00969	Route de Luxembourg 18, Mertert	49.7071558	6.4877489	partial
+be-partial-00970	Avenue Monterey 40, Luxembourg	49.6099105	6.1198108	partial
+be-partial-00971	Rue de Neuhaeusgen 3, Schuttrange	49.6215091	6.2658788	partial
+be-partial-00972	Rue Émile Mayrisch 1H, Dudelange	49.4828646	6.0843896	partial
+be-partial-00973	Rue de Dangé-Saint-Romain 56, Mamer	49.6249329	6.0304550	partial
+be-partial-00974	Rue Victor Ewen 16, Esch-sur-Alzette	49.5098446	5.9820272	partial
+be-partial-00975	Rue Winston Churchill 12, Esch-sur-Alzette	49.5050836	5.9823745	partial
+be-partial-00976	Rue de Luxembourg 8, Sandweiler	49.6165910	6.2114744	partial
+be-partial-00977	Rue de Redange 17, Ospern	49.7811345	5.8972218	partial
+be-partial-00978	Rue Victor Hugo 28, Esch-sur-Alzette	49.4970253	5.9788135	partial
+be-partial-00979	Résidence Belle-Vue 46, Schifflange	49.5043771	6.0054830	partial
+be-partial-00980	Rue Batty Weber 24, Esch-sur-Alzette	49.5027457	5.9663916	partial
+be-partial-00981	Rue de Luxembourg 18B, Bertrange	49.6112114	6.0537105	partial
+be-partial-00982	Rue de l'Église 22, Schouweiler	49.5821956	5.9568825	partial
+be-partial-00983	Rue Jean-Pierre Michels 135, Esch-sur-Alzette	49.5041153	5.9829489	partial
+be-partial-00984	Rue Munster 17, Luxembourg	49.6091062	6.1357322	partial
+be-partial-00985	Impasse Prince Henri 6, Ettelbruck	49.8475441	6.1046595	partial
+be-partial-00986	Am Happgaart 41, Sandweiler	49.6158070	6.2129627	partial
+be-partial-00987	Rue Docteur Michel Welter 50, Esch-sur-Alzette	49.5039736	5.9736552	partial
+be-partial-00988	Route d'Arlon 92, Mamer	49.6307666	6.0240700	partial
+be-partial-00989	Rue de l'Église 4, Schifflange	49.5039441	6.0099780	partial
+be-partial-00990	Fëlschdrefferstrooss 14B, Aspelt	49.5218165	6.2268624	partial
+be-partial-00991	Rue de l'Église 27, Trintange	49.5729475	6.2798935	partial
+be-partial-00992	Rue Raoul Follereau 4, Mamer	49.6300805	6.0235919	partial
+be-partial-00993	Rue Abbé Joseph Flies 47, Ettelbruck	49.8511747	6.0729218	partial
+be-partial-00994	Rue de Strasbourg 12, Luxembourg	49.6013528	6.1314339	partial
+be-partial-00995	Parvis de la Basilique 9, Echternach	49.8138365	6.4210165	partial
+be-partial-00996	Rue de la Montagne 8A, Waldbillig	49.7941539	6.2843701	partial
+be-partial-00997	Rue de Pulvermühl 56, Luxembourg	49.6066590	6.1497793	partial
+be-partial-00998	Rue Kiemel 2A, Mondercange	49.5283972	5.9828618	partial
+be-partial-00999	Rue Saint-Pierre 38, Niederkorn	49.5371565	5.8917858	partial
