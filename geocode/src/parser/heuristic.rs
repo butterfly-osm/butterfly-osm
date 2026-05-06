@@ -96,10 +96,7 @@ fn parse_for_country(text: &str, country: CountryId) -> ParsedQuery {
         .unwrap_or(without_postcode);
 
     let remainder = clean_separators(&without_house);
-    let remainder_words: Vec<String> = remainder
-        .split_whitespace()
-        .map(str::to_string)
-        .collect();
+    let remainder_words: Vec<String> = remainder.split_whitespace().map(str::to_string).collect();
 
     // Emit one hypothesis per plausible (street, locality) split.
     // Each variant becomes its own ParseHypothesis; the executor
