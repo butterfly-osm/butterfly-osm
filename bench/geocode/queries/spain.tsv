@@ -1,0 +1,1001 @@
+query_id	query_text	gold_lat	gold_lon	quality_class
+be-clean-00000	calle Torres Y Villarroel 8, 03203 Elche	38.2997872	-0.6137700	clean
+be-clean-00001	Calle Don Jaime I 33, 50003 Zaragoza	41.6539123	-0.8779007	clean
+be-clean-00002	calle Leonardo da Vinci 2AC, 03203 Elche	38.2936343	-0.6108848	clean
+be-clean-00003	Calle de las Mieses 28, 47009 Valladolid	41.6577447	-4.7410898	clean
+be-clean-00004	Calle de Silvano 77, 28043 Madrid	40.4630376	-3.6376566	clean
+be-clean-00005	Carrer de Maruja Pastor 7, 03540 Alicante	38.3672123	-0.4285691	clean
+be-clean-00006	calle Pau Casals 22, 03203 Elche	38.2928240	-0.6181468	clean
+be-clean-00007	Calle de Menéndez Pidal 173, 28036 Madrid	40.4657009	-3.6798926	clean
+be-clean-00008	calle Marie Curie 33, 03203 Elche	38.2950248	-0.6224504	clean
+be-clean-00009	Calle de Abtao 46, 28007 Madrid	40.4063842	-3.6742291	clean
+be-clean-00010	calle Pitágoras 14, 03203 Elche	38.2959085	-0.6098874	clean
+be-clean-00011	Plaza de Francisco Perojo Cagigas 3, 39710 Solares	43.3835518	-3.7368907	clean
+be-clean-00012	Avenida del Doctor García Tapia 206, 28030 Madrid	40.4079196	-3.6356474	clean
+be-clean-00013	calle Pau Casals 14, 03320 Elche	38.2939041	-0.6155949	clean
+be-clean-00014	Carrer de Félix Rodríguez de la Fuente 58, 03203 Elche	38.2926619	-0.6166505	clean
+be-clean-00015	Autovía A-66, 10680 Malpartida de Plasencia	39.8828238	-6.2760791	clean
+be-clean-00016	Calle J 290, 42005 Soria	41.7728691	-2.4855899	clean
+be-clean-00017	Calle Mayor 77, 28013 Madrid	40.4151603	-3.7121513	clean
+be-clean-00018	Calle Londres, 10005 Cáceres	39.4682298	-6.3891147	clean
+be-clean-00019	Plaza Kuwait, 18690 Almuñécar	36.7351803	-3.6926244	clean
+be-clean-00020	calle Enrique Granados 1AC, 03203 Elche	38.2929371	-0.6123466	clean
+be-clean-00021	Calle del Ave María 17, 28012 Madrid	40.4109653	-3.7004479	clean
+be-clean-00022	Carrer de Juan Negrín 17, 03203 Elche	38.2951352	-0.6086779	clean
+be-clean-00023	Carrer de Félix Rodríguez de la Fuente 92, 03203 Elche	38.2965162	-0.6192816	clean
+be-clean-00024	calle Severo Ochoa 14, 03203 Elche	38.2917586	-0.6102712	clean
+be-clean-00025	calle Pitágoras 7AC, 03320 Elche	38.2958497	-0.6109929	clean
+be-clean-00026	Avenida de Peña Cabarga 20I, 39710 Solares	43.3817365	-3.7411005	clean
+be-clean-00027	Carrer de Félix Rodríguez de la Fuente 22, 03203 Elche	38.2899678	-0.6148092	clean
+be-clean-00028	calle Enrique Granados 1AC, 03203 Elche	38.2929371	-0.6123466	clean
+be-clean-00029	calle Narciso Monturiol 11, 03203 Elche	38.2976402	-0.6195086	clean
+be-clean-00030	Calle Pretiles 10, 18214 Nívar	37.2578721	-3.5779740	clean
+be-clean-00031	Calle de Esparteros 3, 28012 Madrid	40.4160273	-3.7050598	clean
+be-clean-00032	Avenida de Monforte de Lemos 36, 28029 Madrid /Planta 2 Local 3	40.4793735	-3.7083765	clean
+be-clean-00033	Carrer Francesc Puget 2, 08560 Manlleu	42.0042500	2.2960830	clean
+be-clean-00034	Avenida Ruta de la Plata 20, 10001 Cáceres	39.4717469	-6.3890281	clean
+be-clean-00035	calle Leonardo da Vinci 9, 03203 Elche	38.2945935	-0.6094825	clean
+be-clean-00036	Carrer de Torres y Villarroel 2, 03203 Elche	38.2992857	-0.6154081	clean
+be-clean-00037	Avenida de Mataespesa 45, 28430 Alpedrete	40.6596672	-4.0364040	clean
+be-clean-00038	Ctra. EX-108, 10680 Malpartida de Plasencia	39.9767419	-6.0327780	clean
+be-clean-00039	Avenida de Santander 14, 39710 Solares	43.3846949	-3.7399540	clean
+be-clean-00040	Calle Germán Bernácer 39, 03203 Elche	38.2919312	-0.6150577	clean
+be-clean-00041	Avenida Federico García Lorca 8, 29631 Benalmádena	36.5923361	-4.5269924	clean
+be-clean-00042	Calle de Campomanes 4, 28013 Madrid	40.4188562	-3.7093262	clean
+be-clean-00043	Barrio La Iglesia 40B-4, 39619 San Salvador	43.3925778	-3.8043169	clean
+be-clean-00044	A-397, 29451 Parauta	36.6706500	-5.1182266	clean
+be-clean-00045	Calle Germán Bernácer 79, 03203 Elche	38.2955597	-0.6175338	clean
+be-clean-00046	Avenida del Cardenal Herrera Oria 136, 28034 Madrid	40.4895104	-3.7005674	clean
+be-clean-00047	calle Juan de Herrera 42, 03203 Elche	38.2937014	-0.6230614	clean
+be-clean-00048	Avenida de El Ferrol 32, 28029 Madrid	40.4743767	-3.7067515	clean
+be-clean-00049	calle Charles Darwin 6-1, 03203 Elche	38.2923096	-0.6095436	clean
+be-clean-00050	calle Nicolás de Bussi 18, 03203 Elche	38.2890254	-0.6215426	clean
+be-clean-00051	calle Tales de Mileto 5, 03203 Elche	38.2953046	-0.6242575	clean
+be-clean-00052	calle Juan de Villanueva 12, 03203 Elche	38.2895801	-0.6213124	clean
+be-clean-00053	Avenida de Oviedo 14, 39710 Solares	43.3820899	-3.7398919	clean
+be-clean-00054	calle Nicolás Copérnico 4, 03203 Elche	38.2944239	-0.6231757	clean
+be-clean-00055	Calle de Antonio López 246, 28026 Madrid	40.3825062	-3.6963276	clean
+be-clean-00056	Calle General Elorza 75, 33001 Oviedo / Uviéu	43.3665510	-5.8495642	clean
+be-clean-00057	Avenida de La Cabrera 12, 28751 La Cabrera	40.8568720	-3.6128941	clean
+be-clean-00058	Calle Germán Bernácer 52, 03203 Elche	38.2955056	-0.6168455	clean
+be-clean-00059	calle Manuel de Falla 3, 03203 Elche	38.2914009	-0.6116866	clean
+be-clean-00060	Calle del Río Miera 5, 39710 Solares	43.3829906	-3.7405900	clean
+be-clean-00061	Calle del Carmen 4, 28013 Madrid	40.4175269	-3.7035489	clean
+be-clean-00062	Salamanca pasealekua 10, 20003 Donostia / San Sebastián	43.3249453	-1.9822815	clean
+be-clean-00063	calle Marie Curie 11, 03203 Elche	38.2892652	-0.6185395	clean
+be-clean-00064	Calle de Raimundo Fernández Villaverde 16, 28003 Madrid	40.4465563	-3.7020049	clean
+be-clean-00065	Calle Martín y Soler 17, 03203 Elche	38.2943553	-0.6175639	clean
+be-clean-00066	Autovia A-2, 25245 Vila-sana	41.6428154	0.8947393	clean
+be-clean-00067	Calle Germán Bernácer 17, 03203 Elche	38.2899847	-0.6137295	clean
+be-clean-00068	Calle Preciados 14, 28013 Madrid	40.4181290	-3.7046339	clean
+be-clean-00069	Camí de les Planes-Giriblau, 25141 Torregrossa	41.5791410	0.8374270	clean
+be-clean-00070	Avenida de Mataespesa 45, 28430 Alpedrete	40.6599896	-4.0368392	clean
+be-clean-00071	Calle Tomás Luis de Victoria 14, 03203 Elche	38.2935423	-0.6188496	clean
+be-clean-00072	Carrer de Juan Negrín 53-5, 03320 Elche	38.2981525	-0.6107860	clean
+be-clean-00073	Paseo Pizarro, 10694 Torrejón el Rubio	39.7714035	-6.0119612	clean
+be-clean-00074	Autovía A-2 117,400, 19268 Torremocha del Campo /Km	40.9722904	-2.6164165	clean
+be-clean-00075	Calle del Arroyo de las Pilillas 56, 28030 Madrid	40.4074176	-3.6520625	clean
+be-clean-00076	calle Arquímedes 1, 03203 Elche	38.2892292	-0.6076491	clean
+be-clean-00077	Ejército Español, 52001 Melilla	35.2933222	-2.9389085	clean
+be-clean-00078	Calle Santiago Ramón y Cajal 33, 03203 Elche	38.2962821	-0.6145765	clean
+be-clean-00079	Carrer de Juan de la Cierva 44, 03320 Elche	38.2961903	-0.6114676	clean
+be-clean-00080	Barrio La Iglesia 122, 39715 Entrambasaguas	43.3765939	-3.6778866	clean
+be-clean-00081	Calle Juan de Juanes 10, 28007 Madrid	40.4022009	-3.6685664	clean
+be-clean-00082	rambla Paisos Catalans 51, 08110 Montcada i Reixac	41.4904309	2.1858055	clean
+be-clean-00083	Carrer de Juan de la Cierva 38, 03320 Elche	38.2958085	-0.6111911	clean
+be-clean-00084	Avinguda Josep Trías 22, 07458 Can Picafort	39.7675655	3.1478830	clean
+be-clean-00085	Avenida de la Reina Victoria 44, 28003 Madrid	40.4468414	-3.7113239	clean
+be-clean-00086	Calle Los Halcones, 10004 Cáceres	39.4870424	-6.3769608	clean
+be-clean-00087	Avenida Ruta de la Plata 20, 10001 Cáceres	39.4717469	-6.3890281	clean
+be-clean-00088	Avenida de Oviedo 16, 39710 Solares	43.3819438	-3.7400666	clean
+be-clean-00089	Carrer de Muntaner 223, 08036 Barcelona	41.3937636	2.1497797	clean
+be-clean-00090	Calle Pretiles 10, 18214 Nívar	37.2578721	-3.5779740	clean
+be-clean-00091	calle Severo Ochoa 30, 03320 Elche	38.2952346	-0.6127163	clean
+be-clean-00092	Carrer de Juan de la Cierva 58-2, 03203 Elche	38.2977555	-0.6125353	clean
+be-clean-00093	Avenida de las Cortes Valencianas 2, 46183 l'Eliana	39.5664815	-0.5269358	clean
+be-clean-00094	calle Miguel Servet 32, 03203 Elche	38.2951962	-0.6211951	clean
+be-clean-00095	calle Manuel de Falla 7, 03203 Elche	38.2909084	-0.6128367	clean
+be-clean-00096	calle Charles Darwin 6-1, 03203 Elche	38.2923096	-0.6095436	clean
+be-clean-00097	Carrer Francesc Puget 2, 08560 Manlleu	42.0042500	2.2960830	clean
+be-clean-00098	Carretera N-340 Cádiz-Barcelona, 18740 Castell de Ferro	36.7207859	-3.3646478	clean
+be-clean-00099	Calle de Santa Marta 15, 28038 Madrid	40.4024393	-3.6620786	clean
+be-clean-00100	calle Nicolás de Bussi 14, 03203 Elche	38.2887525	-0.6213494	clean
+be-clean-00101	Avenida de Alisas 3, 39710 Solares	43.3843026	-3.7359467	clean
+be-clean-00102	Calle Santiago Ramón y Cajal 3, 03203 Elche	38.2898649	-0.6102298	clean
+be-clean-00103	Plaza de Jesús 4, 28014 Madrid	40.4137383	-3.6957781	clean
+be-clean-00104	Calle del Crucero 29, 39724 Valdecilla	43.3822861	-3.7363076	clean
+be-clean-00105	calle Miguel Servet 32, 03203 Elche	38.2951962	-0.6211951	clean
+be-clean-00106	Carrer de la Ciutat de Llíria 5, 46988 Paterna	39.5122494	-0.4547841	clean
+be-clean-00107	calle Juan de Herrera 13, 03203 Elche	38.2900935	-0.6210019	clean
+be-clean-00108	calle Charles Darwin 11-1, 03203 Elche	38.2930806	-0.6092378	clean
+be-clean-00109	Carrer de Félix Rodríguez de la Fuente 98, 03203 Elche	38.2969026	-0.6195446	clean
+be-clean-00110	calle Manuel de Falla 5, 03203 Elche	38.2912429	-0.6120652	clean
+be-clean-00111	Calle de las Delicias 2, 28045 Madrid	40.4041585	-3.6959215	clean
+be-clean-00112	Carrer de Juan de la Cierva 29, 03203 Elche	38.2934095	-0.6101485	clean
+be-clean-00113	Calle de Saavedra Fajardo 10, 28011 Madrid	40.4143435	-3.7250547	clean
+be-clean-00114	Paseo El Valero, 41950 Castilleja de la Cuesta	37.3857048	-6.0465222	clean
+be-clean-00115	Carrer de Félix Rodríguez de la Fuente 46, 03203 Elche	38.2919352	-0.6161525	clean
+be-clean-00116	Calle de Atocha 127, 28012 Madrid	40.4096055	-3.6926831	clean
+be-clean-00117	Calle de Campomanes 4, 28013 Madrid	40.4188562	-3.7093262	clean
+be-clean-00118	Calle de las Huertas 69, 28014 Madrid	40.4131780	-3.6957012	clean
+be-clean-00119	Carrer de Félix Rodríguez de la Fuente 90, 03203 Elche	38.2964335	-0.6192257	clean
+be-clean-00120	Calle Germán Bernácer 60, 03203 Elche	38.2959689	-0.6171589	clean
+be-clean-00121	Carrer d'Alberto Sols 30, 03203 Elche	38.2965056	-0.6159298	clean
+be-clean-00122	Calle Martín y Soler 17, 03203 Elche	38.2943553	-0.6175639	clean
+be-clean-00123	calle Nicolás de Bussi 26, 03203 Elche	38.2899992	-0.6222026	clean
+be-clean-00124	CR EX-203, 12,8, 10400 Jaraíz de la Vera	40.0263087	-5.7324135	clean
+be-clean-00125	Barrio La Gándara 121-6, 39724 Ceceñas	43.3745259	-3.7179500	clean
+be-clean-00126	Calle del Duque de Alba 15, 28012 Madrid	40.4115325	-3.7067618	clean
+be-clean-00127	calle Juan de Herrera 34, 03203 Elche	38.2929026	-0.6225240	clean
+be-clean-00128	San Roke kalea 2, 20690 Elgeta	43.1366490	-2.4872174	clean
+be-clean-00129	calle Nicolás de Bussi 32, 03203 Elche	38.2910695	-0.6229285	clean
+be-clean-00130	calle Pitágoras 16, 03203 Elche	38.2960733	-0.6095020	clean
+be-clean-00131	Calle del Guadalquivir 16, 28002 Madrid	40.4469484	-3.6868970	clean
+be-clean-00132	Carrer de Félix Rodríguez de la Fuente 24, 03203 Elche	38.2906253	-0.6152618	clean
+be-clean-00133	calle Miguel Servet 7-3, 03203 Elche	38.2978314	-0.6176812	clean
+be-clean-00134	calle Pau Casals 12, 03320 Elche	38.2939797	-0.6154162	clean
+be-clean-00135	Calle de González Arias 10, 28026 Madrid	40.3808099	-3.7086560	clean
+be-clean-00136	Calle de Donoso Cortés 90, 28015 Madrid	40.4366465	-3.7163184	clean
+be-clean-00137	calle Miguel Servet 20-1, 03203 Elche	38.2967947	-0.6174379	clean
+be-clean-00138	Avenida de Alemania 17, 28916 Leganés	40.3343230	-3.7422026	clean
+be-clean-00139	Calle de Pinos Alta 16, 28029 Madrid	40.4662425	-3.6961446	clean
+be-clean-00140	calle Juan de Herrera 13, 03203 Elche	38.2900935	-0.6210019	clean
+be-clean-00141	Carrer d'Alberto Sols 30, 03203 Elche	38.2965056	-0.6159298	clean
+be-clean-00142	Carrer de Félix Rodríguez de la Fuente 14, 03203 Elche	38.2893840	-0.6144098	clean
+be-clean-00143	Calle Germán Bernácer 70, 03203 Elche	38.2971447	-0.6179327	clean
+be-clean-00144	Avinguda de la Granvia de l'Hospitalet 12, 08902 l'Hospitalet de Llobregat	41.3616520	2.1303414	clean
+be-clean-00145	calle Manuel de Falla 1AC, 03203 Elche	38.2915103	-0.6113786	clean
+be-clean-00146	calle Pau Casals 14, 03320 Elche	38.2939041	-0.6155949	clean
+be-clean-00147	Avenida de la Ciudad de Barcelona 27, 28007 Madrid	40.4042477	-3.6804168	clean
+be-clean-00148	calle Manuel de Falla 16, 03203 Elche	38.2895353	-0.6173663	clean
+be-clean-00149	Passeig de Manuel Girona 56, 08034 Barcelona	41.3912953	2.1253205	clean
+be-clean-00150	Paseo de la Estación 26-1, 39710 Solares	43.3876095	-3.7308613	clean
+be-clean-00151	Plaza Teobaldos 2, 31390 Olite	42.4820533	-1.6503136	clean
+be-clean-00152	Calle Tomás Luis de Victoria 15ac, 03203 Elche	38.2948423	-0.6203074	clean
+be-clean-00153	calle Marie Curie 31, 03203 Elche	38.2941756	-0.6218700	clean
+be-clean-00154	Calle de Olid 6, 28010 Madrid	40.4317789	-3.7023720	clean
+be-clean-00155	Calle del Ave María 8, 28012 Madrid	40.4117492	-3.7003220	clean
+be-clean-00156	Calle Tomás Luis de Victoria 24, 03203 Elche	38.2945208	-0.6195190	clean
+be-clean-00157	Carretera de la Gombalda, 46560 Massalfassar	39.5523400	-0.2989700	clean
+be-clean-00158	Carrer de Quart 57, 46001 València	39.4758321	-0.3830933	clean
+be-clean-00159	Plaza de las Culturas, 52001 Melilla	35.2933870	-2.9376744	clean
+be-clean-00160	calle Juan de Herrera 19, 03203 Elche	38.2905153	-0.6212838	clean
+be-clean-00161	Carrer de l'Urgell, 25243 el Palau d'Anglesola	41.6477264	0.8834255	clean
+be-clean-00162	Carrer de Félix Rodríguez de la Fuente 66, 03203 Elche	38.2934473	-0.6171839	clean
+be-clean-00163	Plaça Major 8, 07313 Selva	39.7548922	2.9005072	clean
+be-clean-00164	Avenida de Viana 2-6, 26001 Logroño	42.4685108	-2.4431592	clean
+be-clean-00165	Calle de Nuestra Señora de Valverde 71, 28034 Madrid	40.4956498	-3.6879188	clean
+be-clean-00166	calle Miguel Servet 7-2, 03203 Elche	38.2977106	-0.6175967	clean
+be-clean-00167	Calle de Gonzalo de Córdoba 17, 28010 Madrid	40.4326855	-3.7017994	clean
+be-clean-00168	Carrer de Juan de la Cierva 23, 03203 Elche	38.2921787	-0.6093782	clean
+be-clean-00169	Oria kalea 9, 20400 Tolosa	43.1334525	-2.0765394	clean
+be-clean-00170	Avenida del Monasterio de Silos 75, 28049 Madrid	40.5081229	-3.6939918	clean
+be-clean-00171	Autovía de Andalucía 292.5, 18500 Guadix	37.3201930	-3.1583260	clean
+be-clean-00172	Calle San Juan de la Cruz 32, 50006 Zaragoza	41.6407618	-0.8905612	clean
+be-clean-00173	Calle Tomás Luis de Victoria 6, 03203 Elche	38.2930604	-0.6185221	clean
+be-clean-00174	Carrer de Juan de la Cierva 26-2, 03203 Elche	38.2948423	-0.6105432	clean
+be-clean-00175	Carrer d'Alberto Sols 32, 03203 Elche	38.2966227	-0.6160115	clean
+be-clean-00176	Calle Echegaray 1, 28933 Móstoles	40.3283756	-3.8629860	clean
+be-clean-00177	N-121A, P.K. 44,50, 31792 Legasa	43.1306277	-1.6305469	clean
+be-clean-00178	Calle Germán Bernácer 76, 03203 Elche	38.2974997	-0.6181752	clean
+be-clean-00179	Calle Mayor 73, 28013 Madrid	40.4152606	-3.7115508	clean
+be-clean-00180	Carrer del Roser 40, 08600 Berga	42.1000186	1.8426464	clean
+be-clean-00181	Plaza de Cristino Martos 2, 28015 Madrid	40.4257656	-3.7120898	clean
+be-clean-00182	Camí de L'esglesia de Vera 14, 46022 València	39.4849007	-0.3379912	clean
+be-clean-00183	calle Alfred Nobel 14, 03203 Elche	38.2906093	-0.6118886	clean
+be-clean-00184	Calle Don Jaime I 33, 50003 Zaragoza	41.6539123	-0.8779007	clean
+be-clean-00185	Avda. Martín Palomino, 10600 Plasencia	40.0163403	-6.1035005	clean
+be-clean-00186	Calle de la Estafeta 33, 28041 Madrid	40.3716401	-3.6920580	clean
+be-clean-00187	Calle Tomás Luis de Victoria 11, 03203 Elche	38.2943489	-0.6199335	clean
+be-clean-00188	Carrer de Félix Rodríguez de la Fuente 68, 03203 Elche	38.2936238	-0.6173010	clean
+be-clean-00189	Calle Capitán Salazar Martínez 9, 28005 Madrid	40.4075478	-3.7102564	clean
+be-clean-00190	Carrer de Juan de la Cierva 75, 03203 Elche	38.2987087	-0.6138521	clean
+be-clean-00191	calle James Watt 1AC, 03203 Elche	38.2965426	-0.6242319	clean
+be-clean-00192	calle Marie Curie 8, 03203 Elche	38.2886630	-0.6171702	clean
+be-clean-00193	Calle Germán Bernácer 18, 03203 Elche	38.2902676	-0.6132608	clean
+be-clean-00194	Calle Los Halcones, 10004 Cáceres	39.4870424	-6.3769608	clean
+be-clean-00195	Calle Constitución 2, 39710 Solares	43.3849263	-3.7391610	clean
+be-clean-00196	Calle de las Tres Cruces 3, 28013 Madrid	40.4192843	-3.7030373	clean
+be-clean-00197	Autovia A-2, 25244 Fondarella	41.6384097	0.8742918	clean
+be-clean-00198	Calle de Agustín de Foxá 24, 28036 Madrid	40.4695708	-3.6858208	clean
+be-clean-00199	Carretera de Miraflores 1, 28791 Soto del Real	40.7543454	-3.7835318	clean
+be-abbreviated-00200	Av. de Peña Cabarga 20D, 39710 Solares	43.3822896	-3.7416753	abbreviated
+be-abbreviated-00201	Avinguda Josep Trías 22, 07458 Can Picafort	39.7675655	3.1478830	abbreviated
+be-abbreviated-00202	c/ Nicolás de Bussi 26, 03203 Elche	38.2899992	-0.6222026	abbreviated
+be-abbreviated-00203	Carrer de l'Estació, 12550 Almassora	39.9548766	-0.0769220	abbreviated
+be-abbreviated-00204	C/ Mayor 29, 28596 Brea de Tajo	40.2284800	-3.1118440	abbreviated
+be-abbreviated-00205	C/ de Barceló 3, 28004 Madrid	40.4265261	-3.7008811	abbreviated
+be-abbreviated-00206	C/ Italia 6, 28916 Leganés	40.3346623	-3.7427227	abbreviated
+be-abbreviated-00207	c/ Juan de Herrera 18, 03203 Elche	38.2904324	-0.6206987	abbreviated
+be-abbreviated-00208	C/ Valle del Sella, 28660 Boadilla del Monte	40.4397724	-3.9000254	abbreviated
+be-abbreviated-00209	c/ Pau Casals 2, 03320 Elche	38.2947813	-0.6136422	abbreviated
+be-abbreviated-00210	Carrer de Félix Rodríguez de la Fuente 6, 03203 Elche	38.2889073	-0.6140832	abbreviated
+be-abbreviated-00211	Pl. del País Valenciano 3, 46183 L'Eliana	39.5665288	-0.5300837	abbreviated
+be-abbreviated-00212	Carrer de la Cort Reial 18, 17004 Girona	41.9849613	2.8246637	abbreviated
+be-abbreviated-00213	Gta. de Bilbao 7, 28004 Madrid	40.4287093	-3.7019720	abbreviated
+be-abbreviated-00214	Carrer de Juan Negrín 61-2, 03320 Elche	38.2994420	-0.6117152	abbreviated
+be-abbreviated-00215	C/ de Molins de Rey 4, 28034 Madrid	40.4949220	-3.6934164	abbreviated
+be-abbreviated-00216	Carrer de S.t Llorenç 10, 08221 Terrassa	41.5651670	2.0121333	abbreviated
+be-abbreviated-00217	C/ del Teniente Coronel Noreña 28, 28045 Madrid	40.3877953	-3.6926809	abbreviated
+be-abbreviated-00218	C/ de las Islas Palaos 30, 28034 Madrid	40.4977062	-3.6863726	abbreviated
+be-abbreviated-00219	Av. de Europa 27, 28023 Pozuelo de Alarcón	40.4445042	-3.7866978	abbreviated
+be-abbreviated-00220	A-2217, 22540 Altorricón	41.7986410	0.4136420	abbreviated
+be-abbreviated-00221	Fermin Calbeton kalea 6, 20600 Eibar	43.1842406	-2.4723007	abbreviated
+be-abbreviated-00222	C/ Antonio Ferrandis "Chanquete" 1, 29780 Nerja	36.7476618	-3.8802981	abbreviated
+be-abbreviated-00223	Carrer de Juan Negrín 61-2, 03320 Elche	38.2994420	-0.6117152	abbreviated
+be-abbreviated-00224	C/ Germán Bernácer 2AC, 03203 Elche	38.2882125	-0.6118546	abbreviated
+be-abbreviated-00225	Barrio La Gándara 121-1, 39724 Ceceñas	43.3746996	-3.7176717	abbreviated
+be-abbreviated-00226	c/ Nicolás Copérnico 2, 03203 Elche	38.2946262	-0.6226847	abbreviated
+be-abbreviated-00227	C/ Tomás Luis de Victoria 34, 03203 Elche	38.2951587	-0.6199469	abbreviated
+be-abbreviated-00228	C/ de María Zambrano 35, 50015 Zaragoza	41.6722999	-0.8900469	abbreviated
+be-abbreviated-00229	Av. de Alemania 13, 28916 Leganés	40.3342473	-3.7425153	abbreviated
+be-abbreviated-00230	Ctra. de Valls 32, 08710 Santa Margarida de Montbui	41.5747466	1.6081086	abbreviated
+be-abbreviated-00231	Passeig Marítim 2, 07410 Port d'Alcúdia	39.8407448	3.1368365	abbreviated
+be-abbreviated-00232	Carrer de Juan de la Cierva 87, 03203 Elche	38.2994726	-0.6143777	abbreviated
+be-abbreviated-00233	A-2, 08719 Jorba	41.6184053	1.5100426	abbreviated
+be-abbreviated-00234	C/ Zurbaran 19, 13700 Tomelloso	39.1663729	-3.0281566	abbreviated
+be-abbreviated-00235	Av. de Monforte de Lemos 36, 28029 Madrid /Planta 2 Local 3	40.4793735	-3.7083765	abbreviated
+be-abbreviated-00236	C/ de María Zambrano 35, 50015 Zaragoza	41.6722999	-0.8900469	abbreviated
+be-abbreviated-00237	Rda. de Outeiro 290, 15011 A Coruña	43.3645801	-8.4237261	abbreviated
+be-abbreviated-00238	C/ de María Zambrano 35, 50015 Zaragoza	41.6722999	-0.8900469	abbreviated
+be-abbreviated-00239	C/ del Corregidor José de Pasamonte 5, 28030 Madrid	40.4105917	-3.6492267	abbreviated
+be-abbreviated-00240	C/ de Bailén, 39003 Santander	43.4622640	-3.8040007	abbreviated
+be-abbreviated-00241	C/ Germán Bernácer 52, 03203 Elche	38.2955056	-0.6168455	abbreviated
+be-abbreviated-00242	Carrer de Félix Rodríguez de la Fuente 51, 03203 Elche	38.2951085	-0.6188498	abbreviated
+be-abbreviated-00243	C/ Verónica 1, 50001 Zaragoza	41.6522380	-0.8788064	abbreviated
+be-abbreviated-00244	C/ Germán Bernácer 4, 03203 Elche	38.2889224	-0.6123290	abbreviated
+be-abbreviated-00245	Av. de los Poblados 58, 28044 Madrid	40.3863802	-3.7643136	abbreviated
+be-abbreviated-00246	c/ Enrique Granados 3, 03203 Elche	38.2926477	-0.6130671	abbreviated
+be-abbreviated-00247	c/ Leonardo da Vinci 14, 03203 Elche	38.2945912	-0.6084709	abbreviated
+be-abbreviated-00248	c/ Juan de Herrera 15, 03203 Elche	38.2902972	-0.6211354	abbreviated
+be-abbreviated-00249	Av. El Ferial 95, 49600 Benavente	41.9973882	-5.6768604	abbreviated
+be-abbreviated-00250	Av. de Santander 1, 39710 Solares	43.3836387	-3.7383258	abbreviated
+be-abbreviated-00251	Costanilla de los Ángeles 16, 28013 Madrid	40.4193473	-3.7080096	abbreviated
+be-abbreviated-00252	C/ Germán Bernácer 62, 03203 Elche	38.2960997	-0.6172518	abbreviated
+be-abbreviated-00253	Av. de Andalucía 56, 29770 Torrox Costa	36.7318288	-3.9652438	abbreviated
+be-abbreviated-00254	Av. de Alemania 15, 28916 Leganés	40.3342862	-3.7423546	abbreviated
+be-abbreviated-00255	C/ Santiago Ramón y Cajal 33, 03203 Elche	38.2962821	-0.6145765	abbreviated
+be-abbreviated-00256	C/ San Antonio 37, 29601 Marbella	36.5143724	-4.8817786	abbreviated
+be-abbreviated-00257	Barrio La Gándara 121-5, 39724 Ceceñas	43.3746184	-3.7178104	abbreviated
+be-abbreviated-00258	Carrer de Juan de la Cierva 63, 03203 Elche	38.2976478	-0.6131275	abbreviated
+be-abbreviated-00259	Carrer de Félix Rodríguez de la Fuente 52, 03203 Elche	38.2924073	-0.6164760	abbreviated
+be-abbreviated-00260	c/ Nicolás de Bussi 38, 03203 Elche	38.2914357	-0.6231726	abbreviated
+be-abbreviated-00261	CL HERMANOS GRANDA S/N, 33630 La Pola	43.1658282	-5.8292004	abbreviated
+be-abbreviated-00262	Carrer de Quart 57, 46001 València	39.4758321	-0.3830933	abbreviated
+be-abbreviated-00263	Carrer de Juan de la Cierva 54, 03320 Elche	38.2967707	-0.6118612	abbreviated
+be-abbreviated-00264	C/ del Ave María 43, 28012 Madrid	40.4094201	-3.7009059	abbreviated
+be-abbreviated-00265	Carrer de Juan de la Cierva 9, 03203 Elche	38.2913190	-0.6087976	abbreviated
+be-abbreviated-00266	c/ Alfred Nobel 15, 03203 Elche	38.2907520	-0.6125312	abbreviated
+be-abbreviated-00267	Carrer de Félix Rodríguez de la Fuente 59, 03203 Elche	38.2966392	-0.6197919	abbreviated
+be-abbreviated-00268	Carrer de Juan Negrín 49, 03320 Elche	38.2973116	-0.6101644	abbreviated
+be-abbreviated-00269	carrer Nou de Les Rambles 75, 08001 Barcelona	41.3764247	2.1715874	abbreviated
+be-abbreviated-00270	Av. de los Poblados 58, 28044 Madrid	40.3863802	-3.7643136	abbreviated
+be-abbreviated-00271	Carrer de Muntaner 223, 08036 Barcelona	41.3937636	2.1497797	abbreviated
+be-abbreviated-00272	Av. de Europa 2, 41960 Gines	37.3831517	-6.0859846	abbreviated
+be-abbreviated-00273	c/ Alfred Nobel 9, 03203 Elche	38.2902619	-0.6121927	abbreviated
+be-abbreviated-00274	C/ Mayor 29, 28596 Brea de Tajo	40.2284800	-3.1118440	abbreviated
+be-abbreviated-00275	Barrio La Gándara 121-11, 39724 Ceceñas	43.3745475	-3.7175209	abbreviated
+be-abbreviated-00276	c/ Juan de Herrera 11, 03203 Elche	38.2898848	-0.6208544	abbreviated
+be-abbreviated-00277	Carrer de Juan de la Cierva 32, 03203 Elche	38.2951984	-0.6107793	abbreviated
+be-abbreviated-00278	Av. Blas Infante, 23740 Andújar	38.0389000	-4.0383900	abbreviated
+be-abbreviated-00279	Ctra. Nacional 111, Km. 322, 26120 Albelda de Iregua	42.3935012	-2.4717492	abbreviated
+be-abbreviated-00280	C/ Germán Bernácer 24AC, 03203 Elche	38.2912480	-0.6139242	abbreviated
+be-abbreviated-00281	Carrer de Félix Rodríguez de la Fuente 64, 03203 Elche	38.2933203	-0.6171040	abbreviated
+be-abbreviated-00282	Barrio La Iglesia 40B-7, 39619 San Salvador	43.3922746	-3.8042472	abbreviated
+be-abbreviated-00283	N-230 185, 25549 Bausen	42.8323816	0.7293794	abbreviated
+be-abbreviated-00284	Carrer de Juan de la Cierva 70, 03203 Elche	38.2996401	-0.6139504	abbreviated
+be-abbreviated-00285	Carrer de l'Abat Cra. 17,19, 25265 Castellnou de Seana	41.6493555	0.9702984	abbreviated
+be-abbreviated-00286	C/ de las Delicias 2, 28045 Madrid	40.4041585	-3.6959215	abbreviated
+be-abbreviated-00287	c/ Marie Curie 14, 03203 Elche	38.2903286	-0.6183855	abbreviated
+be-abbreviated-00288	C/ Germán Bernácer 61, 03320 Elche	38.2932471	-0.6159594	abbreviated
+be-abbreviated-00289	Bista eder kalea 11, 20600 Eibar	43.1846789	-2.4700007	abbreviated
+be-abbreviated-00290	Carrer d'Alberto Sols 24, 03203 Elche	38.2961323	-0.6156702	abbreviated
+be-abbreviated-00291	C/ Luis Mitjans 29, 28007 Madrid	40.4034252	-3.6702754	abbreviated
+be-abbreviated-00292	Av. de la Constitución 27, 41004 Sevilla	37.3830476	-5.9933887	abbreviated
+be-abbreviated-00293	Barrio La Gándara 121-15, 39724 Ceceñas	43.3744316	-3.7177160	abbreviated
+be-abbreviated-00294	C/ Tomás Luis de Victoria 8, 03203 Elche	38.2932152	-0.6186256	abbreviated
+be-abbreviated-00295	A-2217, 22540 Altorricón	41.7986410	0.4136420	abbreviated
+be-abbreviated-00296	c/ Marqués de Laplace 6AC, 03203 Elche	38.2884049	-0.6201308	abbreviated
+be-abbreviated-00297	C/ de San Dacio 23, 28034 Madrid	40.4856250	-3.6883678	abbreviated
+be-abbreviated-00298	C/ Germán Bernácer 46, 03203 Elche	38.2946194	-0.6162337	abbreviated
+be-abbreviated-00299	c/ Miguel Servet 32, 03203 Elche	38.2951962	-0.6211951	abbreviated
+be-abbreviated-00300	Carrer de Juan Negrín 13, 03203 Elche	38.2944033	-0.6081670	abbreviated
+be-abbreviated-00301	Av. Sabino Arana 77, 48940 Leioa	43.3246606	-2.9878221	abbreviated
+be-abbreviated-00302	c/ Juan de Herrera 12, 03203 Elche	38.2900283	-0.6204194	abbreviated
+be-abbreviated-00303	c/ Juan de Herrera 21, 03203 Elche	38.2908350	-0.6215056	abbreviated
+be-abbreviated-00304	Carrer del Poeta Cabanyes 5-7, 08004 Barcelona	41.3747759	2.1661966	abbreviated
+be-abbreviated-00305	C/ Mayor 80, 28013 Madrid	40.4153818	-3.7117251	abbreviated
+be-abbreviated-00306	C/ de Ribadavia 9, 28029 Madrid	40.4723365	-3.7106687	abbreviated
+be-abbreviated-00307	C/ de Oriente 8, 28220 Majadahonda	40.4728358	-3.8749537	abbreviated
+be-abbreviated-00308	C/ Germán Bernácer 87, 03203 Elche	38.2967845	-0.6183713	abbreviated
+be-abbreviated-00309	c/ Marie Curie 15, 03203 Elche	38.2899662	-0.6189954	abbreviated
+be-abbreviated-00310	Carrer d'Alberto Sols 28, 03203 Elche	38.2963826	-0.6158444	abbreviated
+be-abbreviated-00311	C/ de San Bernardo 49, 28015 Madrid	40.4249824	-3.7074902	abbreviated
+be-abbreviated-00312	Carrer dels Marquesos del Tremolar, 46183 l'Eliana	39.5617509	-0.5367223	abbreviated
+be-abbreviated-00313	Fermin Calbeton kalea 6, 20600 Eibar	43.1842406	-2.4723007	abbreviated
+be-abbreviated-00314	C/ del Ave María 8, 28012 Madrid	40.4117492	-3.7003220	abbreviated
+be-abbreviated-00315	Pl. del Doctor Laguna 5, 28009 Madrid	40.4155186	-3.6726772	abbreviated
+be-abbreviated-00316	Pl. del Doctor Laguna 6, 28009 Madrid	40.4156031	-3.6721875	abbreviated
+be-abbreviated-00317	Av. de Ramón Pradera 16, 47009 Valladolid	41.6581580	-4.7365684	abbreviated
+be-abbreviated-00318	c/ Manuel de Falla 9, 03203 Elche	38.2907200	-0.6133039	abbreviated
+be-abbreviated-00319	Autovia del Nord-est, 25222 Sidamon	41.6333436	0.8229833	abbreviated
+be-abbreviated-00320	C/ Martín y Soler 3, 03203 Elche	38.2956257	-0.6145863	abbreviated
+be-abbreviated-00321	C/ de Anabel Segura 11, 28108 Alcobendas	40.5338476	-3.6261189	abbreviated
+be-abbreviated-00322	c/ Miguel Servet 2, 03203 Elche	38.2983375	-0.6138163	abbreviated
+be-abbreviated-00323	C/ Germán Bernácer 62, 03203 Elche	38.2960997	-0.6172518	abbreviated
+be-abbreviated-00324	Carrer de Juan de la Cierva 75, 03203 Elche	38.2987087	-0.6138521	abbreviated
+be-abbreviated-00325	Pl. de San Miguel, 28005 Madrid	40.4156013	-3.7095230	abbreviated
+be-abbreviated-00326	c/ Nicolás de Bussi 26, 03203 Elche	38.2899992	-0.6222026	abbreviated
+be-abbreviated-00327	Salamanca pasealekua 10, 20003 Donostia / San Sebastián	43.3249453	-1.9822815	abbreviated
+be-abbreviated-00328	c/ Pau Casals 10, 03320 Elche	38.2940804	-0.6151805	abbreviated
+be-abbreviated-00329	Carrer de Juan Negrín 23, 03203 Elche	38.2955029	-0.6089230	abbreviated
+be-abbreviated-00330	Carrer de Juan Negrín 45, 03320 Elche	38.2970943	-0.6100144	abbreviated
+be-abbreviated-00331	c/ Antonio José Cavanilles 15, 03203 Elche	38.2905212	-0.6223945	abbreviated
+be-abbreviated-00332	C/ Germán Bernácer 65, 03203 Elche	38.2939519	-0.6164406	abbreviated
+be-abbreviated-00333	Po. del Prado 48, 28014 Madrid	40.4098332	-3.6928352	abbreviated
+be-abbreviated-00334	Carrer de Félix Rodríguez de la Fuente 28, 03203 Elche	38.2908098	-0.6153846	abbreviated
+be-abbreviated-00335	C/ Mayor 33, 31600 Burlada/Burlata	42.8254227	-1.6169734	abbreviated
+be-abbreviated-00336	C/ Tomás Luis de Victoria 9, 03203 Elche	38.2942453	-0.6198647	abbreviated
+be-abbreviated-00337	CN-621, 39583 Ojedo	43.1670970	-4.6061990	abbreviated
+be-abbreviated-00338	Carrer de Ganduxer 5, 08021 Barcelona	41.3919314	2.1379764	abbreviated
+be-abbreviated-00339	C/ de Guzmán el Bueno 131, 28003 Madrid	40.4428603	-3.7126967	abbreviated
+be-abbreviated-00340	Carrer de Juan Negrín 61-2, 03320 Elche	38.2994420	-0.6117152	abbreviated
+be-abbreviated-00341	C/ de Oriente 8, 28220 Majadahonda	40.4728358	-3.8749537	abbreviated
+be-abbreviated-00342	Carrer de Félix Rodríguez de la Fuente 66, 03203 Elche	38.2934473	-0.6171839	abbreviated
+be-abbreviated-00343	Passeig de Manuel Girona 56, 08034 Barcelona	41.3912953	2.1253205	abbreviated
+be-abbreviated-00344	c/ Severo Ochoa 6, 03203 Elche	38.2902837	-0.6092803	abbreviated
+be-abbreviated-00345	Av. Andalucía 122, 18249 Puerto Lope	37.3329440	-3.8321390	abbreviated
+be-abbreviated-00346	C/ Germán Bernácer 24AC, 03203 Elche	38.2912480	-0.6139242	abbreviated
+be-abbreviated-00347	c/ Leonardo da Vinci 12, 03203 Elche	38.2943953	-0.6089254	abbreviated
+be-abbreviated-00348	C/ del Monasterio de Sobrado 5, 28049 Madrid	40.5091941	-3.6927889	abbreviated
+be-abbreviated-00349	c/ Nicolás de Bussi 62, 03203 Elche	38.2956453	-0.6261258	abbreviated
+be-abbreviated-00350	c/ Pitágoras 2AC, 03320 Elche	38.2948549	-0.6123452	abbreviated
+be-abbreviated-00351	Av. de Tenerife 19, 28702 San Sebastián de los Reyes	40.5614296	-3.6199174	abbreviated
+be-abbreviated-00352	Carrer de Juan de la Cierva 83, 03203 Elche	38.2991831	-0.6141794	abbreviated
+be-abbreviated-00353	c/ Pau Casals 6, 03320 Elche	38.2944478	-0.6143149	abbreviated
+be-abbreviated-00354	c/ Miguel Servet 4, 03203 Elche	38.2981859	-0.6141923	abbreviated
+be-abbreviated-00355	C/ Martín y Soler 22, 03203 Elche	38.2936257	-0.6202609	abbreviated
+be-abbreviated-00356	c/ Joaquín Turina 4, 03203 Elche	38.2907992	-0.6181941	abbreviated
+be-abbreviated-00357	C/ de Sebastián Herrera 6, 28012 Madrid	40.4037373	-3.6995978	abbreviated
+be-abbreviated-00358	C/ Italia 6, 28916 Leganés	40.3346623	-3.7427227	abbreviated
+be-abbreviated-00359	c/ Alfred Nobel 18, 03203 Elche	38.2908528	-0.6120540	abbreviated
+be-abbreviated-00360	CM-4102 1, 45600 Talavera de la Reina	39.9474930	-4.8293950	abbreviated
+be-abbreviated-00361	c/ Pau Casals 6, 03320 Elche	38.2944478	-0.6143149	abbreviated
+be-abbreviated-00362	C/ de Dolores Barranco 65, 28026 Madrid	40.3827694	-3.7093833	abbreviated
+be-abbreviated-00363	c/ Enrique Granados 7, 03203 Elche	38.2922880	-0.6139148	abbreviated
+be-abbreviated-00364	c/ Juan de Herrera 29, 03203 Elche	38.2918061	-0.6221888	abbreviated
+be-abbreviated-00365	C/ Santa Quiteria 45, 28430 Alpedrete	40.6550773	-4.0197572	abbreviated
+be-abbreviated-00366	Autovia del Nord-est, 25222 Sidamon	41.6333436	0.8229833	abbreviated
+be-abbreviated-00367	Camí de les Planes-Giriblau, 25141 Torregrossa	41.5791410	0.8374270	abbreviated
+be-abbreviated-00368	Po. de la Virgen del Pilar 9-14, 39710 Solares	43.3854305	-3.7397774	abbreviated
+be-abbreviated-00369	C/ de Caños del Peral 3, 28013 Madrid	40.4186369	-3.7090308	abbreviated
+be-abbreviated-00370	Carrer de Félix Rodríguez de la Fuente 22, 03203 Elche	38.2899678	-0.6148092	abbreviated
+be-abbreviated-00371	C/ del Carmen 4, 28013 Madrid	40.4175269	-3.7035489	abbreviated
+be-abbreviated-00372	C/ de la Antracita 24, 28045 Madrid	40.3907752	-3.6873822	abbreviated
+be-abbreviated-00373	C/ Constitución 4, 39710 Solares	43.3848018	-3.7393598	abbreviated
+be-abbreviated-00374	c/ Tales de Mileto 5, 03203 Elche	38.2953046	-0.6242575	abbreviated
+be-abbreviated-00375	c/ Leonardo da Vinci 11, 03203 Elche	38.2946759	-0.6092942	abbreviated
+be-abbreviated-00376	Av. de España, 11300 La Línea de la Concepción	36.1604101	-5.3492784	abbreviated
+be-abbreviated-00377	N-230 163,7, 25530 Vielha	42.7018172	0.7930481	abbreviated
+be-abbreviated-00378	Ctra. de Motril, 18611 Molvízar	36.7822210	-3.6001870	abbreviated
+be-abbreviated-00379	Pl. de Callao 4, 28013 Madrid	40.4200282	-3.7054691	abbreviated
+be-abbreviated-00380	c/ Marie Curie 10, 03203 Elche	38.2895410	-0.6178369	abbreviated
+be-abbreviated-00381	Carrer de Félix Rodríguez de la Fuente 70, 03203 Elche	38.2936932	-0.6173462	abbreviated
+be-abbreviated-00382	Carrer Nostra Senyora de Núria, 08591 Aiguafreda	41.7705071	2.2504013	abbreviated
+be-abbreviated-00383	c/ Enrique Granados 7, 03203 Elche	38.2922880	-0.6139148	abbreviated
+be-abbreviated-00384	Carrer de Juan de la Cierva 58-2, 03203 Elche	38.2977555	-0.6125353	abbreviated
+be-abbreviated-00385	c/ Miguel Servet 22-1, 03203 Elche	38.2964344	-0.6182703	abbreviated
+be-abbreviated-00386	c/ Juan de Herrera 6, 03203 Elche	38.2893692	-0.6199655	abbreviated
+be-abbreviated-00387	c/ Josep Lluís Sert 6, 03203 Elche	38.2924791	-0.6229995	abbreviated
+be-abbreviated-00388	c/ Pau Casals 22, 03203 Elche	38.2928240	-0.6181468	abbreviated
+be-abbreviated-00389	C/ Espadilla 22, 22640 Sallent de Gállego	42.7723653	-0.3347732	abbreviated
+be-abbreviated-00390	C/ de Manuel de Falla, 28222 Majadahonda	40.4500667	-3.8772702	abbreviated
+be-abbreviated-00391	Ctra. Adanero - León, 47670 Becilla de Valderaduey	42.0919363	-5.2067491	abbreviated
+be-abbreviated-00392	c/ Alfred Nobel 10, 03203 Elche	38.2903744	-0.6117326	abbreviated
+be-abbreviated-00393	Carrer d'Alberto Sols 34, 03203 Elche	38.2967594	-0.6161016	abbreviated
+be-abbreviated-00394	Carrer de Gabriel Roca 11, 07400 Port d'Alcúdia	39.8391848	3.1382525	abbreviated
+be-abbreviated-00395	Carrer de la Marinada 9, 25600 Balaguer	41.7727748	0.8163759	abbreviated
+be-abbreviated-00396	C/ Santiago Ramón y Cajal 1AC, 03203 Elche	38.2889482	-0.6096484	abbreviated
+be-abbreviated-00397	C/ de Fernando VI 6, 28004 Madrid	40.4252476	-3.6963836	abbreviated
+be-abbreviated-00398	c/ Juan de Herrera 22, 03203 Elche	38.2906657	-0.6208582	abbreviated
+be-abbreviated-00399	C/ del Príncipe Carlos 26, 28050 Madrid	40.4888193	-3.6506748	abbreviated
+be-typo-00400	Calle Tomás Luis de Victoria 18, 03203 Elche	38.2941218	-0.6192496	typo
+be-typo-00401	N-230 183, 25540 Ls	42.8204470	0.7143720	typo
+be-typo-00402	Carlos Blasco de Imaz plaza 1, 20008 Donostila / San Sebastián	43.3229005	-1.9921186	typo
+be-typo-00403	Avenida de la Autonomía, 50003 Zaragoza	41.6609331	-0.9069655	typo
+be-typo-00404	Calle Germán Bernácer 68, 03203 Elchq	38.2970224	-0.6178473	typo
+be-typo-00405	Calle Antonio Ferrandis "Chanquete" 35, 29780 Nerja	36.7439578	-3.8853544	typo
+be-typo-00406	calle Pitágoras 17, 03320 Elceh	38.2963994	-0.6097171	typo
+be-typo-00407	Calle Tomás Luis de Victoria 4, 03203 Eeche	38.2929321	-0.6184314	typo
+be-typo-00408	Calle Martín y Sole 22, 03203 Elche	38.2936257	-0.6202609	typo
+be-typo-00409	Carrer de Félix Rodríguez de la Fuente 59, 03203 Elche	38.2966392	-0.6197919	typo
+be-typo-00410	Carrrer de Félix Rodríguez de la Fuente 90, 03203 Elche	38.2964335	-0.6192257	typo
+be-typo-00411	calle Juan de Herrera 38, 03203 Elche	38.2931913	-0.6227177	typo
+be-typo-00412	Carrer d'Alberto Sols 15, 03203 Eldhe	38.2961933	-0.6162491	typo
+be-typo-00413	Carrxer de Félix Rodríguez de la Fuente 20, 03203 Elche	38.2898963	-0.6147611	typo
+be-typo-00414	Paseo de la Estación 26-2, 39710 Solasres	43.3877921	-3.7308442	typo
+be-typo-00415	Avinguda de la Generalitat 10, 25310 Agramunt	41.7820757	1.1046445	typo
+be-typo-00416	Calle San Juan de la Cruz 23, 50006 Zaragoza	41.6410490	-0.8907511	typo
+be-typo-00417	Calle de José del Hierro 57, 28027 Magdrid	40.4409269	-3.6427108	typo
+be-typo-00418	Carrer de Félix Rodríguez de la Fuente 96, 03203 Elche	38.2967797	-0.6194615	typo
+be-typo-00419	Calle Ajalvir 31, 28860 Paracuellos de Jarama	40.5063235	-3.5279440	typo
+be-typo-00420	Avenida de Ramón Pradera 12, 47009 Valladolid	41.6572680	-4.7367354	typo
+be-typo-00421	calle Myiguel Servet 7-3, 03203 Elche	38.2978314	-0.6176812	typo
+be-typo-00422	Calle Max Planck 4, 03203 Elch	38.2884082	-0.6166519	typo
+be-typo-00423	Avenda de Alisas, 39720 La Cavada	43.3520717	-3.7028553	typo
+be-typo-00424	Carrer de Félix Rodríguez de la Fuente 25, 03203 Elche	38.2931627	-0.6175233	typo
+be-typo-00425	Carrer de Félix Rodríguez de la Fuente 43, 03203 flche	38.2946403	-0.6185347	typo
+be-typo-00426	Carrer de Gravina 13, 03002 Alicante/Alcant	38.3454876	-0.4796001	typo
+be-typo-00427	Calle Constitución 3, 39710 Solares	43.3847778	-3.7390283	typo
+be-typo-00428	calle Jame Watt 1AC, 03203 Elche	38.2965426	-0.6242319	typo
+be-typo-00429	Avenida de Europa 1, 41960 Gine	37.3834664	-6.0858332	typo
+be-typo-00430	calle Charles Darwin 11-2, 03203 Elchxe	38.2931505	-0.6090714	typo
+be-typo-00431	Partida del Barranc de la Civila 1, 46740 Carcaixent	39.1139170	-0.4580000	typo
+be-typo-00432	Carretera N-630, 10005 Cáceres	39.4887121	-6.4130287	typo
+be-typo-00433	Plaza de Callao 4, 28013 Madrid	40.4200282	-3.7054691	typo
+be-typo-00434	Plaza de Jesús 4, 28014 Madrid	40.4137383	-3.6957781	typo
+be-typo-00435	Plaza de Cristino Martos 2, 28015 Madrid	40.4257656	-3.7120898	typo
+be-typo-00436	calle Pau Casals 9, 03203 vlche	38.2932266	-0.6161973	typo
+be-typo-00437	Calle Orfila 11, 41003 Sevella	37.3930361	-5.9935992	typo
+be-typo-00438	Avenida de Monforte de Lemos 36, 28029 Madrid /Planta 0 y 1 Local 30	40.4803520	-3.7068876	typo
+be-typo-00439	Calle Nueva Atalgya, 29688 Estepona	36.4687095	-5.0195918	typo
+be-typo-00440	Calle Constitución 3, 39710 Solkares	43.3847778	-3.7390283	typo
+be-typo-00441	calle Antoni Gaudí 2AC, 03203 Elche	38.2902737	-0.6105432	typo
+be-typo-00442	Cqlle Valle del Sella, 28660 Boadilla del Monte	40.4397724	-3.9000254	typo
+be-typo-00443	Avinguda Josep Trías 22, 07458 Can Picafort	39.7675655	3.1478830	typo
+be-typo-00444	Calle Germán Bernácer 68, 03203 lEche	38.2970224	-0.6178473	typo
+be-typo-00445	Calle de las Escuclas 3, 28818 Anchuelo	40.4651717	-3.2706420	typo
+be-typo-00446	Camí dels Plans de Can Bonvilar s/n, 08227 Terrassa	41.5754939	2.0610967	typo
+be-typo-00447	Paraje Los Gurullos, 04638 oMjácar	37.1384275	-1.8399518	typo
+be-typo-00448	calle Marie Curie 14, 03203 Elche	38.2903286	-0.6183855	typo
+be-typo-00449	Carrer de la Catalunya Nord 21, 25241 Golmés	41.6296925	0.9061060	typo
+be-typo-00450	Calle de uFernández Rañada 6, 39710 Solares	43.3821972	-3.7367876	typo
+be-typo-00451	Autovia A-2, 25245 Vila-sana	41.6428154	0.8947393	typo
+be-typo-00452	Calle de Luis Buñuel 1, 28223 Pozuelo de Alarcón	40.3984408	-3.7881758	typo
+be-typo-00453	Carrer de Quart 57, 46001 València	39.4758321	-0.3830933	typo
+be-typo-00454	calle Leonardmo da Vinci 3AC, 03203 Elche	38.2939467	-0.6110207	typo
+be-typo-00455	calle Nicolás Copérnico 7, 03203 Elche	38.2933441	-0.6242503	typo
+be-typo-00456	palle del Río Miera 4, 39710 Solares	43.3827301	-3.7404202	typo
+be-typo-00457	CARRETERA EX-102 KM 45.500, 10120 wLogrosán	39.3333330	-5.4794440	typo
+be-typo-00458	Calle San Sebastián 1, 29788 Frigiliana	36.7903726	-3.8952003	typo
+be-typo-00459	Plaza de las 11 Colmenas 1, 28760 Tres Cantos	40.6021936	-3.7145294	typo
+be-typo-00460	callle Juan de Herrera 38, 03203 Elche	38.2931913	-0.6227177	typo
+be-typo-00461	La Rabmla 98, 08002 Barcelona	41.3822988	2.1725153	typo
+be-typo-00462	calle Leonardo da Vinci 10, 03203 Elche	38.2942235	-0.6093676	typo
+be-typo-00463	Carrer d'Altiimra 18, 08290 Cerdanyola del Vallès	41.4900438	2.1391742	typo
+be-typo-00464	Plaza del Valle de Tena 2, 22640 Sallent de Gállego	42.7721273	-0.3314218	typo
+be-typo-00465	calle Tales de Mileto 5, 03203 Elche	38.2953046	-0.6242575	typo
+be-typo-00466	Calle del Teniente Coronel Noreña 26, 28045 Madrid	40.3883121	-3.6933444	typo
+be-typo-00467	Paseo de la Estación 28, 39710 Solares	43.3880416	-3.7308406	typo
+be-typo-00468	Calle Italia 6, 28916 Legfnés	40.3346623	-3.7427227	typo
+be-typo-00469	Calle San Miguel 28, 29787 Maro	36.7592686	-3.8421732	typo
+be-typo-00470	Calle Santiago Ramón y aCjal 7, 03203 Elche	38.2906417	-0.6109645	typo
+be-typo-00471	Calle Tomás Luis de Victorita 30, 03203 Elche	38.2948769	-0.6197526	typo
+be-typo-00472	Avenida Blas Infante, 23740 Andújar	38.0389000	-4.0383900	typo
+be-typo-00473	Carrer de Juan de ln Cierva 23, 03203 Elche	38.2921787	-0.6093782	typo
+be-typo-00474	Avenida de Santander 3, 39710 Solareos	43.3837480	-3.7386262	typo
+be-typo-00475	Carrer de Félix Rodríguez de la Fuente 26, 03203 Elche	38.2907374	-0.6153354	typo
+be-typo-00476	Calle de Tetuán 34, 28013 Madrid	40.4181830	-3.7031236	typo
+be-typo-00477	Calle Gemrán Bernácer 49, 03203 Elche	38.2925387	-0.6154731	typo
+be-typo-00478	Carrer Martín i Soler 2yAC, 03203 Elche	38.2960556	-0.6145488	typo
+be-typo-00479	Avenida Luis de Morales 20, 41005 Sevilla	37.3853757	-5.9728793	typo
+be-typo-00480	calle Antonio José Cavanilles 2, 03203 Elche	38.2918062	-0.6207939	typo
+be-typo-00481	Jose Elosegi Alkatea 273, 20015 Donostia / Sna Sebastián	43.3214757	-1.9492364	typo
+be-typo-00482	calle Severo Ochoa 2AC, 03203 Elche	38.2891631	-0.6083947	typo
+be-typo-00483	Avenida Juan Pablo II 20, 37800 Alba de Tormes	40.8210505	-5.5136708	typo
+be-typo-00484	Calle General Elorza 75, 33001 Oviedo / Uviéu	43.3665510	-5.8495642	typo
+be-typo-00485	Paseo de Saagsta 50, 50006 Zaragoza	41.6419571	-0.8865120	typo
+be-typo-00486	yalle Constitución 4, 39710 Solares	43.3848018	-3.7393598	typo
+be-typo-00487	Carrer de Juan vde la Cierva 3, 03203 Elche	38.2898658	-0.6078152	typo
+be-typo-00488	Calle Tomás Luis de Victoria 26, 03203 Elchre	38.2946367	-0.6195976	typo
+be-typo-00489	calle Nicolás de Bussi 34, 03203 Elhe	38.2911822	-0.6230014	typo
+be-typo-00490	Calle d Arganda 32, 28005 Madrid	40.3995673	-3.7070140	typo
+be-typo-00491	Avenida de El Ferrol 2, 28029 Madrid	40.4747468	-3.7031802	typo
+be-typo-00492	calle Manuel de Falla 2, 03203 Elhce	38.2915199	-0.6129232	typo
+be-typo-00493	Calle Germán Bernácer 37, 03203 Elchk	38.2918024	-0.6149700	typo
+be-typo-00494	calle Pac Casals 1AC, 03320 Elche	38.2941141	-0.6139851	typo
+be-typo-00495	Avenida de Alisas, 39720 La Cavada	43.3521473	-3.7050281	typo
+be-typo-00496	Carretera Nacinoal 111, Km. 322, 26120 Albelda de Iregua	42.3935012	-2.4717492	typo
+be-typo-00497	Calle del Príncipe Carlof 26, 28050 Madrid	40.4888193	-3.6506748	typo
+be-typo-00498	calle Jun de Herrera 43, 03203 Elche	38.2930672	-0.6230380	typo
+be-typo-00499	Paeso del Marqués de Zafra, 28028 Madrid	40.4259964	-3.6647213	typo
+be-typo-00500	calle Alfred Nobel 3, 03203 flche	38.2898026	-0.6118848	typo
+be-typo-00501	Avenida de Tenerife 19, 28702 San Sebastjián de los Reyes	40.5614296	-3.6199174	typo
+be-typo-00502	Calle Mayor 77, 28013 Madred	40.4151603	-3.7121513	typo
+be-typo-00503	Avenida Sabino Ahrana 77, 48940 Leioa	43.3246606	-2.9878221	typo
+be-typo-00504	Plaza xeobaldos 2, 31390 Olite	42.4820533	-1.6503136	typo
+be-typo-00505	Avenida de Aragón 79, 22520 Fraga	41.5201450	0.3345932	typo
+be-typo-00506	Carrer de Sever Ochoa 46, 03203 Elche	38.2986095	-0.6150303	typo
+be-typo-00507	Calle de los Cañizares 10, 28012 Madrid	40.4127198	-3.7017271	typo
+be-typo-00508	CL-517, 37147 Villar de Peralonso	41.0308321	-6.2192537	typo
+be-typo-00509	Calle Germán Bernácer 67, 03203 Elche	38.2940474	-0.6165035	typo
+be-typo-00510	Calle Santiago Ramón y Cajal 37, 03203 Elche	38.2971111	-0.6151409	typo
+be-typo-00511	Calle Lopa de Vega 8, 28912 Leganés	40.3243423	-3.7652946	typo
+be-typo-00512	Carrer de Jaun de la Cierva 63, 03203 Elche	38.2976478	-0.6131275	typo
+be-typo-00513	Plaza de Sanfa Bárbara 4, 28004 Madrid	40.4276137	-3.6962892	typo
+be-typo-00514	Carrer de Félix Rodríguez de la Fuente 12, 03203 Elche	38.2893295	-0.6143676	typo
+be-typo-00515	Passeig de Sant Joan 276, 08560 Manlleu	42.0088060	2.2797220	typo
+be-typo-00516	Calle Germán Bernácer 24AC, 03203 Elche	38.2912480	-0.6139242	typo
+be-typo-00517	Calle Alfonso XII 53, 41001 Sevilla	37.3931847	-6.0007009	typo
+be-typo-00518	Avenida de Alisas 33, 39720 La Cavada	43.3521272	-3.7047232	typo
+be-typo-00519	Calle Londrres, 10005 Cáceres	39.4679574	-6.3888299	typo
+be-typo-00520	Fermin Calbeton kalea 6, 20600 Eibdar	43.1842406	-2.4723007	typo
+be-typo-00521	Calle González de León 4, 41003 Sevilla	37.3869540	-5.9856750	typo
+be-typo-00522	calle Juan de Herrera 36, 03203 Elche	38.2930482	-0.6226232	typo
+be-typo-00523	carretera de Caldes 140, 08186 Lliçà d'Amunt	41.6267522	2.2355417	typo
+be-typo-00524	Calle de Molins de Rey 4, 28034 Magdrid	40.4949220	-3.6934164	typo
+be-typo-00525	Carrer de Félix Rodríguez de la Fuente 14, 03203 Elce	38.2893840	-0.6144098	typo
+be-typo-00526	Carrer de Félix Rodríguez de la Fuente 34, 03203 Elche	38.2911722	-0.6156310	typo
+be-typo-00527	Carrer d'Alberto ols 6, 03320 Elche	38.2946893	-0.6146875	typo
+be-typo-00528	Carrer de Ramón y Cajal 24, 08012 Barcelona	41.4025115	2.1585725	typo
+be-typo-00529	Calle Italia 10, 28916 Leganés	40.3344023	-3.7422365	typo
+be-typo-00530	calle Pau Casals 11-2, 03203 sElche	38.2930012	-0.6167302	typo
+be-typo-00531	Carrer d'Alberxo Sols 20, 03203 Elche	38.2958930	-0.6155066	typo
+be-typo-00532	Avenida de Peñ Cabarga 20I, 39710 Solares	43.3817365	-3.7411005	typo
+be-typo-00533	BA-136, 06650 Siruela	38.9768457	-5.0851823	typo
+be-typo-00534	Carrer de Juan Negrín 33, 03203 Elche	38.2961121	-0.6093424	typo
+be-typo-00535	Calle Real 21, 28791 Soto del Real	40.7546895	-3.7856727	typo
+be-typo-00536	Calle del Alcalde Sáinz de Baranda 50, 28009 Matdrid	40.4164723	-3.6717472	typo
+be-typo-00537	Plaza de Francisco Perojo Cagigas 2, 39710 Solares	43.3836170	-3.7367144	typo
+be-typo-00538	Carrer de Juan de la Cierva 83, 03203 Elche	38.2991831	-0.6141794	typo
+be-typo-00539	Plaza de la Constitución 10, 28412 El Boalo	40.7175029	-3.9201748	typo
+be-typo-00540	Calle Virgen de las Maravillas, 29787 Maro	36.7570603	-3.8434898	typo
+be-typo-00541	Carrer del Mestre Güell 135, 25300 Tàrrega	41.6518754	1.1494573	typo
+be-typo-00542	Pablo Picasso kalea 5, 48300 Gernika-Lums	43.3142186	-2.6774263	typo
+be-typo-00543	Calle de Silvano 77, 28043 Meadrid	40.4630376	-3.6376566	typo
+be-typo-00544	calle Marie Curie 34, 03203 Elche	38.2952110	-0.6217249	typo
+be-typo-00545	Carrer dels Llacs 1, 25210 Guissona	41.7819380	1.2781813	typo
+be-typo-00546	Calle Orfila 11, 41003 Sevilla	37.3930361	-5.9935992	typo
+be-typo-00547	Calle de las Escuelas 3, 28818 Anchuelo	40.4651717	-3.2706420	typo
+be-typo-00548	Calle de la Estafeta 17, 28041 Mdrid /local	40.3727453	-3.6921875	typo
+be-typo-00549	Avenda de Manoteras 40, 28050 Madrid	40.4860343	-3.6656428	typo
+be-typo-00550	Carretera CM-420, 13640 Herencia	39.3535327	-3.4028770	typo
+be-typo-00551	Clale Antonia Herránz 2, 28860 Paracuellos de Jarama	40.5061481	-3.5321130	typo
+be-typo-00552	Gran Vía 38, 28013 Madrid	40.4203920	-3.7045921	typo
+be-typo-00553	Ronda de Outeiro 310, 15011 A Coruña	43.3661359	-8.4243740	typo
+be-typo-00554	calle Guillermo Marconi 5, 03203 Elche	38.2887850	-0.6109534	typo
+be-typo-00555	Carretera N-234, 150,5, 44360 Santa Eulalia dle Campo	40.5643163	-1.2854436	typo
+be-typo-00556	Calle Germán Bernácer 70, 03203 Elche	38.2971447	-0.6179327	typo
+be-typo-00557	calle Charles Darwik 4, 03203 Elche	38.2920966	-0.6100558	typo
+be-typo-00558	Calle Germán Bernácer 32, 03203 vElche	38.2919284	-0.6143881	typo
+be-typo-00559	Calle Martín y Soler 3, 03203 Elche	38.2956257	-0.6145863	typo
+be-typo-00560	Avenida Arcas del Agua 7, 28905 Getafe	40.2927929	-3.7457159	typo
+be-typo-00561	calle Tales de Mileto 2AC, 03203 lEche	38.2955406	-0.6244515	typo
+be-typo-00562	Calle del Ave María 39, 28012 Madrdi	40.4096555	-3.7009094	typo
+be-typo-00563	Costanilla de los Ángeles 16, 28013 Madrid	40.4193473	-3.7080096	typo
+be-typo-00564	Plaza de San Miguel, 28005 sMadrid	40.4156013	-3.7095230	typo
+be-typo-00565	calle Nicolás de Bussi 16, 03203 Elche	38.2888684	-0.6214356	typo
+be-typo-00566	Calle de Emilio Maza Cifrián 6, 39710 Solares	43.3852821	-3.7325067	typo
+be-typo-00567	Carrer de Félix Rodríguez de la Fuente 88, 03203 Elche	38.2963158	-0.6191463	typo
+be-typo-00568	Barrio La Iglesia 40j-3, 39619 San Salvador	43.3926442	-3.8043331	typo
+be-typo-00569	Carrer de Félix Rodríguez de la Fuente 76, 03203 Elche	38.2941131	-0.6176310	typo
+be-typo-00570	Calle de Raimundo Fernández Vidlaverde 16, 28003 Madrid	40.4465563	-3.7020049	typo
+be-typo-00571	calle Juan de Herrera 22, 03203 plche	38.2906657	-0.6208582	typo
+be-typo-00572	Calle de las Veneras 9, 28013 Madrid	40.4195999	-3.7077336	typo
+be-typo-00573	Calle Germán Bernácer 41, 03203 Elceh	38.2920541	-0.6151401	typo
+be-typo-00574	Calle de las Tres Cruces 3, 28013 Madrid	40.4192843	-3.7030373	typo
+be-typo-00575	Calle Sierra Alcaraz 41, 28053 Madrid	40.3900369	-3.6674984	typo
+be-typo-00576	Paseo de las Delicias 61, 28045 Madrid	40.3993218	-3.6921489	typo
+be-typo-00577	Carrer de Félix Rodríguez de l Fuente 62, 03203 Elche	38.2929090	-0.6168217	typo
+be-typo-00578	CN-621, 39583 jOedo	43.1670970	-4.6061990	typo
+be-typo-00579	Carrer de Félix Rodrígauez de la Fuente 20, 03203 Elche	38.2898963	-0.6147611	typo
+be-typo-00580	Calle Nueva 1, 34349 San Nicolás del Real Camio	42.3635128	-4.9517933	typo
+be-typo-00581	Carrer d'Alberxto Sols 7, 03203 Elche	38.2957111	-0.6159165	typo
+be-typo-00582	Avenida Juan Carlos I Rey, 52001 Melilla	35.2939109	-2.9406973	typo
+be-typo-00583	Avenda Real de Pinto 108, 28021 Madrid	40.3391390	-3.7094440	typo
+be-typo-00584	Barrio La Iglesia 122, 39715 Entrambasaguas	43.3765939	-3.6778866	typo
+be-typo-00585	Calle Londres 12, 10005 Cáceyres	39.4681110	-6.3875123	typo
+be-typo-00586	calle Miguel Servaet 9, 03203 Elche	38.2970207	-0.6156646	typo
+be-typo-00587	calle Severo Ochoa 28, 03320 Elche	38.2947045	-0.6123001	typo
+be-typo-00588	Plazma de San Martín 5, 28013 Madrid	40.4186548	-3.7066997	typo
+be-typo-00589	Callg J 290, 42005 Soria	41.7728691	-2.4855899	typo
+be-typo-00590	Carrer del Cigne, 46520 Puerto de Sagunto	39.7197732	-0.1928002	typo
+be-typo-00591	Calle Tomás Luis de Victoria 12, 03203 vElche	38.2934101	-0.6187542	typo
+be-typo-00592	Callejón de las Santas Formas, 28801 Alclá de Henares	40.4846781	-3.3623655	typo
+be-typo-00593	Calle Constitución 4, 39710 Solares	43.3848018	-3.7393598	typo
+be-typo-00594	Carrer de Félix Rodríguez ed la Fuente 38, 03203 Elche	38.2914167	-0.6157985	typo
+be-typo-00595	calle Alfred Nobel 5, 03203 Elche	38.2899133	-0.6119576	typo
+be-typo-00596	Calle de Coloreros 4, 28013 Madrid	40.4166338	-3.7069412	typo
+be-typo-00597	Calle Valle del Sella, 28660 Boadilla del Monte	40.4397724	-3.9000254	typo
+be-typo-00598	Carrer de Juan Negrín 53-4, 03320 Elche	38.2980695	-0.6107285	typo
+be-typo-00599	Carrer de Félix Rodrígpuez de la Fuente 22, 03203 Elche	38.2899678	-0.6148092	typo
+be-reordered-00600	08710 Santa Margarida de Montbui Carretera de Valls 32	41.5747466	1.6081086	reordered
+be-reordered-00601	03203 Elche calle Alfred Nobel 8	38.2902694	-0.6116585	reordered
+be-reordered-00602	03203 Elche Calle Tomás Luis de Victoria 34	38.2951587	-0.6199469	reordered
+be-reordered-00603	03203 Elche calle Marqués de Laplace 4	38.2887704	-0.6193963	reordered
+be-reordered-00604	03203 Elche calle Albert Einstein 2AC	38.2898519	-0.6082969	reordered
+be-reordered-00605	41018 Sevilla Calle Luis de Morales 4	37.3861094	-5.9722120	reordered
+be-reordered-00606	28016 Madrid Calle del Príncipe de Vergara 270	40.4581112	-3.6765942	reordered
+be-reordered-00607	08021 Barcelona Carrer de Ganduxer 5	41.3919314	2.1379764	reordered
+be-reordered-00608	03203 Elche Carrer de Félix Rodríguez de la Fuente 94	38.2966619	-0.6193808	reordered
+be-reordered-00609	28033 Madrid Calle de Caleruega	40.4807288	-3.6714044	reordered
+be-reordered-00610	03203 Elche Calle Germán Bernácer 45	38.2922986	-0.6153106	reordered
+be-reordered-00611	03320 Elche calle Pitágoras 8	38.2956400	-0.6105132	reordered
+be-reordered-00612	39710 Solares Calle del Río Miera 4	43.3827301	-3.7404202	reordered
+be-reordered-00613	07590 Cala Ratjada Cala Lliteras	39.7202798	3.4616683	reordered
+be-reordered-00614	29780 Nerja Calle Pintada 48	36.7477563	-3.8763293	reordered
+be-reordered-00615	03320 Elche calle Pitágoras 8	38.2956400	-0.6105132	reordered
+be-reordered-00616	03203 Elche calle Galileo Galilei 12	38.2882097	-0.6116604	reordered
+be-reordered-00617	03320 Elche Calle Santiago Ramón y Cajal 27	38.2949015	-0.6136293	reordered
+be-reordered-00618	28108 Alcobendas Calle de Anabel Segura 7	40.5346171	-3.6252579	reordered
+be-reordered-00619	28220 Majadahonda Calle del Doctor Mariano Alcaraz 1	40.4554939	-3.8673894	reordered
+be-reordered-00620	03320 Elche Carrer d'Alberto Sols 6	38.2946893	-0.6146875	reordered
+be-reordered-00621	03203 Elche Calle Santiago Ramón y Cajal 19	38.2938170	-0.6129667	reordered
+be-reordered-00622	28027 Madrid Calle de José del Hierro 57	40.4409269	-3.6427108	reordered
+be-reordered-00623	03320 Elche calle Severo Ochoa 30	38.2952346	-0.6127163	reordered
+be-reordered-00624	39583 Ojedo CN-621	43.1670970	-4.6061990	reordered
+be-reordered-00625	03203 Elche Calle Germán Bernácer 78	38.2976190	-0.6182601	reordered
+be-reordered-00626	25210 Guissona Carrer dels Llacs 1	41.7819380	1.2781813	reordered
+be-reordered-00627	03203 Elche Carrer de Juan de la Cierva 61	38.2975301	-0.6130490	reordered
+be-reordered-00628	28220 Majadahonda Calle del Doctor Mariano Alcaraz 1	40.4554939	-3.8673894	reordered
+be-reordered-00629	50001 Zaragoza Calle Verónica 1	41.6522380	-0.8788064	reordered
+be-reordered-00630	03203 Elche Carrer de Juan de la Cierva 60	38.2980960	-0.6127643	reordered
+be-reordered-00631	39710 Solares Calle del Río Miera 1	43.3828517	-3.7409964	reordered
+be-reordered-00632	28003 Madrid Calle de Guzmán el Bueno 131	40.4428603	-3.7126967	reordered
+be-reordered-00633	41950 Castilleja de la Cuesta Paseo El Valero	37.3857048	-6.0465222	reordered
+be-reordered-00634	03203 Elche Calle Tomás Luis de Victoria 4	38.2929321	-0.6184314	reordered
+be-reordered-00635	03203 Elche calle Marqués de Laplace 2	38.2890331	-0.6187702	reordered
+be-reordered-00636	03203 Elche calle Alfred Nobel 9	38.2902619	-0.6121927	reordered
+be-reordered-00637	39710 Solares Paseo de la Virgen del Pilar 4	43.3850537	-3.7399419	reordered
+be-reordered-00638	25240 Linyola Carrer de Prat de la Riba 109	41.7153630	0.9023440	reordered
+be-reordered-00639	03203 Elche Carrer de Juan de la Cierva 69	38.2979862	-0.6133534	reordered
+be-reordered-00640	39710 Solares Avenida de Calvo Sotelo 20	43.3850735	-3.7336015	reordered
+be-reordered-00641	28005 Madrid Plaza de la Cebada 11	40.4116487	-3.7101786	reordered
+be-reordered-00642	03203 Elche calle Severo Ochoa 22	38.2938108	-0.6116832	reordered
+be-reordered-00643	03203 Elche Carrer de Juan de la Cierva 15	38.2917072	-0.6090584	reordered
+be-reordered-00644	03203 Elche calle Juan de Villanueva 5-4	38.2893430	-0.6209104	reordered
+be-reordered-00645	03203 Elche calle Marie Curie 21	38.2913444	-0.6199953	reordered
+be-reordered-00646	03203 Elche Calle Tomás Luis de Victoria 18	38.2941218	-0.6192496	reordered
+be-reordered-00647	03203 Elche Carrer de Félix Rodríguez de la Fuente 44	38.2918166	-0.6160724	reordered
+be-reordered-00648	15402 Ferrol Rúa Magdalena 101	43.4834535	-8.2331487	reordered
+be-reordered-00649	03203 Elche calle Joaquín Turina 4	38.2907992	-0.6181941	reordered
+be-reordered-00650	28430 Alpedrete Calle Navacerrada 13	40.6629509	-4.0298731	reordered
+be-reordered-00651	03203 Elche calle Miguel Servet 16-3	38.2972363	-0.6172739	reordered
+be-reordered-00652	28013 Madrid Calle de las Veneras	40.4192413	-3.7074836	reordered
+be-reordered-00653	03320 Elche calle Pitágoras 2AC	38.2948549	-0.6123452	reordered
+be-reordered-00654	03203 Elche Calle Germán Bernácer 63-2	38.2937590	-0.6163116	reordered
+be-reordered-00655	03203 Elche calle Joaquín Turina 3	38.2906195	-0.6180794	reordered
+be-reordered-00656	30011 Murcia Avenida Lope de Vega	37.9806337	-1.1123097	reordered
+be-reordered-00657	28029 Madrid Calle de Ponferrada 49	40.4760630	-3.7127659	reordered
+be-reordered-00658	28015 Madrid Calle de Meléndez Valdés 36	40.4330671	-3.7126238	reordered
+be-reordered-00659	08784 Piera Carrer de Calderón de la Barca 3-5	41.5221364	1.7444560	reordered
+be-reordered-00660	03203 Elche Calle Germán Bernácer 78	38.2976190	-0.6182601	reordered
+be-reordered-00661	39710 Solares Avenida de Peña Cabarga 20F	43.3821111	-3.7413368	reordered
+be-reordered-00662	03203 Elche calle Marie Curie 28	38.2939259	-0.6208467	reordered
+be-reordered-00663	03203 Elche calle Nicolás de Bussi 44	38.2918178	-0.6234319	reordered
+be-reordered-00664	03689 Hondón de los Frailes calle Virgen de la Salud 1	38.2731505	-0.9281030	reordered
+be-reordered-00665	03203 Elche calle Juan de Herrera 34	38.2929026	-0.6225240	reordered
+be-reordered-00666	08710 Santa Margarida de Montbui Carretera de Valls 32	41.5747466	1.6081086	reordered
+be-reordered-00667	03203 Elche calle Alfred Nobel 18	38.2908528	-0.6120540	reordered
+be-reordered-00668	39710 Solares Avenida de Alisas 3	43.3843026	-3.7359467	reordered
+be-reordered-00669	25633 Tremp Carretera C-13	42.1473145	0.8937929	reordered
+be-reordered-00670	28223 Pozuelo de Alarcón Calle de Luis Buñuel 1	40.3984408	-3.7881758	reordered
+be-reordered-00671	03203 Elche Carrer de Félix Rodríguez de la Fuente 14	38.2893840	-0.6144098	reordered
+be-reordered-00672	03203 Elche calle Juan de Villanueva 14	38.2894802	-0.6215429	reordered
+be-reordered-00673	28944 Fuenlabrada Calle de las Panaderas 1	40.2794181	-3.7980386	reordered
+be-reordered-00674	03689 Hondón de los Frailes calle Virgen de la Salud 1	38.2731505	-0.9281030	reordered
+be-reordered-00675	03203 Elche calle Juan de Herrera 42	38.2937014	-0.6230614	reordered
+be-reordered-00676	03203 Elche calle Josep Lluís Sert 1AC	38.2926262	-0.6216625	reordered
+be-reordered-00677	28039 Madrid Calle de Bravo Murillo 331	40.4642212	-3.6960063	reordered
+be-reordered-00678	03203 Elche Carrer d'Alberto Sols 30	38.2965056	-0.6159298	reordered
+be-reordered-00679	28013 Madrid Calle del Carmen 27	40.4187951	-3.7049160	reordered
+be-reordered-00680	28029 Madrid Avenida de Monforte de Lemos 36	40.4793735	-3.7083765	reordered
+be-reordered-00681	03203 Elche calle Juan de Herrera 5	38.2891602	-0.6203575	reordered
+be-reordered-00682	04800 Albox Carretera del Almanzora	37.3794707	-2.1354775	reordered
+be-reordered-00683	37521 Robleda Avenida de Extremadura 1	40.3866407	-6.6080902	reordered
+be-reordered-00684	03203 Elche Carrer de Félix Rodríguez de la Fuente 8	38.2890547	-0.6141814	reordered
+be-reordered-00685	03203 Elche Calle Martín y Soler 20	38.2938600	-0.6197315	reordered
+be-reordered-00686	03203 Elche calle Pau Casals 24	38.2925176	-0.6192207	reordered
+be-reordered-00687	03203 Elche Carrer de Félix Rodríguez de la Fuente 55	38.2953443	-0.6190133	reordered
+be-reordered-00688	03203 Elche calle Pau Casals 9	38.2932266	-0.6161973	reordered
+be-reordered-00689	39710 Solares Plaza de Francisco Perojo Cagigas 3	43.3835518	-3.7368907	reordered
+be-reordered-00690	03203 Elche calle Tales de Mileto 5	38.2953046	-0.6242575	reordered
+be-reordered-00691	28005 Madrid Calle de Melilla 6	40.4014798	-3.7104250	reordered
+be-reordered-00692	39724 Ceceñas Barrio La Gándara 121-1	43.3746996	-3.7176717	reordered
+be-reordered-00693	31300 Tafalla CR N-121, 38,1	42.4990535	-1.6727024	reordered
+be-reordered-00694	03203 Elche calle Juan de Herrera 13	38.2900935	-0.6210019	reordered
+be-reordered-00695	15011 A Coruña Rúa Gregorio Hernández 4	43.3662583	-8.4199220	reordered
+be-reordered-00696	28071 Madrid Paseo de Recoletos 20-22	40.4237276	-3.6899043	reordered
+be-reordered-00697	03203 Elche Carrer de Félix Rodríguez de la Fuente 39	38.2940629	-0.6181486	reordered
+be-reordered-00698	28014 Madrid Plaza de Jesús 7	40.4141167	-3.6957942	reordered
+be-reordered-00699	03203 Elche calle Juan de Herrera 1-2	38.2887195	-0.6200615	reordered
+be-reordered-00700	03203 Elche Carrer de Félix Rodríguez de la Fuente 96	38.2967797	-0.6194615	reordered
+be-reordered-00701	03203 Elche Carrer de Félix Rodríguez de la Fuente 58	38.2926619	-0.6166505	reordered
+be-reordered-00702	28223 Pozuelo de Alarcón Calle de Luis Buñuel 1	40.3984408	-3.7881758	reordered
+be-reordered-00703	03203 Elche calle Juan de Villanueva 14	38.2894802	-0.6215429	reordered
+be-reordered-00704	28014 Madrid Calle de las Huertas 69	40.4131780	-3.6957012	reordered
+be-reordered-00705	39710 Solares Avenida de Peña Cabarga 20H	43.3819294	-3.7409992	reordered
+be-reordered-00706	20870 Elgoibar San Frantzisko kalea 33	43.2158504	-2.4129067	reordered
+be-reordered-00707	28044 Madrid Avenida de los Poblados 58	40.3863802	-3.7643136	reordered
+be-reordered-00708	28004 Madrid Calle de Barceló 1	40.4264788	-3.7010300	reordered
+be-reordered-00709	28012 Madrid Glorieta de Embajadores 3	40.4049613	-3.7017390	reordered
+be-reordered-00710	28013 Madrid Plaza de San Martín 5	40.4186548	-3.7066997	reordered
+be-reordered-00711	18413 Capileira Carretera de la Sierra 6	36.9608186	-3.3569562	reordered
+be-reordered-00712	28040 Madrid Calle de Juan Montalvo 21	40.4471184	-3.7119678	reordered
+be-reordered-00713	10005 Cáceres Calle Amberes 6	39.4693453	-6.3864503	reordered
+be-reordered-00714	03320 Elche Carrer de Juan Negrín 53-2	38.2979099	-0.6106186	reordered
+be-reordered-00715	03203 Elche calle Miguel Servet 20-1	38.2967947	-0.6174379	reordered
+be-reordered-00716	26004 Logroño Avenida de La Paz 72	42.4641160	-2.4342095	reordered
+be-reordered-00717	28019 Madrid Calle de Antonio López 8	40.3967179	-3.7139110	reordered
+be-reordered-00718	28013 Madrid Plaza de Callao 4	40.4200282	-3.7054691	reordered
+be-reordered-00719	28912 Leganés Calle Lope de Vega 8	40.3243423	-3.7652946	reordered
+be-reordered-00720	03203 Elche calle Juan de Herrera 38	38.2931913	-0.6227177	reordered
+be-reordered-00721	03203 Elche Carrer de Félix Rodríguez de la Fuente 60	38.2927641	-0.6167248	reordered
+be-reordered-00722	03320 Elche calle Isaac Newton 14	38.2972429	-0.6107853	reordered
+be-reordered-00723	39710 Solares Avenida de Oviedo 12	43.3823187	-3.7396055	reordered
+be-reordered-00724	08921 Santa Coloma de Gramenet Avinguda de Francesc Macià 29	41.4523006	2.2050039	reordered
+be-reordered-00725	03203 Elche Calle Martín y Soler 23AC	38.2934527	-0.6196987	reordered
+be-reordered-00726	20160 Donostia / San Sebastián Iparraldeko Autobidea N-I / Autovía N-I	43.2526102	-2.0216927	reordered
+be-reordered-00727	22449 Cerler Avenida de la Estación	42.5894397	0.5398957	reordered
+be-reordered-00728	03203 Elche calle Pau Casals 9	38.2932266	-0.6161973	reordered
+be-reordered-00729	28020 Madrid Calle de Bravo Murillo 297	40.4620328	-3.6987685	reordered
+be-reordered-00730	28007 Madrid Avenida de la Ciudad de Barcelona 53	40.4028416	-3.6774645	reordered
+be-reordered-00731	28019 Madrid Calle de Antonio López 8	40.3967179	-3.7139110	reordered
+be-reordered-00732	28046 Madrid Paseo de la Castellana 4	40.4269232	-3.6894651	reordered
+be-reordered-00733	39619 San Salvador Barrio La Iglesia 40B-6	43.3923525	-3.8042666	reordered
+be-reordered-00734	20120 Hernani Akerregi bailara 23	43.2669440	-1.9682780	reordered
+be-reordered-00735	28029 Madrid Avenida de Monforte de Lemos 36	40.4789998	-3.7081079	reordered
+be-reordered-00736	03203 Elche calle Leonardo da Vinci 2AC	38.2936343	-0.6108848	reordered
+be-reordered-00737	28050 Madrid Calle del Príncipe Carlos	40.4936118	-3.6554348	reordered
+be-reordered-00738	31610 Villava/Atarrabia Calle Bidaburua 6	42.8309523	-1.6114886	reordered
+be-reordered-00739	03203 Elche calle Miguel Servet 3-2	38.2977537	-0.6139404	reordered
+be-reordered-00740	15402 Ferrol Rúa Magdalena 101	43.4834535	-8.2331487	reordered
+be-reordered-00741	03203 Elche Calle Germán Bernácer 2AC	38.2882125	-0.6118546	reordered
+be-reordered-00742	03203 Elche Carrer d'Alberto Sols 5	38.2955830	-0.6158309	reordered
+be-reordered-00743	03203 Elche calle Nicolás de Bussi 42	38.2916176	-0.6232989	reordered
+be-reordered-00744	28015 Madrid Plaza de Cristino Martos 2	40.4256477	-3.7122038	reordered
+be-reordered-00745	08001 Barcelona carrer Nou de Les Rambles 28	41.3782412	2.1732928	reordered
+be-reordered-00746	28109 Alcobendas Avenida de Bruselas 5	40.5301752	-3.6318004	reordered
+be-reordered-00747	03203 Elche Calle Martín y Soler 12	38.2948867	-0.6173272	reordered
+be-reordered-00748	03203 Elche Calle Germán Bernácer 1AC	38.2883760	-0.6128135	reordered
+be-reordered-00749	28012 Madrid Calle de Embajadores 67	40.4036812	-3.7012155	reordered
+be-reordered-00750	28050 Madrid Avenida de Manoteras 40	40.4860343	-3.6656428	reordered
+be-reordered-00751	03203 Elche Calle Tomás Luis de Victoria 22	38.2944048	-0.6194394	reordered
+be-reordered-00752	25141 Torregrossa Camí de les Planes-Giriblau	41.5791410	0.8374270	reordered
+be-reordered-00753	23210 Guarromán Autovía del Sur. N-IV Km. 288	38.1427795	-3.7234750	reordered
+be-reordered-00754	08221 Terrassa Carrer de Sant Llorenç 10	41.5651670	2.0121333	reordered
+be-reordered-00755	39710 Solares Avenida de Oviedo 12	43.3823187	-3.7396055	reordered
+be-reordered-00756	25551 Vilamòs Carretera N-230 Lleida - Francia 174	42.7494173	0.7004338	reordered
+be-reordered-00757	18160 Güéjar Sierra GR-3200	37.1599465	-3.4537551	reordered
+be-reordered-00758	03203 Elche calle Severo Ochoa 22	38.2938108	-0.6116832	reordered
+be-reordered-00759	39710 Solares Avenida de Santander 3	43.3837480	-3.7386262	reordered
+be-reordered-00760	03203 Elche calle Nicolás de Bussi 26	38.2899992	-0.6222026	reordered
+be-reordered-00761	25300 Tàrrega Avinguda de la Canaleta 1	41.6627170	1.1332744	reordered
+be-reordered-00762	03203 Elche calle Antonio José Cavanilles 2	38.2918062	-0.6207939	reordered
+be-reordered-00763	08271 Artés C/ ROCAFORT, 103 (B-4512 KM 0.6)	41.7949720	1.9468752	reordered
+be-reordered-00764	03203 Elche calle Manuel de Falla 9	38.2907200	-0.6133039	reordered
+be-reordered-00765	28029 Madrid Avenida de El Ferrol 22	40.4743826	-3.7059131	reordered
+be-reordered-00766	03203 Elche Carrer de Félix Rodríguez de la Fuente 102AC	38.2972895	-0.6198038	reordered
+be-reordered-00767	03203 Elche calle Alfred Nobel 9	38.2902619	-0.6121927	reordered
+be-reordered-00768	03004 Alicante Carrer del Marqués de Molins 9	38.3505636	-0.4889741	reordered
+be-reordered-00769	03203 Elche calle Juan de Villanueva 12	38.2895801	-0.6213124	reordered
+be-reordered-00770	08034 Barcelona Carrer del Capità Arenas 25	41.3910021	2.1256514	reordered
+be-reordered-00771	03320 Elche Carrer de Juan Negrín 53-3	38.2979867	-0.6106715	reordered
+be-reordered-00772	28030 Madrid Calle de Lituania 2	40.4090215	-3.6624619	reordered
+be-reordered-00773	28013 Madrid Calle Preciados 14	40.4181290	-3.7046339	reordered
+be-reordered-00774	03203 Elche Calle Santiago Ramón y Cajal 9	38.2910849	-0.6110465	reordered
+be-reordered-00775	18413 Capileira Carretera de la Sierra	36.9621414	-3.3574495	reordered
+be-reordered-00776	03203 Elche calle Juan de Herrera 47AC	38.2935688	-0.6233721	reordered
+be-reordered-00777	28008 Madrid Calle de la Princesa 19	40.4262288	-3.7134168	reordered
+be-reordered-00778	03203 Elche Calle Germán Bernácer 76	38.2974997	-0.6181752	reordered
+be-reordered-00779	28280 El Escorial Avenida de Felipe II 3	40.5881800	-4.1291700	reordered
+be-reordered-00780	08710 Santa Margarida de Montbui Carrer Constitució 1	41.5750129	1.6080399	reordered
+be-reordered-00781	03203 Elche Carrer de Juan de la Cierva 85	38.2993024	-0.6142641	reordered
+be-reordered-00782	46013 València Carrera de la Fonteta de Sant Lluís 76	39.4534251	-0.3716590	reordered
+be-reordered-00783	03203 Elche Carrer de Juan de la Cierva 26-1	38.2947607	-0.6104918	reordered
+be-reordered-00784	03203 Elche Carrer d'Alberto Sols 30	38.2965056	-0.6159298	reordered
+be-reordered-00785	03203 Elche Calle Germán Bernácer 25	38.2910965	-0.6144884	reordered
+be-reordered-00786	03203 Elche calle Nicolás de Bussi 52	38.2926251	-0.6239824	reordered
+be-reordered-00787	03203 Elche Calle Tomás Luis de Victoria 14	38.2935423	-0.6188496	reordered
+be-reordered-00788	41001 Sevilla Calle Marqués de Paradas 15	37.3923581	-6.0018093	reordered
+be-reordered-00789	03203 Elche calle Juan de Herrera 2	38.2888096	-0.6195890	reordered
+be-reordered-00790	17800 Olot Carrer de França 130	42.1926039	2.4891774	reordered
+be-reordered-00791	41370 Cazalla de la Sierra Calle Plazuela 16	37.9313650	-5.7599258	reordered
+be-reordered-00792	25161 Alfés Avinguda de les Garrigues 44	41.5176410	0.6196741	reordered
+be-reordered-00793	28004 Madrid Calle de Fortuny 24	40.4337612	-3.6898898	reordered
+be-reordered-00794	52001 Melilla Avenida Juan Carlos I Rey	35.2939109	-2.9406973	reordered
+be-reordered-00795	03203 Elche Carrer de Juan Negrín 33	38.2961121	-0.6093424	reordered
+be-reordered-00796	25132 Benavent de Segrià LP-9221	41.6878920	0.6330247	reordered
+be-reordered-00797	28011 Madrid Calle de Saavedra Fajardo 10	40.4143435	-3.7250547	reordered
+be-reordered-00798	28029 Madrid Calle de Melchor Fernández Almagro 84	40.4754931	-3.7108592	reordered
+be-reordered-00799	28013 Madrid Calle del Carmen 4	40.4175269	-3.7035489	reordered
+be-partial-00800	Rúa Mayor, Olite	42.4807484	-1.6503188	partial
+be-partial-00801	calle Guillermo Marconi 1AC, Elche	38.2891570	-0.6100985	partial
+be-partial-00802	Avenida Blas Infante, Andújar	38.0389000	-4.0383900	partial
+be-partial-00803	Avenida de Monforte de Lemos 36, Madrid	40.4797913	-3.7085021	partial
+be-partial-00804	calle Severo Ochoa 18, Elche	38.2931654	-0.6107004	partial
+be-partial-00805	Avinguda Josep Trías 22, Can Picafort	39.7675655	3.1478830	partial
+be-partial-00806	Carrer de Sant Josep 12, Moià	41.8120404	2.0953793	partial
+be-partial-00807	Avenida de Andalucía 28, Estepa	37.2913890	-4.8824720	partial
+be-partial-00808	Plaza de la Constitución 4, El Boalo	40.7174281	-3.9203733	partial
+be-partial-00809	Calle de la Princesa 19, Madrid	40.4262288	-3.7134168	partial
+be-partial-00810	Carrer de Juan Negrín 33, Elche	38.2961121	-0.6093424	partial
+be-partial-00811	Calle del Carmen 27, Madrid	40.4187951	-3.7049160	partial
+be-partial-00812	Calle Virgen de Aránzazu 3, Madrid	40.4854304	-3.6902918	partial
+be-partial-00813	Avenida de Santander 14, Solares	43.3846949	-3.7399540	partial
+be-partial-00814	Autovía A-66, Malpartida de Plasencia	39.8830395	-6.2760488	partial
+be-partial-00815	Carrer de Maruja Pastor 7, Alicante	38.3672123	-0.4285691	partial
+be-partial-00816	calle Joaquín Turina 4, Elche	38.2907992	-0.6181941	partial
+be-partial-00817	Carrer de Juan de la Cierva 31, Elche	38.2935139	-0.6102210	partial
+be-partial-00818	P.º de Sta. María de la Cabeza 35, Madrid	40.4038286	-3.6964406	partial
+be-partial-00819	Carrer de Gabriel Roca 11, Port d'Alcúdia	39.8391848	3.1382525	partial
+be-partial-00820	Carrer de Juan Negrín 61-2, Elche	38.2994420	-0.6117152	partial
+be-partial-00821	Carrer de Félix Rodríguez de la Fuente 20, Elche	38.2898963	-0.6147611	partial
+be-partial-00822	Ronda de Outeiro 310, A Coruña	43.3661359	-8.4243740	partial
+be-partial-00823	Plaza de las Culturas, Melilla	35.2933870	-2.9376744	partial
+be-partial-00824	calle Severo Ochoa 6, Elche	38.2902837	-0.6092803	partial
+be-partial-00825	Carrer de Juan Negrín 27, Elche	38.2957382	-0.6090865	partial
+be-partial-00826	LP-9221, Benavent de Segrià	41.6878920	0.6330247	partial
+be-partial-00827	calle Miguel Servet 23, Elche	38.2952562	-0.6198180	partial
+be-partial-00828	Avenida de Aragón 79, Fraga	41.5201450	0.3345932	partial
+be-partial-00829	Carrer de la Creu, Montoliu de Lleida	41.5619008	0.5877838	partial
+be-partial-00830	Autovía de Andalucía 292.5, Guadix	37.3201930	-3.1583260	partial
+be-partial-00831	Calle de Nuestra Señora de la Luz 57, Madrid	40.3865761	-3.7522395	partial
+be-partial-00832	Avenida de Alisas 1, Solares	43.3842639	-3.7360601	partial
+be-partial-00833	calle Miguel Servet 7-2, Elche	38.2977106	-0.6175967	partial
+be-partial-00834	CN-621, Ojedo	43.1670970	-4.6061990	partial
+be-partial-00835	Calle de Sabadell 86, Madrid	40.4914209	-3.6966212	partial
+be-partial-00836	Carretera de Murcia 160, Cehegín	38.0859798	-1.7873464	partial
+be-partial-00837	Avenida de Madrid 3, Almería	36.8313225	-2.4491202	partial
+be-partial-00838	calle Juan de Herrera 18, Elche	38.2904324	-0.6206987	partial
+be-partial-00839	Ronda de Segovia 13, Madrid	40.4119884	-3.7176095	partial
+be-partial-00840	calle Juan de Herrera 28AC, Elche	38.2919334	-0.6216933	partial
+be-partial-00841	Carrer de Juan de la Cierva 18, Elche	38.2943501	-0.6102100	partial
+be-partial-00842	Calle Periodista Rafael Gómez Montero 57, Granada	37.1972806	-3.6230120	partial
+be-partial-00843	Carrer de l'Estació, Almassora	39.9548766	-0.0769220	partial
+be-partial-00844	Carrer d'Alberto Sols 22, Elche	38.2960115	-0.6155873	partial
+be-partial-00845	calle Charles Darwin 4, Elche	38.2920966	-0.6100558	partial
+be-partial-00846	Carrer de Severo Ochoa 48, Elche	38.2990401	-0.6153229	partial
+be-partial-00847	calle Enrique Granados 2AC, Elche	38.2930231	-0.6135523	partial
+be-partial-00848	Calle Germán Bernácer 54, Elche	38.2955982	-0.6169079	partial
+be-partial-00849	Fermin Calbeton kalea 8, Eibar	43.1843551	-2.4720696	partial
+be-partial-00850	Carretera de Tàrrega 4, Vallfogona de Balaguer	41.7881410	0.8267599	partial
+be-partial-00851	calle Juan de Villanueva 5-4, Elche	38.2893430	-0.6209104	partial
+be-partial-00852	Autovía del Cantábrico, Reocín	43.3560336	-4.0942399	partial
+be-partial-00853	calle Severo Ochoa 42, Elche	38.2974902	-0.6142084	partial
+be-partial-00854	Calle Puerto de Pajares 6, Madrid	40.3953054	-3.6645157	partial
+be-partial-00855	Calle de Gonzalo de Córdoba 17, Madrid	40.4326855	-3.7017994	partial
+be-partial-00856	Calle Santa María la Blanca 19, Sevilla / Casco Antiguo / San Bartolomé	37.3859119	-5.9866772	partial
+be-partial-00857	Paseo de Santa María de la Cabeza 27, Madrid	40.4050712	-3.6952969	partial
+be-partial-00858	Calle de Ribadavia 9, Madrid	40.4723365	-3.7106687	partial
+be-partial-00859	Carrer de Gabriel Roca 11, Port d'Alcúdia	39.8391848	3.1382525	partial
+be-partial-00860	Cai La Marzaniella 39, Tresona	43.5536490	-5.8860476	partial
+be-partial-00861	Calle Germán Bernácer 29, Elche	38.2913434	-0.6146525	partial
+be-partial-00862	Calle Sarasate, Majadahonda	40.4511010	-3.8568210	partial
+be-partial-00863	calle Josep Lluís Sert 2, Elche	38.2930510	-0.6216412	partial
+be-partial-00864	calle Josep Lluís Sert 5, Elche	38.2922050	-0.6226370	partial
+be-partial-00865	Carrer d'Alberto Sols 32, Elche	38.2966227	-0.6160115	partial
+be-partial-00866	calle Juan de Herrera 15, Elche	38.2902972	-0.6211354	partial
+be-partial-00867	Avenida Europa 2, Torrox-Costa	36.7300952	-3.9619697	partial
+be-partial-00868	Avenida de Madrid, Medinaceli	41.1684731	-2.4213563	partial
+be-partial-00869	Calle Santiago Ramón y Cajal 33, Elche	38.2962821	-0.6145765	partial
+be-partial-00870	Carrer de Félix Rodríguez de la Fuente 18, Elche	38.2897121	-0.6146303	partial
+be-partial-00871	calle Nicolás de Bussi 16, Elche	38.2888684	-0.6214356	partial
+be-partial-00872	Calle Antonio Ferrandis Chanquete, Nerja	36.7476456	-3.8807393	partial
+be-partial-00873	calle Pau Casals 13, Elche	38.2926352	-0.6174675	partial
+be-partial-00874	Avinguda de Francesc Macià 34-36, Santa Coloma de Gramenet	41.4526240	2.2049224	partial
+be-partial-00875	Paseo de La Ventilla 33, Solares	43.3836389	-3.7316366	partial
+be-partial-00876	Calle Germán Bernácer 6, Elche	38.2894294	-0.6126648	partial
+be-partial-00877	Carrer de Juan de la Cierva 1AC, Elche	38.2894531	-0.6075360	partial
+be-partial-00878	calle Antonio José Cavanilles 5, Elche	38.2908518	-0.6215989	partial
+be-partial-00879	Carrer de Juan de la Cierva 54, Elche	38.2967707	-0.6118612	partial
+be-partial-00880	LP-3322, Linyola	41.7184190	0.9027600	partial
+be-partial-00881	Calle de Jerónimo Sainz de la Maza, Santander	43.4576906	-3.8263063	partial
+be-partial-00882	Calle Juan Carlos I 24, Hondón de los Frailes	38.2733995	-0.9277628	partial
+be-partial-00883	calle Josep Lluís Sert 5, Elche	38.2922050	-0.6226370	partial
+be-partial-00884	Calle de Abtao 46, Madrid	40.4063842	-3.6742291	partial
+be-partial-00885	CR AL-118 0,6, Mojácar	37.1691370	-1.8242796	partial
+be-partial-00886	Calle Germán Bernácer 39, Elche	38.2919312	-0.6150577	partial
+be-partial-00887	Calle de la Unión 2, Madrid	40.4167458	-3.7101814	partial
+be-partial-00888	Calle del Calvario 15, Madrid	40.4115441	-3.7023747	partial
+be-partial-00889	calle Marie Curie 14, Elche	38.2903286	-0.6183855	partial
+be-partial-00890	Calle Dos de Mayo 26, Gijón/Xixón	43.5386402	-5.6856034	partial
+be-partial-00891	Zubieta kalea 2, Donostia / San Sebastián	43.3181508	-1.9849778	partial
+be-partial-00892	Calle de Embajadores 55, Madrid	40.4046885	-3.7019897	partial
+be-partial-00893	Avenida Zaragoza 73, Tudela	42.0524730	-1.5967968	partial
+be-partial-00894	Carrer de Félix Rodríguez de la Fuente 102AC, Elche	38.2972895	-0.6198038	partial
+be-partial-00895	Calle Fuente Nueva 24, Los Yébenes	39.5803702	-3.8672785	partial
+be-partial-00896	Calle de la Virgen de Lluc 60, Madrid	40.4351013	-3.6495207	partial
+be-partial-00897	Paseo de la Estación 28, Solares	43.3880416	-3.7308406	partial
+be-partial-00898	Carrer de Félix Rodríguez de la Fuente 90, Elche	38.2964335	-0.6192257	partial
+be-partial-00899	calle Antoni Gaudí 6, Elche	38.2900182	-0.6111523	partial
+be-partial-00900	Carrer de Félix Rodríguez de la Fuente 18, Elche	38.2897121	-0.6146303	partial
+be-partial-00901	Carrer de Juan Negrín 53-6, Elche	38.2982411	-0.6108409	partial
+be-partial-00902	Avenida de Europa 23, Pozuelo de Alarcón	40.4428613	-3.7849662	partial
+be-partial-00903	calle Albert Einstein 1AC, Elche	38.2901822	-0.6091283	partial
+be-partial-00904	Calle de Jesús 2, Madrid	40.4136254	-3.6956999	partial
+be-partial-00905	Gran Vía 40, Madrid	40.4204138	-3.7049789	partial
+be-partial-00906	Plaza del Emperador Carlos V 8, Zaragoza	41.6373031	-0.9001332	partial
+be-partial-00907	Calle Italia 8, Leganés	40.3346898	-3.7426147	partial
+be-partial-00908	Carrer de Félix Rodríguez de la Fuente 62, Elche	38.2929090	-0.6168217	partial
+be-partial-00909	calle Juan de Herrera 2, Elche	38.2888096	-0.6195890	partial
+be-partial-00910	Calle Luis Mitjans 29, Madrid	40.4034252	-3.6702754	partial
+be-partial-00911	calle Alfred Nobel 1AC, Elche	38.2891439	-0.6114176	partial
+be-partial-00912	calle Severo Ochoa 30, Elche	38.2952346	-0.6127163	partial
+be-partial-00913	Calle Vitoria 290, Villafría	42.3641131	-3.6217409	partial
+be-partial-00914	Calle Real 21, Soto del Real	40.7546895	-3.7856727	partial
+be-partial-00915	calle Galileo Galilei 2, Elche	38.2887194	-0.6098259	partial
+be-partial-00916	LP-3322, Linyola	41.7184190	0.9027600	partial
+be-partial-00917	Avenida Real de Pinto 108, Madrid	40.3391390	-3.7094440	partial
+be-partial-00918	Calle Tomás Luis de Victoria 28, Elche	38.2947490	-0.6196674	partial
+be-partial-00919	Calle Germán Bernácer 67, Elche	38.2940474	-0.6165035	partial
+be-partial-00920	Calle del Alcalde Sáinz de Baranda 50, Madrid	40.4164723	-3.6717472	partial
+be-partial-00921	Plaza de la Constitución 9, El Boalo	40.7173984	-3.9204570	partial
+be-partial-00922	calle Charles Darwin 1AC, Elche	38.2926404	-0.6101822	partial
+be-partial-00923	Carrer de Juan de la Cierva 9, Elche	38.2913190	-0.6087976	partial
+be-partial-00924	carrer Vicente Fuentes Sansano 51, Elche/Elx	38.2681689	-0.7167880	partial
+be-partial-00925	San Frantzisko kalea 50, Elgoibar	43.2159222	-2.4123171	partial
+be-partial-00926	calle Severo Ochoa 38, Elche	38.2966163	-0.6136671	partial
+be-partial-00927	CM-4102 1, Talavera de la Reina	39.9474930	-4.8293950	partial
+be-partial-00928	calle Nicolás de Bussi 56, Elche	38.2931496	-0.6243358	partial
+be-partial-00929	calle Severo Ochoa 14, Elche	38.2917586	-0.6102712	partial
+be-partial-00930	Carrer d'Alberto Sols 6, Elche	38.2946893	-0.6146875	partial
+be-partial-00931	Calle Pintada 48, Nerja	36.7477563	-3.8763293	partial
+be-partial-00932	calle Severo Ochoa 4, Elche	38.2895109	-0.6086339	partial
+be-partial-00933	calle Nicolás Copérnico 7, Elche	38.2933441	-0.6242503	partial
+be-partial-00934	Cai La Marzaniella 39, Tresona	43.5536490	-5.8860476	partial
+be-partial-00935	Calle de Fernández Rañada 5, Valdecilla	43.3823701	-3.7367544	partial
+be-partial-00936	Carrer de Juan Negrín 53-4, Elche	38.2980695	-0.6107285	partial
+be-partial-00937	Carrer de Félix Rodríguez de la Fuente 40, Elche	38.2915562	-0.6158929	partial
+be-partial-00938	Calle del Doctor Esquerdo 153, Madrid	40.4098249	-3.6696489	partial
+be-partial-00939	Carrer de Félix Rodríguez de la Fuente 32, Elche	38.2910571	-0.6155537	partial
+be-partial-00940	Carrer de Juan Negrín 61-2, Elche	38.2994420	-0.6117152	partial
+be-partial-00941	calle Miguel Servet 7-2, Elche	38.2977106	-0.6175967	partial
+be-partial-00942	Plaza de San Isidoro 4, León	42.6009900	-5.5711150	partial
+be-partial-00943	Calle de Atocha 127, Madrid	40.4096055	-3.6926831	partial
+be-partial-00944	Carrer de Félix Rodríguez de la Fuente 68, Elche	38.2936238	-0.6173010	partial
+be-partial-00945	Carrer de Félix Rodríguez de la Fuente 18, Elche	38.2897121	-0.6146303	partial
+be-partial-00946	Plaza de Jesús 4, Madrid	40.4137383	-3.6957781	partial
+be-partial-00947	Carrer del Mestre Güell 135, Tàrrega	41.6518754	1.1494573	partial
+be-partial-00948	Calle Germán Bernácer 27, Elche	38.2912175	-0.6145677	partial
+be-partial-00949	Avenida General 49, Madrid	40.4698335	-3.5807416	partial
+be-partial-00950	Avenida de Extremadura 1, Robleda	40.3866407	-6.6080902	partial
+be-partial-00951	calle Thomas Edison 8, Elche	38.2910918	-0.6078160	partial
+be-partial-00952	Calle Cervantes 12, Móstoles	40.3288508	-3.8599739	partial
+be-partial-00953	Avenida Juan Carlos I Rey, Melilla	35.2939109	-2.9406973	partial
+be-partial-00954	Calle de Menéndez Pidal 173, Madrid	40.4657009	-3.6798926	partial
+be-partial-00955	Carrer Sant Isidre 10, Callosa d'en Sarrià	38.6478646	-0.1208182	partial
+be-partial-00956	calle Pitágoras 15, Elche	38.2962581	-0.6100560	partial
+be-partial-00957	Carrer de Félix Rodríguez de la Fuente 12, Elche	38.2893295	-0.6143676	partial
+be-partial-00958	Carrer de Félix Rodríguez de la Fuente 46, Elche	38.2919352	-0.6161525	partial
+be-partial-00959	Calle Preciados 37, Madrid	40.4196853	-3.7074213	partial
+be-partial-00960	Avenida de los Poblados 58, Madrid	40.3863802	-3.7643136	partial
+be-partial-00961	Calle Germán Bernácer 6, Elche	38.2894294	-0.6126648	partial
+be-partial-00962	Paraje Los Gurullos, Mojácar	37.1384275	-1.8399518	partial
+be-partial-00963	calle Severo Ochoa 38, Elche	38.2966163	-0.6136671	partial
+be-partial-00964	Avinguda de Barcelona 41, Vilafranca del Penedès	41.3548890	1.7391760	partial
+be-partial-00965	Plaza de los Cangrejos, Nerja	36.7420704	-3.8804621	partial
+be-partial-00966	Carrer de Juan de la Cierva 3, Elche	38.2898658	-0.6078152	partial
+be-partial-00967	calle Pitágoras 13, Elche	38.2961556	-0.6102941	partial
+be-partial-00968	Avenida de Badajoz 74, Madrid	40.4434360	-3.6508507	partial
+be-partial-00969	Calle del Ave María 15, Madrid	40.4111374	-3.7003260	partial
+be-partial-00970	calle Marie Curie 23, Elche	38.2921206	-0.6207916	partial
+be-partial-00971	Calle Alfonso XII 33, Sevilla	37.3929560	-5.9990458	partial
+be-partial-00972	calle Juan de Villanueva 12, Elche	38.2895801	-0.6213124	partial
+be-partial-00973	Carrera de la Fonteta de Sant Lluís 76, València	39.4534251	-0.3716590	partial
+be-partial-00974	calle Marie Curie 33, Elche	38.2950248	-0.6224504	partial
+be-partial-00975	Plaza de Castilla 3, Madrid	40.4660692	-3.6904236	partial
+be-partial-00976	Calle Germán Bernácer 45, Elche	38.2922986	-0.6153106	partial
+be-partial-00977	Carrer de Juan de la Cierva 9, Elche	38.2913190	-0.6087976	partial
+be-partial-00978	Avinguda de Barcelona 41, Vilafranca del Penedès	41.3548890	1.7391760	partial
+be-partial-00979	Carrer de Félix Rodríguez de la Fuente 43, Elche	38.2946403	-0.6185347	partial
+be-partial-00980	Plaza de San Martín 5, Madrid	40.4186548	-3.7066997	partial
+be-partial-00981	calle Miguel Servet 25, Elche	38.2949265	-0.6205350	partial
+be-partial-00982	Avenida de Extremadura 1, Robleda	40.3866407	-6.6080902	partial
+be-partial-00983	Cai La Marzaniella 39, Tresona	43.5536490	-5.8860476	partial
+be-partial-00984	Carrer de Mestral 19, Balaguer	41.7753436	0.8186569	partial
+be-partial-00985	calle Joaquín Turina 2, Elche	38.2913993	-0.6167658	partial
+be-partial-00986	Carrer de Félix Rodríguez de la Fuente 80-1, Elche	38.2946854	-0.6180311	partial
+be-partial-00987	Vía de Servicio A-376, Utera	37.2092500	-5.8050560	partial
+be-partial-00988	Calle de Zaragoza, Soria	41.7696450	-2.4780776	partial
+be-partial-00989	Autovia Barcelona - Vic - Ripoll C-17 27, L'Ametlla del Vallès	41.6638964	2.2697096	partial
+be-partial-00990	Plaza de Jesús 7, Madrid	40.4141167	-3.6957942	partial
+be-partial-00991	LV-3311, Bellvís	41.6702846	0.8143739	partial
+be-partial-00992	Calle de las Veneras 9, Madrid	40.4195999	-3.7077336	partial
+be-partial-00993	Plaza Kuwait, Almuñécar	36.7351803	-3.6926244	partial
+be-partial-00994	calle Leonardo da Vinci 8, Elche	38.2940232	-0.6098343	partial
+be-partial-00995	Autovía del Mediterráneo Salida 1101, San Roque	36.2307960	-5.3515971	partial
+be-partial-00996	Carrer del Poeta Cabanyes 5-7, Barcelona	41.3747759	2.1661966	partial
+be-partial-00997	calle Antoni Gaudí 9AC, Elche	38.2886209	-0.6134295	partial
+be-partial-00998	CL-517, Villar de Peralonso	41.0308321	-6.2192537	partial
+be-partial-00999	calle Juan de Villanueva 5, Elche	38.2894695	-0.6207981	partial
