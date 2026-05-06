@@ -175,7 +175,7 @@ pub fn map_match(
                 ebg_path,
                 duration_ds,
                 confidence: avg_emission.exp(), // Convert from log to [0,1]
-                region_idx: 0, // single-region path: caller's region is implicit
+                region_idx: 0,                  // single-region path: caller's region is implicit
             });
 
             // Fill tracepoints
@@ -798,7 +798,13 @@ pub fn map_match_multi_region(
     let mode_indices: Vec<u8> = regions
         .regions
         .iter()
-        .map(|r| r.state.mode_lookup.get(mode_name).copied().unwrap_or(u8::MAX))
+        .map(|r| {
+            r.state
+                .mode_lookup
+                .get(mode_name)
+                .copied()
+                .unwrap_or(u8::MAX)
+        })
         .collect();
 
     // ---- Step 4: segmentation (gaps + unmatched samples) -----------
@@ -955,8 +961,13 @@ fn generate_candidates_multi(
             Some(mask),
         );
         for (ebg_id, _mlon, _mlat, _mdist) in hits {
-            let (proj_lon, proj_lat, proj_dist) =
-                project_onto_edge(lon, lat, ebg_id, &entry.state.ebg_nodes, &entry.state.edge_geom);
+            let (proj_lon, proj_lat, proj_dist) = project_onto_edge(
+                lon,
+                lat,
+                ebg_id,
+                &entry.state.ebg_nodes,
+                &entry.state.edge_geom,
+            );
             if proj_dist.is_infinite() {
                 continue;
             }
@@ -1234,14 +1245,7 @@ fn compute_transition_distances_multi(
                 let from_id = &regions.regions[from_region].id;
                 let to_id = &regions.regions[to_region].id;
                 let solution = match solve_cross_region(
-                    from_state,
-                    from_id,
-                    src_rank,
-                    to_state,
-                    to_id,
-                    dst_rank,
-                    mode_name,
-                    overlay,
+                    from_state, from_id, src_rank, to_state, to_id, dst_rank, mode_name, overlay,
                 ) {
                     Some(s) => s,
                     None => continue,
@@ -1468,11 +1472,7 @@ mod tests {
     #[test]
     fn test_split_into_region_runs_single_run() {
         // Two samples both matched into region 0.
-        let candidates = vec![
-            vec![rc(0, 1)],
-            vec![rc(0, 2), rc(0, 3)],
-            vec![rc(0, 4)],
-        ];
+        let candidates = [vec![rc(0, 1)], vec![rc(0, 2), rc(0, 3)], vec![rc(0, 4)]];
         let cand_refs: Vec<&Vec<RegionCandidate>> = candidates.iter().collect();
         let matched = vec![0, 0, 0];
         let runs = split_into_region_runs(&cand_refs, &matched);
@@ -1482,7 +1482,7 @@ mod tests {
     #[test]
     fn test_split_into_region_runs_cross_region() {
         // Sample 0 -> region 0, sample 1 -> region 1.
-        let candidates = vec![
+        let candidates = [
             vec![rc(0, 1), rc(1, 2)],
             vec![rc(0, 3), rc(1, 4)],
             vec![rc(1, 5)],
@@ -1497,7 +1497,7 @@ mod tests {
     #[test]
     fn test_split_into_region_runs_alternating() {
         // 0 -> 1 -> 0 (zigzag)
-        let candidates = vec![vec![rc(0, 1)], vec![rc(1, 2)], vec![rc(0, 3)]];
+        let candidates = [vec![rc(0, 1)], vec![rc(1, 2)], vec![rc(0, 3)]];
         let cand_refs: Vec<&Vec<RegionCandidate>> = candidates.iter().collect();
         let matched = vec![0, 0, 0];
         let runs = split_into_region_runs(&cand_refs, &matched);

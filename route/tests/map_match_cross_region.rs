@@ -62,11 +62,7 @@ fn fixture_paths() -> Option<(PathBuf, PathBuf, PathBuf)> {
     None
 }
 
-fn load_regions_with_overlay(
-    be: &Path,
-    lu: &Path,
-    overlay_path: &Path,
-) -> Arc<RegionsState> {
+fn load_regions_with_overlay(be: &Path, lu: &Path, overlay_path: &Path) -> Arc<RegionsState> {
     let mut regions = RegionsState::load_from_paths(&[be.to_path_buf(), lu.to_path_buf()])
         .expect("load BE+LU containers");
     let overlay = OverlayCluster::load(overlay_path).expect("load overlay");
@@ -151,11 +147,7 @@ fn cross_region_trace_matches_with_overlay() {
     // Every matching's ebg_path must be non-empty (no degenerate
     // single-point matchings).
     for (i, m) in result.matchings.iter().enumerate() {
-        assert!(
-            !m.ebg_path.is_empty(),
-            "matching[{}] has empty ebg_path",
-            i
-        );
+        assert!(!m.ebg_path.is_empty(), "matching[{}] has empty ebg_path", i);
     }
 
     // Most input GPS samples should produce a tracepoint. Synthetic

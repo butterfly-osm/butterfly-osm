@@ -142,9 +142,7 @@ pub async fn match_trace_handler(
     let (state, region_id): (Arc<ServerState>, String) =
         match regions.dispatch_many(coords_iter, &req.mode) {
             Ok(pair) => pair,
-            Err(super::regions::DispatchError::CrossRegion { .. })
-                if regions.overlay.is_some() =>
-            {
+            Err(super::regions::DispatchError::CrossRegion { .. }) if regions.overlay.is_some() => {
                 return cross_region_match_inner(regions, req, started_dispatch).await;
             }
             Err(e) => {
