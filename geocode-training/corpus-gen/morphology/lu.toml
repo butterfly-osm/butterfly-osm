@@ -1,0 +1,47 @@
+## Luxembourg morphology table.
+##
+## Luxembourg is trilingual (LB, FR, DE) but addresses overwhelmingly
+## follow French conventions: street type PREFIXED ("Rue de la Gare",
+## "Avenue J.F. Kennedy"). Postcode is 4 digits, prefixed with "L-"
+## informally; the bare 4-digit form is what the OSM `addr:postcode`
+## tag carries. Postcode leads.
+
+[country]
+iso2 = "LU"
+name = "Luxembourg"
+
+[render]
+field_separator_after_house = ", "
+postcode_city_separator = " "
+postcode_position = "leading"
+
+[postcode]
+## 4-digit P&T postcode. The "L-" prefix is rendering only.
+regex = '^[1-9][0-9]{3}$'
+format = "{}"
+
+[street_types]
+long_to_short = [
+    # FR (dominant in addressing).
+    ["Rue", "R."],
+    ["Avenue", "Av."],
+    ["Boulevard", "Bd"],
+    ["Place", "Pl."],
+    ["Chemin", "Ch."],
+    ["Route", "Rte"],
+    ["Allée", "All."],
+    ["Impasse", "Imp."],
+    ["Saint", "St"],
+    ["Sainte", "Ste"],
+    # DE (compounds — minority).
+    ["Strasse", "Str."],
+    ["Straße", "Str."],
+    ["Platz", "Pl."],
+    # LB (small subset).
+    ["Strooss", "Str."],
+]
+
+[street_types.markers]
+fr = ["rue", "avenue", "boulevard", "place", "chemin", "route", "allée", "impasse", "côte", "montée"]
+de = ["strasse", "straße", "platz", "weg", "gasse"]
+lb = ["strooss", "wee"]

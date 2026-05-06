@@ -1,0 +1,41 @@
+## Spain morphology table.
+##
+## Spanish addresses use street type (vía pública) PREFIXED to name
+## ("Calle Mayor", "Avenida de la Constitución"). 5-digit Correos
+## postcode leads. Numbering can include "número" (núm.) and floor.
+
+[country]
+iso2 = "ES"
+name = "Spain"
+
+[render]
+field_separator_after_house = ", "
+postcode_city_separator = " "
+postcode_position = "leading"
+
+[postcode]
+## 5-digit Correos postcode (first two = province code 01-52).
+regex = '^[0-5][0-9]{4}$'
+format = "{}"
+
+[street_types]
+long_to_short = [
+    ["Calle", "C/"],
+    ["Avenida", "Av."],
+    ["Plaza", "Pl."],
+    ["Paseo", "Po."],
+    ["Carrera", "Cra."],
+    ["Carretera", "Ctra."],
+    ["Camino", "Cno."],
+    ["Travesía", "Trva."],
+    ["Ronda", "Rda."],
+    ["Glorieta", "Gta."],
+    ["Calleja", "Cja."],
+    ["San", "S."],
+    ["Santa", "Sta."],
+    ["Santo", "Sto."],
+]
+
+## Spanish street types are PREFIXED to the name.
+[street_types.markers]
+es = ["calle", "avenida", "plaza", "paseo", "carrera", "carretera", "camino", "travesía", "ronda", "glorieta", "calleja", "vía"]
