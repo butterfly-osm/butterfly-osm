@@ -979,11 +979,10 @@ fn build_shards_all_cmd(
         // Authoritative-source preference: if the region index ships
         // any `[[address]]` entries for this country AND the operator
         // has staged the corresponding files under `<pbf_dir>/addresses/`,
-        // prefer the authoritative source over OSM PBF tags. Belgium
-        // ships three regional BOSA ZIPs (Flanders/Wallonia/Brussels);
+        // prefer the OpenAddresses dump over OSM PBF tags. Belgium
+        // ships three regional OA jobs (Flanders/Wallonia/Brussels);
         // when all three are present we build per-region shards in a
-        // tmp dir and merge them into the country shard. Other
-        // countries fall through to PBF/OSM until their loaders land.
+        // tmp dir and merge them into the country shard.
         match try_authoritative_build(c, pbf_dir, out_dir) {
             Ok(true) => {
                 built.push(c);
