@@ -231,6 +231,24 @@ impl GbdtModel {
         out.first().copied().unwrap_or(0.0)
     }
 
+    /// Score a single raw feature row (any schema). Generic entry
+    /// point used by the recall+rerank pipeline (#205) where the
+    /// feature struct lives in `geocoder/rerank.rs` and is decoupled
+    /// from the legacy [`Features`] schema.
+    #[must_use]
+    pub fn predict_one_raw(&self, row: &[f32]) -> f32 {
+        let datum = Data {
+            feature: row.to_vec(),
+            target: 0.0,
+            weight: 1.0,
+            label: 0.0,
+            residual: 0.0,
+            initial_guess: 0.0,
+        };
+        let out: Vec<f32> = self.inner.predict(&vec![datum]);
+        out.first().copied().unwrap_or(0.0)
+    }
+
     /// Score a batch of feature rows. Used in eval/training paths;
     /// the executor's hot path uses `predict_one` per candidate.
     #[must_use]
