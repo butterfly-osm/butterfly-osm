@@ -1,7 +1,7 @@
 //! Shared types used by multiple API handler modules
 
 use axum::Json;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::profile_abi::Mode;
@@ -10,6 +10,53 @@ use crate::profile_abi::Mode;
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ErrorResponse {
     pub error: String,
+}
+
+/// Directional role of a snap query (#197). The packed snap index
+/// stores one EBG node per directed edge in the underlying NBG, so
+/// the geometrically-closest sample to a coordinate may have valid
+/// outgoing transitions but no valid incoming transitions in the
+/// requested mode (and vice versa). Returning that node for the
+/// "wrong" role would cause /route to 404 even though a route
+/// exists. The server picks the per-mode role bitset to apply based
+/// on this enum.
+///
+/// `Either` (the legacy default) keeps the historical behaviour for
+/// API back-compat where a caller didn't say which role they meant
+/// (e.g. `/isochrone` from a single point — that point is *always*
+/// a source, but historically went through the unfiltered snap).
+/// Practical usage:
+///   - `/route` source point → `Src`
+///   - `/route` destination point → `Dst`
+///   - `/nearest` defaults to `Src` for back-compat with the OSRM
+///     shape, with `role=src|dst|either` as a query parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SnapRole {
+    /// Source role: snap candidates must have at least one mode-valid
+    /// outbound arc.
+    #[default]
+    Src,
+    /// Destination role: snap candidates must have at least one
+    /// mode-valid inbound arc.
+    Dst,
+    /// No role filter; behaves like the legacy snap.
+    Either,
+}
+
+impl SnapRole {
+    /// Resolve to the EBG-id-indexed bitset to use as the snap
+    /// `role_filter`, or `None` for the unfiltered legacy behaviour.
+    pub fn role_filter<'a>(
+        &self,
+        mode_data: &'a crate::server::state::ModeData,
+    ) -> Option<&'a [u64]> {
+        match self {
+            SnapRole::Src => Some(&mode_data.has_outbound),
+            SnapRole::Dst => Some(&mode_data.has_inbound),
+            SnapRole::Either => None,
+        }
+    }
 }
 
 /// A waypoint with snapped location (used by table and trip responses)
