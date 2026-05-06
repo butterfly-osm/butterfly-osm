@@ -544,9 +544,9 @@ The gap closes at scale because fixed overhead (HTTP, coordination) is amortized
 | 1000×1000 | 684ms | **268ms** | **2.56x FASTER** |
 | 2000×2000 | 1.5s | **840ms** | **1.79x FASTER** |
 | 5000×5000 | 8.0s | **5.5s** | **1.45x FASTER** |
-| 10000×10000 | 32.9s | 33.0s | parity |
+| 10000×10000 | 32.9s | **18.3s** | **1.8x FASTER** (was parity, fixed in #190) |
 
-**Key insight:** Butterfly BEATS OSRM across the useful-N range (50–5000). Small sizes (10–25) still lose to OSRM's sequential shape because rayon thread-dispatch overhead isn't amortised over 100–625 cells — partial mitigation in 8eb4799 (≤100-cell fast path, ~14% gain at 10×10), residual gap is graph-architectural. 10k×10k bench-only number sits at the DRAM-bandwidth floor (~30 s) when the bench drives `table_bucket_parallel` directly with the monolithic shape; production `/table/stream` tiles to 1000×1000 and stays L3-resident, so the bench number is **not** what users hit. See #130 for the full analysis.
+**Key insight:** Butterfly BEATS OSRM across the useful-N range (50–10000). Small sizes (10–25) still lose to OSRM's sequential shape because rayon thread-dispatch overhead isn't amortised over 100–625 cells — partial mitigation in 8eb4799 (≤100-cell fast path, ~14% gain at 10×10), residual gap is graph-architectural. 10k×10k bench-only number was previously stuck at the DRAM-bandwidth floor (~33 s monolithic) — fixed in #190 by L3-aware source-tiling inside `table_bucket_parallel`: when the single-pass `PrefixSumBuckets` working set would blow shared L3, the source dimension is split into ~2500-source tiles (sized via runtime cache-topology detection, see `route/src/matrix/tile_geometry.rs`) so each backward sweep stays L3-resident. 10k×10k drops 25.6 s → 18.3 s on the dev host (20-core, 30 MiB L3, single NUMA node). Production `/table/stream` was already tiled at 1000×1000 by `server/table.rs` and is unaffected.
 
 **Optimizations Implemented:**
 | Optimization | Effect | Status |
@@ -560,6 +560,8 @@ The gap closes at scale because fixed overhead (HTTP, coordination) is amortized
 | Thread-local PHAST state | O(1) per-query init | ✅ |
 | Thread-local bucket M2M state (parallel fwd+bwd) | 6x at 100×100, 5.5x at 1000×1000 | ✅ |
 | Block-gated downward scan (C1) | 18x isochrone speedup | ✅ |
+| L3-aware source tiling (#190) | 10k×10k 25.6s → 18.3s (28% faster) | ✅ |
+| Software prefetch on matrix writes (#190) | Gated on matrix ≥ 8 MiB (avoids small-N regression) | ✅ |
 
 **Combined improvement:** 51s → 32.4s (algorithm time) = **36% faster**, HTTP comparison: 1.4x slower than OSRM at scale
 

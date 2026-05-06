@@ -2361,12 +2361,25 @@ fn backward_join_parallel_prefix(
             let dists = &buckets.dists[start..start + len];
             let source_indices = &buckets.source_indices[start..start + len];
 
+            // Prefetch is only beneficial when the result matrix is
+            // larger than the per-thread L3 share — otherwise the
+            // prefetched cache line is already hot and the issued
+            // load just wastes a load-port slot. Threshold: matrix
+            // bigger than 8 MiB (≈ ¼ of dev-host L3 / per-thread
+            // share assuming all 20 cores active). Empirical: at
+            // 1000×1000 (4 MiB) prefetch costs ~14% with no win;
+            // at 5000×5000 (100 MiB) it would help, but #190's
+            // dispatcher routes that to the L3-tiled path which
+            // has its own prefetch logic.
+            let result_bytes = matrix.len().saturating_mul(4);
+            let prefetch_enabled = result_bytes >= 8 * 1024 * 1024;
+
             for i in 0..len {
                 // Software-prefetch the matrix cell we'll touch in
                 // `PREFETCH_DISTANCE` iterations. See the doc on
                 // `prefetch_matrix_cell` for why we use a safe atomic
                 // load + `black_box` instead of `_mm_prefetch`.
-                if i + PREFETCH_DISTANCE < len {
+                if prefetch_enabled && i + PREFETCH_DISTANCE < len {
                     let pf_src_idx = source_indices[i + PREFETCH_DISTANCE] as usize;
                     let pf_idx = pf_src_idx * n_targets + target_idx;
                     prefetch_matrix_cell(matrix, pf_idx);

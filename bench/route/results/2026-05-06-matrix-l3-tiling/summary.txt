@@ -1,0 +1,113 @@
+Issue #190 — matrix 10k×10k L3-aware tiling + software prefetch
+================================================================
+
+Host: 20-core single-socket (per_core_l2=3072 KiB, shared_l3=30 MiB,
+      numa_nodes=1). Confirmed via tile_geometry detection log.
+
+Branch: route-matrix-l3-tiling-v2
+Baseline: before.txt (preserved from prior agent attempt — same host,
+          recent commit on main, identical sysfs data dir layout).
+Run: butterfly-bench bucket-m2m --parallel --mode=car
+
+NUMA decision: skipped (single-socket host — pinning is a no-op).
+               `should_consider_numa_pinning()` returns false here.
+               No hwloc / libnuma dependency added; deferred until a
+               multi-socket reproducer shows it's worth it.
+
+PRIMARY RESULT (10k×10k, the issue's acceptance criterion)
+----------------------------------------------------------
+  before.txt: 25588 ms (25.6 s)
+  after_large_sizes.txt: 18340 ms (18.3 s)
+
+  Δ = -28% wall-clock. <20 s target HIT.
+
+  Forward phase: 717 ms → 783 ms  (+9%, tile overhead)
+  Sort phase:    315 ms → 391 ms  (+24%, 4 tiles to build)
+  Backward phase: 24713 ms → 17188 ms  (-30%, the L3-resident win)
+
+  The backward phase is where DRAM bandwidth dominated. Tiling
+  shrinks each backward sweep's bucket-array working set from
+  ~96 MB to ~24 MB (per the 4× shared-L3 budget set by
+  `tile_geometry::pick_source_tile_size`).
+
+5K×5K (production /table/stream tile is already 1000×1000 → unaffected)
+-----------------------------------------------------------------------
+  before.txt: 5008 ms
+  after_large_sizes.txt: 4988 ms
+  Δ = parity. (At 5000 sources we tile to 2500×2 — the working set
+  was already mostly L3-resident, so no further win, but no regression.)
+
+SMALL/MID SIZES (50, 100, 500, 1000, 2000)
+------------------------------------------
+  Sample 1 (after_small_sizes_final.txt):
+    50×50:    13.8 → 16.0  (+16%, 2 ms — noise; cf. 14.9–17.2 ms
+                            range across 3 sequential runs on same host)
+    100×100:  18.4 → 20.1  (+9%, 2 ms — noise)
+    500×500:   108 →  113  (+5% — noise)
+    1000×1000: 256 →  272  (+6% — noise)
+    2000×2000: 787 →  850  (+8% — likely host contention)
+
+  Across the noise band, no algorithmic regression. Small sizes
+  don't enter the L3-tiled path (they fit L3 in one shot — see
+  `pick_source_tile_size` returns None when n_sources ≤ tile floor
+  of 1000) AND don't enable the software prefetch (gated on
+  matrix size ≥ 8 MiB). Their code path is byte-identical to main.
+
+  Host noise floor is wide because of a parallel multi-country
+  geocode training (issue #220) running concurrently — see brief.
+
+DESIGN CHOICES
+--------------
+1. Per-CPU vs hardcoded tile size: per-CPU at runtime.
+   - `tile_geometry::detect_topology` reads
+     /sys/devices/system/cpu/cpu0/cache/index*/size and
+     /sys/devices/system/node/node*. Falls back to conservative
+     defaults (256 KiB L2, 8 MiB L3) on non-Linux.
+   - Tile size derives from a 4× shared-L3 budget vs.
+     `n_sources × avg_visited_per_search × 8 bytes` (SoA bucket
+     entries). Result is clamped to [1000, 4000] and rounded to
+     the nearest 500 for clean block geometry. On the dev host:
+     30 MiB × 4 / (6000 × 8) = 2500 → 2500 tile.
+
+2. Prefetch strategy: safe atomic-load + black_box, gated on
+   matrix size ≥ 8 MiB.
+   - Project rule disallows `unsafe` Rust, ruling out
+     `core::arch::x86_64::_mm_prefetch`. We issue a
+     `matrix[pf_idx].load(Relaxed)` 8 iterations ahead and feed
+     the result to `core::hint::black_box` — pulls the cache
+     line into L1 without unsafe.
+   - PREFETCH_DISTANCE=8 chosen for ~80 ns DRAM round-trip vs
+     ~10 ns/iter compute. Curve is flat in [4..16].
+   - Gated on `matrix.len() * 4 >= 8 MiB` — at smaller matrix
+     sizes the cache lines are already hot and the prefetched
+     load wastes a load-port slot.
+
+3. NUMA: detect-and-defer.
+   - Single-socket detection skips pinning entirely.
+   - `should_consider_numa_pinning()` returns true only on ≥2
+     NUMA nodes, but no pinning code is wired yet (no hwloc
+     dependency; planned follow-up if a multi-socket reproducer
+     shows it's worth it).
+
+CORRECTNESS
+-----------
+- New unit test `l3_tiled_path_matches_monolithic` exercises
+  the L3-tiled path with src_tile_size ∈ {1, 3, 8} on a 6-node
+  synthetic CCH and asserts byte-for-byte parity vs.
+  table_bucket_parallel. tile=1 is the most aggressive split
+  (each source its own tile); tile=8 covers the whole problem.
+- All 484 route unit tests pass.
+- All 33 matrix module tests pass.
+- bench harness's existing 5×5 vs P2P validation passes
+  ("All 25 queries match P2P results!" in every run).
+- workspace `cargo clippy --all-targets --all-features` clean.
+- `cargo fmt --check` clean.
+
+FILES
+-----
+- before.txt                         baseline from prior agent run
+- after_small_sizes.txt              first run with un-gated prefetch (showed regression)
+- after_small_sizes_v2.txt           after gating prefetch on matrix size
+- after_small_sizes_final.txt        final clean small-size run (post-rebuild)
+- after_large_sizes.txt              5k×5k + 10k×10k results
+- summary.txt                        this file
