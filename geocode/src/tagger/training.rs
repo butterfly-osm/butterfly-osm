@@ -98,17 +98,12 @@ use super::transformer::{
 /// AND a GPU is available, otherwise falls back to CPU with a warning
 /// (the user can force `Cpu` to silence the warning, or `Cuda` to
 /// require a GPU).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DevicePref {
+    #[default]
     Auto,
     Cuda,
     Cpu,
-}
-
-impl Default for DevicePref {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 impl DevicePref {
@@ -877,8 +872,8 @@ pub fn train_and_save_with_outcome<P: AsRef<Path>>(
             &device,
         )?;
 
-        let improved = eval_loss.is_finite()
-            && (best_eval_loss - eval_loss) > train_cfg.early_stop_min_delta;
+        let improved =
+            eval_loss.is_finite() && (best_eval_loss - eval_loss) > train_cfg.early_stop_min_delta;
         if improved {
             best_eval_loss = eval_loss;
             plateau_streak = 0;
@@ -939,9 +934,7 @@ pub fn train_and_save_with_outcome<P: AsRef<Path>>(
         }
         metrics.push(m);
 
-        if train_cfg.early_stop_patience > 0
-            && plateau_streak >= train_cfg.early_stop_patience
-        {
+        if train_cfg.early_stop_patience > 0 && plateau_streak >= train_cfg.early_stop_patience {
             eprintln!(
                 "[train] early stop: eval_loss has not improved by >{} for {} epochs (best={:.4})",
                 train_cfg.early_stop_min_delta, plateau_streak, best_eval_loss
