@@ -1,0 +1,55 @@
+{
+  "mode": "foot",
+  "n_total": 10000,
+  "n_both_valid": 10000,
+  "n_osrm_only": 0,
+  "n_butterfly_only": 0,
+  "n_both_failed": 0,
+  "distance_diff_pct": {
+    "p50": 1.562497153780356,
+    "p95": 4.327696812839356,
+    "p99": 8.880649937069617,
+    "max": 82.94109273264051,
+    "mean": 1.909590192677012
+  },
+  "duration_diff_pct": {
+    "p50": 10.479226130215054,
+    "p95": 13.360786195400916,
+    "p99": 16.719551910629537,
+    "max": 88.60060073522821,
+    "mean": 10.470482050434201
+  },
+  "distance_diff_abs_m": {
+    "p50": 1468.6074999998964,
+    "p95": 4559.16934999993,
+    "p99": 6475.931770000203,
+    "max": 19654.464999999997
+  },
+  "duration_diff_abs_s": {
+    "p50": 7630.300000000003,
+    "p95": 17051.964999999986,
+    "p99": 20737.700000000026,
+    "max": 26348.0
+  },
+  "n_in_distance_tolerance": 1276,
+  "n_in_duration_tolerance": 13,
+  "n_in_both_tolerance": 0,
+  "pct_in_both_tolerance": 0.0,
+  "speed_profile_bias_ratio_osrm_over_bf": 0.9050445038749659,
+  "duration_diff_pct_corrected": {
+    "p50": 1.0171881829552125,
+    "p95": 3.5457815227200453,
+    "p99": 6.93693897561264,
+    "max": 70.69193712293514,
+    "mean": 1.3716807803766196
+  },
+  "n_in_duration_tolerance_corrected": 4950,
+  "pct_in_distance_tolerance": 12.76,
+  "pct_in_distance_and_corrected_duration": 5.07,
+  "n_flagged_distance_gt_5pct": 340,
+  "n_flagged_duration_gt_5pct": 9926,
+  "osrm_distance_total_km": 1089676.2767999999,
+  "bf_distance_total_km": 1106219.276542,
+  "osrm_duration_total_h": 218386.95291666666,
+  "bf_duration_total_h": 241299.68413888887
+}
