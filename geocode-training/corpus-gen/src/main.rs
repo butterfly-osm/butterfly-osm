@@ -13,6 +13,7 @@ mod bench_queries;
 mod bio;
 mod canary;
 mod gold;
+mod morphology;
 mod output;
 
 use anyhow::Result;
@@ -32,8 +33,9 @@ struct Args {
     #[arg(short, long, default_value = "corpus.jsonl")]
     out: PathBuf,
 
-    /// Cross-shard canary output path. BE addresses rewritten with FR/NL
-    /// conventions for held-out regression testing of shard memorization.
+    /// Cross-shard canary output path. Source-country addresses rewritten
+    /// with `--canary-targets` countries' conventions for held-out
+    /// regression testing of shard memorization.
     #[arg(long, default_value = "canary.jsonl")]
     canary: PathBuf,
 
@@ -41,8 +43,22 @@ struct Args {
     #[arg(long, default_value = "BE")]
     country: String,
 
-    /// Number of augmented variants per gold record (default 10).
-    #[arg(short = 'n', long, default_value_t = 10)]
+    /// Comma-separated ISO 3166-1 alpha-2 codes of the canary target
+    /// countries. Each target country's morphology is used to rewrite
+    /// source-country streets with its conventions, generating held-out
+    /// counterfactual examples. Empty to skip canary generation.
+    #[arg(long, default_value = "FR,NL")]
+    canary_targets: String,
+
+    /// Directory containing morphology TOML files (one per ISO code,
+    /// e.g. `morphology/be.toml`).
+    #[arg(long, default_value = "morphology")]
+    morphology_dir: PathBuf,
+
+    /// Number of augmented variants per gold record (default 8 per
+    /// codex review). Each gold record contributes 1 canonical record
+    /// + N augmented variants to the training corpus.
+    #[arg(short = 'n', long, default_value_t = 8)]
     augmentations: u32,
 
     /// Optional cap on number of gold records read from the PBF
@@ -75,8 +91,38 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let mut rng = ChaCha20Rng::seed_from_u64(args.seed);
 
+    // Load source-country morphology + canary-target morphologies.
+    let source_iso = args.country.trim().to_ascii_uppercase();
+    let canary_isos: Vec<String> = args
+        .canary_targets
+        .split(',')
+        .map(|s| s.trim().to_ascii_uppercase())
+        .filter(|s| !s.is_empty() && s != &source_iso)
+        .collect();
+
+    let source_morph = morphology::Morphology::load_from_dir(&args.morphology_dir, &source_iso)?;
+    eprintln!(
+        "[corpus-gen] source morphology: {} ({})",
+        source_morph.country.iso2, source_morph.country.name,
+    );
+
+    let canary_targets: Vec<morphology::Morphology> = canary_isos
+        .iter()
+        .map(|iso| morphology::Morphology::load_from_dir(&args.morphology_dir, iso))
+        .collect::<Result<Vec<_>>>()?;
+    if !canary_targets.is_empty() {
+        eprintln!(
+            "[corpus-gen] canary targets: {}",
+            canary_targets
+                .iter()
+                .map(|m| m.country.iso2.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+    }
+
     eprintln!("[corpus-gen] reading PBF: {}", args.pbf.display());
-    let golds = gold::read_pbf(&args.pbf, &args.country, args.limit)?;
+    let golds = gold::read_pbf(&args.pbf, &source_iso, args.limit)?;
     eprintln!("[corpus-gen] gold records: {}", golds.len());
 
     let mut writer = output::JsonlWriter::new(&args.out)?;
@@ -92,13 +138,11 @@ fn main() -> Result<()> {
     for (i, g) in golds.iter().enumerate() {
         // Skip the canary stride from the training corpus and route them to canary instead.
         if i % canary_stride == 0 {
-            if let Some(record) = canary::rewrite_be_as_fr(g, &mut rng) {
-                canary_writer.write(&record)?;
-                canary_written += 1;
-            }
-            if let Some(record) = canary::rewrite_be_as_nl(g, &mut rng) {
-                canary_writer.write(&record)?;
-                canary_written += 1;
+            for tgt in &canary_targets {
+                if let Some(record) = canary::rewrite_with(g, &source_morph, tgt, &mut rng) {
+                    canary_writer.write(&record)?;
+                    canary_written += 1;
+                }
             }
             continue;
         }
@@ -116,7 +160,7 @@ fn main() -> Result<()> {
 
         // N augmented variants. Each picks one or more rewrite strategies.
         for k in 0..args.augmentations {
-            let variant = augment::apply(g, &canonical, &mut rng, k);
+            let variant = augment::apply(g, &canonical, &source_morph, &mut rng, k);
             writer.write(&output::TrainRecord {
                 text: variant.text,
                 bio_labels: variant.bio_labels,
@@ -147,8 +191,13 @@ fn main() -> Result<()> {
     );
 
     if let Some(bench_path) = &args.bench_queries {
-        let n =
-            bench_queries::write_bench_tsv(&golds, bench_path, args.bench_queries_count, &mut rng)?;
+        let n = bench_queries::write_bench_tsv(
+            &golds,
+            bench_path,
+            args.bench_queries_count,
+            &source_morph,
+            &mut rng,
+        )?;
         eprintln!(
             "[corpus-gen] wrote {} bench queries to {}",
             n,

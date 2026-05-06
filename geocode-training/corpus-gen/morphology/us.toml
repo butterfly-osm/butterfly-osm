@@ -1,0 +1,50 @@
+## United States morphology table.
+
+[country]
+iso2 = "US"
+name = "United States"
+
+[render]
+## US addresses use a comma between street and city, then space-separated
+## state and ZIP: "1600 Pennsylvania Ave NW, Washington DC 20500".
+field_separator_after_house = ", "
+postcode_city_separator = " "
+## US ZIP comes AFTER the city (and state).
+postcode_position = "trailing"
+
+[postcode]
+## 5-digit ZIP, optionally with -4 extension.
+regex = '^[0-9]{5}(-[0-9]{4})?$'
+format = "{}"
+
+[street_types]
+## US street type suffixes (USPS Publication 28).
+long_to_short = [
+    ["Street", "St"],
+    ["Avenue", "Ave"],
+    ["Boulevard", "Blvd"],
+    ["Drive", "Dr"],
+    ["Lane", "Ln"],
+    ["Road", "Rd"],
+    ["Court", "Ct"],
+    ["Place", "Pl"],
+    ["Highway", "Hwy"],
+    ["Parkway", "Pkwy"],
+    ["Circle", "Cir"],
+    ["Plaza", "Plz"],
+    ["Terrace", "Ter"],
+    ["Square", "Sq"],
+    ["North", "N"],
+    ["South", "S"],
+    ["East", "E"],
+    ["West", "W"],
+    ["Northwest", "NW"],
+    ["Northeast", "NE"],
+    ["Southwest", "SW"],
+    ["Southeast", "SE"],
+    ["Saint", "St"],
+]
+
+## US street markers — typically SUFFIXED to the street name.
+[street_types.markers]
+us = ["street", "avenue", "boulevard", "drive", "lane", "road", "court", "highway", "parkway"]

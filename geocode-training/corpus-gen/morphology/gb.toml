@@ -1,0 +1,34 @@
+## United Kingdom morphology table.
+
+[country]
+iso2 = "GB"
+name = "United Kingdom"
+
+[render]
+field_separator_after_house = ", "
+postcode_city_separator = " "
+## UK postcode goes LAST: "10 Downing Street, London SW1A 2AA"
+postcode_position = "trailing"
+
+[postcode]
+## UK postcode: see Royal Mail PAF / BS 7666. Simplified regex.
+regex = '^[A-Z]{1,2}[0-9][A-Z0-9]? ?[0-9][A-Z]{2}$'
+format = "{}"
+
+[street_types]
+long_to_short = [
+    ["Street", "St"],
+    ["Road", "Rd"],
+    ["Avenue", "Ave"],
+    ["Lane", "Ln"],
+    ["Place", "Pl"],
+    ["Crescent", "Cres"],
+    ["Close", "Cl"],
+    ["Drive", "Dr"],
+    ["Court", "Ct"],
+    ["Square", "Sq"],
+    ["Saint", "St"],
+]
+
+[street_types.markers]
+gb = ["street", "road", "avenue", "lane", "crescent", "close", "place", "square"]

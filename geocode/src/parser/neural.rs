@@ -27,6 +27,7 @@ use candle_core::Device;
 
 use crate::routing::{CountryId, classify_country};
 use crate::shard::reader::Shard;
+use crate::tagger::training::CountryVocab;
 use crate::tagger::transformer::{ModelConfig, TaggerModel};
 use crate::types::ParsedQuery;
 
@@ -47,6 +48,9 @@ use super::retrieval_utility::RetrievalUtilityScorer;
 pub struct NeuralParser {
     pub model_path: PathBuf,
     pub config: ModelConfig,
+    /// Country vocabulary used at training time. Index `i` of the
+    /// model's country head corresponds to `country_vocab[i]`.
+    pub country_vocab: CountryVocab,
     model: TaggerModel,
     device: Device,
     pub beam_cfg: BeamConfig,
@@ -80,10 +84,12 @@ impl NeuralParser {
     /// `<path>.config.json` next to the weights — written by
     /// [`crate::tagger::training::train_and_save`].
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let (model, cfg, device) = crate::tagger::training::load_model(path.as_ref())?;
+        let (model, cfg, country_vocab, device) =
+            crate::tagger::training::load_model(path.as_ref())?;
         Ok(Self {
             model_path: path.as_ref().to_path_buf(),
             config: cfg,
+            country_vocab,
             model,
             device,
             beam_cfg: BeamConfig::default(),
@@ -113,7 +119,8 @@ impl NeuralParser {
             }
             None => decode(text, &inference, shard, &self.beam_cfg, &self.util_cfg),
         };
-        let country_candidates = merge_country_candidates(text, &inference.country_posterior);
+        let country_candidates =
+            merge_country_candidates(text, &inference.country_posterior, &self.country_vocab);
         Ok(to_parsed_query(text, &decoded, country_candidates, 5))
     }
 
@@ -130,19 +137,40 @@ impl NeuralParser {
     }
 }
 
-/// Multiply the cheap classifier posterior by the model's country head
-/// posterior, then renormalize. MVP: single country (BE) → both
-/// collapse to `(BE, 1.0)`.
-fn merge_country_candidates(text: &str, model_posterior: &[f32]) -> Vec<(CountryId, f32)> {
+/// Merge the cheap-classifier country posterior with the model's
+/// country-head posterior.
+///
+/// The cheap classifier returns `Vec<(CountryId, weight)>` over ALL
+/// shipped country packs. The model head returns a posterior indexed
+/// by the trained [`CountryVocab`] — which may be a subset of the
+/// shipped packs (e.g. trained on `[BE]` but the classifier knows
+/// about FR/NL/DE/...).
+///
+/// For each `(CountryId, cheap_p)` from the classifier, we look up
+/// the country in the trained vocab. If present, multiply its
+/// `cheap_p` by `model_posterior[id]`. If absent (the model never
+/// saw this country during training, so its head can't speak to
+/// it), the cheap classifier's value is used unchanged. Then
+/// renormalize.
+///
+/// The single-country (`BE`) case collapses to the cheap classifier's
+/// own posterior — the model is just a sanity check for the country
+/// it does know.
+fn merge_country_candidates(
+    text: &str,
+    model_posterior: &[f32],
+    vocab: &CountryVocab,
+) -> Vec<(CountryId, f32)> {
     let cheap = classify_country(text);
     if cheap.is_empty() {
         return cheap;
     }
-    // Model is BE-only (n_countries==1) on the shipped tiny model.
-    // For multi-country: multiply pairwise then normalize.
     let mut out: Vec<(CountryId, f32)> = Vec::with_capacity(cheap.len());
-    for (idx, (cid, cheap_p)) in cheap.iter().enumerate() {
-        let model_p = model_posterior.get(idx).copied().unwrap_or(1.0);
+    for (cid, cheap_p) in &cheap {
+        let model_p = vocab
+            .id_of(cid.as_str())
+            .and_then(|id| model_posterior.get(id as usize).copied())
+            .unwrap_or(1.0);
         out.push((*cid, cheap_p * model_p));
     }
     let total: f32 = out.iter().map(|(_, p)| *p).sum();
@@ -162,7 +190,9 @@ mod tests {
     use super::*;
     use crate::shard::AddressRecord;
     use crate::shard::builder::build_shard;
-    use crate::tagger::training::{TrainConfig, generate_belgium_synthetic, train_and_save};
+    use crate::tagger::training::{
+        CountryVocab, LrSchedule, TrainConfig, generate_belgium_synthetic, train_and_save,
+    };
     use tempfile::tempdir;
 
     fn small_shard() -> (tempfile::TempDir, Shard) {
@@ -198,12 +228,16 @@ mod tests {
         let tcfg = TrainConfig {
             epochs: 2,
             batch_size: 8,
+            warmup_steps: 0,
+            lr_schedule: LrSchedule::Constant,
+            gradient_clip: None,
             ..Default::default()
         };
         let dir = tempdir().unwrap();
         let out = dir.path().join("tiny.safetensors");
         let cfg = ModelConfig::tiny();
-        let _ = train_and_save(cfg, tcfg, &corpus, &out).unwrap();
+        let vocab = CountryVocab::new(&["BE"]).unwrap();
+        let _ = train_and_save(cfg, tcfg, &vocab, &corpus, &out).unwrap();
         let parser = NeuralParser::load(&out).unwrap();
         let (_sd, shard) = small_shard();
         let parsed = parser

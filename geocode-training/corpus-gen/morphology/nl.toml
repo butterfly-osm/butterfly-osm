@@ -1,0 +1,28 @@
+## Netherlands morphology table.
+
+[country]
+iso2 = "NL"
+name = "Netherlands"
+
+[render]
+field_separator_after_house = ", "
+postcode_city_separator = " "
+postcode_position = "leading"
+
+[postcode]
+## NL postcode is 4 digits + space + 2 letters ("1011 AB").
+regex = '^[0-9]{4} ?[A-Z]{2}$'
+format = "{}"
+
+[street_types]
+long_to_short = [
+    ["Straat", "Str."],
+    ["Laan", "Ln."],
+    ["Plein", "Pl."],
+    ["Gracht", "Gr."],
+    ["Weg", "Wg."],
+    ["Sint", "St"],
+]
+
+[street_types.markers]
+nl = ["straat", "laan", "plein", "gracht", "weg", "kade"]

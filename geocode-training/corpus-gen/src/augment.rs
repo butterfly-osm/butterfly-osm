@@ -20,6 +20,7 @@
 
 use crate::bio::{Field, Labeled, Span, bio_from_spans};
 use crate::gold::GoldRecord;
+use crate::morphology::Morphology;
 use rand::Rng;
 use rand_chacha::ChaCha20Rng;
 
@@ -30,18 +31,24 @@ pub struct Augmented {
     pub kind: String,
 }
 
-pub fn apply(g: &GoldRecord, _canonical: &Labeled, rng: &mut ChaCha20Rng, k: u32) -> Augmented {
+pub fn apply(
+    g: &GoldRecord,
+    _canonical: &Labeled,
+    morph: &Morphology,
+    rng: &mut ChaCha20Rng,
+    k: u32,
+) -> Augmented {
     match k % 10 {
         0 => reorder_postcode_first(g),
         1 => drop_field(g, DropTarget::Postcode),
         2 => drop_field(g, DropTarget::City),
-        3 => abbr_contract(g),
-        4 => abbr_expand(g),
+        3 => abbr_contract(g, morph),
+        4 => abbr_expand(g, morph),
         5 => case_transform(g, CaseStyle::Upper),
         6 => case_transform(g, CaseStyle::Lower),
         7 => whitespace_noise(g, rng),
         8 => typo_injection(g, rng),
-        _ => combined_case_abbr(g, rng),
+        _ => combined_case_abbr(g, morph, rng),
     }
 }
 
@@ -155,56 +162,22 @@ fn drop_field(g: &GoldRecord, target: DropTarget) -> Augmented {
     }
 }
 
-/// French/Dutch abbreviation contractions used in BE addressing.
-const ABBR_CONTRACT: &[(&str, &str)] = &[
-    // FR
-    ("Rue", "R."),
-    ("rue", "r."),
-    ("Boulevard", "Bd"),
-    ("boulevard", "bd"),
-    ("Avenue", "Av."),
-    ("avenue", "av."),
-    ("Place", "Pl."),
-    ("place", "pl."),
-    ("Chaussée", "Ch."),
-    ("chaussée", "ch."),
-    ("Saint", "St"),
-    ("saint", "st"),
-    // NL
-    ("Straat", "Str."),
-    ("straat", "str."),
-    ("Laan", "Ln."),
-    ("laan", "ln."),
-];
-
-/// Reverse: contracted → expanded.
-const ABBR_EXPAND: &[(&str, &str)] = &[
-    ("R.", "Rue"),
-    ("r.", "rue"),
-    ("Bd.", "Boulevard"),
-    ("bd.", "boulevard"),
-    ("Bd ", "Boulevard "),
-    ("bd ", "boulevard "),
-    ("Av.", "Avenue"),
-    ("av.", "avenue"),
-    ("Pl.", "Place"),
-    ("pl.", "place"),
-    ("Ch.", "Chaussée"),
-    ("ch.", "chaussée"),
-    ("St ", "Saint "),
-    ("st ", "saint "),
-    ("Str.", "Straat"),
-    ("str.", "straat"),
-    ("Ln.", "Laan"),
-    ("ln.", "laan"),
-];
-
-fn abbr_contract(g: &GoldRecord) -> Augmented {
+/// Contract abbreviations using the morphology's `long_to_short`
+/// table. Tries longest-form first (table is pre-sorted by
+/// [`Morphology::abbreviations`]) so e.g. "Boulevard" matches before
+/// "Bd". Walks the entire street string (not just the prefix) so
+/// suffixed compound forms like German "Friedrichstraße" → "Friedrichstr."
+/// or US "Pennsylvania Avenue" → "Pennsylvania Ave" are handled.
+fn abbr_contract(g: &GoldRecord, morph: &Morphology) -> Augmented {
     let mut g2 = g.clone();
     if let Some(s) = g2.street.as_mut() {
-        for (long, short) in ABBR_CONTRACT {
-            if s.starts_with(long) {
-                *s = format!("{}{}", short, &s[long.len()..]);
+        for (long, short) in morph.abbreviations() {
+            if let Some(idx) = s.find(long.as_str()) {
+                let mut out = String::with_capacity(s.len() + 4);
+                out.push_str(&s[..idx]);
+                out.push_str(&short);
+                out.push_str(&s[idx + long.len()..]);
+                *s = out;
                 break;
             }
         }
@@ -217,12 +190,25 @@ fn abbr_contract(g: &GoldRecord) -> Augmented {
     }
 }
 
-fn abbr_expand(g: &GoldRecord) -> Augmented {
+/// Expand abbreviations: reverse of [`abbr_contract`]. Tries
+/// longest-short-form first so "Blvd" matches before "Bd" / "Bld".
+fn abbr_expand(g: &GoldRecord, morph: &Morphology) -> Augmented {
     let mut g2 = g.clone();
     if let Some(s) = g2.street.as_mut() {
-        for (short, long) in ABBR_EXPAND {
-            if s.starts_with(short) {
-                *s = format!("{}{}", long, &s[short.len()..]);
+        let mut pairs: Vec<(String, String)> = morph
+            .abbreviations()
+            .into_iter()
+            .map(|(l, sh)| (sh, l))
+            .collect();
+        // Longest short-form first.
+        pairs.sort_by_key(|(sh, _)| std::cmp::Reverse(sh.len()));
+        for (short, long) in pairs {
+            if let Some(idx) = s.find(short.as_str()) {
+                let mut out = String::with_capacity(s.len() + 4);
+                out.push_str(&s[..idx]);
+                out.push_str(&long);
+                out.push_str(&s[idx + short.len()..]);
+                *s = out;
                 break;
             }
         }
@@ -442,7 +428,7 @@ fn typo_injection(g: &GoldRecord, rng: &mut ChaCha20Rng) -> Augmented {
     }
 }
 
-fn combined_case_abbr(g: &GoldRecord, rng: &mut ChaCha20Rng) -> Augmented {
+fn combined_case_abbr(g: &GoldRecord, morph: &Morphology, rng: &mut ChaCha20Rng) -> Augmented {
     // Pipeline: contract abbreviations on the GoldRecord, then run the
     // result through case_transform. We mutate the GoldRecord directly
     // (rather than going through `abbr_contract` which produces an
@@ -455,9 +441,13 @@ fn combined_case_abbr(g: &GoldRecord, rng: &mut ChaCha20Rng) -> Augmented {
     };
     let mut g2 = g.clone();
     if let Some(s) = g2.street.as_mut() {
-        for (long, short) in ABBR_CONTRACT {
-            if s.starts_with(long) {
-                *s = format!("{}{}", short, &s[long.len()..]);
+        for (long, short) in morph.abbreviations() {
+            if let Some(idx) = s.find(long.as_str()) {
+                let mut out = String::with_capacity(s.len() + 4);
+                out.push_str(&s[..idx]);
+                out.push_str(&short);
+                out.push_str(&s[idx + long.len()..]);
+                *s = out;
                 break;
             }
         }
