@@ -5,10 +5,15 @@
 //! - Transition probability: exponential on |route_distance - great_circle_distance|
 //! - Route distance: sum of physical edge lengths (length_mm) along the fastest path
 
+use std::sync::Arc;
+
 use crate::profile_abi::Mode;
 use crate::server::edge_geom::EdgeGeometry;
 
+use super::cross_region::solve_cross_region;
+use super::overlay::OverlayCluster;
 use super::query::CchQuery;
+use super::regions::RegionsState;
 use super::state::{CchWeights, ModeData, ServerState};
 
 /// Maximum candidates per GPS observation (after perpendicular-distance reranking)
@@ -648,6 +653,665 @@ fn great_circle_m(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
     let dlat = (lat2 - lat1) * METERS_PER_DEG_LAT;
     let dlon = (lon2 - lon1) * METERS_PER_DEG_LON_AT_50;
     (dlat * dlat + dlon * dlon).sqrt()
+}
+
+// ===========================================================================
+// Cross-region map matching (#194)
+// ===========================================================================
+//
+// When a GPS trace crosses a region boundary, candidates for sample i
+// can be in region A while candidates for sample i+1 are in region B.
+// The single-region [`map_match`] above can't compute the transition
+// distance because each region has its own CCH and the source/target
+// CCH ranks live in disjoint address spaces.
+//
+// [`map_match_multi_region`] handles the multi-region case. The shape
+// mirrors the single-region path: per-sample candidates, segmentation
+// at gaps, then Viterbi. The only difference is in
+// [`compute_transition_distances_multi`], which dispatches each
+// candidate-pair transition to either:
+//   - single-region CCH P2P (same region) — same code path as
+//     [`compute_transition_distances`] above, just behind a region
+//     index check, or
+//   - [`solve_cross_region`] (different regions) — runs the access
+//     CCH leg in the source region, looks up the prebuilt overlay
+//     matrix between representative borders, and runs the egress CCH
+//     leg in the destination region. Returns total cost in mode
+//     units.
+//
+// Path reconstruction at cross-region boundaries inserts a "border
+// crossing" anchor: the matched sequence is split into one [`Matching`]
+// per contiguous same-region run. Edges in different regions cannot be
+// concatenated into one `ebg_path` because EBG ids are region-local.
+// The handler stitches them back together via two-leg geometry +
+// border representative as anchor.
+//
+// Performance:
+//   - Pure single-region trace: hits the existing [`map_match`]
+//     fast-path with zero cross-region overhead.
+//   - Cross-region transition: ~10x slower than a single-region
+//     transition (1 CCH access + matrix lookup + 1 CCH egress vs.
+//     1 CCH P2P).
+//   - For a 10-point trace where 2 transitions cross regions, total
+//     wall-clock is ~5 s + 2 × ~50 ms = ~5.1 s, dominated by the
+//     single-region transitions.
+
+/// One candidate match for a GPS observation in a known region.
+///
+/// Same as [`Candidate`] but tagged with the region index in
+/// [`RegionsState::regions`]. Cross-region candidate pairs route their
+/// transition cost through [`solve_cross_region`] instead of a single-
+/// region CCH P2P.
+#[derive(Debug, Clone)]
+struct RegionCandidate {
+    region_idx: usize,
+    ebg_id: u32,
+    snapped_lon: f64,
+    snapped_lat: f64,
+    distance_m: f64,
+}
+
+/// Map-match a GPS trace that may span multiple regions via the
+/// cross-region overlay (#194).
+///
+/// Returns `None` if no observations could be matched.
+///
+/// Fast-path: when every sample's candidates fall in a single region,
+/// delegates to the existing single-region [`map_match`] with zero
+/// cross-region overhead. The single-region perf budget (~5 s for a
+/// 10-point trace) is preserved exactly.
+///
+/// Cross-region path: when samples span two or more regions, runs a
+/// region-aware Viterbi where transitions across region boundaries
+/// route through [`solve_cross_region`]. Result `matchings` are split
+/// at region boundaries (one [`Matching`] per contiguous same-region
+/// run); cross-region transitions appear as adjacent matchings with
+/// the border representative implicit between them.
+///
+/// `mode_name` must be loaded in every region the trace touches; if
+/// any region lacks the mode the function returns `None`.
+pub fn map_match_multi_region(
+    regions: &RegionsState,
+    mode_name: &str,
+    coordinates: &[(f64, f64)],
+    gps_accuracy: Option<f64>,
+) -> Option<MatchResult> {
+    let n = coordinates.len();
+    if n < 2 {
+        return None;
+    }
+
+    let sigma = gps_accuracy.unwrap_or(DEFAULT_GPS_SIGMA).max(1.0);
+
+    // ---- Step 1: per-sample multi-region candidate generation ------
+    //
+    // For each GPS sample, collect candidates from every region whose
+    // snap_index returns hits. A sample near the border can have
+    // candidates from BOTH adjacent regions.
+    let candidates: Vec<Vec<RegionCandidate>> = coordinates
+        .iter()
+        .map(|&(lon, lat)| generate_candidates_multi(regions, mode_name, lon, lat))
+        .collect();
+
+    // ---- Step 2: fast-path detection -------------------------------
+    //
+    // If every non-empty candidate set lives in a single region, fall
+    // through to the existing single-region path. Cross-region
+    // routing is only invoked when at least one sample has candidates
+    // in a different region than another sample.
+    let single_region = single_region_id(&candidates);
+    if let Some(idx) = single_region {
+        // Fast-path: one region, defer to the existing single-region
+        // implementation. No cross-region overhead.
+        let entry = &regions.regions[idx];
+        let mode_idx = match entry.state.mode_lookup.get(mode_name) {
+            Some(&m) => m,
+            None => return None,
+        };
+        return map_match(
+            &entry.state,
+            Mode(mode_idx),
+            coordinates,
+            gps_accuracy,
+            None,
+            None,
+        );
+    }
+
+    // ---- Step 3: cross-region path ---------------------------------
+    //
+    // Need an overlay to compute cross-region transitions. Without
+    // one, treat as no-match (caller decides whether to 404 or fall
+    // back to per-region single matching).
+    let overlay = regions.overlay.as_ref()?;
+
+    // Resolve mode for each region we'll touch.
+    let mode_indices: Vec<u8> = regions
+        .regions
+        .iter()
+        .map(|r| r.state.mode_lookup.get(mode_name).copied().unwrap_or(u8::MAX))
+        .collect();
+
+    // ---- Step 4: segmentation (gaps + unmatched samples) -----------
+    let segments = find_segments_multi(coordinates, &candidates);
+    if segments.is_empty() {
+        return None;
+    }
+
+    // ---- Step 5: Viterbi per segment, region-aware -----------------
+    let mut matchings: Vec<Matching> = Vec::new();
+    let mut tracepoints: Vec<Option<Tracepoint>> = vec![None; n];
+
+    for segment in &segments {
+        let seg_coords: Vec<(f64, f64)> = segment.iter().map(|&i| coordinates[i]).collect();
+        let seg_candidates: Vec<&Vec<RegionCandidate>> =
+            segment.iter().map(|&i| &candidates[i]).collect();
+
+        let matched_indices = match viterbi_multi(
+            regions,
+            &mode_indices,
+            mode_name,
+            overlay,
+            &seg_coords,
+            &seg_candidates,
+            sigma,
+        ) {
+            Some(v) => v,
+            None => continue,
+        };
+
+        // Split matched sequence into per-region runs and build one
+        // Matching per run. Cross-region transitions become matching
+        // boundaries; the border crossing is implicit between adjacent
+        // matchings (caller's geometry assembly inserts a border
+        // anchor if it has the overlay).
+        let runs = split_into_region_runs(&seg_candidates, &matched_indices);
+        for (run_start, run_end) in runs.iter() {
+            // run is [run_start, run_end] inclusive within the segment.
+            let run_region_idx = seg_candidates[*run_start][matched_indices[*run_start]].region_idx;
+            let entry = &regions.regions[run_region_idx];
+            let m_idx = mode_indices[run_region_idx];
+            if m_idx == u8::MAX {
+                continue;
+            }
+            let mode_data = entry.state.get_mode(Mode(m_idx));
+
+            // Materialise the (single-region) Candidate slice for this
+            // run so we can reuse build_matched_path verbatim.
+            let run_cands: Vec<Vec<Candidate>> = (*run_start..=*run_end)
+                .map(|t| {
+                    seg_candidates[t]
+                        .iter()
+                        .filter(|c| c.region_idx == run_region_idx)
+                        .map(|c| Candidate {
+                            ebg_id: c.ebg_id,
+                            snapped_lon: c.snapped_lon,
+                            snapped_lat: c.snapped_lat,
+                            distance_m: c.distance_m,
+                        })
+                        .collect()
+                })
+                .collect();
+            // Recompute matched indices in the projected (single-
+            // region) candidate vectors. We pick the same physical
+            // candidate (ebg_id) we matched in the multi-region pass.
+            let run_matched: Vec<usize> = (*run_start..=*run_end)
+                .map(|t| {
+                    let target_ebg = seg_candidates[t][matched_indices[t]].ebg_id;
+                    run_cands[t - *run_start]
+                        .iter()
+                        .position(|c| c.ebg_id == target_ebg)
+                        .unwrap_or(0)
+                })
+                .collect();
+
+            let run_cand_refs: Vec<&Vec<Candidate>> = run_cands.iter().collect();
+            let ebg_path = build_matched_path(
+                mode_data,
+                &run_cand_refs,
+                &run_matched,
+                &mode_data.cch_weights,
+            );
+
+            let duration_ds = ebg_path
+                .iter()
+                .map(|&eid| mode_data.node_weights[eid as usize])
+                .filter(|&w| w != u32::MAX)
+                .sum::<u32>();
+
+            // Average emission for this run.
+            let avg_emission: f64 = (*run_start..=*run_end)
+                .map(|t| {
+                    let dist = seg_candidates[t][matched_indices[t]].distance_m;
+                    emission_prob(dist, sigma)
+                })
+                .sum::<f64>()
+                / ((*run_end - *run_start + 1) as f64);
+
+            let matching_idx = matchings.len();
+
+            matchings.push(Matching {
+                ebg_path,
+                duration_ds,
+                confidence: avg_emission.exp(),
+            });
+
+            for (waypoint_index, t) in (*run_start..=*run_end).enumerate() {
+                let cand = &seg_candidates[t][matched_indices[t]];
+                let obs_idx = segment[t];
+                tracepoints[obs_idx] = Some(Tracepoint {
+                    lon: cand.snapped_lon,
+                    lat: cand.snapped_lat,
+                    ebg_id: cand.ebg_id,
+                    matchings_index: matching_idx,
+                    waypoint_index,
+                });
+            }
+        }
+    }
+
+    if matchings.is_empty() {
+        return None;
+    }
+
+    Some(MatchResult {
+        matchings,
+        tracepoints,
+    })
+}
+
+/// Generate candidates for a GPS sample by querying every loaded
+/// region's snap_index. Tags each candidate with its region index so
+/// the Viterbi transition step knows which CCH to use.
+fn generate_candidates_multi(
+    regions: &RegionsState,
+    mode_name: &str,
+    lon: f64,
+    lat: f64,
+) -> Vec<RegionCandidate> {
+    let mut out: Vec<RegionCandidate> = Vec::new();
+    for (region_idx, entry) in regions.regions.iter().enumerate() {
+        let mode_idx = match entry.state.mode_lookup.get(mode_name) {
+            Some(&m) => m,
+            None => continue,
+        };
+        let mode_data = entry.state.get_mode(Mode(mode_idx));
+        let mask = &mode_data.mask;
+        let hits = entry.state.snap_index.snap_k_with_info_filtered(
+            lon,
+            lat,
+            mode_idx,
+            MAX_CANDIDATES,
+            Some(mask),
+        );
+        for (ebg_id, _mlon, _mlat, _mdist) in hits {
+            let (proj_lon, proj_lat, proj_dist) =
+                project_onto_edge(lon, lat, ebg_id, &entry.state.ebg_nodes, &entry.state.edge_geom);
+            if proj_dist.is_infinite() {
+                continue;
+            }
+            out.push(RegionCandidate {
+                region_idx,
+                ebg_id,
+                snapped_lon: proj_lon,
+                snapped_lat: proj_lat,
+                distance_m: proj_dist,
+            });
+        }
+    }
+    // Cap total candidates to bound Viterbi cost: a sample near a
+    // border can produce up to MAX_CANDIDATES * n_regions candidates,
+    // which inflates transition compute. Sort by distance ascending
+    // and keep the closest 2*MAX_CANDIDATES (room for both regions on
+    // a border sample).
+    out.sort_by(|a, b| {
+        a.distance_m
+            .partial_cmp(&b.distance_m)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    out.truncate(MAX_CANDIDATES * 2);
+    out
+}
+
+/// If every non-empty candidate set lives in the same region, return
+/// that region's index. Otherwise return `None`.
+fn single_region_id(candidates: &[Vec<RegionCandidate>]) -> Option<usize> {
+    let mut seen: Option<usize> = None;
+    for cs in candidates.iter() {
+        for c in cs.iter() {
+            match seen {
+                None => seen = Some(c.region_idx),
+                Some(idx) if idx == c.region_idx => {}
+                Some(_) => return None,
+            }
+        }
+    }
+    seen
+}
+
+/// Same logic as [`find_segments`] but parameterised on
+/// [`RegionCandidate`].
+fn find_segments_multi(
+    coordinates: &[(f64, f64)],
+    candidates: &[Vec<RegionCandidate>],
+) -> Vec<Vec<usize>> {
+    let n = coordinates.len();
+    let mut segments = Vec::new();
+    let mut current_segment: Vec<usize> = Vec::new();
+
+    for i in 0..n {
+        if candidates[i].is_empty() {
+            if current_segment.len() >= 2 {
+                segments.push(std::mem::take(&mut current_segment));
+            } else {
+                current_segment.clear();
+            }
+            continue;
+        }
+
+        if let Some(&prev_idx) = current_segment.last() {
+            let gc_dist = great_circle_m(
+                coordinates[prev_idx].0,
+                coordinates[prev_idx].1,
+                coordinates[i].0,
+                coordinates[i].1,
+            );
+            if gc_dist > GAP_THRESHOLD_M {
+                if current_segment.len() >= 2 {
+                    segments.push(std::mem::take(&mut current_segment));
+                } else {
+                    current_segment.clear();
+                }
+            }
+        }
+
+        current_segment.push(i);
+    }
+
+    if current_segment.len() >= 2 {
+        segments.push(current_segment);
+    }
+    segments
+}
+
+/// Region-aware Viterbi. Same shape as [`viterbi`] but transition
+/// distances are computed via [`compute_transition_distances_multi`]
+/// which dispatches to single-region CCH or [`solve_cross_region`]
+/// per candidate pair.
+#[allow(clippy::too_many_arguments)]
+fn viterbi_multi(
+    regions: &RegionsState,
+    mode_indices: &[u8],
+    mode_name: &str,
+    overlay: &OverlayCluster,
+    coordinates: &[(f64, f64)],
+    candidates: &[&Vec<RegionCandidate>],
+    sigma: f64,
+) -> Option<Vec<usize>> {
+    let n_obs = coordinates.len();
+    if n_obs < 2 {
+        return None;
+    }
+
+    let mut log_prob: Vec<Vec<f64>> = Vec::with_capacity(n_obs);
+    let mut predecessor: Vec<Vec<Option<usize>>> = Vec::with_capacity(n_obs);
+
+    let init_probs: Vec<f64> = candidates[0]
+        .iter()
+        .map(|c| emission_prob(c.distance_m, sigma))
+        .collect();
+    log_prob.push(init_probs);
+    predecessor.push(vec![None; candidates[0].len()]);
+
+    for t in 1..n_obs {
+        let n_curr = candidates[t].len();
+        let n_prev = candidates[t - 1].len();
+
+        if n_curr == 0 {
+            return None;
+        }
+
+        let gc_dist = great_circle_m(
+            coordinates[t - 1].0,
+            coordinates[t - 1].1,
+            coordinates[t].0,
+            coordinates[t].1,
+        );
+
+        let transition_dists = compute_transition_distances_multi(
+            regions,
+            mode_indices,
+            mode_name,
+            overlay,
+            candidates[t - 1],
+            candidates[t],
+        );
+
+        let mut curr_probs = vec![NEG_INF; n_curr];
+        let mut curr_pred = vec![None; n_curr];
+
+        for c in 0..n_curr {
+            let emit = emission_prob(candidates[t][c].distance_m, sigma);
+            for p in 0..n_prev {
+                if log_prob[t - 1][p] == NEG_INF {
+                    continue;
+                }
+                let route_dist_m = transition_dists[p * n_curr + c];
+                if route_dist_m == f64::INFINITY {
+                    continue;
+                }
+                let trans = transition_prob(route_dist_m, gc_dist);
+                let total = log_prob[t - 1][p] + trans + emit;
+                if total > curr_probs[c] {
+                    curr_probs[c] = total;
+                    curr_pred[c] = Some(p);
+                }
+            }
+        }
+
+        log_prob.push(curr_probs);
+        predecessor.push(curr_pred);
+    }
+
+    let last_probs = &log_prob[n_obs - 1];
+    let best_final = last_probs
+        .iter()
+        .enumerate()
+        .filter(|&(_, p)| *p != NEG_INF)
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(idx, _)| idx)?;
+
+    let mut path = vec![0usize; n_obs];
+    path[n_obs - 1] = best_final;
+    for t in (1..n_obs).rev() {
+        path[t - 1] = predecessor[t][path[t]]?;
+    }
+    Some(path)
+}
+
+/// Compute per-pair transition distances (meters) in the multi-region
+/// setting. For same-region pairs, runs single-region CCH P2P + length
+/// sum. For cross-region pairs, runs [`solve_cross_region`] and sums
+/// physical lengths from both legs.
+///
+/// The cross-region path is ~10× slower than the same-region path so
+/// we group `from`/`to` by `(from.region_idx, to.region_idx)` and
+/// reuse the per-region CCH query state where possible.
+#[allow(clippy::too_many_arguments)]
+fn compute_transition_distances_multi(
+    regions: &RegionsState,
+    mode_indices: &[u8],
+    mode_name: &str,
+    overlay: &OverlayCluster,
+    from: &[RegionCandidate],
+    to: &[RegionCandidate],
+) -> Vec<f64> {
+    let n_from = from.len();
+    let n_to = to.len();
+    let mut result = vec![f64::INFINITY; n_from * n_to];
+
+    // Group by (from_region, to_region) to amortise CchQuery
+    // construction (negligible compared to the search itself but keeps
+    // the inner loop tidy).
+    for (i, fc) in from.iter().enumerate() {
+        let from_region = fc.region_idx;
+        let from_mode_idx = mode_indices[from_region];
+        if from_mode_idx == u8::MAX {
+            continue;
+        }
+        let from_state: &Arc<ServerState> = &regions.regions[from_region].state;
+        let from_mode_data = from_state.get_mode(Mode(from_mode_idx));
+        let src_rank = from_mode_data.orig_to_rank[fc.ebg_id as usize];
+        if src_rank == u32::MAX {
+            continue;
+        }
+
+        for (j, tc) in to.iter().enumerate() {
+            let to_region = tc.region_idx;
+            let to_mode_idx = mode_indices[to_region];
+            if to_mode_idx == u8::MAX {
+                continue;
+            }
+
+            if from_region == to_region {
+                // Same region: single CCH P2P, sum length_mm.
+                let to_mode_data = from_mode_data; // same region
+                let dst_rank = to_mode_data.orig_to_rank[tc.ebg_id as usize];
+                if dst_rank == u32::MAX {
+                    continue;
+                }
+                let query = CchQuery::with_custom_weights(
+                    &from_mode_data.cch_topo,
+                    &from_mode_data.up_adj_flat,
+                    &from_mode_data.down_rev_flat,
+                    &from_mode_data.cch_weights,
+                );
+                if let Some(qr) = query.query(src_rank, dst_rank) {
+                    let rank_path = super::unpack::unpack_path(
+                        &from_mode_data.cch_topo,
+                        &from_mode_data.cch_weights,
+                        &qr.forward_parent,
+                        &qr.backward_parent,
+                        src_rank,
+                        dst_rank,
+                        qr.meeting_node,
+                    );
+                    let total_mm: u64 = rank_path
+                        .iter()
+                        .map(|&rank| {
+                            let filtered_id =
+                                from_mode_data.cch_topo.rank_to_filtered[rank as usize];
+                            let original_id =
+                                from_mode_data.filtered_to_original[filtered_id as usize];
+                            from_state.ebg_nodes.nodes[original_id as usize].length_mm as u64
+                        })
+                        .sum();
+                    result[i * n_to + j] = total_mm as f64 / 1000.0;
+                }
+            } else {
+                // Different regions: cross-region solve. Returns total
+                // cost in mode units (deciseconds). For HMM transition
+                // probability we want PHYSICAL DISTANCE, so we unpack
+                // both legs and sum length_mm, plus add the haversine
+                // border-crossing distance from src_border_ebg to
+                // dst_border_ebg.
+                let to_state: &Arc<ServerState> = &regions.regions[to_region].state;
+                let to_mode_data = to_state.get_mode(Mode(to_mode_idx));
+                let dst_rank = to_mode_data.orig_to_rank[tc.ebg_id as usize];
+                if dst_rank == u32::MAX {
+                    continue;
+                }
+                let from_id = &regions.regions[from_region].id;
+                let to_id = &regions.regions[to_region].id;
+                let solution = match solve_cross_region(
+                    from_state,
+                    from_id,
+                    src_rank,
+                    to_state,
+                    to_id,
+                    dst_rank,
+                    mode_name,
+                    overlay,
+                ) {
+                    Some(s) => s,
+                    None => continue,
+                };
+
+                // Distance from src snap → src border representative
+                // (within from_region).
+                let src_border_rank = *from_mode_data
+                    .orig_to_rank
+                    .get(solution.src_border_ebg as usize)
+                    .unwrap_or(&u32::MAX);
+                let dst_border_rank = *to_mode_data
+                    .orig_to_rank
+                    .get(solution.dst_border_ebg as usize)
+                    .unwrap_or(&u32::MAX);
+                if src_border_rank == u32::MAX || dst_border_rank == u32::MAX {
+                    continue;
+                }
+
+                let (_pts1, src_dist_m) = super::route::leg_points_and_distance(
+                    from_state,
+                    Mode(from_mode_idx),
+                    src_rank,
+                    src_border_rank,
+                );
+                let (_pts2, dst_dist_m) = super::route::leg_points_and_distance(
+                    to_state,
+                    Mode(to_mode_idx),
+                    dst_border_rank,
+                    dst_rank,
+                );
+
+                // Border crossing physical distance — straight-line
+                // haversine between the two representative borders.
+                let border_m = {
+                    let src_reps = overlay.region_representatives(from_id);
+                    let dst_reps = overlay.region_representatives(to_id);
+                    match (
+                        src_reps.get(solution.src_border_idx as usize),
+                        dst_reps.get(solution.dst_border_idx as usize),
+                    ) {
+                        (Some(sb), Some(db)) => {
+                            crate::nbg::haversine_distance(sb.lat, sb.lon, db.lat, db.lon)
+                        }
+                        _ => 0.0,
+                    }
+                };
+
+                result[i * n_to + j] = src_dist_m + border_m + dst_dist_m;
+            }
+        }
+    }
+
+    result
+}
+
+/// Split a matched candidate sequence into contiguous same-region
+/// runs. Each run is `(run_start, run_end)` inclusive within the
+/// segment. Cross-region transitions become run boundaries.
+fn split_into_region_runs(
+    candidates: &[&Vec<RegionCandidate>],
+    matched_indices: &[usize],
+) -> Vec<(usize, usize)> {
+    let n = matched_indices.len();
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    if n == 0 {
+        return runs;
+    }
+    let mut run_start = 0usize;
+    let mut prev_region = candidates[0][matched_indices[0]].region_idx;
+    for t in 1..n {
+        let cur_region = candidates[t][matched_indices[t]].region_idx;
+        if cur_region != prev_region {
+            runs.push((run_start, t - 1));
+            run_start = t;
+            prev_region = cur_region;
+        }
+    }
+    runs.push((run_start, n - 1));
+    runs
 }
 
 // ---------------------------------------------------------------------------
