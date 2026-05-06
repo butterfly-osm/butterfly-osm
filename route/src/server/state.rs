@@ -310,6 +310,10 @@ impl ServerState {
 
         crate::server::rss::checkpoint("load.shared");
 
+        // Track each base mode's index in `modes_data` so we can later
+        // synthesize traffic variants from the same in-memory topology.
+        let mut base_mode_idx: HashMap<String, usize> = HashMap::new();
+
         for (mode_index, mode_name) in discovered_modes.iter().enumerate() {
             // Use GLOBAL index (from full alphabetical discovery) — must match step 4/5 indexing
             let mode = Mode(global_index[mode_name]);
@@ -324,9 +328,62 @@ impl ServerState {
                 "loaded mode data"
             );
             modes_data.push(mode_data);
+            base_mode_idx.insert(mode_name.clone(), mode_index);
             mode_lookup.insert(mode_name.clone(), mode_index as u8);
             mode_names.push(mode_name.clone());
             crate::server::rss::checkpoint(&format!("load.mode.{}", mode_name));
+        }
+
+        // ---- Traffic variants (#84) ---------------------------------
+        // Auto-discover `cch.w.<base>_<variant>.u32` weight files in step8
+        // and register each as a synthetic mode `<base>_<variant>` that
+        // shares topology with `<base>` but uses the variant weights.
+        match discover_traffic_variants(&step8_dir, &discovered_modes) {
+            Ok(variants) if !variants.is_empty() => {
+                tracing::info!(n_variants = variants.len(), "registering traffic variants");
+                for (base, variant) in &variants {
+                    let synthetic = format!("{}_{}", base, variant);
+                    if mode_lookup.contains_key(&synthetic) {
+                        tracing::warn!(
+                            mode = synthetic.as_str(),
+                            "skipping traffic variant: a base mode with the same name already exists"
+                        );
+                        continue;
+                    }
+                    let base_idx = match base_mode_idx.get(base) {
+                        Some(i) => *i,
+                        None => {
+                            tracing::warn!(
+                                base = base.as_str(),
+                                variant = variant.as_str(),
+                                "skipping traffic variant: base mode not loaded"
+                            );
+                            continue;
+                        }
+                    };
+                    let base_data = &modes_data[base_idx];
+                    let variant_data =
+                        load_traffic_variant_mode_data(base_data, variant, base, &step8_dir)?;
+                    let new_index = modes_data.len();
+                    tracing::info!(
+                        base = base.as_str(),
+                        variant = variant.as_str(),
+                        synthetic = synthetic.as_str(),
+                        index = new_index,
+                        "registered traffic variant"
+                    );
+                    modes_data.push(variant_data);
+                    mode_lookup.insert(synthetic.clone(), new_index as u8);
+                    mode_names.push(synthetic.clone());
+                    crate::server::rss::checkpoint(&format!("load.mode.{}", synthetic));
+                }
+            }
+            Ok(_) => {
+                tracing::info!("no traffic variants found in step8 directory");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "traffic variant discovery failed; ignoring");
+            }
         }
 
         // ---- Packed snap index (#154) -------------------------------
@@ -1038,6 +1095,77 @@ fn discover_modes(step5_dir: &Path) -> Result<Vec<String>> {
     Ok(mode_names)
 }
 
+/// Discover traffic variants by scanning step8 for `cch.w.<base>_<variant>.u32`
+/// files where `<base>` matches a known base mode and a sibling
+/// `cch.w.<base>_<variant>.traffic.json` exists for provenance.
+///
+/// Returns `(base_mode, variant)` pairs sorted by `(base, variant)`. Files
+/// without the sibling provenance JSON are skipped with a warning.
+pub(crate) fn discover_traffic_variants(
+    step8_dir: &Path,
+    base_modes: &[String],
+) -> Result<Vec<(String, String)>> {
+    let mut variants: Vec<(String, String)> = Vec::new();
+
+    // Sort longest-first so a base mode like "car" matches before "ca" when
+    // scanning a synthetic name "car_rush_hour".
+    let mut bases_sorted: Vec<&str> = base_modes.iter().map(String::as_str).collect();
+    bases_sorted.sort_by_key(|s| std::cmp::Reverse(s.len()));
+
+    for entry in std::fs::read_dir(step8_dir)
+        .with_context(|| format!("Failed to read {}", step8_dir.display()))?
+    {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+
+        // Pattern: cch.w.{base}_{variant}.u32
+        let stem = match name_str
+            .strip_prefix("cch.w.")
+            .and_then(|s| s.strip_suffix(".u32"))
+        {
+            Some(s) => s,
+            None => continue,
+        };
+
+        // Try to split <base>_<variant> by trying every known base mode as a prefix.
+        let mut matched: Option<(String, String)> = None;
+        for base in &bases_sorted {
+            if let Some(rest) = stem.strip_prefix(*base)
+                && let Some(variant) = rest.strip_prefix('_')
+                && !variant.is_empty()
+            {
+                matched = Some(((*base).to_string(), variant.to_string()));
+                break;
+            }
+        }
+        let (base, variant) = match matched {
+            Some(t) => t,
+            None => continue, // Plain `cch.w.<base>.u32` — handled by base modes.
+        };
+
+        // Provenance check: refuse to expose a variant without its sibling
+        // .traffic.json so a stray weight file from a previous experiment
+        // can't accidentally pollute the live mode set.
+        let provenance = step8_dir.join(format!("cch.w.{}_{}.traffic.json", base, variant));
+        if !provenance.exists() {
+            tracing::warn!(
+                base = base.as_str(),
+                variant = variant.as_str(),
+                provenance = %provenance.display(),
+                "skipping traffic variant: missing sibling .traffic.json"
+            );
+            continue;
+        }
+
+        variants.push((base, variant));
+    }
+
+    variants.sort();
+    variants.dedup();
+    Ok(variants)
+}
+
 /// Find the best way_attrs file for exclude flags.
 /// Prefers "car" if available, otherwise uses the first available mode.
 fn find_way_attrs_path(step2_dir: &Path, modes: &[String]) -> Option<std::path::PathBuf> {
@@ -1056,6 +1184,54 @@ fn find_way_attrs_path(step2_dir: &Path, modes: &[String]) -> Option<std::path::
     }
 
     None
+}
+
+/// Build a synthetic `ModeData` for a traffic variant by reusing the base
+/// mode's topology + distance structures and loading just the variant
+/// `cch.w.<base>_<variant>.u32` file.
+///
+/// This is the runtime side of the step-8 traffic recustomization: weights
+/// change but topology, distance, masks, accessibility, and adjacency
+/// structure are all identical to the base mode.
+fn load_traffic_variant_mode_data(
+    base: &ModeData,
+    variant_name: &str,
+    base_mode_name: &str,
+    step8_dir: &Path,
+) -> Result<ModeData> {
+    let weights_path = step8_dir.join(format!("cch.w.{}_{}.u32", base_mode_name, variant_name));
+    let cch_weights = CchWeightsFile::read(&weights_path)
+        .with_context(|| format!("loading traffic variant weights {}", weights_path.display()))?;
+
+    // Rebuild the TIME flats against the new weights — they're the only
+    // thing that depends on cch_weights. Distance flats and topology are
+    // shared with the base by clone (Cow::clone is cheap for borrowed
+    // sections; for owned Vecs it duplicates, see comment above).
+    let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &cch_weights, true);
+    let down_rev_flat = DownReverseAdjFlat::build_with(&base.cch_topo, &cch_weights, true);
+    let down_adj_flat = DownAdjFlat::build(&base.cch_topo, &cch_weights);
+
+    Ok(ModeData {
+        mode: base.mode,
+        cch_topo: base.cch_topo.clone(),
+        cch_weights,
+        cch_weights_dist: base.cch_weights_dist.clone(),
+        orig_to_rank: base.orig_to_rank.clone(),
+        filtered_to_original: base.filtered_to_original.clone(),
+        n_filtered_nodes: base.n_filtered_nodes,
+        n_original_nodes: base.n_original_nodes,
+        node_weights: base.node_weights.clone(),
+        mask: base.mask.clone(),
+        has_outbound: base.has_outbound.clone(),
+        has_inbound: base.has_inbound.clone(),
+        up_adj_flat,
+        down_rev_flat,
+        down_adj_flat,
+        up_adj_flat_dist: base.up_adj_flat_dist.clone(),
+        down_rev_flat_dist: base.down_rev_flat_dist.clone(),
+        down_adj_flat_dist: base.down_adj_flat_dist.clone(),
+        exclude_cache: parking_lot::RwLock::new(HashMap::new()),
+    })
 }
 
 /// Load per-mode data (CCH topo, ordering, weights, filtered EBG)
