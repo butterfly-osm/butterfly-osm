@@ -532,6 +532,7 @@ impl PackedSnapIndex {
     /// Snap with bearing filter, edge filter (exclude/avoid), AND
     /// `role_filter` (#197 directional snap). See
     /// [`snap_with_info_filtered_role`] for role-filter semantics.
+    #[allow(clippy::too_many_arguments)]
     pub fn snap_with_bearing_filtered_role(
         &self,
         lon: f64,

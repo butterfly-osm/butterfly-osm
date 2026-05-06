@@ -797,8 +797,14 @@ pub async fn route_handler(
         &mode_data.cch_weights
     };
 
-    let (geometry, duration_s, distance_m, steps, ebg_path) =
-        build_route(&result, active_weights, geom_format, req.steps, src_rank, dst_rank);
+    let (geometry, duration_s, distance_m, steps, ebg_path) = build_route(
+        &result,
+        active_weights,
+        geom_format,
+        req.steps,
+        src_rank,
+        dst_rank,
+    );
 
     // GPX output: skip annotations, alternatives, debug — just emit track points
     if wants_gpx(&headers) {
@@ -920,8 +926,14 @@ pub async fn route_handler(
                     break;
                 }
 
-                let (alt_geom, alt_dur, alt_dist, alt_steps, _alt_path) =
-                    build_route(&alt_result, &penalized_weights, geom_format, req.steps, src_rank, dst_rank);
+                let (alt_geom, alt_dur, alt_dist, alt_steps, _alt_path) = build_route(
+                    &alt_result,
+                    &penalized_weights,
+                    geom_format,
+                    req.steps,
+                    src_rank,
+                    dst_rank,
+                );
 
                 // Penalize this alternative's edges for next iteration
                 for &(_node, edge_idx) in &alt_result.forward_parent {
@@ -1029,44 +1041,42 @@ fn cross_region_route_inner(
     let src_role_filter = SnapRole::Src.role_filter(src_mode_data);
     let dst_role_filter = SnapRole::Dst.role_filter(dst_mode_data);
 
-    let (src_orig, src_snap) =
-        match src_state.snap_index.snap_with_info_filtered_role(
-            req.src_lon,
-            req.src_lat,
-            src_mode.0,
-            None,
-            src_role_filter,
-        ) {
-            Some(t) => (t.0, t),
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: format!("Could not snap source in region {}", src_region),
-                    }),
-                )
-                    .into_response();
-            }
-        };
-    let (dst_orig, dst_snap) =
-        match dst_state.snap_index.snap_with_info_filtered_role(
-            req.dst_lon,
-            req.dst_lat,
-            dst_mode.0,
-            None,
-            dst_role_filter,
-        ) {
-            Some(t) => (t.0, t),
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: format!("Could not snap destination in region {}", dst_region),
-                    }),
-                )
-                    .into_response();
-            }
-        };
+    let (src_orig, src_snap) = match src_state.snap_index.snap_with_info_filtered_role(
+        req.src_lon,
+        req.src_lat,
+        src_mode.0,
+        None,
+        src_role_filter,
+    ) {
+        Some(t) => (t.0, t),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Could not snap source in region {}", src_region),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let (dst_orig, dst_snap) = match dst_state.snap_index.snap_with_info_filtered_role(
+        req.dst_lon,
+        req.dst_lat,
+        dst_mode.0,
+        None,
+        dst_role_filter,
+    ) {
+        Some(t) => (t.0, t),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Could not snap destination in region {}", dst_region),
+                }),
+            )
+                .into_response();
+        }
+    };
 
     let src_rank = src_mode_data.orig_to_rank[src_orig as usize];
     let dst_rank = dst_mode_data.orig_to_rank[dst_orig as usize];

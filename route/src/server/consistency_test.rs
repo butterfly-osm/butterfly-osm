@@ -1451,12 +1451,12 @@ fn test_197_directional_snap_asymmetry_reproducer() {
         let from_role = SnapRole::Src.role_filter(mode_data);
         let to_role = SnapRole::Dst.role_filter(mode_data);
 
-        let from_snap = state.snap_index.snap_with_info_filtered_role(
-            from.0, from.1, mode.0, None, from_role,
-        )?;
-        let to_snap = state.snap_index.snap_with_info_filtered_role(
-            to.0, to.1, mode.0, None, to_role,
-        )?;
+        let from_snap = state
+            .snap_index
+            .snap_with_info_filtered_role(from.0, from.1, mode.0, None, from_role)?;
+        let to_snap = state
+            .snap_index
+            .snap_with_info_filtered_role(to.0, to.1, mode.0, None, to_role)?;
         let from_rank = mode_data.rank_for_original(from_snap.0)?;
         let to_rank = mode_data.rank_for_original(to_snap.0)?;
         let q = CchQuery::new(&state, mode);

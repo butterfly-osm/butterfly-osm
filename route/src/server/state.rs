@@ -1418,153 +1418,153 @@ fn load_mode_data_from_bundle(
         has_outbound,
         has_inbound,
     ) = match (o2r_section, f2o_section) {
-            (Some(o2r_bytes), Some(f2o_bytes)) => {
-                let o2r = ModeIndexFile::read_from_bytes_zero_copy_unverified(o2r_bytes)?;
-                anyhow::ensure!(
-                    o2r.kind == ModeIndexKind::OrigToRank,
-                    "mode/{}/orig_to_rank has wrong kind discriminator: {:?}",
-                    mode_name,
-                    o2r.kind
-                );
-                let f2o = ModeIndexFile::read_from_bytes_zero_copy_unverified(f2o_bytes)?;
-                anyhow::ensure!(
-                    f2o.kind == ModeIndexKind::FilteredToOriginal,
-                    "mode/{}/filtered_to_original has wrong kind discriminator: {:?}",
-                    mode_name,
-                    f2o.kind
-                );
+        (Some(o2r_bytes), Some(f2o_bytes)) => {
+            let o2r = ModeIndexFile::read_from_bytes_zero_copy_unverified(o2r_bytes)?;
+            anyhow::ensure!(
+                o2r.kind == ModeIndexKind::OrigToRank,
+                "mode/{}/orig_to_rank has wrong kind discriminator: {:?}",
+                mode_name,
+                o2r.kind
+            );
+            let f2o = ModeIndexFile::read_from_bytes_zero_copy_unverified(f2o_bytes)?;
+            anyhow::ensure!(
+                f2o.kind == ModeIndexKind::FilteredToOriginal,
+                "mode/{}/filtered_to_original has wrong kind discriminator: {:?}",
+                mode_name,
+                f2o.kind
+            );
 
-                let n_original_nodes = o2r.data.len() as u32;
-                let n_filtered_nodes = f2o.data.len() as u32;
-                tracing::info!(
-                    mode = mode_name,
-                    n_original_nodes,
-                    n_filtered_nodes,
-                    "loaded mapping sections (zero-copy)"
-                );
+            let n_original_nodes = o2r.data.len() as u32;
+            let n_filtered_nodes = f2o.data.len() as u32;
+            tracing::info!(
+                mode = mode_name,
+                n_original_nodes,
+                n_filtered_nodes,
+                "loaded mapping sections (zero-copy)"
+            );
 
-                // #197: build the role-aware snap bitsets from the
-                // filtered EBG section. The section is required because
-                // the in-memory `orig_to_rank`/`filtered_to_original`
-                // mappings discard arc-level connectivity info — they
-                // only say which nodes are mode-accessible, not whether
-                // each node has any mode-valid outbound/inbound arcs.
-                let (has_out, has_in) = match filtered_ebg_section {
-                    Some(bytes) => {
-                        let (filtered_ebg, _cold) =
-                            crate::formats::FilteredEbgFile::read_from_bytes_zero_copy_with_cold(
-                                bytes,
-                            )?;
-                        build_role_masks(&filtered_ebg)
-                    }
-                    None => {
-                        anyhow::bail!(
-                            "mode/{}/filtered_ebg section missing — required for #197 role-aware snap masks. \
+            // #197: build the role-aware snap bitsets from the
+            // filtered EBG section. The section is required because
+            // the in-memory `orig_to_rank`/`filtered_to_original`
+            // mappings discard arc-level connectivity info — they
+            // only say which nodes are mode-accessible, not whether
+            // each node has any mode-valid outbound/inbound arcs.
+            let (has_out, has_in) = match filtered_ebg_section {
+                Some(bytes) => {
+                    let (filtered_ebg, _cold) =
+                        crate::formats::FilteredEbgFile::read_from_bytes_zero_copy_with_cold(
+                            bytes,
+                        )?;
+                    build_role_masks(&filtered_ebg)
+                }
+                None => {
+                    anyhow::bail!(
+                        "mode/{}/filtered_ebg section missing — required for #197 role-aware snap masks. \
                              Re-pack the container with the current pack tool.",
-                            mode_name
-                        );
-                    }
-                };
+                        mode_name
+                    );
+                }
+            };
 
-                // The legacy `mode/<m>/filtered_ebg` and
-                // `mode/<m>/order` sections are still in the container
-                // for back-compat (build/validation tools may read
-                // them). The serve path no longer reads them after the
-                // role-mask build above, so we still madvise(DONTNEED)
-                // their bytes to keep them off RSS.
-                for legacy in ["filtered_ebg", "order"] {
-                    let nm = format!("mode/{}/{}", mode_name, legacy);
-                    if let Some(entry) = container.get(&nm) {
-                        let off = entry.offset as usize;
-                        let len = entry.len as usize;
-                        let range = &static_bytes[off..off + len];
-                        match crate::formats::mmap::madvise_dontneed(range) {
-                            Ok(()) => tracing::info!(
-                                section = %nm,
-                                bytes = len,
-                                "madvise(DONTNEED) on legacy section (#153 dropped from serve path)"
-                            ),
-                            Err(e) => tracing::warn!(
-                                section = %nm,
-                                error = %e,
-                                "madvise(DONTNEED) on legacy section failed, ignoring"
-                            ),
-                        }
+            // The legacy `mode/<m>/filtered_ebg` and
+            // `mode/<m>/order` sections are still in the container
+            // for back-compat (build/validation tools may read
+            // them). The serve path no longer reads them after the
+            // role-mask build above, so we still madvise(DONTNEED)
+            // their bytes to keep them off RSS.
+            for legacy in ["filtered_ebg", "order"] {
+                let nm = format!("mode/{}/{}", mode_name, legacy);
+                if let Some(entry) = container.get(&nm) {
+                    let off = entry.offset as usize;
+                    let len = entry.len as usize;
+                    let range = &static_bytes[off..off + len];
+                    match crate::formats::mmap::madvise_dontneed(range) {
+                        Ok(()) => tracing::info!(
+                            section = %nm,
+                            bytes = len,
+                            "madvise(DONTNEED) on legacy section (#153 dropped from serve path)"
+                        ),
+                        Err(e) => tracing::warn!(
+                            section = %nm,
+                            error = %e,
+                            "madvise(DONTNEED) on legacy section failed, ignoring"
+                        ),
                     }
                 }
-
-                (
-                    o2r.data,
-                    f2o.data,
-                    n_filtered_nodes,
-                    n_original_nodes,
-                    has_out,
-                    has_in,
-                )
             }
-            _ => {
-                // Back-compat fallback: read `FilteredEbg` + `OrderEbg`,
-                // synthesise the arrays at boot, drop the legacy
-                // structs. RSS cost: one heap copy of each array.
+
+            (
+                o2r.data,
+                f2o.data,
+                n_filtered_nodes,
+                n_original_nodes,
+                has_out,
+                has_in,
+            )
+        }
+        _ => {
+            // Back-compat fallback: read `FilteredEbg` + `OrderEbg`,
+            // synthesise the arrays at boot, drop the legacy
+            // structs. RSS cost: one heap copy of each array.
+            tracing::warn!(
+                mode = mode_name,
+                "mode/{0}/orig_to_rank or mode/{0}/filtered_to_original missing; \
+                     this build pre-dates #153, falling back to FilteredEbg/OrderEbg",
+                mode_name
+            );
+            let filtered_section = fetch("filtered_ebg")?;
+            let (filtered_ebg, cold_filtered) =
+                FilteredEbgFile::read_from_bytes_zero_copy_with_cold(filtered_section)?;
+            if let Err(e) = crate::formats::mmap::madvise_dontneed(cold_filtered) {
                 tracing::warn!(
                     mode = mode_name,
-                    "mode/{0}/orig_to_rank or mode/{0}/filtered_to_original missing; \
-                     this build pre-dates #153, falling back to FilteredEbg/OrderEbg",
-                    mode_name
+                    error = %e,
+                    "madvise(DONTNEED) on filtered_ebg cold prefix failed; ignoring"
                 );
-                let filtered_section = fetch("filtered_ebg")?;
-                let (filtered_ebg, cold_filtered) =
-                    FilteredEbgFile::read_from_bytes_zero_copy_with_cold(filtered_section)?;
-                if let Err(e) = crate::formats::mmap::madvise_dontneed(cold_filtered) {
-                    tracing::warn!(
-                        mode = mode_name,
-                        error = %e,
-                        "madvise(DONTNEED) on filtered_ebg cold prefix failed; ignoring"
-                    );
-                }
-                let order_section = fetch("order")?;
-                let order_data = OrderEbgFile::read_from_bytes(order_section)?;
-
-                let n_original_nodes = filtered_ebg.n_original_nodes;
-                let n_filtered_nodes = filtered_ebg.n_filtered_nodes;
-                let orig_to_rank = build_orig_to_rank(&filtered_ebg, &order_data);
-                let filtered_to_original: Vec<u32> = filtered_ebg.filtered_to_original.to_vec();
-
-                // #197: build role-aware snap bitsets while the
-                // filtered EBG is still in scope.
-                let (has_out, has_in) = build_role_masks(&filtered_ebg);
-
-                // Both legacy sections are now fully consumed onto the
-                // heap (orig_to_rank from order, filtered_to_original
-                // copied out). CRC verification paged them in; advise
-                // the kernel it can drop them so we don't carry the
-                // file_kb cost for the rest of the process lifetime.
-                drop(order_data);
-                drop(filtered_ebg);
-                if let Err(e) = crate::formats::mmap::madvise_dontneed(order_section) {
-                    tracing::warn!(
-                        mode = mode_name,
-                        error = %e,
-                        "madvise(DONTNEED) on order section failed; ignoring"
-                    );
-                }
-                if let Err(e) = crate::formats::mmap::madvise_dontneed(filtered_section) {
-                    tracing::warn!(
-                        mode = mode_name,
-                        error = %e,
-                        "madvise(DONTNEED) on filtered_ebg section failed; ignoring"
-                    );
-                }
-                (
-                    Cow::Owned(orig_to_rank),
-                    Cow::Owned(filtered_to_original),
-                    n_filtered_nodes,
-                    n_original_nodes,
-                    has_out,
-                    has_in,
-                )
             }
-        };
+            let order_section = fetch("order")?;
+            let order_data = OrderEbgFile::read_from_bytes(order_section)?;
+
+            let n_original_nodes = filtered_ebg.n_original_nodes;
+            let n_filtered_nodes = filtered_ebg.n_filtered_nodes;
+            let orig_to_rank = build_orig_to_rank(&filtered_ebg, &order_data);
+            let filtered_to_original: Vec<u32> = filtered_ebg.filtered_to_original.to_vec();
+
+            // #197: build role-aware snap bitsets while the
+            // filtered EBG is still in scope.
+            let (has_out, has_in) = build_role_masks(&filtered_ebg);
+
+            // Both legacy sections are now fully consumed onto the
+            // heap (orig_to_rank from order, filtered_to_original
+            // copied out). CRC verification paged them in; advise
+            // the kernel it can drop them so we don't carry the
+            // file_kb cost for the rest of the process lifetime.
+            drop(order_data);
+            drop(filtered_ebg);
+            if let Err(e) = crate::formats::mmap::madvise_dontneed(order_section) {
+                tracing::warn!(
+                    mode = mode_name,
+                    error = %e,
+                    "madvise(DONTNEED) on order section failed; ignoring"
+                );
+            }
+            if let Err(e) = crate::formats::mmap::madvise_dontneed(filtered_section) {
+                tracing::warn!(
+                    mode = mode_name,
+                    error = %e,
+                    "madvise(DONTNEED) on filtered_ebg section failed; ignoring"
+                );
+            }
+            (
+                Cow::Owned(orig_to_rank),
+                Cow::Owned(filtered_to_original),
+                n_filtered_nodes,
+                n_original_nodes,
+                has_out,
+                has_in,
+            )
+        }
+    };
     let topo_section_bytes: &'static [u8] = fetch("topo")?;
     // #151: cch.topo is now v4. Header is 80 bytes (u64-aligned) and
     // every variable-length u32 array is padded to a u64 boundary, so
