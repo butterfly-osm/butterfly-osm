@@ -1,0 +1,142 @@
+# Shard proof — LU
+# Generated 2026-05-06T11:01:09Z
+#
+# Path:        geocode/data/shards/lu-oa-osm-merged.bfgs
+# Size:        10.1 MB (10625604 bytes)
+# SHA-256:     2e16deb909460d754991296b8e134c142b4f7ab5be896954cdbd8c3a59adc62a
+# Source:      BFGS-merge: OpenAddresses (geocode/data/shards/lu.bfgs, 179K records) ∪ OSM PBF (data/luxembourg.pbf addr:* tags, 170K records). Final: 193K records (156K deduped).
+# Format:      BFGS v5 (CRC-verified at server load)
+
+## /health
+{
+    "status": "ok",
+    "version": "2.0.0",
+    "uptime_seconds": 0,
+    "record_count": 192953,
+    "shard_count": 1,
+    "total_records": 192953,
+    "countries": [
+        "LU"
+    ]
+}
+
+## GET /geocode?q=Avenue de la Liberté Luxembourg&country=LU
+{
+    "query": "Avenue de la Libert\u00e9 Luxembourg",
+    "country": "LU",
+    "confidence": "accept",
+    "count": 3,
+    "results": [
+        {
+            "lat": 49.6033945,
+            "lon": 6.1328816,
+            "street": "Avenue de la Libert\u00e9",
+            "housenumber": "24",
+            "postcode": "1610",
+            "locality": "Luxembourg",
+            "country": "LU",
+            "score": 1.1
+        },
+        {
+            "lat": 49.6033372,
+            "lon": 6.1328609,
+            "street": "Avenue de la Libert\u00e9",
+            "housenumber": "26",
+            "postcode": "1610",
+            "locality": "Luxembourg",
+            "country": "LU",
+            "score": 1.1
+        },
+        {
+            "lat": 49.6032545,
+            "lon": 6.1327368,
+            "street": "Avenue de la Libert\u00e9",
+            "housenumber": "28",
+            "postcode": "1610",
+            "locality": "Luxembourg",
+            "country": "LU",
+            "score": 1.1
+        }
+    ]
+}
+
+## GET /geocode?q=Boulevard Royal 1 Luxembourg&country=LU
+{
+    "query": "Boulevard Royal 1 Luxembourg",
+    "country": "LU",
+    "confidence": "accept",
+    "count": 3,
+    "results": [
+        {
+            "lat": 49.6143749,
+            "lon": 6.1300842,
+            "street": "Boulevard Royal",
+            "housenumber": "1",
+            "postcode": "2449",
+            "locality": "Luxembourg",
+            "country": "LU",
+            "score": 1.8000001
+        },
+        {
+            "lat": 49.6145924,
+            "lon": 6.1294778,
+            "street": "Boulevard Royal",
+            "housenumber": "2",
+            "postcode": "2449",
+            "locality": "Luxembourg",
+            "country": "LU",
+            "score": 1.25
+        },
+        {
+            "lat": 49.6147265,
+            "lon": 6.1295779,
+            "street": "Boulevard Royal",
+            "housenumber": "2",
+            "postcode": "2983",
+            "locality": "Luxembourg",
+            "country": "LU",
+            "score": 1.25
+        }
+    ]
+}
+
+## GET /geocode?q=Place d'Armes Luxembourg&country=LU
+{
+    "query": "Place d'Armes Luxembourg",
+    "country": "LU",
+    "confidence": "accept",
+    "count": 3,
+    "results": [
+        {
+            "lat": 49.6110608,
+            "lon": 6.1299287,
+            "street": "Place d'Armes",
+            "housenumber": "1",
+            "postcode": "1136",
+            "locality": "Luxembourg",
+            "country": "LU",
+            "score": 1.1
+        },
+        {
+            "lat": 49.6109686,
+            "lon": 6.1292882,
+            "street": "Place d'Armes",
+            "housenumber": "11",
+            "postcode": "1136",
+            "locality": "Luxembourg",
+            "country": "LU",
+            "score": 1.1
+        },
+        {
+            "lat": 49.6109549,
+            "lon": 6.1291582,
+            "street": "Place d'Armes",
+            "housenumber": "13",
+            "postcode": "1136",
+            "locality": "Luxembourg",
+            "country": "LU",
+            "score": 1.1
+        }
+    ]
+}
+
