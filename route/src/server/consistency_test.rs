@@ -1414,3 +1414,193 @@ fn test_alternative_routes_all_modes() {
         "No alternative routes found in any mode — penalty logic may be broken"
     );
 }
+
+/// Regression test for issue #197 — directional snap asymmetry.
+///
+/// The exact reproducer from the issue body:
+///   src = (4.4579111, 51.2696914)  — Antwerp
+///   dst = (5.7803053, 49.7258993)  — near the Luxembourg border
+///   mode = car
+///
+/// Pre-fix behaviour: this pair returned "no route" in the
+/// src → dst direction even though OSRM finds a 226 km route, because
+/// the destination snap landed on the "downstream" EBG node of a
+/// one-way road segment that has no inbound mode-valid arcs.
+/// Reversing the pair (dst → src) routed cleanly.
+///
+/// Post-fix: with role-aware snap, the destination point selects an
+/// EBG candidate that has at least one inbound arc, so the route
+/// completes in both directions. We don't pin a specific length
+/// (OSRM and Butterfly disagree on details), but it must be in the
+/// right ballpark and routable both ways.
+#[test]
+#[ignore] // Requires Belgium data
+fn test_197_directional_snap_asymmetry_reproducer() {
+    use super::query::CchQuery;
+    use super::types::SnapRole;
+
+    let state = load_state();
+    let mode = lookup_mode(&state, "car");
+    let mode_data = state.get_mode(mode);
+
+    let src = (4.4579111_f64, 51.2696914_f64);
+    let dst = (5.7803053_f64, 49.7258993_f64);
+
+    // Helper: snap with role, then run a P2P CCH query.
+    let route = |from: (f64, f64), to: (f64, f64)| -> Option<u32> {
+        let from_role = SnapRole::Src.role_filter(mode_data);
+        let to_role = SnapRole::Dst.role_filter(mode_data);
+
+        let from_snap = state.snap_index.snap_with_info_filtered_role(
+            from.0, from.1, mode.0, None, from_role,
+        )?;
+        let to_snap = state.snap_index.snap_with_info_filtered_role(
+            to.0, to.1, mode.0, None, to_role,
+        )?;
+        let from_rank = mode_data.rank_for_original(from_snap.0)?;
+        let to_rank = mode_data.rank_for_original(to_snap.0)?;
+        let q = CchQuery::new(&state, mode);
+        q.query(from_rank, to_rank).map(|r| r.distance)
+    };
+
+    let fwd = route(src, dst);
+    let rev = route(dst, src);
+
+    // Both directions must produce a route. The bug was a pure
+    // forward 404; reverse already worked. We assert both because a
+    // future regression that flipped the asymmetry should also fail
+    // this test.
+    assert!(
+        fwd.is_some(),
+        "src → dst route must succeed after #197 fix; got None"
+    );
+    assert!(
+        rev.is_some(),
+        "dst → src route should already work (and continues to)"
+    );
+
+    // Sanity bound: Antwerp ↔ Luxembourg-border driving distance is
+    // roughly 200–300 km. We use route distance in deciseconds-of-
+    // travel-time on the time CCH; at ~100 km/h average the upper
+    // bound is around 4 hours == 144 000 ds. Use a loose 18000 ..
+    // 360000 window (30 min .. 10 h) to detect "trivially short" or
+    // "wildly long" regressions without coupling to OSRM's exact
+    // figure.
+    let fwd_ds = fwd.unwrap();
+    let rev_ds = rev.unwrap();
+    assert!(
+        (18_000..=360_000).contains(&fwd_ds),
+        "fwd route duration {} ds is outside sanity window [18000, 360000]",
+        fwd_ds
+    );
+    assert!(
+        (18_000..=360_000).contains(&rev_ds),
+        "rev route duration {} ds is outside sanity window [18000, 360000]",
+        rev_ds
+    );
+
+    // Both directions should agree to within ~25 % — a directed
+    // network has minor asymmetries (one-way detours) but not 2x.
+    let ratio = (fwd_ds.max(rev_ds) as f64) / (fwd_ds.min(rev_ds) as f64);
+    assert!(
+        ratio < 1.25,
+        "fwd/rev duration mismatch: fwd={} rev={} ratio={:.3}",
+        fwd_ds,
+        rev_ds,
+        ratio
+    );
+}
+
+/// Companion to the #197 regression: verify that with `SnapRole::Either`
+/// (legacy unfiltered snap) on the destination point, the forward
+/// route still fails on the exact reproducer pair. This pins down
+/// that role-aware snap is genuinely the fix and that the underlying
+/// graph asymmetry hasn't changed silently.
+///
+/// If this test starts failing (i.e. the unfiltered snap ALSO finds
+/// a route), it means the closest EBG sample to the destination
+/// changed (different polyline densification, different cell
+/// occupancy, etc.) and we lost the ability to detect the
+/// directional bug from this pair alone — pick a fresh reproducer
+/// from `bench/route/results/correctness-sweep-2026-05-06/results-car.jsonl`
+/// (filter where butterfly_distance_m is null and osrm_distance_m
+/// is not null).
+#[test]
+#[ignore] // Requires Belgium data
+fn test_197_unfiltered_snap_still_demonstrates_bug() {
+    use super::query::CchQuery;
+    use super::types::SnapRole;
+
+    let state = load_state();
+    let mode = lookup_mode(&state, "car");
+    let mode_data = state.get_mode(mode);
+
+    let src = (4.4579111_f64, 51.2696914_f64);
+    let dst = (5.7803053_f64, 49.7258993_f64);
+
+    // Force the legacy "Either" role on both ends.
+    let either = SnapRole::Either.role_filter(mode_data);
+    assert!(either.is_none(), "Either must produce no role filter");
+
+    let from_snap = state
+        .snap_index
+        .snap_with_info_filtered_role(src.0, src.1, mode.0, None, None)
+        .expect("source snap must succeed");
+    let to_snap = state
+        .snap_index
+        .snap_with_info_filtered_role(dst.0, dst.1, mode.0, None, None)
+        .expect("destination snap must succeed");
+
+    let from_rank = mode_data
+        .rank_for_original(from_snap.0)
+        .expect("source must have a rank");
+    let to_rank = mode_data
+        .rank_for_original(to_snap.0)
+        .expect("destination must have a rank");
+
+    let q = CchQuery::new(&state, mode);
+    let fwd = q.query(from_rank, to_rank);
+
+    // The legacy snap demonstrates the bug: forward returns None.
+    // (If a future change to snap candidate selection breaks this,
+    // see the doc comment on this test.)
+    assert!(
+        fwd.is_none(),
+        "Pre-fix bug snap reproducer: with Either role, forward route \
+         was expected to fail (this is what /route used to return). \
+         If you are seeing Some({:?}), the closest EBG candidate to \
+         the destination has changed; pick a fresh reproducer pair.",
+        fwd.map(|r| r.distance)
+    );
+
+    // And confirm that the role-aware variant — different snap on
+    // the destination — successfully routes.
+    let to_snap_dst = state
+        .snap_index
+        .snap_with_info_filtered_role(
+            dst.0,
+            dst.1,
+            mode.0,
+            None,
+            SnapRole::Dst.role_filter(mode_data),
+        )
+        .expect("dst-role snap must succeed");
+    let to_rank_dst = mode_data
+        .rank_for_original(to_snap_dst.0)
+        .expect("dst-role snap target must have a rank");
+
+    // The role-aware snap should select a *different* EBG node than
+    // the unfiltered one (otherwise no fix happened).
+    assert_ne!(
+        to_snap.0, to_snap_dst.0,
+        "Role-aware snap must select a different EBG candidate than \
+         unfiltered snap on this reproducer; got the same id {}",
+        to_snap.0
+    );
+
+    let fwd_fix = q.query(from_rank, to_rank_dst);
+    assert!(
+        fwd_fix.is_some(),
+        "After role-aware snap, forward route must succeed"
+    );
+}
