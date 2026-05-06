@@ -85,8 +85,30 @@ static TOPOLOGY: OnceLock<CacheTopology> = OnceLock::new();
 /// Reads `/sys/devices/system/cpu/cpu0/cache/index*` for cache sizes and
 /// `/sys/devices/system/node/node*` for NUMA topology. On non-Linux or
 /// when sysfs is unavailable, returns conservative fallbacks.
+///
+/// Logs the detected topology + NUMA-pinning decision once at first call
+/// (via `tracing::info`) so operators can see which tile geometry the
+/// matrix engine has chosen.
 pub fn detect_topology() -> CacheTopology {
-    *TOPOLOGY.get_or_init(detect_topology_uncached)
+    *TOPOLOGY.get_or_init(|| {
+        let topo = detect_topology_uncached();
+        // Log once. We use `eprintln!` rather than `tracing::info!` so
+        // this surfaces in `butterfly-bench` runs even when the bench
+        // harness hasn't installed a tracing subscriber.
+        eprintln!(
+            "[tile_geometry] detected: per_core_l2={} KiB, shared_l3={} MiB, numa_nodes={}, n_cpus={}, numa_pinning={}",
+            topo.per_core_l2_bytes / 1024,
+            topo.shared_l3_bytes / (1024 * 1024),
+            topo.numa_nodes,
+            topo.n_cpus,
+            if topo.numa_nodes >= 2 {
+                "considered (multi-socket — pinning code is a planned follow-up)"
+            } else {
+                "skipped (single-socket — no win from pinning)"
+            },
+        );
+        topo
+    })
 }
 
 fn detect_topology_uncached() -> CacheTopology {
