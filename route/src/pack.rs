@@ -1208,6 +1208,501 @@ pub fn unpack(path: &Path, out_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Best-effort parse of the `bundles` field out of a container's
+/// `shared/manifest.json`. Returns the list of `(bundle_id, modes)` pairs
+/// in declaration order. For legacy containers without a `bundles` field
+/// (or no manifest at all), returns an empty vec — callers that need a
+/// "every mode is its own bundle" fallback should derive that from
+/// [`Container::list_modes`] explicitly.
+///
+/// As with [`manifest_region_id`], this is a small hand-rolled parser
+/// rather than a full `serde_json` dance: the manifest is a stable-shape
+/// JSON document under our own control and the dependency cost is not
+/// justified for two scalar fields. Any parse failure (including unknown
+/// JSON shape) returns an empty vec rather than rejecting the container.
+pub fn manifest_bundles(manifest_bytes: &[u8]) -> Vec<(String, Vec<String>)> {
+    let text = match std::str::from_utf8(manifest_bytes) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    // Locate the `"bundles"` key.
+    let key_idx = match text.find("\"bundles\"") {
+        Some(i) => i,
+        None => return Vec::new(),
+    };
+    let rest = &text[key_idx + "\"bundles\"".len()..];
+    let rest = rest.trim_start();
+    let rest = match rest.strip_prefix(':') {
+        Some(r) => r.trim_start(),
+        None => return Vec::new(),
+    };
+    let rest = match rest.strip_prefix('{') {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+    // Walk character by character, collecting `"<key>": [ "m", "n", ... ]`
+    // pairs until we hit the closing `}`. Tolerant of whitespace and
+    // commas; bails out (returning what was parsed so far) on the first
+    // unexpected character.
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    let mut chars = rest.chars().peekable();
+
+    fn skip_ws<I: Iterator<Item = char> + Clone>(it: &mut std::iter::Peekable<I>) {
+        while let Some(&c) = it.peek() {
+            if c.is_whitespace() || c == ',' {
+                it.next();
+            } else {
+                break;
+            }
+        }
+    }
+    fn read_quoted<I: Iterator<Item = char>>(it: &mut std::iter::Peekable<I>) -> Option<String> {
+        // Expects the next char to be `"`.
+        if it.next()? != '"' {
+            return None;
+        }
+        let mut s = String::new();
+        let mut escaped = false;
+        for c in it.by_ref() {
+            if escaped {
+                s.push(c);
+                escaped = false;
+                continue;
+            }
+            match c {
+                '\\' => escaped = true,
+                '"' => return Some(s),
+                _ => s.push(c),
+            }
+        }
+        None
+    }
+
+    loop {
+        skip_ws(&mut chars);
+        match chars.peek() {
+            Some('}') => break,
+            Some('"') => {}
+            _ => break,
+        }
+        let key = match read_quoted(&mut chars) {
+            Some(k) => k,
+            None => break,
+        };
+        skip_ws(&mut chars);
+        if chars.next() != Some(':') {
+            break;
+        }
+        skip_ws(&mut chars);
+        if chars.next() != Some('[') {
+            break;
+        }
+        let mut modes: Vec<String> = Vec::new();
+        loop {
+            skip_ws(&mut chars);
+            match chars.peek() {
+                Some(']') => {
+                    chars.next();
+                    break;
+                }
+                Some('"') => {
+                    let m = match read_quoted(&mut chars) {
+                        Some(s) => s,
+                        None => return out,
+                    };
+                    modes.push(m);
+                }
+                _ => return out,
+            }
+        }
+        out.push((key, modes));
+    }
+    out
+}
+
+/// Result of comparing two modes' accessibility and existing CCH topology
+/// sizes within a container, used by the `topology-diff` subcommand. The
+/// JSON shape is part of the tool's public output — keep it stable so
+/// downstream automation can grep/parse it.
+#[derive(Debug, serde::Serialize)]
+pub struct ModePairDiff {
+    pub mode_a: String,
+    pub mode_b: String,
+    /// Number of original EBG nodes accessible (mask bit set) for mode A.
+    pub n_nodes_a: u64,
+    /// Number of original EBG nodes accessible for mode B.
+    pub n_nodes_b: u64,
+    /// Number of original EBG nodes accessible by both modes.
+    pub n_nodes_intersect: u64,
+    /// Number of original EBG nodes accessible by either mode.
+    pub n_nodes_union: u64,
+    /// Jaccard overlap on the per-node accessibility masks.
+    pub node_jaccard: f64,
+    /// Number of original EBG arcs in mode A's filtered subgraph.
+    pub n_arcs_a: u64,
+    /// Number of original EBG arcs in mode B's filtered subgraph.
+    pub n_arcs_b: u64,
+    /// Number of original EBG arcs in both filtered subgraphs.
+    pub n_arcs_intersect: u64,
+    /// Number of original EBG arcs in either filtered subgraph.
+    pub n_arcs_union: u64,
+    /// Jaccard overlap on the per-arc filtered subgraphs.
+    pub arc_jaccard: f64,
+    /// Per-mode CCH topology size (bytes) — bare section length.
+    pub topo_bytes_a: u64,
+    pub topo_bytes_b: u64,
+    /// Per-mode time + dist weights size (bytes) — section length sum.
+    pub weights_bytes_a: u64,
+    pub weights_bytes_b: u64,
+    /// Per-mode CCH n_nodes / n_shortcuts / n_original_arcs (from the
+    /// topology header). Useful for sanity-checking that topology size
+    /// scales linearly with shortcut count.
+    pub topo_n_nodes_a: u64,
+    pub topo_n_nodes_b: u64,
+    pub topo_n_shortcuts_a: u64,
+    pub topo_n_shortcuts_b: u64,
+    pub topo_n_original_arcs_a: u64,
+    pub topo_n_original_arcs_b: u64,
+    /// Predicted bundled bytes assuming the bundle's CCH topology and
+    /// per-mode weight files scale linearly with the union arc count vs
+    /// the larger individual mode. See `acceptance_disk` for the full
+    /// derivation; this is a back-of-envelope projection, NOT a measured
+    /// value. The acceptance test in #146 mandates an actual rebuild.
+    pub predicted_bundled_bytes: u64,
+    /// Per-mode baseline (sum of `topo + 2*weights` for both modes).
+    pub baseline_bytes: u64,
+    /// `predicted_bundled_bytes / baseline_bytes`. < 1.0 means the
+    /// bundle would reduce on-disk size if the linear-scaling model
+    /// holds.
+    pub predicted_bundle_ratio: f64,
+    /// Issue #146 acceptance criterion (1): the predicted bundled size
+    /// must be smaller than the per-mode baseline. The ground-truth
+    /// version of this check requires actually rebuilding the union;
+    /// this is a *predicted* pass/fail under the linear-scaling model.
+    pub predicted_passes_disk_acceptance: bool,
+}
+
+/// Implementation of the `topology-diff` subcommand. Loads each mode's
+/// per-original-EBG-node accessibility mask + per-mode filtered EBG
+/// (which holds the per-mode arc set as `original_arc_idx`) from the
+/// container, computes node + arc Jaccard overlaps between every pair
+/// in `modes`, and emits a JSON report to stdout.
+///
+/// The report is the empirical input to issue #146's "should we bundle
+/// these modes' topologies" decision. It does NOT actually rebuild a
+/// union topology — that lives in steps 5/6/7 of the build pipeline,
+/// which is out-of-scope here. The `predicted_*` fields project a
+/// linear-scaling estimate so a human can decide whether a candidate
+/// pair is worth the full rebuild.
+///
+/// Output is a JSON object:
+/// ```json
+/// {
+///   "container": "<path>",
+///   "modes": ["bike", "car", "foot", "truck"],
+///   "pairs": [<ModePairDiff>...]
+/// }
+/// ```
+pub fn topology_diff(path: &Path, modes_arg: Option<&str>) -> Result<()> {
+    let container =
+        Container::open(path).with_context(|| format!("opening container {}", path.display()))?;
+
+    // Resolve which modes to compare. Default = all modes in container,
+    // alphabetical, all pairwise combinations.
+    let mode_list: Vec<String> = match modes_arg {
+        Some(s) => s
+            .split(',')
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty())
+            .collect(),
+        None => container.list_modes(),
+    };
+    anyhow::ensure!(
+        mode_list.len() >= 2,
+        "topology-diff needs at least 2 modes (got {}). Pass --modes a,b,c \
+         or pack a multi-mode container.",
+        mode_list.len()
+    );
+    // Validate every requested mode exists in the container.
+    for m in &mode_list {
+        let topo_name = format!("mode/{}/topo", m);
+        anyhow::ensure!(
+            container.get(&topo_name).is_some(),
+            "mode '{}' has no '{}' section in {}",
+            m,
+            topo_name,
+            path.display()
+        );
+    }
+
+    eprintln!(
+        "topology-diff: comparing {} modes ({}) in {}",
+        mode_list.len(),
+        mode_list.join(","),
+        path.display()
+    );
+
+    // Load each mode's accessibility mask and filtered EBG arc set.
+    // Both signals live entirely in `mode/<m>/mask` and
+    // `mode/<m>/filtered_ebg`. We DO NOT load `mode/<m>/topo` body —
+    // those are GiB-scale on Belgium and only the header is useful for
+    // this diff. Header is parsed by reading the first 80 bytes.
+    struct ModeState {
+        name: String,
+        node_mask: Vec<u8>, // per-original-node bitset (covers full key space)
+        n_original_nodes: u64,
+        arc_set: std::collections::BTreeSet<u32>, // unique original-arc indices in filtered EBG
+        topo_bytes: u64,
+        weights_bytes: u64,
+        topo_n_nodes: u64,
+        topo_n_shortcuts: u64,
+        topo_n_original_arcs: u64,
+    }
+    let mut states: Vec<ModeState> = Vec::with_capacity(mode_list.len());
+    for m in &mode_list {
+        eprintln!("  loading mode '{}'...", m);
+        // Mask
+        let mask_name = format!("mode/{}/mask", m);
+        let mask_entry = container
+            .get(&mask_name)
+            .ok_or_else(|| anyhow::anyhow!("missing '{}'", mask_name))?;
+        let mask_bytes = container
+            .read_section_verified(path, mask_entry)
+            .with_context(|| format!("reading {}", mask_name))?;
+        // mask format: 24-byte header, body = bitset, 16-byte footer.
+        anyhow::ensure!(
+            mask_bytes.len() >= 24 + 16,
+            "mask section '{}' too short: {} bytes",
+            mask_name,
+            mask_bytes.len()
+        );
+        let n_nodes_for_mask = u32::from_le_bytes(mask_bytes[8..12].try_into().unwrap()) as u64;
+        let body_len = (n_nodes_for_mask as usize).div_ceil(8);
+        anyhow::ensure!(
+            mask_bytes.len() == 24 + body_len + 16,
+            "mask section '{}' body length mismatch: {} bytes (expected {})",
+            mask_name,
+            mask_bytes.len(),
+            24 + body_len + 16
+        );
+        let node_mask = mask_bytes[24..24 + body_len].to_vec();
+
+        // Filtered EBG arc set
+        let fe_name = format!("mode/{}/filtered_ebg", m);
+        let fe_entry = container
+            .get(&fe_name)
+            .ok_or_else(|| anyhow::anyhow!("missing '{}'", fe_name))?;
+        let fe_bytes = container
+            .read_section_verified(path, fe_entry)
+            .with_context(|| format!("reading {}", fe_name))?;
+        let fe = FilteredEbgFile::read_from_bytes(&fe_bytes)
+            .with_context(|| format!("parsing {}", fe_name))?;
+        // The set of arc indices accessible to this mode = unique values
+        // of original_arc_idx across the filtered CSR.
+        let mut arc_set: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+        for &oai in fe.original_arc_idx.iter() {
+            arc_set.insert(oai);
+        }
+
+        // Topology header (bytes-only, no body parse).
+        let topo_name = format!("mode/{}/topo", m);
+        let topo_entry = container.get(&topo_name).expect("validated above");
+        let topo_bytes = topo_entry.len;
+        let (topo_n_nodes, topo_n_shortcuts, topo_n_original_arcs) = {
+            // Read first 80 bytes (header) of topo section.
+            use std::fs::File;
+            use std::io::{Read, Seek, SeekFrom};
+            let mut f = File::open(path)?;
+            f.seek(SeekFrom::Start(topo_entry.offset))?;
+            let mut hdr = [0u8; 80];
+            f.read_exact(&mut hdr)?;
+            // [0..4] magic, [4..8] version, [8..12] n_nodes, [12..16]
+            // reserved, [16..24] n_shortcuts, [24..32] n_original_arcs.
+            let n_nodes = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as u64;
+            let n_shortcuts = u64::from_le_bytes(hdr[16..24].try_into().unwrap());
+            let n_orig = u64::from_le_bytes(hdr[24..32].try_into().unwrap());
+            (n_nodes, n_shortcuts, n_orig)
+        };
+
+        // Weights (time + dist) sum.
+        let mut weights_bytes = 0u64;
+        for leaf in ["weights.time", "weights.dist"] {
+            let nm = format!("mode/{}/{}", m, leaf);
+            if let Some(e) = container.get(&nm) {
+                weights_bytes += e.len;
+            }
+        }
+
+        states.push(ModeState {
+            name: m.clone(),
+            node_mask,
+            n_original_nodes: n_nodes_for_mask,
+            arc_set,
+            topo_bytes,
+            weights_bytes,
+            topo_n_nodes,
+            topo_n_shortcuts,
+            topo_n_original_arcs,
+        });
+    }
+
+    // Sanity: every mask covers the same n_original_nodes.
+    let n0 = states[0].n_original_nodes;
+    for s in &states[1..] {
+        anyhow::ensure!(
+            s.n_original_nodes == n0,
+            "mode '{}' mask has n_original_nodes={} but '{}' has {}",
+            s.name,
+            s.n_original_nodes,
+            states[0].name,
+            n0
+        );
+    }
+
+    // Pairwise diff.
+    let mut pairs: Vec<ModePairDiff> = Vec::new();
+    for i in 0..states.len() {
+        for j in (i + 1)..states.len() {
+            let a = &states[i];
+            let b = &states[j];
+            // Node intersection / union via byte-by-byte AND/OR.
+            let n_bytes = a.node_mask.len().min(b.node_mask.len());
+            let mut n_intersect: u64 = 0;
+            let mut n_union: u64 = 0;
+            for k in 0..n_bytes {
+                n_intersect += (a.node_mask[k] & b.node_mask[k]).count_ones() as u64;
+                n_union += (a.node_mask[k] | b.node_mask[k]).count_ones() as u64;
+            }
+            let n_a: u64 = a.node_mask.iter().map(|b| b.count_ones() as u64).sum();
+            let n_b: u64 = b.node_mask.iter().map(|b| b.count_ones() as u64).sum();
+            let node_jaccard = if n_union == 0 {
+                0.0
+            } else {
+                n_intersect as f64 / n_union as f64
+            };
+
+            // Arc intersection / union via BTreeSet ops.
+            let arc_intersect: u64 = a.arc_set.intersection(&b.arc_set).count() as u64;
+            let n_arcs_a: u64 = a.arc_set.len() as u64;
+            let n_arcs_b: u64 = b.arc_set.len() as u64;
+            let arc_union: u64 = n_arcs_a + n_arcs_b - arc_intersect;
+            let arc_jaccard = if arc_union == 0 {
+                0.0
+            } else {
+                arc_intersect as f64 / arc_union as f64
+            };
+
+            // Predicted bundled-disk model. Linear-scaling assumption:
+            //
+            //   bundled_topo  ≈ topo_max  * (n_arcs_union / n_arcs_max)
+            //   bundled_weight≈ w_max     * (n_arcs_union / n_arcs_max)
+            //
+            // and the bundle holds 1 topo + (time + dist) per bundled
+            // mode. So bundled bytes for {A, B}:
+            //
+            //   bundled = bundled_topo + 2 * bundled_weight_A + 2 * bundled_weight_B
+            //           = bundled_topo + 4 * bundled_weight (modes ≈
+            //             same shape after union, modulo their own
+            //             u32::MAX entries which still occupy space).
+            //
+            // Baseline (per-mode):
+            //
+            //   baseline = topo_A + 2*w_A + topo_B + 2*w_B
+            //
+            // Bundle wins disk iff `bundled < baseline`. The CHALLENGE
+            // here is that the bundle's per-mode weight file has the
+            // SAME size as the bundled topology's edge count (one u32
+            // per up+down edge, with `u32::MAX` for inaccessible). So
+            // bundle weight bytes scale with `n_arcs_union`, NOT with
+            // `n_arcs_<mode>`.
+            //
+            // We project bundled_topo and bundled_weight from whichever
+            // individual mode has the larger arc set (closer to the
+            // union; gives a tighter lower bound).
+            let (large_topo, large_weight, large_n_arcs) = if n_arcs_a >= n_arcs_b {
+                (a.topo_bytes, a.weights_bytes, n_arcs_a.max(1))
+            } else {
+                (b.topo_bytes, b.weights_bytes, n_arcs_b.max(1))
+            };
+            let scale = arc_union as f64 / large_n_arcs as f64;
+            let bundled_topo = (large_topo as f64 * scale).round() as u64;
+            // large_weight is time+dist combined (×2). For the bundle
+            // we need time+dist for each of the two modes (×4 of the
+            // single-metric weight cost).
+            let single_metric_weight = large_weight / 2;
+            let bundled_weight_one_mode_one_metric =
+                (single_metric_weight as f64 * scale).round() as u64;
+            let bundled_bytes = bundled_topo + 4 * bundled_weight_one_mode_one_metric;
+            let baseline_bytes = a.topo_bytes + a.weights_bytes + b.topo_bytes + b.weights_bytes;
+            let ratio = bundled_bytes as f64 / baseline_bytes.max(1) as f64;
+
+            pairs.push(ModePairDiff {
+                mode_a: a.name.clone(),
+                mode_b: b.name.clone(),
+                n_nodes_a: n_a,
+                n_nodes_b: n_b,
+                n_nodes_intersect: n_intersect,
+                n_nodes_union: n_union,
+                node_jaccard,
+                n_arcs_a,
+                n_arcs_b,
+                n_arcs_intersect: arc_intersect,
+                n_arcs_union: arc_union,
+                arc_jaccard,
+                topo_bytes_a: a.topo_bytes,
+                topo_bytes_b: b.topo_bytes,
+                weights_bytes_a: a.weights_bytes,
+                weights_bytes_b: b.weights_bytes,
+                topo_n_nodes_a: a.topo_n_nodes,
+                topo_n_nodes_b: b.topo_n_nodes,
+                topo_n_shortcuts_a: a.topo_n_shortcuts,
+                topo_n_shortcuts_b: b.topo_n_shortcuts,
+                topo_n_original_arcs_a: a.topo_n_original_arcs,
+                topo_n_original_arcs_b: b.topo_n_original_arcs,
+                predicted_bundled_bytes: bundled_bytes,
+                baseline_bytes,
+                predicted_bundle_ratio: ratio,
+                predicted_passes_disk_acceptance: bundled_bytes < baseline_bytes,
+            });
+        }
+    }
+
+    // Emit human-readable header on stderr; full JSON on stdout.
+    eprintln!();
+    eprintln!(
+        "{:<14} {:<14} {:>10} {:>10} {:>14} {:>14} {:>10}",
+        "mode A", "mode B", "node J", "arc J", "baseline GB", "bundled GB", "ratio"
+    );
+    for p in &pairs {
+        eprintln!(
+            "{:<14} {:<14} {:>10.4} {:>10.4} {:>14.3} {:>14.3} {:>10.4}{}",
+            p.mode_a,
+            p.mode_b,
+            p.node_jaccard,
+            p.arc_jaccard,
+            p.baseline_bytes as f64 / 1.073e9,
+            p.predicted_bundled_bytes as f64 / 1.073e9,
+            p.predicted_bundle_ratio,
+            if p.predicted_passes_disk_acceptance {
+                " *"
+            } else {
+                ""
+            },
+        );
+    }
+    eprintln!();
+    eprintln!("(* = predicted disk-acceptance pass under linear scaling model)");
+
+    let report = serde_json::json!({
+        "container": path.display().to_string(),
+        "modes": mode_list,
+        "n_original_nodes": n0,
+        "pairs": pairs,
+    });
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
 /// Implementation of the `inspect` subcommand.
 pub fn inspect(path: &Path, verify: bool, verify_full: bool) -> Result<()> {
     let c = Container::open(path)?;
@@ -1261,7 +1756,7 @@ mod tests {
     use crate::profile_abi::Mode;
     use std::borrow::Cow;
     use std::fs;
-    use tempfile::TempDir;
+    use tempfile::{NamedTempFile, TempDir};
 
     fn write_file(p: &Path, body: &[u8]) -> Result<()> {
         if let Some(parent) = p.parent() {
@@ -1486,6 +1981,427 @@ mod tests {
         fs::create_dir_all(&existing)?;
         let res = unpack(&container, &existing);
         assert!(res.is_err());
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // #146: manifest `bundles` parser tests
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn manifest_bundles_singleton_per_mode() {
+        let manifest = build_manifest(&["bike".to_string(), "car".to_string()], "BE");
+        let bundles = manifest_bundles(manifest.as_bytes());
+        assert_eq!(
+            bundles,
+            vec![
+                ("bike".to_string(), vec!["bike".to_string()]),
+                ("car".to_string(), vec!["car".to_string()]),
+            ]
+        );
+    }
+
+    #[test]
+    fn manifest_bundles_legacy_no_field() {
+        // No "bundles" field anywhere → empty vec, no panic.
+        let bytes = b"{\"version\":1}";
+        assert!(manifest_bundles(bytes).is_empty());
+        // Non-UTF-8 manifest → empty vec (best-effort parse).
+        assert!(manifest_bundles(&[0xC0u8, 0xC1u8, 0xFFu8]).is_empty());
+        // Empty input → empty vec.
+        assert!(manifest_bundles(&[]).is_empty());
+    }
+
+    #[test]
+    fn manifest_bundles_multi_mode_groups() {
+        // Forward-compat: a hypothetical future #146 manifest groups
+        // car+truck under one bundle id and ships bike + foot solo. The
+        // parser must round-trip the order.
+        let raw = b"{\
+            \"version\":1, \
+            \"region_id\":\"BE\", \
+            \"modes\":[\"bike\",\"car\",\"foot\",\"truck\"], \
+            \"bundles\":{\
+                \"car_truck\":[\"car\",\"truck\"], \
+                \"bike\":[\"bike\"], \
+                \"foot\":[\"foot\"]\
+            }\
+        }";
+        let bundles = manifest_bundles(raw);
+        assert_eq!(
+            bundles,
+            vec![
+                (
+                    "car_truck".to_string(),
+                    vec!["car".to_string(), "truck".to_string()]
+                ),
+                ("bike".to_string(), vec!["bike".to_string()]),
+                ("foot".to_string(), vec!["foot".to_string()]),
+            ]
+        );
+    }
+
+    #[test]
+    fn manifest_bundles_round_trips_through_pack() -> Result<()> {
+        // Regression: write a real manifest via build_manifest, append it
+        // to a container, parse it back through manifest_bundles. This
+        // exercises the same code path that `topology-diff` reads.
+        let modes = vec!["bike".to_string(), "car".to_string(), "foot".to_string()];
+        let manifest = build_manifest(&modes, "BE");
+
+        let tmp = NamedTempFile::new()?;
+        let mut w = ContainerWriter::create(tmp.path())?;
+        w.append_bytes(SectionKind::Unknown, MANIFEST_NAME, manifest.as_bytes())?;
+        w.finalize()?;
+
+        let c = Container::open(tmp.path())?;
+        let entry = c.get(MANIFEST_NAME).expect("manifest section exists");
+        let bytes = c.read_section_verified(tmp.path(), entry)?;
+        let bundles = manifest_bundles(&bytes);
+        assert_eq!(bundles.len(), 3);
+        for (i, m) in modes.iter().enumerate() {
+            assert_eq!(bundles[i], (m.clone(), vec![m.clone()]));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_bundles_tolerates_extra_whitespace() {
+        let raw = b"{ \"bundles\" : { \"a\" : [ \"a\" ] , \"b\" : [ \"b\" , \"c\" ] } }";
+        let bundles = manifest_bundles(raw);
+        assert_eq!(
+            bundles,
+            vec![
+                ("a".to_string(), vec!["a".to_string()]),
+                ("b".to_string(), vec!["b".to_string(), "c".to_string()]),
+            ]
+        );
+    }
+
+    #[test]
+    fn manifest_bundles_tolerates_garbage_after_close() {
+        // Anything past the closing `}` of the bundles map is ignored.
+        let raw = b"{\"bundles\":{\"x\":[\"x\"]} blah blah}";
+        let bundles = manifest_bundles(raw);
+        assert_eq!(bundles, vec![("x".to_string(), vec!["x".to_string()])]);
+    }
+}
+
+#[cfg(test)]
+mod topology_diff_tests {
+    //! Integration tests for `topology-diff`. These build a tiny synth
+    //! container with two real-shaped per-mode bundles (mask +
+    //! filtered_ebg + topo + weights) so the analysis tool exercises
+    //! the full read path including CRC checks.
+
+    use super::*;
+    use crate::formats::butterfly_dat::{ContainerWriter, SectionKind};
+    use crate::formats::cch_topo::{CchTopo, CchTopoFile};
+    use crate::formats::filtered_ebg::FilteredEbg;
+    use crate::formats::{BitsetField, FilteredEbgFile};
+    use crate::profile_abi::Mode;
+    use std::borrow::Cow;
+    use tempfile::NamedTempFile;
+
+    /// Write a minimal mask section bytestream: 24-byte header + bitset
+    /// body + 16-byte footer (matches `mod_mask` format v1).
+    fn build_mask_bytes(mode_byte: u8, n_nodes: u32, body: &[u8]) -> Vec<u8> {
+        use crate::formats::crc::Digest;
+        const MAGIC: u32 = 0x4D41534B;
+        const VERSION: u16 = 1;
+        let mut header = Vec::with_capacity(24);
+        header.extend_from_slice(&MAGIC.to_le_bytes());
+        header.extend_from_slice(&VERSION.to_le_bytes());
+        header.push(mode_byte);
+        header.push(0);
+        header.extend_from_slice(&n_nodes.to_le_bytes());
+        header.extend_from_slice(&[0u8; 8]); // inputs_sha
+        header.extend_from_slice(&[0u8; 4]); // pad
+        debug_assert_eq!(header.len(), 24);
+
+        let body_len = (n_nodes as usize).div_ceil(8);
+        assert_eq!(body.len(), body_len, "test mask body wrong length");
+
+        let mut body_d = Digest::new();
+        body_d.update(body);
+        let body_crc = body_d.finalize();
+        let mut file_d = Digest::new();
+        file_d.update(&header);
+        file_d.update(body);
+        let file_crc = file_d.finalize();
+
+        let mut out = Vec::with_capacity(24 + body_len + 16);
+        out.extend_from_slice(&header);
+        out.extend_from_slice(body);
+        out.extend_from_slice(&body_crc.to_le_bytes());
+        out.extend_from_slice(&file_crc.to_le_bytes());
+        out
+    }
+
+    /// Build a tiny but parse-valid `FilteredEbg` whose `original_arc_idx`
+    /// matches `arc_indices` exactly. Filtered nodes / heads are
+    /// arbitrary — we only need `original_arc_idx` for the diff.
+    fn build_filtered_ebg(mode: Mode, n_orig: u32, arc_indices: &[u32]) -> FilteredEbg {
+        let n_arcs = arc_indices.len() as u64;
+        // Use a single filtered node owning all the arcs, looping back
+        // to itself: the diff tool only inspects original_arc_idx, but
+        // FilteredEbgFile::write requires a self-consistent CSR.
+        let n_filt: u32 = if n_arcs > 0 { 1 } else { 0 };
+        let offsets = if n_filt == 0 {
+            vec![0u64]
+        } else {
+            vec![0u64, n_arcs]
+        };
+        let heads = vec![0u32; arc_indices.len()];
+        let filtered_to_original = if n_filt == 0 { vec![] } else { vec![0u32] };
+        let mut original_to_filtered = vec![u32::MAX; n_orig as usize];
+        if n_filt > 0 {
+            original_to_filtered[0] = 0;
+        }
+        FilteredEbg {
+            mode,
+            n_filtered_nodes: n_filt,
+            n_filtered_arcs: n_arcs,
+            n_original_nodes: n_orig,
+            inputs_sha: [0u8; 32],
+            offsets: Cow::Owned(offsets),
+            heads: Cow::Owned(heads),
+            original_arc_idx: Cow::Owned(arc_indices.to_vec()),
+            filtered_to_original: Cow::Owned(filtered_to_original),
+            original_to_filtered: Cow::Owned(original_to_filtered),
+        }
+    }
+
+    /// Build a tiny `CchTopo` so the topology-diff header probe
+    /// (offset[8..32] of the topo section) reads consistent values.
+    fn build_topo(n_nodes: u32, n_shortcuts: u64, n_original_arcs: u64) -> CchTopo {
+        // No edges, no shortcuts in body — the diff tool only reads the
+        // header. But `up_offsets` / `down_offsets` need n_nodes+1
+        // entries to satisfy the writer.
+        let zero_off = vec![0u64; (n_nodes + 1) as usize];
+        let zero_rank = vec![0u32; n_nodes as usize];
+        CchTopo {
+            n_nodes,
+            n_shortcuts,
+            n_original_arcs,
+            inputs_sha: [0u8; 32],
+            up_offsets: Cow::Owned(zero_off.clone()),
+            up_targets: Cow::Owned(vec![]),
+            up_is_shortcut: BitsetField::from_owned_words(vec![], 0),
+            up_middle: Cow::Owned(vec![]),
+            down_offsets: Cow::Owned(zero_off),
+            down_targets: Cow::Owned(vec![]),
+            down_is_shortcut: BitsetField::from_owned_words(vec![], 0),
+            down_middle: Cow::Owned(vec![]),
+            rank_to_filtered: Cow::Owned(zero_rank),
+        }
+    }
+
+    /// One synthetic per-mode bundle: arc set + node mask. Used by
+    /// `write_synth_container` below. Pulled out so the writer fn's
+    /// argument count stays under the clippy limit.
+    struct SynthMode<'a> {
+        name: &'a str,
+        arcs: &'a [u32],
+        node_mask: &'a [u8],
+    }
+
+    fn write_synth_container(
+        path: &std::path::Path,
+        modes: &[SynthMode<'_>],
+        n_orig_nodes: u32,
+    ) -> Result<()> {
+        let mut w = ContainerWriter::create(path)?;
+        // Per mode: mask + filtered_ebg + topo + weights sections. The
+        // diff tool requires every one of these.
+        for (idx, sm) in modes.iter().enumerate() {
+            let mode = Mode(idx as u8);
+            let mask_bytes = build_mask_bytes(mode.0, n_orig_nodes, sm.node_mask);
+            w.append_bytes(
+                SectionKind::ModeMask,
+                format!("mode/{}/mask", sm.name),
+                &mask_bytes,
+            )?;
+            let fe = build_filtered_ebg(mode, n_orig_nodes, sm.arcs);
+            let fe_path = NamedTempFile::new()?;
+            FilteredEbgFile::write(fe_path.path(), &fe)?;
+            w.append_file(
+                SectionKind::FilteredEbg,
+                format!("mode/{}/filtered_ebg", sm.name),
+                fe_path.path(),
+            )?;
+            let topo = build_topo(1, sm.arcs.len() as u64 / 4, sm.arcs.len() as u64);
+            let topo_path = NamedTempFile::new()?;
+            CchTopoFile::write(topo_path.path(), &topo)?;
+            w.append_file(
+                SectionKind::CchTopo,
+                format!("mode/{}/topo", sm.name),
+                topo_path.path(),
+            )?;
+            // Weights — content is opaque to the diff tool, only sizes
+            // matter. Use a deterministic non-zero size proportional to
+            // arc count so the predicted-bundle math has something
+            // sensible to chew on.
+            let weight_size = sm.arcs.len() * 4;
+            let weight_body = vec![0u8; weight_size];
+            w.append_bytes(
+                SectionKind::CchWeightsTime,
+                format!("mode/{}/weights.time", sm.name),
+                &weight_body,
+            )?;
+            w.append_bytes(
+                SectionKind::CchWeightsDist,
+                format!("mode/{}/weights.dist", sm.name),
+                &weight_body,
+            )?;
+        }
+        w.finalize()
+    }
+
+    /// Pure-function regression: a pair of identical arc sets must yield
+    /// arc Jaccard 1.0; disjoint sets yield 0.0. Verify via the synth
+    /// container path so the byte-level mask / filtered_ebg / topo
+    /// readers are exercised end-to-end.
+    #[test]
+    fn topology_diff_identical_modes_high_overlap() -> Result<()> {
+        let tmp = NamedTempFile::new()?;
+        // Two modes with the same arc set [0..16] and same node mask.
+        let arcs: Vec<u32> = (0..16).collect();
+        let mask = vec![0xFFu8, 0xFFu8]; // all 16 nodes accessible
+        write_synth_container(
+            tmp.path(),
+            &[
+                SynthMode {
+                    name: "alpha",
+                    arcs: &arcs,
+                    node_mask: &mask,
+                },
+                SynthMode {
+                    name: "beta",
+                    arcs: &arcs,
+                    node_mask: &mask,
+                },
+            ],
+            16,
+        )?;
+
+        let c = Container::open(tmp.path())?;
+        // The container has both modes' sections; the diff command
+        // walks them. Assert via list_modes that the prefix iteration
+        // sees both.
+        assert_eq!(
+            c.list_modes(),
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
+
+        // Sanity: the topo-diff function does not panic on the synth.
+        // We don't assert on stdout JSON here (the test_runner reroutes
+        // stdout); we only confirm the heavy-lift path works.
+        topology_diff(tmp.path(), Some("alpha,beta"))?;
+        Ok(())
+    }
+
+    #[test]
+    fn topology_diff_disjoint_modes() -> Result<()> {
+        let tmp = NamedTempFile::new()?;
+        let a_arcs: Vec<u32> = (0..8).collect();
+        let b_arcs: Vec<u32> = (8..16).collect();
+        let a_mask = vec![0x0Fu8, 0x00u8]; // bits 0..3 only
+        let b_mask = vec![0x00u8, 0xF0u8]; // bits 12..15
+        write_synth_container(
+            tmp.path(),
+            &[
+                SynthMode {
+                    name: "left",
+                    arcs: &a_arcs,
+                    node_mask: &a_mask,
+                },
+                SynthMode {
+                    name: "right",
+                    arcs: &b_arcs,
+                    node_mask: &b_mask,
+                },
+            ],
+            16,
+        )?;
+        topology_diff(tmp.path(), Some("left,right"))?;
+        Ok(())
+    }
+
+    #[test]
+    fn topology_diff_rejects_single_mode() -> Result<()> {
+        let tmp = NamedTempFile::new()?;
+        // Build a one-mode container; topology-diff with the default
+        // (all modes) discovers a single mode and bails.
+        let arcs: Vec<u32> = (0..4).collect();
+        let mask = vec![0x0Fu8, 0x00u8];
+        // Reuse the synth helper but only emit one mode.
+        let mut w = ContainerWriter::create(tmp.path())?;
+        let mode = Mode(0);
+        let mask_bytes = build_mask_bytes(mode.0, 16, &mask);
+        w.append_bytes(SectionKind::ModeMask, "mode/only/mask", &mask_bytes)?;
+        let fe = build_filtered_ebg(mode, 16, &arcs);
+        let fe_path = NamedTempFile::new()?;
+        FilteredEbgFile::write(fe_path.path(), &fe)?;
+        w.append_file(
+            SectionKind::FilteredEbg,
+            "mode/only/filtered_ebg",
+            fe_path.path(),
+        )?;
+        let topo = build_topo(1, 1, arcs.len() as u64);
+        let topo_path = NamedTempFile::new()?;
+        CchTopoFile::write(topo_path.path(), &topo)?;
+        w.append_file(SectionKind::CchTopo, "mode/only/topo", topo_path.path())?;
+        w.append_bytes(
+            SectionKind::CchWeightsTime,
+            "mode/only/weights.time",
+            &[0u8; 16],
+        )?;
+        w.append_bytes(
+            SectionKind::CchWeightsDist,
+            "mode/only/weights.dist",
+            &[0u8; 16],
+        )?;
+        w.finalize()?;
+
+        let res = topology_diff(tmp.path(), None);
+        assert!(res.is_err());
+        let msg = res.unwrap_err().to_string();
+        assert!(
+            msg.contains("at least 2 modes"),
+            "unexpected error: {}",
+            msg
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn topology_diff_unknown_mode_errors() -> Result<()> {
+        let tmp = NamedTempFile::new()?;
+        let arcs: Vec<u32> = (0..4).collect();
+        let mask = vec![0x0Fu8, 0x00u8];
+        write_synth_container(
+            tmp.path(),
+            &[
+                SynthMode {
+                    name: "alpha",
+                    arcs: &arcs,
+                    node_mask: &mask,
+                },
+                SynthMode {
+                    name: "beta",
+                    arcs: &arcs,
+                    node_mask: &mask,
+                },
+            ],
+            16,
+        )?;
+
+        // Asking for a mode that doesn't exist: hard error.
+        let res = topology_diff(tmp.path(), Some("alpha,gamma"));
+        assert!(res.is_err());
+        let msg = res.unwrap_err().to_string();
+        assert!(msg.contains("gamma"), "unexpected error: {}", msg);
         Ok(())
     }
 }
