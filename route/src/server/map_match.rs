@@ -72,6 +72,14 @@ pub struct Matching {
     pub duration_ds: u32,
     /// Confidence score (0.0 to 1.0) — average emission probability
     pub confidence: f64,
+    /// Region index in [`super::regions::RegionsState::regions`] this
+    /// matching's `ebg_path` lives in. EBG ids are region-local: each
+    /// loaded region has its own ebg-id space starting at 0. The
+    /// caller MUST resolve geometry / road names against this
+    /// region's per-region `ServerState`. For single-region traces
+    /// this is always 0; cross-region traces produce one [`Matching`]
+    /// per contiguous same-region run.
+    pub region_idx: usize,
 }
 
 /// Matched position for a single GPS observation
@@ -167,6 +175,7 @@ pub fn map_match(
                 ebg_path,
                 duration_ds,
                 confidence: avg_emission.exp(), // Convert from log to [0,1]
+                region_idx: 0, // single-region path: caller's region is implicit
             });
 
             // Fill tracepoints
@@ -894,6 +903,7 @@ pub fn map_match_multi_region(
                 ebg_path,
                 duration_ds,
                 confidence: avg_emission.exp(),
+                region_idx: run_region_idx,
             });
 
             for (waypoint_index, t) in (*run_start..=*run_end).enumerate() {
