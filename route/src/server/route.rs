@@ -442,7 +442,28 @@ pub async fn route_handler(
     let src_role_filter = SnapRole::Src.role_filter(mode_data);
     let dst_role_filter = SnapRole::Dst.role_filter(mode_data);
 
-    const SNAP_K: usize = 4;
+    // SNAP_K = number of EBG-id candidates per role. The same
+    // physical polyline vertex contributes 2 candidates (one per
+    // traversal direction of the underlying NBG edge), so K=32 ≈
+    // 16 unique physical points per side. Empirically (#197
+    // verification on 1563 Belgium pairs that OSRM routes but
+    // pre-fix Butterfly 404s):
+    //   K=4  → 89 % fixed
+    //   K=8  → 94 % fixed
+    //   K=20, cap=96 → 96.7 % fixed
+    //   K=32, cap=192 → 97-99 % fixed
+    // The residual ≤1 % are coordinates that snap onto small
+    // disconnected fragments in Butterfly's mode-filtered graph and
+    // would require enlarging MAX_SNAP_DISTANCE_M (currently 5 km)
+    // or running OSRM-style "find nearest connected" — out of scope
+    // for this fix.
+    //
+    // Best-case (top-1 src × top-1 dst routes) is one P2P query.
+    // Worst case is bounded by MAX_FALLBACK_COMBOS below; typical
+    // Belgium P2P is 5-50 ms so tail latency is ~1-10 s for the
+    // ~1 % pathological pairs. Best-case latency on healthy pairs
+    // is unchanged from pre-fix.
+    const SNAP_K: usize = 32;
     let src_bearing = bearing_hints.as_ref().and_then(|h| h.first().copied());
     let dst_bearing = bearing_hints.as_ref().and_then(|h| h.get(1).copied());
 
@@ -706,6 +727,19 @@ pub async fn route_handler(
                 combo_order.push((i, j));
             }
         }
+    }
+    // Hard cap on total fallback combinations attempted per query
+    // to bound tail latency for genuinely-unreachable pairs. K=32
+    // produces up to 1024 combos worst case. Cap at 192 so we
+    // cover roughly (i+j) ≤ 19 in the enumeration above — enough
+    // to reach the 16th unique physical snap point on either
+    // side, matching the deepest "small disconnected fragment"
+    // skip we see on the #197 verification sweep.
+    // Worst case ≈ 192 × 5-50 ms = 1-10 s tail, only on the ≤1 %
+    // pathological pairs.
+    const MAX_FALLBACK_COMBOS: usize = 192;
+    if combo_order.len() > MAX_FALLBACK_COMBOS {
+        combo_order.truncate(MAX_FALLBACK_COMBOS);
     }
     let mut result_opt: Option<super::query::QueryResult> = None;
     for &(i, j) in &combo_order {
