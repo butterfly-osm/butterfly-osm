@@ -130,14 +130,21 @@ pub async fn match_trace_handler(
             .into_response();
     }
 
-    // Region dispatch (#91): the GPS trace must lie inside a single
-    // region. Mixed-region traces require the cross-region overlay
-    // (PR C / Phase 2) and are rejected with 501.
+    // Region dispatch (#91 + #194):
+    //   - Single-region traces: take the existing intra-region fast
+    //     path (same code as before #194; zero overhead).
+    //   - Cross-region traces (#194): when an overlay is loaded and
+    //     the trace spans regions, route through
+    //     `map_match_multi_region`. When no overlay is loaded, fall
+    //     back to the historical 501 response.
     let started_dispatch = std::time::Instant::now();
     let coords_iter = req.coordinates.iter().map(|&[lon, lat]| (lon, lat));
     let (state, region_id): (Arc<ServerState>, String) =
         match regions.dispatch_many(coords_iter, &req.mode) {
             Ok(pair) => pair,
+            Err(super::regions::DispatchError::CrossRegion { .. }) if regions.overlay.is_some() => {
+                return cross_region_match_inner(regions, req, started_dispatch).await;
+            }
             Err(e) => {
                 let (code, body) = e.into_response_parts();
                 return (
@@ -398,6 +405,231 @@ pub async fn match_trace_handler(
     };
     super::region_metrics::record_query(
         &region_id,
+        "match",
+        started_dispatch.elapsed().as_secs_f64(),
+    );
+    resp
+}
+
+// =============================================================================
+// Cross-region map matching (#194)
+// =============================================================================
+
+/// Handle a cross-region GPS trace by dispatching to
+/// [`super::map_match::map_match_multi_region`]. The trace is built
+/// against the union of every loaded region; when transitions cross a
+/// boundary, the new function consults the overlay matrix instead of
+/// returning 501.
+///
+/// The output `MatchResponse.matchings` is split into one entry per
+/// contiguous same-region run, mirroring the intra-region split-at-
+/// gaps semantics. Each `Matching` carries its own geometry, duration,
+/// distance, and confidence; the caller can stitch them client-side
+/// (typical mobile-app behaviour) or treat them as independent runs.
+async fn cross_region_match_inner(
+    regions: Arc<RegionsState>,
+    req: MatchRequest,
+    started_dispatch: std::time::Instant,
+) -> axum::response::Response {
+    // Validate inputs (same checks as the single-region path).
+    if req.coordinates.len() < 2 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "code": "InvalidValue",
+                "message": "At least 2 coordinates required"
+            })),
+        )
+            .into_response();
+    }
+    if req.coordinates.len() > 500 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "code": "InvalidValue",
+                "message": "Maximum 500 coordinates allowed"
+            })),
+        )
+            .into_response();
+    }
+    for (i, &[lon, lat]) in req.coordinates.iter().enumerate() {
+        if let Err(e) = validate_coord(lon, lat, &format!("coordinate[{}]", i)) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
+            )
+                .into_response();
+        }
+    }
+    if let Some(acc) = req.gps_accuracy
+        && (acc <= 0.0 || acc > 100.0 || acc.is_nan())
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "code": "InvalidValue",
+                "message": "gps_accuracy must be between 0 and 100 meters"
+            })),
+        )
+            .into_response();
+    }
+
+    let geom_format = match GeometryFormat::parse(&req.geometry) {
+        Ok(f) => f,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
+            )
+                .into_response();
+        }
+    };
+
+    // Cross-region path does not support exclude/avoid in the MVP —
+    // those would require per-region recustomization wired into the
+    // overlay solver, which is out of scope for #194. Reject with a
+    // clear error.
+    if req.exclude.as_deref().is_some_and(|s| !s.is_empty()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "code": "InvalidValue",
+                "message": "exclude is not supported on cross-region map matching (yet)"
+            })),
+        )
+            .into_response();
+    }
+    if req.avoid_polygons.as_deref().is_some_and(|s| !s.is_empty()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "code": "InvalidValue",
+                "message": "avoid_polygons is not supported on cross-region map matching (yet)"
+            })),
+        )
+            .into_response();
+    }
+
+    let coords: Vec<(f64, f64)> = req
+        .coordinates
+        .iter()
+        .map(|&[lon, lat]| (lon, lat))
+        .collect();
+    let mode_name = req.mode.clone();
+    let gps_accuracy = req.gps_accuracy;
+    let want_steps = req.steps;
+    let regions_clone = regions.clone();
+
+    let blocking_result = tokio::task::spawn_blocking(move || {
+        let result = super::map_match::map_match_multi_region(
+            &regions_clone,
+            &mode_name,
+            &coords,
+            gps_accuracy,
+        )?;
+
+        let matchings: Vec<MatchMatching> = result
+            .matchings
+            .iter()
+            .map(|m| {
+                let region_idx = m.region_idx;
+                let entry = &regions_clone.regions[region_idx];
+                let mode_idx = entry
+                    .state
+                    .mode_lookup
+                    .get(&mode_name)
+                    .copied()
+                    .unwrap_or(0);
+                let mode_data = entry.state.get_mode(crate::profile_abi::Mode(mode_idx));
+                let (geometry, distance_m) = build_geometry(
+                    &m.ebg_path,
+                    &entry.state.ebg_nodes,
+                    &entry.state.edge_geom,
+                    geom_format,
+                );
+                let duration_s = m.duration_ds as f64 / 10.0;
+                let steps = if want_steps {
+                    Some(build_steps(
+                        &m.ebg_path,
+                        &entry.state.ebg_nodes,
+                        &entry.state.nbg_geo,
+                        &entry.state.edge_geom,
+                        &mode_data.node_weights,
+                        &entry.state.way_names,
+                        geom_format,
+                    ))
+                } else {
+                    None
+                };
+                MatchMatching {
+                    geometry,
+                    duration: duration_s,
+                    distance: distance_m,
+                    confidence: m.confidence,
+                    steps,
+                }
+            })
+            .collect();
+
+        let tracepoints: Vec<Option<MatchTracepoint>> = result
+            .tracepoints
+            .iter()
+            .map(|tp| {
+                tp.as_ref().map(|t| {
+                    // Use the matching's region_idx — tracepoint and
+                    // matching share the same region by construction.
+                    let region_idx = result
+                        .matchings
+                        .get(t.matchings_index)
+                        .map(|m| m.region_idx)
+                        .unwrap_or(0);
+                    let entry = &regions_clone.regions[region_idx];
+                    let name = lookup_road_name(
+                        t.ebg_id,
+                        &entry.state.ebg_nodes,
+                        &entry.state.nbg_geo,
+                        &entry.state.way_names,
+                    )
+                    .unwrap_or_default();
+                    MatchTracepoint {
+                        location: [t.lon, t.lat],
+                        name,
+                        matchings_index: t.matchings_index,
+                        waypoint_index: t.waypoint_index,
+                    }
+                })
+            })
+            .collect();
+
+        Some(MatchResponse {
+            code: "Ok".to_string(),
+            matchings,
+            tracepoints,
+        })
+    })
+    .await;
+
+    let resp = match blocking_result {
+        Ok(Some(response)) => Json(response).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "code": "NoMatch",
+                "message": "Could not match cross-region trace"
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "code": "InternalError",
+                "message": format!("map match computation failed: {}", e)
+            })),
+        )
+            .into_response(),
+    };
+    super::region_metrics::record_query(
+        "cross_region",
         "match",
         started_dispatch.elapsed().as_secs_f64(),
     );
