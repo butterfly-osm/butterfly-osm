@@ -1,12 +1,24 @@
 {
   "verification_date": "2026-05-06",
   "n_pairs": 1000,
-  "pairs_source": "first 1000 from be-pairs.tsv (same pairs as 10k sweep)",
-  "butterfly_data_dir": "data/belgium-f1 (step2-f1 + step5-f1 + step8-f1)",
+  "pairs_source": "first 1000 from be-pairs.tsv (same pairs as 10k sweep PR #198)",
+  "butterfly_data_dir": "data/belgium-f1 (step2-f1 + step5-f1 + step6-mix + step7-mix + step8-f1)",
   "engines": {
     "butterfly": "post-#197 with F1 speed table calibration (this branch)",
     "osrm": "v5.26.0 CH (driving=5050, cycling=5051, walking=5052)"
   },
+  "pre_tuning_bias_ratios_10k_pairs": {
+    "car": 1.166,
+    "bike": 1.254,
+    "foot": 0.905
+  },
+  "post_tuning_bias_ratios_1k_pairs": {
+    "car": 0.9792,
+    "bike": 1.0354,
+    "foot": 0.977
+  },
+  "target": "Bias ratio within 5% of 1.0 (0.95 < ratio < 1.05)",
+  "status": "PASS - all three modes within target",
   "modes": {
     "car": {
       "n_pairs": 1000,
@@ -14,7 +26,16 @@
       "speed_profile_bias_ratio_osrm_over_bf": 0.9791666576560772,
       "distance_diff_pct_p50": 2.3477392934122436,
       "distance_diff_pct_p95": 15.261706632803476,
-      "duration_diff_pct_corrected_p50": 3.341900034048929,
+      "distance_diff_pct_p99": 28.257641241660494,
+      "duration_diff_pct_corrected": {
+        "p50": 3.341900034048929,
+        "p95": 13.641160617902601,
+        "p99": 23.57909297327101,
+        "max": 40.90496976937486,
+        "mean": 4.78036850384741
+      },
+      "n_in_distance_tolerance": 180,
+      "n_in_duration_tolerance_corrected": 162,
       "osrm_distance_total_km": 128734.9886,
       "bf_distance_total_km": 125728.99906300001,
       "osrm_duration_total_h": 1635.0574722222223,
@@ -26,18 +47,46 @@
       "speed_profile_bias_ratio_osrm_over_bf": 1.0354216355878918,
       "distance_diff_pct_p50": 0.883815083014926,
       "distance_diff_pct_p95": 4.161782346415952,
-      "duration_diff_pct_corrected_p50": 1.971051657971623,
+      "distance_diff_pct_p99": 9.915541607094612,
+      "duration_diff_pct_corrected": {
+        "p50": 1.971051657971623,
+        "p95": 5.5608301938316425,
+        "p99": 10.37221959245846,
+        "max": 21.68679026258968,
+        "mean": 2.3322204258960677
+      },
+      "n_in_distance_tolerance": 290,
+      "n_in_duration_tolerance_corrected": 242,
       "osrm_distance_total_km": 114652.0128,
       "bf_distance_total_km": 114833.35137799999,
       "osrm_duration_total_h": 7882.198166666666,
       "bf_duration_total_h": 7612.549222222222
+    },
+    "foot": {
+      "n_pairs": 1000,
+      "n_both_valid": 999,
+      "speed_profile_bias_ratio_osrm_over_bf": 0.976999587277649,
+      "distance_diff_pct_p50": 0.6079695705153675,
+      "distance_diff_pct_p95": 2.8155650745289416,
+      "distance_diff_pct_p99": 6.841503614213758,
+      "duration_diff_pct_corrected": {
+        "p50": 0.6810931730643273,
+        "p95": 2.6533921084894363,
+        "p99": 5.6462997208417125,
+        "max": 16.674571108569772,
+        "mean": 0.9808370108102419
+      },
+      "n_in_distance_tolerance": 414,
+      "n_in_duration_tolerance_corrected": 684,
+      "osrm_distance_total_km": 112491.0081,
+      "bf_distance_total_km": 112765.01383000001,
+      "osrm_duration_total_h": 22543.117583333333,
+      "bf_duration_total_h": 23073.825083333333
     }
   },
-  "pre_tuning_bias_ratios": {
-    "car": 1.166,
-    "bike": 1.254,
-    "foot": 0.905
-  },
-  "target": "Bias ratio within 5% (0.95 < ratio < 1.05)",
-  "status": "PARTIAL \u2014 car/bike within target, foot rebuild in progress"
+  "speed_table_changes": {
+    "car": "motorway 110->90, trunk 90->85, primary 70->65, secondary 60->55, tertiary 50->40, unclassified 50->25, residential 30->25, service 20->15, living_street 10->10, track 15->10. Matches OSRM v5.26 car.lua raw values.",
+    "bike": "cycleway 20->16, path 15->12, footway 15->10, residential/unclassified/tertiary/secondary/primary 18->15, service 15->14, living_street 15->12, track 12->10. Closer to OSRM bicycle.lua flat 15 km/h.",
+    "foot": "every entry -> 5 km/h flat. Matches OSRM foot.lua walking_speed."
+  }
 }
