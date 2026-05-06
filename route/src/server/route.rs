@@ -959,19 +959,88 @@ fn cross_region_route_inner(
         }
     };
 
-    let pts = vec![
-        Point {
-            lon: src_snap.1,
-            lat: src_snap.2,
-        },
-        Point {
-            lon: dst_snap.1,
-            lat: dst_snap.2,
-        },
-    ];
-    let geom = RouteGeometry::from_points(pts, geom_format);
+    // Translate the chosen border EBG nodes back to per-region CCH ranks
+    // so we can run a path-recovery query within each region.
+    let src_border_rank = *src_mode_data
+        .orig_to_rank
+        .get(solution.src_border_ebg as usize)
+        .unwrap_or(&u32::MAX);
+    let dst_border_rank = *dst_mode_data
+        .orig_to_rank
+        .get(solution.dst_border_ebg as usize)
+        .unwrap_or(&u32::MAX);
 
-    let distance_m = crate::nbg::haversine_distance(src_snap.2, src_snap.1, dst_snap.2, dst_snap.1);
+    if src_border_rank == u32::MAX || dst_border_rank == u32::MAX {
+        // Border picked by the picker doesn't translate into either
+        // region's mode-filtered CCH. Treat as no-route rather than
+        // returning a degenerate straight-line polyline.
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!(
+                    "Cross-region border {}↔{} not accessible for mode '{}'",
+                    src_region, dst_region, req.mode
+                ),
+            }),
+        )
+            .into_response();
+    }
+
+    // Look up the chosen border representative lat/lon for the
+    // border-crossing segment that connects the two regions.
+    let src_border = overlay
+        .region_representatives(&src_region)
+        .get(solution.src_border_idx as usize)
+        .copied();
+    let dst_border = overlay
+        .region_representatives(&dst_region)
+        .get(solution.dst_border_idx as usize)
+        .copied();
+
+    // Recover the per-leg EBG paths and stitch geometry. If the access
+    // or egress leg is zero-length (src == its border, or dst's border
+    // == dst), the corresponding leg yields an empty path and we fall
+    // back to the snap point. Collapse-into-border legs are valid; we
+    // keep going.
+    let (src_points, src_dist_m) =
+        leg_points_and_distance(&src_state, src_mode, src_rank, src_border_rank);
+    let (dst_points, dst_dist_m) =
+        leg_points_and_distance(&dst_state, dst_mode, dst_border_rank, dst_rank);
+
+    let src_border_pt = src_border.map(|b| Point {
+        lon: b.lon,
+        lat: b.lat,
+    });
+    let dst_border_pt = dst_border.map(|b| Point {
+        lon: b.lon,
+        lat: b.lat,
+    });
+    let src_snap_pt = Point {
+        lon: src_snap.1,
+        lat: src_snap.2,
+    };
+    let dst_snap_pt = Point {
+        lon: dst_snap.1,
+        lat: dst_snap.2,
+    };
+
+    let all_points = stitch_cross_region_polyline(
+        &src_points,
+        src_snap_pt,
+        src_border_pt,
+        dst_border_pt,
+        &dst_points,
+        dst_snap_pt,
+    );
+
+    let border_crossing_m = match (src_border, dst_border) {
+        (Some(sb), Some(db)) => crate::nbg::haversine_distance(sb.lat, sb.lon, db.lat, db.lon),
+        _ => 0.0,
+    };
+
+    let geom = RouteGeometry::from_points(all_points, geom_format);
+
+    let distance_m = src_dist_m + border_crossing_m + dst_dist_m;
 
     Json(RouteResponse {
         duration_s,
@@ -983,6 +1052,120 @@ fn cross_region_route_inner(
         debug: None,
     })
     .into_response()
+}
+
+/// Run a CCH P2P query inside a single region with path recovery,
+/// unpack the shortcut path to original EBG edges, and walk the
+/// geometry to produce a deduped point list and a precise length-mm
+/// based distance in metres.
+///
+/// Returns `(empty Vec, 0.0)` when:
+/// - `src == dst` (legs degenerate when the source already equals its
+///   border representative)
+/// - the bidirectional search finds no path
+pub fn leg_points_and_distance(
+    state: &ServerState,
+    mode: crate::profile_abi::Mode,
+    src_rank: u32,
+    dst_rank: u32,
+) -> (Vec<Point>, f64) {
+    if src_rank == dst_rank {
+        return (Vec::new(), 0.0);
+    }
+    let mode_data = state.get_mode(mode);
+    let query = CchQuery::new(state, mode);
+    let result = match query.query(src_rank, dst_rank) {
+        Some(r) => r,
+        None => return (Vec::new(), 0.0),
+    };
+
+    let rank_path = unpack_path(
+        &mode_data.cch_topo,
+        &mode_data.cch_weights,
+        &result.forward_parent,
+        &result.backward_parent,
+        src_rank,
+        dst_rank,
+        result.meeting_node,
+    );
+    let ebg_path: Vec<u32> = rank_path
+        .iter()
+        .map(|&rank| {
+            let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
+            mode_data.filtered_to_original[filtered_id as usize]
+        })
+        .collect();
+
+    build_raw_points(&ebg_path, &state.ebg_nodes, &state.edge_geom)
+}
+
+/// Pure stitching of a cross-region polyline. Concatenates the access
+/// leg, the chosen source-side border representative, the
+/// destination-side border representative, and the egress leg into a
+/// single deduplicated point sequence.
+///
+/// Empty legs (degenerate `src == border` cases) fall back to the
+/// snap point of the corresponding side. Adjacent duplicate vertices
+/// — produced by edge-boundary overlap or by a leg whose terminal
+/// vertex coincides with the border representative — are collapsed.
+///
+/// This is the pure geometry kernel of cross-region routing; the
+/// CCH-driven part lives in [`leg_points_and_distance`]. Exposed as
+/// `pub` (module-private to `server`) so the synthetic 2-region
+/// integration test can verify polyline assembly without needing two
+/// real `ServerState` instances.
+pub fn stitch_cross_region_polyline(
+    src_leg: &[Point],
+    src_snap: Point,
+    src_border: Option<Point>,
+    dst_border: Option<Point>,
+    dst_leg: &[Point],
+    dst_snap: Point,
+) -> Vec<Point> {
+    let mut all_points: Vec<Point> = Vec::with_capacity(src_leg.len() + dst_leg.len() + 2);
+
+    if src_leg.is_empty() {
+        all_points.push(src_snap);
+    } else {
+        all_points.extend_from_slice(src_leg);
+    }
+
+    fn push_unique(out: &mut Vec<Point>, p: Point) {
+        let dup = match out.last().copied() {
+            Some(prev) => (prev.lon - p.lon).abs() < 1e-9 && (prev.lat - p.lat).abs() < 1e-9,
+            None => false,
+        };
+        if !dup {
+            out.push(p);
+        }
+    }
+
+    if let Some(b) = src_border {
+        push_unique(&mut all_points, b);
+    }
+    if let Some(b) = dst_border {
+        push_unique(&mut all_points, b);
+    }
+
+    if dst_leg.is_empty() {
+        push_unique(&mut all_points, dst_snap);
+    } else {
+        // Skip the first egress point if it duplicates the LU-side
+        // border we already emitted.
+        let mut iter = dst_leg.iter().copied();
+        if let Some(first) = iter.next() {
+            push_unique(&mut all_points, first);
+            for p in iter {
+                all_points.push(p);
+            }
+        }
+    }
+
+    // Collapse any back-to-back duplicates produced by edge-boundary
+    // overlap (each EBG edge polyline starts at the previous edge's
+    // end vertex).
+    all_points.dedup_by(|a, b| (a.lon - b.lon).abs() < 1e-9 && (a.lat - b.lat).abs() < 1e-9);
+    all_points
 }
 
 // ============ GPX formatting ============
