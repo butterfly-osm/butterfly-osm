@@ -479,6 +479,36 @@ else:
 - ✅ Reverse isochrones (`direction=arrive`)
 - ✅ TSP/trip optimization (`POST /trip`)
 - ✅ Elevation/DEM integration (`GET /height`)
+- ✅ Traffic-aware routing via CCH recustomization (#84)
+
+### Traffic recustomization (#84)
+
+Step 8 supports an optional `--traffic <profile.traffic.json>` flag that
+applies per-density-class speed factors to time weights and emits a separate
+`cch.w.<mode>_<variant>.u32` weight file. The server auto-discovers traffic
+variants in step8 at boot and registers each as a synthetic mode
+`<base>_<variant>` (e.g. `car_rush_hour`). Routing handlers accept a friendly
+`?traffic=rush_hour` query parameter that maps to the variant.
+
+- **Density classes** (5 buckets: urban_high, urban_medium, urban_low,
+  suburban, rural) are assigned per way during step 2 by an OSM-tag
+  classifier (`route/src/density.rs`) and stored in `way_attrs.<mode>.bin`
+  v2. The classifier is deterministic, no spatial pass, O(n_ways).
+  `--density-classifier cdis-parquet` is reserved as a plug-in seam for the
+  proprietary Sirius CDIS sector data; not implemented in this repo.
+- **Profiles** live in `traffic/*.traffic.json`; ship 3 samples
+  (freeflow / offpeak / rush_hour). Strict schema validation: all 5 density
+  keys required, factors in `[0.1, 1.5]`, etc.
+- **Wall time** (Belgium, car, ≈5M EBG nodes / ≈34M shortcuts):
+  freeflow=43.4 s, offpeak=40.7 s, rush_hour=34.8 s. Bottom-up alone is
+  0.5 s; the rest is parallel triangle relaxation, which is
+  **correctness-critical** — skipping it produces over-estimated paths
+  (Brussels-Antwerp went 5583 s / 77 km without relax vs the correct
+  1947 s / 45 km). The `--skip-triangle-relax` flag is hidden, dev-only.
+- **Smoke**: `bench/route/results/2026-05-06-traffic-recustomization/`.
+  Brussels-Antwerp: freeflow 1946.7 s / 45.5 km → rush_hour 2574.7 s /
+  45.9 km, **+32.3% slower** (within the 30-50% expected band).
+  Freeflow weights are byte-identical to the baseline `cch.w.car.u32`.
 
 **Production Hardening (H-Sprint) Complete** ✅
 

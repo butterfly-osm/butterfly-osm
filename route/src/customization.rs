@@ -68,8 +68,14 @@ pub struct TrafficCustomization {
     pub way_attrs_path: PathBuf,
     /// `nbg.geo` from step 3 — required to map EBG node → first OSM way id.
     pub nbg_geo_path: PathBuf,
-    /// If true, skip triangle relaxation. Trades a small amount of shortcut
-    /// tightness for ~30x speedup. Default for traffic recustomization.
+    /// DEVELOPMENT-ONLY: skip triangle relaxation. THIS PRODUCES INCORRECT
+    /// (over-estimated) shortest-path durations because CCH search relies
+    /// on shortcut weights equalling true shortest distances between their
+    /// endpoints. Default false. Empirical Belgium check: skipping relax
+    /// turned a 1947 s / 45 km Brussels–Antwerp route into a 5583 s / 77 km
+    /// route — the algorithm picked a clearly suboptimal corridor because
+    /// the shortcut weights were loose. Only flip this on for bench
+    /// experiments, never for serving traffic to users.
     pub skip_triangle_relax: bool,
 }
 

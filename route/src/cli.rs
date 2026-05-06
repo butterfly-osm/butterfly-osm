@@ -503,12 +503,11 @@ pub enum Commands {
         #[arg(long)]
         nbg_geo: Option<PathBuf>,
 
-        /// With `--traffic`, skip the triangle-relaxation pass. Default for
-        /// traffic recustomization (sub-second wall time at the cost of
-        /// slightly looser shortcut weights). Without `--traffic` this flag
-        /// has no effect.
-        #[arg(long)]
-        no_triangle_relax: bool,
+        /// DEVELOPMENT-ONLY: skip triangle relaxation. Produces INCORRECT
+        /// (over-estimated) routing durations — only use for benchmark
+        /// experiments. Without `--traffic` this flag has no effect.
+        #[arg(long, hide = true)]
+        skip_triangle_relax: bool,
     },
 
     /// Download (refresh) GTFS transit feeds into `<data>/transit/gtfs/`.
@@ -1603,7 +1602,7 @@ impl Cli {
                 traffic,
                 way_attrs,
                 nbg_geo,
-                no_triangle_relax,
+                skip_triangle_relax,
             } => {
                 // Parse mode — discover from filtered_ebg's parent (step5 dir)
                 let mode_name_str = mode.to_lowercase();
@@ -1626,13 +1625,18 @@ impl Cli {
                                 profile.base_model, mode_name_str
                             );
                         }
+                        if skip_triangle_relax {
+                            eprintln!(
+                                "WARNING: --skip-triangle-relax enabled. The resulting weights \
+                                 produce INCORRECT (over-estimated) routing durations and must \
+                                 NOT be served to users. This flag is for bench experiments only."
+                            );
+                        }
                         Some(customization::TrafficCustomization {
                             profile,
                             way_attrs_path,
                             nbg_geo_path,
-                            // Default to skipping relax for fast recustomization.
-                            // The CLI flag turns it BACK ON via inversion.
-                            skip_triangle_relax: !no_triangle_relax,
+                            skip_triangle_relax,
                         })
                     }
                     None => None,
