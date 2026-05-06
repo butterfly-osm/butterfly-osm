@@ -1428,4 +1428,102 @@ mod tests {
         assert_eq!(segments[0], vec![0, 1]);
         assert_eq!(segments[1], vec![2, 3]);
     }
+
+    // -- Cross-region helpers (#194) ------------------------------
+
+    fn rc(region_idx: usize, ebg_id: u32) -> RegionCandidate {
+        RegionCandidate {
+            region_idx,
+            ebg_id,
+            snapped_lon: 0.0,
+            snapped_lat: 0.0,
+            distance_m: 0.0,
+        }
+    }
+
+    #[test]
+    fn test_single_region_id_all_one_region() {
+        let cands = vec![vec![rc(0, 1), rc(0, 2)], vec![rc(0, 3)]];
+        assert_eq!(single_region_id(&cands), Some(0));
+    }
+
+    #[test]
+    fn test_single_region_id_mixed_returns_none() {
+        let cands = vec![vec![rc(0, 1), rc(1, 2)], vec![rc(0, 3)]];
+        assert_eq!(single_region_id(&cands), None);
+    }
+
+    #[test]
+    fn test_single_region_id_empty_first_then_one() {
+        let cands = vec![vec![], vec![rc(1, 5), rc(1, 6)]];
+        assert_eq!(single_region_id(&cands), Some(1));
+    }
+
+    #[test]
+    fn test_single_region_id_all_empty() {
+        let cands: Vec<Vec<RegionCandidate>> = vec![vec![], vec![]];
+        assert_eq!(single_region_id(&cands), None);
+    }
+
+    #[test]
+    fn test_split_into_region_runs_single_run() {
+        // Two samples both matched into region 0.
+        let candidates = vec![
+            vec![rc(0, 1)],
+            vec![rc(0, 2), rc(0, 3)],
+            vec![rc(0, 4)],
+        ];
+        let cand_refs: Vec<&Vec<RegionCandidate>> = candidates.iter().collect();
+        let matched = vec![0, 0, 0];
+        let runs = split_into_region_runs(&cand_refs, &matched);
+        assert_eq!(runs, vec![(0, 2)]);
+    }
+
+    #[test]
+    fn test_split_into_region_runs_cross_region() {
+        // Sample 0 -> region 0, sample 1 -> region 1.
+        let candidates = vec![
+            vec![rc(0, 1), rc(1, 2)],
+            vec![rc(0, 3), rc(1, 4)],
+            vec![rc(1, 5)],
+        ];
+        let cand_refs: Vec<&Vec<RegionCandidate>> = candidates.iter().collect();
+        // matched[0]=0 -> region 0; matched[1]=1 -> region 1; matched[2]=0 -> region 1
+        let matched = vec![0, 1, 0];
+        let runs = split_into_region_runs(&cand_refs, &matched);
+        assert_eq!(runs, vec![(0, 0), (1, 2)]);
+    }
+
+    #[test]
+    fn test_split_into_region_runs_alternating() {
+        // 0 -> 1 -> 0 (zigzag)
+        let candidates = vec![vec![rc(0, 1)], vec![rc(1, 2)], vec![rc(0, 3)]];
+        let cand_refs: Vec<&Vec<RegionCandidate>> = candidates.iter().collect();
+        let matched = vec![0, 0, 0];
+        let runs = split_into_region_runs(&cand_refs, &matched);
+        assert_eq!(runs, vec![(0, 0), (1, 1), (2, 2)]);
+    }
+
+    #[test]
+    fn test_find_segments_multi_continuous() {
+        let coords = vec![(4.0, 50.0), (4.001, 50.0), (4.002, 50.0)];
+        let cands = vec![vec![rc(0, 1)], vec![rc(0, 2)], vec![rc(0, 3)]];
+        let segs = find_segments_multi(&coords, &cands);
+        assert_eq!(segs, vec![vec![0, 1, 2]]);
+    }
+
+    #[test]
+    fn test_find_segments_multi_gap_split() {
+        let coords = vec![(4.0, 50.0), (4.001, 50.0), (4.1, 50.0), (4.101, 50.0)];
+        let cands = vec![
+            vec![rc(0, 1)],
+            vec![rc(0, 2)],
+            vec![rc(0, 3)],
+            vec![rc(0, 4)],
+        ];
+        let segs = find_segments_multi(&coords, &cands);
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0], vec![0, 1]);
+        assert_eq!(segs[1], vec![2, 3]);
+    }
 }
