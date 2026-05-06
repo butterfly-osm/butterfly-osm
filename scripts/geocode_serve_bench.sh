@@ -45,6 +45,8 @@ ARGS=(
     --host "$HOST"
     --parser "$PARSER"
     --admission-disable
+    --rate-limit-per-sec 100000
+    --rate-limit-burst 200000
     --transport rest
 )
 if [[ "$PARSER" == "neural" ]]; then
