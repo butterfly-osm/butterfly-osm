@@ -8,6 +8,7 @@
 # Source label is freeform (e.g. "OpenAddresses oa-be-* (6 regional feeds)"
 # or "Geofabrik OSM PBF addr:* tags").
 set -euo pipefail
+cd "$(dirname "$0")/.."
 
 iso2="$1"
 shard="$2"
