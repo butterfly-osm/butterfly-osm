@@ -436,6 +436,27 @@ impl PackedSnapIndex {
         mode_idx: u8,
         edge_filter: Option<&[u64]>,
     ) -> Option<(u32, f64, f64, f64)> {
+        self.snap_with_info_filtered_role(lon, lat, mode_idx, edge_filter, None)
+    }
+
+    /// Snap with full info, constrained by an `edge_filter`
+    /// (exclude/avoid) AND an optional `role_filter` (#197 directional
+    /// snap). The `role_filter` is the EBG-id-indexed bitset built at
+    /// boot for either the `src` role (`mode_data.has_outbound`) or
+    /// the `dst` role (`mode_data.has_inbound`). Both filters are
+    /// AND'd: a candidate must have its bit set in BOTH `edge_filter`
+    /// and `role_filter` (when those filters are present).
+    ///
+    /// When `role_filter` is None, this is identical to
+    /// [`snap_with_info_filtered`].
+    pub fn snap_with_info_filtered_role(
+        &self,
+        lon: f64,
+        lat: f64,
+        mode_idx: u8,
+        edge_filter: Option<&[u64]>,
+        role_filter: Option<&[u64]>,
+    ) -> Option<(u32, f64, f64, f64)> {
         let mask = self.masks.get(mode_idx as usize)?;
         let mut best: Option<(u32, f64, f64, f64)> = None;
         let max2 = MAX_SNAP_DISTANCE_M * MAX_SNAP_DISTANCE_M;
@@ -446,6 +467,11 @@ impl PackedSnapIndex {
             }
             if let Some(ef) = edge_filter
                 && !mask_bit_set(ef, p.ebg_id as usize)
+            {
+                return None;
+            }
+            if let Some(rf) = role_filter
+                && !mask_bit_set(rf, p.ebg_id as usize)
             {
                 return None;
             }
@@ -500,6 +526,23 @@ impl PackedSnapIndex {
         range: u16,
         edge_filter: Option<&[u64]>,
     ) -> Option<(u32, f64, f64, f64)> {
+        self.snap_with_bearing_filtered_role(lon, lat, mode_idx, bearing, range, edge_filter, None)
+    }
+
+    /// Snap with bearing filter, edge filter (exclude/avoid), AND
+    /// `role_filter` (#197 directional snap). See
+    /// [`snap_with_info_filtered_role`] for role-filter semantics.
+    #[allow(clippy::too_many_arguments)]
+    pub fn snap_with_bearing_filtered_role(
+        &self,
+        lon: f64,
+        lat: f64,
+        mode_idx: u8,
+        bearing: u16,
+        range: u16,
+        edge_filter: Option<&[u64]>,
+        role_filter: Option<&[u64]>,
+    ) -> Option<(u32, f64, f64, f64)> {
         let mask = self.masks.get(mode_idx as usize)?;
         let mut best: Option<(u32, f64, f64, f64)> = None;
         let max2 = MAX_SNAP_DISTANCE_M * MAX_SNAP_DISTANCE_M;
@@ -510,6 +553,11 @@ impl PackedSnapIndex {
             }
             if let Some(ef) = edge_filter
                 && !mask_bit_set(ef, p.ebg_id as usize)
+            {
+                return None;
+            }
+            if let Some(rf) = role_filter
+                && !mask_bit_set(rf, p.ebg_id as usize)
             {
                 return None;
             }
@@ -552,6 +600,21 @@ impl PackedSnapIndex {
         k: usize,
         edge_filter: Option<&[u64]>,
     ) -> Vec<(u32, f64, f64, f64)> {
+        self.snap_k_with_info_filtered_role(lon, lat, mode_idx, k, edge_filter, None)
+    }
+
+    /// K-nearest with full info, edge filter, AND `role_filter` (#197
+    /// directional snap). See [`snap_with_info_filtered_role`] for
+    /// role-filter semantics.
+    pub fn snap_k_with_info_filtered_role(
+        &self,
+        lon: f64,
+        lat: f64,
+        mode_idx: u8,
+        k: usize,
+        edge_filter: Option<&[u64]>,
+        role_filter: Option<&[u64]>,
+    ) -> Vec<(u32, f64, f64, f64)> {
         if k == 0 {
             return Vec::new();
         }
@@ -574,6 +637,11 @@ impl PackedSnapIndex {
             }
             if let Some(ef) = edge_filter
                 && !mask_bit_set(ef, p.ebg_id as usize)
+            {
+                return None;
+            }
+            if let Some(rf) = role_filter
+                && !mask_bit_set(rf, p.ebg_id as usize)
             {
                 return None;
             }

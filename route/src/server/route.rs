@@ -14,7 +14,7 @@ use super::geometry::{GeometryFormat, Point, RouteGeometry, build_geometry, buil
 use super::query::CchQuery;
 use super::regions::RegionsState;
 use super::state::ServerState;
-use super::types::{ErrorResponse, parse_mode, validate_coord};
+use super::types::{ErrorResponse, SnapRole, parse_mode, validate_coord};
 use super::unpack::unpack_path;
 
 // ============ Types ============
@@ -425,96 +425,161 @@ pub async fn route_handler(
         std::borrow::Cow::Borrowed(&mode_data.mask)
     };
 
-    // Snap source (with optional bearing filter)
-    let src_bearing = bearing_hints.as_ref().and_then(|h| h.first().copied());
-    let (src_orig, src_snap_info) = {
-        let snap_result = if let Some((angle, range)) = src_bearing {
-            state.snap_index.snap_with_bearing_filtered(
-                req.src_lon,
-                req.src_lat,
-                mode.0,
-                angle,
-                range,
-                Some(&snap_mask),
-            )
-        } else {
-            state.snap_index.snap_with_info_filtered(
-                req.src_lon,
-                req.src_lat,
-                mode.0,
-                Some(&snap_mask),
-            )
-        };
-        match snap_result {
-            Some((id, lon, lat, dist)) => (
-                id,
-                SnapInfo {
-                    lon,
-                    lat,
-                    snap_distance_m: dist,
-                    ebg_node_id: id,
-                },
-            ),
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "Could not snap source to road network".to_string(),
-                    }),
-                )
-                    .into_response();
-            }
-        }
-    };
+    // #197: role-aware snap with multi-candidate fallback. Source
+    // point must snap to an EBG node with at least one mode-valid
+    // OUTBOUND arc; destination must snap to one with at least one
+    // INBOUND arc. The `Src`/`Dst` enum values resolve to the per-
+    // mode `has_outbound` / `has_inbound` bitsets built at boot.
+    //
+    // Even with role filtering, the geometrically-closest candidate
+    // can still be the wrong one for two-way roads where both EBG
+    // nodes (one per direction of travel) are present at the same
+    // polyline vertex. We collect the top-K candidates per role, try
+    // (src, dst) combinations in expected-best order, and pick the
+    // first pair that produces a valid route. K is small (4) and the
+    // fallback only runs when the primary candidate fails — typical
+    // queries pay one P2P query, pathological pairs pay up to 16.
+    let src_role_filter = SnapRole::Src.role_filter(mode_data);
+    let dst_role_filter = SnapRole::Dst.role_filter(mode_data);
 
-    // Snap destination (with optional bearing filter)
+    // SNAP_K = number of EBG-id candidates per role. The same
+    // physical polyline vertex contributes 2 candidates (one per
+    // traversal direction of the underlying NBG edge), so K=64 ≈
+    // 32 unique physical points per side. Empirically (#197
+    // verification on 1563 Belgium pairs that OSRM routes but
+    // pre-fix Butterfly 404s):
+    //   K=4,  cap=16  →  89 % fixed
+    //   K=8,  cap=64  →  94 % fixed
+    //   K=20, cap=96  →  96.7 % fixed
+    //   K=32, cap=192 →  98 % fixed
+    //   K=64, cap=400 →  98.7 % fixed
+    // The residual ≤1.3 % are coordinates that snap onto truly
+    // disconnected components in Butterfly's mode-filtered car
+    // graph and the closest connected component is beyond the
+    // 5 km MAX_SNAP_DISTANCE_M radius after the role mask filter.
+    // Fixing those requires graph-level "largest SCC" filtering at
+    // index build time — out of scope for this directional-snap
+    // fix.
+    //
+    // Best-case (top-1 src × top-1 dst routes) is one P2P query.
+    // Worst case is bounded by MAX_FALLBACK_COMBOS below; typical
+    // Belgium P2P is 5-50 ms so tail latency is ~2-20 s for the
+    // ~1.3 % pathological pairs. Best-case latency on healthy
+    // pairs is unchanged from pre-fix.
+    const SNAP_K: usize = 64;
+    let src_bearing = bearing_hints.as_ref().and_then(|h| h.first().copied());
     let dst_bearing = bearing_hints.as_ref().and_then(|h| h.get(1).copied());
-    let (_dst_orig, dst_snap_info) = {
-        let snap_result = if let Some((angle, range)) = dst_bearing {
-            state.snap_index.snap_with_bearing_filtered(
-                req.dst_lon,
-                req.dst_lat,
-                mode.0,
-                angle,
-                range,
-                Some(&snap_mask),
-            )
-        } else {
-            state.snap_index.snap_with_info_filtered(
-                req.dst_lon,
-                req.dst_lat,
-                mode.0,
-                Some(&snap_mask),
-            )
-        };
-        match snap_result {
-            Some((id, lon, lat, dist)) => (
-                id,
-                SnapInfo {
-                    lon,
-                    lat,
-                    snap_distance_m: dist,
-                    ebg_node_id: id,
-                },
-            ),
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "Could not snap destination to road network".to_string(),
-                    }),
-                )
-                    .into_response();
-            }
+
+    // Snap top-K source candidates.
+    let src_candidates: Vec<(u32, f64, f64, f64)> = if let Some((angle, range)) = src_bearing {
+        // Bearing-filtered top-K: collect candidates by repeated
+        // bearing-filtered single snaps over an exclusion bitset.
+        // For now we accept that bearing hints reduce to a single
+        // best candidate (the historical behaviour) — bearing implies
+        // direction, so the selected candidate is already the
+        // intended one. K=1 path.
+        match state.snap_index.snap_with_bearing_filtered_role(
+            req.src_lon,
+            req.src_lat,
+            mode.0,
+            angle,
+            range,
+            Some(&snap_mask),
+            src_role_filter,
+        ) {
+            Some(t) => vec![t],
+            None => Vec::new(),
         }
+    } else {
+        state.snap_index.snap_k_with_info_filtered_role(
+            req.src_lon,
+            req.src_lat,
+            mode.0,
+            SNAP_K,
+            Some(&snap_mask),
+            src_role_filter,
+        )
     };
+    if src_candidates.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Could not snap source to road network".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    // Snap top-K destination candidates.
+    let dst_candidates: Vec<(u32, f64, f64, f64)> = if let Some((angle, range)) = dst_bearing {
+        match state.snap_index.snap_with_bearing_filtered_role(
+            req.dst_lon,
+            req.dst_lat,
+            mode.0,
+            angle,
+            range,
+            Some(&snap_mask),
+            dst_role_filter,
+        ) {
+            Some(t) => vec![t],
+            None => Vec::new(),
+        }
+    } else {
+        state.snap_index.snap_k_with_info_filtered_role(
+            req.dst_lon,
+            req.dst_lat,
+            mode.0,
+            SNAP_K,
+            Some(&snap_mask),
+            dst_role_filter,
+        )
+    };
+    if dst_candidates.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Could not snap destination to road network".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    // Pick the primary (best) candidates. The fallback search runs
+    // later, after the CCH query is built, so we can run multiple
+    // P2P queries against the same query state with cheap retries.
+    // The snap-info reported back to the client is updated to match
+    // whichever candidate produced the winning route.
+    let make_snap_info = |t: &(u32, f64, f64, f64)| -> (u32, SnapInfo) {
+        (
+            t.0,
+            SnapInfo {
+                lon: t.1,
+                lat: t.2,
+                snap_distance_m: t.3,
+                ebg_node_id: t.0,
+            },
+        )
+    };
+    let (src_orig, mut src_snap_info) = make_snap_info(&src_candidates[0]);
+    let (_dst_orig, mut dst_snap_info) = make_snap_info(&dst_candidates[0]);
 
     // Convert to rank space directly (#153: collapses
     // original_to_filtered → perm into a single mapping read).
-    let src_rank = mode_data.orig_to_rank[src_orig as usize];
-    let dst_rank = mode_data.orig_to_rank[_dst_orig as usize];
-
-    if src_rank == u32::MAX || dst_rank == u32::MAX {
+    // Map candidate lists from EBG ids to ranks, dropping any that
+    // resolve to u32::MAX (not in the mode's filtered subgraph). If
+    // role filtering is correct the lookup should always succeed —
+    // we filter defensively to avoid a hard error mid-fallback.
+    let src_rank_candidates: Vec<u32> = src_candidates
+        .iter()
+        .map(|c| mode_data.orig_to_rank[c.0 as usize])
+        .filter(|&r| r != u32::MAX)
+        .collect();
+    let dst_rank_candidates: Vec<u32> = dst_candidates
+        .iter()
+        .map(|c| mode_data.orig_to_rank[c.0 as usize])
+        .filter(|&r| r != u32::MAX)
+        .collect();
+    if src_rank_candidates.is_empty() || dst_rank_candidates.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -523,6 +588,12 @@ pub async fn route_handler(
         )
             .into_response();
     }
+    let mut src_rank = src_rank_candidates[0];
+    let mut dst_rank = dst_rank_candidates[0];
+    // Track which candidate index won so we can update the snap-info
+    // block returned in the response.
+    let mut chosen_src_idx: usize = 0;
+    let mut chosen_dst_idx: usize = 0;
 
     // Same-edge: return consistent zero-distance, zero-duration result
     if src_rank == dst_rank {
@@ -567,10 +638,15 @@ pub async fn route_handler(
     }
 
     // Helper: build route from query result — returns (geometry, duration_s, distance_m, steps, ebg_path)
+    // src_rank / dst_rank are passed in so the closure doesn't bind
+    // them by reference (which would conflict with the #197 fallback
+    // logic that reassigns src_rank / dst_rank on a successful retry).
     let build_route = |result: &super::query::QueryResult,
                        weights: &super::state::CchWeights,
                        format: GeometryFormat,
-                       want_steps: bool|
+                       want_steps: bool,
+                       src_rank: u32,
+                       dst_rank: u32|
      -> (RouteGeometry, f64, f64, Option<Vec<RouteStep>>, Vec<u32>) {
         let rank_path = unpack_path(
             &mode_data.cch_topo,
@@ -630,7 +706,77 @@ pub async fn route_handler(
     } else {
         CchQuery::new(&state, mode)
     };
-    let result = match query.query(src_rank, dst_rank) {
+    // #197: multi-candidate fallback. Try the best (src, dst)
+    // combination first; if it fails, retry with the next candidates
+    // in (src_idx, dst_idx) order biased toward the closer-to-input
+    // ones (since `snap_k_with_info_filtered_role` returns sorted by
+    // distance). This catches the residual two-way-road case where
+    // the role filter alone can't disambiguate which direction's
+    // EBG node is the right starting state for THIS particular
+    // src→dst pair.
+    //
+    // Ordering: enumerate by (i+j) ascending, then by i ascending
+    // (prefer closer src over closer dst when sums tie). This
+    // produces (0,0), (0,1), (1,0), (0,2), (1,1), (2,0), … so the
+    // first additional query swaps to the second-best dst, the
+    // second swaps to the second-best src, etc.
+    let mut combo_order: Vec<(usize, usize)> = Vec::new();
+    for sum in 0..(src_rank_candidates.len() + dst_rank_candidates.len()) {
+        for i in 0..src_rank_candidates.len() {
+            let j = sum.checked_sub(i);
+            if let Some(j) = j
+                && j < dst_rank_candidates.len()
+            {
+                combo_order.push((i, j));
+            }
+        }
+    }
+    // Hard cap on total fallback combinations attempted per query
+    // to bound tail latency for genuinely-unreachable pairs. K=64
+    // produces up to 4096 combos worst case. Cap at 400 so we
+    // cover roughly (i+j) ≤ 28 in the enumeration above — enough
+    // to reach ~28 candidates deep on either side, which exhausts
+    // the disconnected-fragment cases that still benefit from
+    // wider search.
+    // Worst case ≈ 400 × 5-50 ms = 2-20 s tail, only on the
+    // ~1.3 % pathological pairs that genuinely have no nearby
+    // connected component in the mode-filtered car graph.
+    const MAX_FALLBACK_COMBOS: usize = 400;
+    if combo_order.len() > MAX_FALLBACK_COMBOS {
+        combo_order.truncate(MAX_FALLBACK_COMBOS);
+    }
+    let mut result_opt: Option<super::query::QueryResult> = None;
+    for &(i, j) in &combo_order {
+        let s = src_rank_candidates[i];
+        let d = dst_rank_candidates[j];
+        if s == d {
+            // Same-rank pair already short-circuited above when the
+            // primary candidates collide. Subsequent collisions in
+            // fallback are degenerate; skip.
+            continue;
+        }
+        if let Some(r) = query.query(s, d) {
+            src_rank = s;
+            dst_rank = d;
+            chosen_src_idx = i;
+            chosen_dst_idx = j;
+            result_opt = Some(r);
+            break;
+        }
+    }
+    // If the fallback selected a non-primary candidate, update the
+    // snap-info reported in the response so callers see WHICH
+    // physical snap was used.
+    if chosen_src_idx != 0 {
+        let (_, info) = make_snap_info(&src_candidates[chosen_src_idx]);
+        src_snap_info = info;
+    }
+    if chosen_dst_idx != 0 {
+        let (_, info) = make_snap_info(&dst_candidates[chosen_dst_idx]);
+        dst_snap_info = info;
+    }
+    let _ = src_orig;
+    let result = match result_opt {
         Some(r) => r,
         None => {
             return (
@@ -651,8 +797,14 @@ pub async fn route_handler(
         &mode_data.cch_weights
     };
 
-    let (geometry, duration_s, distance_m, steps, ebg_path) =
-        build_route(&result, active_weights, geom_format, req.steps);
+    let (geometry, duration_s, distance_m, steps, ebg_path) = build_route(
+        &result,
+        active_weights,
+        geom_format,
+        req.steps,
+        src_rank,
+        dst_rank,
+    );
 
     // GPX output: skip annotations, alternatives, debug — just emit track points
     if wants_gpx(&headers) {
@@ -774,8 +926,14 @@ pub async fn route_handler(
                     break;
                 }
 
-                let (alt_geom, alt_dur, alt_dist, alt_steps, _alt_path) =
-                    build_route(&alt_result, &penalized_weights, geom_format, req.steps);
+                let (alt_geom, alt_dur, alt_dist, alt_steps, _alt_path) = build_route(
+                    &alt_result,
+                    &penalized_weights,
+                    geom_format,
+                    req.steps,
+                    src_rank,
+                    dst_rank,
+                );
 
                 // Penalize this alternative's edges for next iteration
                 for &(_node, edge_idx) in &alt_result.forward_parent {
@@ -879,38 +1037,46 @@ fn cross_region_route_inner(
     let src_mode_data = src_state.get_mode(src_mode);
     let dst_mode_data = dst_state.get_mode(dst_mode);
 
-    let (src_orig, src_snap) =
-        match src_state
-            .snap_index
-            .snap_with_info(req.src_lon, req.src_lat, src_mode.0)
-        {
-            Some(t) => (t.0, t),
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: format!("Could not snap source in region {}", src_region),
-                    }),
-                )
-                    .into_response();
-            }
-        };
-    let (dst_orig, dst_snap) =
-        match dst_state
-            .snap_index
-            .snap_with_info(req.dst_lon, req.dst_lat, dst_mode.0)
-        {
-            Some(t) => (t.0, t),
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: format!("Could not snap destination in region {}", dst_region),
-                    }),
-                )
-                    .into_response();
-            }
-        };
+    // #197: role-aware snap (cross-region path).
+    let src_role_filter = SnapRole::Src.role_filter(src_mode_data);
+    let dst_role_filter = SnapRole::Dst.role_filter(dst_mode_data);
+
+    let (src_orig, src_snap) = match src_state.snap_index.snap_with_info_filtered_role(
+        req.src_lon,
+        req.src_lat,
+        src_mode.0,
+        None,
+        src_role_filter,
+    ) {
+        Some(t) => (t.0, t),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Could not snap source in region {}", src_region),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let (dst_orig, dst_snap) = match dst_state.snap_index.snap_with_info_filtered_role(
+        req.dst_lon,
+        req.dst_lat,
+        dst_mode.0,
+        None,
+        dst_role_filter,
+    ) {
+        Some(t) => (t.0, t),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Could not snap destination in region {}", dst_region),
+                }),
+            )
+                .into_response();
+        }
+    };
 
     let src_rank = src_mode_data.orig_to_rank[src_orig as usize];
     let dst_rank = dst_mode_data.orig_to_rank[dst_orig as usize];

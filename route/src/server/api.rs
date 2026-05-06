@@ -63,6 +63,7 @@ pub use super::types::{ErrorResponse, Waypoint, parse_mode, validate_coord};
         Point,
         super::types::ErrorResponse,
         super::types::Waypoint,
+        super::types::SnapRole,
         super::matching::MatchRequest,
         super::matching::MatchResponse,
         super::matching::MatchMatching,
