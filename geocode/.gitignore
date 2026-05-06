@@ -6,12 +6,7 @@ regions/belgium.bfgs
 # are 100 MB - 6 GB). The MANIFEST.toml + proof files in
 # geocode/data/proof/ document every shipped shard with provenance.
 data/shards/*.bfgs
-<<<<<<< HEAD
 data/shards-merged-demo/*.bfgs
 # But keep small shards that fit comfortably (<50 MB).
 !data/shards/lu.bfgs
 !data/shards-merged-demo/lu-oa-osm-merged.bfgs
-=======
-# But keep small countries that fit comfortably (<50 MB).
-!data/shards/lu.bfgs
->>>>>>> origin/main
