@@ -51,6 +51,11 @@ tower-http = { version = "0.6.8", features = ["cors", "trace", "timeout", "catch
 tower_governor = { version = "0.8", default-features = false, features = ["axum"] }
 axum-prometheus = "0.10"
 metrics = "0.24"
+# Sharded concurrent map for the per-IP admission token-bucket table.
+# Replaces a single `Mutex<HashMap>` whose contention serialised every
+# request through one critical section (#172). Already pulled in
+# transitively (rstar, tonic) — declared explicitly here for clarity.
+dashmap = "6.1"
 
 # gRPC Arrow Flight transport (#145). Same versions butterfly-route uses
 # so the workspace links a single tonic/arrow stack.
