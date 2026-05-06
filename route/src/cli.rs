@@ -266,6 +266,11 @@ pub enum Commands {
         #[arg(long)]
         models_dir: PathBuf,
 
+        /// Density classifier: `osm-tag` (default, deterministic, no extra
+        /// data) or `cdis-parquet` (proprietary plug-in, not implemented).
+        #[arg(long, default_value = "osm-tag")]
+        density_classifier: String,
+
         /// Output directory for way_attrs.*.bin and turn_rules.*.bin
         #[arg(short, long)]
         outdir: PathBuf,
@@ -1171,13 +1176,16 @@ impl Cli {
                 ways,
                 relations,
                 models_dir,
+                density_classifier,
                 outdir,
             } => {
+                let classifier = crate::density::DensityClassifier::from_str(&density_classifier)?;
                 let config = ProfileConfig {
                     ways_path: ways,
                     relations_path: relations,
                     models_dir,
                     outdir,
+                    density_classifier: classifier,
                 };
 
                 run_profiling(config)?;

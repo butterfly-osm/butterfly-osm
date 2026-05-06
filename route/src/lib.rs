@@ -16,6 +16,7 @@
 pub mod cli;
 pub mod contraction;
 pub mod customization;
+pub mod density;
 pub mod ebg;
 pub mod formats;
 pub mod ingest;
