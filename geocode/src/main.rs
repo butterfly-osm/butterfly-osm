@@ -611,7 +611,7 @@ async fn main() -> Result<()> {
             seed,
         } => match (shard, shards_dir) {
             (Some(p), None) => train_rerank_cmd(
-                &[p.clone()],
+                std::slice::from_ref(&p),
                 &out,
                 iterations,
                 max_depth,
@@ -1755,7 +1755,7 @@ fn train_rerank_cmd(
     }
 
     // Per-shard query budget allocation.
-    let total_records: usize = shards.iter().map(|(_, s)| s.record_count() as usize).sum();
+    let total_records: usize = shards.iter().map(|(_, s)| s.record_count()).sum();
     if total_records == 0 {
         bail!("all shards have zero records — cannot train rerank");
     }
