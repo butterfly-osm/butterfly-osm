@@ -1,0 +1,1001 @@
+query_id	query_text	gold_lat	gold_lon	quality_class
+be-clean-00000	HKP Road  Shivajinagar 10, 560001 Shivaji Nagar, Bangalore	12.9857716	77.6020901	clean
+be-clean-00001	Inner Circle 27, 110001 New Delhi	28.6338612	77.2214817	clean
+be-clean-00002	Lepakshi, Anantapur, 515001 Andhra Pradesh	13.8058381	77.5954937	clean
+be-clean-00003	Kalapatti road, 641014 SITRA	11.0432551	77.0381478	clean
+be-clean-00004	Kodungallur - Shornur Road, 680008 thrissur	10.5445144	76.2130311	clean
+be-clean-00005	Natesan Nagar 27, 1st cross, 2nd floor, 605005 Puducherry	11.9311109	79.8059468	clean
+be-clean-00006	Dr Rajkumar Road, Rajajinagar 403, 560010 Bangalore	12.9862636	77.5575477	clean
+be-clean-00007	Raja Gopala Swamy Thottam Street, 614102 Koothanallur	10.7162312	79.5128356	clean
+be-clean-00008	Sjce Campus Road, 570006 Mysuru	12.3103951	76.6138423	clean
+be-clean-00009	Big Bazaar Street, 614101 Koothanallur	10.7055380	79.5197415	clean
+be-clean-00010	Gachibowli Flat No 205, 500032 Hyderabad	17.4539316	78.3642243	clean
+be-clean-00011	Darodkar Square Central Avenue, Hansapuri,, 440002 Nagpur	21.1495333	79.1128642	clean
+be-clean-00012	Sales Tax Road, 673006 Kozhikode (Calicut)	11.2712974	75.7826996	clean
+be-clean-00013	senthil Nagar, MMC Post,, 600118 chennai	13.1179517	80.1306967	clean
+be-clean-00014	KIADB Quarters, Adjustant to BWSSB Office,100 Ft Ring Road,, PEENYA 2nd Phase, Netaji Nagar, Peenya NO.1, 560058 bangalore	13.0330405	77.5183546	clean
+be-clean-00015	Balughata-City Center Road City Center mall Haldia, Ground Floor, 721631 Haldia	22.0592047	88.0755099	clean
+be-clean-00016	Mundakayam - Elavungal State Highway, 686513 Pallippady	9.4761560	76.9574088	clean
+be-clean-00017	Court Road 11, 152123 Fazilka	30.4060884	74.0261219	clean
+be-clean-00018	Hosaline Road, 573201 Hassan	13.0124624	76.0961956	clean
+be-clean-00019	Modipuram, 250110 Meerut	29.0652785	77.7093783	clean
+be-clean-00020	Baijnathpara, Byron Bazar, 492001 Raipur	21.2402287	81.6386182	clean
+be-clean-00021	Vitthal Rao Shivarkar Marg, 411018 Pune	18.4848996	73.9004015	clean
+be-clean-00022	Sunshine Complex, 3rd Floor, Kammanahalli Main Road, Kalyan Nagar Post, HRBR Layout 218, 560043 bangalore	13.0151194	77.6368067	clean
+be-clean-00023	Bus stand road pandriraipur, 492001 raipur	21.2523583	81.6462762	clean
+be-clean-00024	Bull Temple Rd, Gavipuram Extn, Gandhi Bazaar, Basavanagudi, 560004 Bangalore	12.9448286	77.5670946	clean
+be-clean-00025	13th Cross Road 486, D, 560058 Bangalore	13.0187312	77.5052249	clean
+be-clean-00026	LBS Marg 90 feet road, 400072 mumbai	19.0936144	72.8873529	clean
+be-clean-00027	6 No Stop GF, 462016 Bhopal	23.2278298	77.4290720	clean
+be-clean-00028	Chikkanayakanahalli, 573118 Hassan	13.0861329	76.2047604	clean
+be-clean-00029	Near Bhashyam Circle Beauty Spot Park, 63rd & 64th Cross, 5th Block, Rajajinagar 3, 560010 Bangalore	12.9834865	77.5515572	clean
+be-clean-00030	Anna Salai (Mount Road), 600015 Chennai	13.0155768	80.2250330	clean
+be-clean-00031	Mansarovar Station Road, 410209 Navi Mumbai	19.0164338	73.0806552	clean
+be-clean-00032	Karve Road, 411038 Pune	18.5029300	73.8181901	clean
+be-clean-00033	18th Cross, 560018 Bangalore	13.0085323	77.5695736	clean
+be-clean-00034	BIDHOLI, 248001 DEHRADUN	30.4084759	77.9682061	clean
+be-clean-00035	E block, Subramanyanagar,2 State, Rajaji Nagar, 560010 bangalore	13.0054600	77.5563835	clean
+be-clean-00036	Whitefield Main Road, Mahadevpura, Devasandra Industrial Estate, Krishnarajapuram, 560048 Bengaluru	12.9967599	77.6967269	clean
+be-clean-00037	Beach, Thondwaddo, Colva, Betalbatim, 403713 Goa	15.2911999	73.9118158	clean
+be-clean-00038	Rue Aurobindo 44, 605001 Puducherry	11.9382678	79.8309777	clean
+be-clean-00039	90ft road, 400072 mumbai	19.0968294	72.8871357	clean
+be-clean-00040	50/A, Kalasipalyam Main Rd, K. R. Market, Kalasipalayam, Bengaluru,, 560002 bangalore	12.9586251	77.5775672	clean
+be-clean-00041	Saraswati Vihar 850, 122001 Gurgaon	28.4786589	77.0842342	clean
+be-clean-00042	Sushant Lok 3633, 122001 Gurgaon	28.4704308	77.0798072	clean
+be-clean-00043	31 Number Road, 712306 Baruipara	22.7668969	88.2370465	clean
+be-clean-00044	Hingna Rd, Near T Point, Adhayapak Layout, Parsodi, 440022 Nagpur	21.1229142	79.0344631	clean
+be-clean-00045	city mall 36, 4th floor, 492001 raipur	21.2365888	81.6856449	clean
+be-clean-00046	Nowroji Ferdonji Street 19-A, 400001 Mumbai	18.9221604	72.8319798	clean
+be-clean-00047	Kantha Complex, Dr. Rajkumar Road, 3rd Stage, Rajajinaga 73, 560010 bangalore	12.9903931	77.5584441	clean
+be-clean-00048	2nd Cross 65, 560079 Bangalore	12.9726369	77.5278728	clean
+be-clean-00049	BADDAM BALREDDY NAGAR, 500008 TOLICHOWKI	17.3977615	78.4157502	clean
+be-clean-00050	34th Cross Road,Jaya Nagar #16/47/1-C, 560011 Bangalore	12.9257866	77.5861651	clean
+be-clean-00051	CMH Road, 100 Feet Road, Indira Nagar II Stage, Hoysala Nagar, Indira Nagar 292, 560038 Bangalore	12.9785445	77.6405490	clean
+be-clean-00052	Laskarpur Road, Ramkrishna Nagar, GARIA 53, 700084 Kolkata	22.4585682	88.3814157	clean
+be-clean-00053	Atam nagar 131, 141002 ludhiana	30.8865261	75.8524252	clean
+be-clean-00054	Kabir Road, 570021 Mysore	12.3163407	76.6542216	clean
+be-clean-00055	Thiruvannamalai Road, 604202 Gingee	12.2526350	79.4150097	clean
+be-clean-00056	Balaji Temple Road Kalike, 585201 Yadgir	16.7601367	77.1329612	clean
+be-clean-00057	V N Purav Marg, 400071 mumbai	19.0543371	72.8915656	clean
+be-clean-00058	NAL Belur Campus, Wind Tunnel Road, 560037 Bangalore	12.9452801	77.6661088	clean
+be-clean-00059	HAL 2nd Stage, Indira Nagar, 80 Feet Road, Next To Bata Showroom 3038, 560038 BENGALURU	12.9730389	77.6468244	clean
+be-clean-00060	Vijayanagar Water Tank Road, 560040 Bangalore	12.9739096	77.5358485	clean
+be-clean-00061	H33, Bali Nagar, 110015 New Delhi	28.6537296	77.1324450	clean
+be-clean-00062	Kutchery Road 235/10, 600004 Chennai	13.0356156	80.2689542	clean
+be-clean-00063	duvva, 543156 duvva	16.7547255	81.6217442	clean
+be-clean-00064	P. B. Road, 577002 Davangere	14.4640970	75.9262049	clean
+be-clean-00065	Sidhar Koil,Ellampillai, 637502 salem	11.6194482	78.0212238	clean
+be-clean-00066	A Merchant Road, 400089 mumbai	18.9520692	72.8281085	clean
+be-clean-00067	Ahmedabad Palanpur State Highway SH41, 384001 mehsana	23.6090229	72.3972057	clean
+be-clean-00068	19th Main (Goorur Ramaswamy Iyengar Road) 156, 560010 Bangalore	12.9963776	77.5514093	clean
+be-clean-00069	ICS Road, 524101 Gudur	14.1411484	79.8444347	clean
+be-clean-00070	Manuel Gonsalves Road, 400050 Mumbai	19.0592055	72.8294744	clean
+be-clean-00071	Nageswara Rao Pantulu Rd, Gandhi Nagar 49-1-67, 520003 Vijayawada	16.5173354	80.6254176	clean
+be-clean-00072	11th Main Road, Malleshwaram, 8, 560003 Bengaluru	13.0027839	77.5626314	clean
+be-clean-00073	Vasavi Temple Road, 560004 Bengaluru	12.9508789	77.5770446	clean
+be-clean-00074	7th Cross 10th main, 560075 Bangalore	12.9683557	77.6512329	clean
+be-clean-00075	umerkote - Malgam Rd, 764076 jharigaon	19.7140931	82.3658805	clean
+be-clean-00076	Prince Building, Old Tharagupete Rd, Old Tharagupet 307, 560053 Bangalore	12.9674105	77.5764020	clean
+be-clean-00077	Karikode- Kuttichira Road, 691005 kollam	8.9069632	76.6356216	clean
+be-clean-00078	30th Main road, Banashankari 2nd Stage 3828, 560070 Bangalore	12.9222433	77.5618332	clean
+be-clean-00079	Madavari, 383305 Ranasan, Gujarat, India	23.4654168	73.1131613	clean
+be-clean-00080	Perin Nariman Street, 400001 Mumbai	18.9345311	72.8357563	clean
+be-clean-00081	Amrita Shergil Marg 18, 110003 New Delhi	28.5931800	77.2163895	clean
+be-clean-00082	Arakashan Road 8591, 110055 New Delhi	28.6455153	77.2177757	clean
+be-clean-00083	Servey no: 4/2 Basavanpura Village, CK Palya Road off, Bannerghatta Road, 560076 bangalore	12.8414348	77.5923790	clean
+be-clean-00084	Opposite Sri Ram Medical, Phoolwala Chowk 15, 1st Floor Shree Vinayak Plaza, 424001 Dhule	20.9035194	74.7775248	clean
+be-clean-00085	agartala sabrum road, 799144 santirbazar	23.3111805	91.5626564	clean
+be-clean-00086	sadbhavna nagar 2-l-8, 335001 sri ganganagar	29.8881378	73.8599557	clean
+be-clean-00087	BIDHOLI, 248001 DEHRADUN	30.4094792	77.9690958	clean
+be-clean-00088	Sutarwadi Road, 411021 Pune	18.5374735	73.7818919	clean
+be-clean-00089	Rue Labourdonnais, 605001 Puducherry	11.9273109	79.8320422	clean
+be-clean-00090	New Shukrawari Road Ramwadi, Mangalwari, Mahal, 440002 Nagpur	21.1417766	79.1037462	clean
+be-clean-00091	Vijay Nagar Main Road, Vijay Nagar 827, 560040 Bangalore	12.9731233	77.5403966	clean
+be-clean-00092	Mnr Arcade, Saraki Gate, Kanakapura Road, Saraki Gate,, 560078 bangalore	12.8584183	77.6653346	clean
+be-clean-00093	Sunset Boulevard W-Block, Central Park-1, 122009 Gurugram	28.4617455	77.1003865	clean
+be-clean-00094	Sakku House, Main Road, Laxmipuram, 522007 Guntur	16.2184187	80.2929612	clean
+be-clean-00095	Mangaldas Road 7, 411001 Pune	18.5351646	73.8831426	clean
+be-clean-00096	Besa Rd, Manewada Old Village, Parivartan Chowk, Omkar Nagar, Manewada, Nagpur, Maharashtra 440034 Plot No. 2, 440034 Nagpur	21.1022437	79.0995349	clean
+be-clean-00097	Bannerghatta Road 7, 2nd Floor, Krish Towers, Arekere, 560076 Bangalore	12.8897164	77.5975027	clean
+be-clean-00098	Kamakshi Amman Sanadhi Street 72, 631501 Kanchipuram	12.8389685	79.7112540	clean
+be-clean-00099	100 Feet Road 773, 560038 Bangalore	12.9694282	77.6411133	clean
+be-clean-00100	5th Main, West of Chord Road, Shivanagar, Rajajinagar 1, 560010 bangalore	12.9891546	77.5500014	clean
+be-clean-00101	Collectorate Road Opp. Civil Station Kinfra Road, 682030 Kakkanad,Kochi	10.0161249	76.3433752	clean
+be-clean-00102	Marottichuvadu - Thoppil Rd, Marottichuvadu, Edappally,  Kerala, 682024 Kochi,	10.0248357	76.3162321	clean
+be-clean-00103	Sadura, 192210 Anantnag	33.6756087	75.1362981	clean
+be-clean-00104	Plot No 8a, Santkruppa, Near Sneh Nagar Ring Road Chhatrapati Square, 440015 Nagpur	21.1109862	79.0704837	clean
+be-clean-00105	Begur Road 16,, 560068 Bangalore	12.9060510	77.6276471	clean
+be-clean-00106	South End Road, 560004 Bangalore	12.9369639	77.5721872	clean
+be-clean-00107	18th June Road, 403001 Panjim	15.4978476	73.8261636	clean
+be-clean-00108	Magrath Road Ashoknagar, 560025 Bangalore	12.9703327	77.6095057	clean
+be-clean-00109	RV Road, South End Circle, Opp Bangalore Hospital, Basavanagudi 5, 560004 Bangalore	12.9373404	77.5799110	clean
+be-clean-00110	GOOTY ROAD PB NO 34, 515001 ANANTHAPUR (DIST)	14.7033405	77.6085042	clean
+be-clean-00111	Seven temples road, 500011 New bowenpally	17.4627059	78.4756420	clean
+be-clean-00112	Modi Hospital Main Road 16, 560086 Bangalore	12.9977051	77.5495154	clean
+be-clean-00113	satguru nagar, 141007 ludhiana	30.8615983	75.8818671	clean
+be-clean-00114	Road Number 3 plot no 21, 400043 mumbai	19.0644561	72.9219524	clean
+be-clean-00115	10, Doddanna Industrial, 13, 2, Peenya,, 560058 Bengaluru	13.0106491	77.5066382	clean
+be-clean-00116	Kela Godam Road BB east, 110088 delhi	28.7194166	77.1614441	clean
+be-clean-00117	Sushant Lok 3633, 122001 Gurgaon	28.4704308	77.0798072	clean
+be-clean-00118	Tipling Road, 786602 Duliajan	27.3467258	95.3177047	clean
+be-clean-00119	Bus stand road pandriraipur, 492001 raipur	21.2523583	81.6462762	clean
+be-clean-00120	11th Cross, Mico Main Road, Hosur Rd, CK Nagar, Electronic City 736, 560100 Bangalore	12.8701786	77.6548332	clean
+be-clean-00121	4th floor, city mall 36, 492001 raipur	21.2362849	81.6860212	clean
+be-clean-00122	Cftri Campur,Yadavgiri, 570020 Mysore	12.3210823	76.6347949	clean
+be-clean-00123	Jayanagar 4th Main Site B, 570014 Mysuru	12.2944423	76.6339185	clean
+be-clean-00124	karekkad, 676553 Kadampuzha	10.9526721	76.0692668	clean
+be-clean-00125	Alva Hospital, Meenkarai Road, 642103 Ambarampalayam	10.6378336	76.9501310	clean
+be-clean-00126	Siddhaiah Puranik Road, 560079 Bangalore	12.9893282	77.5379751	clean
+be-clean-00127	MCC Tower, Opposite Sigma Tech Park, Varthur Kodi, Varthur Main Rd, Ramagondanahalli, Whitefield 32, 560066 Bengaluru	12.9566858	77.7419283	clean
+be-clean-00128	J Boman Behram Marg (Bellasis Road), 400008 mumbai	18.9682841	72.8226713	clean
+be-clean-00129	Ramchandi,, 492015 naya raipur	21.1837232	81.7385071	clean
+be-clean-00130	13th Cross Sadashivanagar No.393, 560009 Bangalore	13.0077061	77.5793938	clean
+be-clean-00131	Candolim Dando 182-A, 403515 Candolim	15.5030339	73.7697884	clean
+be-clean-00132	RK Patkar Marg (Waterfield Road), 400050 Bandra, Mumbai	19.0605673	72.8345604	clean
+be-clean-00133	sejbahar, old dhambari road, 492015 Raipur	21.1630598	81.6589768	clean
+be-clean-00134	S Kariyappa Road, Basavanagudi 49, 560004 Bangalore	12.9378405	77.5748570	clean
+be-clean-00135	9th Main, 560040 Bangalore	12.9729829	77.5372409	clean
+be-clean-00136	Galu Devi Temple to - Trail to Triund Hill Triund, 176216 Dharamsala	32.2622946	76.3486921	clean
+be-clean-00137	4th floor, 27th Main, Above Gold's Gym, Near CPWD Complex, Sector 1 2631, 560102 Bangalore	12.9153154	77.6516588	clean
+be-clean-00138	Panchvati Main Road, 382721 Kalol	23.2327276	72.4940530	clean
+be-clean-00139	Opposite R T O Office, Amravati Road, Amravati Road Gorepeth, 440010 Nagpur	21.1461500	79.0637996	clean
+be-clean-00140	Ponekkara Road, 682024 Kochi	10.0249462	76.2996697	clean
+be-clean-00141	4th floor, city mall 36, 492001 raipur	21.2362849	81.6860212	clean
+be-clean-00142	Sarjapur Road KH No 357/347, 562125 Bangalore	12.8613103	77.7862784	clean
+be-clean-00143	Agra, Service Rd, Iblur Village, Bellandur, 560103 Bengaluru	12.9219607	77.6627414	clean
+be-clean-00144	Siraspur Khera Road, 110042 Pratap Colony, Siraspur, Delhi	28.7625802	77.1275975	clean
+be-clean-00145	2nd Main Road, Pai Layout, Mahadevapura 100, 1st Floor, Place on Earth, 560016 bangalore	12.9942151	77.6662522	clean
+be-clean-00146	Challaghatta Main Road, Challaghatta,Yemlur-Post, 560037 bengaluru	12.9455409	77.6493327	clean
+be-clean-00147	Jugsalai phatak, 831006 Jamshedpur	22.7768816	86.1853631	clean
+be-clean-00148	Railway Fatak Road, 410206 Navi Mumbai	18.9904678	73.1279357	clean
+be-clean-00149	SardarPura C Road, 342001 Jodhpur	26.2783102	73.0168169	clean
+be-clean-00150	S.C. Road 165, 560020 Seshadripuram, Bengaluru	12.9894702	77.5730228	clean
+be-clean-00151	New Link Road, Andheri West, 400053 Mumbai	19.1396452	72.8314506	clean
+be-clean-00152	Sampige Road, 560003 Bengaluru	12.9918756	77.5701543	clean
+be-clean-00153	BN Reddy Nagar, 500076 Hyderabad	17.4614642	78.5842558	clean
+be-clean-00154	11th Avenue 37, 600083 Chennai	13.0315006	80.2134717	clean
+be-clean-00155	Hinjewadi Road 1, 411057 Pune	18.5927078	73.7357842	clean
+be-clean-00156	G8  Ground Floor, Magneto The Mall, NH6, Labhandi,, 492001 Raipur,	21.2409347	81.6841075	clean
+be-clean-00157	Queen's Road, 560001 Bangalore	12.9825386	77.5969315	clean
+be-clean-00158	Chappenthottam PO Thayyil, 673513 Kozhikode	11.6934537	75.8148301	clean
+be-clean-00159	World Trade Center, Kharadi, 411014 Pune	18.5530100	73.9490208	clean
+be-clean-00160	Ashok Nagar, 515001 Anantapur, Andhra Pradesh	14.6706101	77.6034528	clean
+be-clean-00161	NDA Pashan rd, 411021 Pune	18.5194753	73.7785948	clean
+be-clean-00162	34th Cross Road,  4th Block, Jayanagara Jaya Nagar #771, 560011 bangalore	12.9267767	77.5838359	clean
+be-clean-00163	Harbour Heights service road, 400005 Mumbai	18.9142991	72.8261446	clean
+be-clean-00164	Paud Road, 411038 Pune	18.5103419	73.8164334	clean
+be-clean-00165	M K Nagar, madampakkam road 15, 603202 Guduvanchery	12.8480768	80.0543693	clean
+be-clean-00166	Behind maharishi vidya mandir, alopinagar,tatibandh colony, raipur, 492001 raipur	21.2530250	81.5584171	clean
+be-clean-00167	Near RTO, 401610 Dapchari	20.0708042	72.9094054	clean
+be-clean-00168	Arham Towers,1st Floor, A.K Colony, Off K.R Road, 7th Block, Jayanagar 63/3, 560082 bangalore	12.9294988	77.5743527	clean
+be-clean-00169	Chhatrapati Shivaji Maharaj Road, 400001 Mumbai	18.9240286	72.8335791	clean
+be-clean-00170	Ajmer Road 3, 302006 Jaipur	26.9129392	75.7901959	clean
+be-clean-00171	SARALPADHAR ROAD, 752030 Balugaon	19.7561343	85.2109067	clean
+be-clean-00172	Banaswadi Main Road #12, 2nd floor, 560043 Bangalore	13.0101203	77.6449673	clean
+be-clean-00173	, HRBR Layout 2nd Block, Kalyan Nagar 315, 7th Main Rd, 560043 Bangalore	13.0208903	77.6431560	clean
+be-clean-00174	Forum Value Mall, Ground Floor, Whitefield Main Road, Near-B B M P Whitefild, Whitefield, Prestige Ozone, Whitefield 21, 560066 Bengaluru	12.9599322	77.7478149	clean
+be-clean-00175	Gooty Rd, Rani Nagar, 515005 Anantapur, Andhra Pradesh	14.6886554	77.6078107	clean
+be-clean-00176	13th Cross Road 483, 560038 Bangalore	12.9811573	77.6366177	clean
+be-clean-00177	College road, 761020 Chatrapur	19.3501353	84.9844531	clean
+be-clean-00178	Avanthi Vihar Colony, Labhandi, Ravigram,, 492006 Raipur	21.2474275	81.6883917	clean
+be-clean-00179	DCE College, 110042 Shahbad Daulatpur, Delhi	28.7496454	77.1167453	clean
+be-clean-00180	Paud Road, 411038 Pune	18.5074600	73.8083522	clean
+be-clean-00181	Ganeshkhind Road, 411016 Pune	18.5378515	73.8355739	clean
+be-clean-00182	Palam Vihar 2486, 122001 Gurgaon	28.5077853	77.0366825	clean
+be-clean-00183	St Dominic Street;7th Road, 400050 Bandra, Mumbai	19.0567446	72.8287040	clean
+be-clean-00184	Sankara Naidu Street 50B, 607002 Thiruppapuliyur	11.7464197	79.7451757	clean
+be-clean-00185	Anand Nagar, 560037 Marathahalli, Bangalore	12.9615070	77.7024959	clean
+be-clean-00186	Karve Road, 411038 Pune	18.5030666	73.8185130	clean
+be-clean-00187	8th Main Rd, Malleshwaram 19, 560003 bangalore	13.0008545	77.5631699	clean
+be-clean-00188	Neethimedu, 636002 salem	11.6463187	78.1527477	clean
+be-clean-00189	Sanjay Nagar, 201002 Ghaziabad	28.6928988	77.4484695	clean
+be-clean-00190	Whitefield Main Road, Mahadevpura, Devasandra Industrial Estate, Krishnarajapuram, 560048 Bengaluru	12.9968641	77.6967745	clean
+be-clean-00191	Cooperative Colony, Madras Road 20/1152, 516001 kadapa	14.4781860	78.8299237	clean
+be-clean-00192	Thachancode, 695574 Kuttichal	8.5657000	77.1151258	clean
+be-clean-00193	2nd floor, city mall,NH6,near chokra nala,vishal nagar,GE road, 492001 raipur	21.2367133	81.6860306	clean
+be-clean-00194	Shahnajaf Road, 226001 Lucknow	26.8552200	80.9455810	clean
+be-clean-00195	Binay Sarkar Road, 732101 MALDA	25.0042271	88.1457752	clean
+be-clean-00196	Link Rd, Malleswaram, Jai Bheema Nagar, Seshadripuram 67, 560020 bangalore	12.9926441	77.5742046	clean
+be-clean-00197	Ludhiana Road, 141109 Raikot	30.6494919	75.5998182	clean
+be-clean-00198	Bistupur Signal, 831001 Jamshedpur	22.7924481	86.1850781	clean
+be-clean-00199	Ludhiana Road, 141109 Raikot	30.6538975	75.5999331	clean
+be-abbreviated-00200	rd number 1, 500035 HYDERABAD	17.3460224	78.5273334	abbreviated
+be-abbreviated-00201	Rd Number 3 3, 400043 mumbai	19.0638497	72.9216064	abbreviated
+be-abbreviated-00202	Jayangr 4th Main Site B, 570014 Mysuru	12.2944423	76.6339185	abbreviated
+be-abbreviated-00203	Kovalam Rd, 629702 Kanyakumari	8.0816607	77.5486348	abbreviated
+be-abbreviated-00204	calicut rd 245, 670645 Thonichal	11.7715729	76.0006160	abbreviated
+be-abbreviated-00205	Sec 18 B1/35, 201301 NOIDA	28.5705830	77.3258599	abbreviated
+be-abbreviated-00206	Chikmagalur Javagal Rd, 577146 Kalasapura	13.2775010	75.9343106	abbreviated
+be-abbreviated-00207	Magrath Rd Ashoknagar, 560025 Bangalore	12.9702366	77.6094525	abbreviated
+be-abbreviated-00208	DLF Ph 3 Ambience Island, 122002 Gurugram	28.5028232	77.1003268	abbreviated
+be-abbreviated-00209	First Floor, Tavarekere Mn Rd, BTM Layout 4C-1008, 560043 bangalore	13.0180644	77.6548189	abbreviated
+be-abbreviated-00210	Bellandur Gate, Sarjapura Rd No. 5, 1st Floor,, 560103 Bengaluru	12.9196860	77.6670282	abbreviated
+be-abbreviated-00211	Pallipalayam Rd, Suriyampalayam Post 157, 637209 Tiruchengode	11.3778875	77.8865774	abbreviated
+be-abbreviated-00212	Dr. BR Ambedkar Rd, 400050 Mumbai	19.0603513	72.8294526	abbreviated
+be-abbreviated-00213	SNR College Rd, Nava India Road, 641006 கோயம்புத்தூர்	11.0212988	76.9883526	abbreviated
+be-abbreviated-00214	5th Main Road, HRBR Layout,2nd Block, Kalyan Ngr 436, 560043 bangalore	13.0254536	77.6397912	abbreviated
+be-abbreviated-00215	Arthur Bunder Rd, 400005 Mumbai	18.9182046	72.8315697	abbreviated
+be-abbreviated-00216	Abu Bakar St New Basti, 841232 Madhopur	26.3403833	84.4523133	abbreviated
+be-abbreviated-00217	Ferozepur Rd; old NH95, 142026 Jagraon	30.8094625	75.4777702	abbreviated
+be-abbreviated-00218	Rue Aurobindo 81, 605001 Puducherry	11.9384342	79.8299819	abbreviated
+be-abbreviated-00219	Kolapakkam, 600048 Chennai	13.0118850	80.1569298	abbreviated
+be-abbreviated-00220	Calvary Church Rd No. 625, 560066 Whitefield	12.9705947	77.7508601	abbreviated
+be-abbreviated-00221	Madhusudan Banerjee Rd, NDDM Ward No - 26, Saptam Pally, Nabin Ngr, Birati, 391, 375,, 700049 Kolkata	22.6225187	88.4506765	abbreviated
+be-abbreviated-00222	Rengabashyam St, 600015 Saidapet	13.0241522	80.2185280	abbreviated
+be-abbreviated-00223	shop no 9, wilson garden society, opp.RBI layout, kothanur main road, j.p ngr 7th phase, 94/95, 560078 bangalore	12.8864701	77.5867609	abbreviated
+be-abbreviated-00224	Kodungallur - Shornur Rd, 680027 Thrissur	10.4733918	76.2121049	abbreviated
+be-abbreviated-00225	11th crs 490, 560064 bangalore	13.0683174	77.6154809	abbreviated
+be-abbreviated-00226	BN Reddy Ngr, 500076 Hyderabad	17.4624723	78.5842772	abbreviated
+be-abbreviated-00227	Tumkur Rd, 560058 Bangalore	13.0388390	77.5308674	abbreviated
+be-abbreviated-00228	Ahmedabad Palanpur State Highway SH41, 384001 mehsana	23.6236167	72.3891627	abbreviated
+be-abbreviated-00229	NH45A, sulthan pet, villianur, 605110 puducherry	11.9200257	79.7583485	abbreviated
+be-abbreviated-00230	budhapara, 492001 Raipur	21.2414376	81.6232005	abbreviated
+be-abbreviated-00231	sriram ngr road, 500018 hyderabad	17.4510973	78.4224934	abbreviated
+be-abbreviated-00232	Bannerghatta Rd Balmuri Main Road, Hulimavu, 560076 Bangalore	12.8761073	77.5961821	abbreviated
+be-abbreviated-00233	Under Hill Ln, Civil Lines 6A, 110054 New Delhi	28.6763280	77.2227463	abbreviated
+be-abbreviated-00234	Amravati Rd, Law College Square Law College Square, 440001 Nagpur	21.1476484	79.0610846	abbreviated
+be-abbreviated-00235	Cessna Business Park BGL-12, 560103 Bengaluru	12.9357533	77.6962873	abbreviated
+be-abbreviated-00236	Ahmedabad Palanpur State Highway SH41, 384001 mehsana	23.6247907	72.3886317	abbreviated
+be-abbreviated-00237	Walkeswar Rd 183, 400006 Mumbai	18.9477902	72.7973324	abbreviated
+be-abbreviated-00238	Fuvara rd, 384001 mehsana	23.6045324	72.3912364	abbreviated
+be-abbreviated-00239	Mosque Rd, 577432 Tirthahalli	13.6919148	75.2427170	abbreviated
+be-abbreviated-00240	Palam Vihar 2413, 122001 Gurgaon	28.5091896	77.0338170	abbreviated
+be-abbreviated-00241	Karathitu Rd, Near East Coast Road, Pudupattinam,, 603102, kanchipuram	10.9986758	77.2493732	abbreviated
+be-abbreviated-00242	Swami Vivekananda Rd, 3 Ahmedabad	23.0213900	72.5892915	abbreviated
+be-abbreviated-00243	Ahmedabad Palanpur State Highway SH41, 384002 mehsna	23.5791291	72.3684080	abbreviated
+be-abbreviated-00244	Ramdas Naik Rd, 400050 Bandra, Mumbai	19.0554953	72.8359477	abbreviated
+be-abbreviated-00245	Vijayangr Water Tank Road, 560040 Bangalore	12.9744507	77.5335676	abbreviated
+be-abbreviated-00246	Chota Para Rd, Bajinath Para, 492001 Raipur	21.2380262	81.6380392	abbreviated
+be-abbreviated-00247	Mahakavi Kuvempu Road, 2nd Stage, Rajajinagar, Near Varalaxmi Nursing Home, D-Block, Gayatrinagar, Rajaji Ngr 2941/5, 560010 bangalore	12.9988814	77.5552883	abbreviated
+be-abbreviated-00248	grnd floor,kh no 464/83/p, Mousa,Tihmapara,ward no. 51,Rabindranath Tagore ward raipur, 492001 Raipur	21.2169012	81.6547432	abbreviated
+be-abbreviated-00249	Jain Temple Rd, 471606 Khajuraho	24.8510414	79.9263544	abbreviated
+be-abbreviated-00250	Rajmahal Rd, 362265 Veraval	20.9096773	70.3687088	abbreviated
+be-abbreviated-00251	Khardi station Rd, 421301 Khardi	19.5837203	73.3901306	abbreviated
+be-abbreviated-00252	Shree prahalad ahuya foundation, katora Talab civil lines talab, 492001 raipur	21.2349537	81.6495081	abbreviated
+be-abbreviated-00253	Kelkar Bag, 590001 Belgaum	15.8600991	74.5080982	abbreviated
+be-abbreviated-00254	Jessore Rd 83, 700132 Kolkata	22.6802290	88.4562535	abbreviated
+be-abbreviated-00255	Belur Nagasandra, Bellandur, 560017 BENGALURU	12.9438224	77.6546548	abbreviated
+be-abbreviated-00256	Hill Cart Rd, 734203 Kurseong	26.8787589	88.2773514	abbreviated
+be-abbreviated-00257	Ramar Koil St, 642004 Zamin Uthukuli	10.6511342	76.9772397	abbreviated
+be-abbreviated-00258	Whitefield Rd, 560048 Bengaluru	12.9960736	77.6964135	abbreviated
+be-abbreviated-00259	4th Crs B, Michael Palya, 80 Feet Road 68/3, 1st Floor, 560038 Bangalore	12.9817439	77.6449707	abbreviated
+be-abbreviated-00260	Tulasi Theatre Rd, Marathahalli Village, Marathahalli, Karnataka, 560037 Bengaluru,	12.9539548	77.6979312	abbreviated
+be-abbreviated-00261	Kherli Hafizpur, UP, 203202 Noida	28.3968478	77.6527534	abbreviated
+be-abbreviated-00262	Chappenthottam PO Thayyil, 673513 Kozhikode	11.6934537	75.8148301	abbreviated
+be-abbreviated-00263	7th Main Rd, 560010 Bangalore	12.9895041	77.5458100	abbreviated
+be-abbreviated-00264	Paranthe Wali Gali, 110006 Delhi /36	28.6560678	77.2303749	abbreviated
+be-abbreviated-00265	9th Mn Rd, 4th Crs, 1st Blk, Hrbr Lyt, Kalyan Ngr 9, 560043 bangalore	13.0198978	77.6474795	abbreviated
+be-abbreviated-00266	Lloyd's Col, Triplicane L.C 2, 600014 Chennai	13.0488200	80.2718100	abbreviated
+be-abbreviated-00267	Adimurthy Naga, 515001 Anantapur, Andhra Pradesh	14.6773621	77.5981595	abbreviated
+be-abbreviated-00268	1st Floor, 9th Crs, 1st Main Road, Chamarajpet 168, 560018 bangalore	12.9610541	77.5613113	abbreviated
+be-abbreviated-00269	The Mall Road (M. Gandhi Marg) 107, 133001 Ambala Cantt	30.3466049	76.8309546	abbreviated
+be-abbreviated-00270	Vijayangr Water Tank Road, 560040 Bangalore	12.9746260	77.5326702	abbreviated
+be-abbreviated-00271	Rue Labourdonnais 31, 605001 Puducherry	11.9254137	79.8318462	abbreviated
+be-abbreviated-00272	P.L. Lokhande Mg, 400089 MUMBAI	19.0612649	72.9067792	abbreviated
+be-abbreviated-00273	Arcot Rd, Kodambakkam (opp. Ram Theatre) 282, 600024 Chennai	13.0513800	80.2168200	abbreviated
+be-abbreviated-00274	Station Rd, 713359 Neamatpur	23.7206412	86.8833857	abbreviated
+be-abbreviated-00275	KoottuMuchi- Ullanam- Parappanangadi Rd, 676319 KODAKKAD	11.0836366	75.8729579	abbreviated
+be-abbreviated-00276	janata col, 492001 Raipur	21.2252453	81.6434293	abbreviated
+be-abbreviated-00277	SC Road, Nehru Ngr, Seshadripuram, Bengaluru, Karnataka SC Road, Nehru Nagar, Seshadripuram, Karnataka, 560020 Bengaluru,	12.9870391	77.5744897	abbreviated
+be-abbreviated-00278	SURYADOYA , 9, Gazetted Officers Col , Civilines,, 440001 Nagpur	21.1496610	79.0619177	abbreviated
+be-abbreviated-00279	Sec-63 D-232,, 201301 Noida	28.6274267	77.3847493	abbreviated
+be-abbreviated-00280	Sampige Rd LG-34, 560003 Bengaluru	12.9919478	77.5708501	abbreviated
+be-abbreviated-00281	Hanumantha Ngr Main Road / 50 Feet Road Subhashree Complex, 560050 Banashankari,Bangalore	12.9416700	77.5564774	abbreviated
+be-abbreviated-00282	MSR Ngr 1st Main Road Ramaiah Institute of Technology, 560054 Bengaluru	13.0305521	77.5660376	abbreviated
+be-abbreviated-00283	Solanki Talike Road, Shastri Ngr, 311001 Bhilwara	25.3319726	74.6417266	abbreviated
+be-abbreviated-00284	Near Bowring Hospital,, Central St, Shivaji Nagar 42/5, 560001 Shivaji Nagar, Bangalore	12.9821477	77.6032233	abbreviated
+be-abbreviated-00285	chandikhole, 754082 salapada	20.7181170	86.0033957	abbreviated
+be-abbreviated-00286	Seven temples rd, 500011 New bowenpally	17.4627059	78.4756420	abbreviated
+be-abbreviated-00287	Chaura Bazar Hospital Amritdhara, 132001 Karnal	29.6827067	76.9883887	abbreviated
+be-abbreviated-00288	4th Main Road, 18th Crs, Malleshwaram, Malleshwaram 64, 560055 bangalore	13.0026185	77.5682723	abbreviated
+be-abbreviated-00289	Udayangra 2nd Cross 27 and 28, 560062 Bangalore	12.9103730	77.5531980	abbreviated
+be-abbreviated-00290	NH-6, Near Jindal Steel & Power Limited, VIP Col, Raipur, Chhattisgarh, 492007 raipur	21.2610729	81.6766873	abbreviated
+be-abbreviated-00291	Gandhi Bazar, 604202 Gingee	12.2544546	79.4167437	abbreviated
+be-abbreviated-00292	puliyanmala rd VII/108, 685508 kattappana	9.7563649	77.1209464	abbreviated
+be-abbreviated-00293	Apeejay Rd Sector 21, 410210 Kharghar	19.0479545	73.0664731	abbreviated
+be-abbreviated-00294	Birgoan, 492003 Raipur	21.3083942	81.6192122	abbreviated
+be-abbreviated-00295	Calvary Church Rd No. 625, 560066 Whitefield	12.9705947	77.7508601	abbreviated
+be-abbreviated-00296	Infront of colors mall, Dhamtari rd, 492001 Raipur	21.2131689	81.6561777	abbreviated
+be-abbreviated-00297	Palam Vihar 2658, 122001 Gurgaon	28.5111083	77.0362756	abbreviated
+be-abbreviated-00298	Shyam Plaza, Pandri Shop no 111/12a/13a,3rd floor, 492001 Raipur	21.2493841	81.6459116	abbreviated
+be-abbreviated-00299	11-5-21/2, Sattenapalli, 522403 guntur	16.3960607	80.1497840	abbreviated
+be-abbreviated-00300	Pantarapalya, Nayanda Halli, Pantarapalya, Nayanda Halli 520, 560039 banglore	12.9432314	77.5264877	abbreviated
+be-abbreviated-00301	gandhi chowk, 503001 nizamabad	18.6726911	78.0949882	abbreviated
+be-abbreviated-00302	Paul Market, Agraharam St, Shevapet 35, 636002 salem	11.6601017	78.1712370	abbreviated
+be-abbreviated-00303	Magrath Rd Ashoknagar, 560025 Bangalore	12.9702432	77.6096560	abbreviated
+be-abbreviated-00304	Providence Rd, 682018 Ernakulam	9.9878515	76.2811879	abbreviated
+be-abbreviated-00305	Court Rd 3, 152123 Fazilka	30.4058723	74.0258350	abbreviated
+be-abbreviated-00306	New Marine Lines 50, 51, 400020 Mumbai	18.9413633	72.8275945	abbreviated
+be-abbreviated-00307	Chanapora, 190015 Srinagar	34.0343154	74.8092932	abbreviated
+be-abbreviated-00308	Hennegara, Bommasandra, Electronic City 47 Shop No 4, 560100 Bangalore	12.8398700	77.6531025	abbreviated
+be-abbreviated-00309	Sampige Rd 65 & 66, 560003 Bengaluru	12.9917884	77.5702636	abbreviated
+be-abbreviated-00310	80 feet Road, 12th Main Road, HAL 2nd Stage, Indirangr, 80 Feet Road(Sir C.V. Raman Hospital Road), 560008 Bangalore	12.9702480	77.6470414	abbreviated
+be-abbreviated-00311	Rani Laxmi Bai Rd, 458110 Manasa	24.4771830	75.1424217	abbreviated
+be-abbreviated-00312	Satara-Medha-Mahabaleshwar Rd, 415022 satara	17.7481301	73.9173339	abbreviated
+be-abbreviated-00313	4th Mn 39, 560054 Bangalore	13.0337420	77.5606735	abbreviated
+be-abbreviated-00314	Hinjewadi Rd 1, 411057 Pune	18.5927078	73.7357842	abbreviated
+be-abbreviated-00315	Siddhaiah Puranik Rd, 560079 Bangalore	12.9919338	77.5384148	abbreviated
+be-abbreviated-00316	Didwana Rd SH 60, 341303 Meethari Marwar	27.5724982	74.6840669	abbreviated
+be-abbreviated-00317	Chota Bazar, 250101 Khekra	28.8665084	77.2811749	abbreviated
+be-abbreviated-00318	Asharam Rd, 384001 mahesana	23.6130650	72.4021608	abbreviated
+be-abbreviated-00319	Rajiv Gandhi Salai 5/318, 600097 Chennai	12.9251387	80.2304440	abbreviated
+be-abbreviated-00320	Anjali Hospital, 383305 Ranasan, Gujarat, India	23.4676005	73.1147546	abbreviated
+be-abbreviated-00321	Silchar Rd Via Sonai NH, 788106 Fulertal	24.7938400	93.0192048	abbreviated
+be-abbreviated-00322	215,ambuja city center,ambuja mall,vidhansabha rd saddu, 492007 Raipur	21.2759234	81.6872581	abbreviated
+be-abbreviated-00323	Sriram Spandhana, Challaghatta Jct Rd NA402,, 560017 bengaluru	12.9463798	77.6491990	abbreviated
+be-abbreviated-00324	Whitefield Main Rd, Mahadevpura, Devasandra Industrial Estate, Krishnarajapuram, 560048 Bengaluru	12.9968641	77.6967745	abbreviated
+be-abbreviated-00325	Hosur Rd, 560 068 Bommanahalli, Bangalore	12.9001507	77.6301340	abbreviated
+be-abbreviated-00326	Mysore - Bangalore Rd, 570015 Mysore	12.3386828	76.6499146	abbreviated
+be-abbreviated-00327	Hatutma Sitaram Ghadi Gaonkar St Tulsiwadi, 400034 Mumbai	18.9725898	72.8157740	abbreviated
+be-abbreviated-00328	AK Col, Adugodi 31, 560030 Bangalore	12.9414978	77.6087872	abbreviated
+be-abbreviated-00329	14th Cross, K R Road, Near-SBI, Basavanagudi, Thyagaraja Ngr, Basavanagudi,  Karnataka 4/12,, 560070 Bengaluru,	12.9300005	77.5703092	abbreviated
+be-abbreviated-00330	Chansandra, 560067 Bengaluru	12.9781121	77.7693161	abbreviated
+be-abbreviated-00331	T.P.Area, Opp Vishnu Nivas Building 127, 517501 Tirupati	13.6300373	79.4219427	abbreviated
+be-abbreviated-00332	Kodichikkanahalli Rd 14, 560068 Bangalore	12.8986056	77.6178400	abbreviated
+be-abbreviated-00333	MMDA Col Main Rd, 600026 Chennai	13.0629161	80.2136124	abbreviated
+be-abbreviated-00334	Ahmedabad Palanpur State Highway SH41, 384002 mehsana	23.5878804	72.3772161	abbreviated
+be-abbreviated-00335	Bannerghatta Rd, 560076 Bangalore	12.9045168	77.6014757	abbreviated
+be-abbreviated-00336	City Mall 36, Shop no-30 , Ground Floor, City Mall 36, Raipur, Chhattisgarh, 492001 raipur	21.2362577	81.6857279	abbreviated
+be-abbreviated-00337	Ajni Rd, Ajni Square, Ajni, 440010 Nagpur	21.1235614	79.0875152	abbreviated
+be-abbreviated-00338	Qutab Rd 15, 201301 New Delhi	28.6491348	77.2164415	abbreviated
+be-abbreviated-00339	agartala sabrum rd, 799144 santirbazar	23.3098134	91.5638715	abbreviated
+be-abbreviated-00340	5th Main Road, HRBR Layout,2nd Block, Kalyan Ngr 436, 560043 bangalore	13.0254536	77.6397912	abbreviated
+be-abbreviated-00341	Chanapora, 190015 Srinagar	34.0343154	74.8092932	abbreviated
+be-abbreviated-00342	,2nd Mn Rd, Malleshwaram 13, 560003 bangalore	12.9877039	77.5530939	abbreviated
+be-abbreviated-00343	Geeta Bhavan Rd, 342001 Jodhpur	26.2812274	73.0055064	abbreviated
+be-abbreviated-00344	Kodichikkanahalli Rd 1, 560068 Bangalore	12.8977213	77.6209903	abbreviated
+be-abbreviated-00345	Pandurang Budhkar Mg 130, 400018 Mumbai	19.0169764	72.8364475	abbreviated
+be-abbreviated-00346	Araku-Visakhapatnam Rd, Srungavarapu kota, 535145 Vishakapatnam	18.1141818	83.1383630	abbreviated
+be-abbreviated-00347	Thanisandra Main Rd Survey No. 132P, 133P, & 134P, Nagawara Junction, Manayata Tech Park, 560077 Bangalore	13.0454286	77.6269247	abbreviated
+be-abbreviated-00348	NH 48, 577511 Javanagondahalli	13.8390525	76.7395470	abbreviated
+be-abbreviated-00349	Shyam Plaza,Pandri, 492001 Raipur	21.2496384	81.6460499	abbreviated
+be-abbreviated-00350	GE Rd, Talibandha, 492001 raipur	21.2415535	81.6569579	abbreviated
+be-abbreviated-00351	Hope Park Rd, 643217 Kotagiri	11.4234973	76.8660258	abbreviated
+be-abbreviated-00352	Whitefield Main Rd, Mahadevpura, Devasandra Industrial Estate, Krishnarajapuram, 560048 Bengaluru	12.9963625	77.6968264	abbreviated
+be-abbreviated-00353	1st Mn, Widia Layout, Chandra Layout, Vijay Naga 109, 560040 Bangalore	12.9606425	77.5300492	abbreviated
+be-abbreviated-00354	,shop No 3,sun Complex, Circle, Anjanapura post,&nbsp;J P, Avalahalii, JP Ngr 9th Phase, JP Nagar 3, 560062 bangalore	12.8725257	77.5667017	abbreviated
+be-abbreviated-00355	Padmavathi Ngr NH16, 533106 Rajahmundry	17.0137329	81.8087082	abbreviated
+be-abbreviated-00356	Dharmapuri Bye Pass Rd, Omalur, Dharmapuri Bye Pass Road, Omalur salem	11.7599803	78.0939968	abbreviated
+be-abbreviated-00357	Kondapur X Rd, 500084 Hyderabad	17.4641026	78.3666088	abbreviated
+be-abbreviated-00358	Renganathapuram, 628203 Udangudi	8.4209371	78.0218743	abbreviated
+be-abbreviated-00359	rajareddy st, 516001 kadapa	14.7564644	78.5457116	abbreviated
+be-abbreviated-00360	Sonua Gajpur Main Rd Gajpur, 833103 Gajpur	22.5206890	85.4274853	abbreviated
+be-abbreviated-00361	Ammapettai Bazaar, 636003 salem	11.6590617	78.1818592	abbreviated
+be-abbreviated-00362	Chord Rd, 560040 Bangalore	12.9709921	77.5368677	abbreviated
+be-abbreviated-00363	I Main, 'A' Cross, III Main Road, Chandra Layout, Near Adishwara TV Showroom, Vijay Ngr 1590, 560040 Bangalore	12.9695860	77.5346634	abbreviated
+be-abbreviated-00364	17th C main, 6th Blk, Near Koramangala Club, Koramangala, 6th Block, Koramangala 668/A, 560034 Bangalore	12.9373270	77.6240168	abbreviated
+be-abbreviated-00365	Swamy Vivekananda Rd, 560016 Bangalore	12.9928929	77.6613161	abbreviated
+be-abbreviated-00366	Rajiv Gandhi Salai 5/318, 600097 Chennai	12.9250623	80.2304384	abbreviated
+be-abbreviated-00367	Vandikarast 89, 623501 ramanathapuram	9.3688878	78.8308906	abbreviated
+be-abbreviated-00368	Subbiah Salai (South Boulevard), 605001 Puducherry	11.9251248	79.8292985	abbreviated
+be-abbreviated-00369	St Mark's Road 74/5, 560001 Bangalore	12.9683152	77.6004368	abbreviated
+be-abbreviated-00370	Blk 24, SDA Complex 3rd floor, 171009 kasumpti	31.0784662	77.1799541	abbreviated
+be-abbreviated-00371	H33, Bali Ngr, 110015 New Delhi	28.6537988	77.1324402	abbreviated
+be-abbreviated-00372	38th Crs Road, 560041 Bangalore	12.9218455	77.5854901	abbreviated
+be-abbreviated-00373	Kumaramangalam P O, 685608 Thodupuzha	9.9288242	76.7086331	abbreviated
+be-abbreviated-00374	vidhan sabha rd shop no. 26, 492007 Raipur	21.2756112	81.6875697	abbreviated
+be-abbreviated-00375	Behind BMS College of Engineering 8, 560004 Bangalore	12.9446256	77.5699180	abbreviated
+be-abbreviated-00376	NIBM Rd, 411048 Pune	18.4772712	73.9021993	abbreviated
+be-abbreviated-00377	Narath Shree Muchillot Bhagavathi Kshetram Rd, 670601 kannur	11.9587369	75.3920494	abbreviated
+be-abbreviated-00378	Thekkum Gopuram Azad Lane, 686001 Kottayam	9.5879195	76.5195632	abbreviated
+be-abbreviated-00379	Gopalakrishna Temple rd, 671124 kasaragod	12.5298875	74.9925423	abbreviated
+be-abbreviated-00380	Kapgari Main Rd, 721505 Paschim Medinipur	22.5254067	86.8765446	abbreviated
+be-abbreviated-00381	Dasanaikenpatty, 636201 salem	11.6131263	78.1543655	abbreviated
+be-abbreviated-00382	6 5500, 141007 Ludhiana	30.8623621	75.8813033	abbreviated
+be-abbreviated-00383	NR Col Main Rd, Jeevanbheemanagar, 560075 bangalore	12.9650762	77.6574876	abbreviated
+be-abbreviated-00384	Whitefield Main Rd, Mahadevpura, Devasandra Industrial Estate, Krishnarajapuram, 560048 Bengaluru	12.9973320	77.6967285	abbreviated
+be-abbreviated-00385	17th Cross, 19th Main Road, Sec 4, HSR Layout 235, 560102 Bangalore	12.9122756	77.6462847	abbreviated
+be-abbreviated-00386	PALAKKAL MARKET ROAD, 680027 THRISSUR	10.4730565	76.2118500	abbreviated
+be-abbreviated-00387	Chinmaya Ngr, Prasannaya Palli,, 515002 Anantapur, Andhra Pradesh	14.6397514	77.6081752	abbreviated
+be-abbreviated-00388	City Mall 36, 3rd Floor, City Mall 36,, G.E Rd, Raipur, Chhattisgarh 492001, 492001 raipur	21.2363532	81.6858406	abbreviated
+be-abbreviated-00389	Vasundhara Enclave b-13, 110096 New Delhi	28.5974120	77.3151001	abbreviated
+be-abbreviated-00390	Portofino St 13,14,15, 412112 Dasve, Lavasa	18.4064710	73.5057440	abbreviated
+be-abbreviated-00391	Ram Mandir Ln, Gandhi Sagar Rd, Empress City, 440018 Nagpur	21.1479281	79.1001662	abbreviated
+be-abbreviated-00392	Near NH 147, 382421 Ahmedabad	23.1559206	72.5483000	abbreviated
+be-abbreviated-00393	Sku Campus , S.V.Puram, 515001 Anantapur , Andhra Predesh	14.6162739	77.6422044	abbreviated
+be-abbreviated-00394	Model Town 485, 144601 Kapurthala	31.3877906	75.3905349	abbreviated
+be-abbreviated-00395	vardhaman compound, 834001 ranchi	23.3762322	85.3361210	abbreviated
+be-abbreviated-00396	HAL Old Airport Rd, Marathahalli Village, Marathahalli,, 560037 Bangalore	12.9562560	77.6953953	abbreviated
+be-abbreviated-00397	Hosur Rd, 560095 Bangalore	12.9343669	77.6107742	abbreviated
+be-abbreviated-00398	Magrath Rd Ashoknagar, 560025 Bangalore	12.9702288	77.6097566	abbreviated
+be-abbreviated-00399	Avittathur Shiva Temple Rd, 680683 Avittathur	10.3346502	76.2404151	abbreviated
+be-typo-00400	3rd Cross, 1st Main Road, C.K Nagar, Electronic City, Chennakeshava Nagar, Hosa Road, Pragathi Nagar, Electronic City 850, 560100 Bangalore	12.8703940	77.6559601	typo
+be-typo-00401	PNT Colony Road, Shastri Nagar, 311001 Bhilara	25.3319589	74.6374562	typo
+be-typo-00402	Lakhipur, 788103 Lalkhipur	24.7929132	93.0027587	typo
+be-typo-00403	Mission Street 106, 605001 Puducherry	11.9368829	79.8312803	typo
+be-typo-00404	Agrasen Chowk, Samta Colony, 492001 raipuq	21.2457108	81.6242215	typo
+be-typo-00405	7th Cross 10, RcD Layout, 560030 Bangalore	12.9414015	77.6028616	typo
+be-typo-00406	GD Somani Road, 400005 Mumbi	18.9157512	72.8200492	typo
+be-typo-00407	Shiva ztemple, 585219 Narayanapur rural	16.2540800	76.3761900	typo
+be-typo-00408	No: V-48, 5th Main, 2nd Stage, Peenya Industrial Area, Peenya, Bengaluru, Karnataka – 560058. 48, 560058 bangalore	13.0120679	77.5029766	typo
+be-typo-00409	station road, 384001 mehsana	23.6021602	72.3918597	typo
+be-typo-00410	Collectorate Road, Bihlwara, 311001 Bhilwara	25.3512109	74.6316727	typo
+be-typo-00411	4th Main Road, Chennamanakere Achukatte, BSK 3rd Stage, Banashankari 62/1, 560085 bangalore	12.9263669	77.5546536	typo
+be-typo-00412	22nd Main Road,Banashankari 86,Shankti Arcade, 560070 Bangdlore	12.9269753	77.5643645	typo
+be-typo-00413	Bxatala Road, 143521 Gurdaspur	32.0336905	75.3953097	typo
+be-typo-00414	S G Barve Marg, 400070 Mumbsai	19.0700082	72.8785142	typo
+be-typo-00415	CHILIKA ROAD, 752030 BALUGANO	19.7451785	85.2153715	typo
+be-typo-00416	46th Street, 600061 Chennai	12.9796042	80.1880567	typo
+be-typo-00417	Randamkutty Reshma electricals, 691004 kollam	8.9009793	76.6142327	typo
+be-typo-00418	gundurpuru sahi, 752030 Balupaon	19.7440737	85.2109979	typo
+be-typo-00419	Laksar Hosur Road, Adugodi 43/41, 560030 Bangalore	12.9415138	77.6083283	typo
+be-typo-00420	Daga Building,near raj bavan,civil lines, 492001 rapur	21.2427000	81.6436235	typo
+be-typo-00421	2nd Floor, Shoyam Plaza, Opposite New Bus Stand, Pandari Unit S -5, 492001 Raipur	21.2494559	81.6457753	typo
+be-typo-00422	12th Cross Road, 560102 Bangakore	12.9164007	77.6515357	typo
+be-typo-00423	azaath nagra 6, 614101 koothanallur	10.7033207	79.5250370	typo
+be-typo-00424	Whitefield Main Road, Mahadevpura, Devasandra Industrial Estate, Krishnarajapuram, 560048 Bengalkru	12.9967599	77.6967269	typo
+be-typo-00425	5th Cross, Near Ibblur Bus Stop, Outer Ring Rd, Agara Village, Sector 4, HSR Layout 39/13, 560102 Bengazluru	12.9217521	77.6638083	typo
+be-typo-00426	JATON KA BERA JATAWAS, 342028 JATAWAS TENA ,SHERGARS	26.3188843	72.3629108	typo
+be-typo-00427	Devarachikkanahalli Road 441, 560076 bangalore	12.8942703	77.6094497	typo
+be-typo-00428	Ram Nagar, 515001 Anantapur, Andhra Pradesh	14.6694350	77.5858732	typo
+be-typo-00429	Keezhveeranam Village, 632508 PAnniyur, Kaveritakkam	12.9599911	79.4652600	typo
+be-typo-00430	Thigalarapalyya, Hoodi, Kadugodi Plantation,, 560067 Whitefield, Bangalore	12.9902206	77.7326044	typo
+be-typo-00431	Jain Temple Road, 471606 Khajuraho	24.8509635	79.9257938	typo
+be-typo-00432	Marwari Pantty,Puja Ghat, 786001 Dibrugarh	27.4847523	94.9029154	typo
+be-typo-00433	Madappally College, Vadakara, 673102 Kozhikode	11.6458830	75.5726387	typo
+be-typo-00434	GD Somani Road, 400005 Mumbami	18.9165338	72.8175939	typo
+be-typo-00435	Avittathur-Kottenalloor Road 16/200, 680662 Kottenelloor	10.3178968	76.2409610	typo
+be-typo-00436	Bhavani Kunj, Vasant Kunj 63, 110070 New Delhi	28.5100342	77.1627694	typo
+be-typo-00437	15 Kadapa Tirupati Rd,Vinayak Nagar, Kadapa, Andhra Pradesh, 516003 Kadapa	14.4908496	78.8062948	typo
+be-typo-00438	Jagnnath Mandir Road, 400076 mumbai	19.1049877	72.8904864	typo
+be-typo-00439	Prashanth Nagar Main Road,Vijay Nagar, 4, 560040 Bangalore	12.9757428	77.5335935	typo
+be-typo-00440	CMR Road, Beside Aravind Life Style, HRBR Layout 2nd Block, Kalyan Nagar, Bhadrappa Layout, Kalyan Nagar,, 560043 Bangalore	13.0220316	77.6389717	typo
+be-typo-00441	qLF Phase 3 Ambience Island, 122002 Gurugram	28.5028232	77.1003268	typo
+be-typo-00442	New Kantharaje Urs Road, 570023 Mysuru	12.2953783	76.6155970	typo
+be-typo-00443	Bannerghatta Road Balmuri Main Road, Hulimavu, 560076 Bnagalore	12.8755040	77.5953765	typo
+be-typo-00444	Kamalia Strcet, 614101 Koothanallur	10.7084479	79.5232271	typo
+be-typo-00445	Mahakavi Vailoppilli Road, 682019 Kochi	9.9706652	76.3175312	typo
+be-typo-00446	Paithan-Aurangabad Main Road,Dhangaon 259, 431105 Paithan, Aurangabad	19.5864366	75.3708694	typo
+be-typo-00447	#6, Lala Bapu Ki Wadi 2, Near Fateh Sagar Lake,, Dewali, Panchwati, 313001 Udaipur	24.6079829	73.6788801	typo
+be-typo-00448	opp SaiM andir Marg, Navpada, Vile Parle E KIRIT NURSING HOME, Pushpa Ganga Soc, Subhash Rd, 400057 Mumbai	19.0962884	72.8483799	typo
+be-typo-00449	Govinduapuram Road po kommeri, 673007 kozhikode	11.2446223	75.8043219	typo
+be-typo-00450	A Merchant Road, 400089 mumbai	18.9520692	72.8281085	typo
+be-typo-00451	Old Delhi Gurgaon Road, 122001 Gurugram	28.4672528	77.0371571	typo
+be-typo-00452	NH234 Ambapuram, 632602 gduitattam	12.9453643	78.8715003	typo
+be-typo-00453	S1 630, 110006 Delhi	28.6579859	77.2362700	typo
+be-typo-00454	Old Quarters Road B/2, 641018 Coimbatore	11.0008145	76.9794907	typo
+be-typo-00455	mujawar colony road mmujwarcolony, 415110 karad	17.2776661	74.1890287	typo
+be-typo-00456	Suffren Street, 605001 Pwducherry	11.9261985	79.8323081	typo
+be-typo-00457	Slaagame Road, 573201 Hassan	13.0129786	76.0999329	typo
+be-typo-00458	22nd Main Road 89, 560070 Banashankari,Bangalore	12.9402569	77.5533988	typo
+be-typo-00459	1 Shivaji Nagar, Civil Lines 1 Shivaji Nagar, Civil Lines, jaipur – 302006, Rajasthan, India, 302006 Jaipur	26.9047068	75.7805686	typo
+be-typo-00460	Shekhar Residency, Near Bombay Hospital, 452010 Iddore	22.7538834	75.9010902	typo
+be-typo-00461	Ckhord Road, 560040 Bangalore	12.9710600	77.5366692	typo
+be-typo-00462	Kalyani To NH34 Road F44, 741235 Kalyani	22.9677672	88.4674269	typo
+be-typo-00463	No. 780, 16th Main, BTM Layout, Udipi Garden Road, 560076 Bangalore	12.8856117	77.6036643	typo
+be-typo-00464	Samrala-Behlolpur Road, 141121 Burmy	30.8700319	76.2782155	typo
+be-typo-00465	Glady's Alwares Avenue, 400610 Thaene	19.2363370	72.9701559	typo
+be-typo-00466	, Shubhada Building, Firstfloor, Sir Pochkhanwala Road, Worli New Shop No 18, 400030 Mumbi	19.0087103	72.8164041	typo
+be-typo-00467	Gali Chandi Wali 916, 110055 New Delhi	28.6416911	77.2147016	typo
+be-typo-00468	Sastha Temple Road, 629180 Manakkarai	8.2186113	77.3402556	typo
+be-typo-00469	Lal Bahadur Shastri Marg, 400070 Mumbaoi	19.0811499	72.8819260	typo
+be-typo-00470	Station road, 384001 emhsana	23.6013329	72.3899817	typo
+be-typo-00471	Hea Post Office Road, Bhilwara, 311001 Bhilwara	25.3434342	74.6364651	typo
+be-typo-00472	#17/2, Shaffee Mohammed Road, Off Greams & Khader Nawaz Khan Road, 600006 Chennai	13.0600400	80.2532210	typo
+be-typo-00473	Hoskere, KAS Street, 577139 Srxngeri	13.4201175	75.2479345	typo
+be-typo-00474	Chandavarkar Lane Don Bosco chool, 400092 Mumbai	19.2303902	72.8418808	typo
+be-typo-00475	Magrath Road Ashoknagar, 560025 Bangalor	12.9703295	77.6094669	typo
+be-typo-00476	Purushothapatnam, 507111 Bhadrachalam, Tilangana	17.6680844	80.9107735	typo
+be-typo-00477	Pu. Bha. Bhave Path, 411038 bPune	18.5062595	73.8174209	typo
+be-typo-00478	P B Road, 577002 Davunagere	14.4679807	75.9195682	typo
+be-typo-00479	GD Somani Road, 400005 Mumbaai	18.9157512	72.8200492	typo
+be-typo-00480	Road Number 4 plog no 19/s/1, 400043 MUMBAI	19.0653060	72.9228714	typo
+be-typo-00481	Tilakwadi Herwadkar Building, 325 Roy Road, 325 Roy Road,, 590006 belgaum	15.8354332	74.4996508	typo
+be-typo-00482	Kumarakom Illikkalam Building, 686563 Kottayam	9.5934291	76.4328882	typo
+be-typo-00483	yumaramangalam P O, 685608 Thodupuzha	9.9259833	76.7078451	typo
+be-typo-00484	M Main Road, Kirloskar Colony, Basaweshwvara Nagar, Bengaluru, Karnataka, 560079 bangalore	12.9981057	77.5313787	typo
+be-typo-00485	Cherlapalli Industrial Area, 500076 Hyderabard	17.4580164	78.5860166	typo
+be-typo-00486	Devarabisanahalli, Bellandur, 560103 Bengluru	12.9296474	77.6853394	typo
+be-typo-00487	Baba Khark Singh Marg, 110001 New Delhi	28.6306895	77.2160507	typo
+be-typo-00488	Burma-Kakrala Khurd Road, 141121 Burma	30.8644886	76.2816687	typo
+be-typo-00489	Patliputra Colony,, 800013 Patna	25.6340466	85.1064563	typo
+be-typo-00490	20tb Main, 560040 Bangalore	12.9684412	77.5373058	typo
+be-typo-00491	Anna Nagar,, 600095 Czennai	13.0635932	80.1662498	typo
+be-typo-00492	Palampur Kandi Road, 176061 Palampur	32.1168508	76.5385721	typo
+be-typo-00493	GF-37 303, 452001 Indore	22.7523504	75.8917188	typo
+be-typo-00494	1A Cross Road, Koramangala Industrial Layout, Koramangala Shop No.105, Ground Floor, 5th Floor, 560095 Koraxangala	12.9344396	77.6160195	typo
+be-typo-00495	Kemaapura,Bellandur Survey No-3, 560017 bangalore	12.9440643	77.6717620	typo
+be-typo-00496	1st Floor, 10th Main, 2nd Block, Srinivas Nagar, Near Ayyappaswamy Temple, Banashankari Stage I, Banashankari 281/B, 560050 Baegalore	12.9384167	77.5572651	typo
+be-typo-00497	Abu Bakar Strest New Basti, 841232 Madhopur	26.3403833	84.4523133	typo
+be-typo-00498	17th Main Road #2147, 560008 Bengaguru	12.9641083	77.6436893	typo
+be-typo-00499	Sector-6 48, 132001 Karnal	29.6718695	77.0066678	typo
+be-typo-00500	Mdain Eastern Highway, 686519 Thekkethukavala	9.5366987	76.7582397	typo
+be-typo-00501	Sampige Road 68, 560003 Bengaluru	12.9915068	77.5708648	typo
+be-typo-00502	Peth Galli, 431204 mAbad	19.6141545	75.7861481	typo
+be-typo-00503	9k, Vijaya Nagar, Vijaya Nagar, MRCR Layout, MC Layout 315H/, 560040 Bangalore	12.9699062	77.5331512	typo
+be-typo-00504	Vivekananda Road, 570026 I Block, Ramakrishna Ngaar	12.2909753	76.6108417	typo
+be-typo-00505	4th Main Road, 560040 Bangalor	12.9597604	77.5292414	typo
+be-typo-00506	Mallikarjuna Temple St, 560004 Bangalore	12.9406714	77.5703714	typo
+be-typo-00507	Ghatkopar FOB, 400086 mumabi	19.0861402	72.9071003	typo
+be-typo-00508	Keistal Jasper Commercial Complex, Kasavanahalli Main Road, Sarjapur Road, 560035 Bangalore	12.9001458	77.6753736	typo
+be-typo-00509	1st Main Road, Srinivasa Nagar, 560050 Bangalore	12.9369041	77.5577545	typo
+be-typo-00510	Lohna Surad Road, 176061 Palampur	32.1255282	76.5409923	typo
+be-typo-00511	No. 25-4, Basement, Opp Agarwal Bhavan, HMT Main Road, Mathikere, Bhadrappa Layout, Mathikere Extension, 560054 Bangalore	13.0309835	77.5602170	typo
+be-typo-00512	Sampige Road gG 60-64, 560003 Bengaluru	12.9917551	77.5705993	typo
+be-typo-00513	Opp KG Bank 045, 671321 Kasaragod	12.5895041	75.0022917	typo
+be-typo-00514	9th Cross, Near-Oxford Collage, J P Nagar 1st Phase 53/A, 560078 bangalore	12.9105534	77.5811091	typo
+be-typo-00515	Kastoori Plaza, Chopasani Road , yS4, 342001 Jodhpur	26.2788402	72.9986848	typo
+be-typo-00516	Poolampatti Road, Idappadi 95, 637101 salem	11.5884645	77.8304411	typo
+be-typo-00517	GOOTY iOAD PB NO 34, 515001 ANANTHAPUR (DIST)	14.7033405	77.6085042	typo
+be-typo-00518	Hosur Road, 560095 Bangalore	12.9348719	77.6114029	typo
+be-typo-00519	Aluva - Munnar Road, 686691 Thankalam, Kothamangaalm	10.0685805	76.6137294	typo
+be-typo-00520	Sector 19, 382019 Gandhinagar, Gujarat	23.2182391	72.6703097	typo
+be-typo-00521	Rnig Road, 573201 Hassan	13.0152466	76.1217302	typo
+be-typo-00522	Railway Station road, 431005 Auragngabad	19.8644460	75.3110649	typo
+be-typo-00523	Sulochana Building, 1st Cross Rd, 3rd Block, Sarjapura Main Road, Koramangala 365, 560034 bangalre	12.9250105	77.6278708	typo
+be-typo-00524	Krishnan Street 41, 631501 Kanchipuram	12.8349754	79.6936465	typo
+be-typo-00525	Kariyammana Agrahara Rd, Yemalur, Bllandur, 560037 Bangalore	12.9448945	77.6804735	typo
+be-typo-00526	S1 630, 110006 Delhi	28.6585591	77.2361937	typo
+be-typo-00527	Aralikatte Road, 573201 Hassan	13.0141988	76.0979882	typo
+be-typo-00528	Lakshman Nagar, State Bank of India Colony, 560091 bsangalore	13.0033402	77.4940512	typo
+be-typo-00529	Sarjapur Main Rd, Iblur Villxge, Bellandur, 560102 Bengaluru	12.9232041	77.6632730	typo
+be-typo-00530	Gr Flr, Anand Estate, hittoor Road, 682035 Ernakulam	9.9804056	76.2846481	typo
+be-typo-00531	Rad No. 2, Banjara Hills, 500034 Hyderabad	17.4249998	78.4334774	typo
+be-typo-00532	Patel byrappa bulding pantharapalaya bangalore, Mysore Rd, ITI Layout 3rd Phase, Dr.Ambedkar Nagar, Nayanda Halli 5/2, 560039 abngalore	12.9419258	77.5232885	typo
+be-typo-00533	Satya Nagar, 695019 Thiruvananthapuram	8.4744145	76.9895713	typo
+be-typo-00534	Rama Road, Industrial Area 33 & 33A, 110015 Delhi	28.6601697	77.1516093	typo
+be-typo-00535	Quadrant Road, Sulthangunta, Shivaji Nagar 33, 560001 bangalore	12.9855813	77.6071086	typo
+be-typo-00536	5th Cross, Below Iblur Flyover, Sarjapur Main Road,, Agara Post 39/14, 560102 Benaluru	12.9213347	77.6638400	typo
+be-typo-00537	badwa road, 480001 chhindwara	22.0486256	78.9344415	typo
+be-typo-00538	Prabhakar Nursing Home, 516269 Rayachot	14.0578458	78.7482429	typo
+be-typo-00539	Bhandup Village Road Gold Seal House, 400078 Mumbai	19.1532870	72.9435085	typo
+be-typo-00540	West of Chord Road (LIC Cplony) 100, 560079 Basaveshwara Nagar, Bangalore	12.9981215	77.5404836	typo
+be-typo-00541	Shree Nagar, Belagavi, 590017 Belgaum	15.8850450	74.5254564	typo
+be-typo-00542	Assayee Rad No 38/13, 560005 Bangalore	12.9876245	77.6192012	typo
+be-typo-00543	IB Road, 752030 Balugaon	19.7474549	85.2062839	typo
+be-typo-00544	Lakhipur Town, 788103 Lakhipus	24.7926124	93.0020250	typo
+be-typo-00545	Ketti Valley Road ketti valley, 643215 ceoimbatore	11.3817911	76.7376133	typo
+be-typo-00546	Yemalur Main Rd, Kadubeesanahalli, 132, 560037 Bengaluru	12.9487406	77.6850183	typo
+be-typo-00547	khass bag ner policeline, 342011 jodhpur	26.2817274	73.0300286	typo
+be-typo-00548	Chittaranjan Avenuz 42A, 700012 Kolkata	22.5697629	88.3580789	typo
+be-typo-00549	Karwan Rd, Gudimalkaupr, Mehedipatnam, 500028 Hyderabad	17.3812426	78.4391939	typo
+be-typo-00550	poochinnipasam-vallachira road, 680562 thrissur	10.4403813	76.2334435	typo
+be-typo-00551	Kullu - Telang Road Office of the Supegintending Engineer, 6th Circle, 175101 Kullu	31.9592426	77.1078686	typo
+be-typo-00552	road No. 13 road no13 ppot no.33 shivaji nagar gowandi mumbai 400043, 400043 mumbai	19.0633138	72.9291830	typo
+be-typo-00553	Raejshwari Street, Mehta Nagar, 47, 600029 Chennai	13.0646768	80.2181037	typo
+be-typo-00554	Arakashan Road, 110055 New Dehli	28.6459152	77.2146894	typo
+be-typo-00555	skalzangling S.P Coplex, 194101 leh	34.1468926	77.5705109	typo
+be-typo-00556	Infantry Road 66, 560001 Bangalore	12.9804450	77.6045250	typo
+be-typo-00557	Gopalpura Road B-19, 10-B Scheme, 302018 Jaiupr	26.6698674	76.0114264	typo
+be-typo-00558	Agra, Service Rd, Iblur Village, Bellandur, 560103 Bengaluru	12.9219607	77.6627414	typo
+be-typo-00559	Penya Industrial Area, Peenya, Bengaluru, Karnataka – 560058, 560058 Bangalore	13.0346047	77.5262325	typo
+be-typo-00560	City Mall 36, Ground Floor, City Mall 36, Shop no. 2, G.E Road, NH - 6, Raipur, Chhattisgarh, 492001 vraipur	21.2365463	81.6855828	typo
+be-typo-00561	Anjali Hospital, 383305 Ranasan, Gujarat, India	23.4676005	73.1147546	typo
+be-typo-00562	Sprott Road 11, 400038 Mumbai	18.9344727	72.8403579	typo
+be-typo-00563	Sampige Road bUG07-09, 560003 Bengaluru	12.9914404	77.5710120	typo
+be-typo-00564	1st Floor, Next to Sai Prasadam Hotel, 5th Main Rd, Hampi Nagar 2nd Stage, RPC Layout 221, 560040 Bangalore	12.9649703	77.5389842	typo
+be-typo-00565	Bhavani Kujn, Vasant Kunj 58, 110070 New Delhi	28.5101003	77.1620668	typo
+be-typo-00566	Bhagyanagar Lane 3, 523001 Ongole	15.4911277	80.0474589	typo
+be-typo-00567	3rd floor, Ganesh Towers, Infantry Road, Shivajinagar 111, 560001 Bangalore	12.9805291	77.6032027	typo
+be-typo-00568	Panduranga Nagar, 6th Main, Arekere Gate No 167, 560076 Bpangalore	12.8919270	77.5943529	typo
+be-typo-00569	vellienkadu to Karamadai Road, 641104 karamadai	11.2424247	76.9559249	typo
+be-typo-00570	Valanchery - Perinthalmanna Road, 676552 Valanchery	10.8880804	76.0734637	typo
+be-typo-00571	2nd cross near hp petrol pump, Govindaraja Nagar Ward, Widia Layout, Vijayanagar 20/A, 560040 Bangulore	12.9608763	77.5306651	typo
+be-typo-00572	NIBM eRoad Shop No. 2 & 3, 411048 Pune	18.4771640	73.8958740	typo
+be-typo-00573	Khardi station Road, 421301 Khardi	19.5837203	73.3901306	typo
+be-typo-00574	"Survey No. 51-64, Marathahalli-Sarjapur Outer Ring Road, Behind RMZ Ecospace, 54-64, 560037 kBengaluru	12.9213215	77.6821169	typo
+be-typo-00575	Kanrcheepuram Guduvancherry, 603202 kancheepuram	12.8439226	80.0615864	typo
+be-typo-00576	Gada vitara sahi, 752063 Frtegarh	20.2954631	85.3314439	typo
+be-typo-00577	7th Main Road 46, 560076 Bhangalore	12.9109555	77.6065615	typo
+be-typo-00578	Sastha Temple Road, 629180 Mnaakkarai	8.2186113	77.3402556	typo
+be-typo-00579	Batala Roao, 143521 Gurdaspur	32.0336905	75.3953097	typo
+be-typo-00580	Chota Para Rd, Bajinath Para, 492001 Riapur	21.2380262	81.6380392	typo
+be-typo-00581	S1 771, 110006 Delhi	28.6564939	77.2354431	typo
+be-typo-00582	9th Main Road, 6th A Crsos Street, Sadashivnagar 137-7, 560080 Bangalore	13.0108784	77.5788998	typo
+be-typo-00583	Dr. Babasheb Ambedkar Marathwada University, 431001 Aurangabad	19.9063401	75.3137701	typo
+be-typo-00584	Madhavaraya Mudaliar Road, 560005 Bangalore	13.0009809	77.6138953	typo
+be-typo-00585	SIT Main Road, 572102 Tumkur	13.3297962	77.1167508	typo
+be-typo-00586	Nrupathunga Road, Kuvempu Nagar 1st Stage, Kuvempu Nagara, . 37/B, 570023 Mysuyu,	12.2894879	76.6252114	typo
+be-typo-00587	T-10 & 11, Third Floor, Malleswaram, Bhadrappa Layout, Jai BheemaN agar, Sheshadripuram, 560003 bangalore	12.9911453	77.5704056	typo
+be-typo-00588	Lalbagh Road, 560025 Bangalore	12.9644242	77.5968789	typo
+be-typo-00589	215,ambuja city center,ambuja mall,vidhansabha road saddu, 492007 Raipur	21.2759234	81.6872581	typo
+be-typo-00590	Narsapur Road, 502294 Fasalwadi, Sangareddy	17.6234256	78.1278401	typo
+be-typo-00591	Swamy Vivekananda Road (Old Madras Road), 560016 Bangaloe	12.9941566	77.6637825	typo
+be-typo-00592	Ground Floor, Magneto The Mall, NH6, Labhandi, G26, 492001 Raipur,	21.2407021	81.6843419	typo
+be-typo-00593	Kumaramangalam P O, 685608 Thodupuzha	9.9259833	76.7078451	typo
+be-typo-00594	Podalakur Rd, ZP Colony, 524004 Nellore	14.4254964	79.9580441	typo
+be-typo-00595	Pandit Jawaharlal Nehru Road, 400080 Mulund (West)	19.1703821	72.9536830	typo
+be-typo-00596	Near Deopuri, Dumartarai Road,, 492001 Raipur	21.1975181	81.6913498	typo
+be-typo-00597	Station Rd, Balaji Nagar, 492009 Raipur	21.2569531	81.6342916	typo
+be-typo-00598	Hanumantha Nagar Main Road / 50 Feet Road 173/A, 560050 Banashankai,Bangalore	12.9417055	77.5560577	typo
+be-typo-00599	Benniganahalli, 560016 Bangaflore	12.9944662	77.6632297	typo
+be-reordered-00600	440005 Nagpur 20/1, Wardha Road, Dr. Khare Marg, Near H.P. Petr*	21.1360724	79.0796029	reordered
+be-reordered-00601	560051 Bangalore 1st Floor, NG Chambers, Venkataswamy Naidu Rd, Shivaji Nagar 22	12.9843238	77.5984752	reordered
+be-reordered-00602	492001 raipur raipur,chattisgarh	21.2403147	81.6253870	reordered
+be-reordered-00603	680312 Thrissur Alagappa Nagar, Amballoor 480	10.4326780	76.2709920	reordered
+be-reordered-00604	560040 Bangalore Vijay Nagar Main Road, Vijay Nagar 827	12.9731233	77.5403966	reordered
+be-reordered-00605	440003 Nagpur Ajni Rd, Ajni	21.1233991	79.0854254	reordered
+be-reordered-00606	560003 Bengaluru Sampige Road LG-34	12.9917540	77.5711303	reordered
+be-reordered-00607	342011 jodhpur khass bag near policeline	26.2817274	73.0300286	reordered
+be-reordered-00608	560076 Bangalore Bannerghatta Road, Near Kalyani Kala Mantap, Bilekahalli, 2nd Cross Rd,, Ram Shetty Nagar, Bilekahalli	12.9009278	77.5986641	reordered
+be-reordered-00609	440012 Nagpur Tikekar Road, Congress Nagar Square, Opp. New Eng	21.1310422	79.0821048	reordered
+be-reordered-00610	384002 mehsna Ahmedabad Palanpur State Highway SH41	23.5833420	72.3714199	reordered
+be-reordered-00611	518101 Srisailam Reddy Sadhan 2-3-64/3	16.0721591	78.8749395	reordered
+be-reordered-00612	152116 Abohar Street No. 1 Choti Pouri	30.1372828	74.1933769	reordered
+be-reordered-00613	799144 santirbazar agartala sabrum road	23.3098134	91.5638715	reordered
+be-reordered-00614	400043 mumbai Road Number 3 plot no 15	19.0646963	72.9219077	reordered
+be-reordered-00615	560010 bangalore 10th Main, 2nd Block, Rajajinagar 529	12.9906244	77.5633161	reordered
+be-reordered-00616	713359 Neamatpur Islamia School Road	23.7170629	86.8838353	reordered
+be-reordered-00617	600017 Chennai Dharmapuram Main Road, T Nagar 5	13.0527900	80.2376900	reordered
+be-reordered-00618	614101 koothanallur azaath nagar 6	10.7033207	79.5250370	reordered
+be-reordered-00619	400024 mumbai Railway Colony Road 1	19.0679196	72.8868461	reordered
+be-reordered-00620	515001 Anantapur Sku Campus S.V.Puram	14.6030650	77.6431419	reordered
+be-reordered-00621	560103 BANGALORE 1B, Ecospace, Outer Ring Road, Off RMZ Ecospace Internal Rd,, Adarsh Palm Retreat, Bellandur	12.9261869	77.6799594	reordered
+be-reordered-00622	110006 Delhi S1 771	28.6564939	77.2354431	reordered
+be-reordered-00623	531001 Vishakapatnam Shardha Nagar, Anakapalle	17.6858653	82.9884187	reordered
+be-reordered-00624	560043 Bangalore Kammanahalli Main Road 10	13.0217349	77.6371117	reordered
+be-reordered-00625	713359 Neamatpur Qabaristan Road	23.7183925	86.8834432	reordered
+be-reordered-00626	560102 Bengaluru Sarjapur Main Rd, Iblur Village, Bellandur	12.9214371	77.6629974	reordered
+be-reordered-00627	560050 bangalore Nagendra Block, 50ft Road, 10th Main Rd, Srinagar, Banashankari 237/37	12.9420124	77.5506918	reordered
+be-reordered-00628	560094 Bangalore No126, 80 ft road, RMV 2nd Stage, Ashwath Nagar	13.0304550	77.5797656	reordered
+be-reordered-00629	680568 THALIKULAM KAZHIMBRAM BEACH ROAD	10.3644329	76.1071531	reordered
+be-reordered-00630	515001 Anantapur, Andhra Pradesh Near SV.degree College Campus, Jesus Nagar	14.6713486	77.6004344	reordered
+be-reordered-00631	110002 Delhi Ansari Road 5A / 7	28.6447831	77.2441705	reordered
+be-reordered-00632	590001 belgaum High St, Camp, Belagavi, Karnataka	15.8548335	74.5042006	reordered
+be-reordered-00633	641301 mettupalayam Mettupalayam-Coimbatore Road	11.2951786	76.9391994	reordered
+be-reordered-00634	585104 Kalaburagi Khaja Colony	17.3461141	76.8519503	reordered
+be-reordered-00635	560040 Bangalore Srs Nagar, West Of Chord Road, Vijaynagar, Vijaynagar, CHBS Layout, Vijaya Nagar 303	12.9742472	77.5436187	reordered
+be-reordered-00636	636006 salem Karungalpatty, Gugai	11.6411104	78.1472518	reordered
+be-reordered-00637	560004 Bengaluru Sajjan Rao Circle	12.9526217	77.5773377	reordered
+be-reordered-00638	600020 Chennai Mahatma Gandhi Rd	12.9968115	80.2582413	reordered
+be-reordered-00639	518002 Kurnool bagyanagar	15.8281220	78.0365896	reordered
+be-reordered-00640	600095 Chennai Anna Nagar,	13.0635932	80.1662498	reordered
+be-reordered-00641	492001 raipur GE road ,international swimming pool ,near rk college	21.2477275	81.6022271	reordered
+be-reordered-00642	533103 Rajahmundry Raja Street 79-17-5/8	17.0048480	81.7930259	reordered
+be-reordered-00643	560103 BANGALORE "RMZ Ecospace Internal Rd, Adarsh Palm Retreat, Bellandur	12.9247782	77.6807978	reordered
+be-reordered-00644	492007 Raipur vidhan sabha rd,mowa shop no. 20	21.2752292	81.6880290	reordered
+be-reordered-00645	411048 Pune Narayan Annaji Shinde Road	18.4777980	73.9016322	reordered
+be-reordered-00646	560066 bangalore 1st A Main Rd, Whitefield #669	12.9700147	77.7334952	reordered
+be-reordered-00647	500082 Hyderabad Raj Bhavan Road	17.4255244	78.4568923	reordered
+be-reordered-00648	384002 mehsana Ahmedabad Palanpur State Highway SH41	23.6050180	72.3815569	reordered
+be-reordered-00649	342006 Jodhpur Circuit House Road	26.2829622	73.0376703	reordered
+be-reordered-00650	395001 Surat RK Desai Marg	21.1788591	72.8108678	reordered
+be-reordered-00651	152107 malout sky mall 134	30.1902559	74.5001207	reordered
+be-reordered-00652	560034 bangalore Sulochana Building, 1st Cross Rd, 3rd Block, Sarjapura Main Road, Koramangala 365	12.9250105	77.6278708	reordered
+be-reordered-00653	141001 Ludhiana BRS Nagar 278 B	30.8875561	75.8086898	reordered
+be-reordered-00654	141109 Raikot Raikot - Malerkotla Road	30.6557068	75.6005964	reordered
+be-reordered-00655	411048 Pune Narayan Annaji Shinde Road	18.4783032	73.9015583	reordered
+be-reordered-00656	560010 bangalore Kantha Complex, Dr. Rajkumar Road, 3rd Stage, Rajajinaga 73	12.9903931	77.5584441	reordered
+be-reordered-00657	560102 Bengaluru Agara Post, Sarjapur Main Rd, Iblur Village, Bellandur 3	12.9215701	77.6633011	reordered
+be-reordered-00658	607107 Arasur Grand Southern Trunk Road	11.8207630	79.4197893	reordered
+be-reordered-00659	492001 raipur 4th floor, city mall 36	21.2362849	81.6860212	reordered
+be-reordered-00660	560084 Bangalore Commercial Street 119/120	12.9827449	77.6069771	reordered
+be-reordered-00661	411029 Pune G. A. Kulkarni Road Surver 17/2	18.5036735	73.8215607	reordered
+be-reordered-00662	400050 Bandra, Mumbai Ramdas Naik Road	19.0555538	72.8316380	reordered
+be-reordered-00663	560047 Bangalore Inner Ring Road	12.9386176	77.6288681	reordered
+be-reordered-00664	201301 Noida Bhangel Phase 2	28.5373428	77.2203838	reordered
+be-reordered-00665	560035 Bengaluru Sarjapur Main Road, Carmelaram, Hadosiddapura, Chikkakannalli 3/1	12.9151576	77.6995704	reordered
+be-reordered-00666	560037 Bengaluru Kariyammana Agrahara Rd, Yemalur, Bellandur	12.9489617	77.6873872	reordered
+be-reordered-00667	520010 Vijayawada Mahatma Gandhi Rd, Sidhartha Nagar, Labbipet 40-1-29	16.5011762	80.6461647	reordered
+be-reordered-00668	560029 Banglore Opp KEB office, Maruthi Nagar, Btm 1st Stage	12.9221959	77.6139551	reordered
+be-reordered-00669	560058 Bangalore Anjaneya Temple Road	13.0346626	77.5267529	reordered
+be-reordered-00670	440012 Nagpur Sitabuildi	21.1451583	79.0820907	reordered
+be-reordered-00671	492007 Raipur vidhan sabha rd,Mowa shop no. 17	21.2763309	81.6871856	reordered
+be-reordered-00672	403515 Candolim Fort Aguada Road / Aguada - Siolim Road	15.5032805	73.7705491	reordered
+be-reordered-00673	643217 Kotagiri Johnstone Square	11.4230185	76.8662758	reordered
+be-reordered-00674	403001 Panjim 31st Janaury Road, Fontainhas E-212	15.4956849	73.8310899	reordered
+be-reordered-00675	682024 Kochi Ponekkara Road	10.0249462	76.2996697	reordered
+be-reordered-00676	834002 Ranchi Birsa Chowk,Prakash Nagar	23.3265541	85.3071100	reordered
+be-reordered-00677	682311 Kadayirup Kolenchery road passing through kadayiruppu	10.0094539	76.4526745	reordered
+be-reordered-00678	560003 Bengaluru Sampige Road 1	12.9917237	77.5704196	reordered
+be-reordered-00679	560066 Bangalore EPIP Zone, Whitefield 23	12.9716720	77.7175701	reordered
+be-reordered-00680	584128 sindhanur 31st main canal, ganganagar sindhanur 15	15.7640031	76.7407680	reordered
+be-reordered-00681	492004 raipur main road sector-1,devender nagar,	21.2578919	81.6425730	reordered
+be-reordered-00682	560100 bangaluru Biocon Limited, Corporate Office, 20th KM,, Hosur Main Road, Electronic City, Veer Sandra, Electronic City	12.8310937	77.6803176	reordered
+be-reordered-00683	560034 Bangalore 27th Main Road 419	12.9185225	77.6518418	reordered
+be-reordered-00684	70014 KOLKATA A.J.C.BOSE road, 3RD FLOOR Samilton Chambers, 181/1	22.5508262	88.3633023	reordered
+be-reordered-00685	786602 Duliajan College Road	27.3451916	95.3137351	reordered
+be-reordered-00686	175101 Kullu Dhalpur	31.9593092	77.1099056	reordered
+be-reordered-00687	250110 Meerut City Square Mall	29.0647823	77.7095236	reordered
+be-reordered-00688	560040 Bangalore 11th Cross	12.9754931	77.5324927	reordered
+be-reordered-00689	605001 Puducherry Street of Bazar Saint-Laurent 14	11.9275341	79.8337023	reordered
+be-reordered-00690	600017 Chennai Vidyodaya 2nd Cross Street 5	13.0508335	80.2434416	reordered
+be-reordered-00691	600031 Chennai flowers road	13.0640380	80.2248077	reordered
+be-reordered-00692	122001 Gurgaon Sector 17C todo	28.4740479	77.0606476	reordered
+be-reordered-00693	638001 Erode Mettur Road	11.3456120	77.7177835	reordered
+be-reordered-00694	226003 Lucknow Aminabad	26.8617911	80.9069882	reordered
+be-reordered-00695	560037 Bangalore Shiridi Sai Nagar Main Road, 10th Cross, Kundalahalli 154	12.9509399	77.7150958	reordered
+be-reordered-00696	492001 Raipur NH43 PachpediNaka,bajaj colony,gurumukh singh nagar	21.2169236	81.6565649	reordered
+be-reordered-00697	110035 Delhi 147 1932A	28.6790791	77.1647543	reordered
+be-reordered-00698	411045 Baner Baner Road	18.5617981	73.7835145	reordered
+be-reordered-00699	400005 Mumbai GD Somani Road	18.9165338	72.8175939	reordered
+be-reordered-00700	614101 Koothanallur Hospital Lane	10.7135346	79.5159561	reordered
+be-reordered-00701	560066 bengaluru Immadihalli Main Rd, Vinayaka Layout, Whitefield	13.0120076	77.6298010	reordered
+be-reordered-00702	560034 Bangalore Sarjapura main road, Koramangala, #998,	12.9135690	77.6419254	reordered
+be-reordered-00703	560062 Bangalore Kanakapura Road no:25	12.8809769	77.5457562	reordered
+be-reordered-00704	605001 Puducherry Rue Romain Rolland 52	11.9270148	79.8331319	reordered
+be-reordered-00705	175131 Manali Way to Hadimba	32.2453986	77.1862002	reordered
+be-reordered-00706	517501 Tirupati Nandi circle OPP kapileswara temple, Near NGOS Colony	13.6530860	79.4206324	reordered
+be-reordered-00707	560027 Bangalore Chidananda Maharashi Ashram Road	12.9659456	77.5924964	reordered
+be-reordered-00708	313001 udaipur gadiya devra 58	24.5802266	73.6827318	reordered
+be-reordered-00709	560058 Bangalore Anjaneya Temple Road	13.0346430	77.5268427	reordered
+be-reordered-00710	560040 Bangalore Nagarabhavi Road	12.9730072	77.5293951	reordered
+be-reordered-00711	577139 Sringeri KAS Street, Hoskere	13.4208461	75.2475392	reordered
+be-reordered-00712	411045 Balewadi Balewadi Gaon Road	18.5638383	73.7829342	reordered
+be-reordered-00713	600097 Chennai Fourrts Avenue, Thuraipakkam 3, 4	12.9297292	80.2335815	reordered
+be-reordered-00714	302016 Jaipur Meera Marg	26.9313342	75.8002660	reordered
+be-reordered-00715	689508 Chengannur Kodukulanji P.O	9.2731614	76.6111332	reordered
+be-reordered-00716	110006 Delhi S1 630	28.6582669	77.2362140	reordered
+be-reordered-00717	560032 bangalore Hmt Layout, Near-R T Nagar Bus Depot, R T Nagar, HMT Layout, Dinnur, RT Nagar 16	13.0272204	77.5935350	reordered
+be-reordered-00718	422007 Nashik NICE Industrial Area Plot No. B- 24 & 25,	19.9960502	73.7473064	reordered
+be-reordered-00719	302013 Jaipur Road No.-9A 401-403, 4th floor, North Avenue	26.9937120	75.7727813	reordered
+be-reordered-00720	560076 Bangalore Bannerghatta Road Balmuri Main Road	12.8756821	77.5954793	reordered
+be-reordered-00721	680020 Thrissur Karunakaran Nambiar Road	10.5285094	76.2148081	reordered
+be-reordered-00722	680027 Thrissur Kodungallur - Shornur Road	10.4733918	76.2121049	reordered
+be-reordered-00723	560017 bengaluru Challaghatta Jct Rd, Challaghatta,	12.9450094	77.6492092	reordered
+be-reordered-00724	492007 Raipur vidhan sadha road,mowa	21.2758612	81.6874678	reordered
+be-reordered-00725	560043 Kalyan Nagar, Bangalore Outer Ring Road 122/4	13.0259923	77.6405519	reordered
+be-reordered-00726	110039 Delhi Bawana Industrial Area	28.7899920	77.0534583	reordered
+be-reordered-00727	600089 Chennai Mount Poonamallee Highway	13.0213390	80.1735506	reordered
+be-reordered-00728	517501 Tirupati Mallaiah Gunta Katta, Tata Nagar	13.6320382	79.4214422	reordered
+be-reordered-00729	532421 narasannapeta TELEGA street	18.4115163	84.0403238	reordered
+be-reordered-00730	700016 Kolkata Free School Street (Mirza Ghalib Street) 20	22.5583663	88.3546394	reordered
+be-reordered-00731	560025 Bengaluru Field Marshal Cariappa Road 454	12.9728223	77.6091815	reordered
+be-reordered-00732	560038 Bangalore HAL 2nd Stage 7th Main, Shirdi Sai Baba Mandir Rd, Bhadrappa Layout, Indiranagar 3192	12.9713439	77.6348117	reordered
+be-reordered-00733	524101 Gudur ICS Road	14.1411484	79.8444347	reordered
+be-reordered-00734	400074 Mumbai Shankar Mandir Road	19.0287852	72.8978084	reordered
+be-reordered-00735	761020 Chatrapur District Commisnor Road	19.3517165	84.9836306	reordered
+be-reordered-00736	605001 Puducherry Rue Romain Rolland 52	11.9270148	79.8331319	reordered
+be-reordered-00737	384001 mehsana fuvara	23.6041849	72.3902781	reordered
+be-reordered-00738	110070 New Delhi Bhavani Kunj, Vasant Kunj 68	28.5101820	77.1634311	reordered
+be-reordered-00739	560070 Banashankari,Bangalore BDA Complex 77	12.9256173	77.5649753	reordered
+be-reordered-00740	682030 Kochi, Infopark Road, Near Olive Courtyard, Logistic Park, Edachira, Kakkanad 9-418-A3	10.0176879	76.3513032	reordered
+be-reordered-00741	570008 Mysore C Block,J P Nagar 7	12.2761642	76.6392317	reordered
+be-reordered-00742	752030 Balugaon Veleri	19.7323265	85.2017382	reordered
+be-reordered-00743	560102 Bengaluru Sarjapur Main Rd, Iblur Village, Bellandur,	12.9218925	77.6628632	reordered
+be-reordered-00744	560001 Bangalore Main Guard Cross Road 3A	12.9807537	77.6073428	reordered
+be-reordered-00745	384001 Mahesana Asharam Road	23.6124988	72.4071038	reordered
+be-reordered-00746	686533 Kottayam Chingavanam Njaliakuzhi Road	9.5243549	76.5594150	reordered
+be-reordered-00747	603101 kancheepuram Chengalpattu Rd,palur	12.7676644	79.9034914	reordered
+be-reordered-00748	600005 Chennai Thulukkanam Garden, Triplicane 7	13.0455300	80.2757200	reordered
+be-reordered-00749	560075 Bangalore Jeevan Bheema Nagar 513	12.9683464	77.6512784	reordered
+be-reordered-00750	560048 Bengaluru 2nd Cross Road	12.9838791	77.6939910	reordered
+be-reordered-00751	201301 Noida Sector 22 12	28.6995930	77.1045409	reordered
+be-reordered-00752	560062 Bangalore Kanakapura Road No.30	12.8789971	77.5456985	reordered
+be-reordered-00753	605602 Villupuram Villupuram Pondicherry Nagapatinam National Highway 45A	11.9390995	79.4983602	reordered
+be-reordered-00754	560010 Bangalore 19th Main (Goorur Ramaswamy Iyengar Road) 399/34	12.9982750	77.5508630	reordered
+be-reordered-00755	560043 bangalore 1st Floor, Horamavu Main Road, Horamavu 43	13.0195645	77.6372622	reordered
+be-reordered-00756	122001 Gurgaon Sector 17C 1459	28.4732855	77.0614326	reordered
+be-reordered-00757	560024 Bangalore Hebbal Flyover, Sri Krishna Complex,Bayanna Layout, #2	13.0410852	77.5905288	reordered
+be-reordered-00758	560040 Bangalore Chord Road	12.9708823	77.5367282	reordered
+be-reordered-00759	560103 Bengaluru campus 4A & 4B, 10th & 11th Floor, RMZ Ecoworld, RMZ Eco World Rd, Adarsh Palm Retreat , Bellandur 22	12.9246145	77.6884600	reordered
+be-reordered-00760	440012 Nagpur Rambagh, Ajni	21.1202606	79.0841004	reordered
+be-reordered-00761	500055 hyderabad shapurnagar 4-32-120	17.5159037	78.4456276	reordered
+be-reordered-00762	560040 Bangalore 2nd cross near hp petrol pump, Govindaraja Nagar Ward, Widia Layout, Vijayanagar 20/A	12.9608763	77.5306651	reordered
+be-reordered-00763	122001 Gurgaon Palam Vihar 2579	28.5089381	77.0404332	reordered
+be-reordered-00764	560076 Bangalore Opp Vijaya Bank, Bannerghatta Road, Bangalore 1st Main Road	12.9153987	77.6010351	reordered
+be-reordered-00765	560003 Bengaluru Sampige Road SF 49	12.9916983	77.5711798	reordered
+be-reordered-00766	601301 Padapai Wallajah Road No 90	12.8858789	80.0190505	reordered
+be-reordered-00767	560038 Bengaluru 9th A Main Rd, Binnamangala, Hoysala Nagar, Indiranagar 675	12.9782019	77.6423975	reordered
+be-reordered-00768	560010, Bangalore 3rd Block, Rajajinagar 955	12.9898567	77.5542305	reordered
+be-reordered-00769	573201 Hassan B M Road	13.0026607	76.0983628	reordered
+be-reordered-00770	400052 Santa Cruz South Avenue	19.0750197	72.8356392	reordered
+be-reordered-00771	110075 New Delhi Sector 11 Dwarka S-8 Pkt.1	28.5956823	77.0506800	reordered
+be-reordered-00772	695141 Varkala Temple Road	8.7325482	76.7201162	reordered
+be-reordered-00773	751023 Bhubaneswar maitrivihar	20.3104840	85.8164069	reordered
+be-reordered-00774	411002 Pune Budhwar Peth 33 A	18.5165314	73.8547653	reordered
+be-reordered-00775	691005 kollam Kallumthazham Motheenmukku road Pentex studio	8.9069114	76.6392374	reordered
+be-reordered-00776	560034 Bangalore HSR Layout No 421, 27th Main Sector 1	12.9184112	77.6519048	reordered
+be-reordered-00777	685508 kattappana Idukki District, Kattappana	9.7527562	77.1081361	reordered
+be-reordered-00778	141007 ludhiana satguru nagar	30.8615983	75.8818671	reordered
+be-reordered-00779	671532 Malakkallu Malakkallu Malakkallu	12.4418384	75.2715376	reordered
+be-reordered-00780	560016 Bangalore Swamy Vivekananda Road (Old Madras Road)	12.9935838	77.6639522	reordered
+be-reordered-00781	400005 Mumbai GD Somani Road	18.9166297	72.8176649	reordered
+be-reordered-00782	560076, Bangalore 2nd Cross Street,Panduranga Nagar, Bannerghatta Road No 49	12.8922081	77.5963134	reordered
+be-reordered-00783	440001 Nagpur National Highway 6, Gorepeth	21.1460283	79.0677766	reordered
+be-reordered-00784	612001 Kumbakonam New Railway Station Road 2	10.9601678	79.3926040	reordered
+be-reordered-00785	176061 Palampur Palampur - Dharamsala Road	32.1141462	76.5348931	reordered
+be-reordered-00786	400043 mumbai Road Number 3 3	19.0638497	72.9216064	reordered
+be-reordered-00787	384001 mehsana bazar	23.6020586	72.3910915	reordered
+be-reordered-00788	321001 bharatpur paradise colony tilak nagar	27.2072565	77.4888013	reordered
+be-reordered-00789	411028 Pune Survey No.38, Kale Padal Colony - 7	18.4852771	73.9413540	reordered
+be-reordered-00790	560040 Bangalore Chord Road	12.9700505	77.5367565	reordered
+be-reordered-00791	560034 Bangalore HSR Layout No 421, 27th Main Sector 1	12.9184112	77.6519048	reordered
+be-reordered-00792	682035 Ernakulam Mahatma Gandhi Rd, Kacheripady	9.9853914	76.2818407	reordered
+be-reordered-00793	122001 Gurgaon Palam Vihar 2631	28.5103962	77.0365024	reordered
+be-reordered-00794	600040 Chennai 2nd Avenue, Anna Nagar Y209	13.0345840	80.2684840	reordered
+be-reordered-00795	573201 Hassan Adlimane Road	13.0182569	76.0944461	reordered
+be-reordered-00796	560038 Bengaluru 100 Feet Road 298	12.9794113	77.6406278	reordered
+be-reordered-00797	636201 salem Dasanaickenpatti	11.6069088	78.1462056	reordered
+be-reordered-00798	492001 raipur Magneto The Mall,Raipur	21.2413091	81.6842484	reordered
+be-reordered-00799	152123 Fazilka Court Road 7	30.4059803	74.0259785	reordered
+be-partial-00800	Palampur Kandi Road Office of the Superintending Engineer, Palampur	32.1118606	76.5361878	partial
+be-partial-00801	5th Main Road, HRBR Layout,2nd Block, Kalyan Nagar 436, bangalore	13.0254536	77.6397912	partial
+be-partial-00802	Near Improvement Trust colony,Batala Road, Gurdaspur	32.0333790	75.3949932	partial
+be-partial-00803	BIDHOLI, DEHRADUN	30.4102194	77.9689993	partial
+be-partial-00804	World Trade Center, Kharadi, Pune	18.5530100	73.9490208	partial
+be-partial-00805	Mahakavi Kuvempu Rd, Bhadrappa Layout, Mariappanapalya, Rajaji Nagar 2904, bangalore	12.9982313	77.5586322	partial
+be-partial-00806	Inner Ring Road No.540/567, Bangalore	12.9386608	77.6308797	partial
+be-partial-00807	Thodupuzha - Puliyanmala Road kattappana, kattappana	9.7556163	77.1159715	partial
+be-partial-00808	B B Ganguly St, Calcutta Medical College, College Square, Kolkata,, Kolkatta	22.5701803	88.3593183	partial
+be-partial-00809	Opposite MSEB office, Paud Road, Pune	18.5101710	73.8159984	partial
+be-partial-00810	Behind Government Hospital, Rajur	20.0592244	75.8525864	partial
+be-partial-00811	ITI Campus, Brahmagiri	19.7988157	85.6685187	partial
+be-partial-00812	Saint Mark's Road 39, Bangalore	12.9756318	77.6014761	partial
+be-partial-00813	1648, North Ambazari Road, Shankar Nagar, Nagpur	21.1368952	79.0669225	partial
+be-partial-00814	purani basti, Raipur	21.2328005	81.6341721	partial
+be-partial-00815	Sastha Temple Road, Manakkarai	8.2186113	77.3402556	partial
+be-partial-00816	C.B.S. Road, Aurangabad	19.8794090	75.3175541	partial
+be-partial-00817	Delhi Gate, Agra	27.1992939	77.9986099	partial
+be-partial-00818	PIPLOD GAM BH. SHIKHAR RESIDENCY, SURAT	21.1557514	72.7763961	partial
+be-partial-00819	Magrath Road Ashoknagar, Bangalore	12.9702366	77.6094525	partial
+be-partial-00820	Thiruvannamalai Road, Gingee	12.2526612	79.4147525	partial
+be-partial-00821	7th Cross, Venkatapura Main Rd, 1st Block Koramangala, HSR Layout 5th Sector 358/1-10, bangalore	12.9217959	77.6337167	partial
+be-partial-00822	Magrath Road 15, Magrath Rd, Ashok Nagar, Bengaluru,, Bangalore	12.9703171	77.6096478	partial
+be-partial-00823	Indra Vihar, north delhi, New delhi	28.7058631	77.2121825	partial
+be-partial-00824	Kovalam Road 6/81-B, Kanyakumari	8.0817244	77.5489504	partial
+be-partial-00825	R V Road, Basavanagudi, Near South End Circle 18, Bangalore	12.9387861	77.5799087	partial
+be-partial-00826	near Shilparamam, Tiruchanoor Road 123, Tirupati	13.6137456	79.4409159	partial
+be-partial-00827	30/740,dadhai para road,tatyapara, raipur	21.2354813	81.6665521	partial
+be-partial-00828	1st 'R' Block, Near Mahalakshmi Layout Entrance, bangalore	13.0064642	77.5488867	partial
+be-partial-00829	Banaswadi Road 26/10, Bangalore	13.0008336	77.6327495	partial
+be-partial-00830	Thiruvengadam Salai, Sankarankoil	9.3052825	77.5534247	partial
+be-partial-00831	argora chowk opp.field...., ranchi	23.3500453	85.2983550	partial
+be-partial-00832	Grand Trunk Road, Neamatpur	23.7155246	86.8840442	partial
+be-partial-00833	Subhash Rd, Lohapul, Sitabuldi, Nagpur	21.1453061	79.0881790	partial
+be-partial-00834	Jain Hospital, Millers Road, Vasanth Nagar, Vasanth Nagar, Bangalore	13.0240558	77.6240521	partial
+be-partial-00835	Service Road, Bangalore	12.9727493	77.5389814	partial
+be-partial-00836	Mahatma Gandhi Road Shop No. 1, Grd Flr,, Mumbai	19.0808640	72.9043317	partial
+be-partial-00837	Teppakulam Post, P.B No. 318, Tiruchirappalli	10.8245021	78.6921604	partial
+be-partial-00838	Court Road 8, Fazilka	30.4060073	74.0260143	partial
+be-partial-00839	Pamposh Road R-500, New Delhi	28.6346805	77.1850380	partial
+be-partial-00840	Kullu - Telang Road Office of the Superintending Engineer, 6th Circle, Kullu	31.9592426	77.1078686	partial
+be-partial-00841	Jain Temple Road, Khajuraho	24.8508953	79.9260406	partial
+be-partial-00842	Subramaniapura Road .149,, bangalore	12.9155969	77.5619180	partial
+be-partial-00843	8th Main, 4th Block, Koramangala 8, Bengaluru	12.9344183	77.6260460	partial
+be-partial-00844	Narsinha Colony,Mallapur Rd, Hyderabad	17.4376425	78.5593090	partial
+be-partial-00845	Wind tunnel road, HAL airport area, bangalore	12.9448255	77.6645367	partial
+be-partial-00846	Gayatri nagar ,shankar nagar raipur, raipur	21.2515714	81.6704839	partial
+be-partial-00847	Sobha Garnet, Iblur Village, Bellandur, Bengaluru	12.9217691	77.6649558	partial
+be-partial-00848	5th Cross Street, Bangalore	12.9928215	77.6634074	partial
+be-partial-00849	6th Cross Street, Collectorate Colony 13, Chennai	13.0687865	80.2182717	partial
+be-partial-00850	30th Main road, Banashankari 2nd Stage 3828, Bangalore	12.9222433	77.5618332	partial
+be-partial-00851	Pavanchakki Road, Nadiad	22.6976252	72.8527562	partial
+be-partial-00852	No. 23/1912, Vidhan Sabha Marg, Near Avantibai Chowk, Pandri, Lodhi Para Kapa, No. 23/1912, raipur	21.2610676	81.6575172	partial
+be-partial-00853	Central Avenue Padole Nagar, Nagpur	21.1476480	79.1383532	partial
+be-partial-00854	12th Cross, Kodandarampura, Near-Prasidh Clinic, Malleshwaram 40, bangalore	13.0023294	77.5719173	partial
+be-partial-00855	Chandrabani Wildlife Institute of India, Dehradun	30.2834606	77.9758380	partial
+be-partial-00856	Laimekuri-Nari Link Road, Laimekuri	27.7475624	95.0794975	partial
+be-partial-00857	Guhan Street, Puliyur, Kodambakkam 2/34, Chennai	13.0515000	80.2230100	partial
+be-partial-00858	Feet Intermediate Ring Road, Near Sony World Signal , Kormangala, 100 Feet Rd, S T Bed Layout, Ejipura, 100, Bangalore	12.9383287	77.6310323	partial
+be-partial-00859	vidhan sabha rd,mowa shop no.33, Raipur	21.2759533	81.6877728	partial
+be-partial-00860	1st Main Basaveshwaranagar 80, Bangalore	12.9853846	77.5444298	partial
+be-partial-00861	vishnu Nagar Rd, mumbai	19.0246895	72.9064563	partial
+be-partial-00862	Road Number 3 plot no 19 near hari masjid, mumbai	19.0654904	72.9225027	partial
+be-partial-00863	NIBM Road, Pune	18.4774660	73.8949200	partial
+be-partial-00864	Opposite Manipal North Side Hospital, Near Malleshwaram Railway Station, Malleshwaram, bangalore	13.0007571	77.5638170	partial
+be-partial-00865	Thiruvarur-Mannargudi Rd, Lakshmangudi, Koothanallur	10.7164770	79.5176839	partial
+be-partial-00866	Lakshmi Narayan Road 325, DUM DUM CANTT.,KOLKATA	22.6443655	88.4100037	partial
+be-partial-00867	1, P G Lane, Laxmanrao Road, B V K Iyengar Road, Cross, B V K Iyengar Road, Bangalore	12.9720487	77.5767502	partial
+be-partial-00868	NH 48, Karejavanahally	13.6122242	76.9544591	partial
+be-partial-00869	Ferozepur Road, Ludhiana	30.9044309	75.8397113	partial
+be-partial-00870	Chaura Bazar Hospital Amritdhara, Karnal	29.6827067	76.9883887	partial
+be-partial-00871	Palam Vihar 2221, Gurgaon	28.5118704	77.0356275	partial
+be-partial-00872	Sector-18, Rohini, Delhi	28.7375082	77.1364288	partial
+be-partial-00873	Neeti Khand III, Ghaziabad	28.6423950	77.3777535	partial
+be-partial-00874	Dramman-Kandbari-Saperu Road, Dramman	32.0911859	76.5798612	partial
+be-partial-00875	Kavi Lakshmisha Rd, Vishweshwarapura, Shankarapura, Bangalore	12.9488056	77.5743239	partial
+be-partial-00876	Ajni Rd, Ajni, Nagpur	21.1267097	79.0899193	partial
+be-partial-00877	Ludhiana Road, Raikot	30.6509865	75.5995861	partial
+be-partial-00878	mohmmad road, mumbai	19.0627935	72.9221783	partial
+be-partial-00879	Bommasandra Indl Area, Hosur Main Road, Next To Narayan Hrudayalaya, Chandapura, Bangalore	12.8402070	77.6531530	partial
+be-partial-00880	Varthur Road 5/2, bangalore	12.9560845	77.7168358	partial
+be-partial-00881	Batala Road, Gurdaspur	32.0317805	75.3936333	partial
+be-partial-00882	Thalakavery layout ,1st main road , Basava Nagar 298/2, Bangalore	12.9670978	77.6809662	partial
+be-partial-00883	Kakoti Gaon, Jorhat	26.7521995	94.1963673	partial
+be-partial-00884	YERRABALEM, PLOT NO:42B APIIC INDUSTRIAL ESTATE, Yerrabalem, Andhra Pradesh, GUNTUR	16.4593612	80.5735476	partial
+be-partial-00885	Outer Ring Road 27/7, Doddanekundi, Marathahalli	12.9773708	77.6954828	partial
+be-partial-00886	Pala-Kozha Road;Pala Vaikom Road, Marangattupilly	9.7423269	76.6125013	partial
+be-partial-00887	Swamy Vivekananda Road, Bangalore	12.9931159	77.6620003	partial
+be-partial-00888	Renganathapuram 19/50, Udangudi	8.4206711	78.0222063	partial
+be-partial-00889	10th Main Road, 5th Cross, 2nd Block, Near-Post Office Road, Banashankari 1st Stage 648, Bangalore	12.9378082	77.5579522	partial
+be-partial-00890	St. Anthony School Rd, Neamatpur	23.7153596	86.8880500	partial
+be-partial-00891	Jagraon - Raikot Road, Jagraon	30.8100002	75.4760627	partial
+be-partial-00892	Matha Shopping Arcade, Thodupuzha, Kerala, Thodupuzha	9.8963730	76.7101389	partial
+be-partial-00893	Katora Talab, Main Rd, Katora Talab, Civil Lines,, raipur	21.2329219	81.6530706	partial
+be-partial-00894	Plot No-222/1020 Near Hotel Urmi, Rasulgarh  Bhubaneswar -751010 Odisha, INDIA, Bhubaneswar	20.2962980	85.8596688	partial
+be-partial-00895	Satyan Nagar, Thiruvananthapuram	8.4744145	76.9895713	partial
+be-partial-00896	Sri Muneshwara Estate, Opposite Peenya Police Station, Peenya, Peenya, Kalika Nagar, Ragavendra Nagar, Bengaluru, Karnataka 560058, bangalore	13.0085822	77.4996058	partial
+be-partial-00897	Vishnu Nagar Rd, mumbai	19.0246011	72.9064114	partial
+be-partial-00898	Eidgah Rd, Near Sardar SCR School, Jalori Gate, Sardarpura Khurd, Jodhpur, Rajasthan 342001, Jodhpur	26.2803823	73.0155329	partial
+be-partial-00899	Lakshmipura Main Road 2/3, Bangalore	13.0597062	77.4606920	partial
+be-partial-00900	labhanda G Eroad,jivan vihar, raipur	21.2404603	81.6841533	partial
+be-partial-00901	Circular Road.Lalpur 712/D, Ranchi	23.3740197	85.3369761	partial
+be-partial-00902	Manarcadu P O, Kottayam	9.5850812	76.5821950	partial
+be-partial-00903	Palampur Kandi Road, Palampur	32.1199648	76.5369243	partial
+be-partial-00904	, R.K complex, K.H.B colony 5th block, Door no 152, 1st floor, Bangalore	12.9371520	77.6195215	partial
+be-partial-00905	1st Cross Rd, 7 Block, 3rd Phase, BSK 3rd Stage, Peenya #A2, 480, bangalore	13.0208458	77.4985525	partial
+be-partial-00906	Rue Romain Rolland 17, Puducherry	11.9278171	79.8335223	partial
+be-partial-00907	ITPL Main Road, Bangalore	12.9658406	77.7180248	partial
+be-partial-00908	Wardha Rd Deo Nagar, Nagpur	21.1155968	79.0709418	partial
+be-partial-00909	Dhanvantri Road, Mysuru	12.3129194	76.6494717	partial
+be-partial-00910	Koramangala No.639, 100 Feet Road, Bangalore	12.9540446	77.6172070	partial
+be-partial-00911	Kota Veedhi, Basinikonda 32B,11, Madanapalle	13.5518670	78.5031359	partial
+be-partial-00912	Abu Lane, Meerut	28.9948879	77.7036935	partial
+be-partial-00913	Lakshmi Corner,Opposite M S Ramaiah Hospital, Off New BEL Road, 80 Feet Rd, RMV 2nd Stage, Ashwath Nagar, Bangalore	13.0282272	77.5716378	partial
+be-partial-00914	1st Floor, Chinmaya Mission Hospital Road, 1st Stage, Indira Nagar, Above Siemens Showroom 723, Bengaluru	12.9783265	77.6450388	partial
+be-partial-00915	Jain Temple Road, Khajuraho	24.8510047	79.9256062	partial
+be-partial-00916	EDAPPALLY FIRST FLOOR, COCHIN	10.0238546	76.3128995	partial
+be-partial-00917	258/12/04, Kanakapura Main Rd, Jayanagar, Next To Deepak Nursing Home, Banashankari,Bangalore	12.9229681	77.5644048	partial
+be-partial-00918	Concorde Anthuriums Building, Electronic City, Near Wipro Gate No.16, Bangalore	12.8405937	77.6511400	partial
+be-partial-00919	Mohideen Palli Street, Muthupet	10.3954836	79.4926170	partial
+be-partial-00920	service road chandana bengaluru, bangalore	12.9126771	77.6498604	partial
+be-partial-00921	Whitefield Main Road, Mahadevpura, Devasandra Industrial Estate, Krishnarajapuram, Bengaluru	12.9972705	77.6967381	partial
+be-partial-00922	GSS Gogte College Rd, Vadagoan, Belagavi, Karnataka, belgaum	15.8326557	74.5122929	partial
+be-partial-00923	S1 848, Delhi	28.6563294	77.2363612	partial
+be-partial-00924	Sahipur Road BB east, delhi	28.7189828	77.1603915	partial
+be-partial-00925	BEML Layout, Bogadi P.O, Mysore	12.2903932	76.5936797	partial
+be-partial-00926	Bhagwan Das Road 6, Delhi	28.6223326	77.2361501	partial
+be-partial-00927	Ground Floor, Thakur Shopping Mall & Multiplex, Mumbai	19.2630364	72.8747801	partial
+be-partial-00928	Chilika Road, Balugaon	19.7474438	85.2077828	partial
+be-partial-00929	Bannerghatta Road 448, Bangalore	12.8974942	77.5998505	partial
+be-partial-00930	Beach Road, Kovalam	8.3881805	76.9778989	partial
+be-partial-00931	Accher Paal Market PI-32, Noida	28.4663794	77.5393277	partial
+be-partial-00932	80 Feet Road kormangala No.15,16,17, Raheja Arcade, Bengaluru	12.9344426	77.6130436	partial
+be-partial-00933	Pimple Nilakh, Pune	18.5680497	73.7969176	partial
+be-partial-00934	Kallumthazham Motheenmukku road Pentex studio, kollam	8.9069114	76.6392374	partial
+be-partial-00935	Raja Gopala Swamy Thottam Street, Koothanallur	10.7162312	79.5128356	partial
+be-partial-00936	Avittathur-Kottenalloor Road 16/200, Kottenelloor	10.3178968	76.2409610	partial
+be-partial-00937	No 29, 2nd Floor, Btm Layout, 2nd Stage, Bannerghatta Road, Bannerghatta Road, BHBCS Layout, Stage 2, BTM 2nd Stage, , Karnataka, Bangalore	12.9148059	77.6001736	partial
+be-partial-00938	Chikkanayakanahalli Road, Doddakanahalli Junction, Sarjapur Road, Bangalore	12.9052805	77.6957796	partial
+be-partial-00939	Ground Floor, 1st & 2nd Shop, Dr Rajkumar Road, 1st 'N' Block, Rajajinagar, 1st Block, Rajaji Nagar 60/A, bangalore	13.0041656	77.5533333	partial
+be-partial-00940	Trichy Road, Coimbatore	10.9974277	76.9994698	partial
+be-partial-00941	11th Cross, Bangalore	12.9754931	77.5324927	partial
+be-partial-00942	Guhan Street, Puliyur, Kodambakkam 2/34, Chennai	13.0515000	80.2230100	partial
+be-partial-00943	Haryana Ambala AFS, Haryana	30.3514221	76.8674864	partial
+be-partial-00944	ITPL Main Road, Bangalore	12.9658406	77.7180248	partial
+be-partial-00945	On Main Highway, Diggi	26.3776522	75.4723054	partial
+be-partial-00946	Rue Lal Bahadhur Sastri 167, Puducherry	11.9295818	79.8273415	partial
+be-partial-00947	Bhadrappa Layout, Ganapathy Nagar, Phase 3, Peenya,, Karnatak 9th Cross Rd,, Bengaluru	13.0213558	77.5137554	partial
+be-partial-00948	Banashankari Stage II Siddanna Layout, Bangalore	12.9241776	77.5655772	partial
+be-partial-00949	Chord Road, Bangalore	12.9686867	77.5373687	partial
+be-partial-00950	Central Avenue, Powai Ventura Building, G1 Hiranandani Business Park, Mumbai	19.1171272	72.9098431	partial
+be-partial-00951	shpno-3,ground floor,lalganga shopping mall,GE road, Raipur	21.2449358	81.6393397	partial
+be-partial-00952	Ramamoorthy Padayachi Street 1, Koothangudi	11.0905936	79.3849358	partial
+be-partial-00953	Laskarpur Road, Ramkrishna Nagar, GARIA 53, Kolkata	22.4585682	88.3814157	partial
+be-partial-00954	Palam Vihar 2496, Gurgaon	28.5079071	77.0383207	partial
+be-partial-00955	H.D.Kote Road,Lakshmipuram, mysore	12.2958834	76.6393740	partial
+be-partial-00956	Central Bazar Road, Ramdaspeth, Nagpur	21.1331799	79.0717727	partial
+be-partial-00957	HAL 2nd Stage 7th Main, Shirdi Sai Baba Mandir Rd, Indiranagar, 3192, Bangalore	12.9711228	77.6342464	partial
+be-partial-00958	9th Mn Rd, 4th Crs, 1st Blk, Hrbr Lyt, Kalyan Nagar 9, bangalore	13.0198978	77.6474795	partial
+be-partial-00959	Andheri-Kurla Road Windfall, Ground Floor, Sahar Plaza, Mumbai	19.1122180	72.8686542	partial
+be-partial-00960	11th main,2nd Cross,Outer Ring Road,Industrial Suburb 2nd Stage, 7th Main Road, Yeshwanthpur Suburb II Stage, Peenya Industrial Area 3rd Phase, Yeshwanthpur, Peenya, 171/A, bangalore	13.0241492	77.5276600	partial
+be-partial-00961	7th street, Choolaimedu high road 1, Chennai	13.0626045	80.2305209	partial
+be-partial-00962	Anjaneya Temple Road, Bangalore	13.0344875	77.5267448	partial
+be-partial-00963	Accher Paal Market PI-32, Noida	28.4663794	77.5393277	partial
+be-partial-00964	Jain Temple Road, Khajuraho	24.8508953	79.9260406	partial
+be-partial-00965	PNT Colony Road, Shastri Nagar, Bhilwara	25.3320177	74.6374871	partial
+be-partial-00966	Challaghatta, BENGALURU	12.9438880	77.6517988	partial
+be-partial-00967	5th Main Road Rpc Layout, Vijayanagar 15, Bangalore	12.9643262	77.5404059	partial
+be-partial-00968	ugmani Savidham, Thrissur	10.5254633	76.2078202	partial
+be-partial-00969	selud, aurangabad	19.9836824	75.5868165	partial
+be-partial-00970	Anandapur Road, Kolkata	22.5130780	88.4090559	partial
+be-partial-00971	Old Bus Stand Road, Vasantha Nagar, Ramanathapuram, Tamil Nadu., Ramanathapuram	9.3603855	78.8374921	partial
+be-partial-00972	Head Post Office Road, Bhilwara, Bhilwara	25.3434342	74.6364651	partial
+be-partial-00973	Hosur Road, Bangalore	12.9345734	77.6115121	partial
+be-partial-00974	Romain Rolland Street 16, Puducherry	11.9300984	79.8339487	partial
+be-partial-00975	Thanisandra Main Road Survey No. 132P, 133P, & 134P, Nagawara Junction, Manayata Tech Park, Bangalore	13.0456619	77.6267384	partial
+be-partial-00976	Thiruvizha CoirPark, Cherthala	9.6403133	76.3326923	partial
+be-partial-00977	Azad Road, Tirthahalli	13.6909359	75.2433987	partial
+be-partial-00978	Duler Ground Road, Mapusa	15.5969885	73.8150679	partial
+be-partial-00979	Road no.1 plot no 7, MUMBAI	19.0662799	72.9214798	partial
+be-partial-00980	Palampur - Dharamsala Road, Palampur	32.1141462	76.5348931	partial
+be-partial-00981	Mahakavi Kuvempu Road, 2nd Stage, Rajajinagar, Near Varalaxmi Nursing Home, D-Block, Gayatrinagar, Rajaji Nagar 2941/5, bangalore	12.9988814	77.5552883	partial
+be-partial-00982	Tulsi Theatre Road 9th main, Marathahalli, Bangalore	12.9523974	77.6979565	partial
+be-partial-00983	Barave Road, Khadakpada Circle Shelar Park, Kalyan	19.2533135	73.1376770	partial
+be-partial-00984	80 feet Service road, 11th Cross 1st Cross Road, HAL 2nd Stage, Indiranagar 3754, Bengaluru	12.9668505	77.6372360	partial
+be-partial-00985	Montieth Road 77, Egmore	13.0686478	80.2568372	partial
+be-partial-00986	N/2, Sector 1, Avanti Vihar Main Road, Shankar Nagar Zone 3,, raipur	21.2459738	81.6653017	partial
+be-partial-00987	24th Cross Road 428, Bangalore	12.9237659	77.5696566	partial
+be-partial-00988	Chennakeshava Complex, Marathahalli Main Road, M Halli, Near Thulasi Thre, Marathahalli Main Roa, Bangalore	12.9481926	77.6813728	partial
+be-partial-00989	NH 20, Palampur	32.1111888	76.5385783	partial
+be-partial-00990	Okhla Road D 158 B, Phase 1, New Delhi	28.5636616	77.2890546	partial
+be-partial-00991	Eastern Express Highway, Thane	19.2097786	72.9729516	partial
+be-partial-00992	Vivekananda Nagar Road 303, Rd Number 31, Vivekananda Nagar, Kukatpally,, hyderabad	17.4949726	78.4105957	partial
+be-partial-00993	17th Cross, Near Main Bus Stand, M.C. Road, Vijayanagar 46, Bangalore	12.9717905	77.5372864	partial
+be-partial-00994	Mangalagiri,Atmakur, Guntur	16.4146468	80.5945545	partial
+be-partial-00995	Sarjapur Road Bellandur Gate, Bellandur 528, Bvr Complex, Bangaluru	13.0083873	77.6961576	partial
+be-partial-00996	Thanisandra Main Road Survey No. 132P, 133P, & 134P, Nagawara Junction, Manayata Tech Park, Bangalore	13.0453792	77.6267297	partial
+be-partial-00997	College Road, Nashik	20.0061504	73.7616985	partial
+be-partial-00998	Bannerghatta Road Balmuri Main Road, Hulimavu,, Bangalore	12.8760994	77.5956161	partial
+be-partial-00999	Daya Marga, Mysuru	12.3069191	76.6814282	partial
