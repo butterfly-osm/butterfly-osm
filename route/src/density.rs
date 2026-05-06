@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 
 /// Density class assigned to each way.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum DensityClass {
     /// Dense urban core: residential streets, living streets, service roads.
     UrbanHigh = 0,
@@ -54,6 +54,8 @@ pub enum DensityClass {
     /// Outer urban: secondaries, primaries within town limits.
     UrbanLow = 2,
     /// Suburban / regional: primaries between towns, unclassified.
+    /// Default — neutral mid-bucket.
+    #[default]
     Suburban = 3,
     /// Rural / inter-urban: motorways, trunks, country tracks.
     Rural = 4,
@@ -81,7 +83,7 @@ impl DensityClass {
     }
 
     /// Parse from a label (case-insensitive).
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "urban_high" | "urbanhigh" => Some(DensityClass::UrbanHigh),
             "urban_medium" | "urbanmedium" => Some(DensityClass::UrbanMedium),
@@ -135,12 +137,6 @@ impl DensityClass {
     }
 }
 
-impl Default for DensityClass {
-    fn default() -> Self {
-        DensityClass::Suburban
-    }
-}
-
 /// Strategy used to assign `DensityClass` to each way during step 2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DensityClassifier {
@@ -151,7 +147,7 @@ pub enum DensityClassifier {
 }
 
 impl DensityClassifier {
-    pub fn from_str(s: &str) -> anyhow::Result<Self> {
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
         match s.to_ascii_lowercase().as_str() {
             "osm-tag" | "osm_tag" | "osmtag" => Ok(DensityClassifier::OsmTag),
             "cdis-parquet" | "cdis_parquet" | "cdisparquet" => Ok(DensityClassifier::CdisParquet),
@@ -339,7 +335,7 @@ mod tests {
     fn density_class_round_trip() {
         for c in DensityClass::ALL {
             assert_eq!(DensityClass::from_u8(c.to_u8()), c);
-            assert_eq!(DensityClass::from_str(c.as_str()), Some(c));
+            assert_eq!(DensityClass::parse(c.as_str()), Some(c));
         }
     }
 
@@ -352,38 +348,29 @@ mod tests {
     #[test]
     fn classifier_parsing() {
         assert_eq!(
-            DensityClassifier::from_str("osm-tag").unwrap(),
+            DensityClassifier::parse("osm-tag").unwrap(),
             DensityClassifier::OsmTag
         );
         assert_eq!(
-            DensityClassifier::from_str("CDIS-Parquet").unwrap(),
+            DensityClassifier::parse("CDIS-Parquet").unwrap(),
             DensityClassifier::CdisParquet
         );
-        assert!(DensityClassifier::from_str("nope").is_err());
+        assert!(DensityClassifier::parse("nope").is_err());
     }
 
     #[test]
     fn highway_defaults_match_spec() {
-        assert_eq!(
-            highway_default_density("motorway"),
-            DensityClass::Rural
-        );
+        assert_eq!(highway_default_density("motorway"), DensityClass::Rural);
         assert_eq!(
             highway_default_density("residential"),
             DensityClass::UrbanHigh
         );
-        assert_eq!(
-            highway_default_density("primary"),
-            DensityClass::Suburban
-        );
+        assert_eq!(highway_default_density("primary"), DensityClass::Suburban);
         assert_eq!(
             highway_default_density("tertiary"),
             DensityClass::UrbanMedium
         );
-        assert_eq!(
-            highway_default_density("secondary"),
-            DensityClass::UrbanLow
-        );
+        assert_eq!(highway_default_density("secondary"), DensityClass::UrbanLow);
     }
 
     #[test]

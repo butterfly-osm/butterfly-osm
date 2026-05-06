@@ -313,10 +313,7 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
         );
         (time_up, time_down, Some((dist_up, dist_down)))
     };
-    println!(
-        "  ✓ Bottom-up in {:.2}s",
-        bu_start.elapsed().as_secs_f64()
-    );
+    println!("  ✓ Bottom-up in {:.2}s", bu_start.elapsed().as_secs_f64());
 
     // ===================================================================
     // Triangle relaxation (parallel internally via atomics)

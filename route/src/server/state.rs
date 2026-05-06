@@ -340,10 +340,7 @@ impl ServerState {
         // shares topology with `<base>` but uses the variant weights.
         match discover_traffic_variants(&step8_dir, &discovered_modes) {
             Ok(variants) if !variants.is_empty() => {
-                tracing::info!(
-                    n_variants = variants.len(),
-                    "registering traffic variants"
-                );
+                tracing::info!(n_variants = variants.len(), "registering traffic variants");
                 for (base, variant) in &variants {
                     let synthetic = format!("{}_{}", base, variant);
                     if mode_lookup.contains_key(&synthetic) {
@@ -365,9 +362,8 @@ impl ServerState {
                         }
                     };
                     let base_data = &modes_data[base_idx];
-                    let variant_data = load_traffic_variant_mode_data(
-                        base_data, variant, base, &step8_dir,
-                    )?;
+                    let variant_data =
+                        load_traffic_variant_mode_data(base_data, variant, base, &step8_dir)?;
                     let new_index = modes_data.len();
                     tracing::info!(
                         base = base.as_str(),
@@ -1124,7 +1120,10 @@ pub(crate) fn discover_traffic_variants(
         let name_str = name.to_string_lossy();
 
         // Pattern: cch.w.{base}_{variant}.u32
-        let stem = match name_str.strip_prefix("cch.w.").and_then(|s| s.strip_suffix(".u32")) {
+        let stem = match name_str
+            .strip_prefix("cch.w.")
+            .and_then(|s| s.strip_suffix(".u32"))
+        {
             Some(s) => s,
             None => continue,
         };
@@ -1200,16 +1199,9 @@ fn load_traffic_variant_mode_data(
     base_mode_name: &str,
     step8_dir: &Path,
 ) -> Result<ModeData> {
-    let weights_path = step8_dir.join(format!(
-        "cch.w.{}_{}.u32",
-        base_mode_name, variant_name
-    ));
-    let cch_weights = CchWeightsFile::read(&weights_path).with_context(|| {
-        format!(
-            "loading traffic variant weights {}",
-            weights_path.display()
-        )
-    })?;
+    let weights_path = step8_dir.join(format!("cch.w.{}_{}.u32", base_mode_name, variant_name));
+    let cch_weights = CchWeightsFile::read(&weights_path)
+        .with_context(|| format!("loading traffic variant weights {}", weights_path.display()))?;
 
     // Rebuild the TIME flats against the new weights — they're the only
     // thing that depends on cch_weights. Distance flats and topology are

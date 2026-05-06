@@ -1204,7 +1204,7 @@ impl Cli {
                 density_classifier,
                 outdir,
             } => {
-                let classifier = crate::density::DensityClassifier::from_str(&density_classifier)?;
+                let classifier = crate::density::DensityClassifier::parse(&density_classifier)?;
                 let config = ProfileConfig {
                     ways_path: ways,
                     relations_path: relations,
@@ -1655,10 +1655,7 @@ impl Cli {
                     traffic: traffic_cfg,
                 };
 
-                let traffic_variant = config
-                    .traffic
-                    .as_ref()
-                    .map(|t| t.profile.name.clone());
+                let traffic_variant = config.traffic.as_ref().map(|t| t.profile.name.clone());
                 let result = customization::customize_cch(config)?;
 
                 // Generate lock file

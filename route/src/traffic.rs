@@ -118,7 +118,7 @@ impl TrafficProfile {
         // Build factor array, requiring all five keys, no extras.
         let mut factors = [f32::NAN; 5];
         for (key, value) in &parsed.speed_factors {
-            let class = DensityClass::from_str(key).with_context(|| {
+            let class = DensityClass::parse(key).with_context(|| {
                 format!(
                     "traffic profile '{}': unknown speed_factors key '{}' (allowed: urban_high, urban_medium, urban_low, suburban, rural)",
                     parsed.name, key
@@ -343,6 +343,10 @@ mod tests {
         std::fs::write(tmp.path().join("not_a_profile.json"), "{}").unwrap();
         let files = discover_profiles(tmp.path()).unwrap();
         assert_eq!(files.len(), 1);
-        assert!(files[0].to_string_lossy().ends_with("rush_hour.traffic.json"));
+        assert!(
+            files[0]
+                .to_string_lossy()
+                .ends_with("rush_hour.traffic.json")
+        );
     }
 }
