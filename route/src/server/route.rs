@@ -436,9 +436,11 @@ pub async fn route_handler(
     // nodes (one per direction of travel) are present at the same
     // polyline vertex. We collect the top-K candidates per role, try
     // (src, dst) combinations in expected-best order, and pick the
-    // first pair that produces a valid route. K is small (4) and the
-    // fallback only runs when the primary candidate fails — typical
-    // queries pay one P2P query, pathological pairs pay up to 16.
+    // first pair that produces a valid route. K is SNAP_K (defined
+    // below — 64 at the time of this fix) and the fallback only runs
+    // when the primary candidate fails. Typical healthy queries pay
+    // one P2P query; pathological pairs pay up to MAX_FALLBACK_COMBOS
+    // (400) — see the SNAP_K block below for the empirical sweep.
     let src_role_filter = SnapRole::Src.role_filter(mode_data);
     let dst_role_filter = SnapRole::Dst.role_filter(mode_data);
 

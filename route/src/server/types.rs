@@ -21,15 +21,18 @@ pub struct ErrorResponse {
 /// exists. The server picks the per-mode role bitset to apply based
 /// on this enum.
 ///
-/// `Either` (the legacy default) keeps the historical behaviour for
-/// API back-compat where a caller didn't say which role they meant
-/// (e.g. `/isochrone` from a single point — that point is *always*
-/// a source, but historically went through the unfiltered snap).
+/// `Src` is the current Rust default (via `#[default]`) and the
+/// `/nearest` HTTP default (via `#[serde(default)]` on the request
+/// struct), matching what most callers want. `Either` is the legacy
+/// *behaviour* — the unfiltered snap that was the only option before
+/// #197 — kept available for callers that explicitly want it (e.g.
+/// `/isochrone` from a single point, where that point is *always* a
+/// source but historically went through the unfiltered snap).
 /// Practical usage:
 ///   - `/route` source point → `Src`
 ///   - `/route` destination point → `Dst`
-///   - `/nearest` defaults to `Src` for back-compat with the OSRM
-///     shape, with `role=src|dst|either` as a query parameter.
+///   - `/nearest` defaults to `Src` (current default), with
+///     `role=src|dst|either` as a query parameter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SnapRole {
