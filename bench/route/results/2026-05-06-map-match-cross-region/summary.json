@@ -1,0 +1,41 @@
+{
+  "date": "2026-05-06",
+  "fixture": "belgium-luxembourg + be-lu-overlay",
+  "issue": 194,
+  "regimes": [
+    {
+      "mean_ms": 399.45827299999996,
+      "n_matchings": 1,
+      "name": "brussels-legacy",
+      "p50_ms": 389.89232000000004,
+      "p95_ms": 419.554828,
+      "trials": 3
+    },
+    {
+      "mean_ms": 447.940882,
+      "n_matchings": 1,
+      "name": "brussels-multi-region",
+      "p50_ms": 448.217798,
+      "p95_ms": 452.679924,
+      "trials": 3
+    },
+    {
+      "mean_ms": 45808.5461,
+      "n_matchings": 2,
+      "name": "mixed-one-cross",
+      "p50_ms": 45865.569589000006,
+      "p95_ms": 46046.707501,
+      "trials": 3
+    },
+    {
+      "mean_ms": 3.480736,
+      "n_matchings": 0,
+      "name": "zigzag-full-cross",
+      "p50_ms": 3.4849159999999997,
+      "p95_ms": 3.514044,
+      "trials": 3
+    }
+  ],
+  "single_region_fastpath_p50_overhead_pct": 14.959381092707847,
+  "trials_per_regime": 3
+}
