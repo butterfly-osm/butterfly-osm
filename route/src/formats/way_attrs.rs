@@ -4,8 +4,8 @@
 //!
 //! Header (80 bytes):
 //!   magic:       u32 = 0x57415941  // "WAYA"
-//!   version:     u16 = 1
-//!   mode:        u8  = {0=car,1=bike,2=foot}
+//!   version:     u16 = 1 (legacy) | 2 (current — adds density_class)
+//!   mode:        u8  = {0=car,1=bike,2=foot,...} (alphabetical mode index)
 //!   reserved:    u8  = 0
 //!   count:       u64
 //!   dict_k_sha:  [32]u8
@@ -19,7 +19,8 @@
 //!   surface_class:      u16
 //!   per_km_penalty_ds:  u16
 //!   const_penalty_ds:   u32
-//!   reserved:           [6]u8  // padding to 32 bytes
+//!   density_class:      u8   // v2 only; in v1 this byte is padding
+//!   reserved:           [5]u8  // padding to 32 bytes (v2: 5 bytes; v1: 6)
 //!
 //! Footer (16 bytes):
 //!   body_crc64:  u64
@@ -34,9 +35,12 @@ use super::crc::Digest;
 use crate::profile_abi::{Mode, WayOutput};
 
 const MAGIC: u32 = 0x57415941; // "WAYA"
-const VERSION: u16 = 1;
+/// Current on-disk version — emits the `density_class` byte.
+const VERSION: u16 = 2;
+/// Earliest version we can still read (density_class falls back to default).
+const VERSION_MIN: u16 = 1;
 const HEADER_SIZE: usize = 80; // 4 + 2 + 1 + 1 + 8 + 32 + 32
-const RECORD_SIZE: usize = 32; // 8 + 4 + 4 + 2 + 2 + 2 + 4 + 6(pad)
+const RECORD_SIZE: usize = 32; // 8 + 4 + 4 + 2 + 2 + 2 + 4 + 1 + 5(pad)
 
 #[derive(Debug, Clone)]
 pub struct WayAttr {
@@ -73,23 +77,18 @@ pub fn write<P: AsRef<Path>>(
 
     writer.write_all(&header)?;
 
-    // Write body and calculate CRC
+    // Write body and calculate CRCs in a single pass (header then body).
     let mut body_digest = Digest::new();
-    for attr in sorted_attrs.iter() {
-        let record = encode_record(attr);
-        body_digest.update(&record);
-        writer.write_all(&record)?;
-    }
-
-    let body_crc64 = body_digest.finalize();
-
-    // Calculate file CRC (header + body)
     let mut file_digest = Digest::new();
     file_digest.update(&header);
     for attr in sorted_attrs.iter() {
         let record = encode_record(attr);
+        body_digest.update(&record);
         file_digest.update(&record);
+        writer.write_all(&record)?;
     }
+
+    let body_crc64 = body_digest.finalize();
     let file_crc64 = file_digest.finalize();
 
     // Write footer
@@ -100,7 +99,7 @@ pub fn write<P: AsRef<Path>>(
     Ok(())
 }
 
-/// Encode a single way_attrs record
+/// Encode a single way_attrs record (current version v2 — emits `density_class`)
 fn encode_record(attr: &WayAttr) -> Vec<u8> {
     let mut record = Vec::with_capacity(RECORD_SIZE);
 
@@ -121,14 +120,17 @@ fn encode_record(attr: &WayAttr) -> Vec<u8> {
     record.extend_from_slice(&attr.output.surface_class.to_le_bytes());
     record.extend_from_slice(&attr.output.per_km_penalty_ds.to_le_bytes());
     record.extend_from_slice(&attr.output.const_penalty_ds.to_le_bytes());
-    record.extend_from_slice(&[0u8; 6]); // padding to 32 bytes
+    record.push(attr.output.density_class);
+    record.extend_from_slice(&[0u8; 5]); // padding to 32 bytes
 
     assert_eq!(record.len(), RECORD_SIZE);
     record
 }
 
-/// Decode a single way_attrs record
-fn decode_record(record: &[u8], way_id: i64) -> Result<WayAttr> {
+/// Decode a single way_attrs record. `version` controls how byte 26 is
+/// interpreted: in v2 it carries `density_class`, in v1 it is padding and
+/// the field falls back to its default (Suburban).
+fn decode_record(record: &[u8], way_id: i64, version: u16) -> Result<WayAttr> {
     anyhow::ensure!(record.len() >= RECORD_SIZE, "Record too small");
 
     let flags = u32::from_le_bytes([record[8], record[9], record[10], record[11]]);
@@ -143,20 +145,25 @@ fn decode_record(record: &[u8], way_id: i64) -> Result<WayAttr> {
     let oneway = ((flags >> 2) & 0x3) as u8;
     let class_bits = flags & !0xF; // Clear lower 4 bits
 
-    Ok(WayAttr {
-        way_id,
-        output: WayOutput {
-            access_fwd,
-            access_rev,
-            oneway,
-            base_speed_mmps,
-            highway_class,
-            surface_class,
-            class_bits,
-            per_km_penalty_ds,
-            const_penalty_ds,
-        },
-    })
+    let mut output = WayOutput {
+        access_fwd,
+        access_rev,
+        oneway,
+        base_speed_mmps,
+        highway_class,
+        surface_class,
+        class_bits,
+        per_km_penalty_ds,
+        const_penalty_ds,
+        ..WayOutput::default()
+    };
+
+    if version >= 2 {
+        output.density_class = record[26];
+    }
+    // else: keep WayOutput::default().density_class (Suburban).
+
+    Ok(WayAttr { way_id, output })
 }
 
 /// Read all way_attrs from file
@@ -176,33 +183,49 @@ fn read_all_from_reader<R: std::io::Read>(mut file: R) -> Result<Vec<WayAttr>> {
     let mut header = vec![0u8; HEADER_SIZE];
     file.read_exact(&mut header)?;
 
+    let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+    anyhow::ensure!(
+        magic == MAGIC,
+        "Bad magic in way_attrs: 0x{:08X} (expected 0x{:08X})",
+        magic,
+        MAGIC
+    );
+
+    let version = u16::from_le_bytes([header[4], header[5]]);
+    anyhow::ensure!(
+        (VERSION_MIN..=VERSION).contains(&version),
+        "Unsupported way_attrs version {} (supported: {}..={})",
+        version,
+        VERSION_MIN,
+        VERSION
+    );
+
     let count = u64::from_le_bytes([
         header[8], header[9], header[10], header[11], header[12], header[13], header[14],
         header[15],
     ]);
 
     let mut body_digest = Digest::new();
+    let mut file_digest = Digest::new();
+    file_digest.update(&header);
+
     let mut attrs = Vec::with_capacity(count as usize);
     for _ in 0..count {
         let mut record = vec![0u8; RECORD_SIZE];
         file.read_exact(&mut record)?;
+        // CRC is computed over the raw on-disk bytes (works for any version).
         body_digest.update(&record);
+        file_digest.update(&record);
 
         let way_id = i64::from_le_bytes([
             record[0], record[1], record[2], record[3], record[4], record[5], record[6], record[7],
         ]);
 
-        attrs.push(decode_record(&record, way_id)?);
+        attrs.push(decode_record(&record, way_id, version)?);
     }
 
-    // Verify CRCs
+    // Verify CRCs.
     let computed_body_crc = body_digest.finalize();
-
-    let mut file_digest = Digest::new();
-    file_digest.update(&header);
-    for attr in &attrs {
-        file_digest.update(&encode_record(attr));
-    }
     let computed_file_crc = file_digest.finalize();
 
     let mut footer = [0u8; 16];
@@ -300,5 +323,75 @@ mod tests {
         assert_eq!(flags & 0x1, 1); // access_fwd
         assert_eq!(flags & 0x2, 0); // access_rev
         assert_eq!((flags >> 2) & 0x3, 1); // oneway
+    }
+
+    #[test]
+    fn test_density_class_round_trip_v2() {
+        let attr = WayAttr {
+            way_id: 42,
+            output: WayOutput {
+                access_fwd: true,
+                access_rev: true,
+                base_speed_mmps: 25_000,
+                density_class: 0, // UrbanHigh
+                ..Default::default()
+            },
+        };
+        let bytes = encode_record(&attr);
+        // density_class lives at byte 26 in v2.
+        assert_eq!(bytes[26], 0);
+        let decoded = decode_record(&bytes, 42, VERSION).unwrap();
+        assert_eq!(decoded.output.density_class, 0);
+    }
+
+    #[test]
+    fn test_density_class_v1_falls_back() {
+        // Hand-build a v1 record (byte 26 is padding) and ensure decode picks
+        // up the default.
+        let mut bytes = vec![0u8; RECORD_SIZE];
+        // way_id = 7
+        bytes[..8].copy_from_slice(&7i64.to_le_bytes());
+        bytes[26] = 0xff; // garbage padding
+        let decoded = decode_record(&bytes, 7, 1).unwrap();
+        // Default is Suburban (3) per WayOutput::default()
+        assert_eq!(decoded.output.density_class, 3);
+    }
+
+    #[test]
+    fn test_full_round_trip_v2_with_crc() {
+        use tempfile::NamedTempFile;
+        let tmp = NamedTempFile::new().unwrap();
+
+        let attrs = vec![
+            WayAttr {
+                way_id: 1,
+                output: WayOutput {
+                    access_fwd: true,
+                    base_speed_mmps: 10_000,
+                    highway_class: 1,
+                    density_class: 4, // Rural
+                    ..Default::default()
+                },
+            },
+            WayAttr {
+                way_id: 2,
+                output: WayOutput {
+                    access_fwd: true,
+                    access_rev: true,
+                    base_speed_mmps: 5_000,
+                    density_class: 0, // UrbanHigh
+                    ..Default::default()
+                },
+            },
+        ];
+
+        let dict_k = [0u8; 32];
+        let dict_v = [0u8; 32];
+        write(tmp.path(), Mode(0), &attrs, &dict_k, &dict_v).unwrap();
+
+        let read_back = read_all(tmp.path()).unwrap();
+        assert_eq!(read_back.len(), 2);
+        assert_eq!(read_back[0].output.density_class, 4);
+        assert_eq!(read_back[1].output.density_class, 0);
     }
 }

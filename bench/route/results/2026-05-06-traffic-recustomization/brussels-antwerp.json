@@ -1,0 +1,15 @@
+{
+  "freeflow_s": 1946.7,
+  "offpeak_s": 2081.7,
+  "rush_hour_s": 2574.7,
+  "rush_pct_increase": 32.259721580109925,
+  "all_durations": {
+    "Freeflow (mode=car)": 1946.7,
+    "Freeflow via traffic=freeflow": 1946.7,
+    "Off-peak": 2081.7,
+    "Rush hour": 2574.7,
+    "Direct mode car_rush_hour": 2574.7,
+    "Direct mode car_offpeak": 2081.7,
+    "Direct mode car_freeflow": 1946.7
+  }
+}

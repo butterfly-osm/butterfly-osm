@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::{CompiledModel, compile_model, evaluate_turn_full, evaluate_way};
+use crate::density::{DensityClassifier, WayTagsView};
 use crate::formats::{TurnRule, WayAttr, turn_rules, way_attrs};
 use crate::profile_abi::{Mode, TurnRuleKind};
 
@@ -17,6 +18,20 @@ pub struct ProfileConfig {
     pub relations_path: PathBuf,
     pub models_dir: PathBuf,
     pub outdir: PathBuf,
+    /// Strategy used to assign `DensityClass` per way. Defaults to OsmTag.
+    pub density_classifier: DensityClassifier,
+}
+
+impl Default for ProfileConfig {
+    fn default() -> Self {
+        Self {
+            ways_path: PathBuf::new(),
+            relations_path: PathBuf::new(),
+            models_dir: PathBuf::new(),
+            outdir: PathBuf::new(),
+            density_classifier: DensityClassifier::OsmTag,
+        }
+    }
 }
 
 /// Per-mode output paths produced by Step 2
@@ -196,14 +211,50 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
     let n_modes = modes.len();
     let mut way_attrs_per_mode: Vec<Vec<WayAttr>> = vec![Vec::new(); n_modes];
 
+    // Density classifier: same call for every mode (density is mode-agnostic).
+    if config.density_classifier == DensityClassifier::CdisParquet {
+        anyhow::bail!(
+            "density classifier 'cdis-parquet' is not implemented in this build; \
+             use --density-classifier osm-tag (proprietary CDIS data plug-in is a follow-up issue)"
+        );
+    }
+
+    // Reverse-map highway_class u16 -> highway name for the density classifier.
+    let highway_classes = build_highway_classes();
+
     let way_stream = crate::formats::WaysFile::stream_ways(&config.ways_path)?;
     let mut count = 0u64;
+    let mut density_hist: [u64; 5] = [0; 5];
 
     for result in way_stream {
         let (way_id, keys, vals, _nodes) = result?;
 
+        // Density class is the same across all modes — compute once per way.
+        let density_class = {
+            // Pick the first compiled model just to evaluate the way and
+            // resolve the highway tag — we only need the highway_class u16.
+            // Any model works because they share the same dictionaries.
+            let first = &compiled_models[0];
+            let output = evaluate_way(first, &keys, &vals, &val_dict);
+
+            let highway_name = highway_classes
+                .get(&output.highway_class)
+                .map(|s| s.as_str())
+                .unwrap_or("");
+
+            let view = WayTagsView {
+                keys: &keys,
+                vals: &vals,
+                key_dict: &key_dict,
+                val_dict: &val_dict,
+            };
+            crate::density::classify_osm_tag(config.density_classifier, highway_name, &view)
+        };
+        density_hist[density_class.to_u8() as usize] += 1;
+
         for (i, compiled) in compiled_models.iter().enumerate() {
-            let output = evaluate_way(compiled, &keys, &vals, &val_dict);
+            let mut output = evaluate_way(compiled, &keys, &vals, &val_dict);
+            output.density_class = density_class.to_u8();
             way_attrs_per_mode[i].push(WayAttr { way_id, output });
         }
 
@@ -214,6 +265,10 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
     }
 
     println!("  processed {} ways across {} modes", count, n_modes);
+    println!(
+        "  density histogram: urban_high={} urban_medium={} urban_low={} suburban={} rural={}",
+        density_hist[0], density_hist[1], density_hist[2], density_hist[3], density_hist[4]
+    );
 
     // Write way_attrs files
     println!();

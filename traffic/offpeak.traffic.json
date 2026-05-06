@@ -1,0 +1,11 @@
+{
+  "name": "offpeak",
+  "base_model": "car",
+  "speed_factors": {
+    "urban_high": 0.85,
+    "urban_medium": 0.92,
+    "urban_low": 0.96,
+    "suburban": 0.98,
+    "rural": 1.00
+  }
+}

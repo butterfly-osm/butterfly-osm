@@ -16,6 +16,7 @@
 pub mod cli;
 pub mod contraction;
 pub mod customization;
+pub mod density;
 pub mod ebg;
 pub mod formats;
 pub mod ingest;
@@ -30,6 +31,7 @@ pub mod profile;
 pub mod profile_abi;
 pub mod range;
 pub mod server;
+pub mod traffic;
 pub mod transit;
 pub mod validate;
 pub mod weights;

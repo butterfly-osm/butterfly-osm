@@ -266,6 +266,11 @@ pub enum Commands {
         #[arg(long)]
         models_dir: PathBuf,
 
+        /// Density classifier: `osm-tag` (default, deterministic, no extra
+        /// data) or `cdis-parquet` (proprietary plug-in, not implemented).
+        #[arg(long, default_value = "osm-tag")]
+        density_classifier: String,
+
         /// Output directory for way_attrs.*.bin and turn_rules.*.bin
         #[arg(short, long)]
         outdir: PathBuf,
@@ -445,7 +450,9 @@ pub enum Commands {
         outdir: PathBuf,
     },
 
-    /// Step 8: Customize per-mode CCH with weights
+    /// Step 8: Customize per-mode CCH with weights. Optional `--traffic`
+    /// switches into a fast traffic recustomization that scales edge weights
+    /// by per-density-class speed factors and emits `cch.w.<mode>_<variant>.u32`.
     Step8Customize {
         /// Path to cch.*.topo from Step 7
         #[arg(long)]
@@ -478,6 +485,29 @@ pub enum Commands {
         /// Output directory for cch.w.*.u32 and cch.d.*.u32
         #[arg(short, long)]
         outdir: PathBuf,
+
+        /// OPTIONAL: path to a `*.traffic.json` profile. When set, performs a
+        /// fast traffic recustomization that scales edge weights per density
+        /// class and writes `cch.w.<mode>_<variant>.u32` (no distance file —
+        /// distance is physical). Requires `--way-attrs` and `--nbg-geo`.
+        #[arg(long)]
+        traffic: Option<PathBuf>,
+
+        /// REQUIRED with `--traffic`: path to `way_attrs.<mode>.bin` from
+        /// step 2. Used to look up per-way `density_class`.
+        #[arg(long)]
+        way_attrs: Option<PathBuf>,
+
+        /// REQUIRED with `--traffic`: path to `nbg.geo` from step 3. Used to
+        /// map EBG nodes back to their first OSM way id.
+        #[arg(long)]
+        nbg_geo: Option<PathBuf>,
+
+        /// DEVELOPMENT-ONLY: skip triangle relaxation. Produces INCORRECT
+        /// (over-estimated) routing durations — only use for benchmark
+        /// experiments. Without `--traffic` this flag has no effect.
+        #[arg(long, hide = true)]
+        skip_triangle_relax: bool,
     },
 
     /// Download (refresh) GTFS transit feeds into `<data>/transit/gtfs/`.
@@ -1171,13 +1201,16 @@ impl Cli {
                 ways,
                 relations,
                 models_dir,
+                density_classifier,
                 outdir,
             } => {
+                let classifier = crate::density::DensityClassifier::parse(&density_classifier)?;
                 let config = ProfileConfig {
                     ways_path: ways,
                     relations_path: relations,
                     models_dir,
                     outdir,
+                    density_classifier: classifier,
                 };
 
                 run_profiling(config)?;
@@ -1566,11 +1599,48 @@ impl Cli {
                 ebg_nodes,
                 mode,
                 outdir,
+                traffic,
+                way_attrs,
+                nbg_geo,
+                skip_triangle_relax,
             } => {
                 // Parse mode — discover from filtered_ebg's parent (step5 dir)
                 let mode_name_str = mode.to_lowercase();
                 let step5_dir = filtered_ebg.parent().unwrap_or(Path::new("."));
                 let mode = resolve_mode(&mode_name_str, step5_dir)?;
+
+                let traffic_cfg = match traffic {
+                    Some(traffic_path) => {
+                        let way_attrs_path = way_attrs.ok_or_else(|| {
+                            anyhow::anyhow!("--traffic requires --way-attrs <PATH>")
+                        })?;
+                        let nbg_geo_path = nbg_geo.ok_or_else(|| {
+                            anyhow::anyhow!("--traffic requires --nbg-geo <PATH>")
+                        })?;
+                        let profile = crate::traffic::TrafficProfile::load(&traffic_path)?;
+                        // Validate base_model matches the mode we're customizing.
+                        if profile.base_model != mode_name_str {
+                            println!(
+                                "⚠️  warning: traffic profile base_model='{}' but customizing mode='{}'. Proceeding.",
+                                profile.base_model, mode_name_str
+                            );
+                        }
+                        if skip_triangle_relax {
+                            eprintln!(
+                                "WARNING: --skip-triangle-relax enabled. The resulting weights \
+                                 produce INCORRECT (over-estimated) routing durations and must \
+                                 NOT be served to users. This flag is for bench experiments only."
+                            );
+                        }
+                        Some(customization::TrafficCustomization {
+                            profile,
+                            way_attrs_path,
+                            nbg_geo_path,
+                            skip_triangle_relax,
+                        })
+                    }
+                    None => None,
+                };
 
                 let config = customization::Step8Config {
                     cch_topo_path: cch_topo,
@@ -1580,17 +1650,23 @@ impl Cli {
                     turns_path: turns,
                     ebg_nodes_path: ebg_nodes,
                     mode,
-                    mode_name: mode_name_str,
+                    mode_name: mode_name_str.clone(),
                     outdir: outdir.clone(),
+                    traffic: traffic_cfg,
                 };
 
+                let traffic_variant = config.traffic.as_ref().map(|t| t.profile.name.clone());
                 let result = customization::customize_cch(config)?;
 
                 // Generate lock file
                 let mode_name = &result.mode_name;
-
+                let lock_basename = match &traffic_variant {
+                    Some(v) => format!("step8.{}_{}.lock.json", mode_name, v),
+                    None => format!("step8.{}.lock.json", mode_name),
+                };
                 let lock = serde_json::json!({
                     "mode": mode_name,
+                    "traffic_variant": traffic_variant,
                     "output_path": result.output_path.display().to_string(),
                     "distance_output_path": result.distance_output_path.display().to_string(),
                     "n_up_edges": result.n_up_edges,
@@ -1599,7 +1675,7 @@ impl Cli {
                     "created_at_utc": chrono::Utc::now().to_rfc3339(),
                 });
 
-                let lock_path = outdir.join(format!("step8.{}.lock.json", mode_name));
+                let lock_path = outdir.join(lock_basename);
                 let lock_json = serde_json::to_string_pretty(&lock)?;
                 std::fs::write(&lock_path, lock_json)?;
 
