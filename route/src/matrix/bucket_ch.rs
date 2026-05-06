@@ -1875,7 +1875,22 @@ fn backward_join_prefix(
 use rayon::prelude::*;
 
 /// Parallel bucket M2M computation
-/// Uses rayon to parallelize both forward and backward phases
+///
+/// Dispatches to one of three strategies based on problem size:
+///
+/// 1. **Sequential fast path** (cells ≤ 100): the small-N corner where
+///    rayon thread-dispatch overhead dwarfs routing work. See
+///    `SEQUENTIAL_FAST_PATH_CELL_THRESHOLD`.
+/// 2. **L3-aware source tiling** (#190): when the bucket working set
+///    would blow out shared L3 (`pick_source_tile_size` returns
+///    `Some(tile)`), iterate the source dimension in tiles so each
+///    backward sweep stays L3-resident. Adds 4× backward sweeps for a
+///    10k×10k query but each sweep walks a 4× smaller bucket array
+///    out of L3 instead of DRAM, which net-wins on bandwidth-bound
+///    machines.
+/// 3. **Monolithic parallel** (default for 100 < N×M < L3 threshold):
+///    the single-pass forward+backward shape that production tile
+///    sizes already hit.
 pub fn table_bucket_parallel(
     n_nodes: usize,
     up_adj_flat: &UpAdjFlat,
@@ -1909,6 +1924,24 @@ pub fn table_bucket_parallel(
             }
             engine.compute_flat(up_adj_flat, down_rev_flat, sources, targets)
         });
+    }
+
+    // L3-aware source tiling (#190): for monolithic queries that would
+    // blow shared L3, tile the source dimension so each backward sweep's
+    // bucket array stays L3-resident. The threshold is data-driven
+    // (cache size + per-source bucket fanout estimate).
+    let avg_visited = (n_nodes / 400).clamp(500, 20_000);
+    if let Some(tile) =
+        crate::matrix::tile_geometry::pick_source_tile_size(n_sources, n_targets, avg_visited)
+    {
+        return table_bucket_parallel_l3_tiled(
+            n_nodes,
+            up_adj_flat,
+            down_rev_flat,
+            sources,
+            targets,
+            tile,
+        );
     }
 
     let mut stats = BucketM2MStats {
@@ -2025,6 +2058,225 @@ pub fn table_bucket_parallel(
     let result_matrix: Vec<u32> = matrix.into_iter().map(|a| a.into_inner()).collect();
 
     (result_matrix, stats)
+}
+
+/// L3-aware source-tiled parallel bucket M2M (#190).
+///
+/// For monolithic queries (e.g. 10k×10k) the single-pass `PrefixSumBuckets`
+/// working set is several hundred MB and blows out shared L3 — every
+/// backward relax pulls bucket entries from DRAM. We tile the *source*
+/// dimension into chunks of `src_tile_size` so each tile's `PrefixSumBuckets`
+/// fits the L3 budget chosen by `tile_geometry::pick_source_tile_size`.
+///
+/// Per tile we still run the same forward+backward parallel shape — within
+/// a tile, all rayon workers cooperate on a single set of buckets. Across
+/// tiles we iterate sequentially: each tile's result rows are written to
+/// disjoint slices of the output, so there's no cross-tile contention and
+/// no atomic globals to merge.
+///
+/// Cost analysis vs. monolithic:
+/// - Forward work: identical (`n_sources` searches total either way).
+/// - Backward work: `n_tiles × n_targets` searches instead of `n_targets`,
+///   but each search walks a `1/n_tiles`-sized bucket array — total joins
+///   are unchanged. Memory bandwidth drops by `~n_tiles` because we're
+///   now L3-resident on the bucket reads. Net: faster on DRAM-bound
+///   workloads.
+fn table_bucket_parallel_l3_tiled(
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    down_rev_flat: &DownReverseAdjFlat,
+    sources: &[u32],
+    targets: &[u32],
+    src_tile_size: usize,
+) -> (Vec<u32>, BucketM2MStats) {
+    use std::sync::atomic::AtomicU32;
+
+    let n_sources = sources.len();
+    let n_targets = targets.len();
+
+    let mut stats = BucketM2MStats {
+        n_sources,
+        n_targets,
+        ..Default::default()
+    };
+
+    // Single global result matrix written tile-by-tile (disjoint row slices).
+    let result: Vec<AtomicU32> = (0..n_sources * n_targets)
+        .map(|_| AtomicU32::new(u32::MAX))
+        .collect();
+
+    // Walk source tiles sequentially; within each tile, fan out to rayon.
+    let mut src_start = 0usize;
+    while src_start < n_sources {
+        let src_end = (src_start + src_tile_size).min(n_sources);
+        let tile_sources = &sources[src_start..src_end];
+
+        // ===== PHASE 1: forward (parallel) — buckets for THIS tile's sources =====
+        let forward_start = std::time::Instant::now();
+
+        let bucket_chunks: Vec<Vec<(u32, u32, u32)>> = tile_sources
+            .par_iter()
+            .enumerate()
+            .filter_map(|(local_src_idx, &source)| {
+                if source as usize >= n_nodes {
+                    return None;
+                }
+                let avg_visited = (n_nodes / 400).clamp(500, 20_000);
+
+                FORWARD_STATE.with(|state_cell| {
+                    FORWARD_BUCKET_ITEMS.with(|items_cell| {
+                        let mut state_opt = state_cell.borrow_mut();
+                        let state = state_opt
+                            .get_or_insert_with(|| SearchState::new(n_nodes, avg_visited));
+                        if state.entries.len() != n_nodes {
+                            *state = SearchState::new(n_nodes, avg_visited);
+                        }
+
+                        let mut items = items_cell.borrow_mut();
+                        items.clear();
+
+                        // NOTE: we use `local_src_idx` here so the bucket
+                        // entries reference the position within the tile.
+                        // The output write below uses the global source row.
+                        forward_fill_buckets_flat(
+                            up_adj_flat,
+                            local_src_idx as u32,
+                            source,
+                            state,
+                            &mut items,
+                        );
+
+                        Some(std::mem::take(&mut *items))
+                    })
+                })
+            })
+            .collect();
+
+        let bucket_items: Vec<(u32, u32, u32)> = bucket_chunks.into_iter().flatten().collect();
+        stats.forward_visited += bucket_items.len();
+        stats.forward_time_ms += forward_start.elapsed().as_millis() as u64;
+
+        // ===== PHASE 2: build buckets for THIS tile (sequential, fast) =====
+        let sort_start = std::time::Instant::now();
+        let mut buckets = PrefixSumBuckets::new(n_nodes);
+        buckets.build(&bucket_items);
+        stats.bucket_items += buckets.total_items();
+        stats.bucket_nodes += buckets.n_nodes_with_buckets();
+        stats.sort_time_ms += sort_start.elapsed().as_millis() as u64;
+
+        // ===== PHASE 3: backward (parallel) over targets, writing this tile's rows =====
+        let backward_start = std::time::Instant::now();
+
+        let row_offset = src_start; // Each row's global index = row_offset + local_src_idx
+        let result_ref = &result[..];
+
+        let (tile_visited, tile_joins): (usize, usize) = targets
+            .par_iter()
+            .enumerate()
+            .filter(|&(_, target)| (*target as usize) < n_nodes)
+            .map(|(target_idx, &target)| {
+                let avg_visited = (n_nodes / 400).clamp(500, 20_000);
+                BACKWARD_STATE.with(|state_cell| {
+                    let mut state_opt = state_cell.borrow_mut();
+                    let state =
+                        state_opt.get_or_insert_with(|| SearchState::new(n_nodes, avg_visited));
+                    if state.entries.len() != n_nodes {
+                        *state = SearchState::new(n_nodes, avg_visited);
+                    }
+                    backward_join_tile(
+                        down_rev_flat,
+                        target,
+                        &buckets,
+                        result_ref,
+                        n_targets,
+                        target_idx,
+                        row_offset,
+                        state,
+                    )
+                })
+            })
+            .reduce(|| (0, 0), |(v1, j1), (v2, j2)| (v1 + v2, j1 + j2));
+
+        stats.backward_visited += tile_visited;
+        stats.join_operations += tile_joins;
+        stats.backward_time_ms += backward_start.elapsed().as_millis() as u64;
+
+        // Drop tile's bucket allocations before next tile so we don't pile up.
+        drop(buckets);
+
+        src_start = src_end;
+    }
+
+    let result_matrix: Vec<u32> = result.into_iter().map(|a| a.into_inner()).collect();
+    (result_matrix, stats)
+}
+
+/// Backward join used by the L3-tiled path (#190).
+///
+/// Identical to `backward_join_parallel_prefix` except the result write
+/// uses `row_offset + local_src_idx` so we land in the correct global row.
+/// Prefetch hints on adjacency reads are added in a follow-up commit so
+/// that L3-tiling can be benchmarked in isolation.
+fn backward_join_tile(
+    down_rev_flat: &DownReverseAdjFlat,
+    target: u32,
+    buckets: &PrefixSumBuckets,
+    matrix: &[std::sync::atomic::AtomicU32],
+    n_targets: usize,
+    target_idx: usize,
+    row_offset: usize,
+    state: &mut SearchState,
+) -> (usize, usize) {
+    use std::sync::atomic::Ordering;
+
+    state.start_search();
+    state.relax(target, 0);
+
+    let mut visited = 0usize;
+    let mut joins = 0usize;
+
+    while let Some((d, u)) = state.pop() {
+        visited += 1;
+
+        // O(1) prefix-sum bucket lookup using SoA layout.
+        let (start, len) = buckets.get_range(u);
+        if len > 0 {
+            let dists = &buckets.dists[start..start + len];
+            let source_indices = &buckets.source_indices[start..start + len];
+
+            for i in 0..len {
+                let entry_dist = dists[i];
+                let source_idx = source_indices[i];
+                // Tile-local source index → global row.
+                let idx = (row_offset + source_idx as usize) * n_targets + target_idx;
+
+                // Bound-aware pruning: skip if current best can't be improved.
+                let current_best = matrix[idx].load(Ordering::Relaxed);
+                if current_best <= entry_dist {
+                    continue;
+                }
+
+                joins += 1;
+                let total_dist = entry_dist.saturating_add(d);
+                if total_dist < current_best {
+                    matrix[idx].fetch_min(total_dist, Ordering::Relaxed);
+                }
+            }
+        }
+
+        // Relax DOWN-reverse edges with software prefetch on adjacency reads.
+        let edge_start = down_rev_flat.offsets[u as usize] as usize;
+        let edge_end = down_rev_flat.offsets[u as usize + 1] as usize;
+
+        for i in edge_start..edge_end {
+            let x = down_rev_flat.sources[i];
+            let w = down_rev_flat.weights[i];
+            let new_dist = d.saturating_add(w);
+            state.relax(x, new_dist);
+        }
+    }
+
+    (visited, joins)
 }
 
 /// Backward join for parallel execution using PrefixSumBuckets (O(1) lookup)
@@ -2382,6 +2634,109 @@ mod step_a_tests {
             msg.contains("not 8-byte aligned"),
             "unexpected error: {}",
             msg
+        );
+    }
+
+    /// L3-tiled path (#190) must produce identical results to the
+    /// monolithic parallel path. We force the tiled path with
+    /// `src_tile_size=1` (each source becomes its own tile) on a small
+    /// synthetic CCH and assert byte-for-byte parity with `table_bucket`.
+    ///
+    /// Uses a slightly bigger 6-node graph so we have multiple sources
+    /// and targets and the join phase actually exercises the bucket
+    /// machinery.
+    fn make_cch_6() -> (CchTopo, CchWeights) {
+        // 6 nodes (rank 0..5).
+        // UP edges (mostly toward higher rank, simulating a CH):
+        //   0→3 w=10, 0→4 w=20
+        //   1→3 w=5,  1→5 w=15
+        //   2→4 w=8,  2→5 w=12
+        //   3→5 w=4
+        //   4→5 w=3
+        let n_nodes = 6u32;
+        let up_offsets: Vec<u64> = vec![0, 2, 4, 6, 7, 8, 8];
+        let up_targets: Vec<u32> = vec![3, 4, 3, 5, 4, 5, 5, 5];
+        let up_is_shortcut_bools = vec![false; 8];
+        let up_middle: Vec<u32> = vec![u32::MAX; 8];
+        let up_w: Vec<u32> = vec![10, 20, 5, 15, 8, 12, 4, 3];
+
+        // DOWN edges (reverse of UP):
+        //   3→0 w=10, 3→1 w=5
+        //   4→0 w=20, 4→2 w=8
+        //   5→1 w=15, 5→2 w=12, 5→3 w=4, 5→4 w=3
+        let down_offsets: Vec<u64> = vec![0, 0, 0, 0, 2, 4, 8];
+        let down_targets: Vec<u32> = vec![0, 1, 0, 2, 1, 2, 3, 4];
+        let down_is_shortcut_bools = vec![false; 8];
+        let down_middle: Vec<u32> = vec![u32::MAX; 8];
+        let down_w: Vec<u32> = vec![10, 5, 20, 8, 15, 12, 4, 3];
+
+        let topo = CchTopo {
+            n_nodes,
+            n_shortcuts: 0,
+            n_original_arcs: 8,
+            inputs_sha: [0u8; 32],
+            up_offsets: Cow::Owned(up_offsets),
+            up_targets: Cow::Owned(up_targets),
+            up_is_shortcut: BitsetField::from_bools(&up_is_shortcut_bools),
+            up_middle: Cow::Owned(up_middle),
+            down_offsets: Cow::Owned(down_offsets),
+            down_targets: Cow::Owned(down_targets),
+            down_is_shortcut: BitsetField::from_bools(&down_is_shortcut_bools),
+            down_middle: Cow::Owned(down_middle),
+            rank_to_filtered: Cow::Owned((0..6).collect()),
+        };
+
+        let weights = CchWeights {
+            up: Cow::Owned(up_w),
+            down: Cow::Owned(down_w),
+            up_middle: Cow::Owned(vec![]),
+            down_middle: Cow::Owned(vec![]),
+        };
+
+        (topo, weights)
+    }
+
+    #[test]
+    fn l3_tiled_path_matches_monolithic() {
+        let (topo, w) = make_cch_6();
+        let n_nodes = topo.n_nodes as usize;
+        let up_adj = UpAdjFlat::build(&topo, &w);
+        let down_rev = DownReverseAdjFlat::build(&topo, &w);
+
+        // Pick sources/targets that produce non-trivial joins.
+        let sources: Vec<u32> = vec![0, 1, 2, 0, 1, 2, 3, 4]; // 8 sources
+        let targets: Vec<u32> = vec![3, 4, 5, 5, 4, 3]; // 6 targets
+
+        // Monolithic reference (forces single-tile path because it's tiny).
+        let (mono, _) = table_bucket_parallel(
+            n_nodes, &up_adj, &down_rev, &sources, &targets,
+        );
+
+        // L3-tiled with tile=1 (one source per tile — most aggressive split).
+        let (tiled, _) = table_bucket_parallel_l3_tiled(
+            n_nodes, &up_adj, &down_rev, &sources, &targets, 1,
+        );
+        assert_eq!(
+            tiled, mono,
+            "L3-tiled (tile=1) must match monolithic byte-for-byte"
+        );
+
+        // Also exercise tile=3 (forces non-uniform last tile).
+        let (tiled3, _) = table_bucket_parallel_l3_tiled(
+            n_nodes, &up_adj, &down_rev, &sources, &targets, 3,
+        );
+        assert_eq!(
+            tiled3, mono,
+            "L3-tiled (tile=3) must match monolithic byte-for-byte"
+        );
+
+        // And tile=8 (one tile, equivalent to monolithic shape).
+        let (tiled8, _) = table_bucket_parallel_l3_tiled(
+            n_nodes, &up_adj, &down_rev, &sources, &targets, 8,
+        );
+        assert_eq!(
+            tiled8, mono,
+            "L3-tiled (tile=8 = whole problem) must match monolithic"
         );
     }
 }
