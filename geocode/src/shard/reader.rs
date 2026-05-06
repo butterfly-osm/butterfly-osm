@@ -36,9 +36,18 @@ use super::mmap::map_readonly;
 use super::{
     FOOTER_BYTES, HEADER_BYTES, MAGIC, RECORD_BYTES, SourceTag, VERSION, VERSION_V3, VERSION_V4,
 };
-use crate::geocoder::cost::ShardStats;
 use crate::parser::normalize::normalize;
 use crate::routing::CountryId;
+
+/// Light shard-local statistics. Replaces the deleted `geocoder::cost::ShardStats`
+/// (#205); the channel-execution metrics that depended on it are gone.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShardStats {
+    pub avg_postcode_postings: f32,
+    pub avg_locality_postings: f32,
+    pub avg_street_postings: f32,
+    pub total_addresses: u32,
+}
 
 const CRC_ENGINE: Crc<u64> = Crc::<u64>::new(&CRC_64_XZ);
 
