@@ -115,17 +115,33 @@ wc -l geocode-training/output/world-corpus.jsonl
 The trainer reads the entire corpus into RAM. At ~150 bytes/line average
 that's 2–3 GB heap — comfortable on a 32 GB box.
 
-## Phase 4 — Train
+## Phase 4 — Train (GPU-first, chunked discipline)
 
-Training the production architecture (~825k params at any vocab size up
-to 8 — the country head adds 128 floats per country).
+The trainer ships a `cuda` cargo feature (off by default to keep
+CI builds toolchain-free). Build once with CUDA enabled:
+
+```bash
+export CUDA_COMPUTE_CAP=120        # set to your GPU's CC (12.0 = 5060 Ti)
+export PATH=/usr/local/cuda/bin:$PATH
+export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+cargo build --release -p butterfly-geocode --features cuda
+```
+
+(Common compute caps: 86 = Ampere RTX 3xxx, 89 = Ada RTX 4xxx,
+120 = Blackwell RTX 5xxx, 90 = H100, 80 = A100.)
+
+### 4a — Single-shot training
+
+The trainer accepts the `--device cuda` flag plus the chunked-training
+discipline knobs:
 
 ```bash
 ./target/release/butterfly-geocode train \
     --corpus geocode-training/output/world-corpus.jsonl \
     --countries BE,FR,NL,DE,GB,US \
     --architecture production \
-    --batch-size 64 \
+    --device cuda \
+    --batch-size 128 \
     --learning-rate 1e-3 \
     --lr-schedule cosine \
     --epochs 30 \
@@ -133,29 +149,77 @@ to 8 — the country head adds 128 floats per country).
     --weight-decay 0.01 \
     --gradient-clip 1.0 \
     --eval-split 0.05 \
+    --max-train-seconds 1800 \
+    --early-stop-patience 4 \
+    --metrics-out geocode-research/training-runs/world-prod.jsonl \
     --out geocode/data/models/world-prod.safetensors
 ```
 
-Wall-clock projection (CPU-only, 20-core x86):
+Mandatory hygiene flags:
 
-| Records | Epochs | Throughput | Wall-clock |
-|---------|--------|------------|------------|
-| 1.49 M (BE alone) | 10 | ~250 batches/sec | ~40 min |
-| ~15 M (world) | 30 | ~250 batches/sec | **~30 hours** |
+- `--device cuda` — fail loudly if the GPU isn't reachable rather
+  than silently falling back to CPU.
+- `--max-train-seconds N` — wall-clock cap. The trainer writes a
+  checkpoint and exits with status code **2** if the budget is hit at
+  the start of an epoch. Use the chunk driver below to keep iterating.
+- `--metrics-out PATH.jsonl` — append per-epoch telemetry. The
+  driver below decides whether to continue based on this file; do
+  **not** drop it.
+- `--early-stop-patience N` — auto-stop when eval_loss has plateaued
+  for N consecutive epochs (default min-delta 1e-3).
 
-The 30-hour figure is the dominant cost. To bring it under 6 h, build
-candle with the `cuda` feature (one line in `geocode/Cargo.toml`):
+### 4b — Chunked driver (the "5 minutes between sanity checks" rule)
 
-```toml
-candle-core = { version = "0.10", default-features = false, features = ["cuda"] }
-candle-nn  = { version = "0.10", default-features = false, features = ["cuda"] }
+The user-imposed discipline is *never train more than 5 minutes
+without re-evaluating critically*. `scripts/geocode_train_chunks.py`
+implements that loop on top of the `--max-train-seconds` exit code:
+
+```bash
+python3 scripts/geocode_train_chunks.py \
+    --binary ./target/release/butterfly-geocode \
+    --corpus geocode-training/output/be-corpus-100k.jsonl \
+    --countries BE \
+    --architecture production \
+    --device cuda \
+    --batch-size 128 \
+    --learning-rate 1e-3 \
+    --warmup-steps 200 \
+    --lr-schedule cosine \
+    --epochs 60 \
+    --chunk-seconds 300 \
+    --max-total-seconds 1800 \
+    --early-stop-patience 4 \
+    --plateau-chunks-stop 2 \
+    --out geocode/data/models/belgium-prod.safetensors \
+    --metrics-out geocode-research/training-runs/2026-05-06-gpu-prod.jsonl
 ```
 
-then re-run the training step. A single A100/H100 GPU pushes throughput
-to ~5–10 k batches/sec at this model size, taking the full
-multi-country run from 30h to 3–6h. The architecture is otherwise
-unchanged — same safetensors layout, same sidecar JSON, same inference
-path.
+The driver:
+
+1. Spawns the trainer with `--max-train-seconds = chunk-seconds`.
+2. After each chunk parses the JSONL telemetry and prints
+   `chunk N end-of-chunk: bio_acc=... eval_loss=... train_loss=...`.
+3. Decides:
+   - **continue** if bio_acc improved by ≥ `--min-bio-acc-delta`
+     (default 0.005) or eval_loss improved by ≥
+     `--min-eval-loss-delta` (default 0.005)
+   - **stop** if eval_loss is rising for 2 consecutive chunks
+     (overfit / divergence)
+   - **stop** after `--plateau-chunks-stop` consecutive
+     non-improving chunks
+   - **stop** when wall-clock total reaches `--max-total-seconds`
+4. On continue, re-invokes with `--resume <out> --resume-step <last>`
+   so the cosine LR schedule stays continuous.
+
+### Wall-clock numbers (Belgium 100k corpus, 5060 Ti, fp32, batch=128)
+
+| Architecture | Params | Epoch wall | bio_acc @ epoch 8 | bio_acc @ convergence |
+|---|---|---|---|---|
+| `production` (d=128, l=4, h=8, ff=512) | 0.83 M | ~15 s | ~0.83 | (filled in by run) |
+| `large` (d=256, l=6, h=8, ff=1024) | 4.8 M | ~30 s | (filled in by run) | (filled in by run) |
+
+CPU-only on the same machine clocked **~13 min/epoch**, ~52× slower —
+hence GPU is mandatory for any production-scale run.
 
 ## Phase 5 — Bench
 
@@ -228,6 +292,13 @@ the infrastructure shipped in #192.
   country-acc; per-country breakdown requires an additional eval pass
   iterating per-country. Tracked as #196 (proposed).
 - **Curriculum learning**: train on BE first, then warm-start the world
-  model from the BE checkpoint. Tracked as #197 (proposed).
-- **Mixed-precision (fp16)**: 2x speed on GPU. candle 0.10 supports it
-  but we ship fp32 for CPU stability. Tracked as #198 (proposed).
+  model from the BE checkpoint. The chunked driver supports
+  warm-starting today via `--resume PATH`; the open question is
+  schedule (which mix to start with, when to switch). Tracked as #197
+  (proposed).
+- **Mixed-precision (bf16)**: candle 0.10 supports BF16 dtype but the
+  current `TaggerModel` (LayerNorm + Linear) is F32-only — the
+  `--dtype bf16` flag is plumbed at the API surface and warns + pins
+  to F32 for now. Auto-cast support is filed as #198 (proposed); on
+  the 5060 Ti the F32 path already hits ~15 s/epoch on 100k records,
+  so BF16 is not on the critical path for shipping.
