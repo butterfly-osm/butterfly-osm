@@ -425,108 +425,137 @@ pub async fn route_handler(
         std::borrow::Cow::Borrowed(&mode_data.mask)
     };
 
-    // #197: role-aware snap. Source point must snap to an EBG node
-    // with at least one mode-valid OUTBOUND arc; destination point
-    // must snap to an EBG node with at least one mode-valid INBOUND
-    // arc. The `Src`/`Dst` enum values resolve to the per-mode
-    // `has_outbound` / `has_inbound` bitsets built at boot.
+    // #197: role-aware snap with multi-candidate fallback. Source
+    // point must snap to an EBG node with at least one mode-valid
+    // OUTBOUND arc; destination must snap to one with at least one
+    // INBOUND arc. The `Src`/`Dst` enum values resolve to the per-
+    // mode `has_outbound` / `has_inbound` bitsets built at boot.
+    //
+    // Even with role filtering, the geometrically-closest candidate
+    // can still be the wrong one for two-way roads where both EBG
+    // nodes (one per direction of travel) are present at the same
+    // polyline vertex. We collect the top-K candidates per role, try
+    // (src, dst) combinations in expected-best order, and pick the
+    // first pair that produces a valid route. K is small (4) and the
+    // fallback only runs when the primary candidate fails — typical
+    // queries pay one P2P query, pathological pairs pay up to 16.
     let src_role_filter = SnapRole::Src.role_filter(mode_data);
     let dst_role_filter = SnapRole::Dst.role_filter(mode_data);
 
-    // Snap source (with optional bearing filter)
+    const SNAP_K: usize = 4;
     let src_bearing = bearing_hints.as_ref().and_then(|h| h.first().copied());
-    let (src_orig, src_snap_info) = {
-        let snap_result = if let Some((angle, range)) = src_bearing {
-            state.snap_index.snap_with_bearing_filtered_role(
-                req.src_lon,
-                req.src_lat,
-                mode.0,
-                angle,
-                range,
-                Some(&snap_mask),
-                src_role_filter,
-            )
-        } else {
-            state.snap_index.snap_with_info_filtered_role(
-                req.src_lon,
-                req.src_lat,
-                mode.0,
-                Some(&snap_mask),
-                src_role_filter,
-            )
-        };
-        match snap_result {
-            Some((id, lon, lat, dist)) => (
-                id,
-                SnapInfo {
-                    lon,
-                    lat,
-                    snap_distance_m: dist,
-                    ebg_node_id: id,
-                },
-            ),
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "Could not snap source to road network".to_string(),
-                    }),
-                )
-                    .into_response();
-            }
-        }
-    };
-
-    // Snap destination (with optional bearing filter)
     let dst_bearing = bearing_hints.as_ref().and_then(|h| h.get(1).copied());
-    let (_dst_orig, dst_snap_info) = {
-        let snap_result = if let Some((angle, range)) = dst_bearing {
-            state.snap_index.snap_with_bearing_filtered_role(
-                req.dst_lon,
-                req.dst_lat,
-                mode.0,
-                angle,
-                range,
-                Some(&snap_mask),
-                dst_role_filter,
-            )
-        } else {
-            state.snap_index.snap_with_info_filtered_role(
-                req.dst_lon,
-                req.dst_lat,
-                mode.0,
-                Some(&snap_mask),
-                dst_role_filter,
-            )
-        };
-        match snap_result {
-            Some((id, lon, lat, dist)) => (
-                id,
-                SnapInfo {
-                    lon,
-                    lat,
-                    snap_distance_m: dist,
-                    ebg_node_id: id,
-                },
-            ),
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "Could not snap destination to road network".to_string(),
-                    }),
-                )
-                    .into_response();
-            }
+
+    // Snap top-K source candidates.
+    let src_candidates: Vec<(u32, f64, f64, f64)> = if let Some((angle, range)) = src_bearing {
+        // Bearing-filtered top-K: collect candidates by repeated
+        // bearing-filtered single snaps over an exclusion bitset.
+        // For now we accept that bearing hints reduce to a single
+        // best candidate (the historical behaviour) — bearing implies
+        // direction, so the selected candidate is already the
+        // intended one. K=1 path.
+        match state.snap_index.snap_with_bearing_filtered_role(
+            req.src_lon,
+            req.src_lat,
+            mode.0,
+            angle,
+            range,
+            Some(&snap_mask),
+            src_role_filter,
+        ) {
+            Some(t) => vec![t],
+            None => Vec::new(),
         }
+    } else {
+        state.snap_index.snap_k_with_info_filtered_role(
+            req.src_lon,
+            req.src_lat,
+            mode.0,
+            SNAP_K,
+            Some(&snap_mask),
+            src_role_filter,
+        )
     };
+    if src_candidates.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Could not snap source to road network".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    // Snap top-K destination candidates.
+    let dst_candidates: Vec<(u32, f64, f64, f64)> = if let Some((angle, range)) = dst_bearing {
+        match state.snap_index.snap_with_bearing_filtered_role(
+            req.dst_lon,
+            req.dst_lat,
+            mode.0,
+            angle,
+            range,
+            Some(&snap_mask),
+            dst_role_filter,
+        ) {
+            Some(t) => vec![t],
+            None => Vec::new(),
+        }
+    } else {
+        state.snap_index.snap_k_with_info_filtered_role(
+            req.dst_lon,
+            req.dst_lat,
+            mode.0,
+            SNAP_K,
+            Some(&snap_mask),
+            dst_role_filter,
+        )
+    };
+    if dst_candidates.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Could not snap destination to road network".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    // Pick the primary (best) candidates. The fallback search runs
+    // later, after the CCH query is built, so we can run multiple
+    // P2P queries against the same query state with cheap retries.
+    // The snap-info reported back to the client is updated to match
+    // whichever candidate produced the winning route.
+    let make_snap_info = |t: &(u32, f64, f64, f64)| -> (u32, SnapInfo) {
+        (
+            t.0,
+            SnapInfo {
+                lon: t.1,
+                lat: t.2,
+                snap_distance_m: t.3,
+                ebg_node_id: t.0,
+            },
+        )
+    };
+    let (src_orig, mut src_snap_info) = make_snap_info(&src_candidates[0]);
+    let (_dst_orig, mut dst_snap_info) = make_snap_info(&dst_candidates[0]);
 
     // Convert to rank space directly (#153: collapses
     // original_to_filtered → perm into a single mapping read).
-    let src_rank = mode_data.orig_to_rank[src_orig as usize];
-    let dst_rank = mode_data.orig_to_rank[_dst_orig as usize];
-
-    if src_rank == u32::MAX || dst_rank == u32::MAX {
+    // Map candidate lists from EBG ids to ranks, dropping any that
+    // resolve to u32::MAX (not in the mode's filtered subgraph). If
+    // role filtering is correct the lookup should always succeed —
+    // we filter defensively to avoid a hard error mid-fallback.
+    let src_rank_candidates: Vec<u32> = src_candidates
+        .iter()
+        .map(|c| mode_data.orig_to_rank[c.0 as usize])
+        .filter(|&r| r != u32::MAX)
+        .collect();
+    let dst_rank_candidates: Vec<u32> = dst_candidates
+        .iter()
+        .map(|c| mode_data.orig_to_rank[c.0 as usize])
+        .filter(|&r| r != u32::MAX)
+        .collect();
+    if src_rank_candidates.is_empty() || dst_rank_candidates.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -535,6 +564,12 @@ pub async fn route_handler(
         )
             .into_response();
     }
+    let mut src_rank = src_rank_candidates[0];
+    let mut dst_rank = dst_rank_candidates[0];
+    // Track which candidate index won so we can update the snap-info
+    // block returned in the response.
+    let mut chosen_src_idx: usize = 0;
+    let mut chosen_dst_idx: usize = 0;
 
     // Same-edge: return consistent zero-distance, zero-duration result
     if src_rank == dst_rank {
@@ -579,10 +614,15 @@ pub async fn route_handler(
     }
 
     // Helper: build route from query result — returns (geometry, duration_s, distance_m, steps, ebg_path)
+    // src_rank / dst_rank are passed in so the closure doesn't bind
+    // them by reference (which would conflict with the #197 fallback
+    // logic that reassigns src_rank / dst_rank on a successful retry).
     let build_route = |result: &super::query::QueryResult,
                        weights: &super::state::CchWeights,
                        format: GeometryFormat,
-                       want_steps: bool|
+                       want_steps: bool,
+                       src_rank: u32,
+                       dst_rank: u32|
      -> (RouteGeometry, f64, f64, Option<Vec<RouteStep>>, Vec<u32>) {
         let rank_path = unpack_path(
             &mode_data.cch_topo,
@@ -642,7 +682,63 @@ pub async fn route_handler(
     } else {
         CchQuery::new(&state, mode)
     };
-    let result = match query.query(src_rank, dst_rank) {
+    // #197: multi-candidate fallback. Try the best (src, dst)
+    // combination first; if it fails, retry with the next candidates
+    // in (src_idx, dst_idx) order biased toward the closer-to-input
+    // ones (since `snap_k_with_info_filtered_role` returns sorted by
+    // distance). This catches the residual two-way-road case where
+    // the role filter alone can't disambiguate which direction's
+    // EBG node is the right starting state for THIS particular
+    // src→dst pair.
+    //
+    // Ordering: enumerate by (i+j) ascending, then by i ascending
+    // (prefer closer src over closer dst when sums tie). This
+    // produces (0,0), (0,1), (1,0), (0,2), (1,1), (2,0), … so the
+    // first additional query swaps to the second-best dst, the
+    // second swaps to the second-best src, etc.
+    let mut combo_order: Vec<(usize, usize)> = Vec::new();
+    for sum in 0..(src_rank_candidates.len() + dst_rank_candidates.len()) {
+        for i in 0..src_rank_candidates.len() {
+            let j = sum.checked_sub(i);
+            if let Some(j) = j
+                && j < dst_rank_candidates.len()
+            {
+                combo_order.push((i, j));
+            }
+        }
+    }
+    let mut result_opt: Option<super::query::QueryResult> = None;
+    for &(i, j) in &combo_order {
+        let s = src_rank_candidates[i];
+        let d = dst_rank_candidates[j];
+        if s == d {
+            // Same-rank pair already short-circuited above when the
+            // primary candidates collide. Subsequent collisions in
+            // fallback are degenerate; skip.
+            continue;
+        }
+        if let Some(r) = query.query(s, d) {
+            src_rank = s;
+            dst_rank = d;
+            chosen_src_idx = i;
+            chosen_dst_idx = j;
+            result_opt = Some(r);
+            break;
+        }
+    }
+    // If the fallback selected a non-primary candidate, update the
+    // snap-info reported in the response so callers see WHICH
+    // physical snap was used.
+    if chosen_src_idx != 0 {
+        let (_, info) = make_snap_info(&src_candidates[chosen_src_idx]);
+        src_snap_info = info;
+    }
+    if chosen_dst_idx != 0 {
+        let (_, info) = make_snap_info(&dst_candidates[chosen_dst_idx]);
+        dst_snap_info = info;
+    }
+    let _ = src_orig;
+    let result = match result_opt {
         Some(r) => r,
         None => {
             return (
@@ -664,7 +760,7 @@ pub async fn route_handler(
     };
 
     let (geometry, duration_s, distance_m, steps, ebg_path) =
-        build_route(&result, active_weights, geom_format, req.steps);
+        build_route(&result, active_weights, geom_format, req.steps, src_rank, dst_rank);
 
     // GPX output: skip annotations, alternatives, debug — just emit track points
     if wants_gpx(&headers) {
@@ -787,7 +883,7 @@ pub async fn route_handler(
                 }
 
                 let (alt_geom, alt_dur, alt_dist, alt_steps, _alt_path) =
-                    build_route(&alt_result, &penalized_weights, geom_format, req.steps);
+                    build_route(&alt_result, &penalized_weights, geom_format, req.steps, src_rank, dst_rank);
 
                 // Penalize this alternative's edges for next iteration
                 for &(_node, edge_idx) in &alt_result.forward_parent {
