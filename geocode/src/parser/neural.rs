@@ -84,8 +84,18 @@ impl NeuralParser {
     /// `<path>.config.json` next to the weights — written by
     /// [`crate::tagger::training::train_and_save`].
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
+        Self::load_on(path, crate::tagger::training::DevicePref::Auto)
+    }
+
+    /// Load with explicit device control. The server can pin inference
+    /// to CPU for cold-start determinism, or to CUDA when batch traffic
+    /// is high enough to amortize the kernel-launch overhead.
+    pub fn load_on<P: AsRef<Path>>(
+        path: P,
+        device_pref: crate::tagger::training::DevicePref,
+    ) -> Result<Self> {
         let (model, cfg, country_vocab, device) =
-            crate::tagger::training::load_model(path.as_ref())?;
+            crate::tagger::training::load_model_on(path.as_ref(), device_pref)?;
         Ok(Self {
             model_path: path.as_ref().to_path_buf(),
             config: cfg,

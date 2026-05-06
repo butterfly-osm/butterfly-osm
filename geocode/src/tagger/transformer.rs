@@ -172,6 +172,40 @@ impl ModelConfig {
         }
     }
 
+    /// Larger profile for the post-SOTA exploration target.
+    ///
+    /// d_model=256, n_heads=8 (each 32-dim), n_layers=6, d_ff=1024.
+    /// vocab=260, max_seq_len=128.
+    ///
+    /// Rough parameter count (dominant terms):
+    /// - embed: 260 × 256 = 66 560
+    /// - 6 encoder blocks, each:
+    ///   - QKV: 256 × 768 = 196 608
+    ///   - attn out: 256 × 256 = 65 536
+    ///   - FFN fc1: 256 × 1024 = 262 144
+    ///   - FFN fc2: 1024 × 256 = 262 144
+    ///   - LN×2: ≈ 1 024
+    ///   - sums to ~787 456 per block × 6 = ~4 724 736
+    /// - final LN + heads: ≈ 3 k
+    /// Total ≈ 4.8 M fp32 weights ≈ 19 MB safetensors. Sits inside the
+    /// 16 GB VRAM budget on the 5060 Ti by a wide margin and lets us
+    /// test the post-SOTA hypothesis from the Fork A+ brief (target
+    /// 2-4 M params).
+    #[must_use]
+    pub fn large(n_countries: usize) -> Self {
+        Self {
+            d_model: 256,
+            n_heads: 8,
+            n_layers: 6,
+            d_ff: 1024,
+            max_seq_len: MAX_SEQ_LEN,
+            vocab_size: VOCAB_SIZE,
+            num_bio_labels: NUM_BIO_LABELS,
+            n_countries: n_countries.max(1),
+            layer_norm_eps: 1e-5,
+        }
+    }
+
     /// Approximate parameter count (weights only — biases and LN
     /// scales/biases are tiny rounding terms). Used by tests + logging
     /// to confirm the architecture lands at the expected size.
