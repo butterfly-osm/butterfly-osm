@@ -12,8 +12,8 @@ categories = ["api-bindings"]
 [dependencies]
 butterfly-common = { path = "../butterfly-common" }
 # `butterfly-dl::regions` provides the per-region TOML index that
-# `build-shards-all` consults to discover authoritative-source files
-# (BOSA BeSt for BE, etc.).
+# `build-shards-all` consults to discover OpenAddresses dump locations
+# per country.
 butterfly-dl = { path = "../dl" }
 clap = { workspace = true }
 thiserror = { workspace = true }
