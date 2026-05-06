@@ -1,0 +1,44 @@
+## India morphology table.
+##
+## Indian addresses are written in English (or Hindi) with British
+## conventions: street type SUFFIXED ("Mahatma Gandhi Road"). Postcode
+## is the 6-digit PIN code, trailing the city/state.
+
+[country]
+iso2 = "IN"
+name = "India"
+
+[render]
+field_separator_after_house = ", "
+postcode_city_separator = " - "
+## PIN code goes after the city/state.
+postcode_position = "trailing"
+
+[postcode]
+## 6-digit Indian PIN code; first digit is region 1-8.
+regex = '^[1-8][0-9]{5}$'
+format = "{}"
+
+[street_types]
+long_to_short = [
+    ["Road", "Rd"],
+    ["Street", "St"],
+    ["Lane", "Ln"],
+    ["Avenue", "Ave"],
+    ["Marg", "Mg"],
+    ["Nagar", "Ngr"],
+    ["Colony", "Col"],
+    ["Sector", "Sec"],
+    ["Phase", "Ph"],
+    ["Block", "Blk"],
+    ["Cross", "Crs"],
+    ["Main", "Mn"],
+    ["Mahatma", "M."],
+    ["Saint", "St"],
+]
+
+## Indian markers — English-suffix, plus Hindi/Marathi loan words
+## ("marg" = road, "nagar" = township).
+[street_types.markers]
+en = ["road", "street", "lane", "avenue", "cross", "main", "circle"]
+hi = ["marg", "nagar", "colony", "sector", "phase", "block", "chowk"]
