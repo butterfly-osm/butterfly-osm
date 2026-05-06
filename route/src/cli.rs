@@ -557,6 +557,30 @@ pub enum Commands {
         out: PathBuf,
     },
 
+    /// Issue #146: empirical sharing analysis between mode pairs in a
+    /// `*.butterfly` container. Loads each mode's accessibility mask +
+    /// filtered-EBG arc set + topology section header, computes node
+    /// and arc Jaccard overlap for every pair, and emits a JSON report
+    /// to stdout (with a human-readable summary on stderr).
+    ///
+    /// Output is the empirical input to the #146 acceptance decision
+    /// — whether two modes' CCH topologies share enough structure that
+    /// bundling them (one shared topology + per-mode customised
+    /// weights) pays off vs the per-mode baseline. The tool projects a
+    /// linear-scaling estimate; the ground-truth measurement still
+    /// requires actually rebuilding step5/6/7 on the union, which is
+    /// out of scope for this command.
+    TopologyDiff {
+        /// Path to a `*.butterfly` container.
+        #[arg(short, long)]
+        path: PathBuf,
+
+        /// Comma-separated list of modes to compare. If omitted, every
+        /// mode in the container is compared pairwise.
+        #[arg(long)]
+        modes: Option<String>,
+    },
+
     /// Step 9: Start query server
     Serve {
         /// Directory containing all step outputs (step3/, step4/, etc.).
@@ -1636,6 +1660,9 @@ impl Cli {
                 verify_full,
             } => crate::pack::inspect(&path, verify, verify_full),
             Commands::Unpack { path, out } => crate::pack::unpack(&path, &out),
+            Commands::TopologyDiff { path, modes } => {
+                crate::pack::topology_diff(&path, modes.as_deref())
+            }
             Commands::Serve {
                 data_dir,
                 data,
