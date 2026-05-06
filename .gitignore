@@ -116,6 +116,10 @@ bench/geocode/results/
 # the per-query rows (large + can be regenerated from rerun).
 !bench/geocode/results/2026-05-06-multi-country-v2/
 bench/geocode/results/2026-05-06-multi-country-v2/server.log
+# #81 BE-merged-shard bench: closes the BE recall gap via OA+OSM merge.
+# Keep the summary + delta analysis; per-query rows are large but useful
+# for reproducibility so we keep them too (they are JSONL-compressed).
+!bench/geocode/results/2026-05-06-be-merged-shard/
 bench/geocode/results/2026-05-06-multi-country-v2/*/butterfly-rows.jsonl
 bench/geocode/results/2026-05-06-multi-country-v2/*/nominatim-rows.jsonl
 bench/geocode/.venv/

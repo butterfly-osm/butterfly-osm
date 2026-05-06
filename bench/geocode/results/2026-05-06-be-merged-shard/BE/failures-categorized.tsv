@@ -1,0 +1,613 @@
+query_id	category	facets	query_text	bf_reason	bf_d_m	nom_ok	gold_lat	gold_lon	bf_top1_lat	bf_top1_lon	nom_top1_lat	nom_top1_lon
+be-clean-00002	clean	has_diacritics	Lagerstraße 45, 4750 Elsenborn	wrong_near	188.5	True	50.4610025	6.2090870	50.4622710	6.2108526	50.4608525	6.2090542
+be-clean-00003	clean		Rue de l'Ange, 5000 Namur	wrong_near	837.2	False	50.4633065	4.8661216	50.4680069	4.8568813	50.4640850	4.8653307
+be-clean-00005	clean		Bilzersteenweg 53A, 3730 Hoeselt	wrong_near	660.0	True	50.8561759	5.4977862	50.8510900	5.4929400	50.8562092	5.4979690
+be-clean-00007	clean	has_slash_suffix	Prins Boudewijnlaan 9, 2550 Kontich /8	wrong_far	23389.4	True	51.1427069	4.4354821	51.1409400	4.7707400	51.1427069	4.4354821
+be-clean-00008	clean		Dorpsstraat 44, 1731 Relegem	wrong_near	200.7	True	50.8997628	4.2805763	50.9012875	4.2821072	50.8997628	4.2805763
+be-clean-00018	clean	has_diacritics	Chaussée de Louvain 300, 5004 Bouge	wrong_far	17809.1	True	50.4770205	4.8770909	50.3186500	4.9145600	50.4769962	4.8771244
+be-clean-00020	clean	has_diacritics	Chaussée de Dinant 31, 5530 Spontin	wrong_near	6451.8	True	50.3222336	5.0044630	50.3191200	4.9137200	50.3222336	5.0044630
+be-clean-00023	clean	has_diacritics	Eupener Straße 54, 4731 Raeren - Eynatten	wrong_near	877.3	True	50.6875475	6.0794169	50.6864100	6.0917400	50.6875957	6.0793916
+be-clean-00028	clean	has_diacritics	Chaussée de Dinant 31, 5530 Spontin	wrong_near	6451.8	True	50.3222336	5.0044630	50.3191200	4.9137200	50.3222336	5.0044630
+be-clean-00035	clean	has_diacritics	Lagerstraße 45, 4750 Elsenborn	wrong_near	188.5	True	50.4610025	6.2090870	50.4622710	6.2108526	50.4608525	6.2090542
+be-clean-00036	clean		Gistelse Steenweg 479, 8200 Sint-Andries	wrong_near	2962.1	True	51.1971037	3.1808488	51.1811453	3.1468167	51.1970594	3.1808809
+be-clean-00038	clean		Rue de l'Eperonnerie 61, 4041 Milmort	wrong_near	883.9	True	50.6946540	5.5909687	50.6946635	5.6035181	50.6946540	5.5909687
+be-clean-00047	clean		Langestraat 80, 3111 Wezemaal	wrong_far	49820.2	True	50.9534521	4.7502990	50.7609041	4.1094140	50.9535424	4.7504337
+be-clean-00049	clean		Baron Ruzettelaan 4, 8310 Assebroek	wrong_near	1729.9	True	51.1984511	3.2305637	51.2096500	3.2478000	51.1984601	3.2304225
+be-clean-00057	clean		Veltwijcklaan 180, 2180 Ekeren (Antwerpen)	wrong_near	771.9	True	51.2805259	4.4295905	51.2773400	4.4197300	51.2805379	4.4295829
+be-clean-00058	clean		Rue Haute Claire 10, 4041 Milmort	wrong_near	840.3	True	50.6875297	5.6074559	50.6946635	5.6035181	50.6875297	5.6074559
+be-clean-00061	clean		Kapelsesteenweg 567, 2180 Mariaburg	wrong_near	2514.3	True	51.2928192	4.4434991	51.2720600	4.4578300	51.2928110	4.4434363
+be-clean-00069	clean		Rue Haute 18, 5190 Spy	wrong_far	78961.3	True	50.4807470	4.7072391	50.3582254	5.8050347	50.4807165	4.7072730
+be-clean-00075	clean		Wersbeekstraat 2, 3391 Meensel-Kiezegem	wrong_near	109.4	True	50.8959825	4.9249216	50.8968427	4.9256777	50.8959581	4.9249399
+be-clean-00078	clean		Rue Haute 4, 7321 Blaton	wrong_near	748.6	True	50.5000092	3.6596952	50.4944238	3.6656040	50.4999964	3.6596375
+be-clean-00079	clean		Noordheuvel 66, 2990 Wuustwezel-Gooreind	wrong_near	809.2	True	51.3727280	4.5234766	51.3710500	4.5348200	51.3727280	4.5234766
+be-clean-00084	clean		Gemeentestraat 69, 3010 Kessel-Lo	wrong_near	258.5	True	50.8875305	4.7225617	50.8860900	4.7196700	50.8875977	4.7224775
+be-clean-00100	clean	has_diacritics	Rue Belvaux, 4030 Grivegnée	wrong_near	1920.1	True	50.6218580	5.5995666	50.6320218	5.6215725	50.6223607	5.5986592
+be-clean-00113	clean		Rue du Blanc-Bois 2, 5020 Vedrin	wrong_near	2694.2	True	50.5024547	4.8761523	50.4785106	4.8703253	50.5024583	4.8761475
+be-clean-00116	clean	has_diacritics	Aachener Straße 98, 4731 Eynatten - Raeren	wrong_near	1296.8	True	50.7041968	6.0874539	50.6928700	6.0830700	50.7041968	6.0874539
+be-clean-00119	clean	has_diacritics	Eupener Straße 54, 4731 Raeren - Eynatten	wrong_near	877.3	True	50.6875475	6.0794169	50.6864100	6.0917400	50.6875957	6.0793916
+be-clean-00121	clean		Stationsstraat 7, 8210 Loppem	wrong_far	48830.2	True	51.1551436	3.1922248	50.7324332	3.3810858	51.1551061	3.1922021
+be-clean-00130	clean		Avenue de la Gare 21, 1401 Baulers	wrong_far	33730.6	True	50.6082892	4.3481635	50.9099600	4.2978300	50.6082892	4.3481635
+be-clean-00141	clean		Stationsstraat 7, 8210 Loppem	wrong_far	48830.2	True	51.1551436	3.1922248	50.7324332	3.3810858	51.1551061	3.1922021
+be-clean-00152	clean		Rue des Dames Blanches, 5000 Namur	wrong_far	53986.0	True	50.4668517	4.8667657	50.8304900	4.3594200	50.4671882	4.8670727
+be-clean-00153	clean		Stenebrugstraat, 1741 Ternat	wrong_near	299.0	True	50.8545610	4.1564790	50.8535400	4.1604200	50.8547948	4.1558856
+be-clean-00155	clean		Tervuursesteenweg 132, 1820 Perk	wrong_far	13859.3	True	50.9336360	4.4966869	50.8159200	4.4317700	50.9336671	4.4967239
+be-clean-00175	clean		Rijselsestraat 29, 8210 Loppem	wrong_near	271.1	True	51.1526158	3.1987292	51.1546300	3.1965400	51.1526322	3.1987808
+be-clean-00176	clean		Rue du Fond Agny 35, 1380 Couture-St-Germain	wrong_near	673.3	True	50.6599738	4.4852360	50.6618296	4.4761434	50.6599738	4.4852360
+be-clean-00178	clean		Paddegatstraat, 1880 Nieuwenrode	wrong_far	94207.1	False	50.9796033	4.3513867	51.1792500	3.0407800	50.9752497	4.3576716
+be-clean-00185	clean		Place de Liernu, 5310 Liernu	wrong_far	11058.0	True	50.5841129	4.8276715	50.6814600	4.7956200	50.5838461	4.8272870
+be-clean-00186	clean		Brugsesteenweg 527, 9030 Mariakerke	wrong_far	56411.0	True	51.0710463	3.6811079	51.1268600	2.8781500	51.0709571	3.6810526
+be-clean-00196	clean	has_diacritics	Rue de la Station 63, 4032 Chênée	wrong_far	82810.7	True	50.6090509	5.6144276	49.9857100	4.9764600	50.6090662	5.6144985
+be-clean-00198	clean		Heesstraat 20, 3560 Meldert-Lummen	wrong_near	123.8	True	50.9979824	5.1355512	50.9979800	5.1373200	50.9979824	5.1355512
+be-abbreviated-00202	abbreviated	has_abbreviation	Kerkstr. 18, 2290 Vorselaar	wrong_near	109.9	True	51.2028867	4.7698300	51.2025861	4.7713322	51.2029302	4.7698790
+be-abbreviated-00203	abbreviated		Tervuursesteenweg 772, 1982 Elewijt	wrong_near	5107.1	True	50.9600252	4.4970642	51.0054700	4.4865000	50.9600129	4.4969941
+be-abbreviated-00205	abbreviated	has_abbreviation	Ch. Bara 604, 1410 Waterloo	wrong_near	1585.4	False	50.7005357	4.4011928	50.7140096	4.3938320		
+be-abbreviated-00207	abbreviated	has_abbreviation	Grand'R. 26, 5030 Gembloux	wrong_near	810.7	False	50.5605740	4.6943422	50.5612590	4.6829157	50.5828270	4.7285789
+be-abbreviated-00208	abbreviated	has_abbreviation,has_diacritics	R. Joseph Lizon 24, 7950 Chièvres	wrong_near	4922.5	True	50.5672159	3.7474234	50.5868721	3.8098856	50.5673029	3.7471451
+be-abbreviated-00209	abbreviated	has_abbreviation	R. Piretfontaine 5, 4140 Dolembreux	wrong_near	1404.9	True	50.5364286	5.6337110	50.5345342	5.6533642	50.5364286	5.6337110
+be-abbreviated-00212	abbreviated	has_abbreviation	Ch. de Namur 96a, 5030 Gembloux	wrong_near	1493.1	False	50.5568744	4.7028934	50.5612590	4.6829157		
+be-abbreviated-00213	abbreviated	has_abbreviation	Voskapelleln. 11, 1930 Nossegem	wrong_near	2203.5	True	50.8787490	4.5105242	50.8822500	4.4796100	50.8780778	4.5103448
+be-abbreviated-00214	abbreviated	has_abbreviation	Grand-R. 218, 6740 Sainte-Marie	wrong_near	384.0	False	49.6730100	5.5628737	49.6696822	5.5642994		
+be-abbreviated-00215	abbreviated	has_abbreviation	R. Grande 71,73, 7330 Saint-Ghislain	wrong_near	7679.9	False	50.4449296	3.8206914	50.5033413	3.8786019		
+be-abbreviated-00216	abbreviated	has_abbreviation,has_diacritics	R. du Président 14, 5000 Namur	wrong_far	113818.2	True	50.4633330	4.8637295	50.8201100	3.3508400	50.4633358	4.8636857
+be-abbreviated-00217	abbreviated	has_abbreviation	Pl. des Combattants 20, 4840 Welkenraedt	wrong_near	406.8	True	50.6605926	5.9721061	50.6642039	5.9730310	50.6605926	5.9721061
+be-abbreviated-00218	abbreviated	has_abbreviation	R. Grande 23, 7330 Saint-Ghislain	wrong_near	7555.0	True	50.4464360	3.8202707	50.5033413	3.8786019	50.4464583	3.8203193
+be-abbreviated-00220	abbreviated		Steenhuffeldorp 92, 1840 Steenhuffel	wrong_near	592.4	True	50.9937166	4.2630647	50.9960300	4.2706900	50.9936906	4.2630810
+be-abbreviated-00221	abbreviated	has_abbreviation	Molenstr. 62, 2550 Kontich	wrong_far	30220.1	True	51.1367474	4.4413108	50.8651446	4.4567232	51.1367795	4.4413505
+be-abbreviated-00222	abbreviated	has_diacritics	Bd d'Avroy 238, 4000 Liège	wrong_near	4566.0	True	50.6318684	5.5672700	50.5908102	5.5662833	50.6319715	5.5672535
+be-abbreviated-00223	abbreviated	has_abbreviation	Grand-R. 218, 6740 Sainte-Marie	wrong_near	384.0	False	49.6730100	5.5628737	49.6696822	5.5642994		
+be-abbreviated-00224	abbreviated	has_abbreviation	R. Joseph-Jean Merlot 3, 5060 Falisolle	wrong_near	357.5	True	50.4187846	4.6207761	50.4158401	4.6187497	50.4187658	4.6207407
+be-abbreviated-00225	abbreviated	has_diacritics	Bd du Prince Régent 1, 7900 Leuze	wrong_far	66869.6	True	50.6019272	3.6391829	50.8435200	4.5090900	50.6019272	3.6391829
+be-abbreviated-00228	abbreviated	has_abbreviation	R. des Marronniers 1, 5580 Han-sur-Lesse	wrong_near	584.6	False	50.1215745	5.1915532	50.1227166	5.1835489	50.1238880	5.1882467
+be-abbreviated-00229	abbreviated	has_abbreviation	Ch. de Bruxelles 390, 1410 Waterloo	wrong_far	12274.7	False	50.7093403	4.4008039	50.8184600	4.3744100	50.7162893	4.3727316
+be-abbreviated-00230	abbreviated	has_abbreviation,has_diacritics	1ère Av. 50, 4040 Herstal	wrong_near	3119.7	True	50.6907089	5.6129504	50.6649089	5.6303449	50.6907089	5.6129504
+be-abbreviated-00232	abbreviated		Gistelse Steenweg 276, 8200 Sint-Andries	wrong_near	4019.5	True	51.2004797	3.1955502	51.1811453	3.1468167	51.2004797	3.1955502
+be-abbreviated-00233	abbreviated	has_abbreviation	Dirk Boutsln. 42, 3000 Leuven	wrong_near	874.1	True	50.8807857	4.6986138	50.8876343	4.7047301	50.8807857	4.6986138
+be-abbreviated-00234	abbreviated	has_abbreviation	Vredeln. 69, 8820 Torhout	wrong_near	1114.9	True	51.0572077	3.0982092	51.0671557	3.1002052	51.0574693	3.0982643
+be-abbreviated-00235	abbreviated	has_abbreviation	Hector Henneauln. 64, 1930 Zaventem	wrong_near	966.0	True	50.8806709	4.4751452	50.8872964	4.4662378	50.8806787	4.4751336
+be-abbreviated-00236	abbreviated	has_abbreviation	R. des Marronniers 1, 5580 Han-sur-Lesse	wrong_near	584.6	False	50.1215745	5.1915532	50.1227166	5.1835489	50.1238880	5.1882467
+be-abbreviated-00238	abbreviated	has_abbreviation	R. des Marronniers 1, 5580 Han-sur-Lesse	wrong_near	584.6	False	50.1215745	5.1915532	50.1227166	5.1835489	50.1238880	5.1882467
+be-abbreviated-00241	abbreviated	has_abbreviation	R. Haute Claire 1, 4041 Milmort	wrong_near	873.2	True	50.6872827	5.6077508	50.6946635	5.6035181	50.6872827	5.6077508
+be-abbreviated-00242	abbreviated		Wijnegemsteenweg 39A, 2970 's-Gravenwezel	wrong_near	1144.7	True	51.2616856	4.5500261	51.2519100	4.5448700	51.2616966	4.5500057
+be-abbreviated-00243	abbreviated	has_abbreviation	R. Ferrer 316, 7080 Frameries	wrong_near	489.4	True	50.4036933	3.9117953	50.4079400	3.9136100	50.4036933	3.9117953
+be-abbreviated-00244	abbreviated		Steenweg, 1745 Mazenzele	wrong_far	23618.7	False	50.9425742	4.1701685	51.0276400	4.4793400	50.9449561	4.1681000
+be-abbreviated-00246	abbreviated	has_abbreviation	Pl. de la Gare 9, 1420 Braine-l'Alleud	wrong_near	3742.3	True	50.6854622	4.3752298	50.6911785	4.3228787	50.6854711	4.3752277
+be-abbreviated-00247	abbreviated	has_abbreviation	Norbert Neeckxln. 73, 3920 Lommel	wrong_far	82514.1	True	51.2256826	5.3284718	50.8433400	4.3171100	51.2256826	5.3284718
+be-abbreviated-00248	abbreviated	has_abbreviation	Sint-Jorisstr. 43, 8000 Brugge	wrong_near	144.2	False	51.2114565	3.2237955	51.2123600	3.2223100	51.2138417	3.2214859
+be-abbreviated-00249	abbreviated	has_abbreviation	R. du Commerce 2, 5590 Ciney	wrong_near	976.7	True	50.2953988	5.0998810	50.2866935	5.0980489	50.2953478	5.0998588
+be-abbreviated-00250	abbreviated	has_abbreviation	R. Grande 57, 7330 Saint-Ghislain	wrong_near	7651.0	True	50.4452939	3.8205512	50.5033413	3.8786019	50.4452963	3.8206444
+be-abbreviated-00251	abbreviated	has_abbreviation	Ruiterstr. 32, 3930 Hamont	wrong_near	324.9	True	51.2586374	5.5468099	51.2557200	5.5470700	51.2586374	5.5468099
+be-abbreviated-00252	abbreviated	has_abbreviation	de Borghgraveln. 14, 3550 Heusden-Zolder	wrong_near	3832.4	True	51.0126317	5.2791635	50.9810231	5.3009950	51.0126224	5.2791000
+be-abbreviated-00253	abbreviated	has_abbreviation	R. de l'Ange 61-63, 5000 Namur	wrong_near	743.9	True	50.4639756	4.8652695	50.4680069	4.8568813	50.4639756	4.8652695
+be-abbreviated-00254	abbreviated	has_abbreviation	Zeeln. 21, 8660 De Panne	wrong_far	46947.8	True	51.0966489	2.5883747	51.2274100	3.2285300	51.0966959	2.5882498
+be-abbreviated-00257	abbreviated	has_abbreviation	Dorpsstr. 48, 8470 Gistel	wrong_near	5692.4	True	51.1753857	2.9352881	51.2093000	2.8741000	51.1753857	2.9352881
+be-abbreviated-00258	abbreviated	has_abbreviation	R. de l'Ange 27-31, 5000 Namur	wrong_near	816.8	True	50.4633175	4.8657645	50.4680069	4.8568813	50.4633175	4.8657645
+be-abbreviated-00259	abbreviated	has_abbreviation	Albertkanaalstr. 75A, 3511 Kuringen	wrong_near	844.7	True	50.9519957	5.3055646	50.9585800	5.2995500	50.9519851	5.3054867
+be-abbreviated-00261	abbreviated	has_abbreviation	Hoogstr. 66, 1930 Zaventem	wrong_near	708.8	True	50.8820235	4.4719149	50.8872964	4.4662378	50.8820265	4.4716587
+be-abbreviated-00263	abbreviated	has_abbreviation	Dorpsstr. 34, 3545 Zelem	wrong_far	36779.5	True	50.9799005	5.1033150	51.0949800	4.6101600	50.9798551	5.1033590
+be-abbreviated-00266	abbreviated	has_abbreviation	R. de l'Abbaye 1, 4040 Herstal	wrong_near	3283.0	True	50.6944223	5.6290727	50.6649089	5.6303449	50.6944223	5.6290727
+be-abbreviated-00267	abbreviated	has_abbreviation	Jan Breydelstr. 32, 9000 Gent	wrong_far	52319.8	True	51.0563384	3.7200509	50.8404000	4.3836000	51.0563384	3.7201061
+be-abbreviated-00268	abbreviated		Rue de St-Hubert 16, 6890 Redu	wrong_far	133704.7	True	50.0072643	5.1607521	51.2046000	4.9864300	50.0072615	5.1607934
+be-abbreviated-00271	abbreviated	has_abbreviation	R. Robesse 36c, 6041 Gosselies	wrong_near	1672.3	True	50.4871490	4.4514086	50.4722423	4.4482791	50.4871490	4.4514086
+be-abbreviated-00272	abbreviated	has_abbreviation	Baron August de Becker Remypl. 6, 3010 Kessel-Lo	wrong_near	328.3	False	50.8848408	4.7179376	50.8832461	4.7218755		
+be-abbreviated-00278	abbreviated	has_abbreviation,has_diacritics	R. de la Rivièrette 13, 7333 Tertre	wrong_far	63285.7	True	50.4617340	3.8111904	50.5609300	4.6924800	50.4617356	3.8111885
+be-abbreviated-00279	abbreviated	has_abbreviation	Stationsstr. 32, 8210 Loppem	wrong_far	48886.9	True	51.1553200	3.1902384	50.7324332	3.3810858	51.1554011	3.1902029
+be-abbreviated-00280	abbreviated	has_abbreviation	R. Marneffe 47, 4540 Amay	wrong_far	11921.9	True	50.5406683	5.3009837	50.5794666	5.1436491	50.5406683	5.3009837
+be-abbreviated-00281	abbreviated	has_abbreviation	R. des Carmes 49, 5000 Namur	wrong_near	507.1	True	50.4667124	4.8637516	50.4680069	4.8568813	50.4667738	4.8637272
+be-abbreviated-00282	abbreviated	has_abbreviation,has_diacritics	4ème Av. 73, 4040 Herstal	wrong_near	3782.9	True	50.6956119	5.6072204	50.6649089	5.6303449	50.6956119	5.6072204
+be-abbreviated-00283	abbreviated	has_abbreviation	Pastoor Henri Scherpereelstr. 28, 8630 Veurne	wrong_far	91435.4	True	51.0878039	2.7447213	51.2117200	4.0406500	51.0878153	2.7447901
+be-abbreviated-00284	abbreviated	has_abbreviation	R. de la Roche 32, 6660 Houffalize	wrong_near	1001.2	True	50.1317695	5.7745548	50.1343377	5.7880182	50.1317645	5.7744837
+be-abbreviated-00285	abbreviated	has_abbreviation	Ooststr. 10, 8800 Roeselare	wrong_near	346.5	True	50.9456226	3.1249498	50.9458050	3.1200129	50.9454735	3.1249663
+be-abbreviated-00288	abbreviated	has_abbreviation	Tiensestr. 29, 3000 Leuven	wrong_near	358.9	True	50.8780712	4.7037352	50.8757500	4.7072900	50.8780910	4.7037804
+be-abbreviated-00289	abbreviated	has_abbreviation	Prins Boudewijnln. 274, 2650 Edegem	wrong_near	1299.1	True	51.1606473	4.4286477	51.1511395	4.4394721	51.1607075	4.4285806
+be-abbreviated-00290	abbreviated	has_abbreviation	Stationsstr. 48, 8790 Waregem	wrong_far	17732.4	True	50.8888270	3.4304260	50.7324332	3.3810858	50.8888775	3.4305510
+be-abbreviated-00291	abbreviated	has_abbreviation	Pl. de la Gare 2, 4840 Welkenraedt	wrong_near	430.6	True	50.6603539	5.9736859	50.6642039	5.9730310	50.6603539	5.9736859
+be-abbreviated-00292	abbreviated	has_abbreviation	Van Schoonbekestr. 158, 2018 Antwerpen	wrong_near	3137.7	True	51.1995048	4.4035074	51.2277200	4.4041825	51.1995289	4.4035178
+be-abbreviated-00293	abbreviated	has_abbreviation,has_diacritics	1ère Av. 105, 4040 Herstal	wrong_near	2914.0	True	50.6895921	5.6164528	50.6649089	5.6303449	50.6895921	5.6164528
+be-abbreviated-00294	abbreviated	has_abbreviation	R. des Carmes 1, 5000 Namur	wrong_near	556.7	True	50.4654007	4.8635968	50.4680069	4.8568813	50.4654007	4.8635968
+be-abbreviated-00295	abbreviated		Steenhuffeldorp 92, 1840 Steenhuffel	wrong_near	592.4	True	50.9937166	4.2630647	50.9960300	4.2706900	50.9936906	4.2630810
+be-abbreviated-00296	abbreviated	has_abbreviation	R. de l'Eperonnerie 10, 4041 Milmort	wrong_near	979.0	True	50.6961028	5.5898063	50.6946635	5.6035181	50.6961028	5.5898063
+be-abbreviated-00301	abbreviated	has_abbreviation,has_diacritics	R. Basse 2, 4600 Visé	wrong_far	45077.0	True	50.7341677	5.6939494	50.6339983	5.0739677	50.7341467	5.6938363
+be-abbreviated-00303	abbreviated	has_slash_suffix	Diestseweg 184, 2440 Geel /B	wrong_near	401.9	True	51.1545455	4.9940724	51.1581300	4.9933300	51.1545455	4.9940724
+be-abbreviated-00304	abbreviated	has_abbreviation	Beukenln. 55, 3730 Hoeselt	wrong_near	592.4	True	50.8477173	5.4799763	50.8502102	5.4874330	50.8477215	5.4799849
+be-abbreviated-00306	abbreviated	has_diacritics	Route de Couvin 61, 5651 Somzée	wrong_far	27418.5	True	50.3023291	4.4817745	50.0558188	4.4909614	50.3023291	4.4817745
+be-abbreviated-00307	abbreviated	has_abbreviation	Koningin Astridln. 54, 9230 Wetteren	wrong_far	12761.4	True	51.0048326	3.8788505	50.9385100	4.0275900	51.0048652	3.8789310
+be-abbreviated-00308	abbreviated	has_abbreviation	R. des Chartriers 29, 7000 Mons	wrong_near	3142.2	True	50.4504549	3.9534428	50.4540332	3.9974662	50.4504549	3.9534428
+be-abbreviated-00309	abbreviated	has_abbreviation	Stationsstr. 3, 3080 Vossem	wrong_far	83674.1	True	50.8360523	4.5599684	50.7324332	3.3810858	50.8360768	4.5600611
+be-abbreviated-00310	abbreviated	has_abbreviation	Westerln. 9, 8790 Waregem	wrong_near	3187.1	True	50.8838426	3.4240783	50.8807252	3.4692379	50.8839094	3.4240026
+be-abbreviated-00311	abbreviated	has_abbreviation,has_diacritics	R. du Réservoir 12, 1380 Couture-St-Germain	wrong_near	982.2	True	50.6544595	4.4838240	50.6618296	4.4761434	50.6543758	4.4837735
+be-abbreviated-00312	abbreviated	has_abbreviation	Groenveldstr. 80, 3001 Leuven	wrong_near	400.6	True	50.8729059	4.6837521	50.8765000	4.6833500	50.8729059	4.6837521
+be-abbreviated-00313	abbreviated	has_abbreviation	Molenstr. 62, 2550 Kontich	wrong_far	30220.1	True	51.1367474	4.4413108	50.8651446	4.4567232	51.1367795	4.4413505
+be-abbreviated-00314	abbreviated		Tervuursesteenweg 132, 1820 Perk	wrong_far	13859.3	True	50.9336360	4.4966869	50.8159200	4.4317700	50.9336671	4.4967239
+be-abbreviated-00315	abbreviated	has_abbreviation	Slachthuisln. 3, 3000 Leuven	wrong_near	1834.5	True	50.8741447	4.6896747	50.8876343	4.7047301	50.8741447	4.6896747
+be-abbreviated-00316	abbreviated	has_abbreviation	Ruiterstr. 26, 3930 Hamont	wrong_near	1802.5	True	51.2583687	5.5469393	51.2734400	5.5374000	51.2583687	5.5469393
+be-abbreviated-00317	abbreviated	has_abbreviation	Av. du Parc Industriel 129, 4041 Milmort	wrong_far	165138.0	True	50.6891858	5.5776031	50.8575300	3.2442100	50.6891858	5.5776031
+be-abbreviated-00318	abbreviated	has_abbreviation,has_slash_suffix	Pl. de Bassilly 21, 7830 Bassilly /b	wrong_near	2347.7	True	50.6720803	3.9361570	50.6926048	3.9283410	50.6720803	3.9361570
+be-abbreviated-00319	abbreviated	has_abbreviation	Peperstr. 2, 3080 Tervuren	wrong_near	125.5	True	50.8228791	4.5131380	50.8228453	4.5113523	50.8228429	4.5129556
+be-abbreviated-00321	abbreviated		Dienstenzone Drongen-Noord, 9031 Drongen	wrong_far	26174.6	False	51.0350130	3.6392081	51.1746800	3.9409800	51.0352875	3.6377631
+be-abbreviated-00322	abbreviated	has_abbreviation	R. de Nimy 20, 7000 Mons	wrong_near	2966.1	True	50.4558864	3.9541570	50.4815102	3.9425083	50.4558550	3.9541650
+be-abbreviated-00323	abbreviated	has_abbreviation	Ubbelstr., 3550 Heusden-Zolder	wrong_near	3663.3	False	51.0115082	5.2811473	50.9810231	5.3009950	51.0089203	5.2748319
+be-abbreviated-00324	abbreviated	has_abbreviation	Ernest Brengierstr. 6, 8780 Oostrozebeke	wrong_near	722.1	True	50.9206628	3.3339566	50.9199713	3.3237132	50.9206628	3.3339566
+be-abbreviated-00325	abbreviated	has_abbreviation	Moorselstr. 320, 3080 Tervuren	wrong_near	1249.7	True	50.8601120	4.5346346	50.8492100	4.5389600	50.8601115	4.5346108
+be-abbreviated-00328	abbreviated	has_abbreviation	R. de Battice 52, 4800 Petit-Rechain	wrong_near	413.5	True	50.6202676	5.8308136	50.6193673	5.8365010	50.6203820	5.8309850
+be-abbreviated-00329	abbreviated	has_abbreviation	Pl. du Roi Albert 3 C, 4130 Tilff	wrong_far	175000.0	True	50.5697656	5.5842870	50.9237000	3.1606100	50.5697656	5.5842870
+be-abbreviated-00330	abbreviated	has_abbreviation	Fonteinstr. 45, 3545 Halen	wrong_near	254.1	True	50.9470660	5.1081782	50.9485100	5.1109900	50.9471386	5.1080872
+be-abbreviated-00331	abbreviated	has_abbreviation	Noordstr. 58, 8800 Roeselare	wrong_near	218.8	True	50.9468383	3.1226703	50.9458050	3.1200129	50.9468383	3.1226703
+be-abbreviated-00332	abbreviated	has_abbreviation	Brusselstr. 91, 1740 Ternat	wrong_near	917.6	True	50.8760511	4.1896398	50.8717900	4.1784400	50.8761341	4.1899286
+be-abbreviated-00335	abbreviated	has_abbreviation,has_diacritics	4ème Av. 66, 4040 Herstal	wrong_near	4023.7	False	50.6997109	5.6147017	50.6649089	5.6303449	50.6998763	5.6132842
+be-abbreviated-00336	abbreviated	has_abbreviation,has_diacritics	r. des Pruniers 11, 5100 Wépion	wrong_near	3510.0	True	50.4052823	4.8821564	50.4279448	4.8476717	50.4053536	4.8819444
+be-abbreviated-00337	abbreviated	has_abbreviation	Av. Paul Pastur 117, 6001 Marcinelle	wrong_near	4891.4	True	50.4019611	4.4290407	50.3582997	4.4374508	50.4019454	4.4290608
+be-abbreviated-00339	abbreviated	has_abbreviation	Av. Jean Mermoz 22, 6041 Gosselies	wrong_near	1839.9	True	50.4755537	4.4737527	50.4722423	4.4482791	50.4755537	4.4737527
+be-abbreviated-00340	abbreviated	has_abbreviation	Grand-R. 218, 6740 Sainte-Marie	wrong_near	384.0	False	49.6730100	5.5628737	49.6696822	5.5642994		
+be-abbreviated-00341	abbreviated	has_abbreviation	Koningin Astridln. 54, 9230 Wetteren	wrong_far	12761.4	True	51.0048326	3.8788505	50.9385100	4.0275900	51.0048652	3.8789310
+be-abbreviated-00342	abbreviated	has_abbreviation	Pl. du Parc 21, 4960 Malmedy	wrong_near	1268.4	True	50.4234897	6.0277755	50.4348905	6.0283708	50.4234897	6.0277755
+be-abbreviated-00344	abbreviated	has_abbreviation	Stationsstr. 64, 8860 Lendelede	wrong_far	77363.3	True	50.8853789	3.2462237	50.7744537	4.3336615	50.8853448	3.2462248
+be-abbreviated-00345	abbreviated	has_abbreviation,has_diacritics	R. Lelièvre 1, 5000 Namur	wrong_near	464.7	True	50.4646815	4.8608571	50.4680069	4.8568813	50.4647131	4.8607817
+be-abbreviated-00346	abbreviated	has_abbreviation	Ch. Roosevelt 165, 4540 Amay	wrong_far	103027.3	False	50.5414277	5.3027970	50.9328900	3.9758300		
+be-abbreviated-00348	abbreviated	has_abbreviation,has_diacritics	4ème Av. 75, 4040 Herstal	wrong_near	3749.3	True	50.6949218	5.6060923	50.6649089	5.6303449	50.6949218	5.6060923
+be-abbreviated-00349	abbreviated	has_abbreviation	Florimond Leirensstr. 19, 9230 Wetteren	wrong_far	42709.0	True	51.0058325	3.8844971	50.8725000	3.3128700	51.0057885	3.8847625
+be-abbreviated-00350	abbreviated	has_abbreviation,has_diacritics	Av. Prince de Liège 110, 5100 Jambes	wrong_far	98734.9	True	50.4633708	4.8850646	51.2525200	5.5299300	50.4633708	4.8850646
+be-abbreviated-00351	abbreviated	has_abbreviation	Av. Jean Mermoz 29f, 6041 Gosselies	wrong_near	2029.2	True	50.4763061	4.4762330	50.4722423	4.4482791	50.4763061	4.4762330
+be-abbreviated-00352	abbreviated	has_abbreviation	R. de la Croix 17, 5000 Namur	wrong_far	23002.7	True	50.4636217	4.8647442	50.2920300	5.0459300	50.4635859	4.8647070
+be-abbreviated-00353	abbreviated	has_abbreviation	Statiestr. 56, 8980 Passendale	wrong_near	614.5	True	50.8972000	3.0274896	50.9006159	3.0206014	50.8972402	3.0270150
+be-abbreviated-00354	abbreviated	has_diacritics	Rue St-Léonard 182, 4000 Liège	wrong_far	70252.0	True	50.6479396	5.5905565	51.2098600	5.1323400	50.6479396	5.5905565
+be-abbreviated-00355	abbreviated	has_abbreviation	Grand'Pl. 55, 1400 Nivelles	wrong_near	181.7	True	50.5974744	4.3224340	50.5976700	4.3249900	50.5974657	4.3223810
+be-abbreviated-00357	abbreviated	has_abbreviation	Molenstr. 38, 2270 Herenthout	wrong_near	238.0	True	51.1397580	4.7592225	51.1400669	4.7558469	51.1396645	4.7592445
+be-abbreviated-00359	abbreviated	has_abbreviation,has_diacritics	R. Bois Gotha 2, 4000 Liège	wrong_near	6277.7	True	50.6463944	5.5507002	50.5908102	5.5662833	50.6463749	5.5507519
+be-abbreviated-00360	abbreviated	has_abbreviation,has_diacritics	R. Émile Vandervelde 16, 7332 Sirault	wrong_far	47113.7	True	50.5050022	3.7844778	50.7421300	4.3379600	50.5050181	3.7844697
+be-abbreviated-00363	abbreviated	has_abbreviation,has_diacritics	Av. Léon Jourez 9, 1420 Braine-l'Alleud	wrong_near	3499.2	True	50.6843323	4.3713596	50.6911785	4.3228787	50.6843245	4.3713435
+be-abbreviated-00364	abbreviated	has_abbreviation	Merelpl. 2, 1830 Machelen	wrong_near	138.1	False	50.9158857	4.4424517	50.9163985	4.4442465		
+be-abbreviated-00366	abbreviated	has_abbreviation	Peperstr. 2, 3080 Tervuren	wrong_near	125.5	True	50.8228791	4.5131380	50.8228453	4.5113523	50.8228429	4.5129556
+be-abbreviated-00369	abbreviated	has_abbreviation,has_diacritics	R. de la Bruyère 215, 1332 Genval	wrong_far	222791.3	True	50.7262534	4.4859530	49.2939200	2.3055100	50.7261722	4.4859541
+be-abbreviated-00370	abbreviated	has_abbreviation	R. du Lac 24, 4950 Waimes	wrong_near	3210.7	True	50.4536303	6.1227177	50.4401988	6.0825791	50.4535901	6.1228066
+be-abbreviated-00371	abbreviated	has_abbreviation	Prinses Josephine-Charlottepl. 5, 1950 Kraainem	wrong_near	287.5	False	50.8576648	4.4683265	50.8595280	4.4654870		
+be-abbreviated-00372	abbreviated	has_abbreviation	Molenstr.je 43, 9230 Wetteren	wrong_near	2589.6	False	51.0099744	3.8797496	50.9964250	3.8496499		
+be-abbreviated-00373	abbreviated	has_abbreviation	R. Pierre Bosseau 28, 5670 Nismes	wrong_far	86909.7	True	50.0703160	4.5501000	50.8339300	4.2882800	50.0703160	4.5501000
+be-abbreviated-00374	abbreviated	has_abbreviation	Groenstr. 42, 3560 Lummen	wrong_far	87390.1	True	50.9905427	5.1902306	50.7339913	4.0132786	50.9904521	5.1904423
+be-abbreviated-00377	abbreviated	has_abbreviation	Groenenborgerln. 24, 2610 Wilrijk	wrong_near	1099.7	True	51.1736630	4.4046008	51.1826385	4.3979750	51.1736082	4.4047360
+be-abbreviated-00378	abbreviated	has_abbreviation	Westendeln. 1, 8430 Middelkerke	wrong_near	547.5	True	51.1846104	2.8199613	51.1871029	2.8131862	51.1846104	2.8199613
+be-abbreviated-00379	abbreviated	has_abbreviation	Bondgenotenln. 88, 3000 Leuven	wrong_near	898.4	True	50.8803550	4.7102871	50.8876343	4.7047301	50.8803003	4.7103091
+be-abbreviated-00381	abbreviated	has_abbreviation	Pl. Albert 1er 9, 4880 Aubel	wrong_far	191071.5	True	50.7058151	5.8578797	50.9230300	3.1599200	50.7058232	5.8578233
+be-abbreviated-00383	abbreviated	has_abbreviation,has_diacritics	Av. Léon Jourez 9, 1420 Braine-l'Alleud	wrong_near	3499.2	True	50.6843323	4.3713596	50.6911785	4.3228787	50.6843245	4.3713435
+be-abbreviated-00384	abbreviated		Legeweg 231, 8200 Sint-Andries	wrong_near	3844.4	True	51.2062292	3.1847825	51.1811453	3.1468167	51.2062114	3.1848299
+be-abbreviated-00385	abbreviated	has_abbreviation	Ch. de Charleroi 2, 1470 Genappe	wrong_far	26088.5	False	50.6078737	4.4505361	50.3733008	4.4578992		
+be-abbreviated-00386	abbreviated		Chemin de la Bicoque 3, 4960 Longfaye	wrong_far	190750.5	True	50.4712250	6.0844642	50.6215300	3.3951100	50.4712250	6.0844642
+be-abbreviated-00389	abbreviated	has_abbreviation,has_diacritics	R. du bois brûlé 11, 1380 Couture-St-Germain	wrong_near	578.0	True	50.6615877	4.4843345	50.6618296	4.4761434	50.6615877	4.4843345
+be-abbreviated-00390	abbreviated	has_abbreviation	Pl. de la Station 17, 5000 Namur	wrong_far	54395.8	True	50.4681164	4.8622654	49.9845000	4.9774000	50.4681078	4.8623042
+be-abbreviated-00393	abbreviated	has_abbreviation	Schoolstr. 2, 8310 Assebroek	wrong_far	144164.2	True	51.2016783	3.2495954	50.7060001	5.1514380	51.2016314	3.2495777
+be-abbreviated-00396	abbreviated	has_abbreviation	Hendrik Schoofsstr. 6, 2960 Brecht	wrong_far	110985.9	True	51.3492726	4.6434280	51.1176900	3.0928300	51.3492447	4.6434327
+be-abbreviated-00397	abbreviated		Brusselsesteenweg 312, 3020 Veltem-Beisem	wrong_far	15026.6	True	50.8965829	4.6231840	50.7729500	4.5367900	50.8967024	4.6231633
+be-abbreviated-00399	abbreviated	has_abbreviation	Mechelsestr. 43, 3000 Leuven	wrong_near	168.1	True	50.8810400	4.6993670	50.8796400	4.7002700	50.8810798	4.6992627
+be-typo-00401	typo		Brugsesteenweg 41, 8433 Middelerke	wrong_near	2110.1	False	51.1205304	2.8496464	51.1268600	2.8781500		
+be-typo-00404	typo		Voie de l'Air Pur 213, 4052 Chaudfontaiqe	wrong_far	10610.9	False	50.5641380	5.6351376	50.6019700	5.7731100		
+be-typo-00406	typo		Astridlaan 60, 8620 Nieuwpootr	wrong_near	348.3	False	51.1297945	2.7480673	51.1328900	2.7473000		
+be-typo-00407	typo		Henri Horriestraat 29, 8800 Roeeelare	wrong_far	129440.8	False	50.9473453	3.1247319	50.9784000	4.9724000		
+be-typo-00410	typo	has_diacritics	Erupener Straße 54, 4731 Raeren - Eynatten	wrong_near	877.3	False	50.6875475	6.0794169	50.6864100	6.0917400		
+be-typo-00411	typo		Molendreef 9, 8210 Loppem	wrong_near	118.2	True	51.1513246	3.2002740	51.1520600	3.1990500	51.1513401	3.2003109
+be-typo-00412	typo		Rue du Vivier 1, 6950 Nassogne	wrong_far	237311.9	True	50.1281516	5.3436948	49.2939200	2.3055100	50.1281516	5.3436948
+be-typo-00413	typo		Gorenveldstraat 76, 3001 Leuven	wrong_near	2181.2	False	50.8732018	4.6836736	50.8876343	4.7047301		
+be-typo-00414	typo		Stationsstkraat 177, 2440 Geel	wrong_near	5285.5	False	51.1683038	4.9885503	51.1626136	5.0638075		
+be-typo-00418	typo		Moerkerkse Steenweg 190, 8310 fint-Kruis	wrong_near	495.3	False	51.2143159	3.2489072	51.2129100	3.2421600		
+be-typo-00419	typo		Place des Combattantg 3, 4840 Welkenraedt	wrong_near	391.0	False	50.6607406	5.9739901	50.6642039	5.9730310		
+be-typo-00420	typo		Rue Haute Claire 4, 4041 Milmort	wrong_near	823.3	True	50.6877824	5.6078313	50.6946635	5.6035181	50.6877824	5.6078313
+be-typo-00421	typo		Zavelstraat 37, 9190 Steene	wrong_far	37728.3	False	51.2098672	4.0523447	50.8895300	4.2302500		
+be-typo-00422	typo		Velodonkstraat 2, 3120 Tremelo	wrong_near	4935.7	False	50.9907735	4.7040078	51.0071051	4.7695915		
+be-typo-00423	typo	has_diacritics	Chaussée de Tervuren 11, 1410 Waterkoo	wrong_far	42936.4	False	50.7025963	4.4027532	50.6402800	5.0040400		
+be-typo-00424	typo		Rue de l'Abbyae 13A, 1380 Lasne	wrong_near	5159.2	False	50.6672203	4.4681130	50.7121238	4.4865503		
+be-typo-00425	typo		Gistelse Steenweg 479, 8200 Sint-Andries	wrong_near	2962.1	True	51.1971037	3.1808488	51.1811453	3.1468167	51.1970594	3.1808809
+be-typo-00428	typo	has_slash_suffix	Priys Boudewijnlaan 9, 2550 Kontich /4B	wrong_far	23483.3	False	51.1431805	4.4341415	51.1409400	4.7707400		
+be-typo-00430	typo		Leuvensesteenweg 205, 3190 Boortmeerteek	wrong_near	2701.1	False	50.9770963	4.5598424	50.9941800	4.5324100		
+be-typo-00432	typo		Rue Simonis 8, 4130 Esnuex	wrong_far	91242.1	False	50.5360803	5.5697819	50.8265400	4.3586000		
+be-typo-00434	typo		Kapelsesteenweg 567, 2180 Mariaburg	wrong_near	2514.3	True	51.2928192	4.4434991	51.2720600	4.4578300	51.2928110	4.4434363
+be-typo-00435	typo		Mechelsestroat 42, 3000 Leuven	wrong_near	833.7	False	50.8808746	4.6995872	50.8876343	4.7047301		
+be-typo-00440	typo		Kortrijksepoortstraat, 9000 Lcdeberg	wrong_near	199.9	False	51.0442433	3.7217947	51.0460200	3.7222300		
+be-typo-00443	typo		Rue Arnold Delsupexhe 29, 4040 Hersutal	wrong_far	92553.2	False	50.6822962	5.6419353	50.8003300	4.3399100		
+be-typo-00444	typo		Rue Sainte-Lousie 82, 7301 Hornu	wrong_near	488.1	False	50.4348091	3.8375975	50.4304803	3.8387412		
+be-typo-00446	typo		Heppensesteenweg 78, 3945 aHm	wrong_near	204.3	False	51.1044624	5.1861428	51.1050600	5.1889100		
+be-typo-00447	typo		Staatsbaan 215A, 8610 Kotemark	wrong_near	6916.1	False	51.0192215	2.9685032	51.0271000	3.0665900		
+be-typo-00448	typo		Maurgarethaplein 11, 3000 Leuven	wrong_near	913.7	False	50.8796184	4.7018652	50.8876343	4.7047301		
+be-typo-00449	typo		Dotpsstraat 71, 8470 Gistel	wrong_near	2723.3	False	51.1753648	2.9389712	51.1590726	2.9681334		
+be-typo-00450	typo	has_diacritics	Avenue du Châtgeau 14, 7941 Brugelette	wrong_near	2072.2	False	50.6091875	3.8407494	50.5910282	3.8473476		
+be-typo-00454	typo		Dienstenzone Drongen-Noord, 9031 Drongen	wrong_far	26174.6	False	51.0350130	3.6392081	51.1746800	3.9409800	51.0352875	3.6377631
+be-typo-00455	typo		Henry Fordlakan 50, 3600 Genk	wrong_far	75317.1	False	50.9263614	5.4803014	50.8631700	4.4111000		
+be-typo-00459	typo		Aenue Cardinal Mercier 75, 5000 Namur	no_result		False	50.4645891	4.8497441				
+be-typo-00460	typo	has_diacritics	Rue du Zémont 14, 5030 Lonzée	wrong_near	1256.5	True	50.5537815	4.7248881	50.5425018	4.7259555	50.5536623	4.7249949
+be-typo-00463	typo		Chasusee Verte 101, 4470 Saint-Georges-sur-Meuse	wrong_near	722.1	False	50.6030938	5.3467910	50.6007580	5.3563377		
+be-typo-00464	typo		Wulmersumsesteenweg 367, 3300 Hakendfver, Tienen	wrong_near	1291.3	False	50.7894546	4.9609349	50.8001800	4.9538900		
+be-typo-00466	typo	has_diacritics	Rue Saint-Rmey 29, 4000 Liège	wrong_near	5286.0	False	50.6382972	5.5697625	50.5908102	5.5662833		
+be-typo-00467	typo		Rue Piretfontainte 1, 4140 Dolembreux	wrong_near	1451.6	False	50.5362028	5.6329935	50.5345342	5.6533642		
+be-typo-00468	typo	has_diacritics	Rue de la Rivièrette 13, 7333 Tertre	wrong_far	63285.7	True	50.4617340	3.8111904	50.5609300	4.6924800	50.4617356	3.8111885
+be-typo-00469	typo		Pintestnaat 4, 9840 De Pinte	wrong_near	105.5	False	50.9914125	3.6487647	50.9910417	3.6473778		
+be-typo-00470	typo		Place Albert-Elisabeth 28,30, 7330 Saint-Ghislaion	wrong_far	60532.6	False	50.4435101	3.8192042	50.8411200	4.4055500		
+be-typo-00475	typo		Avenue Albert 1ez 19, 5000 Namur	wrong_far	62156.3	False	50.4664077	4.8789018	50.8995000	4.3211300		
+be-typo-00476	typo	has_diacritics	Rue de Chèvreont 91, 4051 Chaudfontaine	wrong_near	1558.9	False	50.5992118	5.6436766	50.5852580	5.6458116		
+be-typo-00477	typo		Lange Munteplein 7, 8500 Korrtijk	wrong_far	34616.3	False	50.8107814	3.2986325	50.9448600	3.7439100		
+be-typo-00478	typo	has_diacritics	Breeërsteenweg, 3640 Kinrooi	wrong_near	5265.0	False	51.1454867	5.7332192	51.1474800	5.8086300	51.1455582	5.7981325
+be-typo-00479	typo		Gebroeders De Winterstraat 119, 2275 Wechelderzande	wrong_near	1101.9	True	51.2580796	4.8006357	51.2632284	4.7871056	51.2582071	4.8007093
+be-typo-00481	typo		Rue Gradne 45, 7330 Saint-Ghislain	wrong_near	7610.4	False	50.4457780	3.8204260	50.5033413	3.8786019		
+be-typo-00482	typo		yue du Commerce 55, 5590 Ciney	wrong_near	739.3	False	50.2933419	5.0979619	50.2866935	5.0980489		
+be-typo-00483	typo		Heulesvtraat 168, 8560 Wevelgem	wrong_near	4313.0	False	50.8432410	3.2206255	50.8112526	3.1858957		
+be-typo-00486	typo		Tienevest 8, 3000 Leuven	wrong_near	891.3	False	50.8820636	4.7138661	50.8876343	4.7047301		
+be-typo-00490	typo		Sint-Truidensesteenweg 195, 3350 Orsmaal	wrong_near	831.2	True	50.8031583	5.0594838	50.8020800	5.0477800	50.8031583	5.0594838
+be-typo-00492	typo	has_diacritics	Allée du Petit Paris 5, 1410 Watjerloo	wrong_far	217489.0	False	50.7126155	4.4007194	49.2939200	2.3055100		
+be-typo-00493	typo		Leemstraat 17, 3850 Nieuwerkereen	wrong_far	55455.0	False	50.8639380	5.1817455	51.3208900	4.8636400		
+be-typo-00494	typo		Poperingsehweg 453, 8908 Ieper	wrong_near	5118.3	False	50.8545995	2.8183630	50.8499531	2.8909008		
+be-typo-00495	typo		Brusselxesteenweg 23, 3020 Herent	wrong_near	5709.6	False	50.8863051	4.6683507	50.9219720	4.6097754		
+be-typo-00496	typo	has_diacritics	Rue Émile Lété 79, 7332 Sirault	wrong_far	58363.0	True	50.5047624	3.7912146	51.0241837	3.6719466	50.5047888	3.7912678
+be-typo-00497	typo		Rue des Alouttes 140, 4041 Milmort	wrong_near	1132.4	False	50.6942265	5.5874558	50.6946635	5.6035181		
+be-typo-00498	typo		Rue Craesborn 58, 4608 Warsage	wrong_near	274.9	True	50.7314473	5.7638233	50.7321225	5.7600656	50.7314586	5.7637740
+be-typo-00503	typo		bRue des Lilas, 1470 Genappe	wrong_near	629.5	False	50.6143350	4.4518875	50.6105119	4.4453072		
+be-typo-00512	typo		Riddnrsstraat 84, 3000 Leuven	wrong_near	1021.1	False	50.8832518	4.6919394	50.8876343	4.7047301		
+be-typo-00513	typo		Tervuurdsesteenweg 772, 1982 Elewijt	wrong_near	2657.6	False	50.9600252	4.4970642	50.9598500	4.4591200		
+be-typo-00514	typo		Groenveldstraat 72, 3001 Leven	wrong_near	370.4	True	50.8733891	4.6836037	50.8767100	4.6831900	50.8733891	4.6836037
+be-typo-00515	typo		Witte Torenstraaot 43, 3960 Bree	wrong_far	24138.8	False	51.1448131	5.5985968	51.0185400	5.3175100		
+be-typo-00518	typo		Gemeentestraat 12, 3054 Vaalbeek	wrong_near	9285.6	True	50.8275498	4.6909084	50.8951600	4.7685600	50.8275094	4.6909547
+be-typo-00519	typo		Rue des Carmes 36-38, 5000 Nlmur	no_result		False	50.4664101	4.8639557				
+be-typo-00520	typo		Rue Grande 95, 7330 Saint-oGhislain	wrong_far	82857.3	False	50.4442721	3.8209106	50.7576100	4.8860800		
+be-typo-00521	typo		Rue de l'Ange 21, 5000 gNamur	no_result		False	50.4631727	4.8658846				
+be-typo-00522	typo		Stationssteenweg 187, 2560 Kessel	wrong_near	537.0	True	51.1491153	4.6205002	51.1447700	4.6238600	51.1490465	4.6203077
+be-typo-00526	typo	has_diacritics	Rue de Chièvres 111, 7331 Baudour	wrong_far	10380.7	True	50.4935444	3.8062698	50.5868721	3.8098856	50.4935444	3.8062698
+be-typo-00527	typo		Brusselstraat 267, 1702 rGoot-Bijgaarden	wrong_far	13390.9	False	50.8710666	4.2611073	50.8428600	4.0756400		
+be-typo-00529	typo		Rue de l'Ange 40, 5000 Natmur	no_result		False	50.4638252	4.8659442				
+be-typo-00533	typo		Lfijnwaadmarkt 32, 9700 Ename	wrong_near	231.5	False	50.8545218	3.6332613	50.8557600	3.6306100		
+be-typo-00538	typo		Brusselsesteenweg 250, 3020 Heerent	wrong_far	11446.6	False	50.8945432	4.6324730	50.8245900	4.5128300		
+be-typo-00540	typo		Kapelsesteenweg 567, 2180 Mmariaburg	wrong_near	2514.3	False	51.2928192	4.4434991	51.2720600	4.4578300		
+be-typo-00543	typo	has_slash_suffix	Mier 78, 2000 Antwerpen /109	wrong_near	1223.2	False	51.2177609	4.4116416	51.2277200	4.4041825		
+be-typo-00544	typo		Predisherenberg 15A, 3020 Herent	wrong_near	5931.6	False	50.8821012	4.6659701	50.9219720	4.6097754		
+be-typo-00546	typo		Prins Boudrwijnlaan 2, 2600 Berchem	wrong_near	1203.2	False	51.1810664	4.4232543	51.1891474	4.4347356		
+be-typo-00549	typo		Kolonel Begalutlaan 15, 3012 Wilsele	wrong_near	367.0	False	50.8919261	4.7058825	50.8886300	4.7056100		
+be-typo-00552	typo		Avenue Hippolyte Dumont 3, 4540 vAmpsin	wrong_far	63631.3	False	50.5398065	5.2873651	50.8224000	4.5020400		
+be-typo-00555	typo		Felix Beernaertsplein 11, 9230 Wteteren	wrong_far	61268.4	False	51.0028805	3.8800447	51.0083400	4.7556600		
+be-typo-00556	typo		Kauwlei 89, 2550 Kontihc	wrong_near	449.7	False	51.1293064	4.4749513	51.1329900	4.4722900		
+be-typo-00558	typo		Moorselstraat 320, 3080 sTervuren	wrong_near	1249.7	False	50.8601120	4.5346346	50.8492100	4.5389600		
+be-typo-00565	typo		Rue Godefroid 1B, 5000 Namqur	wrong_far	55137.2	False	50.4661767	4.8623390	50.8585400	4.3840200		
+be-typo-00567	typo		Westelsebaan 60, 3271 Averbode	wrong_near	479.4	True	51.0213035	4.9884122	51.0243390	4.9835445	51.0212817	4.9882475
+be-typo-00568	typo		Avenue Paul Pastur 117, 6001 Mracinelle	wrong_far	55867.6	False	50.4019611	4.4290407	50.8997300	4.3213600		
+be-typo-00569	typo	has_diacritics	Chaussée de aBruxelles 36a, 1300 Wavre	wrong_far	49834.6	False	50.7218821	4.6078387	50.3187300	4.9157600		
+be-typo-00571	typo		Beervelde-Donrp 79, 9080 Beervelde	wrong_near	337.3	False	51.0801411	3.8795076	51.0801700	3.8746800		
+be-typo-00572	typo		zRoute de Liers 142, 4041 Milmort	wrong_near	1721.6	False	50.6894713	5.5804936	50.6946635	5.6035181		
+be-typo-00577	typo		Rue Joseph IPret 10B, 5150 Floreffe	wrong_near	2187.4	False	50.4336251	4.7608754	50.4422065	4.7886680		
+be-typo-00578	typo		Rue Piretfontaine 1, 4140 Dolembreux	wrong_near	1451.6	True	50.5362028	5.6329935	50.5345342	5.6533642	50.5362028	5.6329935
+be-typo-00580	typo		Groenplaats 42, 2000 Antwrpen	wrong_near	174.5	False	51.2182830	4.4020381	51.2196900	4.4009300		
+be-typo-00582	typo		Biezenstraut 14, 8430 Middelkerke	wrong_near	2194.8	False	51.1921814	2.8436193	51.1871029	2.8131862		
+be-typo-00583	typo	has_diacritics	Rue Cheveksne 78, 6542 Sars la Buissière	no_result		False	50.3376874	4.2218753				
+be-typo-00588	typo		Reu du Lac 24, 4950 Waimes	wrong_near	3210.7	False	50.4536303	6.1227177	50.4401988	6.0825791		
+be-typo-00589	typo		Diestsesteenweg 296, 3202 Rillaar	wrong_far	12102.1	True	50.9753984	4.8895582	50.8903700	4.7817600	50.9754800	4.8895856
+be-typo-00591	typo		Sint-Jakobsstraat 36, 8000 Brufgge	wrong_near	138.0	False	51.2102627	3.2213731	51.2092600	3.2225400		
+be-typo-00592	typo		Blauwe Stap 8, 3020 Hernt	wrong_far	121793.6	False	50.9148301	4.6872220	51.2671400	3.0359500		
+be-typo-00595	typo		Rue de l'Abbye 13A, 1380 Lasne	wrong_near	5159.2	False	50.6672203	4.4681130	50.7121238	4.4865503		
+be-typo-00596	typo		Stationsstraat 165, 3110 Rotselara	wrong_far	97485.8	False	50.9443410	4.7282219	50.7324332	3.3810858		
+be-typo-00598	typo		Brusselsestetnweg 356, 9050 Ledeberg	wrong_near	382.7	False	51.0398634	3.7441846	51.0370600	3.7410100		
+be-reordered-00600	reordered	has_diacritics	4040 Herstal 1ère Avenue 50	wrong_near	3119.7	True	50.6907089	5.6129504	50.6649089	5.6303449	50.6907089	5.6129504
+be-reordered-00601	reordered		4040 Herstal Rue des Naiveux	wrong_near	2709.5	False	50.6867112	5.6475156	50.6649089	5.6303449	50.6885028	5.6470600
+be-reordered-00602	reordered		7330 Saint-Ghislain Place Albert-Elisabeth 18	wrong_far	60494.3	True	50.4436608	3.8198585	50.8411400	4.4056300	50.4437141	3.8199680
+be-reordered-00603	reordered		2000 Antwerpen Meir 21	wrong_near	1047.6	True	51.2184082	4.4064650	51.2277200	4.4041825	51.2185834	4.4065245
+be-reordered-00604	reordered		2550 Kontich Sint-Jansplein 8	wrong_far	12673.6	True	51.1341545	4.4463946	51.0332513	4.3620211	51.1342505	4.4464533
+be-reordered-00605	reordered	has_diacritics	7130 Bray Avenue Léopold III 12	wrong_far	66576.6	True	50.4255979	4.1248944	50.8854964	4.7296242	50.4249281	4.1251473
+be-reordered-00606	reordered		2900 Schoten Bredabaan 1305	wrong_far	10610.3	True	51.2676237	4.4652488	51.3497928	4.5428510	51.2678820	4.4639889
+be-reordered-00607	reordered		2550 Kontich Heiveldekens 9G	wrong_near	446.8	True	51.1210761	4.4620990	51.1233470	4.4568168	51.1210761	4.4620990
+be-reordered-00608	reordered		7850 Enghien Rue d'Hoves 132	wrong_near	749.6	True	50.6909094	4.0330599	50.6955746	4.0407418	50.6905793	4.0325598
+be-reordered-00609	reordered		3111 Wezemaal Langestraat 80	wrong_far	49820.2	True	50.9534521	4.7502990	50.7609041	4.1094140	50.9535424	4.7504337
+be-reordered-00610	reordered		2970 Schilde Brasschaatsebaan 30	wrong_near	218.3	True	51.2416080	4.5785260	51.2396758	4.5779731	51.2415845	4.5785499
+be-reordered-00611	reordered	has_diacritics	5004 Bouge Chaussée de Louvain 328	wrong_far	20094.9	True	50.4777937	4.8784215	50.6398173	5.0044203	50.4776454	4.8788226
+be-reordered-00612	reordered		8210 Loppem Stationsstraat 7	wrong_far	48830.2	True	51.1551436	3.1922248	50.7324332	3.3810858	51.1551061	3.1922021
+be-reordered-00613	reordered		8200 Sint-Michiels Tillegempark	wrong_near	3151.0	True	51.1766514	3.1822942	51.1940384	3.2179931	51.1764906	3.1829987
+be-reordered-00614	reordered		2387 Baarle-Hertog Molenstraat 90	wrong_near	3424.3	True	51.4381411	4.9317882	51.4074289	4.9354139	51.4381411	4.9317882
+be-reordered-00615	reordered		8000 Sint-Pieters Oostendse Steenweg 117	wrong_far	89502.4	True	51.2236998	3.2005054	50.7980079	4.2862951	51.2236310	3.2007320
+be-reordered-00616	reordered		2880 Bornem Stationsstraat 2	wrong_far	72488.3	True	51.0993707	4.2357541	50.7324332	3.3810858	51.0993876	4.2358360
+be-reordered-00618	reordered	has_diacritics	4120 Neupré Rue des Deux Églises 49	wrong_near	1412.9	True	50.5380391	5.4793933	50.5303732	5.4634497	50.5380087	5.4793230
+be-reordered-00619	reordered	has_diacritics	4000 Liège Rue de la Goffe 8-10	wrong_near	6114.5	True	50.6453019	5.5779152	50.5908102	5.5662833	50.6453019	5.5779152
+be-reordered-00620	reordered		7080 Frameries Rue de l'Industrie 128	wrong_near	2582.1	True	50.4097389	3.8772830	50.4079400	3.9136100	50.4096937	3.8773276
+be-reordered-00621	reordered		2840 Reet Eikenstraat 55	wrong_far	45613.0	True	51.1034837	4.4115347	50.8204803	4.8830108	51.1034736	4.4113823
+be-reordered-00622	reordered		3000 Leuven Tiensestraat 12	wrong_near	411.2	True	50.8785165	4.7031783	50.8758099	4.7071724	50.8785295	4.7030951
+be-reordered-00623	reordered		7330 Saint-Ghislain Rue Grande 74	wrong_near	7688.5	True	50.4449825	3.8203331	50.5033413	3.8786019	50.4449494	3.8202923
+be-reordered-00624	reordered		3290 Diest Leuvensesteenweg 72	wrong_far	41037.8	False	50.9772679	5.0459425	50.8245127	4.5132236	50.9766020	5.0469947
+be-reordered-00625	reordered		9230 Wetteren Serskampsteenweg 33	wrong_near	205.3	True	51.0012749	3.8907021	51.0001421	3.8930183	51.0013247	3.8906173
+be-reordered-00626	reordered	has_diacritics	5101 Lives-sur-meuse Chaussée de Liège 1178	wrong_near	1372.7	True	50.4780918	4.9682817	50.4761073	4.9491348	50.4781244	4.9681344
+be-reordered-00627	reordered		4608 Warsage Rue Joseph Muller 44	wrong_near	458.8	True	50.7358513	5.7628552	50.7321225	5.7600656	50.7358774	5.7628156
+be-reordered-00628	reordered		2450 Meerhout Boslaan 2	wrong_near	3561.6	True	51.1281696	5.0711297	51.1458511	5.0285654	51.1281696	5.0711297
+be-reordered-00629	reordered		3020 Herent Predikherenberg 9	wrong_near	4940.0	True	50.8824939	4.6650972	50.8722502	4.7336083	50.8824939	4.6650972
+be-reordered-00630	reordered		3700 Tongeren Koninksemstraat 58	wrong_near	325.7	True	50.7704716	5.4485623	50.7681823	5.4456729	50.7704463	5.4485620
+be-reordered-00631	reordered		8400 Oostende Vergeet-mij-nietjeslaan 11	wrong_far	115483.7	True	51.2162503	2.8811213	50.7423239	4.3489752	51.2164109	2.8808486
+be-reordered-00632	reordered		2110 Wijnegem Krijgsbaan 124	wrong_near	5742.4	True	51.2179743	4.4957292	51.1740113	4.4524899	51.2179505	4.4958454
+be-reordered-00633	reordered		4041 Milmort Rue des Alouettes 101	wrong_near	1384.0	True	50.6948763	5.5838716	50.6946635	5.6035181	50.6948763	5.5838716
+be-reordered-00634	reordered	has_diacritics	5100 Wépion Chaussée de Dinant 636	wrong_far	25005.8	True	50.4332264	4.8628521	50.6394700	5.0038900	50.4332122	4.8627799
+be-reordered-00635	reordered		3900 Overpelt Lindelsebaan 7	wrong_near	810.1	True	51.2088768	5.4179451	51.2054291	5.4077018	51.2086288	5.4178706
+be-reordered-00636	reordered		2550 Kontich Sint-Jansplein 8	wrong_far	12673.6	True	51.1341545	4.4463946	51.0332513	4.3620211	51.1342505	4.4464533
+be-reordered-00637	reordered		3110 Rotselaar Molenstraat 13	wrong_far	46004.4	True	50.9459364	4.7039949	50.7393111	4.1363543	50.9459617	4.7040580
+be-reordered-00638	reordered		1933 Zaventem Tramlaan 346	wrong_near	3173.8	True	50.8622102	4.4878143	50.8872964	4.4662378	50.8622102	4.4878143
+be-reordered-00639	reordered		5000 Namur Rue de Fer 12	wrong_near	666.2	True	50.4652279	4.8652204	50.4680069	4.8568813	50.4652413	4.8652994
+be-reordered-00640	reordered	has_diacritics	5004 Bouge Chaussée de Louvain 306	wrong_far	17749.9	True	50.4771424	4.8773621	50.3191643	4.9132760	50.4771038	4.8774185
+be-reordered-00641	reordered	has_diacritics	5660 Mariembourg Chaussée de Philippeville 35	wrong_far	11922.9	True	50.0946406	4.5163240	50.1991811	4.5535323	50.0946406	4.5163240
+be-reordered-00642	reordered		2030 Antwerpen Straatsburgdok-Noordkaai 3	wrong_near	124.4	True	51.2428720	4.4189257	51.2418068	4.4194709	51.2428720	4.4189257
+be-reordered-00643	reordered		5020 Champion Rue Louis Albert 8	wrong_near	109.6	True	50.4903531	4.8966683	50.4896338	4.8956093	50.4901808	4.8967890
+be-reordered-00644	reordered		1800 Vilvoorde Mechelsestraat 17	wrong_far	15521.1	True	50.9304602	4.4219186	50.8172349	4.5512820	50.9304190	4.4219127
+be-reordered-00645	reordered		4400 Flemalle Grand'Route 408	wrong_far	21993.4	True	50.5980114	5.4670027	50.4465721	5.2668845	50.5980114	5.4670027
+be-reordered-00646	reordered		3700 Tongeren Grote Markt 35	wrong_near	241.0	True	50.7799098	5.4631796	50.7778123	5.4623143	50.7799055	5.4630802
+be-reordered-00647	reordered		3001 Leuven Groenveldstraat 68	wrong_near	316.0	True	50.8735365	4.6835254	50.8763768	4.6833594	50.8735365	4.6835254
+be-reordered-00648	reordered	has_diacritics	4000 Liège Rue des Célestines 23	wrong_near	5627.0	True	50.6413884	5.5688493	50.5908102	5.5662833	50.6414085	5.5688628
+be-reordered-00650	reordered	has_diacritics	6041 Gosselies Rue du Chêne Saint Jean 9	wrong_near	806.9	False	50.4675314	4.4396072	50.4722423	4.4482791		
+be-reordered-00652	reordered	has_diacritics	4700 Eupen Herbesthaler Straße 126	wrong_near	877.9	True	50.6384617	6.0172729	50.6326848	6.0257585	50.6384512	6.0171437
+be-reordered-00653	reordered		2900 Schoten Bredabaan 967	wrong_far	10401.2	True	51.2587269	4.4655680	51.3423524	4.5326003	51.2587269	4.4655680
+be-reordered-00654	reordered		8210 Loppem Molendreef 9	wrong_far	45199.7	True	51.1513246	3.2002740	50.9216770	2.6668869	51.1513401	3.2003109
+be-reordered-00655	reordered	has_diacritics	4540 Amay Chaussée Roosevelt 98	wrong_far	103460.3	True	50.5453094	5.3120428	50.9333600	3.9757400	50.5453383	5.3120600
+be-reordered-00656	reordered	has_diacritics	4000 Liège Rue des Célestines 16	wrong_near	5626.0	True	50.6413841	5.5686146	50.5908102	5.5662833	50.6413862	5.5685859
+be-reordered-00657	reordered	has_diacritics	1410 Waterloo Chaussée de Bruxelles 412A	wrong_far	12325.1	True	50.7088354	4.4003184	50.8184600	4.3744100	50.7088227	4.4002218
+be-reordered-00658	reordered		3001 Leuven Groenveldstraat 74	wrong_near	348.5	True	50.8732899	4.6836454	50.8764187	4.6833537	50.8732899	4.6836454
+be-reordered-00659	reordered	has_diacritics	4000 Liège Féronstrée 99	wrong_near	273.4	True	50.6469128	5.5805281	50.6459500	5.5769600	50.6469230	5.5805220
+be-reordered-00660	reordered		2018 Antwerpen Jan Van Rijswijcklaan 1	wrong_near	3360.6	True	51.1977169	4.4099884	51.2277200	4.4041825	51.1977169	4.4099884
+be-reordered-00661	reordered		9810 Nazareth Dorp 2	wrong_near	161.0	True	50.9598245	3.5971158	50.9601749	3.5948848	50.9599997	3.5971220
+be-reordered-00662	reordered		3000 Leuven Tiensestraat 12	wrong_near	411.2	True	50.8785165	4.7031783	50.8758099	4.7071724	50.8785295	4.7030951
+be-reordered-00664	reordered		6041 Gosselies Rue des Bancroix 20	wrong_near	535.9	True	50.4703979	4.4412827	50.4722423	4.4482791	50.4703979	4.4412827
+be-reordered-00665	reordered		2540 Hove Kapelstraat 117	wrong_far	74451.6	True	51.1546213	4.4652360	50.7353076	5.2937363	51.1546213	4.4652360
+be-reordered-00666	reordered		7330 Saint-Ghislain Grand'Place 2	wrong_near	7478.3	True	50.4474234	3.8198871	50.5033413	3.8786019	50.4474202	3.8198753
+be-reordered-00667	reordered	has_diacritics	4040 Herstal 4ème Avenue	wrong_near	3929.8	False	50.7000213	5.6239985	50.6649089	5.6303449	50.7007667	5.6253564
+be-reordered-00668	reordered		2880 Bornem Boomstraat 40	wrong_near	124.1	True	51.0984749	4.2336940	51.0995892	4.2338025	51.0985450	4.2336765
+be-reordered-00669	reordered		2590 Berlaar Aarschotsebaan 140	wrong_far	17112.3	True	51.0846156	4.6574710	50.9416331	4.5670022	51.0847815	4.6576103
+be-reordered-00670	reordered		8870 Izegem Korenmarkt 5	wrong_far	89154.4	True	50.9204585	3.2142446	51.0246375	4.4767626	50.9204484	3.2142235
+be-reordered-00671	reordered		3000 Leuven Mechelsestraat 49	wrong_far	12601.3	True	50.8811944	4.6994563	50.8172349	4.5512820	50.8811884	4.6994228
+be-reordered-00672	reordered	has_diacritics	4040 Herstal 2ème Avenue 3	wrong_near	3347.8	True	50.6947290	5.6237973	50.6649089	5.6303449	50.6947290	5.6237973
+be-reordered-00673	reordered		3640 Molenbeersel Makkestraat	wrong_near	1260.0	False	51.1631191	5.7236930	51.1694116	5.7086648	51.1633462	5.7312445
+be-reordered-00674	reordered		5000 Namur Rue Grangagnage 22	wrong_near	324.7	False	50.4651394	4.8577473	50.4680069	4.8568813		
+be-reordered-00675	reordered		5060 Falisolle Rue Joseph-Jean Merlot 3	wrong_near	357.5	True	50.4187846	4.6207761	50.4158401	4.6187497	50.4187658	4.6207407
+be-reordered-00677	reordered	has_diacritics	3640 Kinrooi Breeërsteenweg 262	wrong_near	4548.7	True	51.1459972	5.7433530	51.1477900	5.8085000	51.1460566	5.7433874
+be-reordered-00678	reordered		3740 Bilzen Maastrichterstraat 51	wrong_far	16115.4	True	50.8637233	5.5326069	51.0046702	5.5861488	50.8635829	5.5324976
+be-reordered-00679	reordered		3000 Leuven Parijsstraat 28	wrong_near	4251.5	True	50.8785691	4.6990495	50.8649226	4.6424523	50.8785855	4.6989951
+be-reordered-00680	reordered		9230 Wetteren Markt 14	wrong_near	2702.8	True	51.0068252	3.8845615	50.9964250	3.8496499	51.0068252	3.8845615
+be-reordered-00682	reordered		1745 Opwijk Grootveld 33	wrong_far	21301.0	True	50.9551172	4.2005342	50.8398163	4.4430848	50.9551172	4.2005342
+be-reordered-00683	reordered		2550 Kontich Stationsplein 17	wrong_far	50334.5	True	51.1343388	4.4756792	50.7236255	4.1737055	51.1343825	4.4756371
+be-reordered-00684	reordered	has_diacritics	4000 Liège Place Saint-Lambert 27	wrong_far	35482.1	True	50.6441964	5.5735392	50.4044617	5.2422811	50.6443791	5.5732960
+be-reordered-00685	reordered		9042 Sint-Kruis-Winkel Terdonkplein 14	wrong_near	3003.8	True	51.1455868	3.7764685	51.1554042	3.8165887	51.1455868	3.7764685
+be-reordered-00686	reordered		5190 Spy Rue Haute 18	wrong_far	78831.4	True	50.4807470	4.7072391	50.3593507	5.8034945	50.4807165	4.7072730
+be-reordered-00687	reordered		8430 Middelkerke Zeedijk 39;40;41;42;43;44;45	wrong_near	507.3	False	51.1897974	2.8190607	51.1871029	2.8131862		
+be-reordered-00688	reordered	has_diacritics	5000 Namur Rue du Marché 3	wrong_far	67885.9	True	50.4634139	4.8654122	50.5280353	5.8197487	50.4633995	4.8654303
+be-reordered-00689	reordered	has_diacritics	1410 Waterloo Chaussée de Bruxelles 412A	wrong_far	12325.1	True	50.7088354	4.4003184	50.8184600	4.3744100	50.7088227	4.4002218
+be-reordered-00690	reordered		1830 Machelen Merelplein 24	wrong_near	134.7	True	50.9155994	4.4441243	50.9159400	4.4422800	50.9155994	4.4441243
+be-reordered-00691	reordered		3473 Kortenaken Tiensesteenweg 13	wrong_far	17641.9	True	50.9144853	4.9798135	50.8151784	5.1758604	50.9146482	4.9798489
+be-reordered-00692	reordered		4633 Melen Rue de la Clef	wrong_near	1805.4	False	50.6363630	5.7563479	50.6461302	5.7358962	50.6360649	5.7543997
+be-reordered-00693	reordered		7330 Saint-Ghislain Place Albert-Elisabeth 22	wrong_far	60517.8	True	50.4436354	3.8197744	50.8412000	4.4058900	50.4437358	3.8193869
+be-reordered-00694	reordered	has_diacritics	5000 Namur Rue Henri Blès 56	wrong_near	874.9	True	50.4653109	4.8452685	50.4680069	4.8568813	50.4653109	4.8452685
+be-reordered-00695	reordered		8800 Roeselare Ooststraat 10	wrong_far	63604.1	True	50.9455495	3.1247697	50.8380302	4.0154247	50.9454735	3.1249663
+be-reordered-00696	reordered		8810 Lichtervelde Statieplaats 12	wrong_near	942.3	True	51.0248728	3.1283379	51.0313379	3.1370487	51.0249279	3.1284299
+be-reordered-00697	reordered	has_diacritics	52156 Monschau Eupener Straße 64-66	wrong_near	5925.4	False	50.5673634	6.2191135	50.5144281	6.2094715		
+be-reordered-00698	reordered		7387 Montignies-sur-Roc Place Masson 1A	wrong_near	488.2	True	50.3689094	3.7338111	50.3695655	3.7270044	50.3689094	3.7338111
+be-reordered-00702	reordered		3201 Langdorp Testeltsesteenweg 236	wrong_near	2100.2	True	51.0101403	4.9179187	51.0013039	4.8913898	51.0101580	4.9180057
+be-reordered-00703	reordered		3078 Everberg Gemeentehuisstraat	wrong_far	25153.1	False	50.8773366	4.5701832	50.7303776	4.2980731	50.8760941	4.5694193
+be-reordered-00705	reordered	has_diacritics	4000 Liège Rue Saint-Jean-en-Île 23	wrong_near	5656.7	True	50.6416444	5.5693750	50.5908102	5.5662833	50.6416536	5.5693786
+be-reordered-00706	reordered		3700 Tongeren Maastrichterstraat 104	wrong_near	310.3	True	50.7827359	5.4681925	50.7821345	5.4638822	50.7828496	5.4680876
+be-reordered-00707	reordered		3080 Vossem Stationsstraat 74	wrong_far	83329.7	False	50.8389721	4.5544041	50.7324332	3.3810858	50.8402559	4.5513169
+be-reordered-00709	reordered	has_diacritics	4400 Flémalle Rue Passage d'Eau 2	wrong_near	489.5	False	50.6034339	5.4850803	50.6028548	5.4782041	50.6024434	5.4821567
+be-reordered-00710	reordered	has_diacritics	5000 Namur Boulevard Frère Orban 9	wrong_far	82202.2	True	50.4651760	4.8561165	51.2021804	4.7647109	50.4651753	4.8561627
+be-reordered-00712	reordered		2060 Antwerpen Van Wesenbekestraat 16-18	wrong_near	1475.5	True	51.2195186	4.4208394	51.2277200	4.4041825	51.2196098	4.4212768
+be-reordered-00713	reordered		7020 Nimy Rue des Viaducs 281	wrong_near	589.6	True	50.4811975	3.9508270	50.4815102	3.9425083	50.4811900	3.9512330
+be-reordered-00714	reordered	has_diacritics	4040 Herstal 1ère Avenue 65	wrong_near	2877.5	True	50.6896444	5.6183433	50.6649089	5.6303449	50.6896444	5.6183433
+be-reordered-00715	reordered		5000 Namur Rue Emile Cuvelier 13	wrong_far	61454.1	True	50.4640358	4.8673544	50.8333117	5.5158564	50.4640358	4.8673544
+be-reordered-00716	reordered		2222 Heist-op-den-Berg Nieuwendijk 7	wrong_near	6097.8	True	51.1008514	4.7328582	51.0490770	4.7040889	51.1008771	4.7328535
+be-reordered-00717	reordered		2220 Heist-op-den-Berg Kloosterstraat 1	wrong_near	3582.2	True	51.0764677	4.7310737	51.0490770	4.7040889	51.0763275	4.7314010
+be-reordered-00718	reordered		8790 Waregem Noorderlaan 86	wrong_far	91302.9	True	50.8919181	3.4255943	51.2600241	4.5938239	50.8918781	3.4256594
+be-reordered-00719	reordered		2018 Antwerpen Boudewijnsstraat 55	wrong_near	156.5	True	51.2047120	4.4007510	51.2057195	4.3991817	51.2047310	4.4007944
+be-reordered-00720	reordered	has_diacritics	7331 Baudour Rue de Condé 3	wrong_near	783.7	True	50.4792731	3.8311774	50.4832691	3.8403018	50.4792468	3.8312447
+be-reordered-00721	reordered		1420 Braine-l'Alleud Rue Jules Hans 4	wrong_near	3580.8	True	50.6838231	4.3723650	50.6911785	4.3228787	50.6838231	4.3723650
+be-reordered-00722	reordered		3800 Sint-Truiden Sluisberg 5	wrong_near	264.0	True	50.8139276	5.1832345	50.8155050	5.1860434	50.8139276	5.1832345
+be-reordered-00723	reordered		2920 Kalmthout Kapellensteenweg 32	wrong_near	790.6	True	51.3926466	4.4742591	51.3855786	4.4754973	51.3926738	4.4742430
+be-reordered-00724	reordered		5550 Membre Rue de Vresse 93	wrong_near	424.2	True	49.8662201	4.9048545	49.8631600	4.9013200	49.8662298	4.9048948
+be-reordered-00726	reordered		9060 Zelzate Suikerkaai 17	wrong_far	59609.6	True	51.1960319	3.8112995	50.7314293	4.2359525	51.1960319	3.8112995
+be-reordered-00727	reordered		3120 Tremelo Kruisstraat 24	wrong_far	42210.5	True	50.9931847	4.7025132	50.7601979	5.1774819	50.9932370	4.7024363
+be-reordered-00728	reordered		3020 Herent Oostremstraat 6	wrong_far	59651.7	True	50.9090153	4.6841134	51.0317973	3.8548204	50.9090153	4.6841134
+be-reordered-00729	reordered		9150 Kruibeke Bazelstraat 349	wrong_near	1259.8	True	51.1565016	4.3007601	51.1664339	4.3094506	51.1564778	4.3006814
+be-reordered-00731	reordered		5020 Vedrin Rue du Blanc-Bois 2	wrong_near	2694.2	True	50.5024547	4.8761523	50.4785106	4.8703253	50.5024583	4.8761475
+be-reordered-00732	reordered		4400 Awirs Rue des Awirs 208	no_result		True	50.5992043	5.4086900			50.5992016	5.4086563
+be-reordered-00733	reordered		2180 Mariaburg Kapelsesteenweg 567	wrong_near	2515.0	True	51.2928192	4.4434991	51.2720561	4.4578420	51.2928110	4.4434363
+be-reordered-00734	reordered		3001 Leuven Groenveldstraat 78	wrong_near	118.0	True	50.8730928	4.6836601	50.8741536	4.6836698	50.8730928	4.6836601
+be-reordered-00735	reordered		2400 Mol Kievitstraat 42	wrong_far	80033.2	True	51.1938744	5.0616451	50.8920618	4.0223726	51.1934237	5.0615094
+be-reordered-00736	reordered		7330 Saint-Ghislain Avenue de l'Enseignement 12	wrong_near	7666.6	True	50.4461099	3.8181866	50.5033413	3.8786019	50.4461128	3.8181848
+be-reordered-00737	reordered		8430 Middelkerke Zeedijk 231	wrong_near	870.8	True	51.1828316	2.8027137	51.1871029	2.8131862	51.1826513	2.8027332
+be-reordered-00739	reordered		9700 Oudenaarde Deinzestraat 163	wrong_far	11083.6	True	50.8600547	3.5794537	50.9593631	3.5930410	50.8601377	3.5795078
+be-reordered-00740	reordered		9000 Gent Vlaanderenstraat 79	wrong_far	22367.9	True	51.0505551	3.7299962	50.8562638	3.8127234	51.0505279	3.7302120
+be-reordered-00741	reordered	has_diacritics	7332 Sirault Rue Émile Vandervelde 16	wrong_far	47111.3	True	50.5050022	3.7844778	50.7421085	4.3379429	50.5050181	3.7844697
+be-reordered-00742	reordered		3111 Wezemaal Rigessel 23	wrong_near	514.5	True	50.9445732	4.7510760	50.9474705	4.7568018	50.9444795	4.7506084
+be-reordered-00744	reordered		9150 Kruibeke Bazelstraat 349	wrong_near	1259.8	True	51.1565016	4.3007601	51.1664339	4.3094506	51.1564778	4.3006814
+be-reordered-00745	reordered	has_diacritics	5004 Bouge Chaussée de Louvain 336	wrong_far	17832.5	True	50.4780674	4.8793064	50.3191643	4.9132760	50.4780674	4.8793064
+be-reordered-00746	reordered		9250 Waasmunster Grote Baan 38	wrong_near	3598.5	True	51.1363800	4.0642100	51.1085300	4.0904700	51.1363800	4.0642100
+be-reordered-00747	reordered		4731 Raeren - Eynatten Berlotter Strasse 38	wrong_near	264.8	True	50.6918276	6.1056514	50.6941620	6.1063958	50.6915462	6.1055575
+be-reordered-00748	reordered	has_diacritics	4000 Liège Impasse des Ursulines 42	wrong_far	35027.3	True	50.6476688	5.5767341	50.6716627	5.0812602	50.6476688	5.5767341
+be-reordered-00749	reordered	has_diacritics	4852 Plombières - Hombourg Rue du Cheval Blanc 1	wrong_near	3385.6	True	50.7234828	5.9215167	50.7324728	5.9674719	50.7234912	5.9215005
+be-reordered-00752	reordered		1435 Mont-Saint-Guibert Rue de la Station 11A	wrong_near	114.8	True	50.6377953	4.6125828	50.6367665	4.6124480	50.6377594	4.6126022
+be-reordered-00754	reordered		6740 Sainte-Marie Grand-Rue 218	wrong_near	384.0	True	49.6730100	5.5628737	49.6696822	5.5642994	49.6730416	5.5629449
+be-reordered-00755	reordered	has_diacritics	1300 Wavre Chaussée de Bruxelles 36a	wrong_far	19616.1	True	50.7218821	4.6078387	50.8184600	4.3744100	50.7218821	4.6078387
+be-reordered-00756	reordered		4040 Herstal Rue de l'Abbaye 55	wrong_near	2978.8	True	50.6915757	5.6343855	50.6649089	5.6303449	50.6915757	5.6343855
+be-reordered-00757	reordered		3020 Herent Oostremstraat 10	wrong_far	59678.5	True	50.9090526	4.6843468	51.0319938	3.8547170	50.9090526	4.6843468
+be-reordered-00758	reordered		8860 Lendelede Rozebeeksestraat 59	wrong_near	286.3	True	50.8887009	3.2453090	50.8874400	3.2417500	50.8887292	3.2452330
+be-reordered-00759	reordered		9100 Sint-Niklaas Vlyminckshoek 12	wrong_near	212.7	False	51.1748420	4.1179236	51.1729515	4.1174579	51.1729478	4.1173313
+be-reordered-00762	reordered	has_diacritics	4840 Welkenraedt Rue Mitoyenne - Neutralstraße 903	wrong_near	948.0	True	50.6522696	5.9963654	50.6580022	5.9864112	50.6521886	5.9963458
+be-reordered-00764	reordered		3920 Lommel Kerkstraat 54	wrong_far	56334.4	True	51.2292771	5.3125569	50.7277972	5.4269755	51.2291553	5.3125728
+be-reordered-00765	reordered		3190 Boortmeerbeek Leuvensesteenweg 216	wrong_far	17208.2	True	50.9764135	4.5601516	50.8245127	4.5132236	50.9763185	4.5601206
+be-reordered-00766	reordered		7330 Saint-Ghislain Place Albert-Elisabeth 46	wrong_far	60488.8	True	50.4433574	3.8186286	50.8408200	4.4043100	50.4433574	3.8186286
+be-reordered-00767	reordered		8930 Menen Bruggestraat 637	wrong_far	11992.2	True	50.8261276	3.1171999	50.9201014	3.0333430	50.8261337	3.1175111
+be-reordered-00768	reordered		6001 Marcinelle Avenue Paul Pastur 117	wrong_near	4891.4	True	50.4019611	4.4290407	50.3582997	4.4374508	50.4019454	4.4290608
+be-reordered-00769	reordered		7330 Saint-Ghislain Rue Grande 85	wrong_near	7713.5	True	50.4445262	3.8208083	50.5033413	3.8786019	50.4445262	3.8208083
+be-reordered-00771	reordered	has_diacritics	1380 Couture-St-Germain Rue du Chêne au Corbeau 21a	wrong_near	483.3	True	50.6586284	4.4807812	50.6618296	4.4761434	50.6586645	4.4806975
+be-reordered-00772	reordered		5030 Gembloux Grand'Rue 26	wrong_far	61401.2	True	50.5605740	4.6943422	50.3500834	5.4961673	50.5605740	4.6943422
+be-reordered-00773	reordered	has_diacritics	4840 Welkenraedt Rue de l'École 13-15	wrong_near	307.0	True	50.6615028	5.9739321	50.6642039	5.9730310	50.6615028	5.9739321
+be-reordered-00774	reordered		6900 Marche-en-Famenne Rue Delvigne 50	wrong_near	5999.4	True	50.1666292	5.2723371	50.1932401	5.3456298	50.1667835	5.2725174
+be-reordered-00775	reordered		9230 Wetteren Massemsesteenweg 230	wrong_near	1851.4	True	50.9816697	3.8735713	50.9977568	3.8803932	50.9816752	3.8736067
+be-reordered-00776	reordered		5000 Namur Rue de l'Ange 74	wrong_near	693.4	True	50.4646511	4.8651384	50.4680069	4.8568813	50.4646330	4.8652978
+be-reordered-00777	reordered		1982 Elewijt Tervuursesteenweg 772	wrong_far	15752.9	True	50.9600252	4.4970642	50.8757998	4.6777541	50.9600129	4.4969941
+be-reordered-00778	reordered		8790 Waregem Stationsstraat 195	wrong_far	18071.5	True	50.8923740	3.4267368	50.7324332	3.3810858	50.8923055	3.4265713
+be-reordered-00779	reordered	has_diacritics	6200 Châtelineau Place Wilson	wrong_near	1129.6	False	50.4156892	4.5181279	50.4258477	4.5181741	50.4159273	4.5160895
+be-reordered-00780	reordered		3200 Aarschot Demerstraat 1A	wrong_far	21377.3	True	50.9864380	4.8286665	50.9629913	5.1317103	50.9864380	4.8286665
+be-reordered-00781	reordered		6900 Marche-en-Famenne Rue Delvigne 50	wrong_near	5999.4	True	50.1666292	5.2723371	50.1932401	5.3456298	50.1667835	5.2725174
+be-reordered-00782	reordered		9200 Dendermonde Grootzand 133	wrong_near	2255.0	True	51.0419080	4.1030583	51.0338263	4.1326381	51.0419859	4.1030574
+be-reordered-00783	reordered		8430 Middelkerke Kerkstraat 63	wrong_near	401.8	True	51.1870223	2.8189498	51.1871029	2.8131862	51.1869276	2.8186636
+be-reordered-00784	reordered		3600 Genk Guillaume Lambertlaan 113	wrong_far	77332.3	True	51.0051420	5.4954528	50.8415100	4.4231300	51.0050412	5.4953019
+be-reordered-00785	reordered		8600 Diksmuide Esenweg 93	wrong_near	6744.0	True	51.0311214	2.8784684	51.0867407	2.9169492	51.0312038	2.8786043
+be-reordered-00786	reordered	has_diacritics	1390 Grez-Doiceau Chaussée de Wavre 99	wrong_near	149.7	True	50.7515397	4.6963894	50.7502509	4.6957762	50.7514560	4.6966397
+be-reordered-00787	reordered	has_diacritics	3640 Kinrooi Breeërsteenweg 330	wrong_near	5237.1	True	51.1457601	5.7334926	51.1474900	5.8085200	51.1458920	5.7334853
+be-reordered-00788	reordered		3000 Leuven Tiensestraat 68	wrong_far	29405.6	True	50.8770459	4.7047995	50.7575293	5.0781841	50.8769626	4.7047590
+be-reordered-00789	reordered		4840 Welkenraedt Place de la Gare 6	wrong_near	436.4	True	50.6603107	5.9738089	50.6642039	5.9730310	50.6602723	5.9737545
+be-reordered-00790	reordered		2200 Herentals Toekomstlaan 12	wrong_far	55534.9	True	51.1608882	4.8113009	50.7520737	4.3558428	51.1608882	4.8113009
+be-reordered-00791	reordered		9230 Wetteren Warandelaan 4	wrong_far	35071.3	False	51.0050186	3.8941222	50.9049047	4.3689258	51.0032286	3.8917624
+be-reordered-00792	reordered		9140 Temse Kasteelstraat 85	wrong_far	82164.6	True	51.1237434	4.2221314	50.7206296	5.2045492	51.1237820	4.2220735
+be-reordered-00794	reordered		2460 Poederlee Kerkenend 3	wrong_near	1340.8	True	51.2268756	4.8347804	51.2374836	4.8256239	51.2268756	4.8347804
+be-reordered-00795	reordered	has_diacritics	5020 Champion Chaussée de Louvain 564b	wrong_far	18310.6	True	50.4899361	4.8953183	50.6394700	5.0038900	50.4902290	4.8953426
+be-reordered-00796	reordered	has_diacritics	4700 Eupen Bergstraße 40	wrong_far	32524.0	True	50.6288691	6.0335319	50.3365307	6.0485705	50.6288790	6.0336130
+be-reordered-00798	reordered		8900 Ieper Menenstraat 4	wrong_far	20563.0	True	50.8514307	2.8884766	50.8069455	3.1726557	50.8514307	2.8884766
+be-reordered-00799	reordered		8310 Sint-Kruis Maalse Steenweg 313	wrong_far	38798.5	True	51.2075019	3.2669238	51.1554556	3.8173224	51.2074255	3.2669007
+be-partial-00800	partial	no_postcode	Sint-Jorisstraat 43, Brugge	wrong_near	144.2	False	51.2114565	3.2237955	51.2123600	3.2223100	51.3392104	3.2940397
+be-partial-00802	partial	no_postcode	Omleiding 200, Herent	wrong_near	220.7	True	50.9115393	4.6707482	50.9113400	4.6738800	50.9115393	4.6707482
+be-partial-00803	partial	no_postcode	Rue Haute 4, Blaton	wrong_near	748.6	True	50.5000092	3.6596952	50.4944238	3.6656040	50.4999964	3.6596375
+be-partial-00804	partial	no_postcode	Rue Raymond Noel 120, Bois-de-Villers	wrong_near	118.8	True	50.3966061	4.8258144	50.3959696	4.8271604	50.3966027	4.8258044
+be-partial-00807	partial	no_postcode	Dorpsstraat 76, Molenstede-Diest	wrong_near	927.0	True	51.0026271	5.0206856	51.0101251	5.0148956	51.0026655	5.0206478
+be-partial-00808	partial	no_postcode	Groenveldstraat 110, Leuven	wrong_near	519.9	True	50.8711989	4.6843058	50.8758700	4.6839900	50.8711989	4.6843058
+be-partial-00809	partial	no_postcode	Rue Saint-Jean 21-23, Namur	wrong_far	72268.9	True	50.4630555	4.8646997	50.7044796	5.8150630	50.4630555	4.8646997
+be-partial-00811	partial	no_postcode	Statiestraat 205, Lichtervelde	wrong_near	871.6	True	51.0244366	3.1290749	51.0260200	3.1412800	51.0243337	3.1291535
+be-partial-00812	partial	no_postcode	Rempart de la Vierge 2, Namur	wrong_far	224636.7	True	50.4669543	4.8583121	49.2939200	2.3055100	50.4669255	4.8583501
+be-partial-00813	partial	no_postcode	Loksbergenstraat 61, Halen	wrong_near	704.9	True	50.9326405	5.0662120	50.9364600	5.0742400	50.9326982	5.0661417
+be-partial-00814	partial	no_postcode	Nieuwpoortsesteenweg 540, Oostende	wrong_near	3217.6	True	51.2057545	2.8666242	51.2224000	2.9044100	51.2057603	2.8665253
+be-partial-00816	partial	no_postcode	Koningin Astridlaan 75, Kontich	wrong_far	58044.4	True	51.1343570	4.4565652	50.7670924	3.8677317	51.1343475	4.4565684
+be-partial-00818	partial	no_postcode	Monseigneur Roelensstraat 26, Ardooie	wrong_far	67540.3	True	50.9768864	3.1990179	50.7990314	4.1196759	50.9768926	3.1989497
+be-partial-00819	partial	no_postcode	Dorpsstraat 8, Bekkevoort	wrong_far	143223.2	True	50.9518747	5.0135471	51.0900500	2.9776600	50.9518066	5.0136885
+be-partial-00820	partial	no_postcode	Rue Riverre 13, Floreffe	wrong_near	784.1	True	50.4428370	4.7776391	50.4422065	4.7886680	50.4428370	4.7776391
+be-partial-00821	partial	no_postcode,has_diacritics	Rue de Chièvres 111, Baudour	wrong_far	10380.7	True	50.4935444	3.8062698	50.5868721	3.8098856	50.4935444	3.8062698
+be-partial-00824	partial	no_postcode,has_diacritics	Chaussée d'Alsemberg 469, Braine-l'Alleud	wrong_near	2944.9	True	50.6975002	4.3634790	50.6911785	4.3228787	50.6975002	4.3634790
+be-partial-00825	partial	no_postcode,has_diacritics	Place du Vingt Août 28, Liège	wrong_far	55141.3	True	50.6403575	5.5752181	50.6814600	4.7956200	50.6403575	5.5752181
+be-partial-00827	partial	no_postcode	Nieuwpoortse Steenweg 72A, Gistel	wrong_near	355.6	True	51.1515645	2.9575990	51.1530300	2.9621300	51.1515645	2.9575990
+be-partial-00828	partial	no_postcode	Pastoriestraat 60, Baal	wrong_far	29408.5	True	50.9992199	4.7513123	50.7723175	4.5359251	50.9992277	4.7513544
+be-partial-00829	partial	no_postcode	La Gaichel 1A, Eischen	wrong_near	1859.3	False	49.6934388	5.8703983	49.6772790	5.8770370		
+be-partial-00831	partial	no_postcode	Rue Hurbise 160, Herstal	wrong_near	2457.6	True	50.6869765	5.6284171	50.6649089	5.6303449	50.6868109	5.6282784
+be-partial-00832	partial	no_postcode	Ieperstraat 34, Poperinge	wrong_near	117.9	True	50.8545272	2.7285442	50.8551000	2.7271300	50.8547143	2.7287543
+be-partial-00833	partial	no_postcode	Maastrichtersteenweg 181, Hasselt	wrong_near	429.8	True	50.9282853	5.3554714	50.9299000	5.3499000	50.9282243	5.3554151
+be-partial-00834	partial	no_postcode,has_diacritics	Chaussée de Bruxelles 36a, Wavre	wrong_far	19616.1	True	50.7218821	4.6078387	50.8184600	4.3744100	50.7218821	4.6078387
+be-partial-00835	partial	no_postcode	Turnhoutsebaan 272, Mol	wrong_near	2124.2	True	51.2102649	5.1157753	51.1911700	5.1166700	51.2099037	5.1159230
+be-partial-00836	partial	no_postcode	Leopoldlaan 62, Middelkerke	wrong_near	176.6	True	51.1877057	2.8151602	51.1883000	2.8175100	51.1877057	2.8151602
+be-partial-00837	partial	no_postcode	Grote Markt 50, Kortrijk	wrong_near	7513.4	True	50.8276279	3.2649615	50.8539852	3.3634872	50.8274284	3.2645690
+be-partial-00840	partial	no_postcode	rue du Naneux 2A, Gouvy	wrong_near	4480.5	True	50.1908688	5.9491934	50.2292165	5.9298610	50.1908688	5.9491934
+be-partial-00841	partial	no_postcode	Sint-Truidensesteenweg 195, Orsmaal	wrong_near	832.0	True	50.8031583	5.0594838	50.8020712	5.0477702	50.8031583	5.0594838
+be-partial-00842	partial	no_postcode,has_diacritics	Place du Vingt Août 17, Liège	wrong_far	115495.7	True	50.6397020	5.5762164	50.7175900	3.9416500	50.6396619	5.5763474
+be-partial-00843	partial	no_postcode	Kapellensteenweg 32, Kalmthout	wrong_near	784.0	True	51.3926466	4.4742591	51.3856400	4.4755200	51.3926738	4.4742430
+be-partial-00844	partial	no_postcode	Place des Combattants 18, Welkenraedt	wrong_near	402.6	True	50.6606140	5.9722928	50.6642039	5.9730310	50.6605889	5.9723053
+be-partial-00845	partial	no_postcode	Diesterstraat 39, Tessenderlo	wrong_near	330.6	True	51.0657112	5.0883365	51.0627403	5.0885037	51.0657170	5.0883545
+be-partial-00846	partial	no_postcode	Avenue de l'Artisanat 19, Braine-l'Alleud	wrong_near	2983.2	True	50.6953581	4.3647135	50.6911785	4.3228787	50.6954755	4.3645218
+be-partial-00847	partial	no_postcode,no_housenumber	Maria-Theresialei, Ekeren	wrong_near	9220.8	False	51.2973026	4.4393112	51.2158380	4.4145538	51.2957351	4.4370963
+be-partial-00848	partial	no_postcode	Diestsestraat 22, Leuven	wrong_near	112.8	True	50.8799827	4.7034844	50.8796800	4.7019500	50.8799369	4.7035490
+be-partial-00849	partial	no_postcode	Wapenplaats 10, Wakken	wrong_near	111.9	True	50.9302176	3.3980300	50.9298400	3.3995100	50.9301446	3.3979013
+be-partial-00850	partial	no_postcode	Nieuwpoortlaan 69, Middelkerke	wrong_near	402.1	True	51.1448506	2.7567154	51.1484600	2.7570700	51.1448179	2.7566948
+be-partial-00851	partial	no_postcode,has_diacritics	Place du Théâtre 13, Namur	wrong_far	24727.2	True	50.4638985	4.8680921	50.6814600	4.7956200	50.4638985	4.8680921
+be-partial-00853	partial	no_postcode	Rue de Milmort 699, Milmort	wrong_near	738.3	True	50.6884207	5.6070871	50.6946635	5.6035181	50.6884207	5.6070871
+be-partial-00854	partial	no_postcode	Rue de l'Ange 45, Namur	wrong_near	784.5	True	50.4636156	4.8655563	50.4680069	4.8568813	50.4636010	4.8654855
+be-partial-00855	partial	no_postcode	Rigessel 23, Wezemaal	wrong_near	119.3	True	50.9445732	4.7510760	50.9451500	4.7496400	50.9444795	4.7506084
+be-partial-00857	partial	no_postcode	Tervuursesteenweg 5, Hofstade	wrong_far	18849.9	True	51.0051702	4.4864027	50.8687440	4.6460793	51.0051876	4.4865549
+be-partial-00858	partial	no_postcode	Place d'Ollignies 10, Ollignies	wrong_far	79787.5	True	50.6877706	3.8585470	50.0164300	4.2555800	50.6876987	3.8585861
+be-partial-00859	partial	no_postcode	Kamperbaan 52, Hechtel	wrong_near	271.7	True	51.1261211	5.3629084	51.1252400	5.3665400	51.1263797	5.3621142
+be-partial-00860	partial	no_postcode,has_diacritics	Rue du Méry 22, Liège	wrong_near	5423.0	True	50.6393226	5.5741721	50.5908102	5.5662833	50.6393573	5.5741535
+be-partial-00861	partial	no_postcode	Tervuursesteenweg 85, Heverlee	wrong_far	20619.8	True	50.8761408	4.6805669	51.0138400	4.4834400	50.8761408	4.6805669
+be-partial-00862	partial	no_postcode	Rue de l'Arsenal 25, Namur	wrong_near	370.5	True	50.4647416	4.8579207	50.4680069	4.8568813	50.4647416	4.8579207
+be-partial-00863	partial	no_postcode,no_housenumber,has_diacritics	Place du Marché, Châtelet	wrong_near	1871.1	True	50.4055262	4.5203387	50.4189466	4.5044093	50.4055681	4.5215930
+be-partial-00864	partial	no_postcode	Gistelse Steenweg 30, Sint-Andries	wrong_near	5012.7	True	51.2039442	3.2088714	51.1811453	3.1468167	51.2043324	3.2089041
+be-partial-00865	partial	no_postcode	Rue d'Achet 6, Hamois	wrong_near	2999.3	True	50.3401469	5.1565982	50.3258299	5.1207860	50.3401577	5.1565421
+be-partial-00867	partial	no_postcode,no_housenumber	Pastoriestraat, Baal	wrong_far	29160.2	False	50.9962260	4.7523137	50.7723175	4.5359251	50.9975063	4.7517860
+be-partial-00869	partial	no_postcode	Rue Rogier 1, Mons	wrong_far	47921.7	False	50.4518063	3.9445240	50.8383423	3.6439623	50.4343085	3.7956272
+be-partial-00870	partial	no_postcode	Liersebaan 196, Massenhoven	wrong_near	1197.2	True	51.1918546	4.6378248	51.2018717	4.6315273	51.1918546	4.6378248
+be-partial-00871	partial	no_postcode	Hamonterweg 16, Neerpelt	wrong_near	1854.0	True	51.2356104	5.4514180	51.2403500	5.4769500	51.2355659	5.4515052
+be-partial-00872	partial	no_postcode	Rue Jean-Charles de Hugo 81, Bellefontaine	wrong_near	737.6	True	49.6656214	5.4966411	49.6722544	5.4967565	49.6656265	5.4966192
+be-partial-00873	partial	no_postcode,has_diacritics	Boulevard de Froidmont 23, Liège	wrong_far	157602.3	True	50.6241102	5.5917533	50.9637212	3.4147259	50.6243676	5.5917625
+be-partial-00874	partial	no_postcode	Grand-Rue 218, Sainte-Marie	wrong_near	384.0	True	49.6730100	5.5628737	49.6696822	5.5642994	49.6730416	5.5629449
+be-partial-00875	partial	no_postcode	Bruggestraat 637, Menen	wrong_far	41092.1	True	50.8261276	3.1171999	51.1685152	3.3381578	50.8261337	3.1175111
+be-partial-00876	partial	no_postcode	Elzestraat 7, Kessel	wrong_far	27939.6	True	51.1562365	4.6215520	51.2149738	4.2317861	51.1562524	4.6215175
+be-partial-00877	partial	no_postcode,has_diacritics	Aachener Straße 154, Hauset	wrong_near	8728.9	True	50.7085287	6.0884799	50.6365710	6.0389707	50.7085287	6.0884799
+be-partial-00878	partial	no_postcode,has_diacritics	Rue de Hermée 68, Oupeye	wrong_near	224.4	True	50.7103210	5.6310388	50.7089611	5.6286849	50.7103210	5.6310388
+be-partial-00879	partial	no_postcode	Rue Raymond Noel 120, Bois-de-Villers	wrong_near	118.8	True	50.3966061	4.8258144	50.3959696	4.8271604	50.3966027	4.8258044
+be-partial-00880	partial	no_postcode	Stationsstraat 23-25, Haacht	wrong_far	92129.9	True	50.9768654	4.6351545	50.7324332	3.3810858	50.9768654	4.6351545
+be-partial-00881	partial	no_postcode	Tervuursestraat 118, Leuven	wrong_near	326.7	True	50.8776699	4.6855927	50.8794310	4.6893197	50.8777173	4.6855185
+be-partial-00882	partial	no_postcode	Westelsebaan 186, Averbode	wrong_near	634.1	True	51.0293992	4.9793646	51.0243390	4.9835445	51.0292814	4.9792067
+be-partial-00883	partial	no_postcode	Graaf van Landaststraat 160, Eine	wrong_far	57376.9	True	50.8787420	3.6159511	50.8630300	4.4332400	50.8788205	3.6160759
+be-partial-00885	partial	no_postcode,has_diacritics	Chaussée d'Alsemberg 421, Braine-l'Alleud	wrong_near	3033.1	True	50.6968233	4.3650077	50.6911785	4.3228787	50.6964361	4.3648019
+be-partial-00886	partial	no_postcode,has_diacritics	Rue du Réservoir 15, Couture-St-Germain	wrong_near	876.1	True	50.6551087	4.4826307	50.6618296	4.4761434	50.6551299	4.4826458
+be-partial-00888	partial	no_postcode	Prins Boudewijnlaan 9, Kontich	wrong_far	64301.5	True	51.1427069	4.4354821	50.8245928	5.2025825	51.1427672	4.4359133
+be-partial-00889	partial	no_postcode	Mechelsestraat 42, Leuven	wrong_near	145.4	True	50.8808746	4.6995872	50.8796400	4.7002700	50.8809135	4.6996551
+be-partial-00890	partial	no_postcode	Broekveldstraat 34, Herent	wrong_near	216.0	True	50.9106324	4.6737272	50.9086900	4.6737600	50.9105095	4.6735102
+be-partial-00891	partial	no_postcode,has_diacritics	Rue de Couvin 63, Somzée	wrong_far	27462.8	False	50.3027287	4.4818462	50.0558188	4.4909614		
+be-partial-00892	partial	no_postcode	Leopoldlaan 89, Overpelt	wrong_near	922.7	True	51.2239454	5.4283406	51.2158200	5.4256500	51.2239797	5.4281419
+be-partial-00893	partial	no_postcode	Brusselsesteenweg 28-30, Tervuren	wrong_near	149.4	True	50.8244125	4.5107224	50.8245900	4.5128300	50.8244125	4.5107224
+be-partial-00894	partial	no_postcode,has_diacritics	Chaussée de Philippeville 35, Mariembourg	wrong_far	11922.9	True	50.0946406	4.5163240	50.1991811	4.5535323	50.0947136	4.5160386
+be-partial-00896	partial	no_postcode	Liersesteenweg 120, Aarschot	wrong_near	554.3	True	51.0019623	4.8279355	50.9983300	4.8333600	51.0019104	4.8279329
+be-partial-00897	partial	no_postcode,has_diacritics	Rue du Méry 22, Liège	wrong_near	5423.0	True	50.6393226	5.5741721	50.5908102	5.5662833	50.6393573	5.5741535
+be-partial-00898	partial	no_postcode,has_diacritics	Rue de Dalhem 15, Visé	wrong_near	4435.0	True	50.7320694	5.6970178	50.7351357	5.7598481	50.7321344	5.6971593
+be-partial-00899	partial	no_postcode	Rue du Crucifix 40, Herstal	wrong_far	11587.9	True	50.6750081	5.6399720	50.7385100	5.7704500	50.6749636	5.6403377
+be-partial-00900	partial	no_postcode	Vissenakenstraat 597, Tienen	wrong_near	3456.0	True	50.8478174	4.9187751	50.8183200	4.9342800	50.8478604	4.9189073
+be-partial-00901	partial	no_postcode	Jan Persijnstraat 12, Kortrijk	wrong_near	7614.4	True	50.8268567	3.2639203	50.8539852	3.3634872	50.8268457	3.2638558
+be-partial-00902	partial	no_postcode	Essex Scottishlaan 1, Middelkerke	wrong_near	4687.5	True	51.1573343	2.7655791	51.1871029	2.8131862	51.1573003	2.7654551
+be-partial-00903	partial	no_postcode	Molenstraat 36, Kontich	wrong_far	49071.6	True	51.1362098	4.4425384	50.7393111	4.1363543	51.1362401	4.4425539
+be-partial-00905	partial	no_postcode	Graatakker 99, Turnhout	wrong_near	189.1	True	51.3165071	4.9513160	51.3159628	4.9487388	51.3165975	4.9513878
+be-partial-00906	partial	no_postcode	Mechelsestraat 86, Leuven	wrong_near	371.8	True	50.8828018	4.6985454	50.8796400	4.7002700	50.8828177	4.6987177
+be-partial-00907	partial	no_postcode	Groenplaats 32, Antwerpen	wrong_near	105.3	True	51.2192758	4.4022091	51.2197244	4.4008770	51.2192758	4.4022091
+be-partial-00908	partial	no_postcode	Pastoriestraat 1, Relegem	wrong_far	22853.0	True	50.8998135	4.2806838	50.7723175	4.5359251	50.8998135	4.2806838
+be-partial-00909	partial	no_postcode	Klein Overlaar 56, Hoegaarden	wrong_near	2289.8	True	50.7821836	4.9004579	50.7665128	4.9215842	50.7822216	4.9004086
+be-partial-00910	partial	no_postcode	Wampenberg 66, Arendonk	wrong_near	318.6	True	51.3272570	5.0940966	51.3299100	5.0958300	51.3271774	5.0944709
+be-partial-00911	partial	no_postcode	Tervuursesteenweg 31, Mechelen	wrong_near	100.7	True	51.0129505	4.4837117	51.0138400	4.4834400	51.0129558	4.4837648
+be-partial-00912	partial	no_postcode,has_diacritics	Rue de Dalhem 15, Visé	wrong_near	4435.0	True	50.7320694	5.6970178	50.7351357	5.7598481	50.7321344	5.6971593
+be-partial-00913	partial	no_postcode	Blauwstraat 82, Boom	wrong_near	149.1	True	51.0866077	4.3691634	51.0862400	4.3671100	51.0865490	4.3691299
+be-partial-00915	partial	no_postcode	Tiensestraat 37, Leuven	wrong_near	127.2	True	50.8778820	4.7038162	50.8789000	4.7029900	50.8779147	4.7039071
+be-partial-00917	partial	no_postcode	Poederleese weg 115, Lille	wrong_near	712.6	True	51.2322348	4.8312823	51.2375400	4.8255400	51.2323286	4.8314896
+be-partial-00918	partial	no_postcode	IJzerenleen 38, Mechelen	wrong_near	102.4	True	51.0267406	4.4782873	51.0273000	4.4794500	51.0268474	4.4779828
+be-partial-00919	partial	no_postcode	Boomsesteenweg 35-37, Schelle	wrong_near	433.4	True	51.1172734	4.3757723	51.1204029	4.3720718	51.1172734	4.3757723
+be-partial-00920	partial	no_postcode	Maboge 22, La Roche-en-Ardenne	wrong_near	149.2	True	50.1677981	5.6267137	50.1689000	5.6279100	50.1677981	5.6267137
+be-partial-00922	partial	no_postcode,has_diacritics	1ère Avenue 55, Herstal	wrong_near	2863.3	True	50.6897684	5.6197478	50.6649089	5.6303449	50.6897684	5.6197478
+be-partial-00923	partial	no_postcode	Route de Lessines 107, Lanquesaint Ath	wrong_near	1121.1	True	50.6483360	3.7998619	50.6404715	3.8098099	50.6483360	3.7998619
+be-partial-00924	partial	no_postcode	Krijgsbaan 124, Wijnegem	wrong_near	348.3	True	51.2179743	4.4957292	51.2208200	4.4978200	51.2179505	4.4958454
+be-partial-00925	partial	no_postcode,has_diacritics	Chaussée Reine Astrid 60, Braine-l'Alleud	wrong_near	4128.3	True	50.6857601	4.3808535	50.6911785	4.3228787	50.6857214	4.3807902
+be-partial-00926	partial	no_postcode	Koningin Astridlaan 259, Kraainem	wrong_far	42985.3	True	50.8484781	4.4657677	50.7670924	3.8677317	50.8484781	4.4657677
+be-partial-00927	partial	no_postcode	Rue Grande 30, Saint-Ghislain	wrong_near	7562.1	True	50.4464929	3.8199515	50.5033413	3.8786019	50.4464801	3.8199403
+be-partial-00928	partial	no_postcode	Rue des Faubourgs 65, Arlon	wrong_near	727.4	True	49.6851948	5.8108783	49.6859889	5.8008422	49.6852562	5.8108840
+be-partial-00930	partial	no_postcode	Kapucijnenvoer 205, Leuven	wrong_near	709.5	True	50.8741781	4.6916391	50.8804200	4.6937400	50.8741833	4.6916872
+be-partial-00931	partial	no_postcode	Rue Grande 23, Tellin	wrong_far	78791.2	True	50.0818188	5.2196957	50.7578000	4.8862200	50.0817423	5.2197121
+be-partial-00934	partial	no_postcode	Norbert Neeckxlaan 73, Lommel	wrong_far	139786.5	True	51.2256826	5.3284718	51.1656478	3.3246272	51.2256826	5.3284718
+be-partial-00935	partial	no_postcode	Luikersteenweg 230, Lommel	wrong_near	1119.2	True	51.2342911	5.3750465	51.2249400	5.3691000	51.2342546	5.3752737
+be-partial-00936	partial	no_postcode,has_diacritics	Rue du Collège 25, Namur	wrong_far	94287.2	False	50.4636257	4.8629369	50.9955690	3.8196865	50.5922689	4.9087141
+be-partial-00937	partial	no_postcode	Monseigneur Ladeuzeplein 22, Leuven	wrong_far	42136.9	True	50.8780010	4.7063224	50.7987224	4.1195360	50.8779853	4.7062925
+be-partial-00939	partial	no_postcode	Route du Lion 126, Braine-l'Alleud	wrong_near	5114.7	True	50.6820940	4.3940509	50.6911785	4.3228787	50.6820677	4.3940053
+be-partial-00941	partial	no_postcode	Van Iseghemlaan 76, Oostende	wrong_near	2108.0	True	51.2306705	2.9123889	51.2134957	2.9252035	51.2306705	2.9123889
+be-partial-00942	partial	no_postcode	Mechelsestraat 125, Leuven	wrong_near	454.8	True	50.8835247	4.6982421	50.8796400	4.7002700	50.8835752	4.6980222
+be-partial-00943	partial	no_postcode,has_diacritics	Aachener Straße 160, Hauset	wrong_far	47422.9	True	50.7088243	6.0886624	50.2829819	6.1254425	50.7089969	6.0886355
+be-partial-00944	partial	no_postcode	Tervuursesteenweg 58, Hofstade	wrong_far	18461.9	True	51.0014377	4.4877263	50.8687440	4.6460793	51.0014676	4.4878411
+be-partial-00946	partial	no_postcode	Rue Haute Claire 20, Milmort	wrong_near	898.2	True	50.6866061	5.6044230	50.6946635	5.6035181	50.6866061	5.6044230
+be-partial-00947	partial	no_postcode	Staatsbaan 55, Oud-Turnhout	wrong_near	1459.7	True	51.3107008	5.0225602	51.2977779	5.0262561	51.3109330	5.0225537
+be-partial-00949	partial	no_postcode	Brugsesteenweg 56, Middelkerke	wrong_near	4165.4	True	51.1260072	2.8184782	51.1268600	2.8781500	51.1261281	2.8184570
+be-partial-00950	partial	no_postcode,has_diacritics	Rue du Chêne au Corbeau 28-30, Couture-St-Germain	wrong_near	576.1	True	50.6585852	4.4825155	50.6618296	4.4761434	50.6586044	4.4826096
+be-partial-00951	partial	no_postcode	Gistelse Steenweg 168, Sint-Andries	wrong_near	4370.3	True	51.2014871	3.2004761	51.1811453	3.1468167	51.2019689	3.2000063
+be-partial-00952	partial	no_postcode	Albert I-laan 13, Nieuwpoort	wrong_near	2486.8	True	51.1383807	2.7393367	51.1439105	2.7047975	51.1385095	2.7394811
+be-partial-00953	partial	no_postcode,has_diacritics	2ème Avenue 39, Herstal	wrong_near	3566.2	True	50.6951605	5.6135357	50.6649089	5.6303449	50.6951605	5.6135357
+be-partial-00954	partial	no_postcode,no_housenumber	Pastoriestraat, Baal	wrong_far	29160.2	False	50.9962260	4.7523137	50.7723175	4.5359251	50.9975063	4.7517860
+be-partial-00955	partial	no_postcode	Predikherenberg 13, Herent	wrong_near	148.0	True	50.8822518	4.6655558	50.8833400	4.6643400	50.8822518	4.6655558
+be-partial-00956	partial	no_postcode	Oostendelaan 312, Middelkerke	wrong_near	1897.6	True	51.1947134	2.8439383	51.1854600	2.8210600	51.1947630	2.8440838
+be-partial-00957	partial	no_postcode	Groenveldstraat 94, Leuven	wrong_near	443.7	True	50.8724510	4.6840503	50.8764200	4.6834000	50.8724510	4.6840503
+be-partial-00958	partial	no_postcode,has_diacritics	Chaussée de Charleroi 69, Gembloux	wrong_far	26810.2	True	50.5647388	4.6881905	50.3733008	4.4578992	50.5647388	4.6881905
+be-partial-00960	partial	no_postcode	Rue d'Abhooz 6, Herstal	wrong_near	3367.2	True	50.6944356	5.6197387	50.6649089	5.6303449	50.6944356	5.6197387
+be-partial-00961	partial	no_postcode	Dorp 7, Poederlee	wrong_near	424.6	True	51.2274105	4.8354734	51.2308824	4.8329341	51.2273974	4.8353853
+be-partial-00962	partial	no_postcode,has_diacritics	Rue de la Rivièrette 13, Tertre	wrong_far	46031.0	True	50.4617340	3.8111904	50.4064700	4.4552800	50.4617356	3.8111885
+be-partial-00963	partial	no_postcode	Alfons Smetsplein 4, Leuven	wrong_far	15483.3	True	50.8771996	4.7034848	50.8202500	4.5022300	50.8771844	4.7035511
+be-partial-00964	partial	no_postcode	Kuipersstraat 35, Brugge	wrong_near	127.1	True	51.2108833	3.2227293	51.2097400	3.2227200	51.2108769	3.2227036
+be-partial-00965	partial	no_postcode	Place du Martyr 16, Verviers	wrong_near	1146.9	True	50.5936033	5.8610528	50.5836879	5.8655265	50.5937060	5.8610666
+be-partial-00966	partial	no_postcode,has_diacritics	Rue des Vennes 347, Liège	wrong_far	88228.2	True	50.6187819	5.5959033	51.2664500	4.8684300	50.6187819	5.5959033
+be-partial-00967	partial	no_postcode	Leopoldlaan 208, Middelkerke	wrong_near	805.5	True	51.1845141	2.8076563	51.1883000	2.8175100	51.1845217	2.8075920
+be-partial-00968	partial	no_postcode	Albert I Laan 142, Koksijde	wrong_near	765.8	True	51.1338088	2.6830187	51.1274663	2.6787427	51.1337442	2.6830415
+be-partial-00970	partial	no_postcode	Liersesteenweg 153, Lint	wrong_near	567.5	True	51.1262420	4.5055525	51.1271500	4.4975500	51.1263630	4.5053265
+be-partial-00972	partial	no_postcode	Rue des Alouettes 141, Milmort	wrong_near	1158.5	True	50.6948099	5.5870726	50.6946635	5.6035181	50.6948099	5.5870726
+be-partial-00973	partial	no_postcode	Rue Godefroid 68, Namur	wrong_far	55032.0	True	50.4680128	4.8626345	50.8587300	4.3833900	50.4680239	4.8626889
+be-partial-00974	partial	no_postcode	Tervuursesteenweg 31, Mechelen	wrong_near	100.7	True	51.0129505	4.4837117	51.0138400	4.4834400	51.0129558	4.4837648
+be-partial-00975	partial	no_postcode	Mechelsesteenweg 11, Edegem	wrong_far	34918.7	True	51.1622709	4.4573741	50.8496518	4.5046575	51.1626584	4.4572532
+be-partial-00976	partial	no_postcode	Sint-Pietersstraat 15, Sint-Pieters-Voeren	wrong_far	135330.6	False	50.7383647	5.8229332	50.9152300	3.9165900		
+be-partial-00977	partial	no_postcode,has_diacritics	Rue des Déportés 47, Sirault	wrong_far	48307.5	True	50.5061394	3.7906524	50.4066800	4.4549000	50.5061394	3.7906524
+be-partial-00978	partial	no_postcode,has_diacritics	Lütticher Straße 210, Kelmis	wrong_near	498.4	True	50.7149045	6.0144437	50.7178103	6.0198339	50.7149045	6.0144437
+be-partial-00979	partial	no_postcode,no_housenumber	Leuvensesteenweg, Muizen	wrong_far	19084.5	False	50.9958039	4.5303479	50.8245127	4.5132236	51.0060714	4.5140188
+be-partial-00981	partial	no_postcode	Rue Joseph PIret 10B, Floreffe	wrong_near	2187.4	True	50.4336251	4.7608754	50.4422065	4.7886680	50.4336251	4.7608754
+be-partial-00983	partial	no_postcode,has_diacritics	3ème Avenue 16, Herstal	wrong_near	3826.1	True	50.6989871	5.6228364	50.6649089	5.6303449	50.6989871	5.6228364
+be-partial-00984	partial	no_postcode	Kamperbaan 52, Hechtel	wrong_near	271.7	True	51.1261211	5.3629084	51.1252400	5.3665400	51.1263797	5.3621142
+be-partial-00985	partial	no_postcode	Groenveldstraat 82, Leuven	wrong_near	436.1	True	50.8728070	4.6838013	50.8767100	4.6831900	50.8728070	4.6838013
+be-partial-00987	partial	no_postcode	Rue Grande 45, Saint-Ghislain	wrong_near	7610.4	True	50.4457780	3.8204260	50.5033413	3.8786019	50.4457803	3.8204648
+be-partial-00988	partial	no_postcode	Tiensestraat 41, Leuven	wrong_near	222.6	True	50.8777206	4.7055530	50.8789000	4.7029900	50.8779506	4.7048187
+be-partial-00992	partial	no_postcode	Rue de Milmort 670, Milmort	wrong_near	911.3	True	50.6874034	5.6095207	50.6946635	5.6035181	50.6874034	5.6095207
+be-partial-00994	partial	no_postcode	Rue des Lilas 18, Genappe	wrong_near	674.2	True	50.6144996	4.4525046	50.6105119	4.4453072	50.6144541	4.4533161
+be-partial-00996	partial	no_postcode	Rue Grande 45, Saint-Ghislain	wrong_near	7610.4	True	50.4457780	3.8204260	50.5033413	3.8786019	50.4457803	3.8204648
+be-partial-00997	partial	no_postcode,has_diacritics	Rue du Pot d'Or 46, Liège	wrong_near	5623.5	True	50.6413533	5.5690206	50.5908102	5.5662833	50.6413870	5.5689750
+be-partial-00998	partial	no_postcode	Rue de la Halle 8, Namur	wrong_far	87838.4	True	50.4628725	4.8653769	51.2401312	4.6419799	50.4628556	4.8653821
+be-partial-00999	partial	no_postcode	Mechelsesteenweg 398, Edegem	wrong_far	34787.6	True	51.1611095	4.4577601	50.8496518	4.5046575	51.1610931	4.4576981
