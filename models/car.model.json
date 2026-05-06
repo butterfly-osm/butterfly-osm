@@ -5,14 +5,14 @@
   "speed": {
     "unit": "km/h",
     "highway": {
-      "motorway": 72, "motorway_link": 36,
-      "trunk": 68, "trunk_link": 32,
-      "primary": 52, "primary_link": 24,
-      "secondary": 44, "secondary_link": 20,
-      "tertiary": 32, "tertiary_link": 16,
-      "unclassified": 20, "residential": 20,
-      "service": 12, "living_street": 8,
-      "track": 8
+      "motorway": 90, "motorway_link": 45,
+      "trunk": 85, "trunk_link": 40,
+      "primary": 65, "primary_link": 30,
+      "secondary": 55, "secondary_link": 25,
+      "tertiary": 40, "tertiary_link": 20,
+      "unclassified": 25, "residential": 25,
+      "service": 15, "living_street": 10,
+      "track": 10
     },
     "speed_cap_kmh": 288,
     "overrides": [
@@ -40,8 +40,8 @@
       { "tag": "access", "values": ["no", "private"] }
     ],
     "allow_if": [
-      { "if": { "highway": "track", "tracktype": "grade1" }, "speed_kmh": 16 },
-      { "if": { "highway": "track", "tracktype": "grade2" }, "speed_kmh": 12 }
+      { "if": { "highway": "track", "tracktype": "grade1" }, "speed_kmh": 20 },
+      { "if": { "highway": "track", "tracktype": "grade2" }, "speed_kmh": 15 }
     ]
   },
 
