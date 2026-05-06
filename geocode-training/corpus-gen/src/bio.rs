@@ -7,11 +7,25 @@
 //! Field set: STREET, HNUM, POST, CITY, UNIT. Five fields × 2 (B/I) + O = 11
 //! possible labels (we use indices, not strings, in the training output).
 //!
-//! IMPORTANT: when augmentation rewrites the canonical text, the BIO labels
-//! must be re-derived against the new byte string. We never try to
-//! "synthesize" labels from offsets — we always tag spans against the
-//! rewritten string. This is the design that survives typo injection without
-//! drift (per the codex/gemini review on label preservation).
+//! ## Provenance-based labeling
+//!
+//! BIO labels are derived from the **gold record's per-field provenance**
+//! at render time, NOT from post-hoc tokenizer alignment over a flat
+//! string. `render_canonical` walks the gold record component by
+//! component (street, housenumber, postcode, city, unit), appends each
+//! to a buffer, and records the resulting byte range as a `Span`. The
+//! BIO byte vector is then a direct projection of those spans onto
+//! `text.len()` bytes — no string-search step, no fuzzy alignment.
+//!
+//! This is the design that addresses the codex review (`CORPUS_DESIGN_NOTES.md`):
+//! every output codepoint owns a field id, derived from the structured
+//! source rather than recovered after the fact.
+//!
+//! When augmentation rewrites the canonical text, the BIO labels are
+//! re-derived against the new byte string via the same span-driven
+//! mechanism (the augmenter mutates the spans alongside the text and
+//! calls `bio_from_spans` against the rewritten pair). This is the
+//! design that survives typo injection without drift.
 
 use crate::gold::GoldRecord;
 

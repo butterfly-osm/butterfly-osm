@@ -19,6 +19,7 @@
 use crate::augment::{self, Augmented};
 use crate::bio::Labeled;
 use crate::gold::GoldRecord;
+use crate::morphology::Morphology;
 use anyhow::{Result, bail};
 use rand::Rng;
 use rand_chacha::ChaCha20Rng;
@@ -32,6 +33,7 @@ pub fn write_bench_tsv(
     golds: &[GoldRecord],
     path: &Path,
     target: usize,
+    morph: &Morphology,
     rng: &mut ChaCha20Rng,
 ) -> Result<usize> {
     let f = File::create(path)?;
@@ -67,10 +69,18 @@ pub fn write_bench_tsv(
             let canonical = crate::bio::render_canonical(g);
             let text = match *class {
                 "clean" => canonical.text.clone(),
-                "abbreviated" => render_one_kind(g, &canonical, rng, kind_offset_for_class(class)),
-                "typo" => render_one_kind(g, &canonical, rng, kind_offset_for_class(class)),
-                "reordered" => render_one_kind(g, &canonical, rng, kind_offset_for_class(class)),
-                "partial" => render_one_kind(g, &canonical, rng, kind_offset_for_class(class)),
+                "abbreviated" => {
+                    render_one_kind(g, &canonical, morph, rng, kind_offset_for_class(class))
+                }
+                "typo" => {
+                    render_one_kind(g, &canonical, morph, rng, kind_offset_for_class(class))
+                }
+                "reordered" => {
+                    render_one_kind(g, &canonical, morph, rng, kind_offset_for_class(class))
+                }
+                "partial" => {
+                    render_one_kind(g, &canonical, morph, rng, kind_offset_for_class(class))
+                }
                 _ => unreachable!(),
             };
             // Skip degenerate (empty / too short) outputs.
@@ -104,7 +114,13 @@ fn kind_offset_for_class(class: &&str) -> u32 {
     }
 }
 
-fn render_one_kind(g: &GoldRecord, canonical: &Labeled, rng: &mut ChaCha20Rng, k: u32) -> String {
-    let Augmented { text, .. } = augment::apply(g, canonical, rng, k);
+fn render_one_kind(
+    g: &GoldRecord,
+    canonical: &Labeled,
+    morph: &Morphology,
+    rng: &mut ChaCha20Rng,
+    k: u32,
+) -> String {
+    let Augmented { text, .. } = augment::apply(g, canonical, morph, rng, k);
     text
 }

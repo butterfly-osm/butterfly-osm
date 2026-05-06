@@ -145,25 +145,53 @@ enum Command {
     /// for shipping the proof-of-life model.
     Train {
         /// Output safetensors path. A sidecar `.config.json` with the
-        /// model architecture is written next to it.
+        /// model architecture + country vocab is written next to it.
         #[arg(long)]
         out: PathBuf,
-        /// Path to a JSONL corpus. Each line: `{"text", "country", "spans": [{"field","start","end"}, ...]}`.
+        /// Path to a JSONL corpus. Two formats are accepted (auto-detected):
+        ///
+        /// 1. Spans format (legacy): `{"text", "country", "spans": [{"field","start","end"}, ...]}`.
+        /// 2. corpus-gen BIO format: `{"text", "country", "bio_labels": [...], "augmentation": "..."}`.
         #[arg(long)]
         corpus: Option<PathBuf>,
         /// Number of synthetic examples to generate when no corpus is
         /// provided. Default 4096.
         #[arg(long, default_value_t = 4096)]
         synthetic: usize,
+        /// Comma-separated list of ISO 3166-1 alpha-2 country codes that
+        /// the model's country head will be sized for. Order does not
+        /// matter — the vocab is internally lex-sorted.
+        #[arg(long, default_value = "BE")]
+        countries: String,
+        /// Architecture profile. `tiny` (the proof-of-life shipped model)
+        /// or `production` (#96 Fork A+: d=128, l=4, h=8, ~825k params).
+        #[arg(long, default_value = "tiny")]
+        architecture: String,
         /// Number of training epochs.
         #[arg(long, default_value_t = 8)]
         epochs: usize,
         /// Mini-batch size.
-        #[arg(long, default_value_t = 16)]
+        #[arg(long, default_value_t = 64)]
         batch_size: usize,
-        /// Learning rate for AdamW.
-        #[arg(long, default_value_t = 2e-3)]
+        /// Peak learning rate for AdamW.
+        #[arg(long, default_value_t = 1e-3)]
         learning_rate: f64,
+        /// LR schedule kind: `cosine`, `linear`, or `constant`.
+        /// All variants do a linear warmup ramp first.
+        #[arg(long, default_value = "cosine")]
+        lr_schedule: String,
+        /// AdamW weight-decay coefficient.
+        #[arg(long, default_value_t = 0.01)]
+        weight_decay: f64,
+        /// Max global gradient L2-norm. Set to 0 to disable clipping.
+        #[arg(long, default_value_t = 1.0)]
+        gradient_clip: f64,
+        /// Number of linear-warmup steps. `0` disables warmup.
+        #[arg(long, default_value_t = 1000)]
+        warmup_steps: usize,
+        /// Eval split fraction in `[0.0, 1.0)`. Default 0.1.
+        #[arg(long, default_value_t = 0.1)]
+        eval_split: f32,
         /// Random seed.
         #[arg(long, default_value_t = 0xB17EBAD0)]
         seed: u64,
@@ -416,17 +444,31 @@ async fn main() -> Result<()> {
             out,
             corpus,
             synthetic,
+            countries,
+            architecture,
             epochs,
             batch_size,
             learning_rate,
+            lr_schedule,
+            weight_decay,
+            gradient_clip,
+            warmup_steps,
+            eval_split,
             seed,
         } => train_cmd(
             out,
             corpus,
             synthetic,
+            &countries,
+            &architecture,
             epochs,
             batch_size,
             learning_rate,
+            &lr_schedule,
+            weight_decay,
+            gradient_clip,
+            warmup_steps,
+            eval_split,
             seed,
         ),
         Command::Serve {
@@ -1199,19 +1241,35 @@ fn candidate_pbf_names(c: CountryId) -> Vec<String> {
     v
 }
 
+#[allow(clippy::too_many_arguments)]
 fn train_cmd(
     out: PathBuf,
     corpus_path: Option<PathBuf>,
     synthetic_n: usize,
+    countries_csv: &str,
+    architecture: &str,
     epochs: usize,
     batch_size: usize,
     learning_rate: f64,
+    lr_schedule: &str,
+    weight_decay: f64,
+    gradient_clip: f64,
+    warmup_steps: usize,
+    eval_split: f32,
     seed: u64,
 ) -> Result<()> {
     use butterfly_geocode::tagger::training::{
-        TrainConfig, generate_belgium_synthetic, read_jsonl_corpus, train_and_save,
+        CountryVocab, LrSchedule, TrainConfig, generate_belgium_synthetic, read_jsonl_corpus,
+        train_and_save,
     };
     use butterfly_geocode::tagger::transformer::ModelConfig;
+
+    let vocab = CountryVocab::from_csv(countries_csv)?;
+    info!(
+        countries = vocab.countries().join(",").as_str(),
+        n = vocab.len(),
+        "country vocab"
+    );
 
     let corpus = if let Some(path) = corpus_path {
         info!(path = %path.display(), "loading corpus");
@@ -1228,16 +1286,52 @@ fn train_cmd(
         c
     };
 
-    let cfg = ModelConfig::tiny();
+    let cfg = match architecture.trim().to_ascii_lowercase().as_str() {
+        "tiny" => {
+            // tiny is BE-only by definition; reject multi-country with tiny.
+            if vocab.len() != 1 {
+                bail!(
+                    "architecture=tiny is single-country; got vocab len={}. Use --architecture production for multi-country.",
+                    vocab.len()
+                );
+            }
+            ModelConfig::tiny()
+        }
+        "production" => ModelConfig::production(vocab.len()),
+        other => bail!("unknown --architecture {:?} (use tiny|production)", other),
+    };
+    info!(
+        architecture = architecture,
+        d_model = cfg.d_model,
+        n_layers = cfg.n_layers,
+        n_heads = cfg.n_heads,
+        d_ff = cfg.d_ff,
+        n_countries = cfg.n_countries,
+        params_approx = cfg.approx_param_count(),
+        "model config"
+    );
+
+    let schedule = LrSchedule::parse(lr_schedule)?;
+    let grad_clip = if gradient_clip > 0.0 {
+        Some(gradient_clip)
+    } else {
+        None
+    };
+
     let train_cfg = TrainConfig {
         epochs,
         batch_size,
         learning_rate,
+        weight_decay,
+        gradient_clip: grad_clip,
+        warmup_steps,
+        lr_schedule: schedule,
+        eval_split,
         seed,
         ..Default::default()
     };
 
-    let metrics = train_and_save(cfg, train_cfg, &corpus, &out)?;
+    let metrics = train_and_save(cfg, train_cfg, &vocab, &corpus, &out)?;
     info!("training complete");
     if let Some(last) = metrics.last() {
         info!(
