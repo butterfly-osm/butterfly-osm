@@ -17,7 +17,7 @@ pub struct WayInput<'a> {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WayOutput {
     /// Can traverse forward (along way direction)
     pub access_fwd: bool,
@@ -37,6 +37,30 @@ pub struct WayOutput {
     pub per_km_penalty_ds: u16,
     /// Constant penalty per edge entry in deciseconds
     pub const_penalty_ds: u32,
+    /// Urban density class — used by step 8 traffic recustomization to apply
+    /// per-class speed factors. See `crate::density`. Defaults to `Suburban`
+    /// (encoded as 3) so v1 way_attrs files round-trip cleanly through v2.
+    pub density_class: u8,
+}
+
+impl Default for WayOutput {
+    fn default() -> Self {
+        Self {
+            access_fwd: false,
+            access_rev: false,
+            oneway: 0,
+            base_speed_mmps: 0,
+            surface_class: 0,
+            highway_class: 0,
+            class_bits: 0,
+            per_km_penalty_ds: 0,
+            const_penalty_ds: 0,
+            // Suburban (3) is the neutral default — corresponds to a 1.0
+            // factor in the freeflow profile and a sensible mid-bucket for
+            // traffic profiles that don't explicitly call out the class.
+            density_class: 3,
+        }
+    }
 }
 
 #[repr(C)]

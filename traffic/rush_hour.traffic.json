@@ -1,0 +1,11 @@
+{
+  "name": "rush_hour",
+  "base_model": "car",
+  "speed_factors": {
+    "urban_high": 0.55,
+    "urban_medium": 0.70,
+    "urban_low": 0.85,
+    "suburban": 0.90,
+    "rural": 0.95
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "freeflow",
+  "base_model": "car",
+  "speed_factors": {
+    "urban_high": 1.00,
+    "urban_medium": 1.00,
+    "urban_low": 1.00,
+    "suburban": 1.00,
+    "rural": 1.00
+  }
+}
