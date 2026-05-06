@@ -224,6 +224,22 @@ impl ServerState {
         self
     }
 
+    /// Replace the admission policy. Used by the `serve --admission-*`
+    /// CLI flags so deployments fronted by their own rate limiter can
+    /// disable the gate, and so benchmarks talking from a single
+    /// localhost IP can lift the per-IP cap that otherwise pins
+    /// throughput at `per_ip_refill_per_sec` (#172).
+    ///
+    /// Reuses the existing [`GeneralMetrics`] handle so admission
+    /// counters keep flowing through the same Prometheus registry as
+    /// the rest of the control plane.
+    #[must_use]
+    pub fn with_admission_policy(mut self, policy: AdmissionPolicy) -> Self {
+        let metrics = *self.admission.metrics();
+        self.admission = AdmissionState::new(policy, metrics);
+        self
+    }
+
     /// Total number of records across all loaded shards.
     #[must_use]
     pub fn total_record_count(&self) -> usize {
