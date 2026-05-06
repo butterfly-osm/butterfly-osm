@@ -41,6 +41,8 @@ echo "[bench-e2e] starting server (log: $SERVER_LOG)..."
   --model "$MODEL" \
   --rerank-model "$RERANK" \
   --admission-disable \
+  --rate-limit-per-sec 100000 \
+  --rate-limit-burst 100000 \
   --request-timeout-secs 30 \
   --max-body-bytes 65536 \
   > "$SERVER_LOG" 2>&1 &
