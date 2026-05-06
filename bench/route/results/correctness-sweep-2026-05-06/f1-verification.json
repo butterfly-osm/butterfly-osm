@@ -1,0 +1,43 @@
+{
+  "verification_date": "2026-05-06",
+  "n_pairs": 1000,
+  "pairs_source": "first 1000 from be-pairs.tsv (same pairs as 10k sweep)",
+  "butterfly_data_dir": "data/belgium-f1 (step2-f1 + step5-f1 + step8-f1)",
+  "engines": {
+    "butterfly": "post-#197 with F1 speed table calibration (this branch)",
+    "osrm": "v5.26.0 CH (driving=5050, cycling=5051, walking=5052)"
+  },
+  "modes": {
+    "car": {
+      "n_pairs": 1000,
+      "n_both_valid": 1000,
+      "speed_profile_bias_ratio_osrm_over_bf": 0.9791666576560772,
+      "distance_diff_pct_p50": 2.3477392934122436,
+      "distance_diff_pct_p95": 15.261706632803476,
+      "duration_diff_pct_corrected_p50": 3.341900034048929,
+      "osrm_distance_total_km": 128734.9886,
+      "bf_distance_total_km": 125728.99906300001,
+      "osrm_duration_total_h": 1635.0574722222223,
+      "bf_duration_total_h": 1669.8459444444445
+    },
+    "bike": {
+      "n_pairs": 1000,
+      "n_both_valid": 999,
+      "speed_profile_bias_ratio_osrm_over_bf": 1.0354216355878918,
+      "distance_diff_pct_p50": 0.883815083014926,
+      "distance_diff_pct_p95": 4.161782346415952,
+      "duration_diff_pct_corrected_p50": 1.971051657971623,
+      "osrm_distance_total_km": 114652.0128,
+      "bf_distance_total_km": 114833.35137799999,
+      "osrm_duration_total_h": 7882.198166666666,
+      "bf_duration_total_h": 7612.549222222222
+    }
+  },
+  "pre_tuning_bias_ratios": {
+    "car": 1.166,
+    "bike": 1.254,
+    "foot": 0.905
+  },
+  "target": "Bias ratio within 5% (0.95 < ratio < 1.05)",
+  "status": "PARTIAL \u2014 car/bike within target, foot rebuild in progress"
+}
