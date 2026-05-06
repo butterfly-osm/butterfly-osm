@@ -1,9 +1,9 @@
 //! End-to-end test for the post-libpostal recall+rerank pipeline (#205).
 //!
 //! Builds a tiny synthetic Belgium shard (5 OpenAddresses gold addresses
-//! + 5 OSM POI samples), emits the recall index sidecars, boots an
-//! in-process Axum router, and exercises `/geocode` for top-1
-//! correctness on each gold query.
+//! plus 5 OSM POI samples), emits the recall index sidecars, boots an
+//! in-process Axum router, and exercises `/geocode` for top-1 correctness
+//! on each gold query.
 //!
 //! No external data dependencies — runs in <1 s on every CI box.
 
@@ -156,14 +156,8 @@ async fn body_to_string(resp: axum::response::Response) -> String {
     String::from_utf8(bytes.to_vec()).expect("utf8")
 }
 
-async fn forward(
-    app: &axum::Router,
-    q: &str,
-) -> serde_json::Value {
-    let uri = format!(
-        "/geocode?q={}&country=BE",
-        urlencoding(q)
-    );
+async fn forward(app: &axum::Router, q: &str) -> serde_json::Value {
+    let uri = format!("/geocode?q={}&country=BE", urlencoding(q));
     let req = Request::builder().uri(&uri).body(Body::empty()).unwrap();
     let resp = app.clone().oneshot(req).await.expect("router oneshot");
     assert_eq!(resp.status(), StatusCode::OK, "uri={uri}");
@@ -228,7 +222,10 @@ async fn fuzzy_partial_query_still_recalls_candidates() {
     // expansion must still find Anderlecht's Rue Wayez.
     let (_dir, app) = make_app();
     let v = forward(&app, "Rue Wayez Anderlecht").await;
-    assert!(v["count"].as_u64().unwrap_or(0) > 0, "no recall for partial: {v}");
+    assert!(
+        v["count"].as_u64().unwrap_or(0) > 0,
+        "no recall for partial: {v}"
+    );
 }
 
 #[tokio::test]
