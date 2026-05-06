@@ -1,82 +1,73 @@
-//! Query parser.
+//! Parser surface — tagger signal emission only.
 //!
-//! ## Backends
+//! Per #205 the parse-then-geocode shape is gone. The "parser"
+//! modules that survive emit [`crate::geocoder::recall::TaggerSignals`]
+//! for the recall + rerank pipeline; they no longer extract fields
+//! into a [`ParsedQuery`] (which itself was deleted in #205).
 //!
-//! - [`heuristic`] — deterministic, regex-driven baseline (Phase 0
-//!   from PR #162). Single hypothesis, single country. Always
-//!   available, no model file required.
-//! - [`neural`] — byte-level transformer + retrieval-aware decoding
-//!   (#96 §Tagger + #98 Phase 1). Loaded from a safetensors file at
-//!   server startup; falls back to the heuristic parser if the file
-//!   is missing.
-//!
-//! Both backends emit the same [`crate::types::ParsedQuery`] shape.
-//! The executor consumes either without knowing which produced it.
-//!
-//! ## Backend trait
-//!
-//! [`ParserBackend`] is the dynamic-dispatch interface used by the
-//! HTTP handlers. The neural backend is wrapped in the variant that
-//! takes a `&Shard` because the decoder needs shard statistics for
-//! anchor detection and retrieval-utility scoring; the heuristic
-//! backend doesn't, so the trait passes `&Shard` to both for symmetry
-//! (it's free for the heuristic implementation).
+//! - [`heuristic`] — deterministic regex-driven baseline. Always
+//!   available, no model file required. Currently emits a neutral
+//!   `TaggerSignals` (empty BIO logits, classifier-only country
+//!   posterior, fixed `global_confidence`); cheap deterministic
+//!   priors that recall depends on (postcode regex, country
+//!   classifier) live in `geocoder::rerank` and `routing::Classifier`
+//!   respectively.
+//! - [`neural`] — byte-level transformer ([`crate::tagger`]) that
+//!   produces real BIO logits and a country posterior.
+//! - [`normalize`] — string normalization shared by the recall
+//!   index builder and every other text-comparing call site.
 
-pub mod anchor;
-pub mod beam;
-pub mod decoding;
 pub mod heuristic;
 pub mod neural;
 pub mod normalize;
-pub mod phase2_features;
-pub mod phase2_training;
-pub mod retrieval_utility;
 
-use crate::routing::CountryId;
+use crate::geocoder::recall::TaggerSignals;
 use crate::shard::reader::Shard;
-use crate::types::ParsedQuery;
 
-pub use heuristic::parse_heuristic;
-pub use neural::NeuralParser;
-
-/// Polymorphic parser interface.
-///
-/// `parse` is fallible because the neural backend can fail at runtime
-/// (forward pass error, shape mismatch on a malformed model file) —
-/// the heuristic backend always returns `Ok(...)`.
+/// Polymorphic tagger-signal source. Wraps either the heuristic
+/// fallback ([`HeuristicBackend`]) or the neural [`neural::NeuralParser`]
+/// behind a single trait object so the server can swap backends at
+/// runtime.
 pub trait ParserBackend: Send + Sync + std::fmt::Debug {
-    fn parse(&self, text: &str, country: CountryId, shard: &Shard) -> anyhow::Result<ParsedQuery>;
+    /// Emit tagger signals for `text`. The shard handle is threaded
+    /// through for parity with the legacy interface; current backends
+    /// ignore it but a future tagger-aware preconditioner may consult
+    /// shard stats.
+    fn signals(&self, text: &str, shard: &Shard) -> anyhow::Result<TaggerSignals>;
     fn name(&self) -> &'static str;
 }
 
+/// Heuristic fallback backend — emits neutral `TaggerSignals`. Used
+/// when no neural model is loaded; the recall + rerank pipeline still
+/// runs, just without per-byte BIO weighting.
 #[derive(Debug, Default)]
 pub struct HeuristicBackend;
 
 impl ParserBackend for HeuristicBackend {
-    fn parse(&self, text: &str, country: CountryId, _shard: &Shard) -> anyhow::Result<ParsedQuery> {
-        Ok(parse_heuristic(text, country))
+    fn signals(&self, text: &str, _shard: &Shard) -> anyhow::Result<TaggerSignals> {
+        Ok(heuristic::neutral_signals(text))
     }
     fn name(&self) -> &'static str {
         "heuristic"
     }
 }
 
-/// Wrapper for [`NeuralParser`] under the [`ParserBackend`] trait.
+/// Neural backend — wraps [`neural::NeuralParser`] under [`ParserBackend`].
 #[derive(Debug)]
 pub struct NeuralBackend {
-    pub parser: NeuralParser,
+    pub parser: neural::NeuralParser,
 }
 
 impl NeuralBackend {
     #[must_use]
-    pub fn new(parser: NeuralParser) -> Self {
+    pub fn new(parser: neural::NeuralParser) -> Self {
         Self { parser }
     }
 }
 
 impl ParserBackend for NeuralBackend {
-    fn parse(&self, text: &str, _country: CountryId, shard: &Shard) -> anyhow::Result<ParsedQuery> {
-        self.parser.parse(text, shard)
+    fn signals(&self, text: &str, _shard: &Shard) -> anyhow::Result<TaggerSignals> {
+        self.parser.signals(text)
     }
     fn name(&self) -> &'static str {
         "neural"

@@ -11,10 +11,8 @@ use tracing::{Level, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use butterfly_geocode::CountryId;
-use butterfly_geocode::confidence::{
-    GbdtModel, TrainConfig, build_training_groups, build_training_rows, dump_training_rows,
-    evaluate, load_corpus, synthesise_corpus_from_shard, train_pointwise,
-};
+use butterfly_geocode::confidence::GbdtModel;
+use butterfly_geocode::index::{BuildOptions, build_recall_index};
 use butterfly_geocode::osm_extract::{ExtractProgress, extract_addresses_with_tags};
 use butterfly_geocode::server::{
     DEFAULT_GRPC_PORT, DEFAULT_REST_PORT, ServerConfig, ServerState, Transport,
@@ -26,11 +24,7 @@ use butterfly_geocode::shard::{AddressRecord, SourceTag};
 use butterfly_geocode::sources::{
     SourceProgress, collect_all, merge_records, openaddresses::OpenAddressesSource,
 };
-use butterfly_geocode::{
-    HeuristicBackend, HeuristicScorer, LearnedScorer, NeuralBackend, NeuralParser, ParserBackend,
-    Phase2TrainConfig, RetrievalUtilityScorer, phase2_evaluate, phase2_load_labels,
-    phase2_split_train_eval, phase2_train_pointwise,
-};
+use butterfly_geocode::{HeuristicBackend, NeuralBackend, NeuralParser, ParserBackend};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -56,20 +50,6 @@ enum ParserKind {
     /// the `train` subcommand. If the model fails to load, the server
     /// falls back to the heuristic parser with a warning.
     Neural,
-}
-
-/// Retrieval-utility scorer selection (#98 Phase 1 / Phase 2).
-///
-/// `Heuristic` (default) — hand-crafted scoring from #168 (Phase 1).
-/// `Learned` — GBDT trained against geocode-success ground truth via
-/// `butterfly-geocode train-retrieval-utility`. Requires
-/// `--retrieval-utility-model <path>`. If the model fails to load,
-/// the server falls back to the heuristic scorer with a warning.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
-enum RetrievalUtilityKind {
-    #[default]
-    Heuristic,
-    Learned,
 }
 
 #[derive(Subcommand, Debug)]
@@ -284,18 +264,6 @@ enum Command {
         /// Path to the safetensors model. Required when `--parser=neural`.
         #[arg(long)]
         model: Option<PathBuf>,
-        /// Retrieval-utility scorer (#98). `heuristic` (default) uses
-        /// the Phase 1 hand-crafted scoring; `learned` uses a GBDT
-        /// trained against geocode-success ground truth (#98 Phase 2).
-        /// Requires `--retrieval-utility-model` when set to `learned`.
-        /// Only consulted when `--parser=neural`; the heuristic parser
-        /// emits a single hypothesis and skips utility scoring.
-        #[arg(long, value_enum, default_value_t = RetrievalUtilityKind::Heuristic)]
-        retrieval_utility: RetrievalUtilityKind,
-        /// Path to a Phase 2 retrieval-utility GBDT model file. Required
-        /// when `--retrieval-utility=learned`.
-        #[arg(long)]
-        retrieval_utility_model: Option<PathBuf>,
         /// Per-IP HTTP rate limit (requests per second steady state).
         #[arg(long, default_value_t = 100)]
         rate_limit_per_sec: u32,
@@ -391,68 +359,44 @@ enum Command {
         #[arg(long)]
         group_by_country: bool,
     },
-    /// Train the GBDT confidence reranker (#96 §Confidence Model).
+    /// Train the rerank GBDT (#205 step 2).
     ///
-    /// Reads a JSONL labelled corpus, runs the executor against the
-    /// provided shard to materialise candidates, computes features,
-    /// labels each (query, candidate) pair, and trains a pointwise
-    /// logistic-loss GBDT.
-    ///
-    /// If `--corpus` is omitted, the trainer synthesises a tiny
-    /// labelled corpus by sampling records directly from the shard —
-    /// the Phase-0 bootstrap when no real labelled data exists yet.
+    /// Reads a shard + recall index, synthesises perturbed gold
+    /// queries, runs recall against the index, labels candidates by
+    /// proximity to the gold record, computes [`RerankFeatures`] and
+    /// trains a pointwise logistic-loss GBDT. Saves a versioned
+    /// envelope file the server loads with `--rerank-model`.
     TrainRerank {
+        /// BFGS shard (with sibling `.recall.fst` / `.recall.postings`).
         #[arg(long)]
         shard: PathBuf,
-        #[arg(long)]
-        corpus: Option<PathBuf>,
-        #[arg(long)]
-        out: PathBuf,
-        #[arg(long, default_value_t = 100)]
-        iterations: usize,
-        #[arg(long, default_value_t = 6)]
-        max_depth: u32,
-        #[arg(long, default_value_t = 20)]
-        limit_per_query: usize,
-        #[arg(long, default_value_t = 5000)]
-        synth_size: usize,
-        #[arg(long)]
-        dump_rows: Option<PathBuf>,
-    },
-    /// Train the Phase 2 retrieval-utility GBDT (#98 §2.2).
-    ///
-    /// Reads a JSONL file of `(features, label)` rows produced by the
-    /// `phase2-label` binary in `geocode-training/`, splits 90/10
-    /// train/eval (deterministic with `--seed`), trains a pointwise
-    /// log-likelihood GBDT, evaluates AUC + Brier on the held-out
-    /// split, persists the model.
-    ///
-    /// Output is a `.gbdt` file consumable by
-    /// `butterfly-geocode serve --retrieval-utility=learned --retrieval-utility-model <path>`.
-    TrainRetrievalUtility {
-        /// JSONL file produced by `phase2-label`. Each line is a
-        /// `(features, label)` row (label = 1 if executed program
-        /// landed on gold, 0 otherwise).
-        #[arg(long)]
-        labels: PathBuf,
         /// Output GBDT model path.
         #[arg(long)]
         out: PathBuf,
-        /// Number of boosting iterations (trees).
-        #[arg(long, default_value_t = 150)]
-        epochs: usize,
+        /// Number of boosting iterations.
+        #[arg(long, default_value_t = 100)]
+        iterations: usize,
         /// Tree max depth.
         #[arg(long, default_value_t = 6)]
-        depth: u32,
-        /// Held-out eval split fraction in `[0, 1)`. `0.0` disables eval.
-        #[arg(long, default_value_t = 0.1)]
-        eval_split: f32,
-        /// Learning rate (shrinkage).
-        #[arg(long, default_value_t = 0.1)]
-        learning_rate: f32,
-        /// Random seed (for the train/eval split).
+        max_depth: u32,
+        /// Number of synthetic queries to generate from the shard.
+        #[arg(long, default_value_t = 5000)]
+        synth_size: usize,
+        /// Top-K candidates from recall scored per query.
+        #[arg(long, default_value_t = 20)]
+        limit_per_query: usize,
+        /// Random seed.
         #[arg(long, default_value_t = 0xB17EBAD0)]
         seed: u64,
+    },
+    /// Build the recall FST + postings + stats sidecar for an
+    /// existing BFGS shard. Idempotent — overwrites existing
+    /// sidecars. Useful when an operator built shards before #205
+    /// landed.
+    BuildRecallIndex {
+        /// BFGS shard to index.
+        #[arg(long)]
+        shard: PathBuf,
     },
 }
 
@@ -540,8 +484,6 @@ async fn main() -> Result<()> {
             rerank_model,
             parser,
             model,
-            retrieval_utility,
-            retrieval_utility_model,
             rate_limit_per_sec,
             rate_limit_burst,
             admission_disable,
@@ -615,8 +557,6 @@ async fn main() -> Result<()> {
                 rerank_model.as_deref(),
                 parser,
                 model.as_deref(),
-                retrieval_utility,
-                retrieval_utility_model.as_deref(),
                 server_cfg,
                 admission_policy,
                 std::time::Duration::from_secs(shutdown_timeout_secs),
@@ -644,40 +584,22 @@ async fn main() -> Result<()> {
         }
         Command::TrainRerank {
             shard,
-            corpus,
             out,
             iterations,
             max_depth,
-            limit_per_query,
             synth_size,
-            dump_rows,
+            limit_per_query,
+            seed,
         } => train_rerank_cmd(
             &shard,
-            corpus.as_deref(),
             &out,
             iterations,
             max_depth,
-            limit_per_query,
             synth_size,
-            dump_rows.as_deref(),
-        ),
-        Command::TrainRetrievalUtility {
-            labels,
-            out,
-            epochs,
-            depth,
-            eval_split,
-            learning_rate,
-            seed,
-        } => train_retrieval_utility_cmd(
-            &labels,
-            &out,
-            epochs,
-            depth,
-            eval_split,
-            learning_rate,
+            limit_per_query,
             seed,
         ),
+        Command::BuildRecallIndex { shard } => build_recall_index_cmd(&shard),
     }
 }
 
@@ -843,6 +765,21 @@ fn build_shard_cmd(
         );
     }
     info!("shard verified");
+
+    // Emit the recall FST + postings + stats sidecars next to the
+    // shard. Operators no longer need a separate `build-recall-index`
+    // run for fresh shards.
+    let report =
+        build_recall_index(out, &s, &BuildOptions::default()).context("building recall index")?;
+    info!(
+        fst = %report.fst_path.display(),
+        postings = %report.postings_path.display(),
+        stats = %report.stats_path.display(),
+        vocab_size = report.stats.vocab_size,
+        p50_postings = report.stats.p50_postings,
+        p95_postings = report.stats.p95_postings,
+        "recall index emitted"
+    );
 
     Ok(())
 }
@@ -1486,53 +1423,15 @@ async fn serve_cmd(
     rerank_model_path: Option<&std::path::Path>,
     parser_kind: ParserKind,
     model_path: Option<&std::path::Path>,
-    retrieval_utility_kind: RetrievalUtilityKind,
-    retrieval_utility_model_path: Option<&std::path::Path>,
     server_cfg: ServerConfig,
     admission_policy: butterfly_geocode::control::AdmissionPolicy,
     shutdown_timeout: std::time::Duration,
     pack_registry: Arc<butterfly_geocode::routing::PackRegistry>,
 ) -> Result<()> {
-    // Resolve the retrieval-utility scorer first so we can plumb it
-    // through to the neural parser at construction time. `learned`
-    // with a missing/broken file falls back to the heuristic with a
-    // warning, mirroring how the model file fall-back works.
-    let retrieval_scorer: Option<Arc<dyn RetrievalUtilityScorer>> = match retrieval_utility_kind {
-        RetrievalUtilityKind::Heuristic => {
-            info!("retrieval-utility scorer = heuristic (#98 Phase 1)");
-            Some(Arc::new(HeuristicScorer::default()))
-        }
-        RetrievalUtilityKind::Learned => {
-            let p = retrieval_utility_model_path.ok_or_else(|| {
-                anyhow!(
-                    "--retrieval-utility=learned requires --retrieval-utility-model <path/to/model.gbdt>"
-                )
-            })?;
-            match LearnedScorer::load(p) {
-                Ok(s) => {
-                    info!(
-                        model = %p.display(),
-                        schema_version = s.schema_version(),
-                        "learned retrieval-utility scorer loaded — using #98 Phase 2"
-                    );
-                    Some(Arc::new(s) as Arc<dyn RetrievalUtilityScorer>)
-                }
-                Err(e) => {
-                    warn!(
-                        error = %e,
-                        model = %p.display(),
-                        "learned retrieval-utility model failed to load; falling back to heuristic scorer"
-                    );
-                    Some(Arc::new(HeuristicScorer::default()))
-                }
-            }
-        }
-    };
-
-    // Pick the parser backend first — the neural parser is wired via
-    // `ParserBackend` (#98 Phase 1), the heuristic backend is always
-    // available as a deterministic fallback (Phase 0 baseline). The
-    // GBDT reranker layer composes on top regardless of parser choice.
+    // Pick the parser backend. The neural backend emits real BIO
+    // logits + per-country posterior; the heuristic backend emits
+    // neutral signals (cheap classifier only). The recall + rerank
+    // pipeline runs identically on either.
     let parser_backend: Arc<dyn ParserBackend> = match parser_kind {
         ParserKind::Heuristic => {
             info!("using heuristic parser backend");
@@ -1544,11 +1443,9 @@ async fn serve_cmd(
             })?;
             match NeuralParser::load(model_path) {
                 Ok(p) => {
-                    let p = p.with_retrieval_scorer(retrieval_scorer.clone());
                     info!(
                         model = %model_path.display(),
-                        scorer = retrieval_scorer.as_ref().map(|s| s.name()).unwrap_or("none"),
-                        "neural parser loaded — using #98 retrieval-aware decoding"
+                        "neural tagger loaded — emitting per-byte BIO logits + country posterior"
                     );
                     Arc::new(NeuralBackend::new(p))
                 }
@@ -1556,7 +1453,7 @@ async fn serve_cmd(
                     warn!(
                         error = %e,
                         model = %model_path.display(),
-                        "neural model failed to load; falling back to heuristic parser"
+                        "neural model failed to load; falling back to heuristic backend"
                     );
                     Arc::new(HeuristicBackend)
                 }
@@ -1568,12 +1465,26 @@ async fn serve_cmd(
         (Some(p), None) => {
             info!(shard = %p.display(), "loading shard (single-country mode)");
             let shard = Shard::open(p).context("opening shard")?;
+            let country = shard.country();
+            let recall = butterfly_geocode::index::RecallIndex::open(p).with_context(|| {
+                format!(
+                    "opening recall index for shard at {} — rebuild via \
+                     `butterfly-geocode build-recall-index --shard {}`",
+                    p.display(),
+                    p.display()
+                )
+            })?;
             info!(
-                country = shard.country().iso2(),
+                country = country.iso2(),
                 record_count = shard.record_count(),
-                "shard loaded"
+                recall_keys = recall.key_count(),
+                "shard + recall index loaded"
             );
-            ServerState::new(shard)
+            let mut shards = std::collections::HashMap::new();
+            shards.insert(country, std::sync::Arc::new(shard));
+            let mut recaller = butterfly_geocode::geocoder::recall::Recaller::new();
+            recaller.insert(country, recall);
+            ServerState::from_shards_with_recaller(shards, recaller)
         }
         (None, Some(d)) => {
             info!(dir = %d.display(), "loading shards from directory (multi-country mode)");
@@ -1728,191 +1639,295 @@ async fn serve_cmd(
     Ok(())
 }
 
+/// Train the rerank GBDT (#205 step 2).
+///
+/// Synthesises perturbed gold queries from the shard records, runs
+/// recall against the sibling FST, labels candidates by proximity to
+/// the gold record, computes [`butterfly_geocode::RerankFeatures`]
+/// per (query, candidate), and trains a pointwise log-likelihood GBDT.
 #[allow(clippy::too_many_arguments)]
 fn train_rerank_cmd(
     shard_path: &std::path::Path,
-    corpus_path: Option<&std::path::Path>,
     out: &std::path::Path,
     iterations: usize,
     max_depth: u32,
-    limit_per_query: usize,
     synth_size: usize,
-    dump_rows: Option<&std::path::Path>,
+    limit_per_query: usize,
+    seed: u64,
 ) -> Result<()> {
-    info!(shard = %shard_path.display(), "loading shard");
+    use butterfly_geocode::geocoder::recall::{RecallBudget, Recaller, TaggerSignals};
+    use butterfly_geocode::geocoder::rerank::SourcePriors;
+    use butterfly_geocode::index::RecallIndex;
+    use butterfly_geocode::shard::reader::haversine_m;
+    use gbdt::config::Config;
+    use gbdt::decision_tree::{Data, DataVec};
+    use gbdt::gradient_boost::GBDT;
+
+    info!(shard = %shard_path.display(), "loading shard + recall index");
     let shard = Shard::open(shard_path).context("opening shard")?;
-    info!(record_count = shard.record_count(), "shard loaded");
-
-    let corpus = match corpus_path {
-        Some(p) => {
-            info!(corpus = %p.display(), "loading labelled corpus");
-            let c = load_corpus(p).context("loading corpus")?;
-            info!(rows = c.len(), "corpus loaded");
-            c
-        }
-        None => {
-            info!(
-                synth_size,
-                "no corpus provided — synthesising from shard records"
-            );
-            synthesise_corpus_from_shard(&shard, synth_size)
-        }
-    };
-    if corpus.is_empty() {
-        return Err(anyhow::anyhow!("empty corpus — nothing to train on"));
-    }
-
-    let start = std::time::Instant::now();
-    let (rows, balance) =
-        build_training_rows(&shard, &corpus, limit_per_query).context("building training rows")?;
+    let recall_index = RecallIndex::open(shard_path).with_context(|| {
+        format!(
+            "opening recall index for shard at {} — rebuild via \
+             `butterfly-geocode build-recall-index --shard {}`",
+            shard_path.display(),
+            shard_path.display()
+        )
+    })?;
     info!(
-        rows = rows.len(),
-        positives = balance.positives,
-        negatives = balance.negatives,
-        secs = start.elapsed().as_secs_f64(),
-        "training rows materialised"
+        record_count = shard.record_count(),
+        recall_keys = recall_index.key_count(),
+        "shard + recall index loaded"
     );
+
+    let country = shard.country();
+    let mut recaller = Recaller::new();
+    recaller.insert(country, recall_index);
+
+    // Synthesise queries — each gold record contributes a clean query
+    // plus deterministic perturbations (typo, dropped field, swapped
+    // tokens, drop diacritics by lowercase). Seeded LCG for
+    // reproducibility.
+    let mut state: u64 = seed;
+    fn lcg(s: &mut u64) -> u32 {
+        *s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (*s >> 32) as u32
+    }
+    let n = shard.record_count() as u32;
+    if n == 0 {
+        bail!("shard has zero records — cannot train rerank");
+    }
+    let mut queries: Vec<(u32, String)> = Vec::with_capacity(synth_size);
+    for _ in 0..synth_size {
+        let id = lcg(&mut state) % n;
+        let Some(rec) = shard.record(id) else {
+            continue;
+        };
+        // Generate one of: clean / drop-house / drop-postcode /
+        // typo-street / locality-only.
+        let mode = lcg(&mut state) % 5;
+        let q = match mode {
+            0 => format!(
+                "{} {} {} {}",
+                rec.street, rec.housenumber, rec.postcode, rec.locality
+            ),
+            1 => format!("{} {} {}", rec.street, rec.postcode, rec.locality),
+            2 => format!("{} {} {}", rec.street, rec.housenumber, rec.locality),
+            3 => {
+                // Typo: swap two adjacent characters in street.
+                let mut s = rec.street.to_string();
+                if s.len() >= 4 {
+                    let bytes = unsafe_safe_swap(&s, 1);
+                    s = bytes;
+                }
+                format!(
+                    "{} {} {} {}",
+                    s, rec.housenumber, rec.postcode, rec.locality
+                )
+            }
+            _ => rec.locality.to_string(),
+        };
+        queries.push((id, q));
+    }
+    info!(n = queries.len(), "synthetic queries generated");
+
+    // Run recall on each, label candidates by proximity to the gold
+    // record's lat/lon. Positive = within 50 m, negative otherwise.
+    let mut rows: Vec<(Vec<f32>, f32)> = Vec::new();
+    let signals = TaggerSignals::default();
+    let budget = RecallBudget::default().adapt_to_stats(
+        recaller
+            .stats_for(country)
+            .map(|s| s.p95_postings)
+            .unwrap_or(256),
+    );
+    let priors = SourcePriors::default();
+
+    for (gold_id, q) in &queries {
+        let cands = recaller.query(q, &signals, &[country], &budget);
+        let cands_top: Vec<_> = cands.into_iter().take(limit_per_query).collect();
+        if cands_top.is_empty() {
+            continue;
+        }
+        let Some(gold_rec) = shard.record(*gold_id) else {
+            continue;
+        };
+        let mut group_has_positive = false;
+        let mut group_rows: Vec<(Vec<f32>, f32)> = Vec::with_capacity(cands_top.len());
+        for cand in cands_top {
+            let Some(rec) = shard.record(cand.address_id as u32) else {
+                continue;
+            };
+            let d = haversine_m(gold_rec.lat, gold_rec.lon, rec.lat, rec.lon);
+            let label = if d <= 50.0 { 1.0 } else { 0.0 };
+            if label > 0.5 {
+                group_has_positive = true;
+            }
+            let feat = compute_rerank_row(q, &signals, &cand, &rec, &priors);
+            group_rows.push((feat, label));
+        }
+        if group_has_positive {
+            rows.extend(group_rows);
+        }
+    }
+
+    info!(rows = rows.len(), "training rows materialised");
     if rows.is_empty() {
-        return Err(anyhow::anyhow!(
-            "no training rows produced — executor returned no candidates for any corpus entry"
-        ));
+        bail!(
+            "no training rows with positive labels produced — synth_size or recall budget too small"
+        );
     }
-    if balance.positives == 0 {
-        return Err(anyhow::anyhow!(
-            "no positive labels in corpus — model would degenerate"
-        ));
-    }
-
-    if let Some(p) = dump_rows {
-        dump_training_rows(&rows, p).context("dumping training rows")?;
-        info!(dump = %p.display(), "training rows written");
+    let n_pos = rows.iter().filter(|r| r.1 > 0.5).count();
+    let n_neg = rows.len() - n_pos;
+    info!(positives = n_pos, negatives = n_neg, "label balance");
+    if n_pos == 0 || n_neg == 0 {
+        bail!("degenerate labels: pos={n_pos} neg={n_neg}");
     }
 
-    let cfg = TrainConfig {
-        n_trees: iterations,
-        max_depth,
-        ..TrainConfig::default()
-    };
-    let t = std::time::Instant::now();
-    let model = train_pointwise(&rows, cfg).context("training GBDT")?;
+    let mut data: DataVec = rows
+        .into_iter()
+        .map(|(feature, label)| Data {
+            feature,
+            target: label,
+            weight: 1.0,
+            label,
+            residual: 0.0,
+            initial_guess: 0.0,
+        })
+        .collect();
+    let n_features = butterfly_geocode::RerankFeatures::N;
+    let mut cfg = Config::new();
+    cfg.set_feature_size(n_features);
+    cfg.set_max_depth(max_depth);
+    cfg.set_iterations(iterations);
+    cfg.set_shrinkage(0.1);
+    cfg.set_loss("LogLikelyhood");
+    cfg.set_data_sample_ratio(1.0);
+    cfg.set_feature_sample_ratio(1.0);
+    cfg.set_training_optimization_level(2);
+    let t0 = std::time::Instant::now();
+    let mut g = GBDT::new(&cfg);
+    g.fit(&mut data);
     info!(
-        secs = t.elapsed().as_secs_f64(),
+        secs = t0.elapsed().as_secs_f64(),
         n_trees = iterations,
         max_depth,
         "GBDT trained"
     );
 
-    let groups =
-        build_training_groups(&shard, &corpus, limit_per_query).context("building eval groups")?;
-    let report = evaluate(&model, &groups);
-    info!(
-        binary_accuracy = report.binary_accuracy,
-        rank_1_hit_rate = report.rank_1_hit_rate,
-        n_groups = report.n_groups,
-        n_groups_with_positive = report.n_groups_with_positive,
-        rank_1_hits = report.rank_1_hits,
-        "training-set eval"
-    );
-
-    model.save(out).context("saving GBDT model")?;
-    info!(out = %out.display(), "GBDT model written");
+    let model = GbdtModel::from_inner(g);
+    model.save(out).context("saving rerank GBDT")?;
+    info!(out = %out.display(), "rerank GBDT model written");
 
     let _ = GbdtModel::load(out).context("verifying saved model loads cleanly")?;
     info!("saved model verified (load-back succeeded)");
-
     Ok(())
 }
 
-/// Train the Phase 2 retrieval-utility GBDT.
-///
-/// Reads a JSONL labels file produced by `phase2-label`, splits
-/// train/eval, fits, evaluates, and persists the model.
-fn train_retrieval_utility_cmd(
-    labels_path: &std::path::Path,
-    out: &std::path::Path,
-    epochs: usize,
-    depth: u32,
-    eval_split: f32,
-    learning_rate: f32,
-    seed: u64,
-) -> Result<()> {
-    info!(labels = %labels_path.display(), "loading Phase 2 labels");
-    let rows = phase2_load_labels(labels_path).context("loading Phase 2 labels")?;
-    info!(n = rows.len(), "labels loaded");
-    if rows.is_empty() {
-        bail!("empty labels file — nothing to train on");
-    }
-    let n_pos = rows.iter().filter(|r| r.label > 0.5).count();
-    let n_neg = rows.len() - n_pos;
-    info!(positives = n_pos, negatives = n_neg, "label balance");
-    if n_pos == 0 || n_neg == 0 {
-        bail!(
-            "labels file is degenerate (all-pos or all-neg): pos={n_pos} neg={n_neg} — \
-             retrieval-utility model would not learn a decision boundary"
-        );
-    }
+/// Compute a [`RerankFeatures`] row inline. Mirrors the production
+/// pipeline's feature shape.
+fn compute_rerank_row(
+    query: &str,
+    signals: &butterfly_geocode::TaggerSignals,
+    cand: &butterfly_geocode::Candidate,
+    rec: &butterfly_geocode::shard::reader::ShardRecord,
+    priors: &butterfly_geocode::geocoder::rerank::SourcePriors,
+) -> Vec<f32> {
+    use butterfly_geocode::geocoder::recall::lexical_alignment_score;
+    use butterfly_geocode::geocoder::rerank::extract_postcode;
+    use butterfly_geocode::parser::normalize::normalize;
 
-    let cfg = Phase2TrainConfig {
-        n_trees: epochs,
-        max_depth: depth,
-        learning_rate,
-        feature_sample_ratio: 1.0,
-        data_sample_ratio: 1.0,
-        seed,
-        eval_split,
+    let normalized_input = normalize(query);
+    let canonical = format!(
+        "{} {} {} {}",
+        normalize(&rec.street),
+        normalize(&rec.housenumber),
+        normalize(&rec.postcode),
+        normalize(&rec.locality)
+    );
+    let canonical = canonical.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    let lexical = lexical_alignment_score(&normalized_input, &canonical);
+
+    let country_p = signals
+        .country_posterior
+        .iter()
+        .find(|(c, _)| *c == cand.country)
+        .map(|(_, p)| *p)
+        .unwrap_or(0.0);
+
+    let postcode_agreement = match extract_postcode(query) {
+        Some(pc) if !rec.postcode.is_empty() => {
+            let a = pc.to_ascii_lowercase().replace(' ', "");
+            let b = rec.postcode.to_ascii_lowercase().replace(' ', "");
+            if a == b {
+                1.0
+            } else if b.contains(&a) || a.contains(&b) {
+                0.5
+            } else {
+                0.0
+            }
+        }
+        _ => -1.0,
     };
 
-    let (train, eval) = phase2_split_train_eval(&rows, &cfg);
-    info!(
-        n_train = train.len(),
-        n_eval = eval.len(),
-        "train/eval split (deterministic with --seed)"
-    );
-
-    let t0 = std::time::Instant::now();
-    let model = phase2_train_pointwise(&train, cfg).context("training Phase 2 GBDT")?;
-    info!(
-        secs = t0.elapsed().as_secs_f64(),
-        n_trees = epochs,
-        max_depth = depth,
-        "GBDT trained"
-    );
-
-    if !eval.is_empty() {
-        let report = phase2_evaluate(&model, &eval);
-        info!(
-            n_eval = report.n_eval,
-            n_positive = report.n_positive,
-            n_negative = report.n_negative,
-            auc = report.auc,
-            brier = report.brier,
-            accuracy_at_half = report.accuracy_at_half,
-            "Phase 2 held-out eval"
-        );
-        if report.auc < 0.5 {
-            warn!(
-                auc = report.auc,
-                "AUC < 0.5 — features carry no signal; the learned scorer is worse than random. \
-                 Investigate feature design before deploying."
-            );
-        } else if report.auc < 0.7 {
-            warn!(
-                auc = report.auc,
-                "AUC < 0.7 — features carry weak signal. Consider feature ablation or \
-                 enlarging the labels corpus."
-            );
-        } else {
-            info!(auc = report.auc, "AUC ≥ 0.7 — features carry usable signal");
+    let source_prior = priors.for_source(cand.source_tag);
+    let mut completeness = 0.0_f32;
+    let mut total = 0.0_f32;
+    for f in [&rec.street, &rec.housenumber, &rec.postcode, &rec.locality] {
+        total += 1.0;
+        if !f.is_empty() {
+            completeness += 1.0;
         }
     }
+    let completeness = completeness / total.max(1.0);
 
-    model.save(out).context("saving Phase 2 GBDT")?;
-    info!(out = %out.display(), "Phase 2 GBDT model written");
+    vec![
+        lexical,
+        0.0, // tagger_bio_agreement: synthetic queries have no BIO logits
+        country_p,
+        postcode_agreement,
+        source_prior,
+        cand.recall_score,
+        completeness,
+    ]
+}
 
-    // Round-trip verification.
-    let _ = LearnedScorer::load(out).context("verifying saved Phase 2 model loads cleanly")?;
-    info!("saved Phase 2 model verified (load-back succeeded)");
+/// UTF-8 safe single-character swap helper (typo perturbation).
+fn unsafe_safe_swap(s: &str, idx: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if idx + 1 >= chars.len() {
+        return s.to_string();
+    }
+    let mut out: Vec<char> = chars.clone();
+    out.swap(idx, idx + 1);
+    out.into_iter().collect()
+}
 
+/// Build the recall FST + postings + stats sidecar for an existing
+/// BFGS shard.
+fn build_recall_index_cmd(shard_path: &std::path::Path) -> Result<()> {
+    info!(shard = %shard_path.display(), "loading shard");
+    let shard = Shard::open(shard_path).context("opening shard")?;
+    info!(
+        country = shard.country().iso2(),
+        record_count = shard.record_count(),
+        "shard loaded"
+    );
+    let report = build_recall_index(shard_path, &shard, &BuildOptions::default())
+        .context("building recall index")?;
+    info!(
+        fst = %report.fst_path.display(),
+        postings = %report.postings_path.display(),
+        stats = %report.stats_path.display(),
+        vocab_size = report.stats.vocab_size,
+        avg_key_len = report.stats.avg_key_len,
+        p50_postings = report.stats.p50_postings,
+        p95_postings = report.stats.p95_postings,
+        total_postings = report.stats.total_postings,
+        "recall index built"
+    );
     Ok(())
 }
 

@@ -187,6 +187,7 @@ impl ModelConfig {
     ///   - LN×2: ≈ 1 024
     ///   - sums to ~787 456 per block × 6 = ~4 724 736
     /// - final LN + heads: ≈ 3 k
+    ///
     /// Total ≈ 4.8 M fp32 weights ≈ 19 MB safetensors. Sits inside the
     /// 16 GB VRAM budget on the 5060 Ti by a wide margin and lets us
     /// test the post-SOTA hypothesis from the Fork A+ brief (target

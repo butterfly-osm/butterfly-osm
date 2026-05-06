@@ -107,18 +107,25 @@ fn fixture_addresses() -> Vec<AddressRecord> {
     ]
 }
 
-fn make_fixture_shard() -> (TempDir, Shard) {
+fn make_fixture_shard() -> (TempDir, std::path::PathBuf, Shard) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("fixture.bfgs");
     build_shard(&path, CountryId::BE, fixture_addresses()).expect("build fixture shard");
     let shard = Shard::open(&path).expect("open fixture shard");
-    (dir, shard)
+    butterfly_geocode::build_recall_index(
+        &path,
+        &shard,
+        &butterfly_geocode::BuildOptions::default(),
+    )
+    .expect("build recall index");
+    (dir, path, shard)
 }
 
 /// Boot a real tonic Flight server on a random ephemeral port.
 async fn spawn_flight_server() -> (TempDir, String) {
-    let (dir, shard) = make_fixture_shard();
-    let state = Arc::new(ServerState::new(shard));
+    let (dir, path, _shard) = make_fixture_shard();
+    let state =
+        Arc::new(ServerState::new_with_recall_at(&path).expect("ServerState::new_with_recall_at"));
     let svc = butterfly_geocode::server::flight::build_flight_server(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
