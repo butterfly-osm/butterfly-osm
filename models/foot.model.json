@@ -6,11 +6,12 @@
     "unit": "km/h",
     "highway": {
       "footway": 5, "pedestrian": 5, "steps": 5,
-      "path": 4.5, "cycleway": 4.5,
+      "path": 5, "cycleway": 5,
       "residential": 5, "living_street": 5, "unclassified": 5,
-      "tertiary": 4.5, "secondary": 4.5, "primary": 4.5,
-      "service": 4.5,
-      "track": 4
+      "tertiary": 5, "secondary": 5, "primary": 5,
+      "tertiary_link": 5, "secondary_link": 5, "primary_link": 5,
+      "service": 5,
+      "track": 5
     },
     "speed_cap_kmh": 10,
     "overrides": []
