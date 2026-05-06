@@ -14,7 +14,7 @@ use super::geometry::{GeometryFormat, Point, RouteGeometry, build_geometry, buil
 use super::query::CchQuery;
 use super::regions::RegionsState;
 use super::state::ServerState;
-use super::types::{ErrorResponse, parse_mode, validate_coord};
+use super::types::{ErrorResponse, SnapRole, parse_mode, validate_coord};
 use super::unpack::unpack_path;
 
 // ============ Types ============
@@ -425,24 +425,34 @@ pub async fn route_handler(
         std::borrow::Cow::Borrowed(&mode_data.mask)
     };
 
+    // #197: role-aware snap. Source point must snap to an EBG node
+    // with at least one mode-valid OUTBOUND arc; destination point
+    // must snap to an EBG node with at least one mode-valid INBOUND
+    // arc. The `Src`/`Dst` enum values resolve to the per-mode
+    // `has_outbound` / `has_inbound` bitsets built at boot.
+    let src_role_filter = SnapRole::Src.role_filter(mode_data);
+    let dst_role_filter = SnapRole::Dst.role_filter(mode_data);
+
     // Snap source (with optional bearing filter)
     let src_bearing = bearing_hints.as_ref().and_then(|h| h.first().copied());
     let (src_orig, src_snap_info) = {
         let snap_result = if let Some((angle, range)) = src_bearing {
-            state.snap_index.snap_with_bearing_filtered(
+            state.snap_index.snap_with_bearing_filtered_role(
                 req.src_lon,
                 req.src_lat,
                 mode.0,
                 angle,
                 range,
                 Some(&snap_mask),
+                src_role_filter,
             )
         } else {
-            state.snap_index.snap_with_info_filtered(
+            state.snap_index.snap_with_info_filtered_role(
                 req.src_lon,
                 req.src_lat,
                 mode.0,
                 Some(&snap_mask),
+                src_role_filter,
             )
         };
         match snap_result {
@@ -471,20 +481,22 @@ pub async fn route_handler(
     let dst_bearing = bearing_hints.as_ref().and_then(|h| h.get(1).copied());
     let (_dst_orig, dst_snap_info) = {
         let snap_result = if let Some((angle, range)) = dst_bearing {
-            state.snap_index.snap_with_bearing_filtered(
+            state.snap_index.snap_with_bearing_filtered_role(
                 req.dst_lon,
                 req.dst_lat,
                 mode.0,
                 angle,
                 range,
                 Some(&snap_mask),
+                dst_role_filter,
             )
         } else {
-            state.snap_index.snap_with_info_filtered(
+            state.snap_index.snap_with_info_filtered_role(
                 req.dst_lon,
                 req.dst_lat,
                 mode.0,
                 Some(&snap_mask),
+                dst_role_filter,
             )
         };
         match snap_result {
@@ -879,11 +891,18 @@ fn cross_region_route_inner(
     let src_mode_data = src_state.get_mode(src_mode);
     let dst_mode_data = dst_state.get_mode(dst_mode);
 
+    // #197: role-aware snap (cross-region path).
+    let src_role_filter = SnapRole::Src.role_filter(src_mode_data);
+    let dst_role_filter = SnapRole::Dst.role_filter(dst_mode_data);
+
     let (src_orig, src_snap) =
-        match src_state
-            .snap_index
-            .snap_with_info(req.src_lon, req.src_lat, src_mode.0)
-        {
+        match src_state.snap_index.snap_with_info_filtered_role(
+            req.src_lon,
+            req.src_lat,
+            src_mode.0,
+            None,
+            src_role_filter,
+        ) {
             Some(t) => (t.0, t),
             None => {
                 return (
@@ -896,10 +915,13 @@ fn cross_region_route_inner(
             }
         };
     let (dst_orig, dst_snap) =
-        match dst_state
-            .snap_index
-            .snap_with_info(req.dst_lon, req.dst_lat, dst_mode.0)
-        {
+        match dst_state.snap_index.snap_with_info_filtered_role(
+            req.dst_lon,
+            req.dst_lat,
+            dst_mode.0,
+            None,
+            dst_role_filter,
+        ) {
             Some(t) => (t.0, t),
             None => {
                 return (
