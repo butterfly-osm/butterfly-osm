@@ -1765,13 +1765,16 @@ fn train_rerank_cmd(
     let mut per_shard_budgets: Vec<usize> = shards
         .iter()
         .map(|(_, s)| {
-            let p = (synth_size as u128 * s.record_count() as u128 / total_records as u128) as usize;
+            let p =
+                (synth_size as u128 * s.record_count() as u128 / total_records as u128) as usize;
             p.max(MIN_PER_SHARD)
         })
         .collect();
     // Clamp so the sum doesn't blow past 2x the requested size.
     let sum: usize = per_shard_budgets.iter().sum();
-    let cap = synth_size.saturating_mul(2).max(synth_size + MIN_PER_SHARD * shards.len());
+    let cap = synth_size
+        .saturating_mul(2)
+        .max(synth_size + MIN_PER_SHARD * shards.len());
     if sum > cap {
         let scale = cap as f64 / sum as f64;
         for b in per_shard_budgets.iter_mut() {
@@ -1803,7 +1806,10 @@ fn train_rerank_cmd(
     {
         let n = shard.record_count() as u32;
         if n == 0 {
-            warn!(country = country.iso2(), "shard has zero records — skipping");
+            warn!(
+                country = country.iso2(),
+                "shard has zero records — skipping"
+            );
             continue;
         }
         let mut state = base_seed.wrapping_add((idx as u64).wrapping_mul(0x9E3779B97F4A7C15));
@@ -1860,8 +1866,7 @@ fn train_rerank_cmd(
                 continue;
             };
             let mut group_has_positive = false;
-            let mut group_rows: Vec<(Vec<f32>, f32)> =
-                Vec::with_capacity(cands_top.len());
+            let mut group_rows: Vec<(Vec<f32>, f32)> = Vec::with_capacity(cands_top.len());
             for cand in cands_top {
                 let Some(rec) = shard.record(cand.address_id as u32) else {
                     continue;
@@ -1887,9 +1892,18 @@ fn train_rerank_cmd(
         ));
     }
 
-    info!(rows = rows.len(), shards = shards.len(), "pooled training rows materialised");
+    info!(
+        rows = rows.len(),
+        shards = shards.len(),
+        "pooled training rows materialised"
+    );
     for (iso, pos, total) in &per_country_pos {
-        info!(country = iso, positives = pos, total = total, "per-country label contribution");
+        info!(
+            country = iso,
+            positives = pos,
+            total = total,
+            "per-country label contribution"
+        );
     }
     if rows.is_empty() {
         bail!(
