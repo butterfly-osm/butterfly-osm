@@ -1,0 +1,9 @@
+# Butterfly region index — Greece
+#
+# OSM PBF for Greece from Geofabrik. Greek script primary case
+# for the world geocoder corpus (#225).
+#
+# Verified live 2026-05-07.
+
+[pbf]
+url = "https://download.geofabrik.de/europe/greece-latest.osm.pbf"

@@ -1,0 +1,9 @@
+# Butterfly region index — Nigeria
+#
+# OSM PBF for Nigeria from Geofabrik. Latin-script African case for
+# the world geocoder corpus (#225).
+#
+# Verified live 2026-05-07.
+
+[pbf]
+url = "https://download.geofabrik.de/africa/nigeria-latest.osm.pbf"

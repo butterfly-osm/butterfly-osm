@@ -1,0 +1,9 @@
+# Butterfly region index — Mexico
+#
+# OSM PBF for Mexico from Geofabrik. Hispanic Latin-American case
+# for the world geocoder corpus (#225).
+#
+# Verified live 2026-05-07.
+
+[pbf]
+url = "https://download.geofabrik.de/north-america/mexico-latest.osm.pbf"

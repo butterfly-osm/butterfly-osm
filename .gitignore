@@ -28,7 +28,9 @@ data/*/transit/
 /target
 
 # Project specific
-data/
+# Use /data/* (not data/) so individual files can be re-included via !data/...
+# git refuses to negate descendants of a fully-ignored directory.
+/data/*
 # Exception: geocode shipped tiny models (small, checked-in Phase-0
 # baselines per #96 §Confidence Model and #98 §Tagger).
 !geocode/data/
@@ -127,6 +129,11 @@ bench/geocode/results/2026-05-06-multi-country-v2/server.log
 !bench/geocode/results/2026-05-06-be-merged-shard/
 bench/geocode/results/2026-05-06-multi-country-v2/*/butterfly-rows.jsonl
 bench/geocode/results/2026-05-06-multi-country-v2/*/nominatim-rows.jsonl
+# #225 world-corpus REPORT: small markdown summary; the heavy artefacts
+# (parquets) live under data/world-corpus/ and are gitignored, with
+# their hashes recorded in MANIFEST.json.
+!bench/geocode/results/2026-05-07-world-corpus/
+!bench/geocode/results/2026-05-07-world-corpus/REPORT.md
 bench/geocode/.venv/
 
 # AI consultation stderr (verbose progress logs; the .txt outputs are kept)
@@ -161,3 +168,14 @@ geocode/data/us/
 geocode/data/au/
 geocode/data/jp/
 geocode/data/br/
+
+# World corpus build artefacts. MANIFEST.json is committed (provenance for the
+# gitignored parquets). Per-family bench TSVs land under bench/geocode/queries/
+# and are committed there.
+#
+# `/data/*` above ignores everything in data/ but allows targeted re-includes
+# via a directory path then a file path. We re-include the world-corpus dir,
+# re-ignore everything inside it except MANIFEST.json.
+!/data/world-corpus/
+/data/world-corpus/*
+!/data/world-corpus/MANIFEST.json
