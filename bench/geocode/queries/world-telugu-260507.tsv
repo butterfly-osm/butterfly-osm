@@ -1,0 +1,34 @@
+query_id	query_text	gold_lat	gold_lon	quality_class	assigned_country	script_family	query_form	osm_kind	osm_id	name
+in-telugu-canonical-0000000001	గ్రామపంచాయితీ కార్యాలయం చెన్నారం, CHENNARAM , Chennaram 5020	16.340485400000002	78.2019365	noisy	IN	Telugu	canonical	node	9741231795	గ్రామపంచాయితీ కార్యాలయం చెన్నారం
+in-telugu-canonical-0000000002	చేరువుగట్టు, Hyderabad Rd, Chervugattu, Telangana 508254 ,  508254	17.1740101	79.2121757	noisy	IN	Telugu	canonical	node	10101107918	చేరువుగట్టు
+in-telugu-canonical-0000000003	ఈదమ్మ గుడి, ఏదుల బాట	16.3384527	78.2077002	noisy	IN	Telugu	canonical	node	10162486473	ఈదమ్మ గుడి
+in-telugu-canonical-0000000004	పోషవ్వ గుడి, Chennaram - Machupally Road	16.3389425	78.20346310000001	noisy	IN	Telugu	canonical	node	10162568003	పోషవ్వ గుడి
+in-telugu-canonical-0000000005	కట్టమైసమ్మ గుడి, Chennaram 509206	16.3394926	78.2054691	noisy	IN	Telugu	canonical	node	10200286306	కట్టమైసమ్మ గుడి
+in-telugu-canonical-0000000006	Padmanabhaswamy Temple Hill | పద్మనాభస్వామి ఆలయం కొండ	17.9939916	83.32829530000001	noisy	IN	Telugu	canonical	node	13614343102	Padmanabhaswamy Temple Hill | పద్మనాభస్వామి ఆలయం కొండ
+in-telugu-canonical-0000000007	గజపతి నగరం S I MAGGAM WORK, Gajapathinagaram - Andra Road A661,  535270	18.2816343	83.3358183	noisy	IN	Telugu	canonical	node	13683460201	గజపతి నగరం S I MAGGAM WORK
+in-telugu-canonical-0000000008	ప్రకృతి చికిత్సాలయము, Nature Cure Hospital Road , Hyderabad 500016			noisy	IN	Telugu	canonical	way	849385520	ప్రకృతి చికిత్సాలయము
+in-telugu-canonical-0000000009	పల్లె ప్రకృతి వనం చెన్నారం, CHENNARAM ,  509206			noisy	IN	Telugu	canonical	way	1060251031	పల్లె ప్రకృతి వనం చెన్నారం
+in-telugu-canonical-0000000010	రైతువేదిక చెన్నారం, CHENNARAM , Chennaram 509206			noisy	IN	Telugu	canonical	way	1060253329	రైతువేదిక చెన్నారం
+in-telugu-canonical-0000000011	పోషవ్వ గుడి, CHENNARAM , Chennaram 509206			noisy	IN	Telugu	canonical	way	1060254014	పోషవ్వ గుడి
+in-telugu-partial-0000000001	గ్రామపంచాయితీ కార్యాలయం చెన్నారం, Chennaram	16.340485400000002	78.2019365	noisy	IN	Telugu	partial	node	9741231795	గ్రామపంచాయితీ కార్యాలయం చెన్నారం
+in-telugu-partial-0000000002	చేరువుగట్టు	17.1740101	79.2121757	noisy	IN	Telugu	partial	node	10101107918	చేరువుగట్టు
+in-telugu-partial-0000000003	ఈదమ్మ గుడి	16.3384527	78.2077002	noisy	IN	Telugu	partial	node	10162486473	ఈదమ్మ గుడి
+in-telugu-partial-0000000004	పోషవ్వ గుడి	16.3389425	78.20346310000001	noisy	IN	Telugu	partial	node	10162568003	పోషవ్వ గుడి
+in-telugu-partial-0000000005	కట్టమైసమ్మ గుడి, Chennaram	16.3394926	78.2054691	noisy	IN	Telugu	partial	node	10200286306	కట్టమైసమ్మ గుడి
+in-telugu-partial-0000000006	Padmanabhaswamy Temple Hill | పద్మనాభస్వామి ఆలయం కొండ	17.9939916	83.32829530000001	noisy	IN	Telugu	partial	node	13614343102	Padmanabhaswamy Temple Hill | పద్మనాభస్వామి ఆలయం కొండ
+in-telugu-partial-0000000007	గజపతి నగరం S I MAGGAM WORK	18.2816343	83.3358183	noisy	IN	Telugu	partial	node	13683460201	గజపతి నగరం S I MAGGAM WORK
+in-telugu-partial-0000000008	ప్రకృతి చికిత్సాలయము, Hyderabad			noisy	IN	Telugu	partial	way	849385520	ప్రకృతి చికిత్సాలయము
+in-telugu-partial-0000000009	పల్లె ప్రకృతి వనం చెన్నారం			noisy	IN	Telugu	partial	way	1060251031	పల్లె ప్రకృతి వనం చెన్నారం
+in-telugu-partial-0000000010	రైతువేదిక చెన్నారం, Chennaram			noisy	IN	Telugu	partial	way	1060253329	రైతువేదిక చెన్నారం
+in-telugu-partial-0000000011	పోషవ్వ గుడి, Chennaram			noisy	IN	Telugu	partial	way	1060254014	పోషవ్వ గుడి
+in-telugu-reordered-0000000001	Chennaram, CHENNARAM , గ్రామపంచాయితీ కార్యాలయం చెన్నారం	16.340485400000002	78.2019365	noisy	IN	Telugu	reordered	node	9741231795	గ్రామపంచాయితీ కార్యాలయం చెన్నారం
+in-telugu-reordered-0000000002	Hyderabad Rd, Chervugattu, Telangana 508254 , చేరువుగట్టు	17.1740101	79.2121757	noisy	IN	Telugu	reordered	node	10101107918	చేరువుగట్టు
+in-telugu-reordered-0000000003	ఏదుల బాట , ఈదమ్మ గుడి	16.3384527	78.2077002	noisy	IN	Telugu	reordered	node	10162486473	ఈదమ్మ గుడి
+in-telugu-reordered-0000000004	Chennaram - Machupally Road , పోషవ్వ గుడి	16.3389425	78.20346310000001	noisy	IN	Telugu	reordered	node	10162568003	పోషవ్వ గుడి
+in-telugu-reordered-0000000005	Chennaram, కట్టమైసమ్మ గుడి	16.3394926	78.2054691	noisy	IN	Telugu	reordered	node	10200286306	కట్టమైసమ్మ గుడి
+in-telugu-reordered-0000000006	Padmanabhaswamy Temple Hill | పద్మనాభస్వామి ఆలయం కొండ	17.9939916	83.32829530000001	noisy	IN	Telugu	reordered	node	13614343102	Padmanabhaswamy Temple Hill | పద్మనాభస్వామి ఆలయం కొండ
+in-telugu-reordered-0000000007	Gajapathinagaram - Andra Road A661, గజపతి నగరం S I MAGGAM WORK	18.2816343	83.3358183	noisy	IN	Telugu	reordered	node	13683460201	గజపతి నగరం S I MAGGAM WORK
+in-telugu-reordered-0000000008	Hyderabad, Nature Cure Hospital Road , ప్రకృతి చికిత్సాలయము			noisy	IN	Telugu	reordered	way	849385520	ప్రకృతి చికిత్సాలయము
+in-telugu-reordered-0000000009	CHENNARAM , పల్లె ప్రకృతి వనం చెన్నారం			noisy	IN	Telugu	reordered	way	1060251031	పల్లె ప్రకృతి వనం చెన్నారం
+in-telugu-reordered-0000000010	Chennaram, CHENNARAM , రైతువేదిక చెన్నారం			noisy	IN	Telugu	reordered	way	1060253329	రైతువేదిక చెన్నారం
+in-telugu-reordered-0000000011	Chennaram, CHENNARAM , పోషవ్వ గుడి			noisy	IN	Telugu	reordered	way	1060254014	పోషవ్వ గుడి

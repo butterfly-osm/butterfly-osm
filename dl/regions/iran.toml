@@ -1,0 +1,11 @@
+# Butterfly region index — Iran
+#
+# OSM PBF for Iran from Geofabrik. Persian/Farsi RTL script case
+# for the world geocoder corpus (#225). Distinct from Arabic
+# (different letter forms, different script blocks U+0600-U+06FF
+# overlap but Farsi-specific U+067E etc.).
+#
+# Verified live 2026-05-07.
+
+[pbf]
+url = "https://download.geofabrik.de/asia/iran-latest.osm.pbf"
