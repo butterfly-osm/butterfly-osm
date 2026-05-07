@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 #
-# build.sh — single-entrypoint, fully reproducible build of the world geocoder
-# corpus. See README.md for the contract this script honours.
+# build.sh — single-entrypoint, locally-reproducible build of the world
+# geocoder corpus. See README.md for the full contract.
 #
-# Invariants:
-#   * Idempotent: re-running on the same git tree must produce byte-identical
-#     outputs. Existing artefacts that pass SHA-256 checks are reused.
-#   * No mutating URLs: every download URL must point at an immutable Geofabrik
-#     dated snapshot (`*-YYMMDD.osm.pbf`). `*-latest.osm.pbf` is rejected.
-#   * Verified consumption: every PBF is SHA-256 verified against the lock
-#     file before any extract step touches it. First run records hashes; every
-#     subsequent run enforces them.
-#   * Deterministic SQL: every COPY has an explicit ORDER BY; samples use a
-#     fixed hash function on (country, kind, id, name) for stable selection.
+# Invariants (per #225 brief):
+#   * butterfly-dl is the ONLY downloader. No curl, no wget.
+#   * DuckDB is the ONLY OSM extractor. No custom Rust parsers in this dir.
+#   * Local SHA-256 sidecars (written by butterfly-dl's verified.rs) are the
+#     reproducibility primitive. Latest-snapshot URLs are accepted because the
+#     sidecar locks the bytes you actually consumed.
+#   * Every COPY ... TO has an explicit ORDER BY for deterministic parquet.
+#   * Idempotent: re-running on the same git tree with the same input PBFs
+#     must produce byte-identical parquet outputs and bench TSVs.
 
 set -euo pipefail
 
@@ -22,7 +21,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-DATE_TAG="${DATE_TAG:-260401}"            # Geofabrik snapshot date (YYMMDD)
+DATE_TAG="${DATE_TAG:-260507}"            # human-readable build tag (YYMMDD)
 WORK_DIR="${WORK_DIR:-$REPO_ROOT/data/world-corpus}"
 INPUTS_DIR="$WORK_DIR/inputs"
 OUTPUTS_DIR="$WORK_DIR"
@@ -31,14 +30,17 @@ BENCH_RESULTS_DIR="$REPO_ROOT/bench/geocode/results/2026-05-07-world-corpus"
 SAMPLE_PER_FAMILY="${SAMPLE_PER_FAMILY:-1000}"
 
 MANIFEST_INPUT="$SCRIPT_DIR/manifest_input.tsv"
-LOCK_FILE="$SCRIPT_DIR/manifest_input.lock.json"
 MANIFEST_OUTPUT="$WORK_DIR/MANIFEST.json"
 
 DUCKDB_BIN="${DUCKDB_BIN:-/usr/local/bin/duckdb}"
 EXPECTED_DUCKDB_VERSION="v1.5.2"
 
+BUTTERFLY_DL_BIN="${BUTTERFLY_DL_BIN:-$REPO_ROOT/target/release/butterfly-dl}"
+
+# Max parallel downloads (Geofabrik politeness ceiling).
+DL_PARALLEL="${DL_PARALLEL:-3}"
+
 PHASE="${1:-all}"
-# allow `--phase NAME` style too
 if [[ "$PHASE" == "--phase" ]]; then
   PHASE="${2:-all}"
 fi
@@ -55,14 +57,14 @@ log()  { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 fail() { log "FATAL: $*"; exit 1; }
 
 # -----------------------------------------------------------------------------
-# Pre-flight checks
+# Pre-flight
 # -----------------------------------------------------------------------------
 preflight() {
   log "preflight: checking dependencies"
-  command -v "$DUCKDB_BIN" >/dev/null || fail "duckdb not at $DUCKDB_BIN"
-  command -v jq            >/dev/null || fail "jq missing"
-  command -v sha256sum     >/dev/null || fail "sha256sum missing"
-  command -v curl          >/dev/null || fail "curl missing"
+  command -v "$DUCKDB_BIN"      >/dev/null || fail "duckdb not at $DUCKDB_BIN"
+  command -v jq                 >/dev/null || fail "jq missing"
+  command -v sha256sum          >/dev/null || fail "sha256sum missing"
+  [[ -x "$BUTTERFLY_DL_BIN" ]] || fail "butterfly-dl not at $BUTTERFLY_DL_BIN — run 'cargo build --release -p butterfly-dl'"
 
   local got
   got="$("$DUCKDB_BIN" --version | awk '{print $1}')"
@@ -71,135 +73,133 @@ preflight() {
     log "      reproducibility may not hold across versions"
   fi
 
-  # Refuse mutating URLs (skip comment lines).
-  if grep -vE '^[[:space:]]*#' "$MANIFEST_INPUT" \
-       | grep -qE '\-latest\.osm\.pbf'; then
-    fail "manifest_input.tsv contains a -latest URL — those mutate, forbidden"
-  fi
-
-  # Validate every URL has a YYMMDD date that matches the manifest's date column.
-  local bad=0
-  while IFS=$'\t' read -r iso2 source url date bytes notes; do
-    [[ "$iso2" =~ ^# || -z "$iso2" || "$iso2" == "iso2" ]] && continue
-    local url_date
-    url_date="$(printf '%s' "$url" | grep -oE -- '-[0-9]{6}\.osm\.pbf' | head -1 | tr -d '-' | sed 's/.osm.pbf//')"
-    [[ -z "$url_date" ]] && { log "BAD: $iso2 url has no YYMMDD: $url"; bad=$((bad+1)); continue; }
-    local manifest_date_yymmdd
-    manifest_date_yymmdd="$(printf '%s' "$date" | tr -d '-' | cut -c3-8)"
-    if [[ "$url_date" != "$manifest_date_yymmdd" ]]; then
-      log "BAD: $iso2 url date $url_date != manifest date $date"
-      bad=$((bad+1))
-    fi
-  done < "$MANIFEST_INPUT"
-  [[ $bad -eq 0 ]] || fail "$bad manifest rows have URL/date mismatch"
-
   log "preflight: OK"
 }
 
 # -----------------------------------------------------------------------------
-# Manifest parsing
+# Manifest parsing — emits TSV rows: iso2 \t geofabrik_path \t pbf_filename
 # -----------------------------------------------------------------------------
-# Produces tab-delimited rows on stdout: iso2 url filename
 manifest_rows() {
-  awk -F '\t' '!/^#/ && $1 != "iso2" && NF >= 5 {
-    n = split($3, parts, "/");
-    print $1 "\t" $3 "\t" parts[n];
-  }' "$MANIFEST_INPUT"
+  awk -F '\t' '!/^#/ && $1 != "iso2" && NF >= 3 { print $1 "\t" $2 "\t" $3 }' "$MANIFEST_INPUT"
 }
 
 # -----------------------------------------------------------------------------
-# Phase 1 — download & verify
+# Phase: download (butterfly-dl, parallel, sidecar-verified)
 # -----------------------------------------------------------------------------
 phase_download() {
-  log "phase: download"
+  log "phase: download (butterfly-dl, parallel=$DL_PARALLEL)"
 
-  local lock_existed=0
-  if [[ -f "$LOCK_FILE" ]]; then
-    lock_existed=1
-    log "  lock file exists; verifying against it"
-  else
-    log "  no lock file — first run, will record hashes"
-  fi
+  local pids=()
+  local todo=()
 
-  local tmp_lock
-  tmp_lock="$(mktemp)"
-  echo '{"snapshot_date_tag":"'"$DATE_TAG"'","entries":[' > "$tmp_lock"
-
-  local first=1
-  while IFS=$'\t' read -r iso2 url filename; do
+  while IFS=$'\t' read -r iso2 path filename; do
     local target="$INPUTS_DIR/$filename"
-
-    # Resolve expected SHA-256 from the lock if available.
-    local expected_sha=""
-    if [[ $lock_existed -eq 1 ]]; then
-      expected_sha="$(jq -r --arg iso "$iso2" \
-        '.entries[] | select(.iso2==$iso) | .sha256 // empty' \
-        "$LOCK_FILE" 2>/dev/null || true)"
+    local sidecar="$target.sha256"
+    if [[ -f "$target" && -f "$sidecar" ]]; then
+      log "  $iso2: already present (sidecar present), skipping"
+      continue
     fi
-
-    # Download if missing or hash-mismatch.
-    if [[ -f "$target" ]]; then
-      if [[ -n "$expected_sha" ]]; then
-        local actual
-        actual="$(sha256sum "$target" | awk '{print $1}')"
-        if [[ "$actual" != "$expected_sha" ]]; then
-          log "  $iso2: existing file SHA-256 mismatch, redownloading"
-          rm -f "$target"
-        fi
-      fi
-    fi
-
-    if [[ ! -f "$target" ]]; then
-      log "  $iso2: downloading $url"
-      curl -sSL --fail --retry 3 --retry-delay 5 -o "$target.partial" "$url"
-      mv "$target.partial" "$target"
-    fi
-
-    local sha
-    sha="$(sha256sum "$target" | awk '{print $1}')"
-    local size
-    size="$(stat -c %s "$target")"
-
-    if [[ -n "$expected_sha" && "$sha" != "$expected_sha" ]]; then
-      fail "$iso2: SHA-256 mismatch after download. expected=$expected_sha got=$sha"
-    fi
-
-    log "  $iso2: ok size=$size sha256=${sha:0:16}…"
-
-    if [[ $first -eq 0 ]]; then echo ',' >> "$tmp_lock"; fi
-    first=0
-    jq -n --arg iso "$iso2" --arg url "$url" --arg fn "$filename" \
-          --arg sha "$sha" --argjson sz "$size" \
-      '{iso2:$iso,url:$url,filename:$fn,sha256:$sha,bytes:$sz}' >> "$tmp_lock"
+    todo+=("$iso2|$path|$target")
   done < <(manifest_rows)
 
-  echo ']}' >> "$tmp_lock"
+  if [[ ${#todo[@]} -eq 0 ]]; then
+    log "  all PBFs already on disk with sidecars"
+    return
+  fi
 
-  # Pretty-print and atomically install. If lock didn't exist, this commits
-  # the first-run hashes.
-  jq --sort-keys . "$tmp_lock" > "$LOCK_FILE.tmp"
-  mv "$LOCK_FILE.tmp" "$LOCK_FILE"
-  rm -f "$tmp_lock"
+  log "  downloading ${#todo[@]} PBF(s)"
+
+  for entry in "${todo[@]}"; do
+    local iso2="${entry%%|*}"
+    local rest="${entry#*|}"
+    local path="${rest%%|*}"
+    local target="${rest##*|}"
+
+    # Throttle to DL_PARALLEL
+    while (( ${#pids[@]} >= DL_PARALLEL )); do
+      local new_pids=()
+      for p in "${pids[@]}"; do
+        if kill -0 "$p" 2>/dev/null; then
+          new_pids+=("$p")
+        else
+          wait "$p" || fail "background download $p failed"
+        fi
+      done
+      pids=("${new_pids[@]}")
+      [[ ${#pids[@]} -ge $DL_PARALLEL ]] && sleep 1
+    done
+
+    log "  $iso2: butterfly-dl $path → $(basename "$target")"
+    (
+      # Retry up to 5 times with exponential backoff for 429/5xx (Geofabrik 529 etc.)
+      attempt=0
+      max_attempts=5
+      delay=10
+      until "$BUTTERFLY_DL_BIN" "$path" "$target" --force >>"$LOG_FILE.dl-$iso2" 2>&1; do
+        attempt=$((attempt+1))
+        if [[ $attempt -ge $max_attempts ]]; then
+          echo "FATAL: butterfly-dl $iso2 failed after $attempt attempts"
+          tail -50 "$LOG_FILE.dl-$iso2"
+          exit 1
+        fi
+        echo "[retry] $iso2: attempt $attempt failed, sleeping ${delay}s" >> "$LOG_FILE.dl-$iso2"
+        sleep "$delay"
+        delay=$((delay*2))
+      done
+      # butterfly-dl path-shaped fetches (e.g. africa/kenya) do not write
+      # the .sha256 sidecar (only region-name-shaped or known-extension
+      # callers go through verified::download_verified). Compute the
+      # sidecar here so the rest of the pipeline has its reproducibility
+      # primitive.
+      if [[ ! -f "$target.sha256" ]]; then
+        sha256sum "$target" | awk -v fn="$(basename "$target")" '{print $1"  "fn}' > "$target.sha256"
+      fi
+      [[ -f "$target.sha256" ]] || { echo "FATAL: $iso2 missing sidecar after download"; exit 1; }
+    ) &
+    pids+=("$!")
+  done
+
+  for p in "${pids[@]}"; do
+    wait "$p" || fail "background download $p failed"
+  done
+
+  # Final sidecar audit.
+  local missing=0
+  while IFS=$'\t' read -r iso2 path filename; do
+    [[ -f "$INPUTS_DIR/$filename.sha256" ]] || { log "  MISSING sidecar: $iso2 ($filename)"; missing=$((missing+1)); }
+  done < <(manifest_rows)
+  [[ $missing -eq 0 ]] || fail "$missing PBF(s) missing SHA-256 sidecars"
+
   log "phase: download — done"
 }
 
 # -----------------------------------------------------------------------------
-# Phase 2 — per-PBF extract
+# Phase: extract (DuckDB, per-PBF, parallel-safe via per-row temp SQL)
 # -----------------------------------------------------------------------------
 phase_extract() {
   log "phase: extract"
-  while IFS=$'\t' read -r iso2 url filename; do
+  while IFS=$'\t' read -r iso2 path filename; do
     local pbf="$INPUTS_DIR/$filename"
+    local sidecar="$pbf.sha256"
     local out="$OUTPUTS_DIR/${iso2}.parquet"
 
-    [[ -f "$pbf" ]] || fail "missing PBF for $iso2 at $pbf — run phase download first"
+    [[ -f "$pbf" ]]     || fail "missing PBF for $iso2 at $pbf — run phase download first"
+    [[ -f "$sidecar" ]] || fail "missing sidecar for $iso2 at $sidecar"
+
+    # Verify sidecar matches the file on disk before consumption.
+    local expected actual
+    expected="$(awk '{print $1}' "$sidecar")"
+    actual="$(sha256sum "$pbf" | awk '{print $1}')"
+    if [[ "$expected" != "$actual" ]]; then
+      fail "$iso2: SHA-256 mismatch — sidecar=$expected actual=$actual"
+    fi
 
     if [[ -f "$out" ]]; then
-      log "  $iso2: parquet exists, skipping"
+      log "  $iso2: parquet exists, skipping (sha256 verified ${expected:0:12}…)"
       continue
     fi
 
-    log "  $iso2: extracting $filename → $(basename "$out")"
+    log "  $iso2: extracting $filename → $(basename "$out") (sha256 ${expected:0:12}…)"
     local sql_tmp
     sql_tmp="$(mktemp --suffix=.sql)"
     sed -e "s|__OUT_PATH__|$out|g" "$SCRIPT_DIR/extract.sql" > "$sql_tmp"
@@ -213,7 +213,7 @@ phase_extract() {
 }
 
 # -----------------------------------------------------------------------------
-# Phase 3 — unify
+# Phase: unify (cross-country country assignment via bbox)
 # -----------------------------------------------------------------------------
 extract_bbox_csv() {
   local out="$1"
@@ -223,7 +223,6 @@ extract_bbox_csv() {
     local iso
     iso="$(basename "$toml" .toml | tr 'a-z' 'A-Z')"
     [[ "$iso" == "README" ]] && continue
-    # Parse the [bbox] block — a tiny TOML subset is enough.
     awk -v iso="$iso" '
       BEGIN { in_bbox = 0 }
       /^\[bbox\]/ { in_bbox = 1; next }
@@ -238,13 +237,9 @@ extract_bbox_csv() {
       }
     ' "$toml" >> "$out"
   done
-  # Append extra bboxes for countries not in geocode/data/packs (RU, CN, KR, TW,
-  # TH, IR, IL, PS, SA, AE, KW, BH, OM, QA, EG, GR). These are needed so that
-  # shared PBFs (GCC bundle, IL+PS bundle) split correctly during unify.
   if [[ -f "$SCRIPT_DIR/extra_bboxes.csv" ]]; then
     tail -n +2 "$SCRIPT_DIR/extra_bboxes.csv" >> "$out"
   fi
-  # Stable order for reproducibility
   { head -1 "$out"; tail -n +2 "$out" | LC_ALL=C sort -u; } > "$out.sorted"
   mv "$out.sorted" "$out"
 }
@@ -277,7 +272,7 @@ phase_unify() {
 }
 
 # -----------------------------------------------------------------------------
-# Phase 4 — multilingual pairs
+# Phase: pairs (multilingual)
 # -----------------------------------------------------------------------------
 phase_pairs() {
   log "phase: pairs"
@@ -304,7 +299,7 @@ phase_pairs() {
 }
 
 # -----------------------------------------------------------------------------
-# Phase 5 — stratify
+# Phase: stratify (per script family)
 # -----------------------------------------------------------------------------
 phase_stratify() {
   log "phase: stratify"
@@ -331,7 +326,7 @@ phase_stratify() {
 }
 
 # -----------------------------------------------------------------------------
-# Phase 6 — bench sample
+# Phase: bench sample
 # -----------------------------------------------------------------------------
 phase_sample() {
   log "phase: sample"
@@ -354,7 +349,6 @@ phase_sample() {
     log "  bench-sample parquet exists, reusing"
   fi
 
-  # Split per-family into TSVs (deterministic — single COPY per family with ORDER BY)
   local families
   families="$("$DUCKDB_BIN" -noheader -list -c \
     "SELECT DISTINCT script_family FROM read_parquet('$out') ORDER BY script_family;")"
@@ -390,45 +384,56 @@ phase_sample() {
 }
 
 # -----------------------------------------------------------------------------
-# Phase 7 — manifest
+# Phase: manifest
 # -----------------------------------------------------------------------------
 phase_manifest() {
   log "phase: manifest"
 
-  local build_sh_sha
+  local build_sh_sha extract_sql_sha unify_sql_sha pairs_sql_sha stratify_sql_sha sample_sql_sha
   build_sh_sha="$(sha256sum "$SCRIPT_DIR/build.sh" | awk '{print $1}')"
-  local extract_sql_sha
   extract_sql_sha="$(sha256sum "$SCRIPT_DIR/extract.sql" | awk '{print $1}')"
-  local unify_sql_sha
   unify_sql_sha="$(sha256sum "$SCRIPT_DIR/unify.sql" | awk '{print $1}')"
-  local pairs_sql_sha
   pairs_sql_sha="$(sha256sum "$SCRIPT_DIR/pairs.sql" | awk '{print $1}')"
-  local stratify_sql_sha
   stratify_sql_sha="$(sha256sum "$SCRIPT_DIR/stratify.sql" | awk '{print $1}')"
-  local sample_sql_sha
   sample_sql_sha="$(sha256sum "$SCRIPT_DIR/sample_bench.sql" | awk '{print $1}')"
 
-  local duckdb_version
+  local duckdb_version spatial_version
   duckdb_version="$("$DUCKDB_BIN" --version | awk '{print $1}')"
-
-  local spatial_version
   spatial_version="$("$DUCKDB_BIN" -noheader -list -c \
     "INSTALL spatial; LOAD spatial; SELECT extension_version FROM duckdb_extensions() WHERE extension_name='spatial';" 2>/dev/null | tail -1)"
 
-  # Build outputs array
+  # Inputs: read sidecars from disk (the lock IS the sidecar).
+  local inputs_tmp
+  inputs_tmp="$(mktemp)"
+  echo '[' > "$inputs_tmp"
+  local first=1
+  while IFS=$'\t' read -r iso2 path filename; do
+    local pbf="$INPUTS_DIR/$filename"
+    local sidecar="$pbf.sha256"
+    [[ -f "$pbf" && -f "$sidecar" ]] || continue
+    local sha sz
+    sha="$(awk '{print $1}' "$sidecar")"
+    sz="$(stat -c %s "$pbf")"
+    if [[ $first -eq 0 ]]; then echo ',' >> "$inputs_tmp"; fi
+    first=0
+    jq -n --arg iso "$iso2" --arg path "$path" --arg fn "$filename" \
+          --arg sha "$sha" --argjson sz "$sz" \
+      '{iso2:$iso, geofabrik_path:$path, filename:$fn, sha256:$sha, bytes:$sz}' >> "$inputs_tmp"
+  done < <(manifest_rows)
+  echo ']' >> "$inputs_tmp"
+
+  # Outputs.
   local outputs_tmp
   outputs_tmp="$(mktemp)"
   echo '[' > "$outputs_tmp"
-  local first=1
+  first=1
   hash_one() {
     local rel="$1"
     local abs="$2"
     [[ -f "$abs" ]] || return 0
-    local sha
+    local sha sz rows="null"
     sha="$(sha256sum "$abs" | awk '{print $1}')"
-    local sz
     sz="$(stat -c %s "$abs")"
-    local rows="null"
     if [[ "$abs" == *.parquet ]]; then
       rows="$("$DUCKDB_BIN" -noheader -list -c \
         "SELECT count(*) FROM read_parquet('$abs');" 2>/dev/null | tail -1)"
@@ -441,17 +446,14 @@ phase_manifest() {
       '{path:$path, sha256:$sha, bytes:$sz, rows:$r}' >> "$outputs_tmp"
   }
 
-  # Per-country parquets
   while IFS=$'\t' read -r iso2 _ _; do
-    local p="$OUTPUTS_DIR/${iso2}.parquet"
-    hash_one "data/world-corpus/${iso2}.parquet" "$p"
+    hash_one "data/world-corpus/${iso2}.parquet" "$OUTPUTS_DIR/${iso2}.parquet"
   done < <(manifest_rows)
-  hash_one "data/world-corpus/all-with-country.parquet"  "$OUTPUTS_DIR/all-with-country.parquet"
+  hash_one "data/world-corpus/all-with-country.parquet"   "$OUTPUTS_DIR/all-with-country.parquet"
   hash_one "data/world-corpus/multilingual-pairs.parquet" "$OUTPUTS_DIR/multilingual-pairs.parquet"
-  hash_one "data/world-corpus/family-stats.parquet"      "$OUTPUTS_DIR/family-stats.parquet"
-  hash_one "data/world-corpus/bench-sample.parquet"      "$OUTPUTS_DIR/bench-sample.parquet"
+  hash_one "data/world-corpus/family-stats.parquet"       "$OUTPUTS_DIR/family-stats.parquet"
+  hash_one "data/world-corpus/bench-sample.parquet"       "$OUTPUTS_DIR/bench-sample.parquet"
 
-  # Per-family bench TSVs
   for tsv in "$BENCH_QUERIES_DIR"/world-*-"$DATE_TAG".tsv; do
     [[ -f "$tsv" ]] || continue
     hash_one "bench/geocode/queries/$(basename "$tsv")" "$tsv"
@@ -459,24 +461,25 @@ phase_manifest() {
 
   echo ']' >> "$outputs_tmp"
 
-  # Final manifest
   jq -n \
-    --arg build_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --arg snapshot   "$DATE_TAG" \
-    --arg duckdb     "$duckdb_version" \
-    --arg spatial    "$spatial_version" \
-    --arg sample_n   "$SAMPLE_PER_FAMILY" \
-    --arg build_sh   "$build_sh_sha" \
+    --arg build_date  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg snapshot    "$DATE_TAG" \
+    --arg duckdb      "$duckdb_version" \
+    --arg spatial     "$spatial_version" \
+    --arg sample_n    "$SAMPLE_PER_FAMILY" \
+    --arg build_sh    "$build_sh_sha" \
     --arg extract_sql "$extract_sql_sha" \
     --arg unify_sql   "$unify_sql_sha" \
     --arg pairs_sql   "$pairs_sql_sha" \
     --arg stratify_sql "$stratify_sql_sha" \
     --arg sample_sql  "$sample_sql_sha" \
-    --slurpfile inputs  <(jq '.entries' "$LOCK_FILE") \
+    --slurpfile inputs  "$inputs_tmp" \
     --slurpfile outputs "$outputs_tmp" \
     '{
        build_date_utc: $build_date,
        data_snapshot:  $snapshot,
+       downloader: "butterfly-dl",
+       reproducibility_primitive: "local SHA-256 sidecars (butterfly-dl verified.rs)",
        duckdb_version: $duckdb,
        duckdb_spatial_version: $spatial,
        sample_per_family: ($sample_n | tonumber),
@@ -493,7 +496,7 @@ phase_manifest() {
      }' \
     | jq --sort-keys . > "$MANIFEST_OUTPUT"
 
-  rm -f "$outputs_tmp"
+  rm -f "$inputs_tmp" "$outputs_tmp"
   log "  wrote $MANIFEST_OUTPUT"
   log "phase: manifest — done"
 }

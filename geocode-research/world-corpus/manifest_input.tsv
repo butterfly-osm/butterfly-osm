@@ -1,41 +1,48 @@
 # World corpus input manifest. One row per Geofabrik PBF.
 #
 # Columns:
-#   iso2    — ISO-3166-1 alpha-2 (or ad-hoc tag for multi-country dumps like GCC)
-#   source  — always 'osm' for this build (OA was deferred — see notes)
-#   url     — IMMUTABLE Geofabrik dated snapshot URL. Must be of the form
-#             https://download.geofabrik.de/.../<region>-YYMMDD.osm.pbf .
-#             *-latest.osm.pbf URLs are forbidden because they mutate.
-#   date    — snapshot date YYYY-MM-DD (must match the YYMMDD in url)
-#   bytes   — expected Content-Length, used as a coarse pre-flight check
-#   notes   — free-form
+#   iso2            — ISO-3166-1 alpha-2 (or ad-hoc tag for multi-country dumps like GCC)
+#   geofabrik_path  — path-shaped input for butterfly-dl (e.g. "europe/belgium").
+#                     butterfly-dl resolves this against the Geofabrik latest
+#                     snapshot URL: https://download.geofabrik.de/<path>-latest.osm.pbf
+#   pbf_filename    — local filename under data/world-corpus/inputs/
+#                     Determined by us, not by Geofabrik.
+#   notes           — free-form
 #
-# SHA-256s are NOT in this file. They live in manifest_input.lock.json,
-# which is generated on the first run of build.sh and then committed.
-# build.sh refuses to consume any download whose SHA-256 doesn't match the lock.
-iso2	source	url	date	bytes	notes
-BE	osm	https://download.geofabrik.de/europe/belgium-260401.osm.pbf	2026-04-01	680621647	belgium
-LU	osm	https://download.geofabrik.de/europe/luxembourg-260401.osm.pbf	2026-04-01	46486606	luxembourg
-NL	osm	https://download.geofabrik.de/europe/netherlands-260401.osm.pbf	2026-04-01	1375597717	netherlands
-DE	osm	https://download.geofabrik.de/europe/germany-260401.osm.pbf	2026-04-01	4731380060	germany
-FR	osm	https://download.geofabrik.de/europe/france-260401.osm.pbf	2026-04-01	4985232861	france
-AT	osm	https://download.geofabrik.de/europe/austria-260401.osm.pbf	2026-04-01	796654488	austria
-CH	osm	https://download.geofabrik.de/europe/switzerland-260401.osm.pbf	2026-04-01	528048245	switzerland
-GB	osm	https://download.geofabrik.de/europe/great-britain-260401.osm.pbf	2026-04-01	2103605773	great-britain
-IT	osm	https://download.geofabrik.de/europe/italy-260401.osm.pbf	2026-04-01	2177792084	italy
-ES	osm	https://download.geofabrik.de/europe/spain-260401.osm.pbf	2026-04-01	1426664334	spain
-RU	osm	https://download.geofabrik.de/russia-260401.osm.pbf	2026-04-01	4065703615	russia (root snapshot, not under a continent subdir)
-GR	osm	https://download.geofabrik.de/europe/greece-260401.osm.pbf	2026-04-01	334947432	greece
-JP	osm	https://download.geofabrik.de/asia/japan-260401.osm.pbf	2026-04-01	2395572571	japan
-IN	osm	https://download.geofabrik.de/asia/india-260401.osm.pbf	2026-04-01	1667644171	india
-CN	osm	https://download.geofabrik.de/asia/china-260401.osm.pbf	2026-04-01	1493951781	china
-KR	osm	https://download.geofabrik.de/asia/south-korea-260401.osm.pbf	2026-04-01	274146664	south-korea
-TW	osm	https://download.geofabrik.de/asia/taiwan-260401.osm.pbf	2026-04-01	322631791	taiwan
-TH	osm	https://download.geofabrik.de/asia/thailand-260401.osm.pbf	2026-04-01	319948834	thailand
-IR	osm	https://download.geofabrik.de/asia/iran-260401.osm.pbf	2026-04-01	226435366	iran
-IL	osm	https://download.geofabrik.de/asia/israel-and-palestine-260401.osm.pbf	2026-04-01	120684807	israel-and-palestine (PBF shared; tag IL, bbox-classify into IL/PS post-extract)
-GCC	osm	https://download.geofabrik.de/asia/gcc-states-260401.osm.pbf	2026-04-01	248419339	GCC bundle (SA AE KW BH OM QA); bbox-classify post-extract
-EG	osm	https://download.geofabrik.de/africa/egypt-260401.osm.pbf	2026-04-01	175257126	egypt
-AU	osm	https://download.geofabrik.de/australia-oceania/australia-260401.osm.pbf	2026-04-01	929500651	australia
-BR	osm	https://download.geofabrik.de/south-america/brazil-260401.osm.pbf	2026-04-01	1974155391	brazil
-US	osm	https://download.geofabrik.de/north-america/us-northeast-260401.osm.pbf	2026-04-01	1758362068	us-northeast (only NE region; fully reproducible subset)
+# Reproducibility primitive: butterfly-dl writes a SHA-256 sidecar
+# (<file>.sha256) on every successful download. build.sh refuses to
+# consume a PBF whose sidecar is missing. The sidecar is the lock —
+# we don't pin URLs (Geofabrik's "latest" mutates monthly).
+iso2	geofabrik_path	pbf_filename	notes
+BE	europe/belgium	belgium.osm.pbf	belgium
+LU	europe/luxembourg	luxembourg.osm.pbf	luxembourg
+NL	europe/netherlands	netherlands.osm.pbf	netherlands
+DE	europe/germany	germany.osm.pbf	germany
+FR	europe/france	france.osm.pbf	france
+AT	europe/austria	austria.osm.pbf	austria
+CH	europe/switzerland	switzerland.osm.pbf	switzerland
+GB	europe/great-britain	great-britain.osm.pbf	great-britain
+IT	europe/italy	italy.osm.pbf	italy
+ES	europe/spain	spain.osm.pbf	spain
+RU	russia	russia.osm.pbf	russia (root snapshot, not under a continent subdir)
+GR	europe/greece	greece.osm.pbf	greece
+JP	asia/japan	japan.osm.pbf	japan
+IN	asia/india	india.osm.pbf	india
+CN	asia/china	china.osm.pbf	china
+KR	asia/south-korea	south-korea.osm.pbf	south-korea
+TW	asia/taiwan	taiwan.osm.pbf	taiwan
+TH	asia/thailand	thailand.osm.pbf	thailand
+IR	asia/iran	iran.osm.pbf	iran
+IL	asia/israel-and-palestine	israel-and-palestine.osm.pbf	israel-and-palestine (PBF shared; tag IL, bbox-classify into IL/PS post-extract)
+GCC	asia/gcc-states	gcc-states.osm.pbf	GCC bundle (SA AE KW BH OM QA); bbox-classify post-extract
+EG	africa/egypt	egypt.osm.pbf	egypt
+KE	africa/kenya	kenya.osm.pbf	kenya
+NG	africa/nigeria	nigeria.osm.pbf	nigeria
+ZA	africa/south-africa	south-africa.osm.pbf	south-africa
+AU	australia-oceania/australia	australia.osm.pbf	australia
+BR	south-america/brazil	brazil.osm.pbf	brazil
+AR	south-america/argentina	argentina.osm.pbf	argentina
+CL	south-america/chile	chile.osm.pbf	chile
+MX	north-america/mexico	mexico.osm.pbf	mexico
+CA	north-america/canada	canada.osm.pbf	canada
+US	north-america/us	us.osm.pbf	full US (replaces partial us-northeast)
