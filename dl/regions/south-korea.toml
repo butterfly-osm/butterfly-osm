@@ -1,0 +1,10 @@
+# Butterfly region index — South Korea
+#
+# OSM PBF for South Korea from Geofabrik. Hangul primary script
+# case for the world geocoder corpus (#225). No national
+# OpenAddresses pack today; OSM is the baseline.
+#
+# Verified live 2026-05-07.
+
+[pbf]
+url = "https://download.geofabrik.de/asia/south-korea-latest.osm.pbf"

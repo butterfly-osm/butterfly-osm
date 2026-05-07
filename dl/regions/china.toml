@@ -1,0 +1,11 @@
+# Butterfly region index — China
+#
+# OSM PBF for China from Geofabrik. CJK simplified primary script
+# case for the world geocoder corpus (#225). OSM coverage in China
+# is variable; metro coverage (Beijing, Shanghai, Guangzhou,
+# Shenzhen) is best.
+#
+# Verified live 2026-05-07.
+
+[pbf]
+url = "https://download.geofabrik.de/asia/china-latest.osm.pbf"

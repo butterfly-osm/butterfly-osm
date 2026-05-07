@@ -1,0 +1,14 @@
+# Butterfly region index — Saudi Arabia
+#
+# OSM PBF only — OpenAddresses has no Saudi Arabia coverage.
+# OSM addr:* tagging in SA is sparse; many addresses come through
+# place-name + landmark hierarchy rather than street + housenumber.
+# This is the canonical RTL-Arabic test case for the world-resilient
+# geocoder per #225.
+
+[pbf]
+url = "https://download.geofabrik.de/asia/gcc-states-latest.osm.pbf"
+# Note: Geofabrik publishes Saudi Arabia inside the GCC (Gulf
+# Cooperation Council) extract, alongside Bahrain/Kuwait/Oman/Qatar/UAE.
+# Single-country SA PBF is not separately published by Geofabrik;
+# the GCC pack is ~280 MB and covers all 6 countries.

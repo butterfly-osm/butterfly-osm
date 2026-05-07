@@ -1,0 +1,10 @@
+# Butterfly region index — Egypt
+#
+# OSM PBF for Egypt from Geofabrik. Arabic script case (non-GCC,
+# Egyptian dialect register in OSM tagging) for the world geocoder
+# corpus (#225).
+#
+# Verified live 2026-05-07.
+
+[pbf]
+url = "https://download.geofabrik.de/africa/egypt-latest.osm.pbf"

@@ -1,0 +1,10 @@
+# Butterfly region index — South Africa
+#
+# OSM PBF for South Africa from Geofabrik. Latin-script African case
+# (multilingual: English, Afrikaans, Zulu, Xhosa, Sotho, etc.) for the
+# world geocoder corpus (#225).
+#
+# Verified live 2026-05-07.
+
+[pbf]
+url = "https://download.geofabrik.de/africa/south-africa-latest.osm.pbf"

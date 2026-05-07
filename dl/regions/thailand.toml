@@ -1,0 +1,9 @@
+# Butterfly region index — Thailand
+#
+# OSM PBF for Thailand from Geofabrik. Thai script primary case
+# for the world geocoder corpus (#225).
+#
+# Verified live 2026-05-07.
+
+[pbf]
+url = "https://download.geofabrik.de/asia/thailand-latest.osm.pbf"

@@ -1,0 +1,10 @@
+# Butterfly region index — United States
+#
+# Full continental USA OSM PBF from Geofabrik. Latin-script case at
+# continental scale; the largest single non-planet region in the
+# world geocoder corpus (#225).
+#
+# Verified live 2026-05-07.
+
+[pbf]
+url = "https://download.geofabrik.de/north-america/us-latest.osm.pbf"
