@@ -238,8 +238,14 @@ extract_bbox_csv() {
       }
     ' "$toml" >> "$out"
   done
+  # Append extra bboxes for countries not in geocode/data/packs (RU, CN, KR, TW,
+  # TH, IR, IL, PS, SA, AE, KW, BH, OM, QA, EG, GR). These are needed so that
+  # shared PBFs (GCC bundle, IL+PS bundle) split correctly during unify.
+  if [[ -f "$SCRIPT_DIR/extra_bboxes.csv" ]]; then
+    tail -n +2 "$SCRIPT_DIR/extra_bboxes.csv" >> "$out"
+  fi
   # Stable order for reproducibility
-  { head -1 "$out"; tail -n +2 "$out" | LC_ALL=C sort; } > "$out.sorted"
+  { head -1 "$out"; tail -n +2 "$out" | LC_ALL=C sort -u; } > "$out.sorted"
   mv "$out.sorted" "$out"
 }
 
@@ -362,21 +368,20 @@ phase_sample() {
     "$DUCKDB_BIN" -c "
       COPY (
         SELECT
+          query_id,
+          query_text,
+          gold_lat,
+          gold_lon,
+          quality_class,
           assigned_country,
           script_family,
+          query_form,
           osm_kind,
           osm_id,
-          name,
-          street,
-          housenumber,
-          city,
-          postcode,
-          query_canonical,
-          query_partial,
-          query_reordered
+          name
         FROM read_parquet('$out')
         WHERE script_family = '$fam'
-        ORDER BY assigned_country, osm_kind, osm_id
+        ORDER BY query_form, osm_kind, osm_id
       ) TO '$tsv' (FORMAT 'csv', DELIMITER '\t', HEADER true);
     " >/dev/null
   done <<< "$families"

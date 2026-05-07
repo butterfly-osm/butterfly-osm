@@ -75,50 +75,84 @@ SELECT *
 FROM ranked
 WHERE rn <= __SAMPLE_PER_FAMILY__;
 
--- 3. Generate 3 query forms per sampled record:
---    canonical: "name, street housenumber, city postcode"
---    partial  : "name, city"  (drop street + housenumber)
---    reordered: "city, street housenumber, name"
+-- 3. Generate 3 query forms per sampled record, one row per query.
+--    query_form ∈ {canonical, partial, reordered}
+--      canonical: "name, street housenumber, city postcode"
+--      partial  : "name, city"
+--      reordered: "city, street housenumber, name"
 --
--- All three are emitted as columns of one row so the sampled record id is
--- preserved for downstream joining.
+-- Each row carries its gold lat/lon so the bench harness can score recall
+-- without further joins. quality_class follows the existing convention used
+-- by bench/geocode/queries/<country>.tsv ("clean" if all four address fields
+-- present, else "noisy").
+CREATE OR REPLACE TEMP TABLE expanded AS
+WITH base AS (
+  SELECT
+    s.assigned_country,
+    s.script_family,
+    s.osm_kind,
+    s.osm_id,
+    s.name,
+    s.street,
+    s.housenumber,
+    s.city,
+    s.postcode,
+    -- recover the lat/lon from the unified parquet
+    u.lat AS gold_lat,
+    u.lon AS gold_lon
+  FROM sampled s
+  JOIN read_parquet('__UNIFIED_PARQUET__') u
+    ON u.osm_kind = s.osm_kind
+   AND u.osm_id   = s.osm_id
+)
+SELECT
+  printf('%s-%s-%s-%010d',
+         lower(assigned_country),
+         lower(script_family),
+         form,
+         row_number() OVER (PARTITION BY script_family, form ORDER BY osm_kind, osm_id)) AS query_id,
+  query_text,
+  gold_lat,
+  gold_lon,
+  CASE WHEN street <> '' AND housenumber <> '' AND city <> '' AND postcode <> ''
+       THEN 'clean' ELSE 'noisy' END AS quality_class,
+  assigned_country,
+  script_family,
+  form AS query_form,
+  osm_kind,
+  osm_id,
+  name
+FROM base,
+  LATERAL (VALUES
+    ('canonical',
+       trim(both ', ' FROM regexp_replace(
+         printf('%s, %s %s, %s %s', name, street, housenumber, city, postcode),
+         ',\s*,', ',', 'g'))),
+    ('partial',
+       trim(both ', ' FROM regexp_replace(
+         printf('%s, %s', name, city),
+         ',\s*,', ',', 'g'))),
+    ('reordered',
+       trim(both ', ' FROM regexp_replace(
+         printf('%s, %s %s, %s', city, street, housenumber, name),
+         ',\s*,', ',', 'g')))
+  ) AS f(form, query_text);
+
 COPY (
   SELECT
+    query_id,
+    query_text,
+    gold_lat,
+    gold_lon,
+    quality_class,
     assigned_country,
     script_family,
+    query_form,
     osm_kind,
     osm_id,
-    name,
-    street,
-    housenumber,
-    city,
-    postcode,
-    -- canonical query
-    trim(both ', ' FROM
-      regexp_replace(
-        printf('%s, %s %s, %s %s',
-               name,
-               street, housenumber,
-               city, postcode),
-        ',\s*,', ',', 'g'
-      )
-    ) AS query_canonical,
-    -- partial query (drop street + housenumber)
-    trim(both ', ' FROM
-      regexp_replace(
-        printf('%s, %s', name, city),
-        ',\s*,', ',', 'g'
-      )
-    ) AS query_partial,
-    -- reordered query (city first)
-    trim(both ', ' FROM
-      regexp_replace(
-        printf('%s, %s %s, %s', city, street, housenumber, name),
-        ',\s*,', ',', 'g'
-      )
-    ) AS query_reordered
-  FROM sampled
-  ORDER BY script_family, osm_kind, osm_id
+    name
+  FROM expanded
+  ORDER BY script_family, query_form, osm_kind, osm_id
 ) TO '__OUT_PATH__' (
   FORMAT 'parquet',
   COMPRESSION 'zstd',

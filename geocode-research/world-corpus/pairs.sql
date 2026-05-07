@@ -8,63 +8,64 @@
 --   __OUT_PATH__     — sed-replaced output parquet path
 --
 -- Determinism: ORDER BY on every output. No sampling here.
+--
+-- Implementation: UNPIVOT to rotate the wide name_* columns into a tall
+-- (lang, text) form in a single scan.
 
 SET memory_limit = '16GB';
 SET threads = 8;
 
--- Wide table → "tall" form: one row per (record, language, text)
 CREATE OR REPLACE TEMP TABLE name_long AS
-WITH wide AS (
-  SELECT
-    assigned_country, osm_kind, osm_id,
-    name, name_en, name_fr, name_de, name_nl, name_es, name_it, name_pt,
-    name_ru, name_uk, name_el,
-    name_ja, name_ko, name_zh, name_zh_hans, name_zh_hant,
-    name_ar, name_fa, name_he,
-    name_hi, name_bn, name_ta, name_te,
-    name_th, name_tr, name_pl, name_cs, name_hu, name_sv, name_da, name_no, name_fi,
-    alt_name, official_name, int_name
-  FROM read_parquet('__UNIFIED_PARQUET__')
-),
-piv AS (
-  -- emit a (lang, text) row per non-null name column
-  SELECT assigned_country, osm_kind, osm_id, 'default'   AS lang, name           AS text FROM wide WHERE name           IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'en'        AS lang, name_en        AS text FROM wide WHERE name_en        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'fr'        AS lang, name_fr        AS text FROM wide WHERE name_fr        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'de'        AS lang, name_de        AS text FROM wide WHERE name_de        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'nl'        AS lang, name_nl        AS text FROM wide WHERE name_nl        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'es'        AS lang, name_es        AS text FROM wide WHERE name_es        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'it'        AS lang, name_it        AS text FROM wide WHERE name_it        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'pt'        AS lang, name_pt        AS text FROM wide WHERE name_pt        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'ru'        AS lang, name_ru        AS text FROM wide WHERE name_ru        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'uk'        AS lang, name_uk        AS text FROM wide WHERE name_uk        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'el'        AS lang, name_el        AS text FROM wide WHERE name_el        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'ja'        AS lang, name_ja        AS text FROM wide WHERE name_ja        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'ko'        AS lang, name_ko        AS text FROM wide WHERE name_ko        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'zh'        AS lang, name_zh        AS text FROM wide WHERE name_zh        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'zh-Hans'   AS lang, name_zh_hans   AS text FROM wide WHERE name_zh_hans   IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'zh-Hant'   AS lang, name_zh_hant   AS text FROM wide WHERE name_zh_hant   IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'ar'        AS lang, name_ar        AS text FROM wide WHERE name_ar        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'fa'        AS lang, name_fa        AS text FROM wide WHERE name_fa        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'he'        AS lang, name_he        AS text FROM wide WHERE name_he        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'hi'        AS lang, name_hi        AS text FROM wide WHERE name_hi        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'bn'        AS lang, name_bn        AS text FROM wide WHERE name_bn        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'ta'        AS lang, name_ta        AS text FROM wide WHERE name_ta        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'te'        AS lang, name_te        AS text FROM wide WHERE name_te        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'th'        AS lang, name_th        AS text FROM wide WHERE name_th        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'tr'        AS lang, name_tr        AS text FROM wide WHERE name_tr        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'pl'        AS lang, name_pl        AS text FROM wide WHERE name_pl        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'cs'        AS lang, name_cs        AS text FROM wide WHERE name_cs        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'hu'        AS lang, name_hu        AS text FROM wide WHERE name_hu        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'sv'        AS lang, name_sv        AS text FROM wide WHERE name_sv        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'da'        AS lang, name_da        AS text FROM wide WHERE name_da        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'no'        AS lang, name_no        AS text FROM wide WHERE name_no        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'fi'        AS lang, name_fi        AS text FROM wide WHERE name_fi        IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'alt'       AS lang, alt_name       AS text FROM wide WHERE alt_name       IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'official'  AS lang, official_name  AS text FROM wide WHERE official_name  IS NOT NULL
-  UNION ALL SELECT assigned_country, osm_kind, osm_id, 'int'       AS lang, int_name       AS text FROM wide WHERE int_name       IS NOT NULL
+SELECT * FROM (
+  UNPIVOT (
+    SELECT
+      assigned_country, osm_kind, osm_id,
+      name           AS "default",
+      name_en        AS en,
+      name_fr        AS fr,
+      name_de        AS de,
+      name_nl        AS nl,
+      name_es        AS es,
+      name_it        AS it,
+      name_pt        AS pt,
+      name_ru        AS ru,
+      name_uk        AS uk,
+      name_el        AS el,
+      name_ja        AS ja,
+      name_ko        AS ko,
+      name_zh        AS zh,
+      name_zh_hans   AS "zh-Hans",
+      name_zh_hant   AS "zh-Hant",
+      name_ar        AS ar,
+      name_fa        AS fa,
+      name_he        AS he,
+      name_hi        AS hi,
+      name_bn        AS bn,
+      name_ta        AS ta,
+      name_te        AS te,
+      name_th        AS th,
+      name_tr        AS tr,
+      name_pl        AS pl,
+      name_cs        AS cs,
+      name_hu        AS hu,
+      name_sv        AS sv,
+      name_da        AS da,
+      name_no        AS no,
+      name_fi        AS fi,
+      alt_name       AS alt,
+      official_name  AS official,
+      int_name       AS int
+    FROM read_parquet('__UNIFIED_PARQUET__')
+  )
+  ON "default", en, fr, de, nl, es, it, pt, ru, uk, el,
+     ja, ko, zh, "zh-Hans", "zh-Hant",
+     ar, fa, he,
+     hi, bn, ta, te,
+     th, tr, pl, cs, hu, sv, da, no, fi,
+     alt, official, int
+  INTO NAME lang VALUE text
 )
-SELECT * FROM piv;
+WHERE text IS NOT NULL AND length(text) > 0;
 
 -- Records with at least 2 distinct languages
 CREATE OR REPLACE TEMP TABLE multilingual_records AS
