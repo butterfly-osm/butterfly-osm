@@ -99,6 +99,9 @@ geocode-research/scratch-*/target/
 geocode-research/scratch-*/Cargo.lock
 geocode-research/router-features/target/
 geocode-research/router-features/Cargo.lock
+# Large intermediate artifacts that can be regenerated from the corpus
+# (300k record × 391 f32 feature matrix ~ 450 MB).
+geocode-research/router-features/artifacts/features-subset.bin
 
 # Geocode training generator: target/, lockfile, and any non-fixture corpus output
 geocode-training/corpus-gen/target/
