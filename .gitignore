@@ -161,3 +161,13 @@ geocode/data/us/
 geocode/data/au/
 geocode/data/jp/
 geocode/data/br/
+
+# World corpus build artefacts. MANIFEST.json is committed (provenance for the
+# gitignored parquets). Per-family bench TSVs land under bench/geocode/queries/
+# and are committed there.
+data/world-corpus/inputs/
+data/world-corpus/*.parquet
+data/world-corpus/*.csv
+data/world-corpus/build.log
+data/world-corpus-repro-check/
+!data/world-corpus/MANIFEST.json
