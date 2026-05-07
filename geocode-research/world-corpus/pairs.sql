@@ -12,8 +12,12 @@
 -- Implementation: UNPIVOT to rotate the wide name_* columns into a tall
 -- (lang, text) form in a single scan.
 
-SET memory_limit = '16GB';
-SET threads = 8;
+SET memory_limit = '8GB';
+SET threads = 4;
+-- Same streaming reasoning as unify.sql: bound RAM, let DuckDB spill to .tmp
+-- on disk. 224M-row UNPIVOT × 35 langs is ~7.8B candidate rows pre-filter,
+-- so we need to spill. The WHERE filter (text IS NOT NULL AND length > 0)
+-- prunes most of those before the self-join.
 
 CREATE OR REPLACE TEMP TABLE name_long AS
 SELECT * FROM (

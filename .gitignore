@@ -129,6 +129,11 @@ bench/geocode/results/2026-05-06-multi-country-v2/server.log
 !bench/geocode/results/2026-05-06-be-merged-shard/
 bench/geocode/results/2026-05-06-multi-country-v2/*/butterfly-rows.jsonl
 bench/geocode/results/2026-05-06-multi-country-v2/*/nominatim-rows.jsonl
+# #225 world-corpus REPORT: small markdown summary; the heavy artefacts
+# (parquets) live under data/world-corpus/ and are gitignored, with
+# their hashes recorded in MANIFEST.json.
+!bench/geocode/results/2026-05-07-world-corpus/
+!bench/geocode/results/2026-05-07-world-corpus/REPORT.md
 bench/geocode/.venv/
 
 # AI consultation stderr (verbose progress logs; the .txt outputs are kept)

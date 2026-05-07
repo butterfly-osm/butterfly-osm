@@ -17,10 +17,23 @@
 --   * Final ORDER BY (assigned_country, osm_kind, osm_id) is stable.
 
 LOAD spatial;
-SET memory_limit = '16GB';
-SET threads = 8;
+-- 224M-row union with bbox classification. Single-threaded with no
+-- top-level ORDER BY to avoid the global mergesort that triggers
+-- multi-hundred-GB spills on RAM-constrained boxes. Determinism
+-- comes from the input contract:
+--   * read_parquet(glob) iterates in lexicographic glob order
+--   * each per-country input parquet is already ORDER BY (osm_kind, osm_id)
+--     (extract.sql guarantees this)
+--   * single-threaded execution preserves that order through the
+--     classified CTE and the LEFT JOIN
+-- Result: byte-identical output across runs given byte-identical inputs,
+-- without paying for a 224M-row global sort.
+SET memory_limit = '8GB';
+SET threads = 1;
+-- temp_directory defaults to <working_dir>/.tmp/duckdb_*; that is fine.
+-- (We override it on RAM-constrained boxes via env / build.sh, not here.)
 
--- 1. country bbox table
+-- 1. country bbox table (tiny — ~40 rows)
 CREATE OR REPLACE TABLE country_bbox AS
 SELECT
   iso2,
@@ -30,70 +43,73 @@ SELECT
   CAST(max_lon AS DOUBLE) AS max_lon
 FROM read_csv('__BBOX_CSV__', header=true);
 
--- 2. raw union of every per-country parquet (auto-schema-merged)
-CREATE OR REPLACE VIEW raw_features AS
-SELECT *
-FROM read_parquet('__PARQUET_GLOB__', union_by_name=true);
+-- 2. Pre-compute bbox lookup for ONLY the multi-country PBFs (GCC, IL).
+--    These are the only PBFs whose source_iso2 doesn't already encode
+--    the destination country. ~1.3M rows total — small enough to
+--    process eagerly without spilling. Goes parallel for this small
+--    pre-pass; the big pass below uses threads=1.
+SET threads = 4;
+CREATE OR REPLACE TEMP TABLE bbox_lookup AS
+SELECT
+  f.osm_kind,
+  f.osm_id,
+  MIN(b.iso2) AS bbox_country_iso2
+FROM read_parquet('__PARQUET_GLOB__', union_by_name=true) f
+JOIN country_bbox b
+  ON f.lat BETWEEN b.min_lat AND b.max_lat
+ AND f.lon BETWEEN b.min_lon AND b.max_lon
+WHERE f.source_iso2 IN ('GCC', 'IL')
+  AND f.lat IS NOT NULL
+  AND f.lon IS NOT NULL
+GROUP BY f.osm_kind, f.osm_id;
 
--- 3. classify each feature into an iso2:
---    a) trust addr:country if it's a 2-letter uppercase code already
---    b) else bbox lookup (find the country whose bbox contains the point)
---    c) else fallback to source_iso2 (the PBF tag the row came from)
+-- 3. Big streaming union pass.
+--    threads=1 + no ORDER BY → output row order is exactly:
+--      "concat input parquets in lexicographic glob order, each parquet
+--       in its own ORDER BY (osm_kind, osm_id) order".
+--    Same inputs ⇒ same output bytes.
+--
+--    Uses LEFT JOIN to bbox_lookup which fits in memory (1.3M rows).
+SET threads = 1;
+
 COPY (
-  WITH
-  parsed AS (
-    SELECT
-      *,
-      CASE
-        WHEN addr_country IS NOT NULL AND length(addr_country) = 2
-             AND regexp_matches(addr_country, '^[A-Z]{2}$')
-          THEN addr_country
-        ELSE NULL
-      END AS addr_country_iso2
-    FROM raw_features
-  ),
-  with_bbox AS (
-    SELECT
-      p.*,
-      -- bbox lookup; pick the alphabetically-first matching country for stability
-      (
-        SELECT MIN(b.iso2)
-        FROM country_bbox b
-        WHERE p.lat IS NOT NULL AND p.lon IS NOT NULL
-          AND p.lat BETWEEN b.min_lat AND b.max_lat
-          AND p.lon BETWEEN b.min_lon AND b.max_lon
-      ) AS bbox_country_iso2
-    FROM parsed p
-  )
   SELECT
-    coalesce(addr_country_iso2, bbox_country_iso2, source_iso2) AS assigned_country,
-    -- preserve everything else
-    source_iso2,
-    osm_kind,
-    osm_id,
-    lat,
-    lon,
-    name,
-    name_en, name_fr, name_de, name_nl, name_es, name_it, name_pt,
-    name_ru, name_uk, name_el,
-    name_ja, name_ko, name_zh, name_zh_hans, name_zh_hant,
-    name_ar, name_fa, name_he,
-    name_hi, name_bn, name_ta, name_te,
-    name_th, name_tr, name_pl, name_cs, name_hu, name_sv, name_da, name_no, name_fi,
-    alt_name, short_name, official_name, old_name, loc_name, int_name,
-    name_left, name_right,
-    addr_housenumber, addr_housename, addr_street, addr_place, addr_unit, addr_floor,
-    addr_suburb, addr_district, addr_subdistrict, addr_hamlet, addr_village,
-    addr_town, addr_city, addr_county, addr_province, addr_state,
-    addr_postcode, addr_country, addr_full,
-    place, amenity, tourism, historic, natural_kind, shop, building, landuse,
-    leisure, office, highway, railway, aeroway, waterway, boundary, admin_level,
-    wikipedia, wikidata, population
-  FROM with_bbox
-  ORDER BY
-    coalesce(addr_country_iso2, bbox_country_iso2, source_iso2),
-    osm_kind,
-    osm_id
+    coalesce(
+      CASE
+        WHEN c.addr_country IS NOT NULL
+             AND length(c.addr_country) = 2
+             AND regexp_matches(c.addr_country, '^[A-Z]{2}$')
+          THEN c.addr_country
+        ELSE NULL
+      END,
+      bl.bbox_country_iso2,
+      c.source_iso2
+    ) AS assigned_country,
+    c.source_iso2,
+    c.osm_kind,
+    c.osm_id,
+    c.lat,
+    c.lon,
+    c.name,
+    c.name_en, c.name_fr, c.name_de, c.name_nl, c.name_es, c.name_it, c.name_pt,
+    c.name_ru, c.name_uk, c.name_el,
+    c.name_ja, c.name_ko, c.name_zh, c.name_zh_hans, c.name_zh_hant,
+    c.name_ar, c.name_fa, c.name_he,
+    c.name_hi, c.name_bn, c.name_ta, c.name_te,
+    c.name_th, c.name_tr, c.name_pl, c.name_cs, c.name_hu, c.name_sv, c.name_da, c.name_no, c.name_fi,
+    c.alt_name, c.short_name, c.official_name, c.old_name, c.loc_name, c.int_name,
+    c.name_left, c.name_right,
+    c.addr_housenumber, c.addr_housename, c.addr_street, c.addr_place, c.addr_unit, c.addr_floor,
+    c.addr_suburb, c.addr_district, c.addr_subdistrict, c.addr_hamlet, c.addr_village,
+    c.addr_town, c.addr_city, c.addr_county, c.addr_province, c.addr_state,
+    c.addr_postcode, c.addr_country, c.addr_full,
+    c.place, c.amenity, c.tourism, c.historic, c.natural_kind, c.shop, c.building, c.landuse,
+    c.leisure, c.office, c.highway, c.railway, c.aeroway, c.waterway, c.boundary, c.admin_level,
+    c.wikipedia, c.wikidata, c.population
+  FROM read_parquet('__PARQUET_GLOB__', union_by_name=true) c
+  LEFT JOIN bbox_lookup bl
+    ON bl.osm_kind = c.osm_kind
+   AND bl.osm_id   = c.osm_id
 ) TO '__OUT_PATH__' (
   FORMAT 'parquet',
   COMPRESSION 'zstd',
