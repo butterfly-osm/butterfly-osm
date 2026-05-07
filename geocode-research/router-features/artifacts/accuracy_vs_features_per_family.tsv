@@ -1,0 +1,29 @@
+step	classes_active	family	acc	n
+1	[Marker]	hispanic_latin	0.795095	8033
+1	[Marker]	western_latin	0.552266	43872
+1	[Marker]	devanagari_mixed	0.623207	3973
+1	[Marker]	cjk	0.798641	4122
+2	[Marker, Digit]	hispanic_latin	0.826092	8033
+2	[Marker, Digit]	devanagari_mixed	0.922477	3973
+2	[Marker, Digit]	cjk	0.975012	4122
+2	[Marker, Digit]	western_latin	0.748222	43872
+3	[Marker, Digit, Bigram]	western_latin	0.843864	43872
+3	[Marker, Digit, Bigram]	devanagari_mixed	0.931538	3973
+3	[Marker, Digit, Bigram]	hispanic_latin	0.932653	8033
+3	[Marker, Digit, Bigram]	cjk	0.974527	4122
+4	[Marker, Digit, Bigram, Length]	western_latin	0.848833	43872
+4	[Marker, Digit, Bigram, Length]	devanagari_mixed	0.930279	3973
+4	[Marker, Digit, Bigram, Length]	hispanic_latin	0.930039	8033
+4	[Marker, Digit, Bigram, Length]	cjk	0.984716	4122
+5	[Marker, Digit, Bigram, Length, Punct]	hispanic_latin	0.936512	8033
+5	[Marker, Digit, Bigram, Length, Punct]	western_latin	0.867136	43872
+5	[Marker, Digit, Bigram, Length, Punct]	devanagari_mixed	0.929524	3973
+5	[Marker, Digit, Bigram, Length, Punct]	cjk	0.991994	4122
+6	[Marker, Digit, Bigram, Length, Punct, Script]	western_latin	0.867227	43872
+6	[Marker, Digit, Bigram, Length, Punct, Script]	hispanic_latin	0.936512	8033
+6	[Marker, Digit, Bigram, Length, Punct, Script]	cjk	0.993450	4122
+6	[Marker, Digit, Bigram, Length, Punct, Script]	devanagari_mixed	0.929776	3973
+7	[Marker, Digit, Bigram, Length, Punct, Script, Postcode]	devanagari_mixed	0.929524	3973
+7	[Marker, Digit, Bigram, Length, Punct, Script, Postcode]	cjk	0.996118	4122
+7	[Marker, Digit, Bigram, Length, Punct, Script, Postcode]	western_latin	0.869279	43872
+7	[Marker, Digit, Bigram, Length, Punct, Script, Postcode]	hispanic_latin	0.952695	8033

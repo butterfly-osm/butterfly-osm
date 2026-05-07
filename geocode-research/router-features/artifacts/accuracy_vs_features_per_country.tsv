@@ -1,0 +1,106 @@
+step	classes_active	country	acc
+1	[Marker]	AT	0.485354
+1	[Marker]	AU	0.549657
+1	[Marker]	BE	0.307250
+1	[Marker]	BR	0.898207
+1	[Marker]	CH	0.468117
+1	[Marker]	DE	0.576377
+1	[Marker]	ES	0.694894
+1	[Marker]	FR	0.691305
+1	[Marker]	GB	0.371719
+1	[Marker]	IN	0.623207
+1	[Marker]	IT	0.847205
+1	[Marker]	JP	0.798641
+1	[Marker]	LU	0.323445
+1	[Marker]	NL	0.867056
+1	[Marker]	US	0.574547
+2	[Marker, Digit]	AT	0.671212
+2	[Marker, Digit]	AU	0.807722
+2	[Marker, Digit]	BE	0.489750
+2	[Marker, Digit]	BR	0.954787
+2	[Marker, Digit]	CH	0.549387
+2	[Marker, Digit]	DE	0.932968
+2	[Marker, Digit]	ES	0.701031
+2	[Marker, Digit]	FR	0.881984
+2	[Marker, Digit]	GB	0.788757
+2	[Marker, Digit]	IN	0.922477
+2	[Marker, Digit]	IT	0.846193
+2	[Marker, Digit]	JP	0.975012
+2	[Marker, Digit]	LU	0.674213
+2	[Marker, Digit]	NL	0.703677
+2	[Marker, Digit]	US	0.882411
+3	[Marker, Digit, Bigram]	AT	0.814141
+3	[Marker, Digit, Bigram]	AU	0.861570
+3	[Marker, Digit, Bigram]	BE	0.683000
+3	[Marker, Digit, Bigram]	BR	0.961606
+3	[Marker, Digit, Bigram]	CH	0.702426
+3	[Marker, Digit, Bigram]	DE	0.938201
+3	[Marker, Digit, Bigram]	ES	0.904516
+3	[Marker, Digit, Bigram]	FR	0.894513
+3	[Marker, Digit, Bigram]	GB	0.834572
+3	[Marker, Digit, Bigram]	IN	0.931538
+3	[Marker, Digit, Bigram]	IT	0.926638
+3	[Marker, Digit, Bigram]	JP	0.974527
+3	[Marker, Digit, Bigram]	LU	0.859485
+3	[Marker, Digit, Bigram]	NL	0.873630
+3	[Marker, Digit, Bigram]	US	0.894567
+4	[Marker, Digit, Bigram, Length]	AT	0.821212
+4	[Marker, Digit, Bigram, Length]	AU	0.867666
+4	[Marker, Digit, Bigram, Length]	BE	0.673250
+4	[Marker, Digit, Bigram, Length]	BR	0.954029
+4	[Marker, Digit, Bigram, Length]	CH	0.726682
+4	[Marker, Digit, Bigram, Length]	DE	0.944680
+4	[Marker, Digit, Bigram, Length]	ES	0.906726
+4	[Marker, Digit, Bigram, Length]	FR	0.907542
+4	[Marker, Digit, Bigram, Length]	GB	0.857603
+4	[Marker, Digit, Bigram, Length]	IN	0.930279
+4	[Marker, Digit, Bigram, Length]	IT	0.922590
+4	[Marker, Digit, Bigram, Length]	JP	0.984716
+4	[Marker, Digit, Bigram, Length]	LU	0.862087
+4	[Marker, Digit, Bigram, Length]	NL	0.855612
+4	[Marker, Digit, Bigram, Length]	US	0.898784
+5	[Marker, Digit, Bigram, Length, Punct]	AT	0.823990
+5	[Marker, Digit, Bigram, Length, Punct]	AU	0.872746
+5	[Marker, Digit, Bigram, Length, Punct]	BE	0.697000
+5	[Marker, Digit, Bigram, Length, Punct]	BR	0.971710
+5	[Marker, Digit, Bigram, Length, Punct]	CH	0.749437
+5	[Marker, Digit, Bigram, Length, Punct]	DE	0.942437
+5	[Marker, Digit, Bigram, Length, Punct]	ES	0.902307
+5	[Marker, Digit, Bigram, Length, Punct]	FR	0.904285
+5	[Marker, Digit, Bigram, Length, Punct]	GB	0.879891
+5	[Marker, Digit, Bigram, Length, Punct]	IN	0.929524
+5	[Marker, Digit, Bigram, Length, Punct]	IT	0.945358
+5	[Marker, Digit, Bigram, Length, Punct]	JP	0.991994
+5	[Marker, Digit, Bigram, Length, Punct]	LU	0.872756
+5	[Marker, Digit, Bigram, Length, Punct]	NL	0.944729
+5	[Marker, Digit, Bigram, Length, Punct]	US	0.903994
+6	[Marker, Digit, Bigram, Length, Punct, Script]	AT	0.824242
+6	[Marker, Digit, Bigram, Length, Punct, Script]	AU	0.872746
+6	[Marker, Digit, Bigram, Length, Punct, Script]	BE	0.698500
+6	[Marker, Digit, Bigram, Length, Punct, Script]	BR	0.971710
+6	[Marker, Digit, Bigram, Length, Punct, Script]	CH	0.749437
+6	[Marker, Digit, Bigram, Length, Punct, Script]	DE	0.942437
+6	[Marker, Digit, Bigram, Length, Punct, Script]	ES	0.902307
+6	[Marker, Digit, Bigram, Length, Punct, Script]	FR	0.904285
+6	[Marker, Digit, Bigram, Length, Punct, Script]	GB	0.879396
+6	[Marker, Digit, Bigram, Length, Punct, Script]	IN	0.929776
+6	[Marker, Digit, Bigram, Length, Punct, Script]	IT	0.945358
+6	[Marker, Digit, Bigram, Length, Punct, Script]	JP	0.993450
+6	[Marker, Digit, Bigram, Length, Punct, Script]	LU	0.872756
+6	[Marker, Digit, Bigram, Length, Punct, Script]	NL	0.944485
+6	[Marker, Digit, Bigram, Length, Punct, Script]	US	0.903994
+7	[Marker, Digit, Bigram, Length, Punct, Script, Postcode]	AT	0.810606
+7	[Marker, Digit, Bigram, Length, Punct, Script, Postcode]	AU	0.872238
+7	[Marker, Digit, Bigram, Length, Punct, Script, Postcode]	BE	0.707000
+7	[Marker, Digit, Bigram, Length, Punct, Script, Postcode]	BR	0.977772
+7	[Marker, Digit, Bigram, Length, Punct, Script, Postcode]	CH	0.738685
+7	[Marker, Digit, Bigram, Length, Punct, Script, Postcode]	DE	0.942437
+7	[Marker, Digit, Bigram, Length, Punct, Script, Postcode]	ES	0.928326
+7	[Marker, Digit, Bigram, Length, Punct, Script, Postcode]	FR	0.908043
+7	[Marker, Digit, Bigram, Length, Punct, Script, Postcode]	GB	0.876424
+7	[Marker, Digit, Bigram, Length, Punct, Script, Postcode]	IN	0.929524
+7	[Marker, Digit, Bigram, Length, Punct, Script, Postcode]	IT	0.943334
+7	[Marker, Digit, Bigram, Length, Punct, Script, Postcode]	JP	0.996118
+7	[Marker, Digit, Bigram, Length, Punct, Script, Postcode]	LU	0.890190
+7	[Marker, Digit, Bigram, Length, Punct, Script, Postcode]	NL	0.963234
+7	[Marker, Digit, Bigram, Length, Punct, Script, Postcode]	US	0.907963

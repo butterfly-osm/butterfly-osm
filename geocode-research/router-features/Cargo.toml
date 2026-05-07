@@ -1,0 +1,68 @@
+[package]
+name = "router-features"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "AGPL-3.0-or-later"
+publish = false
+description = "Issue #227 measurement crate — feature-cost frontier for cheap country router. NOT production code."
+
+# Standalone workspace so this research crate doesn't pull workspace lints
+# (deny-warnings is too strict for prototype code that explores many
+# feature flags and prints to stdout). It's research, per #227.
+[workspace]
+
+[dependencies]
+# Tree training. Already in butterfly-geocode deps.
+gbdt = "0.1.3"
+
+# Multi-pattern Aho-Corasick over morphology / pack lexical markers.
+# DFA-based (lower memory, fast), well-known crate.
+aho-corasick = "1.1"
+
+# Regex for postcode DFAs.
+regex = "1.11"
+
+# Corpus parsing.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# TOML for pack / morphology files.
+toml = "1.1"
+
+# CLI parsing.
+clap = { version = "4.6", features = ["derive"] }
+
+# Random shuffles + sampling for train/test splits.
+rand = { version = "0.9", features = ["std", "std_rng"] }
+
+# Error plumbing for binaries.
+anyhow = "1.0"
+
+# Sub-microsecond timing for feature-cost micro-bench.
+# Criterion is overkill for this; std Instant + warmup loop is fine.
+
+[[bin]]
+name = "extract-bench"
+path = "src/bin/extract_bench.rs"
+
+[[bin]]
+name = "measure-features"
+path = "src/bin/measure_features.rs"
+
+[[bin]]
+name = "accuracy-curve"
+path = "src/bin/accuracy_curve.rs"
+
+[[bin]]
+name = "ablation"
+path = "src/bin/ablation.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = false

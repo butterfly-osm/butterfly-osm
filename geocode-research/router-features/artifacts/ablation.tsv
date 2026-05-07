@@ -1,0 +1,4 @@
+structure	mean_inference_ns	p50_ns	p99_ns	memory_kb	macro_acc	min_country_acc	min_country	min_family_acc	min_family
+tree	738	733	952	870	0.888811	0.697000	BE	0.867136	western_latin
+signature_table	350	336	476	21843	0.180505	0.038046	ES	0.068717	hispanic_latin
+cascade	629	694	982	21844	0.300019	0.061301	DE	0.238125	western_latin
