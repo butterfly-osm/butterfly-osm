@@ -1,0 +1,10 @@
+# Butterfly region index — Canada
+#
+# OSM PBF for Canada from Geofabrik. Latin/French bilingual case for
+# the world geocoder corpus (#225). Address coverage in Canada is
+# fragmented across provincial open-data portals; OSM is the baseline.
+#
+# Verified live 2026-05-07.
+
+[pbf]
+url = "https://download.geofabrik.de/north-america/canada-latest.osm.pbf"
