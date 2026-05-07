@@ -1,0 +1,10 @@
+# Butterfly region index — Russia
+#
+# OSM PBF for Russia from Geofabrik. Cyrillic primary script case
+# for the world geocoder corpus (#225). Russia has no nationally
+# unified open address dataset; OSM is the baseline.
+#
+# Verified live 2026-05-07.
+
+[pbf]
+url = "https://download.geofabrik.de/russia-latest.osm.pbf"

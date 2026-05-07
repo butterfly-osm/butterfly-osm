@@ -1,0 +1,10 @@
+# Butterfly region index — Israel and Palestine
+#
+# OSM PBF for Israel and Palestine from Geofabrik. Hebrew RTL
+# primary script case (with significant Arabic + English
+# co-occurrence) for the world geocoder corpus (#225).
+#
+# Verified live 2026-05-07.
+
+[pbf]
+url = "https://download.geofabrik.de/asia/israel-and-palestine-latest.osm.pbf"

@@ -1,0 +1,859 @@
+query_id	query_text	gold_lat	gold_lon	quality_class	assigned_country	script_family	query_form	osm_kind	osm_id	name
+cn-bengali-canonical-0000000001	রাজশাহী	24.3715513	88.5921038	noisy	CN	Bengali	canonical	node	372612223	রাজশাহী
+cn-bengali-canonical-0000000002	সাগরপাড়া	24.364769300000003	88.60737370000001	noisy	CN	Bengali	canonical	node	575988850	সাগরপাড়া
+cn-bengali-canonical-0000000003	মাধবপুর	24.286945300000003	91.83430270000001	noisy	CN	Bengali	canonical	node	582806167	মাধবপুর
+cn-bengali-canonical-0000000004	দক্ষিন তালপট্টি	21.6079963	89.1874617	noisy	CN	Bengali	canonical	node	1404460874	দক্ষিন তালপট্টি
+cn-bengali-canonical-0000000005	আখাউড়া	23.8681221	91.2088835	noisy	CN	Bengali	canonical	node	1431033281	আখাউড়া
+cn-bengali-canonical-0000000006	হিলি, হিলি	25.277513000000003	89.0069924	noisy	CN	Bengali	canonical	node	1472108324	হিলি
+cn-bengali-canonical-0000000007	হিলি	25.280797900000003	89.0033726	noisy	CN	Bengali	canonical	node	1472108326	হিলি
+cn-bengali-canonical-0000000008	জয়পুরহাট, Joypurhat	25.098996000000003	89.0260363	noisy	CN	Bengali	canonical	node	1472108338	জয়পুরহাট
+cn-bengali-canonical-0000000009	রামগড়	22.9963081	91.73766140000001	noisy	CN	Bengali	canonical	node	1786432760	রামগড়
+cn-bengali-canonical-0000000010	টিকাপাড়া	24.366562000000002	88.6121621	noisy	CN	Bengali	canonical	node	1909696016	টিকাপাড়া
+cn-bengali-canonical-0000000011	শাহবাজপুর	24.803046100000003	92.2431021	noisy	CN	Bengali	canonical	node	2051081332	শাহবাজপুর
+cn-bengali-canonical-0000000012	তালাইমারি	24.3617221	88.6268824	noisy	CN	Bengali	canonical	node	2150852154	তালাইমারি
+cn-bengali-canonical-0000000013	আগ্রাদ্বিগুন	25.1793599	88.7042492	noisy	CN	Bengali	canonical	node	2432347375	আগ্রাদ্বিগুন
+cn-bengali-canonical-0000000014	সুয়াগাজী	23.3766599	91.2406102	noisy	CN	Bengali	canonical	node	2459312224	সুয়াগাজী
+cn-bengali-canonical-0000000015	চারঘাট	24.281899300000003	88.75064730000001	noisy	CN	Bengali	canonical	node	2481950541	চারঘাট
+cn-bengali-canonical-0000000016	ভোলারহাট	24.943452800000003	88.2185594	noisy	CN	Bengali	canonical	node	2481956891	ভোলারহাট
+cn-bengali-canonical-0000000017	গোদাগাড়ী	24.4581726	88.3285448	noisy	CN	Bengali	canonical	node	2481956894	গোদাগাড়ী
+cn-bengali-canonical-0000000018	পরশুরাম	23.215108	91.44371720000001	noisy	CN	Bengali	canonical	node	2481967216	পরশুরাম
+cn-bengali-canonical-0000000019	হাকিমপুর	25.281057800000003	89.0101446	noisy	CN	Bengali	canonical	node	2481986730	হাকিমপুর
+cn-bengali-canonical-0000000020	খামারভাতী	26.0423085	89.28986110000001	noisy	CN	Bengali	canonical	node	2676569139	খামারভাতী
+cn-bengali-canonical-0000000021	মায়ং	26.259148500000002	92.0413225	noisy	CN	Bengali	canonical	node	3309060542	মায়ং
+bd-bengali-canonical-0000000022	জকিগঞ্জ	24.877456600000002	92.36988330000001	noisy	BD	Bengali	canonical	node	3396281149	জকিগঞ্জ
+cn-bengali-canonical-0000000023	জৈন্তাপুর	25.135576200000003	92.12339250000001	noisy	CN	Bengali	canonical	node	3396286397	জৈন্তাপুর
+cn-bengali-canonical-0000000024	পাথরডুবি	26.1486959	89.6199631	noisy	CN	Bengali	canonical	node	3980088480	পাথরডুবি
+cn-bengali-canonical-0000000025	শিলখুড়ি	26.1782794	89.6654572	noisy	CN	Bengali	canonical	node	3980088485	শিলখুড়ি
+cn-bengali-canonical-0000000026	উজিরপুর	23.3321951	91.28367300000001	noisy	CN	Bengali	canonical	node	3995846116	উজিরপুর
+cn-bengali-canonical-0000000027	লোগাং	23.4310577	91.9438334	noisy	CN	Bengali	canonical	node	4215808896	লোগাং
+cn-bengali-canonical-0000000028	সাজেক	23.3857193	92.2920464	noisy	CN	Bengali	canonical	node	4215808908	সাজেক
+cn-bengali-canonical-0000000029	বাখরাবাদ গ্যাস আদর্শ বিদ্যালয়, Comilla Bypass Road ,  3500	23.451357400000003	91.21081380000001	noisy	CN	Bengali	canonical	node	4543693195	বাখরাবাদ গ্যাস আদর্শ বিদ্যালয়
+cn-bengali-canonical-0000000030	Bashir Medical Hall বশির মেডিকেল হল, Comilla 3500	23.322408000000003	91.28117300000001	noisy	CN	Bengali	canonical	node	5125777816	Bashir Medical Hall বশির মেডিকেল হল
+cn-bengali-canonical-0000000031	Kali Mandir কালী মন্দির, Rajshahi	24.3618013	88.6254514	noisy	CN	Bengali	canonical	node	5130352203	Kali Mandir কালী মন্দির
+cn-bengali-canonical-0000000032	Rubel Tea Stall and Cafe রুবেল টি স্টল এবং ক্যাফে, Rajshahi	24.3602586	88.62010360000001	noisy	CN	Bengali	canonical	node	5130472690	Rubel Tea Stall and Cafe রুবেল টি স্টল এবং ক্যাফে
+cn-bengali-canonical-0000000033	Lotto Sales Point লোটো সেলস্ পয়েন্ট, Rajshahi	24.3654027	88.6002309	noisy	CN	Bengali	canonical	node	5132367181	Lotto Sales Point লোটো সেলস্ পয়েন্ট
+cn-bengali-canonical-0000000034	Anamika Cloth Store অনামিকা কাপড়ের দোকান, Rajshahi	24.365601	88.5992896	noisy	CN	Bengali	canonical	node	5132401281	Anamika Cloth Store অনামিকা কাপড়ের দোকান
+cn-bengali-canonical-0000000035	Sobuj Library সবুজ লাইব্রেরী, Rajshahi	24.366423400000002	88.5976045	noisy	CN	Bengali	canonical	node	5132476256	Sobuj Library সবুজ লাইব্রেরী
+cn-bengali-canonical-0000000036	Parjatan Bar & Restaurent রাজশাহী পর্যটন বার ও রেস্তোঁরা, Rajshahi	24.3683558	88.5720821	noisy	CN	Bengali	canonical	node	5132683769	Parjatan Bar & Restaurent রাজশাহী পর্যটন বার ও রেস্তোঁরা
+cn-bengali-canonical-0000000037	Tapan Jewellers তপন গহনা, Rajshahi	24.373775900000002	88.56142220000001	noisy	CN	Bengali	canonical	node	5132724025	Tapan Jewellers তপন গহনা
+cn-bengali-canonical-0000000038	Durjoy Store দূর্জয় ষ্টোর, Rajshahi	24.3739127	88.5619721	noisy	CN	Bengali	canonical	node	5132735294	Durjoy Store দূর্জয় ষ্টোর
+cn-bengali-canonical-0000000039	তৌহিদ সুজ, Godagari	24.468366000000003	88.32310030000001	noisy	CN	Bengali	canonical	node	5132892251	তৌহিদ সুজ
+cn-bengali-canonical-0000000040	বুড়াবুড়ি হাট	26.473969	88.4511044	noisy	CN	Bengali	canonical	node	5276325031	বুড়াবুড়ি হাট
+cn-bengali-canonical-0000000041	পাগলীডাঙ্গী	26.6118987	88.39998130000001	noisy	CN	Bengali	canonical	node	5276325041	পাগলীডাঙ্গী
+cn-bengali-canonical-0000000042	বাংলাবান্ধা	26.590600000000002	88.39486720000001	noisy	CN	Bengali	canonical	node	5276325042	বাংলাবান্ধা
+cn-bengali-canonical-0000000043	চাঁন পুর জামে মসজিদ, Chandpur 3 No Word, Moulvibazar 3223	24.336678000000003	91.99196300000001	clean	CN	Bengali	canonical	node	5301581824	চাঁন পুর জামে মসজিদ
+cn-bengali-canonical-0000000044	বেইজিং রেঁস্তোরা, Topsia North Road 105, Kolkata 700046	22.546521300000002	88.387096	clean	CN	Bengali	canonical	node	5349341783	বেইজিং রেঁস্তোরা
+cn-bengali-canonical-0000000045	জাফলং	25.1729658	92.0202881	noisy	CN	Bengali	canonical	node	5379578776	জাফলং
+cn-bengali-canonical-0000000046	তামাবিল	25.180553900000003	92.0327067	noisy	CN	Bengali	canonical	node	5379578777	তামাবিল
+cn-bengali-canonical-0000000047	সিং মেডিকেল, Siliguri	26.699839400000002	88.41863500000001	noisy	CN	Bengali	canonical	node	5380066083	সিং মেডিকেল
+bd-bengali-canonical-0000000048	দহগ্রাম	26.3040722	88.94551100000001	noisy	BD	Bengali	canonical	node	6127940033	দহগ্রাম
+cn-bengali-canonical-0000000049	ছাগলনাইয়া	23.0398704	91.51482580000001	noisy	CN	Bengali	canonical	node	6152586898	ছাগলনাইয়া
+cn-bengali-canonical-0000000050	কমলপুর	23.4337966	91.2314692	noisy	CN	Bengali	canonical	node	6162842848	কমলপুর
+cn-bengali-canonical-0000000051	মুজিবনগর	23.649926200000003	88.5930663	noisy	CN	Bengali	canonical	node	6235275825	মুজিবনগর
+cn-bengali-canonical-0000000052	চন্দ্র মোটরসাইকেল মেরামত, Moronga Road (Shani Mandir More) Mathabhanha 1,  736146	26.340967000000003	89.21094520000001	noisy	CN	Bengali	canonical	node	6881113813	চন্দ্র মোটরসাইকেল মেরামত
+cn-bengali-canonical-0000000053	বাবু, Netajinagar ,  721101	22.4242898	87.31636680000001	noisy	CN	Bengali	canonical	node	7188469085	বাবু
+cn-bengali-canonical-0000000054	তেলিবিল উচ্চ বিদ্যালয়, শরীফপুর, আমতলাবাজার ২ নং ওয়ার্ড, মৌলভীবাজার ৩২২৩	24.3444258	91.9769665	clean	CN	Bengali	canonical	node	7388623576	তেলিবিল উচ্চ বিদ্যালয়
+cn-bengali-canonical-0000000055	আমতলাবাজার জামে মসজিদ, Sharifpur, Amtolabazar 2 No. Word, Mulvibazar 3223	24.3451808	91.9765617	clean	CN	Bengali	canonical	node	7388623579	আমতলাবাজার জামে মসজিদ
+cn-bengali-canonical-0000000056	ছেরাজ উদ্দিন মাস্টার বাড়ি, সিরাজ উদ্দিন সড়ক ওয়ার্ড নং ৬, বাথানিয়া, ছাগলনাইয়া, ফেনী 3900	23.0192845	91.47199570000001	clean	CN	Bengali	canonical	node	7641274031	ছেরাজ উদ্দিন মাস্টার বাড়ি
+cn-bengali-canonical-0000000057	শীল পাথর শিলুয়া, শিলুয়া চৌধুরী বাজার রোড শিলুয়া চৌধুরী বাজার, শিলুয়া, ছাগলনাইয়া, ফেনী ৩৯০০	23.0223163	91.4601602	clean	CN	Bengali	canonical	node	7641274032	শীল পাথর শিলুয়া
+cn-bengali-canonical-0000000058	মা শীতলা মন্দির, চাতরা, শ্রীরামপুর	22.763801500000003	88.3320814	noisy	CN	Bengali	canonical	node	8235629984	মা শীতলা মন্দির, চাতরা
+cn-bengali-canonical-0000000059	চাতরা নন্দলাল ইন্‌স্টিটিউশন, A. P. Ghosh Road , Serampore	22.7632489	88.33712150000001	noisy	CN	Bengali	canonical	node	8241996422	চাতরা নন্দলাল ইন্‌স্টিটিউশন
+cn-bengali-canonical-0000000060	শ্রীরামপুর মহকুমা গ্ৰন্থাগার, Serampore	22.7511042	88.3405958	noisy	CN	Bengali	canonical	node	8242020784	শ্রীরামপুর মহকুমা গ্ৰন্থাগার
+cn-bengali-canonical-0000000061	চাতরা	22.7632805	88.3340093	noisy	CN	Bengali	canonical	node	8248548276	চাতরা
+cn-bengali-canonical-0000000062	মাহেশ	22.736106300000003	88.35158200000001	noisy	CN	Bengali	canonical	node	8248562969	মাহেশ
+cn-bengali-canonical-0000000063	বল্লভপুর	22.7454958	88.3524845	noisy	CN	Bengali	canonical	node	8248564448	বল্লভপুর
+cn-bengali-canonical-0000000064	কানাইপুর বারোয়ারিতলা কালি মন্দির, Naity Road	22.702312300000003	88.3259135	noisy	CN	Bengali	canonical	node	8308814650	কানাইপুর বারোয়ারিতলা কালি মন্দির
+cn-bengali-canonical-0000000065	কুস্থল	23.4781052	87.04723580000001	noisy	CN	Bengali	canonical	node	8341272625	কুস্থল
+cn-bengali-canonical-0000000066	অমরকানন	23.3939714	87.11011900000001	noisy	CN	Bengali	canonical	node	8341473075	অমরকানন
+cn-bengali-canonical-0000000067	জোঁকা	23.159867600000002	88.8587067	noisy	CN	Bengali	canonical	node	9033787074	জোঁকা
+cn-bengali-canonical-0000000068	উত্তর দেয়াড়া	22.7221054	88.7910975	noisy	CN	Bengali	canonical	node	9033797768	উত্তর দেয়াড়া
+cn-bengali-canonical-0000000069	খামারপাড়া	22.7144182	88.78946710000001	noisy	CN	Bengali	canonical	node	9033797769	খামারপাড়া
+cn-bengali-canonical-0000000070	চৌদ্দগ্রাম	23.224766000000002	91.31349250000001	noisy	CN	Bengali	canonical	node	9139175182	চৌদ্দগ্রাম
+cn-bengali-canonical-0000000071	জয়্গুখ্ব গাঁও	27.5338566	95.39584280000001	noisy	CN	Bengali	canonical	node	9171945868	জয়্গুখ্ব গাঁও
+cn-bengali-canonical-0000000072	না-মাতাপুং গাঁও	27.526064700000003	95.43643	noisy	CN	Bengali	canonical	node	9171945885	না-মাতাপুং গাঁও
+cn-bengali-canonical-0000000073	দেন্কা গাঁও	27.535826	95.413835	noisy	CN	Bengali	canonical	node	9171959504	দেন্কা গাঁও
+cn-bengali-canonical-0000000074	টারজান গাঁও	27.543894	95.4038725	noisy	CN	Bengali	canonical	node	9171959505	টারজান গাঁও
+cn-bengali-canonical-0000000075	ফুলগাজী	23.1554703	91.43264690000001	noisy	CN	Bengali	canonical	node	9215982196	ফুলগাজী
+cn-bengali-canonical-0000000076	সোনামসজিদ	24.8343512	88.1438964	noisy	CN	Bengali	canonical	node	9272049812	সোনামসজিদ
+cn-bengali-canonical-0000000077	ভোমরা	22.6678539	88.95887060000001	noisy	CN	Bengali	canonical	node	9275084660	ভোমরা
+cn-bengali-canonical-0000000078	Poriborton - পরিবর্তন, Darbarpur Road, Old Munshirhat, Fulgazi, Feni. , Fulgazi, Feni 3943	23.108765000000002	91.4325218	noisy	CN	Bengali	canonical	node	9521408514	Poriborton - পরিবর্তন
+cn-bengali-canonical-0000000079	ধর্মগড়	26.012464	88.1609109	noisy	CN	Bengali	canonical	node	9669724683	ধর্মগড়
+cn-bengali-canonical-0000000080	সাতছড়ি ত্রিপুরা বস্তি	24.113828	91.4240949	noisy	CN	Bengali	canonical	node	9816626324	সাতছড়ি ত্রিপুরা বস্তি
+cn-bengali-canonical-0000000081	সাতছড়ি ত্রিপুরা বস্তি	24.1251603	91.4420293	noisy	CN	Bengali	canonical	node	9822353647	সাতছড়ি ত্রিপুরা বস্তি
+cn-bengali-canonical-0000000082	স্কাইপ	24.640664400000002	94.52783620000001	noisy	CN	Bengali	canonical	node	9831518376	স্কাইপ
+cn-bengali-canonical-0000000083	নাকুগাঁও	25.200104900000003	90.22317170000001	noisy	CN	Bengali	canonical	node	9838215050	নাকুগাঁও
+cn-bengali-canonical-0000000084	গোবরাকুড়া	25.1800438	90.3405652	noisy	CN	Bengali	canonical	node	9838232567	গোবরাকুড়া
+cn-bengali-canonical-0000000085	ই এস আই হাসপাতাল, Vivekananda Sarani	23.709513100000002	86.9537334	noisy	CN	Bengali	canonical	node	9921874217	ই এস আই হাসপাতাল
+cn-bengali-canonical-0000000086	সিইএসসি লিমিটেড, Prisep street ,  700072	22.566477300000003	88.3566943	noisy	CN	Bengali	canonical	node	10009392417	সিইএসসি লিমিটেড
+bd-bengali-canonical-0000000087	আঙ্গোরপোতা	26.325227100000003	88.9341759	noisy	BD	Bengali	canonical	node	10083658903	আঙ্গোরপোতা
+bd-bengali-canonical-0000000088	ঝালাংগী	26.4556541	88.9621716	noisy	BD	Bengali	canonical	node	10105428934	ঝালাংগী
+cn-bengali-canonical-0000000089	পরশুরাম রেলওয়ে স্টেশন, পরশুরাম	23.216143000000002	91.44530420000001	noisy	CN	Bengali	canonical	node	10139557255	পরশুরাম রেলওয়ে স্টেশন
+cn-bengali-canonical-0000000090	সরকারি খাদ্য গুদাম, Feni	23.148102100000003	91.4303833	noisy	CN	Bengali	canonical	node	10140023261	সরকারি খাদ্য গুদাম
+cn-bengali-canonical-0000000091	ফুলগাজী রেলওয়ে স্টেশন, Feni	23.1475271	91.4312649	noisy	CN	Bengali	canonical	node	10140023315	ফুলগাজী রেলওয়ে স্টেশন
+cn-bengali-canonical-0000000092	উদয়পুর	23.3731554	92.3520075	noisy	CN	Bengali	canonical	node	10143104025	উদয়পুর
+cn-bengali-canonical-0000000093	মীনা সিদ্ধি এপার্টমেন্ট, Dakshin Para Road 127,  700028	22.613146500000003	88.4203267	noisy	CN	Bengali	canonical	node	10168084417	মীনা সিদ্ধি এপার্টমেন্ট
+cn-bengali-canonical-0000000094	উত্তরবঙ্গ বিশ্বাবিদ্যালয়, AH-2 Raja Rammohunpur, Shivmandir 734014	26.7097085	88.3538182	clean	CN	Bengali	canonical	node	10183352916	উত্তরবঙ্গ বিশ্বাবিদ্যালয়
+cn-bengali-canonical-0000000095	মিরহাট দক্ষিণপাড়া বারোয়ারি, Baidyapur Mirhat,  713122	23.1672346	88.2504782	noisy	CN	Bengali	canonical	node	10537166036	মিরহাট দক্ষিণপাড়া বারোয়ারি
+cn-bengali-canonical-0000000096	মিরহাট প্রাইমারী বিদ্যালয়, Baidyapur Mirhat,  713122	23.167821	88.25155980000001	noisy	CN	Bengali	canonical	node	10537222342	মিরহাট প্রাইমারী বিদ্যালয়
+cn-bengali-canonical-0000000097	বৈদ্যপুর রাজরাজেশ্বর বালিকা বিদ্যালয়, Baidyapur Mirhat,  713122	23.1649618	88.2488471	noisy	CN	Bengali	canonical	node	10537256895	বৈদ্যপুর রাজরাজেশ্বর বালিকা বিদ্যালয়
+cn-bengali-canonical-0000000098	মিরহাট বড় পূজাবাড়ী, Baidyapur Mirhat,  713122	23.1658668	88.25066620000001	noisy	CN	Bengali	canonical	node	10537258795	মিরহাট বড় পূজাবাড়ী
+cn-bengali-canonical-0000000099	মিরহাট সুপার মার্কেট, Baidyapur Mirhat,  713122	23.164103200000003	88.24863	noisy	CN	Bengali	canonical	node	10537267475	মিরহাট সুপার মার্কেট
+cn-bengali-canonical-0000000100	অঙ্কন শিক্ষা কেন্দ্র, Ramgaon 45, Jaigaon 736182	26.8416779	89.3830265	clean	CN	Bengali	canonical	node	10772511116	অঙ্কন শিক্ষা কেন্দ্র
+cn-bengali-canonical-0000000101	জপুই	23.6531448	92.24133710000001	noisy	CN	Bengali	canonical	node	11192445644	জপুই
+cn-bengali-canonical-0000000102	বিশ্বাস মিষ্টান্ন ভান্ডার, Noagaon Chowmuhani ,  799285	24.191792500000002	91.829367	noisy	CN	Bengali	canonical	node	11369365269	বিশ্বাস মিষ্টান্ন ভান্ডার
+cn-bengali-canonical-0000000103	স্বামী বিবেকানন্দ ইউনিভার্সিটি, Bara khathalia ,  7000121	22.758467500000002	88.3961163	noisy	CN	Bengali	canonical	node	11909470769	স্বামী বিবেকানন্দ ইউনিভার্সিটি
+cn-bengali-canonical-0000000104	উদ্ভিদ সংগনিরোধ কেন্দ্র, Banglabandha	26.630939400000003	88.4137422	noisy	CN	Bengali	canonical	node	12109688647	উদ্ভিদ সংগনিরোধ কেন্দ্র
+cn-bengali-canonical-0000000105	পশ্চিম কালাজরি R.F. পার্ট	23.413753900000003	91.8057349	noisy	CN	Bengali	canonical	node	12138120130	পশ্চিম কালাজরি R.F. পার্ট
+cn-bengali-canonical-0000000106	চরখানপুর	24.3176381	88.59372040000001	noisy	CN	Bengali	canonical	node	12148008955	চরখানপুর
+cn-bengali-canonical-0000000107	আল - আকসা মসজিদ এবং মাদরাসা কমপ্লেক্স - এ প্রজেক্ট ওফ AQS ট্রাস্ট, Rajshahi	24.3182623	88.5891903	noisy	CN	Bengali	canonical	node	12148025466	আল - আকসা মসজিদ এবং মাদরাসা কমপ্লেক্স - এ প্রজেক্ট ওফ AQS ট্রাস্ট
+cn-bengali-canonical-0000000108	নিজ কালিকাপুর	23.253759600000002	91.4434726	noisy	CN	Bengali	canonical	node	12151388906	নিজ কালিকাপুর
+cn-bengali-canonical-0000000109	শরিফগন্জ বাজার	24.879355800000003	92.45907340000001	noisy	CN	Bengali	canonical	node	12328834486	শরিফগন্জ বাজার
+cn-bengali-canonical-0000000110	সুন্দরবন কুরিয়ার সার্ভিস, RDA market road	24.3653927	88.60130550000001	noisy	CN	Bengali	canonical	node	12421195801	সুন্দরবন কুরিয়ার সার্ভিস
+cn-bengali-canonical-0000000111	বালুতুপা	23.4547895	91.2126746	noisy	CN	Bengali	canonical	node	12535677930	বালুতুপা
+cn-bengali-canonical-0000000112	চৌয়ারা	23.4138489	91.2223733	noisy	CN	Bengali	canonical	node	12535677933	চৌয়ারা
+cn-bengali-canonical-0000000113	দয়াল মেডিকেল হল — Dayal Medical Hall, 96 Feeder Road 88, Belgharia, Kolkata 700056	22.6605698	88.3852233	clean	CN	Bengali	canonical	node	12550804135	দয়াল মেডিকেল হল — Dayal Medical Hall
+cn-bengali-canonical-0000000114	সুরজ ফার্মেসি, Itinda Road ,  743292	22.6658753	88.8863846	noisy	CN	Bengali	canonical	node	12679373101	সুরজ ফার্মেসি
+cn-bengali-canonical-0000000115	মানিক সেনের দোকান, B B Ghosh Road , Bardhaman 713101	23.2413348	87.86435610000001	noisy	CN	Bengali	canonical	node	12696530088	মানিক সেনের দোকান
+cn-bengali-canonical-0000000116	জয়শ্রী ভাণ্ডার, B B Ghosh Road 83, Bardhaman 713101	23.2420639	87.8646751	clean	CN	Bengali	canonical	node	12699344070	জয়শ্রী ভাণ্ডার
+cn-bengali-canonical-0000000117	পোরশা	25.0245527	88.4550777	noisy	CN	Bengali	canonical	node	12851478565	পোরশা
+cn-bengali-canonical-0000000118	কাবাব এক্সপ্রেস, ঢাকা-চট্টগ্রাম মহাসড়ক , Comilla	23.1532464	91.32415250000001	noisy	CN	Bengali	canonical	node	12864707688	কাবাব এক্সপ্রেস
+cn-bengali-canonical-0000000119	নারায়নপুর,  3526	23.6499835	91.1577817	noisy	CN	Bengali	canonical	node	13087398066	নারায়নপুর
+cn-bengali-canonical-0000000120	পিজ্জা লাইট, Railway Station Rd ,  782446	25.915614700000003	92.9563174	noisy	CN	Bengali	canonical	node	13152617501	পিজ্জা লাইট
+cn-bengali-canonical-0000000121	এম বাজাৰ লংকা, Shillong Rd ,  782446	25.917234500000003	92.95053030000001	noisy	CN	Bengali	canonical	node	13152617502	এম বাজাৰ লংকা
+cn-bengali-canonical-0000000122	ময়ুৰ হোটেল, Railway Station Rd ,  782446	25.9154142	92.95642380000001	noisy	CN	Bengali	canonical	node	13152642501	ময়ুৰ হোটেল
+cn-bengali-canonical-0000000123	লংকা বি পি এইচ চি, Railway Station RD ,  782446	25.9174131	92.95508790000001	noisy	CN	Bengali	canonical	node	13152710101	লংকা বি পি এইচ চি
+cn-bengali-canonical-0000000124	মেড এডভান্স ক্লিনিক, Railway Station Rd	25.9165953	92.95546180000001	noisy	CN	Bengali	canonical	node	13152712201	মেড এডভান্স ক্লিনিক
+cn-bengali-canonical-0000000125	লংকা বি পি এইচ, Railway Station Rd ,  782446	25.9175556	92.9551526	noisy	CN	Bengali	canonical	node	13152868701	লংকা বি পি এইচ
+cn-bengali-canonical-0000000126	নবগ্ৰাম	23.4657431	91.2034624	noisy	CN	Bengali	canonical	node	13172438656	নবগ্ৰাম
+cn-bengali-canonical-0000000127	বারপাড়া	23.453861800000002	91.20658900000001	noisy	CN	Bengali	canonical	node	13172438658	বারপাড়া
+cn-bengali-canonical-0000000128	পাথুরিয়া	23.462002400000003	91.20327920000001	noisy	CN	Bengali	canonical	node	13172438662	পাথুরিয়া
+cn-bengali-canonical-0000000129	ছাপাকুর	23.4505543	91.2137933	noisy	CN	Bengali	canonical	node	13172438666	ছাপাকুর
+cn-bengali-canonical-0000000130	সংরাইস	23.4679302	91.2047438	noisy	CN	Bengali	canonical	node	13172438667	সংরাইস
+cn-bengali-canonical-0000000131	জগন্নাথপুর	23.4625044	91.20955430000001	noisy	CN	Bengali	canonical	node	13172438674	জগন্নাথপুর
+cn-bengali-canonical-0000000132	জগতবেড়	26.3735165	89.06644680000001	noisy	CN	Bengali	canonical	node	13178984494	জগতবেড়
+cn-bengali-canonical-0000000133	শ্রীরামপুর	26.4288427	88.9579736	noisy	CN	Bengali	canonical	node	13178984670	শ্রীরামপুর
+cn-bengali-canonical-0000000134	গোতামারী	26.090393900000002	89.22620760000001	noisy	CN	Bengali	canonical	node	13180641503	গোতামারী
+cn-bengali-canonical-0000000135	পশ্চিম ছাতনাই	26.2561861	88.87868660000001	noisy	CN	Bengali	canonical	node	13190171769	পশ্চিম ছাতনাই
+cn-bengali-canonical-0000000136	লক্ষ্মণ ভাণ্ডার, Military Road , Shivmandir 734011	26.7110807	88.3620604	noisy	CN	Bengali	canonical	node	13286859209	লক্ষ্মণ ভাণ্ডার
+cn-bengali-canonical-0000000137	জালালপুর	23.766579800000002	87.3778181	noisy	CN	Bengali	canonical	node	13304498505	জালালপুর
+cn-bengali-canonical-0000000138	মহাম্মদপুরনগর	23.8050821	87.49170170000001	noisy	CN	Bengali	canonical	node	13311220128	মহাম্মদপুরনগর
+cn-bengali-canonical-0000000139	তুরুকবারিহাট	23.8125165	87.4957073	noisy	CN	Bengali	canonical	node	13311220129	তুরুকবারিহাট
+cn-bengali-canonical-0000000140	সাহাপুর	23.7949328	87.4947283	noisy	CN	Bengali	canonical	node	13311232827	সাহাপুর
+cn-bengali-canonical-0000000141	Hotel The Premium III Rashik Bangali (রসিক বাঙালি), NH12 ,  741102	23.390877500000002	88.4846479	noisy	CN	Bengali	canonical	node	13355558001	Hotel The Premium III Rashik Bangali (রসিক বাঙালি)
+cn-bengali-canonical-0000000142	বলদিয়া	26.0715423	89.7820762	noisy	CN	Bengali	canonical	node	13365850496	বলদিয়া
+cn-bengali-canonical-0000000143	বঙ্গসোনাহাট	26.1020545	89.75715140000001	noisy	CN	Bengali	canonical	node	13365850526	বঙ্গসোনাহাট
+cn-bengali-canonical-0000000144	কচাকাটা	25.9985505	89.8080654	noisy	CN	Bengali	canonical	node	13379540798	কচাকাটা
+bd-bengali-canonical-0000000145	নারায়নপুর যুব উন্নয়ন ক্লাব, Narayanpur Club Road , Uttar Narayanpur 3500	23.6497232	91.1596008	noisy	BD	Bengali	canonical	node	13439391962	নারায়নপুর যুব উন্নয়ন ক্লাব
+bd-bengali-canonical-0000000146	মনির স্টোর, Uttar Narayanpur 3500	23.648658700000002	91.1597296	noisy	BD	Bengali	canonical	node	13440320700	মনির স্টোর
+bd-bengali-canonical-0000000147	শাফায়েত ভ্যারাইটিজ ষ্টোর, Uttar Narayanpur 3500	23.6491995	91.1597469	noisy	BD	Bengali	canonical	node	13440332901	শাফায়েত ভ্যারাইটিজ ষ্টোর
+cn-bengali-canonical-0000000148	Udang 1-No Panchayat (উদং ১-নং পঞ্চায়েত), Bagnan Amta Road ,  711401	22.530806600000002	87.9895413	noisy	CN	Bengali	canonical	node	13583052401	Udang 1-No Panchayat (উদং ১-নং পঞ্চায়েত)
+cn-bengali-canonical-0000000149	Hosen Lodge - হোসেন লজ, Ghosh Para Road	24.3689962	88.5902765	noisy	CN	Bengali	canonical	node	13624107001	Hosen Lodge - হোসেন লজ
+in-bengali-canonical-0000000150	খুলনা বিভাগ			noisy	IN	Bengali	canonical	relation	3825003	খুলনা বিভাগ
+in-bengali-canonical-0000000151	হাঁসের চর			noisy	IN	Bengali	canonical	way	34638400	হাঁসের চর
+in-bengali-canonical-0000000152	ত্রিকোণা দ্বীপ			noisy	IN	Bengali	canonical	way	34667596	ত্রিকোণা দ্বীপ
+in-bengali-canonical-0000000153	টিয়ার চর			noisy	IN	Bengali	canonical	way	34690057	টিয়ার চর
+in-bengali-canonical-0000000154	ভিক্টোরিয়া মেমোরিয়াল হল, Queen's Way 1, Kolkata 700071			clean	IN	Bengali	canonical	way	36165294	ভিক্টোরিয়া মেমোরিয়াল হল
+in-bengali-canonical-0000000155	তালপট্টি			noisy	IN	Bengali	canonical	way	155168532	তালপট্টি
+in-bengali-canonical-0000000156	বড়াল নদী, Natore 6640			noisy	IN	Bengali	canonical	way	161860530	বড়াল নদী
+in-bengali-canonical-0000000157	মাঝের চর			noisy	IN	Bengali	canonical	way	265731108	মাঝের চর
+in-bengali-canonical-0000000158	দুবলার চর			noisy	IN	Bengali	canonical	way	312425708	দুবলার চর
+in-bengali-canonical-0000000159	Jolshaghar-জলসাঘর, Barada Basak Street, Basak Bagan, Baranagar 7/18/1, Kolkata 700036			clean	IN	Bengali	canonical	way	358751862	Jolshaghar-জলসাঘর
+in-bengali-canonical-0000000160	রাজশাহী কৃষি উন্নয়ন ব্যাংক, Greater Road , Rajshahi			noisy	IN	Bengali	canonical	way	369336788	রাজশাহী কৃষি উন্নয়ন ব্যাংক
+in-bengali-canonical-0000000161	দুর্লভপুর, Comilla 3500			noisy	IN	Bengali	canonical	way	483957769	দুর্লভপুর
+in-bengali-canonical-0000000162	S S AUTO Rice Mill এস এস অটো রাইস মিল, Chandsree, 3550			noisy	IN	Bengali	canonical	way	527187784	S S AUTO Rice Mill এস এস অটো রাইস মিল
+in-bengali-canonical-0000000163	Heron Auto Filling Station হিরনের অটো ফিলিং স্টেশনে, Chandul			noisy	IN	Bengali	canonical	way	527189387	Heron Auto Filling Station হিরনের অটো ফিলিং স্টেশনে
+in-bengali-canonical-0000000164	Food Palace, Highway Restaurant ফুড প্যালেস, Comilla 3500			noisy	IN	Bengali	canonical	way	527191455	Food Palace, Highway Restaurant ফুড প্যালেস
+in-bengali-canonical-0000000165	Foyez Store ফয়েজ স্টোর, Dhaka - Chittagong Highway, Chauddagram, Chittagong Division			noisy	IN	Bengali	canonical	way	527213737	Foyez Store ফয়েজ স্টোর
+in-bengali-canonical-0000000166	পায়েল স্টোর, Dhaka - Chittagong Highway, Chauddagram, Chittagong Division			noisy	IN	Bengali	canonical	way	527213887	পায়েল স্টোর
+in-bengali-canonical-0000000167	Chauddagram Government College চৌদ্দগ্রাম সরকারী কলেজ, Chauddagram			noisy	IN	Bengali	canonical	way	527221598	Chauddagram Government College চৌদ্দগ্রাম সরকারী কলেজ
+in-bengali-canonical-0000000168	SINGER Plus সিঙ্গার প্লাস, Chauddagram			noisy	IN	Bengali	canonical	way	527222180	SINGER Plus সিঙ্গার প্লাস
+in-bengali-canonical-0000000169	চৌদ্দগ্রাম-পৌরসভা Municipality Of Bangladesh, Chauddagram			noisy	IN	Bengali	canonical	way	527222681	চৌদ্দগ্রাম-পৌরসভা Municipality Of Bangladesh
+in-bengali-canonical-0000000170	Chouddagram Girls High School চৌদ্দগ্রাম উচ্চ মাধ্যমিক বালিকা বিদ্যালয়, Dhaka - Chittagong Hwy, Chauddagram, Chittagong Division 799153			noisy	IN	Bengali	canonical	way	527223054	Chouddagram Girls High School চৌদ্দগ্রাম উচ্চ মাধ্যমিক বালিকা বিদ্যালয়
+in-bengali-canonical-0000000171	Home Improvement Store.নাজমুল পর্দা গ্যালারী, Chauddagram			noisy	IN	Bengali	canonical	way	527224559	Home Improvement Store.নাজমুল পর্দা গ্যালারী
+in-bengali-canonical-0000000172	সিটি ব্যাংক লিমিটেড, Chauddagram			noisy	IN	Bengali	canonical	way	527228367	সিটি ব্যাংক লিমিটেড
+in-bengali-canonical-0000000173	বাংলাদেশ কৃষি ব্যাংক, Chauddagram			noisy	IN	Bengali	canonical	way	527228504	বাংলাদেশ কৃষি ব্যাংক
+in-bengali-canonical-0000000174	Chauddagram Central Jame Masjid চৌদ্দগ্রাম কেন্দ্রীয় জামে মসজিদ, Chauddagram			noisy	IN	Bengali	canonical	way	527229742	Chauddagram Central Jame Masjid চৌদ্দগ্রাম কেন্দ্রীয় জামে মসজিদ
+in-bengali-canonical-0000000175	Hotel Zamzam Restaurant and Sweetmeat হোটেল জমজমের রেঁস্তোরা এবং মিষ্টির, Chauddagram			noisy	IN	Bengali	canonical	way	527230621	Hotel Zamzam Restaurant and Sweetmeat হোটেল জমজমের রেঁস্তোরা এবং মিষ্টির
+in-bengali-canonical-0000000176	ChouddGram Police Station চৌদ্দগ্রাম থানা, Dhaka - Chittagong Hwy, Chauddagram			noisy	IN	Bengali	canonical	way	527231320	ChouddGram Police Station চৌদ্দগ্রাম থানা
+in-bengali-canonical-0000000177	Chauddagram Upazila Post Office চৌদ্দগ্রাম উপজেলা পোস্ট অফিস, Post Office Rd, Chauddagram			noisy	IN	Bengali	canonical	way	527233062	Chauddagram Upazila Post Office চৌদ্দগ্রাম উপজেলা পোস্ট অফিস
+in-bengali-canonical-0000000178	Chowdhury Filling Station চৌধুরী ফিলিং স্টেশন, Chauddagram			noisy	IN	Bengali	canonical	way	527233262	Chowdhury Filling Station চৌধুরী ফিলিং স্টেশন
+in-bengali-canonical-0000000179	West Dhonmuri Eidgah Moydan পশ্চ‌িম ধনমুড়ী ঈদগাহ ময়দান, Chauddagram			noisy	IN	Bengali	canonical	way	527233634	West Dhonmuri Eidgah Moydan পশ্চ‌িম ধনমুড়ী ঈদগাহ ময়দান
+in-bengali-canonical-0000000180	Jame Masjid Chondipur জমে মসজিদ চন্ডিপুর, Chondipur Road, Chittagong Division			noisy	IN	Bengali	canonical	way	527234718	Jame Masjid Chondipur জমে মসজিদ চন্ডিপুর
+in-bengali-canonical-0000000181	New Royal Host Restaurant নিউ রয়েল হোস্ট রেঁস্তোরা, Dhaka - Chittagong Hwy			noisy	IN	Bengali	canonical	way	527234977	New Royal Host Restaurant নিউ রয়েল হোস্ট রেঁস্তোরা
+in-bengali-canonical-0000000182	Rajshahi New Govt. Degree College রাজশাহী নিউ গভঃ ডিগ্রী কলেজ, Rajshahi			noisy	IN	Bengali	canonical	way	528056202	Rajshahi New Govt. Degree College রাজশাহী নিউ গভঃ ডিগ্রী কলেজ
+in-bengali-canonical-0000000183	জনতা ব্যাংকের এরিয়া অফিস, Rajshahi			noisy	IN	Bengali	canonical	way	528075684	জনতা ব্যাংকের এরিয়া অফিস
+in-bengali-canonical-0000000184	Hamdard হামদর্দ, Rajshahi			noisy	IN	Bengali	canonical	way	528076331	Hamdard হামদর্দ
+in-bengali-canonical-0000000185	Index Plaza ইন্ডেক্স প্লাজা, Rajshahi			noisy	IN	Bengali	canonical	way	528077981	Index Plaza ইন্ডেক্স প্লাজা
+in-bengali-canonical-0000000186	City Church, Rajshahi সিটি চার্চ, রাজশাহী, Rajshahi			noisy	IN	Bengali	canonical	way	528078078	City Church, Rajshahi সিটি চার্চ, রাজশাহী
+in-bengali-canonical-0000000187	Deputy Collectorate Office, Rajshahi রাজশাহী ডিসি অফিস, Rajshahi			noisy	IN	Bengali	canonical	way	528083988	Deputy Collectorate Office, Rajshahi রাজশাহী ডিসি অফিস
+in-bengali-canonical-0000000188	রাজশাহী কৃষি উন্নয়ন ব্যাংক, Godagari			noisy	IN	Bengali	canonical	way	528110357	রাজশাহী কৃষি উন্নয়ন ব্যাংক
+in-bengali-canonical-0000000189	Upazila Election Office, Godagari, Rajshahi উপজেলা নির্বাচন অফিস, গোদাগাড়ী, রাজশাহী, Godagari			noisy	IN	Bengali	canonical	way	528110492	Upazila Election Office, Godagari, Rajshahi উপজেলা নির্বাচন অফিস, গোদাগাড়ী, রাজশাহী
+in-bengali-canonical-0000000190	গোদাগাড়ী ভূমি রেজিস্ট্রি অফিস, Godagari			noisy	IN	Bengali	canonical	way	528110753	গোদাগাড়ী ভূমি রেজিস্ট্রি অফিস
+in-bengali-canonical-0000000191	Godagari Degree College রাজশাহীর গোদাগাড়ী ডিগ্রি কলেজের, Godagari			noisy	IN	Bengali	canonical	way	528110881	Godagari Degree College রাজশাহীর গোদাগাড়ী ডিগ্রি কলেজের
+in-bengali-canonical-0000000192	নলজুরি জামে মসজিদ, Sylhet			noisy	IN	Bengali	canonical	way	531373726	নলজুরি জামে মসজিদ
+in-bengali-canonical-0000000193	সিপাই পাড়া সরকারি প্রাথমিক বিদ্যালয়, Pancagarh			noisy	IN	Bengali	canonical	way	545737551	সিপাই পাড়া সরকারি প্রাথমিক বিদ্যালয়
+in-bengali-canonical-0000000194	Gatipara Puraton Jame Mosque (গাতিপাড়া পুরাতন জামে ), Benapole 7431			noisy	IN	Bengali	canonical	way	578454606	Gatipara Puraton Jame Mosque (গাতিপাড়া পুরাতন জামে )
+in-bengali-canonical-0000000195	মিলন পল্লী বিদ্যুৎ অফিস, ডব্লিউবিএসইডিসিএল, Station Feeder Road , Siliguri 734005			noisy	IN	Bengali	canonical	way	598338345	মিলন পল্লী বিদ্যুৎ অফিস, ডব্লিউবিএসইডিসিএল
+in-bengali-canonical-0000000196	নমৌজা			noisy	IN	Bengali	canonical	way	790315348	নমৌজা
+in-bengali-canonical-0000000197	বাঁকুড়া বেসরকারী বাস টার্মিনাস, Near Bankura Fire Station Bankura bus station, Gobindanagar, Bankura, West Bengal 722101			clean	IN	Bengali	canonical	way	895260213	বাঁকুড়া বেসরকারী বাস টার্মিনাস
+in-bengali-canonical-0000000198	আলিফ কমিউটি সেন্টার গঞ্জাজল, Zakiganj-Sylhet Rd			noisy	IN	Bengali	canonical	way	1075541706	আলিফ কমিউটি সেন্টার গঞ্জাজল
+in-bengali-canonical-0000000199	মতিন ডাক্তার হাসপাতাল, Zakiganj-Sylhet Rd , zakiganj 3190			noisy	IN	Bengali	canonical	way	1077007727	মতিন ডাক্তার হাসপাতাল
+in-bengali-canonical-0000000200	কাজির বাড়ী জামে মসজিদ, Zakiganj , Sylhet			noisy	IN	Bengali	canonical	way	1080214597	কাজির বাড়ী জামে মসজিদ
+in-bengali-canonical-0000000201	মুমিনপুর সরকারী প্রাথমিক বিদ্যালয়, Zakiganj			noisy	IN	Bengali	canonical	way	1080561698	মুমিনপুর সরকারী প্রাথমিক বিদ্যালয়
+in-bengali-canonical-0000000202	গাওছিয়া সেন্টার, Zakiganj-Sylhet Rd , Zakiganj			noisy	IN	Bengali	canonical	way	1080699425	গাওছিয়া সেন্টার
+in-bengali-canonical-0000000203	ক্বাসিমুল ঊলুম উত্তরকুল কওমি মাদ্রাসা, Zakiganj-Sylhet Rd , Zakiganj			noisy	IN	Bengali	canonical	way	1080835856	ক্বাসিমুল ঊলুম উত্তরকুল কওমি মাদ্রাসা
+in-bengali-canonical-0000000204	মামর খানী ছাহেব বাড়ী, Munshi Bazar Road , Zakiganj			noisy	IN	Bengali	canonical	way	1080855098	মামর খানী ছাহেব বাড়ী
+in-bengali-canonical-0000000205	সাজাপুর ইদগাহ, kashkanakpur , zakiganj			noisy	IN	Bengali	canonical	way	1082141860	সাজাপুর ইদগাহ
+in-bengali-canonical-0000000206	আবাবিলের বাড়ি, সাজাপুর রোড , zakiganj 3190			noisy	IN	Bengali	canonical	way	1082141870	আবাবিলের বাড়ি
+in-bengali-canonical-0000000207	রবি টাওয়ার, Zakiganj , Sylhet			noisy	IN	Bengali	canonical	way	1082281960	রবি টাওয়ার
+in-bengali-canonical-0000000208	বিয়াবাইল সরকারী প্রাথমিক বিদ্যালয়, Zakiganj-Sylhet Rd kashkanakpur, Zakiganj 3190			clean	IN	Bengali	canonical	way	1082281961	বিয়াবাইল সরকারী প্রাথমিক বিদ্যালয়
+in-bengali-canonical-0000000209	সাজাপুর জামে মসজিদ, Zakiganj-Sylhet Rd , Zakiganj Kashkanakpur			noisy	IN	Bengali	canonical	way	1082281962	সাজাপুর জামে মসজিদ
+in-bengali-canonical-0000000210	বিসমিল্লাহ মতিন ফার্নিচার, সাজাপুর রোড , Zakiganj 3190			noisy	IN	Bengali	canonical	way	1082281963	বিসমিল্লাহ মতিন ফার্নিচার
+in-bengali-canonical-0000000211	জিপি টাওয়ার, Zakiganj , Sylhet Kashkanakpur			noisy	IN	Bengali	canonical	way	1082281976	জিপি টাওয়ার
+in-bengali-canonical-0000000212	সুফিয়ান সো মিল, সাজাপুর রোড , Zakiganj 3190			noisy	IN	Bengali	canonical	way	1082281988	সুফিয়ান সো মিল
+in-bengali-canonical-0000000213	সাজাপুর কালীবাড়ি, Zakiganj-Sylhet Rd , Zakiganj			noisy	IN	Bengali	canonical	way	1082281993	সাজাপুর কালীবাড়ি
+in-bengali-canonical-0000000214	শহিদ জমশেদ আলি ইসলামিক একাডেমি, Zakiganj-Sylhet Rd , Zakiganj 3190			noisy	IN	Bengali	canonical	way	1082291120	শহিদ জমশেদ আলি ইসলামিক একাডেমি
+in-bengali-canonical-0000000215	খলাছড়া দাখিল মাদরাসা, জকিগঞ্জ সড়ক , Sylhet			noisy	IN	Bengali	canonical	way	1092419942	খলাছড়া দাখিল মাদরাসা
+in-bengali-canonical-0000000216	ইনামতি জামে মসজিদ, Zakiganj-Sylhet Rd , Sylhet 3190			noisy	IN	Bengali	canonical	way	1093417743	ইনামতি জামে মসজিদ
+in-bengali-canonical-0000000217	জামিয়া ইসলামিয়া কাওমিয়া ইছামতি ইনামতি মাদরাসা জকিগঞ্জ সিলেট, Zakiganj-Sylhet Rd , Sylhet 3190			noisy	IN	Bengali	canonical	way	1093501159	জামিয়া ইসলামিয়া কাওমিয়া ইছামতি ইনামতি মাদরাসা জকিগঞ্জ সিলেট
+in-bengali-canonical-0000000218	আমলসীদ মহিলা মাদ্রাসা, Zakiganj-Sylhet Rd , Zakiganj			noisy	IN	Bengali	canonical	way	1097062315	আমলসীদ মহিলা মাদ্রাসা
+in-bengali-canonical-0000000219	হযরত শাহ বদল (রহ:) মতিনিয়া হিফজুল কুরআন ক্যাডেট মাদরাসা, Zakiganj-Sylhet Rd			noisy	IN	Bengali	canonical	way	1106877543	হযরত শাহ বদল (রহ:) মতিনিয়া হিফজুল কুরআন ক্যাডেট মাদরাসা
+in-bengali-canonical-0000000220	পশ্চিম কসকনকপুর লামারগ্রাম কেন্দ্রীয় জামে মসজিদ, লামারগ্রাম রোড , zakiganj 3190			noisy	IN	Bengali	canonical	way	1112157456	পশ্চিম কসকনকপুর লামারগ্রাম কেন্দ্রীয় জামে মসজিদ
+in-bengali-canonical-0000000221	সাজাপুর মোকাম জামে মসজিদ, Kashkanakpur , zakiganj			noisy	IN	Bengali	canonical	way	1112157483	সাজাপুর মোকাম জামে মসজিদ
+in-bengali-canonical-0000000222	ফুলের দিঘী, Zakiganj			noisy	IN	Bengali	canonical	way	1190305209	ফুলের দিঘী
+in-bengali-canonical-0000000223	বাংলাদেশ পানি উন্নয়ন বোর্ড, Cumilla			noisy	IN	Bengali	canonical	way	1204914622	বাংলাদেশ পানি উন্নয়ন বোর্ড
+in-bengali-canonical-0000000224	মল্লিকার দীঘি - নারায়নপুর, Narayanpur			noisy	IN	Bengali	canonical	way	1211575519	মল্লিকার দীঘি - নারায়নপুর
+in-bengali-canonical-0000000225	মানরা - নারায়নপুর, Narayanpur			noisy	IN	Bengali	canonical	way	1211577617	মানরা - নারায়নপুর
+bd-bengali-canonical-0000000226	নারায়নপুর দক্ষিনপাড়া জামে মসজিদ, Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1211588247	নারায়নপুর দক্ষিনপাড়া জামে মসজিদ
+bd-bengali-canonical-0000000227	মা মমতাজ ভিলা, Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1211589411	মা মমতাজ ভিলা
+bd-bengali-canonical-0000000228	জাকির মঞ্জিল, Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1216253787	জাকির মঞ্জিল
+bd-bengali-canonical-0000000229	শাহ আলম ভিলা, Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1216254289	শাহ আলম ভিলা
+bd-bengali-canonical-0000000230	বাহরুল ভিলা, Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1216254307	বাহরুল ভিলা
+in-bengali-canonical-0000000231	চাঁদপুর টি এস্টেট, Habiganj			noisy	IN	Bengali	canonical	way	1233844606	চাঁদপুর টি এস্টেট
+in-bengali-canonical-0000000232	Dakhin Udaipur, Hojai, দখিন উদয়পুর			noisy	IN	Bengali	canonical	way	1240390312	Dakhin Udaipur, Hojai, দখিন উদয়পুর
+in-bengali-canonical-0000000233	সামন্তা বাজার, সাতপাড়া রোড , মহেশপুর ৭৩৪০			noisy	IN	Bengali	canonical	way	1279788493	সামন্তা বাজার
+in-bengali-canonical-0000000234	বায়তুস সালাম জামে মসজিদ- হানিগ্রাম, Zakiganj-Sylhet Rd , Zakiganj 3190			noisy	IN	Bengali	canonical	way	1285481540	বায়তুস সালাম জামে মসজিদ- হানিগ্রাম
+in-bengali-canonical-0000000235	হানিগ্রাম প্রবাসী ঐক্য পরিষদ, Zakiganj-Sylhet Rd , Zakiganj 3190			noisy	IN	Bengali	canonical	way	1285487693	হানিগ্রাম প্রবাসী ঐক্য পরিষদ
+in-bengali-canonical-0000000236	হানিগ্রাম দারুল ফয়েজ ইসলামিক একাডেমী, Zakiganj-Sylhet Rd , Zakiganj 3190			noisy	IN	Bengali	canonical	way	1285858667	হানিগ্রাম দারুল ফয়েজ ইসলামিক একাডেমী
+in-bengali-canonical-0000000237	বারোঠাকুরী বাাজার, Sylhet			noisy	IN	Bengali	canonical	way	1286963545	বারোঠাকুরী বাাজার
+in-bengali-canonical-0000000238	মাদিহার মামার দোকান, সোনাসার-শরিফগন্জ রোড , Zakiganj 3190			noisy	IN	Bengali	canonical	way	1286967227	মাদিহার মামার দোকান
+in-bengali-canonical-0000000239	দেব উত্তর জামে মসজিদ, সোনাসার-শরিফগন্জ রোড , Zakiganj 3190			noisy	IN	Bengali	canonical	way	1286967545	দেব উত্তর জামে মসজিদ
+in-bengali-canonical-0000000240	রহমানিয়া কমিউনিটি সেন্টার, Zakiganj-Sylhet Rd , Sylhet 3190			noisy	IN	Bengali	canonical	way	1286978128	রহমানিয়া কমিউনিটি সেন্টার
+in-bengali-canonical-0000000241	কদুর বাজার, Zakiganj , Sylhet			noisy	IN	Bengali	canonical	way	1286985630	কদুর বাজার
+in-bengali-canonical-0000000242	মইয়াখালী সরকারী প্রাথমিক বিদ্যালয়, জকিগঞ্জ সড়ক			noisy	IN	Bengali	canonical	way	1287267808	মইয়াখালী সরকারী প্রাথমিক বিদ্যালয়
+in-bengali-canonical-0000000243	মেসার্স তালুকদার এল পি জি ফিলিং স্টেশন, Zakiganj-Sylhet Rd , Zakiganj			noisy	IN	Bengali	canonical	way	1287272425	মেসার্স তালুকদার এল পি জি ফিলিং স্টেশন
+in-bengali-canonical-0000000244	ইনামতি মোকাম জামে মসজিদ, Zakiganj-Sylhet Rd , Sylhet			noisy	IN	Bengali	canonical	way	1287342303	ইনামতি মোকাম জামে মসজিদ
+in-bengali-canonical-0000000245	সোনাসার গ্রাম, Zakiganj , Sylhet			noisy	IN	Bengali	canonical	way	1287565484	সোনাসার গ্রাম
+in-bengali-canonical-0000000246	বারোগাত্তা, Zakiganj , Sylhet			noisy	IN	Bengali	canonical	way	1287565791	বারোগাত্তা
+in-bengali-canonical-0000000247	বলরামের চক, Zakiganj			noisy	IN	Bengali	canonical	way	1287595074	বলরামের চক
+in-bengali-canonical-0000000248	তেরে বিন বাড়ি প্লট, ছেংগের বাজার ব্রিজ , Sylhet Kashkanakpur			noisy	IN	Bengali	canonical	way	1288848664	তেরে বিন বাড়ি প্লট
+in-bengali-canonical-0000000249	বদল শাহ (রাহ:)মাজার জামে মসজিদ, Zakiganj-Sylhet Rd			noisy	IN	Bengali	canonical	way	1289023202	বদল শাহ (রাহ:)মাজার জামে মসজিদ
+in-bengali-canonical-0000000250	খারিজা কেন্দীয় জামে মসজিদ, Zakiganj , Sylhet			noisy	IN	Bengali	canonical	way	1289027318	খারিজা কেন্দীয় জামে মসজিদ
+in-bengali-canonical-0000000251	সোনাসার চত্বর, Zakiganj-Sylhet Rd , zakiganj 3190			noisy	IN	Bengali	canonical	way	1289260249	সোনাসার চত্বর
+bd-bengali-canonical-0000000252	জাহাঙ্গীর আলম, Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1289809058	জাহাঙ্গীর আলম
+bd-bengali-canonical-0000000253	বায়তুল নূর পাঞ্জেগানা মসজিদ, Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1289809062	বায়তুল নূর পাঞ্জেগানা মসজিদ
+in-bengali-canonical-0000000254	আয়ফল রমিজ আইডিয়াল স্কুল অ্যান্ড কলেজ, West Narayanpur			noisy	IN	Bengali	canonical	way	1289809064	আয়ফল রমিজ আইডিয়াল স্কুল অ্যান্ড কলেজ
+bd-bengali-canonical-0000000255	নারায়নপুর উত্তর পাড়া জামে মসজিদ, Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1289809066	নারায়নপুর উত্তর পাড়া জামে মসজিদ
+bd-bengali-canonical-0000000256	খিজির মিয়ার বাড়ি, Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1289809071	খিজির মিয়ার বাড়ি
+bd-bengali-canonical-0000000257	স্থলবন্দর, Parshuram			noisy	BD	Bengali	canonical	way	1312787145	স্থলবন্দর
+in-bengali-canonical-0000000258	গ্রান্ড সুলতান টি রিসোর্ট এন্ড গলফ ক্লাব, Sreemangal - Bhanugach Road Radhanagar, Moulvibazar 3210			clean	IN	Bengali	canonical	way	1316090512	গ্রান্ড সুলতান টি রিসোর্ট এন্ড গলফ ক্লাব
+in-bengali-canonical-0000000259	এখন চার্জ, ঢাকা-চট্টগ্রাম মহাসড়ক , Comilla			noisy	IN	Bengali	canonical	way	1330826427	এখন চার্জ
+in-bengali-canonical-0000000260	North Maternity Home - Darjipara Matri Sadan — নর্থ মেটার্নিটি হোম (দর্জিপাড়া মাতৃসদন), Nilmoni Mitra Street 22, Kolkata 700006			clean	IN	Bengali	canonical	way	1355797693	North Maternity Home - Darjipara Matri Sadan — নর্থ মেটার্নিটি হোম (দর্জিপাড়া মাতৃসদন)
+in-bengali-canonical-0000000261	মলিকের বাড়ি, বিয়াবাইল রোড , zakiganj 3190			noisy	IN	Bengali	canonical	way	1384664078	মলিকের বাড়ি
+in-bengali-canonical-0000000262	নারায়নপুর মেইন রোড, Narayanpur			noisy	IN	Bengali	canonical	way	1416805402	নারায়নপুর মেইন রোড
+in-bengali-canonical-0000000263	নারায়নপুর মেইন রোড, Narayanpur			noisy	IN	Bengali	canonical	way	1416805403	নারায়নপুর মেইন রোড
+in-bengali-canonical-0000000264	নারায়নপুর দক্ষিণপাড়া কেন্দ্রীয় ঈদগাহ, Narayanpur , Uttar Narayanpur 3500			noisy	IN	Bengali	canonical	way	1416805406	নারায়নপুর দক্ষিণপাড়া কেন্দ্রীয় ঈদগাহ
+bd-bengali-canonical-0000000265	বাগে-ই-মাদিনা হাসিনা ফরিদ হাফেজিয়া মাদরাসা ও এতিমখানা, Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1416860923	বাগে-ই-মাদিনা হাসিনা ফরিদ হাফেজিয়া মাদরাসা ও এতিমখানা
+in-bengali-canonical-0000000266	Sealdah (শিয়ালদহ), Kolkata			noisy	IN	Bengali	canonical	way	1448681279	Sealdah (শিয়ালদহ)
+bd-bengali-canonical-0000000267	নারায়নপুর জামে মসজিদ, Manara - Narayanpur , Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1462399911	নারায়নপুর জামে মসজিদ
+bd-bengali-canonical-0000000268	চাঁন মিয়া ফকির জামে মসজিদ, Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1462399912	চাঁন মিয়া ফকির জামে মসজিদ
+in-bengali-canonical-0000000269	মানরা - নারায়নপুর, Narayanpur			noisy	IN	Bengali	canonical	way	1462399913	মানরা - নারায়নপুর
+in-bengali-canonical-0000000270	মল্লিকার দীঘি - নারায়নপুর, Narayanpur			noisy	IN	Bengali	canonical	way	1462399914	মল্লিকার দীঘি - নারায়নপুর
+in-bengali-canonical-0000000271	মানরা - নারায়নপুর, Narayanpur			noisy	IN	Bengali	canonical	way	1462399919	মানরা - নারায়নপুর
+in-bengali-canonical-0000000272	মানরা - নারায়নপুর, Narayanpur			noisy	IN	Bengali	canonical	way	1462399925	মানরা - নারায়নপুর
+bd-bengali-canonical-0000000273	সরদার বাড়ি, Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1462645138	সরদার বাড়ি
+in-bengali-canonical-0000000274	মানরা - নারায়নপুর, Narayanpur			noisy	IN	Bengali	canonical	way	1462645140	মানরা - নারায়নপুর
+in-bengali-canonical-0000000275	মল্লিকার দীঘি - নারায়নপুর, Narayanpur			noisy	IN	Bengali	canonical	way	1462645141	মল্লিকার দীঘি - নারায়নপুর
+bd-bengali-canonical-0000000276	সোহেল রানা, Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1462645157	সোহেল রানা
+bd-bengali-canonical-0000000277	গফুর মন্জিল, Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1462645161	গফুর মন্জিল
+bd-bengali-canonical-0000000278	রোফিয়া হাউজ, Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1462645162	রোফিয়া হাউজ
+bd-bengali-canonical-0000000279	জিয়া উদ্দিন আহমেদ এর মাজার, নারায়নপুর মধ্যপাড়া , Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1465061454	জিয়া উদ্দিন আহমেদ এর মাজার
+bd-bengali-canonical-0000000280	নাজীর ভিলা, Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1465110565	নাজীর ভিলা
+bd-bengali-canonical-0000000281	চৌধুরী ভবন, Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1465149021	চৌধুরী ভবন
+bd-bengali-canonical-0000000282	সুমন ভিলা, Narayanpur Club Road , Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1465149022	সুমন ভিলা
+bd-bengali-canonical-0000000283	ফারুক ভিলা, Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1465149023	ফারুক ভিলা
+bd-bengali-canonical-0000000284	মডার্ন রাইস মিল, Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1465386544	মডার্ন রাইস মিল
+bd-bengali-canonical-0000000285	কবির মনজিল, নারায়নপুর মধ্যপাড়া , Uttar Narayanpur 3500			noisy	BD	Bengali	canonical	way	1465386553	কবির মনজিল
+in-bengali-canonical-0000000286	প্রতীক্ষা,  10, Guwahati 781028			noisy	IN	Bengali	canonical	way	1465513183	প্রতীক্ষা
+cn-bengali-partial-0000000001	রাজশাহী	24.3715513	88.5921038	noisy	CN	Bengali	partial	node	372612223	রাজশাহী
+cn-bengali-partial-0000000002	সাগরপাড়া	24.364769300000003	88.60737370000001	noisy	CN	Bengali	partial	node	575988850	সাগরপাড়া
+cn-bengali-partial-0000000003	মাধবপুর	24.286945300000003	91.83430270000001	noisy	CN	Bengali	partial	node	582806167	মাধবপুর
+cn-bengali-partial-0000000004	দক্ষিন তালপট্টি	21.6079963	89.1874617	noisy	CN	Bengali	partial	node	1404460874	দক্ষিন তালপট্টি
+cn-bengali-partial-0000000005	আখাউড়া	23.8681221	91.2088835	noisy	CN	Bengali	partial	node	1431033281	আখাউড়া
+cn-bengali-partial-0000000006	হিলি, হিলি	25.277513000000003	89.0069924	noisy	CN	Bengali	partial	node	1472108324	হিলি
+cn-bengali-partial-0000000007	হিলি	25.280797900000003	89.0033726	noisy	CN	Bengali	partial	node	1472108326	হিলি
+cn-bengali-partial-0000000008	জয়পুরহাট, Joypurhat	25.098996000000003	89.0260363	noisy	CN	Bengali	partial	node	1472108338	জয়পুরহাট
+cn-bengali-partial-0000000009	রামগড়	22.9963081	91.73766140000001	noisy	CN	Bengali	partial	node	1786432760	রামগড়
+cn-bengali-partial-0000000010	টিকাপাড়া	24.366562000000002	88.6121621	noisy	CN	Bengali	partial	node	1909696016	টিকাপাড়া
+cn-bengali-partial-0000000011	শাহবাজপুর	24.803046100000003	92.2431021	noisy	CN	Bengali	partial	node	2051081332	শাহবাজপুর
+cn-bengali-partial-0000000012	তালাইমারি	24.3617221	88.6268824	noisy	CN	Bengali	partial	node	2150852154	তালাইমারি
+cn-bengali-partial-0000000013	আগ্রাদ্বিগুন	25.1793599	88.7042492	noisy	CN	Bengali	partial	node	2432347375	আগ্রাদ্বিগুন
+cn-bengali-partial-0000000014	সুয়াগাজী	23.3766599	91.2406102	noisy	CN	Bengali	partial	node	2459312224	সুয়াগাজী
+cn-bengali-partial-0000000015	চারঘাট	24.281899300000003	88.75064730000001	noisy	CN	Bengali	partial	node	2481950541	চারঘাট
+cn-bengali-partial-0000000016	ভোলারহাট	24.943452800000003	88.2185594	noisy	CN	Bengali	partial	node	2481956891	ভোলারহাট
+cn-bengali-partial-0000000017	গোদাগাড়ী	24.4581726	88.3285448	noisy	CN	Bengali	partial	node	2481956894	গোদাগাড়ী
+cn-bengali-partial-0000000018	পরশুরাম	23.215108	91.44371720000001	noisy	CN	Bengali	partial	node	2481967216	পরশুরাম
+cn-bengali-partial-0000000019	হাকিমপুর	25.281057800000003	89.0101446	noisy	CN	Bengali	partial	node	2481986730	হাকিমপুর
+cn-bengali-partial-0000000020	খামারভাতী	26.0423085	89.28986110000001	noisy	CN	Bengali	partial	node	2676569139	খামারভাতী
+cn-bengali-partial-0000000021	মায়ং	26.259148500000002	92.0413225	noisy	CN	Bengali	partial	node	3309060542	মায়ং
+bd-bengali-partial-0000000022	জকিগঞ্জ	24.877456600000002	92.36988330000001	noisy	BD	Bengali	partial	node	3396281149	জকিগঞ্জ
+cn-bengali-partial-0000000023	জৈন্তাপুর	25.135576200000003	92.12339250000001	noisy	CN	Bengali	partial	node	3396286397	জৈন্তাপুর
+cn-bengali-partial-0000000024	পাথরডুবি	26.1486959	89.6199631	noisy	CN	Bengali	partial	node	3980088480	পাথরডুবি
+cn-bengali-partial-0000000025	শিলখুড়ি	26.1782794	89.6654572	noisy	CN	Bengali	partial	node	3980088485	শিলখুড়ি
+cn-bengali-partial-0000000026	উজিরপুর	23.3321951	91.28367300000001	noisy	CN	Bengali	partial	node	3995846116	উজিরপুর
+cn-bengali-partial-0000000027	লোগাং	23.4310577	91.9438334	noisy	CN	Bengali	partial	node	4215808896	লোগাং
+cn-bengali-partial-0000000028	সাজেক	23.3857193	92.2920464	noisy	CN	Bengali	partial	node	4215808908	সাজেক
+cn-bengali-partial-0000000029	বাখরাবাদ গ্যাস আদর্শ বিদ্যালয়	23.451357400000003	91.21081380000001	noisy	CN	Bengali	partial	node	4543693195	বাখরাবাদ গ্যাস আদর্শ বিদ্যালয়
+cn-bengali-partial-0000000030	Bashir Medical Hall বশির মেডিকেল হল, Comilla	23.322408000000003	91.28117300000001	noisy	CN	Bengali	partial	node	5125777816	Bashir Medical Hall বশির মেডিকেল হল
+cn-bengali-partial-0000000031	Kali Mandir কালী মন্দির, Rajshahi	24.3618013	88.6254514	noisy	CN	Bengali	partial	node	5130352203	Kali Mandir কালী মন্দির
+cn-bengali-partial-0000000032	Rubel Tea Stall and Cafe রুবেল টি স্টল এবং ক্যাফে, Rajshahi	24.3602586	88.62010360000001	noisy	CN	Bengali	partial	node	5130472690	Rubel Tea Stall and Cafe রুবেল টি স্টল এবং ক্যাফে
+cn-bengali-partial-0000000033	Lotto Sales Point লোটো সেলস্ পয়েন্ট, Rajshahi	24.3654027	88.6002309	noisy	CN	Bengali	partial	node	5132367181	Lotto Sales Point লোটো সেলস্ পয়েন্ট
+cn-bengali-partial-0000000034	Anamika Cloth Store অনামিকা কাপড়ের দোকান, Rajshahi	24.365601	88.5992896	noisy	CN	Bengali	partial	node	5132401281	Anamika Cloth Store অনামিকা কাপড়ের দোকান
+cn-bengali-partial-0000000035	Sobuj Library সবুজ লাইব্রেরী, Rajshahi	24.366423400000002	88.5976045	noisy	CN	Bengali	partial	node	5132476256	Sobuj Library সবুজ লাইব্রেরী
+cn-bengali-partial-0000000036	Parjatan Bar & Restaurent রাজশাহী পর্যটন বার ও রেস্তোঁরা, Rajshahi	24.3683558	88.5720821	noisy	CN	Bengali	partial	node	5132683769	Parjatan Bar & Restaurent রাজশাহী পর্যটন বার ও রেস্তোঁরা
+cn-bengali-partial-0000000037	Tapan Jewellers তপন গহনা, Rajshahi	24.373775900000002	88.56142220000001	noisy	CN	Bengali	partial	node	5132724025	Tapan Jewellers তপন গহনা
+cn-bengali-partial-0000000038	Durjoy Store দূর্জয় ষ্টোর, Rajshahi	24.3739127	88.5619721	noisy	CN	Bengali	partial	node	5132735294	Durjoy Store দূর্জয় ষ্টোর
+cn-bengali-partial-0000000039	তৌহিদ সুজ, Godagari	24.468366000000003	88.32310030000001	noisy	CN	Bengali	partial	node	5132892251	তৌহিদ সুজ
+cn-bengali-partial-0000000040	বুড়াবুড়ি হাট	26.473969	88.4511044	noisy	CN	Bengali	partial	node	5276325031	বুড়াবুড়ি হাট
+cn-bengali-partial-0000000041	পাগলীডাঙ্গী	26.6118987	88.39998130000001	noisy	CN	Bengali	partial	node	5276325041	পাগলীডাঙ্গী
+cn-bengali-partial-0000000042	বাংলাবান্ধা	26.590600000000002	88.39486720000001	noisy	CN	Bengali	partial	node	5276325042	বাংলাবান্ধা
+cn-bengali-partial-0000000043	চাঁন পুর জামে মসজিদ, Moulvibazar	24.336678000000003	91.99196300000001	clean	CN	Bengali	partial	node	5301581824	চাঁন পুর জামে মসজিদ
+cn-bengali-partial-0000000044	বেইজিং রেঁস্তোরা, Kolkata	22.546521300000002	88.387096	clean	CN	Bengali	partial	node	5349341783	বেইজিং রেঁস্তোরা
+cn-bengali-partial-0000000045	জাফলং	25.1729658	92.0202881	noisy	CN	Bengali	partial	node	5379578776	জাফলং
+cn-bengali-partial-0000000046	তামাবিল	25.180553900000003	92.0327067	noisy	CN	Bengali	partial	node	5379578777	তামাবিল
+cn-bengali-partial-0000000047	সিং মেডিকেল, Siliguri	26.699839400000002	88.41863500000001	noisy	CN	Bengali	partial	node	5380066083	সিং মেডিকেল
+bd-bengali-partial-0000000048	দহগ্রাম	26.3040722	88.94551100000001	noisy	BD	Bengali	partial	node	6127940033	দহগ্রাম
+cn-bengali-partial-0000000049	ছাগলনাইয়া	23.0398704	91.51482580000001	noisy	CN	Bengali	partial	node	6152586898	ছাগলনাইয়া
+cn-bengali-partial-0000000050	কমলপুর	23.4337966	91.2314692	noisy	CN	Bengali	partial	node	6162842848	কমলপুর
+cn-bengali-partial-0000000051	মুজিবনগর	23.649926200000003	88.5930663	noisy	CN	Bengali	partial	node	6235275825	মুজিবনগর
+cn-bengali-partial-0000000052	চন্দ্র মোটরসাইকেল মেরামত	26.340967000000003	89.21094520000001	noisy	CN	Bengali	partial	node	6881113813	চন্দ্র মোটরসাইকেল মেরামত
+cn-bengali-partial-0000000053	বাবু	22.4242898	87.31636680000001	noisy	CN	Bengali	partial	node	7188469085	বাবু
+cn-bengali-partial-0000000054	তেলিবিল উচ্চ বিদ্যালয়, মৌলভীবাজার	24.3444258	91.9769665	clean	CN	Bengali	partial	node	7388623576	তেলিবিল উচ্চ বিদ্যালয়
+cn-bengali-partial-0000000055	আমতলাবাজার জামে মসজিদ, Mulvibazar	24.3451808	91.9765617	clean	CN	Bengali	partial	node	7388623579	আমতলাবাজার জামে মসজিদ
+cn-bengali-partial-0000000056	ছেরাজ উদ্দিন মাস্টার বাড়ি, বাথানিয়া, ছাগলনাইয়া, ফেনী	23.0192845	91.47199570000001	clean	CN	Bengali	partial	node	7641274031	ছেরাজ উদ্দিন মাস্টার বাড়ি
+cn-bengali-partial-0000000057	শীল পাথর শিলুয়া, শিলুয়া, ছাগলনাইয়া, ফেনী	23.0223163	91.4601602	clean	CN	Bengali	partial	node	7641274032	শীল পাথর শিলুয়া
+cn-bengali-partial-0000000058	মা শীতলা মন্দির, চাতরা, শ্রীরামপুর	22.763801500000003	88.3320814	noisy	CN	Bengali	partial	node	8235629984	মা শীতলা মন্দির, চাতরা
+cn-bengali-partial-0000000059	চাতরা নন্দলাল ইন্‌স্টিটিউশন, Serampore	22.7632489	88.33712150000001	noisy	CN	Bengali	partial	node	8241996422	চাতরা নন্দলাল ইন্‌স্টিটিউশন
+cn-bengali-partial-0000000060	শ্রীরামপুর মহকুমা গ্ৰন্থাগার, Serampore	22.7511042	88.3405958	noisy	CN	Bengali	partial	node	8242020784	শ্রীরামপুর মহকুমা গ্ৰন্থাগার
+cn-bengali-partial-0000000061	চাতরা	22.7632805	88.3340093	noisy	CN	Bengali	partial	node	8248548276	চাতরা
+cn-bengali-partial-0000000062	মাহেশ	22.736106300000003	88.35158200000001	noisy	CN	Bengali	partial	node	8248562969	মাহেশ
+cn-bengali-partial-0000000063	বল্লভপুর	22.7454958	88.3524845	noisy	CN	Bengali	partial	node	8248564448	বল্লভপুর
+cn-bengali-partial-0000000064	কানাইপুর বারোয়ারিতলা কালি মন্দির	22.702312300000003	88.3259135	noisy	CN	Bengali	partial	node	8308814650	কানাইপুর বারোয়ারিতলা কালি মন্দির
+cn-bengali-partial-0000000065	কুস্থল	23.4781052	87.04723580000001	noisy	CN	Bengali	partial	node	8341272625	কুস্থল
+cn-bengali-partial-0000000066	অমরকানন	23.3939714	87.11011900000001	noisy	CN	Bengali	partial	node	8341473075	অমরকানন
+cn-bengali-partial-0000000067	জোঁকা	23.159867600000002	88.8587067	noisy	CN	Bengali	partial	node	9033787074	জোঁকা
+cn-bengali-partial-0000000068	উত্তর দেয়াড়া	22.7221054	88.7910975	noisy	CN	Bengali	partial	node	9033797768	উত্তর দেয়াড়া
+cn-bengali-partial-0000000069	খামারপাড়া	22.7144182	88.78946710000001	noisy	CN	Bengali	partial	node	9033797769	খামারপাড়া
+cn-bengali-partial-0000000070	চৌদ্দগ্রাম	23.224766000000002	91.31349250000001	noisy	CN	Bengali	partial	node	9139175182	চৌদ্দগ্রাম
+cn-bengali-partial-0000000071	জয়্গুখ্ব গাঁও	27.5338566	95.39584280000001	noisy	CN	Bengali	partial	node	9171945868	জয়্গুখ্ব গাঁও
+cn-bengali-partial-0000000072	না-মাতাপুং গাঁও	27.526064700000003	95.43643	noisy	CN	Bengali	partial	node	9171945885	না-মাতাপুং গাঁও
+cn-bengali-partial-0000000073	দেন্কা গাঁও	27.535826	95.413835	noisy	CN	Bengali	partial	node	9171959504	দেন্কা গাঁও
+cn-bengali-partial-0000000074	টারজান গাঁও	27.543894	95.4038725	noisy	CN	Bengali	partial	node	9171959505	টারজান গাঁও
+cn-bengali-partial-0000000075	ফুলগাজী	23.1554703	91.43264690000001	noisy	CN	Bengali	partial	node	9215982196	ফুলগাজী
+cn-bengali-partial-0000000076	সোনামসজিদ	24.8343512	88.1438964	noisy	CN	Bengali	partial	node	9272049812	সোনামসজিদ
+cn-bengali-partial-0000000077	ভোমরা	22.6678539	88.95887060000001	noisy	CN	Bengali	partial	node	9275084660	ভোমরা
+cn-bengali-partial-0000000078	Poriborton - পরিবর্তন, Fulgazi, Feni	23.108765000000002	91.4325218	noisy	CN	Bengali	partial	node	9521408514	Poriborton - পরিবর্তন
+cn-bengali-partial-0000000079	ধর্মগড়	26.012464	88.1609109	noisy	CN	Bengali	partial	node	9669724683	ধর্মগড়
+cn-bengali-partial-0000000080	সাতছড়ি ত্রিপুরা বস্তি	24.113828	91.4240949	noisy	CN	Bengali	partial	node	9816626324	সাতছড়ি ত্রিপুরা বস্তি
+cn-bengali-partial-0000000081	সাতছড়ি ত্রিপুরা বস্তি	24.1251603	91.4420293	noisy	CN	Bengali	partial	node	9822353647	সাতছড়ি ত্রিপুরা বস্তি
+cn-bengali-partial-0000000082	স্কাইপ	24.640664400000002	94.52783620000001	noisy	CN	Bengali	partial	node	9831518376	স্কাইপ
+cn-bengali-partial-0000000083	নাকুগাঁও	25.200104900000003	90.22317170000001	noisy	CN	Bengali	partial	node	9838215050	নাকুগাঁও
+cn-bengali-partial-0000000084	গোবরাকুড়া	25.1800438	90.3405652	noisy	CN	Bengali	partial	node	9838232567	গোবরাকুড়া
+cn-bengali-partial-0000000085	ই এস আই হাসপাতাল	23.709513100000002	86.9537334	noisy	CN	Bengali	partial	node	9921874217	ই এস আই হাসপাতাল
+cn-bengali-partial-0000000086	সিইএসসি লিমিটেড	22.566477300000003	88.3566943	noisy	CN	Bengali	partial	node	10009392417	সিইএসসি লিমিটেড
+bd-bengali-partial-0000000087	আঙ্গোরপোতা	26.325227100000003	88.9341759	noisy	BD	Bengali	partial	node	10083658903	আঙ্গোরপোতা
+bd-bengali-partial-0000000088	ঝালাংগী	26.4556541	88.9621716	noisy	BD	Bengali	partial	node	10105428934	ঝালাংগী
+cn-bengali-partial-0000000089	পরশুরাম রেলওয়ে স্টেশন, পরশুরাম	23.216143000000002	91.44530420000001	noisy	CN	Bengali	partial	node	10139557255	পরশুরাম রেলওয়ে স্টেশন
+cn-bengali-partial-0000000090	সরকারি খাদ্য গুদাম, Feni	23.148102100000003	91.4303833	noisy	CN	Bengali	partial	node	10140023261	সরকারি খাদ্য গুদাম
+cn-bengali-partial-0000000091	ফুলগাজী রেলওয়ে স্টেশন, Feni	23.1475271	91.4312649	noisy	CN	Bengali	partial	node	10140023315	ফুলগাজী রেলওয়ে স্টেশন
+cn-bengali-partial-0000000092	উদয়পুর	23.3731554	92.3520075	noisy	CN	Bengali	partial	node	10143104025	উদয়পুর
+cn-bengali-partial-0000000093	মীনা সিদ্ধি এপার্টমেন্ট	22.613146500000003	88.4203267	noisy	CN	Bengali	partial	node	10168084417	মীনা সিদ্ধি এপার্টমেন্ট
+cn-bengali-partial-0000000094	উত্তরবঙ্গ বিশ্বাবিদ্যালয়, Shivmandir	26.7097085	88.3538182	clean	CN	Bengali	partial	node	10183352916	উত্তরবঙ্গ বিশ্বাবিদ্যালয়
+cn-bengali-partial-0000000095	মিরহাট দক্ষিণপাড়া বারোয়ারি	23.1672346	88.2504782	noisy	CN	Bengali	partial	node	10537166036	মিরহাট দক্ষিণপাড়া বারোয়ারি
+cn-bengali-partial-0000000096	মিরহাট প্রাইমারী বিদ্যালয়	23.167821	88.25155980000001	noisy	CN	Bengali	partial	node	10537222342	মিরহাট প্রাইমারী বিদ্যালয়
+cn-bengali-partial-0000000097	বৈদ্যপুর রাজরাজেশ্বর বালিকা বিদ্যালয়	23.1649618	88.2488471	noisy	CN	Bengali	partial	node	10537256895	বৈদ্যপুর রাজরাজেশ্বর বালিকা বিদ্যালয়
+cn-bengali-partial-0000000098	মিরহাট বড় পূজাবাড়ী	23.1658668	88.25066620000001	noisy	CN	Bengali	partial	node	10537258795	মিরহাট বড় পূজাবাড়ী
+cn-bengali-partial-0000000099	মিরহাট সুপার মার্কেট	23.164103200000003	88.24863	noisy	CN	Bengali	partial	node	10537267475	মিরহাট সুপার মার্কেট
+cn-bengali-partial-0000000100	অঙ্কন শিক্ষা কেন্দ্র, Jaigaon	26.8416779	89.3830265	clean	CN	Bengali	partial	node	10772511116	অঙ্কন শিক্ষা কেন্দ্র
+cn-bengali-partial-0000000101	জপুই	23.6531448	92.24133710000001	noisy	CN	Bengali	partial	node	11192445644	জপুই
+cn-bengali-partial-0000000102	বিশ্বাস মিষ্টান্ন ভান্ডার	24.191792500000002	91.829367	noisy	CN	Bengali	partial	node	11369365269	বিশ্বাস মিষ্টান্ন ভান্ডার
+cn-bengali-partial-0000000103	স্বামী বিবেকানন্দ ইউনিভার্সিটি	22.758467500000002	88.3961163	noisy	CN	Bengali	partial	node	11909470769	স্বামী বিবেকানন্দ ইউনিভার্সিটি
+cn-bengali-partial-0000000104	উদ্ভিদ সংগনিরোধ কেন্দ্র, Banglabandha	26.630939400000003	88.4137422	noisy	CN	Bengali	partial	node	12109688647	উদ্ভিদ সংগনিরোধ কেন্দ্র
+cn-bengali-partial-0000000105	পশ্চিম কালাজরি R.F. পার্ট	23.413753900000003	91.8057349	noisy	CN	Bengali	partial	node	12138120130	পশ্চিম কালাজরি R.F. পার্ট
+cn-bengali-partial-0000000106	চরখানপুর	24.3176381	88.59372040000001	noisy	CN	Bengali	partial	node	12148008955	চরখানপুর
+cn-bengali-partial-0000000107	আল - আকসা মসজিদ এবং মাদরাসা কমপ্লেক্স - এ প্রজেক্ট ওফ AQS ট্রাস্ট, Rajshahi	24.3182623	88.5891903	noisy	CN	Bengali	partial	node	12148025466	আল - আকসা মসজিদ এবং মাদরাসা কমপ্লেক্স - এ প্রজেক্ট ওফ AQS ট্রাস্ট
+cn-bengali-partial-0000000108	নিজ কালিকাপুর	23.253759600000002	91.4434726	noisy	CN	Bengali	partial	node	12151388906	নিজ কালিকাপুর
+cn-bengali-partial-0000000109	শরিফগন্জ বাজার	24.879355800000003	92.45907340000001	noisy	CN	Bengali	partial	node	12328834486	শরিফগন্জ বাজার
+cn-bengali-partial-0000000110	সুন্দরবন কুরিয়ার সার্ভিস	24.3653927	88.60130550000001	noisy	CN	Bengali	partial	node	12421195801	সুন্দরবন কুরিয়ার সার্ভিস
+cn-bengali-partial-0000000111	বালুতুপা	23.4547895	91.2126746	noisy	CN	Bengali	partial	node	12535677930	বালুতুপা
+cn-bengali-partial-0000000112	চৌয়ারা	23.4138489	91.2223733	noisy	CN	Bengali	partial	node	12535677933	চৌয়ারা
+cn-bengali-partial-0000000113	দয়াল মেডিকেল হল — Dayal Medical Hall, Belgharia, Kolkata	22.6605698	88.3852233	clean	CN	Bengali	partial	node	12550804135	দয়াল মেডিকেল হল — Dayal Medical Hall
+cn-bengali-partial-0000000114	সুরজ ফার্মেসি	22.6658753	88.8863846	noisy	CN	Bengali	partial	node	12679373101	সুরজ ফার্মেসি
+cn-bengali-partial-0000000115	মানিক সেনের দোকান, Bardhaman	23.2413348	87.86435610000001	noisy	CN	Bengali	partial	node	12696530088	মানিক সেনের দোকান
+cn-bengali-partial-0000000116	জয়শ্রী ভাণ্ডার, Bardhaman	23.2420639	87.8646751	clean	CN	Bengali	partial	node	12699344070	জয়শ্রী ভাণ্ডার
+cn-bengali-partial-0000000117	পোরশা	25.0245527	88.4550777	noisy	CN	Bengali	partial	node	12851478565	পোরশা
+cn-bengali-partial-0000000118	কাবাব এক্সপ্রেস, Comilla	23.1532464	91.32415250000001	noisy	CN	Bengali	partial	node	12864707688	কাবাব এক্সপ্রেস
+cn-bengali-partial-0000000119	নারায়নপুর	23.6499835	91.1577817	noisy	CN	Bengali	partial	node	13087398066	নারায়নপুর
+cn-bengali-partial-0000000120	পিজ্জা লাইট	25.915614700000003	92.9563174	noisy	CN	Bengali	partial	node	13152617501	পিজ্জা লাইট
+cn-bengali-partial-0000000121	এম বাজাৰ লংকা	25.917234500000003	92.95053030000001	noisy	CN	Bengali	partial	node	13152617502	এম বাজাৰ লংকা
+cn-bengali-partial-0000000122	ময়ুৰ হোটেল	25.9154142	92.95642380000001	noisy	CN	Bengali	partial	node	13152642501	ময়ুৰ হোটেল
+cn-bengali-partial-0000000123	লংকা বি পি এইচ চি	25.9174131	92.95508790000001	noisy	CN	Bengali	partial	node	13152710101	লংকা বি পি এইচ চি
+cn-bengali-partial-0000000124	মেড এডভান্স ক্লিনিক	25.9165953	92.95546180000001	noisy	CN	Bengali	partial	node	13152712201	মেড এডভান্স ক্লিনিক
+cn-bengali-partial-0000000125	লংকা বি পি এইচ	25.9175556	92.9551526	noisy	CN	Bengali	partial	node	13152868701	লংকা বি পি এইচ
+cn-bengali-partial-0000000126	নবগ্ৰাম	23.4657431	91.2034624	noisy	CN	Bengali	partial	node	13172438656	নবগ্ৰাম
+cn-bengali-partial-0000000127	বারপাড়া	23.453861800000002	91.20658900000001	noisy	CN	Bengali	partial	node	13172438658	বারপাড়া
+cn-bengali-partial-0000000128	পাথুরিয়া	23.462002400000003	91.20327920000001	noisy	CN	Bengali	partial	node	13172438662	পাথুরিয়া
+cn-bengali-partial-0000000129	ছাপাকুর	23.4505543	91.2137933	noisy	CN	Bengali	partial	node	13172438666	ছাপাকুর
+cn-bengali-partial-0000000130	সংরাইস	23.4679302	91.2047438	noisy	CN	Bengali	partial	node	13172438667	সংরাইস
+cn-bengali-partial-0000000131	জগন্নাথপুর	23.4625044	91.20955430000001	noisy	CN	Bengali	partial	node	13172438674	জগন্নাথপুর
+cn-bengali-partial-0000000132	জগতবেড়	26.3735165	89.06644680000001	noisy	CN	Bengali	partial	node	13178984494	জগতবেড়
+cn-bengali-partial-0000000133	শ্রীরামপুর	26.4288427	88.9579736	noisy	CN	Bengali	partial	node	13178984670	শ্রীরামপুর
+cn-bengali-partial-0000000134	গোতামারী	26.090393900000002	89.22620760000001	noisy	CN	Bengali	partial	node	13180641503	গোতামারী
+cn-bengali-partial-0000000135	পশ্চিম ছাতনাই	26.2561861	88.87868660000001	noisy	CN	Bengali	partial	node	13190171769	পশ্চিম ছাতনাই
+cn-bengali-partial-0000000136	লক্ষ্মণ ভাণ্ডার, Shivmandir	26.7110807	88.3620604	noisy	CN	Bengali	partial	node	13286859209	লক্ষ্মণ ভাণ্ডার
+cn-bengali-partial-0000000137	জালালপুর	23.766579800000002	87.3778181	noisy	CN	Bengali	partial	node	13304498505	জালালপুর
+cn-bengali-partial-0000000138	মহাম্মদপুরনগর	23.8050821	87.49170170000001	noisy	CN	Bengali	partial	node	13311220128	মহাম্মদপুরনগর
+cn-bengali-partial-0000000139	তুরুকবারিহাট	23.8125165	87.4957073	noisy	CN	Bengali	partial	node	13311220129	তুরুকবারিহাট
+cn-bengali-partial-0000000140	সাহাপুর	23.7949328	87.4947283	noisy	CN	Bengali	partial	node	13311232827	সাহাপুর
+cn-bengali-partial-0000000141	Hotel The Premium III Rashik Bangali (রসিক বাঙালি)	23.390877500000002	88.4846479	noisy	CN	Bengali	partial	node	13355558001	Hotel The Premium III Rashik Bangali (রসিক বাঙালি)
+cn-bengali-partial-0000000142	বলদিয়া	26.0715423	89.7820762	noisy	CN	Bengali	partial	node	13365850496	বলদিয়া
+cn-bengali-partial-0000000143	বঙ্গসোনাহাট	26.1020545	89.75715140000001	noisy	CN	Bengali	partial	node	13365850526	বঙ্গসোনাহাট
+cn-bengali-partial-0000000144	কচাকাটা	25.9985505	89.8080654	noisy	CN	Bengali	partial	node	13379540798	কচাকাটা
+bd-bengali-partial-0000000145	নারায়নপুর যুব উন্নয়ন ক্লাব, Uttar Narayanpur	23.6497232	91.1596008	noisy	BD	Bengali	partial	node	13439391962	নারায়নপুর যুব উন্নয়ন ক্লাব
+bd-bengali-partial-0000000146	মনির স্টোর, Uttar Narayanpur	23.648658700000002	91.1597296	noisy	BD	Bengali	partial	node	13440320700	মনির স্টোর
+bd-bengali-partial-0000000147	শাফায়েত ভ্যারাইটিজ ষ্টোর, Uttar Narayanpur	23.6491995	91.1597469	noisy	BD	Bengali	partial	node	13440332901	শাফায়েত ভ্যারাইটিজ ষ্টোর
+cn-bengali-partial-0000000148	Udang 1-No Panchayat (উদং ১-নং পঞ্চায়েত)	22.530806600000002	87.9895413	noisy	CN	Bengali	partial	node	13583052401	Udang 1-No Panchayat (উদং ১-নং পঞ্চায়েত)
+cn-bengali-partial-0000000149	Hosen Lodge - হোসেন লজ	24.3689962	88.5902765	noisy	CN	Bengali	partial	node	13624107001	Hosen Lodge - হোসেন লজ
+in-bengali-partial-0000000150	খুলনা বিভাগ			noisy	IN	Bengali	partial	relation	3825003	খুলনা বিভাগ
+in-bengali-partial-0000000151	হাঁসের চর			noisy	IN	Bengali	partial	way	34638400	হাঁসের চর
+in-bengali-partial-0000000152	ত্রিকোণা দ্বীপ			noisy	IN	Bengali	partial	way	34667596	ত্রিকোণা দ্বীপ
+in-bengali-partial-0000000153	টিয়ার চর			noisy	IN	Bengali	partial	way	34690057	টিয়ার চর
+in-bengali-partial-0000000154	ভিক্টোরিয়া মেমোরিয়াল হল, Kolkata			clean	IN	Bengali	partial	way	36165294	ভিক্টোরিয়া মেমোরিয়াল হল
+in-bengali-partial-0000000155	তালপট্টি			noisy	IN	Bengali	partial	way	155168532	তালপট্টি
+in-bengali-partial-0000000156	বড়াল নদী, Natore			noisy	IN	Bengali	partial	way	161860530	বড়াল নদী
+in-bengali-partial-0000000157	মাঝের চর			noisy	IN	Bengali	partial	way	265731108	মাঝের চর
+in-bengali-partial-0000000158	দুবলার চর			noisy	IN	Bengali	partial	way	312425708	দুবলার চর
+in-bengali-partial-0000000159	Jolshaghar-জলসাঘর, Kolkata			clean	IN	Bengali	partial	way	358751862	Jolshaghar-জলসাঘর
+in-bengali-partial-0000000160	রাজশাহী কৃষি উন্নয়ন ব্যাংক, Rajshahi			noisy	IN	Bengali	partial	way	369336788	রাজশাহী কৃষি উন্নয়ন ব্যাংক
+in-bengali-partial-0000000161	দুর্লভপুর, Comilla			noisy	IN	Bengali	partial	way	483957769	দুর্লভপুর
+in-bengali-partial-0000000162	S S AUTO Rice Mill এস এস অটো রাইস মিল, Chandsree, 3550			noisy	IN	Bengali	partial	way	527187784	S S AUTO Rice Mill এস এস অটো রাইস মিল
+in-bengali-partial-0000000163	Heron Auto Filling Station হিরনের অটো ফিলিং স্টেশনে, Chandul			noisy	IN	Bengali	partial	way	527189387	Heron Auto Filling Station হিরনের অটো ফিলিং স্টেশনে
+in-bengali-partial-0000000164	Food Palace, Highway Restaurant ফুড প্যালেস, Comilla			noisy	IN	Bengali	partial	way	527191455	Food Palace, Highway Restaurant ফুড প্যালেস
+in-bengali-partial-0000000165	Foyez Store ফয়েজ স্টোর, Dhaka - Chittagong Highway, Chauddagram, Chittagong Division			noisy	IN	Bengali	partial	way	527213737	Foyez Store ফয়েজ স্টোর
+in-bengali-partial-0000000166	পায়েল স্টোর, Dhaka - Chittagong Highway, Chauddagram, Chittagong Division			noisy	IN	Bengali	partial	way	527213887	পায়েল স্টোর
+in-bengali-partial-0000000167	Chauddagram Government College চৌদ্দগ্রাম সরকারী কলেজ, Chauddagram			noisy	IN	Bengali	partial	way	527221598	Chauddagram Government College চৌদ্দগ্রাম সরকারী কলেজ
+in-bengali-partial-0000000168	SINGER Plus সিঙ্গার প্লাস, Chauddagram			noisy	IN	Bengali	partial	way	527222180	SINGER Plus সিঙ্গার প্লাস
+in-bengali-partial-0000000169	চৌদ্দগ্রাম-পৌরসভা Municipality Of Bangladesh, Chauddagram			noisy	IN	Bengali	partial	way	527222681	চৌদ্দগ্রাম-পৌরসভা Municipality Of Bangladesh
+in-bengali-partial-0000000170	Chouddagram Girls High School চৌদ্দগ্রাম উচ্চ মাধ্যমিক বালিকা বিদ্যালয়, Dhaka - Chittagong Hwy, Chauddagram, Chittagong Division 799153			noisy	IN	Bengali	partial	way	527223054	Chouddagram Girls High School চৌদ্দগ্রাম উচ্চ মাধ্যমিক বালিকা বিদ্যালয়
+in-bengali-partial-0000000171	Home Improvement Store.নাজমুল পর্দা গ্যালারী, Chauddagram			noisy	IN	Bengali	partial	way	527224559	Home Improvement Store.নাজমুল পর্দা গ্যালারী
+in-bengali-partial-0000000172	সিটি ব্যাংক লিমিটেড, Chauddagram			noisy	IN	Bengali	partial	way	527228367	সিটি ব্যাংক লিমিটেড
+in-bengali-partial-0000000173	বাংলাদেশ কৃষি ব্যাংক, Chauddagram			noisy	IN	Bengali	partial	way	527228504	বাংলাদেশ কৃষি ব্যাংক
+in-bengali-partial-0000000174	Chauddagram Central Jame Masjid চৌদ্দগ্রাম কেন্দ্রীয় জামে মসজিদ, Chauddagram			noisy	IN	Bengali	partial	way	527229742	Chauddagram Central Jame Masjid চৌদ্দগ্রাম কেন্দ্রীয় জামে মসজিদ
+in-bengali-partial-0000000175	Hotel Zamzam Restaurant and Sweetmeat হোটেল জমজমের রেঁস্তোরা এবং মিষ্টির, Chauddagram			noisy	IN	Bengali	partial	way	527230621	Hotel Zamzam Restaurant and Sweetmeat হোটেল জমজমের রেঁস্তোরা এবং মিষ্টির
+in-bengali-partial-0000000176	ChouddGram Police Station চৌদ্দগ্রাম থানা, Dhaka - Chittagong Hwy, Chauddagram			noisy	IN	Bengali	partial	way	527231320	ChouddGram Police Station চৌদ্দগ্রাম থানা
+in-bengali-partial-0000000177	Chauddagram Upazila Post Office চৌদ্দগ্রাম উপজেলা পোস্ট অফিস, Post Office Rd, Chauddagram			noisy	IN	Bengali	partial	way	527233062	Chauddagram Upazila Post Office চৌদ্দগ্রাম উপজেলা পোস্ট অফিস
+in-bengali-partial-0000000178	Chowdhury Filling Station চৌধুরী ফিলিং স্টেশন, Chauddagram			noisy	IN	Bengali	partial	way	527233262	Chowdhury Filling Station চৌধুরী ফিলিং স্টেশন
+in-bengali-partial-0000000179	West Dhonmuri Eidgah Moydan পশ্চ‌িম ধনমুড়ী ঈদগাহ ময়দান, Chauddagram			noisy	IN	Bengali	partial	way	527233634	West Dhonmuri Eidgah Moydan পশ্চ‌িম ধনমুড়ী ঈদগাহ ময়দান
+in-bengali-partial-0000000180	Jame Masjid Chondipur জমে মসজিদ চন্ডিপুর, Chondipur Road, Chittagong Division			noisy	IN	Bengali	partial	way	527234718	Jame Masjid Chondipur জমে মসজিদ চন্ডিপুর
+in-bengali-partial-0000000181	New Royal Host Restaurant নিউ রয়েল হোস্ট রেঁস্তোরা, Dhaka - Chittagong Hwy			noisy	IN	Bengali	partial	way	527234977	New Royal Host Restaurant নিউ রয়েল হোস্ট রেঁস্তোরা
+in-bengali-partial-0000000182	Rajshahi New Govt. Degree College রাজশাহী নিউ গভঃ ডিগ্রী কলেজ, Rajshahi			noisy	IN	Bengali	partial	way	528056202	Rajshahi New Govt. Degree College রাজশাহী নিউ গভঃ ডিগ্রী কলেজ
+in-bengali-partial-0000000183	জনতা ব্যাংকের এরিয়া অফিস, Rajshahi			noisy	IN	Bengali	partial	way	528075684	জনতা ব্যাংকের এরিয়া অফিস
+in-bengali-partial-0000000184	Hamdard হামদর্দ, Rajshahi			noisy	IN	Bengali	partial	way	528076331	Hamdard হামদর্দ
+in-bengali-partial-0000000185	Index Plaza ইন্ডেক্স প্লাজা, Rajshahi			noisy	IN	Bengali	partial	way	528077981	Index Plaza ইন্ডেক্স প্লাজা
+in-bengali-partial-0000000186	City Church, Rajshahi সিটি চার্চ, রাজশাহী, Rajshahi			noisy	IN	Bengali	partial	way	528078078	City Church, Rajshahi সিটি চার্চ, রাজশাহী
+in-bengali-partial-0000000187	Deputy Collectorate Office, Rajshahi রাজশাহী ডিসি অফিস, Rajshahi			noisy	IN	Bengali	partial	way	528083988	Deputy Collectorate Office, Rajshahi রাজশাহী ডিসি অফিস
+in-bengali-partial-0000000188	রাজশাহী কৃষি উন্নয়ন ব্যাংক, Godagari			noisy	IN	Bengali	partial	way	528110357	রাজশাহী কৃষি উন্নয়ন ব্যাংক
+in-bengali-partial-0000000189	Upazila Election Office, Godagari, Rajshahi উপজেলা নির্বাচন অফিস, গোদাগাড়ী, রাজশাহী, Godagari			noisy	IN	Bengali	partial	way	528110492	Upazila Election Office, Godagari, Rajshahi উপজেলা নির্বাচন অফিস, গোদাগাড়ী, রাজশাহী
+in-bengali-partial-0000000190	গোদাগাড়ী ভূমি রেজিস্ট্রি অফিস, Godagari			noisy	IN	Bengali	partial	way	528110753	গোদাগাড়ী ভূমি রেজিস্ট্রি অফিস
+in-bengali-partial-0000000191	Godagari Degree College রাজশাহীর গোদাগাড়ী ডিগ্রি কলেজের, Godagari			noisy	IN	Bengali	partial	way	528110881	Godagari Degree College রাজশাহীর গোদাগাড়ী ডিগ্রি কলেজের
+in-bengali-partial-0000000192	নলজুরি জামে মসজিদ, Sylhet			noisy	IN	Bengali	partial	way	531373726	নলজুরি জামে মসজিদ
+in-bengali-partial-0000000193	সিপাই পাড়া সরকারি প্রাথমিক বিদ্যালয়, Pancagarh			noisy	IN	Bengali	partial	way	545737551	সিপাই পাড়া সরকারি প্রাথমিক বিদ্যালয়
+in-bengali-partial-0000000194	Gatipara Puraton Jame Mosque (গাতিপাড়া পুরাতন জামে ), Benapole			noisy	IN	Bengali	partial	way	578454606	Gatipara Puraton Jame Mosque (গাতিপাড়া পুরাতন জামে )
+in-bengali-partial-0000000195	মিলন পল্লী বিদ্যুৎ অফিস, ডব্লিউবিএসইডিসিএল, Siliguri			noisy	IN	Bengali	partial	way	598338345	মিলন পল্লী বিদ্যুৎ অফিস, ডব্লিউবিএসইডিসিএল
+in-bengali-partial-0000000196	নমৌজা			noisy	IN	Bengali	partial	way	790315348	নমৌজা
+in-bengali-partial-0000000197	বাঁকুড়া বেসরকারী বাস টার্মিনাস, Gobindanagar, Bankura, West Bengal			clean	IN	Bengali	partial	way	895260213	বাঁকুড়া বেসরকারী বাস টার্মিনাস
+in-bengali-partial-0000000198	আলিফ কমিউটি সেন্টার গঞ্জাজল			noisy	IN	Bengali	partial	way	1075541706	আলিফ কমিউটি সেন্টার গঞ্জাজল
+in-bengali-partial-0000000199	মতিন ডাক্তার হাসপাতাল, zakiganj			noisy	IN	Bengali	partial	way	1077007727	মতিন ডাক্তার হাসপাতাল
+in-bengali-partial-0000000200	কাজির বাড়ী জামে মসজিদ, Sylhet			noisy	IN	Bengali	partial	way	1080214597	কাজির বাড়ী জামে মসজিদ
+in-bengali-partial-0000000201	মুমিনপুর সরকারী প্রাথমিক বিদ্যালয়, Zakiganj			noisy	IN	Bengali	partial	way	1080561698	মুমিনপুর সরকারী প্রাথমিক বিদ্যালয়
+in-bengali-partial-0000000202	গাওছিয়া সেন্টার, Zakiganj			noisy	IN	Bengali	partial	way	1080699425	গাওছিয়া সেন্টার
+in-bengali-partial-0000000203	ক্বাসিমুল ঊলুম উত্তরকুল কওমি মাদ্রাসা, Zakiganj			noisy	IN	Bengali	partial	way	1080835856	ক্বাসিমুল ঊলুম উত্তরকুল কওমি মাদ্রাসা
+in-bengali-partial-0000000204	মামর খানী ছাহেব বাড়ী, Zakiganj			noisy	IN	Bengali	partial	way	1080855098	মামর খানী ছাহেব বাড়ী
+in-bengali-partial-0000000205	সাজাপুর ইদগাহ, zakiganj			noisy	IN	Bengali	partial	way	1082141860	সাজাপুর ইদগাহ
+in-bengali-partial-0000000206	আবাবিলের বাড়ি, zakiganj			noisy	IN	Bengali	partial	way	1082141870	আবাবিলের বাড়ি
+in-bengali-partial-0000000207	রবি টাওয়ার, Sylhet			noisy	IN	Bengali	partial	way	1082281960	রবি টাওয়ার
+in-bengali-partial-0000000208	বিয়াবাইল সরকারী প্রাথমিক বিদ্যালয়, Zakiganj			clean	IN	Bengali	partial	way	1082281961	বিয়াবাইল সরকারী প্রাথমিক বিদ্যালয়
+in-bengali-partial-0000000209	সাজাপুর জামে মসজিদ, Zakiganj			noisy	IN	Bengali	partial	way	1082281962	সাজাপুর জামে মসজিদ
+in-bengali-partial-0000000210	বিসমিল্লাহ মতিন ফার্নিচার, Zakiganj			noisy	IN	Bengali	partial	way	1082281963	বিসমিল্লাহ মতিন ফার্নিচার
+in-bengali-partial-0000000211	জিপি টাওয়ার, Sylhet			noisy	IN	Bengali	partial	way	1082281976	জিপি টাওয়ার
+in-bengali-partial-0000000212	সুফিয়ান সো মিল, Zakiganj			noisy	IN	Bengali	partial	way	1082281988	সুফিয়ান সো মিল
+in-bengali-partial-0000000213	সাজাপুর কালীবাড়ি, Zakiganj			noisy	IN	Bengali	partial	way	1082281993	সাজাপুর কালীবাড়ি
+in-bengali-partial-0000000214	শহিদ জমশেদ আলি ইসলামিক একাডেমি, Zakiganj			noisy	IN	Bengali	partial	way	1082291120	শহিদ জমশেদ আলি ইসলামিক একাডেমি
+in-bengali-partial-0000000215	খলাছড়া দাখিল মাদরাসা, Sylhet			noisy	IN	Bengali	partial	way	1092419942	খলাছড়া দাখিল মাদরাসা
+in-bengali-partial-0000000216	ইনামতি জামে মসজিদ, Sylhet			noisy	IN	Bengali	partial	way	1093417743	ইনামতি জামে মসজিদ
+in-bengali-partial-0000000217	জামিয়া ইসলামিয়া কাওমিয়া ইছামতি ইনামতি মাদরাসা জকিগঞ্জ সিলেট, Sylhet			noisy	IN	Bengali	partial	way	1093501159	জামিয়া ইসলামিয়া কাওমিয়া ইছামতি ইনামতি মাদরাসা জকিগঞ্জ সিলেট
+in-bengali-partial-0000000218	আমলসীদ মহিলা মাদ্রাসা, Zakiganj			noisy	IN	Bengali	partial	way	1097062315	আমলসীদ মহিলা মাদ্রাসা
+in-bengali-partial-0000000219	হযরত শাহ বদল (রহ:) মতিনিয়া হিফজুল কুরআন ক্যাডেট মাদরাসা			noisy	IN	Bengali	partial	way	1106877543	হযরত শাহ বদল (রহ:) মতিনিয়া হিফজুল কুরআন ক্যাডেট মাদরাসা
+in-bengali-partial-0000000220	পশ্চিম কসকনকপুর লামারগ্রাম কেন্দ্রীয় জামে মসজিদ, zakiganj			noisy	IN	Bengali	partial	way	1112157456	পশ্চিম কসকনকপুর লামারগ্রাম কেন্দ্রীয় জামে মসজিদ
+in-bengali-partial-0000000221	সাজাপুর মোকাম জামে মসজিদ, zakiganj			noisy	IN	Bengali	partial	way	1112157483	সাজাপুর মোকাম জামে মসজিদ
+in-bengali-partial-0000000222	ফুলের দিঘী, Zakiganj			noisy	IN	Bengali	partial	way	1190305209	ফুলের দিঘী
+in-bengali-partial-0000000223	বাংলাদেশ পানি উন্নয়ন বোর্ড, Cumilla			noisy	IN	Bengali	partial	way	1204914622	বাংলাদেশ পানি উন্নয়ন বোর্ড
+in-bengali-partial-0000000224	মল্লিকার দীঘি - নারায়নপুর, Narayanpur			noisy	IN	Bengali	partial	way	1211575519	মল্লিকার দীঘি - নারায়নপুর
+in-bengali-partial-0000000225	মানরা - নারায়নপুর			noisy	IN	Bengali	partial	way	1211577617	মানরা - নারায়নপুর
+bd-bengali-partial-0000000226	নারায়নপুর দক্ষিনপাড়া জামে মসজিদ, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1211588247	নারায়নপুর দক্ষিনপাড়া জামে মসজিদ
+bd-bengali-partial-0000000227	মা মমতাজ ভিলা, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1211589411	মা মমতাজ ভিলা
+bd-bengali-partial-0000000228	জাকির মঞ্জিল, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1216253787	জাকির মঞ্জিল
+bd-bengali-partial-0000000229	শাহ আলম ভিলা, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1216254289	শাহ আলম ভিলা
+bd-bengali-partial-0000000230	বাহরুল ভিলা, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1216254307	বাহরুল ভিলা
+in-bengali-partial-0000000231	চাঁদপুর টি এস্টেট, Habiganj			noisy	IN	Bengali	partial	way	1233844606	চাঁদপুর টি এস্টেট
+in-bengali-partial-0000000232	Dakhin Udaipur, Hojai, দখিন উদয়পুর			noisy	IN	Bengali	partial	way	1240390312	Dakhin Udaipur, Hojai, দখিন উদয়পুর
+in-bengali-partial-0000000233	সামন্তা বাজার, মহেশপুর			noisy	IN	Bengali	partial	way	1279788493	সামন্তা বাজার
+in-bengali-partial-0000000234	বায়তুস সালাম জামে মসজিদ- হানিগ্রাম, Zakiganj			noisy	IN	Bengali	partial	way	1285481540	বায়তুস সালাম জামে মসজিদ- হানিগ্রাম
+in-bengali-partial-0000000235	হানিগ্রাম প্রবাসী ঐক্য পরিষদ, Zakiganj			noisy	IN	Bengali	partial	way	1285487693	হানিগ্রাম প্রবাসী ঐক্য পরিষদ
+in-bengali-partial-0000000236	হানিগ্রাম দারুল ফয়েজ ইসলামিক একাডেমী, Zakiganj			noisy	IN	Bengali	partial	way	1285858667	হানিগ্রাম দারুল ফয়েজ ইসলামিক একাডেমী
+in-bengali-partial-0000000237	বারোঠাকুরী বাাজার			noisy	IN	Bengali	partial	way	1286963545	বারোঠাকুরী বাাজার
+in-bengali-partial-0000000238	মাদিহার মামার দোকান, Zakiganj			noisy	IN	Bengali	partial	way	1286967227	মাদিহার মামার দোকান
+in-bengali-partial-0000000239	দেব উত্তর জামে মসজিদ, Zakiganj			noisy	IN	Bengali	partial	way	1286967545	দেব উত্তর জামে মসজিদ
+in-bengali-partial-0000000240	রহমানিয়া কমিউনিটি সেন্টার, Sylhet			noisy	IN	Bengali	partial	way	1286978128	রহমানিয়া কমিউনিটি সেন্টার
+in-bengali-partial-0000000241	কদুর বাজার, Sylhet			noisy	IN	Bengali	partial	way	1286985630	কদুর বাজার
+in-bengali-partial-0000000242	মইয়াখালী সরকারী প্রাথমিক বিদ্যালয়			noisy	IN	Bengali	partial	way	1287267808	মইয়াখালী সরকারী প্রাথমিক বিদ্যালয়
+in-bengali-partial-0000000243	মেসার্স তালুকদার এল পি জি ফিলিং স্টেশন, Zakiganj			noisy	IN	Bengali	partial	way	1287272425	মেসার্স তালুকদার এল পি জি ফিলিং স্টেশন
+in-bengali-partial-0000000244	ইনামতি মোকাম জামে মসজিদ, Sylhet			noisy	IN	Bengali	partial	way	1287342303	ইনামতি মোকাম জামে মসজিদ
+in-bengali-partial-0000000245	সোনাসার গ্রাম, Sylhet			noisy	IN	Bengali	partial	way	1287565484	সোনাসার গ্রাম
+in-bengali-partial-0000000246	বারোগাত্তা, Sylhet			noisy	IN	Bengali	partial	way	1287565791	বারোগাত্তা
+in-bengali-partial-0000000247	বলরামের চক			noisy	IN	Bengali	partial	way	1287595074	বলরামের চক
+in-bengali-partial-0000000248	তেরে বিন বাড়ি প্লট, Sylhet			noisy	IN	Bengali	partial	way	1288848664	তেরে বিন বাড়ি প্লট
+in-bengali-partial-0000000249	বদল শাহ (রাহ:)মাজার জামে মসজিদ			noisy	IN	Bengali	partial	way	1289023202	বদল শাহ (রাহ:)মাজার জামে মসজিদ
+in-bengali-partial-0000000250	খারিজা কেন্দীয় জামে মসজিদ, Sylhet			noisy	IN	Bengali	partial	way	1289027318	খারিজা কেন্দীয় জামে মসজিদ
+in-bengali-partial-0000000251	সোনাসার চত্বর, zakiganj			noisy	IN	Bengali	partial	way	1289260249	সোনাসার চত্বর
+bd-bengali-partial-0000000252	জাহাঙ্গীর আলম, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1289809058	জাহাঙ্গীর আলম
+bd-bengali-partial-0000000253	বায়তুল নূর পাঞ্জেগানা মসজিদ, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1289809062	বায়তুল নূর পাঞ্জেগানা মসজিদ
+in-bengali-partial-0000000254	আয়ফল রমিজ আইডিয়াল স্কুল অ্যান্ড কলেজ			noisy	IN	Bengali	partial	way	1289809064	আয়ফল রমিজ আইডিয়াল স্কুল অ্যান্ড কলেজ
+bd-bengali-partial-0000000255	নারায়নপুর উত্তর পাড়া জামে মসজিদ, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1289809066	নারায়নপুর উত্তর পাড়া জামে মসজিদ
+bd-bengali-partial-0000000256	খিজির মিয়ার বাড়ি, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1289809071	খিজির মিয়ার বাড়ি
+bd-bengali-partial-0000000257	স্থলবন্দর, Parshuram			noisy	BD	Bengali	partial	way	1312787145	স্থলবন্দর
+in-bengali-partial-0000000258	গ্রান্ড সুলতান টি রিসোর্ট এন্ড গলফ ক্লাব, Moulvibazar			clean	IN	Bengali	partial	way	1316090512	গ্রান্ড সুলতান টি রিসোর্ট এন্ড গলফ ক্লাব
+in-bengali-partial-0000000259	এখন চার্জ, Comilla			noisy	IN	Bengali	partial	way	1330826427	এখন চার্জ
+in-bengali-partial-0000000260	North Maternity Home - Darjipara Matri Sadan — নর্থ মেটার্নিটি হোম (দর্জিপাড়া মাতৃসদন), Kolkata			clean	IN	Bengali	partial	way	1355797693	North Maternity Home - Darjipara Matri Sadan — নর্থ মেটার্নিটি হোম (দর্জিপাড়া মাতৃসদন)
+in-bengali-partial-0000000261	মলিকের বাড়ি, zakiganj			noisy	IN	Bengali	partial	way	1384664078	মলিকের বাড়ি
+in-bengali-partial-0000000262	নারায়নপুর মেইন রোড, Narayanpur			noisy	IN	Bengali	partial	way	1416805402	নারায়নপুর মেইন রোড
+in-bengali-partial-0000000263	নারায়নপুর মেইন রোড, Narayanpur			noisy	IN	Bengali	partial	way	1416805403	নারায়নপুর মেইন রোড
+in-bengali-partial-0000000264	নারায়নপুর দক্ষিণপাড়া কেন্দ্রীয় ঈদগাহ, Uttar Narayanpur			noisy	IN	Bengali	partial	way	1416805406	নারায়নপুর দক্ষিণপাড়া কেন্দ্রীয় ঈদগাহ
+bd-bengali-partial-0000000265	বাগে-ই-মাদিনা হাসিনা ফরিদ হাফেজিয়া মাদরাসা ও এতিমখানা, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1416860923	বাগে-ই-মাদিনা হাসিনা ফরিদ হাফেজিয়া মাদরাসা ও এতিমখানা
+in-bengali-partial-0000000266	Sealdah (শিয়ালদহ), Kolkata			noisy	IN	Bengali	partial	way	1448681279	Sealdah (শিয়ালদহ)
+bd-bengali-partial-0000000267	নারায়নপুর জামে মসজিদ, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1462399911	নারায়নপুর জামে মসজিদ
+bd-bengali-partial-0000000268	চাঁন মিয়া ফকির জামে মসজিদ, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1462399912	চাঁন মিয়া ফকির জামে মসজিদ
+in-bengali-partial-0000000269	মানরা - নারায়নপুর			noisy	IN	Bengali	partial	way	1462399913	মানরা - নারায়নপুর
+in-bengali-partial-0000000270	মল্লিকার দীঘি - নারায়নপুর, Narayanpur			noisy	IN	Bengali	partial	way	1462399914	মল্লিকার দীঘি - নারায়নপুর
+in-bengali-partial-0000000271	মানরা - নারায়নপুর			noisy	IN	Bengali	partial	way	1462399919	মানরা - নারায়নপুর
+in-bengali-partial-0000000272	মানরা - নারায়নপুর			noisy	IN	Bengali	partial	way	1462399925	মানরা - নারায়নপুর
+bd-bengali-partial-0000000273	সরদার বাড়ি, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1462645138	সরদার বাড়ি
+in-bengali-partial-0000000274	মানরা - নারায়নপুর			noisy	IN	Bengali	partial	way	1462645140	মানরা - নারায়নপুর
+in-bengali-partial-0000000275	মল্লিকার দীঘি - নারায়নপুর, Narayanpur			noisy	IN	Bengali	partial	way	1462645141	মল্লিকার দীঘি - নারায়নপুর
+bd-bengali-partial-0000000276	সোহেল রানা, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1462645157	সোহেল রানা
+bd-bengali-partial-0000000277	গফুর মন্জিল, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1462645161	গফুর মন্জিল
+bd-bengali-partial-0000000278	রোফিয়া হাউজ, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1462645162	রোফিয়া হাউজ
+bd-bengali-partial-0000000279	জিয়া উদ্দিন আহমেদ এর মাজার, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1465061454	জিয়া উদ্দিন আহমেদ এর মাজার
+bd-bengali-partial-0000000280	নাজীর ভিলা, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1465110565	নাজীর ভিলা
+bd-bengali-partial-0000000281	চৌধুরী ভবন, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1465149021	চৌধুরী ভবন
+bd-bengali-partial-0000000282	সুমন ভিলা, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1465149022	সুমন ভিলা
+bd-bengali-partial-0000000283	ফারুক ভিলা, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1465149023	ফারুক ভিলা
+bd-bengali-partial-0000000284	মডার্ন রাইস মিল, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1465386544	মডার্ন রাইস মিল
+bd-bengali-partial-0000000285	কবির মনজিল, Uttar Narayanpur			noisy	BD	Bengali	partial	way	1465386553	কবির মনজিল
+in-bengali-partial-0000000286	প্রতীক্ষা, Guwahati			noisy	IN	Bengali	partial	way	1465513183	প্রতীক্ষা
+cn-bengali-reordered-0000000001	রাজশাহী	24.3715513	88.5921038	noisy	CN	Bengali	reordered	node	372612223	রাজশাহী
+cn-bengali-reordered-0000000002	সাগরপাড়া	24.364769300000003	88.60737370000001	noisy	CN	Bengali	reordered	node	575988850	সাগরপাড়া
+cn-bengali-reordered-0000000003	মাধবপুর	24.286945300000003	91.83430270000001	noisy	CN	Bengali	reordered	node	582806167	মাধবপুর
+cn-bengali-reordered-0000000004	দক্ষিন তালপট্টি	21.6079963	89.1874617	noisy	CN	Bengali	reordered	node	1404460874	দক্ষিন তালপট্টি
+cn-bengali-reordered-0000000005	আখাউড়া	23.8681221	91.2088835	noisy	CN	Bengali	reordered	node	1431033281	আখাউড়া
+cn-bengali-reordered-0000000006	হিলি, হিলি	25.277513000000003	89.0069924	noisy	CN	Bengali	reordered	node	1472108324	হিলি
+cn-bengali-reordered-0000000007	হিলি	25.280797900000003	89.0033726	noisy	CN	Bengali	reordered	node	1472108326	হিলি
+cn-bengali-reordered-0000000008	Joypurhat, জয়পুরহাট	25.098996000000003	89.0260363	noisy	CN	Bengali	reordered	node	1472108338	জয়পুরহাট
+cn-bengali-reordered-0000000009	রামগড়	22.9963081	91.73766140000001	noisy	CN	Bengali	reordered	node	1786432760	রামগড়
+cn-bengali-reordered-0000000010	টিকাপাড়া	24.366562000000002	88.6121621	noisy	CN	Bengali	reordered	node	1909696016	টিকাপাড়া
+cn-bengali-reordered-0000000011	শাহবাজপুর	24.803046100000003	92.2431021	noisy	CN	Bengali	reordered	node	2051081332	শাহবাজপুর
+cn-bengali-reordered-0000000012	তালাইমারি	24.3617221	88.6268824	noisy	CN	Bengali	reordered	node	2150852154	তালাইমারি
+cn-bengali-reordered-0000000013	আগ্রাদ্বিগুন	25.1793599	88.7042492	noisy	CN	Bengali	reordered	node	2432347375	আগ্রাদ্বিগুন
+cn-bengali-reordered-0000000014	সুয়াগাজী	23.3766599	91.2406102	noisy	CN	Bengali	reordered	node	2459312224	সুয়াগাজী
+cn-bengali-reordered-0000000015	চারঘাট	24.281899300000003	88.75064730000001	noisy	CN	Bengali	reordered	node	2481950541	চারঘাট
+cn-bengali-reordered-0000000016	ভোলারহাট	24.943452800000003	88.2185594	noisy	CN	Bengali	reordered	node	2481956891	ভোলারহাট
+cn-bengali-reordered-0000000017	গোদাগাড়ী	24.4581726	88.3285448	noisy	CN	Bengali	reordered	node	2481956894	গোদাগাড়ী
+cn-bengali-reordered-0000000018	পরশুরাম	23.215108	91.44371720000001	noisy	CN	Bengali	reordered	node	2481967216	পরশুরাম
+cn-bengali-reordered-0000000019	হাকিমপুর	25.281057800000003	89.0101446	noisy	CN	Bengali	reordered	node	2481986730	হাকিমপুর
+cn-bengali-reordered-0000000020	খামারভাতী	26.0423085	89.28986110000001	noisy	CN	Bengali	reordered	node	2676569139	খামারভাতী
+cn-bengali-reordered-0000000021	মায়ং	26.259148500000002	92.0413225	noisy	CN	Bengali	reordered	node	3309060542	মায়ং
+bd-bengali-reordered-0000000022	জকিগঞ্জ	24.877456600000002	92.36988330000001	noisy	BD	Bengali	reordered	node	3396281149	জকিগঞ্জ
+cn-bengali-reordered-0000000023	জৈন্তাপুর	25.135576200000003	92.12339250000001	noisy	CN	Bengali	reordered	node	3396286397	জৈন্তাপুর
+cn-bengali-reordered-0000000024	পাথরডুবি	26.1486959	89.6199631	noisy	CN	Bengali	reordered	node	3980088480	পাথরডুবি
+cn-bengali-reordered-0000000025	শিলখুড়ি	26.1782794	89.6654572	noisy	CN	Bengali	reordered	node	3980088485	শিলখুড়ি
+cn-bengali-reordered-0000000026	উজিরপুর	23.3321951	91.28367300000001	noisy	CN	Bengali	reordered	node	3995846116	উজিরপুর
+cn-bengali-reordered-0000000027	লোগাং	23.4310577	91.9438334	noisy	CN	Bengali	reordered	node	4215808896	লোগাং
+cn-bengali-reordered-0000000028	সাজেক	23.3857193	92.2920464	noisy	CN	Bengali	reordered	node	4215808908	সাজেক
+cn-bengali-reordered-0000000029	Comilla Bypass Road , বাখরাবাদ গ্যাস আদর্শ বিদ্যালয়	23.451357400000003	91.21081380000001	noisy	CN	Bengali	reordered	node	4543693195	বাখরাবাদ গ্যাস আদর্শ বিদ্যালয়
+cn-bengali-reordered-0000000030	Comilla, Bashir Medical Hall বশির মেডিকেল হল	23.322408000000003	91.28117300000001	noisy	CN	Bengali	reordered	node	5125777816	Bashir Medical Hall বশির মেডিকেল হল
+cn-bengali-reordered-0000000031	Rajshahi, Kali Mandir কালী মন্দির	24.3618013	88.6254514	noisy	CN	Bengali	reordered	node	5130352203	Kali Mandir কালী মন্দির
+cn-bengali-reordered-0000000032	Rajshahi, Rubel Tea Stall and Cafe রুবেল টি স্টল এবং ক্যাফে	24.3602586	88.62010360000001	noisy	CN	Bengali	reordered	node	5130472690	Rubel Tea Stall and Cafe রুবেল টি স্টল এবং ক্যাফে
+cn-bengali-reordered-0000000033	Rajshahi, Lotto Sales Point লোটো সেলস্ পয়েন্ট	24.3654027	88.6002309	noisy	CN	Bengali	reordered	node	5132367181	Lotto Sales Point লোটো সেলস্ পয়েন্ট
+cn-bengali-reordered-0000000034	Rajshahi, Anamika Cloth Store অনামিকা কাপড়ের দোকান	24.365601	88.5992896	noisy	CN	Bengali	reordered	node	5132401281	Anamika Cloth Store অনামিকা কাপড়ের দোকান
+cn-bengali-reordered-0000000035	Rajshahi, Sobuj Library সবুজ লাইব্রেরী	24.366423400000002	88.5976045	noisy	CN	Bengali	reordered	node	5132476256	Sobuj Library সবুজ লাইব্রেরী
+cn-bengali-reordered-0000000036	Rajshahi, Parjatan Bar & Restaurent রাজশাহী পর্যটন বার ও রেস্তোঁরা	24.3683558	88.5720821	noisy	CN	Bengali	reordered	node	5132683769	Parjatan Bar & Restaurent রাজশাহী পর্যটন বার ও রেস্তোঁরা
+cn-bengali-reordered-0000000037	Rajshahi, Tapan Jewellers তপন গহনা	24.373775900000002	88.56142220000001	noisy	CN	Bengali	reordered	node	5132724025	Tapan Jewellers তপন গহনা
+cn-bengali-reordered-0000000038	Rajshahi, Durjoy Store দূর্জয় ষ্টোর	24.3739127	88.5619721	noisy	CN	Bengali	reordered	node	5132735294	Durjoy Store দূর্জয় ষ্টোর
+cn-bengali-reordered-0000000039	Godagari, তৌহিদ সুজ	24.468366000000003	88.32310030000001	noisy	CN	Bengali	reordered	node	5132892251	তৌহিদ সুজ
+cn-bengali-reordered-0000000040	বুড়াবুড়ি হাট	26.473969	88.4511044	noisy	CN	Bengali	reordered	node	5276325031	বুড়াবুড়ি হাট
+cn-bengali-reordered-0000000041	পাগলীডাঙ্গী	26.6118987	88.39998130000001	noisy	CN	Bengali	reordered	node	5276325041	পাগলীডাঙ্গী
+cn-bengali-reordered-0000000042	বাংলাবান্ধা	26.590600000000002	88.39486720000001	noisy	CN	Bengali	reordered	node	5276325042	বাংলাবান্ধা
+cn-bengali-reordered-0000000043	Moulvibazar, Chandpur 3 No Word, চাঁন পুর জামে মসজিদ	24.336678000000003	91.99196300000001	clean	CN	Bengali	reordered	node	5301581824	চাঁন পুর জামে মসজিদ
+cn-bengali-reordered-0000000044	Kolkata, Topsia North Road 105, বেইজিং রেঁস্তোরা	22.546521300000002	88.387096	clean	CN	Bengali	reordered	node	5349341783	বেইজিং রেঁস্তোরা
+cn-bengali-reordered-0000000045	জাফলং	25.1729658	92.0202881	noisy	CN	Bengali	reordered	node	5379578776	জাফলং
+cn-bengali-reordered-0000000046	তামাবিল	25.180553900000003	92.0327067	noisy	CN	Bengali	reordered	node	5379578777	তামাবিল
+cn-bengali-reordered-0000000047	Siliguri, সিং মেডিকেল	26.699839400000002	88.41863500000001	noisy	CN	Bengali	reordered	node	5380066083	সিং মেডিকেল
+bd-bengali-reordered-0000000048	দহগ্রাম	26.3040722	88.94551100000001	noisy	BD	Bengali	reordered	node	6127940033	দহগ্রাম
+cn-bengali-reordered-0000000049	ছাগলনাইয়া	23.0398704	91.51482580000001	noisy	CN	Bengali	reordered	node	6152586898	ছাগলনাইয়া
+cn-bengali-reordered-0000000050	কমলপুর	23.4337966	91.2314692	noisy	CN	Bengali	reordered	node	6162842848	কমলপুর
+cn-bengali-reordered-0000000051	মুজিবনগর	23.649926200000003	88.5930663	noisy	CN	Bengali	reordered	node	6235275825	মুজিবনগর
+cn-bengali-reordered-0000000052	Moronga Road (Shani Mandir More) Mathabhanha 1, চন্দ্র মোটরসাইকেল মেরামত	26.340967000000003	89.21094520000001	noisy	CN	Bengali	reordered	node	6881113813	চন্দ্র মোটরসাইকেল মেরামত
+cn-bengali-reordered-0000000053	Netajinagar , বাবু	22.4242898	87.31636680000001	noisy	CN	Bengali	reordered	node	7188469085	বাবু
+cn-bengali-reordered-0000000054	মৌলভীবাজার, শরীফপুর, আমতলাবাজার ২ নং ওয়ার্ড, তেলিবিল উচ্চ বিদ্যালয়	24.3444258	91.9769665	clean	CN	Bengali	reordered	node	7388623576	তেলিবিল উচ্চ বিদ্যালয়
+cn-bengali-reordered-0000000055	Mulvibazar, Sharifpur, Amtolabazar 2 No. Word, আমতলাবাজার জামে মসজিদ	24.3451808	91.9765617	clean	CN	Bengali	reordered	node	7388623579	আমতলাবাজার জামে মসজিদ
+cn-bengali-reordered-0000000056	বাথানিয়া, ছাগলনাইয়া, ফেনী, সিরাজ উদ্দিন সড়ক ওয়ার্ড নং ৬, ছেরাজ উদ্দিন মাস্টার বাড়ি	23.0192845	91.47199570000001	clean	CN	Bengali	reordered	node	7641274031	ছেরাজ উদ্দিন মাস্টার বাড়ি
+cn-bengali-reordered-0000000057	শিলুয়া, ছাগলনাইয়া, ফেনী, শিলুয়া চৌধুরী বাজার রোড শিলুয়া চৌধুরী বাজার, শীল পাথর শিলুয়া	23.0223163	91.4601602	clean	CN	Bengali	reordered	node	7641274032	শীল পাথর শিলুয়া
+cn-bengali-reordered-0000000058	শ্রীরামপুর, মা শীতলা মন্দির, চাতরা	22.763801500000003	88.3320814	noisy	CN	Bengali	reordered	node	8235629984	মা শীতলা মন্দির, চাতরা
+cn-bengali-reordered-0000000059	Serampore, A. P. Ghosh Road , চাতরা নন্দলাল ইন্‌স্টিটিউশন	22.7632489	88.33712150000001	noisy	CN	Bengali	reordered	node	8241996422	চাতরা নন্দলাল ইন্‌স্টিটিউশন
+cn-bengali-reordered-0000000060	Serampore, শ্রীরামপুর মহকুমা গ্ৰন্থাগার	22.7511042	88.3405958	noisy	CN	Bengali	reordered	node	8242020784	শ্রীরামপুর মহকুমা গ্ৰন্থাগার
+cn-bengali-reordered-0000000061	চাতরা	22.7632805	88.3340093	noisy	CN	Bengali	reordered	node	8248548276	চাতরা
+cn-bengali-reordered-0000000062	মাহেশ	22.736106300000003	88.35158200000001	noisy	CN	Bengali	reordered	node	8248562969	মাহেশ
+cn-bengali-reordered-0000000063	বল্লভপুর	22.7454958	88.3524845	noisy	CN	Bengali	reordered	node	8248564448	বল্লভপুর
+cn-bengali-reordered-0000000064	Naity Road , কানাইপুর বারোয়ারিতলা কালি মন্দির	22.702312300000003	88.3259135	noisy	CN	Bengali	reordered	node	8308814650	কানাইপুর বারোয়ারিতলা কালি মন্দির
+cn-bengali-reordered-0000000065	কুস্থল	23.4781052	87.04723580000001	noisy	CN	Bengali	reordered	node	8341272625	কুস্থল
+cn-bengali-reordered-0000000066	অমরকানন	23.3939714	87.11011900000001	noisy	CN	Bengali	reordered	node	8341473075	অমরকানন
+cn-bengali-reordered-0000000067	জোঁকা	23.159867600000002	88.8587067	noisy	CN	Bengali	reordered	node	9033787074	জোঁকা
+cn-bengali-reordered-0000000068	উত্তর দেয়াড়া	22.7221054	88.7910975	noisy	CN	Bengali	reordered	node	9033797768	উত্তর দেয়াড়া
+cn-bengali-reordered-0000000069	খামারপাড়া	22.7144182	88.78946710000001	noisy	CN	Bengali	reordered	node	9033797769	খামারপাড়া
+cn-bengali-reordered-0000000070	চৌদ্দগ্রাম	23.224766000000002	91.31349250000001	noisy	CN	Bengali	reordered	node	9139175182	চৌদ্দগ্রাম
+cn-bengali-reordered-0000000071	জয়্গুখ্ব গাঁও	27.5338566	95.39584280000001	noisy	CN	Bengali	reordered	node	9171945868	জয়্গুখ্ব গাঁও
+cn-bengali-reordered-0000000072	না-মাতাপুং গাঁও	27.526064700000003	95.43643	noisy	CN	Bengali	reordered	node	9171945885	না-মাতাপুং গাঁও
+cn-bengali-reordered-0000000073	দেন্কা গাঁও	27.535826	95.413835	noisy	CN	Bengali	reordered	node	9171959504	দেন্কা গাঁও
+cn-bengali-reordered-0000000074	টারজান গাঁও	27.543894	95.4038725	noisy	CN	Bengali	reordered	node	9171959505	টারজান গাঁও
+cn-bengali-reordered-0000000075	ফুলগাজী	23.1554703	91.43264690000001	noisy	CN	Bengali	reordered	node	9215982196	ফুলগাজী
+cn-bengali-reordered-0000000076	সোনামসজিদ	24.8343512	88.1438964	noisy	CN	Bengali	reordered	node	9272049812	সোনামসজিদ
+cn-bengali-reordered-0000000077	ভোমরা	22.6678539	88.95887060000001	noisy	CN	Bengali	reordered	node	9275084660	ভোমরা
+cn-bengali-reordered-0000000078	Fulgazi, Feni, Darbarpur Road, Old Munshirhat, Fulgazi, Feni. , Poriborton - পরিবর্তন	23.108765000000002	91.4325218	noisy	CN	Bengali	reordered	node	9521408514	Poriborton - পরিবর্তন
+cn-bengali-reordered-0000000079	ধর্মগড়	26.012464	88.1609109	noisy	CN	Bengali	reordered	node	9669724683	ধর্মগড়
+cn-bengali-reordered-0000000080	সাতছড়ি ত্রিপুরা বস্তি	24.113828	91.4240949	noisy	CN	Bengali	reordered	node	9816626324	সাতছড়ি ত্রিপুরা বস্তি
+cn-bengali-reordered-0000000081	সাতছড়ি ত্রিপুরা বস্তি	24.1251603	91.4420293	noisy	CN	Bengali	reordered	node	9822353647	সাতছড়ি ত্রিপুরা বস্তি
+cn-bengali-reordered-0000000082	স্কাইপ	24.640664400000002	94.52783620000001	noisy	CN	Bengali	reordered	node	9831518376	স্কাইপ
+cn-bengali-reordered-0000000083	নাকুগাঁও	25.200104900000003	90.22317170000001	noisy	CN	Bengali	reordered	node	9838215050	নাকুগাঁও
+cn-bengali-reordered-0000000084	গোবরাকুড়া	25.1800438	90.3405652	noisy	CN	Bengali	reordered	node	9838232567	গোবরাকুড়া
+cn-bengali-reordered-0000000085	Vivekananda Sarani , ই এস আই হাসপাতাল	23.709513100000002	86.9537334	noisy	CN	Bengali	reordered	node	9921874217	ই এস আই হাসপাতাল
+cn-bengali-reordered-0000000086	Prisep street , সিইএসসি লিমিটেড	22.566477300000003	88.3566943	noisy	CN	Bengali	reordered	node	10009392417	সিইএসসি লিমিটেড
+bd-bengali-reordered-0000000087	আঙ্গোরপোতা	26.325227100000003	88.9341759	noisy	BD	Bengali	reordered	node	10083658903	আঙ্গোরপোতা
+bd-bengali-reordered-0000000088	ঝালাংগী	26.4556541	88.9621716	noisy	BD	Bengali	reordered	node	10105428934	ঝালাংগী
+cn-bengali-reordered-0000000089	পরশুরাম, পরশুরাম রেলওয়ে স্টেশন	23.216143000000002	91.44530420000001	noisy	CN	Bengali	reordered	node	10139557255	পরশুরাম রেলওয়ে স্টেশন
+cn-bengali-reordered-0000000090	Feni, সরকারি খাদ্য গুদাম	23.148102100000003	91.4303833	noisy	CN	Bengali	reordered	node	10140023261	সরকারি খাদ্য গুদাম
+cn-bengali-reordered-0000000091	Feni, ফুলগাজী রেলওয়ে স্টেশন	23.1475271	91.4312649	noisy	CN	Bengali	reordered	node	10140023315	ফুলগাজী রেলওয়ে স্টেশন
+cn-bengali-reordered-0000000092	উদয়পুর	23.3731554	92.3520075	noisy	CN	Bengali	reordered	node	10143104025	উদয়পুর
+cn-bengali-reordered-0000000093	Dakshin Para Road 127, মীনা সিদ্ধি এপার্টমেন্ট	22.613146500000003	88.4203267	noisy	CN	Bengali	reordered	node	10168084417	মীনা সিদ্ধি এপার্টমেন্ট
+cn-bengali-reordered-0000000094	Shivmandir, AH-2 Raja Rammohunpur, উত্তরবঙ্গ বিশ্বাবিদ্যালয়	26.7097085	88.3538182	clean	CN	Bengali	reordered	node	10183352916	উত্তরবঙ্গ বিশ্বাবিদ্যালয়
+cn-bengali-reordered-0000000095	Baidyapur Mirhat, মিরহাট দক্ষিণপাড়া বারোয়ারি	23.1672346	88.2504782	noisy	CN	Bengali	reordered	node	10537166036	মিরহাট দক্ষিণপাড়া বারোয়ারি
+cn-bengali-reordered-0000000096	Baidyapur Mirhat, মিরহাট প্রাইমারী বিদ্যালয়	23.167821	88.25155980000001	noisy	CN	Bengali	reordered	node	10537222342	মিরহাট প্রাইমারী বিদ্যালয়
+cn-bengali-reordered-0000000097	Baidyapur Mirhat, বৈদ্যপুর রাজরাজেশ্বর বালিকা বিদ্যালয়	23.1649618	88.2488471	noisy	CN	Bengali	reordered	node	10537256895	বৈদ্যপুর রাজরাজেশ্বর বালিকা বিদ্যালয়
+cn-bengali-reordered-0000000098	Baidyapur Mirhat, মিরহাট বড় পূজাবাড়ী	23.1658668	88.25066620000001	noisy	CN	Bengali	reordered	node	10537258795	মিরহাট বড় পূজাবাড়ী
+cn-bengali-reordered-0000000099	Baidyapur Mirhat, মিরহাট সুপার মার্কেট	23.164103200000003	88.24863	noisy	CN	Bengali	reordered	node	10537267475	মিরহাট সুপার মার্কেট
+cn-bengali-reordered-0000000100	Jaigaon, Ramgaon 45, অঙ্কন শিক্ষা কেন্দ্র	26.8416779	89.3830265	clean	CN	Bengali	reordered	node	10772511116	অঙ্কন শিক্ষা কেন্দ্র
+cn-bengali-reordered-0000000101	জপুই	23.6531448	92.24133710000001	noisy	CN	Bengali	reordered	node	11192445644	জপুই
+cn-bengali-reordered-0000000102	Noagaon Chowmuhani , বিশ্বাস মিষ্টান্ন ভান্ডার	24.191792500000002	91.829367	noisy	CN	Bengali	reordered	node	11369365269	বিশ্বাস মিষ্টান্ন ভান্ডার
+cn-bengali-reordered-0000000103	Bara khathalia , স্বামী বিবেকানন্দ ইউনিভার্সিটি	22.758467500000002	88.3961163	noisy	CN	Bengali	reordered	node	11909470769	স্বামী বিবেকানন্দ ইউনিভার্সিটি
+cn-bengali-reordered-0000000104	Banglabandha, উদ্ভিদ সংগনিরোধ কেন্দ্র	26.630939400000003	88.4137422	noisy	CN	Bengali	reordered	node	12109688647	উদ্ভিদ সংগনিরোধ কেন্দ্র
+cn-bengali-reordered-0000000105	পশ্চিম কালাজরি R.F. পার্ট	23.413753900000003	91.8057349	noisy	CN	Bengali	reordered	node	12138120130	পশ্চিম কালাজরি R.F. পার্ট
+cn-bengali-reordered-0000000106	চরখানপুর	24.3176381	88.59372040000001	noisy	CN	Bengali	reordered	node	12148008955	চরখানপুর
+cn-bengali-reordered-0000000107	Rajshahi, আল - আকসা মসজিদ এবং মাদরাসা কমপ্লেক্স - এ প্রজেক্ট ওফ AQS ট্রাস্ট	24.3182623	88.5891903	noisy	CN	Bengali	reordered	node	12148025466	আল - আকসা মসজিদ এবং মাদরাসা কমপ্লেক্স - এ প্রজেক্ট ওফ AQS ট্রাস্ট
+cn-bengali-reordered-0000000108	নিজ কালিকাপুর	23.253759600000002	91.4434726	noisy	CN	Bengali	reordered	node	12151388906	নিজ কালিকাপুর
+cn-bengali-reordered-0000000109	শরিফগন্জ বাজার	24.879355800000003	92.45907340000001	noisy	CN	Bengali	reordered	node	12328834486	শরিফগন্জ বাজার
+cn-bengali-reordered-0000000110	RDA market road , সুন্দরবন কুরিয়ার সার্ভিস	24.3653927	88.60130550000001	noisy	CN	Bengali	reordered	node	12421195801	সুন্দরবন কুরিয়ার সার্ভিস
+cn-bengali-reordered-0000000111	বালুতুপা	23.4547895	91.2126746	noisy	CN	Bengali	reordered	node	12535677930	বালুতুপা
+cn-bengali-reordered-0000000112	চৌয়ারা	23.4138489	91.2223733	noisy	CN	Bengali	reordered	node	12535677933	চৌয়ারা
+cn-bengali-reordered-0000000113	Belgharia, Kolkata, 96 Feeder Road 88, দয়াল মেডিকেল হল — Dayal Medical Hall	22.6605698	88.3852233	clean	CN	Bengali	reordered	node	12550804135	দয়াল মেডিকেল হল — Dayal Medical Hall
+cn-bengali-reordered-0000000114	Itinda Road , সুরজ ফার্মেসি	22.6658753	88.8863846	noisy	CN	Bengali	reordered	node	12679373101	সুরজ ফার্মেসি
+cn-bengali-reordered-0000000115	Bardhaman, B B Ghosh Road , মানিক সেনের দোকান	23.2413348	87.86435610000001	noisy	CN	Bengali	reordered	node	12696530088	মানিক সেনের দোকান
+cn-bengali-reordered-0000000116	Bardhaman, B B Ghosh Road 83, জয়শ্রী ভাণ্ডার	23.2420639	87.8646751	clean	CN	Bengali	reordered	node	12699344070	জয়শ্রী ভাণ্ডার
+cn-bengali-reordered-0000000117	পোরশা	25.0245527	88.4550777	noisy	CN	Bengali	reordered	node	12851478565	পোরশা
+cn-bengali-reordered-0000000118	Comilla, ঢাকা-চট্টগ্রাম মহাসড়ক , কাবাব এক্সপ্রেস	23.1532464	91.32415250000001	noisy	CN	Bengali	reordered	node	12864707688	কাবাব এক্সপ্রেস
+cn-bengali-reordered-0000000119	নারায়নপুর	23.6499835	91.1577817	noisy	CN	Bengali	reordered	node	13087398066	নারায়নপুর
+cn-bengali-reordered-0000000120	Railway Station Rd , পিজ্জা লাইট	25.915614700000003	92.9563174	noisy	CN	Bengali	reordered	node	13152617501	পিজ্জা লাইট
+cn-bengali-reordered-0000000121	Shillong Rd , এম বাজাৰ লংকা	25.917234500000003	92.95053030000001	noisy	CN	Bengali	reordered	node	13152617502	এম বাজাৰ লংকা
+cn-bengali-reordered-0000000122	Railway Station Rd , ময়ুৰ হোটেল	25.9154142	92.95642380000001	noisy	CN	Bengali	reordered	node	13152642501	ময়ুৰ হোটেল
+cn-bengali-reordered-0000000123	Railway Station RD , লংকা বি পি এইচ চি	25.9174131	92.95508790000001	noisy	CN	Bengali	reordered	node	13152710101	লংকা বি পি এইচ চি
+cn-bengali-reordered-0000000124	Railway Station Rd , মেড এডভান্স ক্লিনিক	25.9165953	92.95546180000001	noisy	CN	Bengali	reordered	node	13152712201	মেড এডভান্স ক্লিনিক
+cn-bengali-reordered-0000000125	Railway Station Rd , লংকা বি পি এইচ	25.9175556	92.9551526	noisy	CN	Bengali	reordered	node	13152868701	লংকা বি পি এইচ
+cn-bengali-reordered-0000000126	নবগ্ৰাম	23.4657431	91.2034624	noisy	CN	Bengali	reordered	node	13172438656	নবগ্ৰাম
+cn-bengali-reordered-0000000127	বারপাড়া	23.453861800000002	91.20658900000001	noisy	CN	Bengali	reordered	node	13172438658	বারপাড়া
+cn-bengali-reordered-0000000128	পাথুরিয়া	23.462002400000003	91.20327920000001	noisy	CN	Bengali	reordered	node	13172438662	পাথুরিয়া
+cn-bengali-reordered-0000000129	ছাপাকুর	23.4505543	91.2137933	noisy	CN	Bengali	reordered	node	13172438666	ছাপাকুর
+cn-bengali-reordered-0000000130	সংরাইস	23.4679302	91.2047438	noisy	CN	Bengali	reordered	node	13172438667	সংরাইস
+cn-bengali-reordered-0000000131	জগন্নাথপুর	23.4625044	91.20955430000001	noisy	CN	Bengali	reordered	node	13172438674	জগন্নাথপুর
+cn-bengali-reordered-0000000132	জগতবেড়	26.3735165	89.06644680000001	noisy	CN	Bengali	reordered	node	13178984494	জগতবেড়
+cn-bengali-reordered-0000000133	শ্রীরামপুর	26.4288427	88.9579736	noisy	CN	Bengali	reordered	node	13178984670	শ্রীরামপুর
+cn-bengali-reordered-0000000134	গোতামারী	26.090393900000002	89.22620760000001	noisy	CN	Bengali	reordered	node	13180641503	গোতামারী
+cn-bengali-reordered-0000000135	পশ্চিম ছাতনাই	26.2561861	88.87868660000001	noisy	CN	Bengali	reordered	node	13190171769	পশ্চিম ছাতনাই
+cn-bengali-reordered-0000000136	Shivmandir, Military Road , লক্ষ্মণ ভাণ্ডার	26.7110807	88.3620604	noisy	CN	Bengali	reordered	node	13286859209	লক্ষ্মণ ভাণ্ডার
+cn-bengali-reordered-0000000137	জালালপুর	23.766579800000002	87.3778181	noisy	CN	Bengali	reordered	node	13304498505	জালালপুর
+cn-bengali-reordered-0000000138	মহাম্মদপুরনগর	23.8050821	87.49170170000001	noisy	CN	Bengali	reordered	node	13311220128	মহাম্মদপুরনগর
+cn-bengali-reordered-0000000139	তুরুকবারিহাট	23.8125165	87.4957073	noisy	CN	Bengali	reordered	node	13311220129	তুরুকবারিহাট
+cn-bengali-reordered-0000000140	সাহাপুর	23.7949328	87.4947283	noisy	CN	Bengali	reordered	node	13311232827	সাহাপুর
+cn-bengali-reordered-0000000141	NH12 , Hotel The Premium III Rashik Bangali (রসিক বাঙালি)	23.390877500000002	88.4846479	noisy	CN	Bengali	reordered	node	13355558001	Hotel The Premium III Rashik Bangali (রসিক বাঙালি)
+cn-bengali-reordered-0000000142	বলদিয়া	26.0715423	89.7820762	noisy	CN	Bengali	reordered	node	13365850496	বলদিয়া
+cn-bengali-reordered-0000000143	বঙ্গসোনাহাট	26.1020545	89.75715140000001	noisy	CN	Bengali	reordered	node	13365850526	বঙ্গসোনাহাট
+cn-bengali-reordered-0000000144	কচাকাটা	25.9985505	89.8080654	noisy	CN	Bengali	reordered	node	13379540798	কচাকাটা
+bd-bengali-reordered-0000000145	Uttar Narayanpur, Narayanpur Club Road , নারায়নপুর যুব উন্নয়ন ক্লাব	23.6497232	91.1596008	noisy	BD	Bengali	reordered	node	13439391962	নারায়নপুর যুব উন্নয়ন ক্লাব
+bd-bengali-reordered-0000000146	Uttar Narayanpur, মনির স্টোর	23.648658700000002	91.1597296	noisy	BD	Bengali	reordered	node	13440320700	মনির স্টোর
+bd-bengali-reordered-0000000147	Uttar Narayanpur, শাফায়েত ভ্যারাইটিজ ষ্টোর	23.6491995	91.1597469	noisy	BD	Bengali	reordered	node	13440332901	শাফায়েত ভ্যারাইটিজ ষ্টোর
+cn-bengali-reordered-0000000148	Bagnan Amta Road , Udang 1-No Panchayat (উদং ১-নং পঞ্চায়েত)	22.530806600000002	87.9895413	noisy	CN	Bengali	reordered	node	13583052401	Udang 1-No Panchayat (উদং ১-নং পঞ্চায়েত)
+cn-bengali-reordered-0000000149	Ghosh Para Road , Hosen Lodge - হোসেন লজ	24.3689962	88.5902765	noisy	CN	Bengali	reordered	node	13624107001	Hosen Lodge - হোসেন লজ
+in-bengali-reordered-0000000150	খুলনা বিভাগ			noisy	IN	Bengali	reordered	relation	3825003	খুলনা বিভাগ
+in-bengali-reordered-0000000151	হাঁসের চর			noisy	IN	Bengali	reordered	way	34638400	হাঁসের চর
+in-bengali-reordered-0000000152	ত্রিকোণা দ্বীপ			noisy	IN	Bengali	reordered	way	34667596	ত্রিকোণা দ্বীপ
+in-bengali-reordered-0000000153	টিয়ার চর			noisy	IN	Bengali	reordered	way	34690057	টিয়ার চর
+in-bengali-reordered-0000000154	Kolkata, Queen's Way 1, ভিক্টোরিয়া মেমোরিয়াল হল			clean	IN	Bengali	reordered	way	36165294	ভিক্টোরিয়া মেমোরিয়াল হল
+in-bengali-reordered-0000000155	তালপট্টি			noisy	IN	Bengali	reordered	way	155168532	তালপট্টি
+in-bengali-reordered-0000000156	Natore, বড়াল নদী			noisy	IN	Bengali	reordered	way	161860530	বড়াল নদী
+in-bengali-reordered-0000000157	মাঝের চর			noisy	IN	Bengali	reordered	way	265731108	মাঝের চর
+in-bengali-reordered-0000000158	দুবলার চর			noisy	IN	Bengali	reordered	way	312425708	দুবলার চর
+in-bengali-reordered-0000000159	Kolkata, Barada Basak Street, Basak Bagan, Baranagar 7/18/1, Jolshaghar-জলসাঘর			clean	IN	Bengali	reordered	way	358751862	Jolshaghar-জলসাঘর
+in-bengali-reordered-0000000160	Rajshahi, Greater Road , রাজশাহী কৃষি উন্নয়ন ব্যাংক			noisy	IN	Bengali	reordered	way	369336788	রাজশাহী কৃষি উন্নয়ন ব্যাংক
+in-bengali-reordered-0000000161	Comilla, দুর্লভপুর			noisy	IN	Bengali	reordered	way	483957769	দুর্লভপুর
+in-bengali-reordered-0000000162	Chandsree, 3550, S S AUTO Rice Mill এস এস অটো রাইস মিল			noisy	IN	Bengali	reordered	way	527187784	S S AUTO Rice Mill এস এস অটো রাইস মিল
+in-bengali-reordered-0000000163	Chandul, Heron Auto Filling Station হিরনের অটো ফিলিং স্টেশনে			noisy	IN	Bengali	reordered	way	527189387	Heron Auto Filling Station হিরনের অটো ফিলিং স্টেশনে
+in-bengali-reordered-0000000164	Comilla, Food Palace, Highway Restaurant ফুড প্যালেস			noisy	IN	Bengali	reordered	way	527191455	Food Palace, Highway Restaurant ফুড প্যালেস
+in-bengali-reordered-0000000165	Dhaka - Chittagong Highway, Chauddagram, Chittagong Division, Foyez Store ফয়েজ স্টোর			noisy	IN	Bengali	reordered	way	527213737	Foyez Store ফয়েজ স্টোর
+in-bengali-reordered-0000000166	Dhaka - Chittagong Highway, Chauddagram, Chittagong Division, পায়েল স্টোর			noisy	IN	Bengali	reordered	way	527213887	পায়েল স্টোর
+in-bengali-reordered-0000000167	Chauddagram, Chauddagram Government College চৌদ্দগ্রাম সরকারী কলেজ			noisy	IN	Bengali	reordered	way	527221598	Chauddagram Government College চৌদ্দগ্রাম সরকারী কলেজ
+in-bengali-reordered-0000000168	Chauddagram, SINGER Plus সিঙ্গার প্লাস			noisy	IN	Bengali	reordered	way	527222180	SINGER Plus সিঙ্গার প্লাস
+in-bengali-reordered-0000000169	Chauddagram, চৌদ্দগ্রাম-পৌরসভা Municipality Of Bangladesh			noisy	IN	Bengali	reordered	way	527222681	চৌদ্দগ্রাম-পৌরসভা Municipality Of Bangladesh
+in-bengali-reordered-0000000170	Dhaka - Chittagong Hwy, Chauddagram, Chittagong Division 799153, Chouddagram Girls High School চৌদ্দগ্রাম উচ্চ মাধ্যমিক বালিকা বিদ্যালয়			noisy	IN	Bengali	reordered	way	527223054	Chouddagram Girls High School চৌদ্দগ্রাম উচ্চ মাধ্যমিক বালিকা বিদ্যালয়
+in-bengali-reordered-0000000171	Chauddagram, Home Improvement Store.নাজমুল পর্দা গ্যালারী			noisy	IN	Bengali	reordered	way	527224559	Home Improvement Store.নাজমুল পর্দা গ্যালারী
+in-bengali-reordered-0000000172	Chauddagram, সিটি ব্যাংক লিমিটেড			noisy	IN	Bengali	reordered	way	527228367	সিটি ব্যাংক লিমিটেড
+in-bengali-reordered-0000000173	Chauddagram, বাংলাদেশ কৃষি ব্যাংক			noisy	IN	Bengali	reordered	way	527228504	বাংলাদেশ কৃষি ব্যাংক
+in-bengali-reordered-0000000174	Chauddagram, Chauddagram Central Jame Masjid চৌদ্দগ্রাম কেন্দ্রীয় জামে মসজিদ			noisy	IN	Bengali	reordered	way	527229742	Chauddagram Central Jame Masjid চৌদ্দগ্রাম কেন্দ্রীয় জামে মসজিদ
+in-bengali-reordered-0000000175	Chauddagram, Hotel Zamzam Restaurant and Sweetmeat হোটেল জমজমের রেঁস্তোরা এবং মিষ্টির			noisy	IN	Bengali	reordered	way	527230621	Hotel Zamzam Restaurant and Sweetmeat হোটেল জমজমের রেঁস্তোরা এবং মিষ্টির
+in-bengali-reordered-0000000176	Dhaka - Chittagong Hwy, Chauddagram, ChouddGram Police Station চৌদ্দগ্রাম থানা			noisy	IN	Bengali	reordered	way	527231320	ChouddGram Police Station চৌদ্দগ্রাম থানা
+in-bengali-reordered-0000000177	Post Office Rd, Chauddagram, Chauddagram Upazila Post Office চৌদ্দগ্রাম উপজেলা পোস্ট অফিস			noisy	IN	Bengali	reordered	way	527233062	Chauddagram Upazila Post Office চৌদ্দগ্রাম উপজেলা পোস্ট অফিস
+in-bengali-reordered-0000000178	Chauddagram, Chowdhury Filling Station চৌধুরী ফিলিং স্টেশন			noisy	IN	Bengali	reordered	way	527233262	Chowdhury Filling Station চৌধুরী ফিলিং স্টেশন
+in-bengali-reordered-0000000179	Chauddagram, West Dhonmuri Eidgah Moydan পশ্চ‌িম ধনমুড়ী ঈদগাহ ময়দান			noisy	IN	Bengali	reordered	way	527233634	West Dhonmuri Eidgah Moydan পশ্চ‌িম ধনমুড়ী ঈদগাহ ময়দান
+in-bengali-reordered-0000000180	Chondipur Road, Chittagong Division, Jame Masjid Chondipur জমে মসজিদ চন্ডিপুর			noisy	IN	Bengali	reordered	way	527234718	Jame Masjid Chondipur জমে মসজিদ চন্ডিপুর
+in-bengali-reordered-0000000181	Dhaka - Chittagong Hwy, New Royal Host Restaurant নিউ রয়েল হোস্ট রেঁস্তোরা			noisy	IN	Bengali	reordered	way	527234977	New Royal Host Restaurant নিউ রয়েল হোস্ট রেঁস্তোরা
+in-bengali-reordered-0000000182	Rajshahi, Rajshahi New Govt. Degree College রাজশাহী নিউ গভঃ ডিগ্রী কলেজ			noisy	IN	Bengali	reordered	way	528056202	Rajshahi New Govt. Degree College রাজশাহী নিউ গভঃ ডিগ্রী কলেজ
+in-bengali-reordered-0000000183	Rajshahi, জনতা ব্যাংকের এরিয়া অফিস			noisy	IN	Bengali	reordered	way	528075684	জনতা ব্যাংকের এরিয়া অফিস
+in-bengali-reordered-0000000184	Rajshahi, Hamdard হামদর্দ			noisy	IN	Bengali	reordered	way	528076331	Hamdard হামদর্দ
+in-bengali-reordered-0000000185	Rajshahi, Index Plaza ইন্ডেক্স প্লাজা			noisy	IN	Bengali	reordered	way	528077981	Index Plaza ইন্ডেক্স প্লাজা
+in-bengali-reordered-0000000186	Rajshahi, City Church, Rajshahi সিটি চার্চ, রাজশাহী			noisy	IN	Bengali	reordered	way	528078078	City Church, Rajshahi সিটি চার্চ, রাজশাহী
+in-bengali-reordered-0000000187	Rajshahi, Deputy Collectorate Office, Rajshahi রাজশাহী ডিসি অফিস			noisy	IN	Bengali	reordered	way	528083988	Deputy Collectorate Office, Rajshahi রাজশাহী ডিসি অফিস
+in-bengali-reordered-0000000188	Godagari, রাজশাহী কৃষি উন্নয়ন ব্যাংক			noisy	IN	Bengali	reordered	way	528110357	রাজশাহী কৃষি উন্নয়ন ব্যাংক
+in-bengali-reordered-0000000189	Godagari, Upazila Election Office, Godagari, Rajshahi উপজেলা নির্বাচন অফিস, গোদাগাড়ী, রাজশাহী			noisy	IN	Bengali	reordered	way	528110492	Upazila Election Office, Godagari, Rajshahi উপজেলা নির্বাচন অফিস, গোদাগাড়ী, রাজশাহী
+in-bengali-reordered-0000000190	Godagari, গোদাগাড়ী ভূমি রেজিস্ট্রি অফিস			noisy	IN	Bengali	reordered	way	528110753	গোদাগাড়ী ভূমি রেজিস্ট্রি অফিস
+in-bengali-reordered-0000000191	Godagari, Godagari Degree College রাজশাহীর গোদাগাড়ী ডিগ্রি কলেজের			noisy	IN	Bengali	reordered	way	528110881	Godagari Degree College রাজশাহীর গোদাগাড়ী ডিগ্রি কলেজের
+in-bengali-reordered-0000000192	Sylhet, নলজুরি জামে মসজিদ			noisy	IN	Bengali	reordered	way	531373726	নলজুরি জামে মসজিদ
+in-bengali-reordered-0000000193	Pancagarh, সিপাই পাড়া সরকারি প্রাথমিক বিদ্যালয়			noisy	IN	Bengali	reordered	way	545737551	সিপাই পাড়া সরকারি প্রাথমিক বিদ্যালয়
+in-bengali-reordered-0000000194	Benapole, Gatipara Puraton Jame Mosque (গাতিপাড়া পুরাতন জামে )			noisy	IN	Bengali	reordered	way	578454606	Gatipara Puraton Jame Mosque (গাতিপাড়া পুরাতন জামে )
+in-bengali-reordered-0000000195	Siliguri, Station Feeder Road , মিলন পল্লী বিদ্যুৎ অফিস, ডব্লিউবিএসইডিসিএল			noisy	IN	Bengali	reordered	way	598338345	মিলন পল্লী বিদ্যুৎ অফিস, ডব্লিউবিএসইডিসিএল
+in-bengali-reordered-0000000196	নমৌজা			noisy	IN	Bengali	reordered	way	790315348	নমৌজা
+in-bengali-reordered-0000000197	Gobindanagar, Bankura, West Bengal, Near Bankura Fire Station Bankura bus station, বাঁকুড়া বেসরকারী বাস টার্মিনাস			clean	IN	Bengali	reordered	way	895260213	বাঁকুড়া বেসরকারী বাস টার্মিনাস
+in-bengali-reordered-0000000198	Zakiganj-Sylhet Rd , আলিফ কমিউটি সেন্টার গঞ্জাজল			noisy	IN	Bengali	reordered	way	1075541706	আলিফ কমিউটি সেন্টার গঞ্জাজল
+in-bengali-reordered-0000000199	zakiganj, Zakiganj-Sylhet Rd , মতিন ডাক্তার হাসপাতাল			noisy	IN	Bengali	reordered	way	1077007727	মতিন ডাক্তার হাসপাতাল
+in-bengali-reordered-0000000200	Sylhet, Zakiganj , কাজির বাড়ী জামে মসজিদ			noisy	IN	Bengali	reordered	way	1080214597	কাজির বাড়ী জামে মসজিদ
+in-bengali-reordered-0000000201	Zakiganj, মুমিনপুর সরকারী প্রাথমিক বিদ্যালয়			noisy	IN	Bengali	reordered	way	1080561698	মুমিনপুর সরকারী প্রাথমিক বিদ্যালয়
+in-bengali-reordered-0000000202	Zakiganj, Zakiganj-Sylhet Rd , গাওছিয়া সেন্টার			noisy	IN	Bengali	reordered	way	1080699425	গাওছিয়া সেন্টার
+in-bengali-reordered-0000000203	Zakiganj, Zakiganj-Sylhet Rd , ক্বাসিমুল ঊলুম উত্তরকুল কওমি মাদ্রাসা			noisy	IN	Bengali	reordered	way	1080835856	ক্বাসিমুল ঊলুম উত্তরকুল কওমি মাদ্রাসা
+in-bengali-reordered-0000000204	Zakiganj, Munshi Bazar Road , মামর খানী ছাহেব বাড়ী			noisy	IN	Bengali	reordered	way	1080855098	মামর খানী ছাহেব বাড়ী
+in-bengali-reordered-0000000205	zakiganj, kashkanakpur , সাজাপুর ইদগাহ			noisy	IN	Bengali	reordered	way	1082141860	সাজাপুর ইদগাহ
+in-bengali-reordered-0000000206	zakiganj, সাজাপুর রোড , আবাবিলের বাড়ি			noisy	IN	Bengali	reordered	way	1082141870	আবাবিলের বাড়ি
+in-bengali-reordered-0000000207	Sylhet, Zakiganj , রবি টাওয়ার			noisy	IN	Bengali	reordered	way	1082281960	রবি টাওয়ার
+in-bengali-reordered-0000000208	Zakiganj, Zakiganj-Sylhet Rd kashkanakpur, বিয়াবাইল সরকারী প্রাথমিক বিদ্যালয়			clean	IN	Bengali	reordered	way	1082281961	বিয়াবাইল সরকারী প্রাথমিক বিদ্যালয়
+in-bengali-reordered-0000000209	Zakiganj, Zakiganj-Sylhet Rd , সাজাপুর জামে মসজিদ			noisy	IN	Bengali	reordered	way	1082281962	সাজাপুর জামে মসজিদ
+in-bengali-reordered-0000000210	Zakiganj, সাজাপুর রোড , বিসমিল্লাহ মতিন ফার্নিচার			noisy	IN	Bengali	reordered	way	1082281963	বিসমিল্লাহ মতিন ফার্নিচার
+in-bengali-reordered-0000000211	Sylhet, Zakiganj , জিপি টাওয়ার			noisy	IN	Bengali	reordered	way	1082281976	জিপি টাওয়ার
+in-bengali-reordered-0000000212	Zakiganj, সাজাপুর রোড , সুফিয়ান সো মিল			noisy	IN	Bengali	reordered	way	1082281988	সুফিয়ান সো মিল
+in-bengali-reordered-0000000213	Zakiganj, Zakiganj-Sylhet Rd , সাজাপুর কালীবাড়ি			noisy	IN	Bengali	reordered	way	1082281993	সাজাপুর কালীবাড়ি
+in-bengali-reordered-0000000214	Zakiganj, Zakiganj-Sylhet Rd , শহিদ জমশেদ আলি ইসলামিক একাডেমি			noisy	IN	Bengali	reordered	way	1082291120	শহিদ জমশেদ আলি ইসলামিক একাডেমি
+in-bengali-reordered-0000000215	Sylhet, জকিগঞ্জ সড়ক , খলাছড়া দাখিল মাদরাসা			noisy	IN	Bengali	reordered	way	1092419942	খলাছড়া দাখিল মাদরাসা
+in-bengali-reordered-0000000216	Sylhet, Zakiganj-Sylhet Rd , ইনামতি জামে মসজিদ			noisy	IN	Bengali	reordered	way	1093417743	ইনামতি জামে মসজিদ
+in-bengali-reordered-0000000217	Sylhet, Zakiganj-Sylhet Rd , জামিয়া ইসলামিয়া কাওমিয়া ইছামতি ইনামতি মাদরাসা জকিগঞ্জ সিলেট			noisy	IN	Bengali	reordered	way	1093501159	জামিয়া ইসলামিয়া কাওমিয়া ইছামতি ইনামতি মাদরাসা জকিগঞ্জ সিলেট
+in-bengali-reordered-0000000218	Zakiganj, Zakiganj-Sylhet Rd , আমলসীদ মহিলা মাদ্রাসা			noisy	IN	Bengali	reordered	way	1097062315	আমলসীদ মহিলা মাদ্রাসা
+in-bengali-reordered-0000000219	Zakiganj-Sylhet Rd , হযরত শাহ বদল (রহ:) মতিনিয়া হিফজুল কুরআন ক্যাডেট মাদরাসা			noisy	IN	Bengali	reordered	way	1106877543	হযরত শাহ বদল (রহ:) মতিনিয়া হিফজুল কুরআন ক্যাডেট মাদরাসা
+in-bengali-reordered-0000000220	zakiganj, লামারগ্রাম রোড , পশ্চিম কসকনকপুর লামারগ্রাম কেন্দ্রীয় জামে মসজিদ			noisy	IN	Bengali	reordered	way	1112157456	পশ্চিম কসকনকপুর লামারগ্রাম কেন্দ্রীয় জামে মসজিদ
+in-bengali-reordered-0000000221	zakiganj, Kashkanakpur , সাজাপুর মোকাম জামে মসজিদ			noisy	IN	Bengali	reordered	way	1112157483	সাজাপুর মোকাম জামে মসজিদ
+in-bengali-reordered-0000000222	Zakiganj, ফুলের দিঘী			noisy	IN	Bengali	reordered	way	1190305209	ফুলের দিঘী
+in-bengali-reordered-0000000223	Cumilla, বাংলাদেশ পানি উন্নয়ন বোর্ড			noisy	IN	Bengali	reordered	way	1204914622	বাংলাদেশ পানি উন্নয়ন বোর্ড
+in-bengali-reordered-0000000224	Narayanpur, মল্লিকার দীঘি - নারায়নপুর			noisy	IN	Bengali	reordered	way	1211575519	মল্লিকার দীঘি - নারায়নপুর
+in-bengali-reordered-0000000225	Narayanpur , মানরা - নারায়নপুর			noisy	IN	Bengali	reordered	way	1211577617	মানরা - নারায়নপুর
+bd-bengali-reordered-0000000226	Uttar Narayanpur, নারায়নপুর দক্ষিনপাড়া জামে মসজিদ			noisy	BD	Bengali	reordered	way	1211588247	নারায়নপুর দক্ষিনপাড়া জামে মসজিদ
+bd-bengali-reordered-0000000227	Uttar Narayanpur, মা মমতাজ ভিলা			noisy	BD	Bengali	reordered	way	1211589411	মা মমতাজ ভিলা
+bd-bengali-reordered-0000000228	Uttar Narayanpur, জাকির মঞ্জিল			noisy	BD	Bengali	reordered	way	1216253787	জাকির মঞ্জিল
+bd-bengali-reordered-0000000229	Uttar Narayanpur, শাহ আলম ভিলা			noisy	BD	Bengali	reordered	way	1216254289	শাহ আলম ভিলা
+bd-bengali-reordered-0000000230	Uttar Narayanpur, বাহরুল ভিলা			noisy	BD	Bengali	reordered	way	1216254307	বাহরুল ভিলা
+in-bengali-reordered-0000000231	Habiganj, চাঁদপুর টি এস্টেট			noisy	IN	Bengali	reordered	way	1233844606	চাঁদপুর টি এস্টেট
+in-bengali-reordered-0000000232	Dakhin Udaipur, Hojai, দখিন উদয়পুর			noisy	IN	Bengali	reordered	way	1240390312	Dakhin Udaipur, Hojai, দখিন উদয়পুর
+in-bengali-reordered-0000000233	মহেশপুর, সাতপাড়া রোড , সামন্তা বাজার			noisy	IN	Bengali	reordered	way	1279788493	সামন্তা বাজার
+in-bengali-reordered-0000000234	Zakiganj, Zakiganj-Sylhet Rd , বায়তুস সালাম জামে মসজিদ- হানিগ্রাম			noisy	IN	Bengali	reordered	way	1285481540	বায়তুস সালাম জামে মসজিদ- হানিগ্রাম
+in-bengali-reordered-0000000235	Zakiganj, Zakiganj-Sylhet Rd , হানিগ্রাম প্রবাসী ঐক্য পরিষদ			noisy	IN	Bengali	reordered	way	1285487693	হানিগ্রাম প্রবাসী ঐক্য পরিষদ
+in-bengali-reordered-0000000236	Zakiganj, Zakiganj-Sylhet Rd , হানিগ্রাম দারুল ফয়েজ ইসলামিক একাডেমী			noisy	IN	Bengali	reordered	way	1285858667	হানিগ্রাম দারুল ফয়েজ ইসলামিক একাডেমী
+in-bengali-reordered-0000000237	Sylhet , বারোঠাকুরী বাাজার			noisy	IN	Bengali	reordered	way	1286963545	বারোঠাকুরী বাাজার
+in-bengali-reordered-0000000238	Zakiganj, সোনাসার-শরিফগন্জ রোড , মাদিহার মামার দোকান			noisy	IN	Bengali	reordered	way	1286967227	মাদিহার মামার দোকান
+in-bengali-reordered-0000000239	Zakiganj, সোনাসার-শরিফগন্জ রোড , দেব উত্তর জামে মসজিদ			noisy	IN	Bengali	reordered	way	1286967545	দেব উত্তর জামে মসজিদ
+in-bengali-reordered-0000000240	Sylhet, Zakiganj-Sylhet Rd , রহমানিয়া কমিউনিটি সেন্টার			noisy	IN	Bengali	reordered	way	1286978128	রহমানিয়া কমিউনিটি সেন্টার
+in-bengali-reordered-0000000241	Sylhet, Zakiganj , কদুর বাজার			noisy	IN	Bengali	reordered	way	1286985630	কদুর বাজার
+in-bengali-reordered-0000000242	জকিগঞ্জ সড়ক , মইয়াখালী সরকারী প্রাথমিক বিদ্যালয়			noisy	IN	Bengali	reordered	way	1287267808	মইয়াখালী সরকারী প্রাথমিক বিদ্যালয়
+in-bengali-reordered-0000000243	Zakiganj, Zakiganj-Sylhet Rd , মেসার্স তালুকদার এল পি জি ফিলিং স্টেশন			noisy	IN	Bengali	reordered	way	1287272425	মেসার্স তালুকদার এল পি জি ফিলিং স্টেশন
+in-bengali-reordered-0000000244	Sylhet, Zakiganj-Sylhet Rd , ইনামতি মোকাম জামে মসজিদ			noisy	IN	Bengali	reordered	way	1287342303	ইনামতি মোকাম জামে মসজিদ
+in-bengali-reordered-0000000245	Sylhet, Zakiganj , সোনাসার গ্রাম			noisy	IN	Bengali	reordered	way	1287565484	সোনাসার গ্রাম
+in-bengali-reordered-0000000246	Sylhet, Zakiganj , বারোগাত্তা			noisy	IN	Bengali	reordered	way	1287565791	বারোগাত্তা
+in-bengali-reordered-0000000247	Zakiganj , বলরামের চক			noisy	IN	Bengali	reordered	way	1287595074	বলরামের চক
+in-bengali-reordered-0000000248	Sylhet, ছেংগের বাজার ব্রিজ , তেরে বিন বাড়ি প্লট			noisy	IN	Bengali	reordered	way	1288848664	তেরে বিন বাড়ি প্লট
+in-bengali-reordered-0000000249	Zakiganj-Sylhet Rd , বদল শাহ (রাহ:)মাজার জামে মসজিদ			noisy	IN	Bengali	reordered	way	1289023202	বদল শাহ (রাহ:)মাজার জামে মসজিদ
+in-bengali-reordered-0000000250	Sylhet, Zakiganj , খারিজা কেন্দীয় জামে মসজিদ			noisy	IN	Bengali	reordered	way	1289027318	খারিজা কেন্দীয় জামে মসজিদ
+in-bengali-reordered-0000000251	zakiganj, Zakiganj-Sylhet Rd , সোনাসার চত্বর			noisy	IN	Bengali	reordered	way	1289260249	সোনাসার চত্বর
+bd-bengali-reordered-0000000252	Uttar Narayanpur, জাহাঙ্গীর আলম			noisy	BD	Bengali	reordered	way	1289809058	জাহাঙ্গীর আলম
+bd-bengali-reordered-0000000253	Uttar Narayanpur, বায়তুল নূর পাঞ্জেগানা মসজিদ			noisy	BD	Bengali	reordered	way	1289809062	বায়তুল নূর পাঞ্জেগানা মসজিদ
+in-bengali-reordered-0000000254	West Narayanpur , আয়ফল রমিজ আইডিয়াল স্কুল অ্যান্ড কলেজ			noisy	IN	Bengali	reordered	way	1289809064	আয়ফল রমিজ আইডিয়াল স্কুল অ্যান্ড কলেজ
+bd-bengali-reordered-0000000255	Uttar Narayanpur, নারায়নপুর উত্তর পাড়া জামে মসজিদ			noisy	BD	Bengali	reordered	way	1289809066	নারায়নপুর উত্তর পাড়া জামে মসজিদ
+bd-bengali-reordered-0000000256	Uttar Narayanpur, খিজির মিয়ার বাড়ি			noisy	BD	Bengali	reordered	way	1289809071	খিজির মিয়ার বাড়ি
+bd-bengali-reordered-0000000257	Parshuram, স্থলবন্দর			noisy	BD	Bengali	reordered	way	1312787145	স্থলবন্দর
+in-bengali-reordered-0000000258	Moulvibazar, Sreemangal - Bhanugach Road Radhanagar, গ্রান্ড সুলতান টি রিসোর্ট এন্ড গলফ ক্লাব			clean	IN	Bengali	reordered	way	1316090512	গ্রান্ড সুলতান টি রিসোর্ট এন্ড গলফ ক্লাব
+in-bengali-reordered-0000000259	Comilla, ঢাকা-চট্টগ্রাম মহাসড়ক , এখন চার্জ			noisy	IN	Bengali	reordered	way	1330826427	এখন চার্জ
+in-bengali-reordered-0000000260	Kolkata, Nilmoni Mitra Street 22, North Maternity Home - Darjipara Matri Sadan — নর্থ মেটার্নিটি হোম (দর্জিপাড়া মাতৃসদন)			clean	IN	Bengali	reordered	way	1355797693	North Maternity Home - Darjipara Matri Sadan — নর্থ মেটার্নিটি হোম (দর্জিপাড়া মাতৃসদন)
+in-bengali-reordered-0000000261	zakiganj, বিয়াবাইল রোড , মলিকের বাড়ি			noisy	IN	Bengali	reordered	way	1384664078	মলিকের বাড়ি
+in-bengali-reordered-0000000262	Narayanpur, নারায়নপুর মেইন রোড			noisy	IN	Bengali	reordered	way	1416805402	নারায়নপুর মেইন রোড
+in-bengali-reordered-0000000263	Narayanpur, নারায়নপুর মেইন রোড			noisy	IN	Bengali	reordered	way	1416805403	নারায়নপুর মেইন রোড
+in-bengali-reordered-0000000264	Uttar Narayanpur, Narayanpur , নারায়নপুর দক্ষিণপাড়া কেন্দ্রীয় ঈদগাহ			noisy	IN	Bengali	reordered	way	1416805406	নারায়নপুর দক্ষিণপাড়া কেন্দ্রীয় ঈদগাহ
+bd-bengali-reordered-0000000265	Uttar Narayanpur, বাগে-ই-মাদিনা হাসিনা ফরিদ হাফেজিয়া মাদরাসা ও এতিমখানা			noisy	BD	Bengali	reordered	way	1416860923	বাগে-ই-মাদিনা হাসিনা ফরিদ হাফেজিয়া মাদরাসা ও এতিমখানা
+in-bengali-reordered-0000000266	Kolkata, Sealdah (শিয়ালদহ)			noisy	IN	Bengali	reordered	way	1448681279	Sealdah (শিয়ালদহ)
+bd-bengali-reordered-0000000267	Uttar Narayanpur, Manara - Narayanpur , নারায়নপুর জামে মসজিদ			noisy	BD	Bengali	reordered	way	1462399911	নারায়নপুর জামে মসজিদ
+bd-bengali-reordered-0000000268	Uttar Narayanpur, চাঁন মিয়া ফকির জামে মসজিদ			noisy	BD	Bengali	reordered	way	1462399912	চাঁন মিয়া ফকির জামে মসজিদ
+in-bengali-reordered-0000000269	Narayanpur , মানরা - নারায়নপুর			noisy	IN	Bengali	reordered	way	1462399913	মানরা - নারায়নপুর
+in-bengali-reordered-0000000270	Narayanpur, মল্লিকার দীঘি - নারায়নপুর			noisy	IN	Bengali	reordered	way	1462399914	মল্লিকার দীঘি - নারায়নপুর
+in-bengali-reordered-0000000271	Narayanpur , মানরা - নারায়নপুর			noisy	IN	Bengali	reordered	way	1462399919	মানরা - নারায়নপুর
+in-bengali-reordered-0000000272	Narayanpur , মানরা - নারায়নপুর			noisy	IN	Bengali	reordered	way	1462399925	মানরা - নারায়নপুর
+bd-bengali-reordered-0000000273	Uttar Narayanpur, সরদার বাড়ি			noisy	BD	Bengali	reordered	way	1462645138	সরদার বাড়ি
+in-bengali-reordered-0000000274	Narayanpur , মানরা - নারায়নপুর			noisy	IN	Bengali	reordered	way	1462645140	মানরা - নারায়নপুর
+in-bengali-reordered-0000000275	Narayanpur, মল্লিকার দীঘি - নারায়নপুর			noisy	IN	Bengali	reordered	way	1462645141	মল্লিকার দীঘি - নারায়নপুর
+bd-bengali-reordered-0000000276	Uttar Narayanpur, সোহেল রানা			noisy	BD	Bengali	reordered	way	1462645157	সোহেল রানা
+bd-bengali-reordered-0000000277	Uttar Narayanpur, গফুর মন্জিল			noisy	BD	Bengali	reordered	way	1462645161	গফুর মন্জিল
+bd-bengali-reordered-0000000278	Uttar Narayanpur, রোফিয়া হাউজ			noisy	BD	Bengali	reordered	way	1462645162	রোফিয়া হাউজ
+bd-bengali-reordered-0000000279	Uttar Narayanpur, নারায়নপুর মধ্যপাড়া , জিয়া উদ্দিন আহমেদ এর মাজার			noisy	BD	Bengali	reordered	way	1465061454	জিয়া উদ্দিন আহমেদ এর মাজার
+bd-bengali-reordered-0000000280	Uttar Narayanpur, নাজীর ভিলা			noisy	BD	Bengali	reordered	way	1465110565	নাজীর ভিলা
+bd-bengali-reordered-0000000281	Uttar Narayanpur, চৌধুরী ভবন			noisy	BD	Bengali	reordered	way	1465149021	চৌধুরী ভবন
+bd-bengali-reordered-0000000282	Uttar Narayanpur, Narayanpur Club Road , সুমন ভিলা			noisy	BD	Bengali	reordered	way	1465149022	সুমন ভিলা
+bd-bengali-reordered-0000000283	Uttar Narayanpur, ফারুক ভিলা			noisy	BD	Bengali	reordered	way	1465149023	ফারুক ভিলা
+bd-bengali-reordered-0000000284	Uttar Narayanpur, মডার্ন রাইস মিল			noisy	BD	Bengali	reordered	way	1465386544	মডার্ন রাইস মিল
+bd-bengali-reordered-0000000285	Uttar Narayanpur, নারায়নপুর মধ্যপাড়া , কবির মনজিল			noisy	BD	Bengali	reordered	way	1465386553	কবির মনজিল
+in-bengali-reordered-0000000286	Guwahati,  10, প্রতীক্ষা			noisy	IN	Bengali	reordered	way	1465513183	প্রতীক্ষা

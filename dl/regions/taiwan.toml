@@ -1,0 +1,9 @@
+# Butterfly region index — Taiwan
+#
+# OSM PBF for Taiwan from Geofabrik. CJK traditional primary
+# script case for the world geocoder corpus (#225).
+#
+# Verified live 2026-05-07.
+
+[pbf]
+url = "https://download.geofabrik.de/asia/taiwan-latest.osm.pbf"

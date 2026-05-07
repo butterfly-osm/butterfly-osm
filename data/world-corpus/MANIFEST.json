@@ -1,0 +1,452 @@
+{
+  "build_date_utc": "2026-05-07T11:36:47Z",
+  "data_snapshot": "260401",
+  "duckdb_spatial_version": "dc1996b",
+  "duckdb_version": "v1.5.2",
+  "inputs": [
+    {
+      "bytes": 680621647,
+      "filename": "belgium-260401.osm.pbf",
+      "iso2": "BE",
+      "sha256": "9713ecb9b29885ef59093a2f057eaa3f455948c84f91ad6a7f0ab2e6529b3408",
+      "url": "https://download.geofabrik.de/europe/belgium-260401.osm.pbf"
+    },
+    {
+      "bytes": 46486606,
+      "filename": "luxembourg-260401.osm.pbf",
+      "iso2": "LU",
+      "sha256": "8db5b4a6e326b005cb56c1606c98e9980d8237e89700328817795ffb63d3310e",
+      "url": "https://download.geofabrik.de/europe/luxembourg-260401.osm.pbf"
+    },
+    {
+      "bytes": 1375597717,
+      "filename": "netherlands-260401.osm.pbf",
+      "iso2": "NL",
+      "sha256": "45b64b48a08c4a1cf3e4211ea336e980d7f6f4bc4537bb21e032d05c8a10c4a7",
+      "url": "https://download.geofabrik.de/europe/netherlands-260401.osm.pbf"
+    },
+    {
+      "bytes": 4731380060,
+      "filename": "germany-260401.osm.pbf",
+      "iso2": "DE",
+      "sha256": "b6980e4d759fb362a135eebb53d66520df0f596e94b0408375617af1c38e42f8",
+      "url": "https://download.geofabrik.de/europe/germany-260401.osm.pbf"
+    },
+    {
+      "bytes": 4985232861,
+      "filename": "france-260401.osm.pbf",
+      "iso2": "FR",
+      "sha256": "8eca8937766c1a8194cbd78946a32fedd3ebd6d5bd48a8e07167998740df18e5",
+      "url": "https://download.geofabrik.de/europe/france-260401.osm.pbf"
+    },
+    {
+      "bytes": 796654488,
+      "filename": "austria-260401.osm.pbf",
+      "iso2": "AT",
+      "sha256": "8b1980a75cad808097568c293c418c5b6ecd9ecfa0f7c7e6a6ec3b6ae8ccf4ff",
+      "url": "https://download.geofabrik.de/europe/austria-260401.osm.pbf"
+    },
+    {
+      "bytes": 528048245,
+      "filename": "switzerland-260401.osm.pbf",
+      "iso2": "CH",
+      "sha256": "57448e8400523f798b41642eaba91c470c22ddc72cae047887e8cdd8c59b2ff9",
+      "url": "https://download.geofabrik.de/europe/switzerland-260401.osm.pbf"
+    },
+    {
+      "bytes": 2103605773,
+      "filename": "great-britain-260401.osm.pbf",
+      "iso2": "GB",
+      "sha256": "6099454ab5ad96f6cb09c68dc16416693a28f2b3f4fa7d6c5fa75591659afa4a",
+      "url": "https://download.geofabrik.de/europe/great-britain-260401.osm.pbf"
+    },
+    {
+      "bytes": 2177792084,
+      "filename": "italy-260401.osm.pbf",
+      "iso2": "IT",
+      "sha256": "55ebfd671ccf29e1eac91fc1a4f32f95eb4c0bea49673a5709f0e95ff621ee5c",
+      "url": "https://download.geofabrik.de/europe/italy-260401.osm.pbf"
+    },
+    {
+      "bytes": 1426664334,
+      "filename": "spain-260401.osm.pbf",
+      "iso2": "ES",
+      "sha256": "935c87d2ec8db30c3765658c8ef589f2cb4ce8294f3266d864af45687356fe4d",
+      "url": "https://download.geofabrik.de/europe/spain-260401.osm.pbf"
+    },
+    {
+      "bytes": 4065703615,
+      "filename": "russia-260401.osm.pbf",
+      "iso2": "RU",
+      "sha256": "c166975c32eec2d29f3e6dd2de96b4a5ef4a916b6437547b1358b62a305b3785",
+      "url": "https://download.geofabrik.de/russia-260401.osm.pbf"
+    },
+    {
+      "bytes": 334947432,
+      "filename": "greece-260401.osm.pbf",
+      "iso2": "GR",
+      "sha256": "6a6652d8d50ae43525e201cc09d6620b91df9a5a858d28bde2295d57a5fd70d9",
+      "url": "https://download.geofabrik.de/europe/greece-260401.osm.pbf"
+    },
+    {
+      "bytes": 2395572571,
+      "filename": "japan-260401.osm.pbf",
+      "iso2": "JP",
+      "sha256": "7e0089e3102f0b8198dd526395a39b42294eb96b3976355b805f73f2bb59909e",
+      "url": "https://download.geofabrik.de/asia/japan-260401.osm.pbf"
+    },
+    {
+      "bytes": 1667644171,
+      "filename": "india-260401.osm.pbf",
+      "iso2": "IN",
+      "sha256": "706c2ab5af3354cfd2f34f7caa6ef889af8b5bfe699cd4a571c68fdf723a9e0a",
+      "url": "https://download.geofabrik.de/asia/india-260401.osm.pbf"
+    },
+    {
+      "bytes": 1493951781,
+      "filename": "china-260401.osm.pbf",
+      "iso2": "CN",
+      "sha256": "2d254b60e36fc02e3da62b1ba622b885eee885bf43f87419f22d0f6ee300bd07",
+      "url": "https://download.geofabrik.de/asia/china-260401.osm.pbf"
+    },
+    {
+      "bytes": 274146664,
+      "filename": "south-korea-260401.osm.pbf",
+      "iso2": "KR",
+      "sha256": "b86e3d89587be797e4b79bb78438cfc551bc8fc124c78fed869e75119312aade",
+      "url": "https://download.geofabrik.de/asia/south-korea-260401.osm.pbf"
+    },
+    {
+      "bytes": 322631791,
+      "filename": "taiwan-260401.osm.pbf",
+      "iso2": "TW",
+      "sha256": "1ca8ad0a79fab9d8207c37f2a9f8f83cecbd3e93ccdb3d0e65a8affd607da886",
+      "url": "https://download.geofabrik.de/asia/taiwan-260401.osm.pbf"
+    },
+    {
+      "bytes": 319948834,
+      "filename": "thailand-260401.osm.pbf",
+      "iso2": "TH",
+      "sha256": "236dad45be4334ac1c062ba66dbe6daa01e87e6310feb82b97558fe889d9fc56",
+      "url": "https://download.geofabrik.de/asia/thailand-260401.osm.pbf"
+    },
+    {
+      "bytes": 226435366,
+      "filename": "iran-260401.osm.pbf",
+      "iso2": "IR",
+      "sha256": "11242d51649b8098730ce0b66e994a92d67c27c0f234ad98f8945f278773800d",
+      "url": "https://download.geofabrik.de/asia/iran-260401.osm.pbf"
+    },
+    {
+      "bytes": 120684807,
+      "filename": "israel-and-palestine-260401.osm.pbf",
+      "iso2": "IL",
+      "sha256": "5248ff9c3b4b073b97d2d8fbb7bbe497c609edc38d8c330830b97d3aebed4402",
+      "url": "https://download.geofabrik.de/asia/israel-and-palestine-260401.osm.pbf"
+    },
+    {
+      "bytes": 248419339,
+      "filename": "gcc-states-260401.osm.pbf",
+      "iso2": "GCC",
+      "sha256": "e96dcb36c08c9cc0c8567ff6c4a50b1b7ce9bf7ae14dd66767190565183f4c6d",
+      "url": "https://download.geofabrik.de/asia/gcc-states-260401.osm.pbf"
+    },
+    {
+      "bytes": 175257126,
+      "filename": "egypt-260401.osm.pbf",
+      "iso2": "EG",
+      "sha256": "67a6666de3c44ca3f64815bd11d726ebe38dec6b0fe1fa601e15ac86d8a53ddf",
+      "url": "https://download.geofabrik.de/africa/egypt-260401.osm.pbf"
+    },
+    {
+      "bytes": 929500651,
+      "filename": "australia-260401.osm.pbf",
+      "iso2": "AU",
+      "sha256": "b061ac36b82d9db798a6b9c4ed0838899b39b08e97dc20990f6fcc6490cf20c4",
+      "url": "https://download.geofabrik.de/australia-oceania/australia-260401.osm.pbf"
+    },
+    {
+      "bytes": 1974155391,
+      "filename": "brazil-260401.osm.pbf",
+      "iso2": "BR",
+      "sha256": "f08b9d9bd75fd47d7a7f2078ec1ffa8a5314778d91e54683388decb3f2a91397",
+      "url": "https://download.geofabrik.de/south-america/brazil-260401.osm.pbf"
+    },
+    {
+      "bytes": 1758362068,
+      "filename": "us-northeast-260401.osm.pbf",
+      "iso2": "US",
+      "sha256": "51f718345109fc4316f124788a442b6519b5448a03057f3196a5b4a4688dcbce",
+      "url": "https://download.geofabrik.de/north-america/us-northeast-260401.osm.pbf"
+    }
+  ],
+  "outputs": [
+    {
+      "bytes": 37238152,
+      "path": "data/world-corpus/BE.parquet",
+      "rows": 5047873,
+      "sha256": "7c7d7e5285910fd7adabb4b95a07ae0553986c7710a3764d3326b1b9763299c6"
+    },
+    {
+      "bytes": 2906333,
+      "path": "data/world-corpus/LU.parquet",
+      "rows": 235878,
+      "sha256": "7def96831fa1143de800beefefeb4b35ac63ff83f6985be2fc82560da63b7171"
+    },
+    {
+      "bytes": 197127734,
+      "path": "data/world-corpus/NL.parquet",
+      "rows": 11436788,
+      "sha256": "1765085145f610557df43eb6b97d687f7b8af28f5f5c1e93fb8dcc9f32696ce4"
+    },
+    {
+      "bytes": 326778173,
+      "path": "data/world-corpus/DE.parquet",
+      "rows": 28099001,
+      "sha256": "bee82ebdafd27005c24cccb1f6881cfdaf6757a5c222f744851b77e68e725f7b"
+    },
+    {
+      "bytes": 316533640,
+      "path": "data/world-corpus/FR.parquet",
+      "rows": 19663641,
+      "sha256": "08d57daabd92c618c775785daa1f3d6343d85fbd133256bf459e872b37d4aa02"
+    },
+    {
+      "bytes": 42758448,
+      "path": "data/world-corpus/AT.parquet",
+      "rows": 3682311,
+      "sha256": "efcb57f73c700f3c9f5f5805e26d2520b1e9fbc1d9a3758d6902c6142b27f87d"
+    },
+    {
+      "bytes": 39783520,
+      "path": "data/world-corpus/CH.parquet",
+      "rows": 3147902,
+      "sha256": "37a201a95d8ee96d9f436a6d25b39ddf98003c9a547580e44089a06cf84bad93"
+    },
+    {
+      "bytes": 114763978,
+      "path": "data/world-corpus/GB.parquet",
+      "rows": 10527482,
+      "sha256": "415801bcb91c70261cf82a322d1cf89f0fb33210fd68d4a7baf9d4cc5d986fdc"
+    },
+    {
+      "bytes": 140212818,
+      "path": "data/world-corpus/IT.parquet",
+      "rows": 8385933,
+      "sha256": "afe90abeb691ac167987c9ee90b12d6b8ef8599e19c2415cf9ebe805cb4f9bc3"
+    },
+    {
+      "bytes": 96077569,
+      "path": "data/world-corpus/ES.parquet",
+      "rows": 5746984,
+      "sha256": "965aabe093165120899b1117025d0f164ed18c891af5c5689aa9d6dd7b61dcb0"
+    },
+    {
+      "bytes": 147524498,
+      "path": "data/world-corpus/RU.parquet",
+      "rows": 15859726,
+      "sha256": "7998f791035308ea1339449ae8b9a756227daae58a2a4f41c63eef19cc9fbd72"
+    },
+    {
+      "bytes": 12656320,
+      "path": "data/world-corpus/GR.parquet",
+      "rows": 622043,
+      "sha256": "e1a6948061cdbc482309c9917ae45427c078cb5987e8bd6f4390361f917faaae"
+    },
+    {
+      "bytes": 71136276,
+      "path": "data/world-corpus/JP.parquet",
+      "rows": 3353583,
+      "sha256": "1284ee75c881ef7cf0f4d69af6d4f4a187441dc6f15c2615754607400cd2e7d6"
+    },
+    {
+      "bytes": 42145737,
+      "path": "data/world-corpus/IN.parquet",
+      "rows": 1978358,
+      "sha256": "3ac1883ffea58be257b8a7bc966a5150dd35a3e5a2f8b4ad04bb6f788e6ec8c9"
+    },
+    {
+      "bytes": 77239331,
+      "path": "data/world-corpus/CN.parquet",
+      "rows": 4370577,
+      "sha256": "8db631383fefe4524097faa269cad42a7dcdbd684c2157b03863644ce86af9d4"
+    },
+    {
+      "bytes": 25378603,
+      "path": "data/world-corpus/KR.parquet",
+      "rows": 1447560,
+      "sha256": "0eace9deb9743eff98356426bfa69591618ee194f5aec3798f1eecc0b5e72624"
+    },
+    {
+      "bytes": 193501179,
+      "path": "data/world-corpus/TW.parquet",
+      "rows": 10425550,
+      "sha256": "92f7b6fecfc4dbfba9bf92c765b6ea7f95f1b6ffdc46e20eeb8185bf9c92776f"
+    },
+    {
+      "bytes": 10506803,
+      "path": "data/world-corpus/TH.parquet",
+      "rows": 423823,
+      "sha256": "c5c7192798b4221abde22049112773041a46efdc3535c9041ddde9f0091166d2"
+    },
+    {
+      "bytes": 17906917,
+      "path": "data/world-corpus/IR.parquet",
+      "rows": 1213597,
+      "sha256": "216e52c2a07f0b98c1a3996dfdba7414a5360a32a48ed580e1fc9da16e257175"
+    },
+    {
+      "bytes": 9011872,
+      "path": "data/world-corpus/IL.parquet",
+      "rows": 391809,
+      "sha256": "97207a80204008a9313d14eab271a9a11d6f6f02680482df0ffd26893448d768"
+    },
+    {
+      "bytes": 15248937,
+      "path": "data/world-corpus/GCC.parquet",
+      "rows": 895827,
+      "sha256": "617ac33f72b5b4cf154af46d0c3094d93c1884d66a119d41e5823fe36d9b2894"
+    },
+    {
+      "bytes": 50120935,
+      "path": "data/world-corpus/EG.parquet",
+      "rows": 2901453,
+      "sha256": "a6af0ae86d0e90abd1e535a78a14dc33022e4992d629809974035b26f6766820"
+    },
+    {
+      "bytes": 89232449,
+      "path": "data/world-corpus/AU.parquet",
+      "rows": 6378761,
+      "sha256": "1b8644987594ba0cc33f68d5ab9df95adad32a60cee135db01754b5ccbbf35d9"
+    },
+    {
+      "bytes": 81084564,
+      "path": "data/world-corpus/BR.parquet",
+      "rows": 5819326,
+      "sha256": "b046d9a8df31001782810b2cade43238f0a4457fc4f42e04de809b46eb8ac2fb"
+    },
+    {
+      "bytes": 164197039,
+      "path": "data/world-corpus/US.parquet",
+      "rows": 13765834,
+      "sha256": "5990a5cf3f6a95ae3f0452445dd76d131be4ee1d7e2ea908d7b941f7a7ebd638"
+    },
+    {
+      "bytes": 2286289999,
+      "path": "data/world-corpus/all-with-country.parquet",
+      "rows": 165821620,
+      "sha256": "ef56f253c770c5fe5452a51585ee9f21ad44991163f3b8eaf56c181960927d9d"
+    },
+    {
+      "bytes": 172010531,
+      "path": "data/world-corpus/multilingual-pairs.parquet",
+      "rows": 23149949,
+      "sha256": "075be287a6d8874b2cf1eba070d53f95a99a28e7b70d74d199adbbbf3c2c98bc"
+    },
+    {
+      "bytes": 2453,
+      "path": "data/world-corpus/family-stats.parquet",
+      "rows": 281,
+      "sha256": "787ba84ae3094270b047df4f1c854d1015113fab82cbe8efb5cebb0aa31281a2"
+    },
+    {
+      "bytes": 659755,
+      "path": "data/world-corpus/bench-sample.parquet",
+      "rows": 33393,
+      "sha256": "0ea2f2df85d4f5f023560da25b5409b415ad07c5529177768e4cbfd58c12f257"
+    },
+    {
+      "bytes": 467235,
+      "path": "bench/geocode/queries/world-arabic-260401.tsv",
+      "rows": 3000,
+      "sha256": "cff790103347aedc8287f0b41f590966ff9f599de0aa23f9c3bdf08e2a4d1c1c"
+    },
+    {
+      "bytes": 178366,
+      "path": "bench/geocode/queries/world-bengali-260401.tsv",
+      "rows": 858,
+      "sha256": "1c4a5a8b796abdaf7a7d32f8d5605c238f65935e39751f68b1675930ee87d52f"
+    },
+    {
+      "bytes": 466584,
+      "path": "bench/geocode/queries/world-cyrillic-260401.tsv",
+      "rows": 3000,
+      "sha256": "bbee8d4b959d44502bca61cb2d2abad8a6da7dbccbfb60530556e52f5066c7ce"
+    },
+    {
+      "bytes": 414447,
+      "path": "bench/geocode/queries/world-devanagari-260401.tsv",
+      "rows": 1880,
+      "sha256": "8d5df1c884ec231372a5df4c57b54edf9052b38aa89c72288195983aaede49b3"
+    },
+    {
+      "bytes": 493759,
+      "path": "bench/geocode/queries/world-greek-260401.tsv",
+      "rows": 3000,
+      "sha256": "ef51e719cd559120c40690b3f081f3bc9e8ec352d390068d170e9614baa2310c"
+    },
+    {
+      "bytes": 380512,
+      "path": "bench/geocode/queries/world-han-260401.tsv",
+      "rows": 3006,
+      "sha256": "8adee8e18887d855d70216e94ef5496fc43154a1a453588d0f9228b3aecf4a76"
+    },
+    {
+      "bytes": 435576,
+      "path": "bench/geocode/queries/world-hangul-260401.tsv",
+      "rows": 3000,
+      "sha256": "a5a981a3293b37cc1e352391a7b446a29265d2e9e35f2ad59ffd9a3f6125488c"
+    },
+    {
+      "bytes": 422098,
+      "path": "bench/geocode/queries/world-hebrew-260401.tsv",
+      "rows": 3000,
+      "sha256": "c7aa6f1a3a3362ec21f0380bc692546f8e397a94d2badd7524175b8fd5e91f49"
+    },
+    {
+      "bytes": 459231,
+      "path": "bench/geocode/queries/world-japanese-260401.tsv",
+      "rows": 3000,
+      "sha256": "09bbf4feaf230e78ded06e90d68b0ec9b6167b92d268a7e0bad2415a0ccbbf25"
+    },
+    {
+      "bytes": 414248,
+      "path": "bench/geocode/queries/world-latin-260401.tsv",
+      "rows": 3000,
+      "sha256": "0a4ce41bf32694887dff939cbcd18dbbb52d152a57fc11960e529fa1346d497d"
+    },
+    {
+      "bytes": 276550,
+      "path": "bench/geocode/queries/world-other-260401.tsv",
+      "rows": 3003,
+      "sha256": "e0c68f4c52f052565668e218e64272bd9cde3b3e31579403c5c068a3fffdb410"
+    },
+    {
+      "bytes": 160967,
+      "path": "bench/geocode/queries/world-tamil-260401.tsv",
+      "rows": 621,
+      "sha256": "3c4b3081092b0d360ead4c82054576b413673d5e338e47da7a1b2c80a13f3896"
+    },
+    {
+      "bytes": 7224,
+      "path": "bench/geocode/queries/world-telugu-260401.tsv",
+      "rows": 33,
+      "sha256": "df935ee55bedc3a2c43c3dd56fcf6495890ab4d1f85cfa913d42bb1e25afdee3"
+    },
+    {
+      "bytes": 550749,
+      "path": "bench/geocode/queries/world-thai-260401.tsv",
+      "rows": 3000,
+      "sha256": "fbc968fe7dbd7aad1ff71f4cf7e357cfefdc08fbb2a5afd0564ecf8e90d0eab7"
+    }
+  ],
+  "sample_per_family": 1000,
+  "script_sha256": {
+    "build.sh": "33763efc0298a26767f66bd3718d4d32dbf68a08409e73f50c27e9390f2a64a2",
+    "extract.sql": "d6375a253a812c143fa4743d7fbcc977bee1e04517a7e01a3a3cab84de3352d1",
+    "pairs.sql": "983d1f91d784a9722e8d409f3fb55bbe8e5c34811abc9b2104e64eb92b15c880",
+    "sample_bench.sql": "9df50d602de19429de2a89a06b3c65a509af42a128972ce7eb8b11ea91cd39dc",
+    "stratify.sql": "28eee4c7a565ac9cdd5a4298346839604b9a7604939ea0263a8d25c88f8185b3",
+    "unify.sql": "abee7d216639529c63eb8b50640f9cf115d8121dd505462a1d692baded807043"
+  }
+}
