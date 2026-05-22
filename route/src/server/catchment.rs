@@ -281,31 +281,43 @@ fn route_between(
     src: (f64, f64),
     dst: (f64, f64),
 ) -> Vec<(f64, f64)> {
-    // #197 directional snap: src needs outbound, dst needs inbound.
-    let src_role = super::types::SnapRole::Src.role_filter(mode_data);
-    let dst_role = super::types::SnapRole::Dst.role_filter(mode_data);
-    let src_snap = state
-        .snap_index
-        .snap_filtered_role(src.0, src.1, mode.0, None, src_role);
-    let dst_snap = state
-        .snap_index
-        .snap_filtered_role(dst.0, dst.1, mode.0, None, dst_role);
+    // K-best snap + combo fallback (#197); src needs has_outbound and
+    // dst needs has_inbound, both connectivity-aware after the SCC
+    // role-mask change.
+    const SNAP_K: usize = 64;
+    let src_snap = super::snap_kbest::snap_k_pair_role(
+        state,
+        mode_data,
+        mode,
+        src.0,
+        src.1,
+        super::types::SnapRole::Src,
+        None,
+        SNAP_K,
+    );
+    let dst_snap = super::snap_kbest::snap_k_pair_role(
+        state,
+        mode_data,
+        mode,
+        dst.0,
+        dst.1,
+        super::types::SnapRole::Dst,
+        None,
+        SNAP_K,
+    );
 
-    let (src_orig, dst_orig) = match (src_snap, dst_snap) {
-        (Some(s), Some(d)) => (s, d),
-        _ => return vec![src, dst],
-    };
-
-    let src_rank = mode_data.orig_to_rank[src_orig as usize];
-    let dst_rank = mode_data.orig_to_rank[dst_orig as usize];
-
-    if src_rank == u32::MAX || dst_rank == u32::MAX {
+    if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
         return vec![src, dst];
     }
 
     let query = CchQuery::new(state, mode);
-    let result = match query.query(src_rank, dst_rank) {
-        Some(r) => r,
+    let (src_rank, dst_rank, result) = match super::snap_kbest::p2p_with_kbest_fallback(
+        &query,
+        &src_snap.ranks,
+        &dst_snap.ranks,
+        super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+    ) {
+        Some(triple) => triple,
         None => return vec![src, dst],
     };
 
@@ -791,24 +803,27 @@ pub async fn catchment_handler(
     let store_role = super::types::SnapRole::Src.role_filter(mode_data);
     let client_role = super::types::SnapRole::Dst.role_filter(mode_data);
 
-    // For each store: compute 1-to-N matrix via Bucket M2M, then catchment
+    // For each store: compute 1-to-N matrix via Bucket M2M, then catchment.
+    // K-best snap + per-cell P2P fallback rescues INF cells the same
+    // way /table POST does — see snap_kbest.rs.
+    const SNAP_K: usize = 64;
     for store_input in &req.stores {
-        // Snap store as source
-        let store_snap = state.snap_index.snap_filtered_role(
+        // K-best snap store as source.
+        let store_snap = super::snap_kbest::snap_k_pair_role(
+            &state,
+            mode_data,
+            mode,
             store_input.lon,
             store_input.lat,
-            mode.0,
+            super::types::SnapRole::Src,
             None,
-            store_role,
+            SNAP_K,
         );
-        let store_orig = match store_snap {
-            Some(id) => id,
+        let store_rank = match store_snap.primary_rank() {
+            Some(r) => r,
             None => continue, // Skip unsnappable stores
         };
-        let store_rank = mode_data.orig_to_rank[store_orig as usize];
-        if store_rank == u32::MAX {
-            continue;
-        }
+        let _ = (store_role, client_role); // legacy bindings no longer used
 
         // Determine this store's effective radius (km) when requested. For
         // `Auto`, we compute p95 × 1.1 over the Euclidean distances from the
@@ -825,11 +840,11 @@ pub async fn catchment_handler(
         };
         let effective_radius_m: Option<f64> = effective_radius_km.map(|km| km * 1000.0);
 
-        // Snap all clients. When a radius is active, clients farther than
-        // `effective_radius_m` from the store are dropped BEFORE the M2M
-        // call so the routing layer does proportionally less work. This is
-        // the "true" speedup path — no mask-at-emit is needed because the
-        // filtered list is the list that gets routed.
+        // Snap all clients (K-best). When a radius is active, clients farther
+        // than `effective_radius_m` from the store are dropped BEFORE the
+        // M2M call so the routing layer does proportionally less work.
+        let mut client_snaps: Vec<super::snap_kbest::KBestSnap> =
+            Vec::with_capacity(req.clients.len());
         let mut client_ranks: Vec<u32> = Vec::with_capacity(req.clients.len());
         let mut client_valid: Vec<usize> = Vec::with_capacity(req.clients.len());
         for (ci, c) in req.clients.iter().enumerate() {
@@ -839,16 +854,20 @@ pub async fn catchment_handler(
                     continue;
                 }
             }
-            if let Some(orig_id) =
-                state
-                    .snap_index
-                    .snap_filtered_role(c.lon, c.lat, mode.0, None, client_role)
-            {
-                let rank = mode_data.orig_to_rank[orig_id as usize];
-                if rank != u32::MAX {
-                    client_ranks.push(rank);
-                    client_valid.push(ci);
-                }
+            let snap = super::snap_kbest::snap_k_pair_role(
+                &state,
+                mode_data,
+                mode,
+                c.lon,
+                c.lat,
+                super::types::SnapRole::Dst,
+                None,
+                SNAP_K,
+            );
+            if let Some(r) = snap.primary_rank() {
+                client_ranks.push(r);
+                client_valid.push(ci);
+                client_snaps.push(snap);
             }
         }
 
@@ -860,13 +879,37 @@ pub async fn catchment_handler(
         let sources = &[store_rank];
         let targets = &client_ranks;
 
-        let (matrix, _stats) = table_bucket_full_flat(
+        let (mut matrix, _stats) = table_bucket_full_flat(
             n_nodes,
             &mode_data.up_adj_flat,
             &mode_data.down_rev_flat,
             sources,
             targets,
         );
+
+        // Per-cell K-best fallback for INF cells.
+        if matrix.contains(&u32::MAX) {
+            use rayon::prelude::*;
+            let query = super::query::CchQuery::new(&state, mode);
+            let patches: Vec<(usize, u32)> = (0..client_valid.len())
+                .filter(|&ti| matrix[ti] == u32::MAX)
+                .collect::<Vec<_>>()
+                .par_iter()
+                .filter_map(|&ti| {
+                    let dst_ranks = &client_snaps[ti].ranks;
+                    super::snap_kbest::p2p_with_kbest_fallback(
+                        &query,
+                        &store_snap.ranks,
+                        dst_ranks,
+                        super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+                    )
+                    .map(|(_, _, r)| (ti, r.distance))
+                })
+                .collect();
+            for (ti, dist) in patches {
+                matrix[ti] = dist;
+            }
+        }
 
         // Build Client structs with drive times
         let mut clients_with_dt: Vec<Client> = Vec::new();
