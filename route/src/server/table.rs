@@ -552,10 +552,11 @@ pub async fn compute_table_bucket_m2m(
     // Per-cell K-best fallback (#197 matrix gap).
     //
     // Bucket M2M uses only the primary candidate per src/dst. For the
-    // small fraction of pairs the primary snap lands in a small SCC
-    // that can't reach (or be reached by) the primary on the other
-    // side, even though K-best would. /route already does this
-    // fallback inline; we mirror it here so /table agrees with /route.
+    // small fraction of pairs the primary snap is still unsuitable
+    // for this particular OD pair (usually same-geometry directional
+    // ambiguity or dynamic exclude/avoid effects), even though K-best
+    // would connect. /route already does this fallback inline; we
+    // mirror it here so /table agrees with /route.
     // The K-best snap (expensive — iterates all samples within 5 km)
     // is done LAZILY for only the affected src/dst rows/cols, so a
     // healthy matrix pays zero K-best snap cost.
@@ -629,13 +630,9 @@ fn apply_k_best_fallback(
     // or total latency explodes (the unbounded version ran 88 s on
     // Belgium 50×50 scattered).
     //
-    // 64 covers (i, j) ≤ ~11 — empirically the per-cell sweet spot:
-    // 100×100 clustered Belgium has ~9 % of cells in snap traps (878
-    // cells); at 64 combos each spends ~6 ms exhausting the combo
-    // budget for true topology disconnects, capping the whole fallback
-    // at ~200 ms wall on 20 cores instead of 540 ms with 200 combos.
-    // No measured route-only-success regressions on the 200-pair
-    // sweep at 64.
+    // Connectivity-aware role masks should keep this path cold on the
+    // base graph. Keep the cap broad enough to preserve /route parity
+    // for the remaining dynamic or geometrically ambiguous cases.
     const MAX_FALLBACK_COMBOS: usize = 200;
 
     let _t_fb_start = std::time::Instant::now();
