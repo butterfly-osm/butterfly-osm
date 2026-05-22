@@ -504,6 +504,23 @@ impl PackedSnapIndex {
             .map(|(id, _, _, _)| id)
     }
 
+    /// Convenience: like [`snap_filtered`] but also constrained by an
+    /// optional `role_filter` (#197 directional snap). Use this from
+    /// query handlers that know whether the snap is acting as a source
+    /// (use `mode_data.has_outbound`) or destination (use
+    /// `mode_data.has_inbound`).
+    pub fn snap_filtered_role(
+        &self,
+        lon: f64,
+        lat: f64,
+        mode_idx: u8,
+        edge_filter: Option<&[u64]>,
+        role_filter: Option<&[u64]>,
+    ) -> Option<u32> {
+        self.snap_with_info_filtered_role(lon, lat, mode_idx, edge_filter, role_filter)
+            .map(|(id, _, _, _)| id)
+    }
+
     /// Snap with bearing filter. `bearing` and `range` are degrees.
     pub fn snap_with_bearing(
         &self,

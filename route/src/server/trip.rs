@@ -637,34 +637,65 @@ pub async fn trip_handler(
                 std::borrow::Cow::Borrowed(&mode_data.mask)
             };
 
-        // Snap all coordinates and convert to rank space
+        // Snap all coordinates and convert to rank space.
+        // For TSP each waypoint participates in two legs (arrives from
+        // the previous, departs to the next), so each snap must yield
+        // an edge that is both a valid source AND a valid destination.
+        // We fold both role bitsets into the snap_mask up-front (cheap,
+        // one allocation per request) so a single snap call returns a
+        // candidate that satisfies both roles.
+        let mut role_anded_mask: Vec<u64> = snap_mask.to_vec();
+        let outbound = mode_data.has_outbound.as_slice();
+        let inbound = mode_data.has_inbound.as_slice();
+        for (i, word) in role_anded_mask.iter_mut().enumerate() {
+            let ob = outbound.get(i).copied().unwrap_or(u64::MAX);
+            let ib = inbound.get(i).copied().unwrap_or(u64::MAX);
+            *word &= ob & ib;
+        }
+
+        // Snap K candidates per waypoint so we can fall back when the
+        // primary snap traps us in a small SCC (#197 matrix gap). The
+        // first candidate feeds the N×N TSP matrix; the rest patch
+        // INF cells via per-cell P2P after the matrix is built.
+        const SNAP_K: usize = 64;
+
         let mut ranks: Vec<u32> = Vec::with_capacity(n);
         let mut snapped_locations: Vec<[f64; 2]> = Vec::with_capacity(n);
         let mut valid: Vec<bool> = Vec::with_capacity(n);
+        let mut candidates: Vec<Vec<u32>> = Vec::with_capacity(n);
 
         for &[lon, lat] in &coordinates {
-            if let Some(orig_id) =
-                state_clone
-                    .snap_index
-                    .snap_filtered(lon, lat, mode.0, Some(&snap_mask))
-            {
-                let rank = mode_data.orig_to_rank[orig_id as usize];
+            // No role_filter here — we already AND'd both roles into
+            // role_anded_mask, so a single snap pass returns candidates
+            // satisfying both src and dst.
+            let cands = state_clone.snap_index.snap_k_with_info_filtered(
+                lon,
+                lat,
+                mode.0,
+                SNAP_K,
+                Some(&role_anded_mask),
+            );
+            let mut cand_ranks: Vec<u32> = Vec::with_capacity(cands.len());
+            for (orig_id, _plon, _plat, _d) in &cands {
+                let rank = mode_data.orig_to_rank[*orig_id as usize];
+                if rank != u32::MAX {
+                    cand_ranks.push(rank);
+                }
+            }
+            if let Some((orig_id, _, _, _)) = cands.first() {
+                let rank = mode_data.orig_to_rank[*orig_id as usize];
                 if rank != u32::MAX {
                     ranks.push(rank);
                     valid.push(true);
-                    // Get snapped location
-                    let snapped = get_node_location(&state_clone, orig_id);
-                    snapped_locations.push(snapped);
-                } else {
-                    ranks.push(0);
-                    valid.push(false);
-                    snapped_locations.push([lon, lat]);
+                    snapped_locations.push(get_node_location(&state_clone, *orig_id));
+                    candidates.push(cand_ranks);
+                    continue;
                 }
-            } else {
-                ranks.push(0);
-                valid.push(false);
-                snapped_locations.push([lon, lat]);
             }
+            ranks.push(0);
+            valid.push(false);
+            snapped_locations.push([lon, lat]);
+            candidates.push(Vec::new());
         }
 
         // Check that all waypoints snapped successfully
@@ -700,19 +731,185 @@ pub async fn trip_handler(
         };
 
         // Compute N*N duration matrix (for TSP optimization, always on time)
-        let (duration_matrix, _stats) =
+        let (mut duration_matrix, _stats) =
             table_bucket_full_flat(n_nodes, time_up, time_down, &ranks, &ranks);
 
-        // Run TSP solver on the duration matrix
-        let tsp_result = solve_tsp(&duration_matrix, n, round_trip);
-
         // Compute distance matrix if requested (for reporting leg distances)
-        let distance_matrix = if want_distance {
+        let mut distance_matrix = if want_distance {
             let (dist_mat, _) = table_bucket_full_flat(n_nodes, dist_up, dist_down, &ranks, &ranks);
             Some(dist_mat)
         } else {
             None
         };
+
+        // K-best fallback for INF matrix cells (#197 matrix gap, same
+        // pattern as /table). If the primary snap pair can't connect,
+        // try other snap candidates per cell via P2P. This must happen
+        // BEFORE the TSP solver — INF cells would otherwise be treated
+        // as "impossible legs" and produce nonsense tours.
+        {
+            use super::query::CchQuery;
+            use rayon::prelude::*;
+
+            // Bounded per-cell fallback. Same justification as
+            // table.rs::apply_k_best_fallback — keeps tail latency in
+            // check on pathological tours where many legs straddle
+            // disconnected fragments.
+            const MAX_FALLBACK_COMBOS: usize = 200;
+            let combo_enum = |k_src: usize, k_dst: usize| -> Vec<(usize, usize)> {
+                let mut order = Vec::new();
+                for sum in 0..(k_src + k_dst) {
+                    for i in 0..k_src {
+                        if let Some(j) = sum.checked_sub(i)
+                            && j < k_dst
+                        {
+                            order.push((i, j));
+                        }
+                    }
+                }
+                if order.len() > MAX_FALLBACK_COMBOS {
+                    order.truncate(MAX_FALLBACK_COMBOS);
+                }
+                order
+            };
+
+            // Detect whether any cell needs the fallback.
+            let any_dur_inf = duration_matrix.contains(&u32::MAX);
+            let any_dist_inf = distance_matrix
+                .as_ref()
+                .map(|m| m.contains(&u32::MAX))
+                .unwrap_or(false);
+
+            if any_dur_inf || any_dist_inf {
+                let time_query = if any_dur_inf {
+                    let query = match (&avoid_result, &exclude_weights) {
+                        (Some((aw, _)), _) => CchQuery::with_custom_weights(
+                            &mode_data.cch_topo,
+                            &aw.time_up_flat,
+                            &aw.time_down_flat,
+                            &aw.time_weights,
+                        ),
+                        (None, Some(ew)) => CchQuery::with_custom_weights(
+                            &mode_data.cch_topo,
+                            &ew.time_up_flat,
+                            &ew.time_down_flat,
+                            &ew.time_weights,
+                        ),
+                        (None, None) => CchQuery::new(&state_clone, mode),
+                    };
+                    Some(query)
+                } else {
+                    None
+                };
+                let dist_query = if any_dist_inf {
+                    // Reuse the TIME flats' topology (which carries
+                    // topo_edge_idx) and override with the distance
+                    // metric weights — distance-only flats omit
+                    // topo_edge_idx so they cannot back a CchQuery.
+                    let query = match (&avoid_result, &exclude_weights) {
+                        (Some((aw, _)), _) => CchQuery::with_custom_weights(
+                            &mode_data.cch_topo,
+                            &aw.time_up_flat,
+                            &aw.time_down_flat,
+                            &aw.dist_weights,
+                        ),
+                        (None, Some(ew)) => CchQuery::with_custom_weights(
+                            &mode_data.cch_topo,
+                            &ew.time_up_flat,
+                            &ew.time_down_flat,
+                            &ew.dist_weights,
+                        ),
+                        (None, None) => CchQuery::with_custom_weights(
+                            &mode_data.cch_topo,
+                            &mode_data.up_adj_flat,
+                            &mode_data.down_rev_flat,
+                            &mode_data.cch_weights_dist,
+                        ),
+                    };
+                    Some(query)
+                } else {
+                    None
+                };
+
+                // Collect cells needing fallback, then run them in
+                // parallel via rayon.
+                let mut work: Vec<(usize, usize, bool, bool)> = Vec::new();
+                for i in 0..n {
+                    if !valid[i] || candidates[i].is_empty() {
+                        continue;
+                    }
+                    for j in 0..n {
+                        if i == j || !valid[j] || candidates[j].is_empty() {
+                            continue;
+                        }
+                        let cell = i * n + j;
+                        let dur_missing = duration_matrix[cell] == u32::MAX;
+                        let dist_missing = distance_matrix
+                            .as_ref()
+                            .map(|m| m[cell] == u32::MAX)
+                            .unwrap_or(false);
+                        if dur_missing || dist_missing {
+                            work.push((i, j, dur_missing, dist_missing));
+                        }
+                    }
+                }
+
+                let time_q = time_query.as_ref();
+                let dist_q = dist_query.as_ref();
+                let patches: Vec<(usize, usize, u32, u32)> = work
+                    .par_iter()
+                    .map(|&(i, j, dur_missing, dist_missing)| {
+                        let src_cands = &candidates[i];
+                        let dst_cands = &candidates[j];
+                        let order = combo_enum(src_cands.len(), dst_cands.len());
+                        let mut dur_done = !dur_missing;
+                        let mut dist_done = !dist_missing;
+                        let mut dur_val = u32::MAX;
+                        let mut dist_val = u32::MAX;
+                        for &(ci, cj) in &order {
+                            let s_rank = src_cands[ci];
+                            let d_rank = dst_cands[cj];
+                            if s_rank == d_rank {
+                                continue;
+                            }
+                            if !dur_done
+                                && let Some(tq) = time_q
+                                && let Some(r) = tq.query(s_rank, d_rank)
+                            {
+                                dur_val = r.distance;
+                                dur_done = true;
+                            }
+                            if !dist_done
+                                && let Some(dq) = dist_q
+                                && let Some(r) = dq.query(s_rank, d_rank)
+                            {
+                                dist_val = r.distance;
+                                dist_done = true;
+                            }
+                            if dur_done && dist_done {
+                                break;
+                            }
+                        }
+                        (i, j, dur_val, dist_val)
+                    })
+                    .collect();
+
+                for (i, j, dur_val, dist_val) in patches {
+                    let cell = i * n + j;
+                    if dur_val != u32::MAX {
+                        duration_matrix[cell] = dur_val;
+                    }
+                    if dist_val != u32::MAX
+                        && let Some(m) = distance_matrix.as_mut()
+                    {
+                        m[cell] = dist_val;
+                    }
+                }
+            }
+        }
+
+        // Run TSP solver on the (now-patched) duration matrix
+        let tsp_result = solve_tsp(&duration_matrix, n, round_trip);
 
         // Build legs from the optimized order
         let order = &tsp_result.order;
