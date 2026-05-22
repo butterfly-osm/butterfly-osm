@@ -356,6 +356,8 @@ pub async fn compute_table_bucket_m2m(
     let src_role_filter = SnapRole::Src.role_filter(mode_data);
     let dst_role_filter = SnapRole::Dst.role_filter(mode_data);
 
+    let t_pre = std::time::Instant::now();
+
     // (rank, snapped, valid, candidate_ranks)
     type SnapResult = (u32, (f64, f64), bool, Vec<u32>);
 
@@ -471,6 +473,12 @@ pub async fn compute_table_bucket_m2m(
     let n_sources = sources.len();
     let n_targets = destinations.len();
     let use_parallel = sources_rank.len() * targets_rank.len() >= 2500;
+    tracing::debug!(
+        "compute_table_bucket_m2m: snap+rebuild took {:?} n_src={} n_tgt={}",
+        t_pre.elapsed(),
+        sources.len(),
+        destinations.len()
+    );
 
     // Select flat adjacencies based on custom weights (exclude or avoid)
     let (time_up, time_down) = if let Some(cw) = custom_weights {
@@ -486,11 +494,17 @@ pub async fn compute_table_bucket_m2m(
 
     // Compute duration matrix if requested
     let durations = if want_duration {
+        let t_dur = std::time::Instant::now();
         let (matrix, _stats) = if use_parallel {
             table_bucket_parallel(n_nodes, time_up, time_down, &sources_rank, &targets_rank)
         } else {
             table_bucket_full_flat(n_nodes, time_up, time_down, &sources_rank, &targets_rank)
         };
+        tracing::debug!(
+            "compute_table_bucket_m2m: duration M2M took {:?} parallel={}",
+            t_dur.elapsed(),
+            use_parallel
+        );
 
         Some(flat_matrix_to_2d(
             &matrix,
@@ -507,11 +521,17 @@ pub async fn compute_table_bucket_m2m(
 
     // Compute distance matrix if requested (independent shortest-distance metric)
     let distances = if want_distance {
+        let t_dist = std::time::Instant::now();
         let (matrix, _stats) = if use_parallel {
             table_bucket_parallel(n_nodes, dist_up, dist_down, &sources_rank, &targets_rank)
         } else {
             table_bucket_full_flat(n_nodes, dist_up, dist_down, &sources_rank, &targets_rank)
         };
+        tracing::debug!(
+            "compute_table_bucket_m2m: distance M2M took {:?} parallel={}",
+            t_dist.elapsed(),
+            use_parallel
+        );
 
         Some(flat_matrix_to_2d(
             &matrix,
