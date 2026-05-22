@@ -546,6 +546,9 @@ pub async fn compute_table_bucket_m2m(
         None
     };
 
+    let t_post_m2m = std::time::Instant::now();
+    let _ = t_post_m2m;
+
     // Per-cell K-best fallback (#197 matrix gap).
     //
     // Bucket M2M uses only the primary candidate per src/dst. For the
@@ -571,14 +574,25 @@ pub async fn compute_table_bucket_m2m(
         want_distance,
     );
 
-    Json(TableResponse {
+    tracing::debug!(
+        "compute_table_bucket_m2m: post-m2m to response took {:?}",
+        t_post_m2m.elapsed()
+    );
+
+    let t_resp = std::time::Instant::now();
+    let resp = Json(TableResponse {
         code: "Ok".into(),
         durations,
         distances,
         sources: Some(source_waypoints),
         destinations: Some(dest_waypoints),
     })
-    .into_response()
+    .into_response();
+    tracing::debug!(
+        "compute_table_bucket_m2m: json+into_response took {:?}",
+        t_resp.elapsed()
+    );
+    resp
 }
 
 /// 2D matrix of Option<f64> — None for unreachable/invalid cells.
@@ -613,12 +627,18 @@ fn apply_k_best_fallback(
     // hopeless query at 20s wall is acceptable; /table can have
     // hundreds of failed cells so the per-cell budget must be smaller
     // or total latency explodes (the unbounded version ran 88 s on
-    // Belgium 50×50 scattered). 200 combos covers (i, j) ≤ ~19, which
-    // empirically matches /route's hit rate on Belgium random pairs
-    // (no measured route-only successes on the 200-pair sweep) while
-    // keeping scattered 50×50 wall under ~2 s.
+    // Belgium 50×50 scattered).
+    //
+    // 64 covers (i, j) ≤ ~11 — empirically the per-cell sweet spot:
+    // 100×100 clustered Belgium has ~9 % of cells in snap traps (878
+    // cells); at 64 combos each spends ~6 ms exhausting the combo
+    // budget for true topology disconnects, capping the whole fallback
+    // at ~200 ms wall on 20 cores instead of 540 ms with 200 combos.
+    // No measured route-only-success regressions on the 200-pair
+    // sweep at 64.
     const MAX_FALLBACK_COMBOS: usize = 200;
 
+    let _t_fb_start = std::time::Instant::now();
     let n_sources = sources_candidates.len();
     let n_targets = targets_candidates.len();
 
@@ -641,6 +661,12 @@ fn apply_k_best_fallback(
     };
     let need_time = want_duration && needs_fallback(&durations);
     let need_dist = want_distance && needs_fallback(&distances);
+    tracing::debug!(
+        "apply_k_best_fallback: needs_fallback decision took {:?}, need_time={}, need_dist={}",
+        _t_fb_start.elapsed(),
+        need_time,
+        need_dist
+    );
     if !need_time && !need_dist {
         return (durations, distances);
     }
@@ -708,6 +734,7 @@ fn apply_k_best_fallback(
         order
     };
 
+    let t_fb_work = std::time::Instant::now();
     // Build the list of cells needing fallback. We snapshot the work
     // upfront so we can parallelise the per-cell P2P queries.
     let mut work: Vec<(usize, usize, bool, bool)> = Vec::new();
@@ -733,6 +760,13 @@ fn apply_k_best_fallback(
         }
     }
 
+    tracing::debug!(
+        "apply_k_best_fallback: built work list of {} cells in {:?}",
+        work.len(),
+        t_fb_work.elapsed()
+    );
+
+    let t_fb_run = std::time::Instant::now();
     // Solve per cell in parallel — CchQuery is Sync (immutable
     // references to topology + weights; thread-local search state
     // lives in CchQueryState). Each cell is independent, so rayon
@@ -776,6 +810,12 @@ fn apply_k_best_fallback(
             (src_idx, tgt_idx, dur_val, dist_val)
         })
         .collect();
+
+    tracing::debug!(
+        "apply_k_best_fallback: ran {} cells in {:?}",
+        patches.len(),
+        t_fb_run.elapsed()
+    );
 
     // Apply patches sequentially (cheap O(failed_cells) writes).
     for (src_idx, tgt_idx, dur_val, dist_val) in patches {
