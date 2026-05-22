@@ -317,9 +317,10 @@ fn do_matrix(
     // M2M primary pass; the rest power the per-cell P2P fallback for
     // INF cells in the small-matrix branch below.
     const SNAP_K: usize = 64;
+    use rayon::prelude::*;
     let src_kbest: Vec<super::snap_kbest::KBestSnap> = params
         .sources
-        .iter()
+        .par_iter()
         .map(|&[lon, lat]| {
             super::snap_kbest::snap_k_pair_role(
                 state,
@@ -335,7 +336,7 @@ fn do_matrix(
         .collect();
     let dst_kbest: Vec<super::snap_kbest::KBestSnap> = params
         .destinations
-        .iter()
+        .par_iter()
         .map(|&[lon, lat]| {
             super::snap_kbest::snap_k_pair_role(
                 state,
