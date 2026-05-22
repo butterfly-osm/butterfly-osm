@@ -245,16 +245,27 @@ struct MatrixParams {
 }
 
 /// Snap coordinates to ranks, returning (ranks, valid_indices).
+///
+/// `role` controls the #197 directional snap filter:
+///   * `SnapRole::Src` — sources / origins (must have a mode-valid outbound arc)
+///   * `SnapRole::Dst` — destinations / targets (must have a mode-valid inbound arc)
+///   * `SnapRole::Either` — legacy unfiltered snap (no role constraint)
 fn snap_to_ranks(
     coords: &[[f64; 2]],
     state: &ServerState,
     mode_idx: u8,
     mode_data: &super::state::ModeData,
+    role: super::types::SnapRole,
 ) -> (Vec<u32>, Vec<usize>) {
+    let role_filter = role.role_filter(mode_data);
     let mut ranks = Vec::with_capacity(coords.len());
     let mut valid = Vec::with_capacity(coords.len());
     for (i, [lon, lat]) in coords.iter().enumerate() {
-        if let Some(orig_id) = state.snap_index.snap(*lon, *lat, mode_idx) {
+        if let Some(orig_id) =
+            state
+                .snap_index
+                .snap_filtered_role(*lon, *lat, mode_idx, None, role_filter)
+        {
             let rank = mode_data.orig_to_rank[orig_id as usize];
             if rank != u32::MAX {
                 ranks.push(rank);
@@ -269,15 +280,23 @@ fn snap_to_ranks(
 /// that fail to snap keep their original lon/lat — they will still be marked
 /// invalid in the matrix, but having them in the vector keeps indexing
 /// straightforward for the Euclidean pre-filter.
+///
+/// `role` controls the #197 directional snap filter (see [`snap_to_ranks`]).
 fn snapped_coords_full(
     coords: &[[f64; 2]],
     state: &ServerState,
     mode_idx: u8,
     mode_data: &super::state::ModeData,
+    role: super::types::SnapRole,
 ) -> Vec<(f64, f64)> {
+    let role_filter = role.role_filter(mode_data);
     let mut out = Vec::with_capacity(coords.len());
     for [lon, lat] in coords {
-        if let Some(orig_id) = state.snap_index.snap(*lon, *lat, mode_idx) {
+        if let Some(orig_id) =
+            state
+                .snap_index
+                .snap_filtered_role(*lon, *lat, mode_idx, None, role_filter)
+        {
             let rank = mode_data.orig_to_rank[orig_id as usize];
             if rank != u32::MAX {
                 let loc = super::types::get_node_location(state, orig_id);
@@ -356,8 +375,16 @@ fn do_matrix(
     let mode_data = state.get_mode(mode);
     let n_nodes = mode_data.cch_topo.n_nodes as usize;
 
-    let (sources_rank, valid_src) = snap_to_ranks(&params.sources, state, mode.0, mode_data);
-    let (targets_rank, valid_dst) = snap_to_ranks(&params.destinations, state, mode.0, mode_data);
+    use super::types::SnapRole;
+    let (sources_rank, valid_src) =
+        snap_to_ranks(&params.sources, state, mode.0, mode_data, SnapRole::Src);
+    let (targets_rank, valid_dst) = snap_to_ranks(
+        &params.destinations,
+        state,
+        mode.0,
+        mode_data,
+        SnapRole::Dst,
+    );
 
     if sources_rank.is_empty() || targets_rank.is_empty() {
         let schema = Arc::new(matrix_schema());
@@ -366,8 +393,15 @@ fn do_matrix(
     }
 
     // Full-length snapped coordinates — for the Euclidean pre-filter.
-    let sources_snapped = snapped_coords_full(&params.sources, state, mode.0, mode_data);
-    let targets_snapped = snapped_coords_full(&params.destinations, state, mode.0, mode_data);
+    let sources_snapped =
+        snapped_coords_full(&params.sources, state, mode.0, mode_data, SnapRole::Src);
+    let targets_snapped = snapped_coords_full(
+        &params.destinations,
+        state,
+        mode.0,
+        mode_data,
+        SnapRole::Dst,
+    );
 
     let radius_param = parse_radius(params.radius_km.as_ref());
     let neighbor_mask: Option<Arc<Vec<Vec<u32>>>> = match radius_param {
@@ -588,8 +622,20 @@ fn do_route_batch(
                 dst_lon_arr.append_value(dlon);
                 dst_lat_arr.append_value(dlat);
 
-                let src_snap = state.snap_index.snap(slon, slat, mode.0);
-                let dst_snap = state.snap_index.snap(dlon, dlat, mode.0);
+                let src_snap = state.snap_index.snap_filtered_role(
+                    slon,
+                    slat,
+                    mode.0,
+                    None,
+                    super::types::SnapRole::Src.role_filter(mode_data),
+                );
+                let dst_snap = state.snap_index.snap_filtered_role(
+                    dlon,
+                    dlat,
+                    mode.0,
+                    None,
+                    super::types::SnapRole::Dst.role_filter(mode_data),
+                );
 
                 match (src_snap, dst_snap) {
                     (Some(src_orig), Some(dst_orig)) => {
@@ -718,9 +764,23 @@ fn do_isochrone(
     let mode_data = state.get_mode(mode);
     let mode_name = &state.mode_names[mode.index()];
 
+    let is_reverse = params.direction.to_lowercase() == "arrive";
+    // #197 directional snap: depart → center is a source (needs outbound),
+    // arrive → center is a destination (needs inbound).
+    let center_role = if is_reverse {
+        super::types::SnapRole::Dst
+    } else {
+        super::types::SnapRole::Src
+    };
     let orig_id = state
         .snap_index
-        .snap(params.lon, params.lat, mode.0)
+        .snap_filtered_role(
+            params.lon,
+            params.lat,
+            mode.0,
+            None,
+            center_role.role_filter(mode_data),
+        )
         .ok_or_else(|| Status::not_found("Could not snap to road network"))?;
     let origin_rank = mode_data.orig_to_rank[orig_id as usize];
     if origin_rank == u32::MAX {
@@ -728,8 +788,6 @@ fn do_isochrone(
             "Snapped node not accessible for this mode",
         ));
     }
-
-    let is_reverse = params.direction.to_lowercase() == "arrive";
     let max_interval = *params.intervals.iter().max().unwrap();
     let max_threshold_ds = max_interval * 10;
 
@@ -897,8 +955,21 @@ pub fn do_edges_batch(
                     };
 
                 // Snap both endpoints on the requested mode's network.
-                let src_snap = state.snap_index.snap(pair[0], pair[1], mode.0);
-                let dst_snap = state.snap_index.snap(pair[2], pair[3], mode.0);
+                // #197: src needs has_outbound, dst needs has_inbound.
+                let src_snap = state.snap_index.snap_filtered_role(
+                    pair[0],
+                    pair[1],
+                    mode.0,
+                    None,
+                    super::types::SnapRole::Src.role_filter(mode_data),
+                );
+                let dst_snap = state.snap_index.snap_filtered_role(
+                    pair[2],
+                    pair[3],
+                    mode.0,
+                    None,
+                    super::types::SnapRole::Dst.role_filter(mode_data),
+                );
                 let (Some(src_orig), Some(dst_orig)) = (src_snap, dst_snap) else {
                     emit_unreachable(
                         &mut query_idx_b,
@@ -1397,8 +1468,12 @@ async fn do_exchange_catchment(
                 continue;
             }
 
-            // Snap store
-            let store_snap = state.snap_index.snap(*slon, *slat, mode.0);
+            // Snap store as source (drive-time FROM store) — #197 Src role.
+            let store_role = super::types::SnapRole::Src.role_filter(mode_data);
+            let client_role = super::types::SnapRole::Dst.role_filter(mode_data);
+            let store_snap = state
+                .snap_index
+                .snap_filtered_role(*slon, *slat, mode.0, None, store_role);
             let store_orig = match store_snap {
                 Some(id) => id,
                 None => continue,
@@ -1408,11 +1483,15 @@ async fn do_exchange_catchment(
                 continue;
             }
 
-            // Snap all clients
+            // Snap all clients as destinations — #197 Dst role.
             let mut client_ranks: Vec<u32> = Vec::with_capacity(client_coords.len());
             let mut client_valid: Vec<usize> = Vec::with_capacity(client_coords.len());
             for (ci, &(clon, clat)) in client_coords.iter().enumerate() {
-                if let Some(orig_id) = state.snap_index.snap(clon, clat, mode.0) {
+                if let Some(orig_id) =
+                    state
+                        .snap_index
+                        .snap_filtered_role(clon, clat, mode.0, None, client_role)
+                {
                     let rank = mode_data.orig_to_rank[orig_id as usize];
                     if rank != u32::MAX {
                         client_ranks.push(rank);

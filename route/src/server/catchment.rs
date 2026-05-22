@@ -281,8 +281,15 @@ fn route_between(
     src: (f64, f64),
     dst: (f64, f64),
 ) -> Vec<(f64, f64)> {
-    let src_snap = state.snap_index.snap(src.0, src.1, mode.0);
-    let dst_snap = state.snap_index.snap(dst.0, dst.1, mode.0);
+    // #197 directional snap: src needs outbound, dst needs inbound.
+    let src_role = super::types::SnapRole::Src.role_filter(mode_data);
+    let dst_role = super::types::SnapRole::Dst.role_filter(mode_data);
+    let src_snap = state
+        .snap_index
+        .snap_filtered_role(src.0, src.1, mode.0, None, src_role);
+    let dst_snap = state
+        .snap_index
+        .snap_filtered_role(dst.0, dst.1, mode.0, None, dst_role);
 
     let (src_orig, dst_orig) = match (src_snap, dst_snap) {
         (Some(s), Some(d)) => (s, d),
@@ -340,7 +347,12 @@ pub fn isochrone_hull(
     let mode_data = state.get_mode(mode);
     let mode_name = &state.mode_names[mode.index()];
 
-    let orig_id = match state.snap_index.snap(store_lon, store_lat, mode.0) {
+    // Catchment hull is a depart-isochrone: store acts as source.
+    let store_role = super::types::SnapRole::Src.role_filter(mode_data);
+    let orig_id = match state
+        .snap_index
+        .snap_filtered_role(store_lon, store_lat, mode.0, None, store_role)
+    {
         Some(id) => id,
         None => return Vec::new(),
     };
@@ -774,12 +786,21 @@ pub async fn catchment_handler(
         Vec::new()
     };
 
+    // #197 directional snap: store is the source for the 1-to-N matrix,
+    // clients are destinations. Cache the bitsets once outside the loop.
+    let store_role = super::types::SnapRole::Src.role_filter(mode_data);
+    let client_role = super::types::SnapRole::Dst.role_filter(mode_data);
+
     // For each store: compute 1-to-N matrix via Bucket M2M, then catchment
     for store_input in &req.stores {
-        // Snap store
-        let store_snap = state
-            .snap_index
-            .snap(store_input.lon, store_input.lat, mode.0);
+        // Snap store as source
+        let store_snap = state.snap_index.snap_filtered_role(
+            store_input.lon,
+            store_input.lat,
+            mode.0,
+            None,
+            store_role,
+        );
         let store_orig = match store_snap {
             Some(id) => id,
             None => continue, // Skip unsnappable stores
@@ -818,7 +839,11 @@ pub async fn catchment_handler(
                     continue;
                 }
             }
-            if let Some(orig_id) = state.snap_index.snap(c.lon, c.lat, mode.0) {
+            if let Some(orig_id) =
+                state
+                    .snap_index
+                    .snap_filtered_role(c.lon, c.lat, mode.0, None, client_role)
+            {
                 let rank = mode_data.orig_to_rank[orig_id as usize];
                 if rank != u32::MAX {
                     client_ranks.push(rank);
