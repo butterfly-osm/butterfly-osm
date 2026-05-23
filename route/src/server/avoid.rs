@@ -163,15 +163,10 @@ fn hash_polygon_json(s: &str) -> u64 {
     h.finish()
 }
 
-/// Parse + canonicalise a polygon payload into a sortable byte vec.
-///
-/// Returns `None` if the JSON shape is invalid; callers fall back to a
-/// raw-bytes hash so a malformed polygon still has a deterministic
-/// cache key (it will lose every time at the parse step downstream).
 /// Booth's algorithm — O(n) lexicographically minimal cyclic rotation.
 ///
 /// Returns the starting index `k` such that `s.rotate_left(k)` yields
-/// the lex-smallest rotation of `s`. References:
+/// the lex-smallest rotation of `s`. Reference:
 ///   K. S. Booth, "Lexicographically least circular substrings", 1980.
 ///
 /// Operates on the doubled sequence implicitly via `failure[]` of size 2n.
@@ -207,6 +202,11 @@ fn booth_minimal_rotation<T: Ord + Copy>(s: &[T]) -> usize {
     k % n
 }
 
+/// Parse + canonicalise a polygon payload into a sortable byte vec.
+///
+/// Returns `None` if the JSON shape is invalid; callers fall back to a
+/// raw-bytes hash so a malformed polygon still has a deterministic
+/// cache key (it will lose every time at the parse step downstream).
 fn canonicalize_polygons(s: &str) -> Option<Vec<u8>> {
     let val: serde_json::Value = serde_json::from_str(s).ok()?;
     let arr = val.as_array()?;
@@ -280,7 +280,81 @@ fn canonicalize_polygons(s: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod canon_tests {
-    use super::canonicalize_polygons;
+    use super::{booth_minimal_rotation, canonicalize_polygons};
+
+    /// O(n²) reference: try every rotation, pick the lex-smallest.
+    /// Used to cross-check Booth's algorithm on tricky inputs.
+    fn naive_minimal_rotation<T: Ord + Copy>(s: &[T]) -> usize {
+        let n = s.len();
+        if n <= 1 {
+            return 0;
+        }
+        let mut best = 0usize;
+        for cand in 1..n {
+            for k in 0..n {
+                let a = s[(best + k) % n];
+                let b = s[(cand + k) % n];
+                if b < a {
+                    best = cand;
+                    break;
+                } else if b > a {
+                    break;
+                }
+            }
+        }
+        best
+    }
+
+    fn booth_matches_naive<T: Ord + Copy + std::fmt::Debug>(s: &[T]) {
+        let b = booth_minimal_rotation(s);
+        let n = naive_minimal_rotation(s);
+        // Both rotations must produce the same full sequence — different
+        // starting indices are allowed when the input has rotational
+        // symmetry (e.g. all-equal vertices).
+        let n_len = s.len();
+        let booth_seq: Vec<T> = (0..n_len).map(|k| s[(b + k) % n_len]).collect();
+        let naive_seq: Vec<T> = (0..n_len).map(|k| s[(n + k) % n_len]).collect();
+        assert_eq!(booth_seq, naive_seq, "Booth mismatch on {:?}", s);
+    }
+
+    #[test]
+    fn booth_basic() {
+        booth_matches_naive::<u32>(&[]);
+        booth_matches_naive(&[5u32]);
+        booth_matches_naive(&[3u32, 1, 2]);
+        booth_matches_naive(&[1u32, 2, 3, 4]);
+        booth_matches_naive(&[4u32, 3, 2, 1]);
+    }
+
+    #[test]
+    fn booth_repeated_patterns() {
+        booth_matches_naive(&[1u32, 2, 1, 2, 1, 2]);
+        booth_matches_naive(&[1u32, 1, 1, 1]);
+        booth_matches_naive(&[2u32, 1, 2, 1]);
+    }
+
+    #[test]
+    fn booth_multiple_identical_minima() {
+        booth_matches_naive(&[1u32, 5, 1, 3]);
+        booth_matches_naive(&[1u32, 5, 1, 3, 1, 2]);
+        booth_matches_naive(&[1u32, 9, 1, 9, 1, 9]);
+    }
+
+    #[test]
+    fn booth_random_smoke() {
+        // Hand-picked tricky sequences.
+        let cases: &[&[u32]] = &[
+            &[7, 3, 9, 3, 7, 1, 2, 1],
+            &[5, 5, 4, 5, 5, 4, 5],
+            &[10, 1, 10, 2, 10, 1, 10, 2, 10, 1],
+            &[1, 2, 1, 3, 1, 2, 1, 4],
+            &[9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
+            &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        ];
+        for s in cases {
+            booth_matches_naive(s);
+        }
+    }
 
     #[test]
     fn whitespace_independent() {
