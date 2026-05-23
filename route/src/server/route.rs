@@ -419,7 +419,11 @@ pub async fn route_handler(
     let mode_data = state.get_mode(mode);
     let num_alternatives = (req.alternatives.min(5)) as usize;
 
-    // Compute avoid weights — time-only for P2P route (skip distance + flat adj)
+    // Compute avoid weights — time-only for P2P route (skip distance + flat adj).
+    // Uses sparse triangle relaxation; #238 fix made pass 1 of sparse mark every
+    // node that is either incident to a changed edge OR a potential middle of a
+    // triangle relaxing one, so it now matches the full path's output. /route
+    // stays on the fast time-only path.
     let avoid_result = if let Some(ref avoid_str) = avoid_json {
         match super::avoid::compute_avoid_weights_time_only(
             &state,
