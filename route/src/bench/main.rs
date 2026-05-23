@@ -1013,7 +1013,9 @@ fn load_phast(data_dir: &Path, mode: &str) -> anyhow::Result<PhastEngine> {
     // 2. Split across step6/step7/step8 subdirectories
     // 3. Split across step6-belgium-fixed, step7-belgium-fixed, etc.
 
-    // Prioritize rank-aligned (version 2) over older versions
+    // The canonical layout is `step7/` / `step8/` (current build output).
+    // The `*-rank-aligned/` variants are legacy from an earlier transition
+    // (#190-era) and are kept as a fallback for old data directories.
     let topo_path = find_file(
         data_dir,
         &[
@@ -1382,7 +1384,9 @@ fn run_batched_phast_bench(
 }
 
 fn load_batched_phast(data_dir: &Path, mode: &str) -> anyhow::Result<BatchedPhastEngine> {
-    // Prioritize rank-aligned (version 2) over older versions
+    // The canonical layout is `step7/` / `step8/` (current build output).
+    // The `*-rank-aligned/` variants are legacy from an earlier transition
+    // (#190-era) and are kept as a fallback for old data directories.
     let topo_path = find_file(
         data_dir,
         &[
@@ -1627,7 +1631,9 @@ fn run_batched_isochrone_bench(
     let batched_start = Instant::now();
 
     // Find paths using the same discovery logic as single-source
-    // Prioritize rank-aligned (version 2) over older versions
+    // The canonical layout is `step7/` / `step8/` (current build output).
+    // The `*-rank-aligned/` variants are legacy from an earlier transition
+    // (#190-era) and are kept as a fallback for old data directories.
     let topo_path = find_file(
         data_dir,
         &[
