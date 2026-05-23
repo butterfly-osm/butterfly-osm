@@ -89,17 +89,20 @@ pub fn pending_count() -> i64 {
     PENDING.load(Ordering::Relaxed)
 }
 
-/// Record current avoid-cache stats as Prometheus gauges/counters (#242).
-/// Called from /metrics scrape via the health-style RegionsState snapshot.
-/// - `butterfly_route_avoid_cache_hits_total` (counter, label `region`)
-/// - `butterfly_route_avoid_cache_misses_total` (counter, label `region`)
+/// Record current avoid-cache stats as Prometheus gauges (#242).
+///
+/// All four metrics are exported as GAUGES — Prometheus convention
+/// reserves the `_total` suffix for counters, so we dropped it. Names:
+/// - `butterfly_route_avoid_cache_hits` (gauge, label `region`)
+/// - `butterfly_route_avoid_cache_misses` (gauge, label `region`)
 /// - `butterfly_route_avoid_cache_size` (gauge, label `region`)
 /// - `butterfly_route_avoid_cache_capacity` (gauge, label `region`)
 ///
-/// Cumulative semantics: hits/misses are absolute counts since boot.
-/// The `metrics` counter API expects monotonic increments, so we mirror
-/// the absolute count via gauges rather than incrementing — Prometheus
-/// scrapes work fine with gauges-treated-as-counters.
+/// Cumulative hits/misses are tracked inside `AvoidWeightCache` as
+/// monotone counters; we publish the snapshot value as a gauge so the
+/// Prometheus type system stays consistent with the metric name. Rate
+/// queries (`rate(hits[5m])`) still work on a gauge that only
+/// increases.
 pub fn record_avoid_cache_stats(
     region: &str,
     hits: u64,
@@ -108,12 +111,12 @@ pub fn record_avoid_cache_stats(
     capacity: usize,
 ) {
     metrics::gauge!(
-        "butterfly_route_avoid_cache_hits_total",
+        "butterfly_route_avoid_cache_hits",
         "region" => region.to_string()
     )
     .set(hits as f64);
     metrics::gauge!(
-        "butterfly_route_avoid_cache_misses_total",
+        "butterfly_route_avoid_cache_misses",
         "region" => region.to_string()
     )
     .set(misses as f64);
