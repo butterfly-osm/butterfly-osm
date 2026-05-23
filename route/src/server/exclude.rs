@@ -9,7 +9,29 @@
 //! 3. Recompute all shortcut weights bottom-up (shortcuts through excluded edges get u32::MAX)
 //! 4. Run triangle relaxation to find alternative paths through non-excluded edges
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+/// Pack (weight, middle_rank) into a single u64 for atomic fetch_min.
+/// Weight in high 32 bits so fetch_min minimizes by weight first. Middle
+/// in low 32 bits comes along for the ride — when the relax improves
+/// the weight it atomically records the m that produced it.
+///
+/// Build-time customization does the same dance in customization.rs;
+/// duplicated here so exclude.rs stays self-contained.
+#[inline]
+fn pack_wm(weight: u32, middle: u32) -> u64 {
+    ((weight as u64) << 32) | (middle as u64)
+}
+
+#[inline]
+fn unpack_weight(packed: u64) -> u32 {
+    (packed >> 32) as u32
+}
+
+#[inline]
+fn unpack_middle(packed: u64) -> u32 {
+    packed as u32
+}
 
 use rayon::prelude::*;
 
@@ -268,15 +290,19 @@ pub fn recustomize_weights(
         }
     }
 
-    // Triangle relaxation to find alternative paths
+    // Triangle relaxation to find alternative paths. The relax updates
+    // (weight, middle) as a tuple via AtomicU64, so middles drift to
+    // whichever m actually produces the current best weight. Stale
+    // middles → wrong unpack geometry (#239).
     let rev_down = build_reverse_down_adj(topo);
-    triangle_relax(topo, &mut up_weights, &mut down_weights, &rev_down);
+    let (up_middles, down_middles) =
+        triangle_relax(topo, &mut up_weights, &mut down_weights, &rev_down);
 
     CchWeights {
         up: up_weights.into(),
         down: down_weights.into(),
-        up_middle: base_weights.up_middle.clone(),
-        down_middle: base_weights.down_middle.clone(),
+        up_middle: up_middles.into(),
+        down_middle: down_middles.into(),
     }
 }
 
@@ -393,8 +419,10 @@ fn recustomize_weights_sparse_triangle(
     // Build reverse DOWN adjacency for triangle relaxation
     let rev_down = build_reverse_down_adj(topo);
 
-    // Sparse triangle relaxation: only process dirty nodes
-    sparse_triangle_relax(
+    // Sparse triangle relaxation: only process dirty nodes. The relax
+    // updates (weight, middle) atomically so unpack_path follows the
+    // m that actually produced the relaxed weight (#239).
+    let (up_middles, down_middles) = sparse_triangle_relax(
         topo,
         &mut up_weights,
         &mut down_weights,
@@ -406,8 +434,8 @@ fn recustomize_weights_sparse_triangle(
     CchWeights {
         up: up_weights.into(),
         down: down_weights.into(),
-        up_middle: base_weights.up_middle.clone(),
-        down_middle: base_weights.down_middle.clone(),
+        up_middle: up_middles.into(),
+        down_middle: down_middles.into(),
     }
 }
 
@@ -472,11 +500,22 @@ fn sparse_triangle_relax(
     rev_down: &ReverseDownAdj,
     changed_up_edges: &[ChangedEdge],
     changed_down_edges: &[ChangedEdge],
-) {
+) -> (Vec<u32>, Vec<u32>) {
     let n_nodes = topo.n_nodes as usize;
 
-    let atomic_up: Vec<AtomicU32> = up_weights.drain(..).map(AtomicU32::new).collect();
-    let atomic_down: Vec<AtomicU32> = down_weights.drain(..).map(AtomicU32::new).collect();
+    // Pack (weight, middle) so the relax updates both atomically.
+    // Without this, `unpack_path` follows stale topo middles even
+    // when the weight reflects a different m (#239).
+    let atomic_up: Vec<AtomicU64> = up_weights
+        .drain(..)
+        .zip(topo.up_middle.iter())
+        .map(|(w, &m)| AtomicU64::new(pack_wm(w, m)))
+        .collect();
+    let atomic_down: Vec<AtomicU64> = down_weights
+        .drain(..)
+        .zip(topo.down_middle.iter())
+        .map(|(w, &m)| AtomicU64::new(pack_wm(w, m)))
+        .collect();
 
     let dirty: Vec<AtomicBool> = (0..n_nodes).map(|_| AtomicBool::new(false)).collect();
 
@@ -574,7 +613,7 @@ fn sparse_triangle_relax(
                 for i_rev in rev_start..rev_end {
                     let x = rev_down.sources[i_rev] as usize;
                     let edge_idx_xm = rev_down.edge_idx[i_rev];
-                    let w_xm = atomic_down[edge_idx_xm].load(Ordering::Relaxed);
+                    let w_xm = unpack_weight(atomic_down[edge_idx_xm].load(Ordering::Relaxed));
 
                     if w_xm == u32::MAX {
                         continue;
@@ -589,19 +628,20 @@ fn sparse_triangle_relax(
                             continue;
                         }
 
-                        let w_my = atomic_up[i_my].load(Ordering::Relaxed);
+                        let w_my = unpack_weight(atomic_up[i_my].load(Ordering::Relaxed));
                         if w_my == u32::MAX {
                             continue;
                         }
 
                         let new_weight = w_xm.saturating_add(w_my);
+                        let new_packed = pack_wm(new_weight, m as u32);
 
                         if y > x {
                             if let Some(idx) =
                                 find_edge_index(x, y, &topo.up_offsets, &topo.up_targets)
                             {
-                                let old = atomic_up[idx].fetch_min(new_weight, Ordering::Relaxed);
-                                if new_weight < old {
+                                let old = atomic_up[idx].fetch_min(new_packed, Ordering::Relaxed);
+                                if new_packed < old {
                                     pass_updates.fetch_add(1, Ordering::Relaxed);
                                     // Improved UP x→y is consumed only by triangles
                                     // centered at x. One-sided propagation.
@@ -611,8 +651,8 @@ fn sparse_triangle_relax(
                         } else if let Some(idx) =
                             find_edge_index(x, y, &topo.down_offsets, &topo.down_targets)
                         {
-                            let old = atomic_down[idx].fetch_min(new_weight, Ordering::Relaxed);
-                            if new_weight < old {
+                            let old = atomic_down[idx].fetch_min(new_packed, Ordering::Relaxed);
+                            if new_packed < old {
                                 pass_updates.fetch_add(1, Ordering::Relaxed);
                                 // Improved DOWN x→y is consumed only by triangles
                                 // centered at y. One-sided propagation.
@@ -652,8 +692,23 @@ fn sparse_triangle_relax(
         dirty_nodes = next_dirty_nodes;
     }
 
-    *up_weights = atomic_up.into_iter().map(AtomicU32::into_inner).collect();
-    *down_weights = atomic_down.into_iter().map(AtomicU32::into_inner).collect();
+    let n_up = atomic_up.len();
+    let n_down = atomic_down.len();
+    let mut up_middles = Vec::with_capacity(n_up);
+    let mut down_middles = Vec::with_capacity(n_down);
+    up_weights.reserve(n_up);
+    down_weights.reserve(n_down);
+    for a in atomic_up {
+        let packed = a.into_inner();
+        up_weights.push(unpack_weight(packed));
+        up_middles.push(unpack_middle(packed));
+    }
+    for a in atomic_down {
+        let packed = a.into_inner();
+        down_weights.push(unpack_weight(packed));
+        down_middles.push(unpack_middle(packed));
+    }
+    (up_middles, down_middles)
 }
 
 /// Compute time-only exclude weights (for P2P route queries).
@@ -824,19 +879,38 @@ fn build_reverse_down_adj(topo: &CchTopo) -> ReverseDownAdj {
     }
 }
 
-/// Triangle relaxation: find shorter paths through alternative intermediate nodes.
-/// Iterates until convergence (no more weight decreases).
+/// Triangle relaxation: find shorter paths through alternative intermediate
+/// nodes. Iterates until convergence (no more weight decreases).
+///
+/// Packs (weight, middle_rank) into AtomicU64 so the relax updates both
+/// atomically — when m gives a strictly better weight, the slot's middle
+/// becomes m. This is what `unpack_path` follows; without it the unpack
+/// follows the stale topo middle and the geometry can cross an avoided
+/// region even when the duration correctly reflects the detour (#239).
+///
+/// Returns `(up_middles, down_middles)` populated with the relaxed
+/// middles; the caller's mutable `up_weights` / `down_weights` are
+/// written in-place with the relaxed weights.
 fn triangle_relax(
     topo: &CchTopo,
     up_weights: &mut Vec<u32>,
     down_weights: &mut Vec<u32>,
     rev_down: &ReverseDownAdj,
-) {
+) -> (Vec<u32>, Vec<u32>) {
     let n_nodes = topo.n_nodes as usize;
 
-    // Convert to atomic arrays for lock-free parallel relaxation
-    let atomic_up: Vec<AtomicU32> = up_weights.drain(..).map(AtomicU32::new).collect();
-    let atomic_down: Vec<AtomicU32> = down_weights.drain(..).map(AtomicU32::new).collect();
+    // Pack (weight, middle) into AtomicU64; initial middle = topo's
+    // contraction middle for each edge.
+    let atomic_up: Vec<AtomicU64> = up_weights
+        .iter()
+        .zip(topo.up_middle.iter())
+        .map(|(&w, &m)| AtomicU64::new(pack_wm(w, m)))
+        .collect();
+    let atomic_down: Vec<AtomicU64> = down_weights
+        .iter()
+        .zip(topo.down_middle.iter())
+        .map(|(&w, &m)| AtomicU64::new(pack_wm(w, m)))
+        .collect();
 
     let mut pass = 0u32;
     loop {
@@ -850,7 +924,7 @@ fn triangle_relax(
             for i_rev in rev_start..rev_end {
                 let x = rev_down.sources[i_rev] as usize;
                 let edge_idx_xm = rev_down.edge_idx[i_rev];
-                let w_xm = atomic_down[edge_idx_xm].load(Ordering::Relaxed);
+                let w_xm = unpack_weight(atomic_down[edge_idx_xm].load(Ordering::Relaxed));
 
                 if w_xm == u32::MAX {
                     continue;
@@ -865,31 +939,28 @@ fn triangle_relax(
                         continue;
                     }
 
-                    let w_my = atomic_up[i_my].load(Ordering::Relaxed);
+                    let w_my = unpack_weight(atomic_up[i_my].load(Ordering::Relaxed));
                     if w_my == u32::MAX {
                         continue;
                     }
 
                     let new_weight = w_xm.saturating_add(w_my);
+                    let new_packed = pack_wm(new_weight, m as u32);
 
                     if y > x {
-                        // UP edge from x to y
                         if let Some(idx) = find_edge_index(x, y, &topo.up_offsets, &topo.up_targets)
                         {
-                            let old = atomic_up[idx].fetch_min(new_weight, Ordering::Relaxed);
-                            if new_weight < old {
+                            let old = atomic_up[idx].fetch_min(new_packed, Ordering::Relaxed);
+                            if new_packed < old {
                                 pass_updates.fetch_add(1, Ordering::Relaxed);
                             }
                         }
-                    } else {
-                        // DOWN edge from x to y
-                        if let Some(idx) =
-                            find_edge_index(x, y, &topo.down_offsets, &topo.down_targets)
-                        {
-                            let old = atomic_down[idx].fetch_min(new_weight, Ordering::Relaxed);
-                            if new_weight < old {
-                                pass_updates.fetch_add(1, Ordering::Relaxed);
-                            }
+                    } else if let Some(idx) =
+                        find_edge_index(x, y, &topo.down_offsets, &topo.down_targets)
+                    {
+                        let old = atomic_down[idx].fetch_min(new_packed, Ordering::Relaxed);
+                        if new_packed < old {
+                            pass_updates.fetch_add(1, Ordering::Relaxed);
                         }
                     }
                 }
@@ -912,8 +983,25 @@ fn triangle_relax(
         }
     }
 
-    *up_weights = atomic_up.into_iter().map(AtomicU32::into_inner).collect();
-    *down_weights = atomic_down.into_iter().map(AtomicU32::into_inner).collect();
+    let n_up = atomic_up.len();
+    let n_down = atomic_down.len();
+    let mut up_middles = Vec::with_capacity(n_up);
+    let mut down_middles = Vec::with_capacity(n_down);
+    up_weights.clear();
+    down_weights.clear();
+    up_weights.reserve(n_up);
+    down_weights.reserve(n_down);
+    for a in atomic_up {
+        let packed = a.into_inner();
+        up_weights.push(unpack_weight(packed));
+        up_middles.push(unpack_middle(packed));
+    }
+    for a in atomic_down {
+        let packed = a.into_inner();
+        down_weights.push(unpack_weight(packed));
+        down_middles.push(unpack_middle(packed));
+    }
+    (up_middles, down_middles)
 }
 
 #[cfg(test)]
