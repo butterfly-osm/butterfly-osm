@@ -264,9 +264,9 @@ pub async fn table_post_handler(
     let mode_data = state.get_mode(mode);
 
     // Compute avoid weights (includes exclude if both present)
-    let avoid_result = if let Some(ref avoid_str) = avoid_json {
+    let avoid_entry = if let Some(ref avoid_str) = avoid_json {
         match super::avoid::compute_avoid_weights(&state, mode_data, avoid_str, exclude_mask) {
-            Ok((weights, flags)) => Some((weights, flags)),
+            Ok(entry) => Some(entry),
             Err(e) => {
                 return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
             }
@@ -276,17 +276,17 @@ pub async fn table_post_handler(
     };
 
     // Get exclude weights if only exclude (no avoid)
-    let exclude_weights = if avoid_result.is_none() {
+    let exclude_weights = if avoid_entry.is_none() {
         exclude_mask.map(|exc| state.get_exclude_weights(mode, exc))
     } else {
         None
     };
 
     // Build snap mask
-    let snap_mask: Vec<u64> = if let Some((_, ref avoid_flags)) = avoid_result {
+    let snap_mask: Vec<u64> = if let Some(ref entry) = avoid_entry {
         super::avoid::build_avoid_mask(
             &mode_data.mask,
-            avoid_flags,
+            &entry.flags,
             exclude_mask.map(|exc| (state.edge_exclude_flags.as_slice(), exc)),
         )
     } else if let Some(exc) = exclude_mask {
@@ -295,10 +295,12 @@ pub async fn table_post_handler(
         mode_data.mask.clone()
     };
 
-    // Determine custom weights: avoid takes priority, then exclude
+    // Determine custom weights: avoid takes priority, then exclude.
+    // /table holds an Arc<AvoidEntry>; the borrow points into the cache
+    // so /table cache hits avoid the prior ~200 MB deep clone.
     let custom_weights_ref: Option<&super::exclude::ExcludeWeights> =
-        if let Some((ref aw, _)) = avoid_result {
-            Some(aw)
+        if let Some(ref entry) = avoid_entry {
+            Some(&entry.weights)
         } else {
             exclude_weights.as_deref()
         };
@@ -981,9 +983,9 @@ pub async fn table_stream_handler(
     let n_nodes = mode_data.cch_topo.n_nodes as usize;
 
     // Compute avoid weights (includes exclude if both present)
-    let avoid_result = if let Some(ref avoid_str) = avoid_json {
+    let avoid_entry = if let Some(ref avoid_str) = avoid_json {
         match super::avoid::compute_avoid_weights(&state, mode_data, avoid_str, exclude_mask) {
-            Ok((weights, flags)) => Some((weights, flags)),
+            Ok(entry) => Some(entry),
             Err(e) => {
                 return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
             }
@@ -993,17 +995,17 @@ pub async fn table_stream_handler(
     };
 
     // Get exclude weights if only exclude (no avoid)
-    let exclude_weights = if avoid_result.is_none() {
+    let exclude_weights = if avoid_entry.is_none() {
         exclude_mask.map(|exc| state.get_exclude_weights(mode, exc))
     } else {
         None
     };
 
     // Build snap mask
-    let snap_mask: std::borrow::Cow<'_, [u64]> = if let Some((_, ref avoid_flags)) = avoid_result {
+    let snap_mask: std::borrow::Cow<'_, [u64]> = if let Some(ref entry) = avoid_entry {
         std::borrow::Cow::Owned(super::avoid::build_avoid_mask(
             &mode_data.mask,
-            avoid_flags,
+            &entry.flags,
             exclude_mask.map(|exc| (state.edge_exclude_flags.as_slice(), exc)),
         ))
     } else if let Some(exc) = exclude_mask {
@@ -1116,15 +1118,15 @@ pub async fn table_stream_handler(
     };
 
     // Select flat adjacencies based on custom weights (exclude or avoid)
-    let up_adj_flat = if let Some((ref aw, _)) = avoid_result {
-        aw.time_up_flat.clone()
+    let up_adj_flat = if let Some(ref entry) = avoid_entry {
+        entry.weights.time_up_flat.clone()
     } else if let Some(ref ew) = exclude_weights {
         ew.time_up_flat.clone()
     } else {
         mode_data.up_adj_flat.clone()
     };
-    let down_rev_flat = if let Some((ref aw, _)) = avoid_result {
-        aw.time_down_flat.clone()
+    let down_rev_flat = if let Some(ref entry) = avoid_entry {
+        entry.weights.time_down_flat.clone()
     } else if let Some(ref ew) = exclude_weights {
         ew.time_down_flat.clone()
     } else {

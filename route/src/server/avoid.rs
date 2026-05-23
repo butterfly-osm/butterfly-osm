@@ -20,8 +20,6 @@ use std::sync::Arc;
 use geo::{Contains, Coord, Point, Polygon};
 use parking_lot::RwLock;
 
-use crate::formats::cch_weights::CchWeights;
-
 use super::exclude::{self, ExcludeWeights};
 use super::snap_index::PackedSnapIndex;
 use super::state::{ModeData, ServerState};
@@ -407,51 +405,33 @@ fn get_or_compute_avoid_entry(
     Ok(entry)
 }
 
-/// Compute time-only avoid weights for P2P route queries.
+/// Compute (or cache-fetch) the avoid weight set for /route, /table,
+/// /isochrone, /trip, /matching. Returns the full `Arc<AvoidEntry>`
+/// directly — callers borrow fields they need via deref. This avoids
+/// the ~100-400 MB deep clone on cache hits that owned-return forced.
 ///
-/// Backed by the shared `AvoidWeightCache`. The cache stores full
-/// `ExcludeWeights`; this function clones the time field. /route pays
-/// a ~1.2× upfront cost vs a hypothetical time-only cache but in
-/// exchange any subsequent /table or /isochrone on the same polygon
-/// gets the same cache hit.
-pub fn compute_avoid_weights_time_only(
-    state: &ServerState,
-    mode_data: &ModeData,
-    avoid_json: &str,
-    exclude_mask: Option<u8>,
-) -> Result<(CchWeights, Vec<u8>), String> {
-    let mode_idx = mode_index_in_state(state, mode_data)? as u8;
-    let entry = get_or_compute_avoid_entry(state, mode_data, mode_idx, avoid_json, exclude_mask)?;
-    Ok((entry.weights.time_weights.clone(), entry.flags.clone()))
-}
-
-/// Compute full avoid weights (time + distance + flat adjacencies).
-///
-/// For PHAST-based endpoints (isochrones, matrices, trip). Backed by
-/// the shared `AvoidWeightCache`. If `exclude_mask` is also specified,
-/// both avoid and exclude flags are merged before recustomization.
+/// Both time-only (P2P /route) and full (PHAST batch) consumers go
+/// through this single entry point. Time-only callers read
+/// `entry.weights.time_weights`; full callers read `entry.weights`.
 pub fn compute_avoid_weights(
     state: &ServerState,
     mode_data: &ModeData,
     avoid_json: &str,
     exclude_mask: Option<u8>,
-) -> Result<(ExcludeWeights, Vec<u8>), String> {
+) -> Result<Arc<AvoidEntry>, String> {
     let mode_idx = mode_index_in_state(state, mode_data)? as u8;
-    let entry = get_or_compute_avoid_entry(state, mode_data, mode_idx, avoid_json, exclude_mask)?;
-    // The cached ExcludeWeights is shared via Arc; consumers that
-    // need an owned value pay a deep clone here. The 100-200 MB clone
-    // is still cheap vs the 30 s recustomization it replaces.
-    let owned: ExcludeWeights = ExcludeWeights {
-        time_weights: entry.weights.time_weights.clone(),
-        dist_weights: entry.weights.dist_weights.clone(),
-        time_up_flat: entry.weights.time_up_flat.clone(),
-        time_down_flat: entry.weights.time_down_flat.clone(),
-        time_down_fwd_flat: entry.weights.time_down_fwd_flat.clone(),
-        dist_up_flat: entry.weights.dist_up_flat.clone(),
-        dist_down_flat: entry.weights.dist_down_flat.clone(),
-        dist_down_fwd_flat: entry.weights.dist_down_fwd_flat.clone(),
-    };
-    Ok((owned, entry.flags.clone()))
+    get_or_compute_avoid_entry(state, mode_data, mode_idx, avoid_json, exclude_mask)
+}
+
+/// Compatibility shim: /route only needs the time field but reuses
+/// the cache via the unified entry. Same `Arc<AvoidEntry>` shape.
+pub fn compute_avoid_weights_time_only(
+    state: &ServerState,
+    mode_data: &ModeData,
+    avoid_json: &str,
+    exclude_mask: Option<u8>,
+) -> Result<Arc<AvoidEntry>, String> {
+    compute_avoid_weights(state, mode_data, avoid_json, exclude_mask)
 }
 
 /// Look up the mode index by comparing the `ModeData` pointer against
