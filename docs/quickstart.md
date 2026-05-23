@@ -23,12 +23,12 @@ cd /path/to/butterfly-osm
 docker build -t butterfly-route .
 ```
 
-No pre-built images are published yet — build locally. The published
-runtime layer is ~200 MB (slim Debian + the static-ish Rust binary +
-curl + certs); the multi-stage builder layer is fat but never shipped.
-The 26 GB figure cited elsewhere refers to the mounted Belgium data
-volume (the packed `*.butterfly` container), not the image. Build takes
-5–10 min cold, seconds warm.
+No pre-built images are published yet — build locally. The locally-
+built runtime layer is ~200 MB (slim Debian + the static-ish Rust
+binary + curl + certs); the multi-stage builder layer is fat but
+never shipped. The 26 GB figure cited elsewhere refers to the mounted
+Belgium data volume (the packed `*.butterfly` container), not the
+image. Build takes 5–10 min cold, seconds warm.
 
 ## 3. Run the server
 
