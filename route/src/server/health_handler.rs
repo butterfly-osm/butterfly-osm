@@ -85,6 +85,37 @@ pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl In
 
     let n_failed = failed_sections.len();
 
+    // #242: aggregate avoid-cache stats across regions. /route, /table,
+    // /isochrone, /trip share one cache per region. We surface
+    // hits/misses/size/cap so operators can tune
+    // BUTTERFLY_AVOID_CACHE_CAP based on traffic.
+    let avoid_cache_stats: Vec<serde_json::Value> = regions
+        .regions
+        .iter()
+        .map(|region| {
+            let (hits, misses, size, capacity) = region.state.avoid_cache.stats();
+            // Mirror current stats into the Prometheus registry so the
+            // next /metrics scrape sees fresh values. /health is the
+            // natural "snapshot" hook — typical ops setups poll it
+            // alongside /metrics.
+            super::metrics::record_avoid_cache_stats(&region.id, hits, misses, size, capacity);
+            let total = hits + misses;
+            let hit_rate = if total > 0 {
+                hits as f64 / total as f64
+            } else {
+                0.0
+            };
+            serde_json::json!({
+                "region": region.id,
+                "hits": hits,
+                "misses": misses,
+                "hit_rate": hit_rate,
+                "size": size,
+                "capacity": capacity,
+            })
+        })
+        .collect();
+
     Json(serde_json::json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
@@ -107,5 +138,6 @@ pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl In
             "n_failed": n_failed,
             "failed": failed_sections,
         },
+        "avoid_cache": avoid_cache_stats,
     }))
 }
