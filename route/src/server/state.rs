@@ -61,18 +61,17 @@ pub struct ModeData {
     // Original node weights and mask (indexed by original EBG node ID)
     pub node_weights: Vec<u32>,
     pub mask: Vec<u64>,
-    /// Per-mode "has at least one outbound mode-valid arc" bitset
-    /// (indexed by original EBG node ID). Built at boot from the
-    /// filtered EBG. Used by role-aware snap (#197) so that snapping a
-    /// SOURCE point only returns EBG nodes that can actually start a
-    /// route in this mode (excludes one-way exit ramps where every
-    /// outbound transition is banned in this mode).
+    /// Per-mode source snap bitset (indexed by original EBG node ID).
+    /// Built at boot from the filtered EBG. A set bit means the node
+    /// has at least one mode-valid outbound arc and can reach the main
+    /// routing core. Used by role-aware snap (#197) so source snaps do
+    /// not land in isolated snap traps.
     pub has_outbound: Vec<u64>,
-    /// Per-mode "has at least one inbound mode-valid arc" bitset
-    /// (indexed by original EBG node ID). Built at boot from the
-    /// filtered EBG. Used by role-aware snap (#197) so that snapping a
-    /// DESTINATION point only returns EBG nodes that can actually be
-    /// reached in this mode (excludes nodes only reachable backward).
+    /// Per-mode destination snap bitset (indexed by original EBG node
+    /// ID). Built at boot from the filtered EBG. A set bit means the
+    /// node has at least one mode-valid inbound arc and is reachable
+    /// from the main routing core. Used by role-aware snap (#197) so
+    /// destination snaps do not land in isolated snap traps.
     pub has_inbound: Vec<u64>,
     // Flat adjacencies for bucket M2M - TIME metric (pre-built for performance)
     //
@@ -183,6 +182,14 @@ pub struct ServerState {
 
     // Per-EBG-edge exclude flags (toll/ferry/motorway), indexed by original EBG edge ID
     pub edge_exclude_flags: Vec<u8>,
+
+    // Bounded LRU cache for avoid_polygons-recustomized weights.
+    // Keyed by (mode, polygon_hash, exclude_mask). Each entry is
+    // ~100-200 MB on Belgium — capacity defaults to 8 (~1.6 GB cap),
+    // overridable via the BUTTERFLY_AVOID_CACHE_CAP env var. Cache
+    // hits drop avoid_polygons latency from ~30 s to ~5 ms. See
+    // server/avoid.rs::AvoidWeightCache.
+    pub avoid_cache: super::avoid::AvoidWeightCache,
 
     // Optional transit (public transport) state
     pub transit: Option<crate::transit::TransitState>,
@@ -473,6 +480,7 @@ impl ServerState {
             way_names,
             node_weights_dist,
             edge_exclude_flags,
+            avoid_cache: super::avoid::AvoidWeightCache::default(),
             transit,
             started_at: std::time::Instant::now(),
             data_dir: data_dir.to_string_lossy().to_string(),
@@ -973,6 +981,7 @@ impl ServerState {
             way_names,
             node_weights_dist,
             edge_exclude_flags,
+            avoid_cache: super::avoid::AvoidWeightCache::default(),
             transit: None,
             started_at: std::time::Instant::now(),
             data_dir: container_path.to_string_lossy().to_string(),
@@ -1259,9 +1268,9 @@ fn load_mode_data(
     let weights_path = step5_dir.join(format!("w.{}.u32", mode_name));
     let weights_data = mod_weights::read_all(&weights_path)?;
 
-    // Build snap mask from the SCC-filtered EBG (only nodes in the largest
-    // strongly connected component are snappable). This ensures queries never
-    // snap to dead-end stubs or disconnected fragments.
+    // Build the base snap mask from the mode-filtered EBG. Directional
+    // role masks below further restrict candidates to nodes connected
+    // to the main routing core.
     let n_original = filtered_ebg.n_original_nodes as usize;
     let mask = {
         let n_words = n_original.div_ceil(64);
@@ -1304,9 +1313,9 @@ fn load_mode_data(
 
     // Build role-aware snap bitsets (#197) from the same filtered EBG.
     // The filtered EBG already encodes both node-level mode access AND
-    // per-arc turn-table mode masking, so this is the exact ground
-    // truth for "can this node start a route" / "can this node end a
-    // route" in this mode.
+    // per-arc turn-table mode masking. We also require connectivity to
+    // the main routing core so primary snaps do not land in isolated
+    // components that force per-cell matrix fallback.
     let (has_outbound, has_inbound) = build_role_masks(&filtered_ebg);
 
     Ok(ModeData {
@@ -1332,11 +1341,17 @@ fn load_mode_data(
     })
 }
 
-/// Build per-mode `has_outbound` and `has_inbound` bitsets indexed by
-/// **original** EBG node id, from the mode's `FilteredEbg`. The
-/// filtered EBG already encodes both node-level mode accessibility and
-/// per-arc turn-table mode masking, so a node's outbound (or inbound)
-/// bit is set iff the node has at least one mode-valid arc out (or in).
+/// Build per-mode source and destination snap bitsets indexed by
+/// **original** EBG node id, from the mode's `FilteredEbg`.
+///
+/// The filtered EBG already encodes both node-level mode accessibility
+/// and per-arc turn-table mode masking. A source candidate must also be
+/// able to reach the largest SCC, and a destination candidate must be
+/// reachable from that SCC. This preserves directed endpoint stubs
+/// (sources can be outside the core if they can drive/walk into it;
+/// destinations can be outside the core if the core can reach them)
+/// while filtering isolated small SCCs that otherwise look valid under
+/// a plain outbound/inbound test and poison matrix primary snaps.
 ///
 /// Fixes #197: directional snap asymmetry. The legacy snap returned
 /// the geometrically-closest mode-eligible EBG node without checking
@@ -1350,27 +1365,215 @@ fn load_mode_data(
 fn build_role_masks(filtered_ebg: &crate::formats::FilteredEbg) -> (Vec<u64>, Vec<u64>) {
     let n_orig = filtered_ebg.n_original_nodes as usize;
     let n_words = n_orig.div_ceil(64);
-    let mut has_outbound = vec![0u64; n_words];
-    let mut has_inbound = vec![0u64; n_words];
-
     let f2o = filtered_ebg.filtered_to_original.as_ref();
     let offsets = filtered_ebg.offsets.as_ref();
     let heads = filtered_ebg.heads.as_ref();
+    let n_filt = f2o.len();
 
-    for (filt_id, &orig_id) in f2o.iter().enumerate() {
+    let mut has_outbound_f = vec![false; n_filt];
+    let mut has_inbound_f = vec![false; n_filt];
+
+    for filt_id in 0..n_filt {
         let start = offsets[filt_id] as usize;
         let end = offsets[filt_id + 1] as usize;
         if end > start {
-            let oi = orig_id as usize;
-            has_outbound[oi / 64] |= 1u64 << (oi % 64);
+            has_outbound_f[filt_id] = true;
         }
         for &head_filt in &heads[start..end] {
-            let head_orig = f2o[head_filt as usize] as usize;
-            has_inbound[head_orig / 64] |= 1u64 << (head_orig % 64);
+            let head = head_filt as usize;
+            if head < n_filt {
+                has_inbound_f[head] = true;
+            }
         }
     }
 
+    let reverse = build_reverse_csr(n_filt, offsets, heads);
+    let core = largest_scc_mask(n_filt, offsets, heads, &reverse);
+    let can_reach_core = flood_from_seeds(n_filt, &reverse.offsets, &reverse.heads, &core);
+    let reachable_from_core = flood_from_seeds(n_filt, offsets, heads, &core);
+
+    let mut has_outbound = vec![0u64; n_words];
+    let mut has_inbound = vec![0u64; n_words];
+    let mut core_nodes = 0usize;
+    let mut src_nodes = 0usize;
+    let mut dst_nodes = 0usize;
+
+    for (filt_id, &orig_id) in f2o.iter().enumerate() {
+        if core[filt_id] {
+            core_nodes += 1;
+        }
+        let oi = orig_id as usize;
+        if has_outbound_f[filt_id] && can_reach_core[filt_id] {
+            has_outbound[oi / 64] |= 1u64 << (oi % 64);
+            src_nodes += 1;
+        }
+        if has_inbound_f[filt_id] && reachable_from_core[filt_id] {
+            has_inbound[oi / 64] |= 1u64 << (oi % 64);
+            dst_nodes += 1;
+        }
+    }
+
+    tracing::info!(
+        filtered_nodes = n_filt,
+        core_nodes,
+        source_snap_nodes = src_nodes,
+        destination_snap_nodes = dst_nodes,
+        "built connectivity-aware role snap masks"
+    );
+
     (has_outbound, has_inbound)
+}
+
+struct ReverseCsr {
+    offsets: Vec<u64>,
+    heads: Vec<u32>,
+}
+
+fn build_reverse_csr(n_nodes: usize, offsets: &[u64], heads: &[u32]) -> ReverseCsr {
+    let mut counts = vec![0usize; n_nodes];
+    for u in 0..n_nodes {
+        let start = offsets[u] as usize;
+        let end = offsets[u + 1] as usize;
+        for &v in &heads[start..end] {
+            let v = v as usize;
+            if v < n_nodes {
+                counts[v] += 1;
+            }
+        }
+    }
+
+    let mut rev_offsets = Vec::with_capacity(n_nodes + 1);
+    let mut acc = 0u64;
+    rev_offsets.push(acc);
+    for &count in &counts {
+        acc += count as u64;
+        rev_offsets.push(acc);
+    }
+
+    let mut rev_heads = vec![0u32; acc as usize];
+    counts.fill(0);
+    for u in 0..n_nodes {
+        let start = offsets[u] as usize;
+        let end = offsets[u + 1] as usize;
+        for &v in &heads[start..end] {
+            let v = v as usize;
+            if v >= n_nodes {
+                continue;
+            }
+            let pos = rev_offsets[v] as usize + counts[v];
+            rev_heads[pos] = u as u32;
+            counts[v] += 1;
+        }
+    }
+
+    ReverseCsr {
+        offsets: rev_offsets,
+        heads: rev_heads,
+    }
+}
+
+fn largest_scc_mask(
+    n_nodes: usize,
+    offsets: &[u64],
+    heads: &[u32],
+    reverse: &ReverseCsr,
+) -> Vec<bool> {
+    if n_nodes == 0 {
+        return Vec::new();
+    }
+
+    // Kosaraju, iterative to avoid a multi-million-node recursion stack.
+    let mut seen = vec![false; n_nodes];
+    let mut finish_order = Vec::with_capacity(n_nodes);
+    let mut stack: Vec<(usize, usize)> = Vec::new(); // (node, next edge slot)
+
+    for start in 0..n_nodes {
+        if seen[start] {
+            continue;
+        }
+        seen[start] = true;
+        stack.push((start, offsets[start] as usize));
+
+        while let Some((u, next)) = stack.last_mut() {
+            let end = offsets[*u + 1] as usize;
+            if *next < end {
+                let v = heads[*next] as usize;
+                *next += 1;
+                if v < n_nodes && !seen[v] {
+                    seen[v] = true;
+                    stack.push((v, offsets[v] as usize));
+                }
+            } else {
+                finish_order.push(*u as u32);
+                stack.pop();
+            }
+        }
+    }
+
+    let mut assigned = vec![false; n_nodes];
+    let mut best_component: Vec<u32> = Vec::new();
+    let mut node_stack: Vec<u32> = Vec::new();
+
+    for &start in finish_order.iter().rev() {
+        let start_usize = start as usize;
+        if assigned[start_usize] {
+            continue;
+        }
+
+        let mut component: Vec<u32> = Vec::new();
+        assigned[start_usize] = true;
+        node_stack.push(start);
+
+        while let Some(u) = node_stack.pop() {
+            component.push(u);
+            let u = u as usize;
+            let start = reverse.offsets[u] as usize;
+            let end = reverse.offsets[u + 1] as usize;
+            for &v in &reverse.heads[start..end] {
+                let v = v as usize;
+                if !assigned[v] {
+                    assigned[v] = true;
+                    node_stack.push(v as u32);
+                }
+            }
+        }
+
+        if component.len() > best_component.len() {
+            best_component = component;
+        }
+    }
+
+    let mut mask = vec![false; n_nodes];
+    for node in best_component {
+        mask[node as usize] = true;
+    }
+    mask
+}
+
+fn flood_from_seeds(n_nodes: usize, offsets: &[u64], heads: &[u32], seeds: &[bool]) -> Vec<bool> {
+    let mut seen = vec![false; n_nodes];
+    let mut stack = Vec::new();
+    for (node, &is_seed) in seeds.iter().enumerate() {
+        if is_seed {
+            seen[node] = true;
+            stack.push(node as u32);
+        }
+    }
+
+    while let Some(u) = stack.pop() {
+        let u = u as usize;
+        let start = offsets[u] as usize;
+        let end = offsets[u + 1] as usize;
+        for &v in &heads[start..end] {
+            let v = v as usize;
+            if v < n_nodes && !seen[v] {
+                seen[v] = true;
+                stack.push(v as u32);
+            }
+        }
+    }
+
+    seen
 }
 
 /// Build the composed `orig_to_rank` array from a legacy
@@ -2063,4 +2266,60 @@ fn try_load_edge_geometry(
     let eg =
         EdgeGeometry::from_sections(off, pts).with_context(|| "stitching edge_geom sections")?;
     Ok(Some(eg))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_role_masks;
+    use crate::formats::FilteredEbg;
+    use crate::profile_abi::Mode;
+    use std::borrow::Cow;
+
+    fn tiny_filtered_ebg(offsets: Vec<u64>, heads: Vec<u32>) -> FilteredEbg {
+        let n = offsets.len() - 1;
+        FilteredEbg {
+            mode: Mode(1),
+            n_filtered_nodes: n as u32,
+            n_filtered_arcs: heads.len() as u64,
+            n_original_nodes: n as u32,
+            inputs_sha: [0; 32],
+            offsets: Cow::Owned(offsets),
+            heads: Cow::Owned(heads.clone()),
+            original_arc_idx: Cow::Owned((0..heads.len() as u32).collect()),
+            filtered_to_original: Cow::Owned((0..n as u32).collect()),
+            original_to_filtered: Cow::Owned((0..n as u32).collect()),
+        }
+    }
+
+    fn bit(mask: &[u64], node: usize) -> bool {
+        (mask[node / 64] & (1u64 << (node % 64))) != 0
+    }
+
+    #[test]
+    fn role_masks_keep_core_reachable_stubs_and_drop_small_sccs() {
+        // 0 -> 1, 1 <-> 2 <-> 6, 2 -> 3, plus isolated 4 <-> 5.
+        // The largest SCC is {1,2,6}. Sources may include 0 because it
+        // can reach the core; destinations may include 3 because the
+        // core can reach it. The isolated SCC looks internally valid
+        // but is not useful for Belgium-wide table/route snaps.
+        let fe = tiny_filtered_ebg(vec![0, 1, 2, 5, 5, 6, 7, 8], vec![1, 2, 1, 6, 3, 5, 4, 1]);
+
+        let (src, dst) = build_role_masks(&fe);
+
+        assert!(bit(&src, 0));
+        assert!(bit(&src, 1));
+        assert!(bit(&src, 2));
+        assert!(!bit(&src, 3));
+        assert!(!bit(&src, 4));
+        assert!(!bit(&src, 5));
+        assert!(bit(&src, 6));
+
+        assert!(!bit(&dst, 0));
+        assert!(bit(&dst, 1));
+        assert!(bit(&dst, 2));
+        assert!(bit(&dst, 3));
+        assert!(!bit(&dst, 4));
+        assert!(!bit(&dst, 5));
+        assert!(bit(&dst, 6));
+    }
 }

@@ -534,6 +534,22 @@ impl RegionsState {
                 available: self.available_modes(),
             });
         }
+        // Single-region fast path: skip the per-coord snap_winner sweep.
+        // The matrix handler runs its own K-best snap downstream, which
+        // is what actually validates whether each coord lies in a region.
+        // A coord that doesn't snap there will get an INF cell, which is
+        // the correct behaviour for a single-region container. Without
+        // this short-circuit, dispatch_many ran 200+ serial single-best
+        // snaps per /table call (~200 ms wall on Belgium at N=100) —
+        // dominating the request latency.
+        if self.regions.len() == 1 {
+            let only = &self.regions[0];
+            // We still need to consume the first coord to check the
+            // iterator isn't empty (matches the original Empty error).
+            let mut iter = coords.into_iter();
+            iter.next().ok_or(DispatchError::Empty)?;
+            return Ok((Arc::clone(&only.state), only.id.clone()));
+        }
         let mut iter = coords.into_iter();
         let first = iter.next().ok_or(DispatchError::Empty)?;
         let first_winner = self
