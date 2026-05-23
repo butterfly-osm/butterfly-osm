@@ -97,7 +97,7 @@ A 50k × 50k matrix is 2.5 billion cells. At the documented throughput, anything
 
 ---
 
-## Symptom: 400 response with `route spans regions X → Y; cross-region overlay not yet implemented (#91 Phase 2)`
+## Symptom: 501 response with `route spans regions X → Y; cross-region overlay not yet implemented (#91 Phase 2)`
 
 **Diagnosis**
 
@@ -209,7 +209,7 @@ Common failure modes:
 **Fix**
 
 - Format the ticket as `matrix:car:{...}` — three fields, two colons, JSON last.
-- Verify with a known-good action: `route_batch:car:{"queries":[...]}`. If that works, your `matrix` request is malformed; if it also fails, your colon count is wrong.
+- Verify with a known-good action: `route_batch:car:{"pairs":[[src_lon,src_lat,dst_lon,dst_lat],...]}`. If that works, your `matrix` request is malformed; if it also fails, your colon count is wrong.
 
 ---
 
