@@ -10,17 +10,21 @@
 //! recomputation to dependent edges via triangle dependencies, and
 //! terminate when the queue is empty. Work is bounded by polygon size,
 //! not graph size — a 1 km Belgium polygon takes ~780 ms instead of
-//! the ~37 s the from-scratch bottom-up cost.
+//! the ~37 s the from-scratch bottom-up used to cost.
 //!
 //! See `recustomize_weights_incremental` for the algorithm and the
 //! BFS dependency walk in `enqueue_dependents`.
 
-/// Pack (weight, middle_rank) into a single u64 for atomic fetch_min.
-/// Weight in high 32 bits so fetch_min minimizes by weight first. Middle
-/// in low 32 bits comes along for the ride.
+/// Pack (weight, middle_rank) into a single u64 so the (weight, middle)
+/// pair compares lexicographically as a unit: high 32 bits hold the
+/// weight, low 32 bits hold the middle. `recompute_edge_weight` picks
+/// the lex-smallest packed value over all candidate triangles, which
+/// gives a deterministic (weight, middle) tuple even when several
+/// middles produce the same weight.
 ///
-/// Build-time customization does the same dance in customization.rs;
-/// duplicated here so exclude.rs stays self-contained.
+/// Build-time customization (`customization.rs::triangle_relax_parallel`)
+/// uses the same packing inside `AtomicU64::fetch_min`; serve-time
+/// recustomization is single-threaded per call so no atomics here.
 #[inline]
 fn pack_wm(weight: u32, middle: u32) -> u64 {
     ((weight as u64) << 32) | (middle as u64)
