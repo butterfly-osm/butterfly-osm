@@ -1,20 +1,23 @@
-//! Exclude feature: re-customize CCH weights to block toll/ferry/motorway edges.
+//! Exclude / avoid: re-customize CCH weights to block specific edges.
 //!
-//! At startup, builds per-EBG-edge exclude flags from way attributes.
-//! At query time, selects or computes excluded weight sets with cached results.
+//! At startup, builds per-EBG-edge exclude flags (toll/ferry/motorway)
+//! from way attributes. At query time, computes a fresh `CchWeights`
+//! set with the flagged edges treated as INF.
 //!
-//! The recustomization algorithm:
-//! 1. Clone existing CCH weights
-//! 2. Set base (non-shortcut) edges whose original EBG edge is excluded to u32::MAX
-//! 3. Recompute all shortcut weights bottom-up (shortcuts through excluded edges get u32::MAX)
-//! 4. Run triangle relaxation to find alternative paths through non-excluded edges
-
-use std::sync::atomic::{AtomicU64, Ordering};
+//! The recustomization is **incremental BFS** (#240): start from the
+//! build-time relaxed weights + middles, seed a queue with every CCH
+//! base edge whose underlying OSM edge is flagged, propagate
+//! recomputation to dependent edges via triangle dependencies, and
+//! terminate when the queue is empty. Work is bounded by polygon size,
+//! not graph size — a 1 km Belgium polygon takes ~780 ms instead of
+//! the ~37 s the from-scratch bottom-up cost.
+//!
+//! See `recustomize_weights_incremental` for the algorithm and the
+//! BFS dependency walk in `enqueue_dependents`.
 
 /// Pack (weight, middle_rank) into a single u64 for atomic fetch_min.
 /// Weight in high 32 bits so fetch_min minimizes by weight first. Middle
-/// in low 32 bits comes along for the ride — when the relax improves
-/// the weight it atomically records the m that produced it.
+/// in low 32 bits comes along for the ride.
 ///
 /// Build-time customization does the same dance in customization.rs;
 /// duplicated here so exclude.rs stays self-contained.
@@ -32,8 +35,6 @@ fn unpack_weight(packed: u64) -> u32 {
 fn unpack_middle(packed: u64) -> u32 {
     packed as u32
 }
-
-use rayon::prelude::*;
 
 use crate::formats::way_attrs;
 use crate::formats::{CchTopo, CchWeights, EbgNodes};
@@ -200,116 +201,12 @@ pub fn build_exclude_mask(
         .collect()
 }
 
-/// Re-customize CCH weights with excluded edges set to u32::MAX.
-///
-/// Algorithm:
-/// 1. For base (non-shortcut) CCH edges: if the target's original EBG edge is excluded,
-///    set weight to u32::MAX. Otherwise keep existing weight.
-/// 2. For shortcut edges: recompute as w(u,m) + w(m,v) using modified weights.
-/// 3. Process bottom-up by rank (ascending) for correct dependency order.
-/// 4. Run triangle relaxation to find alternative paths where shortcuts were blocked.
-pub fn recustomize_weights(
-    topo: &CchTopo,
-    base_weights: &CchWeights,
-    edge_exclude_flags: &[u8],
-    exclude_mask: u8,
-    filtered_to_original: &[u32],
-) -> CchWeights {
-    let n_nodes = topo.n_nodes as usize;
-
-    let is_excluded = |orig_id: usize| -> bool {
-        orig_id < edge_exclude_flags.len() && (edge_exclude_flags[orig_id] & exclude_mask) != 0
-    };
-
-    // Build sorted down indices for correct dependency order
-    let sorted_down_indices: Vec<Vec<usize>> = (0..n_nodes)
-        .into_par_iter()
-        .map(|u| {
-            let start = topo.down_offsets[u] as usize;
-            let end = topo.down_offsets[u + 1] as usize;
-            if start >= end {
-                return Vec::new();
-            }
-            let mut indices: Vec<usize> = (start..end).collect();
-            indices.sort_unstable_by_key(|&i| topo.down_targets[i]);
-            indices
-        })
-        .collect();
-
-    let mut up_weights = vec![u32::MAX; topo.up_targets.len()];
-    let mut down_weights = vec![u32::MAX; topo.down_targets.len()];
-
-    // Bottom-up pass
-    for rank in 0..n_nodes {
-        let u = rank;
-
-        // DOWN edges (sorted by target rank)
-        for &i in &sorted_down_indices[u] {
-            let v = topo.down_targets[i] as usize;
-            if !topo.down_is_shortcut.bit(i) {
-                // Base edge: check target for exclusion
-                let v_filtered = topo.rank_to_filtered[v] as usize;
-                let v_orig = filtered_to_original[v_filtered] as usize;
-
-                if is_excluded(v_orig) {
-                    down_weights[i] = u32::MAX;
-                } else {
-                    down_weights[i] = base_weights.down[i];
-                }
-            } else {
-                // Shortcut: recompute from components
-                let m = topo.down_middle[i] as usize;
-                let w_um =
-                    find_edge_weight(u, m, &topo.down_offsets, &topo.down_targets, &down_weights);
-                let w_mv = find_edge_weight(m, v, &topo.up_offsets, &topo.up_targets, &up_weights);
-                down_weights[i] = w_um.saturating_add(w_mv);
-            }
-        }
-
-        // UP edges
-        let up_start = topo.up_offsets[u] as usize;
-        let up_end = topo.up_offsets[u + 1] as usize;
-        for i in up_start..up_end {
-            let v = topo.up_targets[i] as usize;
-            if !topo.up_is_shortcut.bit(i) {
-                let v_filtered = topo.rank_to_filtered[v] as usize;
-                let v_orig = filtered_to_original[v_filtered] as usize;
-
-                if is_excluded(v_orig) {
-                    up_weights[i] = u32::MAX;
-                } else {
-                    up_weights[i] = base_weights.up[i];
-                }
-            } else {
-                let m = topo.up_middle[i] as usize;
-                let w_um =
-                    find_edge_weight(u, m, &topo.down_offsets, &topo.down_targets, &down_weights);
-                let w_mv = find_edge_weight(m, v, &topo.up_offsets, &topo.up_targets, &up_weights);
-                up_weights[i] = w_um.saturating_add(w_mv);
-            }
-        }
-    }
-
-    // Triangle relaxation to find alternative paths. The relax updates
-    // (weight, middle) as a tuple via AtomicU64, so middles drift to
-    // whichever m actually produces the current best weight. Stale
-    // middles → wrong unpack geometry (#239).
-    let rev_down = build_reverse_down_adj(topo);
-    let (up_middles, down_middles) =
-        triangle_relax(topo, &mut up_weights, &mut down_weights, &rev_down);
-
-    CchWeights {
-        up: up_weights.into(),
-        down: down_weights.into(),
-        up_middle: up_middles.into(),
-        down_middle: down_middles.into(),
-    }
-}
-
 /// Compute time-only exclude weights (for P2P route queries).
 ///
-/// Skips distance recustomization and flat adjacency builds.
-/// Uses sparse triangle relaxation (~10x faster than full) for correct routing.
+/// Skips distance recustomization and flat adjacency builds. Uses the
+/// incremental BFS recustomization (#240) — work is bounded by
+/// polygon size rather than graph size. On Belgium, a 1 km rural
+/// polygon takes ~780 ms instead of ~37 s.
 pub fn compute_exclude_weights_time_only(
     topo: &CchTopo,
     base_time: &CchWeights,
@@ -407,19 +304,6 @@ pub fn compute_exclude_weights(
 // --- Internal helpers ---
 
 #[inline]
-fn find_edge_weight(u: usize, v: usize, offsets: &[u64], targets: &[u32], weights: &[u32]) -> u32 {
-    let start = offsets[u] as usize;
-    let end = offsets[u + 1] as usize;
-    if start >= end {
-        return u32::MAX;
-    }
-    match targets[start..end].binary_search(&(v as u32)) {
-        Ok(idx) => weights[start + idx],
-        Err(_) => u32::MAX,
-    }
-}
-
-#[inline]
 fn find_edge_index(u: usize, v: usize, offsets: &[u64], targets: &[u32]) -> Option<usize> {
     let start = offsets[u] as usize;
     let end = offsets[u + 1] as usize;
@@ -432,10 +316,12 @@ fn find_edge_index(u: usize, v: usize, offsets: &[u64], targets: &[u32]) -> Opti
         .map(|idx| start + idx)
 }
 
+/// Reverse DOWN adjacency: for each node m, the set of nodes x with a
+/// DOWN edge x → m. Built once per recustomization and reused by the
+/// BFS dependency walk.
 struct ReverseDownAdj {
     offsets: Vec<u64>,
     sources: Vec<u32>,
-    edge_idx: Vec<usize>,
 }
 
 fn build_reverse_down_adj(topo: &CchTopo) -> ReverseDownAdj {
@@ -457,7 +343,6 @@ fn build_reverse_down_adj(topo: &CchTopo) -> ReverseDownAdj {
 
     let total = offsets[n_nodes] as usize;
     let mut sources = vec![0u32; total];
-    let mut edge_idx = vec![0usize; total];
     let mut insert = vec![0u64; n_nodes];
 
     for u in 0..n_nodes {
@@ -467,151 +352,16 @@ fn build_reverse_down_adj(topo: &CchTopo) -> ReverseDownAdj {
             let m = topo.down_targets[i] as usize;
             let pos = (offsets[m] + insert[m]) as usize;
             sources[pos] = u as u32;
-            edge_idx[pos] = i;
             insert[m] += 1;
         }
     }
 
-    ReverseDownAdj {
-        offsets,
-        sources,
-        edge_idx,
-    }
-}
-
-/// Triangle relaxation: find shorter paths through alternative intermediate
-/// nodes. Iterates until convergence (no more weight decreases).
-///
-/// Packs (weight, middle_rank) into AtomicU64 so the relax updates both
-/// atomically — when m gives a strictly better weight, the slot's middle
-/// becomes m. This is what `unpack_path` follows; without it the unpack
-/// follows the stale topo middle and the geometry can cross an avoided
-/// region even when the duration correctly reflects the detour (#239).
-///
-/// Returns `(up_middles, down_middles)` populated with the relaxed
-/// middles; the caller's mutable `up_weights` / `down_weights` are
-/// written in-place with the relaxed weights.
-fn triangle_relax(
-    topo: &CchTopo,
-    up_weights: &mut Vec<u32>,
-    down_weights: &mut Vec<u32>,
-    rev_down: &ReverseDownAdj,
-) -> (Vec<u32>, Vec<u32>) {
-    let n_nodes = topo.n_nodes as usize;
-
-    // Pack (weight, middle) into AtomicU64; initial middle = topo's
-    // contraction middle for each edge.
-    let atomic_up: Vec<AtomicU64> = up_weights
-        .iter()
-        .zip(topo.up_middle.iter())
-        .map(|(&w, &m)| AtomicU64::new(pack_wm(w, m)))
-        .collect();
-    let atomic_down: Vec<AtomicU64> = down_weights
-        .iter()
-        .zip(topo.down_middle.iter())
-        .map(|(&w, &m)| AtomicU64::new(pack_wm(w, m)))
-        .collect();
-
-    let mut pass = 0u32;
-    loop {
-        pass += 1;
-        let pass_updates = AtomicU64::new(0);
-
-        (0..n_nodes).into_par_iter().for_each(|m| {
-            let rev_start = rev_down.offsets[m] as usize;
-            let rev_end = rev_down.offsets[m + 1] as usize;
-
-            for i_rev in rev_start..rev_end {
-                let x = rev_down.sources[i_rev] as usize;
-                let edge_idx_xm = rev_down.edge_idx[i_rev];
-                let w_xm = unpack_weight(atomic_down[edge_idx_xm].load(Ordering::Relaxed));
-
-                if w_xm == u32::MAX {
-                    continue;
-                }
-
-                let up_start = topo.up_offsets[m] as usize;
-                let up_end = topo.up_offsets[m + 1] as usize;
-
-                for i_my in up_start..up_end {
-                    let y = topo.up_targets[i_my] as usize;
-                    if y == x {
-                        continue;
-                    }
-
-                    let w_my = unpack_weight(atomic_up[i_my].load(Ordering::Relaxed));
-                    if w_my == u32::MAX {
-                        continue;
-                    }
-
-                    let new_weight = w_xm.saturating_add(w_my);
-                    let new_packed = pack_wm(new_weight, m as u32);
-
-                    if y > x {
-                        if let Some(idx) = find_edge_index(x, y, &topo.up_offsets, &topo.up_targets)
-                        {
-                            let old = atomic_up[idx].fetch_min(new_packed, Ordering::Relaxed);
-                            if new_packed < old {
-                                pass_updates.fetch_add(1, Ordering::Relaxed);
-                            }
-                        }
-                    } else if let Some(idx) =
-                        find_edge_index(x, y, &topo.down_offsets, &topo.down_targets)
-                    {
-                        let old = atomic_down[idx].fetch_min(new_packed, Ordering::Relaxed);
-                        if new_packed < old {
-                            pass_updates.fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
-                }
-            }
-        });
-
-        let pu = pass_updates.into_inner();
-        tracing::debug!(pass, updates = pu, "exclude triangle relaxation");
-        if pu == 0 {
-            break;
-        }
-        if pass >= 50 {
-            tracing::warn!(
-                pass,
-                updates = pu,
-                "full triangle relaxation hit 50-pass cap without converging — \
-                 weights may still be improvable; falling through with current state"
-            );
-            break;
-        }
-    }
-
-    let n_up = atomic_up.len();
-    let n_down = atomic_down.len();
-    let mut up_middles = Vec::with_capacity(n_up);
-    let mut down_middles = Vec::with_capacity(n_down);
-    up_weights.clear();
-    down_weights.clear();
-    up_weights.reserve(n_up);
-    down_weights.reserve(n_down);
-    for a in atomic_up {
-        let packed = a.into_inner();
-        up_weights.push(unpack_weight(packed));
-        up_middles.push(unpack_middle(packed));
-    }
-    for a in atomic_down {
-        let packed = a.into_inner();
-        down_weights.push(unpack_weight(packed));
-        down_middles.push(unpack_middle(packed));
-    }
-    (up_middles, down_middles)
+    ReverseDownAdj { offsets, sources }
 }
 
 // ============================================================================
 // #240 Incremental recustomization
 // ============================================================================
-//
-// The from-scratch path (recustomize_weights / recustomize_weights_sparse_triangle)
-// runs an O(|edges|) bottom-up over every CCH edge regardless of polygon size.
-// On Belgium that's ~12 M shortcut recomputations and ~8 s sequential — even
-// for a polygon covering 10 base edges in a rural area.
 //
 // The incremental version starts from the BASE weights + base middles and
 // only re-evaluates edges that depend, transitively, on a polygon-flagged
