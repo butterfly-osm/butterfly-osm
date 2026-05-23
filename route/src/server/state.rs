@@ -183,6 +183,14 @@ pub struct ServerState {
     // Per-EBG-edge exclude flags (toll/ferry/motorway), indexed by original EBG edge ID
     pub edge_exclude_flags: Vec<u8>,
 
+    // Bounded LRU cache for avoid_polygons-recustomized weights.
+    // Keyed by (mode, polygon_hash, exclude_mask). Each entry is
+    // ~100-200 MB on Belgium — capacity defaults to 8 (~1.6 GB cap),
+    // overridable via the BUTTERFLY_AVOID_CACHE_CAP env var. Cache
+    // hits drop avoid_polygons latency from ~30 s to ~5 ms. See
+    // server/avoid.rs::AvoidWeightCache.
+    pub avoid_cache: super::avoid::AvoidWeightCache,
+
     // Optional transit (public transport) state
     pub transit: Option<crate::transit::TransitState>,
 
@@ -472,6 +480,7 @@ impl ServerState {
             way_names,
             node_weights_dist,
             edge_exclude_flags,
+            avoid_cache: super::avoid::AvoidWeightCache::default(),
             transit,
             started_at: std::time::Instant::now(),
             data_dir: data_dir.to_string_lossy().to_string(),
@@ -972,6 +981,7 @@ impl ServerState {
             way_names,
             node_weights_dist,
             edge_exclude_flags,
+            avoid_cache: super::avoid::AvoidWeightCache::default(),
             transit: None,
             started_at: std::time::Instant::now(),
             data_dir: container_path.to_string_lossy().to_string(),
