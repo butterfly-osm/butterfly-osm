@@ -605,7 +605,7 @@ pub async fn trip_handler(
         let n_nodes = mode_data.cch_topo.n_nodes as usize;
 
         // Compute avoid weights (includes exclude if both present)
-        let avoid_result = if let Some(ref avoid_str) = avoid_json {
+        let avoid_entry = if let Some(ref avoid_str) = avoid_json {
             super::avoid::compute_avoid_weights(&state_clone, mode_data, avoid_str, exclude_mask)
                 .ok()
         } else {
@@ -613,29 +613,28 @@ pub async fn trip_handler(
         };
 
         // Get exclude weights if only exclude (no avoid)
-        let exclude_weights = if avoid_result.is_none() {
+        let exclude_weights = if avoid_entry.is_none() {
             exclude_mask.map(|exc| state_clone.get_exclude_weights(mode, exc))
         } else {
             None
         };
 
         // Build snap mask
-        let snap_mask: std::borrow::Cow<'_, [u64]> =
-            if let Some((_, ref avoid_flags)) = avoid_result {
-                std::borrow::Cow::Owned(super::avoid::build_avoid_mask(
-                    &mode_data.mask,
-                    avoid_flags,
-                    exclude_mask.map(|exc| (state_clone.edge_exclude_flags.as_slice(), exc)),
-                ))
-            } else if let Some(exc) = exclude_mask {
-                std::borrow::Cow::Owned(super::exclude::build_exclude_mask(
-                    &mode_data.mask,
-                    &state_clone.edge_exclude_flags,
-                    exc,
-                ))
-            } else {
-                std::borrow::Cow::Borrowed(&mode_data.mask)
-            };
+        let snap_mask: std::borrow::Cow<'_, [u64]> = if let Some(ref entry) = avoid_entry {
+            std::borrow::Cow::Owned(super::avoid::build_avoid_mask(
+                &mode_data.mask,
+                &entry.flags,
+                exclude_mask.map(|exc| (state_clone.edge_exclude_flags.as_slice(), exc)),
+            ))
+        } else if let Some(exc) = exclude_mask {
+            std::borrow::Cow::Owned(super::exclude::build_exclude_mask(
+                &mode_data.mask,
+                &state_clone.edge_exclude_flags,
+                exc,
+            ))
+        } else {
+            std::borrow::Cow::Borrowed(&mode_data.mask)
+        };
 
         // Snap all coordinates and convert to rank space.
         // For TSP each waypoint participates in two legs (arrives from
@@ -715,15 +714,15 @@ pub async fn trip_handler(
         }
 
         // Select flat adjacencies (avoid takes priority, then exclude)
-        let (time_up, time_down) = if let Some((ref aw, _)) = avoid_result {
-            (&aw.time_up_flat, &aw.time_down_flat)
+        let (time_up, time_down) = if let Some(ref entry) = avoid_entry {
+            (&entry.weights.time_up_flat, &entry.weights.time_down_flat)
         } else if let Some(ref ew) = exclude_weights {
             (&ew.time_up_flat, &ew.time_down_flat)
         } else {
             (&mode_data.up_adj_flat, &mode_data.down_rev_flat)
         };
-        let (dist_up, dist_down) = if let Some((ref aw, _)) = avoid_result {
-            (&aw.dist_up_flat, &aw.dist_down_flat)
+        let (dist_up, dist_down) = if let Some(ref entry) = avoid_entry {
+            (&entry.weights.dist_up_flat, &entry.weights.dist_down_flat)
         } else if let Some(ref ew) = exclude_weights {
             (&ew.dist_up_flat, &ew.dist_down_flat)
         } else {
@@ -782,12 +781,12 @@ pub async fn trip_handler(
 
             if any_dur_inf || any_dist_inf {
                 let time_query = if any_dur_inf {
-                    let query = match (&avoid_result, &exclude_weights) {
-                        (Some((aw, _)), _) => CchQuery::with_custom_weights(
+                    let query = match (&avoid_entry, &exclude_weights) {
+                        (Some(entry), _) => CchQuery::with_custom_weights(
                             &mode_data.cch_topo,
-                            &aw.time_up_flat,
-                            &aw.time_down_flat,
-                            &aw.time_weights,
+                            &entry.weights.time_up_flat,
+                            &entry.weights.time_down_flat,
+                            &entry.weights.time_weights,
                         ),
                         (None, Some(ew)) => CchQuery::with_custom_weights(
                             &mode_data.cch_topo,
@@ -806,12 +805,12 @@ pub async fn trip_handler(
                     // topo_edge_idx) and override with the distance
                     // metric weights — distance-only flats omit
                     // topo_edge_idx so they cannot back a CchQuery.
-                    let query = match (&avoid_result, &exclude_weights) {
-                        (Some((aw, _)), _) => CchQuery::with_custom_weights(
+                    let query = match (&avoid_entry, &exclude_weights) {
+                        (Some(entry), _) => CchQuery::with_custom_weights(
                             &mode_data.cch_topo,
-                            &aw.time_up_flat,
-                            &aw.time_down_flat,
-                            &aw.dist_weights,
+                            &entry.weights.time_up_flat,
+                            &entry.weights.time_down_flat,
+                            &entry.weights.dist_weights,
                         ),
                         (None, Some(ew)) => CchQuery::with_custom_weights(
                             &mode_data.cch_topo,
