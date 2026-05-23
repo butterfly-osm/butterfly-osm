@@ -1,8 +1,0 @@
-step	classes_added	n_features	cumulative_cost_ns	macro_top1	train_rows	test_rows	train_seconds
-1	marker	226	58.87	0.605132	240000	60000	45.816
-2	marker,digit	241	183.33	0.785439	240000	60000	51.981
-3	marker,digit,bigram	341	435.72	0.870329	240000	60000	74.595
-4	marker,digit,bigram,length	346	490.00	0.874231	240000	60000	76.536
-5	marker,digit,bigram,length,punct	356	624.27	0.888811	240000	60000	78.195
-6	marker,digit,bigram,length,punct,script	376	702.29	0.888992	240000	60000	82.057
-7	marker,digit,bigram,length,punct,script,postcode	391	2372.42	0.892793	240000	60000	84.852
