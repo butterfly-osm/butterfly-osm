@@ -134,15 +134,143 @@ impl Default for AvoidWeightCache {
     }
 }
 
-/// Hash a raw avoid_polygons JSON string. Byte-identical inputs
-/// collapse to the same hash. Different polygons or different
-/// floating-point precision produce different hashes; this is by
-/// design — clients that want cache hits should canonicalize their
-/// polygon serialization.
+/// Hash an avoid_polygons JSON payload after canonicalising it (#243).
+///
+/// Canonicalisation steps:
+///   1. Parse into a `Vec<Vec<(f64, f64)>>` of rings.
+///   2. Round each coordinate to 6 decimals (~10 cm precision). Belgium
+///      coords range up to 6 decimal digits naturally; tighter than this
+///      hits noise.
+///   3. Strip any duplicate trailing closing vertex (rings are then
+///      stored open).
+///   4. Rotate each ring so its lexicographically smallest vertex is at
+///      position 0. The shortest cyclic shift uniquifies "same ring,
+///      different starting point".
+///   5. Sort polygons by their canonical first vertex so multi-polygon
+///      orderings collapse.
+///   6. Hash the resulting canonical byte stream.
+///
+/// Falls back to a raw-bytes hash if parsing fails — the cache will
+/// then miss as before, but the route handler's error path still
+/// surfaces the parse error.
 fn hash_polygon_json(s: &str) -> u64 {
     let mut h = rustc_hash::FxHasher::default();
-    s.as_bytes().hash(&mut h);
+    match canonicalize_polygons(s) {
+        Some(canon) => canon.hash(&mut h),
+        None => s.as_bytes().hash(&mut h),
+    }
     h.finish()
+}
+
+/// Parse + canonicalise a polygon payload into a sortable byte vec.
+///
+/// Returns `None` if the JSON shape is invalid; callers fall back to a
+/// raw-bytes hash so a malformed polygon still has a deterministic
+/// cache key (it will lose every time at the parse step downstream).
+fn canonicalize_polygons(s: &str) -> Option<Vec<u8>> {
+    let val: serde_json::Value = serde_json::from_str(s).ok()?;
+    let arr = val.as_array()?;
+    if arr.is_empty() {
+        return None;
+    }
+    let is_single = arr[0]
+        .as_array()
+        .is_some_and(|inner| inner.len() == 2 && inner[0].is_number());
+    let rings_json: Vec<&serde_json::Value> = if is_single {
+        vec![&val]
+    } else {
+        arr.iter().collect()
+    };
+
+    let mut rings: Vec<Vec<(i64, i64)>> = Vec::with_capacity(rings_json.len());
+    for ring_val in &rings_json {
+        let ring = ring_val.as_array()?;
+        let mut pts: Vec<(i64, i64)> = Vec::with_capacity(ring.len());
+        for pt in ring {
+            let coord = pt.as_array()?;
+            if coord.len() != 2 {
+                return None;
+            }
+            let lon = coord[0].as_f64()?;
+            let lat = coord[1].as_f64()?;
+            // 6 decimals ≈ 10 cm precision. Scale to integer for stable
+            // hashing without f64 representation quirks.
+            let lon_q = (lon * 1_000_000.0).round() as i64;
+            let lat_q = (lat * 1_000_000.0).round() as i64;
+            pts.push((lon_q, lat_q));
+        }
+        if pts.len() < 3 {
+            return None;
+        }
+        // Drop duplicate closing vertex if present.
+        if pts.first() == pts.last() {
+            pts.pop();
+        }
+        // Rotate ring so the lexicographically smallest vertex is at
+        // index 0. Makes "same ring, different start" hash to the
+        // same canonical key.
+        if let Some(min_idx) = (0..pts.len()).min_by_key(|&i| pts[i]) {
+            pts.rotate_left(min_idx);
+        }
+        rings.push(pts);
+    }
+
+    // Multi-polygon order: sort rings by their canonical first vertex.
+    rings.sort_unstable_by_key(|r| r[0]);
+
+    // Serialise to a deterministic byte stream.
+    let mut out = Vec::with_capacity(rings.iter().map(|r| r.len() * 16).sum::<usize>() + 8);
+    out.extend_from_slice(&(rings.len() as u32).to_le_bytes());
+    for ring in &rings {
+        out.extend_from_slice(&(ring.len() as u32).to_le_bytes());
+        for (lon, lat) in ring {
+            out.extend_from_slice(&lon.to_le_bytes());
+            out.extend_from_slice(&lat.to_le_bytes());
+        }
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod canon_tests {
+    use super::canonicalize_polygons;
+
+    #[test]
+    fn whitespace_independent() {
+        let a = "[[4.32,50.92],[4.50,50.92],[4.50,51.15],[4.32,51.15]]";
+        let b = "[[4.32, 50.92], [4.50, 50.92], [4.50, 51.15], [4.32, 51.15]]";
+        assert_eq!(canonicalize_polygons(a), canonicalize_polygons(b));
+    }
+
+    #[test]
+    fn precision_independent_at_6dp() {
+        let a = "[[4.32,50.92],[4.50,50.92],[4.50,51.15],[4.32,51.15]]";
+        let b =
+            "[[4.320000,50.920000],[4.500000,50.920000],[4.500000,51.150000],[4.320000,51.150000]]";
+        assert_eq!(canonicalize_polygons(a), canonicalize_polygons(b));
+    }
+
+    #[test]
+    fn closing_vertex_independent() {
+        let a = "[[4.32,50.92],[4.50,50.92],[4.50,51.15],[4.32,51.15]]";
+        let b = "[[4.32,50.92],[4.50,50.92],[4.50,51.15],[4.32,51.15],[4.32,50.92]]";
+        assert_eq!(canonicalize_polygons(a), canonicalize_polygons(b));
+    }
+
+    #[test]
+    fn ring_rotation_independent() {
+        let a = "[[4.32,50.92],[4.50,50.92],[4.50,51.15],[4.32,51.15]]";
+        // Same ring, rotated start.
+        let b = "[[4.50,51.15],[4.32,51.15],[4.32,50.92],[4.50,50.92]]";
+        assert_eq!(canonicalize_polygons(a), canonicalize_polygons(b));
+    }
+
+    #[test]
+    fn different_polygons_differ() {
+        let a = "[[4.32,50.92],[4.50,50.92],[4.50,51.15],[4.32,51.15]]";
+        let b = "[[4.32,50.92],[4.50,50.92],[4.50,51.20],[4.32,51.20]]";
+        assert_ne!(canonicalize_polygons(a), canonicalize_polygons(b));
+    }
 }
 
 /// Bit flag for avoid-polygon edges (bit 3, distinct from toll/ferry/motorway bits 0-2).
