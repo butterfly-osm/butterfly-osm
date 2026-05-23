@@ -27,7 +27,7 @@ faster than OSRM at scale.
 
 ```bash
 docker build -t butterfly-route .
-docker run -d --name butterfly -p 3001:8080 -p 3002:3002 \
+docker run -d --name butterfly -p 3001:8080 -p 3002:8081 \
   -v "${PWD}/data/belgium:/data" butterfly-route
 curl "http://localhost:3001/route?src_lon=4.3517&src_lat=50.8503&dst_lon=4.4025&dst_lat=51.2194&mode=car"
 ```
@@ -62,7 +62,7 @@ Support directories: `bench/` (regression and competitor benches),
 - Bearing hints (`bearings=angle,range`).
 
 ### Matrices
-- Bucket many-to-many CH for sparse `S × T` (small `/matrix`, low-latency).
+- Bucket many-to-many CH for sparse `S × T` (small `POST /table`, low-latency).
 - K-lane batched PHAST + L3-aware source tiling (#190) for large matrices — 10k×10k in 18.3 s in-process.
 - Arrow Flight gRPC `matrix` action for 50k×50k+ over the wire, with parallel K-best snap (#232).
 - Per-row Arrow IPC streaming, cooperative cancellation on client disconnect.

@@ -76,7 +76,7 @@ Content negotiation:
 **Notes**
 
 - K-best snap with `SNAP_K=64` per role + bounded combo fallback (max 400) — see `route.rs:476-498`.
-- Avoid-polygon recustomisation result cached per-region; cache capacity from `BUTTERFLY_AVOID_CACHE_CAP` (default 8), see `route/src/server/avoid.rs`. Hits cost ~22 ms vs minutes for a cold recustomise; surfaced in `/health.avoid_cache`.
+- Avoid-polygon recustomisation result cached per-region; cache capacity from `BUTTERFLY_AVOID_CACHE_CAP` (default 8), see `route/src/server/avoid.rs`. Hits cost ~22 ms vs ~0.8–1.2 s for a cold recustomise (#240 incremental BFS — polygon-size dependent, was ~37 s pre-#240); surfaced in `/health.avoid_cache`.
 - Same-edge src/dst short-circuits to zero-distance result.
 - Cross-region routing is handled via the overlay cluster (#91 Phase 2) when multiple regions are loaded; same-region queries take the fast intra-region path.
 - See [Architecture: routing pipeline](architecture.md) for the CCH P2P + path-unpack flow.

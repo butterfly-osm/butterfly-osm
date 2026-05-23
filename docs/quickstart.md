@@ -1,6 +1,10 @@
 # Quickstart
 
-Get a Belgium routing server answering `/route` requests in 60 seconds. Docker, one country, one curl.
+Once you have a baked Belgium routing container (or step1–step8 tree) on
+disk, get a server answering `/route` requests in 60 seconds.
+
+The cold path (download Geofabrik PBF, build the binary, run steps 1–8)
+is a one-time ~10–30 min job. Everything below assumes that's done.
 
 ## 1. Download Belgium data
 
@@ -19,7 +23,12 @@ cd /path/to/butterfly-osm
 docker build -t butterfly-route .
 ```
 
-No pre-built images are published yet — build locally. The multi-stage build produces a ~26 GB image (the build stage is fat; only the slim runtime layer is what ships if you squash). Build takes 5-10 min cold, seconds warm.
+No pre-built images are published yet — build locally. The published
+runtime layer is ~200 MB (slim Debian + the static-ish Rust binary +
+curl + certs); the multi-stage builder layer is fat but never shipped.
+The 26 GB figure cited elsewhere refers to the mounted Belgium data
+volume (the packed `*.butterfly` container), not the image. Build takes
+5–10 min cold, seconds warm.
 
 ## 3. Run the server
 
