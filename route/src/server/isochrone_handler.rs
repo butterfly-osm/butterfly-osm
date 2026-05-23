@@ -17,7 +17,7 @@ use super::geometry::{GeometryFormat, Point, build_isochrone_geometry, encode_po
 use super::regions::RegionsState;
 use super::route::{default_direction, default_geometries};
 use super::state::ServerState;
-use super::types::{ErrorResponse, parse_mode, validate_coord};
+use super::types::{ErrorResponse, SnapRole, parse_mode, validate_coord};
 
 // ============ Types ============
 
@@ -743,23 +743,34 @@ pub async fn isochrone_handler(
         std::borrow::Cow::Borrowed(&mode_data.mask)
     };
 
-    // Snap center
-    let center_orig =
-        match state
-            .snap_index
-            .snap_filtered(req.lon, req.lat, mode.0, Some(&snap_mask))
-        {
-            Some(id) => id,
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "Could not snap center to road network".to_string(),
-                    }),
-                )
-                    .into_response();
-            }
-        };
+    // Snap center — directional role tracks isochrone direction:
+    //   depart  → center acts as a source     → SnapRole::Src (needs outbound arcs)
+    //   arrive  → center acts as a destination → SnapRole::Dst (needs inbound arcs)
+    let center_role = if reverse {
+        SnapRole::Dst
+    } else {
+        SnapRole::Src
+    };
+    let center_role_filter = center_role.role_filter(mode_data);
+
+    let center_orig = match state.snap_index.snap_filtered_role(
+        req.lon,
+        req.lat,
+        mode.0,
+        Some(&snap_mask),
+        center_role_filter,
+    ) {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Could not snap center to road network".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
 
     let center_rank = mode_data.orig_to_rank[center_orig as usize];
     if center_rank == u32::MAX {
@@ -1173,6 +1184,10 @@ pub async fn isochrone_bulk_handler(
         (&mode_data.up_adj_flat, &mode_data.down_adj_flat)
     };
 
+    // Bulk isochrones are depart-only (no `direction` field), so origins
+    // act as sources. Apply the #197 directional role filter.
+    let origin_role_filter = SnapRole::Src.role_filter(mode_data);
+
     // Process all origins in parallel
     let results: Vec<(u32, Vec<u8>)> = req
         .origins
@@ -1180,9 +1195,13 @@ pub async fn isochrone_bulk_handler(
         .enumerate()
         .filter_map(|(idx, &[lon, lat])| {
             // Snap origin
-            let center_orig = state
-                .snap_index
-                .snap_filtered(lon, lat, mode.0, Some(&snap_mask))?;
+            let center_orig = state.snap_index.snap_filtered_role(
+                lon,
+                lat,
+                mode.0,
+                Some(&snap_mask),
+                origin_role_filter,
+            )?;
             let center_rank = mode_data.orig_to_rank[center_orig as usize];
             if center_rank == u32::MAX {
                 return None;

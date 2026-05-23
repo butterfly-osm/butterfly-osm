@@ -37,11 +37,12 @@ pub struct ErrorResponse {
 #[serde(rename_all = "lowercase")]
 pub enum SnapRole {
     /// Source role: snap candidates must have at least one mode-valid
-    /// outbound arc.
+    /// outbound arc and be able to reach the main routing core.
     #[default]
     Src,
     /// Destination role: snap candidates must have at least one
-    /// mode-valid inbound arc.
+    /// mode-valid inbound arc and be reachable from the main routing
+    /// core.
     Dst,
     /// No role filter; behaves like the legacy snap.
     Either,

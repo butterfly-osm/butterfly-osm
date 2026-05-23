@@ -319,29 +319,38 @@ fn recustomize_weights_sparse_triangle(
 
     let mut up_weights = vec![u32::MAX; topo.up_targets.len()];
     let mut down_weights = vec![u32::MAX; topo.down_targets.len()];
+    let mut changed_up_edges: Vec<ChangedEdge> = Vec::new();
+    let mut changed_down_edges: Vec<ChangedEdge> = Vec::new();
 
-    // Bottom-up pass
+    // Bottom-up pass — collect changed edges as we go so the triangle
+    // relax pass 1 can iterate only those instead of sweeping every node.
     for rank in 0..n_nodes {
         let u = rank;
 
         // DOWN edges (sorted by target rank)
         for &i in &sorted_down_indices[u] {
             let v = topo.down_targets[i] as usize;
-            if !topo.down_is_shortcut.bit(i) {
+            let new_weight = if !topo.down_is_shortcut.bit(i) {
                 let v_filtered = topo.rank_to_filtered[v] as usize;
                 let v_orig = filtered_to_original[v_filtered] as usize;
-
                 if is_excluded(v_orig) {
-                    down_weights[i] = u32::MAX;
+                    u32::MAX
                 } else {
-                    down_weights[i] = base_weights.down[i];
+                    base_weights.down[i]
                 }
             } else {
                 let m = topo.down_middle[i] as usize;
                 let w_um =
                     find_edge_weight(u, m, &topo.down_offsets, &topo.down_targets, &down_weights);
                 let w_mv = find_edge_weight(m, v, &topo.up_offsets, &topo.up_targets, &up_weights);
-                down_weights[i] = w_um.saturating_add(w_mv);
+                w_um.saturating_add(w_mv)
+            };
+            down_weights[i] = new_weight;
+            if new_weight != base_weights.down[i] {
+                changed_down_edges.push(ChangedEdge {
+                    source: u as u32,
+                    target: v as u32,
+                });
             }
         }
 
@@ -350,24 +359,36 @@ fn recustomize_weights_sparse_triangle(
         let up_end = topo.up_offsets[u + 1] as usize;
         for i in up_start..up_end {
             let v = topo.up_targets[i] as usize;
-            if !topo.up_is_shortcut.bit(i) {
+            let new_weight = if !topo.up_is_shortcut.bit(i) {
                 let v_filtered = topo.rank_to_filtered[v] as usize;
                 let v_orig = filtered_to_original[v_filtered] as usize;
-
                 if is_excluded(v_orig) {
-                    up_weights[i] = u32::MAX;
+                    u32::MAX
                 } else {
-                    up_weights[i] = base_weights.up[i];
+                    base_weights.up[i]
                 }
             } else {
                 let m = topo.up_middle[i] as usize;
                 let w_um =
                     find_edge_weight(u, m, &topo.down_offsets, &topo.down_targets, &down_weights);
                 let w_mv = find_edge_weight(m, v, &topo.up_offsets, &topo.up_targets, &up_weights);
-                up_weights[i] = w_um.saturating_add(w_mv);
+                w_um.saturating_add(w_mv)
+            };
+            up_weights[i] = new_weight;
+            if new_weight != base_weights.up[i] {
+                changed_up_edges.push(ChangedEdge {
+                    source: u as u32,
+                    target: v as u32,
+                });
             }
         }
     }
+
+    tracing::debug!(
+        changed_up_edges = changed_up_edges.len(),
+        changed_down_edges = changed_down_edges.len(),
+        "sparse: bottom-up done, changed-edge set collected"
+    );
 
     // Build reverse DOWN adjacency for triangle relaxation
     let rev_down = build_reverse_down_adj(topo);
@@ -375,10 +396,11 @@ fn recustomize_weights_sparse_triangle(
     // Sparse triangle relaxation: only process dirty nodes
     sparse_triangle_relax(
         topo,
-        base_weights,
         &mut up_weights,
         &mut down_weights,
         &rev_down,
+        &changed_up_edges,
+        &changed_down_edges,
     );
 
     CchWeights {
@@ -389,172 +411,245 @@ fn recustomize_weights_sparse_triangle(
     }
 }
 
-/// Sparse triangle relaxation: only process nodes with changed edges.
+/// A weight that differs from base after the bottom-up customization
+/// pass. Collected during bottom-up so triangle relaxation can iterate
+/// only those edges instead of sweeping every node.
+#[derive(Clone, Copy, Debug)]
+struct ChangedEdge {
+    source: u32,
+    target: u32,
+}
+
+#[inline]
+fn push_dirty_once(dirty: &[AtomicBool], out: &mut Vec<usize>, node: usize) {
+    if !dirty[node].swap(true, Ordering::Relaxed) {
+        out.push(node);
+    }
+}
+
+#[inline]
+fn mark_potential_middles(
+    topo: &CchTopo,
+    dirty: &[AtomicBool],
+    out: &mut Vec<usize>,
+    x: usize,
+    y: usize,
+) {
+    let down_start = topo.down_offsets[x] as usize;
+    let down_end = topo.down_offsets[x + 1] as usize;
+    for &m_u32 in &topo.down_targets[down_start..down_end] {
+        let m = m_u32 as usize;
+        if m == y {
+            continue;
+        }
+        if find_edge_index(m, y, &topo.up_offsets, &topo.up_targets).is_some() {
+            push_dirty_once(dirty, out, m);
+        }
+    }
+}
+
+/// Sparse triangle relaxation. Pass 1's dirty set is bounded by the
+/// changed-edge list collected during bottom-up:
+///   (a) For each changed UP edge x→y: mark the SOURCE x dirty (the
+///       only m whose next-pass iteration reads w_xy as w_my).
+///   (b) For each changed DOWN edge x→y: mark the TARGET y dirty (the
+///       only m whose iteration reads w_xy as w_xm).
+///   (c) For each changed edge (x, y): enumerate potential middles m
+///       (DOWN neighbours of x that have a UP edge to y) and mark
+///       dirty[m]. This catches the "shortcut x→y went INF and the
+///       triangle that rescues it uses an m_alt with unchanged
+///       incident edges" case (#238).
 ///
-/// Initial dirty set: all nodes m where at least one incident edge weight
-/// differs from base. Subsequent passes only process nodes dirtied by updates.
+/// Subsequent passes use **one-sided** propagation. An improved UP
+/// edge x→y is consumed only by triangles centered at x. An improved
+/// DOWN edge x→y is consumed only by triangles centered at y. Marking
+/// both endpoints (as the earlier version did) doubles dirty-set churn
+/// for no correctness benefit.
 fn sparse_triangle_relax(
     topo: &CchTopo,
-    base_weights: &CchWeights,
     up_weights: &mut Vec<u32>,
     down_weights: &mut Vec<u32>,
     rev_down: &ReverseDownAdj,
+    changed_up_edges: &[ChangedEdge],
+    changed_down_edges: &[ChangedEdge],
 ) {
     let n_nodes = topo.n_nodes as usize;
 
-    // Convert to atomic arrays for lock-free parallel relaxation
     let atomic_up: Vec<AtomicU32> = up_weights.drain(..).map(AtomicU32::new).collect();
     let atomic_down: Vec<AtomicU32> = down_weights.drain(..).map(AtomicU32::new).collect();
 
-    // Build initial dirty set: nodes with at least one changed incident edge
     let dirty: Vec<AtomicBool> = (0..n_nodes).map(|_| AtomicBool::new(false)).collect();
 
-    // Check DOWN edges: if weight changed, mark both endpoints as dirty
-    (0..n_nodes).into_par_iter().for_each(|u| {
-        let start = topo.down_offsets[u] as usize;
-        let end = topo.down_offsets[u + 1] as usize;
-        for (aw, bw) in atomic_down[start..end]
-            .iter()
-            .zip(&base_weights.down[start..end])
-        {
-            let w = aw.load(Ordering::Relaxed);
-            if w != *bw {
-                dirty[u].store(true, Ordering::Relaxed);
-                break;
-            }
-        }
-        for (idx, aw) in atomic_down[start..end].iter().enumerate() {
-            let w = aw.load(Ordering::Relaxed);
-            if w != base_weights.down[start + idx] {
-                let m = topo.down_targets[start + idx] as usize;
-                dirty[m].store(true, Ordering::Relaxed);
-            }
-        }
-    });
-    // Check UP edges: if weight changed, mark both endpoints as dirty
-    (0..n_nodes).into_par_iter().for_each(|u| {
-        let up_start = topo.up_offsets[u] as usize;
-        let up_end = topo.up_offsets[u + 1] as usize;
-        for (aw, bw) in atomic_up[up_start..up_end]
-            .iter()
-            .zip(&base_weights.up[up_start..up_end])
-        {
-            let w = aw.load(Ordering::Relaxed);
-            if w != *bw {
-                dirty[u].store(true, Ordering::Relaxed);
-                break;
-            }
-        }
-        for (idx, aw) in atomic_up[up_start..up_end].iter().enumerate() {
-            let w = aw.load(Ordering::Relaxed);
-            if w != base_weights.up[up_start + idx] {
-                let v = topo.up_targets[up_start + idx] as usize;
-                dirty[v].store(true, Ordering::Relaxed);
-            }
-        }
-    });
+    // Build the initial dirty set as an actual Vec (not a bitvector
+    // scan) so subsequent passes don't pay O(n_nodes) to enumerate it.
+    let mut dirty_nodes: Vec<usize> = Vec::new();
 
-    let initial_dirty: usize = dirty.iter().filter(|d| d.load(Ordering::Relaxed)).count();
+    // (a) Per-edge apex marking. For changed UP edges, that's the source;
+    // for changed DOWN edges, that's the target.
+    let from_up: Vec<usize> = changed_up_edges
+        .par_iter()
+        .fold(Vec::new, |mut local, edge| {
+            push_dirty_once(&dirty, &mut local, edge.source as usize);
+            local
+        })
+        .reduce(Vec::new, |mut a, mut b| {
+            a.append(&mut b);
+            a
+        });
+    let from_down: Vec<usize> = changed_down_edges
+        .par_iter()
+        .fold(Vec::new, |mut local, edge| {
+            push_dirty_once(&dirty, &mut local, edge.target as usize);
+            local
+        })
+        .reduce(Vec::new, |mut a, mut b| {
+            a.append(&mut b);
+            a
+        });
+    dirty_nodes.extend(from_up);
+    dirty_nodes.extend(from_down);
+
+    // (b) Potential middles per changed edge. Bounded by O(changed × deg).
+    let middles_up: Vec<usize> = changed_up_edges
+        .par_iter()
+        .fold(Vec::new, |mut local, edge| {
+            mark_potential_middles(
+                topo,
+                &dirty,
+                &mut local,
+                edge.source as usize,
+                edge.target as usize,
+            );
+            local
+        })
+        .reduce(Vec::new, |mut a, mut b| {
+            a.append(&mut b);
+            a
+        });
+    let middles_down: Vec<usize> = changed_down_edges
+        .par_iter()
+        .fold(Vec::new, |mut local, edge| {
+            mark_potential_middles(
+                topo,
+                &dirty,
+                &mut local,
+                edge.source as usize,
+                edge.target as usize,
+            );
+            local
+        })
+        .reduce(Vec::new, |mut a, mut b| {
+            a.append(&mut b);
+            a
+        });
+    dirty_nodes.extend(middles_up);
+    dirty_nodes.extend(middles_down);
+
     tracing::debug!(
-        dirty_nodes = initial_dirty,
+        changed_up_edges = changed_up_edges.len(),
+        changed_down_edges = changed_down_edges.len(),
+        dirty_nodes = dirty_nodes.len(),
         total_nodes = n_nodes,
         "sparse triangle relax: initial dirty set"
     );
 
     let mut pass = 0u32;
-    loop {
+    while !dirty_nodes.is_empty() {
         pass += 1;
 
-        // Collect dirty nodes for this pass
-        let dirty_nodes: Vec<usize> = dirty
-            .iter()
-            .enumerate()
-            .filter(|(_, d)| d.load(Ordering::Relaxed))
-            .map(|(i, _)| i)
-            .collect();
-
-        if dirty_nodes.is_empty() {
-            break;
-        }
-
-        // Clear dirty flags for this pass
+        // Clear dirty flags so the next pass's per-edge marks can
+        // detect "already enqueued for this pass" via swap.
         dirty_nodes
             .par_iter()
             .for_each(|&m| dirty[m].store(false, Ordering::Relaxed));
 
         let pass_updates = AtomicU64::new(0);
 
-        dirty_nodes.par_iter().for_each(|&m| {
-            let rev_start = rev_down.offsets[m] as usize;
-            let rev_end = rev_down.offsets[m + 1] as usize;
+        let next_dirty_nodes: Vec<usize> = dirty_nodes
+            .par_iter()
+            .fold(Vec::new, |mut next_dirty, &m| {
+                let rev_start = rev_down.offsets[m] as usize;
+                let rev_end = rev_down.offsets[m + 1] as usize;
 
-            for i_rev in rev_start..rev_end {
-                let x = rev_down.sources[i_rev] as usize;
-                let edge_idx_xm = rev_down.edge_idx[i_rev];
-                let w_xm = atomic_down[edge_idx_xm].load(Ordering::Relaxed);
+                for i_rev in rev_start..rev_end {
+                    let x = rev_down.sources[i_rev] as usize;
+                    let edge_idx_xm = rev_down.edge_idx[i_rev];
+                    let w_xm = atomic_down[edge_idx_xm].load(Ordering::Relaxed);
 
-                if w_xm == u32::MAX {
-                    continue;
-                }
-
-                let up_start = topo.up_offsets[m] as usize;
-                let up_end = topo.up_offsets[m + 1] as usize;
-
-                for i_my in up_start..up_end {
-                    let y = topo.up_targets[i_my] as usize;
-                    if y == x {
+                    if w_xm == u32::MAX {
                         continue;
                     }
 
-                    let w_my = atomic_up[i_my].load(Ordering::Relaxed);
-                    if w_my == u32::MAX {
-                        continue;
-                    }
+                    let up_start = topo.up_offsets[m] as usize;
+                    let up_end = topo.up_offsets[m + 1] as usize;
 
-                    let new_weight = w_xm.saturating_add(w_my);
-
-                    if y > x {
-                        // UP edge from x to y
-                        if let Some(idx) = find_edge_index(x, y, &topo.up_offsets, &topo.up_targets)
-                        {
-                            let old = atomic_up[idx].fetch_min(new_weight, Ordering::Relaxed);
-                            if new_weight < old {
-                                pass_updates.fetch_add(1, Ordering::Relaxed);
-                                // Both endpoints: x is middle for a→x→y triangles,
-                                // y is middle for x→y→b triangles (as DOWN from y)
-                                dirty[x].store(true, Ordering::Relaxed);
-                                dirty[y].store(true, Ordering::Relaxed);
-                            }
+                    for i_my in up_start..up_end {
+                        let y = topo.up_targets[i_my] as usize;
+                        if y == x {
+                            continue;
                         }
-                    } else {
-                        // DOWN edge from x to y
-                        if let Some(idx) =
+
+                        let w_my = atomic_up[i_my].load(Ordering::Relaxed);
+                        if w_my == u32::MAX {
+                            continue;
+                        }
+
+                        let new_weight = w_xm.saturating_add(w_my);
+
+                        if y > x {
+                            if let Some(idx) =
+                                find_edge_index(x, y, &topo.up_offsets, &topo.up_targets)
+                            {
+                                let old = atomic_up[idx].fetch_min(new_weight, Ordering::Relaxed);
+                                if new_weight < old {
+                                    pass_updates.fetch_add(1, Ordering::Relaxed);
+                                    // Improved UP x→y is consumed only by triangles
+                                    // centered at x. One-sided propagation.
+                                    push_dirty_once(&dirty, &mut next_dirty, x);
+                                }
+                            }
+                        } else if let Some(idx) =
                             find_edge_index(x, y, &topo.down_offsets, &topo.down_targets)
                         {
                             let old = atomic_down[idx].fetch_min(new_weight, Ordering::Relaxed);
                             if new_weight < old {
                                 pass_updates.fetch_add(1, Ordering::Relaxed);
-                                // Both endpoints: y is middle for x→y→b triangles,
-                                // x is middle for a→x→y triangles (as DOWN from x)
-                                dirty[x].store(true, Ordering::Relaxed);
-                                dirty[y].store(true, Ordering::Relaxed);
+                                // Improved DOWN x→y is consumed only by triangles
+                                // centered at y. One-sided propagation.
+                                push_dirty_once(&dirty, &mut next_dirty, y);
                             }
                         }
                     }
                 }
-            }
-        });
+                next_dirty
+            })
+            .reduce(Vec::new, |mut a, mut b| {
+                a.append(&mut b);
+                a
+            });
 
         let pu = pass_updates.into_inner();
         tracing::debug!(
             pass,
             updates = pu,
             dirty_nodes = dirty_nodes.len(),
+            next_dirty_nodes = next_dirty_nodes.len(),
             "sparse triangle relaxation"
         );
-        if pu == 0 || pass >= 50 {
+        if pu == 0 {
             break;
         }
+        if pass >= 50 {
+            tracing::warn!(
+                pass,
+                updates = pu,
+                "sparse triangle relaxation hit 50-pass cap without converging — \
+                 weights may still be improvable; falling through with current state"
+            );
+            break;
+        }
+
+        dirty_nodes = next_dirty_nodes;
     }
 
     *up_weights = atomic_up.into_iter().map(AtomicU32::into_inner).collect();
@@ -803,7 +898,16 @@ fn triangle_relax(
 
         let pu = pass_updates.into_inner();
         tracing::debug!(pass, updates = pu, "exclude triangle relaxation");
-        if pu == 0 || pass >= 50 {
+        if pu == 0 {
+            break;
+        }
+        if pass >= 50 {
+            tracing::warn!(
+                pass,
+                updates = pu,
+                "full triangle relaxation hit 50-pass cap without converging — \
+                 weights may still be improvable; falling through with current state"
+            );
             break;
         }
     }

@@ -5,14 +5,147 @@
 //!
 //! The R-tree spatial index provides O(log n) bounding-box prefiltering,
 //! followed by O(v) ray-casting point-in-polygon for each candidate edge.
+//!
+//! Recustomization is expensive (~30 s on Belgium even for a tiny polygon
+//! because the bottom-up rebuilds every shortcut weight). To make repeat
+//! queries cheap, we cache the recustomized weights keyed by
+//! (mode, polygon_hash, exclude_mask). Cache capacity is bounded so
+//! memory stays predictable — each entry is ~100-200 MB on Belgium. See
+//! `AvoidWeightCache` below.
+
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use geo::{Contains, Coord, Point, Polygon};
+use parking_lot::RwLock;
 
 use crate::formats::cch_weights::CchWeights;
 
 use super::exclude::{self, ExcludeWeights};
 use super::snap_index::PackedSnapIndex;
 use super::state::{ModeData, ServerState};
+
+/// Default LRU capacity. Each full entry is ~100-200 MB on Belgium, so 8
+/// entries cap memory at ~1.6 GB. Override at boot via the
+/// `BUTTERFLY_AVOID_CACHE_CAP` env var.
+pub const DEFAULT_AVOID_CACHE_CAP: usize = 8;
+
+/// Cache key for a recustomized weight set. The polygon hash collapses
+/// the polygon JSON to 64 bits; clients querying with byte-identical
+/// JSON hit the cache. Different polygons hash to different keys, so
+/// there is no risk of returning the wrong weights — at worst we miss.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct AvoidKey {
+    mode_idx: u8,
+    exclude_mask: u8,
+    polygon_hash: u64,
+}
+
+/// Value cached for an `AvoidKey`. Holds the full weight set (time +
+/// distance + flat adjacencies) plus the avoid flags so /route, /table,
+/// /isochrone, /trip can all reuse the same recustomization.
+pub struct AvoidEntry {
+    pub weights: ExcludeWeights,
+    pub flags: Vec<u8>,
+}
+
+struct AvoidCacheInner {
+    map: HashMap<AvoidKey, (Arc<AvoidEntry>, u64)>, // (entry, last-touched generation)
+    generation: u64,
+    capacity: usize,
+    hits: u64,
+    misses: u64,
+}
+
+/// Bounded LRU keyed by (mode, polygon_hash, exclude_mask). Single
+/// `RwLock` for the whole cache — reads are an `Arc::clone` so the
+/// lock is released quickly. Writes do an O(capacity) scan for the
+/// least-recently-used slot when full.
+pub struct AvoidWeightCache {
+    inner: RwLock<AvoidCacheInner>,
+}
+
+impl AvoidWeightCache {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            inner: RwLock::new(AvoidCacheInner {
+                map: HashMap::with_capacity(capacity.max(1)),
+                generation: 0,
+                capacity: capacity.max(1),
+                hits: 0,
+                misses: 0,
+            }),
+        }
+    }
+
+    fn get(&self, key: &AvoidKey) -> Option<Arc<AvoidEntry>> {
+        // Fast path: read lock + key presence check.
+        let present = self.inner.read().map.contains_key(key);
+        if !present {
+            return None;
+        }
+        // Slow path: write lock so we can bump the LRU generation
+        // stamp atomically with the read.
+        let mut inner = self.inner.write();
+        let new_gen = inner.generation.wrapping_add(1);
+        if let Some((entry, gen_stamp)) = inner.map.get_mut(key) {
+            *gen_stamp = new_gen;
+            let entry_clone = Arc::clone(entry);
+            inner.generation = new_gen;
+            inner.hits += 1;
+            return Some(entry_clone);
+        }
+        None
+    }
+
+    fn insert(&self, key: AvoidKey, entry: Arc<AvoidEntry>) {
+        let mut inner = self.inner.write();
+        inner.misses += 1;
+        // Evict LRU if at capacity and the new key isn't already present.
+        if !inner.map.contains_key(&key)
+            && inner.map.len() >= inner.capacity
+            && let Some(victim) = inner
+                .map
+                .iter()
+                .min_by_key(|(_, (_, g))| *g)
+                .map(|(k, _)| *k)
+        {
+            inner.map.remove(&victim);
+        }
+        inner.generation = inner.generation.wrapping_add(1);
+        let gen_stamp = inner.generation;
+        inner.map.insert(key, (entry, gen_stamp));
+    }
+
+    /// (hits, misses, current size, capacity) — surfaced for the
+    /// /health endpoint or operational visibility.
+    pub fn stats(&self) -> (u64, u64, usize, usize) {
+        let inner = self.inner.read();
+        (inner.hits, inner.misses, inner.map.len(), inner.capacity)
+    }
+}
+
+impl Default for AvoidWeightCache {
+    fn default() -> Self {
+        let cap = std::env::var("BUTTERFLY_AVOID_CACHE_CAP")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_AVOID_CACHE_CAP);
+        Self::new(cap)
+    }
+}
+
+/// Hash a raw avoid_polygons JSON string. Byte-identical inputs
+/// collapse to the same hash. Different polygons or different
+/// floating-point precision produce different hashes; this is by
+/// design — clients that want cache hits should canonicalize their
+/// polygon serialization.
+fn hash_polygon_json(s: &str) -> u64 {
+    let mut h = rustc_hash::FxHasher::default();
+    s.as_bytes().hash(&mut h);
+    h.finish()
+}
 
 /// Bit flag for avoid-polygon edges (bit 3, distinct from toll/ferry/motorway bits 0-2).
 const AVOID_BIT: u8 = 8;
@@ -214,54 +347,42 @@ fn prepare_avoid_flags(
     Ok((avoid_flags, poly_count, avoided_count))
 }
 
-/// Compute time-only avoid weights for P2P route queries.
+/// Compute (or read from cache) the FULL avoid-weight set for a
+/// `(mode, polygon_hash, exclude_mask)` key. The full set is
+/// shareable between /route, /table, /isochrone, /trip — first caller
+/// pays the ~30 s recustomization cost; subsequent callers on the same
+/// key return in ~µs.
 ///
-/// Skips distance recustomization and flat adjacency builds (~2x faster).
-/// Returns (time_weights, avoid_flags) for use with `CchQuery::with_custom_weights`.
-pub fn compute_avoid_weights_time_only(
+/// Concurrent identical misses both compute and the second insertion
+/// silently overwrites — we accept the duplicate work in exchange for
+/// dead-simple lock semantics (no per-key Mutex / OnceCell).
+fn get_or_compute_avoid_entry(
     state: &ServerState,
     mode_data: &ModeData,
+    mode_idx: u8,
     avoid_json: &str,
     exclude_mask: Option<u8>,
-) -> Result<(CchWeights, Vec<u8>), String> {
-    let start = std::time::Instant::now();
+) -> Result<Arc<AvoidEntry>, String> {
+    let polygon_hash = hash_polygon_json(avoid_json);
+    let key = AvoidKey {
+        mode_idx,
+        exclude_mask: exclude_mask.unwrap_or(0),
+        polygon_hash,
+    };
 
+    if let Some(entry) = state.avoid_cache.get(&key) {
+        tracing::debug!(
+            mode_idx,
+            exclude_mask = key.exclude_mask,
+            polygon_hash,
+            "avoid weights cache HIT"
+        );
+        return Ok(entry);
+    }
+
+    let start = std::time::Instant::now();
     let (avoid_flags, poly_count, avoided_count) =
         prepare_avoid_flags(state, avoid_json, exclude_mask)?;
-
-    let time_weights = exclude::compute_exclude_weights_time_only(
-        &mode_data.cch_topo,
-        &mode_data.cch_weights,
-        &avoid_flags,
-        AVOID_BIT,
-        &mode_data.filtered_to_original,
-    );
-
-    tracing::info!(
-        polygons = poly_count,
-        avoided_edges = avoided_count,
-        elapsed_ms = start.elapsed().as_millis(),
-        "computed avoid weights (time-only)"
-    );
-
-    Ok((time_weights, avoid_flags))
-}
-
-/// Compute full avoid weights (time + distance + flat adjacencies).
-///
-/// For PHAST-based endpoints (isochrones, matrices, trip).
-/// If `exclude_mask` is also specified, both avoid and exclude flags are merged.
-pub fn compute_avoid_weights(
-    state: &ServerState,
-    mode_data: &ModeData,
-    avoid_json: &str,
-    exclude_mask: Option<u8>,
-) -> Result<(ExcludeWeights, Vec<u8>), String> {
-    let start = std::time::Instant::now();
-
-    let (avoid_flags, poly_count, avoided_count) =
-        prepare_avoid_flags(state, avoid_json, exclude_mask)?;
-
     let weights = exclude::compute_exclude_weights(
         &mode_data.cch_topo,
         &mode_data.cch_weights,
@@ -270,15 +391,79 @@ pub fn compute_avoid_weights(
         AVOID_BIT,
         &mode_data.filtered_to_original,
     );
-
     tracing::info!(
+        mode_idx,
         polygons = poly_count,
         avoided_edges = avoided_count,
         elapsed_ms = start.elapsed().as_millis(),
-        "computed avoid weights"
+        "computed avoid weights (cache MISS, stored)"
     );
 
-    Ok((weights, avoid_flags))
+    let entry = Arc::new(AvoidEntry {
+        weights,
+        flags: avoid_flags,
+    });
+    state.avoid_cache.insert(key, Arc::clone(&entry));
+    Ok(entry)
+}
+
+/// Compute time-only avoid weights for P2P route queries.
+///
+/// Backed by the shared `AvoidWeightCache`. The cache stores full
+/// `ExcludeWeights`; this function clones the time field. /route pays
+/// a ~1.2× upfront cost vs a hypothetical time-only cache but in
+/// exchange any subsequent /table or /isochrone on the same polygon
+/// gets the same cache hit.
+pub fn compute_avoid_weights_time_only(
+    state: &ServerState,
+    mode_data: &ModeData,
+    avoid_json: &str,
+    exclude_mask: Option<u8>,
+) -> Result<(CchWeights, Vec<u8>), String> {
+    let mode_idx = mode_index_in_state(state, mode_data)? as u8;
+    let entry = get_or_compute_avoid_entry(state, mode_data, mode_idx, avoid_json, exclude_mask)?;
+    Ok((entry.weights.time_weights.clone(), entry.flags.clone()))
+}
+
+/// Compute full avoid weights (time + distance + flat adjacencies).
+///
+/// For PHAST-based endpoints (isochrones, matrices, trip). Backed by
+/// the shared `AvoidWeightCache`. If `exclude_mask` is also specified,
+/// both avoid and exclude flags are merged before recustomization.
+pub fn compute_avoid_weights(
+    state: &ServerState,
+    mode_data: &ModeData,
+    avoid_json: &str,
+    exclude_mask: Option<u8>,
+) -> Result<(ExcludeWeights, Vec<u8>), String> {
+    let mode_idx = mode_index_in_state(state, mode_data)? as u8;
+    let entry = get_or_compute_avoid_entry(state, mode_data, mode_idx, avoid_json, exclude_mask)?;
+    // The cached ExcludeWeights is shared via Arc; consumers that
+    // need an owned value pay a deep clone here. The 100-200 MB clone
+    // is still cheap vs the 30 s recustomization it replaces.
+    let owned: ExcludeWeights = ExcludeWeights {
+        time_weights: entry.weights.time_weights.clone(),
+        dist_weights: entry.weights.dist_weights.clone(),
+        time_up_flat: entry.weights.time_up_flat.clone(),
+        time_down_flat: entry.weights.time_down_flat.clone(),
+        time_down_fwd_flat: entry.weights.time_down_fwd_flat.clone(),
+        dist_up_flat: entry.weights.dist_up_flat.clone(),
+        dist_down_flat: entry.weights.dist_down_flat.clone(),
+        dist_down_fwd_flat: entry.weights.dist_down_fwd_flat.clone(),
+    };
+    Ok((owned, entry.flags.clone()))
+}
+
+/// Look up the mode index by comparing the `ModeData` pointer against
+/// the state's mode list. Avoids threading an explicit index through
+/// the existing call sites.
+fn mode_index_in_state(state: &ServerState, mode_data: &ModeData) -> Result<usize, String> {
+    for (i, m) in state.modes.iter().enumerate() {
+        if std::ptr::eq(m, mode_data) {
+            return Ok(i);
+        }
+    }
+    Err("internal error: ModeData not registered in ServerState".to_string())
 }
 
 /// Parse an optional avoid_polygons parameter.

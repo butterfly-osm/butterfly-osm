@@ -419,7 +419,11 @@ pub async fn route_handler(
     let mode_data = state.get_mode(mode);
     let num_alternatives = (req.alternatives.min(5)) as usize;
 
-    // Compute avoid weights — time-only for P2P route (skip distance + flat adj)
+    // Compute avoid weights — time-only for P2P route (skip distance + flat adj).
+    // Uses sparse triangle relaxation; #238 fix made pass 1 of sparse mark every
+    // node that is either incident to a changed edge OR a potential middle of a
+    // triangle relaxing one, so it now matches the full path's output. /route
+    // stays on the fast time-only path.
     let avoid_result = if let Some(ref avoid_str) = avoid_json {
         match super::avoid::compute_avoid_weights_time_only(
             &state,
@@ -483,13 +487,11 @@ pub async fn route_handler(
     //   K=20, cap=96  →  96.7 % fixed
     //   K=32, cap=192 →  98 % fixed
     //   K=64, cap=400 →  98.7 % fixed
-    // The residual ≤1.3 % are coordinates that snap onto truly
-    // disconnected components in Butterfly's mode-filtered car
-    // graph and the closest connected component is beyond the
-    // 5 km MAX_SNAP_DISTANCE_M radius after the role mask filter.
-    // Fixing those requires graph-level "largest SCC" filtering at
-    // index build time — out of scope for this directional-snap
-    // fix.
+    // The role masks are connectivity-aware: source candidates must
+    // be able to reach the main routing core and destination candidates
+    // must be reachable from it. The K-best fallback remains for
+    // same-geometry directional ambiguity and dynamic exclude/avoid
+    // cases, not for ordinary disconnected-component cleanup.
     //
     // Best-case (top-1 src × top-1 dst routes) is one P2P query.
     // Worst case is bounded by MAX_FALLBACK_COMBOS below; typical
@@ -766,11 +768,11 @@ pub async fn route_handler(
     // produces up to 4096 combos worst case. Cap at 400 so we
     // cover roughly (i+j) ≤ 28 in the enumeration above — enough
     // to reach ~28 candidates deep on either side, which exhausts
-    // the disconnected-fragment cases that still benefit from
-    // wider search.
+    // deep same-geometry directional ambiguity and dynamic
+    // exclude/avoid cases that still benefit from wider search.
     // Worst case ≈ 400 × 5-50 ms = 2-20 s tail, only on the
     // ~1.3 % pathological pairs that genuinely have no nearby
-    // connected component in the mode-filtered car graph.
+    // dynamic or geometrically ambiguous cases.
     const MAX_FALLBACK_COMBOS: usize = 400;
     if combo_order.len() > MAX_FALLBACK_COMBOS {
         combo_order.truncate(MAX_FALLBACK_COMBOS);

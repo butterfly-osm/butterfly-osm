@@ -244,52 +244,6 @@ struct MatrixParams {
     radius_km: Option<serde_json::Value>,
 }
 
-/// Snap coordinates to ranks, returning (ranks, valid_indices).
-fn snap_to_ranks(
-    coords: &[[f64; 2]],
-    state: &ServerState,
-    mode_idx: u8,
-    mode_data: &super::state::ModeData,
-) -> (Vec<u32>, Vec<usize>) {
-    let mut ranks = Vec::with_capacity(coords.len());
-    let mut valid = Vec::with_capacity(coords.len());
-    for (i, [lon, lat]) in coords.iter().enumerate() {
-        if let Some(orig_id) = state.snap_index.snap(*lon, *lat, mode_idx) {
-            let rank = mode_data.orig_to_rank[orig_id as usize];
-            if rank != u32::MAX {
-                ranks.push(rank);
-                valid.push(i);
-            }
-        }
-    }
-    (ranks, valid)
-}
-
-/// Build a full-length (n = coords.len()) snapped coordinate vector. Points
-/// that fail to snap keep their original lon/lat — they will still be marked
-/// invalid in the matrix, but having them in the vector keeps indexing
-/// straightforward for the Euclidean pre-filter.
-fn snapped_coords_full(
-    coords: &[[f64; 2]],
-    state: &ServerState,
-    mode_idx: u8,
-    mode_data: &super::state::ModeData,
-) -> Vec<(f64, f64)> {
-    let mut out = Vec::with_capacity(coords.len());
-    for [lon, lat] in coords {
-        if let Some(orig_id) = state.snap_index.snap(*lon, *lat, mode_idx) {
-            let rank = mode_data.orig_to_rank[orig_id as usize];
-            if rank != u32::MAX {
-                let loc = super::types::get_node_location(state, orig_id);
-                out.push((loc[0], loc[1]));
-                continue;
-            }
-        }
-        out.push((*lon, *lat));
-    }
-    out
-}
-
 /// Build matrix RecordBatch from flat u32 distances.
 #[allow(clippy::too_many_arguments)]
 fn build_matrix_batch(
@@ -356,18 +310,89 @@ fn do_matrix(
     let mode_data = state.get_mode(mode);
     let n_nodes = mode_data.cch_topo.n_nodes as usize;
 
-    let (sources_rank, valid_src) = snap_to_ranks(&params.sources, state, mode.0, mode_data);
-    let (targets_rank, valid_dst) = snap_to_ranks(&params.destinations, state, mode.0, mode_data);
+    use super::types::SnapRole;
+    // K-best snap candidates per src/dst with directional role + the
+    // SCC-aware connectivity filter (via mode_data.has_outbound /
+    // has_inbound). The first candidate per slot feeds the bucket
+    // M2M primary pass; the rest power the per-cell P2P fallback for
+    // INF cells in the small-matrix branch below.
+    const SNAP_K: usize = 64;
+    use rayon::prelude::*;
+    let src_kbest: Vec<super::snap_kbest::KBestSnap> = params
+        .sources
+        .par_iter()
+        .map(|&[lon, lat]| {
+            super::snap_kbest::snap_k_pair_role(
+                state,
+                mode_data,
+                mode,
+                lon,
+                lat,
+                SnapRole::Src,
+                None,
+                SNAP_K,
+            )
+        })
+        .collect();
+    let dst_kbest: Vec<super::snap_kbest::KBestSnap> = params
+        .destinations
+        .par_iter()
+        .map(|&[lon, lat]| {
+            super::snap_kbest::snap_k_pair_role(
+                state,
+                mode_data,
+                mode,
+                lon,
+                lat,
+                SnapRole::Dst,
+                None,
+                SNAP_K,
+            )
+        })
+        .collect();
+
+    let mut sources_rank = Vec::with_capacity(params.sources.len());
+    let mut valid_src = Vec::with_capacity(params.sources.len());
+    let mut sources_snapped = Vec::with_capacity(params.sources.len());
+    for (i, snap) in src_kbest.iter().enumerate() {
+        if let Some(r) = snap.primary_rank() {
+            sources_rank.push(r);
+            valid_src.push(i);
+            if let Some((_, plon, plat, _)) = snap.primary {
+                sources_snapped.push((plon, plat));
+            } else {
+                let [lon, lat] = params.sources[i];
+                sources_snapped.push((lon, lat));
+            }
+        } else {
+            let [lon, lat] = params.sources[i];
+            sources_snapped.push((lon, lat));
+        }
+    }
+    let mut targets_rank = Vec::with_capacity(params.destinations.len());
+    let mut valid_dst = Vec::with_capacity(params.destinations.len());
+    let mut targets_snapped = Vec::with_capacity(params.destinations.len());
+    for (i, snap) in dst_kbest.iter().enumerate() {
+        if let Some(r) = snap.primary_rank() {
+            targets_rank.push(r);
+            valid_dst.push(i);
+            if let Some((_, plon, plat, _)) = snap.primary {
+                targets_snapped.push((plon, plat));
+            } else {
+                let [lon, lat] = params.destinations[i];
+                targets_snapped.push((lon, lat));
+            }
+        } else {
+            let [lon, lat] = params.destinations[i];
+            targets_snapped.push((lon, lat));
+        }
+    }
 
     if sources_rank.is_empty() || targets_rank.is_empty() {
         let schema = Arc::new(matrix_schema());
         let empty = RecordBatch::new_empty(schema);
         return Ok(Box::pin(stream::once(async move { Ok(empty) })));
     }
-
-    // Full-length snapped coordinates — for the Euclidean pre-filter.
-    let sources_snapped = snapped_coords_full(&params.sources, state, mode.0, mode_data);
-    let targets_snapped = snapped_coords_full(&params.destinations, state, mode.0, mode_data);
 
     let radius_param = parse_radius(params.radius_km.as_ref());
     let neighbor_mask: Option<Arc<Vec<Vec<u32>>>> = match radius_param {
@@ -404,11 +429,49 @@ fn do_matrix(
         let up = &mode_data.up_adj_flat;
         let down = &mode_data.down_rev_flat;
 
-        let (matrix, _stats) = if use_parallel {
+        let (mut matrix, _stats) = if use_parallel {
             table_bucket_parallel(n_nodes, up, down, &sources_rank, &targets_rank)
         } else {
             table_bucket_full_flat(n_nodes, up, down, &sources_rank, &targets_rank)
         };
+
+        // Per-cell K-best fallback for INF cells (mirrors /table POST).
+        // With SCC-aware role masks this is now a rare per-cell rescue
+        // for geometric-ambiguity / dynamic-recustomisation pairs.
+        if matrix.contains(&u32::MAX) {
+            use rayon::prelude::*;
+            let query = super::query::CchQuery::new(state, mode);
+
+            // Map back from matrix index (over valid src/dst) to the
+            // original src/dst index so we can look up the K-best ranks.
+            let mut work: Vec<(usize, usize)> = Vec::new();
+            for (i, _) in valid_src.iter().enumerate() {
+                for (j, _) in valid_dst.iter().enumerate() {
+                    if matrix[i * n_valid_dst + j] == u32::MAX {
+                        work.push((i, j));
+                    }
+                }
+            }
+            let patches: Vec<(usize, usize, u32)> = work
+                .par_iter()
+                .filter_map(|&(i, j)| {
+                    let src_orig_idx = valid_src[i];
+                    let dst_orig_idx = valid_dst[j];
+                    let src_ranks = &src_kbest[src_orig_idx].ranks;
+                    let dst_ranks = &dst_kbest[dst_orig_idx].ranks;
+                    super::snap_kbest::p2p_with_kbest_fallback(
+                        &query,
+                        src_ranks,
+                        dst_ranks,
+                        super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+                    )
+                    .map(|(_, _, r)| (i, j, r.distance))
+                })
+                .collect();
+            for (i, j, dist) in patches {
+                matrix[i * n_valid_dst + j] = dist;
+            }
+        }
 
         let schema = Arc::new(matrix_schema());
         let batch = build_matrix_batch(
@@ -581,6 +644,13 @@ fn do_route_batch(
             let mut dist_arr = Float32Builder::with_capacity(n);
             let mut geom_arr = BinaryBuilder::with_capacity(n, n * 256);
 
+            // K-best snap + bounded combo fallback (mirrors /route).
+            // The connectivity-aware role masks already eliminate most
+            // snap traps; the fallback now only catches same-geometry
+            // directional ambiguity and exclude/avoid edge cases.
+            const SNAP_K: usize = 64;
+            let query = CchQuery::new(&state, mode);
+
             for pair in chunk {
                 let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
                 src_lon_arr.append_value(slon);
@@ -588,61 +658,70 @@ fn do_route_batch(
                 dst_lon_arr.append_value(dlon);
                 dst_lat_arr.append_value(dlat);
 
-                let src_snap = state.snap_index.snap(slon, slat, mode.0);
-                let dst_snap = state.snap_index.snap(dlon, dlat, mode.0);
+                let src_snap = super::snap_kbest::snap_k_pair_role(
+                    &state,
+                    mode_data,
+                    mode,
+                    slon,
+                    slat,
+                    super::types::SnapRole::Src,
+                    None,
+                    SNAP_K,
+                );
+                let dst_snap = super::snap_kbest::snap_k_pair_role(
+                    &state,
+                    mode_data,
+                    mode,
+                    dlon,
+                    dlat,
+                    super::types::SnapRole::Dst,
+                    None,
+                    SNAP_K,
+                );
 
-                match (src_snap, dst_snap) {
-                    (Some(src_orig), Some(dst_orig)) => {
-                        let src_rank = mode_data.orig_to_rank[src_orig as usize];
-                        let dst_rank = mode_data.orig_to_rank[dst_orig as usize];
+                if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
+                    dur_arr.append_value(f32::NAN);
+                    dist_arr.append_value(f32::NAN);
+                    geom_arr.append_value(&[] as &[u8]);
+                    continue;
+                }
 
-                        if src_rank == u32::MAX || dst_rank == u32::MAX {
-                            dur_arr.append_value(f32::NAN);
-                            dist_arr.append_value(f32::NAN);
-                            geom_arr.append_value(&[] as &[u8]);
-                            continue;
-                        }
+                match super::snap_kbest::p2p_with_kbest_fallback(
+                    &query,
+                    &src_snap.ranks,
+                    &dst_snap.ranks,
+                    super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+                ) {
+                    Some((src_rank, dst_rank, result)) => {
+                        let duration_s = result.distance as f64 / 10.0;
 
-                        let query = CchQuery::new(&state, mode);
-                        match query.query(src_rank, dst_rank) {
-                            Some(result) => {
-                                let duration_s = result.distance as f64 / 10.0;
+                        let rank_path = unpack_path(
+                            &mode_data.cch_topo,
+                            &mode_data.cch_weights,
+                            &result.forward_parent,
+                            &result.backward_parent,
+                            src_rank,
+                            dst_rank,
+                            result.meeting_node,
+                        );
+                        let ebg_path: Vec<u32> = rank_path
+                            .iter()
+                            .map(|&rank| {
+                                let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
+                                mode_data.filtered_to_original[filt_id as usize]
+                            })
+                            .collect();
 
-                                let rank_path = unpack_path(
-                                    &mode_data.cch_topo,
-                                    &mode_data.cch_weights,
-                                    &result.forward_parent,
-                                    &result.backward_parent,
-                                    src_rank,
-                                    dst_rank,
-                                    result.meeting_node,
-                                );
-                                let ebg_path: Vec<u32> = rank_path
-                                    .iter()
-                                    .map(|&rank| {
-                                        let filt_id =
-                                            mode_data.cch_topo.rank_to_filtered[rank as usize];
-                                        mode_data.filtered_to_original[filt_id as usize]
-                                    })
-                                    .collect();
+                        let (points, distance_m) =
+                            build_raw_points(&ebg_path, &state.ebg_nodes, &state.edge_geom);
 
-                                let (points, distance_m) =
-                                    build_raw_points(&ebg_path, &state.ebg_nodes, &state.edge_geom);
+                        let wkb = encode_linestring_wkb(&points);
 
-                                let wkb = encode_linestring_wkb(&points);
-
-                                dur_arr.append_value(duration_s as f32);
-                                dist_arr.append_value(distance_m as f32);
-                                geom_arr.append_value(&wkb);
-                            }
-                            None => {
-                                dur_arr.append_value(f32::NAN);
-                                dist_arr.append_value(f32::NAN);
-                                geom_arr.append_value(&[] as &[u8]);
-                            }
-                        }
+                        dur_arr.append_value(duration_s as f32);
+                        dist_arr.append_value(distance_m as f32);
+                        geom_arr.append_value(&wkb);
                     }
-                    _ => {
+                    None => {
                         dur_arr.append_value(f32::NAN);
                         dist_arr.append_value(f32::NAN);
                         geom_arr.append_value(&[] as &[u8]);
@@ -718,9 +797,23 @@ fn do_isochrone(
     let mode_data = state.get_mode(mode);
     let mode_name = &state.mode_names[mode.index()];
 
+    let is_reverse = params.direction.to_lowercase() == "arrive";
+    // #197 directional snap: depart → center is a source (needs outbound),
+    // arrive → center is a destination (needs inbound).
+    let center_role = if is_reverse {
+        super::types::SnapRole::Dst
+    } else {
+        super::types::SnapRole::Src
+    };
     let orig_id = state
         .snap_index
-        .snap(params.lon, params.lat, mode.0)
+        .snap_filtered_role(
+            params.lon,
+            params.lat,
+            mode.0,
+            None,
+            center_role.role_filter(mode_data),
+        )
         .ok_or_else(|| Status::not_found("Could not snap to road network"))?;
     let origin_rank = mode_data.orig_to_rank[orig_id as usize];
     if origin_rank == u32::MAX {
@@ -728,8 +821,6 @@ fn do_isochrone(
             "Snapped node not accessible for this mode",
         ));
     }
-
-    let is_reverse = params.direction.to_lowercase() == "arrive";
     let max_interval = *params.intervals.iter().max().unwrap();
     let max_threshold_ds = max_interval * 10;
 
@@ -896,25 +987,32 @@ pub fn do_edges_batch(
                         dist_m_b.append_null();
                     };
 
-                // Snap both endpoints on the requested mode's network.
-                let src_snap = state.snap_index.snap(pair[0], pair[1], mode.0);
-                let dst_snap = state.snap_index.snap(pair[2], pair[3], mode.0);
-                let (Some(src_orig), Some(dst_orig)) = (src_snap, dst_snap) else {
-                    emit_unreachable(
-                        &mut query_idx_b,
-                        &mut target_idx_b,
-                        &mut edge_seq_b,
-                        &mut osm_from_b,
-                        &mut osm_to_b,
-                        &mut dur_ms_b,
-                        &mut dist_m_b,
-                    );
-                    continue;
-                };
-
-                let src_rank = mode_data.orig_to_rank[src_orig as usize];
-                let dst_rank = mode_data.orig_to_rank[dst_orig as usize];
-                if src_rank == u32::MAX || dst_rank == u32::MAX {
+                // K-best snap + bounded combo fallback for the residual
+                // geometric-ambiguity / dynamic-recustomisation cases.
+                // The connectivity-aware role masks already drop
+                // disconnected-component snap traps before we get here.
+                const SNAP_K: usize = 64;
+                let src_snap = super::snap_kbest::snap_k_pair_role(
+                    &state,
+                    mode_data,
+                    mode,
+                    pair[0],
+                    pair[1],
+                    super::types::SnapRole::Src,
+                    None,
+                    SNAP_K,
+                );
+                let dst_snap = super::snap_kbest::snap_k_pair_role(
+                    &state,
+                    mode_data,
+                    mode,
+                    pair[2],
+                    pair[3],
+                    super::types::SnapRole::Dst,
+                    None,
+                    SNAP_K,
+                );
+                if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
                     emit_unreachable(
                         &mut query_idx_b,
                         &mut target_idx_b,
@@ -936,7 +1034,12 @@ pub fn do_edges_batch(
                     &mode_data.down_rev_flat,
                     &mode_data.cch_weights,
                 );
-                let Some(result) = query.query(src_rank, dst_rank) else {
+                let Some((src_rank, dst_rank, result)) = super::snap_kbest::p2p_with_kbest_fallback(
+                    &query,
+                    &src_snap.ranks,
+                    &dst_snap.ranks,
+                    super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+                ) else {
                     emit_unreachable(
                         &mut query_idx_b,
                         &mut target_idx_b,
@@ -1397,27 +1500,45 @@ async fn do_exchange_catchment(
                 continue;
             }
 
-            // Snap store
-            let store_snap = state.snap_index.snap(*slon, *slat, mode.0);
-            let store_orig = match store_snap {
-                Some(id) => id,
+            // K-best snap store as source (#197 Src role).
+            const SNAP_K: usize = 64;
+            let store_snap = super::snap_kbest::snap_k_pair_role(
+                &state,
+                mode_data,
+                mode,
+                *slon,
+                *slat,
+                super::types::SnapRole::Src,
+                None,
+                SNAP_K,
+            );
+            let store_rank = match store_snap.primary_rank() {
+                Some(r) => r,
                 None => continue,
             };
-            let store_rank = mode_data.orig_to_rank[store_orig as usize];
-            if store_rank == u32::MAX {
-                continue;
-            }
 
-            // Snap all clients
+            // K-best snap all clients as destinations (#197 Dst role).
+            let client_snaps: Vec<super::snap_kbest::KBestSnap> = client_coords
+                .iter()
+                .map(|&(clon, clat)| {
+                    super::snap_kbest::snap_k_pair_role(
+                        &state,
+                        mode_data,
+                        mode,
+                        clon,
+                        clat,
+                        super::types::SnapRole::Dst,
+                        None,
+                        SNAP_K,
+                    )
+                })
+                .collect();
             let mut client_ranks: Vec<u32> = Vec::with_capacity(client_coords.len());
             let mut client_valid: Vec<usize> = Vec::with_capacity(client_coords.len());
-            for (ci, &(clon, clat)) in client_coords.iter().enumerate() {
-                if let Some(orig_id) = state.snap_index.snap(clon, clat, mode.0) {
-                    let rank = mode_data.orig_to_rank[orig_id as usize];
-                    if rank != u32::MAX {
-                        client_ranks.push(rank);
-                        client_valid.push(ci);
-                    }
+            for (ci, snap) in client_snaps.iter().enumerate() {
+                if let Some(r) = snap.primary_rank() {
+                    client_ranks.push(r);
+                    client_valid.push(ci);
                 }
             }
 
@@ -1426,13 +1547,38 @@ async fn do_exchange_catchment(
             }
 
             // 1-to-N matrix
-            let (matrix, _stats) = table_bucket_full_flat(
+            let (mut matrix, _stats) = table_bucket_full_flat(
                 n_nodes,
                 &mode_data.up_adj_flat,
                 &mode_data.down_rev_flat,
                 &[store_rank],
                 &client_ranks,
             );
+
+            // Per-cell K-best fallback for INF cells (mirrors /table POST).
+            if matrix.contains(&u32::MAX) {
+                use rayon::prelude::*;
+                let query = super::query::CchQuery::new(&state, mode);
+                let patches: Vec<(usize, u32)> = (0..client_valid.len())
+                    .filter(|&ti| matrix[ti] == u32::MAX)
+                    .collect::<Vec<_>>()
+                    .par_iter()
+                    .filter_map(|&ti| {
+                        let ci = client_valid[ti];
+                        let dst_ranks = &client_snaps[ci].ranks;
+                        super::snap_kbest::p2p_with_kbest_fallback(
+                            &query,
+                            &store_snap.ranks,
+                            dst_ranks,
+                            super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+                        )
+                        .map(|(_, _, r)| (ti, r.distance))
+                    })
+                    .collect();
+                for (ti, dist) in patches {
+                    matrix[ti] = dist;
+                }
+            }
 
             let mut clients_with_dt: Vec<super::catchment::Client> = Vec::new();
             for (ti, &ci) in client_valid.iter().enumerate() {

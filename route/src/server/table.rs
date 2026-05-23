@@ -25,7 +25,9 @@ use crate::profile_abi::Mode;
 
 use super::regions::RegionsState;
 use super::state::ServerState;
-use super::types::{ErrorResponse, Waypoint, get_node_location, parse_mode, validate_coord};
+use super::types::{
+    ErrorResponse, SnapRole, Waypoint, get_node_location, parse_mode, validate_coord,
+};
 
 // ============ Types ============
 
@@ -339,87 +341,113 @@ pub async fn compute_table_bucket_m2m(
     let mode_data = state.get_mode(mode);
     let n_nodes = mode_data.cch_topo.n_nodes as usize;
 
-    // Snap sources to graph nodes and convert to RANK space
-    // The bucket M2M algorithm operates on rank positions (CCH is rank-aligned)
+    // K-best snap with the directional #197 role filter. Use the same
+    // primary (candidates[0]) that /route uses, so the matrix and
+    // routes agree on every pair where the primary pair connects. The
+    // remaining K-1 candidates feed `apply_k_best_fallback` for the
+    // rare cells where the primary pair lands in a snap trap.
+    //
+    // snap_k_with_info_filtered_role iterates all samples within 5 km
+    // (no early-exit) — non-trivial per call. We parallelise over src/
+    // dst with rayon so an N-source request scales close-to-linearly
+    // with the number of cores instead of doing N serial snaps.
+    const SNAP_K: usize = 64;
+
+    let src_role_filter = SnapRole::Src.role_filter(mode_data);
+    let dst_role_filter = SnapRole::Dst.role_filter(mode_data);
+
+    let t_pre = std::time::Instant::now();
+
+    // (rank, snapped, valid, candidate_ranks)
+    type SnapResult = (u32, (f64, f64), bool, Vec<u32>);
+
+    // For each source: SnapResult.
+    let source_results: Vec<SnapResult> = sources
+        .par_iter()
+        .map(|&[lon, lat]| {
+            let cands = state.snap_index.snap_k_with_info_filtered_role(
+                lon,
+                lat,
+                mode.0,
+                SNAP_K,
+                Some(snap_mask),
+                src_role_filter,
+            );
+            let candidate_ranks: Vec<u32> = cands
+                .iter()
+                .filter_map(|(orig_id, _, _, _)| {
+                    let r = mode_data.orig_to_rank[*orig_id as usize];
+                    if r == u32::MAX { None } else { Some(r) }
+                })
+                .collect();
+            if let Some(&(orig_id, plon, plat, _)) = cands.first() {
+                let rank = mode_data.orig_to_rank[orig_id as usize];
+                if rank != u32::MAX {
+                    return (rank, (plon, plat), true, candidate_ranks);
+                }
+            }
+            (0, (lon, lat), false, Vec::new())
+        })
+        .collect();
+
+    let target_results: Vec<SnapResult> = destinations
+        .par_iter()
+        .map(|&[lon, lat]| {
+            let cands = state.snap_index.snap_k_with_info_filtered_role(
+                lon,
+                lat,
+                mode.0,
+                SNAP_K,
+                Some(snap_mask),
+                dst_role_filter,
+            );
+            let candidate_ranks: Vec<u32> = cands
+                .iter()
+                .filter_map(|(orig_id, _, _, _)| {
+                    let r = mode_data.orig_to_rank[*orig_id as usize];
+                    if r == u32::MAX { None } else { Some(r) }
+                })
+                .collect();
+            if let Some(&(orig_id, plon, plat, _)) = cands.first() {
+                let rank = mode_data.orig_to_rank[orig_id as usize];
+                if rank != u32::MAX {
+                    return (rank, (plon, plat), true, candidate_ranks);
+                }
+            }
+            (0, (lon, lat), false, Vec::new())
+        })
+        .collect();
+
     let mut sources_rank: Vec<u32> = Vec::with_capacity(sources.len());
     let mut source_waypoints: Vec<Waypoint> = Vec::with_capacity(sources.len());
     let mut source_valid: Vec<bool> = Vec::with_capacity(sources.len());
     let mut sources_snapped: Vec<(f64, f64)> = Vec::with_capacity(sources.len());
-
-    for [lon, lat] in sources {
-        if let Some(orig_id) = state
-            .snap_index
-            .snap_filtered(*lon, *lat, mode.0, Some(snap_mask))
-        {
-            let rank = mode_data.orig_to_rank[orig_id as usize];
-            if rank != u32::MAX {
-                sources_rank.push(rank);
-                source_valid.push(true);
-                let snapped = get_node_location(state, orig_id);
-                sources_snapped.push((snapped[0], snapped[1]));
-                source_waypoints.push(Waypoint {
-                    location: snapped,
-                    name: String::new(),
-                });
-            } else {
-                sources_rank.push(0);
-                source_valid.push(false);
-                sources_snapped.push((*lon, *lat));
-                source_waypoints.push(Waypoint {
-                    location: [*lon, *lat],
-                    name: String::new(),
-                });
-            }
-        } else {
-            sources_rank.push(0);
-            source_valid.push(false);
-            sources_snapped.push((*lon, *lat));
-            source_waypoints.push(Waypoint {
-                location: [*lon, *lat],
-                name: String::new(),
-            });
-        }
+    let mut sources_candidates: Vec<Vec<u32>> = Vec::with_capacity(sources.len());
+    for (rank, (plon, plat), valid, cands) in source_results {
+        sources_rank.push(rank);
+        source_valid.push(valid);
+        sources_snapped.push((plon, plat));
+        source_waypoints.push(Waypoint {
+            location: [plon, plat],
+            name: String::new(),
+        });
+        sources_candidates.push(cands);
     }
 
-    // Snap destinations to graph nodes and convert to RANK space
     let mut targets_rank: Vec<u32> = Vec::with_capacity(destinations.len());
     let mut dest_waypoints: Vec<Waypoint> = Vec::with_capacity(destinations.len());
     let mut target_valid: Vec<bool> = Vec::with_capacity(destinations.len());
     let mut targets_snapped: Vec<(f64, f64)> = Vec::with_capacity(destinations.len());
-
-    for [lon, lat] in destinations {
-        if let Some(orig_id) = state
-            .snap_index
-            .snap_filtered(*lon, *lat, mode.0, Some(snap_mask))
-        {
-            let rank = mode_data.orig_to_rank[orig_id as usize];
-            if rank != u32::MAX {
-                targets_rank.push(rank);
-                target_valid.push(true);
-                let snapped = get_node_location(state, orig_id);
-                targets_snapped.push((snapped[0], snapped[1]));
-                dest_waypoints.push(Waypoint {
-                    location: snapped,
-                    name: String::new(),
-                });
-            } else {
-                targets_rank.push(0);
-                target_valid.push(false);
-                targets_snapped.push((*lon, *lat));
-                dest_waypoints.push(Waypoint {
-                    location: [*lon, *lat],
-                    name: String::new(),
-                });
-            }
-        } else {
-            targets_rank.push(0);
-            target_valid.push(false);
-            targets_snapped.push((*lon, *lat));
-            dest_waypoints.push(Waypoint {
-                location: [*lon, *lat],
-                name: String::new(),
-            });
-        }
+    let mut targets_candidates: Vec<Vec<u32>> = Vec::with_capacity(destinations.len());
+    for (rank, (plon, plat), valid, cands) in target_results {
+        targets_rank.push(rank);
+        target_valid.push(valid);
+        targets_snapped.push((plon, plat));
+        dest_waypoints.push(Waypoint {
+            location: [plon, plat],
+            name: String::new(),
+        });
+        targets_candidates.push(cands);
     }
 
     // Build the per-source neighbour mask if a radius was requested.
@@ -445,6 +473,12 @@ pub async fn compute_table_bucket_m2m(
     let n_sources = sources.len();
     let n_targets = destinations.len();
     let use_parallel = sources_rank.len() * targets_rank.len() >= 2500;
+    tracing::debug!(
+        "compute_table_bucket_m2m: snap+rebuild took {:?} n_src={} n_tgt={}",
+        t_pre.elapsed(),
+        sources.len(),
+        destinations.len()
+    );
 
     // Select flat adjacencies based on custom weights (exclude or avoid)
     let (time_up, time_down) = if let Some(cw) = custom_weights {
@@ -460,11 +494,17 @@ pub async fn compute_table_bucket_m2m(
 
     // Compute duration matrix if requested
     let durations = if want_duration {
+        let t_dur = std::time::Instant::now();
         let (matrix, _stats) = if use_parallel {
             table_bucket_parallel(n_nodes, time_up, time_down, &sources_rank, &targets_rank)
         } else {
             table_bucket_full_flat(n_nodes, time_up, time_down, &sources_rank, &targets_rank)
         };
+        tracing::debug!(
+            "compute_table_bucket_m2m: duration M2M took {:?} parallel={}",
+            t_dur.elapsed(),
+            use_parallel
+        );
 
         Some(flat_matrix_to_2d(
             &matrix,
@@ -481,11 +521,17 @@ pub async fn compute_table_bucket_m2m(
 
     // Compute distance matrix if requested (independent shortest-distance metric)
     let distances = if want_distance {
+        let t_dist = std::time::Instant::now();
         let (matrix, _stats) = if use_parallel {
             table_bucket_parallel(n_nodes, dist_up, dist_down, &sources_rank, &targets_rank)
         } else {
             table_bucket_full_flat(n_nodes, dist_up, dist_down, &sources_rank, &targets_rank)
         };
+        tracing::debug!(
+            "compute_table_bucket_m2m: distance M2M took {:?} parallel={}",
+            t_dist.elapsed(),
+            use_parallel
+        );
 
         Some(flat_matrix_to_2d(
             &matrix,
@@ -500,14 +546,289 @@ pub async fn compute_table_bucket_m2m(
         None
     };
 
-    Json(TableResponse {
+    let t_post_m2m = std::time::Instant::now();
+    let _ = t_post_m2m;
+
+    // Per-cell K-best fallback (#197 matrix gap).
+    //
+    // Bucket M2M uses only the primary candidate per src/dst. For the
+    // small fraction of pairs the primary snap is still unsuitable
+    // for this particular OD pair (usually same-geometry directional
+    // ambiguity or dynamic exclude/avoid effects), even though K-best
+    // would connect. /route already does this fallback inline; we
+    // mirror it here so /table agrees with /route.
+    // The K-best snap (expensive — iterates all samples within 5 km)
+    // is done LAZILY for only the affected src/dst rows/cols, so a
+    // healthy matrix pays zero K-best snap cost.
+    let (durations, distances) = apply_k_best_fallback(
+        state,
+        mode_data,
+        mode,
+        durations,
+        distances,
+        &sources_candidates,
+        &targets_candidates,
+        &source_valid,
+        &target_valid,
+        custom_weights,
+        want_duration,
+        want_distance,
+    );
+
+    tracing::debug!(
+        "compute_table_bucket_m2m: post-m2m to response took {:?}",
+        t_post_m2m.elapsed()
+    );
+
+    let t_resp = std::time::Instant::now();
+    let resp = Json(TableResponse {
         code: "Ok".into(),
         durations,
         distances,
         sources: Some(source_waypoints),
         destinations: Some(dest_waypoints),
     })
-    .into_response()
+    .into_response();
+    tracing::debug!(
+        "compute_table_bucket_m2m: json+into_response took {:?}",
+        t_resp.elapsed()
+    );
+    resp
+}
+
+/// 2D matrix of Option<f64> — None for unreachable/invalid cells.
+type MatrixGrid = Option<Vec<Vec<Option<f64>>>>;
+
+/// For each cell where bucket-M2M returned None (unreachable under the
+/// primary src/dst snap pair), retry with the K-best candidate combo
+/// enumeration — the same fallback /route uses for #197.
+///
+/// Lazy K-best: the expensive `snap_k_with_info_filtered_role`
+/// (iterates all samples within 5 km) is only invoked for src/dst rows
+/// and columns that contain at least one None cell. Healthy matrices
+/// pay zero overhead beyond the cheap primary snap done upfront.
+#[allow(clippy::too_many_arguments)]
+fn apply_k_best_fallback(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    mut durations: MatrixGrid,
+    mut distances: MatrixGrid,
+    sources_candidates: &[Vec<u32>],
+    targets_candidates: &[Vec<u32>],
+    source_valid: &[bool],
+    target_valid: &[bool],
+    custom_weights: Option<&super::exclude::ExcludeWeights>,
+    want_duration: bool,
+    want_distance: bool,
+) -> (MatrixGrid, MatrixGrid) {
+    use super::query::CchQuery;
+
+    // Cap per-cell fallback combos. /route uses 400 because a single
+    // hopeless query at 20s wall is acceptable; /table can have
+    // hundreds of failed cells so the per-cell budget must be smaller
+    // or total latency explodes (the unbounded version ran 88 s on
+    // Belgium 50×50 scattered).
+    //
+    // Connectivity-aware role masks should keep this path cold on the
+    // base graph. Keep the cap broad enough to preserve /route parity
+    // for the remaining dynamic or geometrically ambiguous cases.
+    const MAX_FALLBACK_COMBOS: usize = 200;
+
+    let _t_fb_start = std::time::Instant::now();
+    let n_sources = sources_candidates.len();
+    let n_targets = targets_candidates.len();
+
+    // Decide whether any cell needs the fallback. Skip the (cheap)
+    // CchQuery construction entirely on the common path.
+    let needs_fallback = |grid: &MatrixGrid| -> bool {
+        if let Some(g) = grid {
+            for (i, row) in g.iter().enumerate() {
+                if !source_valid[i] {
+                    continue;
+                }
+                for (j, cell) in row.iter().enumerate() {
+                    if target_valid[j] && cell.is_none() {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    };
+    let need_time = want_duration && needs_fallback(&durations);
+    let need_dist = want_distance && needs_fallback(&distances);
+    tracing::debug!(
+        "apply_k_best_fallback: needs_fallback decision took {:?}, need_time={}, need_dist={}",
+        _t_fb_start.elapsed(),
+        need_time,
+        need_dist
+    );
+    if !need_time && !need_dist {
+        return (durations, distances);
+    }
+
+    // Time CchQuery: use the same backend as /route (flats from
+    // mode_data, or recustomised flats if exclude/avoid are in play).
+    // with_custom_weights expects the *reverse* down-adjacency
+    // (DownReverseAdjFlat) for the bidirectional backward search — same
+    // layout as `mode_data.down_rev_flat`.
+    let time_query = if need_time {
+        Some(match custom_weights {
+            Some(cw) => CchQuery::with_custom_weights(
+                &mode_data.cch_topo,
+                &cw.time_up_flat,
+                &cw.time_down_flat,
+                &cw.time_weights,
+            ),
+            None => CchQuery::new(state, mode),
+        })
+    } else {
+        None
+    };
+
+    // Distance CchQuery: the CCH topology is shared between time and
+    // distance, and the metric-dependent INF sets agree (both are gated
+    // on mode access + exclude flags). So we reuse the TIME flats for
+    // topology + topo_edge_idx and override with the distance-metric
+    // weights. The standalone `*_dist` flats and the `dist_*` flats on
+    // `ExcludeWeights` intentionally omit `topo_edge_idx` because PHAST
+    // doesn't need it — they cannot back a `CchQuery` directly.
+    let dist_query = if need_dist {
+        let (up_flat, down_flat, weights) = match custom_weights {
+            Some(cw) => (&cw.time_up_flat, &cw.time_down_flat, &cw.dist_weights),
+            None => (
+                &mode_data.up_adj_flat,
+                &mode_data.down_rev_flat,
+                &mode_data.cch_weights_dist,
+            ),
+        };
+        Some(CchQuery::with_custom_weights(
+            &mode_data.cch_topo,
+            up_flat,
+            down_flat,
+            weights,
+        ))
+    } else {
+        None
+    };
+
+    // Build (i+j)-ordered combo enumeration; same shape as /route.
+    let combo_enum = |k_src: usize, k_dst: usize| -> Vec<(usize, usize)> {
+        let mut order = Vec::new();
+        for sum in 0..(k_src + k_dst) {
+            for i in 0..k_src {
+                if let Some(j) = sum.checked_sub(i)
+                    && j < k_dst
+                {
+                    order.push((i, j));
+                }
+            }
+        }
+        if order.len() > MAX_FALLBACK_COMBOS {
+            order.truncate(MAX_FALLBACK_COMBOS);
+        }
+        order
+    };
+
+    let t_fb_work = std::time::Instant::now();
+    // Build the list of cells needing fallback. We snapshot the work
+    // upfront so we can parallelise the per-cell P2P queries.
+    let mut work: Vec<(usize, usize, bool, bool)> = Vec::new();
+    for src_idx in 0..n_sources {
+        if !source_valid[src_idx] || sources_candidates[src_idx].is_empty() {
+            continue;
+        }
+        for tgt_idx in 0..n_targets {
+            if !target_valid[tgt_idx] || targets_candidates[tgt_idx].is_empty() {
+                continue;
+            }
+            let dur_missing = durations
+                .as_ref()
+                .map(|d| d[src_idx][tgt_idx].is_none())
+                .unwrap_or(false);
+            let dist_missing = distances
+                .as_ref()
+                .map(|d| d[src_idx][tgt_idx].is_none())
+                .unwrap_or(false);
+            if dur_missing || dist_missing {
+                work.push((src_idx, tgt_idx, dur_missing, dist_missing));
+            }
+        }
+    }
+
+    tracing::debug!(
+        "apply_k_best_fallback: built work list of {} cells in {:?}",
+        work.len(),
+        t_fb_work.elapsed()
+    );
+
+    let t_fb_run = std::time::Instant::now();
+    // Solve per cell in parallel — CchQuery is Sync (immutable
+    // references to topology + weights; thread-local search state
+    // lives in CchQueryState). Each cell is independent, so rayon
+    // gives close to linear speed-up on n_cores.
+    let time_query_ref = time_query.as_ref();
+    let dist_query_ref = dist_query.as_ref();
+    let patches: Vec<(usize, usize, Option<f64>, Option<f64>)> = work
+        .par_iter()
+        .map(|&(src_idx, tgt_idx, dur_missing, dist_missing)| {
+            let src_cands = &sources_candidates[src_idx];
+            let tgt_cands = &targets_candidates[tgt_idx];
+            let order = combo_enum(src_cands.len(), tgt_cands.len());
+            let mut dur_done = !dur_missing;
+            let mut dist_done = !dist_missing;
+            let mut dur_val: Option<f64> = None;
+            let mut dist_val: Option<f64> = None;
+            for &(i, j) in &order {
+                let s_rank = src_cands[i];
+                let d_rank = tgt_cands[j];
+                if s_rank == d_rank {
+                    continue;
+                }
+                if !dur_done
+                    && let Some(tq) = time_query_ref
+                    && let Some(r) = tq.query(s_rank, d_rank)
+                {
+                    dur_val = Some(r.distance as f64 / 10.0);
+                    dur_done = true;
+                }
+                if !dist_done
+                    && let Some(dq) = dist_query_ref
+                    && let Some(r) = dq.query(s_rank, d_rank)
+                {
+                    dist_val = Some(r.distance as f64 / 1000.0);
+                    dist_done = true;
+                }
+                if dur_done && dist_done {
+                    break;
+                }
+            }
+            (src_idx, tgt_idx, dur_val, dist_val)
+        })
+        .collect();
+
+    tracing::debug!(
+        "apply_k_best_fallback: ran {} cells in {:?}",
+        patches.len(),
+        t_fb_run.elapsed()
+    );
+
+    // Apply patches sequentially (cheap O(failed_cells) writes).
+    for (src_idx, tgt_idx, dur_val, dist_val) in patches {
+        if let Some(grid) = durations.as_mut()
+            && let Some(v) = dur_val
+        {
+            grid[src_idx][tgt_idx] = Some(v);
+        }
+        if let Some(grid) = distances.as_mut()
+            && let Some(v) = dist_val
+        {
+            grid[src_idx][tgt_idx] = Some(v);
+        }
+    }
+
+    (durations, distances)
 }
 
 /// Convert flat u32 matrix to 2D Option<f64> matrix with null for invalid/unreachable.
@@ -701,13 +1022,18 @@ pub async fn table_stream_handler(
     let mut sources_rank: Vec<u32> = Vec::with_capacity(req.sources.len());
     let mut valid_src_indices: Vec<usize> = Vec::with_capacity(req.sources.len());
     let mut sources_snapped: Vec<(f64, f64)> = Vec::with_capacity(req.sources.len());
+    let src_role_filter = SnapRole::Src.role_filter(mode_data);
+    let dst_role_filter = SnapRole::Dst.role_filter(mode_data);
+
     for (i, [lon, lat]) in req.sources.iter().enumerate() {
         let mut matched = false;
-        if let Some(orig_id) =
-            state
-                .snap_index
-                .snap_filtered(*lon, *lat, mode.0, Some(&snap_mask[..]))
-        {
+        if let Some(orig_id) = state.snap_index.snap_filtered_role(
+            *lon,
+            *lat,
+            mode.0,
+            Some(&snap_mask[..]),
+            src_role_filter,
+        ) {
             let rank = mode_data.orig_to_rank[orig_id as usize];
             if rank != u32::MAX {
                 sources_rank.push(rank);
@@ -728,11 +1054,13 @@ pub async fn table_stream_handler(
     let mut targets_snapped: Vec<(f64, f64)> = Vec::with_capacity(req.destinations.len());
     for (i, [lon, lat]) in req.destinations.iter().enumerate() {
         let mut matched = false;
-        if let Some(orig_id) =
-            state
-                .snap_index
-                .snap_filtered(*lon, *lat, mode.0, Some(&snap_mask[..]))
-        {
+        if let Some(orig_id) = state.snap_index.snap_filtered_role(
+            *lon,
+            *lat,
+            mode.0,
+            Some(&snap_mask[..]),
+            dst_role_filter,
+        ) {
             let rank = mode_data.orig_to_rank[orig_id as usize];
             if rank != u32::MAX {
                 targets_rank.push(rank);
