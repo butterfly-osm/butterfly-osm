@@ -137,18 +137,19 @@ impl Default for AvoidWeightCache {
 /// Hash an avoid_polygons JSON payload after canonicalising it (#243).
 ///
 /// Canonicalisation steps:
-///   1. Parse into a `Vec<Vec<(f64, f64)>>` of rings.
-///   2. Round each coordinate to 6 decimals (~10 cm precision). Belgium
-///      coords range up to 6 decimal digits naturally; tighter than this
-///      hits noise.
-///   3. Strip any duplicate trailing closing vertex (rings are then
+///   1. Parse the JSON into rings of `(i64, i64)` vertices, each
+///      coordinate quantised to 6 decimals (lon × 1e6, lat × 1e6, then
+///      `round() as i64`). 6 decimals ≈ 10 cm precision.
+///   2. Strip any duplicate trailing closing vertex (rings are then
 ///      stored open).
-///   4. Rotate each ring so its lexicographically smallest vertex is at
-///      position 0. The shortest cyclic shift uniquifies "same ring,
-///      different starting point".
-///   5. Sort polygons by their canonical first vertex so multi-polygon
-///      orderings collapse.
-///   6. Hash the resulting canonical byte stream.
+///   3. Rotate each ring to its lexicographically minimal cyclic
+///      rotation — picks the start that yields the smallest FULL
+///      sequence, not just the smallest first vertex (degenerate
+///      when multiple vertices share the min value).
+///   4. Sort polygons by the entire canonical ring sequence so
+///      multi-polygon orderings collapse and ties resolve
+///      deterministically.
+///   5. Hash the resulting canonical byte stream.
 ///
 /// Falls back to a raw-bytes hash if parsing fails — the cache will
 /// then miss as before, but the route handler's error path still
@@ -206,17 +207,39 @@ fn canonicalize_polygons(s: &str) -> Option<Vec<u8>> {
         if pts.first() == pts.last() {
             pts.pop();
         }
-        // Rotate ring so the lexicographically smallest vertex is at
-        // index 0. Makes "same ring, different start" hash to the
-        // same canonical key.
-        if let Some(min_idx) = (0..pts.len()).min_by_key(|&i| pts[i]) {
-            pts.rotate_left(min_idx);
+        // Rotate ring to its lexicographically minimal cyclic rotation.
+        // Naive `min_by_key` returns the FIRST index of the smallest
+        // vertex, which breaks rotation-independence when the same
+        // vertex value appears multiple times in the ring. Instead we
+        // pick the rotation start that yields the lexicographically
+        // smallest full sequence. For typical polygons (≤ ~100 verts)
+        // the O(n²) candidate enumeration is trivial; for pathological
+        // rings the upgrade to Booth's algorithm is mechanical.
+        if !pts.is_empty() {
+            let n = pts.len();
+            let mut best = 0usize;
+            for cand in 1..n {
+                for k in 0..n {
+                    let a = pts[(best + k) % n];
+                    let b = pts[(cand + k) % n];
+                    if b < a {
+                        best = cand;
+                        break;
+                    } else if b > a {
+                        break;
+                    }
+                }
+            }
+            pts.rotate_left(best);
         }
         rings.push(pts);
     }
 
-    // Multi-polygon order: sort rings by their canonical first vertex.
-    rings.sort_unstable_by_key(|r| r[0]);
+    // Multi-polygon order: sort by the FULL canonical ring sequence
+    // (not just first vertex). Two rings whose canonical first vertex
+    // collides need a stable tie-break to keep multi-polygon hashing
+    // deterministic.
+    rings.sort_unstable();
 
     // Serialise to a deterministic byte stream.
     let mut out = Vec::with_capacity(rings.iter().map(|r| r.len() * 16).sum::<usize>() + 8);
@@ -270,6 +293,22 @@ mod canon_tests {
         let a = "[[4.32,50.92],[4.50,50.92],[4.50,51.15],[4.32,51.15]]";
         let b = "[[4.32,50.92],[4.50,50.92],[4.50,51.20],[4.32,51.20]]";
         assert_ne!(canonicalize_polygons(a), canonicalize_polygons(b));
+    }
+
+    #[test]
+    fn multi_polygon_order_independent() {
+        let p1 = "[[4.32,50.92],[4.50,50.92],[4.50,51.15],[4.32,51.15]]";
+        let p2 = "[[5.10,50.50],[5.30,50.50],[5.30,50.70],[5.10,50.70]]";
+        let a = format!("[{},{}]", p1, p2);
+        let b = format!("[{},{}]", p2, p1);
+        assert_eq!(canonicalize_polygons(&a), canonicalize_polygons(&b));
+    }
+
+    #[test]
+    fn duplicate_min_vertex_rotation_independent() {
+        let a = "[[1.0,1.0],[2.0,3.0],[1.0,1.0],[4.0,5.0]]";
+        let b = "[[1.0,1.0],[4.0,5.0],[1.0,1.0],[2.0,3.0]]";
+        assert_eq!(canonicalize_polygons(a), canonicalize_polygons(b));
     }
 }
 
