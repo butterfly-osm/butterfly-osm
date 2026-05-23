@@ -424,14 +424,14 @@ pub async fn route_handler(
     // node that is either incident to a changed edge OR a potential middle of a
     // triangle relaxing one, so it now matches the full path's output. /route
     // stays on the fast time-only path.
-    let avoid_result = if let Some(ref avoid_str) = avoid_json {
+    let avoid_entry = if let Some(ref avoid_str) = avoid_json {
         match super::avoid::compute_avoid_weights_time_only(
             &state,
             mode_data,
             avoid_str,
             exclude_mask,
         ) {
-            Ok((weights, flags)) => Some((weights, flags)),
+            Ok(entry) => Some(entry),
             Err(e) => {
                 return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
             }
@@ -441,10 +441,10 @@ pub async fn route_handler(
     };
 
     // Build snap mask (with optional avoid/exclude filtering)
-    let snap_mask: std::borrow::Cow<'_, [u64]> = if let Some((_, ref avoid_flags)) = avoid_result {
+    let snap_mask: std::borrow::Cow<'_, [u64]> = if let Some(ref entry) = avoid_entry {
         std::borrow::Cow::Owned(super::avoid::build_avoid_mask(
             &mode_data.mask,
-            avoid_flags,
+            &entry.flags,
             exclude_mask.map(|exc| (state.edge_exclude_flags.as_slice(), exc)),
         ))
     } else if let Some(exc) = exclude_mask {
@@ -716,17 +716,17 @@ pub async fn route_handler(
     };
 
     // Run primary query (with optional avoid/exclude weights)
-    let exclude_weights = if avoid_result.is_none() {
+    let exclude_weights = if avoid_entry.is_none() {
         exclude_mask.map(|exc| state.get_exclude_weights(mode, exc))
     } else {
-        None // avoid_result already incorporates exclude
+        None // avoid_entry already incorporates exclude
     };
-    let query = if let Some((ref time_weights, _)) = avoid_result {
+    let query = if let Some(ref entry) = avoid_entry {
         CchQuery::with_custom_weights(
             &mode_data.cch_topo,
             &mode_data.up_adj_flat,
             &mode_data.down_rev_flat,
-            time_weights,
+            &entry.weights.time_weights,
         )
     } else if let Some(ref ew) = exclude_weights {
         CchQuery::with_custom_weights(
@@ -821,8 +821,8 @@ pub async fn route_handler(
         }
     };
 
-    let active_weights = if let Some((ref time_weights, _)) = avoid_result {
-        time_weights
+    let active_weights = if let Some(ref entry) = avoid_entry {
+        &entry.weights.time_weights
     } else if let Some(ref ew) = exclude_weights {
         &ew.time_weights
     } else {
@@ -916,8 +916,8 @@ pub async fn route_handler(
         // This clones ~200MB (up + down weight arrays). Acceptable for alternatives
         // since they're requested rarely (only when alternatives > 0).
         // A proper fix (penalty views) would require changing the CchQuery API.
-        let mut penalized_weights = if let Some((ref time_weights, _)) = avoid_result {
-            time_weights.clone()
+        let mut penalized_weights = if let Some(ref entry) = avoid_entry {
+            entry.weights.time_weights.clone()
         } else if let Some(ref ew) = exclude_weights {
             ew.time_weights.clone()
         } else {

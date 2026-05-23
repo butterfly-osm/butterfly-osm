@@ -272,23 +272,23 @@ pub async fn match_trace_handler(
         // Build snap mask and weights: avoid takes priority, then exclude
         let mode_data = state_clone.get_mode(mode);
 
-        let avoid_result = if let Some(ref avoid_str) = avoid_json {
+        let avoid_entry = if let Some(ref avoid_str) = avoid_json {
             super::avoid::compute_avoid_weights(&state_clone, mode_data, avoid_str, exclude_mask)
                 .ok()
         } else {
             None
         };
 
-        let exclude_weights = if avoid_result.is_none() {
+        let exclude_weights = if avoid_entry.is_none() {
             exclude_mask.map(|exc| state_clone.get_exclude_weights(mode, exc))
         } else {
             None
         };
 
-        let snap_mask: Option<Vec<u64>> = if let Some((_, ref avoid_flags)) = avoid_result {
+        let snap_mask: Option<Vec<u64>> = if let Some(ref entry) = avoid_entry {
             Some(super::avoid::build_avoid_mask(
                 &mode_data.mask,
-                avoid_flags,
+                &entry.flags,
                 exclude_mask.map(|exc| (state_clone.edge_exclude_flags.as_slice(), exc)),
             ))
         } else {
@@ -301,8 +301,8 @@ pub async fn match_trace_handler(
             })
         };
 
-        let cch_weights = if let Some((ref aw, _)) = avoid_result {
-            Some(&aw.time_weights)
+        let cch_weights = if let Some(ref entry) = avoid_entry {
+            Some(&entry.weights.time_weights)
         } else {
             exclude_weights.as_ref().map(|ew| &ew.time_weights)
         };
