@@ -8,6 +8,128 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For detailed tool-specific changes, see individual tool changelogs:
 - [butterfly-dl](./tools/butterfly-dl/CHANGELOG.md) - OSM data downloader
 
+## [Unreleased] — 2026-05-23
+
+### Added
+
+- **butterfly-route**: Incremental `avoid_polygons` customization
+  ([#240](https://github.com/butterfly-osm/butterfly-osm/issues/240),
+  [#249](https://github.com/butterfly-osm/butterfly-osm/pull/249)). The
+  recustomization pass now walks an explicit BFS frontier seeded from
+  the edges that intersect the avoid polygons, instead of re-running a
+  whole-graph triangle relaxation. A 1 km rural polygon on Belgium went
+  from 37 s to ~780 ms end-to-end (47× speedup); the larger E19
+  motorway-corridor polygon settles at 1.16 s. Cold `/route` requests
+  that previously dominated the response now spend the bulk of their
+  time in I/O and snap, not in customization.
+- **butterfly-route**: LRU avoid-polygon cache with operational
+  visibility ([#242](https://github.com/butterfly-osm/butterfly-osm/issues/242),
+  [#243](https://github.com/butterfly-osm/butterfly-osm/issues/243),
+  [#246](https://github.com/butterfly-osm/butterfly-osm/pull/246),
+  [#247](https://github.com/butterfly-osm/butterfly-osm/pull/247)).
+  Cache hit rate, entry count, and eviction counters are now surfaced
+  on `GET /health` and exported as four Prometheus gauges on
+  `GET /metrics`. Polygon inputs are canonicalized before hashing so
+  semantically equivalent JSON inputs (rotation, whitespace, ring
+  closure) collide on the same cache entry. Booth's algorithm
+  ([#250](https://github.com/butterfly-osm/butterfly-osm/pull/250))
+  replaces the quadratic rotation search used in the first cut of
+  canonicalization.
+- **belgium-latest container** ([#236](https://github.com/butterfly-osm/butterfly-osm/issues/236)):
+  refreshed Belgium build deployed with 5.13M EBG nodes, 14.98M edges,
+  769K named roads, and 4 modes (bike, car, foot, truck). Used as the
+  reference dataset for every benchmark in this release.
+
+### Changed
+
+- **butterfly-route**: Avoid cache now returns `Arc<AvoidEntry>` rather
+  than cloning the customized weight set per request
+  ([#241](https://github.com/butterfly-osm/butterfly-osm/issues/241),
+  [#245](https://github.com/butterfly-osm/butterfly-osm/pull/245)).
+  `/table` warm-hit latency dropped from 366 ms to 22 ms, matching the
+  baseline `/table` cost on un-avoided queries.
+- **butterfly-route**: `POST /table/stream` now borrows the flat
+  adjacency arrays from the cached `AvoidEntry` instead of cloning
+  them ([#248](https://github.com/butterfly-osm/butterfly-osm/pull/248)).
+  Eliminates a 100–200 MB per-request clone on Belgium-sized inputs;
+  visible as a flat memory profile under sustained streaming load.
+
+### Fixed
+
+- **butterfly-route**: Matrix gap closed
+  ([#197](https://github.com/butterfly-osm/butterfly-osm/issues/197),
+  [#232](https://github.com/butterfly-osm/butterfly-osm/pull/232)).
+  K-best snap and SCC-aware role masks are now applied at every snap
+  site — `/route`, `/nearest`, `/table`, `/matrix`, `/isochrone`,
+  `/trip`, and the Flight gRPC equivalents — instead of only `/route`.
+  A 200-pair Belgium `/route` ↔ `/table` correlation sweep now reports
+  100% agreement, up from a ~9% gap where `/table` would return
+  unreachable for pairs `/route` resolved successfully.
+- **butterfly-route**: Small-N matrix dispatch fast-path
+  ([#191](https://github.com/butterfly-osm/butterfly-osm/issues/191),
+  [#232](https://github.com/butterfly-osm/butterfly-osm/pull/232)).
+  10×10 and 25×25 matrices no longer fall through to the bulk
+  scheduler — rayon thread-dispatch overhead at those sizes outweighed
+  the parallelism win.
+- **butterfly-route**: Sparse triangle correctness for avoid polygons
+  ([#235](https://github.com/butterfly-osm/butterfly-osm/issues/235),
+  [#232](https://github.com/butterfly-osm/butterfly-osm/pull/232)).
+  `/route` and `/table` durations now match exactly on avoided
+  queries; the previous implementation had an 8% disagreement caused
+  by the sparse pass touching a different node set than the dense
+  baseline.
+- **butterfly-route**: Stale unpacked geometry in serve-time triangle
+  relaxation ([#239](https://github.com/butterfly-osm/butterfly-osm/issues/239),
+  [#244](https://github.com/butterfly-osm/butterfly-osm/pull/244)).
+  When the relax loop replaced a shortcut's middle node, the unpacking
+  arrays still pointed at the original topology middle, producing
+  polylines that crossed the avoid polygon even though the duration
+  number was correct. `up_middle` and `down_middle` are now updated in
+  lockstep with the weight.
+- **butterfly-route**: Additional correctness and review fixes for
+  the incremental avoid path
+  ([#233](https://github.com/butterfly-osm/butterfly-osm/issues/233),
+  [#234](https://github.com/butterfly-osm/butterfly-osm/issues/234),
+  [#248](https://github.com/butterfly-osm/butterfly-osm/pull/248),
+  [#251](https://github.com/butterfly-osm/butterfly-osm/pull/251),
+  [#252](https://github.com/butterfly-osm/butterfly-osm/pull/252)).
+
+### Removed
+
+- **butterfly-geocode**: Crate shelved
+  ([#253](https://github.com/butterfly-osm/butterfly-osm/issues/253),
+  [#254](https://github.com/butterfly-osm/butterfly-osm/pull/254)).
+  The full geocoder work tree is preserved under the git tag
+  `geocode-shelved-2026-05-23` and can be restored at any time; it is
+  removed from the workspace to keep CI and release artifacts focused
+  on the routing engine.
+
+### Documentation
+
+- New top-level `docs/` directory with a quickstart guide, REST + gRPC
+  API reference, deployment guide, architecture overview, and
+  troubleshooting notes.
+- README rewritten to reflect the current state of the workspace
+  (route engine production-ready, geocoder shelved, downloader stable).
+- Stale "sparse triangle" comments across `route/src/server/exclude.rs`
+  and adjacent modules updated to "incremental BFS"
+  ([#251](https://github.com/butterfly-osm/butterfly-osm/pull/251),
+  [#252](https://github.com/butterfly-osm/butterfly-osm/pull/252)) so
+  the code matches the algorithm that actually runs.
+
+### Performance reference (Belgium, 2026-05-23)
+
+- 10k×10k distance matrix: **18.3 s**, 1.8× faster than OSRM CH on the
+  same dataset.
+- 50k×50k Flight gRPC matrix: **9.61 min**, at parity with the
+  historical `/table/stream` baseline and well outside what OSRM can
+  serve at all (URL-length limits, no streaming).
+- `/route` with `avoid_polygons`, warm cache hit: **11 ms**.
+- `/route` with `avoid_polygons`, cold miss: **~780 ms** for a 1 km
+  rural polygon (was 37 s); **1.16 s** for the E19 motorway corridor.
+- `/table` with `avoid_polygons`, warm cache hit: **22 ms** (was
+  366 ms before the `Arc<AvoidEntry>` return).
+
 ## [Unreleased] — 2026-04-14
 
 ### Changed

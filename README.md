@@ -2,526 +2,198 @@
   <img src="images/butterfly_logo_900kb.jpg" width="280" alt="Butterfly-OSM logo" />
 </p>
 
-# Butterfly-OSM 🦋
+# Butterfly-OSM
 
-Hurricane-fast drivetime engine and OSM toolkit built for modern performance requirements.
+Production-grade routing engine and OSM toolkit, in Rust.
 
-## Vision
-
-**Goal**: 10x faster than state-of-the-art with minimal memory footprint and modern architecture.
-
-Butterfly-OSM reimagines OpenStreetMap data processing from the ground up, leveraging Rust's performance and safety to create a new generation of geographic tools that are both lightning-fast and resource-efficient.
-
-## What
-
-A comprehensive ecosystem of OSM tools designed around **separation of concerns** and **composability**:
-
-### Core Tools
-
-- **butterfly-dl**: Memory-efficient OSM data downloader (<1GB RAM for any file size) with verified content checks (magic-byte prefix, min-bytes floor, SHA-256 sidecar) and region-indexed parallel downloads
-- **butterfly-route**: High-performance road router **and** multimodal transit engine. Edge-based CCH for exact turn-aware driving/walking/cycling, PHAST isochrones, Arrow-streaming distance matrices, and a full RAPTOR-based public transport stack with multi-feed merging (SNCB, De Lijn, TEC, STIB via NeTEx-EPIP) and ULTRA transfer-graph preprocessing
-- **butterfly-common**: Shared utilities, error handling, and geographic algorithms
-
-## Why
-
-### The Performance Problem
-
-Current OSM tools suffer from fundamental limitations:
-- **Memory inefficiency**: Tools that require 10GB+ RAM for large datasets
-- **Single-threaded bottlenecks**: Missing modern parallelization opportunities  
-- **Monolithic architecture**: Difficult to compose and extend
-- **Legacy codebases**: Built before modern understanding of performance
-
-### Our Approach
-
-**Hurricane-fast through intelligent design:**
-- **🔥 Rust performance**: Zero-cost abstractions with memory safety
-- **🧠 Smart algorithms**: Geographic-aware data structures and caching
-- **🚀 Modern async**: Tokio-based concurrency for I/O-bound operations
-- **💎 Composable architecture**: Unix philosophy applied to OSM processing
-
-### Target Performance
-
-| Operation | Current Tools | Butterfly-OSM Target | Improvement |
-|-----------|---------------|---------------------|-------------|
-| Planet download | 2-4 hours | 20-40 minutes | **3-6x faster** |
-| Matrix 10k×10k | 32.9s (OSRM) | 18.2s | **1.8x faster** |
-| Memory usage | 4-16GB | <1GB | **4-16x less** |
-
-## How
-
-### Architecture Principles
-
-#### 1. Separation of Concerns
-Each tool has a single, well-defined responsibility:
-```
-butterfly-dl    → Data acquisition (download, streaming)
-butterfly-route → Routing engine (CCH, isochrones, matrices)
-butterfly-common → Shared utilities and algorithms
-```
-
-#### 2. Composable Design
-Common patterns abstracted into `butterfly-common`:
-- Geographic algorithms (bounding boxes, projections)
-- Error handling with fuzzy matching
-- Memory-efficient data structures
-- Async I/O primitives
-
-#### 3. Performance-First Design
-
-**Memory efficiency:**
-- Streaming architecture - process data without loading entirely into memory
-- Fixed-size buffers - predictable memory usage regardless of input size
-- Zero-copy operations where possible
-
-**Compute efficiency:**
-- Rust's zero-cost abstractions
-- SIMD operations for geometric calculations
-- Lock-free data structures for parallelism
-- Modern async/await for I/O concurrency
-
-**I/O efficiency:**  
-- HTTP/2 with connection pooling
-- Direct I/O for large sequential operations
-- Intelligent caching strategies
-- Range requests and resume capability
-
-### Modern Language Benefits
-
-**Rust advantages over C/C++:**
-- Memory safety without garbage collection overhead
-- Fearless concurrency with compile-time race condition prevention
-- Modern package management with Cargo
-- Excellent async ecosystem with Tokio
-
-**Rust advantages over Python/JavaScript:**
-- 10-100x performance improvement
-- Predictable memory usage
-- No GIL limitations for parallelism
-- Compiled binaries with no runtime dependencies
-
-## Ecosystem Status
-
-### ✅ Available Now
-
-- **butterfly-dl**: Production-ready OSM downloader
-  - Handles files from 1MB to 81GB (planet.osm.pbf)
-  - 79% faster than aria2, 3x faster than curl on medium files
-  - <1GB memory usage regardless of file size
-
-- **butterfly-route**: High-performance road router + multimodal transit engine
-  - Exact turn-aware routing (edge-based CCH)
-  - **1.8x FASTER than OSRM** at scale (10k×10k matrices)
-  - Full RAPTOR transit stack: multi-feed merging (GTFS + NeTEx-EPIP), ULTRA transfer preprocessing, `/transit` + `/transit/bulk` REST, `transit_bulk` + `edges_batch` Flight actions
-  - Production-hardened: structured logging, graceful shutdown, timeouts, compression, input validation, panic recovery, Prometheus metrics
-  - Open work tracked in GitHub issues (`gh issue list`); `competitive_landscape.md` captures where Butterfly wins vs OSRM / Valhalla / GraphHopper
-  - See [Routing Engine](#routing-engine-butterfly-route) below
-
-## Routing Engine (butterfly-route)
-
-High-performance routing engine with **exact turn-aware queries** using edge-based Customizable Contraction Hierarchies (CCH). Production-hardened with structured logging, graceful shutdown, request timeouts, response compression, input validation, panic recovery, and Prometheus metrics. Docker-ready.
-
-### Performance
-
-| Workload | Butterfly | OSRM | Result |
-|----------|-----------|------|--------|
-| Isochrones (bulk) | **1,526/sec** | - | Production-ready |
-| Matrix 100×100 | 164ms | 55ms | 3x slower (acceptable) |
-| Matrix 10k×10k | **18.2s** | 32.9s | **1.8x FASTER** |
-
-**Key insight**: Butterfly wins at scale. Use bulk APIs for production workloads.
-
-### Bulk APIs (Recommended for Production)
-
-#### Bulk Isochrones
-
-For computing many isochrones, use the bulk endpoint which processes origins in parallel:
-
-```bash
-# Compute 100 isochrones in one request
-curl -X POST http://localhost:3001/isochrone/bulk \
-  -H "Content-Type: application/json" \
-  -d '{
-    "origins": [[4.35, 50.85], [4.40, 50.86], ...],
-    "time_s": 1800,
-    "mode": "car"
-  }' \
-  --output isochrones.wkb
-
-# Response: Length-prefixed WKB stream
-# Format: [4B origin_idx][4B wkb_len][WKB polygon]...
-```
-
-**Throughput**: 1,526 isochrones/sec (vs 815/sec individual)
-
-#### Bulk Distance Matrices
-
-For large matrices (1000+ origins/destinations), use Arrow streaming:
-
-```bash
-# Compute 10,000 × 10,000 matrix via Arrow IPC
-curl -X POST http://localhost:3001/table/stream \
-  -H "Content-Type: application/json" \
-  -d '{
-    "sources": [[lon1,lat1], [lon2,lat2], ...],
-    "destinations": [[lon1,lat1], [lon2,lat2], ...],
-    "mode": "car"
-  }' \
-  --output matrix.arrow
-
-# Process with PyArrow, DuckDB, or any Arrow-compatible tool
-```
-
-**Performance**: 18.2s for 10k×10k (1.8x faster than OSRM)
-
-### Individual APIs
-
-For single queries or small workloads:
-
-```bash
-# Single route with turn-by-turn steps (includes road names)
-curl "http://localhost:3001/route?src_lon=4.35&src_lat=50.85&dst_lon=4.40&dst_lat=50.86&mode=car&steps=true"
-
-# Single isochrone (GeoJSON, CCW polygons, 5-decimal precision)
-curl "http://localhost:3001/isochrone?lon=4.35&lat=50.85&time_s=1800&mode=car"
-
-# Reverse isochrone (where can people reach me FROM within 30 min?)
-curl "http://localhost:3001/isochrone?lon=4.35&lat=50.85&time_s=1800&mode=car&direction=arrive"
-
-# TSP/trip optimization
-curl -X POST "http://localhost:3001/trip" -H "Content-Type: application/json" \
-  -d '{"coordinates": [[4.35,50.85],[4.40,50.86],[4.45,50.87]], "mode": "car"}'
-```
-
-### Multi-region Serving (#91 Phase 1)
-
-butterfly-route can serve multiple country-sized regions from a single
-process. Each region is its own `*.butterfly` container, loaded
-independently with its own CCH hierarchy, weights, snap index, and
-edge geometry. Query dispatch is automatic: each request snaps its
-coordinates and is routed to the matching region.
-
-```bash
-# Pack each region with its identifier
-butterfly-route pack --region BE -d data/belgium    -o data/belgium/baseline.butterfly
-butterfly-route pack --region LU -d data/luxembourg -o data/luxembourg/luxembourg.butterfly
-
-# Serve a directory of containers
-mkdir -p /srv/regions
-ln -s /path/to/data/belgium/baseline.butterfly       /srv/regions/be.butterfly
-ln -s /path/to/data/luxembourg/luxembourg.butterfly  /srv/regions/lu.butterfly
-butterfly-route serve --data-dir /srv/regions --port 3001
-
-# Optional --regions filter loads a subset
-butterfly-route serve --data-dir /srv/regions --regions BE,LU --port 3001
-
-# Inspect what's loaded
-curl -s http://localhost:3001/regions
-# {"loaded":[
-#   {"id":"BE","container":".../be.butterfly","nodes":5019052,"edges":14649023,
-#    "verify_status":"verified","named_roads":754380,"modes":[...]},
-#   {"id":"LU","container":".../lu.butterfly","nodes":478552,"edges":1365815,
-#    "verify_status":"verified","named_roads":46287,"modes":[...]}
-# ]}
-
-# Same-region queries route as expected
-curl "http://localhost:3001/route?src_lon=4.35&src_lat=50.85&dst_lon=3.22&dst_lat=51.21&mode=car"
-
-# Cross-region queries return HTTP 501 with a clear error unless an
-# overlay is loaded (#91 Phase 2):
-curl -w "\n%{http_code}\n" \
-  "http://localhost:3001/route?src_lon=4.35&src_lat=50.85&dst_lon=6.13&dst_lat=49.61&mode=car"
-# {"error":"route spans regions BE → LU; cross-region overlay not yet implemented (#91 Phase 2)"}
-# 501
-```
-
-#### Cross-region overlay (#91 Phase 2)
-
-The overlay extends multi-region serving with precomputed border-node
-tables and per-(src, dst, mode) distance matrices, so a single P2P
-request can stitch a route across two regions:
-
-```bash
-# 1. Extract cross-region border crossings from per-region containers
-butterfly-route extract-borders \
-  --regions data/belgium/baseline.butterfly data/luxembourg/luxembourg.butterfly \
-  --out data/be-lu-borders.json
-# Real BE+LU output: 8010 crossings in ~67 s, mean edge distance 3.4 m
-
-# 2. Build the overlay container (offline batch — see route/docs/91-overlay-design.md
-#    for the cost analysis; the live BE+LU build needs the optimisations
-#    tracked as follow-ups).
-butterfly-route build-overlay \
-  --regions data/belgium/baseline.butterfly data/luxembourg/luxembourg.butterfly \
-  --modes car --out data/be-lu-overlay.butterfly
-
-# 3. Boot serve with --overlay
-butterfly-route serve --data-dir /srv/regions --overlay data/be-lu-overlay.butterfly
-```
-
-When `--overlay` is supplied, `dispatch_p2p_with_overlay` returns a
-`P2pPlan::CrossRegion` for cross-region queries instead of 501. The
-default `route_handler` continues to use the 501 path so existing
-non-overlay deployments are unchanged.
-
-Algorithm + on-disk format details: `route/docs/91-overlay-design.md`.
-Synthetic 2-region oracle test (verifies the combinator against
-brute-force Dijkstra on the union graph for all 81 src×tgt pairs):
-`route/tests/cross_region_synthetic.rs`.
-
-**Per-region Prometheus metrics** at `/metrics`:
-
-- `butterfly_route_region_nodes_total{region}` — graph size
-- `butterfly_route_region_edges_total{region}` — graph size
-- `butterfly_route_query_total{region,endpoint}` — request counter
-- `butterfly_route_query_duration_seconds{region,endpoint}` — latency histogram
-- `butterfly_route_query_cross_region_total{src,dst}` — 501 counter
-
-Single-region deployments (`serve --data <file>` or a step-tree
-`serve --data-dir <tree>`) work unchanged — they're transparently
-wrapped as a one-region multi-region state, so handlers, JSON shapes,
-and the Flight gRPC surface are identical.
-
-## Multimodal Transit (RAPTOR + CCH)
-
-butterfly-route ships a production transit engine alongside the road router. Public transport queries thread a foot/bike/car **access leg** (CCH) + **RAPTOR rounds** over the merged timetable + foot **egress leg** (CCH), with ULTRA-preprocessed transfer graphs for sub-second stop-to-stop walking.
-
-### Feed coverage
-
-Out of the box on Belgium with **zero operator configuration**:
-
-- **SNCB** (national rail) — GTFS via iRail
-- **De Lijn** (Flanders bus + tram) — GTFS via iRail
-- **TEC** (Wallonia bus) — GTFS
-- **STIB** (Brussels metro/tram/bus) — **NeTEx-EPIP** via the Belgian National Access Point (no GTFS published — butterfly-route's streaming NeTEx parser handles the 720 MB EPIP file directly, reprojects Lambert-93 → WGS84, and merges with the GTFS feeds into one `Timetable`)
-
-Cross-feed equivalence bridges wire physically co-located stops (SNCB ↔ STIB at Brussels-Midi, SNCB ↔ De Lijn at suburban hubs), and same-station parent-child transfers (multiple platforms of the same station) are injected automatically into the foot-CCH transfer graph.
-
-### REST endpoints
-
-```bash
-# Single multimodal query (JSON)
-curl "http://localhost:3001/transit?origin_lon=4.3517&origin_lat=50.8466\
-&dest_lon=4.4025&dest_lat=51.2194&depart=08:00:00"
-
-# Batch routing: 100k queries in one call, rayon-amortised access CCH
-curl -X POST http://localhost:3001/transit/bulk \
-  -H 'content-type: application/json' \
-  -d '{"queries":[{"origin_lon":4.3517,"origin_lat":50.8466,"dest_lon":4.4025,"dest_lat":51.2194,"depart":"08:00:00"},...]}'
-
-# Opt-in routed polylines for access / egress / middle walking legs
-curl "http://localhost:3001/transit?...&geometry=full"
-```
-
-### Arrow Flight (gRPC, port 3002)
-
-For high-throughput analytics pipelines the **standalone gRPC Flight server** exposes Arrow IPC streaming on a separate port — no Arrow-over-HTTP hybrid, REST stays JSON and Flight stays Arrow:
-
-| Action | Ticket | Output shape |
-|---|---|---|
-| `matrix` | `matrix:<profile>:{"sources":[...],"destinations":[...]}` | One row per pair, duration + distance |
-| `route_batch` | `route_batch:<profile>:{"pairs":[[src,dst],...]}` | Pair-level duration + WKB polyline |
-| `isochrone` | `isochrone:<profile>:{"lon":...,"lat":...,"intervals":[...]}` | Polygons as WKB |
-| `catchment` | via DoExchange | Catchment hulls per store |
-| **`transit_bulk`** | `transit_bulk:<profile>:{"queries":[...]}` | Per-query row with metadata + JSON legs (up to 500 k queries/call) |
-| **`edges_batch`** | `edges_batch:<profile>:{"pairs":[...]}` | **Unnested per-edge path output** with OSM node ids — the flow-analytics primitive no other OSS router ships |
-
-The `edges_batch` action emits one Arrow row per traversed EBG edge with `(query_idx, target_idx, edge_seq, osm_node_from, osm_node_to, duration_ms, distance_m)` columns, unreachable pairs get a single row with null edge columns, and the continuity invariant `osm_node_to[i] == osm_node_from[i+1]` is enforced — ready to `GROUP BY osm_node_to` for traffic assignment, emissions inventory, or network vulnerability analysis.
-
-### Transit-specific perf (Belgium, 4 feeds merged)
-
-| Workload | Metric |
-|---|---|
-| Single `/transit` query, warm | **35 ms p50** |
-| Bulk 20 same-origin queries | **150 ms** (7× speedup vs serial) |
-| Bulk 1000 varied queries | **3.22 ms/query**, **311 queries/sec** |
-| Merged transfer graph | 66 512 stops, 668 k edges |
-| Cross-feed equivalence bridges | 986 post-ULTRA |
-| Same-station child-pair coverage | 94 % of multi-child parents |
-
-### Running the Routing Engine
-
-```bash
-# Build the Docker image
-docker build -t butterfly-route .
-
-# Run the server (Belgium data). Port 3001 = REST, 3002 = gRPC Flight.
-docker run -d --name butterfly \
-  -p 3001:8080 -p 3002:3002 \
-  -v "${PWD}/data/belgium:/data" \
-  butterfly-route
-
-# Health check (REST)
-curl http://localhost:3001/health
-
-# Swagger UI at http://localhost:3001/swagger-ui/
-
-# gRPC Flight server at 0.0.0.0:3002 — list available actions:
-grpcurl -plaintext localhost:3002 arrow.flight.protocol.FlightService/ListActions
-```
-
-See [CLAUDE.md](CLAUDE.md) for detailed build instructions, algorithm documentation, and local development setup.
-
-## Installation
-
-### Quick Start
-```bash
-# Install from crates.io
-cargo install butterfly-dl
-
-# Download Belgium OSM data
-butterfly-dl europe/belgium
-
-# Verify installation
-butterfly-dl --version
-```
-
-### Development Setup
-```bash
-# Clone the workspace
-git clone https://github.com/butterfly-osm/butterfly-osm
-cd butterfly-osm
-
-# Docker (recommended)
-docker build -t butterfly-route .
-
-# Local build
-cargo build --workspace --release
-
-# Run tests
-cargo test --workspace
-
-# Install specific tool
-cargo install --path dl
-```
-
-### Pre-built Binaries
-
-Download optimized binaries for your platform:
-- [Linux x86_64](https://github.com/butterfly-osm/butterfly-osm/releases/latest/download/butterfly-dl-latest-x86_64-unknown-linux-gnu.tar.gz)
-- [Linux ARM64](https://github.com/butterfly-osm/butterfly-osm/releases/latest/download/butterfly-dl-latest-aarch64-unknown-linux-gnu.tar.gz)  
-- [macOS Intel](https://github.com/butterfly-osm/butterfly-osm/releases/latest/download/butterfly-dl-latest-x86_64-apple-darwin.tar.gz)
-- [macOS Apple Silicon](https://github.com/butterfly-osm/butterfly-osm/releases/latest/download/butterfly-dl-latest-aarch64-apple-darwin.tar.gz)
-- [Windows x86_64](https://github.com/butterfly-osm/butterfly-osm/releases/latest/download/butterfly-dl-latest-x86_64-pc-windows-msvc.zip)
-
-## Workspace Structure
-
-```
-butterfly-osm/
-├── butterfly-common/     # Shared utilities and algorithms
-├── dl/                   # butterfly-dl: OSM data downloader (production-ready)
-├── route/                # butterfly-route: routing engine (production-ready)
-├── scripts/              # Benchmarking and validation scripts
-└── data/                 # Test data and examples
-```
-
-### Building Individual Tools
-
-```bash
-# Build specific tool
-cargo build --release -p butterfly-dl
-
-# Test specific tool  
-cargo test -p butterfly-dl
-
-# Install from workspace
-cargo install --path dl
-```
-
-## Performance Benchmarks
-
-### butterfly-route vs OSRM (Belgium)
-
-| Workload | Butterfly | OSRM | Ratio |
-|----------|-----------|------|-------|
-| Single route | 2ms | 1ms | 2x slower |
-| Isochrone (30min) | **5ms** | - | - |
-| Bulk isochrones | **1,526/sec** | - | - |
-| Matrix 100×100 | 164ms | 55ms | 3x slower |
-| Matrix 1k×1k | 1.55s | 0.68s | 2.3x slower |
-| Matrix 10k×10k | **18.2s** | 32.9s | **1.8x FASTER** |
-
-**Key insight**: Edge-based CH has ~2.5x more states than node-based (exact turn handling).
-The overhead is acceptable for small queries, and **Butterfly wins at scale**.
-
-### Production Features
-
-- **Structured logging**: `tracing` with text/JSON output (`--log-format json`)
-- **Graceful shutdown**: SIGINT + SIGTERM handling
-- **Request timeouts**: 120s for API routes, 600s for streaming
-- **Concurrency limiting**: Max 32 concurrent API requests, max 4 streaming requests
-- **Response compression**: gzip + brotli on API routes
-- **Input validation**: Coordinate bounds, time limits, size limits
-- **Panic recovery**: `CatchPanicLayer` returns 500 JSON instead of crashing
-- **Prometheus metrics**: Per-endpoint latency histograms at `/metrics`, plus per-section CRC verification counters (`butterfly_route_sections_verified_total`, `butterfly_route_sections_verify_pending`, `butterfly_route_section_verify_duration_seconds{section}`, `butterfly_route_section_verify_failed_total{section}`)
-- **Health check**: `/health` with uptime, node/edge counts, mode list, and per-section lazy-CRC verification status (`verify_status`, `verify.{n_sections,n_verified,n_unverified,n_verifying,n_failed,failed[]}`)
-- **Swagger UI**: OpenAPI docs at `/swagger-ui/`
-- **Lazy CRC verification (#160)**: When loaded from a `.butterfly` container (`--data <file>`), per-section CRC walks default to **on-first-access** rather than at boot — saves ~30 % wall-clock and ~30 % boot-transient peak RSS on Belgium. Use `--warmup-on-boot` for a background pass that walks every section in parallel after the listener binds (recommended for production). Use `--eager-verify` to restore the pre-#160 fail-fast-on-boot semantics.
-
-### butterfly-dl vs Industry Standard
-
-Real-world benchmarks on 43MB Luxembourg dataset:
-
-```
-Tool         Duration  Speed     Memory    Improvement
---------------------------------------------------------
-butterfly-dl 3.037s    14.07MB/s ~215MB   Baseline
-aria2c       5.447s    7.84MB/s  ~120MB   79% slower
-curl         9.349s    4.57MB/s  ~10MB    208% slower
-```
-
-**Key insights:**
-- **79% faster** than aria2 (industry standard)
-- **3x faster** than curl
-- Consistent ~215MB memory usage regardless of file size
-- Smart connection scaling based on file size
-
-### Memory Efficiency Verification
-
-```bash
-# Download 81GB planet file - uses <1GB RAM
-butterfly-dl planet
-
-# Memory usage remains constant
-ps aux | grep butterfly-dl
-# butterfly-dl   0.2  2.1  215MB  ...
-```
-
-## Contributing
-
-We welcome contributions to the butterfly-osm ecosystem! 
-
-### Development Philosophy
-- **Performance first**: Every change should maintain or improve performance
-- **Memory conscious**: Fixed memory usage patterns preferred
-- **Test driven**: Comprehensive benchmarks for all performance claims  
-- **Unix philosophy**: Small, composable tools that do one thing well
-
-### Getting Started
-1. Fork the repository
-2. Create a feature branch
-3. Add comprehensive tests and benchmarks
-4. Ensure all existing tests pass
-5. Submit a pull request
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
-
-## License
-
-AGPL-3.0-or-later — see [LICENSE](LICENSE) file for the canonical FSF text.
+Exact turn-aware edge-based CCH for driving, walking, cycling, and trucking;
+a full RAPTOR + ULTRA multimodal transit stack with merged GTFS and
+NeTEx-EPIP feeds; REST + Arrow Flight gRPC; Belgium-latest deployed today,
+faster than OSRM at scale.
 
 [![License: AGPL v3+](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
 
-Network-deployed forks must publish their source code under AGPL §13. By
-submitting a pull request you agree your contribution is licensed under
-AGPL-3.0-or-later (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+## At a glance
 
-## Team
+- **Matrix 10k×10k**: 18.3 s in-process (1.8× faster than OSRM CH at 32.9 s).
+- **Flight gRPC matrix 50k×50k**: 9.61 min (parity with the historical `/table/stream` baseline; OSRM cannot run it).
+- **`/isochrone` 30-min**: 5 ms p50; bulk endpoint sustains **1 526 iso/sec**.
+- **`/route?avoid_polygons=...`**: ~780 ms cold MISS, ~22 ms warm HIT (incremental recustomization + LRU cache, #240).
+- **`/transit` single warm**: 35 ms p50; `/transit/bulk` sustains 311 q/s on varied queries.
+- **Coverage**: 4 modes (car, bike, foot, truck) × 4 merged transit feeds (SNCB, De Lijn, TEC, STIB).
+- Belgium artifact `data/belgium/baseline.butterfly` deployed to the production `belgium-latest` container.
 
-**Butterfly Project** - Built by Pierre <pierre@warnier.net> for the broader OpenStreetMap community.
+## Quickstart
 
----
+```bash
+docker build -t butterfly-route .
+docker run -d --name butterfly -p 3001:8080 -p 3002:3002 \
+  -v "${PWD}/data/belgium:/data" butterfly-route
+curl "http://localhost:3001/route?src_lon=4.3517&src_lat=50.8503&dst_lon=4.4025&dst_lat=51.2194&mode=car"
+```
 
-**Mission**: Democratizing high-performance geographic computing through modern tools and architecture.
+Boot is ~30-40 s for the road graph alone, ~3 min with transit feeds. See
+[Quickstart](docs/quickstart.md) for the full walk-through including the
+upstream `butterfly-dl` + step1–step8 pipeline.
 
-**butterfly-osm** - Hurricane-fast OSM processing for the modern era.
+## Workspace
+
+```
+butterfly-osm/
+├── butterfly-common/   # shared error types + utilities
+├── dl/                 # butterfly-dl — OSM downloader (<1GB RAM for any file size)
+└── route/              # butterfly-route — routing engine + transit
+```
+
+Support directories: `bench/` (regression and competitor benches),
+`scripts/` (OSRM/Valhalla harnesses), `data/` (Belgium artifacts), `traffic/`
+(per-density-class speed profiles for #84 recustomization), `models/`
+(declarative `*.model.json` cost models, Q-Sprint).
+
+## Features
+
+### Point-to-point routing
+- Exact turn restrictions (edge-based CCH state is a directed edge id).
+- Multiple alternatives (penalty-based).
+- `exclude=toll,ferry,motorway` via CCH recustomization with sparse triangle relaxation.
+- `avoid_polygons=...` — incremental recustomization seeded by polygon-flagged base edges (#240) plus a bounded LRU cache keyed by canonicalised polygon hash.
+- Traffic-aware variants (`?traffic=rush_hour`, #84): 5-bucket density classification, per-class speed factors, separate `cch.w.<mode>_<variant>.u32` weight set.
+- Turn-by-turn steps with road names from 754K named-roads index.
+- Bearing hints (`bearings=angle,range`).
+
+### Matrices
+- Bucket many-to-many CH for sparse `S × T` (small `/matrix`, low-latency).
+- K-lane batched PHAST + L3-aware source tiling (#190) for large matrices — 10k×10k in 18.3 s in-process.
+- Arrow Flight gRPC `matrix` action for 50k×50k+ over the wire, with parallel K-best snap (#232).
+- Per-row Arrow IPC streaming, cooperative cancellation on client disconnect.
+
+### Isochrones
+- Block-gated PHAST downward scan (18× faster than naive linear scan).
+- `direction=depart|arrive` (reverse isochrones).
+- `contours=300,600,1200` (multi-contour) and `distance_m=...` (isodistance).
+- GeoJSON or WKB output; CCW outer rings, 5-decimal precision.
+- `POST /isochrone/bulk` length-prefixed WKB stream.
+
+### Multimodal transit
+- RAPTOR rounds over a merged `Timetable` (GTFS + NeTEx-EPIP via streaming `quick-xml` parser, Lambert-93 → WGS84 reprojection).
+- ULTRA-preprocessed stop-to-stop transfer graph (66 512 stops, 668 K edges on Belgium).
+- Cross-feed equivalence bridges (SNCB ↔ STIB, SNCB ↔ De Lijn) and same-station parent-child transfers, injected before ULTRA dominance restriction.
+- `GET /transit` JSON, `POST /transit/bulk` (up to 100 K queries/call), Flight `transit_bulk` action (up to 500 K queries/call).
+- NeTEx calendar fallback: if the active day set is empty (stale publication), remap to the same weekday in the latest published period.
+
+### Other queries
+- `POST /trip` — TSP/trip optimization (nearest-neighbor + 2-opt + or-opt).
+- `GET /nearest` — K-best snap with connectivity-aware role masks (#197).
+- `GET /height` — SRTM DEM elevation.
+- Flight `edges_batch` — unnested per-edge path output with OSM node ids (flow analytics, emissions inventory, network vulnerability).
+- Flight `catchment` — per-store catchment hulls via DoExchange.
+
+### Operational
+- `/health` with uptime, per-region node/edge counts, lazy-CRC verification status, and `avoid_cache` stats (hits/misses/size/capacity per region, #242).
+- `/metrics` (Prometheus): latency histograms, per-section verification counters, `avoid_cache` gauges.
+- Graceful shutdown (SIGINT + SIGTERM), 120s request timeout, 600s streaming timeout, gzip+brotli compression, panic recovery (`CatchPanicLayer`), input validation, multi-region serving (#91).
+
+## Performance (Belgium, vs OSRM CH)
+
+In-process bucket M2M, parallel, 8 threads (`butterfly-bench bucket-m2m --parallel`):
+
+| Size       | OSRM CH | Butterfly | Ratio          |
+|------------|---------|-----------|----------------|
+| 50×50      | 17 ms   | 12 ms     | 1.4× FASTER    |
+| 100×100    | 35 ms   | 32 ms     | 1.1× FASTER    |
+| 1000×1000  | 684 ms  | 268 ms    | 2.56× FASTER   |
+| 5000×5000  | 8.0 s   | 5.5 s     | 1.45× FASTER   |
+| 10000×10000| 32.9 s  | **18.3 s**| **1.8× FASTER**|
+
+Edge-based CCH has ~2.5× more states than OSRM's node-based CH (~5M EBG
+nodes vs ~1.9M), and butterfly handles turn restrictions exactly where OSRM
+approximates them — we beat OSRM despite the extra work. Small `N` (<25)
+still loses to OSRM's sequential shape because rayon thread dispatch isn't
+amortised over so few cells; see closed issue #191 for the analysis.
+
+Flight gRPC end-to-end (includes Arrow IPC framing, full network roundtrip,
+parallel K-best snap):
+
+| Size      | Cells | Time      | Throughput |
+|-----------|-------|-----------|------------|
+| 1k × 1k   | 1 M   | 3.61 s    | 277 K c/s  |
+| 10k × 10k | 100 M | 35.5 s    | 2.8 M c/s  |
+| 50k × 50k | 2.5 B | **9.61 min** | 4.3 M c/s  |
+
+Bench source: `bench/route/results/2026-05-22-post-snap-kbest/REPORT.md`.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph data[Data sources]
+        PBF[Belgium PBF]
+        GTFS[GTFS feeds<br/>SNCB · De Lijn · TEC]
+        NETEX[NeTEx-EPIP<br/>STIB]
+    end
+
+    subgraph pipeline[Build pipeline<br/>step1 → step8]
+        ING[step1-ingest<br/>step2-profile]
+        EBG[step3-nbg → step4-ebg<br/>edge-based graph]
+        CCH[step5-weights → step6-order<br/>step7-contract → step8-customize]
+    end
+
+    subgraph serve[Serve]
+        REST[REST :3001<br/>route · matrix · isochrone<br/>transit · trip · nearest · height]
+        FLIGHT[Flight gRPC :3002<br/>matrix · route_batch<br/>isochrone · catchment<br/>transit_bulk · edges_batch]
+    end
+
+    PBF --> ING --> EBG --> CCH --> REST
+    CCH --> FLIGHT
+    GTFS --> REST
+    NETEX --> REST
+    GTFS --> FLIGHT
+    NETEX --> FLIGHT
+```
+
+The edge-based CCH (EBG) is the **single source of truth**: routes,
+matrices, isochrones, transit access/egress legs, and avoid-polygon
+recustomization all run on the same hierarchy with the same weights. That
+invariant is what keeps them mutually consistent. See
+[Architecture](docs/architecture.md) for the full pipeline, PHAST and
+bucket M2M internals, the avoid_polygons fast path (#240), and the transit
+subsystem.
+
+## Documentation
+
+- [Quickstart](docs/quickstart.md) — Docker + first `/route` in 60 seconds.
+- [API reference](docs/api.md) — REST + Flight endpoint catalog, query parameters, response shapes.
+- [Deployment](docs/deployment.md) — env vars, `/health`, `/metrics`, Prometheus, multi-region.
+- [Architecture](docs/architecture.md) — edge-based CCH, pipeline steps, avoid_polygons internals, transit subsystem.
+- [Troubleshooting](docs/troubleshooting.md) — boot failures, snap errors, CRC mismatches, avoid-cache miss rate.
+
+Swagger UI is live at `http://<host>:3001/swagger-ui/` when the server is
+running. `CLAUDE.md` carries the in-tree engineering notes and benchmarking
+playbooks.
+
+## Contributing
+
+Performance claims must be benchmarked against OSRM (matrices) and Valhalla
+(isochrones) on Belgium. The harnesses live under `scripts/` and
+`bench/route/`. Workspace lints are enforced as errors (warnings included);
+run `cargo clippy --workspace --all-targets --all-features` and
+`cargo fmt --all` before opening a PR. Submission implies AGPL-3.0-or-later
+licensing per `CONTRIBUTING.md`.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
+
+## License
+
+AGPL-3.0-or-later — applies to every crate in the workspace
+(`butterfly-common`, `butterfly-dl`, `butterfly-route`). Network-deployed
+forks must publish source per AGPL §13. See [LICENSE](LICENSE) for the
+canonical FSF text.
+
+## Status
+
+- **butterfly-route**: production-ready; `belgium-latest` container deployed.
+- **butterfly-dl**: production-ready; 79% faster than aria2 on Geofabrik downloads, <1 GB RAM for any file size up to the 81 GB planet.
+- **Geocoder**: shelved (see issue #254, tag `geocode-shelved-2026-05-23`).
+
+Built by Pierre &lt;pierre@warnier.net&gt; for the broader OpenStreetMap
+community.
