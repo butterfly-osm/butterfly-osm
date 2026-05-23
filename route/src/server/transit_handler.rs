@@ -400,12 +400,19 @@ pub fn compute_access_context(
     }
 
     let origin_ranks = snap_stop_ranks_on_mode(&access_candidates, timetable, state, access_idx);
-    let origin_source_rank = snap_to_rank(req.origin_lon, req.origin_lat, state, access_idx)
-        .ok_or_else(|| {
-            not_found(&format!(
-                "origin could not snap to the {access_mode} network"
-            ))
-        })?;
+    // Origin is the source for the access leg (walking out from origin).
+    let origin_source_rank = snap_to_rank_role(
+        req.origin_lon,
+        req.origin_lat,
+        state,
+        access_idx,
+        super::types::SnapRole::Src,
+    )
+    .ok_or_else(|| {
+        not_found(&format!(
+            "origin could not snap to the {access_mode} network"
+        ))
+    })?;
 
     // Access 1-to-N via the distance-only CchQuery (#103). Reuses the
     // thread-local `CCH_QUERY_STATE` with O(1) per-query reset.
@@ -583,12 +590,19 @@ pub fn compute_transit_journey_with_access(
     }
 
     let dest_ranks = snap_stop_ranks_on_mode(&egress_candidates, timetable, state, egress_idx);
-    let dest_source_rank =
-        snap_to_rank(req.dest_lon, req.dest_lat, state, egress_idx).ok_or_else(|| {
-            not_found(&format!(
-                "destination could not snap to the {egress_mode} network"
-            ))
-        })?;
+    // Destination is the target for the egress leg (walking IN from stops).
+    let dest_source_rank = snap_to_rank_role(
+        req.dest_lon,
+        req.dest_lat,
+        state,
+        egress_idx,
+        super::types::SnapRole::Dst,
+    )
+    .ok_or_else(|| {
+        not_found(&format!(
+            "destination could not snap to the {egress_mode} network"
+        ))
+    })?;
 
     // Egress 1-to-N via distance-only CchQuery. K sources × 1 target.
     let egress_query = CchQuery::with_custom_weights(
@@ -1242,7 +1256,20 @@ fn build_routed_road_leg(
 }
 
 fn snap_to_rank(lon: f64, lat: f64, state: &ServerState, mode_idx: u8) -> Option<u32> {
+    snap_to_rank_role(lon, lat, state, mode_idx, super::types::SnapRole::Either)
+}
+
+fn snap_to_rank_role(
+    lon: f64,
+    lat: f64,
+    state: &ServerState,
+    mode_idx: u8,
+    role: super::types::SnapRole,
+) -> Option<u32> {
     let mode_data = &state.modes[mode_idx as usize];
-    let orig = state.snap_index.snap(lon, lat, mode_idx)?;
+    let role_filter = role.role_filter(mode_data);
+    let orig = state
+        .snap_index
+        .snap_filtered_role(lon, lat, mode_idx, None, role_filter)?;
     mode_data.rank_for_original(orig)
 }
