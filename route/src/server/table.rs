@@ -1117,22 +1117,6 @@ pub async fn table_stream_handler(
             .into_response();
     };
 
-    // Select flat adjacencies based on custom weights (exclude or avoid)
-    let up_adj_flat = if let Some(ref entry) = avoid_entry {
-        entry.weights.time_up_flat.clone()
-    } else if let Some(ref ew) = exclude_weights {
-        ew.time_up_flat.clone()
-    } else {
-        mode_data.up_adj_flat.clone()
-    };
-    let down_rev_flat = if let Some(ref entry) = avoid_entry {
-        entry.weights.time_down_flat.clone()
-    } else if let Some(ref ew) = exclude_weights {
-        ew.time_down_flat.clone()
-    } else {
-        mode_data.down_rev_flat.clone()
-    };
-
     // ----------------------------------------------------------------
     // Smart algorithm selection:
     //   - Small matrices (N*M <= 50,000): Bucket M2M (fast, low overhead)
@@ -1143,10 +1127,26 @@ pub async fn table_stream_handler(
 
     if n_total_sources * n_total_targets <= BUCKET_M2M_THRESHOLD {
         // --- SMALL MATRIX PATH: Bucket M2M → single Arrow IPC tile ---
+        // Borrow the flats directly from the cached avoid entry /
+        // exclude weights / mode data — no deep clone on the hot path.
+        let up_adj_flat: &UpAdjFlat = if let Some(ref entry) = avoid_entry {
+            &entry.weights.time_up_flat
+        } else if let Some(ref ew) = exclude_weights {
+            &ew.time_up_flat
+        } else {
+            &mode_data.up_adj_flat
+        };
+        let down_rev_flat: &DownReverseAdjFlat = if let Some(ref entry) = avoid_entry {
+            &entry.weights.time_down_flat
+        } else if let Some(ref ew) = exclude_weights {
+            &ew.time_down_flat
+        } else {
+            &mode_data.down_rev_flat
+        };
         let resp = table_stream_bucket_path(
             n_nodes,
-            &up_adj_flat,
-            &down_rev_flat,
+            up_adj_flat,
+            down_rev_flat,
             n_total_sources,
             n_total_targets,
             n_total_cells,
@@ -1192,11 +1192,37 @@ pub async fn table_stream_handler(
     let cancelled_outer = cancelled.clone();
     let neighbor_mask_for_phast = neighbor_mask.clone();
 
+    // Move the Arc-wrapped state into the spawn_blocking closure so we
+    // can borrow flat adjacencies straight from the cached avoid entry
+    // / exclude weights / mode_data — no deep clone of the 100+ MB
+    // UpAdjFlat / DownReverseAdjFlat on the hot path.
+    let state_for_phast = Arc::clone(&state);
+    let avoid_entry_for_phast = avoid_entry.clone();
+    let exclude_weights_for_phast = exclude_weights.clone();
+
     // Spawn compute task - SOURCE-BLOCK OUTER LOOP to avoid repeated forward computation
     // For 10k x 10k with 1000 x 1000 tiles: forward computed 10x (once per src block) instead of 100x
     tokio::task::spawn_blocking(move || {
         let cancelled = cancelled_outer;
         let neighbor_mask = neighbor_mask_for_phast;
+        let state = state_for_phast;
+        let avoid_entry = avoid_entry_for_phast;
+        let exclude_weights = exclude_weights_for_phast;
+        let mode_data = state.get_mode(mode);
+        let up_adj_flat: &UpAdjFlat = if let Some(ref entry) = avoid_entry {
+            &entry.weights.time_up_flat
+        } else if let Some(ref ew) = exclude_weights {
+            &ew.time_up_flat
+        } else {
+            &mode_data.up_adj_flat
+        };
+        let down_rev_flat: &DownReverseAdjFlat = if let Some(ref entry) = avoid_entry {
+            &entry.weights.time_down_flat
+        } else if let Some(ref ew) = exclude_weights {
+            &ew.time_down_flat
+        } else {
+            &mode_data.down_rev_flat
+        };
         // Generate source and destination blocks
         let src_blocks: Vec<(usize, usize)> = (0..n_total_sources)
             .step_by(src_tile_size)
@@ -1280,7 +1306,7 @@ pub async fn table_stream_handler(
             // FORWARD PHASE: Compute forward searches ONCE for this source block
             let source_buckets = std::sync::Arc::new(forward_build_buckets(
                 n_nodes,
-                &up_adj_flat,
+                up_adj_flat,
                 &block_src_ranks,
             ));
 
@@ -1312,7 +1338,7 @@ pub async fn table_stream_handler(
                     // BACKWARD + JOIN using prebuilt source buckets
                     let tile_matrix = backward_join_with_buckets(
                         n_nodes,
-                        &down_rev_flat,
+                        down_rev_flat,
                         &source_buckets,
                         &block_dst_ranks,
                     );
