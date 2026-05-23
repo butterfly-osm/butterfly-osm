@@ -9,7 +9,7 @@
 //! 3. Recompute all shortcut weights bottom-up (shortcuts through excluded edges get u32::MAX)
 //! 4. Run triangle relaxation to find alternative paths through non-excluded edges
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Pack (weight, middle_rank) into a single u64 for atomic fetch_min.
 /// Weight in high 32 bits so fetch_min minimizes by weight first. Middle
@@ -306,411 +306,6 @@ pub fn recustomize_weights(
     }
 }
 
-/// Like `recustomize_weights` but uses sparse triangle relaxation.
-///
-/// After the bottom-up pass, identifies which edges changed vs base weights,
-/// then only processes triangle relaxation on dirty nodes (nodes with at least
-/// one changed incident edge). Subsequent passes only process newly-dirtied
-/// nodes, making later passes much faster.
-///
-/// For avoid polygons affecting ~1% of edges, this is ~10x faster than full
-/// triangle relaxation while producing identical results.
-fn recustomize_weights_sparse_triangle(
-    topo: &CchTopo,
-    base_weights: &CchWeights,
-    edge_exclude_flags: &[u8],
-    exclude_mask: u8,
-    filtered_to_original: &[u32],
-) -> CchWeights {
-    let n_nodes = topo.n_nodes as usize;
-
-    let is_excluded = |orig_id: usize| -> bool {
-        orig_id < edge_exclude_flags.len() && (edge_exclude_flags[orig_id] & exclude_mask) != 0
-    };
-
-    // Build sorted down indices for correct dependency order
-    let sorted_down_indices: Vec<Vec<usize>> = (0..n_nodes)
-        .into_par_iter()
-        .map(|u| {
-            let start = topo.down_offsets[u] as usize;
-            let end = topo.down_offsets[u + 1] as usize;
-            if start >= end {
-                return Vec::new();
-            }
-            let mut indices: Vec<usize> = (start..end).collect();
-            indices.sort_unstable_by_key(|&i| topo.down_targets[i]);
-            indices
-        })
-        .collect();
-
-    let mut up_weights = vec![u32::MAX; topo.up_targets.len()];
-    let mut down_weights = vec![u32::MAX; topo.down_targets.len()];
-    let mut changed_up_edges: Vec<ChangedEdge> = Vec::new();
-    let mut changed_down_edges: Vec<ChangedEdge> = Vec::new();
-
-    // Bottom-up pass — collect changed edges as we go so the triangle
-    // relax pass 1 can iterate only those instead of sweeping every node.
-    for rank in 0..n_nodes {
-        let u = rank;
-
-        // DOWN edges (sorted by target rank)
-        for &i in &sorted_down_indices[u] {
-            let v = topo.down_targets[i] as usize;
-            let new_weight = if !topo.down_is_shortcut.bit(i) {
-                let v_filtered = topo.rank_to_filtered[v] as usize;
-                let v_orig = filtered_to_original[v_filtered] as usize;
-                if is_excluded(v_orig) {
-                    u32::MAX
-                } else {
-                    base_weights.down[i]
-                }
-            } else {
-                let m = topo.down_middle[i] as usize;
-                let w_um =
-                    find_edge_weight(u, m, &topo.down_offsets, &topo.down_targets, &down_weights);
-                let w_mv = find_edge_weight(m, v, &topo.up_offsets, &topo.up_targets, &up_weights);
-                w_um.saturating_add(w_mv)
-            };
-            down_weights[i] = new_weight;
-            if new_weight != base_weights.down[i] {
-                changed_down_edges.push(ChangedEdge {
-                    source: u as u32,
-                    target: v as u32,
-                });
-            }
-        }
-
-        // UP edges
-        let up_start = topo.up_offsets[u] as usize;
-        let up_end = topo.up_offsets[u + 1] as usize;
-        for i in up_start..up_end {
-            let v = topo.up_targets[i] as usize;
-            let new_weight = if !topo.up_is_shortcut.bit(i) {
-                let v_filtered = topo.rank_to_filtered[v] as usize;
-                let v_orig = filtered_to_original[v_filtered] as usize;
-                if is_excluded(v_orig) {
-                    u32::MAX
-                } else {
-                    base_weights.up[i]
-                }
-            } else {
-                let m = topo.up_middle[i] as usize;
-                let w_um =
-                    find_edge_weight(u, m, &topo.down_offsets, &topo.down_targets, &down_weights);
-                let w_mv = find_edge_weight(m, v, &topo.up_offsets, &topo.up_targets, &up_weights);
-                w_um.saturating_add(w_mv)
-            };
-            up_weights[i] = new_weight;
-            if new_weight != base_weights.up[i] {
-                changed_up_edges.push(ChangedEdge {
-                    source: u as u32,
-                    target: v as u32,
-                });
-            }
-        }
-    }
-
-    tracing::debug!(
-        changed_up_edges = changed_up_edges.len(),
-        changed_down_edges = changed_down_edges.len(),
-        "sparse: bottom-up done, changed-edge set collected"
-    );
-
-    // Build reverse DOWN adjacency for triangle relaxation
-    let rev_down = build_reverse_down_adj(topo);
-
-    // Sparse triangle relaxation: only process dirty nodes. The relax
-    // updates (weight, middle) atomically so unpack_path follows the
-    // m that actually produced the relaxed weight (#239).
-    let (up_middles, down_middles) = sparse_triangle_relax(
-        topo,
-        &mut up_weights,
-        &mut down_weights,
-        &rev_down,
-        &changed_up_edges,
-        &changed_down_edges,
-    );
-
-    CchWeights {
-        up: up_weights.into(),
-        down: down_weights.into(),
-        up_middle: up_middles.into(),
-        down_middle: down_middles.into(),
-    }
-}
-
-/// A weight that differs from base after the bottom-up customization
-/// pass. Collected during bottom-up so triangle relaxation can iterate
-/// only those edges instead of sweeping every node.
-#[derive(Clone, Copy, Debug)]
-struct ChangedEdge {
-    source: u32,
-    target: u32,
-}
-
-#[inline]
-fn push_dirty_once(dirty: &[AtomicBool], out: &mut Vec<usize>, node: usize) {
-    if !dirty[node].swap(true, Ordering::Relaxed) {
-        out.push(node);
-    }
-}
-
-#[inline]
-fn mark_potential_middles(
-    topo: &CchTopo,
-    dirty: &[AtomicBool],
-    out: &mut Vec<usize>,
-    x: usize,
-    y: usize,
-) {
-    let down_start = topo.down_offsets[x] as usize;
-    let down_end = topo.down_offsets[x + 1] as usize;
-    for &m_u32 in &topo.down_targets[down_start..down_end] {
-        let m = m_u32 as usize;
-        if m == y {
-            continue;
-        }
-        if find_edge_index(m, y, &topo.up_offsets, &topo.up_targets).is_some() {
-            push_dirty_once(dirty, out, m);
-        }
-    }
-}
-
-/// Sparse triangle relaxation. Pass 1's dirty set is bounded by the
-/// changed-edge list collected during bottom-up:
-///   (a) For each changed UP edge x→y: mark the SOURCE x dirty (the
-///       only m whose next-pass iteration reads w_xy as w_my).
-///   (b) For each changed DOWN edge x→y: mark the TARGET y dirty (the
-///       only m whose iteration reads w_xy as w_xm).
-///   (c) For each changed edge (x, y): enumerate potential middles m
-///       (DOWN neighbours of x that have a UP edge to y) and mark
-///       dirty[m]. This catches the "shortcut x→y went INF and the
-///       triangle that rescues it uses an m_alt with unchanged
-///       incident edges" case (#238).
-///
-/// Subsequent passes use **one-sided** propagation. An improved UP
-/// edge x→y is consumed only by triangles centered at x. An improved
-/// DOWN edge x→y is consumed only by triangles centered at y. Marking
-/// both endpoints (as the earlier version did) doubles dirty-set churn
-/// for no correctness benefit.
-fn sparse_triangle_relax(
-    topo: &CchTopo,
-    up_weights: &mut Vec<u32>,
-    down_weights: &mut Vec<u32>,
-    rev_down: &ReverseDownAdj,
-    changed_up_edges: &[ChangedEdge],
-    changed_down_edges: &[ChangedEdge],
-) -> (Vec<u32>, Vec<u32>) {
-    let n_nodes = topo.n_nodes as usize;
-
-    // Pack (weight, middle) so the relax updates both atomically.
-    // Without this, `unpack_path` follows stale topo middles even
-    // when the weight reflects a different m (#239).
-    let atomic_up: Vec<AtomicU64> = up_weights
-        .drain(..)
-        .zip(topo.up_middle.iter())
-        .map(|(w, &m)| AtomicU64::new(pack_wm(w, m)))
-        .collect();
-    let atomic_down: Vec<AtomicU64> = down_weights
-        .drain(..)
-        .zip(topo.down_middle.iter())
-        .map(|(w, &m)| AtomicU64::new(pack_wm(w, m)))
-        .collect();
-
-    let dirty: Vec<AtomicBool> = (0..n_nodes).map(|_| AtomicBool::new(false)).collect();
-
-    // Build the initial dirty set as an actual Vec (not a bitvector
-    // scan) so subsequent passes don't pay O(n_nodes) to enumerate it.
-    let mut dirty_nodes: Vec<usize> = Vec::new();
-
-    // (a) Per-edge apex marking. For changed UP edges, that's the source;
-    // for changed DOWN edges, that's the target.
-    let from_up: Vec<usize> = changed_up_edges
-        .par_iter()
-        .fold(Vec::new, |mut local, edge| {
-            push_dirty_once(&dirty, &mut local, edge.source as usize);
-            local
-        })
-        .reduce(Vec::new, |mut a, mut b| {
-            a.append(&mut b);
-            a
-        });
-    let from_down: Vec<usize> = changed_down_edges
-        .par_iter()
-        .fold(Vec::new, |mut local, edge| {
-            push_dirty_once(&dirty, &mut local, edge.target as usize);
-            local
-        })
-        .reduce(Vec::new, |mut a, mut b| {
-            a.append(&mut b);
-            a
-        });
-    dirty_nodes.extend(from_up);
-    dirty_nodes.extend(from_down);
-
-    // (b) Potential middles per changed edge. Bounded by O(changed × deg).
-    let middles_up: Vec<usize> = changed_up_edges
-        .par_iter()
-        .fold(Vec::new, |mut local, edge| {
-            mark_potential_middles(
-                topo,
-                &dirty,
-                &mut local,
-                edge.source as usize,
-                edge.target as usize,
-            );
-            local
-        })
-        .reduce(Vec::new, |mut a, mut b| {
-            a.append(&mut b);
-            a
-        });
-    let middles_down: Vec<usize> = changed_down_edges
-        .par_iter()
-        .fold(Vec::new, |mut local, edge| {
-            mark_potential_middles(
-                topo,
-                &dirty,
-                &mut local,
-                edge.source as usize,
-                edge.target as usize,
-            );
-            local
-        })
-        .reduce(Vec::new, |mut a, mut b| {
-            a.append(&mut b);
-            a
-        });
-    dirty_nodes.extend(middles_up);
-    dirty_nodes.extend(middles_down);
-
-    tracing::debug!(
-        changed_up_edges = changed_up_edges.len(),
-        changed_down_edges = changed_down_edges.len(),
-        dirty_nodes = dirty_nodes.len(),
-        total_nodes = n_nodes,
-        "sparse triangle relax: initial dirty set"
-    );
-
-    let mut pass = 0u32;
-    while !dirty_nodes.is_empty() {
-        pass += 1;
-
-        // Clear dirty flags so the next pass's per-edge marks can
-        // detect "already enqueued for this pass" via swap.
-        dirty_nodes
-            .par_iter()
-            .for_each(|&m| dirty[m].store(false, Ordering::Relaxed));
-
-        let pass_updates = AtomicU64::new(0);
-
-        let next_dirty_nodes: Vec<usize> = dirty_nodes
-            .par_iter()
-            .fold(Vec::new, |mut next_dirty, &m| {
-                let rev_start = rev_down.offsets[m] as usize;
-                let rev_end = rev_down.offsets[m + 1] as usize;
-
-                for i_rev in rev_start..rev_end {
-                    let x = rev_down.sources[i_rev] as usize;
-                    let edge_idx_xm = rev_down.edge_idx[i_rev];
-                    let w_xm = unpack_weight(atomic_down[edge_idx_xm].load(Ordering::Relaxed));
-
-                    if w_xm == u32::MAX {
-                        continue;
-                    }
-
-                    let up_start = topo.up_offsets[m] as usize;
-                    let up_end = topo.up_offsets[m + 1] as usize;
-
-                    for i_my in up_start..up_end {
-                        let y = topo.up_targets[i_my] as usize;
-                        if y == x {
-                            continue;
-                        }
-
-                        let w_my = unpack_weight(atomic_up[i_my].load(Ordering::Relaxed));
-                        if w_my == u32::MAX {
-                            continue;
-                        }
-
-                        let new_weight = w_xm.saturating_add(w_my);
-                        let new_packed = pack_wm(new_weight, m as u32);
-
-                        if y > x {
-                            if let Some(idx) =
-                                find_edge_index(x, y, &topo.up_offsets, &topo.up_targets)
-                            {
-                                let old = atomic_up[idx].fetch_min(new_packed, Ordering::Relaxed);
-                                if new_packed < old {
-                                    pass_updates.fetch_add(1, Ordering::Relaxed);
-                                    // Improved UP x→y is consumed only by triangles
-                                    // centered at x. One-sided propagation.
-                                    push_dirty_once(&dirty, &mut next_dirty, x);
-                                }
-                            }
-                        } else if let Some(idx) =
-                            find_edge_index(x, y, &topo.down_offsets, &topo.down_targets)
-                        {
-                            let old = atomic_down[idx].fetch_min(new_packed, Ordering::Relaxed);
-                            if new_packed < old {
-                                pass_updates.fetch_add(1, Ordering::Relaxed);
-                                // Improved DOWN x→y is consumed only by triangles
-                                // centered at y. One-sided propagation.
-                                push_dirty_once(&dirty, &mut next_dirty, y);
-                            }
-                        }
-                    }
-                }
-                next_dirty
-            })
-            .reduce(Vec::new, |mut a, mut b| {
-                a.append(&mut b);
-                a
-            });
-
-        let pu = pass_updates.into_inner();
-        tracing::debug!(
-            pass,
-            updates = pu,
-            dirty_nodes = dirty_nodes.len(),
-            next_dirty_nodes = next_dirty_nodes.len(),
-            "sparse triangle relaxation"
-        );
-        if pu == 0 {
-            break;
-        }
-        if pass >= 50 {
-            tracing::warn!(
-                pass,
-                updates = pu,
-                "sparse triangle relaxation hit 50-pass cap without converging — \
-                 weights may still be improvable; falling through with current state"
-            );
-            break;
-        }
-
-        dirty_nodes = next_dirty_nodes;
-    }
-
-    let n_up = atomic_up.len();
-    let n_down = atomic_down.len();
-    let mut up_middles = Vec::with_capacity(n_up);
-    let mut down_middles = Vec::with_capacity(n_down);
-    up_weights.reserve(n_up);
-    down_weights.reserve(n_down);
-    for a in atomic_up {
-        let packed = a.into_inner();
-        up_weights.push(unpack_weight(packed));
-        up_middles.push(unpack_middle(packed));
-    }
-    for a in atomic_down {
-        let packed = a.into_inner();
-        down_weights.push(unpack_weight(packed));
-        down_middles.push(unpack_middle(packed));
-    }
-    (up_middles, down_middles)
-}
-
 /// Compute time-only exclude weights (for P2P route queries).
 ///
 /// Skips distance recustomization and flat adjacency builds.
@@ -724,7 +319,9 @@ pub fn compute_exclude_weights_time_only(
 ) -> CchWeights {
     let start = std::time::Instant::now();
 
-    let time_weights = recustomize_weights_sparse_triangle(
+    // Incremental BFS recustomization (#240). Walks only edges
+    // transitively dependent on polygon-flagged base edges.
+    let time_weights = recustomize_weights_incremental(
         topo,
         base_time,
         edge_exclude_flags,
@@ -735,7 +332,7 @@ pub fn compute_exclude_weights_time_only(
     tracing::info!(
         exclude_mask,
         elapsed_ms = start.elapsed().as_millis(),
-        "computed exclude weights (time-only, sparse triangle)"
+        "computed exclude weights (time-only, incremental)"
     );
 
     time_weights
@@ -752,10 +349,13 @@ pub fn compute_exclude_weights(
 ) -> ExcludeWeights {
     let start = std::time::Instant::now();
 
-    // Re-customize time and distance weights in parallel
+    // Re-customize time and distance weights in parallel.
+    // Uses the incremental BFS algorithm (#240) — touches only edges
+    // transitively dependent on polygon-flagged base edges, so work
+    // is bounded by polygon size rather than graph size.
     let (time_weights, dist_weights) = rayon::join(
         || {
-            recustomize_weights(
+            recustomize_weights_incremental(
                 topo,
                 base_time,
                 edge_exclude_flags,
@@ -764,7 +364,7 @@ pub fn compute_exclude_weights(
             )
         },
         || {
-            recustomize_weights(
+            recustomize_weights_incremental(
                 topo,
                 base_dist,
                 edge_exclude_flags,
@@ -1002,6 +602,417 @@ fn triangle_relax(
         down_middles.push(unpack_middle(packed));
     }
     (up_middles, down_middles)
+}
+
+// ============================================================================
+// #240 Incremental recustomization
+// ============================================================================
+//
+// The from-scratch path (recustomize_weights / recustomize_weights_sparse_triangle)
+// runs an O(|edges|) bottom-up over every CCH edge regardless of polygon size.
+// On Belgium that's ~12 M shortcut recomputations and ~8 s sequential — even
+// for a polygon covering 10 base edges in a rural area.
+//
+// The incremental version starts from the BASE weights + base middles and
+// only re-evaluates edges that depend, transitively, on a polygon-flagged
+// base edge. Cost is O(|touched_shortcuts| × deg) rather than O(|edges|).
+//
+// Algorithm:
+//   1. Initialise (up_weights, down_weights, up_middle, down_middle) to the
+//      base build-time values — those are already triangle-relaxed for the
+//      no-avoid graph.
+//   2. Seed a BFS queue with every CCH base edge whose underlying OSM edge
+//      is in the polygon. For each, mark it as needing recomputation.
+//   3. Pop edges from the queue, recompute their (weight, middle) by
+//      considering every triangle (x, m, y) where x = edge.source and
+//      y = edge.target. If the result changed, write it and enqueue every
+//      edge that uses this one as a triangle leg.
+//   4. Terminate when the queue is empty.
+//
+// Correctness: each edge's recomputation considers all incident triangles,
+// so the final (weight, middle) matches what a full triangle relaxation
+// would produce. Convergence is guaranteed because weights only decrease
+// and are bounded by the base value.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EdgeDir {
+    Up,
+    Down,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct EdgeRef {
+    dir: EdgeDir,
+    idx: usize,
+    source: usize,
+    target: usize,
+}
+
+/// Incrementally recustomize CCH weights starting from `base_weights` after
+/// the avoid/exclude mask flags some base edges as INF.
+///
+/// Returns a new `CchWeights` with the relaxed weights AND relaxed middles
+/// — `unpack_path` must follow the relaxed middles to emit the correct
+/// geometry (#239).
+pub fn recustomize_weights_incremental(
+    topo: &CchTopo,
+    base_weights: &CchWeights,
+    edge_exclude_flags: &[u8],
+    exclude_mask: u8,
+    filtered_to_original: &[u32],
+) -> CchWeights {
+    let start = std::time::Instant::now();
+    let mut up_weights = base_weights.up.to_vec();
+    let mut down_weights = base_weights.down.to_vec();
+    let mut up_middle = if base_weights.up_middle.len() == topo.up_targets.len() {
+        base_weights.up_middle.to_vec()
+    } else {
+        topo.up_middle.to_vec()
+    };
+    let mut down_middle = if base_weights.down_middle.len() == topo.down_targets.len() {
+        base_weights.down_middle.to_vec()
+    } else {
+        topo.down_middle.to_vec()
+    };
+
+    let mut queued_up = vec![false; topo.up_targets.len()];
+    let mut queued_down = vec![false; topo.down_targets.len()];
+    let mut queue: std::collections::VecDeque<EdgeRef> = std::collections::VecDeque::new();
+    let mut seeded = 0usize;
+    let n_nodes = topo.n_nodes as usize;
+
+    // Seed: every CCH BASE edge whose underlying OSM edge is in the
+    // polygon. Shortcuts inherit through the BFS propagation.
+    for source in 0..n_nodes {
+        let up_start = topo.up_offsets[source] as usize;
+        let up_end = topo.up_offsets[source + 1] as usize;
+        for idx in up_start..up_end {
+            if !topo.up_is_shortcut.bit(idx)
+                && cch_base_edge_excluded(
+                    topo.up_targets[idx] as usize,
+                    topo,
+                    edge_exclude_flags,
+                    exclude_mask,
+                    filtered_to_original,
+                )
+            {
+                push_edge(
+                    &mut queue,
+                    &mut queued_up,
+                    &mut queued_down,
+                    EdgeRef {
+                        dir: EdgeDir::Up,
+                        idx,
+                        source,
+                        target: topo.up_targets[idx] as usize,
+                    },
+                );
+                seeded += 1;
+            }
+        }
+        let down_start = topo.down_offsets[source] as usize;
+        let down_end = topo.down_offsets[source + 1] as usize;
+        for idx in down_start..down_end {
+            if !topo.down_is_shortcut.bit(idx)
+                && cch_base_edge_excluded(
+                    topo.down_targets[idx] as usize,
+                    topo,
+                    edge_exclude_flags,
+                    exclude_mask,
+                    filtered_to_original,
+                )
+            {
+                push_edge(
+                    &mut queue,
+                    &mut queued_up,
+                    &mut queued_down,
+                    EdgeRef {
+                        dir: EdgeDir::Down,
+                        idx,
+                        source,
+                        target: topo.down_targets[idx] as usize,
+                    },
+                );
+                seeded += 1;
+            }
+        }
+    }
+
+    // Reverse DOWN adjacency: for each m, which sources x have a DOWN
+    // edge x→m? Needed by enqueue_dependents to walk triangles centred
+    // at the lower apex when an UP edge changes.
+    let rev_down = build_reverse_down_adj(topo);
+
+    let mut recomputed = 0usize;
+    let mut changed_weight = 0usize;
+    let mut changed_middle = 0usize;
+
+    while let Some(edge) = queue.pop_front() {
+        match edge.dir {
+            EdgeDir::Up => queued_up[edge.idx] = false,
+            EdgeDir::Down => queued_down[edge.idx] = false,
+        }
+        recomputed += 1;
+
+        let (new_weight, new_middle) = recompute_edge_weight(
+            edge,
+            topo,
+            base_weights,
+            edge_exclude_flags,
+            exclude_mask,
+            filtered_to_original,
+            &up_weights,
+            &down_weights,
+        );
+
+        let (old_weight, old_middle) = match edge.dir {
+            EdgeDir::Up => (up_weights[edge.idx], up_middle[edge.idx]),
+            EdgeDir::Down => (down_weights[edge.idx], down_middle[edge.idx]),
+        };
+
+        if new_weight == old_weight && new_middle == old_middle {
+            continue;
+        }
+
+        match edge.dir {
+            EdgeDir::Up => {
+                up_weights[edge.idx] = new_weight;
+                up_middle[edge.idx] = new_middle;
+            }
+            EdgeDir::Down => {
+                down_weights[edge.idx] = new_weight;
+                down_middle[edge.idx] = new_middle;
+            }
+        }
+
+        if new_middle != old_middle {
+            changed_middle += 1;
+        }
+        if new_weight != old_weight {
+            changed_weight += 1;
+            enqueue_dependents(
+                edge,
+                topo,
+                &rev_down,
+                &mut queue,
+                &mut queued_up,
+                &mut queued_down,
+            );
+        }
+    }
+
+    tracing::debug!(
+        seeded_edges = seeded,
+        recomputed_edges = recomputed,
+        changed_weight_edges = changed_weight,
+        changed_middle_edges = changed_middle,
+        elapsed_ms = start.elapsed().as_millis(),
+        "incremental CCH recustomization"
+    );
+
+    CchWeights {
+        up: up_weights.into(),
+        down: down_weights.into(),
+        up_middle: up_middle.into(),
+        down_middle: down_middle.into(),
+    }
+}
+
+#[inline]
+fn push_edge(
+    queue: &mut std::collections::VecDeque<EdgeRef>,
+    queued_up: &mut [bool],
+    queued_down: &mut [bool],
+    edge: EdgeRef,
+) {
+    let queued = match edge.dir {
+        EdgeDir::Up => &mut queued_up[edge.idx],
+        EdgeDir::Down => &mut queued_down[edge.idx],
+    };
+    if !*queued {
+        *queued = true;
+        queue.push_back(edge);
+    }
+}
+
+/// True if the CCH base edge with the given target rank corresponds to
+/// an OSM edge that is in the polygon/exclude flag set.
+#[inline]
+fn cch_base_edge_excluded(
+    target_rank: usize,
+    topo: &CchTopo,
+    edge_exclude_flags: &[u8],
+    exclude_mask: u8,
+    filtered_to_original: &[u32],
+) -> bool {
+    let filtered = topo.rank_to_filtered[target_rank] as usize;
+    let Some(&orig) = filtered_to_original.get(filtered) else {
+        return false;
+    };
+    edge_exclude_flags
+        .get(orig as usize)
+        .is_some_and(|flags| flags & exclude_mask != 0)
+}
+
+/// Pick the best (weight, middle) for `edge` by considering its
+/// direct base value (if base) and every triangle through the
+/// current up_weights / down_weights.
+#[allow(clippy::too_many_arguments)]
+fn recompute_edge_weight(
+    edge: EdgeRef,
+    topo: &CchTopo,
+    base_weights: &CchWeights,
+    edge_exclude_flags: &[u8],
+    exclude_mask: u8,
+    filtered_to_original: &[u32],
+    up_weights: &[u32],
+    down_weights: &[u32],
+) -> (u32, u32) {
+    let is_shortcut = match edge.dir {
+        EdgeDir::Up => topo.up_is_shortcut.bit(edge.idx),
+        EdgeDir::Down => topo.down_is_shortcut.bit(edge.idx),
+    };
+
+    // Start from the base value (or INF if this base edge is itself
+    // excluded). The triangle scan below can only improve it.
+    let base_excluded = !is_shortcut
+        && cch_base_edge_excluded(
+            edge.target,
+            topo,
+            edge_exclude_flags,
+            exclude_mask,
+            filtered_to_original,
+        );
+    let mut best_weight = if base_excluded {
+        u32::MAX
+    } else {
+        match edge.dir {
+            EdgeDir::Up => base_weights.up[edge.idx],
+            EdgeDir::Down => base_weights.down[edge.idx],
+        }
+    };
+    let mut best_middle = match edge.dir {
+        EdgeDir::Up => topo.up_middle[edge.idx],
+        EdgeDir::Down => topo.down_middle[edge.idx],
+    };
+    let mut best_packed = pack_wm(best_weight, best_middle);
+
+    // Iterate every candidate middle m: m has DOWN edge from source
+    // (rank(m) < rank(source)) and UP edge to target.
+    let down_start = topo.down_offsets[edge.source] as usize;
+    let down_end = topo.down_offsets[edge.source + 1] as usize;
+    for (offset, &m_u32) in topo.down_targets[down_start..down_end].iter().enumerate() {
+        let i_xm = down_start + offset;
+        let m = m_u32 as usize;
+        if m == edge.target {
+            continue;
+        }
+        let w_xm = down_weights[i_xm];
+        if w_xm == u32::MAX {
+            continue;
+        }
+        let Some(i_my) = find_edge_index(m, edge.target, &topo.up_offsets, &topo.up_targets) else {
+            continue;
+        };
+        let w_my = up_weights[i_my];
+        if w_my == u32::MAX {
+            continue;
+        }
+        let packed = pack_wm(w_xm.saturating_add(w_my), m as u32);
+        if packed < best_packed {
+            best_packed = packed;
+            best_weight = unpack_weight(packed);
+            best_middle = unpack_middle(packed);
+        }
+    }
+
+    (best_weight, best_middle)
+}
+
+/// Enqueue every edge whose recomputation depends on `edge`. When an
+/// UP edge m→y changes, all triangles x→m→y need re-examination — the
+/// affected output edges are (x, y) for every x that has a DOWN edge
+/// to m. Symmetric for DOWN edges via the upper apex.
+fn enqueue_dependents(
+    edge: EdgeRef,
+    topo: &CchTopo,
+    rev_down: &ReverseDownAdj,
+    queue: &mut std::collections::VecDeque<EdgeRef>,
+    queued_up: &mut [bool],
+    queued_down: &mut [bool],
+) {
+    match edge.dir {
+        EdgeDir::Up => {
+            // Improved m→y (with m = edge.source, y = edge.target).
+            // Affected: every (x, y) where x→m DOWN exists.
+            let m = edge.source;
+            let y = edge.target;
+            let rev_start = rev_down.offsets[m] as usize;
+            let rev_end = rev_down.offsets[m + 1] as usize;
+            for slot in rev_start..rev_end {
+                let x = rev_down.sources[slot] as usize;
+                if x == y {
+                    continue;
+                }
+                push_existing_edge(x, y, topo, queue, queued_up, queued_down);
+            }
+        }
+        EdgeDir::Down => {
+            // Improved x→m DOWN (with x = edge.source, m = edge.target).
+            // Affected: every (x, y) where m→y UP exists.
+            let x = edge.source;
+            let m = edge.target;
+            let up_start = topo.up_offsets[m] as usize;
+            let up_end = topo.up_offsets[m + 1] as usize;
+            for i_my in up_start..up_end {
+                let y = topo.up_targets[i_my] as usize;
+                if x == y {
+                    continue;
+                }
+                push_existing_edge(x, y, topo, queue, queued_up, queued_down);
+            }
+        }
+    }
+}
+
+#[inline]
+fn push_existing_edge(
+    source: usize,
+    target: usize,
+    topo: &CchTopo,
+    queue: &mut std::collections::VecDeque<EdgeRef>,
+    queued_up: &mut [bool],
+    queued_down: &mut [bool],
+) {
+    if target > source {
+        if let Some(idx) = find_edge_index(source, target, &topo.up_offsets, &topo.up_targets) {
+            push_edge(
+                queue,
+                queued_up,
+                queued_down,
+                EdgeRef {
+                    dir: EdgeDir::Up,
+                    idx,
+                    source,
+                    target,
+                },
+            );
+        }
+    } else if let Some(idx) =
+        find_edge_index(source, target, &topo.down_offsets, &topo.down_targets)
+    {
+        push_edge(
+            queue,
+            queued_up,
+            queued_down,
+            EdgeRef {
+                dir: EdgeDir::Down,
+                idx,
+                source,
+                target,
+            },
+        );
+    }
 }
 
 #[cfg(test)]
