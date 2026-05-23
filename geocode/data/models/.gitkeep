@@ -1,8 +1,0 @@
-# This directory holds shipped + locally-trained model files.
-#
-# The committed proof-of-life model is `belgium-tiny.safetensors` plus
-# its sidecar `belgium-tiny.safetensors.config.json`. Both files are
-# under 5 MB combined and small enough to commit.
-#
-# Locally-trained models (other names) should be gitignored — see the
-# repository root .gitignore.
