@@ -1018,7 +1018,8 @@ fn load_phast(data_dir: &Path, mode: &str) -> anyhow::Result<PhastEngine> {
         data_dir,
         &[
             format!("cch.{}.topo", mode),
-            format!("step7-rank-aligned/cch.{}.topo", mode),
+            format!("step7/cch.{}.topo", mode),
+            format!("step7/cch.{}.topo", mode),
             format!("step7-belgium-fixed/cch.{}.topo", mode),
         ],
     )
@@ -1028,7 +1029,8 @@ fn load_phast(data_dir: &Path, mode: &str) -> anyhow::Result<PhastEngine> {
         data_dir,
         &[
             format!("cch.w.{}.u32", mode),
-            format!("step8-rank-aligned/cch.w.{}.u32", mode),
+            format!("step8/cch.w.{}.u32", mode),
+            format!("step8/cch.w.{}.u32", mode),
             format!("step8-belgium-fixed/cch.w.{}.u32", mode),
         ],
     )
@@ -1039,6 +1041,7 @@ fn load_phast(data_dir: &Path, mode: &str) -> anyhow::Result<PhastEngine> {
         &[
             format!("order.{}.ebg", mode),
             format!("step6/order.{}.ebg", mode),
+            format!("step6-roadclass/order.{}.ebg", mode),
             format!("step6-belgium-fixed/order.{}.ebg", mode),
         ],
     )
@@ -1384,7 +1387,8 @@ fn load_batched_phast(data_dir: &Path, mode: &str) -> anyhow::Result<BatchedPhas
         data_dir,
         &[
             format!("cch.{}.topo", mode),
-            format!("step7-rank-aligned/cch.{}.topo", mode),
+            format!("step7/cch.{}.topo", mode),
+            format!("step7/cch.{}.topo", mode),
             format!("step7-belgium-fixed/cch.{}.topo", mode),
         ],
     )
@@ -1394,7 +1398,8 @@ fn load_batched_phast(data_dir: &Path, mode: &str) -> anyhow::Result<BatchedPhas
         data_dir,
         &[
             format!("cch.w.{}.u32", mode),
-            format!("step8-rank-aligned/cch.w.{}.u32", mode),
+            format!("step8/cch.w.{}.u32", mode),
+            format!("step8/cch.w.{}.u32", mode),
             format!("step8-belgium-fixed/cch.w.{}.u32", mode),
         ],
     )
@@ -1405,6 +1410,7 @@ fn load_batched_phast(data_dir: &Path, mode: &str) -> anyhow::Result<BatchedPhas
         &[
             format!("order.{}.ebg", mode),
             format!("step6/order.{}.ebg", mode),
+            format!("step6-roadclass/order.{}.ebg", mode),
             format!("step6-belgium-fixed/order.{}.ebg", mode),
         ],
     )
@@ -1626,7 +1632,7 @@ fn run_batched_isochrone_bench(
         data_dir,
         &[
             format!("cch.{}.topo", mode),
-            format!("step7-rank-aligned/cch.{}.topo", mode),
+            format!("step7/cch.{}.topo", mode),
             format!("step7/cch.{}.topo", mode),
             format!("step7-new/cch.{}.topo", mode),
         ],
@@ -1637,7 +1643,7 @@ fn run_batched_isochrone_bench(
         data_dir,
         &[
             format!("cch.w.{}.u32", mode),
-            format!("step8-rank-aligned/cch.w.{}.u32", mode),
+            format!("step8/cch.w.{}.u32", mode),
             format!("step8/cch.w.{}.u32", mode),
             format!("step8-new/cch.w.{}.u32", mode),
         ],
@@ -2967,7 +2973,7 @@ fn run_bucket_m2m_bench(
         data_dir,
         &[
             format!("cch.{}.topo", mode),
-            format!("step7-rank-aligned/cch.{}.topo", mode),
+            format!("step7/cch.{}.topo", mode),
             format!("step7/cch.{}.topo", mode),
         ],
     )
@@ -2977,7 +2983,7 @@ fn run_bucket_m2m_bench(
         data_dir,
         &[
             format!("cch.w.{}.u32", mode),
-            format!("step8-rank-aligned/cch.w.{}.u32", mode),
+            format!("step8/cch.w.{}.u32", mode),
             format!("step8/cch.w.{}.u32", mode),
         ],
     )
@@ -3507,7 +3513,7 @@ fn run_e2e_isochrone_bench(
         data_dir,
         &[
             format!("cch.{}.topo", mode),
-            format!("step7-rank-aligned/cch.{}.topo", mode),
+            format!("step7/cch.{}.topo", mode),
         ],
     )
     .ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
@@ -3516,7 +3522,7 @@ fn run_e2e_isochrone_bench(
         data_dir,
         &[
             format!("cch.w.{}.u32", mode),
-            format!("step8-rank-aligned/cch.w.{}.u32", mode),
+            format!("step8/cch.w.{}.u32", mode),
         ],
     )
     .ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
@@ -3795,7 +3801,7 @@ fn run_pathological_origins_bench(data_dir: &Path, mode: &str) -> anyhow::Result
         data_dir,
         &[
             format!("cch.{}.topo", mode),
-            format!("step7-rank-aligned/cch.{}.topo", mode),
+            format!("step7/cch.{}.topo", mode),
         ],
     )
     .ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
@@ -3804,7 +3810,7 @@ fn run_pathological_origins_bench(data_dir: &Path, mode: &str) -> anyhow::Result
         data_dir,
         &[
             format!("cch.w.{}.u32", mode),
-            format!("step8-rank-aligned/cch.w.{}.u32", mode),
+            format!("step8/cch.w.{}.u32", mode),
         ],
     )
     .ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
@@ -3999,7 +4005,7 @@ fn run_bulk_pipeline_bench(
         data_dir,
         &[
             format!("cch.{}.topo", mode),
-            format!("step7-rank-aligned/cch.{}.topo", mode),
+            format!("step7/cch.{}.topo", mode),
         ],
     )
     .ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
@@ -4007,7 +4013,7 @@ fn run_bulk_pipeline_bench(
         data_dir,
         &[
             format!("cch.w.{}.u32", mode),
-            format!("step8-rank-aligned/cch.w.{}.u32", mode),
+            format!("step8/cch.w.{}.u32", mode),
         ],
     )
     .ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
@@ -4180,7 +4186,7 @@ fn run_monotonicity_test(
         data_dir,
         &[
             format!("cch.{}.topo", mode),
-            format!("step7-rank-aligned/cch.{}.topo", mode),
+            format!("step7/cch.{}.topo", mode),
         ],
     )
     .ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
@@ -4188,7 +4194,7 @@ fn run_monotonicity_test(
         data_dir,
         &[
             format!("cch.w.{}.u32", mode),
-            format!("step8-rank-aligned/cch.w.{}.u32", mode),
+            format!("step8/cch.w.{}.u32", mode),
         ],
     )
     .ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
@@ -4266,7 +4272,7 @@ fn run_detail_compare(data_dir: &Path, mode: &str, threshold_min: u32) -> anyhow
         data_dir,
         &[
             format!("cch.{}.topo", mode),
-            format!("step7-rank-aligned/cch.{}.topo", mode),
+            format!("step7/cch.{}.topo", mode),
         ],
     )
     .ok_or_else(|| anyhow::anyhow!("Cannot find cch.{}.topo", mode))?;
@@ -4274,7 +4280,7 @@ fn run_detail_compare(data_dir: &Path, mode: &str, threshold_min: u32) -> anyhow
         data_dir,
         &[
             format!("cch.w.{}.u32", mode),
-            format!("step8-rank-aligned/cch.w.{}.u32", mode),
+            format!("step8/cch.w.{}.u32", mode),
         ],
     )
     .ok_or_else(|| anyhow::anyhow!("Cannot find cch.w.{}.u32", mode))?;
