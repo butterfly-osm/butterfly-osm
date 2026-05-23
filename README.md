@@ -139,7 +139,7 @@ flowchart LR
     end
 
     subgraph serve[Serve]
-        REST[REST :3001<br/>route · matrix · isochrone<br/>transit · trip · nearest · height]
+        REST[REST :3001<br/>route · table · isochrone<br/>transit · trip · nearest · height]
         FLIGHT[Flight gRPC :3002<br/>matrix · route_batch<br/>isochrone · catchment<br/>transit_bulk · edges_batch]
     end
 
