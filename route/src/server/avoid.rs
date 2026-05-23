@@ -168,6 +168,45 @@ fn hash_polygon_json(s: &str) -> u64 {
 /// Returns `None` if the JSON shape is invalid; callers fall back to a
 /// raw-bytes hash so a malformed polygon still has a deterministic
 /// cache key (it will lose every time at the parse step downstream).
+/// Booth's algorithm — O(n) lexicographically minimal cyclic rotation.
+///
+/// Returns the starting index `k` such that `s.rotate_left(k)` yields
+/// the lex-smallest rotation of `s`. References:
+///   K. S. Booth, "Lexicographically least circular substrings", 1980.
+///
+/// Operates on the doubled sequence implicitly via `failure[]` of size 2n.
+/// Used by `canonicalize_polygons` so the avoid-cache hit rate isn't
+/// gated on polygon vertex count (#243 follow-up).
+fn booth_minimal_rotation<T: Ord + Copy>(s: &[T]) -> usize {
+    let n = s.len();
+    if n <= 1 {
+        return 0;
+    }
+    // failure[i] = -1 sentinel encoded as i+1 = 0 means "unset".
+    // Storing failure as `Vec<isize>` with -1 sentinel keeps the code
+    // readable; size is 2n which is fine for polygon vertex counts.
+    let mut failure: Vec<isize> = vec![-1; 2 * n];
+    let mut k: usize = 0;
+    for j in 1..2 * n {
+        let mut i = failure[j - k - 1];
+        while i != -1 && s[(j) % n] != s[(k as isize + i + 1) as usize % n] {
+            if s[(j) % n] < s[(k as isize + i + 1) as usize % n] {
+                k = (j as isize - i - 1) as usize;
+            }
+            i = failure[i as usize];
+        }
+        if i == -1 && s[(j) % n] != s[(k as isize + i + 1) as usize % n] {
+            if s[(j) % n] < s[(k as isize + i + 1) as usize % n] {
+                k = j;
+            }
+            failure[j - k] = -1;
+        } else {
+            failure[j - k] = i + 1;
+        }
+    }
+    k % n
+}
+
 fn canonicalize_polygons(s: &str) -> Option<Vec<u8>> {
     let val: serde_json::Value = serde_json::from_str(s).ok()?;
     let arr = val.as_array()?;
@@ -207,30 +246,15 @@ fn canonicalize_polygons(s: &str) -> Option<Vec<u8>> {
         if pts.first() == pts.last() {
             pts.pop();
         }
-        // Rotate ring to its lexicographically minimal cyclic rotation.
-        // Naive `min_by_key` returns the FIRST index of the smallest
-        // vertex, which breaks rotation-independence when the same
-        // vertex value appears multiple times in the ring. Instead we
-        // pick the rotation start that yields the lexicographically
-        // smallest full sequence. For typical polygons (≤ ~100 verts)
-        // the O(n²) candidate enumeration is trivial; for pathological
-        // rings the upgrade to Booth's algorithm is mechanical.
+        // Rotate ring to its lexicographically minimal cyclic rotation
+        // via Booth's algorithm — O(n) time and O(n) space. The naive
+        // "smallest vertex first" approach breaks rotation-independence
+        // when the same vertex value appears multiple times. A full
+        // O(n²) sequence-compare also works but degrades on large
+        // polygons; Booth's stays linear regardless of polygon size.
         if !pts.is_empty() {
-            let n = pts.len();
-            let mut best = 0usize;
-            for cand in 1..n {
-                for k in 0..n {
-                    let a = pts[(best + k) % n];
-                    let b = pts[(cand + k) % n];
-                    if b < a {
-                        best = cand;
-                        break;
-                    } else if b > a {
-                        break;
-                    }
-                }
-            }
-            pts.rotate_left(best);
+            let start = booth_minimal_rotation(&pts);
+            pts.rotate_left(start);
         }
         rings.push(pts);
     }
