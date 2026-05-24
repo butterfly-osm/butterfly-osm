@@ -121,6 +121,93 @@ pub fn find_free_port(start: u16) -> Result<u16> {
 /// than getting swallowed into a stale `false` — operators noticing a
 /// permission issue at this site is more useful than silently falling
 /// back to the legacy path.
+/// #292 Phase 6: process-wide override for the RSS budget, set by the
+/// CLI via `--rss-budget-gb`. The OnceLock keeps the value initialise-
+/// once and lets the eviction poller read it without needing to grow
+/// the `serve()` signature.
+static RSS_BUDGET_OVERRIDE_GIB: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+
+/// Set the process-wide RSS budget override (in GiB). Called once by
+/// the CLI before `serve()` runs; later sets are ignored (OnceLock
+/// semantics).
+pub fn set_rss_budget_override(gib: f64) {
+    let _ = RSS_BUDGET_OVERRIDE_GIB.set(gib);
+}
+
+/// #292 Phase 6: read the server's RSS budget in bytes.
+///
+/// Source order: process-wide override (`--rss-budget-gb` CLI flag)
+/// > environment variable `BUTTERFLY_RSS_BUDGET_GB` if set and
+/// parseable > 80% of the system's MemTotal (read from
+/// `/proc/meminfo` on Linux). The final number is clamped to at
+/// least 1 GiB and at most 1 TiB to catch operator typos.
+fn rss_budget_bytes() -> u64 {
+    const MIN_GIB: f64 = 1.0;
+    const MAX_GIB: f64 = 1024.0;
+    let gib = if let Some(&v) = RSS_BUDGET_OVERRIDE_GIB.get() {
+        v
+    } else if let Ok(s) = std::env::var("BUTTERFLY_RSS_BUDGET_GB") {
+        match s.parse::<f64>() {
+            Ok(v) if v.is_finite() && v > 0.0 => v,
+            _ => {
+                tracing::warn!(value = %s, "BUTTERFLY_RSS_BUDGET_GB unparseable; using default");
+                default_rss_budget_gib()
+            }
+        }
+    } else {
+        default_rss_budget_gib()
+    };
+    let clamped = gib.clamp(MIN_GIB, MAX_GIB);
+    (clamped * (1u64 << 30) as f64) as u64
+}
+
+/// Default budget: 80% of `MemTotal` from `/proc/meminfo`. If the
+/// file can't be read (non-Linux dev env), fall back to 8 GiB so
+/// the eviction logic still has a reasonable threshold to enforce.
+fn default_rss_budget_gib() -> f64 {
+    const FALLBACK_GIB: f64 = 8.0;
+    let path = "/proc/meminfo";
+    let s = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return FALLBACK_GIB,
+    };
+    for line in s.lines() {
+        if let Some(rest) = line.strip_prefix("MemTotal:") {
+            // e.g. "MemTotal:       65789012 kB"
+            let kb: u64 = rest
+                .trim()
+                .split_whitespace()
+                .next()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(0);
+            if kb > 0 {
+                let gib = (kb as f64) / (1024.0 * 1024.0);
+                return gib * 0.80;
+            }
+        }
+    }
+    FALLBACK_GIB
+}
+
+/// Read this process's `VmRSS` in bytes from `/proc/self/status`.
+/// Returns `None` if the file can't be read or the line can't be
+/// parsed (the poller treats `None` as "skip this tick").
+fn read_proc_vm_rss_bytes() -> Option<u64> {
+    let path = "/proc/self/status";
+    let s = std::fs::read_to_string(path).ok()?;
+    for line in s.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            let kb: u64 = rest
+                .trim()
+                .split_whitespace()
+                .next()
+                .and_then(|n| n.parse().ok())?;
+            return Some(kb * 1024);
+        }
+    }
+    None
+}
+
 fn directory_has_butterfly_container(dir: &Path) -> Result<bool> {
     let read_dir =
         std::fs::read_dir(dir).with_context(|| format!("reading data dir {}", dir.display()))?;
@@ -374,6 +461,57 @@ pub async fn serve(
     // the steady-state baseline #153/#154/#155 will measure against,
     // captured prior to observable readiness on `/health`.
     crate::server::rss::checkpoint("boot.complete");
+
+    // #292 Phase 6: spawn the LRU eviction poller. Reads VmRSS once
+    // per `EVICT_POLL_SECS` and, if over budget, evicts the oldest
+    // Loaded region(s) until back under budget or only `keep_min`
+    // regions remain. Single-region deployments never evict because
+    // the budget check is trivially satisfied (only one region —
+    // nothing to compare against).
+    {
+        let state_for_evictor = Arc::clone(&state);
+        let budget_bytes = rss_budget_bytes();
+        tokio::spawn(async move {
+            const EVICT_POLL_SECS: u64 = 30;
+            const KEEP_MIN: usize = 1;
+            tracing::info!(
+                budget_gib = budget_bytes as f64 / (1u64 << 30) as f64,
+                poll_secs = EVICT_POLL_SECS,
+                "RSS-budget eviction poller started"
+            );
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(EVICT_POLL_SECS)).await;
+                let cur = match read_proc_vm_rss_bytes() {
+                    Some(v) => v,
+                    None => continue,
+                };
+                if cur <= budget_bytes {
+                    continue;
+                }
+                tracing::info!(
+                    rss_gib = cur as f64 / (1u64 << 30) as f64,
+                    budget_gib = budget_bytes as f64 / (1u64 << 30) as f64,
+                    "over RSS budget; evicting LRU regions"
+                );
+                let evicted = state_for_evictor.evict_lru_until(
+                    || {
+                        // Re-read RSS so each round sees fresh state.
+                        read_proc_vm_rss_bytes()
+                            .map(|r| r <= budget_bytes)
+                            .unwrap_or(true)
+                    },
+                    KEEP_MIN,
+                );
+                if evicted > 0 {
+                    tracing::info!(
+                        evicted,
+                        loaded_after = state_for_evictor.loaded_count(),
+                        "LRU eviction pass complete"
+                    );
+                }
+            }
+        });
+    }
 
     // Find free ports
     let http_port = match port {

@@ -36,6 +36,18 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+
+/// Monotonic millisecond offset from server boot. Used for LRU
+/// timestamps in [`RegionEntry::last_used_ms`]. The exact epoch isn't
+/// important — only the ordering between calls within one process —
+/// so we anchor at the first call via a [`std::sync::OnceLock`].
+fn boot_offset_ms() -> u64 {
+    use std::sync::OnceLock;
+    static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
+    let epoch = *EPOCH.get_or_init(std::time::Instant::now);
+    std::time::Instant::now().duration_since(epoch).as_millis() as u64
+}
 
 use super::state::ServerState;
 use super::types::ErrorResponse;
@@ -71,6 +83,13 @@ pub struct RegionEntry {
     /// `Unloaded` variant for LRU eviction) without breaking callers.
     /// Use [`Self::state()`] to read.
     state_cell: parking_lot::RwLock<RegionState>,
+    /// #292 Phase 6: monotonic timestamp (millis since server start)
+    /// of the most recent [`Self::state()`] call that found the entry
+    /// `Loaded` (fast path) or transitioned it to `Loaded` (slow path).
+    /// Drives LRU eviction: when the background poller is over the
+    /// RSS budget it evicts the region with the smallest `last_used`.
+    /// `0` means "never accessed since registration".
+    pub last_used_ms: std::sync::atomic::AtomicU64,
     /// Snapshot of the section verification state for this region —
     /// see [`VerifyStatus`]. Today this is always `Verified` once a
     /// region is added to [`RegionsState`] because the boot path bails
@@ -112,32 +131,103 @@ impl RegionEntry {
     /// `Pending`. Today the boot path is eager (every entry constructed
     /// as `Loaded`), so the read-lock fast path always wins.
     ///
-    /// Panics if the lazy load fails. Future Phase 3 will surface
-    /// load errors via `try_state(&self) -> Result<Arc<ServerState>>`
-    /// for callers that want graceful degradation; `state()` will
-    /// remain the panic-on-fail flavour for the legacy eager path.
+    /// Panics if the lazy load fails. Future work will surface load
+    /// errors via `try_state(&self) -> Result<Arc<ServerState>>` for
+    /// callers that want graceful degradation; `state()` will remain
+    /// the panic-on-fail flavour for the legacy eager path.
+    ///
+    /// #292 Phase 6: every successful resolution (fast path or slow
+    /// path) bumps `last_used_ms` so the LRU eviction poller can pick
+    /// the genuinely-oldest region without false-positives on entries
+    /// that were recently touched.
     #[inline]
     pub fn state(&self) -> Arc<ServerState> {
         // Fast path: read lock; if Loaded, clone the Arc and return.
         if let RegionState::Loaded(arc) = &*self.state_cell.read() {
+            self.touch();
             return Arc::clone(arc);
         }
         // Slow path: take write lock, double-check, load + cache.
         let mut guard = self.state_cell.write();
         if let RegionState::Loaded(arc) = &*guard {
+            self.touch();
             return Arc::clone(arc);
         }
-        let state = ServerState::load_from_container(&self.container, None)
-            .unwrap_or_else(|e| {
-                panic!(
-                    "lazy region load failed for {}: {}",
-                    self.container.display(),
-                    e
-                )
-            });
+        let load_start = std::time::Instant::now();
+        let state = ServerState::load_from_container(&self.container, None).unwrap_or_else(|e| {
+            panic!(
+                "lazy region load failed for {}: {}",
+                self.container.display(),
+                e
+            )
+        });
+        tracing::info!(
+            region = %self.id,
+            container = %self.container.display(),
+            load_ms = load_start.elapsed().as_millis() as u64,
+            nodes = state.ebg_nodes.n_nodes,
+            edges = state.ebg_csr.n_arcs,
+            "lazy-loaded region on demand"
+        );
         let arc = Arc::new(state);
         *guard = RegionState::Loaded(Arc::clone(&arc));
+        self.touch();
         arc
+    }
+
+    /// Bump `last_used_ms` to the current monotonic offset. Cheap atomic
+    /// store (no fence — LRU comparison is racy by design, off-by-a-tick
+    /// is fine).
+    #[inline]
+    fn touch(&self) {
+        let now_ms = boot_offset_ms();
+        self.last_used_ms
+            .store(now_ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Snapshot of the last time this region was touched, in millis
+    /// since server boot. `0` means "never accessed".
+    #[inline]
+    pub fn last_used(&self) -> u64 {
+        self.last_used_ms.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// #292 Phase 6: evict the loaded ServerState back to `Pending`,
+    /// dropping the strong `Arc` reference held by `state_cell`.
+    /// In-flight clones survive until their requests finish; on the
+    /// last drop the `ServerState` destructor runs and mmaps unmap.
+    ///
+    /// Returns `true` if a state was evicted, `false` if the entry was
+    /// already `Pending`. The eviction takes the write lock — concurrent
+    /// `state()` calls will briefly block, then either hit the new
+    /// `Pending` and lazy-reload, or pass through if `Loaded`.
+    pub fn try_evict(&self) -> bool {
+        let mut guard = self.state_cell.write();
+        match &*guard {
+            RegionState::Pending => false,
+            RegionState::Loaded(arc) => {
+                let strong = Arc::strong_count(arc);
+                tracing::info!(
+                    region = %self.id,
+                    in_flight = strong.saturating_sub(1),
+                    "evicting region back to Pending"
+                );
+                *guard = RegionState::Pending;
+                // Reset LRU stamp so it doesn't beat regions that are
+                // genuinely older next round.
+                self.last_used_ms
+                    .store(0, std::sync::atomic::Ordering::Relaxed);
+                true
+            }
+        }
+    }
+
+    /// `true` if this entry is currently `Loaded`. Cheap read-lock peek;
+    /// used by the eviction poller to enumerate candidates without
+    /// triggering a load.
+    #[inline]
+    pub fn is_loaded(&self) -> bool {
+        matches!(&*self.state_cell.read(), RegionState::Loaded(_))
     }
 
     /// Non-loading peek: returns `Some(Arc<ServerState>)` if the entry
@@ -264,6 +354,7 @@ impl RegionsState {
             bbox: peeked_bbox,
             mode_names,
             state_cell: parking_lot::RwLock::new(RegionState::Loaded(Arc::new(state))),
+            last_used_ms: AtomicU64::new(boot_offset_ms()),
             verify_status: VerifyStatus::Verified,
             metrics,
         };
@@ -317,6 +408,7 @@ impl RegionsState {
                 bbox,
                 mode_names,
                 state_cell: parking_lot::RwLock::new(RegionState::Loaded(Arc::new(state))),
+                last_used_ms: AtomicU64::new(boot_offset_ms()),
                 verify_status: VerifyStatus::Verified,
                 metrics,
             });
@@ -416,8 +508,12 @@ impl RegionsState {
         // lazy path's snap_winner / has_mode can filter without
         // loading. The whole pre-pass is <1 ms per container (manifest
         // section read + a 40-byte snap_points header read).
-        let mut to_load: Vec<(String, Option<crate::formats::SnapBbox>, Vec<String>, PathBuf)> =
-            Vec::new();
+        let mut to_load: Vec<(
+            String,
+            Option<crate::formats::SnapBbox>,
+            Vec<String>,
+            PathBuf,
+        )> = Vec::new();
         let mut skipped: Vec<String> = Vec::new();
         for path in &containers {
             let (region, bbox, modes) = peek_region_meta(path)
@@ -490,6 +586,7 @@ impl RegionsState {
                     bbox,
                     mode_names: peeked_modes,
                     state_cell: parking_lot::RwLock::new(RegionState::Pending),
+                    last_used_ms: AtomicU64::new(0),
                     verify_status: VerifyStatus::Verified,
                     metrics,
                 });
@@ -521,6 +618,7 @@ impl RegionsState {
                 bbox,
                 mode_names,
                 state_cell: parking_lot::RwLock::new(RegionState::Loaded(Arc::new(state))),
+                last_used_ms: AtomicU64::new(boot_offset_ms()),
                 verify_status: VerifyStatus::Verified,
                 metrics,
             });
@@ -691,10 +789,7 @@ impl RegionsState {
             });
         }
         match self.snap_winner(lon, lat, mode_name) {
-            Some((idx, _dist)) => Ok((
-                self.regions[idx].state(),
-                self.regions[idx].id.clone(),
-            )),
+            Some((idx, _dist)) => Ok((self.regions[idx].state(), self.regions[idx].id.clone())),
             None => Err(DispatchError::NoRegion {
                 endpoint: Endpoint::Single,
                 lon,
@@ -742,10 +837,9 @@ impl RegionsState {
         let src = self.snap_winner(src_lon, src_lat, mode_name);
         let dst = self.snap_winner(dst_lon, dst_lat, mode_name);
         match (src, dst) {
-            (Some((s_idx, _)), Some((d_idx, _))) if s_idx == d_idx => Ok((
-                self.regions[s_idx].state(),
-                self.regions[s_idx].id.clone(),
-            )),
+            (Some((s_idx, _)), Some((d_idx, _))) if s_idx == d_idx => {
+                Ok((self.regions[s_idx].state(), self.regions[s_idx].id.clone()))
+            }
             (Some((s_idx, _)), Some((d_idx, _))) => {
                 let src_region = self.regions[s_idx].id.clone();
                 let dst_region = self.regions[d_idx].id.clone();
@@ -846,15 +940,89 @@ impl RegionsState {
                 });
             }
         }
-        Ok((
-            self.regions[s_idx].state(),
-            self.regions[s_idx].id.clone(),
-        ))
+        Ok((self.regions[s_idx].state(), self.regions[s_idx].id.clone()))
     }
 
     /// Sorted list of all loaded region ids.
     pub fn region_ids(&self) -> Vec<String> {
         self.regions.iter().map(|r| r.id.clone()).collect()
+    }
+
+    /// #292 Phase 6: count of currently-loaded regions (excludes
+    /// Pending entries). Used by the LRU eviction poller's
+    /// "anything to do" check before it walks the regions array.
+    pub fn loaded_count(&self) -> usize {
+        self.regions.iter().filter(|r| r.is_loaded()).count()
+    }
+
+    /// #292 Phase 6: evict loaded regions in LRU order until either
+    /// `target` returns `false` (we're back under budget) or every
+    /// region except `keep_min` regions has been evicted.
+    ///
+    /// `target_satisfied` is a closure that returns `true` when the
+    /// caller is satisfied (i.e. under budget). It's called once
+    /// before any eviction (early exit if already under budget) and
+    /// after each eviction. Wiring through a closure rather than a
+    /// concrete RSS check keeps this module decoupled from the
+    /// /proc/self/status reader living in [`super::rss`].
+    ///
+    /// `keep_min`: always leave at least this many regions loaded.
+    /// Set to 0 to allow draining everything; a serve-loop poller
+    /// will typically set it to 1 so the most-recently-used region
+    /// stays warm.
+    ///
+    /// Returns the number of regions evicted in this call.
+    pub fn evict_lru_until<F: FnMut() -> bool>(
+        &self,
+        mut target_satisfied: F,
+        keep_min: usize,
+    ) -> usize {
+        if target_satisfied() {
+            return 0;
+        }
+        // Collect (last_used, index) for currently Loaded entries;
+        // sort ascending so the LRU entries come first.
+        let mut candidates: Vec<(u64, usize)> = self
+            .regions
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| {
+                if r.is_loaded() {
+                    Some((r.last_used(), i))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        candidates.sort_by_key(|&(ts, _)| ts);
+
+        let loaded_total = candidates.len();
+        let evictable = loaded_total.saturating_sub(keep_min);
+        if evictable == 0 {
+            tracing::debug!(
+                loaded = loaded_total,
+                keep_min,
+                "evict_lru_until: nothing evictable (keep_min reached)"
+            );
+            return 0;
+        }
+
+        let mut evicted = 0usize;
+        for &(_ts, idx) in candidates.iter().take(evictable) {
+            if self.regions[idx].try_evict() {
+                evicted += 1;
+            }
+            if target_satisfied() {
+                break;
+            }
+        }
+        tracing::info!(
+            evicted,
+            loaded_before = loaded_total,
+            loaded_after = self.loaded_count(),
+            "evict_lru_until complete"
+        );
+        evicted
     }
 
     /// Cross-region-aware P2P dispatch (#91 Phase 2).

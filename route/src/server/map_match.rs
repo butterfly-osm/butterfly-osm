@@ -964,13 +964,8 @@ fn generate_candidates_multi(
             Some(mask),
         );
         for (ebg_id, _mlon, _mlat, _mdist) in hits {
-            let (proj_lon, proj_lat, proj_dist) = project_onto_edge(
-                lon,
-                lat,
-                ebg_id,
-                &state.ebg_nodes,
-                &state.edge_geom,
-            );
+            let (proj_lon, proj_lat, proj_dist) =
+                project_onto_edge(lon, lat, ebg_id, &state.ebg_nodes, &state.edge_geom);
             if proj_dist.is_infinite() {
                 continue;
             }

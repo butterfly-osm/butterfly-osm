@@ -13,12 +13,13 @@
 //! cast each slice with `bytemuck::cast_slice`.
 
 use anyhow::Result;
-use std::borrow::Cow;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
+use std::sync::Arc;
 
 use super::crc;
+use super::mmap::ArcCow;
 
 const MAGIC: u32 = 0x45424743; // "EBGC"
 const VERSION: u16 = 1;
@@ -31,13 +32,15 @@ pub struct EbgCsr {
     pub n_arcs: u64,
     pub created_unix: u64,
     pub inputs_sha: [u8; 32],
-    /// CSR offsets array (`n_nodes + 1`). Borrowed (zero-copy) when
-    /// loaded from a `'static` byte slice, owned otherwise.
-    pub offsets: Cow<'static, [u64]>,
+    /// CSR offsets array (`n_nodes + 1`). Owned when built or read
+    /// from a plain file; Arc-backed mmap view when read from a
+    /// container section. See [`ArcCow`] for the variant shape and
+    /// the eviction story (#296).
+    pub offsets: ArcCow<u64>,
     /// CSR heads array (`n_arcs`).
-    pub heads: Cow<'static, [u32]>,
+    pub heads: ArcCow<u32>,
     /// Turn-table index per arc (`n_arcs`).
-    pub turn_idx: Cow<'static, [u32]>,
+    pub turn_idx: ArcCow<u32>,
 }
 
 pub struct EbgCsrFile;
@@ -191,15 +194,16 @@ impl EbgCsrFile {
             n_arcs,
             created_unix,
             inputs_sha,
-            offsets: Cow::Owned(offsets),
-            heads: Cow::Owned(heads),
-            turn_idx: Cow::Owned(turn_idx),
+            offsets: ArcCow::from_vec(offsets),
+            heads: ArcCow::from_vec(heads),
+            turn_idx: ArcCow::from_vec(turn_idx),
         })
     }
 
-    /// Zero-copy reader for `'static` byte slices (mmap-backed
-    /// container sections). Reinterprets the body arrays as borrowed
-    /// slices into the mapping; CRC is verified before returning.
+    /// Zero-copy reader for `'static` byte slices (test fixtures that
+    /// leak a `Box<[u8]>`). Production loaders should use
+    /// [`Self::read_from_mmap_unverified`] which keeps the
+    /// `Arc<Mmap>` strong-count tied to the returned struct.
     ///
     /// Layout (#152):
     ///   header(64) | offsets((n_nodes+1) × u64)
@@ -221,6 +225,84 @@ impl EbgCsrFile {
         Self::read_from_bytes_zero_copy_inner(bytes, false)
     }
 
+    /// Production mmap-backed reader (#296). Holds an `Arc<Mmap>`
+    /// clone for the returned struct's lifetime — when the struct
+    /// drops, the strong count decreases. Once all clones drop, the
+    /// `Mmap` drops, `munmap` fires, and the kernel reclaims the
+    /// pages.
+    ///
+    /// `byte_offset` and `byte_len` are the position and length of
+    /// the section within the container, as recorded in the directory
+    /// entry. CRC walking is the caller's responsibility (typically
+    /// driven through the lazy CRC layer before this call).
+    pub fn read_from_mmap_unverified(
+        mmap: Arc<memmap2::Mmap>,
+        byte_offset: usize,
+        byte_len: usize,
+    ) -> Result<EbgCsr> {
+        anyhow::ensure!(
+            byte_offset.saturating_add(byte_len) <= mmap.len(),
+            "ebg.csr section out of bounds: off={byte_offset} len={byte_len} mmap_len={}",
+            mmap.len()
+        );
+        let bytes = &mmap[byte_offset..byte_offset + byte_len];
+
+        // Parse header to determine sub-array sizes within the body.
+        let (n_nodes, n_arcs, created_unix, inputs_sha) = parse_header(bytes)?;
+
+        let n_offsets = (n_nodes as usize)
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("ebg.csr offsets count overflow"))?;
+        let n_arcs_us =
+            usize::try_from(n_arcs).map_err(|_| anyhow::anyhow!("ebg.csr n_arcs > usize::MAX"))?;
+
+        let offsets_len = n_offsets
+            .checked_mul(8)
+            .ok_or_else(|| anyhow::anyhow!("ebg.csr offsets size overflow"))?;
+        let heads_len = n_arcs_us
+            .checked_mul(4)
+            .ok_or_else(|| anyhow::anyhow!("ebg.csr heads size overflow"))?;
+        let turn_len = heads_len;
+
+        // Section-relative offsets
+        let off_start = HEADER_LEN;
+        let off_end = off_start
+            .checked_add(offsets_len)
+            .ok_or_else(|| anyhow::anyhow!("ebg.csr offsets end overflow"))?;
+        let heads_end = off_end
+            .checked_add(heads_len)
+            .ok_or_else(|| anyhow::anyhow!("ebg.csr heads end overflow"))?;
+        let turn_end = heads_end
+            .checked_add(turn_len)
+            .ok_or_else(|| anyhow::anyhow!("ebg.csr turn end overflow"))?;
+        let expected = turn_end
+            .checked_add(FOOTER_LEN)
+            .ok_or_else(|| anyhow::anyhow!("ebg.csr section size overflow"))?;
+        anyhow::ensure!(
+            byte_len == expected,
+            "ebg.csr length mismatch: declared {byte_len}, expected {expected}",
+        );
+
+        // Container-absolute offsets for the mmap-backed ArcCow views.
+        let offsets_byte_offset = byte_offset + off_start;
+        let heads_byte_offset = byte_offset + off_end;
+        let turn_byte_offset = byte_offset + heads_end;
+
+        let offsets = ArcCow::<u64>::from_mmap(Arc::clone(&mmap), offsets_byte_offset, n_offsets)?;
+        let heads = ArcCow::<u32>::from_mmap(Arc::clone(&mmap), heads_byte_offset, n_arcs_us)?;
+        let turn_idx = ArcCow::<u32>::from_mmap(mmap, turn_byte_offset, n_arcs_us)?;
+
+        Ok(EbgCsr {
+            n_nodes,
+            n_arcs,
+            created_unix,
+            inputs_sha,
+            offsets,
+            heads,
+            turn_idx,
+        })
+    }
+
     fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<EbgCsr> {
         anyhow::ensure!(
             bytes.len() >= HEADER_LEN + FOOTER_LEN,
@@ -233,31 +315,8 @@ impl EbgCsrFile {
             "ebg.csr section start must be 8-byte aligned"
         );
 
+        let (n_nodes, n_arcs, created_unix, inputs_sha) = parse_header(bytes)?;
         let header = &bytes[..HEADER_LEN];
-        let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
-        anyhow::ensure!(
-            magic == MAGIC,
-            "Invalid magic in ebg.csr: expected 0x{:08X}, got 0x{:08X}",
-            MAGIC,
-            magic
-        );
-        let version = u16::from_le_bytes([header[4], header[5]]);
-        anyhow::ensure!(
-            version == VERSION,
-            "Unsupported ebg.csr version {version}, expected {VERSION}",
-        );
-
-        let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
-        let n_arcs = u64::from_le_bytes([
-            header[12], header[13], header[14], header[15], header[16], header[17], header[18],
-            header[19],
-        ]);
-        let created_unix = u64::from_le_bytes([
-            header[20], header[21], header[22], header[23], header[24], header[25], header[26],
-            header[27],
-        ]);
-        let mut inputs_sha = [0u8; 32];
-        inputs_sha.copy_from_slice(&header[28..60]);
 
         let n_offsets = (n_nodes as usize)
             .checked_add(1)
@@ -284,9 +343,9 @@ impl EbgCsrFile {
             turn_end + FOOTER_LEN
         );
 
-        let offsets: &'static [u64] = bytemuck::cast_slice(&bytes[off_start..off_end]);
-        let heads: &'static [u32] = bytemuck::cast_slice(&bytes[off_end..heads_end]);
-        let turn_idx: &'static [u32] = bytemuck::cast_slice(&bytes[heads_end..turn_end]);
+        let offsets_slice: &[u64] = bytemuck::cast_slice(&bytes[off_start..off_end]);
+        let heads_slice: &[u32] = bytemuck::cast_slice(&bytes[off_end..heads_end]);
+        let turn_slice: &[u32] = bytemuck::cast_slice(&bytes[heads_end..turn_end]);
 
         // CRC over header + body
         if verify {
@@ -304,14 +363,55 @@ impl EbgCsrFile {
             );
         }
 
+        // Test fixtures use this path — wrap the Vec'd copies in
+        // `ArcCow::Owned`. The `bytes: &'static [u8]` lifetime here
+        // means the caller leaked the buffer (typically `Box::leak`
+        // in a #[cfg(test)] block); we don't carry that leak into
+        // production storage. Production goes through
+        // [`Self::read_from_mmap_unverified`].
         Ok(EbgCsr {
             n_nodes,
             n_arcs,
             created_unix,
             inputs_sha,
-            offsets: Cow::Borrowed(offsets),
-            heads: Cow::Borrowed(heads),
-            turn_idx: Cow::Borrowed(turn_idx),
+            offsets: ArcCow::from_vec(offsets_slice.to_vec()),
+            heads: ArcCow::from_vec(heads_slice.to_vec()),
+            turn_idx: ArcCow::from_vec(turn_slice.to_vec()),
         })
     }
+}
+
+/// Parse the 64-byte EBG CSR header and return the fixed fields.
+/// Shared by the owned, zero-copy, and mmap-backed readers.
+fn parse_header(bytes: &[u8]) -> Result<(u32, u64, u64, [u8; 32])> {
+    anyhow::ensure!(
+        bytes.len() >= HEADER_LEN + FOOTER_LEN,
+        "ebg.csr too short for header+footer: {} bytes",
+        bytes.len()
+    );
+    let header = &bytes[..HEADER_LEN];
+    let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+    anyhow::ensure!(
+        magic == MAGIC,
+        "Invalid magic in ebg.csr: expected 0x{:08X}, got 0x{:08X}",
+        MAGIC,
+        magic
+    );
+    let version = u16::from_le_bytes([header[4], header[5]]);
+    anyhow::ensure!(
+        version == VERSION,
+        "Unsupported ebg.csr version {version}, expected {VERSION}",
+    );
+    let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
+    let n_arcs = u64::from_le_bytes([
+        header[12], header[13], header[14], header[15], header[16], header[17], header[18],
+        header[19],
+    ]);
+    let created_unix = u64::from_le_bytes([
+        header[20], header[21], header[22], header[23], header[24], header[25], header[26],
+        header[27],
+    ]);
+    let mut inputs_sha = [0u8; 32];
+    inputs_sha.copy_from_slice(&header[28..60]);
+    Ok((n_nodes, n_arcs, created_unix, inputs_sha))
 }
