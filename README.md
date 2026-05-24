@@ -130,9 +130,24 @@ end-to-end wire time at every size.
 | 1 800  | 102 ms              | 238 ms                              | **2.3× faster** |
 | 3 600  | 346 ms              | 579 ms                              | **1.7× faster** |
 
-p50 over 5 Belgium centers (Brussels, Antwerp, Ghent, Liège, Charleroi).
-butterfly uses PHAST + thread-local state + block-gated downward (#C1).
-drivetimes calls libvalhalla, which traces a 2-D grid + triangulates.
+p50 over 5 Belgium centers. butterfly uses PHAST + thread-local state +
+block-gated downward (#C1). drivetimes calls libvalhalla, which traces
+a 2-D grid + triangulates.
+
+### Where butterfly currently trails
+
+We measure **both** sides of the comparison honestly:
+
+- **P2P route batch (`route_batch`) is ~15× slower than drivetimes/libosrm
+  at 10 k pairs** (5.8 ms/pair vs 0.38 ms/pair). libosrm's tuned CH
+  unpacker + WKB encoder beats our current Flight `route_batch` handler.
+  Single `/route` REST is ~10 ms p50, fine for one-off queries. The
+  batch handler is the gap. Tracked in [#269](https://github.com/butterfly-osm/butterfly-osm/issues/269).
+- **Steady-state RSS is ~12× larger** (16 GiB vs 1.3 GiB on Belgium
+  4-mode without transit). Compute-time delta is parity (~2 GB both).
+  The baseline weight is per-mode CCH topology + flat adjacencies +
+  spatial index — load-bearing for matrix/isochrone perf but heavy
+  for small deployments. Tracked in [#270](https://github.com/butterfly-osm/butterfly-osm/issues/270).
 
 Bench source: [`bench/route/results/2026-05-24-honest-flight-comparison/REPORT.md`](bench/route/results/2026-05-24-honest-flight-comparison/REPORT.md).
 

@@ -98,6 +98,49 @@ butterfly-route Flight (port 3002) plus REST (port 3001):
 Bench scripts: `/tmp/honest_matrix_bench.py` and `/tmp/honest_iso_bench.py`
 (checked into this directory if you want to rerun).
 
+## P2P routing — `route_batch:car:{pairs}` vs drivetimes `route:car:{pairs}`
+
+```
+N pairs    butterfly Flight    drivetimes Flight       Ratio
+            route_batch (ms)   route (libosrm, ms)
+---------------------------------------------------------------
+       1                5 (5.44 ms/pair)        5 (4.74 ms/pair)   ~equal
+      10              141 (14.15)              14 (1.44)          9.8× slower
+     100              609 (6.09)              106 (1.06)         5.75× slower
+    1 000           7 238 (7.24)              713 (0.71)        10.16× slower
+   10 000          57 889 (5.79)            3 835 (0.38)        15.09× slower
+```
+
+**drivetimes (libosrm) is 15× faster than butterfly on P2P route_batch at
+10 k pairs.** Per-pair butterfly is ~6 ms, drivetimes is ~0.4 ms.
+
+The matrix path uses bucket M2M and L3-aware source tiling for shared
+distance fields. `route_batch` runs each pair through full bidirectional
+CCH P2P + path unpack + WKB encoding. That last step is where libosrm
+shines — its unpacker is highly tuned. Butterfly's `Flight::do_route_batch`
+also serialises per-pair work over rayon less efficiently than libosrm's
+internal multi-threaded route batch. Filed as a regression.
+
+## Peak RAM at 10 k × 10 k matrix
+
+```
+Engine             | Baseline RSS | Peak RSS | Compute delta
+-------------------|--------------|----------|---------------
+butterfly Flight   |   16.04 GiB  | 18.00 GiB|   ~2.0 GB
+drivetimes Flight  |    1.29 GiB  |  3.38 GiB|   ~2.1 GB
+```
+
+**Compute delta is parity (~2 GB both).** Butterfly's BASELINE is 12×
+larger — 4 modes (car / bike / foot / truck), CCH topology, weights,
+flat adjacencies, spatial index, road-name HashMap, snap masks. drivetimes
+baseline is libosrm CH for 3 modes only, no flat adjacencies (it uses
+OSRM's internal indices).
+
+Butterfly's larger footprint buys (a) exact turn restrictions, (b) 4
+modes including truck, (c) avoid_polygons cache (~1.6 GB ceiling),
+(d) Flight `matrix` performance. It does **not** buy P2P batch speed
+relative to libosrm — that's the routing regression filed above.
+
 ## Caveats
 
 - drivetimes image is from May 12 (6 weeks old at bench time). Its libosrm
@@ -112,12 +155,20 @@ Bench scripts: `/tmp/honest_matrix_bench.py` and `/tmp/honest_iso_bench.py`
   suggests >10× the butterfly figure (which is 9.61 min) — likely OOM
   or hours.
 
-## Bottom line
+## Bottom line — honest, mixed
 
-butterfly-route is **faster end-to-end than drivetimes (libosrm CH +
-libvalhalla)** on every size measured. Gap widens with workload size.
+butterfly-route **beats drivetimes (libosrm + libvalhalla) decisively on
+matrix and isochrone**: 10-19× on matrix at every size from 50 to 10 k,
+1.6-4× on isochrone at every threshold from 5 min to 60 min.
 
-This is the number that belongs in the README. The old "1.8× faster"
-in-process figure underspoke our actual position because the Flight
-gRPC vs Flight gRPC comparison is much more favorable than the
-in-process-vs-HTTP one we were quoting.
+butterfly-route **loses to drivetimes on P2P route_batch** by ~15× at 10 k
+pairs. libosrm's per-pair routing pipeline (CH unpacking + WKB encoding)
+is much more optimised than our Flight `route_batch` handler.
+
+butterfly's **steady-state memory is 12× larger** (16 GiB vs 1.3 GiB
+baseline on Belgium) because of the 4-mode load, edge-based CCH
+artifacts, and avoid cache. Compute-time memory delta is parity.
+
+The previous README claim of "1.8× faster than OSRM" was based on
+in-process bucket-m2m vs OSRM HTTP — apples to oranges. Honest tally:
+we lead on matrix + isochrone, trail on routing batch, use more RAM.
