@@ -179,7 +179,7 @@ fn bench_map_match_cross_region() {
     };
 
     let regions = load_regions_with_overlay(&be, &lu, &ov);
-    let be_state = &regions.regions[0].state;
+    let be_state = regions.regions[0].state();
     let be_mode_idx = *be_state.mode_lookup.get("car").expect("BE has car");
 
     // Keep N_TRIALS small for cross-region regimes (each trial is
@@ -195,7 +195,7 @@ fn bench_map_match_cross_region() {
     let regime_legacy = {
         let trace = trace_be.clone();
         measure("brussels-legacy", N_TRIALS, || {
-            map_match(be_state, Mode(be_mode_idx), &trace, Some(15.0), None, None)
+            map_match(&be_state, Mode(be_mode_idx), &trace, Some(15.0), None, None)
                 .map(|r| r.matchings.len())
         })
     };

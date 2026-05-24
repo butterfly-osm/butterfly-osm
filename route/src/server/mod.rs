@@ -288,38 +288,39 @@ pub async fn serve(
     if regions_state.len() == 1
         && let Some(cfg) = crate::transit::config::load(&data_dir_for_transit)?
     {
-        // Mutate the (only) ServerState in place via Arc::get_mut. This
-        // runs before any Arc clone leaks out of the function.
-        let primary_arc = &mut regions_state.regions[0].state;
-        let state_owned: &mut ServerState = Arc::get_mut(primary_arc)
-            .ok_or_else(|| anyhow::anyhow!("transit bootstrap: primary state already shared"))?;
-        let foot_idx = state_owned
-            .mode_lookup
-            .get("foot")
-            .copied()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "transit configured but foot mode is not loaded; add 'foot' to --modes"
-                )
-            })?;
-        let foot = &state_owned.modes[foot_idx as usize];
-        match crate::transit::load_from_disk(&cfg, foot, foot_idx, &state_owned.snap_index) {
-            Ok(snapshot) => {
-                tracing::info!(
-                    stops = snapshot.timetable.n_stops(),
-                    routes = snapshot.timetable.n_routes(),
-                    trips = snapshot.timetable.n_total_trips,
-                    "transit snapshot loaded"
-                );
-                state_owned.install_transit(crate::transit::TransitState::new(cfg, snapshot));
+        // Mutate the (only) ServerState in place via the boot-only
+        // with_loaded_state_mut helper. This runs before any Arc clone
+        // leaks out of the function. #292 Phase 2: the helper handles
+        // the new RegionState::Loaded(Arc<...>) wrapping.
+        regions_state.regions[0].with_loaded_state_mut(|state_owned| {
+            let foot_idx = match state_owned.mode_lookup.get("foot").copied() {
+                Some(idx) => idx,
+                None => {
+                    tracing::warn!(
+                        "transit configured but foot mode is not loaded; add 'foot' to --modes"
+                    );
+                    return;
+                }
+            };
+            let foot = &state_owned.modes[foot_idx as usize];
+            match crate::transit::load_from_disk(&cfg, foot, foot_idx, &state_owned.snap_index) {
+                Ok(snapshot) => {
+                    tracing::info!(
+                        stops = snapshot.timetable.n_stops(),
+                        routes = snapshot.timetable.n_routes(),
+                        trips = snapshot.timetable.n_total_trips,
+                        "transit snapshot loaded"
+                    );
+                    state_owned.install_transit(crate::transit::TransitState::new(cfg, snapshot));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "no usable transit feeds on disk — run `butterfly-route transit-fetch` to populate. Continuing in road-only mode."
+                    );
+                }
             }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "no usable transit feeds on disk — run `butterfly-route transit-fetch` to populate. Continuing in road-only mode."
-                );
-            }
-        }
+        })?;
     } else if regions_state.len() > 1 {
         tracing::info!(
             "multi-region serve — transit subsystem not loaded (out of scope for #91 Phase 1)"

@@ -534,13 +534,12 @@ async fn cross_region_match_inner(
             .map(|m| {
                 let region_idx = m.region_idx;
                 let entry = &regions_clone.regions[region_idx];
-                let mode_idx = entry
-                    .state
+                let state = entry.state();
+                let mode_idx = state
                     .mode_lookup
                     .get(&mode_name)
                     .copied()
                     .unwrap_or(0);
-                let state = entry.state();
                 let mode_data = state.get_mode(crate::profile_abi::Mode(mode_idx));
                 let (geometry, distance_m) = build_geometry(
                     &m.ebg_path,

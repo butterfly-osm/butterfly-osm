@@ -48,7 +48,14 @@ use super::types::ErrorResponse;
 pub struct RegionEntry {
     pub id: String,
     pub container: PathBuf,
-    pub state: Arc<ServerState>,
+    /// #292 Phase 2: lazy-loadable region state. `Loaded(Arc<ServerState>)`
+    /// in the default eager-boot path; `Pending` reserved for the lazy
+    /// boot path (`--lazy-regions`, Phase 3).
+    ///
+    /// Private so the choice of representation can evolve (e.g. add an
+    /// `Unloaded` variant for LRU eviction) without breaking callers.
+    /// Use [`Self::state()`] to read.
+    state_cell: parking_lot::RwLock<RegionState>,
     /// Snapshot of the section verification state for this region —
     /// see [`VerifyStatus`]. Today this is always `Verified` once a
     /// region is added to [`RegionsState`] because the boot path bails
@@ -65,30 +72,81 @@ pub struct RegionEntry {
     pub metrics: super::region_metrics::RegionMetrics,
 }
 
+/// #292 Phase 2: per-region load state.
+///
+/// `Loaded(Arc<ServerState>)` is the eager-boot default — every region
+/// is constructed in this variant during `serve --data-dir <dir>` boot.
+/// `Pending` reserved for the future `--lazy-regions` boot path: the
+/// container path is registered without a corresponding ServerState,
+/// and the first call to [`RegionEntry::state`] drives the load.
+///
+/// An `Unloaded` variant for LRU eviction will be added alongside the
+/// memory-budget background task.
+enum RegionState {
+    /// Lazy registration — container path known, ServerState not yet
+    /// constructed. Currently unused until the `--lazy-regions` flag
+    /// lands in Phase 3.
+    #[allow(dead_code)]
+    Pending,
+    Loaded(Arc<ServerState>),
+}
+
 impl RegionEntry {
-    /// Forward-compatible accessor for the per-region `ServerState`.
+    /// Read the per-region `ServerState`, lazy-loading from the
+    /// container on first access if the entry was registered as
+    /// `Pending`. Today the boot path is eager (every entry constructed
+    /// as `Loaded`), so the read-lock fast path always wins.
     ///
-    /// Today the boot path eagerly loads every region, so this is
-    /// always a cheap `Arc::clone`.
-    ///
-    /// **#292 Phase 2** will introduce lazy region loading — at that
-    /// point this method's body changes to drive an on-demand load
-    /// if the region was previously evicted or never loaded, and the
-    /// return type becomes `Result<Arc<ServerState>>`. Consumers that
-    /// use `region.state()` today get a no-op alias; they will need
-    /// a `?` after the call when #292 lands.
-    ///
-    /// **New code should prefer `region.state()` over `&region.state`.**
-    /// The `state` field is currently public for back-compat with
-    /// existing callers (and may keep working through the Phase 1
-    /// migration), but the field's *type* will change in Phase 2
-    /// (likely to `RwLock<RegionState>`), at which point direct field
-    /// access will break. Routing the access through `.state()` keeps
-    /// future migration local — only this method body changes, no
-    /// caller does.
+    /// Panics if the lazy load fails. Future Phase 3 will surface
+    /// load errors via `try_state(&self) -> Result<Arc<ServerState>>`
+    /// for callers that want graceful degradation; `state()` will
+    /// remain the panic-on-fail flavour for the legacy eager path.
     #[inline]
     pub fn state(&self) -> Arc<ServerState> {
-        Arc::clone(&self.state)
+        // Fast path: read lock; if Loaded, clone the Arc and return.
+        if let RegionState::Loaded(arc) = &*self.state_cell.read() {
+            return Arc::clone(arc);
+        }
+        // Slow path: take write lock, double-check, load + cache.
+        let mut guard = self.state_cell.write();
+        if let RegionState::Loaded(arc) = &*guard {
+            return Arc::clone(arc);
+        }
+        let state = ServerState::load_from_container(&self.container, None)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "lazy region load failed for {}: {}",
+                    self.container.display(),
+                    e
+                )
+            });
+        let arc = Arc::new(state);
+        *guard = RegionState::Loaded(Arc::clone(&arc));
+        arc
+    }
+
+    /// Boot-only helper: invoke `f` with a `&mut ServerState` if the
+    /// entry is `Loaded` AND the inner `Arc` has refcount 1. Used by
+    /// the single-region transit bootstrap path in
+    /// `server::mod::start_server` which mutates the per-region state
+    /// before any handler can clone it. Panics if not Loaded or if the
+    /// `Arc` has been shared.
+    pub fn with_loaded_state_mut<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut ServerState) -> R,
+    {
+        let mut guard = self.state_cell.write();
+        match &mut *guard {
+            RegionState::Loaded(arc) => {
+                let s = Arc::get_mut(arc).ok_or_else(|| {
+                    anyhow::anyhow!("region state already shared (cannot get_mut)")
+                })?;
+                Ok(f(s))
+            }
+            RegionState::Pending => Err(anyhow::anyhow!(
+                "region state not loaded; cannot mutate during boot"
+            )),
+        }
     }
 }
 
@@ -148,7 +206,7 @@ impl RegionsState {
         let entry = RegionEntry {
             id: id.clone(),
             container,
-            state: Arc::new(state),
+            state_cell: parking_lot::RwLock::new(RegionState::Loaded(Arc::new(state))),
             verify_status: VerifyStatus::Verified,
             metrics,
         };
@@ -193,7 +251,7 @@ impl RegionsState {
             entries.push(RegionEntry {
                 id: region_id,
                 container: path.clone(),
-                state: Arc::new(state),
+                state_cell: parking_lot::RwLock::new(RegionState::Loaded(Arc::new(state))),
                 verify_status: VerifyStatus::Verified,
                 metrics,
             });
@@ -331,7 +389,7 @@ impl RegionsState {
             regions.push(RegionEntry {
                 id,
                 container: path,
-                state: Arc::new(state),
+                state_cell: parking_lot::RwLock::new(RegionState::Loaded(Arc::new(state))),
                 verify_status: VerifyStatus::Verified,
                 metrics,
             });

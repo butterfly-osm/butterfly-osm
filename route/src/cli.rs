@@ -67,7 +67,7 @@ fn run_extract_borders(regions: &[PathBuf], out: &Path) -> Result<()> {
     let pairs: Vec<(String, std::sync::Arc<crate::server::ServerState>)> = regions_state
         .regions
         .iter()
-        .map(|r| (r.id.clone(), std::sync::Arc::clone(&r.state)))
+        .map(|r| (r.id.clone(), r.state()))
         .collect();
 
     let extract_started = std::time::Instant::now();
@@ -148,7 +148,7 @@ fn run_build_overlay(regions: &[PathBuf], modes: Option<&str>, out: &Path) -> Re
     let pairs: Vec<(String, std::sync::Arc<crate::server::ServerState>)> = regions_state
         .regions
         .iter()
-        .map(|r| (r.id.clone(), std::sync::Arc::clone(&r.state)))
+        .map(|r| (r.id.clone(), r.state()))
         .collect();
 
     let mode_list: Vec<String> = match modes {
