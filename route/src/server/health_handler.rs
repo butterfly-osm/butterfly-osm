@@ -22,8 +22,10 @@ use super::regions::RegionsState;
     )
 )]
 pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl IntoResponse {
-    let primary = regions.primary();
-    let uptime = primary.started_at.elapsed();
+    // #292 Phase 3: use server-level started_at (set when RegionsState
+    // was constructed) rather than primary.started_at, which would
+    // force a lazy region load just to compute uptime.
+    let uptime = regions.server_started_at.elapsed();
     // #292 Phase 3: only sum stats for regions that are already loaded.
     // Pending regions don't contribute to the totals (a lazy-boot
     // operator sees the total grow as queries pull regions in).
@@ -131,15 +133,21 @@ pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl In
         })
         .collect();
 
+    // Per-primary stats — #292 Phase 3: read only if primary already
+    // loaded. /health hitting this code path does NOT force a lazy
+    // load just to populate stats; operators see 0 / [] until the
+    // first query loads the primary region.
+    let primary_loaded = regions.regions.first().and_then(|r| r.state_loaded());
+
     Json(serde_json::json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_s": uptime.as_secs(),
-        "modes": primary.mode_names,
-        "data_dir": primary.data_dir,
-        "nodes_count": primary.ebg_nodes.n_nodes,
-        "edges_count": primary.ebg_csr.n_arcs,
-        "named_roads_count": primary.way_names.len(),
+        "modes": primary_loaded.as_ref().map(|p| p.mode_names.clone()).unwrap_or_default(),
+        "data_dir": primary_loaded.as_ref().map(|p| p.data_dir.clone()).unwrap_or_default(),
+        "nodes_count": primary_loaded.as_ref().map(|p| p.ebg_nodes.n_nodes).unwrap_or(0),
+        "edges_count": primary_loaded.as_ref().map(|p| p.ebg_csr.n_arcs).unwrap_or(0),
+        "named_roads_count": primary_loaded.as_ref().map(|p| p.way_names.len()).unwrap_or(0),
         "regions_count": regions.len(),
         "regions": regions.region_ids(),
         "total_nodes_count": total_nodes,
