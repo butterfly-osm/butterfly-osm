@@ -18,6 +18,7 @@
 //!   file_crc64:  u64
 
 use anyhow::{Context, Result};
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -28,11 +29,15 @@ use crate::profile_abi::Mode;
 const MAGIC: u32 = 0x574D4F44; // "WMOD"
 const VERSION: u16 = 1;
 const HEADER_SIZE: usize = 32; // 4 + 2 + 1 + 1 + 4 + 16 + 4(pad)
+const FOOTER_SIZE: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct ModWeights {
     pub mode: Mode,
-    pub weights: Vec<u32>, // deciseconds per node
+    /// Per-node weights in deciseconds.
+    /// `Cow::Borrowed` for mmap-backed container reads (zero-copy);
+    /// `Cow::Owned` for the legacy file-reader path.
+    pub weights: Cow<'static, [u32]>,
     pub inputs_sha: [u8; 16],
 }
 
@@ -57,7 +62,7 @@ pub fn write<P: AsRef<Path>>(path: P, data: &ModWeights) -> Result<()> {
 
     // Write body and calculate CRC
     let mut body_digest = Digest::new();
-    for &weight in &data.weights {
+    for &weight in data.weights.iter() {
         let bytes = weight.to_le_bytes();
         body_digest.update(&bytes);
         writer.write_all(&bytes)?;
@@ -68,7 +73,7 @@ pub fn write<P: AsRef<Path>>(path: P, data: &ModWeights) -> Result<()> {
     // Calculate file CRC (header + body)
     let mut file_digest = Digest::new();
     file_digest.update(&header);
-    for &weight in &data.weights {
+    for &weight in data.weights.iter() {
         file_digest.update(&weight.to_le_bytes());
     }
     let file_crc64 = file_digest.finalize();
@@ -157,7 +162,71 @@ fn read_all_from_reader<R: std::io::Read>(mut file: R) -> Result<ModWeights> {
 
     Ok(ModWeights {
         mode,
-        weights,
+        weights: Cow::Owned(weights),
+        inputs_sha,
+    })
+}
+
+/// #294: zero-copy read of `w.<mode>.u32` over `'static` mmap bytes.
+/// Returns `ModWeights` with `weights: Cow::Borrowed(&[u32])` directly
+/// over the input slice. Saves ~20 MB per mode on Belgium that the
+/// owning Vec<u32> path would have copied onto the heap.
+///
+/// Skips the per-format CRC walk; caller MUST have verified the bytes
+/// upstream (e.g. via `LazyContainer::verify_now`).
+pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<ModWeights> {
+    anyhow::ensure!(
+        bytes.len() >= HEADER_SIZE + FOOTER_SIZE,
+        "mod_weights too short: {} bytes",
+        bytes.len()
+    );
+    // Container guarantees 8-byte alignment, but bytemuck::cast_slice
+    // panics on misalignment — validate explicitly so misuse fails
+    // with a typed error instead of an abort.
+    anyhow::ensure!(
+        (bytes.as_ptr() as usize).is_multiple_of(4),
+        "mod_weights section must start 4-byte aligned (got addr 0x{:x})",
+        bytes.as_ptr() as usize
+    );
+
+    let header = &bytes[..HEADER_SIZE];
+    let magic = u32::from_le_bytes(header[0..4].try_into().unwrap());
+    anyhow::ensure!(
+        magic == MAGIC,
+        "Invalid magic: expected 0x{:08x}, got 0x{:08x}",
+        MAGIC,
+        magic
+    );
+
+    let version = u16::from_le_bytes(header[4..6].try_into().unwrap());
+    anyhow::ensure!(version == VERSION, "Unsupported version: {}", version);
+
+    let mode_byte = header[6];
+    anyhow::ensure!(
+        (mode_byte as usize) < crate::profile_abi::MAX_MODES,
+        "Invalid mode: {}",
+        mode_byte
+    );
+    let mode = Mode(mode_byte);
+
+    let count = u32::from_le_bytes(header[8..12].try_into().unwrap()) as usize;
+
+    let mut inputs_sha = [0u8; 16];
+    inputs_sha.copy_from_slice(&header[12..28]);
+
+    let body_end = HEADER_SIZE + count * 4;
+    anyhow::ensure!(
+        bytes.len() == body_end + FOOTER_SIZE,
+        "mod_weights size mismatch: got {}, expected {}",
+        bytes.len(),
+        body_end + FOOTER_SIZE
+    );
+
+    let weights: &'static [u32] = bytemuck::cast_slice(&bytes[HEADER_SIZE..body_end]);
+
+    Ok(ModWeights {
+        mode,
+        weights: Cow::Borrowed(weights),
         inputs_sha,
     })
 }

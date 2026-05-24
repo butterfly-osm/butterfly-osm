@@ -822,21 +822,21 @@ pub async fn isochrone_handler(
             &entry.weights.time_up_flat,
             &entry.weights.time_down_flat,
             &entry.weights.time_down_fwd_flat,
-            mode_data.node_weights.as_slice(),
+            &mode_data.node_weights[..],
         )
     } else if let Some(ref ew) = exclude_weights {
         (
             &ew.time_up_flat,
             &ew.time_down_flat,
             &ew.time_down_fwd_flat,
-            mode_data.node_weights.as_slice(),
+            &mode_data.node_weights[..],
         )
     } else {
         (
             &mode_data.up_adj_flat,
             &mode_data.down_rev_flat,
             &mode_data.down_adj_flat,
-            mode_data.node_weights.as_slice(),
+            &mode_data.node_weights[..],
         )
     };
 
