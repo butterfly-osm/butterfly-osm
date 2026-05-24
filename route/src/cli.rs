@@ -647,6 +647,19 @@ pub enum Commands {
         #[arg(long)]
         regions: Option<String>,
 
+        /// #292 Phase 3: register regions without constructing their
+        /// `ServerState` at boot. First query for each region pays the
+        /// per-container load latency (~few seconds on Belgium-sized
+        /// regions); subsequent queries are unchanged. Boot completes
+        /// in <1s regardless of region count, enabling planet-scale
+        /// deployment (70+ regions) on machines that couldn't hold
+        /// every region in RAM simultaneously.
+        ///
+        /// Implies `--modes` is ignored on the lazy path. Single
+        /// `--data <file>` mode is always eager.
+        #[arg(long)]
+        lazy_regions: bool,
+
         /// Log format: "text" (default) or "json"
         #[arg(long, default_value = "text")]
         log_format: String,
@@ -1747,6 +1760,7 @@ impl Cli {
                 transport,
                 modes,
                 regions,
+                lazy_regions,
                 log_format,
                 rss_checkpoints,
                 eager_verify,
@@ -1821,6 +1835,7 @@ impl Cli {
                     region_filter.as_deref(),
                     &load_options,
                     overlay.as_deref(),
+                    lazy_regions,
                 ))?;
                 Ok(())
             }

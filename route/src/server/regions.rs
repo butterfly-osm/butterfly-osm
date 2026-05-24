@@ -125,6 +125,20 @@ impl RegionEntry {
         arc
     }
 
+    /// Non-loading peek: returns `Some(Arc<ServerState>)` if the entry
+    /// is already `Loaded`, `None` if `Pending`. Used by code that
+    /// reports on already-loaded regions (e.g. metrics, /regions
+    /// endpoint) but doesn't want to trigger a full lazy load just to
+    /// publish a stat.
+    #[inline]
+    pub fn state_loaded(&self) -> Option<Arc<ServerState>> {
+        if let RegionState::Loaded(arc) = &*self.state_cell.read() {
+            Some(Arc::clone(arc))
+        } else {
+            None
+        }
+    }
+
     /// Boot-only helper: invoke `f` with a `&mut ServerState` if the
     /// entry is `Loaded` AND the inner `Arc` has refcount 1. Used by
     /// the single-region transit bootstrap path in
@@ -275,10 +289,33 @@ impl RegionsState {
     /// At least one region must load; an empty directory or a filter
     /// that excludes every container is a hard error so an operator
     /// does not accidentally start a server with zero data.
+    /// `lazy: true` registers regions as [`RegionState::Pending`]
+    /// without constructing their `ServerState` at boot. First call to
+    /// [`RegionEntry::state`] for each region pays the per-container
+    /// load latency (~few seconds on Belgium-sized regions); subsequent
+    /// calls are free.
+    ///
+    /// `lazy: false` (the default) is the eager-boot path that
+    /// constructs every `ServerState` up front — matches the
+    /// pre-#292 behaviour.
     pub fn load_from_dir(
         dir: &Path,
         region_filter: Option<&[String]>,
         mode_filter: Option<&[String]>,
+    ) -> Result<Self> {
+        Self::load_from_dir_with_opts(dir, region_filter, mode_filter, false)
+    }
+
+    /// Like [`Self::load_from_dir`] with explicit `lazy` flag. When
+    /// `lazy` is true, regions are registered as `Pending` and their
+    /// `ServerState` is constructed on first query. The
+    /// `mode_filter` is ignored on the lazy path (it'd need to be
+    /// remembered per-region; revisit when the use case appears).
+    pub fn load_from_dir_with_opts(
+        dir: &Path,
+        region_filter: Option<&[String]>,
+        mode_filter: Option<&[String]>,
+        lazy: bool,
     ) -> Result<Self> {
         anyhow::ensure!(
             dir.is_dir(),
@@ -368,7 +405,34 @@ impl RegionsState {
 
         let mut regions: Vec<RegionEntry> = Vec::with_capacity(to_load.len());
         let mut by_id: HashMap<String, usize> = HashMap::new();
+        if lazy && mode_filter.is_some() {
+            tracing::warn!(
+                "--lazy-regions ignores --modes (the filter would need to be remembered per-region; revisit if needed)"
+            );
+        }
         for (id, path) in to_load {
+            let idx = regions.len();
+            by_id.insert(id.clone(), idx);
+            let metrics = super::region_metrics::RegionMetrics::new(&id);
+
+            if lazy {
+                // Register-only: no ServerState construction at boot.
+                // First state() call drives the load.
+                tracing::info!(
+                    region = %id,
+                    container = %path.display(),
+                    "registered region (lazy — load on first query)"
+                );
+                regions.push(RegionEntry {
+                    id,
+                    container: path,
+                    state_cell: parking_lot::RwLock::new(RegionState::Pending),
+                    verify_status: VerifyStatus::Verified,
+                    metrics,
+                });
+                continue;
+            }
+
             tracing::info!(region = %id, container = %path.display(), "loading region");
             let load_start = std::time::Instant::now();
             let state = ServerState::load_from_container(&path, mode_filter)
@@ -383,9 +447,6 @@ impl RegionsState {
                 modes = ?state.mode_names,
                 "loaded region"
             );
-            let idx = regions.len();
-            by_id.insert(id.clone(), idx);
-            let metrics = super::region_metrics::RegionMetrics::new(&id);
             regions.push(RegionEntry {
                 id,
                 container: path,
