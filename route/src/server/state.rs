@@ -1674,6 +1674,49 @@ fn load_way_names(step1_dir: &Path) -> Result<HashMap<i64, String>> {
 ///
 /// `parse` is a closure that turns `&'static [u8]` into the typed flat
 /// view; `build_owned` is the legacy heap-build fallback.
+/// #277: madvise(DONTNEED) a single distance section's bytes after parse.
+///
+/// The view structures (flat adjacencies, CchWeights) hold Cow::Borrowed
+/// references into `bytes`; the slice itself stays a valid reference into
+/// the mmap, so the views remain usable. The kernel re-faults the pages
+/// on next access and evicts again on memory pressure.
+fn madvise_dist_section(bytes: &[u8], section_label: &str) {
+    if let Err(e) = crate::formats::mmap::madvise_dontneed(bytes) {
+        tracing::warn!(
+            section = %section_label,
+            error = %e,
+            "madvise(DONTNEED) on distance section failed; ignoring"
+        );
+    } else {
+        tracing::info!(
+            section = %section_label,
+            bytes = bytes.len(),
+            "madvise(DONTNEED) on warm-only distance section (#277)"
+        );
+    }
+}
+
+/// Same as `madvise_dist_section` but looks up the section's byte range
+/// in the container by name. Used after `load_flat_section`, where the
+/// inner `bytes` slice is not exposed.
+fn madvise_section_in_container(
+    container: &crate::formats::butterfly_dat::Container,
+    static_bytes: &'static [u8],
+    section_name: &str,
+) {
+    let entry = match container.get(section_name) {
+        Some(e) => e,
+        None => return, // legacy path, no container section
+    };
+    let off = entry.offset as usize;
+    let len = entry.len as usize;
+    if off + len > static_bytes.len() {
+        return;
+    }
+    let bytes = &static_bytes[off..off + len];
+    madvise_dist_section(bytes, section_name);
+}
+
 fn load_flat_section<T, P, B>(
     container: &crate::formats::butterfly_dat::Container,
     _static_mmap: &'static memmap2::Mmap,
@@ -2031,35 +2074,77 @@ fn load_mode_data_from_bundle(
         || DownAdjFlat::build(&cch_topo, &cch_weights),
     )?;
 
+    // #277: distance flats (cch_weights_dist, up_adj_flat_dist,
+    // down_rev_flat_dist, down_adj_flat_dist) are zero-copy views over
+    // mmap'd sections — Cow::Borrowed slices that never copy. The
+    // ~4.93 GiB they account for on Belgium is purely the mmap pages
+    // forced resident by the boot CRC walk.
+    //
+    // They are warm-only on the serve path: only isodistance,
+    // metric=distance /matrix and /trip, and metric=distance
+    // recustomization in /avoid touch them. For workloads that stay on
+    // the default time metric (the common case), those bytes sit
+    // resident for nothing.
+    //
+    // Issue a madvise(MADV_DONTNEED) after each section is parsed. The
+    // flat views remain valid (they're just slice references); the
+    // kernel demand-pages bytes back when a distance query actually
+    // dereferences them, and evicts again under memory pressure. Worst
+    // case is a small one-time page-fault latency on the first
+    // distance request; for the same query repeated, the working set
+    // stays cached normally.
+    let cch_weights_dist_bytes = fetch("weights.dist")?;
     let cch_weights_dist =
-        CchWeightsFile::read_from_bytes_zero_copy_unverified(fetch("weights.dist")?)?;
+        CchWeightsFile::read_from_bytes_zero_copy_unverified(cch_weights_dist_bytes)?;
+    madvise_dist_section(
+        cch_weights_dist_bytes,
+        &format!("mode/{}/weights.dist", mode_name),
+    );
+    let up_adj_flat_dist_section = format!("mode/{}/up_adj_flat.dist", mode_name);
     let up_adj_flat_dist = load_flat_section(
         container,
         static_mmap,
         static_bytes,
-        &format!("mode/{}/up_adj_flat.dist", mode_name),
+        &up_adj_flat_dist_section,
         lazy,
         |bytes| UpAdjFlatFile::read_from_bytes_unverified(bytes),
         || UpAdjFlat::build(&cch_topo, &cch_weights_dist),
     )?;
+    madvise_section_in_container(
+        container,
+        static_bytes,
+        &up_adj_flat_dist_section,
+    );
+    let down_rev_flat_dist_section = format!("mode/{}/down_reverse_adj_flat.dist", mode_name);
     let down_rev_flat_dist = load_flat_section(
         container,
         static_mmap,
         static_bytes,
-        &format!("mode/{}/down_reverse_adj_flat.dist", mode_name),
+        &down_rev_flat_dist_section,
         lazy,
         |bytes| DownReverseAdjFlatFile::read_from_bytes_unverified(bytes),
         || DownReverseAdjFlat::build(&cch_topo, &cch_weights_dist),
     )?;
+    madvise_section_in_container(
+        container,
+        static_bytes,
+        &down_rev_flat_dist_section,
+    );
+    let down_adj_flat_dist_section = format!("mode/{}/down_adj_flat.dist", mode_name);
     let down_adj_flat_dist = load_flat_section(
         container,
         static_mmap,
         static_bytes,
-        &format!("mode/{}/down_adj_flat.dist", mode_name),
+        &down_adj_flat_dist_section,
         lazy,
         |bytes| DownAdjFlatFile::read_from_bytes_unverified(bytes),
         || DownAdjFlat::build(&cch_topo, &cch_weights_dist),
     )?;
+    madvise_section_in_container(
+        container,
+        static_bytes,
+        &down_adj_flat_dist_section,
+    );
 
     Ok(ModeData {
         mode,
