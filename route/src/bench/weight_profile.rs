@@ -18,12 +18,17 @@
 //! All RNG draws use `StdRng::seed_from_u64(WEIGHT_PROFILE_SEED)` so the
 //! same Belgium container produces bit-identical reports across runs.
 
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use priority_queue::PriorityQueue;
+use rand::{RngExt, SeedableRng, rngs::StdRng};
+use rayon::prelude::*;
 use serde::Serialize;
 
+use butterfly_route::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
 use butterfly_route::server::state::ServerState;
 
 /// Fixed seed for every RNG draw in this profiler (10 000 random OD
@@ -63,6 +68,10 @@ pub struct MetricReport {
     pub statik: DirectionPair<StaticStats>,
     /// Section C — per-block range histograms per direction.
     pub blocks: DirectionPair<BlockStats>,
+    /// Section B — hot-query-weighted distribution (combined across
+    /// directions because each bidirectional CCH query touches both
+    /// the UP and DOWN graphs).
+    pub hot: HotStats,
 }
 
 #[derive(Debug, Serialize)]
@@ -91,6 +100,60 @@ pub struct StaticStats {
     /// Log-spaced histogram. Keys are the bucket upper bound or
     /// `"inf"` for the INF bucket. Values are edge counts.
     pub log_histogram: BTreeMap<String, u64>,
+}
+
+// ---- Section B ------------------------------------------------------------
+
+#[derive(Debug, Serialize, Default, Clone)]
+pub struct HotStats {
+    /// Number of OD queries that ran (queries that fail to snap or
+    /// reach are still counted into the denominator — they contribute
+    /// 0 relaxations).
+    pub n_queries_total: u64,
+    pub n_queries_reached: u64,
+    pub n_queries_unreachable: u64,
+    /// Number of `relaxed_edges` visits across all queries. One edge
+    /// can be relaxed multiple times (lazy reinsertion) and each
+    /// visit is counted — this is the metric the codec actually
+    /// cares about because each visit is a weight load from memory.
+    pub n_relaxed_total: u64,
+    /// Number of *distinct* edges visited at least once across all
+    /// queries. This distinguishes "hot" edges (visited many times)
+    /// from "cold" edges (visited once).
+    pub n_unique_edges_visited: u64,
+    /// Weighted overflow rates at each codec threshold, computed in
+    /// the *same unit* as the codec target. `r = #relaxations of
+    /// edges with weight > threshold / #relaxations total`. INF
+    /// edges never appear here because the flats filter them out at
+    /// build time (the bidirectional search never sees them).
+    pub overflow_rates_cs: OverflowRates,
+    pub overflow_rates_s: OverflowRates,
+    pub overflow_rates_ds: OverflowRates,
+    /// Same shape as Section A's log histogram, but bucketed by the
+    /// relaxation count instead of the static edge count.
+    pub log_histogram: BTreeMap<String, u64>,
+}
+
+#[derive(Debug, Serialize, Default, Clone)]
+pub struct OverflowRates {
+    /// `r_u8` = relaxations of edges with quantised weight > 255.
+    pub u8: f64,
+    /// `r_u12` = relaxations of edges with quantised weight > 4095.
+    pub u12: f64,
+    /// `r_u14` = relaxations of edges with quantised weight > 16383.
+    pub u14: f64,
+    /// `r_u16` = relaxations of edges with quantised weight > 65534
+    /// (the largest u16 value that doesn't collide with a hypothetical
+    /// 65 535 sentinel).
+    pub u16: f64,
+    /// `r_u24` = relaxations of edges with quantised weight > 16 777 214.
+    pub u24: f64,
+    /// Raw count of relaxations over the u16 threshold. Useful when
+    /// the consumer wants to double-check the rate against
+    /// `n_relaxed_total`.
+    pub n_over_u16: u64,
+    /// Raw count of relaxations over the u24 threshold.
+    pub n_over_u24: u64,
 }
 
 // ---- Section C ------------------------------------------------------------
@@ -260,22 +323,109 @@ pub fn run_weight_profile(
     }
     println!();
 
+    // ---- Section B -------------------------------------------------------
+    //
+    // Generate OD pairs once (in WGS84) and reuse them across modes.
+    // Snapping happens per mode because the mode mask determines which
+    // edges are usable as source/dest.
+    println!(
+        "[4/?] Section B: hot-query-weighted distribution \
+         (100 corpus + 10 000 random OD pairs)..."
+    );
+    let bbox = compute_bbox(&state);
+    println!(
+        "  bbox (lon, lat): [{:.4}, {:.4}] x [{:.4}, {:.4}]",
+        bbox.min_lon, bbox.min_lat, bbox.max_lon, bbox.max_lat,
+    );
+    let od_pairs = generate_od_pairs(&bbox);
+    println!(
+        "  generated {} OD pairs (100 deterministic corpus + 10 000 RNG)",
+        od_pairs.len()
+    );
+
+    let mut hot_b: BTreeMap<String, (HotStats, HotStats)> = BTreeMap::new();
+    for (mode_idx, mode_name) in state.mode_names.iter().enumerate() {
+        let mode_data = &state.modes[mode_idx];
+        let snap_start = std::time::Instant::now();
+        let snapped: Vec<(u32, u32)> = snap_od_pairs(&state, &od_pairs, mode_idx as u8);
+        let n_snapped = snapped.len();
+        println!(
+            "  - {}: snapped {}/{} OD pairs in {:.1}s",
+            mode_name,
+            n_snapped,
+            od_pairs.len(),
+            snap_start.elapsed().as_secs_f64()
+        );
+
+        // Time metric: instrumented bidirectional search over the
+        // standard time flats.
+        let t_start = std::time::Instant::now();
+        let n_nodes = mode_data.cch_topo.n_nodes as usize;
+        let hot_time = run_instrumented_queries(
+            n_nodes,
+            &mode_data.up_adj_flat,
+            &mode_data.down_rev_flat,
+            &snapped,
+        );
+        println!(
+            "    time: {} queries → {} relaxations, {} unique edges \
+             (u16 overflow {:.4}% cs, {:.4}% s; u24 {:.4}% cs, {:.4}% s) in {:.1}s",
+            hot_time.n_queries_total,
+            hot_time.n_relaxed_total,
+            hot_time.n_unique_edges_visited,
+            100.0 * hot_time.overflow_rates_cs.u16,
+            100.0 * hot_time.overflow_rates_s.u16,
+            100.0 * hot_time.overflow_rates_cs.u24,
+            100.0 * hot_time.overflow_rates_s.u24,
+            t_start.elapsed().as_secs_f64()
+        );
+
+        // Distance metric: same shape over the dist flats. Snapping
+        // uses the same EBG-id → rank chain because the per-mode rank
+        // permutation is shared with the time CCH.
+        let d_start = std::time::Instant::now();
+        let hot_dist = run_instrumented_queries(
+            n_nodes,
+            &mode_data.up_adj_flat_dist,
+            &mode_data.down_rev_flat_dist,
+            &snapped,
+        );
+        println!(
+            "    dist: {} queries → {} relaxations, {} unique edges \
+             (u16 overflow {:.4}% cs, {:.4}% s; u24 {:.4}% cs, {:.4}% s) in {:.1}s",
+            hot_dist.n_queries_total,
+            hot_dist.n_relaxed_total,
+            hot_dist.n_unique_edges_visited,
+            100.0 * hot_dist.overflow_rates_cs.u16,
+            100.0 * hot_dist.overflow_rates_s.u16,
+            100.0 * hot_dist.overflow_rates_cs.u24,
+            100.0 * hot_dist.overflow_rates_s.u24,
+            d_start.elapsed().as_secs_f64()
+        );
+
+        hot_b.insert(mode_name.clone(), (hot_time, hot_dist));
+    }
+    println!();
+
     // ---- Assemble per-mode report ---------------------------------------
     let mut modes_report: BTreeMap<String, ModeReport> = BTreeMap::new();
     for mode_name in state.mode_names.iter() {
         let (t_up, t_dn, d_up, d_dn) = static_a.remove(mode_name).expect("static A populated");
         let (tb_up, tb_dn, db_up, db_dn) =
             blocks_c.remove(mode_name).expect("blocks C populated");
+        let (hot_time, hot_dist) = hot_b.remove(mode_name).expect("hot B populated");
         modes_report.insert(
             mode_name.clone(),
             ModeReport {
                 time: MetricReport {
                     statik: DirectionPair { up: t_up, down: t_dn },
                     blocks: DirectionPair { up: tb_up, down: tb_dn },
+                    hot: hot_time,
                 },
                 dist: MetricReport {
                     statik: DirectionPair { up: d_up, down: d_dn },
                     blocks: DirectionPair { up: db_up, down: db_dn },
+                    hot: hot_dist,
                 },
             },
         );
@@ -511,6 +661,494 @@ fn percentile_index(n: usize, p_mille: u64) -> usize {
     }
     let idx = ((n as u64 - 1).saturating_mul(p_mille)) / 100_000;
     idx as usize
+}
+
+// ---------- Section B helpers ----------------------------------------------
+
+/// Region bbox in WGS84 degrees. Pulled from the snap index at boot;
+/// the snap index records the bbox in i32-e7 fixed point so we
+/// convert to f64 once here.
+#[derive(Debug, Clone, Copy)]
+struct Bbox {
+    min_lon: f64,
+    min_lat: f64,
+    max_lon: f64,
+    max_lat: f64,
+}
+
+fn compute_bbox(state: &ServerState) -> Bbox {
+    let p = &state.snap_index.points;
+    Bbox {
+        min_lon: p.bbox_min_lon as f64 / 1e7,
+        min_lat: p.bbox_min_lat as f64 / 1e7,
+        max_lon: p.bbox_max_lon as f64 / 1e7,
+        max_lat: p.bbox_max_lat as f64 / 1e7,
+    }
+}
+
+/// A WGS84 OD pair.
+#[derive(Debug, Clone, Copy)]
+struct OdPair {
+    origin_lon: f64,
+    origin_lat: f64,
+    dest_lon: f64,
+    dest_lat: f64,
+}
+
+/// 100 deterministic OD pairs from the bbox using a fixed sub-seed,
+/// plus 10 000 RNG pairs using `WEIGHT_PROFILE_SEED`. The corpus
+/// sub-seed (0xC0_2F_15) is distinct from the main seed so the two
+/// sets of OD pairs do not overlap by coincidence.
+fn generate_od_pairs(bbox: &Bbox) -> Vec<OdPair> {
+    let mut out = Vec::with_capacity(10_100);
+    // Corpus (100 pairs).
+    let mut corpus_rng = StdRng::seed_from_u64(0xC0_2F_15);
+    for _ in 0..100 {
+        out.push(rng_od_pair(&mut corpus_rng, bbox));
+    }
+    // RNG (10 000 pairs).
+    let mut main_rng = StdRng::seed_from_u64(WEIGHT_PROFILE_SEED);
+    for _ in 0..10_000 {
+        out.push(rng_od_pair(&mut main_rng, bbox));
+    }
+    out
+}
+
+#[inline]
+fn rng_od_pair(rng: &mut StdRng, bbox: &Bbox) -> OdPair {
+    OdPair {
+        origin_lon: rng.random_range(bbox.min_lon..bbox.max_lon),
+        origin_lat: rng.random_range(bbox.min_lat..bbox.max_lat),
+        dest_lon: rng.random_range(bbox.min_lon..bbox.max_lon),
+        dest_lat: rng.random_range(bbox.min_lat..bbox.max_lat),
+    }
+}
+
+/// Snap every OD pair to a (source_rank, target_rank) tuple via the
+/// per-mode snap index + `rank_for_original` chain. Pairs that fail
+/// to snap on either end (no road within `MAX_SNAP_DISTANCE_M` /
+/// inaccessible to this mode) are silently dropped, mirroring how
+/// `/route` handles unreachable requests. The drop is counted and
+/// reported via the per-mode log line.
+fn snap_od_pairs(state: &ServerState, pairs: &[OdPair], mode_idx: u8) -> Vec<(u32, u32)> {
+    let mode_data = &state.modes[mode_idx as usize];
+    pairs
+        .iter()
+        .filter_map(|p| {
+            let src_orig = state.snap_index.snap(p.origin_lon, p.origin_lat, mode_idx)?;
+            let dst_orig = state.snap_index.snap(p.dest_lon, p.dest_lat, mode_idx)?;
+            let src_rank = mode_data.rank_for_original(src_orig)?;
+            let dst_rank = mode_data.rank_for_original(dst_orig)?;
+            Some((src_rank, dst_rank))
+        })
+        .collect()
+}
+
+/// Per-thread relaxation accumulator. One `EdgeBin` per thread keeps
+/// the histogram local so the parallel sum has no atomic contention
+/// on the hot loop. Per-thread results merge at the end of the
+/// parallel pass.
+#[derive(Default, Clone)]
+struct EdgeBin {
+    /// Count of relaxations bucketed by `w / 100_000`-and-stop log
+    /// bucket index. Index 0 = "(0, 1]", up to index 10 = "(1e9, inf)".
+    /// Used to populate the `log_histogram` field after merge.
+    log: [u64; 12],
+    /// Per-threshold relaxation counts (independent of unit).
+    /// Indices: 0=u8 (cs), 1=u12 (cs), 2=u14 (cs), 3=u16 (cs), 4=u24 (cs),
+    /// 5=u8 (s), 6=u12 (s), 7=u14 (s), 8=u16 (s), 9=u24 (s),
+    /// 10=u8 (ds), 11=u12 (ds), 12=u14 (ds), 13=u16 (ds), 14=u24 (ds).
+    over: [u64; 15],
+    /// Total relaxations seen.
+    n_relaxed: u64,
+    /// Bitset of edge slots visited (sized to flat.weights.len()).
+    /// Used to count distinct edges visited across all queries.
+    visited: Vec<u64>,
+    /// Per-query reached count.
+    n_reached: u64,
+    n_queries: u64,
+}
+
+impl EdgeBin {
+    fn new(n_edges: usize) -> Self {
+        Self {
+            log: [0; 12],
+            over: [0; 15],
+            n_relaxed: 0,
+            visited: vec![0u64; n_edges.div_ceil(64)],
+            n_reached: 0,
+            n_queries: 0,
+        }
+    }
+
+    #[inline]
+    fn record(&mut self, edge_idx: u32, weight: u32) {
+        self.n_relaxed += 1;
+        // Log bucket.
+        let bucket = log_bucket_index(weight);
+        self.log[bucket] += 1;
+        // Threshold counts at cs.
+        let w_cs = weight as u64;
+        if w_cs > 255 {
+            self.over[0] += 1;
+        }
+        if w_cs > 4095 {
+            self.over[1] += 1;
+        }
+        if w_cs > 16_383 {
+            self.over[2] += 1;
+        }
+        if w_cs > 65_534 {
+            self.over[3] += 1;
+        }
+        if w_cs > 16_777_214 {
+            self.over[4] += 1;
+        }
+        // Threshold counts at s (÷ 100, round-half-to-even).
+        let w_s = round_half_even_div(w_cs, 100);
+        if w_s > 255 {
+            self.over[5] += 1;
+        }
+        if w_s > 4095 {
+            self.over[6] += 1;
+        }
+        if w_s > 16_383 {
+            self.over[7] += 1;
+        }
+        if w_s > 65_534 {
+            self.over[8] += 1;
+        }
+        if w_s > 16_777_214 {
+            self.over[9] += 1;
+        }
+        // Threshold counts at ds (÷ 10, round-half-to-even).
+        let w_ds = round_half_even_div(w_cs, 10);
+        if w_ds > 255 {
+            self.over[10] += 1;
+        }
+        if w_ds > 4095 {
+            self.over[11] += 1;
+        }
+        if w_ds > 16_383 {
+            self.over[12] += 1;
+        }
+        if w_ds > 65_534 {
+            self.over[13] += 1;
+        }
+        if w_ds > 16_777_214 {
+            self.over[14] += 1;
+        }
+        // Visited bitset.
+        let word = (edge_idx as usize) / 64;
+        let bit = (edge_idx as usize) % 64;
+        if word < self.visited.len() {
+            self.visited[word] |= 1u64 << bit;
+        }
+    }
+
+    fn merge_into(&mut self, other: &EdgeBin) {
+        for i in 0..self.log.len() {
+            self.log[i] += other.log[i];
+        }
+        for i in 0..self.over.len() {
+            self.over[i] += other.over[i];
+        }
+        self.n_relaxed += other.n_relaxed;
+        self.n_reached += other.n_reached;
+        self.n_queries += other.n_queries;
+        for (a, b) in self.visited.iter_mut().zip(other.visited.iter()) {
+            *a |= *b;
+        }
+    }
+}
+
+#[inline]
+fn log_bucket_index(w: u32) -> usize {
+    let edges = [
+        1u64,
+        10,
+        100,
+        1_000,
+        10_000,
+        100_000,
+        1_000_000,
+        10_000_000,
+        100_000_000,
+        1_000_000_000,
+    ];
+    if w == u32::MAX {
+        return 11;
+    }
+    let w64 = w as u64;
+    for (i, &edge) in edges.iter().enumerate() {
+        if w64 <= edge {
+            return i;
+        }
+    }
+    10
+}
+
+#[inline]
+fn log_bucket_label_by_index(i: usize) -> String {
+    let edges = [
+        1u64,
+        10,
+        100,
+        1_000,
+        10_000,
+        100_000,
+        1_000_000,
+        10_000_000,
+        100_000_000,
+        1_000_000_000,
+    ];
+    if i == 11 {
+        return "inf".to_string();
+    }
+    if i == 10 {
+        return format!("({},inf)", edges[edges.len() - 1]);
+    }
+    let prev = if i == 0 { 0 } else { edges[i - 1] };
+    format!("({},{}]", prev, edges[i])
+}
+
+/// Run bidirectional CCH P2P over every snapped OD pair, with each
+/// relaxation recorded into a per-thread `EdgeBin`. Parallelised with
+/// rayon over the OD list.
+///
+/// The bidirectional algorithm is a faithful port of the
+/// `CchQuery::distance` shape in `server/query.rs` — same early-
+/// termination condition, same stale-pop check, same priority
+/// queue. The only difference is the relaxation step records the
+/// (edge_idx, weight) before applying it. Recording happens
+/// unconditionally (even for non-improving relaxations) because the
+/// codec cares about every weight load — the relaxation cost is
+/// paid regardless of whether the result improves the distance.
+fn run_instrumented_queries(
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    down_rev_flat: &DownReverseAdjFlat,
+    snapped: &[(u32, u32)],
+) -> HotStats {
+    let n_up_edges = up_adj_flat.weights.len();
+    let n_down_edges = down_rev_flat.weights.len();
+
+    // Each thread accumulates into one `EdgeBin` for UP edges and
+    // one for DOWN — we union them at the end. The visited bitset
+    // separates UP and DOWN because edge_idx is independent across
+    // them (both index into their respective `weights` arrays).
+    let (up_bin, dn_bin) = snapped
+        .par_iter()
+        .fold(
+            || (EdgeBin::new(n_up_edges), EdgeBin::new(n_down_edges)),
+            |(mut up, mut dn), &(src, dst)| {
+                let reached = run_one_query(
+                    n_nodes,
+                    up_adj_flat,
+                    down_rev_flat,
+                    src,
+                    dst,
+                    &mut up,
+                    &mut dn,
+                );
+                up.n_queries += 1;
+                dn.n_queries += 1;
+                if reached {
+                    up.n_reached += 1;
+                    dn.n_reached += 1;
+                }
+                (up, dn)
+            },
+        )
+        .reduce(
+            || (EdgeBin::new(n_up_edges), EdgeBin::new(n_down_edges)),
+            |mut a, b| {
+                a.0.merge_into(&b.0);
+                a.1.merge_into(&b.1);
+                a
+            },
+        );
+
+    // Both bins observe the same per-query event sequence, so
+    // `n_queries` / `n_reached` are duplicated. Take from `up_bin`
+    // (single source of truth) and add UP + DOWN relaxation counts.
+    let n_queries_total = up_bin.n_queries;
+    let n_queries_reached = up_bin.n_reached;
+    let n_queries_unreachable = n_queries_total - n_queries_reached;
+    let n_relaxed_total = up_bin.n_relaxed + dn_bin.n_relaxed;
+    let n_unique_edges_visited =
+        count_set_bits(&up_bin.visited) + count_set_bits(&dn_bin.visited);
+
+    let mut log_histogram = BTreeMap::new();
+    for i in 0..12 {
+        let label = log_bucket_label_by_index(i);
+        let count = up_bin.log[i] + dn_bin.log[i];
+        log_histogram.insert(label, count);
+    }
+
+    let denom = n_relaxed_total.max(1) as f64;
+    let to_rate = |idx: usize| -> u64 { up_bin.over[idx] + dn_bin.over[idx] };
+    let overflow_rates_cs = OverflowRates {
+        u8: to_rate(0) as f64 / denom,
+        u12: to_rate(1) as f64 / denom,
+        u14: to_rate(2) as f64 / denom,
+        u16: to_rate(3) as f64 / denom,
+        u24: to_rate(4) as f64 / denom,
+        n_over_u16: to_rate(3),
+        n_over_u24: to_rate(4),
+    };
+    let overflow_rates_s = OverflowRates {
+        u8: to_rate(5) as f64 / denom,
+        u12: to_rate(6) as f64 / denom,
+        u14: to_rate(7) as f64 / denom,
+        u16: to_rate(8) as f64 / denom,
+        u24: to_rate(9) as f64 / denom,
+        n_over_u16: to_rate(8),
+        n_over_u24: to_rate(9),
+    };
+    let overflow_rates_ds = OverflowRates {
+        u8: to_rate(10) as f64 / denom,
+        u12: to_rate(11) as f64 / denom,
+        u14: to_rate(12) as f64 / denom,
+        u16: to_rate(13) as f64 / denom,
+        u24: to_rate(14) as f64 / denom,
+        n_over_u16: to_rate(13),
+        n_over_u24: to_rate(14),
+    };
+
+    HotStats {
+        n_queries_total,
+        n_queries_reached,
+        n_queries_unreachable,
+        n_relaxed_total,
+        n_unique_edges_visited,
+        overflow_rates_cs,
+        overflow_rates_s,
+        overflow_rates_ds,
+        log_histogram,
+    }
+}
+
+/// Count `1` bits in a packed `&[u64]` bitset. Each word's
+/// `count_ones()` is a single CPU instruction on x86_64
+/// (`popcntq`), so this is cheap even for the 5M-bit visited
+/// bitset Belgium ends up producing.
+fn count_set_bits(bits: &[u64]) -> u64 {
+    bits.iter().map(|w| w.count_ones() as u64).sum()
+}
+
+/// One instrumented bidirectional CCH query. Mirrors
+/// `CchQuery::distance` (see `server/query.rs`) but
+///   (1) the priority queue + distance/parent arrays live on the
+///       stack frame instead of in a thread-local, so the rayon
+///       fold closure stays Send + Sync,
+///   (2) each relaxation records the edge slot + weight into the
+///       caller's `EdgeBin`, regardless of whether the relaxation
+///       improves the best distance — every weight load is a real
+///       memory access the codec must serve.
+///
+/// Returns true iff the search found a finite path.
+fn run_one_query(
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    down_rev_flat: &DownReverseAdjFlat,
+    source: u32,
+    target: u32,
+    up_bin: &mut EdgeBin,
+    dn_bin: &mut EdgeBin,
+) -> bool {
+    if source == target {
+        return true;
+    }
+
+    let mut dist_fwd = vec![u32::MAX; n_nodes];
+    let mut dist_bwd = vec![u32::MAX; n_nodes];
+    let mut pq_fwd: PriorityQueue<u32, Reverse<u32>> = PriorityQueue::new();
+    let mut pq_bwd: PriorityQueue<u32, Reverse<u32>> = PriorityQueue::new();
+
+    dist_fwd[source as usize] = 0;
+    dist_bwd[target as usize] = 0;
+    pq_fwd.push(source, Reverse(0));
+    pq_bwd.push(target, Reverse(0));
+
+    let mut best_dist = u32::MAX;
+
+    while !pq_fwd.is_empty() || !pq_bwd.is_empty() {
+        let fwd_min = pq_fwd.peek().map(|(_, &Reverse(d))| d).unwrap_or(u32::MAX);
+        let bwd_min = pq_bwd.peek().map(|(_, &Reverse(d))| d).unwrap_or(u32::MAX);
+        if fwd_min >= best_dist && bwd_min >= best_dist {
+            break;
+        }
+
+        // Forward UP step.
+        if let Some((u, Reverse(d))) = pq_fwd.pop() {
+            if d <= dist_fwd[u as usize] {
+                let bwd_d = dist_bwd[u as usize];
+                if bwd_d != u32::MAX {
+                    let total = d.saturating_add(bwd_d);
+                    if total < best_dist {
+                        best_dist = total;
+                    }
+                }
+                // Relax UP edges from `u`.
+                let start = up_adj_flat.offsets[u as usize] as usize;
+                let end = up_adj_flat.offsets[u as usize + 1] as usize;
+                for slot in start..end {
+                    let v = up_adj_flat.targets[slot];
+                    let w = up_adj_flat.weights[slot];
+                    // Record relaxation in the UP histogram.
+                    up_bin.record(slot as u32, w);
+                    let new_dist = d.saturating_add(w);
+                    if new_dist < dist_fwd[v as usize] {
+                        dist_fwd[v as usize] = new_dist;
+                        pq_fwd.push(v, Reverse(new_dist));
+                        let bwd_v = dist_bwd[v as usize];
+                        if bwd_v != u32::MAX {
+                            let total = new_dist.saturating_add(bwd_v);
+                            if total < best_dist {
+                                best_dist = total;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Backward reversed-DOWN step.
+        if let Some((u, Reverse(d))) = pq_bwd.pop() {
+            if d <= dist_bwd[u as usize] {
+                let fwd_d = dist_fwd[u as usize];
+                if fwd_d != u32::MAX {
+                    let total = d.saturating_add(fwd_d);
+                    if total < best_dist {
+                        best_dist = total;
+                    }
+                }
+                let start = down_rev_flat.offsets[u as usize] as usize;
+                let end = down_rev_flat.offsets[u as usize + 1] as usize;
+                for slot in start..end {
+                    let x = down_rev_flat.sources[slot];
+                    let w = down_rev_flat.weights[slot];
+                    // Record relaxation in the DOWN histogram.
+                    dn_bin.record(slot as u32, w);
+                    let new_dist = d.saturating_add(w);
+                    if new_dist < dist_bwd[x as usize] {
+                        dist_bwd[x as usize] = new_dist;
+                        pq_bwd.push(x, Reverse(new_dist));
+                        let fwd_x = dist_fwd[x as usize];
+                        if fwd_x != u32::MAX {
+                            let total = new_dist.saturating_add(fwd_x);
+                            if total < best_dist {
+                                best_dist = total;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    best_dist != u32::MAX
 }
 
 // ---------- Section C helpers ----------------------------------------------
