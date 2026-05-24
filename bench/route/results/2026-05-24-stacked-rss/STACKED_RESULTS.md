@@ -48,7 +48,7 @@ drivetimes (libosrm + libvalhalla) Belgium baseline: 1.29 GiB. We're at 1.99 GiB
 | 1000 | 667 ms | 0.67 ms | 1.76× slower |
 | 10000 | 6164 ms | 0.62 ms | **1.62× slower** |
 
-Residual 1.62× gap vs libosrm is structural (edge-based CCH = ~2.5× more states than node-based CH). Closing further requires per-pair allocator tuning (jemalloc + #290 thread pool amortization) and/or PHAST/CCH-search inner loop tightening.
+Residual 1.62× gap vs libosrm is the next perf frontier (see codex review in PR #291): per-pair allocator pressure (#273 scratch buffers), CCH inner-loop tightening (#291 heap swap landed; further inline opportunities), thread amortization (#290 worker pool landed). NOT asserting irreducibility.
 
 ## Open follow-ups
 

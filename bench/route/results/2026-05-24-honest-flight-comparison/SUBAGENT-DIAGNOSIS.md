@@ -701,14 +701,17 @@ Cost: **0 hours** (env var).
 **Realistic 1-day target:** #270-1 + #270-2 + #270-3 + #270-6 = **~7 GB
 saved on RSS** in ~6 engineering hours. Drops 16 GiB → ~9 GiB baseline.
 That's **3× larger than libosrm**, not 12× — and the residual gap is
-the structural edge-based-CCH penalty plus 1 extra mode (foot vs
-libosrm's lighter foot profile).
+hypothesised to come from the edge-based-CCH state factor plus 1 extra
+mode (foot vs libosrm's lighter foot profile). (Per CLAUDE.md rule 7,
+this should be confirmed via a codex pass before being asserted as
+irreducible.)
 
 A multi-day pass (all 8 fixes) would land **~9 GB saved**, baseline
-~7 GiB, **5.4× libosrm**. The remaining gap is genuinely structural
-(edge-based CCH ~2.5× more states than node-based CH, per CLAUDE.md
-OSRM algo analysis) and not worth fighting further without
-algorithmic surgery.
+~7 GiB, **5.4× libosrm**. The remaining gap is hypothesised to be
+dominated by the edge-based CCH state factor (~2.5× more states than
+node-based CH, per CLAUDE.md OSRM algo analysis). Confirming versus
+codex / further algorithmic exploration is the right next step rather
+than declaring the gap closed.
 
 ### 2.7 What NOT to touch for #270
 
