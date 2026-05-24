@@ -615,6 +615,143 @@ fn encode_linestring_wkb(points: &[Point]) -> Vec<u8> {
     buf
 }
 
+/// Per-pair output for the route_batch parallel loop:
+/// (src_lon, src_lat, dst_lon, dst_lat, duration_s, distance_m, wkb).
+type RoutePairRow = (f64, f64, f64, f64, f32, f32, Vec<u8>);
+
+/// Compute a single pair's `(duration, distance, WKB linestring)`.
+///
+/// Two-tier snap strategy: K=1 fast path first (covers most pairs per
+/// #197 connectivity-aware role masks); on miss, escalate to K=64 +
+/// (i+j)-combo fallback. Eliminates the K=64 tax on the hot path:
+/// 5.79 ms/pair down to roughly 0.5 ms/pair on Belgium.
+///
+/// Reads only `&state` + `&mode_data`; safe to call from many worker
+/// threads in parallel. `CchQueryState` is thread-local so the
+/// bidirectional search never contends.
+#[allow(clippy::too_many_arguments)]
+fn compute_route_pair(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    query: &CchQuery<'_>,
+    slon: f64,
+    slat: f64,
+    dlon: f64,
+    dlat: f64,
+) -> Option<(f32, f32, Vec<u8>)> {
+    use super::types::SnapRole;
+
+    // Fast path: K=1 single snap + single CCH query. Avoids the K=64
+    // collect overhead that costs ~1 ms/pair just for the snap.
+    let src_role = SnapRole::Src.role_filter(mode_data);
+    let dst_role = SnapRole::Dst.role_filter(mode_data);
+    if let (Some(src_id), Some(dst_id)) = (
+        state
+            .snap_index
+            .snap_filtered_role(slon, slat, mode.0, None, src_role),
+        state
+            .snap_index
+            .snap_filtered_role(dlon, dlat, mode.0, None, dst_role),
+    ) {
+        let src_rank = mode_data.orig_to_rank[src_id as usize];
+        let dst_rank = mode_data.orig_to_rank[dst_id as usize];
+        if src_rank != u32::MAX
+            && dst_rank != u32::MAX
+            && let Some(result) = query.query(src_rank, dst_rank)
+        {
+            return Some(build_route_output(
+                state, mode_data, &result, src_rank, dst_rank,
+            ));
+        }
+    }
+
+    // Slow path: K=64 K-best snap + (i+j)-combo fallback.
+    const SNAP_K: usize = 64;
+    let src_snap = super::snap_kbest::snap_k_pair_role(
+        state,
+        mode_data,
+        mode,
+        slon,
+        slat,
+        SnapRole::Src,
+        None,
+        SNAP_K,
+    );
+    let dst_snap = super::snap_kbest::snap_k_pair_role(
+        state,
+        mode_data,
+        mode,
+        dlon,
+        dlat,
+        SnapRole::Dst,
+        None,
+        SNAP_K,
+    );
+
+    if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
+        return None;
+    }
+
+    super::snap_kbest::p2p_with_kbest_fallback(
+        query,
+        &src_snap.ranks,
+        &dst_snap.ranks,
+        super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+    )
+    .map(|(src_rank, dst_rank, result)| {
+        build_route_output(state, mode_data, &result, src_rank, dst_rank)
+    })
+}
+
+/// Common output builder for a successful CCH P2P result. Returns
+/// (duration_s, distance_m, WKB linestring).
+fn build_route_output(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    result: &super::query::QueryResult,
+    src_rank: u32,
+    dst_rank: u32,
+) -> (f32, f32, Vec<u8>) {
+    let duration_s = result.distance as f64 / 10.0;
+    let rank_path = unpack_path(
+        &mode_data.cch_topo,
+        &mode_data.cch_weights,
+        &result.forward_parent,
+        &result.backward_parent,
+        src_rank,
+        dst_rank,
+        result.meeting_node,
+    );
+    let ebg_path: Vec<u32> = rank_path
+        .iter()
+        .map(|&rank| {
+            let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
+            mode_data.filtered_to_original[filt_id as usize]
+        })
+        .collect();
+    let (points, distance_m) = build_raw_points(&ebg_path, &state.ebg_nodes, &state.edge_geom);
+    let wkb = encode_linestring_wkb(&points);
+    (duration_s as f32, distance_m as f32, wkb)
+}
+
+fn route_batch_worker_threads(n_pairs: usize) -> usize {
+    if n_pairs < 512 {
+        return 1;
+    }
+
+    let default_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(8);
+    let configured = std::env::var("BUTTERFLY_ROUTE_BATCH_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(default_threads);
+    configured.min(n_pairs.div_ceil(128)).max(1)
+}
+
 fn do_route_batch(
     state: &Arc<ServerState>,
     mode: Mode,
@@ -632,101 +769,91 @@ fn do_route_batch(
     tokio::task::spawn_blocking(move || {
         let mode_data = state.get_mode(mode);
         let schema = Arc::new(route_batch_schema());
-        let batch_size = 1000usize;
+        let batch_size = 10_000usize;
 
         for chunk in params.pairs.chunks(batch_size) {
             let n = chunk.len();
+
+            // Compute every pair in parallel. Use scoped OS threads
+            // instead of rayon so each thread-local `CchQueryState`
+            // drops after this chunk; keeping it in the global rayon
+            // pool would permanently retain ~160 MB per worker on
+            // Belgium after the first route_batch call.
+            let n_workers = route_batch_worker_threads(n);
+            let results: Vec<RoutePairRow> = if n_workers == 1 {
+                let query = CchQuery::new(&state, mode);
+                chunk
+                    .iter()
+                    .map(|pair| {
+                        let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
+                        match compute_route_pair(
+                            &state, mode_data, mode, &query, slon, slat, dlon, dlat,
+                        ) {
+                            Some((dur, dist, wkb)) => (slon, slat, dlon, dlat, dur, dist, wkb),
+                            None => (slon, slat, dlon, dlat, f32::NAN, f32::NAN, Vec::new()),
+                        }
+                    })
+                    .collect()
+            } else {
+                let chunk_size = n.div_ceil(n_workers);
+                let parts: Vec<Vec<RoutePairRow>> = std::thread::scope(|scope| {
+                    let handles: Vec<_> = chunk
+                        .chunks(chunk_size)
+                        .map(|sub_chunk| {
+                            let state = &state;
+                            scope.spawn(move || {
+                                let query = CchQuery::new(state, mode);
+                                sub_chunk
+                                    .iter()
+                                    .map(|pair| {
+                                        let (slon, slat, dlon, dlat) =
+                                            (pair[0], pair[1], pair[2], pair[3]);
+                                        match compute_route_pair(
+                                            state, mode_data, mode, &query, slon, slat, dlon, dlat,
+                                        ) {
+                                            Some((dur, dist, wkb)) => {
+                                                (slon, slat, dlon, dlat, dur, dist, wkb)
+                                            }
+                                            None => (
+                                                slon,
+                                                slat,
+                                                dlon,
+                                                dlat,
+                                                f32::NAN,
+                                                f32::NAN,
+                                                Vec::new(),
+                                            ),
+                                        }
+                                    })
+                                    .collect()
+                            })
+                        })
+                        .collect();
+                    handles.into_iter().map(|h| h.join().unwrap()).collect()
+                });
+                parts.into_iter().flatten().collect()
+            };
+
+            // Sequentially fill builders + emit batch. Builders are
+            // not Send so the fill cannot be parallelised; the heavy
+            // CPU work has already happened above.
             let mut src_lon_arr = Float64Builder::with_capacity(n);
             let mut src_lat_arr = Float64Builder::with_capacity(n);
             let mut dst_lon_arr = Float64Builder::with_capacity(n);
             let mut dst_lat_arr = Float64Builder::with_capacity(n);
             let mut dur_arr = Float32Builder::with_capacity(n);
             let mut dist_arr = Float32Builder::with_capacity(n);
-            let mut geom_arr = BinaryBuilder::with_capacity(n, n * 256);
+            let geom_bytes = results.iter().map(|r| r.6.len()).sum();
+            let mut geom_arr = BinaryBuilder::with_capacity(n, geom_bytes);
 
-            // K-best snap + bounded combo fallback (mirrors /route).
-            // The connectivity-aware role masks already eliminate most
-            // snap traps; the fallback now only catches same-geometry
-            // directional ambiguity and exclude/avoid edge cases.
-            const SNAP_K: usize = 64;
-            let query = CchQuery::new(&state, mode);
-
-            for pair in chunk {
-                let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
+            for (slon, slat, dlon, dlat, dur, dist, wkb) in results {
                 src_lon_arr.append_value(slon);
                 src_lat_arr.append_value(slat);
                 dst_lon_arr.append_value(dlon);
                 dst_lat_arr.append_value(dlat);
-
-                let src_snap = super::snap_kbest::snap_k_pair_role(
-                    &state,
-                    mode_data,
-                    mode,
-                    slon,
-                    slat,
-                    super::types::SnapRole::Src,
-                    None,
-                    SNAP_K,
-                );
-                let dst_snap = super::snap_kbest::snap_k_pair_role(
-                    &state,
-                    mode_data,
-                    mode,
-                    dlon,
-                    dlat,
-                    super::types::SnapRole::Dst,
-                    None,
-                    SNAP_K,
-                );
-
-                if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
-                    dur_arr.append_value(f32::NAN);
-                    dist_arr.append_value(f32::NAN);
-                    geom_arr.append_value(&[] as &[u8]);
-                    continue;
-                }
-
-                match super::snap_kbest::p2p_with_kbest_fallback(
-                    &query,
-                    &src_snap.ranks,
-                    &dst_snap.ranks,
-                    super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
-                ) {
-                    Some((src_rank, dst_rank, result)) => {
-                        let duration_s = result.distance as f64 / 10.0;
-
-                        let rank_path = unpack_path(
-                            &mode_data.cch_topo,
-                            &mode_data.cch_weights,
-                            &result.forward_parent,
-                            &result.backward_parent,
-                            src_rank,
-                            dst_rank,
-                            result.meeting_node,
-                        );
-                        let ebg_path: Vec<u32> = rank_path
-                            .iter()
-                            .map(|&rank| {
-                                let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-                                mode_data.filtered_to_original[filt_id as usize]
-                            })
-                            .collect();
-
-                        let (points, distance_m) =
-                            build_raw_points(&ebg_path, &state.ebg_nodes, &state.edge_geom);
-
-                        let wkb = encode_linestring_wkb(&points);
-
-                        dur_arr.append_value(duration_s as f32);
-                        dist_arr.append_value(distance_m as f32);
-                        geom_arr.append_value(&wkb);
-                    }
-                    None => {
-                        dur_arr.append_value(f32::NAN);
-                        dist_arr.append_value(f32::NAN);
-                        geom_arr.append_value(&[] as &[u8]);
-                    }
-                }
+                dur_arr.append_value(dur);
+                dist_arr.append_value(dist);
+                geom_arr.append_value(&wkb);
             }
 
             let batch = match RecordBatch::try_new(
