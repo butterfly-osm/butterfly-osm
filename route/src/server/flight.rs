@@ -615,9 +615,18 @@ fn encode_linestring_wkb(points: &[Point]) -> Vec<u8> {
     buf
 }
 
-/// Per-pair output for the route_batch parallel loop:
-/// (src_lon, src_lat, dst_lon, dst_lat, duration_s, distance_m, wkb).
-type RoutePairRow = (f64, f64, f64, f64, f32, f32, Vec<u8>);
+/// Per-pair output for the route_batch parallel loop. One row per
+/// (source, destination) pair. Named fields — the previous tuple alias
+/// indexed by position (`r.6` for WKB) was brittle.
+struct RoutePairRow {
+    src_lon: f64,
+    src_lat: f64,
+    dst_lon: f64,
+    dst_lat: f64,
+    duration_s: f32,
+    distance_m: f32,
+    wkb: Vec<u8>,
+}
 
 /// Compute a single pair's `(duration, distance, WKB linestring)`.
 ///
@@ -740,16 +749,38 @@ fn route_batch_worker_threads(n_pairs: usize) -> usize {
         return 1;
     }
 
-    let default_threads = std::thread::available_parallelism()
+    // Cap at logical CPU count: even if BUTTERFLY_ROUTE_BATCH_THREADS
+    // is set above available_parallelism, oversubscribing hurts
+    // latency/throughput. Default to min(available, 8) when env unset.
+    let max_threads = std::thread::available_parallelism()
         .map(|n| n.get())
-        .unwrap_or(4)
-        .min(8);
+        .unwrap_or(4);
+    let default_threads = max_threads.min(8);
     let configured = std::env::var("BUTTERFLY_ROUTE_BATCH_THREADS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|&v| v > 0)
         .unwrap_or(default_threads);
-    configured.min(n_pairs.div_ceil(128)).max(1)
+    configured
+        .min(max_threads)
+        .min(n_pairs.div_ceil(128))
+        .max(1)
+}
+
+/// Per-record-batch pair count. Each emitted Arrow `RecordBatch` carries
+/// at most this many `(src, dst, dur, dist, wkb)` rows.
+///
+/// Sized for the gRPC `max_encoding_message_size` of 64 MiB. WKB
+/// geometry on a Belgium route averages ~6–7 KiB; 2000 pairs ≈ 12 MiB,
+/// leaving headroom for unusually long routes (50+ KiB transcontinental
+/// shapes are not Belgium, but the cap must hold in the worst case).
+/// Override via `BUTTERFLY_ROUTE_BATCH_BATCH_SIZE` if needed.
+fn route_batch_batch_size() -> usize {
+    std::env::var("BUTTERFLY_ROUTE_BATCH_BATCH_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(2_000)
 }
 
 fn do_route_batch(
@@ -769,7 +800,35 @@ fn do_route_batch(
     tokio::task::spawn_blocking(move || {
         let mode_data = state.get_mode(mode);
         let schema = Arc::new(route_batch_schema());
-        let batch_size = 10_000usize;
+        let batch_size = route_batch_batch_size();
+
+        let row_of = |slon: f64,
+                      slat: f64,
+                      dlon: f64,
+                      dlat: f64,
+                      result: Option<(f32, f32, Vec<u8>)>|
+         -> RoutePairRow {
+            match result {
+                Some((dur, dist, wkb)) => RoutePairRow {
+                    src_lon: slon,
+                    src_lat: slat,
+                    dst_lon: dlon,
+                    dst_lat: dlat,
+                    duration_s: dur,
+                    distance_m: dist,
+                    wkb,
+                },
+                None => RoutePairRow {
+                    src_lon: slon,
+                    src_lat: slat,
+                    dst_lon: dlon,
+                    dst_lat: dlat,
+                    duration_s: f32::NAN,
+                    distance_m: f32::NAN,
+                    wkb: Vec::new(),
+                },
+            }
+        };
 
         for chunk in params.pairs.chunks(batch_size) {
             let n = chunk.len();
@@ -786,52 +845,61 @@ fn do_route_batch(
                     .iter()
                     .map(|pair| {
                         let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
-                        match compute_route_pair(
+                        let r = compute_route_pair(
                             &state, mode_data, mode, &query, slon, slat, dlon, dlat,
-                        ) {
-                            Some((dur, dist, wkb)) => (slon, slat, dlon, dlat, dur, dist, wkb),
-                            None => (slon, slat, dlon, dlat, f32::NAN, f32::NAN, Vec::new()),
-                        }
+                        );
+                        row_of(slon, slat, dlon, dlat, r)
                     })
                     .collect()
             } else {
                 let chunk_size = n.div_ceil(n_workers);
-                let parts: Vec<Vec<RoutePairRow>> = std::thread::scope(|scope| {
-                    let handles: Vec<_> = chunk
-                        .chunks(chunk_size)
-                        .map(|sub_chunk| {
-                            let state = &state;
-                            scope.spawn(move || {
-                                let query = CchQuery::new(state, mode);
-                                sub_chunk
-                                    .iter()
-                                    .map(|pair| {
-                                        let (slon, slat, dlon, dlat) =
-                                            (pair[0], pair[1], pair[2], pair[3]);
-                                        match compute_route_pair(
-                                            state, mode_data, mode, &query, slon, slat, dlon, dlat,
-                                        ) {
-                                            Some((dur, dist, wkb)) => {
-                                                (slon, slat, dlon, dlat, dur, dist, wkb)
-                                            }
-                                            None => (
-                                                slon,
-                                                slat,
-                                                dlon,
+                let join_result: std::thread::Result<Vec<Vec<RoutePairRow>>> =
+                    std::thread::scope(|scope| {
+                        let handles: Vec<_> = chunk
+                            .chunks(chunk_size)
+                            .map(|sub_chunk| {
+                                let state = &state;
+                                scope.spawn(move || {
+                                    let query = CchQuery::new(state, mode);
+                                    sub_chunk
+                                        .iter()
+                                        .map(|pair| {
+                                            let (slon, slat, dlon, dlat) =
+                                                (pair[0], pair[1], pair[2], pair[3]);
+                                            let r = compute_route_pair(
+                                                state, mode_data, mode, &query, slon, slat, dlon,
                                                 dlat,
-                                                f32::NAN,
-                                                f32::NAN,
-                                                Vec::new(),
-                                            ),
-                                        }
-                                    })
-                                    .collect()
+                                            );
+                                            row_of(slon, slat, dlon, dlat, r)
+                                        })
+                                        .collect::<Vec<RoutePairRow>>()
+                                })
                             })
-                        })
-                        .collect();
-                    handles.into_iter().map(|h| h.join().unwrap()).collect()
-                });
-                parts.into_iter().flatten().collect()
+                            .collect();
+                        handles.into_iter().map(|h| h.join()).collect()
+                    });
+                match join_result {
+                    Ok(parts) => parts.into_iter().flatten().collect(),
+                    Err(panic_payload) => {
+                        // Convert a worker panic into a Status::internal
+                        // sent on tx so a single bad pair cannot take
+                        // down the gRPC server.
+                        let msg = panic_payload
+                            .downcast_ref::<String>()
+                            .cloned()
+                            .or_else(|| {
+                                panic_payload
+                                    .downcast_ref::<&'static str>()
+                                    .map(|s| s.to_string())
+                            })
+                            .unwrap_or_else(|| "<non-string panic>".to_string());
+                        let _ = tx.blocking_send(Err(Status::internal(format!(
+                            "route_batch worker panicked: {}",
+                            msg
+                        ))));
+                        return;
+                    }
+                }
             };
 
             // Sequentially fill builders + emit batch. Builders are
@@ -843,17 +911,17 @@ fn do_route_batch(
             let mut dst_lat_arr = Float64Builder::with_capacity(n);
             let mut dur_arr = Float32Builder::with_capacity(n);
             let mut dist_arr = Float32Builder::with_capacity(n);
-            let geom_bytes = results.iter().map(|r| r.6.len()).sum();
+            let geom_bytes = results.iter().map(|r| r.wkb.len()).sum();
             let mut geom_arr = BinaryBuilder::with_capacity(n, geom_bytes);
 
-            for (slon, slat, dlon, dlat, dur, dist, wkb) in results {
-                src_lon_arr.append_value(slon);
-                src_lat_arr.append_value(slat);
-                dst_lon_arr.append_value(dlon);
-                dst_lat_arr.append_value(dlat);
-                dur_arr.append_value(dur);
-                dist_arr.append_value(dist);
-                geom_arr.append_value(&wkb);
+            for row in results {
+                src_lon_arr.append_value(row.src_lon);
+                src_lat_arr.append_value(row.src_lat);
+                dst_lon_arr.append_value(row.dst_lon);
+                dst_lat_arr.append_value(row.dst_lat);
+                dur_arr.append_value(row.duration_s);
+                dist_arr.append_value(row.distance_m);
+                geom_arr.append_value(&row.wkb);
             }
 
             let batch = match RecordBatch::try_new(
