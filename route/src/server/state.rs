@@ -627,12 +627,23 @@ impl ServerState {
                 .ok_or_else(|| anyhow::anyhow!("missing required section '{}'", name))?;
             let off = entry.offset as usize;
             let len = entry.len as usize;
+            // Use checked_add so a malformed container with
+            // pathologically large offset+len cannot wrap usize and
+            // bypass the bounds check.
+            let end = off.checked_add(len).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "section '{}' offset+len overflows usize (off={}, len={})",
+                    name,
+                    off,
+                    len
+                )
+            })?;
             anyhow::ensure!(
-                off + len <= static_bytes.len(),
+                end <= static_bytes.len(),
                 "section '{}' bytes [{},{}) exceed mmap len {}",
                 name,
                 off,
-                off + len,
+                end,
                 static_bytes.len()
             );
             // Drive lazy CRC verification through LazyContainer. The
@@ -642,7 +653,7 @@ impl ServerState {
             // and lets format readers skip their own body CRC walk
             // via the `_unverified` entry points.
             lazy_for_bytes.verify_now(name)?;
-            Ok(&static_bytes[off..off + len])
+            Ok(&static_bytes[off..end])
         };
         let lazy_for_optional = std::sync::Arc::clone(&lazy_arc);
         let optional_section = |name: &str| -> Result<Option<&'static [u8]>> {
@@ -650,16 +661,24 @@ impl ServerState {
                 Some(entry) => {
                     let off = entry.offset as usize;
                     let len = entry.len as usize;
+                    let end = off.checked_add(len).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "section '{}' offset+len overflows usize (off={}, len={})",
+                            name,
+                            off,
+                            len
+                        )
+                    })?;
                     anyhow::ensure!(
-                        off + len <= static_bytes.len(),
+                        end <= static_bytes.len(),
                         "section '{}' bytes [{},{}) exceed mmap len {}",
                         name,
                         off,
-                        off + len,
+                        end,
                         static_bytes.len()
                     );
                     lazy_for_optional.verify_now(name)?;
-                    Ok(Some(&static_bytes[off..off + len]))
+                    Ok(Some(&static_bytes[off..end]))
                 }
                 None => Ok(None),
             }
@@ -862,7 +881,26 @@ impl ServerState {
                 if let Some(entry) = container.get(&section) {
                     let off = entry.offset as usize;
                     let len = entry.len as usize;
-                    let range = &static_bytes[off..off + len];
+                    let Some(end) = off.checked_add(len) else {
+                        tracing::warn!(
+                            section = %section,
+                            offset = off,
+                            len = len,
+                            "section offset+len overflows usize; skipping madvise"
+                        );
+                        continue;
+                    };
+                    if end > static_bytes.len() {
+                        tracing::warn!(
+                            section = %section,
+                            offset = off,
+                            len = len,
+                            mmap_len = static_bytes.len(),
+                            "section out-of-bounds vs mmap; skipping madvise"
+                        );
+                        continue;
+                    }
+                    let range = &static_bytes[off..end];
                     match crate::formats::mmap::madvise_dontneed(range) {
                         Ok(()) => tracing::info!(
                             section = %section,
@@ -1772,18 +1810,26 @@ where
     };
     let off = entry.offset as usize;
     let len = entry.len as usize;
+    let end = off.checked_add(len).ok_or_else(|| {
+        anyhow::anyhow!(
+            "flat section '{}' offset+len overflows usize (off={}, len={})",
+            section_name,
+            off,
+            len
+        )
+    })?;
     anyhow::ensure!(
-        off + len <= static_bytes.len(),
+        end <= static_bytes.len(),
         "flat section '{}' bytes [{},{}) exceed mmap len {}",
         section_name,
         off,
-        off + len,
+        end,
         static_bytes.len()
     );
     // #161: verify CRC via LazyContainer, then read with the unverified
     // format reader to avoid paging the body in twice.
     lazy.verify_now(section_name)?;
-    let bytes: &'static [u8] = &static_bytes[off..off + len];
+    let bytes: &'static [u8] = &static_bytes[off..end];
     let parsed = parse(bytes)?;
     Ok(parsed)
 }
@@ -1811,17 +1857,25 @@ fn load_mode_data_from_bundle(
             .ok_or_else(|| anyhow::anyhow!("missing mode bundle section '{}'", name))?;
         let off = entry.offset as usize;
         let len = entry.len as usize;
+        let end = off.checked_add(len).ok_or_else(|| {
+            anyhow::anyhow!(
+                "section '{}' offset+len overflows usize (off={}, len={})",
+                name,
+                off,
+                len
+            )
+        })?;
         anyhow::ensure!(
-            off + len <= static_bytes.len(),
+            end <= static_bytes.len(),
             "section '{}' bytes [{},{}) exceed mmap len {}",
             name,
             off,
-            off + len,
+            end,
             static_bytes.len()
         );
         // #161: drive lazy CRC verification before handing out bytes.
         lazy.verify_now(&name)?;
-        Ok(&static_bytes[off..off + len])
+        Ok(&static_bytes[off..end])
     };
 
     // ---- Server-only mapping sections (#153) -------------------
