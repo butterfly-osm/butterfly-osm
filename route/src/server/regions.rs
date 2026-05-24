@@ -136,13 +136,20 @@ enum RegionState {
 impl RegionEntry {
     /// Read the per-region `ServerState`, lazy-loading from the
     /// container on first access if the entry was registered as
-    /// `Pending`. Today the boot path is eager (every entry constructed
-    /// as `Loaded`), so the read-lock fast path always wins.
+    /// `Pending`. The default `serve --data-dir` boot path is
+    /// **lazy** (every entry starts as `Pending`); operators that
+    /// pass `--eager-regions` get the legacy stall-at-boot behaviour
+    /// where every entry is constructed `Loaded` up front. Either
+    /// way, once an entry is `Loaded` the read-lock fast path wins.
     ///
-    /// Panics if the lazy load fails. Future work will surface load
-    /// errors via `try_state(&self) -> Result<Arc<ServerState>>` for
-    /// callers that want graceful degradation; `state()` will remain
-    /// the panic-on-fail flavour for the legacy eager path.
+    /// Panics if the lazy load fails. This is intentional for now:
+    /// a corrupt-container failure is a deployment-time error, not a
+    /// per-request graceful-degradation case. The panic propagates
+    /// out of the serving handler and Axum's `CatchPanicLayer` turns
+    /// it into a 500. A future [`Self::try_state`] returning
+    /// `Result<Arc<ServerState>>` would let handlers downgrade to a
+    /// 503 with `Retry-After`; until that ships, treat
+    /// `state()` as the panic-on-fail flavour.
     ///
     /// #292 Phase 6: every successful resolution (fast path or slow
     /// path) bumps `last_used_ms` so the LRU eviction poller can pick
