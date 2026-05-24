@@ -615,11 +615,22 @@ fn encode_linestring_wkb_into(points: &[Point], out: &mut Vec<u8>) {
 }
 
 /// #273 per-worker scratch buffers. Reused across pairs in the same
-/// `std::thread::scope` worker. Each pair calls `compute_route_pair`
-/// passing `&mut RouteScratch`; the buffers are cleared at the start
-/// of each call. The final WKB is moved out via `std::mem::take`
-/// (handed off to the Arrow `BinaryBuilder`) and replaced with a
-/// fresh empty `Vec`, so the next pair starts clean.
+/// `std::thread::scope` worker.
+///
+/// `rank_path`, `ebg_path`, and `points` are reused with their
+/// capacity intact: each call clears them and re-uses the allocation.
+/// **`wkb` is different**: the final byte vector must escape into the
+/// Arrow `BinaryBuilder`, so we hand its ownership out via
+/// `std::mem::take` and the next call starts with an empty Vec
+/// (capacity zero). That means the WKB allocation is **not** amortised
+/// across pairs — it's per-pair by necessity. Documented here so the
+/// shape of the struct doesn't suggest a stronger guarantee than it
+/// can offer.
+///
+/// If WKB allocation is ever shown to dominate a profile (it does not
+/// today on Belgium), the path forward is a per-worker WKB arena +
+/// (offset, len) tracking with a single drain into the Arrow builder
+/// at the end of the chunk.
 #[derive(Default)]
 struct RouteScratch {
     rank_path: Vec<u32>,
@@ -683,9 +694,7 @@ fn compute_route_pair(
             && dst_rank != u32::MAX
             && let Some(result) = query.query(src_rank, dst_rank)
         {
-            return Some(build_route_output(
-                state, mode_data, &result, src_rank, dst_rank, scratch,
-            ));
+            return Some(build_route_output(state, mode_data, &result, src_rank, scratch));
         }
     }
 
@@ -722,8 +731,8 @@ fn compute_route_pair(
         &dst_snap.ranks,
         super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
     )
-    .map(|(src_rank, dst_rank, result)| {
-        build_route_output(state, mode_data, &result, src_rank, dst_rank, scratch)
+    .map(|(src_rank, _dst_rank, result)| {
+        build_route_output(state, mode_data, &result, src_rank, scratch)
     })
 }
 
@@ -737,7 +746,6 @@ fn build_route_output(
     mode_data: &super::state::ModeData,
     result: &super::query::QueryResult,
     src_rank: u32,
-    dst_rank: u32,
     scratch: &mut RouteScratch,
 ) -> (f32, f32, Vec<u8>) {
     let duration_s = result.distance as f64 / 10.0;
@@ -750,7 +758,6 @@ fn build_route_output(
         src_rank,
         &mut scratch.rank_path,
     );
-    let _ = dst_rank; // unpack derives the path from forward+backward parents
 
     // Translate CCH-rank ids → original EBG ids, reusing scratch.ebg_path.
     scratch.ebg_path.clear();
