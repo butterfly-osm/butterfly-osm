@@ -72,6 +72,10 @@ pub struct MetricReport {
     /// directions because each bidirectional CCH query touches both
     /// the UP and DOWN graphs).
     pub hot: HotStats,
+    /// Section D — cumulative rounding sensitivity at s/m precision.
+    pub rounding: RoundingStats,
+    /// Section E — triangle relaxation tie rate at cs vs s.
+    pub tie: TieStats,
 }
 
 #[derive(Debug, Serialize)]
@@ -100,6 +104,58 @@ pub struct StaticStats {
     /// Log-spaced histogram. Keys are the bucket upper bound or
     /// `"inf"` for the INF bucket. Values are edge counts.
     pub log_histogram: BTreeMap<String, u64>,
+}
+
+// ---- Section D ------------------------------------------------------------
+
+#[derive(Debug, Serialize, Default, Clone)]
+pub struct RoundingStats {
+    /// Number of routes evaluated. Routes that fail to snap or
+    /// are unreachable are excluded (the spec asks for "1 000
+    /// random P2P routes" — we re-roll until we have that many or
+    /// exhaust a reasonable attempt budget).
+    pub n_routes_total: u64,
+    pub n_routes_attempted: u64,
+    pub n_routes_unreachable: u64,
+    /// Median absolute drift (%) — small, robust to outliers.
+    pub median_drift_pct: f64,
+    /// p90, p99 absolute drift (%).
+    pub p90_drift_pct: f64,
+    pub p99_drift_pct: f64,
+    /// Max absolute drift (%).
+    pub max_drift_pct: f64,
+    /// Mean absolute drift (%).
+    pub mean_drift_pct: f64,
+    /// Number of routes with drift > 1 / 5 / 10 percent.
+    pub drift_over_1pct_count: u64,
+    pub drift_over_5pct_count: u64,
+    pub drift_over_10pct_count: u64,
+    /// Fraction over 1% — exposed for the verdict in the markdown
+    /// report.
+    pub frac_over_1pct: f64,
+}
+
+// ---- Section E ------------------------------------------------------------
+
+#[derive(Debug, Serialize, Default, Clone)]
+pub struct TieStats {
+    /// Number of (x, m, y) triangles enumerated. Each apex `m`
+    /// contributes one entry per (x, y) pair where x precedes m in
+    /// the DOWN graph and y succeeds m in the UP graph and (x → y)
+    /// exists in the CCH topology.
+    pub n_triangles_total: u64,
+    /// Number of triangles where `w(x, y) == w(x → m) + w(m → y)`
+    /// exactly at cs precision. INF entries on any leg disqualify
+    /// the triangle from the tie count (a tie with INF is
+    /// meaningless).
+    pub n_ties_cs: u64,
+    /// Same at s precision: each weight rounded with
+    /// `round_half_even_div(w, 100)` before the comparison.
+    pub n_ties_s: u64,
+    /// Tie rates and the rate delta `tie_rate_s - tie_rate_cs`.
+    pub tie_rate_cs: f64,
+    pub tie_rate_s: f64,
+    pub tie_rate_delta: f64,
 }
 
 // ---- Section B ------------------------------------------------------------
@@ -407,6 +463,90 @@ pub fn run_weight_profile(
     }
     println!();
 
+    // ---- Section D -------------------------------------------------------
+    println!(
+        "[5/?] Section D: cumulative rounding sensitivity (1 000 random P2P routes)..."
+    );
+    let mut rounding_d: BTreeMap<String, (RoundingStats, RoundingStats)> = BTreeMap::new();
+    let d_pairs = generate_rounding_pairs(&bbox);
+    for (mode_idx, mode_name) in state.mode_names.iter().enumerate() {
+        let mode_data = &state.modes[mode_idx];
+        let snapped: Vec<(u32, u32)> = snap_od_pairs(&state, &d_pairs, mode_idx as u8);
+        let n_nodes = mode_data.cch_topo.n_nodes as usize;
+
+        let t_start = std::time::Instant::now();
+        let r_time = run_rounding_routes(
+            n_nodes,
+            &mode_data.up_adj_flat,
+            &mode_data.down_rev_flat,
+            &snapped,
+            100, // s = cs / 100
+        );
+        let d_start = std::time::Instant::now();
+        let r_dist = run_rounding_routes(
+            n_nodes,
+            &mode_data.up_adj_flat_dist,
+            &mode_data.down_rev_flat_dist,
+            &snapped,
+            1000, // m = mm / 1000
+        );
+        println!(
+            "  - {}: time {} routes (median {:.4}%, p99 {:.4}%, >1% {}/{}) in {:.1}s; \
+             dist {} routes (median {:.4}%, p99 {:.4}%, >1% {}/{}) in {:.1}s",
+            mode_name,
+            r_time.n_routes_total,
+            r_time.median_drift_pct,
+            r_time.p99_drift_pct,
+            r_time.drift_over_1pct_count,
+            r_time.n_routes_total,
+            t_start.elapsed().as_secs_f64() - (d_start.elapsed().as_secs_f64()),
+            r_dist.n_routes_total,
+            r_dist.median_drift_pct,
+            r_dist.p99_drift_pct,
+            r_dist.drift_over_1pct_count,
+            r_dist.n_routes_total,
+            d_start.elapsed().as_secs_f64(),
+        );
+        rounding_d.insert(mode_name.clone(), (r_time, r_dist));
+    }
+    println!();
+
+    // ---- Section E -------------------------------------------------------
+    println!(
+        "[6/?] Section E: triangle-relaxation tie rate (cs vs s precision)..."
+    );
+    let mut tie_e: BTreeMap<String, (TieStats, TieStats)> = BTreeMap::new();
+    for (mode_idx, mode_name) in state.mode_names.iter().enumerate() {
+        let mode_data = &state.modes[mode_idx];
+        let t_start = std::time::Instant::now();
+        let tie_time = compute_tie_stats(&mode_data.cch_topo, &mode_data.cch_weights, 100);
+        let tt = t_start.elapsed().as_secs_f64();
+        let d_start = std::time::Instant::now();
+        let tie_dist = compute_tie_stats(&mode_data.cch_topo, &mode_data.cch_weights_dist, 1000);
+        let td = d_start.elapsed().as_secs_f64();
+        println!(
+            "  - {}: time {} triangles, {} ties cs ({:.4}%) → {} ties s ({:.4}%) Δ={:+.4}% in {:.1}s; \
+             dist {} triangles, {} ties cs ({:.4}%) → {} ties s ({:.4}%) Δ={:+.4}% in {:.1}s",
+            mode_name,
+            tie_time.n_triangles_total,
+            tie_time.n_ties_cs,
+            100.0 * tie_time.tie_rate_cs,
+            tie_time.n_ties_s,
+            100.0 * tie_time.tie_rate_s,
+            100.0 * tie_time.tie_rate_delta,
+            tt,
+            tie_dist.n_triangles_total,
+            tie_dist.n_ties_cs,
+            100.0 * tie_dist.tie_rate_cs,
+            tie_dist.n_ties_s,
+            100.0 * tie_dist.tie_rate_s,
+            100.0 * tie_dist.tie_rate_delta,
+            td,
+        );
+        tie_e.insert(mode_name.clone(), (tie_time, tie_dist));
+    }
+    println!();
+
     // ---- Assemble per-mode report ---------------------------------------
     let mut modes_report: BTreeMap<String, ModeReport> = BTreeMap::new();
     for mode_name in state.mode_names.iter() {
@@ -414,6 +554,8 @@ pub fn run_weight_profile(
         let (tb_up, tb_dn, db_up, db_dn) =
             blocks_c.remove(mode_name).expect("blocks C populated");
         let (hot_time, hot_dist) = hot_b.remove(mode_name).expect("hot B populated");
+        let (r_time, r_dist) = rounding_d.remove(mode_name).expect("rounding D populated");
+        let (tie_time, tie_dist) = tie_e.remove(mode_name).expect("tie E populated");
         modes_report.insert(
             mode_name.clone(),
             ModeReport {
@@ -421,11 +563,15 @@ pub fn run_weight_profile(
                     statik: DirectionPair { up: t_up, down: t_dn },
                     blocks: DirectionPair { up: tb_up, down: tb_dn },
                     hot: hot_time,
+                    rounding: r_time,
+                    tie: tie_time,
                 },
                 dist: MetricReport {
                     statik: DirectionPair { up: d_up, down: d_dn },
                     blocks: DirectionPair { up: db_up, down: db_dn },
                     hot: hot_dist,
+                    rounding: r_dist,
+                    tie: tie_dist,
                 },
             },
         );
@@ -1149,6 +1295,377 @@ fn run_one_query(
     }
 
     best_dist != u32::MAX
+}
+
+// ---------- Section D helpers ----------------------------------------------
+
+/// Generate 4 000 OD pairs from the bbox using a fixed sub-seed
+/// (0xDD_1F_7E) distinct from the corpus / hot seeds. The over-
+/// sample budget targets ~1 000 *successful* snapped routes on
+/// Belgium, where ~35 % of bbox-uniform pairs snap to both ends
+/// (the bbox includes large non-Belgium chunks of FR / NL / DE
+/// and the North Sea — about 65 % of uniform draws land outside
+/// any reachable road).
+fn generate_rounding_pairs(bbox: &Bbox) -> Vec<OdPair> {
+    let mut rng = StdRng::seed_from_u64(0xDD_1F_7E);
+    (0..4_000).map(|_| rng_od_pair(&mut rng, bbox)).collect()
+}
+
+/// For each snapped OD pair, run a bidirectional CCH P2P, recover
+/// the path's per-edge weights, and compare cs/mm vs s/m precision
+/// totals. `divisor` is the cs → s factor (100) or mm → m factor
+/// (1000) depending on metric. Returns the populated `RoundingStats`.
+///
+/// `drift_pct = |sum_ref_cs - sum_round_cs| / sum_ref_cs`, where
+/// `sum_round_cs = (sum of per-edge round_half_even_div(w, divisor))
+/// * divisor`. This compares the path's true cs total against the
+/// total you'd see if each edge weight were stored in s/m units and
+/// reconstructed by multiplication.
+fn run_rounding_routes(
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    down_rev_flat: &DownReverseAdjFlat,
+    snapped: &[(u32, u32)],
+    divisor: u32,
+) -> RoundingStats {
+    // Per-route drift values; sorted at the end for percentiles.
+    let drifts: Vec<f64> = snapped
+        .par_iter()
+        .filter_map(|&(src, dst)| {
+            let path = path_edges(n_nodes, up_adj_flat, down_rev_flat, src, dst)?;
+            if path.is_empty() {
+                return Some(0.0);
+            }
+            let mut sum_cs: u64 = 0;
+            let mut sum_round_cs: u64 = 0;
+            for &w in &path {
+                sum_cs = sum_cs.saturating_add(w as u64);
+                let q = round_half_even_div(w as u64, divisor as u64);
+                sum_round_cs = sum_round_cs.saturating_add(q * divisor as u64);
+            }
+            if sum_cs == 0 {
+                return Some(0.0);
+            }
+            let diff = (sum_cs as i64 - sum_round_cs as i64).unsigned_abs();
+            let drift = diff as f64 / sum_cs as f64 * 100.0;
+            Some(drift)
+        })
+        .collect();
+
+    let mut sorted = drifts;
+    let n_total = sorted.len() as u64;
+    let n_attempted = snapped.len() as u64;
+    let n_unreachable = n_attempted.saturating_sub(n_total);
+    if sorted.is_empty() {
+        return RoundingStats {
+            n_routes_total: 0,
+            n_routes_attempted: n_attempted,
+            n_routes_unreachable: n_unreachable,
+            ..Default::default()
+        };
+    }
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    let n = sorted.len();
+    let median_idx = percentile_index(n, 50_000);
+    let p90_idx = percentile_index(n, 90_000);
+    let p99_idx = percentile_index(n, 99_000);
+    let median = sorted[median_idx];
+    let p90 = sorted[p90_idx];
+    let p99 = sorted[p99_idx];
+    let max = *sorted.last().unwrap();
+    let mean = sorted.iter().copied().sum::<f64>() / n as f64;
+
+    let over_1 = sorted.iter().filter(|&&d| d > 1.0).count() as u64;
+    let over_5 = sorted.iter().filter(|&&d| d > 5.0).count() as u64;
+    let over_10 = sorted.iter().filter(|&&d| d > 10.0).count() as u64;
+    let frac_over_1 = over_1 as f64 / n as f64;
+
+    RoundingStats {
+        n_routes_total: n_total,
+        n_routes_attempted: n_attempted,
+        n_routes_unreachable: n_unreachable,
+        median_drift_pct: median,
+        p90_drift_pct: p90,
+        p99_drift_pct: p99,
+        max_drift_pct: max,
+        mean_drift_pct: mean,
+        drift_over_1pct_count: over_1,
+        drift_over_5pct_count: over_5,
+        drift_over_10pct_count: over_10,
+        frac_over_1pct: frac_over_1,
+    }
+}
+
+/// Run bidirectional CCH P2P from `source` to `target` and return
+/// the sequence of per-CCH-edge weights along the meeting-node
+/// path. Mirrors `CchQuery::query` but does not unpack shortcuts —
+/// the spec's "round each edge weight independently" is over the
+/// CCH edges as stored, which is what the query actually reads.
+///
+/// Returns `None` if the search finds no finite path. Returns
+/// `Some(vec![])` for the trivial `source == target` case.
+fn path_edges(
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    down_rev_flat: &DownReverseAdjFlat,
+    source: u32,
+    target: u32,
+) -> Option<Vec<u32>> {
+    if source == target {
+        return Some(Vec::new());
+    }
+
+    let mut dist_fwd = vec![u32::MAX; n_nodes];
+    let mut dist_bwd = vec![u32::MAX; n_nodes];
+    // Per-node parent: (prev_node, edge_weight). The edge weight is
+    // captured at relaxation time so we don't have to re-find the
+    // slot later (the search graph is CSR; the parent slot is in
+    // the *predecessor*'s out-edge list, so we'd have to scan).
+    let mut parent_fwd: Vec<(u32, u32)> = vec![(u32::MAX, 0); n_nodes];
+    let mut parent_bwd: Vec<(u32, u32)> = vec![(u32::MAX, 0); n_nodes];
+    let mut pq_fwd: PriorityQueue<u32, Reverse<u32>> = PriorityQueue::new();
+    let mut pq_bwd: PriorityQueue<u32, Reverse<u32>> = PriorityQueue::new();
+
+    dist_fwd[source as usize] = 0;
+    dist_bwd[target as usize] = 0;
+    pq_fwd.push(source, Reverse(0));
+    pq_bwd.push(target, Reverse(0));
+
+    let mut best_dist = u32::MAX;
+    let mut meeting_node = u32::MAX;
+
+    while !pq_fwd.is_empty() || !pq_bwd.is_empty() {
+        let fwd_min = pq_fwd.peek().map(|(_, &Reverse(d))| d).unwrap_or(u32::MAX);
+        let bwd_min = pq_bwd.peek().map(|(_, &Reverse(d))| d).unwrap_or(u32::MAX);
+        if fwd_min >= best_dist && bwd_min >= best_dist {
+            break;
+        }
+        if let Some((u, Reverse(d))) = pq_fwd.pop() {
+            if d <= dist_fwd[u as usize] {
+                let bwd_d = dist_bwd[u as usize];
+                if bwd_d != u32::MAX {
+                    let total = d.saturating_add(bwd_d);
+                    if total < best_dist {
+                        best_dist = total;
+                        meeting_node = u;
+                    }
+                }
+                let start = up_adj_flat.offsets[u as usize] as usize;
+                let end = up_adj_flat.offsets[u as usize + 1] as usize;
+                for slot in start..end {
+                    let v = up_adj_flat.targets[slot];
+                    let w = up_adj_flat.weights[slot];
+                    let new_dist = d.saturating_add(w);
+                    if new_dist < dist_fwd[v as usize] {
+                        dist_fwd[v as usize] = new_dist;
+                        parent_fwd[v as usize] = (u, w);
+                        pq_fwd.push(v, Reverse(new_dist));
+                        let bwd_v = dist_bwd[v as usize];
+                        if bwd_v != u32::MAX {
+                            let total = new_dist.saturating_add(bwd_v);
+                            if total < best_dist {
+                                best_dist = total;
+                                meeting_node = v;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((u, Reverse(d))) = pq_bwd.pop() {
+            if d <= dist_bwd[u as usize] {
+                let fwd_d = dist_fwd[u as usize];
+                if fwd_d != u32::MAX {
+                    let total = d.saturating_add(fwd_d);
+                    if total < best_dist {
+                        best_dist = total;
+                        meeting_node = u;
+                    }
+                }
+                let start = down_rev_flat.offsets[u as usize] as usize;
+                let end = down_rev_flat.offsets[u as usize + 1] as usize;
+                for slot in start..end {
+                    let x = down_rev_flat.sources[slot];
+                    let w = down_rev_flat.weights[slot];
+                    let new_dist = d.saturating_add(w);
+                    if new_dist < dist_bwd[x as usize] {
+                        dist_bwd[x as usize] = new_dist;
+                        parent_bwd[x as usize] = (u, w);
+                        pq_bwd.push(x, Reverse(new_dist));
+                        let fwd_x = dist_fwd[x as usize];
+                        if fwd_x != u32::MAX {
+                            let total = new_dist.saturating_add(fwd_x);
+                            if total < best_dist {
+                                best_dist = total;
+                                meeting_node = x;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if best_dist == u32::MAX {
+        return None;
+    }
+
+    // Reconstruct path: forward from source → meeting_node, then
+    // backward from meeting_node → target. Collect only the edge
+    // weights since that's all the rounding analysis needs.
+    let mut weights: Vec<u32> = Vec::new();
+    let mut cur = meeting_node;
+    while cur != source {
+        let (prev, w) = parent_fwd[cur as usize];
+        if prev == u32::MAX {
+            // Disconnected on the forward side; can happen on
+            // bidirectional search if `meeting_node` is itself the
+            // source. Treat as empty path on this leg.
+            break;
+        }
+        weights.push(w);
+        cur = prev;
+    }
+    weights.reverse();
+    let mut cur = meeting_node;
+    while cur != target {
+        let (prev, w) = parent_bwd[cur as usize];
+        if prev == u32::MAX {
+            break;
+        }
+        weights.push(w);
+        cur = prev;
+    }
+    Some(weights)
+}
+
+// ---------- Section E helpers ----------------------------------------------
+
+/// Enumerate every triangle `(x, m, y)` in the CCH topology and
+/// count ties of `w(x, y) == w(x → m) + w(m → y)` at cs vs at
+/// quantised precision (`divisor` = 100 for s, 1000 for m).
+///
+/// For each apex `m`, walk `m`'s DOWN edges (those land at lower-
+/// rank nodes `x`) and `m`'s UP edges (those land at higher-rank
+/// nodes `y`). The triangle is closed by either an UP edge (x →
+/// y) or a DOWN edge (x → y) depending on whether y has higher or
+/// lower rank than x.
+///
+/// Parallelised by apex `m` with rayon. Each thread accumulates
+/// into local `(n_total, n_ties_cs, n_ties_s)` triples; the reduce
+/// is plain addition.
+fn compute_tie_stats(
+    topo: &butterfly_route::formats::CchTopo,
+    weights: &butterfly_route::formats::CchWeights,
+    divisor: u32,
+) -> TieStats {
+    let n_nodes = topo.n_nodes as usize;
+
+    let (n_total, n_ties_cs, n_ties_s) = (0..n_nodes)
+        .into_par_iter()
+        .map(|m| {
+            let mut local_total: u64 = 0;
+            let mut local_ties_cs: u64 = 0;
+            let mut local_ties_s: u64 = 0;
+
+            // Walk down edges from m (lower-rank neighbours x).
+            let down_start = topo.down_offsets[m] as usize;
+            let down_end = topo.down_offsets[m + 1] as usize;
+            // Walk up edges from m (higher-rank neighbours y).
+            let up_start = topo.up_offsets[m] as usize;
+            let up_end = topo.up_offsets[m + 1] as usize;
+            if down_end == down_start || up_end == up_start {
+                return (0u64, 0u64, 0u64);
+            }
+
+            for i_xm in down_start..down_end {
+                let x = topo.down_targets[i_xm] as usize;
+                let w_xm = weights.down[i_xm];
+                if w_xm == u32::MAX {
+                    continue;
+                }
+                let w_xm_s = round_half_even_div(w_xm as u64, divisor as u64);
+
+                for i_my in up_start..up_end {
+                    let y = topo.up_targets[i_my] as usize;
+                    if y == x {
+                        continue;
+                    }
+                    let w_my = weights.up[i_my];
+                    if w_my == u32::MAX {
+                        continue;
+                    }
+                    let w_my_s = round_half_even_div(w_my as u64, divisor as u64);
+
+                    // Direct edge (x → y). Two cases: y > x → UP, y < x → DOWN.
+                    let direct_w = if y > x {
+                        find_edge_weight(x, y, &topo.up_offsets, &topo.up_targets, &weights.up)
+                    } else {
+                        find_edge_weight(x, y, &topo.down_offsets, &topo.down_targets, &weights.down)
+                    };
+                    if direct_w == u32::MAX {
+                        // No closing edge — not a triangle.
+                        continue;
+                    }
+                    local_total += 1;
+
+                    let two_hop = w_xm.saturating_add(w_my);
+                    if direct_w == two_hop {
+                        local_ties_cs += 1;
+                    }
+                    let direct_w_s = round_half_even_div(direct_w as u64, divisor as u64);
+                    let two_hop_s = w_xm_s.saturating_add(w_my_s);
+                    if direct_w_s == two_hop_s {
+                        local_ties_s += 1;
+                    }
+                }
+            }
+            (local_total, local_ties_cs, local_ties_s)
+        })
+        .reduce(|| (0u64, 0u64, 0u64), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2));
+
+    let rate_cs = if n_total > 0 {
+        n_ties_cs as f64 / n_total as f64
+    } else {
+        0.0
+    };
+    let rate_s = if n_total > 0 {
+        n_ties_s as f64 / n_total as f64
+    } else {
+        0.0
+    };
+    TieStats {
+        n_triangles_total: n_total,
+        n_ties_cs,
+        n_ties_s,
+        tie_rate_cs: rate_cs,
+        tie_rate_s: rate_s,
+        tie_rate_delta: rate_s - rate_cs,
+    }
+}
+
+/// CCH CSR lookup: given `(u, v)` find the weight on edge `u → v`
+/// in the offsets/targets/weights triple. Returns `u32::MAX` if
+/// the edge doesn't exist. The targets slice is sorted ascending
+/// per CCH invariants, so we use binary search.
+#[inline]
+fn find_edge_weight(
+    u: usize,
+    v: usize,
+    offsets: &[u64],
+    targets: &[u32],
+    weights: &[u32],
+) -> u32 {
+    let start = offsets[u] as usize;
+    let end = offsets[u + 1] as usize;
+    if start >= end {
+        return u32::MAX;
+    }
+    match targets[start..end].binary_search(&(v as u32)) {
+        Ok(idx) => weights[start + idx],
+        Err(_) => u32::MAX,
+    }
 }
 
 // ---------- Section C helpers ----------------------------------------------
