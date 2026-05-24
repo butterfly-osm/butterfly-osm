@@ -1898,16 +1898,24 @@ fn load_mode_data_from_bundle(
             Some(entry) => {
                 let off = entry.offset as usize;
                 let len = entry.len as usize;
+                let end = off.checked_add(len).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "section '{}' offset+len overflows usize (off={}, len={})",
+                        section_name,
+                        off,
+                        len
+                    )
+                })?;
                 anyhow::ensure!(
-                    off + len <= static_bytes.len(),
+                    end <= static_bytes.len(),
                     "section '{}' bytes [{},{}) exceed mmap len {}",
                     section_name,
                     off,
-                    off + len,
+                    end,
                     static_bytes.len()
                 );
                 lazy.verify_now(&section_name)?;
-                Ok(Some(&static_bytes[off..off + len]))
+                Ok(Some(&static_bytes[off..end]))
             }
             None => Ok(None),
         }
@@ -1991,7 +1999,26 @@ fn load_mode_data_from_bundle(
                 if let Some(entry) = container.get(&nm) {
                     let off = entry.offset as usize;
                     let len = entry.len as usize;
-                    let range = &static_bytes[off..off + len];
+                    let Some(end) = off.checked_add(len) else {
+                        tracing::warn!(
+                            section = %nm,
+                            offset = off,
+                            len = len,
+                            "section offset+len overflows usize; skipping madvise"
+                        );
+                        continue;
+                    };
+                    if end > static_bytes.len() {
+                        tracing::warn!(
+                            section = %nm,
+                            offset = off,
+                            len = len,
+                            mmap_len = static_bytes.len(),
+                            "section out-of-bounds vs mmap; skipping madvise"
+                        );
+                        continue;
+                    }
+                    let range = &static_bytes[off..end];
                     match crate::formats::mmap::madvise_dontneed(range) {
                         Ok(()) => tracing::info!(
                             section = %nm,
