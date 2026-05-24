@@ -774,9 +774,9 @@ fn route_batch_worker_threads(n_pairs: usize) -> usize {
 /// geometry on a Belgium route averages ~6–7 KiB; 2000 pairs ≈ 12 MiB,
 /// leaving headroom for unusually long routes (50+ KiB transcontinental
 /// shapes are not Belgium, but the cap must hold in the worst case).
-/// Override via `BUTTERFLY_ROUTE_BATCH_BATCH_SIZE` if needed.
+/// Override via `BUTTERFLY_ROUTE_BATCH_SIZE` if needed.
 fn route_batch_batch_size() -> usize {
-    std::env::var("BUTTERFLY_ROUTE_BATCH_BATCH_SIZE")
+    std::env::var("BUTTERFLY_ROUTE_BATCH_SIZE")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|&v| v > 0)
