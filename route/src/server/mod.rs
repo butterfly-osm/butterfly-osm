@@ -332,8 +332,8 @@ pub async fn serve(
     for r in &regions_state.regions {
         crate::server::region_metrics::register_region_size(
             &r.id,
-            r.state.ebg_nodes.n_nodes as u64,
-            r.state.ebg_csr.n_arcs,
+            r.state().ebg_nodes.n_nodes as u64,
+            r.state().ebg_csr.n_arcs,
         );
     }
 

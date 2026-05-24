@@ -69,11 +69,11 @@ pub async fn regions_handler(State(regions): State<Arc<RegionsState>>) -> impl I
         .map(|r| LoadedRegion {
             id: r.id.clone(),
             container: r.container.display().to_string(),
-            nodes: r.state.ebg_nodes.n_nodes as u64,
-            edges: r.state.ebg_csr.n_arcs,
+            nodes: r.state().ebg_nodes.n_nodes as u64,
+            edges: r.state().ebg_csr.n_arcs,
             verify_status: r.verify_status.label(),
-            named_roads: r.state.way_names.len(),
-            modes: r.state.mode_names.clone(),
+            named_roads: r.state().way_names.len(),
+            modes: r.state().mode_names.clone(),
         })
         .collect();
     Json(RegionsResponse { loaded })

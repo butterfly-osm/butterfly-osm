@@ -27,9 +27,9 @@ pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl In
     let total_nodes: u64 = regions
         .regions
         .iter()
-        .map(|r| r.state.ebg_nodes.n_nodes as u64)
+        .map(|r| r.state().ebg_nodes.n_nodes as u64)
         .sum();
-    let total_edges: u64 = regions.regions.iter().map(|r| r.state.ebg_csr.n_arcs).sum();
+    let total_edges: u64 = regions.regions.iter().map(|r| r.state().ebg_csr.n_arcs).sum();
 
     // #160: aggregate lazy-CRC verification status across every loaded
     // region. The `verify_status` field is `ok` if no region has a
@@ -45,7 +45,7 @@ pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl In
         let mut failed: Vec<serde_json::Value> = Vec::new();
         let mut any_lazy = false;
         for region in regions.regions.iter() {
-            if let Some(lazy) = &region.state.lazy {
+            if let Some(lazy) = &region.state().lazy {
                 any_lazy = true;
                 for (name, rt) in lazy.iter_runtimes() {
                     n_sections += 1;
@@ -93,7 +93,7 @@ pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl In
         .regions
         .iter()
         .map(|region| {
-            let (hits, misses, size, capacity) = region.state.avoid_cache.stats();
+            let (hits, misses, size, capacity) = region.state().avoid_cache.stats();
             // Mirror current stats into the Prometheus registry so the
             // next /metrics scrape sees fresh values. /health is the
             // natural "snapshot" hook — typical ops setups poll it
