@@ -302,6 +302,18 @@ Tickets are grouped informally by area:
 3. **No sloppiness** — Code must be correct, not "good enough"
 4. **Prove it works** — Run on belgium.pbf and verify lock conditions pass
 5. **No assumptions** — If uncertain, investigate; don't guess
+6. **Never stop if you have a backlog** — In `/loop` dynamic mode or any
+   autonomous task, do NOT schedule long waits while open tickets,
+   pending PR reviews, or unstarted follow-up work exist. Pick up the
+   next backlog item and start it. Scheduling fallback waits is for
+   truly idle external blockers (CI, deploys, remote queues) — not for
+   "I'm tired" or "I've done enough today". The user is explicit:
+   *"I want this done better than anyone else"*.
+7. **Never call a perf gap "structural" without asking codex** —
+   Dismissing residual performance gaps as irreducible (e.g. "edge-based
+   CCH has 2.5× more states than node-based") is laziness disguised as
+   analysis. Before claiming a gap is structural, invoke codex (no
+   timeouts, no leading) with full context and let it find the wins.
 
 **If code cannot be completed correctly, stop and ask rather than writing incomplete code.**
 
