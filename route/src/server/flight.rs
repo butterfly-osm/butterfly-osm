@@ -778,17 +778,22 @@ fn route_batch_worker_threads(n_pairs: usize) -> usize {
 /// Per-record-batch pair count. Each emitted Arrow `RecordBatch` carries
 /// at most this many `(src, dst, dur, dist, wkb)` rows.
 ///
-/// Sized for the gRPC `max_encoding_message_size` of 64 MiB. WKB
-/// geometry on a Belgium route averages ~6–7 KiB; 2000 pairs ≈ 12 MiB,
-/// leaving headroom for unusually long routes (50+ KiB transcontinental
-/// shapes are not Belgium, but the cap must hold in the worst case).
-/// Override via `BUTTERFLY_ROUTE_BATCH_SIZE` if needed.
+/// Sized for the gRPC `max_encoding_message_size` of 64 MiB. Default 1000:
+///   - Belgium WKB avg ~6-7 KiB → 1000 pairs ≈ 6-7 MiB per batch
+///   - Transcontinental WKB ~50 KiB → 1000 pairs ≈ 50 MiB, still under cap
+///   - Fixed-size columns (src/dst/dur/dist = 32 bytes/row) negligible
+///
+/// Override via `BUTTERFLY_ROUTE_BATCH_SIZE` if you know your WKB sizes
+/// fit in a higher cap, or set it lower for very long routes. PR #294
+/// review confirmed 2000 was unsafe at the 50 KiB tail; 1000 is the
+/// conservative default. A future change (#TBD) should switch to
+/// adaptive byte-aware chunking instead of a fixed pair count.
 fn route_batch_batch_size() -> usize {
     std::env::var("BUTTERFLY_ROUTE_BATCH_SIZE")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|&v| v > 0)
-        .unwrap_or(2_000)
+        .unwrap_or(1_000)
 }
 
 fn do_route_batch(
