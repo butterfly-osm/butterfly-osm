@@ -11,12 +11,13 @@
 //! mmap with no heap copy.
 
 use anyhow::Result;
-use std::borrow::Cow;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
+use std::sync::Arc;
 
 use super::crc;
+use super::mmap::ArcCow;
 
 const MAGIC: u32 = 0x4542474E; // "EBGN"
 const VERSION: u16 = 1;
@@ -46,10 +47,11 @@ pub struct EbgNodes {
     pub n_nodes: u32,
     pub created_unix: u64,
     pub inputs_sha: [u8; 32],
-    /// Flat node array. Borrowed (zero-copy) when read from a
-    /// `'static` byte slice (mmap-backed container section), owned
-    /// otherwise. Indexed by `ebg_id`.
-    pub nodes: Cow<'static, [EbgNode]>,
+    /// Flat node array. Owned when read from a plain file or built
+    /// in memory; Arc-backed mmap view when read from a container
+    /// section. Indexed by `ebg_id`. See [`ArcCow`] for the variant
+    /// shape and the eviction story (#296).
+    pub nodes: ArcCow<EbgNode>,
 }
 
 pub struct EbgNodesFile;
@@ -193,14 +195,14 @@ impl EbgNodesFile {
             n_nodes,
             created_unix,
             inputs_sha,
-            nodes: Cow::Owned(nodes),
+            nodes: ArcCow::from_vec(nodes),
         })
     }
 
-    /// Zero-copy reader for `'static` byte slices (mmap-backed
-    /// container sections). The body is reinterpreted as
-    /// `&'static [EbgNode]` directly from the mapping — no heap
-    /// allocation. CRC is verified before returning.
+    /// Zero-copy reader for `'static` byte slices (test fixtures that
+    /// leak a `Box<[u8]>`). Production loaders should use
+    /// [`Self::read_from_mmap_unverified`] which keeps the
+    /// `Arc<Mmap>` strong-count tied to the returned struct.
     ///
     /// The caller (the container) guarantees that the section bytes
     /// start at an 8-byte boundary; combined with the 64-byte header,
@@ -215,6 +217,52 @@ impl EbgNodesFile {
     /// verified upstream (e.g. via the container's lazy CRC layer).
     pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<EbgNodes> {
         Self::read_from_bytes_zero_copy_inner(bytes, false)
+    }
+
+    /// Production mmap-backed reader (#296). Holds an `Arc<Mmap>`
+    /// clone for the returned struct's lifetime — when the struct
+    /// drops, the strong count decreases. Once all clones drop, the
+    /// `Mmap` drops, `munmap` fires, and the kernel reclaims the
+    /// pages.
+    ///
+    /// `byte_offset` and `byte_len` are the position and length of
+    /// the section within the container, as recorded in the directory
+    /// entry. CRC walking is the caller's responsibility (typically
+    /// driven through the lazy CRC layer before this call).
+    pub fn read_from_mmap_unverified(
+        mmap: Arc<memmap2::Mmap>,
+        byte_offset: usize,
+        byte_len: usize,
+    ) -> Result<EbgNodes> {
+        anyhow::ensure!(
+            byte_offset.saturating_add(byte_len) <= mmap.len(),
+            "ebg.nodes section out of bounds: off={byte_offset} len={byte_len} mmap_len={}",
+            mmap.len()
+        );
+        let bytes = &mmap[byte_offset..byte_offset + byte_len];
+        // Parse header + footer to determine the body offset/length
+        // in container-absolute terms, then build the ArcCow against
+        // the mmap directly.
+        let (n_nodes, created_unix, inputs_sha) = parse_header(bytes)?;
+        let body_len = NODE_RECORD_LEN
+            .checked_mul(n_nodes as usize)
+            .ok_or_else(|| anyhow::anyhow!("ebg.nodes body size overflow for n_nodes={n_nodes}"))?;
+        let expected = HEADER_LEN
+            .checked_add(body_len)
+            .and_then(|n| n.checked_add(FOOTER_LEN))
+            .ok_or_else(|| anyhow::anyhow!("ebg.nodes section size overflow"))?;
+        anyhow::ensure!(
+            byte_len == expected,
+            "ebg.nodes length mismatch: declared {byte_len}, expected {expected}",
+        );
+        let body_byte_offset = byte_offset + HEADER_LEN;
+        let nodes = ArcCow::<EbgNode>::from_mmap(mmap, body_byte_offset, n_nodes as usize)?;
+        Ok(EbgNodes {
+            n_nodes,
+            created_unix,
+            inputs_sha,
+            nodes,
+        })
     }
 
     fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<EbgNodes> {
@@ -284,15 +332,52 @@ impl EbgNodesFile {
             let _ = footer; // unused without CRC walk
         }
 
-        let nodes: &'static [EbgNode] = bytemuck::cast_slice(body);
+        let nodes_slice: &[EbgNode] = bytemuck::cast_slice(body);
 
+        // Test fixtures use this path — wrap the Vec'd copy in
+        // `ArcCow::Owned`. The `bytes: &'static [u8]` lifetime here
+        // means the caller leaked the buffer (typically `Box::leak`
+        // in a #[cfg(test)] block); we don't carry that leak into
+        // production storage. Production goes through
+        // [`Self::read_from_mmap_unverified`].
         Ok(EbgNodes {
             n_nodes,
             created_unix,
             inputs_sha,
-            nodes: Cow::Borrowed(nodes),
+            nodes: ArcCow::from_vec(nodes_slice.to_vec()),
         })
     }
+}
+
+/// Parse the 64-byte EBG nodes header and return the fixed fields.
+/// Shared by the owned, zero-copy, and mmap-backed readers.
+fn parse_header(bytes: &[u8]) -> Result<(u32, u64, [u8; 32])> {
+    anyhow::ensure!(
+        bytes.len() >= HEADER_LEN + FOOTER_LEN,
+        "ebg.nodes too short for header+footer: {} bytes",
+        bytes.len()
+    );
+    let header = &bytes[..HEADER_LEN];
+    let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+    anyhow::ensure!(
+        magic == MAGIC,
+        "Invalid magic in ebg.nodes: expected 0x{:08X}, got 0x{:08X}",
+        MAGIC,
+        magic
+    );
+    let version = u16::from_le_bytes([header[4], header[5]]);
+    anyhow::ensure!(
+        version == VERSION,
+        "Unsupported ebg.nodes version {version}, expected {VERSION}",
+    );
+    let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
+    let created_unix = u64::from_le_bytes([
+        header[12], header[13], header[14], header[15], header[16], header[17], header[18],
+        header[19],
+    ]);
+    let mut inputs_sha = [0u8; 32];
+    inputs_sha.copy_from_slice(&header[20..52]);
+    Ok((n_nodes, created_unix, inputs_sha))
 }
 
 #[cfg(test)]
@@ -306,7 +391,7 @@ mod tests {
             n_nodes: 3,
             created_unix: 1700000000,
             inputs_sha: [0xAB; 32],
-            nodes: Cow::Owned(vec![
+            nodes: ArcCow::from_vec(vec![
                 EbgNode {
                     tail_nbg: 0,
                     head_nbg: 1,

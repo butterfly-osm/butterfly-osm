@@ -60,6 +60,7 @@ pub use ebg_turn_table::{TurnEntry, TurnKind, TurnTable, TurnTableFile};
 pub use edge_geom::{EdgeGeomOffsets, EdgeGeomOffsetsFile, EdgeGeomPoints, EdgeGeomPointsFile};
 pub use filtered_ebg::{FilteredEbg, FilteredEbgFile};
 pub use hybrid_state::{HybridState, HybridStateFile};
+pub use mmap::ArcCow;
 pub use mod_mask::ModMask;
 pub use mod_turns::ModTurns;
 pub use mod_weights::ModWeights;

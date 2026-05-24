@@ -12,7 +12,6 @@ use crate::formats::{
     FilteredEbgFile, NbgGeo, NbgGeoFile, NbgNodeMapFile, OrderEbgFile, WaysFile, mod_weights,
     mode_index::{ModeIndexFile, ModeIndexKind},
 };
-use std::borrow::Cow;
 // Re-export CchWeights for use by api.rs
 pub use crate::formats::CchWeights;
 use crate::matrix::bucket_ch::{
@@ -46,11 +45,11 @@ pub struct ModeData {
     // `u32::MAX` if the original node is not accessible in this mode.
     // Replaces the two-step `original_to_filtered → perm` chain at
     // every serve-path snap site.
-    pub orig_to_rank: Cow<'static, [u32]>,
+    pub orig_to_rank: crate::formats::ArcCow<u32>,
     /// `filtered_to_original[filtered_id]` → original EBG node id.
     /// Used on the unpack/back-reference direction (route geometry,
     /// road-name lookup, exclude/avoid recustomization).
-    pub filtered_to_original: Cow<'static, [u32]>,
+    pub filtered_to_original: crate::formats::ArcCow<u32>,
     /// Number of filtered (mode-accessible) EBG nodes. Equals
     /// `filtered_to_original.len()`. Kept as a u32 for the few
     /// metadata / log sites that read it directly.
@@ -563,77 +562,68 @@ impl ServerState {
         let mmap = std::sync::Arc::clone(lazy_arc.mmap_arc());
         let container = lazy_arc.container().clone();
 
-        // #147: leak a clone of the Arc so derived `&'static [u8]` views
-        // remain valid for process lifetime. Server lifetime IS process
-        // lifetime today, so the leak is one Arc per loaded container —
-        // negligible. Original `mmap` Arc still drops at end of scope;
-        // the leaked Arc keeps the mapping alive forever.
+        // #296: Container bytes are accessed through the `Arc<Mmap>` held
+        // by `lazy_arc`. Format readers now consume `(Arc<Mmap>, offset,
+        // len)` triples via their `read_from_mmap_unverified` entry
+        // points; each reader holds its own `Arc<Mmap>` clone for the
+        // returned struct's lifetime. When `ServerState` drops, every
+        // reader's `ArcCow` drops, the strong count hits zero, `Mmap`
+        // drops, `munmap` fires, and the kernel reclaims the pages.
         //
-        // SAFETY: `Box::leak` is safe; it returns `&'static T` from
-        // `Box<T>`. The `unsafe_code` carveout policy is unaffected —
-        // the only `unsafe` site remains `formats/mmap.rs::map_readonly`.
-        let leaked_arc: &'static std::sync::Arc<memmap2::Mmap> =
-            Box::leak(Box::new(std::sync::Arc::clone(&mmap)));
-        let static_mmap: &'static memmap2::Mmap = leaked_arc.as_ref();
-        let static_bytes: &'static [u8] = &static_mmap[..];
-
-        // Convenience accessor: section name → `'static` bytes from the
-        // leaked mapping.
+        // Pre-#296 this scope leaked a clone of the Arc to obtain
+        // `&'static [u8]` views, which permanently pinned the mapping
+        // in RSS and defeated the eviction story added in #292. The
+        // leak is gone.
         //
         // #160 + #161: per-section CRC is verified through the
-        // [`LazyContainer`] gate held by `lazy_arc` — calling
-        // `verify_now` here transitions the section through the lazy
-        // state machine, drives the metrics counters, and returns once
-        // the section is `Verified`. Format readers below are then
-        // called via their `_unverified` entry points so the section
-        // body is walked exactly once on the container load path
-        // (LazyContainer's CRC walk replaces the per-format walk).
-        // For readers that lack an `_unverified` variant the format CRC
-        // is still walked, paging the body in twice for those sections;
-        // the readers we did upgrade are the largest by far (CCH
-        // weights, EBG nodes/CSR, snap index, edge geom, flats).
+        // [`LazyContainer`] gate held by `lazy_arc`. Calling
+        // `verify_now` transitions the section through the lazy state
+        // machine, drives the metrics counters, and returns once the
+        // section is `Verified`. Format readers are then called via
+        // their `_unverified` entry points so the section body is walked
+        // exactly once on the container load path. For readers that
+        // lack an `_unverified` variant the format CRC is still walked,
+        // paging the body in twice for those sections; the readers we
+        // did upgrade are the largest by far (CCH weights, EBG
+        // nodes/CSR, snap index, edge geom, flats).
         //
-        // Page-fault footprint per section after `section_bytes`
-        // returns — i.e. **after** LazyContainer's CRC walk:
-        //   - `EbgNodesFile::read_from_bytes_zero_copy_unverified`,
-        //     `EbgCsrFile::read_from_bytes_zero_copy_unverified`,
-        //     `SnapPointsFile::*_unverified`,
-        //     `SnapGridFile::*_unverified`,
-        //     `EdgeGeomOffsetsFile::*_unverified`,
-        //     `EdgeGeomPointsFile::*_unverified`,
-        //     `ModeIndexFile::*_unverified`,
-        //     `CchTopoFile::*_unverified` — these read only the section
-        //     header (~32–80 bytes) plus a handful of length fields and
-        //     return `Cow::Borrowed` slices into the mmap; body pages
-        //     are paged in lazily when the slices are subsequently read
-        //     by routing.
-        //   - `CchWeightsFile::*_unverified`,
-        //     `UpAdjFlatFile::read_from_bytes_unverified`,
-        //     `DownReverseAdjFlatFile::read_from_bytes_unverified`,
-        //     `DownAdjFlatFile::read_from_bytes_unverified`,
-        //     `SnapMaskFile::*_unverified` — these likewise return
-        //     `Cow::Borrowed` slices and only touch the header. The
-        //     subsequent `bytemuck::cast_slice` is a pointer-only cast
-        //     that does not touch body bytes.
+        // Page-fault footprint after a `section_arc` call — i.e. AFTER
+        // LazyContainer's CRC walk:
+        //   - `EbgNodesFile`, `EbgCsrFile`, `SnapPointsFile`,
+        //     `SnapGridFile`, `EdgeGeomOffsetsFile`,
+        //     `EdgeGeomPointsFile`, `ModeIndexFile`, `CchTopoFile`,
+        //     `CchWeightsFile`, `SnapMaskFile`, `FilteredEbgFile`,
+        //     `UpAdjFlatFile`, `DownReverseAdjFlatFile`,
+        //     `DownAdjFlatFile` — all of these read only the section
+        //     header (~32-80 bytes) plus a handful of length fields and
+        //     hand back `ArcCow::Mmap` views; body pages are paged in
+        //     lazily when the slices are subsequently read by routing.
         //   - `NbgGeoFile::read_edges_only_from_bytes` does walk the
         //     full body to populate the edges Vec; an explicit
         //     `madvise(DONTNEED)` immediately after parsing returns
-        //     those pages to the kernel. Same for the legacy
-        //     `FilteredEbgFile` / `OrderEbgFile` fallback path.
+        //     those pages to the kernel.
         let lazy_for_bytes = std::sync::Arc::clone(&lazy_arc);
-        let section_bytes = |name: &str| -> Result<&'static [u8]> {
+        let mmap_for_bytes = std::sync::Arc::clone(&mmap);
+
+        // Returns `(Arc<Mmap>, byte_offset, byte_len)` for the
+        // `read_from_mmap_unverified` path. Cloning the Arc is cheap
+        // (atomic inc). Each format reader holds its own clone so the
+        // mapping stays alive as long as any reader does — when
+        // `ServerState` drops, every reader's `ArcCow` drops, refcount
+        // hits 0, `munmap` fires.
+        let section_arc = |name: &str| -> Result<(std::sync::Arc<memmap2::Mmap>, usize, usize)> {
             let entry = container
                 .get(name)
                 .ok_or_else(|| anyhow::anyhow!("missing required section '{}'", name))?;
             let off = entry.offset as usize;
             let len = entry.len as usize;
             anyhow::ensure!(
-                off + len <= static_bytes.len(),
+                off + len <= mmap_for_bytes.len(),
                 "section '{}' bytes [{},{}) exceed mmap len {}",
                 name,
                 off,
                 off + len,
-                static_bytes.len()
+                mmap_for_bytes.len()
             );
             // Drive lazy CRC verification through LazyContainer. The
             // first call to `verify_now` walks the section body once;
@@ -642,24 +632,45 @@ impl ServerState {
             // and lets format readers skip their own body CRC walk
             // via the `_unverified` entry points.
             lazy_for_bytes.verify_now(name)?;
-            Ok(&static_bytes[off..off + len])
+            Ok((std::sync::Arc::clone(&mmap_for_bytes), off, len))
         };
-        let lazy_for_optional = std::sync::Arc::clone(&lazy_arc);
-        let optional_section = |name: &str| -> Result<Option<&'static [u8]>> {
+        // Byte-slice accessors borrowed from the live `Arc<Mmap>`.
+        // Lifetimes are tied to `mmap_for_bytes` (not `'static`), used
+        // by `madvise(DONTNEED)` callers and the non-zero-copy readers
+        // that still consume `&[u8]` directly (NbgGeoFile, WaysFile,
+        // way_attrs, mod_weights).
+        let section_bytes = |name: &str| -> Result<&[u8]> {
+            let entry = container
+                .get(name)
+                .ok_or_else(|| anyhow::anyhow!("missing required section '{}'", name))?;
+            let off = entry.offset as usize;
+            let len = entry.len as usize;
+            anyhow::ensure!(
+                off + len <= mmap_for_bytes.len(),
+                "section '{}' bytes [{},{}) exceed mmap len {}",
+                name,
+                off,
+                off + len,
+                mmap_for_bytes.len()
+            );
+            lazy_for_bytes.verify_now(name)?;
+            Ok(&mmap_for_bytes[off..off + len])
+        };
+        let optional_section = |name: &str| -> Result<Option<&[u8]>> {
             match container.get(name) {
                 Some(entry) => {
                     let off = entry.offset as usize;
                     let len = entry.len as usize;
                     anyhow::ensure!(
-                        off + len <= static_bytes.len(),
+                        off + len <= mmap_for_bytes.len(),
                         "section '{}' bytes [{},{}) exceed mmap len {}",
                         name,
                         off,
                         off + len,
-                        static_bytes.len()
+                        mmap_for_bytes.len()
                     );
-                    lazy_for_optional.verify_now(name)?;
-                    Ok(Some(&static_bytes[off..off + len]))
+                    lazy_for_bytes.verify_now(name)?;
+                    Ok(Some(&mmap_for_bytes[off..off + len]))
                 }
                 None => Ok(None),
             }
@@ -675,22 +686,23 @@ impl ServerState {
         tracing::info!("Loading EBG nodes (zero-copy)...");
         // #161: LazyContainer already CRC-verified the section bytes;
         // skip the per-format CRC walk to avoid paging the body twice.
-        let ebg_nodes =
-            EbgNodesFile::read_from_bytes_zero_copy_unverified(section_bytes("shared/ebg.nodes")?)?;
+        let (m, off, len) = section_arc("shared/ebg.nodes")?;
+        let ebg_nodes = EbgNodesFile::read_from_mmap_unverified(m, off, len)?;
         tracing::info!(nodes = ebg_nodes.n_nodes, "loaded EBG nodes");
 
         tracing::info!("Loading EBG CSR (zero-copy)...");
-        let ebg_csr_section = section_bytes("shared/ebg.csr")?;
-        let ebg_csr = EbgCsrFile::read_from_bytes_zero_copy_unverified(ebg_csr_section)?;
+        let (m, off, len) = section_arc("shared/ebg.csr")?;
+        let ebg_csr_bytes = &mmap_for_bytes[off..off + len];
+        let ebg_csr = EbgCsrFile::read_from_mmap_unverified(m, off, len)?;
         tracing::info!(arcs = ebg_csr.n_arcs, "loaded EBG CSR");
         // #152: ebg.csr is build/validate-only at serve time. The only
         // field any handler reads is `n_arcs` (a u64 in the header used
         // by /health). The body arrays (offsets, heads, turn_idx) are
         // touched by validate/step4 + ordering/contraction, none of
         // which run on the serve path. Drop the file pages from RSS;
-        // the borrowed Cow slices stay valid and a rare cold reader
-        // pages them back at fault cost.
-        if let Err(e) = crate::formats::mmap::madvise_dontneed(ebg_csr_section) {
+        // the borrowed ArcCow slices stay valid (the Arc<Mmap> is still
+        // alive) and a rare cold reader pages them back at fault cost.
+        if let Err(e) = crate::formats::mmap::madvise_dontneed(ebg_csr_bytes) {
             tracing::warn!(
                 section = "shared/ebg.csr",
                 error = %e,
@@ -699,7 +711,7 @@ impl ServerState {
         } else {
             tracing::info!(
                 section = "shared/ebg.csr",
-                bytes = ebg_csr_section.len(),
+                bytes = ebg_csr_bytes.len(),
                 "madvise(DONTNEED) on cold ebg.csr section"
             );
         }
@@ -793,8 +805,13 @@ impl ServerState {
 
         for (mode_index, mode_name) in discovered_modes.iter().enumerate() {
             let mode = Mode(global_index[mode_name]);
-            let mode_data =
-                load_mode_data_from_bundle(mode_name, mode, &container, static_mmap, &lazy_arc)?;
+            let mode_data = load_mode_data_from_bundle(
+                mode_name,
+                mode,
+                &container,
+                &mmap_for_bytes,
+                &lazy_arc,
+            )?;
             tracing::info!(
                 mode = mode_name.as_str(),
                 index = mode_index,
@@ -814,8 +831,7 @@ impl ServerState {
         // pre-dates #154.
         let snap_index = match try_load_packed_snap_index(
             &container,
-            static_mmap,
-            static_bytes,
+            &mmap_for_bytes,
             &mode_names,
             &lazy_arc,
         )? {
@@ -862,7 +878,7 @@ impl ServerState {
                 if let Some(entry) = container.get(&section) {
                     let off = entry.offset as usize;
                     let len = entry.len as usize;
-                    let range = &static_bytes[off..off + len];
+                    let range = &mmap_for_bytes[off..off + len];
                     match crate::formats::mmap::madvise_dontneed(range) {
                         Ok(()) => tracing::info!(
                             section = %section,
@@ -937,12 +953,13 @@ impl ServerState {
         // open time they're still there now, so the back-compat branch
         // is for old containers that loaded the full NbgGeo.
         let edge_geom = if has_flat_edge_geom {
-            let eg = try_load_edge_geometry(&container, static_mmap, static_bytes, &lazy_arc)?
-                .ok_or_else(|| {
+            let eg = try_load_edge_geometry(&container, &mmap_for_bytes, &lazy_arc)?.ok_or_else(
+                || {
                     anyhow::anyhow!(
                         "edge_geom sections vanished between open and load — container corrupt?"
                     )
-                })?;
+                },
+            )?;
             tracing::info!(
                 n_edges = eg.n_edges(),
                 n_points = eg.n_points(),
@@ -1323,8 +1340,8 @@ fn load_mode_data(
         cch_topo,
         cch_weights,
         cch_weights_dist,
-        orig_to_rank: Cow::Owned(orig_to_rank),
-        filtered_to_original: Cow::Owned(filtered_to_original),
+        orig_to_rank: crate::formats::ArcCow::from_vec(orig_to_rank),
+        filtered_to_original: crate::formats::ArcCow::from_vec(filtered_to_original),
         n_filtered_nodes,
         n_original_nodes,
         node_weights: weights_data.weights,
@@ -1672,19 +1689,20 @@ fn load_way_names(step1_dir: &Path) -> Result<HashMap<i64, String>> {
 /// once LazyContainer's CRC walk has completed and any pages it pulled
 /// in are reclaimable by the kernel under memory pressure.
 ///
-/// `parse` is a closure that turns `&'static [u8]` into the typed flat
-/// view; `build_owned` is the legacy heap-build fallback.
+/// `parse` is a closure that turns `(Arc<Mmap>, byte_offset, byte_len)`
+/// into the typed flat view via the `read_from_mmap_unverified` reader;
+/// `build_owned` is the legacy heap-build fallback for containers that
+/// pre-date the prebuilt flat sections.
 fn load_flat_section<T, P, B>(
     container: &crate::formats::butterfly_dat::Container,
-    _static_mmap: &'static memmap2::Mmap,
-    static_bytes: &'static [u8],
+    mmap: &std::sync::Arc<memmap2::Mmap>,
     section_name: &str,
     lazy: &std::sync::Arc<crate::formats::lazy_verify::LazyContainer>,
     parse: P,
     build_owned: B,
 ) -> Result<T>
 where
-    P: FnOnce(&'static [u8]) -> Result<T>,
+    P: FnOnce(std::sync::Arc<memmap2::Mmap>, usize, usize) -> Result<T>,
     B: FnOnce() -> T,
 {
     let entry = match container.get(section_name) {
@@ -1697,18 +1715,17 @@ where
     let off = entry.offset as usize;
     let len = entry.len as usize;
     anyhow::ensure!(
-        off + len <= static_bytes.len(),
+        off + len <= mmap.len(),
         "flat section '{}' bytes [{},{}) exceed mmap len {}",
         section_name,
         off,
         off + len,
-        static_bytes.len()
+        mmap.len()
     );
     // #161: verify CRC via LazyContainer, then read with the unverified
     // format reader to avoid paging the body in twice.
     lazy.verify_now(section_name)?;
-    let bytes: &'static [u8] = &static_bytes[off..off + len];
-    let parsed = parse(bytes)?;
+    let parsed = parse(std::sync::Arc::clone(mmap), off, len)?;
     Ok(parsed)
 }
 
@@ -1724,11 +1741,12 @@ fn load_mode_data_from_bundle(
     mode_name: &str,
     mode: Mode,
     container: &crate::formats::butterfly_dat::Container,
-    static_mmap: &'static memmap2::Mmap,
+    mmap: &std::sync::Arc<memmap2::Mmap>,
     lazy: &std::sync::Arc<crate::formats::lazy_verify::LazyContainer>,
 ) -> Result<ModeData> {
-    let static_bytes: &'static [u8] = &static_mmap[..];
-    let fetch = |leaf: &str| -> Result<&'static [u8]> {
+    // Required section → `(Arc<Mmap>, off, len)` for the
+    // `read_from_mmap_unverified` path.
+    let fetch_arc = |leaf: &str| -> Result<(std::sync::Arc<memmap2::Mmap>, usize, usize)> {
         let name = format!("mode/{}/{}", mode_name, leaf);
         let entry = container
             .get(&name)
@@ -1736,16 +1754,37 @@ fn load_mode_data_from_bundle(
         let off = entry.offset as usize;
         let len = entry.len as usize;
         anyhow::ensure!(
-            off + len <= static_bytes.len(),
+            off + len <= mmap.len(),
             "section '{}' bytes [{},{}) exceed mmap len {}",
             name,
             off,
             off + len,
-            static_bytes.len()
+            mmap.len()
         );
         // #161: drive lazy CRC verification before handing out bytes.
         lazy.verify_now(&name)?;
-        Ok(&static_bytes[off..off + len])
+        Ok((std::sync::Arc::clone(mmap), off, len))
+    };
+    // Required section → borrowed byte slice from the live mapping.
+    // Used by readers that still consume `&[u8]` directly
+    // (`mod_weights::read_all_from_bytes`).
+    let fetch_bytes = |leaf: &str| -> Result<&[u8]> {
+        let name = format!("mode/{}/{}", mode_name, leaf);
+        let entry = container
+            .get(&name)
+            .ok_or_else(|| anyhow::anyhow!("missing mode bundle section '{}'", name))?;
+        let off = entry.offset as usize;
+        let len = entry.len as usize;
+        anyhow::ensure!(
+            off + len <= mmap.len(),
+            "section '{}' bytes [{},{}) exceed mmap len {}",
+            name,
+            off,
+            off + len,
+            mmap.len()
+        );
+        lazy.verify_now(&name)?;
+        Ok(&mmap[off..off + len])
     };
 
     // ---- Server-only mapping sections (#153) -------------------
@@ -1757,29 +1796,30 @@ fn load_mode_data_from_bundle(
     // Back-compat: if either section is absent, fall back to reading
     // `FilteredEbg` + `OrderEbg` and synthesising the arrays at boot.
     // The fallback path matches pre-#153 behaviour byte-for-byte.
-    let try_optional = |name: &str| -> Result<Option<&'static [u8]>> {
-        let section_name = format!("mode/{}/{}", mode_name, name);
-        match container.get(&section_name) {
-            Some(entry) => {
-                let off = entry.offset as usize;
-                let len = entry.len as usize;
-                anyhow::ensure!(
-                    off + len <= static_bytes.len(),
-                    "section '{}' bytes [{},{}) exceed mmap len {}",
-                    section_name,
-                    off,
-                    off + len,
-                    static_bytes.len()
-                );
-                lazy.verify_now(&section_name)?;
-                Ok(Some(&static_bytes[off..off + len]))
+    let try_optional_arc =
+        |name: &str| -> Result<Option<(std::sync::Arc<memmap2::Mmap>, usize, usize)>> {
+            let section_name = format!("mode/{}/{}", mode_name, name);
+            match container.get(&section_name) {
+                Some(entry) => {
+                    let off = entry.offset as usize;
+                    let len = entry.len as usize;
+                    anyhow::ensure!(
+                        off + len <= mmap.len(),
+                        "section '{}' bytes [{},{}) exceed mmap len {}",
+                        section_name,
+                        off,
+                        off + len,
+                        mmap.len()
+                    );
+                    lazy.verify_now(&section_name)?;
+                    Ok(Some((std::sync::Arc::clone(mmap), off, len)))
+                }
+                None => Ok(None),
             }
-            None => Ok(None),
-        }
-    };
+        };
 
-    let o2r_section = try_optional("orig_to_rank")?;
-    let f2o_section = try_optional("filtered_to_original")?;
+    let o2r_section = try_optional_arc("orig_to_rank")?;
+    let f2o_section = try_optional_arc("filtered_to_original")?;
 
     // #197: role-aware snap masks need the per-mode filtered EBG
     // adjacency. We fetch it transiently, build the bitsets, then
@@ -1787,7 +1827,7 @@ fn load_mode_data_from_bundle(
     // them). Required regardless of whether the preferred (#153)
     // mapping path is taken or the legacy fallback runs, so we hoist
     // the read up here.
-    let filtered_ebg_section = try_optional("filtered_ebg")?;
+    let filtered_ebg_section = try_optional_arc("filtered_ebg")?;
 
     let (
         orig_to_rank,
@@ -1797,15 +1837,15 @@ fn load_mode_data_from_bundle(
         has_outbound,
         has_inbound,
     ) = match (o2r_section, f2o_section) {
-        (Some(o2r_bytes), Some(f2o_bytes)) => {
-            let o2r = ModeIndexFile::read_from_bytes_zero_copy_unverified(o2r_bytes)?;
+        (Some((o2r_mmap, o2r_off, o2r_len)), Some((f2o_mmap, f2o_off, f2o_len))) => {
+            let o2r = ModeIndexFile::read_from_mmap_unverified(o2r_mmap, o2r_off, o2r_len)?;
             anyhow::ensure!(
                 o2r.kind == ModeIndexKind::OrigToRank,
                 "mode/{}/orig_to_rank has wrong kind discriminator: {:?}",
                 mode_name,
                 o2r.kind
             );
-            let f2o = ModeIndexFile::read_from_bytes_zero_copy_unverified(f2o_bytes)?;
+            let f2o = ModeIndexFile::read_from_mmap_unverified(f2o_mmap, f2o_off, f2o_len)?;
             anyhow::ensure!(
                 f2o.kind == ModeIndexKind::FilteredToOriginal,
                 "mode/{}/filtered_to_original has wrong kind discriminator: {:?}",
@@ -1829,11 +1869,10 @@ fn load_mode_data_from_bundle(
             // only say which nodes are mode-accessible, not whether
             // each node has any mode-valid outbound/inbound arcs.
             let (has_out, has_in) = match filtered_ebg_section {
-                Some(bytes) => {
-                    let (filtered_ebg, _cold) =
-                        crate::formats::FilteredEbgFile::read_from_bytes_zero_copy_with_cold(
-                            bytes,
-                        )?;
+                Some((fe_mmap, fe_off, fe_len)) => {
+                    let filtered_ebg = crate::formats::FilteredEbgFile::read_from_mmap_unverified(
+                        fe_mmap, fe_off, fe_len,
+                    )?;
                     build_role_masks(&filtered_ebg)
                 }
                 None => {
@@ -1856,7 +1895,7 @@ fn load_mode_data_from_bundle(
                 if let Some(entry) = container.get(&nm) {
                     let off = entry.offset as usize;
                     let len = entry.len as usize;
-                    let range = &static_bytes[off..off + len];
+                    let range = &mmap[off..off + len];
                     match crate::formats::mmap::madvise_dontneed(range) {
                         Ok(()) => tracing::info!(
                             section = %nm,
@@ -1891,17 +1930,9 @@ fn load_mode_data_from_bundle(
                      this build pre-dates #153, falling back to FilteredEbg/OrderEbg",
                 mode_name
             );
-            let filtered_section = fetch("filtered_ebg")?;
-            let (filtered_ebg, cold_filtered) =
-                FilteredEbgFile::read_from_bytes_zero_copy_with_cold(filtered_section)?;
-            if let Err(e) = crate::formats::mmap::madvise_dontneed(cold_filtered) {
-                tracing::warn!(
-                    mode = mode_name,
-                    error = %e,
-                    "madvise(DONTNEED) on filtered_ebg cold prefix failed; ignoring"
-                );
-            }
-            let order_section = fetch("order")?;
+            let (fe_mmap, fe_off, fe_len) = fetch_arc("filtered_ebg")?;
+            let filtered_ebg = FilteredEbgFile::read_from_mmap_unverified(fe_mmap, fe_off, fe_len)?;
+            let order_section = fetch_bytes("order")?;
             let order_data = OrderEbgFile::read_from_bytes(order_section)?;
 
             let n_original_nodes = filtered_ebg.n_original_nodes;
@@ -1927,7 +1958,10 @@ fn load_mode_data_from_bundle(
                     "madvise(DONTNEED) on order section failed; ignoring"
                 );
             }
-            if let Err(e) = crate::formats::mmap::madvise_dontneed(filtered_section) {
+            // Madvise the filtered_ebg section bytes (we no longer have
+            // a `cold_filtered` sub-slice; pass the whole section).
+            let fe_range = &mmap[fe_off..fe_off + fe_len];
+            if let Err(e) = crate::formats::mmap::madvise_dontneed(fe_range) {
                 tracing::warn!(
                     mode = mode_name,
                     error = %e,
@@ -1935,8 +1969,8 @@ fn load_mode_data_from_bundle(
                 );
             }
             (
-                Cow::Owned(orig_to_rank),
-                Cow::Owned(filtered_to_original),
+                crate::formats::ArcCow::from_vec(orig_to_rank),
+                crate::formats::ArcCow::from_vec(filtered_to_original),
                 n_filtered_nodes,
                 n_original_nodes,
                 has_out,
@@ -1944,21 +1978,23 @@ fn load_mode_data_from_bundle(
             )
         }
     };
-    let topo_section_bytes: &'static [u8] = fetch("topo")?;
+    let (topo_mmap, topo_off, topo_len) = fetch_arc("topo")?;
     // #151: cch.topo is now v4. Header is 80 bytes (u64-aligned) and
     // every variable-length u32 array is padded to a u64 boundary, so
     // the zero-copy reader works regardless of n_up_edges/n_down_edges
     // parity. Saves ≈ 3-5 GB of heap on Belgium vs the v3 owning
     // reader; the topo body now lives in mmap'd file pages and is
     // demand-paged like the flats. The offsets/targets/middles/bitset
-    // slices are borrowed from the mmap with the same Box::leak'd
-    // 'static lifetime trick as the flats.
-    let cch_topo = CchTopoFile::read_from_bytes_zero_copy_unverified(topo_section_bytes)?;
+    // slices are borrowed from the mmap via `ArcCow::from_mmap` (no
+    // leak — the Arc<Mmap> strong-count is tied to the returned
+    // struct's lifetime, #296).
+    let cch_topo = CchTopoFile::read_from_mmap_unverified(topo_mmap, topo_off, topo_len)?;
     // After CRC verification we hint the kernel that the topo bytes can
     // be reclaimed. Hot routing pages page back in lazily; cold ones
     // (e.g. `up_middle` bytes for shortcuts that no query ever unpacks)
     // stay off RSS. Same mechanism the flats use.
-    if let Err(e) = crate::formats::mmap::madvise_dontneed(topo_section_bytes) {
+    let topo_bytes_for_madvise = &mmap[topo_off..topo_off + topo_len];
+    if let Err(e) = crate::formats::mmap::madvise_dontneed(topo_bytes_for_madvise) {
         tracing::warn!(
             section = "topo",
             error = %e,
@@ -1967,12 +2003,12 @@ fn load_mode_data_from_bundle(
     } else {
         tracing::info!(
             section = "topo",
-            bytes = topo_section_bytes.len(),
+            bytes = topo_len,
             "madvise(DONTNEED) on cch.topo section"
         );
     }
 
-    let weights_data = mod_weights::read_all_from_bytes(fetch("node_weights.time")?)?;
+    let weights_data = mod_weights::read_all_from_bytes(fetch_bytes("node_weights.time")?)?;
 
     let n_original = n_original_nodes as usize;
     let mask = {
@@ -1988,7 +2024,8 @@ fn load_mode_data_from_bundle(
 
     // #147: zero-copy CCH weights — `up`/`down` u32 slices come straight
     // from the mmap. Saves ~6 GB of heap (4 modes × 2 metrics × ~750MB).
-    let cch_weights = CchWeightsFile::read_from_bytes_zero_copy_unverified(fetch("weights.time")?)?;
+    let (wt_mmap, wt_off, wt_len) = fetch_arc("weights.time")?;
+    let cch_weights = CchWeightsFile::read_from_mmap_unverified(wt_mmap, wt_off, wt_len)?;
 
     // #150: prefer pre-built flat sections from the container so the
     // flats live in mmap'd file pages instead of process heap. Bounds
@@ -2005,59 +2042,53 @@ fn load_mode_data_from_bundle(
     // size.
     let up_adj_flat = load_flat_section(
         container,
-        static_mmap,
-        static_bytes,
+        mmap,
         &format!("mode/{}/up_adj_flat.time", mode_name),
         lazy,
-        |bytes| UpAdjFlatFile::read_from_bytes_unverified(bytes),
+        |m, off, len| UpAdjFlatFile::read_from_mmap_unverified(m, off, len),
         || UpAdjFlat::build_with(&cch_topo, &cch_weights, true),
     )?;
     let down_rev_flat = load_flat_section(
         container,
-        static_mmap,
-        static_bytes,
+        mmap,
         &format!("mode/{}/down_reverse_adj_flat.time", mode_name),
         lazy,
-        |bytes| DownReverseAdjFlatFile::read_from_bytes_unverified(bytes),
+        |m, off, len| DownReverseAdjFlatFile::read_from_mmap_unverified(m, off, len),
         || DownReverseAdjFlat::build_with(&cch_topo, &cch_weights, true),
     )?;
     let down_adj_flat = load_flat_section(
         container,
-        static_mmap,
-        static_bytes,
+        mmap,
         &format!("mode/{}/down_adj_flat.time", mode_name),
         lazy,
-        |bytes| DownAdjFlatFile::read_from_bytes_unverified(bytes),
+        |m, off, len| DownAdjFlatFile::read_from_mmap_unverified(m, off, len),
         || DownAdjFlat::build(&cch_topo, &cch_weights),
     )?;
 
-    let cch_weights_dist =
-        CchWeightsFile::read_from_bytes_zero_copy_unverified(fetch("weights.dist")?)?;
+    let (wd_mmap, wd_off, wd_len) = fetch_arc("weights.dist")?;
+    let cch_weights_dist = CchWeightsFile::read_from_mmap_unverified(wd_mmap, wd_off, wd_len)?;
     let up_adj_flat_dist = load_flat_section(
         container,
-        static_mmap,
-        static_bytes,
+        mmap,
         &format!("mode/{}/up_adj_flat.dist", mode_name),
         lazy,
-        |bytes| UpAdjFlatFile::read_from_bytes_unverified(bytes),
+        |m, off, len| UpAdjFlatFile::read_from_mmap_unverified(m, off, len),
         || UpAdjFlat::build(&cch_topo, &cch_weights_dist),
     )?;
     let down_rev_flat_dist = load_flat_section(
         container,
-        static_mmap,
-        static_bytes,
+        mmap,
         &format!("mode/{}/down_reverse_adj_flat.dist", mode_name),
         lazy,
-        |bytes| DownReverseAdjFlatFile::read_from_bytes_unverified(bytes),
+        |m, off, len| DownReverseAdjFlatFile::read_from_mmap_unverified(m, off, len),
         || DownReverseAdjFlat::build(&cch_topo, &cch_weights_dist),
     )?;
     let down_adj_flat_dist = load_flat_section(
         container,
-        static_mmap,
-        static_bytes,
+        mmap,
         &format!("mode/{}/down_adj_flat.dist", mode_name),
         lazy,
-        |bytes| DownAdjFlatFile::read_from_bytes_unverified(bytes),
+        |m, off, len| DownAdjFlatFile::read_from_mmap_unverified(m, off, len),
         || DownAdjFlat::build(&cch_topo, &cch_weights_dist),
     )?;
 
@@ -2165,8 +2196,7 @@ fn build_packed_snap_index_inmem(
 /// walks them off the request path).
 fn try_load_packed_snap_index(
     container: &crate::formats::butterfly_dat::Container,
-    _static_mmap: &'static memmap2::Mmap,
-    static_bytes: &'static [u8],
+    mmap: &std::sync::Arc<memmap2::Mmap>,
     mode_names: &[String],
     lazy: &std::sync::Arc<crate::formats::lazy_verify::LazyContainer>,
 ) -> Result<Option<PackedSnapIndex>> {
@@ -2181,19 +2211,29 @@ fn try_load_packed_snap_index(
         None => return Ok(None),
     };
 
-    let pts_bytes = &static_bytes
-        [pts_entry.offset as usize..pts_entry.offset as usize + pts_entry.len as usize];
-    let grid_bytes = &static_bytes
-        [grid_entry.offset as usize..grid_entry.offset as usize + grid_entry.len as usize];
+    let pts_off = pts_entry.offset as usize;
+    let pts_len = pts_entry.len as usize;
+    let grid_off = grid_entry.offset as usize;
+    let grid_len = grid_entry.len as usize;
+    anyhow::ensure!(
+        pts_off + pts_len <= mmap.len(),
+        "shared/snap_points section out of mmap bounds"
+    );
+    anyhow::ensure!(
+        grid_off + grid_len <= mmap.len(),
+        "shared/snap_grid section out of mmap bounds"
+    );
 
     // #161: drive lazy CRC verification through LazyContainer; format
     // readers below skip their own body walk.
     lazy.verify_now("shared/snap_points")?;
     lazy.verify_now("shared/snap_grid")?;
-    let points = SnapPointsFile::read_from_bytes_zero_copy_unverified(pts_bytes)
-        .with_context(|| "reading shared/snap_points zero-copy")?;
-    let grid = SnapGridFile::read_from_bytes_zero_copy_unverified(grid_bytes)
-        .with_context(|| "reading shared/snap_grid zero-copy")?;
+    let points =
+        SnapPointsFile::read_from_mmap_unverified(std::sync::Arc::clone(mmap), pts_off, pts_len)
+            .with_context(|| "reading shared/snap_points zero-copy")?;
+    let grid =
+        SnapGridFile::read_from_mmap_unverified(std::sync::Arc::clone(mmap), grid_off, grid_len)
+            .with_context(|| "reading shared/snap_grid zero-copy")?;
 
     // Per-mode masks: for every loaded mode_name, look up
     // `mode/<name>/snap_mask`. Caller may have filtered to a subset of
@@ -2206,11 +2246,20 @@ fn try_load_packed_snap_index(
             Some(e) => e,
             None => return Ok(None),
         };
-        let mask_bytes =
-            &static_bytes[entry.offset as usize..entry.offset as usize + entry.len as usize];
+        let mask_off = entry.offset as usize;
+        let mask_len = entry.len as usize;
+        anyhow::ensure!(
+            mask_off + mask_len <= mmap.len(),
+            "{} section out of mmap bounds",
+            key
+        );
         lazy.verify_now(&key)?;
-        let mask = SnapMaskFile::read_from_bytes_zero_copy_unverified(mask_bytes)
-            .with_context(|| format!("reading {} zero-copy", key))?;
+        let mask = SnapMaskFile::read_from_mmap_unverified(
+            std::sync::Arc::clone(mmap),
+            mask_off,
+            mask_len,
+        )
+        .with_context(|| format!("reading {} zero-copy", key))?;
         // Sanity: mask sample count must match the shared point array.
         anyhow::ensure!(
             mask.n_points == points.n_points,
@@ -2235,8 +2284,7 @@ fn try_load_packed_snap_index(
 /// #160: per-section CRC verification is gated by [`LazyContainer`].
 fn try_load_edge_geometry(
     container: &crate::formats::butterfly_dat::Container,
-    _static_mmap: &'static memmap2::Mmap,
-    static_bytes: &'static [u8],
+    mmap: &std::sync::Arc<memmap2::Mmap>,
     lazy: &std::sync::Arc<crate::formats::lazy_verify::LazyContainer>,
 ) -> Result<Option<EdgeGeometry>> {
     use crate::formats::edge_geom::{EdgeGeomOffsetsFile, EdgeGeomPointsFile};
@@ -2253,15 +2301,31 @@ fn try_load_edge_geometry(
     lazy.verify_now("shared/edge_geom_offsets")?;
     lazy.verify_now("shared/edge_geom_points")?;
 
-    let off_bytes = &static_bytes
-        [off_entry.offset as usize..off_entry.offset as usize + off_entry.len as usize];
-    let pts_bytes = &static_bytes
-        [pts_entry.offset as usize..pts_entry.offset as usize + pts_entry.len as usize];
+    let off_off = off_entry.offset as usize;
+    let off_len = off_entry.len as usize;
+    let pts_off = pts_entry.offset as usize;
+    let pts_len = pts_entry.len as usize;
+    anyhow::ensure!(
+        off_off + off_len <= mmap.len(),
+        "shared/edge_geom_offsets section out of mmap bounds"
+    );
+    anyhow::ensure!(
+        pts_off + pts_len <= mmap.len(),
+        "shared/edge_geom_points section out of mmap bounds"
+    );
 
-    let off = EdgeGeomOffsetsFile::read_from_bytes_zero_copy_unverified(off_bytes)
-        .with_context(|| "reading shared/edge_geom_offsets zero-copy")?;
-    let pts = EdgeGeomPointsFile::read_from_bytes_zero_copy_unverified(pts_bytes)
-        .with_context(|| "reading shared/edge_geom_points zero-copy")?;
+    let off = EdgeGeomOffsetsFile::read_from_mmap_unverified(
+        std::sync::Arc::clone(mmap),
+        off_off,
+        off_len,
+    )
+    .with_context(|| "reading shared/edge_geom_offsets zero-copy")?;
+    let pts = EdgeGeomPointsFile::read_from_mmap_unverified(
+        std::sync::Arc::clone(mmap),
+        pts_off,
+        pts_len,
+    )
+    .with_context(|| "reading shared/edge_geom_points zero-copy")?;
 
     let eg =
         EdgeGeometry::from_sections(off, pts).with_context(|| "stitching edge_geom sections")?;
@@ -2273,7 +2337,6 @@ mod tests {
     use super::build_role_masks;
     use crate::formats::FilteredEbg;
     use crate::profile_abi::Mode;
-    use std::borrow::Cow;
 
     fn tiny_filtered_ebg(offsets: Vec<u64>, heads: Vec<u32>) -> FilteredEbg {
         let n = offsets.len() - 1;
@@ -2283,11 +2346,11 @@ mod tests {
             n_filtered_arcs: heads.len() as u64,
             n_original_nodes: n as u32,
             inputs_sha: [0; 32],
-            offsets: Cow::Owned(offsets),
-            heads: Cow::Owned(heads.clone()),
-            original_arc_idx: Cow::Owned((0..heads.len() as u32).collect()),
-            filtered_to_original: Cow::Owned((0..n as u32).collect()),
-            original_to_filtered: Cow::Owned((0..n as u32).collect()),
+            offsets: crate::formats::ArcCow::from_vec(offsets),
+            heads: crate::formats::ArcCow::from_vec(heads.clone()),
+            original_arc_idx: crate::formats::ArcCow::from_vec((0..heads.len() as u32).collect()),
+            filtered_to_original: crate::formats::ArcCow::from_vec((0..n as u32).collect()),
+            original_to_filtered: crate::formats::ArcCow::from_vec((0..n as u32).collect()),
         }
     }
 

@@ -663,6 +663,18 @@ pub enum Commands {
         #[arg(long)]
         eager_regions: bool,
 
+        /// Resident-set budget in GiB for the LRU eviction poller
+        /// (#292 Phase 6). When VmRSS exceeds this number, the
+        /// background poller evicts the least-recently-used loaded
+        /// regions until back under budget. Falls back to 80% of
+        /// system MemTotal if unset. Env override:
+        /// `BUTTERFLY_RSS_BUDGET_GB=…`.
+        ///
+        /// Single-region deployments are effectively unaffected (the
+        /// poller always keeps at least one region loaded).
+        #[arg(long)]
+        rss_budget_gb: Option<f64>,
+
         /// Log format: "text" (default) or "json"
         #[arg(long, default_value = "text")]
         log_format: String,
@@ -1764,6 +1776,7 @@ impl Cli {
                 modes,
                 regions,
                 eager_regions,
+                rss_budget_gb,
                 log_format,
                 rss_checkpoints,
                 eager_verify,
@@ -1782,6 +1795,15 @@ impl Cli {
                 if rss_checkpoints {
                     crate::server::rss::set_enabled(true);
                     crate::server::rss::checkpoint("startup");
+                }
+
+                // #292 Phase 6: stash --rss-budget-gb in a process-wide
+                // OnceLock so the eviction poller can read it without
+                // requiring serve() to grow another parameter for an
+                // operational tunable. Env var
+                // `BUTTERFLY_RSS_BUDGET_GB=…` is also honoured.
+                if let Some(gib) = rss_budget_gb {
+                    crate::server::set_rss_budget_override(gib);
                 }
 
                 let transport_mode = server::Transport::parse(&transport)?;

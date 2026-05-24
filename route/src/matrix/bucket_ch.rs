@@ -17,8 +17,7 @@
 //! - **Bucket prefix-sum layout**: O(1) lookup instead of O(log n) binary search
 //! - **Version-stamped distances**: Amortized O(1) per-search initialization
 
-use crate::formats::{CchTopo, CchWeights};
-use std::borrow::Cow;
+use crate::formats::{ArcCow, CchTopo, CchWeights};
 use std::cell::RefCell;
 
 // Thread-local `SearchState` scratch buffers for the parallel bucket M2M path.
@@ -64,20 +63,23 @@ const SEQUENTIAL_FAST_PATH_CELL_THRESHOLD: usize = 100;
 /// flats that feed `CchQuery` (so `unpack_path` can recover the topo
 /// edge from a parent pointer). Distance-metric flats and PHAST-only
 /// flats leave it empty to keep memory down.
-/// Flat fields are `Cow<'static, [..]>` so a single struct can either
-/// own its arrays (legacy heap path: `UpAdjFlat::build`) or borrow them
-/// straight from a leaked `Arc<Mmap>` (the #150 mmap path:
-/// `UpAdjFlat::read_from_bytes`). All consumers index through the
-/// auto-deref to `&[u32]` / `&[u64]` and never see the Cow wrapper.
+/// Flat fields are `ArcCow<T>` so a single struct can either own its
+/// arrays (legacy heap path: `UpAdjFlat::build`) or borrow them straight
+/// from a live `Arc<Mmap>` (the #296 mmap path:
+/// `UpAdjFlatFile::read_from_mmap_unverified`). The `Mmap` variant
+/// holds an `Arc<Mmap>` clone so dropping the flat decrements the
+/// mapping's strong count — no more leaked Arcs that pin the file in
+/// RSS forever. All consumers index through the auto-deref to `&[u32]`
+/// / `&[u64]` and never see the ArcCow wrapper.
 #[derive(Clone)]
 pub struct UpAdjFlat {
-    pub offsets: Cow<'static, [u64]>, // n_nodes + 1
-    pub targets: Cow<'static, [u32]>, // target node for edge
-    pub weights: Cow<'static, [u32]>, // weight of edge (embedded)
+    pub offsets: ArcCow<u64>, // n_nodes + 1
+    pub targets: ArcCow<u32>, // target node for edge
+    pub weights: ArcCow<u32>, // weight of edge (embedded)
     /// Back-reference to topo edge index per flat slot. Empty unless
     /// this flat feeds the routing hot path (`CchQuery::new` / the
     /// alternatives backend) where parent pointers reference topo edges.
-    pub topo_edge_idx: Cow<'static, [u32]>,
+    pub topo_edge_idx: ArcCow<u32>,
 }
 
 impl UpAdjFlat {
@@ -141,10 +143,10 @@ impl UpAdjFlat {
         }
 
         Self {
-            offsets: Cow::Owned(offsets),
-            targets: Cow::Owned(targets),
-            weights: Cow::Owned(flat_weights),
-            topo_edge_idx: Cow::Owned(topo_edge_idx),
+            offsets: ArcCow::from_vec(offsets),
+            targets: ArcCow::from_vec(targets),
+            weights: ArcCow::from_vec(flat_weights),
+            topo_edge_idx: ArcCow::from_vec(topo_edge_idx),
         }
     }
 
@@ -163,9 +165,9 @@ impl UpAdjFlat {
 /// `madvise(DONTNEED)`-ed at startup.
 #[derive(Clone)]
 pub struct DownAdjFlat {
-    pub offsets: Cow<'static, [u64]>,
-    pub targets: Cow<'static, [u32]>,
-    pub weights: Cow<'static, [u32]>,
+    pub offsets: ArcCow<u64>,
+    pub targets: ArcCow<u32>,
+    pub weights: ArcCow<u32>,
 }
 
 impl DownAdjFlat {
@@ -214,9 +216,9 @@ impl DownAdjFlat {
         }
 
         Self {
-            offsets: Cow::Owned(offsets),
-            targets: Cow::Owned(targets),
-            weights: Cow::Owned(flat_weights),
+            offsets: ArcCow::from_vec(offsets),
+            targets: ArcCow::from_vec(targets),
+            weights: ArcCow::from_vec(flat_weights),
         }
     }
 }
@@ -229,11 +231,11 @@ impl DownAdjFlat {
 /// `CchQuery` (so unpack can recover topo edges from parent pointers).
 #[derive(Clone)]
 pub struct DownReverseAdjFlat {
-    pub offsets: Cow<'static, [u64]>, // n_nodes + 1
-    pub sources: Cow<'static, [u32]>, // source node x for reverse edge
-    pub weights: Cow<'static, [u32]>, // weight of edge x→y (embedded)
+    pub offsets: ArcCow<u64>, // n_nodes + 1
+    pub sources: ArcCow<u32>, // source node x for reverse edge
+    pub weights: ArcCow<u32>, // weight of edge x→y (embedded)
     /// Empty unless this flat feeds the routing hot path.
-    pub topo_edge_idx: Cow<'static, [u32]>,
+    pub topo_edge_idx: ArcCow<u32>,
 }
 
 impl DownReverseAdjFlat {
@@ -294,10 +296,10 @@ impl DownReverseAdjFlat {
         }
 
         Self {
-            offsets: Cow::Owned(offsets),
-            sources: Cow::Owned(sources),
-            weights: Cow::Owned(flat_weights),
-            topo_edge_idx: Cow::Owned(topo_edge_idx),
+            offsets: ArcCow::from_vec(offsets),
+            sources: ArcCow::from_vec(sources),
+            weights: ArcCow::from_vec(flat_weights),
+            topo_edge_idx: ArcCow::from_vec(topo_edge_idx),
         }
     }
 
@@ -517,10 +519,15 @@ impl UpAdjFlatFile {
         out
     }
 
-    /// Zero-copy read over a `'static` byte slice. The returned flat
-    /// borrows its arrays straight from the input. Verifies both body and
-    /// file CRCs before returning. Section start MUST be 8-byte aligned
-    /// (the container writer guarantees this).
+    /// Legacy reader over a `'static` byte slice. Verifies both body
+    /// and file CRCs before returning. Production loaders should use
+    /// [`Self::read_from_mmap_unverified`] which keeps the `Arc<Mmap>`
+    /// strong-count tied to the returned struct (no leak).
+    ///
+    /// Historically the returned slices were `Cow::Borrowed` into the
+    /// `'static` input. After #296, this path copies into owned `Vec`s
+    /// so the returned `UpAdjFlat` does not pin the input bytes; the
+    /// production zero-copy lives on [`Self::read_from_mmap_unverified`].
     pub fn read_from_bytes(bytes: &'static [u8]) -> anyhow::Result<UpAdjFlat> {
         Self::read_from_bytes_inner(bytes, true)
     }
@@ -552,22 +559,77 @@ impl UpAdjFlatFile {
             verify_adj_flat_crcs(bytes, body_end)?;
         }
 
-        let offsets: &'static [u64] =
+        let offsets: &[u64] =
             bytemuck::cast_slice(&bytes[offsets_off..offsets_off + 8 * (n_nodes + 1)]);
-        let targets: &'static [u32] =
-            bytemuck::cast_slice(&bytes[targets_off..targets_off + 4 * n_edges]);
-        let weights: &'static [u32] =
-            bytemuck::cast_slice(&bytes[weights_off..weights_off + 4 * n_edges]);
-        let topo_edge_idx: &'static [u32] = if has_topo_idx {
+        let targets: &[u32] = bytemuck::cast_slice(&bytes[targets_off..targets_off + 4 * n_edges]);
+        let weights: &[u32] = bytemuck::cast_slice(&bytes[weights_off..weights_off + 4 * n_edges]);
+        let topo_edge_idx: &[u32] = if has_topo_idx {
             bytemuck::cast_slice(&bytes[topo_off..topo_off + 4 * n_edges])
         } else {
             &[]
         };
+        // Legacy zero-copy path: copy into owned `Vec`s so the on-disk
+        // → in-memory shape matches the post-#296 `ArcCow<T>` field
+        // type. The `Arc<Mmap>`-backed un-leak path is
+        // [`Self::read_from_mmap_unverified`].
         Ok(UpAdjFlat {
-            offsets: Cow::Borrowed(offsets),
-            targets: Cow::Borrowed(targets),
-            weights: Cow::Borrowed(weights),
-            topo_edge_idx: Cow::Borrowed(topo_edge_idx),
+            offsets: ArcCow::from_vec(offsets.to_vec()),
+            targets: ArcCow::from_vec(targets.to_vec()),
+            weights: ArcCow::from_vec(weights.to_vec()),
+            topo_edge_idx: ArcCow::from_vec(topo_edge_idx.to_vec()),
+        })
+    }
+
+    /// Production mmap-backed reader (#296). Holds an `Arc<Mmap>` clone
+    /// for the returned flat's lifetime — when the flat drops, the
+    /// strong count decreases. Once every clone drops, the `Mmap`
+    /// drops, `munmap` fires, and the kernel reclaims the pages. This
+    /// is the un-leak counterpart to [`Self::read_from_bytes`].
+    ///
+    /// `byte_offset` and `byte_len` are the position and length of the
+    /// section within the container, as recorded in the directory
+    /// entry. CRC walking is the caller's responsibility (typically
+    /// driven through the lazy CRC layer before this call).
+    pub fn read_from_mmap_unverified(
+        mmap: std::sync::Arc<memmap2::Mmap>,
+        byte_offset: usize,
+        byte_len: usize,
+    ) -> anyhow::Result<UpAdjFlat> {
+        anyhow::ensure!(
+            byte_offset.saturating_add(byte_len) <= mmap.len(),
+            "up_adj_flat section out of bounds: off={byte_offset} len={byte_len} mmap_len={}",
+            mmap.len()
+        );
+        let bytes = &mmap[byte_offset..byte_offset + byte_len];
+        let (has_topo_idx, n_nodes, n_edges) = parse_adj_flat_header(bytes, UP_ADJ_FLAT_MAGIC)?;
+        let (offsets_off, targets_off, weights_off, topo_off, body_end) =
+            body_layout(n_nodes, n_edges, has_topo_idx);
+        anyhow::ensure!(
+            byte_len == body_end + ADJ_FLAT_FOOTER_SIZE,
+            "up_adj_flat size mismatch: got {}, expected {}",
+            byte_len,
+            body_end + ADJ_FLAT_FOOTER_SIZE
+        );
+        // Container-absolute byte offsets of each sub-array.
+        let offsets_abs = byte_offset + offsets_off;
+        let targets_abs = byte_offset + targets_off;
+        let weights_abs = byte_offset + weights_off;
+        let topo_abs = byte_offset + topo_off;
+
+        let offsets =
+            ArcCow::<u64>::from_mmap(std::sync::Arc::clone(&mmap), offsets_abs, n_nodes + 1)?;
+        let targets = ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), targets_abs, n_edges)?;
+        let weights = ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), weights_abs, n_edges)?;
+        let topo_edge_idx = if has_topo_idx {
+            ArcCow::<u32>::from_mmap(mmap, topo_abs, n_edges)?
+        } else {
+            ArcCow::from_vec(Vec::new())
+        };
+        Ok(UpAdjFlat {
+            offsets,
+            targets,
+            weights,
+            topo_edge_idx,
         })
     }
 }
@@ -622,16 +684,56 @@ impl DownAdjFlatFile {
         if verify {
             verify_adj_flat_crcs(bytes, body_end)?;
         }
-        let offsets: &'static [u64] =
+        let offsets: &[u64] =
             bytemuck::cast_slice(&bytes[offsets_off..offsets_off + 8 * (n_nodes + 1)]);
-        let targets: &'static [u32] =
-            bytemuck::cast_slice(&bytes[targets_off..targets_off + 4 * n_edges]);
-        let weights: &'static [u32] =
-            bytemuck::cast_slice(&bytes[weights_off..weights_off + 4 * n_edges]);
+        let targets: &[u32] = bytemuck::cast_slice(&bytes[targets_off..targets_off + 4 * n_edges]);
+        let weights: &[u32] = bytemuck::cast_slice(&bytes[weights_off..weights_off + 4 * n_edges]);
+        // Legacy zero-copy path now copies into owned Vecs (#296).
         Ok(DownAdjFlat {
-            offsets: Cow::Borrowed(offsets),
-            targets: Cow::Borrowed(targets),
-            weights: Cow::Borrowed(weights),
+            offsets: ArcCow::from_vec(offsets.to_vec()),
+            targets: ArcCow::from_vec(targets.to_vec()),
+            weights: ArcCow::from_vec(weights.to_vec()),
+        })
+    }
+
+    /// Production mmap-backed reader (#296). See
+    /// [`UpAdjFlatFile::read_from_mmap_unverified`] for the un-leak
+    /// rationale; identical pattern.
+    pub fn read_from_mmap_unverified(
+        mmap: std::sync::Arc<memmap2::Mmap>,
+        byte_offset: usize,
+        byte_len: usize,
+    ) -> anyhow::Result<DownAdjFlat> {
+        anyhow::ensure!(
+            byte_offset.saturating_add(byte_len) <= mmap.len(),
+            "down_adj_flat section out of bounds: off={byte_offset} len={byte_len} mmap_len={}",
+            mmap.len()
+        );
+        let bytes = &mmap[byte_offset..byte_offset + byte_len];
+        let (has_topo_idx, n_nodes, n_edges) = parse_adj_flat_header(bytes, DOWN_ADJ_FLAT_MAGIC)?;
+        anyhow::ensure!(
+            !has_topo_idx,
+            "DownAdjFlat must not carry topo_edge_idx (has_topo_idx=1)"
+        );
+        let (offsets_off, targets_off, weights_off, _, body_end) =
+            body_layout(n_nodes, n_edges, false);
+        anyhow::ensure!(
+            byte_len == body_end + ADJ_FLAT_FOOTER_SIZE,
+            "down_adj_flat size mismatch: got {}, expected {}",
+            byte_len,
+            body_end + ADJ_FLAT_FOOTER_SIZE
+        );
+        let offsets_abs = byte_offset + offsets_off;
+        let targets_abs = byte_offset + targets_off;
+        let weights_abs = byte_offset + weights_off;
+        let offsets =
+            ArcCow::<u64>::from_mmap(std::sync::Arc::clone(&mmap), offsets_abs, n_nodes + 1)?;
+        let targets = ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), targets_abs, n_edges)?;
+        let weights = ArcCow::<u32>::from_mmap(mmap, weights_abs, n_edges)?;
+        Ok(DownAdjFlat {
+            offsets,
+            targets,
+            weights,
         })
     }
 }
@@ -694,22 +796,66 @@ impl DownReverseAdjFlatFile {
         if verify {
             verify_adj_flat_crcs(bytes, body_end)?;
         }
-        let offsets: &'static [u64] =
+        let offsets: &[u64] =
             bytemuck::cast_slice(&bytes[offsets_off..offsets_off + 8 * (n_nodes + 1)]);
-        let sources: &'static [u32] =
-            bytemuck::cast_slice(&bytes[sources_off..sources_off + 4 * n_edges]);
-        let weights: &'static [u32] =
-            bytemuck::cast_slice(&bytes[weights_off..weights_off + 4 * n_edges]);
-        let topo_edge_idx: &'static [u32] = if has_topo_idx {
+        let sources: &[u32] = bytemuck::cast_slice(&bytes[sources_off..sources_off + 4 * n_edges]);
+        let weights: &[u32] = bytemuck::cast_slice(&bytes[weights_off..weights_off + 4 * n_edges]);
+        let topo_edge_idx: &[u32] = if has_topo_idx {
             bytemuck::cast_slice(&bytes[topo_off..topo_off + 4 * n_edges])
         } else {
             &[]
         };
+        // Legacy zero-copy path now copies into owned Vecs (#296).
         Ok(DownReverseAdjFlat {
-            offsets: Cow::Borrowed(offsets),
-            sources: Cow::Borrowed(sources),
-            weights: Cow::Borrowed(weights),
-            topo_edge_idx: Cow::Borrowed(topo_edge_idx),
+            offsets: ArcCow::from_vec(offsets.to_vec()),
+            sources: ArcCow::from_vec(sources.to_vec()),
+            weights: ArcCow::from_vec(weights.to_vec()),
+            topo_edge_idx: ArcCow::from_vec(topo_edge_idx.to_vec()),
+        })
+    }
+
+    /// Production mmap-backed reader (#296). See
+    /// [`UpAdjFlatFile::read_from_mmap_unverified`] for the un-leak
+    /// rationale; identical pattern.
+    pub fn read_from_mmap_unverified(
+        mmap: std::sync::Arc<memmap2::Mmap>,
+        byte_offset: usize,
+        byte_len: usize,
+    ) -> anyhow::Result<DownReverseAdjFlat> {
+        anyhow::ensure!(
+            byte_offset.saturating_add(byte_len) <= mmap.len(),
+            "down_reverse_adj_flat section out of bounds: off={byte_offset} len={byte_len} mmap_len={}",
+            mmap.len()
+        );
+        let bytes = &mmap[byte_offset..byte_offset + byte_len];
+        let (has_topo_idx, n_nodes, n_edges) =
+            parse_adj_flat_header(bytes, DOWN_REV_ADJ_FLAT_MAGIC)?;
+        let (offsets_off, sources_off, weights_off, topo_off, body_end) =
+            body_layout(n_nodes, n_edges, has_topo_idx);
+        anyhow::ensure!(
+            byte_len == body_end + ADJ_FLAT_FOOTER_SIZE,
+            "down_reverse_adj_flat size mismatch: got {}, expected {}",
+            byte_len,
+            body_end + ADJ_FLAT_FOOTER_SIZE
+        );
+        let offsets_abs = byte_offset + offsets_off;
+        let sources_abs = byte_offset + sources_off;
+        let weights_abs = byte_offset + weights_off;
+        let topo_abs = byte_offset + topo_off;
+        let offsets =
+            ArcCow::<u64>::from_mmap(std::sync::Arc::clone(&mmap), offsets_abs, n_nodes + 1)?;
+        let sources = ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), sources_abs, n_edges)?;
+        let weights = ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), weights_abs, n_edges)?;
+        let topo_edge_idx = if has_topo_idx {
+            ArcCow::<u32>::from_mmap(mmap, topo_abs, n_edges)?
+        } else {
+            ArcCow::from_vec(Vec::new())
+        };
+        Ok(DownReverseAdjFlat {
+            offsets,
+            sources,
+            weights,
+            topo_edge_idx,
         })
     }
 }
@@ -2493,23 +2639,23 @@ mod step_a_tests {
             n_shortcuts: 2,
             n_original_arcs: 2,
             inputs_sha: [0u8; 32],
-            up_offsets: Cow::Owned(up_offsets),
-            up_targets: Cow::Owned(up_targets),
+            up_offsets: crate::formats::ArcCow::from_vec(up_offsets),
+            up_targets: crate::formats::ArcCow::from_vec(up_targets),
             up_is_shortcut: BitsetField::from_bools(&up_is_shortcut_bools),
-            up_middle: Cow::Owned(up_middle),
-            down_offsets: Cow::Owned(down_offsets),
-            down_targets: Cow::Owned(down_targets),
+            up_middle: crate::formats::ArcCow::from_vec(up_middle),
+            down_offsets: crate::formats::ArcCow::from_vec(down_offsets),
+            down_targets: crate::formats::ArcCow::from_vec(down_targets),
             down_is_shortcut: BitsetField::from_bools(&down_is_shortcut_bools),
-            down_middle: Cow::Owned(down_middle),
-            rank_to_filtered: Cow::Owned(vec![0u32, 1, 2, 3]),
+            down_middle: crate::formats::ArcCow::from_vec(down_middle),
+            rank_to_filtered: crate::formats::ArcCow::from_vec(vec![0u32, 1, 2, 3]),
         };
 
         let weights = CchWeights {
-            up: Cow::Owned(vec![10u32, 3, 7, u32::MAX]),
-            down: Cow::Owned(vec![10u32, 3, 7, u32::MAX]),
+            up: vec![10u32, 3, 7, u32::MAX].into(),
+            down: vec![10u32, 3, 7, u32::MAX].into(),
             // empty relaxed middles → fall back to topo middles
-            up_middle: Cow::Owned(vec![]),
-            down_middle: Cow::Owned(vec![]),
+            up_middle: vec![].into(),
+            down_middle: vec![].into(),
         };
 
         (topo, weights)
@@ -2750,22 +2896,22 @@ mod step_a_tests {
             n_shortcuts: 0,
             n_original_arcs: 8,
             inputs_sha: [0u8; 32],
-            up_offsets: Cow::Owned(up_offsets),
-            up_targets: Cow::Owned(up_targets),
+            up_offsets: crate::formats::ArcCow::from_vec(up_offsets),
+            up_targets: crate::formats::ArcCow::from_vec(up_targets),
             up_is_shortcut: BitsetField::from_bools(&up_is_shortcut_bools),
-            up_middle: Cow::Owned(up_middle),
-            down_offsets: Cow::Owned(down_offsets),
-            down_targets: Cow::Owned(down_targets),
+            up_middle: crate::formats::ArcCow::from_vec(up_middle),
+            down_offsets: crate::formats::ArcCow::from_vec(down_offsets),
+            down_targets: crate::formats::ArcCow::from_vec(down_targets),
             down_is_shortcut: BitsetField::from_bools(&down_is_shortcut_bools),
-            down_middle: Cow::Owned(down_middle),
-            rank_to_filtered: Cow::Owned((0..6).collect()),
+            down_middle: crate::formats::ArcCow::from_vec(down_middle),
+            rank_to_filtered: crate::formats::ArcCow::from_vec((0..6).collect()),
         };
 
         let weights = CchWeights {
-            up: Cow::Owned(up_w),
-            down: Cow::Owned(down_w),
-            up_middle: Cow::Owned(vec![]),
-            down_middle: Cow::Owned(vec![]),
+            up: up_w.into(),
+            down: down_w.into(),
+            up_middle: vec![].into(),
+            down_middle: vec![].into(),
         };
 
         (topo, weights)
