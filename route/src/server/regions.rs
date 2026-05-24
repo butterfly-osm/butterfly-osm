@@ -62,8 +62,10 @@ pub struct RegionEntry {
     /// Pending region to load just to enumerate its modes.
     pub mode_names: Vec<String>,
     /// #292 Phase 2: lazy-loadable region state. `Loaded(Arc<ServerState>)`
-    /// in the default eager-boot path; `Pending` reserved for the lazy
-    /// boot path (`--lazy-regions`, Phase 3).
+    /// is the after-load steady state; `Pending` is the lazy-boot
+    /// default — entries are registered as Pending and the first call
+    /// to [`Self::state()`] drives the per-container load. Operators
+    /// can opt back into eager boot with `--eager-regions`.
     ///
     /// Private so the choice of representation can evolve (e.g. add an
     /// `Unloaded` variant for LRU eviction) without breaking callers.
@@ -87,19 +89,19 @@ pub struct RegionEntry {
 
 /// #292 Phase 2: per-region load state.
 ///
-/// `Loaded(Arc<ServerState>)` is the eager-boot default — every region
-/// is constructed in this variant during `serve --data-dir <dir>` boot.
-/// `Pending` reserved for the future `--lazy-regions` boot path: the
-/// container path is registered without a corresponding ServerState,
-/// and the first call to [`RegionEntry::state`] drives the load.
+/// `Pending` is the lazy default: the container path is registered
+/// without a corresponding ServerState, and the first call to
+/// [`RegionEntry::state`] drives the load on the serving thread.
+/// `Loaded(Arc<ServerState>)` is the after-load steady state — also
+/// the variant used when an operator forces eager boot via
+/// `--eager-regions` (every region is `Loaded` at boot then).
 ///
 /// An `Unloaded` variant for LRU eviction will be added alongside the
 /// memory-budget background task.
 enum RegionState {
     /// Lazy registration — container path known, ServerState not yet
-    /// constructed. Currently unused until the `--lazy-regions` flag
-    /// lands in Phase 3.
-    #[allow(dead_code)]
+    /// constructed. This is the default state of every entry built by
+    /// the multi-region `serve --data-dir` boot path.
     Pending,
     Loaded(Arc<ServerState>),
 }
@@ -339,21 +341,25 @@ impl RegionsState {
     /// At least one region must load; an empty directory or a filter
     /// that excludes every container is a hard error so an operator
     /// does not accidentally start a server with zero data.
-    /// `lazy: true` registers regions as [`RegionState::Pending`]
-    /// without constructing their `ServerState` at boot. First call to
-    /// [`RegionEntry::state`] for each region pays the per-container
-    /// load latency (~few seconds on Belgium-sized regions); subsequent
-    /// calls are free.
+    /// `lazy: true` (the **default behaviour** for `serve --data-dir`,
+    /// `serve` itself drives this through CLI) registers regions as
+    /// [`RegionState::Pending`] without constructing their
+    /// `ServerState` at boot. First call to [`RegionEntry::state`] for
+    /// each region pays the per-container load latency (~few seconds
+    /// on Belgium-sized regions); subsequent calls are free.
     ///
-    /// `lazy: false` (the default) is the eager-boot path that
-    /// constructs every `ServerState` up front — matches the
-    /// pre-#292 behaviour.
+    /// `lazy: false` is the legacy eager-boot path that constructs
+    /// every `ServerState` up front. It's reachable via
+    /// `--eager-regions` for operators that explicitly want
+    /// stall-at-boot semantics. The convenience wrapper
+    /// [`Self::load_from_dir`] keeps the lazy default so existing
+    /// callers get the sane default for free.
     pub fn load_from_dir(
         dir: &Path,
         region_filter: Option<&[String]>,
         mode_filter: Option<&[String]>,
     ) -> Result<Self> {
-        Self::load_from_dir_with_opts(dir, region_filter, mode_filter, false)
+        Self::load_from_dir_with_opts(dir, region_filter, mode_filter, true)
     }
 
     /// Like [`Self::load_from_dir`] with explicit `lazy` flag. When
@@ -460,7 +466,7 @@ impl RegionsState {
         let mut by_id: HashMap<String, usize> = HashMap::new();
         if lazy && mode_filter.is_some() {
             tracing::warn!(
-                "--lazy-regions ignores --modes (the filter would need to be remembered per-region; revisit if needed)"
+                "lazy region load ignores --modes (the filter would need to be remembered per-region; either pass --eager-regions to honour the filter, or revisit if needed)"
             );
         }
         for (id, bbox, peeked_modes, path) in to_load {

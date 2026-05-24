@@ -647,18 +647,21 @@ pub enum Commands {
         #[arg(long)]
         regions: Option<String>,
 
-        /// #292 Phase 3: register regions without constructing their
-        /// `ServerState` at boot. First query for each region pays the
-        /// per-container load latency (~few seconds on Belgium-sized
-        /// regions); subsequent queries are unchanged. Boot completes
-        /// in <1s regardless of region count, enabling planet-scale
-        /// deployment (70+ regions) on machines that couldn't hold
-        /// every region in RAM simultaneously.
+        /// Force eager region load at boot — the legacy pre-#292
+        /// behaviour. Default is **lazy**: regions are registered
+        /// without constructing their `ServerState`, and first query
+        /// for each region pays the per-container load latency (~few
+        /// seconds on Belgium-sized regions). Lazy is the sane default
+        /// for planet-scale deployment.
         ///
-        /// Implies `--modes` is ignored on the lazy path. Single
-        /// `--data <file>` mode is always eager.
+        /// Only set this when an operator explicitly wants stall-at-boot
+        /// semantics (e.g. dedicated single-region deployment where the
+        /// 30-60 s first-request latency would be unacceptable and no
+        /// warm-on-boot strategy is in place yet).
+        ///
+        /// Single `--data <file>` mode is always eager (only one region).
         #[arg(long)]
-        lazy_regions: bool,
+        eager_regions: bool,
 
         /// Log format: "text" (default) or "json"
         #[arg(long, default_value = "text")]
@@ -1760,7 +1763,7 @@ impl Cli {
                 transport,
                 modes,
                 regions,
-                lazy_regions,
+                eager_regions,
                 log_format,
                 rss_checkpoints,
                 eager_verify,
@@ -1835,7 +1838,9 @@ impl Cli {
                     region_filter.as_deref(),
                     &load_options,
                     overlay.as_deref(),
-                    lazy_regions,
+                    // #292 Phase 5: lazy is the sane default; eager
+                    // is an explicit operator opt-in.
+                    !eager_regions,
                 ))?;
                 Ok(())
             }

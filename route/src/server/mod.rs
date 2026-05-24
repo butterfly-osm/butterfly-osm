@@ -459,8 +459,8 @@ async fn start_grpc_server(state: Arc<regions::RegionsState>, port: u16) -> Resu
         );
     }
     // #292 Phase 3: pass the whole RegionsState; Flight resolves the
-    // primary region per request so --lazy-regions can keep regions
-    // Pending until first query.
+    // primary region per request so the default-lazy boot can keep
+    // regions Pending until first query.
     let flight_svc = flight::build_flight_server(Arc::clone(&state));
 
     tonic::transport::Server::builder()
