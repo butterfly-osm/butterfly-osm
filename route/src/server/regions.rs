@@ -742,12 +742,19 @@ impl RegionsState {
         // plus any near-border slack. A query farther than 1.1 km from
         // a region's bbox edge would not have snapped there anyway.
         const BBOX_MARGIN_DEG: f64 = 0.01;
-        // #142: tile margin in cells. 1 cell = 0.1° ≈ 7-11 km at
-        // mid-latitudes. margin_tiles=1 accepts the 3x3 block around
-        // the query tile so a near-edge query that snaps into a
-        // neighbouring tile's road segment still considers this
-        // region.
-        const TILE_MARGIN: i32 = 1;
+        // #142: tile margin = 0 (exact tile membership). Initial
+        // attempt at margin=1 (3x3 ring, ~21×33 km) was too
+        // permissive: BE's border tiles satisfied the ring around a
+        // pure-LU query coord, causing BE to load unnecessarily.
+        // margin=0 means: only load this region if the query coord
+        // lands in a tile that the region's road network actually
+        // touches. The bbox margin (0.01° ≈ 1.1 km) handles the
+        // very-near-border cases. Queries 1-5 km outside a region's
+        // tile coverage but within snap radius (5 km) are a known
+        // false-negative — rare, and snap_index falls back to
+        // returning None which is the correct behaviour for that
+        // case anyway.
+        const TILE_MARGIN: i32 = 0;
 
         let mut best: Option<(usize, f64)> = None;
         for (idx, region) in self.regions.iter().enumerate() {
