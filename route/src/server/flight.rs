@@ -780,7 +780,14 @@ fn build_route_output(
     );
 
     encode_linestring_wkb_into(&scratch.points, &mut scratch.wkb);
-    let wkb = std::mem::take(&mut scratch.wkb);
+    // #301: `mem::take` leaves `Vec::new()` behind (zero capacity),
+    // forcing a fresh allocation on the next pair and defeating the
+    // scratch-buffer reuse this struct exists for. Instead replace
+    // with a same-capacity Vec — the returned WKB still owns its
+    // bytes, and the scratch slot stays sized for the next pair so
+    // subsequent encodes reuse the allocation.
+    let cap = scratch.wkb.capacity();
+    let wkb = std::mem::replace(&mut scratch.wkb, Vec::with_capacity(cap));
 
     (duration_s as f32, distance_m as f32, wkb)
 }
