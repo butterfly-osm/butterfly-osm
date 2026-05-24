@@ -648,6 +648,7 @@ fn compute_route_pair(
     slat: f64,
     dlon: f64,
     dlat: f64,
+    fallback_count: &std::sync::atomic::AtomicU64,
 ) -> Option<(f32, f32, Vec<u8>)> {
     use super::types::SnapRole;
 
@@ -674,6 +675,9 @@ fn compute_route_pair(
             ));
         }
     }
+
+    // #275-bench: increment fallback counter — K=1 fast path missed.
+    fallback_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     // Slow path: K=64 K-best snap + (i+j)-combo fallback.
     const SNAP_K: usize = 64;
@@ -833,6 +837,12 @@ fn do_route_batch(
         for chunk in params.pairs.chunks(batch_size) {
             let n = chunk.len();
 
+            // #275-bench: per-chunk fallback counter. fetched by K=64
+            // slow path inside `compute_route_pair` so we can quantify
+            // how often the K=1 fast path misses.
+            let fallback_count = std::sync::atomic::AtomicU64::new(0);
+            let fb = &fallback_count;
+
             // Compute every pair in parallel. Use scoped OS threads
             // instead of rayon so each thread-local `CchQueryState`
             // drops after this chunk; keeping it in the global rayon
@@ -846,7 +856,7 @@ fn do_route_batch(
                     .map(|pair| {
                         let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
                         let r = compute_route_pair(
-                            &state, mode_data, mode, &query, slon, slat, dlon, dlat,
+                            &state, mode_data, mode, &query, slon, slat, dlon, dlat, fb,
                         );
                         row_of(slon, slat, dlon, dlat, r)
                     })
@@ -868,7 +878,7 @@ fn do_route_batch(
                                                 (pair[0], pair[1], pair[2], pair[3]);
                                             let r = compute_route_pair(
                                                 state, mode_data, mode, &query, slon, slat, dlon,
-                                                dlat,
+                                                dlat, fb,
                                             );
                                             row_of(slon, slat, dlon, dlat, r)
                                         })
@@ -942,6 +952,17 @@ fn do_route_batch(
                     return;
                 }
             };
+
+            // #275-bench: log fallback rate per chunk. Sustained high
+            // rates (>5%) indicate the K=1 fast path is missing on
+            // common inputs and an intermediate K tier may be warranted.
+            let fb = fallback_count.load(std::sync::atomic::Ordering::Relaxed);
+            tracing::info!(
+                n_pairs = n,
+                fallback = fb,
+                fallback_pct = (fb as f64) * 100.0 / (n.max(1) as f64),
+                "route_batch chunk fallback rate"
+            );
 
             if tx.blocking_send(Ok(batch)).is_err() {
                 return; // Client disconnected
