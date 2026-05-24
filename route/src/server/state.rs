@@ -965,14 +965,23 @@ impl ServerState {
             };
             let off = entry.offset as usize;
             let len = entry.len as usize;
-            if off + len > static_bytes.len() {
+            let Some(end) = off.checked_add(len) else {
+                tracing::warn!(
+                    section = %other_section,
+                    offset = off,
+                    len = len,
+                    "way_attrs section offset+len overflows usize; skipping evict"
+                );
+                continue;
+            };
+            if end > static_bytes.len() {
                 tracing::warn!(
                     section = %other_section,
                     "way_attrs section bytes exceed mmap; skipping evict"
                 );
                 continue;
             }
-            let other_bytes = &static_bytes[off..off + len];
+            let other_bytes = &static_bytes[off..end];
             if let Err(e) = crate::formats::mmap::madvise_dontneed(other_bytes) {
                 tracing::warn!(
                     section = %other_section,
