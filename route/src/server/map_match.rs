@@ -68,8 +68,8 @@ pub struct MatchResult {
 pub struct Matching {
     /// Ordered EBG edge IDs forming the matched path
     pub ebg_path: Vec<u32>,
-    /// Total duration in deciseconds
-    pub duration_ds: u32,
+    /// Total duration in seconds (post-#297; was deciseconds).
+    pub duration_s: u32,
     /// Confidence score (0.0 to 1.0) — average emission probability
     pub confidence: f64,
     /// Region index in [`super::regions::RegionsState::regions`] this
@@ -154,7 +154,7 @@ pub fn map_match(
             let ebg_path =
                 build_matched_path(mode_data, &seg_candidates, &matched_indices, weights);
 
-            let duration_ds = ebg_path
+            let duration_s = ebg_path
                 .iter()
                 .map(|&eid| mode_data.node_weights[eid as usize])
                 .filter(|&w| w != u32::MAX)
@@ -173,7 +173,7 @@ pub fn map_match(
 
             matchings.push(Matching {
                 ebg_path,
-                duration_ds,
+                duration_s,
                 confidence: avg_emission.exp(), // Convert from log to [0,1]
                 region_idx: 0,                  // single-region path: caller's region is implicit
             });
@@ -890,7 +890,7 @@ pub fn map_match_multi_region(
                 &mode_data.cch_weights,
             );
 
-            let duration_ds = ebg_path
+            let duration_s = ebg_path
                 .iter()
                 .map(|&eid| mode_data.node_weights[eid as usize])
                 .filter(|&w| w != u32::MAX)
@@ -909,7 +909,7 @@ pub fn map_match_multi_region(
 
             matchings.push(Matching {
                 ebg_path,
-                duration_ds,
+                duration_s,
                 confidence: avg_emission.exp(),
                 region_idx: run_region_idx,
             });

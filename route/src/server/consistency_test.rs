@@ -144,7 +144,7 @@ fn test_route_table_duration_consistency() {
             match (route_dist, table_dist) {
                 (Some(r), Some(t)) => {
                     if r == t {
-                        eprintln!("  PASS {mode_name} pair {i}: {:.1}s", r as f64 / 10.0);
+                        eprintln!("  PASS {mode_name} pair {i}: {}s", r);
                         passed += 1;
                     } else {
                         let msg = format!(
@@ -262,10 +262,7 @@ fn test_route_table_distance_consistency() {
             match (table_dist, table_dist2) {
                 (Some(d1), Some(d2)) => {
                     if d1 == d2 {
-                        eprintln!(
-                            "  PASS {mode_name} pair {i}: dist={:.1}m",
-                            d1 as f64 / 1000.0
-                        );
+                        eprintln!("  PASS {mode_name} pair {i}: dist={}m", d1);
                         passed += 1;
                     } else {
                         let msg = format!("{mode_name} pair {i}: dist1={} dist2={}", d1, d2);
@@ -304,8 +301,7 @@ fn test_isochrone_route_consistency() {
     let state = load_state();
     let mode = lookup_mode(&state, "car");
     let mode_data = state.get_mode(mode);
-    let threshold_s = 300; // 5 minutes
-    let threshold_ds = threshold_s * 10;
+    let threshold_s = 300; // 5 minutes (weights are seconds post-#297, no conversion needed)
 
     // Test origins
     let origins = [
@@ -329,7 +325,7 @@ fn test_isochrone_route_consistency() {
             &mode_data.up_adj_flat,
             &mode_data.down_adj_flat,
             center_rank,
-            threshold_ds,
+            threshold_s,
             mode,
         );
 
@@ -353,7 +349,7 @@ fn test_isochrone_route_consistency() {
                         passed += 1;
                     } else {
                         // Allow tiny rounding: both should be within threshold
-                        if d <= threshold_ds && phast_dist <= threshold_ds {
+                        if d <= threshold_s && phast_dist <= threshold_s {
                             passed += 1;
                         } else {
                             let msg = format!(
@@ -494,9 +490,9 @@ fn test_route_path_validity() {
             );
 
             eprintln!(
-                "  PASS {mode_name} pair {i}: path_len={} dist={:.1}s",
+                "  PASS {mode_name} pair {i}: path_len={} dist={}s",
                 ebg_path.len(),
-                result.distance as f64 / 10.0
+                result.distance
             );
             passed += 1;
         }
@@ -555,11 +551,11 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
         .iter()
         .map(|&filtered| mode_data.filtered_to_original[filtered as usize])
         .collect();
-    let mut unpacked_dist_ds = 0u64;
+    let mut unpacked_dist_s = 0u64;
     let mut duplicate_cch_hops = 0usize;
 
     eprintln!(
-        "Ghent->Liege src_rank={} dst_rank={} src_orig={} dst_orig={} query_dist_ds={} forward_len={} backward_len={} unpacked_len={}",
+        "Ghent->Liege src_rank={} dst_rank={} src_orig={} dst_orig={} query_dist_s={} forward_len={} backward_len={} unpacked_len={}",
         src_rank,
         dst_rank,
         src_orig,
@@ -635,15 +631,15 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
             rank_path[i + 1],
             edge_idx
         );
-        unpacked_dist_ds += weights[edge_idx] as u64;
+        unpacked_dist_s += weights[edge_idx] as u64;
     }
 
     eprintln!(
-        "Ghent->Liege unpacked_dist_ds={} duplicate_cch_hops={}",
-        unpacked_dist_ds, duplicate_cch_hops
+        "Ghent->Liege unpacked_dist_s={} duplicate_cch_hops={}",
+        unpacked_dist_s, duplicate_cch_hops
     );
 
-    let path_dist_ds = |path: &[u32]| -> u64 {
+    let path_dist_s = |path: &[u32]| -> u64 {
         let mut total = 0u64;
         for pair in path.windows(2) {
             let src = pair[0] as usize;
@@ -687,7 +683,7 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
             target,
         );
         eprintln!(
-            "forward step {}: {} -> {} edge_idx={} shortcut={} weight_ds={} expanded_len={} expanded_ds={}",
+            "forward step {}: {} -> {} edge_idx={} shortcut={} weight_s={} expanded_len={} expanded_s={}",
             step,
             current,
             target,
@@ -695,7 +691,7 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
             mode_data.cch_topo.up_is_shortcut.bit(edge_idx),
             edge_weight,
             expanded.len(),
-            path_dist_ds(&expanded)
+            path_dist_s(&expanded)
         );
         current = target;
     }
@@ -714,7 +710,7 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
             node,
         );
         eprintln!(
-            "backward step {}: {} -> {} edge_idx={} shortcut={} weight_ds={} expanded_len={} expanded_ds={}",
+            "backward step {}: {} -> {} edge_idx={} shortcut={} weight_s={} expanded_len={} expanded_s={}",
             step,
             node,
             target,
@@ -722,7 +718,7 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
             mode_data.cch_topo.down_is_shortcut.bit(edge_idx),
             edge_weight,
             expanded.len(),
-            path_dist_ds(&expanded)
+            path_dist_s(&expanded)
         );
     }
 }
@@ -1480,33 +1476,32 @@ fn test_197_directional_snap_asymmetry_reproducer() {
     );
 
     // Sanity bound: Antwerp ↔ Luxembourg-border driving distance is
-    // roughly 200–300 km. We use route distance in deciseconds-of-
-    // travel-time on the time CCH; at ~100 km/h average the upper
-    // bound is around 4 hours == 144 000 ds. Use a loose 18000 ..
-    // 360000 window (30 min .. 10 h) to detect "trivially short" or
-    // "wildly long" regressions without coupling to OSRM's exact
-    // figure.
-    let fwd_ds = fwd.unwrap();
-    let rev_ds = rev.unwrap();
+    // roughly 200–300 km. We use route distance in seconds (post-#297)
+    // on the time CCH; at ~100 km/h average the upper bound is around
+    // 4 hours == 14 400 s. Use a loose 1800 .. 36000 window (30 min .. 10 h)
+    // to detect "trivially short" or "wildly long" regressions without
+    // coupling to OSRM's exact figure.
+    let fwd_s = fwd.unwrap();
+    let rev_s = rev.unwrap();
     assert!(
-        (18_000..=360_000).contains(&fwd_ds),
-        "fwd route duration {} ds is outside sanity window [18000, 360000]",
-        fwd_ds
+        (1_800..=36_000).contains(&fwd_s),
+        "fwd route duration {} s is outside sanity window [1800, 36000]",
+        fwd_s
     );
     assert!(
-        (18_000..=360_000).contains(&rev_ds),
-        "rev route duration {} ds is outside sanity window [18000, 360000]",
-        rev_ds
+        (1_800..=36_000).contains(&rev_s),
+        "rev route duration {} s is outside sanity window [1800, 36000]",
+        rev_s
     );
 
     // Both directions should agree to within ~25 % — a directed
     // network has minor asymmetries (one-way detours) but not 2x.
-    let ratio = (fwd_ds.max(rev_ds) as f64) / (fwd_ds.min(rev_ds) as f64);
+    let ratio = (fwd_s.max(rev_s) as f64) / (fwd_s.min(rev_s) as f64);
     assert!(
         ratio < 1.25,
         "fwd/rev duration mismatch: fwd={} rev={} ratio={:.3}",
-        fwd_ds,
-        rev_ds,
+        fwd_s,
+        rev_s,
         ratio
     );
 }

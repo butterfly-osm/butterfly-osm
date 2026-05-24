@@ -746,10 +746,10 @@ fn build_matrix_with_buckets(
     row_major
 }
 
-/// Convert haversine metres → mode-specific deciseconds for the
-/// inter-region traversal cost. This is a fixed-speed approximation
-/// because the crossing edge isn't in any region's CCH; we conservatively
-/// assume the lowest typical speed for the mode.
+/// Convert haversine metres → mode-specific seconds for the
+/// inter-region traversal cost (post-#297; was deciseconds). Fixed-speed
+/// approximation because the crossing edge isn't in any region's CCH —
+/// we conservatively assume the lowest typical speed for the mode.
 fn build_inter_region_cost(distance_m: f64, mode: &str) -> u32 {
     let speed_mps = match mode {
         "foot" => 1.4,   // ~5 km/h
@@ -757,10 +757,9 @@ fn build_inter_region_cost(distance_m: f64, mode: &str) -> u32 {
         "truck" => 11.1, // ~40 km/h
         _ => 13.9,       // ~50 km/h (car default)
     };
-    let secs = distance_m / speed_mps;
-    let dsec = (secs * 10.0).ceil();
-    if dsec.is_finite() && dsec >= 0.0 && dsec <= u32::MAX as f64 {
-        dsec as u32
+    let secs = (distance_m / speed_mps).ceil();
+    if secs.is_finite() && secs >= 0.0 && secs <= u32::MAX as f64 {
+        secs as u32
     } else {
         u32::MAX
     }
