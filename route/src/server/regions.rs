@@ -742,17 +742,31 @@ impl RegionsState {
         // plus any near-border slack. A query farther than 1.1 km from
         // a region's bbox edge would not have snapped there anyway.
         const BBOX_MARGIN_DEG: f64 = 0.01;
+        // #142: tile margin in cells. 1 cell = 0.1° ≈ 7-11 km at
+        // mid-latitudes. margin_tiles=1 accepts the 3x3 block around
+        // the query tile so a near-edge query that snaps into a
+        // neighbouring tile's road segment still considers this
+        // region.
+        const TILE_MARGIN: i32 = 1;
 
         let mut best: Option<(usize, f64)> = None;
         for (idx, region) in self.regions.iter().enumerate() {
-            // Bbox pre-filter. If the region has a cached bbox AND the
-            // query lies outside it (with margin), skip — for Pending
-            // regions this is the difference between "load to learn
-            // nothing" and "stay Pending". For Loaded regions it's a
-            // tiny constant-time check that lets us bypass the snap
-            // grid traversal too.
+            // Bbox pre-filter (cheap, 4 cmps). Catches "completely
+            // outside this region's bounding box".
             if let Some(bbox) = region.bbox
                 && !bbox.contains_with_margin(lon, lat, BBOX_MARGIN_DEG)
+            {
+                continue;
+            }
+            // #142 tile pre-filter. Tighter than bbox: a query inside
+            // BE's bbox but in LU territory (where BE bbox contains
+            // LU but BE's road tiles don't cover that LU sub-area)
+            // will skip BE even though bbox passes. This is the
+            // difference between "load BE for every LU query because
+            // LU sits inside BE's bbox" and "only load BE when the
+            // query is in BE's road tile set".
+            if let Some(rt) = &region.tiles
+                && !rt.contains_with_margin(lon, lat, TILE_MARGIN)
             {
                 continue;
             }
