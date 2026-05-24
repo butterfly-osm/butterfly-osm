@@ -457,7 +457,7 @@ impl RegionsState {
         }
         match self.snap_winner(lon, lat, mode_name) {
             Some((idx, _dist)) => Ok((
-                Arc::clone(&self.regions[idx].state),
+                self.regions[idx].state(),
                 self.regions[idx].id.clone(),
             )),
             None => Err(DispatchError::NoRegion {
@@ -508,7 +508,7 @@ impl RegionsState {
         let dst = self.snap_winner(dst_lon, dst_lat, mode_name);
         match (src, dst) {
             (Some((s_idx, _)), Some((d_idx, _))) if s_idx == d_idx => Ok((
-                Arc::clone(&self.regions[s_idx].state),
+                self.regions[s_idx].state(),
                 self.regions[s_idx].id.clone(),
             )),
             (Some((s_idx, _)), Some((d_idx, _))) => {
@@ -575,7 +575,7 @@ impl RegionsState {
             // iterator isn't empty (matches the original Empty error).
             let mut iter = coords.into_iter();
             iter.next().ok_or(DispatchError::Empty)?;
-            return Ok((Arc::clone(&only.state), only.id.clone()));
+            return Ok((only.state(), only.id.clone()));
         }
         let mut iter = coords.into_iter();
         let first = iter.next().ok_or(DispatchError::Empty)?;
@@ -612,7 +612,7 @@ impl RegionsState {
             }
         }
         Ok((
-            Arc::clone(&self.regions[s_idx].state),
+            self.regions[s_idx].state(),
             self.regions[s_idx].id.clone(),
         ))
     }
@@ -651,7 +651,7 @@ impl RegionsState {
         let dst = self.snap_winner(dst_lon, dst_lat, mode_name);
         match (src, dst) {
             (Some((s_idx, _)), Some((d_idx, _))) if s_idx == d_idx => Ok(P2pPlan::SameRegion {
-                state: Arc::clone(&self.regions[s_idx].state),
+                state: self.regions[s_idx].state(),
                 region: self.regions[s_idx].id.clone(),
             }),
             (Some((s_idx, _)), Some((d_idx, _))) => {
@@ -659,9 +659,9 @@ impl RegionsState {
                 let dst_region = self.regions[d_idx].id.clone();
                 match &self.overlay {
                     Some(o) => Ok(P2pPlan::CrossRegion {
-                        src_state: Arc::clone(&self.regions[s_idx].state),
+                        src_state: self.regions[s_idx].state(),
                         src_region,
-                        dst_state: Arc::clone(&self.regions[d_idx].state),
+                        dst_state: self.regions[d_idx].state(),
                         dst_region,
                         overlay: Arc::clone(o),
                     }),
