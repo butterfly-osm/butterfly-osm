@@ -76,9 +76,16 @@ impl RegionEntry {
     /// if the region was previously evicted or never loaded, and the
     /// return type becomes `Result<Arc<ServerState>>`. Consumers that
     /// use `region.state()` today get a no-op alias; they will need
-    /// a `?` after the call when #292 lands. Direct `&region.state`
-    /// field access keeps working too (back-compat), but new code
-    /// should prefer this method so the lazy migration is local.
+    /// a `?` after the call when #292 lands.
+    ///
+    /// **New code should prefer `region.state()` over `&region.state`.**
+    /// The `state` field is currently public for back-compat with
+    /// existing callers (and may keep working through the Phase 1
+    /// migration), but the field's *type* will change in Phase 2
+    /// (likely to `RwLock<RegionState>`), at which point direct field
+    /// access will break. Routing the access through `.state()` keeps
+    /// future migration local — only this method body changes, no
+    /// caller does.
     #[inline]
     pub fn state(&self) -> Arc<ServerState> {
         Arc::clone(&self.state)
