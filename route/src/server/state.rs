@@ -917,10 +917,32 @@ impl ServerState {
                 if let Some(entry) = container.get(&section) {
                     let off = entry.offset as usize;
                     let len = entry.len as usize;
-                    if off + len > static_bytes.len() {
+                    // Use checked_add so corrupted container metadata
+                    // can't overflow usize and silently bypass the
+                    // bounds check.
+                    let end = match off.checked_add(len) {
+                        Some(e) => e,
+                        None => {
+                            tracing::warn!(
+                                section = %section,
+                                offset = off,
+                                len = len,
+                                "container section offset+len overflows usize; skipping madvise"
+                            );
+                            continue;
+                        }
+                    };
+                    if end > static_bytes.len() {
+                        tracing::warn!(
+                            section = %section,
+                            offset = off,
+                            len = len,
+                            mmap_len = static_bytes.len(),
+                            "container section out-of-bounds vs mmap; skipping madvise"
+                        );
                         continue;
                     }
-                    let range = &static_bytes[off..off + len];
+                    let range = &static_bytes[off..end];
                     if let Err(e) = crate::formats::mmap::madvise_dontneed(range) {
                         tracing::warn!(
                             section = %section,
