@@ -375,7 +375,7 @@ impl RegionsState {
         let lower = mode_name.to_lowercase();
         self.regions
             .iter()
-            .any(|r| r.state.mode_lookup.contains_key(&lower))
+            .any(|r| r.state().mode_lookup.contains_key(&lower))
     }
 
     /// Sorted union of every mode name across loaded regions. Used by
@@ -384,19 +384,23 @@ impl RegionsState {
     pub fn available_modes(&self) -> Vec<String> {
         let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for r in &self.regions {
-            for name in r.state.mode_lookup.keys() {
+            for name in r.state().mode_lookup.keys() {
                 set.insert(name.clone());
             }
         }
         set.into_iter().collect()
     }
 
-    /// Borrow the first region's state. Used as a fallback by metadata
+    /// Return the first region's state. Used as a fallback by metadata
     /// endpoints (`/health`, `/metrics`) and by tests that don't care
     /// which region answers. Single-region deployments behave exactly
     /// like before this PR.
-    pub fn primary(&self) -> &Arc<ServerState> {
-        &self.regions[0].state
+    ///
+    /// Phase 1 migration: returns owned `Arc<ServerState>` (was
+    /// `&Arc<ServerState>`). Callers that need a reference auto-deref
+    /// via `&*primary()` or store the Arc locally.
+    pub fn primary(&self) -> Arc<ServerState> {
+        self.regions[0].state()
     }
 
     /// Snap a single coordinate to whichever region's road network
@@ -410,12 +414,13 @@ impl RegionsState {
     pub fn snap_winner(&self, lon: f64, lat: f64, mode_name: &str) -> Option<(usize, f64)> {
         let mut best: Option<(usize, f64)> = None;
         for (idx, region) in self.regions.iter().enumerate() {
-            let mode_idx = match region.state.mode_lookup.get(mode_name) {
+            let state = region.state();
+            let mode_idx = match state.mode_lookup.get(mode_name) {
                 Some(&m) => m,
                 None => continue,
             };
             if let Some((_ebg_id, _slon, _slat, dist_m)) =
-                region.state.snap_index.snap_with_info(lon, lat, mode_idx)
+                state.snap_index.snap_with_info(lon, lat, mode_idx)
             {
                 let candidate = (idx, dist_m);
                 best = match best {
