@@ -51,7 +51,7 @@ use super::state::ServerState;
 
 /// Butterfly Arrow Flight service. Holds an `Arc<RegionsState>` and
 /// resolves the primary `ServerState` lazily per request — this lets
-/// the multi-region `--lazy-regions` boot keep all regions in Pending
+/// the multi-region default-lazy boot keep all regions in Pending
 /// state until the first query (#292 Phase 3).
 ///
 /// **Multi-region limitation**: today Flight always serves the
@@ -2141,8 +2141,8 @@ impl FlightService for ButterflyFlight {
         let ticket = request.into_inner();
         let parsed = parse_ticket(&ticket)?;
         // Resolve the primary region lazily — triggers container load
-        // if this is a Pending region (--lazy-regions boot). Subsequent
-        // calls hit the read-lock fast path.
+        // if this is still a Pending region (the default boot path).
+        // Subsequent calls hit the read-lock fast path.
         let state = self.state();
         let mode = resolve_mode(&parsed.profile, &state)?;
 
@@ -2366,7 +2366,7 @@ impl FlightService for ButterflyFlight {
         request: Request<Streaming<FlightData>>,
     ) -> std::result::Result<Response<Self::DoExchangeStream>, Status> {
         // Resolve primary region lazily (triggers container load on
-        // first call if --lazy-regions and Pending).
+        // first call if still Pending — default boot state).
         let state = self.state();
         let mut stream = request.into_inner();
 
