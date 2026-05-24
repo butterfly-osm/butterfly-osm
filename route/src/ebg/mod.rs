@@ -241,17 +241,33 @@ pub fn build_ebg(config: EbgConfig) -> Result<EbgResult> {
     })
 }
 
+/// Convert millimeters → meters with round-half-up rounding.
+/// 0 mm → 0 m. 500 mm → 1 m. 1499 mm → 1 m. 1500 mm → 2 m.
+#[inline]
+fn mm_to_m_round_half_up(length_mm: u32) -> u32 {
+    if length_mm == 0 {
+        return 0;
+    }
+    // (mm + 500) / 1000 = round-half-up for non-negative values
+    (length_mm.saturating_add(500)) / 1000
+}
+
 /// Enumerate EBG nodes (2 per NBG undirected edge)
 fn enumerate_ebg_nodes(nbg_geo: &NbgGeo) -> Result<Vec<EbgNode>> {
     let mut nodes = Vec::with_capacity((nbg_geo.n_edges_und * 2) as usize);
 
     for (geom_idx, edge) in nbg_geo.edges.iter().enumerate() {
+        // Convert mm → m with round-half-up. Floor of 0.5 m would lose
+        // the edge entirely on very short links; round-half-up keeps a
+        // minimum of 1 m for any non-zero geometry.
+        let length_m = mm_to_m_round_half_up(edge.length_mm);
+
         // Forward direction: u → v
         nodes.push(EbgNode {
             tail_nbg: edge.u_node,
             head_nbg: edge.v_node,
             geom_idx: geom_idx as u32,
-            length_mm: edge.length_mm,
+            length_m,
             class_bits: edge.flags,
             primary_way: (edge.first_osm_way_id & 0xFFFFFFFF) as u32,
         });
@@ -261,7 +277,7 @@ fn enumerate_ebg_nodes(nbg_geo: &NbgGeo) -> Result<Vec<EbgNode>> {
             tail_nbg: edge.v_node,
             head_nbg: edge.u_node,
             geom_idx: geom_idx as u32,
-            length_mm: edge.length_mm,
+            length_m,
             class_bits: edge.flags,
             primary_way: (edge.first_osm_way_id & 0xFFFFFFFF) as u32,
         });

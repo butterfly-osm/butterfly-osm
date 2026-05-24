@@ -876,7 +876,7 @@ pub async fn route_handler(
                 if want_spd {
                     let distances: Vec<f64> = ebg_path
                         .iter()
-                        .map(|&eid| state.ebg_nodes.nodes[eid as usize].length_mm as f64 / 1000.0)
+                        .map(|&eid| state.ebg_nodes.nodes[eid as usize].length_m as f64)
                         .collect();
                     ann.speed = Some(
                         durations
@@ -897,7 +897,7 @@ pub async fn route_handler(
                 ann.distance = Some(
                     ebg_path
                         .iter()
-                        .map(|&eid| state.ebg_nodes.nodes[eid as usize].length_mm as f64 / 1000.0)
+                        .map(|&eid| state.ebg_nodes.nodes[eid as usize].length_m as f64)
                         .collect(),
                 );
             }
@@ -1478,7 +1478,7 @@ pub(crate) fn build_steps(
     let start_bearing = get_edge_bearing(first_node, edge_geom, true);
 
     // Depart step (first edge)
-    let first_distance = first_node.length_mm as f64 / 1000.0;
+    let first_distance = first_node.length_m as f64;
     let first_duration =
         if (ebg_path[0] as usize) < node_weights.len() && node_weights[ebg_path[0] as usize] > 0 {
             node_weights[ebg_path[0] as usize] as f64 / 10.0
@@ -1511,7 +1511,7 @@ pub(crate) fn build_steps(
     for i in 1..ebg_path.len() {
         let edge_id = ebg_path[i];
         let node = &ebg_nodes.nodes[edge_id as usize];
-        let edge_distance = node.length_mm as f64 / 1000.0;
+        let edge_distance = node.length_m as f64;
         let edge_duration =
             if (edge_id as usize) < node_weights.len() && node_weights[edge_id as usize] > 0 {
                 node_weights[edge_id as usize] as f64 / 10.0

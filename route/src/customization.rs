@@ -825,7 +825,7 @@ fn compute_original_weight_rank_aligned(
 }
 
 /// Compute distance weight for an original edge in rank-aligned CCH.
-/// Distance = length_mm (physical distance, mode-independent).
+/// Distance = length_m (physical distance, mode-independent).
 /// Accessibility uses same check as time: node_weights[v] == 0 → inaccessible.
 /// No turn penalties for distance.
 #[inline]
@@ -843,7 +843,7 @@ fn compute_distance_weight_rank_aligned(
         return u32::MAX;
     }
 
-    ebg_nodes[original_v].length_mm
+    ebg_nodes[original_v].length_m
 }
 
 // ===================================================================

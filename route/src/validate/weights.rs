@@ -92,9 +92,10 @@ pub fn validate_step5(
         // Lock Condition E: Sanity & bounds
         println!("\nE. Sanity & bounds checks for '{}'...", mode_name);
         let t0 = std::time::Instant::now();
+        // Bounds in seconds (was deciseconds in #297 — divide by 10).
         let max_weight = match mode_name.as_str() {
-            "car" => 10_000_000u32,
-            _ => 5_000_000u32,
+            "car" => 1_000_000u32,
+            _ => 500_000u32,
         };
         verify_lock_e_bounds(&weights, &mask, 1, max_weight, mode_name)?;
         println!(
@@ -220,30 +221,39 @@ fn verify_lock_b_math(
             ebg_id
         );
 
-        // Recompute weight using exact formulas
-        let length_mm = ebg_node.length_mm;
+        // Recompute weight using exact formulas (must match step 5 in weights.rs).
+        let length_m = ebg_node.length_m;
         let base_speed_mmps = way_attr.output.base_speed_mmps;
 
-        let travel_time_ds = (length_mm as u64 * 10).div_ceil(base_speed_mmps as u64) as u32;
-        let per_km_extra_ds = (length_mm as u64 * way_attr.output.per_km_penalty_ds as u64)
-            .div_ceil(1_000_000) as u32;
-        let expected_weight = travel_time_ds
-            .saturating_add(per_km_extra_ds)
-            .saturating_add(way_attr.output.const_penalty_ds)
+        let travel_time_s = crate::weights::round_half_even_div(
+            length_m as u64 * 1000,
+            base_speed_mmps as u64,
+        ) as u32;
+        let per_km_extra_s = crate::weights::round_half_even_div(
+            length_m as u64 * way_attr.output.per_km_penalty_ds as u64,
+            10_000,
+        ) as u32;
+        let const_penalty_s = crate::weights::round_half_even_div(
+            way_attr.output.const_penalty_ds as u64,
+            10,
+        ) as u32;
+        let expected_weight = travel_time_s
+            .saturating_add(per_km_extra_s)
+            .saturating_add(const_penalty_s)
             .max(1);
 
         anyhow::ensure!(
             weights.weights[ebg_id] == expected_weight,
-            "Weight mismatch at node {}: expected {} got {} (mode={:?}, length_mm={}, speed={}, travel_time={}, per_km={}, const={})",
+            "Weight mismatch at node {}: expected {} got {} (mode={:?}, length_m={}, speed={}, travel_time={}, per_km={}, const={})",
             ebg_id,
             expected_weight,
             weights.weights[ebg_id],
             mode,
-            length_mm,
+            length_m,
             base_speed_mmps,
-            travel_time_ds,
-            per_km_extra_ds,
-            way_attr.output.const_penalty_ds
+            travel_time_s,
+            per_km_extra_s,
+            const_penalty_s,
         );
 
         sampled += 1;

@@ -20,7 +20,9 @@ use super::crc;
 use super::mmap::ArcCow;
 
 const MAGIC: u32 = 0x4542474E; // "EBGN"
-const VERSION: u16 = 1;
+/// Current on-disk version. v2 stores `length_m` (meters) instead of v1's
+/// `length_mm` (millimeters). v1 files are rejected — re-run step 4.
+const VERSION: u16 = 2;
 const HEADER_LEN: usize = 64;
 const FOOTER_LEN: usize = 16;
 const NODE_RECORD_LEN: usize = 24;
@@ -34,7 +36,7 @@ pub struct EbgNode {
     pub tail_nbg: u32,    // compact NBG node id
     pub head_nbg: u32,    // compact NBG node id
     pub geom_idx: u32,    // index into nbg.geo record
-    pub length_mm: u32,   // copy of nbg.geo.length_mm
+    pub length_m: u32,    // edge length in meters (round-half-up from nbg.geo.length_mm)
     pub class_bits: u32,  // ferry, bridge, tunnel, roundabout, ford, etc.
     pub primary_way: u32, // lower 32 bits of first_osm_way_id
 }
@@ -91,7 +93,7 @@ impl EbgNodesFile {
             let tail_bytes = node.tail_nbg.to_le_bytes();
             let head_bytes = node.head_nbg.to_le_bytes();
             let geom_bytes = node.geom_idx.to_le_bytes();
-            let length_bytes = node.length_mm.to_le_bytes();
+            let length_bytes = node.length_m.to_le_bytes();
             let class_bytes = node.class_bits.to_le_bytes();
             let way_bytes = node.primary_way.to_le_bytes();
 
@@ -146,7 +148,8 @@ impl EbgNodesFile {
         let version = u16::from_le_bytes([header[4], header[5]]);
         anyhow::ensure!(
             version == VERSION,
-            "Unsupported ebg.nodes version {version}, expected {VERSION}",
+            "Unsupported ebg.nodes version {version}, expected {VERSION}. \
+             v1 files used millimeter precision; re-run step 4 to regenerate as v2 (meters).",
         );
 
         let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
@@ -288,7 +291,8 @@ impl EbgNodesFile {
         let version = u16::from_le_bytes([header[4], header[5]]);
         anyhow::ensure!(
             version == VERSION,
-            "Unsupported ebg.nodes version {version}, expected {VERSION}",
+            "Unsupported ebg.nodes version {version}, expected {VERSION}. \
+             v1 files used millimeter precision; re-run step 4 to regenerate as v2 (meters).",
         );
 
         let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
@@ -396,7 +400,7 @@ mod tests {
                     tail_nbg: 0,
                     head_nbg: 1,
                     geom_idx: 100,
-                    length_mm: 5000,
+                    length_m: 5,
                     class_bits: 0,
                     primary_way: 42,
                 },
@@ -404,7 +408,7 @@ mod tests {
                     tail_nbg: 1,
                     head_nbg: 2,
                     geom_idx: 101,
-                    length_mm: 3000,
+                    length_m: 3,
                     class_bits: 1,
                     primary_way: 43,
                 },
@@ -412,7 +416,7 @@ mod tests {
                     tail_nbg: 2,
                     head_nbg: 0,
                     geom_idx: 102,
-                    length_mm: 7000,
+                    length_m: 7,
                     class_bits: 0,
                     primary_way: 44,
                 },
@@ -433,7 +437,7 @@ mod tests {
         assert_eq!(loaded.nodes.len(), 3);
         assert_eq!(loaded.nodes[0].tail_nbg, 0);
         assert_eq!(loaded.nodes[0].head_nbg, 1);
-        assert_eq!(loaded.nodes[1].length_mm, 3000);
+        assert_eq!(loaded.nodes[1].length_m, 3);
         assert_eq!(loaded.nodes[2].primary_way, 44);
         Ok(())
     }

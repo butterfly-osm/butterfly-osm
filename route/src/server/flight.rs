@@ -1624,16 +1624,16 @@ pub fn do_edges_batch(
                         .copied()
                         .unwrap_or(0);
                     // Per-edge duration: node_weights is in
-                    // deciseconds; convert to ms.
-                    let duration_ds = mode_data
+                    // seconds; convert to ms.
+                    let duration_s = mode_data
                         .node_weights
                         .get(ebg_id as usize)
                         .copied()
                         .unwrap_or(0);
-                    let duration_ms = duration_ds.saturating_mul(100);
-                    // Per-edge distance: length_mm on the EbgNode is
-                    // a copy of nbg.geo.length_mm; convert to metres.
-                    let distance_m = node.length_mm / 1000;
+                    let duration_ms = duration_s.saturating_mul(1000);
+                    // Per-edge distance: length_m on the EbgNode is the
+                    // round-half-up conversion of nbg.geo.length_mm.
+                    let distance_m = node.length_m;
 
                     query_idx_b.append_value(global_idx);
                     target_idx_b.append_value(target_idx);

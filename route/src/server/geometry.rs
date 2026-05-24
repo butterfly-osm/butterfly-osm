@@ -159,7 +159,8 @@ pub fn build_raw_points_into(
             coordinates.push(Point { lon, lat });
         }
 
-        total_distance_m += node.length_mm as f64 / 1000.0;
+        // #297: EBG `length_m` is in metres (was `length_mm` in v1).
+        total_distance_m += node.length_m as f64;
     }
 
     coordinates.dedup_by(|a, b| (a.lon - b.lon).abs() < 1e-9 && (a.lat - b.lat).abs() < 1e-9);

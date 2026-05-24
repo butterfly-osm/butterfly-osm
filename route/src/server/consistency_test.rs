@@ -971,11 +971,11 @@ fn test_nearest_returns_valid_results() {
 
             // EBG node should have valid geometry
             let node = &state.ebg_nodes.nodes[ebg_id as usize];
-            assert!(node.length_mm > 0, "{mode_name}: snapped edge has 0 length");
+            assert!(node.length_m > 0, "{mode_name}: snapped edge has 0 length");
 
             eprintln!(
-                "  PASS {mode_name} ({lon},{lat}): ebg={ebg_id}, dist={dist_m:.1}m, edge_len={:.1}m",
-                node.length_mm as f64 / 1000.0
+                "  PASS {mode_name} ({lon},{lat}): ebg={ebg_id}, dist={dist_m:.1}m, edge_len={}m",
+                node.length_m
             );
         }
     }
