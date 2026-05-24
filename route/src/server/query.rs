@@ -5,13 +5,14 @@
 //! once per thread and reused across queries via version stamping.
 
 use std::cell::RefCell;
-use std::cmp::Reverse;
-
-use priority_queue::PriorityQueue;
 
 use crate::formats::CchTopo;
-use crate::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
+use crate::matrix::bucket_ch::{DAryHeap, DownReverseAdjFlat, UpAdjFlat};
 use crate::profile_abi::Mode;
+
+/// Sentinel used in the per-node heap-handle arrays: this node is not
+/// currently in the priority queue.
+const HANDLE_NONE: u32 = u32::MAX;
 
 use super::state::{CchWeights, ServerState};
 
@@ -51,10 +52,19 @@ struct CchQueryState {
     gen_bwd: Vec<u32>,
     /// Current generation (incremented per query)
     current_gen: u32,
-    /// Forward priority queue (reused across queries)
-    pq_fwd: PriorityQueue<u32, Reverse<u32>>,
-    /// Backward priority queue
-    pq_bwd: PriorityQueue<u32, Reverse<u32>>,
+    /// Forward 4-ary heap (decrease-key) — replaces PriorityQueue
+    /// (codex #291). Heap entries are `(weight, node_id)` where node_id
+    /// is a usize-cast u32. `handles_fwd[node]` gives the heap position
+    /// of that node, or `HANDLE_NONE` if not in the heap this gen.
+    pq_fwd: DAryHeap,
+    pq_bwd: DAryHeap,
+    /// Per-node forward heap handle (heap position or HANDLE_NONE).
+    /// Generation-stamped: only valid when `gen_fwd[node] == current_gen`
+    /// AND `handles_fwd_gen[node] == current_gen`.
+    handles_fwd: Vec<u32>,
+    handles_bwd: Vec<u32>,
+    handles_fwd_gen: Vec<u32>,
+    handles_bwd_gen: Vec<u32>,
 }
 
 impl CchQueryState {
@@ -67,8 +77,12 @@ impl CchQueryState {
             gen_fwd: vec![0; n_nodes],
             gen_bwd: vec![0; n_nodes],
             current_gen: 0,
-            pq_fwd: PriorityQueue::new(),
-            pq_bwd: PriorityQueue::new(),
+            pq_fwd: DAryHeap::new(1024),
+            pq_bwd: DAryHeap::new(1024),
+            handles_fwd: vec![HANDLE_NONE; n_nodes],
+            handles_bwd: vec![HANDLE_NONE; n_nodes],
+            handles_fwd_gen: vec![0; n_nodes],
+            handles_bwd_gen: vec![0; n_nodes],
         }
     }
 
@@ -80,10 +94,61 @@ impl CchQueryState {
             // Overflow — reset all versions (rare, every ~4B queries)
             self.gen_fwd.iter_mut().for_each(|v| *v = 0);
             self.gen_bwd.iter_mut().for_each(|v| *v = 0);
+            self.handles_fwd_gen.iter_mut().for_each(|v| *v = 0);
+            self.handles_bwd_gen.iter_mut().for_each(|v| *v = 0);
             self.current_gen = 1;
         }
         self.pq_fwd.clear();
         self.pq_bwd.clear();
+        // handles_fwd / handles_bwd are gen-stamped; no O(n) reset needed.
+    }
+
+    /// Push `node` onto the forward heap with weight `dist`. Detects
+    /// whether the node is already in the heap (via gen-stamped handle)
+    /// and uses decrease-key in that case; otherwise pushes fresh.
+    #[inline]
+    fn push_fwd(&mut self, node: u32, dist: u32) {
+        if self.handles_fwd_gen[node as usize] == self.current_gen {
+            let handle = self.handles_fwd[node as usize];
+            self.pq_fwd
+                .decrease(handle, dist, node, &mut self.handles_fwd);
+        } else {
+            self.pq_fwd.push(dist, node, &mut self.handles_fwd);
+            self.handles_fwd_gen[node as usize] = self.current_gen;
+        }
+    }
+
+    #[inline]
+    fn push_bwd(&mut self, node: u32, dist: u32) {
+        if self.handles_bwd_gen[node as usize] == self.current_gen {
+            let handle = self.handles_bwd[node as usize];
+            self.pq_bwd
+                .decrease(handle, dist, node, &mut self.handles_bwd);
+        } else {
+            self.pq_bwd.push(dist, node, &mut self.handles_bwd);
+            self.handles_bwd_gen[node as usize] = self.current_gen;
+        }
+    }
+
+    /// Pop the minimum-weight forward heap entry. Returns `(weight, node)`.
+    /// Clears the node's gen-stamped handle so a future push will be a
+    /// fresh insert.
+    #[inline]
+    fn pop_fwd(&mut self) -> Option<(u32, u32)> {
+        let out = self.pq_fwd.pop(&mut self.handles_fwd);
+        if let Some((_, node)) = out {
+            self.handles_fwd_gen[node as usize] = 0;
+        }
+        out
+    }
+
+    #[inline]
+    fn pop_bwd(&mut self) -> Option<(u32, u32)> {
+        let out = self.pq_bwd.pop(&mut self.handles_bwd);
+        if let Some((_, node)) = out {
+            self.handles_bwd_gen[node as usize] = 0;
+        }
+        out
     }
 
     // Forward distance accessors
@@ -354,8 +419,8 @@ impl<'a> CchQuery<'a> {
             // Initialize source and target
             state.set_fwd(source as usize, 0, (source, 0));
             state.set_bwd(target as usize, 0, (target, 0));
-            state.pq_fwd.push(source, Reverse(0));
-            state.pq_bwd.push(target, Reverse(0));
+            state.push_fwd(source, 0);
+            state.push_bwd(target, 0);
 
             // Best meeting point
             let mut best_dist = u32::MAX;
@@ -370,22 +435,14 @@ impl<'a> CchQuery<'a> {
             // Bidirectional search with early termination
             while !state.pq_fwd.is_empty() || !state.pq_bwd.is_empty() {
                 // Early termination: if both queue minimums exceed best_dist, stop
-                let fwd_min = state
-                    .pq_fwd
-                    .peek()
-                    .map(|(_, &Reverse(d))| d)
-                    .unwrap_or(u32::MAX);
-                let bwd_min = state
-                    .pq_bwd
-                    .peek()
-                    .map(|(_, &Reverse(d))| d)
-                    .unwrap_or(u32::MAX);
+                let fwd_min = state.pq_fwd.peek_min_weight().unwrap_or(u32::MAX);
+                let bwd_min = state.pq_bwd.peek_min_weight().unwrap_or(u32::MAX);
                 if fwd_min >= best_dist && bwd_min >= best_dist {
                     break;
                 }
 
                 // Forward step — search UP graph
-                if let Some((u, Reverse(d))) = state.pq_fwd.pop() {
+                if let Some((d, u)) = state.pop_fwd() {
                     if d > state.get_fwd(u as usize) {
                         // Stale entry — skip
                     } else {
@@ -416,7 +473,7 @@ impl<'a> CchQuery<'a> {
                             let new_dist = d.saturating_add(w);
                             if new_dist < state.get_fwd(v as usize) {
                                 state.set_fwd(v as usize, new_dist, (u, edge_idx));
-                                state.pq_fwd.push(v, Reverse(new_dist));
+                                state.push_fwd(v, new_dist);
 
                                 // Check meeting when updating
                                 let bwd_v = state.get_bwd(v as usize);
@@ -442,7 +499,7 @@ impl<'a> CchQuery<'a> {
                 }
 
                 // Backward step — traverse reversed DOWN edges (= upward in reversed graph)
-                if let Some((u, Reverse(d))) = state.pq_bwd.pop() {
+                if let Some((d, u)) = state.pop_bwd() {
                     if d > state.get_bwd(u as usize) {
                         // Stale — skip
                     } else {
@@ -473,7 +530,7 @@ impl<'a> CchQuery<'a> {
                             let new_dist = d.saturating_add(w);
                             if new_dist < state.get_bwd(x as usize) {
                                 state.set_bwd(x as usize, new_dist, (u, edge_idx));
-                                state.pq_bwd.push(x, Reverse(new_dist));
+                                state.push_bwd(x, new_dist);
 
                                 // Check meeting when updating
                                 let fwd_x = state.get_fwd(x as usize);
@@ -586,28 +643,20 @@ impl CchQuery<'_> {
 
             state.set_fwd(source as usize, 0, (source, 0));
             state.set_bwd(target as usize, 0, (target, 0));
-            state.pq_fwd.push(source, Reverse(0));
-            state.pq_bwd.push(target, Reverse(0));
+            state.push_fwd(source, 0);
+            state.push_bwd(target, 0);
 
             let mut best_dist = u32::MAX;
 
             while !state.pq_fwd.is_empty() || !state.pq_bwd.is_empty() {
-                let fwd_min = state
-                    .pq_fwd
-                    .peek()
-                    .map(|(_, &Reverse(d))| d)
-                    .unwrap_or(u32::MAX);
-                let bwd_min = state
-                    .pq_bwd
-                    .peek()
-                    .map(|(_, &Reverse(d))| d)
-                    .unwrap_or(u32::MAX);
+                let fwd_min = state.pq_fwd.peek_min_weight().unwrap_or(u32::MAX);
+                let bwd_min = state.pq_bwd.peek_min_weight().unwrap_or(u32::MAX);
                 if fwd_min >= best_dist && bwd_min >= best_dist {
                     break;
                 }
 
                 // Forward step — UP graph.
-                if let Some((u, Reverse(d))) = state.pq_fwd.pop()
+                if let Some((d, u)) = state.pop_fwd()
                     && d <= state.get_fwd(u as usize)
                 {
                     let bwd_d = state.get_bwd(u as usize);
@@ -621,7 +670,7 @@ impl CchQuery<'_> {
                         let new_dist = d.saturating_add(w);
                         if new_dist < state.get_fwd(v as usize) {
                             state.set_fwd(v as usize, new_dist, (u, edge_idx));
-                            state.pq_fwd.push(v, Reverse(new_dist));
+                            state.push_fwd(v, new_dist);
                             let bwd_v = state.get_bwd(v as usize);
                             if bwd_v != u32::MAX {
                                 let total = new_dist.saturating_add(bwd_v);
@@ -634,7 +683,7 @@ impl CchQuery<'_> {
                 }
 
                 // Backward step — reversed DOWN graph.
-                if let Some((u, Reverse(d))) = state.pq_bwd.pop()
+                if let Some((d, u)) = state.pop_bwd()
                     && d <= state.get_bwd(u as usize)
                 {
                     let fwd_d = state.get_fwd(u as usize);
@@ -648,7 +697,7 @@ impl CchQuery<'_> {
                         let new_dist = d.saturating_add(w);
                         if new_dist < state.get_bwd(x as usize) {
                             state.set_bwd(x as usize, new_dist, (u, edge_idx));
-                            state.pq_bwd.push(x, Reverse(new_dist));
+                            state.push_bwd(x, new_dist);
                             let fwd_x = state.get_fwd(x as usize);
                             if fwd_x != u32::MAX {
                                 let total = new_dist.saturating_add(fwd_x);
