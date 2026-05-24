@@ -48,6 +48,19 @@ use super::types::ErrorResponse;
 pub struct RegionEntry {
     pub id: String,
     pub container: PathBuf,
+    /// #292 Phase 4: cached snap_points bbox, peeked from the container
+    /// at registration time without loading the rest of the region.
+    /// Drives the lazy `snap_winner` filter so a query that lies
+    /// entirely outside a Pending region's coverage box never triggers
+    /// its load. `None` for legacy containers whose snap_points header
+    /// could not be peeked — those fall back to the unconditional snap
+    /// (and trigger load) as before.
+    pub bbox: Option<crate::formats::SnapBbox>,
+    /// #292 Phase 4: sorted list of mode names available in the
+    /// container, peeked from the section directory at registration.
+    /// Lets `has_mode` / `available_modes` answer without forcing a
+    /// Pending region to load just to enumerate its modes.
+    pub mode_names: Vec<String>,
     /// #292 Phase 2: lazy-loadable region state. `Loaded(Arc<ServerState>)`
     /// in the default eager-boot path; `Pending` reserved for the lazy
     /// boot path (`--lazy-regions`, Phase 3).
@@ -222,9 +235,32 @@ impl RegionsState {
     pub fn from_single(id: impl Into<String>, container: PathBuf, state: ServerState) -> Self {
         let id = id.into();
         let metrics = super::region_metrics::RegionMetrics::new(&id);
+        // Best-effort bbox peek — Loaded entries don't strictly need it
+        // (snap_winner runs on the in-memory index for Loaded), but
+        // keeping it consistent across constructors keeps debug output
+        // and /regions JSON uniform.
+        // Peek bbox+modes for parity with the multi-region path. For
+        // already-Loaded entries this is informational (snap_winner
+        // bbox-checks Pending regions; has_mode still consults the
+        // ServerState mode_lookup once the entry is loaded), but it
+        // keeps the /regions JSON shape uniform regardless of how the
+        // entry was constructed.
+        let (peeked_bbox, peeked_modes) = peek_region_meta(&container)
+            .map(|(_, b, m)| (b, m))
+            .unwrap_or((None, Vec::new()));
+        // Prefer the live ServerState's mode names when available — for
+        // legacy step-tree containers the manifest may not list modes
+        // but the live state knows them.
+        let mode_names = if peeked_modes.is_empty() {
+            state.mode_names.clone()
+        } else {
+            peeked_modes
+        };
         let entry = RegionEntry {
             id: id.clone(),
             container,
+            bbox: peeked_bbox,
+            mode_names,
             state_cell: parking_lot::RwLock::new(RegionState::Loaded(Arc::new(state))),
             verify_status: VerifyStatus::Verified,
             metrics,
@@ -253,7 +289,7 @@ impl RegionsState {
         let mut entries: Vec<RegionEntry> = Vec::with_capacity(paths.len());
         let mut seen: HashMap<String, PathBuf> = HashMap::new();
         for path in paths {
-            let region_id = peek_region_id(path)
+            let (region_id, bbox, peeked_modes) = peek_region_meta(path)
                 .with_context(|| format!("reading region id from {}", path.display()))?;
             if let Some(prev) = seen.get(&region_id) {
                 anyhow::bail!(
@@ -268,9 +304,16 @@ impl RegionsState {
                 format!("loading region '{}' from {}", region_id, path.display())
             })?;
             let metrics = super::region_metrics::RegionMetrics::new(&region_id);
+            let mode_names = if peeked_modes.is_empty() {
+                state.mode_names.clone()
+            } else {
+                peeked_modes
+            };
             entries.push(RegionEntry {
                 id: region_id,
                 container: path.clone(),
+                bbox,
+                mode_names,
                 state_cell: parking_lot::RwLock::new(RegionState::Loaded(Arc::new(state))),
                 verify_status: VerifyStatus::Verified,
                 metrics,
@@ -363,12 +406,15 @@ impl RegionsState {
         containers.sort();
 
         // Pre-pass: read each container's manifest to map container path
-        // → region id. We do this first so that the region filter is
-        // applied before the (much heavier) full state load.
-        let mut to_load: Vec<(String, PathBuf)> = Vec::new();
+        // → region id, and peek the snap_points bbox + mode list so the
+        // lazy path's snap_winner / has_mode can filter without
+        // loading. The whole pre-pass is <1 ms per container (manifest
+        // section read + a 40-byte snap_points header read).
+        let mut to_load: Vec<(String, Option<crate::formats::SnapBbox>, Vec<String>, PathBuf)> =
+            Vec::new();
         let mut skipped: Vec<String> = Vec::new();
         for path in &containers {
-            let region = peek_region_id(path)
+            let (region, bbox, modes) = peek_region_meta(path)
                 .with_context(|| format!("reading region id from {}", path.display()))?;
             if let Some(filter) = region_filter
                 && !filter.iter().any(|r| r.eq_ignore_ascii_case(&region))
@@ -376,7 +422,7 @@ impl RegionsState {
                 skipped.push(format!("{} (region={})", path.display(), region));
                 continue;
             }
-            to_load.push((region, path.clone()));
+            to_load.push((region, bbox, modes, path.clone()));
         }
 
         if !skipped.is_empty() {
@@ -389,7 +435,7 @@ impl RegionsState {
 
         // Reject duplicate region ids — operator error, fail loudly.
         let mut seen: HashMap<&str, &Path> = HashMap::new();
-        for (id, path) in &to_load {
+        for (id, _bbox, _modes, path) in &to_load {
             if let Some(prev) = seen.insert(id.as_str(), path.as_path()) {
                 anyhow::bail!(
                     "duplicate region id '{}' across containers: {} and {}",
@@ -417,7 +463,7 @@ impl RegionsState {
                 "--lazy-regions ignores --modes (the filter would need to be remembered per-region; revisit if needed)"
             );
         }
-        for (id, path) in to_load {
+        for (id, bbox, peeked_modes, path) in to_load {
             let idx = regions.len();
             by_id.insert(id.clone(), idx);
             let metrics = super::region_metrics::RegionMetrics::new(&id);
@@ -428,11 +474,15 @@ impl RegionsState {
                 tracing::info!(
                     region = %id,
                     container = %path.display(),
+                    bbox = ?bbox.map(|b| b.to_f64()),
+                    modes = ?peeked_modes,
                     "registered region (lazy — load on first query)"
                 );
                 regions.push(RegionEntry {
                     id,
                     container: path,
+                    bbox,
+                    mode_names: peeked_modes,
                     state_cell: parking_lot::RwLock::new(RegionState::Pending),
                     verify_status: VerifyStatus::Verified,
                     metrics,
@@ -454,9 +504,16 @@ impl RegionsState {
                 modes = ?state.mode_names,
                 "loaded region"
             );
+            let mode_names = if peeked_modes.is_empty() {
+                state.mode_names.clone()
+            } else {
+                peeked_modes
+            };
             regions.push(RegionEntry {
                 id,
                 container: path,
+                bbox,
+                mode_names,
                 state_cell: parking_lot::RwLock::new(RegionState::Loaded(Arc::new(state))),
                 verify_status: VerifyStatus::Verified,
                 metrics,
@@ -499,10 +556,22 @@ impl RegionsState {
     /// doesn't exist) which the operator reads as "out of coverage"
     /// rather than "wrong mode".
     pub fn has_mode(&self, mode_name: &str) -> bool {
+        // #292 Phase 4: consult the registration-time cached mode_names
+        // (peeked from the container's section directory) rather than
+        // forcing a Pending region to load just to enumerate its modes.
+        // The cache is authoritative for any container with the
+        // `mode/<m>/...` schema; legacy containers fall back to the
+        // ServerState mode_lookup via `state()` (which loads them
+        // eagerly in the legacy path anyway).
         let lower = mode_name.to_lowercase();
-        self.regions
-            .iter()
-            .any(|r| r.state().mode_lookup.contains_key(&lower))
+        self.regions.iter().any(|r| {
+            r.mode_names.iter().any(|m| m.eq_ignore_ascii_case(&lower))
+                // Legacy fallback: only consult state() for entries
+                // whose container didn't expose modes in its directory.
+                // For lazy-boot containers this branch is unreachable
+                // because peek_region_meta filled mode_names.
+                || (r.mode_names.is_empty() && r.state().mode_lookup.contains_key(&lower))
+        })
     }
 
     /// Sorted union of every mode name across loaded regions. Used by
@@ -511,8 +580,18 @@ impl RegionsState {
     pub fn available_modes(&self) -> Vec<String> {
         let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for r in &self.regions {
-            for name in r.state().mode_lookup.keys() {
-                set.insert(name.clone());
+            // #292 Phase 4: use cached mode_names for Pending-safety.
+            if !r.mode_names.is_empty() {
+                for name in &r.mode_names {
+                    set.insert(name.clone());
+                }
+            } else {
+                // Legacy container with no per-mode section names —
+                // need state() to enumerate. Boot path loaded it
+                // eagerly, so no lazy regression here.
+                for name in r.state().mode_lookup.keys() {
+                    set.insert(name.clone());
+                }
             }
         }
         set.into_iter().collect()
@@ -539,8 +618,26 @@ impl RegionsState {
     /// Returns `(region_idx, snap_distance_m)` for the winner, or
     /// `None` if no region snapped the point.
     pub fn snap_winner(&self, lon: f64, lat: f64, mode_name: &str) -> Option<(usize, f64)> {
+        // #292 Phase 4: bbox margin in degrees. A degree of latitude is
+        // ~111 km; ~0.01 ≈ 1.1 km, which comfortably covers the
+        // server's default snap radius (typically a few hundred metres)
+        // plus any near-border slack. A query farther than 1.1 km from
+        // a region's bbox edge would not have snapped there anyway.
+        const BBOX_MARGIN_DEG: f64 = 0.01;
+
         let mut best: Option<(usize, f64)> = None;
         for (idx, region) in self.regions.iter().enumerate() {
+            // Bbox pre-filter. If the region has a cached bbox AND the
+            // query lies outside it (with margin), skip — for Pending
+            // regions this is the difference between "load to learn
+            // nothing" and "stay Pending". For Loaded regions it's a
+            // tiny constant-time check that lets us bypass the snap
+            // grid traversal too.
+            if let Some(bbox) = region.bbox
+                && !bbox.contains_with_margin(lon, lat, BBOX_MARGIN_DEG)
+            {
+                continue;
+            }
             let state = region.state();
             let mode_idx = match state.mode_lookup.get(mode_name) {
                 Some(&m) => m,
@@ -965,14 +1062,36 @@ impl DispatchError {
     }
 }
 
-/// Read just the region id from a container without loading the rest.
-/// Used by the discovery pre-pass so the region filter is applied
-/// before the heavy state load.
-fn peek_region_id(path: &Path) -> Result<String> {
+/// Peek the region id, `shared/snap_points` bbox, and mode-name list
+/// from a container without loading the body. Bbox is `None` for legacy
+/// containers without the packed snap index; `mode_names` is empty for
+/// legacy step-tree containers that pre-date the `mode/<m>/...` schema.
+/// Used by the lazy-region boot path so `snap_winner` / `has_mode` /
+/// `available_modes` can answer Pending-region questions without
+/// triggering a full load.
+fn peek_region_meta(
+    path: &Path,
+) -> Result<(String, Option<crate::formats::SnapBbox>, Vec<String>)> {
     use crate::formats::butterfly_dat::Container;
     let container =
         Container::open(path).with_context(|| format!("opening container {}", path.display()))?;
-    container.read_region_id(path)
+    let region_id = container.read_region_id(path)?;
+    let bbox = match container.get("shared/snap_points") {
+        Some(entry) => match crate::formats::peek_snap_points_bbox(path, entry.offset) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                tracing::warn!(
+                    container = %path.display(),
+                    error = %e,
+                    "could not peek snap_points bbox; lazy snap_winner falls back to full load",
+                );
+                None
+            }
+        },
+        None => None,
+    };
+    let mode_names = container.list_modes();
+    Ok((region_id, bbox, mode_names))
 }
 
 #[cfg(test)]
