@@ -28,7 +28,7 @@ e4c0275 perf(route): #272 review fixes — wkb doc + remove unused dst_rank
 | RssAnon (heap) | 532 MiB | 604 MiB | within noise |
 | RssFile (mmap pages) | 15.5 GiB | 1.39 GiB | -91% |
 
-**Plant-scale target (≤4 GiB) MET comfortably.**
+**Planet-scale target (≤4 GiB) MET comfortably.**
 
 drivetimes (libosrm + libvalhalla) Belgium baseline: 1.29 GiB. We're at 1.99 GiB. Per mode (4 vs 3) we're at parity.
 
