@@ -131,8 +131,15 @@ impl CchQueryState {
     }
 
     /// Pop the minimum-weight forward heap entry. Returns `(weight, node)`.
-    /// Clears the node's gen-stamped handle so a future push will be a
-    /// fresh insert.
+    ///
+    /// Two clears happen on pop:
+    /// 1. `handles_fwd[node] = INVALID_HANDLE` — done inside
+    ///    `DAryHeap::pop` itself so the heap-position invariant
+    ///    (`handles[n] == heap_position` xor `INVALID_HANDLE`) stays
+    ///    self-contained.
+    /// 2. `handles_fwd_gen[node] = 0` — cleared here so a future push
+    ///    in the same generation treats this node as fresh-insert
+    ///    rather than decrease-key.
     #[inline]
     fn pop_fwd(&mut self) -> Option<(u32, u32)> {
         let out = self.pq_fwd.pop(&mut self.handles_fwd);
@@ -142,6 +149,8 @@ impl CchQueryState {
         out
     }
 
+    /// Symmetric backward pop. See [`Self::pop_fwd`] for handle clearing
+    /// invariants.
     #[inline]
     fn pop_bwd(&mut self) -> Option<(u32, u32)> {
         let out = self.pq_bwd.pop(&mut self.handles_bwd);

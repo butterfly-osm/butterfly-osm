@@ -780,13 +780,21 @@ impl DAryHeap {
         self.heapify_up(pos, handles);
     }
 
-    /// Pop minimum element
+    /// Pop minimum element. Clears the popped node's `handles` entry to
+    /// `INVALID_HANDLE` so the handle invariant (`handles[node] ==
+    /// position in heap, or INVALID_HANDLE if not in heap`) holds
+    /// without callers having to remember to clear it themselves.
+    /// Codex / PR #291 review fix.
     #[inline]
     pub(crate) fn pop(&mut self, handles: &mut [u32]) -> Option<(u32, u32)> {
         if self.heap.is_empty() {
             return None;
         }
         let result = self.heap[0];
+        // The popped node is no longer in the heap — invalidate its
+        // handle. Done before the swap/heapify so we never accidentally
+        // overwrite it with the new root's position.
+        handles[result.1 as usize] = INVALID_HANDLE;
         if self.heap.len() == 1 {
             self.heap.pop();
             return Some(result);
