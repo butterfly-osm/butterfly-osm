@@ -902,9 +902,15 @@ fn do_route_batch_blocking(
         return;
     }
 
-    // Multi-worker: persistent pool. Bounded sync_channel for work,
-    // unbounded for results so workers never block on a slow batch
-    // emitter.
+    // Multi-worker: persistent pool. PR #293 review feedback addressed:
+    //   1. Per-worker sync_channel + round-robin dispatch (was
+    //      Arc<Mutex<Receiver>>, which serialised all worker recvs
+    //      through one lock — defeated parallelism).
+    //   2. catch_unwind in each worker so a panic between recv and
+    //      send sends a poison Done back instead of deadlocking the
+    //      coordinator on done_rx.recv().
+    //   3. Early returns close all work channels before returning so
+    //      workers exit cleanly via recv() → Err; no scope-join deadlock.
     #[derive(Clone, Copy)]
     struct Work {
         slot: u32,
@@ -913,39 +919,75 @@ fn do_route_batch_blocking(
         dlon: f64,
         dlat: f64,
     }
+    enum DoneKind {
+        Row(RoutePairRow),
+        WorkerPanic(String),
+    }
     struct Done {
         slot: u32,
-        row: RoutePairRow,
+        kind: DoneKind,
     }
 
-    let (work_tx, work_rx) = std::sync::mpsc::sync_channel::<Work>(n_workers * 32);
+    // Per-worker channels for true MPMC dispatch without a shared lock.
+    let mut work_txs: Vec<std::sync::mpsc::SyncSender<Work>> = Vec::with_capacity(n_workers);
+    let mut work_rxs: Vec<std::sync::mpsc::Receiver<Work>> = Vec::with_capacity(n_workers);
+    for _ in 0..n_workers {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Work>(32);
+        work_txs.push(tx);
+        work_rxs.push(rx);
+    }
     let (done_tx, done_rx) = std::sync::mpsc::channel::<Done>();
-    // mpsc::Receiver is !Sync; wrap in Mutex for multi-consumer.
-    let work_rx = std::sync::Arc::new(parking_lot::Mutex::new(work_rx));
+
+    // Helper to close all worker work channels at once.
+    fn drop_all_tx<T>(v: &mut Vec<std::sync::mpsc::SyncSender<T>>) {
+        v.clear();
+    }
 
     let join_result: std::thread::Result<()> = std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(n_workers);
-        for _ in 0..n_workers {
+        for rx in work_rxs.into_iter() {
             let state = std::sync::Arc::clone(&state);
-            let work_rx = std::sync::Arc::clone(&work_rx);
             let done_tx = done_tx.clone();
             handles.push(scope.spawn(move || {
                 let query = CchQuery::new(&state, mode);
                 let mode_data = state.get_mode(mode);
-                loop {
-                    let work = work_rx.lock().recv();
-                    let work = match work {
-                        Ok(w) => w,
-                        Err(_) => return, // channel closed
+                while let Ok(work) = rx.recv() {
+                    // catch_unwind so a per-pair panic produces a
+                    // poison Done; the coordinator continues to count
+                    // completions and surfaces the error after the
+                    // chunk is fully accounted for.
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let r = compute_route_pair(
+                            &state, mode_data, mode, &query, work.slon, work.slat, work.dlon,
+                            work.dlat,
+                        );
+                        row_of(work.slon, work.slat, work.dlon, work.dlat, r)
+                    }));
+                    let kind = match result {
+                        Ok(row) => DoneKind::Row(row),
+                        Err(panic_payload) => {
+                            let msg = panic_payload
+                                .downcast_ref::<String>()
+                                .cloned()
+                                .or_else(|| {
+                                    panic_payload
+                                        .downcast_ref::<&'static str>()
+                                        .map(|s| s.to_string())
+                                })
+                                .unwrap_or_else(|| "<non-string panic>".to_string());
+                            DoneKind::WorkerPanic(msg)
+                        }
                     };
-                    let r = compute_route_pair(
-                        &state, mode_data, mode, &query, work.slon, work.slat, work.dlon, work.dlat,
-                    );
-                    let row = row_of(work.slon, work.slat, work.dlon, work.dlat, r);
-                    let _ = done_tx.send(Done {
-                        slot: work.slot,
-                        row,
-                    });
+                    if done_tx
+                        .send(Done {
+                            slot: work.slot,
+                            kind,
+                        })
+                        .is_err()
+                    {
+                        // Coordinator gone — exit.
+                        return;
+                    }
                 }
             }));
         }
@@ -953,7 +995,11 @@ fn do_route_batch_blocking(
         // worker drops its clone (after work_rx closes).
         drop(done_tx);
 
-        for chunk in params.pairs.chunks(batch_size) {
+        let mut next_worker = 0usize;
+        let mut first_panic_msg: Option<String> = None;
+        let mut bail_msg: Option<&'static str> = None;
+
+        'chunks: for chunk in params.pairs.chunks(batch_size) {
             let n = chunk.len();
             for (i, pair) in chunk.iter().enumerate() {
                 let work = Work {
@@ -963,36 +1009,80 @@ fn do_route_batch_blocking(
                     dlon: pair[2],
                     dlat: pair[3],
                 };
-                if work_tx.send(work).is_err() {
-                    let _ = tx.blocking_send(Err(Status::internal(
-                        "route_batch workers exited unexpectedly",
-                    )));
-                    return Ok(());
+                // Round-robin dispatch.
+                if work_txs[next_worker].send(work).is_err() {
+                    bail_msg = Some("route_batch workers exited unexpectedly");
+                    break 'chunks;
                 }
+                next_worker = (next_worker + 1) % n_workers;
             }
             let mut slots: Vec<Option<RoutePairRow>> = (0..n).map(|_| None).collect();
-            for _ in 0..n {
+            let mut received = 0usize;
+            while received < n {
                 match done_rx.recv() {
-                    Ok(d) => slots[d.slot as usize] = Some(d.row),
+                    Ok(d) => {
+                        received += 1;
+                        match d.kind {
+                            DoneKind::Row(row) => slots[d.slot as usize] = Some(row),
+                            DoneKind::WorkerPanic(msg) => {
+                                if first_panic_msg.is_none() {
+                                    first_panic_msg = Some(msg);
+                                }
+                                // Fill slot with NaN row so emit can run
+                                // without unwrap; the panic message is
+                                // surfaced as Status::internal after the
+                                // chunk completes.
+                                slots[d.slot as usize] = Some(RoutePairRow {
+                                    src_lon: f64::NAN,
+                                    src_lat: f64::NAN,
+                                    dst_lon: f64::NAN,
+                                    dst_lat: f64::NAN,
+                                    duration_s: f32::NAN,
+                                    distance_m: f32::NAN,
+                                    wkb: Vec::new(),
+                                });
+                            }
+                        }
+                    }
                     Err(_) => {
-                        let _ = tx.blocking_send(Err(Status::internal(
-                            "route_batch result channel closed early",
-                        )));
-                        return Ok(());
+                        bail_msg = Some("route_batch result channel closed early");
+                        break 'chunks;
                     }
                 }
+            }
+            if first_panic_msg.is_some() {
+                // Bail out before emitting a batch that contains panic
+                // poison rows. The error gets surfaced below.
+                break 'chunks;
             }
             let results: Vec<RoutePairRow> = slots
                 .into_iter()
                 .map(|s| s.expect("slot filled"))
                 .collect();
             if !emit_route_batch(&tx, &schema, n, results) {
-                return Ok(()); // client disconnected
+                bail_msg = Some("client disconnected");
+                break 'chunks;
             }
         }
-        drop(work_tx);
+
+        // Always close all work channels BEFORE joining so workers
+        // exit cleanly via recv → Err. Without this, an early break
+        // would leave work_txs open and the scope.join would deadlock
+        // waiting for workers that are blocked in recv().
+        drop_all_tx(&mut work_txs);
         for h in handles {
             h.join()?;
+        }
+
+        if let Some(msg) = first_panic_msg {
+            let _ = tx.blocking_send(Err(Status::internal(format!(
+                "route_batch worker panicked: {}",
+                msg
+            ))));
+        } else if let Some(msg) = bail_msg
+            && msg != "client disconnected"
+        {
+            let _ = tx.blocking_send(Err(Status::internal(msg)));
         }
         Ok(())
     });
