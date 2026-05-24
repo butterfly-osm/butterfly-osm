@@ -540,22 +540,23 @@ async fn cross_region_match_inner(
                     .get(&mode_name)
                     .copied()
                     .unwrap_or(0);
-                let mode_data = entry.state.get_mode(crate::profile_abi::Mode(mode_idx));
+                let state = entry.state();
+                let mode_data = state.get_mode(crate::profile_abi::Mode(mode_idx));
                 let (geometry, distance_m) = build_geometry(
                     &m.ebg_path,
-                    &entry.state.ebg_nodes,
-                    &entry.state.edge_geom,
+                    &state.ebg_nodes,
+                    &state.edge_geom,
                     geom_format,
                 );
                 let duration_s = m.duration_ds as f64 / 10.0;
                 let steps = if want_steps {
                     Some(build_steps(
                         &m.ebg_path,
-                        &entry.state.ebg_nodes,
-                        &entry.state.nbg_geo,
-                        &entry.state.edge_geom,
+                        &state.ebg_nodes,
+                        &state.nbg_geo,
+                        &state.edge_geom,
                         &mode_data.node_weights,
-                        &entry.state.way_names,
+                        &state.way_names,
                         geom_format,
                     ))
                 } else {
@@ -584,11 +585,12 @@ async fn cross_region_match_inner(
                         .map(|m| m.region_idx)
                         .unwrap_or(0);
                     let entry = &regions_clone.regions[region_idx];
+                    let state = entry.state();
                     let name = lookup_road_name(
                         t.ebg_id,
-                        &entry.state.ebg_nodes,
-                        &entry.state.nbg_geo,
-                        &entry.state.way_names,
+                        &state.ebg_nodes,
+                        &state.nbg_geo,
+                        &state.way_names,
                     )
                     .unwrap_or_default();
                     MatchTracepoint {

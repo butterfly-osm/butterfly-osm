@@ -773,7 +773,7 @@ pub fn map_match_multi_region(
         // Fast-path: one region, defer to the existing single-region
         // implementation. No cross-region overhead.
         let entry = &regions.regions[idx];
-        let mode_idx = match entry.state.mode_lookup.get(mode_name) {
+        let mode_idx = match entry.state().mode_lookup.get(mode_name) {
             Some(&m) => m,
             None => return None,
         };
@@ -849,7 +849,8 @@ pub fn map_match_multi_region(
             if m_idx == u8::MAX {
                 continue;
             }
-            let mode_data = entry.state.get_mode(Mode(m_idx));
+            let state = entry.state();
+            let mode_data = state.get_mode(Mode(m_idx));
 
             // Materialise the (single-region) Candidate slice for this
             // run so we can reuse build_matched_path verbatim.
@@ -947,13 +948,14 @@ fn generate_candidates_multi(
 ) -> Vec<RegionCandidate> {
     let mut out: Vec<RegionCandidate> = Vec::new();
     for (region_idx, entry) in regions.regions.iter().enumerate() {
-        let mode_idx = match entry.state.mode_lookup.get(mode_name) {
+        let state = entry.state();
+        let mode_idx = match state.mode_lookup.get(mode_name) {
             Some(&m) => m,
             None => continue,
         };
-        let mode_data = entry.state.get_mode(Mode(mode_idx));
+        let mode_data = state.get_mode(Mode(mode_idx));
         let mask = &mode_data.mask;
-        let hits = entry.state.snap_index.snap_k_with_info_filtered(
+        let hits = state.snap_index.snap_k_with_info_filtered(
             lon,
             lat,
             mode_idx,
@@ -965,8 +967,8 @@ fn generate_candidates_multi(
                 lon,
                 lat,
                 ebg_id,
-                &entry.state.ebg_nodes,
-                &entry.state.edge_geom,
+                &state.ebg_nodes,
+                &state.edge_geom,
             );
             if proj_dist.is_infinite() {
                 continue;
