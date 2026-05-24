@@ -216,7 +216,7 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     println!("  ✓ {} EBG nodes", ebg_nodes.n_nodes);
 
     // Apply traffic factors directly to the in-memory `weights.weights` array
-    // (per-EBG-node travel-time in deciseconds). The bottom-up customization
+    // (per-EBG-node travel-time in seconds, post-#297). The bottom-up customization
     // passes that follow then propagate the scaled originals through the
     // shortcut hierarchy.
     let traffic_skip_relax = if let Some(t) = traffic {
@@ -1015,7 +1015,11 @@ fn write_cch_weights(
     use crate::formats::crc::Digest;
 
     const MAGIC: u32 = 0x43434857; // "CCHW"
-    const VERSION: u16 = 1;
+    // v2: contents are in seconds (time) or meters (distance) — was
+    // deciseconds / millimeters in v1 (#297). The on-disk layout is
+    // unchanged (opaque u32 pass-through of step 5's unit); only the
+    // semantic meaning of the integers differs.
+    const VERSION: u16 = 2;
 
     let mut writer = BufWriter::new(File::create(path)?);
     let mut crc_digest = Digest::new();
