@@ -1,17 +1,6 @@
 # Butterfly region index — Austria
 #
-# OSM PBF plus OpenAddresses (#96 §"Data Sources").
-#
-# OpenAddresses' Austria pack (`at/countrywide`, ~71 MB compressed)
-# ingests the BEV Adressregister into the OA normalised schema.
-#
-# Verified live 2026-05-05.
+# OSM PBF only.
 
 [pbf]
 url = "https://download.geofabrik.de/europe/austria-latest.osm.pbf"
-
-[[address]]
-id     = "oa-at-countrywide"
-url    = "https://v2.openaddresses.io/batch-prod/job/824498/source.geojson.gz"
-format = "geojson-gz"
-source = "openaddresses"
