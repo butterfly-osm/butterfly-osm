@@ -443,7 +443,7 @@ async fn start_grpc_server(state: Arc<regions::RegionsState>, port: u16) -> Resu
             "gRPC Flight will only serve the primary region in multi-region mode (PR C extends to multi-region)"
         );
     }
-    let flight_svc = flight::build_flight_server(Arc::clone(state.primary()));
+    let flight_svc = flight::build_flight_server(state.primary());
 
     tonic::transport::Server::builder()
         .add_service(flight_svc)
