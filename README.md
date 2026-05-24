@@ -15,7 +15,7 @@ faster than OSRM at scale.
 
 ## At a glance
 
-- **Matrix 10k×10k**: 18.3 s in-process (1.8× faster than OSRM CH at 32.9 s).
+- **Matrix 10k×10k via Flight gRPC**: 32.5 s end-to-end (vs drivetimes/libosrm 614 s — 19× faster on the wire).
 - **Flight gRPC matrix 50k×50k**: 9.61 min (parity with the historical `/table/stream` baseline; OSRM cannot run it).
 - **`/isochrone` 30-min**: 5 ms p50; bulk endpoint sustains **1 526 iso/sec**.
 - **`/route?avoid_polygons=...`**: ~780 ms cold MISS, ~22 ms warm HIT (incremental recustomization + LRU cache, #240).
@@ -63,7 +63,7 @@ Support directories: `bench/` (regression and competitor benches),
 
 ### Matrices
 - Bucket many-to-many CH for sparse `S × T` (small `POST /table`, low-latency).
-- K-lane batched PHAST + L3-aware source tiling (#190) for large matrices — 10k×10k in 18.3 s in-process.
+- K-lane batched PHAST + L3-aware source tiling (#190) for large matrices — 10k×10k in 32.5 s end-to-end via Flight (drivetimes/libosrm 614 s).
 - Arrow Flight gRPC `matrix` action for 50k×50k+ over the wire, with parallel K-best snap (#232).
 - Per-row Arrow IPC streaming, cooperative cancellation on client disconnect.
 
@@ -93,34 +93,63 @@ Support directories: `bench/` (regression and competitor benches),
 - `/metrics` (Prometheus): latency histograms, per-section verification counters, `avoid_cache` gauges.
 - Graceful shutdown (SIGINT + SIGTERM), 120s request timeout, 600s streaming timeout, gzip+brotli compression, panic recovery (`CatchPanicLayer`), input validation, multi-region serving (#91).
 
-## Performance (Belgium, vs OSRM CH)
+## Performance (Belgium, Arrow Flight vs Arrow Flight)
 
-In-process bucket M2M, parallel, 8 threads (`butterfly-bench bucket-m2m --parallel`):
+End-to-end Arrow Flight gRPC, both servers on the same host, same coords,
+same hour. butterfly-route Flight on port 3002 vs **drivetimes** — the
+sibling Flight server that wraps libosrm CH (matrix/route) and libvalhalla
+(isochrone) inside the same Arrow Flight protocol. Apples-to-apples: same
+client, same wire format, same network roundtrip cost.
 
-| Size       | OSRM CH | Butterfly | Ratio          |
-|------------|---------|-----------|----------------|
-| 50×50      | 17 ms   | 12 ms     | 1.4× FASTER    |
-| 100×100    | 35 ms   | 32 ms     | 1.1× FASTER    |
-| 1000×1000  | 684 ms  | 268 ms    | 2.56× FASTER   |
-| 5000×5000  | 8.0 s   | 5.5 s     | 1.45× FASTER   |
-| 10000×10000| 32.9 s  | **18.3 s**| **1.8× FASTER**|
+### Matrix — `matrix:car:{sources,destinations}`
 
-Edge-based CCH has ~2.5× more states than OSRM's node-based CH (~5M EBG
-nodes vs ~1.9M), and butterfly handles turn restrictions exactly where OSRM
-approximates them — we beat OSRM despite the extra work. Small `N` (<25)
-still loses to OSRM's sequential shape because rayon thread dispatch isn't
-amortised over so few cells; see closed issue #191 for the analysis.
+| Size         | butterfly Flight | drivetimes Flight (libosrm CH) | Ratio       |
+|--------------|------------------|--------------------------------|-------------|
+| 50×50        | 39 ms            | 381 ms                         | **10× faster** |
+| 100×100      | 52 ms            | 104 ms                         | **2× faster**  |
+| 500×500      | 1.4 s            | 1.6 s                          | **1.1× faster** |
+| 1 000×1 000  | 3.5 s            | 6.2 s                          | **1.75× faster** |
+| 2 500×2 500  | 7.8 s            | 38.6 s                         | **5× faster**  |
+| 5 000×5 000  | 14.8 s           | 153.6 s                        | **10× faster** |
+| 10 000×10 000| **32.5 s**       | 614.5 s                        | **19× faster** |
+| 50 000×50 000| 9.61 min         | (libosrm Table doesn't scale)  | —              |
 
-Flight gRPC end-to-end (includes Arrow IPC framing, full network roundtrip,
-parallel K-best snap):
+The gap widens with N because libosrm's `Table()` API materialises the
+full intermediate distance field per call; butterfly streams tiled
+bucket-M2M with L3-aware source tiling (#190) plus parallel K-best snap
+(#232). Edge-based CCH carries ~2.5× more states than OSRM's node-based
+CH and handles turn restrictions exactly, and butterfly still wins on
+end-to-end wire time at every size.
 
-| Size      | Cells | Time      | Throughput |
-|-----------|-------|-----------|------------|
-| 1k × 1k   | 1 M   | 3.61 s    | 277 K c/s  |
-| 10k × 10k | 100 M | 35.5 s    | 2.8 M c/s  |
-| 50k × 50k | 2.5 B | **9.61 min** | 4.3 M c/s  |
+### Isochrones — `isochrone:car:{lon,lat,intervals}`
 
-Bench source: `bench/route/results/2026-05-22-post-snap-kbest/REPORT.md`.
+| time_s | butterfly Flight p50 | drivetimes Flight p50 (libvalhalla) | Ratio |
+|--------|---------------------|-------------------------------------|-------|
+| 300    | 6 ms                | 24 ms                               | **4× faster** |
+| 600    | 30 ms               | 49 ms                               | **1.6× faster** |
+| 1 800  | 102 ms              | 238 ms                              | **2.3× faster** |
+| 3 600  | 346 ms              | 579 ms                              | **1.7× faster** |
+
+p50 over 5 Belgium centers. butterfly uses PHAST + thread-local state +
+block-gated downward (#C1). drivetimes calls libvalhalla, which traces
+a 2-D grid + triangulates.
+
+### Where butterfly currently trails
+
+We measure **both** sides of the comparison honestly:
+
+- **P2P route batch (`route_batch`) is ~15× slower than drivetimes/libosrm
+  at 10 k pairs** (5.8 ms/pair vs 0.38 ms/pair). libosrm's tuned CH
+  unpacker + WKB encoder beats our current Flight `route_batch` handler.
+  Single `/route` REST is ~10 ms p50, fine for one-off queries. The
+  batch handler is the gap. Tracked in [#269](https://github.com/butterfly-osm/butterfly-osm/issues/269).
+- **Steady-state RSS is ~12× larger** (16 GiB vs 1.3 GiB on Belgium
+  4-mode without transit). Compute-time delta is parity (~2 GB both).
+  The baseline weight is per-mode CCH topology + flat adjacencies +
+  spatial index — load-bearing for matrix/isochrone perf but heavy
+  for small deployments. Tracked in [#270](https://github.com/butterfly-osm/butterfly-osm/issues/270).
+
+Bench source: [`bench/route/results/2026-05-24-honest-flight-comparison/REPORT.md`](bench/route/results/2026-05-24-honest-flight-comparison/REPORT.md).
 
 ## Architecture
 
