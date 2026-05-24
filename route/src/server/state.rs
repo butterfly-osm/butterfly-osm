@@ -944,28 +944,47 @@ impl ServerState {
             vec![0u8; ebg_nodes.n_nodes as usize]
         };
 
-        // Evict the other modes' way_attrs sections too — they were
-        // CRC-walked at boot but never parsed (only one mode supplies
-        // the exclude flags). They stay cold forever.
+        // Evict the other modes' way_attrs sections too — only one mode
+        // supplies the exclude flags, the rest stay cold forever.
+        //
+        // Important: resolve byte ranges via `container.get(..)` +
+        // `static_bytes[..]` directly. Do NOT route through
+        // `optional_section(..)` because that calls
+        // `lazy.verify_now(name)`, which would force a full CRC walk
+        // (and page-in) of every other mode's way_attrs at boot —
+        // defeating lazy verification. `madvise(MADV_DONTNEED)` is
+        // safe on unverified bytes: it evicts resident pages (a no-op
+        // on pages that were never faulted in).
         for other_mode in &discovered_modes {
             if other_mode == &attrs_mode {
                 continue;
             }
             let other_section = format!("mode/{}/way_attrs", other_mode);
-            if let Some(other_bytes) = optional_section(&other_section)? {
-                if let Err(e) = crate::formats::mmap::madvise_dontneed(other_bytes) {
-                    tracing::warn!(
-                        section = %other_section,
-                        error = %e,
-                        "madvise(DONTNEED) on way_attrs failed; ignoring"
-                    );
-                } else {
-                    tracing::info!(
-                        section = %other_section,
-                        bytes = other_bytes.len(),
-                        "madvise(DONTNEED) on cold way_attrs section"
-                    );
-                }
+            let Some(entry) = container.get(&other_section) else {
+                continue;
+            };
+            let off = entry.offset as usize;
+            let len = entry.len as usize;
+            if off + len > static_bytes.len() {
+                tracing::warn!(
+                    section = %other_section,
+                    "way_attrs section bytes exceed mmap; skipping evict"
+                );
+                continue;
+            }
+            let other_bytes = &static_bytes[off..off + len];
+            if let Err(e) = crate::formats::mmap::madvise_dontneed(other_bytes) {
+                tracing::warn!(
+                    section = %other_section,
+                    error = %e,
+                    "madvise(DONTNEED) on way_attrs failed; ignoring"
+                );
+            } else {
+                tracing::info!(
+                    section = %other_section,
+                    bytes = other_bytes.len(),
+                    "madvise(DONTNEED) on cold way_attrs section (no verify)"
+                );
             }
         }
 
