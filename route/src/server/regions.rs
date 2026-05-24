@@ -65,6 +65,26 @@ pub struct RegionEntry {
     pub metrics: super::region_metrics::RegionMetrics,
 }
 
+impl RegionEntry {
+    /// Forward-compatible accessor for the per-region `ServerState`.
+    ///
+    /// Today the boot path eagerly loads every region, so this is
+    /// always a cheap `Arc::clone`.
+    ///
+    /// **#292 Phase 2** will introduce lazy region loading — at that
+    /// point this method's body changes to drive an on-demand load
+    /// if the region was previously evicted or never loaded, and the
+    /// return type becomes `Result<Arc<ServerState>>`. Consumers that
+    /// use `region.state()` today get a no-op alias; they will need
+    /// a `?` after the call when #292 lands. Direct `&region.state`
+    /// field access keeps working too (back-compat), but new code
+    /// should prefer this method so the lazy migration is local.
+    #[inline]
+    pub fn state(&self) -> Arc<ServerState> {
+        Arc::clone(&self.state)
+    }
+}
+
 /// State of a region's CRC-verification at boot.
 ///
 /// Today the boot path verifies every section eagerly (so any region
