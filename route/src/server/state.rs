@@ -1664,13 +1664,20 @@ fn load_way_names(step1_dir: &Path) -> Result<HashMap<i64, String>> {
 /// 3. Parse the bytes via the format reader's `_unverified` variant
 ///    (zero-copy view).
 ///
-/// Note: a `madvise(DONTNEED)` after parsing is **not** required here.
-/// The format reader's `_unverified` entry point only touches the
-/// header (~32–80 bytes) and returns `Cow::Borrowed` slices over the
-/// body; `bytemuck::cast_slice` is a pointer-only cast and does not
-/// page the body in. The body therefore stays cold in the page cache
-/// once LazyContainer's CRC walk has completed and any pages it pulled
-/// in are reclaimable by the kernel under memory pressure.
+/// Note on madvise: a `madvise(DONTNEED)` is **not required for
+/// correctness** after parsing — the format reader's `_unverified`
+/// entry point only touches the header (~32–80 bytes) and returns
+/// `Cow::Borrowed` slices over the body; `bytemuck::cast_slice` is a
+/// pointer-only cast and does not page the body in. The body therefore
+/// stays cold in the page cache once LazyContainer's CRC walk has
+/// completed and any pages it pulled in are reclaimable by the kernel
+/// under memory pressure.
+///
+/// **Callers that want to proactively drop CRC-warmed pages** (e.g.
+/// the #277 distance-flat path) call `madvise_section_in_container`
+/// after `load_flat_section` returns. This is an RSS optimisation, not
+/// a correctness requirement: it pre-evicts the bytes the boot CRC
+/// walk pulled resident, instead of waiting for memory pressure.
 ///
 /// `parse` is a closure that turns `&'static [u8]` into the typed flat
 /// view; `build_owned` is the legacy heap-build fallback.
@@ -1699,6 +1706,13 @@ fn madvise_dist_section(bytes: &[u8], section_label: &str) {
 /// Same as `madvise_dist_section` but looks up the section's byte range
 /// in the container by name. Used after `load_flat_section`, where the
 /// inner `bytes` slice is not exposed.
+///
+/// Uses `checked_add` on the offset+length pair so corrupted container
+/// metadata can't overflow `usize` and silently bypass the bounds
+/// check. An out-of-bounds or overflowing range logs a warning and
+/// skips the madvise — the load itself already succeeded, so this is
+/// a non-fatal optimisation failure, but we do not want it to fail
+/// quietly.
 fn madvise_section_in_container(
     container: &crate::formats::butterfly_dat::Container,
     static_bytes: &'static [u8],
@@ -1710,10 +1724,29 @@ fn madvise_section_in_container(
     };
     let off = entry.offset as usize;
     let len = entry.len as usize;
-    if off + len > static_bytes.len() {
+    let end = match off.checked_add(len) {
+        Some(e) => e,
+        None => {
+            tracing::warn!(
+                section = %section_name,
+                offset = off,
+                len = len,
+                "container section offset+len overflows usize; skipping madvise"
+            );
+            return;
+        }
+    };
+    if end > static_bytes.len() {
+        tracing::warn!(
+            section = %section_name,
+            offset = off,
+            len = len,
+            mmap_len = static_bytes.len(),
+            "container section out-of-bounds vs mmap; skipping madvise"
+        );
         return;
     }
-    let bytes = &static_bytes[off..off + len];
+    let bytes = &static_bytes[off..end];
     madvise_dist_section(bytes, section_name);
 }
 
