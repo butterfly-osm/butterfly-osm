@@ -129,7 +129,7 @@ pub async fn get(source: &str, dest: Option<&str>) -> Result<()> {
     downloader
         .download_to_file(source, &file_path, &options)
         .await?;
-    maybe_write_sidecar(&file_path);
+    maybe_write_sidecar(file_path.clone()).await;
     Ok(())
 }
 
@@ -142,19 +142,33 @@ pub async fn get(source: &str, dest: Option<&str>) -> Result<()> {
 /// Recognised extensions come from
 /// [`verified::VerifiedOptions::for_extension`] (PBF, ZIP, GZ, XZ,
 /// ZST, XML).
-fn maybe_write_sidecar(file_path: &str) {
-    let target = std::path::Path::new(file_path);
-    if !verified::VerifiedOptions::for_extension(target).sha256_sidecar {
-        return;
-    }
-    let Some(sha) = verified::hash_file_if_exists(target) else {
-        return;
-    };
-    if let Err(e) = verified::write_sidecar(target, sha) {
-        // Sidecar write failure is non-fatal — the file is already on
-        // disk. Warn so deployment pipelines that rely on the sidecar
-        // can detect the issue.
-        eprintln!("⚠ failed to write .sha256 sidecar: {e}");
+///
+/// The hash + write run inside `tokio::task::spawn_blocking` so they
+/// don't pin the async executor's I/O thread for the seconds it takes
+/// on multi-GiB files. On a single-thread runtime that would freeze
+/// the whole runtime; on a multi-thread runtime it would tie up one
+/// worker. `spawn_blocking` parks the work on the dedicated blocking
+/// pool where this kind of CPU+disk-bound task belongs.
+async fn maybe_write_sidecar(file_path: String) {
+    let res = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        let target = std::path::Path::new(&file_path);
+        if !verified::VerifiedOptions::for_extension(target).sha256_sidecar {
+            return Ok(());
+        }
+        let Some(sha) = verified::hash_file_if_exists(target) else {
+            return Ok(());
+        };
+        if let Err(e) = verified::write_sidecar(target, sha) {
+            // Sidecar write failure is non-fatal — the file is already
+            // on disk. Warn so deployment pipelines that rely on the
+            // sidecar can detect the issue.
+            eprintln!("⚠ failed to write .sha256 sidecar: {e}");
+        }
+        Ok(())
+    })
+    .await;
+    if let Err(join_err) = res {
+        eprintln!("⚠ sidecar task join error: {join_err}");
     }
 }
 
@@ -261,7 +275,7 @@ pub async fn get_with_options(
     downloader
         .download_to_file(source, &file_path, &options)
         .await?;
-    maybe_write_sidecar(&file_path);
+    maybe_write_sidecar(file_path).await;
     Ok(())
 }
 
