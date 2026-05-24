@@ -5,13 +5,6 @@ members = [
     "dl",
     "route",
 ]
-# #308: butterfly-geocode excluded from the workspace pending full
-# crate removal. The geocoder was shelved in #254 (df77a93) but the
-# crate dir still exists and depends on AddressEntry / address
-# downloads in butterfly-dl that #308 strips. Excluding it from
-# `members` lets dl + route + common build cleanly; full removal is
-# tracked in #309.
-exclude = ["geocode", "geocode-data", "geocode-research", "geocode-training"]
 
 [workspace.package]
 version = "2.0.0"
@@ -31,8 +24,8 @@ indicatif = "0.18"
 strsim = "0.11.1"
 tempfile = "3.27"
 # `toml` is API-stable across 0.8 → 1.x for our schema-parsing
-# workload (TOML region indexes + country packs). Pinning workspace-
-# wide so dl/route/geocode all link the same crate version.
+# workload (TOML region indexes). Pinning workspace-wide so dl + route
+# link the same crate version.
 toml = "1.1"
 # Dev dependencies
 wiremock = "0.6.5"
