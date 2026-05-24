@@ -773,12 +773,13 @@ pub fn map_match_multi_region(
         // Fast-path: one region, defer to the existing single-region
         // implementation. No cross-region overhead.
         let entry = &regions.regions[idx];
-        let mode_idx = match entry.state().mode_lookup.get(mode_name) {
+        let state = entry.state();
+        let mode_idx = match state.mode_lookup.get(mode_name) {
             Some(&m) => m,
             None => return None,
         };
         return map_match(
-            &entry.state,
+            &state,
             Mode(mode_idx),
             coordinates,
             gps_accuracy,
@@ -799,7 +800,7 @@ pub fn map_match_multi_region(
         .regions
         .iter()
         .map(|r| {
-            r.state
+            r.state()
                 .mode_lookup
                 .get(mode_name)
                 .copied()
@@ -1182,7 +1183,8 @@ fn compute_transition_distances_multi(
         if from_mode_idx == u8::MAX {
             continue;
         }
-        let from_state: &Arc<ServerState> = &regions.regions[from_region].state;
+        let from_state_arc = regions.regions[from_region].state();
+        let from_state: &Arc<ServerState> = &from_state_arc;
         let from_mode_data = from_state.get_mode(Mode(from_mode_idx));
         let src_rank = from_mode_data.orig_to_rank[fc.ebg_id as usize];
         if src_rank == u32::MAX {
@@ -1238,7 +1240,8 @@ fn compute_transition_distances_multi(
                 // both legs and sum length_mm, plus add the haversine
                 // border-crossing distance from src_border_ebg to
                 // dst_border_ebg.
-                let to_state: &Arc<ServerState> = &regions.regions[to_region].state;
+                let to_state_arc = regions.regions[to_region].state();
+                let to_state: &Arc<ServerState> = &to_state_arc;
                 let to_mode_data = to_state.get_mode(Mode(to_mode_idx));
                 let dst_rank = to_mode_data.orig_to_rank[tc.ebg_id as usize];
                 if dst_rank == u32::MAX {
