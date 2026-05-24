@@ -293,8 +293,8 @@ fn verify_lock_c_turns(
                 turns.penalties[arc_idx]
             );
         } else {
-            // Mode allowed - check penalty mapping via dynamic penalty_ds array
-            let expected_penalty = turn_entry.penalty_ds[mode.index()];
+            // Mode allowed - check penalty mapping via dynamic penalty_s array
+            let expected_penalty = turn_entry.penalty_s[mode.index()];
             anyhow::ensure!(
                 turns.penalties[arc_idx] == expected_penalty,
                 "Arc {} penalty mismatch: expected {} got {}",

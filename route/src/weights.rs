@@ -360,13 +360,10 @@ fn generate_mode_data(
         weights[ebg_id] = weight_s.max(1);
     }
 
-    // Compute turn penalties
-    // Turn penalties are now geometry-based (computed in step4 EBG construction)
-    // Every turn has a penalty stored in the turn table based on:
-    // - Turn angle (straight/right/left/u-turn)
-    // - Intersection complexity (degree)
-    // - Traffic signals (future: not yet implemented)
-    let mut total_penalty_ds = 0u64;
+    // Compute turn penalties.
+    // Turn penalties are geometry-based (computed in step 4 EBG construction).
+    // Every turn has a penalty stored in the turn table in SECONDS (post-#297).
+    let mut total_penalty_s = 0u64;
     let mut arcs_with_penalty = 0usize;
 
     for (arc_idx, penalty) in penalties.iter_mut().enumerate() {
@@ -381,11 +378,11 @@ fn generate_mode_data(
         }
 
         // Extract per-mode penalty from the dynamic array indexed by mode index
-        let penalty_ds = turn_entry.penalty_ds[mode.index()];
-        *penalty = penalty_ds;
+        let penalty_s = turn_entry.penalty_s[mode.index()];
+        *penalty = penalty_s;
 
-        if penalty_ds > 0 {
-            total_penalty_ds += penalty_ds as u64;
+        if penalty_s > 0 {
+            total_penalty_s += penalty_s as u64;
             arcs_with_penalty += 1;
         }
     }
@@ -396,7 +393,7 @@ fn generate_mode_data(
             "  Turn penalties: {} arcs ({:.1}%), avg {:.1}s",
             arcs_with_penalty,
             arcs_with_penalty as f64 * 100.0 / n_arcs as f64,
-            total_penalty_ds as f64 / arcs_with_penalty as f64 / 10.0
+            total_penalty_s as f64 / arcs_with_penalty as f64
         );
     }
 
