@@ -44,11 +44,10 @@ use crate::profile_abi::Mode;
 use crate::range::contour::ContourResult;
 use crate::range::wkb_stream::encode_polygon_wkb;
 
-use super::geometry::{Point, build_isochrone_geometry, build_raw_points};
+use super::geometry::{Point, build_isochrone_geometry};
 use super::isochrone_handler::{run_phast_bounded_fast, run_phast_bounded_fast_reverse};
 use super::query::CchQuery;
 use super::state::ServerState;
-use super::unpack::unpack_path;
 
 /// Butterfly Arrow Flight service — wraps shared ServerState
 pub struct ButterflyFlight {
@@ -599,20 +598,34 @@ struct RouteBatchParams {
     pairs: Vec<[f64; 4]>, // [src_lon, src_lat, dst_lon, dst_lat]
 }
 
-/// Encode a LineString as WKB (Well-Known Binary), little-endian.
-fn encode_linestring_wkb(points: &[Point]) -> Vec<u8> {
+/// #273: in-place WKB encoder — appends bytes to `out`. Clears `out`
+/// first so callers can reuse the same buffer across pairs.
+fn encode_linestring_wkb_into(points: &[Point], out: &mut Vec<u8>) {
+    out.clear();
     let n = points.len();
-    let buf_size = 1 + 4 + 4 + n * 16;
-    let mut buf = Vec::with_capacity(buf_size);
+    out.reserve(1 + 4 + 4 + n * 16);
 
-    buf.push(1u8); // little-endian
-    let _ = buf.write_all(&2u32.to_le_bytes()); // LineString type
-    let _ = buf.write_all(&(n as u32).to_le_bytes());
+    out.push(1u8); // little-endian
+    let _ = out.write_all(&2u32.to_le_bytes()); // LineString type
+    let _ = out.write_all(&(n as u32).to_le_bytes());
     for p in points {
-        let _ = buf.write_all(&p.lon.to_le_bytes());
-        let _ = buf.write_all(&p.lat.to_le_bytes());
+        let _ = out.write_all(&p.lon.to_le_bytes());
+        let _ = out.write_all(&p.lat.to_le_bytes());
     }
-    buf
+}
+
+/// #273 per-worker scratch buffers. Reused across pairs in the same
+/// `std::thread::scope` worker. Each pair calls `compute_route_pair`
+/// passing `&mut RouteScratch`; the buffers are cleared at the start
+/// of each call. The final WKB is moved out via `std::mem::take`
+/// (handed off to the Arrow `BinaryBuilder`) and replaced with a
+/// fresh empty `Vec`, so the next pair starts clean.
+#[derive(Default)]
+struct RouteScratch {
+    rank_path: Vec<u32>,
+    ebg_path: Vec<u32>,
+    points: Vec<Point>,
+    wkb: Vec<u8>,
 }
 
 /// Per-pair output for the route_batch parallel loop. One row per
@@ -649,6 +662,7 @@ fn compute_route_pair(
     dlon: f64,
     dlat: f64,
     fallback_count: &std::sync::atomic::AtomicU64,
+    scratch: &mut RouteScratch,
 ) -> Option<(f32, f32, Vec<u8>)> {
     use super::types::SnapRole;
 
@@ -679,7 +693,7 @@ fn compute_route_pair(
             && let Some(result) = query.query(src_rank, dst_rank)
         {
             return Some(build_route_output(
-                state, mode_data, &result, src_rank, dst_rank,
+                state, mode_data, &result, src_rank, dst_rank, scratch,
             ));
         }
     }
@@ -721,38 +735,53 @@ fn compute_route_pair(
         super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
     )
     .map(|(src_rank, dst_rank, result)| {
-        build_route_output(state, mode_data, &result, src_rank, dst_rank)
+        build_route_output(state, mode_data, &result, src_rank, dst_rank, scratch)
     })
 }
 
 /// Common output builder for a successful CCH P2P result. Returns
-/// (duration_s, distance_m, WKB linestring).
+/// (duration_s, distance_m, WKB linestring). #273: uses `scratch` for
+/// rank_path / ebg_path / points / wkb buffers — clears them on entry
+/// and hands ownership of the final WKB to the caller via mem::take
+/// (replaced with an empty `Vec` so the next call starts clean).
 fn build_route_output(
     state: &ServerState,
     mode_data: &super::state::ModeData,
     result: &super::query::QueryResult,
     src_rank: u32,
     dst_rank: u32,
+    scratch: &mut RouteScratch,
 ) -> (f32, f32, Vec<u8>) {
     let duration_s = result.distance as f64 / 10.0;
-    let rank_path = unpack_path(
+
+    super::unpack::unpack_path_into(
         &mode_data.cch_topo,
         &mode_data.cch_weights,
         &result.forward_parent,
         &result.backward_parent,
         src_rank,
-        dst_rank,
-        result.meeting_node,
+        &mut scratch.rank_path,
     );
-    let ebg_path: Vec<u32> = rank_path
-        .iter()
-        .map(|&rank| {
-            let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-            mode_data.filtered_to_original[filt_id as usize]
-        })
-        .collect();
-    let (points, distance_m) = build_raw_points(&ebg_path, &state.ebg_nodes, &state.edge_geom);
-    let wkb = encode_linestring_wkb(&points);
+    let _ = dst_rank; // unpack derives the path from forward+backward parents
+
+    // Translate CCH-rank ids → original EBG ids, reusing scratch.ebg_path.
+    scratch.ebg_path.clear();
+    scratch.ebg_path.reserve(scratch.rank_path.len());
+    for &rank in &scratch.rank_path {
+        let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
+        scratch.ebg_path.push(mode_data.filtered_to_original[filt_id as usize]);
+    }
+
+    let distance_m = super::geometry::build_raw_points_into(
+        &scratch.ebg_path,
+        &state.ebg_nodes,
+        &state.edge_geom,
+        &mut scratch.points,
+    );
+
+    encode_linestring_wkb_into(&scratch.points, &mut scratch.wkb);
+    let wkb = std::mem::take(&mut scratch.wkb);
+
     (duration_s as f32, distance_m as f32, wkb)
 }
 
@@ -867,12 +896,22 @@ fn do_route_batch(
             let n_workers = route_batch_worker_threads(n);
             let results: Vec<RoutePairRow> = if n_workers == 1 {
                 let query = CchQuery::new(&state, mode);
+                let mut scratch = RouteScratch::default();
                 chunk
                     .iter()
                     .map(|pair| {
                         let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
                         let r = compute_route_pair(
-                            &state, mode_data, mode, &query, slon, slat, dlon, dlat, fb,
+                            &state,
+                            mode_data,
+                            mode,
+                            &query,
+                            slon,
+                            slat,
+                            dlon,
+                            dlat,
+                            fb,
+                            &mut scratch,
                         );
                         row_of(slon, slat, dlon, dlat, r)
                     })
@@ -887,14 +926,23 @@ fn do_route_batch(
                                 let state = &state;
                                 scope.spawn(move || {
                                     let query = CchQuery::new(state, mode);
+                                    let mut scratch = RouteScratch::default();
                                     sub_chunk
                                         .iter()
                                         .map(|pair| {
                                             let (slon, slat, dlon, dlat) =
                                                 (pair[0], pair[1], pair[2], pair[3]);
                                             let r = compute_route_pair(
-                                                state, mode_data, mode, &query, slon, slat, dlon,
-                                                dlat, fb,
+                                                state,
+                                                mode_data,
+                                                mode,
+                                                &query,
+                                                slon,
+                                                slat,
+                                                dlon,
+                                                dlat,
+                                                fb,
+                                                &mut scratch,
                                             );
                                             row_of(slon, slat, dlon, dlat, r)
                                         })
