@@ -71,7 +71,8 @@ pub use node_signals::{NodeSignals, NodeSignalsFile};
 pub use order_ebg::{OrderEbg, OrderEbgFile};
 pub use relations::{Member, MemberKind, Relation, RelationsFile};
 pub use snap_index::{
-    PackedPoint, SnapGrid, SnapGridFile, SnapMask, SnapMaskFile, SnapPoints, SnapPointsFile,
+    PackedPoint, SnapBbox, SnapGrid, SnapGridFile, SnapMask, SnapMaskFile, SnapPoints,
+    SnapPointsFile, peek_snap_points_bbox,
 };
 pub use turn_rules::TurnRule;
 pub use way_attrs::WayAttr;

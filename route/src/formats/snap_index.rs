@@ -263,6 +263,83 @@ fn parse_snap_points_header_and_check(
     })
 }
 
+/// Bounding box pulled from a `shared/snap_points` header (i32-e7).
+/// Returned by [`peek_snap_points_bbox`]. Same semantics as
+/// `SnapPoints::bbox_*` but without loading the body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapBbox {
+    pub min_lon_e7: i32,
+    pub min_lat_e7: i32,
+    pub max_lon_e7: i32,
+    pub max_lat_e7: i32,
+}
+
+impl SnapBbox {
+    /// Convert to floating-point (lon_min, lat_min, lon_max, lat_max).
+    #[inline]
+    pub fn to_f64(&self) -> (f64, f64, f64, f64) {
+        (
+            self.min_lon_e7 as f64 / 1e7,
+            self.min_lat_e7 as f64 / 1e7,
+            self.max_lon_e7 as f64 / 1e7,
+            self.max_lat_e7 as f64 / 1e7,
+        )
+    }
+
+    /// `true` iff (lon, lat) falls inside the bbox padded by `margin_deg`
+    /// on every side. Use a generous margin so a query just outside the
+    /// box but within the snap radius still considers this region. A
+    /// degree of latitude is ~111 km; a 500 m snap radius needs
+    /// `margin_deg ≈ 0.005`.
+    #[inline]
+    pub fn contains_with_margin(&self, lon: f64, lat: f64, margin_deg: f64) -> bool {
+        let (mn_lon, mn_lat, mx_lon, mx_lat) = self.to_f64();
+        lon >= mn_lon - margin_deg
+            && lon <= mx_lon + margin_deg
+            && lat >= mn_lat - margin_deg
+            && lat <= mx_lat + margin_deg
+    }
+}
+
+/// Read the bbox out of a `shared/snap_points` section header without
+/// loading the body. Reads exactly [`HEADER_SIZE`] bytes from disk and
+/// verifies the magic + version. Does NOT verify the body CRC — callers
+/// that care about per-section integrity should drive that through
+/// [`SnapPointsFile::read_from_bytes`] at full-load time.
+///
+/// Used by the lazy-region boot path to filter regions by bbox in
+/// `snap_winner` without triggering a per-region full load.
+pub fn peek_snap_points_bbox<P: AsRef<Path>>(
+    path: P,
+    offset: u64,
+) -> Result<SnapBbox> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = File::open(path.as_ref())?;
+    f.seek(SeekFrom::Start(offset))?;
+    let mut header = [0u8; HEADER_SIZE];
+    f.read_exact(&mut header)?;
+    let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+    anyhow::ensure!(
+        magic == SNAP_POINTS_MAGIC,
+        "Invalid magic in snap_points: expected 0x{:08X}, got 0x{:08X}",
+        SNAP_POINTS_MAGIC,
+        magic
+    );
+    let version = u16::from_le_bytes([header[4], header[5]]);
+    anyhow::ensure!(
+        version == SNAP_VERSION,
+        "Unsupported snap_points version {}, expected {}",
+        version,
+        SNAP_VERSION
+    );
+    Ok(SnapBbox {
+        min_lon_e7: i32::from_le_bytes([header[12], header[13], header[14], header[15]]),
+        min_lat_e7: i32::from_le_bytes([header[16], header[17], header[18], header[19]]),
+        max_lon_e7: i32::from_le_bytes([header[20], header[21], header[22], header[23]]),
+        max_lat_e7: i32::from_le_bytes([header[24], header[25], header[26], header[27]]),
+    })
+}
+
 // ---------- snap_grid ------------------------------------------------------
 
 /// Parsed `shared/snap_grid` section. The body is the CSR `offsets`
@@ -673,6 +750,46 @@ mod tests {
                 _pad: 0,
             })
             .collect()
+    }
+
+    #[test]
+    fn peek_snap_points_bbox_reads_header_only() {
+        let pts = sample_points();
+        let original = SnapPoints {
+            n_points: pts.len() as u32,
+            bbox_min_lon: 25_000_000,
+            bbox_min_lat: 494_000_000,
+            bbox_max_lon: 65_000_000,
+            bbox_max_lat: 516_000_000,
+            cell_log2: 17,
+            points: Cow::Owned(pts),
+        };
+        let bytes = SnapPointsFile::encode(&original);
+        // Write to a temp file and peek at offset 0.
+        let tmp = tempfile::NamedTempFile::new().expect("tmp");
+        std::fs::write(tmp.path(), &bytes).expect("write");
+        let bbox = peek_snap_points_bbox(tmp.path(), 0).expect("peek");
+        assert_eq!(bbox.min_lon_e7, 25_000_000);
+        assert_eq!(bbox.min_lat_e7, 494_000_000);
+        assert_eq!(bbox.max_lon_e7, 65_000_000);
+        assert_eq!(bbox.max_lat_e7, 516_000_000);
+        // contains_with_margin sanity
+        assert!(bbox.contains_with_margin(4.0, 50.0, 0.01)); // inside
+        assert!(!bbox.contains_with_margin(-30.0, 40.0, 0.01)); // mid-Atlantic
+        // Just outside max_lon (6.5) with no margin should miss
+        assert!(!bbox.contains_with_margin(6.51, 50.0, 0.0));
+        // Same point with 0.05° margin should hit
+        assert!(bbox.contains_with_margin(6.51, 50.0, 0.05));
+    }
+
+    #[test]
+    fn peek_snap_points_bbox_rejects_bad_magic() {
+        let mut bytes = vec![0u8; 56]; // 40 header + 16 footer
+        bytes[0] = 0xAB; // wrong magic
+        let tmp = tempfile::NamedTempFile::new().expect("tmp");
+        std::fs::write(tmp.path(), &bytes).expect("write");
+        let err = peek_snap_points_bbox(tmp.path(), 0).expect_err("should fail");
+        assert!(err.to_string().contains("magic"), "{}", err);
     }
 
     #[test]
