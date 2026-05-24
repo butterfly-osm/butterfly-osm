@@ -73,6 +73,14 @@ pub struct RegionEntry {
     /// Lets `has_mode` / `available_modes` answer without forcing a
     /// Pending region to load just to enumerate its modes.
     pub mode_names: Vec<String>,
+    /// #142: coarse 0.1° tile coverage set for the region's road
+    /// network. Loaded at registration when `shared/region_tiles` is
+    /// present in the container. Drives `snap_winner`'s tighter
+    /// pre-filter after the bbox check — adjacent regions only
+    /// false-positive on tiles that genuinely border, instead of any
+    /// bbox overlap. `None` for legacy containers without the
+    /// section; `snap_winner` falls back to bbox-only filtering.
+    pub tiles: Option<crate::formats::RegionTiles>,
     /// #292 Phase 2: lazy-loadable region state. `Loaded(Arc<ServerState>)`
     /// is the after-load steady state; `Pending` is the lazy-boot
     /// default — entries are registered as Pending and the first call
@@ -337,9 +345,9 @@ impl RegionsState {
         // ServerState mode_lookup once the entry is loaded), but it
         // keeps the /regions JSON shape uniform regardless of how the
         // entry was constructed.
-        let (peeked_bbox, peeked_modes) = peek_region_meta(&container)
-            .map(|(_, b, m)| (b, m))
-            .unwrap_or((None, Vec::new()));
+        let (peeked_bbox, peeked_modes, peeked_tiles) = peek_region_meta(&container)
+            .map(|(_, b, m, t)| (b, m, t))
+            .unwrap_or((None, Vec::new(), None));
         // Prefer the live ServerState's mode names when available — for
         // legacy step-tree containers the manifest may not list modes
         // but the live state knows them.
@@ -352,6 +360,7 @@ impl RegionsState {
             id: id.clone(),
             container,
             bbox: peeked_bbox,
+            tiles: peeked_tiles,
             mode_names,
             state_cell: parking_lot::RwLock::new(RegionState::Loaded(Arc::new(state))),
             last_used_ms: AtomicU64::new(boot_offset_ms()),
@@ -382,7 +391,7 @@ impl RegionsState {
         let mut entries: Vec<RegionEntry> = Vec::with_capacity(paths.len());
         let mut seen: HashMap<String, PathBuf> = HashMap::new();
         for path in paths {
-            let (region_id, bbox, peeked_modes) = peek_region_meta(path)
+            let (region_id, bbox, peeked_modes, peeked_tiles) = peek_region_meta(path)
                 .with_context(|| format!("reading region id from {}", path.display()))?;
             if let Some(prev) = seen.get(&region_id) {
                 anyhow::bail!(
@@ -407,6 +416,7 @@ impl RegionsState {
                 container: path.clone(),
                 bbox,
                 mode_names,
+                tiles: peeked_tiles,
                 state_cell: parking_lot::RwLock::new(RegionState::Loaded(Arc::new(state))),
                 last_used_ms: AtomicU64::new(boot_offset_ms()),
                 verify_status: VerifyStatus::Verified,
@@ -512,11 +522,12 @@ impl RegionsState {
             String,
             Option<crate::formats::SnapBbox>,
             Vec<String>,
+            Option<crate::formats::RegionTiles>,
             PathBuf,
         )> = Vec::new();
         let mut skipped: Vec<String> = Vec::new();
         for path in &containers {
-            let (region, bbox, modes) = peek_region_meta(path)
+            let (region, bbox, modes, tiles) = peek_region_meta(path)
                 .with_context(|| format!("reading region id from {}", path.display()))?;
             if let Some(filter) = region_filter
                 && !filter.iter().any(|r| r.eq_ignore_ascii_case(&region))
@@ -524,7 +535,7 @@ impl RegionsState {
                 skipped.push(format!("{} (region={})", path.display(), region));
                 continue;
             }
-            to_load.push((region, bbox, modes, path.clone()));
+            to_load.push((region, bbox, modes, tiles, path.clone()));
         }
 
         if !skipped.is_empty() {
@@ -537,7 +548,7 @@ impl RegionsState {
 
         // Reject duplicate region ids — operator error, fail loudly.
         let mut seen: HashMap<&str, &Path> = HashMap::new();
-        for (id, _bbox, _modes, path) in &to_load {
+        for (id, _bbox, _modes, _tiles, path) in &to_load {
             if let Some(prev) = seen.insert(id.as_str(), path.as_path()) {
                 anyhow::bail!(
                     "duplicate region id '{}' across containers: {} and {}",
@@ -565,7 +576,7 @@ impl RegionsState {
                 "lazy region load ignores --modes (the filter would need to be remembered per-region; either pass --eager-regions to honour the filter, or revisit if needed)"
             );
         }
-        for (id, bbox, peeked_modes, path) in to_load {
+        for (id, bbox, peeked_modes, peeked_tiles, path) in to_load {
             let idx = regions.len();
             by_id.insert(id.clone(), idx);
             let metrics = super::region_metrics::RegionMetrics::new(&id);
@@ -578,6 +589,7 @@ impl RegionsState {
                     container = %path.display(),
                     bbox = ?bbox.map(|b| b.to_f64()),
                     modes = ?peeked_modes,
+                    n_tiles = peeked_tiles.as_ref().map(|t| t.len()).unwrap_or(0),
                     "registered region (lazy — load on first query)"
                 );
                 regions.push(RegionEntry {
@@ -585,6 +597,7 @@ impl RegionsState {
                     container: path,
                     bbox,
                     mode_names: peeked_modes,
+                    tiles: peeked_tiles,
                     state_cell: parking_lot::RwLock::new(RegionState::Pending),
                     last_used_ms: AtomicU64::new(0),
                     verify_status: VerifyStatus::Verified,
@@ -617,6 +630,7 @@ impl RegionsState {
                 container: path,
                 bbox,
                 mode_names,
+                tiles: peeked_tiles,
                 state_cell: parking_lot::RwLock::new(RegionState::Loaded(Arc::new(state))),
                 last_used_ms: AtomicU64::new(boot_offset_ms()),
                 verify_status: VerifyStatus::Verified,
@@ -1245,7 +1259,12 @@ impl DispatchError {
 /// triggering a full load.
 fn peek_region_meta(
     path: &Path,
-) -> Result<(String, Option<crate::formats::SnapBbox>, Vec<String>)> {
+) -> Result<(
+    String,
+    Option<crate::formats::SnapBbox>,
+    Vec<String>,
+    Option<crate::formats::RegionTiles>,
+)> {
     use crate::formats::butterfly_dat::Container;
     let container =
         Container::open(path).with_context(|| format!("opening container {}", path.display()))?;
@@ -1265,7 +1284,35 @@ fn peek_region_meta(
         None => None,
     };
     let mode_names = container.list_modes();
-    Ok((region_id, bbox, mode_names))
+    // #142: peek region_tiles if present. Loaded into heap as an
+    // owned Vec — the array is small (~5 KiB Belgium, ~10 MiB planet)
+    // and we want it always-resident so snap_winner's tile check is
+    // a pure binary search.
+    let tiles = match container.get("shared/region_tiles") {
+        Some(entry) => match container.read_section_verified(path, entry) {
+            Ok(bytes) => match crate::formats::RegionTilesFile::read_from_bytes(&bytes) {
+                Ok(rt) => Some(rt),
+                Err(e) => {
+                    tracing::warn!(
+                        container = %path.display(),
+                        error = %e,
+                        "region_tiles section unreadable; falling back to bbox-only filter",
+                    );
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    container = %path.display(),
+                    error = %e,
+                    "region_tiles section CRC failed; falling back to bbox-only filter",
+                );
+                None
+            }
+        },
+        None => None,
+    };
+    Ok((region_id, bbox, mode_names, tiles))
 }
 
 #[cfg(test)]
