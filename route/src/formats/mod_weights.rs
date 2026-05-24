@@ -269,3 +269,118 @@ pub fn verify<P: AsRef<Path>>(path: P) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pack a valid `ModWeights` payload into bytes. Mirrors what
+    /// `write()` produces minus the file I/O.
+    fn build_bytes(mode: Mode, weights: &[u32], inputs_sha: &[u8; 16]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(HEADER_SIZE + weights.len() * 4 + FOOTER_SIZE);
+        out.extend_from_slice(&MAGIC.to_le_bytes());
+        out.extend_from_slice(&VERSION.to_le_bytes());
+        out.push(mode.0);
+        out.push(0);
+        out.extend_from_slice(&(weights.len() as u32).to_le_bytes());
+        out.extend_from_slice(inputs_sha);
+        out.extend_from_slice(&[0u8; 4]);
+        assert_eq!(out.len(), HEADER_SIZE);
+
+        let mut body_digest = Digest::new();
+        for &w in weights {
+            let b = w.to_le_bytes();
+            body_digest.update(&b);
+            out.extend_from_slice(&b);
+        }
+        let body_crc = body_digest.finalize();
+
+        let mut file_digest = Digest::new();
+        file_digest.update(&out[..HEADER_SIZE]);
+        for &w in weights {
+            file_digest.update(&w.to_le_bytes());
+        }
+        let file_crc = file_digest.finalize();
+        out.extend_from_slice(&body_crc.to_le_bytes());
+        out.extend_from_slice(&file_crc.to_le_bytes());
+        out
+    }
+
+    /// Leak the buffer so its byte slice is `'static`. Tests only.
+    fn leak_static(buf: Vec<u8>) -> &'static [u8] {
+        Box::leak(buf.into_boxed_slice())
+    }
+
+    #[test]
+    fn zero_copy_roundtrip_returns_borrowed_view() {
+        let mode = Mode(0);
+        let weights = vec![10u32, 20, 30, 40, 50];
+        let inputs_sha = [1u8; 16];
+        let bytes = build_bytes(mode, &weights, &inputs_sha);
+        let bytes = leak_static(bytes);
+
+        let parsed = read_from_bytes_zero_copy_unverified(bytes).expect("parse ok");
+        assert_eq!(parsed.mode.0, 0);
+        assert_eq!(parsed.inputs_sha, inputs_sha);
+        assert_eq!(&parsed.weights[..], weights.as_slice());
+        // Critically: the view must be Cow::Borrowed pointing into our
+        // input bytes, not a fresh Vec copy.
+        match &parsed.weights {
+            std::borrow::Cow::Borrowed(_) => {} // ok
+            std::borrow::Cow::Owned(_) => panic!("expected Cow::Borrowed view"),
+        }
+    }
+
+    #[test]
+    fn zero_copy_fails_on_bad_magic() {
+        let mode = Mode(0);
+        let weights = vec![10u32, 20, 30];
+        let inputs_sha = [0u8; 16];
+        let mut bytes = build_bytes(mode, &weights, &inputs_sha);
+        // Corrupt the magic in-place.
+        bytes[0] = 0xAA;
+        let bytes = leak_static(bytes);
+
+        let err = read_from_bytes_zero_copy_unverified(bytes).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("magic"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn zero_copy_fails_on_size_mismatch() {
+        let mode = Mode(0);
+        let weights = vec![10u32, 20, 30];
+        let inputs_sha = [0u8; 16];
+        let mut bytes = build_bytes(mode, &weights, &inputs_sha);
+        // Truncate the footer so file_size != expected.
+        bytes.truncate(bytes.len() - 4);
+        let bytes = leak_static(bytes);
+
+        let err = read_from_bytes_zero_copy_unverified(bytes).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("size mismatch") || msg.contains("too short"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn zero_copy_unverified_ignores_corrupted_crc() {
+        // The `_unverified` reader skips CRC validation; callers are
+        // expected to have run LazyContainer's CRC check upstream.
+        // This test asserts that corrupting the body CRC does NOT
+        // cause the reader to fail — that's the documented contract.
+        let mode = Mode(0);
+        let weights = vec![10u32, 20, 30];
+        let inputs_sha = [0u8; 16];
+        let mut bytes = build_bytes(mode, &weights, &inputs_sha);
+        let body_end = HEADER_SIZE + weights.len() * 4;
+        // Overwrite body CRC bytes (offsets body_end..body_end+8).
+        for i in 0..8 {
+            bytes[body_end + i] ^= 0xFF;
+        }
+        let bytes = leak_static(bytes);
+        let parsed = read_from_bytes_zero_copy_unverified(bytes).expect("ok despite CRC bits");
+        assert_eq!(&parsed.weights[..], weights.as_slice());
+    }
+}
