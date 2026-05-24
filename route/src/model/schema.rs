@@ -130,7 +130,9 @@ mod tests {
         let model: ModelSchema = serde_json::from_str(&json).unwrap();
         assert_eq!(model.name, "car");
         assert_eq!(model.version, 1);
-        assert_eq!(model.speed.highway.get("motorway"), Some(&110.0));
+        // #87 / PR #211: car motorway speed tuned 110 → 90 km/h to
+        // match OSRM car.lua raw and close the duration bias.
+        assert_eq!(model.speed.highway.get("motorway"), Some(&90.0));
         assert!(model.access.highway.get("motorway") == Some(&true));
         assert!(model.access.highway.get("footway") == Some(&false));
         assert!(model.oneway.respect);
