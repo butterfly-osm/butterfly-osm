@@ -24,12 +24,19 @@ use super::regions::RegionsState;
 pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl IntoResponse {
     let primary = regions.primary();
     let uptime = primary.started_at.elapsed();
+    // #292 Phase 3: only sum stats for regions that are already loaded.
+    // Pending regions don't contribute to the totals (a lazy-boot
+    // operator sees the total grow as queries pull regions in).
     let total_nodes: u64 = regions
         .regions
         .iter()
-        .map(|r| r.state().ebg_nodes.n_nodes as u64)
+        .filter_map(|r| r.state_loaded().map(|s| s.ebg_nodes.n_nodes as u64))
         .sum();
-    let total_edges: u64 = regions.regions.iter().map(|r| r.state().ebg_csr.n_arcs).sum();
+    let total_edges: u64 = regions
+        .regions
+        .iter()
+        .filter_map(|r| r.state_loaded().map(|s| s.ebg_csr.n_arcs))
+        .sum();
 
     // #160: aggregate lazy-CRC verification status across every loaded
     // region. The `verify_status` field is `ok` if no region has a
@@ -45,7 +52,14 @@ pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl In
         let mut failed: Vec<serde_json::Value> = Vec::new();
         let mut any_lazy = false;
         for region in regions.regions.iter() {
-            if let Some(lazy) = &region.state().lazy {
+            // Skip Pending regions — no ServerState yet, no lazy_verify
+            // runtime to walk. Health endpoint will reflect them once
+            // their first query triggers the load.
+            let state = match region.state_loaded() {
+                Some(s) => s,
+                None => continue,
+            };
+            if let Some(lazy) = &state.lazy {
                 any_lazy = true;
                 for (name, rt) in lazy.iter_runtimes() {
                     n_sections += 1;
@@ -92,8 +106,9 @@ pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl In
     let avoid_cache_stats: Vec<serde_json::Value> = regions
         .regions
         .iter()
-        .map(|region| {
-            let (hits, misses, size, capacity) = region.state().avoid_cache.stats();
+        .filter_map(|region| Some((region, region.state_loaded()?)))
+        .map(|(region, state)| {
+            let (hits, misses, size, capacity) = state.avoid_cache.stats();
             // Mirror current stats into the Prometheus registry so the
             // next /metrics scrape sees fresh values. /health is the
             // natural "snapshot" hook — typical ops setups poll it

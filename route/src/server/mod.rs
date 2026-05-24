@@ -224,6 +224,7 @@ pub async fn serve(
     region_filter: Option<&[String]>,
     load_options: &crate::server::state::LoadOptions,
     overlay_path: Option<&Path>,
+    lazy_regions: bool,
 ) -> Result<()> {
     tracing::info!("Step 9: Starting query server...");
 
@@ -233,9 +234,17 @@ pub async fn serve(
             DataSource::Directory(dir) => {
                 let has_container = directory_has_butterfly_container(dir)?;
                 if has_container {
-                    tracing::info!(dir = %dir.display(), "multi-region container directory detected");
-                    let regions_state =
-                        regions::RegionsState::load_from_dir(dir, region_filter, mode_filter)?;
+                    tracing::info!(
+                        dir = %dir.display(),
+                        lazy = lazy_regions,
+                        "multi-region container directory detected"
+                    );
+                    let regions_state = regions::RegionsState::load_from_dir_with_opts(
+                        dir,
+                        region_filter,
+                        mode_filter,
+                        lazy_regions,
+                    )?;
                     (regions_state, dir.to_path_buf())
                 } else {
                     tracing::info!(dir = %dir.display(), "legacy step-tree directory detected");
@@ -330,12 +339,17 @@ pub async fn serve(
     }
 
     // ---- Per-region size metrics -----------------------------------
+    // Skip Pending regions on the lazy boot path; their stats publish
+    // after the first query loads the ServerState. state_loaded() is a
+    // non-loading peek so this loop doesn't trigger N region loads.
     for r in &regions_state.regions {
-        crate::server::region_metrics::register_region_size(
-            &r.id,
-            r.state().ebg_nodes.n_nodes as u64,
-            r.state().ebg_csr.n_arcs,
-        );
+        if let Some(s) = r.state_loaded() {
+            crate::server::region_metrics::register_region_size(
+                &r.id,
+                s.ebg_nodes.n_nodes as u64,
+                s.ebg_csr.n_arcs,
+            );
+        }
     }
 
     // ---- Cross-region overlay (#91 Phase 2) ------------------------
