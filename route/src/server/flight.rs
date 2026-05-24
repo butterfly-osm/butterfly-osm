@@ -778,17 +778,25 @@ fn route_batch_worker_threads(n_pairs: usize) -> usize {
 /// Per-record-batch pair count. Each emitted Arrow `RecordBatch` carries
 /// at most this many `(src, dst, dur, dist, wkb)` rows.
 ///
-/// Sized for the gRPC `max_encoding_message_size` of 64 MiB. WKB
-/// geometry on a Belgium route averages ~6–7 KiB; 2000 pairs ≈ 12 MiB,
-/// leaving headroom for unusually long routes (50+ KiB transcontinental
-/// shapes are not Belgium, but the cap must hold in the worst case).
-/// Override via `BUTTERFLY_ROUTE_BATCH_SIZE` if needed.
+/// Sized for the gRPC `max_encoding_message_size` of 64 MiB. Default 1000:
+///   - Belgium WKB avg ~6-7 KiB → 1000 pairs ≈ 6-7 MiB per batch
+///   - Transcontinental WKB ~50 KiB → 1000 pairs ≈ 50 MiB, still under cap
+///   - Fixed-size columns (src/dst/dur/dist = 32 bytes/row) negligible
+///
+/// PR #294/#295 review (#TBD follow-up): a byte-aware adaptive flusher
+/// that splits a chunk into multiple RecordBatches when accumulated WKB
+/// exceeds a soft cap (e.g. 32 MiB) is the proper correctness fix.
+/// Tracking that as a separate change so this PR's perf claims stay
+/// reviewable.
+///
+/// Override via `BUTTERFLY_ROUTE_BATCH_SIZE` if you know your WKB sizes
+/// fit in a higher cap, or set it lower for very long routes.
 fn route_batch_batch_size() -> usize {
     std::env::var("BUTTERFLY_ROUTE_BATCH_SIZE")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|&v| v > 0)
-        .unwrap_or(2_000)
+        .unwrap_or(1_000)
 }
 
 fn do_route_batch(
@@ -884,7 +892,35 @@ fn do_route_batch(
                                 })
                             })
                             .collect();
-                        handles.into_iter().map(|h| h.join()).collect()
+                        // PR #295 review: join EVERY handle (don't
+                        // short-circuit via .collect::<Result<…>>) so a
+                        // panic in one worker doesn't leave other
+                        // scoped threads un-joined. Capture the FIRST
+                        // panic payload and convert it to a single
+                        // Status::internal; subsequent panics are
+                        // suppressed (logged) so they don't propagate
+                        // out of the scope and abort the task.
+                        let mut parts: Vec<Vec<RoutePairRow>> = Vec::with_capacity(handles.len());
+                        let mut first_panic: Option<Box<dyn std::any::Any + Send + 'static>> = None;
+                        for h in handles {
+                            match h.join() {
+                                Ok(part) => parts.push(part),
+                                Err(payload) => {
+                                    if first_panic.is_none() {
+                                        first_panic = Some(payload);
+                                    } else {
+                                        tracing::warn!(
+                                            "additional worker panic suppressed (first already captured)"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(p) = first_panic {
+                            Err(p) as std::thread::Result<Vec<Vec<RoutePairRow>>>
+                        } else {
+                            Ok(parts)
+                        }
                     });
                 match join_result {
                     Ok(parts) => parts.into_iter().flatten().collect(),
