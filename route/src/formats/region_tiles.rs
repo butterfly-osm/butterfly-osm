@@ -65,9 +65,15 @@ pub fn tile_id_from_e7(lon_e7: i32, lat_e7: i32) -> u64 {
 
 /// Pack a float lat/lon into a tile id. Convenience for the runtime
 /// query path (`snap_winner` has lat/lon as f64).
+///
+/// Uses round-half-to-even (`.round()`) for the f64→i32-e7 conversion
+/// so the runtime tile-id of a coord matches the pack-time tile-id of
+/// the same coord, which is built from already-quantised `PackedPoint`
+/// values that round at the OSM ingest layer. Truncating with `as i32`
+/// here would misclassify coords near tile boundaries by one cell.
 #[inline]
 pub fn tile_id_from_f64(lon: f64, lat: f64) -> u64 {
-    tile_id_from_e7((lon * 1e7) as i32, (lat * 1e7) as i32)
+    tile_id_from_e7((lon * 1e7).round() as i32, (lat * 1e7).round() as i32)
 }
 
 /// Parsed `shared/region_tiles` section.
@@ -84,12 +90,16 @@ impl RegionTiles {
     /// `margin_tiles=0` checks exact tile membership; `margin_tiles=1`
     /// also accepts the 8 neighbouring tiles (3x3 block).
     ///
-    /// `snap_winner` uses `margin_tiles=1` so a query near a tile edge
-    /// that snaps into a neighbour's road segment still considers this
-    /// region.
+    /// Production `snap_winner` calls with `margin_tiles=0` (exact
+    /// match) after empirical evidence that margin=1 was too
+    /// permissive for the BE-LU geometry (BE border tiles satisfied
+    /// the ring around pure-LU coords). The bbox margin (0.01°)
+    /// handles the very-near-border cases instead.
     pub fn contains_with_margin(&self, lon: f64, lat: f64, margin_tiles: i32) -> bool {
-        let lon_e7 = (lon * 1e7) as i32;
-        let lat_e7 = (lat * 1e7) as i32;
+        // Use round-half-to-even to match tile_id_from_f64 — see its
+        // doc comment for why truncation would misclassify edges.
+        let lon_e7 = (lon * 1e7).round() as i32;
+        let lat_e7 = (lat * 1e7).round() as i32;
         let center_lon_cell =
             ((lon_e7 as i64 + LON_OFFSET_E7 as i64) / CELL_SIZE_E7 as i64) as i32;
         let center_lat_cell =
@@ -176,6 +186,19 @@ impl RegionTilesFile {
             "region_tiles body CRC mismatch: computed 0x{:016X}, stored 0x{:016X}",
             computed_body,
             stored_body
+        );
+        // Also verify file_crc (covers header + body) so a flipped
+        // n_tiles that still matches the slice length is still caught.
+        let mut file_d = Digest::new();
+        file_d.update(&bytes[..footer_off]);
+        let computed_file = file_d.finalize();
+        let stored_file =
+            u64::from_le_bytes(bytes[footer_off + 8..footer_off + 16].try_into()?);
+        anyhow::ensure!(
+            computed_file == stored_file,
+            "region_tiles file CRC mismatch: computed 0x{:016X}, stored 0x{:016X}",
+            computed_file,
+            stored_file
         );
         Ok(RegionTiles {
             n_tiles,
