@@ -35,7 +35,7 @@ use butterfly_route::server::state::ServerState;
 /// pairs, 1 000 rounding-sensitivity routes). Picked once; never
 /// changed so two runs of the profiler on the same data emit
 /// byte-identical JSON.
-pub const WEIGHT_PROFILE_SEED: u64 = 0x0B07_7E_F1;
+pub const WEIGHT_PROFILE_SEED: u64 = 0x0B07_7EF1;
 
 /// JSON schema version. Bump on any breaking layout change (added
 /// fields are *not* breaking; removed/renamed fields *are*). The
@@ -276,11 +276,7 @@ pub struct BucketCounts {
 /// CLI handler in `main.rs`. Loads the requested region, walks every
 /// measurement section, and writes `weight-profile.json` +
 /// `weight-profile.md` under `output_dir`.
-pub fn run_weight_profile(
-    data_dir: &Path,
-    output_dir: &Path,
-    region: Option<&str>,
-) -> Result<()> {
+pub fn run_weight_profile(data_dir: &Path, output_dir: &Path, region: Option<&str>) -> Result<()> {
     std::fs::create_dir_all(output_dir)
         .with_context(|| format!("creating output directory {}", output_dir.display()))?;
 
@@ -344,9 +340,7 @@ pub fn run_weight_profile(
     println!();
 
     // ---- Section C -------------------------------------------------------
-    println!(
-        "[3/?] Section C: per-block range histograms (block sizes 32, 64, 128)..."
-    );
+    println!("[3/?] Section C: per-block range histograms (block sizes 32, 64, 128)...");
     const BLOCK_SIZES: &[usize] = &[32, 64, 128];
     let mut blocks_c: BTreeMap<String, (BlockStats, BlockStats, BlockStats, BlockStats)> =
         BTreeMap::new();
@@ -464,9 +458,7 @@ pub fn run_weight_profile(
     println!();
 
     // ---- Section D -------------------------------------------------------
-    println!(
-        "[5/?] Section D: cumulative rounding sensitivity (1 000 random P2P routes)..."
-    );
+    println!("[5/?] Section D: cumulative rounding sensitivity (1 000 random P2P routes)...");
     let mut rounding_d: BTreeMap<String, (RoundingStats, RoundingStats)> = BTreeMap::new();
     let d_pairs = generate_rounding_pairs(&bbox);
     for (mode_idx, mode_name) in state.mode_names.iter().enumerate() {
@@ -512,9 +504,7 @@ pub fn run_weight_profile(
     println!();
 
     // ---- Section E -------------------------------------------------------
-    println!(
-        "[6/?] Section E: triangle-relaxation tie rate (cs vs s precision)..."
-    );
+    println!("[6/?] Section E: triangle-relaxation tie rate (cs vs s precision)...");
     let mut tie_e: BTreeMap<String, (TieStats, TieStats)> = BTreeMap::new();
     for (mode_idx, mode_name) in state.mode_names.iter().enumerate() {
         let mode_data = &state.modes[mode_idx];
@@ -551,8 +541,7 @@ pub fn run_weight_profile(
     let mut modes_report: BTreeMap<String, ModeReport> = BTreeMap::new();
     for mode_name in state.mode_names.iter() {
         let (t_up, t_dn, d_up, d_dn) = static_a.remove(mode_name).expect("static A populated");
-        let (tb_up, tb_dn, db_up, db_dn) =
-            blocks_c.remove(mode_name).expect("blocks C populated");
+        let (tb_up, tb_dn, db_up, db_dn) = blocks_c.remove(mode_name).expect("blocks C populated");
         let (hot_time, hot_dist) = hot_b.remove(mode_name).expect("hot B populated");
         let (r_time, r_dist) = rounding_d.remove(mode_name).expect("rounding D populated");
         let (tie_time, tie_dist) = tie_e.remove(mode_name).expect("tie E populated");
@@ -560,15 +549,27 @@ pub fn run_weight_profile(
             mode_name.clone(),
             ModeReport {
                 time: MetricReport {
-                    statik: DirectionPair { up: t_up, down: t_dn },
-                    blocks: DirectionPair { up: tb_up, down: tb_dn },
+                    statik: DirectionPair {
+                        up: t_up,
+                        down: t_dn,
+                    },
+                    blocks: DirectionPair {
+                        up: tb_up,
+                        down: tb_dn,
+                    },
                     hot: hot_time,
                     rounding: r_time,
                     tie: tie_time,
                 },
                 dist: MetricReport {
-                    statik: DirectionPair { up: d_up, down: d_dn },
-                    blocks: DirectionPair { up: db_up, down: db_dn },
+                    statik: DirectionPair {
+                        up: d_up,
+                        down: d_dn,
+                    },
+                    blocks: DirectionPair {
+                        up: db_up,
+                        down: db_dn,
+                    },
                     hot: hot_dist,
                     rounding: r_dist,
                     tie: tie_dist,
@@ -596,8 +597,7 @@ pub fn run_weight_profile(
 
     let md_path = output_dir.join("weight-profile.md");
     let md = render_markdown(&report);
-    std::fs::write(&md_path, md)
-        .with_context(|| format!("writing {}", md_path.display()))?;
+    std::fs::write(&md_path, md).with_context(|| format!("writing {}", md_path.display()))?;
     println!("  ✓ wrote {}", md_path.display());
     println!();
 
@@ -730,8 +730,12 @@ fn render_markdown(report: &Report) -> String {
          `max_bits` is the worst case. `n_inf_blocks` is the count \
          of fully-INF blocks (encoded as a single sentinel).\n\n",
     );
-    out.push_str("| Mode | Metric | Block size | n_blocks | n_inf_blocks | mean_bits | max_bits |\n");
-    out.push_str("|------|--------|-----------:|---------:|-------------:|----------:|---------:|\n");
+    out.push_str(
+        "| Mode | Metric | Block size | n_blocks | n_inf_blocks | mean_bits | max_bits |\n",
+    );
+    out.push_str(
+        "|------|--------|-----------:|---------:|-------------:|----------:|---------:|\n",
+    );
     for (mode_name, mode) in &report.modes {
         for (metric_name, metric) in [("time", &mode.time), ("dist", &mode.dist)] {
             let blocks = &metric.blocks.up;
@@ -1027,7 +1031,18 @@ fn log_bucket_label(w: u32) -> String {
     if w == u32::MAX {
         return "inf".to_string();
     }
-    let edges = [1u64, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000, 1_000_000_000];
+    let edges = [
+        1u64,
+        10,
+        100,
+        1_000,
+        10_000,
+        100_000,
+        1_000_000,
+        10_000_000,
+        100_000_000,
+        1_000_000_000,
+    ];
     let w64 = w as u64;
     for (i, &edge) in edges.iter().enumerate() {
         if w64 <= edge {
@@ -1043,7 +1058,18 @@ fn log_bucket_label(w: u32) -> String {
 /// empty).
 fn empty_log_histogram() -> BTreeMap<String, u64> {
     let mut m = BTreeMap::new();
-    let edges = [1u64, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000, 1_000_000_000];
+    let edges = [
+        1u64,
+        10,
+        100,
+        1_000,
+        10_000,
+        100_000,
+        1_000_000,
+        10_000_000,
+        100_000_000,
+        1_000_000_000,
+    ];
     let mut prev = 0u64;
     for &edge in &edges {
         m.insert(format!("({},{}]", prev, edge), 0);
@@ -1139,7 +1165,9 @@ fn snap_od_pairs(state: &ServerState, pairs: &[OdPair], mode_idx: u8) -> Vec<(u3
     pairs
         .iter()
         .filter_map(|p| {
-            let src_orig = state.snap_index.snap(p.origin_lon, p.origin_lat, mode_idx)?;
+            let src_orig = state
+                .snap_index
+                .snap(p.origin_lon, p.origin_lat, mode_idx)?;
             let dst_orig = state.snap_index.snap(p.dest_lon, p.dest_lat, mode_idx)?;
             let src_rank = mode_data.rank_for_original(src_orig)?;
             let dst_rank = mode_data.rank_for_original(dst_orig)?;
@@ -1380,8 +1408,7 @@ fn run_instrumented_queries(
     let n_queries_reached = up_bin.n_reached;
     let n_queries_unreachable = n_queries_total - n_queries_reached;
     let n_relaxed_total = up_bin.n_relaxed + dn_bin.n_relaxed;
-    let n_unique_edges_visited =
-        count_set_bits(&up_bin.visited) + count_set_bits(&dn_bin.visited);
+    let n_unique_edges_visited = count_set_bits(&up_bin.visited) + count_set_bits(&dn_bin.visited);
 
     let mut log_histogram = BTreeMap::new();
     for i in 0..12 {
@@ -1485,33 +1512,33 @@ fn run_one_query(
         }
 
         // Forward UP step.
-        if let Some((u, Reverse(d))) = pq_fwd.pop() {
-            if d <= dist_fwd[u as usize] {
-                let bwd_d = dist_bwd[u as usize];
-                if bwd_d != u32::MAX {
-                    let total = d.saturating_add(bwd_d);
-                    if total < best_dist {
-                        best_dist = total;
-                    }
+        if let Some((u, Reverse(d))) = pq_fwd.pop()
+            && d <= dist_fwd[u as usize]
+        {
+            let bwd_d = dist_bwd[u as usize];
+            if bwd_d != u32::MAX {
+                let total = d.saturating_add(bwd_d);
+                if total < best_dist {
+                    best_dist = total;
                 }
-                // Relax UP edges from `u`.
-                let start = up_adj_flat.offsets[u as usize] as usize;
-                let end = up_adj_flat.offsets[u as usize + 1] as usize;
-                for slot in start..end {
-                    let v = up_adj_flat.targets[slot];
-                    let w = up_adj_flat.weights[slot];
-                    // Record relaxation in the UP histogram.
-                    up_bin.record(slot as u32, w);
-                    let new_dist = d.saturating_add(w);
-                    if new_dist < dist_fwd[v as usize] {
-                        dist_fwd[v as usize] = new_dist;
-                        pq_fwd.push(v, Reverse(new_dist));
-                        let bwd_v = dist_bwd[v as usize];
-                        if bwd_v != u32::MAX {
-                            let total = new_dist.saturating_add(bwd_v);
-                            if total < best_dist {
-                                best_dist = total;
-                            }
+            }
+            // Relax UP edges from `u`.
+            let start = up_adj_flat.offsets[u as usize] as usize;
+            let end = up_adj_flat.offsets[u as usize + 1] as usize;
+            for slot in start..end {
+                let v = up_adj_flat.targets[slot];
+                let w = up_adj_flat.weights[slot];
+                // Record relaxation in the UP histogram.
+                up_bin.record(slot as u32, w);
+                let new_dist = d.saturating_add(w);
+                if new_dist < dist_fwd[v as usize] {
+                    dist_fwd[v as usize] = new_dist;
+                    pq_fwd.push(v, Reverse(new_dist));
+                    let bwd_v = dist_bwd[v as usize];
+                    if bwd_v != u32::MAX {
+                        let total = new_dist.saturating_add(bwd_v);
+                        if total < best_dist {
+                            best_dist = total;
                         }
                     }
                 }
@@ -1519,32 +1546,32 @@ fn run_one_query(
         }
 
         // Backward reversed-DOWN step.
-        if let Some((u, Reverse(d))) = pq_bwd.pop() {
-            if d <= dist_bwd[u as usize] {
-                let fwd_d = dist_fwd[u as usize];
-                if fwd_d != u32::MAX {
-                    let total = d.saturating_add(fwd_d);
-                    if total < best_dist {
-                        best_dist = total;
-                    }
+        if let Some((u, Reverse(d))) = pq_bwd.pop()
+            && d <= dist_bwd[u as usize]
+        {
+            let fwd_d = dist_fwd[u as usize];
+            if fwd_d != u32::MAX {
+                let total = d.saturating_add(fwd_d);
+                if total < best_dist {
+                    best_dist = total;
                 }
-                let start = down_rev_flat.offsets[u as usize] as usize;
-                let end = down_rev_flat.offsets[u as usize + 1] as usize;
-                for slot in start..end {
-                    let x = down_rev_flat.sources[slot];
-                    let w = down_rev_flat.weights[slot];
-                    // Record relaxation in the DOWN histogram.
-                    dn_bin.record(slot as u32, w);
-                    let new_dist = d.saturating_add(w);
-                    if new_dist < dist_bwd[x as usize] {
-                        dist_bwd[x as usize] = new_dist;
-                        pq_bwd.push(x, Reverse(new_dist));
-                        let fwd_x = dist_fwd[x as usize];
-                        if fwd_x != u32::MAX {
-                            let total = new_dist.saturating_add(fwd_x);
-                            if total < best_dist {
-                                best_dist = total;
-                            }
+            }
+            let start = down_rev_flat.offsets[u as usize] as usize;
+            let end = down_rev_flat.offsets[u as usize + 1] as usize;
+            for slot in start..end {
+                let x = down_rev_flat.sources[slot];
+                let w = down_rev_flat.weights[slot];
+                // Record relaxation in the DOWN histogram.
+                dn_bin.record(slot as u32, w);
+                let new_dist = d.saturating_add(w);
+                if new_dist < dist_bwd[x as usize] {
+                    dist_bwd[x as usize] = new_dist;
+                    pq_bwd.push(x, Reverse(new_dist));
+                    let fwd_x = dist_fwd[x as usize];
+                    if fwd_x != u32::MAX {
+                        let total = new_dist.saturating_add(fwd_x);
+                        if total < best_dist {
+                            best_dist = total;
                         }
                     }
                 }
@@ -1575,9 +1602,9 @@ fn generate_rounding_pairs(bbox: &Bbox) -> Vec<OdPair> {
 /// (1000) depending on metric. Returns the populated `RoundingStats`.
 ///
 /// `drift_pct = |sum_ref_cs - sum_round_cs| / sum_ref_cs`, where
-/// `sum_round_cs = (sum of per-edge round_half_even_div(w, divisor))
-/// * divisor`. This compares the path's true cs total against the
-/// total you'd see if each edge weight were stored in s/m units and
+/// `sum_round_cs = (sum of per-edge round_half_even_div(w, divisor)) *
+/// divisor`. This compares the path's true cs total against the total
+/// you'd see if each edge weight were stored in s/m units and
 /// reconstructed by multiplication.
 fn run_rounding_routes(
     n_nodes: usize,
@@ -1699,65 +1726,65 @@ fn path_edges(
         if fwd_min >= best_dist && bwd_min >= best_dist {
             break;
         }
-        if let Some((u, Reverse(d))) = pq_fwd.pop() {
-            if d <= dist_fwd[u as usize] {
-                let bwd_d = dist_bwd[u as usize];
-                if bwd_d != u32::MAX {
-                    let total = d.saturating_add(bwd_d);
-                    if total < best_dist {
-                        best_dist = total;
-                        meeting_node = u;
-                    }
+        if let Some((u, Reverse(d))) = pq_fwd.pop()
+            && d <= dist_fwd[u as usize]
+        {
+            let bwd_d = dist_bwd[u as usize];
+            if bwd_d != u32::MAX {
+                let total = d.saturating_add(bwd_d);
+                if total < best_dist {
+                    best_dist = total;
+                    meeting_node = u;
                 }
-                let start = up_adj_flat.offsets[u as usize] as usize;
-                let end = up_adj_flat.offsets[u as usize + 1] as usize;
-                for slot in start..end {
-                    let v = up_adj_flat.targets[slot];
-                    let w = up_adj_flat.weights[slot];
-                    let new_dist = d.saturating_add(w);
-                    if new_dist < dist_fwd[v as usize] {
-                        dist_fwd[v as usize] = new_dist;
-                        parent_fwd[v as usize] = (u, w);
-                        pq_fwd.push(v, Reverse(new_dist));
-                        let bwd_v = dist_bwd[v as usize];
-                        if bwd_v != u32::MAX {
-                            let total = new_dist.saturating_add(bwd_v);
-                            if total < best_dist {
-                                best_dist = total;
-                                meeting_node = v;
-                            }
+            }
+            let start = up_adj_flat.offsets[u as usize] as usize;
+            let end = up_adj_flat.offsets[u as usize + 1] as usize;
+            for slot in start..end {
+                let v = up_adj_flat.targets[slot];
+                let w = up_adj_flat.weights[slot];
+                let new_dist = d.saturating_add(w);
+                if new_dist < dist_fwd[v as usize] {
+                    dist_fwd[v as usize] = new_dist;
+                    parent_fwd[v as usize] = (u, w);
+                    pq_fwd.push(v, Reverse(new_dist));
+                    let bwd_v = dist_bwd[v as usize];
+                    if bwd_v != u32::MAX {
+                        let total = new_dist.saturating_add(bwd_v);
+                        if total < best_dist {
+                            best_dist = total;
+                            meeting_node = v;
                         }
                     }
                 }
             }
         }
-        if let Some((u, Reverse(d))) = pq_bwd.pop() {
-            if d <= dist_bwd[u as usize] {
-                let fwd_d = dist_fwd[u as usize];
-                if fwd_d != u32::MAX {
-                    let total = d.saturating_add(fwd_d);
-                    if total < best_dist {
-                        best_dist = total;
-                        meeting_node = u;
-                    }
+        if let Some((u, Reverse(d))) = pq_bwd.pop()
+            && d <= dist_bwd[u as usize]
+        {
+            let fwd_d = dist_fwd[u as usize];
+            if fwd_d != u32::MAX {
+                let total = d.saturating_add(fwd_d);
+                if total < best_dist {
+                    best_dist = total;
+                    meeting_node = u;
                 }
-                let start = down_rev_flat.offsets[u as usize] as usize;
-                let end = down_rev_flat.offsets[u as usize + 1] as usize;
-                for slot in start..end {
-                    let x = down_rev_flat.sources[slot];
-                    let w = down_rev_flat.weights[slot];
-                    let new_dist = d.saturating_add(w);
-                    if new_dist < dist_bwd[x as usize] {
-                        dist_bwd[x as usize] = new_dist;
-                        parent_bwd[x as usize] = (u, w);
-                        pq_bwd.push(x, Reverse(new_dist));
-                        let fwd_x = dist_fwd[x as usize];
-                        if fwd_x != u32::MAX {
-                            let total = new_dist.saturating_add(fwd_x);
-                            if total < best_dist {
-                                best_dist = total;
-                                meeting_node = x;
-                            }
+            }
+            let start = down_rev_flat.offsets[u as usize] as usize;
+            let end = down_rev_flat.offsets[u as usize + 1] as usize;
+            for slot in start..end {
+                let x = down_rev_flat.sources[slot];
+                let w = down_rev_flat.weights[slot];
+                let new_dist = d.saturating_add(w);
+                if new_dist < dist_bwd[x as usize] {
+                    dist_bwd[x as usize] = new_dist;
+                    parent_bwd[x as usize] = (u, w);
+                    pq_bwd.push(x, Reverse(new_dist));
+                    let fwd_x = dist_fwd[x as usize];
+                    if fwd_x != u32::MAX {
+                        let total = new_dist.saturating_add(fwd_x);
+                        if total < best_dist {
+                            best_dist = total;
+                            meeting_node = x;
                         }
                     }
                 }
@@ -1860,7 +1887,13 @@ fn compute_tie_stats(
                     let direct_w = if y > x {
                         find_edge_weight(x, y, &topo.up_offsets, &topo.up_targets, &weights.up)
                     } else {
-                        find_edge_weight(x, y, &topo.down_offsets, &topo.down_targets, &weights.down)
+                        find_edge_weight(
+                            x,
+                            y,
+                            &topo.down_offsets,
+                            &topo.down_targets,
+                            &weights.down,
+                        )
                     };
                     if direct_w == u32::MAX {
                         // No closing edge — not a triangle.
@@ -1881,7 +1914,10 @@ fn compute_tie_stats(
             }
             (local_total, local_ties_cs, local_ties_s)
         })
-        .reduce(|| (0u64, 0u64, 0u64), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2));
+        .reduce(
+            || (0u64, 0u64, 0u64),
+            |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2),
+        );
 
     let rate_cs = if n_total > 0 {
         n_ties_cs as f64 / n_total as f64
@@ -1908,13 +1944,7 @@ fn compute_tie_stats(
 /// the edge doesn't exist. The targets slice is sorted ascending
 /// per CCH invariants, so we use binary search.
 #[inline]
-fn find_edge_weight(
-    u: usize,
-    v: usize,
-    offsets: &[u64],
-    targets: &[u32],
-    weights: &[u32],
-) -> u32 {
+fn find_edge_weight(u: usize, v: usize, offsets: &[u64], targets: &[u32], weights: &[u32]) -> u32 {
     let start = offsets[u] as usize;
     let end = offsets[u + 1] as usize;
     if start >= end {
@@ -2028,9 +2058,9 @@ fn compute_block_size_stats(weights: &[u32], block_size: usize) -> BlockSizeStat
 /// `bits_needed(range)` = ceil(log2(range + 1)).
 ///
 /// Special cases:
-///   * range == 0      → 0 bits (a constant block can be encoded as the
-///                       min value alone, no per-edge bits needed).
-///   * range == 1      → 1 bit.
+///   * range == 0 → 0 bits (a constant block can be encoded as the min
+///     value alone, no per-edge bits needed).
+///   * range == 1 → 1 bit.
 ///   * range == u32::MAX → 32 bits.
 ///
 /// `range` is passed as u64 because `(max - min) + 1` overflows u32
@@ -2081,7 +2111,16 @@ mod tests {
 
     #[test]
     fn buckets_cs_count_each_threshold() {
-        let weights = vec![0u32, 100, 65_534, 65_535, 65_536, 16_777_214, 16_777_215, u32::MAX];
+        let weights = vec![
+            0u32,
+            100,
+            65_534,
+            65_535,
+            65_536,
+            16_777_214,
+            16_777_215,
+            u32::MAX,
+        ];
         let b = compute_buckets(&weights, 1);
         // ≤ 65_534: 0, 100, 65_534 → 3
         assert_eq!(b.le_65534, 3);
