@@ -207,6 +207,11 @@ pub struct RegionsState {
     /// (default), cross-region queries continue to return 501 via the
     /// existing [`Self::dispatch_p2p_id`] code path.
     pub overlay: Option<Arc<super::overlay::OverlayCluster>>,
+    /// #292 Phase 3: server-level boot time. Used by /health to
+    /// report uptime without forcing a lazy region load. (The
+    /// per-`ServerState` `started_at` is per-region-load, not server
+    /// start.)
+    pub server_started_at: std::time::Instant,
 }
 
 impl RegionsState {
@@ -230,6 +235,7 @@ impl RegionsState {
             regions: vec![entry],
             by_id,
             overlay: None,
+            server_started_at: std::time::Instant::now(),
         }
     }
 
@@ -279,6 +285,7 @@ impl RegionsState {
             regions: entries,
             by_id,
             overlay: None,
+            server_started_at: std::time::Instant::now(),
         })
     }
 
@@ -460,6 +467,7 @@ impl RegionsState {
             regions,
             by_id,
             overlay: None,
+            server_started_at: std::time::Instant::now(),
         })
     }
 
