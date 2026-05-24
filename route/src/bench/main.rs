@@ -21,7 +21,7 @@ use butterfly_route::formats::CchWeightsFile;
 use butterfly_route::matrix::batched_phast::{BatchedPhastEngine, BatchedPhastStats, K_LANES};
 use butterfly_route::matrix::bucket_ch::{BucketM2MEngine, DownReverseAdjFlat, UpAdjFlat};
 use butterfly_route::range::batched_isochrone::{
-    ADAPTIVE_THRESHOLD_DS, AdaptiveIsochroneEngine, BatchedIsochroneEngine,
+    ADAPTIVE_THRESHOLD_S, AdaptiveIsochroneEngine, BatchedIsochroneEngine,
 };
 use butterfly_route::range::frontier::FrontierExtractor;
 use butterfly_route::range::phast::{PhastEngine, PhastStats};
@@ -3517,23 +3517,24 @@ fn run_e2e_isochrone_bench(
     n_origins: usize,
     seed: u64,
 ) -> anyhow::Result<()> {
-    let threshold_ds = threshold_ms / 100;
+    // ms → s (post-#297).
+    let threshold_s = threshold_ms / 1000;
 
     println!("═══════════════════════════════════════════════════════════════");
     println!("  END-TO-END ISOCHRONE BENCHMARK");
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}", mode);
     println!(
-        "  Threshold: {} ms = {} ds ({:.1} min)",
+        "  Threshold: {} ms = {} s ({:.1} min)",
         threshold_ms,
-        threshold_ds,
+        threshold_s,
         threshold_ms as f64 / 60000.0
     );
     println!("  Origins: {}", n_origins);
     println!(
-        "  Adaptive crossover: {} ds ({:.1} min)",
-        ADAPTIVE_THRESHOLD_DS,
-        ADAPTIVE_THRESHOLD_DS as f64 / 600.0
+        "  Adaptive crossover: {} s ({:.1} min)",
+        ADAPTIVE_THRESHOLD_S,
+        ADAPTIVE_THRESHOLD_S as f64 / 60.0
     );
     println!();
 
@@ -3638,7 +3639,7 @@ fn run_e2e_isochrone_bench(
 
         // Phase 1: Compute (PHAST + segment extraction + contour)
         let compute_start = Instant::now();
-        let contour_results = engine.query_many(&[origin], threshold_ds)?;
+        let contour_results = engine.query_many(&[origin], threshold_s)?;
         let compute_time = compute_start.elapsed();
 
         if contour_results.is_empty() || contour_results[0].outer_ring.is_empty() {
@@ -3666,7 +3667,7 @@ fn run_e2e_isochrone_bench(
         // Create record for serialization test
         records.push(IsochroneRecord {
             origin_id: origin,
-            threshold_ds,
+            threshold_s,
             wkb,
             n_vertices: contour.outer_ring.len() as u32,
             elapsed_us: total_time.as_micros() as u64,
@@ -4020,7 +4021,7 @@ fn run_bulk_pipeline_bench(
     use std::fs::File;
     use std::io::{BufWriter, Write};
 
-    let threshold_ds = threshold_ms / 100;
+    let threshold_s = threshold_ms / 1000;
 
     println!("═══════════════════════════════════════════════════════════════");
     println!("  BULK ISOCHRONE PIPELINE");
@@ -4111,7 +4112,7 @@ fn run_bulk_pipeline_bench(
     let mut total_wkb = 0usize;
 
     for (i, &origin) in origins.iter().enumerate() {
-        let results = engine.query_many(&[origin], threshold_ds)?;
+        let results = engine.query_many(&[origin], threshold_s)?;
         if !results.is_empty() && !results[0].outer_ring.is_empty() {
             let c = &results[0];
             valid += 1;
@@ -4360,14 +4361,14 @@ fn run_detail_compare(data_dir: &Path, mode: &str, threshold_min: u32) -> anyhow
 
     // Use middle node as test origin
     let origin = phast.n_nodes() as u32 / 2;
-    let threshold_ds = threshold_min * 600; // Convert min to deciseconds
+    let threshold_s = threshold_min * 60; // Convert min to seconds (post-#297)
 
     // Run PHAST query once
     println!("[2/3] Running PHAST query...");
-    let result = phast.query_bounded(origin, threshold_ds);
+    let result = phast.query_bounded(origin, threshold_s);
 
     // Extract segments
-    let all_segments = extractor.extract_reachable_segments(&result.dist, threshold_ds * 100);
+    let all_segments = extractor.extract_reachable_segments(&result.dist, threshold_s);
     println!("  ✓ Reachable segments: {}", all_segments.len());
     println!();
 

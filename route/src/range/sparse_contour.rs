@@ -500,20 +500,19 @@ impl SparseContourConfig {
         }
     }
 
-    /// Select config by mode name and threshold (in deciseconds).
+    /// Select config by mode name and threshold (in seconds, post-#297).
     ///
     /// For large thresholds the reachable set is enormous, so we use coarser
     /// cells and stronger simplification to keep the contour pipeline fast
     /// without visible quality loss (the polygon covers hundreds of km).
     ///
-    /// Threshold tiers (after conversion to seconds):
-    /// -  <=600s  (10 min): base cell size (finest detail)
-    /// -  <=1800s (30 min): 2x base cell size
-    /// -  <=3600s (60 min): 4x base cell size
-    /// -  >3600s           : 6.67x base cell size
-    pub fn for_mode_name_with_threshold(name: &str, threshold_ds: u32) -> Self {
+    /// Threshold tiers:
+    /// -  <=600 s  (10 min): base cell size (finest detail)
+    /// -  <=1800 s (30 min): 2x base cell size
+    /// -  <=3600 s (60 min): 4x base cell size
+    /// -  >3600 s         : 6.67x base cell size
+    pub fn for_mode_name_with_threshold(name: &str, threshold_s: u32) -> Self {
         let base = Self::for_mode_name(name);
-        let threshold_s = threshold_ds / 10;
 
         let (cell_mult, simplify_mult) = if threshold_s <= 600 {
             (1.0, 1.0)
@@ -1099,9 +1098,9 @@ mod tests {
 
     #[test]
     fn test_adaptive_cell_size_small_threshold() {
-        // 300s = 5 min → 3000 ds → should use base config (1x multiplier)
+        // 300 s = 5 min → should use base config (1x multiplier).
         let base = SparseContourConfig::for_mode_name("car");
-        let adaptive = SparseContourConfig::for_mode_name_with_threshold("car", 3000);
+        let adaptive = SparseContourConfig::for_mode_name_with_threshold("car", 300);
         assert!(
             (adaptive.cell_size_m - base.cell_size_m).abs() < 0.01,
             "small threshold should use base cell size: got {} expected {}",
@@ -1116,9 +1115,9 @@ mod tests {
 
     #[test]
     fn test_adaptive_cell_size_medium_threshold() {
-        // 1800s = 30 min → 18000 ds → should use 2x multiplier
+        // 1800 s = 30 min → 2x multiplier.
         let base = SparseContourConfig::for_mode_name("car");
-        let adaptive = SparseContourConfig::for_mode_name_with_threshold("car", 18000);
+        let adaptive = SparseContourConfig::for_mode_name_with_threshold("car", 1800);
         assert!(
             (adaptive.cell_size_m - base.cell_size_m * 2.0).abs() < 0.01,
             "30-min threshold should use 2x cell size: got {} expected {}",
@@ -1133,9 +1132,9 @@ mod tests {
 
     #[test]
     fn test_adaptive_cell_size_large_threshold() {
-        // 3600s = 60 min → 36000 ds → should use 4x multiplier
+        // 3600 s = 60 min → 4x multiplier.
         let base = SparseContourConfig::for_mode_name("car");
-        let adaptive = SparseContourConfig::for_mode_name_with_threshold("car", 36000);
+        let adaptive = SparseContourConfig::for_mode_name_with_threshold("car", 3600);
         assert!(
             (adaptive.cell_size_m - base.cell_size_m * 4.0).abs() < 0.01,
             "60-min threshold should use 4x cell size: got {} expected {}",
@@ -1150,9 +1149,9 @@ mod tests {
 
     #[test]
     fn test_adaptive_cell_size_huge_threshold() {
-        // 7200s = 120 min → 72000 ds → should use 6.67x multiplier
+        // 7200 s = 120 min → 6.67x multiplier.
         let base = SparseContourConfig::for_mode_name("car");
-        let adaptive = SparseContourConfig::for_mode_name_with_threshold("car", 72000);
+        let adaptive = SparseContourConfig::for_mode_name_with_threshold("car", 7200);
         assert!(
             adaptive.cell_size_m > base.cell_size_m * 6.0,
             "120-min threshold should use >6x cell size: got {} base {}",
@@ -1169,15 +1168,16 @@ mod tests {
 
     #[test]
     fn test_simplification_scales_with_threshold() {
-        // Verify that simplification tolerance monotonically increases with threshold
-        let thresholds_ds = [1000, 6000, 12000, 36000, 72000];
+        // Verify that simplification tolerance monotonically increases with threshold.
+        // Values now in seconds (post-#297).
+        let thresholds_s = [100u32, 600, 1200, 3600, 7200];
         let mut prev_tolerance = 0.0f64;
-        for &t in &thresholds_ds {
+        for &t in &thresholds_s {
             let config = SparseContourConfig::for_mode_name_with_threshold("car", t);
             assert!(
                 config.simplify_tolerance_m >= prev_tolerance,
                 "simplify_tolerance_m should be monotonically increasing: \
-                 at threshold_ds={} got {}, prev was {}",
+                 at threshold_s={} got {}, prev was {}",
                 t,
                 config.simplify_tolerance_m,
                 prev_tolerance
@@ -1188,40 +1188,40 @@ mod tests {
 
     #[test]
     fn test_adaptive_preserves_morphology_rounds() {
-        // Adaptive scaling should not change dilation/erosion rounds
+        // Adaptive scaling should not change dilation/erosion rounds.
         let base = SparseContourConfig::for_mode_name("car");
-        for &t_ds in &[3000u32, 18000, 36000, 72000] {
-            let adaptive = SparseContourConfig::for_mode_name_with_threshold("car", t_ds);
+        for &t_s in &[300u32, 1800, 3600, 7200] {
+            let adaptive = SparseContourConfig::for_mode_name_with_threshold("car", t_s);
             assert_eq!(
                 adaptive.dilation_rounds, base.dilation_rounds,
-                "dilation_rounds should be preserved at threshold_ds={}",
-                t_ds
+                "dilation_rounds should be preserved at threshold_s={}",
+                t_s
             );
             assert_eq!(
                 adaptive.erosion_rounds, base.erosion_rounds,
-                "erosion_rounds should be preserved at threshold_ds={}",
-                t_ds
+                "erosion_rounds should be preserved at threshold_s={}",
+                t_s
             );
         }
     }
 
     #[test]
     fn test_adaptive_works_for_all_modes() {
-        // Should work for car, bike, foot, and unknown modes without panicking
+        // Should work for car, bike, foot, and unknown modes without panicking.
         for mode in &["car", "bike", "foot", "truck", "bus"] {
-            for &t_ds in &[1000u32, 18000, 36000, 72000] {
-                let config = SparseContourConfig::for_mode_name_with_threshold(mode, t_ds);
+            for &t_s in &[100u32, 1800, 3600, 7200] {
+                let config = SparseContourConfig::for_mode_name_with_threshold(mode, t_s);
                 assert!(
                     config.cell_size_m > 0.0,
-                    "cell_size_m must be positive for mode={} threshold_ds={}",
+                    "cell_size_m must be positive for mode={} threshold_s={}",
                     mode,
-                    t_ds
+                    t_s
                 );
                 assert!(
                     config.simplify_tolerance_m >= 0.0,
-                    "simplify_tolerance_m must be non-negative for mode={} threshold_ds={}",
+                    "simplify_tolerance_m must be non-negative for mode={} threshold_s={}",
                     mode,
-                    t_ds
+                    t_s
                 );
             }
         }
@@ -1229,23 +1229,23 @@ mod tests {
 
     #[test]
     fn test_adaptive_boundary_at_exactly_600s() {
-        // 600s = 10 min → 6000 ds → should be the last tier using 1x multiplier
+        // 600 s = 10 min → last tier using 1x multiplier.
         let base = SparseContourConfig::for_mode_name("car");
-        let adaptive = SparseContourConfig::for_mode_name_with_threshold("car", 6000);
+        let adaptive = SparseContourConfig::for_mode_name_with_threshold("car", 600);
         assert!(
             (adaptive.cell_size_m - base.cell_size_m).abs() < 0.01,
-            "exactly 600s should use base cell size"
+            "exactly 600 s should use base cell size"
         );
     }
 
     #[test]
     fn test_adaptive_boundary_at_601s() {
-        // 601s → 6010 ds → should use 2x multiplier (> 600s tier)
+        // 601 s → 2x multiplier (> 600 s tier).
         let base = SparseContourConfig::for_mode_name("car");
-        let adaptive = SparseContourConfig::for_mode_name_with_threshold("car", 6010);
+        let adaptive = SparseContourConfig::for_mode_name_with_threshold("car", 601);
         assert!(
             (adaptive.cell_size_m - base.cell_size_m * 2.0).abs() < 0.01,
-            "601s should use 2x cell size: got {} expected {}",
+            "601 s should use 2x cell size: got {} expected {}",
             adaptive.cell_size_m,
             base.cell_size_m * 2.0
         );
