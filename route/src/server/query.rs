@@ -389,7 +389,32 @@ impl<'a> CchQuery<'a> {
                     if d > state.get_fwd(u as usize) {
                         // Stale entry — skip
                     } else {
-                        fwd_settled += 1;
+                        // #272 stall-on-demand (forward): if a DOWN predecessor
+                        // x of u has been reached by forward search with
+                        // dist_fwd[x] + w(x→u) < d, then u is on a non-shortest
+                        // path and we skip its relax. The opposite-direction
+                        // check uses for_down_rev_edges; CH literature reports
+                        // 20–40 % pop reduction.
+                        let mut stalled = false;
+                        self.for_down_rev_edges(u, |x, w, _| {
+                            if stalled {
+                                return;
+                            }
+                            if state.gen_fwd[x as usize] == state.current_gen {
+                                let dx = state.dist_fwd[x as usize];
+                                if dx != u32::MAX && dx.saturating_add(w) < d {
+                                    stalled = true;
+                                }
+                            }
+                        });
+                        if stalled {
+                            // Skip the rest of the forward branch this
+                            // iteration; backward branch below still runs.
+                            // Use a sentinel by overwriting d so the early
+                            // bound logic stays correct — actually we just
+                            // skip via an if-block.
+                        } else {
+                            fwd_settled += 1;
 
                         // Check meeting point when settling a node
                         let bwd_d = state.get_bwd(u as usize);
@@ -438,6 +463,7 @@ impl<'a> CchQuery<'a> {
                                 }
                             }
                         });
+                        } // close #272 stall else
                     }
                 }
 
@@ -446,6 +472,24 @@ impl<'a> CchQuery<'a> {
                     if d > state.get_bwd(u as usize) {
                         // Stale — skip
                     } else {
+                        // #272 stall-on-demand (backward): if an UP successor v
+                        // of u has been reached by backward search with
+                        // dist_bwd[v] + w(u→v) < d, then u is on a non-shortest
+                        // path. Backward search settles via for_down_rev_edges;
+                        // the opposite-direction check uses for_up_edges.
+                        let mut stalled = false;
+                        self.for_up_edges(u, |v, w, _| {
+                            if stalled {
+                                return;
+                            }
+                            if state.gen_bwd[v as usize] == state.current_gen {
+                                let dv = state.dist_bwd[v as usize];
+                                if dv != u32::MAX && dv.saturating_add(w) < d {
+                                    stalled = true;
+                                }
+                            }
+                        });
+                        if !stalled {
                         bwd_settled += 1;
 
                         // Check meeting point
@@ -495,6 +539,7 @@ impl<'a> CchQuery<'a> {
                                 }
                             }
                         });
+                        } // close #272 backward stall else
                     }
                 }
             }
