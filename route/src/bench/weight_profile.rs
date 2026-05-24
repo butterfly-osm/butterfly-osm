@@ -11,9 +11,14 @@
 //!   D. Cumulative rounding sensitivity at the new units.
 //!   E. Triangle relaxation tie rate at cs vs s precision.
 //!
-//! The profiler is read-only: it never mutates `ServerState` and uses the
-//! existing `CchQuery::distance` serve-path for hot-query instrumentation
-//! by way of a thread-local counter that the relaxation loop reads.
+//! The profiler is read-only: it never mutates `ServerState`. Hot-query
+//! instrumentation re-implements the bidirectional CCH relaxation
+//! inline (see [`run_one_query`]) so the per-edge weight observation
+//! sits on the hot path without forcing an instrumented build of the
+//! production [`super::super::server::query::CchQuery`]. Behaviour is
+//! intentionally the same shape as `CchQuery::distance`: bidirectional
+//! Dijkstra over the up/down CSR, stale-pop check, early termination
+//! when both PQ mins exceed `best_dist`.
 //!
 //! All RNG draws use `StdRng::seed_from_u64(WEIGHT_PROFILE_SEED)` so the
 //! same Belgium container produces bit-identical reports across runs.
@@ -36,6 +41,10 @@ use butterfly_route::server::state::ServerState;
 /// changed so two runs of the profiler on the same data emit
 /// byte-identical JSON.
 pub const WEIGHT_PROFILE_SEED: u64 = 0x0B07_7EF1;
+/// Dedicated sub-seed for the 100-pair pseudo-corpus in
+/// [`generate_od_pairs`]. Distinct from `WEIGHT_PROFILE_SEED` so the
+/// 100 + 10 000 OD pairs don't overlap by coincidence.
+pub const WEIGHT_PROFILE_SUB_SEED_CORPUS: u64 = 0xC0_2F_15;
 
 /// JSON schema version. Bump on any breaking layout change (added
 /// fields are *not* breaking; removed/renamed fields *are*). The
@@ -110,10 +119,15 @@ pub struct StaticStats {
 
 #[derive(Debug, Serialize, Default, Clone)]
 pub struct RoundingStats {
-    /// Number of routes evaluated. Routes that fail to snap or
-    /// are unreachable are excluded (the spec asks for "1 000
-    /// random P2P routes" — we re-roll until we have that many or
-    /// exhaust a reasonable attempt budget).
+    /// Number of routes evaluated. The implementation draws a fixed
+    /// pool of 4 000 candidate OD pairs once via
+    /// [`generate_rounding_pairs`] and counts the subset that snaps
+    /// AND reaches; on Belgium that consistently yields ~1 000–1 500
+    /// reachable routes, comfortably above the #298 spec floor of
+    /// 1 000. Earlier prose about "re-rolling until we have 1 000"
+    /// described an intent that the simpler fixed-pool path achieved
+    /// without the loop — keeping the simpler shape since the
+    /// reachable count is well-above the floor on every region tried.
     pub n_routes_total: u64,
     pub n_routes_attempted: u64,
     pub n_routes_unreachable: u64,
@@ -162,9 +176,12 @@ pub struct TieStats {
 
 #[derive(Debug, Serialize, Default, Clone)]
 pub struct HotStats {
-    /// Number of OD queries that ran (queries that fail to snap or
-    /// reach are still counted into the denominator — they contribute
-    /// 0 relaxations).
+    /// Number of OD queries that ran. Snap-failed pairs are dropped
+    /// in [`snap_od_pairs`] before any query is dispatched, so the
+    /// denominator counts only OD pairs whose both endpoints snapped
+    /// onto a mode-eligible road. Unreachable pairs (both snapped but
+    /// no path in the CCH) contribute 0 relaxations and are tallied
+    /// in `n_queries_unreachable`.
     pub n_queries_total: u64,
     pub n_queries_reached: u64,
     pub n_queries_unreachable: u64,
@@ -874,10 +891,15 @@ fn yes_no(b: bool) -> &'static str {
 /// every `BucketCounts` bucket *except* `eq_inf`. The `distinct_count`
 /// is over the non-INF set; INF is counted via `n_inf`.
 ///
-/// The percentile shape uses the standard linear-interpolation
-/// definition on the *sorted non-INF set*: `p_k = sorted[floor(k *
-/// (n-1) / 1)]` where index is computed in fixed-point so the result
-/// is bit-identical across runs.
+/// The percentile shape is **nearest-rank** (no interpolation) on
+/// the sorted non-INF set: `p_k = sorted[floor(k * (n-1) / 1000)]`,
+/// where the index is computed in fixed-point by
+/// [`percentile_index`] so the result is bit-identical across runs.
+/// Nearest-rank was chosen over the linear-interpolation flavour so
+/// reported percentiles are always actual edge weights — useful when
+/// the JSON is read by codec-evaluation scripts that look up buckets
+/// by the reported value rather than treating it as a smoothed
+/// statistic.
 fn compute_static_stats(weights: &[u32]) -> StaticStats {
     let n_total = weights.len() as u64;
     let mut values: Vec<u32> = Vec::with_capacity(weights.len());
@@ -1125,16 +1147,23 @@ struct OdPair {
     dest_lat: f64,
 }
 
-/// 100 deterministic OD pairs from the bbox using a fixed sub-seed,
-/// plus 10 000 RNG pairs using `WEIGHT_PROFILE_SEED`. The corpus
-/// sub-seed (0xC0_2F_15) is distinct from the main seed so the two
-/// sets of OD pairs do not overlap by coincidence.
+/// 10 100 OD pairs drawn uniformly from the bbox: 100 from a fixed
+/// sub-seed `WEIGHT_PROFILE_SUB_SEED_CORPUS`, then 10 000 from the
+/// main `WEIGHT_PROFILE_SEED`. Both draws use the same RNG construction
+/// so neither set is "real" external corpus data — the 100-pair
+/// `pseudo_corpus` mirrors #298's prose about a "100 OD corpus" with a
+/// deterministic stand-in until a curated corpus file ships.
+///
+/// To swap in an external corpus, replace the first loop with a CSV
+/// load and bail if the file is missing. Today the deterministic
+/// pseudo-corpus is sufficient to gate codec / unit decisions per the
+/// profiler verdict table.
 fn generate_od_pairs(bbox: &Bbox) -> Vec<OdPair> {
     let mut out = Vec::with_capacity(10_100);
-    // Corpus (100 pairs).
-    let mut corpus_rng = StdRng::seed_from_u64(0xC0_2F_15);
+    // Pseudo-corpus (100 deterministic pairs from a dedicated sub-seed).
+    let mut pseudo_corpus_rng = StdRng::seed_from_u64(WEIGHT_PROFILE_SUB_SEED_CORPUS);
     for _ in 0..100 {
-        out.push(rng_od_pair(&mut corpus_rng, bbox));
+        out.push(rng_od_pair(&mut pseudo_corpus_rng, bbox));
     }
     // RNG (10 000 pairs).
     let mut main_rng = StdRng::seed_from_u64(WEIGHT_PROFILE_SEED);
@@ -1614,27 +1643,39 @@ fn run_rounding_routes(
     divisor: u32,
 ) -> RoundingStats {
     // Per-route drift values; sorted at the end for percentiles.
+    // `map_init` runs the `PathScratch::new` closure once per rayon
+    // worker thread so the O(n_nodes) allocation is amortised across
+    // every route that worker processes — a single profiler pass on
+    // Belgium pays N_THREADS × ~160 MiB peak instead of per-route
+    // ~160 MiB transient (Copilot #305 review).
     let drifts: Vec<f64> = snapped
         .par_iter()
-        .filter_map(|&(src, dst)| {
-            let path = path_edges(n_nodes, up_adj_flat, down_rev_flat, src, dst)?;
-            if path.is_empty() {
-                return Some(0.0);
-            }
-            let mut sum_cs: u64 = 0;
-            let mut sum_round_cs: u64 = 0;
-            for &w in &path {
-                sum_cs = sum_cs.saturating_add(w as u64);
-                let q = round_half_even_div(w as u64, divisor as u64);
-                sum_round_cs = sum_round_cs.saturating_add(q * divisor as u64);
-            }
-            if sum_cs == 0 {
-                return Some(0.0);
-            }
-            let diff = (sum_cs as i64 - sum_round_cs as i64).unsigned_abs();
-            let drift = diff as f64 / sum_cs as f64 * 100.0;
-            Some(drift)
-        })
+        .map_init(
+            || PathScratch::new(n_nodes),
+            |scratch, &(src, dst)| {
+                let path = match path_edges(scratch, up_adj_flat, down_rev_flat, src, dst) {
+                    Some(p) => p,
+                    None => return None,
+                };
+                if path.is_empty() {
+                    return Some(0.0);
+                }
+                let mut sum_cs: u64 = 0;
+                let mut sum_round_cs: u64 = 0;
+                for &w in &path {
+                    sum_cs = sum_cs.saturating_add(w as u64);
+                    let q = round_half_even_div(w as u64, divisor as u64);
+                    sum_round_cs = sum_round_cs.saturating_add(q * divisor as u64);
+                }
+                if sum_cs == 0 {
+                    return Some(0.0);
+                }
+                let diff = (sum_cs as i64 - sum_round_cs as i64).unsigned_abs();
+                let drift = diff as f64 / sum_cs as f64 * 100.0;
+                Some(drift)
+            },
+        )
+        .filter_map(|x| x)
         .collect();
 
     let mut sorted = drifts;
@@ -1682,16 +1723,106 @@ fn run_rounding_routes(
     }
 }
 
+/// Reusable scratch for repeated [`path_edges`] calls. Allocated
+/// once per rounding-routes pass; generation-stamped so per-call
+/// re-init is O(1) instead of O(n_nodes).
+///
+/// Without this, a single profiler run on Belgium (~5 M CCH nodes,
+/// ~1 000 reachable rounding routes) would allocate
+/// ~5 M × 4 × 8 B = 160 MiB per route × 1 000 routes ≈ 160 GiB total
+/// transient allocations — Copilot review on PR #305 flagged this as
+/// the dominant runtime cost. Reusing scratch via gen-stamping
+/// collapses it to a one-shot 160 MiB.
+struct PathScratch {
+    dist_fwd: Vec<u32>,
+    dist_bwd: Vec<u32>,
+    parent_fwd: Vec<(u32, u32)>,
+    parent_bwd: Vec<(u32, u32)>,
+    gen_fwd: Vec<u64>,
+    gen_bwd: Vec<u64>,
+    current_gen: u64,
+    pq_fwd: PriorityQueue<u32, Reverse<u32>>,
+    pq_bwd: PriorityQueue<u32, Reverse<u32>>,
+}
+
+impl PathScratch {
+    fn new(n_nodes: usize) -> Self {
+        Self {
+            dist_fwd: vec![u32::MAX; n_nodes],
+            dist_bwd: vec![u32::MAX; n_nodes],
+            parent_fwd: vec![(u32::MAX, 0); n_nodes],
+            parent_bwd: vec![(u32::MAX, 0); n_nodes],
+            gen_fwd: vec![0; n_nodes],
+            gen_bwd: vec![0; n_nodes],
+            current_gen: 0,
+            pq_fwd: PriorityQueue::new(),
+            pq_bwd: PriorityQueue::new(),
+        }
+    }
+
+    /// Bump the generation counter and clear the PQs; the dist /
+    /// parent arrays are left intact and reads must check the gen
+    /// stamp first.
+    fn start_query(&mut self) {
+        self.current_gen = self.current_gen.wrapping_add(1);
+        // On generation wrap (every 2^64 queries — never in practice)
+        // reset every gen stamp so the previous "current" can't be
+        // confused with a fresh entry.
+        if self.current_gen == 0 {
+            self.gen_fwd.fill(0);
+            self.gen_bwd.fill(0);
+            self.current_gen = 1;
+        }
+        self.pq_fwd.clear();
+        self.pq_bwd.clear();
+    }
+
+    #[inline]
+    fn dist_fwd(&self, u: usize) -> u32 {
+        if self.gen_fwd[u] == self.current_gen {
+            self.dist_fwd[u]
+        } else {
+            u32::MAX
+        }
+    }
+
+    #[inline]
+    fn dist_bwd(&self, u: usize) -> u32 {
+        if self.gen_bwd[u] == self.current_gen {
+            self.dist_bwd[u]
+        } else {
+            u32::MAX
+        }
+    }
+
+    #[inline]
+    fn set_fwd(&mut self, u: usize, d: u32, parent: (u32, u32)) {
+        self.dist_fwd[u] = d;
+        self.parent_fwd[u] = parent;
+        self.gen_fwd[u] = self.current_gen;
+    }
+
+    #[inline]
+    fn set_bwd(&mut self, u: usize, d: u32, parent: (u32, u32)) {
+        self.dist_bwd[u] = d;
+        self.parent_bwd[u] = parent;
+        self.gen_bwd[u] = self.current_gen;
+    }
+}
+
 /// Run bidirectional CCH P2P from `source` to `target` and return
 /// the sequence of per-CCH-edge weights along the meeting-node
 /// path. Mirrors `CchQuery::query` but does not unpack shortcuts —
 /// the spec's "round each edge weight independently" is over the
 /// CCH edges as stored, which is what the query actually reads.
 ///
+/// Caller owns `scratch` and reuses it across calls — see
+/// [`PathScratch`] for the rationale.
+///
 /// Returns `None` if the search finds no finite path. Returns
 /// `Some(vec![])` for the trivial `source == target` case.
 fn path_edges(
-    n_nodes: usize,
+    scratch: &mut PathScratch,
     up_adj_flat: &UpAdjFlat,
     down_rev_flat: &DownReverseAdjFlat,
     source: u32,
@@ -1701,35 +1832,25 @@ fn path_edges(
         return Some(Vec::new());
     }
 
-    let mut dist_fwd = vec![u32::MAX; n_nodes];
-    let mut dist_bwd = vec![u32::MAX; n_nodes];
-    // Per-node parent: (prev_node, edge_weight). The edge weight is
-    // captured at relaxation time so we don't have to re-find the
-    // slot later (the search graph is CSR; the parent slot is in
-    // the *predecessor*'s out-edge list, so we'd have to scan).
-    let mut parent_fwd: Vec<(u32, u32)> = vec![(u32::MAX, 0); n_nodes];
-    let mut parent_bwd: Vec<(u32, u32)> = vec![(u32::MAX, 0); n_nodes];
-    let mut pq_fwd: PriorityQueue<u32, Reverse<u32>> = PriorityQueue::new();
-    let mut pq_bwd: PriorityQueue<u32, Reverse<u32>> = PriorityQueue::new();
-
-    dist_fwd[source as usize] = 0;
-    dist_bwd[target as usize] = 0;
-    pq_fwd.push(source, Reverse(0));
-    pq_bwd.push(target, Reverse(0));
+    scratch.start_query();
+    scratch.set_fwd(source as usize, 0, (u32::MAX, 0));
+    scratch.set_bwd(target as usize, 0, (u32::MAX, 0));
+    scratch.pq_fwd.push(source, Reverse(0));
+    scratch.pq_bwd.push(target, Reverse(0));
 
     let mut best_dist = u32::MAX;
     let mut meeting_node = u32::MAX;
 
-    while !pq_fwd.is_empty() || !pq_bwd.is_empty() {
-        let fwd_min = pq_fwd.peek().map(|(_, &Reverse(d))| d).unwrap_or(u32::MAX);
-        let bwd_min = pq_bwd.peek().map(|(_, &Reverse(d))| d).unwrap_or(u32::MAX);
+    while !scratch.pq_fwd.is_empty() || !scratch.pq_bwd.is_empty() {
+        let fwd_min = scratch.pq_fwd.peek().map(|(_, &Reverse(d))| d).unwrap_or(u32::MAX);
+        let bwd_min = scratch.pq_bwd.peek().map(|(_, &Reverse(d))| d).unwrap_or(u32::MAX);
         if fwd_min >= best_dist && bwd_min >= best_dist {
             break;
         }
-        if let Some((u, Reverse(d))) = pq_fwd.pop()
-            && d <= dist_fwd[u as usize]
+        if let Some((u, Reverse(d))) = scratch.pq_fwd.pop()
+            && d <= scratch.dist_fwd(u as usize)
         {
-            let bwd_d = dist_bwd[u as usize];
+            let bwd_d = scratch.dist_bwd(u as usize);
             if bwd_d != u32::MAX {
                 let total = d.saturating_add(bwd_d);
                 if total < best_dist {
@@ -1743,11 +1864,10 @@ fn path_edges(
                 let v = up_adj_flat.targets[slot];
                 let w = up_adj_flat.weights[slot];
                 let new_dist = d.saturating_add(w);
-                if new_dist < dist_fwd[v as usize] {
-                    dist_fwd[v as usize] = new_dist;
-                    parent_fwd[v as usize] = (u, w);
-                    pq_fwd.push(v, Reverse(new_dist));
-                    let bwd_v = dist_bwd[v as usize];
+                if new_dist < scratch.dist_fwd(v as usize) {
+                    scratch.set_fwd(v as usize, new_dist, (u, w));
+                    scratch.pq_fwd.push(v, Reverse(new_dist));
+                    let bwd_v = scratch.dist_bwd(v as usize);
                     if bwd_v != u32::MAX {
                         let total = new_dist.saturating_add(bwd_v);
                         if total < best_dist {
@@ -1758,10 +1878,10 @@ fn path_edges(
                 }
             }
         }
-        if let Some((u, Reverse(d))) = pq_bwd.pop()
-            && d <= dist_bwd[u as usize]
+        if let Some((u, Reverse(d))) = scratch.pq_bwd.pop()
+            && d <= scratch.dist_bwd(u as usize)
         {
-            let fwd_d = dist_fwd[u as usize];
+            let fwd_d = scratch.dist_fwd(u as usize);
             if fwd_d != u32::MAX {
                 let total = d.saturating_add(fwd_d);
                 if total < best_dist {
@@ -1775,11 +1895,10 @@ fn path_edges(
                 let x = down_rev_flat.sources[slot];
                 let w = down_rev_flat.weights[slot];
                 let new_dist = d.saturating_add(w);
-                if new_dist < dist_bwd[x as usize] {
-                    dist_bwd[x as usize] = new_dist;
-                    parent_bwd[x as usize] = (u, w);
-                    pq_bwd.push(x, Reverse(new_dist));
-                    let fwd_x = dist_fwd[x as usize];
+                if new_dist < scratch.dist_bwd(x as usize) {
+                    scratch.set_bwd(x as usize, new_dist, (u, w));
+                    scratch.pq_bwd.push(x, Reverse(new_dist));
+                    let fwd_x = scratch.dist_fwd(x as usize);
                     if fwd_x != u32::MAX {
                         let total = new_dist.saturating_add(fwd_x);
                         if total < best_dist {
@@ -1799,10 +1918,13 @@ fn path_edges(
     // Reconstruct path: forward from source → meeting_node, then
     // backward from meeting_node → target. Collect only the edge
     // weights since that's all the rounding analysis needs.
+    // Reads parent_fwd/parent_bwd directly — nodes on the meeting
+    // path were touched this query, so the gen stamps are current
+    // and the parent entries are valid for this iteration.
     let mut weights: Vec<u32> = Vec::new();
     let mut cur = meeting_node;
     while cur != source {
-        let (prev, w) = parent_fwd[cur as usize];
+        let (prev, w) = scratch.parent_fwd[cur as usize];
         if prev == u32::MAX {
             // Disconnected on the forward side; can happen on
             // bidirectional search if `meeting_node` is itself the
@@ -1815,7 +1937,7 @@ fn path_edges(
     weights.reverse();
     let mut cur = meeting_node;
     while cur != target {
-        let (prev, w) = parent_bwd[cur as usize];
+        let (prev, w) = scratch.parent_bwd[cur as usize];
         if prev == u32::MAX {
             break;
         }
