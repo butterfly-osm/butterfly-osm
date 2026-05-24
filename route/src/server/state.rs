@@ -879,6 +879,65 @@ impl ServerState {
             }
         }
 
+        // #279: evict TIME flats for non-default modes too.
+        //
+        // Each mode loads three time-metric flat sections
+        // (up_adj_flat.time, down_reverse_adj_flat.time,
+        // down_adj_flat.time). They are zero-copy Cow::Borrowed views
+        // and the boot-time CRC walk forces them resident. For
+        // workloads dominated by one mode (almost always car on
+        // consumer routing, truck on delivery, etc.) the non-default
+        // modes' flats sit resident for nothing.
+        //
+        // Pick the same "default" mode as the exclude-flag loader
+        // (car if present, otherwise the first discovered mode). Evict
+        // every other mode's time flats. madvise on a zero-copy view's
+        // backing pages is safe — the view stays valid; kernel
+        // demand-pages on first query of that mode.
+        //
+        // On Belgium with 4 modes (car/bike/foot/truck) this evicts
+        // ~3 × 1.6 GiB ≈ 5 GiB of flats. First bike/foot/truck query
+        // pays one cold page-in pass; the kernel keeps subsequent
+        // queries hot via its page cache.
+        let default_mode = if discovered_modes.iter().any(|m| m == "car") {
+            "car"
+        } else {
+            discovered_modes[0].as_str()
+        };
+        for mode_name in &discovered_modes {
+            if mode_name == default_mode {
+                continue;
+            }
+            for leaf in [
+                "up_adj_flat.time",
+                "down_reverse_adj_flat.time",
+                "down_adj_flat.time",
+            ] {
+                let section = format!("mode/{}/{}", mode_name, leaf);
+                if let Some(entry) = container.get(&section) {
+                    let off = entry.offset as usize;
+                    let len = entry.len as usize;
+                    if off + len > static_bytes.len() {
+                        continue;
+                    }
+                    let range = &static_bytes[off..off + len];
+                    if let Err(e) = crate::formats::mmap::madvise_dontneed(range) {
+                        tracing::warn!(
+                            section = %section,
+                            error = %e,
+                            "madvise(DONTNEED) on non-default flat failed; ignoring"
+                        );
+                    } else {
+                        tracing::info!(
+                            section = %section,
+                            bytes = len,
+                            "madvise(DONTNEED) on non-default mode time flat (#279)"
+                        );
+                    }
+                }
+            }
+        }
+
         // ---- Road names from shared/step1.ways.raw ------------------
         tracing::info!("Loading road names from container...");
         let way_names = if let Some(ways_bytes) = optional_section("shared/step1.ways.raw")? {
