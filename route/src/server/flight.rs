@@ -663,8 +663,16 @@ fn compute_route_pair(
             .snap_index
             .snap_filtered_role(dlon, dlat, mode.0, None, dst_role),
     ) {
-        let src_rank = mode_data.orig_to_rank[src_id as usize];
-        let dst_rank = mode_data.orig_to_rank[dst_id as usize];
+        // Defensive bounds-checked lookup so a corrupted snap index can
+        // never index out-of-range here (would panic + take down the
+        // request). Treat OOB as snap miss and fall through to slow path.
+        let (src_rank, dst_rank) = match (
+            mode_data.orig_to_rank.get(src_id as usize).copied(),
+            mode_data.orig_to_rank.get(dst_id as usize).copied(),
+        ) {
+            (Some(s), Some(d)) => (s, d),
+            _ => (u32::MAX, u32::MAX),
+        };
         if src_rank != u32::MAX
             && dst_rank != u32::MAX
             && let Some(result) = query.query(src_rank, dst_rank)
