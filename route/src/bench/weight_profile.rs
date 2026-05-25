@@ -335,10 +335,10 @@ pub fn run_weight_profile(data_dir: &Path, output_dir: &Path, region: Option<&st
         BTreeMap::new();
     for (i, mode_name) in state.mode_names.iter().enumerate() {
         let mode_data = &state.modes[i];
-        let t_up = compute_static_stats(&mode_data.cch_weights.up);
-        let t_dn = compute_static_stats(&mode_data.cch_weights.down);
-        let d_up = compute_static_stats(&mode_data.cch_weights_dist.up);
-        let d_dn = compute_static_stats(&mode_data.cch_weights_dist.down);
+        let t_up = compute_static_stats(&mode_data.cch_weights.up.iter().collect::<Vec<u32>>());
+        let t_dn = compute_static_stats(&mode_data.cch_weights.down.iter().collect::<Vec<u32>>());
+        let d_up = compute_static_stats(&mode_data.cch_weights_dist.up.iter().collect::<Vec<u32>>());
+        let d_dn = compute_static_stats(&mode_data.cch_weights_dist.down.iter().collect::<Vec<u32>>());
         println!(
             "  - {}: time up p99={} p99.9={} max={} inf={}; \
              dist up p99={} p99.9={} max={} inf={}",
@@ -363,10 +363,10 @@ pub fn run_weight_profile(data_dir: &Path, output_dir: &Path, region: Option<&st
         BTreeMap::new();
     for (i, mode_name) in state.mode_names.iter().enumerate() {
         let mode_data = &state.modes[i];
-        let t_up = compute_block_stats(&mode_data.cch_weights.up, BLOCK_SIZES);
-        let t_dn = compute_block_stats(&mode_data.cch_weights.down, BLOCK_SIZES);
-        let d_up = compute_block_stats(&mode_data.cch_weights_dist.up, BLOCK_SIZES);
-        let d_dn = compute_block_stats(&mode_data.cch_weights_dist.down, BLOCK_SIZES);
+        let t_up = compute_block_stats(&mode_data.cch_weights.up.iter().collect::<Vec<u32>>(), BLOCK_SIZES);
+        let t_dn = compute_block_stats(&mode_data.cch_weights.down.iter().collect::<Vec<u32>>(), BLOCK_SIZES);
+        let d_up = compute_block_stats(&mode_data.cch_weights_dist.up.iter().collect::<Vec<u32>>(), BLOCK_SIZES);
+        let d_dn = compute_block_stats(&mode_data.cch_weights_dist.down.iter().collect::<Vec<u32>>(), BLOCK_SIZES);
         let summary = |b: &BlockStats| -> String {
             let mut s = Vec::new();
             for sz in BLOCK_SIZES {
@@ -1988,7 +1988,7 @@ fn compute_tie_stats(
 
             for i_xm in down_start..down_end {
                 let x = topo.down_targets[i_xm] as usize;
-                let w_xm = weights.down[i_xm];
+                let w_xm = weights.down.get(i_xm);
                 if w_xm == u32::MAX {
                     continue;
                 }
@@ -1999,7 +1999,7 @@ fn compute_tie_stats(
                     if y == x {
                         continue;
                     }
-                    let w_my = weights.up[i_my];
+                    let w_my = weights.up.get(i_my);
                     if w_my == u32::MAX {
                         continue;
                     }
@@ -2066,14 +2066,20 @@ fn compute_tie_stats(
 /// the edge doesn't exist. The targets slice is sorted ascending
 /// per CCH invariants, so we use binary search.
 #[inline]
-fn find_edge_weight(u: usize, v: usize, offsets: &[u64], targets: &[u32], weights: &[u32]) -> u32 {
+fn find_edge_weight(
+    u: usize,
+    v: usize,
+    offsets: &[u64],
+    targets: &[u32],
+    weights: &butterfly_route::formats::WeightArray,
+) -> u32 {
     let start = offsets[u] as usize;
     let end = offsets[u + 1] as usize;
     if start >= end {
         return u32::MAX;
     }
     match targets[start..end].binary_search(&(v as u32)) {
-        Ok(idx) => weights[start + idx],
+        Ok(idx) => weights.get(start + idx),
         Err(_) => u32::MAX,
     }
 }

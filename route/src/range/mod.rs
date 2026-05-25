@@ -169,7 +169,7 @@ impl RangeEngine {
 
             for i in up_start..up_end {
                 let v = self.topo.up_targets[i];
-                let w = self.weights.up[i];
+                let w = self.weights.up.get(i);
 
                 if w == u32::MAX {
                     continue; // Skip infinite weight edges
@@ -196,7 +196,7 @@ impl RangeEngine {
 
             for i in down_start..down_end {
                 let v = self.topo.down_targets[i];
-                let w = self.weights.down[i];
+                let w = self.weights.down.get(i);
 
                 if w == u32::MAX {
                     continue; // Skip infinite weight edges
@@ -233,7 +233,7 @@ impl RangeEngine {
 
                 for i in up_start..up_end {
                     let v = self.topo.up_targets[i];
-                    let w = self.weights.up[i];
+                    let w = self.weights.up.get(i);
                     if w != u32::MAX {
                         let d_v = d_u.saturating_add(w);
                         // Check if this edge crosses the threshold
@@ -255,7 +255,7 @@ impl RangeEngine {
 
                 for i in down_start..down_end {
                     let v = self.topo.down_targets[i];
-                    let w = self.weights.down[i];
+                    let w = self.weights.down.get(i);
                     if w != u32::MAX {
                         let d_v = d_u.saturating_add(w);
                         if d_v > threshold_ms {

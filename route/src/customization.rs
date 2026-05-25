@@ -1013,53 +1013,69 @@ fn write_cch_weights(
     mode: Mode,
 ) -> Result<()> {
     use crate::formats::crc::Digest;
+    use crate::formats::WeightWidth;
 
     const MAGIC: u32 = 0x43434857; // "CCHW"
-    // v2: contents are in seconds (time) or meters (distance) — was
-    // deciseconds / millimeters in v1 (#297). The on-disk layout is
-    // unchanged (opaque u32 pass-through of step 5's unit); only the
-    // semantic meaning of the integers differs.
-    const VERSION: u16 = 2;
+    // #306 PR 2 v3: per-direction body width.
+    //   bit 0 of header byte 7 → up body is u16 (else u32)
+    //   bit 1 of header byte 7 → down body is u16 (else u32)
+    // Step 8 picks the smallest fitting width per direction. The
+    // u16::MAX sentinel in the compact variant maps back to u32::MAX
+    // (the "no edge" marker) on read.
+    const VERSION: u16 = 3;
+
+    // Decide per-direction width based on max value (excluding the
+    // u32::MAX "no edge" sentinel — that's encoded as u16::MAX on
+    // the u16 path).
+    let up_width = WeightWidth::choose(up_weights);
+    let down_width = WeightWidth::choose(down_weights);
+
+    let mut width_flags = 0u8;
+    if up_width == WeightWidth::U16 {
+        width_flags |= 0x01;
+    }
+    if down_width == WeightWidth::U16 {
+        width_flags |= 0x02;
+    }
 
     let mut writer = BufWriter::new(File::create(path)?);
     let mut crc_digest = Digest::new();
 
-    // Header (32 bytes)
+    // Header (32 bytes): magic(4) | version(2) | mode(1) | flags(1)
+    //                  | n_up(8)  | n_down(8) | reserved(8)
     let magic_bytes = MAGIC.to_le_bytes();
     let version_bytes = VERSION.to_le_bytes();
     let mode_byte = mode.0;
-    let reserved = 0u8;
     let n_up = (up_weights.len() as u64).to_le_bytes();
     let n_down = (down_weights.len() as u64).to_le_bytes();
     let padding = [0u8; 8];
 
     writer.write_all(&magic_bytes)?;
     writer.write_all(&version_bytes)?;
-    writer.write_all(&[mode_byte, reserved])?;
+    writer.write_all(&[mode_byte, width_flags])?;
     writer.write_all(&n_up)?;
     writer.write_all(&n_down)?;
     writer.write_all(&padding)?;
 
     crc_digest.update(&magic_bytes);
     crc_digest.update(&version_bytes);
-    crc_digest.update(&[mode_byte, reserved]);
+    crc_digest.update(&[mode_byte, width_flags]);
     crc_digest.update(&n_up);
     crc_digest.update(&n_down);
     crc_digest.update(&padding);
 
-    for &w in up_weights {
-        let bytes = w.to_le_bytes();
-        writer.write_all(&bytes)?;
-        crc_digest.update(&bytes);
-    }
+    // Write body at chosen width per direction. `u32::MAX` (no edge)
+    // collapses to `u16::MAX` in the compact path so the read-side
+    // sentinel mapping reconstructs `u32::MAX` losslessly.
+    // Each u16 body is padded to a 4-byte boundary so the following
+    // arrays (the other direction's body + u32 middles) stay aligned.
+    write_weights_body(&mut writer, &mut crc_digest, up_weights, up_width)?;
+    write_padding(&mut writer, &mut crc_digest, up_width, up_weights.len())?;
+    write_weights_body(&mut writer, &mut crc_digest, down_weights, down_width)?;
+    write_padding(&mut writer, &mut crc_digest, down_width, down_weights.len())?;
 
-    for &w in down_weights {
-        let bytes = w.to_le_bytes();
-        writer.write_all(&bytes)?;
-        crc_digest.update(&bytes);
-    }
-
-    // Write relaxed middle arrays (after weights, before CRC)
+    // Write relaxed middle arrays — stay at u32 (middle node ids
+    // address `n_filtered_nodes` which planet-scale exceeds 65 535).
     for &m in up_middle {
         let bytes = m.to_le_bytes();
         writer.write_all(&bytes)?;
@@ -1076,6 +1092,57 @@ fn write_cch_weights(
     writer.write_all(&crc.to_le_bytes())?;
 
     writer.flush()?;
+    Ok(())
+}
+
+/// Emit a weight body at the chosen width, updating the CRC.
+fn write_weights_body<W: std::io::Write>(
+    writer: &mut W,
+    crc_digest: &mut crate::formats::crc::Digest,
+    weights: &[u32],
+    width: crate::formats::WeightWidth,
+) -> Result<()> {
+    use crate::formats::WeightWidth;
+    match width {
+        WeightWidth::U32 => {
+            for &w in weights {
+                let bytes = w.to_le_bytes();
+                writer.write_all(&bytes)?;
+                crc_digest.update(&bytes);
+            }
+        }
+        WeightWidth::U16 => {
+            for &w in weights {
+                // u32::MAX → u16::MAX sentinel.
+                let v16: u16 = if w == u32::MAX {
+                    u16::MAX
+                } else {
+                    w as u16
+                };
+                let bytes = v16.to_le_bytes();
+                writer.write_all(&bytes)?;
+                crc_digest.update(&bytes);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Emit 0-3 zero bytes so the next array begins on a 4-byte boundary.
+/// u32 bodies are already 4-aligned; only u16 needs 2 bytes of pad
+/// when `n` is odd.
+fn write_padding<W: std::io::Write>(
+    writer: &mut W,
+    crc_digest: &mut crate::formats::crc::Digest,
+    width: crate::formats::WeightWidth,
+    n: usize,
+) -> Result<()> {
+    let pad = width.padded_body_bytes(n) - width.bytes_per_entry() * n;
+    if pad > 0 {
+        let zeros = [0u8; 4];
+        writer.write_all(&zeros[..pad])?;
+        crc_digest.update(&zeros[..pad]);
+    }
     Ok(())
 }
 

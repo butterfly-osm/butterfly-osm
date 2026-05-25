@@ -186,7 +186,7 @@ impl PhastEngine {
 
             for i in up_start..up_end {
                 let v = self.topo.up_targets[i];
-                let w = self.weights.up[i];
+                let w = self.weights.up.get(i);
 
                 if w == u32::MAX {
                     continue;
@@ -233,7 +233,7 @@ impl PhastEngine {
             for i in down_start..down_end {
                 // v is the target's rank (rank-aligned CCH)
                 let v = self.topo.down_targets[i] as usize;
-                let w = self.weights.down[i];
+                let w = self.weights.down.get(i);
 
                 if w == u32::MAX {
                     continue;
@@ -325,7 +325,7 @@ impl PhastEngine {
 
             for i in up_start..up_end {
                 let v = self.topo.up_targets[i];
-                let w = self.weights.up[i];
+                let w = self.weights.up.get(i);
 
                 if w == u32::MAX {
                     continue;
@@ -376,7 +376,7 @@ impl PhastEngine {
 
                 for i in down_start..down_end {
                     let v = self.topo.down_targets[i] as usize;
-                    let w = self.weights.down[i];
+                    let w = self.weights.down.get(i);
 
                     if w == u32::MAX {
                         continue;
@@ -418,7 +418,7 @@ impl PhastEngine {
 
                     for i in down_start..down_end {
                         let v = self.topo.down_targets[i] as usize;
-                        let w = self.weights.down[i];
+                        let w = self.weights.down.get(i);
 
                         if w == u32::MAX {
                             continue;
@@ -503,7 +503,7 @@ impl PhastEngine {
 
             for i in up_start..up_end {
                 let v = self.topo.up_targets[i];
-                let w = self.weights.up[i];
+                let w = self.weights.up.get(i);
 
                 if w == u32::MAX {
                     continue;
@@ -561,7 +561,7 @@ impl PhastEngine {
             for i in down_start..down_end {
                 // v is the target's rank (rank-aligned CCH)
                 let v = self.topo.down_targets[i] as usize;
-                let w = self.weights.down[i];
+                let w = self.weights.down.get(i);
 
                 if w == u32::MAX {
                     continue;
@@ -629,7 +629,7 @@ impl PhastEngine {
 
             for i in up_start..up_end {
                 let v = self.topo.up_targets[i];
-                let w = self.weights.up[i];
+                let w = self.weights.up.get(i);
 
                 if w == u32::MAX {
                     continue;
@@ -667,7 +667,7 @@ impl PhastEngine {
             for i in down_start..down_end {
                 // v is the target's rank (rank-aligned CCH)
                 let v = self.topo.down_targets[i] as usize;
-                let w = self.weights.down[i];
+                let w = self.weights.down.get(i);
 
                 if w == u32::MAX {
                     continue;
@@ -762,7 +762,7 @@ impl PhastEngine {
 
             for i in up_start..up_end {
                 let v = self.topo.up_targets[i];
-                let w = self.weights.up[i];
+                let w = self.weights.up.get(i);
 
                 if w == u32::MAX {
                     continue;
@@ -826,7 +826,7 @@ impl PhastEngine {
 
                 for i in down_start..down_end {
                     let v = self.topo.down_targets[i] as usize;
-                    let w = self.weights.down[i];
+                    let w = self.weights.down.get(i);
 
                     if w == u32::MAX {
                         continue;
@@ -1128,7 +1128,7 @@ impl PhastEngine {
 
             for i in up_start..up_end {
                 let v = self.topo.up_targets[i];
-                let w = self.weights.up[i];
+                let w = self.weights.up.get(i);
                 if w != u32::MAX {
                     let d_v = dist[v as usize];
                     if d_v > threshold {
@@ -1149,7 +1149,7 @@ impl PhastEngine {
 
             for i in down_start..down_end {
                 let v = self.topo.down_targets[i];
-                let w = self.weights.down[i];
+                let w = self.weights.down.get(i);
                 if w != u32::MAX {
                     let d_v = dist[v as usize];
                     if d_v > threshold {

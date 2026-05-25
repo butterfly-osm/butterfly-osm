@@ -144,13 +144,13 @@ fn check_non_negative_weights(weights: &crate::formats::CchWeights, result: &mut
     let mut near_max_up = 0usize;
     let mut near_max_down = 0usize;
 
-    for &w in weights.up.iter() {
+    for w in weights.up.iter() {
         if w >= near_max_threshold && w != u32::MAX {
             near_max_up += 1;
         }
     }
 
-    for &w in weights.down.iter() {
+    for w in weights.down.iter() {
         if w >= near_max_threshold && w != u32::MAX {
             near_max_down += 1;
         }
@@ -178,7 +178,7 @@ fn check_weight_domain(weights: &crate::formats::CchWeights, result: &mut Invari
     let mut excessive_up = 0usize;
     let mut excessive_down = 0usize;
 
-    for &w in weights.up.iter() {
+    for w in weights.up.iter() {
         if w == u32::MAX {
             inf_up += 1;
         } else {
@@ -192,7 +192,7 @@ fn check_weight_domain(weights: &crate::formats::CchWeights, result: &mut Invari
         }
     }
 
-    for &w in weights.down.iter() {
+    for w in weights.down.iter() {
         if w == u32::MAX {
             inf_down += 1;
         } else {
@@ -256,8 +256,8 @@ fn check_inf_consistency(
         let down_start = topo.down_offsets[u] as usize;
         let down_end = topo.down_offsets[u + 1] as usize;
 
-        let has_finite_up = (up_start..up_end).any(|i| weights.up[i] != u32::MAX);
-        let has_finite_down = (down_start..down_end).any(|i| weights.down[i] != u32::MAX);
+        let has_finite_up = (up_start..up_end).any(|i| weights.up.get(i) != u32::MAX);
+        let has_finite_down = (down_start..down_end).any(|i| weights.down.get(i) != u32::MAX);
 
         if !has_finite_up && !has_finite_down && (up_end > up_start || down_end > down_start) {
             isolated_nodes += 1;
@@ -428,16 +428,14 @@ fn check_overflow_potential(
     let max_finite_up = weights
         .up
         .iter()
-        .filter(|&&w| w != u32::MAX)
+        .filter(|&w| w != u32::MAX)
         .max()
-        .copied()
         .unwrap_or(0);
     let max_finite_down = weights
         .down
         .iter()
-        .filter(|&&w| w != u32::MAX)
+        .filter(|&w| w != u32::MAX)
         .max()
-        .copied()
         .unwrap_or(0);
     let max_weight = max_finite_up.max(max_finite_down);
 
@@ -484,7 +482,7 @@ fn check_tie_breaking_readiness(
         // Collect finite weights and targets
         let mut edges: Vec<(u32, u32)> = Vec::new();
         for i in up_start..up_end {
-            let w = weights.up[i];
+            let w = weights.up.get(i);
             if w != u32::MAX {
                 edges.push((w, topo.up_targets[i]));
             }

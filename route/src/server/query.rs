@@ -259,7 +259,7 @@ fn reconstruct_path_versioned(
 /// that build per-call weight arrays. After #152 it reuses the SAME
 /// `UpAdjFlat`/`DownReverseAdjFlat` topology that the hot path uses —
 /// the flats already carry `topo_edge_idx`, so we look up custom
-/// weights via `weights.up[topo_edge_idx]` / `weights.down[topo_edge_idx]`
+/// weights via `weights.up.get(topo_edge_idx)` / `weights.down.get(topo_edge_idx)`
 /// and ignore the flat's embedded weights. This eliminates the
 /// duplicate `DownReverseAdj` Vec-of-Vec topology that #149 left
 /// stranded on the heap (~320 MB on Belgium across 4 modes).
@@ -336,7 +336,7 @@ impl<'a> CchQuery<'a> {
                 let end = up_adj_flat.offsets[u as usize + 1] as usize;
                 for slot in start..end {
                     let parent_idx = up_adj_flat.topo_edge_idx[slot];
-                    let w = weights.up[parent_idx as usize];
+                    let w = weights.up.get(parent_idx as usize);
                     if w == u32::MAX {
                         continue;
                     }
@@ -371,7 +371,7 @@ impl<'a> CchQuery<'a> {
                 let end = down_rev_flat.offsets[u as usize + 1] as usize;
                 for slot in start..end {
                     let parent_idx = down_rev_flat.topo_edge_idx[slot];
-                    let w = weights.down[parent_idx as usize];
+                    let w = weights.down.get(parent_idx as usize);
                     if w == u32::MAX {
                         continue;
                     }

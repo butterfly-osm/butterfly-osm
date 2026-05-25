@@ -416,8 +416,8 @@ pub fn recustomize_weights_incremental(
     filtered_to_original: &[u32],
 ) -> CchWeights {
     let start = std::time::Instant::now();
-    let mut up_weights = base_weights.up.to_vec();
-    let mut down_weights = base_weights.down.to_vec();
+    let mut up_weights = base_weights.up.iter().collect::<Vec<u32>>();
+    let mut down_weights = base_weights.down.iter().collect::<Vec<u32>>();
     let mut up_middle = if base_weights.up_middle.len() == topo.up_targets.len() {
         base_weights.up_middle.to_vec()
     } else {
@@ -641,8 +641,8 @@ fn recompute_edge_weight(
         u32::MAX
     } else {
         match edge.dir {
-            EdgeDir::Up => base_weights.up[edge.idx],
-            EdgeDir::Down => base_weights.down[edge.idx],
+            EdgeDir::Up => base_weights.up.get(edge.idx),
+            EdgeDir::Down => base_weights.down.get(edge.idx),
         }
     };
     let mut best_middle = match edge.dir {

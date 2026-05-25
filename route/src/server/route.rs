@@ -928,15 +928,15 @@ pub async fn route_handler(
         for &(_node, edge_idx) in &result.forward_parent {
             let idx = edge_idx as usize;
             if idx < penalized_weights.up.len() {
-                let new_val = penalized_weights.up[idx].saturating_mul(3);
-                penalized_weights.up.to_mut()[idx] = new_val;
+                let new_val = penalized_weights.up.get(idx).saturating_mul(3);
+                penalized_weights.up.to_mut_vec()[idx] = new_val;
             }
         }
         for &(_node, edge_idx) in &result.backward_parent {
             let idx = edge_idx as usize;
             if idx < penalized_weights.down.len() {
-                let new_val = penalized_weights.down[idx].saturating_mul(3);
-                penalized_weights.down.to_mut()[idx] = new_val;
+                let new_val = penalized_weights.down.get(idx).saturating_mul(3);
+                penalized_weights.down.to_mut_vec()[idx] = new_val;
             }
         }
 
@@ -971,15 +971,15 @@ pub async fn route_handler(
                 for &(_node, edge_idx) in &alt_result.forward_parent {
                     let idx = edge_idx as usize;
                     if idx < penalized_weights.up.len() {
-                        let new_val = penalized_weights.up[idx].saturating_mul(3);
-                        penalized_weights.up.to_mut()[idx] = new_val;
+                        let new_val = penalized_weights.up.get(idx).saturating_mul(3);
+                        penalized_weights.up.to_mut_vec()[idx] = new_val;
                     }
                 }
                 for &(_node, edge_idx) in &alt_result.backward_parent {
                     let idx = edge_idx as usize;
                     if idx < penalized_weights.down.len() {
-                        let new_val = penalized_weights.down[idx].saturating_mul(3);
-                        penalized_weights.down.to_mut()[idx] = new_val;
+                        let new_val = penalized_weights.down.get(idx).saturating_mul(3);
+                        penalized_weights.down.to_mut_vec()[idx] = new_val;
                     }
                 }
 

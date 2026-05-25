@@ -631,7 +631,7 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
             rank_path[i + 1],
             edge_idx
         );
-        unpacked_dist_s += weights[edge_idx] as u64;
+        unpacked_dist_s += weights.get(edge_idx) as u64;
     }
 
     eprintln!(
@@ -663,7 +663,7 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
             let edge_idx = (start..end)
                 .find(|&idx| targets[idx] == dst)
                 .expect("missing edge while summing path");
-            total += weights[edge_idx] as u64;
+            total += weights.get(edge_idx) as u64;
         }
         total
     };
@@ -672,7 +672,7 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
     for (step, &(_node, edge_idx_u32)) in result.forward_parent.iter().enumerate() {
         let edge_idx = edge_idx_u32 as usize;
         let target = mode_data.cch_topo.up_targets[edge_idx];
-        let edge_weight = mode_data.cch_weights.up[edge_idx];
+        let edge_weight = mode_data.cch_weights.up.get(edge_idx);
         let expanded = unpack_path(
             &mode_data.cch_topo,
             &mode_data.cch_weights,
@@ -699,7 +699,7 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
     for (step, &(node, edge_idx_u32)) in result.backward_parent.iter().rev().enumerate() {
         let edge_idx = edge_idx_u32 as usize;
         let target = mode_data.cch_topo.down_targets[edge_idx];
-        let edge_weight = mode_data.cch_weights.down[edge_idx];
+        let edge_weight = mode_data.cch_weights.down.get(edge_idx);
         let expanded = unpack_path(
             &mode_data.cch_topo,
             &mode_data.cch_weights,
@@ -746,15 +746,15 @@ fn test_alternative_routes_differ() {
     for &(_node, edge_idx) in &primary.forward_parent {
         let idx = edge_idx as usize;
         if idx < penalized.up.len() {
-            let new_val = penalized.up[idx].saturating_mul(3);
-            penalized.up.to_mut()[idx] = new_val;
+            let new_val = penalized.up.get(idx).saturating_mul(3);
+            penalized.up.to_mut_vec()[idx] = new_val;
         }
     }
     for &(_node, edge_idx) in &primary.backward_parent {
         let idx = edge_idx as usize;
         if idx < penalized.down.len() {
-            let new_val = penalized.down[idx].saturating_mul(3);
-            penalized.down.to_mut()[idx] = new_val;
+            let new_val = penalized.down.get(idx).saturating_mul(3);
+            penalized.down.to_mut_vec()[idx] = new_val;
         }
     }
 
@@ -1355,15 +1355,15 @@ fn test_alternative_routes_all_modes() {
             for &(_node, edge_idx) in &primary.forward_parent {
                 let idx = edge_idx as usize;
                 if idx < penalized.up.len() {
-                    let new_val = penalized.up[idx].saturating_mul(3);
-                    penalized.up.to_mut()[idx] = new_val;
+                    let new_val = penalized.up.get(idx).saturating_mul(3);
+                    penalized.up.to_mut_vec()[idx] = new_val;
                 }
             }
             for &(_node, edge_idx) in &primary.backward_parent {
                 let idx = edge_idx as usize;
                 if idx < penalized.down.len() {
-                    let new_val = penalized.down[idx].saturating_mul(3);
-                    penalized.down.to_mut()[idx] = new_val;
+                    let new_val = penalized.down.get(idx).saturating_mul(3);
+                    penalized.down.to_mut_vec()[idx] = new_val;
                 }
             }
 
