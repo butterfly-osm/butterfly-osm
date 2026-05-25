@@ -268,7 +268,7 @@ pub fn run_phast_bounded_fast(
 
             for i in up_start..up_end {
                 let v = up_adj_flat.targets[i] as usize;
-                let w = up_adj_flat.weights[i];
+                let w = up_adj_flat.weights.get(i);
                 let new_dist = d.saturating_add(w);
                 if new_dist < state.get_dist(v) {
                     state.set_dist(v, new_dist);
@@ -306,7 +306,7 @@ pub fn run_phast_bounded_fast(
 
                 for i in down_start..down_end {
                     let v = down_adj_flat.targets[i] as usize;
-                    let w = down_adj_flat.weights[i];
+                    let w = down_adj_flat.weights.get(i);
                     let new_dist = d_u.saturating_add(w);
                     if new_dist < state.get_dist(v) {
                         // set_dist marks the target block as active too
@@ -414,7 +414,7 @@ pub fn run_phast_bounded_fast_reverse(
 
             for i in start..end {
                 let v = down_rev_flat.sources[i] as usize; // v has higher rank
-                let w = down_rev_flat.weights[i];
+                let w = down_rev_flat.weights.get(i);
 
                 if w == u32::MAX {
                     continue;
@@ -443,7 +443,7 @@ pub fn run_phast_bounded_fast_reverse(
 
             for i in up_start..up_end {
                 let u = up_adj_flat.targets[i] as usize; // u has higher rank
-                let w = up_adj_flat.weights[i];
+                let w = up_adj_flat.weights.get(i);
 
                 let d_u = state.get_dist(u);
                 if d_u == u32::MAX || d_u > threshold {

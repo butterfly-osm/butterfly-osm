@@ -322,7 +322,7 @@ impl<'a> CchQuery<'a> {
                 let end = up_adj_flat.offsets[u as usize + 1] as usize;
                 for slot in start..end {
                     let v = up_adj_flat.targets[slot];
-                    let w = up_adj_flat.weights[slot];
+                    let w = up_adj_flat.weights.get(slot);
                     let parent_idx = up_adj_flat.topo_edge_idx[slot];
                     f(v, w, parent_idx);
                 }
@@ -357,7 +357,7 @@ impl<'a> CchQuery<'a> {
                 let end = down_rev_flat.offsets[u as usize + 1] as usize;
                 for slot in start..end {
                     let x = down_rev_flat.sources[slot];
-                    let w = down_rev_flat.weights[slot];
+                    let w = down_rev_flat.weights.get(slot);
                     let parent_idx = down_rev_flat.topo_edge_idx[slot];
                     f(x, w, parent_idx);
                 }
