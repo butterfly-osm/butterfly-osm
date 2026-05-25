@@ -723,31 +723,43 @@ const INVALID_HANDLE: u32 = u32::MAX;
 
 /// 4-ary min-heap with decrease-key support
 /// Mirrors OSRM's DAryHeap implementation
-struct DAryHeap {
+pub(crate) struct DAryHeap {
     /// Heap array: (weight, index into inserted_nodes)
     heap: Vec<(u32, u32)>,
 }
 
 impl DAryHeap {
-    fn new(capacity: usize) -> Self {
+    pub(crate) fn new(capacity: usize) -> Self {
         Self {
             heap: Vec::with_capacity(capacity),
         }
     }
 
     #[inline]
-    fn size(&self) -> usize {
-        self.heap.len()
+    pub(crate) fn is_empty(&self) -> bool {
+        self.heap.is_empty()
     }
 
     #[inline]
-    fn clear(&mut self) {
+    #[allow(dead_code)]
+    pub(crate) fn size(&self) -> usize {
+        self.heap.len()
+    }
+
+    /// Peek the minimum weight without popping.
+    #[inline]
+    pub(crate) fn peek_min_weight(&self) -> Option<u32> {
+        self.heap.first().map(|(w, _)| *w)
+    }
+
+    #[inline]
+    pub(crate) fn clear(&mut self) {
         self.heap.clear();
     }
 
     /// Insert new element and return its handle
     #[inline]
-    fn push(&mut self, weight: u32, index: u32, handles: &mut [u32]) {
+    pub(crate) fn push(&mut self, weight: u32, index: u32, handles: &mut [u32]) {
         let pos = self.heap.len();
         self.heap.push((weight, index));
         self.heapify_up(pos, handles);
@@ -755,7 +767,7 @@ impl DAryHeap {
 
     /// Decrease key at given handle
     #[inline]
-    fn decrease(&mut self, handle: u32, weight: u32, index: u32, handles: &mut [u32]) {
+    pub(crate) fn decrease(&mut self, handle: u32, weight: u32, index: u32, handles: &mut [u32]) {
         let pos = handle as usize;
         debug_assert!(
             pos < self.heap.len(),
@@ -770,11 +782,15 @@ impl DAryHeap {
 
     /// Pop minimum element
     #[inline]
-    fn pop(&mut self, handles: &mut [u32]) -> Option<(u32, u32)> {
+    pub(crate) fn pop(&mut self, handles: &mut [u32]) -> Option<(u32, u32)> {
         if self.heap.is_empty() {
             return None;
         }
         let result = self.heap[0];
+        // #291 review fix: always clear the popped element's handle so
+        // stale handle slots can't be mistaken for live ones on the next
+        // push (which would call decrease on a dead position).
+        handles[result.1 as usize] = INVALID_HANDLE;
         if self.heap.len() == 1 {
             self.heap.pop();
             return Some(result);
