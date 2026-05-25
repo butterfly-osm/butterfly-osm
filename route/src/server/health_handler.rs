@@ -22,14 +22,23 @@ use super::regions::RegionsState;
     )
 )]
 pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl IntoResponse {
-    let primary = regions.primary();
-    let uptime = primary.started_at.elapsed();
+    // #292 Phase 3: use server-level started_at (set when RegionsState
+    // was constructed) rather than primary.started_at, which would
+    // force a lazy region load just to compute uptime.
+    let uptime = regions.server_started_at.elapsed();
+    // #292 Phase 3: only sum stats for regions that are already loaded.
+    // Pending regions don't contribute to the totals (a lazy-boot
+    // operator sees the total grow as queries pull regions in).
     let total_nodes: u64 = regions
         .regions
         .iter()
-        .map(|r| r.state.ebg_nodes.n_nodes as u64)
+        .filter_map(|r| r.state_loaded().map(|s| s.ebg_nodes.n_nodes as u64))
         .sum();
-    let total_edges: u64 = regions.regions.iter().map(|r| r.state.ebg_csr.n_arcs).sum();
+    let total_edges: u64 = regions
+        .regions
+        .iter()
+        .filter_map(|r| r.state_loaded().map(|s| s.ebg_csr.n_arcs))
+        .sum();
 
     // #160: aggregate lazy-CRC verification status across every loaded
     // region. The `verify_status` field is `ok` if no region has a
@@ -45,7 +54,14 @@ pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl In
         let mut failed: Vec<serde_json::Value> = Vec::new();
         let mut any_lazy = false;
         for region in regions.regions.iter() {
-            if let Some(lazy) = &region.state.lazy {
+            // Skip Pending regions — no ServerState yet, no lazy_verify
+            // runtime to walk. Health endpoint will reflect them once
+            // their first query triggers the load.
+            let state = match region.state_loaded() {
+                Some(s) => s,
+                None => continue,
+            };
+            if let Some(lazy) = &state.lazy {
                 any_lazy = true;
                 for (name, rt) in lazy.iter_runtimes() {
                     n_sections += 1;
@@ -92,8 +108,9 @@ pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl In
     let avoid_cache_stats: Vec<serde_json::Value> = regions
         .regions
         .iter()
-        .map(|region| {
-            let (hits, misses, size, capacity) = region.state.avoid_cache.stats();
+        .filter_map(|region| Some((region, region.state_loaded()?)))
+        .map(|(region, state)| {
+            let (hits, misses, size, capacity) = state.avoid_cache.stats();
             // Mirror current stats into the Prometheus registry so the
             // next /metrics scrape sees fresh values. /health is the
             // natural "snapshot" hook — typical ops setups poll it
@@ -116,15 +133,21 @@ pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl In
         })
         .collect();
 
+    // Per-primary stats — #292 Phase 3: read only if primary already
+    // loaded. /health hitting this code path does NOT force a lazy
+    // load just to populate stats; operators see 0 / [] until the
+    // first query loads the primary region.
+    let primary_loaded = regions.regions.first().and_then(|r| r.state_loaded());
+
     Json(serde_json::json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_s": uptime.as_secs(),
-        "modes": primary.mode_names,
-        "data_dir": primary.data_dir,
-        "nodes_count": primary.ebg_nodes.n_nodes,
-        "edges_count": primary.ebg_csr.n_arcs,
-        "named_roads_count": primary.way_names.len(),
+        "modes": primary_loaded.as_ref().map(|p| p.mode_names.clone()).unwrap_or_default(),
+        "data_dir": primary_loaded.as_ref().map(|p| p.data_dir.clone()).unwrap_or_default(),
+        "nodes_count": primary_loaded.as_ref().map(|p| p.ebg_nodes.n_nodes).unwrap_or(0),
+        "edges_count": primary_loaded.as_ref().map(|p| p.ebg_csr.n_arcs).unwrap_or(0),
+        "named_roads_count": primary_loaded.as_ref().map(|p| p.way_names.len()).unwrap_or(0),
         "regions_count": regions.len(),
         "regions": regions.region_ids(),
         "total_nodes_count": total_nodes,

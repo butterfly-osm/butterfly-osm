@@ -67,7 +67,7 @@ fn run_extract_borders(regions: &[PathBuf], out: &Path) -> Result<()> {
     let pairs: Vec<(String, std::sync::Arc<crate::server::ServerState>)> = regions_state
         .regions
         .iter()
-        .map(|r| (r.id.clone(), std::sync::Arc::clone(&r.state)))
+        .map(|r| (r.id.clone(), r.state()))
         .collect();
 
     let extract_started = std::time::Instant::now();
@@ -148,7 +148,7 @@ fn run_build_overlay(regions: &[PathBuf], modes: Option<&str>, out: &Path) -> Re
     let pairs: Vec<(String, std::sync::Arc<crate::server::ServerState>)> = regions_state
         .regions
         .iter()
-        .map(|r| (r.id.clone(), std::sync::Arc::clone(&r.state)))
+        .map(|r| (r.id.clone(), r.state()))
         .collect();
 
     let mode_list: Vec<String> = match modes {
@@ -646,6 +646,34 @@ pub enum Commands {
         /// (single-container mode is implicitly one region).
         #[arg(long)]
         regions: Option<String>,
+
+        /// Force eager region load at boot — the legacy pre-#292
+        /// behaviour. Default is **lazy**: regions are registered
+        /// without constructing their `ServerState`, and first query
+        /// for each region pays the per-container load latency (~few
+        /// seconds on Belgium-sized regions). Lazy is the sane default
+        /// for planet-scale deployment.
+        ///
+        /// Only set this when an operator explicitly wants stall-at-boot
+        /// semantics (e.g. dedicated single-region deployment where the
+        /// 30-60 s first-request latency would be unacceptable and no
+        /// warm-on-boot strategy is in place yet).
+        ///
+        /// Single `--data <file>` mode is always eager (only one region).
+        #[arg(long)]
+        eager_regions: bool,
+
+        /// Resident-set budget in GiB for the LRU eviction poller
+        /// (#292 Phase 6). When VmRSS exceeds this number, the
+        /// background poller evicts the least-recently-used loaded
+        /// regions until back under budget. Falls back to 80% of
+        /// system MemTotal if unset. Env override:
+        /// `BUTTERFLY_RSS_BUDGET_GB=…`.
+        ///
+        /// Single-region deployments are effectively unaffected (the
+        /// poller always keeps at least one region loaded).
+        #[arg(long)]
+        rss_budget_gb: Option<f64>,
 
         /// Log format: "text" (default) or "json"
         #[arg(long, default_value = "text")]
@@ -1747,6 +1775,8 @@ impl Cli {
                 transport,
                 modes,
                 regions,
+                eager_regions,
+                rss_budget_gb,
                 log_format,
                 rss_checkpoints,
                 eager_verify,
@@ -1765,6 +1795,15 @@ impl Cli {
                 if rss_checkpoints {
                     crate::server::rss::set_enabled(true);
                     crate::server::rss::checkpoint("startup");
+                }
+
+                // #292 Phase 6: stash --rss-budget-gb in a process-wide
+                // OnceLock so the eviction poller can read it without
+                // requiring serve() to grow another parameter for an
+                // operational tunable. Env var
+                // `BUTTERFLY_RSS_BUDGET_GB=…` is also honoured.
+                if let Some(gib) = rss_budget_gb {
+                    crate::server::set_rss_budget_override(gib);
                 }
 
                 let transport_mode = server::Transport::parse(&transport)?;
@@ -1821,6 +1860,9 @@ impl Cli {
                     region_filter.as_deref(),
                     &load_options,
                     overlay.as_deref(),
+                    // #292 Phase 5: lazy is the sane default; eager
+                    // is an explicit operator opt-in.
+                    !eager_regions,
                 ))?;
                 Ok(())
             }
