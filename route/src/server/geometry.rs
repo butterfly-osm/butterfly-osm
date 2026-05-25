@@ -126,31 +126,45 @@ fn encode_value(value: i64, out: &mut String) {
 /// Extract raw deduped coordinate list and total distance from EBG path.
 ///
 /// This is the shared core for both `build_geometry` and GPX output.
+/// Returns a freshly allocated `Vec<Point>`; prefer
+/// [`build_raw_points_into`] in hot paths where the caller can supply a
+/// reusable buffer.
 pub fn build_raw_points(
     ebg_path: &[u32],
     ebg_nodes: &EbgNodes,
     edge_geom: &EdgeGeometry,
 ) -> (Vec<Point>, f64) {
     let mut coordinates = Vec::new();
+    let total_distance_m =
+        build_raw_points_into(ebg_path, ebg_nodes, edge_geom, &mut coordinates);
+    (coordinates, total_distance_m)
+}
+
+/// #273: in-place variant — appends points into `coordinates`.
+/// Clears `coordinates` first; returns total distance in metres.
+pub fn build_raw_points_into(
+    ebg_path: &[u32],
+    ebg_nodes: &EbgNodes,
+    edge_geom: &EdgeGeometry,
+    coordinates: &mut Vec<Point>,
+) -> f64 {
+    coordinates.clear();
     let mut total_distance_m = 0.0;
 
     for &ebg_id in ebg_path {
         let node = &ebg_nodes.nodes[ebg_id as usize];
         let polyline = edge_geom.polyline(node.geom_idx);
 
-        // Add geometry points from polyline (lazy iterator over (lon, lat) f64 pairs)
         for (lon, lat) in polyline.iter() {
             coordinates.push(Point { lon, lat });
         }
 
-        // Accumulate distance
         total_distance_m += node.length_mm as f64 / 1000.0;
     }
 
-    // Remove duplicate consecutive points
     coordinates.dedup_by(|a, b| (a.lon - b.lon).abs() < 1e-9 && (a.lat - b.lat).abs() < 1e-9);
 
-    (coordinates, total_distance_m)
+    total_distance_m
 }
 
 /// Build route geometry from EBG node sequence
