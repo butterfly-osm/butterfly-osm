@@ -215,6 +215,13 @@ pub enum SectionKind {
     /// name is `overlay/cluster_map/<region>`.
     OverlayClusterMap = 0x000D_0005,
 
+    /// `shared/way_names_idx` — compact mmap-able OSM way-name lookup
+    /// table (#282). Sorted `[i64; n]` ids + `[u32; n+1]` offsets +
+    /// concatenated UTF-8 names blob. Replaces the boot-time
+    /// `HashMap<i64, String>` and saves ~30 MB heap on Belgium
+    /// (scales to ~3 GiB at planet scale).
+    WayNamesIdx = 0x000E_0001,
+
     /// Future / unrecognised. Readers that see this should fall back
     /// to the section name string.
     Unknown = 0xFFFF_FFFF,
@@ -274,6 +281,8 @@ impl SectionKind {
             0x000D_0004 => Self::OverlayCrossings,
             0x000D_0005 => Self::OverlayClusterMap,
 
+            0x000E_0001 => Self::WayNamesIdx,
+
             _ => Self::Unknown,
         }
     }
@@ -317,6 +326,7 @@ impl SectionKind {
             Self::OverlayMatrix => "overlay/matrix",
             Self::OverlayCrossings => "overlay/crossings",
             Self::OverlayClusterMap => "overlay/cluster_map",
+            Self::WayNamesIdx => "shared/way_names_idx",
             Self::Unknown => "unknown",
         }
     }

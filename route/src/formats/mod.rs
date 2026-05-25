@@ -48,6 +48,9 @@ pub mod edge_geom;
 // Multi-region coarse tile coverage set (#142)
 pub mod region_tiles;
 
+// Compact OSM way-name lookup index (#282)
+pub mod way_names_idx;
+
 // Step 7 formats
 pub mod cch_topo;
 
