@@ -1016,13 +1016,10 @@ fn write_cch_weights(
     use crate::formats::WeightWidth;
 
     const MAGIC: u32 = 0x43434857; // "CCHW"
-    // #306 PR 2 v3: per-direction body width.
-    //   bit 0 of header byte 7 → up body is u16 (else u32)
-    //   bit 1 of header byte 7 → down body is u16 (else u32)
-    // Step 8 picks the smallest fitting width per direction. The
-    // u16::MAX sentinel in the compact variant maps back to u32::MAX
-    // (the "no edge" marker) on read.
-    const VERSION: u16 = 3;
+    // v4 (#306 PR 3): per-direction 2-bit width code in header byte 7.
+    //   00 = u32, 01 = u16, 10 = u24, 11 = reserved
+    // Reader requires exactly v4; older files must be regenerated.
+    const VERSION: u16 = 4;
 
     // Decide per-direction width based on max value (excluding the
     // u32::MAX "no edge" sentinel — that's encoded as u16::MAX on
