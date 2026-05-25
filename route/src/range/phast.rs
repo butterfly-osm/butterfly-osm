@@ -926,7 +926,7 @@ impl PhastEngine {
 
             for i in edge_start..edge_end {
                 let v = down_rev_flat.sources[i];
-                let w = down_rev_flat.weights[i];
+                let w = down_rev_flat.weights.get(i);
                 // No INF check needed - DownReverseAdjFlat is pre-filtered
 
                 let new_dist = d.saturating_add(w);
@@ -971,7 +971,7 @@ impl PhastEngine {
 
             for i in up_start..up_end {
                 let v = up_adj_flat.targets[i] as usize; // v has higher rank
-                let w = up_adj_flat.weights[i];
+                let w = up_adj_flat.weights.get(i);
 
                 let d_v = dist[v];
                 if d_v == u32::MAX {
@@ -1047,7 +1047,7 @@ impl PhastEngine {
 
             for i in edge_start..edge_end {
                 let v = down_rev_flat.sources[i];
-                let w = down_rev_flat.weights[i];
+                let w = down_rev_flat.weights.get(i);
 
                 let new_dist = d.saturating_add(w);
                 stats.upward_relaxations += 1;
@@ -1078,7 +1078,7 @@ impl PhastEngine {
 
             for i in up_start..up_end {
                 let v = up_adj_flat.targets[i] as usize;
-                let w = up_adj_flat.weights[i];
+                let w = up_adj_flat.weights.get(i);
 
                 let d_v = dist[v];
                 if d_v == u32::MAX {

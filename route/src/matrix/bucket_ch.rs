@@ -63,6 +63,36 @@ const SEQUENTIAL_FAST_PATH_CELL_THRESHOLD: usize = 100;
 /// flats that feed `CchQuery` (so `unpack_path` can recover the topo
 /// edge from a parent pointer). Distance-metric flats and PHAST-only
 /// flats leave it empty to keep memory down.
+///
+/// #306 PR 4: build a `WeightArray` from an owned `Vec<u32>` of
+/// computed weights, narrowing to u16 when every value fits the
+/// compact codec.
+fn build_weight_array(
+    weights_u32: Vec<u32>,
+    width: crate::formats::WeightWidth,
+) -> crate::formats::WeightArray {
+    use crate::formats::{WeightArray, WeightWidth};
+    match width {
+        WeightWidth::U32 => WeightArray::from_vec_u32(weights_u32),
+        WeightWidth::U16 => {
+            let v16: Vec<u16> = weights_u32
+                .into_iter()
+                .map(|w| {
+                    if w == u32::MAX {
+                        u16::MAX
+                    } else {
+                        // `WeightWidth::choose` only returns U16 when all
+                        // finite values fit in u16 (and < u16::MAX), so
+                        // the cast is lossless.
+                        w as u16
+                    }
+                })
+                .collect();
+            WeightArray::from_vec_u16(v16)
+        }
+    }
+}
+
 /// Flat fields are `ArcCow<T>` so a single struct can either own its
 /// arrays (legacy heap path: `UpAdjFlat::build`) or borrow them straight
 /// from a live `Arc<Mmap>` (the #296 mmap path:
@@ -75,7 +105,11 @@ const SEQUENTIAL_FAST_PATH_CELL_THRESHOLD: usize = 100;
 pub struct UpAdjFlat {
     pub offsets: ArcCow<u64>, // n_nodes + 1
     pub targets: ArcCow<u32>, // target node for edge
-    pub weights: ArcCow<u32>, // weight of edge (embedded)
+    /// Embedded weight per slot. `WeightArray` carries either u16 or
+    /// u32 storage transparently — see `crate::formats::cch_weights`
+    /// for the codec. Width is picked at build time based on the
+    /// underlying `CchWeights` source (#306 PR 4).
+    pub weights: crate::formats::WeightArray,
     /// Back-reference to topo edge index per flat slot. Empty unless
     /// this flat feeds the routing hot path (`CchQuery::new` / the
     /// alternatives backend) where parent pointers reference topo edges.
@@ -85,6 +119,11 @@ pub struct UpAdjFlat {
 impl UpAdjFlat {
     /// Build flat UP adjacency from topology and weights.
     /// `with_topo_idx` controls whether the back-reference is materialised.
+    ///
+    /// #306 PR 4: weights are stored at the same width as the source
+    /// [`CchWeights`] `up` array. INF entries are filtered out at this
+    /// stage, so the flat's max is ≤ the cch_weights' max — picking the
+    /// same width is always safe.
     pub fn build_with(topo: &CchTopo, weights: &CchWeights, with_topo_idx: bool) -> Self {
         let n_nodes = topo.n_nodes as usize;
 
@@ -142,10 +181,14 @@ impl UpAdjFlat {
             }
         }
 
+        // Embed at the same width as the source.
+        let width = crate::formats::WeightWidth::choose(&flat_weights);
+        let weights_arr = build_weight_array(flat_weights, width);
+
         Self {
             offsets: ArcCow::from_vec(offsets),
             targets: ArcCow::from_vec(targets),
-            weights: ArcCow::from_vec(flat_weights),
+            weights: weights_arr,
             topo_edge_idx: ArcCow::from_vec(topo_edge_idx),
         }
     }
@@ -167,7 +210,7 @@ impl UpAdjFlat {
 pub struct DownAdjFlat {
     pub offsets: ArcCow<u64>,
     pub targets: ArcCow<u32>,
-    pub weights: ArcCow<u32>,
+    pub weights: crate::formats::WeightArray,
 }
 
 impl DownAdjFlat {
@@ -215,10 +258,13 @@ impl DownAdjFlat {
             }
         }
 
+        let width = crate::formats::WeightWidth::choose(&flat_weights);
+        let weights_arr = build_weight_array(flat_weights, width);
+
         Self {
             offsets: ArcCow::from_vec(offsets),
             targets: ArcCow::from_vec(targets),
-            weights: ArcCow::from_vec(flat_weights),
+            weights: weights_arr,
         }
     }
 }
@@ -233,7 +279,8 @@ impl DownAdjFlat {
 pub struct DownReverseAdjFlat {
     pub offsets: ArcCow<u64>, // n_nodes + 1
     pub sources: ArcCow<u32>, // source node x for reverse edge
-    pub weights: ArcCow<u32>, // weight of edge x→y (embedded)
+    /// Embedded weight per slot — see `UpAdjFlat::weights`.
+    pub weights: crate::formats::WeightArray,
     /// Empty unless this flat feeds the routing hot path.
     pub topo_edge_idx: ArcCow<u32>,
 }
@@ -295,10 +342,13 @@ impl DownReverseAdjFlat {
             }
         }
 
+        let width = crate::formats::WeightWidth::choose(&flat_weights);
+        let weights_arr = build_weight_array(flat_weights, width);
+
         Self {
             offsets: ArcCow::from_vec(offsets),
             sources: ArcCow::from_vec(sources),
-            weights: ArcCow::from_vec(flat_weights),
+            weights: weights_arr,
             topo_edge_idx: ArcCow::from_vec(topo_edge_idx),
         }
     }
@@ -435,13 +485,21 @@ fn write_adj_flat_body_and_footer(
     out: &mut Vec<u8>,
     offsets: &[u64],
     a32: &[u32], // targets or sources
-    weights: &[u32],
+    weights: &crate::formats::WeightArray,
     topo_edge_idx: Option<&[u32]>,
 ) {
     debug_assert_eq!(out.len(), ADJ_FLAT_HEADER_SIZE);
     out.extend_from_slice(bytemuck::cast_slice(offsets));
     out.extend_from_slice(bytemuck::cast_slice(a32));
-    out.extend_from_slice(bytemuck::cast_slice(weights));
+    // The flat file format v1 stores weights as u32 on disk. The
+    // in-memory `WeightArray` may be u16 — widen on write so the
+    // existing reader keeps working (the codec lives in
+    // `cch_weights`'s file format; the flat file format follows in
+    // a future PR if RSS measurements justify it). For the matrix
+    // hot path the in-memory u16 path is what matters.
+    for w in weights.iter() {
+        out.extend_from_slice(&w.to_le_bytes());
+    }
     if let Some(t) = topo_edge_idx {
         out.extend_from_slice(bytemuck::cast_slice(t));
     }
@@ -575,7 +633,7 @@ impl UpAdjFlatFile {
         Ok(UpAdjFlat {
             offsets: ArcCow::from_vec(offsets.to_vec()),
             targets: ArcCow::from_vec(targets.to_vec()),
-            weights: ArcCow::from_vec(weights.to_vec()),
+            weights: crate::formats::WeightArray::U32(ArcCow::from_vec(weights.to_vec())),
             topo_edge_idx: ArcCow::from_vec(topo_edge_idx.to_vec()),
         })
     }
@@ -619,7 +677,7 @@ impl UpAdjFlatFile {
         let offsets =
             ArcCow::<u64>::from_mmap(std::sync::Arc::clone(&mmap), offsets_abs, n_nodes + 1)?;
         let targets = ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), targets_abs, n_edges)?;
-        let weights = ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), weights_abs, n_edges)?;
+        let weights = crate::formats::WeightArray::U32(ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), weights_abs, n_edges)?);
         let topo_edge_idx = if has_topo_idx {
             ArcCow::<u32>::from_mmap(mmap, topo_abs, n_edges)?
         } else {
@@ -692,7 +750,7 @@ impl DownAdjFlatFile {
         Ok(DownAdjFlat {
             offsets: ArcCow::from_vec(offsets.to_vec()),
             targets: ArcCow::from_vec(targets.to_vec()),
-            weights: ArcCow::from_vec(weights.to_vec()),
+            weights: crate::formats::WeightArray::U32(ArcCow::from_vec(weights.to_vec())),
         })
     }
 
@@ -729,7 +787,7 @@ impl DownAdjFlatFile {
         let offsets =
             ArcCow::<u64>::from_mmap(std::sync::Arc::clone(&mmap), offsets_abs, n_nodes + 1)?;
         let targets = ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), targets_abs, n_edges)?;
-        let weights = ArcCow::<u32>::from_mmap(mmap, weights_abs, n_edges)?;
+        let weights = crate::formats::WeightArray::U32(ArcCow::<u32>::from_mmap(mmap, weights_abs, n_edges)?);
         Ok(DownAdjFlat {
             offsets,
             targets,
@@ -809,7 +867,7 @@ impl DownReverseAdjFlatFile {
         Ok(DownReverseAdjFlat {
             offsets: ArcCow::from_vec(offsets.to_vec()),
             sources: ArcCow::from_vec(sources.to_vec()),
-            weights: ArcCow::from_vec(weights.to_vec()),
+            weights: crate::formats::WeightArray::U32(ArcCow::from_vec(weights.to_vec())),
             topo_edge_idx: ArcCow::from_vec(topo_edge_idx.to_vec()),
         })
     }
@@ -845,7 +903,7 @@ impl DownReverseAdjFlatFile {
         let offsets =
             ArcCow::<u64>::from_mmap(std::sync::Arc::clone(&mmap), offsets_abs, n_nodes + 1)?;
         let sources = ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), sources_abs, n_edges)?;
-        let weights = ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), weights_abs, n_edges)?;
+        let weights = crate::formats::WeightArray::U32(ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), weights_abs, n_edges)?);
         let topo_edge_idx = if has_topo_idx {
             ArcCow::<u32>::from_mmap(mmap, topo_abs, n_edges)?
         } else {
@@ -1897,7 +1955,7 @@ fn forward_fill_buckets_flat(
 
         for i in start..end {
             let v = up_adj_flat.targets[i];
-            let w = up_adj_flat.weights[i];
+            let w = up_adj_flat.weights.get(i);
             let new_dist = d.saturating_add(w);
             state.relax(v, new_dist);
         }
@@ -1973,7 +2031,7 @@ fn backward_join_opt(
 
         for i in edge_start..edge_end {
             let x = down_rev_flat.sources[i];
-            let w = down_rev_flat.weights[i];
+            let w = down_rev_flat.weights.get(i);
             let new_dist = d.saturating_add(w);
             state.relax(x, new_dist);
         }
@@ -2026,7 +2084,7 @@ fn backward_join_prefix(
 
         for i in edge_start..edge_end {
             let x = down_rev_flat.sources[i];
-            let w = down_rev_flat.weights[i];
+            let w = down_rev_flat.weights.get(i);
             let new_dist = d.saturating_add(w);
             state.relax(x, new_dist);
         }
@@ -2455,7 +2513,7 @@ fn backward_join_tile(
 
         for i in edge_start..edge_end {
             let x = down_rev_flat.sources[i];
-            let w = down_rev_flat.weights[i];
+            let w = down_rev_flat.weights.get(i);
             let new_dist = d.saturating_add(w);
             state.relax(x, new_dist);
         }
@@ -2577,7 +2635,7 @@ fn backward_join_parallel_prefix(
 
         for i in edge_start..edge_end {
             let x = down_rev_flat.sources[i];
-            let w = down_rev_flat.weights[i];
+            let w = down_rev_flat.weights.get(i);
             let new_dist = d.saturating_add(w);
             state.relax(x, new_dist);
         }
@@ -2694,7 +2752,7 @@ mod step_a_tests {
         for (slot, &topo_idx) in flat.topo_edge_idx.iter().enumerate() {
             let i = topo_idx as usize;
             assert_eq!(flat.targets[slot], topo.up_targets[i]);
-            assert_eq!(flat.weights[slot], w.up.get(i));
+            assert_eq!(flat.weights.get(slot), w.up.get(i));
         }
     }
 
@@ -2731,7 +2789,7 @@ mod step_a_tests {
                 let f_off = flat.offsets[source] as usize;
                 let f_end = flat.offsets[source + 1] as usize;
                 let found = (f_off..f_end)
-                    .any(|slot| flat.targets[slot] == target && flat.weights[slot] == w_topo);
+                    .any(|slot| flat.targets[slot] == target && flat.weights.get(slot) == w_topo);
                 assert!(
                     found,
                     "edge {source}->{target} w={w_topo} missing in DownAdjFlat"
@@ -2750,7 +2808,7 @@ mod step_a_tests {
 
         for (slot, &topo_idx) in flat.topo_edge_idx.iter().enumerate() {
             let i = topo_idx as usize;
-            assert_eq!(flat.weights[slot], w.down.get(i));
+            assert_eq!(flat.weights.get(slot), w.down.get(i));
         }
     }
 
@@ -2799,7 +2857,7 @@ mod step_a_tests {
         let decoded = UpAdjFlatFile::read_from_bytes(leaked).expect("decode round-trip");
         assert_eq!(&*decoded.offsets, &*flat.offsets);
         assert_eq!(&*decoded.targets, &*flat.targets);
-        assert_eq!(&*decoded.weights, &*flat.weights);
+        assert_eq!(decoded.weights.iter().collect::<Vec<u32>>(), flat.weights.iter().collect::<Vec<u32>>());
         assert_eq!(&*decoded.topo_edge_idx, &*flat.topo_edge_idx);
     }
 
@@ -2812,7 +2870,7 @@ mod step_a_tests {
         let decoded = UpAdjFlatFile::read_from_bytes(leaked).expect("decode");
         assert_eq!(&*decoded.offsets, &*flat.offsets);
         assert_eq!(&*decoded.targets, &*flat.targets);
-        assert_eq!(&*decoded.weights, &*flat.weights);
+        assert_eq!(decoded.weights.iter().collect::<Vec<u32>>(), flat.weights.iter().collect::<Vec<u32>>());
         assert!(decoded.topo_edge_idx.is_empty());
     }
 
@@ -2825,7 +2883,7 @@ mod step_a_tests {
         let decoded = DownAdjFlatFile::read_from_bytes(leaked).expect("decode");
         assert_eq!(&*decoded.offsets, &*flat.offsets);
         assert_eq!(&*decoded.targets, &*flat.targets);
-        assert_eq!(&*decoded.weights, &*flat.weights);
+        assert_eq!(decoded.weights.iter().collect::<Vec<u32>>(), flat.weights.iter().collect::<Vec<u32>>());
     }
 
     #[test]
@@ -2837,7 +2895,7 @@ mod step_a_tests {
         let decoded = DownReverseAdjFlatFile::read_from_bytes(leaked).expect("decode");
         assert_eq!(&*decoded.offsets, &*flat.offsets);
         assert_eq!(&*decoded.sources, &*flat.sources);
-        assert_eq!(&*decoded.weights, &*flat.weights);
+        assert_eq!(decoded.weights.iter().collect::<Vec<u32>>(), flat.weights.iter().collect::<Vec<u32>>());
         assert_eq!(&*decoded.topo_edge_idx, &*flat.topo_edge_idx);
     }
 
