@@ -952,7 +952,15 @@ fn emit_route_batch(
     ) {
         Ok(b) => b,
         Err(e) => {
-            let _ = tx.blocking_send(Err(Status::internal(format!("Arrow: {}", e))));
+            // PR #322 review: if the receiver is already gone, the
+            // outcome is really a disconnect — don't claim ArrowError
+            // for a status that never reached the client.
+            if tx
+                .blocking_send(Err(Status::internal(format!("Arrow: {}", e))))
+                .is_err()
+            {
+                return EmitOutcome::Disconnected;
+            }
             return EmitOutcome::ArrowError;
         }
     };

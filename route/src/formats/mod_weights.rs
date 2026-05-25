@@ -233,12 +233,9 @@ pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<ModW
         bytes.len(),
         expected_total
     );
-    anyhow::ensure!(
-        body_end >= HEADER_SIZE,
-        "mod_weights body_end {} < HEADER_SIZE {}",
-        body_end,
-        HEADER_SIZE
-    );
+    // `body_end >= HEADER_SIZE` is implied by `body_end =
+    // HEADER_SIZE.checked_add(body_len)` having succeeded
+    // (body_len is non-negative because it's a usize).
 
     let weights: &'static [u32] = bytemuck::cast_slice(&bytes[HEADER_SIZE..body_end]);
 

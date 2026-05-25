@@ -10,12 +10,14 @@ use crate::formats::CchTopo;
 use crate::matrix::bucket_ch::{DAryHeap, DownReverseAdjFlat, INVALID_HANDLE, UpAdjFlat};
 use crate::profile_abi::Mode;
 
-/// PR #317 review: `HANDLE_NONE` is a local alias for the shared
-/// `bucket_ch::INVALID_HANDLE` sentinel — both refer to the same
-/// `u32::MAX` "no live handle" marker. Re-exported here as a const
-/// to keep call sites readable without forcing every user to spell
-/// out the full `bucket_ch::INVALID_HANDLE` path.
-const HANDLE_NONE: u32 = INVALID_HANDLE;
+/// Local alias for the shared `bucket_ch::INVALID_HANDLE` sentinel
+/// (both `u32::MAX`). The alias is `pub(crate)` so the matrix-side
+/// bucket code and the CCH query-side code can refer to a single
+/// canonical "no live heap handle" marker — see #317 review. Kept
+/// as an alias rather than `pub use` so call sites in this module
+/// stay terse without forcing the rest of the crate to spell out the
+/// full `bucket_ch::INVALID_HANDLE` path.
+pub(crate) const HANDLE_NONE: u32 = INVALID_HANDLE;
 
 use super::state::{CchWeights, ServerState};
 
@@ -57,20 +59,30 @@ struct CchQueryState {
     current_gen: u32,
     /// Forward 4-ary heap (decrease-key) — replaces PriorityQueue
     /// (codex #291). Heap entries are `(weight, node_id)` where node_id
-    /// is a usize-cast u32. `handles_fwd[node]` gives the heap position
-    /// of that node, or `HANDLE_NONE` if not in the heap.
+    /// is a usize-cast u32. `handles_fwd[node]` is the heap position
+    /// only when the node is in-heap *this query*; see the comment on
+    /// `handles_fwd` below for the full invariant.
     pq_fwd: DAryHeap,
     pq_bwd: DAryHeap,
-    /// Per-node forward heap handle (heap position or HANDLE_NONE).
+    /// Per-node forward heap handle.
+    ///
+    /// **Not globally valid.** For any node where `gen_fwd[node] !=
+    /// current_gen` the handle slot may still carry a stale value left
+    /// over from a previous query — only the gen check gives it
+    /// meaning. `set_fwd` resets the slot to `HANDLE_NONE` on first
+    /// touch this query and `DAryHeap::pop` clears it again on
+    /// settlement, so the "in-heap-now" predicate `gen_fwd[node] ==
+    /// current_gen && handles_fwd[node] != HANDLE_NONE` is always
+    /// sound for callers that read it.
+    ///
+    /// In practice the callers in this file (`push_fwd`,
+    /// `is_stalled_fwd`) only read `handles_fwd` immediately after a
+    /// `set_fwd` for the same node, so the gen check is implicit and
+    /// the field-level read of `handles_fwd[node] != HANDLE_NONE`
+    /// alone is correct.
     ///
     /// PR #317 review: dropped the separate `handles_*_gen` arrays
-    /// (~40 MB/thread on Belgium). Staleness is now folded into
-    /// `set_fwd` / `set_bwd`: when those see `gen != current_gen`
-    /// (first touch this query) they clear the handle slot before
-    /// updating, so any push following a `set_*` correctly observes
-    /// `HANDLE_NONE`. `DAryHeap::pop` continues to set the handle to
-    /// `HANDLE_NONE` so settled nodes are recognised as "not in heap"
-    /// on a later re-push.
+    /// (~40 MB/thread on Belgium) by folding staleness into `set_fwd`.
     handles_fwd: Vec<u32>,
     handles_bwd: Vec<u32>,
 }
