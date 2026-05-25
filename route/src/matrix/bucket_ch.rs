@@ -699,7 +699,9 @@ impl UpAdjFlatFile {
         let offsets =
             ArcCow::<u64>::from_mmap(std::sync::Arc::clone(&mmap), offsets_abs, n_nodes + 1)?;
         let targets = ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), targets_abs, n_edges)?;
-        let weights = crate::formats::WeightArray::U32(ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), weights_abs, n_edges)?);
+        let weights = crate::formats::WeightArray::from_arccow_u32(
+            ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), weights_abs, n_edges)?,
+        );
         let topo_edge_idx = if has_topo_idx {
             ArcCow::<u32>::from_mmap(mmap, topo_abs, n_edges)?
         } else {
@@ -809,7 +811,9 @@ impl DownAdjFlatFile {
         let offsets =
             ArcCow::<u64>::from_mmap(std::sync::Arc::clone(&mmap), offsets_abs, n_nodes + 1)?;
         let targets = ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), targets_abs, n_edges)?;
-        let weights = crate::formats::WeightArray::U32(ArcCow::<u32>::from_mmap(mmap, weights_abs, n_edges)?);
+        let weights = crate::formats::WeightArray::from_arccow_u32(
+            ArcCow::<u32>::from_mmap(mmap, weights_abs, n_edges)?,
+        );
         Ok(DownAdjFlat {
             offsets,
             targets,
@@ -925,7 +929,9 @@ impl DownReverseAdjFlatFile {
         let offsets =
             ArcCow::<u64>::from_mmap(std::sync::Arc::clone(&mmap), offsets_abs, n_nodes + 1)?;
         let sources = ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), sources_abs, n_edges)?;
-        let weights = crate::formats::WeightArray::U32(ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), weights_abs, n_edges)?);
+        let weights = crate::formats::WeightArray::from_arccow_u32(
+            ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), weights_abs, n_edges)?,
+        );
         let topo_edge_idx = if has_topo_idx {
             ArcCow::<u32>::from_mmap(mmap, topo_abs, n_edges)?
         } else {
