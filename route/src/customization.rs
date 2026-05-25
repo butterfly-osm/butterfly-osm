@@ -1016,13 +1016,10 @@ fn write_cch_weights(
     use crate::formats::WeightWidth;
 
     const MAGIC: u32 = 0x43434857; // "CCHW"
-    // #306 PR 2 v3: per-direction body width.
-    //   bit 0 of header byte 7 → up body is u16 (else u32)
-    //   bit 1 of header byte 7 → down body is u16 (else u32)
-    // Step 8 picks the smallest fitting width per direction. The
-    // u16::MAX sentinel in the compact variant maps back to u32::MAX
-    // (the "no edge" marker) on read.
-    const VERSION: u16 = 3;
+    // v4 (#306 PR 3): per-direction 2-bit width code in header byte 7.
+    //   00 = u32, 01 = u16, 10 = u24, 11 = reserved
+    // Reader requires exactly v4; older files must be regenerated.
+    const VERSION: u16 = 4;
 
     // Decide per-direction width based on max value (excluding the
     // u32::MAX "no edge" sentinel — that's encoded as u16::MAX on
@@ -1030,13 +1027,18 @@ fn write_cch_weights(
     let up_width = WeightWidth::choose(up_weights);
     let down_width = WeightWidth::choose(down_weights);
 
-    let mut width_flags = 0u8;
-    if up_width == WeightWidth::U16 {
-        width_flags |= 0x01;
-    }
-    if down_width == WeightWidth::U16 {
-        width_flags |= 0x02;
-    }
+    // Per-direction 2-bit width code in header byte 7 (#306 PR 3):
+    //   00 = u32
+    //   01 = u16
+    //   10 = u24
+    let width_code = |w: WeightWidth| -> u8 {
+        match w {
+            WeightWidth::U32 => 0,
+            WeightWidth::U16 => 1,
+            WeightWidth::U24 => 2,
+        }
+    };
+    let width_flags = width_code(up_width) | (width_code(down_width) << 2);
 
     let mut writer = BufWriter::new(File::create(path)?);
     let mut crc_digest = Digest::new();
@@ -1102,7 +1104,7 @@ fn write_weights_body<W: std::io::Write>(
     weights: &[u32],
     width: crate::formats::WeightWidth,
 ) -> Result<()> {
-    use crate::formats::WeightWidth;
+    use crate::formats::{U24_SENTINEL, WeightWidth};
     match width {
         WeightWidth::U32 => {
             for &w in weights {
@@ -1113,7 +1115,6 @@ fn write_weights_body<W: std::io::Write>(
         }
         WeightWidth::U16 => {
             for &w in weights {
-                // u32::MAX → u16::MAX sentinel.
                 let v16: u16 = if w == u32::MAX {
                     u16::MAX
                 } else {
@@ -1122,6 +1123,17 @@ fn write_weights_body<W: std::io::Write>(
                 let bytes = v16.to_le_bytes();
                 writer.write_all(&bytes)?;
                 crc_digest.update(&bytes);
+            }
+        }
+        WeightWidth::U24 => {
+            for &w in weights {
+                // u32::MAX → U24_SENTINEL (0x00FF_FFFF) so the read
+                // path's `U24_SENTINEL → u32::MAX` mapping round-trips
+                // the "no edge" marker.
+                let v24: u32 = if w == u32::MAX { U24_SENTINEL } else { w };
+                let bytes = v24.to_le_bytes();
+                writer.write_all(&bytes[..3])?;
+                crc_digest.update(&bytes[..3]);
             }
         }
     }
