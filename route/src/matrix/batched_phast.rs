@@ -171,7 +171,7 @@ impl BatchedPhastEngine {
 
                 for i in up_start..up_end {
                     let v = self.topo.up_targets[i];
-                    let w = self.weights.up[i];
+                    let w = self.weights.up.get(i);
 
                     if w == u32::MAX {
                         continue;
@@ -226,7 +226,7 @@ impl BatchedPhastEngine {
             for i in down_start..down_end {
                 // v is the target's rank (rank-aligned CCH)
                 let v = self.topo.down_targets[i] as usize;
-                let w = self.weights.down[i];
+                let w = self.weights.down.get(i);
 
                 if w == u32::MAX {
                     continue;
@@ -331,7 +331,7 @@ impl BatchedPhastEngine {
 
                 for i in up_start..up_end {
                     let v = self.topo.up_targets[i];
-                    let w = self.weights.up[i];
+                    let w = self.weights.up.get(i);
 
                     if w == u32::MAX {
                         continue;
@@ -401,7 +401,7 @@ impl BatchedPhastEngine {
             // Relax DOWN edges for active lanes only
             for i in down_start..down_end {
                 let v = self.topo.down_targets[i] as usize;
-                let w = self.weights.down[i];
+                let w = self.weights.down.get(i);
 
                 if w == u32::MAX {
                     continue;
@@ -508,7 +508,7 @@ impl BatchedPhastEngine {
 
                 for i in up_start..up_end {
                     let v = self.topo.up_targets[i];
-                    let w = self.weights.up[i];
+                    let w = self.weights.up.get(i);
 
                     if w == u32::MAX {
                         continue;
@@ -563,7 +563,7 @@ impl BatchedPhastEngine {
 
             for i in down_start..down_end {
                 let v = self.topo.down_targets[i] as usize;
-                let w = self.weights.down[i];
+                let w = self.weights.down.get(i);
 
                 if w == u32::MAX {
                     continue;
@@ -835,7 +835,7 @@ impl BatchedPhastEngine {
 
                 for i in up_start..up_end {
                     let v = self.topo.up_targets[i];
-                    let w = self.weights.up[i];
+                    let w = self.weights.up.get(i);
 
                     if w == u32::MAX {
                         continue;
@@ -884,7 +884,7 @@ impl BatchedPhastEngine {
 
             for i in down_start..down_end {
                 let v = self.topo.down_targets[i] as usize;
-                let w = self.weights.down[i];
+                let w = self.weights.down.get(i);
 
                 if w == u32::MAX {
                     continue;
@@ -1010,7 +1010,7 @@ impl BatchedPhastEngine {
 
                 for i in up_start..up_end {
                     let v = self.topo.up_targets[i];
-                    let w = self.weights.up[i];
+                    let w = self.weights.up.get(i);
 
                     if w == u32::MAX {
                         continue;
@@ -1096,7 +1096,7 @@ impl BatchedPhastEngine {
 
                 for i in down_start..down_end {
                     let v = self.topo.down_targets[i] as usize;
-                    let w = self.weights.down[i];
+                    let w = self.weights.down.get(i);
 
                     if w == u32::MAX {
                         continue;
@@ -1164,7 +1164,7 @@ impl BatchedPhastEngine {
                     // Relax DOWN edges for active lanes only
                     for i in down_start..down_end {
                         let v = self.topo.down_targets[i] as usize;
-                        let w = self.weights.down[i];
+                        let w = self.weights.down.get(i);
 
                         if w == u32::MAX {
                             continue;
