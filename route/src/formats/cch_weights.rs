@@ -83,15 +83,22 @@ impl WeightWidth {
         (raw + 3) & !3
     }
 
-    /// `WeightWidth::U16` iff every value in `weights` fits in `u16`.
-    /// `u32::MAX` (the "no edge" sentinel) maps to `u16::MAX` on the
-    /// compact path — that round-trip is lossless, so the sentinel
-    /// itself doesn't force U32.
+    /// `WeightWidth::U16` iff every value in `weights` fits losslessly
+    /// in the compact path. The compact encoding reserves `u16::MAX`
+    /// as the "no edge" sentinel for `u32::MAX`, so:
+    ///
+    /// - `u32::MAX` (sentinel) → encodes to `u16::MAX` losslessly
+    /// - real finite weights must be `< u16::MAX = 65 535`; a real
+    ///   value of 65 535 would alias the sentinel on round-trip
+    ///   (read-back would widen to `u32::MAX`), so it forces U32
+    /// - anything above `u16::MAX` (excluding the sentinel) also
+    ///   forces U32
     #[inline]
     pub fn choose(weights: &[u32]) -> Self {
+        let max_finite_inline = u16::MAX as u32 - 1; // 65_534
         if weights
             .iter()
-            .all(|&w| w == u32::MAX || w <= u16::MAX as u32)
+            .all(|&w| w == u32::MAX || w <= max_finite_inline)
         {
             Self::U16
         } else {
@@ -702,4 +709,72 @@ fn parse_header(header: &[u8]) -> Result<CchWeightsHeader> {
         up_width,
         down_width,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn width_choose_picks_u16_for_small_values() {
+        let w = vec![0u32, 1, 100, 65_534];
+        assert_eq!(WeightWidth::choose(&w), WeightWidth::U16);
+    }
+
+    #[test]
+    fn width_choose_picks_u16_with_sentinel() {
+        // u32::MAX (no-edge sentinel) maps to u16::MAX losslessly.
+        let w = vec![0u32, u32::MAX, 100, u32::MAX];
+        assert_eq!(WeightWidth::choose(&w), WeightWidth::U16);
+    }
+
+    #[test]
+    fn width_choose_forces_u32_on_real_65535() {
+        // Real weight = 65_535 (u16::MAX) would alias the sentinel
+        // on round-trip — must force U32.
+        let w = vec![0u32, 65_535, 100];
+        assert_eq!(WeightWidth::choose(&w), WeightWidth::U32);
+    }
+
+    #[test]
+    fn width_choose_forces_u32_on_overflow() {
+        let w = vec![0u32, 100_000, 100];
+        assert_eq!(WeightWidth::choose(&w), WeightWidth::U32);
+    }
+
+    #[test]
+    fn padded_body_bytes_aligns_to_4() {
+        assert_eq!(WeightWidth::U16.padded_body_bytes(0), 0);
+        assert_eq!(WeightWidth::U16.padded_body_bytes(1), 4); // 2 → pad 2
+        assert_eq!(WeightWidth::U16.padded_body_bytes(2), 4); // 4 aligned
+        assert_eq!(WeightWidth::U16.padded_body_bytes(3), 8); // 6 → pad 2
+        assert_eq!(WeightWidth::U16.padded_body_bytes(4), 8); // 8 aligned
+        assert_eq!(WeightWidth::U32.padded_body_bytes(1), 4);
+        assert_eq!(WeightWidth::U32.padded_body_bytes(2), 8);
+    }
+
+    #[test]
+    fn weight_array_u16_sentinel_round_trip() {
+        // Manually build U16 storage including the sentinel; ensure
+        // get() widens it back to u32::MAX.
+        let arr = WeightArray::U16(ArcCow::from_vec(vec![1u16, 2, u16::MAX, 65_534]));
+        assert_eq!(arr.get(0), 1);
+        assert_eq!(arr.get(1), 2);
+        assert_eq!(arr.get(2), u32::MAX);
+        assert_eq!(arr.get(3), 65_534);
+        // Iter widens identically.
+        let vals: Vec<u32> = arr.iter().collect();
+        assert_eq!(vals, vec![1, 2, u32::MAX, 65_534]);
+    }
+
+    #[test]
+    fn weight_array_to_mut_widens_u16_to_u32() {
+        let mut arr = WeightArray::U16(ArcCow::from_vec(vec![1u16, u16::MAX, 100]));
+        let v = arr.to_mut_vec();
+        assert_eq!(v.as_slice(), &[1u32, u32::MAX, 100]);
+        // Mutation persists through subsequent reads.
+        v[0] = 999;
+        assert_eq!(arr.get(0), 999);
+        assert!(matches!(arr.width(), WeightWidth::U32));
+    }
 }
