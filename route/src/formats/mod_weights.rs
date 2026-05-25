@@ -214,13 +214,28 @@ pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<ModW
     let mut inputs_sha = [0u8; 16];
     inputs_sha.copy_from_slice(&header[12..28]);
 
-    let body_end = HEADER_SIZE + count * 4;
+    // PR #319 Copilot review: a malicious/corrupt header `count` could
+    // overflow `count * 4` or the addition, making `body_end` wrap and
+    // potentially be less than `HEADER_SIZE`. Use checked arithmetic so
+    // overflow returns a clean error instead of panicking on the slice.
+    let body_len = count
+        .checked_mul(4)
+        .ok_or_else(|| anyhow::anyhow!("mod_weights count overflows: count={}", count))?;
+    let body_end = HEADER_SIZE
+        .checked_add(body_len)
+        .ok_or_else(|| anyhow::anyhow!("mod_weights body_end overflows: count={}", count))?;
+    let expected_total = body_end
+        .checked_add(FOOTER_SIZE)
+        .ok_or_else(|| anyhow::anyhow!("mod_weights expected_total overflows: count={}", count))?;
     anyhow::ensure!(
-        bytes.len() == body_end + FOOTER_SIZE,
+        bytes.len() == expected_total,
         "mod_weights size mismatch: got {}, expected {}",
         bytes.len(),
-        body_end + FOOTER_SIZE
+        expected_total
     );
+    // `body_end >= HEADER_SIZE` is implied by `body_end =
+    // HEADER_SIZE.checked_add(body_len)` having succeeded
+    // (body_len is non-negative because it's a usize).
 
     let weights: &'static [u32] = bytemuck::cast_slice(&bytes[HEADER_SIZE..body_end]);
 

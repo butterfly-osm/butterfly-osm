@@ -865,7 +865,12 @@ impl DownReverseAdjFlatFile {
 // =============================================================================
 
 const ARITY: usize = 4;
-const INVALID_HANDLE: u32 = u32::MAX;
+/// Single shared sentinel for "no live heap handle". Used both by
+/// the matrix-side bucket Dijkstra (this module) and by the CCH
+/// query-side `CchQueryState` (in `server/query.rs`). PR #317 review:
+/// pulled up to `pub(crate)` so both call sites depend on the same
+/// constant and can't drift.
+pub(crate) const INVALID_HANDLE: u32 = u32::MAX;
 
 /// 4-ary min-heap with decrease-key support
 /// Mirrors OSRM's DAryHeap implementation
