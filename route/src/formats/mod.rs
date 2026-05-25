@@ -45,6 +45,9 @@ pub mod snap_index;
 // Server-only flat edge geometry sections (#155)
 pub mod edge_geom;
 
+// Multi-region coarse tile coverage set (#142)
+pub mod region_tiles;
+
 // Step 7 formats
 pub mod cch_topo;
 
@@ -70,6 +73,9 @@ pub use nbg_geo::{NbgEdge, NbgGeo, NbgGeoFile, PolyLine};
 pub use nbg_node_map::{NbgNodeMap, NbgNodeMapFile, NodeMapping};
 pub use node_signals::{NodeSignals, NodeSignalsFile};
 pub use order_ebg::{OrderEbg, OrderEbgFile};
+pub use region_tiles::{
+    RegionTiles, RegionTilesFile, build_from_snap_points as build_region_tiles, tile_id_from_f64,
+};
 pub use relations::{Member, MemberKind, Relation, RelationsFile};
 pub use snap_index::{
     PackedPoint, SnapBbox, SnapGrid, SnapGridFile, SnapMask, SnapMaskFile, SnapPoints,

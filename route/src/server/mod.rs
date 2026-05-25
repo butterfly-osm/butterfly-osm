@@ -130,7 +130,20 @@ static RSS_BUDGET_OVERRIDE_GIB: std::sync::OnceLock<f64> = std::sync::OnceLock::
 /// Set the process-wide RSS budget override (in GiB). Called once by
 /// the CLI before `serve()` runs; later sets are ignored (OnceLock
 /// semantics).
+///
+/// Rejects NaN, infinity, and non-positive values with a warning —
+/// these would either propagate NaN through the `clamp()` in
+/// [`rss_budget_bytes`] or saturate the `as u64` cast to wild
+/// numbers. Invalid input falls through to the env-var / MemTotal
+/// default path.
 pub fn set_rss_budget_override(gib: f64) {
+    if !gib.is_finite() || gib <= 0.0 {
+        tracing::warn!(
+            value = gib,
+            "--rss-budget-gb must be finite and > 0; falling back to env / MemTotal default"
+        );
+        return;
+    }
     let _ = RSS_BUDGET_OVERRIDE_GIB.set(gib);
 }
 
