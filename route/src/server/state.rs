@@ -880,9 +880,28 @@ impl ServerState {
         }
 
         // ---- Road names from shared/step1.ways.raw ------------------
+        // #275: ways.raw is read once at boot to populate `way_names`.
+        // The names live in a heap HashMap from that point on; the
+        // mmap'd byte range is never read again at serve time. Drop the
+        // pages from RSS — they came in resident because LazyContainer's
+        // boot-time CRC walk touched them.
         tracing::info!("Loading road names from container...");
         let way_names = if let Some(ways_bytes) = optional_section("shared/step1.ways.raw")? {
-            load_way_names_from_bytes(ways_bytes)?
+            let names = load_way_names_from_bytes(ways_bytes)?;
+            if let Err(e) = crate::formats::mmap::madvise_dontneed(ways_bytes) {
+                tracing::warn!(
+                    section = "shared/step1.ways.raw",
+                    error = %e,
+                    "madvise(DONTNEED) on ways.raw failed; ignoring"
+                );
+            } else {
+                tracing::info!(
+                    section = "shared/step1.ways.raw",
+                    bytes = ways_bytes.len(),
+                    "madvise(DONTNEED) on cold ways.raw section"
+                );
+            }
+            names
         } else {
             tracing::warn!("ways.raw missing in container, road names unavailable");
             HashMap::new()
@@ -890,6 +909,12 @@ impl ServerState {
         tracing::info!(named_roads = way_names.len(), "loaded road names");
 
         // ---- Edge exclude flags from one mode's way_attrs -----------
+        // #275: way_attrs is read once at boot to build the per-edge
+        // exclude flag table. The flags live in a heap Vec from that
+        // point on; the mmap'd byte range (this mode's plus every other
+        // mode's, all forced resident by the boot CRC walk) is cold for
+        // the rest of the process lifetime. Drop those pages too.
+        //
         // Prefer car if available, otherwise the alphabetically first mode.
         let attrs_mode = if discovered_modes.iter().any(|m| m == "car") {
             "car".to_string()
@@ -899,11 +924,78 @@ impl ServerState {
         let attrs_section = format!("mode/{}/way_attrs", attrs_mode);
         let edge_exclude_flags = if let Some(attr_bytes) = optional_section(&attrs_section)? {
             let attrs = crate::formats::way_attrs::read_all_from_bytes(attr_bytes)?;
-            exclude::build_edge_exclude_flags_from_attrs(&ebg_nodes, &attrs)?
+            let flags = exclude::build_edge_exclude_flags_from_attrs(&ebg_nodes, &attrs)?;
+            if let Err(e) = crate::formats::mmap::madvise_dontneed(attr_bytes) {
+                tracing::warn!(
+                    section = %attrs_section,
+                    error = %e,
+                    "madvise(DONTNEED) on way_attrs failed; ignoring"
+                );
+            } else {
+                tracing::info!(
+                    section = %attrs_section,
+                    bytes = attr_bytes.len(),
+                    "madvise(DONTNEED) on cold way_attrs section"
+                );
+            }
+            flags
         } else {
             tracing::warn!(section = %attrs_section, "way_attrs absent, exclude feature disabled");
             vec![0u8; ebg_nodes.n_nodes as usize]
         };
+
+        // Evict the other modes' way_attrs sections too — only one mode
+        // supplies the exclude flags, the rest stay cold forever.
+        //
+        // Important: resolve byte ranges via `container.get(..)` +
+        // `static_bytes[..]` directly. Do NOT route through
+        // `optional_section(..)` because that calls
+        // `lazy.verify_now(name)`, which would force a full CRC walk
+        // (and page-in) of every other mode's way_attrs at boot —
+        // defeating lazy verification. `madvise(MADV_DONTNEED)` is
+        // safe on unverified bytes: it evicts resident pages (a no-op
+        // on pages that were never faulted in).
+        for other_mode in &discovered_modes {
+            if other_mode == &attrs_mode {
+                continue;
+            }
+            let other_section = format!("mode/{}/way_attrs", other_mode);
+            let Some(entry) = container.get(&other_section) else {
+                continue;
+            };
+            let off = entry.offset as usize;
+            let len = entry.len as usize;
+            let Some(end) = off.checked_add(len) else {
+                tracing::warn!(
+                    section = %other_section,
+                    offset = off,
+                    len = len,
+                    "way_attrs section offset+len overflows usize; skipping evict"
+                );
+                continue;
+            };
+            if end > static_bytes.len() {
+                tracing::warn!(
+                    section = %other_section,
+                    "way_attrs section bytes exceed mmap; skipping evict"
+                );
+                continue;
+            }
+            let other_bytes = &static_bytes[off..end];
+            if let Err(e) = crate::formats::mmap::madvise_dontneed(other_bytes) {
+                tracing::warn!(
+                    section = %other_section,
+                    error = %e,
+                    "madvise(DONTNEED) on way_attrs failed; ignoring"
+                );
+            } else {
+                tracing::info!(
+                    section = %other_section,
+                    bytes = other_bytes.len(),
+                    "madvise(DONTNEED) on cold way_attrs section (no verify)"
+                );
+            }
+        }
 
         let node_weights_dist: Vec<u32> = ebg_nodes.nodes.iter().map(|n| n.length_mm).collect();
 
