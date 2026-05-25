@@ -58,8 +58,10 @@ pub struct ModeData {
     /// Number of original EBG nodes. Equals `orig_to_rank.len()`.
     /// Reported in /health and a couple of spot diagnostics.
     pub n_original_nodes: u32,
-    // Original node weights and mask (indexed by original EBG node ID)
-    pub node_weights: Vec<u32>,
+    /// Per-edge weights (deciseconds) indexed by original EBG node id.
+    /// `Cow::Borrowed` for mmap-backed container reads (#294); `Cow::Owned`
+    /// for the legacy --data-dir / clone paths.
+    pub node_weights: Cow<'static, [u32]>,
     pub mask: Vec<u64>,
     /// Per-mode source snap bitset (indexed by original EBG node ID).
     /// Built at boot from the filtered EBG. A set bit means the node
@@ -2302,7 +2304,10 @@ fn load_mode_data_from_bundle(
         );
     }
 
-    let weights_data = mod_weights::read_all_from_bytes(fetch("node_weights.time")?)?;
+    // #294: zero-copy node_weights — borrow directly over the mmap
+    // section instead of copying ~20 MB per mode onto the heap.
+    let weights_data =
+        mod_weights::read_from_bytes_zero_copy_unverified(fetch("node_weights.time")?)?;
 
     let n_original = n_original_nodes as usize;
     let mask = {
