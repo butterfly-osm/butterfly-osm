@@ -7,12 +7,17 @@
 use std::cell::RefCell;
 
 use crate::formats::CchTopo;
-use crate::matrix::bucket_ch::{DAryHeap, DownReverseAdjFlat, UpAdjFlat};
+use crate::matrix::bucket_ch::{DAryHeap, DownReverseAdjFlat, INVALID_HANDLE, UpAdjFlat};
 use crate::profile_abi::Mode;
 
-/// Sentinel used in the per-node heap-handle arrays: this node is not
-/// currently in the priority queue.
-const HANDLE_NONE: u32 = u32::MAX;
+/// Local alias for the shared `bucket_ch::INVALID_HANDLE` sentinel
+/// (both `u32::MAX`). The alias is `pub(crate)` so the matrix-side
+/// bucket code and the CCH query-side code can refer to a single
+/// canonical "no live heap handle" marker — see #317 review. Kept
+/// as an alias rather than `pub use` so call sites in this module
+/// stay terse without forcing the rest of the crate to spell out the
+/// full `bucket_ch::INVALID_HANDLE` path.
+pub(crate) const HANDLE_NONE: u32 = INVALID_HANDLE;
 
 use super::state::{CchWeights, ServerState};
 
@@ -54,17 +59,32 @@ struct CchQueryState {
     current_gen: u32,
     /// Forward 4-ary heap (decrease-key) — replaces PriorityQueue
     /// (codex #291). Heap entries are `(weight, node_id)` where node_id
-    /// is a usize-cast u32. `handles_fwd[node]` gives the heap position
-    /// of that node, or `HANDLE_NONE` if not in the heap this gen.
+    /// is a usize-cast u32. `handles_fwd[node]` is the heap position
+    /// only when the node is in-heap *this query*; see the comment on
+    /// `handles_fwd` below for the full invariant.
     pq_fwd: DAryHeap,
     pq_bwd: DAryHeap,
-    /// Per-node forward heap handle (heap position or HANDLE_NONE).
-    /// Generation-stamped: only valid when `gen_fwd[node] == current_gen`
-    /// AND `handles_fwd_gen[node] == current_gen`.
+    /// Per-node forward heap handle.
+    ///
+    /// **Not globally valid.** For any node where `gen_fwd[node] !=
+    /// current_gen` the handle slot may still carry a stale value left
+    /// over from a previous query — only the gen check gives it
+    /// meaning. `set_fwd` resets the slot to `HANDLE_NONE` on first
+    /// touch this query and `DAryHeap::pop` clears it again on
+    /// settlement, so the "in-heap-now" predicate `gen_fwd[node] ==
+    /// current_gen && handles_fwd[node] != HANDLE_NONE` is always
+    /// sound for callers that read it.
+    ///
+    /// In practice the callers in this file (`push_fwd`,
+    /// `is_stalled_fwd`) only read `handles_fwd` immediately after a
+    /// `set_fwd` for the same node, so the gen check is implicit and
+    /// the field-level read of `handles_fwd[node] != HANDLE_NONE`
+    /// alone is correct.
+    ///
+    /// PR #317 review: dropped the separate `handles_*_gen` arrays
+    /// (~40 MB/thread on Belgium) by folding staleness into `set_fwd`.
     handles_fwd: Vec<u32>,
     handles_bwd: Vec<u32>,
-    handles_fwd_gen: Vec<u32>,
-    handles_bwd_gen: Vec<u32>,
 }
 
 impl CchQueryState {
@@ -81,8 +101,6 @@ impl CchQueryState {
             pq_bwd: DAryHeap::new(1024),
             handles_fwd: vec![HANDLE_NONE; n_nodes],
             handles_bwd: vec![HANDLE_NONE; n_nodes],
-            handles_fwd_gen: vec![0; n_nodes],
-            handles_bwd_gen: vec![0; n_nodes],
         }
     }
 
@@ -91,64 +109,65 @@ impl CchQueryState {
     fn start_query(&mut self) {
         self.current_gen = self.current_gen.wrapping_add(1);
         if self.current_gen == 0 {
-            // Overflow — reset all versions (rare, every ~4B queries)
+            // Overflow — reset all versions (rare, every ~4B queries).
+            // After reset we also wipe the handle arrays so the
+            // post-overflow first query starts fully clean (otherwise
+            // a node visited just before overflow could carry a stale
+            // non-HANDLE_NONE entry into the first query of the next
+            // generation cycle, where set_* clears it via the gen
+            // check — but that check would now misfire since gen
+            // was just reset to 0).
             self.gen_fwd.iter_mut().for_each(|v| *v = 0);
             self.gen_bwd.iter_mut().for_each(|v| *v = 0);
-            self.handles_fwd_gen.iter_mut().for_each(|v| *v = 0);
-            self.handles_bwd_gen.iter_mut().for_each(|v| *v = 0);
+            self.handles_fwd.iter_mut().for_each(|h| *h = HANDLE_NONE);
+            self.handles_bwd.iter_mut().for_each(|h| *h = HANDLE_NONE);
             self.current_gen = 1;
         }
         self.pq_fwd.clear();
         self.pq_bwd.clear();
-        // handles_fwd / handles_bwd are gen-stamped; no O(n) reset needed.
+        // handles_fwd / handles_bwd carry over: set_* clears stale
+        // entries on first touch this query.
     }
 
-    /// Push `node` onto the forward heap with weight `dist`. Detects
-    /// whether the node is already in the heap (via gen-stamped handle)
-    /// and uses decrease-key in that case; otherwise pushes fresh.
+    /// Push `node` onto the forward heap with weight `dist`. Caller
+    /// must have called `set_fwd(node, …)` first; that's where stale
+    /// handles get cleared on first-touch-this-query.
     #[inline]
     fn push_fwd(&mut self, node: u32, dist: u32) {
-        if self.handles_fwd_gen[node as usize] == self.current_gen {
+        if self.handles_fwd[node as usize] != HANDLE_NONE {
+            // Live handle this query — decrease.
             let handle = self.handles_fwd[node as usize];
             self.pq_fwd
                 .decrease(handle, dist, node, &mut self.handles_fwd);
         } else {
+            // Fresh insert (DAryHeap::push sets handles_fwd[node]).
             self.pq_fwd.push(dist, node, &mut self.handles_fwd);
-            self.handles_fwd_gen[node as usize] = self.current_gen;
         }
     }
 
     #[inline]
     fn push_bwd(&mut self, node: u32, dist: u32) {
-        if self.handles_bwd_gen[node as usize] == self.current_gen {
+        if self.handles_bwd[node as usize] != HANDLE_NONE {
             let handle = self.handles_bwd[node as usize];
             self.pq_bwd
                 .decrease(handle, dist, node, &mut self.handles_bwd);
         } else {
             self.pq_bwd.push(dist, node, &mut self.handles_bwd);
-            self.handles_bwd_gen[node as usize] = self.current_gen;
         }
     }
 
     /// Pop the minimum-weight forward heap entry. Returns `(weight, node)`.
-    /// Clears the node's gen-stamped handle so a future push will be a
-    /// fresh insert.
+    /// `DAryHeap::pop` clears the popped node's `handles_fwd` slot to
+    /// `HANDLE_NONE` so subsequent operations recognise this node as
+    /// "not in heap".
     #[inline]
     fn pop_fwd(&mut self) -> Option<(u32, u32)> {
-        let out = self.pq_fwd.pop(&mut self.handles_fwd);
-        if let Some((_, node)) = out {
-            self.handles_fwd_gen[node as usize] = 0;
-        }
-        out
+        self.pq_fwd.pop(&mut self.handles_fwd)
     }
 
     #[inline]
     fn pop_bwd(&mut self) -> Option<(u32, u32)> {
-        let out = self.pq_bwd.pop(&mut self.handles_bwd);
-        if let Some((_, node)) = out {
-            self.handles_bwd_gen[node as usize] = 0;
-        }
-        out
+        self.pq_bwd.pop(&mut self.handles_bwd)
     }
 
     // Forward distance accessors
@@ -163,6 +182,13 @@ impl CchQueryState {
 
     #[inline]
     fn set_fwd(&mut self, node: usize, dist: u32, parent: (u32, u32)) {
+        // PR #317 review: on first touch this query, clear the stale
+        // handle slot. Any push that follows then correctly observes
+        // HANDLE_NONE and pushes fresh instead of decrease-keying a
+        // dead handle from a previous query's heap.
+        if self.gen_fwd[node] != self.current_gen {
+            self.handles_fwd[node] = HANDLE_NONE;
+        }
         self.dist_fwd[node] = dist;
         self.parent_fwd[node] = parent;
         self.gen_fwd[node] = self.current_gen;
@@ -180,6 +206,9 @@ impl CchQueryState {
 
     #[inline]
     fn set_bwd(&mut self, node: usize, dist: u32, parent: (u32, u32)) {
+        if self.gen_bwd[node] != self.current_gen {
+            self.handles_bwd[node] = HANDLE_NONE;
+        }
         self.dist_bwd[node] = dist;
         self.parent_bwd[node] = parent;
         self.gen_bwd[node] = self.current_gen;
