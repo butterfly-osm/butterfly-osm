@@ -120,10 +120,14 @@ impl UpAdjFlat {
     /// Build flat UP adjacency from topology and weights.
     /// `with_topo_idx` controls whether the back-reference is materialised.
     ///
-    /// #306 PR 4: weights are stored at the same width as the source
-    /// [`CchWeights`] `up` array. INF entries are filtered out at this
-    /// stage, so the flat's max is ≤ the cch_weights' max — picking the
-    /// same width is always safe.
+    /// #306 PR 4: storage width for the flat's `weights` is **picked
+    /// from the filtered set**, not copied from the input. INF entries
+    /// are dropped during the build, so the flat's set is a strict
+    /// subset of the cch_weights' set — `WeightWidth::choose` runs on
+    /// the filtered values and may pick a tighter width than the
+    /// input had (e.g. cch_weights at U32 but only finite values < u16
+    /// survived). In practice on Belgium the chosen width matches
+    /// cch_weights' width for the same direction.
     pub fn build_with(topo: &CchTopo, weights: &CchWeights, with_topo_idx: bool) -> Self {
         let n_nodes = topo.n_nodes as usize;
 
@@ -492,13 +496,20 @@ fn write_adj_flat_body_and_footer(
     out.extend_from_slice(bytemuck::cast_slice(offsets));
     out.extend_from_slice(bytemuck::cast_slice(a32));
     // The flat file format v1 stores weights as u32 on disk. The
-    // in-memory `WeightArray` may be u16 — widen on write so the
-    // existing reader keeps working (the codec lives in
-    // `cch_weights`'s file format; the flat file format follows in
-    // a future PR if RSS measurements justify it). For the matrix
-    // hot path the in-memory u16 path is what matters.
-    for w in weights.iter() {
-        out.extend_from_slice(&w.to_le_bytes());
+    // in-memory `WeightArray` may be u16/u24/u32 — widen on write so
+    // the existing reader keeps working. PR #326 review: fast-path
+    // the U32 case via `cast_slice` (zero copy of the underlying
+    // slice) instead of iterating per-entry. The compact variants
+    // still iterate to widen.
+    match weights {
+        crate::formats::WeightArray::U32(arr) => {
+            out.extend_from_slice(bytemuck::cast_slice(arr.as_slice()));
+        }
+        _ => {
+            for w in weights.iter() {
+                out.extend_from_slice(&w.to_le_bytes());
+            }
+        }
     }
     if let Some(t) = topo_edge_idx {
         out.extend_from_slice(bytemuck::cast_slice(t));
@@ -633,7 +644,7 @@ impl UpAdjFlatFile {
         Ok(UpAdjFlat {
             offsets: ArcCow::from_vec(offsets.to_vec()),
             targets: ArcCow::from_vec(targets.to_vec()),
-            weights: crate::formats::WeightArray::U32(ArcCow::from_vec(weights.to_vec())),
+            weights: crate::formats::WeightArray::from_vec_u32(weights.to_vec()),
             topo_edge_idx: ArcCow::from_vec(topo_edge_idx.to_vec()),
         })
     }
@@ -750,7 +761,7 @@ impl DownAdjFlatFile {
         Ok(DownAdjFlat {
             offsets: ArcCow::from_vec(offsets.to_vec()),
             targets: ArcCow::from_vec(targets.to_vec()),
-            weights: crate::formats::WeightArray::U32(ArcCow::from_vec(weights.to_vec())),
+            weights: crate::formats::WeightArray::from_vec_u32(weights.to_vec()),
         })
     }
 
@@ -867,7 +878,7 @@ impl DownReverseAdjFlatFile {
         Ok(DownReverseAdjFlat {
             offsets: ArcCow::from_vec(offsets.to_vec()),
             sources: ArcCow::from_vec(sources.to_vec()),
-            weights: crate::formats::WeightArray::U32(ArcCow::from_vec(weights.to_vec())),
+            weights: crate::formats::WeightArray::from_vec_u32(weights.to_vec()),
             topo_edge_idx: ArcCow::from_vec(topo_edge_idx.to_vec()),
         })
     }
