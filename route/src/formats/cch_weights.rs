@@ -74,12 +74,25 @@ impl WeightWidth {
         }
     }
 
-    /// `WeightWidth::U16` iff every value in `weights` fits in `u16`
-    /// (including the `u32::MAX` "no edge" sentinel — but u16::MAX
-    /// reserves nothing, so a `u32::MAX` sentinel forces `U32`).
+    /// Number of bytes occupied by a body of `n` entries at this width,
+    /// padded up to the next 4-byte boundary so the following `u32`
+    /// arrays (middles) stay aligned for `bytemuck::cast_slice`.
+    #[inline]
+    pub fn padded_body_bytes(self, n: usize) -> usize {
+        let raw = self.bytes_per_entry() * n;
+        (raw + 3) & !3
+    }
+
+    /// `WeightWidth::U16` iff every value in `weights` fits in `u16`.
+    /// `u32::MAX` (the "no edge" sentinel) maps to `u16::MAX` on the
+    /// compact path — that round-trip is lossless, so the sentinel
+    /// itself doesn't force U32.
     #[inline]
     pub fn choose(weights: &[u32]) -> Self {
-        if weights.iter().all(|&w| w <= u16::MAX as u32) {
+        if weights
+            .iter()
+            .all(|&w| w == u32::MAX || w <= u16::MAX as u32)
+        {
             Self::U16
         } else {
             Self::U32
@@ -349,17 +362,16 @@ impl CchWeightsFile {
         } = parse_header(header)?;
 
         // Layout v3 (with optional middle arrays):
-        //   header(32) | up(width_up·n_up) | down(width_down·n_down)
-        //              | [v2/v3 middles: up_middle(4·n_up) | down_middle(4·n_down)]
+        //   header(32) | up(width_up·n_up [+0-2 pad]) | down(width_down·n_down [+0-2 pad])
+        //              | [v3 middles: up_middle(4·n_up) | down_middle(4·n_down)]
         //              | footer(16)
-        let up_bytes = up_width
-            .bytes_per_entry()
-            .checked_mul(n_up)
-            .ok_or_else(|| anyhow::anyhow!("cch.weights up byte len overflow for n_up={n_up}"))?;
-        let down_bytes = down_width
-            .bytes_per_entry()
-            .checked_mul(n_down)
-            .ok_or_else(|| anyhow::anyhow!("cch.weights down byte len overflow for n_down={n_down}"))?;
+        //
+        // u16 bodies are padded up to a 4-byte boundary so the
+        // following arrays (the other direction's body and the u32
+        // middles) stay aligned for `bytemuck::cast_slice` /
+        // `ArcCow::<u32>::from_mmap`.
+        let up_bytes = up_width.padded_body_bytes(n_up);
+        let down_bytes = down_width.padded_body_bytes(n_down);
         let body_no_middle = up_bytes
             .checked_add(down_bytes)
             .ok_or_else(|| anyhow::anyhow!("cch.weights body size overflow"))?;
@@ -448,11 +460,12 @@ impl CchWeightsFile {
         } = parse_header(header)?;
 
         // v3 layout (with optional middles, per-direction body width):
-        //   header(32) | up(width_up·n_up) | down(width_down·n_down)
+        //   header(32) | up(width_up·n_up [+0-2 pad]) | down(width_down·n_down [+0-2 pad])
         //              | [up_middle(4·n_up) | down_middle(4·n_down)]
         //              | footer(16)
-        let up_bytes = up_width.bytes_per_entry() * n_up;
-        let down_bytes = down_width.bytes_per_entry() * n_down;
+        // u16 bodies pad up to 4-byte boundary — see `padded_body_bytes`.
+        let up_bytes = up_width.padded_body_bytes(n_up);
+        let down_bytes = down_width.padded_body_bytes(n_down);
         let no_middle_len = HEADER_LEN + up_bytes + down_bytes + FOOTER_LEN;
         let with_middle_len = no_middle_len + 4 * (n_up + n_down);
         let has_middles = match bytes.len() {
@@ -467,12 +480,15 @@ impl CchWeightsFile {
         };
 
         let up_off = HEADER_LEN;
-        let up_end = up_off + up_bytes;
+        let up_end = up_off + up_bytes; // includes padding
         let down_off = up_end;
         let down_end = down_off + down_bytes;
 
-        let up_body = &bytes[up_off..up_end];
-        let down_body = &bytes[down_off..down_end];
+        // Read only the actual data bytes (skip any 0-2 byte tail pad).
+        let up_data = up_width.bytes_per_entry() * n_up;
+        let down_data = down_width.bytes_per_entry() * n_down;
+        let up_body = &bytes[up_off..up_off + up_data];
+        let down_body = &bytes[down_off..down_off + down_data];
         let up_vec: Vec<u32> = match up_width {
             WeightWidth::U16 => decode_u16_to_u32_vec(up_body),
             WeightWidth::U32 => bytemuck::cast_slice::<u8, u32>(up_body).to_vec(),
@@ -534,33 +550,36 @@ impl CchWeightsFile {
             down_width,
         } = parse_header(&header)?;
 
-        // Read up weights at width.
-        let up_byte_count = up_width.bytes_per_entry() * n_up;
-        let mut up_body = vec![0u8; up_byte_count];
+        // Read up weights body (padded to next 4-byte boundary).
+        let up_padded_count = up_width.padded_body_bytes(n_up);
+        let up_data_count = up_width.bytes_per_entry() * n_up;
+        let mut up_body = vec![0u8; up_padded_count];
         reader.read_exact(&mut up_body)?;
         crc_digest.update(&up_body);
+        // Decode only the actual data bytes (skip the 0-2 byte tail pad).
         let up_vec: Vec<u32> = match up_width {
-            WeightWidth::U16 => decode_u16_to_u32_vec(&up_body),
-            WeightWidth::U32 => up_body
+            WeightWidth::U16 => decode_u16_to_u32_vec(&up_body[..up_data_count]),
+            WeightWidth::U32 => up_body[..up_data_count]
                 .chunks_exact(4)
                 .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
                 .collect(),
         };
 
-        // Read down weights at width.
-        let down_byte_count = down_width.bytes_per_entry() * n_down;
-        let mut down_body = vec![0u8; down_byte_count];
+        // Read down weights body (padded).
+        let down_padded_count = down_width.padded_body_bytes(n_down);
+        let down_data_count = down_width.bytes_per_entry() * n_down;
+        let mut down_body = vec![0u8; down_padded_count];
         reader.read_exact(&mut down_body)?;
         crc_digest.update(&down_body);
         let down_vec: Vec<u32> = match down_width {
-            WeightWidth::U16 => decode_u16_to_u32_vec(&down_body),
-            WeightWidth::U32 => down_body
+            WeightWidth::U16 => decode_u16_to_u32_vec(&down_body[..down_data_count]),
+            WeightWidth::U32 => down_body[..down_data_count]
                 .chunks_exact(4)
                 .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
                 .collect(),
         };
 
-        let no_middle_len = HEADER_LEN + up_byte_count + down_byte_count + FOOTER_LEN;
+        let no_middle_len = HEADER_LEN + up_padded_count + down_padded_count + FOOTER_LEN;
         let with_middle_len = no_middle_len + 4 * (n_up + n_down);
 
         let (up_middle, down_middle): (Vec<u32>, Vec<u32>) = match file_len {

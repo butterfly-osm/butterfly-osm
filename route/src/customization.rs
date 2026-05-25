@@ -1067,8 +1067,12 @@ fn write_cch_weights(
     // Write body at chosen width per direction. `u32::MAX` (no edge)
     // collapses to `u16::MAX` in the compact path so the read-side
     // sentinel mapping reconstructs `u32::MAX` losslessly.
+    // Each u16 body is padded to a 4-byte boundary so the following
+    // arrays (the other direction's body + u32 middles) stay aligned.
     write_weights_body(&mut writer, &mut crc_digest, up_weights, up_width)?;
+    write_padding(&mut writer, &mut crc_digest, up_width, up_weights.len())?;
     write_weights_body(&mut writer, &mut crc_digest, down_weights, down_width)?;
+    write_padding(&mut writer, &mut crc_digest, down_width, down_weights.len())?;
 
     // Write relaxed middle arrays — stay at u32 (middle node ids
     // address `n_filtered_nodes` which planet-scale exceeds 65 535).
@@ -1120,6 +1124,24 @@ fn write_weights_body<W: std::io::Write>(
                 crc_digest.update(&bytes);
             }
         }
+    }
+    Ok(())
+}
+
+/// Emit 0-3 zero bytes so the next array begins on a 4-byte boundary.
+/// u32 bodies are already 4-aligned; only u16 needs 2 bytes of pad
+/// when `n` is odd.
+fn write_padding<W: std::io::Write>(
+    writer: &mut W,
+    crc_digest: &mut crate::formats::crc::Digest,
+    width: crate::formats::WeightWidth,
+    n: usize,
+) -> Result<()> {
+    let pad = width.padded_body_bytes(n) - width.bytes_per_entry() * n;
+    if pad > 0 {
+        let zeros = [0u8; 4];
+        writer.write_all(&zeros[..pad])?;
+        crc_digest.update(&zeros[..pad]);
     }
     Ok(())
 }
