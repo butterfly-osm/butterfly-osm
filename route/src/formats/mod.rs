@@ -60,6 +60,7 @@ pub use ebg_turn_table::{TurnEntry, TurnKind, TurnTable, TurnTableFile};
 pub use edge_geom::{EdgeGeomOffsets, EdgeGeomOffsetsFile, EdgeGeomPoints, EdgeGeomPointsFile};
 pub use filtered_ebg::{FilteredEbg, FilteredEbgFile};
 pub use hybrid_state::{HybridState, HybridStateFile};
+pub use mmap::ArcCow;
 pub use mod_mask::ModMask;
 pub use mod_turns::ModTurns;
 pub use mod_weights::ModWeights;
@@ -71,7 +72,8 @@ pub use node_signals::{NodeSignals, NodeSignalsFile};
 pub use order_ebg::{OrderEbg, OrderEbgFile};
 pub use relations::{Member, MemberKind, Relation, RelationsFile};
 pub use snap_index::{
-    PackedPoint, SnapGrid, SnapGridFile, SnapMask, SnapMaskFile, SnapPoints, SnapPointsFile,
+    PackedPoint, SnapBbox, SnapGrid, SnapGridFile, SnapMask, SnapMaskFile, SnapPoints,
+    SnapPointsFile, peek_snap_points_bbox,
 };
 pub use turn_rules::TurnRule;
 pub use way_attrs::WayAttr;
