@@ -221,7 +221,10 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     // shortcut hierarchy.
     let traffic_skip_relax = if let Some(t) = traffic {
         let scale_start = std::time::Instant::now();
-        apply_traffic_to_node_weights(&mut weights.weights, &ebg_nodes, t)?;
+        // #294: weights.weights is Cow<[u32]>. Customization is a
+        // build-time path that always owns the data; `to_mut()` is a
+        // no-op on Owned and a copy-on-write on Borrowed.
+        apply_traffic_to_node_weights(weights.weights.to_mut(), &ebg_nodes, t)?;
         println!(
             "  ✓ Applied '{}' speed factors to {} EBG node weights in {:.3}s",
             t.profile.name,
