@@ -676,6 +676,34 @@ fn pack_snap_index(
         .with_context(|| "packing shared/snap_points".to_string())?;
     drop(pts_bytes);
 
+    // #142: region_tiles — coarse (0.1°) tile coverage set listing
+    // every tile the region's road network touches. Lets multi-region
+    // serve's snap_winner skip a Pending region whose tiles don't
+    // cover the query coord without forcing the region's lazy load.
+    // Additive — legacy containers stay readable.
+    let tiles = crate::formats::build_region_tiles(
+        built
+            .points
+            .points
+            .as_slice()
+            .iter()
+            .map(|p| (p.lon_e7, p.lat_e7)),
+    );
+    let tiles_bytes = crate::formats::RegionTilesFile::encode(&tiles);
+    println!(
+        "  + [{:>5} KiB] {:<28} <- (region_tiles, {} tiles @ 0.1°)",
+        tiles_bytes.len() / 1024,
+        "shared/region_tiles",
+        tiles.len(),
+    );
+    w.append_bytes(
+        crate::formats::butterfly_dat::SectionKind::Unknown,
+        "shared/region_tiles",
+        &tiles_bytes,
+    )
+    .with_context(|| "packing shared/region_tiles".to_string())?;
+    drop(tiles_bytes);
+
     let grid_bytes = SnapGridFile::encode(&built.grid);
     println!(
         "  + [{:>5} MiB] {:<28} <- (snap_grid, {}x{} cells)",
