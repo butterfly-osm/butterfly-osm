@@ -777,7 +777,8 @@ fn build_route_output(
     dst_rank: u32,
     scratch: &mut RouteScratch,
 ) -> (f32, f32, Vec<u8>) {
-    let duration_s = result.distance as f64 / 10.0;
+    // #297: result.distance is now seconds (v2 CCH weights).
+    let duration_s = result.distance as f64;
 
     super::unpack::unpack_path_into(
         &mode_data.cch_topo,
@@ -1272,133 +1273,7 @@ fn do_route_batch(
     let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<RecordBatch, Status>>(8);
 
     tokio::task::spawn_blocking(move || {
-<<<<<<< HEAD
         do_route_batch_blocking(state, mode, params, tx);
-=======
-        let mode_data = state.get_mode(mode);
-        let schema = Arc::new(route_batch_schema());
-        let batch_size = 1000usize;
-
-        for chunk in params.pairs.chunks(batch_size) {
-            let n = chunk.len();
-            let mut src_lon_arr = Float64Builder::with_capacity(n);
-            let mut src_lat_arr = Float64Builder::with_capacity(n);
-            let mut dst_lon_arr = Float64Builder::with_capacity(n);
-            let mut dst_lat_arr = Float64Builder::with_capacity(n);
-            let mut dur_arr = Float32Builder::with_capacity(n);
-            let mut dist_arr = Float32Builder::with_capacity(n);
-            let mut geom_arr = BinaryBuilder::with_capacity(n, n * 256);
-
-            // K-best snap + bounded combo fallback (mirrors /route).
-            // The connectivity-aware role masks already eliminate most
-            // snap traps; the fallback now only catches same-geometry
-            // directional ambiguity and exclude/avoid edge cases.
-            const SNAP_K: usize = 64;
-            let query = CchQuery::new(&state, mode);
-
-            for pair in chunk {
-                let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
-                src_lon_arr.append_value(slon);
-                src_lat_arr.append_value(slat);
-                dst_lon_arr.append_value(dlon);
-                dst_lat_arr.append_value(dlat);
-
-                let src_snap = super::snap_kbest::snap_k_pair_role(
-                    &state,
-                    mode_data,
-                    mode,
-                    slon,
-                    slat,
-                    super::types::SnapRole::Src,
-                    None,
-                    SNAP_K,
-                );
-                let dst_snap = super::snap_kbest::snap_k_pair_role(
-                    &state,
-                    mode_data,
-                    mode,
-                    dlon,
-                    dlat,
-                    super::types::SnapRole::Dst,
-                    None,
-                    SNAP_K,
-                );
-
-                if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
-                    dur_arr.append_value(f32::NAN);
-                    dist_arr.append_value(f32::NAN);
-                    geom_arr.append_value(&[] as &[u8]);
-                    continue;
-                }
-
-                match super::snap_kbest::p2p_with_kbest_fallback(
-                    &query,
-                    &src_snap.ranks,
-                    &dst_snap.ranks,
-                    super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
-                ) {
-                    Some((src_rank, dst_rank, result)) => {
-                        // result.distance is already in seconds (post-#297).
-                        let duration_s = result.distance as f64;
-
-                        let rank_path = unpack_path(
-                            &mode_data.cch_topo,
-                            &mode_data.cch_weights,
-                            &result.forward_parent,
-                            &result.backward_parent,
-                            src_rank,
-                            dst_rank,
-                            result.meeting_node,
-                        );
-                        let ebg_path: Vec<u32> = rank_path
-                            .iter()
-                            .map(|&rank| {
-                                let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-                                mode_data.filtered_to_original[filt_id as usize]
-                            })
-                            .collect();
-
-                        let (points, distance_m) =
-                            build_raw_points(&ebg_path, &state.ebg_nodes, &state.edge_geom);
-
-                        let wkb = encode_linestring_wkb(&points);
-
-                        dur_arr.append_value(duration_s as f32);
-                        dist_arr.append_value(distance_m as f32);
-                        geom_arr.append_value(&wkb);
-                    }
-                    None => {
-                        dur_arr.append_value(f32::NAN);
-                        dist_arr.append_value(f32::NAN);
-                        geom_arr.append_value(&[] as &[u8]);
-                    }
-                }
-            }
-
-            let batch = match RecordBatch::try_new(
-                schema.clone(),
-                vec![
-                    Arc::new(src_lon_arr.finish()) as ArrayRef,
-                    Arc::new(src_lat_arr.finish()),
-                    Arc::new(dst_lon_arr.finish()),
-                    Arc::new(dst_lat_arr.finish()),
-                    Arc::new(dur_arr.finish()),
-                    Arc::new(dist_arr.finish()),
-                    Arc::new(geom_arr.finish()),
-                ],
-            ) {
-                Ok(b) => b,
-                Err(e) => {
-                    let _ = tx.blocking_send(Err(Status::internal(format!("Arrow: {}", e))));
-                    return;
-                }
-            };
-
-            if tx.blocking_send(Ok(batch)).is_err() {
-                return; // Client disconnected
-            }
-        }
->>>>>>> 1f88a44 (feat(units): server + bench remove ds/mm conversions (#297))
     });
 
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
