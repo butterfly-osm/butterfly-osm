@@ -37,12 +37,13 @@
 //! naturally 4-byte aligned for `bytemuck::cast_slice`.
 
 use anyhow::Result;
-use std::borrow::Cow;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
+use std::sync::Arc;
 
 use super::crc::Digest;
+use super::mmap::ArcCow;
 
 const MAGIC: u32 = 0x4D49_4458; // "MIDX"
 const VERSION: u16 = 1;
@@ -76,9 +77,10 @@ pub struct ModeIndex {
     pub kind: ModeIndexKind,
     pub mode: u8,
     pub inputs_sha: [u8; 16],
-    /// Flat `u32` array. Borrowed when read zero-copy from a mmap'd
-    /// container, owned when read from a plain file or built in memory.
-    pub data: Cow<'static, [u32]>,
+    /// Flat `u32` array. Owned when read from a plain file or built in
+    /// memory; Arc-backed mmap view when read from a container section.
+    /// See [`ArcCow`] for the eviction story (#296).
+    pub data: ArcCow<u32>,
 }
 
 impl ModeIndex {
@@ -163,12 +165,15 @@ impl ModeIndexFile {
             kind,
             mode,
             inputs_sha,
-            data: Cow::Owned(v),
+            data: ArcCow::from_vec(v),
         })
     }
 
-    /// Zero-copy reader for `'static` byte slices (mmap-backed
-    /// container sections). Reinterprets the body as `&'static [u32]`;
+    /// Zero-copy reader for `'static` byte slices (test fixtures that
+    /// leak a `Box<[u8]>`). Production loaders should use
+    /// [`Self::read_from_mmap_unverified`] which keeps the
+    /// `Arc<Mmap>` strong-count tied to the returned struct.
+    ///
     /// CRCs are verified before returning.
     pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<ModeIndex> {
         Self::read_from_bytes_zero_copy_inner(bytes, true)
@@ -188,12 +193,62 @@ impl ModeIndexFile {
             0,
             "ModeIndex body must be 4-byte aligned"
         );
-        let data: &'static [u32] = bytemuck::cast_slice(body);
+        // Test fixtures use this path — copy the body into a `Vec<u32>`
+        // and wrap it in `ArcCow::Owned`. The `bytes: &'static [u8]`
+        // lifetime here means the caller leaked the buffer (typically
+        // `Box::leak` in a `#[cfg(test)]` block); we don't carry that
+        // leak into production storage. Production goes through
+        // [`Self::read_from_mmap_unverified`].
+        let data_slice: &[u32] = bytemuck::cast_slice(body);
         Ok(ModeIndex {
             kind,
             mode,
             inputs_sha,
-            data: Cow::Borrowed(data),
+            data: ArcCow::from_vec(data_slice.to_vec()),
+        })
+    }
+
+    /// Production mmap-backed reader (#296). Holds an `Arc<Mmap>` clone
+    /// for the returned struct's lifetime — when the struct drops, the
+    /// strong count decreases. Once all clones drop, the `Mmap` drops,
+    /// `munmap` fires, and the kernel reclaims the pages.
+    ///
+    /// `byte_offset` and `byte_len` are the position and length of the
+    /// section within the container, as recorded in the directory entry.
+    /// CRC walking is the caller's responsibility (typically driven
+    /// through the lazy CRC layer before this call).
+    pub fn read_from_mmap_unverified(
+        mmap: Arc<memmap2::Mmap>,
+        byte_offset: usize,
+        byte_len: usize,
+    ) -> Result<ModeIndex> {
+        anyhow::ensure!(
+            byte_offset.saturating_add(byte_len) <= mmap.len(),
+            "ModeIndex section out of bounds: off={byte_offset} len={byte_len} mmap_len={}",
+            mmap.len()
+        );
+        let bytes = &mmap[byte_offset..byte_offset + byte_len];
+        // Parse header (and the body length implied by `count`) without
+        // verifying CRCs — caller's responsibility upstream.
+        let (kind, mode, inputs_sha, count, _body) = parse_header_and_check(bytes, false)?;
+        let body_len = count
+            .checked_mul(4)
+            .ok_or_else(|| anyhow::anyhow!("ModeIndex count * 4 overflow"))?;
+        let expected = HEADER_SIZE
+            .checked_add(body_len)
+            .and_then(|n| n.checked_add(FOOTER_SIZE))
+            .ok_or_else(|| anyhow::anyhow!("ModeIndex section size overflow"))?;
+        anyhow::ensure!(
+            byte_len == expected,
+            "ModeIndex length mismatch: declared {byte_len}, expected {expected}",
+        );
+        let body_byte_offset = byte_offset + HEADER_SIZE;
+        let data = ArcCow::<u32>::from_mmap(mmap, body_byte_offset, count)?;
+        Ok(ModeIndex {
+            kind,
+            mode,
+            inputs_sha,
+            data,
         })
     }
 }
@@ -291,14 +346,14 @@ mod tests {
             kind: ModeIndexKind::OrigToRank,
             mode: 1,
             inputs_sha: [0xAB; 16],
-            data: Cow::Owned(vec![0u32, 1, 2, u32::MAX, 4]),
+            data: ArcCow::from_vec(vec![0u32, 1, 2, u32::MAX, 4]),
         };
         let bytes = ModeIndexFile::encode(&original);
         let parsed = ModeIndexFile::read_from_bytes(&bytes).expect("read");
         assert_eq!(parsed.kind, ModeIndexKind::OrigToRank);
         assert_eq!(parsed.mode, 1);
         assert_eq!(parsed.inputs_sha, [0xAB; 16]);
-        assert_eq!(parsed.data.as_ref(), original.data.as_ref());
+        assert_eq!(parsed.data.as_slice(), original.data.as_slice());
     }
 
     #[test]
@@ -307,7 +362,7 @@ mod tests {
             kind: ModeIndexKind::FilteredToOriginal,
             mode: 2,
             inputs_sha: [0; 16],
-            data: Cow::Owned((0..1000u32).collect()),
+            data: ArcCow::from_vec((0..1000u32).collect()),
         };
         let bytes = ModeIndexFile::encode(&original);
         let parsed = ModeIndexFile::read_from_bytes(&bytes).expect("read");
@@ -325,7 +380,7 @@ mod tests {
             kind: ModeIndexKind::OrigToRank,
             mode: 0,
             inputs_sha: [0; 16],
-            data: Cow::Owned(vec![]),
+            data: ArcCow::from_vec(vec![]),
         };
         let bytes = ModeIndexFile::encode(&original);
         let parsed = ModeIndexFile::read_from_bytes(&bytes).expect("read");
@@ -338,7 +393,7 @@ mod tests {
             kind: ModeIndexKind::OrigToRank,
             mode: 0,
             inputs_sha: [0; 16],
-            data: Cow::Owned(vec![1u32, 2, 3, 4]),
+            data: ArcCow::from_vec(vec![1u32, 2, 3, 4]),
         };
         let mut bytes = ModeIndexFile::encode(&original);
         // Flip a body byte
@@ -355,7 +410,7 @@ mod tests {
             kind: ModeIndexKind::OrigToRank,
             mode: 0,
             inputs_sha: [0; 16],
-            data: Cow::Owned(vec![0u32]),
+            data: ArcCow::from_vec(vec![0u32]),
         });
         bytes[0] ^= 0xFF;
         let res = ModeIndexFile::read_from_bytes(&bytes);
@@ -369,7 +424,7 @@ mod tests {
             kind: ModeIndexKind::FilteredToOriginal,
             mode: 3,
             inputs_sha: [0xDE; 16],
-            data: Cow::Owned((0..256u32).map(|x| x.wrapping_mul(7)).collect()),
+            data: ArcCow::from_vec((0..256u32).map(|x| x.wrapping_mul(7)).collect()),
         };
         let bytes = ModeIndexFile::encode(&original);
         // Leak to get 'static lifetime for zero-copy reader.
@@ -379,7 +434,70 @@ mod tests {
         assert_eq!(owned.kind, zerocopy.kind);
         assert_eq!(owned.mode, zerocopy.mode);
         assert_eq!(owned.inputs_sha, zerocopy.inputs_sha);
-        assert_eq!(owned.data.as_ref(), zerocopy.data.as_ref());
-        assert!(matches!(zerocopy.data, Cow::Borrowed(_)));
+        assert_eq!(owned.data.as_slice(), zerocopy.data.as_slice());
+    }
+
+    #[test]
+    fn mmap_unverified_roundtrip() -> Result<()> {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let original = ModeIndex {
+            kind: ModeIndexKind::FilteredToOriginal,
+            mode: 5,
+            inputs_sha: [0x7F; 16],
+            data: ArcCow::from_vec((0..512u32).map(|x| x ^ 0xABCD).collect()),
+        };
+        let bytes = ModeIndexFile::encode(&original);
+
+        let mut tmp = NamedTempFile::new()?;
+        tmp.write_all(&bytes)?;
+        tmp.flush()?;
+
+        let mmap = super::super::mmap::map_readonly(tmp.path())?;
+        let strong_before = Arc::strong_count(&mmap);
+        let parsed = ModeIndexFile::read_from_mmap_unverified(Arc::clone(&mmap), 0, bytes.len())?;
+        // The mmap-backed ArcCow keeps a clone alive.
+        assert!(Arc::strong_count(&mmap) > strong_before);
+        assert_eq!(parsed.kind, ModeIndexKind::FilteredToOriginal);
+        assert_eq!(parsed.mode, 5);
+        assert_eq!(parsed.inputs_sha, [0x7F; 16]);
+        assert_eq!(parsed.data.as_slice(), original.data.as_slice());
+
+        // Dropping the parsed struct decrements the strong count back.
+        drop(parsed);
+        assert_eq!(Arc::strong_count(&mmap), strong_before);
+        Ok(())
+    }
+
+    #[test]
+    fn mmap_unverified_rejects_bad_length() -> Result<()> {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let original = ModeIndex {
+            kind: ModeIndexKind::OrigToRank,
+            mode: 0,
+            inputs_sha: [0; 16],
+            data: ArcCow::from_vec(vec![1u32, 2, 3, 4]),
+        };
+        let bytes = ModeIndexFile::encode(&original);
+
+        let mut tmp = NamedTempFile::new()?;
+        tmp.write_all(&bytes)?;
+        tmp.flush()?;
+
+        let mmap = super::super::mmap::map_readonly(tmp.path())?;
+        // Out-of-bounds: byte_offset + byte_len exceeds mmap length.
+        assert!(
+            ModeIndexFile::read_from_mmap_unverified(Arc::clone(&mmap), 0, bytes.len() + 16)
+                .is_err()
+        );
+        // Length mismatch: tail truncated.
+        assert!(
+            ModeIndexFile::read_from_mmap_unverified(Arc::clone(&mmap), 0, bytes.len() - 1)
+                .is_err()
+        );
+        Ok(())
     }
 }

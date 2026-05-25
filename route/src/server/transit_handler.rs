@@ -971,7 +971,7 @@ pub async fn transit_bulk_handler(
     // [`transit_handler`]). Use the primary region.
     let started = std::time::Instant::now();
     let primary_region_id = regions.regions[0].id.clone();
-    let state = Arc::clone(regions.primary());
+    let state = regions.primary();
     // Soft cap on batch size. 100k is generous for interactive use;
     // operators doing matrix-style work should look at `/table/stream`
     // for the road side and batch transit in chunks of ~10k.

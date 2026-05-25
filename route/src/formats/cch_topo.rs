@@ -43,13 +43,14 @@
 //! supporting the legacy layout indefinitely is a footgun.
 
 use anyhow::Result;
-use std::borrow::Cow;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
+use std::sync::Arc;
 
 use super::bitset::BitsetField;
 use super::crc;
+use super::mmap::ArcCow;
 
 const MAGIC: u32 = 0x43434854; // "CCHT"
 const VERSION: u32 = 4; // Version 4 (#151): 80-byte u64-aligned header + variable-array padding for zero-copy
@@ -93,26 +94,31 @@ pub struct CchTopo {
     pub n_original_arcs: u64,
     pub inputs_sha: [u8; 32],
 
-    // Upward graph in CSR format (indexed by rank)
-    // For node at rank r, upward neighbors have rank > r
-    pub up_offsets: Cow<'static, [u64]>, // n_nodes + 1, indexed by rank
-    pub up_targets: Cow<'static, [u32]>, // Rank positions of targets
+    // Upward graph in CSR format (indexed by rank).
+    // For node at rank r, upward neighbors have rank > r.
+    // `ArcCow` variants: `Owned(Vec<T>)` for writers / builders / unit
+    // tests, `Mmap { Arc<Mmap>, .. }` for the zero-copy server boot
+    // path (#296). The `Arc<Mmap>` strong-count keeps the mapping
+    // alive while the struct lives; dropping the struct lets the
+    // kernel reclaim the pages once the last clone drops.
+    pub up_offsets: ArcCow<u64>, // n_nodes + 1, indexed by rank
+    pub up_targets: ArcCow<u32>, // Rank positions of targets
     /// Bit-packed: bit `i` is true iff edge `i` is a shortcut. Use
     /// `up_is_shortcut.bit(i)` instead of indexing — see #147.
     pub up_is_shortcut: BitsetField,
-    pub up_middle: Cow<'static, [u32]>, // Rank position of middle node (u32::MAX if original)
+    pub up_middle: ArcCow<u32>, // Rank position of middle node (u32::MAX if original)
 
     // Downward graph in CSR format (indexed by rank)
     // For node at rank r, downward neighbors have rank < r
-    pub down_offsets: Cow<'static, [u64]>,
-    pub down_targets: Cow<'static, [u32]>,
+    pub down_offsets: ArcCow<u64>,
+    pub down_targets: ArcCow<u32>,
     pub down_is_shortcut: BitsetField,
-    pub down_middle: Cow<'static, [u32]>,
+    pub down_middle: ArcCow<u32>,
 
     // Mapping from rank position to filtered node ID
     // rank_to_filtered[rank] = filtered_id
     // Used for geometry lookup and path unpacking
-    pub rank_to_filtered: Cow<'static, [u32]>,
+    pub rank_to_filtered: ArcCow<u32>,
 }
 
 pub struct CchTopoFile;
@@ -397,27 +403,37 @@ impl CchTopoFile {
             n_shortcuts,
             n_original_arcs,
             inputs_sha,
-            up_offsets: Cow::Owned(up_offsets),
-            up_targets: Cow::Owned(up_targets),
+            up_offsets: ArcCow::from_vec(up_offsets),
+            up_targets: ArcCow::from_vec(up_targets),
             up_is_shortcut,
-            up_middle: Cow::Owned(up_middle),
-            down_offsets: Cow::Owned(down_offsets),
-            down_targets: Cow::Owned(down_targets),
+            up_middle: ArcCow::from_vec(up_middle),
+            down_offsets: ArcCow::from_vec(down_offsets),
+            down_targets: ArcCow::from_vec(down_targets),
             down_is_shortcut,
-            down_middle: Cow::Owned(down_middle),
-            rank_to_filtered: Cow::Owned(rank_to_filtered),
+            down_middle: ArcCow::from_vec(down_middle),
+            rank_to_filtered: ArcCow::from_vec(rank_to_filtered),
         })
     }
 
-    /// Zero-copy read over a `'static` byte slice — see #147.
+    /// Legacy `'static [u8]` reader — see #147 for the original
+    /// zero-copy design and #296 for the un-leak follow-up.
     ///
-    /// Constructs `CchTopo` whose numeric fields are `Cow::Borrowed`
-    /// slices into the input bytes, and whose `*_is_shortcut` bitsets
-    /// borrow the on-disk packed `u64` words directly. CRC is verified
-    /// before returning.
+    /// Historically this constructed a `CchTopo` whose numeric fields
+    /// borrowed from the input bytes via `Cow::Borrowed`. With #296
+    /// the field type is now [`ArcCow`], which only carries an
+    /// `Arc<Mmap>` reference; the `'static` lifetime input has no
+    /// safe way to express the same shape, so the body arrays are
+    /// copied into owned `Vec`s here. The `*_is_shortcut` bitsets
+    /// still borrow the on-disk packed `u64` words directly because
+    /// `BitsetField` keeps its own `Cow<'static, [u64]>` — that's a
+    /// separately-tracked migration.
     ///
-    /// Section start MUST be 8-byte aligned (the container writer
-    /// guarantees this for every section).
+    /// Production loaders should use
+    /// [`Self::read_from_mmap_unverified`] instead, which is true
+    /// zero-copy and lets the `Arc<Mmap>` drop when the struct does.
+    ///
+    /// CRC is verified before returning. Section start MUST be 8-byte
+    /// aligned (the container writer guarantees this for every section).
     pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<CchTopo> {
         Self::read_from_bytes_zero_copy_inner(bytes, true)
     }
@@ -564,22 +580,234 @@ impl CchTopoFile {
             );
         }
 
+        // Test-fixture path: the caller leaked a `Box<[u8]>` so the
+        // `'static` bytes outlive the struct. Production loaders no
+        // longer go through this — they use
+        // [`Self::read_from_mmap_unverified`] which wires the
+        // `Arc<Mmap>` strong-count into the returned `ArcCow` fields
+        // so the mapping drops cleanly on eviction. We copy the body
+        // arrays into owned `Vec`s here so #296 eviction is not
+        // silently subverted by stray `'static` references from
+        // test/legacy callers. The bitset still borrows its packed
+        // words from the leaked `'static` slice; that's a small,
+        // bounded amount of memory and `BitsetField` is the
+        // separate-issue Cow type.
         Ok(CchTopo {
             n_nodes,
             n_shortcuts,
             n_original_arcs,
             inputs_sha,
-            up_offsets: Cow::Borrowed(up_offsets),
-            up_targets: Cow::Borrowed(up_targets),
+            up_offsets: ArcCow::from_vec(up_offsets.to_vec()),
+            up_targets: ArcCow::from_vec(up_targets.to_vec()),
             up_is_shortcut: BitsetField::from_borrowed_words(up_bits_words, n_up_edges),
-            up_middle: Cow::Borrowed(up_middle),
-            down_offsets: Cow::Borrowed(down_offsets),
-            down_targets: Cow::Borrowed(down_targets),
+            up_middle: ArcCow::from_vec(up_middle.to_vec()),
+            down_offsets: ArcCow::from_vec(down_offsets.to_vec()),
+            down_targets: ArcCow::from_vec(down_targets.to_vec()),
             down_is_shortcut: BitsetField::from_borrowed_words(down_bits_words, n_down_edges),
-            down_middle: Cow::Borrowed(down_middle),
-            rank_to_filtered: Cow::Borrowed(rank_to_filtered),
+            down_middle: ArcCow::from_vec(down_middle.to_vec()),
+            rank_to_filtered: ArcCow::from_vec(rank_to_filtered.to_vec()),
         })
     }
+
+    /// Production mmap-backed reader (#296). Constructs a `CchTopo`
+    /// whose body arrays are zero-copy `ArcCow::Mmap` views over the
+    /// supplied `Arc<Mmap>`. Each returned field carries a clone of
+    /// the `Arc`, so the mapping stays alive as long as the struct
+    /// (or any clone of an individual field) does. Once the
+    /// `ServerState` drops, the strong-count falls to zero,
+    /// `Mmap::drop` calls `munmap`, and the kernel reclaims the
+    /// pages — finally un-leaking the boot-time mapping (#296).
+    ///
+    /// `byte_offset` and `byte_len` are the position and length of
+    /// the section inside the container, as recorded in the
+    /// directory. CRC verification is the caller's responsibility
+    /// (driven through the lazy CRC layer before this call).
+    ///
+    /// The bitset `is_shortcut` fields are NOT zero-copy here —
+    /// `BitsetField` is itself a `Cow`-based abstraction
+    /// (separately tracked) and currently cannot hold an `Arc<Mmap>`
+    /// reference. We copy the packed u64 words into owned storage.
+    /// The cost is bounded: each bitset is `ceil(n_edges / 64)`
+    /// u64 words, i.e. ~1/256 of the u32 target array. For the
+    /// Belgium build (~192 M edges) that's ~3 MB total across both
+    /// directions vs the multi-GB u32/u64 arrays we keep zero-copy.
+    pub fn read_from_mmap_unverified(
+        mmap: Arc<memmap2::Mmap>,
+        byte_offset: usize,
+        byte_len: usize,
+    ) -> Result<CchTopo> {
+        anyhow::ensure!(
+            byte_offset.saturating_add(byte_len) <= mmap.len(),
+            "cch.topo section out of bounds: off={byte_offset} len={byte_len} mmap_len={}",
+            mmap.len()
+        );
+        let bytes = &mmap[byte_offset..byte_offset + byte_len];
+
+        // The container guarantees section starts are 8-byte aligned.
+        // The v4 header is 80 bytes (u64-multiple) and every variable-
+        // length u32 array is padded to the next u64 boundary, so all
+        // u64 sub-slices stay u64-aligned and all u32 sub-slices stay
+        // u32-aligned regardless of n_up_edges / n_down_edges parity.
+        debug_assert_eq!(
+            bytes.as_ptr() as usize % 8,
+            0,
+            "cch.topo bytes must be u64-aligned at section start \
+             (container writer pads sections to 8-byte boundaries)"
+        );
+
+        let (n_nodes, n_shortcuts, n_original_arcs, n_up_edges, n_down_edges, inputs_sha) =
+            parse_header(bytes)?;
+
+        let n_offsets = (n_nodes as usize) + 1;
+        let n_up_words = n_up_edges.div_ceil(64);
+        let n_down_words = n_down_edges.div_ceil(64);
+        let n_up_pad = u32_pad_to_u64(n_up_edges);
+        let n_down_pad = u32_pad_to_u64(n_down_edges);
+        let n_nodes_pad = u32_pad_to_u64(n_nodes as usize);
+
+        // Layout (mirrors `read_from_bytes_zero_copy_inner`):
+        //   header(80)
+        // | up_offsets(8 * n_offsets)
+        // | up_targets(4 * n_up + n_up_pad)
+        // | up_bits(8 * n_up_words)
+        // | up_middle(4 * n_up + n_up_pad)
+        // | down_offsets(8 * n_offsets)
+        // | down_targets(4 * n_down + n_down_pad)
+        // | down_bits(8 * n_down_words)
+        // | down_middle(4 * n_down + n_down_pad)
+        // | rank_to_filtered(4 * n_nodes + n_nodes_pad)
+        // | footer(16)
+        let mut cur = HEADER_LEN;
+
+        let upo_off = byte_offset + cur;
+        let upo_len_bytes = 8 * n_offsets;
+        cur += upo_len_bytes;
+
+        let upt_off = byte_offset + cur;
+        let upt_len_bytes = 4 * n_up_edges;
+        cur += upt_len_bytes + n_up_pad;
+
+        let upb_off = byte_offset + cur;
+        let upb_len_bytes = 8 * n_up_words;
+        cur += upb_len_bytes;
+
+        let upm_off = byte_offset + cur;
+        let upm_len_bytes = 4 * n_up_edges;
+        cur += upm_len_bytes + n_up_pad;
+
+        let dno_off = byte_offset + cur;
+        let dno_len_bytes = 8 * n_offsets;
+        cur += dno_len_bytes;
+
+        let dnt_off = byte_offset + cur;
+        let dnt_len_bytes = 4 * n_down_edges;
+        cur += dnt_len_bytes + n_down_pad;
+
+        let dnb_off = byte_offset + cur;
+        let dnb_len_bytes = 8 * n_down_words;
+        cur += dnb_len_bytes;
+
+        let dnm_off = byte_offset + cur;
+        let dnm_len_bytes = 4 * n_down_edges;
+        cur += dnm_len_bytes + n_down_pad;
+
+        let rtf_off = byte_offset + cur;
+        let rtf_len_bytes = 4 * (n_nodes as usize);
+        cur += rtf_len_bytes + n_nodes_pad;
+
+        let expected = cur + FOOTER_LEN;
+        anyhow::ensure!(
+            byte_len == expected,
+            "cch.topo length mismatch: declared {byte_len}, expected body+footer {expected}",
+        );
+
+        // Build the zero-copy ArcCow views. Each call validates
+        // alignment + bounds against the mmap; the hot path does no
+        // further checks beyond bytemuck::cast_slice.
+        let up_offsets = ArcCow::<u64>::from_mmap(Arc::clone(&mmap), upo_off, n_offsets)?;
+        let up_targets = ArcCow::<u32>::from_mmap(Arc::clone(&mmap), upt_off, n_up_edges)?;
+        let up_middle = ArcCow::<u32>::from_mmap(Arc::clone(&mmap), upm_off, n_up_edges)?;
+        let down_offsets = ArcCow::<u64>::from_mmap(Arc::clone(&mmap), dno_off, n_offsets)?;
+        let down_targets = ArcCow::<u32>::from_mmap(Arc::clone(&mmap), dnt_off, n_down_edges)?;
+        let down_middle = ArcCow::<u32>::from_mmap(Arc::clone(&mmap), dnm_off, n_down_edges)?;
+        let rank_to_filtered =
+            ArcCow::<u32>::from_mmap(Arc::clone(&mmap), rtf_off, n_nodes as usize)?;
+
+        // Bitsets: BitsetField doesn't yet have an Arc<Mmap> variant
+        // (separate issue), so copy the packed words into owned
+        // storage. See doc comment for the bounded-cost rationale.
+        let up_bits_bytes = &mmap[upb_off..upb_off + upb_len_bytes];
+        let up_bits_words: &[u64] = bytemuck::cast_slice(up_bits_bytes);
+        let up_is_shortcut = BitsetField::from_owned_words(up_bits_words.to_vec(), n_up_edges);
+
+        let down_bits_bytes = &mmap[dnb_off..dnb_off + dnb_len_bytes];
+        let down_bits_words: &[u64] = bytemuck::cast_slice(down_bits_bytes);
+        let down_is_shortcut =
+            BitsetField::from_owned_words(down_bits_words.to_vec(), n_down_edges);
+
+        Ok(CchTopo {
+            n_nodes,
+            n_shortcuts,
+            n_original_arcs,
+            inputs_sha,
+            up_offsets,
+            up_targets,
+            up_is_shortcut,
+            up_middle,
+            down_offsets,
+            down_targets,
+            down_is_shortcut,
+            down_middle,
+            rank_to_filtered,
+        })
+    }
+}
+
+/// Parse the 80-byte v4 cch.topo header and return its fields.
+/// Shared by the owned, zero-copy, and mmap-backed readers.
+///
+/// Returns `(n_nodes, n_shortcuts, n_original_arcs, n_up_edges,
+/// n_down_edges, inputs_sha)`. `n_up_edges` / `n_down_edges` are
+/// returned as `usize` because every downstream consumer indexes by
+/// them.
+fn parse_header(bytes: &[u8]) -> Result<(u32, u64, u64, usize, usize, [u8; 32])> {
+    anyhow::ensure!(
+        bytes.len() >= HEADER_LEN + FOOTER_LEN,
+        "cch.topo too short for header+footer: {} bytes",
+        bytes.len()
+    );
+    let h = &bytes[..HEADER_LEN];
+    let magic = u32::from_le_bytes(h[0..4].try_into().unwrap());
+    anyhow::ensure!(
+        magic == MAGIC,
+        "Invalid magic: expected 0x{:08X}, got 0x{:08X}",
+        MAGIC,
+        magic
+    );
+    let version = u32::from_le_bytes(h[4..8].try_into().unwrap());
+    anyhow::ensure!(
+        version == VERSION,
+        "Unsupported cch.topo format version {}: this build only reads v{}. \
+         Regenerate the per-mode topology with `butterfly-route step7-contract`.",
+        version,
+        VERSION
+    );
+    let n_nodes = u32::from_le_bytes(h[8..12].try_into().unwrap());
+    // h[12..16] reserved
+    let n_shortcuts = u64::from_le_bytes(h[16..24].try_into().unwrap());
+    let n_original_arcs = u64::from_le_bytes(h[24..32].try_into().unwrap());
+    let n_up_edges = u64::from_le_bytes(h[32..40].try_into().unwrap()) as usize;
+    let n_down_edges = u64::from_le_bytes(h[40..48].try_into().unwrap()) as usize;
+    let mut inputs_sha = [0u8; 32];
+    inputs_sha.copy_from_slice(&h[48..80]);
+    Ok((
+        n_nodes,
+        n_shortcuts,
+        n_original_arcs,
+        n_up_edges,
+        n_down_edges,
+        inputs_sha,
+    ))
 }
 
 #[cfg(test)]
