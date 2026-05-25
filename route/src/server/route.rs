@@ -1432,18 +1432,25 @@ fn gpx_response(body: String) -> axum::response::Response {
 
 // ============ Helper functions ============
 
-/// Look up the road name for an EBG edge via geom_idx → NbgEdge.first_osm_way_id
+/// Look up the road name for an EBG edge via geom_idx → NbgEdge.first_osm_way_id.
+///
+/// #282: takes the abstract `WayNames` (either mmap-backed
+/// `WayNamesIdx` or legacy `HashMap`) and returns an owned `String` so
+/// callers don't have to thread a lifetime through the step-building
+/// pipeline. The lookup itself is O(log n) (binary search on the
+/// mmap-backed array) or O(1) (HashMap) — the allocation only happens
+/// when there's actually a name to return.
 pub fn lookup_road_name(
     edge_id: u32,
     ebg_nodes: &crate::formats::EbgNodes,
     nbg_geo: &crate::formats::NbgGeo,
-    way_names: &std::collections::HashMap<i64, String>,
+    way_names: &crate::server::state::WayNames,
 ) -> Option<String> {
     let node = &ebg_nodes.nodes[edge_id as usize];
     let geom_idx = node.geom_idx as usize;
     if geom_idx < nbg_geo.edges.len() {
         let way_id = nbg_geo.edges[geom_idx].first_osm_way_id;
-        way_names.get(&way_id).cloned()
+        way_names.get(way_id).map(|s| s.to_string())
     } else {
         None
     }
@@ -1456,7 +1463,7 @@ pub(crate) fn build_steps(
     nbg_geo: &crate::formats::NbgGeo,
     edge_geom: &crate::server::edge_geom::EdgeGeometry,
     node_weights: &[u32],
-    way_names: &std::collections::HashMap<i64, String>,
+    way_names: &crate::server::state::WayNames,
     format: GeometryFormat,
 ) -> Vec<RouteStep> {
     if ebg_path.len() < 2 {

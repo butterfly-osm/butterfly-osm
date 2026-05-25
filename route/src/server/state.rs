@@ -26,6 +26,57 @@ use super::exclude::{self, ExcludeWeights};
 use super::edge_geom::EdgeGeometry;
 use super::elevation::ElevationData;
 use super::snap_index::{DEFAULT_CELL_LOG2, PackedSnapIndex, SnapBuilderMode, build_snap_index};
+use crate::formats::way_names_idx::WayNamesIdx;
+
+/// Road-name lookup backend.
+///
+/// Two storage variants behind the same `get(way_id) -> Option<&str>`
+/// API:
+///
+/// - [`WayNames::Idx`] — compact mmap-backed sorted-array + offsets
+///   index loaded from a container's `shared/way_names_idx` section
+///   (#282). On Belgium this holds ~5-10 KB heap with 754 K named ways
+///   addressable; scales to ~3 GiB heap saved on planet-scale corpora.
+/// - [`WayNames::Heap`] — legacy `HashMap<i64, String>` built from
+///   `step1/ways.raw` at boot. Used by the data-dir path and as a
+///   fallback when the container pre-dates #282.
+pub enum WayNames {
+    Idx(WayNamesIdx),
+    Heap(HashMap<i64, String>),
+}
+
+impl WayNames {
+    /// Look up a name by OSM way id. Returns the borrowed string when
+    /// present; identical semantics for both backends.
+    #[inline]
+    pub fn get(&self, way_id: i64) -> Option<&str> {
+        match self {
+            Self::Idx(idx) => idx.get(way_id),
+            Self::Heap(m) => m.get(&way_id).map(|s| s.as_str()),
+        }
+    }
+
+    /// Number of named ways indexed.
+    #[inline]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Idx(idx) => idx.len(),
+            Self::Heap(m) => m.len(),
+        }
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Construct from a legacy HashMap (data-dir path or container
+    /// without `shared/way_names_idx`).
+    #[inline]
+    pub fn from_heap(m: HashMap<i64, String>) -> Self {
+        Self::Heap(m)
+    }
+}
 
 /// Per-mode data including CCH topology (since each mode has its own filtered CCH)
 pub struct ModeData {
@@ -175,8 +226,14 @@ pub struct ServerState {
     // Elevation data (optional, loaded from SRTM .hgt files)
     pub elevation: Option<ElevationData>,
 
-    // Road names: OSM way_id → name string (for turn-by-turn instructions)
-    pub way_names: HashMap<i64, String>,
+    // Road names: OSM way_id → name string (for turn-by-turn instructions).
+    //
+    // #282: when the container has `shared/way_names_idx`, this is a
+    // compact mmap-backed sorted-array + offsets + UTF-8 blob view
+    // (~5-10 KB heap on Belgium). Otherwise it's the legacy
+    // `HashMap<i64, String>` built from `step1/ways.raw` (~30-50 MB
+    // heap on Belgium). Both expose the same `get(way_id) -> Option<&str>` API.
+    pub way_names: WayNames,
 
     // Distance weights indexed by original EBG node ID (length_mm per edge)
     // Used for isodistance isochrones — same role as ModeData.node_weights but in millimeters
@@ -406,9 +463,12 @@ impl ServerState {
             crate::server::rss::checkpoint(&format!("spatial.mode.{}", name));
         }
 
-        // Load road names from ways.raw for turn-by-turn instructions
+        // Load road names from ways.raw for turn-by-turn instructions.
+        // Data-dir path always uses the legacy HashMap; the container
+        // path (`load_state_from_bundle`) can use the compact mmap
+        // index when `shared/way_names_idx` is present (#282).
         tracing::info!("Loading road names...");
-        let way_names = load_way_names(&step1_dir)?;
+        let way_names = WayNames::from_heap(load_way_names(&step1_dir)?);
         tracing::info!(named_roads = way_names.len(), "loaded road names");
 
         // Build per-edge exclude flags from way_attrs.car.bin
@@ -998,14 +1058,37 @@ impl ServerState {
             }
         }
 
-        // ---- Road names from shared/step1.ways.raw ------------------
-        // #275: ways.raw is read once at boot to populate `way_names`.
-        // The names live in a heap HashMap from that point on; the
-        // mmap'd byte range is never read again at serve time. Drop the
-        // pages from RSS — they came in resident because LazyContainer's
-        // boot-time CRC walk touched them.
+        // ---- Road names ---------------------------------------------
+        // #282: prefer the compact mmap-backed `shared/way_names_idx`
+        // section (~5-10 KB heap on Belgium, scales to ~3 GiB saved at
+        // planet scale). Fall back to the legacy
+        // `shared/step1.ways.raw` HashMap build (~30-50 MB heap on
+        // Belgium) for containers that pre-date the index.
         tracing::info!("Loading road names from container...");
-        let way_names = if let Some(ways_bytes) = optional_section("shared/step1.ways.raw")? {
+        // PR #324 review: do NOT call `lazy_for_bytes.verify_now` here.
+        // A synchronous verify walks the full ~19 MiB way_names_idx
+        // body, paging it in at boot, which defeats the
+        // demand-paged-mmap goal of the lazy index. The lazy header
+        // (magic / version / sizes) is still validated by
+        // `read_from_mmap_unverified` below; the body CRC stays
+        // deferred. Operators that want eager body CRC can opt in
+        // via `--warmup-on-boot` or `--eager-verify`, which the
+        // existing `LazyContainer::spawn_warmup` path already covers.
+        let way_names = if let Some(entry) = container.get("shared/way_names_idx") {
+            let off = entry.offset as usize;
+            let len = entry.len as usize;
+            let idx = crate::formats::way_names_idx::read_from_mmap_unverified(
+                std::sync::Arc::clone(&mmap_for_bytes),
+                off,
+                len,
+            )?;
+            tracing::info!(
+                source = "shared/way_names_idx",
+                named_roads = idx.len(),
+                "loaded road names (mmap-backed, body CRC deferred to warmup/eager flags)"
+            );
+            WayNames::Idx(idx)
+        } else if let Some(ways_bytes) = optional_section("shared/step1.ways.raw")? {
             let names = load_way_names_from_bytes(ways_bytes)?;
             if let Err(e) = crate::formats::mmap::madvise_dontneed(ways_bytes) {
                 tracing::warn!(
@@ -1020,12 +1103,16 @@ impl ServerState {
                     "madvise(DONTNEED) on cold ways.raw section"
                 );
             }
-            names
+            tracing::info!(
+                source = "shared/step1.ways.raw",
+                named_roads = names.len(),
+                "loaded road names (heap HashMap fallback)"
+            );
+            WayNames::Heap(names)
         } else {
-            tracing::warn!("ways.raw missing in container, road names unavailable");
-            HashMap::new()
+            tracing::warn!("no way_names section in container, road names unavailable");
+            WayNames::Heap(HashMap::new())
         };
-        tracing::info!(named_roads = way_names.len(), "loaded road names");
 
         // ---- Edge exclude flags from one mode's way_attrs -----------
         // #275: way_attrs is read once at boot to build the per-edge
