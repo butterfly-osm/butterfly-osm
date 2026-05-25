@@ -112,12 +112,19 @@ pub fn build_from_pairs(pairs: impl IntoIterator<Item = (i64, String)>) -> Resul
     let mut entries: Vec<(i64, String)> = pairs.into_iter().collect();
     // Sort + dedup (keep last) — same semantics as repeated HashMap::insert.
     entries.sort_by_key(|(id, _)| *id);
+    // PR #324 review: `Vec::dedup_by` walks left-to-right but passes
+    // the closure args in **opposite order from the slice** (see std
+    // docs: "if same_bucket(a, b) returns true, a is removed"). So
+    // when our closure runs on adjacent items, `a` is the LATER one
+    // in the slice and `b` is the EARLIER one. Returning true removes
+    // `a` (the later) and keeps `b` (the earlier).
+    //
+    // For last-write-wins on `(way_id, name)`, we swap `a.1` into
+    // `b.1` BEFORE returning true. That leaves the LATER entry's name
+    // in the slot that survives, achieving the same semantic as
+    // `for (id, name) in pairs { map.insert(id, name); }`.
     entries.dedup_by(|a, b| {
-        // dedup_by retains `b` when the predicate returns true and `a == b`.
-        // For us, "same key" means we want to keep the later entry (a comes
-        // after b in iter order because Vec::dedup_by walks back-to-front).
         if a.0 == b.0 {
-            // Move a's name into b so we retain the later value.
             std::mem::swap(&mut a.1, &mut b.1);
             true
         } else {

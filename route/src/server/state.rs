@@ -1065,10 +1065,18 @@ impl ServerState {
         // `shared/step1.ways.raw` HashMap build (~30-50 MB heap on
         // Belgium) for containers that pre-date the index.
         tracing::info!("Loading road names from container...");
+        // PR #324 review: do NOT call `lazy_for_bytes.verify_now` here.
+        // A synchronous verify walks the full ~19 MiB way_names_idx
+        // body, paging it in at boot, which defeats the
+        // demand-paged-mmap goal of the lazy index. The lazy header
+        // (magic / version / sizes) is still validated by
+        // `read_from_mmap_unverified` below; the body CRC stays
+        // deferred. Operators that want eager body CRC can opt in
+        // via `--warmup-on-boot` or `--eager-verify`, which the
+        // existing `LazyContainer::spawn_warmup` path already covers.
         let way_names = if let Some(entry) = container.get("shared/way_names_idx") {
             let off = entry.offset as usize;
             let len = entry.len as usize;
-            lazy_for_bytes.verify_now("shared/way_names_idx")?;
             let idx = crate::formats::way_names_idx::read_from_mmap_unverified(
                 std::sync::Arc::clone(&mmap_for_bytes),
                 off,
@@ -1077,7 +1085,7 @@ impl ServerState {
             tracing::info!(
                 source = "shared/way_names_idx",
                 named_roads = idx.len(),
-                "loaded road names (mmap-backed)"
+                "loaded road names (mmap-backed, body CRC deferred to warmup/eager flags)"
             );
             WayNames::Idx(idx)
         } else if let Some(ways_bytes) = optional_section("shared/step1.ways.raw")? {
