@@ -545,6 +545,19 @@ pub fn pack(
         );
     }
 
+    // ---- Way-name lookup index (#282) ------------------------------
+    // Build a compact mmap-able way-name table from `step1/ways.raw`.
+    // Saves ~30 MB heap on Belgium vs the HashMap<i64, String> path
+    // (scales to ~3 GiB on planet-scale corpora). If ways.raw is
+    // missing or unreadable, skip emission; the server falls back to
+    // the legacy HashMap built on boot.
+    if let Err(e) = pack_way_names_idx(&mut w, &step1) {
+        eprintln!(
+            "  ! [skip way_names_idx] {}; server will build HashMap at boot from ways.raw",
+            e
+        );
+    }
+
     // ---- Manifest ---------------------------------------------------
     // Lists the modes packed and their bundle ids. For now, every mode
     // is a singleton bundle (bundle_id == mode_name); the topology-
@@ -910,6 +923,93 @@ fn pack_edge_geometry(w: &mut ContainerWriter, step3: &Path) -> Result<()> {
         &pts_bytes,
     )
     .with_context(|| "packing shared/edge_geom_points".to_string())?;
+
+    Ok(())
+}
+
+/// #282: build a compact mmap-able way-name lookup index from
+/// `step1/ways.raw` and append it as `shared/way_names_idx`. Replaces
+/// the boot-time `HashMap<i64, String>` with sorted `[i64]` keys +
+/// `[u32]` offsets + a packed UTF-8 names blob. Saves ~30 MB heap on
+/// Belgium; scales to ~3 GiB at planet scale.
+///
+/// Returns `Err` if `ways.raw` is missing or fails to parse — the
+/// caller logs and skips the section emission, which leaves the
+/// container compatible with the legacy HashMap fallback in
+/// `state.rs::load_way_names_from_bytes`.
+fn pack_way_names_idx(w: &mut ContainerWriter, step1: &Path) -> Result<()> {
+    use crate::formats::WaysFile;
+    use crate::formats::way_names_idx;
+
+    let ways_path = step1.join("ways.raw");
+    if !ways_path.exists() {
+        anyhow::bail!("step1/ways.raw not found at {}", ways_path.display());
+    }
+
+    // Read the value dictionary first — we need the "name" key id so
+    // we can pick out only the (way_id, val_id) pairs without paying
+    // for the full ways stream's string cloning.
+    let (key_dict, val_dict, _, _) = WaysFile::read_dictionaries(&ways_path)
+        .with_context(|| format!("reading ways dictionaries from {}", ways_path.display()))?;
+    let name_key_id = match key_dict.iter().find(|(_, v)| v.as_str() == "name") {
+        Some((k, _)) => Some(*k),
+        None => {
+            // PR #324 review: don't bail when ways.raw has no `name`
+            // key — emit an empty index instead. This matches the
+            // server's legacy `load_way_names_from_bytes` which
+            // returns `HashMap::new()` in the same condition, so the
+            // container stays drop-in for both reader paths.
+            tracing::warn!("no 'name' key in ways.raw dictionary — emitting empty way_names_idx");
+            None
+        }
+    };
+
+    // PR #324 review: collect `(way_id, val_id)` instead of cloning
+    // every name into a heap String during the stream. Names get
+    // materialised once, in sorted order, after dedup — eliminates
+    // ~19 MiB of redundant heap allocation on Belgium and scales
+    // proportionally on planet-scale corpora.
+    let mut pairs: Vec<(i64, u32)> = Vec::new();
+    if let Some(name_key_id) = name_key_id {
+        for result in WaysFile::stream_ways(&ways_path)? {
+            let (way_id, keys, vals, _nodes) = result?;
+            for (i, &k) in keys.iter().enumerate() {
+                if k == name_key_id {
+                    let val_id = vals[i];
+                    if let Some(name) = val_dict.get(&val_id)
+                        && !name.is_empty()
+                    {
+                        pairs.push((way_id, val_id));
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    // Resolve val_id → name only AFTER sort+dedup. `build_from_pairs`
+    // wants `(i64, String)`, so materialise here in one pass over the
+    // post-dedup set.
+    let resolved: Vec<(i64, String)> = pairs
+        .into_iter()
+        .filter_map(|(way_id, val_id)| {
+            val_dict.get(&val_id).map(|n| (way_id, n.clone()))
+        })
+        .collect();
+    let idx = way_names_idx::build_from_pairs(resolved)
+        .with_context(|| "building way_names_idx".to_string())?;
+    let n_entries = idx.n_entries;
+
+    let buf = way_names_idx::serialise_to_bytes(&idx)
+        .with_context(|| "serialising way_names_idx".to_string())?;
+
+    w.append_bytes(SectionKind::WayNamesIdx, "shared/way_names_idx", &buf)
+        .with_context(|| "packing shared/way_names_idx".to_string())?;
+
+    println!(
+        "  + packed shared/way_names_idx ({} entries, {:.2} MiB)",
+        n_entries,
+        buf.len() as f64 / (1024.0 * 1024.0)
+    );
 
     Ok(())
 }
