@@ -777,7 +777,8 @@ fn build_route_output(
     dst_rank: u32,
     scratch: &mut RouteScratch,
 ) -> (f32, f32, Vec<u8>) {
-    let duration_s = result.distance as f64 / 10.0;
+    // #297: result.distance is now seconds (v2 CCH weights).
+    let duration_s = result.distance as f64;
 
     super::unpack::unpack_path_into(
         &mode_data.cch_topo,
@@ -1342,15 +1343,16 @@ fn do_isochrone(
             "Snapped node not accessible for this mode",
         ));
     }
-    let max_interval = *params.intervals.iter().max().unwrap();
-    let max_threshold_ds = max_interval * 10;
+    // Intervals are user-input seconds; weights are also seconds (post-#297),
+    // so the threshold passes through unchanged.
+    let max_threshold_s = *params.intervals.iter().max().unwrap();
 
     let settled = if is_reverse {
         run_phast_bounded_fast_reverse(
             &mode_data.up_adj_flat,
             &mode_data.down_rev_flat,
             origin_rank,
-            max_threshold_ds,
+            max_threshold_s,
             mode,
         )
     } else {
@@ -1358,7 +1360,7 @@ fn do_isochrone(
             &mode_data.up_adj_flat,
             &mode_data.down_adj_flat,
             origin_rank,
-            max_threshold_ds,
+            max_threshold_s,
             mode,
         )
     };
@@ -1379,11 +1381,10 @@ fn do_isochrone(
     let mut wkb_data: Vec<Vec<u8>> = Vec::with_capacity(params.intervals.len());
 
     for &interval_s in &params.intervals {
-        let threshold_ds = interval_s * 10;
-
+        // No scaling: thresholds and weights are both in seconds (post-#297).
         let polygon_points = build_isochrone_geometry(
             &settled_original,
-            threshold_ds,
+            interval_s,
             node_weights,
             &state.ebg_nodes,
             &state.edge_geom,
@@ -1624,16 +1625,16 @@ pub fn do_edges_batch(
                         .copied()
                         .unwrap_or(0);
                     // Per-edge duration: node_weights is in
-                    // deciseconds; convert to ms.
-                    let duration_ds = mode_data
+                    // seconds; convert to ms.
+                    let duration_s = mode_data
                         .node_weights
                         .get(ebg_id as usize)
                         .copied()
                         .unwrap_or(0);
-                    let duration_ms = duration_ds.saturating_mul(100);
-                    // Per-edge distance: length_mm on the EbgNode is
-                    // a copy of nbg.geo.length_mm; convert to metres.
-                    let distance_m = node.length_mm / 1000;
+                    let duration_ms = duration_s.saturating_mul(1000);
+                    // Per-edge distance: length_m on the EbgNode is the
+                    // round-half-up conversion of nbg.geo.length_mm.
+                    let distance_m = node.length_m;
 
                     query_idx_b.append_value(global_idx);
                     target_idx_b.append_value(target_idx);
@@ -2105,7 +2106,8 @@ async fn do_exchange_catchment(
             for (ti, &ci) in client_valid.iter().enumerate() {
                 let d = matrix[ti];
                 if d != u32::MAX {
-                    let duration_s = d as f32 / 10.0;
+                    // d is already seconds (post-#297).
+                    let duration_s = d as f32;
                     clients_with_dt.push(super::catchment::Client {
                         lon: client_coords[ci].0,
                         lat: client_coords[ci].1,

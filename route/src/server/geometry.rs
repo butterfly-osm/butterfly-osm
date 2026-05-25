@@ -159,7 +159,8 @@ pub fn build_raw_points_into(
             coordinates.push(Point { lon, lat });
         }
 
-        total_distance_m += node.length_mm as f64 / 1000.0;
+        // #297: EBG `length_m` is in metres (was `length_mm` in v1).
+        total_distance_m += node.length_m as f64;
     }
 
     coordinates.dedup_by(|a, b| (a.lon - b.lon).abs() < 1e-9 && (a.lat - b.lat).abs() < 1e-9);
@@ -191,8 +192,8 @@ pub fn build_geometry(
 ///
 /// This respects road network topology and produces geometrically correct isochrones.
 pub fn build_isochrone_geometry(
-    settled_nodes: &[(u32, u32)], // (original_ebg_id, distance_ds)
-    max_time_ds: u32,
+    settled_nodes: &[(u32, u32)], // (original_ebg_id, distance) — seconds for time, meters for isodistance (post-#297)
+    max_threshold: u32,
     node_weights: &[u32], // Edge costs indexed by original EBG node ID
     ebg_nodes: &EbgNodes,
     edge_geom: &EdgeGeometry,
@@ -201,7 +202,7 @@ pub fn build_isochrone_geometry(
     let geo_start = std::time::Instant::now();
     let result = build_isochrone_geometry_sparse(
         settled_nodes,
-        max_time_ds,
+        max_threshold,
         node_weights,
         ebg_nodes,
         edge_geom,
@@ -209,7 +210,7 @@ pub fn build_isochrone_geometry(
     );
     let geo_us = geo_start.elapsed().as_micros();
     tracing::debug!(
-        threshold_ds = max_time_ds,
+        threshold = max_threshold,
         settled_input = settled_nodes.len(),
         polygon_vertices = result.len(),
         geometry_us = geo_us,

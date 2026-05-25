@@ -4,8 +4,8 @@
 //!
 //! Header (80 bytes):
 //!   magic:         u32 = 0x5455524E  // "TURN"
-//!   version:       u16 = 1
-//!   mode:          u8  = {0,1,2}
+//!   version:       u16 = 2  // v2: penalty in seconds (was ds in v1, #297)
+//!   mode:          u8  = {0,1,2,...}
 //!   reserved:      u8  = 0
 //!   count:         u64
 //!   rel_dict_k_sha: [32]u8
@@ -16,7 +16,7 @@
 //!   from_way_id:   i64
 //!   to_way_id:     i64
 //!   kind:          u8  // 0=None,1=Ban,2=Only,3=Penalty
-//!   penalty_ds:    u32
+//!   penalty_s:     u32  // seconds (was deciseconds in v1)
 //!   is_time_dep:   u8  // 0/1/2 (2=needs_expansion for via=way)
 //!   reserved:      [6]u8
 //!
@@ -33,7 +33,7 @@ use super::crc::Digest;
 use crate::profile_abi::{Mode, TurnRuleKind};
 
 const MAGIC: u32 = 0x5455524E; // "TURN"
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 const HEADER_SIZE: usize = 80; // 4 + 2 + 1 + 1 + 8 + 32 + 32
 const RECORD_SIZE: usize = 36; // i64*3 + u8 + u32 + u8 + [6]u8 = 24 + 1 + 4 + 1 + 6
 
@@ -43,7 +43,7 @@ pub struct TurnRule {
     pub from_way_id: i64,
     pub to_way_id: i64,
     pub kind: TurnRuleKind,
-    pub penalty_ds: u32,
+    pub penalty_s: u32, // seconds (was deciseconds in v1, #297)
     pub is_time_dep: u8, // 0=static, 1=time-dependent, 2=needs expansion (via=way)
 }
 
@@ -111,7 +111,7 @@ fn encode_record(rule: &TurnRule) -> Vec<u8> {
     record.extend_from_slice(&rule.from_way_id.to_le_bytes());
     record.extend_from_slice(&rule.to_way_id.to_le_bytes());
     record.push(rule.kind as u8);
-    record.extend_from_slice(&rule.penalty_ds.to_le_bytes());
+    record.extend_from_slice(&rule.penalty_s.to_le_bytes());
     record.push(rule.is_time_dep);
     record.extend_from_slice(&[0u8; 6]); // reserved
 
@@ -135,7 +135,7 @@ fn decode_record(record: &[u8]) -> Result<TurnRule> {
         record[23],
     ]);
     let kind_byte = record[24];
-    let penalty_ds = u32::from_le_bytes([record[25], record[26], record[27], record[28]]);
+    let penalty_s = u32::from_le_bytes([record[25], record[26], record[27], record[28]]);
     let is_time_dep = record[29];
 
     let kind = match kind_byte {
@@ -151,7 +151,7 @@ fn decode_record(record: &[u8]) -> Result<TurnRule> {
         from_way_id,
         to_way_id,
         kind,
-        penalty_ds,
+        penalty_s,
         is_time_dep,
     })
 }
@@ -166,6 +166,23 @@ pub fn read_all<P: AsRef<Path>>(path: P) -> Result<Vec<TurnRule>> {
     // Read header
     let mut header = vec![0u8; HEADER_SIZE];
     file.read_exact(&mut header)?;
+
+    let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+    anyhow::ensure!(
+        magic == MAGIC,
+        "Bad magic in turn_rules: 0x{:08X} (expected 0x{:08X})",
+        magic,
+        MAGIC
+    );
+
+    let version = u16::from_le_bytes([header[4], header[5]]);
+    anyhow::ensure!(
+        version == VERSION,
+        "Unsupported turn_rules version {} (expected {}). \
+         v1 stored deciseconds; re-run step 2 to regenerate as v2 (seconds, #297).",
+        version,
+        VERSION,
+    );
 
     let count = u64::from_le_bytes([
         header[8], header[9], header[10], header[11], header[12], header[13], header[14],
@@ -266,7 +283,7 @@ mod tests {
             from_way_id: 456,
             to_way_id: 789,
             kind: TurnRuleKind::Ban,
-            penalty_ds: 0,
+            penalty_s: 0,
             is_time_dep: 0,
         };
         let record = encode_record(&rule);
@@ -281,7 +298,7 @@ mod tests {
                 from_way_id: 1,
                 to_way_id: 1,
                 kind: TurnRuleKind::Ban,
-                penalty_ds: 0,
+                penalty_s: 0,
                 is_time_dep: 0,
             },
             TurnRule {
@@ -289,7 +306,7 @@ mod tests {
                 from_way_id: 2,
                 to_way_id: 1,
                 kind: TurnRuleKind::Ban,
-                penalty_ds: 0,
+                penalty_s: 0,
                 is_time_dep: 0,
             },
         ];
@@ -305,7 +322,7 @@ mod tests {
                 from_way_id: 200,
                 to_way_id: 300,
                 kind: TurnRuleKind::Ban,
-                penalty_ds: 0,
+                penalty_s: 0,
                 is_time_dep: 0,
             },
             TurnRule {
@@ -313,7 +330,7 @@ mod tests {
                 from_way_id: 200,
                 to_way_id: 400,
                 kind: TurnRuleKind::Penalty,
-                penalty_ds: 150,
+                penalty_s: 15,
                 is_time_dep: 1,
             },
             TurnRule {
@@ -321,7 +338,7 @@ mod tests {
                 from_way_id: 600,
                 to_way_id: 700,
                 kind: TurnRuleKind::Only,
-                penalty_ds: 0,
+                penalty_s: 0,
                 is_time_dep: 0,
             },
         ]
@@ -343,7 +360,7 @@ mod tests {
         assert_eq!(loaded[1].via_node_id, 100);
         assert_eq!(loaded[1].to_way_id, 400);
         assert_eq!(loaded[1].kind, TurnRuleKind::Penalty);
-        assert_eq!(loaded[1].penalty_ds, 150);
+        assert_eq!(loaded[1].penalty_s, 15);
         assert_eq!(loaded[2].via_node_id, 500);
         assert_eq!(loaded[2].kind, TurnRuleKind::Only);
         Ok(())

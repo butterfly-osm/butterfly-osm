@@ -1,46 +1,83 @@
 {
   "name": "car_nodir",
   "version": 1,
-
   "speed": {
     "unit": "km/h",
     "highway": {
-      "motorway": 110, "motorway_link": 60,
-      "trunk": 90, "trunk_link": 50,
-      "primary": 70, "primary_link": 40,
-      "secondary": 60, "secondary_link": 40,
-      "tertiary": 50, "tertiary_link": 30,
-      "unclassified": 50, "residential": 30,
-      "service": 20, "living_street": 10,
+      "motorway": 110,
+      "motorway_link": 60,
+      "trunk": 90,
+      "trunk_link": 50,
+      "primary": 70,
+      "primary_link": 40,
+      "secondary": 60,
+      "secondary_link": 40,
+      "tertiary": 50,
+      "tertiary_link": 30,
+      "unclassified": 50,
+      "residential": 30,
+      "service": 20,
+      "living_street": 10,
       "track": 15
     },
     "speed_cap_kmh": 288,
     "overrides": [
-      { "if": { "route": "ferry" }, "limit_to": 20 }
+      {
+        "if": {
+          "route": "ferry"
+        },
+        "limit_to": 20
+      }
     ]
   },
-
   "access": {
     "highway": {
-      "motorway": true, "motorway_link": true,
-      "trunk": true, "trunk_link": true,
-      "primary": true, "primary_link": true,
-      "secondary": true, "secondary_link": true,
-      "tertiary": true, "tertiary_link": true,
-      "unclassified": true, "residential": true,
-      "service": true, "living_street": true,
+      "motorway": true,
+      "motorway_link": true,
+      "trunk": true,
+      "trunk_link": true,
+      "primary": true,
+      "primary_link": true,
+      "secondary": true,
+      "secondary_link": true,
+      "tertiary": true,
+      "tertiary_link": true,
+      "unclassified": true,
+      "residential": true,
+      "service": true,
+      "living_street": true,
       "track": false,
-      "footway": false, "path": false, "cycleway": false,
-      "pedestrian": false, "steps": false,
+      "footway": false,
+      "path": false,
+      "cycleway": false,
+      "pedestrian": false,
+      "steps": false,
       "construction": false
     },
     "deny_if": [
-      { "tag": "motor_vehicle", "values": ["no", "private"] },
-      { "tag": "vehicle", "values": ["no", "private"] },
-      { "tag": "access", "values": ["no", "private"] }
+      {
+        "tag": "motor_vehicle",
+        "values": [
+          "no",
+          "private"
+        ]
+      },
+      {
+        "tag": "vehicle",
+        "values": [
+          "no",
+          "private"
+        ]
+      },
+      {
+        "tag": "access",
+        "values": [
+          "no",
+          "private"
+        ]
+      }
     ]
   },
-
   "oneway": {
     "respect": false,
     "tag": "oneway",
@@ -48,42 +85,69 @@
     "reverse_values": [],
     "default_oneway_highways": []
   },
-
   "priority": [],
-
   "highway_class": {
-    "motorway": 1, "motorway_link": 2,
-    "trunk": 3, "trunk_link": 4,
-    "primary": 5, "primary_link": 6,
-    "secondary": 7, "secondary_link": 8,
-    "tertiary": 9, "tertiary_link": 10,
-    "unclassified": 11, "residential": 12,
-    "service": 13, "living_street": 14, "track": 15,
-    "footway": 20, "path": 20, "cycleway": 20, "pedestrian": 20, "steps": 20,
+    "motorway": 1,
+    "motorway_link": 2,
+    "trunk": 3,
+    "trunk_link": 4,
+    "primary": 5,
+    "primary_link": 6,
+    "secondary": 7,
+    "secondary_link": 8,
+    "tertiary": 9,
+    "tertiary_link": 10,
+    "unclassified": 11,
+    "residential": 12,
+    "service": 13,
+    "living_street": 14,
+    "track": 15,
+    "footway": 20,
+    "path": 20,
+    "cycleway": 20,
+    "pedestrian": 20,
+    "steps": 20,
     "construction": 99
   },
-
   "class_bits": {
-    "toll":          { "tag": "toll", "value": "yes" },
-    "ferry":         { "tag": "route", "value": "ferry" },
-    "tunnel":        { "tag": "tunnel", "value": "yes" },
-    "bridge":        { "tag": "bridge", "value": "yes" },
-    "link":          { "highway_suffix": "_link" },
-    "residential":   { "highway": "residential" },
-    "service":       { "highway": "service" },
-    "living_street": { "highway": "living_street" }
+    "toll": {
+      "tag": "toll",
+      "value": "yes"
+    },
+    "ferry": {
+      "tag": "route",
+      "value": "ferry"
+    },
+    "tunnel": {
+      "tag": "tunnel",
+      "value": "yes"
+    },
+    "bridge": {
+      "tag": "bridge",
+      "value": "yes"
+    },
+    "link": {
+      "highway_suffix": "_link"
+    },
+    "residential": {
+      "highway": "residential"
+    },
+    "service": {
+      "highway": "service"
+    },
+    "living_street": {
+      "highway": "living_street"
+    }
   },
-
   "turn_penalties": {
-    "turn_penalty_ds": 75,
+    "turn_penalty_s": 8,
     "turn_bias": 1.075,
-    "u_turn_penalty_ds": 200,
+    "u_turn_penalty_s": 20,
     "min_degree_for_penalty": 3,
-    "signal_delay_ds": 80,
-    "class_change_penalty_ds_per_diff": 5,
+    "signal_delay_s": 8,
+    "class_change_penalty_s_per_diff": 0,
     "max_class_diff_for_penalty": 6
   },
-
   "turn_restrictions": {
     "respect": false,
     "restriction_tag": "restriction",

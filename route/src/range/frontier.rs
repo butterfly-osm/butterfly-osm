@@ -48,7 +48,9 @@ pub struct FrontierExtractor {
     ebg_nodes: EbgNodes,
     /// NBG geometry (for polylines)
     nbg_geo: NbgGeo,
-    /// Edge weights (original EBG node ID → deciseconds)
+    /// Edge weights (original EBG node ID → seconds, post-#297).
+    /// For isodistance queries the weights are meters; the math is identical
+    /// because the function treats both axes as opaque integer weight units.
     weights: Vec<u32>,
 }
 
@@ -82,53 +84,48 @@ impl FrontierExtractor {
         })
     }
 
-    /// Extract frontier cut points from PHAST distances
+    /// Extract frontier cut points from PHAST distances.
     ///
     /// For each base edge where dist[edge_start] ≤ T < dist[edge_start] + weight,
     /// compute the cut point.
     ///
-    /// Note: phast_dist values are in deciseconds (CCH weight units).
-    /// threshold_ms is in milliseconds.
-    pub fn extract(&self, phast_dist: &[u32], threshold_ms: u32) -> Vec<FrontierCutPoint> {
+    /// `phast_dist` and `threshold` share the same unit (seconds for time
+    /// queries, meters for isodistance queries) — both come from the same
+    /// step 5 weight array.
+    pub fn extract(&self, phast_dist: &[u32], threshold: u32) -> Vec<FrontierCutPoint> {
         let mut cut_points = Vec::new();
 
         // Iterate over all filtered nodes (which are base EBG edges)
         for filtered_id in 0..self.filtered_ebg.n_filtered_nodes {
-            let dist_ds = phast_dist[filtered_id as usize];
+            let dist = phast_dist[filtered_id as usize];
 
             // Skip unreachable edges
-            if dist_ds == u32::MAX {
+            if dist == u32::MAX {
                 continue;
             }
 
-            // Convert PHAST distance from deciseconds to milliseconds
-            let dist_ms = (dist_ds as u64 * 100).min(u32::MAX as u64) as u32;
-
             // Skip edges that start beyond the threshold
-            if dist_ms > threshold_ms {
+            if dist > threshold {
                 continue;
             }
 
             // Get original EBG node ID
             let ebg_node_id = self.filtered_ebg.filtered_to_original[filtered_id as usize];
 
-            // Get edge weight (in deciseconds, convert to ms)
-            let weight_ds = self.weights[ebg_node_id as usize];
-            if weight_ds == 0 {
+            let weight = self.weights[ebg_node_id as usize];
+            if weight == 0 {
                 continue; // Inaccessible
             }
-            let weight_ms = weight_ds * 100; // deciseconds → milliseconds
 
             // Check if this edge crosses the threshold
-            let dist_end_ms = dist_ms.saturating_add(weight_ms);
-            if dist_end_ms <= threshold_ms {
+            let dist_end = dist.saturating_add(weight);
+            if dist_end <= threshold {
                 continue; // Edge fully inside
             }
 
-            // This edge crosses the frontier!
-            // Compute cut fraction
-            let cut_fraction = if weight_ms > 0 {
-                (threshold_ms - dist_ms) as f32 / weight_ms as f32
+            // This edge crosses the frontier — compute cut fraction.
+            let cut_fraction = if weight > 0 {
+                (threshold - dist) as f32 / weight as f32
             } else {
                 0.0
             };
@@ -142,8 +139,8 @@ impl FrontierExtractor {
 
             cut_points.push(FrontierCutPoint {
                 ebg_node_id,
-                dist_start: dist_ms,
-                edge_weight: weight_ms,
+                dist_start: dist,
+                edge_weight: weight,
                 cut_fraction,
                 lat_fxp,
                 lon_fxp,
@@ -153,43 +150,37 @@ impl FrontierExtractor {
         cut_points
     }
 
-    /// Extract all reachable points (interior of isochrone)
+    /// Extract all reachable points (interior of isochrone).
     ///
     /// Returns the midpoint of each reachable edge for raster filling.
-    ///
-    /// Note: phast_dist values are in deciseconds (CCH weight units).
-    /// threshold_ms is in milliseconds.
-    pub fn extract_reachable(&self, phast_dist: &[u32], threshold_ms: u32) -> Vec<ReachablePoint> {
+    /// `phast_dist` and `threshold` share the same unit (seconds for time,
+    /// meters for isodistance).
+    pub fn extract_reachable(&self, phast_dist: &[u32], threshold: u32) -> Vec<ReachablePoint> {
         let mut points = Vec::new();
 
         for filtered_id in 0..self.filtered_ebg.n_filtered_nodes {
-            let dist_ds = phast_dist[filtered_id as usize];
+            let dist = phast_dist[filtered_id as usize];
 
             // Skip unreachable edges
-            if dist_ds == u32::MAX {
+            if dist == u32::MAX {
                 continue;
             }
 
-            // Convert PHAST distance from deciseconds to milliseconds
-            let dist_ms = (dist_ds as u64 * 100).min(u32::MAX as u64) as u32;
-
             // Only include edges fully inside the reachable region
-            if dist_ms > threshold_ms {
+            if dist > threshold {
                 continue;
             }
 
             // Get original EBG node ID
             let ebg_node_id = self.filtered_ebg.filtered_to_original[filtered_id as usize];
 
-            // Get edge weight (in deciseconds, convert to ms)
-            let weight_ds = self.weights[ebg_node_id as usize];
-            if weight_ds == 0 {
+            let weight = self.weights[ebg_node_id as usize];
+            if weight == 0 {
                 continue;
             }
-            let weight_ms = weight_ds * 100;
 
             // Only include edges fully inside (not crossing the threshold)
-            if dist_ms.saturating_add(weight_ms) > threshold_ms {
+            if dist.saturating_add(weight) > threshold {
                 continue;
             }
 
@@ -204,7 +195,7 @@ impl FrontierExtractor {
         points
     }
 
-    /// Extract ONLY frontier segments (edges that cross the threshold boundary)
+    /// Extract ONLY frontier segments (edges that cross the threshold boundary).
     ///
     /// This is much smaller than all reachable segments and defines the actual
     /// isochrone boundary. Use this for concave hull polygon generation.
@@ -213,46 +204,41 @@ impl FrontierExtractor {
     pub fn extract_frontier_segments(
         &self,
         phast_dist: &[u32],
-        threshold_ms: u32,
+        threshold: u32,
     ) -> Vec<ReachableSegment> {
         let mut segments = Vec::new();
 
         for filtered_id in 0..self.filtered_ebg.n_filtered_nodes {
-            let dist_ds = phast_dist[filtered_id as usize];
+            let dist = phast_dist[filtered_id as usize];
 
             // Skip unreachable edges
-            if dist_ds == u32::MAX {
+            if dist == u32::MAX {
                 continue;
             }
 
-            // Convert PHAST distance from deciseconds to milliseconds
-            let dist_ms = (dist_ds as u64 * 100).min(u32::MAX as u64) as u32;
-
             // Skip edges that start beyond the threshold
-            if dist_ms > threshold_ms {
+            if dist > threshold {
                 continue;
             }
 
             // Get original EBG node ID
             let ebg_node_id = self.filtered_ebg.filtered_to_original[filtered_id as usize];
 
-            // Get edge weight (in deciseconds, convert to ms)
-            let weight_ds = self.weights[ebg_node_id as usize];
-            if weight_ds == 0 {
+            let weight = self.weights[ebg_node_id as usize];
+            if weight == 0 {
                 continue;
             }
-            let weight_ms = weight_ds * 100;
 
             // Check if this edge crosses the threshold (frontier edge)
-            let dist_end_ms = dist_ms.saturating_add(weight_ms);
-            if dist_end_ms <= threshold_ms {
+            let dist_end = dist.saturating_add(weight);
+            if dist_end <= threshold {
                 // Fully reachable - NOT a frontier edge, skip
                 continue;
             }
 
             // This IS a frontier edge - extract from start to cut point
             let geom_idx = self.ebg_nodes.nodes[ebg_node_id as usize].geom_idx as usize;
-            let cut_fraction = (threshold_ms - dist_ms) as f32 / weight_ms as f32;
+            let cut_fraction = (threshold - dist) as f32 / weight as f32;
             let points = self.extract_partial_polyline(geom_idx, cut_fraction);
             if !points.is_empty() {
                 segments.push(ReachableSegment { points });
@@ -262,7 +248,7 @@ impl FrontierExtractor {
         segments
     }
 
-    /// Extract all reachable road segments with their geometry for grid stamping
+    /// Extract all reachable road segments with their geometry for grid stamping.
     ///
     /// Returns polylines for:
     /// - Fully reachable edges: entire polyline
@@ -270,35 +256,30 @@ impl FrontierExtractor {
     pub fn extract_reachable_segments(
         &self,
         phast_dist: &[u32],
-        threshold_ms: u32,
+        threshold: u32,
     ) -> Vec<ReachableSegment> {
         let mut segments = Vec::new();
 
         for filtered_id in 0..self.filtered_ebg.n_filtered_nodes {
-            let dist_ds = phast_dist[filtered_id as usize];
+            let dist = phast_dist[filtered_id as usize];
 
             // Skip unreachable edges
-            if dist_ds == u32::MAX {
+            if dist == u32::MAX {
                 continue;
             }
 
-            // Convert PHAST distance from deciseconds to milliseconds
-            let dist_ms = (dist_ds as u64 * 100).min(u32::MAX as u64) as u32;
-
             // Skip edges that start beyond the threshold
-            if dist_ms > threshold_ms {
+            if dist > threshold {
                 continue;
             }
 
             // Get original EBG node ID
             let ebg_node_id = self.filtered_ebg.filtered_to_original[filtered_id as usize];
 
-            // Get edge weight (in deciseconds, convert to ms)
-            let weight_ds = self.weights[ebg_node_id as usize];
-            if weight_ds == 0 {
+            let weight = self.weights[ebg_node_id as usize];
+            if weight == 0 {
                 continue;
             }
-            let weight_ms = weight_ds * 100;
 
             // Get geometry
             let ebg_node = &self.ebg_nodes.nodes[ebg_node_id as usize];
@@ -310,9 +291,9 @@ impl FrontierExtractor {
             }
 
             // Determine how much of the edge is reachable
-            let dist_end_ms = dist_ms.saturating_add(weight_ms);
+            let dist_end = dist.saturating_add(weight);
 
-            if dist_end_ms <= threshold_ms {
+            if dist_end <= threshold {
                 // Fully reachable: include entire polyline
                 let points: Vec<(i32, i32)> = polyline
                     .lat_fxp
@@ -323,7 +304,7 @@ impl FrontierExtractor {
                 segments.push(ReachableSegment { points });
             } else {
                 // Frontier edge: include from start to cut point
-                let cut_fraction = (threshold_ms - dist_ms) as f32 / weight_ms as f32;
+                let cut_fraction = (threshold - dist) as f32 / weight as f32;
                 let points = self.extract_partial_polyline(geom_idx, cut_fraction);
                 if !points.is_empty() {
                     segments.push(ReachableSegment { points });

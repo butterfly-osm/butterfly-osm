@@ -917,8 +917,9 @@ pub async fn trip_handler(
         } else {
             order.len() - 1
         });
-        let mut total_duration_ds: u64 = 0;
-        let mut total_distance_mm: u64 = 0;
+        // Matrices are in seconds (time) and meters (distance) post-#297.
+        let mut total_duration_s: u64 = 0;
+        let mut total_distance_m: u64 = 0;
 
         let leg_count = if round_trip {
             order.len()
@@ -931,13 +932,13 @@ pub async fn trip_handler(
             let from = order[leg_idx];
             let to = order[(leg_idx + 1) % order.len()];
 
-            let dur_ds = duration_matrix[from * n + to];
-            let dur_s = if dur_ds == u32::MAX {
+            let dur_raw = duration_matrix[from * n + to];
+            let dur_s = if dur_raw == u32::MAX {
                 has_unreachable = true;
                 None
             } else {
-                total_duration_ds += dur_ds as u64;
-                Some(dur_ds as f64 / 10.0) // deciseconds -> seconds
+                total_duration_s += dur_raw as u64;
+                Some(dur_raw as f64)
             };
 
             let dist_m = if let Some(ref dm) = distance_matrix {
@@ -946,8 +947,8 @@ pub async fn trip_handler(
                     has_unreachable = true;
                     None
                 } else {
-                    total_distance_mm += d as u64;
-                    Some(d as f64 / 1000.0) // millimeters -> meters
+                    total_distance_m += d as u64;
+                    Some(d as f64)
                 }
             } else {
                 None
@@ -978,9 +979,9 @@ pub async fn trip_handler(
 
         let trip = Trip {
             legs,
-            duration: total_duration_ds as f64 / 10.0,
-            distance: total_distance_mm as f64 / 1000.0,
-            weight: total_duration_ds as f64 / 10.0,
+            duration: total_duration_s as f64,
+            distance: total_distance_m as f64,
+            weight: total_duration_s as f64,
             weight_name: "duration".to_string(),
             improvement_pct: tsp_result.improvement_pct,
         };

@@ -95,14 +95,23 @@ pub enum ClassBitRule {
     HighwayAny { highway_any: Vec<String> },
 }
 
+/// Turn-penalty section of a model JSON. Values are whole seconds
+/// (post-#297; v1 used deciseconds). The `deny_unknown_fields` attribute
+/// makes the loader REJECT pre-#297 JSON files (which used `_ds` keys),
+/// pointing the user at the migration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TurnPenaltySchema {
-    pub turn_penalty_ds: u32,
+    /// Maximum turn penalty in seconds (was deciseconds in pre-#297 models).
+    pub turn_penalty_s: u32,
     pub turn_bias: f64,
-    pub u_turn_penalty_ds: u32,
+    /// Additional U-turn penalty in seconds (was deciseconds).
+    pub u_turn_penalty_s: u32,
     pub min_degree_for_penalty: u8,
-    pub signal_delay_ds: u32,
-    pub class_change_penalty_ds_per_diff: u32,
+    /// Traffic-signal delay in seconds (was deciseconds).
+    pub signal_delay_s: u32,
+    /// Per-class-step transition penalty in seconds (was deciseconds).
+    pub class_change_penalty_s_per_diff: u32,
     pub max_class_diff_for_penalty: u8,
 }
 
@@ -138,7 +147,8 @@ mod tests {
         assert!(model.access.highway.get("motorway") == Some(&true));
         assert!(model.access.highway.get("footway") == Some(&false));
         assert!(model.oneway.respect);
-        assert_eq!(model.turn_penalties.turn_penalty_ds, 75);
+        // car turn_penalty: 75 ds → 8 s (round-half-to-even: 7.5 → 8 since 7 is odd → 8).
+        assert_eq!(model.turn_penalties.turn_penalty_s, 8);
     }
 
     #[test]
@@ -165,7 +175,7 @@ mod tests {
         assert_eq!(model.name, "foot");
         assert!(!model.oneway.respect);
         assert_eq!(model.turn_penalties.turn_bias, 1.0);
-        assert_eq!(model.turn_penalties.u_turn_penalty_ds, 0);
+        assert_eq!(model.turn_penalties.u_turn_penalty_s, 0);
     }
 
     #[test]

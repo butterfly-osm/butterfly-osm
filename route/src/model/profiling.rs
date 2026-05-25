@@ -367,7 +367,7 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
         }
 
         for (i, compiled) in compiled_turn_models.iter().enumerate() {
-            let (kind, applies, penalty_ds, is_time_dep) =
+            let (kind, applies, penalty_s, is_time_dep) =
                 evaluate_turn_full(compiled, &keys, &vals, &rel_key_dict, &rel_val_dict);
 
             if applies && kind != TurnRuleKind::None {
@@ -376,7 +376,7 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
                     from_way_id,
                     to_way_id,
                     kind,
-                    penalty_ds,
+                    penalty_s,
                     is_time_dep: if is_time_dep { 1 } else { 0 },
                 });
             }

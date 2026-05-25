@@ -4,14 +4,14 @@
 //!
 //! Header (32 bytes):
 //!   magic:       u32 = 0x544D4F44  // "TMOD"
-//!   version:     u16 = 1
-//!   mode:        u8  = {0=car,1=bike,2=foot}
+//!   version:     u16 = 2  // v2: seconds (was v1: deciseconds, #297)
+//!   mode:        u8  = {0=car,1=bike,2=foot,...}
 //!   reserved:    u8  = 0
 //!   count:       u32 = n_arcs
 //!   inputs_sha:  [16]u8  // truncated SHA-256 of inputs
 //!
 //! Body (count * u32):
-//!   u32 penalty_ds[count]  // deciseconds (0 = no penalty or mode not allowed)
+//!   u32 penalty_s[count]  // seconds (0 = no penalty or mode not allowed)
 //!
 //! Footer (16 bytes):
 //!   body_crc64:  u64
@@ -26,13 +26,13 @@ use super::crc::Digest;
 use crate::profile_abi::Mode;
 
 const MAGIC: u32 = 0x544D4F44; // "TMOD"
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 const HEADER_SIZE: usize = 32; // 4 + 2 + 1 + 1 + 4 + 16 + 4(pad)
 
 #[derive(Debug, Clone)]
 pub struct ModTurns {
     pub mode: Mode,
-    pub penalties: Vec<u32>, // deciseconds per arc
+    pub penalties: Vec<u32>, // seconds per arc (was deciseconds in v1, #297)
     pub inputs_sha: [u8; 16],
 }
 
@@ -104,9 +104,11 @@ pub fn read_all<P: AsRef<Path>>(path: P) -> Result<ModTurns> {
     let version = u16::from_le_bytes([header[4], header[5]]);
     anyhow::ensure!(
         version == VERSION,
-        "Unsupported version in {}: {}",
+        "Unsupported t.<mode>.u32 version in {}: {} (expected {}). \
+         v1 stored deciseconds; re-run step 5 to regenerate as v2 (seconds, #297).",
         path.as_ref().display(),
-        version
+        version,
+        VERSION,
     );
 
     let mode_byte = header[6];

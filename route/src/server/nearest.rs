@@ -164,7 +164,7 @@ pub async fn nearest_handler(
     let waypoints: Vec<NearestWaypoint> = results
         .iter()
         .map(|&(ebg_id, snap_lon, snap_lat, dist_m)| {
-            let edge_length = state.ebg_nodes.nodes[ebg_id as usize].length_mm as f64 / 1000.0;
+            let edge_length = state.ebg_nodes.nodes[ebg_id as usize].length_m as f64;
             NearestWaypoint {
                 location: [snap_lon, snap_lat],
                 distance: dist_m,

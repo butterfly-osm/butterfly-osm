@@ -3,7 +3,7 @@
 //! Algorithm: Hidden Markov Model with Viterbi decoding (Newson & Krumm 2009)
 //! - Emission probability: Gaussian on perpendicular GPS-to-edge distance
 //! - Transition probability: exponential on |route_distance - great_circle_distance|
-//! - Route distance: sum of physical edge lengths (length_mm) along the fastest path
+//! - Route distance: sum of physical edge lengths (length_m) along the fastest path
 
 use std::sync::Arc;
 
@@ -68,8 +68,8 @@ pub struct MatchResult {
 pub struct Matching {
     /// Ordered EBG edge IDs forming the matched path
     pub ebg_path: Vec<u32>,
-    /// Total duration in deciseconds
-    pub duration_ds: u32,
+    /// Total duration in seconds (post-#297; was deciseconds).
+    pub duration_s: u32,
     /// Confidence score (0.0 to 1.0) — average emission probability
     pub confidence: f64,
     /// Region index in [`super::regions::RegionsState::regions`] this
@@ -154,7 +154,7 @@ pub fn map_match(
             let ebg_path =
                 build_matched_path(mode_data, &seg_candidates, &matched_indices, weights);
 
-            let duration_ds = ebg_path
+            let duration_s = ebg_path
                 .iter()
                 .map(|&eid| mode_data.node_weights[eid as usize])
                 .filter(|&w| w != u32::MAX)
@@ -173,7 +173,7 @@ pub fn map_match(
 
             matchings.push(Matching {
                 ebg_path,
-                duration_ds,
+                duration_s,
                 confidence: avg_emission.exp(), // Convert from log to [0,1]
                 region_idx: 0,                  // single-region path: caller's region is implicit
             });
@@ -489,7 +489,7 @@ fn viterbi(
 /// Returns flat array of size from.len() * to.len() (row-major: from[i] → to[j] at i*n_to+j).
 ///
 /// Uses TIME-based CCH P2P to find the fastest path, then sums the physical edge lengths
-/// (length_mm from ebg_nodes) along the unpacked path. This gives exact route distance
+/// (length_m from ebg_nodes) along the unpacked path. This gives exact route distance
 /// without depending on distance CCH weights.
 fn compute_transition_distances(
     mode_data: &ModeData,
@@ -533,21 +533,21 @@ fn compute_transition_distances(
                     qr.meeting_node,
                 );
 
-                // Sum physical edge lengths (length_mm) along the path.
+                // Sum physical edge lengths (length_m) along the path.
                 // NOTE: This sums full edge lengths including the first and last edges,
                 // even though the snap point may be partway along them. The error is
                 // bounded by one edge length (~50-200m) and is consistent across all
                 // candidate pairs, so Viterbi selection is minimally affected.
-                let total_mm: u64 = rank_path
+                let total_m: u64 = rank_path
                     .iter()
                     .map(|&rank| {
                         let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
                         let original_id = mode_data.filtered_to_original[filtered_id as usize];
-                        ebg_nodes.nodes[original_id as usize].length_mm as u64
+                        ebg_nodes.nodes[original_id as usize].length_m as u64
                     })
                     .sum();
 
-                result[i * n_to + j] = total_mm as f64 / 1000.0; // mm → m
+                result[i * n_to + j] = total_m as f64;
             }
         }
     }
@@ -890,7 +890,7 @@ pub fn map_match_multi_region(
                 &mode_data.cch_weights,
             );
 
-            let duration_ds = ebg_path
+            let duration_s = ebg_path
                 .iter()
                 .map(|&eid| mode_data.node_weights[eid as usize])
                 .filter(|&w| w != u32::MAX)
@@ -909,7 +909,7 @@ pub fn map_match_multi_region(
 
             matchings.push(Matching {
                 ebg_path,
-                duration_ds,
+                duration_s,
                 confidence: avg_emission.exp(),
                 region_idx: run_region_idx,
             });
@@ -1194,7 +1194,7 @@ fn compute_transition_distances_multi(
             }
 
             if from_region == to_region {
-                // Same region: single CCH P2P, sum length_mm.
+                // Same region: single CCH P2P, sum length_m.
                 let to_mode_data = from_mode_data; // same region
                 let dst_rank = to_mode_data.orig_to_rank[tc.ebg_id as usize];
                 if dst_rank == u32::MAX {
@@ -1216,23 +1216,23 @@ fn compute_transition_distances_multi(
                         dst_rank,
                         qr.meeting_node,
                     );
-                    let total_mm: u64 = rank_path
+                    let total_m: u64 = rank_path
                         .iter()
                         .map(|&rank| {
                             let filtered_id =
                                 from_mode_data.cch_topo.rank_to_filtered[rank as usize];
                             let original_id =
                                 from_mode_data.filtered_to_original[filtered_id as usize];
-                            from_state.ebg_nodes.nodes[original_id as usize].length_mm as u64
+                            from_state.ebg_nodes.nodes[original_id as usize].length_m as u64
                         })
                         .sum();
-                    result[i * n_to + j] = total_mm as f64 / 1000.0;
+                    result[i * n_to + j] = total_m as f64;
                 }
             } else {
                 // Different regions: cross-region solve. Returns total
-                // cost in mode units (deciseconds). For HMM transition
+                // cost in mode units (seconds). For HMM transition
                 // probability we want PHYSICAL DISTANCE, so we unpack
-                // both legs and sum length_mm, plus add the haversine
+                // both legs and sum length_m, plus add the haversine
                 // border-crossing distance from src_border_ebg to
                 // dst_border_ebg.
                 let to_state_arc = regions.regions[to_region].state();

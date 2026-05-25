@@ -670,7 +670,7 @@ fn test_route_geometry_json_only_has_geometry_fields() {
         );
         assert!(
             !obj.contains_key("duration_ds"),
-            "format {:?}: no duration_ds",
+            "format {:?}: no duration_ds (legacy ds field, pre-#297)",
             format
         );
         assert!(

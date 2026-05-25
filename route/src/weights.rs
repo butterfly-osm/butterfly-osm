@@ -7,6 +7,90 @@ use std::path::{Path, PathBuf};
 use crate::formats::*;
 use crate::profile_abi::Mode;
 
+/// Integer division with round-half-to-even (banker's rounding) semantics.
+/// `numerator / denominator`, with halves rounded toward the even quotient.
+/// Returns 0 when `denominator == 0` (caller is responsible for guarding).
+#[inline]
+pub(crate) fn round_half_even_div(numerator: u64, denominator: u64) -> u64 {
+    if denominator == 0 {
+        return 0;
+    }
+    let quotient = numerator / denominator;
+    let remainder = numerator % denominator;
+    // PR #323 review: use overflowing_mul so we treat an overflowed
+    // 2·remainder as strictly greater than `denominator` (which is the
+    // correct semantic — overflow only happens when remainder >
+    // u64::MAX/2, and remainder < denominator implies denominator >
+    // u64::MAX/2 too, so 2·remainder is genuinely > denominator). The
+    // previous `saturating_mul` produced the same answer in practice
+    // but was hard to reason about at the comparison boundary.
+    let (twice, overflowed) = remainder.overflowing_mul(2);
+    if !overflowed && twice < denominator {
+        quotient
+    } else if overflowed || twice > denominator {
+        quotient + 1
+    } else {
+        // Exactly half — round to even.
+        if quotient.is_multiple_of(2) {
+            quotient
+        } else {
+            quotient + 1
+        }
+    }
+}
+
+#[cfg(test)]
+mod round_tests {
+    use super::round_half_even_div;
+
+    #[test]
+    fn test_round_half_even() {
+        // Below half: round down.
+        assert_eq!(round_half_even_div(14, 10), 1);
+        // Above half: round up.
+        assert_eq!(round_half_even_div(16, 10), 2);
+        // Exactly half: round to nearest even (banker's rounding).
+        // 1.5 — quotient `1` is odd, so round UP to 2 (even).
+        assert_eq!(round_half_even_div(15, 10), 2);
+        // 2.5 — quotient `2` is already even, so round DOWN (stay at 2).
+        assert_eq!(round_half_even_div(25, 10), 2);
+        // 3.5 — quotient `3` is odd, so round UP to 4 (even).
+        assert_eq!(round_half_even_div(35, 10), 4);
+        // 4.5 — quotient `4` is already even, so round DOWN (stay at 4).
+        assert_eq!(round_half_even_div(45, 10), 4);
+        // Zero numerator: zero result.
+        assert_eq!(round_half_even_div(0, 10), 0);
+        // Exact: pass through.
+        assert_eq!(round_half_even_div(100, 10), 10);
+    }
+
+    /// Overflow protection (#323 review): when `2 * remainder` would
+    /// overflow u64, the function still rounds correctly. Construct
+    /// `denominator > u64::MAX / 2` so the remainder doubling
+    /// overflows, and verify the rounded answer matches manual
+    /// arithmetic.
+    #[test]
+    fn test_overflow_in_doubling() {
+        let d = (u64::MAX / 2) + 100; // d > u64::MAX/2
+        // n < d → quotient = 0, remainder = n.
+        // n > d/2 (so >= half) → correct banker's answer is 1.
+        // n is also > u64::MAX/2, so 2·n overflows: this is the path
+        // we want to exercise.
+        let n = d - 1;
+        assert!(n > u64::MAX / 2, "test setup: remainder must overflow on *2");
+        assert_eq!(round_half_even_div(n, d), 1);
+
+        // Same denominator, but n just under d/2 → round down to 0.
+        let n2 = d / 2 - 1;
+        assert_eq!(round_half_even_div(n2, d), 0);
+    }
+
+    #[test]
+    fn test_zero_denominator() {
+        assert_eq!(round_half_even_div(100, 0), 0);
+    }
+}
+
 /// Input descriptor for a single mode to be processed by Step 5.
 #[derive(Debug, Clone)]
 pub struct Step5ModeInput {
@@ -260,7 +344,7 @@ fn generate_mode_data(
         }
 
         // Compute weight
-        let length_mm = ebg_node.length_mm;
+        let length_m = ebg_node.length_m;
         let base_speed_mmps = way_attr.output.base_speed_mmps;
 
         if base_speed_mmps == 0 {
@@ -275,33 +359,43 @@ fn generate_mode_data(
 
         dbg_accessible += 1;
 
-        // Compute travel_time_ds using integer math (ceiling division)
-        // travel_time_ds = ceil(length_mm / base_speed_mmps * 10)
-        //                = (length_mm * 10 + base_speed_mmps - 1) / base_speed_mmps
-        let travel_time_ds = (length_mm as u64 * 10).div_ceil(base_speed_mmps as u64) as u32;
+        // Compute travel_time_s using integer math (round-half-to-even).
+        //
+        // time_s = length_m * 1000 / base_speed_mmps
+        //        = (length_m * 1000) / base_speed_mmps   (round half to even)
+        //
+        // For 1 km of road at 50 km/h (base_speed_mmps = 13_889):
+        //   length_m = 1000, time = 1_000_000 / 13_889 ≈ 71.99 → 72 s.
+        let numerator = length_m as u64 * 1000;
+        let travel_time_s = round_half_even_div(numerator, base_speed_mmps as u64) as u32;
 
-        // Compute per_km_extra_ds using integer math
-        // per_km_extra_ds = ceil(length_km * per_km_penalty_ds)
-        //                 = (length_mm * per_km_penalty_ds + 1_000_000 - 1) / 1_000_000
-        let per_km_extra_ds = (length_mm as u64 * way_attr.output.per_km_penalty_ds as u64)
-            .div_ceil(1_000_000) as u32;
+        // Compute per_km_extra_s using integer math (round-half-to-even).
+        //
+        // per_km_penalty_ds is stored as deciseconds-per-km on disk (way_attrs v2);
+        // output is seconds. To convert:
+        //   per_km_extra_s = length_km * per_km_penalty_ds / 10
+        //                  = (length_m * per_km_penalty_ds) / 10_000
+        let per_km_extra_s = round_half_even_div(
+            length_m as u64 * way_attr.output.per_km_penalty_ds as u64,
+            10_000,
+        ) as u32;
+
+        // const_penalty_ds on disk is also deciseconds — convert to seconds.
+        let const_penalty_s = round_half_even_div(way_attr.output.const_penalty_ds as u64, 10) as u32;
 
         // Total weight = travel_time + per_km_extra + const_penalty (saturating)
-        let weight_ds = travel_time_ds
-            .saturating_add(per_km_extra_ds)
-            .saturating_add(way_attr.output.const_penalty_ds);
+        let weight_s = travel_time_s
+            .saturating_add(per_km_extra_s)
+            .saturating_add(const_penalty_s);
 
         // Enforce minimum weight of 1 for accessible nodes
-        weights[ebg_id] = weight_ds.max(1);
+        weights[ebg_id] = weight_s.max(1);
     }
 
-    // Compute turn penalties
-    // Turn penalties are now geometry-based (computed in step4 EBG construction)
-    // Every turn has a penalty stored in the turn table based on:
-    // - Turn angle (straight/right/left/u-turn)
-    // - Intersection complexity (degree)
-    // - Traffic signals (future: not yet implemented)
-    let mut total_penalty_ds = 0u64;
+    // Compute turn penalties.
+    // Turn penalties are geometry-based (computed in step 4 EBG construction).
+    // Every turn has a penalty stored in the turn table in SECONDS (post-#297).
+    let mut total_penalty_s = 0u64;
     let mut arcs_with_penalty = 0usize;
 
     for (arc_idx, penalty) in penalties.iter_mut().enumerate() {
@@ -316,11 +410,11 @@ fn generate_mode_data(
         }
 
         // Extract per-mode penalty from the dynamic array indexed by mode index
-        let penalty_ds = turn_entry.penalty_ds[mode.index()];
-        *penalty = penalty_ds;
+        let penalty_s = turn_entry.penalty_s[mode.index()];
+        *penalty = penalty_s;
 
-        if penalty_ds > 0 {
-            total_penalty_ds += penalty_ds as u64;
+        if penalty_s > 0 {
+            total_penalty_s += penalty_s as u64;
             arcs_with_penalty += 1;
         }
     }
@@ -331,7 +425,7 @@ fn generate_mode_data(
             "  Turn penalties: {} arcs ({:.1}%), avg {:.1}s",
             arcs_with_penalty,
             arcs_with_penalty as f64 * 100.0 / n_arcs as f64,
-            total_penalty_ds as f64 / arcs_with_penalty as f64 / 10.0
+            total_penalty_s as f64 / arcs_with_penalty as f64
         );
     }
 

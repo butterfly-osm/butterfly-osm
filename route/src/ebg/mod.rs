@@ -54,12 +54,13 @@ pub struct TurnRuleKey {
     pub to_way_id: i64,
 }
 
-/// Canonical turn rule with dynamic per-mode penalties
+/// Canonical turn rule with dynamic per-mode penalties.
+/// `penalty_s[i]` = penalty in seconds for mode index `i` (was deciseconds pre-#297).
 #[derive(Debug, Clone)]
 pub struct CanonicalTurnRule {
     pub mode_mask: u8, // Which modes this rule applies to
     pub kind: TurnKind,
-    pub penalty_ds: [u32; MAX_MODES], // Indexed by mode index
+    pub penalty_s: [u32; MAX_MODES], // Indexed by mode index
     pub has_time_dep: bool,
 }
 
@@ -241,17 +242,33 @@ pub fn build_ebg(config: EbgConfig) -> Result<EbgResult> {
     })
 }
 
+/// Convert millimeters → meters with round-half-up rounding.
+/// 0 mm → 0 m. 500 mm → 1 m. 1499 mm → 1 m. 1500 mm → 2 m.
+#[inline]
+fn mm_to_m_round_half_up(length_mm: u32) -> u32 {
+    if length_mm == 0 {
+        return 0;
+    }
+    // (mm + 500) / 1000 = round-half-up for non-negative values
+    (length_mm.saturating_add(500)) / 1000
+}
+
 /// Enumerate EBG nodes (2 per NBG undirected edge)
 fn enumerate_ebg_nodes(nbg_geo: &NbgGeo) -> Result<Vec<EbgNode>> {
     let mut nodes = Vec::with_capacity((nbg_geo.n_edges_und * 2) as usize);
 
     for (geom_idx, edge) in nbg_geo.edges.iter().enumerate() {
+        // Convert mm → m with round-half-up. Floor of 0.5 m would lose
+        // the edge entirely on very short links; round-half-up keeps a
+        // minimum of 1 m for any non-zero geometry.
+        let length_m = mm_to_m_round_half_up(edge.length_mm);
+
         // Forward direction: u → v
         nodes.push(EbgNode {
             tail_nbg: edge.u_node,
             head_nbg: edge.v_node,
             geom_idx: geom_idx as u32,
-            length_mm: edge.length_mm,
+            length_m,
             class_bits: edge.flags,
             primary_way: (edge.first_osm_way_id & 0xFFFFFFFF) as u32,
         });
@@ -261,7 +278,7 @@ fn enumerate_ebg_nodes(nbg_geo: &NbgGeo) -> Result<Vec<EbgNode>> {
             tail_nbg: edge.v_node,
             head_nbg: edge.u_node,
             geom_idx: geom_idx as u32,
-            length_mm: edge.length_mm,
+            length_m,
             class_bits: edge.flags,
             primary_way: (edge.first_osm_way_id & 0xFFFFFFFF) as u32,
         });
@@ -306,13 +323,13 @@ fn build_adjacency(
             .push(ebg_id as u32);
     }
 
-    // Determine which modes have u-turn restrictions (modes with oneway rules, i.e., vehicular)
-    // Use a simple heuristic: modes whose model JSON has respect_oneway=true should ban u-turns.
-    // For now, any mode that has turn penalty u_turn_penalty_ds > 0 restricts u-turns.
+    // Determine which modes have u-turn restrictions (modes with oneway rules, i.e., vehicular).
+    // Use a simple heuristic: any mode whose turn penalty config sets u_turn_penalty_s > 0
+    // restricts u-turns.
     let mut uturn_restricted_mask = 0u8;
     for mc in modes {
         let idx = mc.mode_index as usize;
-        if penalty_configs[idx].u_turn_penalty_ds > 0 {
+        if penalty_configs[idx].u_turn_penalty_s > 0 {
             uturn_restricted_mask |= Mode(mc.mode_index).bit();
         }
     }
@@ -320,7 +337,7 @@ fn build_adjacency(
     // Debug counters
     let mut total_arcs = 0u64;
     let mut arcs_with_penalty = 0u64;
-    let mut total_penalty_ds = 0u64;
+    let mut total_penalty_s = 0u64;
 
     // For each NBG intersection node
     for nbg_node in 0..nbg_csr.n_nodes {
@@ -436,22 +453,22 @@ fn build_adjacency(
                     to_highway_class,
                 );
 
-                // Compute per-mode penalties dynamically
-                let mut penalty_ds = [0u32; MAX_MODES];
+                // Compute per-mode penalties dynamically (values in seconds).
+                let mut penalty_s = [0u32; MAX_MODES];
                 for mc in modes {
                     let idx = mc.mode_index as usize;
                     if (mode_mask & Mode(mc.mode_index).bit()) != 0 {
-                        penalty_ds[idx] = compute_turn_penalty(&geom, &penalty_configs[idx]);
+                        penalty_s[idx] = compute_turn_penalty(&geom, &penalty_configs[idx]);
                     }
                 }
 
-                // Add explicit penalties from turn rules if any
+                // Add explicit penalties from turn rules if any.
                 if let Some(rule) = canonical_rules.get(&rule_key)
                     && rule.kind == TurnKind::Penalty
                 {
                     for mc in modes {
                         let idx = mc.mode_index as usize;
-                        penalty_ds[idx] = penalty_ds[idx].saturating_add(rule.penalty_ds[idx]);
+                        penalty_s[idx] = penalty_s[idx].saturating_add(rule.penalty_s[idx]);
                     }
                 }
 
@@ -459,11 +476,11 @@ fn build_adjacency(
                 total_arcs += 1;
                 let first_penalty = modes
                     .first()
-                    .map(|mc| penalty_ds[mc.mode_index as usize])
+                    .map(|mc| penalty_s[mc.mode_index as usize])
                     .unwrap_or(0);
                 if first_penalty > 0 {
                     arcs_with_penalty += 1;
-                    total_penalty_ds += first_penalty as u64;
+                    total_penalty_s += first_penalty as u64;
                 }
 
                 // Get or create turn table entry
@@ -477,7 +494,7 @@ fn build_adjacency(
                         .get(&rule_key)
                         .map(|r| r.has_time_dep)
                         .unwrap_or(false),
-                    penalty_ds,
+                    penalty_s,
                     attrs_idx: 0,
                 };
 
@@ -514,7 +531,7 @@ fn build_adjacency(
     if arcs_with_penalty > 0 {
         println!(
             "    Avg penalty: {:.1}s",
-            total_penalty_ds as f64 / arcs_with_penalty as f64 / 10.0
+            total_penalty_s as f64 / arcs_with_penalty as f64
         );
     }
 

@@ -515,7 +515,7 @@ pub async fn compute_table_bucket_m2m(
             &source_valid,
             &target_valid,
             neighbor_mask.as_deref(),
-            |v| v as f64 / 10.0, // deciseconds -> seconds
+            |v| v as f64, // already in seconds (post-#297)
         ))
     } else {
         None
@@ -542,7 +542,7 @@ pub async fn compute_table_bucket_m2m(
             &source_valid,
             &target_valid,
             neighbor_mask.as_deref(),
-            |v| v as f64 / 1000.0, // millimeters -> meters
+            |v| v as f64, // already in meters (post-#297)
         ))
     } else {
         None
@@ -792,14 +792,16 @@ fn apply_k_best_fallback(
                     && let Some(tq) = time_query_ref
                     && let Some(r) = tq.query(s_rank, d_rank)
                 {
-                    dur_val = Some(r.distance as f64 / 10.0);
+                    // r.distance is already in seconds (post-#297).
+                    dur_val = Some(r.distance as f64);
                     dur_done = true;
                 }
                 if !dist_done
                     && let Some(dq) = dist_query_ref
                     && let Some(r) = dq.query(s_rank, d_rank)
                 {
-                    dist_val = Some(r.distance as f64 / 1000.0);
+                    // r.distance is already in meters (post-#297).
+                    dist_val = Some(r.distance as f64);
                     dist_done = true;
                 }
                 if dur_done && dist_done {

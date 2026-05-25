@@ -254,8 +254,7 @@ mod tests {
         // Test case: Brussels center, 10 min isochrone
         let origin_lon = 4.3517;
         let origin_lat = 50.8503;
-        let threshold_s = 600; // 10 minutes
-        let threshold_ds = threshold_s * 10;
+        let threshold_s = 600u32; // 10 minutes (weights already in s post-#297)
 
         // Snap origin
         let origin_ebg = state
@@ -270,7 +269,7 @@ mod tests {
             &mode_data.up_adj_flat,
             &mode_data.down_adj_flat,
             origin_rank,
-            threshold_ds,
+            threshold_s,
             mode,
         );
 
@@ -285,7 +284,7 @@ mod tests {
         // Build isochrone polygon
         let polygon_points = build_isochrone_geometry_sparse(
             &settled,
-            threshold_ds,
+            threshold_s,
             &mode_data.node_weights,
             &state.ebg_nodes,
             &state.edge_geom,
@@ -347,8 +346,8 @@ mod tests {
             let drive_time = compute_drive_time_ebg(mode_data, &query, origin_ebg, dst_ebg);
 
             match drive_time {
-                Some(time_ds) => {
-                    let time_s = time_ds as f32 / 10.0;
+                Some(time_s_u) => {
+                    let time_s = time_s_u as f32;
                     if is_inside {
                         if time_s <= threshold_s as f32 {
                             inside_correct += 1;
@@ -482,8 +481,8 @@ mod tests {
         );
     }
 
-    /// Compute drive time from origin EBG node to destination EBG node
-    /// Returns drive time in deciseconds (ds), or None if no route
+    /// Compute drive time from origin EBG node to destination EBG node.
+    /// Returns drive time in seconds (post-#297), or None if no route.
     fn compute_drive_time_ebg(
         mode_data: &crate::server::state::ModeData,
         query: &crate::server::query::CchQuery,

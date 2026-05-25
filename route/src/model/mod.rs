@@ -194,7 +194,7 @@ mod tests {
         for i in 0..9 {
             let name = format!("mode{}", i);
             let content = format!(
-                r#"{{"name":"{}","version":1,"speed":{{"unit":"km/h","highway":{{}},"overrides":[]}},"access":{{"highway":{{}}}},"oneway":{{"respect":false,"tag":"oneway","forward_values":[],"reverse_values":[],"default_oneway_highways":[]}},"priority":[],"highway_class":{{}},"class_bits":{{}},"turn_penalties":{{"turn_penalty_ds":0,"turn_bias":1.0,"u_turn_penalty_ds":0,"min_degree_for_penalty":3,"signal_delay_ds":0,"class_change_penalty_ds_per_diff":0,"max_class_diff_for_penalty":0}},"turn_restrictions":{{"respect":false,"restriction_tag":"restriction","exception_values":[]}}}}"#,
+                r#"{{"name":"{}","version":1,"speed":{{"unit":"km/h","highway":{{}},"overrides":[]}},"access":{{"highway":{{}}}},"oneway":{{"respect":false,"tag":"oneway","forward_values":[],"reverse_values":[],"default_oneway_highways":[]}},"priority":[],"highway_class":{{}},"class_bits":{{}},"turn_penalties":{{"turn_penalty_s":0,"turn_bias":1.0,"u_turn_penalty_s":0,"min_degree_for_penalty":3,"signal_delay_s":0,"class_change_penalty_s_per_diff":0,"max_class_diff_for_penalty":0}},"turn_restrictions":{{"respect":false,"restriction_tag":"restriction","exception_values":[]}}}}"#,
                 name
             );
             std::fs::write(tmp.path().join(format!("{}.model.json", name)), content).unwrap();

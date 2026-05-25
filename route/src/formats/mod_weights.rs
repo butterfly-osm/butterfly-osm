@@ -4,14 +4,14 @@
 //!
 //! Header (32 bytes):
 //!   magic:       u32 = 0x574D4F44  // "WMOD"
-//!   version:     u16 = 1
-//!   mode:        u8  = {0=car,1=bike,2=foot}
+//!   version:     u16 = 2  // v2: seconds (was v1: deciseconds, #297)
+//!   mode:        u8  = {0=car,1=bike,2=foot,...}
 //!   reserved:    u8  = 0
 //!   count:       u32 = n_nodes
 //!   inputs_sha:  [16]u8  // truncated SHA-256 of inputs
 //!
 //! Body (count * u32):
-//!   u32 weight_ds[count]  // deciseconds (0 = inaccessible)
+//!   u32 weight_s[count]  // seconds (0 = inaccessible)
 //!
 //! Footer (16 bytes):
 //!   body_crc64:  u64
@@ -27,14 +27,15 @@ use super::crc::Digest;
 use crate::profile_abi::Mode;
 
 const MAGIC: u32 = 0x574D4F44; // "WMOD"
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 const HEADER_SIZE: usize = 32; // 4 + 2 + 1 + 1 + 4 + 16 + 4(pad)
 const FOOTER_SIZE: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct ModWeights {
     pub mode: Mode,
-    /// Per-node weights in deciseconds.
+    /// Per-node weights in seconds (#297 unit conversion — was
+    /// deciseconds in v1, now seconds in v2).
     /// `Cow::Borrowed` for mmap-backed container reads (zero-copy);
     /// `Cow::Owned` for the legacy file-reader path.
     pub weights: Cow<'static, [u32]>,
@@ -112,7 +113,13 @@ fn read_all_from_reader<R: std::io::Read>(mut file: R) -> Result<ModWeights> {
     );
 
     let version = u16::from_le_bytes([header[4], header[5]]);
-    anyhow::ensure!(version == VERSION, "Unsupported version: {}", version);
+    anyhow::ensure!(
+        version == VERSION,
+        "Unsupported w.<mode>.u32 version: {} (expected {}). \
+         v1 used deciseconds; re-run step 5 to regenerate as v2 (seconds, #297).",
+        version,
+        VERSION,
+    );
 
     let mode_byte = header[6];
     anyhow::ensure!(

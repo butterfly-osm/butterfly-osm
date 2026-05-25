@@ -37,6 +37,10 @@ use super::mmap::ArcCow;
 const MAGIC: u32 = 0x43434857; // "CCHW"
 const HEADER_LEN: usize = 32;
 const FOOTER_LEN: usize = 16;
+/// Current on-disk version. v2 stores body in seconds (time weights)
+/// or meters (distance weights). v1 stored deciseconds / millimeters
+/// and is rejected — re-run step 8 to regenerate.
+const VERSION: u16 = 2;
 
 /// CCH weights - stores weights and relaxed middle nodes for UP and DOWN edges.
 /// The middle arrays are the post-triangle-relaxation middles — these are the
@@ -290,6 +294,15 @@ impl CchWeightsFile {
             );
         }
 
+        let version = u16::from_le_bytes([header[4], header[5]]);
+        anyhow::ensure!(
+            version == VERSION,
+            "Unsupported cch.weights version {} (expected {}). \
+             v1 stored deciseconds/millimeters; re-run step 8 to regenerate as v2 (seconds/meters, #297).",
+            version,
+            VERSION,
+        );
+
         let n_up = u64::from_le_bytes([
             header[8], header[9], header[10], header[11], header[12], header[13], header[14],
             header[15],
@@ -383,6 +396,16 @@ fn parse_header(header: &[u8]) -> Result<(usize, usize)> {
         "Invalid magic: expected 0x{:08X}, got 0x{:08X}",
         MAGIC,
         magic
+    );
+    // #297: enforce v2 (seconds/meters). v1 (deciseconds/millimeters)
+    // is rejected — re-run step 8 to regenerate.
+    let version = u16::from_le_bytes(header[4..6].try_into().unwrap());
+    anyhow::ensure!(
+        version == VERSION,
+        "Unsupported cch.weights version {} (expected {}). \
+         v1 stored deciseconds/millimeters; re-run step 8 to regenerate as v2 (seconds/meters, #297).",
+        version,
+        VERSION,
     );
     let n_up = u64::from_le_bytes(header[8..16].try_into().unwrap()) as usize;
     let n_down = u64::from_le_bytes(header[16..24].try_into().unwrap()) as usize;

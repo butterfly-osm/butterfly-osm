@@ -340,7 +340,7 @@ pub fn run_phast_bounded_fast(
         let total_us = total_start.elapsed().as_micros();
 
         tracing::debug!(
-            threshold_ds = threshold,
+            threshold_s = threshold,
             upward_us = upward_us,
             downward_us = downward_us,
             collect_us = collect_us,
@@ -473,7 +473,7 @@ pub fn run_phast_bounded_fast_reverse(
         let total_us = total_start.elapsed().as_micros();
 
         tracing::debug!(
-            threshold_ds = threshold,
+            threshold_s = threshold,
             upward_us = upward_us,
             downward_us = downward_us,
             collect_us = collect_us,
@@ -543,9 +543,9 @@ pub async fn isochrone_handler(
 
     // Determine isochrone metric: exactly one of {time_s, distance_m, contours}
     enum IsoMetric {
-        Time(u32),           // threshold in deciseconds
-        Distance(u32),       // threshold in millimeters
-        MultiTime(Vec<u32>), // sorted thresholds in deciseconds
+        Time(u32),           // threshold in seconds (post-#297; was ds)
+        Distance(u32),       // threshold in meters (post-#297; was mm)
+        MultiTime(Vec<u32>), // sorted thresholds in seconds
     }
 
     let provided = [
@@ -577,7 +577,7 @@ pub async fn isochrone_handler(
             )
                 .into_response();
         }
-        IsoMetric::Time(t * 10) // convert to deciseconds
+        IsoMetric::Time(t) // seconds (post-#297; weights are also in s)
     } else if let Some(d) = req.distance_m {
         if d == 0 || d > 100_000 {
             return (
@@ -588,13 +588,13 @@ pub async fn isochrone_handler(
             )
                 .into_response();
         }
-        IsoMetric::Distance(d * 1000) // convert to millimeters
+        IsoMetric::Distance(d) // meters (post-#297; weights are also in m)
     } else if let Some(ref contours_str) = req.contours {
         let mut values = Vec::new();
         for part in contours_str.split(',') {
             let part = part.trim();
             match part.parse::<u32>() {
-                Ok(v) if (1..=7200).contains(&v) => values.push(v * 10), // deciseconds
+                Ok(v) if (1..=7200).contains(&v) => values.push(v), // seconds (post-#297)
                 Ok(v) => {
                     return (
                         StatusCode::BAD_REQUEST,
@@ -894,11 +894,13 @@ pub async fn isochrone_handler(
         }
     };
 
-    // Build list of thresholds with their labels
+    // Build list of thresholds with their labels.
+    // Tuple is (threshold_in_weight_units, time_s_label, distance_m_label).
+    // Post-#297 the threshold is already in the display unit (seconds or meters).
     let thresholds: Vec<(u32, Option<u32>, Option<u32>)> = match &metric {
-        IsoMetric::Time(ds) => vec![(*ds, Some(*ds / 10), None)],
-        IsoMetric::Distance(mm) => vec![(*mm, None, Some(*mm / 1000))],
-        IsoMetric::MultiTime(vals) => vals.iter().map(|&ds| (ds, Some(ds / 10), None)).collect(),
+        IsoMetric::Time(s) => vec![(*s, Some(*s), None)],
+        IsoMetric::Distance(m) => vec![(*m, None, Some(*m))],
+        IsoMetric::MultiTime(vals) => vals.iter().map(|&s| (s, Some(s), None)).collect(),
     };
 
     // WKB path (content negotiation)
@@ -980,28 +982,31 @@ pub async fn isochrone_handler(
     .into_response()
 }
 
-/// Build network geometry - all reachable road segments as polylines
+/// Build network geometry - all reachable road segments as polylines.
+/// `time_s` is the threshold in seconds (post-#297); node_weights are also
+/// in seconds. For isodistance queries the units are meters but the math is
+/// identical (the function operates on opaque integer weight units).
 pub fn build_network_geometry(
     settled: &[(u32, u32)],
-    time_ds: u32,
+    time_s: u32,
     node_weights: &[u32],
     ebg_nodes: &crate::formats::EbgNodes,
     edge_geom: &crate::server::edge_geom::EdgeGeometry,
 ) -> Vec<Vec<[f64; 2]>> {
     let mut network: Vec<Vec<[f64; 2]>> = Vec::with_capacity(settled.len());
 
-    for &(ebg_id, dist_ds) in settled {
-        if dist_ds > time_ds {
+    for &(ebg_id, dist_s) in settled {
+        if dist_s > time_s {
             continue;
         }
 
-        let weight_ds = if (ebg_id as usize) < node_weights.len() {
+        let weight_s = if (ebg_id as usize) < node_weights.len() {
             node_weights[ebg_id as usize]
         } else {
             continue;
         };
 
-        if weight_ds == 0 || weight_ds == u32::MAX {
+        if weight_s == 0 || weight_s == u32::MAX {
             continue;
         }
 
@@ -1011,9 +1016,9 @@ pub fn build_network_geometry(
             continue;
         }
 
-        let dist_end_ds = dist_ds.saturating_add(weight_ds);
+        let dist_end_s = dist_s.saturating_add(weight_s);
 
-        if dist_end_ds <= time_ds {
+        if dist_end_s <= time_s {
             // Fully reachable — emit every (lon, lat) f64 pair.
             let coords: Vec<[f64; 2]> = polyline.iter().map(|(lon, lat)| [lon, lat]).collect();
             if coords.len() >= 2 {
@@ -1021,7 +1026,7 @@ pub fn build_network_geometry(
             }
         } else {
             // Partially reachable - clip to cut_idx (inclusive).
-            let cut_fraction = (time_ds - dist_ds) as f32 / weight_ds as f32;
+            let cut_fraction = (time_s - dist_s) as f32 / weight_s as f32;
             let n_pts = polyline.len();
             let cut_idx = ((n_pts - 1) as f32 * cut_fraction).ceil() as usize;
             let cut_idx = cut_idx.min(n_pts - 1).max(1);
@@ -1141,7 +1146,8 @@ pub async fn isochrone_bulk_handler(
     };
 
     let mode_data = state.get_mode(mode);
-    let time_ds = req.time_s * 10;
+    // Weights and thresholds are both seconds (post-#297).
+    let time_s = req.time_s;
 
     // Compute avoid weights (includes exclude if both present)
     let avoid_entry = if let Some(ref avoid_str) = avoid_json {
@@ -1212,7 +1218,7 @@ pub async fn isochrone_bulk_handler(
 
             // Run PHAST - Note: thread-local state handles per-thread allocation
             let phast_settled =
-                run_phast_bounded_fast(up_flat, down_fwd_flat, center_rank, time_ds, mode);
+                run_phast_bounded_fast(up_flat, down_fwd_flat, center_rank, time_s, mode);
 
             // Convert to original IDs
             let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());
@@ -1225,7 +1231,7 @@ pub async fn isochrone_bulk_handler(
             // Build polygon using frontier-based concave hull
             let points = build_isochrone_geometry(
                 &settled,
-                time_ds,
+                time_s,
                 &mode_data.node_weights,
                 &state.ebg_nodes,
                 &state.edge_geom,

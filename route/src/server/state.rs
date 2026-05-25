@@ -235,8 +235,8 @@ pub struct ServerState {
     // heap on Belgium). Both expose the same `get(way_id) -> Option<&str>` API.
     pub way_names: WayNames,
 
-    // Distance weights indexed by original EBG node ID (length_mm per edge)
-    // Used for isodistance isochrones — same role as ModeData.node_weights but in millimeters
+    // Distance weights indexed by original EBG node ID (length_m per edge).
+    // Used for isodistance isochrones — same role as ModeData.node_weights but in meters.
     pub node_weights_dist: Vec<u32>,
 
     // Per-EBG-edge exclude flags (toll/ferry/motorway), indexed by original EBG edge ID
@@ -482,9 +482,9 @@ impl ServerState {
             vec![0u8; ebg_nodes.n_nodes as usize]
         };
 
-        // Build distance-based node weights from EBG edge lengths (mm)
-        // Used for isodistance isochrones: same role as ModeData.node_weights but distance-based
-        let node_weights_dist: Vec<u32> = ebg_nodes.nodes.iter().map(|n| n.length_mm).collect();
+        // Build distance-based node weights from EBG edge lengths (m).
+        // Used for isodistance isochrones: same role as ModeData.node_weights but distance-based.
+        let node_weights_dist: Vec<u32> = ebg_nodes.nodes.iter().map(|n| n.length_m).collect();
         tracing::info!(
             edges = node_weights_dist.len(),
             "built distance node weights"
@@ -1154,7 +1154,7 @@ impl ServerState {
         // supplies the exclude flags, the rest stay cold forever.
         //
         // Important: resolve byte ranges via `container.get(..)` +
-        // `static_bytes[..]` directly. Do NOT route through
+        // `mmap_for_bytes[..]` directly. Do NOT route through
         // `optional_section(..)` because that calls
         // `lazy.verify_now(name)`, which would force a full CRC walk
         // (and page-in) of every other mode's way_attrs at boot —
@@ -1203,7 +1203,8 @@ impl ServerState {
             }
         }
 
-        let node_weights_dist: Vec<u32> = ebg_nodes.nodes.iter().map(|n| n.length_mm).collect();
+        // #297: EBG `length_m` is now metres (was `length_mm`).
+        let node_weights_dist: Vec<u32> = ebg_nodes.nodes.iter().map(|n| n.length_m).collect();
 
         // ---- Optional SRTM (looked up next to the container file) --
         let srtm_dir = container_path
