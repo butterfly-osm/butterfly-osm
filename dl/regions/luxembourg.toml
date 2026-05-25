@@ -1,18 +1,6 @@
 # Butterfly region index — Luxembourg
 #
-# OSM PBF plus OpenAddresses (#96 §"Data Sources").
-#
-# OpenAddresses' Luxembourg pack (`lu/countrywide`, ~6 MB
-# compressed) ingests BD-Adresses (Administration du Cadastre et de
-# la Topographie) into the OA normalised schema.
-#
-# Verified live 2026-05-05.
+# OSM PBF only. Transit feeds not yet wired for Luxembourg.
 
 [pbf]
 url = "https://download.geofabrik.de/europe/luxembourg-latest.osm.pbf"
-
-[[address]]
-id     = "oa-lu-countrywide"
-url    = "https://v2.openaddresses.io/batch-prod/job/823471/source.geojson.gz"
-format = "geojson-gz"
-source = "openaddresses"

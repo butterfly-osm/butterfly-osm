@@ -1,23 +1,6 @@
 # Butterfly region index — France
 #
-# OSM PBF for France from Geofabrik plus OpenAddresses
-# (#96 §"Data Sources").
-#
-# OpenAddresses' France pack (`fr/countrywide`, ~795 MB compressed,
-# ~26M records) consolidates BAN (Base Adresse Nationale) into the
-# OA normalised schema. butterfly-geocode reads it via the
-# OpenAddresses streaming loader (no per-source code path).
-#
-# Verified live 2026-05-05. Job IDs pin the snapshot — refresh by
-# querying `https://batch.openaddresses.io/api/data?source=fr` and
-# updating the job number. See `geocode-data/SOURCES.md` for the
-# discovery contract.
+# OSM PBF only. No transit feeds wired yet.
 
 [pbf]
 url = "https://download.geofabrik.de/europe/france-latest.osm.pbf"
-
-[[address]]
-id     = "oa-fr-countrywide"
-url    = "https://v2.openaddresses.io/batch-prod/job/743120/source.geojson.gz"
-format = "geojson-gz"
-source = "openaddresses"

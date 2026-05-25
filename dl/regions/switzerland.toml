@@ -1,18 +1,6 @@
 # Butterfly region index — Switzerland
 #
-# OSM PBF plus OpenAddresses (#96 §"Data Sources").
-#
-# OpenAddresses' Switzerland pack (`ch/countrywide`, ~154 MB
-# compressed) ingests the swisstopo Amtliches Gebäudeadressregister
-# into the OA normalised schema.
-#
-# Verified live 2026-05-05.
+# OSM PBF only.
 
 [pbf]
 url = "https://download.geofabrik.de/europe/switzerland-latest.osm.pbf"
-
-[[address]]
-id     = "oa-ch-countrywide"
-url    = "https://v2.openaddresses.io/batch-prod/job/824053/source.geojson.gz"
-format = "geojson-gz"
-source = "openaddresses"
