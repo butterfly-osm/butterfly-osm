@@ -413,7 +413,7 @@ fn build_down_reverse(
         let end = topo.down_offsets[u + 1] as usize;
         for i in start..end {
             let v = topo.down_targets[i] as usize;
-            let w = weights.down[i];
+            let w = weights.down.get(i);
             let idx = offsets[v] as usize + pos[v] as usize;
             sources[idx] = u as u32;
             rev_weights[idx] = w;
@@ -439,11 +439,11 @@ fn find_routable_nodes(
         // Check if has at least one finite outgoing edge (UP or DOWN)
         let up_start = topo.up_offsets[u] as usize;
         let up_end = topo.up_offsets[u + 1] as usize;
-        let has_up = (up_start..up_end).any(|i| weights.up[i] != u32::MAX);
+        let has_up = (up_start..up_end).any(|i| weights.up.get(i) != u32::MAX);
 
         let down_start = topo.down_offsets[u] as usize;
         let down_end = topo.down_offsets[u + 1] as usize;
-        let has_down = (down_start..down_end).any(|i| weights.down[i] != u32::MAX);
+        let has_down = (down_start..down_end).any(|i| weights.down.get(i) != u32::MAX);
 
         if has_up || has_down {
             routable.push(u as u32);
@@ -469,7 +469,7 @@ fn random_walk_neighbor(
         let up_start = topo.up_offsets[current as usize] as usize;
         let up_end = topo.up_offsets[current as usize + 1] as usize;
         for i in up_start..up_end {
-            if weights.up[i] != u32::MAX {
+            if weights.up.get(i) != u32::MAX {
                 neighbors.push(topo.up_targets[i]);
             }
         }
@@ -477,7 +477,7 @@ fn random_walk_neighbor(
         let down_start = topo.down_offsets[current as usize] as usize;
         let down_end = topo.down_offsets[current as usize + 1] as usize;
         for i in down_start..down_end {
-            if weights.down[i] != u32::MAX {
+            if weights.down.get(i) != u32::MAX {
                 neighbors.push(topo.down_targets[i]);
             }
         }
@@ -539,7 +539,7 @@ fn bidi_cch_query(
                 let end = topo.up_offsets[u_idx + 1] as usize;
                 for i in start..end {
                     let v = topo.up_targets[i];
-                    let w = weights.up[i];
+                    let w = weights.up.get(i);
                     if w == u32::MAX {
                         continue;
                     }
@@ -646,7 +646,7 @@ fn cch_dijkstra_query(
         let up_end = topo.up_offsets[u_idx + 1] as usize;
         for i in up_start..up_end {
             let v = topo.up_targets[i];
-            let w = weights.up[i];
+            let w = weights.up.get(i);
             if w == u32::MAX {
                 continue;
             }
@@ -671,7 +671,7 @@ fn cch_dijkstra_query(
         let down_end = topo.down_offsets[u_idx + 1] as usize;
         for i in down_start..down_end {
             let v = topo.down_targets[i];
-            let w = weights.down[i];
+            let w = weights.down.get(i);
             if w == u32::MAX {
                 continue;
             }
@@ -911,7 +911,7 @@ fn generate_regression_cases(
         let up_start = topo.up_offsets[u] as usize;
         let up_end = topo.up_offsets[u + 1] as usize;
         for i in up_start..up_end {
-            if weights.up[i] != u32::MAX && adjacent_count < 10 {
+            if weights.up.get(i) != u32::MAX && adjacent_count < 10 {
                 cases.push(RegressionCase {
                     name: "adjacent_up",
                     src: u as u32,
@@ -932,7 +932,7 @@ fn generate_regression_cases(
         let down_start = topo.down_offsets[u] as usize;
         let down_end = topo.down_offsets[u + 1] as usize;
         for i in down_start..down_end {
-            if weights.down[i] != u32::MAX && down_count < 10 {
+            if weights.down.get(i) != u32::MAX && down_count < 10 {
                 cases.push(RegressionCase {
                     name: "adjacent_down",
                     src: u as u32,
@@ -993,8 +993,8 @@ fn generate_regression_cases(
         let down_end = topo.down_offsets[u + 1] as usize;
 
         // Check if node has no finite edges
-        let has_finite_up = (up_start..up_end).any(|i| weights.up[i] != u32::MAX);
-        let has_finite_down = (down_start..down_end).any(|i| weights.down[i] != u32::MAX);
+        let has_finite_up = (up_start..up_end).any(|i| weights.up.get(i) != u32::MAX);
+        let has_finite_down = (down_start..down_end).any(|i| weights.down.get(i) != u32::MAX);
 
         if !has_finite_up && !has_finite_down {
             // This node is isolated - route to another node should fail
@@ -1031,7 +1031,7 @@ fn generate_regression_cases(
         let up_end = topo.up_offsets[u + 1] as usize;
 
         for i in up_start..up_end {
-            if weights.up[i] == u32::MAX {
+            if weights.up.get(i) == u32::MAX {
                 continue;
             }
             let v = topo.up_targets[i] as usize;
@@ -1040,7 +1040,7 @@ fn generate_regression_cases(
             let v_up_end = topo.up_offsets[v + 1] as usize;
 
             for j in v_up_start..v_up_end {
-                if weights.up[j] != u32::MAX && two_hop_count < 10 {
+                if weights.up.get(j) != u32::MAX && two_hop_count < 10 {
                     cases.push(RegressionCase {
                         name: "two_hop",
                         src: u as u32,
@@ -1070,7 +1070,7 @@ fn find_chain_start(
         let up_end = topo.up_offsets[u + 1] as usize;
 
         let finite_count = (up_start..up_end)
-            .filter(|&i| weights.up[i] != u32::MAX)
+            .filter(|&i| weights.up.get(i) != u32::MAX)
             .count();
 
         if finite_count == 1 {
@@ -1097,7 +1097,7 @@ fn follow_chain(
         // Find first finite neighbor
         let mut next = None;
         for i in up_start..up_end {
-            if weights.up[i] != u32::MAX {
+            if weights.up.get(i) != u32::MAX {
                 next = Some(topo.up_targets[i]);
                 break;
             }

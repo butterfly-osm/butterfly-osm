@@ -94,7 +94,7 @@ impl UpAdjFlat {
             let start = topo.up_offsets[source] as usize;
             let end = topo.up_offsets[source + 1] as usize;
             for i in start..end {
-                if weights.up[i] != u32::MAX {
+                if weights.up.get(i) != u32::MAX {
                     *count += 1;
                 }
             }
@@ -127,7 +127,7 @@ impl UpAdjFlat {
             let end = topo.up_offsets[source + 1] as usize;
 
             for i in start..end {
-                let w = weights.up[i];
+                let w = weights.up.get(i);
                 if w == u32::MAX {
                     continue;
                 }
@@ -180,7 +180,7 @@ impl DownAdjFlat {
             let start = topo.down_offsets[source] as usize;
             let end = topo.down_offsets[source + 1] as usize;
             for i in start..end {
-                if weights.down[i] != u32::MAX {
+                if weights.down.get(i) != u32::MAX {
                     *count += 1;
                 }
             }
@@ -203,7 +203,7 @@ impl DownAdjFlat {
             let start = topo.down_offsets[source] as usize;
             let end = topo.down_offsets[source + 1] as usize;
             for i in start..end {
-                let w = weights.down[i];
+                let w = weights.down.get(i);
                 if w == u32::MAX {
                     continue;
                 }
@@ -250,7 +250,7 @@ impl DownReverseAdjFlat {
             let start = topo.down_offsets[source] as usize;
             let end = topo.down_offsets[source + 1] as usize;
             for i in start..end {
-                if weights.down[i] != u32::MAX {
+                if weights.down.get(i) != u32::MAX {
                     let target = topo.down_targets[i] as usize;
                     counts[target] += 1;
                 }
@@ -280,7 +280,7 @@ impl DownReverseAdjFlat {
             let start = topo.down_offsets[source] as usize;
             let end = topo.down_offsets[source + 1] as usize;
             for i in start..end {
-                let w = weights.down[i];
+                let w = weights.down.get(i);
                 if w == u32::MAX {
                     continue;
                 }
@@ -1904,10 +1904,13 @@ fn forward_fill_buckets_flat(
     }
 }
 
-/// Forward search from source using UP edges, collecting bucket items
+/// Forward search from source using UP edges, collecting bucket items.
+/// Takes `&WeightArray` so the caller's `cch_weights.up` (which may be
+/// `U16` or `U32` per #306 PR 2) passes through transparently — the
+/// hot path stays one widening read per edge.
 fn forward_fill_buckets_opt(
     topo: &CchTopo,
-    weights_up: &[u32],
+    weights_up: &crate::formats::WeightArray,
     source_idx: u32,
     source: u32,
     state: &mut SearchState,
@@ -1923,14 +1926,11 @@ fn forward_fill_buckets_opt(
         let start = topo.up_offsets[u as usize] as usize;
         let end = topo.up_offsets[u as usize + 1] as usize;
 
-        for (&v, &w) in topo.up_targets[start..end]
-            .iter()
-            .zip(&weights_up[start..end])
-        {
+        for (slot, &v) in topo.up_targets[start..end].iter().enumerate() {
+            let w = weights_up.get(start + slot);
             if w == u32::MAX {
                 continue;
             }
-
             let new_dist = d.saturating_add(w);
             state.relax(v, new_dist);
         }
@@ -2694,7 +2694,7 @@ mod step_a_tests {
         for (slot, &topo_idx) in flat.topo_edge_idx.iter().enumerate() {
             let i = topo_idx as usize;
             assert_eq!(flat.targets[slot], topo.up_targets[i]);
-            assert_eq!(flat.weights[slot], w.up[i]);
+            assert_eq!(flat.weights[slot], w.up.get(i));
         }
     }
 
@@ -2723,7 +2723,7 @@ mod step_a_tests {
             let s_off = topo.down_offsets[source] as usize;
             let s_end = topo.down_offsets[source + 1] as usize;
             for i in s_off..s_end {
-                let w_topo = w.down[i];
+                let w_topo = w.down.get(i);
                 if w_topo == u32::MAX {
                     continue;
                 }
@@ -2750,7 +2750,7 @@ mod step_a_tests {
 
         for (slot, &topo_idx) in flat.topo_edge_idx.iter().enumerate() {
             let i = topo_idx as usize;
-            assert_eq!(flat.weights[slot], w.down[i]);
+            assert_eq!(flat.weights[slot], w.down.get(i));
         }
     }
 
