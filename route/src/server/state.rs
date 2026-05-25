@@ -627,12 +627,23 @@ impl ServerState {
                 .ok_or_else(|| anyhow::anyhow!("missing required section '{}'", name))?;
             let off = entry.offset as usize;
             let len = entry.len as usize;
+            // Use checked_add so a malformed container with
+            // pathologically large offset+len cannot wrap usize and
+            // bypass the bounds check.
+            let end = off.checked_add(len).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "section '{}' offset+len overflows usize (off={}, len={})",
+                    name,
+                    off,
+                    len
+                )
+            })?;
             anyhow::ensure!(
-                off + len <= static_bytes.len(),
+                end <= static_bytes.len(),
                 "section '{}' bytes [{},{}) exceed mmap len {}",
                 name,
                 off,
-                off + len,
+                end,
                 static_bytes.len()
             );
             // Drive lazy CRC verification through LazyContainer. The
@@ -642,7 +653,7 @@ impl ServerState {
             // and lets format readers skip their own body CRC walk
             // via the `_unverified` entry points.
             lazy_for_bytes.verify_now(name)?;
-            Ok(&static_bytes[off..off + len])
+            Ok(&static_bytes[off..end])
         };
         let lazy_for_optional = std::sync::Arc::clone(&lazy_arc);
         let optional_section = |name: &str| -> Result<Option<&'static [u8]>> {
@@ -650,16 +661,24 @@ impl ServerState {
                 Some(entry) => {
                     let off = entry.offset as usize;
                     let len = entry.len as usize;
+                    let end = off.checked_add(len).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "section '{}' offset+len overflows usize (off={}, len={})",
+                            name,
+                            off,
+                            len
+                        )
+                    })?;
                     anyhow::ensure!(
-                        off + len <= static_bytes.len(),
+                        end <= static_bytes.len(),
                         "section '{}' bytes [{},{}) exceed mmap len {}",
                         name,
                         off,
-                        off + len,
+                        end,
                         static_bytes.len()
                     );
                     lazy_for_optional.verify_now(name)?;
-                    Ok(Some(&static_bytes[off..off + len]))
+                    Ok(Some(&static_bytes[off..end]))
                 }
                 None => Ok(None),
             }
@@ -862,7 +881,26 @@ impl ServerState {
                 if let Some(entry) = container.get(&section) {
                     let off = entry.offset as usize;
                     let len = entry.len as usize;
-                    let range = &static_bytes[off..off + len];
+                    let Some(end) = off.checked_add(len) else {
+                        tracing::warn!(
+                            section = %section,
+                            offset = off,
+                            len = len,
+                            "section offset+len overflows usize; skipping madvise"
+                        );
+                        continue;
+                    };
+                    if end > static_bytes.len() {
+                        tracing::warn!(
+                            section = %section,
+                            offset = off,
+                            len = len,
+                            mmap_len = static_bytes.len(),
+                            "section out-of-bounds vs mmap; skipping madvise"
+                        );
+                        continue;
+                    }
+                    let range = &static_bytes[off..end];
                     match crate::formats::mmap::madvise_dontneed(range) {
                         Ok(()) => tracing::info!(
                             section = %section,
@@ -1756,16 +1794,92 @@ fn load_way_names(step1_dir: &Path) -> Result<HashMap<i64, String>> {
 /// 3. Parse the bytes via the format reader's `_unverified` variant
 ///    (zero-copy view).
 ///
-/// Note: a `madvise(DONTNEED)` after parsing is **not** required here.
-/// The format reader's `_unverified` entry point only touches the
-/// header (~32–80 bytes) and returns `Cow::Borrowed` slices over the
-/// body; `bytemuck::cast_slice` is a pointer-only cast and does not
-/// page the body in. The body therefore stays cold in the page cache
-/// once LazyContainer's CRC walk has completed and any pages it pulled
-/// in are reclaimable by the kernel under memory pressure.
+/// Note on madvise: a `madvise(DONTNEED)` is **not required for
+/// correctness** after parsing — the format reader's `_unverified`
+/// entry point only touches the header (~32–80 bytes) and returns
+/// `Cow::Borrowed` slices over the body; `bytemuck::cast_slice` is a
+/// pointer-only cast and does not page the body in. The body therefore
+/// stays cold in the page cache once LazyContainer's CRC walk has
+/// completed and any pages it pulled in are reclaimable by the kernel
+/// under memory pressure.
+///
+/// **Callers that want to proactively drop CRC-warmed pages** (e.g.
+/// the #277 distance-flat path) call `madvise_section_in_container`
+/// after `load_flat_section` returns. This is an RSS optimisation, not
+/// a correctness requirement: it pre-evicts the bytes the boot CRC
+/// walk pulled resident, instead of waiting for memory pressure.
 ///
 /// `parse` is a closure that turns `&'static [u8]` into the typed flat
 /// view; `build_owned` is the legacy heap-build fallback.
+/// #277: madvise(DONTNEED) a single distance section's bytes after parse.
+///
+/// The view structures (flat adjacencies, CchWeights) hold Cow::Borrowed
+/// references into `bytes`; the slice itself stays a valid reference into
+/// the mmap, so the views remain usable. The kernel re-faults the pages
+/// on next access and evicts again on memory pressure.
+fn madvise_dist_section(bytes: &[u8], section_label: &str) {
+    if let Err(e) = crate::formats::mmap::madvise_dontneed(bytes) {
+        tracing::warn!(
+            section = %section_label,
+            error = %e,
+            "madvise(DONTNEED) on distance section failed; ignoring"
+        );
+    } else {
+        tracing::info!(
+            section = %section_label,
+            bytes = bytes.len(),
+            "madvise(DONTNEED) on warm-only distance section (#277)"
+        );
+    }
+}
+
+/// Same as `madvise_dist_section` but looks up the section's byte range
+/// in the container by name. Used after `load_flat_section`, where the
+/// inner `bytes` slice is not exposed.
+///
+/// Uses `checked_add` on the offset+length pair so corrupted container
+/// metadata can't overflow `usize` and silently bypass the bounds
+/// check. An out-of-bounds or overflowing range logs a warning and
+/// skips the madvise — the load itself already succeeded, so this is
+/// a non-fatal optimisation failure, but we do not want it to fail
+/// quietly.
+fn madvise_section_in_container(
+    container: &crate::formats::butterfly_dat::Container,
+    static_bytes: &'static [u8],
+    section_name: &str,
+) {
+    let entry = match container.get(section_name) {
+        Some(e) => e,
+        None => return, // legacy path, no container section
+    };
+    let off = entry.offset as usize;
+    let len = entry.len as usize;
+    let end = match off.checked_add(len) {
+        Some(e) => e,
+        None => {
+            tracing::warn!(
+                section = %section_name,
+                offset = off,
+                len = len,
+                "container section offset+len overflows usize; skipping madvise"
+            );
+            return;
+        }
+    };
+    if end > static_bytes.len() {
+        tracing::warn!(
+            section = %section_name,
+            offset = off,
+            len = len,
+            mmap_len = static_bytes.len(),
+            "container section out-of-bounds vs mmap; skipping madvise"
+        );
+        return;
+    }
+    let bytes = &static_bytes[off..end];
+    madvise_dist_section(bytes, section_name);
+}
+
 fn load_flat_section<T, P, B>(
     container: &crate::formats::butterfly_dat::Container,
     _static_mmap: &'static memmap2::Mmap,
@@ -1788,18 +1902,26 @@ where
     };
     let off = entry.offset as usize;
     let len = entry.len as usize;
+    let end = off.checked_add(len).ok_or_else(|| {
+        anyhow::anyhow!(
+            "flat section '{}' offset+len overflows usize (off={}, len={})",
+            section_name,
+            off,
+            len
+        )
+    })?;
     anyhow::ensure!(
-        off + len <= static_bytes.len(),
+        end <= static_bytes.len(),
         "flat section '{}' bytes [{},{}) exceed mmap len {}",
         section_name,
         off,
-        off + len,
+        end,
         static_bytes.len()
     );
     // #161: verify CRC via LazyContainer, then read with the unverified
     // format reader to avoid paging the body in twice.
     lazy.verify_now(section_name)?;
-    let bytes: &'static [u8] = &static_bytes[off..off + len];
+    let bytes: &'static [u8] = &static_bytes[off..end];
     let parsed = parse(bytes)?;
     Ok(parsed)
 }
@@ -1827,17 +1949,25 @@ fn load_mode_data_from_bundle(
             .ok_or_else(|| anyhow::anyhow!("missing mode bundle section '{}'", name))?;
         let off = entry.offset as usize;
         let len = entry.len as usize;
+        let end = off.checked_add(len).ok_or_else(|| {
+            anyhow::anyhow!(
+                "section '{}' offset+len overflows usize (off={}, len={})",
+                name,
+                off,
+                len
+            )
+        })?;
         anyhow::ensure!(
-            off + len <= static_bytes.len(),
+            end <= static_bytes.len(),
             "section '{}' bytes [{},{}) exceed mmap len {}",
             name,
             off,
-            off + len,
+            end,
             static_bytes.len()
         );
         // #161: drive lazy CRC verification before handing out bytes.
         lazy.verify_now(&name)?;
-        Ok(&static_bytes[off..off + len])
+        Ok(&static_bytes[off..end])
     };
 
     // ---- Server-only mapping sections (#153) -------------------
@@ -2123,35 +2253,77 @@ fn load_mode_data_from_bundle(
         || DownAdjFlat::build(&cch_topo, &cch_weights),
     )?;
 
+    // #277: distance flats (cch_weights_dist, up_adj_flat_dist,
+    // down_rev_flat_dist, down_adj_flat_dist) are zero-copy views over
+    // mmap'd sections — Cow::Borrowed slices that never copy. The
+    // ~4.93 GiB they account for on Belgium is purely the mmap pages
+    // forced resident by the boot CRC walk.
+    //
+    // They are warm-only on the serve path: only isodistance,
+    // metric=distance /matrix and /trip, and metric=distance
+    // recustomization in /avoid touch them. For workloads that stay on
+    // the default time metric (the common case), those bytes sit
+    // resident for nothing.
+    //
+    // Issue a madvise(MADV_DONTNEED) after each section is parsed. The
+    // flat views remain valid (they're just slice references); the
+    // kernel demand-pages bytes back when a distance query actually
+    // dereferences them, and evicts again under memory pressure. Worst
+    // case is a small one-time page-fault latency on the first
+    // distance request; for the same query repeated, the working set
+    // stays cached normally.
+    let cch_weights_dist_bytes = fetch("weights.dist")?;
     let cch_weights_dist =
-        CchWeightsFile::read_from_bytes_zero_copy_unverified(fetch("weights.dist")?)?;
+        CchWeightsFile::read_from_bytes_zero_copy_unverified(cch_weights_dist_bytes)?;
+    madvise_dist_section(
+        cch_weights_dist_bytes,
+        &format!("mode/{}/weights.dist", mode_name),
+    );
+    let up_adj_flat_dist_section = format!("mode/{}/up_adj_flat.dist", mode_name);
     let up_adj_flat_dist = load_flat_section(
         container,
         static_mmap,
         static_bytes,
-        &format!("mode/{}/up_adj_flat.dist", mode_name),
+        &up_adj_flat_dist_section,
         lazy,
         |bytes| UpAdjFlatFile::read_from_bytes_unverified(bytes),
         || UpAdjFlat::build(&cch_topo, &cch_weights_dist),
     )?;
+    madvise_section_in_container(
+        container,
+        static_bytes,
+        &up_adj_flat_dist_section,
+    );
+    let down_rev_flat_dist_section = format!("mode/{}/down_reverse_adj_flat.dist", mode_name);
     let down_rev_flat_dist = load_flat_section(
         container,
         static_mmap,
         static_bytes,
-        &format!("mode/{}/down_reverse_adj_flat.dist", mode_name),
+        &down_rev_flat_dist_section,
         lazy,
         |bytes| DownReverseAdjFlatFile::read_from_bytes_unverified(bytes),
         || DownReverseAdjFlat::build(&cch_topo, &cch_weights_dist),
     )?;
+    madvise_section_in_container(
+        container,
+        static_bytes,
+        &down_rev_flat_dist_section,
+    );
+    let down_adj_flat_dist_section = format!("mode/{}/down_adj_flat.dist", mode_name);
     let down_adj_flat_dist = load_flat_section(
         container,
         static_mmap,
         static_bytes,
-        &format!("mode/{}/down_adj_flat.dist", mode_name),
+        &down_adj_flat_dist_section,
         lazy,
         |bytes| DownAdjFlatFile::read_from_bytes_unverified(bytes),
         || DownAdjFlat::build(&cch_topo, &cch_weights_dist),
     )?;
+    madvise_section_in_container(
+        container,
+        static_bytes,
+        &down_adj_flat_dist_section,
+    );
 
     Ok(ModeData {
         mode,
