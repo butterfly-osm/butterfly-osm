@@ -2,7 +2,9 @@
 
 use crate::formats::{CchTopo, CchWeights};
 
-/// Unpack a path of CCH edges to original EBG edges.
+/// Unpack a path of CCH edges to original EBG edges. Returns a freshly
+/// allocated `Vec<u32>`; prefer [`unpack_path_into`] in hot paths where
+/// the caller can supply a reusable buffer.
 ///
 /// Uses the RELAXED middles from CchWeights (post-triangle-relaxation) instead
 /// of the topology middles (from contraction). This ensures the unpacked path
@@ -10,94 +12,99 @@ use crate::formats::{CchTopo, CchWeights};
 pub fn unpack_path(
     topo: &CchTopo,
     weights: &CchWeights,
-    forward_path: &[(u32, u32)], // (node, up_edge_idx) from source → meeting
-    backward_path: &[(u32, u32)], // (node, down_edge_idx) from target → meeting
+    forward_path: &[(u32, u32)],
+    backward_path: &[(u32, u32)],
     source: u32,
     _target: u32,
     _meeting_node: u32,
 ) -> Vec<u32> {
-    let mut result = vec![source];
+    let mut out = Vec::new();
+    unpack_path_into(topo, weights, forward_path, backward_path, source, &mut out);
+    out
+}
 
-    // === Forward part: source → meeting (UP edges) ===
+/// #273: in-place path unpack — appends original EBG edges to `out`.
+///
+/// Clears `out` first, then writes the source node followed by every
+/// expanded edge. Reuses the caller's `Vec<u32>` across pairs so a
+/// 10k-pair `route_batch` no longer pays N allocations for the final
+/// path and ~N allocations per recursive shortcut hop.
+pub fn unpack_path_into(
+    topo: &CchTopo,
+    weights: &CchWeights,
+    forward_path: &[(u32, u32)],
+    backward_path: &[(u32, u32)],
+    source: u32,
+    out: &mut Vec<u32>,
+) {
+    out.clear();
+    out.push(source);
+
+    // Forward part: source → meeting (UP edges).
     let mut current = source;
     for &(_node, edge_idx) in forward_path {
         let actual_idx = edge_idx as usize;
-        let edges = unpack_up_edge(topo, weights, current, actual_idx);
-        result.extend(edges);
+        unpack_up_edge_into(topo, weights, current, actual_idx, out);
         current = topo.up_targets[actual_idx];
     }
 
-    // === Backward part reversed: meeting → target (DOWN edges) ===
+    // Backward part reversed: meeting → target (DOWN edges).
     for &(node, edge_idx) in backward_path.iter().rev() {
         let actual_idx = edge_idx as usize;
-        let edges = unpack_down_edge(topo, weights, node, actual_idx);
-        result.extend(edges);
+        unpack_down_edge_into(topo, weights, node, actual_idx, out);
     }
-
-    result
 }
 
-/// Unpack a single UP edge to original edges
-fn unpack_up_edge(topo: &CchTopo, weights: &CchWeights, source: u32, edge_idx: usize) -> Vec<u32> {
+/// Unpack one UP edge in place — appends expanded edges to `out`.
+fn unpack_up_edge_into(
+    topo: &CchTopo,
+    weights: &CchWeights,
+    source: u32,
+    edge_idx: usize,
+    out: &mut Vec<u32>,
+) {
     if !topo.up_is_shortcut.bit(edge_idx) {
-        return vec![topo.up_targets[edge_idx]];
+        out.push(topo.up_targets[edge_idx]);
+        return;
     }
-
-    // Use relaxed middle from weights (optimal), falling back to topo middle
     let middle = if edge_idx < weights.up_middle.len() {
         weights.up_middle[edge_idx]
     } else {
         topo.up_middle[edge_idx]
     };
     let target = topo.up_targets[edge_idx];
-
-    let mut result = Vec::new();
-
-    // source -> middle (DOWN edge)
     if let Some(down_idx) = find_down_edge(topo, source as usize, middle) {
-        result.extend(unpack_down_edge(topo, weights, source, down_idx));
+        unpack_down_edge_into(topo, weights, source, down_idx, out);
     }
-
-    // middle -> target (UP edge)
     if let Some(up_idx) = find_up_edge(topo, middle as usize, target) {
-        result.extend(unpack_up_edge(topo, weights, middle, up_idx));
+        unpack_up_edge_into(topo, weights, middle, up_idx, out);
     }
-
-    result
 }
 
-/// Unpack a single DOWN edge to original edges
-fn unpack_down_edge(
+/// Unpack one DOWN edge in place — appends expanded edges to `out`.
+fn unpack_down_edge_into(
     topo: &CchTopo,
     weights: &CchWeights,
     source: u32,
     edge_idx: usize,
-) -> Vec<u32> {
+    out: &mut Vec<u32>,
+) {
     if !topo.down_is_shortcut.bit(edge_idx) {
-        return vec![topo.down_targets[edge_idx]];
+        out.push(topo.down_targets[edge_idx]);
+        return;
     }
-
-    // Use relaxed middle from weights (optimal), falling back to topo middle
     let middle = if edge_idx < weights.down_middle.len() {
         weights.down_middle[edge_idx]
     } else {
         topo.down_middle[edge_idx]
     };
     let target = topo.down_targets[edge_idx];
-
-    let mut result = Vec::new();
-
-    // source -> middle (DOWN edge)
     if let Some(down_idx) = find_down_edge(topo, source as usize, middle) {
-        result.extend(unpack_down_edge(topo, weights, source, down_idx));
+        unpack_down_edge_into(topo, weights, source, down_idx, out);
     }
-
-    // middle -> target (UP edge)
     if let Some(up_idx) = find_up_edge(topo, middle as usize, target) {
-        result.extend(unpack_up_edge(topo, weights, middle, up_idx));
+        unpack_up_edge_into(topo, weights, middle, up_idx, out);
     }
-
-    result
 }
 
 /// Find UP edge index from source to target
