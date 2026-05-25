@@ -37,39 +37,57 @@ use super::mmap::ArcCow;
 const MAGIC: u32 = 0x43434857; // "CCHW"
 const HEADER_LEN: usize = 32;
 const FOOTER_LEN: usize = 16;
-/// Current on-disk version. v3 (#306 PR 2) carries a per-direction
-/// `width_flags` byte in header byte 7 that lets the body be encoded
-/// as `[u16]` or `[u32]` independently for UP/DOWN edges. v2 stored
-/// body in seconds (time weights) or meters (distance weights) at
-/// fixed u32; v3 readers still accept v2 (width = u32 implied). v1
-/// stored deciseconds / millimeters and is rejected — re-run step 8
-/// to regenerate.
-const VERSION: u16 = 3;
-const VERSION_V2: u16 = 2;
+/// Current on-disk version. v4 (#306 PR 3): per-direction 2-bit
+/// width code in header byte 7 — 00=u32, 01=u16, 10=u24, 11=reserved.
+/// Older versions (v1/v2/v3) are rejected; re-run step 8 to
+/// regenerate.
+const VERSION: u16 = 4;
 
-/// Width flags packed into header byte 7 (v3+):
-/// - bit 0: up body width  (0 = u32, 1 = u16)
-/// - bit 1: down body width (0 = u32, 1 = u16)
-const UP_COMPACT_FLAG: u8 = 0x01;
-const DOWN_COMPACT_FLAG: u8 = 0x02;
-
-/// Per-direction body width for a CCH weights file (#306 PR 2).
+/// Width fields packed into header byte 7.
 ///
-/// At write time, step 8 picks `U16` when the direction's max value
-/// fits losslessly in `u16` (≤ 65 535). On Belgium that's car and
-/// bike for time weights; foot stays `U32` until PR 3's u24+overflow
-/// table lands.
+/// Each direction uses a 2-bit field:
+///   00 = u32 (no compression)
+///   01 = u16
+///   10 = u24
+///   11 = reserved
+///
+/// Bits 0..2 are the up-direction width, bits 2..4 are the
+/// down-direction width. Bits 4..8 are reserved.
+const UP_WIDTH_MASK: u8 = 0b0000_0011;
+const DOWN_WIDTH_SHIFT: u8 = 2;
+const DOWN_WIDTH_MASK: u8 = 0b0000_1100;
+const WIDTH_CODE_U32: u8 = 0;
+const WIDTH_CODE_U16: u8 = 1;
+const WIDTH_CODE_U24: u8 = 2;
+
+/// Per-direction body width for a CCH weights file.
+///
+/// - **U16** (#306 PR 2): each entry stored in 2 bytes. `u16::MAX`
+///   reserved as the "no edge" sentinel. Inline range 0..=65 534.
+///   Used by car/bike time weights on Belgium.
+/// - **U24** (#306 PR 3): each entry stored in 3 bytes little-endian.
+///   `0x00FF_FFFF` reserved as the sentinel. Inline range
+///   0..=16 777 214. Used by foot time and all distance weights on
+///   Belgium (max ~271 k < 16 M).
+/// - **U32**: 4 bytes per entry, no compression. Sentinel `u32::MAX`.
+///   Used when even u24 would overflow (planet-scale very-long shortcuts).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WeightWidth {
     U16,
+    U24,
     U32,
 }
+
+/// `u24` (3-byte) sentinel value used to represent `u32::MAX` on the
+/// compact path. Inline range is `0..=U24_SENTINEL - 1`.
+pub const U24_SENTINEL: u32 = 0x00FF_FFFF;
 
 impl WeightWidth {
     #[inline]
     pub fn bytes_per_entry(self) -> usize {
         match self {
             Self::U16 => 2,
+            Self::U24 => 3,
             Self::U32 => 4,
         }
     }
@@ -83,27 +101,34 @@ impl WeightWidth {
         (raw + 3) & !3
     }
 
-    /// `WeightWidth::U16` iff every value in `weights` fits losslessly
-    /// in the compact path. The compact encoding reserves `u16::MAX`
-    /// as the "no edge" sentinel for `u32::MAX`, so:
+    /// Pick the smallest width that encodes every value losslessly.
     ///
-    /// - `u32::MAX` (sentinel) → encodes to `u16::MAX` losslessly
-    /// - real finite weights must be `< u16::MAX = 65 535`; a real
-    ///   value of 65 535 would alias the sentinel on round-trip
-    ///   (read-back would widen to `u32::MAX`), so it forces U32
-    /// - anything above `u16::MAX` (excluding the sentinel) also
-    ///   forces U32
+    /// Each width reserves its `MAX` as the "no edge" sentinel for
+    /// `u32::MAX`, so a real finite value equal to that boundary
+    /// would alias the sentinel on round-trip — those values get
+    /// kicked up to the next wider width:
+    ///
+    /// - `U16`: real finite ≤ 65 534 (and `u32::MAX` allowed → maps to `u16::MAX`)
+    /// - `U24`: real finite ≤ 16 777 214 (and `u32::MAX` allowed → maps to `U24_SENTINEL`)
+    /// - `U32`: no constraints
     #[inline]
     pub fn choose(weights: &[u32]) -> Self {
-        let max_finite_inline = u16::MAX as u32 - 1; // 65_534
-        if weights
+        let u16_max_finite = u16::MAX as u32 - 1; // 65_534
+        let u24_max_finite = U24_SENTINEL - 1; // 16_777_214
+
+        let fits_u16 = weights
             .iter()
-            .all(|&w| w == u32::MAX || w <= max_finite_inline)
-        {
-            Self::U16
-        } else {
-            Self::U32
+            .all(|&w| w == u32::MAX || w <= u16_max_finite);
+        if fits_u16 {
+            return Self::U16;
         }
+        let fits_u24 = weights
+            .iter()
+            .all(|&w| w == u32::MAX || w <= u24_max_finite);
+        if fits_u24 {
+            return Self::U24;
+        }
+        Self::U32
     }
 }
 
@@ -123,25 +148,39 @@ impl WeightWidth {
 #[derive(Debug, Clone)]
 pub enum WeightArray {
     /// Compact `u16` storage. Reader uses `u16::MAX` as the
-    /// "no edge" sentinel (same role as `u32::MAX` in the U32 variant
-    /// — by convention this is widened back to `u32::MAX` by `get`).
+    /// "no edge" sentinel — widened back to `u32::MAX` by `get`.
     U16(ArcCow<u16>),
-    /// Native `u32` storage. Used when the direction's max value
-    /// doesn't fit in `u16` (foot mode on Belgium, all distance
-    /// arrays until PR 3 lands the u24 codec).
+    /// Compact `u24` storage (3 bytes little-endian per entry).
+    /// Reader uses `U24_SENTINEL = 0x00FF_FFFF` as the "no edge"
+    /// sentinel — widened back to `u32::MAX` by `get`. Used for
+    /// distance weights and foot time weights on Belgium.
+    /// Storage is `ArcCow<u8>` with `n × 3` bytes. The entry count
+    /// is `bytes.len() / 3` (no separate field — keeps the enum
+    /// the same size as the U16/U32 variants for better cache
+    /// behaviour on the hot path).
+    U24(ArcCow<u8>),
+    /// Native `u32` storage. Used when even u24 overflows.
     U32(ArcCow<u32>),
 }
 
 impl WeightArray {
-    /// Read entry `i`, widening to `u32`. The `u16::MAX` sentinel in
-    /// the compact variant maps back to `u32::MAX` so the
-    /// "no edge" semantic survives a round-trip.
-    #[inline]
+    /// Read entry `i`, widening to `u32`. Compact variants map their
+    /// per-width sentinel (`u16::MAX` / `U24_SENTINEL`) back to
+    /// `u32::MAX` so the "no edge" semantic survives a round-trip.
+    #[inline(always)]
     pub fn get(&self, i: usize) -> u32 {
         match self {
             Self::U16(arr) => {
                 let v = arr.as_slice()[i];
                 if v == u16::MAX { u32::MAX } else { v as u32 }
+            }
+            Self::U24(bytes) => {
+                let off = i * 3;
+                let b = bytes.as_slice();
+                let v = u32::from(b[off])
+                    | (u32::from(b[off + 1]) << 8)
+                    | (u32::from(b[off + 2]) << 16);
+                if v == U24_SENTINEL { u32::MAX } else { v }
             }
             Self::U32(arr) => arr.as_slice()[i],
         }
@@ -152,6 +191,7 @@ impl WeightArray {
     pub fn len(&self) -> usize {
         match self {
             Self::U16(arr) => arr.len(),
+            Self::U24(bytes) => bytes.len() / 3,
             Self::U32(arr) => arr.len(),
         }
     }
@@ -176,43 +216,35 @@ impl WeightArray {
     pub fn width(&self) -> WeightWidth {
         match self {
             Self::U16(_) => WeightWidth::U16,
+            Self::U24(_) => WeightWidth::U24,
             Self::U32(_) => WeightWidth::U32,
         }
     }
 
-    /// Upgrade to an owned `Vec<u32>` for mutation. Used by callers
-    /// that need to penalize or zero specific entries (e.g. exclude /
-    /// avoid recustomization). The compact variant is widened in
-    /// place; the wide variant produces a fresh Vec via `to_mut`.
-    ///
-    /// After calling this, the returned `&mut Vec<u32>` is the same
-    /// storage `get`/`iter` will read. Subsequent reads decode
-    /// through the U32 path.
+    /// Upgrade to an owned `Vec<u32>` for mutation. Compact variants
+    /// are widened in place; subsequent reads then decode through the
+    /// U32 path. After calling, the returned `&mut Vec<u32>` is the
+    /// same storage `get` / `iter` reads from.
     pub fn to_mut_vec(&mut self) -> &mut Vec<u32> {
-        if let Self::U16(arr) = self {
-            let widened: Vec<u32> = arr
-                .as_slice()
-                .iter()
-                .map(|&v| if v == u16::MAX { u32::MAX } else { v as u32 })
-                .collect();
-            *self = Self::U32(ArcCow::from_vec(widened));
-        }
         match self {
-            Self::U32(arr) => match arr {
-                ArcCow::Owned(v) => v,
-                ArcCow::Mmap { .. } => {
-                    // Mmap-backed → copy to owned so we can hand out
-                    // a `&mut Vec`.
-                    let owned: Vec<u32> = arr.as_slice().to_vec();
-                    *arr = ArcCow::from_vec(owned);
-                    if let ArcCow::Owned(v) = arr {
-                        v
-                    } else {
-                        unreachable!("just set to ArcCow::Owned")
-                    }
-                }
-            },
-            Self::U16(_) => unreachable!("just upgraded to U32 above"),
+            Self::U16(_) | Self::U24 { .. } => {
+                let widened: Vec<u32> = (0..self.len()).map(|i| self.get(i)).collect();
+                *self = Self::U32(ArcCow::from_vec(widened));
+            }
+            Self::U32(_) => {}
+        }
+        if let Self::U32(arr) = self {
+            if matches!(arr, ArcCow::Mmap { .. }) {
+                let owned: Vec<u32> = arr.as_slice().to_vec();
+                *arr = ArcCow::from_vec(owned);
+            }
+            if let ArcCow::Owned(v) = arr {
+                v
+            } else {
+                unreachable!("just normalised to ArcCow::Owned")
+            }
+        } else {
+            unreachable!("just upgraded to U32 above")
         }
     }
 
@@ -227,6 +259,14 @@ impl WeightArray {
     #[inline]
     pub fn from_vec_u16(v: Vec<u16>) -> Self {
         Self::U16(ArcCow::from_vec(v))
+    }
+
+    /// Construct from `n × 3` little-endian bytes at the U24 width.
+    /// Entry count is derived from `bytes.len() / 3`.
+    #[inline]
+    pub fn from_u24_bytes(bytes: Vec<u8>, n_entries: usize) -> Self {
+        debug_assert_eq!(bytes.len(), n_entries * 3, "u24 length mismatch");
+        Self::U24(ArcCow::from_vec(bytes))
     }
 
     /// Empty array (U32 width).
@@ -409,22 +449,8 @@ impl CchWeightsFile {
         let up_off = byte_offset + HEADER_LEN;
         let down_off = up_off + up_bytes;
 
-        let up = match up_width {
-            WeightWidth::U16 => {
-                WeightArray::U16(ArcCow::<u16>::from_mmap(Arc::clone(&mmap), up_off, n_up)?)
-            }
-            WeightWidth::U32 => {
-                WeightArray::U32(ArcCow::<u32>::from_mmap(Arc::clone(&mmap), up_off, n_up)?)
-            }
-        };
-        let down = match down_width {
-            WeightWidth::U16 => {
-                WeightArray::U16(ArcCow::<u16>::from_mmap(Arc::clone(&mmap), down_off, n_down)?)
-            }
-            WeightWidth::U32 => {
-                WeightArray::U32(ArcCow::<u32>::from_mmap(Arc::clone(&mmap), down_off, n_down)?)
-            }
-        };
+        let up = decode_weight_array_mmap(&mmap, up_off, n_up, up_width)?;
+        let down = decode_weight_array_mmap(&mmap, down_off, n_down, down_width)?;
 
         let (up_middle, down_middle) = if has_middles {
             let upm_off = down_off + down_bytes;
@@ -498,10 +524,12 @@ impl CchWeightsFile {
         let down_body = &bytes[down_off..down_off + down_data];
         let up_vec: Vec<u32> = match up_width {
             WeightWidth::U16 => decode_u16_to_u32_vec(up_body),
+            WeightWidth::U24 => decode_u24_to_u32_vec(up_body),
             WeightWidth::U32 => bytemuck::cast_slice::<u8, u32>(up_body).to_vec(),
         };
         let down_vec: Vec<u32> = match down_width {
             WeightWidth::U16 => decode_u16_to_u32_vec(down_body),
+            WeightWidth::U24 => decode_u24_to_u32_vec(down_body),
             WeightWidth::U32 => bytemuck::cast_slice::<u8, u32>(down_body).to_vec(),
         };
 
@@ -566,6 +594,7 @@ impl CchWeightsFile {
         // Decode only the actual data bytes (skip the 0-2 byte tail pad).
         let up_vec: Vec<u32> = match up_width {
             WeightWidth::U16 => decode_u16_to_u32_vec(&up_body[..up_data_count]),
+            WeightWidth::U24 => decode_u24_to_u32_vec(&up_body[..up_data_count]),
             WeightWidth::U32 => up_body[..up_data_count]
                 .chunks_exact(4)
                 .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
@@ -580,6 +609,7 @@ impl CchWeightsFile {
         crc_digest.update(&down_body);
         let down_vec: Vec<u32> = match down_width {
             WeightWidth::U16 => decode_u16_to_u32_vec(&down_body[..down_data_count]),
+            WeightWidth::U24 => decode_u24_to_u32_vec(&down_body[..down_data_count]),
             WeightWidth::U32 => down_body[..down_data_count]
                 .chunks_exact(4)
                 .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
@@ -649,6 +679,51 @@ fn decode_u16_to_u32_vec(bytes: &[u8]) -> Vec<u32> {
         .collect()
 }
 
+/// Decode a u24-compact body (3 bytes LE per entry) into a `Vec<u32>`,
+/// mapping the `U24_SENTINEL` back to `u32::MAX`.
+#[inline]
+fn decode_u24_to_u32_vec(bytes: &[u8]) -> Vec<u32> {
+    bytes
+        .chunks_exact(3)
+        .map(|c| {
+            let v = u32::from(c[0]) | (u32::from(c[1]) << 8) | (u32::from(c[2]) << 16);
+            if v == U24_SENTINEL { u32::MAX } else { v }
+        })
+        .collect()
+}
+
+/// Build a `WeightArray` from a mmap-backed body at the chosen width.
+fn decode_weight_array_mmap(
+    mmap: &Arc<memmap2::Mmap>,
+    byte_offset: usize,
+    n: usize,
+    width: WeightWidth,
+) -> Result<WeightArray> {
+    match width {
+        WeightWidth::U16 => Ok(WeightArray::U16(ArcCow::<u16>::from_mmap(
+            Arc::clone(mmap),
+            byte_offset,
+            n,
+        )?)),
+        WeightWidth::U32 => Ok(WeightArray::U32(ArcCow::<u32>::from_mmap(
+            Arc::clone(mmap),
+            byte_offset,
+            n,
+        )?)),
+        WeightWidth::U24 => {
+            // u24 needs `n × 3` raw bytes; ArcCow<u8> has no alignment requirement.
+            let n_bytes = n.checked_mul(3).ok_or_else(|| {
+                anyhow::anyhow!("cch.weights u24 byte count overflow: n={n}")
+            })?;
+            Ok(WeightArray::U24(ArcCow::<u8>::from_mmap(
+                Arc::clone(mmap),
+                byte_offset,
+                n_bytes,
+            )?))
+        }
+    }
+}
+
 /// Parsed cch.weights header.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CchWeightsHeader {
@@ -682,25 +757,29 @@ fn parse_header(header: &[u8]) -> Result<CchWeightsHeader> {
     );
     let version = u16::from_le_bytes(header[4..6].try_into().unwrap());
     anyhow::ensure!(
-        version == VERSION || version == VERSION_V2,
-        "Unsupported cch.weights version {} (expected {} or {}). \
-         v1 stored deciseconds/millimeters; re-run step 8 to regenerate \
-         as v2/v3 (seconds/meters, #297/#306).",
+        version == VERSION,
+        "Unsupported cch.weights version {} (expected {}). Re-run step 8 to regenerate.",
         version,
         VERSION,
-        VERSION_V2,
     );
-    let width_flags = if version == VERSION { header[7] } else { 0 };
-    let up_width = if width_flags & UP_COMPACT_FLAG != 0 {
-        WeightWidth::U16
-    } else {
-        WeightWidth::U32
+    let flags = header[7];
+    let up_code = flags & UP_WIDTH_MASK;
+    let down_code = (flags & DOWN_WIDTH_MASK) >> DOWN_WIDTH_SHIFT;
+    let decode_width = |c: u8, dir: &str| -> Result<WeightWidth> {
+        match c {
+            WIDTH_CODE_U32 => Ok(WeightWidth::U32),
+            WIDTH_CODE_U16 => Ok(WeightWidth::U16),
+            WIDTH_CODE_U24 => Ok(WeightWidth::U24),
+            _ => Err(anyhow::anyhow!(
+                "cch.weights: unknown {} width code {} (header byte 7 = 0x{:02X})",
+                dir,
+                c,
+                flags
+            )),
+        }
     };
-    let down_width = if width_flags & DOWN_COMPACT_FLAG != 0 {
-        WeightWidth::U16
-    } else {
-        WeightWidth::U32
-    };
+    let up_width = decode_width(up_code, "up")?;
+    let down_width = decode_width(down_code, "down")?;
     let n_up = u64::from_le_bytes(header[8..16].try_into().unwrap()) as usize;
     let n_down = u64::from_le_bytes(header[16..24].try_into().unwrap()) as usize;
     Ok(CchWeightsHeader {
@@ -729,17 +808,67 @@ mod tests {
     }
 
     #[test]
-    fn width_choose_forces_u32_on_real_65535() {
-        // Real weight = 65_535 (u16::MAX) would alias the sentinel
-        // on round-trip — must force U32.
+    fn width_choose_promotes_to_u24_on_real_65535() {
+        // Real weight = 65_535 (u16::MAX) would alias the u16 sentinel
+        // on round-trip — must promote at least to U24.
         let w = vec![0u32, 65_535, 100];
+        assert_eq!(WeightWidth::choose(&w), WeightWidth::U24);
+    }
+
+    #[test]
+    fn width_choose_promotes_to_u24_on_mid_range() {
+        // 100_000 doesn't fit u16 but fits u24.
+        let w = vec![0u32, 100_000, 100];
+        assert_eq!(WeightWidth::choose(&w), WeightWidth::U24);
+    }
+
+    #[test]
+    fn width_choose_promotes_to_u24_with_sentinel() {
+        // U24's sentinel (U24_SENTINEL = 0x00FF_FFFF) must round-trip
+        // u32::MAX. Real finite values up to U24_SENTINEL - 1 are
+        // representable.
+        let w = vec![0u32, u32::MAX, 0x00FF_FFFE, 100];
+        assert_eq!(WeightWidth::choose(&w), WeightWidth::U24);
+    }
+
+    #[test]
+    fn width_choose_forces_u32_on_u24_overflow() {
+        // 0x00FF_FFFF = U24_SENTINEL — a real finite value at that
+        // boundary aliases the sentinel on round-trip → force U32.
+        let w = vec![0u32, U24_SENTINEL, 100];
         assert_eq!(WeightWidth::choose(&w), WeightWidth::U32);
     }
 
     #[test]
     fn width_choose_forces_u32_on_overflow() {
-        let w = vec![0u32, 100_000, 100];
+        // > U24_SENTINEL → can't fit u24.
+        let w = vec![0u32, 0x0100_0000, 100];
         assert_eq!(WeightWidth::choose(&w), WeightWidth::U32);
+    }
+
+    #[test]
+    fn weight_array_u24_sentinel_round_trip() {
+        // Build a u24-storage array manually and verify round-trip.
+        let raw: Vec<u32> = vec![0, 1, U24_SENTINEL, 0x12_3456, 65_535, u32::MAX];
+        let arr = build_test_u24_array(&raw);
+        assert_eq!(arr.get(0), 0);
+        assert_eq!(arr.get(1), 1);
+        // U24_SENTINEL stored as the sentinel → read as u32::MAX.
+        // (Caller is responsible for not writing real finite U24_SENTINEL.)
+        assert_eq!(arr.get(2), u32::MAX);
+        assert_eq!(arr.get(3), 0x12_3456);
+        assert_eq!(arr.get(4), 65_535);
+        assert_eq!(arr.get(5), u32::MAX);
+    }
+
+    fn build_test_u24_array(values: &[u32]) -> WeightArray {
+        let mut bytes: Vec<u8> = Vec::with_capacity(values.len() * 3);
+        for &v in values {
+            let stored: u32 = if v == u32::MAX { U24_SENTINEL } else { v };
+            let le = stored.to_le_bytes();
+            bytes.extend_from_slice(&le[..3]);
+        }
+        WeightArray::from_u24_bytes(bytes, values.len())
     }
 
     #[test]

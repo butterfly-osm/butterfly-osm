@@ -59,7 +59,7 @@ pub mod cch_weights;
 
 pub use bitset::BitsetField;
 pub use cch_topo::{CchTopo, CchTopoFile, Shortcut};
-pub use cch_weights::{CchWeights, CchWeightsFile, WeightArray, WeightWidth};
+pub use cch_weights::{CchWeights, CchWeightsFile, U24_SENTINEL, WeightArray, WeightWidth};
 pub use ebg_csr::{EbgCsr, EbgCsrFile};
 pub use ebg_nodes::{EbgNode, EbgNodes, EbgNodesFile};
 pub use ebg_turn_table::{TurnEntry, TurnKind, TurnTable, TurnTableFile};

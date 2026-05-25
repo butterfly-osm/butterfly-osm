@@ -71,9 +71,20 @@ fn build_weight_array(
     weights_u32: Vec<u32>,
     width: crate::formats::WeightWidth,
 ) -> crate::formats::WeightArray {
-    use crate::formats::{WeightArray, WeightWidth};
+    use crate::formats::{U24_SENTINEL, WeightArray, WeightWidth};
     match width {
         WeightWidth::U32 => WeightArray::from_vec_u32(weights_u32),
+        WeightWidth::U24 => {
+            // 3-byte LE storage; u32::MAX → U24_SENTINEL.
+            let n = weights_u32.len();
+            let mut bytes: Vec<u8> = Vec::with_capacity(n * 3);
+            for &w in &weights_u32 {
+                let v: u32 = if w == u32::MAX { U24_SENTINEL } else { w };
+                let le = v.to_le_bytes();
+                bytes.extend_from_slice(&le[..3]);
+            }
+            return WeightArray::from_u24_bytes(bytes, n);
+        }
         WeightWidth::U16 => {
             let v16: Vec<u16> = weights_u32
                 .into_iter()
