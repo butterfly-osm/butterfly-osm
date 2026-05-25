@@ -94,8 +94,8 @@ pub struct TurnOutput {
     pub applies: u8,
     /// Bitmask of exceptions (same encoding as applies)
     pub except_mask: u8,
-    /// Penalty in deciseconds (only for Penalty kind)
-    pub penalty_ds: u32,
+    /// Penalty in seconds (only for Penalty kind) — was deciseconds pre-#297.
+    pub penalty_s: u32,
     /// True if conditional restrictions present
     pub is_time_dependent: bool,
 }
@@ -106,7 +106,7 @@ impl Default for TurnOutput {
             kind: TurnRuleKind::None,
             applies: 0,
             except_mask: 0,
-            penalty_ds: 0,
+            penalty_s: 0,
             is_time_dependent: false,
         }
     }

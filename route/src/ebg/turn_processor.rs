@@ -112,7 +112,7 @@ fn process_rule(
                 mode_index,
                 mode_bit,
                 kind,
-                rule.penalty_ds,
+                rule.penalty_s,
                 false, // Not time-dependent after expansion
                 canonical_rules,
             );
@@ -128,7 +128,7 @@ fn process_rule(
         mode_index,
         mode_bit,
         kind,
-        rule.penalty_ds,
+        rule.penalty_s,
         rule.is_time_dep == 1,
         canonical_rules,
     );
@@ -145,7 +145,7 @@ fn add_canonical_rule(
     mode_index: u8,
     mode_bit: u8,
     kind: TurnKind,
-    penalty_ds: u32,
+    penalty_s: u32,
     has_time_dep: bool,
     canonical_rules: &mut HashMap<TurnRuleKey, CanonicalTurnRule>,
 ) {
@@ -158,19 +158,19 @@ fn add_canonical_rule(
     // Merge with existing rule if present
     if let Some(existing) = canonical_rules.get_mut(&key) {
         existing.mode_mask |= mode_bit;
-        existing.penalty_ds[mode_index as usize] = penalty_ds;
+        existing.penalty_s[mode_index as usize] = penalty_s;
         existing.has_time_dep |= has_time_dep;
     } else {
         // Create new canonical rule
         let mut penalty_arr = [0u32; MAX_MODES];
-        penalty_arr[mode_index as usize] = penalty_ds;
+        penalty_arr[mode_index as usize] = penalty_s;
 
         canonical_rules.insert(
             key,
             CanonicalTurnRule {
                 mode_mask: mode_bit,
                 kind,
-                penalty_ds: penalty_arr,
+                penalty_s: penalty_arr,
                 has_time_dep,
             },
         );

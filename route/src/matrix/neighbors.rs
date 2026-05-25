@@ -229,12 +229,14 @@ pub fn build_neighbors(
 }
 
 /// Reasonable mode→average-speed lookup (m/s) used by the optional bounded
-/// PHAST path. `m/s * seconds = metres` so the returned decisecond bound is
-/// `radius_m * 10 / speed_mps`.
+/// PHAST path. `m/s * seconds = metres` so the returned second bound is
+/// `radius_m / speed_mps`.
 ///
 /// These values intentionally err on the fast side so the bound never cuts off
 /// legitimate routes. Unknown modes fall back to 5 m/s.
-pub fn decisecond_bound_for_radius(mode_name: &str, radius_km: f64) -> u32 {
+///
+/// Returns weight in seconds (post-#297; was deciseconds).
+pub fn second_bound_for_radius(mode_name: &str, radius_km: f64) -> u32 {
     let speed_mps = match mode_name.to_ascii_lowercase().as_str() {
         "car" => 22.0_f64,
         "truck" => 18.0,
@@ -243,15 +245,14 @@ pub fn decisecond_bound_for_radius(mode_name: &str, radius_km: f64) -> u32 {
         _ => 5.0,
     };
     let radius_m = radius_km * 1000.0;
-    // deciseconds (= 0.1 s)
-    let ds = (radius_m / speed_mps) * 10.0;
-    if !ds.is_finite() || ds <= 0.0 {
+    let secs = radius_m / speed_mps;
+    if !secs.is_finite() || secs <= 0.0 {
         return u32::MAX;
     }
-    if ds >= u32::MAX as f64 {
+    if secs >= u32::MAX as f64 {
         u32::MAX
     } else {
-        ds.ceil() as u32
+        secs.ceil() as u32
     }
 }
 
@@ -400,12 +401,12 @@ mod tests {
     }
 
     #[test]
-    fn decisecond_bound_sane() {
-        // 50 km by car at 22 m/s ≈ 2273 s → 22 727 deciseconds.
-        let ds = decisecond_bound_for_radius("car", 50.0);
-        assert!(ds > 20_000 && ds < 30_000, "got {}", ds);
-        // Unknown mode falls back to 5 m/s.
-        let ds_default = decisecond_bound_for_radius("unicorn", 5.0);
-        assert!(ds_default > 9_000 && ds_default < 11_000);
+    fn second_bound_sane() {
+        // 50 km by car at 22 m/s ≈ 2273 s.
+        let s = second_bound_for_radius("car", 50.0);
+        assert!(s > 2_000 && s < 3_000, "got {}", s);
+        // Unknown mode falls back to 5 m/s → 5 km / 5 m/s = 1000 s.
+        let s_default = second_bound_for_radius("unicorn", 5.0);
+        assert!(s_default > 900 && s_default < 1_100);
     }
 }

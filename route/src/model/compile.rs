@@ -288,15 +288,15 @@ pub fn compile_model(
         })
         .collect();
 
-    // --- Turn penalty config ---
+    // --- Turn penalty config (post-#297: values in seconds) ---
     let tp = &schema.turn_penalties;
     let turn_penalty_config = TurnPenaltyConfig {
-        turn_penalty_ds: tp.turn_penalty_ds,
+        turn_penalty_s: tp.turn_penalty_s,
         turn_bias: tp.turn_bias,
-        u_turn_penalty_ds: tp.u_turn_penalty_ds,
+        u_turn_penalty_s: tp.u_turn_penalty_s,
         min_degree_for_penalty: tp.min_degree_for_penalty,
-        signal_delay_ds: tp.signal_delay_ds,
-        class_change_penalty_ds_per_diff: tp.class_change_penalty_ds_per_diff,
+        signal_delay_s: tp.signal_delay_s,
+        class_change_penalty_s_per_diff: tp.class_change_penalty_s_per_diff,
         max_class_diff_for_penalty: tp.max_class_diff_for_penalty,
     };
 

@@ -9,7 +9,7 @@ use super::crc;
 use crate::profile_abi::MAX_MODES;
 
 const MAGIC: u32 = 0x45424754; // "EBGT"
-const VERSION: u16 = 2; // v2: dynamic penalty array [u32; MAX_MODES]
+const VERSION: u16 = 3; // v3: penalty array values in seconds (was deciseconds in v2, #297)
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TurnKind {
@@ -31,14 +31,15 @@ impl From<u8> for TurnKind {
 }
 
 /// Turn table entry with dynamic per-mode penalty array.
-/// `penalty_ds[i]` = penalty in deciseconds for mode with index i.
+/// `penalty_s[i]` = penalty in seconds for mode with index i (post-#297;
+/// v2 stored deciseconds, v3 stores seconds).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TurnEntry {
     pub mode_mask: u8, // bit i = mode i accessible
     pub kind: TurnKind,
     pub has_time_dep: bool,
-    pub penalty_ds: [u32; MAX_MODES], // indexed by mode index
-    pub attrs_idx: u32,               // future use; 0 for now
+    pub penalty_s: [u32; MAX_MODES], // indexed by mode index
+    pub attrs_idx: u32,              // future use; 0 for now
 }
 
 #[derive(Debug)]
@@ -85,8 +86,8 @@ impl TurnTableFile {
             record[2] = entry.has_time_dep as u8;
             // record[3] = reserved
 
-            // Write penalty_ds array: MAX_MODES u32s starting at offset 4
-            for (i, &p) in entry.penalty_ds.iter().enumerate() {
+            // Write penalty_s array: MAX_MODES u32s starting at offset 4
+            for (i, &p) in entry.penalty_s.iter().enumerate() {
                 let off = 4 + i * 4;
                 record[off..off + 4].copy_from_slice(&p.to_le_bytes());
             }
@@ -128,7 +129,8 @@ impl TurnTableFile {
         let version = u16::from_le_bytes([header[4], header[5]]);
         anyhow::ensure!(
             version == VERSION,
-            "Unsupported turn_table version: {} (expected {}). Re-run pipeline.",
+            "Unsupported turn_table version: {} (expected {}). \
+             v2 stored deciseconds; re-run step 4 to regenerate as v3 (seconds, #297).",
             version,
             VERSION
         );
@@ -143,8 +145,8 @@ impl TurnTableFile {
             reader.read_exact(&mut record)?;
             crc_digest.update(&record);
 
-            let mut penalty_ds = [0u32; MAX_MODES];
-            for (i, slot) in penalty_ds.iter_mut().enumerate() {
+            let mut penalty_s = [0u32; MAX_MODES];
+            for (i, slot) in penalty_s.iter_mut().enumerate() {
                 let off = 4 + i * 4;
                 *slot = u32::from_le_bytes([
                     record[off],
@@ -159,7 +161,7 @@ impl TurnTableFile {
                 mode_mask: record[0],
                 kind: TurnKind::from(record[1]),
                 has_time_dep: record[2] != 0,
-                penalty_ds,
+                penalty_s,
                 attrs_idx: u32::from_le_bytes([
                     record[attrs_off],
                     record[attrs_off + 1],
