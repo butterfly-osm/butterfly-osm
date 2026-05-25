@@ -1556,7 +1556,7 @@ fn run_one_query(
             let end = up_adj_flat.offsets[u as usize + 1] as usize;
             for slot in start..end {
                 let v = up_adj_flat.targets[slot];
-                let w = up_adj_flat.weights[slot];
+                let w = up_adj_flat.weights.get(slot);
                 // Record relaxation in the UP histogram.
                 up_bin.record(slot as u32, w);
                 let new_dist = d.saturating_add(w);
@@ -1589,7 +1589,7 @@ fn run_one_query(
             let end = down_rev_flat.offsets[u as usize + 1] as usize;
             for slot in start..end {
                 let x = down_rev_flat.sources[slot];
-                let w = down_rev_flat.weights[slot];
+                let w = down_rev_flat.weights.get(slot);
                 // Record relaxation in the DOWN histogram.
                 dn_bin.record(slot as u32, w);
                 let new_dist = d.saturating_add(w);
@@ -1862,7 +1862,7 @@ fn path_edges(
             let end = up_adj_flat.offsets[u as usize + 1] as usize;
             for slot in start..end {
                 let v = up_adj_flat.targets[slot];
-                let w = up_adj_flat.weights[slot];
+                let w = up_adj_flat.weights.get(slot);
                 let new_dist = d.saturating_add(w);
                 if new_dist < scratch.dist_fwd(v as usize) {
                     scratch.set_fwd(v as usize, new_dist, (u, w));
@@ -1893,7 +1893,7 @@ fn path_edges(
             let end = down_rev_flat.offsets[u as usize + 1] as usize;
             for slot in start..end {
                 let x = down_rev_flat.sources[slot];
-                let w = down_rev_flat.weights[slot];
+                let w = down_rev_flat.weights.get(slot);
                 let new_dist = d.saturating_add(w);
                 if new_dist < scratch.dist_bwd(x as usize) {
                     scratch.set_bwd(x as usize, new_dist, (u, w));
