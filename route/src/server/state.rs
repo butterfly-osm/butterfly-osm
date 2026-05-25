@@ -4,6 +4,7 @@
 //! The spatial index operates in original EBG space, then maps to filtered space for query.
 
 use anyhow::{Context, Result};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -622,7 +623,7 @@ impl ServerState {
             // Use checked_add so a malformed container with
             // pathologically large offset+len cannot wrap usize and
             // bypass the bounds check.
-            let end = off.checked_add(len).ok_or_else(|| {
+            let _end = off.checked_add(len).ok_or_else(|| {
                 anyhow::anyhow!(
                     "section '{}' offset+len overflows usize (off={}, len={})",
                     name,
@@ -674,7 +675,7 @@ impl ServerState {
                 Some(entry) => {
                     let off = entry.offset as usize;
                     let len = entry.len as usize;
-                    let end = off.checked_add(len).ok_or_else(|| {
+                    let _end = off.checked_add(len).ok_or_else(|| {
                         anyhow::anyhow!(
                             "section '{}' offset+len overflows usize (off={}, len={})",
                             name,
@@ -969,17 +970,17 @@ impl ServerState {
                             continue;
                         }
                     };
-                    if end > static_bytes.len() {
+                    if end > mmap_for_bytes.len() {
                         tracing::warn!(
                             section = %section,
                             offset = off,
                             len = len,
-                            mmap_len = static_bytes.len(),
+                            mmap_len = mmap_for_bytes.len(),
                             "container section out-of-bounds vs mmap; skipping madvise"
                         );
                         continue;
                     }
-                    let range = &static_bytes[off..end];
+                    let range = &mmap_for_bytes[off..end];
                     if let Err(e) = crate::formats::mmap::madvise_dontneed(range) {
                         tracing::warn!(
                             section = %section,
@@ -1092,14 +1093,14 @@ impl ServerState {
                 );
                 continue;
             };
-            if end > static_bytes.len() {
+            if end > mmap_for_bytes.len() {
                 tracing::warn!(
                     section = %other_section,
                     "way_attrs section bytes exceed mmap; skipping evict"
                 );
                 continue;
             }
-            let other_bytes = &static_bytes[off..end];
+            let other_bytes = &mmap_for_bytes[off..end];
             if let Err(e) = crate::formats::mmap::madvise_dontneed(other_bytes) {
                 tracing::warn!(
                     section = %other_section,
@@ -1915,7 +1916,7 @@ where
     };
     let off = entry.offset as usize;
     let len = entry.len as usize;
-    let end = off.checked_add(len).ok_or_else(|| {
+    let _end = off.checked_add(len).ok_or_else(|| {
         anyhow::anyhow!(
             "flat section '{}' offset+len overflows usize (off={}, len={})",
             section_name,
@@ -1936,6 +1937,62 @@ where
     lazy.verify_now(section_name)?;
     let parsed = parse(std::sync::Arc::clone(mmap), off, len)?;
     Ok(parsed)
+}
+
+/// #277 madvise(DONTNEED) on a container section, addressed by name.
+/// After Phase 6 un-leak, the mapping is owned by an `Arc<Mmap>` rather
+/// than a leaked `'static [u8]` — so the bytes we hand to `madvise` are
+/// borrowed from the live `Arc` and the slice lifetime stays tied to it.
+///
+/// Non-fatal optimisation: an out-of-bounds or overflowing range logs a
+/// warning and skips the madvise.
+fn madvise_section_in_container(
+    container: &crate::formats::butterfly_dat::Container,
+    mmap: &std::sync::Arc<memmap2::Mmap>,
+    section_name: &str,
+) {
+    let entry = match container.get(section_name) {
+        Some(e) => e,
+        None => return,
+    };
+    let off = entry.offset as usize;
+    let len = entry.len as usize;
+    let end = match off.checked_add(len) {
+        Some(e) => e,
+        None => {
+            tracing::warn!(
+                section = %section_name,
+                offset = off,
+                len = len,
+                "container section offset+len overflows usize; skipping madvise"
+            );
+            return;
+        }
+    };
+    if end > mmap.len() {
+        tracing::warn!(
+            section = %section_name,
+            offset = off,
+            len = len,
+            mmap_len = mmap.len(),
+            "container section out-of-bounds vs mmap; skipping madvise"
+        );
+        return;
+    }
+    let bytes = &mmap[off..end];
+    if let Err(e) = crate::formats::mmap::madvise_dontneed(bytes) {
+        tracing::warn!(
+            section = %section_name,
+            error = %e,
+            "madvise(DONTNEED) on distance section failed; ignoring"
+        );
+    } else {
+        tracing::info!(
+            section = %section_name,
+            bytes = len,
+            "madvise(DONTNEED) on warm-only distance section (#277)"
+        );
+    }
 }
 
 /// Same as `load_mode_data` but reads from a `.butterfly` container's
@@ -1962,7 +2019,7 @@ fn load_mode_data_from_bundle(
             .ok_or_else(|| anyhow::anyhow!("missing mode bundle section '{}'", name))?;
         let off = entry.offset as usize;
         let len = entry.len as usize;
-        let end = off.checked_add(len).ok_or_else(|| {
+        let _end = off.checked_add(len).ok_or_else(|| {
             anyhow::anyhow!(
                 "section '{}' offset+len overflows usize (off={}, len={})",
                 name,
@@ -2284,45 +2341,46 @@ fn load_mode_data_from_bundle(
 
     let (wd_mmap, wd_off, wd_len) = fetch_arc("weights.dist")?;
     let cch_weights_dist = CchWeightsFile::read_from_mmap_unverified(wd_mmap, wd_off, wd_len)?;
+    let up_adj_flat_dist_section = format!("mode/{}/up_adj_flat.dist", mode_name);
     let up_adj_flat_dist = load_flat_section(
         container,
         mmap,
-        &format!("mode/{}/up_adj_flat.dist", mode_name),
+        &up_adj_flat_dist_section,
         lazy,
         |m, off, len| UpAdjFlatFile::read_from_mmap_unverified(m, off, len),
         || UpAdjFlat::build(&cch_topo, &cch_weights_dist),
     )?;
     madvise_section_in_container(
         container,
-        static_bytes,
+        mmap,
         &up_adj_flat_dist_section,
     );
     let down_rev_flat_dist_section = format!("mode/{}/down_reverse_adj_flat.dist", mode_name);
     let down_rev_flat_dist = load_flat_section(
         container,
         mmap,
-        &format!("mode/{}/down_reverse_adj_flat.dist", mode_name),
+        &down_rev_flat_dist_section,
         lazy,
         |m, off, len| DownReverseAdjFlatFile::read_from_mmap_unverified(m, off, len),
         || DownReverseAdjFlat::build(&cch_topo, &cch_weights_dist),
     )?;
     madvise_section_in_container(
         container,
-        static_bytes,
+        mmap,
         &down_rev_flat_dist_section,
     );
     let down_adj_flat_dist_section = format!("mode/{}/down_adj_flat.dist", mode_name);
     let down_adj_flat_dist = load_flat_section(
         container,
         mmap,
-        &format!("mode/{}/down_adj_flat.dist", mode_name),
+        &down_adj_flat_dist_section,
         lazy,
         |m, off, len| DownAdjFlatFile::read_from_mmap_unverified(m, off, len),
         || DownAdjFlat::build(&cch_topo, &cch_weights_dist),
     )?;
     madvise_section_in_container(
         container,
-        static_bytes,
+        mmap,
         &down_adj_flat_dist_section,
     );
 
