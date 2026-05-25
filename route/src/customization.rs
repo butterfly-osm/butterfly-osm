@@ -1141,8 +1141,9 @@ fn write_weights_body<W: std::io::Write>(
 }
 
 /// Emit 0-3 zero bytes so the next array begins on a 4-byte boundary.
-/// u32 bodies are already 4-aligned; only u16 needs 2 bytes of pad
-/// when `n` is odd.
+/// u32 bodies are already 4-aligned; u16 needs 0-2 bytes of pad when
+/// `n` is odd; u24 needs 0-3 bytes of pad to round `n * 3` up to the
+/// next multiple of 4. CRC covers the padding.
 fn write_padding<W: std::io::Write>(
     writer: &mut W,
     crc_digest: &mut crate::formats::crc::Digest,
