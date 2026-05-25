@@ -128,7 +128,48 @@ pub async fn get(source: &str, dest: Option<&str>) -> Result<()> {
 
     downloader
         .download_to_file(source, &file_path, &options)
-        .await
+        .await?;
+    maybe_write_sidecar(file_path.clone()).await;
+    Ok(())
+}
+
+/// #230: write the `.sha256` sidecar when the destination has a
+/// recognised extension. The parallel HTTP downloader doesn't compute
+/// SHA inline (it would force single-connection streaming and lose
+/// the range-parallelism win on big PBFs), so we do a second pass
+/// over the just-written file. The page cache is hot — for a 6 GiB
+/// file this is a ~2-second CPU-bound hash with no disk I/O.
+/// Recognised extensions come from
+/// [`verified::VerifiedOptions::for_extension`] (PBF, ZIP, GZ, XZ,
+/// ZST, XML).
+///
+/// The hash + write run inside `tokio::task::spawn_blocking` so they
+/// don't pin the async executor's I/O thread for the seconds it takes
+/// on multi-GiB files. On a single-thread runtime that would freeze
+/// the whole runtime; on a multi-thread runtime it would tie up one
+/// worker. `spawn_blocking` parks the work on the dedicated blocking
+/// pool where this kind of CPU+disk-bound task belongs.
+async fn maybe_write_sidecar(file_path: String) {
+    let res = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        let target = std::path::Path::new(&file_path);
+        if !verified::VerifiedOptions::for_extension(target).sha256_sidecar {
+            return Ok(());
+        }
+        let Some(sha) = verified::hash_file_if_exists(target) else {
+            return Ok(());
+        };
+        if let Err(e) = verified::write_sidecar(target, sha) {
+            // Sidecar write failure is non-fatal — the file is already
+            // on disk. Warn so deployment pipelines that rely on the
+            // sidecar can detect the issue.
+            eprintln!("⚠ failed to write .sha256 sidecar: {e}");
+        }
+        Ok(())
+    })
+    .await;
+    if let Err(join_err) = res {
+        eprintln!("⚠ sidecar task join error: {join_err}");
+    }
 }
 
 /// Download and return a stream
@@ -233,7 +274,9 @@ pub async fn get_with_options(
 
     downloader
         .download_to_file(source, &file_path, &options)
-        .await
+        .await?;
+    maybe_write_sidecar(file_path).await;
+    Ok(())
 }
 
 /// Advanced API: Create a downloader with custom configuration

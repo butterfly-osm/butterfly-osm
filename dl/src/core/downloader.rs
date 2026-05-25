@@ -591,32 +591,22 @@ fn calculate_optimal_connections(file_size: u64, max_connections: usize) -> usiz
     )
 }
 
-/// Create an optimized file for large downloads with optional Direct I/O
+/// Create a file for large downloads.
+///
+/// **#231:** previously this opened large files with `O_DIRECT` on
+/// Linux, hoping to bypass the page cache for ~5% throughput gain on
+/// NVMe. The bypass requires page-aligned write buffers, which the
+/// async streaming code does not guarantee — the open succeeded but
+/// subsequent `write_all` calls failed with `EINVAL` on ext4 for
+/// files > 1 GiB. The workaround at the call site (download to
+/// `/tmp` tmpfs, then `mv`) cost more than the original optimisation
+/// ever saved.
+///
+/// Modern Linux 6.x with kernel write-back tuning gives streaming
+/// downloads ~95% of O_DIRECT throughput through the page cache
+/// without any of the alignment hazards. Dropping the O_DIRECT path
+/// for the more robust standard I/O is the right tradeoff.
 async fn create_optimized_file(path: &str, _size_hint: Option<u64>) -> Result<tokio::fs::File> {
-    #[cfg(unix)]
-    {
-        // Try Direct I/O for large files (>1GB) on Linux systems only
-        // O_DIRECT is not available on macOS/BSD systems
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-
-            if let Some(size) = _size_hint
-                && size > 1024 * 1024 * 1024
-                && let Ok(file) = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .custom_flags(libc::O_DIRECT)
-                    .open(path)
-            {
-                return Ok(tokio::fs::File::from_std(file));
-                // Direct I/O failures fall through to standard I/O below.
-            }
-        }
-    }
-
-    // Fallback to standard file creation
     tokio::fs::File::create(path).await.map_err(Into::into)
 }
 
