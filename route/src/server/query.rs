@@ -5,13 +5,14 @@
 //! once per thread and reused across queries via version stamping.
 
 use std::cell::RefCell;
-use std::cmp::Reverse;
-
-use priority_queue::PriorityQueue;
 
 use crate::formats::CchTopo;
-use crate::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
+use crate::matrix::bucket_ch::{DAryHeap, DownReverseAdjFlat, UpAdjFlat};
 use crate::profile_abi::Mode;
+
+/// Sentinel used in the per-node heap-handle arrays: this node is not
+/// currently in the priority queue.
+const HANDLE_NONE: u32 = u32::MAX;
 
 use super::state::{CchWeights, ServerState};
 
@@ -51,10 +52,19 @@ struct CchQueryState {
     gen_bwd: Vec<u32>,
     /// Current generation (incremented per query)
     current_gen: u32,
-    /// Forward priority queue (reused across queries)
-    pq_fwd: PriorityQueue<u32, Reverse<u32>>,
-    /// Backward priority queue
-    pq_bwd: PriorityQueue<u32, Reverse<u32>>,
+    /// Forward 4-ary heap (decrease-key) — replaces PriorityQueue
+    /// (codex #291). Heap entries are `(weight, node_id)` where node_id
+    /// is a usize-cast u32. `handles_fwd[node]` gives the heap position
+    /// of that node, or `HANDLE_NONE` if not in the heap this gen.
+    pq_fwd: DAryHeap,
+    pq_bwd: DAryHeap,
+    /// Per-node forward heap handle (heap position or HANDLE_NONE).
+    /// Generation-stamped: only valid when `gen_fwd[node] == current_gen`
+    /// AND `handles_fwd_gen[node] == current_gen`.
+    handles_fwd: Vec<u32>,
+    handles_bwd: Vec<u32>,
+    handles_fwd_gen: Vec<u32>,
+    handles_bwd_gen: Vec<u32>,
 }
 
 impl CchQueryState {
@@ -67,8 +77,12 @@ impl CchQueryState {
             gen_fwd: vec![0; n_nodes],
             gen_bwd: vec![0; n_nodes],
             current_gen: 0,
-            pq_fwd: PriorityQueue::new(),
-            pq_bwd: PriorityQueue::new(),
+            pq_fwd: DAryHeap::new(1024),
+            pq_bwd: DAryHeap::new(1024),
+            handles_fwd: vec![HANDLE_NONE; n_nodes],
+            handles_bwd: vec![HANDLE_NONE; n_nodes],
+            handles_fwd_gen: vec![0; n_nodes],
+            handles_bwd_gen: vec![0; n_nodes],
         }
     }
 
@@ -80,10 +94,61 @@ impl CchQueryState {
             // Overflow — reset all versions (rare, every ~4B queries)
             self.gen_fwd.iter_mut().for_each(|v| *v = 0);
             self.gen_bwd.iter_mut().for_each(|v| *v = 0);
+            self.handles_fwd_gen.iter_mut().for_each(|v| *v = 0);
+            self.handles_bwd_gen.iter_mut().for_each(|v| *v = 0);
             self.current_gen = 1;
         }
         self.pq_fwd.clear();
         self.pq_bwd.clear();
+        // handles_fwd / handles_bwd are gen-stamped; no O(n) reset needed.
+    }
+
+    /// Push `node` onto the forward heap with weight `dist`. Detects
+    /// whether the node is already in the heap (via gen-stamped handle)
+    /// and uses decrease-key in that case; otherwise pushes fresh.
+    #[inline]
+    fn push_fwd(&mut self, node: u32, dist: u32) {
+        if self.handles_fwd_gen[node as usize] == self.current_gen {
+            let handle = self.handles_fwd[node as usize];
+            self.pq_fwd
+                .decrease(handle, dist, node, &mut self.handles_fwd);
+        } else {
+            self.pq_fwd.push(dist, node, &mut self.handles_fwd);
+            self.handles_fwd_gen[node as usize] = self.current_gen;
+        }
+    }
+
+    #[inline]
+    fn push_bwd(&mut self, node: u32, dist: u32) {
+        if self.handles_bwd_gen[node as usize] == self.current_gen {
+            let handle = self.handles_bwd[node as usize];
+            self.pq_bwd
+                .decrease(handle, dist, node, &mut self.handles_bwd);
+        } else {
+            self.pq_bwd.push(dist, node, &mut self.handles_bwd);
+            self.handles_bwd_gen[node as usize] = self.current_gen;
+        }
+    }
+
+    /// Pop the minimum-weight forward heap entry. Returns `(weight, node)`.
+    /// Clears the node's gen-stamped handle so a future push will be a
+    /// fresh insert.
+    #[inline]
+    fn pop_fwd(&mut self) -> Option<(u32, u32)> {
+        let out = self.pq_fwd.pop(&mut self.handles_fwd);
+        if let Some((_, node)) = out {
+            self.handles_fwd_gen[node as usize] = 0;
+        }
+        out
+    }
+
+    #[inline]
+    fn pop_bwd(&mut self) -> Option<(u32, u32)> {
+        let out = self.pq_bwd.pop(&mut self.handles_bwd);
+        if let Some((_, node)) = out {
+            self.handles_bwd_gen[node as usize] = 0;
+        }
+        out
     }
 
     // Forward distance accessors
@@ -409,8 +474,8 @@ impl<'a> CchQuery<'a> {
             // Initialize source and target
             state.set_fwd(source as usize, 0, (source, 0));
             state.set_bwd(target as usize, 0, (target, 0));
-            state.pq_fwd.push(source, Reverse(0));
-            state.pq_bwd.push(target, Reverse(0));
+            state.push_fwd(source, 0);
+            state.push_bwd(target, 0);
 
             // Best meeting point
             let mut best_dist = u32::MAX;
@@ -425,30 +490,21 @@ impl<'a> CchQuery<'a> {
             // Bidirectional search with early termination
             while !state.pq_fwd.is_empty() || !state.pq_bwd.is_empty() {
                 // Early termination: if both queue minimums exceed best_dist, stop
-                let fwd_min = state
-                    .pq_fwd
-                    .peek()
-                    .map(|(_, &Reverse(d))| d)
-                    .unwrap_or(u32::MAX);
-                let bwd_min = state
-                    .pq_bwd
-                    .peek()
-                    .map(|(_, &Reverse(d))| d)
-                    .unwrap_or(u32::MAX);
+                let fwd_min = state.pq_fwd.peek_min_weight().unwrap_or(u32::MAX);
+                let bwd_min = state.pq_bwd.peek_min_weight().unwrap_or(u32::MAX);
                 if fwd_min >= best_dist && bwd_min >= best_dist {
                     break;
                 }
 
-                // Forward step — search UP graph. Stale-pop check and
-                // #272 stall-on-demand both gate the relax block in one
-                // chained let-binding. Stall body is inlined here (not
-                // hoisted to `is_stalled_fwd`) because hoisting prevents
-                // the compiler from folding the closure into the outer
-                // loop, costing the measurable speedup. The shared
-                // helper exists for unit testing only.
-                if let Some((u, Reverse(d))) = state.pq_fwd.pop()
-                    && d <= state.get_fwd(u as usize)
-                    && {
+                // Forward step — search UP graph. #272 stall-on-demand
+                // body is inlined (not hoisted to `is_stalled_fwd`)
+                // because hoisting prevents the compiler from folding
+                // the closure into the outer loop, costing the measured
+                // p50 speedup.
+                if let Some((d, u)) = state.pop_fwd() {
+                    if d > state.get_fwd(u as usize) {
+                        // Stale entry — skip
+                    } else {
                         let mut stalled = false;
                         self.for_down_rev_edges(u, |x, w, _| {
                             if stalled {
@@ -461,66 +517,67 @@ impl<'a> CchQuery<'a> {
                                 }
                             }
                         });
-                        !stalled
-                    }
-                {
-                    fwd_settled += 1;
+                        if !stalled {
+                            fwd_settled += 1;
 
-                    // Check meeting point when settling a node
-                    let bwd_d = state.get_bwd(u as usize);
-                    if bwd_d != u32::MAX {
-                        let total = d.saturating_add(bwd_d);
-                        if total < best_dist {
-                            best_dist = total;
-                            meeting_node = u;
-                            if debug {
-                                tracing::debug!(
-                                    meet_node = u,
-                                    dist_fwd = d,
-                                    dist_bwd = bwd_d,
-                                    total,
-                                    "FWD meet"
-                                );
-                            }
-                        }
-                    }
-
-                    // Relax UP edges
-                    self.for_up_edges(u, |v, w, edge_idx| {
-                        fwd_relaxed += 1;
-                        let new_dist = d.saturating_add(w);
-                        if new_dist < state.get_fwd(v as usize) {
-                            state.set_fwd(v as usize, new_dist, (u, edge_idx));
-                            state.pq_fwd.push(v, Reverse(new_dist));
-
-                            // Check meeting when updating
-                            let bwd_v = state.get_bwd(v as usize);
-                            if bwd_v != u32::MAX {
-                                let total = new_dist.saturating_add(bwd_v);
+                            // Check meeting point when settling a node
+                            let bwd_d = state.get_bwd(u as usize);
+                            if bwd_d != u32::MAX {
+                                let total = d.saturating_add(bwd_d);
                                 if total < best_dist {
                                     best_dist = total;
-                                    meeting_node = v;
+                                    meeting_node = u;
                                     if debug {
                                         tracing::debug!(
-                                            meet_node = v,
-                                            dist_fwd = new_dist,
-                                            dist_bwd = bwd_v,
+                                            meet_node = u,
+                                            dist_fwd = d,
+                                            dist_bwd = bwd_d,
                                             total,
-                                            "FWD meet via edge"
+                                            "FWD meet"
                                         );
                                     }
                                 }
                             }
+
+                            // Relax UP edges
+                            self.for_up_edges(u, |v, w, edge_idx| {
+                                fwd_relaxed += 1;
+                                let new_dist = d.saturating_add(w);
+                                if new_dist < state.get_fwd(v as usize) {
+                                    state.set_fwd(v as usize, new_dist, (u, edge_idx));
+                                    state.push_fwd(v, new_dist);
+
+                                    // Check meeting when updating
+                                    let bwd_v = state.get_bwd(v as usize);
+                                    if bwd_v != u32::MAX {
+                                        let total = new_dist.saturating_add(bwd_v);
+                                        if total < best_dist {
+                                            best_dist = total;
+                                            meeting_node = v;
+                                            if debug {
+                                                tracing::debug!(
+                                                    meet_node = v,
+                                                    dist_fwd = new_dist,
+                                                    dist_bwd = bwd_v,
+                                                    total,
+                                                    "FWD meet via edge"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            });
                         }
-                    });
+                    }
                 }
 
                 // Backward step — traverse reversed DOWN edges
-                // (= upward in reversed graph). Stall body inlined for
-                // the same reason as the forward branch above.
-                if let Some((u, Reverse(d))) = state.pq_bwd.pop()
-                    && d <= state.get_bwd(u as usize)
-                    && {
+                // (= upward in reversed graph). #272 stall body inlined
+                // for the same reason as the forward branch above.
+                if let Some((d, u)) = state.pop_bwd() {
+                    if d > state.get_bwd(u as usize) {
+                        // Stale — skip
+                    } else {
                         let mut stalled = false;
                         self.for_up_edges(u, |v, w, _| {
                             if stalled {
@@ -533,58 +590,59 @@ impl<'a> CchQuery<'a> {
                                 }
                             }
                         });
-                        !stalled
-                    }
-                {
-                    bwd_settled += 1;
-
-                    // Check meeting point
-                    let fwd_d = state.get_fwd(u as usize);
-                    if fwd_d != u32::MAX {
-                        let total = d.saturating_add(fwd_d);
-                        if total < best_dist {
-                            best_dist = total;
-                            meeting_node = u;
-                            if debug {
-                                tracing::debug!(
-                                    meet_node = u,
-                                    dist_fwd = fwd_d,
-                                    dist_bwd = d,
-                                    total,
-                                    "BWD meet"
-                                );
-                            }
+                        if stalled {
+                            continue;
                         }
-                    }
+                        bwd_settled += 1;
 
-                    // Relax reverse DOWN edges
-                    self.for_down_rev_edges(u, |x, w, edge_idx| {
-                        bwd_relaxed += 1;
-                        let new_dist = d.saturating_add(w);
-                        if new_dist < state.get_bwd(x as usize) {
-                            state.set_bwd(x as usize, new_dist, (u, edge_idx));
-                            state.pq_bwd.push(x, Reverse(new_dist));
-
-                            // Check meeting when updating
-                            let fwd_x = state.get_fwd(x as usize);
-                            if fwd_x != u32::MAX {
-                                let total = new_dist.saturating_add(fwd_x);
-                                if total < best_dist {
-                                    best_dist = total;
-                                    meeting_node = x;
-                                    if debug {
-                                        tracing::debug!(
-                                            meet_node = x,
-                                            dist_fwd = fwd_x,
-                                            dist_bwd = new_dist,
-                                            total,
-                                            "BWD meet via edge"
-                                        );
-                                    }
+                        // Check meeting point
+                        let fwd_d = state.get_fwd(u as usize);
+                        if fwd_d != u32::MAX {
+                            let total = d.saturating_add(fwd_d);
+                            if total < best_dist {
+                                best_dist = total;
+                                meeting_node = u;
+                                if debug {
+                                    tracing::debug!(
+                                        meet_node = u,
+                                        dist_fwd = fwd_d,
+                                        dist_bwd = d,
+                                        total,
+                                        "BWD meet"
+                                    );
                                 }
                             }
                         }
-                    });
+
+                        // Relax reverse DOWN edges
+                        self.for_down_rev_edges(u, |x, w, edge_idx| {
+                            bwd_relaxed += 1;
+                            let new_dist = d.saturating_add(w);
+                            if new_dist < state.get_bwd(x as usize) {
+                                state.set_bwd(x as usize, new_dist, (u, edge_idx));
+                                state.push_bwd(x, new_dist);
+
+                                // Check meeting when updating
+                                let fwd_x = state.get_fwd(x as usize);
+                                if fwd_x != u32::MAX {
+                                    let total = new_dist.saturating_add(fwd_x);
+                                    if total < best_dist {
+                                        best_dist = total;
+                                        meeting_node = x;
+                                        if debug {
+                                            tracing::debug!(
+                                                meet_node = x,
+                                                dist_fwd = fwd_x,
+                                                dist_bwd = new_dist,
+                                                total,
+                                                "BWD meet via edge"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    }
                 }
             }
 
@@ -675,110 +733,98 @@ impl CchQuery<'_> {
 
             state.set_fwd(source as usize, 0, (source, 0));
             state.set_bwd(target as usize, 0, (target, 0));
-            state.pq_fwd.push(source, Reverse(0));
-            state.pq_bwd.push(target, Reverse(0));
+            state.push_fwd(source, 0);
+            state.push_bwd(target, 0);
 
             let mut best_dist = u32::MAX;
 
             while !state.pq_fwd.is_empty() || !state.pq_bwd.is_empty() {
-                let fwd_min = state
-                    .pq_fwd
-                    .peek()
-                    .map(|(_, &Reverse(d))| d)
-                    .unwrap_or(u32::MAX);
-                let bwd_min = state
-                    .pq_bwd
-                    .peek()
-                    .map(|(_, &Reverse(d))| d)
-                    .unwrap_or(u32::MAX);
+                let fwd_min = state.pq_fwd.peek_min_weight().unwrap_or(u32::MAX);
+                let bwd_min = state.pq_bwd.peek_min_weight().unwrap_or(u32::MAX);
                 if fwd_min >= best_dist && bwd_min >= best_dist {
                     break;
                 }
 
-                // Forward step — UP graph. #272 stall-on-demand applies
-                // here too (transit access/egress, distances_one_to_many).
-                // Body inlined; see `query_with_debug` for rationale.
-                if let Some((u, Reverse(d))) = state.pq_fwd.pop()
+                // Forward step — UP graph. #272 stall-on-demand inline.
+                if let Some((d, u)) = state.pop_fwd()
                     && d <= state.get_fwd(u as usize)
-                    && {
-                        let mut stalled = false;
-                        self.for_down_rev_edges(u, |x, w, _| {
-                            if stalled {
-                                return;
-                            }
-                            if state.gen_fwd[x as usize] == state.current_gen {
-                                let dx = state.dist_fwd[x as usize];
-                                if dx != u32::MAX && dx.saturating_add(w) < d {
-                                    stalled = true;
-                                }
-                            }
-                        });
-                        !stalled
-                    }
                 {
-                    let bwd_d = state.get_bwd(u as usize);
-                    if bwd_d != u32::MAX {
-                        let total = d.saturating_add(bwd_d);
-                        if total < best_dist {
-                            best_dist = total;
+                    let mut stalled = false;
+                    self.for_down_rev_edges(u, |x, w, _| {
+                        if stalled {
+                            return;
                         }
-                    }
-                    self.for_up_edges(u, |v, w, edge_idx| {
-                        let new_dist = d.saturating_add(w);
-                        if new_dist < state.get_fwd(v as usize) {
-                            state.set_fwd(v as usize, new_dist, (u, edge_idx));
-                            state.pq_fwd.push(v, Reverse(new_dist));
-                            let bwd_v = state.get_bwd(v as usize);
-                            if bwd_v != u32::MAX {
-                                let total = new_dist.saturating_add(bwd_v);
-                                if total < best_dist {
-                                    best_dist = total;
-                                }
+                        if state.gen_fwd[x as usize] == state.current_gen {
+                            let dx = state.dist_fwd[x as usize];
+                            if dx != u32::MAX && dx.saturating_add(w) < d {
+                                stalled = true;
                             }
                         }
                     });
+                    if !stalled {
+                        let bwd_d = state.get_bwd(u as usize);
+                        if bwd_d != u32::MAX {
+                            let total = d.saturating_add(bwd_d);
+                            if total < best_dist {
+                                best_dist = total;
+                            }
+                        }
+                        self.for_up_edges(u, |v, w, edge_idx| {
+                            let new_dist = d.saturating_add(w);
+                            if new_dist < state.get_fwd(v as usize) {
+                                state.set_fwd(v as usize, new_dist, (u, edge_idx));
+                                state.push_fwd(v, new_dist);
+                                let bwd_v = state.get_bwd(v as usize);
+                                if bwd_v != u32::MAX {
+                                    let total = new_dist.saturating_add(bwd_v);
+                                    if total < best_dist {
+                                        best_dist = total;
+                                    }
+                                }
+                            }
+                        });
+                    }
                 }
 
-                // Backward step — reversed DOWN graph. #272 stall too.
-                if let Some((u, Reverse(d))) = state.pq_bwd.pop()
+                // Backward step — reversed DOWN graph. #272 stall inline.
+                if let Some((d, u)) = state.pop_bwd()
                     && d <= state.get_bwd(u as usize)
-                    && {
-                        let mut stalled = false;
-                        self.for_up_edges(u, |v, w, _| {
-                            if stalled {
-                                return;
-                            }
-                            if state.gen_bwd[v as usize] == state.current_gen {
-                                let dv = state.dist_bwd[v as usize];
-                                if dv != u32::MAX && dv.saturating_add(w) < d {
-                                    stalled = true;
-                                }
-                            }
-                        });
-                        !stalled
-                    }
                 {
-                    let fwd_d = state.get_fwd(u as usize);
-                    if fwd_d != u32::MAX {
-                        let total = d.saturating_add(fwd_d);
-                        if total < best_dist {
-                            best_dist = total;
+                    let mut stalled = false;
+                    self.for_up_edges(u, |v, w, _| {
+                        if stalled {
+                            return;
                         }
-                    }
-                    self.for_down_rev_edges(u, |x, w, edge_idx| {
-                        let new_dist = d.saturating_add(w);
-                        if new_dist < state.get_bwd(x as usize) {
-                            state.set_bwd(x as usize, new_dist, (u, edge_idx));
-                            state.pq_bwd.push(x, Reverse(new_dist));
-                            let fwd_x = state.get_fwd(x as usize);
-                            if fwd_x != u32::MAX {
-                                let total = new_dist.saturating_add(fwd_x);
-                                if total < best_dist {
-                                    best_dist = total;
-                                }
+                        if state.gen_bwd[v as usize] == state.current_gen {
+                            let dv = state.dist_bwd[v as usize];
+                            if dv != u32::MAX && dv.saturating_add(w) < d {
+                                stalled = true;
                             }
                         }
                     });
+                    if !stalled {
+                        let fwd_d = state.get_fwd(u as usize);
+                        if fwd_d != u32::MAX {
+                            let total = d.saturating_add(fwd_d);
+                            if total < best_dist {
+                                best_dist = total;
+                            }
+                        }
+                        self.for_down_rev_edges(u, |x, w, edge_idx| {
+                            let new_dist = d.saturating_add(w);
+                            if new_dist < state.get_bwd(x as usize) {
+                                state.set_bwd(x as usize, new_dist, (u, edge_idx));
+                                state.push_bwd(x, new_dist);
+                                let fwd_x = state.get_fwd(x as usize);
+                                if fwd_x != u32::MAX {
+                                    let total = new_dist.saturating_add(fwd_x);
+                                    if total < best_dist {
+                                        best_dist = total;
+                                    }
+                                }
+                            }
+                        });
+                    }
                 }
             }
 
@@ -1016,8 +1062,6 @@ mod tests {
         assert!(query.query(3, 1).is_none());
     }
 
-    // ---------------- #272 stall-on-demand targeted tests ----------------
-
     /// Build a 4-node CCH where the shortest path from 0 to 1 goes
     /// UP-then-DOWN through node 2. After backward search reaches 1's
     /// DOWN-predecessor 2, the forward pop of 1 at its direct UP cost
@@ -1032,21 +1076,11 @@ mod tests {
     fn build_stall_test_cch() -> (CchTopo, CchWeights, UpAdjFlat, DownReverseAdjFlat) {
         let n_nodes = 4u32;
 
-        // up_offsets indexed by node; ranges into up_targets/up_weights.
-        // 0: [0..2) → 0→1 (slot 0), 0→2 (slot 1)
-        // 1: [2..3) → 1→3 (slot 2)
-        // 2: [3..4) → 2→3 (slot 3)
-        // 3: [4..4) → empty
         let up_offsets = vec![0u64, 2, 3, 4, 4];
         let up_targets = vec![1u32, 2, 3, 3];
         let up_is_shortcut = vec![false; 4];
         let up_middle = vec![u32::MAX; 4];
 
-        // down_offsets:
-        // 0: [0..0) empty
-        // 1: [0..1) → 1→0 (slot 0)
-        // 2: [1..3) → 2→0 (slot 1), 2→1 (slot 2)
-        // 3: [3..5) → 3→1 (slot 3), 3→2 (slot 4)
         let down_offsets = vec![0u64, 0, 1, 3, 5];
         let down_targets = vec![0u32, 0, 1, 1, 2];
         let down_is_shortcut = vec![false; 5];
@@ -1069,9 +1103,7 @@ mod tests {
         };
 
         let weights = CchWeights {
-            // up slot order matches up_targets above: 100, 5, 100, 10
             up: vec![100u32, 5, 100, 10].into(),
-            // down slot order matches down_targets: 100, 5, 1, 80, 10
             down: vec![100u32, 5, 1, 80, 10].into(),
             up_middle: vec![].into(),
             down_middle: vec![].into(),
@@ -1083,33 +1115,21 @@ mod tests {
         (topo, weights, up_flat, down_rev_flat)
     }
 
-    /// query() returns the *correct* SP distance on the stall fixture.
-    /// Even when stall-on-demand fires (forward pop of 1 at d=100 with
-    /// dist_fwd[2]=5 + w(2→1)=1 = 6 < 100), the meeting found at the
-    /// 0→UP→2→DOWN→1 path must still be the answer.
     #[test]
     fn test_stall_does_not_break_correctness() {
         let (topo, weights, up_flat, down_rev_flat) = build_stall_test_cch();
         let q = CchQuery::with_custom_weights(&topo, &up_flat, &down_rev_flat, &weights);
 
-        // SP(0→1) = 6 (UP-then-DOWN via 2). Must be found despite stall.
         let r = q.query(0, 1).expect("path 0→1 exists");
         assert_eq!(r.distance, 6, "stall must not break 0→1 correctness");
 
-        // SP(0→3) = 15 (UP-only via 2).
         let r = q.query(0, 3).expect("path 0→3 exists");
         assert_eq!(r.distance, 15, "stall must not break 0→3 correctness");
 
-        // distance() variant must agree.
         assert_eq!(q.distance(0, 1), Some(6));
         assert_eq!(q.distance(0, 3), Some(15));
     }
 
-    /// Direct unit test of `is_stalled_fwd`: hand-craft a `CchQueryState`
-    /// where forward has reached the higher-rank predecessor 2 with
-    /// dist_fwd[2] = 5, and ask whether popping node 1 at d=100 should
-    /// stall. It should — because w(2→1)=1 (DOWN edge), so
-    /// dist_fwd[2] + w(2→1) = 6 < 100.
     #[test]
     fn test_is_stalled_fwd_fires_on_shorter_predecessor() {
         let (topo, weights, up_flat, down_rev_flat) = build_stall_test_cch();
@@ -1117,28 +1137,17 @@ mod tests {
 
         let mut state = CchQueryState::new(4);
         state.start_query();
-        // Pretend forward reached node 2 with dist 5.
         state.set_fwd(2, 5, (0, 0));
 
-        // Popping node 1 with d=100 should be stalled (via 2→1, w=1).
         assert!(q.is_stalled_fwd(&state, 1, 100));
-
-        // Popping node 1 with d=5 should NOT be stalled (5+1 ≮ 5).
         assert!(!q.is_stalled_fwd(&state, 1, 5));
 
-        // If 2 has not been visited (different generation), no stall.
-        state.start_query(); // bumps current_gen → 2's stamp is now stale
-        state.set_fwd(2, 5, (0, 0));
-        // Reset the gen stamp by overwriting current_gen without touching gen_fwd[2]:
-        // simulate "2 not yet visited" by bumping gen again.
         state.start_query();
-        // Now state.gen_fwd[2] != state.current_gen.
+        state.set_fwd(2, 5, (0, 0));
+        state.start_query();
         assert!(!q.is_stalled_fwd(&state, 1, 100));
     }
 
-    /// Symmetric backward stall test: backward reached UP-successor 2
-    /// with dist_bwd[2] = 5, and a backward pop of 0 at d=100 should
-    /// stall (via 0→2 UP, w=5: 5+5=10 < 100).
     #[test]
     fn test_is_stalled_bwd_fires_on_shorter_successor() {
         let (topo, weights, up_flat, down_rev_flat) = build_stall_test_cch();
@@ -1146,17 +1155,11 @@ mod tests {
 
         let mut state = CchQueryState::new(4);
         state.start_query();
-        // Pretend backward reached node 2 with dist 5.
         state.set_bwd(2, 5, (0, 0));
 
-        // Popping node 0 with d=100 should stall (via 0→2 UP, w=5).
         assert!(q.is_stalled_bwd(&state, 0, 100));
-
-        // Popping node 0 with d=10 should NOT stall (10+5 ≮ 10 → 15 ≮ 10).
-        // Edge case: equal totals are not stalls (strict <).
         assert!(!q.is_stalled_bwd(&state, 0, 10));
 
-        // No visit → no stall.
         state.start_query();
         assert!(!q.is_stalled_bwd(&state, 0, 100));
     }
