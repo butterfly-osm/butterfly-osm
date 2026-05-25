@@ -839,6 +839,351 @@ fn route_batch_batch_size() -> usize {
         .unwrap_or(1_000)
 }
 
+/// Convert a `compute_route_pair` result into a `RoutePairRow`,
+/// filling NaN + empty WKB on failure (snap miss, unreachable).
+#[inline]
+fn row_of(
+    slon: f64,
+    slat: f64,
+    dlon: f64,
+    dlat: f64,
+    result: Option<(f32, f32, Vec<u8>)>,
+) -> RoutePairRow {
+    match result {
+        Some((dur, dist, wkb)) => RoutePairRow {
+            src_lon: slon,
+            src_lat: slat,
+            dst_lon: dlon,
+            dst_lat: dlat,
+            duration_s: dur,
+            distance_m: dist,
+            wkb,
+        },
+        None => RoutePairRow {
+            src_lon: slon,
+            src_lat: slat,
+            dst_lon: dlon,
+            dst_lat: dlat,
+            duration_s: f32::NAN,
+            distance_m: f32::NAN,
+            wkb: Vec::new(),
+        },
+    }
+}
+
+/// Build + send an Arrow `RecordBatch` from a fully-computed chunk of
+/// `RoutePairRow`s. Returns `false` if the receiver disconnected.
+fn emit_route_batch(
+    tx: &tokio::sync::mpsc::Sender<std::result::Result<RecordBatch, Status>>,
+    schema: &Arc<arrow::datatypes::Schema>,
+    n: usize,
+    results: Vec<RoutePairRow>,
+) -> bool {
+    let mut src_lon_arr = Float64Builder::with_capacity(n);
+    let mut src_lat_arr = Float64Builder::with_capacity(n);
+    let mut dst_lon_arr = Float64Builder::with_capacity(n);
+    let mut dst_lat_arr = Float64Builder::with_capacity(n);
+    let mut dur_arr = Float32Builder::with_capacity(n);
+    let mut dist_arr = Float32Builder::with_capacity(n);
+    let geom_bytes = results.iter().map(|r| r.wkb.len()).sum();
+    let mut geom_arr = BinaryBuilder::with_capacity(n, geom_bytes);
+
+    for row in results {
+        src_lon_arr.append_value(row.src_lon);
+        src_lat_arr.append_value(row.src_lat);
+        dst_lon_arr.append_value(row.dst_lon);
+        dst_lat_arr.append_value(row.dst_lat);
+        dur_arr.append_value(row.duration_s);
+        dist_arr.append_value(row.distance_m);
+        geom_arr.append_value(&row.wkb);
+    }
+
+    let batch = match RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(src_lon_arr.finish()) as ArrayRef,
+            Arc::new(src_lat_arr.finish()),
+            Arc::new(dst_lon_arr.finish()),
+            Arc::new(dst_lat_arr.finish()),
+            Arc::new(dur_arr.finish()),
+            Arc::new(dist_arr.finish()),
+            Arc::new(geom_arr.finish()),
+        ],
+    ) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = tx.blocking_send(Err(Status::internal(format!("Arrow: {}", e))));
+            return false;
+        }
+    };
+
+    tx.blocking_send(Ok(batch)).is_ok()
+}
+
+/// #290: persistent worker pool. Spawns `n_workers` threads ONCE at
+/// the start of the request so each thread initialises its
+/// thread-local `CchQueryState` + per-worker `RouteScratch` exactly
+/// once (the previous loop re-spawned per chunk, paying ~80 MB TLS
+/// init each time on Belgium).
+fn do_route_batch_blocking(
+    state: Arc<ServerState>,
+    mode: Mode,
+    params: RouteBatchParams,
+    tx: tokio::sync::mpsc::Sender<std::result::Result<RecordBatch, Status>>,
+) {
+    let mode_data = state.get_mode(mode);
+    let schema = Arc::new(route_batch_schema());
+    let batch_size = route_batch_batch_size();
+    let total_pairs = params.pairs.len();
+    let n_workers = route_batch_worker_threads(total_pairs);
+
+    // Small-batch fast path: no pool overhead for tiny calls.
+    if n_workers == 1 {
+        let query = CchQuery::new(&state, mode);
+        let mut scratch = RouteScratch::default();
+        for chunk in params.pairs.chunks(batch_size) {
+            let n = chunk.len();
+            let fallback_count = std::sync::atomic::AtomicU64::new(0);
+            let fb = &fallback_count;
+            let results: Vec<RoutePairRow> = chunk
+                .iter()
+                .map(|pair| {
+                    let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
+                    let r = compute_route_pair(
+                        &state,
+                        mode_data,
+                        mode,
+                        &query,
+                        slon,
+                        slat,
+                        dlon,
+                        dlat,
+                        fb,
+                        &mut scratch,
+                    );
+                    row_of(slon, slat, dlon, dlat, r)
+                })
+                .collect();
+            let fb_count = fallback_count.load(std::sync::atomic::Ordering::Relaxed);
+            tracing::info!(
+                n_pairs = n,
+                fallback = fb_count,
+                fallback_pct = (fb_count as f64) * 100.0 / (n.max(1) as f64),
+                "route_batch chunk fallback rate"
+            );
+            if !emit_route_batch(&tx, &schema, n, results) {
+                return; // client disconnected
+            }
+        }
+        return;
+    }
+
+    // Multi-worker: persistent pool. #293 review feedback addressed:
+    //   1. Per-worker sync_channel + round-robin dispatch (was
+    //      Arc<Mutex<Receiver>>, which serialised all worker recvs
+    //      through one lock — defeated parallelism).
+    //   2. catch_unwind in each worker so a panic between recv and
+    //      send sends a poison Done back instead of deadlocking the
+    //      coordinator on done_rx.recv().
+    //   3. Early returns close all work channels before returning so
+    //      workers exit cleanly via recv() → Err; no scope-join deadlock.
+    #[derive(Clone, Copy)]
+    struct Work {
+        slot: u32,
+        slon: f64,
+        slat: f64,
+        dlon: f64,
+        dlat: f64,
+    }
+    enum DoneKind {
+        Row(RoutePairRow),
+        WorkerPanic(String),
+    }
+    struct Done {
+        slot: u32,
+        kind: DoneKind,
+    }
+
+    // Shared fallback counter across the whole call so workers and
+    // coordinator can quantify K=1 fast-path miss rate.
+    let fallback_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+    // Per-worker channels for true MPMC dispatch without a shared lock.
+    let mut work_txs: Vec<std::sync::mpsc::SyncSender<Work>> = Vec::with_capacity(n_workers);
+    let mut work_rxs: Vec<std::sync::mpsc::Receiver<Work>> = Vec::with_capacity(n_workers);
+    for _ in 0..n_workers {
+        let (wtx, wrx) = std::sync::mpsc::sync_channel::<Work>(32);
+        work_txs.push(wtx);
+        work_rxs.push(wrx);
+    }
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<Done>();
+
+    let join_result: std::thread::Result<()> = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(n_workers);
+        for rx in work_rxs.into_iter() {
+            let state = Arc::clone(&state);
+            let done_tx = done_tx.clone();
+            let fallback_count = Arc::clone(&fallback_count);
+            handles.push(scope.spawn(move || {
+                let query = CchQuery::new(&state, mode);
+                let mode_data = state.get_mode(mode);
+                let mut scratch = RouteScratch::default();
+                let fb = fallback_count.as_ref();
+                while let Ok(work) = rx.recv() {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let r = compute_route_pair(
+                            &state,
+                            mode_data,
+                            mode,
+                            &query,
+                            work.slon,
+                            work.slat,
+                            work.dlon,
+                            work.dlat,
+                            fb,
+                            &mut scratch,
+                        );
+                        row_of(work.slon, work.slat, work.dlon, work.dlat, r)
+                    }));
+                    let kind = match result {
+                        Ok(row) => DoneKind::Row(row),
+                        Err(panic_payload) => {
+                            let msg = panic_payload
+                                .downcast_ref::<String>()
+                                .cloned()
+                                .or_else(|| {
+                                    panic_payload
+                                        .downcast_ref::<&'static str>()
+                                        .map(|s| s.to_string())
+                                })
+                                .unwrap_or_else(|| "<non-string panic>".to_string());
+                            DoneKind::WorkerPanic(msg)
+                        }
+                    };
+                    if done_tx
+                        .send(Done {
+                            slot: work.slot,
+                            kind,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }));
+        }
+        drop(done_tx);
+
+        let mut next_worker = 0usize;
+        let mut first_panic_msg: Option<String> = None;
+        let mut bail_msg: Option<&'static str> = None;
+
+        'chunks: for chunk in params.pairs.chunks(batch_size) {
+            let n = chunk.len();
+            let fb_before = fallback_count.load(std::sync::atomic::Ordering::Relaxed);
+            for (i, pair) in chunk.iter().enumerate() {
+                let work = Work {
+                    slot: i as u32,
+                    slon: pair[0],
+                    slat: pair[1],
+                    dlon: pair[2],
+                    dlat: pair[3],
+                };
+                if work_txs[next_worker].send(work).is_err() {
+                    bail_msg = Some("route_batch workers exited unexpectedly");
+                    break 'chunks;
+                }
+                next_worker = (next_worker + 1) % n_workers;
+            }
+            let mut slots: Vec<Option<RoutePairRow>> = (0..n).map(|_| None).collect();
+            let mut received = 0usize;
+            while received < n {
+                match done_rx.recv() {
+                    Ok(d) => {
+                        received += 1;
+                        match d.kind {
+                            DoneKind::Row(row) => slots[d.slot as usize] = Some(row),
+                            DoneKind::WorkerPanic(msg) => {
+                                if first_panic_msg.is_none() {
+                                    first_panic_msg = Some(msg);
+                                }
+                                slots[d.slot as usize] = Some(RoutePairRow {
+                                    src_lon: f64::NAN,
+                                    src_lat: f64::NAN,
+                                    dst_lon: f64::NAN,
+                                    dst_lat: f64::NAN,
+                                    duration_s: f32::NAN,
+                                    distance_m: f32::NAN,
+                                    wkb: Vec::new(),
+                                });
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        bail_msg = Some("route_batch result channel closed early");
+                        break 'chunks;
+                    }
+                }
+            }
+            if first_panic_msg.is_some() {
+                break 'chunks;
+            }
+            let results: Vec<RoutePairRow> = slots
+                .into_iter()
+                .map(|s| s.expect("slot filled"))
+                .collect();
+            let fb_chunk =
+                fallback_count.load(std::sync::atomic::Ordering::Relaxed) - fb_before;
+            tracing::info!(
+                n_pairs = n,
+                fallback = fb_chunk,
+                fallback_pct = (fb_chunk as f64) * 100.0 / (n.max(1) as f64),
+                "route_batch chunk fallback rate"
+            );
+            if !emit_route_batch(&tx, &schema, n, results) {
+                bail_msg = Some("client disconnected");
+                break 'chunks;
+            }
+        }
+
+        // Close all work channels BEFORE joining so workers exit
+        // cleanly via recv → Err. Without this, an early break would
+        // leave work_txs open and scope.join would deadlock.
+        work_txs.clear();
+        for h in handles {
+            h.join()?;
+        }
+
+        if let Some(msg) = first_panic_msg {
+            let _ = tx.blocking_send(Err(Status::internal(format!(
+                "route_batch worker panicked: {}",
+                msg
+            ))));
+        } else if let Some(msg) = bail_msg
+            && msg != "client disconnected"
+        {
+            let _ = tx.blocking_send(Err(Status::internal(msg)));
+        }
+        Ok(())
+    });
+
+    if let Err(panic_payload) = join_result {
+        let msg = panic_payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| {
+                panic_payload
+                    .downcast_ref::<&'static str>()
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| "<non-string panic>".to_string());
+        let _ = tx.blocking_send(Err(Status::internal(format!(
+            "route_batch worker panicked: {}",
+            msg
+        ))));
+    }
+}
+
 fn do_route_batch(
     state: &Arc<ServerState>,
     mode: Mode,
@@ -854,219 +1199,7 @@ fn do_route_batch(
     let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<RecordBatch, Status>>(8);
 
     tokio::task::spawn_blocking(move || {
-        let mode_data = state.get_mode(mode);
-        let schema = Arc::new(route_batch_schema());
-        let batch_size = route_batch_batch_size();
-
-        let row_of = |slon: f64,
-                      slat: f64,
-                      dlon: f64,
-                      dlat: f64,
-                      result: Option<(f32, f32, Vec<u8>)>|
-         -> RoutePairRow {
-            match result {
-                Some((dur, dist, wkb)) => RoutePairRow {
-                    src_lon: slon,
-                    src_lat: slat,
-                    dst_lon: dlon,
-                    dst_lat: dlat,
-                    duration_s: dur,
-                    distance_m: dist,
-                    wkb,
-                },
-                None => RoutePairRow {
-                    src_lon: slon,
-                    src_lat: slat,
-                    dst_lon: dlon,
-                    dst_lat: dlat,
-                    duration_s: f32::NAN,
-                    distance_m: f32::NAN,
-                    wkb: Vec::new(),
-                },
-            }
-        };
-
-        for chunk in params.pairs.chunks(batch_size) {
-            let n = chunk.len();
-
-            // #275-bench: per-chunk fallback counter. fetched by K=64
-            // slow path inside `compute_route_pair` so we can quantify
-            // how often the K=1 fast path misses.
-            let fallback_count = std::sync::atomic::AtomicU64::new(0);
-            let fb = &fallback_count;
-
-            // Compute every pair in parallel. Use scoped OS threads
-            // instead of rayon so each thread-local `CchQueryState`
-            // drops after this chunk; keeping it in the global rayon
-            // pool would permanently retain ~160 MB per worker on
-            // Belgium after the first route_batch call.
-            let n_workers = route_batch_worker_threads(n);
-            let results: Vec<RoutePairRow> = if n_workers == 1 {
-                let query = CchQuery::new(&state, mode);
-                let mut scratch = RouteScratch::default();
-                chunk
-                    .iter()
-                    .map(|pair| {
-                        let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
-                        let r = compute_route_pair(
-                            &state,
-                            mode_data,
-                            mode,
-                            &query,
-                            slon,
-                            slat,
-                            dlon,
-                            dlat,
-                            fb,
-                            &mut scratch,
-                        );
-                        row_of(slon, slat, dlon, dlat, r)
-                    })
-                    .collect()
-            } else {
-                let chunk_size = n.div_ceil(n_workers);
-                let join_result: std::thread::Result<Vec<Vec<RoutePairRow>>> =
-                    std::thread::scope(|scope| {
-                        let handles: Vec<_> = chunk
-                            .chunks(chunk_size)
-                            .map(|sub_chunk| {
-                                let state = &state;
-                                scope.spawn(move || {
-                                    let query = CchQuery::new(state, mode);
-                                    let mut scratch = RouteScratch::default();
-                                    sub_chunk
-                                        .iter()
-                                        .map(|pair| {
-                                            let (slon, slat, dlon, dlat) =
-                                                (pair[0], pair[1], pair[2], pair[3]);
-                                            let r = compute_route_pair(
-                                                state,
-                                                mode_data,
-                                                mode,
-                                                &query,
-                                                slon,
-                                                slat,
-                                                dlon,
-                                                dlat,
-                                                fb,
-                                                &mut scratch,
-                                            );
-                                            row_of(slon, slat, dlon, dlat, r)
-                                        })
-                                        .collect::<Vec<RoutePairRow>>()
-                                })
-                            })
-                            .collect();
-                        // PR #295 review: join EVERY handle (don't
-                        // short-circuit via .collect::<Result<…>>) so a
-                        // panic in one worker doesn't leave other
-                        // scoped threads un-joined. Capture the FIRST
-                        // panic payload and convert it to a single
-                        // Status::internal; subsequent panics are
-                        // suppressed (logged) so they don't propagate
-                        // out of the scope and abort the task.
-                        let mut parts: Vec<Vec<RoutePairRow>> = Vec::with_capacity(handles.len());
-                        let mut first_panic: Option<Box<dyn std::any::Any + Send + 'static>> = None;
-                        for h in handles {
-                            match h.join() {
-                                Ok(part) => parts.push(part),
-                                Err(payload) => {
-                                    if first_panic.is_none() {
-                                        first_panic = Some(payload);
-                                    } else {
-                                        tracing::warn!(
-                                            "additional worker panic suppressed (first already captured)"
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        if let Some(p) = first_panic {
-                            Err(p) as std::thread::Result<Vec<Vec<RoutePairRow>>>
-                        } else {
-                            Ok(parts)
-                        }
-                    });
-                match join_result {
-                    Ok(parts) => parts.into_iter().flatten().collect(),
-                    Err(panic_payload) => {
-                        // Convert a worker panic into a Status::internal
-                        // sent on tx so a single bad pair cannot take
-                        // down the gRPC server.
-                        let msg = panic_payload
-                            .downcast_ref::<String>()
-                            .cloned()
-                            .or_else(|| {
-                                panic_payload
-                                    .downcast_ref::<&'static str>()
-                                    .map(|s| s.to_string())
-                            })
-                            .unwrap_or_else(|| "<non-string panic>".to_string());
-                        let _ = tx.blocking_send(Err(Status::internal(format!(
-                            "route_batch worker panicked: {}",
-                            msg
-                        ))));
-                        return;
-                    }
-                }
-            };
-
-            // Sequentially fill builders + emit batch. Builders are
-            // not Send so the fill cannot be parallelised; the heavy
-            // CPU work has already happened above.
-            let mut src_lon_arr = Float64Builder::with_capacity(n);
-            let mut src_lat_arr = Float64Builder::with_capacity(n);
-            let mut dst_lon_arr = Float64Builder::with_capacity(n);
-            let mut dst_lat_arr = Float64Builder::with_capacity(n);
-            let mut dur_arr = Float32Builder::with_capacity(n);
-            let mut dist_arr = Float32Builder::with_capacity(n);
-            let geom_bytes = results.iter().map(|r| r.wkb.len()).sum();
-            let mut geom_arr = BinaryBuilder::with_capacity(n, geom_bytes);
-
-            for row in results {
-                src_lon_arr.append_value(row.src_lon);
-                src_lat_arr.append_value(row.src_lat);
-                dst_lon_arr.append_value(row.dst_lon);
-                dst_lat_arr.append_value(row.dst_lat);
-                dur_arr.append_value(row.duration_s);
-                dist_arr.append_value(row.distance_m);
-                geom_arr.append_value(&row.wkb);
-            }
-
-            let batch = match RecordBatch::try_new(
-                schema.clone(),
-                vec![
-                    Arc::new(src_lon_arr.finish()) as ArrayRef,
-                    Arc::new(src_lat_arr.finish()),
-                    Arc::new(dst_lon_arr.finish()),
-                    Arc::new(dst_lat_arr.finish()),
-                    Arc::new(dur_arr.finish()),
-                    Arc::new(dist_arr.finish()),
-                    Arc::new(geom_arr.finish()),
-                ],
-            ) {
-                Ok(b) => b,
-                Err(e) => {
-                    let _ = tx.blocking_send(Err(Status::internal(format!("Arrow: {}", e))));
-                    return;
-                }
-            };
-
-            // #275-bench: log fallback rate per chunk. Sustained high
-            // rates (>5%) indicate the K=1 fast path is missing on
-            // common inputs and an intermediate K tier may be warranted.
-            let fb = fallback_count.load(std::sync::atomic::Ordering::Relaxed);
-            tracing::info!(
-                n_pairs = n,
-                fallback = fb,
-                fallback_pct = (fb as f64) * 100.0 / (n.max(1) as f64),
-                "route_batch chunk fallback rate"
-            );
-
-            if tx.blocking_send(Ok(batch)).is_err() {
-                return; // Client disconnected
-            }
-        }
+        do_route_batch_blocking(state, mode, params, tx);
     });
 
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
