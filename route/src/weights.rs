@@ -348,7 +348,7 @@ fn generate_mode_data(
 
     let weights_data = ModWeights {
         mode,
-        weights,
+        weights: std::borrow::Cow::Owned(weights),
         inputs_sha,
     };
 
