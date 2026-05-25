@@ -5,13 +5,6 @@ members = [
     "dl",
     "route",
 ]
-# #308: butterfly-geocode excluded from the workspace pending full
-# crate removal. The geocoder was shelved in #254 (df77a93) but the
-# crate dir still exists and depends on AddressEntry / address
-# downloads in butterfly-dl that #308 strips. Excluding it from
-# `members` lets dl + route + common build cleanly; full removal is
-# tracked in #309.
-exclude = ["geocode", "geocode-data", "geocode-research", "geocode-training"]
 
 [workspace.package]
 version = "2.0.0"
