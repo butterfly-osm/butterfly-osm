@@ -615,6 +615,190 @@ fn encode_linestring_wkb(points: &[Point]) -> Vec<u8> {
     buf
 }
 
+/// Per-pair output for the route_batch parallel loop. One row per
+/// (source, destination) pair. Named fields — the previous tuple alias
+/// indexed by position (`r.6` for WKB) was brittle.
+struct RoutePairRow {
+    src_lon: f64,
+    src_lat: f64,
+    dst_lon: f64,
+    dst_lat: f64,
+    duration_s: f32,
+    distance_m: f32,
+    wkb: Vec<u8>,
+}
+
+/// Compute a single pair's `(duration, distance, WKB linestring)`.
+///
+/// Two-tier snap strategy: K=1 fast path first (covers most pairs per
+/// #197 connectivity-aware role masks); on miss, escalate to K=64 +
+/// (i+j)-combo fallback. Eliminates the K=64 tax on the hot path:
+/// 5.79 ms/pair down to roughly 0.5 ms/pair on Belgium.
+///
+/// Reads only `&state` + `&mode_data`; safe to call from many worker
+/// threads in parallel. `CchQueryState` is thread-local so the
+/// bidirectional search never contends.
+#[allow(clippy::too_many_arguments)]
+fn compute_route_pair(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    query: &CchQuery<'_>,
+    slon: f64,
+    slat: f64,
+    dlon: f64,
+    dlat: f64,
+) -> Option<(f32, f32, Vec<u8>)> {
+    use super::types::SnapRole;
+
+    // Fast path: K=1 single snap + single CCH query. Avoids the K=64
+    // collect overhead that costs ~1 ms/pair just for the snap.
+    let src_role = SnapRole::Src.role_filter(mode_data);
+    let dst_role = SnapRole::Dst.role_filter(mode_data);
+    if let (Some(src_id), Some(dst_id)) = (
+        state
+            .snap_index
+            .snap_filtered_role(slon, slat, mode.0, None, src_role),
+        state
+            .snap_index
+            .snap_filtered_role(dlon, dlat, mode.0, None, dst_role),
+    ) {
+        // Defensive bounds-checked lookup so a corrupted snap index can
+        // never index out-of-range here (would panic + take down the
+        // request). Treat OOB as snap miss and fall through to slow path.
+        let (src_rank, dst_rank) = match (
+            mode_data.orig_to_rank.get(src_id as usize).copied(),
+            mode_data.orig_to_rank.get(dst_id as usize).copied(),
+        ) {
+            (Some(s), Some(d)) => (s, d),
+            _ => (u32::MAX, u32::MAX),
+        };
+        if src_rank != u32::MAX
+            && dst_rank != u32::MAX
+            && let Some(result) = query.query(src_rank, dst_rank)
+        {
+            return Some(build_route_output(
+                state, mode_data, &result, src_rank, dst_rank,
+            ));
+        }
+    }
+
+    // Slow path: K=64 K-best snap + (i+j)-combo fallback.
+    const SNAP_K: usize = 64;
+    let src_snap = super::snap_kbest::snap_k_pair_role(
+        state,
+        mode_data,
+        mode,
+        slon,
+        slat,
+        SnapRole::Src,
+        None,
+        SNAP_K,
+    );
+    let dst_snap = super::snap_kbest::snap_k_pair_role(
+        state,
+        mode_data,
+        mode,
+        dlon,
+        dlat,
+        SnapRole::Dst,
+        None,
+        SNAP_K,
+    );
+
+    if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
+        return None;
+    }
+
+    super::snap_kbest::p2p_with_kbest_fallback(
+        query,
+        &src_snap.ranks,
+        &dst_snap.ranks,
+        super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+    )
+    .map(|(src_rank, dst_rank, result)| {
+        build_route_output(state, mode_data, &result, src_rank, dst_rank)
+    })
+}
+
+/// Common output builder for a successful CCH P2P result. Returns
+/// (duration_s, distance_m, WKB linestring).
+fn build_route_output(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    result: &super::query::QueryResult,
+    src_rank: u32,
+    dst_rank: u32,
+) -> (f32, f32, Vec<u8>) {
+    let duration_s = result.distance as f64 / 10.0;
+    let rank_path = unpack_path(
+        &mode_data.cch_topo,
+        &mode_data.cch_weights,
+        &result.forward_parent,
+        &result.backward_parent,
+        src_rank,
+        dst_rank,
+        result.meeting_node,
+    );
+    let ebg_path: Vec<u32> = rank_path
+        .iter()
+        .map(|&rank| {
+            let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
+            mode_data.filtered_to_original[filt_id as usize]
+        })
+        .collect();
+    let (points, distance_m) = build_raw_points(&ebg_path, &state.ebg_nodes, &state.edge_geom);
+    let wkb = encode_linestring_wkb(&points);
+    (duration_s as f32, distance_m as f32, wkb)
+}
+
+fn route_batch_worker_threads(n_pairs: usize) -> usize {
+    if n_pairs < 512 {
+        return 1;
+    }
+
+    // Cap at logical CPU count: even if BUTTERFLY_ROUTE_BATCH_THREADS
+    // is set above available_parallelism, oversubscribing hurts
+    // latency/throughput. Default to min(available, 8) when env unset.
+    let max_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let default_threads = max_threads.min(8);
+    let configured = std::env::var("BUTTERFLY_ROUTE_BATCH_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(default_threads);
+    configured
+        .min(max_threads)
+        .min(n_pairs.div_ceil(128))
+        .max(1)
+}
+
+/// Per-record-batch pair count. Each emitted Arrow `RecordBatch` carries
+/// at most this many `(src, dst, dur, dist, wkb)` rows.
+///
+/// Sized for the gRPC `max_encoding_message_size` of 64 MiB. Default 1000:
+///   - Belgium WKB avg ~6-7 KiB → 1000 pairs ≈ 6-7 MiB per batch
+///   - Transcontinental WKB ~50 KiB → 1000 pairs ≈ 50 MiB, still under cap
+///   - Fixed-size columns (src/dst/dur/dist = 32 bytes/row) negligible
+///
+/// PR #294/#295 review (#TBD follow-up): a byte-aware adaptive flusher
+/// that splits a chunk into multiple RecordBatches when accumulated WKB
+/// exceeds a soft cap (e.g. 32 MiB) is the proper correctness fix.
+/// Tracking that as a separate change so this PR's perf claims stay
+/// reviewable.
+///
+/// Override via `BUTTERFLY_ROUTE_BATCH_SIZE` if you know your WKB sizes
+/// fit in a higher cap, or set it lower for very long routes.
+fn route_batch_batch_size() -> usize {
+    std::env::var("BUTTERFLY_ROUTE_BATCH_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(1_000)
+}
+
 fn do_route_batch(
     state: &Arc<ServerState>,
     mode: Mode,
@@ -632,101 +816,156 @@ fn do_route_batch(
     tokio::task::spawn_blocking(move || {
         let mode_data = state.get_mode(mode);
         let schema = Arc::new(route_batch_schema());
-        let batch_size = 1000usize;
+        let batch_size = route_batch_batch_size();
+
+        let row_of = |slon: f64,
+                      slat: f64,
+                      dlon: f64,
+                      dlat: f64,
+                      result: Option<(f32, f32, Vec<u8>)>|
+         -> RoutePairRow {
+            match result {
+                Some((dur, dist, wkb)) => RoutePairRow {
+                    src_lon: slon,
+                    src_lat: slat,
+                    dst_lon: dlon,
+                    dst_lat: dlat,
+                    duration_s: dur,
+                    distance_m: dist,
+                    wkb,
+                },
+                None => RoutePairRow {
+                    src_lon: slon,
+                    src_lat: slat,
+                    dst_lon: dlon,
+                    dst_lat: dlat,
+                    duration_s: f32::NAN,
+                    distance_m: f32::NAN,
+                    wkb: Vec::new(),
+                },
+            }
+        };
 
         for chunk in params.pairs.chunks(batch_size) {
             let n = chunk.len();
+
+            // Compute every pair in parallel. Use scoped OS threads
+            // instead of rayon so each thread-local `CchQueryState`
+            // drops after this chunk; keeping it in the global rayon
+            // pool would permanently retain ~160 MB per worker on
+            // Belgium after the first route_batch call.
+            let n_workers = route_batch_worker_threads(n);
+            let results: Vec<RoutePairRow> = if n_workers == 1 {
+                let query = CchQuery::new(&state, mode);
+                chunk
+                    .iter()
+                    .map(|pair| {
+                        let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
+                        let r = compute_route_pair(
+                            &state, mode_data, mode, &query, slon, slat, dlon, dlat,
+                        );
+                        row_of(slon, slat, dlon, dlat, r)
+                    })
+                    .collect()
+            } else {
+                let chunk_size = n.div_ceil(n_workers);
+                let join_result: std::thread::Result<Vec<Vec<RoutePairRow>>> =
+                    std::thread::scope(|scope| {
+                        let handles: Vec<_> = chunk
+                            .chunks(chunk_size)
+                            .map(|sub_chunk| {
+                                let state = &state;
+                                scope.spawn(move || {
+                                    let query = CchQuery::new(state, mode);
+                                    sub_chunk
+                                        .iter()
+                                        .map(|pair| {
+                                            let (slon, slat, dlon, dlat) =
+                                                (pair[0], pair[1], pair[2], pair[3]);
+                                            let r = compute_route_pair(
+                                                state, mode_data, mode, &query, slon, slat, dlon,
+                                                dlat,
+                                            );
+                                            row_of(slon, slat, dlon, dlat, r)
+                                        })
+                                        .collect::<Vec<RoutePairRow>>()
+                                })
+                            })
+                            .collect();
+                        // PR #295 review: join EVERY handle (don't
+                        // short-circuit via .collect::<Result<…>>) so a
+                        // panic in one worker doesn't leave other
+                        // scoped threads un-joined. Capture the FIRST
+                        // panic payload and convert it to a single
+                        // Status::internal; subsequent panics are
+                        // suppressed (logged) so they don't propagate
+                        // out of the scope and abort the task.
+                        let mut parts: Vec<Vec<RoutePairRow>> = Vec::with_capacity(handles.len());
+                        let mut first_panic: Option<Box<dyn std::any::Any + Send + 'static>> = None;
+                        for h in handles {
+                            match h.join() {
+                                Ok(part) => parts.push(part),
+                                Err(payload) => {
+                                    if first_panic.is_none() {
+                                        first_panic = Some(payload);
+                                    } else {
+                                        tracing::warn!(
+                                            "additional worker panic suppressed (first already captured)"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(p) = first_panic {
+                            Err(p) as std::thread::Result<Vec<Vec<RoutePairRow>>>
+                        } else {
+                            Ok(parts)
+                        }
+                    });
+                match join_result {
+                    Ok(parts) => parts.into_iter().flatten().collect(),
+                    Err(panic_payload) => {
+                        // Convert a worker panic into a Status::internal
+                        // sent on tx so a single bad pair cannot take
+                        // down the gRPC server.
+                        let msg = panic_payload
+                            .downcast_ref::<String>()
+                            .cloned()
+                            .or_else(|| {
+                                panic_payload
+                                    .downcast_ref::<&'static str>()
+                                    .map(|s| s.to_string())
+                            })
+                            .unwrap_or_else(|| "<non-string panic>".to_string());
+                        let _ = tx.blocking_send(Err(Status::internal(format!(
+                            "route_batch worker panicked: {}",
+                            msg
+                        ))));
+                        return;
+                    }
+                }
+            };
+
+            // Sequentially fill builders + emit batch. Builders are
+            // not Send so the fill cannot be parallelised; the heavy
+            // CPU work has already happened above.
             let mut src_lon_arr = Float64Builder::with_capacity(n);
             let mut src_lat_arr = Float64Builder::with_capacity(n);
             let mut dst_lon_arr = Float64Builder::with_capacity(n);
             let mut dst_lat_arr = Float64Builder::with_capacity(n);
             let mut dur_arr = Float32Builder::with_capacity(n);
             let mut dist_arr = Float32Builder::with_capacity(n);
-            let mut geom_arr = BinaryBuilder::with_capacity(n, n * 256);
+            let geom_bytes = results.iter().map(|r| r.wkb.len()).sum();
+            let mut geom_arr = BinaryBuilder::with_capacity(n, geom_bytes);
 
-            // K-best snap + bounded combo fallback (mirrors /route).
-            // The connectivity-aware role masks already eliminate most
-            // snap traps; the fallback now only catches same-geometry
-            // directional ambiguity and exclude/avoid edge cases.
-            const SNAP_K: usize = 64;
-            let query = CchQuery::new(&state, mode);
-
-            for pair in chunk {
-                let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
-                src_lon_arr.append_value(slon);
-                src_lat_arr.append_value(slat);
-                dst_lon_arr.append_value(dlon);
-                dst_lat_arr.append_value(dlat);
-
-                let src_snap = super::snap_kbest::snap_k_pair_role(
-                    &state,
-                    mode_data,
-                    mode,
-                    slon,
-                    slat,
-                    super::types::SnapRole::Src,
-                    None,
-                    SNAP_K,
-                );
-                let dst_snap = super::snap_kbest::snap_k_pair_role(
-                    &state,
-                    mode_data,
-                    mode,
-                    dlon,
-                    dlat,
-                    super::types::SnapRole::Dst,
-                    None,
-                    SNAP_K,
-                );
-
-                if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
-                    dur_arr.append_value(f32::NAN);
-                    dist_arr.append_value(f32::NAN);
-                    geom_arr.append_value(&[] as &[u8]);
-                    continue;
-                }
-
-                match super::snap_kbest::p2p_with_kbest_fallback(
-                    &query,
-                    &src_snap.ranks,
-                    &dst_snap.ranks,
-                    super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
-                ) {
-                    Some((src_rank, dst_rank, result)) => {
-                        let duration_s = result.distance as f64 / 10.0;
-
-                        let rank_path = unpack_path(
-                            &mode_data.cch_topo,
-                            &mode_data.cch_weights,
-                            &result.forward_parent,
-                            &result.backward_parent,
-                            src_rank,
-                            dst_rank,
-                            result.meeting_node,
-                        );
-                        let ebg_path: Vec<u32> = rank_path
-                            .iter()
-                            .map(|&rank| {
-                                let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-                                mode_data.filtered_to_original[filt_id as usize]
-                            })
-                            .collect();
-
-                        let (points, distance_m) =
-                            build_raw_points(&ebg_path, &state.ebg_nodes, &state.edge_geom);
-
-                        let wkb = encode_linestring_wkb(&points);
-
-                        dur_arr.append_value(duration_s as f32);
-                        dist_arr.append_value(distance_m as f32);
-                        geom_arr.append_value(&wkb);
-                    }
-                    None => {
-                        dur_arr.append_value(f32::NAN);
-                        dist_arr.append_value(f32::NAN);
-                        geom_arr.append_value(&[] as &[u8]);
-                    }
-                }
+            for row in results {
+                src_lon_arr.append_value(row.src_lon);
+                src_lat_arr.append_value(row.src_lat);
+                dst_lon_arr.append_value(row.dst_lon);
+                dst_lat_arr.append_value(row.dst_lat);
+                dur_arr.append_value(row.duration_s);
+                dist_arr.append_value(row.distance_m);
+                geom_arr.append_value(&row.wkb);
             }
 
             let batch = match RecordBatch::try_new(
