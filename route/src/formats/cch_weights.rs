@@ -227,7 +227,7 @@ impl WeightArray {
     /// same storage `get` / `iter` reads from.
     pub fn to_mut_vec(&mut self) -> &mut Vec<u32> {
         match self {
-            Self::U16(_) | Self::U24 { .. } => {
+            Self::U16(_) | Self::U24(_) => {
                 let widened: Vec<u32> = (0..self.len()).map(|i| self.get(i)).collect();
                 *self = Self::U32(ArcCow::from_vec(widened));
             }
@@ -408,14 +408,14 @@ impl CchWeightsFile {
             down_width,
         } = parse_header(header)?;
 
-        // Layout v3 (with optional middle arrays):
-        //   header(32) | up(width_up·n_up [+0-2 pad]) | down(width_down·n_down [+0-2 pad])
-        //              | [v3 middles: up_middle(4·n_up) | down_middle(4·n_down)]
+        // Layout v4 (with optional middle arrays):
+        //   header(32) | up(width_up·n_up [+0-3 pad]) | down(width_down·n_down [+0-3 pad])
+        //              | [middles: up_middle(4·n_up) | down_middle(4·n_down)]
         //              | footer(16)
         //
-        // u16 bodies are padded up to a 4-byte boundary so the
-        // following arrays (the other direction's body and the u32
-        // middles) stay aligned for `bytemuck::cast_slice` /
+        // u16 bodies pad 0-2 bytes; u24 bodies pad 0-3 bytes. The pad
+        // keeps the following arrays (the other direction's body and
+        // the u32 middles) 4-byte aligned for `bytemuck::cast_slice` /
         // `ArcCow::<u32>::from_mmap`.
         let up_bytes = up_width.padded_body_bytes(n_up);
         let down_bytes = down_width.padded_body_bytes(n_down);
@@ -492,11 +492,11 @@ impl CchWeightsFile {
             down_width,
         } = parse_header(header)?;
 
-        // v3 layout (with optional middles, per-direction body width):
-        //   header(32) | up(width_up·n_up [+0-2 pad]) | down(width_down·n_down [+0-2 pad])
+        // v4 layout (with optional middles, per-direction body width):
+        //   header(32) | up(width_up·n_up [+0-3 pad]) | down(width_down·n_down [+0-3 pad])
         //              | [up_middle(4·n_up) | down_middle(4·n_down)]
         //              | footer(16)
-        // u16 bodies pad up to 4-byte boundary — see `padded_body_bytes`.
+        // u16/u24 bodies pad up to 4-byte boundary — see `padded_body_bytes`.
         let up_bytes = up_width.padded_body_bytes(n_up);
         let down_bytes = down_width.padded_body_bytes(n_down);
         let no_middle_len = HEADER_LEN + up_bytes + down_bytes + FOOTER_LEN;
@@ -735,12 +735,13 @@ pub(crate) struct CchWeightsHeader {
 
 /// Parse the 32-byte CCH weights header.
 ///
-/// v3 (#306 PR 2): header byte 7 carries `width_flags`:
-///   bit 0 → up body is u16  (else u32)
-///   bit 1 → down body is u16 (else u32)
+/// v4 (#306 PR 3): header byte 7 carries a 2-bit per-direction width
+/// code:
+///   bits 0..2: up_width   { 00=u32, 01=u16, 10=u24, 11=reserved }
+///   bits 2..4: down_width { same encoding }
+///   bits 4..8: reserved
 ///
-/// v2 readers wrote 0 in byte 7, so a v2-as-v3 read sees
-/// `up_width = down_width = U32` — exactly the v2 semantic.
+/// Anything other than v4 is rejected — re-run step 8 to regenerate.
 /// Shared by the owned, zero-copy, and mmap-backed readers.
 fn parse_header(header: &[u8]) -> Result<CchWeightsHeader> {
     anyhow::ensure!(
