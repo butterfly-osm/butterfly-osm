@@ -1,39 +1,60 @@
 {
   "name": "foot",
   "version": 1,
-
   "speed": {
     "unit": "km/h",
     "highway": {
-      "footway": 5, "pedestrian": 5, "steps": 5,
-      "path": 5, "cycleway": 5,
-      "residential": 5, "living_street": 5, "unclassified": 5,
-      "tertiary": 5, "secondary": 5, "primary": 5,
+      "footway": 5,
+      "pedestrian": 5,
+      "steps": 5,
+      "path": 5,
+      "cycleway": 5,
+      "residential": 5,
+      "living_street": 5,
+      "unclassified": 5,
+      "tertiary": 5,
+      "secondary": 5,
+      "primary": 5,
       "service": 5,
       "track": 5
     },
     "speed_cap_kmh": 10,
     "overrides": []
   },
-
   "access": {
     "highway": {
-      "footway": true, "pedestrian": true, "steps": true,
-      "path": true, "cycleway": true,
-      "residential": true, "living_street": true, "unclassified": true,
-      "tertiary": true, "secondary": true, "primary": true,
-      "tertiary_link": true, "secondary_link": true, "primary_link": true,
+      "footway": true,
+      "pedestrian": true,
+      "steps": true,
+      "path": true,
+      "cycleway": true,
+      "residential": true,
+      "living_street": true,
+      "unclassified": true,
+      "tertiary": true,
+      "secondary": true,
+      "primary": true,
+      "tertiary_link": true,
+      "secondary_link": true,
+      "primary_link": true,
       "service": true,
       "track": true,
-      "motorway": false, "motorway_link": false,
-      "trunk": false, "trunk_link": false,
+      "motorway": false,
+      "motorway_link": false,
+      "trunk": false,
+      "trunk_link": false,
       "construction": false
     },
     "deny_if": [
-      { "tag": "foot", "values": ["no", "private"] }
+      {
+        "tag": "foot",
+        "values": [
+          "no",
+          "private"
+        ]
+      }
     ]
   },
-
   "oneway": {
     "respect": false,
     "tag": "oneway:foot",
@@ -41,39 +62,52 @@
     "reverse_values": [],
     "default_oneway_highways": []
   },
-
   "priority": [],
-
   "highway_class": {
-    "footway": 12, "pedestrian": 12, "steps": 12,
-    "path": 20, "cycleway": 20,
-    "residential": 12, "living_street": 12, "unclassified": 12,
-    "tertiary": 9, "secondary": 9, "primary": 9,
-    "tertiary_link": 9, "secondary_link": 9, "primary_link": 9,
+    "footway": 12,
+    "pedestrian": 12,
+    "steps": 12,
+    "path": 20,
+    "cycleway": 20,
+    "residential": 12,
+    "living_street": 12,
+    "unclassified": 12,
+    "tertiary": 9,
+    "secondary": 9,
+    "primary": 9,
+    "tertiary_link": 9,
+    "secondary_link": 9,
+    "primary_link": 9,
     "service": 13,
     "track": 15,
-    "motorway": 1, "motorway_link": 1,
-    "trunk": 1, "trunk_link": 1
+    "motorway": 1,
+    "motorway_link": 1,
+    "trunk": 1,
+    "trunk_link": 1
   },
-
   "class_bits": {
-    "footway": { "highway_any": ["footway", "pedestrian"] }
+    "footway": {
+      "highway_any": [
+        "footway",
+        "pedestrian"
+      ]
+    }
   },
-
   "turn_penalties": {
-    "turn_penalty_ds": 20,
+    "turn_penalty_s": 2,
     "turn_bias": 1.0,
-    "u_turn_penalty_ds": 0,
+    "u_turn_penalty_s": 0,
     "min_degree_for_penalty": 4,
-    "signal_delay_ds": 40,
-    "class_change_penalty_ds_per_diff": 0,
+    "signal_delay_s": 4,
+    "class_change_penalty_s_per_diff": 0,
     "max_class_diff_for_penalty": 0
   },
-
   "turn_restrictions": {
     "respect": true,
     "restriction_tag": "restriction",
     "mode_specific_tag": "restriction:foot",
-    "exception_values": ["foot"]
+    "exception_values": [
+      "foot"
+    ]
   }
 }

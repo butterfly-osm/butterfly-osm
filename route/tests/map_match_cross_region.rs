@@ -116,11 +116,11 @@ fn cross_region_trace_matches_with_overlay() {
     );
     for (i, m) in result.matchings.iter().enumerate() {
         eprintln!(
-            "  matching[{}]: region_idx={} ebg_path.len={} duration_ds={} confidence={:.3}",
+            "  matching[{}]: region_idx={} ebg_path.len={} duration_s={} confidence={:.3}",
             i,
             m.region_idx,
             m.ebg_path.len(),
-            m.duration_ds,
+            m.duration_s,
             m.confidence
         );
     }

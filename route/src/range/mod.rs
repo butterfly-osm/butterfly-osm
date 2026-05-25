@@ -34,7 +34,7 @@ pub use sparse_contour::{
 
 pub mod batched_isochrone;
 pub use batched_isochrone::{
-    ADAPTIVE_THRESHOLD_DS, AdaptiveIsochroneEngine, BatchedIsochroneEngine, BatchedIsochroneResult,
+    ADAPTIVE_THRESHOLD_S, AdaptiveIsochroneEngine, BatchedIsochroneEngine, BatchedIsochroneResult,
     BatchedIsochroneStats,
 };
 

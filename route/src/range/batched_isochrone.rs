@@ -114,17 +114,15 @@ impl BatchedIsochroneEngine {
     ///
     /// # Arguments
     /// * `origins` - Up to K origin node IDs (len must be <= K_LANES)
-    /// * `threshold_ds` - Time threshold in deciseconds (CCH weight units)
+    /// * `threshold_s` - Time threshold in seconds (CCH weight units, post-#297).
     ///
     /// # Returns
     /// BatchedIsochroneResult with K contour polygons
     pub fn query_batch(
         &self,
         origins: &[u32],
-        threshold_ds: u32,
+        threshold_s: u32,
     ) -> Result<BatchedIsochroneResult> {
-        // Convert to milliseconds for frontier extraction
-        let threshold_ms = threshold_ds * 100;
         let start = std::time::Instant::now();
         let k = origins.len();
 
@@ -139,7 +137,7 @@ impl BatchedIsochroneEngine {
         // Phase 1: K-lane batched PHAST with early-stop and lane masking
         // ============================================================
         let phast_start = std::time::Instant::now();
-        let phast_result = self.phast.query_batch_bounded(origins, threshold_ds);
+        let phast_result = self.phast.query_batch_bounded(origins, threshold_s);
         stats.phast_time_ms = phast_start.elapsed().as_millis() as u64;
 
         // ============================================================
@@ -150,9 +148,7 @@ impl BatchedIsochroneEngine {
         let extractor = Arc::clone(&self.extractor);
         let segments: Vec<Vec<ReachableSegment>> = (0..k)
             .into_par_iter()
-            .map(|lane| {
-                extractor.extract_reachable_segments(&phast_result.dist[lane], threshold_ms)
-            })
+            .map(|lane| extractor.extract_reachable_segments(&phast_result.dist[lane], threshold_s))
             .collect();
 
         stats.segment_time_ms = segment_start.elapsed().as_millis() as u64;
@@ -221,12 +217,12 @@ impl BatchedIsochroneEngine {
     ///
     /// # Returns
     /// Vector of ContourResult, one per origin
-    pub fn query_many(&self, origins: &[u32], threshold_ds: u32) -> Result<Vec<ContourResult>> {
+    pub fn query_many(&self, origins: &[u32], threshold_s: u32) -> Result<Vec<ContourResult>> {
         let mut all_contours = Vec::with_capacity(origins.len());
 
         // Process in batches of K
         for chunk in origins.chunks(K_LANES) {
-            let result = self.query_batch(chunk, threshold_ds)?;
+            let result = self.query_batch(chunk, threshold_s)?;
             all_contours.extend(result.contours);
         }
 
@@ -234,11 +230,11 @@ impl BatchedIsochroneEngine {
     }
 }
 
-/// Threshold in deciseconds below which single-source beats K-lane batched.
+/// Threshold in seconds below which single-source beats K-lane batched.
 /// Empirically determined on Belgium dataset:
 /// - Below 15 min: single-source + early-stop is faster
 /// - Above 18 min: K-lane batching + lane masking is faster
-pub const ADAPTIVE_THRESHOLD_DS: u32 = 10000; // ~17 min crossover
+pub const ADAPTIVE_THRESHOLD_S: u32 = 1000; // ~17 min crossover
 
 /// Adaptive isochrone engine that automatically selects the best algorithm.
 ///
@@ -296,14 +292,12 @@ impl AdaptiveIsochroneEngine {
     }
 
     /// Generate a single isochrone using the optimal algorithm for the threshold
-    pub fn query_single(&self, origin: u32, threshold_ds: u32) -> Result<ContourResult> {
-        let threshold_ms = threshold_ds * 100;
-
-        // Always use single-source for single queries (no batching benefit)
-        let phast_result = self.single_phast.query_bounded(origin, threshold_ds);
+    pub fn query_single(&self, origin: u32, threshold_s: u32) -> Result<ContourResult> {
+        // Always use single-source for single queries (no batching benefit).
+        let phast_result = self.single_phast.query_bounded(origin, threshold_s);
         let segments = self
             .extractor
-            .extract_reachable_segments(&phast_result.dist, threshold_ms);
+            .extract_reachable_segments(&phast_result.dist, threshold_s);
 
         if segments.is_empty() {
             return Ok(ContourResult {
@@ -342,17 +336,15 @@ impl AdaptiveIsochroneEngine {
 
     /// Generate multiple isochrones, automatically choosing the best algorithm
     ///
-    /// - For threshold < ADAPTIVE_THRESHOLD_DS: runs single-source queries
-    /// - For threshold >= ADAPTIVE_THRESHOLD_DS: uses K-lane batching
-    pub fn query_many(&self, origins: &[u32], threshold_ds: u32) -> Result<Vec<ContourResult>> {
-        let threshold_ms = threshold_ds * 100;
-
-        if threshold_ds < ADAPTIVE_THRESHOLD_DS {
+    /// - For threshold < ADAPTIVE_THRESHOLD_S: runs single-source queries
+    /// - For threshold >= ADAPTIVE_THRESHOLD_S: uses K-lane batching
+    pub fn query_many(&self, origins: &[u32], threshold_s: u32) -> Result<Vec<ContourResult>> {
+        if threshold_s < ADAPTIVE_THRESHOLD_S {
             // Small threshold: single-source is faster
             // Process sequentially (could parallelize with rayon if needed)
             let mut results = Vec::with_capacity(origins.len());
             for &origin in origins {
-                results.push(self.query_single(origin, threshold_ds)?);
+                results.push(self.query_single(origin, threshold_s)?);
             }
             Ok(results)
         } else {
@@ -360,7 +352,7 @@ impl AdaptiveIsochroneEngine {
             let mut all_contours = Vec::with_capacity(origins.len());
 
             for chunk in origins.chunks(K_LANES) {
-                let phast_result = self.batched_phast.query_batch_bounded(chunk, threshold_ds);
+                let phast_result = self.batched_phast.query_batch_bounded(chunk, threshold_s);
 
                 // Extract segments and generate contours for each lane
                 let extractor = Arc::clone(&self.extractor);
@@ -370,7 +362,7 @@ impl AdaptiveIsochroneEngine {
                     .into_par_iter()
                     .filter_map(|lane| {
                         let segments = extractor
-                            .extract_reachable_segments(&phast_result.dist[lane], threshold_ms);
+                            .extract_reachable_segments(&phast_result.dist[lane], threshold_s);
                         if segments.is_empty() {
                             return Some(ContourResult {
                                 outer_ring: vec![],

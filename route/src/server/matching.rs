@@ -328,7 +328,7 @@ pub async fn match_trace_handler(
                     &state_clone.edge_geom,
                     geom_format,
                 );
-                let duration_s = m.duration_ds as f64 / 10.0;
+                let duration_s = m.duration_s as f64;
 
                 let steps = if want_steps {
                     Some(build_steps(
@@ -539,7 +539,9 @@ async fn cross_region_match_inner(
                 let mode_data = state.get_mode(crate::profile_abi::Mode(mode_idx));
                 let (geometry, distance_m) =
                     build_geometry(&m.ebg_path, &state.ebg_nodes, &state.edge_geom, geom_format);
-                let duration_s = m.duration_ds as f64 / 10.0;
+                // #297: duration is now seconds-native (m.duration_s)
+                // instead of the v1 deciseconds field.
+                let duration_s = m.duration_s as f64;
                 let steps = if want_steps {
                     Some(build_steps(
                         &m.ebg_path,

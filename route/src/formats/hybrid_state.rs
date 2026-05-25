@@ -31,7 +31,7 @@ pub struct HybridState {
     // CSR in hybrid state space
     pub offsets: Vec<u64>, // n_states + 1
     pub targets: Vec<u32>, // n_arcs (hybrid state IDs)
-    pub weights: Vec<u32>, // n_arcs (edge weight + turn cost in deciseconds)
+    pub weights: Vec<u32>, // n_arcs (edge weight + turn cost in seconds, post-#297)
 
     // State mappings
     // For states 0..n_node_states: maps to NBG node ID
