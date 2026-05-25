@@ -7,6 +7,8 @@
 //!
 //! Outputs: p50/p95/p99 times + detailed counters
 
+mod weight_profile;
+
 use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -460,6 +462,30 @@ enum Commands {
         #[arg(long, default_value = "30")]
         threshold_min: u32,
     },
+
+    /// Weight distribution profiler (#298) — gates #279/#297 codec/unit decisions.
+    ///
+    /// Emits a deterministic JSON + human markdown report covering five
+    /// sections: static distribution, hot-query-weighted overflow rates,
+    /// per-block range histograms, rounding-drift sensitivity, and
+    /// triangle relaxation tie-rate delta.
+    WeightProfile {
+        /// Data directory (step-tree layout) containing the prebuilt
+        /// Belgium CCH artefacts (step1..step8).
+        #[arg(long)]
+        data_dir: PathBuf,
+
+        /// Output directory. The two report files are written under
+        /// `<output>/weight-profile.{json,md}`. Created if missing.
+        #[arg(long)]
+        output: PathBuf,
+
+        /// Optional region id (e.g. `BE`). Currently informational only —
+        /// the step-tree loader is region-agnostic. Reserved for the
+        /// future `.butterfly` container loading path.
+        #[arg(long)]
+        region: Option<String>,
+    },
 }
 
 /// Aggregated statistics across multiple runs
@@ -691,6 +717,12 @@ fn main() -> anyhow::Result<()> {
             mode,
             threshold_min,
         } => run_detail_compare(&data_dir, &mode, threshold_min),
+
+        Commands::WeightProfile {
+            data_dir,
+            output,
+            region,
+        } => weight_profile::run_weight_profile(&data_dir, &output, region.as_deref()),
     }
 }
 
