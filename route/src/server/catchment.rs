@@ -374,13 +374,14 @@ pub fn isochrone_hull(
         return Vec::new();
     }
 
-    let threshold_ds = (threshold_s * 10.0) as u32;
+    // Weights are seconds (post-#297); threshold is already user-input seconds.
+    let threshold_s_u32 = threshold_s.round() as u32;
 
     let settled = run_phast_bounded_fast(
         &mode_data.up_adj_flat,
         &mode_data.down_adj_flat,
         origin_rank,
-        threshold_ds,
+        threshold_s_u32,
         mode,
     );
 
@@ -398,7 +399,7 @@ pub fn isochrone_hull(
 
     let polygon_points = build_isochrone_geometry(
         &settled_original,
-        threshold_ds,
+        threshold_s_u32,
         node_weights,
         &state.ebg_nodes,
         &state.edge_geom,
@@ -916,7 +917,8 @@ pub async fn catchment_handler(
         for (ti, &ci) in client_valid.iter().enumerate() {
             let d = matrix[ti]; // 1 source, so index = ti
             if d != u32::MAX {
-                let duration_s = d as f32 / 10.0; // deciseconds -> seconds
+                // d is already in seconds (post-#297).
+                let duration_s = d as f32;
                 clients_with_dt.push(Client {
                     lon: req.clients[ci].lon,
                     lat: req.clients[ci].lat,

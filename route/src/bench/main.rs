@@ -21,7 +21,7 @@ use butterfly_route::formats::CchWeightsFile;
 use butterfly_route::matrix::batched_phast::{BatchedPhastEngine, BatchedPhastStats, K_LANES};
 use butterfly_route::matrix::bucket_ch::{BucketM2MEngine, DownReverseAdjFlat, UpAdjFlat};
 use butterfly_route::range::batched_isochrone::{
-    ADAPTIVE_THRESHOLD_DS, AdaptiveIsochroneEngine, BatchedIsochroneEngine,
+    ADAPTIVE_THRESHOLD_S, AdaptiveIsochroneEngine, BatchedIsochroneEngine,
 };
 use butterfly_route::range::frontier::FrontierExtractor;
 use butterfly_route::range::phast::{PhastEngine, PhastStats};
@@ -355,9 +355,9 @@ enum Commands {
         #[arg(long, default_value = "bike")]
         mode: String,
 
-        /// Threshold in deciseconds
-        #[arg(long, default_value = "6000")]
-        threshold_ds: u32,
+        /// Threshold in seconds (post-#297; was deciseconds).
+        #[arg(long, default_value = "600")]
+        threshold_s: u32,
 
         /// Number of queries
         #[arg(long, default_value = "50")]
@@ -672,10 +672,10 @@ fn main() -> anyhow::Result<()> {
         Commands::ContourCompare {
             data_dir,
             mode,
-            threshold_ds,
+            threshold_s,
             n_queries,
             seed,
-        } => run_contour_compare_bench(&data_dir, &mode, threshold_ds, n_queries, seed),
+        } => run_contour_compare_bench(&data_dir, &mode, threshold_s, n_queries, seed),
 
         Commands::E2eIsochrone {
             data_dir,
@@ -758,9 +758,8 @@ fn run_isochrone_bench(
     println!("  ✓ PHAST nodes: {}", phast.n_nodes());
     println!();
 
-    // Convert ms to deciseconds (CCH weight units)
-    // 1 decisecond = 100 milliseconds
-    let threshold_ds = threshold_ms / 100;
+    // Convert ms to seconds (CCH weight units post-#297). 1 s = 1000 ms.
+    let threshold_s = threshold_ms / 1000;
 
     // Generate random origins
     let mut rng = StdRng::seed_from_u64(seed);
@@ -780,14 +779,14 @@ fn run_isochrone_bench(
     for (i, &origin) in origins.iter().enumerate() {
         let total_start = Instant::now();
 
-        // PHAST (expects deciseconds)
+        // PHAST (expects seconds, post-#297)
         let phast_start = Instant::now();
-        let result = phast.query_bounded(origin, threshold_ds);
+        let result = phast.query_bounded(origin, threshold_s);
         let phast_time = phast_start.elapsed();
 
-        // Frontier extraction (expects deciseconds)
+        // Frontier extraction (expects seconds, post-#297)
         let frontier_start = Instant::now();
-        let segments = extractor.extract_reachable_segments(&result.dist, threshold_ds);
+        let segments = extractor.extract_reachable_segments(&result.dist, threshold_s);
         let frontier_time = frontier_start.elapsed();
 
         // Contour generation (sparse boundary tracing)
@@ -1744,9 +1743,8 @@ fn run_batched_isochrone_bench(
         batched_start.elapsed().as_secs_f64()
     );
 
-    // Convert ms to deciseconds (CCH weight units)
-    // 1 decisecond = 100 milliseconds
-    let threshold_ds = threshold_ms / 100;
+    // Convert ms to seconds (CCH weight units post-#297). 1 s = 1000 ms.
+    let threshold_s = threshold_ms / 1000;
 
     // Generate random origins
     let mut rng = StdRng::seed_from_u64(seed);
@@ -1760,8 +1758,8 @@ fn run_batched_isochrone_bench(
     let mut single_vertices = 0usize;
 
     for (i, &origin) in origins.iter().enumerate() {
-        let result = phast.query_bounded(origin, threshold_ds);
-        let segments = extractor.extract_reachable_segments(&result.dist, threshold_ms);
+        let result = phast.query_bounded(origin, threshold_s);
+        let segments = extractor.extract_reachable_segments(&result.dist, threshold_s);
         let contour = generate_sparse_contour(&segments, &sparse_config)?;
         single_vertices += contour.outer_ring.len();
 
@@ -1784,7 +1782,7 @@ fn run_batched_isochrone_bench(
     let mut n_batches = 0usize;
 
     for (batch_idx, chunk) in origins.chunks(K_LANES).enumerate() {
-        let result = batched_engine.query_batch(chunk, threshold_ds)?;
+        let result = batched_engine.query_batch(chunk, threshold_s)?;
         for contour in &result.contours {
             batched_vertices += contour.outer_ring.len();
         }
@@ -2463,17 +2461,17 @@ fn run_klane_bounded_bench(
     n_batches: usize,
     seed: u64,
 ) -> anyhow::Result<()> {
-    // Convert to deciseconds (CCH weight units)
-    let threshold_ds = threshold_ms / 100;
+    // Convert to seconds (CCH weight units post-#297). 1 s = 1000 ms.
+    let threshold_s = threshold_ms / 1000;
 
     println!("═══════════════════════════════════════════════════════════════");
     println!("  K-LANE BLOCK-GATED PHAST BENCHMARK");
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}", mode);
     println!(
-        "  Threshold: {} ms = {} ds ({:.1} min)",
+        "  Threshold: {} ms = {} s ({:.1} min)",
         threshold_ms,
-        threshold_ds,
+        threshold_s,
         threshold_ms as f64 / 60000.0
     );
     println!(
@@ -2533,8 +2531,8 @@ fn run_klane_bounded_bench(
 
     // ========== K-lane block-gated PHAST (bounded) ==========
     println!(
-        "[3/3] Running K-lane block-gated PHAST (bounded T={} ds)...",
-        threshold_ds
+        "[3/3] Running K-lane block-gated PHAST (bounded T={} s)...",
+        threshold_s
     );
 
     let mut gated_times: Vec<Duration> = Vec::with_capacity(n_batches);
@@ -2542,7 +2540,7 @@ fn run_klane_bounded_bench(
 
     for batch in &sources {
         let start = Instant::now();
-        let result = engine.query_batch_block_gated(batch, threshold_ds);
+        let result = engine.query_batch_block_gated(batch, threshold_s);
         gated_times.push(start.elapsed());
 
         gated_stats.upward_relaxations += result.stats.upward_relaxations;
@@ -2568,7 +2566,7 @@ fn run_klane_bounded_bench(
 
     // Compare first batch results
     let regular_result = engine.query_batch(&sources[0]);
-    let gated_result = engine.query_batch_block_gated(&sources[0], threshold_ds);
+    let gated_result = engine.query_batch_block_gated(&sources[0], threshold_s);
 
     let mut mismatches = 0;
     for lane in 0..K_LANES {
@@ -2576,9 +2574,9 @@ fn run_klane_bounded_bench(
             let regular_d = regular_result.dist[lane][node];
             let gated_d = gated_result.dist[lane][node];
 
-            // Both should agree on reachability within threshold (using deciseconds)
-            let regular_reachable = regular_d <= threshold_ds;
-            let gated_reachable = gated_d <= threshold_ds;
+            // Both should agree on reachability within threshold (in seconds post-#297)
+            let regular_reachable = regular_d <= threshold_s;
+            let gated_reachable = gated_d <= threshold_s;
 
             if regular_reachable != gated_reachable
                 || (regular_reachable && gated_reachable && regular_d != gated_d)
@@ -3359,7 +3357,7 @@ fn run_p2p_query(
 fn run_contour_compare_bench(
     data_dir: &Path,
     mode: &str,
-    threshold_ds: u32,
+    threshold_s: u32,
     n_queries: usize,
     seed: u64,
 ) -> anyhow::Result<()> {
@@ -3368,9 +3366,9 @@ fn run_contour_compare_bench(
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}", mode);
     println!(
-        "  Threshold: {} ds ({:.1} min)",
-        threshold_ds,
-        threshold_ds as f64 / 600.0
+        "  Threshold: {} s ({:.1} min)",
+        threshold_s,
+        threshold_s as f64 / 60.0
     );
     println!("  Queries: {}", n_queries);
 
@@ -3419,12 +3417,9 @@ fn run_contour_compare_bench(
     let mut sparse_contour_times: Vec<u64> = Vec::with_capacity(n_queries);
     let mut sparse_simplify_times: Vec<u64> = Vec::with_capacity(n_queries);
 
-    // Convert threshold_ds to threshold_ms for segment extraction
-    let threshold_ms = threshold_ds * 100;
-
     for (i, &origin) in origins.iter().enumerate() {
-        let result = phast.query_active_set(origin, threshold_ds);
-        let segments = extractor.extract_reachable_segments(&result.dist, threshold_ms);
+        let result = phast.query_active_set(origin, threshold_s);
+        let segments = extractor.extract_reachable_segments(&result.dist, threshold_s);
 
         if segments.is_empty() {
             continue;
@@ -3522,23 +3517,24 @@ fn run_e2e_isochrone_bench(
     n_origins: usize,
     seed: u64,
 ) -> anyhow::Result<()> {
-    let threshold_ds = threshold_ms / 100;
+    // ms → s (post-#297).
+    let threshold_s = threshold_ms / 1000;
 
     println!("═══════════════════════════════════════════════════════════════");
     println!("  END-TO-END ISOCHRONE BENCHMARK");
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Mode: {}", mode);
     println!(
-        "  Threshold: {} ms = {} ds ({:.1} min)",
+        "  Threshold: {} ms = {} s ({:.1} min)",
         threshold_ms,
-        threshold_ds,
+        threshold_s,
         threshold_ms as f64 / 60000.0
     );
     println!("  Origins: {}", n_origins);
     println!(
-        "  Adaptive crossover: {} ds ({:.1} min)",
-        ADAPTIVE_THRESHOLD_DS,
-        ADAPTIVE_THRESHOLD_DS as f64 / 600.0
+        "  Adaptive crossover: {} s ({:.1} min)",
+        ADAPTIVE_THRESHOLD_S,
+        ADAPTIVE_THRESHOLD_S as f64 / 60.0
     );
     println!();
 
@@ -3643,7 +3639,7 @@ fn run_e2e_isochrone_bench(
 
         // Phase 1: Compute (PHAST + segment extraction + contour)
         let compute_start = Instant::now();
-        let contour_results = engine.query_many(&[origin], threshold_ds)?;
+        let contour_results = engine.query_many(&[origin], threshold_s)?;
         let compute_time = compute_start.elapsed();
 
         if contour_results.is_empty() || contour_results[0].outer_ring.is_empty() {
@@ -3671,7 +3667,7 @@ fn run_e2e_isochrone_bench(
         // Create record for serialization test
         records.push(IsochroneRecord {
             origin_id: origin,
-            threshold_ds,
+            threshold_s,
             wkb,
             n_vertices: contour.outer_ring.len() as u32,
             elapsed_us: total_time.as_micros() as u64,
@@ -4025,7 +4021,7 @@ fn run_bulk_pipeline_bench(
     use std::fs::File;
     use std::io::{BufWriter, Write};
 
-    let threshold_ds = threshold_ms / 100;
+    let threshold_s = threshold_ms / 1000;
 
     println!("═══════════════════════════════════════════════════════════════");
     println!("  BULK ISOCHRONE PIPELINE");
@@ -4116,7 +4112,7 @@ fn run_bulk_pipeline_bench(
     let mut total_wkb = 0usize;
 
     for (i, &origin) in origins.iter().enumerate() {
-        let results = engine.query_many(&[origin], threshold_ds)?;
+        let results = engine.query_many(&[origin], threshold_s)?;
         if !results.is_empty() && !results[0].outer_ring.is_empty() {
             let c = &results[0];
             valid += 1;
@@ -4365,14 +4361,14 @@ fn run_detail_compare(data_dir: &Path, mode: &str, threshold_min: u32) -> anyhow
 
     // Use middle node as test origin
     let origin = phast.n_nodes() as u32 / 2;
-    let threshold_ds = threshold_min * 600; // Convert min to deciseconds
+    let threshold_s = threshold_min * 60; // Convert min to seconds (post-#297)
 
     // Run PHAST query once
     println!("[2/3] Running PHAST query...");
-    let result = phast.query_bounded(origin, threshold_ds);
+    let result = phast.query_bounded(origin, threshold_s);
 
     // Extract segments
-    let all_segments = extractor.extract_reachable_segments(&result.dist, threshold_ds * 100);
+    let all_segments = extractor.extract_reachable_segments(&result.dist, threshold_s);
     println!("  ✓ Reachable segments: {}", all_segments.len());
     println!();
 

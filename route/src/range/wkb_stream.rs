@@ -7,7 +7,7 @@
 //!
 //! Each isochrone includes:
 //! - origin_id: u32 (the origin node)
-//! - threshold_ds: u32 (threshold in deciseconds)
+//! - threshold_s: u32 (threshold in seconds, post-#297)
 //! - wkb: Binary (WKB-encoded polygon)
 //! - n_vertices: u32 (number of vertices in outer ring)
 //!
@@ -134,8 +134,8 @@ pub fn encode_polygon_wkb(contour: &ContourResult) -> Option<Vec<u8>> {
 pub struct IsochroneRecord {
     /// Origin node ID
     pub origin_id: u32,
-    /// Threshold in deciseconds
-    pub threshold_ds: u32,
+    /// Threshold in seconds (post-#297; was deciseconds).
+    pub threshold_s: u32,
     /// WKB-encoded polygon
     pub wkb: Vec<u8>,
     /// Number of vertices in outer ring
@@ -148,13 +148,13 @@ impl IsochroneRecord {
     /// Create from a ContourResult
     pub fn from_contour(
         origin_id: u32,
-        threshold_ds: u32,
+        threshold_s: u32,
         contour: &ContourResult,
     ) -> Option<Self> {
         let wkb = encode_polygon_wkb(contour)?;
         Some(Self {
             origin_id,
-            threshold_ds,
+            threshold_s,
             wkb,
             n_vertices: contour.outer_ring.len() as u32,
             elapsed_us: contour.stats.elapsed_ms * 1000,
@@ -166,7 +166,7 @@ impl IsochroneRecord {
 #[derive(Debug, Default)]
 pub struct IsochroneBatch {
     pub origin_ids: Vec<u32>,
-    pub threshold_ds: Vec<u32>,
+    pub threshold_s: Vec<u32>,
     pub wkb_data: Vec<Vec<u8>>,
     pub n_vertices: Vec<u32>,
     pub elapsed_us: Vec<u64>,
@@ -177,7 +177,7 @@ impl IsochroneBatch {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             origin_ids: Vec::with_capacity(capacity),
-            threshold_ds: Vec::with_capacity(capacity),
+            threshold_s: Vec::with_capacity(capacity),
             wkb_data: Vec::with_capacity(capacity),
             n_vertices: Vec::with_capacity(capacity),
             elapsed_us: Vec::with_capacity(capacity),
@@ -187,7 +187,7 @@ impl IsochroneBatch {
     /// Add a record to the batch
     pub fn push(&mut self, record: IsochroneRecord) {
         self.origin_ids.push(record.origin_id);
-        self.threshold_ds.push(record.threshold_ds);
+        self.threshold_s.push(record.threshold_s);
         self.wkb_data.push(record.wkb);
         self.n_vertices.push(record.n_vertices);
         self.elapsed_us.push(record.elapsed_us);
@@ -221,14 +221,14 @@ pub fn batch_to_arrow(
 
     let schema = Arc::new(Schema::new(vec![
         Field::new("origin_id", DataType::UInt32, false),
-        Field::new("threshold_ds", DataType::UInt32, false),
+        Field::new("threshold_s", DataType::UInt32, false),
         Field::new("wkb", DataType::Binary, false),
         Field::new("n_vertices", DataType::UInt32, false),
         Field::new("elapsed_us", DataType::UInt64, false),
     ]));
 
     let origin_ids: ArrayRef = Arc::new(UInt32Array::from(batch.origin_ids.clone()));
-    let thresholds: ArrayRef = Arc::new(UInt32Array::from(batch.threshold_ds.clone()));
+    let thresholds: ArrayRef = Arc::new(UInt32Array::from(batch.threshold_s.clone()));
     let wkb: ArrayRef = Arc::new(BinaryArray::from_iter_values(
         batch.wkb_data.iter().map(|v| v.as_slice()),
     ));
@@ -249,8 +249,8 @@ pub fn write_ndjson(records: &[IsochroneRecord]) -> Vec<u8> {
         // Base64-encode WKB for JSON compatibility
         let wkb_b64 = base64_encode(&record.wkb);
         let line = format!(
-            r#"{{"origin_id":{},"threshold_ds":{},"wkb":"{}","n_vertices":{},"elapsed_us":{}}}"#,
-            record.origin_id, record.threshold_ds, wkb_b64, record.n_vertices, record.elapsed_us
+            r#"{{"origin_id":{},"threshold_s":{},"wkb":"{}","n_vertices":{},"elapsed_us":{}}}"#,
+            record.origin_id, record.threshold_s, wkb_b64, record.n_vertices, record.elapsed_us
         );
         buf.extend_from_slice(line.as_bytes());
         buf.push(b'\n');

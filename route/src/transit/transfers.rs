@@ -554,10 +554,9 @@ pub fn build_transfer_graph(
     // Each thread touches its own `CCH_QUERY_STATE` cell with no
     // cross-thread contention. No nested parallelism.
 
+    // CCH weights are in seconds (post-#297), so the threshold passes
+    // through unchanged.
     let max_walk_s = opts.max_walk_s;
-    // Weights are deciseconds; convert the max walk time to the same
-    // unit for the early-termination check inside CchQuery::distance.
-    let max_walk_ds = max_walk_s.saturating_mul(10);
 
     // Flatten sources so the parallel iterator sees a simple Vec.
     struct SourceWork {
@@ -599,13 +598,10 @@ pub fn build_transfer_graph(
             let query = CchQuery::with_custom_weights(topo, up_flat, down_rev_flat, weights);
             let mut emitted: Vec<(u32, u32, u32)> = Vec::with_capacity(w.neighbours.len());
             for &(target_stop, target_rank) in &w.neighbours {
-                let Some(raw) = query.distance(w.source_rank, target_rank) else {
+                // query.distance returns seconds (post-#297).
+                let Some(walk_s) = query.distance(w.source_rank, target_rank) else {
                     continue;
                 };
-                if raw > max_walk_ds {
-                    continue;
-                }
-                let walk_s = raw.div_ceil(10);
                 if walk_s > max_walk_s {
                     continue;
                 }
