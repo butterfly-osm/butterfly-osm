@@ -1030,13 +1030,18 @@ fn write_cch_weights(
     let up_width = WeightWidth::choose(up_weights);
     let down_width = WeightWidth::choose(down_weights);
 
-    let mut width_flags = 0u8;
-    if up_width == WeightWidth::U16 {
-        width_flags |= 0x01;
-    }
-    if down_width == WeightWidth::U16 {
-        width_flags |= 0x02;
-    }
+    // Per-direction 2-bit width code in header byte 7 (#306 PR 3):
+    //   00 = u32
+    //   01 = u16
+    //   10 = u24
+    let width_code = |w: WeightWidth| -> u8 {
+        match w {
+            WeightWidth::U32 => 0,
+            WeightWidth::U16 => 1,
+            WeightWidth::U24 => 2,
+        }
+    };
+    let width_flags = width_code(up_width) | (width_code(down_width) << 2);
 
     let mut writer = BufWriter::new(File::create(path)?);
     let mut crc_digest = Digest::new();
@@ -1102,7 +1107,7 @@ fn write_weights_body<W: std::io::Write>(
     weights: &[u32],
     width: crate::formats::WeightWidth,
 ) -> Result<()> {
-    use crate::formats::WeightWidth;
+    use crate::formats::{U24_SENTINEL, WeightWidth};
     match width {
         WeightWidth::U32 => {
             for &w in weights {
@@ -1113,7 +1118,6 @@ fn write_weights_body<W: std::io::Write>(
         }
         WeightWidth::U16 => {
             for &w in weights {
-                // u32::MAX → u16::MAX sentinel.
                 let v16: u16 = if w == u32::MAX {
                     u16::MAX
                 } else {
@@ -1122,6 +1126,17 @@ fn write_weights_body<W: std::io::Write>(
                 let bytes = v16.to_le_bytes();
                 writer.write_all(&bytes)?;
                 crc_digest.update(&bytes);
+            }
+        }
+        WeightWidth::U24 => {
+            for &w in weights {
+                // u32::MAX → U24_SENTINEL (0x00FF_FFFF) so the read
+                // path's `U24_SENTINEL → u32::MAX` mapping round-trips
+                // the "no edge" marker.
+                let v24: u32 = if w == u32::MAX { U24_SENTINEL } else { w };
+                let bytes = v24.to_le_bytes();
+                writer.write_all(&bytes[..3])?;
+                crc_digest.update(&bytes[..3]);
             }
         }
     }
