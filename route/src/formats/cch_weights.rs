@@ -37,24 +37,254 @@ use super::mmap::ArcCow;
 const MAGIC: u32 = 0x43434857; // "CCHW"
 const HEADER_LEN: usize = 32;
 const FOOTER_LEN: usize = 16;
-/// Current on-disk version. v2 stores body in seconds (time weights)
-/// or meters (distance weights). v1 stored deciseconds / millimeters
-/// and is rejected — re-run step 8 to regenerate.
-const VERSION: u16 = 2;
+/// Current on-disk version. v3 (#306 PR 2) carries a per-direction
+/// `width_flags` byte in header byte 7 that lets the body be encoded
+/// as `[u16]` or `[u32]` independently for UP/DOWN edges. v2 stored
+/// body in seconds (time weights) or meters (distance weights) at
+/// fixed u32; v3 readers still accept v2 (width = u32 implied). v1
+/// stored deciseconds / millimeters and is rejected — re-run step 8
+/// to regenerate.
+const VERSION: u16 = 3;
+const VERSION_V2: u16 = 2;
+
+/// Width flags packed into header byte 7 (v3+):
+/// - bit 0: up body width  (0 = u32, 1 = u16)
+/// - bit 1: down body width (0 = u32, 1 = u16)
+const UP_COMPACT_FLAG: u8 = 0x01;
+const DOWN_COMPACT_FLAG: u8 = 0x02;
+
+/// Per-direction body width for a CCH weights file (#306 PR 2).
+///
+/// At write time, step 8 picks `U16` when the direction's max value
+/// fits losslessly in `u16` (≤ 65 535). On Belgium that's car and
+/// bike for time weights; foot stays `U32` until PR 3's u24+overflow
+/// table lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeightWidth {
+    U16,
+    U32,
+}
+
+impl WeightWidth {
+    #[inline]
+    pub fn bytes_per_entry(self) -> usize {
+        match self {
+            Self::U16 => 2,
+            Self::U32 => 4,
+        }
+    }
+
+    /// Number of bytes occupied by a body of `n` entries at this width,
+    /// padded up to the next 4-byte boundary so the following `u32`
+    /// arrays (middles) stay aligned for `bytemuck::cast_slice`.
+    #[inline]
+    pub fn padded_body_bytes(self, n: usize) -> usize {
+        let raw = self.bytes_per_entry() * n;
+        (raw + 3) & !3
+    }
+
+    /// `WeightWidth::U16` iff every value in `weights` fits losslessly
+    /// in the compact path. The compact encoding reserves `u16::MAX`
+    /// as the "no edge" sentinel for `u32::MAX`, so:
+    ///
+    /// - `u32::MAX` (sentinel) → encodes to `u16::MAX` losslessly
+    /// - real finite weights must be `< u16::MAX = 65 535`; a real
+    ///   value of 65 535 would alias the sentinel on round-trip
+    ///   (read-back would widen to `u32::MAX`), so it forces U32
+    /// - anything above `u16::MAX` (excluding the sentinel) also
+    ///   forces U32
+    #[inline]
+    pub fn choose(weights: &[u32]) -> Self {
+        let max_finite_inline = u16::MAX as u32 - 1; // 65_534
+        if weights
+            .iter()
+            .all(|&w| w == u32::MAX || w <= max_finite_inline)
+        {
+            Self::U16
+        } else {
+            Self::U32
+        }
+    }
+}
+
+/// Per-direction weight array — either compact u16 or wide u32.
+///
+/// The hot routing path doesn't read [`CchWeights`] directly (see
+/// codex review on #279); access is through pre-built
+/// `UpAdjFlat` / `DownReverseAdjFlat` that embed the weights inline.
+/// CchWeights stays resident in `ModeData` mainly for unpack, validators,
+/// and recustomization, so the storage backing matters for steady-state
+/// RSS but not for routing latency.
+///
+/// Mmap-backed variants borrow from the live `Arc<Mmap>` covering the
+/// container; widening to `u32` happens on read via [`Self::get`].
+/// After madvise(DONTNEED) on the container section, the mmap pages
+/// are evictable — only the small enum wrapper stays on the heap.
+#[derive(Debug, Clone)]
+pub enum WeightArray {
+    /// Compact `u16` storage. Reader uses `u16::MAX` as the
+    /// "no edge" sentinel (same role as `u32::MAX` in the U32 variant
+    /// — by convention this is widened back to `u32::MAX` by `get`).
+    U16(ArcCow<u16>),
+    /// Native `u32` storage. Used when the direction's max value
+    /// doesn't fit in `u16` (foot mode on Belgium, all distance
+    /// arrays until PR 3 lands the u24 codec).
+    U32(ArcCow<u32>),
+}
+
+impl WeightArray {
+    /// Read entry `i`, widening to `u32`. The `u16::MAX` sentinel in
+    /// the compact variant maps back to `u32::MAX` so the
+    /// "no edge" semantic survives a round-trip.
+    #[inline]
+    pub fn get(&self, i: usize) -> u32 {
+        match self {
+            Self::U16(arr) => {
+                let v = arr.as_slice()[i];
+                if v == u16::MAX { u32::MAX } else { v as u32 }
+            }
+            Self::U32(arr) => arr.as_slice()[i],
+        }
+    }
+
+    /// Length of the underlying array.
+    #[inline]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::U16(arr) => arr.len(),
+            Self::U32(arr) => arr.len(),
+        }
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Iterate over the values widened to `u32`. The compact variant
+    /// emits `u32::MAX` for entries equal to the `u16::MAX` sentinel.
+    pub fn iter(&self) -> WeightArrayIter<'_> {
+        WeightArrayIter {
+            inner: self,
+            i: 0,
+            end: self.len(),
+        }
+    }
+
+    /// Get the storage width — useful for size reporting and tests.
+    #[inline]
+    pub fn width(&self) -> WeightWidth {
+        match self {
+            Self::U16(_) => WeightWidth::U16,
+            Self::U32(_) => WeightWidth::U32,
+        }
+    }
+
+    /// Upgrade to an owned `Vec<u32>` for mutation. Used by callers
+    /// that need to penalize or zero specific entries (e.g. exclude /
+    /// avoid recustomization). The compact variant is widened in
+    /// place; the wide variant produces a fresh Vec via `to_mut`.
+    ///
+    /// After calling this, the returned `&mut Vec<u32>` is the same
+    /// storage `get`/`iter` will read. Subsequent reads decode
+    /// through the U32 path.
+    pub fn to_mut_vec(&mut self) -> &mut Vec<u32> {
+        if let Self::U16(arr) = self {
+            let widened: Vec<u32> = arr
+                .as_slice()
+                .iter()
+                .map(|&v| if v == u16::MAX { u32::MAX } else { v as u32 })
+                .collect();
+            *self = Self::U32(ArcCow::from_vec(widened));
+        }
+        match self {
+            Self::U32(arr) => match arr {
+                ArcCow::Owned(v) => v,
+                ArcCow::Mmap { .. } => {
+                    // Mmap-backed → copy to owned so we can hand out
+                    // a `&mut Vec`.
+                    let owned: Vec<u32> = arr.as_slice().to_vec();
+                    *arr = ArcCow::from_vec(owned);
+                    if let ArcCow::Owned(v) = arr {
+                        v
+                    } else {
+                        unreachable!("just set to ArcCow::Owned")
+                    }
+                }
+            },
+            Self::U16(_) => unreachable!("just upgraded to U32 above"),
+        }
+    }
+
+    /// Construct from an owned `Vec<u32>` at the U32 width. Used by
+    /// in-memory builders / writers that work in the wide space.
+    #[inline]
+    pub fn from_vec_u32(v: Vec<u32>) -> Self {
+        Self::U32(ArcCow::from_vec(v))
+    }
+
+    /// Construct from an owned `Vec<u16>` at the U16 width.
+    #[inline]
+    pub fn from_vec_u16(v: Vec<u16>) -> Self {
+        Self::U16(ArcCow::from_vec(v))
+    }
+
+    /// Empty array (U32 width).
+    #[inline]
+    pub fn empty() -> Self {
+        Self::U32(ArcCow::from_vec(Vec::new()))
+    }
+}
+
+impl From<Vec<u32>> for WeightArray {
+    #[inline]
+    fn from(v: Vec<u32>) -> Self {
+        Self::U32(ArcCow::from_vec(v))
+    }
+}
+
+/// Iterator over a [`WeightArray`], emitting `u32` values.
+pub struct WeightArrayIter<'a> {
+    inner: &'a WeightArray,
+    i: usize,
+    end: usize,
+}
+
+impl Iterator for WeightArrayIter<'_> {
+    type Item = u32;
+    #[inline]
+    fn next(&mut self) -> Option<u32> {
+        if self.i >= self.end {
+            None
+        } else {
+            let v = self.inner.get(self.i);
+            self.i += 1;
+            Some(v)
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.end - self.i;
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for WeightArrayIter<'_> {}
 
 /// CCH weights - stores weights and relaxed middle nodes for UP and DOWN edges.
 /// The middle arrays are the post-triangle-relaxation middles — these are the
 /// correct middles for path unpacking (the topology's middles are from contraction
 /// and may be suboptimal).
 ///
-/// Fields are [`ArcCow<u32>`] so they can either own a `Vec<u32>`
-/// (legacy / writer / construction sites) or hold an `Arc<Mmap>`-backed
-/// zero-copy view over a section of a `*.butterfly` container (#296).
-/// All `&self.up` access patterns deref to `&[u32]` regardless of variant.
+/// `up` / `down` are [`WeightArray`] (u16 or u32, per direction).
+/// `up_middle` / `down_middle` stay [`ArcCow<u32>`] — middle node ids
+/// can address `n_nodes` which on a planet-scale CCH exceeds 65 535.
+/// All reads go through `WeightArray::get` which widens transparently.
 #[derive(Debug, Clone)]
 pub struct CchWeights {
-    pub up: ArcCow<u32>,
-    pub down: ArcCow<u32>,
+    pub up: WeightArray,
+    pub down: WeightArray,
     /// Relaxed middle nodes for UP shortcuts (empty if not available — use topo middles)
     pub up_middle: ArcCow<u32>,
     /// Relaxed middle nodes for DOWN shortcuts (empty if not available — use topo middles)
@@ -131,35 +361,47 @@ impl CchWeightsFile {
         );
 
         let header = &mmap[byte_offset..byte_offset + HEADER_LEN];
-        let (n_up, n_down) = parse_header(header)?;
+        let CchWeightsHeader {
+            n_up,
+            n_down,
+            up_width,
+            down_width,
+        } = parse_header(header)?;
 
-        // Layout: header(32) | up(4*n_up) | down(4*n_down) |
-        //         [v2: up_middle(4*n_up) | down_middle(4*n_down)] |
-        //         footer(16)
-        let up_bytes = 4usize
-            .checked_mul(n_up)
-            .ok_or_else(|| anyhow::anyhow!("cch.weights up byte len overflow for n_up={n_up}"))?;
-        let down_bytes = 4usize.checked_mul(n_down).ok_or_else(|| {
-            anyhow::anyhow!("cch.weights down byte len overflow for n_down={n_down}")
-        })?;
-        let body_v1 = up_bytes
+        // Layout v3 (with optional middle arrays):
+        //   header(32) | up(width_up·n_up [+0-2 pad]) | down(width_down·n_down [+0-2 pad])
+        //              | [v3 middles: up_middle(4·n_up) | down_middle(4·n_down)]
+        //              | footer(16)
+        //
+        // u16 bodies are padded up to a 4-byte boundary so the
+        // following arrays (the other direction's body and the u32
+        // middles) stay aligned for `bytemuck::cast_slice` /
+        // `ArcCow::<u32>::from_mmap`.
+        let up_bytes = up_width.padded_body_bytes(n_up);
+        let down_bytes = down_width.padded_body_bytes(n_down);
+        let body_no_middle = up_bytes
             .checked_add(down_bytes)
             .ok_or_else(|| anyhow::anyhow!("cch.weights body size overflow"))?;
-        let expected_v1_len = HEADER_LEN
-            .checked_add(body_v1)
+        // Middle arrays (when present) stay at u32 — see CchWeights doc.
+        let middle_bytes = 4usize
+            .checked_mul(n_up)
+            .and_then(|u| u.checked_add(4usize.checked_mul(n_down)?))
+            .ok_or_else(|| anyhow::anyhow!("cch.weights middle size overflow"))?;
+        let expected_no_middle_len = HEADER_LEN
+            .checked_add(body_no_middle)
             .and_then(|n| n.checked_add(FOOTER_LEN))
             .ok_or_else(|| anyhow::anyhow!("cch.weights section size overflow"))?;
-        let expected_v2_len = expected_v1_len
-            .checked_add(body_v1)
-            .ok_or_else(|| anyhow::anyhow!("cch.weights v2 section size overflow"))?;
-        let is_v2 = match byte_len {
-            n if n == expected_v1_len => false,
-            n if n == expected_v2_len => true,
+        let expected_with_middle_len = expected_no_middle_len
+            .checked_add(middle_bytes)
+            .ok_or_else(|| anyhow::anyhow!("cch.weights w/ middle size overflow"))?;
+        let has_middles = match byte_len {
+            n if n == expected_no_middle_len => false,
+            n if n == expected_with_middle_len => true,
             n => anyhow::bail!(
-                "Invalid cch.weights size: got {}, expected {} (v1) or {} (v2)",
+                "Invalid cch.weights size: got {}, expected {} (no middles) or {} (with middles)",
                 n,
-                expected_v1_len,
-                expected_v2_len
+                expected_no_middle_len,
+                expected_with_middle_len
             ),
         };
 
@@ -167,20 +409,32 @@ impl CchWeightsFile {
         let up_off = byte_offset + HEADER_LEN;
         let down_off = up_off + up_bytes;
 
-        let up = ArcCow::<u32>::from_mmap(Arc::clone(&mmap), up_off, n_up)?;
-        let down = ArcCow::<u32>::from_mmap(Arc::clone(&mmap), down_off, n_down)?;
+        let up = match up_width {
+            WeightWidth::U16 => {
+                WeightArray::U16(ArcCow::<u16>::from_mmap(Arc::clone(&mmap), up_off, n_up)?)
+            }
+            WeightWidth::U32 => {
+                WeightArray::U32(ArcCow::<u32>::from_mmap(Arc::clone(&mmap), up_off, n_up)?)
+            }
+        };
+        let down = match down_width {
+            WeightWidth::U16 => {
+                WeightArray::U16(ArcCow::<u16>::from_mmap(Arc::clone(&mmap), down_off, n_down)?)
+            }
+            WeightWidth::U32 => {
+                WeightArray::U32(ArcCow::<u32>::from_mmap(Arc::clone(&mmap), down_off, n_down)?)
+            }
+        };
 
-        let (up_middle, down_middle) = if is_v2 {
+        let (up_middle, down_middle) = if has_middles {
             let upm_off = down_off + down_bytes;
-            let dnm_off = upm_off + up_bytes;
+            let dnm_off = upm_off + 4 * n_up;
             let upm = ArcCow::<u32>::from_mmap(Arc::clone(&mmap), upm_off, n_up)?;
             // Final clone consumes the local `mmap` binding.
             let dnm = ArcCow::<u32>::from_mmap(mmap, dnm_off, n_down)?;
             (upm, dnm)
         } else {
-            // Empty arrays — no need to drag the mmap along; empty
-            // `Vec<u32>` doesn't allocate.
-            let _ = mmap; // suppress unused-binding warning on v1
+            let _ = mmap;
             (ArcCow::from_vec(Vec::new()), ArcCow::from_vec(Vec::new()))
         };
 
@@ -199,42 +453,59 @@ impl CchWeightsFile {
             "cch.weights too short for header+footer: {} bytes",
             bytes.len()
         );
-        // Container guarantees 8-byte section alignment, but `bytemuck::cast_slice`
-        // panics on misalignment. Validate explicitly so a misuse from tests/tools
-        // returns a typed error instead of aborting the process.
         anyhow::ensure!(
             (bytes.as_ptr() as usize).is_multiple_of(4),
             "cch.weights section must start 4-byte aligned (got addr 0x{:x})",
             bytes.as_ptr() as usize
         );
         let header = &bytes[..HEADER_LEN];
-        let (n_up, n_down) = parse_header(header)?;
+        let CchWeightsHeader {
+            n_up,
+            n_down,
+            up_width,
+            down_width,
+        } = parse_header(header)?;
 
-        // ----- Layout: header(32) | up(4*n_up) | down(4*n_down) |
-        //               [v2: up_middle(4*n_up) | down_middle(4*n_down)] |
-        //               footer(16)
-        let expected_v1_len = HEADER_LEN + 4 * (n_up + n_down) + FOOTER_LEN;
-        let expected_v2_len = expected_v1_len + 4 * (n_up + n_down);
-        let is_v2 = match bytes.len() {
-            n if n == expected_v1_len => false,
-            n if n == expected_v2_len => true,
+        // v3 layout (with optional middles, per-direction body width):
+        //   header(32) | up(width_up·n_up [+0-2 pad]) | down(width_down·n_down [+0-2 pad])
+        //              | [up_middle(4·n_up) | down_middle(4·n_down)]
+        //              | footer(16)
+        // u16 bodies pad up to 4-byte boundary — see `padded_body_bytes`.
+        let up_bytes = up_width.padded_body_bytes(n_up);
+        let down_bytes = down_width.padded_body_bytes(n_down);
+        let no_middle_len = HEADER_LEN + up_bytes + down_bytes + FOOTER_LEN;
+        let with_middle_len = no_middle_len + 4 * (n_up + n_down);
+        let has_middles = match bytes.len() {
+            n if n == no_middle_len => false,
+            n if n == with_middle_len => true,
             n => anyhow::bail!(
-                "Invalid cch.weights size: got {}, expected {} (v1) or {} (v2)",
+                "Invalid cch.weights size: got {}, expected {} (no middles) or {} (with middles)",
                 n,
-                expected_v1_len,
-                expected_v2_len
+                no_middle_len,
+                with_middle_len
             ),
         };
 
         let up_off = HEADER_LEN;
-        let up_end = up_off + 4 * n_up;
+        let up_end = up_off + up_bytes; // includes padding
         let down_off = up_end;
-        let down_end = down_off + 4 * n_down;
+        let down_end = down_off + down_bytes;
 
-        let up_slice: &[u32] = bytemuck::cast_slice(&bytes[up_off..up_end]);
-        let down_slice: &[u32] = bytemuck::cast_slice(&bytes[down_off..down_end]);
+        // Read only the actual data bytes (skip any 0-2 byte tail pad).
+        let up_data = up_width.bytes_per_entry() * n_up;
+        let down_data = down_width.bytes_per_entry() * n_down;
+        let up_body = &bytes[up_off..up_off + up_data];
+        let down_body = &bytes[down_off..down_off + down_data];
+        let up_vec: Vec<u32> = match up_width {
+            WeightWidth::U16 => decode_u16_to_u32_vec(up_body),
+            WeightWidth::U32 => bytemuck::cast_slice::<u8, u32>(up_body).to_vec(),
+        };
+        let down_vec: Vec<u32> = match down_width {
+            WeightWidth::U16 => decode_u16_to_u32_vec(down_body),
+            WeightWidth::U32 => bytemuck::cast_slice::<u8, u32>(down_body).to_vec(),
+        };
 
-        let (up_middle, down_middle, body_end) = if is_v2 {
+        let (up_middle, down_middle, body_end) = if has_middles {
             let upm_off = down_end;
             let upm_end = upm_off + 4 * n_up;
             let dnm_off = upm_end;
@@ -246,7 +517,6 @@ impl CchWeightsFile {
             (Vec::new(), Vec::new(), down_end)
         };
 
-        // ----- CRC: covers everything before the 16-byte footer -----
         if verify {
             let body = &bytes[..body_end];
             let computed_crc = {
@@ -264,13 +534,11 @@ impl CchWeightsFile {
             );
         }
 
-        // Legacy `'static` zero-copy path now copies into `Vec<u32>` —
-        // production load goes through [`Self::read_from_mmap_unverified`].
-        // The few remaining test fixtures that leak buffers don't care
-        // about the extra Vec; they're tiny by construction.
+        // Test-fixture path now also widens u16→u32 if needed; production
+        // load goes through `read_from_mmap_unverified`.
         Ok(CchWeights {
-            up: ArcCow::from_vec(up_slice.to_vec()),
-            down: ArcCow::from_vec(down_slice.to_vec()),
+            up: WeightArray::from_vec_u32(up_vec),
+            down: WeightArray::from_vec_u32(down_vec),
             up_middle: ArcCow::from_vec(up_middle),
             down_middle: ArcCow::from_vec(down_middle),
         })
@@ -279,64 +547,51 @@ impl CchWeightsFile {
     fn read_from_reader<R: Read>(mut reader: R, file_len: usize) -> Result<CchWeights> {
         let mut crc_digest = crc::Digest::new();
 
-        // Read header (32 bytes)
-        // magic(4) + reserved(4) + n_up(8) + n_down(8) + reserved(8) = 32
         let mut header = [0u8; HEADER_LEN];
         reader.read_exact(&mut header)?;
         crc_digest.update(&header);
+        let CchWeightsHeader {
+            n_up,
+            n_down,
+            up_width,
+            down_width,
+        } = parse_header(&header)?;
 
-        let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
-        if magic != MAGIC {
-            anyhow::bail!(
-                "Invalid magic: expected 0x{:08X}, got 0x{:08X}",
-                MAGIC,
-                magic
-            );
-        }
+        // Read up weights body (padded to next 4-byte boundary).
+        let up_padded_count = up_width.padded_body_bytes(n_up);
+        let up_data_count = up_width.bytes_per_entry() * n_up;
+        let mut up_body = vec![0u8; up_padded_count];
+        reader.read_exact(&mut up_body)?;
+        crc_digest.update(&up_body);
+        // Decode only the actual data bytes (skip the 0-2 byte tail pad).
+        let up_vec: Vec<u32> = match up_width {
+            WeightWidth::U16 => decode_u16_to_u32_vec(&up_body[..up_data_count]),
+            WeightWidth::U32 => up_body[..up_data_count]
+                .chunks_exact(4)
+                .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+                .collect(),
+        };
 
-        let version = u16::from_le_bytes([header[4], header[5]]);
-        anyhow::ensure!(
-            version == VERSION,
-            "Unsupported cch.weights version {} (expected {}). \
-             v1 stored deciseconds/millimeters; re-run step 8 to regenerate as v2 (seconds/meters, #297).",
-            version,
-            VERSION,
-        );
+        // Read down weights body (padded).
+        let down_padded_count = down_width.padded_body_bytes(n_down);
+        let down_data_count = down_width.bytes_per_entry() * n_down;
+        let mut down_body = vec![0u8; down_padded_count];
+        reader.read_exact(&mut down_body)?;
+        crc_digest.update(&down_body);
+        let down_vec: Vec<u32> = match down_width {
+            WeightWidth::U16 => decode_u16_to_u32_vec(&down_body[..down_data_count]),
+            WeightWidth::U32 => down_body[..down_data_count]
+                .chunks_exact(4)
+                .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+                .collect(),
+        };
 
-        let n_up = u64::from_le_bytes([
-            header[8], header[9], header[10], header[11], header[12], header[13], header[14],
-            header[15],
-        ]) as usize;
-        let n_down = u64::from_le_bytes([
-            header[16], header[17], header[18], header[19], header[20], header[21], header[22],
-            header[23],
-        ]) as usize;
-
-        // Read up weights
-        let mut up = Vec::with_capacity(n_up);
-        for _ in 0..n_up {
-            let mut buf = [0u8; 4];
-            reader.read_exact(&mut buf)?;
-            crc_digest.update(&buf);
-            up.push(u32::from_le_bytes(buf));
-        }
-
-        // Read down weights
-        let mut down = Vec::with_capacity(n_down);
-        for _ in 0..n_down {
-            let mut buf = [0u8; 4];
-            reader.read_exact(&mut buf)?;
-            crc_digest.update(&buf);
-            down.push(u32::from_le_bytes(buf));
-        }
-
-        let expected_v1_len = HEADER_LEN + 4 * (n_up + n_down) + FOOTER_LEN;
-        let expected_v2_len = expected_v1_len + 4 * (n_up + n_down);
+        let no_middle_len = HEADER_LEN + up_padded_count + down_padded_count + FOOTER_LEN;
+        let with_middle_len = no_middle_len + 4 * (n_up + n_down);
 
         let (up_middle, down_middle): (Vec<u32>, Vec<u32>) = match file_len {
-            len if len == expected_v1_len => (Vec::new(), Vec::new()),
-            len if len == expected_v2_len => {
-                // Read relaxed middle arrays (v2: after weights, before CRC)
+            len if len == no_middle_len => (Vec::new(), Vec::new()),
+            len if len == with_middle_len => {
                 let mut up_middle = Vec::with_capacity(n_up);
                 for _ in 0..n_up {
                     let mut buf = [0u8; 4];
@@ -354,14 +609,13 @@ impl CchWeightsFile {
                 (up_middle, down_middle)
             }
             len => anyhow::bail!(
-                "Invalid cch.weights size: got {}, expected {} (v1) or {} (v2)",
+                "Invalid cch.weights size: got {}, expected {} (no middles) or {} (with middles)",
                 len,
-                expected_v1_len,
-                expected_v2_len
+                no_middle_len,
+                with_middle_len
             ),
         };
 
-        // Verify CRC64
         let computed_crc = crc_digest.finalize();
         let mut footer = [0u8; FOOTER_LEN];
         reader.read_exact(&mut footer)?;
@@ -374,17 +628,46 @@ impl CchWeightsFile {
         );
 
         Ok(CchWeights {
-            up: ArcCow::from_vec(up),
-            down: ArcCow::from_vec(down),
+            up: WeightArray::from_vec_u32(up_vec),
+            down: WeightArray::from_vec_u32(down_vec),
             up_middle: ArcCow::from_vec(up_middle),
             down_middle: ArcCow::from_vec(down_middle),
         })
     }
 }
 
-/// Parse the 32-byte CCH weights header and return `(n_up, n_down)`.
+/// Decode a u16-compact body into a `Vec<u32>`, mapping the
+/// `u16::MAX` sentinel back to `u32::MAX`.
+#[inline]
+fn decode_u16_to_u32_vec(bytes: &[u8]) -> Vec<u32> {
+    bytes
+        .chunks_exact(2)
+        .map(|c| {
+            let v = u16::from_le_bytes(c.try_into().unwrap());
+            if v == u16::MAX { u32::MAX } else { v as u32 }
+        })
+        .collect()
+}
+
+/// Parsed cch.weights header.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CchWeightsHeader {
+    pub n_up: usize,
+    pub n_down: usize,
+    pub up_width: WeightWidth,
+    pub down_width: WeightWidth,
+}
+
+/// Parse the 32-byte CCH weights header.
+///
+/// v3 (#306 PR 2): header byte 7 carries `width_flags`:
+///   bit 0 → up body is u16  (else u32)
+///   bit 1 → down body is u16 (else u32)
+///
+/// v2 readers wrote 0 in byte 7, so a v2-as-v3 read sees
+/// `up_width = down_width = U32` — exactly the v2 semantic.
 /// Shared by the owned, zero-copy, and mmap-backed readers.
-fn parse_header(header: &[u8]) -> Result<(usize, usize)> {
+fn parse_header(header: &[u8]) -> Result<CchWeightsHeader> {
     anyhow::ensure!(
         header.len() >= HEADER_LEN,
         "cch.weights header too short: {} bytes",
@@ -397,17 +680,101 @@ fn parse_header(header: &[u8]) -> Result<(usize, usize)> {
         MAGIC,
         magic
     );
-    // #297: enforce v2 (seconds/meters). v1 (deciseconds/millimeters)
-    // is rejected — re-run step 8 to regenerate.
     let version = u16::from_le_bytes(header[4..6].try_into().unwrap());
     anyhow::ensure!(
-        version == VERSION,
-        "Unsupported cch.weights version {} (expected {}). \
-         v1 stored deciseconds/millimeters; re-run step 8 to regenerate as v2 (seconds/meters, #297).",
+        version == VERSION || version == VERSION_V2,
+        "Unsupported cch.weights version {} (expected {} or {}). \
+         v1 stored deciseconds/millimeters; re-run step 8 to regenerate \
+         as v2/v3 (seconds/meters, #297/#306).",
         version,
         VERSION,
+        VERSION_V2,
     );
+    let width_flags = if version == VERSION { header[7] } else { 0 };
+    let up_width = if width_flags & UP_COMPACT_FLAG != 0 {
+        WeightWidth::U16
+    } else {
+        WeightWidth::U32
+    };
+    let down_width = if width_flags & DOWN_COMPACT_FLAG != 0 {
+        WeightWidth::U16
+    } else {
+        WeightWidth::U32
+    };
     let n_up = u64::from_le_bytes(header[8..16].try_into().unwrap()) as usize;
     let n_down = u64::from_le_bytes(header[16..24].try_into().unwrap()) as usize;
-    Ok((n_up, n_down))
+    Ok(CchWeightsHeader {
+        n_up,
+        n_down,
+        up_width,
+        down_width,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn width_choose_picks_u16_for_small_values() {
+        let w = vec![0u32, 1, 100, 65_534];
+        assert_eq!(WeightWidth::choose(&w), WeightWidth::U16);
+    }
+
+    #[test]
+    fn width_choose_picks_u16_with_sentinel() {
+        // u32::MAX (no-edge sentinel) maps to u16::MAX losslessly.
+        let w = vec![0u32, u32::MAX, 100, u32::MAX];
+        assert_eq!(WeightWidth::choose(&w), WeightWidth::U16);
+    }
+
+    #[test]
+    fn width_choose_forces_u32_on_real_65535() {
+        // Real weight = 65_535 (u16::MAX) would alias the sentinel
+        // on round-trip — must force U32.
+        let w = vec![0u32, 65_535, 100];
+        assert_eq!(WeightWidth::choose(&w), WeightWidth::U32);
+    }
+
+    #[test]
+    fn width_choose_forces_u32_on_overflow() {
+        let w = vec![0u32, 100_000, 100];
+        assert_eq!(WeightWidth::choose(&w), WeightWidth::U32);
+    }
+
+    #[test]
+    fn padded_body_bytes_aligns_to_4() {
+        assert_eq!(WeightWidth::U16.padded_body_bytes(0), 0);
+        assert_eq!(WeightWidth::U16.padded_body_bytes(1), 4); // 2 → pad 2
+        assert_eq!(WeightWidth::U16.padded_body_bytes(2), 4); // 4 aligned
+        assert_eq!(WeightWidth::U16.padded_body_bytes(3), 8); // 6 → pad 2
+        assert_eq!(WeightWidth::U16.padded_body_bytes(4), 8); // 8 aligned
+        assert_eq!(WeightWidth::U32.padded_body_bytes(1), 4);
+        assert_eq!(WeightWidth::U32.padded_body_bytes(2), 8);
+    }
+
+    #[test]
+    fn weight_array_u16_sentinel_round_trip() {
+        // Manually build U16 storage including the sentinel; ensure
+        // get() widens it back to u32::MAX.
+        let arr = WeightArray::U16(ArcCow::from_vec(vec![1u16, 2, u16::MAX, 65_534]));
+        assert_eq!(arr.get(0), 1);
+        assert_eq!(arr.get(1), 2);
+        assert_eq!(arr.get(2), u32::MAX);
+        assert_eq!(arr.get(3), 65_534);
+        // Iter widens identically.
+        let vals: Vec<u32> = arr.iter().collect();
+        assert_eq!(vals, vec![1, 2, u32::MAX, 65_534]);
+    }
+
+    #[test]
+    fn weight_array_to_mut_widens_u16_to_u32() {
+        let mut arr = WeightArray::U16(ArcCow::from_vec(vec![1u16, u16::MAX, 100]));
+        let v = arr.to_mut_vec();
+        assert_eq!(v.as_slice(), &[1u32, u32::MAX, 100]);
+        // Mutation persists through subsequent reads.
+        v[0] = 999;
+        assert_eq!(arr.get(0), 999);
+        assert!(matches!(arr.width(), WeightWidth::U32));
+    }
 }
