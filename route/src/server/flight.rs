@@ -638,9 +638,12 @@ fn encode_linestring_wkb_into(points: &[Point], out: &mut Vec<u8>) {
 /// #273 per-worker scratch buffers. Reused across pairs in the same
 /// `std::thread::scope` worker. Each pair calls `compute_route_pair`
 /// passing `&mut RouteScratch`; the buffers are cleared at the start
-/// of each call. The final WKB is moved out via `std::mem::take`
-/// (handed off to the Arrow `BinaryBuilder`) and replaced with a
-/// fresh empty `Vec`, so the next pair starts clean.
+/// of each call. The final WKB is moved out via `std::mem::replace`
+/// (handed off to the Arrow `BinaryBuilder`) and the slot is replaced
+/// with `Vec::with_capacity(prev_capacity)` so the next pair's encode
+/// reuses the allocation. (#301 review: `mem::take` would leave
+/// `Vec::new()` with zero capacity, forcing a fresh allocation per
+/// pair and defeating the scratch reuse this struct exists for.)
 #[derive(Default)]
 struct RouteScratch {
     rank_path: Vec<u32>,
@@ -763,8 +766,9 @@ fn compute_route_pair(
 /// Common output builder for a successful CCH P2P result. Returns
 /// (duration_s, distance_m, WKB linestring). #273: uses `scratch` for
 /// rank_path / ebg_path / points / wkb buffers — clears them on entry
-/// and hands ownership of the final WKB to the caller via mem::take
-/// (replaced with an empty `Vec` so the next call starts clean).
+/// and hands ownership of the final WKB to the caller via
+/// `std::mem::replace` (the slot is replaced with a same-capacity
+/// `Vec`, preserving the allocation for the next call's encode).
 fn build_route_output(
     state: &ServerState,
     mode_data: &super::state::ModeData,
@@ -892,14 +896,29 @@ fn row_of(
     }
 }
 
+/// Outcome of building + sending an Arrow `RecordBatch`. The variants
+/// distinguish a clean send (`Sent`) from an Arrow build failure
+/// (`ArrowError`, already forwarded as `Status::internal` on `tx` —
+/// caller bails) from a client disconnect (`Disconnected`).
+///
+/// PR #318 Copilot review: the previous `bool` return collapsed the
+/// Arrow-error and disconnect paths; call sites then logged
+/// disconnects when an Arrow error actually fired, which was
+/// misleading.
+enum EmitOutcome {
+    Sent,
+    Disconnected,
+    ArrowError,
+}
+
 /// Build + send an Arrow `RecordBatch` from a fully-computed chunk of
-/// `RoutePairRow`s. Returns `false` if the receiver disconnected.
+/// `RoutePairRow`s.
 fn emit_route_batch(
     tx: &tokio::sync::mpsc::Sender<std::result::Result<RecordBatch, Status>>,
     schema: &Arc<arrow::datatypes::Schema>,
     n: usize,
     results: Vec<RoutePairRow>,
-) -> bool {
+) -> EmitOutcome {
     let mut src_lon_arr = Float64Builder::with_capacity(n);
     let mut src_lat_arr = Float64Builder::with_capacity(n);
     let mut dst_lon_arr = Float64Builder::with_capacity(n);
@@ -934,11 +953,15 @@ fn emit_route_batch(
         Ok(b) => b,
         Err(e) => {
             let _ = tx.blocking_send(Err(Status::internal(format!("Arrow: {}", e))));
-            return false;
+            return EmitOutcome::ArrowError;
         }
     };
 
-    tx.blocking_send(Ok(batch)).is_ok()
+    if tx.blocking_send(Ok(batch)).is_ok() {
+        EmitOutcome::Sent
+    } else {
+        EmitOutcome::Disconnected
+    }
 }
 
 /// #290: persistent worker pool. Spawns `n_workers` threads ONCE at
@@ -964,6 +987,9 @@ fn do_route_batch_blocking(
         let mut scratch = RouteScratch::default();
         for chunk in params.pairs.chunks(batch_size) {
             let n = chunk.len();
+            // #275-bench: per-chunk counter incremented by
+            // `compute_route_pair` each time the K=1 fast path misses
+            // and escalates to the K=64 + (i+j)-combo fallback.
             let fallback_count = std::sync::atomic::AtomicU64::new(0);
             let fb = &fallback_count;
             let results: Vec<RoutePairRow> = chunk
@@ -986,14 +1012,18 @@ fn do_route_batch_blocking(
                 })
                 .collect();
             let fb_count = fallback_count.load(std::sync::atomic::Ordering::Relaxed);
-            tracing::info!(
+            // #315 Copilot review: drop to DEBUG so production
+            // /route_batch traffic doesn't spam logs (this is bench
+            // instrumentation, not request audit).
+            tracing::debug!(
                 n_pairs = n,
                 fallback = fb_count,
                 fallback_pct = (fb_count as f64) * 100.0 / (n.max(1) as f64),
                 "route_batch chunk fallback rate"
             );
-            if !emit_route_batch(&tx, &schema, n, results) {
-                return; // client disconnected
+            match emit_route_batch(&tx, &schema, n, results) {
+                EmitOutcome::Sent => {}
+                EmitOutcome::Disconnected | EmitOutcome::ArrowError => return,
             }
         }
         return;
@@ -1008,9 +1038,12 @@ fn do_route_batch_blocking(
     //      coordinator on done_rx.recv().
     //   3. Early returns close all work channels before returning so
     //      workers exit cleanly via recv() → Err; no scope-join deadlock.
+    // #318 Copilot review: slot is `usize` so unusually large batch
+    // sizes (BUTTERFLY_ROUTE_BATCH_SIZE > u32::MAX) can't truncate and
+    // out-of-bounds index when writing back to `slots`.
     #[derive(Clone, Copy)]
     struct Work {
-        slot: u32,
+        slot: usize,
         slon: f64,
         slat: f64,
         dlon: f64,
@@ -1021,7 +1054,7 @@ fn do_route_batch_blocking(
         WorkerPanic(String),
     }
     struct Done {
-        slot: u32,
+        slot: usize,
         kind: DoneKind,
     }
 
@@ -1104,7 +1137,7 @@ fn do_route_batch_blocking(
             let fb_before = fallback_count.load(std::sync::atomic::Ordering::Relaxed);
             for (i, pair) in chunk.iter().enumerate() {
                 let work = Work {
-                    slot: i as u32,
+                    slot: i,
                     slon: pair[0],
                     slat: pair[1],
                     dlon: pair[2],
@@ -1123,12 +1156,12 @@ fn do_route_batch_blocking(
                     Ok(d) => {
                         received += 1;
                         match d.kind {
-                            DoneKind::Row(row) => slots[d.slot as usize] = Some(row),
+                            DoneKind::Row(row) => slots[d.slot] = Some(row),
                             DoneKind::WorkerPanic(msg) => {
                                 if first_panic_msg.is_none() {
                                     first_panic_msg = Some(msg);
                                 }
-                                slots[d.slot as usize] = Some(RoutePairRow {
+                                slots[d.slot] = Some(RoutePairRow {
                                     src_lon: f64::NAN,
                                     src_lat: f64::NAN,
                                     dst_lon: f64::NAN,
@@ -1155,15 +1188,26 @@ fn do_route_batch_blocking(
                 .collect();
             let fb_chunk =
                 fallback_count.load(std::sync::atomic::Ordering::Relaxed) - fb_before;
-            tracing::info!(
+            // #315 Copilot review: drop to DEBUG so production logs
+            // aren't spammed by bench instrumentation.
+            tracing::debug!(
                 n_pairs = n,
                 fallback = fb_chunk,
                 fallback_pct = (fb_chunk as f64) * 100.0 / (n.max(1) as f64),
                 "route_batch chunk fallback rate"
             );
-            if !emit_route_batch(&tx, &schema, n, results) {
-                bail_msg = Some("client disconnected");
-                break 'chunks;
+            match emit_route_batch(&tx, &schema, n, results) {
+                EmitOutcome::Sent => {}
+                EmitOutcome::Disconnected => {
+                    bail_msg = Some("client disconnected");
+                    break 'chunks;
+                }
+                EmitOutcome::ArrowError => {
+                    // emit_route_batch already forwarded the error
+                    // status on tx; bail without setting bail_msg so
+                    // we don't double-send.
+                    break 'chunks;
+                }
             }
         }
 
