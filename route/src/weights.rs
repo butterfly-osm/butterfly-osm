@@ -17,10 +17,17 @@ pub(crate) fn round_half_even_div(numerator: u64, denominator: u64) -> u64 {
     }
     let quotient = numerator / denominator;
     let remainder = numerator % denominator;
-    let twice = remainder.saturating_mul(2);
-    if twice < denominator {
+    // PR #323 review: use overflowing_mul so we treat an overflowed
+    // 2·remainder as strictly greater than `denominator` (which is the
+    // correct semantic — overflow only happens when remainder >
+    // u64::MAX/2, and remainder < denominator implies denominator >
+    // u64::MAX/2 too, so 2·remainder is genuinely > denominator). The
+    // previous `saturating_mul` produced the same answer in practice
+    // but was hard to reason about at the comparison boundary.
+    let (twice, overflowed) = remainder.overflowing_mul(2);
+    if !overflowed && twice < denominator {
         quotient
-    } else if twice > denominator {
+    } else if overflowed || twice > denominator {
         quotient + 1
     } else {
         // Exactly half — round to even.
@@ -42,15 +49,40 @@ mod round_tests {
         assert_eq!(round_half_even_div(14, 10), 1);
         // Above half: round up.
         assert_eq!(round_half_even_div(16, 10), 2);
-        // Exactly half, quotient even: round down.
-        assert_eq!(round_half_even_div(15, 10), 2); // 1.5 → 2 (even)
-        assert_eq!(round_half_even_div(25, 10), 2); // 2.5 → 2 (even)
-        // Exactly half, quotient odd: round up.
-        assert_eq!(round_half_even_div(35, 10), 4); // 3.5 → 4 (even)
+        // Exactly half: round to nearest even (banker's rounding).
+        // 1.5 — quotient `1` is odd, so round UP to 2 (even).
+        assert_eq!(round_half_even_div(15, 10), 2);
+        // 2.5 — quotient `2` is already even, so round DOWN (stay at 2).
+        assert_eq!(round_half_even_div(25, 10), 2);
+        // 3.5 — quotient `3` is odd, so round UP to 4 (even).
+        assert_eq!(round_half_even_div(35, 10), 4);
+        // 4.5 — quotient `4` is already even, so round DOWN (stay at 4).
+        assert_eq!(round_half_even_div(45, 10), 4);
         // Zero numerator: zero result.
         assert_eq!(round_half_even_div(0, 10), 0);
         // Exact: pass through.
         assert_eq!(round_half_even_div(100, 10), 10);
+    }
+
+    /// Overflow protection (#323 review): when `2 * remainder` would
+    /// overflow u64, the function still rounds correctly. Construct
+    /// `denominator > u64::MAX / 2` so the remainder doubling
+    /// overflows, and verify the rounded answer matches manual
+    /// arithmetic.
+    #[test]
+    fn test_overflow_in_doubling() {
+        let d = (u64::MAX / 2) + 100; // d > u64::MAX/2
+        // n < d → quotient = 0, remainder = n.
+        // n > d/2 (so >= half) → correct banker's answer is 1.
+        // n is also > u64::MAX/2, so 2·n overflows: this is the path
+        // we want to exercise.
+        let n = d - 1;
+        assert!(n > u64::MAX / 2, "test setup: remainder must overflow on *2");
+        assert_eq!(round_half_even_div(n, d), 1);
+
+        // Same denominator, but n just under d/2 → round down to 0.
+        let n2 = d / 2 - 1;
+        assert_eq!(round_half_even_div(n2, d), 0);
     }
 
     #[test]
