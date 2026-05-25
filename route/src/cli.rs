@@ -1330,19 +1330,57 @@ impl Cli {
                         .join("node_signals.bin")
                 });
 
-                // Build dynamic EbgModeConfig list
+                // #332: mode indices MUST come from the global alphabetical
+                // ordering over every mode the step2 directory holds, NOT
+                // from the (sub)set passed via --way-attrs. step5-weights
+                // discovers modes the same way (`Mode::discover_from_dir`),
+                // so step4 and step5 stay aligned even when step4 only
+                // processes a subset. Without this, the per-arc mode_mask
+                // bits written by step4 don't match the bits step5 looks
+                // up, and the subset modes end with `n_filtered_arcs == 0`.
+                let step2_dir = wa_parsed
+                    .first()
+                    .and_then(|(_, _, p)| p.parent())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Cannot determine step2 directory from way-attrs paths")
+                    })?;
+                let all_modes = Mode::discover_from_dir(step2_dir);
+                anyhow::ensure!(
+                    !all_modes.is_empty(),
+                    "No modes found in {}. Expected way_attrs.*.bin files.",
+                    step2_dir.display()
+                );
+
+                // Build dynamic EbgModeConfig list — keep ONLY the modes
+                // the operator passed via --way-attrs, but assign the
+                // global index from `all_modes`.
                 let modes: Vec<crate::ebg::EbgModeConfig> = wa_parsed
                     .iter()
                     .zip(tr_parsed.iter())
-                    .map(
-                        |((name, idx, wa_path), (_, _, tr_path))| crate::ebg::EbgModeConfig {
+                    .map(|((name, _local_idx, wa_path), (_, _, tr_path))| {
+                        let global_idx = all_modes
+                            .iter()
+                            .find(|(n, _)| n == name)
+                            .map(|(_, idx)| *idx)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "Mode '{}' not found in step2 directory {} (discovered: {:?})",
+                                    name,
+                                    step2_dir.display(),
+                                    all_modes
+                                        .iter()
+                                        .map(|(n, _)| n.as_str())
+                                        .collect::<Vec<_>>()
+                                )
+                            })?;
+                        Ok(crate::ebg::EbgModeConfig {
                             mode_name: name.clone(),
-                            mode_index: *idx,
+                            mode_index: global_idx,
                             way_attrs_path: wa_path.clone(),
                             turn_rules_path: tr_path.clone(),
-                        },
-                    )
-                    .collect();
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
 
                 let config = EbgConfig {
                     nbg_csr_path: nbg_csr.clone(),
