@@ -37,22 +37,18 @@ use super::mmap::ArcCow;
 const MAGIC: u32 = 0x43434857; // "CCHW"
 const HEADER_LEN: usize = 32;
 const FOOTER_LEN: usize = 16;
-/// Current on-disk version. v3 (#306 PR 2) carries a per-direction
-/// `width_flags` byte in header byte 7 that lets the body be encoded
-/// as `[u16]` or `[u32]` independently for UP/DOWN edges. v2 stored
-/// body in seconds (time weights) or meters (distance weights) at
-/// fixed u32; v3 readers still accept v2 (width = u32 implied). v1
-/// stored deciseconds / millimeters and is rejected — re-run step 8
-/// to regenerate.
-const VERSION: u16 = 3;
-const VERSION_V2: u16 = 2;
+/// Current on-disk version. v4 (#306 PR 3): per-direction 2-bit
+/// width code in header byte 7 — 00=u32, 01=u16, 10=u24, 11=reserved.
+/// Older versions (v1/v2/v3) are rejected; re-run step 8 to
+/// regenerate.
+const VERSION: u16 = 4;
 
-/// Width fields packed into header byte 7 (v3+).
+/// Width fields packed into header byte 7.
 ///
 /// Each direction uses a 2-bit field:
 ///   00 = u32 (no compression)
-///   01 = u16 (#306 PR 2)
-///   10 = u24 (#306 PR 3)
+///   01 = u16
+///   10 = u24
 ///   11 = reserved
 ///
 /// Bits 0..2 are the up-direction width, bits 2..4 are the
@@ -761,17 +757,14 @@ fn parse_header(header: &[u8]) -> Result<CchWeightsHeader> {
     );
     let version = u16::from_le_bytes(header[4..6].try_into().unwrap());
     anyhow::ensure!(
-        version == VERSION || version == VERSION_V2,
-        "Unsupported cch.weights version {} (expected {} or {}). \
-         v1 stored deciseconds/millimeters; re-run step 8 to regenerate \
-         as v2/v3 (seconds/meters, #297/#306).",
+        version == VERSION,
+        "Unsupported cch.weights version {} (expected {}). Re-run step 8 to regenerate.",
         version,
         VERSION,
-        VERSION_V2,
     );
-    let width_flags = if version == VERSION { header[7] } else { 0 };
-    let up_code = width_flags & UP_WIDTH_MASK;
-    let down_code = (width_flags & DOWN_WIDTH_MASK) >> DOWN_WIDTH_SHIFT;
+    let flags = header[7];
+    let up_code = flags & UP_WIDTH_MASK;
+    let down_code = (flags & DOWN_WIDTH_MASK) >> DOWN_WIDTH_SHIFT;
     let decode_width = |c: u8, dir: &str| -> Result<WeightWidth> {
         match c {
             WIDTH_CODE_U32 => Ok(WeightWidth::U32),
@@ -781,7 +774,7 @@ fn parse_header(header: &[u8]) -> Result<CchWeightsHeader> {
                 "cch.weights: unknown {} width code {} (header byte 7 = 0x{:02X})",
                 dir,
                 c,
-                width_flags
+                flags
             )),
         }
     };
