@@ -3334,7 +3334,7 @@ fn run_p2p_query(
             let end = down_rev.offsets[u as usize + 1] as usize;
             for slot in start..end {
                 let x = down_rev.sources[slot];
-                let w = down_rev.weights[slot];
+                let w = down_rev.weights.get(slot);
                 let new_d = d.saturating_add(w);
                 if new_d < dist_bwd[x as usize] {
                     dist_bwd[x as usize] = new_d;
