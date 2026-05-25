@@ -3037,8 +3037,8 @@ fn run_bucket_m2m_bench(
 
     println!("Loading CCH weights from {:?}...", weights_path);
     let weights = CchWeightsFile::read(&weights_path)?;
-    let up_inf = weights.up.iter().filter(|&&w| w == u32::MAX).count();
-    let down_inf = weights.down.iter().filter(|&&w| w == u32::MAX).count();
+    let up_inf = weights.up.iter().filter(|&w| w == u32::MAX).count();
+    let down_inf = weights.down.iter().filter(|&w| w == u32::MAX).count();
     println!(
         "  ✓ {} up weights ({} INF = {:.1}%), {} down weights ({} INF = {:.1}%)",
         weights.up.len(),
@@ -3294,7 +3294,7 @@ fn run_p2p_query(
             let end = topo.up_offsets[u as usize + 1] as usize;
             for i in start..end {
                 let v = topo.up_targets[i];
-                let w = weights.up[i];
+                let w = weights.up.get(i);
                 if w == u32::MAX {
                     continue;
                 }
