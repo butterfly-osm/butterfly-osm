@@ -15,8 +15,7 @@
 //!
 //! See `route/docs/154-design.md` for the full design rationale.
 
-use std::borrow::Cow;
-
+use crate::formats::mmap::ArcCow;
 use crate::formats::snap_index::{PackedPoint, SnapGrid, SnapMask, SnapPoints};
 use crate::formats::{EbgNodes, NbgGeo};
 
@@ -298,7 +297,7 @@ pub fn build_snap_index(
                 mode: m.mode_byte,
                 n_points: n_points as u32,
                 inputs_sha: m.inputs_sha,
-                bits: Cow::Owned(bits),
+                bits: ArcCow::from_vec(bits),
             }
         })
         .collect();
@@ -311,7 +310,7 @@ pub fn build_snap_index(
             bbox_max_lon,
             bbox_max_lat,
             cell_log2,
-            points: Cow::Owned(sorted_points),
+            points: ArcCow::from_vec(sorted_points),
         },
         grid: SnapGrid {
             n_cells_x,
@@ -319,7 +318,7 @@ pub fn build_snap_index(
             origin_x,
             origin_y,
             cell_log2,
-            offsets: Cow::Owned(offsets),
+            offsets: ArcCow::from_vec(offsets),
         },
         masks,
     }
@@ -938,7 +937,7 @@ mod tests {
             n_nodes,
             created_unix: 0,
             inputs_sha: [0; 32],
-            nodes: Cow::Owned(nodes),
+            nodes: crate::formats::ArcCow::from_vec(nodes),
         };
         let geo = NbgGeo {
             n_edges_und: 0,
@@ -1041,7 +1040,7 @@ mod tests {
             n_nodes: 0,
             created_unix: 0,
             inputs_sha: [0; 32],
-            nodes: Cow::Owned(Vec::new()),
+            nodes: crate::formats::ArcCow::from_vec(Vec::new()),
         };
         let geo = NbgGeo {
             n_edges_und: 0,
@@ -1118,7 +1117,7 @@ mod tests {
             n_nodes: 2,
             created_unix: 0,
             inputs_sha: [0; 32],
-            nodes: Cow::Owned(nodes),
+            nodes: crate::formats::ArcCow::from_vec(nodes),
         };
         let geo = NbgGeo {
             n_edges_und: 0,

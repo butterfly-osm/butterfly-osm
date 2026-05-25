@@ -121,6 +121,93 @@ pub fn find_free_port(start: u16) -> Result<u16> {
 /// than getting swallowed into a stale `false` — operators noticing a
 /// permission issue at this site is more useful than silently falling
 /// back to the legacy path.
+/// #292 Phase 6: process-wide override for the RSS budget, set by the
+/// CLI via `--rss-budget-gb`. The OnceLock keeps the value initialise-
+/// once and lets the eviction poller read it without needing to grow
+/// the `serve()` signature.
+static RSS_BUDGET_OVERRIDE_GIB: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+
+/// Set the process-wide RSS budget override (in GiB). Called once by
+/// the CLI before `serve()` runs; later sets are ignored (OnceLock
+/// semantics).
+pub fn set_rss_budget_override(gib: f64) {
+    let _ = RSS_BUDGET_OVERRIDE_GIB.set(gib);
+}
+
+/// #292 Phase 6: read the server's RSS budget in bytes.
+///
+/// Source order: process-wide override (`--rss-budget-gb` CLI flag)
+/// > environment variable `BUTTERFLY_RSS_BUDGET_GB` if set and
+/// parseable > 80% of the system's MemTotal (read from
+/// `/proc/meminfo` on Linux). The final number is clamped to at
+/// least 1 GiB and at most 1 TiB to catch operator typos.
+fn rss_budget_bytes() -> u64 {
+    const MIN_GIB: f64 = 1.0;
+    const MAX_GIB: f64 = 1024.0;
+    let gib = if let Some(&v) = RSS_BUDGET_OVERRIDE_GIB.get() {
+        v
+    } else if let Ok(s) = std::env::var("BUTTERFLY_RSS_BUDGET_GB") {
+        match s.parse::<f64>() {
+            Ok(v) if v.is_finite() && v > 0.0 => v,
+            _ => {
+                tracing::warn!(value = %s, "BUTTERFLY_RSS_BUDGET_GB unparseable; using default");
+                default_rss_budget_gib()
+            }
+        }
+    } else {
+        default_rss_budget_gib()
+    };
+    let clamped = gib.clamp(MIN_GIB, MAX_GIB);
+    (clamped * (1u64 << 30) as f64) as u64
+}
+
+/// Default budget: 80% of `MemTotal` from `/proc/meminfo`. If the
+/// file can't be read (non-Linux dev env), fall back to 8 GiB so
+/// the eviction logic still has a reasonable threshold to enforce.
+fn default_rss_budget_gib() -> f64 {
+    const FALLBACK_GIB: f64 = 8.0;
+    let path = "/proc/meminfo";
+    let s = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return FALLBACK_GIB,
+    };
+    for line in s.lines() {
+        if let Some(rest) = line.strip_prefix("MemTotal:") {
+            // e.g. "MemTotal:       65789012 kB"
+            let kb: u64 = rest
+                .trim()
+                .split_whitespace()
+                .next()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(0);
+            if kb > 0 {
+                let gib = (kb as f64) / (1024.0 * 1024.0);
+                return gib * 0.80;
+            }
+        }
+    }
+    FALLBACK_GIB
+}
+
+/// Read this process's `VmRSS` in bytes from `/proc/self/status`.
+/// Returns `None` if the file can't be read or the line can't be
+/// parsed (the poller treats `None` as "skip this tick").
+fn read_proc_vm_rss_bytes() -> Option<u64> {
+    let path = "/proc/self/status";
+    let s = std::fs::read_to_string(path).ok()?;
+    for line in s.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            let kb: u64 = rest
+                .trim()
+                .split_whitespace()
+                .next()
+                .and_then(|n| n.parse().ok())?;
+            return Some(kb * 1024);
+        }
+    }
+    None
+}
+
 fn directory_has_butterfly_container(dir: &Path) -> Result<bool> {
     let read_dir =
         std::fs::read_dir(dir).with_context(|| format!("reading data dir {}", dir.display()))?;
@@ -224,6 +311,7 @@ pub async fn serve(
     region_filter: Option<&[String]>,
     load_options: &crate::server::state::LoadOptions,
     overlay_path: Option<&Path>,
+    lazy_regions: bool,
 ) -> Result<()> {
     tracing::info!("Step 9: Starting query server...");
 
@@ -233,9 +321,17 @@ pub async fn serve(
             DataSource::Directory(dir) => {
                 let has_container = directory_has_butterfly_container(dir)?;
                 if has_container {
-                    tracing::info!(dir = %dir.display(), "multi-region container directory detected");
-                    let regions_state =
-                        regions::RegionsState::load_from_dir(dir, region_filter, mode_filter)?;
+                    tracing::info!(
+                        dir = %dir.display(),
+                        lazy = lazy_regions,
+                        "multi-region container directory detected"
+                    );
+                    let regions_state = regions::RegionsState::load_from_dir_with_opts(
+                        dir,
+                        region_filter,
+                        mode_filter,
+                        lazy_regions,
+                    )?;
                     (regions_state, dir.to_path_buf())
                 } else {
                     tracing::info!(dir = %dir.display(), "legacy step-tree directory detected");
@@ -288,38 +384,39 @@ pub async fn serve(
     if regions_state.len() == 1
         && let Some(cfg) = crate::transit::config::load(&data_dir_for_transit)?
     {
-        // Mutate the (only) ServerState in place via Arc::get_mut. This
-        // runs before any Arc clone leaks out of the function.
-        let primary_arc = &mut regions_state.regions[0].state;
-        let state_owned: &mut ServerState = Arc::get_mut(primary_arc)
-            .ok_or_else(|| anyhow::anyhow!("transit bootstrap: primary state already shared"))?;
-        let foot_idx = state_owned
-            .mode_lookup
-            .get("foot")
-            .copied()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "transit configured but foot mode is not loaded; add 'foot' to --modes"
-                )
-            })?;
-        let foot = &state_owned.modes[foot_idx as usize];
-        match crate::transit::load_from_disk(&cfg, foot, foot_idx, &state_owned.snap_index) {
-            Ok(snapshot) => {
-                tracing::info!(
-                    stops = snapshot.timetable.n_stops(),
-                    routes = snapshot.timetable.n_routes(),
-                    trips = snapshot.timetable.n_total_trips,
-                    "transit snapshot loaded"
-                );
-                state_owned.install_transit(crate::transit::TransitState::new(cfg, snapshot));
+        // Mutate the (only) ServerState in place via the boot-only
+        // with_loaded_state_mut helper. This runs before any Arc clone
+        // leaks out of the function. #292 Phase 2: the helper handles
+        // the new RegionState::Loaded(Arc<...>) wrapping.
+        regions_state.regions[0].with_loaded_state_mut(|state_owned| {
+            let foot_idx = match state_owned.mode_lookup.get("foot").copied() {
+                Some(idx) => idx,
+                None => {
+                    tracing::warn!(
+                        "transit configured but foot mode is not loaded; add 'foot' to --modes"
+                    );
+                    return;
+                }
+            };
+            let foot = &state_owned.modes[foot_idx as usize];
+            match crate::transit::load_from_disk(&cfg, foot, foot_idx, &state_owned.snap_index) {
+                Ok(snapshot) => {
+                    tracing::info!(
+                        stops = snapshot.timetable.n_stops(),
+                        routes = snapshot.timetable.n_routes(),
+                        trips = snapshot.timetable.n_total_trips,
+                        "transit snapshot loaded"
+                    );
+                    state_owned.install_transit(crate::transit::TransitState::new(cfg, snapshot));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "no usable transit feeds on disk — run `butterfly-route transit-fetch` to populate. Continuing in road-only mode."
+                    );
+                }
             }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "no usable transit feeds on disk — run `butterfly-route transit-fetch` to populate. Continuing in road-only mode."
-                );
-            }
-        }
+        })?;
     } else if regions_state.len() > 1 {
         tracing::info!(
             "multi-region serve — transit subsystem not loaded (out of scope for #91 Phase 1)"
@@ -329,12 +426,17 @@ pub async fn serve(
     }
 
     // ---- Per-region size metrics -----------------------------------
+    // Skip Pending regions on the lazy boot path; their stats publish
+    // after the first query loads the ServerState. state_loaded() is a
+    // non-loading peek so this loop doesn't trigger N region loads.
     for r in &regions_state.regions {
-        crate::server::region_metrics::register_region_size(
-            &r.id,
-            r.state.ebg_nodes.n_nodes as u64,
-            r.state.ebg_csr.n_arcs,
-        );
+        if let Some(s) = r.state_loaded() {
+            crate::server::region_metrics::register_region_size(
+                &r.id,
+                s.ebg_nodes.n_nodes as u64,
+                s.ebg_csr.n_arcs,
+            );
+        }
     }
 
     // ---- Cross-region overlay (#91 Phase 2) ------------------------
@@ -359,6 +461,57 @@ pub async fn serve(
     // the steady-state baseline #153/#154/#155 will measure against,
     // captured prior to observable readiness on `/health`.
     crate::server::rss::checkpoint("boot.complete");
+
+    // #292 Phase 6: spawn the LRU eviction poller. Reads VmRSS once
+    // per `EVICT_POLL_SECS` and, if over budget, evicts the oldest
+    // Loaded region(s) until back under budget or only `keep_min`
+    // regions remain. Single-region deployments never evict because
+    // the budget check is trivially satisfied (only one region —
+    // nothing to compare against).
+    {
+        let state_for_evictor = Arc::clone(&state);
+        let budget_bytes = rss_budget_bytes();
+        tokio::spawn(async move {
+            const EVICT_POLL_SECS: u64 = 30;
+            const KEEP_MIN: usize = 1;
+            tracing::info!(
+                budget_gib = budget_bytes as f64 / (1u64 << 30) as f64,
+                poll_secs = EVICT_POLL_SECS,
+                "RSS-budget eviction poller started"
+            );
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(EVICT_POLL_SECS)).await;
+                let cur = match read_proc_vm_rss_bytes() {
+                    Some(v) => v,
+                    None => continue,
+                };
+                if cur <= budget_bytes {
+                    continue;
+                }
+                tracing::info!(
+                    rss_gib = cur as f64 / (1u64 << 30) as f64,
+                    budget_gib = budget_bytes as f64 / (1u64 << 30) as f64,
+                    "over RSS budget; evicting LRU regions"
+                );
+                let evicted = state_for_evictor.evict_lru_until(
+                    || {
+                        // Re-read RSS so each round sees fresh state.
+                        read_proc_vm_rss_bytes()
+                            .map(|r| r <= budget_bytes)
+                            .unwrap_or(true)
+                    },
+                    KEEP_MIN,
+                );
+                if evicted > 0 {
+                    tracing::info!(
+                        evicted,
+                        loaded_after = state_for_evictor.loaded_count(),
+                        "LRU eviction pass complete"
+                    );
+                }
+            }
+        });
+    }
 
     // Find free ports
     let http_port = match port {
@@ -443,7 +596,10 @@ async fn start_grpc_server(state: Arc<regions::RegionsState>, port: u16) -> Resu
             "gRPC Flight will only serve the primary region in multi-region mode (PR C extends to multi-region)"
         );
     }
-    let flight_svc = flight::build_flight_server(Arc::clone(state.primary()));
+    // #292 Phase 3: pass the whole RegionsState; Flight resolves the
+    // primary region per request so the default-lazy boot can keep
+    // regions Pending until first query.
+    let flight_svc = flight::build_flight_server(Arc::clone(&state));
 
     tonic::transport::Server::builder()
         .add_service(flight_svc)

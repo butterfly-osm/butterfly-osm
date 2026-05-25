@@ -6,21 +6,20 @@
 //! conversion to per-vertex calls so hot consumers that only need the
 //! first / last point pay one divide instead of N.
 //!
-//! On the serve path the underlying `Cow<'static, [..]>` slices borrow
-//! directly from the mmap'd container, so `polyline(edge_id)` is a
-//! cache-line-aligned `&[i32]` view with zero allocation. The legacy
-//! fallback (containers that pre-date #155, or directory-tree boots)
-//! flattens the heap `Vec<PolyLine>` into the same layout in memory once
-//! at boot and runs through the same accessors.
+//! On the serve path the underlying [`ArcCow`] slices borrow directly
+//! from the mmap'd container, so `polyline(edge_id)` is a cache-line-
+//! aligned `&[i32]` view with zero allocation. The legacy fallback
+//! (containers that pre-date #155, or directory-tree boots) flattens
+//! the heap `Vec<PolyLine>` into the same layout in memory once at
+//! boot and runs through the same accessors.
 //!
 //! The shape is deliberately the smallest delta from the legacy
 //! `polyline.lat_fxp[i] / polyline.lon_fxp[i]` access pattern: every
 //! consumer migrates to `let poly = state.edge_geom.polyline(edge_id);`
 //! plus per-vertex `poly.at(i)` / `poly.at_e7(i)` reads.
 
-use std::borrow::Cow;
-
 use crate::formats::edge_geom::{EdgeGeomOffsets, EdgeGeomPoints};
+use crate::formats::mmap::ArcCow;
 
 /// Flat, mmap-friendly edge geometry. Replaces the heap-resident
 /// `Vec<PolyLine>` shape inside `NbgGeo` on the serve path.
@@ -28,14 +27,14 @@ pub struct EdgeGeometry {
     /// Cumulative POINT counts per edge. Length = `n_edges + 1`.
     /// `offsets[i]..offsets[i+1]` is the half-open range of vertex
     /// indices for edge `i`.
-    offsets: Cow<'static, [u32]>,
+    offsets: ArcCow<u32>,
     /// Interleaved `(lon_e7, lat_e7)` pairs. Length = `2 * n_points`.
-    points: Cow<'static, [i32]>,
+    points: ArcCow<i32>,
 }
 
 impl EdgeGeometry {
-    /// Build from on-disk sections (zero-copy or owning, depending on
-    /// the `Cow` shape carried by the parsed structs).
+    /// Build from on-disk sections (mmap-backed or owning, depending on
+    /// the [`ArcCow`] shape carried by the parsed structs).
     pub fn from_sections(off: EdgeGeomOffsets, pts: EdgeGeomPoints) -> anyhow::Result<Self> {
         anyhow::ensure!(
             off.n_points == pts.n_points,
@@ -95,8 +94,8 @@ impl EdgeGeometry {
         offsets.push(cumulative);
 
         Self {
-            offsets: Cow::Owned(offsets),
-            points: Cow::Owned(points),
+            offsets: ArcCow::from_vec(offsets),
+            points: ArcCow::from_vec(points),
         }
     }
 
@@ -256,7 +255,7 @@ mod tests {
         let off = EdgeGeomOffsets {
             n_edges: 4,
             n_points: 10,
-            offsets: Cow::Owned(offsets),
+            offsets: ArcCow::from_vec(offsets),
         };
         let pts = EdgeGeomPoints {
             n_points: 10,
@@ -264,7 +263,7 @@ mod tests {
             bbox_min_lat: 500,
             bbox_max_lon: 9_100,
             bbox_max_lat: 9_500,
-            points: Cow::Owned(points),
+            points: ArcCow::from_vec(points),
         };
         EdgeGeometry::from_sections(off, pts).expect("valid fixture")
     }
@@ -403,7 +402,7 @@ mod tests {
         let off = EdgeGeomOffsets {
             n_edges: g.n_edges() as u32,
             n_points: g.n_points() as u32,
-            offsets: Cow::Owned((0..=g.n_edges()).map(|i| g.offsets[i]).collect()),
+            offsets: ArcCow::from_vec((0..=g.n_edges()).map(|i| g.offsets[i]).collect()),
         };
         let pts = EdgeGeomPoints {
             n_points: g.n_points() as u32,
@@ -411,7 +410,7 @@ mod tests {
             bbox_min_lat: 500,
             bbox_max_lon: 9_100,
             bbox_max_lat: 9_500,
-            points: Cow::Owned(g.points.to_vec()),
+            points: ArcCow::from_vec(g.points.as_slice().to_vec()),
         };
         let off_bytes = EdgeGeomOffsetsFile::encode(&off);
         let pts_bytes = EdgeGeomPointsFile::encode(&pts);

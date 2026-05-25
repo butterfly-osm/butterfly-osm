@@ -16,12 +16,13 @@
 //!   prior arrays do) is sufficient.
 
 use anyhow::Result;
-use std::borrow::Cow;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
+use std::sync::Arc;
 
 use super::crc;
+use super::mmap::ArcCow;
 use crate::profile_abi::Mode;
 
 const MAGIC: u32 = 0x46454247; // "FEBG" = Filtered EBG
@@ -38,14 +39,20 @@ pub struct FilteredEbg {
     pub n_original_nodes: u32,
     pub inputs_sha: [u8; 32],
 
-    // CSR in filtered space
-    pub offsets: Cow<'static, [u64]>, // n_filtered_nodes + 1
-    pub heads: Cow<'static, [u32]>,   // n_filtered_arcs (filtered node IDs)
-    pub original_arc_idx: Cow<'static, [u32]>, // n_filtered_arcs
+    // CSR in filtered space.
+    //
+    // Each `ArcCow<T>` is heap-owned when built in memory or read from a
+    // plain file, and is an `Arc<Mmap>`-backed zero-copy view when loaded
+    // from a container section via [`FilteredEbgFile::read_from_mmap_unverified`].
+    // Dropping the struct decrements the mmap's strong count so the kernel
+    // can reclaim the pages once every consumer releases its handle (#296).
+    pub offsets: ArcCow<u64>,          // n_filtered_nodes + 1
+    pub heads: ArcCow<u32>,            // n_filtered_arcs (filtered node IDs)
+    pub original_arc_idx: ArcCow<u32>, // n_filtered_arcs
 
     // Node ID mappings
-    pub filtered_to_original: Cow<'static, [u32]>, // n_filtered_nodes
-    pub original_to_filtered: Cow<'static, [u32]>, // n_original_nodes (u32::MAX if not in filtered)
+    pub filtered_to_original: ArcCow<u32>, // n_filtered_nodes
+    pub original_to_filtered: ArcCow<u32>, // n_original_nodes (u32::MAX if not in filtered)
 }
 
 impl FilteredEbg {
@@ -150,11 +157,11 @@ impl FilteredEbg {
             n_filtered_arcs: heads.len() as u64,
             n_original_nodes,
             inputs_sha,
-            offsets: Cow::Owned(offsets),
-            heads: Cow::Owned(heads),
-            original_arc_idx: Cow::Owned(original_arc_idx),
-            filtered_to_original: Cow::Owned(filtered_to_original),
-            original_to_filtered: Cow::Owned(original_to_filtered),
+            offsets: ArcCow::from_vec(offsets),
+            heads: ArcCow::from_vec(heads),
+            original_arc_idx: ArcCow::from_vec(original_arc_idx),
+            filtered_to_original: ArcCow::from_vec(filtered_to_original),
+            original_to_filtered: ArcCow::from_vec(original_to_filtered),
         }
     }
 
@@ -356,11 +363,11 @@ impl FilteredEbgFile {
             n_filtered_arcs,
             n_original_nodes,
             inputs_sha,
-            offsets: Cow::Owned(offsets),
-            heads: Cow::Owned(heads),
-            original_arc_idx: Cow::Owned(original_arc_idx),
-            filtered_to_original: Cow::Owned(filtered_to_original),
-            original_to_filtered: Cow::Owned(original_to_filtered),
+            offsets: ArcCow::from_vec(offsets),
+            heads: ArcCow::from_vec(heads),
+            original_arc_idx: ArcCow::from_vec(original_arc_idx),
+            filtered_to_original: ArcCow::from_vec(filtered_to_original),
+            original_to_filtered: ArcCow::from_vec(original_to_filtered),
         })
     }
 
@@ -386,9 +393,13 @@ impl FilteredEbgFile {
     /// Zero-copy reader that additionally returns the byte range of
     /// the build-time-only cold prefix (`offsets`, `heads`,
     /// `original_arc_idx`). Callers (`server/state.rs`) can pass this
-    /// range to `madvise(DONTNEED)` so the cold pages drop from RSS
-    /// — the borrowed Cow slices stay valid; the rare cold consumers
-    /// (build-only validators) page them back at fault cost.
+    /// range to `madvise(DONTNEED)` so the cold pages drop from RSS.
+    ///
+    /// Historically the returned slices were `Cow::Borrowed` into the
+    /// mapping. After #296, this path copies into owned `Vec`s so the
+    /// returned `FilteredEbg` does not pin the mapping; the byte range
+    /// is still safe to `madvise(DONTNEED)` once the copies are made.
+    /// Production zero-copy lives on [`Self::read_from_mmap_unverified`].
     ///
     /// Hot serve-time arrays (`filtered_to_original`,
     /// `original_to_filtered`) live AFTER the cold prefix and are
@@ -489,18 +500,178 @@ impl FilteredEbgFile {
         );
 
         let cold = &bytes[off_start..oai_end];
+        // Legacy zero-copy path: kept for tests and the back-compat
+        // `server/state.rs` fallback that still hands us `'static` bytes
+        // (containers that haven't migrated to `Arc<Mmap>` plumbing).
+        // We copy into owned `Vec`s so the on-disk → in-memory shape
+        // matches the post-#296 `ArcCow<T>` field type; the
+        // `Arc<Mmap>`-backed un-leak path is
+        // [`Self::read_from_mmap_unverified`].
         let parsed = FilteredEbg {
             mode,
             n_filtered_nodes,
             n_filtered_arcs,
             n_original_nodes,
             inputs_sha,
-            offsets: Cow::Borrowed(offsets),
-            heads: Cow::Borrowed(heads),
-            original_arc_idx: Cow::Borrowed(original_arc_idx),
-            filtered_to_original: Cow::Borrowed(filtered_to_original),
-            original_to_filtered: Cow::Borrowed(original_to_filtered),
+            offsets: ArcCow::from_vec(offsets.to_vec()),
+            heads: ArcCow::from_vec(heads.to_vec()),
+            original_arc_idx: ArcCow::from_vec(original_arc_idx.to_vec()),
+            filtered_to_original: ArcCow::from_vec(filtered_to_original.to_vec()),
+            original_to_filtered: ArcCow::from_vec(original_to_filtered.to_vec()),
         };
         Ok((parsed, cold))
+    }
+
+    /// Production mmap-backed reader (#296). Holds an `Arc<Mmap>`
+    /// clone for the returned struct's lifetime — when the struct
+    /// drops, the strong count decreases. Once every clone drops, the
+    /// `Mmap` drops, `munmap` fires, and the kernel reclaims the
+    /// pages. This is the un-leak counterpart to
+    /// [`Self::read_from_bytes_zero_copy_with_cold`].
+    ///
+    /// `byte_offset` and `byte_len` are the position and length of the
+    /// section within the container, as recorded in the directory
+    /// entry. CRC walking is the caller's responsibility (typically
+    /// driven through the lazy CRC layer before this call) — the
+    /// `_unverified` suffix matches the convention from the other
+    /// mmap-backed readers.
+    ///
+    /// Layout (#152), reproduced for the offset arithmetic below:
+    ///   header(64) | offsets((n_filt+1) × u64)
+    ///             | heads(n_arcs × u32)
+    ///             | original_arc_idx(n_arcs × u32)
+    ///             | filtered_to_original(n_filt × u32)
+    ///             | original_to_filtered(n_orig × u32)
+    ///             | footer(16)
+    ///
+    /// Container guarantees 8-byte section alignment, so the offsets
+    /// `u64` array is u64-aligned at `byte_offset + HEADER_LEN`. Every
+    /// subsequent array is `u32`, only needing 4-byte alignment, which
+    /// any cursor that has consumed a multiple of 4 bytes (all prior
+    /// arrays do) satisfies.
+    pub fn read_from_mmap_unverified(
+        mmap: Arc<memmap2::Mmap>,
+        byte_offset: usize,
+        byte_len: usize,
+    ) -> Result<FilteredEbg> {
+        anyhow::ensure!(
+            byte_offset.saturating_add(byte_len) <= mmap.len(),
+            "filtered_ebg section out of bounds: off={byte_offset} len={byte_len} mmap_len={}",
+            mmap.len()
+        );
+        let bytes = &mmap[byte_offset..byte_offset + byte_len];
+        anyhow::ensure!(
+            bytes.len() >= HEADER_LEN + FOOTER_LEN,
+            "filtered_ebg too short for header+footer: {} bytes",
+            bytes.len()
+        );
+
+        let header = &bytes[..HEADER_LEN];
+        let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+        anyhow::ensure!(
+            magic == MAGIC,
+            "Invalid magic in filtered_ebg: expected 0x{:08X}, got 0x{:08X}",
+            MAGIC,
+            magic
+        );
+        let version = u16::from_le_bytes([header[4], header[5]]);
+        anyhow::ensure!(
+            version == VERSION,
+            "Unsupported filtered_ebg version {version}, expected {VERSION}",
+        );
+        anyhow::ensure!(
+            (header[6] as usize) < crate::profile_abi::MAX_MODES,
+            "Invalid mode in filtered_ebg: {}",
+            header[6]
+        );
+        let mode = Mode(header[6]);
+
+        let n_filtered_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
+        let n_filtered_arcs = u64::from_le_bytes([
+            header[12], header[13], header[14], header[15], header[16], header[17], header[18],
+            header[19],
+        ]);
+        let n_original_nodes = u32::from_le_bytes([header[20], header[21], header[22], header[23]]);
+        let mut inputs_sha = [0u8; 32];
+        inputs_sha.copy_from_slice(&header[24..56]);
+
+        let n_filt = n_filtered_nodes as usize;
+        let n_orig = n_original_nodes as usize;
+        let n_arcs = usize::try_from(n_filtered_arcs)
+            .map_err(|_| anyhow::anyhow!("filtered_ebg n_arcs > usize::MAX"))?;
+
+        let offsets_n = n_filt
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("filtered_ebg offsets count overflow"))?;
+        let offsets_bytes = offsets_n
+            .checked_mul(8)
+            .ok_or_else(|| anyhow::anyhow!("filtered_ebg offsets size overflow"))?;
+        let heads_bytes = n_arcs
+            .checked_mul(4)
+            .ok_or_else(|| anyhow::anyhow!("filtered_ebg heads size overflow"))?;
+        let oai_bytes = heads_bytes;
+        let f2o_bytes = n_filt
+            .checked_mul(4)
+            .ok_or_else(|| anyhow::anyhow!("filtered_ebg f2o size overflow"))?;
+        let o2f_bytes = n_orig
+            .checked_mul(4)
+            .ok_or_else(|| anyhow::anyhow!("filtered_ebg o2f size overflow"))?;
+
+        // Container-absolute byte offsets of each sub-array.
+        let offsets_off = byte_offset
+            .checked_add(HEADER_LEN)
+            .ok_or_else(|| anyhow::anyhow!("filtered_ebg offsets offset overflow"))?;
+        let heads_off = offsets_off
+            .checked_add(offsets_bytes)
+            .ok_or_else(|| anyhow::anyhow!("filtered_ebg heads offset overflow"))?;
+        let oai_off = heads_off
+            .checked_add(heads_bytes)
+            .ok_or_else(|| anyhow::anyhow!("filtered_ebg oai offset overflow"))?;
+        let f2o_off = oai_off
+            .checked_add(oai_bytes)
+            .ok_or_else(|| anyhow::anyhow!("filtered_ebg f2o offset overflow"))?;
+        let o2f_off = f2o_off
+            .checked_add(f2o_bytes)
+            .ok_or_else(|| anyhow::anyhow!("filtered_ebg o2f offset overflow"))?;
+        let body_end = o2f_off
+            .checked_add(o2f_bytes)
+            .ok_or_else(|| anyhow::anyhow!("filtered_ebg body end offset overflow"))?;
+
+        let expected = HEADER_LEN
+            .checked_add(offsets_bytes)
+            .and_then(|n| n.checked_add(heads_bytes))
+            .and_then(|n| n.checked_add(oai_bytes))
+            .and_then(|n| n.checked_add(f2o_bytes))
+            .and_then(|n| n.checked_add(o2f_bytes))
+            .and_then(|n| n.checked_add(FOOTER_LEN))
+            .ok_or_else(|| anyhow::anyhow!("filtered_ebg section size overflow"))?;
+        anyhow::ensure!(
+            byte_len == expected,
+            "filtered_ebg length mismatch: declared {byte_len}, expected {expected}",
+        );
+
+        let offsets = ArcCow::<u64>::from_mmap(Arc::clone(&mmap), offsets_off, offsets_n)?;
+        let heads = ArcCow::<u32>::from_mmap(Arc::clone(&mmap), heads_off, n_arcs)?;
+        let original_arc_idx = ArcCow::<u32>::from_mmap(Arc::clone(&mmap), oai_off, n_arcs)?;
+        let filtered_to_original = ArcCow::<u32>::from_mmap(Arc::clone(&mmap), f2o_off, n_filt)?;
+        let original_to_filtered = ArcCow::<u32>::from_mmap(mmap, o2f_off, n_orig)?;
+
+        // Sanity: body_end matches what we computed independently from
+        // `expected`. Cheap check; guards against arithmetic drift if
+        // the layout ever changes.
+        debug_assert_eq!(body_end, byte_offset + expected - FOOTER_LEN);
+
+        Ok(FilteredEbg {
+            mode,
+            n_filtered_nodes,
+            n_filtered_arcs,
+            n_original_nodes,
+            inputs_sha,
+            offsets,
+            heads,
+            original_arc_idx,
+            filtered_to_original,
+            original_to_filtered,
+        })
     }
 }

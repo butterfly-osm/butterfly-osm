@@ -207,7 +207,7 @@ pub fn build_ebg(config: EbgConfig) -> Result<EbgResult> {
         n_nodes: ebg_nodes.len() as u32,
         created_unix,
         inputs_sha,
-        nodes: std::borrow::Cow::Owned(ebg_nodes),
+        nodes: crate::formats::ArcCow::from_vec(ebg_nodes),
     };
     EbgNodesFile::write(&nodes_path, &ebg_nodes_data)?;
     println!("  ✓ Wrote {}", nodes_path.display());
@@ -561,9 +561,9 @@ fn materialize_csr(
         n_arcs,
         created_unix,
         inputs_sha: [0u8; 32],
-        offsets: std::borrow::Cow::Owned(offsets),
-        heads: std::borrow::Cow::Owned(heads),
-        turn_idx: std::borrow::Cow::Owned(turn_idx),
+        offsets: crate::formats::ArcCow::from_vec(offsets),
+        heads: crate::formats::ArcCow::from_vec(heads),
+        turn_idx: crate::formats::ArcCow::from_vec(turn_idx),
     })
 }
 

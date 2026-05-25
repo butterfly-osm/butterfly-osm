@@ -22,12 +22,13 @@
 //! `body_crc : u64 || file_crc : u64`.
 
 use anyhow::Result;
-use std::borrow::Cow;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
+use std::sync::Arc;
 
 use super::crc::Digest;
+use super::mmap::ArcCow;
 
 // ---------- Constants -------------------------------------------------------
 
@@ -77,9 +78,12 @@ pub struct SnapPoints {
     pub bbox_max_lon: i32,
     pub bbox_max_lat: i32,
     pub cell_log2: u8,
-    /// Sample array. Borrowed when read zero-copy from a mmap'd
-    /// container, owned when read from a plain file or built in memory.
-    pub points: Cow<'static, [PackedPoint]>,
+    /// Sample array. Owned when read from a plain file or built in
+    /// memory; `Arc<Mmap>`-backed view when read zero-copy from a
+    /// container section. Indexed sequentially within each grid cell.
+    /// See [`ArcCow`] for the variant shape and the eviction story
+    /// (#296).
+    pub points: ArcCow<PackedPoint>,
 }
 
 impl SnapPoints {
@@ -124,7 +128,7 @@ impl SnapPointsFile {
         debug_assert_eq!(out.len(), HEADER_SIZE);
 
         // Body
-        let body_bytes: &[u8] = bytemuck::cast_slice(p.points.as_ref());
+        let body_bytes: &[u8] = bytemuck::cast_slice(p.points.as_slice());
         out.extend_from_slice(body_bytes);
 
         // Footer
@@ -159,11 +163,15 @@ impl SnapPointsFile {
             bbox_max_lon: parsed.bbox_max_lon,
             bbox_max_lat: parsed.bbox_max_lat,
             cell_log2: parsed.cell_log2,
-            points: Cow::Owned(pts.to_vec()),
+            points: ArcCow::from_vec(pts.to_vec()),
         })
     }
 
-    /// Zero-copy reader for a `'static` byte slice (mmap-backed).
+    /// Zero-copy reader for `'static` byte slices (test fixtures that
+    /// leak a `Box<[u8]>`). Production loaders should use
+    /// [`Self::read_from_mmap_unverified`] which keeps the
+    /// `Arc<Mmap>` strong-count tied to the returned struct so the
+    /// mapping can actually be reclaimed (#296).
     pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<SnapPoints> {
         Self::read_from_bytes_zero_copy_inner(bytes, true)
     }
@@ -175,6 +183,59 @@ impl SnapPointsFile {
         Self::read_from_bytes_zero_copy_inner(bytes, false)
     }
 
+    /// Production mmap-backed reader (#296). Holds an `Arc<Mmap>`
+    /// clone for the returned struct's lifetime — when the struct
+    /// drops, the strong count decreases. Once all clones drop, the
+    /// `Mmap` drops, `munmap` fires, and the kernel reclaims the
+    /// pages.
+    ///
+    /// `byte_offset` and `byte_len` are the position and length of the
+    /// `shared/snap_points` section within the container, as recorded
+    /// in the directory entry. CRC walking is the caller's
+    /// responsibility (typically driven through the lazy CRC layer
+    /// before this call).
+    pub fn read_from_mmap_unverified(
+        mmap: Arc<memmap2::Mmap>,
+        byte_offset: usize,
+        byte_len: usize,
+    ) -> Result<SnapPoints> {
+        anyhow::ensure!(
+            byte_offset.saturating_add(byte_len) <= mmap.len(),
+            "snap_points section out of bounds: off={byte_offset} len={byte_len} mmap_len={}",
+            mmap.len()
+        );
+        // Extract header values into locals so we can move `mmap`
+        // into `from_mmap` afterwards without a borrow-check conflict.
+        let (n_points, bbox_min_lon, bbox_min_lat, bbox_max_lon, bbox_max_lat, cell_log2) = {
+            let bytes = &mmap[byte_offset..byte_offset + byte_len];
+            let parsed = parse_snap_points_header_and_check(bytes, false)?;
+            (
+                parsed.n_points,
+                parsed.bbox_min_lon,
+                parsed.bbox_min_lat,
+                parsed.bbox_max_lon,
+                parsed.bbox_max_lat,
+                parsed.cell_log2,
+            )
+        };
+        // Body sits immediately after the 40-byte header. The
+        // container guarantees 8-byte section alignment, so the body
+        // offset is 4-byte aligned, which matches
+        // `align_of::<PackedPoint>() == 4`. `ArcCow::from_mmap`
+        // re-validates the alignment itself.
+        let body_byte_offset = byte_offset + HEADER_SIZE;
+        let points = ArcCow::<PackedPoint>::from_mmap(mmap, body_byte_offset, n_points as usize)?;
+        Ok(SnapPoints {
+            n_points,
+            bbox_min_lon,
+            bbox_min_lat,
+            bbox_max_lon,
+            bbox_max_lat,
+            cell_log2,
+            points,
+        })
+    }
+
     fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<SnapPoints> {
         let parsed = parse_snap_points_header_and_check(bytes, verify)?;
         debug_assert_eq!(
@@ -183,6 +244,12 @@ impl SnapPointsFile {
             "snap_points body must be aligned for PackedPoint"
         );
         let pts: &'static [PackedPoint] = bytemuck::cast_slice(parsed.body);
+        // Test fixtures use this path — wrap the Vec'd copy in
+        // `ArcCow::Owned`. The `bytes: &'static [u8]` lifetime here
+        // means the caller leaked the buffer (typically `Box::leak` in
+        // a `#[cfg(test)]` block); we don't carry that leak into
+        // production storage. Production goes through
+        // [`Self::read_from_mmap_unverified`].
         Ok(SnapPoints {
             n_points: parsed.n_points,
             bbox_min_lon: parsed.bbox_min_lon,
@@ -190,7 +257,7 @@ impl SnapPointsFile {
             bbox_max_lon: parsed.bbox_max_lon,
             bbox_max_lat: parsed.bbox_max_lat,
             cell_log2: parsed.cell_log2,
-            points: Cow::Borrowed(pts),
+            points: ArcCow::from_vec(pts.to_vec()),
         })
     }
 }
@@ -263,6 +330,80 @@ fn parse_snap_points_header_and_check(
     })
 }
 
+/// Bounding box pulled from a `shared/snap_points` header (i32-e7).
+/// Returned by [`peek_snap_points_bbox`]. Same semantics as
+/// `SnapPoints::bbox_*` but without loading the body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapBbox {
+    pub min_lon_e7: i32,
+    pub min_lat_e7: i32,
+    pub max_lon_e7: i32,
+    pub max_lat_e7: i32,
+}
+
+impl SnapBbox {
+    /// Convert to floating-point (lon_min, lat_min, lon_max, lat_max).
+    #[inline]
+    pub fn to_f64(&self) -> (f64, f64, f64, f64) {
+        (
+            self.min_lon_e7 as f64 / 1e7,
+            self.min_lat_e7 as f64 / 1e7,
+            self.max_lon_e7 as f64 / 1e7,
+            self.max_lat_e7 as f64 / 1e7,
+        )
+    }
+
+    /// `true` iff (lon, lat) falls inside the bbox padded by `margin_deg`
+    /// on every side. Use a generous margin so a query just outside the
+    /// box but within the snap radius still considers this region. A
+    /// degree of latitude is ~111 km; a 500 m snap radius needs
+    /// `margin_deg ≈ 0.005`.
+    #[inline]
+    pub fn contains_with_margin(&self, lon: f64, lat: f64, margin_deg: f64) -> bool {
+        let (mn_lon, mn_lat, mx_lon, mx_lat) = self.to_f64();
+        lon >= mn_lon - margin_deg
+            && lon <= mx_lon + margin_deg
+            && lat >= mn_lat - margin_deg
+            && lat <= mx_lat + margin_deg
+    }
+}
+
+/// Read the bbox out of a `shared/snap_points` section header without
+/// loading the body. Reads exactly [`HEADER_SIZE`] bytes from disk and
+/// verifies the magic + version. Does NOT verify the body CRC — callers
+/// that care about per-section integrity should drive that through
+/// [`SnapPointsFile::read_from_bytes`] at full-load time.
+///
+/// Used by the lazy-region boot path to filter regions by bbox in
+/// `snap_winner` without triggering a per-region full load.
+pub fn peek_snap_points_bbox<P: AsRef<Path>>(path: P, offset: u64) -> Result<SnapBbox> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = File::open(path.as_ref())?;
+    f.seek(SeekFrom::Start(offset))?;
+    let mut header = [0u8; HEADER_SIZE];
+    f.read_exact(&mut header)?;
+    let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+    anyhow::ensure!(
+        magic == SNAP_POINTS_MAGIC,
+        "Invalid magic in snap_points: expected 0x{:08X}, got 0x{:08X}",
+        SNAP_POINTS_MAGIC,
+        magic
+    );
+    let version = u16::from_le_bytes([header[4], header[5]]);
+    anyhow::ensure!(
+        version == SNAP_VERSION,
+        "Unsupported snap_points version {}, expected {}",
+        version,
+        SNAP_VERSION
+    );
+    Ok(SnapBbox {
+        min_lon_e7: i32::from_le_bytes([header[12], header[13], header[14], header[15]]),
+        min_lat_e7: i32::from_le_bytes([header[16], header[17], header[18], header[19]]),
+        max_lon_e7: i32::from_le_bytes([header[20], header[21], header[22], header[23]]),
+        max_lat_e7: i32::from_le_bytes([header[24], header[25], header[26], header[27]]),
+    })
+}
+
 // ---------- snap_grid ------------------------------------------------------
 
 /// Parsed `shared/snap_grid` section. The body is the CSR `offsets`
@@ -275,8 +416,10 @@ pub struct SnapGrid {
     pub origin_y: i32,
     pub cell_log2: u8,
     /// `offsets[i]..offsets[i+1]` is the half-open range into
-    /// `snap_points` for cell `i`.
-    pub offsets: Cow<'static, [u32]>,
+    /// `snap_points` for cell `i`. Owned when built in memory or read
+    /// from a plain file; `Arc<Mmap>`-backed view when read zero-copy
+    /// from a container section. See [`ArcCow`] (#296).
+    pub offsets: ArcCow<u32>,
 }
 
 impl SnapGrid {
@@ -314,7 +457,7 @@ impl SnapGridFile {
         debug_assert_eq!(out.len(), HEADER_SIZE);
 
         // Body
-        let body_bytes: &[u8] = bytemuck::cast_slice(g.offsets.as_ref());
+        let body_bytes: &[u8] = bytemuck::cast_slice(g.offsets.as_slice());
         out.extend_from_slice(body_bytes);
 
         // Footer
@@ -346,10 +489,14 @@ impl SnapGridFile {
             origin_x: parsed.origin_x,
             origin_y: parsed.origin_y,
             cell_log2: parsed.cell_log2,
-            offsets: Cow::Owned(off_slice.to_vec()),
+            offsets: ArcCow::from_vec(off_slice.to_vec()),
         })
     }
 
+    /// Zero-copy reader for `'static` byte slices (test fixtures).
+    /// Production loaders should use
+    /// [`Self::read_from_mmap_unverified`] which keeps the
+    /// `Arc<Mmap>` strong-count tied to the returned struct (#296).
     pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<SnapGrid> {
         Self::read_from_bytes_zero_copy_inner(bytes, true)
     }
@@ -361,6 +508,57 @@ impl SnapGridFile {
         Self::read_from_bytes_zero_copy_inner(bytes, false)
     }
 
+    /// Production mmap-backed reader (#296). Holds an `Arc<Mmap>`
+    /// clone for the returned struct's lifetime — when the struct
+    /// drops, the strong count decreases.
+    ///
+    /// `byte_offset` and `byte_len` are the position and length of the
+    /// `shared/snap_grid` section within the container. CRC walking is
+    /// the caller's responsibility.
+    pub fn read_from_mmap_unverified(
+        mmap: Arc<memmap2::Mmap>,
+        byte_offset: usize,
+        byte_len: usize,
+    ) -> Result<SnapGrid> {
+        anyhow::ensure!(
+            byte_offset.saturating_add(byte_len) <= mmap.len(),
+            "snap_grid section out of bounds: off={byte_offset} len={byte_len} mmap_len={}",
+            mmap.len()
+        );
+        let (n_cells_x, n_cells_y, origin_x, origin_y, cell_log2, n_offsets) = {
+            let bytes = &mmap[byte_offset..byte_offset + byte_len];
+            let parsed = parse_snap_grid_header_and_check(bytes, false)?;
+            let n_cells = (parsed.n_cells_x as usize)
+                .checked_mul(parsed.n_cells_y as usize)
+                .ok_or_else(|| anyhow::anyhow!("snap_grid cell count overflow"))?;
+            let n_offsets = n_cells
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("snap_grid offsets count overflow"))?;
+            (
+                parsed.n_cells_x,
+                parsed.n_cells_y,
+                parsed.origin_x,
+                parsed.origin_y,
+                parsed.cell_log2,
+                n_offsets,
+            )
+        };
+        // Body sits immediately after the 40-byte header. 8-byte
+        // section alignment + 40-byte header keeps the body 4-byte
+        // aligned, matching `align_of::<u32>() == 4`. `ArcCow::from_mmap`
+        // re-validates the alignment itself.
+        let body_byte_offset = byte_offset + HEADER_SIZE;
+        let offsets = ArcCow::<u32>::from_mmap(mmap, body_byte_offset, n_offsets)?;
+        Ok(SnapGrid {
+            n_cells_x,
+            n_cells_y,
+            origin_x,
+            origin_y,
+            cell_log2,
+            offsets,
+        })
+    }
+
     fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<SnapGrid> {
         let parsed = parse_snap_grid_header_and_check(bytes, verify)?;
         debug_assert_eq!(
@@ -369,13 +567,16 @@ impl SnapGridFile {
             "snap_grid body must be 4-byte aligned"
         );
         let off_slice: &'static [u32] = bytemuck::cast_slice(parsed.body);
+        // Test fixtures use this path — copy through `ArcCow::Owned`.
+        // The `'static` lifetime means the caller leaked the buffer;
+        // we don't carry that leak into production storage.
         Ok(SnapGrid {
             n_cells_x: parsed.n_cells_x,
             n_cells_y: parsed.n_cells_y,
             origin_x: parsed.origin_x,
             origin_y: parsed.origin_y,
             cell_log2: parsed.cell_log2,
-            offsets: Cow::Borrowed(off_slice),
+            offsets: ArcCow::from_vec(off_slice.to_vec()),
         })
     }
 }
@@ -456,7 +657,11 @@ pub struct SnapMask {
     pub mode: u8,
     pub n_points: u32,
     pub inputs_sha: [u8; 16],
-    pub bits: Cow<'static, [u64]>,
+    /// Bitmap body, one bit per `snap_points` entry. Owned when built
+    /// in memory or read from a plain file; `Arc<Mmap>`-backed view
+    /// when read zero-copy from a container section. See [`ArcCow`]
+    /// (#296).
+    pub bits: ArcCow<u64>,
 }
 
 impl SnapMask {
@@ -496,7 +701,7 @@ impl SnapMaskFile {
         debug_assert_eq!(out.len(), HEADER_SIZE);
 
         // Body
-        let body_bytes: &[u8] = bytemuck::cast_slice(m.bits.as_ref());
+        let body_bytes: &[u8] = bytemuck::cast_slice(m.bits.as_slice());
         out.extend_from_slice(body_bytes);
 
         // Footer
@@ -526,10 +731,14 @@ impl SnapMaskFile {
             mode: parsed.mode,
             n_points: parsed.n_points,
             inputs_sha: parsed.inputs_sha,
-            bits: Cow::Owned(bits.to_vec()),
+            bits: ArcCow::from_vec(bits.to_vec()),
         })
     }
 
+    /// Zero-copy reader for `'static` byte slices (test fixtures).
+    /// Production loaders should use
+    /// [`Self::read_from_mmap_unverified`] which keeps the
+    /// `Arc<Mmap>` strong-count tied to the returned struct (#296).
     pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<SnapMask> {
         Self::read_from_bytes_zero_copy_inner(bytes, true)
     }
@@ -541,6 +750,43 @@ impl SnapMaskFile {
         Self::read_from_bytes_zero_copy_inner(bytes, false)
     }
 
+    /// Production mmap-backed reader (#296). Holds an `Arc<Mmap>`
+    /// clone for the returned struct's lifetime — when the struct
+    /// drops, the strong count decreases.
+    ///
+    /// `byte_offset` and `byte_len` are the position and length of the
+    /// `mode/<m>/snap_mask` section within the container. CRC walking
+    /// is the caller's responsibility.
+    pub fn read_from_mmap_unverified(
+        mmap: Arc<memmap2::Mmap>,
+        byte_offset: usize,
+        byte_len: usize,
+    ) -> Result<SnapMask> {
+        anyhow::ensure!(
+            byte_offset.saturating_add(byte_len) <= mmap.len(),
+            "snap_mask section out of bounds: off={byte_offset} len={byte_len} mmap_len={}",
+            mmap.len()
+        );
+        let (mode, n_points, inputs_sha, n_words) = {
+            let bytes = &mmap[byte_offset..byte_offset + byte_len];
+            let parsed = parse_snap_mask_header_and_check(bytes, false)?;
+            let n_words = (parsed.n_points as usize).div_ceil(64);
+            (parsed.mode, parsed.n_points, parsed.inputs_sha, n_words)
+        };
+        // Body sits immediately after the 40-byte header. 8-byte
+        // section alignment + 40-byte header keeps the body 8-byte
+        // aligned, matching `align_of::<u64>() == 8`. `ArcCow::from_mmap`
+        // re-validates the alignment itself.
+        let body_byte_offset = byte_offset + HEADER_SIZE;
+        let bits = ArcCow::<u64>::from_mmap(mmap, body_byte_offset, n_words)?;
+        Ok(SnapMask {
+            mode,
+            n_points,
+            inputs_sha,
+            bits,
+        })
+    }
+
     fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<SnapMask> {
         let parsed = parse_snap_mask_header_and_check(bytes, verify)?;
         debug_assert_eq!(
@@ -549,11 +795,12 @@ impl SnapMaskFile {
             "snap_mask body must be 8-byte aligned"
         );
         let bits: &'static [u64] = bytemuck::cast_slice(parsed.body);
+        // Test fixtures use this path — copy through `ArcCow::Owned`.
         Ok(SnapMask {
             mode: parsed.mode,
             n_points: parsed.n_points,
             inputs_sha: parsed.inputs_sha,
-            bits: Cow::Borrowed(bits),
+            bits: ArcCow::from_vec(bits.to_vec()),
         })
     }
 }
@@ -676,6 +923,46 @@ mod tests {
     }
 
     #[test]
+    fn peek_snap_points_bbox_reads_header_only() {
+        let pts = sample_points();
+        let original = SnapPoints {
+            n_points: pts.len() as u32,
+            bbox_min_lon: 25_000_000,
+            bbox_min_lat: 494_000_000,
+            bbox_max_lon: 65_000_000,
+            bbox_max_lat: 516_000_000,
+            cell_log2: 17,
+            points: ArcCow::from_vec(pts),
+        };
+        let bytes = SnapPointsFile::encode(&original);
+        // Write to a temp file and peek at offset 0.
+        let tmp = tempfile::NamedTempFile::new().expect("tmp");
+        std::fs::write(tmp.path(), &bytes).expect("write");
+        let bbox = peek_snap_points_bbox(tmp.path(), 0).expect("peek");
+        assert_eq!(bbox.min_lon_e7, 25_000_000);
+        assert_eq!(bbox.min_lat_e7, 494_000_000);
+        assert_eq!(bbox.max_lon_e7, 65_000_000);
+        assert_eq!(bbox.max_lat_e7, 516_000_000);
+        // contains_with_margin sanity
+        assert!(bbox.contains_with_margin(4.0, 50.0, 0.01)); // inside
+        assert!(!bbox.contains_with_margin(-30.0, 40.0, 0.01)); // mid-Atlantic
+        // Just outside max_lon (6.5) with no margin should miss
+        assert!(!bbox.contains_with_margin(6.51, 50.0, 0.0));
+        // Same point with 0.05° margin should hit
+        assert!(bbox.contains_with_margin(6.51, 50.0, 0.05));
+    }
+
+    #[test]
+    fn peek_snap_points_bbox_rejects_bad_magic() {
+        let mut bytes = vec![0u8; 56]; // 40 header + 16 footer
+        bytes[0] = 0xAB; // wrong magic
+        let tmp = tempfile::NamedTempFile::new().expect("tmp");
+        std::fs::write(tmp.path(), &bytes).expect("write");
+        let err = peek_snap_points_bbox(tmp.path(), 0).expect_err("should fail");
+        assert!(err.to_string().contains("magic"), "{}", err);
+    }
+
+    #[test]
     fn snap_points_roundtrip_owned() {
         let pts = sample_points();
         let original = SnapPoints {
@@ -685,14 +972,14 @@ mod tests {
             bbox_max_lon: 65_000_000,
             bbox_max_lat: 516_000_000,
             cell_log2: 17,
-            points: Cow::Owned(pts.clone()),
+            points: ArcCow::from_vec(pts.clone()),
         };
         let bytes = SnapPointsFile::encode(&original);
         let parsed = SnapPointsFile::read_from_bytes(&bytes).expect("read");
         assert_eq!(parsed.n_points as usize, pts.len());
         assert_eq!(parsed.bbox_min_lon, 25_000_000);
         assert_eq!(parsed.cell_log2, 17);
-        assert_eq!(parsed.points.as_ref(), pts.as_slice());
+        assert_eq!(parsed.points.as_slice(), pts.as_slice());
     }
 
     #[test]
@@ -705,14 +992,17 @@ mod tests {
             bbox_max_lon: 1,
             bbox_max_lat: 1,
             cell_log2: 17,
-            points: Cow::Owned(pts.clone()),
+            points: ArcCow::from_vec(pts.clone()),
         };
         let bytes = SnapPointsFile::encode(&original);
         let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
         let owned = SnapPointsFile::read_from_bytes(leaked).expect("owned");
         let zc = SnapPointsFile::read_from_bytes_zero_copy(leaked).expect("zc");
-        assert_eq!(owned.points.as_ref(), zc.points.as_ref());
-        assert!(matches!(zc.points, Cow::Borrowed(_)));
+        assert_eq!(owned.points.as_slice(), zc.points.as_slice());
+        // Legacy zero-copy path now copies into `ArcCow::Owned`. The
+        // true zero-copy production path is
+        // `read_from_mmap_unverified`, exercised in a separate test.
+        assert!(matches!(zc.points, ArcCow::Owned(_)));
     }
 
     #[test]
@@ -725,7 +1015,7 @@ mod tests {
             bbox_max_lon: 1,
             bbox_max_lat: 1,
             cell_log2: 17,
-            points: Cow::Owned(pts),
+            points: ArcCow::from_vec(pts),
         };
         let mut bytes = SnapPointsFile::encode(&original);
         bytes[HEADER_SIZE + 8] ^= 0xFF;
@@ -744,7 +1034,7 @@ mod tests {
             bbox_max_lon: 1,
             bbox_max_lat: 1,
             cell_log2: 17,
-            points: Cow::Owned(pts),
+            points: ArcCow::from_vec(pts),
         };
         let mut bytes = SnapPointsFile::encode(&original);
         bytes[0] ^= 0xFF;
@@ -766,14 +1056,14 @@ mod tests {
             origin_x: 25_000_000,
             origin_y: 494_000_000,
             cell_log2: 17,
-            offsets: Cow::Owned(offsets.clone()),
+            offsets: ArcCow::from_vec(offsets.clone()),
         };
         let bytes = SnapGridFile::encode(&original);
         let parsed = SnapGridFile::read_from_bytes(&bytes).expect("read");
         assert_eq!(parsed.n_cells_x, n_cells_x);
         assert_eq!(parsed.n_cells_y, n_cells_y);
         assert_eq!(parsed.cell_log2, 17);
-        assert_eq!(parsed.offsets.as_ref(), offsets.as_slice());
+        assert_eq!(parsed.offsets.as_slice(), offsets.as_slice());
     }
 
     #[test]
@@ -787,13 +1077,15 @@ mod tests {
             origin_x: 0,
             origin_y: 0,
             cell_log2: 17,
-            offsets: Cow::Owned(offsets.clone()),
+            offsets: ArcCow::from_vec(offsets.clone()),
         };
         let bytes = SnapGridFile::encode(&original);
         let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
         let zc = SnapGridFile::read_from_bytes_zero_copy(leaked).expect("zc");
-        assert_eq!(zc.offsets.as_ref(), offsets.as_slice());
-        assert!(matches!(zc.offsets, Cow::Borrowed(_)));
+        assert_eq!(zc.offsets.as_slice(), offsets.as_slice());
+        // Legacy zero-copy path copies into `ArcCow::Owned`; true
+        // zero-copy goes through `read_from_mmap_unverified`.
+        assert!(matches!(zc.offsets, ArcCow::Owned(_)));
     }
 
     #[test]
@@ -810,7 +1102,7 @@ mod tests {
             mode: 1,
             n_points,
             inputs_sha: [0xCD; 16],
-            bits: Cow::Owned(bits.clone()),
+            bits: ArcCow::from_vec(bits.clone()),
         };
         let bytes = SnapMaskFile::encode(&original);
         let parsed = SnapMaskFile::read_from_bytes(&bytes).expect("read");
@@ -838,13 +1130,15 @@ mod tests {
             mode: 3,
             n_points,
             inputs_sha: [0; 16],
-            bits: Cow::Owned(bits.clone()),
+            bits: ArcCow::from_vec(bits.clone()),
         };
         let bytes = SnapMaskFile::encode(&original);
         let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
         let zc = SnapMaskFile::read_from_bytes_zero_copy(leaked).expect("zc");
-        assert_eq!(zc.bits.as_ref(), bits.as_slice());
-        assert!(matches!(zc.bits, Cow::Borrowed(_)));
+        assert_eq!(zc.bits.as_slice(), bits.as_slice());
+        // Legacy zero-copy path copies into `ArcCow::Owned`; true
+        // zero-copy goes through `read_from_mmap_unverified`.
+        assert!(matches!(zc.bits, ArcCow::Owned(_)));
     }
 
     #[test]
@@ -855,7 +1149,7 @@ mod tests {
             mode: 0,
             n_points,
             inputs_sha: [0; 16],
-            bits: Cow::Owned(bits),
+            bits: ArcCow::from_vec(bits),
         };
         let mut bytes = SnapMaskFile::encode(&original);
         bytes[HEADER_SIZE + 4] ^= 0xFF;
@@ -873,7 +1167,7 @@ mod tests {
             bbox_max_lon: 0,
             bbox_max_lat: 0,
             cell_log2: 17,
-            points: Cow::Owned(vec![]),
+            points: ArcCow::from_vec(vec![]),
         };
         let bytes = SnapPointsFile::encode(&original);
         let parsed = SnapPointsFile::read_from_bytes(&bytes).expect("read");
@@ -890,7 +1184,7 @@ mod tests {
             origin_x: 0,
             origin_y: 0,
             cell_log2: 17,
-            offsets: Cow::Owned(vec![0u32, 1, 2, 3, 4]), // n_cells=4 -> need 5 entries
+            offsets: ArcCow::from_vec(vec![0u32, 1, 2, 3, 4]), // n_cells=4 -> need 5 entries
         };
         let bytes = SnapGridFile::encode(&g);
         let parsed = SnapGridFile::read_from_bytes(&bytes).expect("read");

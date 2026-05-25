@@ -773,12 +773,13 @@ pub fn map_match_multi_region(
         // Fast-path: one region, defer to the existing single-region
         // implementation. No cross-region overhead.
         let entry = &regions.regions[idx];
-        let mode_idx = match entry.state.mode_lookup.get(mode_name) {
+        let state = entry.state();
+        let mode_idx = match state.mode_lookup.get(mode_name) {
             Some(&m) => m,
             None => return None,
         };
         return map_match(
-            &entry.state,
+            &state,
             Mode(mode_idx),
             coordinates,
             gps_accuracy,
@@ -799,7 +800,7 @@ pub fn map_match_multi_region(
         .regions
         .iter()
         .map(|r| {
-            r.state
+            r.state()
                 .mode_lookup
                 .get(mode_name)
                 .copied()
@@ -849,7 +850,8 @@ pub fn map_match_multi_region(
             if m_idx == u8::MAX {
                 continue;
             }
-            let mode_data = entry.state.get_mode(Mode(m_idx));
+            let state = entry.state();
+            let mode_data = state.get_mode(Mode(m_idx));
 
             // Materialise the (single-region) Candidate slice for this
             // run so we can reuse build_matched_path verbatim.
@@ -947,13 +949,14 @@ fn generate_candidates_multi(
 ) -> Vec<RegionCandidate> {
     let mut out: Vec<RegionCandidate> = Vec::new();
     for (region_idx, entry) in regions.regions.iter().enumerate() {
-        let mode_idx = match entry.state.mode_lookup.get(mode_name) {
+        let state = entry.state();
+        let mode_idx = match state.mode_lookup.get(mode_name) {
             Some(&m) => m,
             None => continue,
         };
-        let mode_data = entry.state.get_mode(Mode(mode_idx));
+        let mode_data = state.get_mode(Mode(mode_idx));
         let mask = &mode_data.mask;
-        let hits = entry.state.snap_index.snap_k_with_info_filtered(
+        let hits = state.snap_index.snap_k_with_info_filtered(
             lon,
             lat,
             mode_idx,
@@ -961,13 +964,8 @@ fn generate_candidates_multi(
             Some(mask),
         );
         for (ebg_id, _mlon, _mlat, _mdist) in hits {
-            let (proj_lon, proj_lat, proj_dist) = project_onto_edge(
-                lon,
-                lat,
-                ebg_id,
-                &entry.state.ebg_nodes,
-                &entry.state.edge_geom,
-            );
+            let (proj_lon, proj_lat, proj_dist) =
+                project_onto_edge(lon, lat, ebg_id, &state.ebg_nodes, &state.edge_geom);
             if proj_dist.is_infinite() {
                 continue;
             }
@@ -1180,7 +1178,8 @@ fn compute_transition_distances_multi(
         if from_mode_idx == u8::MAX {
             continue;
         }
-        let from_state: &Arc<ServerState> = &regions.regions[from_region].state;
+        let from_state_arc = regions.regions[from_region].state();
+        let from_state: &Arc<ServerState> = &from_state_arc;
         let from_mode_data = from_state.get_mode(Mode(from_mode_idx));
         let src_rank = from_mode_data.orig_to_rank[fc.ebg_id as usize];
         if src_rank == u32::MAX {
@@ -1236,7 +1235,8 @@ fn compute_transition_distances_multi(
                 // both legs and sum length_mm, plus add the haversine
                 // border-crossing distance from src_border_ebg to
                 // dst_border_ebg.
-                let to_state: &Arc<ServerState> = &regions.regions[to_region].state;
+                let to_state_arc = regions.regions[to_region].state();
+                let to_state: &Arc<ServerState> = &to_state_arc;
                 let to_mode_data = to_state.get_mode(Mode(to_mode_idx));
                 let dst_rank = to_mode_data.orig_to_rank[tc.ebg_id as usize];
                 if dst_rank == u32::MAX {

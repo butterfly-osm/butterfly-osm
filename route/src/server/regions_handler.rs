@@ -66,14 +66,28 @@ pub async fn regions_handler(State(regions): State<Arc<RegionsState>>) -> impl I
     let loaded: Vec<LoadedRegion> = regions
         .regions
         .iter()
-        .map(|r| LoadedRegion {
-            id: r.id.clone(),
-            container: r.container.display().to_string(),
-            nodes: r.state.ebg_nodes.n_nodes as u64,
-            edges: r.state.ebg_csr.n_arcs,
-            verify_status: r.verify_status.label(),
-            named_roads: r.state.way_names.len(),
-            modes: r.state.mode_names.clone(),
+        .map(|r| {
+            // #292 Phase 3: report 0s for Pending regions on the lazy
+            // boot path; their stats publish once first query loads
+            // the state. verify_status stays "verified" because the
+            // container is *registered* — its sections haven't been
+            // walked yet, but they will be when the load fires.
+            let state_opt = r.state_loaded();
+            LoadedRegion {
+                id: r.id.clone(),
+                container: r.container.display().to_string(),
+                nodes: state_opt
+                    .as_ref()
+                    .map(|s| s.ebg_nodes.n_nodes as u64)
+                    .unwrap_or(0),
+                edges: state_opt.as_ref().map(|s| s.ebg_csr.n_arcs).unwrap_or(0),
+                verify_status: r.verify_status.label(),
+                named_roads: state_opt.as_ref().map(|s| s.way_names.len()).unwrap_or(0),
+                modes: state_opt
+                    .as_ref()
+                    .map(|s| s.mode_names.clone())
+                    .unwrap_or_default(),
+            }
         })
         .collect();
     Json(RegionsResponse { loaded })

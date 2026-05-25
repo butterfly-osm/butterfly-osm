@@ -718,7 +718,7 @@ pub async fn catchment_handler(
             // Catchment with empty stores/clients hits the validation
             // path below; fall back to primary so the validation error
             // fires. Region label is the primary's id.
-            (Arc::clone(regions.primary()), regions.regions[0].id.clone())
+            (regions.primary(), regions.regions[0].id.clone())
         };
 
     // Validate mode

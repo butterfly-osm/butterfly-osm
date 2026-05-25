@@ -33,7 +33,6 @@ use crate::matrix::bucket_ch::{
     UpAdjFlatFile,
 };
 use crate::server::snap_index::{DEFAULT_CELL_LOG2, SnapBuilderMode, build_snap_index};
-use std::borrow::Cow;
 
 /// Section name for the JSON manifest that lists modes + bundle ids.
 /// Lives at the top of the `shared/` namespace so legacy tooling can
@@ -367,7 +366,7 @@ pub fn pack(
                     kind: ModeIndexKind::OrigToRank,
                     mode: mode_byte,
                     inputs_sha,
-                    data: Cow::Owned(orig_to_rank),
+                    data: crate::formats::ArcCow::from_vec(orig_to_rank),
                 };
                 append_encoded(
                     &mut w,
@@ -383,7 +382,7 @@ pub fn pack(
                     kind: ModeIndexKind::FilteredToOriginal,
                     mode: mode_byte,
                     inputs_sha,
-                    data: Cow::Owned(f2o_data),
+                    data: crate::formats::ArcCow::from_vec(f2o_data),
                 };
                 append_encoded(
                     &mut w,
@@ -795,7 +794,7 @@ fn pack_edge_geometry(w: &mut ContainerWriter, step3: &Path) -> Result<()> {
     let off_struct = EdgeGeomOffsets {
         n_edges: n_edges as u32,
         n_points,
-        offsets: Cow::Owned(offsets),
+        offsets: crate::formats::mmap::ArcCow::from_vec(offsets),
     };
     let pts_struct = EdgeGeomPoints {
         n_points,
@@ -803,7 +802,7 @@ fn pack_edge_geometry(w: &mut ContainerWriter, step3: &Path) -> Result<()> {
         bbox_min_lat,
         bbox_max_lon,
         bbox_max_lat,
-        points: Cow::Owned(points),
+        points: crate::formats::mmap::ArcCow::from_vec(points),
     };
 
     let off_bytes = EdgeGeomOffsetsFile::encode(&off_struct);
@@ -1754,7 +1753,6 @@ mod tests {
     use crate::formats::filtered_ebg::FilteredEbg;
     use crate::formats::order_ebg::OrderEbg;
     use crate::profile_abi::Mode;
-    use std::borrow::Cow;
     use std::fs;
     use tempfile::{NamedTempFile, TempDir};
 
@@ -1784,11 +1782,11 @@ mod tests {
             n_filtered_arcs: 0,
             n_original_nodes: 0,
             inputs_sha: [0u8; 32],
-            offsets: Cow::Owned(vec![0u64]), // n_filtered_nodes + 1 = 1 entry
-            heads: Cow::Owned(vec![]),
-            original_arc_idx: Cow::Owned(vec![]),
-            filtered_to_original: Cow::Owned(vec![]),
-            original_to_filtered: Cow::Owned(vec![]),
+            offsets: crate::formats::ArcCow::from_vec(vec![0u64]), // n_filtered_nodes + 1 = 1 entry
+            heads: crate::formats::ArcCow::from_vec(vec![]),
+            original_arc_idx: crate::formats::ArcCow::from_vec(vec![]),
+            filtered_to_original: crate::formats::ArcCow::from_vec(vec![]),
+            original_to_filtered: crate::formats::ArcCow::from_vec(vec![]),
         };
         crate::formats::FilteredEbgFile::write(p, &data)?;
         Ok(())
@@ -2100,7 +2098,6 @@ mod topology_diff_tests {
     use crate::formats::filtered_ebg::FilteredEbg;
     use crate::formats::{BitsetField, FilteredEbgFile};
     use crate::profile_abi::Mode;
-    use std::borrow::Cow;
     use tempfile::NamedTempFile;
 
     /// Write a minimal mask section bytestream: 24-byte header + bitset
@@ -2164,11 +2161,11 @@ mod topology_diff_tests {
             n_filtered_arcs: n_arcs,
             n_original_nodes: n_orig,
             inputs_sha: [0u8; 32],
-            offsets: Cow::Owned(offsets),
-            heads: Cow::Owned(heads),
-            original_arc_idx: Cow::Owned(arc_indices.to_vec()),
-            filtered_to_original: Cow::Owned(filtered_to_original),
-            original_to_filtered: Cow::Owned(original_to_filtered),
+            offsets: crate::formats::ArcCow::from_vec(offsets),
+            heads: crate::formats::ArcCow::from_vec(heads),
+            original_arc_idx: crate::formats::ArcCow::from_vec(arc_indices.to_vec()),
+            filtered_to_original: crate::formats::ArcCow::from_vec(filtered_to_original),
+            original_to_filtered: crate::formats::ArcCow::from_vec(original_to_filtered),
         }
     }
 
@@ -2185,15 +2182,15 @@ mod topology_diff_tests {
             n_shortcuts,
             n_original_arcs,
             inputs_sha: [0u8; 32],
-            up_offsets: Cow::Owned(zero_off.clone()),
-            up_targets: Cow::Owned(vec![]),
+            up_offsets: crate::formats::ArcCow::from_vec(zero_off.clone()),
+            up_targets: crate::formats::ArcCow::from_vec(vec![]),
             up_is_shortcut: BitsetField::from_owned_words(vec![], 0),
-            up_middle: Cow::Owned(vec![]),
-            down_offsets: Cow::Owned(zero_off),
-            down_targets: Cow::Owned(vec![]),
+            up_middle: crate::formats::ArcCow::from_vec(vec![]),
+            down_offsets: crate::formats::ArcCow::from_vec(zero_off),
+            down_targets: crate::formats::ArcCow::from_vec(vec![]),
             down_is_shortcut: BitsetField::from_owned_words(vec![], 0),
-            down_middle: Cow::Owned(vec![]),
-            rank_to_filtered: Cow::Owned(zero_rank),
+            down_middle: crate::formats::ArcCow::from_vec(vec![]),
+            rank_to_filtered: crate::formats::ArcCow::from_vec(zero_rank),
         }
     }
 

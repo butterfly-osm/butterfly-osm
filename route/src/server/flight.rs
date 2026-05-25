@@ -49,20 +49,41 @@ use super::isochrone_handler::{run_phast_bounded_fast, run_phast_bounded_fast_re
 use super::query::CchQuery;
 use super::state::ServerState;
 
-/// Butterfly Arrow Flight service — wraps shared ServerState
+/// Butterfly Arrow Flight service. Holds an `Arc<RegionsState>` and
+/// resolves the primary `ServerState` lazily per request — this lets
+/// the multi-region default-lazy boot keep all regions in Pending
+/// state until the first query (#292 Phase 3).
+///
+/// **Multi-region limitation**: today Flight always serves the
+/// *primary* (first) region. Cross-region routing on Flight is filed
+/// as future work (PR C in the #91 chain). Until then, multi-region
+/// REST works correctly via the per-request dispatcher; Flight is
+/// single-region-only.
 pub struct ButterflyFlight {
-    state: Arc<ServerState>,
+    regions: Arc<super::regions::RegionsState>,
 }
 
 impl ButterflyFlight {
-    pub fn new(state: Arc<ServerState>) -> Self {
-        Self { state }
+    pub fn new(regions: Arc<super::regions::RegionsState>) -> Self {
+        Self { regions }
+    }
+
+    /// Resolve the primary region's state on demand. Triggers lazy
+    /// load (~30 s container load) the first time a Flight handler
+    /// reaches this method on a Pending region.
+    #[inline]
+    fn state(&self) -> Arc<ServerState> {
+        self.regions.primary()
     }
 }
 
-/// Build a configured FlightServiceServer
-pub fn build_flight_server(state: Arc<ServerState>) -> FlightServiceServer<ButterflyFlight> {
-    FlightServiceServer::new(ButterflyFlight::new(state))
+/// Build a configured FlightServiceServer. Takes `Arc<RegionsState>`
+/// instead of `Arc<ServerState>` so lazy region boot doesn't get
+/// forced into eager construction at boot time.
+pub fn build_flight_server(
+    regions: Arc<super::regions::RegionsState>,
+) -> FlightServiceServer<ButterflyFlight> {
+    FlightServiceServer::new(ButterflyFlight::new(regions))
         .max_encoding_message_size(64 * 1024 * 1024)
         .max_decoding_message_size(64 * 1024 * 1024)
 }
@@ -2119,7 +2140,11 @@ impl FlightService for ButterflyFlight {
     ) -> std::result::Result<Response<Self::DoGetStream>, Status> {
         let ticket = request.into_inner();
         let parsed = parse_ticket(&ticket)?;
-        let mode = resolve_mode(&parsed.profile, &self.state)?;
+        // Resolve the primary region lazily — triggers container load
+        // if this is still a Pending region (the default boot path).
+        // Subsequent calls hit the read-lock fast path.
+        let state = self.state();
+        let mode = resolve_mode(&parsed.profile, &state)?;
 
         match parsed.action.as_str() {
             "matrix" => {
@@ -2140,7 +2165,7 @@ impl FlightService for ButterflyFlight {
                     ));
                 }
 
-                let batch_stream = do_matrix(&self.state, mode, params)?;
+                let batch_stream = do_matrix(&state, mode, params)?;
                 let schema = Arc::new(matrix_schema());
                 let flight_stream = batches_to_flight_data(schema, batch_stream);
                 Ok(Response::new(flight_stream))
@@ -2159,7 +2184,7 @@ impl FlightService for ButterflyFlight {
                     return Err(Status::invalid_argument("max 100,000 pairs per request"));
                 }
 
-                let batch_stream = do_route_batch(&self.state, mode, params)?;
+                let batch_stream = do_route_batch(&state, mode, params)?;
                 let schema = Arc::new(route_batch_schema());
                 let flight_stream = batches_to_flight_data(schema, batch_stream);
                 Ok(Response::new(flight_stream))
@@ -2172,7 +2197,7 @@ impl FlightService for ButterflyFlight {
 
                 validate_coord(params.lon, params.lat, "origin")?;
 
-                let batch_stream = do_isochrone(&self.state, mode, params)?;
+                let batch_stream = do_isochrone(&state, mode, params)?;
                 let schema = Arc::new(isochrone_schema());
                 let flight_stream = batches_to_flight_data(schema, batch_stream);
                 Ok(Response::new(flight_stream))
@@ -2189,7 +2214,7 @@ impl FlightService for ButterflyFlight {
                     serde_json::from_str(&parsed.params_json).map_err(|e| {
                         Status::invalid_argument(format!("Invalid transit_bulk params: {}", e))
                     })?;
-                let batch_stream = do_transit_bulk(&self.state, params)?;
+                let batch_stream = do_transit_bulk(&state, params)?;
                 let schema = Arc::new(transit_bulk_schema());
                 let flight_stream = batches_to_flight_data(schema, batch_stream);
                 Ok(Response::new(flight_stream))
@@ -2199,7 +2224,7 @@ impl FlightService for ButterflyFlight {
                     serde_json::from_str(&parsed.params_json).map_err(|e| {
                         Status::invalid_argument(format!("Invalid edges_batch params: {}", e))
                     })?;
-                let batch_stream = do_edges_batch(&self.state, mode, params)?;
+                let batch_stream = do_edges_batch(&state, mode, params)?;
                 let schema = Arc::new(edges_batch_schema());
                 let flight_stream = batches_to_flight_data(schema, batch_stream);
                 Ok(Response::new(flight_stream))
@@ -2340,7 +2365,9 @@ impl FlightService for ButterflyFlight {
         &self,
         request: Request<Streaming<FlightData>>,
     ) -> std::result::Result<Response<Self::DoExchangeStream>, Status> {
-        let state = Arc::clone(&self.state);
+        // Resolve primary region lazily (triggers container load on
+        // first call if still Pending — default boot state).
+        let state = self.state();
         let mut stream = request.into_inner();
 
         // Collect all FlightData messages, extract descriptor from first

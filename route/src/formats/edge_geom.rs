@@ -20,12 +20,13 @@
 //! `body_crc : u64 || file_crc : u64`.
 
 use anyhow::Result;
-use std::borrow::Cow;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
+use std::sync::Arc;
 
 use super::crc::Digest;
+use super::mmap::ArcCow;
 
 // ---------- Constants -------------------------------------------------------
 
@@ -48,8 +49,11 @@ pub struct EdgeGeomOffsets {
     /// Cumulative point counts. `offsets[edge_id]..offsets[edge_id + 1]`
     /// indexes the half-open vertex range for edge `edge_id` in the
     /// `points` body. Length is `n_edges + 1`; `offsets[0] = 0`,
-    /// `offsets[n_edges] = n_points`.
-    pub offsets: Cow<'static, [u32]>,
+    /// `offsets[n_edges] = n_points`. Owned when read from a plain file
+    /// or built in memory; Arc-backed mmap view when read from a
+    /// container section. See [`ArcCow`] for the variant shape and the
+    /// eviction story (#296).
+    pub offsets: ArcCow<u32>,
 }
 
 impl EdgeGeomOffsets {
@@ -93,7 +97,7 @@ impl EdgeGeomOffsetsFile {
         debug_assert_eq!(out.len(), HEADER_SIZE);
 
         // Body — convert to LE bytes (bytemuck cast assumes host endian).
-        for &v in o.offsets.as_ref() {
+        for &v in o.offsets.as_slice() {
             out.extend_from_slice(&v.to_le_bytes());
         }
 
@@ -128,11 +132,16 @@ impl EdgeGeomOffsetsFile {
         Ok(EdgeGeomOffsets {
             n_edges: parsed.n_edges,
             n_points: parsed.n_points,
-            offsets: Cow::Owned(offsets),
+            offsets: ArcCow::from_vec(offsets),
         })
     }
 
-    /// Zero-copy reader for a `'static` byte slice (mmap-backed).
+    /// Legacy zero-copy reader for a `'static` byte slice. Test fixtures
+    /// that leak a `Box<[u8]>` still use this path; it now copies the
+    /// body into a `Vec<u32>` and wraps it in `ArcCow::Owned`.
+    /// Production loaders should use
+    /// [`Self::read_from_mmap_unverified`] which keeps the
+    /// `Arc<Mmap>` strong-count tied to the returned struct (#296).
     pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<EdgeGeomOffsets> {
         Self::read_from_bytes_zero_copy_inner(bytes, true)
     }
@@ -154,12 +163,56 @@ impl EdgeGeomOffsetsFile {
             0,
             "edge_geom_offsets body must be 4-byte aligned for &[u32]"
         );
-        let off_slice: &'static [u32] = bytemuck::cast_slice(parsed.body);
+        // Cast the borrowed body bytes to `&[u32]`, then copy into a
+        // Vec wrapped in `ArcCow::Owned`. The legacy zero-copy entry
+        // point is now Owned because the `'static` lifetime came from a
+        // `Box::leak` in test fixtures — we don't carry that leak into
+        // production storage. Production goes through
+        // [`Self::read_from_mmap_unverified`].
+        let off_slice: &[u32] = bytemuck::cast_slice(parsed.body);
         sanity_check_offsets(off_slice, parsed.n_points)?;
         Ok(EdgeGeomOffsets {
             n_edges: parsed.n_edges,
             n_points: parsed.n_points,
-            offsets: Cow::Borrowed(off_slice),
+            offsets: ArcCow::from_vec(off_slice.to_vec()),
+        })
+    }
+
+    /// Production mmap-backed reader (#296). Holds an `Arc<Mmap>`
+    /// clone for the returned struct's lifetime — when the struct
+    /// drops, the strong count decreases. Once all clones drop, the
+    /// `Mmap` drops, `munmap` fires, and the kernel reclaims the
+    /// pages.
+    ///
+    /// `byte_offset` and `byte_len` are the position and length of
+    /// the section within the container, as recorded in the directory
+    /// entry. CRC walking is the caller's responsibility (typically
+    /// driven through the lazy CRC layer before this call).
+    pub fn read_from_mmap_unverified(
+        mmap: Arc<memmap2::Mmap>,
+        byte_offset: usize,
+        byte_len: usize,
+    ) -> Result<EdgeGeomOffsets> {
+        anyhow::ensure!(
+            byte_offset.saturating_add(byte_len) <= mmap.len(),
+            "edge_geom_offsets section out of bounds: off={byte_offset} len={byte_len} mmap_len={}",
+            mmap.len()
+        );
+        let (n_edges, n_points, expected_entries) = {
+            let bytes = &mmap[byte_offset..byte_offset + byte_len];
+            let parsed = parse_offsets_header_and_check(bytes, false)?;
+            // Validate offsets monotonicity against the live slice;
+            // the borrow ends with this block.
+            let off_slice: &[u32] = bytemuck::cast_slice(parsed.body);
+            sanity_check_offsets(off_slice, parsed.n_points)?;
+            (parsed.n_edges, parsed.n_points, parsed.expected_entries)
+        };
+        let body_byte_offset = byte_offset + HEADER_SIZE;
+        let offsets = ArcCow::<u32>::from_mmap(mmap, body_byte_offset, expected_entries)?;
+        Ok(EdgeGeomOffsets {
+            n_edges,
+            n_points,
+            offsets,
         })
     }
 }
@@ -261,7 +314,10 @@ pub struct EdgeGeomPoints {
     pub bbox_max_lon: i32,
     pub bbox_max_lat: i32,
     /// Interleaved `(lon_e7, lat_e7)` pairs. Length = `2 * n_points`.
-    pub points: Cow<'static, [i32]>,
+    /// Owned when read from a plain file or built in memory; Arc-backed
+    /// mmap view when read from a container section. See [`ArcCow`] for
+    /// the variant shape and the eviction story (#296).
+    pub points: ArcCow<i32>,
 }
 
 pub struct EdgeGeomPointsFile;
@@ -296,7 +352,7 @@ impl EdgeGeomPointsFile {
         debug_assert_eq!(out.len(), HEADER_SIZE);
 
         // Body
-        for &v in p.points.as_ref() {
+        for &v in p.points.as_slice() {
             out.extend_from_slice(&v.to_le_bytes());
         }
 
@@ -332,10 +388,16 @@ impl EdgeGeomPointsFile {
             bbox_min_lat: parsed.bbox_min_lat,
             bbox_max_lon: parsed.bbox_max_lon,
             bbox_max_lat: parsed.bbox_max_lat,
-            points: Cow::Owned(points),
+            points: ArcCow::from_vec(points),
         })
     }
 
+    /// Legacy zero-copy reader for a `'static` byte slice. Test
+    /// fixtures that leak a `Box<[u8]>` still use this path; it now
+    /// copies the body into a `Vec<i32>` and wraps it in
+    /// `ArcCow::Owned`. Production loaders should use
+    /// [`Self::read_from_mmap_unverified`] which keeps the
+    /// `Arc<Mmap>` strong-count tied to the returned struct (#296).
     pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<EdgeGeomPoints> {
         Self::read_from_bytes_zero_copy_inner(bytes, true)
     }
@@ -357,14 +419,58 @@ impl EdgeGeomPointsFile {
             0,
             "edge_geom_points body must be 4-byte aligned for &[i32]"
         );
-        let pts: &'static [i32] = bytemuck::cast_slice(parsed.body);
+        let pts: &[i32] = bytemuck::cast_slice(parsed.body);
         Ok(EdgeGeomPoints {
             n_points: parsed.n_points,
             bbox_min_lon: parsed.bbox_min_lon,
             bbox_min_lat: parsed.bbox_min_lat,
             bbox_max_lon: parsed.bbox_max_lon,
             bbox_max_lat: parsed.bbox_max_lat,
-            points: Cow::Borrowed(pts),
+            points: ArcCow::from_vec(pts.to_vec()),
+        })
+    }
+
+    /// Production mmap-backed reader (#296). Holds an `Arc<Mmap>`
+    /// clone for the returned struct's lifetime — when the struct
+    /// drops, the strong count decreases. Once all clones drop, the
+    /// `Mmap` drops, `munmap` fires, and the kernel reclaims the
+    /// pages.
+    ///
+    /// `byte_offset` and `byte_len` are the position and length of
+    /// the section within the container, as recorded in the directory
+    /// entry. CRC walking is the caller's responsibility (typically
+    /// driven through the lazy CRC layer before this call).
+    pub fn read_from_mmap_unverified(
+        mmap: Arc<memmap2::Mmap>,
+        byte_offset: usize,
+        byte_len: usize,
+    ) -> Result<EdgeGeomPoints> {
+        anyhow::ensure!(
+            byte_offset.saturating_add(byte_len) <= mmap.len(),
+            "edge_geom_points section out of bounds: off={byte_offset} len={byte_len} mmap_len={}",
+            mmap.len()
+        );
+        let (n_points, bbox_min_lon, bbox_min_lat, bbox_max_lon, bbox_max_lat, expected_i32s) = {
+            let bytes = &mmap[byte_offset..byte_offset + byte_len];
+            let parsed = parse_points_header_and_check(bytes, false)?;
+            (
+                parsed.n_points,
+                parsed.bbox_min_lon,
+                parsed.bbox_min_lat,
+                parsed.bbox_max_lon,
+                parsed.bbox_max_lat,
+                parsed.expected_i32s,
+            )
+        };
+        let body_byte_offset = byte_offset + HEADER_SIZE;
+        let points = ArcCow::<i32>::from_mmap(mmap, body_byte_offset, expected_i32s)?;
+        Ok(EdgeGeomPoints {
+            n_points,
+            bbox_min_lon,
+            bbox_min_lat,
+            bbox_max_lon,
+            bbox_max_lat,
+            points,
         })
     }
 }
@@ -482,7 +588,7 @@ mod tests {
         EdgeGeomOffsets {
             n_edges: 4,
             n_points: 10,
-            offsets: Cow::Owned(offsets),
+            offsets: ArcCow::from_vec(offsets),
         }
     }
 
@@ -495,7 +601,7 @@ mod tests {
             bbox_min_lat: 30_000_100,
             bbox_max_lon: 30_001_800,
             bbox_max_lat: 30_001_900,
-            points: Cow::Owned(pts),
+            points: ArcCow::from_vec(pts),
         }
     }
 
@@ -506,7 +612,7 @@ mod tests {
         let parsed = EdgeGeomOffsetsFile::read_from_bytes(&bytes).expect("read");
         assert_eq!(parsed.n_edges, original.n_edges);
         assert_eq!(parsed.n_points, original.n_points);
-        assert_eq!(parsed.offsets.as_ref(), original.offsets.as_ref());
+        assert_eq!(parsed.offsets.as_slice(), original.offsets.as_slice());
     }
 
     #[test]
@@ -516,8 +622,7 @@ mod tests {
         let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
         let owned = EdgeGeomOffsetsFile::read_from_bytes(leaked).expect("owned");
         let zc = EdgeGeomOffsetsFile::read_from_bytes_zero_copy(leaked).expect("zc");
-        assert_eq!(owned.offsets.as_ref(), zc.offsets.as_ref());
-        assert!(matches!(zc.offsets, Cow::Borrowed(_)));
+        assert_eq!(owned.offsets.as_slice(), zc.offsets.as_slice());
     }
 
     #[test]
@@ -585,7 +690,7 @@ mod tests {
         let bad = EdgeGeomOffsets {
             n_edges: 3,
             n_points: 10,
-            offsets: Cow::Owned(vec![0, 5, 3, 10]), // non-monotonic at index 1->2
+            offsets: ArcCow::from_vec(vec![0, 5, 3, 10]), // non-monotonic at index 1->2
         };
         let bytes = EdgeGeomOffsetsFile::encode(&bad);
         let r = EdgeGeomOffsetsFile::read_from_bytes(&bytes);
@@ -598,7 +703,7 @@ mod tests {
         let bad = EdgeGeomOffsets {
             n_edges: 2,
             n_points: 5,
-            offsets: Cow::Owned(vec![1, 3, 5]), // offsets[0] != 0
+            offsets: ArcCow::from_vec(vec![1, 3, 5]), // offsets[0] != 0
         };
         let bytes = EdgeGeomOffsetsFile::encode(&bad);
         let r = EdgeGeomOffsetsFile::read_from_bytes(&bytes);
@@ -611,7 +716,7 @@ mod tests {
         let bad = EdgeGeomOffsets {
             n_edges: 2,
             n_points: 7, // mismatch with offsets[2] = 5
-            offsets: Cow::Owned(vec![0, 3, 5]),
+            offsets: ArcCow::from_vec(vec![0, 3, 5]),
         };
         let bytes = EdgeGeomOffsetsFile::encode(&bad);
         let r = EdgeGeomOffsetsFile::read_from_bytes(&bytes);
@@ -627,7 +732,7 @@ mod tests {
         assert_eq!(parsed.n_points, original.n_points);
         assert_eq!(parsed.bbox_min_lon, original.bbox_min_lon);
         assert_eq!(parsed.bbox_max_lat, original.bbox_max_lat);
-        assert_eq!(parsed.points.as_ref(), original.points.as_ref());
+        assert_eq!(parsed.points.as_slice(), original.points.as_slice());
     }
 
     #[test]
@@ -637,8 +742,7 @@ mod tests {
         let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
         let owned = EdgeGeomPointsFile::read_from_bytes(leaked).expect("owned");
         let zc = EdgeGeomPointsFile::read_from_bytes_zero_copy(leaked).expect("zc");
-        assert_eq!(owned.points.as_ref(), zc.points.as_ref());
-        assert!(matches!(zc.points, Cow::Borrowed(_)));
+        assert_eq!(owned.points.as_slice(), zc.points.as_slice());
     }
 
     #[test]
@@ -693,7 +797,7 @@ mod tests {
         let off = EdgeGeomOffsets {
             n_edges: 0,
             n_points: 0,
-            offsets: Cow::Owned(vec![0]),
+            offsets: ArcCow::from_vec(vec![0]),
         };
         let pts = EdgeGeomPoints {
             n_points: 0,
@@ -701,7 +805,7 @@ mod tests {
             bbox_min_lat: 0,
             bbox_max_lon: 0,
             bbox_max_lat: 0,
-            points: Cow::Owned(vec![]),
+            points: ArcCow::from_vec(vec![]),
         };
         let off_bytes = EdgeGeomOffsetsFile::encode(&off);
         let pts_bytes = EdgeGeomPointsFile::encode(&pts);
