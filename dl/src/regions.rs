@@ -50,14 +50,6 @@ const GERMANY_INDEX_TOML: &str = include_str!("../regions/germany.toml");
 const AUSTRIA_INDEX_TOML: &str = include_str!("../regions/austria.toml");
 const SWITZERLAND_INDEX_TOML: &str = include_str!("../regions/switzerland.toml");
 
-// Non-European regions for butterfly-geocode #96 "serve the world".
-// These ship a [pbf] section only — no transit feeds.
-const UNITED_STATES_INDEX_TOML: &str = include_str!("../regions/united-states.toml");
-const JAPAN_INDEX_TOML: &str = include_str!("../regions/japan.toml");
-const BRAZIL_INDEX_TOML: &str = include_str!("../regions/brazil.toml");
-const INDIA_INDEX_TOML: &str = include_str!("../regions/india.toml");
-const AUSTRALIA_INDEX_TOML: &str = include_str!("../regions/australia.toml");
-
 /// Parsed region index. Each field is an optional list so partial
 /// regions (e.g. one without transit feeds) are a valid shape.
 #[derive(Debug, Clone, Deserialize)]
@@ -68,13 +60,6 @@ pub struct RegionIndex {
     pub gtfs: Vec<GtfsEntry>,
     #[serde(default)]
     pub netex_epip: Vec<NetexEpipEntry>,
-    /// Authoritative-source address datasets (#96 §"Data Sources":
-    /// OpenAddresses, which ingests national open-data datasets like
-    /// BOSA / BAN / BAG / G-NAF / state-level US/DE feeds upstream
-    /// and republishes them through one normalised schema). Consumed
-    /// by butterfly-geocode; routing pipelines ignore the section.
-    #[serde(default)]
-    pub address: Vec<AddressEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -94,58 +79,6 @@ pub struct NetexEpipEntry {
     pub url: String,
 }
 
-/// Authoritative-source address dataset entry. Lives under
-/// `addresses/<id>.<ext>` in the region data root; the extension
-/// derives from `format` (geojson-gz → `.geojson.gz`,
-/// csv-zip → `.zip`, csv → `.csv`).
-#[derive(Debug, Clone, Deserialize)]
-pub struct AddressEntry {
-    pub id: String,
-    pub url: String,
-    /// Wire format. Recognised values:
-    ///
-    /// - `"geojson-gz"` — gzipped GeoJSON-seq, the canonical
-    ///   OpenAddresses processed feed (one Feature per line).
-    /// - `"geojson"` / `"geojsonseq"` / `"ndjson"` — raw uncompressed
-    ///   JSON-seq.
-    /// - `"csv"` — raw CSV (per OpenAddresses CSV spec or BOSA-style).
-    /// - `"csv-gz"` / `"gz"` — gzipped CSV.
-    /// - `"csv-zip"` / `"zip"` — ZIP wrapping a single CSV/GeoJSON
-    ///   entry.
-    /// - `"xml-zip"` — ZIP wrapping XML (legacy, no longer used in
-    ///   v5).
-    ///
-    /// Drives the verification preset (magic prefix + min bytes) at
-    /// fetch time and the loader dispatch at ingest time.
-    pub format: String,
-    /// `SourceTag` name (`"osm"`, `"openaddresses"` / `"oa"`).
-    /// Stored as metadata only; the importer's CLI flag is the source
-    /// of truth for the per-shard byte. Carrying it here lets
-    /// operators inspect the index without a separate registry.
-    #[serde(default)]
-    pub source: Option<String>,
-}
-
-impl AddressEntry {
-    /// File extension on disk for the chosen wire format.
-    fn extension(&self) -> &'static str {
-        match self.format.as_str() {
-            "geojson-gz" => "geojson.gz",
-            "geojson" => "geojson",
-            "geojsonseq" => "geojsonseq",
-            "ndjson" => "ndjson",
-            "csv-zip" | "xml-zip" | "zip" => "zip",
-            "csv-gz" | "gz" => "csv.gz",
-            "csv" => "csv",
-            "xml" => "xml",
-            // Default to .bin for unknown formats. The verified
-            // download falls back to no magic-prefix check, which is
-            // safe — the importer will reject malformed payloads.
-            _ => "bin",
-        }
-    }
-}
-
 impl RegionIndex {
     /// Load the shipped index for a region name. Returns an error if
     /// the region is not recognised.
@@ -158,11 +91,6 @@ impl RegionIndex {
             "germany" => GERMANY_INDEX_TOML,
             "austria" => AUSTRIA_INDEX_TOML,
             "switzerland" => SWITZERLAND_INDEX_TOML,
-            "united-states" | "us" => UNITED_STATES_INDEX_TOML,
-            "japan" => JAPAN_INDEX_TOML,
-            "brazil" => BRAZIL_INDEX_TOML,
-            "india" => INDIA_INDEX_TOML,
-            "australia" => AUSTRALIA_INDEX_TOML,
             other => bail!(
                 "unknown region '{other}'. Supported regions are bundled \
                  in `dl/regions/`. Add a new one with a new TOML file + \
@@ -191,13 +119,12 @@ pub struct RegionEntry {
 }
 
 /// High-level filter for `--only <section>`. Matches the TOML section
-/// names or the aggregate `"transit"` / `"all"` / `"addresses"`.
+/// names or the aggregate `"transit"` / `"all"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SectionFilter {
     All,
     PbfOnly,
     TransitOnly,
-    AddressesOnly,
 }
 
 impl SectionFilter {
@@ -208,9 +135,8 @@ impl SectionFilter {
             "all" => Ok(Self::All),
             "pbf" => Ok(Self::PbfOnly),
             "transit" => Ok(Self::TransitOnly),
-            "addresses" | "address" => Ok(Self::AddressesOnly),
             other => bail!(
-                "unknown --only value '{other}'. Accepted values: all, pbf, transit, addresses"
+                "unknown --only value '{other}'. Accepted values: all, pbf, transit"
             ),
         }
     }
@@ -221,10 +147,6 @@ impl SectionFilter {
 
     fn keeps_transit(self) -> bool {
         matches!(self, Self::All | Self::TransitOnly)
-    }
-
-    fn keeps_addresses(self) -> bool {
-        matches!(self, Self::All | Self::AddressesOnly)
     }
 }
 
@@ -273,20 +195,6 @@ impl RegionIndex {
                     url: feed.url.clone(),
                     target,
                     section: "netex_epip",
-                });
-            }
-        }
-        if filter.keeps_addresses() {
-            for entry in &self.address {
-                let target =
-                    data_root
-                        .join("addresses")
-                        .join(format!("{}.{}", entry.id, entry.extension()));
-                out.push(RegionEntry {
-                    id: entry.id.clone(),
-                    url: entry.url.clone(),
-                    target,
-                    section: "address",
                 });
             }
         }
@@ -398,12 +306,6 @@ pub fn shipped_regions() -> &'static [&'static str] {
         "luxembourg",
         "netherlands",
         "switzerland",
-        // #96 serve-the-world non-European set
-        "australia",
-        "brazil",
-        "india",
-        "japan",
-        "united-states",
     ]
 }
 
@@ -414,7 +316,6 @@ mod tests {
     #[test]
     fn belgium_index_parses() {
         let idx = RegionIndex::load("belgium").expect("belgium should load");
-        // PBF
         assert!(
             idx.pbf.is_some(),
             "belgium index must carry a [pbf] section"
@@ -427,26 +328,13 @@ mod tests {
         assert!(gtfs_ids.contains(&"delijn"));
         assert!(gtfs_ids.contains(&"tec"));
         assert_eq!(idx.netex_epip[0].id, "stib");
-        // Six OpenAddresses regional packs (BRU/VLG/WAL × per-region
-        // langs — bru-fr, bru-nl, vlg-fr, vlg-nl, wal-fr, wal-de).
-        assert_eq!(idx.address.len(), 6);
-        for entry in &idx.address {
-            assert_eq!(entry.source.as_deref(), Some("openaddresses"));
-            assert_eq!(entry.format, "geojson-gz");
-            assert!(
-                entry.url.contains("openaddresses.io"),
-                "OpenAddresses URL drift: {}",
-                entry.url
-            );
-        }
     }
 
     #[test]
-    fn cross_border_region_indexes_parse_with_oa_addresses() {
+    fn cross_border_region_indexes_parse() {
         // Cross-border cluster #1 (BE/FR/NL/LU/DE) plus #2 (AT/DE/CH).
-        // All carry a [pbf] section; per-country authoritative data
-        // ships through OpenAddresses (#96 §"Data Sources") with one
-        // or more `[[address]]` entries.
+        // All carry a [pbf] section; transit / NeTEx ships only for
+        // Belgium today.
         for region in [
             "france",
             "netherlands",
@@ -474,24 +362,6 @@ mod tests {
                 pbf_url.starts_with("https://download.geofabrik.de/"),
                 "region '{region}' PBF URL should be Geofabrik: {pbf_url}",
             );
-            assert!(
-                !idx.address.is_empty(),
-                "region '{region}' must carry at least one [[address]] OpenAddresses entry",
-            );
-            for entry in &idx.address {
-                assert_eq!(
-                    entry.source.as_deref(),
-                    Some("openaddresses"),
-                    "region '{region}' [[address]] entry {} should be tagged source=openaddresses",
-                    entry.id,
-                );
-                assert!(
-                    entry.url.contains("openaddresses.io"),
-                    "region '{region}' [[address]] {} url should hit OpenAddresses: {}",
-                    entry.id,
-                    entry.url,
-                );
-            }
         }
     }
 
@@ -523,12 +393,6 @@ mod tests {
             "germany",
             "austria",
             "switzerland",
-            "united-states",
-            "us",
-            "japan",
-            "brazil",
-            "india",
-            "australia",
         ];
         for name in known {
             assert!(
@@ -562,9 +426,8 @@ mod tests {
     fn entries_respects_all_filter() {
         let idx = RegionIndex::load("belgium").unwrap();
         let entries = idx.entries("belgium", Path::new("/tmp/data"), SectionFilter::All);
-        // 1 pbf + 3 gtfs + 1 netex + 6 address
-        // (OA bru-fr/nl, vlg-fr/nl, wal-fr/de) = 11.
-        assert_eq!(entries.len(), 11);
+        // 1 pbf + 3 gtfs + 1 netex = 5.
+        assert_eq!(entries.len(), 5);
         let pbf = entries.iter().find(|e| e.section == "pbf").unwrap();
         assert_eq!(pbf.target, Path::new("/tmp/data/belgium.pbf"));
         let sncb = entries
@@ -579,56 +442,6 @@ mod tests {
         assert_eq!(
             stib.target,
             Path::new("/tmp/data/transit/netex/stib-epip.xml")
-        );
-        let bru_fr = entries
-            .iter()
-            .find(|e| e.section == "address" && e.id == "oa-be-bru-fr")
-            .unwrap();
-        assert_eq!(
-            bru_fr.target,
-            Path::new("/tmp/data/addresses/oa-be-bru-fr.geojson.gz"),
-        );
-        assert!(
-            bru_fr.url.contains("openaddresses.io"),
-            "OpenAddresses URL drift: {}",
-            bru_fr.url,
-        );
-    }
-
-    #[test]
-    fn entries_respects_addresses_only_filter() {
-        let idx = RegionIndex::load("belgium").unwrap();
-        let entries = idx.entries(
-            "belgium",
-            Path::new("/tmp/data"),
-            SectionFilter::AddressesOnly,
-        );
-        // 6 OpenAddresses regional packs (BRU/VLG/WAL × per-region langs).
-        assert_eq!(entries.len(), 6);
-        for e in &entries {
-            assert_eq!(e.section, "address");
-            assert!(
-                e.id.starts_with("oa-be-"),
-                "unexpected id: {} (expected oa-be-* prefix)",
-                e.id
-            );
-            assert!(
-                e.target.to_string_lossy().ends_with(".geojson.gz"),
-                "unexpected target: {} (expected .geojson.gz)",
-                e.target.display()
-            );
-        }
-    }
-
-    #[test]
-    fn section_filter_addresses_parses() {
-        assert_eq!(
-            SectionFilter::parse("addresses").unwrap(),
-            SectionFilter::AddressesOnly
-        );
-        assert_eq!(
-            SectionFilter::parse("address").unwrap(),
-            SectionFilter::AddressesOnly
         );
     }
 
