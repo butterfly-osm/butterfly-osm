@@ -2027,6 +2027,116 @@ where
     Ok(parsed)
 }
 
+/// #345: read a split-format UpAdjFlat from a FlatTopo + FlatWeights
+/// section pair. Returns None if either section is absent so the
+/// caller can fall back to the legacy v4 path.
+fn try_load_flat_split_up(
+    container: &crate::formats::butterfly_dat::Container,
+    mmap: &std::sync::Arc<memmap2::Mmap>,
+    lazy: &std::sync::Arc<crate::formats::lazy_verify::LazyContainer>,
+    mode_name: &str,
+    metric: &str,
+) -> Result<Option<crate::matrix::bucket_ch::UpAdjFlat>> {
+    let topo_name = format!("mode/{}/up_adj.topo", mode_name);
+    let weights_name = format!("mode/{}/up_adj.weights.{}", mode_name, metric);
+    let (Some(topo_entry), Some(weights_entry)) =
+        (container.get(&topo_name), container.get(&weights_name))
+    else {
+        return Ok(None);
+    };
+    lazy.verify_now(&topo_name)?;
+    lazy.verify_now(&weights_name)?;
+    let (offsets, targets, topo_edge_idx) = crate::matrix::bucket_ch::decode_flat_topo_from_mmap(
+        std::sync::Arc::clone(mmap),
+        topo_entry.offset as usize,
+        topo_entry.len as usize,
+    )?;
+    let weights = crate::matrix::bucket_ch::decode_flat_weights_from_mmap(
+        std::sync::Arc::clone(mmap),
+        weights_entry.offset as usize,
+        weights_entry.len as usize,
+    )?;
+    Ok(Some(crate::matrix::bucket_ch::UpAdjFlat {
+        offsets,
+        targets,
+        weights,
+        topo_edge_idx,
+    }))
+}
+
+/// #345: read a split-format DownReverseAdjFlat from FlatTopo +
+/// FlatWeights. Returns None if either section is absent.
+fn try_load_flat_split_down_rev(
+    container: &crate::formats::butterfly_dat::Container,
+    mmap: &std::sync::Arc<memmap2::Mmap>,
+    lazy: &std::sync::Arc<crate::formats::lazy_verify::LazyContainer>,
+    mode_name: &str,
+    metric: &str,
+) -> Result<Option<crate::matrix::bucket_ch::DownReverseAdjFlat>> {
+    let topo_name = format!("mode/{}/down_reverse_adj.topo", mode_name);
+    let weights_name = format!("mode/{}/down_reverse_adj.weights.{}", mode_name, metric);
+    let (Some(topo_entry), Some(weights_entry)) =
+        (container.get(&topo_name), container.get(&weights_name))
+    else {
+        return Ok(None);
+    };
+    lazy.verify_now(&topo_name)?;
+    lazy.verify_now(&weights_name)?;
+    let (offsets, sources, topo_edge_idx) =
+        crate::matrix::bucket_ch::decode_flat_topo_from_mmap(
+            std::sync::Arc::clone(mmap),
+            topo_entry.offset as usize,
+            topo_entry.len as usize,
+        )?;
+    let weights = crate::matrix::bucket_ch::decode_flat_weights_from_mmap(
+        std::sync::Arc::clone(mmap),
+        weights_entry.offset as usize,
+        weights_entry.len as usize,
+    )?;
+    Ok(Some(crate::matrix::bucket_ch::DownReverseAdjFlat {
+        offsets,
+        sources,
+        weights,
+        topo_edge_idx,
+    }))
+}
+
+/// #345: read a split-format DownAdjFlat from FlatTopo +
+/// FlatWeights. Returns None if either section is absent.
+fn try_load_flat_split_down(
+    container: &crate::formats::butterfly_dat::Container,
+    mmap: &std::sync::Arc<memmap2::Mmap>,
+    lazy: &std::sync::Arc<crate::formats::lazy_verify::LazyContainer>,
+    mode_name: &str,
+    metric: &str,
+) -> Result<Option<crate::matrix::bucket_ch::DownAdjFlat>> {
+    let topo_name = format!("mode/{}/down_adj.topo", mode_name);
+    let weights_name = format!("mode/{}/down_adj.weights.{}", mode_name, metric);
+    let (Some(topo_entry), Some(weights_entry)) =
+        (container.get(&topo_name), container.get(&weights_name))
+    else {
+        return Ok(None);
+    };
+    lazy.verify_now(&topo_name)?;
+    lazy.verify_now(&weights_name)?;
+    let (offsets, targets, _topo_idx_ignored) =
+        crate::matrix::bucket_ch::decode_flat_topo_from_mmap(
+            std::sync::Arc::clone(mmap),
+            topo_entry.offset as usize,
+            topo_entry.len as usize,
+        )?;
+    let weights = crate::matrix::bucket_ch::decode_flat_weights_from_mmap(
+        std::sync::Arc::clone(mmap),
+        weights_entry.offset as usize,
+        weights_entry.len as usize,
+    )?;
+    Ok(Some(crate::matrix::bucket_ch::DownAdjFlat {
+        offsets,
+        targets,
+        weights,
+    }))
+}
+
 /// #277 madvise(DONTNEED) on a container section, addressed by name.
 /// After Phase 6 un-leak, the mapping is owned by an `Arc<Mmap>` rather
 /// than a leaked `'static [u8]` — so the bytes we hand to `madvise` are
@@ -2402,75 +2512,102 @@ fn load_mode_data_from_bundle(
     // lazily on first access; the cold ones stay off RSS. This is the
     // mechanism that makes idle RSS scale with working set, not dataset
     // size.
-    let up_adj_flat = load_flat_section(
-        container,
-        mmap,
-        &format!("mode/{}/up_adj_flat.time", mode_name),
-        lazy,
-        |m, off, len| UpAdjFlatFile::read_from_mmap_unverified(m, off, len),
-        || UpAdjFlat::build_with(&cch_topo, &cch_weights, true),
-    )?;
-    let down_rev_flat = load_flat_section(
-        container,
-        mmap,
-        &format!("mode/{}/down_reverse_adj_flat.time", mode_name),
-        lazy,
-        |m, off, len| DownReverseAdjFlatFile::read_from_mmap_unverified(m, off, len),
-        || DownReverseAdjFlat::build_with(&cch_topo, &cch_weights, true),
-    )?;
-    let down_adj_flat = load_flat_section(
-        container,
-        mmap,
-        &format!("mode/{}/down_adj_flat.time", mode_name),
-        lazy,
-        |m, off, len| DownAdjFlatFile::read_from_mmap_unverified(m, off, len),
-        || DownAdjFlat::build(&cch_topo, &cch_weights),
-    )?;
+    // #345: prefer the split FlatTopo + FlatWeights sections; fall
+    // back to the legacy v4 monolithic flat; fall back to building
+    // from cch_topo + cch_weights on the heap if neither is present.
+    let up_adj_flat = if let Some(f) =
+        try_load_flat_split_up(container, mmap, lazy, mode_name, "time")?
+    {
+        f
+    } else {
+        load_flat_section(
+            container,
+            mmap,
+            &format!("mode/{}/up_adj_flat.time", mode_name),
+            lazy,
+            |m, off, len| UpAdjFlatFile::read_from_mmap_unverified(m, off, len),
+            || UpAdjFlat::build_with(&cch_topo, &cch_weights, true),
+        )?
+    };
+    let down_rev_flat = if let Some(f) =
+        try_load_flat_split_down_rev(container, mmap, lazy, mode_name, "time")?
+    {
+        f
+    } else {
+        load_flat_section(
+            container,
+            mmap,
+            &format!("mode/{}/down_reverse_adj_flat.time", mode_name),
+            lazy,
+            |m, off, len| DownReverseAdjFlatFile::read_from_mmap_unverified(m, off, len),
+            || DownReverseAdjFlat::build_with(&cch_topo, &cch_weights, true),
+        )?
+    };
+    let down_adj_flat = if let Some(f) =
+        try_load_flat_split_down(container, mmap, lazy, mode_name, "time")?
+    {
+        f
+    } else {
+        load_flat_section(
+            container,
+            mmap,
+            &format!("mode/{}/down_adj_flat.time", mode_name),
+            lazy,
+            |m, off, len| DownAdjFlatFile::read_from_mmap_unverified(m, off, len),
+            || DownAdjFlat::build(&cch_topo, &cch_weights),
+        )?
+    };
 
     let (wd_mmap, wd_off, wd_len) = fetch_arc("weights.dist")?;
     let cch_weights_dist = CchWeightsFile::read_from_mmap_unverified(wd_mmap, wd_off, wd_len)?;
     let up_adj_flat_dist_section = format!("mode/{}/up_adj_flat.dist", mode_name);
-    let up_adj_flat_dist = load_flat_section(
-        container,
-        mmap,
-        &up_adj_flat_dist_section,
-        lazy,
-        |m, off, len| UpAdjFlatFile::read_from_mmap_unverified(m, off, len),
-        || UpAdjFlat::build(&cch_topo, &cch_weights_dist),
-    )?;
-    madvise_section_in_container(
-        container,
-        mmap,
-        &up_adj_flat_dist_section,
-    );
+    let up_adj_flat_dist = if let Some(f) =
+        try_load_flat_split_up(container, mmap, lazy, mode_name, "dist")?
+    {
+        f
+    } else {
+        load_flat_section(
+            container,
+            mmap,
+            &up_adj_flat_dist_section,
+            lazy,
+            |m, off, len| UpAdjFlatFile::read_from_mmap_unverified(m, off, len),
+            || UpAdjFlat::build(&cch_topo, &cch_weights_dist),
+        )?
+    };
+    madvise_section_in_container(container, mmap, &up_adj_flat_dist_section);
     let down_rev_flat_dist_section = format!("mode/{}/down_reverse_adj_flat.dist", mode_name);
-    let down_rev_flat_dist = load_flat_section(
-        container,
-        mmap,
-        &down_rev_flat_dist_section,
-        lazy,
-        |m, off, len| DownReverseAdjFlatFile::read_from_mmap_unverified(m, off, len),
-        || DownReverseAdjFlat::build(&cch_topo, &cch_weights_dist),
-    )?;
-    madvise_section_in_container(
-        container,
-        mmap,
-        &down_rev_flat_dist_section,
-    );
+    let down_rev_flat_dist = if let Some(f) =
+        try_load_flat_split_down_rev(container, mmap, lazy, mode_name, "dist")?
+    {
+        f
+    } else {
+        load_flat_section(
+            container,
+            mmap,
+            &down_rev_flat_dist_section,
+            lazy,
+            |m, off, len| DownReverseAdjFlatFile::read_from_mmap_unverified(m, off, len),
+            || DownReverseAdjFlat::build(&cch_topo, &cch_weights_dist),
+        )?
+    };
+    madvise_section_in_container(container, mmap, &down_rev_flat_dist_section);
     let down_adj_flat_dist_section = format!("mode/{}/down_adj_flat.dist", mode_name);
-    let down_adj_flat_dist = load_flat_section(
-        container,
-        mmap,
-        &down_adj_flat_dist_section,
-        lazy,
-        |m, off, len| DownAdjFlatFile::read_from_mmap_unverified(m, off, len),
-        || DownAdjFlat::build(&cch_topo, &cch_weights_dist),
-    )?;
-    madvise_section_in_container(
-        container,
-        mmap,
-        &down_adj_flat_dist_section,
-    );
+    let down_adj_flat_dist = if let Some(f) =
+        try_load_flat_split_down(container, mmap, lazy, mode_name, "dist")?
+    {
+        f
+    } else {
+        load_flat_section(
+            container,
+            mmap,
+            &down_adj_flat_dist_section,
+            lazy,
+            |m, off, len| DownAdjFlatFile::read_from_mmap_unverified(m, off, len),
+            || DownAdjFlat::build(&cch_topo, &cch_weights_dist),
+        )?
+    };
+    madvise_section_in_container(container, mmap, &down_adj_flat_dist_section);
 
     Ok(ModeData {
         mode,
