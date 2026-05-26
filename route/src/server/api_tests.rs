@@ -915,7 +915,6 @@ fn test_contours_max_10() {
 fn test_contour_feature_serialization_time() {
     let feature = ContourFeature {
         time_s: Some(600),
-        distance_m: None,
         polygon: None,
         polygon_geojson: Some(vec![[4.35, 50.85], [4.36, 50.86]]),
         polygon_points: None,
@@ -929,27 +928,11 @@ fn test_contour_feature_serialization_time() {
 }
 
 #[test]
-fn test_contour_feature_serialization_distance() {
-    let feature = ContourFeature {
-        time_s: None,
-        distance_m: Some(5000),
-        polygon: None,
-        polygon_geojson: Some(vec![[4.35, 50.85]]),
-        polygon_points: None,
-        reachable_edges: 999,
-    };
-    let json = serde_json::to_value(&feature).unwrap();
-    assert!(json.get("time_s").is_none());
-    assert_eq!(json["distance_m"], 5000);
-}
-
-#[test]
 fn test_isochrone_response_always_has_contours_array() {
     let resp = IsochroneResponse {
         contours: vec![
             ContourFeature {
                 time_s: Some(300),
-                distance_m: None,
                 polygon: None,
                 polygon_geojson: Some(vec![[4.35, 50.85]]),
                 polygon_points: None,
@@ -957,7 +940,6 @@ fn test_isochrone_response_always_has_contours_array() {
             },
             ContourFeature {
                 time_s: Some(600),
-                distance_m: None,
                 polygon: None,
                 polygon_geojson: Some(vec![[4.34, 50.84]]),
                 polygon_points: None,
@@ -974,25 +956,13 @@ fn test_isochrone_response_always_has_contours_array() {
     assert!(contours[1]["reachable_edges"].as_u64() > contours[0]["reachable_edges"].as_u64());
 }
 
-// === P3: Isodistance tests ===
-
 #[test]
 fn test_isochrone_request_deser_time_s() {
     use super::isochrone_handler::IsochroneRequest;
     let json_str = r#"{"lon":4.35,"lat":50.85,"time_s":600,"mode":"car"}"#;
     let req: IsochroneRequest = serde_json::from_str(json_str).unwrap();
     assert_eq!(req.time_s, Some(600));
-    assert!(req.distance_m.is_none());
     assert!(req.contours.is_none());
-}
-
-#[test]
-fn test_isochrone_request_deser_distance_m() {
-    use super::isochrone_handler::IsochroneRequest;
-    let json_str = r#"{"lon":4.35,"lat":50.85,"distance_m":5000,"mode":"car"}"#;
-    let req: IsochroneRequest = serde_json::from_str(json_str).unwrap();
-    assert!(req.time_s.is_none());
-    assert_eq!(req.distance_m, Some(5000));
 }
 
 #[test]
@@ -1178,7 +1148,6 @@ fn test_isochrone_response_single_contour_still_array() {
     let resp = IsochroneResponse {
         contours: vec![ContourFeature {
             time_s: Some(600),
-            distance_m: None,
             polygon: Some("encoded".to_string()),
             polygon_geojson: None,
             polygon_points: None,
