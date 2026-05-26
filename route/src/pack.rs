@@ -134,18 +134,25 @@ fn glob_per_mode(dir: &Path, prefix: &str, suffix: &str) -> Result<Vec<(String, 
 /// Operator-tweakable knobs for [`pack_with_options`].
 #[derive(Debug, Clone)]
 pub struct PackOptions {
-    /// Drop `shared/nbg.csr` (build-time only, never read by the serve
-    /// path) and `shared/nbg.geo` (only edge metadata is read by serve
-    /// via `read_edges_only_from_bytes`; the polyline body is dead
-    /// post-#155 once `edge_geom` sections are present).
+    /// Drop `shared/nbg.csr` from the packed container. The serve path
+    /// never reads this section — validators in
+    /// `route/src/validate/step4.rs` and the experimental `nbg_ch`
+    /// pipeline read step3/ directly off the filesystem (not from the
+    /// container), so the bytes are dead weight at serve time.
     ///
-    /// `true` by default — saves ~160 MB per Belgium-scale region.
-    /// Validators and the experimental `nbg_ch` pipeline read from
-    /// `step3/` directly (raw FS path) and are unaffected.
+    /// `true` by default — saves ~72 MB per Belgium-scale region (the
+    /// exact `nbg.csr` section size on Belgium; bigger regions save
+    /// proportionally more).
     ///
     /// Pass `lean: false` only when you need a container that
-    /// round-trips through `unpack` to a byte-identical step3/ tree —
-    /// useful for debugging the pack/unpack invariant, not for serving.
+    /// round-trips through `unpack` to a step3/ tree containing the
+    /// original `nbg.csr` — useful for debugging the pack/unpack
+    /// invariant, not for serving.
+    ///
+    /// A follow-up will extend this to skip the polyline body of
+    /// `shared/nbg.geo` (also dead post-#155 once the `edge_geom_*`
+    /// sections are present). That trim needs a format-aware writer,
+    /// not just a "skip the file" check, so it's a separate PR.
     pub lean: bool,
 }
 
@@ -246,18 +253,19 @@ pub fn pack_with_options(
     //
     // - `nbg.csr` is never read by the serve path. Validators and the
     //   experimental `nbg_ch` pipeline read step3/ directly from the
-    //   filesystem (not from the container), so it can be dropped
-    //   under `--lean`.
+    //   filesystem (not from the container), so it is dropped under
+    //   `opts.lean` (default).
     // - `nbg.geo` has two consumers: full polyline reads (legacy) and
     //   `read_edges_only_from_bytes` (post-#155 serve path, which gets
-    //   polylines from `edge_geom_*` sections). When packing lean and
-    //   `edge_geom_*` will also be present, the full polyline body is
-    //   dead weight. We keep `nbg.geo` regardless because the edge
-    //   metadata (bearing, flags, first_osm_way_id) is consumed by the
-    //   route handler; a follow-up could ship just the edge records.
-    // - `nbg.node_map` is also unused by the serve path (used by
-    //   `edges_batch` for OSM-id lookup, but that path reads from
-    //   `shared/nbg.node_map`) — wait, that IS the serve path. Keep it.
+    //   polylines from `edge_geom_*` sections when those sections are
+    //   present). The polyline body is dead weight in that case, but
+    //   the edge metadata (bearing, flags, first_osm_way_id) is still
+    //   consumed by the route handler — so we keep `nbg.geo` whole
+    //   here; trimming just the polyline body needs a format-aware
+    //   writer and is tracked as a follow-up under #346.
+    // - `nbg.node_map` IS consumed by the serve path:
+    //   `Flight::do_edges_batch` looks up OSM node ids via
+    //   `NbgNodeMap::compact_to_osm`. Always pack it.
     if !opts.lean {
         maybe_append(
             &mut w,
@@ -2235,9 +2243,9 @@ mod tests {
         // node_signals optional, missing is OK
         assert!(c.get("shared/step1.node_signals.bin").is_none());
         // #346: default `pack` is lean — nbg.csr is dropped. The
-        // round-trip / debug path (`pack_with_options(lean: false)`)
-        // is exercised by the `roundtrip_with_legacy_nbg_csr` test
-        // below.
+        // opt-out path (`pack_with_options(lean: false)`) is exercised
+        // by `pack_with_options_lean_false_keeps_nbg_csr` below, which
+        // also verifies the byte-identical unpack restore.
         assert!(c.get("shared/nbg.csr").is_none());
         assert!(c.get("shared/ebg.nodes").is_some());
 
@@ -2333,6 +2341,10 @@ mod tests {
         // The opt-out path keeps the legacy `shared/nbg.csr` section so
         // operators that need a byte-identical pack/unpack round-trip
         // (debugging, validators) can still get the section.
+        //
+        // Beyond just "section present in container", verify the full
+        // round-trip: unpack and check the restored
+        // `step3/nbg.csr` is byte-equal to the original.
         let tmp = synth_dir()?;
         let out = tmp.path().join("non-lean.butterfly");
         pack_with_options(tmp.path(), &out, None, None, PackOptions { lean: false })?;
@@ -2341,6 +2353,37 @@ mod tests {
             c.get("shared/nbg.csr").is_some(),
             "non-lean pack should retain nbg.csr"
         );
+
+        let unpacked = tmp.path().join("non-lean-out");
+        unpack(&out, &unpacked)?;
+        let original = fs::read(tmp.path().join("step3/nbg.csr"))?;
+        let restored = fs::read(unpacked.join("step3/nbg.csr"))?;
+        assert_eq!(
+            original, restored,
+            "non-lean pack + unpack should round-trip nbg.csr byte-for-byte"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pack_lean_default_omits_nbg_csr_from_unpacked_tree() -> Result<()> {
+        // The lean default drops nbg.csr from the container; an
+        // unpack of the lean container must therefore NOT restore a
+        // step3/nbg.csr file. This is the inverse of the opt-out
+        // test above and documents the operator-visible behaviour:
+        // lean packs cannot round-trip nbg.csr.
+        let tmp = synth_dir()?;
+        let out = tmp.path().join("lean.butterfly");
+        pack(tmp.path(), &out, None, None)?;
+        let unpacked = tmp.path().join("lean-out");
+        unpack(&out, &unpacked)?;
+        assert!(
+            !unpacked.join("step3/nbg.csr").exists(),
+            "lean unpack should not restore nbg.csr"
+        );
+        // But the other shared sections must still round-trip.
+        assert!(unpacked.join("step3/nbg.geo").exists());
+        assert!(unpacked.join("step3/nbg.node_map").exists());
         Ok(())
     }
 
