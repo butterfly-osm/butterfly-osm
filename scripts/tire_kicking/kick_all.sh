@@ -291,7 +291,7 @@ run("transit_bulk_1", lambda: call("transit_bulk", {
         "max_access_m": 500,   "max_egress_m": 500,
         "max_access_stops": 10,
     }],
-}), expected_status_msg="transit subsystem is not loaded")
+}))
 
 # catchment via DoExchange (#335). Input schema:
 #   (store_id: utf8, store_lon: f64, store_lat: f64, client_lon: f64, client_lat: f64)

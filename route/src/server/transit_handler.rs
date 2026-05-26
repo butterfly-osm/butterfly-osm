@@ -241,17 +241,31 @@ pub async fn transit_handler(
     State(regions): State<Arc<RegionsState>>,
     Query(req): Query<TransitRequest>,
 ) -> Result<Json<TransitResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Transit is single-region only in #91 Phase 1 (the timetable is
-    // loaded against the primary region's foot CCH at boot). For
-    // multi-region deployments the transit subsystem is not loaded;
-    // any /transit query returns 503 from the inner journey computer.
+    // #334: dispatch by the access origin's region — each region
+    // carries its own transit subsystem. Cross-region transit (origin
+    // and destination in different regions) is still a follow-up; for
+    // now we serve intra-region origin/destination pairs.
     let started = std::time::Instant::now();
-    let primary_region_id = regions.regions[0].id.clone();
-    let state = regions.primary();
+    let access_mode = req
+        .access_mode
+        .as_deref()
+        .map(|s| s.to_lowercase())
+        .unwrap_or_else(|| "foot".to_string());
+    let (state, region_id) = match regions.dispatch_single_id(
+        req.origin_lon,
+        req.origin_lat,
+        &access_mode,
+    ) {
+        Ok(pair) => pair,
+        Err(err) => {
+            let (status, body) = err.into_response_parts();
+            return Err((status, Json(body)));
+        }
+    };
     let result = compute_transit_journey(state.as_ref(), &req).map(Json);
     if result.is_ok() {
         super::region_metrics::record_query(
-            &primary_region_id,
+            &region_id,
             "transit",
             started.elapsed().as_secs_f64(),
         );
@@ -967,11 +981,10 @@ pub async fn transit_bulk_handler(
     State(regions): State<Arc<RegionsState>>,
     Json(req): Json<TransitBulkRequest>,
 ) -> Result<Json<TransitBulkResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Transit is single-region only in #91 Phase 1 (see comment in
-    // [`transit_handler`]). Use the primary region.
+    // #334: dispatch by the first query's access origin region. Every
+    // query in the batch must dispatch to the same region; mixed-region
+    // batches return 501 (the existing cross-region semantic).
     let started = std::time::Instant::now();
-    let primary_region_id = regions.regions[0].id.clone();
-    let state = regions.primary();
     // Soft cap on batch size. 100k is generous for interactive use;
     // operators doing matrix-style work should look at `/table/stream`
     // for the road side and batch transit in chunks of ~10k.
@@ -987,11 +1000,43 @@ pub async fn transit_bulk_handler(
             }),
         ));
     }
+    if req.queries.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "queries must not be empty".to_string(),
+            }),
+        ));
+    }
+
+    // Snap the first query's origin to pick the region. Batches must
+    // be single-region — Flight's transit_bulk shares this constraint.
+    let first_access_mode = req
+        .queries[0]
+        .access_mode
+        .as_deref()
+        .or(req.access_mode.as_deref())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_else(|| "foot".to_string());
+    let (state, region_id) = match regions.dispatch_single_id(
+        req.queries[0].origin_lon,
+        req.queries[0].origin_lat,
+        &first_access_mode,
+    ) {
+        Ok(pair) => pair,
+        Err(err) => {
+            let (status, body) = err.into_response_parts();
+            return Err((status, Json(body)));
+        }
+    };
     if state.transit.is_none() {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse {
-                error: "transit subsystem is not loaded".to_string(),
+                error: format!(
+                    "transit subsystem is not loaded for region {}",
+                    region_id
+                ),
             }),
         ));
     }
@@ -1038,7 +1083,7 @@ pub async fn transit_bulk_handler(
             })?;
 
     super::region_metrics::record_query(
-        &primary_region_id,
+        &region_id,
         "transit",
         started.elapsed().as_secs_f64(),
     );
