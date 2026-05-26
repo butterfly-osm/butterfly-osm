@@ -554,6 +554,40 @@ pub enum Commands {
         /// `[A-Z0-9_-]`, max 16 chars; lowercase input is upper-cased.
         #[arg(long)]
         region: Option<String>,
+
+        /// Keep the `step{1..8}/` intermediate directories under
+        /// `--data-dir` after the container is packed. By default,
+        /// `pack` runs `prune` automatically after a successful pack
+        /// (verifies the container + per-section CRCs, then deletes
+        /// step1..step8 to reclaim disk — typically 30-60% of the
+        /// region's footprint). Pass this flag in iterative dev
+        /// workflows where you want to re-run individual steps without
+        /// re-ingesting the PBF.
+        #[arg(long)]
+        keep_intermediates: bool,
+    },
+
+    /// Verify a `*.butterfly` container against its source data-dir
+    /// and delete the `step{1..8}/` intermediate directories.
+    ///
+    /// Use this after the fact on an existing pack — when you've
+    /// upgraded an operator deployment and want to reclaim disk
+    /// without re-running the pipeline. New packs run prune
+    /// automatically (see `pack --keep-intermediates`).
+    Prune {
+        /// Path to the `*.butterfly` container produced by `pack`.
+        #[arg(short, long)]
+        container: PathBuf,
+
+        /// Source data directory whose `step{1..8}/` subtree should
+        /// be removed. Must be the same directory that was passed to
+        /// `pack --data-dir`.
+        #[arg(short, long)]
+        data_dir: PathBuf,
+
+        /// Print the deletion plan without removing anything.
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Show the section directory of a `*.butterfly` container.
@@ -1847,7 +1881,21 @@ impl Cli {
                 out,
                 step_prefix,
                 region,
-            } => crate::pack::pack(&data_dir, &out, step_prefix.as_deref(), region.as_deref()),
+                keep_intermediates,
+            } => {
+                crate::pack::pack(&data_dir, &out, step_prefix.as_deref(), region.as_deref())?;
+                if !keep_intermediates {
+                    println!();
+                    println!("Auto-pruning intermediates (pass --keep-intermediates to disable)...");
+                    crate::pack::prune(&out, &data_dir, false)?;
+                }
+                Ok(())
+            }
+            Commands::Prune {
+                container,
+                data_dir,
+                dry_run,
+            } => crate::pack::prune(&container, &data_dir, dry_run),
             Commands::Inspect {
                 path,
                 verify,

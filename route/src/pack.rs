@@ -1831,6 +1831,127 @@ pub fn topology_diff(path: &Path, modes_arg: Option<&str>) -> Result<()> {
 }
 
 /// Implementation of the `inspect` subcommand.
+/// Recursive on-disk size of a path (file or directory).
+fn dir_size_bytes(p: &Path) -> Result<u64> {
+    let meta = std::fs::metadata(p)
+        .with_context(|| format!("stat {}", p.display()))?;
+    if meta.is_file() {
+        return Ok(meta.len());
+    }
+    let mut total = 0u64;
+    for entry in std::fs::read_dir(p).with_context(|| format!("reading {}", p.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let m = entry.metadata()?;
+        if m.is_dir() {
+            total += dir_size_bytes(&path)?;
+        } else {
+            total += m.len();
+        }
+    }
+    Ok(total)
+}
+
+fn humanize_bytes(b: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    if b >= GB {
+        format!("{:.2} GB", b as f64 / GB as f64)
+    } else if b >= MB {
+        format!("{:.1} MB", b as f64 / MB as f64)
+    } else if b >= KB {
+        format!("{:.1} KB", b as f64 / KB as f64)
+    } else {
+        format!("{} B", b)
+    }
+}
+
+/// Prune the step{1..8}/ intermediate directories from a data-dir
+/// AFTER verifying the corresponding *.butterfly container is
+/// structurally valid and every section's CRC checks out.
+///
+/// Once a container exists, the per-step output trees are redundant —
+/// every byte the serve path needs is in the container. Operators
+/// running multiple regions can reclaim 30-60% of their data
+/// footprint via this command after a successful pack.
+///
+/// To rebuild from a pruned data-dir, re-run the pipeline from
+/// step 1 (the source PBF stays in place; this command only removes
+/// `step{1..8}/`).
+pub fn prune(container: &Path, data_dir: &Path, dry_run: bool) -> Result<()> {
+    // ---- 1. Structural verify of the container -------------------
+    println!(
+        "verifying container {} against data-dir {}",
+        container.display(),
+        data_dir.display()
+    );
+    let c = Container::open(container)
+        .with_context(|| format!("opening container {}", container.display()))?;
+    println!(
+        "  container OK — version {}, {} sections",
+        c.version, c.n_sections
+    );
+
+    // ---- 2. Per-section CRC walk ---------------------------------
+    print!("  verifying {} per-section CRCs ", c.n_sections);
+    for sec in &c.sections {
+        let _ = c.read_section_verified(container, sec).with_context(|| {
+            format!(
+                "section '{}' (offset={}, len={}) failed CRC — refusing to prune",
+                sec.name, sec.offset, sec.len
+            )
+        })?;
+    }
+    println!("OK");
+
+    // ---- 3. Discover step{1..8} candidate directories -------------
+    let steps: Vec<PathBuf> = (1..=8)
+        .map(|n| data_dir.join(format!("step{}", n)))
+        .filter(|p| p.is_dir())
+        .collect();
+
+    if steps.is_empty() {
+        println!(
+            "  no step{{1..8}}/ directories under {} — nothing to prune",
+            data_dir.display()
+        );
+        return Ok(());
+    }
+
+    // ---- 4. Compute sizes and present the plan -------------------
+    let mut sizes: Vec<(PathBuf, u64)> = Vec::new();
+    let mut total = 0u64;
+    for p in &steps {
+        let sz = dir_size_bytes(p).unwrap_or(0);
+        total += sz;
+        sizes.push((p.clone(), sz));
+    }
+
+    if dry_run {
+        println!("\nDry-run — would delete:");
+    } else {
+        println!("\nDeleting:");
+    }
+    for (p, sz) in &sizes {
+        println!("  {}  ({})", p.display(), humanize_bytes(*sz));
+    }
+    println!("Total: {}", humanize_bytes(total));
+
+    if dry_run {
+        println!("\n(no files removed — pass without --dry-run to delete)");
+        return Ok(());
+    }
+
+    // ---- 5. Delete the step dirs ---------------------------------
+    for (p, _) in &sizes {
+        std::fs::remove_dir_all(p)
+            .with_context(|| format!("removing {}", p.display()))?;
+    }
+    println!("\nDone — reclaimed {}", humanize_bytes(total));
+    Ok(())
+}
+
 pub fn inspect(path: &Path, verify: bool, verify_full: bool) -> Result<()> {
     let c = Container::open(path)?;
     println!(
