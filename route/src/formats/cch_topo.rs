@@ -1152,7 +1152,8 @@ fn parse_header(bytes: &[u8]) -> Result<HeaderFields> {
         h[15]
     );
     let up_width = weight_width_from_code(byte12 & MIDDLE_WIDTH_CODE_MASK)?;
-    let down_width = weight_width_from_code((byte12 >> MIDDLE_DOWN_SHIFT) & MIDDLE_WIDTH_CODE_MASK)?;
+    let down_width =
+        weight_width_from_code((byte12 >> MIDDLE_DOWN_SHIFT) & MIDDLE_WIDTH_CODE_MASK)?;
     let middles_absent = byte12 & MIDDLE_ABSENT_BIT != 0;
     let n_shortcuts = u64::from_le_bytes(h[16..24].try_into().unwrap());
     let n_original_arcs = u64::from_le_bytes(h[24..32].try_into().unwrap());
@@ -1595,7 +1596,11 @@ mod tests {
         // v5 (#352): byte 12 carries per-direction middle width codes
         // (bits 0..=3); bits 4..=7 of byte 12 and bytes 13..=15 stay
         // reserved-zero.
-        assert_eq!(raw[12] & !MIDDLE_BYTE12_KNOWN_MASK, 0, "byte12 reserved bits");
+        assert_eq!(
+            raw[12] & !MIDDLE_BYTE12_KNOWN_MASK,
+            0,
+            "byte12 reserved bits"
+        );
         assert_eq!(raw[13], 0, "header[13] reserved");
         assert_eq!(raw[14], 0, "header[14] reserved");
         assert_eq!(raw[15], 0, "header[15] reserved");
@@ -1661,7 +1666,10 @@ mod tests {
             loaded.down_middle.width(),
             crate::formats::cch_weights::WeightWidth::U16
         );
-        assert_eq!(loaded.up_middle.to_vec_u32(), vec![u32::MAX, 2, u32::MAX, 1]);
+        assert_eq!(
+            loaded.up_middle.to_vec_u32(),
+            vec![u32::MAX, 2, u32::MAX, 1]
+        );
         assert_eq!(loaded.down_middle.to_vec_u32(), vec![u32::MAX, u32::MAX, 1]);
         Ok(())
     }

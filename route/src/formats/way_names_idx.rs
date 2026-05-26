@@ -310,14 +310,11 @@ pub fn read_from_mmap_unverified(
 
     let (way_ids, offsets, names) = if is_compressed {
         // Decompressed bytes — copy out each subarray as owned Vec.
-        let way_ids_slice: &[i64] = bytemuck::cast_slice(
-            &bytes[way_ids_local_off..way_ids_local_off + way_ids_bytes],
-        );
-        let offsets_slice: &[u32] = bytemuck::cast_slice(
-            &bytes[offsets_local_off..offsets_local_off + offsets_bytes],
-        );
-        let names_slice =
-            &bytes[names_local_off..names_local_off + names_bytes];
+        let way_ids_slice: &[i64] =
+            bytemuck::cast_slice(&bytes[way_ids_local_off..way_ids_local_off + way_ids_bytes]);
+        let offsets_slice: &[u32] =
+            bytemuck::cast_slice(&bytes[offsets_local_off..offsets_local_off + offsets_bytes]);
+        let names_slice = &bytes[names_local_off..names_local_off + names_bytes];
         (
             ArcCow::from_vec(way_ids_slice.to_vec()),
             ArcCow::from_vec(offsets_slice.to_vec()),
@@ -329,8 +326,7 @@ pub fn read_from_mmap_unverified(
         let offsets_off = byte_offset + offsets_local_off;
         let names_off = byte_offset + names_local_off;
         let way_ids = ArcCow::from_mmap(Arc::clone(&mmap), way_ids_off, n_entries as usize)?;
-        let offsets =
-            ArcCow::from_mmap(Arc::clone(&mmap), offsets_off, n_entries as usize + 1)?;
+        let offsets = ArcCow::from_mmap(Arc::clone(&mmap), offsets_off, n_entries as usize + 1)?;
         let names = ArcCow::from_mmap(Arc::clone(&mmap), names_off, names_blob_len as usize)?;
         (way_ids, offsets, names)
     };
@@ -434,10 +430,10 @@ mod tests {
         ];
         let idx = build_from_pairs(pairs).unwrap();
         assert_eq!(idx.n_entries, 3, "duplicate key should be deduped");
-        assert_eq!(idx.get(42).as_deref(), Some("First Street"));
+        assert_eq!(idx.get(42), Some("First Street"));
         // Last-write-wins on duplicate.
-        assert_eq!(idx.get(1_000).as_deref(), Some("Main Street (renamed)"));
-        assert_eq!(idx.get(2_500).as_deref(), Some("Park Ave"));
+        assert_eq!(idx.get(1_000), Some("Main Street (renamed)"));
+        assert_eq!(idx.get(2_500), Some("Park Ave"));
         assert_eq!(idx.get(99_999), None);
     }
 
@@ -451,9 +447,7 @@ mod tests {
 
     #[test]
     fn write_read_roundtrip() {
-        let pairs: Vec<(i64, String)> = (0..1000)
-            .map(|i| (i * 7, format!("street-{i}")))
-            .collect();
+        let pairs: Vec<(i64, String)> = (0..1000).map(|i| (i * 7, format!("street-{i}"))).collect();
         let idx = build_from_pairs(pairs).unwrap();
 
         let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -461,7 +455,7 @@ mod tests {
         let loaded = read_owned(tmp.path()).unwrap();
         assert_eq!(loaded.n_entries, 1000);
         for i in 0..1000 {
-            assert_eq!(loaded.get(i * 7).as_deref(), Some(&format!("street-{i}")[..]));
+            assert_eq!(loaded.get(i * 7), Some(&format!("street-{i}")[..]));
         }
         assert_eq!(loaded.get(99_999_999), None);
     }

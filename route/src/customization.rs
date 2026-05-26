@@ -1016,8 +1016,8 @@ fn write_cch_weights(
     down_middle: &[u32],
     mode: Mode,
 ) -> Result<()> {
-    use crate::formats::crc::Digest;
     use crate::formats::WeightWidth;
+    use crate::formats::crc::Digest;
 
     const MAGIC: u32 = 0x43434857; // "CCHW"
     // v4 (#306 PR 3): per-direction 2-bit width code in header byte 7.
@@ -1119,11 +1119,7 @@ fn write_weights_body<W: std::io::Write>(
         }
         WeightWidth::U16 => {
             for &w in weights {
-                let v16: u16 = if w == u32::MAX {
-                    u16::MAX
-                } else {
-                    w as u16
-                };
+                let v16: u16 = if w == u32::MAX { u16::MAX } else { w as u16 };
                 let bytes = v16.to_le_bytes();
                 writer.write_all(&bytes)?;
                 crc_digest.update(&bytes);

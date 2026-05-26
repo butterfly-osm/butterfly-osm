@@ -135,8 +135,7 @@ pub fn build_raw_points(
     edge_geom: &EdgeGeometry,
 ) -> (Vec<Point>, f64) {
     let mut coordinates = Vec::new();
-    let total_distance_m =
-        build_raw_points_into(ebg_path, ebg_nodes, edge_geom, &mut coordinates);
+    let total_distance_m = build_raw_points_into(ebg_path, ebg_nodes, edge_geom, &mut coordinates);
     (coordinates, total_distance_m)
 }
 
