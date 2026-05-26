@@ -28,10 +28,7 @@ use crate::formats::snap_index::{SnapGridFile, SnapMaskFile, SnapPointsFile};
 use crate::formats::{
     CchTopoFile, CchWeightsFile, EbgNodesFile, FilteredEbgFile, NbgGeoFile, OrderEbgFile,
 };
-use crate::matrix::bucket_ch::{
-    DownAdjFlat, DownAdjFlatFile, DownReverseAdjFlat, DownReverseAdjFlatFile, UpAdjFlat,
-    UpAdjFlatFile,
-};
+use crate::matrix::bucket_ch::{DownAdjFlat, DownReverseAdjFlat, UpAdjFlat};
 use crate::server::snap_index::{DEFAULT_CELL_LOG2, SnapBuilderMode, build_snap_index};
 
 /// Section name for the JSON manifest that lists modes + bundle ids.
@@ -103,6 +100,172 @@ fn append_encoded(
     );
     w.append_bytes(kind, name, &bytes)
         .with_context(|| format!("packing synthesised section {}", name))
+}
+
+/// #345: write a shared FlatTopo section + two FlatWeights sections
+/// (time + dist) for an UpAdjFlat pair built from the same `cch_topo`.
+///
+/// Verifies the time/dist flats have identical offsets + targets +
+/// topo_edge_idx — if not, the function bails so the operator sees the
+/// topology divergence rather than silently writing a topo from `.time`
+/// that doesn't actually match `.dist`.
+fn write_split_flat_pair(
+    w: &mut ContainerWriter,
+    mode: &str,
+    dir_token: &str,
+    time_flat: crate::matrix::bucket_ch::UpAdjFlat,
+    dist_flat: crate::matrix::bucket_ch::UpAdjFlat,
+) -> Result<()> {
+    use crate::matrix::bucket_ch::{encode_flat_topo_bytes, encode_flat_weights_bytes};
+
+    anyhow::ensure!(
+        time_flat.offsets.as_slice() == dist_flat.offsets.as_slice(),
+        "FlatTopo divergence on mode={} dir={}: time and dist have different offsets — \
+         time and dist customise produced different INF sets, cannot share topology",
+        mode,
+        dir_token
+    );
+    anyhow::ensure!(
+        time_flat.targets.as_slice() == dist_flat.targets.as_slice(),
+        "FlatTopo divergence on mode={} dir={}: time and dist have different targets",
+        mode,
+        dir_token
+    );
+    anyhow::ensure!(
+        time_flat.topo_edge_idx.as_slice() == dist_flat.topo_edge_idx.as_slice()
+            || dist_flat.topo_edge_idx.as_slice().is_empty(),
+        "FlatTopo divergence on mode={} dir={}: topo_edge_idx differs",
+        mode,
+        dir_token
+    );
+
+    let topo_bytes = encode_flat_topo_bytes(
+        time_flat.offsets.as_slice(),
+        time_flat.targets.as_slice(),
+        time_flat.topo_edge_idx.as_slice(),
+    );
+    append_encoded(
+        w,
+        SectionKind::FlatTopo,
+        &format!("mode/{}/{}.topo", mode, dir_token),
+        topo_bytes,
+    )?;
+    append_encoded(
+        w,
+        SectionKind::FlatWeights,
+        &format!("mode/{}/{}.weights.time", mode, dir_token),
+        encode_flat_weights_bytes(&time_flat.weights),
+    )?;
+    append_encoded(
+        w,
+        SectionKind::FlatWeights,
+        &format!("mode/{}/{}.weights.dist", mode, dir_token),
+        encode_flat_weights_bytes(&dist_flat.weights),
+    )?;
+    Ok(())
+}
+
+/// Same as [`write_split_flat_pair`] but for `DownReverseAdjFlat`
+/// (target-keyed reverse adjacency with optional topo_edge_idx).
+fn write_split_flat_pair_drev(
+    w: &mut ContainerWriter,
+    mode: &str,
+    time_flat: crate::matrix::bucket_ch::DownReverseAdjFlat,
+    dist_flat: crate::matrix::bucket_ch::DownReverseAdjFlat,
+) -> Result<()> {
+    use crate::matrix::bucket_ch::{encode_flat_topo_bytes, encode_flat_weights_bytes};
+    let dir_token = "down_reverse_adj";
+    anyhow::ensure!(
+        time_flat.offsets.as_slice() == dist_flat.offsets.as_slice(),
+        "FlatTopo divergence on mode={} {}: offsets differ",
+        mode,
+        dir_token
+    );
+    anyhow::ensure!(
+        time_flat.sources.as_slice() == dist_flat.sources.as_slice(),
+        "FlatTopo divergence on mode={} {}: sources differ",
+        mode,
+        dir_token
+    );
+    anyhow::ensure!(
+        time_flat.topo_edge_idx.as_slice() == dist_flat.topo_edge_idx.as_slice()
+            || dist_flat.topo_edge_idx.as_slice().is_empty(),
+        "FlatTopo divergence on mode={} {}: topo_edge_idx differs",
+        mode,
+        dir_token
+    );
+    let topo_bytes = encode_flat_topo_bytes(
+        time_flat.offsets.as_slice(),
+        time_flat.sources.as_slice(),
+        time_flat.topo_edge_idx.as_slice(),
+    );
+    append_encoded(
+        w,
+        SectionKind::FlatTopo,
+        &format!("mode/{}/{}.topo", mode, dir_token),
+        topo_bytes,
+    )?;
+    append_encoded(
+        w,
+        SectionKind::FlatWeights,
+        &format!("mode/{}/{}.weights.time", mode, dir_token),
+        encode_flat_weights_bytes(&time_flat.weights),
+    )?;
+    append_encoded(
+        w,
+        SectionKind::FlatWeights,
+        &format!("mode/{}/{}.weights.dist", mode, dir_token),
+        encode_flat_weights_bytes(&dist_flat.weights),
+    )?;
+    Ok(())
+}
+
+/// Same as [`write_split_flat_pair`] but for `DownAdjFlat` (forward
+/// down, no topo_edge_idx).
+fn write_split_flat_pair_down(
+    w: &mut ContainerWriter,
+    mode: &str,
+    time_flat: crate::matrix::bucket_ch::DownAdjFlat,
+    dist_flat: crate::matrix::bucket_ch::DownAdjFlat,
+) -> Result<()> {
+    use crate::matrix::bucket_ch::{encode_flat_topo_bytes, encode_flat_weights_bytes};
+    let dir_token = "down_adj";
+    anyhow::ensure!(
+        time_flat.offsets.as_slice() == dist_flat.offsets.as_slice(),
+        "FlatTopo divergence on mode={} {}: offsets differ",
+        mode,
+        dir_token
+    );
+    anyhow::ensure!(
+        time_flat.targets.as_slice() == dist_flat.targets.as_slice(),
+        "FlatTopo divergence on mode={} {}: targets differ",
+        mode,
+        dir_token
+    );
+    let topo_bytes = encode_flat_topo_bytes(
+        time_flat.offsets.as_slice(),
+        time_flat.targets.as_slice(),
+        &[],
+    );
+    append_encoded(
+        w,
+        SectionKind::FlatTopo,
+        &format!("mode/{}/{}.topo", mode, dir_token),
+        topo_bytes,
+    )?;
+    append_encoded(
+        w,
+        SectionKind::FlatWeights,
+        &format!("mode/{}/{}.weights.time", mode, dir_token),
+        encode_flat_weights_bytes(&time_flat.weights),
+    )?;
+    append_encoded(
+        w,
+        SectionKind::FlatWeights,
+        &format!("mode/{}/{}.weights.dist", mode, dir_token),
+        encode_flat_weights_bytes(&dist_flat.weights),
+    )?;
+    Ok(())
 }
 
 /// Glob a directory for files matching `prefix.*.suffix`. Returns the
@@ -502,64 +665,37 @@ pub fn pack_with_options(
             let dist_res = CchWeightsFile::read(&cch_d_path);
             match (topo_res, time_res, dist_res) {
                 (Ok(cch_topo), Ok(cch_time), Ok(cch_dist)) => {
-                    // TIME flats: UP and DOWN-REV carry topo_edge_idx (the
-                    // routing hot path needs it for parent-pointer unpacking);
-                    // forward-DOWN does not.
-                    let up_time = UpAdjFlat::build_with(&cch_topo, &cch_time, true);
-                    append_encoded(
+                    // #345: write split FlatTopo + per-metric FlatWeights
+                    // sections. One topology per (mode, direction); two
+                    // weights sections per direction (time + dist).
+                    // The topology of `.time` and `.dist` must match —
+                    // if they diverge (different INF sets) we bail with
+                    // a clear error so the operator can diagnose.
+                    //
+                    // TIME flats: UP and DOWN-REV carry topo_edge_idx
+                    // (the routing hot path needs it for parent-pointer
+                    // unpacking); forward-DOWN does not.
+                    write_split_flat_pair(
                         &mut w,
-                        SectionKind::UpAdjFlat,
-                        &format!("mode/{}/up_adj_flat.time", mode),
-                        UpAdjFlatFile::encode(&up_time),
+                        mode,
+                        "up_adj",
+                        UpAdjFlat::build_with(&cch_topo, &cch_time, true),
+                        UpAdjFlat::build(&cch_topo, &cch_dist),
                     )?;
-                    drop(up_time);
 
-                    let drev_time = DownReverseAdjFlat::build_with(&cch_topo, &cch_time, true);
-                    append_encoded(
+                    write_split_flat_pair_drev(
                         &mut w,
-                        SectionKind::DownReverseAdjFlat,
-                        &format!("mode/{}/down_reverse_adj_flat.time", mode),
-                        DownReverseAdjFlatFile::encode(&drev_time),
+                        mode,
+                        DownReverseAdjFlat::build_with(&cch_topo, &cch_time, true),
+                        DownReverseAdjFlat::build(&cch_topo, &cch_dist),
                     )?;
-                    drop(drev_time);
 
-                    let dadj_time = DownAdjFlat::build(&cch_topo, &cch_time);
-                    append_encoded(
+                    write_split_flat_pair_down(
                         &mut w,
-                        SectionKind::DownAdjFlat,
-                        &format!("mode/{}/down_adj_flat.time", mode),
-                        DownAdjFlatFile::encode(&dadj_time),
+                        mode,
+                        DownAdjFlat::build(&cch_topo, &cch_time),
+                        DownAdjFlat::build(&cch_topo, &cch_dist),
                     )?;
-                    drop(dadj_time);
-
-                    // DIST flats: only PHAST forward + isodistance use them;
-                    // no topo back-ref needed.
-                    let up_dist = UpAdjFlat::build(&cch_topo, &cch_dist);
-                    append_encoded(
-                        &mut w,
-                        SectionKind::UpAdjFlat,
-                        &format!("mode/{}/up_adj_flat.dist", mode),
-                        UpAdjFlatFile::encode(&up_dist),
-                    )?;
-                    drop(up_dist);
-
-                    let drev_dist = DownReverseAdjFlat::build(&cch_topo, &cch_dist);
-                    append_encoded(
-                        &mut w,
-                        SectionKind::DownReverseAdjFlat,
-                        &format!("mode/{}/down_reverse_adj_flat.dist", mode),
-                        DownReverseAdjFlatFile::encode(&drev_dist),
-                    )?;
-                    drop(drev_dist);
-
-                    let dadj_dist = DownAdjFlat::build(&cch_topo, &cch_dist);
-                    append_encoded(
-                        &mut w,
-                        SectionKind::DownAdjFlat,
-                        &format!("mode/{}/down_adj_flat.dist", mode),
-                        DownAdjFlatFile::encode(&dadj_dist),
-                    )?;
-                    drop(dadj_dist);
                 }
                 (topo_r, time_r, dist_r) => {
                     let why = topo_r

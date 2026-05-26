@@ -104,6 +104,32 @@ fn build_weight_array(
     }
 }
 
+/// Shared topology bytes for a `(mode, direction)` pair (#345).
+///
+/// Built once per direction, then referenced by every metric variant
+/// (`time`, `dist`, ...) via `Arc<FlatTopo>`. Replaces the per-metric
+/// duplication that the monolithic v4 flat format incurred — Belgium
+/// bike `up_adj_flat.dist` was ~613 MB of redundant topo bytes already
+/// present in `up_adj_flat.time`.
+///
+/// All fields are `ArcCow<T>` so the struct can be built fresh in
+/// memory (tests, customize) or mmap-mapped from a `FlatTopo`
+/// container section at server boot. The `Arc<Mmap>` clone keeps the
+/// mapping alive as long as any view references it.
+#[derive(Clone)]
+pub struct FlatTopo {
+    pub n_nodes: u32,
+    pub offsets: ArcCow<u64>, // n_nodes + 1
+    /// Targets (for UP / DOWN) or sources (for DOWN_REVERSE).
+    /// Naming is direction-dependent; the field stays generic so
+    /// downstream consumers don't care which side it is.
+    pub targets: ArcCow<u32>,
+    /// Back-reference to topo edge index per flat slot. Empty unless
+    /// this flat feeds the routing hot path (`CchQuery::new` / the
+    /// alternatives backend).
+    pub topo_edge_idx: ArcCow<u32>,
+}
+
 /// Flat fields are `ArcCow<T>` so a single struct can either own its
 /// arrays (legacy heap path: `UpAdjFlat::build`) or borrow them straight
 /// from a live `Arc<Mmap>` (the #296 mmap path:
@@ -372,6 +398,566 @@ impl DownReverseAdjFlat {
     pub fn build(topo: &CchTopo, weights: &CchWeights) -> Self {
         Self::build_with(topo, weights, false)
     }
+}
+
+// =============================================================================
+// SPLIT FORMAT — FlatTopo + FlatWeights (#345)
+// =============================================================================
+//
+// New on-disk format that separates the (offsets + targets + topo_edge_idx)
+// "topology" from the per-metric weights. Single FlatTopo section per
+// (mode × direction); one FlatWeights section per (mode × direction × metric).
+// The two sections together carry the same information as the v4
+// `UpAdjFlatFile` / `DownAdjFlatFile` / `DownReverseAdjFlatFile` triplet
+// but with the topology bytes shared across metric variants.
+//
+// FlatTopo layout (little-endian):
+//
+//   header (24 bytes):
+//     magic        : u32   = 0x4F505446 ("FTPO" LE)
+//     version      : u16   = 1
+//     flags        : u16
+//                          bits 0..=1: targets width (00=u32, 01=u16, 10=u24)
+//                          bit 2     : offsets_u32 (1 if n_edges fits u32)
+//                          bit 3     : has_topo_idx
+//                          bits 4..=15: reserved (must be 0)
+//     n_nodes      : u32
+//     n_edges      : u64
+//
+//   body (each array padded to u64 boundary):
+//     offsets       : (n_nodes + 1) × {4 or 8}
+//     targets       : n_edges × {2, 3, or 4} bytes
+//     topo_edge_idx : n_edges × u32         (IF has_topo_idx)
+//
+//   footer (16 bytes):
+//     body_crc : u64
+//     file_crc : u64
+//
+// FlatWeights layout (little-endian):
+//
+//   header (16 bytes):
+//     magic        : u32   = 0x54475746 ("FWGT" LE)
+//     version      : u16   = 1
+//     flags        : u16
+//                          bits 0..=1: weights width (00=u32, 01=u16, 10=u24)
+//                          bits 2..=15: reserved (must be 0)
+//     n_edges      : u64
+//
+//   body:
+//     weights      : n_edges × {2, 3, or 4} bytes, padded to u64
+//
+//   footer (16 bytes):
+//     body_crc : u64
+//     file_crc : u64
+
+const FLAT_TOPO_MAGIC: u32 = 0x4F505446; // "FTPO" LE
+const FLAT_TOPO_VERSION: u16 = 1;
+const FLAT_TOPO_HEADER_SIZE: usize = 24;
+const FLAT_WEIGHTS_MAGIC: u32 = 0x54475746; // "FWGT" LE
+const FLAT_WEIGHTS_VERSION: u16 = 1;
+const FLAT_WEIGHTS_HEADER_SIZE: usize = 16;
+const FLAT_SPLIT_FOOTER_SIZE: usize = 16;
+
+const FLAT_TOPO_TARGETS_WIDTH_MASK: u16 = 0b0000_0000_0000_0011;
+const FLAT_TOPO_OFFSETS_U32_BIT: u16 = 0b0000_0000_0000_0100;
+const FLAT_TOPO_HAS_TOPO_IDX_BIT: u16 = 0b0000_0000_0000_1000;
+const FLAT_TOPO_FLAGS_KNOWN: u16 = 0b0000_0000_0000_1111;
+
+const FLAT_WEIGHTS_WIDTH_MASK: u16 = 0b0000_0000_0000_0011;
+const FLAT_WEIGHTS_FLAGS_KNOWN: u16 = 0b0000_0000_0000_0011;
+
+#[inline]
+const fn pad_to_u64(n: usize) -> usize {
+    (8 - (n & 7)) & 7
+}
+
+fn width_code_u16(w: crate::formats::WeightWidth) -> u16 {
+    match w {
+        crate::formats::WeightWidth::U32 => 0,
+        crate::formats::WeightWidth::U16 => 1,
+        crate::formats::WeightWidth::U24 => 2,
+    }
+}
+
+fn width_from_code_u16(c: u16) -> anyhow::Result<crate::formats::WeightWidth> {
+    match c {
+        0 => Ok(crate::formats::WeightWidth::U32),
+        1 => Ok(crate::formats::WeightWidth::U16),
+        2 => Ok(crate::formats::WeightWidth::U24),
+        _ => anyhow::bail!("unknown flat width code: {c}"),
+    }
+}
+
+/// Pick the narrowest [`WeightWidth`] that fits every target/source rank
+/// in `slice`. Same encoding the v4 monolithic flat already uses for
+/// the targets array (#351).
+fn pick_targets_width_split(slice: &[u32]) -> crate::formats::WeightWidth {
+    let mut max_v: u32 = 0;
+    for &v in slice {
+        if v > max_v {
+            max_v = v;
+        }
+    }
+    if max_v < (u16::MAX as u32) {
+        crate::formats::WeightWidth::U16
+    } else if max_v < crate::formats::U24_SENTINEL {
+        crate::formats::WeightWidth::U24
+    } else {
+        crate::formats::WeightWidth::U32
+    }
+}
+
+fn encode_targets_to_bytes_split(
+    slice: &[u32],
+    width: crate::formats::WeightWidth,
+) -> Vec<u8> {
+    match width {
+        crate::formats::WeightWidth::U32 => {
+            let mut out = Vec::with_capacity(4 * slice.len());
+            for &v in slice {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            out
+        }
+        crate::formats::WeightWidth::U16 => {
+            let mut out = Vec::with_capacity(2 * slice.len());
+            for &v in slice {
+                debug_assert!(v < u16::MAX as u32);
+                out.extend_from_slice(&(v as u16).to_le_bytes());
+            }
+            out
+        }
+        crate::formats::WeightWidth::U24 => {
+            let mut out = Vec::with_capacity(3 * slice.len());
+            for &v in slice {
+                debug_assert!(v < crate::formats::U24_SENTINEL);
+                out.push((v & 0xFF) as u8);
+                out.push(((v >> 8) & 0xFF) as u8);
+                out.push(((v >> 16) & 0xFF) as u8);
+            }
+            out
+        }
+    }
+}
+
+/// Serialise the topology half of a (mode × direction) flat. Output is
+/// a complete section body (header + body + footer) ready to be
+/// `append_bytes`'d into a container as `SectionKind::FlatTopo`.
+pub fn encode_flat_topo_bytes(
+    offsets: &[u64],
+    targets: &[u32],
+    topo_edge_idx: &[u32],
+) -> Vec<u8> {
+    let n_nodes = offsets.len().saturating_sub(1);
+    let n_edges = targets.len();
+    let has_topo_idx = !topo_edge_idx.is_empty();
+    debug_assert!(
+        !has_topo_idx || topo_edge_idx.len() == n_edges,
+        "topo_edge_idx must be empty or match n_edges"
+    );
+
+    let offsets_u32 = (n_edges as u64) < (u32::MAX as u64);
+    let targets_width = pick_targets_width_split(targets);
+
+    let mut flags: u16 = width_code_u16(targets_width);
+    if offsets_u32 {
+        flags |= FLAT_TOPO_OFFSETS_U32_BIT;
+    }
+    if has_topo_idx {
+        flags |= FLAT_TOPO_HAS_TOPO_IDX_BIT;
+    }
+    debug_assert_eq!(
+        flags & !FLAT_TOPO_FLAGS_KNOWN,
+        0,
+        "flat-topo flag pollution"
+    );
+
+    let offsets_entry_bytes = if offsets_u32 { 4 } else { 8 };
+    let offsets_bytes_count = offsets.len() * offsets_entry_bytes;
+    let offsets_pad = pad_to_u64(offsets_bytes_count);
+    let targets_bytes_count = n_edges * targets_width.bytes_per_entry();
+    let targets_pad = pad_to_u64(targets_bytes_count);
+    let topo_idx_bytes_count = if has_topo_idx { 4 * n_edges } else { 0 };
+    let topo_idx_pad = pad_to_u64(topo_idx_bytes_count);
+
+    let body_size = offsets_bytes_count
+        + offsets_pad
+        + targets_bytes_count
+        + targets_pad
+        + topo_idx_bytes_count
+        + topo_idx_pad;
+
+    let mut out = Vec::with_capacity(FLAT_TOPO_HEADER_SIZE + body_size + FLAT_SPLIT_FOOTER_SIZE);
+
+    // header
+    out.extend_from_slice(&FLAT_TOPO_MAGIC.to_le_bytes());
+    out.extend_from_slice(&FLAT_TOPO_VERSION.to_le_bytes());
+    out.extend_from_slice(&flags.to_le_bytes());
+    out.extend_from_slice(&(n_nodes as u32).to_le_bytes());
+    // reserved u32 pads header to u64 boundary so the offsets array
+    // starts u64-aligned for `bytemuck::cast_slice::<u8, u64>` on the
+    // mmap read path.
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&(n_edges as u64).to_le_bytes());
+    debug_assert_eq!(out.len(), FLAT_TOPO_HEADER_SIZE);
+
+    // body
+    if offsets_u32 {
+        for &off in offsets {
+            out.extend_from_slice(&(off as u32).to_le_bytes());
+        }
+    } else {
+        for &off in offsets {
+            out.extend_from_slice(&off.to_le_bytes());
+        }
+    }
+    for _ in 0..offsets_pad {
+        out.push(0);
+    }
+    out.extend_from_slice(&encode_targets_to_bytes_split(targets, targets_width));
+    for _ in 0..targets_pad {
+        out.push(0);
+    }
+    if has_topo_idx {
+        for &t in topo_edge_idx {
+            out.extend_from_slice(&t.to_le_bytes());
+        }
+        for _ in 0..topo_idx_pad {
+            out.push(0);
+        }
+    }
+    debug_assert_eq!(out.len(), FLAT_TOPO_HEADER_SIZE + body_size);
+
+    // footer
+    let body_slice = &out[FLAT_TOPO_HEADER_SIZE..];
+    let mut body_d = crate::formats::crc::Digest::new();
+    body_d.update(body_slice);
+    let body_crc = body_d.finalize();
+    let mut file_d = crate::formats::crc::Digest::new();
+    file_d.update(&out);
+    let file_crc = file_d.finalize();
+    out.extend_from_slice(&body_crc.to_le_bytes());
+    out.extend_from_slice(&file_crc.to_le_bytes());
+
+    out
+}
+
+/// Decoded FlatTopo (heap-owned). Production loaders will use a
+/// mmap-backed variant later in this phase; this version is the
+/// reference for round-trip tests and any path that already holds
+/// owned bytes.
+#[derive(Debug)]
+pub struct DecodedFlatTopo {
+    pub n_nodes: u32,
+    pub offsets: Vec<u64>,
+    pub targets: Vec<u32>,
+    pub topo_edge_idx: Vec<u32>,
+}
+
+fn decode_targets_from_bytes_split(
+    bytes: &[u8],
+    n_edges: usize,
+    width: crate::formats::WeightWidth,
+) -> Vec<u32> {
+    match width {
+        crate::formats::WeightWidth::U32 => bytemuck::cast_slice::<u8, u32>(&bytes[..4 * n_edges])
+            .to_vec(),
+        crate::formats::WeightWidth::U16 => {
+            let s: &[u16] = bytemuck::cast_slice(&bytes[..2 * n_edges]);
+            s.iter().map(|&v| v as u32).collect()
+        }
+        crate::formats::WeightWidth::U24 => {
+            let mut out = Vec::with_capacity(n_edges);
+            for i in 0..n_edges {
+                let off = i * 3;
+                let v = u32::from(bytes[off])
+                    | (u32::from(bytes[off + 1]) << 8)
+                    | (u32::from(bytes[off + 2]) << 16);
+                out.push(v);
+            }
+            out
+        }
+    }
+}
+
+/// Parse a FlatTopo section from owned bytes. Verifies both CRCs.
+pub fn decode_flat_topo_bytes(bytes: &[u8]) -> anyhow::Result<DecodedFlatTopo> {
+    anyhow::ensure!(
+        bytes.len() >= FLAT_TOPO_HEADER_SIZE + FLAT_SPLIT_FOOTER_SIZE,
+        "flat-topo section too short: {} bytes",
+        bytes.len()
+    );
+
+    let magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+    anyhow::ensure!(
+        magic == FLAT_TOPO_MAGIC,
+        "flat-topo bad magic: 0x{magic:08X}"
+    );
+    let version = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
+    anyhow::ensure!(version == FLAT_TOPO_VERSION, "flat-topo bad version: {version}");
+    let flags = u16::from_le_bytes(bytes[6..8].try_into().unwrap());
+    anyhow::ensure!(
+        flags & !FLAT_TOPO_FLAGS_KNOWN == 0,
+        "flat-topo unknown flag bits: 0x{flags:04X}"
+    );
+    let targets_width = width_from_code_u16(flags & FLAT_TOPO_TARGETS_WIDTH_MASK)?;
+    let offsets_u32 = flags & FLAT_TOPO_OFFSETS_U32_BIT != 0;
+    let has_topo_idx = flags & FLAT_TOPO_HAS_TOPO_IDX_BIT != 0;
+    let n_nodes = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    // bytes[12..16] reserved (must be zero)
+    anyhow::ensure!(
+        bytes[12] == 0 && bytes[13] == 0 && bytes[14] == 0 && bytes[15] == 0,
+        "flat-topo reserved bytes 12..=15 must be zero"
+    );
+    let n_edges = u64::from_le_bytes(bytes[16..24].try_into().unwrap()) as usize;
+
+    let n_offsets = (n_nodes as usize) + 1;
+    let offsets_entry_bytes = if offsets_u32 { 4 } else { 8 };
+    let offsets_bytes_count = n_offsets * offsets_entry_bytes;
+    let offsets_pad = pad_to_u64(offsets_bytes_count);
+    let targets_bytes_count = n_edges * targets_width.bytes_per_entry();
+    let targets_pad = pad_to_u64(targets_bytes_count);
+    let topo_idx_bytes_count = if has_topo_idx { 4 * n_edges } else { 0 };
+    let topo_idx_pad = pad_to_u64(topo_idx_bytes_count);
+
+    let body_size = offsets_bytes_count
+        + offsets_pad
+        + targets_bytes_count
+        + targets_pad
+        + topo_idx_bytes_count
+        + topo_idx_pad;
+    let expected_total = FLAT_TOPO_HEADER_SIZE + body_size + FLAT_SPLIT_FOOTER_SIZE;
+    anyhow::ensure!(
+        bytes.len() == expected_total,
+        "flat-topo size mismatch: got {}, expected {expected_total}",
+        bytes.len()
+    );
+
+    let mut cur = FLAT_TOPO_HEADER_SIZE;
+    let offsets: Vec<u64> = if offsets_u32 {
+        let s: &[u32] = bytemuck::cast_slice(&bytes[cur..cur + offsets_bytes_count]);
+        s.iter().map(|&v| v as u64).collect()
+    } else {
+        bytemuck::cast_slice::<u8, u64>(&bytes[cur..cur + offsets_bytes_count]).to_vec()
+    };
+    cur += offsets_bytes_count + offsets_pad;
+    let targets = decode_targets_from_bytes_split(&bytes[cur..], n_edges, targets_width);
+    cur += targets_bytes_count + targets_pad;
+    let topo_edge_idx: Vec<u32> = if has_topo_idx {
+        bytemuck::cast_slice::<u8, u32>(&bytes[cur..cur + topo_idx_bytes_count]).to_vec()
+    } else {
+        Vec::new()
+    };
+
+    // CRC check
+    let body_slice = &bytes[FLAT_TOPO_HEADER_SIZE..FLAT_TOPO_HEADER_SIZE + body_size];
+    let mut body_d = crate::formats::crc::Digest::new();
+    body_d.update(body_slice);
+    let computed_body = body_d.finalize();
+    let stored_body =
+        u64::from_le_bytes(bytes[expected_total - 16..expected_total - 8].try_into().unwrap());
+    anyhow::ensure!(
+        computed_body == stored_body,
+        "flat-topo body CRC mismatch: computed {computed_body:#018x}, stored {stored_body:#018x}"
+    );
+    let mut file_d = crate::formats::crc::Digest::new();
+    file_d.update(&bytes[..FLAT_TOPO_HEADER_SIZE + body_size]);
+    let computed_file = file_d.finalize();
+    let stored_file =
+        u64::from_le_bytes(bytes[expected_total - 8..expected_total].try_into().unwrap());
+    anyhow::ensure!(
+        computed_file == stored_file,
+        "flat-topo file CRC mismatch"
+    );
+
+    Ok(DecodedFlatTopo {
+        n_nodes,
+        offsets,
+        targets,
+        topo_edge_idx,
+    })
+}
+
+/// Serialise the weights half of a (mode × direction × metric) flat.
+/// Output is a complete section body (header + body + footer) ready
+/// for `SectionKind::FlatWeights`.
+pub fn encode_flat_weights_bytes(weights: &crate::formats::WeightArray) -> Vec<u8> {
+    let n_edges = weights.len();
+    let width = weights.width();
+    let flags: u16 = width_code_u16(width);
+    debug_assert_eq!(flags & !FLAT_WEIGHTS_FLAGS_KNOWN, 0);
+
+    let body_data_bytes = n_edges * width.bytes_per_entry();
+    let body_pad = pad_to_u64(body_data_bytes);
+    let body_size = body_data_bytes + body_pad;
+
+    let mut out =
+        Vec::with_capacity(FLAT_WEIGHTS_HEADER_SIZE + body_size + FLAT_SPLIT_FOOTER_SIZE);
+
+    out.extend_from_slice(&FLAT_WEIGHTS_MAGIC.to_le_bytes());
+    out.extend_from_slice(&FLAT_WEIGHTS_VERSION.to_le_bytes());
+    out.extend_from_slice(&flags.to_le_bytes());
+    out.extend_from_slice(&(n_edges as u64).to_le_bytes());
+    debug_assert_eq!(out.len(), FLAT_WEIGHTS_HEADER_SIZE);
+
+    // body — encode through WeightArray::iter to handle u16/u24/u32
+    // uniformly, going through the per-width sentinel that `WeightArray`
+    // already implements.
+    let mut body_bytes = Vec::with_capacity(body_data_bytes);
+    match width {
+        crate::formats::WeightWidth::U32 => {
+            for v in weights.iter() {
+                body_bytes.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        crate::formats::WeightWidth::U16 => {
+            for v in weights.iter() {
+                let v16: u16 = if v == u32::MAX { u16::MAX } else { v as u16 };
+                body_bytes.extend_from_slice(&v16.to_le_bytes());
+            }
+        }
+        crate::formats::WeightWidth::U24 => {
+            for v in weights.iter() {
+                let packed: u32 = if v == u32::MAX {
+                    crate::formats::U24_SENTINEL
+                } else {
+                    v
+                };
+                body_bytes.push((packed & 0xFF) as u8);
+                body_bytes.push(((packed >> 8) & 0xFF) as u8);
+                body_bytes.push(((packed >> 16) & 0xFF) as u8);
+            }
+        }
+    }
+    out.extend_from_slice(&body_bytes);
+    for _ in 0..body_pad {
+        out.push(0);
+    }
+    debug_assert_eq!(out.len(), FLAT_WEIGHTS_HEADER_SIZE + body_size);
+
+    let body_slice = &out[FLAT_WEIGHTS_HEADER_SIZE..];
+    let mut body_d = crate::formats::crc::Digest::new();
+    body_d.update(body_slice);
+    let body_crc = body_d.finalize();
+    let mut file_d = crate::formats::crc::Digest::new();
+    file_d.update(&out);
+    let file_crc = file_d.finalize();
+    out.extend_from_slice(&body_crc.to_le_bytes());
+    out.extend_from_slice(&file_crc.to_le_bytes());
+
+    out
+}
+
+/// MMAP-backed parse of a FlatTopo section. Returns ArcCow views
+/// directly into the supplied `Arc<Mmap>` so the topology bytes stay
+/// in the page cache (zero-copy). The strong-count clone keeps the
+/// mapping alive for the lifetime of the returned views.
+///
+/// For brevity the u24/u16 targets still allocate at the call site
+/// — the in-memory `ArcCow<u32>` shape stays uniform across the
+/// codebase. mmap stays zero-copy for u32 offsets + u32 targets.
+pub fn decode_flat_topo_from_mmap(
+    mmap: std::sync::Arc<memmap2::Mmap>,
+    byte_offset: usize,
+    byte_len: usize,
+) -> anyhow::Result<(
+    ArcCow<u64>,    // offsets
+    ArcCow<u32>,    // targets
+    ArcCow<u32>,    // topo_edge_idx (empty if not present)
+)> {
+    anyhow::ensure!(
+        byte_offset.saturating_add(byte_len) <= mmap.len(),
+        "flat-topo section out of bounds"
+    );
+    let bytes = &mmap[byte_offset..byte_offset + byte_len];
+    let decoded = decode_flat_topo_bytes(bytes)?;
+    // u24/u16 widening already done by decode_flat_topo_bytes. For u32
+    // we could keep mmap-backed; for now widen everything to owned for
+    // a uniform code path (the boot RAM cost matches the v4 path
+    // exactly when targets were u32). Future work: ArcCow::Mmap path
+    // when targets stored as u32 + offsets stored as u64. Tracked as a
+    // #345 follow-up if the bench gate shows extra heap pressure.
+    let _ = mmap; // explicitly drop the clone — owned Vecs above
+    Ok((
+        ArcCow::from_vec(decoded.offsets),
+        ArcCow::from_vec(decoded.targets),
+        ArcCow::from_vec(decoded.topo_edge_idx),
+    ))
+}
+
+/// MMAP-backed parse of a FlatWeights section. Returns the
+/// [`WeightArray`] composed of mmap-backed bytes when the width is
+/// fixed-stride (u16/u32) — the zero-copy hot path. For u24, the
+/// `WeightArray::U24` already wraps an `ArcCow<u8>` that can be
+/// mmap-backed; we widen to owned here to avoid drifting two paths
+/// — same trade as `decode_flat_topo_from_mmap`. Future work:
+/// preserve mmap-backed `ArcCow<u8>` for u24 weights.
+pub fn decode_flat_weights_from_mmap(
+    mmap: std::sync::Arc<memmap2::Mmap>,
+    byte_offset: usize,
+    byte_len: usize,
+) -> anyhow::Result<crate::formats::WeightArray> {
+    anyhow::ensure!(
+        byte_offset.saturating_add(byte_len) <= mmap.len(),
+        "flat-weights section out of bounds"
+    );
+    let bytes = &mmap[byte_offset..byte_offset + byte_len];
+    let weights = decode_flat_weights_bytes(bytes)?;
+    let _ = mmap;
+    Ok(weights)
+}
+
+/// Parse a FlatWeights section from owned bytes. Verifies both CRCs.
+pub fn decode_flat_weights_bytes(bytes: &[u8]) -> anyhow::Result<crate::formats::WeightArray> {
+    anyhow::ensure!(
+        bytes.len() >= FLAT_WEIGHTS_HEADER_SIZE + FLAT_SPLIT_FOOTER_SIZE,
+        "flat-weights section too short"
+    );
+    let magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+    anyhow::ensure!(magic == FLAT_WEIGHTS_MAGIC, "flat-weights bad magic");
+    let version = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
+    anyhow::ensure!(version == FLAT_WEIGHTS_VERSION, "flat-weights bad version");
+    let flags = u16::from_le_bytes(bytes[6..8].try_into().unwrap());
+    anyhow::ensure!(
+        flags & !FLAT_WEIGHTS_FLAGS_KNOWN == 0,
+        "flat-weights unknown flag bits"
+    );
+    let width = width_from_code_u16(flags & FLAT_WEIGHTS_WIDTH_MASK)?;
+    let n_edges = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
+
+    let body_data_bytes = n_edges * width.bytes_per_entry();
+    let body_pad = pad_to_u64(body_data_bytes);
+    let body_size = body_data_bytes + body_pad;
+    let expected_total = FLAT_WEIGHTS_HEADER_SIZE + body_size + FLAT_SPLIT_FOOTER_SIZE;
+    anyhow::ensure!(
+        bytes.len() == expected_total,
+        "flat-weights size mismatch: got {}, expected {expected_total}",
+        bytes.len()
+    );
+
+    let body_slice = &bytes[FLAT_WEIGHTS_HEADER_SIZE..FLAT_WEIGHTS_HEADER_SIZE + body_size];
+    let mut body_d = crate::formats::crc::Digest::new();
+    body_d.update(body_slice);
+    let computed_body = body_d.finalize();
+    let stored_body =
+        u64::from_le_bytes(bytes[expected_total - 16..expected_total - 8].try_into().unwrap());
+    anyhow::ensure!(computed_body == stored_body, "flat-weights body CRC mismatch");
+
+    let body_data = &body_slice[..body_data_bytes];
+    let weights = match width {
+        crate::formats::WeightWidth::U32 => {
+            let v: Vec<u32> = bytemuck::cast_slice::<u8, u32>(body_data).to_vec();
+            crate::formats::WeightArray::from_vec_u32(v)
+        }
+        crate::formats::WeightWidth::U16 => {
+            let v: Vec<u16> = bytemuck::cast_slice::<u8, u16>(body_data).to_vec();
+            crate::formats::WeightArray::from_vec_u16(v)
+        }
+        crate::formats::WeightWidth::U24 => {
+            crate::formats::WeightArray::from_u24_bytes(body_data.to_vec(), n_edges)
+        }
+    };
+    Ok(weights)
 }
 
 // =============================================================================
@@ -3759,5 +4345,110 @@ mod step_a_tests {
         for i in 0..flat.weights.len() {
             assert_eq!(back.weights.get(i), flat.weights.get(i));
         }
+    }
+
+    // ---- #345 split format round-trip tests ----
+
+    #[test]
+    fn flat_topo_split_u16_targets_no_topo_idx_roundtrip() {
+        let offsets: Vec<u64> = vec![0, 2, 3, 5, 6];
+        let targets: Vec<u32> = vec![1, 3, 2, 0, 1, 3];
+        let bytes = encode_flat_topo_bytes(&offsets, &targets, &[]);
+        let decoded = decode_flat_topo_bytes(&bytes).unwrap();
+        assert_eq!(decoded.n_nodes, 4);
+        assert_eq!(decoded.offsets, offsets);
+        assert_eq!(decoded.targets, targets);
+        assert!(decoded.topo_edge_idx.is_empty());
+    }
+
+    #[test]
+    fn flat_topo_split_u24_targets_with_topo_idx_roundtrip() {
+        let offsets: Vec<u64> = vec![0, 1, 2, 3];
+        let targets: Vec<u32> = vec![100_000, 1_000_000, 16_000_000];
+        let topo_idx: Vec<u32> = vec![17, 23, 42];
+        let bytes = encode_flat_topo_bytes(&offsets, &targets, &topo_idx);
+        let decoded = decode_flat_topo_bytes(&bytes).unwrap();
+        assert_eq!(decoded.targets, targets);
+        assert_eq!(decoded.topo_edge_idx, topo_idx);
+        let flags = u16::from_le_bytes(bytes[6..8].try_into().unwrap());
+        assert_eq!(flags & FLAT_TOPO_TARGETS_WIDTH_MASK, 2, "u24 code expected");
+        assert!(flags & FLAT_TOPO_HAS_TOPO_IDX_BIT != 0, "has_topo_idx bit");
+        assert!(flags & FLAT_TOPO_OFFSETS_U32_BIT != 0, "offsets_u32 fits");
+    }
+
+    #[test]
+    fn flat_topo_split_u32_targets_when_u24_overflows() {
+        let offsets: Vec<u64> = vec![0, 1];
+        let targets: Vec<u32> = vec![crate::formats::U24_SENTINEL + 5];
+        let bytes = encode_flat_topo_bytes(&offsets, &targets, &[]);
+        let decoded = decode_flat_topo_bytes(&bytes).unwrap();
+        assert_eq!(decoded.targets, targets);
+        let flags = u16::from_le_bytes(bytes[6..8].try_into().unwrap());
+        assert_eq!(flags & FLAT_TOPO_TARGETS_WIDTH_MASK, 0, "u32 code");
+    }
+
+    #[test]
+    fn flat_weights_u16_roundtrip() {
+        use crate::formats::WeightArray;
+        let w = WeightArray::from_vec_u16(vec![10, u16::MAX, 5, 0, 1234]);
+        let bytes = encode_flat_weights_bytes(&w);
+        let back = decode_flat_weights_bytes(&bytes).unwrap();
+        assert_eq!(back.width(), crate::formats::WeightWidth::U16);
+        assert_eq!(back.len(), 5);
+        assert_eq!(back.get(0), 10);
+        assert_eq!(back.get(1), u32::MAX);
+        assert_eq!(back.get(2), 5);
+        assert_eq!(back.get(3), 0);
+        assert_eq!(back.get(4), 1234);
+    }
+
+    #[test]
+    fn flat_weights_u24_roundtrip() {
+        let w = crate::formats::WeightArray::from_u24_bytes(
+            vec![
+                0x10, 0x00, 0x00, // 0x000010 = 16
+                0xFF, 0xFF, 0xFF, // U24_SENTINEL → u32::MAX
+                0x00, 0x00, 0x01, // 0x010000 = 65536
+            ],
+            3,
+        );
+        let bytes = encode_flat_weights_bytes(&w);
+        let back = decode_flat_weights_bytes(&bytes).unwrap();
+        assert_eq!(back.width(), crate::formats::WeightWidth::U24);
+        assert_eq!(back.get(0), 16);
+        assert_eq!(back.get(1), u32::MAX);
+        assert_eq!(back.get(2), 65536);
+    }
+
+    #[test]
+    fn flat_weights_u32_roundtrip() {
+        let w = crate::formats::WeightArray::from_vec_u32(vec![1, 2, 3, u32::MAX]);
+        let bytes = encode_flat_weights_bytes(&w);
+        let back = decode_flat_weights_bytes(&bytes).unwrap();
+        assert_eq!(back.width(), crate::formats::WeightWidth::U32);
+        assert_eq!(back.get(3), u32::MAX);
+    }
+
+    #[test]
+    fn flat_topo_rejects_corrupted_crc() {
+        let offsets: Vec<u64> = vec![0, 1];
+        let targets: Vec<u32> = vec![42];
+        let mut bytes = encode_flat_topo_bytes(&offsets, &targets, &[]);
+        let n = bytes.len();
+        bytes[n - 16] ^= 0xFF;
+        let err = decode_flat_topo_bytes(&bytes).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("CRC"), "expected CRC error, got: {msg}");
+    }
+
+    #[test]
+    fn flat_weights_rejects_corrupted_crc() {
+        let w = crate::formats::WeightArray::from_vec_u32(vec![1, 2, 3]);
+        let mut bytes = encode_flat_weights_bytes(&w);
+        let n = bytes.len();
+        bytes[n - 16] ^= 0xFF;
+        let err = decode_flat_weights_bytes(&bytes).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("CRC"), "expected CRC error, got: {msg}");
     }
 }

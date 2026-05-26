@@ -222,6 +222,20 @@ pub enum SectionKind {
     /// (scales to ~3 GiB at planet scale).
     WayNamesIdx = 0x000E_0001,
 
+    /// Shared flat-adjacency **topology** for a (mode, direction)
+    /// triple (#345). One section per (mode × dir) covers all
+    /// metric variants — `offsets + targets/sources + topo_edge_idx`.
+    /// Pairs with [`FlatWeights`] sections, one per (mode × dir × metric).
+    /// Replaces the per-(mode × dir × metric) monolithic `UpAdjFlat` /
+    /// `DownAdjFlat` / `DownReverseAdjFlat` sections — those stay
+    /// supported for legacy containers but new builds emit the split.
+    /// Section name carries `(mode, dir)`, e.g. `mode/car/up_adj.topo`.
+    FlatTopo = 0x000F_0001,
+    /// Per-metric weights for a (mode × dir × metric) tuple (#345).
+    /// Pairs with a [`FlatTopo`] section. Section name carries
+    /// `(mode, dir, metric)`, e.g. `mode/car/up_adj.weights.time`.
+    FlatWeights = 0x000F_0002,
+
     /// Future / unrecognised. Readers that see this should fall back
     /// to the section name string.
     Unknown = 0xFFFF_FFFF,
@@ -283,6 +297,9 @@ impl SectionKind {
 
             0x000E_0001 => Self::WayNamesIdx,
 
+            0x000F_0001 => Self::FlatTopo,
+            0x000F_0002 => Self::FlatWeights,
+
             _ => Self::Unknown,
         }
     }
@@ -327,6 +344,8 @@ impl SectionKind {
             Self::OverlayCrossings => "overlay/crossings",
             Self::OverlayClusterMap => "overlay/cluster_map",
             Self::WayNamesIdx => "shared/way_names_idx",
+            Self::FlatTopo => "flat/topo",
+            Self::FlatWeights => "flat/weights",
             Self::Unknown => "unknown",
         }
     }
