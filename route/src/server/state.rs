@@ -2460,7 +2460,47 @@ fn load_mode_data_from_bundle(
     // slices are borrowed from the mmap via `ArcCow::from_mmap` (no
     // leak — the Arc<Mmap> strong-count is tied to the returned
     // struct's lifetime, #296).
-    let cch_topo = CchTopoFile::read_from_mmap_unverified(topo_mmap, topo_off, topo_len)?;
+    let mut cch_topo = CchTopoFile::read_from_mmap_unverified(topo_mmap, topo_off, topo_len)?;
+    // #359: if the topo's middles are absent (split format), populate
+    // them from the CchMiddles sibling section. This is the
+    // matrix-RAM-isolation path — middles live in their own cold
+    // section that matrix-only workloads can madvise(DONTNEED).
+    if cch_topo.up_middle.is_empty() && cch_topo.down_middle.is_empty() {
+        let middles_name = format!("mode/{}/middles", mode_name);
+        if let Some(entry) = container.get(&middles_name) {
+            let mid_off = entry.offset as usize;
+            let mid_len = entry.len as usize;
+            lazy.verify_now(&middles_name)?;
+            let middles = crate::formats::cch_middles::decode_section_from_mmap(
+                std::sync::Arc::clone(mmap),
+                mid_off,
+                mid_len,
+            )?;
+            cch_topo.up_middle = middles.up_middle;
+            cch_topo.down_middle = middles.down_middle;
+            // #359 Phase 4: madvise(DONTNEED) on the CchMiddles range.
+            // CRC verification above paged the bytes in; matrix /
+            // isochrone / bucket-M2M never touch middles, so we hint
+            // the kernel to drop those pages. Route-unpack paths page
+            // them back in on demand at standard fault cost. Estimated
+            // ~300-420 MB RSS savings per Belgium mode under matrix
+            // load (codex assessment on #352).
+            let middles_bytes_for_madvise = &mmap[mid_off..mid_off + mid_len];
+            if let Err(e) = crate::formats::mmap::madvise_dontneed(middles_bytes_for_madvise) {
+                tracing::warn!(
+                    section = %middles_name,
+                    error = %e,
+                    "madvise(DONTNEED) on cch.middles section failed; ignoring"
+                );
+            } else {
+                tracing::info!(
+                    section = %middles_name,
+                    bytes = mid_len,
+                    "loaded CchMiddles + madvise(DONTNEED) (#359 — cold section, route unpack pages back on demand)"
+                );
+            }
+        }
+    }
     // After CRC verification we hint the kernel that the topo bytes can
     // be reclaimed. Hot routing pages page back in lazily; cold ones
     // (e.g. `up_middle` bytes for shortcuts that no query ever unpacks)

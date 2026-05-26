@@ -617,16 +617,52 @@ pub fn pack_with_options(
             }
         }
 
-        // step7 topology. As of #151 the v4 layout pads every variable-
-        // length u32 array to a u64 boundary, so the server reads it
-        // zero-copy out of the mmap'd container.
-        let topo = step7.join(format!("cch.{}.topo", mode));
-        maybe_append(
-            &mut w,
-            SectionKind::CchTopo,
-            &format!("mode/{}/topo", mode),
-            &topo,
-        )?;
+        // step7 topology — split into a hot CchTopo section + a cold
+        // CchMiddles section (#359). step7 still emits the monolithic
+        // v5 file; pack reads it once and writes two sections so
+        // matrix workloads can madvise(DONTNEED) the middles range
+        // without touching the topology's hot pages.
+        //
+        // Backwards-compatible: the CchTopo section is the v5 layout
+        // with header bit `MIDDLE_ABSENT_BIT` set. Old server boots
+        // (pre-#359) would reject the unknown bit and fail to load —
+        // but old servers shouldn't be pointed at new containers.
+        let topo_path = step7.join(format!("cch.{}.topo", mode));
+        if topo_path.exists() {
+            match CchTopoFile::read(&topo_path) {
+                Ok(cch_topo) => {
+                    let topo_bytes = CchTopoFile::encode_without_middles(&cch_topo);
+                    append_encoded(
+                        &mut w,
+                        SectionKind::CchTopo,
+                        &format!("mode/{}/topo", mode),
+                        topo_bytes,
+                    )?;
+                    let up_middle: Vec<u32> = cch_topo.up_middle.iter().collect();
+                    let down_middle: Vec<u32> = cch_topo.down_middle.iter().collect();
+                    let middles_bytes =
+                        crate::formats::cch_middles::encode_section(&up_middle, &down_middle);
+                    append_encoded(
+                        &mut w,
+                        SectionKind::CchMiddles,
+                        &format!("mode/{}/middles", mode),
+                        middles_bytes,
+                    )?;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "  ! [skip cch.topo split] mode={} ({}); falling back to monolithic append",
+                        mode, e
+                    );
+                    maybe_append(
+                        &mut w,
+                        SectionKind::CchTopo,
+                        &format!("mode/{}/topo", mode),
+                        &topo_path,
+                    )?;
+                }
+            }
+        }
         // step8 customised weights.
         let cch_w = step8.join(format!("cch.w.{}.u32", mode));
         maybe_append(
