@@ -293,6 +293,87 @@ run("transit_bulk_1", lambda: call("transit_bulk", {
     }],
 }), expected_status_msg="transit subsystem is not loaded")
 
+# catchment via DoExchange (#335). Input schema:
+#   (store_id: utf8, store_lon: f64, store_lat: f64, client_lon: f64, client_lat: f64)
+# Output: per-store / per-percentile catchment hulls as WKB.
+def run_catchment():
+    global PASS, FAIL
+    try:
+        import pyarrow.flight as flight
+        schema = pa.schema([
+            pa.field("store_id",    pa.utf8()),
+            pa.field("store_lon",   pa.float64()),
+            pa.field("store_lat",   pa.float64()),
+            pa.field("client_lon",  pa.float64()),
+            pa.field("client_lat",  pa.float64()),
+        ])
+        # 1 BE store with 5 BE clients around Brussels — small enough to be fast,
+        # large enough that the percentile hull has real shape.
+        rows = [
+            ("store_A", 4.351, 50.846, 4.360, 50.850),
+            ("store_A", 4.351, 50.846, 4.355, 50.840),
+            ("store_A", 4.351, 50.846, 4.345, 50.852),
+            ("store_A", 4.351, 50.846, 4.358, 50.860),
+            ("store_A", 4.351, 50.846, 4.340, 50.838),
+        ]
+        store_ids   = pa.array([r[0] for r in rows], type=pa.utf8())
+        store_lons  = pa.array([r[1] for r in rows], type=pa.float64())
+        store_lats  = pa.array([r[2] for r in rows], type=pa.float64())
+        client_lons = pa.array([r[3] for r in rows], type=pa.float64())
+        client_lats = pa.array([r[4] for r in rows], type=pa.float64())
+        batch = pa.RecordBatch.from_arrays(
+            [store_ids, store_lons, store_lats, client_lons, client_lats],
+            schema=schema,
+        )
+
+        percentiles = [50, 80]
+        params = {"percentiles": percentiles, "hull_mode": "isochrone", "remove_outliers": False}
+        desc = flight.FlightDescriptor.for_command(
+            f"catchment:car:{json.dumps(params)}".encode()
+        )
+        writer, reader = client.do_exchange(desc)
+        try:
+            writer.begin(schema)
+            writer.write_batch(batch)
+            writer.done_writing()
+            out = reader.read_all()
+        finally:
+            # Always close to avoid leaking the gRPC stream on errors.
+            writer.close()
+
+        # Server emits exactly (n_stores × n_percentiles) rows. With 1
+        # store and 2 percentiles configured we expect 2 rows, and the
+        # output schema MUST carry the documented columns.
+        n_stores = 1
+        expected_rows = n_stores * len(percentiles)
+        if out.num_rows != expected_rows:
+            print(
+                f"FAIL  Flight catchment_1store: got {out.num_rows} rows, expected {expected_rows} "
+                f"({n_stores} stores × {len(percentiles)} percentiles)"
+            )
+            FAIL += 1
+            return
+        required_cols = {"store_id", "percentile", "polygon_wkb"}
+        actual_cols = set(out.column_names)
+        missing = required_cols - actual_cols
+        if missing:
+            print(
+                f"FAIL  Flight catchment_1store: missing required columns {missing}; "
+                f"got {sorted(actual_cols)}"
+            )
+            FAIL += 1
+            return
+        print(
+            f"PASS  Flight catchment_1store: rows={out.num_rows} cols={out.num_columns} "
+            f"(percentile values: {out.column('percentile').to_pylist()})"
+        )
+        PASS += 1
+    except Exception as e:
+        print(f"FAIL  Flight catchment_1store: {e}")
+        FAIL += 1
+
+run_catchment()
+
 print(f"FLIGHT_PASS={PASS}")
 print(f"FLIGHT_FAIL={FAIL}")
 print(f"FLIGHT_EXPECTED={EXPECTED}")
