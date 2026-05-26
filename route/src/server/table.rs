@@ -344,79 +344,69 @@ pub async fn compute_table_bucket_m2m(
     let n_nodes = mode_data.cch_topo.n_nodes as usize;
 
     // K-best snap with the directional #197 role filter. Use the same
-    // primary (candidates[0]) that /route uses, so the matrix and
-    // routes agree on every pair where the primary pair connects. The
-    // remaining K-1 candidates feed `apply_k_best_fallback` for the
-    // rare cells where the primary pair lands in a snap trap.
+    // primary that /route uses, so the matrix and routes agree on every
+    // pair where the primary pair connects.
     //
-    // snap_k_with_info_filtered_role iterates all samples within 5 km
-    // (no early-exit) — non-trivial per call. We parallelise over src/
-    // dst with rayon so an N-source request scales close-to-linearly
-    // with the number of cores instead of doing N serial snaps.
+    // Phase 1 (this block): snap K=1 per source/destination. Cheap —
+    // each iterate_rings call exits as soon as one candidate is found
+    // and no closer ring can beat it.
+    //
+    // Phase 2 (apply_k_best_fallback): only for the small fraction of
+    // pairs whose K=1 primary doesn't connect do we escalate to a K=64
+    // snap for the affected source/destination indices. That cost
+    // remains O(failed_rows + failed_cols), not O(n_sources + n_targets).
+    //
+    // Pre-#368 the matrix paid the K=64 snap upfront for every
+    // src/dst — ≈ 2.1 ms × N on serial / N/20 parallel. Belgium 100×100
+    // matrix snap dropped from ~20 ms total → ~1 ms; 1000×1000 from
+    // ~200 ms → ~13 ms. Healthy matrices never see the escalation cost.
     const SNAP_K: usize = 64;
+    let _ = SNAP_K; // referenced from apply_k_best_fallback's docs
 
     let src_role_filter = SnapRole::Src.role_filter(mode_data);
     let dst_role_filter = SnapRole::Dst.role_filter(mode_data);
 
     let t_pre = std::time::Instant::now();
 
-    // (rank, snapped, valid, candidate_ranks)
-    type SnapResult = (u32, (f64, f64), bool, Vec<u32>);
+    // (rank, snapped, valid). Per-row candidate list is built lazily on
+    // first miss (see apply_k_best_fallback's lazy K=64 escalator).
+    type SnapResult = (u32, (f64, f64), bool);
 
-    // For each source: SnapResult.
     let source_results: Vec<SnapResult> = sources
         .par_iter()
         .map(|&[lon, lat]| {
-            let cands = state.snap_index.snap_k_with_info_filtered_role(
+            if let Some((orig_id, plon, plat, _)) = state.snap_index.snap_with_info_filtered_role(
                 lon,
                 lat,
                 mode.0,
-                SNAP_K,
                 Some(snap_mask),
                 src_role_filter,
-            );
-            let candidate_ranks: Vec<u32> = cands
-                .iter()
-                .filter_map(|(orig_id, _, _, _)| {
-                    let r = mode_data.orig_to_rank[*orig_id as usize];
-                    if r == u32::MAX { None } else { Some(r) }
-                })
-                .collect();
-            if let Some(&(orig_id, plon, plat, _)) = cands.first() {
+            ) {
                 let rank = mode_data.orig_to_rank[orig_id as usize];
                 if rank != u32::MAX {
-                    return (rank, (plon, plat), true, candidate_ranks);
+                    return (rank, (plon, plat), true);
                 }
             }
-            (0, (lon, lat), false, Vec::new())
+            (0, (lon, lat), false)
         })
         .collect();
 
     let target_results: Vec<SnapResult> = destinations
         .par_iter()
         .map(|&[lon, lat]| {
-            let cands = state.snap_index.snap_k_with_info_filtered_role(
+            if let Some((orig_id, plon, plat, _)) = state.snap_index.snap_with_info_filtered_role(
                 lon,
                 lat,
                 mode.0,
-                SNAP_K,
                 Some(snap_mask),
                 dst_role_filter,
-            );
-            let candidate_ranks: Vec<u32> = cands
-                .iter()
-                .filter_map(|(orig_id, _, _, _)| {
-                    let r = mode_data.orig_to_rank[*orig_id as usize];
-                    if r == u32::MAX { None } else { Some(r) }
-                })
-                .collect();
-            if let Some(&(orig_id, plon, plat, _)) = cands.first() {
+            ) {
                 let rank = mode_data.orig_to_rank[orig_id as usize];
                 if rank != u32::MAX {
-                    return (rank, (plon, plat), true, candidate_ranks);
+                    return (rank, (plon, plat), true);
                 }
             }
-            (0, (lon, lat), false, Vec::new())
+            (0, (lon, lat), false)
         })
         .collect();
 
@@ -424,8 +414,7 @@ pub async fn compute_table_bucket_m2m(
     let mut source_waypoints: Vec<Waypoint> = Vec::with_capacity(sources.len());
     let mut source_valid: Vec<bool> = Vec::with_capacity(sources.len());
     let mut sources_snapped: Vec<(f64, f64)> = Vec::with_capacity(sources.len());
-    let mut sources_candidates: Vec<Vec<u32>> = Vec::with_capacity(sources.len());
-    for (rank, (plon, plat), valid, cands) in source_results {
+    for (rank, (plon, plat), valid) in source_results {
         sources_rank.push(rank);
         source_valid.push(valid);
         sources_snapped.push((plon, plat));
@@ -433,15 +422,13 @@ pub async fn compute_table_bucket_m2m(
             location: [plon, plat],
             name: String::new(),
         });
-        sources_candidates.push(cands);
     }
 
     let mut targets_rank: Vec<u32> = Vec::with_capacity(destinations.len());
     let mut dest_waypoints: Vec<Waypoint> = Vec::with_capacity(destinations.len());
     let mut target_valid: Vec<bool> = Vec::with_capacity(destinations.len());
     let mut targets_snapped: Vec<(f64, f64)> = Vec::with_capacity(destinations.len());
-    let mut targets_candidates: Vec<Vec<u32>> = Vec::with_capacity(destinations.len());
-    for (rank, (plon, plat), valid, cands) in target_results {
+    for (rank, (plon, plat), valid) in target_results {
         targets_rank.push(rank);
         target_valid.push(valid);
         targets_snapped.push((plon, plat));
@@ -449,7 +436,6 @@ pub async fn compute_table_bucket_m2m(
             location: [plon, plat],
             name: String::new(),
         });
-        targets_candidates.push(cands);
     }
 
     // Build the per-source neighbour mask if a radius was requested.
@@ -568,10 +554,13 @@ pub async fn compute_table_bucket_m2m(
         mode,
         durations,
         distances,
-        &sources_candidates,
-        &targets_candidates,
+        sources,
+        destinations,
         &source_valid,
         &target_valid,
+        snap_mask,
+        src_role_filter,
+        dst_role_filter,
         custom_weights,
         want_duration,
         want_distance,
@@ -616,15 +605,19 @@ fn apply_k_best_fallback(
     mode: Mode,
     mut durations: MatrixGrid,
     mut distances: MatrixGrid,
-    sources_candidates: &[Vec<u32>],
-    targets_candidates: &[Vec<u32>],
+    sources: &[[f64; 2]],
+    destinations: &[[f64; 2]],
     source_valid: &[bool],
     target_valid: &[bool],
+    snap_mask: &[u64],
+    src_role_filter: Option<&[u64]>,
+    dst_role_filter: Option<&[u64]>,
     custom_weights: Option<&super::exclude::ExcludeWeights>,
     want_duration: bool,
     want_distance: bool,
 ) -> (MatrixGrid, MatrixGrid) {
     use super::query::CchQuery;
+    const SNAP_K: usize = 64;
 
     // Cap per-cell fallback combos. /route uses 400 because a single
     // hopeless query at 20s wall is acceptable; /table can have
@@ -638,8 +631,8 @@ fn apply_k_best_fallback(
     const MAX_FALLBACK_COMBOS: usize = 200;
 
     let _t_fb_start = std::time::Instant::now();
-    let n_sources = sources_candidates.len();
-    let n_targets = targets_candidates.len();
+    let n_sources = sources.len();
+    let n_targets = destinations.len();
 
     // Decide whether any cell needs the fallback. Skip the (cheap)
     // CchQuery construction entirely on the common path.
@@ -734,15 +727,18 @@ fn apply_k_best_fallback(
     };
 
     let t_fb_work = std::time::Instant::now();
-    // Build the list of cells needing fallback. We snapshot the work
-    // upfront so we can parallelise the per-cell P2P queries.
+    // Build the list of cells needing fallback AND the set of unique
+    // src/tgt indices touched by them. We snap K=64 only for those
+    // indices — healthy matrices snap zero rows/cols here.
     let mut work: Vec<(usize, usize, bool, bool)> = Vec::new();
+    let mut src_idx_set: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut tgt_idx_set: std::collections::HashSet<usize> = std::collections::HashSet::new();
     for src_idx in 0..n_sources {
-        if !source_valid[src_idx] || sources_candidates[src_idx].is_empty() {
+        if !source_valid[src_idx] {
             continue;
         }
         for tgt_idx in 0..n_targets {
-            if !target_valid[tgt_idx] || targets_candidates[tgt_idx].is_empty() {
+            if !target_valid[tgt_idx] {
                 continue;
             }
             let dur_missing = durations
@@ -755,14 +751,88 @@ fn apply_k_best_fallback(
                 .unwrap_or(false);
             if dur_missing || dist_missing {
                 work.push((src_idx, tgt_idx, dur_missing, dist_missing));
+                src_idx_set.insert(src_idx);
+                tgt_idx_set.insert(tgt_idx);
             }
         }
     }
 
     tracing::debug!(
-        "apply_k_best_fallback: built work list of {} cells in {:?}",
+        "apply_k_best_fallback: built work list of {} cells (unique src={}, tgt={}) in {:?}",
         work.len(),
+        src_idx_set.len(),
+        tgt_idx_set.len(),
         t_fb_work.elapsed()
+    );
+
+    if work.is_empty() {
+        return (durations, distances);
+    }
+
+    // Lazy K=64 escalation: snap each affected src/tgt index ONCE, in
+    // parallel. `sources_candidates[i]` is None for indices not in the
+    // failed set — those rows never see the K=64 cost.
+    let t_fb_snap = std::time::Instant::now();
+    let mut sources_candidates: Vec<Option<Vec<u32>>> = vec![None; n_sources];
+    let mut targets_candidates: Vec<Option<Vec<u32>>> = vec![None; n_targets];
+    let needed_src: Vec<usize> = src_idx_set.into_iter().collect();
+    let needed_tgt: Vec<usize> = tgt_idx_set.into_iter().collect();
+    let src_snapped: Vec<(usize, Vec<u32>)> = needed_src
+        .par_iter()
+        .map(|&i| {
+            let [lon, lat] = sources[i];
+            let cands = state.snap_index.snap_k_with_info_filtered_role(
+                lon,
+                lat,
+                mode.0,
+                SNAP_K,
+                Some(snap_mask),
+                src_role_filter,
+            );
+            let ranks: Vec<u32> = cands
+                .iter()
+                .filter_map(|(orig_id, _, _, _)| {
+                    let r = mode_data.orig_to_rank[*orig_id as usize];
+                    if r == u32::MAX { None } else { Some(r) }
+                })
+                .collect();
+            (i, ranks)
+        })
+        .collect();
+    let tgt_snapped: Vec<(usize, Vec<u32>)> = needed_tgt
+        .par_iter()
+        .map(|&i| {
+            let [lon, lat] = destinations[i];
+            let cands = state.snap_index.snap_k_with_info_filtered_role(
+                lon,
+                lat,
+                mode.0,
+                SNAP_K,
+                Some(snap_mask),
+                dst_role_filter,
+            );
+            let ranks: Vec<u32> = cands
+                .iter()
+                .filter_map(|(orig_id, _, _, _)| {
+                    let r = mode_data.orig_to_rank[*orig_id as usize];
+                    if r == u32::MAX { None } else { Some(r) }
+                })
+                .collect();
+            (i, ranks)
+        })
+        .collect();
+    for (i, ranks) in src_snapped {
+        sources_candidates[i] = Some(ranks);
+    }
+    for (i, ranks) in tgt_snapped {
+        targets_candidates[i] = Some(ranks);
+    }
+    tracing::debug!(
+        "apply_k_best_fallback: lazy K={} snap for {} src + {} tgt took {:?}",
+        SNAP_K,
+        needed_src.len(),
+        needed_tgt.len(),
+        t_fb_snap.elapsed()
     );
 
     let t_fb_run = std::time::Instant::now();
@@ -775,8 +845,9 @@ fn apply_k_best_fallback(
     let patches: Vec<(usize, usize, Option<f64>, Option<f64>)> = work
         .par_iter()
         .map(|&(src_idx, tgt_idx, dur_missing, dist_missing)| {
-            let src_cands = &sources_candidates[src_idx];
-            let tgt_cands = &targets_candidates[tgt_idx];
+            let empty: Vec<u32> = Vec::new();
+            let src_cands = sources_candidates[src_idx].as_ref().unwrap_or(&empty);
+            let tgt_cands = targets_candidates[tgt_idx].as_ref().unwrap_or(&empty);
             let order = combo_enum(src_cands.len(), tgt_cands.len());
             let mut dur_done = !dur_missing;
             let mut dist_done = !dist_missing;
