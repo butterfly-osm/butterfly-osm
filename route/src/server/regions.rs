@@ -277,10 +277,13 @@ impl RegionEntry {
         // a load here is intentional even on the otherwise-lazy path.
         if matches!(&*guard, RegionState::Pending) {
             let load_start = std::time::Instant::now();
-            let state =
-                ServerState::load_from_container(&self.container, None).map_err(|e| {
-                    anyhow::anyhow!("lazy region load failed for {}: {}", self.container.display(), e)
-                })?;
+            let state = ServerState::load_from_container(&self.container, None).map_err(|e| {
+                anyhow::anyhow!(
+                    "lazy region load failed for {}: {}",
+                    self.container.display(),
+                    e
+                )
+            })?;
             tracing::info!(
                 region = %self.id,
                 container = %self.container.display(),
@@ -822,6 +825,54 @@ impl RegionsState {
         best
     }
 
+    /// Fast bbox-tier affinity check for `(lon, lat)` against a
+    /// previously-picked region (#343). Used by bulk preflights where
+    /// most queries land in the same region as `query[0]` and full
+    /// `snap_winner` per point is wasted work.
+    ///
+    /// - [`RegionAffinity::In`] — bbox + tile both clear AND no other
+    ///   region's bbox covers the point. Caller accepts without
+    ///   running a full snap.
+    /// - [`RegionAffinity::OutOfBbox`] — bbox or tile rejects the
+    ///   point. The point cannot belong to this region; the caller
+    ///   surfaces a cross-region 501.
+    /// - [`RegionAffinity::Ambiguous`] — the bbox of at least one
+    ///   other region also covers this point. The caller MUST fall
+    ///   back to full `snap_winner` to disambiguate (covers the
+    ///   BE/LU border-overlap case).
+    pub fn confirm_in_region(&self, region_idx: usize, lon: f64, lat: f64) -> RegionAffinity {
+        const BBOX_MARGIN_DEG: f64 = 0.01;
+        const TILE_MARGIN: i32 = 0;
+        let region = &self.regions[region_idx];
+        // bbox check on the picked region
+        if let Some(bbox) = region.bbox
+            && !bbox.contains_with_margin(lon, lat, BBOX_MARGIN_DEG)
+        {
+            return RegionAffinity::OutOfBbox;
+        }
+        // #142 tile pre-filter (tighter than bbox)
+        if let Some(rt) = &region.tiles
+            && !rt.contains_with_margin(lon, lat, TILE_MARGIN)
+        {
+            return RegionAffinity::OutOfBbox;
+        }
+        // Ambiguity check: any OTHER region's bbox covers this point?
+        // If yes, the point sits in the BE/LU-style border overlap
+        // zone — the bbox alone cannot say which region owns it. Caller
+        // must run a full snap to disambiguate.
+        for (other_idx, other) in self.regions.iter().enumerate() {
+            if other_idx == region_idx {
+                continue;
+            }
+            if let Some(other_bbox) = other.bbox
+                && other_bbox.contains_with_margin(lon, lat, BBOX_MARGIN_DEG)
+            {
+                return RegionAffinity::Ambiguous;
+            }
+        }
+        RegionAffinity::In
+    }
+
     /// Pick the region for a single-coordinate request (e.g. `/nearest`,
     /// `/isochrone`, `/height`). Returns the per-region `Arc<ServerState>`
     /// or a [`DispatchError::NoRegion`] payload (renders as **400**
@@ -876,6 +927,58 @@ impl RegionsState {
     ) -> Result<Arc<ServerState>, DispatchError> {
         self.dispatch_p2p_id(src_lon, src_lat, dst_lon, dst_lat, mode_name)
             .map(|(s, _)| s)
+    }
+
+    /// #343: same as [`Self::dispatch_p2p_id`] but also returns the
+    /// winning region's index. Used by bulk preflights that follow up
+    /// with [`Self::confirm_in_region`] on queries[1..] against the
+    /// returned index.
+    pub fn dispatch_p2p_with_idx(
+        &self,
+        src_lon: f64,
+        src_lat: f64,
+        dst_lon: f64,
+        dst_lat: f64,
+        mode_name: &str,
+    ) -> Result<(Arc<ServerState>, String, usize), DispatchError> {
+        if !self.has_mode(mode_name) {
+            return Err(DispatchError::InvalidMode {
+                mode: mode_name.to_string(),
+                available: self.available_modes(),
+            });
+        }
+        let src = self.snap_winner(src_lon, src_lat, mode_name);
+        let dst = self.snap_winner(dst_lon, dst_lat, mode_name);
+        match (src, dst) {
+            (Some((s_idx, _)), Some((d_idx, _))) if s_idx == d_idx => Ok((
+                self.regions[s_idx].state(),
+                self.regions[s_idx].id.clone(),
+                s_idx,
+            )),
+            (Some((s_idx, _)), Some((d_idx, _))) => {
+                let src_region = self.regions[s_idx].id.clone();
+                let dst_region = self.regions[d_idx].id.clone();
+                super::region_metrics::record_cross_region_reject(&src_region, &dst_region);
+                Err(DispatchError::CrossRegion {
+                    src_region,
+                    dst_region,
+                })
+            }
+            (None, _) => Err(DispatchError::NoRegion {
+                endpoint: Endpoint::Source,
+                lon: src_lon,
+                lat: src_lat,
+                mode: mode_name.to_string(),
+                tried: self.region_ids().into_iter().collect(),
+            }),
+            (_, None) => Err(DispatchError::NoRegion {
+                endpoint: Endpoint::Destination,
+                lon: dst_lon,
+                lat: dst_lat,
+                mode: mode_name.to_string(),
+                tried: self.region_ids().into_iter().collect(),
+            }),
+        }
     }
 
     /// Same as [`Self::dispatch_p2p`] but also returns the winning
@@ -1178,6 +1281,25 @@ pub enum P2pPlan {
         dst_region: String,
         overlay: Arc<super::overlay::OverlayCluster>,
     },
+}
+
+/// Result of [`RegionsState::confirm_in_region`] — the fast bbox-tier
+/// pre-check that bulk preflights run instead of a full per-point snap
+/// (#343).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegionAffinity {
+    /// Bbox + tile both confirm this point belongs to the picked
+    /// region, and no other region's bbox overlaps it. Fast-path
+    /// accept — caller skips the full snap.
+    In,
+    /// Bbox or tile rejects the point. Definitely not in this region.
+    /// Caller surfaces a cross-region 501.
+    OutOfBbox,
+    /// At least one other region's bbox also covers this point — the
+    /// bbox alone cannot decide ownership (e.g. the BE/LU border
+    /// strip). Caller MUST fall back to full `snap_winner` to
+    /// disambiguate.
+    Ambiguous,
 }
 
 /// Which side of a P2P request the failing coordinate is on. Carried
