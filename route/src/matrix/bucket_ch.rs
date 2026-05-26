@@ -1061,8 +1061,10 @@ fn width_code_of(w: crate::formats::WeightWidth) -> u8 {
     }
 }
 
-fn write_adj_flat_header(
-    out: &mut Vec<u8>,
+/// Fields that go into the v4 flat-adjacency header. Grouped into a
+/// struct so [`write_adj_flat_header`] takes a single argument
+/// instead of an 8-tuple (clippy `too_many_arguments`).
+struct AdjFlatHeader {
     magic: u32,
     has_topo_idx: bool,
     width: crate::formats::WeightWidth,
@@ -1070,18 +1072,20 @@ fn write_adj_flat_header(
     targets_width: crate::formats::WeightWidth,
     n_nodes: u64,
     n_edges: u64,
-) {
-    let mut flags: u8 = width_code_of(width);
-    if offsets_u32 {
+}
+
+fn write_adj_flat_header(out: &mut Vec<u8>, h: AdjFlatHeader) {
+    let mut flags: u8 = width_code_of(h.width);
+    if h.offsets_u32 {
         flags |= ADJ_FLAT_OFFSETS_U32_BIT;
     }
-    flags |= width_code_of(targets_width) << ADJ_FLAT_TARGETS_CODE_SHIFT;
-    out.extend_from_slice(&magic.to_le_bytes());
+    flags |= width_code_of(h.targets_width) << ADJ_FLAT_TARGETS_CODE_SHIFT;
+    out.extend_from_slice(&h.magic.to_le_bytes());
     out.extend_from_slice(&ADJ_FLAT_VERSION.to_le_bytes());
-    out.push(if has_topo_idx { 1 } else { 0 });
+    out.push(if h.has_topo_idx { 1 } else { 0 });
     out.push(flags); // byte 7: see ADJ_FLAT_* constants above
-    out.extend_from_slice(&n_nodes.to_le_bytes());
-    out.extend_from_slice(&n_edges.to_le_bytes());
+    out.extend_from_slice(&h.n_nodes.to_le_bytes());
+    out.extend_from_slice(&h.n_edges.to_le_bytes());
     out.extend_from_slice(&0u64.to_le_bytes()); // _resv2
     debug_assert!(out.len().is_multiple_of(ADJ_FLAT_HEADER_SIZE));
 }
@@ -1492,13 +1496,15 @@ impl UpAdjFlatFile {
         let mut out = Vec::with_capacity(body_end + ADJ_FLAT_FOOTER_SIZE);
         write_adj_flat_header(
             &mut out,
-            UP_ADJ_FLAT_MAGIC,
-            has_topo_idx,
-            width,
-            offsets_u32,
-            targets_width,
-            n_nodes as u64,
-            n_edges as u64,
+            AdjFlatHeader {
+                magic: UP_ADJ_FLAT_MAGIC,
+                has_topo_idx,
+                width,
+                offsets_u32,
+                targets_width,
+                n_nodes: n_nodes as u64,
+                n_edges: n_edges as u64,
+            },
         );
         let topo: Option<&[u32]> = if has_topo_idx {
             Some(&flat.topo_edge_idx)
@@ -1674,13 +1680,15 @@ impl DownAdjFlatFile {
         let mut out = Vec::with_capacity(body_end + ADJ_FLAT_FOOTER_SIZE);
         write_adj_flat_header(
             &mut out,
-            DOWN_ADJ_FLAT_MAGIC,
-            false,
-            width,
-            offsets_u32,
-            targets_width,
-            n_nodes as u64,
-            n_edges as u64,
+            AdjFlatHeader {
+                magic: DOWN_ADJ_FLAT_MAGIC,
+                has_topo_idx: false,
+                width,
+                offsets_u32,
+                targets_width,
+                n_nodes: n_nodes as u64,
+                n_edges: n_edges as u64,
+            },
         );
         write_adj_flat_body_and_footer(
             &mut out,
@@ -1816,13 +1824,15 @@ impl DownReverseAdjFlatFile {
         let mut out = Vec::with_capacity(body_end + ADJ_FLAT_FOOTER_SIZE);
         write_adj_flat_header(
             &mut out,
-            DOWN_REV_ADJ_FLAT_MAGIC,
-            has_topo_idx,
-            width,
-            offsets_u32,
-            targets_width,
-            n_nodes as u64,
-            n_edges as u64,
+            AdjFlatHeader {
+                magic: DOWN_REV_ADJ_FLAT_MAGIC,
+                has_topo_idx,
+                width,
+                offsets_u32,
+                targets_width,
+                n_nodes: n_nodes as u64,
+                n_edges: n_edges as u64,
+            },
         );
         let topo: Option<&[u32]> = if has_topo_idx {
             Some(&flat.topo_edge_idx)
