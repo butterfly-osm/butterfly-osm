@@ -85,7 +85,7 @@ impl BitsetField {
         len: usize,
     ) -> Result<Self> {
         anyhow::ensure!(
-            byte_len % 8 == 0,
+            byte_len.is_multiple_of(8),
             "BitsetField byte_len must be a multiple of 8 (u64 words), got {byte_len}",
         );
         let n_words = byte_len / 8;

@@ -83,7 +83,7 @@ fn build_weight_array(
                 let le = v.to_le_bytes();
                 bytes.extend_from_slice(&le[..3]);
             }
-            return WeightArray::from_u24_bytes(bytes, n);
+            WeightArray::from_u24_bytes(bytes, n)
         }
         WeightWidth::U16 => {
             let v16: Vec<u16> = weights_u32
@@ -611,20 +611,14 @@ pub fn encode_flat_topo_bytes(
             out.extend_from_slice(&off.to_le_bytes());
         }
     }
-    for _ in 0..offsets_pad {
-        out.push(0);
-    }
+    out.resize(out.len() + offsets_pad, 0);
     out.extend_from_slice(&encode_targets_to_bytes_split(targets, targets_width));
-    for _ in 0..targets_pad {
-        out.push(0);
-    }
+    out.resize(out.len() + targets_pad, 0);
     if has_topo_idx {
         for &t in topo_edge_idx {
             out.extend_from_slice(&t.to_le_bytes());
         }
-        for _ in 0..topo_idx_pad {
-            out.push(0);
-        }
+        out.resize(out.len() + topo_idx_pad, 0);
     }
     debug_assert_eq!(out.len(), FLAT_TOPO_HEADER_SIZE + body_size);
 
@@ -830,9 +824,7 @@ pub fn encode_flat_weights_bytes(weights: &crate::formats::WeightArray) -> Vec<u
         }
     }
     out.extend_from_slice(&body_bytes);
-    for _ in 0..body_pad {
-        out.push(0);
-    }
+    out.resize(out.len() + body_pad, 0);
     debug_assert_eq!(out.len(), FLAT_WEIGHTS_HEADER_SIZE + body_size);
 
     let body_slice = &out[FLAT_WEIGHTS_HEADER_SIZE..];

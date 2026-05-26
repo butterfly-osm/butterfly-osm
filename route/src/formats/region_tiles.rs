@@ -140,7 +140,7 @@ impl RegionTilesFile {
             "RegionTilesFile::encode: input must be sorted ascending"
         );
         let n = rt.len();
-        let body_len = n * std::mem::size_of::<u64>();
+        let body_len = std::mem::size_of_val(rt);
         let mut out = Vec::with_capacity(HEADER_SIZE + body_len + FOOTER_SIZE);
         out.extend_from_slice(&REGION_TILES_MAGIC.to_le_bytes());
         out.extend_from_slice(&REGION_TILES_VERSION.to_le_bytes());
