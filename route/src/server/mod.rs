@@ -149,9 +149,9 @@ pub fn set_rss_budget_override(gib: f64) {
 
 /// #292 Phase 6: read the server's RSS budget in bytes.
 ///
-/// Source order: process-wide override (`--rss-budget-gb` CLI flag)
-/// > environment variable `BUTTERFLY_RSS_BUDGET_GB` if set and
-/// parseable > 80% of the system's MemTotal (read from
+/// Source order: process-wide override (`--rss-budget-gb` CLI flag),
+/// then environment variable `BUTTERFLY_RSS_BUDGET_GB` if set and
+/// parseable, then 80% of the system's MemTotal (read from
 /// `/proc/meminfo` on Linux). The final number is clamped to at
 /// least 1 GiB and at most 1 TiB to catch operator typos.
 fn rss_budget_bytes() -> u64 {
@@ -188,7 +188,6 @@ fn default_rss_budget_gib() -> f64 {
         if let Some(rest) = line.strip_prefix("MemTotal:") {
             // e.g. "MemTotal:       65789012 kB"
             let kb: u64 = rest
-                .trim()
                 .split_whitespace()
                 .next()
                 .and_then(|n| n.parse().ok())
@@ -211,7 +210,6 @@ fn read_proc_vm_rss_bytes() -> Option<u64> {
     for line in s.lines() {
         if let Some(rest) = line.strip_prefix("VmRSS:") {
             let kb: u64 = rest
-                .trim()
                 .split_whitespace()
                 .next()
                 .and_then(|n| n.parse().ok())?;

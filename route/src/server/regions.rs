@@ -548,13 +548,14 @@ impl RegionsState {
         // lazy path's snap_winner / has_mode can filter without
         // loading. The whole pre-pass is <1 ms per container (manifest
         // section read + a 40-byte snap_points header read).
-        let mut to_load: Vec<(
+        type RegionPreloadEntry = (
             String,
             Option<crate::formats::SnapBbox>,
             Vec<String>,
             Option<crate::formats::RegionTiles>,
             PathBuf,
-        )> = Vec::new();
+        );
+        let mut to_load: Vec<RegionPreloadEntry> = Vec::new();
         let mut skipped: Vec<String> = Vec::new();
         for path in &containers {
             let (region, bbox, modes, tiles) = peek_region_meta(path)
@@ -1427,14 +1428,18 @@ impl DispatchError {
 /// Used by the lazy-region boot path so `snap_winner` / `has_mode` /
 /// `available_modes` can answer Pending-region questions without
 /// triggering a full load.
-fn peek_region_meta(
-    path: &Path,
-) -> Result<(
+/// `(region_id, optional snap bbox, mode names, optional region tiles)`
+/// — the tuple shape [`peek_region_meta`] returns. Promoted to a type
+/// alias so the signature stays readable and the clippy
+/// `clippy::type_complexity` lint stops firing.
+type RegionMetaPeek = (
     String,
     Option<crate::formats::SnapBbox>,
     Vec<String>,
     Option<crate::formats::RegionTiles>,
-)> {
+);
+
+fn peek_region_meta(path: &Path) -> Result<RegionMetaPeek> {
     use crate::formats::butterfly_dat::Container;
     let container =
         Container::open(path).with_context(|| format!("opening container {}", path.display()))?;
