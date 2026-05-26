@@ -225,18 +225,15 @@ fn verify_lock_b_math(
         let length_m = ebg_node.length_m;
         let base_speed_mmps = way_attr.output.base_speed_mmps;
 
-        let travel_time_s = crate::weights::round_half_even_div(
-            length_m as u64 * 1000,
-            base_speed_mmps as u64,
-        ) as u32;
+        let travel_time_s =
+            crate::weights::round_half_even_div(length_m as u64 * 1000, base_speed_mmps as u64)
+                as u32;
         let per_km_extra_s = crate::weights::round_half_even_div(
             length_m as u64 * way_attr.output.per_km_penalty_ds as u64,
             10_000,
         ) as u32;
-        let const_penalty_s = crate::weights::round_half_even_div(
-            way_attr.output.const_penalty_ds as u64,
-            10,
-        ) as u32;
+        let const_penalty_s =
+            crate::weights::round_half_even_div(way_attr.output.const_penalty_ds as u64, 10) as u32;
         let expected_weight = travel_time_s
             .saturating_add(per_km_extra_s)
             .saturating_add(const_penalty_s)

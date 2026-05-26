@@ -507,10 +507,7 @@ fn pick_targets_width_split(slice: &[u32]) -> crate::formats::WeightWidth {
     }
 }
 
-fn encode_targets_to_bytes_split(
-    slice: &[u32],
-    width: crate::formats::WeightWidth,
-) -> Vec<u8> {
+fn encode_targets_to_bytes_split(slice: &[u32], width: crate::formats::WeightWidth) -> Vec<u8> {
     match width {
         crate::formats::WeightWidth::U32 => {
             let mut out = Vec::with_capacity(4 * slice.len());
@@ -543,11 +540,7 @@ fn encode_targets_to_bytes_split(
 /// Serialise the topology half of a (mode × direction) flat. Output is
 /// a complete section body (header + body + footer) ready to be
 /// `append_bytes`'d into a container as `SectionKind::FlatTopo`.
-pub fn encode_flat_topo_bytes(
-    offsets: &[u64],
-    targets: &[u32],
-    topo_edge_idx: &[u32],
-) -> Vec<u8> {
+pub fn encode_flat_topo_bytes(offsets: &[u64], targets: &[u32], topo_edge_idx: &[u32]) -> Vec<u8> {
     let n_nodes = offsets.len().saturating_sub(1);
     let n_edges = targets.len();
     let has_topo_idx = !topo_edge_idx.is_empty();
@@ -654,8 +647,9 @@ fn decode_targets_from_bytes_split(
     width: crate::formats::WeightWidth,
 ) -> Vec<u32> {
     match width {
-        crate::formats::WeightWidth::U32 => bytemuck::cast_slice::<u8, u32>(&bytes[..4 * n_edges])
-            .to_vec(),
+        crate::formats::WeightWidth::U32 => {
+            bytemuck::cast_slice::<u8, u32>(&bytes[..4 * n_edges]).to_vec()
+        }
         crate::formats::WeightWidth::U16 => {
             let s: &[u16] = bytemuck::cast_slice(&bytes[..2 * n_edges]);
             s.iter().map(|&v| v as u32).collect()
@@ -688,7 +682,10 @@ pub fn decode_flat_topo_bytes(bytes: &[u8]) -> anyhow::Result<DecodedFlatTopo> {
         "flat-topo bad magic: 0x{magic:08X}"
     );
     let version = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
-    anyhow::ensure!(version == FLAT_TOPO_VERSION, "flat-topo bad version: {version}");
+    anyhow::ensure!(
+        version == FLAT_TOPO_VERSION,
+        "flat-topo bad version: {version}"
+    );
     let flags = u16::from_le_bytes(bytes[6..8].try_into().unwrap());
     anyhow::ensure!(
         flags & !FLAT_TOPO_FLAGS_KNOWN == 0,
@@ -748,8 +745,11 @@ pub fn decode_flat_topo_bytes(bytes: &[u8]) -> anyhow::Result<DecodedFlatTopo> {
     let mut body_d = crate::formats::crc::Digest::new();
     body_d.update(body_slice);
     let computed_body = body_d.finalize();
-    let stored_body =
-        u64::from_le_bytes(bytes[expected_total - 16..expected_total - 8].try_into().unwrap());
+    let stored_body = u64::from_le_bytes(
+        bytes[expected_total - 16..expected_total - 8]
+            .try_into()
+            .unwrap(),
+    );
     anyhow::ensure!(
         computed_body == stored_body,
         "flat-topo body CRC mismatch: computed {computed_body:#018x}, stored {stored_body:#018x}"
@@ -757,12 +757,12 @@ pub fn decode_flat_topo_bytes(bytes: &[u8]) -> anyhow::Result<DecodedFlatTopo> {
     let mut file_d = crate::formats::crc::Digest::new();
     file_d.update(&bytes[..FLAT_TOPO_HEADER_SIZE + body_size]);
     let computed_file = file_d.finalize();
-    let stored_file =
-        u64::from_le_bytes(bytes[expected_total - 8..expected_total].try_into().unwrap());
-    anyhow::ensure!(
-        computed_file == stored_file,
-        "flat-topo file CRC mismatch"
+    let stored_file = u64::from_le_bytes(
+        bytes[expected_total - 8..expected_total]
+            .try_into()
+            .unwrap(),
     );
+    anyhow::ensure!(computed_file == stored_file, "flat-topo file CRC mismatch");
 
     Ok(DecodedFlatTopo {
         n_nodes,
@@ -785,8 +785,7 @@ pub fn encode_flat_weights_bytes(weights: &crate::formats::WeightArray) -> Vec<u
     let body_pad = pad_to_u64(body_data_bytes);
     let body_size = body_data_bytes + body_pad;
 
-    let mut out =
-        Vec::with_capacity(FLAT_WEIGHTS_HEADER_SIZE + body_size + FLAT_SPLIT_FOOTER_SIZE);
+    let mut out = Vec::with_capacity(FLAT_WEIGHTS_HEADER_SIZE + body_size + FLAT_SPLIT_FOOTER_SIZE);
 
     out.extend_from_slice(&FLAT_WEIGHTS_MAGIC.to_le_bytes());
     out.extend_from_slice(&FLAT_WEIGHTS_VERSION.to_le_bytes());
@@ -853,9 +852,9 @@ pub fn decode_flat_topo_from_mmap(
     byte_offset: usize,
     byte_len: usize,
 ) -> anyhow::Result<(
-    ArcCow<u64>,    // offsets
-    ArcCow<u32>,    // targets
-    ArcCow<u32>,    // topo_edge_idx (empty if not present)
+    ArcCow<u64>, // offsets
+    ArcCow<u32>, // targets
+    ArcCow<u32>, // topo_edge_idx (empty if not present)
 )> {
     anyhow::ensure!(
         byte_offset.saturating_add(byte_len) <= mmap.len(),
@@ -931,9 +930,15 @@ pub fn decode_flat_weights_bytes(bytes: &[u8]) -> anyhow::Result<crate::formats:
     let mut body_d = crate::formats::crc::Digest::new();
     body_d.update(body_slice);
     let computed_body = body_d.finalize();
-    let stored_body =
-        u64::from_le_bytes(bytes[expected_total - 16..expected_total - 8].try_into().unwrap());
-    anyhow::ensure!(computed_body == stored_body, "flat-weights body CRC mismatch");
+    let stored_body = u64::from_le_bytes(
+        bytes[expected_total - 16..expected_total - 8]
+            .try_into()
+            .unwrap(),
+    );
+    anyhow::ensure!(
+        computed_body == stored_body,
+        "flat-weights body CRC mismatch"
+    );
 
     let body_data = &body_slice[..body_data_bytes];
     let weights = match width {
@@ -1130,9 +1135,8 @@ fn parse_adj_flat_header(
     // width code, #351). Bits 5..=7 are reserved and MUST be zero in
     // v4. Anything else means either future-format data we don't
     // understand or corruption — reject up front.
-    const ADJ_FLAT_BYTE7_KNOWN_MASK: u8 = ADJ_FLAT_WIDTH_CODE_MASK
-        | ADJ_FLAT_OFFSETS_U32_BIT
-        | ADJ_FLAT_TARGETS_CODE_MASK;
+    const ADJ_FLAT_BYTE7_KNOWN_MASK: u8 =
+        ADJ_FLAT_WIDTH_CODE_MASK | ADJ_FLAT_OFFSETS_U32_BIT | ADJ_FLAT_TARGETS_CODE_MASK;
     anyhow::ensure!(
         (bytes[7] & !ADJ_FLAT_BYTE7_KNOWN_MASK) == 0,
         "adj-flat header byte 7 has reserved bits set (0x{:02X}); refusing to load",
@@ -1142,23 +1146,34 @@ fn parse_adj_flat_header(
         ADJ_FLAT_WIDTH_CODE_U32 => crate::formats::WeightWidth::U32,
         ADJ_FLAT_WIDTH_CODE_U16 => crate::formats::WeightWidth::U16,
         ADJ_FLAT_WIDTH_CODE_U24 => crate::formats::WeightWidth::U24,
-        v => anyhow::bail!("adj-flat width code {} invalid (byte 7 = 0x{:02X})", v, bytes[7]),
+        v => anyhow::bail!(
+            "adj-flat width code {} invalid (byte 7 = 0x{:02X})",
+            v,
+            bytes[7]
+        ),
     };
     let offsets_u32 = (bytes[7] & ADJ_FLAT_OFFSETS_U32_BIT) != 0;
-    let targets_width =
-        match (bytes[7] & ADJ_FLAT_TARGETS_CODE_MASK) >> ADJ_FLAT_TARGETS_CODE_SHIFT {
-            ADJ_FLAT_WIDTH_CODE_U32 => crate::formats::WeightWidth::U32,
-            ADJ_FLAT_WIDTH_CODE_U16 => crate::formats::WeightWidth::U16,
-            ADJ_FLAT_WIDTH_CODE_U24 => crate::formats::WeightWidth::U24,
-            v => anyhow::bail!(
-                "adj-flat targets width code {} invalid (byte 7 = 0x{:02X})",
-                v,
-                bytes[7]
-            ),
-        };
+    let targets_width = match (bytes[7] & ADJ_FLAT_TARGETS_CODE_MASK) >> ADJ_FLAT_TARGETS_CODE_SHIFT
+    {
+        ADJ_FLAT_WIDTH_CODE_U32 => crate::formats::WeightWidth::U32,
+        ADJ_FLAT_WIDTH_CODE_U16 => crate::formats::WeightWidth::U16,
+        ADJ_FLAT_WIDTH_CODE_U24 => crate::formats::WeightWidth::U24,
+        v => anyhow::bail!(
+            "adj-flat targets width code {} invalid (byte 7 = 0x{:02X})",
+            v,
+            bytes[7]
+        ),
+    };
     let n_nodes = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
     let n_edges = u64::from_le_bytes(bytes[16..24].try_into().unwrap()) as usize;
-    Ok((has_topo_idx, width, offsets_u32, targets_width, n_nodes, n_edges))
+    Ok((
+        has_topo_idx,
+        width,
+        offsets_u32,
+        targets_width,
+        n_nodes,
+        n_edges,
+    ))
 }
 
 fn body_layout(
@@ -1205,7 +1220,10 @@ fn body_layout(
 /// regions have ~76 M edges max per mode → easily fits u32 (4 G).
 #[inline]
 fn pick_offsets_u32(offsets: &[u64]) -> bool {
-    offsets.last().map(|&v| v <= u32::MAX as u64).unwrap_or(true)
+    offsets
+        .last()
+        .map(|&v| v <= u32::MAX as u64)
+        .unwrap_or(true)
 }
 
 /// #351: pick the narrowest width that losslessly stores every target.
@@ -1385,8 +1403,8 @@ fn write_adj_flat_body_and_footer(
         }
     }
     // Trailing pad for u16/u24 so the next array starts 4-B aligned.
-    let pad_bytes = targets_width.padded_body_bytes(n_edges)
-        - targets_width.bytes_per_entry() * n_edges;
+    let pad_bytes =
+        targets_width.padded_body_bytes(n_edges) - targets_width.bytes_per_entry() * n_edges;
     for _ in 0..pad_bytes {
         out.push(0);
     }
@@ -1491,7 +1509,12 @@ impl UpAdjFlatFile {
         let offsets_u32 = pick_offsets_u32(&flat.offsets);
         let targets_width = pick_targets_width(&flat.targets);
         let (_, _, _, _, body_end) = body_layout(
-            n_nodes, n_edges, has_topo_idx, width, offsets_u32, targets_width,
+            n_nodes,
+            n_edges,
+            has_topo_idx,
+            width,
+            offsets_u32,
+            targets_width,
         );
         let mut out = Vec::with_capacity(body_end + ADJ_FLAT_FOOTER_SIZE);
         write_adj_flat_header(
@@ -1548,7 +1571,12 @@ impl UpAdjFlatFile {
         let (has_topo_idx, width, offsets_u32, targets_width, n_nodes, n_edges) =
             parse_adj_flat_header(bytes, UP_ADJ_FLAT_MAGIC)?;
         let (offsets_off, targets_off, weights_off, topo_off, body_end) = body_layout(
-            n_nodes, n_edges, has_topo_idx, width, offsets_u32, targets_width,
+            n_nodes,
+            n_edges,
+            has_topo_idx,
+            width,
+            offsets_u32,
+            targets_width,
         );
         anyhow::ensure!(
             bytes.len() == body_end + ADJ_FLAT_FOOTER_SIZE,
@@ -1567,8 +1595,7 @@ impl UpAdjFlatFile {
         }
 
         let offsets_vec: Vec<u64> = read_offsets_vec(bytes, offsets_off, n_nodes, offsets_u32);
-        let targets_vec: Vec<u32> =
-            read_targets_vec(bytes, targets_off, n_edges, targets_width);
+        let targets_vec: Vec<u32> = read_targets_vec(bytes, targets_off, n_edges, targets_width);
         // v2 (#349): decode the weights body from its native width into
         // a Vec<u32> so the legacy byte-slice path returns the same
         // public shape it always did. Compact widths shrink the
@@ -1627,7 +1654,12 @@ impl UpAdjFlatFile {
         let (has_topo_idx, width, offsets_u32, targets_width, n_nodes, n_edges) =
             parse_adj_flat_header(bytes, UP_ADJ_FLAT_MAGIC)?;
         let (offsets_off, targets_off, weights_off, topo_off, body_end) = body_layout(
-            n_nodes, n_edges, has_topo_idx, width, offsets_u32, targets_width,
+            n_nodes,
+            n_edges,
+            has_topo_idx,
+            width,
+            offsets_u32,
+            targets_width,
         );
         anyhow::ensure!(
             byte_len == body_end + ADJ_FLAT_FOOTER_SIZE,
@@ -1674,9 +1706,8 @@ impl DownAdjFlatFile {
         let offsets_u32 = pick_offsets_u32(&flat.offsets);
         let targets_width = pick_targets_width(&flat.targets);
         // DownAdjFlat never carries topo_edge_idx.
-        let (_, _, _, _, body_end) = body_layout(
-            n_nodes, n_edges, false, width, offsets_u32, targets_width,
-        );
+        let (_, _, _, _, body_end) =
+            body_layout(n_nodes, n_edges, false, width, offsets_u32, targets_width);
         let mut out = Vec::with_capacity(body_end + ADJ_FLAT_FOOTER_SIZE);
         write_adj_flat_header(
             &mut out,
@@ -1719,9 +1750,8 @@ impl DownAdjFlatFile {
             !has_topo_idx,
             "DownAdjFlat must not carry topo_edge_idx (has_topo_idx=1)"
         );
-        let (offsets_off, targets_off, weights_off, _, body_end) = body_layout(
-            n_nodes, n_edges, false, width, offsets_u32, targets_width,
-        );
+        let (offsets_off, targets_off, weights_off, _, body_end) =
+            body_layout(n_nodes, n_edges, false, width, offsets_u32, targets_width);
         anyhow::ensure!(
             bytes.len() == body_end + ADJ_FLAT_FOOTER_SIZE,
             "adj-flat size mismatch"
@@ -1734,8 +1764,7 @@ impl DownAdjFlatFile {
             verify_adj_flat_crcs(bytes, body_end)?;
         }
         let offsets_vec: Vec<u64> = read_offsets_vec(bytes, offsets_off, n_nodes, offsets_u32);
-        let targets_vec: Vec<u32> =
-            read_targets_vec(bytes, targets_off, n_edges, targets_width);
+        let targets_vec: Vec<u32> = read_targets_vec(bytes, targets_off, n_edges, targets_width);
         let weights_bytes = &bytes[weights_off..weights_off + width.bytes_per_entry() * n_edges];
         let weights_vec: Vec<u32> = match width {
             crate::formats::WeightWidth::U32 => {
@@ -1776,9 +1805,8 @@ impl DownAdjFlatFile {
             !has_topo_idx,
             "DownAdjFlat must not carry topo_edge_idx (has_topo_idx=1)"
         );
-        let (offsets_off, targets_off, weights_off, _, body_end) = body_layout(
-            n_nodes, n_edges, false, width, offsets_u32, targets_width,
-        );
+        let (offsets_off, targets_off, weights_off, _, body_end) =
+            body_layout(n_nodes, n_edges, false, width, offsets_u32, targets_width);
         anyhow::ensure!(
             byte_len == body_end + ADJ_FLAT_FOOTER_SIZE,
             "down_adj_flat size mismatch: got {}, expected {}",
@@ -1819,7 +1847,12 @@ impl DownReverseAdjFlatFile {
         let offsets_u32 = pick_offsets_u32(&flat.offsets);
         let targets_width = pick_targets_width(&flat.sources);
         let (_, _, _, _, body_end) = body_layout(
-            n_nodes, n_edges, has_topo_idx, width, offsets_u32, targets_width,
+            n_nodes,
+            n_edges,
+            has_topo_idx,
+            width,
+            offsets_u32,
+            targets_width,
         );
         let mut out = Vec::with_capacity(body_end + ADJ_FLAT_FOOTER_SIZE);
         write_adj_flat_header(
@@ -1868,7 +1901,12 @@ impl DownReverseAdjFlatFile {
         let (has_topo_idx, width, offsets_u32, targets_width, n_nodes, n_edges) =
             parse_adj_flat_header(bytes, DOWN_REV_ADJ_FLAT_MAGIC)?;
         let (offsets_off, sources_off, weights_off, topo_off, body_end) = body_layout(
-            n_nodes, n_edges, has_topo_idx, width, offsets_u32, targets_width,
+            n_nodes,
+            n_edges,
+            has_topo_idx,
+            width,
+            offsets_u32,
+            targets_width,
         );
         anyhow::ensure!(
             bytes.len() == body_end + ADJ_FLAT_FOOTER_SIZE,
@@ -1882,8 +1920,7 @@ impl DownReverseAdjFlatFile {
             verify_adj_flat_crcs(bytes, body_end)?;
         }
         let offsets_vec: Vec<u64> = read_offsets_vec(bytes, offsets_off, n_nodes, offsets_u32);
-        let sources_vec: Vec<u32> =
-            read_targets_vec(bytes, sources_off, n_edges, targets_width);
+        let sources_vec: Vec<u32> = read_targets_vec(bytes, sources_off, n_edges, targets_width);
         let weights_bytes = &bytes[weights_off..weights_off + width.bytes_per_entry() * n_edges];
         let weights_vec: Vec<u32> = match width {
             crate::formats::WeightWidth::U32 => {
@@ -1927,7 +1964,12 @@ impl DownReverseAdjFlatFile {
         let (has_topo_idx, width, offsets_u32, targets_width, n_nodes, n_edges) =
             parse_adj_flat_header(bytes, DOWN_REV_ADJ_FLAT_MAGIC)?;
         let (offsets_off, sources_off, weights_off, topo_off, body_end) = body_layout(
-            n_nodes, n_edges, has_topo_idx, width, offsets_u32, targets_width,
+            n_nodes,
+            n_edges,
+            has_topo_idx,
+            width,
+            offsets_u32,
+            targets_width,
         );
         anyhow::ensure!(
             byte_len == body_end + ADJ_FLAT_FOOTER_SIZE,
@@ -3900,7 +3942,10 @@ mod step_a_tests {
         let decoded = UpAdjFlatFile::read_from_bytes(leaked).expect("decode round-trip");
         assert_eq!(&*decoded.offsets, &*flat.offsets);
         assert_eq!(&*decoded.targets, &*flat.targets);
-        assert_eq!(decoded.weights.iter().collect::<Vec<u32>>(), flat.weights.iter().collect::<Vec<u32>>());
+        assert_eq!(
+            decoded.weights.iter().collect::<Vec<u32>>(),
+            flat.weights.iter().collect::<Vec<u32>>()
+        );
         assert_eq!(&*decoded.topo_edge_idx, &*flat.topo_edge_idx);
     }
 
@@ -3913,7 +3958,10 @@ mod step_a_tests {
         let decoded = UpAdjFlatFile::read_from_bytes(leaked).expect("decode");
         assert_eq!(&*decoded.offsets, &*flat.offsets);
         assert_eq!(&*decoded.targets, &*flat.targets);
-        assert_eq!(decoded.weights.iter().collect::<Vec<u32>>(), flat.weights.iter().collect::<Vec<u32>>());
+        assert_eq!(
+            decoded.weights.iter().collect::<Vec<u32>>(),
+            flat.weights.iter().collect::<Vec<u32>>()
+        );
         assert!(decoded.topo_edge_idx.is_empty());
     }
 
@@ -3926,7 +3974,10 @@ mod step_a_tests {
         let decoded = DownAdjFlatFile::read_from_bytes(leaked).expect("decode");
         assert_eq!(&*decoded.offsets, &*flat.offsets);
         assert_eq!(&*decoded.targets, &*flat.targets);
-        assert_eq!(decoded.weights.iter().collect::<Vec<u32>>(), flat.weights.iter().collect::<Vec<u32>>());
+        assert_eq!(
+            decoded.weights.iter().collect::<Vec<u32>>(),
+            flat.weights.iter().collect::<Vec<u32>>()
+        );
     }
 
     #[test]
@@ -3938,7 +3989,10 @@ mod step_a_tests {
         let decoded = DownReverseAdjFlatFile::read_from_bytes(leaked).expect("decode");
         assert_eq!(&*decoded.offsets, &*flat.offsets);
         assert_eq!(&*decoded.sources, &*flat.sources);
-        assert_eq!(decoded.weights.iter().collect::<Vec<u32>>(), flat.weights.iter().collect::<Vec<u32>>());
+        assert_eq!(
+            decoded.weights.iter().collect::<Vec<u32>>(),
+            flat.weights.iter().collect::<Vec<u32>>()
+        );
         assert_eq!(&*decoded.topo_edge_idx, &*flat.topo_edge_idx);
     }
 
@@ -4174,7 +4228,11 @@ mod step_a_tests {
         let back = UpAdjFlatFile::read_from_bytes(static_bytes).unwrap();
         assert_eq!(back.weights.len(), 3);
         assert_eq!(back.weights.get(0), 10);
-        assert_eq!(back.weights.get(1), u32::MAX, "u16::MAX must widen back to u32::MAX");
+        assert_eq!(
+            back.weights.get(1),
+            u32::MAX,
+            "u16::MAX must widen back to u32::MAX"
+        );
         assert_eq!(back.weights.get(2), 65_000);
     }
 
@@ -4270,8 +4328,7 @@ mod step_a_tests {
     }
 
     fn assert_targets_width_code(bytes: &[u8], expected: u8) {
-        let code =
-            (bytes[7] & ADJ_FLAT_TARGETS_CODE_MASK) >> ADJ_FLAT_TARGETS_CODE_SHIFT;
+        let code = (bytes[7] & ADJ_FLAT_TARGETS_CODE_MASK) >> ADJ_FLAT_TARGETS_CODE_SHIFT;
         assert_eq!(code, expected, "header byte 7 targets width code mismatch");
     }
 
