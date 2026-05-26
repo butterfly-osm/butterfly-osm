@@ -92,6 +92,13 @@ check_rest() {
 
 echo -e "${G}== REST tire-kicking ==${N}"
 
+# Helpers ---------------------------------------------------------------
+# Optional flag NL_LOADED=1 enables Netherlands-specific checks. Set when
+# the multi-region serve has a Netherlands container mounted in addition
+# to BE + LU. Default off so this script stays green against the smaller
+# BE + LU smoke configuration.
+NL_LOADED="${NL_LOADED:-0}"
+
 # Health + metadata
 check_rest "health"  '"status"' "200" "${BASE}/health"
 check_rest "regions" 'regions'  "200" "${BASE}/regions"
@@ -108,10 +115,22 @@ done
 check_rest "route_BE_LU_car_cross" "" "200,501" \
   "${BASE}/route?src_lon=4.351&src_lat=50.846&dst_lon=6.130&dst_lat=49.611&mode=car"
 
+# NL routing — Amsterdam → Rotterdam.
+if [ "$NL_LOADED" = 1 ]; then
+  check_rest "route_NL_NL_car" 'duration_s' "200" \
+    "${BASE}/route?src_lon=4.900&src_lat=52.373&dst_lon=4.480&dst_lat=51.924&mode=car"
+  # NL → BE cross-region (Amsterdam → Brussels)
+  check_rest "route_NL_BE_car_cross" "" "200,501" \
+    "${BASE}/route?src_lon=4.900&src_lat=52.373&dst_lon=4.351&dst_lat=50.846&mode=car"
+fi
+
 # Nearest — single point
 check_rest "nearest_BE" 'waypoints' "200" "${BASE}/nearest?lon=4.351&lat=50.846&mode=car&number=1"
 check_rest "nearest_LU" 'waypoints' "200" "${BASE}/nearest?lon=6.130&lat=49.611&mode=car&number=1"
 check_rest "nearest_n5" 'waypoints' "200" "${BASE}/nearest?lon=4.351&lat=50.846&mode=car&number=5"
+if [ "$NL_LOADED" = 1 ]; then
+  check_rest "nearest_NL" 'waypoints' "200" "${BASE}/nearest?lon=4.900&lat=52.373&mode=car&number=1"
+fi
 
 # Matrix — small (POST /table)
 check_rest "matrix_5x5_car" 'durations' "200" \
@@ -126,6 +145,10 @@ check_rest "iso_arrive_car_BE" 'polygon' "200" \
   "${BASE}/isochrone?lon=4.351&lat=50.846&time_s=600&mode=car&direction=arrive"
 check_rest "iso_LU_car" 'polygon' "200" \
   "${BASE}/isochrone?lon=6.130&lat=49.611&time_s=600&mode=car"
+if [ "$NL_LOADED" = 1 ]; then
+  check_rest "iso_NL_car" 'polygon' "200" \
+    "${BASE}/isochrone?lon=4.900&lat=52.373&time_s=600&mode=car"
+fi
 
 # Bulk isochrone (stream) — body is binary WKB stream, so check HTTP 200 only.
 check_rest "iso_bulk" "" "200" \
@@ -160,7 +183,7 @@ echo -e "${G}== Flight (gRPC) tire-kicking ==${N}"
 PY_BIN="${PY_BIN:-${PWD}/.venv/bin/python}"
 [ -x "$PY_BIN" ] || PY_BIN=python3
 
-FLIGHT_REPORT=$("$PY_BIN" - "$GRPC" <<'PY'
+FLIGHT_REPORT=$(NL_LOADED="$NL_LOADED" "$PY_BIN" - "$GRPC" <<'PY'
 import json
 import sys
 
@@ -258,6 +281,26 @@ expect_reject("route_batch_BE_to_LU_xreg",
         "pairs": [[4.351, 50.846, 6.130, 49.611]],
     }),
     "spans regions", "FailedPrecondition")
+
+# Netherlands-only Flight tests (gated on $NL_LOADED). When the
+# multi-region serve has the NL container mounted, these checks exercise
+# the same #336 dispatcher against Dutch coordinates.
+import os
+if os.environ.get("NL_LOADED") == "1":
+    run("isochrone_NL_car", lambda: call("isochrone", {
+        "lon": 4.900, "lat": 52.373, "intervals": [600],
+    }))
+    run("matrix_NL_2x2_car", lambda: call("matrix", {
+        "sources":      [[4.900, 52.373], [4.910, 52.380]],
+        "destinations": [[4.480, 51.924], [4.490, 51.920]],
+    }))
+    # NL ↔ BE cross-region must reject
+    expect_reject("matrix_NL_to_BE_xreg",
+        lambda: call("matrix", {
+            "sources":      [[4.900, 52.373]],
+            "destinations": [[4.351, 50.846]],
+        }),
+        "spans regions", "FailedPrecondition")
 
 run("route_batch_3", lambda: call("route_batch", {
     "pairs": [
