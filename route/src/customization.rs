@@ -365,10 +365,51 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
         None => None,
     };
 
+    // Length-along-time-shortest (#371/#372). For every CCH edge, the
+    // sum of physical edge lengths along the time-optimal expansion
+    // (using `time_*_mid` as the chosen middles). This is the
+    // metric `/table`, `/trip`, and Flight matrix endpoints must
+    // report as `distance` so the number belongs to the same path as
+    // the duration — matching what `/route` already produces by
+    // per-cell unpacking. The on-disk file `cch.lat.<mode>.u32` is
+    // written alongside the existing `cch.d.<mode>.u32`; consumers
+    // migrate in #372.
+    let lat_pair = if dist_relaxed.is_some() {
+        println!("\n📏 Length-along-time-shortest customization...");
+        let lat_start = std::time::Instant::now();
+        let (lat_up, lat_down) = bottom_up_with_external_middles(
+            &topo,
+            &sorted_down_indices,
+            &time_up_mid,
+            &time_down_mid,
+            |_u_rank, v_rank| {
+                compute_distance_weight_rank_aligned(
+                    v_rank,
+                    &weights.weights,
+                    &ebg_nodes.nodes,
+                    &filtered_ebg.filtered_to_original,
+                    rank_to_filtered,
+                )
+            },
+        );
+        println!(
+            "  ✓ {:.2}s — {} up entries, {} down entries",
+            lat_start.elapsed().as_secs_f64(),
+            lat_up.len(),
+            lat_down.len()
+        );
+        Some((lat_up, lat_down))
+    } else {
+        None
+    };
+
     // Sanity checks
     sanity_check_weights(&topo, &time_up, &time_down, "Time", 95.0)?;
     if let Some((ref du, ref dd)) = dist_relaxed {
         sanity_check_weights_simple(du, dd, "Distance", 95.0)?;
+    }
+    if let Some((ref lu, ref ld)) = lat_pair {
+        sanity_check_weights_simple(lu, ld, "Length-along-time", 95.0)?;
     }
 
     // Write outputs
@@ -412,6 +453,24 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
         // reference, but it MUST already exist (server still reads it).
         config.outdir.join(format!("cch.d.{}.u32", mode_name))
     };
+
+    // #371/#372: length-along-time-shortest weights. Same on-disk
+    // shape as cch.d (same `write_cch_weights`); new file name so
+    // both files coexist during migration. Reuses the time-optimal
+    // middles since the metric is derived from the same path.
+    if let Some((lat_up, lat_down)) = lat_pair {
+        let p = config.outdir.join(format!("cch.lat.{}.u32", mode_name));
+        println!("Writing length-along-time weights...");
+        write_cch_weights(
+            &p,
+            &lat_up,
+            &lat_down,
+            &time_up_mid,
+            &time_down_mid,
+            config.mode,
+        )?;
+        println!("  ✓ Written {}", p.display());
+    }
 
     // For traffic variants, also drop a sibling `.traffic.json` next to the
     // weight file for provenance — the server validates this on boot.
@@ -600,6 +659,75 @@ fn build_reverse_down_adj_for_relax(topo: &CchTopo) -> ReverseDownAdj {
 ///
 /// `orig_weight_fn(u_rank, v_rank) -> u32` provides original edge weight.
 /// Shortcuts always use: weight(u→m) + weight(m→v) via stored middle node.
+/// Bottom-up customize using EXTERNAL middles (e.g. the post-triangle-
+/// relax time-optimal middles), to compute "length along the time-
+/// shortest path" per shortcut for #371/#372.
+///
+/// For non-shortcut edges, `orig_weight_fn(u, v)` returns the physical
+/// edge length (mode-independent). For shortcut edges, the value is
+/// recursively `w[u→m] + w[m→v]` where `m` is the supplied external
+/// middle for that shortcut (the time-optimal apex, NOT
+/// `topo.{up,down}_middle` which holds the contraction-time middle
+/// pre-relax).
+///
+/// Iteration order (rank ascending, DOWN then UP within each rank)
+/// matches `bottom_up_customize`, so the recursive dependency holds:
+/// when we visit a shortcut at rank u, all sub-edges `u→m` (down within
+/// rank u, processed first by target-rank sort) and `m→v` (up from m,
+/// `m < u` so processed in an earlier outer iteration) already have
+/// their length-along-time computed.
+pub fn bottom_up_with_external_middles(
+    topo: &CchTopo,
+    sorted_down_indices: &[Vec<usize>],
+    external_up_mid: &[u32],
+    external_down_mid: &[u32],
+    orig_weight_fn: impl Fn(usize, usize) -> u32,
+) -> (Vec<u32>, Vec<u32>) {
+    let n_nodes = topo.n_nodes as usize;
+    let n_up = topo.up_targets.len();
+    let n_down = topo.down_targets.len();
+
+    assert_eq!(external_up_mid.len(), n_up);
+    assert_eq!(external_down_mid.len(), n_down);
+
+    let mut up_weights = vec![u32::MAX; n_up];
+    let mut down_weights = vec![u32::MAX; n_down];
+
+    for rank in 0..n_nodes {
+        let u = rank;
+
+        for &i in &sorted_down_indices[u] {
+            let v = topo.down_targets[i] as usize;
+            if !topo.down_is_shortcut.bit(i) {
+                down_weights[i] = orig_weight_fn(u, v);
+            } else {
+                let m = external_down_mid[i] as usize;
+                let w_um =
+                    find_edge_weight(u, m, &topo.down_offsets, &topo.down_targets, &down_weights);
+                let w_mv = find_edge_weight(m, v, &topo.up_offsets, &topo.up_targets, &up_weights);
+                down_weights[i] = w_um.saturating_add(w_mv);
+            }
+        }
+
+        let up_start = topo.up_offsets[u] as usize;
+        let up_end = topo.up_offsets[u + 1] as usize;
+        for i in up_start..up_end {
+            let v = topo.up_targets[i] as usize;
+            if !topo.up_is_shortcut.bit(i) {
+                up_weights[i] = orig_weight_fn(u, v);
+            } else {
+                let m = external_up_mid[i] as usize;
+                let w_um =
+                    find_edge_weight(u, m, &topo.down_offsets, &topo.down_targets, &down_weights);
+                let w_mv = find_edge_weight(m, v, &topo.up_offsets, &topo.up_targets, &up_weights);
+                up_weights[i] = w_um.saturating_add(w_mv);
+            }
+        }
+    }
+
+    (up_weights, down_weights)
+}
+
 fn bottom_up_customize(
     topo: &CchTopo,
     sorted_down_indices: &[Vec<usize>],
