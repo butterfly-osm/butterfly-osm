@@ -44,7 +44,11 @@ pub struct LoadedRegion {
     /// without a transit dir return road-only and this flag is `false`.
     /// Pending (not-yet-loaded) regions report `false` here — the
     /// transit attach runs only after the region's first load.
-    #[serde(default)]
+    ///
+    /// This type only derives `Serialize` (the server is the only
+    /// writer), so no `serde(default)` is needed for client
+    /// compatibility: clients that pre-date this field simply ignore
+    /// the new key.
     pub transit: bool,
 }
 
