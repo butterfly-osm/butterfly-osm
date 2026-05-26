@@ -77,12 +77,12 @@ const VERSION: u32 = 5; // Version 5 (#352): u16/u24/u32 width-picked middles vi
 const HEADER_LEN: usize = 80;
 const FOOTER_LEN: usize = 16;
 
-const MIDDLE_WIDTH_CODE_U32: u8 = 0;
-const MIDDLE_WIDTH_CODE_U16: u8 = 1;
-const MIDDLE_WIDTH_CODE_U24: u8 = 2;
-const MIDDLE_WIDTH_CODE_MASK: u8 = 0b0000_0011;
-const MIDDLE_DOWN_SHIFT: u8 = 2;
-const MIDDLE_BYTE12_KNOWN_MASK: u8 = 0b0000_1111;
+pub(crate) const MIDDLE_WIDTH_CODE_U32: u8 = 0;
+pub(crate) const MIDDLE_WIDTH_CODE_U16: u8 = 1;
+pub(crate) const MIDDLE_WIDTH_CODE_U24: u8 = 2;
+pub(crate) const MIDDLE_WIDTH_CODE_MASK: u8 = 0b0000_0011;
+pub(crate) const MIDDLE_DOWN_SHIFT: u8 = 2;
+pub(crate) const MIDDLE_BYTE12_KNOWN_MASK: u8 = 0b0000_1111;
 
 /// Number of zero bytes to write after a `[u32]` slice of length `n` to
 /// advance the section cursor to the next u64 boundary.
@@ -98,7 +98,7 @@ const fn middle_pad_to_u64(data_bytes: usize) -> usize {
     (8 - (data_bytes & 7)) & 7
 }
 
-fn pick_middle_width(slice: &[u32]) -> WeightWidth {
+pub(crate) fn pick_middle_width(slice: &[u32]) -> WeightWidth {
     let mut max_val: u32 = 0;
     for &v in slice {
         if v == u32::MAX {
@@ -118,7 +118,7 @@ fn pick_middle_width(slice: &[u32]) -> WeightWidth {
 }
 
 #[inline]
-const fn width_code_from_weight_width(w: WeightWidth) -> u8 {
+pub(crate) const fn width_code_from_weight_width(w: WeightWidth) -> u8 {
     match w {
         WeightWidth::U16 => MIDDLE_WIDTH_CODE_U16,
         WeightWidth::U24 => MIDDLE_WIDTH_CODE_U24,
@@ -126,7 +126,7 @@ const fn width_code_from_weight_width(w: WeightWidth) -> u8 {
     }
 }
 
-fn weight_width_from_code(code: u8) -> Result<WeightWidth> {
+pub(crate) fn weight_width_from_code(code: u8) -> Result<WeightWidth> {
     match code {
         MIDDLE_WIDTH_CODE_U32 => Ok(WeightWidth::U32),
         MIDDLE_WIDTH_CODE_U16 => Ok(WeightWidth::U16),
@@ -135,7 +135,7 @@ fn weight_width_from_code(code: u8) -> Result<WeightWidth> {
     }
 }
 
-fn encode_middles_to_bytes(slice: &[u32], width: WeightWidth) -> Vec<u8> {
+pub(crate) fn encode_middles_to_bytes(slice: &[u32], width: WeightWidth) -> Vec<u8> {
     match width {
         WeightWidth::U32 => {
             let mut out = Vec::with_capacity(4 * slice.len());
@@ -169,7 +169,7 @@ fn encode_middles_to_bytes(slice: &[u32], width: WeightWidth) -> Vec<u8> {
     }
 }
 
-fn weight_array_from_bytes(bytes: Vec<u8>, n: usize, width: WeightWidth) -> WeightArray {
+pub(crate) fn weight_array_from_bytes(bytes: Vec<u8>, n: usize, width: WeightWidth) -> WeightArray {
     debug_assert_eq!(
         bytes.len(),
         n * width.bytes_per_entry(),
@@ -194,7 +194,7 @@ fn weight_array_from_bytes(bytes: Vec<u8>, n: usize, width: WeightWidth) -> Weig
     }
 }
 
-fn mmap_weight_array(
+pub(crate) fn mmap_weight_array(
     mmap: &Arc<memmap2::Mmap>,
     abs_byte_off: usize,
     n: usize,
