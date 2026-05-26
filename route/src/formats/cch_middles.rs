@@ -91,13 +91,9 @@ pub fn encode_section(up_middle: &[u32], down_middle: &[u32]) -> Vec<u8> {
     debug_assert_eq!(out.len(), HEADER_LEN);
 
     out.extend_from_slice(&encode_middles_to_bytes(up_middle, up_width));
-    for _ in 0..up_pad {
-        out.push(0);
-    }
+    out.resize(out.len() + up_pad, 0);
     out.extend_from_slice(&encode_middles_to_bytes(down_middle, down_width));
-    for _ in 0..down_pad {
-        out.push(0);
-    }
+    out.resize(out.len() + down_pad, 0);
     debug_assert_eq!(out.len(), HEADER_LEN + body_size);
 
     let body_slice = &out[HEADER_LEN..];
