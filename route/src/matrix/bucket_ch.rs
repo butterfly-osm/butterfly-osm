@@ -422,9 +422,14 @@ const ADJ_FLAT_VERSION: u16 = 2;
 const ADJ_FLAT_HEADER_SIZE: usize = 32;
 const ADJ_FLAT_FOOTER_SIZE: usize = 16;
 
-/// Per-direction width codes packed into header byte 7. Matches the
-/// `cch.weights` v4 encoding for consistency: 0=u32, 1=u16, 2=u24.
-/// Bits 0..2 hold the width code; bits 2..8 are reserved.
+/// Width code for the single weights array in this file, packed into
+/// header byte 7. Each flat file carries one weights array (unlike
+/// `cch.weights` which carries two — up and down — and uses both halves
+/// of the same byte). Codes match the `cch.weights` v4 convention for
+/// consistency: 0=u32, 1=u16, 2=u24.
+///
+/// Bits 0..=1 (the low two bits) hold the 2-bit width code; bits 2..=7
+/// are reserved and currently must be zero.
 const ADJ_FLAT_WIDTH_CODE_U32: u8 = 0;
 const ADJ_FLAT_WIDTH_CODE_U16: u8 = 1;
 const ADJ_FLAT_WIDTH_CODE_U24: u8 = 2;
@@ -544,7 +549,7 @@ fn write_adj_flat_body_and_footer(
     // bytes to a 4-B boundary so the following `topo_edge_idx` (still
     // u32) stays aligned for `bytemuck::cast_slice` /
     // `ArcCow::<u32>::from_mmap`.
-    use crate::formats::{U24_SENTINEL, WeightArray};
+    use crate::formats::WeightArray;
     let n_edges = a32.len();
     let width = weights.width();
     match weights {
@@ -552,15 +557,19 @@ fn write_adj_flat_body_and_footer(
             out.extend_from_slice(bytemuck::cast_slice(arr.as_slice()));
         }
         WeightArray::U16(arr) => {
-            // Sentinel: u32::MAX → u16::MAX on disk (matches the
-            // reader's widen-on-read mapping).
+            // The in-memory `ArcCow<u16>` already carries the
+            // u32::MAX → u16::MAX sentinel mapping (applied at
+            // build time via `WeightArray::from_vec_u32`). Bytes
+            // round-trip verbatim through `get()`.
             let slice = arr.as_slice();
             debug_assert_eq!(slice.len(), n_edges);
             out.extend_from_slice(bytemuck::cast_slice(slice));
         }
         WeightArray::U24(bytes) => {
-            // u24 stores 3 LE bytes per entry. Sentinel `U24_SENTINEL`
-            // round-trips to `u32::MAX` via the get accessor.
+            // u24 stores 3 LE bytes per entry. The sentinel
+            // `crate::formats::U24_SENTINEL` was baked in at build
+            // time; the on-disk bytes round-trip verbatim and the
+            // reader's `get()` widens U24_SENTINEL back to u32::MAX.
             let slice = bytes.as_slice();
             debug_assert_eq!(slice.len(), 3 * n_edges);
             out.extend_from_slice(slice);
@@ -572,7 +581,6 @@ fn write_adj_flat_body_and_footer(
     for _ in 0..pad {
         out.push(0);
     }
-    let _ = U24_SENTINEL; // silence unused import in non-U24 paths
 
     if let Some(t) = topo_edge_idx {
         out.extend_from_slice(bytemuck::cast_slice(t));
@@ -3170,5 +3178,175 @@ mod step_a_tests {
             tiled8, mono,
             "L3-tiled (tile=8 = whole problem) must match monolithic"
         );
+    }
+
+    // ---- #349 flat-file v2 width round-trip tests --------------------
+    //
+    // Each test builds a small synthetic UpAdjFlat / DownAdjFlat /
+    // DownReverseAdjFlat with weights at one specific WeightArray
+    // variant, encodes via `*File::encode`, then decodes via
+    // `read_from_bytes` and asserts:
+    //   - n_edges / n_nodes preserved
+    //   - the decoded WeightArray reads back the same `get(i)` for
+    //     every slot
+    //   - the on-disk header width code is what we asked for
+    //   - the sentinel value (u32::MAX) round-trips through the
+    //     widen-on-read mapping
+
+    fn build_flat_with_width(width: crate::formats::WeightWidth) -> UpAdjFlat {
+        use crate::formats::WeightArray;
+        // 4 nodes, 3 edges, including a sentinel (u32::MAX) at slot 1.
+        let offsets: Vec<u64> = vec![0, 1, 2, 3, 3];
+        let targets: Vec<u32> = vec![1, 2, 0];
+        // Pick representative finite weights per width:
+        //   U16: small values plus u32::MAX sentinel
+        //   U24: medium values plus u32::MAX sentinel
+        //   U32: large values plus u32::MAX sentinel
+        let w32: Vec<u32> = match width {
+            crate::formats::WeightWidth::U16 => vec![10, u32::MAX, 65_000],
+            crate::formats::WeightWidth::U24 => vec![100_000, u32::MAX, 10_000_000],
+            crate::formats::WeightWidth::U32 => vec![1_000_000_000, u32::MAX, 4_000_000_000],
+        };
+        let weights = match width {
+            crate::formats::WeightWidth::U16 => {
+                let v16: Vec<u16> = w32
+                    .iter()
+                    .map(|&w| if w == u32::MAX { u16::MAX } else { w as u16 })
+                    .collect();
+                WeightArray::from_vec_u16(v16)
+            }
+            crate::formats::WeightWidth::U24 => {
+                let mut bytes: Vec<u8> = Vec::with_capacity(3 * w32.len());
+                for &w in &w32 {
+                    let v: u32 = if w == u32::MAX {
+                        crate::formats::U24_SENTINEL
+                    } else {
+                        w
+                    };
+                    let le = v.to_le_bytes();
+                    bytes.extend_from_slice(&le[..3]);
+                }
+                WeightArray::from_u24_bytes(bytes, w32.len())
+            }
+            crate::formats::WeightWidth::U32 => WeightArray::from_vec_u32(w32.clone()),
+        };
+        // Smoke: in-memory get() returns the round-tripped values.
+        assert_eq!(weights.get(0), w32[0]);
+        assert_eq!(weights.get(1), u32::MAX);
+        assert_eq!(weights.get(2), w32[2]);
+
+        UpAdjFlat {
+            offsets: ArcCow::from_vec(offsets),
+            targets: ArcCow::from_vec(targets),
+            weights,
+            topo_edge_idx: ArcCow::from_vec(Vec::new()),
+        }
+    }
+
+    fn assert_width_code(bytes: &[u8], expected: u8) {
+        // Header byte 7 = width code (low 2 bits) per #349.
+        assert_eq!(
+            bytes[7] & ADJ_FLAT_WIDTH_CODE_MASK,
+            expected,
+            "header width code byte mismatch"
+        );
+    }
+
+    #[test]
+    fn up_adj_flat_v2_round_trip_u32() {
+        let flat = build_flat_with_width(crate::formats::WeightWidth::U32);
+        let bytes = UpAdjFlatFile::encode(&flat);
+        assert_width_code(&bytes, ADJ_FLAT_WIDTH_CODE_U32);
+        let static_bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+        let back = UpAdjFlatFile::read_from_bytes(static_bytes).unwrap();
+        assert_eq!(back.weights.len(), 3);
+        for i in 0..3 {
+            assert_eq!(back.weights.get(i), flat.weights.get(i));
+        }
+    }
+
+    #[test]
+    fn up_adj_flat_v2_round_trip_u16() {
+        let flat = build_flat_with_width(crate::formats::WeightWidth::U16);
+        let bytes = UpAdjFlatFile::encode(&flat);
+        assert_width_code(&bytes, ADJ_FLAT_WIDTH_CODE_U16);
+        // n_edges=3 (odd) so u16 body is padded by 2 bytes — round-trip
+        // proves the padding is correctly consumed by the reader.
+        let static_bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+        let back = UpAdjFlatFile::read_from_bytes(static_bytes).unwrap();
+        assert_eq!(back.weights.len(), 3);
+        assert_eq!(back.weights.get(0), 10);
+        assert_eq!(back.weights.get(1), u32::MAX, "u16::MAX must widen back to u32::MAX");
+        assert_eq!(back.weights.get(2), 65_000);
+    }
+
+    #[test]
+    fn up_adj_flat_v2_round_trip_u24() {
+        let flat = build_flat_with_width(crate::formats::WeightWidth::U24);
+        let bytes = UpAdjFlatFile::encode(&flat);
+        assert_width_code(&bytes, ADJ_FLAT_WIDTH_CODE_U24);
+        // n_edges=3 (so 9 bytes of u24 body, padded by 3 to 12).
+        let static_bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+        let back = UpAdjFlatFile::read_from_bytes(static_bytes).unwrap();
+        assert_eq!(back.weights.len(), 3);
+        assert_eq!(back.weights.get(0), 100_000);
+        assert_eq!(
+            back.weights.get(1),
+            u32::MAX,
+            "U24_SENTINEL must widen back to u32::MAX"
+        );
+        assert_eq!(back.weights.get(2), 10_000_000);
+    }
+
+    #[test]
+    fn down_adj_flat_v2_round_trip_u16() {
+        // DownAdjFlat builder doesn't have a public encode that accepts
+        // raw vecs, so reuse the topology builder + override weights.
+        use crate::formats::WeightArray;
+        let (topo, w) = make_cch();
+        let mut flat = DownAdjFlat::build(&topo, &w);
+        // Replace weights with a u16-width array that holds the same
+        // values to exercise the new write/read paths. Values are
+        // small (the synth CCH uses 1..=20).
+        let widened: Vec<u32> = (0..flat.weights.len() as u32)
+            .map(|i| flat.weights.get(i as usize))
+            .collect();
+        let v16: Vec<u16> = widened
+            .iter()
+            .map(|&w| if w == u32::MAX { u16::MAX } else { w as u16 })
+            .collect();
+        flat.weights = WeightArray::from_vec_u16(v16);
+        let bytes = DownAdjFlatFile::encode(&flat);
+        assert_width_code(&bytes, ADJ_FLAT_WIDTH_CODE_U16);
+        let static_bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+        let back = DownAdjFlatFile::read_from_bytes(static_bytes).unwrap();
+        for i in 0..flat.weights.len() {
+            assert_eq!(back.weights.get(i), flat.weights.get(i));
+        }
+    }
+
+    #[test]
+    fn down_reverse_adj_flat_v2_round_trip_u24() {
+        use crate::formats::{U24_SENTINEL, WeightArray};
+        let (topo, w) = make_cch();
+        let mut flat = DownReverseAdjFlat::build_with(&topo, &w, true);
+        // Build a u24 weights view of the same values.
+        let widened: Vec<u32> = (0..flat.weights.len() as u32)
+            .map(|i| flat.weights.get(i as usize))
+            .collect();
+        let mut bytes24: Vec<u8> = Vec::with_capacity(3 * widened.len());
+        for &w in &widened {
+            let v: u32 = if w == u32::MAX { U24_SENTINEL } else { w };
+            let le = v.to_le_bytes();
+            bytes24.extend_from_slice(&le[..3]);
+        }
+        flat.weights = WeightArray::from_u24_bytes(bytes24, widened.len());
+        let bytes = DownReverseAdjFlatFile::encode(&flat);
+        assert_width_code(&bytes, ADJ_FLAT_WIDTH_CODE_U24);
+        let static_bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+        let back = DownReverseAdjFlatFile::read_from_bytes(static_bytes).unwrap();
+        for i in 0..flat.weights.len() {
+            assert_eq!(back.weights.get(i), flat.weights.get(i));
+        }
     }
 }

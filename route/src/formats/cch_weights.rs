@@ -679,10 +679,11 @@ impl CchWeightsFile {
 /// Decode a u16-compact body into a `Vec<u32>`, mapping the
 /// `u16::MAX` sentinel back to `u32::MAX`.
 ///
-/// Public so other formats can reuse the codec without duplicating
-/// the sentinel-mapping logic.
+/// Crate-visible so other formats (e.g. `matrix::bucket_ch` flat
+/// files) can reuse the codec without duplicating the sentinel-mapping
+/// logic. NOT part of the public crate API.
 #[inline]
-pub fn decode_u16_to_u32_vec(bytes: &[u8]) -> Vec<u32> {
+pub(crate) fn decode_u16_to_u32_vec(bytes: &[u8]) -> Vec<u32> {
     bytes
         .chunks_exact(2)
         .map(|c| {
@@ -695,10 +696,11 @@ pub fn decode_u16_to_u32_vec(bytes: &[u8]) -> Vec<u32> {
 /// Decode a u24-compact body (3 bytes LE per entry) into a `Vec<u32>`,
 /// mapping the `U24_SENTINEL` back to `u32::MAX`.
 ///
-/// Public so other formats can reuse the codec without duplicating
-/// the sentinel-mapping logic.
+/// Crate-visible so other formats can reuse the codec without
+/// duplicating the sentinel-mapping logic. NOT part of the public
+/// crate API.
 #[inline]
-pub fn decode_u24_to_u32_vec(bytes: &[u8]) -> Vec<u32> {
+pub(crate) fn decode_u24_to_u32_vec(bytes: &[u8]) -> Vec<u32> {
     bytes
         .chunks_exact(3)
         .map(|c| {
@@ -710,10 +712,11 @@ pub fn decode_u24_to_u32_vec(bytes: &[u8]) -> Vec<u32> {
 
 /// Build a `WeightArray` from a mmap-backed body at the chosen width.
 ///
-/// Public so other formats that store weights inline (e.g. the flat
-/// adjacency files in `matrix::bucket_ch`) can reuse the decode path
-/// instead of duplicating the variant-dispatch logic.
-pub fn decode_weight_array_mmap(
+/// Crate-visible so other formats that store weights inline (e.g. the
+/// flat adjacency files in `matrix::bucket_ch`) can reuse the decode
+/// path instead of duplicating the variant-dispatch logic. NOT part of
+/// the public crate API.
+pub(crate) fn decode_weight_array_mmap(
     mmap: &Arc<memmap2::Mmap>,
     byte_offset: usize,
     n: usize,
