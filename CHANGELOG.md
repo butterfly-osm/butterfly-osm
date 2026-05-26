@@ -8,6 +8,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For detailed tool-specific changes, see individual tool changelogs:
 - [butterfly-dl](./tools/butterfly-dl/CHANGELOG.md) - OSM data downloader
 
+## [Unreleased] — 2026-05-26 — Disk/RAM codec sprint
+
+End-to-end disk + RAM reduction sweep landed across nine PRs. Belgium
+packed container shrank from 16.06 GiB to 12.87 GiB (**−20%**) with
+no query-latency regression. Cumulative Europe-scale projection at
+10 regions: ~20-30 GiB on-disk savings.
+
+### Added
+
+- **butterfly-route**: Format v5 width-picked CCH middles (#352,
+  PR #357). `cch.topo` packs `up_middle`/`down_middle` at u16/u24/u32
+  depending on rank range. Belgium savings: 272 MB. `WeightArray`
+  reuse keeps `u32::MAX` "no middle" sentinel semantics across all
+  three widths.
+- **butterfly-route**: zstd-compressed cold sections (#347, PR #358).
+  `shared/way_names_idx` 19.81 → 6.61 MiB (67% saved) +
+  `shared/snap_grid` 179 → 77 KiB (57% saved). Section-internal
+  transparent magic-prefix sniff — pre-#347 containers load
+  unchanged.
+- **butterfly-route**: Split flat-adjacency format (#345, PR #360).
+  Per-(mode × direction) `FlatTopo` section shared across time and
+  dist metric variants; per-(mode × direction × metric) `FlatWeights`
+  sections carry only the weight bytes. Saves ~1 GiB on Belgium.
+  Pack-side topology divergence guard catches the unexpected case
+  loudly.
+- **butterfly-route**: Cold `CchMiddles` SectionKind (#359, PR #362).
+  Pack splits `cch.topo` middles out into a dedicated cold section;
+  server boot loads both, then `madvise(DONTNEED)` on the middles
+  range after CRC walk. Matrix / isochrone / bucket-M2M never touch
+  middles, so the kernel reclaims their pages and route-unpack pages
+  them back on demand. Codex estimate: ~300-420 MB RSS per Belgium
+  mode under 24-thread matrix load.
+- **butterfly-route**: Transit_bulk preflight bbox-tier confirm
+  (#343, PR #361). `RegionsState::confirm_in_region` replaces per-
+  query full snap with bbox + tile check, falling back to full snap
+  only for bbox-overlap zones. Projected 100k same-region batch:
+  1 s → <50 ms.
+
+### Changed
+
+- **butterfly-route**: u32 offsets in flat adjacencies when n_edges
+  fits u32 (#350, PR #355). Belgium-class containers gain another
+  ~300 MB.
+- **butterfly-route**: u24 absolute targets in flat adjacencies
+  (#351, PR #356). Codex re-consult on rank-delta concluded absolute
+  u24 is the right first step (rank-delta deferred — bench math
+  showed it would regress on hot-loop edge reads). 652 MB saved on
+  Belgium.
+- **butterfly-route**: u16/u24 weights propagation to flats (#349,
+  PR #354). 970 MB compressed across the four flat-adjacency
+  variants on Belgium.
+- **butterfly-route**: Auto-prune step1..step8 after pack (#344,
+  PR #348). `pack` now defaults to deleting the per-step intermediate
+  trees after CRC-verifying the packed container — typically 30-60%
+  of a region's footprint. `--keep-intermediates` opts out for
+  iterative dev.
+- **butterfly-route**: Lean default pack drops `shared/nbg.csr`
+  (#346, PR #353). Belgium container shrank by another ~190 MB; the
+  per-edge geometry index in `shared/edge_geom_*` (#155) supplants
+  the unused NBG CSR for serve-time geometry lookups.
+
+### Tested
+
+- Multi-region serve (BE + LU) verified end-to-end: 19/19 REST PASS,
+  10/11 Flight PASS (only `transit_bulk` fails — transit subsystem
+  not loaded, expected for a no-transit-feed setup).
+- /route Brussels→Antwerp byte-identical across all 9 merges.
+  12 ms p50 latency unchanged.
+- Matrix bench 1000×1000 mean: 244.9 ms (was 249 ms pre-codec —
+  noise-band but trending faster).
+- e2e-isochrone bench: 4.11 ms mean / 11.5 ms p99 / 243 iso/sec
+  single-threaded.
+- 600 lib tests pass.
+
+### Removed
+
+- ~365 GB of stale build artifacts (geocode/nominatim docker volume,
+  pre-codec Belgium snapshots, abandoned step experiments).
+
+### Internal
+
+- 0 clippy errors on butterfly-route — `chore(clippy)` sweep
+  (PR #363, #364) collapses 13 lints into idiomatic forms with no
+  behaviour change.
+
 ## [Unreleased] — 2026-05-23
 
 ### Added
