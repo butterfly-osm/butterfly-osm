@@ -961,7 +961,7 @@ impl ServerState {
         // slices into them remain valid; subsequent rare reads page
         // them back in at standard fault cost.
         for mode_name in &discovered_modes {
-            for leaf in ["weights.time", "weights.dist"] {
+            for leaf in ["weights.time", "weights.dist", "weights.lat"] {
                 let section = format!("mode/{}/{}", mode_name, leaf);
                 if let Some(entry) = container.get(&section) {
                     let off = entry.offset as usize;
@@ -2669,10 +2669,34 @@ fn load_mode_data_from_bundle(
         };
     madvise_section_in_container(container, mmap, &down_adj_flat_dist_section);
 
-    // #371/#372: cch_weights_lat not yet wired through pack.rs for the
-    // container path. Until that ships, the container-mode boot uses
-    // None (matrix endpoints fall back to cch_weights_dist).
-    let cch_weights_lat = None;
+    // #371/#372: length-along-time weights section, when present.
+    // Pre-PR #377 containers don't have this section; we boot with
+    // None and matrix endpoints fall back to cch_weights_dist
+    // (broken metric, see #371 / #372). Once everyone repacks, this
+    // becomes a hard load like weights.dist above.
+    let cch_weights_lat = {
+        let name = format!("mode/{}/weights.lat", mode_name);
+        if let Some(entry) = container.get(&name) {
+            let off = entry.offset as usize;
+            let len = entry.len as usize;
+            anyhow::ensure!(
+                off + len <= mmap.len(),
+                "section '{}' bytes [{},{}) exceed mmap len {}",
+                name,
+                off,
+                off + len,
+                mmap.len()
+            );
+            lazy.verify_now(&name)?;
+            Some(CchWeightsFile::read_from_mmap_unverified(
+                mmap.clone(),
+                off,
+                len,
+            )?)
+        } else {
+            None
+        }
+    };
 
     Ok(ModeData {
         mode,
