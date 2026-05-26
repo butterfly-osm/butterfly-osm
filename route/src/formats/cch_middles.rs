@@ -41,8 +41,8 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use super::cch_topo::{
-    MIDDLE_BYTE12_KNOWN_MASK, MIDDLE_DOWN_SHIFT, MIDDLE_WIDTH_CODE_MASK, encode_middles_to_bytes,
-    mmap_weight_array, pick_middle_width, weight_array_from_bytes, weight_width_from_code,
+    MIDDLE_DOWN_SHIFT, MIDDLE_WIDTH_CODE_MASK, encode_middles_to_bytes, mmap_weight_array,
+    pick_middle_width, weight_array_from_bytes, weight_width_from_code,
     width_code_from_weight_width,
 };
 use super::cch_weights::{WeightArray, WeightWidth};
@@ -52,6 +52,10 @@ const MAGIC: u32 = 0x53444944; // "DIDS" LE
 const VERSION: u16 = 1;
 const HEADER_LEN: usize = 24;
 const FOOTER_LEN: usize = 16;
+/// Known flag bits for cch.middles header byte 6: bits 0..=1 are the
+/// up-direction width code, bits 2..=3 are the down-direction width
+/// code. Bits 4..=15 are reserved.
+const FLAGS_KNOWN_MASK: u8 = 0b0000_1111;
 
 #[inline]
 const fn pad_to_u64(n: usize) -> usize {
@@ -67,7 +71,7 @@ pub fn encode_section(up_middle: &[u32], down_middle: &[u32]) -> Vec<u8> {
     let flags: u16 = u16::from(width_code_from_weight_width(up_width))
         | (u16::from(width_code_from_weight_width(down_width)) << MIDDLE_DOWN_SHIFT);
     debug_assert_eq!(
-        u8::try_from(flags).map(|b| b & !MIDDLE_BYTE12_KNOWN_MASK),
+        u8::try_from(flags).map(|b| b & !FLAGS_KNOWN_MASK),
         Ok(0),
         "cch.middles flag pollution"
     );
@@ -220,7 +224,7 @@ fn parse_header_and_size(
     // layout as cch.topo header byte 12 — bits 0..=3 carry the two
     // 2-bit width codes, bits 4..=15 stay reserved.
     anyhow::ensure!(
-        (flags >> 8) == 0 && (flags as u8) & !MIDDLE_BYTE12_KNOWN_MASK == 0,
+        (flags >> 8) == 0 && (flags as u8) & !FLAGS_KNOWN_MASK == 0,
         "cch.middles unknown flag bits: 0x{flags:04X}"
     );
     let up_width = weight_width_from_code((flags as u8) & MIDDLE_WIDTH_CODE_MASK)?;

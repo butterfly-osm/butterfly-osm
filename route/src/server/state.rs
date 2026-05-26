@@ -2460,7 +2460,30 @@ fn load_mode_data_from_bundle(
     // slices are borrowed from the mmap via `ArcCow::from_mmap` (no
     // leak — the Arc<Mmap> strong-count is tied to the returned
     // struct's lifetime, #296).
-    let cch_topo = CchTopoFile::read_from_mmap_unverified(topo_mmap, topo_off, topo_len)?;
+    let mut cch_topo = CchTopoFile::read_from_mmap_unverified(topo_mmap, topo_off, topo_len)?;
+    // #359: if the topo's middles are absent (split format), populate
+    // them from the CchMiddles sibling section. This is the
+    // matrix-RAM-isolation path — middles live in their own cold
+    // section that matrix-only workloads can madvise(DONTNEED).
+    if cch_topo.up_middle.is_empty() && cch_topo.down_middle.is_empty() {
+        let middles_name = format!("mode/{}/middles", mode_name);
+        if let Some(entry) = container.get(&middles_name) {
+            let mid_off = entry.offset as usize;
+            let mid_len = entry.len as usize;
+            lazy.verify_now(&middles_name)?;
+            let middles = crate::formats::cch_middles::decode_section_from_mmap(
+                std::sync::Arc::clone(mmap),
+                mid_off,
+                mid_len,
+            )?;
+            cch_topo.up_middle = middles.up_middle;
+            cch_topo.down_middle = middles.down_middle;
+            tracing::info!(
+                section = %middles_name,
+                "loaded CchMiddles cold section (#359 — RAM isolation)"
+            );
+        }
+    }
     // After CRC verification we hint the kernel that the topo bytes can
     // be reclaimed. Hot routing pages page back in lazily; cold ones
     // (e.g. `up_middle` bytes for shortcuts that no query ever unpacks)
