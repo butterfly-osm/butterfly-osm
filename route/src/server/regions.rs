@@ -1179,7 +1179,7 @@ pub enum Endpoint {
 }
 
 impl Endpoint {
-    fn label(&self) -> String {
+    pub fn label(&self) -> String {
         match self {
             Endpoint::Source => "source".to_string(),
             Endpoint::Destination => "destination".to_string(),
