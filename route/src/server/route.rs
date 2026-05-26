@@ -498,18 +498,21 @@ pub async fn route_handler(
     // Belgium P2P is 5-50 ms so tail latency is ~2-20 s for the
     // ~1.3 % pathological pairs. Best-case latency on healthy
     // pairs is unchanged from pre-fix.
+    // SNAP_K is the *escalation* fan-out used when the K=1 primary
+    // query fails. Healthy /route pairs only ever pay the K=1 cost
+    // (≈ 250 µs vs ≈ 2.1 ms for K=64), saving ~1.5–3 ms per request
+    // on the 98.7 % of Belgium pairs that resolve on (0,0). The K=64
+    // escalation only fires on the ~1.3 % pathological pairs where
+    // the geometrically-closest candidate is the wrong same-geometry
+    // directional twin or a disconnected mode-filtered island.
     const SNAP_K: usize = 64;
     let src_bearing = bearing_hints.as_ref().and_then(|h| h.first().copied());
     let dst_bearing = bearing_hints.as_ref().and_then(|h| h.get(1).copied());
 
-    // Snap top-K source candidates.
-    let src_candidates: Vec<(u32, f64, f64, f64)> = if let Some((angle, range)) = src_bearing {
-        // Bearing-filtered top-K: collect candidates by repeated
-        // bearing-filtered single snaps over an exclusion bitset.
-        // For now we accept that bearing hints reduce to a single
-        // best candidate (the historical behaviour) — bearing implies
-        // direction, so the selected candidate is already the
-        // intended one. K=1 path.
+    // PHASE 1: K=1 snap for both endpoints. Bearing-filtered queries
+    // were already K=1 in the previous implementation; non-bearing
+    // queries now start at K=1 too and only escalate on failure.
+    let mut src_candidates: Vec<(u32, f64, f64, f64)> = if let Some((angle, range)) = src_bearing {
         match state.snap_index.snap_with_bearing_filtered_role(
             req.src_lon,
             req.src_lat,
@@ -523,14 +526,16 @@ pub async fn route_handler(
             None => Vec::new(),
         }
     } else {
-        state.snap_index.snap_k_with_info_filtered_role(
+        match state.snap_index.snap_with_info_filtered_role(
             req.src_lon,
             req.src_lat,
             mode.0,
-            SNAP_K,
             Some(&snap_mask),
             src_role_filter,
-        )
+        ) {
+            Some(t) => vec![t],
+            None => Vec::new(),
+        }
     };
     if src_candidates.is_empty() {
         return (
@@ -542,8 +547,7 @@ pub async fn route_handler(
             .into_response();
     }
 
-    // Snap top-K destination candidates.
-    let dst_candidates: Vec<(u32, f64, f64, f64)> = if let Some((angle, range)) = dst_bearing {
+    let mut dst_candidates: Vec<(u32, f64, f64, f64)> = if let Some((angle, range)) = dst_bearing {
         match state.snap_index.snap_with_bearing_filtered_role(
             req.dst_lon,
             req.dst_lat,
@@ -557,14 +561,16 @@ pub async fn route_handler(
             None => Vec::new(),
         }
     } else {
-        state.snap_index.snap_k_with_info_filtered_role(
+        match state.snap_index.snap_with_info_filtered_role(
             req.dst_lon,
             req.dst_lat,
             mode.0,
-            SNAP_K,
             Some(&snap_mask),
             dst_role_filter,
-        )
+        ) {
+            Some(t) => vec![t],
+            None => Vec::new(),
+        }
     };
     if dst_candidates.is_empty() {
         return (
@@ -601,12 +607,12 @@ pub async fn route_handler(
     // resolve to u32::MAX (not in the mode's filtered subgraph). If
     // role filtering is correct the lookup should always succeed —
     // we filter defensively to avoid a hard error mid-fallback.
-    let src_rank_candidates: Vec<u32> = src_candidates
+    let mut src_rank_candidates: Vec<u32> = src_candidates
         .iter()
         .map(|c| mode_data.orig_to_rank[c.0 as usize])
         .filter(|&r| r != u32::MAX)
         .collect();
-    let dst_rank_candidates: Vec<u32> = dst_candidates
+    let mut dst_rank_candidates: Vec<u32> = dst_candidates
         .iter()
         .map(|c| mode_data.orig_to_rank[c.0 as usize])
         .filter(|&r| r != u32::MAX)
@@ -752,16 +758,24 @@ pub async fn route_handler(
     // produces (0,0), (0,1), (1,0), (0,2), (1,1), (2,0), … so the
     // first additional query swaps to the second-best dst, the
     // second swaps to the second-best src, etc.
-    let mut combo_order: Vec<(usize, usize)> = Vec::new();
-    for sum in 0..(src_rank_candidates.len() + dst_rank_candidates.len()) {
-        for i in 0..src_rank_candidates.len() {
-            let j = sum.checked_sub(i);
-            if let Some(j) = j
-                && j < dst_rank_candidates.len()
-            {
-                combo_order.push((i, j));
+    // Build combo enumeration helper — same enumeration both for the
+    // K=1 first pass and the K=64 escalation. (i+j) ascending, i
+    // ascending on ties: (0,0), (0,1), (1,0), (0,2), (1,1), …
+    fn build_combo_order(n_src: usize, n_dst: usize, cap: usize) -> Vec<(usize, usize)> {
+        let mut order = Vec::new();
+        for sum in 0..(n_src + n_dst) {
+            for i in 0..n_src {
+                if let Some(j) = sum.checked_sub(i)
+                    && j < n_dst
+                {
+                    order.push((i, j));
+                }
             }
         }
+        if order.len() > cap {
+            order.truncate(cap);
+        }
+        order
     }
     // Hard cap on total fallback combinations attempted per query
     // to bound tail latency for genuinely-unreachable pairs. K=64
@@ -774,26 +788,110 @@ pub async fn route_handler(
     // ~1.3 % pathological pairs that genuinely have no nearby
     // dynamic or geometrically ambiguous cases.
     const MAX_FALLBACK_COMBOS: usize = 400;
-    if combo_order.len() > MAX_FALLBACK_COMBOS {
-        combo_order.truncate(MAX_FALLBACK_COMBOS);
-    }
+    let mut combo_order = build_combo_order(
+        src_rank_candidates.len(),
+        dst_rank_candidates.len(),
+        MAX_FALLBACK_COMBOS,
+    );
     let mut result_opt: Option<super::query::QueryResult> = None;
-    for &(i, j) in &combo_order {
-        let s = src_rank_candidates[i];
-        let d = dst_rank_candidates[j];
-        if s == d {
-            // Same-rank pair already short-circuited above when the
-            // primary candidates collide. Subsequent collisions in
-            // fallback are degenerate; skip.
-            continue;
+    let try_combos = |combo_order: &[(usize, usize)],
+                      src_rank_candidates: &[u32],
+                      dst_rank_candidates: &[u32]|
+     -> Option<(super::query::QueryResult, u32, u32, usize, usize)> {
+        for &(i, j) in combo_order {
+            let s = src_rank_candidates[i];
+            let d = dst_rank_candidates[j];
+            if s == d {
+                continue;
+            }
+            if let Some(r) = query.query(s, d) {
+                return Some((r, s, d, i, j));
+            }
         }
-        if let Some(r) = query.query(s, d) {
-            src_rank = s;
-            dst_rank = d;
-            chosen_src_idx = i;
-            chosen_dst_idx = j;
-            result_opt = Some(r);
-            break;
+        None
+    };
+    if let Some((r, s, d, i, j)) =
+        try_combos(&combo_order, &src_rank_candidates, &dst_rank_candidates)
+    {
+        src_rank = s;
+        dst_rank = d;
+        chosen_src_idx = i;
+        chosen_dst_idx = j;
+        result_opt = Some(r);
+    }
+    // ESCALATION: the K=1 primary failed. Re-snap with K=64 and retry
+    // the full fallback enumeration. Bearing-filtered queries stay at
+    // K=1 (bearing implies a directionally-specific candidate). Same
+    // for src/dst pairs that started K=1-degenerate (length 1). This
+    // path fires on ~1.3 % of Belgium pairs per the SNAP_K sweep in
+    // #197.
+    if result_opt.is_none()
+        && src_bearing.is_none()
+        && dst_bearing.is_none()
+        && src_candidates.len() == 1
+        && dst_candidates.len() == 1
+    {
+        let mut new_src = state.snap_index.snap_k_with_info_filtered_role(
+            req.src_lon,
+            req.src_lat,
+            mode.0,
+            SNAP_K,
+            Some(&snap_mask),
+            src_role_filter,
+        );
+        let mut new_dst = state.snap_index.snap_k_with_info_filtered_role(
+            req.dst_lon,
+            req.dst_lat,
+            mode.0,
+            SNAP_K,
+            Some(&snap_mask),
+            dst_role_filter,
+        );
+        if !new_src.is_empty() && !new_dst.is_empty() {
+            // Drop the K=1 result (it's already known to fail) and try
+            // the remaining K=64 candidates. Preserve the K=1 result at
+            // index 0 so combo_order indexing matches the snap_candidates
+            // semantics callers expect.
+            src_candidates.clear();
+            src_candidates.append(&mut new_src);
+            dst_candidates.clear();
+            dst_candidates.append(&mut new_dst);
+            src_rank_candidates = src_candidates
+                .iter()
+                .map(|c| mode_data.orig_to_rank[c.0 as usize])
+                .filter(|&r| r != u32::MAX)
+                .collect();
+            dst_rank_candidates = dst_candidates
+                .iter()
+                .map(|c| mode_data.orig_to_rank[c.0 as usize])
+                .filter(|&r| r != u32::MAX)
+                .collect();
+            combo_order = build_combo_order(
+                src_rank_candidates.len(),
+                dst_rank_candidates.len(),
+                MAX_FALLBACK_COMBOS,
+            );
+            // Skip combo (0,0) — the K=1 attempt already failed on it.
+            if let Some(pos) = combo_order.iter().position(|&c| c == (0, 0)) {
+                combo_order.remove(pos);
+            }
+            if let Some((r, s, d, i, j)) =
+                try_combos(&combo_order, &src_rank_candidates, &dst_rank_candidates)
+            {
+                src_rank = s;
+                dst_rank = d;
+                chosen_src_idx = i;
+                chosen_dst_idx = j;
+                result_opt = Some(r);
+                // Update primary snap-info to reflect the new K=64
+                // primary candidate (caller still sees a meaningful
+                // src/dst snap even if we ended up using a non-(0,0)
+                // fallback combo).
+                let (_, info) = make_snap_info(&src_candidates[0]);
+                src_snap_info = info;
+                let (_, info) = make_snap_info(&dst_candidates[0]);
+                dst_snap_info = info;
+            }
         }
     }
     // If the fallback selected a non-primary candidate, update the
