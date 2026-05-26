@@ -510,6 +510,18 @@ fn parse_adj_flat_header(
         1 => true,
         v => anyhow::bail!("adj-flat has_topo_idx byte invalid: {}", v),
     };
+    // Reserved bits guard: byte 7 currently uses bits 0..=1 (weights
+    // width code) and bit 2 (offsets_u32 flag). Bits 3..=7 are
+    // reserved and MUST be zero in v3. Anything else means either
+    // future-format data we don't understand or corruption — reject
+    // up front rather than silently misread.
+    const ADJ_FLAT_BYTE7_KNOWN_MASK: u8 =
+        ADJ_FLAT_WIDTH_CODE_MASK | ADJ_FLAT_OFFSETS_U32_BIT;
+    anyhow::ensure!(
+        (bytes[7] & !ADJ_FLAT_BYTE7_KNOWN_MASK) == 0,
+        "adj-flat header byte 7 has reserved bits set (0x{:02X}); refusing to load",
+        bytes[7]
+    );
     let width = match bytes[7] & ADJ_FLAT_WIDTH_CODE_MASK {
         ADJ_FLAT_WIDTH_CODE_U32 => crate::formats::WeightWidth::U32,
         ADJ_FLAT_WIDTH_CODE_U16 => crate::formats::WeightWidth::U16,
@@ -621,8 +633,14 @@ fn write_adj_flat_body_and_footer(
 ) {
     debug_assert_eq!(out.len(), ADJ_FLAT_HEADER_SIZE);
     // v3 (#350): write offsets at u32 width when the writer picked it.
-    // The choose() check at the call site guarantees every value fits.
+    // The `pick_offsets_u32()` guard at the call site verifies every
+    // value fits u32; a `debug_assert!` here catches any future caller
+    // that bypasses the guard (e.g. a forgotten branch).
     if offsets_u32 {
+        debug_assert!(
+            offsets.iter().all(|&v| v <= u32::MAX as u64),
+            "writer asked for u32 offsets but at least one value > u32::MAX (caller bypassed pick_offsets_u32)"
+        );
         let u32_offsets: Vec<u32> = offsets.iter().map(|&v| v as u32).collect();
         out.extend_from_slice(bytemuck::cast_slice(&u32_offsets));
     } else {
