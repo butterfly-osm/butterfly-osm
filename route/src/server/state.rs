@@ -153,6 +153,16 @@ pub struct ModeData {
     /// Forward DOWN flat (DISTANCE metric). Used by the isodistance
     /// forward PHAST downward scan.
     pub down_adj_flat_dist: DownAdjFlat,
+    /// Flat UP adjacency carrying the length-along-time weights
+    /// (#371/#372). `None` for old containers or pre-PR #377 step8
+    /// outputs. Same topology as `up_adj_flat` (time) — index `i`
+    /// addresses the same CCH edge. Used by the 2-channel bucket-M2M
+    /// alongside `up_adj_flat` to report distance along the
+    /// time-shortest path.
+    pub up_adj_flat_lat: Option<UpAdjFlat>,
+    /// Reverse DOWN flat carrying length-along-time weights. See
+    /// `up_adj_flat_lat`.
+    pub down_rev_flat_lat: Option<DownReverseAdjFlat>,
     // Cached exclude weight sets (keyed by exclude bitmask)
     pub exclude_cache: parking_lot::RwLock<HashMap<u8, std::sync::Arc<ExcludeWeights>>>,
 }
@@ -1546,6 +1556,8 @@ fn load_traffic_variant_mode_data(
         up_adj_flat_dist: base.up_adj_flat_dist.clone(),
         down_rev_flat_dist: base.down_rev_flat_dist.clone(),
         down_adj_flat_dist: base.down_adj_flat_dist.clone(),
+        up_adj_flat_lat: base.up_adj_flat_lat.clone(),
+        down_rev_flat_lat: base.down_rev_flat_lat.clone(),
         exclude_cache: parking_lot::RwLock::new(HashMap::new()),
     })
 }
@@ -1627,6 +1639,14 @@ fn load_mode_data(
         );
         None
     };
+    let (up_adj_flat_lat, down_rev_flat_lat) = if let Some(ref lat) = cch_weights_lat {
+        (
+            Some(UpAdjFlat::build(&cch_topo, lat)),
+            Some(DownReverseAdjFlat::build(&cch_topo, lat)),
+        )
+    } else {
+        (None, None)
+    };
 
     // ---- Build server-only mappings (#153) ----------------------
     // The `--data-dir` path always synthesises these from the legacy
@@ -1664,6 +1684,8 @@ fn load_mode_data(
         up_adj_flat_dist,
         down_rev_flat_dist,
         down_adj_flat_dist,
+        up_adj_flat_lat,
+        down_rev_flat_lat,
         exclude_cache: parking_lot::RwLock::new(HashMap::new()),
     })
 }
@@ -2697,6 +2719,14 @@ fn load_mode_data_from_bundle(
             None
         }
     };
+    let (up_adj_flat_lat, down_rev_flat_lat) = if let Some(ref lat) = cch_weights_lat {
+        (
+            Some(UpAdjFlat::build(&cch_topo, lat)),
+            Some(DownReverseAdjFlat::build(&cch_topo, lat)),
+        )
+    } else {
+        (None, None)
+    };
 
     Ok(ModeData {
         mode,
@@ -2718,6 +2748,8 @@ fn load_mode_data_from_bundle(
         up_adj_flat_dist,
         down_rev_flat_dist,
         down_adj_flat_dist,
+        up_adj_flat_lat,
+        down_rev_flat_lat,
         exclude_cache: parking_lot::RwLock::new(HashMap::new()),
     })
 }
