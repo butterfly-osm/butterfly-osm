@@ -421,12 +421,12 @@ pub fn recustomize_weights_incremental(
     let mut up_middle = if base_weights.up_middle.len() == topo.up_targets.len() {
         base_weights.up_middle.to_vec()
     } else {
-        topo.up_middle.to_vec()
+        topo.up_middle.to_vec_u32()
     };
     let mut down_middle = if base_weights.down_middle.len() == topo.down_targets.len() {
         base_weights.down_middle.to_vec()
     } else {
-        topo.down_middle.to_vec()
+        topo.down_middle.to_vec_u32()
     };
 
     let mut queued_up = vec![false; topo.up_targets.len()];
@@ -646,8 +646,8 @@ fn recompute_edge_weight(
         }
     };
     let mut best_middle = match edge.dir {
-        EdgeDir::Up => topo.up_middle[edge.idx],
-        EdgeDir::Down => topo.down_middle[edge.idx],
+        EdgeDir::Up => topo.up_middle.get(edge.idx),
+        EdgeDir::Down => topo.down_middle.get(edge.idx),
     };
     let mut best_packed = pack_wm(best_weight, best_middle);
 
