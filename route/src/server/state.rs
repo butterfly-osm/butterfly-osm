@@ -85,6 +85,12 @@ pub struct ModeData {
     pub cch_topo: CchTopo,
     pub cch_weights: CchWeights,
     pub cch_weights_dist: CchWeights,
+    /// Length-along-time-shortest weights (#371/#372). `None` for
+    /// containers built before PR #377. Once the 2-channel bucket-M2M
+    /// lands, /table /trip Flight matrix consumers will REQUIRE this
+    /// — the loader will then fail boot if it's missing rather than
+    /// silently falling back to the broken `cch_weights_dist`.
+    pub cch_weights_lat: Option<CchWeights>,
     // ---- Server-only per-mode mapping sections (#153) -------------
     // These replace the build-time `OrderEbg` + `FilteredEbg` structs
     // on the serve path. They are loaded from the container's
@@ -1525,6 +1531,7 @@ fn load_traffic_variant_mode_data(
         cch_topo: base.cch_topo.clone(),
         cch_weights,
         cch_weights_dist: base.cch_weights_dist.clone(),
+        cch_weights_lat: base.cch_weights_lat.clone(),
         orig_to_rank: base.orig_to_rank.clone(),
         filtered_to_original: base.filtered_to_original.clone(),
         n_filtered_nodes: base.n_filtered_nodes,
@@ -1602,6 +1609,25 @@ fn load_mode_data(
     let down_rev_flat_dist = DownReverseAdjFlat::build(&cch_topo, &cch_weights_dist);
     let down_adj_flat_dist = DownAdjFlat::build(&cch_topo, &cch_weights_dist);
 
+    // #371/#372: optional length-along-time weights (cch.lat.<mode>.u32).
+    // Containers built before PR #377 don't have this file; we boot
+    // without it and `/table` / `/trip` / Flight matrix endpoints
+    // continue to use `cch_weights_dist` (the broken metric). Once
+    // the 2-channel bucket-M2M lands (and Belgium is repacked), the
+    // matrix endpoints switch to this for drivetime-consistent
+    // distance reporting.
+    let cch_lat_weights_path = step8_dir.join(format!("cch.lat.{}.u32", mode_name));
+    let cch_weights_lat = if cch_lat_weights_path.exists() {
+        tracing::info!(mode = mode_name, "loading length-along-time weights");
+        Some(CchWeightsFile::read(&cch_lat_weights_path)?)
+    } else {
+        tracing::info!(
+            mode = mode_name,
+            "no cch.lat.<mode>.u32 — old container, falling back to distance-shortest for /table /trip /Flight"
+        );
+        None
+    };
+
     // ---- Build server-only mappings (#153) ----------------------
     // The `--data-dir` path always synthesises these from the legacy
     // structs at boot. Container path prefers the dedicated sections;
@@ -1623,6 +1649,7 @@ fn load_mode_data(
         cch_topo,
         cch_weights,
         cch_weights_dist,
+        cch_weights_lat,
         orig_to_rank: crate::formats::ArcCow::from_vec(orig_to_rank),
         filtered_to_original: crate::formats::ArcCow::from_vec(filtered_to_original),
         n_filtered_nodes,
@@ -2642,11 +2669,17 @@ fn load_mode_data_from_bundle(
         };
     madvise_section_in_container(container, mmap, &down_adj_flat_dist_section);
 
+    // #371/#372: cch_weights_lat not yet wired through pack.rs for the
+    // container path. Until that ships, the container-mode boot uses
+    // None (matrix endpoints fall back to cch_weights_dist).
+    let cch_weights_lat = None;
+
     Ok(ModeData {
         mode,
         cch_topo,
         cch_weights,
         cch_weights_dist,
+        cch_weights_lat,
         orig_to_rank,
         filtered_to_original,
         n_filtered_nodes,
