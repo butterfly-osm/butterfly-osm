@@ -678,6 +678,18 @@ pub fn pack_with_options(
             &format!("mode/{}/weights.dist", mode),
             &cch_d,
         )?;
+        // #371/#372: length-along-time-shortest weights, when present.
+        // Pre-PR #377 step8 outputs don't have this file; older runs
+        // skip it and the server reverts to the broken distance-shortest
+        // metric. Once everyone re-runs step8, cch.lat ships in every
+        // container.
+        let cch_lat = step8.join(format!("cch.lat.{}.u32", mode));
+        maybe_append(
+            &mut w,
+            SectionKind::CchWeightsLat,
+            &format!("mode/{}/weights.lat", mode),
+            &cch_lat,
+        )?;
 
         // ---- Pre-built flat adjacencies (#150) -----------------------
         // Flats are built once at pack time from (cch_topo, cch_weights),
@@ -1460,6 +1472,7 @@ fn path_for_section(out_dir: &Path, name: &str) -> Option<PathBuf> {
             "topo" => Some(out_dir.join("step7").join(format!("cch.{}.topo", mode))),
             "weights.time" => Some(out_dir.join("step8").join(format!("cch.w.{}.u32", mode))),
             "weights.dist" => Some(out_dir.join("step8").join(format!("cch.d.{}.u32", mode))),
+            "weights.lat" => Some(out_dir.join("step8").join(format!("cch.lat.{}.u32", mode))),
             _ => None,
         };
     }

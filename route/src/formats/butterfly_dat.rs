@@ -156,6 +156,12 @@ pub enum SectionKind {
     CchWeightsTime = 0x0008_0001,
     /// `step8/cch.d.<mode>.u32` — per-mode customised distance weights.
     CchWeightsDist = 0x0008_0002,
+    /// `step8/cch.lat.<mode>.u32` — per-mode length-along-time-shortest
+    /// weights (#371/#372). For every CCH shortcut, the sum of physical
+    /// edge lengths along the time-optimal expansion. Replaces
+    /// `CchWeightsDist` for matrix/trip/Flight distance reporting so
+    /// the returned distance belongs to the same path as the duration.
+    CchWeightsLat = 0x0008_0003,
 
     /// Pre-built flat UP adjacency for a (mode, metric). Built at pack
     /// time from cch_topo + cch_weights. Mmapped at server boot — the
@@ -290,6 +296,7 @@ impl SectionKind {
 
             0x0008_0001 => Self::CchWeightsTime,
             0x0008_0002 => Self::CchWeightsDist,
+            0x0008_0003 => Self::CchWeightsLat,
 
             0x0009_0001 => Self::UpAdjFlat,
             0x0009_0002 => Self::DownAdjFlat,
@@ -345,6 +352,7 @@ impl SectionKind {
             Self::CchMiddles => "step7/cch.middles",
             Self::CchWeightsTime => "step8/cch.w.u32",
             Self::CchWeightsDist => "step8/cch.d.u32",
+            Self::CchWeightsLat => "step8/cch.lat.u32",
             Self::UpAdjFlat => "flat/up_adj",
             Self::DownAdjFlat => "flat/down_adj",
             Self::DownReverseAdjFlat => "flat/down_reverse_adj",
