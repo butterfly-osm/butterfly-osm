@@ -29,15 +29,12 @@ pub struct IsochroneRequest {
     /// Center latitude
     #[schema(example = 50.8503)]
     pub lat: f64,
-    /// Time limit in seconds (1-7200). Mutually exclusive with distance_m and contours.
+    /// Time limit in seconds (1-7200). Mutually exclusive with contours.
     #[serde(default)]
     #[schema(example = 600)]
     pub time_s: Option<u32>,
-    /// Distance limit in meters (1-100000). Mutually exclusive with time_s and contours.
-    #[serde(default)]
-    pub distance_m: Option<u32>,
     /// Multiple time contours as comma-separated seconds (e.g. "300,600,1200", max 10).
-    /// Mutually exclusive with time_s and distance_m.
+    /// Mutually exclusive with time_s.
     #[serde(default)]
     pub contours: Option<String>,
     /// Transport mode (car, bike, foot)
@@ -65,12 +62,9 @@ pub struct IsochroneRequest {
 /// A single contour polygon in an isochrone response
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ContourFeature {
-    /// Contour threshold in seconds (present for time-based isochrones)
+    /// Contour threshold in seconds
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_s: Option<u32>,
-    /// Contour threshold in meters (present for distance-based isochrones)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub distance_m: Option<u32>,
     /// Polygon as encoded polyline6 string
     #[serde(skip_serializing_if = "Option::is_none")]
     pub polygon: Option<String>,
@@ -501,13 +495,12 @@ pub fn run_phast_bounded_fast_reverse(
     path = "/isochrone",
     tag = "Isochrone",
     summary = "Compute reachability polygon",
-    description = "Computes the area reachable within a time or distance limit using PHAST.\nSupports forward (depart) and reverse (arrive) isochrones.\n\nProvide exactly one of: `time_s`, `distance_m`, or `contours`.\n\nContent negotiation:\n- `Accept: application/json` \u{2192} JSON polygon\n- `Accept: application/octet-stream` \u{2192} WKB binary polygon (single contour only)",
+    description = "Computes the area reachable within a time limit using PHAST.\nSupports forward (depart) and reverse (arrive) isochrones.\n\nProvide exactly one of: `time_s` or `contours`.\n\nContent negotiation:\n- `Accept: application/json` \u{2192} JSON polygon\n- `Accept: application/octet-stream` \u{2192} WKB binary polygon (single contour only)",
     params(
         ("lon" = f64, Query, description = "Center longitude", example = 4.3517),
         ("lat" = f64, Query, description = "Center latitude", example = 50.8503),
-        ("time_s" = Option<u32>, Query, description = "Time limit in seconds (1-7200). Mutually exclusive with distance_m, contours.", example = 600),
-        ("distance_m" = Option<u32>, Query, description = "Distance limit in meters (1-100000). Mutually exclusive with time_s, contours.", example = json!(null)),
-        ("contours" = Option<String>, Query, description = "Comma-separated time contours in seconds (e.g. '300,600,1200', max 10). Mutually exclusive with time_s, distance_m.", example = json!(null)),
+        ("time_s" = Option<u32>, Query, description = "Time limit in seconds (1-7200). Mutually exclusive with contours.", example = 600),
+        ("contours" = Option<String>, Query, description = "Comma-separated time contours in seconds (e.g. '300,600,1200', max 10). Mutually exclusive with time_s.", example = json!(null)),
         ("mode" = String, Query, description = "Transport mode (e.g. car, bike, foot \u{2014} depends on available models)", example = "car"),
         ("direction" = Option<String>, Query, description = "Direction: 'depart' (default) or 'arrive'", example = "depart"),
         ("geometries" = Option<String>, Query, description = "Geometry encoding: polyline6 (default), geojson, points", example = "geojson"),
@@ -541,27 +534,27 @@ pub async fn isochrone_handler(
     };
     let _: &Arc<ServerState> = &state;
 
-    // Determine isochrone metric: exactly one of {time_s, distance_m, contours}
+    // Determine isochrone metric: exactly one of {time_s, contours}.
+    // The pre-#371 `distance_m` (isodistance) variant was removed — that
+    // mode ran PHAST on a separate distance-shortest CCH metric, which
+    // produced reachability sets along a different geometric path from
+    // every other drivetime endpoint. Reachable-by-time is the only
+    // semantically consistent isochrone for a drivetime engine.
     enum IsoMetric {
         Time(u32),           // threshold in seconds (post-#297; was ds)
-        Distance(u32),       // threshold in meters (post-#297; was mm)
         MultiTime(Vec<u32>), // sorted thresholds in seconds
     }
 
-    let provided = [
-        req.time_s.is_some(),
-        req.distance_m.is_some(),
-        req.contours.is_some(),
-    ]
-    .iter()
-    .filter(|&&b| b)
-    .count();
+    let provided = [req.time_s.is_some(), req.contours.is_some()]
+        .iter()
+        .filter(|&&b| b)
+        .count();
 
     if provided != 1 {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "Provide exactly one of: time_s, distance_m, or contours".to_string(),
+                error: "Provide exactly one of: time_s or contours".to_string(),
             }),
         )
             .into_response();
@@ -578,17 +571,6 @@ pub async fn isochrone_handler(
                 .into_response();
         }
         IsoMetric::Time(t) // seconds (post-#297; weights are also in s)
-    } else if let Some(d) = req.distance_m {
-        if d == 0 || d > 100_000 {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("distance_m must be between 1 and 100000, got {}", d),
-                }),
-            )
-                .into_response();
-        }
-        IsoMetric::Distance(d) // meters (post-#297; weights are also in m)
     } else if let Some(ref contours_str) = req.contours {
         let mut values = Vec::new();
         for part in contours_str.split(',') {
@@ -705,11 +687,13 @@ pub async fn isochrone_handler(
         None
     };
 
-    // Determine PHAST threshold (max of all contour values) and whether to use distance weights
-    let (phast_threshold, use_distance_weights) = match &metric {
-        IsoMetric::Time(ds) => (*ds, false),
-        IsoMetric::Distance(mm) => (*mm, true),
-        IsoMetric::MultiTime(vals) => (*vals.last().unwrap(), false),
+    // Determine PHAST threshold (max of all contour values). All isochrone
+    // metrics are time-based after #371 (isodistance was removed because
+    // it ran PHAST on a separate distance-shortest CCH metric — a path
+    // that disagreed with every other endpoint).
+    let phast_threshold = match &metric {
+        IsoMetric::Time(s) => *s,
+        IsoMetric::MultiTime(vals) => *vals.last().unwrap(),
     };
 
     // Parse include parameter
@@ -790,34 +774,12 @@ pub async fn isochrone_handler(
         None
     };
 
-    // Select weights based on metric type and custom weights.
+    // Select weights based on custom weights (avoid > exclude > base mode).
     // - `up_flat` / `down_flat` (target-keyed reverse): used by the
     //   bounded-search reverse PHAST and as ambient state for snap path.
     // - `down_fwd_flat`: used by the *forward* isochrone downward scan.
-    let (up_flat, down_flat, down_fwd_flat, node_weights) = if use_distance_weights {
-        if let Some(ref entry) = avoid_entry {
-            (
-                &entry.weights.dist_up_flat,
-                &entry.weights.dist_down_flat,
-                &entry.weights.dist_down_fwd_flat,
-                state.node_weights_dist.as_slice(),
-            )
-        } else if let Some(ref ew) = exclude_weights {
-            (
-                &ew.dist_up_flat,
-                &ew.dist_down_flat,
-                &ew.dist_down_fwd_flat,
-                state.node_weights_dist.as_slice(),
-            )
-        } else {
-            (
-                &mode_data.up_adj_flat_dist,
-                &mode_data.down_rev_flat_dist,
-                &mode_data.down_adj_flat_dist,
-                state.node_weights_dist.as_slice(),
-            )
-        }
-    } else if let Some(ref entry) = avoid_entry {
+    // All time-based — isodistance was removed in #371.
+    let (up_flat, down_flat, down_fwd_flat, node_weights) = if let Some(ref entry) = avoid_entry {
         (
             &entry.weights.time_up_flat,
             &entry.weights.time_down_flat,
@@ -894,13 +856,10 @@ pub async fn isochrone_handler(
         }
     };
 
-    // Build list of thresholds with their labels.
-    // Tuple is (threshold_in_weight_units, time_s_label, distance_m_label).
-    // Post-#297 the threshold is already in the display unit (seconds or meters).
-    let thresholds: Vec<(u32, Option<u32>, Option<u32>)> = match &metric {
-        IsoMetric::Time(s) => vec![(*s, Some(*s), None)],
-        IsoMetric::Distance(m) => vec![(*m, None, Some(*m))],
-        IsoMetric::MultiTime(vals) => vals.iter().map(|&s| (s, Some(s), None)).collect(),
+    // Build list of thresholds with their labels. All time-based after #371.
+    let thresholds: Vec<(u32, Option<u32>)> = match &metric {
+        IsoMetric::Time(s) => vec![(*s, Some(*s))],
+        IsoMetric::MultiTime(vals) => vals.iter().map(|&s| (s, Some(s))).collect(),
     };
 
     // WKB path (content negotiation)
@@ -942,13 +901,12 @@ pub async fn isochrone_handler(
     // JSON path -- always returns contours array
     let contour_features: Vec<ContourFeature> = thresholds
         .iter()
-        .map(|&(threshold, time_s, distance_m)| {
+        .map(|&(threshold, time_s)| {
             let polygon = build_contour_polygon(threshold);
             let reachable = settled.iter().filter(|&&(_, d)| d <= threshold).count();
             let (poly_enc, poly_geo, poly_pts) = encode_polygon(&polygon, geom_format);
             ContourFeature {
                 time_s,
-                distance_m,
                 polygon: poly_enc,
                 polygon_geojson: poly_geo,
                 polygon_points: poly_pts,
