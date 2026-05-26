@@ -279,9 +279,9 @@ run("edges_batch_2", lambda: call("edges_batch", {
     ],
 }))
 
-# transit_bulk: in multi-region serve the transit subsystem is intentionally
-# not loaded (see #334). Downgrade that specific failure mode to EXPECTED so
-# the script's non-zero exit still catches REAL regressions.
+# transit_bulk: post-#334, multi-region serve loads transit per region
+# (BE has feeds, LU is road-only). Single intra-region BE query is a
+# hard PASS now; any failure here is a real regression.
 run("transit_bulk_1", lambda: call("transit_bulk", {
     "queries": [{
         "origin_lon": 4.351, "origin_lat": 50.846,

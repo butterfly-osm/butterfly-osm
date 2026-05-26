@@ -242,18 +242,21 @@ pub async fn transit_handler(
     Query(req): Query<TransitRequest>,
 ) -> Result<Json<TransitResponse>, (StatusCode, Json<ErrorResponse>)> {
     // #334: dispatch by the access origin's region — each region
-    // carries its own transit subsystem. Cross-region transit (origin
-    // and destination in different regions) is still a follow-up; for
-    // now we serve intra-region origin/destination pairs.
+    // carries its own transit subsystem. Validate that origin and
+    // destination snap into the same region; otherwise return the
+    // canonical 501 cross-region response so the caller knows the
+    // request needs a cross-region overlay (future work).
     let started = std::time::Instant::now();
     let access_mode = req
         .access_mode
         .as_deref()
         .map(|s| s.to_lowercase())
         .unwrap_or_else(|| "foot".to_string());
-    let (state, region_id) = match regions.dispatch_single_id(
+    let (state, region_id) = match regions.dispatch_p2p_id(
         req.origin_lon,
         req.origin_lat,
+        req.dest_lon,
+        req.dest_lat,
         &access_mode,
     ) {
         Ok(pair) => pair,
@@ -1009,8 +1012,12 @@ pub async fn transit_bulk_handler(
         ));
     }
 
-    // Snap the first query's origin to pick the region. Batches must
-    // be single-region — Flight's transit_bulk shares this constraint.
+    // Snap the first query's origin to pick the region, then preflight
+    // EVERY query: each origin and destination must snap into the same
+    // region as the first query. Mixed-region batches return 501 — the
+    // canonical cross-region semantic also used by /transit, /route and
+    // /table. Validating up front lets us return one clear error
+    // instead of fanning out N per-query 404s.
     let first_access_mode = req
         .queries[0]
         .access_mode
@@ -1018,9 +1025,11 @@ pub async fn transit_bulk_handler(
         .or(req.access_mode.as_deref())
         .map(|s| s.to_lowercase())
         .unwrap_or_else(|| "foot".to_string());
-    let (state, region_id) = match regions.dispatch_single_id(
+    let (state, region_id) = match regions.dispatch_p2p_id(
         req.queries[0].origin_lon,
         req.queries[0].origin_lat,
+        req.queries[0].dest_lon,
+        req.queries[0].dest_lat,
         &first_access_mode,
     ) {
         Ok(pair) => pair,
@@ -1029,6 +1038,25 @@ pub async fn transit_bulk_handler(
             return Err((status, Json(body)));
         }
     };
+    for (i, q) in req.queries.iter().enumerate().skip(1) {
+        let q_mode = q
+            .access_mode
+            .as_deref()
+            .or(req.access_mode.as_deref())
+            .map(|s| s.to_lowercase())
+            .unwrap_or_else(|| "foot".to_string());
+        if let Err(err) = regions.dispatch_p2p_id(
+            q.origin_lon,
+            q.origin_lat,
+            q.dest_lon,
+            q.dest_lat,
+            &q_mode,
+        ) {
+            let (status, mut body) = err.into_response_parts();
+            body.error = format!("query[{}]: {}", i, body.error);
+            return Err((status, Json(body)));
+        }
+    }
     if state.transit.is_none() {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
