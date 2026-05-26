@@ -141,6 +141,13 @@ prost_011 = { package = "prost", version = "0.11" }
 # Transit: TOML config parsing
 toml = "1.1"
 
+# zstd compression for cold container sections (#347 — way_names_idx
+# and snap_grid). Pure-Rust binding to the upstream zstd C library;
+# uses the bundled C source so no system dep. Level-3 chosen as the
+# fast-decompress sweet spot — boot-time decompression is single-
+# digit ms per section on Belgium.
+zstd = "0.13"
+
 [lints]
 workspace = true
 

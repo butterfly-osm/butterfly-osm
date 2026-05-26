@@ -57,6 +57,9 @@ pub mod cch_topo;
 // Step 8 formats
 pub mod cch_weights;
 
+// Transparent zstd compression for cold container sections (#347)
+pub mod zstd_compress;
+
 pub use bitset::BitsetField;
 pub use cch_topo::{CchTopo, CchTopoFile, Shortcut};
 pub use cch_weights::{CchWeights, CchWeightsFile, U24_SENTINEL, WeightArray, WeightWidth};

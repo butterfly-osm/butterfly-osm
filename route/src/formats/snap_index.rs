@@ -525,30 +525,42 @@ impl SnapGridFile {
             "snap_grid section out of bounds: off={byte_offset} len={byte_len} mmap_len={}",
             mmap.len()
         );
-        let (n_cells_x, n_cells_y, origin_x, origin_y, cell_log2, n_offsets) = {
-            let bytes = &mmap[byte_offset..byte_offset + byte_len];
-            let parsed = parse_snap_grid_header_and_check(bytes, false)?;
-            let n_cells = (parsed.n_cells_x as usize)
-                .checked_mul(parsed.n_cells_y as usize)
-                .ok_or_else(|| anyhow::anyhow!("snap_grid cell count overflow"))?;
-            let n_offsets = n_cells
-                .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("snap_grid offsets count overflow"))?;
-            (
-                parsed.n_cells_x,
-                parsed.n_cells_y,
-                parsed.origin_x,
-                parsed.origin_y,
-                parsed.cell_log2,
-                n_offsets,
-            )
-        };
+        let section_bytes = &mmap[byte_offset..byte_offset + byte_len];
+
+        // #347: zstd magic at the section start triggers decompression
+        // to an owned Vec<u8>. Returned offsets land as `ArcCow::Owned`
+        // — heap rather than mmap-backed. SnapGrid is a one-shot lookup
+        // table consulted at every /nearest request but the offsets
+        // are small enough (<5 MB on Belgium) that owned storage is
+        // fine.
+        let owned = crate::formats::zstd_compress::decompress_if_zstd(section_bytes)?;
+        let is_compressed = matches!(owned, std::borrow::Cow::Owned(_));
+        let bytes: &[u8] = &owned;
+        let parsed = parse_snap_grid_header_and_check(bytes, false)?;
+        let n_cells = (parsed.n_cells_x as usize)
+            .checked_mul(parsed.n_cells_y as usize)
+            .ok_or_else(|| anyhow::anyhow!("snap_grid cell count overflow"))?;
+        let n_offsets = n_cells
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("snap_grid offsets count overflow"))?;
+        let n_cells_x = parsed.n_cells_x;
+        let n_cells_y = parsed.n_cells_y;
+        let origin_x = parsed.origin_x;
+        let origin_y = parsed.origin_y;
+        let cell_log2 = parsed.cell_log2;
+
         // Body sits immediately after the 40-byte header. 8-byte
         // section alignment + 40-byte header keeps the body 4-byte
-        // aligned, matching `align_of::<u32>() == 4`. `ArcCow::from_mmap`
-        // re-validates the alignment itself.
-        let body_byte_offset = byte_offset + HEADER_SIZE;
-        let offsets = ArcCow::<u32>::from_mmap(mmap, body_byte_offset, n_offsets)?;
+        // aligned for the uncompressed path; the decompressed Vec<u8>
+        // is heap-aligned so `bytemuck::cast_slice` is safe either way.
+        let offsets = if is_compressed {
+            let off_slice: &[u32] =
+                bytemuck::cast_slice(&bytes[HEADER_SIZE..HEADER_SIZE + 4 * n_offsets]);
+            ArcCow::from_vec(off_slice.to_vec())
+        } else {
+            let body_byte_offset = byte_offset + HEADER_SIZE;
+            ArcCow::<u32>::from_mmap(mmap, body_byte_offset, n_offsets)?
+        };
         Ok(SnapGrid {
             n_cells_x,
             n_cells_y,

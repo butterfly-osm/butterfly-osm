@@ -244,7 +244,17 @@ pub fn read_from_mmap_unverified(
         total_len,
         mmap.len()
     );
-    let bytes = &mmap[byte_offset..total_len];
+    let section_bytes = &mmap[byte_offset..total_len];
+
+    // #347: if the section body starts with the zstd magic, decompress
+    // to an owned Vec<u8> and parse from that. The returned `ArcCow`
+    // views are `Owned` rather than `Mmap` — they consume ~25 MB of
+    // heap (vs ~120 MB compressed in the mmap's page cache) but we
+    // accept the trade because way_names_idx is cold and sparse-access
+    // anyway.
+    let owned_decompressed = crate::formats::zstd_compress::decompress_if_zstd(section_bytes)?;
+    let is_compressed = matches!(owned_decompressed, std::borrow::Cow::Owned(_));
+    let bytes: &[u8] = &owned_decompressed;
     anyhow::ensure!(
         bytes.len() >= HEADER_SIZE + FOOTER_SIZE,
         "way_names section too short: {} bytes",
@@ -292,15 +302,38 @@ pub fn read_from_mmap_unverified(
         expected_total
     );
 
-    // Build ArcCow views.
-    let way_ids_off = byte_offset + HEADER_SIZE;
-    let offsets_off = way_ids_off + way_ids_bytes;
-    let names_off = offsets_off + offsets_bytes;
+    // Build views. Zero-copy mmap path for the uncompressed case;
+    // owned Vec path for the zstd-decompressed case (#347).
+    let way_ids_local_off = HEADER_SIZE;
+    let offsets_local_off = way_ids_local_off + way_ids_bytes;
+    let names_local_off = offsets_local_off + offsets_bytes;
 
-    let way_ids = ArcCow::from_mmap(Arc::clone(&mmap), way_ids_off, n_entries as usize)?;
-    let offsets =
-        ArcCow::from_mmap(Arc::clone(&mmap), offsets_off, n_entries as usize + 1)?;
-    let names = ArcCow::from_mmap(Arc::clone(&mmap), names_off, names_blob_len as usize)?;
+    let (way_ids, offsets, names) = if is_compressed {
+        // Decompressed bytes — copy out each subarray as owned Vec.
+        let way_ids_slice: &[i64] = bytemuck::cast_slice(
+            &bytes[way_ids_local_off..way_ids_local_off + way_ids_bytes],
+        );
+        let offsets_slice: &[u32] = bytemuck::cast_slice(
+            &bytes[offsets_local_off..offsets_local_off + offsets_bytes],
+        );
+        let names_slice =
+            &bytes[names_local_off..names_local_off + names_bytes];
+        (
+            ArcCow::from_vec(way_ids_slice.to_vec()),
+            ArcCow::from_vec(offsets_slice.to_vec()),
+            ArcCow::from_vec(names_slice.to_vec()),
+        )
+    } else {
+        // Mmap-backed zero-copy.
+        let way_ids_off = byte_offset + way_ids_local_off;
+        let offsets_off = byte_offset + offsets_local_off;
+        let names_off = byte_offset + names_local_off;
+        let way_ids = ArcCow::from_mmap(Arc::clone(&mmap), way_ids_off, n_entries as usize)?;
+        let offsets =
+            ArcCow::from_mmap(Arc::clone(&mmap), offsets_off, n_entries as usize + 1)?;
+        let names = ArcCow::from_mmap(Arc::clone(&mmap), names_off, names_blob_len as usize)?;
+        (way_ids, offsets, names)
+    };
 
     Ok(WayNamesIdx {
         n_entries,

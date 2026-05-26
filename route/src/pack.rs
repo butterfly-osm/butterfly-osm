@@ -779,16 +779,35 @@ fn pack_snap_index(
     drop(tiles_bytes);
 
     let grid_bytes = SnapGridFile::encode(&built.grid);
-    println!(
-        "  + [{:>5} MiB] {:<28} <- (snap_grid, {}x{} cells)",
-        grid_bytes.len() / (1024 * 1024),
-        "shared/snap_grid",
-        built.grid.n_cells_x,
-        built.grid.n_cells_y,
-    );
-    w.append_bytes(SectionKind::SnapGrid, "shared/snap_grid", &grid_bytes)
+    // #347: compress the snap_grid section transparently. Grid offsets
+    // are CSR-style sparse arrays — many adjacent cells have identical
+    // start offsets, so zstd-3 compresses them ~3-5× on Belgium.
+    let raw_len = grid_bytes.len();
+    let packed = crate::formats::zstd_compress::encode_compressed_if_beneficial(&grid_bytes);
+    let compressed = packed.len() != raw_len;
+    if compressed {
+        println!(
+            "  + [{:>5} KiB → {:>5} KiB zstd, {:.0}% saved] {:<28} <- (snap_grid, {}x{} cells)",
+            raw_len / 1024,
+            packed.len() / 1024,
+            100.0 * (1.0 - packed.len() as f64 / raw_len as f64),
+            "shared/snap_grid",
+            built.grid.n_cells_x,
+            built.grid.n_cells_y,
+        );
+    } else {
+        println!(
+            "  + [{:>5} MiB] {:<28} <- (snap_grid, {}x{} cells)",
+            raw_len / (1024 * 1024),
+            "shared/snap_grid",
+            built.grid.n_cells_x,
+            built.grid.n_cells_y,
+        );
+    }
+    w.append_bytes(SectionKind::SnapGrid, "shared/snap_grid", &packed)
         .with_context(|| "packing shared/snap_grid".to_string())?;
     drop(grid_bytes);
+    drop(packed);
 
     for (mw, mask) in mode_work.iter().zip(built.masks.iter()) {
         let mask_bytes = SnapMaskFile::encode(mask);
@@ -1063,14 +1082,32 @@ fn pack_way_names_idx(w: &mut ContainerWriter, step1: &Path) -> Result<()> {
     let buf = way_names_idx::serialise_to_bytes(&idx)
         .with_context(|| "serialising way_names_idx".to_string())?;
 
-    w.append_bytes(SectionKind::WayNamesIdx, "shared/way_names_idx", &buf)
+    // #347: compress the section body transparently. The reader sniffs
+    // the zstd magic and decompresses on first access. Text-like name
+    // payload compresses ~5×; bitset+offsets are dense binary so the
+    // overall ratio is ~3×.
+    let raw_len = buf.len();
+    let packed = crate::formats::zstd_compress::encode_compressed_if_beneficial(&buf);
+    let compressed = packed.len() != raw_len;
+
+    w.append_bytes(SectionKind::WayNamesIdx, "shared/way_names_idx", &packed)
         .with_context(|| "packing shared/way_names_idx".to_string())?;
 
-    println!(
-        "  + packed shared/way_names_idx ({} entries, {:.2} MiB)",
-        n_entries,
-        buf.len() as f64 / (1024.0 * 1024.0)
-    );
+    if compressed {
+        println!(
+            "  + packed shared/way_names_idx ({} entries, {:.2} MiB raw → {:.2} MiB zstd, {:.0}% saved)",
+            n_entries,
+            raw_len as f64 / (1024.0 * 1024.0),
+            packed.len() as f64 / (1024.0 * 1024.0),
+            100.0 * (1.0 - packed.len() as f64 / raw_len as f64),
+        );
+    } else {
+        println!(
+            "  + packed shared/way_names_idx ({} entries, {:.2} MiB)",
+            n_entries,
+            raw_len as f64 / (1024.0 * 1024.0)
+        );
+    }
 
     Ok(())
 }
