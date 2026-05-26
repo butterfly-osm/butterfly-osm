@@ -52,6 +52,7 @@ pub mod region_tiles;
 pub mod way_names_idx;
 
 // Step 7 formats
+pub mod cch_middles;
 pub mod cch_topo;
 
 // Step 8 formats
