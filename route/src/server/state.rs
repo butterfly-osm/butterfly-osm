@@ -2478,10 +2478,27 @@ fn load_mode_data_from_bundle(
             )?;
             cch_topo.up_middle = middles.up_middle;
             cch_topo.down_middle = middles.down_middle;
-            tracing::info!(
-                section = %middles_name,
-                "loaded CchMiddles cold section (#359 — RAM isolation)"
-            );
+            // #359 Phase 4: madvise(DONTNEED) on the CchMiddles range.
+            // CRC verification above paged the bytes in; matrix /
+            // isochrone / bucket-M2M never touch middles, so we hint
+            // the kernel to drop those pages. Route-unpack paths page
+            // them back in on demand at standard fault cost. Estimated
+            // ~300-420 MB RSS savings per Belgium mode under matrix
+            // load (codex assessment on #352).
+            let middles_bytes_for_madvise = &mmap[mid_off..mid_off + mid_len];
+            if let Err(e) = crate::formats::mmap::madvise_dontneed(middles_bytes_for_madvise) {
+                tracing::warn!(
+                    section = %middles_name,
+                    error = %e,
+                    "madvise(DONTNEED) on cch.middles section failed; ignoring"
+                );
+            } else {
+                tracing::info!(
+                    section = %middles_name,
+                    bytes = mid_len,
+                    "loaded CchMiddles + madvise(DONTNEED) (#359 — cold section, route unpack pages back on demand)"
+                );
+            }
         }
     }
     // After CRC verification we hint the kernel that the topo bytes can
