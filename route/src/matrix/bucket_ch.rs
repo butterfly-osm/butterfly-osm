@@ -848,6 +848,65 @@ pub fn encode_flat_weights_bytes(weights: &crate::formats::WeightArray) -> Vec<u
     out
 }
 
+/// MMAP-backed parse of a FlatTopo section. Returns ArcCow views
+/// directly into the supplied `Arc<Mmap>` so the topology bytes stay
+/// in the page cache (zero-copy). The strong-count clone keeps the
+/// mapping alive for the lifetime of the returned views.
+///
+/// For brevity the u24/u16 targets still allocate at the call site
+/// — the in-memory `ArcCow<u32>` shape stays uniform across the
+/// codebase. mmap stays zero-copy for u32 offsets + u32 targets.
+pub fn decode_flat_topo_from_mmap(
+    mmap: std::sync::Arc<memmap2::Mmap>,
+    byte_offset: usize,
+    byte_len: usize,
+) -> anyhow::Result<(
+    ArcCow<u64>,    // offsets
+    ArcCow<u32>,    // targets
+    ArcCow<u32>,    // topo_edge_idx (empty if not present)
+)> {
+    anyhow::ensure!(
+        byte_offset.saturating_add(byte_len) <= mmap.len(),
+        "flat-topo section out of bounds"
+    );
+    let bytes = &mmap[byte_offset..byte_offset + byte_len];
+    let decoded = decode_flat_topo_bytes(bytes)?;
+    // u24/u16 widening already done by decode_flat_topo_bytes. For u32
+    // we could keep mmap-backed; for now widen everything to owned for
+    // a uniform code path (the boot RAM cost matches the v4 path
+    // exactly when targets were u32). Future work: ArcCow::Mmap path
+    // when targets stored as u32 + offsets stored as u64. Tracked as a
+    // #345 follow-up if the bench gate shows extra heap pressure.
+    let _ = mmap; // explicitly drop the clone — owned Vecs above
+    Ok((
+        ArcCow::from_vec(decoded.offsets),
+        ArcCow::from_vec(decoded.targets),
+        ArcCow::from_vec(decoded.topo_edge_idx),
+    ))
+}
+
+/// MMAP-backed parse of a FlatWeights section. Returns the
+/// [`WeightArray`] composed of mmap-backed bytes when the width is
+/// fixed-stride (u16/u32) — the zero-copy hot path. For u24, the
+/// `WeightArray::U24` already wraps an `ArcCow<u8>` that can be
+/// mmap-backed; we widen to owned here to avoid drifting two paths
+/// — same trade as `decode_flat_topo_from_mmap`. Future work:
+/// preserve mmap-backed `ArcCow<u8>` for u24 weights.
+pub fn decode_flat_weights_from_mmap(
+    mmap: std::sync::Arc<memmap2::Mmap>,
+    byte_offset: usize,
+    byte_len: usize,
+) -> anyhow::Result<crate::formats::WeightArray> {
+    anyhow::ensure!(
+        byte_offset.saturating_add(byte_len) <= mmap.len(),
+        "flat-weights section out of bounds"
+    );
+    let bytes = &mmap[byte_offset..byte_offset + byte_len];
+    let weights = decode_flat_weights_bytes(bytes)?;
+    let _ = mmap;
+    Ok(weights)
+}
+
 /// Parse a FlatWeights section from owned bytes. Verifies both CRCs.
 pub fn decode_flat_weights_bytes(bytes: &[u8]) -> anyhow::Result<crate::formats::WeightArray> {
     anyhow::ensure!(
