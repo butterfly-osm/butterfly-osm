@@ -37,6 +37,19 @@ pub struct LoadedRegion {
     pub named_roads: usize,
     /// Sorted list of mode names available in this region.
     pub modes: Vec<String>,
+    /// `true` if this region carries a transit subsystem (GTFS / NeTEx
+    /// feeds + RAPTOR timetable + ULTRA transfers). Multi-region
+    /// deployments discover transit via the
+    /// `<data_dir>/<region_id_lowercase>/transit/` convention; regions
+    /// without a transit dir return road-only and this flag is `false`.
+    /// Pending (not-yet-loaded) regions report `false` here — the
+    /// transit attach runs only after the region's first load.
+    ///
+    /// This type only derives `Serialize` (the server is the only
+    /// writer), so no `serde(default)` is needed for client
+    /// compatibility: clients that pre-date this field simply ignore
+    /// the new key.
+    pub transit: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -87,6 +100,10 @@ pub async fn regions_handler(State(regions): State<Arc<RegionsState>>) -> impl I
                     .as_ref()
                     .map(|s| s.mode_names.clone())
                     .unwrap_or_default(),
+                transit: state_opt
+                    .as_ref()
+                    .map(|s| s.transit.is_some())
+                    .unwrap_or(false),
             }
         })
         .collect();
