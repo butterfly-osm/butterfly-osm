@@ -36,11 +36,30 @@
 //!
 //! Pad bytes are part of the body and are included in the CRC.
 //!
-//! v3 files are not readable by this build: the writer of step7 emits
-//! v4 only, and the reader bails on the version mismatch with a hint to
-//! rerun `butterfly-route step7-contract`. The serve-time RSS win
-//! unlocked by zero-copy is large enough (≈ 3-5 GB on Belgium) that
-//! supporting the legacy layout indefinitely is a footgun.
+//! v3/v4 files are not readable by this build: the writer of step7
+//! emits v5 only, and the reader bails on the version mismatch with a
+//! hint to rerun `butterfly-route step7-contract`. The serve-time RSS
+//! win unlocked by zero-copy is large enough (≈ 3-5 GB on Belgium)
+//! that supporting legacy layouts indefinitely is a footgun.
+//!
+//! # Format version 5 (#352)
+//!
+//! v5 packs the `up_middle` / `down_middle` rank arrays at the narrowest
+//! width that holds the data — `u16` (`< 65 535` ranks), `u24`
+//! (`< 16 777 215`), or `u32` otherwise. Width is picked per-direction.
+//! The `u32::MAX` "no middle" sentinel maps to the per-width sentinel
+//! (`u16::MAX`, `U24_SENTINEL`) on encode, same convention as
+//! [`WeightArray`]. Belgium ranks max around 2.5 M filtered nodes per
+//! mode so middles compress to u24 cleanly — ~140 MB saved across the
+//! four-mode topology. Europe-scale (DE/FR/IT) car-mode might exceed
+//! `2²⁴ = 16 777 216`; the picker falls back to u32 automatically.
+//!
+//! Header byte 12 carries the per-direction width codes:
+//!   bits 0..=1 = up_middle width (00=u32, 01=u16, 10=u24)
+//!   bits 2..=3 = down_middle width (same encoding)
+//!   bits 4..=7 = reserved (reader rejects non-zero)
+//!
+//! Bytes 13..=15 stay reserved-zero (reader rejects non-zero).
 
 use anyhow::Result;
 use std::fs::File;
@@ -49,23 +68,152 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::bitset::BitsetField;
+use super::cch_weights::{WeightArray, WeightWidth};
 use super::crc;
 use super::mmap::ArcCow;
 
 const MAGIC: u32 = 0x43434854; // "CCHT"
-const VERSION: u32 = 4; // Version 4 (#151): 80-byte u64-aligned header + variable-array padding for zero-copy
+const VERSION: u32 = 5; // Version 5 (#352): u16/u24/u32 width-picked middles via WeightArray
 const HEADER_LEN: usize = 80;
 const FOOTER_LEN: usize = 16;
 
+const MIDDLE_WIDTH_CODE_U32: u8 = 0;
+const MIDDLE_WIDTH_CODE_U16: u8 = 1;
+const MIDDLE_WIDTH_CODE_U24: u8 = 2;
+const MIDDLE_WIDTH_CODE_MASK: u8 = 0b0000_0011;
+const MIDDLE_DOWN_SHIFT: u8 = 2;
+const MIDDLE_BYTE12_KNOWN_MASK: u8 = 0b0000_1111;
+
 /// Number of zero bytes to write after a `[u32]` slice of length `n` to
-/// advance the section cursor to the next u64 boundary. The body of the
-/// v4 format starts at section-internal offset 80 (a multiple of 8) and
-/// every preceding array is either a multiple of 8 bytes long or already
-/// followed by this padding, so alignment is invariant under the data
-/// shape.
+/// advance the section cursor to the next u64 boundary.
 #[inline]
 const fn u32_pad_to_u64(n: usize) -> usize {
     (n & 1) * 4
+}
+
+/// Number of zero pad bytes to advance from a packed middle data span
+/// (`data_bytes`) to the next u64 boundary.
+#[inline]
+const fn middle_pad_to_u64(data_bytes: usize) -> usize {
+    (8 - (data_bytes & 7)) & 7
+}
+
+fn pick_middle_width(slice: &[u32]) -> WeightWidth {
+    let mut max_val: u32 = 0;
+    for &v in slice {
+        if v == u32::MAX {
+            continue;
+        }
+        if v > max_val {
+            max_val = v;
+        }
+    }
+    if max_val < (u16::MAX as u32) {
+        WeightWidth::U16
+    } else if max_val < super::cch_weights::U24_SENTINEL {
+        WeightWidth::U24
+    } else {
+        WeightWidth::U32
+    }
+}
+
+#[inline]
+const fn width_code_from_weight_width(w: WeightWidth) -> u8 {
+    match w {
+        WeightWidth::U16 => MIDDLE_WIDTH_CODE_U16,
+        WeightWidth::U24 => MIDDLE_WIDTH_CODE_U24,
+        WeightWidth::U32 => MIDDLE_WIDTH_CODE_U32,
+    }
+}
+
+fn weight_width_from_code(code: u8) -> Result<WeightWidth> {
+    match code {
+        MIDDLE_WIDTH_CODE_U32 => Ok(WeightWidth::U32),
+        MIDDLE_WIDTH_CODE_U16 => Ok(WeightWidth::U16),
+        MIDDLE_WIDTH_CODE_U24 => Ok(WeightWidth::U24),
+        _ => anyhow::bail!("Unknown cch.topo middle width code: {code}"),
+    }
+}
+
+fn encode_middles_to_bytes(slice: &[u32], width: WeightWidth) -> Vec<u8> {
+    match width {
+        WeightWidth::U32 => {
+            let mut out = Vec::with_capacity(4 * slice.len());
+            for &v in slice {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            out
+        }
+        WeightWidth::U16 => {
+            let mut out = Vec::with_capacity(2 * slice.len());
+            for &v in slice {
+                let v16: u16 = if v == u32::MAX { u16::MAX } else { v as u16 };
+                out.extend_from_slice(&v16.to_le_bytes());
+            }
+            out
+        }
+        WeightWidth::U24 => {
+            let mut out = Vec::with_capacity(3 * slice.len());
+            for &v in slice {
+                let packed: u32 = if v == u32::MAX {
+                    super::cch_weights::U24_SENTINEL
+                } else {
+                    v
+                };
+                out.push((packed & 0xFF) as u8);
+                out.push(((packed >> 8) & 0xFF) as u8);
+                out.push(((packed >> 16) & 0xFF) as u8);
+            }
+            out
+        }
+    }
+}
+
+fn weight_array_from_bytes(bytes: Vec<u8>, n: usize, width: WeightWidth) -> WeightArray {
+    debug_assert_eq!(
+        bytes.len(),
+        n * width.bytes_per_entry(),
+        "byte/entry mismatch"
+    );
+    match width {
+        WeightWidth::U32 => {
+            let v: Vec<u32> = bytes
+                .chunks_exact(4)
+                .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            WeightArray::from_vec_u32(v)
+        }
+        WeightWidth::U16 => {
+            let v: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            WeightArray::from_vec_u16(v)
+        }
+        WeightWidth::U24 => WeightArray::from_u24_bytes(bytes, n),
+    }
+}
+
+fn mmap_weight_array(
+    mmap: &Arc<memmap2::Mmap>,
+    abs_byte_off: usize,
+    n: usize,
+    width: WeightWidth,
+) -> Result<WeightArray> {
+    match width {
+        WeightWidth::U32 => {
+            let arc = ArcCow::<u32>::from_mmap(Arc::clone(mmap), abs_byte_off, n)?;
+            Ok(WeightArray::from_arccow_u32(arc))
+        }
+        WeightWidth::U16 => {
+            let arc = ArcCow::<u16>::from_mmap(Arc::clone(mmap), abs_byte_off, n)?;
+            Ok(WeightArray::from_arccow_u16(arc))
+        }
+        WeightWidth::U24 => {
+            let arc = ArcCow::<u8>::from_mmap(Arc::clone(mmap), abs_byte_off, n * 3)?;
+            Ok(WeightArray::from_arccow_u24(arc, n))
+        }
+    }
 }
 
 /// A shortcut in the CCH
@@ -106,14 +254,19 @@ pub struct CchTopo {
     /// Bit-packed: bit `i` is true iff edge `i` is a shortcut. Use
     /// `up_is_shortcut.bit(i)` instead of indexing — see #147.
     pub up_is_shortcut: BitsetField,
-    pub up_middle: ArcCow<u32>, // Rank position of middle node (u32::MAX if original)
+    /// Rank position of middle node (`u32::MAX` if original). Stored as
+    /// a width-picked [`WeightArray`] (u16/u24/u32) so the disk and
+    /// mmap-resident representation tracks the rank space (#352). The
+    /// `u32::MAX` "no middle" sentinel maps to the per-width sentinel
+    /// (`u16::MAX`, `U24_SENTINEL`) via [`WeightArray::get`].
+    pub up_middle: WeightArray,
 
     // Downward graph in CSR format (indexed by rank)
     // For node at rank r, downward neighbors have rank < r
     pub down_offsets: ArcCow<u64>,
     pub down_targets: ArcCow<u32>,
     pub down_is_shortcut: BitsetField,
-    pub down_middle: ArcCow<u32>,
+    pub down_middle: WeightArray,
 
     // Mapping from rank position to filtered node ID
     // rank_to_filtered[rank] = filtered_id
@@ -146,11 +299,27 @@ impl CchTopoFile {
         let mut writer = BufWriter::new(File::create(path)?);
         let mut crc_digest = crc::Digest::new();
 
+        // Materialise middles as `Vec<u32>` once for the width picker
+        // and body encoder. Avoids repeated traversals of mmap-backed
+        // entries per direction.
+        let up_middle_vec: Vec<u32> = data.up_middle.iter().collect();
+        let down_middle_vec: Vec<u32> = data.down_middle.iter().collect();
+        let up_width = pick_middle_width(&up_middle_vec);
+        let down_width = pick_middle_width(&down_middle_vec);
+        let byte12: u8 = width_code_from_weight_width(up_width)
+            | (width_code_from_weight_width(down_width) << MIDDLE_DOWN_SHIFT);
+        debug_assert_eq!(
+            byte12 & !MIDDLE_BYTE12_KNOWN_MASK,
+            0,
+            "width-code encoding produced reserved-bit pollution"
+        );
+
         // -------- Header (80 bytes, u64-aligned) -------------------------
         // [ 0.. 4]  magic "CCHT"
-        // [ 4.. 8]  version u32 = 4
+        // [ 4.. 8]  version u32 = 5
         // [ 8..12]  n_nodes u32
-        // [12..16]  reserved u32 (zero, pads header to u64 boundary)
+        // [12]      middle-width-codes byte (see MIDDLE_*_CODE constants)
+        // [13..16]  reserved (zero, reader rejects non-zero)
         // [16..24]  n_shortcuts u64
         // [24..32]  n_original_arcs u64
         // [32..40]  n_up_edges u64
@@ -159,7 +328,8 @@ impl CchTopoFile {
         let magic_bytes = MAGIC.to_le_bytes();
         let version_bytes = VERSION.to_le_bytes();
         let n_nodes_bytes = data.n_nodes.to_le_bytes();
-        let reserved_bytes = 0u32.to_le_bytes();
+        let mut reserved_bytes = [0u8; 4];
+        reserved_bytes[0] = byte12;
         let n_shortcuts_bytes = data.n_shortcuts.to_le_bytes();
         let n_original_bytes = data.n_original_arcs.to_le_bytes();
         let n_up_edges = data.up_offsets.last().copied().unwrap_or(0);
@@ -208,6 +378,27 @@ impl CchTopoFile {
             Ok(())
         };
 
+        // Helper for the variable-width middles. Encodes at the chosen
+        // width then pads to the next u64 boundary so the subsequent
+        // `[u64]` section starts u64-aligned. Pad bytes are part of the
+        // body CRC.
+        let write_middles = |writer: &mut BufWriter<File>,
+                             crc_digest: &mut crc::Digest,
+                             slice: &[u32],
+                             width: WeightWidth|
+         -> Result<()> {
+            let bytes = encode_middles_to_bytes(slice, width);
+            writer.write_all(&bytes)?;
+            crc_digest.update(&bytes);
+            let pad = middle_pad_to_u64(bytes.len());
+            if pad != 0 {
+                let zeros = [0u8; 8];
+                writer.write_all(&zeros[..pad])?;
+                crc_digest.update(&zeros[..pad]);
+            }
+            Ok(())
+        };
+
         // -------- Up graph ---------------------------------------------
         // Offsets are u64 — naturally aligned, no padding.
         for &off in data.up_offsets.iter() {
@@ -225,7 +416,7 @@ impl CchTopoFile {
             writer.write_all(&bytes)?;
             crc_digest.update(&bytes);
         }
-        write_u32_padded(&mut writer, &mut crc_digest, &data.up_middle)?;
+        write_middles(&mut writer, &mut crc_digest, &up_middle_vec, up_width)?;
 
         // -------- Down graph -------------------------------------------
         for &off in data.down_offsets.iter() {
@@ -240,7 +431,7 @@ impl CchTopoFile {
             writer.write_all(&bytes)?;
             crc_digest.update(&bytes);
         }
-        write_u32_padded(&mut writer, &mut crc_digest, &data.down_middle)?;
+        write_middles(&mut writer, &mut crc_digest, &down_middle_vec, down_width)?;
 
         // -------- Rank → filtered mapping ------------------------------
         // No further u64 sections follow, but the v4 format keeps the
@@ -272,49 +463,20 @@ impl CchTopoFile {
     fn read_from_reader<R: Read>(mut reader: R) -> Result<CchTopo> {
         let mut crc_digest = crc::Digest::new();
 
-        // -------- Header (80 bytes, v4 #151) ----------------------------
-        // [ 0.. 4]  magic
-        // [ 4.. 8]  version u32 = 4
-        // [ 8..12]  n_nodes u32
-        // [12..16]  reserved u32
-        // [16..24]  n_shortcuts u64
-        // [24..32]  n_original_arcs u64
-        // [32..40]  n_up_edges u64
-        // [40..48]  n_down_edges u64
-        // [48..80]  sha256[32]
+        // -------- Header (80 bytes, v5 #352) — see parse_header ---------
         let mut header = [0u8; HEADER_LEN];
         reader.read_exact(&mut header)?;
         crc_digest.update(&header);
-
-        let magic = u32::from_le_bytes(header[0..4].try_into().unwrap());
-        if magic != MAGIC {
-            anyhow::bail!(
-                "Invalid magic: expected 0x{:08X}, got 0x{:08X}",
-                MAGIC,
-                magic
-            );
-        }
-
-        let version = u32::from_le_bytes(header[4..8].try_into().unwrap());
-        if version != VERSION {
-            anyhow::bail!(
-                "Unsupported cch.topo format version {}: this build only reads v{}. \
-                 Regenerate the per-mode topology with `butterfly-route step7-contract` \
-                 (the v4 layout adds 4 reserved header bytes + per-array padding so the \
-                 server can mmap the topology zero-copy).",
-                version,
-                VERSION
-            );
-        }
-
-        let n_nodes = u32::from_le_bytes(header[8..12].try_into().unwrap());
-        // header[12..16] is reserved/padding, ignored
-        let n_shortcuts = u64::from_le_bytes(header[16..24].try_into().unwrap());
-        let n_original_arcs = u64::from_le_bytes(header[24..32].try_into().unwrap());
-        let n_up_edges = u64::from_le_bytes(header[32..40].try_into().unwrap());
-        let n_down_edges = u64::from_le_bytes(header[40..48].try_into().unwrap());
-        let mut inputs_sha = [0u8; 32];
-        inputs_sha.copy_from_slice(&header[48..80]);
+        let (
+            n_nodes,
+            n_shortcuts,
+            n_original_arcs,
+            n_up_edges,
+            n_down_edges,
+            inputs_sha,
+            up_width,
+            down_width,
+        ) = parse_header(&header)?;
 
         // Helper: read `n` little-endian u32s and consume the v4 padding
         // bytes (0 or 4) that follow if `n` is odd. Padding is part of
@@ -337,6 +499,26 @@ impl CchTopoFile {
                 Ok(out)
             };
 
+        // Helper: read `n` middles at `width` plus 0..=7 trailing pad
+        // bytes so the cursor lands on a u64 boundary.
+        let read_middles = |reader: &mut R,
+                            crc_digest: &mut crc::Digest,
+                            n: usize,
+                            width: WeightWidth|
+         -> Result<WeightArray> {
+            let data_bytes = n * width.bytes_per_entry();
+            let mut buf = vec![0u8; data_bytes];
+            reader.read_exact(&mut buf)?;
+            crc_digest.update(&buf);
+            let pad = middle_pad_to_u64(data_bytes);
+            if pad != 0 {
+                let mut zeros = [0u8; 8];
+                reader.read_exact(&mut zeros[..pad])?;
+                crc_digest.update(&zeros[..pad]);
+            }
+            Ok(weight_array_from_bytes(buf, n, width))
+        };
+
         // -------- Up graph ---------------------------------------------
         let mut up_offsets = Vec::with_capacity((n_nodes + 1) as usize);
         for _ in 0..=n_nodes {
@@ -346,9 +528,9 @@ impl CchTopoFile {
             up_offsets.push(u64::from_le_bytes(buf));
         }
 
-        let up_targets = read_u32_padded(&mut reader, &mut crc_digest, n_up_edges as usize)?;
+        let up_targets = read_u32_padded(&mut reader, &mut crc_digest, n_up_edges)?;
 
-        let n_up_words = (n_up_edges as usize).div_ceil(64);
+        let n_up_words = n_up_edges.div_ceil(64);
         let mut up_bits = Vec::with_capacity(n_up_words);
         for _ in 0..n_up_words {
             let mut buf = [0u8; 8];
@@ -356,9 +538,9 @@ impl CchTopoFile {
             crc_digest.update(&buf);
             up_bits.push(u64::from_le_bytes(buf));
         }
-        let up_is_shortcut = BitsetField::from_owned_words(up_bits, n_up_edges as usize);
+        let up_is_shortcut = BitsetField::from_owned_words(up_bits, n_up_edges);
 
-        let up_middle = read_u32_padded(&mut reader, &mut crc_digest, n_up_edges as usize)?;
+        let up_middle = read_middles(&mut reader, &mut crc_digest, n_up_edges, up_width)?;
 
         // -------- Down graph -------------------------------------------
         let mut down_offsets = Vec::with_capacity((n_nodes + 1) as usize);
@@ -369,9 +551,9 @@ impl CchTopoFile {
             down_offsets.push(u64::from_le_bytes(buf));
         }
 
-        let down_targets = read_u32_padded(&mut reader, &mut crc_digest, n_down_edges as usize)?;
+        let down_targets = read_u32_padded(&mut reader, &mut crc_digest, n_down_edges)?;
 
-        let n_down_words = (n_down_edges as usize).div_ceil(64);
+        let n_down_words = n_down_edges.div_ceil(64);
         let mut down_bits = Vec::with_capacity(n_down_words);
         for _ in 0..n_down_words {
             let mut buf = [0u8; 8];
@@ -379,9 +561,9 @@ impl CchTopoFile {
             crc_digest.update(&buf);
             down_bits.push(u64::from_le_bytes(buf));
         }
-        let down_is_shortcut = BitsetField::from_owned_words(down_bits, n_down_edges as usize);
+        let down_is_shortcut = BitsetField::from_owned_words(down_bits, n_down_edges);
 
-        let down_middle = read_u32_padded(&mut reader, &mut crc_digest, n_down_edges as usize)?;
+        let down_middle = read_middles(&mut reader, &mut crc_digest, n_down_edges, down_width)?;
 
         // -------- Rank → filtered mapping ------------------------------
         let rank_to_filtered = read_u32_padded(&mut reader, &mut crc_digest, n_nodes as usize)?;
@@ -406,11 +588,11 @@ impl CchTopoFile {
             up_offsets: ArcCow::from_vec(up_offsets),
             up_targets: ArcCow::from_vec(up_targets),
             up_is_shortcut,
-            up_middle: ArcCow::from_vec(up_middle),
+            up_middle,
             down_offsets: ArcCow::from_vec(down_offsets),
             down_targets: ArcCow::from_vec(down_targets),
             down_is_shortcut,
-            down_middle: ArcCow::from_vec(down_middle),
+            down_middle,
             rank_to_filtered: ArcCow::from_vec(rank_to_filtered),
         })
     }
@@ -470,31 +652,17 @@ impl CchTopoFile {
              (container writer pads sections to 8-byte boundaries)"
         );
 
-        // ----- Header (80 bytes, v4) -----
-        let h = &bytes[..HEADER_LEN];
-        let magic = u32::from_le_bytes(h[0..4].try_into().unwrap());
-        anyhow::ensure!(
-            magic == MAGIC,
-            "Invalid magic: expected 0x{:08X}, got 0x{:08X}",
-            MAGIC,
-            magic
-        );
-        let version = u32::from_le_bytes(h[4..8].try_into().unwrap());
-        anyhow::ensure!(
-            version == VERSION,
-            "Unsupported cch.topo format version {}: this build only reads v{}. \
-             Regenerate the per-mode topology with `butterfly-route step7-contract`.",
-            version,
-            VERSION
-        );
-        let n_nodes = u32::from_le_bytes(h[8..12].try_into().unwrap());
-        // h[12..16] reserved
-        let n_shortcuts = u64::from_le_bytes(h[16..24].try_into().unwrap());
-        let n_original_arcs = u64::from_le_bytes(h[24..32].try_into().unwrap());
-        let n_up_edges = u64::from_le_bytes(h[32..40].try_into().unwrap()) as usize;
-        let n_down_edges = u64::from_le_bytes(h[40..48].try_into().unwrap()) as usize;
-        let mut inputs_sha = [0u8; 32];
-        inputs_sha.copy_from_slice(&h[48..80]);
+        // ----- Header (80 bytes, v5) -----
+        let (
+            n_nodes,
+            n_shortcuts,
+            n_original_arcs,
+            n_up_edges,
+            n_down_edges,
+            inputs_sha,
+            up_width,
+            down_width,
+        ) = parse_header(bytes)?;
 
         let n_offsets = (n_nodes as usize) + 1;
         let n_up_words = n_up_edges.div_ceil(64);
@@ -502,22 +670,23 @@ impl CchTopoFile {
         let n_up_pad = u32_pad_to_u64(n_up_edges);
         let n_down_pad = u32_pad_to_u64(n_down_edges);
         let n_nodes_pad = u32_pad_to_u64(n_nodes as usize);
+        let upm_data_bytes = n_up_edges * up_width.bytes_per_entry();
+        let upm_pad = middle_pad_to_u64(upm_data_bytes);
+        let dnm_data_bytes = n_down_edges * down_width.bytes_per_entry();
+        let dnm_pad = middle_pad_to_u64(dnm_data_bytes);
 
-        // ----- Layout (#151 v4):
+        // ----- Layout (#352 v5):
         //   header(80)
         // | up_offsets(8 * n_offsets)
         // | up_targets(4 * n_up + n_up_pad)
         // | up_bits(8 * n_up_words)
-        // | up_middle(4 * n_up + n_up_pad)
+        // | up_middle(upm_data_bytes + upm_pad)
         // | down_offsets(8 * n_offsets)
         // | down_targets(4 * n_down + n_down_pad)
         // | down_bits(8 * n_down_words)
-        // | down_middle(4 * n_down + n_down_pad)
+        // | down_middle(dnm_data_bytes + dnm_pad)
         // | rank_to_filtered(4 * n_nodes + n_nodes_pad)
         // | footer(16)
-        // All u32-array end offsets land on an 8-byte boundary thanks to
-        // the trailing pad bytes, so every u64 slice that follows is
-        // safe to `bytemuck::cast_slice`.
         let mut cur = HEADER_LEN;
 
         let upo_end = cur + 8 * n_offsets;
@@ -532,9 +701,9 @@ impl CchTopoFile {
         let up_bits_words: &'static [u64] = bytemuck::cast_slice(&bytes[cur..upb_end]);
         cur = upb_end;
 
-        let upm_end = cur + 4 * n_up_edges;
-        let up_middle: &'static [u32] = bytemuck::cast_slice(&bytes[cur..upm_end]);
-        cur = upm_end + n_up_pad;
+        let upm_end = cur + upm_data_bytes;
+        let up_middle_bytes: &'static [u8] = &bytes[cur..upm_end];
+        cur = upm_end + upm_pad;
 
         let dno_end = cur + 8 * n_offsets;
         let down_offsets: &'static [u64] = bytemuck::cast_slice(&bytes[cur..dno_end]);
@@ -548,9 +717,9 @@ impl CchTopoFile {
         let down_bits_words: &'static [u64] = bytemuck::cast_slice(&bytes[cur..dnb_end]);
         cur = dnb_end;
 
-        let dnm_end = cur + 4 * n_down_edges;
-        let down_middle: &'static [u32] = bytemuck::cast_slice(&bytes[cur..dnm_end]);
-        cur = dnm_end + n_down_pad;
+        let dnm_end = cur + dnm_data_bytes;
+        let down_middle_bytes: &'static [u8] = &bytes[cur..dnm_end];
+        cur = dnm_end + dnm_pad;
 
         let rtf_end = cur + 4 * (n_nodes as usize);
         let rank_to_filtered: &'static [u32] = bytemuck::cast_slice(&bytes[cur..rtf_end]);
@@ -600,11 +769,15 @@ impl CchTopoFile {
             up_offsets: ArcCow::from_vec(up_offsets.to_vec()),
             up_targets: ArcCow::from_vec(up_targets.to_vec()),
             up_is_shortcut: BitsetField::from_borrowed_words(up_bits_words, n_up_edges),
-            up_middle: ArcCow::from_vec(up_middle.to_vec()),
+            up_middle: weight_array_from_bytes(up_middle_bytes.to_vec(), n_up_edges, up_width),
             down_offsets: ArcCow::from_vec(down_offsets.to_vec()),
             down_targets: ArcCow::from_vec(down_targets.to_vec()),
             down_is_shortcut: BitsetField::from_borrowed_words(down_bits_words, n_down_edges),
-            down_middle: ArcCow::from_vec(down_middle.to_vec()),
+            down_middle: weight_array_from_bytes(
+                down_middle_bytes.to_vec(),
+                n_down_edges,
+                down_width,
+            ),
             rank_to_filtered: ArcCow::from_vec(rank_to_filtered.to_vec()),
         })
     }
@@ -655,8 +828,16 @@ impl CchTopoFile {
              (container writer pads sections to 8-byte boundaries)"
         );
 
-        let (n_nodes, n_shortcuts, n_original_arcs, n_up_edges, n_down_edges, inputs_sha) =
-            parse_header(bytes)?;
+        let (
+            n_nodes,
+            n_shortcuts,
+            n_original_arcs,
+            n_up_edges,
+            n_down_edges,
+            inputs_sha,
+            up_width,
+            down_width,
+        ) = parse_header(bytes)?;
 
         let n_offsets = (n_nodes as usize) + 1;
         let n_up_words = n_up_edges.div_ceil(64);
@@ -664,19 +845,12 @@ impl CchTopoFile {
         let n_up_pad = u32_pad_to_u64(n_up_edges);
         let n_down_pad = u32_pad_to_u64(n_down_edges);
         let n_nodes_pad = u32_pad_to_u64(n_nodes as usize);
+        let upm_data_bytes = n_up_edges * up_width.bytes_per_entry();
+        let upm_pad = middle_pad_to_u64(upm_data_bytes);
+        let dnm_data_bytes = n_down_edges * down_width.bytes_per_entry();
+        let dnm_pad = middle_pad_to_u64(dnm_data_bytes);
 
-        // Layout (mirrors `read_from_bytes_zero_copy_inner`):
-        //   header(80)
-        // | up_offsets(8 * n_offsets)
-        // | up_targets(4 * n_up + n_up_pad)
-        // | up_bits(8 * n_up_words)
-        // | up_middle(4 * n_up + n_up_pad)
-        // | down_offsets(8 * n_offsets)
-        // | down_targets(4 * n_down + n_down_pad)
-        // | down_bits(8 * n_down_words)
-        // | down_middle(4 * n_down + n_down_pad)
-        // | rank_to_filtered(4 * n_nodes + n_nodes_pad)
-        // | footer(16)
+        // Layout (#352 v5) — see `read_from_bytes_zero_copy_inner`.
         let mut cur = HEADER_LEN;
 
         let upo_off = byte_offset + cur;
@@ -692,8 +866,7 @@ impl CchTopoFile {
         cur += upb_len_bytes;
 
         let upm_off = byte_offset + cur;
-        let upm_len_bytes = 4 * n_up_edges;
-        cur += upm_len_bytes + n_up_pad;
+        cur += upm_data_bytes + upm_pad;
 
         let dno_off = byte_offset + cur;
         let dno_len_bytes = 8 * n_offsets;
@@ -708,8 +881,7 @@ impl CchTopoFile {
         cur += dnb_len_bytes;
 
         let dnm_off = byte_offset + cur;
-        let dnm_len_bytes = 4 * n_down_edges;
-        cur += dnm_len_bytes + n_down_pad;
+        cur += dnm_data_bytes + dnm_pad;
 
         let rtf_off = byte_offset + cur;
         let rtf_len_bytes = 4 * (n_nodes as usize);
@@ -723,13 +895,14 @@ impl CchTopoFile {
 
         // Build the zero-copy ArcCow views. Each call validates
         // alignment + bounds against the mmap; the hot path does no
-        // further checks beyond bytemuck::cast_slice.
+        // further checks beyond bytemuck::cast_slice. Middles go
+        // through `mmap_weight_array` to honour the width code.
         let up_offsets = ArcCow::<u64>::from_mmap(Arc::clone(&mmap), upo_off, n_offsets)?;
         let up_targets = ArcCow::<u32>::from_mmap(Arc::clone(&mmap), upt_off, n_up_edges)?;
-        let up_middle = ArcCow::<u32>::from_mmap(Arc::clone(&mmap), upm_off, n_up_edges)?;
+        let up_middle = mmap_weight_array(&mmap, upm_off, n_up_edges, up_width)?;
         let down_offsets = ArcCow::<u64>::from_mmap(Arc::clone(&mmap), dno_off, n_offsets)?;
         let down_targets = ArcCow::<u32>::from_mmap(Arc::clone(&mmap), dnt_off, n_down_edges)?;
-        let down_middle = ArcCow::<u32>::from_mmap(Arc::clone(&mmap), dnm_off, n_down_edges)?;
+        let down_middle = mmap_weight_array(&mmap, dnm_off, n_down_edges, down_width)?;
         let rank_to_filtered =
             ArcCow::<u32>::from_mmap(Arc::clone(&mmap), rtf_off, n_nodes as usize)?;
 
@@ -763,17 +936,21 @@ impl CchTopoFile {
     }
 }
 
-/// Parse the 80-byte v4 cch.topo header and return its fields.
+/// `(n_nodes, n_shortcuts, n_original_arcs, n_up_edges, n_down_edges,
+/// inputs_sha, up_middle_width, down_middle_width)` — the full set of
+/// v5 cch.topo header fields. Named alias to keep clippy off the
+/// 8-tuple in `parse_header`.
+type HeaderFields = (u32, u64, u64, usize, usize, [u8; 32], WeightWidth, WeightWidth);
+
+/// Parse the 80-byte v5 cch.topo header and return its fields.
 /// Shared by the owned, zero-copy, and mmap-backed readers.
 ///
-/// Returns `(n_nodes, n_shortcuts, n_original_arcs, n_up_edges,
-/// n_down_edges, inputs_sha)`. `n_up_edges` / `n_down_edges` are
-/// returned as `usize` because every downstream consumer indexes by
-/// them.
-fn parse_header(bytes: &[u8]) -> Result<(u32, u64, u64, usize, usize, [u8; 32])> {
+/// `n_up_edges` / `n_down_edges` are returned as `usize` because every
+/// downstream consumer indexes by them.
+fn parse_header(bytes: &[u8]) -> Result<HeaderFields> {
     anyhow::ensure!(
-        bytes.len() >= HEADER_LEN + FOOTER_LEN,
-        "cch.topo too short for header+footer: {} bytes",
+        bytes.len() >= HEADER_LEN,
+        "cch.topo too short for header: {} bytes",
         bytes.len()
     );
     let h = &bytes[..HEADER_LEN];
@@ -788,12 +965,29 @@ fn parse_header(bytes: &[u8]) -> Result<(u32, u64, u64, usize, usize, [u8; 32])>
     anyhow::ensure!(
         version == VERSION,
         "Unsupported cch.topo format version {}: this build only reads v{}. \
-         Regenerate the per-mode topology with `butterfly-route step7-contract`.",
+         Regenerate the per-mode topology with `butterfly-route step7-contract` \
+         (the v5 layout packs CCH middles at u16/u24/u32 — picked per direction).",
         version,
         VERSION
     );
     let n_nodes = u32::from_le_bytes(h[8..12].try_into().unwrap());
-    // h[12..16] reserved
+    let byte12 = h[12];
+    anyhow::ensure!(
+        byte12 & !MIDDLE_BYTE12_KNOWN_MASK == 0,
+        "cch.topo header byte 12 has unknown bits set: 0x{:02X} \
+         (known mask 0x{:02X}); this build does not understand the format",
+        byte12,
+        MIDDLE_BYTE12_KNOWN_MASK
+    );
+    anyhow::ensure!(
+        h[13] == 0 && h[14] == 0 && h[15] == 0,
+        "cch.topo header bytes 13..=15 must be zero (reserved); got [{}, {}, {}]",
+        h[13],
+        h[14],
+        h[15]
+    );
+    let up_width = weight_width_from_code(byte12 & MIDDLE_WIDTH_CODE_MASK)?;
+    let down_width = weight_width_from_code((byte12 >> MIDDLE_DOWN_SHIFT) & MIDDLE_WIDTH_CODE_MASK)?;
     let n_shortcuts = u64::from_le_bytes(h[16..24].try_into().unwrap());
     let n_original_arcs = u64::from_le_bytes(h[24..32].try_into().unwrap());
     let n_up_edges = u64::from_le_bytes(h[32..40].try_into().unwrap()) as usize;
@@ -807,6 +1001,8 @@ fn parse_header(bytes: &[u8]) -> Result<(u32, u64, u64, usize, usize, [u8; 32])>
         n_up_edges,
         n_down_edges,
         inputs_sha,
+        up_width,
+        down_width,
     ))
 }
 
@@ -945,7 +1141,7 @@ mod tests {
         assert!(!loaded.up_is_shortcut.bit(0));
         assert!(!loaded.up_is_shortcut.bit(1));
         assert!(loaded.up_is_shortcut.bit(2));
-        assert_eq!(loaded.up_middle[2], 1);
+        assert_eq!(loaded.up_middle.get(2), 1);
         assert_eq!(&loaded.down_targets[..], &[0u32, 1, 2]);
         assert_eq!(&loaded.rank_to_filtered[..], &[10u32, 20, 30, 40]);
         Ok(())
@@ -1094,7 +1290,7 @@ mod tests {
                 "up bit {i}"
             );
         }
-        assert_eq!(&a.up_middle[..], &b.up_middle[..]);
+        assert_eq!(a.up_middle.to_vec_u32(), b.up_middle.to_vec_u32());
         assert_eq!(&a.down_offsets[..], &b.down_offsets[..]);
         assert_eq!(&a.down_targets[..], &b.down_targets[..]);
         assert_eq!(a.down_is_shortcut.len(), b.down_is_shortcut.len());
@@ -1105,7 +1301,7 @@ mod tests {
                 "down bit {i}"
             );
         }
-        assert_eq!(&a.down_middle[..], &b.down_middle[..]);
+        assert_eq!(a.down_middle.to_vec_u32(), b.down_middle.to_vec_u32());
         assert_eq!(&a.rank_to_filtered[..], &b.rank_to_filtered[..]);
     }
 
@@ -1229,11 +1425,13 @@ mod tests {
             data.n_nodes,
             "n_nodes at [8..12]"
         );
-        assert_eq!(
-            u32::from_le_bytes(raw[12..16].try_into().unwrap()),
-            0,
-            "reserved padding zero at [12..16]"
-        );
+        // v5 (#352): byte 12 carries per-direction middle width codes
+        // (bits 0..=3); bits 4..=7 of byte 12 and bytes 13..=15 stay
+        // reserved-zero.
+        assert_eq!(raw[12] & !MIDDLE_BYTE12_KNOWN_MASK, 0, "byte12 reserved bits");
+        assert_eq!(raw[13], 0, "header[13] reserved");
+        assert_eq!(raw[14], 0, "header[14] reserved");
+        assert_eq!(raw[15], 0, "header[15] reserved");
         assert_eq!(
             u64::from_le_bytes(raw[16..24].try_into().unwrap()),
             data.n_shortcuts,
@@ -1255,6 +1453,179 @@ mod tests {
             "n_down at [40..48]"
         );
         assert_eq!(&raw[48..80], &data.inputs_sha[..], "sha at [48..80]");
+        Ok(())
+    }
+
+    /// v5 (#352): when middle ranks all fit in u16, the writer picks
+    /// U16 and the round-trip preserves every entry — including the
+    /// `u32::MAX` "no middle" sentinel via the per-width sentinel
+    /// (`u16::MAX`).
+    #[test]
+    fn test_v5_picks_u16_for_small_ranks() -> Result<()> {
+        let data = CchTopo {
+            n_nodes: 4,
+            n_shortcuts: 2,
+            n_original_arcs: 2,
+            inputs_sha: [0xAB; 32],
+            up_offsets: vec![0u64, 1, 2, 3, 4].into(),
+            up_targets: vec![1u32, 2, 3, 0].into(),
+            up_is_shortcut: BitsetField::from_bools(&[false, true, false, true]),
+            up_middle: WeightArray::from_vec_u32(vec![u32::MAX, 2, u32::MAX, 1]),
+            down_offsets: vec![0u64, 0, 1, 2, 3].into(),
+            down_targets: vec![0u32, 1, 2].into(),
+            down_is_shortcut: BitsetField::from_bools(&[false, false, true]),
+            down_middle: WeightArray::from_vec_u32(vec![u32::MAX, u32::MAX, 1]),
+            rank_to_filtered: vec![10u32, 20, 30, 40].into(),
+        };
+        let tmp = NamedTempFile::new()?;
+        CchTopoFile::write(tmp.path(), &data)?;
+        let raw = std::fs::read(tmp.path())?;
+        assert_eq!(
+            raw[12] & MIDDLE_BYTE12_KNOWN_MASK,
+            MIDDLE_WIDTH_CODE_U16 | (MIDDLE_WIDTH_CODE_U16 << MIDDLE_DOWN_SHIFT),
+            "byte12 should encode u16 width for both directions"
+        );
+        let loaded = CchTopoFile::read(tmp.path())?;
+        assert_eq!(
+            loaded.up_middle.width(),
+            crate::formats::cch_weights::WeightWidth::U16
+        );
+        assert_eq!(
+            loaded.down_middle.width(),
+            crate::formats::cch_weights::WeightWidth::U16
+        );
+        assert_eq!(loaded.up_middle.to_vec_u32(), vec![u32::MAX, 2, u32::MAX, 1]);
+        assert_eq!(loaded.down_middle.to_vec_u32(), vec![u32::MAX, u32::MAX, 1]);
+        Ok(())
+    }
+
+    /// v5 (#352): when middle ranks exceed `u16::MAX` but fit u24, the
+    /// writer picks U24 — the typical Belgium-class build (~2.5 M
+    /// filtered nodes per mode → u24 covers every entry).
+    #[test]
+    fn test_v5_picks_u24_for_belgium_class_ranks() -> Result<()> {
+        let big_rank: u32 = 100_000; // exceeds u16::MAX = 65 535
+        let data = CchTopo {
+            n_nodes: 4,
+            n_shortcuts: 2,
+            n_original_arcs: 2,
+            inputs_sha: [0u8; 32],
+            up_offsets: vec![0u64, 1, 2, 3, 4].into(),
+            up_targets: vec![1u32, 2, 3, 0].into(),
+            up_is_shortcut: BitsetField::from_bools(&[true, true, false, false]),
+            up_middle: WeightArray::from_vec_u32(vec![big_rank, big_rank + 5, u32::MAX, u32::MAX]),
+            down_offsets: vec![0u64, 0, 1, 2, 3].into(),
+            down_targets: vec![0u32, 1, 2].into(),
+            down_is_shortcut: BitsetField::from_bools(&[false, true, true]),
+            down_middle: WeightArray::from_vec_u32(vec![u32::MAX, big_rank, big_rank + 7]),
+            rank_to_filtered: vec![10u32, 20, 30, 40].into(),
+        };
+        let tmp = NamedTempFile::new()?;
+        CchTopoFile::write(tmp.path(), &data)?;
+        let raw = std::fs::read(tmp.path())?;
+        assert_eq!(
+            raw[12] & MIDDLE_BYTE12_KNOWN_MASK,
+            MIDDLE_WIDTH_CODE_U24 | (MIDDLE_WIDTH_CODE_U24 << MIDDLE_DOWN_SHIFT),
+            "byte12 should encode u24 width for both directions"
+        );
+        let loaded = CchTopoFile::read(tmp.path())?;
+        assert_eq!(
+            loaded.up_middle.width(),
+            crate::formats::cch_weights::WeightWidth::U24
+        );
+        assert_eq!(
+            loaded.down_middle.width(),
+            crate::formats::cch_weights::WeightWidth::U24
+        );
+        assert_eq!(
+            loaded.up_middle.to_vec_u32(),
+            vec![big_rank, big_rank + 5, u32::MAX, u32::MAX]
+        );
+        assert_eq!(
+            loaded.down_middle.to_vec_u32(),
+            vec![u32::MAX, big_rank, big_rank + 7]
+        );
+        Ok(())
+    }
+
+    /// v5 (#352): when middle ranks exceed `U24_SENTINEL`, the writer
+    /// falls back to U32. Picks per-direction so one direction can be
+    /// narrow even if the other overflows.
+    #[test]
+    fn test_v5_picks_u32_when_u24_overflows() -> Result<()> {
+        let huge_rank = crate::formats::cch_weights::U24_SENTINEL + 100;
+        let data = CchTopo {
+            n_nodes: 4,
+            n_shortcuts: 1,
+            n_original_arcs: 3,
+            inputs_sha: [0u8; 32],
+            up_offsets: vec![0u64, 1, 2, 3, 4].into(),
+            up_targets: vec![1u32, 2, 3, 0].into(),
+            up_is_shortcut: BitsetField::from_bools(&[false, false, true, false]),
+            up_middle: WeightArray::from_vec_u32(vec![u32::MAX, u32::MAX, huge_rank, u32::MAX]),
+            down_offsets: vec![0u64, 0, 1, 2, 3].into(),
+            down_targets: vec![0u32, 1, 2].into(),
+            down_is_shortcut: BitsetField::from_bools(&[false, false, true]),
+            down_middle: WeightArray::from_vec_u32(vec![u32::MAX, u32::MAX, 1]),
+            rank_to_filtered: vec![10u32, 20, 30, 40].into(),
+        };
+        let tmp = NamedTempFile::new()?;
+        CchTopoFile::write(tmp.path(), &data)?;
+        let raw = std::fs::read(tmp.path())?;
+        assert_eq!(
+            raw[12] & MIDDLE_BYTE12_KNOWN_MASK,
+            MIDDLE_WIDTH_CODE_U32 | (MIDDLE_WIDTH_CODE_U16 << MIDDLE_DOWN_SHIFT),
+            "byte12 picker: up=U32, down=U16"
+        );
+        let loaded = CchTopoFile::read(tmp.path())?;
+        assert_eq!(
+            loaded.up_middle.width(),
+            crate::formats::cch_weights::WeightWidth::U32
+        );
+        assert_eq!(
+            loaded.down_middle.width(),
+            crate::formats::cch_weights::WeightWidth::U16
+        );
+        assert_eq!(
+            loaded.up_middle.to_vec_u32(),
+            vec![u32::MAX, u32::MAX, huge_rank, u32::MAX]
+        );
+        assert_eq!(loaded.down_middle.to_vec_u32(), vec![u32::MAX, u32::MAX, 1]);
+        Ok(())
+    }
+
+    /// v5 (#352): the reader rejects any non-zero in the reserved bits
+    /// of byte 12 (bits 4..=7) or in bytes 13..=15.
+    #[test]
+    fn test_v5_rejects_reserved_bit_pollution() -> Result<()> {
+        let data = make_test_topo();
+        let tmp = NamedTempFile::new()?;
+        CchTopoFile::write(tmp.path(), &data)?;
+        let mut raw = std::fs::read(tmp.path())?;
+
+        // Pollute bit 5 of byte 12 → reader rejects.
+        let saved = raw[12];
+        raw[12] |= 0b0010_0000;
+        let mut tmp2 = NamedTempFile::new()?;
+        std::io::Write::write_all(&mut tmp2, &raw)?;
+        let err = CchTopoFile::read(tmp2.path()).expect_err("must reject");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("unknown bits"),
+            "unexpected error message: {msg}"
+        );
+        raw[12] = saved;
+
+        // Pollute byte 13 → reader rejects.
+        raw[13] = 0xFF;
+        let mut tmp3 = NamedTempFile::new()?;
+        std::io::Write::write_all(&mut tmp3, &raw)?;
+        let err = CchTopoFile::read(tmp3.path()).expect_err("must reject");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("reserved"),
+            "byte 13 pollution should be rejected: {msg}"
+        );
         Ok(())
     }
 }

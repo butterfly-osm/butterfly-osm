@@ -331,8 +331,8 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
         println!("\n🔺 Triangle relaxation for TIME: SKIPPED (traffic fast-path)");
         // Materialize the middles so they live as owned Vec<u32> matching
         // the relaxed branch's type.
-        let up_mid: Vec<u32> = topo.up_middle.to_vec();
-        let down_mid: Vec<u32> = topo.down_middle.to_vec();
+        let up_mid: Vec<u32> = topo.up_middle.to_vec_u32();
+        let down_mid: Vec<u32> = topo.down_middle.to_vec_u32();
         (time_up, time_down, up_mid, down_mid)
     } else {
         println!("\n🔺 Triangle relaxation for TIME (parallel)...");
@@ -394,12 +394,14 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     let distance_output_path = if let Some((dist_up, dist_down)) = dist_relaxed {
         let p = config.outdir.join(format!("cch.d.{}.u32", mode_name));
         println!("Writing distance weights...");
+        let topo_up_mid: Vec<u32> = topo.up_middle.to_vec_u32();
+        let topo_down_mid: Vec<u32> = topo.down_middle.to_vec_u32();
         write_cch_weights(
             &p,
             &dist_up,
             &dist_down,
-            &topo.up_middle,
-            &topo.down_middle,
+            &topo_up_mid,
+            &topo_down_mid,
             config.mode,
         )?;
         println!("  ✓ Written {}", p.display());
@@ -619,7 +621,7 @@ fn bottom_up_customize(
             if !topo.down_is_shortcut.bit(i) {
                 down_weights[i] = orig_weight_fn(u, v);
             } else {
-                let m = topo.down_middle[i] as usize;
+                let m = topo.down_middle.get(i) as usize;
                 let w_um =
                     find_edge_weight(u, m, &topo.down_offsets, &topo.down_targets, &down_weights);
                 let w_mv = find_edge_weight(m, v, &topo.up_offsets, &topo.up_targets, &up_weights);
@@ -635,7 +637,7 @@ fn bottom_up_customize(
             if !topo.up_is_shortcut.bit(i) {
                 up_weights[i] = orig_weight_fn(u, v);
             } else {
-                let m = topo.up_middle[i] as usize;
+                let m = topo.up_middle.get(i) as usize;
                 let w_um =
                     find_edge_weight(u, m, &topo.down_offsets, &topo.down_targets, &down_weights);
                 let w_mv = find_edge_weight(m, v, &topo.up_offsets, &topo.up_targets, &up_weights);
@@ -684,16 +686,18 @@ fn triangle_relax_parallel(
 ) -> (Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>, u64, u32) {
     let n_nodes = topo.n_nodes as usize;
 
-    // Pack (weight, middle) into AtomicU64 for lock-free update of both
+    // Pack (weight, middle) into AtomicU64 for lock-free update of both.
+    // `topo.{up,down}_middle` are now [`WeightArray`] whose iterator
+    // yields `u32` by value (not `&u32`), so the lambda binds `m` plain.
     let atomic_up: Vec<AtomicU64> = up_weights
         .iter()
         .zip(topo.up_middle.iter())
-        .map(|(&w, &m)| AtomicU64::new(pack_wm(w, m)))
+        .map(|(&w, m)| AtomicU64::new(pack_wm(w, m)))
         .collect();
     let atomic_down: Vec<AtomicU64> = down_weights
         .iter()
         .zip(topo.down_middle.iter())
-        .map(|(&w, &m)| AtomicU64::new(pack_wm(w, m)))
+        .map(|(&w, m)| AtomicU64::new(pack_wm(w, m)))
         .collect();
 
     let mut total_relaxations = 0u64;
@@ -1318,12 +1322,14 @@ pub fn customize_cch_hybrid(config: Step8HybridConfig) -> Result<Step8Result> {
         .join(format!("cch.w.hybrid.{}.u32", mode_name));
 
     println!("\nWriting output...");
+    let topo_up_mid: Vec<u32> = topo.up_middle.to_vec_u32();
+    let topo_down_mid: Vec<u32> = topo.down_middle.to_vec_u32();
     write_cch_weights(
         &output_path,
         &up_weights,
         &down_weights,
-        &topo.up_middle,
-        &topo.down_middle,
+        &topo_up_mid,
+        &topo_down_mid,
         config.mode,
     )?;
     println!("  ✓ Written {}", output_path.display());

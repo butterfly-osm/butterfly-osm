@@ -70,7 +70,7 @@ fn unpack_up_edge_into(
     let middle = if edge_idx < weights.up_middle.len() {
         weights.up_middle[edge_idx]
     } else {
-        topo.up_middle[edge_idx]
+        topo.up_middle.get(edge_idx)
     };
     let target = topo.up_targets[edge_idx];
     if let Some(down_idx) = find_down_edge(topo, source as usize, middle) {
@@ -96,7 +96,7 @@ fn unpack_down_edge_into(
     let middle = if edge_idx < weights.down_middle.len() {
         weights.down_middle[edge_idx]
     } else {
-        topo.down_middle[edge_idx]
+        topo.down_middle.get(edge_idx)
     };
     let target = topo.down_targets[edge_idx];
     if let Some(down_idx) = find_down_edge(topo, source as usize, middle) {

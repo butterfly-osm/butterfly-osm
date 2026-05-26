@@ -211,6 +211,13 @@ impl WeightArray {
         }
     }
 
+    /// Allocate a fresh `Vec<u32>` with every entry widened to `u32`.
+    /// Helper for call sites that need owned storage (validators,
+    /// exclude/avoid recustomization, debug dumps).
+    pub fn to_vec_u32(&self) -> Vec<u32> {
+        self.iter().collect()
+    }
+
     /// Get the storage width — useful for size reporting and tests.
     #[inline]
     pub fn width(&self) -> WeightWidth {
@@ -262,6 +269,24 @@ impl WeightArray {
     #[inline]
     pub fn from_arccow_u32(arc: ArcCow<u32>) -> Self {
         Self::U32(arc)
+    }
+
+    /// Wrap an existing `ArcCow<u16>` at the U16 width — zero-copy when
+    /// `arc` is mmap-backed. Used by the v5 cch.topo mmap reader so the
+    /// u16 middle bytes stay in the page cache (#352).
+    #[inline]
+    pub fn from_arccow_u16(arc: ArcCow<u16>) -> Self {
+        Self::U16(arc)
+    }
+
+    /// Wrap an existing `ArcCow<u8>` at the U24 width — zero-copy when
+    /// `arc` is mmap-backed. `arc.len()` MUST equal `n_entries * 3`.
+    /// Used by the v5 cch.topo mmap reader so the u24 middle bytes
+    /// stay in the page cache (#352).
+    #[inline]
+    pub fn from_arccow_u24(arc: ArcCow<u8>, n_entries: usize) -> Self {
+        debug_assert_eq!(arc.len(), n_entries * 3, "u24 length mismatch");
+        Self::U24(arc)
     }
 
     /// Construct from an owned `Vec<u16>` at the U16 width.
