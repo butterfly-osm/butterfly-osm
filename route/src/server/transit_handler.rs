@@ -267,11 +267,7 @@ pub async fn transit_handler(
     };
     let result = compute_transit_journey(state.as_ref(), &req).map(Json);
     if result.is_ok() {
-        super::region_metrics::record_query(
-            &region_id,
-            "transit",
-            started.elapsed().as_secs_f64(),
-        );
+        super::region_metrics::record_query(&region_id, "transit", started.elapsed().as_secs_f64());
     }
     result
 }
@@ -1018,21 +1014,25 @@ pub async fn transit_bulk_handler(
     // canonical cross-region semantic also used by /transit, /route and
     // /table. Validating up front lets us return one clear error
     // instead of fanning out N per-query 404s.
-    let first_access_mode = req
-        .queries[0]
+    let first_access_mode = req.queries[0]
         .access_mode
         .as_deref()
         .or(req.access_mode.as_deref())
         .map(|s| s.to_lowercase())
         .unwrap_or_else(|| "foot".to_string());
-    let (state, region_id) = match regions.dispatch_p2p_id(
+    // #343: snap query[0] once to pick the winning region, then for
+    // queries[1..] use the cheap bbox-tier confirm_in_region check
+    // before falling back to full snap. On a 100 k same-origin-region
+    // batch this drops preflight from ~1 s of full snaps to ~50 ms of
+    // bbox comparisons + a handful of border-overlap fallbacks.
+    let (state, region_id, winner_idx) = match regions.dispatch_p2p_with_idx(
         req.queries[0].origin_lon,
         req.queries[0].origin_lat,
         req.queries[0].dest_lon,
         req.queries[0].dest_lat,
         &first_access_mode,
     ) {
-        Ok(pair) => pair,
+        Ok(triple) => triple,
         Err(err) => {
             let (status, body) = err.into_response_parts();
             return Err((status, Json(body)));
@@ -1045,26 +1045,57 @@ pub async fn transit_bulk_handler(
             .or(req.access_mode.as_deref())
             .map(|s| s.to_lowercase())
             .unwrap_or_else(|| "foot".to_string());
-        if let Err(err) = regions.dispatch_p2p_id(
-            q.origin_lon,
-            q.origin_lat,
-            q.dest_lon,
-            q.dest_lat,
-            &q_mode,
-        ) {
-            let (status, mut body) = err.into_response_parts();
-            body.error = format!("query[{}]: {}", i, body.error);
-            return Err((status, Json(body)));
+        // Confirm origin first then destination, taking the bbox-tier
+        // fast path when neither point sits in a border-overlap zone.
+        for (lon, lat, ep) in [
+            (
+                q.origin_lon,
+                q.origin_lat,
+                crate::server::regions::Endpoint::Source,
+            ),
+            (
+                q.dest_lon,
+                q.dest_lat,
+                crate::server::regions::Endpoint::Destination,
+            ),
+        ] {
+            match regions.confirm_in_region(winner_idx, lon, lat) {
+                crate::server::regions::RegionAffinity::In => {}
+                crate::server::regions::RegionAffinity::OutOfBbox => {
+                    // Definite cross-region — surface 501 with the
+                    // query index + the offending side.
+                    let body = ErrorResponse {
+                        error: format!(
+                            "query[{}]: {} ({:.4},{:.4}) does not snap to region {}",
+                            i,
+                            match ep {
+                                crate::server::regions::Endpoint::Source => "origin",
+                                crate::server::regions::Endpoint::Destination => "destination",
+                                _ => "coord",
+                            },
+                            lon,
+                            lat,
+                            region_id
+                        ),
+                    };
+                    return Err((StatusCode::NOT_IMPLEMENTED, Json(body)));
+                }
+                crate::server::regions::RegionAffinity::Ambiguous => {
+                    // Bbox overlap — must run a full snap to confirm.
+                    if let Err(err) = regions.dispatch_p2p_id(lon, lat, lon, lat, &q_mode) {
+                        let (status, mut body) = err.into_response_parts();
+                        body.error = format!("query[{}]: {}", i, body.error);
+                        return Err((status, Json(body)));
+                    }
+                }
+            }
         }
     }
     if state.transit.is_none() {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse {
-                error: format!(
-                    "transit subsystem is not loaded for region {}",
-                    region_id
-                ),
+                error: format!("transit subsystem is not loaded for region {}", region_id),
             }),
         ));
     }
@@ -1110,11 +1141,7 @@ pub async fn transit_bulk_handler(
                 )
             })?;
 
-    super::region_metrics::record_query(
-        &region_id,
-        "transit",
-        started.elapsed().as_secs_f64(),
-    );
+    super::region_metrics::record_query(&region_id, "transit", started.elapsed().as_secs_f64());
     Ok(Json(TransitBulkResponse { count, results }))
 }
 
