@@ -434,11 +434,14 @@ fn do_matrix(
     // INF cells in the small-matrix branch below.
     const SNAP_K: usize = 64;
     use rayon::prelude::*;
-    let src_kbest: Vec<super::snap_kbest::KBestSnap> = params
+    // Lazy snap (#368 pattern): K=1 primary upfront, K=64 escalation
+    // lives in the INF-cell fallback below.
+    type PrimarySnap = Option<((u32, f64, f64, f64), u32)>;
+    let src_primary: Vec<PrimarySnap> = params
         .sources
         .par_iter()
         .map(|&[lon, lat]| {
-            super::snap_kbest::snap_k_pair_role(
+            super::snap_kbest::snap_primary_role(
                 state,
                 mode_data,
                 mode,
@@ -446,15 +449,14 @@ fn do_matrix(
                 lat,
                 SnapRole::Src,
                 None,
-                SNAP_K,
             )
         })
         .collect();
-    let dst_kbest: Vec<super::snap_kbest::KBestSnap> = params
+    let dst_primary: Vec<PrimarySnap> = params
         .destinations
         .par_iter()
         .map(|&[lon, lat]| {
-            super::snap_kbest::snap_k_pair_role(
+            super::snap_kbest::snap_primary_role(
                 state,
                 mode_data,
                 mode,
@@ -462,7 +464,6 @@ fn do_matrix(
                 lat,
                 SnapRole::Dst,
                 None,
-                SNAP_K,
             )
         })
         .collect();
@@ -470,16 +471,11 @@ fn do_matrix(
     let mut sources_rank = Vec::with_capacity(params.sources.len());
     let mut valid_src = Vec::with_capacity(params.sources.len());
     let mut sources_snapped = Vec::with_capacity(params.sources.len());
-    for (i, snap) in src_kbest.iter().enumerate() {
-        if let Some(r) = snap.primary_rank() {
-            sources_rank.push(r);
+    for (i, snap) in src_primary.iter().enumerate() {
+        if let Some(((_, plon, plat, _), rank)) = snap {
+            sources_rank.push(*rank);
             valid_src.push(i);
-            if let Some((_, plon, plat, _)) = snap.primary {
-                sources_snapped.push((plon, plat));
-            } else {
-                let [lon, lat] = params.sources[i];
-                sources_snapped.push((lon, lat));
-            }
+            sources_snapped.push((*plon, *plat));
         } else {
             let [lon, lat] = params.sources[i];
             sources_snapped.push((lon, lat));
@@ -488,16 +484,11 @@ fn do_matrix(
     let mut targets_rank = Vec::with_capacity(params.destinations.len());
     let mut valid_dst = Vec::with_capacity(params.destinations.len());
     let mut targets_snapped = Vec::with_capacity(params.destinations.len());
-    for (i, snap) in dst_kbest.iter().enumerate() {
-        if let Some(r) = snap.primary_rank() {
-            targets_rank.push(r);
+    for (i, snap) in dst_primary.iter().enumerate() {
+        if let Some(((_, plon, plat, _), rank)) = snap {
+            targets_rank.push(*rank);
             valid_dst.push(i);
-            if let Some((_, plon, plat, _)) = snap.primary {
-                targets_snapped.push((plon, plat));
-            } else {
-                let [lon, lat] = params.destinations[i];
-                targets_snapped.push((lon, lat));
-            }
+            targets_snapped.push((*plon, *plat));
         } else {
             let [lon, lat] = params.destinations[i];
             targets_snapped.push((lon, lat));
@@ -554,27 +545,81 @@ fn do_matrix(
         // Per-cell K-best fallback for INF cells (mirrors /table POST).
         // With SCC-aware role masks this is now a rare per-cell rescue
         // for geometric-ambiguity / dynamic-recustomisation pairs.
+        // K=64 escalation runs only for src/dst indices that have at
+        // least one INF cell.
         if matrix.contains(&u32::MAX) {
             use rayon::prelude::*;
+            use std::collections::HashSet;
             let query = super::query::CchQuery::new(state, mode);
 
-            // Map back from matrix index (over valid src/dst) to the
-            // original src/dst index so we can look up the K-best ranks.
             let mut work: Vec<(usize, usize)> = Vec::new();
+            let mut needed_src: HashSet<usize> = HashSet::new();
+            let mut needed_dst: HashSet<usize> = HashSet::new();
             for (i, _) in valid_src.iter().enumerate() {
                 for (j, _) in valid_dst.iter().enumerate() {
                     if matrix[i * n_valid_dst + j] == u32::MAX {
                         work.push((i, j));
+                        needed_src.insert(valid_src[i]);
+                        needed_dst.insert(valid_dst[j]);
                     }
                 }
             }
+            // Lazy K=64 snap for only the failing src/dst originals.
+            let needed_src_vec: Vec<usize> = needed_src.into_iter().collect();
+            let needed_dst_vec: Vec<usize> = needed_dst.into_iter().collect();
+            let mut src_kbest_ranks: std::collections::HashMap<usize, Vec<u32>> =
+                std::collections::HashMap::new();
+            for (orig_idx, ranks) in needed_src_vec
+                .par_iter()
+                .map(|&oi| {
+                    let [lon, lat] = params.sources[oi];
+                    let snap = super::snap_kbest::snap_k_pair_role(
+                        state,
+                        mode_data,
+                        mode,
+                        lon,
+                        lat,
+                        SnapRole::Src,
+                        None,
+                        SNAP_K,
+                    );
+                    (oi, snap.ranks)
+                })
+                .collect::<Vec<_>>()
+            {
+                src_kbest_ranks.insert(orig_idx, ranks);
+            }
+            let mut dst_kbest_ranks: std::collections::HashMap<usize, Vec<u32>> =
+                std::collections::HashMap::new();
+            for (orig_idx, ranks) in needed_dst_vec
+                .par_iter()
+                .map(|&oi| {
+                    let [lon, lat] = params.destinations[oi];
+                    let snap = super::snap_kbest::snap_k_pair_role(
+                        state,
+                        mode_data,
+                        mode,
+                        lon,
+                        lat,
+                        SnapRole::Dst,
+                        None,
+                        SNAP_K,
+                    );
+                    (oi, snap.ranks)
+                })
+                .collect::<Vec<_>>()
+            {
+                dst_kbest_ranks.insert(orig_idx, ranks);
+            }
+
+            let empty: Vec<u32> = Vec::new();
             let patches: Vec<(usize, usize, u32)> = work
                 .par_iter()
                 .filter_map(|&(i, j)| {
                     let src_orig_idx = valid_src[i];
                     let dst_orig_idx = valid_dst[j];
-                    let src_ranks = &src_kbest[src_orig_idx].ranks;
-                    let dst_ranks = &dst_kbest[dst_orig_idx].ranks;
+                    let src_ranks = src_kbest_ranks.get(&src_orig_idx).unwrap_or(&empty);
+                    let dst_ranks = dst_kbest_ranks.get(&dst_orig_idx).unwrap_or(&empty);
                     super::snap_kbest::p2p_with_kbest_fallback(
                         &query,
                         src_ranks,
@@ -1604,12 +1649,12 @@ pub fn do_edges_batch(
                         dist_m_b.append_null();
                     };
 
-                // K-best snap + bounded combo fallback for the residual
-                // geometric-ambiguity / dynamic-recustomisation cases.
-                // The connectivity-aware role masks already drop
-                // disconnected-component snap traps before we get here.
+                // Lazy snap (#368 pattern): K=1 primary first, escalate
+                // to K=64 + combo fallback when EITHER primary is None
+                // (closest snap has u32::MAX rank — not in this mode's
+                // CCH) OR the primary pair doesn't connect.
                 const SNAP_K: usize = 64;
-                let src_snap = super::snap_kbest::snap_k_pair_role(
+                let src_primary = super::snap_kbest::snap_primary_role(
                     &state,
                     mode_data,
                     mode,
@@ -1617,9 +1662,8 @@ pub fn do_edges_batch(
                     pair[1],
                     super::types::SnapRole::Src,
                     None,
-                    SNAP_K,
                 );
-                let dst_snap = super::snap_kbest::snap_k_pair_role(
+                let dst_primary = super::snap_kbest::snap_primary_role(
                     &state,
                     mode_data,
                     mode,
@@ -1627,20 +1671,7 @@ pub fn do_edges_batch(
                     pair[3],
                     super::types::SnapRole::Dst,
                     None,
-                    SNAP_K,
                 );
-                if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
-                    emit_unreachable(
-                        &mut query_idx_b,
-                        &mut target_idx_b,
-                        &mut edge_seq_b,
-                        &mut osm_from_b,
-                        &mut osm_to_b,
-                        &mut dur_ms_b,
-                        &mut dist_m_b,
-                    );
-                    continue;
-                }
 
                 // Run CchQuery against the default time weights (no
                 // avoid/exclude support in MVP; add later as a param
@@ -1651,12 +1682,49 @@ pub fn do_edges_batch(
                     &mode_data.down_rev_flat,
                     &mode_data.cch_weights,
                 );
-                let Some((src_rank, dst_rank, result)) = super::snap_kbest::p2p_with_kbest_fallback(
-                    &query,
-                    &src_snap.ranks,
-                    &dst_snap.ranks,
-                    super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
-                ) else {
+
+                let primary_ranks = src_primary.and_then(|(_, s)| dst_primary.map(|(_, d)| (s, d)));
+                let p2p_result = if let Some((s, d)) = primary_ranks
+                    && let Some(r) = query.query(s, d)
+                {
+                    Some((s, d, r))
+                } else {
+                    // Escalation: K=64 snap + combo fallback. This
+                    // also rescues pairs whose closest snap had
+                    // u32::MAX rank — K=64 looks further out for a
+                    // contracted neighbor.
+                    let src_snap = super::snap_kbest::snap_k_pair_role(
+                        &state,
+                        mode_data,
+                        mode,
+                        pair[0],
+                        pair[1],
+                        super::types::SnapRole::Src,
+                        None,
+                        SNAP_K,
+                    );
+                    let dst_snap = super::snap_kbest::snap_k_pair_role(
+                        &state,
+                        mode_data,
+                        mode,
+                        pair[2],
+                        pair[3],
+                        super::types::SnapRole::Dst,
+                        None,
+                        SNAP_K,
+                    );
+                    if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
+                        None
+                    } else {
+                        super::snap_kbest::p2p_with_kbest_fallback(
+                            &query,
+                            &src_snap.ranks,
+                            &dst_snap.ranks,
+                            super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+                        )
+                    }
+                };
+                let Some((src_rank, dst_rank, result)) = p2p_result else {
                     emit_unreachable(
                         &mut query_idx_b,
                         &mut target_idx_b,
@@ -2117,9 +2185,11 @@ async fn do_exchange_catchment(
                 continue;
             }
 
-            // K-best snap store as source (#197 Src role).
+            // Lazy snap (#368 pattern): K=1 primary upfront for store
+            // and all clients; K=64 escalation lives in the INF-cell
+            // fallback below.
             const SNAP_K: usize = 64;
-            let store_snap = super::snap_kbest::snap_k_pair_role(
+            let store_rank = match super::snap_kbest::snap_primary_role(
                 &state,
                 mode_data,
                 mode,
@@ -2127,33 +2197,23 @@ async fn do_exchange_catchment(
                 *slat,
                 super::types::SnapRole::Src,
                 None,
-                SNAP_K,
-            );
-            let store_rank = match store_snap.primary_rank() {
-                Some(r) => r,
+            ) {
+                Some((_, r)) => r,
                 None => continue,
             };
 
-            // K-best snap all clients as destinations (#197 Dst role).
-            let client_snaps: Vec<super::snap_kbest::KBestSnap> = client_coords
-                .iter()
-                .map(|&(clon, clat)| {
-                    super::snap_kbest::snap_k_pair_role(
-                        &state,
-                        mode_data,
-                        mode,
-                        clon,
-                        clat,
-                        super::types::SnapRole::Dst,
-                        None,
-                        SNAP_K,
-                    )
-                })
-                .collect();
             let mut client_ranks: Vec<u32> = Vec::with_capacity(client_coords.len());
             let mut client_valid: Vec<usize> = Vec::with_capacity(client_coords.len());
-            for (ci, snap) in client_snaps.iter().enumerate() {
-                if let Some(r) = snap.primary_rank() {
+            for (ci, &(clon, clat)) in client_coords.iter().enumerate() {
+                if let Some((_, r)) = super::snap_kbest::snap_primary_role(
+                    &state,
+                    mode_data,
+                    mode,
+                    clon,
+                    clat,
+                    super::types::SnapRole::Dst,
+                    None,
+                ) {
                     client_ranks.push(r);
                     client_valid.push(ci);
                 }
@@ -2173,23 +2233,52 @@ async fn do_exchange_catchment(
             );
 
             // Per-cell K-best fallback for INF cells (mirrors /table POST).
+            // K=64 escalation runs only for client indices whose 1-to-N
+            // cell came back u32::MAX.
             if matrix.contains(&u32::MAX) {
                 use rayon::prelude::*;
                 let query = super::query::CchQuery::new(&state, mode);
-                let patches: Vec<(usize, u32)> = (0..client_valid.len())
+                let store_kbest = super::snap_kbest::snap_k_pair_role(
+                    &state,
+                    mode_data,
+                    mode,
+                    *slon,
+                    *slat,
+                    super::types::SnapRole::Src,
+                    None,
+                    SNAP_K,
+                );
+                let failing: Vec<usize> = (0..client_valid.len())
                     .filter(|&ti| matrix[ti] == u32::MAX)
-                    .collect::<Vec<_>>()
+                    .collect();
+                let client_kbest: Vec<(usize, Vec<u32>)> = failing
                     .par_iter()
-                    .filter_map(|&ti| {
+                    .map(|&ti| {
                         let ci = client_valid[ti];
-                        let dst_ranks = &client_snaps[ci].ranks;
+                        let (clon, clat) = client_coords[ci];
+                        let snap = super::snap_kbest::snap_k_pair_role(
+                            &state,
+                            mode_data,
+                            mode,
+                            clon,
+                            clat,
+                            super::types::SnapRole::Dst,
+                            None,
+                            SNAP_K,
+                        );
+                        (ti, snap.ranks)
+                    })
+                    .collect();
+                let patches: Vec<(usize, u32)> = client_kbest
+                    .par_iter()
+                    .filter_map(|(ti, dst_ranks)| {
                         super::snap_kbest::p2p_with_kbest_fallback(
                             &query,
-                            &store_snap.ranks,
+                            &store_kbest.ranks,
                             dst_ranks,
                             super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
                         )
-                        .map(|(_, _, r)| (ti, r.distance))
+                        .map(|(_, _, r)| (*ti, r.distance))
                     })
                     .collect();
                 for (ti, dist) in patches {

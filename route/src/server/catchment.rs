@@ -806,11 +806,12 @@ pub async fn catchment_handler(
 
     // For each store: compute 1-to-N matrix via Bucket M2M, then catchment.
     // K-best snap + per-cell P2P fallback rescues INF cells the same
-    // way /table POST does — see snap_kbest.rs.
+    // way /table POST does — see snap_kbest.rs. Lazy version (#368
+    // pattern): K=1 primary upfront, K=64 only when an INF cell needs
+    // it.
     const SNAP_K: usize = 64;
     for store_input in &req.stores {
-        // K-best snap store as source.
-        let store_snap = super::snap_kbest::snap_k_pair_role(
+        let store_rank = match super::snap_kbest::snap_primary_role(
             &state,
             mode_data,
             mode,
@@ -818,10 +819,8 @@ pub async fn catchment_handler(
             store_input.lat,
             super::types::SnapRole::Src,
             None,
-            SNAP_K,
-        );
-        let store_rank = match store_snap.primary_rank() {
-            Some(r) => r,
+        ) {
+            Some((_, r)) => r,
             None => continue, // Skip unsnappable stores
         };
         let _ = (store_role, client_role); // legacy bindings no longer used
@@ -841,11 +840,9 @@ pub async fn catchment_handler(
         };
         let effective_radius_m: Option<f64> = effective_radius_km.map(|km| km * 1000.0);
 
-        // Snap all clients (K-best). When a radius is active, clients farther
-        // than `effective_radius_m` from the store are dropped BEFORE the
-        // M2M call so the routing layer does proportionally less work.
-        let mut client_snaps: Vec<super::snap_kbest::KBestSnap> =
-            Vec::with_capacity(req.clients.len());
+        // Snap all clients K=1 upfront (cheap). The K=64 escalation
+        // happens lazily inside the INF-cell fallback below — same
+        // lazy pattern as #370 /table and #374 /trip.
         let mut client_ranks: Vec<u32> = Vec::with_capacity(req.clients.len());
         let mut client_valid: Vec<usize> = Vec::with_capacity(req.clients.len());
         for (ci, c) in req.clients.iter().enumerate() {
@@ -855,7 +852,7 @@ pub async fn catchment_handler(
                     continue;
                 }
             }
-            let snap = super::snap_kbest::snap_k_pair_role(
+            if let Some((_, rank)) = super::snap_kbest::snap_primary_role(
                 &state,
                 mode_data,
                 mode,
@@ -863,12 +860,9 @@ pub async fn catchment_handler(
                 c.lat,
                 super::types::SnapRole::Dst,
                 None,
-                SNAP_K,
-            );
-            if let Some(r) = snap.primary_rank() {
-                client_ranks.push(r);
+            ) {
+                client_ranks.push(rank);
                 client_valid.push(ci);
-                client_snaps.push(snap);
             }
         }
 
@@ -888,23 +882,55 @@ pub async fn catchment_handler(
             targets,
         );
 
-        // Per-cell K-best fallback for INF cells.
+        // Per-cell K-best fallback for INF cells. K=64 escalation runs
+        // only for client indices whose 1-to-N cell came back u32::MAX
+        // — typically zero of them on a healthy graph.
         if matrix.contains(&u32::MAX) {
             use rayon::prelude::*;
             let query = super::query::CchQuery::new(&state, mode);
-            let patches: Vec<(usize, u32)> = (0..client_valid.len())
+            // Lazily snap K=64 for the source store and just the
+            // failing clients.
+            let store_kbest = super::snap_kbest::snap_k_pair_role(
+                &state,
+                mode_data,
+                mode,
+                store_input.lon,
+                store_input.lat,
+                super::types::SnapRole::Src,
+                None,
+                SNAP_K,
+            );
+            let failing: Vec<usize> = (0..client_valid.len())
                 .filter(|&ti| matrix[ti] == u32::MAX)
-                .collect::<Vec<_>>()
+                .collect();
+            let client_kbest_for_failing: Vec<(usize, Vec<u32>)> = failing
                 .par_iter()
-                .filter_map(|&ti| {
-                    let dst_ranks = &client_snaps[ti].ranks;
+                .map(|&ti| {
+                    let ci = client_valid[ti];
+                    let c = &req.clients[ci];
+                    let snap = super::snap_kbest::snap_k_pair_role(
+                        &state,
+                        mode_data,
+                        mode,
+                        c.lon,
+                        c.lat,
+                        super::types::SnapRole::Dst,
+                        None,
+                        SNAP_K,
+                    );
+                    (ti, snap.ranks)
+                })
+                .collect();
+            let patches: Vec<(usize, u32)> = client_kbest_for_failing
+                .par_iter()
+                .filter_map(|(ti, dst_ranks)| {
                     super::snap_kbest::p2p_with_kbest_fallback(
                         &query,
-                        &store_snap.ranks,
+                        &store_kbest.ranks,
                         dst_ranks,
                         super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
                     )
-                    .map(|(_, _, r)| (ti, r.distance))
+                    .map(|(_, _, r)| (*ti, r.distance))
                 })
                 .collect();
             for (ti, dist) in patches {
