@@ -104,6 +104,32 @@ fn build_weight_array(
     }
 }
 
+/// Shared topology bytes for a `(mode, direction)` pair (#345).
+///
+/// Built once per direction, then referenced by every metric variant
+/// (`time`, `dist`, ...) via `Arc<FlatTopo>`. Replaces the per-metric
+/// duplication that the monolithic v4 flat format incurred — Belgium
+/// bike `up_adj_flat.dist` was ~613 MB of redundant topo bytes already
+/// present in `up_adj_flat.time`.
+///
+/// All fields are `ArcCow<T>` so the struct can be built fresh in
+/// memory (tests, customize) or mmap-mapped from a `FlatTopo`
+/// container section at server boot. The `Arc<Mmap>` clone keeps the
+/// mapping alive as long as any view references it.
+#[derive(Clone)]
+pub struct FlatTopo {
+    pub n_nodes: u32,
+    pub offsets: ArcCow<u64>, // n_nodes + 1
+    /// Targets (for UP / DOWN) or sources (for DOWN_REVERSE).
+    /// Naming is direction-dependent; the field stays generic so
+    /// downstream consumers don't care which side it is.
+    pub targets: ArcCow<u32>,
+    /// Back-reference to topo edge index per flat slot. Empty unless
+    /// this flat feeds the routing hot path (`CchQuery::new` / the
+    /// alternatives backend).
+    pub topo_edge_idx: ArcCow<u32>,
+}
+
 /// Flat fields are `ArcCow<T>` so a single struct can either own its
 /// arrays (legacy heap path: `UpAdjFlat::build`) or borrow them straight
 /// from a live `Arc<Mmap>` (the #296 mmap path:
