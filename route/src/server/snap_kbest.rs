@@ -55,6 +55,53 @@ pub fn combo_order(k_src: usize, k_dst: usize, max_combos: usize) -> Vec<(usize,
     order
 }
 
+/// Snap the K=1 primary with the #197 role filter — the cheap path
+/// before any K=64 escalation. Returns the primary tuple
+/// `(ebg_id, snapped_lon, snapped_lat, snap_distance_m)` plus the
+/// rank, or `None` if no candidate exists.
+///
+/// If the geometrically-closest candidate has `orig_to_rank == u32::MAX`
+/// (not in this mode's contracted graph — rare; usually the role_filter
+/// already excludes such nodes), this function transparently escalates
+/// to a K=64 fetch and returns the closest candidate that DOES have a
+/// valid rank. So callers never have to re-snap to recover from that
+/// edge case — they pay K=64 only on the (rare) miss.
+///
+/// Mirrors the lazy-snap pattern used inline in /route (#368), /table
+/// (#370), and /trip (#374). Use this for any handler that uses the
+/// primary on the happy path and only needs the K=64 list to feed the
+/// combo fallback when the primary CCH query returns None.
+pub fn snap_primary_role(
+    state: &ServerState,
+    mode_data: &ModeData,
+    mode: Mode,
+    lon: f64,
+    lat: f64,
+    role: SnapRole,
+    snap_mask: Option<&[u64]>,
+) -> Option<((u32, f64, f64, f64), u32)> {
+    let role_filter = role.role_filter(mode_data);
+    if let Some((orig_id, plon, plat, d)) =
+        state
+            .snap_index
+            .snap_with_info_filtered_role(lon, lat, mode.0, snap_mask, role_filter)
+    {
+        let rank = mode_data.orig_to_rank[orig_id as usize];
+        if rank != u32::MAX {
+            return Some(((orig_id, plon, plat, d), rank));
+        }
+    }
+    // K=1 closest had u32::MAX rank (role_filter and orig_to_rank
+    // disagreed on this node — typically very rare). Escalate to K=64
+    // and pick the first candidate with a valid rank. Preserves the
+    // pre-#368 behaviour of always finding the closest contracted
+    // neighbour when one exists within MAX_SNAP_DISTANCE_M.
+    let kbest = snap_k_pair_role(state, mode_data, mode, lon, lat, role, snap_mask, 64);
+    let rank = kbest.primary_rank()?;
+    let primary = kbest.primary?;
+    Some((primary, rank))
+}
+
 /// Snap K candidates per src/dst with the directional #197 role filter,
 /// dropping any candidate whose rank is `u32::MAX` (not contracted in
 /// this mode's CCH). Returns the rank-space candidate lists, the
