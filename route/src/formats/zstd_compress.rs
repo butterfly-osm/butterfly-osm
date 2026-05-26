@@ -156,10 +156,7 @@ mod tests {
         buf.extend_from_slice(&[0u8; 4]); // garbage after magic
         let err = decompress_if_zstd(&buf).expect_err("must reject");
         let msg = format!("{err:#}");
-        assert!(
-            msg.contains("zstd"),
-            "expected zstd error, got: {msg}"
-        );
+        assert!(msg.contains("zstd"), "expected zstd error, got: {msg}");
     }
 
     #[test]

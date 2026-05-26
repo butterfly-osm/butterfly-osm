@@ -146,11 +146,7 @@ pub struct IsochroneRecord {
 
 impl IsochroneRecord {
     /// Create from a ContourResult
-    pub fn from_contour(
-        origin_id: u32,
-        threshold_s: u32,
-        contour: &ContourResult,
-    ) -> Option<Self> {
+    pub fn from_contour(origin_id: u32, threshold_s: u32, contour: &ContourResult) -> Option<Self> {
         let wkb = encode_polygon_wkb(contour)?;
         Some(Self {
             origin_id,

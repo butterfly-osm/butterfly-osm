@@ -132,8 +132,11 @@ pub fn decode_section_owned(bytes: &[u8]) -> Result<DecodedMiddles> {
     let mut body_d = crc::Digest::new();
     body_d.update(body);
     let computed_body = body_d.finalize();
-    let stored_body =
-        u64::from_le_bytes(bytes[HEADER_LEN + body_size..HEADER_LEN + body_size + 8].try_into().unwrap());
+    let stored_body = u64::from_le_bytes(
+        bytes[HEADER_LEN + body_size..HEADER_LEN + body_size + 8]
+            .try_into()
+            .unwrap(),
+    );
     anyhow::ensure!(
         computed_body == stored_body,
         "cch.middles body CRC mismatch: computed {computed_body:#018x}, stored {stored_body:#018x}"
@@ -203,9 +206,7 @@ pub fn decode_section_from_mmap(
     })
 }
 
-fn parse_header_and_size(
-    bytes: &[u8],
-) -> Result<(usize, usize, WeightWidth, WeightWidth, usize)> {
+fn parse_header_and_size(bytes: &[u8]) -> Result<(usize, usize, WeightWidth, WeightWidth, usize)> {
     anyhow::ensure!(
         bytes.len() >= HEADER_LEN + FOOTER_LEN,
         "cch.middles section too short: {} bytes",
@@ -214,7 +215,10 @@ fn parse_header_and_size(
     let magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
     anyhow::ensure!(magic == MAGIC, "cch.middles bad magic: 0x{magic:08X}");
     let version = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
-    anyhow::ensure!(version == VERSION, "cch.middles unsupported version: {version}");
+    anyhow::ensure!(
+        version == VERSION,
+        "cch.middles unsupported version: {version}"
+    );
     let flags = u16::from_le_bytes(bytes[6..8].try_into().unwrap());
     // High 8 bits must be zero (reserved); flag byte uses the same bit
     // layout as cch.topo header byte 12 — bits 0..=3 carry the two
