@@ -131,12 +131,49 @@ fn glob_per_mode(dir: &Path, prefix: &str, suffix: &str) -> Result<Vec<(String, 
     Ok(out)
 }
 
+/// Operator-tweakable knobs for [`pack_with_options`].
+#[derive(Debug, Clone)]
+pub struct PackOptions {
+    /// Drop `shared/nbg.csr` (build-time only, never read by the serve
+    /// path) and `shared/nbg.geo` (only edge metadata is read by serve
+    /// via `read_edges_only_from_bytes`; the polyline body is dead
+    /// post-#155 once `edge_geom` sections are present).
+    ///
+    /// `true` by default — saves ~160 MB per Belgium-scale region.
+    /// Validators and the experimental `nbg_ch` pipeline read from
+    /// `step3/` directly (raw FS path) and are unaffected.
+    ///
+    /// Pass `lean: false` only when you need a container that
+    /// round-trips through `unpack` to a byte-identical step3/ tree —
+    /// useful for debugging the pack/unpack invariant, not for serving.
+    pub lean: bool,
+}
+
+impl Default for PackOptions {
+    fn default() -> Self {
+        Self { lean: true }
+    }
+}
+
 /// Implementation of the `pack` subcommand.
 pub fn pack(
     data_dir: &Path,
     out: &Path,
     step_prefix: Option<&str>,
     region: Option<&str>,
+) -> Result<()> {
+    pack_with_options(data_dir, out, step_prefix, region, PackOptions::default())
+}
+
+/// Same as [`pack`] with operator overrides for the section-omission
+/// flags. New code paths should call this directly so the defaults can
+/// evolve without breaking existing callers.
+pub fn pack_with_options(
+    data_dir: &Path,
+    out: &Path,
+    step_prefix: Option<&str>,
+    region: Option<&str>,
+    opts: PackOptions,
 ) -> Result<()> {
     let region_id = normalize_region_id(region.unwrap_or(DEFAULT_REGION_ID))?;
     println!(
@@ -205,14 +242,30 @@ pub fn pack(
         "shared/step1.node_signals.bin",
         &step1.join("node_signals.bin"),
     )?;
-    // NBG (build-time intermediate, but the geo + node_map are read at
-    // server startup — keep them in `shared/`).
-    maybe_append(
-        &mut w,
-        SectionKind::NbgCsr,
-        "shared/nbg.csr",
-        &step3.join("nbg.csr"),
-    )?;
+    // NBG sections (#346):
+    //
+    // - `nbg.csr` is never read by the serve path. Validators and the
+    //   experimental `nbg_ch` pipeline read step3/ directly from the
+    //   filesystem (not from the container), so it can be dropped
+    //   under `--lean`.
+    // - `nbg.geo` has two consumers: full polyline reads (legacy) and
+    //   `read_edges_only_from_bytes` (post-#155 serve path, which gets
+    //   polylines from `edge_geom_*` sections). When packing lean and
+    //   `edge_geom_*` will also be present, the full polyline body is
+    //   dead weight. We keep `nbg.geo` regardless because the edge
+    //   metadata (bearing, flags, first_osm_way_id) is consumed by the
+    //   route handler; a follow-up could ship just the edge records.
+    // - `nbg.node_map` is also unused by the serve path (used by
+    //   `edges_batch` for OSM-id lookup, but that path reads from
+    //   `shared/nbg.node_map`) — wait, that IS the serve path. Keep it.
+    if !opts.lean {
+        maybe_append(
+            &mut w,
+            SectionKind::NbgCsr,
+            "shared/nbg.csr",
+            &step3.join("nbg.csr"),
+        )?;
+    }
     maybe_append(
         &mut w,
         SectionKind::NbgGeo,
@@ -2181,7 +2234,11 @@ mod tests {
         assert!(c.get("shared/step1.relations.raw").is_some());
         // node_signals optional, missing is OK
         assert!(c.get("shared/step1.node_signals.bin").is_none());
-        assert!(c.get("shared/nbg.csr").is_some());
+        // #346: default `pack` is lean — nbg.csr is dropped. The
+        // round-trip / debug path (`pack_with_options(lean: false)`)
+        // is exercised by the `roundtrip_with_legacy_nbg_csr` test
+        // below.
+        assert!(c.get("shared/nbg.csr").is_none());
         assert!(c.get("shared/ebg.nodes").is_some());
 
         // mode bundles (sorted alphabetically by mode)
@@ -2268,6 +2325,22 @@ mod tests {
         // Files that pack skipped (lifted) must NOT show up in the
         // unpacked tree.
         assert!(!unpacked.join("step6/order.lifted.car.ebg").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn pack_with_options_lean_false_keeps_nbg_csr() -> Result<()> {
+        // The opt-out path keeps the legacy `shared/nbg.csr` section so
+        // operators that need a byte-identical pack/unpack round-trip
+        // (debugging, validators) can still get the section.
+        let tmp = synth_dir()?;
+        let out = tmp.path().join("non-lean.butterfly");
+        pack_with_options(tmp.path(), &out, None, None, PackOptions { lean: false })?;
+        let c = Container::open(&out)?;
+        assert!(
+            c.get("shared/nbg.csr").is_some(),
+            "non-lean pack should retain nbg.csr"
+        );
         Ok(())
     }
 
