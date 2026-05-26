@@ -3176,11 +3176,11 @@ mod step_a_tests {
             up_offsets: crate::formats::ArcCow::from_vec(up_offsets),
             up_targets: crate::formats::ArcCow::from_vec(up_targets),
             up_is_shortcut: BitsetField::from_bools(&up_is_shortcut_bools),
-            up_middle: crate::formats::ArcCow::from_vec(up_middle),
+            up_middle: crate::formats::cch_weights::WeightArray::from_vec_u32(up_middle),
             down_offsets: crate::formats::ArcCow::from_vec(down_offsets),
             down_targets: crate::formats::ArcCow::from_vec(down_targets),
             down_is_shortcut: BitsetField::from_bools(&down_is_shortcut_bools),
-            down_middle: crate::formats::ArcCow::from_vec(down_middle),
+            down_middle: crate::formats::cch_weights::WeightArray::from_vec_u32(down_middle),
             rank_to_filtered: crate::formats::ArcCow::from_vec(vec![0u32, 1, 2, 3]),
         };
 
@@ -3433,11 +3433,11 @@ mod step_a_tests {
             up_offsets: crate::formats::ArcCow::from_vec(up_offsets),
             up_targets: crate::formats::ArcCow::from_vec(up_targets),
             up_is_shortcut: BitsetField::from_bools(&up_is_shortcut_bools),
-            up_middle: crate::formats::ArcCow::from_vec(up_middle),
+            up_middle: crate::formats::cch_weights::WeightArray::from_vec_u32(up_middle),
             down_offsets: crate::formats::ArcCow::from_vec(down_offsets),
             down_targets: crate::formats::ArcCow::from_vec(down_targets),
             down_is_shortcut: BitsetField::from_bools(&down_is_shortcut_bools),
-            down_middle: crate::formats::ArcCow::from_vec(down_middle),
+            down_middle: crate::formats::cch_weights::WeightArray::from_vec_u32(down_middle),
             rank_to_filtered: crate::formats::ArcCow::from_vec((0..6).collect()),
         };
 

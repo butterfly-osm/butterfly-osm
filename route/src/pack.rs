@@ -2726,11 +2726,11 @@ mod topology_diff_tests {
             up_offsets: crate::formats::ArcCow::from_vec(zero_off.clone()),
             up_targets: crate::formats::ArcCow::from_vec(vec![]),
             up_is_shortcut: BitsetField::from_owned_words(vec![], 0),
-            up_middle: crate::formats::ArcCow::from_vec(vec![]),
+            up_middle: crate::formats::cch_weights::WeightArray::from_vec_u32(vec![]),
             down_offsets: crate::formats::ArcCow::from_vec(zero_off),
             down_targets: crate::formats::ArcCow::from_vec(vec![]),
             down_is_shortcut: BitsetField::from_owned_words(vec![], 0),
-            down_middle: crate::formats::ArcCow::from_vec(vec![]),
+            down_middle: crate::formats::cch_weights::WeightArray::from_vec_u32(vec![]),
             rank_to_filtered: crate::formats::ArcCow::from_vec(zero_rank),
         }
     }
