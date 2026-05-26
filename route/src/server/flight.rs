@@ -71,9 +71,105 @@ impl ButterflyFlight {
     /// Resolve the primary region's state on demand. Triggers lazy
     /// load (~30 s container load) the first time a Flight handler
     /// reaches this method on a Pending region.
+    ///
+    /// Used only by handlers that don't carry coordinates (e.g. the
+    /// transit subsystem readiness check) — coordinate-bearing actions
+    /// dispatch to the right region via
+    /// [`ButterflyFlight::dispatch_for_point`] / [`dispatch_for_pair`].
     #[inline]
     fn state(&self) -> Arc<ServerState> {
         self.regions.primary()
+    }
+
+    /// #336: snap a single coordinate to the right region and return
+    /// `(state, region_id)`. Maps the regions-layer
+    /// [`super::regions::DispatchError`] into a gRPC `Status` so each
+    /// action handler stays a single statement.
+    fn dispatch_for_point(
+        &self,
+        lon: f64,
+        lat: f64,
+        profile: &str,
+    ) -> std::result::Result<(Arc<ServerState>, String), Status> {
+        self.regions
+            .dispatch_single_id(lon, lat, profile)
+            .map_err(dispatch_to_status)
+    }
+
+    /// #336: snap a src/dst pair to the right region. Returns
+    /// `(state, region_id)` when both endpoints share a region, or a
+    /// `FAILED_PRECONDITION` status for cross-region pairs (mirrors
+    /// the REST 501 with the same wording).
+    fn dispatch_for_pair(
+        &self,
+        src_lon: f64,
+        src_lat: f64,
+        dst_lon: f64,
+        dst_lat: f64,
+        profile: &str,
+    ) -> std::result::Result<(Arc<ServerState>, String), Status> {
+        self.regions
+            .dispatch_p2p_id(src_lon, src_lat, dst_lon, dst_lat, profile)
+            .map_err(dispatch_to_status)
+    }
+}
+
+/// Map a [`super::regions::DispatchError`] into a gRPC `Status` that
+/// matches the REST-side semantics (400 → InvalidArgument, 501 →
+/// FailedPrecondition). Flight has no native 501 so we use
+/// FailedPrecondition (status code 9) for cross-region, which is also
+/// what the REST handler returns under the hood for "spans regions".
+/// Find the first row's (store_lon, store_lat) across a sequence of
+/// catchment input batches so [`ButterflyFlight::do_exchange`] can
+/// dispatch to the right region.  Returns `None` if no batch has any
+/// rows; the caller renders an InvalidArgument in that case.
+fn first_store_lonlat(batches: &[arrow::record_batch::RecordBatch]) -> Option<(f64, f64)> {
+    for batch in batches {
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        let slon = batch
+            .column_by_name("store_lon")?
+            .as_any()
+            .downcast_ref::<Float64Array>()?;
+        let slat = batch
+            .column_by_name("store_lat")?
+            .as_any()
+            .downcast_ref::<Float64Array>()?;
+        return Some((slon.value(0), slat.value(0)));
+    }
+    None
+}
+
+fn dispatch_to_status(err: super::regions::DispatchError) -> Status {
+    use super::regions::DispatchError;
+    match err {
+        DispatchError::NoRegion {
+            endpoint,
+            lon,
+            lat,
+            mode,
+            ..
+        } => Status::not_found(format!(
+            "No road found within snap distance for {} ({}, {}) mode={}",
+            endpoint.label(),
+            lon,
+            lat,
+            mode
+        )),
+        DispatchError::InvalidMode { mode, available } => Status::invalid_argument(format!(
+            "Invalid mode '{}'. Available across loaded regions: {}.",
+            mode,
+            available.join(", ")
+        )),
+        DispatchError::CrossRegion {
+            src_region,
+            dst_region,
+        } => Status::failed_precondition(format!(
+            "request spans regions {} \u{2192} {}; cross-region Flight not yet implemented (#336 follow-up)",
+            src_region, dst_region
+        )),
+        DispatchError::Empty => Status::invalid_argument("no coordinates supplied to dispatcher"),
     }
 }
 
@@ -2194,12 +2290,11 @@ impl FlightService for ButterflyFlight {
     ) -> std::result::Result<Response<Self::DoGetStream>, Status> {
         let ticket = request.into_inner();
         let parsed = parse_ticket(&ticket)?;
-        // Resolve the primary region lazily — triggers container load
-        // if this is still a Pending region (the default boot path).
-        // Subsequent calls hit the read-lock fast path.
-        let state = self.state();
-        let mode = resolve_mode(&parsed.profile, &state)?;
 
+        // #336: per-action region dispatch. Each coordinate-bearing
+        // action snaps an input point to pick the region; transit_bulk
+        // is single-state today (blocked on #334) and continues to use
+        // the primary state until multi-region transit lands.
         match parsed.action.as_str() {
             "matrix" => {
                 let params: MatrixParams =
@@ -2207,17 +2302,31 @@ impl FlightService for ButterflyFlight {
                         Status::invalid_argument(format!("Invalid matrix params: {}", e))
                     })?;
 
+                if params.sources.is_empty() || params.destinations.is_empty() {
+                    return Err(Status::invalid_argument(
+                        "sources and destinations must not be empty",
+                    ));
+                }
                 for (i, [lon, lat]) in params.sources.iter().enumerate() {
                     validate_coord(*lon, *lat, &format!("source[{}]", i))?;
                 }
                 for (i, [lon, lat]) in params.destinations.iter().enumerate() {
                     validate_coord(*lon, *lat, &format!("dest[{}]", i))?;
                 }
-                if params.sources.is_empty() || params.destinations.is_empty() {
-                    return Err(Status::invalid_argument(
-                        "sources and destinations must not be empty",
-                    ));
-                }
+
+                // Snap the first (source, destination) pair. If both
+                // sides snap to the same region we proceed; otherwise
+                // the dispatcher returns CrossRegion → 9 (FAILED_PRECONDITION).
+                let [s_lon, s_lat] = params.sources[0];
+                let [d_lon, d_lat] = params.destinations[0];
+                let (state, _region) = self.dispatch_for_pair(
+                    s_lon,
+                    s_lat,
+                    d_lon,
+                    d_lat,
+                    &parsed.profile,
+                )?;
+                let mode = resolve_mode(&parsed.profile, &state)?;
 
                 let batch_stream = do_matrix(&state, mode, params)?;
                 let schema = Arc::new(matrix_schema());
@@ -2230,13 +2339,26 @@ impl FlightService for ButterflyFlight {
                         Status::invalid_argument(format!("Invalid route_batch params: {}", e))
                     })?;
 
-                for (i, pair) in params.pairs.iter().enumerate() {
-                    validate_coord(pair[0], pair[1], &format!("pair[{}].src", i))?;
-                    validate_coord(pair[2], pair[3], &format!("pair[{}].dst", i))?;
+                if params.pairs.is_empty() {
+                    return Err(Status::invalid_argument("pairs must not be empty"));
                 }
                 if params.pairs.len() > 100_000 {
                     return Err(Status::invalid_argument("max 100,000 pairs per request"));
                 }
+                for (i, pair) in params.pairs.iter().enumerate() {
+                    validate_coord(pair[0], pair[1], &format!("pair[{}].src", i))?;
+                    validate_coord(pair[2], pair[3], &format!("pair[{}].dst", i))?;
+                }
+
+                // First pair picks the region; subsequent pairs sharing
+                // that region run within it. Mixed-region pairs are
+                // rejected up front by dispatch_for_pair on the FIRST
+                // pair; per-pair cross-region in a multi-pair batch is
+                // a known follow-up (see #336).
+                let p0 = params.pairs[0];
+                let (state, _region) =
+                    self.dispatch_for_pair(p0[0], p0[1], p0[2], p0[3], &parsed.profile)?;
+                let mode = resolve_mode(&parsed.profile, &state)?;
 
                 let batch_stream = do_route_batch(&state, mode, params)?;
                 let schema = Arc::new(route_batch_schema());
@@ -2248,8 +2370,11 @@ impl FlightService for ButterflyFlight {
                     serde_json::from_str(&parsed.params_json).map_err(|e| {
                         Status::invalid_argument(format!("Invalid isochrone params: {}", e))
                     })?;
-
                 validate_coord(params.lon, params.lat, "origin")?;
+
+                let (state, _region) =
+                    self.dispatch_for_point(params.lon, params.lat, &parsed.profile)?;
+                let mode = resolve_mode(&parsed.profile, &state)?;
 
                 let batch_stream = do_isochrone(&state, mode, params)?;
                 let schema = Arc::new(isochrone_schema());
@@ -2257,13 +2382,14 @@ impl FlightService for ButterflyFlight {
                 Ok(Response::new(flight_stream))
             }
             "transit_bulk" => {
-                // The transit_bulk action ignores the `profile` part
-                // of the ticket — every query carries its own
-                // `access_mode` / `egress_mode`. The mode resolved
-                // above is unused but parsing it would be a hard
-                // error if the profile were missing, so we accept any
-                // valid loaded mode here.
-                let _ = mode;
+                // The transit_bulk action ignores the `profile` part of
+                // the ticket — every query carries its own
+                // `access_mode`/`egress_mode`. Transit in multi-region
+                // mode is blocked on #334 (subsystem not loaded across
+                // regions); for now continue to dispatch on the primary
+                // and let `do_transit_bulk` return FailedPrecondition if
+                // transit isn't loaded.
+                let state = self.state();
                 let params: TransitBulkParams =
                     serde_json::from_str(&parsed.params_json).map_err(|e| {
                         Status::invalid_argument(format!("Invalid transit_bulk params: {}", e))
@@ -2278,6 +2404,18 @@ impl FlightService for ButterflyFlight {
                     serde_json::from_str(&parsed.params_json).map_err(|e| {
                         Status::invalid_argument(format!("Invalid edges_batch params: {}", e))
                     })?;
+                if params.pairs.is_empty() {
+                    return Err(Status::invalid_argument("pairs must not be empty"));
+                }
+                for (i, pair) in params.pairs.iter().enumerate() {
+                    validate_coord(pair[0], pair[1], &format!("pair[{}].src", i))?;
+                    validate_coord(pair[2], pair[3], &format!("pair[{}].dst", i))?;
+                }
+                let p0 = params.pairs[0];
+                let (state, _region) =
+                    self.dispatch_for_pair(p0[0], p0[1], p0[2], p0[3], &parsed.profile)?;
+                let mode = resolve_mode(&parsed.profile, &state)?;
+
                 let batch_stream = do_edges_batch(&state, mode, params)?;
                 let schema = Arc::new(edges_batch_schema());
                 let flight_stream = batches_to_flight_data(schema, batch_stream);
@@ -2419,9 +2557,6 @@ impl FlightService for ButterflyFlight {
         &self,
         request: Request<Streaming<FlightData>>,
     ) -> std::result::Result<Response<Self::DoExchangeStream>, Status> {
-        // Resolve primary region lazily (triggers container load on
-        // first call if still Pending — default boot state).
-        let state = self.state();
         let mut stream = request.into_inner();
 
         // Collect all FlightData messages, extract descriptor from first
@@ -2455,7 +2590,6 @@ impl FlightService for ButterflyFlight {
         }
         let profile = parts.get(1).copied().unwrap_or("car");
         let params_json = parts.get(2).copied().unwrap_or("{}");
-        let mode = resolve_mode(profile, &state)?;
 
         let cp = super::catchment::parse_exchange_params(params_json)
             .map_err(Status::invalid_argument)?;
@@ -2476,6 +2610,19 @@ impl FlightService for ButterflyFlight {
         if batches.is_empty() {
             return Err(Status::invalid_argument("no data received"));
         }
+
+        // #336: snap the first store coordinate to pick the region.
+        // Catchment input schema: (store_id, store_lon, store_lat,
+        // client_lon, client_lat). Mixed-region inputs in a single
+        // batch are a follow-up — for now the first row picks.
+        let (store_lon, store_lat) =
+            first_store_lonlat(&batches).ok_or_else(|| {
+                Status::invalid_argument(
+                    "no rows in input batches — need at least one (store_lon, store_lat)",
+                )
+            })?;
+        let (state, _region) = self.dispatch_for_point(store_lon, store_lat, profile)?;
+        let mode = resolve_mode(profile, &state)?;
 
         do_exchange_catchment(state, mode, cp, &batches).await
     }
