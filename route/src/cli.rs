@@ -567,8 +567,19 @@ pub enum Commands {
         keep_intermediates: bool,
     },
 
-    /// Verify a `*.butterfly` container against its source data-dir
-    /// and delete the `step{1..8}/` intermediate directories.
+    /// Verify a `*.butterfly` container is self-consistent and then
+    /// delete the `step{1..8}/` intermediate directories under
+    /// `--data-dir`.
+    ///
+    /// The pre-flight runs a structural read of the container plus a
+    /// streaming per-section CRC walk (no full-section buffer spike).
+    /// On any failure, no files are touched and `prune` exits non-zero.
+    ///
+    /// The container's section sha's are NOT cross-checked against
+    /// the data-dir's step lockfiles — operators pointing
+    /// `--container` and `--data-dir` at mismatched pairs may delete
+    /// intermediates that don't correspond to that container. Pass
+    /// the pair you just packed.
     ///
     /// Use this after the fact on an existing pack — when you've
     /// upgraded an operator deployment and want to reclaim disk
