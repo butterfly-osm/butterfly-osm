@@ -891,7 +891,9 @@ fn build_route_output(
     scratch.ebg_path.reserve(scratch.rank_path.len());
     for &rank in &scratch.rank_path {
         let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-        scratch.ebg_path.push(mode_data.filtered_to_original[filt_id as usize]);
+        scratch
+            .ebg_path
+            .push(mode_data.filtered_to_original[filt_id as usize]);
     }
 
     let distance_m = super::geometry::build_raw_points_into(
@@ -1287,12 +1289,9 @@ fn do_route_batch_blocking(
             if first_panic_msg.is_some() {
                 break 'chunks;
             }
-            let results: Vec<RoutePairRow> = slots
-                .into_iter()
-                .map(|s| s.expect("slot filled"))
-                .collect();
-            let fb_chunk =
-                fallback_count.load(std::sync::atomic::Ordering::Relaxed) - fb_before;
+            let results: Vec<RoutePairRow> =
+                slots.into_iter().map(|s| s.expect("slot filled")).collect();
+            let fb_chunk = fallback_count.load(std::sync::atomic::Ordering::Relaxed) - fb_before;
             // #315 Copilot review: drop to DEBUG so production logs
             // aren't spammed by bench instrumentation.
             tracing::debug!(
@@ -2319,13 +2318,8 @@ impl FlightService for ButterflyFlight {
                 // the dispatcher returns CrossRegion → 9 (FAILED_PRECONDITION).
                 let [s_lon, s_lat] = params.sources[0];
                 let [d_lon, d_lat] = params.destinations[0];
-                let (state, _region) = self.dispatch_for_pair(
-                    s_lon,
-                    s_lat,
-                    d_lon,
-                    d_lat,
-                    &parsed.profile,
-                )?;
+                let (state, _region) =
+                    self.dispatch_for_pair(s_lon, s_lat, d_lon, d_lat, &parsed.profile)?;
                 let mode = resolve_mode(&parsed.profile, &state)?;
 
                 let batch_stream = do_matrix(&state, mode, params)?;
@@ -2615,12 +2609,11 @@ impl FlightService for ButterflyFlight {
         // Catchment input schema: (store_id, store_lon, store_lat,
         // client_lon, client_lat). Mixed-region inputs in a single
         // batch are a follow-up — for now the first row picks.
-        let (store_lon, store_lat) =
-            first_store_lonlat(&batches).ok_or_else(|| {
-                Status::invalid_argument(
-                    "no rows in input batches — need at least one (store_lon, store_lat)",
-                )
-            })?;
+        let (store_lon, store_lat) = first_store_lonlat(&batches).ok_or_else(|| {
+            Status::invalid_argument(
+                "no rows in input batches — need at least one (store_lon, store_lat)",
+            )
+        })?;
         let (state, _region) = self.dispatch_for_point(store_lon, store_lat, profile)?;
         let mode = resolve_mode(profile, &state)?;
 

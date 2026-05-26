@@ -100,10 +100,8 @@ impl RegionTiles {
         // doc comment for why truncation would misclassify edges.
         let lon_e7 = (lon * 1e7).round() as i32;
         let lat_e7 = (lat * 1e7).round() as i32;
-        let center_lon_cell =
-            ((lon_e7 as i64 + LON_OFFSET_E7 as i64) / CELL_SIZE_E7 as i64) as i32;
-        let center_lat_cell =
-            ((lat_e7 as i64 + LAT_OFFSET_E7 as i64) / CELL_SIZE_E7 as i64) as i32;
+        let center_lon_cell = ((lon_e7 as i64 + LON_OFFSET_E7 as i64) / CELL_SIZE_E7 as i64) as i32;
+        let center_lat_cell = ((lat_e7 as i64 + LAT_OFFSET_E7 as i64) / CELL_SIZE_E7 as i64) as i32;
         let slice = self.tiles.as_slice();
         for dy in -margin_tiles..=margin_tiles {
             for dx in -margin_tiles..=margin_tiles {
@@ -192,8 +190,7 @@ impl RegionTilesFile {
         let mut file_d = Digest::new();
         file_d.update(&bytes[..footer_off]);
         let computed_file = file_d.finalize();
-        let stored_file =
-            u64::from_le_bytes(bytes[footer_off + 8..footer_off + 16].try_into()?);
+        let stored_file = u64::from_le_bytes(bytes[footer_off + 8..footer_off + 16].try_into()?);
         anyhow::ensure!(
             computed_file == stored_file,
             "region_tiles file CRC mismatch: computed 0x{:016X}, stored 0x{:016X}",
