@@ -77,7 +77,10 @@ mod round_tests {
         // n is also > u64::MAX/2, so 2·n overflows: this is the path
         // we want to exercise.
         let n = d - 1;
-        assert!(n > u64::MAX / 2, "test setup: remainder must overflow on *2");
+        assert!(
+            n > u64::MAX / 2,
+            "test setup: remainder must overflow on *2"
+        );
         assert_eq!(round_half_even_div(n, d), 1);
 
         // Same denominator, but n just under d/2 → round down to 0.
@@ -381,7 +384,8 @@ fn generate_mode_data(
         ) as u32;
 
         // const_penalty_ds on disk is also deciseconds — convert to seconds.
-        let const_penalty_s = round_half_even_div(way_attr.output.const_penalty_ds as u64, 10) as u32;
+        let const_penalty_s =
+            round_half_even_div(way_attr.output.const_penalty_ds as u64, 10) as u32;
 
         // Total weight = travel_time + per_km_extra + const_penalty (saturating)
         let weight_s = travel_time_s

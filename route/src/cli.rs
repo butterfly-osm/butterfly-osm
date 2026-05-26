@@ -1400,12 +1400,9 @@ impl Cli {
                 // directory — discovering modes from only the first path's
                 // parent while the others point elsewhere would silently
                 // produce wrong global indices.
-                let step2_dir = wa_parsed[0]
-                    .2
-                    .parent()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("Cannot determine step2 directory from way-attrs paths")
-                    })?;
+                let step2_dir = wa_parsed[0].2.parent().ok_or_else(|| {
+                    anyhow::anyhow!("Cannot determine step2 directory from way-attrs paths")
+                })?;
                 for ((name, _, wa_path), (_, _, tr_path)) in wa_parsed.iter().zip(tr_parsed.iter())
                 {
                     let wa_parent = wa_path.parent().unwrap_or(Path::new(""));
@@ -1897,7 +1894,9 @@ impl Cli {
                 crate::pack::pack(&data_dir, &out, step_prefix.as_deref(), region.as_deref())?;
                 if !keep_intermediates {
                     println!();
-                    println!("Auto-pruning intermediates (pass --keep-intermediates to disable)...");
+                    println!(
+                        "Auto-pruning intermediates (pass --keep-intermediates to disable)..."
+                    );
                     crate::pack::prune(&out, &data_dir, false)?;
                 }
                 Ok(())

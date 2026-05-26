@@ -337,8 +337,10 @@ pub fn run_weight_profile(data_dir: &Path, output_dir: &Path, region: Option<&st
         let mode_data = &state.modes[i];
         let t_up = compute_static_stats(&mode_data.cch_weights.up.iter().collect::<Vec<u32>>());
         let t_dn = compute_static_stats(&mode_data.cch_weights.down.iter().collect::<Vec<u32>>());
-        let d_up = compute_static_stats(&mode_data.cch_weights_dist.up.iter().collect::<Vec<u32>>());
-        let d_dn = compute_static_stats(&mode_data.cch_weights_dist.down.iter().collect::<Vec<u32>>());
+        let d_up =
+            compute_static_stats(&mode_data.cch_weights_dist.up.iter().collect::<Vec<u32>>());
+        let d_dn =
+            compute_static_stats(&mode_data.cch_weights_dist.down.iter().collect::<Vec<u32>>());
         println!(
             "  - {}: time up p99={} p99.9={} max={} inf={}; \
              dist up p99={} p99.9={} max={} inf={}",
@@ -363,10 +365,22 @@ pub fn run_weight_profile(data_dir: &Path, output_dir: &Path, region: Option<&st
         BTreeMap::new();
     for (i, mode_name) in state.mode_names.iter().enumerate() {
         let mode_data = &state.modes[i];
-        let t_up = compute_block_stats(&mode_data.cch_weights.up.iter().collect::<Vec<u32>>(), BLOCK_SIZES);
-        let t_dn = compute_block_stats(&mode_data.cch_weights.down.iter().collect::<Vec<u32>>(), BLOCK_SIZES);
-        let d_up = compute_block_stats(&mode_data.cch_weights_dist.up.iter().collect::<Vec<u32>>(), BLOCK_SIZES);
-        let d_dn = compute_block_stats(&mode_data.cch_weights_dist.down.iter().collect::<Vec<u32>>(), BLOCK_SIZES);
+        let t_up = compute_block_stats(
+            &mode_data.cch_weights.up.iter().collect::<Vec<u32>>(),
+            BLOCK_SIZES,
+        );
+        let t_dn = compute_block_stats(
+            &mode_data.cch_weights.down.iter().collect::<Vec<u32>>(),
+            BLOCK_SIZES,
+        );
+        let d_up = compute_block_stats(
+            &mode_data.cch_weights_dist.up.iter().collect::<Vec<u32>>(),
+            BLOCK_SIZES,
+        );
+        let d_dn = compute_block_stats(
+            &mode_data.cch_weights_dist.down.iter().collect::<Vec<u32>>(),
+            BLOCK_SIZES,
+        );
         let summary = |b: &BlockStats| -> String {
             let mut s = Vec::new();
             for sz in BLOCK_SIZES {
@@ -1842,8 +1856,16 @@ fn path_edges(
     let mut meeting_node = u32::MAX;
 
     while !scratch.pq_fwd.is_empty() || !scratch.pq_bwd.is_empty() {
-        let fwd_min = scratch.pq_fwd.peek().map(|(_, &Reverse(d))| d).unwrap_or(u32::MAX);
-        let bwd_min = scratch.pq_bwd.peek().map(|(_, &Reverse(d))| d).unwrap_or(u32::MAX);
+        let fwd_min = scratch
+            .pq_fwd
+            .peek()
+            .map(|(_, &Reverse(d))| d)
+            .unwrap_or(u32::MAX);
+        let bwd_min = scratch
+            .pq_bwd
+            .peek()
+            .map(|(_, &Reverse(d))| d)
+            .unwrap_or(u32::MAX);
         if fwd_min >= best_dist && bwd_min >= best_dist {
             break;
         }

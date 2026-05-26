@@ -1243,9 +1243,7 @@ fn pack_way_names_idx(w: &mut ContainerWriter, step1: &Path) -> Result<()> {
     // post-dedup set.
     let resolved: Vec<(i64, String)> = pairs
         .into_iter()
-        .filter_map(|(way_id, val_id)| {
-            val_dict.get(&val_id).map(|n| (way_id, n.clone()))
-        })
+        .filter_map(|(way_id, val_id)| val_dict.get(&val_id).map(|n| (way_id, n.clone())))
         .collect();
     let idx = way_names_idx::build_from_pairs(resolved)
         .with_context(|| "building way_names_idx".to_string())?;
@@ -2108,8 +2106,7 @@ pub fn topology_diff(path: &Path, modes_arg: Option<&str>) -> Result<()> {
 /// symlinked transit dir or moved step output via symlink. The same
 /// guard applies to descendants.
 fn dir_size_bytes(p: &Path) -> Result<u64> {
-    let meta = std::fs::symlink_metadata(p)
-        .with_context(|| format!("stat {}", p.display()))?;
+    let meta = std::fs::symlink_metadata(p).with_context(|| format!("stat {}", p.display()))?;
     if !meta.is_dir() {
         return Ok(meta.len());
     }
@@ -2117,8 +2114,8 @@ fn dir_size_bytes(p: &Path) -> Result<u64> {
     for entry in std::fs::read_dir(p).with_context(|| format!("reading {}", p.display()))? {
         let entry = entry?;
         let path = entry.path();
-        let m = std::fs::symlink_metadata(&path)
-            .with_context(|| format!("stat {}", path.display()))?;
+        let m =
+            std::fs::symlink_metadata(&path).with_context(|| format!("stat {}", path.display()))?;
         if m.is_dir() {
             // Real directory — recurse. (Symlinks fall through to the
             // else branch because `symlink_metadata` reports the link
@@ -2237,7 +2234,11 @@ pub fn prune(container: &Path, data_dir: &Path, dry_run: bool) -> Result<()> {
                 sizes.push((p.clone(), Some(sz)));
             }
             Err(e) => {
-                eprintln!("warn: cannot size {} — {} (still proceeding)", p.display(), e);
+                eprintln!(
+                    "warn: cannot size {} — {} (still proceeding)",
+                    p.display(),
+                    e
+                );
                 any_unknown = true;
                 sizes.push((p.clone(), None));
             }
@@ -2256,7 +2257,10 @@ pub fn prune(container: &Path, data_dir: &Path, dry_run: bool) -> Result<()> {
         }
     }
     if any_unknown {
-        println!("Total: {} (partial — some sizes failed)", humanize_bytes(total_known));
+        println!(
+            "Total: {} (partial — some sizes failed)",
+            humanize_bytes(total_known)
+        );
     } else {
         println!("Total: {}", humanize_bytes(total_known));
     }
@@ -2268,8 +2272,7 @@ pub fn prune(container: &Path, data_dir: &Path, dry_run: bool) -> Result<()> {
 
     // ---- 5. Delete the step dirs ---------------------------------
     for (p, _) in &sizes {
-        std::fs::remove_dir_all(p)
-            .with_context(|| format!("removing {}", p.display()))?;
+        std::fs::remove_dir_all(p).with_context(|| format!("removing {}", p.display()))?;
     }
     println!("\nDone — reclaimed {}", humanize_bytes(total_known));
     Ok(())
@@ -2725,8 +2728,16 @@ mod tests {
         // Small payload — exercises the streaming CRC verify path with
         // multiple chunks if needed by Copilot's review math (the
         // implementation handles tiny inputs fine).
-        w.append_bytes(SectionKind::Unknown, "test/payload", b"prune-test-payload-bytes")?;
-        w.append_bytes(SectionKind::Unknown, "test/manifest", b"{\"region_id\":\"TEST\"}")?;
+        w.append_bytes(
+            SectionKind::Unknown,
+            "test/payload",
+            b"prune-test-payload-bytes",
+        )?;
+        w.append_bytes(
+            SectionKind::Unknown,
+            "test/manifest",
+            b"{\"region_id\":\"TEST\"}",
+        )?;
         w.finalize()?;
         // Smoke: container opens
         let _c = Container::open(&container_path)?;

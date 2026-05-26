@@ -829,11 +829,7 @@ impl Container {
     /// [`Self::read_section_verified`], this never allocates a buffer
     /// of `sec.len` bytes — useful for verifying multi-GB sections at
     /// boot or during the `prune` pre-flight without spiking RSS.
-    pub fn verify_section_crc<P: AsRef<Path>>(
-        &self,
-        path: P,
-        sec: &SectionEntry,
-    ) -> Result<()> {
+    pub fn verify_section_crc<P: AsRef<Path>>(&self, path: P, sec: &SectionEntry) -> Result<()> {
         const CHUNK: usize = 1 << 20; // 1 MiB
         let mut file = File::open(path.as_ref())?;
         file.seek(SeekFrom::Start(sec.offset))?;

@@ -118,11 +118,7 @@ impl BatchedIsochroneEngine {
     ///
     /// # Returns
     /// BatchedIsochroneResult with K contour polygons
-    pub fn query_batch(
-        &self,
-        origins: &[u32],
-        threshold_s: u32,
-    ) -> Result<BatchedIsochroneResult> {
+    pub fn query_batch(&self, origins: &[u32], threshold_s: u32) -> Result<BatchedIsochroneResult> {
         let start = std::time::Instant::now();
         let k = origins.len();
 

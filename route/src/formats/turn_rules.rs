@@ -43,7 +43,7 @@ pub struct TurnRule {
     pub from_way_id: i64,
     pub to_way_id: i64,
     pub kind: TurnRuleKind,
-    pub penalty_s: u32, // seconds (was deciseconds in v1, #297)
+    pub penalty_s: u32,  // seconds (was deciseconds in v1, #297)
     pub is_time_dep: u8, // 0=static, 1=time-dependent, 2=needs expansion (via=way)
 }
 

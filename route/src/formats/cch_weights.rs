@@ -760,9 +760,9 @@ pub(crate) fn decode_weight_array_mmap(
         )?)),
         WeightWidth::U24 => {
             // u24 needs `n × 3` raw bytes; ArcCow<u8> has no alignment requirement.
-            let n_bytes = n.checked_mul(3).ok_or_else(|| {
-                anyhow::anyhow!("cch.weights u24 byte count overflow: n={n}")
-            })?;
+            let n_bytes = n
+                .checked_mul(3)
+                .ok_or_else(|| anyhow::anyhow!("cch.weights u24 byte count overflow: n={n}"))?;
             Ok(WeightArray::U24(ArcCow::<u8>::from_mmap(
                 Arc::clone(mmap),
                 byte_offset,

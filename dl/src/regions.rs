@@ -135,9 +135,7 @@ impl SectionFilter {
             "all" => Ok(Self::All),
             "pbf" => Ok(Self::PbfOnly),
             "transit" => Ok(Self::TransitOnly),
-            other => bail!(
-                "unknown --only value '{other}'. Accepted values: all, pbf, transit"
-            ),
+            other => bail!("unknown --only value '{other}'. Accepted values: all, pbf, transit"),
         }
     }
 
