@@ -255,6 +255,15 @@ impl WeightArray {
         Self::U32(ArcCow::from_vec(v))
     }
 
+    /// Wrap an existing `ArcCow<u32>` at the U32 width. Use this for
+    /// mmap-backed flats so the underlying mapping is preserved
+    /// (zero-copy) and call sites don't reach for the enum variant
+    /// directly.
+    #[inline]
+    pub fn from_arccow_u32(arc: ArcCow<u32>) -> Self {
+        Self::U32(arc)
+    }
+
     /// Construct from an owned `Vec<u16>` at the U16 width.
     #[inline]
     pub fn from_vec_u16(v: Vec<u16>) -> Self {
@@ -413,10 +422,11 @@ impl CchWeightsFile {
         //              | [middles: up_middle(4·n_up) | down_middle(4·n_down)]
         //              | footer(16)
         //
-        // u16 bodies pad 0-2 bytes; u24 bodies pad 0-3 bytes. The pad
-        // keeps the following arrays (the other direction's body and
-        // the u32 middles) 4-byte aligned for `bytemuck::cast_slice` /
-        // `ArcCow::<u32>::from_mmap`.
+        // u16 bodies pad 0 or 2 bytes (exactly 2 when `n_up`/`n_down`
+        // is odd, else 0); u24 bodies pad 0, 1, 2, or 3 bytes to round
+        // `n * 3` up to a 4-byte boundary. The pad keeps the following
+        // arrays (the other direction's body and the u32 middles)
+        // 4-byte aligned for `bytemuck::cast_slice` / `ArcCow::<u32>::from_mmap`.
         let up_bytes = up_width.padded_body_bytes(n_up);
         let down_bytes = down_width.padded_body_bytes(n_down);
         let body_no_middle = up_bytes
