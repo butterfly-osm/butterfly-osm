@@ -788,6 +788,39 @@ impl Container {
         Ok(buf)
     }
 
+    /// Verify a section's CRC by streaming its bytes through the
+    /// incremental digest in fixed-size chunks. Unlike
+    /// [`Self::read_section_verified`], this never allocates a buffer
+    /// of `sec.len` bytes — useful for verifying multi-GB sections at
+    /// boot or during the `prune` pre-flight without spiking RSS.
+    pub fn verify_section_crc<P: AsRef<Path>>(
+        &self,
+        path: P,
+        sec: &SectionEntry,
+    ) -> Result<()> {
+        const CHUNK: usize = 1 << 20; // 1 MiB
+        let mut file = File::open(path.as_ref())?;
+        file.seek(SeekFrom::Start(sec.offset))?;
+        let mut digest = crc::Digest::new();
+        let mut remaining = sec.len as usize;
+        let mut buf = vec![0u8; CHUNK.min(remaining.max(1))];
+        while remaining > 0 {
+            let want = remaining.min(buf.len());
+            file.read_exact(&mut buf[..want])?;
+            digest.update(&buf[..want]);
+            remaining -= want;
+        }
+        let computed = digest.finalize();
+        anyhow::ensure!(
+            computed == sec.crc,
+            "section '{}' CRC mismatch: computed 0x{:016X}, stored 0x{:016X}",
+            sec.name,
+            computed,
+            sec.crc
+        );
+        Ok(())
+    }
+
     /// Borrow a section's bytes from a memory-mapped container.
     ///
     /// Verifies the section's stored CRC against the bytes-as-mapped on
