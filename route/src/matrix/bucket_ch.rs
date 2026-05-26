@@ -418,7 +418,14 @@ impl DownReverseAdjFlat {
 /// padded to a 4-byte boundary so the following `topo_edge_idx` (still
 /// u32) stays naturally aligned for `bytemuck::cast_slice` /
 /// `ArcCow::<u32>::from_mmap`.
-const ADJ_FLAT_VERSION: u16 = 2;
+/// Version 3 (#350): header byte 7 bit 2 selects offset width
+/// (0=u64, 1=u32). Writer picks u32 when every offset fits u32::MAX
+/// (every Belgium-class region — n_edges_per_mode ~76 M ≪ 4 G). u32
+/// offset bodies still land 4-aligned, but the targets/u32 arrays
+/// that follow expect 4-alignment, NOT 8-alignment — when offsets
+/// are u32 we shrink the body by `4*(n_nodes+1)` bytes which is
+/// always a multiple of 4 so downstream alignment is preserved.
+const ADJ_FLAT_VERSION: u16 = 3;
 const ADJ_FLAT_HEADER_SIZE: usize = 32;
 const ADJ_FLAT_FOOTER_SIZE: usize = 16;
 
@@ -428,12 +435,17 @@ const ADJ_FLAT_FOOTER_SIZE: usize = 16;
 /// of the same byte). Codes match the `cch.weights` v4 convention for
 /// consistency: 0=u32, 1=u16, 2=u24.
 ///
-/// Bits 0..=1 (the low two bits) hold the 2-bit width code; bits 2..=7
-/// are reserved and currently must be zero.
+/// Bits 0..=1 (the low two bits) hold the 2-bit width code; bit 2
+/// (#350) flags u32 offsets; bits 3..=7 are reserved and must be zero.
 const ADJ_FLAT_WIDTH_CODE_U32: u8 = 0;
 const ADJ_FLAT_WIDTH_CODE_U16: u8 = 1;
 const ADJ_FLAT_WIDTH_CODE_U24: u8 = 2;
 const ADJ_FLAT_WIDTH_CODE_MASK: u8 = 0b0000_0011;
+/// #350: bit 2 of header byte 7 set means offsets are u32-encoded on
+/// disk; cleared means u64 (the v1/v2 default). Reader widens u32
+/// offsets back to a u64 `ArcCow::Owned` Vec since the in-memory
+/// representation stays `ArcCow<u64>` for hot-path simplicity.
+const ADJ_FLAT_OFFSETS_U32_BIT: u8 = 0b0000_0100;
 
 /// Magic for `UpAdjFlat` files. ASCII "UPAJ" (little-endian).
 const UP_ADJ_FLAT_MAGIC: u32 = 0x4A415055;
@@ -447,6 +459,7 @@ fn write_adj_flat_header(
     magic: u32,
     has_topo_idx: bool,
     width: crate::formats::WeightWidth,
+    offsets_u32: bool,
     n_nodes: u64,
     n_edges: u64,
 ) {
@@ -455,10 +468,14 @@ fn write_adj_flat_header(
         crate::formats::WeightWidth::U16 => ADJ_FLAT_WIDTH_CODE_U16,
         crate::formats::WeightWidth::U24 => ADJ_FLAT_WIDTH_CODE_U24,
     };
+    let mut flags: u8 = width_code;
+    if offsets_u32 {
+        flags |= ADJ_FLAT_OFFSETS_U32_BIT;
+    }
     out.extend_from_slice(&magic.to_le_bytes());
     out.extend_from_slice(&ADJ_FLAT_VERSION.to_le_bytes());
     out.push(if has_topo_idx { 1 } else { 0 });
-    out.push(width_code); // v2 (#349): width code, was _resv in v1
+    out.push(flags); // byte 7: bits 0..=1 weights width (#349), bit 2 offsets-u32 (#350)
     out.extend_from_slice(&n_nodes.to_le_bytes());
     out.extend_from_slice(&n_edges.to_le_bytes());
     out.extend_from_slice(&0u64.to_le_bytes()); // _resv2
@@ -468,7 +485,7 @@ fn write_adj_flat_header(
 fn parse_adj_flat_header(
     bytes: &[u8],
     expected_magic: u32,
-) -> anyhow::Result<(bool, crate::formats::WeightWidth, usize, usize)> {
+) -> anyhow::Result<(bool, crate::formats::WeightWidth, bool, usize, usize)> {
     anyhow::ensure!(
         bytes.len() >= ADJ_FLAT_HEADER_SIZE + ADJ_FLAT_FOOTER_SIZE,
         "adj-flat section too short: {} bytes",
@@ -499,9 +516,10 @@ fn parse_adj_flat_header(
         ADJ_FLAT_WIDTH_CODE_U24 => crate::formats::WeightWidth::U24,
         v => anyhow::bail!("adj-flat width code {} invalid (byte 7 = 0x{:02X})", v, bytes[7]),
     };
+    let offsets_u32 = (bytes[7] & ADJ_FLAT_OFFSETS_U32_BIT) != 0;
     let n_nodes = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
     let n_edges = u64::from_le_bytes(bytes[16..24].try_into().unwrap()) as usize;
-    Ok((has_topo_idx, width, n_nodes, n_edges))
+    Ok((has_topo_idx, width, offsets_u32, n_nodes, n_edges))
 }
 
 fn body_layout(
@@ -509,19 +527,26 @@ fn body_layout(
     n_edges: usize,
     has_topo_idx: bool,
     width: crate::formats::WeightWidth,
+    offsets_u32: bool,
 ) -> (usize, usize, usize, usize, usize) {
     // Returns (offsets_off, targets_off, weights_off, topo_off, body_end)
     // All offsets are absolute byte offsets from the start of the file
     // (i.e. inclusive of the header). The container guarantees the
-    // section starts u64-aligned, and our header is exactly 32 B, so the
-    // u64 offsets array starts u64-aligned. After it, the cursor is
-    // 32 + 8*(n_nodes+1) which is still a multiple of 8.
+    // section starts u64-aligned, and our header is exactly 32 B, so
+    // both 8-byte (u64) and 4-byte (u32) offsets land naturally
+    // aligned. After the offsets array the cursor is still a multiple
+    // of 4 (since `(n_nodes+1) * {4,8}` is always a multiple of 4),
+    // so the following u32 `targets` array stays aligned for
+    // `bytemuck::cast_slice` / `ArcCow::<u32>::from_mmap`.
     //
     // v2 (#349): weights body is `width.padded_body_bytes(n_edges)` —
     // u16/u24 bodies pad up to 4 B so the following `topo_edge_idx`
     // (still u32) stays 4-aligned for `bytemuck::cast_slice`.
+    // v3 (#350): offsets body is `(n_nodes+1) * {4,8}` depending on
+    // `offsets_u32`.
     let offsets_off = ADJ_FLAT_HEADER_SIZE;
-    let targets_off = offsets_off + 8 * (n_nodes + 1);
+    let offsets_elem = if offsets_u32 { 4 } else { 8 };
+    let targets_off = offsets_off + offsets_elem * (n_nodes + 1);
     let weights_off = targets_off + 4 * n_edges;
     let weights_bytes = width.padded_body_bytes(n_edges);
     let topo_off = weights_off + weights_bytes;
@@ -533,15 +558,76 @@ fn body_layout(
     (offsets_off, targets_off, weights_off, topo_off, body_end)
 }
 
+/// Choose u32 offsets when every offset value fits a u32. Belgium-class
+/// regions have ~76 M edges max per mode → easily fits u32 (4 G).
+#[inline]
+fn pick_offsets_u32(offsets: &[u64]) -> bool {
+    offsets.last().map(|&v| v <= u32::MAX as u64).unwrap_or(true)
+}
+
+/// #350: decode the offsets array body from disk into a heap `Vec<u64>`.
+/// When the file stored u32 offsets, widen on read; otherwise borrow the
+/// u64 slice via `bytemuck::cast_slice` and copy into the Vec (legacy
+/// byte-slice reader is owned-Vec semantics; mmap path has its own
+/// helper that preserves zero-copy when offsets are u64).
+fn read_offsets_vec(
+    bytes: &[u8],
+    offsets_off: usize,
+    n_nodes: usize,
+    offsets_u32: bool,
+) -> Vec<u64> {
+    let n = n_nodes + 1;
+    if offsets_u32 {
+        let body = &bytes[offsets_off..offsets_off + 4 * n];
+        let view: &[u32] = bytemuck::cast_slice(body);
+        view.iter().map(|&v| v as u64).collect()
+    } else {
+        let body = &bytes[offsets_off..offsets_off + 8 * n];
+        let view: &[u64] = bytemuck::cast_slice(body);
+        view.to_vec()
+    }
+}
+
+/// mmap-backed offsets loader (#350). When the file stored u64 offsets
+/// we keep zero-copy semantics via `ArcCow::<u64>::from_mmap`. When the
+/// file stored u32 offsets we widen to a heap `Vec<u64>` once, since
+/// the in-memory `flat.offsets` type stays `ArcCow<u64>` for hot-path
+/// simplicity — the offsets array is small (n_nodes+1 entries, ~38 MB
+/// on Belgium) so the one-shot widen at boot is cheap vs the lifetime
+/// of the loaded region.
+fn load_offsets_arccow(
+    mmap: &std::sync::Arc<memmap2::Mmap>,
+    offsets_abs: usize,
+    n_nodes: usize,
+    offsets_u32: bool,
+) -> anyhow::Result<ArcCow<u64>> {
+    let n = n_nodes + 1;
+    if offsets_u32 {
+        let body = &mmap[offsets_abs..offsets_abs + 4 * n];
+        let view: &[u32] = bytemuck::cast_slice(body);
+        Ok(ArcCow::from_vec(view.iter().map(|&v| v as u64).collect()))
+    } else {
+        ArcCow::<u64>::from_mmap(std::sync::Arc::clone(mmap), offsets_abs, n)
+    }
+}
+
 fn write_adj_flat_body_and_footer(
     out: &mut Vec<u8>,
     offsets: &[u64],
     a32: &[u32], // targets or sources
     weights: &crate::formats::WeightArray,
     topo_edge_idx: Option<&[u32]>,
+    offsets_u32: bool,
 ) {
     debug_assert_eq!(out.len(), ADJ_FLAT_HEADER_SIZE);
-    out.extend_from_slice(bytemuck::cast_slice(offsets));
+    // v3 (#350): write offsets at u32 width when the writer picked it.
+    // The choose() check at the call site guarantees every value fits.
+    if offsets_u32 {
+        let u32_offsets: Vec<u32> = offsets.iter().map(|&v| v as u32).collect();
+        out.extend_from_slice(bytemuck::cast_slice(&u32_offsets));
+    } else {
+        out.extend_from_slice(bytemuck::cast_slice(offsets));
+    }
     out.extend_from_slice(bytemuck::cast_slice(a32));
 
     // v2 (#349): weights body is written at the actual width — u16/u24
@@ -641,13 +727,16 @@ impl UpAdjFlatFile {
             );
         }
         let width = flat.weights.width();
-        let (_, _, _, _, body_end) = body_layout(n_nodes, n_edges, has_topo_idx, width);
+        let offsets_u32 = pick_offsets_u32(&flat.offsets);
+        let (_, _, _, _, body_end) =
+            body_layout(n_nodes, n_edges, has_topo_idx, width, offsets_u32);
         let mut out = Vec::with_capacity(body_end + ADJ_FLAT_FOOTER_SIZE);
         write_adj_flat_header(
             &mut out,
             UP_ADJ_FLAT_MAGIC,
             has_topo_idx,
             width,
+            offsets_u32,
             n_nodes as u64,
             n_edges as u64,
         );
@@ -656,7 +745,14 @@ impl UpAdjFlatFile {
         } else {
             None
         };
-        write_adj_flat_body_and_footer(&mut out, &flat.offsets, &flat.targets, &flat.weights, topo);
+        write_adj_flat_body_and_footer(
+            &mut out,
+            &flat.offsets,
+            &flat.targets,
+            &flat.weights,
+            topo,
+            offsets_u32,
+        );
         debug_assert_eq!(out.len(), body_end + ADJ_FLAT_FOOTER_SIZE);
         out
     }
@@ -682,10 +778,10 @@ impl UpAdjFlatFile {
     }
 
     fn read_from_bytes_inner(bytes: &'static [u8], verify: bool) -> anyhow::Result<UpAdjFlat> {
-        let (has_topo_idx, width, n_nodes, n_edges) =
+        let (has_topo_idx, width, offsets_u32, n_nodes, n_edges) =
             parse_adj_flat_header(bytes, UP_ADJ_FLAT_MAGIC)?;
         let (offsets_off, targets_off, weights_off, topo_off, body_end) =
-            body_layout(n_nodes, n_edges, has_topo_idx, width);
+            body_layout(n_nodes, n_edges, has_topo_idx, width, offsets_u32);
         anyhow::ensure!(
             bytes.len() == body_end + ADJ_FLAT_FOOTER_SIZE,
             "adj-flat size mismatch: got {}, expected {}",
@@ -702,8 +798,7 @@ impl UpAdjFlatFile {
             verify_adj_flat_crcs(bytes, body_end)?;
         }
 
-        let offsets: &[u64] =
-            bytemuck::cast_slice(&bytes[offsets_off..offsets_off + 8 * (n_nodes + 1)]);
+        let offsets_vec: Vec<u64> = read_offsets_vec(bytes, offsets_off, n_nodes, offsets_u32);
         let targets: &[u32] = bytemuck::cast_slice(&bytes[targets_off..targets_off + 4 * n_edges]);
         // v2 (#349): decode the weights body from its native width into
         // a Vec<u32> so the legacy byte-slice path returns the same
@@ -732,7 +827,7 @@ impl UpAdjFlatFile {
         // type. The `Arc<Mmap>`-backed un-leak path is
         // [`Self::read_from_mmap_unverified`].
         Ok(UpAdjFlat {
-            offsets: ArcCow::from_vec(offsets.to_vec()),
+            offsets: ArcCow::from_vec(offsets_vec),
             targets: ArcCow::from_vec(targets.to_vec()),
             weights: crate::formats::WeightArray::from_vec_u32(weights_vec),
             topo_edge_idx: ArcCow::from_vec(topo_edge_idx.to_vec()),
@@ -760,10 +855,10 @@ impl UpAdjFlatFile {
             mmap.len()
         );
         let bytes = &mmap[byte_offset..byte_offset + byte_len];
-        let (has_topo_idx, width, n_nodes, n_edges) =
+        let (has_topo_idx, width, offsets_u32, n_nodes, n_edges) =
             parse_adj_flat_header(bytes, UP_ADJ_FLAT_MAGIC)?;
         let (offsets_off, targets_off, weights_off, topo_off, body_end) =
-            body_layout(n_nodes, n_edges, has_topo_idx, width);
+            body_layout(n_nodes, n_edges, has_topo_idx, width, offsets_u32);
         anyhow::ensure!(
             byte_len == body_end + ADJ_FLAT_FOOTER_SIZE,
             "up_adj_flat size mismatch: got {}, expected {}",
@@ -776,8 +871,7 @@ impl UpAdjFlatFile {
         let weights_abs = byte_offset + weights_off;
         let topo_abs = byte_offset + topo_off;
 
-        let offsets =
-            ArcCow::<u64>::from_mmap(std::sync::Arc::clone(&mmap), offsets_abs, n_nodes + 1)?;
+        let offsets = load_offsets_arccow(&mmap, offsets_abs, n_nodes, offsets_u32)?;
         let targets = ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), targets_abs, n_edges)?;
         let weights = crate::formats::cch_weights::decode_weight_array_mmap(
             &mmap,
@@ -807,18 +901,28 @@ impl DownAdjFlatFile {
         let n_nodes = flat.offsets.len().saturating_sub(1);
         let n_edges = flat.weights.len();
         let width = flat.weights.width();
+        let offsets_u32 = pick_offsets_u32(&flat.offsets);
         // DownAdjFlat never carries topo_edge_idx.
-        let (_, _, _, _, body_end) = body_layout(n_nodes, n_edges, false, width);
+        let (_, _, _, _, body_end) =
+            body_layout(n_nodes, n_edges, false, width, offsets_u32);
         let mut out = Vec::with_capacity(body_end + ADJ_FLAT_FOOTER_SIZE);
         write_adj_flat_header(
             &mut out,
             DOWN_ADJ_FLAT_MAGIC,
             false,
             width,
+            offsets_u32,
             n_nodes as u64,
             n_edges as u64,
         );
-        write_adj_flat_body_and_footer(&mut out, &flat.offsets, &flat.targets, &flat.weights, None);
+        write_adj_flat_body_and_footer(
+            &mut out,
+            &flat.offsets,
+            &flat.targets,
+            &flat.weights,
+            None,
+            offsets_u32,
+        );
         out
     }
 
@@ -833,14 +937,14 @@ impl DownAdjFlatFile {
     }
 
     fn read_from_bytes_inner(bytes: &'static [u8], verify: bool) -> anyhow::Result<DownAdjFlat> {
-        let (has_topo_idx, width, n_nodes, n_edges) =
+        let (has_topo_idx, width, offsets_u32, n_nodes, n_edges) =
             parse_adj_flat_header(bytes, DOWN_ADJ_FLAT_MAGIC)?;
         anyhow::ensure!(
             !has_topo_idx,
             "DownAdjFlat must not carry topo_edge_idx (has_topo_idx=1)"
         );
         let (offsets_off, targets_off, weights_off, _, body_end) =
-            body_layout(n_nodes, n_edges, false, width);
+            body_layout(n_nodes, n_edges, false, width, offsets_u32);
         anyhow::ensure!(
             bytes.len() == body_end + ADJ_FLAT_FOOTER_SIZE,
             "adj-flat size mismatch"
@@ -852,8 +956,7 @@ impl DownAdjFlatFile {
         if verify {
             verify_adj_flat_crcs(bytes, body_end)?;
         }
-        let offsets: &[u64] =
-            bytemuck::cast_slice(&bytes[offsets_off..offsets_off + 8 * (n_nodes + 1)]);
+        let offsets_vec: Vec<u64> = read_offsets_vec(bytes, offsets_off, n_nodes, offsets_u32);
         let targets: &[u32] = bytemuck::cast_slice(&bytes[targets_off..targets_off + 4 * n_edges]);
         let weights_bytes = &bytes[weights_off..weights_off + width.bytes_per_entry() * n_edges];
         let weights_vec: Vec<u32> = match width {
@@ -869,7 +972,7 @@ impl DownAdjFlatFile {
         };
         // Legacy zero-copy path now copies into owned Vecs (#296).
         Ok(DownAdjFlat {
-            offsets: ArcCow::from_vec(offsets.to_vec()),
+            offsets: ArcCow::from_vec(offsets_vec),
             targets: ArcCow::from_vec(targets.to_vec()),
             weights: crate::formats::WeightArray::from_vec_u32(weights_vec),
         })
@@ -889,14 +992,14 @@ impl DownAdjFlatFile {
             mmap.len()
         );
         let bytes = &mmap[byte_offset..byte_offset + byte_len];
-        let (has_topo_idx, width, n_nodes, n_edges) =
+        let (has_topo_idx, width, offsets_u32, n_nodes, n_edges) =
             parse_adj_flat_header(bytes, DOWN_ADJ_FLAT_MAGIC)?;
         anyhow::ensure!(
             !has_topo_idx,
             "DownAdjFlat must not carry topo_edge_idx (has_topo_idx=1)"
         );
         let (offsets_off, targets_off, weights_off, _, body_end) =
-            body_layout(n_nodes, n_edges, false, width);
+            body_layout(n_nodes, n_edges, false, width, offsets_u32);
         anyhow::ensure!(
             byte_len == body_end + ADJ_FLAT_FOOTER_SIZE,
             "down_adj_flat size mismatch: got {}, expected {}",
@@ -906,8 +1009,7 @@ impl DownAdjFlatFile {
         let offsets_abs = byte_offset + offsets_off;
         let targets_abs = byte_offset + targets_off;
         let weights_abs = byte_offset + weights_off;
-        let offsets =
-            ArcCow::<u64>::from_mmap(std::sync::Arc::clone(&mmap), offsets_abs, n_nodes + 1)?;
+        let offsets = load_offsets_arccow(&mmap, offsets_abs, n_nodes, offsets_u32)?;
         let targets = ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), targets_abs, n_edges)?;
         let weights = crate::formats::cch_weights::decode_weight_array_mmap(
             &mmap,
@@ -935,13 +1037,16 @@ impl DownReverseAdjFlatFile {
             assert_eq!(flat.topo_edge_idx.len(), n_edges);
         }
         let width = flat.weights.width();
-        let (_, _, _, _, body_end) = body_layout(n_nodes, n_edges, has_topo_idx, width);
+        let offsets_u32 = pick_offsets_u32(&flat.offsets);
+        let (_, _, _, _, body_end) =
+            body_layout(n_nodes, n_edges, has_topo_idx, width, offsets_u32);
         let mut out = Vec::with_capacity(body_end + ADJ_FLAT_FOOTER_SIZE);
         write_adj_flat_header(
             &mut out,
             DOWN_REV_ADJ_FLAT_MAGIC,
             has_topo_idx,
             width,
+            offsets_u32,
             n_nodes as u64,
             n_edges as u64,
         );
@@ -950,7 +1055,14 @@ impl DownReverseAdjFlatFile {
         } else {
             None
         };
-        write_adj_flat_body_and_footer(&mut out, &flat.offsets, &flat.sources, &flat.weights, topo);
+        write_adj_flat_body_and_footer(
+            &mut out,
+            &flat.offsets,
+            &flat.sources,
+            &flat.weights,
+            topo,
+            offsets_u32,
+        );
         out
     }
 
@@ -968,10 +1080,10 @@ impl DownReverseAdjFlatFile {
         bytes: &'static [u8],
         verify: bool,
     ) -> anyhow::Result<DownReverseAdjFlat> {
-        let (has_topo_idx, width, n_nodes, n_edges) =
+        let (has_topo_idx, width, offsets_u32, n_nodes, n_edges) =
             parse_adj_flat_header(bytes, DOWN_REV_ADJ_FLAT_MAGIC)?;
         let (offsets_off, sources_off, weights_off, topo_off, body_end) =
-            body_layout(n_nodes, n_edges, has_topo_idx, width);
+            body_layout(n_nodes, n_edges, has_topo_idx, width, offsets_u32);
         anyhow::ensure!(
             bytes.len() == body_end + ADJ_FLAT_FOOTER_SIZE,
             "adj-flat size mismatch"
@@ -983,8 +1095,7 @@ impl DownReverseAdjFlatFile {
         if verify {
             verify_adj_flat_crcs(bytes, body_end)?;
         }
-        let offsets: &[u64] =
-            bytemuck::cast_slice(&bytes[offsets_off..offsets_off + 8 * (n_nodes + 1)]);
+        let offsets_vec: Vec<u64> = read_offsets_vec(bytes, offsets_off, n_nodes, offsets_u32);
         let sources: &[u32] = bytemuck::cast_slice(&bytes[sources_off..sources_off + 4 * n_edges]);
         let weights_bytes = &bytes[weights_off..weights_off + width.bytes_per_entry() * n_edges];
         let weights_vec: Vec<u32> = match width {
@@ -1005,7 +1116,7 @@ impl DownReverseAdjFlatFile {
         };
         // Legacy zero-copy path now copies into owned Vecs (#296).
         Ok(DownReverseAdjFlat {
-            offsets: ArcCow::from_vec(offsets.to_vec()),
+            offsets: ArcCow::from_vec(offsets_vec),
             sources: ArcCow::from_vec(sources.to_vec()),
             weights: crate::formats::WeightArray::from_vec_u32(weights_vec),
             topo_edge_idx: ArcCow::from_vec(topo_edge_idx.to_vec()),
@@ -1026,10 +1137,10 @@ impl DownReverseAdjFlatFile {
             mmap.len()
         );
         let bytes = &mmap[byte_offset..byte_offset + byte_len];
-        let (has_topo_idx, width, n_nodes, n_edges) =
+        let (has_topo_idx, width, offsets_u32, n_nodes, n_edges) =
             parse_adj_flat_header(bytes, DOWN_REV_ADJ_FLAT_MAGIC)?;
         let (offsets_off, sources_off, weights_off, topo_off, body_end) =
-            body_layout(n_nodes, n_edges, has_topo_idx, width);
+            body_layout(n_nodes, n_edges, has_topo_idx, width, offsets_u32);
         anyhow::ensure!(
             byte_len == body_end + ADJ_FLAT_FOOTER_SIZE,
             "down_reverse_adj_flat size mismatch: got {}, expected {}",
@@ -1040,8 +1151,7 @@ impl DownReverseAdjFlatFile {
         let sources_abs = byte_offset + sources_off;
         let weights_abs = byte_offset + weights_off;
         let topo_abs = byte_offset + topo_off;
-        let offsets =
-            ArcCow::<u64>::from_mmap(std::sync::Arc::clone(&mmap), offsets_abs, n_nodes + 1)?;
+        let offsets = load_offsets_arccow(&mmap, offsets_abs, n_nodes, offsets_u32)?;
         let sources = ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), sources_abs, n_edges)?;
         let weights = crate::formats::cch_weights::decode_weight_array_mmap(
             &mmap,
@@ -3323,6 +3433,52 @@ mod step_a_tests {
         for i in 0..flat.weights.len() {
             assert_eq!(back.weights.get(i), flat.weights.get(i));
         }
+    }
+
+    #[test]
+    fn up_adj_flat_v3_picks_u32_offsets_for_small_data() {
+        // Synthetic flats have tiny offset counts, so `pick_offsets_u32`
+        // selects u32. Header byte 7 bit 2 must be set; the round-trip
+        // through `read_from_bytes` must reconstruct an identical
+        // `flat.offsets` Vec.
+        let flat = build_flat_with_width(crate::formats::WeightWidth::U32);
+        let bytes = UpAdjFlatFile::encode(&flat);
+        assert!(
+            bytes[7] & ADJ_FLAT_OFFSETS_U32_BIT != 0,
+            "small flats should pack u32 offsets (header byte 7 bit 2 set)"
+        );
+        let static_bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+        let back = UpAdjFlatFile::read_from_bytes(static_bytes).unwrap();
+        // offsets reconstructed byte-for-byte (widened from u32 → u64)
+        assert_eq!(back.offsets.as_slice(), flat.offsets.as_slice());
+    }
+
+    #[test]
+    fn up_adj_flat_v3_picks_u64_offsets_for_large_data() {
+        // Forge a flat whose last offset overflows u32, forcing the
+        // writer onto the u64 path. The body content is meaningless
+        // (we just want the size selection to fire), so we sidestep
+        // build_with by constructing the flat directly.
+        use crate::formats::WeightArray;
+        // 2 nodes, 1 edge. Offsets [0, u32::MAX as u64 + 1] — last
+        // exceeds u32, so writer must pick u64.
+        let offsets: Vec<u64> = vec![0, u32::MAX as u64 + 1];
+        let targets: Vec<u32> = vec![0];
+        let flat = UpAdjFlat {
+            offsets: ArcCow::from_vec(offsets),
+            targets: ArcCow::from_vec(targets),
+            weights: WeightArray::from_vec_u32(vec![42]),
+            topo_edge_idx: ArcCow::from_vec(Vec::new()),
+        };
+        let bytes = UpAdjFlatFile::encode(&flat);
+        assert_eq!(
+            bytes[7] & ADJ_FLAT_OFFSETS_U32_BIT,
+            0,
+            "large offsets must force the u64 path (header byte 7 bit 2 clear)"
+        );
+        let static_bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+        let back = UpAdjFlatFile::read_from_bytes(static_bytes).unwrap();
+        assert_eq!(back.offsets.as_slice(), flat.offsets.as_slice());
     }
 
     #[test]
