@@ -389,23 +389,49 @@ pub async fn serve(
             }
         };
 
-    // ---- Transit bootstrap (single-region only) --------------------
-    // Transit subsystem is loaded against the *primary* region's foot
-    // CCH. Multi-region transit (one timetable + ULTRA per region) is
-    // out of scope for #91 Phase 1.
+    // ---- Transit bootstrap (per-region, #334) ----------------------
+    //
+    // Each region can carry its own transit feeds. Discovery order, for
+    // every loaded region:
+    //   1. `<data_dir>/<region_id_lowercase>/transit/transit.toml`
+    //      (multi-region convention — operator stages each region's
+    //      feeds next to its container)
+    //   2. `<data_dir>/transit/transit.toml`
+    //      (legacy single-region convention — kept so an existing
+    //      single-region deployment doesn't need reorganisation)
+    //
+    // For multi-region deployments without per-region transit dirs, only
+    // the primary region picks up option 2; the others stay road-only.
+    // Cross-region transit (origin in BE, destination in LU) is a future
+    // follow-up — for now, each region's transit serves intra-region
+    // origin/destination pairs.
     let mut regions_state = regions_state;
-    if regions_state.len() == 1
-        && let Some(cfg) = crate::transit::config::load(&data_dir_for_transit)?
-    {
-        // Mutate the (only) ServerState in place via the boot-only
-        // with_loaded_state_mut helper. This runs before any Arc clone
-        // leaks out of the function. #292 Phase 2: the helper handles
-        // the new RegionState::Loaded(Arc<...>) wrapping.
-        regions_state.regions[0].with_loaded_state_mut(|state_owned| {
+    let mut transit_loaded_count = 0usize;
+    let n_regions = regions_state.regions.len();
+    for idx in 0..n_regions {
+        let region_id_lower = regions_state.regions[idx].id.to_lowercase();
+        let per_region_dir = data_dir_for_transit.join(&region_id_lower);
+
+        // Prefer per-region transit/. Fall back to the global
+        // <data_dir>/transit/ only for the primary region so we don't
+        // accidentally point every region at the same feeds.
+        let cfg = match crate::transit::config::load(&per_region_dir)? {
+            Some(cfg) => Some(cfg),
+            None if idx == 0 => crate::transit::config::load(&data_dir_for_transit)?,
+            None => None,
+        };
+
+        let Some(cfg) = cfg else {
+            continue;
+        };
+
+        let region_id = regions_state.regions[idx].id.clone();
+        regions_state.regions[idx].with_loaded_state_mut(|state_owned| {
             let foot_idx = match state_owned.mode_lookup.get("foot").copied() {
                 Some(idx) => idx,
                 None => {
                     tracing::warn!(
+                        region = %region_id,
                         "transit configured but foot mode is not loaded; add 'foot' to --modes"
                     );
                     return;
@@ -415,6 +441,7 @@ pub async fn serve(
             match crate::transit::load_from_disk(&cfg, foot, foot_idx, &state_owned.snap_index) {
                 Ok(snapshot) => {
                     tracing::info!(
+                        region = %region_id,
                         stops = snapshot.timetable.n_stops(),
                         routes = snapshot.timetable.n_routes(),
                         trips = snapshot.timetable.n_total_trips,
@@ -424,18 +451,37 @@ pub async fn serve(
                 }
                 Err(e) => {
                     tracing::warn!(
+                        region = %region_id,
                         error = %e,
-                        "no usable transit feeds on disk — run `butterfly-route transit-fetch` to populate. Continuing in road-only mode."
+                        "no usable transit feeds on disk — run `butterfly-route transit-fetch` to populate. Continuing in road-only mode for this region."
                     );
                 }
             }
         })?;
-    } else if regions_state.len() > 1 {
-        tracing::info!(
-            "multi-region serve — transit subsystem not loaded (out of scope for #91 Phase 1)"
-        );
+
+        if regions_state.regions[idx]
+            .state_loaded()
+            .is_some_and(|s| s.transit.is_some())
+        {
+            transit_loaded_count += 1;
+        }
+    }
+    if transit_loaded_count == 0 {
+        if n_regions > 1 {
+            tracing::info!(
+                "multi-region serve — no transit feeds discovered in any region (looked for `<data_dir>/<region>/transit/` + global fallback)"
+            );
+        } else {
+            tracing::info!("no transit/ directory — running in road-only mode");
+        }
     } else {
-        tracing::info!("no transit/ directory — running in road-only mode");
+        tracing::info!(
+            transit_loaded_count,
+            n_regions,
+            "transit subsystem loaded for {} of {} regions",
+            transit_loaded_count,
+            n_regions
+        );
     }
 
     // ---- Per-region size metrics -----------------------------------

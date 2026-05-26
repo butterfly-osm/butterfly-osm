@@ -259,17 +259,39 @@ impl RegionEntry {
         }
     }
 
-    /// Boot-only helper: invoke `f` with a `&mut ServerState` if the
-    /// entry is `Loaded` AND the inner `Arc` has refcount 1. Used by
-    /// the single-region transit bootstrap path in
-    /// `server::mod::start_server` which mutates the per-region state
-    /// before any handler can clone it. Panics if not Loaded or if the
-    /// `Arc` has been shared.
+    /// Boot-only helper: invoke `f` with a `&mut ServerState`. If the
+    /// entry is `Pending` (the lazy multi-region default), this
+    /// transitions it to `Loaded` first — every caller of this helper
+    /// runs at boot, before any handler clone leaks out, so triggering
+    /// the load here is the right semantic. If the entry is `Loaded`
+    /// but the inner `Arc` was already shared (refcount > 1) returns
+    /// an error — the caller is then on the hook for explaining why
+    /// state escaped before boot finished.
     pub fn with_loaded_state_mut<F, R>(&self, f: F) -> Result<R>
     where
         F: FnOnce(&mut ServerState) -> R,
     {
         let mut guard = self.state_cell.write();
+        // If still Pending, drive the per-container load synchronously.
+        // This is called only from boot (transit attach), so triggering
+        // a load here is intentional even on the otherwise-lazy path.
+        if matches!(&*guard, RegionState::Pending) {
+            let load_start = std::time::Instant::now();
+            let state =
+                ServerState::load_from_container(&self.container, None).map_err(|e| {
+                    anyhow::anyhow!("lazy region load failed for {}: {}", self.container.display(), e)
+                })?;
+            tracing::info!(
+                region = %self.id,
+                container = %self.container.display(),
+                load_ms = load_start.elapsed().as_millis() as u64,
+                nodes = state.ebg_nodes.n_nodes,
+                edges = state.ebg_csr.n_arcs,
+                "loaded region for boot-time mutation (transit attach)"
+            );
+            *guard = RegionState::Loaded(Arc::new(state));
+            self.touch();
+        }
         match &mut *guard {
             RegionState::Loaded(arc) => {
                 let s = Arc::get_mut(arc).ok_or_else(|| {
@@ -277,9 +299,7 @@ impl RegionEntry {
                 })?;
                 Ok(f(s))
             }
-            RegionState::Pending => Err(anyhow::anyhow!(
-                "region state not loaded; cannot mutate during boot"
-            )),
+            RegionState::Pending => unreachable!("transitioned above"),
         }
     }
 }
