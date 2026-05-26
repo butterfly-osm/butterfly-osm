@@ -136,6 +136,21 @@ pub enum SectionKind {
 
     /// `step7/cch.<mode>.topo` — per-mode CCH topology.
     CchTopo = 0x0007_0001,
+    /// `step7/cch.<mode>.middles` — per-mode CCH shortcut middle
+    /// pointers, split out of `cch.topo` into a separate **cold**
+    /// section (#359 / #352 phase 2). The middles array is only
+    /// consulted during shortcut unpack (P2P route geometry
+    /// reconstruction). Matrix / isochrone / bucket-M2M never touch
+    /// it. Co-locating the bytes in a dedicated section lets
+    /// matrix-only workloads `madvise(DONTNEED)` the entire middle
+    /// range without affecting hot pages of the topology proper —
+    /// projected ~300-420 MB RSS savings per Belgium mode under
+    /// 24-thread matrix load (codex assessment on #352).
+    ///
+    /// Carries the same `up_middle + down_middle` arrays the v5
+    /// `cch.topo` body used to embed, with their own header,
+    /// width-picked layout, and CRC.
+    CchMiddles = 0x0007_0002,
 
     /// `step8/cch.w.<mode>.u32` — per-mode customised time weights.
     CchWeightsTime = 0x0008_0001,
@@ -271,6 +286,7 @@ impl SectionKind {
             0x0006_0001 => Self::OrderEbg,
 
             0x0007_0001 => Self::CchTopo,
+            0x0007_0002 => Self::CchMiddles,
 
             0x0008_0001 => Self::CchWeightsTime,
             0x0008_0002 => Self::CchWeightsDist,
@@ -326,6 +342,7 @@ impl SectionKind {
             Self::ModeMask => "step5/mask.bitset",
             Self::OrderEbg => "step6/order.ebg",
             Self::CchTopo => "step7/cch.topo",
+            Self::CchMiddles => "step7/cch.middles",
             Self::CchWeightsTime => "step8/cch.w.u32",
             Self::CchWeightsDist => "step8/cch.d.u32",
             Self::UpAdjFlat => "flat/up_adj",
