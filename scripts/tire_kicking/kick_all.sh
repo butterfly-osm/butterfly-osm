@@ -326,22 +326,48 @@ def run_catchment():
             schema=schema,
         )
 
-        params = {"percentiles": [50, 80], "hull_mode": "isochrone", "remove_outliers": False}
+        percentiles = [50, 80]
+        params = {"percentiles": percentiles, "hull_mode": "isochrone", "remove_outliers": False}
         desc = flight.FlightDescriptor.for_command(
             f"catchment:car:{json.dumps(params)}".encode()
         )
         writer, reader = client.do_exchange(desc)
-        writer.begin(schema)
-        writer.write_batch(batch)
-        writer.done_writing()
-        out = reader.read_all()
-        writer.close()
-        if out.num_rows == 0:
-            print(f"FAIL  Flight catchment_1store: 0 output rows — expected per-(store, percentile)")
+        try:
+            writer.begin(schema)
+            writer.write_batch(batch)
+            writer.done_writing()
+            out = reader.read_all()
+        finally:
+            # Always close to avoid leaking the gRPC stream on errors.
+            writer.close()
+
+        # Server emits exactly (n_stores × n_percentiles) rows. With 1
+        # store and 2 percentiles configured we expect 2 rows, and the
+        # output schema MUST carry the documented columns.
+        n_stores = 1
+        expected_rows = n_stores * len(percentiles)
+        if out.num_rows != expected_rows:
+            print(
+                f"FAIL  Flight catchment_1store: got {out.num_rows} rows, expected {expected_rows} "
+                f"({n_stores} stores × {len(percentiles)} percentiles)"
+            )
             FAIL += 1
-        else:
-            print(f"PASS  Flight catchment_1store: rows={out.num_rows} cols={out.num_columns}")
-            PASS += 1
+            return
+        required_cols = {"store_id", "percentile", "polygon_wkb"}
+        actual_cols = set(out.column_names)
+        missing = required_cols - actual_cols
+        if missing:
+            print(
+                f"FAIL  Flight catchment_1store: missing required columns {missing}; "
+                f"got {sorted(actual_cols)}"
+            )
+            FAIL += 1
+            return
+        print(
+            f"PASS  Flight catchment_1store: rows={out.num_rows} cols={out.num_columns} "
+            f"(percentile values: {out.column('percentile').to_pylist()})"
+        )
+        PASS += 1
     except Exception as e:
         print(f"FAIL  Flight catchment_1store: {e}")
         FAIL += 1
