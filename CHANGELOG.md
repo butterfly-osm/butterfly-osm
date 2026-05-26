@@ -8,6 +8,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For detailed tool-specific changes, see individual tool changelogs:
 - [butterfly-dl](./tools/butterfly-dl/CHANGELOG.md) - OSM data downloader
 
+## [Unreleased] — 2026-05-26 — Lazy snap escalation + isodistance removal
+
+Closed the OSRM gap on the headline `/route` endpoint and pushed `/table`
+ahead of OSRM on the HTTP wall, all by deferring the K=64 candidate
+fetch in every snapping handler. Also removed isodistance from
+`/isochrone` as part of the drivetime-distance-consistency cleanup
+(#371). Six PRs landed in one day on top of the codec sprint below.
+
+### Performance — lazy K=64 snap escalation across all snapping endpoints
+
+The pre-patch pattern: every endpoint paid the K=64 candidate fetch
+upfront for every source/destination (~2.14 ms each on Belgium per
+the `iterate_rings` + linear-scan-update-best loop), even though
+98.7% of pairs route on (0, 0) (#197 sweep). After: K=1 primary
+upfront, K=64 escalation only for src/tgt indices that produce an
+INF cell or where the primary CCH query returns None.
+
+| endpoint | size | before | after | Δ |
+|---|---|---:|---:|---:|
+| `/route` Brussels→Antwerp HTTP wall | apples-to-apples | 12 ms p50 | **9 ms p50** | **−25%** |
+| `/route` tail | 30-run max | 13 ms | **16 ms** | within noise |
+| `/table` HTTP wall | 100×100 | 75 ms | **47 ms** | **−37%** |
+| `/table` HTTP wall | 1000×1000 | ~740 ms | **549 ms** | **−26%** |
+| OSRM CH `/table` HTTP wall reference | 1000×1000 | 684 ms | — | Butterfly is now **1.25× faster than OSRM** |
+
+`/route` now ties OSRM at p50 (9 ms vs 9 ms apples-to-apples) and
+beats it on the tail (16 ms vs OSRM 33 ms max).
+
+### Added
+
+- **butterfly-route**: `snap_kbest::snap_primary_role` helper
+  (PR #375). K=1 primary with a valid CCH rank; transparently
+  escalates to K=64 if the geometrically-closest candidate has
+  `orig_to_rank == u32::MAX` (rare `role_filter` / `orig_to_rank`
+  disagreement edge case). Used by `/route`, `/catchment`, Flight
+  `matrix`, Flight `edges_batch`, Flight `catchment`.
+
+### Changed
+
+- **butterfly-route**: `/route` lazy snap escalation (PR #368).
+  Snap K=1 primary first; only escalate to K=64 + #197 combo
+  enumeration on primary CCH query failure (~1.3% of Belgium pairs).
+  snap_src 2140 µs → 127 µs, snap_dst 717 µs → 23 µs, handler total
+  6850 µs → 4180 µs.
+- **butterfly-route**: `/table` lazy snap (PR #370). Same pattern,
+  K=64 only for src/tgt indices that have at least one failed cell
+  after bucket-M2M. Healthy 1000×1000 matrices snap K=64 for zero
+  indices.
+- **butterfly-route**: `/trip` lazy snap (PR #374). K=1 per waypoint
+  upfront, K=64 only for waypoints whose row/column has an INF cell.
+- **butterfly-route**: Flight `matrix` / `route_batch` / `edges_batch`
+  + Flight `catchment` DoExchange + REST `/catchment` all share the
+  same lazy pattern (PR #375).
+
+### Removed
+
+- **butterfly-route**: `/isochrone?distance_m=…` (isodistance) removed
+  entirely (#371, PR #373). Isodistance was the only endpoint that
+  ran PHAST on the separate distance-shortest CCH (`cch_weights_dist`),
+  reporting reachability for a geometric path different from every
+  other drivetime endpoint in the engine. Requests now return 400
+  `Provide exactly one of: time_s or contours`. The `cch_weights_dist`
+  storage stays for now — still consumed by `/table`, `/trip`, and
+  Flight matrix endpoints; #372 tracks the 2-channel bucket-M2M
+  migration that retires it from those endpoints too.
+
+### Known regression (acknowledged, not fixed in this sprint)
+
+- `/table`, `/trip`, Flight `matrix` / `route_batch` / `edges_batch`
+  still report `distance` from the separate distance-shortest CCH —
+  a geometric path that disagrees with `/route`. Cross-check on
+  Aalst→Charleroi: `/route` returns 13038 s / 161 545 m
+  (time-shortest motorway), `/table` returns 13038 s / 142 443 m
+  (distance-shortest secondary roads). Tracked as #372; the fix
+  requires a 2-channel bucket-M2M that accumulates length-along-time
+  during the same forward+backward Dijkstra. Substantial algorithm
+  change deferred to its own PR.
+
+### Internal
+
+- Clippy + fmt drift cleanup (PR #369). 21 files reformatted under
+  edition-2024 rustfmt; 4 `needless_option_as_deref` warnings
+  collapsed in `way_names_idx` test code.
+
 ## [Unreleased] — 2026-05-26 — Disk/RAM codec sprint
 
 End-to-end disk + RAM reduction sweep landed across nine PRs. Belgium
