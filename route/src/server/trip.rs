@@ -652,10 +652,12 @@ pub async fn trip_handler(
             *word &= ob & ib;
         }
 
-        // Snap K candidates per waypoint so we can fall back when the
-        // primary snap traps us in a small SCC (#197 matrix gap). The
-        // first candidate feeds the N×N TSP matrix; the rest patch
-        // INF cells via per-cell P2P after the matrix is built.
+        // Snap K=1 per waypoint upfront — same lazy pattern as #368
+        // (/route) and #370 (/table): the primary candidate feeds the
+        // N×N TSP matrix; if any matrix cell is INF after the bucket
+        // M2M, escalate to K=64 for ONLY the affected waypoint
+        // indices and replay the combo fallback (#197). Healthy tours
+        // never pay the K=64 snap cost.
         const SNAP_K: usize = 64;
 
         let mut ranks: Vec<u32> = Vec::with_capacity(n);
@@ -667,27 +669,19 @@ pub async fn trip_handler(
             // No role_filter here — we already AND'd both roles into
             // role_anded_mask, so a single snap pass returns candidates
             // satisfying both src and dst.
-            let cands = state_clone.snap_index.snap_k_with_info_filtered(
-                lon,
-                lat,
-                mode.0,
-                SNAP_K,
-                Some(&role_anded_mask),
-            );
-            let mut cand_ranks: Vec<u32> = Vec::with_capacity(cands.len());
-            for (orig_id, _plon, _plat, _d) in &cands {
-                let rank = mode_data.orig_to_rank[*orig_id as usize];
-                if rank != u32::MAX {
-                    cand_ranks.push(rank);
-                }
-            }
-            if let Some((orig_id, _, _, _)) = cands.first() {
-                let rank = mode_data.orig_to_rank[*orig_id as usize];
+            if let Some((orig_id, _plon, _plat, _d)) = state_clone
+                .snap_index
+                .snap_with_info_filtered(lon, lat, mode.0, Some(&role_anded_mask))
+            {
+                let rank = mode_data.orig_to_rank[orig_id as usize];
                 if rank != u32::MAX {
                     ranks.push(rank);
                     valid.push(true);
-                    snapped_locations.push(get_node_location(&state_clone, *orig_id));
-                    candidates.push(cand_ranks);
+                    snapped_locations.push(get_node_location(&state_clone, orig_id));
+                    // candidates[i] starts as just the primary; escalated
+                    // to K=64 lazily inside the fallback block below if
+                    // this waypoint participates in an INF cell.
+                    candidates.push(vec![rank]);
                     continue;
                 }
             }
@@ -833,12 +827,14 @@ pub async fn trip_handler(
                 // Collect cells needing fallback, then run them in
                 // parallel via rayon.
                 let mut work: Vec<(usize, usize, bool, bool)> = Vec::new();
-                for i in 0..n {
-                    if !valid[i] || candidates[i].is_empty() {
+                let mut needed_idx_set: std::collections::HashSet<usize> =
+                    std::collections::HashSet::new();
+                for (i, &vi) in valid.iter().enumerate() {
+                    if !vi {
                         continue;
                     }
-                    for j in 0..n {
-                        if i == j || !valid[j] || candidates[j].is_empty() {
+                    for (j, &vj) in valid.iter().enumerate() {
+                        if i == j || !vj {
                             continue;
                         }
                         let cell = i * n + j;
@@ -849,7 +845,41 @@ pub async fn trip_handler(
                             .unwrap_or(false);
                         if dur_missing || dist_missing {
                             work.push((i, j, dur_missing, dist_missing));
+                            needed_idx_set.insert(i);
+                            needed_idx_set.insert(j);
                         }
+                    }
+                }
+
+                // Lazy K=64 escalation: snap only the waypoint indices
+                // that participate in at least one INF cell. Same shape
+                // as table::apply_k_best_fallback. Healthy tours land
+                // here with an empty set and pay zero K=64 cost.
+                let needed_idx: Vec<usize> = needed_idx_set.into_iter().collect();
+                let escalated: Vec<(usize, Vec<u32>)> = needed_idx
+                    .par_iter()
+                    .map(|&i| {
+                        let [lon, lat] = coordinates[i];
+                        let cands = state_clone.snap_index.snap_k_with_info_filtered(
+                            lon,
+                            lat,
+                            mode.0,
+                            SNAP_K,
+                            Some(&role_anded_mask),
+                        );
+                        let ranks: Vec<u32> = cands
+                            .iter()
+                            .filter_map(|(orig_id, _, _, _)| {
+                                let r = mode_data.orig_to_rank[*orig_id as usize];
+                                if r == u32::MAX { None } else { Some(r) }
+                            })
+                            .collect();
+                        (i, ranks)
+                    })
+                    .collect();
+                for (i, ranks) in escalated {
+                    if !ranks.is_empty() {
+                        candidates[i] = ranks;
                     }
                 }
 
