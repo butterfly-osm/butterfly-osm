@@ -208,10 +208,56 @@ def run(name, fn, expected_status_msg=None):
             print(f"FAIL  Flight {name}: {msg}")
             FAIL += 1
 
+def expect_reject(name, fn, *needles):
+    """Fail if `fn` succeeded; FAIL if rejected with the WRONG message; PASS
+    if rejected with any of `needles` in the gRPC status text."""
+    global PASS, FAIL
+    try:
+        tbl = fn()
+        print(f"FAIL  Flight {name}: expected rejection but got rows={tbl.num_rows}")
+        FAIL += 1
+    except Exception as e:
+        msg = str(e)
+        if any(n in msg for n in needles):
+            print(f"PASS  Flight {name}: rejected with expected message")
+        else:
+            print(f"FAIL  Flight {name}: rejected with unexpected message — {msg[:200]}")
+            FAIL += 1
+            return
+        PASS += 1
+
 run("matrix_5x5_car", lambda: call("matrix", {
     "sources": [[4.351,50.846],[4.36,50.86],[4.37,50.84],[4.38,50.87],[4.34,50.88]],
     "destinations": [[4.402,51.218],[4.41,51.21],[4.42,51.20],[4.39,51.23],[4.43,51.19]],
 }))
+
+# Multi-region: LU-only Flight queries (#336). Pre-#336 these would have
+# snapped LU coords against BE's spatial index and returned NotFound /
+# wrong results.
+run("isochrone_LU_car", lambda: call("isochrone", {
+    "lon": 6.130, "lat": 49.611, "intervals": [600],
+}))
+run("matrix_LU_2x2_car", lambda: call("matrix", {
+    "sources":      [[6.130,49.611],[6.135,49.615]],
+    "destinations": [[6.140,49.620],[6.145,49.625]],
+}))
+run("route_batch_LU_1", lambda: call("route_batch", {
+    "pairs": [[6.130,49.611,6.140,49.620]],
+}))
+
+# Multi-region: cross-region requests must be REJECTED (FAILED_PRECONDITION).
+# Anything else is a regression — silent wrong answer is worse than an error.
+expect_reject("matrix_BE_to_LU_xreg",
+    lambda: call("matrix", {
+        "sources":      [[4.351, 50.846]],
+        "destinations": [[6.130, 49.611]],
+    }),
+    "spans regions", "FailedPrecondition")
+expect_reject("route_batch_BE_to_LU_xreg",
+    lambda: call("route_batch", {
+        "pairs": [[4.351, 50.846, 6.130, 49.611]],
+    }),
+    "spans regions", "FailedPrecondition")
 
 run("route_batch_3", lambda: call("route_batch", {
     "pairs": [
