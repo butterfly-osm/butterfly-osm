@@ -238,7 +238,7 @@ impl<T: bytemuck::Pod> ArcCow<T> {
         // `as_ptr() as usize` is safe; we just check the would-be address.
         let ptr_addr = (mmap.as_ptr() as usize).wrapping_add(byte_offset);
         anyhow::ensure!(
-            ptr_addr % align == 0,
+            ptr_addr.is_multiple_of(align),
             "ArcCow misaligned for {}: ptr={ptr_addr:#x} align={align}",
             std::any::type_name::<T>()
         );
