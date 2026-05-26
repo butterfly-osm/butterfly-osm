@@ -480,58 +480,119 @@ pub async fn compute_table_bucket_m2m(
         (&mode_data.up_adj_flat_dist, &mode_data.down_rev_flat_dist)
     };
 
-    // Compute duration matrix if requested
-    let durations = if want_duration {
-        let t_dur = std::time::Instant::now();
-        let (matrix, _stats) = if use_parallel {
-            table_bucket_parallel(n_nodes, time_up, time_down, &sources_rank, &targets_rank)
-        } else {
-            table_bucket_full_flat(n_nodes, time_up, time_down, &sources_rank, &targets_rank)
-        };
-        tracing::debug!(
-            "compute_table_bucket_m2m: duration M2M took {:?} parallel={}",
-            t_dur.elapsed(),
-            use_parallel
-        );
+    // #372: when both duration and distance are requested AND the
+    // length-along-time flats are available (container shipped with
+    // cch.lat.<mode>.u32 from PR #379), use the 2-channel bucket-M2M.
+    // It produces both matrices in a single forward+backward pass with
+    // the time-shortest path's geometry — distance numbers correspond
+    // to the same path as the duration (matching /route's per-cell
+    // unpack semantics).
+    //
+    // Custom-weight paths (exclude/avoid) don't have length-along-time
+    // recustomisation yet; they fall back to the two-pass distance-
+    // shortest legacy below.
+    let use_2channel = want_duration
+        && want_distance
+        && custom_weights.is_none()
+        && mode_data.up_adj_flat_lat.is_some()
+        && mode_data.down_rev_flat_lat.is_some();
 
-        Some(flat_matrix_to_2d(
-            &matrix,
+    let (durations, distances) = if use_2channel {
+        let t_2ch = std::time::Instant::now();
+        let up_lat = mode_data
+            .up_adj_flat_lat
+            .as_ref()
+            .expect("guarded by use_2channel");
+        let dn_lat = mode_data
+            .down_rev_flat_lat
+            .as_ref()
+            .expect("guarded by use_2channel");
+        let (time_mat, lat_mat, _stats) = crate::matrix::bucket_ch::table_bucket_full_flat_lat(
+            n_nodes,
+            time_up,
+            time_down,
+            up_lat,
+            dn_lat,
+            &sources_rank,
+            &targets_rank,
+        );
+        tracing::debug!(
+            "compute_table_bucket_m2m: 2-channel M2M took {:?}",
+            t_2ch.elapsed(),
+        );
+        let dur = flat_matrix_to_2d(
+            &time_mat,
             n_sources,
             n_targets,
             &source_valid,
             &target_valid,
             neighbor_mask.as_deref(),
-            |v| v as f64, // already in seconds (post-#297)
-        ))
-    } else {
-        None
-    };
-
-    // Compute distance matrix if requested (independent shortest-distance metric)
-    let distances = if want_distance {
-        let t_dist = std::time::Instant::now();
-        let (matrix, _stats) = if use_parallel {
-            table_bucket_parallel(n_nodes, dist_up, dist_down, &sources_rank, &targets_rank)
-        } else {
-            table_bucket_full_flat(n_nodes, dist_up, dist_down, &sources_rank, &targets_rank)
-        };
-        tracing::debug!(
-            "compute_table_bucket_m2m: distance M2M took {:?} parallel={}",
-            t_dist.elapsed(),
-            use_parallel
+            |v| v as f64,
         );
-
-        Some(flat_matrix_to_2d(
-            &matrix,
+        let dist = flat_matrix_to_2d(
+            &lat_mat,
             n_sources,
             n_targets,
             &source_valid,
             &target_valid,
             neighbor_mask.as_deref(),
-            |v| v as f64, // already in meters (post-#297)
-        ))
+            |v| v as f64,
+        );
+        (Some(dur), Some(dist))
     } else {
-        None
+        // Legacy two-pass: separate distance-shortest CCH for `distance`.
+        let durations = if want_duration {
+            let t_dur = std::time::Instant::now();
+            let (matrix, _stats) = if use_parallel {
+                table_bucket_parallel(n_nodes, time_up, time_down, &sources_rank, &targets_rank)
+            } else {
+                table_bucket_full_flat(n_nodes, time_up, time_down, &sources_rank, &targets_rank)
+            };
+            tracing::debug!(
+                "compute_table_bucket_m2m: duration M2M took {:?} parallel={}",
+                t_dur.elapsed(),
+                use_parallel
+            );
+
+            Some(flat_matrix_to_2d(
+                &matrix,
+                n_sources,
+                n_targets,
+                &source_valid,
+                &target_valid,
+                neighbor_mask.as_deref(),
+                |v| v as f64,
+            ))
+        } else {
+            None
+        };
+
+        let distances = if want_distance {
+            let t_dist = std::time::Instant::now();
+            let (matrix, _stats) = if use_parallel {
+                table_bucket_parallel(n_nodes, dist_up, dist_down, &sources_rank, &targets_rank)
+            } else {
+                table_bucket_full_flat(n_nodes, dist_up, dist_down, &sources_rank, &targets_rank)
+            };
+            tracing::debug!(
+                "compute_table_bucket_m2m: distance M2M took {:?} parallel={}",
+                t_dist.elapsed(),
+                use_parallel
+            );
+
+            Some(flat_matrix_to_2d(
+                &matrix,
+                n_sources,
+                n_targets,
+                &source_valid,
+                &target_valid,
+                neighbor_mask.as_deref(),
+                |v| v as f64,
+            ))
+        } else {
+            None
+        };
+        (durations, distances)
     };
 
     let t_post_m2m = std::time::Instant::now();
