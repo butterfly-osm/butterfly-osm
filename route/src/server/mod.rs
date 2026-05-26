@@ -595,18 +595,17 @@ async fn start_rest_server(state: Arc<regions::RegionsState>, port: u16) -> Resu
 
 /// Start only the Arrow Flight gRPC server
 ///
-/// gRPC Flight is single-region only in #91 Phase 1 — the per-method
-/// dispatchers in `server::flight` operate on `Arc<ServerState>` and
-/// were not rewritten for cross-region 501. We hand the *primary*
-/// region's state to Flight; multi-region gRPC is tracked for PR C.
+/// #336: Flight handlers dispatch per-action to the right region via
+/// `dispatch_for_point` / `dispatch_for_pair`. Mixed-region batches
+/// return FAILED_PRECONDITION (the gRPC analogue of REST 501).
 async fn start_grpc_server(state: Arc<regions::RegionsState>, port: u16) -> Result<()> {
     let grpc_addr: std::net::SocketAddr = format!("0.0.0.0:{}", port).parse()?;
     tracing::info!(port = port, "gRPC Flight server listening on {}", grpc_addr);
 
     if state.len() > 1 {
-        tracing::warn!(
+        tracing::info!(
             n_regions = state.len(),
-            "gRPC Flight will only serve the primary region in multi-region mode (PR C extends to multi-region)"
+            "gRPC Flight multi-region: actions snap their first input point to pick the region; mixed-region batches return FAILED_PRECONDITION (#336)"
         );
     }
     // #292 Phase 3: pass the whole RegionsState; Flight resolves the
