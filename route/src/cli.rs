@@ -1311,6 +1311,18 @@ impl Cli {
                 let wa_parsed = parse_mode_path_pairs(&way_attrs, "way-attrs")?;
                 let tr_parsed = parse_mode_path_pairs(&turn_rules, "turn-rules")?;
 
+                // Fail loudly when no modes were passed at all — otherwise
+                // step2_dir discovery below would error with the misleading
+                // "cannot determine step2 directory" message.
+                anyhow::ensure!(
+                    !wa_parsed.is_empty(),
+                    "step4-ebg requires at least one --way-attrs MODE=PATH"
+                );
+                anyhow::ensure!(
+                    !tr_parsed.is_empty(),
+                    "step4-ebg requires at least one --turn-rules MODE=PATH"
+                );
+
                 // Validate that way_attrs and turn_rules have the same set of modes
                 let wa_modes: Vec<&str> = wa_parsed.iter().map(|(n, _, _)| n.as_str()).collect();
                 let tr_modes: Vec<&str> = tr_parsed.iter().map(|(n, _, _)| n.as_str()).collect();
@@ -1330,19 +1342,97 @@ impl Cli {
                         .join("node_signals.bin")
                 });
 
-                // Build dynamic EbgModeConfig list
+                // #332: mode indices MUST come from the global alphabetical
+                // ordering over every mode the step2 directory holds, NOT
+                // from the (sub)set passed via --way-attrs. step5-weights
+                // discovers modes the same way (`Mode::discover_from_dir`),
+                // so step4 and step5 stay aligned even when step4 only
+                // processes a subset. Without this, the per-arc mode_mask
+                // bits written by step4 don't match the bits step5 looks
+                // up, and the subset modes end with `n_filtered_arcs == 0`.
+                //
+                // PR #333 review: all paths MUST live under the same step2
+                // directory — discovering modes from only the first path's
+                // parent while the others point elsewhere would silently
+                // produce wrong global indices.
+                let step2_dir = wa_parsed[0]
+                    .2
+                    .parent()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Cannot determine step2 directory from way-attrs paths")
+                    })?;
+                for ((name, _, wa_path), (_, _, tr_path)) in wa_parsed.iter().zip(tr_parsed.iter())
+                {
+                    let wa_parent = wa_path.parent().unwrap_or(Path::new(""));
+                    anyhow::ensure!(
+                        wa_parent == step2_dir,
+                        "--way-attrs for '{}' is in {} but step4-ebg expects every \
+                         way_attrs/turn_rules under the same step2 directory (first \
+                         path's parent: {})",
+                        name,
+                        wa_parent.display(),
+                        step2_dir.display()
+                    );
+                    let tr_parent = tr_path.parent().unwrap_or(Path::new(""));
+                    anyhow::ensure!(
+                        tr_parent == step2_dir,
+                        "--turn-rules for '{}' is in {} but step4-ebg expects every \
+                         way_attrs/turn_rules under the same step2 directory (first \
+                         path's parent: {})",
+                        name,
+                        tr_parent.display(),
+                        step2_dir.display()
+                    );
+                }
+
+                let all_modes = Mode::discover_from_dir(step2_dir);
+                anyhow::ensure!(
+                    !all_modes.is_empty(),
+                    "No modes found in {}. Expected way_attrs.*.bin files.",
+                    step2_dir.display()
+                );
+                // Bit masks in turn_table.mode_mask are u8; mode_index ≥ 8
+                // would overflow. Defensive check in case the directory has
+                // stale way_attrs files from an older multi-mode run.
+                anyhow::ensure!(
+                    all_modes.len() <= crate::profile_abi::MAX_MODES,
+                    "Found {} modes in {} but MAX_MODES is {}. Remove stale \
+                     way_attrs.*.bin files before re-running step4-ebg.",
+                    all_modes.len(),
+                    step2_dir.display(),
+                    crate::profile_abi::MAX_MODES
+                );
+
+                // Build dynamic EbgModeConfig list — keep ONLY the modes
+                // the operator passed via --way-attrs, but assign the
+                // global index from `all_modes`.
                 let modes: Vec<crate::ebg::EbgModeConfig> = wa_parsed
                     .iter()
                     .zip(tr_parsed.iter())
-                    .map(
-                        |((name, idx, wa_path), (_, _, tr_path))| crate::ebg::EbgModeConfig {
+                    .map(|((name, _local_idx, wa_path), (_, _, tr_path))| {
+                        let global_idx = all_modes
+                            .iter()
+                            .find(|(n, _)| n == name)
+                            .map(|(_, idx)| *idx)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "Mode '{}' not found in step2 directory {} (discovered: {:?})",
+                                    name,
+                                    step2_dir.display(),
+                                    all_modes
+                                        .iter()
+                                        .map(|(n, _)| n.as_str())
+                                        .collect::<Vec<_>>()
+                                )
+                            })?;
+                        Ok(crate::ebg::EbgModeConfig {
                             mode_name: name.clone(),
-                            mode_index: *idx,
+                            mode_index: global_idx,
                             way_attrs_path: wa_path.clone(),
                             turn_rules_path: tr_path.clone(),
-                        },
-                    )
-                    .collect();
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
 
                 let config = EbgConfig {
                     nbg_csr_path: nbg_csr.clone(),
