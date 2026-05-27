@@ -691,6 +691,63 @@ pub fn pack_with_options(
             &cch_lat,
         )?;
 
+        // #84/#392: traffic-variant recustomized weights, when present.
+        // Scan step8 for `cch.w.<mode>_<variant>.u32` siblings (and the
+        // pair `cch.w.<mode>_<variant>.traffic.json` for provenance) and
+        // bundle each pair as
+        //   mode/<mode>/_variant/<variant>/weights.time
+        //   mode/<mode>/_variant/<variant>/traffic.json
+        // ServerState container loader enumerates these after building
+        // the base mode and synthesises a `<mode>_<variant>` mode that
+        // shares topology/snap/flats with the base and only overrides
+        // cch_weights. --data-dir already auto-discovers variants from
+        // disk; this brings the container path to parity.
+        if step8.is_dir() {
+            let prefix = format!("cch.w.{}_", mode);
+            let mut variant_pairs: Vec<(String, std::path::PathBuf, std::path::PathBuf)> =
+                Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&step8) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    let Some(stem) = name_str
+                        .strip_prefix(&prefix)
+                        .and_then(|s| s.strip_suffix(".u32"))
+                    else {
+                        continue;
+                    };
+                    if stem.is_empty() || stem.contains('.') {
+                        continue;
+                    }
+                    let weights_path = entry.path();
+                    let json_path = step8.join(format!("cch.w.{}_{}.traffic.json", mode, stem));
+                    if !json_path.exists() {
+                        eprintln!(
+                            "  ! [skip variant] {} missing sibling .traffic.json — pack skipped",
+                            weights_path.display()
+                        );
+                        continue;
+                    }
+                    variant_pairs.push((stem.to_string(), weights_path, json_path));
+                }
+            }
+            variant_pairs.sort_by(|a, b| a.0.cmp(&b.0));
+            for (variant, weights_path, json_path) in variant_pairs {
+                maybe_append(
+                    &mut w,
+                    SectionKind::CchWeightsTime,
+                    &format!("mode/{}/_variant/{}/weights.time", mode, variant),
+                    &weights_path,
+                )?;
+                maybe_append(
+                    &mut w,
+                    SectionKind::TrafficProfileJson,
+                    &format!("mode/{}/_variant/{}/traffic.json", mode, variant),
+                    &json_path,
+                )?;
+            }
+        }
+
         // ---- Pre-built flat adjacencies (#150) -----------------------
         // Flats are built once at pack time from (cch_topo, cch_weights),
         // serialised into the container, and mmap'd directly at server

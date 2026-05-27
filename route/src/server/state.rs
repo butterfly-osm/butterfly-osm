@@ -923,6 +923,13 @@ impl ServerState {
             crate::server::rss::checkpoint(&format!("load.mode.{}", mode_name));
         }
 
+        // Traffic-variant discovery — list now, register AFTER the
+        // snap-index build below. Variants share topology + snap mask
+        // with their base; adding them to the snap builder corrupts
+        // mode-byte indexing (the builder keys per-mode masks by
+        // `mode_byte`, which a variant copies from its base).
+        let container_variants = container.list_traffic_variants();
+
         // ---- Packed snap index (#154) -------------------------------
         // Prefer mmap-backed sections from the container; fall back to
         // building the legacy rstar in heap memory when the container
@@ -958,6 +965,125 @@ impl ServerState {
                 idx
             }
         };
+
+        // Register container traffic-variants now that snap_index is
+        // built. Each variant becomes a synthetic mode `<base>_<variant>`
+        // sharing topology, snap mask, dist + len_along_time flats with
+        // its base — only TIME flats are rebuilt against the variant's
+        // recustomised cch_weights.
+        let mut snap_index = snap_index;
+        for (base, variant) in &container_variants {
+            let synthetic = format!("{}_{}", base, variant);
+            if mode_lookup.contains_key(&synthetic) {
+                tracing::warn!(
+                    mode = synthetic.as_str(),
+                    "skipping container traffic variant: a base mode with the same name already exists"
+                );
+                continue;
+            }
+            let base_idx = match mode_lookup.get(base) {
+                Some(i) => *i as usize,
+                None => {
+                    tracing::warn!(
+                        base = base.as_str(),
+                        variant = variant.as_str(),
+                        "skipping container traffic variant: base mode not loaded"
+                    );
+                    continue;
+                }
+            };
+            let weights_section_name = format!("mode/{}/_variant/{}/weights.time", base, variant);
+            let provenance_section_name =
+                format!("mode/{}/_variant/{}/traffic.json", base, variant);
+            let Some(weights_entry) = container.get(&weights_section_name) else {
+                tracing::warn!(
+                    section = weights_section_name.as_str(),
+                    "skipping container traffic variant: weights section missing"
+                );
+                continue;
+            };
+            if container.get(&provenance_section_name).is_none() {
+                tracing::warn!(
+                    section = provenance_section_name.as_str(),
+                    "skipping container traffic variant: provenance .traffic.json section missing"
+                );
+                continue;
+            }
+            lazy_arc.verify_now(&weights_section_name)?;
+            lazy_arc.verify_now(&provenance_section_name)?;
+            let off = weights_entry.offset as usize;
+            let len = weights_entry.len as usize;
+            anyhow::ensure!(
+                off + len <= mmap_for_bytes.len(),
+                "section '{}' bytes [{},{}) exceed mmap len {}",
+                weights_section_name,
+                off,
+                off + len,
+                mmap_for_bytes.len()
+            );
+            let variant_cch_weights =
+                CchWeightsFile::read_from_mmap_unverified(mmap_for_bytes.clone(), off, len)?;
+            let base_data = &modes_data[base_idx];
+            // Rebuild only the TIME flats against the variant weights;
+            // dist + len_along_time flats keep their base bytes
+            // (distance semantics are mode-physical, not affected by
+            // variant speed factors).
+            let up_adj_flat =
+                UpAdjFlat::build_with(&base_data.cch_topo, &variant_cch_weights, true);
+            let down_rev_flat =
+                DownReverseAdjFlat::build_with(&base_data.cch_topo, &variant_cch_weights, true);
+            let down_adj_flat = DownAdjFlat::build(&base_data.cch_topo, &variant_cch_weights);
+            let variant_data = ModeData {
+                mode: base_data.mode,
+                cch_topo: base_data.cch_topo.clone(),
+                cch_weights: variant_cch_weights,
+                cch_weights_dist: base_data.cch_weights_dist.clone(),
+                cch_weights_len_along_time: base_data.cch_weights_len_along_time.clone(),
+                orig_to_rank: base_data.orig_to_rank.clone(),
+                filtered_to_original: base_data.filtered_to_original.clone(),
+                n_filtered_nodes: base_data.n_filtered_nodes,
+                n_original_nodes: base_data.n_original_nodes,
+                node_weights: base_data.node_weights.clone(),
+                mask: base_data.mask.clone(),
+                has_outbound: base_data.has_outbound.clone(),
+                has_inbound: base_data.has_inbound.clone(),
+                up_adj_flat,
+                down_rev_flat,
+                down_adj_flat,
+                up_adj_flat_dist: base_data.up_adj_flat_dist.clone(),
+                down_rev_flat_dist: base_data.down_rev_flat_dist.clone(),
+                down_adj_flat_dist: base_data.down_adj_flat_dist.clone(),
+                up_adj_flat_len_along_time: base_data.up_adj_flat_len_along_time.clone(),
+                down_rev_flat_len_along_time: base_data.down_rev_flat_len_along_time.clone(),
+                exclude_cache: parking_lot::RwLock::new(HashMap::new()),
+            };
+            let new_index = modes_data.len();
+            tracing::info!(
+                base = base.as_str(),
+                variant = variant.as_str(),
+                synthetic = synthetic.as_str(),
+                index = new_index,
+                "registered container traffic variant"
+            );
+            modes_data.push(variant_data);
+            mode_lookup.insert(synthetic.clone(), new_index as u8);
+            mode_names.push(synthetic.clone());
+            // Snap_index masks are indexed by mode_idx; a variant shares
+            // its base's eligible-edges mask, so push an ArcCow clone of
+            // the base's mask at the variant's new mode_idx slot. ArcCow
+            // clone is an Arc bump — no body copy.
+            if let Some(base_mask) = snap_index.masks.get(base_idx).cloned() {
+                snap_index.masks.push(base_mask);
+            } else {
+                tracing::warn!(
+                    base = base.as_str(),
+                    variant = variant.as_str(),
+                    base_idx,
+                    "container traffic variant: base snap mask missing; snap will reject variant queries"
+                );
+            }
+            crate::server::rss::checkpoint(&format!("load.mode.{}", synthetic));
+        }
 
         // #149: Now that every mode's flat adjacencies are built, hint
         // the kernel that the cch_weights.{time,dist} byte ranges are

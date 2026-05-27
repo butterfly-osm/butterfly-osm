@@ -162,6 +162,12 @@ pub enum SectionKind {
     /// `CchWeightsDist` for matrix/trip/Flight distance reporting so
     /// the returned distance belongs to the same path as the duration.
     CchWeightsLat = 0x0008_0003,
+    /// `traffic/<variant>.traffic.json` — per-variant speed-factor
+    /// profile (#84/#392). Bundled alongside the variant's recustomized
+    /// `cch.w.<mode>_<variant>.u32` weights at
+    /// `mode/<mode>/_variant/<variant>/traffic.json` so the server can
+    /// emit provenance and reject stray weight files without sidecars.
+    TrafficProfileJson = 0x0008_0004,
 
     /// Pre-built flat UP adjacency for a (mode, metric). Built at pack
     /// time from cch_topo + cch_weights. Mmapped at server boot — the
@@ -297,6 +303,7 @@ impl SectionKind {
             0x0008_0001 => Self::CchWeightsTime,
             0x0008_0002 => Self::CchWeightsDist,
             0x0008_0003 => Self::CchWeightsLat,
+            0x0008_0004 => Self::TrafficProfileJson,
 
             0x0009_0001 => Self::UpAdjFlat,
             0x0009_0002 => Self::DownAdjFlat,
@@ -353,6 +360,7 @@ impl SectionKind {
             Self::CchWeightsTime => "step8/cch.w.u32",
             Self::CchWeightsDist => "step8/cch.d.u32",
             Self::CchWeightsLat => "step8/cch.lat.u32",
+            Self::TrafficProfileJson => "step8/traffic.json",
             Self::UpAdjFlat => "flat/up_adj",
             Self::DownAdjFlat => "flat/down_adj",
             Self::DownReverseAdjFlat => "flat/down_reverse_adj",
@@ -803,6 +811,32 @@ impl Container {
                 let rest = s.name.strip_prefix("mode/")?;
                 let slash = rest.find('/')?;
                 Some(rest[..slash].to_string())
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Enumerate `(base, variant)` traffic-variant pairs present in the
+    /// container. Scans for `mode/<base>/_variant/<variant>/weights.time`
+    /// section names (#84/#392 packing convention) and returns each
+    /// unique `(base, variant)` it finds. Pre-#392 containers return
+    /// the empty vec.
+    pub fn list_traffic_variants(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self
+            .sections
+            .iter()
+            .filter_map(|s| {
+                let rest = s.name.strip_prefix("mode/")?;
+                let mut parts = rest.splitn(4, '/');
+                let base = parts.next()?;
+                let kind = parts.next()?;
+                if kind != "_variant" {
+                    return None;
+                }
+                let variant = parts.next()?;
+                Some((base.to_string(), variant.to_string()))
             })
             .collect();
         out.sort();

@@ -59,6 +59,18 @@ pub struct Step8Config {
     /// `cch.w.<mode>_<variant>.u32` and skips the distance metric (distance is
     /// physical and unaffected by traffic).
     pub traffic: Option<TrafficCustomization>,
+    /// When `true` AND `traffic` is set, write the traffic-customised
+    /// weights to the BASE path `cch.w.<mode>.u32` instead of the
+    /// suffixed variant path `cch.w.<mode>_<variant>.u32`. The sidecar
+    /// `cch.w.<mode>.traffic.json` is still emitted for provenance so
+    /// human-readable origin survives.
+    ///
+    /// Used to make a friction profile the implicit default — e.g.
+    /// `step8-customize --traffic realistic --bake-as-base` makes
+    /// `?mode=car` return realistic-friction durations instead of the
+    /// legal-limit baseline, without introducing a separate variant
+    /// mode name.
+    pub bake_traffic_as_base: bool,
 }
 
 /// Inputs needed to apply a traffic profile during step 8.
@@ -415,10 +427,12 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     // Write outputs
     std::fs::create_dir_all(&config.outdir)?;
 
-    // Output filename — traffic variants get a `_<variant>` suffix.
+    // Output filename — traffic variants get a `_<variant>` suffix
+    // unless `--bake-as-base` was passed, in which case the variant
+    // overwrites the base `cch.w.<mode>.u32`.
     let weight_suffix = match traffic {
-        Some(t) => format!("{}_{}", mode_name, t.profile.name),
-        None => mode_name.clone(),
+        Some(t) if !config.bake_traffic_as_base => format!("{}_{}", mode_name, t.profile.name),
+        Some(_) | None => mode_name.clone(),
     };
     let output_path = config.outdir.join(format!("cch.w.{}.u32", weight_suffix));
     println!("\nWriting time weights...");
