@@ -494,31 +494,47 @@ pub async fn compute_table_bucket_m2m(
     let use_2channel = want_duration
         && want_distance
         && custom_weights.is_none()
-        && mode_data.up_adj_flat_lat.is_some()
-        && mode_data.down_rev_flat_lat.is_some();
+        && mode_data.up_adj_flat_len_along_time.is_some()
+        && mode_data.down_rev_flat_len_along_time.is_some();
 
     let (durations, distances) = if use_2channel {
         let t_2ch = std::time::Instant::now();
         let up_lat = mode_data
-            .up_adj_flat_lat
+            .up_adj_flat_len_along_time
             .as_ref()
             .expect("guarded by use_2channel");
         let dn_lat = mode_data
-            .down_rev_flat_lat
+            .down_rev_flat_len_along_time
             .as_ref()
             .expect("guarded by use_2channel");
-        let (time_mat, lat_mat, _stats) = crate::matrix::bucket_ch::table_bucket_full_flat_lat(
-            n_nodes,
-            time_up,
-            time_down,
-            up_lat,
-            dn_lat,
-            &sources_rank,
-            &targets_rank,
-        );
+        // Same parallel/sequential dispatch heuristic as single-channel
+        // table_bucket_*. The parallel 2-channel path uses thread-local
+        // SearchState2 and an AtomicU64 packed matrix.
+        let (time_mat, lat_mat, _stats) = if use_parallel {
+            crate::matrix::bucket_ch::table_bucket_parallel_len_along_time(
+                n_nodes,
+                time_up,
+                time_down,
+                up_lat,
+                dn_lat,
+                &sources_rank,
+                &targets_rank,
+            )
+        } else {
+            crate::matrix::bucket_ch::table_bucket_full_flat_len_along_time(
+                n_nodes,
+                time_up,
+                time_down,
+                up_lat,
+                dn_lat,
+                &sources_rank,
+                &targets_rank,
+            )
+        };
         tracing::debug!(
-            "compute_table_bucket_m2m: 2-channel M2M took {:?}",
+            "compute_table_bucket_m2m: 2-channel M2M took {:?} parallel={}",
             t_2ch.elapsed(),
+            use_parallel,
         );
         let dur = flat_matrix_to_2d(
             &time_mat,

@@ -731,15 +731,16 @@ pub async fn trip_handler(
         let use_2channel = want_distance
             && avoid_entry.is_none()
             && exclude_weights.is_none()
-            && mode_data.up_adj_flat_lat.is_some()
-            && mode_data.down_rev_flat_lat.is_some();
+            && mode_data.up_adj_flat_len_along_time.is_some()
+            && mode_data.down_rev_flat_len_along_time.is_some();
 
         let (mut duration_matrix, mut distance_matrix) = if use_2channel {
-            let up_lat = mode_data.up_adj_flat_lat.as_ref().unwrap();
-            let dn_lat = mode_data.down_rev_flat_lat.as_ref().unwrap();
-            let (dur_mat, lat_mat, _stats) = crate::matrix::bucket_ch::table_bucket_full_flat_lat(
-                n_nodes, time_up, time_down, up_lat, dn_lat, &ranks, &ranks,
-            );
+            let up_lat = mode_data.up_adj_flat_len_along_time.as_ref().unwrap();
+            let dn_lat = mode_data.down_rev_flat_len_along_time.as_ref().unwrap();
+            let (dur_mat, lat_mat, _stats) =
+                crate::matrix::bucket_ch::table_bucket_full_flat_len_along_time(
+                    n_nodes, time_up, time_down, up_lat, dn_lat, &ranks, &ranks,
+                );
             (dur_mat, Some(lat_mat))
         } else {
             let (dur_mat, _stats) =
