@@ -90,8 +90,9 @@ geometry sum.
   }
   ```
 
-  Unconditional `fetch_min` was the dominant cost (codex consult);
-  load-and-check skips the locked RMW on cells that can't improve.
+  Unconditional `fetch_min` was the dominant cost on contended cells;
+  load-and-check skips the locked RMW when the current value already
+  beats this bucket's entry.
 
 ### Consumers
 
@@ -193,17 +194,15 @@ beats it on the tail (16 ms vs OSRM 33 ms max).
   Flight matrix endpoints; #372 tracks the 2-channel bucket-M2M
   migration that retires it from those endpoints too.
 
-### Known regression (acknowledged, not fixed in this sprint)
+### Subsequently fixed (#372, see top of [Unreleased])
 
-- `/table`, `/trip`, Flight `matrix` / `route_batch` / `edges_batch`
-  still report `distance` from the separate distance-shortest CCH —
-  a geometric path that disagrees with `/route`. Cross-check on
-  Aalst→Charleroi: `/route` returns 13038 s / 161 545 m
-  (time-shortest motorway), `/table` returns 13038 s / 142 443 m
-  (distance-shortest secondary roads). Tracked as #372; the fix
-  requires a 2-channel bucket-M2M that accumulates length-along-time
-  during the same forward+backward Dijkstra. Substantial algorithm
-  change deferred to its own PR.
+- The matrix endpoints' divergent distance metric (`/table`, `/trip`,
+  Flight `matrix` / `route_batch` / `edges_batch` reporting from the
+  separate distance-shortest CCH instead of length-along-time) was the
+  reason the 2-channel bucket-M2M work in #372 shipped. With that
+  work landed, all matrix endpoints now report distance consistent
+  with `/route` within u32 rounding (≤ 0.45 % on the 4-pair Belgium
+  sweep).
 
 ### Internal
 
