@@ -4193,14 +4193,43 @@ fn backward_join_parallel_prefix_len_along_time(
 
         let entries = buckets.get(u);
         for entry in entries {
-            let total_time = entry.dist.saturating_add(d);
-            let total_lat = entry.lat.saturating_add(l);
-            let packed = ((total_time as u64) << 32) | (total_lat as u64);
             let cell = entry.source_idx as usize * n_targets + target_idx;
-            // fetch_min on packed (time, lat) — smaller time wins, lat
-            // tagged on the winning value travels with it.
-            packed_matrix[cell].fetch_min(packed, Ordering::Relaxed);
-            joins += 1;
+            // Bound-pruned CAS loop: replace unconditional fetch_min
+            // with load + compare + compare_exchange_weak. fetch_min
+            // forces a locked RMW even on cells we can't improve;
+            // load-and-check skips the RMW entirely for the common
+            // "already-better" case. CAS retries only when another
+            // thread won the race in between — rare on Belgium
+            // /table at 1000x1000. Codex consult flagged this as the
+            // dominant cost of the 2-channel path.
+            let mut cur = packed_matrix[cell].load(Ordering::Relaxed);
+            loop {
+                let cur_time = (cur >> 32) as u32;
+                if cur_time <= entry.dist {
+                    // current best beats this bucket's dist alone —
+                    // can't improve via this entry.
+                    break;
+                }
+                let total_time = entry.dist.saturating_add(d);
+                if total_time >= cur_time {
+                    // can't improve total either.
+                    break;
+                }
+                let total_lat = entry.lat.saturating_add(l);
+                let next = ((total_time as u64) << 32) | total_lat as u64;
+                match packed_matrix[cell].compare_exchange_weak(
+                    cur,
+                    next,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => {
+                        joins += 1;
+                        break;
+                    }
+                    Err(observed) => cur = observed,
+                }
+            }
         }
 
         let edge_start = down_rev_flat.offsets[u as usize] as usize;
