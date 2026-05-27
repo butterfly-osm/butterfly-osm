@@ -46,6 +46,7 @@ pub mod flight;
 pub mod geometry;
 pub mod health_handler;
 pub mod height_handler;
+pub mod idle_compactor;
 pub mod isochrone_handler;
 pub mod map_match;
 pub mod matching;
@@ -126,6 +127,27 @@ pub fn find_free_port(start: u16) -> Result<u16> {
 /// once and lets the eviction poller read it without needing to grow
 /// the `serve()` signature.
 static RSS_BUDGET_OVERRIDE_GIB: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+
+/// #400: idle-compact threshold (seconds). 0 disables the compactor.
+/// Set once via CLI (`--idle-compact-secs`); default 300 (5 min) when
+/// the CLI didn't pass a value.
+static IDLE_COMPACT_SECS_OVERRIDE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
+pub fn set_idle_compact_secs(secs: u64) {
+    let _ = IDLE_COMPACT_SECS_OVERRIDE.set(secs);
+}
+
+fn idle_compact_secs() -> u64 {
+    if let Some(&v) = IDLE_COMPACT_SECS_OVERRIDE.get() {
+        return v;
+    }
+    if let Ok(s) = std::env::var("BUTTERFLY_IDLE_COMPACT_SECS")
+        && let Ok(v) = s.parse::<u64>()
+    {
+        return v;
+    }
+    300
+}
 
 /// Set the process-wide RSS budget override (in GiB). Called once by
 /// the CLI before `serve()` runs; later sets are ignored (OnceLock
@@ -518,6 +540,26 @@ pub async fn serve(
     // the steady-state baseline #153/#154/#155 will measure against,
     // captured prior to observable readiness on `/health`.
     crate::server::rss::checkpoint("boot.complete");
+
+    // #400 — lean-at-rest: spawn the idle compactor. Periodically
+    // issues `rayon::broadcast` so each worker drops its per-thread
+    // routing state (~80 MB bucket-M2M + ~60 MB query state +
+    // PHAST per mode) when it hasn't served a query in
+    // `idle_compact_secs`. Disabled with `--idle-compact-secs 0`.
+    {
+        let secs = idle_compact_secs();
+        let threshold = std::time::Duration::from_secs(secs);
+        // Poll quarter as often as the threshold so freshly-idle
+        // workers get evicted within ~threshold/4.
+        let poll_interval = std::time::Duration::from_secs((secs / 4).max(15).min(secs.max(15)));
+        // Hold the handle for the life of the server so the
+        // background thread keeps running.
+        let _idle_compactor =
+            crate::server::idle_compactor::IdleCompactor::start(threshold, poll_interval);
+        // Leak the handle into a static so it lives forever. Server
+        // shutdown is process-exit; explicit cleanup not needed.
+        std::mem::forget(_idle_compactor);
+    }
 
     // #292 Phase 6: spawn the LRU eviction poller. Reads VmRSS once
     // per `EVICT_POLL_SECS` and, if over budget, evicts the oldest

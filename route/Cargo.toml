@@ -40,6 +40,16 @@ memmap2 = "0.9"
 # adjacencies in steps A–C kept the only remaining readers cold).
 libc = "0.2"
 
+# Global allocator (#400). glibc's default arena keeps freed allocations
+# in process — even after the bucket-M2M thread-local SearchStates are
+# dropped, VmRSS stays high because glibc holds the pages in its arena.
+# jemalloc returns memory aggressively via `madvise(DONTNEED)` once
+# heap regions go cold, which is the lean-at-rest behaviour the idle
+# compactor needs. Picked over mimalloc for the longer production
+# track record on long-running multi-thread servers (Firefox, Redis,
+# TiKV, ripgrep, Rustup all use jemalloc).
+tikv-jemallocator = "0.6"
+
 # Safe POD slice reinterpretation for zero-copy mmap views (#147).
 # `bytemuck::cast_slice` performs alignment + size checks at runtime and
 # wraps the only `unsafe` (slice-of-u8 → slice-of-u32) in its own well-

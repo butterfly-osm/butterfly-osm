@@ -731,6 +731,22 @@ pub enum Commands {
         #[arg(long)]
         rss_budget_gb: Option<f64>,
 
+        /// #400 — lean-at-rest: idle threshold in seconds for the
+        /// per-worker thread-local cache compactor. After a heavy
+        /// /table or /isochrone query, each rayon worker retains
+        /// 80-140 MB of `SearchState` / `PhastState` for the rest of
+        /// the process lifetime. The compactor wakes every
+        /// `secs / 4` and drops caches on workers that have not
+        /// served a query in `secs`. Default 300 (5 min). Set to 0
+        /// to disable. Env override: `BUTTERFLY_IDLE_COMPACT_SECS=…`.
+        ///
+        /// First query after eviction pays a one-time re-alloc cost
+        /// (~10 ms / worker on Belgium). Lazy region eviction
+        /// (--rss-budget-gb) is orthogonal — that handles whole
+        /// regions, this handles per-worker scratch.
+        #[arg(long)]
+        idle_compact_secs: Option<u64>,
+
         /// Log format: "text" (default) or "json"
         #[arg(long, default_value = "text")]
         log_format: String,
@@ -1945,6 +1961,7 @@ impl Cli {
                 regions,
                 eager_regions,
                 rss_budget_gb,
+                idle_compact_secs,
                 log_format,
                 rss_checkpoints,
                 eager_verify,
@@ -1972,6 +1989,11 @@ impl Cli {
                 // `BUTTERFLY_RSS_BUDGET_GB=…` is also honoured.
                 if let Some(gib) = rss_budget_gb {
                     crate::server::set_rss_budget_override(gib);
+                }
+                // #400: stash --idle-compact-secs in a process-wide OnceLock
+                // so the compactor reads it without growing serve()'s sig.
+                if let Some(secs) = idle_compact_secs {
+                    crate::server::set_idle_compact_secs(secs);
                 }
 
                 let transport_mode = server::Transport::parse(&transport)?;

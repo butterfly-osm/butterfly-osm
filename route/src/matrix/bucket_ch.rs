@@ -54,6 +54,60 @@ thread_local! {
     // dwarfs the actual routing work, so we skip the parallel path
     // entirely and run sequentially in a single thread-cached engine.
     static SEQUENTIAL_ENGINE: RefCell<Option<BucketM2MEngine>> = const { RefCell::new(None) };
+
+    // #400: per-worker last-touched timestamp for the lean-at-rest
+    // background eviction. Updated at the entry of each bucket-M2M
+    // forward/backward function via `touch_idle_marker()`; checked by
+    // `try_drop_idle_state()` running on each worker via
+    // `rayon::broadcast` from the idle-compactor thread.
+    static LAST_TOUCH: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// #400: mark this worker as recently active. Cheap (~30 ns / call) —
+/// called once at the entry of each bucket-M2M function. The idle
+/// compactor uses this to decide whether to drop the per-worker
+/// thread-local caches.
+#[inline]
+fn touch_idle_marker() {
+    LAST_TOUCH.with(|c| c.set(Some(std::time::Instant::now())));
+}
+
+/// #400: drop the per-worker bucket-M2M caches if this thread has not
+/// touched them in `threshold`. Called from `rayon::broadcast` by the
+/// idle-compactor thread. Releases ~80 MB per worker (forward +
+/// backward SearchStates + bucket items vec) plus the 2-channel
+/// equivalents. Subsequent queries pay one re-alloc (~10 ms / worker).
+pub fn try_drop_idle_state(threshold: std::time::Duration) -> bool {
+    let stale = LAST_TOUCH.with(|c| match c.get() {
+        Some(last) => last.elapsed() > threshold,
+        None => false, // never touched — nothing to drop
+    });
+    if !stale {
+        return false;
+    }
+    FORWARD_STATE.with(|c| *c.borrow_mut() = None);
+    BACKWARD_STATE.with(|c| *c.borrow_mut() = None);
+    FORWARD_BUCKET_ITEMS.with(|c| {
+        c.borrow_mut().shrink_to_fit();
+        *c.borrow_mut() = Vec::new();
+    });
+    FORWARD_STATE_LAT.with(|c| *c.borrow_mut() = None);
+    BACKWARD_STATE_LAT.with(|c| *c.borrow_mut() = None);
+    FORWARD_BUCKET_ITEMS_LAT.with(|c| {
+        c.borrow_mut().shrink_to_fit();
+        *c.borrow_mut() = Vec::new();
+    });
+    SEQ_STATE_LAT.with(|c| *c.borrow_mut() = None);
+    SEQ_BUCKETS_LAT.with(|c| *c.borrow_mut() = None);
+    SEQ_BUCKET_ITEMS_LAT.with(|c| {
+        c.borrow_mut().shrink_to_fit();
+        *c.borrow_mut() = Vec::new();
+    });
+    SEQUENTIAL_ENGINE.with(|c| *c.borrow_mut() = None);
+    // Reset the marker so we don't keep dropping on every poll.
+    LAST_TOUCH.with(|c| c.set(None));
+    true
 }
 
 /// Cell-count threshold below which `table_bucket_parallel` dispatches
@@ -3185,6 +3239,7 @@ fn forward_fill_buckets_flat(
     state: &mut SearchState,
     bucket_items: &mut Vec<(u32, u32, u32)>,
 ) {
+    touch_idle_marker();
     state.start_search();
     state.relax(source, 0);
 
@@ -3718,6 +3773,7 @@ fn backward_join_tile(
 ) -> (usize, usize) {
     use std::sync::atomic::Ordering;
 
+    touch_idle_marker();
     state.start_search();
     state.relax(target, 0);
 
@@ -3835,6 +3891,7 @@ fn backward_join_parallel_prefix(
 ) -> (usize, usize) {
     use std::sync::atomic::Ordering;
 
+    touch_idle_marker();
     state.start_search();
     state.relax(target, 0);
 
@@ -4180,6 +4237,7 @@ fn forward_fill_buckets_flat_len_along_time(
     state: &mut SearchState2,
     bucket_items: &mut Vec<(u32, u32, u32, u32)>,
 ) {
+    touch_idle_marker();
     state.start_search();
     state.relax(source, 0, 0);
 
@@ -4412,6 +4470,7 @@ fn backward_join_local_columns_len_along_time(
     lat_col: &mut [u32],
     state: &mut SearchState2,
 ) -> (usize, usize) {
+    touch_idle_marker();
     state.start_search();
     state.relax(target, 0, 0);
 

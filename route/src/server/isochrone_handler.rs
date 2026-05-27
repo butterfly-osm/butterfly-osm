@@ -195,6 +195,41 @@ thread_local! {
         None, None, None, None,
         None, None, None, None,
     ]) };
+
+    /// #400: per-thread last-touched timestamp for lean-at-rest eviction.
+    static PHAST_LAST_TOUCH: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[inline]
+fn touch_phast_idle_marker() {
+    PHAST_LAST_TOUCH.with(|c| c.set(Some(std::time::Instant::now())));
+}
+
+/// #400: drop both forward and reverse PHAST states on this thread if
+/// idle > threshold. Releases up to MAX_MODES × 2 × ~30 MB per worker
+/// when fully populated (Belgium uses 4 car modes + bike + foot ≈
+/// ~720 MB per worker upper bound).
+pub fn try_drop_idle_phast(threshold: std::time::Duration) -> bool {
+    let stale = PHAST_LAST_TOUCH.with(|c| match c.get() {
+        Some(last) => last.elapsed() > threshold,
+        None => false,
+    });
+    if !stale {
+        return false;
+    }
+    PHAST_STATES.with(|c| {
+        for slot in c.borrow_mut().iter_mut() {
+            *slot = None;
+        }
+    });
+    PHAST_STATES_REV.with(|c| {
+        for slot in c.borrow_mut().iter_mut() {
+            *slot = None;
+        }
+    });
+    PHAST_LAST_TOUCH.with(|c| c.set(None));
+    true
 }
 
 /// Run PHAST bounded query using thread-local state.
@@ -216,6 +251,7 @@ pub fn run_phast_bounded_fast(
 ) -> Vec<(u32, u32)> {
     use std::cmp::Reverse;
 
+    touch_phast_idle_marker();
     let total_start = std::time::Instant::now();
     let n_nodes = up_adj_flat.offsets.len() - 1;
     let mode_idx = mode.index();
@@ -373,6 +409,7 @@ pub fn run_phast_bounded_fast_reverse(
 ) -> Vec<(u32, u32)> {
     use std::cmp::Reverse;
 
+    touch_phast_idle_marker();
     let total_start = std::time::Instant::now();
     let n_nodes = up_adj_flat.offsets.len() - 1;
     let mode_idx = mode.index();

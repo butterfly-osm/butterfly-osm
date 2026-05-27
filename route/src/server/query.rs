@@ -218,6 +218,32 @@ impl CchQueryState {
 thread_local! {
     /// Single thread-local CCH query state. Re-initializes when n_nodes changes.
     static CCH_QUERY_STATE: RefCell<Option<CchQueryState>> = const { RefCell::new(None) };
+
+    /// #400: per-thread last-touched timestamp for lean-at-rest eviction.
+    static LAST_TOUCH: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[inline]
+fn touch_idle_marker() {
+    LAST_TOUCH.with(|c| c.set(Some(std::time::Instant::now())));
+}
+
+/// #400: drop `CCH_QUERY_STATE` on this thread if it has not been
+/// touched in `threshold`. Called via `rayon::broadcast` from the
+/// idle-compactor thread. Releases ~60 MB per thread (dist_fwd +
+/// dist_bwd + parent + gen arrays sized to n_nodes).
+pub fn try_drop_idle_state(threshold: std::time::Duration) -> bool {
+    let stale = LAST_TOUCH.with(|c| match c.get() {
+        Some(last) => last.elapsed() > threshold,
+        None => false,
+    });
+    if !stale {
+        return false;
+    }
+    CCH_QUERY_STATE.with(|c| *c.borrow_mut() = None);
+    LAST_TOUCH.with(|c| c.set(None));
+    true
 }
 
 /// Reconstruct path from generation-stamped parent arrays
@@ -486,6 +512,7 @@ impl<'a> CchQuery<'a> {
             });
         }
 
+        touch_idle_marker();
         let n = self.n_nodes;
 
         CCH_QUERY_STATE.with(|cell| {
