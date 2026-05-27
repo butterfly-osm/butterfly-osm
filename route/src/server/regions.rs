@@ -1458,7 +1458,17 @@ fn peek_region_meta(path: &Path) -> Result<RegionMetaPeek> {
         },
         None => None,
     };
-    let mode_names = container.list_modes();
+    let mut mode_names = container.list_modes();
+    // #392: also surface traffic-variant synthetic modes
+    // (`<base>_<variant>`) so the dispatcher's mode-validation accepts
+    // `?mode=car_realistic` on both eagerly- and lazily-loaded regions.
+    for (base, variant) in container.list_traffic_variants() {
+        let synthetic = format!("{}_{}", base, variant);
+        if !mode_names.contains(&synthetic) {
+            mode_names.push(synthetic);
+        }
+    }
+    mode_names.sort();
     // #142: peek region_tiles if present. Loaded into heap as an
     // owned Vec — the array is small (~5 KiB Belgium, ~10 MiB planet)
     // and we want it always-resident so snap_winner's tile check is
