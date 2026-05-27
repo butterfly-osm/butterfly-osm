@@ -205,6 +205,31 @@ impl RaptorState {
 thread_local! {
     /// One RAPTOR state per thread, reused across queries. See #104.
     static RAPTOR_STATE: RefCell<RaptorState> = RefCell::new(RaptorState::new());
+
+    /// #400: per-thread last-touched timestamp for lean-at-rest eviction.
+    static LAST_TOUCH: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[inline]
+fn touch_idle_marker() {
+    LAST_TOUCH.with(|c| c.set(Some(std::time::Instant::now())));
+}
+
+/// #400: drop the per-thread RAPTOR state if idle > threshold.
+/// Replaces it with a fresh (empty) RaptorState rather than `None`
+/// since RAPTOR_STATE is `RefCell<RaptorState>` (not `Option<...>`).
+pub fn try_drop_idle_state(threshold: std::time::Duration) -> bool {
+    let stale = LAST_TOUCH.with(|c| match c.get() {
+        Some(last) => last.elapsed() > threshold,
+        None => false,
+    });
+    if !stale {
+        return false;
+    }
+    RAPTOR_STATE.with(|c| *c.borrow_mut() = RaptorState::new());
+    LAST_TOUCH.with(|c| c.set(None));
+    true
 }
 
 /// A single leg of a RAPTOR journey.
@@ -306,6 +331,7 @@ pub fn run_raptor(
         return None;
     }
 
+    touch_idle_marker();
     RAPTOR_STATE.with(|cell| {
         let mut st = cell.borrow_mut();
         st.start(n_stops, n_routes);
