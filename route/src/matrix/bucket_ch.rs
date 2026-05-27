@@ -4207,12 +4207,20 @@ fn backward_join_local_columns_len_along_time(
                 continue;
             }
             let total_time = entry.dist.saturating_add(d);
-            if total_time >= cur_time {
+            if total_time > cur_time {
                 continue;
             }
-            time_col[src] = total_time;
-            lat_col[src] = entry.lat.saturating_add(l);
-            joins += 1;
+            let total_lat = entry.lat.saturating_add(l);
+            // Lexicographic (time, lat) tie-break matches the prior
+            // packed-AtomicU64 fetch_min semantics: on equal time,
+            // smaller lat wins. Keeps /table output deterministic
+            // across runs and consistent with the pre-target-owned
+            // implementation.
+            if total_time < cur_time || total_lat < lat_col[src] {
+                time_col[src] = total_time;
+                lat_col[src] = total_lat;
+                joins += 1;
+            }
         }
 
         let edge_start = down_rev_flat.offsets[u as usize] as usize;
@@ -4312,18 +4320,23 @@ pub fn table_bucket_parallel_len_along_time(
     // ---- Backward phase: target-owned local columns (no atomics) ----
     //
     // Each target's backward Dijkstra writes its own (n_sources)-sized
-    // time + lat columns. Because every cell (src, tgt) is touched by
-    // exactly ONE target's backward run, we don't need any cross-thread
-    // synchronisation on writes — plain branch+store on a thread-local
-    // `Vec<u32>` instead of locked CAS on a shared `AtomicU64`. Codex
-    // consult flagged this as the next lever past the bound-pruned CAS.
+    // time + lat columns. Every cell (src, tgt) is touched by exactly
+    // one target's backward run, so no cross-thread synchronisation
+    // on writes is needed — plain branch+store on a local Vec<u32>
+    // instead of locked CAS on a shared AtomicU64.
     //
     // After parallel collection we gather the columns into the final
     // row-major matrices.
     let backward_start = std::time::Instant::now();
 
-    type ColumnPair = (usize, Vec<u32>, Vec<u32>, usize, usize);
-    let columns: Vec<ColumnPair> = targets
+    struct ColumnResult {
+        target_idx: usize,
+        time_col: Vec<u32>,
+        lat_col: Vec<u32>,
+        visited: usize,
+        joins: usize,
+    }
+    let columns: Vec<ColumnResult> = targets
         .par_iter()
         .enumerate()
         .filter(|&(_, target)| (*target as usize) < n_nodes)
@@ -4347,28 +4360,41 @@ pub fn table_bucket_parallel_len_along_time(
                     &mut lat_col,
                     state,
                 );
-                (target_idx, time_col, lat_col, visited, joins)
+                ColumnResult {
+                    target_idx,
+                    time_col,
+                    lat_col,
+                    visited,
+                    joins,
+                }
             })
         })
         .collect();
 
     let mut total_visited = 0usize;
     let mut total_joins = 0usize;
-    for (_, _, _, v, j) in &columns {
-        total_visited += *v;
-        total_joins += *j;
+    for c in &columns {
+        total_visited += c.visited;
+        total_joins += c.joins;
     }
     stats.backward_visited = total_visited;
     stats.join_operations = total_joins;
     stats.backward_time_ms = backward_start.elapsed().as_millis() as u64;
 
     // ---- Gather columns into row-major matrices ----
+    //
+    // Source-major outer loop, column inner loop: each iteration writes
+    // a contiguous run of n_targets cells (one full row), so the row-
+    // major output is touched in stride-1 order. This is significantly
+    // friendlier on L1/L2 than the prior target-major iteration which
+    // wrote each cell at stride `n_targets`.
     let mut time_matrix = vec![u32::MAX; n_sources * n_targets];
     let mut lat_matrix = vec![u32::MAX; n_sources * n_targets];
-    for (target_idx, time_col, lat_col, _, _) in columns {
-        for src in 0..n_sources {
-            time_matrix[src * n_targets + target_idx] = time_col[src];
-            lat_matrix[src * n_targets + target_idx] = lat_col[src];
+    for src in 0..n_sources {
+        let row_off = src * n_targets;
+        for c in &columns {
+            time_matrix[row_off + c.target_idx] = c.time_col[src];
+            lat_matrix[row_off + c.target_idx] = c.lat_col[src];
         }
     }
 
