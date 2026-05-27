@@ -8,7 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For detailed tool-specific changes, see individual tool changelogs:
 - [butterfly-dl](./tools/butterfly-dl/CHANGELOG.md) - OSM data downloader
 
-## [Unreleased] — 2026-05-27 — Drivetime distance consistency (2-channel bucket-M2M)
+## [Unreleased]
+
+### 2026-05-27 — Drivetime distance consistency (2-channel bucket-M2M)
 
 Closed #371/#372 — the matrix endpoints (`/table`, `/trip`, Flight)
 now report distance values that belong to the SAME path as the
@@ -23,13 +25,11 @@ semantically consistent AND faster than the broken legacy.
 
 | state | latency | distance metric |
 |---|---:|---|
-| Pre-#372 legacy 2-pass (single-channel time + single-channel dist) | 549 ms | wrong (distance-shortest CCH, different geometric path) |
-| 2-channel sequential | 5408 ms | correct |
-| 2-channel parallel, unconditional fetch_min | 817–876 ms | correct |
-| **2-channel parallel + bound-pruned CAS loop (shipped)** | **459 ms** | **correct (matches /route to within 0.45 % u32 rounding)** |
+| Pre-#372 legacy 2-pass | 549 ms | wrong (distance-shortest CCH, different geometric path) |
+| **Shipped: 2-channel + target-owned local columns** | **379 ms** | **correct (matches /route to within 0.45 % u32 rounding)** |
 | OSRM CH reference (HTTP wall) | 684 ms | — |
 
-Butterfly is now **1.49× faster than OSRM** at 1000×1000 with the
+Butterfly is now **1.81× faster than OSRM** at 1000×1000 with the
 correct drivetime distance metric.
 
 ### Correctness sweep (4 Belgium pairs)
@@ -110,20 +110,15 @@ geometry sum.
   was reported for a path geometry different from every other
   endpoint. Requests now return 400.
 
-### PRs landing this sprint
+### PRs
 
-| PR | Title |
-|---|---|
-| #373 | fix(isochrone): #371 remove distance_m (isodistance) parameter |
-| #377 | feat(customize): #371/#372 emit cch.lat.<mode>.u32 alongside cch.d |
-| #378 | feat(state): #372 load cch.lat.<mode>.u32 into ModeData.cch_weights_lat |
-| #379 | feat(pack): #372 bundle cch.lat.<mode>.u32 into container as CchWeightsLat section |
-| #380 | feat(state): #372 build up_adj_flat_lat / down_rev_flat_lat at boot |
-| #381 | feat(matrix,table): #372 2-channel bucket-M2M — time + length-along-time |
-
-Plus the post-merge cleanups (rename `lat` → `len_along_time` in
-Rust identifiers per Copilot review on #380; CAS-loop replaces
-fetch_min per codex consult — both squashed into #381).
+- #373 fix(isochrone): #371 remove `distance_m` (isodistance) parameter
+- #377 feat(customize): #371/#372 emit `cch.lat.<mode>.u32` alongside `cch.d`
+- #378 feat(state): #372 load `cch.lat.<mode>.u32` into `ModeData.cch_weights_len_along_time`
+- #379 feat(pack): #372 bundle `cch.lat.<mode>.u32` into container as `CchWeightsLat` section
+- #380 feat(state): #372 build `up_adj_flat_len_along_time` / `down_rev_flat_len_along_time` at boot
+- #381 feat(matrix,table): #372 2-channel bucket-M2M (time + length-along-time)
+- #383 perf(matrix): #372 target-owned local columns — eliminate `AtomicU64` in 2-channel backward
 
 ### Known follow-up
 
@@ -132,7 +127,7 @@ fetch_min per codex consult — both squashed into #381).
   in play. Once the exclude/avoid recustomiser also computes
   length-along-time, drop the dist plumbing entirely.
 
-## [Unreleased] — 2026-05-26 — Lazy snap escalation + isodistance removal
+### 2026-05-26 — Lazy snap escalation + isodistance removal
 
 Closed the OSRM gap on the headline `/route` endpoint and pushed `/table`
 ahead of OSRM on the HTTP wall, all by deferring the K=64 candidate
@@ -216,7 +211,7 @@ beats it on the tail (16 ms vs OSRM 33 ms max).
   edition-2024 rustfmt; 4 `needless_option_as_deref` warnings
   collapsed in `way_names_idx` test code.
 
-## [Unreleased] — 2026-05-26 — Disk/RAM codec sprint
+### 2026-05-26 — Disk/RAM codec sprint
 
 End-to-end disk + RAM reduction sweep landed across nine PRs. Belgium
 packed container shrank from 16.06 GiB to 12.87 GiB (**−20%**) with
@@ -301,7 +296,7 @@ no query-latency regression. Cumulative Europe-scale projection at
   (PR #363, #364) collapses 13 lints into idiomatic forms with no
   behaviour change.
 
-## [Unreleased] — 2026-05-23
+### 2026-05-23
 
 ### Added
 
@@ -423,7 +418,7 @@ no query-latency regression. Cumulative Europe-scale projection at
 - `/table` with `avoid_polygons`, warm cache hit: **22 ms** (was
   366 ms before the `Arc<AvoidEntry>` return).
 
-## [Unreleased] — 2026-04-14
+### 2026-04-14
 
 ### Changed
 
