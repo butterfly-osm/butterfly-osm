@@ -39,6 +39,15 @@ thread_local! {
     static FORWARD_STATE_LAT: RefCell<Option<SearchState2>> = const { RefCell::new(None) };
     static BACKWARD_STATE_LAT: RefCell<Option<SearchState2>> = const { RefCell::new(None) };
     static FORWARD_BUCKET_ITEMS_LAT: RefCell<Vec<(u32, u32, u32, u32)>> = const { RefCell::new(Vec::new()) };
+    // Sequential 2-channel engine (#395) — when small-N /table dispatches
+    // to `table_bucket_full_flat_len_along_time`, reuse a single thread-
+    // local SearchState2 instead of allocating ~80 MB per call. Tied to
+    // the calling thread (the axum handler thread, not a rayon worker)
+    // so it doesn't conflict with the parallel path's per-rayon-worker
+    // FORWARD_STATE_LAT / BACKWARD_STATE_LAT.
+    static SEQ_STATE_LAT: RefCell<Option<SearchState2>> = const { RefCell::new(None) };
+    static SEQ_BUCKETS_LAT: RefCell<Option<PrefixSumBuckets2>> = const { RefCell::new(None) };
+    static SEQ_BUCKET_ITEMS_LAT: RefCell<Vec<(u32, u32, u32, u32)>> = const { RefCell::new(Vec::new()) };
 
     // Sequential engine for the small-N fast path (#129). At low cell
     // counts (~≤ 1000) rayon's thread-dispatch + work-stealing overhead
@@ -4048,19 +4057,24 @@ fn backward_join_prefix_len_along_time(
             let cell = entry.source_idx as usize * n_targets + target_idx;
 
             let current_best_time = time_matrix[cell];
-            if current_best_time <= entry.dist {
-                // dist alone cannot improve the time; skip — lat is
-                // semantically tied to whichever (src, m, tgt) wins
-                // time, so we don't speculatively update it here.
+            // STRICT bound-prune (matches #385 parallel-path fix): at
+            // equality `cur_time == entry.dist + 0` the per-edge (time,
+            // lat) lex tie-break below can still improve the cell by
+            // lowering lat without changing time. Using `<` (not `<=`)
+            // keeps lex semantics consistent with the parallel solver.
+            if current_best_time < entry.dist {
                 continue;
             }
-
             let total_time = entry.dist.saturating_add(d);
-            if total_time < current_best_time {
-                time_matrix[cell] = total_time;
-                lat_matrix[cell] = entry.lat.saturating_add(l);
+            if total_time > current_best_time {
+                continue;
             }
-            joins += 1;
+            let total_lat = entry.lat.saturating_add(l);
+            if total_time < current_best_time || total_lat < lat_matrix[cell] {
+                time_matrix[cell] = total_time;
+                lat_matrix[cell] = total_lat;
+                joins += 1;
+            }
         }
 
         let edge_start = down_rev_flat.offsets[u as usize] as usize;
@@ -4113,54 +4127,79 @@ pub fn table_bucket_full_flat_len_along_time(
     };
 
     let avg_visited = (n_nodes / 400).clamp(500, 20000);
-    let mut state = SearchState2::new(n_nodes, avg_visited);
 
-    let forward_start = std::time::Instant::now();
-    let mut bucket_items: Vec<(u32, u32, u32, u32)> = Vec::with_capacity(n_sources * avg_visited);
-    for (source_idx, &source) in sources.iter().enumerate() {
-        if source as usize >= n_nodes {
-            continue;
-        }
-        forward_fill_buckets_flat_len_along_time(
-            up_adj_flat,
-            up_adj_flat_len_along_time,
-            source_idx as u32,
-            source,
-            &mut state,
-            &mut bucket_items,
-        );
-    }
-    stats.forward_visited = bucket_items.len();
-    stats.forward_time_ms = forward_start.elapsed().as_millis() as u64;
+    // #395: thread-local SearchState2 + PrefixSumBuckets2 + bucket_items
+    // pool — avoid ~80 MB malloc per call on the small-N fast path.
+    // Re-initialise when n_nodes changes (operator switched regions
+    // mid-process). `start_search()` resets via generation stamp.
+    SEQ_STATE_LAT.with(|state_cell| {
+        SEQ_BUCKETS_LAT.with(|buckets_cell| {
+            SEQ_BUCKET_ITEMS_LAT.with(|items_cell| {
+                let mut state_opt = state_cell.borrow_mut();
+                let state =
+                    state_opt.get_or_insert_with(|| SearchState2::new(n_nodes, avg_visited));
+                if state.entries.len() != n_nodes {
+                    *state = SearchState2::new(n_nodes, avg_visited);
+                }
+                // Reset cumulative perf counters per call.
+                state.pushes = 0;
+                state.pops = 0;
+                let mut buckets_opt = buckets_cell.borrow_mut();
+                let buckets = buckets_opt.get_or_insert_with(|| PrefixSumBuckets2::new(n_nodes));
+                if buckets.counts.len() != n_nodes {
+                    *buckets = PrefixSumBuckets2::new(n_nodes);
+                }
+                let mut bucket_items = items_cell.borrow_mut();
+                bucket_items.clear();
+                bucket_items.reserve(n_sources * avg_visited);
 
-    let sort_start = std::time::Instant::now();
-    let mut buckets = PrefixSumBuckets2::new(n_nodes);
-    buckets.build(&bucket_items);
-    stats.sort_time_ms = sort_start.elapsed().as_millis() as u64;
+                let forward_start = std::time::Instant::now();
+                for (source_idx, &source) in sources.iter().enumerate() {
+                    if source as usize >= n_nodes {
+                        continue;
+                    }
+                    forward_fill_buckets_flat_len_along_time(
+                        up_adj_flat,
+                        up_adj_flat_len_along_time,
+                        source_idx as u32,
+                        source,
+                        state,
+                        &mut bucket_items,
+                    );
+                }
+                stats.forward_visited = bucket_items.len();
+                stats.forward_time_ms = forward_start.elapsed().as_millis() as u64;
 
-    let backward_start = std::time::Instant::now();
-    for (target_idx, &target) in targets.iter().enumerate() {
-        if target as usize >= n_nodes {
-            continue;
-        }
-        let (visited, joins) = backward_join_prefix_len_along_time(
-            down_rev_flat,
-            down_rev_flat_len_along_time,
-            target,
-            &buckets,
-            &mut time_matrix,
-            &mut lat_matrix,
-            n_targets,
-            target_idx,
-            &mut state,
-        );
-        stats.backward_visited += visited;
-        stats.join_operations += joins;
-    }
-    stats.backward_time_ms = backward_start.elapsed().as_millis() as u64;
+                let sort_start = std::time::Instant::now();
+                buckets.build(&bucket_items);
+                stats.sort_time_ms = sort_start.elapsed().as_millis() as u64;
 
-    stats.heap_pushes = state.pushes;
-    stats.heap_pops = state.pops;
+                let backward_start = std::time::Instant::now();
+                for (target_idx, &target) in targets.iter().enumerate() {
+                    if target as usize >= n_nodes {
+                        continue;
+                    }
+                    let (visited, joins) = backward_join_prefix_len_along_time(
+                        down_rev_flat,
+                        down_rev_flat_len_along_time,
+                        target,
+                        buckets,
+                        &mut time_matrix,
+                        &mut lat_matrix,
+                        n_targets,
+                        target_idx,
+                        state,
+                    );
+                    stats.backward_visited += visited;
+                    stats.join_operations += joins;
+                }
+                stats.backward_time_ms = backward_start.elapsed().as_millis() as u64;
+
+                stats.heap_pushes = state.pushes;
+                stats.heap_pops = state.pops;
+            });
+        });
+    });
 
     (time_matrix, lat_matrix, stats)
 }
@@ -4267,6 +4306,25 @@ pub fn table_bucket_parallel_len_along_time(
             vec![u32::MAX; n_sources * n_targets],
             vec![u32::MAX; n_sources * n_targets],
             BucketM2MStats::default(),
+        );
+    }
+
+    // #395 small-N fast path: at low cell counts rayon fork/work-steal
+    // overhead dwarfs the per-source Dijkstra work AND each rayon
+    // worker takes a `RefCell::borrow_mut` on the thread-local state
+    // per task. Below `SEQUENTIAL_FAST_PATH_CELL_THRESHOLD` we delegate
+    // to the pooled sequential 2-channel engine — same Dijkstra work,
+    // none of the dispatch overhead. Pool keeps the ~80 MB
+    // SearchState2 hot across calls.
+    if n_sources * n_targets <= SEQUENTIAL_FAST_PATH_CELL_THRESHOLD {
+        return table_bucket_full_flat_len_along_time(
+            n_nodes,
+            up_adj_flat,
+            down_rev_flat,
+            up_adj_flat_len_along_time,
+            down_rev_flat_len_along_time,
+            sources,
+            targets,
         );
     }
 

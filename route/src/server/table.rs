@@ -460,7 +460,6 @@ pub async fn compute_table_bucket_m2m(
 
     let n_sources = sources.len();
     let n_targets = destinations.len();
-    let use_parallel = sources_rank.len() * targets_rank.len() >= 2500;
     tracing::debug!(
         "compute_table_bucket_m2m: snap+rebuild took {:?} n_src={} n_tgt={}",
         t_pre.elapsed(),
@@ -507,13 +506,14 @@ pub async fn compute_table_bucket_m2m(
             .down_rev_flat_len_along_time
             .as_ref()
             .expect("guarded by use_2channel");
-        // Always use parallel for 2-channel: the sequential path
-        // calls `SearchState2::new(n_nodes)` per request which is
-        // ~60 MB on Belgium and dominates small-N latency. The
-        // parallel path amortises via thread-local SearchState2 so
-        // even 10×10 is fast.
-        let _ = use_parallel; // reserved for future fast-path tuning
-        let (time_mat, lat_mat, _stats) = if true {
+        // #395: always go through the `_parallel_` wrapper — it now
+        // dispatches internally to the pooled sequential 2-channel
+        // path for small N (≤ SEQUENTIAL_FAST_PATH_CELL_THRESHOLD)
+        // and the rayon-parallel path above it. Routing the dispatch
+        // through the wrapper avoids the hand-coded cells>=2500 split
+        // that previously called `table_bucket_full_flat_len_along_time`
+        // directly and ate a ~80 MB SearchState2 allocation per call.
+        let (time_mat, lat_mat, _stats) =
             crate::matrix::bucket_ch::table_bucket_parallel_len_along_time(
                 n_nodes,
                 time_up,
@@ -522,22 +522,10 @@ pub async fn compute_table_bucket_m2m(
                 dn_lat,
                 &sources_rank,
                 &targets_rank,
-            )
-        } else {
-            crate::matrix::bucket_ch::table_bucket_full_flat_len_along_time(
-                n_nodes,
-                time_up,
-                time_down,
-                up_lat,
-                dn_lat,
-                &sources_rank,
-                &targets_rank,
-            )
-        };
+            );
         tracing::debug!(
-            "compute_table_bucket_m2m: 2-channel M2M took {:?} parallel={}",
+            "compute_table_bucket_m2m: 2-channel M2M took {:?}",
             t_2ch.elapsed(),
-            use_parallel,
         );
         let dur = flat_matrix_to_2d(
             &time_mat,
@@ -560,17 +548,19 @@ pub async fn compute_table_bucket_m2m(
         (Some(dur), Some(dist))
     } else {
         // Legacy two-pass: separate distance-shortest CCH for `distance`.
+        // #395: always dispatch through `table_bucket_parallel`; it
+        // routes small-N (cells ≤ SEQUENTIAL_FAST_PATH_CELL_THRESHOLD)
+        // to the thread-local `BucketM2MEngine` and rayon-parallels
+        // above that. The previous hand-split call to
+        // `table_bucket_full_flat` allocated a fresh `SearchState`
+        // (~60 MB) per request and dominated small-N latency.
         let durations = if want_duration {
             let t_dur = std::time::Instant::now();
-            let (matrix, _stats) = if use_parallel {
-                table_bucket_parallel(n_nodes, time_up, time_down, &sources_rank, &targets_rank)
-            } else {
-                table_bucket_full_flat(n_nodes, time_up, time_down, &sources_rank, &targets_rank)
-            };
+            let (matrix, _stats) =
+                table_bucket_parallel(n_nodes, time_up, time_down, &sources_rank, &targets_rank);
             tracing::debug!(
-                "compute_table_bucket_m2m: duration M2M took {:?} parallel={}",
-                t_dur.elapsed(),
-                use_parallel
+                "compute_table_bucket_m2m: duration M2M took {:?}",
+                t_dur.elapsed()
             );
 
             Some(flat_matrix_to_2d(
@@ -588,15 +578,11 @@ pub async fn compute_table_bucket_m2m(
 
         let distances = if want_distance {
             let t_dist = std::time::Instant::now();
-            let (matrix, _stats) = if use_parallel {
-                table_bucket_parallel(n_nodes, dist_up, dist_down, &sources_rank, &targets_rank)
-            } else {
-                table_bucket_full_flat(n_nodes, dist_up, dist_down, &sources_rank, &targets_rank)
-            };
+            let (matrix, _stats) =
+                table_bucket_parallel(n_nodes, dist_up, dist_down, &sources_rank, &targets_rank);
             tracing::debug!(
-                "compute_table_bucket_m2m: distance M2M took {:?} parallel={}",
-                t_dist.elapsed(),
-                use_parallel
+                "compute_table_bucket_m2m: distance M2M took {:?}",
+                t_dist.elapsed()
             );
 
             Some(flat_matrix_to_2d(
