@@ -858,9 +858,13 @@ pub fn encode_flat_weights_bytes(weights: &crate::formats::WeightArray) -> Vec<u
 /// in the page cache (zero-copy). The strong-count clone keeps the
 /// mapping alive for the lifetime of the returned views.
 ///
-/// For brevity the u24/u16 targets still allocate at the call site
-/// — the in-memory `ArcCow<u32>` shape stays uniform across the
-/// codebase. mmap stays zero-copy for u32 offsets + u32 targets.
+/// #399 (2026-05-27): the production case (offsets u64, targets u32,
+/// optional u32 topo_edge_idx) now truly zero-copies via
+/// `ArcCow::from_mmap`. The u16/u24 targets paths still widen to
+/// owned `Vec<u32>` since they need per-entry sentinel translation.
+/// Pre-#399, the previous implementation always copied the body to
+/// owned Vecs — that turned ~5+ GB of mmap-backed weight + topology
+/// data into anon RSS on every Belgium boot.
 pub fn decode_flat_topo_from_mmap(
     mmap: std::sync::Arc<memmap2::Mmap>,
     byte_offset: usize,
@@ -874,15 +878,89 @@ pub fn decode_flat_topo_from_mmap(
         byte_offset.saturating_add(byte_len) <= mmap.len(),
         "flat-topo section out of bounds"
     );
+    anyhow::ensure!(
+        byte_len >= FLAT_TOPO_HEADER_SIZE + FLAT_SPLIT_FOOTER_SIZE,
+        "flat-topo section too short: {} bytes",
+        byte_len
+    );
+
+    // Peek the header to determine widths + size up the body. CRC is
+    // verified by the caller via the lazy_verify layer; we trust the
+    // bytes here.
+    let header = &mmap[byte_offset..byte_offset + FLAT_TOPO_HEADER_SIZE];
+    let magic = u32::from_le_bytes(header[0..4].try_into().unwrap());
+    anyhow::ensure!(
+        magic == FLAT_TOPO_MAGIC,
+        "flat-topo bad magic: 0x{magic:08X}"
+    );
+    let version = u16::from_le_bytes(header[4..6].try_into().unwrap());
+    anyhow::ensure!(
+        version == FLAT_TOPO_VERSION,
+        "flat-topo bad version: {version}"
+    );
+    let flags = u16::from_le_bytes(header[6..8].try_into().unwrap());
+    anyhow::ensure!(
+        flags & !FLAT_TOPO_FLAGS_KNOWN == 0,
+        "flat-topo unknown flag bits: 0x{flags:04X}"
+    );
+    let targets_width = width_from_code_u16(flags & FLAT_TOPO_TARGETS_WIDTH_MASK)?;
+    let offsets_u32 = flags & FLAT_TOPO_OFFSETS_U32_BIT != 0;
+    let has_topo_idx = flags & FLAT_TOPO_HAS_TOPO_IDX_BIT != 0;
+    let n_nodes = u32::from_le_bytes(header[8..12].try_into().unwrap());
+    let n_edges = u64::from_le_bytes(header[16..24].try_into().unwrap()) as usize;
+
+    let n_offsets = (n_nodes as usize) + 1;
+    let offsets_entry_bytes = if offsets_u32 { 4 } else { 8 };
+    let offsets_bytes_count = n_offsets * offsets_entry_bytes;
+    let offsets_pad = pad_to_u64(offsets_bytes_count);
+    let targets_bytes_count = n_edges * targets_width.bytes_per_entry();
+    let targets_pad = pad_to_u64(targets_bytes_count);
+    let topo_idx_bytes_count = if has_topo_idx { 4 * n_edges } else { 0 };
+    let topo_idx_pad = pad_to_u64(topo_idx_bytes_count);
+
+    let body_size = offsets_bytes_count
+        + offsets_pad
+        + targets_bytes_count
+        + targets_pad
+        + topo_idx_bytes_count
+        + topo_idx_pad;
+    let expected_total = FLAT_TOPO_HEADER_SIZE + body_size + FLAT_SPLIT_FOOTER_SIZE;
+    anyhow::ensure!(
+        byte_len == expected_total,
+        "flat-topo size mismatch: got {byte_len}, expected {expected_total}",
+    );
+
+    // Production fast path: offsets u64, targets u32. Each sub-array
+    // is mmap-backed via ArcCow::from_mmap when the section crosses
+    // the size threshold; below it we copy to Owned Vec to avoid the
+    // per-access deref overhead. Pack guarantees 8-byte section
+    // alignment, and the per-array offsets land on 4-byte boundaries.
+    //
+    // Threshold rationale (#399): an A/B at 1000×1000 showed the
+    // mmap-backed path adding ~15% to wall time vs Owned. The savings
+    // only justify the cost on big sections — bike's 250-550 MB flats
+    // alone account for ~1.5 GB of the boot anon. Car/foot per-flat
+    // are 35-155 MB and stay Owned.
+    let mmap_back = body_size >= FLAT_SECTION_MMAP_BACK_THRESHOLD;
+    if !offsets_u32 && targets_width == crate::formats::WeightWidth::U32 && mmap_back {
+        let offsets_off = byte_offset + FLAT_TOPO_HEADER_SIZE;
+        let targets_off = offsets_off + offsets_bytes_count + offsets_pad;
+        let topo_idx_off = targets_off + targets_bytes_count + targets_pad;
+        let offsets =
+            ArcCow::<u64>::from_mmap(std::sync::Arc::clone(&mmap), offsets_off, n_offsets)?;
+        let targets = ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), targets_off, n_edges)?;
+        let topo_edge_idx = if has_topo_idx {
+            ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), topo_idx_off, n_edges)?
+        } else {
+            ArcCow::from_vec(Vec::new())
+        };
+        return Ok((offsets, targets, topo_edge_idx));
+    }
+
+    // Fallback for u16/u24 targets or u32 offsets — these need
+    // per-entry sentinel widening, so we keep the existing owned path.
     let bytes = &mmap[byte_offset..byte_offset + byte_len];
     let decoded = decode_flat_topo_bytes(bytes)?;
-    // u24/u16 widening already done by decode_flat_topo_bytes. For u32
-    // we could keep mmap-backed; for now widen everything to owned for
-    // a uniform code path (the boot RAM cost matches the v4 path
-    // exactly when targets were u32). Future work: ArcCow::Mmap path
-    // when targets stored as u32 + offsets stored as u64. Tracked as a
-    // #345 follow-up if the bench gate shows extra heap pressure.
-    let _ = mmap; // explicitly drop the clone — owned Vecs above
     Ok((
         ArcCow::from_vec(decoded.offsets),
         ArcCow::from_vec(decoded.targets),
@@ -892,11 +970,14 @@ pub fn decode_flat_topo_from_mmap(
 
 /// MMAP-backed parse of a FlatWeights section. Returns the
 /// [`WeightArray`] composed of mmap-backed bytes when the width is
-/// fixed-stride (u16/u32) — the zero-copy hot path. For u24, the
-/// `WeightArray::U24` already wraps an `ArcCow<u8>` that can be
-/// mmap-backed; we widen to owned here to avoid drifting two paths
-/// — same trade as `decode_flat_topo_from_mmap`. Future work:
-/// preserve mmap-backed `ArcCow<u8>` for u24 weights.
+/// fixed-stride (u16/u32/u24) — the zero-copy hot path.
+///
+/// #399 (2026-05-27): all three widths are now zero-copy. Previously
+/// the function called `decode_flat_weights_bytes` which always
+/// allocated `Vec<u32>` / `Vec<u16>` / `Vec<u8>` via `.to_vec()`,
+/// converting ~5 GB of mmap-backed weight data into anon RSS on
+/// Belgium boot. CRC verification is the caller's responsibility
+/// (driven by `LazyContainer::verify_now`) — we trust the bytes.
 pub fn decode_flat_weights_from_mmap(
     mmap: std::sync::Arc<memmap2::Mmap>,
     byte_offset: usize,
@@ -906,11 +987,66 @@ pub fn decode_flat_weights_from_mmap(
         byte_offset.saturating_add(byte_len) <= mmap.len(),
         "flat-weights section out of bounds"
     );
+    anyhow::ensure!(
+        byte_len >= FLAT_WEIGHTS_HEADER_SIZE + FLAT_SPLIT_FOOTER_SIZE,
+        "flat-weights section too short"
+    );
+
+    let header = &mmap[byte_offset..byte_offset + FLAT_WEIGHTS_HEADER_SIZE];
+    let magic = u32::from_le_bytes(header[0..4].try_into().unwrap());
+    anyhow::ensure!(magic == FLAT_WEIGHTS_MAGIC, "flat-weights bad magic");
+    let version = u16::from_le_bytes(header[4..6].try_into().unwrap());
+    anyhow::ensure!(version == FLAT_WEIGHTS_VERSION, "flat-weights bad version");
+    let flags = u16::from_le_bytes(header[6..8].try_into().unwrap());
+    anyhow::ensure!(
+        flags & !FLAT_WEIGHTS_FLAGS_KNOWN == 0,
+        "flat-weights unknown flag bits"
+    );
+    let width = width_from_code_u16(flags & FLAT_WEIGHTS_WIDTH_MASK)?;
+    let n_edges = u64::from_le_bytes(header[8..16].try_into().unwrap()) as usize;
+
+    let body_data_bytes = n_edges * width.bytes_per_entry();
+    let body_pad = pad_to_u64(body_data_bytes);
+    let body_size = body_data_bytes + body_pad;
+    let expected_total = FLAT_WEIGHTS_HEADER_SIZE + body_size + FLAT_SPLIT_FOOTER_SIZE;
+    anyhow::ensure!(
+        byte_len == expected_total,
+        "flat-weights size mismatch: got {byte_len}, expected {expected_total}",
+    );
+
+    let body_off = byte_offset + FLAT_WEIGHTS_HEADER_SIZE;
+    // Size-thresholded mmap (#399): match the FlatTopo threshold.
+    if body_size >= FLAT_SECTION_MMAP_BACK_THRESHOLD {
+        let arr = match width {
+            crate::formats::WeightWidth::U32 => crate::formats::WeightArray::U32(
+                ArcCow::<u32>::from_mmap(std::sync::Arc::clone(&mmap), body_off, n_edges)?,
+            ),
+            crate::formats::WeightWidth::U16 => crate::formats::WeightArray::U16(
+                ArcCow::<u16>::from_mmap(std::sync::Arc::clone(&mmap), body_off, n_edges)?,
+            ),
+            crate::formats::WeightWidth::U24 => crate::formats::WeightArray::U24(
+                ArcCow::<u8>::from_mmap(std::sync::Arc::clone(&mmap), body_off, n_edges * 3)?,
+            ),
+        };
+        return Ok(arr);
+    }
+    // Small sections: fall through to the existing owned-Vec path.
     let bytes = &mmap[byte_offset..byte_offset + byte_len];
-    let weights = decode_flat_weights_bytes(bytes)?;
-    let _ = mmap;
-    Ok(weights)
+    decode_flat_weights_bytes(bytes)
 }
+
+/// Size-threshold (#399) for keeping a flat section mmap-backed vs
+/// copying it to an owned `Vec` at boot. An A/B at 1000×1000 showed
+/// the mmap path costing ~15% wall time per query (due to the
+/// `ArcCow::Mmap` deref in the hot loops). Below the threshold we
+/// pay the boot RAM (one Owned Vec per section) to keep the hot path
+/// branch-free; above it the per-section RAM is large enough that
+/// keeping the bytes file-backed dominates.
+///
+/// 128 MiB picked by inspection of Belgium per-mode flat sizes:
+/// bike's 250-555 MB topo + 150 MB weights cross it; car/foot per-flat
+/// (35-155 MB each) stay below.
+const FLAT_SECTION_MMAP_BACK_THRESHOLD: usize = 128 * 1024 * 1024;
 
 /// Parse a FlatWeights section from owned bytes. Verifies both CRCs.
 pub fn decode_flat_weights_bytes(bytes: &[u8]) -> anyhow::Result<crate::formats::WeightArray> {
@@ -3034,7 +3170,14 @@ pub fn backward_join_with_buckets(
     matrix
 }
 
-/// Forward search using flat UP adjacency (no INF check in hot loop)
+/// Forward search using flat UP adjacency (no INF check in hot loop).
+///
+/// #399: hoist `.as_slice()` once before the loop. ArcCow's Deref
+/// otherwise dispatches a `match Owned/Mmap` on every index — fine for
+/// `Owned` (single ptr fetch) but for `Mmap` includes `bytemuck::cast_slice`
+/// per call, which the optimiser doesn't always inline through. Hoisting
+/// to a raw `&[T]` once erases that cost in the inner loop.
+#[allow(clippy::needless_range_loop)] // weights.get(i) needs the index
 fn forward_fill_buckets_flat(
     up_adj_flat: &UpAdjFlat,
     source_idx: u32,
@@ -3045,16 +3188,20 @@ fn forward_fill_buckets_flat(
     state.start_search();
     state.relax(source, 0);
 
+    let offsets = up_adj_flat.offsets.as_slice();
+    let targets = up_adj_flat.targets.as_slice();
+    let weights = &up_adj_flat.weights;
+
     while let Some((d, u)) = state.pop() {
         bucket_items.push((u, source_idx, d));
 
         // Relax UP edges (no INF check - pre-filtered)
-        let start = up_adj_flat.offsets[u as usize] as usize;
-        let end = up_adj_flat.offsets[u as usize + 1] as usize;
+        let start = offsets[u as usize] as usize;
+        let end = offsets[u as usize + 1] as usize;
 
         for i in start..end {
-            let v = up_adj_flat.targets[i];
-            let w = up_adj_flat.weights.get(i);
+            let v = targets[i];
+            let w = weights.get(i);
             let new_dist = d.saturating_add(w);
             state.relax(v, new_dist);
         }
@@ -3095,6 +3242,7 @@ fn forward_fill_buckets_opt(
 }
 
 /// Backward search from target using flat reverse adjacency, joining with buckets
+#[allow(clippy::needless_range_loop)] // weights.get(i) needs the index
 fn backward_join_opt(
     down_rev_flat: &DownReverseAdjFlat,
     target: u32,
@@ -3107,6 +3255,11 @@ fn backward_join_opt(
     // (visited, joins)
     state.start_search();
     state.relax(target, 0);
+
+    // #399: hoist mmap-backed slices once (see forward_fill_buckets_flat).
+    let dr_offsets = down_rev_flat.offsets.as_slice();
+    let dr_sources = down_rev_flat.sources.as_slice();
+    let dr_weights = &down_rev_flat.weights;
 
     let mut visited = 0usize;
     let mut joins = 0usize;
@@ -3125,12 +3278,12 @@ fn backward_join_opt(
         }
 
         // Relax reversed DOWN edges using flat adjacency (no edge_idx indirection!)
-        let edge_start = down_rev_flat.offsets[u as usize] as usize;
-        let edge_end = down_rev_flat.offsets[u as usize + 1] as usize;
+        let edge_start = dr_offsets[u as usize] as usize;
+        let edge_end = dr_offsets[u as usize + 1] as usize;
 
         for i in edge_start..edge_end {
-            let x = down_rev_flat.sources[i];
-            let w = down_rev_flat.weights.get(i);
+            let x = dr_sources[i];
+            let w = dr_weights.get(i);
             let new_dist = d.saturating_add(w);
             state.relax(x, new_dist);
         }
@@ -3141,6 +3294,7 @@ fn backward_join_opt(
 
 /// Backward search from target using flat reverse adjacency, joining with prefix-sum buckets
 /// O(1) bucket lookup instead of O(log n) binary search
+#[allow(clippy::needless_range_loop)] // weights.get(i) needs the index
 fn backward_join_prefix(
     down_rev_flat: &DownReverseAdjFlat,
     target: u32,
@@ -3152,6 +3306,11 @@ fn backward_join_prefix(
 ) -> (usize, usize) {
     state.start_search();
     state.relax(target, 0);
+
+    // #399: hoist mmap-backed slices once.
+    let dr_offsets = down_rev_flat.offsets.as_slice();
+    let dr_sources = down_rev_flat.sources.as_slice();
+    let dr_weights = &down_rev_flat.weights;
 
     let mut visited = 0usize;
     let mut joins = 0usize;
@@ -3178,12 +3337,12 @@ fn backward_join_prefix(
         }
 
         // Relax reversed DOWN edges using flat adjacency (no edge_idx indirection!)
-        let edge_start = down_rev_flat.offsets[u as usize] as usize;
-        let edge_end = down_rev_flat.offsets[u as usize + 1] as usize;
+        let edge_start = dr_offsets[u as usize] as usize;
+        let edge_end = dr_offsets[u as usize + 1] as usize;
 
         for i in edge_start..edge_end {
-            let x = down_rev_flat.sources[i];
-            let w = down_rev_flat.weights.get(i);
+            let x = dr_sources[i];
+            let w = dr_weights.get(i);
             let new_dist = d.saturating_add(w);
             state.relax(x, new_dist);
         }
@@ -3546,6 +3705,7 @@ fn table_bucket_parallel_l3_tiled(
 /// pattern. A `T0` prefetch issued ~8 iterations ahead overlaps the DRAM
 /// fetch with the current iteration's atomic load/store.
 #[allow(clippy::too_many_arguments)] // mirrors backward_join_parallel_prefix; splitting would add a struct just for argument grouping
+#[allow(clippy::needless_range_loop)] // weights.get(i) needs the index
 fn backward_join_tile(
     down_rev_flat: &DownReverseAdjFlat,
     target: u32,
@@ -3560,6 +3720,11 @@ fn backward_join_tile(
 
     state.start_search();
     state.relax(target, 0);
+
+    // #399: hoist mmap-backed slices once.
+    let dr_offsets = down_rev_flat.offsets.as_slice();
+    let dr_sources = down_rev_flat.sources.as_slice();
+    let dr_weights = &down_rev_flat.weights;
 
     let mut visited = 0usize;
     let mut joins = 0usize;
@@ -3607,12 +3772,12 @@ fn backward_join_tile(
         // Relax DOWN-reverse edges. The hardware prefetcher handles the
         // sequential offsets/sources/weights reads, so no software
         // prefetch needed here.
-        let edge_start = down_rev_flat.offsets[u as usize] as usize;
-        let edge_end = down_rev_flat.offsets[u as usize + 1] as usize;
+        let edge_start = dr_offsets[u as usize] as usize;
+        let edge_end = dr_offsets[u as usize + 1] as usize;
 
         for i in edge_start..edge_end {
-            let x = down_rev_flat.sources[i];
-            let w = down_rev_flat.weights.get(i);
+            let x = dr_sources[i];
+            let w = dr_weights.get(i);
             let new_dist = d.saturating_add(w);
             state.relax(x, new_dist);
         }
@@ -3658,6 +3823,7 @@ fn prefetch_matrix_cell(matrix: &[std::sync::atomic::AtomicU32], idx: usize) {
 /// Backward join for parallel execution using PrefixSumBuckets (O(1) lookup)
 /// With bound-aware pruning: skip joins where current best <= source distance
 /// Uses SoA layout for better cache efficiency
+#[allow(clippy::needless_range_loop)] // weights.get(i) needs the index
 fn backward_join_parallel_prefix(
     down_rev_flat: &DownReverseAdjFlat,
     target: u32,
@@ -3671,6 +3837,11 @@ fn backward_join_parallel_prefix(
 
     state.start_search();
     state.relax(target, 0);
+
+    // #399: hoist mmap-backed slices once.
+    let dr_offsets = down_rev_flat.offsets.as_slice();
+    let dr_sources = down_rev_flat.sources.as_slice();
+    let dr_weights = &down_rev_flat.weights;
 
     let mut visited = 0usize;
     let mut joins = 0usize;
@@ -3729,12 +3900,12 @@ fn backward_join_parallel_prefix(
         }
 
         // Relax DOWN-reverse edges
-        let edge_start = down_rev_flat.offsets[u as usize] as usize;
-        let edge_end = down_rev_flat.offsets[u as usize + 1] as usize;
+        let edge_start = dr_offsets[u as usize] as usize;
+        let edge_end = dr_offsets[u as usize + 1] as usize;
 
         for i in edge_start..edge_end {
-            let x = down_rev_flat.sources[i];
-            let w = down_rev_flat.weights.get(i);
+            let x = dr_sources[i];
+            let w = dr_weights.get(i);
             let new_dist = d.saturating_add(w);
             state.relax(x, new_dist);
         }
@@ -4000,6 +4171,7 @@ impl SearchState2 {
 /// Forward search using flat UP adjacency for BOTH metrics. `up_adj_flat`
 /// and `up_adj_flat_len_along_time` share the CCH topology — index `i` addresses
 /// the same edge in both. Reads time from the first, lat from the second.
+#[allow(clippy::needless_range_loop)] // weights.get(i) needs the index
 fn forward_fill_buckets_flat_len_along_time(
     up_adj_flat: &UpAdjFlat,
     up_adj_flat_len_along_time: &UpAdjFlat,
@@ -4011,15 +4183,21 @@ fn forward_fill_buckets_flat_len_along_time(
     state.start_search();
     state.relax(source, 0, 0);
 
+    // #399: hoist mmap-backed slices once.
+    let offsets = up_adj_flat.offsets.as_slice();
+    let targets = up_adj_flat.targets.as_slice();
+    let w_time_arr = &up_adj_flat.weights;
+    let w_lat_arr = &up_adj_flat_len_along_time.weights;
+
     while let Some((d, l, u)) = state.pop() {
         bucket_items.push((u, source_idx, d, l));
 
-        let start = up_adj_flat.offsets[u as usize] as usize;
-        let end = up_adj_flat.offsets[u as usize + 1] as usize;
+        let start = offsets[u as usize] as usize;
+        let end = offsets[u as usize + 1] as usize;
         for i in start..end {
-            let v = up_adj_flat.targets[i];
-            let w_time = up_adj_flat.weights.get(i);
-            let w_lat = up_adj_flat_len_along_time.weights.get(i);
+            let v = targets[i];
+            let w_time = w_time_arr.get(i);
+            let w_lat = w_lat_arr.get(i);
             let new_dist = d.saturating_add(w_time);
             let new_lat = l.saturating_add(w_lat);
             state.relax(v, new_dist, new_lat);
@@ -4032,6 +4210,7 @@ fn forward_fill_buckets_flat_len_along_time(
 /// matrices. The meeting node is chosen by min-TIME; lat is reported at
 /// that node, not separately optimised.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::needless_range_loop)] // weights.get(i) needs the index
 fn backward_join_prefix_len_along_time(
     down_rev_flat: &DownReverseAdjFlat,
     down_rev_flat_len_along_time: &DownReverseAdjFlat,
@@ -4045,6 +4224,12 @@ fn backward_join_prefix_len_along_time(
 ) -> (usize, usize) {
     state.start_search();
     state.relax(target, 0, 0);
+
+    // #399: hoist mmap-backed slices once.
+    let dr_offsets = down_rev_flat.offsets.as_slice();
+    let dr_sources = down_rev_flat.sources.as_slice();
+    let dr_w_time = &down_rev_flat.weights;
+    let dr_w_lat = &down_rev_flat_len_along_time.weights;
 
     let mut visited = 0usize;
     let mut joins = 0usize;
@@ -4077,12 +4262,12 @@ fn backward_join_prefix_len_along_time(
             }
         }
 
-        let edge_start = down_rev_flat.offsets[u as usize] as usize;
-        let edge_end = down_rev_flat.offsets[u as usize + 1] as usize;
+        let edge_start = dr_offsets[u as usize] as usize;
+        let edge_end = dr_offsets[u as usize + 1] as usize;
         for i in edge_start..edge_end {
-            let x = down_rev_flat.sources[i];
-            let w_time = down_rev_flat.weights.get(i);
-            let w_lat = down_rev_flat_len_along_time.weights.get(i);
+            let x = dr_sources[i];
+            let w_time = dr_w_time.get(i);
+            let w_lat = dr_w_lat.get(i);
             let new_dist = d.saturating_add(w_time);
             let new_lat = l.saturating_add(w_lat);
             state.relax(x, new_dist, new_lat);
@@ -4217,6 +4402,7 @@ pub fn table_bucket_full_flat_len_along_time(
 /// backward run. Replaces the AtomicU64 packed matrix at codex's
 /// suggestion — eliminates the locked RMW that the bound-pruned CAS
 /// loop still incurred on every successful update.
+#[allow(clippy::needless_range_loop)] // weights.get(i) needs the index
 fn backward_join_local_columns_len_along_time(
     down_rev_flat: &DownReverseAdjFlat,
     down_rev_flat_len_along_time: &DownReverseAdjFlat,
@@ -4228,6 +4414,12 @@ fn backward_join_local_columns_len_along_time(
 ) -> (usize, usize) {
     state.start_search();
     state.relax(target, 0, 0);
+
+    // #399: hoist mmap-backed slices once.
+    let dr_offsets = down_rev_flat.offsets.as_slice();
+    let dr_sources = down_rev_flat.sources.as_slice();
+    let dr_w_time = &down_rev_flat.weights;
+    let dr_w_lat = &down_rev_flat_len_along_time.weights;
 
     let mut visited = 0usize;
     let mut joins = 0usize;
@@ -4264,12 +4456,12 @@ fn backward_join_local_columns_len_along_time(
             }
         }
 
-        let edge_start = down_rev_flat.offsets[u as usize] as usize;
-        let edge_end = down_rev_flat.offsets[u as usize + 1] as usize;
+        let edge_start = dr_offsets[u as usize] as usize;
+        let edge_end = dr_offsets[u as usize + 1] as usize;
         for i in edge_start..edge_end {
-            let x = down_rev_flat.sources[i];
-            let w_time = down_rev_flat.weights.get(i);
-            let w_lat = down_rev_flat_len_along_time.weights.get(i);
+            let x = dr_sources[i];
+            let w_time = dr_w_time.get(i);
+            let w_lat = dr_w_lat.get(i);
             let new_dist = d.saturating_add(w_time);
             let new_lat = l.saturating_add(w_lat);
             state.relax(x, new_dist, new_lat);
