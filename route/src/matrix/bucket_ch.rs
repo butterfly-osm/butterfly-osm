@@ -4199,11 +4199,13 @@ fn backward_join_local_columns_len_along_time(
         let entries = buckets.get(u);
         for entry in entries {
             let src = entry.source_idx as usize;
-            // Bound-aware pruning: skip when current best already wins
-            // on time alone. Plain branch + load on a local Vec — no
-            // atomics, no cache-line ping-pong.
+            // Bound-aware pruning: skip only when the bucket's dist
+            // ALONE is STRICTLY worse than the current best time. At
+            // equality the per-edge (time, lat) lex tie-break below
+            // can still improve the row by lowering lat without
+            // changing time, so we cannot prune ties here.
             let cur_time = time_col[src];
-            if cur_time <= entry.dist {
+            if cur_time < entry.dist {
                 continue;
             }
             let total_time = entry.dist.saturating_add(d);
@@ -4211,8 +4213,8 @@ fn backward_join_local_columns_len_along_time(
                 continue;
             }
             let total_lat = entry.lat.saturating_add(l);
-            // Lexicographic (time, lat) tie-break matches the prior
-            // packed-AtomicU64 fetch_min semantics: on equal time,
+            // Lexicographic (time, lat) tie-break — matches the prior
+            // packed-AtomicU64 `fetch_min` semantics: on equal time,
             // smaller lat wins. Keeps /table output deterministic
             // across runs and consistent with the pre-target-owned
             // implementation.
