@@ -8,6 +8,130 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For detailed tool-specific changes, see individual tool changelogs:
 - [butterfly-dl](./tools/butterfly-dl/CHANGELOG.md) - OSM data downloader
 
+## [Unreleased] — 2026-05-27 — Drivetime distance consistency (2-channel bucket-M2M)
+
+Closed #371/#372 — the matrix endpoints (`/table`, `/trip`, Flight)
+now report distance values that belong to the SAME path as the
+duration, matching what `/route` reports for the same coordinate pair.
+The fix combined a new on-disk weight (`cch.lat.<mode>.u32`,
+length-along-time-shortest per CCH edge), a 2-channel bucket-M2M
+algorithm, and a bound-pruned CAS loop on a packed `AtomicU64` for
+the parallel backward join. Net effect: drivetime APIs are
+semantically consistent AND faster than the broken legacy.
+
+### Belgium /table 1000×1000 dur+dist (HTTP wall)
+
+| state | latency | distance metric |
+|---|---:|---|
+| Pre-#372 legacy 2-pass (single-channel time + single-channel dist) | 549 ms | wrong (distance-shortest CCH, different geometric path) |
+| 2-channel sequential | 5408 ms | correct |
+| 2-channel parallel, unconditional fetch_min | 817–876 ms | correct |
+| **2-channel parallel + bound-pruned CAS loop (shipped)** | **459 ms** | **correct (matches /route to within 0.45 % u32 rounding)** |
+| OSRM CH reference (HTTP wall) | 684 ms | — |
+
+Butterfly is now **1.49× faster than OSRM** at 1000×1000 with the
+correct drivetime distance metric.
+
+### Correctness sweep (4 Belgium pairs)
+
+| pair | /route distance | /table distance | gap |
+|---|---:|---:|---:|
+| Brussels–Antwerp | 57 693 m | 57 678 m | 0.026 % |
+| Aalst–Charleroi | 161 545 m | 160 826 m | 0.45 % |
+| Liège–Gent | 166 871 m | 166 861 m | 0.006 % |
+| Bruges–Namur | 236 950 m | 236 909 m | 0.017 % |
+
+All durations match EXACTLY. The residual u32 rounding gap comes
+from `EbgNode.length_m` being u32-rounded vs `/route`'s polyline
+geometry sum.
+
+### Pipeline / on-disk
+
+- step8 customize emits `cch.lat.<mode>.u32` alongside `cch.d.<mode>.u32`
+  via the new `bottom_up_with_external_middles` helper — for each
+  shortcut, sum the physical edge lengths along the time-optimal
+  middle's two halves, recursive bottom-up using the post-relax time
+  middles. Belgium car: +0.48 s in step8.
+- pack.rs bundles `cch.lat.<mode>.u32` into the container as a new
+  `CchWeightsLat = 0x0008_0003` section. Belgium container 12.87 GiB
+  → **15.4 GiB** (+1.5 GiB for cch.lat across 3 modes).
+- `ServerState.ModeData` gains `cch_weights_len_along_time:
+  Option<CchWeights>` plus `up_adj_flat_len_along_time` /
+  `down_rev_flat_len_along_time`. Old containers boot with `None`
+  and fall through to the legacy 2-pass.
+
+### Algorithm (matrix/bucket_ch.rs)
+
+- `SearchState2` — `NodeEntry` + parallel `Vec<u32> lats`; `relax()`
+  takes `(node, dist, lat)` and updates both when `dist` improves;
+  `pop()` returns `(dist, lat, node)`.
+- `Bucket2Entry` — 12 bytes `(dist, lat, source_idx)`. SoA layout
+  proven slower for this access pattern than AoS; AoS-only.
+- `PrefixSumBuckets2` — same prefix-sum stamping as the single-channel
+  buckets, AoS-only.
+- `forward_fill_buckets_flat_len_along_time` — reads time from
+  `up_adj_flat.weights` and lat from `up_adj_flat_len_along_time.
+  weights` at the same flat index. Same topology, parallel arrays.
+- `backward_join_parallel_prefix_len_along_time` — per-cell update via
+  **bound-pruned CAS loop** on packed `AtomicU64`:
+
+  ```rust
+  let mut cur = packed_matrix[cell].load(Relaxed);
+  loop {
+      let cur_time = (cur >> 32) as u32;
+      if cur_time <= entry.dist { break; }            // can't improve via this entry
+      let total_time = entry.dist.saturating_add(d);
+      if total_time >= cur_time { break; }
+      let next = ((total_time as u64) << 32) | total_lat as u64;
+      match packed_matrix[cell].compare_exchange_weak(cur, next, Relaxed, Relaxed) {
+          Ok(_) => break,
+          Err(observed) => cur = observed,
+      }
+  }
+  ```
+
+  Unconditional `fetch_min` was the dominant cost (codex consult);
+  load-and-check skips the locked RMW on cells that can't improve.
+
+### Consumers
+
+- `/table` and `/trip` dispatch to the 2-channel function when:
+  duration+distance both requested, no exclude/avoid, AND
+  `cch_weights_len_along_time` is loaded. Otherwise falls back to
+  the legacy 2-pass single-channel path (distance-shortest CCH).
+- Flight `route_batch` / `edges_batch` already correct (per-cell
+  unpack from the time CCH); Flight `matrix` returns `u32::MAX` for
+  distance (unchanged).
+
+### Removed
+
+- `/isochrone?distance_m=` parameter (PR #373). Was the only endpoint
+  that ran PHAST on the separate distance-shortest CCH; reachability
+  was reported for a path geometry different from every other
+  endpoint. Requests now return 400.
+
+### PRs landing this sprint
+
+| PR | Title |
+|---|---|
+| #373 | fix(isochrone): #371 remove distance_m (isodistance) parameter |
+| #377 | feat(customize): #371/#372 emit cch.lat.<mode>.u32 alongside cch.d |
+| #378 | feat(state): #372 load cch.lat.<mode>.u32 into ModeData.cch_weights_lat |
+| #379 | feat(pack): #372 bundle cch.lat.<mode>.u32 into container as CchWeightsLat section |
+| #380 | feat(state): #372 build up_adj_flat_lat / down_rev_flat_lat at boot |
+| #381 | feat(matrix,table): #372 2-channel bucket-M2M — time + length-along-time |
+
+Plus the post-merge cleanups (rename `lat` → `len_along_time` in
+Rust identifiers per Copilot review on #380; CAS-loop replaces
+fetch_min per codex consult — both squashed into #381).
+
+### Known follow-up
+
+- `cch_weights_dist` and the dist flats are still loaded — the legacy
+  2-pass fallback uses them when custom weights (exclude/avoid) are
+  in play. Once the exclude/avoid recustomiser also computes
+  length-along-time, drop the dist plumbing entirely.
+
 ## [Unreleased] — 2026-05-26 — Lazy snap escalation + isodistance removal
 
 Closed the OSRM gap on the headline `/route` endpoint and pushed `/table`
