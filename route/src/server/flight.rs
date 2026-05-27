@@ -447,7 +447,7 @@ fn do_matrix(
         .map(|&[lon, lat]| {
             super::snap_kbest::snap_primary_role(
                 state,
-                mode_data,
+                &mode_data,
                 mode,
                 lon,
                 lat,
@@ -462,7 +462,7 @@ fn do_matrix(
         .map(|&[lon, lat]| {
             super::snap_kbest::snap_primary_role(
                 state,
-                mode_data,
+                &mode_data,
                 mode,
                 lon,
                 lat,
@@ -590,7 +590,7 @@ fn do_matrix(
         if matrix.contains(&u32::MAX) {
             use rayon::prelude::*;
             use std::collections::HashSet;
-            let query = super::query::CchQuery::new(state, mode);
+            let query = super::query::CchQuery::new(&mode_data);
 
             let mut work: Vec<(usize, usize)> = Vec::new();
             let mut needed_src: HashSet<usize> = HashSet::new();
@@ -615,7 +615,7 @@ fn do_matrix(
                     let [lon, lat] = params.sources[oi];
                     let snap = super::snap_kbest::snap_k_pair_role(
                         state,
-                        mode_data,
+                        &mode_data,
                         mode,
                         lon,
                         lat,
@@ -637,7 +637,7 @@ fn do_matrix(
                     let [lon, lat] = params.destinations[oi];
                     let snap = super::snap_kbest::snap_k_pair_role(
                         state,
-                        mode_data,
+                        &mode_data,
                         mode,
                         lon,
                         lat,
@@ -1184,7 +1184,7 @@ fn do_route_batch_blocking(
 
     // Small-batch fast path: no pool overhead for tiny calls.
     if n_workers == 1 {
-        let query = CchQuery::new(&state, mode);
+        let query = CchQuery::new(&mode_data);
         let mut scratch = RouteScratch::default();
         for chunk in params.pairs.chunks(batch_size) {
             let n = chunk.len();
@@ -1199,7 +1199,7 @@ fn do_route_batch_blocking(
                     let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
                     let r = compute_route_pair(
                         &state,
-                        mode_data,
+                        &mode_data,
                         mode,
                         &query,
                         slon,
@@ -1280,15 +1280,15 @@ fn do_route_batch_blocking(
             let done_tx = done_tx.clone();
             let fallback_count = Arc::clone(&fallback_count);
             handles.push(scope.spawn(move || {
-                let query = CchQuery::new(&state, mode);
                 let mode_data = state.get_mode(mode);
+                let query = CchQuery::new(&mode_data);
                 let mut scratch = RouteScratch::default();
                 let fb = fallback_count.as_ref();
                 while let Ok(work) = rx.recv() {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         let r = compute_route_pair(
                             &state,
-                            mode_data,
+                            &mode_data,
                             mode,
                             &query,
                             work.slon,
@@ -1523,7 +1523,7 @@ fn do_isochrone(
             params.lat,
             mode.0,
             None,
-            center_role.role_filter(mode_data),
+            center_role.role_filter(&mode_data),
         )
         .ok_or_else(|| Status::not_found("Could not snap to road network"))?;
     let origin_rank = mode_data.orig_to_rank[orig_id as usize];
@@ -1705,7 +1705,7 @@ pub fn do_edges_batch(
                 const SNAP_K: usize = 64;
                 let src_primary = super::snap_kbest::snap_primary_role(
                     &state,
-                    mode_data,
+                    &mode_data,
                     mode,
                     pair[0],
                     pair[1],
@@ -1714,7 +1714,7 @@ pub fn do_edges_batch(
                 );
                 let dst_primary = super::snap_kbest::snap_primary_role(
                     &state,
-                    mode_data,
+                    &mode_data,
                     mode,
                     pair[2],
                     pair[3],
@@ -1744,7 +1744,7 @@ pub fn do_edges_batch(
                     // contracted neighbor.
                     let src_snap = super::snap_kbest::snap_k_pair_role(
                         &state,
-                        mode_data,
+                        &mode_data,
                         mode,
                         pair[0],
                         pair[1],
@@ -1754,7 +1754,7 @@ pub fn do_edges_batch(
                     );
                     let dst_snap = super::snap_kbest::snap_k_pair_role(
                         &state,
-                        mode_data,
+                        &mode_data,
                         mode,
                         pair[2],
                         pair[3],
@@ -2240,7 +2240,7 @@ async fn do_exchange_catchment(
             const SNAP_K: usize = 64;
             let store_rank = match super::snap_kbest::snap_primary_role(
                 &state,
-                mode_data,
+                &mode_data,
                 mode,
                 *slon,
                 *slat,
@@ -2256,7 +2256,7 @@ async fn do_exchange_catchment(
             for (ci, &(clon, clat)) in client_coords.iter().enumerate() {
                 if let Some((_, r)) = super::snap_kbest::snap_primary_role(
                     &state,
-                    mode_data,
+                    &mode_data,
                     mode,
                     clon,
                     clat,
@@ -2286,10 +2286,10 @@ async fn do_exchange_catchment(
             // cell came back u32::MAX.
             if matrix.contains(&u32::MAX) {
                 use rayon::prelude::*;
-                let query = super::query::CchQuery::new(&state, mode);
+                let query = super::query::CchQuery::new(&mode_data);
                 let store_kbest = super::snap_kbest::snap_k_pair_role(
                     &state,
-                    mode_data,
+                    &mode_data,
                     mode,
                     *slon,
                     *slat,
@@ -2307,7 +2307,7 @@ async fn do_exchange_catchment(
                         let (clon, clat) = client_coords[ci];
                         let snap = super::snap_kbest::snap_k_pair_role(
                             &state,
-                            mode_data,
+                            &mode_data,
                             mode,
                             clon,
                             clat,

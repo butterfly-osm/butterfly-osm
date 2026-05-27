@@ -38,7 +38,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::server::geometry::build_raw_points;
 use crate::server::query::CchQuery;
-use crate::server::state::ModeData;
 use crate::server::unpack::unpack_path;
 use crate::transit::gtfs::haversine_m;
 use crate::transit::raptor::{RaptorLeg, RaptorQuery, run_raptor};
@@ -350,7 +349,7 @@ pub fn compute_access_context(
             access_mode
         )));
     };
-    let access_mode_data: &ModeData = &state.modes[access_idx as usize];
+    let access_mode_data = state.get_mode(crate::model::types::Mode(access_idx));
 
     let (access_default_radius, access_default_stops, _access_speed) =
         default_access_params(&access_mode);
@@ -543,7 +542,7 @@ pub fn compute_transit_journey_with_access(
             egress_mode
         )));
     };
-    let egress_mode_data: &ModeData = &state.modes[egress_idx as usize];
+    let egress_mode_data = state.get_mode(crate::model::types::Mode(egress_idx));
 
     let (egress_default_radius, egress_default_stops, _egress_speed) =
         default_access_params(&egress_mode);
@@ -1323,7 +1322,7 @@ fn build_routed_road_leg(
     if src_rank == dst_rank {
         return Some((vec![[from_lon, from_lat], [to_lon, to_lat]], 0));
     }
-    let mode_data = &state.modes[mode_idx as usize];
+    let mode_data = state.get_mode(crate::model::types::Mode(mode_idx));
     let query = CchQuery::with_custom_weights(
         &mode_data.cch_topo,
         &mode_data.up_adj_flat,
@@ -1366,8 +1365,8 @@ fn snap_to_rank_role(
     mode_idx: u8,
     role: super::types::SnapRole,
 ) -> Option<u32> {
-    let mode_data = &state.modes[mode_idx as usize];
-    let role_filter = role.role_filter(mode_data);
+    let mode_data = state.get_mode(crate::model::types::Mode(mode_idx));
+    let role_filter = role.role_filter(&mode_data);
     let orig = state
         .snap_index
         .snap_filtered_role(lon, lat, mode_idx, None, role_filter)?;

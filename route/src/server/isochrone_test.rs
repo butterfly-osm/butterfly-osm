@@ -316,7 +316,8 @@ mod tests {
         let mut n_snapped = 0;
 
         // Create query engine
-        let query = CchQuery::new(&state, mode);
+        let mode_data = state.get_mode(mode);
+        let query = CchQuery::new(&mode_data);
 
         // Maximum snap distance for test samples (500m - larger than routing to get more coverage)
         const MAX_SNAP_DISTANCE_M: f64 = 500.0;
@@ -343,7 +344,7 @@ mod tests {
             let is_inside = polygon.contains(&snapped_point);
 
             // Compute drive time from origin to snapped EBG node
-            let drive_time = compute_drive_time_ebg(mode_data, &query, origin_ebg, dst_ebg);
+            let drive_time = compute_drive_time_ebg(&mode_data, &query, origin_ebg, dst_ebg);
 
             match drive_time {
                 Some(time_s_u) => {

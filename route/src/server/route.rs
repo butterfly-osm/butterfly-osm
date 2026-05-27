@@ -427,7 +427,7 @@ pub async fn route_handler(
     let avoid_entry = if let Some(ref avoid_str) = avoid_json {
         match super::avoid::compute_avoid_weights_time_only(
             &state,
-            mode_data,
+            &mode_data,
             avoid_str,
             exclude_mask,
         ) {
@@ -473,8 +473,8 @@ pub async fn route_handler(
     // when the primary candidate fails. Typical healthy queries pay
     // one P2P query; pathological pairs pay up to MAX_FALLBACK_COMBOS
     // (400) — see the SNAP_K block below for the empirical sweep.
-    let src_role_filter = SnapRole::Src.role_filter(mode_data);
-    let dst_role_filter = SnapRole::Dst.role_filter(mode_data);
+    let src_role_filter = SnapRole::Src.role_filter(&mode_data);
+    let dst_role_filter = SnapRole::Dst.role_filter(&mode_data);
 
     // SNAP_K = number of EBG-id candidates per role. The same
     // physical polyline vertex contributes 2 candidates (one per
@@ -742,7 +742,7 @@ pub async fn route_handler(
             &ew.time_weights,
         )
     } else {
-        CchQuery::new(&state, mode)
+        CchQuery::new(&mode_data)
     };
     // #197: multi-candidate fallback. Try the best (src, dst)
     // combination first; if it fails, retry with the next candidates
@@ -1172,8 +1172,8 @@ fn cross_region_route_inner(
     let dst_mode_data = dst_state.get_mode(dst_mode);
 
     // #197: role-aware snap (cross-region path).
-    let src_role_filter = SnapRole::Src.role_filter(src_mode_data);
-    let dst_role_filter = SnapRole::Dst.role_filter(dst_mode_data);
+    let src_role_filter = SnapRole::Src.role_filter(&src_mode_data);
+    let dst_role_filter = SnapRole::Dst.role_filter(&dst_mode_data);
 
     let (src_orig, src_snap) = match src_state.snap_index.snap_with_info_filtered_role(
         req.src_lon,
@@ -1373,7 +1373,7 @@ pub fn leg_points_and_distance(
         return (Vec::new(), 0.0);
     }
     let mode_data = state.get_mode(mode);
-    let query = CchQuery::new(state, mode);
+    let query = CchQuery::new(&mode_data);
     let result = match query.query(src_rank, dst_rank) {
         Some(r) => r,
         None => return (Vec::new(), 0.0),
