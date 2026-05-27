@@ -1,0 +1,11 @@
+{
+  "name": "realistic",
+  "base_model": "car",
+  "speed_factors": {
+    "urban_high": 0.60,
+    "urban_medium": 0.78,
+    "urban_low": 0.88,
+    "suburban": 0.95,
+    "rural": 1.00
+  }
+}
