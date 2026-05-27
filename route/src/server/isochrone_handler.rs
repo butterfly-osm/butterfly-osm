@@ -714,7 +714,7 @@ pub async fn isochrone_handler(
 
     // Compute avoid weights (includes exclude if both present)
     let avoid_entry = if let Some(ref avoid_str) = avoid_json {
-        match super::avoid::compute_avoid_weights(&state, mode_data, avoid_str, exclude_mask) {
+        match super::avoid::compute_avoid_weights(&state, &mode_data, avoid_str, exclude_mask) {
             Ok(entry) => Some(entry),
             Err(e) => {
                 return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
@@ -772,7 +772,7 @@ pub async fn isochrone_handler(
     } else {
         SnapRole::Src
     };
-    let center_role_filter = center_role.role_filter(mode_data);
+    let center_role_filter = center_role.role_filter(&mode_data);
 
     let center_orig = match state.snap_index.snap_filtered_role(
         req.lon,
@@ -1146,7 +1146,7 @@ pub async fn isochrone_bulk_handler(
 
     // Compute avoid weights (includes exclude if both present)
     let avoid_entry = if let Some(ref avoid_str) = avoid_json {
-        match super::avoid::compute_avoid_weights(&state, mode_data, avoid_str, exclude_mask) {
+        match super::avoid::compute_avoid_weights(&state, &mode_data, avoid_str, exclude_mask) {
             Ok(entry) => Some(entry),
             Err(e) => {
                 return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
@@ -1190,7 +1190,7 @@ pub async fn isochrone_bulk_handler(
 
     // Bulk isochrones are depart-only (no `direction` field), so origins
     // act as sources. Apply the #197 directional role filter.
-    let origin_role_filter = SnapRole::Src.role_filter(mode_data);
+    let origin_role_filter = SnapRole::Src.role_filter(&mode_data);
 
     // Process all origins in parallel
     let results: Vec<(u32, Vec<u8>)> = req

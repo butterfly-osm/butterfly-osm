@@ -606,7 +606,7 @@ pub async fn trip_handler(
 
         // Compute avoid weights (includes exclude if both present)
         let avoid_entry = if let Some(ref avoid_str) = avoid_json {
-            super::avoid::compute_avoid_weights(&state_clone, mode_data, avoid_str, exclude_mask)
+            super::avoid::compute_avoid_weights(&state_clone, &mode_data, avoid_str, exclude_mask)
                 .ok()
         } else {
             None
@@ -807,7 +807,7 @@ pub async fn trip_handler(
                             &ew.time_down_flat,
                             &ew.time_weights,
                         ),
-                        (None, None) => CchQuery::new(&state_clone, mode),
+                        (None, None) => CchQuery::new(&mode_data),
                     };
                     Some(query)
                 } else {
