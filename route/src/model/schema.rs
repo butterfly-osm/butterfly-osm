@@ -139,10 +139,11 @@ mod tests {
         let model: ModelSchema = serde_json::from_str(&json).unwrap();
         assert_eq!(model.name, "car");
         assert_eq!(model.version, 1);
-        // Speed table re-calibrated to OSRM raw values in #211 (F1 OSRM
-        // bias closure: motorway 110→90, primary 70→65, etc.). Test the
-        // schema parses + key-presence rather than pinning a specific
-        // speed value, since #87 follow-up tuning may keep iterating.
+        // Speed table re-reverted to OSM legal limits in #390 (motorway
+        // 90→120, primary 65→90 etc.). Test the schema parses + key
+        // presence rather than pinning a specific speed value; the
+        // numeric values evolve as the realistic-friction work moves
+        // from base table into profile multipliers.
         assert!(model.speed.highway.contains_key("motorway"));
         assert!(model.access.highway.get("motorway") == Some(&true));
         assert!(model.access.highway.get("footway") == Some(&false));
