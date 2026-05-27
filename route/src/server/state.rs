@@ -90,7 +90,7 @@ pub struct ModeData {
     /// lands, /table /trip Flight matrix consumers will REQUIRE this
     /// — the loader will then fail boot if it's missing rather than
     /// silently falling back to the broken `cch_weights_dist`.
-    pub cch_weights_lat: Option<CchWeights>,
+    pub cch_weights_len_along_time: Option<CchWeights>,
     // ---- Server-only per-mode mapping sections (#153) -------------
     // These replace the build-time `OrderEbg` + `FilteredEbg` structs
     // on the serve path. They are loaded from the container's
@@ -159,10 +159,10 @@ pub struct ModeData {
     /// addresses the same CCH edge. Used by the 2-channel bucket-M2M
     /// alongside `up_adj_flat` to report distance along the
     /// time-shortest path.
-    pub up_adj_flat_lat: Option<UpAdjFlat>,
+    pub up_adj_flat_len_along_time: Option<UpAdjFlat>,
     /// Reverse DOWN flat carrying length-along-time weights. See
-    /// `up_adj_flat_lat`.
-    pub down_rev_flat_lat: Option<DownReverseAdjFlat>,
+    /// `up_adj_flat_len_along_time`.
+    pub down_rev_flat_len_along_time: Option<DownReverseAdjFlat>,
     // Cached exclude weight sets (keyed by exclude bitmask)
     pub exclude_cache: parking_lot::RwLock<HashMap<u8, std::sync::Arc<ExcludeWeights>>>,
 }
@@ -1541,7 +1541,7 @@ fn load_traffic_variant_mode_data(
         cch_topo: base.cch_topo.clone(),
         cch_weights,
         cch_weights_dist: base.cch_weights_dist.clone(),
-        cch_weights_lat: base.cch_weights_lat.clone(),
+        cch_weights_len_along_time: base.cch_weights_len_along_time.clone(),
         orig_to_rank: base.orig_to_rank.clone(),
         filtered_to_original: base.filtered_to_original.clone(),
         n_filtered_nodes: base.n_filtered_nodes,
@@ -1556,8 +1556,8 @@ fn load_traffic_variant_mode_data(
         up_adj_flat_dist: base.up_adj_flat_dist.clone(),
         down_rev_flat_dist: base.down_rev_flat_dist.clone(),
         down_adj_flat_dist: base.down_adj_flat_dist.clone(),
-        up_adj_flat_lat: base.up_adj_flat_lat.clone(),
-        down_rev_flat_lat: base.down_rev_flat_lat.clone(),
+        up_adj_flat_len_along_time: base.up_adj_flat_len_along_time.clone(),
+        down_rev_flat_len_along_time: base.down_rev_flat_len_along_time.clone(),
         exclude_cache: parking_lot::RwLock::new(HashMap::new()),
     })
 }
@@ -1629,7 +1629,7 @@ fn load_mode_data(
     // matrix endpoints switch to this for drivetime-consistent
     // distance reporting.
     let cch_lat_weights_path = step8_dir.join(format!("cch.lat.{}.u32", mode_name));
-    let cch_weights_lat = if cch_lat_weights_path.exists() {
+    let cch_weights_len_along_time = if cch_lat_weights_path.exists() {
         tracing::info!(mode = mode_name, "loading length-along-time weights");
         Some(CchWeightsFile::read(&cch_lat_weights_path)?)
     } else {
@@ -1639,14 +1639,8 @@ fn load_mode_data(
         );
         None
     };
-    let (up_adj_flat_lat, down_rev_flat_lat) = if let Some(ref lat) = cch_weights_lat {
-        (
-            Some(UpAdjFlat::build(&cch_topo, lat)),
-            Some(DownReverseAdjFlat::build(&cch_topo, lat)),
-        )
-    } else {
-        (None, None)
-    };
+    let (up_adj_flat_len_along_time, down_rev_flat_len_along_time) =
+        build_len_along_time_flats(&cch_topo, &cch_weights_len_along_time);
 
     // ---- Build server-only mappings (#153) ----------------------
     // The `--data-dir` path always synthesises these from the legacy
@@ -1669,7 +1663,7 @@ fn load_mode_data(
         cch_topo,
         cch_weights,
         cch_weights_dist,
-        cch_weights_lat,
+        cch_weights_len_along_time,
         orig_to_rank: crate::formats::ArcCow::from_vec(orig_to_rank),
         filtered_to_original: crate::formats::ArcCow::from_vec(filtered_to_original),
         n_filtered_nodes,
@@ -1684,8 +1678,8 @@ fn load_mode_data(
         up_adj_flat_dist,
         down_rev_flat_dist,
         down_adj_flat_dist,
-        up_adj_flat_lat,
-        down_rev_flat_lat,
+        up_adj_flat_len_along_time,
+        down_rev_flat_len_along_time,
         exclude_cache: parking_lot::RwLock::new(HashMap::new()),
     })
 }
@@ -1711,6 +1705,25 @@ fn load_mode_data(
 /// causing /route to 404 in one direction even though OSRM finds the
 /// route. Bike/foot are effectively undirected so they were unaffected
 /// in practice; car was 15.6 % broken on the Belgium correctness sweep.
+/// Shared #372 helper: build length-along-time flats from the optional
+/// `cch_weights_len_along_time`. Both `--data-dir` and container-mode
+/// loaders call this so the construction stays in lock-step. Returns
+/// `(None, None)` when weights are absent (old containers / pre-#377
+/// step8 outputs).
+fn build_len_along_time_flats(
+    cch_topo: &CchTopo,
+    cch_weights_len_along_time: &Option<CchWeights>,
+) -> (Option<UpAdjFlat>, Option<DownReverseAdjFlat>) {
+    if let Some(ref w) = *cch_weights_len_along_time {
+        (
+            Some(UpAdjFlat::build(cch_topo, w)),
+            Some(DownReverseAdjFlat::build(cch_topo, w)),
+        )
+    } else {
+        (None, None)
+    }
+}
+
 fn build_role_masks(filtered_ebg: &crate::formats::FilteredEbg) -> (Vec<u64>, Vec<u64>) {
     let n_orig = filtered_ebg.n_original_nodes as usize;
     let n_words = n_orig.div_ceil(64);
@@ -2696,7 +2709,7 @@ fn load_mode_data_from_bundle(
     // None and matrix endpoints fall back to cch_weights_dist
     // (broken metric, see #371 / #372). Once everyone repacks, this
     // becomes a hard load like weights.dist above.
-    let cch_weights_lat = {
+    let cch_weights_len_along_time = {
         let name = format!("mode/{}/weights.lat", mode_name);
         if let Some(entry) = container.get(&name) {
             let off = entry.offset as usize;
@@ -2719,21 +2732,15 @@ fn load_mode_data_from_bundle(
             None
         }
     };
-    let (up_adj_flat_lat, down_rev_flat_lat) = if let Some(ref lat) = cch_weights_lat {
-        (
-            Some(UpAdjFlat::build(&cch_topo, lat)),
-            Some(DownReverseAdjFlat::build(&cch_topo, lat)),
-        )
-    } else {
-        (None, None)
-    };
+    let (up_adj_flat_len_along_time, down_rev_flat_len_along_time) =
+        build_len_along_time_flats(&cch_topo, &cch_weights_len_along_time);
 
     Ok(ModeData {
         mode,
         cch_topo,
         cch_weights,
         cch_weights_dist,
-        cch_weights_lat,
+        cch_weights_len_along_time,
         orig_to_rank,
         filtered_to_original,
         n_filtered_nodes,
@@ -2748,8 +2755,8 @@ fn load_mode_data_from_bundle(
         up_adj_flat_dist,
         down_rev_flat_dist,
         down_adj_flat_dist,
-        up_adj_flat_lat,
-        down_rev_flat_lat,
+        up_adj_flat_len_along_time,
+        down_rev_flat_len_along_time,
         exclude_cache: parking_lot::RwLock::new(HashMap::new()),
     })
 }

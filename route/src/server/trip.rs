@@ -723,16 +723,35 @@ pub async fn trip_handler(
             (&mode_data.up_adj_flat_dist, &mode_data.down_rev_flat_dist)
         };
 
-        // Compute N*N duration matrix (for TSP optimization, always on time)
-        let (mut duration_matrix, _stats) =
-            table_bucket_full_flat(n_nodes, time_up, time_down, &ranks, &ranks);
+        // #372: if length-along-time flats are loaded AND no custom
+        // weights are in play, use the 2-channel bucket-M2M so that
+        // the distance reported per leg belongs to the same time-
+        // shortest path the duration is timed against. Falls back to
+        // the legacy two-pass distance-shortest path otherwise.
+        let use_2channel = want_distance
+            && avoid_entry.is_none()
+            && exclude_weights.is_none()
+            && mode_data.up_adj_flat_len_along_time.is_some()
+            && mode_data.down_rev_flat_len_along_time.is_some();
 
-        // Compute distance matrix if requested (for reporting leg distances)
-        let mut distance_matrix = if want_distance {
-            let (dist_mat, _) = table_bucket_full_flat(n_nodes, dist_up, dist_down, &ranks, &ranks);
-            Some(dist_mat)
+        let (mut duration_matrix, mut distance_matrix) = if use_2channel {
+            let up_lat = mode_data.up_adj_flat_len_along_time.as_ref().unwrap();
+            let dn_lat = mode_data.down_rev_flat_len_along_time.as_ref().unwrap();
+            let (dur_mat, lat_mat, _stats) =
+                crate::matrix::bucket_ch::table_bucket_full_flat_len_along_time(
+                    n_nodes, time_up, time_down, up_lat, dn_lat, &ranks, &ranks,
+                );
+            (dur_mat, Some(lat_mat))
         } else {
-            None
+            let (dur_mat, _stats) =
+                table_bucket_full_flat(n_nodes, time_up, time_down, &ranks, &ranks);
+            let dist_mat = if want_distance {
+                let (m, _) = table_bucket_full_flat(n_nodes, dist_up, dist_down, &ranks, &ranks);
+                Some(m)
+            } else {
+                None
+            };
+            (dur_mat, dist_mat)
         };
 
         // K-best fallback for INF matrix cells (#197 matrix gap, same

@@ -34,6 +34,11 @@ thread_local! {
     static FORWARD_STATE: RefCell<Option<SearchState>> = const { RefCell::new(None) };
     static BACKWARD_STATE: RefCell<Option<SearchState>> = const { RefCell::new(None) };
     static FORWARD_BUCKET_ITEMS: RefCell<Vec<(u32, u32, u32)>> = const { RefCell::new(Vec::new()) };
+    // 2-channel (#372) thread-local state — kept separate so single-
+    // channel callers don't pay the parallel-lat allocation.
+    static FORWARD_STATE_LAT: RefCell<Option<SearchState2>> = const { RefCell::new(None) };
+    static BACKWARD_STATE_LAT: RefCell<Option<SearchState2>> = const { RefCell::new(None) };
+    static FORWARD_BUCKET_ITEMS_LAT: RefCell<Vec<(u32, u32, u32, u32)>> = const { RefCell::new(Vec::new()) };
 
     // Sequential engine for the small-N fast path (#129). At low cell
     // counts (~≤ 1000) rayon's thread-dispatch + work-stealing overhead
@@ -3760,6 +3765,621 @@ impl BucketArena {
     pub fn total_items(&self) -> usize {
         self.items.len()
     }
+}
+
+// =============================================================================
+// 2-CHANNEL BUCKET-M2M (#372): time + length-along-time-shortest
+// =============================================================================
+//
+// Mirrors the single-channel implementation above but propagates a second
+// per-edge weight (length-along-time) alongside time during the SAME
+// forward+backward Dijkstra. The path chosen is the time-shortest one
+// (decisions driven entirely by `dist`); `lat` accumulates the distance
+// along that path. The output is two matrices: time and lat.
+//
+// Why a separate fork rather than a generic 2-channel implementation:
+//   - The hot path is a u32 heap + relax loop; adding optional second
+//     channels via Option<&[u32]> branches in every iteration costs a
+//     mispredict per relax that the static fork avoids.
+//   - The bucket entries grow from 8 → 12 bytes; PrefixSumBuckets2 keeps
+//     the SoA layout but with an extra `lats` array parallel to `dists`.
+//   - Backward join chooses meeting node by MIN-TIME (not min-lat) and
+//     reads lat at that meeting node — different from a generic
+//     two-metric search.
+
+/// Bucket entry (12 bytes) — like `BucketEntry` but carries a second u32
+/// `lat` representing the length along the time-shortest path from the
+/// source to this bucket's node.
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct Bucket2Entry {
+    dist: u32,
+    lat: u32,
+    source_idx: u32,
+}
+
+/// Reusable prefix-sum bucket structure for the 2-channel variant.
+/// SoA layout: `dists` + `lats` + `source_indices` as three parallel
+/// `Vec<u32>` (12 bytes per entry, better cache utilisation than AoS).
+struct PrefixSumBuckets2 {
+    counts: Vec<u32>,
+    count_stamps: Vec<u32>,
+    current_stamp: u32,
+    offsets: Vec<u32>,
+    /// AoS layout — backward join reads one `Bucket2Entry` per join.
+    /// (Tried a parallel SoA layout; the AoS read pattern was faster
+    /// because the join touches all three fields per entry anyway.)
+    items: Vec<Bucket2Entry>,
+    active_nodes: Vec<u32>,
+}
+
+impl PrefixSumBuckets2 {
+    fn new(n_nodes: usize) -> Self {
+        Self {
+            counts: vec![0; n_nodes],
+            count_stamps: vec![0; n_nodes],
+            current_stamp: 0,
+            offsets: vec![0; n_nodes + 1],
+            items: Vec::new(),
+            active_nodes: Vec::new(),
+        }
+    }
+
+    /// Build from raw items `(node, source_idx, dist, lat)`.
+    fn build(&mut self, raw_items: &[(u32, u32, u32, u32)]) {
+        self.current_stamp = self.current_stamp.wrapping_add(1);
+        if self.current_stamp == 0 {
+            self.count_stamps.fill(0);
+            self.current_stamp = 1;
+        }
+        self.active_nodes.clear();
+
+        for &(node, _, _, _) in raw_items {
+            let n = node as usize;
+            if self.count_stamps[n] != self.current_stamp {
+                self.count_stamps[n] = self.current_stamp;
+                self.counts[n] = 0;
+                self.active_nodes.push(node);
+            }
+            self.counts[n] += 1;
+        }
+
+        let mut total = 0u32;
+        for &node in &self.active_nodes {
+            let n = node as usize;
+            self.offsets[n] = total;
+            total += self.counts[n];
+        }
+
+        let total_items = total as usize;
+        if self.items.len() < total_items {
+            self.items.resize(
+                total_items,
+                Bucket2Entry {
+                    dist: 0,
+                    lat: 0,
+                    source_idx: 0,
+                },
+            );
+        }
+
+        if let Some(last) = self.offsets.last_mut() {
+            *last = total;
+        }
+
+        // Per-node write cursor — reuse `counts` as cursor by zeroing
+        // then re-counting, mirroring `PrefixSumBuckets::build`.
+        for &node in &self.active_nodes {
+            self.counts[node as usize] = 0;
+        }
+        for &(node, src_idx, dist, lat) in raw_items {
+            let n = node as usize;
+            let pos = (self.offsets[n] + self.counts[n]) as usize;
+            self.items[pos] = Bucket2Entry {
+                dist,
+                lat,
+                source_idx: src_idx,
+            };
+            self.counts[n] += 1;
+        }
+    }
+
+    #[inline]
+    fn get(&self, node: u32) -> &[Bucket2Entry] {
+        let n = node as usize;
+        if self.count_stamps[n] != self.current_stamp {
+            return &[];
+        }
+        let start = self.offsets[n] as usize;
+        let end = start + self.counts[n] as usize;
+        &self.items[start..end]
+    }
+}
+
+/// 2-channel search state — parallel to `SearchState` but with a `lats`
+/// array storing the length-along-time-shortest accumulator. Reads of
+/// `lats[node]` are valid only when `entries[node].version` matches
+/// `current_version` (i.e. when `dist` is current).
+struct SearchState2 {
+    entries: Vec<NodeEntry>,
+    lats: Vec<u32>,
+    current_version: u32,
+    heap: DAryHeap,
+    handles: Vec<u32>,
+    pushes: usize,
+    pops: usize,
+}
+
+impl SearchState2 {
+    fn new(n_nodes: usize, heap_capacity: usize) -> Self {
+        Self {
+            entries: vec![
+                NodeEntry {
+                    dist: u32::MAX,
+                    version: 0,
+                };
+                n_nodes
+            ],
+            lats: vec![u32::MAX; n_nodes],
+            current_version: 0,
+            heap: DAryHeap::new(heap_capacity),
+            handles: vec![INVALID_HANDLE; n_nodes],
+            pushes: 0,
+            pops: 0,
+        }
+    }
+
+    #[inline]
+    fn start_search(&mut self) {
+        self.current_version = self.current_version.wrapping_add(1);
+        if self.current_version == 0 {
+            for e in &mut self.entries {
+                e.dist = u32::MAX;
+                e.version = 0;
+            }
+            for h in &mut self.handles {
+                *h = INVALID_HANDLE;
+            }
+            self.current_version = 1;
+        }
+        self.heap.clear();
+    }
+
+    /// Relax with both `dist` (drives ordering) and `lat` (accumulates
+    /// alongside). When `dist` improves, both fields are updated. Returns
+    /// `true` if anything changed.
+    #[inline]
+    fn relax(&mut self, node: u32, dist: u32, lat: u32) -> bool {
+        let e = &mut self.entries[node as usize];
+
+        if e.version == self.current_version {
+            if dist < e.dist {
+                e.dist = dist;
+                self.lats[node as usize] = lat;
+                let handle = self.handles[node as usize];
+                if handle != INVALID_HANDLE && (handle as usize) < self.heap.size() {
+                    self.heap.decrease(handle, dist, node, &mut self.handles);
+                    self.pushes += 1;
+                }
+                return true;
+            }
+            return false;
+        }
+
+        self.handles[node as usize] = INVALID_HANDLE;
+        e.dist = dist;
+        e.version = self.current_version;
+        self.lats[node as usize] = lat;
+        self.heap.push(dist, node, &mut self.handles);
+        self.pushes += 1;
+        true
+    }
+
+    /// Returns `(dist, lat, node)` for the next-min-dist node.
+    #[inline]
+    fn pop(&mut self) -> Option<(u32, u32, u32)> {
+        if let Some((dist, node)) = self.heap.pop(&mut self.handles) {
+            self.pops += 1;
+            self.handles[node as usize] = INVALID_HANDLE;
+            let lat = self.lats[node as usize];
+            return Some((dist, lat, node));
+        }
+        None
+    }
+}
+
+/// Forward search using flat UP adjacency for BOTH metrics. `up_adj_flat`
+/// and `up_adj_flat_len_along_time` share the CCH topology — index `i` addresses
+/// the same edge in both. Reads time from the first, lat from the second.
+fn forward_fill_buckets_flat_len_along_time(
+    up_adj_flat: &UpAdjFlat,
+    up_adj_flat_len_along_time: &UpAdjFlat,
+    source_idx: u32,
+    source: u32,
+    state: &mut SearchState2,
+    bucket_items: &mut Vec<(u32, u32, u32, u32)>,
+) {
+    state.start_search();
+    state.relax(source, 0, 0);
+
+    while let Some((d, l, u)) = state.pop() {
+        bucket_items.push((u, source_idx, d, l));
+
+        let start = up_adj_flat.offsets[u as usize] as usize;
+        let end = up_adj_flat.offsets[u as usize + 1] as usize;
+        for i in start..end {
+            let v = up_adj_flat.targets[i];
+            let w_time = up_adj_flat.weights.get(i);
+            let w_lat = up_adj_flat_len_along_time.weights.get(i);
+            let new_dist = d.saturating_add(w_time);
+            let new_lat = l.saturating_add(w_lat);
+            state.relax(v, new_dist, new_lat);
+        }
+    }
+}
+
+/// Backward search from target — joins buckets at the meeting node and
+/// writes BOTH the time-min and the lat-at-time-min into the output
+/// matrices. The meeting node is chosen by min-TIME; lat is reported at
+/// that node, not separately optimised.
+#[allow(clippy::too_many_arguments)]
+fn backward_join_prefix_len_along_time(
+    down_rev_flat: &DownReverseAdjFlat,
+    down_rev_flat_len_along_time: &DownReverseAdjFlat,
+    target: u32,
+    buckets: &PrefixSumBuckets2,
+    time_matrix: &mut [u32],
+    lat_matrix: &mut [u32],
+    n_targets: usize,
+    target_idx: usize,
+    state: &mut SearchState2,
+) -> (usize, usize) {
+    state.start_search();
+    state.relax(target, 0, 0);
+
+    let mut visited = 0usize;
+    let mut joins = 0usize;
+
+    while let Some((d, l, u)) = state.pop() {
+        visited += 1;
+
+        let bucket_entries = buckets.get(u);
+        for entry in bucket_entries {
+            let cell = entry.source_idx as usize * n_targets + target_idx;
+
+            let current_best_time = time_matrix[cell];
+            if current_best_time <= entry.dist {
+                // dist alone cannot improve the time; skip — lat is
+                // semantically tied to whichever (src, m, tgt) wins
+                // time, so we don't speculatively update it here.
+                continue;
+            }
+
+            let total_time = entry.dist.saturating_add(d);
+            if total_time < current_best_time {
+                time_matrix[cell] = total_time;
+                lat_matrix[cell] = entry.lat.saturating_add(l);
+            }
+            joins += 1;
+        }
+
+        let edge_start = down_rev_flat.offsets[u as usize] as usize;
+        let edge_end = down_rev_flat.offsets[u as usize + 1] as usize;
+        for i in edge_start..edge_end {
+            let x = down_rev_flat.sources[i];
+            let w_time = down_rev_flat.weights.get(i);
+            let w_lat = down_rev_flat_len_along_time.weights.get(i);
+            let new_dist = d.saturating_add(w_time);
+            let new_lat = l.saturating_add(w_lat);
+            state.relax(x, new_dist, new_lat);
+        }
+    }
+
+    (visited, joins)
+}
+
+/// 2-channel bucket-M2M (#372). Mirrors `table_bucket_full_flat` but
+/// returns two matrices: time and length-along-time-shortest. The path
+/// chosen at every cell is the time-shortest one; the lat number
+/// belongs to that same path (no separate distance-shortest search).
+///
+/// `up_adj_flat` / `down_rev_flat` carry time weights; `_lat` variants
+/// carry length-along-time weights with the SAME topology (built by
+/// `state.rs` via `UpAdjFlat::build(&cch_topo, &cch_weights_len_along_time)`).
+#[allow(clippy::too_many_arguments)]
+pub fn table_bucket_full_flat_len_along_time(
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    down_rev_flat: &DownReverseAdjFlat,
+    up_adj_flat_len_along_time: &UpAdjFlat,
+    down_rev_flat_len_along_time: &DownReverseAdjFlat,
+    sources: &[u32],
+    targets: &[u32],
+) -> (Vec<u32>, Vec<u32>, BucketM2MStats) {
+    let n_sources = sources.len();
+    let n_targets = targets.len();
+
+    let mut time_matrix = vec![u32::MAX; n_sources * n_targets];
+    let mut lat_matrix = vec![u32::MAX; n_sources * n_targets];
+
+    if n_sources == 0 || n_targets == 0 {
+        return (time_matrix, lat_matrix, BucketM2MStats::default());
+    }
+
+    let mut stats = BucketM2MStats {
+        n_sources,
+        n_targets,
+        ..Default::default()
+    };
+
+    let avg_visited = (n_nodes / 400).clamp(500, 20000);
+    let mut state = SearchState2::new(n_nodes, avg_visited);
+
+    let forward_start = std::time::Instant::now();
+    let mut bucket_items: Vec<(u32, u32, u32, u32)> = Vec::with_capacity(n_sources * avg_visited);
+    for (source_idx, &source) in sources.iter().enumerate() {
+        if source as usize >= n_nodes {
+            continue;
+        }
+        forward_fill_buckets_flat_len_along_time(
+            up_adj_flat,
+            up_adj_flat_len_along_time,
+            source_idx as u32,
+            source,
+            &mut state,
+            &mut bucket_items,
+        );
+    }
+    stats.forward_visited = bucket_items.len();
+    stats.forward_time_ms = forward_start.elapsed().as_millis() as u64;
+
+    let sort_start = std::time::Instant::now();
+    let mut buckets = PrefixSumBuckets2::new(n_nodes);
+    buckets.build(&bucket_items);
+    stats.sort_time_ms = sort_start.elapsed().as_millis() as u64;
+
+    let backward_start = std::time::Instant::now();
+    for (target_idx, &target) in targets.iter().enumerate() {
+        if target as usize >= n_nodes {
+            continue;
+        }
+        let (visited, joins) = backward_join_prefix_len_along_time(
+            down_rev_flat,
+            down_rev_flat_len_along_time,
+            target,
+            &buckets,
+            &mut time_matrix,
+            &mut lat_matrix,
+            n_targets,
+            target_idx,
+            &mut state,
+        );
+        stats.backward_visited += visited;
+        stats.join_operations += joins;
+    }
+    stats.backward_time_ms = backward_start.elapsed().as_millis() as u64;
+
+    stats.heap_pushes = state.pushes;
+    stats.heap_pops = state.pops;
+
+    (time_matrix, lat_matrix, stats)
+}
+
+/// Parallel 2-channel backward join. Writes into a single
+/// `AtomicU64` matrix where each cell packs `(time << 32) | lat` —
+/// `fetch_min` on this packed value keeps time and lat in lock-step
+/// (smaller u64 = smaller time wins, and the lat tagged onto the
+/// winning value rides along automatically).
+#[allow(clippy::too_many_arguments)]
+fn backward_join_parallel_prefix_len_along_time(
+    down_rev_flat: &DownReverseAdjFlat,
+    down_rev_flat_len_along_time: &DownReverseAdjFlat,
+    target: u32,
+    buckets: &PrefixSumBuckets2,
+    packed_matrix: &[std::sync::atomic::AtomicU64],
+    n_targets: usize,
+    target_idx: usize,
+    state: &mut SearchState2,
+) -> (usize, usize) {
+    use std::sync::atomic::Ordering;
+    state.start_search();
+    state.relax(target, 0, 0);
+
+    let mut visited = 0usize;
+    let mut joins = 0usize;
+
+    while let Some((d, l, u)) = state.pop() {
+        visited += 1;
+
+        let entries = buckets.get(u);
+        for entry in entries {
+            let cell = entry.source_idx as usize * n_targets + target_idx;
+            // Bound-pruned CAS loop: replace unconditional fetch_min
+            // with load + compare + compare_exchange_weak. fetch_min
+            // forces a locked RMW even on cells we can't improve;
+            // load-and-check skips the RMW entirely for the common
+            // "already-better" case. CAS retries only when another
+            // thread won the race in between — rare on Belgium
+            // /table at 1000x1000. Codex consult flagged this as the
+            // dominant cost of the 2-channel path.
+            let mut cur = packed_matrix[cell].load(Ordering::Relaxed);
+            loop {
+                let cur_time = (cur >> 32) as u32;
+                if cur_time <= entry.dist {
+                    // current best beats this bucket's dist alone —
+                    // can't improve via this entry.
+                    break;
+                }
+                let total_time = entry.dist.saturating_add(d);
+                if total_time >= cur_time {
+                    // can't improve total either.
+                    break;
+                }
+                let total_lat = entry.lat.saturating_add(l);
+                let next = ((total_time as u64) << 32) | total_lat as u64;
+                match packed_matrix[cell].compare_exchange_weak(
+                    cur,
+                    next,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => {
+                        joins += 1;
+                        break;
+                    }
+                    Err(observed) => cur = observed,
+                }
+            }
+        }
+
+        let edge_start = down_rev_flat.offsets[u as usize] as usize;
+        let edge_end = down_rev_flat.offsets[u as usize + 1] as usize;
+        for i in edge_start..edge_end {
+            let x = down_rev_flat.sources[i];
+            let w_time = down_rev_flat.weights.get(i);
+            let w_lat = down_rev_flat_len_along_time.weights.get(i);
+            let new_dist = d.saturating_add(w_time);
+            let new_lat = l.saturating_add(w_lat);
+            state.relax(x, new_dist, new_lat);
+        }
+    }
+
+    (visited, joins)
+}
+
+/// Parallel 2-channel bucket-M2M. Mirrors `table_bucket_parallel` but
+/// propagates length-along-time alongside time using thread-local
+/// `SearchState2`. Backward phase writes into a packed `AtomicU64`
+/// matrix so updates to (time, lat) stay atomic without per-cell
+/// mutexes.
+///
+/// For small matrices the cost of forking rayon is higher than the
+/// routing work itself; the caller dispatches to the sequential
+/// `table_bucket_full_flat_len_along_time` below ~1024 cells.
+#[allow(clippy::too_many_arguments)]
+pub fn table_bucket_parallel_len_along_time(
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    down_rev_flat: &DownReverseAdjFlat,
+    up_adj_flat_len_along_time: &UpAdjFlat,
+    down_rev_flat_len_along_time: &DownReverseAdjFlat,
+    sources: &[u32],
+    targets: &[u32],
+) -> (Vec<u32>, Vec<u32>, BucketM2MStats) {
+    use std::sync::atomic::Ordering;
+    let n_sources = sources.len();
+    let n_targets = targets.len();
+
+    if n_sources == 0 || n_targets == 0 {
+        return (
+            vec![u32::MAX; n_sources * n_targets],
+            vec![u32::MAX; n_sources * n_targets],
+            BucketM2MStats::default(),
+        );
+    }
+
+    let mut stats = BucketM2MStats {
+        n_sources,
+        n_targets,
+        ..Default::default()
+    };
+
+    // ---- Forward phase: parallel per-source ----
+    let forward_start = std::time::Instant::now();
+    let bucket_chunks: Vec<Vec<(u32, u32, u32, u32)>> = sources
+        .par_iter()
+        .enumerate()
+        .filter_map(|(source_idx, &source)| {
+            if source as usize >= n_nodes {
+                return None;
+            }
+            let avg_visited = (n_nodes / 400).clamp(500, 20_000);
+            FORWARD_STATE_LAT.with(|state_cell| {
+                FORWARD_BUCKET_ITEMS_LAT.with(|items_cell| {
+                    let mut state_opt = state_cell.borrow_mut();
+                    let state =
+                        state_opt.get_or_insert_with(|| SearchState2::new(n_nodes, avg_visited));
+                    if state.entries.len() != n_nodes {
+                        *state = SearchState2::new(n_nodes, avg_visited);
+                    }
+                    let mut items = items_cell.borrow_mut();
+                    items.clear();
+                    forward_fill_buckets_flat_len_along_time(
+                        up_adj_flat,
+                        up_adj_flat_len_along_time,
+                        source_idx as u32,
+                        source,
+                        state,
+                        &mut items,
+                    );
+                    Some(std::mem::take(&mut *items))
+                })
+            })
+        })
+        .collect();
+    let bucket_items: Vec<(u32, u32, u32, u32)> = bucket_chunks.into_iter().flatten().collect();
+    stats.forward_visited = bucket_items.len();
+    stats.forward_time_ms = forward_start.elapsed().as_millis() as u64;
+
+    // ---- Bucket build ----
+    let sort_start = std::time::Instant::now();
+    let mut buckets = PrefixSumBuckets2::new(n_nodes);
+    buckets.build(&bucket_items);
+    stats.sort_time_ms = sort_start.elapsed().as_millis() as u64;
+
+    // ---- Backward phase: parallel per-target, atomic packed matrix ----
+    let backward_start = std::time::Instant::now();
+    // Init each cell to u64::MAX so `fetch_min` accepts the first
+    // valid (time, lat) write.
+    let packed_matrix: Vec<std::sync::atomic::AtomicU64> = (0..n_sources * n_targets)
+        .map(|_| std::sync::atomic::AtomicU64::new(u64::MAX))
+        .collect();
+
+    let (total_visited, total_joins): (usize, usize) = targets
+        .par_iter()
+        .enumerate()
+        .filter(|&(_, target)| (*target as usize) < n_nodes)
+        .map(|(target_idx, &target)| {
+            let avg_visited = (n_nodes / 400).clamp(500, 20_000);
+            BACKWARD_STATE_LAT.with(|state_cell| {
+                let mut state_opt = state_cell.borrow_mut();
+                let state =
+                    state_opt.get_or_insert_with(|| SearchState2::new(n_nodes, avg_visited));
+                if state.entries.len() != n_nodes {
+                    *state = SearchState2::new(n_nodes, avg_visited);
+                }
+                backward_join_parallel_prefix_len_along_time(
+                    down_rev_flat,
+                    down_rev_flat_len_along_time,
+                    target,
+                    &buckets,
+                    &packed_matrix,
+                    n_targets,
+                    target_idx,
+                    state,
+                )
+            })
+        })
+        .reduce(|| (0, 0), |(v1, j1), (v2, j2)| (v1 + v2, j1 + j2));
+
+    stats.backward_visited = total_visited;
+    stats.join_operations = total_joins;
+    stats.backward_time_ms = backward_start.elapsed().as_millis() as u64;
+
+    // ---- Unpack packed matrix into two u32 matrices ----
+    let mut time_matrix = vec![u32::MAX; n_sources * n_targets];
+    let mut lat_matrix = vec![u32::MAX; n_sources * n_targets];
+    for (i, slot) in packed_matrix.iter().enumerate() {
+        let v = slot.load(Ordering::Relaxed);
+        if v == u64::MAX {
+            // unreachable — keep u32::MAX sentinels
+            continue;
+        }
+        time_matrix[i] = (v >> 32) as u32;
+        lat_matrix[i] = (v & 0xFFFF_FFFF) as u32;
+    }
+
+    (time_matrix, lat_matrix, stats)
 }
 
 #[cfg(test)]
