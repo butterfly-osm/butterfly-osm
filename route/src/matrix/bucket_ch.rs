@@ -4171,17 +4171,22 @@ pub fn table_bucket_full_flat_len_along_time(
 /// (smaller u64 = smaller time wins, and the lat tagged onto the
 /// winning value rides along automatically).
 #[allow(clippy::too_many_arguments)]
-fn backward_join_parallel_prefix_len_along_time(
+/// 2-channel backward join — target-owned local columns. Each target
+/// writes its own row of (time, lat) into thread-local `time_col` and
+/// `lat_col` `Vec<u32>` of size `n_sources`. No atomics needed because
+/// every cell `(src, target)` is touched by exactly ONE target's
+/// backward run. Replaces the AtomicU64 packed matrix at codex's
+/// suggestion — eliminates the locked RMW that the bound-pruned CAS
+/// loop still incurred on every successful update.
+fn backward_join_local_columns_len_along_time(
     down_rev_flat: &DownReverseAdjFlat,
     down_rev_flat_len_along_time: &DownReverseAdjFlat,
     target: u32,
     buckets: &PrefixSumBuckets2,
-    packed_matrix: &[std::sync::atomic::AtomicU64],
-    n_targets: usize,
-    target_idx: usize,
+    time_col: &mut [u32],
+    lat_col: &mut [u32],
     state: &mut SearchState2,
 ) -> (usize, usize) {
-    use std::sync::atomic::Ordering;
     state.start_search();
     state.relax(target, 0, 0);
 
@@ -4193,43 +4198,21 @@ fn backward_join_parallel_prefix_len_along_time(
 
         let entries = buckets.get(u);
         for entry in entries {
-            let cell = entry.source_idx as usize * n_targets + target_idx;
-            // Bound-pruned CAS loop: replace unconditional fetch_min
-            // with load + compare + compare_exchange_weak. fetch_min
-            // forces a locked RMW even on cells we can't improve;
-            // load-and-check skips the RMW entirely for the common
-            // "already-better" case. CAS retries only when another
-            // thread won the race in between — rare on Belgium
-            // /table at 1000x1000. Codex consult flagged this as the
-            // dominant cost of the 2-channel path.
-            let mut cur = packed_matrix[cell].load(Ordering::Relaxed);
-            loop {
-                let cur_time = (cur >> 32) as u32;
-                if cur_time <= entry.dist {
-                    // current best beats this bucket's dist alone —
-                    // can't improve via this entry.
-                    break;
-                }
-                let total_time = entry.dist.saturating_add(d);
-                if total_time >= cur_time {
-                    // can't improve total either.
-                    break;
-                }
-                let total_lat = entry.lat.saturating_add(l);
-                let next = ((total_time as u64) << 32) | total_lat as u64;
-                match packed_matrix[cell].compare_exchange_weak(
-                    cur,
-                    next,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => {
-                        joins += 1;
-                        break;
-                    }
-                    Err(observed) => cur = observed,
-                }
+            let src = entry.source_idx as usize;
+            // Bound-aware pruning: skip when current best already wins
+            // on time alone. Plain branch + load on a local Vec — no
+            // atomics, no cache-line ping-pong.
+            let cur_time = time_col[src];
+            if cur_time <= entry.dist {
+                continue;
             }
+            let total_time = entry.dist.saturating_add(d);
+            if total_time >= cur_time {
+                continue;
+            }
+            time_col[src] = total_time;
+            lat_col[src] = entry.lat.saturating_add(l);
+            joins += 1;
         }
 
         let edge_start = down_rev_flat.offsets[u as usize] as usize;
@@ -4266,7 +4249,6 @@ pub fn table_bucket_parallel_len_along_time(
     sources: &[u32],
     targets: &[u32],
 ) -> (Vec<u32>, Vec<u32>, BucketM2MStats) {
-    use std::sync::atomic::Ordering;
     let n_sources = sources.len();
     let n_targets = targets.len();
 
@@ -4327,15 +4309,21 @@ pub fn table_bucket_parallel_len_along_time(
     buckets.build(&bucket_items);
     stats.sort_time_ms = sort_start.elapsed().as_millis() as u64;
 
-    // ---- Backward phase: parallel per-target, atomic packed matrix ----
+    // ---- Backward phase: target-owned local columns (no atomics) ----
+    //
+    // Each target's backward Dijkstra writes its own (n_sources)-sized
+    // time + lat columns. Because every cell (src, tgt) is touched by
+    // exactly ONE target's backward run, we don't need any cross-thread
+    // synchronisation on writes — plain branch+store on a thread-local
+    // `Vec<u32>` instead of locked CAS on a shared `AtomicU64`. Codex
+    // consult flagged this as the next lever past the bound-pruned CAS.
+    //
+    // After parallel collection we gather the columns into the final
+    // row-major matrices.
     let backward_start = std::time::Instant::now();
-    // Init each cell to u64::MAX so `fetch_min` accepts the first
-    // valid (time, lat) write.
-    let packed_matrix: Vec<std::sync::atomic::AtomicU64> = (0..n_sources * n_targets)
-        .map(|_| std::sync::atomic::AtomicU64::new(u64::MAX))
-        .collect();
 
-    let (total_visited, total_joins): (usize, usize) = targets
+    type ColumnPair = (usize, Vec<u32>, Vec<u32>, usize, usize);
+    let columns: Vec<ColumnPair> = targets
         .par_iter()
         .enumerate()
         .filter(|&(_, target)| (*target as usize) < n_nodes)
@@ -4348,35 +4336,40 @@ pub fn table_bucket_parallel_len_along_time(
                 if state.entries.len() != n_nodes {
                     *state = SearchState2::new(n_nodes, avg_visited);
                 }
-                backward_join_parallel_prefix_len_along_time(
+                let mut time_col = vec![u32::MAX; n_sources];
+                let mut lat_col = vec![u32::MAX; n_sources];
+                let (visited, joins) = backward_join_local_columns_len_along_time(
                     down_rev_flat,
                     down_rev_flat_len_along_time,
                     target,
                     &buckets,
-                    &packed_matrix,
-                    n_targets,
-                    target_idx,
+                    &mut time_col,
+                    &mut lat_col,
                     state,
-                )
+                );
+                (target_idx, time_col, lat_col, visited, joins)
             })
         })
-        .reduce(|| (0, 0), |(v1, j1), (v2, j2)| (v1 + v2, j1 + j2));
+        .collect();
 
+    let mut total_visited = 0usize;
+    let mut total_joins = 0usize;
+    for (_, _, _, v, j) in &columns {
+        total_visited += *v;
+        total_joins += *j;
+    }
     stats.backward_visited = total_visited;
     stats.join_operations = total_joins;
     stats.backward_time_ms = backward_start.elapsed().as_millis() as u64;
 
-    // ---- Unpack packed matrix into two u32 matrices ----
+    // ---- Gather columns into row-major matrices ----
     let mut time_matrix = vec![u32::MAX; n_sources * n_targets];
     let mut lat_matrix = vec![u32::MAX; n_sources * n_targets];
-    for (i, slot) in packed_matrix.iter().enumerate() {
-        let v = slot.load(Ordering::Relaxed);
-        if v == u64::MAX {
-            // unreachable — keep u32::MAX sentinels
-            continue;
+    for (target_idx, time_col, lat_col, _, _) in columns {
+        for src in 0..n_sources {
+            time_matrix[src * n_targets + target_idx] = time_col[src];
+            lat_matrix[src * n_targets + target_idx] = lat_col[src];
         }
-        time_matrix[i] = (v >> 32) as u32;
-        lat_matrix[i] = (v & 0xFFFF_FFFF) as u32;
     }
 
     (time_matrix, lat_matrix, stats)
