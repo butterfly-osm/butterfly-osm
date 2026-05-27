@@ -139,7 +139,7 @@ mod tests {
         let model: ModelSchema = serde_json::from_str(&json).unwrap();
         assert_eq!(model.name, "car");
         assert_eq!(model.version, 1);
-        // Speed table re-reverted to OSM legal limits in #390 (motorway
+        // Speed table reverted to OSM legal limits in #390 (motorway
         // 90→120, primary 65→90 etc.). Test the schema parses + key
         // presence rather than pinning a specific speed value; the
         // numeric values evolve as the realistic-friction work moves
