@@ -265,7 +265,7 @@ pub async fn table_post_handler(
 
     // Compute avoid weights (includes exclude if both present)
     let avoid_entry = if let Some(ref avoid_str) = avoid_json {
-        match super::avoid::compute_avoid_weights(&state, mode_data, avoid_str, exclude_mask) {
+        match super::avoid::compute_avoid_weights(&state, &mode_data, avoid_str, exclude_mask) {
             Ok(entry) => Some(entry),
             Err(e) => {
                 return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
@@ -363,8 +363,8 @@ pub async fn compute_table_bucket_m2m(
     const SNAP_K: usize = 64;
     let _ = SNAP_K; // referenced from apply_k_best_fallback's docs
 
-    let src_role_filter = SnapRole::Src.role_filter(mode_data);
-    let dst_role_filter = SnapRole::Dst.role_filter(mode_data);
+    let src_role_filter = SnapRole::Src.role_filter(&mode_data);
+    let dst_role_filter = SnapRole::Dst.role_filter(&mode_data);
 
     let t_pre = std::time::Instant::now();
 
@@ -616,7 +616,7 @@ pub async fn compute_table_bucket_m2m(
     // healthy matrix pays zero K-best snap cost.
     let (durations, distances) = apply_k_best_fallback(
         state,
-        mode_data,
+        &mode_data,
         mode,
         durations,
         distances,
@@ -742,7 +742,7 @@ fn apply_k_best_fallback(
                 &cw.time_down_flat,
                 &cw.time_weights,
             ),
-            None => CchQuery::new(state, mode),
+            None => CchQuery::new(mode_data),
         })
     } else {
         None
@@ -1123,7 +1123,7 @@ pub async fn table_stream_handler(
 
     // Compute avoid weights (includes exclude if both present)
     let avoid_entry = if let Some(ref avoid_str) = avoid_json {
-        match super::avoid::compute_avoid_weights(&state, mode_data, avoid_str, exclude_mask) {
+        match super::avoid::compute_avoid_weights(&state, &mode_data, avoid_str, exclude_mask) {
             Ok(entry) => Some(entry),
             Err(e) => {
                 return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
@@ -1163,8 +1163,8 @@ pub async fn table_stream_handler(
     let mut sources_rank: Vec<u32> = Vec::with_capacity(req.sources.len());
     let mut valid_src_indices: Vec<usize> = Vec::with_capacity(req.sources.len());
     let mut sources_snapped: Vec<(f64, f64)> = Vec::with_capacity(req.sources.len());
-    let src_role_filter = SnapRole::Src.role_filter(mode_data);
-    let dst_role_filter = SnapRole::Dst.role_filter(mode_data);
+    let src_role_filter = SnapRole::Src.role_filter(&mode_data);
+    let dst_role_filter = SnapRole::Dst.role_filter(&mode_data);
 
     for (i, [lon, lat]) in req.sources.iter().enumerate() {
         let mut matched = false;

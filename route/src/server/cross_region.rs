@@ -207,7 +207,7 @@ pub fn solve_cross_region(
         let access: Vec<Option<u32>> = valid_src_ranks
             .par_iter()
             .map(|&t| {
-                let q = CchQuery::new(src_state, Mode(src_mode_idx));
+                let q = CchQuery::new(&src_mode_data);
                 q.distance(src_rank, t)
             })
             .collect();
@@ -255,7 +255,7 @@ pub fn solve_cross_region(
         let egress: Vec<Option<u32>> = valid_dst_ranks
             .par_iter()
             .map(|&s| {
-                let q = CchQuery::new(dst_state, Mode(dst_mode_idx));
+                let q = CchQuery::new(&dst_mode_data);
                 q.distance(s, dst_rank)
             })
             .collect();

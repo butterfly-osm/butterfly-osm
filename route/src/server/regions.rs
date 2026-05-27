@@ -688,6 +688,14 @@ impl RegionsState {
         self.regions.is_empty()
     }
 
+    /// #402: iterate all registered regions for the idle compactor's
+    /// per-mode eviction sweep. Returns `&RegionEntry` so the caller
+    /// can call `state_loaded()` (non-loading peek) and then walk
+    /// that region's mode slots.
+    pub fn iter_regions(&self) -> impl Iterator<Item = &RegionEntry> {
+        self.regions.iter()
+    }
+
     /// Look up a region by id, case-insensitive on the user's input.
     /// Ids in storage are already normalised upper-case (see
     /// [`crate::pack::normalize_region_id`]), so we upper-case the

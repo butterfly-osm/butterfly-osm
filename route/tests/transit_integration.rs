@@ -394,8 +394,8 @@ fn belgium_server_state() -> Option<Arc<ServerState>> {
         // Borrow-checker dance: extract what we need before install_transit
         // takes a &mut self.
         let snapshot = {
-            let foot = &state.modes[foot_idx as usize];
-            butterfly_route::transit::load_from_disk(&cfg, foot, foot_idx, &state.snap_index)
+            let foot = state.get_mode(butterfly_route::profile_abi::Mode(foot_idx));
+            butterfly_route::transit::load_from_disk(&cfg, &foot, foot_idx, &state.snap_index)
                 .expect("transit snapshot load")
         };
         state.install_transit(butterfly_route::transit::TransitState::new(cfg, snapshot));

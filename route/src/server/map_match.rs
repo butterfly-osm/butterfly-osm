@@ -142,7 +142,7 @@ pub fn map_match(
             segment.iter().map(|&i| &candidates[i]).collect();
 
         if let Some(matched_indices) = viterbi(
-            mode_data,
+            &mode_data,
             &state.ebg_nodes,
             &seg_coords,
             &seg_candidates,
@@ -152,7 +152,7 @@ pub fn map_match(
             // Build EBG path from matched candidate sequence
             let matching_idx = matchings.len();
             let ebg_path =
-                build_matched_path(mode_data, &seg_candidates, &matched_indices, weights);
+                build_matched_path(&mode_data, &seg_candidates, &matched_indices, weights);
 
             let duration_s = ebg_path
                 .iter()
@@ -884,7 +884,7 @@ pub fn map_match_multi_region(
 
             let run_cand_refs: Vec<&Vec<Candidate>> = run_cands.iter().collect();
             let ebg_path = build_matched_path(
-                mode_data,
+                &mode_data,
                 &run_cand_refs,
                 &run_matched,
                 &mode_data.cch_weights,
@@ -1195,7 +1195,7 @@ fn compute_transition_distances_multi(
 
             if from_region == to_region {
                 // Same region: single CCH P2P, sum length_m.
-                let to_mode_data = from_mode_data; // same region
+                let to_mode_data = from_mode_data.clone(); // same region
                 let dst_rank = to_mode_data.orig_to_rank[tc.ebg_id as usize];
                 if dst_rank == u32::MAX {
                     continue;

@@ -318,7 +318,7 @@ pub fn run_weight_profile(data_dir: &Path, output_dir: &Path, region: Option<&st
         load_elapsed.as_secs_f64()
     );
     for (i, name) in state.mode_names.iter().enumerate() {
-        let mode_data = &state.modes[i];
+        let mode_data = state.get_mode(butterfly_route::profile_abi::Mode(i as u8));
         println!(
             "    - {}: {} CCH ranks, {} UP weights, {} DOWN weights",
             name,
@@ -334,7 +334,7 @@ pub fn run_weight_profile(data_dir: &Path, output_dir: &Path, region: Option<&st
     let mut static_a: BTreeMap<String, (StaticStats, StaticStats, StaticStats, StaticStats)> =
         BTreeMap::new();
     for (i, mode_name) in state.mode_names.iter().enumerate() {
-        let mode_data = &state.modes[i];
+        let mode_data = state.get_mode(butterfly_route::profile_abi::Mode(i as u8));
         let t_up = compute_static_stats(&mode_data.cch_weights.up.iter().collect::<Vec<u32>>());
         let t_dn = compute_static_stats(&mode_data.cch_weights.down.iter().collect::<Vec<u32>>());
         let d_up =
@@ -364,7 +364,7 @@ pub fn run_weight_profile(data_dir: &Path, output_dir: &Path, region: Option<&st
     let mut blocks_c: BTreeMap<String, (BlockStats, BlockStats, BlockStats, BlockStats)> =
         BTreeMap::new();
     for (i, mode_name) in state.mode_names.iter().enumerate() {
-        let mode_data = &state.modes[i];
+        let mode_data = state.get_mode(butterfly_route::profile_abi::Mode(i as u8));
         let t_up = compute_block_stats(
             &mode_data.cch_weights.up.iter().collect::<Vec<u32>>(),
             BLOCK_SIZES,
@@ -426,7 +426,7 @@ pub fn run_weight_profile(data_dir: &Path, output_dir: &Path, region: Option<&st
 
     let mut hot_b: BTreeMap<String, (HotStats, HotStats)> = BTreeMap::new();
     for (mode_idx, mode_name) in state.mode_names.iter().enumerate() {
-        let mode_data = &state.modes[mode_idx];
+        let mode_data = state.get_mode(butterfly_route::profile_abi::Mode(mode_idx as u8));
         let snap_start = std::time::Instant::now();
         let snapped: Vec<(u32, u32)> = snap_od_pairs(&state, &od_pairs, mode_idx as u8);
         let n_snapped = snapped.len();
@@ -493,7 +493,7 @@ pub fn run_weight_profile(data_dir: &Path, output_dir: &Path, region: Option<&st
     let mut rounding_d: BTreeMap<String, (RoundingStats, RoundingStats)> = BTreeMap::new();
     let d_pairs = generate_rounding_pairs(&bbox);
     for (mode_idx, mode_name) in state.mode_names.iter().enumerate() {
-        let mode_data = &state.modes[mode_idx];
+        let mode_data = state.get_mode(butterfly_route::profile_abi::Mode(mode_idx as u8));
         let snapped: Vec<(u32, u32)> = snap_od_pairs(&state, &d_pairs, mode_idx as u8);
         let n_nodes = mode_data.cch_topo.n_nodes as usize;
 
@@ -538,7 +538,7 @@ pub fn run_weight_profile(data_dir: &Path, output_dir: &Path, region: Option<&st
     println!("[6/?] Section E: triangle-relaxation tie rate (cs vs s precision)...");
     let mut tie_e: BTreeMap<String, (TieStats, TieStats)> = BTreeMap::new();
     for (mode_idx, mode_name) in state.mode_names.iter().enumerate() {
-        let mode_data = &state.modes[mode_idx];
+        let mode_data = state.get_mode(butterfly_route::profile_abi::Mode(mode_idx as u8));
         let t_start = std::time::Instant::now();
         let tie_time = compute_tie_stats(&mode_data.cch_topo, &mode_data.cch_weights, 100);
         let tt = t_start.elapsed().as_secs_f64();
@@ -1204,7 +1204,7 @@ fn rng_od_pair(rng: &mut StdRng, bbox: &Bbox) -> OdPair {
 /// `/route` handles unreachable requests. The drop is counted and
 /// reported via the per-mode log line.
 fn snap_od_pairs(state: &ServerState, pairs: &[OdPair], mode_idx: u8) -> Vec<(u32, u32)> {
-    let mode_data = &state.modes[mode_idx as usize];
+    let mode_data = state.get_mode(butterfly_route::profile_abi::Mode(mode_idx));
     pairs
         .iter()
         .filter_map(|p| {

@@ -318,8 +318,14 @@ pub struct CchQuery<'a> {
 }
 
 impl<'a> CchQuery<'a> {
-    pub fn new(state: &'a ServerState, mode: Mode) -> Self {
-        let mode_data = state.get_mode(mode);
+    /// Build a query against the given mode's CCH flats.
+    ///
+    /// #402: The caller MUST hold an `Arc<ModeData>` (via
+    /// `state.get_mode(mode)`) for the lifetime of the returned
+    /// `CchQuery`. We borrow into that Arc here — letting it drop while
+    /// the query is alive would be use-after-free, which the borrow
+    /// checker enforces.
+    pub fn new(mode_data: &'a super::state::ModeData) -> Self {
         Self {
             backend: Backend::Flats {
                 up_adj_flat: &mode_data.up_adj_flat,
@@ -751,7 +757,8 @@ pub fn query_one_to_many(
     source: u32,
     targets: &[u32],
 ) -> Vec<Option<u32>> {
-    let query = CchQuery::new(state, mode);
+    let mode_data = state.get_mode(mode);
+    let query = CchQuery::new(&mode_data);
     targets
         .iter()
         .map(|&t| query.query(source, t).map(|r| r.distance))
