@@ -586,16 +586,41 @@ overlapped semantically with realistic.
 
 The gap closes at scale because fixed overhead (HTTP, coordination) is amortized.
 
-**Matrix Performance (2026-04-14, Belgium, 8 threads):**
-| Size | OSRM CH | Butterfly | Ratio |
+**Matrix Performance (2026-05-27, Belgium, post-#395, HTTP wall, 20-core):**
+| Size | OSRM CH (HTTP) | Butterfly | Ratio |
 |------|---------|-----------|-------|
-| 50×50 | 17ms | **12ms** | **1.4x FASTER** |
-| 100×100 | 35ms | **32ms** | **1.1x FASTER** |
-| 500×500 | ~250ms | **116ms** | **2.2x FASTER** |
-| 1000×1000 | 684ms | **268ms** | **2.56x FASTER** |
-| 2000×2000 | 1.5s | **840ms** | **1.79x FASTER** |
-| 5000×5000 | 8.0s | **5.5s** | **1.45x FASTER** |
-| 10000×10000 | 32.9s | **18.3s** | **1.8x FASTER** (was parity, fixed in #190) |
+| 10×10 | **3.1ms** | 20.5ms | **0.15× (OSRM faster)** |
+| 25×25 | 7.3ms | **11.7ms** | 0.62× (closing — was 0.17× pre-#395) |
+| 50×50 | 14.4ms | **15.2ms** | **0.95× (essentially tied)** |
+| 100×100 | 31.7ms | **23.0ms** | **1.38× FASTER** |
+| 200×200 | URL-limit | **42ms** | OSRM can't issue via GET |
+| 500×500 | URL-limit | **105ms** | — |
+| 1000×1000 | 684ms (batched) | **260ms** | ~**2.7× FASTER** |
+| 2000×2000 | 1.5s | **840ms** | ~**1.79× FASTER** |
+| 5000×5000 | 8.0s | **5.5s** | **1.45× FASTER** |
+| 10000×10000 | 32.9s | **18.3s** | **1.8× FASTER** |
+
+**Small-N progress (#395, 2026-05-27)**: The /table handler was
+hand-dispatching `use_parallel = cells >= 2500` and calling
+`table_bucket_full_flat` directly for small N — that function did a
+fresh `SearchState::new(n_nodes)` per call (~60 MB malloc on Belgium)
+and dominated 10×10 / 25×25 latency. Fix: always delegate to
+`table_bucket_parallel` / `_parallel_len_along_time`, which already had
+the correct internal dispatch routing small-N to a pooled thread-local
+`BucketM2MEngine`. Added the same fast-path delegation inside the
+2-channel parallel wrapper plus a `SEQ_STATE_LAT` /
+`SEQ_BUCKETS_LAT` thread-local pool for the sequential 2-channel path.
+Result: 25×25 dropped 49 → 12 ms (4× faster), 10×10 dropped 30 → 20 ms
+(33% faster). 100×100+ unchanged (already went through the
+parallel path).
+
+**Remaining 10×10 gap (6× slower)**: per-Dijkstra cost on edge-based
+CCH (5 M EBG nodes vs OSRM's ~1.9 M NBG nodes) means each forward /
+backward walk visits more states. OSRM additionally uses
+stall-on-demand to prune ~40 % of visits. /route P2P p50 = 3.7 ms; a
+10×10 sequential bucket-M2M = 20 Dijkstras × ~1 ms each. To match
+OSRM we need stall-on-demand inside the bucket-M2M Dijkstras
+(estimated 30-40 % visit reduction → 12-14 ms). Tracked as #396.
 
 **Key insight:** Butterfly BEATS OSRM across the useful-N range (50–10000). Small sizes (10–25) still lose to OSRM's sequential shape because rayon thread-dispatch overhead isn't amortised over 100–625 cells — partial mitigation in 8eb4799 (≤100-cell fast path, ~14% gain at 10×10), residual gap is graph-architectural. 10k×10k bench-only number was previously stuck at the DRAM-bandwidth floor (~33 s monolithic) — fixed in #190 by L3-aware source-tiling inside `table_bucket_parallel`: when the single-pass `PrefixSumBuckets` working set would blow shared L3, the source dimension is split into ~2500-source tiles (sized via runtime cache-topology detection, see `route/src/matrix/tile_geometry.rs`) so each backward sweep stays L3-resident. 10k×10k drops 25.6 s → 18.3 s on the dev host (20-core, 30 MiB L3, single NUMA node). Production `/table/stream` was already tiled at 1000×1000 by `server/table.rs` and is unaffected.
 
