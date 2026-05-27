@@ -507,10 +507,13 @@ pub async fn compute_table_bucket_m2m(
             .down_rev_flat_len_along_time
             .as_ref()
             .expect("guarded by use_2channel");
-        // Same parallel/sequential dispatch heuristic as single-channel
-        // table_bucket_*. The parallel 2-channel path uses thread-local
-        // SearchState2 and an AtomicU64 packed matrix.
-        let (time_mat, lat_mat, _stats) = if use_parallel {
+        // Always use parallel for 2-channel: the sequential path
+        // calls `SearchState2::new(n_nodes)` per request which is
+        // ~60 MB on Belgium and dominates small-N latency. The
+        // parallel path amortises via thread-local SearchState2 so
+        // even 10×10 is fast.
+        let _ = use_parallel; // reserved for future fast-path tuning
+        let (time_mat, lat_mat, _stats) = if true {
             crate::matrix::bucket_ch::table_bucket_parallel_len_along_time(
                 n_nodes,
                 time_up,

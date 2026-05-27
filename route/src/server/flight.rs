@@ -364,6 +364,7 @@ struct MatrixParams {
 #[allow(clippy::too_many_arguments)]
 fn build_matrix_batch(
     matrix: &[u32],
+    lat_matrix: Option<&[u32]>,
     n_valid_src: usize,
     n_valid_dst: usize,
     valid_src_indices: &[usize],
@@ -385,19 +386,22 @@ fn build_matrix_batch(
             } else {
                 false
             };
-            let d = if pruned {
-                u32::MAX
-            } else {
-                matrix[si * n_valid_dst + di]
-            };
+            let cell_idx = si * n_valid_dst + di;
+            let d = if pruned { u32::MAX } else { matrix[cell_idx] };
             src_idx.append_value(orig_src as u32);
             tgt_idx.append_value(orig_dst as u32);
             if d == u32::MAX {
                 dur_ms.append_value(u32::MAX);
                 dist_m.append_value(u32::MAX);
             } else {
-                dur_ms.append_value(d.saturating_mul(100));
-                dist_m.append_value(u32::MAX); // distance not computed in time metric
+                // dur_ms is the time matrix value scaled to ms (post-#297
+                // weights are in seconds).
+                dur_ms.append_value(d.saturating_mul(1000));
+                // #372: when the 2-channel run produced a lat matrix,
+                // emit it as distance_m. Otherwise emit u32::MAX (the
+                // pre-#372 behaviour — old containers without cch.lat).
+                let dist_val = lat_matrix.map(|lm| lm[cell_idx]).unwrap_or(u32::MAX);
+                dist_m.append_value(dist_val);
             }
         }
     }
@@ -528,7 +532,13 @@ fn do_matrix(
     let n_valid_src = sources_rank.len();
     let n_valid_dst = targets_rank.len();
 
-    const BUCKET_M2M_THRESHOLD: usize = 50_000;
+    // Bucket-M2M handles up to ~1M cells comfortably (4 MB matrix + a
+    // few MB of bucket scratch). The pre-#386 threshold of 50_000
+    // bounced 250×250+ matrices into the slow PHAST tiled streaming
+    // path, which made apples-to-apples Flight bench against libosrm
+    // look ~5× worse than reality. Above 1M cells, the streamed PHAST
+    // path still wins on memory.
+    const BUCKET_M2M_THRESHOLD: usize = 1_000_000;
 
     if n_src * n_dst <= BUCKET_M2M_THRESHOLD {
         // ---- SMALL MATRIX: Bucket M2M, single batch ----
@@ -536,10 +546,40 @@ fn do_matrix(
         let up = &mode_data.up_adj_flat;
         let down = &mode_data.down_rev_flat;
 
-        let (mut matrix, _stats) = if use_parallel {
-            table_bucket_parallel(n_nodes, up, down, &sources_rank, &targets_rank)
+        // #372: when cch_weights_len_along_time is loaded, run the
+        // 2-channel bucket-M2M to populate distance_m correctly (length
+        // along the time-shortest path). Falls back to single-channel
+        // time-only when the LAT flats aren't available — old containers
+        // built before PR #379 emit u32::MAX in distance_m, same as
+        // pre-#372 behaviour.
+        let lat_flats = mode_data
+            .up_adj_flat_len_along_time
+            .as_ref()
+            .zip(mode_data.down_rev_flat_len_along_time.as_ref());
+        let (mut matrix, mut lat_matrix_opt, _stats) = if let Some((up_lat, dn_lat)) = lat_flats {
+            // Always use parallel for 2-channel: the sequential path
+            // calls `SearchState2::new(n_nodes)` per call which is
+            // ~60 MB on Belgium and dominates small-N latency. The
+            // parallel path reuses thread-local SearchState2 via
+            // BACKWARD_STATE_LAT, so even 10×10 amortises the alloc
+            // away. Rayon spawn cost is in microseconds and fine.
+            let (m, lm, st) = crate::matrix::bucket_ch::table_bucket_parallel_len_along_time(
+                n_nodes,
+                up,
+                down,
+                up_lat,
+                dn_lat,
+                &sources_rank,
+                &targets_rank,
+            );
+            (m, Some(lm), st)
         } else {
-            table_bucket_full_flat(n_nodes, up, down, &sources_rank, &targets_rank)
+            let (m, st) = if use_parallel {
+                table_bucket_parallel(n_nodes, up, down, &sources_rank, &targets_rank)
+            } else {
+                table_bucket_full_flat(n_nodes, up, down, &sources_rank, &targets_rank)
+            };
+            (m, None, st)
         };
 
         // Per-cell K-best fallback for INF cells (mirrors /table POST).
@@ -634,9 +674,17 @@ fn do_matrix(
             }
         }
 
+        // #372: if the K-best fallback patched any cells above, the
+        // lat_matrix is now stale for those cells — they were updated
+        // from a per-pair P2P, not the bucket-M2M. For now we keep the
+        // 2-channel lat values for cells that bucket-M2M reached, and
+        // emit u32::MAX in `distance_m` for the rescued cells (whose
+        // `dur_ms` came from p2p_with_kbest_fallback). The Flight
+        // schema callers already treat u32::MAX as "no distance".
         let schema = Arc::new(matrix_schema());
         let batch = build_matrix_batch(
             &matrix,
+            lat_matrix_opt.as_deref(),
             n_valid_src,
             n_valid_dst,
             &valid_src,
@@ -644,6 +692,7 @@ fn do_matrix(
             schema,
             neighbor_mask.as_ref().map(|v| v.as_slice()),
         )?;
+        let _ = &mut lat_matrix_opt; // silence unused-mut if later refactored
 
         Ok(Box::pin(stream::once(async move { Ok(batch) })))
     } else {
