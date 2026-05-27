@@ -702,9 +702,16 @@ pub fn compute_avoid_weights_time_only(
 /// Look up the mode index by comparing the `ModeData` pointer against
 /// the state's mode list. Avoids threading an explicit index through
 /// the existing call sites.
+///
+/// #402: `state.modes` is now `Vec<ModeSlot>`, where each slot wraps the
+/// `Arc<ModeData>` behind a `RwLock`. We peek the read lock and compare
+/// the `Arc`'s inner pointer to identify the slot owning `mode_data`.
 fn mode_index_in_state(state: &ServerState, mode_data: &ModeData) -> Result<usize, String> {
     for (i, m) in state.modes.iter().enumerate() {
-        if std::ptr::eq(m, mode_data) {
+        let r = m.state.read();
+        if let Some(arc) = r.as_ref()
+            && std::ptr::eq(std::sync::Arc::as_ptr(arc), mode_data as *const ModeData)
+        {
             return Ok(i);
         }
     }

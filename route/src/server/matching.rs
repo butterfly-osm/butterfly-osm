@@ -273,7 +273,7 @@ pub async fn match_trace_handler(
         let mode_data = state_clone.get_mode(mode);
 
         let avoid_entry = if let Some(ref avoid_str) = avoid_json {
-            super::avoid::compute_avoid_weights(&state_clone, mode_data, avoid_str, exclude_mask)
+            super::avoid::compute_avoid_weights(&state_clone, &mode_data, avoid_str, exclude_mask)
                 .ok()
         } else {
             None

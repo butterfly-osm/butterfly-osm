@@ -59,9 +59,19 @@ impl IdleCompactor {
     /// is `poll_interval = threshold / 4` so freshly-idle workers get
     /// evicted within a quarter of `threshold`.
     ///
+    /// `regions` is the multi-region registry; the compactor walks
+    /// every loaded region's mode slots once per tick and evicts any
+    /// that have been idle longer than `threshold` (#402). Per-mode
+    /// eviction frees the whole mode definition (~1-4 GB on Belgium)
+    /// rather than just the per-worker scratch (~80 MB).
+    ///
     /// Setting `threshold = 0` disables the compactor (returns a
     /// no-op handle).
-    pub fn start(threshold: Duration, poll_interval: Duration) -> Self {
+    pub fn start(
+        threshold: Duration,
+        poll_interval: Duration,
+        regions: Arc<crate::server::regions::RegionsState>,
+    ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         if threshold.is_zero() {
             tracing::info!("#400 idle-compactor: disabled (threshold=0)");
@@ -75,7 +85,7 @@ impl IdleCompactor {
         );
         std::thread::Builder::new()
             .name("idle-compactor".into())
-            .spawn(move || run(stop_clone, threshold, poll_interval))
+            .spawn(move || run(stop_clone, threshold, poll_interval, regions))
             .expect("idle-compactor thread spawn");
         Self { stop }
     }
@@ -90,7 +100,12 @@ impl Drop for IdleCompactor {
     }
 }
 
-fn run(stop: Arc<AtomicBool>, threshold: Duration, poll_interval: Duration) {
+fn run(
+    stop: Arc<AtomicBool>,
+    threshold: Duration,
+    poll_interval: Duration,
+    regions: Arc<crate::server::regions::RegionsState>,
+) {
     // Resolve the poll-interval into a small unit so we can wake up
     // promptly on shutdown without polling tightly.
     let sleep_step = Duration::from_secs(1).min(poll_interval);
@@ -103,6 +118,7 @@ fn run(stop: Arc<AtomicBool>, threshold: Duration, poll_interval: Duration) {
         }
         elapsed = Duration::ZERO;
         evict_all_workers(threshold);
+        evict_idle_modes(threshold, &regions);
     }
 }
 
@@ -138,6 +154,33 @@ fn evict_all_workers(threshold: Duration) {
             phast = drops_phast.load(Ordering::Relaxed),
             raptor = drops_raptor.load(Ordering::Relaxed),
             "#400 idle-compactor: dropped per-worker caches"
+        );
+    }
+}
+
+/// #402 per-mode eviction. Walks every loaded region's mode slots
+/// and asks each to evict if idle > threshold. Mode loading is
+/// re-driven by the next `get_mode` call (single-flight under the
+/// per-slot write lock). Mode size on Belgium: ~1-4 GB per mode.
+fn evict_idle_modes(threshold: Duration, regions: &Arc<crate::server::regions::RegionsState>) {
+    let threshold_ms = threshold.as_millis() as u64;
+    let mut evicted = 0usize;
+    for region in regions.iter_regions() {
+        // Skip Pending regions — nothing loaded to evict.
+        let state = match region.state_loaded() {
+            Some(s) => s,
+            None => continue,
+        };
+        for mode_idx in 0..state.modes.len() {
+            if state.try_evict_mode_if_idle(mode_idx, threshold_ms) {
+                evicted += 1;
+            }
+        }
+    }
+    if evicted > 0 {
+        tracing::info!(
+            modes = evicted,
+            "#402 idle-compactor: evicted cold mode slots"
         );
     }
 }

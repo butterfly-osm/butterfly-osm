@@ -140,7 +140,7 @@ pub async fn nearest_handler(
     // start a route; `dst` to nodes that can terminate a route;
     // `either` disables the directional filter for back-compat.
     let mode_data = state.get_mode(mode);
-    let role_filter = req.role.role_filter(mode_data);
+    let role_filter = req.role.role_filter(&mode_data);
 
     let results = state.snap_index.snap_k_with_info_filtered_role(
         req.lon,
