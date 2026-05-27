@@ -296,11 +296,14 @@ mod tests {
     }
 
     #[test]
-    fn ships_three_sample_profiles() {
+    fn ships_realistic_and_rush_hour_profiles() {
+        // Post-#392: only two profiles ship — `car_realistic` (baked
+        // into base car) and `rush_hour` (variant). Freeflow + offpeak
+        // were dropped (freeflow became identical to post-#390
+        // legal-limit base, offpeak overlapped with realistic).
         let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let traffic_dir = workspace.parent().unwrap().join("traffic");
         if !traffic_dir.exists() {
-            // Allow running from a packaged crate without the traffic/ dir.
             return;
         }
         let files = discover_profiles(&traffic_dir).unwrap();
@@ -314,13 +317,15 @@ mod tests {
                     .to_string()
             })
             .collect();
-        assert!(names.contains(&"freeflow".to_string()), "got: {:?}", names);
+        assert!(
+            names.contains(&"car_realistic".to_string()),
+            "got: {:?}",
+            names
+        );
         assert!(names.contains(&"rush_hour".to_string()), "got: {:?}", names);
-        assert!(names.contains(&"offpeak".to_string()), "got: {:?}", names);
 
         for f in &files {
             let p = TrafficProfile::load(f).expect("ship profile must load");
-            // Sanity: factors roughly monotone (urban_high ≤ rural).
             assert!(
                 p.factor_for(DensityClass::UrbanHigh) <= p.factor_for(DensityClass::Rural) + 1e-6
                     || p.is_freeflow(),
@@ -329,11 +334,6 @@ mod tests {
                 p.factors
             );
         }
-
-        // Freeflow profile must be detectable as freeflow.
-        let freeflow_path = traffic_dir.join("freeflow.traffic.json");
-        let freeflow = TrafficProfile::load(&freeflow_path).unwrap();
-        assert!(freeflow.is_freeflow());
     }
 
     #[test]
