@@ -193,6 +193,72 @@ impl ModeData {
 
 // CchWeights is imported from crate::formats
 
+/// #402 lazy-load + eviction slot for a single mode.
+///
+/// Holds a parking_lot RwLock around the optional `Arc<ModeData>` so:
+/// - the fast path (mode resident, just clone the Arc) is wait-free
+///   after the read-lock acquire,
+/// - the lazy-reload path takes the write lock and re-checks (handles
+///   single-flight: simultaneous queries for the same cold mode all
+///   wait on the same write lock, only one load runs),
+/// - the idle compactor can evict (drop the Arc inside the slot)
+///   while in-flight queries continue to hold their own Arc clones —
+///   the data only actually drops when the last clone is released.
+pub struct ModeSlot {
+    /// Mode name (`"car"`, `"bike"`, `"car_rush_hour"`, ...) used by
+    /// the lazy reloader to call back into the loader.
+    pub mode_name: String,
+    /// The actual mode data. `Some` when resident, `None` after the
+    /// idle compactor evicted it (next `get_mode` lazy-reloads).
+    pub state: parking_lot::RwLock<Option<std::sync::Arc<ModeData>>>,
+    /// Monotonic millis-since-server-start of the most recent
+    /// `get_mode(...)` that found this slot resident. Drives idle
+    /// eviction.
+    pub last_used_ms: std::sync::atomic::AtomicU64,
+    /// #402: traffic-variant modes (e.g. `car_rush_hour`) have a
+    /// different load shape — rebuilt by cloning the base mode's
+    /// topology + reading a recustomised `cch.w` section.
+    /// `load_mode_data_from_bundle` doesn't handle that yet. For v1
+    /// the compactor skips variants. Base modes (the heavy ones —
+    /// 1-4 GB each) are the eviction target.
+    pub evictable: bool,
+}
+
+/// #402: a mode name is a traffic-variant iff it has the shape
+/// `<base>_<variant>` where `<base>` is also present in the loaded
+/// mode set. The boot loader pushes both base modes (e.g. `car`) and
+/// variants (e.g. `car_rush_hour`) into the same `mode_names` Vec, so
+/// we detect variants by walking prefixes.
+fn is_variant_mode_name(name: &str, all_names: &[String]) -> bool {
+    for sep in name.match_indices('_') {
+        let prefix = &name[..sep.0];
+        if all_names.iter().any(|n| n == prefix) {
+            return true;
+        }
+    }
+    false
+}
+
+impl ModeSlot {
+    pub fn new_loaded(mode_name: String, data: ModeData) -> Self {
+        Self {
+            mode_name,
+            state: parking_lot::RwLock::new(Some(std::sync::Arc::new(data))),
+            last_used_ms: std::sync::atomic::AtomicU64::new(0),
+            evictable: true,
+        }
+    }
+
+    pub fn new_loaded_variant(mode_name: String, data: ModeData) -> Self {
+        Self {
+            mode_name,
+            state: parking_lot::RwLock::new(Some(std::sync::Arc::new(data))),
+            last_used_ms: std::sync::atomic::AtomicU64::new(0),
+            evictable: false,
+        }
+    }
+}
+
 /// Server state containing all loaded data
 pub struct ServerState {
     // Graph structure (original EBG, used for spatial index and geometry)
@@ -219,8 +285,13 @@ pub struct ServerState {
     /// Belgium: ~11 MB (≈1.4M nodes × 8 bytes).
     pub nbg_node_to_osm: Vec<i64>,
 
-    // Per-mode data (dynamically discovered, indexed by mode_index)
-    pub modes: Vec<ModeData>,
+    // Per-mode data (dynamically discovered, indexed by mode_index).
+    // #402: each mode lives behind a `ModeSlot` lock so the idle
+    // compactor can evict cold modes and the next query lazy-reloads
+    // them. Callers go through `get_mode(...)` which returns an
+    // `Arc<ModeData>` — holding the Arc keeps the mode alive even if
+    // the compactor races to evict.
+    pub modes: Vec<ModeSlot>,
     /// Mode names indexed by mode_index (alphabetically sorted)
     pub mode_names: Vec<String>,
     /// Mode name → mode index lookup
@@ -544,13 +615,29 @@ impl ServerState {
         );
         crate::server::rss::checkpoint("load.edge_geom");
 
+        // #402: wrap each ModeData in a lazy/evictable slot. The
+        // directory-tree loader has no container backing, so the
+        // lazy reload path will panic if a slot is ever evicted —
+        // this path is only used by tests + the legacy --data-dir
+        // flow where eviction shouldn't fire.
+        let modes_slots: Vec<ModeSlot> = modes_data
+            .into_iter()
+            .zip(mode_names.iter().cloned())
+            .map(|(data, name)| {
+                if is_variant_mode_name(&name, &mode_names) {
+                    ModeSlot::new_loaded_variant(name, data)
+                } else {
+                    ModeSlot::new_loaded(name, data)
+                }
+            })
+            .collect();
         Ok(Self {
             ebg_nodes,
             ebg_csr,
             nbg_geo,
             edge_geom,
             nbg_node_to_osm,
-            modes: modes_data,
+            modes: modes_slots,
             mode_names,
             mode_lookup,
             snap_index,
@@ -1409,13 +1496,30 @@ impl ServerState {
             lazy_arc.spawn_warmup();
         }
 
+        // #402: wrap each ModeData in a lazy/evictable slot. The
+        // container path retains _mmap_arc + lazy, so the slow path
+        // in `get_mode` (lazy reload after compactor eviction) can
+        // call back into `load_mode_data_from_bundle`. Variant modes
+        // (e.g. `car_rush_hour`) get the non-evictable variant flag —
+        // their reload shape differs from base modes.
+        let modes_slots: Vec<ModeSlot> = modes_data
+            .into_iter()
+            .zip(mode_names.iter().cloned())
+            .map(|(data, name)| {
+                if is_variant_mode_name(&name, &mode_names) {
+                    ModeSlot::new_loaded_variant(name, data)
+                } else {
+                    ModeSlot::new_loaded(name, data)
+                }
+            })
+            .collect();
         Ok(Self {
             ebg_nodes,
             ebg_csr,
             nbg_geo,
             edge_geom,
             nbg_node_to_osm,
-            modes: modes_data,
+            modes: modes_slots,
             mode_names,
             mode_lookup,
             snap_index,
@@ -1432,9 +1536,110 @@ impl ServerState {
         })
     }
 
-    /// Get mode data by mode (index-based lookup)
-    pub fn get_mode(&self, mode: Mode) -> &ModeData {
-        &self.modes[mode.index()]
+    /// Get mode data by mode (index-based lookup). #402: lazy-reloads
+    /// if the slot was previously evicted by the idle compactor.
+    /// Returns an `Arc<ModeData>` — holding the Arc keeps the mode
+    /// alive for the duration of the caller's work even if the
+    /// compactor races to evict in the background.
+    pub fn get_mode(&self, mode: Mode) -> std::sync::Arc<ModeData> {
+        let slot = &self.modes[mode.index()];
+        // Fast path: resident slot.
+        {
+            let r = slot.state.read();
+            if let Some(arc) = r.as_ref() {
+                slot.last_used_ms.store(
+                    self.started_at.elapsed().as_millis() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                return std::sync::Arc::clone(arc);
+            }
+        }
+        // Slow path: evicted, lazy-reload under write lock with
+        // single-flight semantics.
+        let mut w = slot.state.write();
+        if let Some(arc) = w.as_ref() {
+            // Someone else loaded while we waited for the lock.
+            slot.last_used_ms.store(
+                self.started_at.elapsed().as_millis() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            return std::sync::Arc::clone(arc);
+        }
+        let loaded = self
+            .lazy_load_mode(&slot.mode_name, mode)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "#402 lazy reload of mode '{}' failed: {}",
+                    slot.mode_name, e
+                )
+            });
+        let arc = std::sync::Arc::new(loaded);
+        *w = Some(std::sync::Arc::clone(&arc));
+        slot.last_used_ms.store(
+            self.started_at.elapsed().as_millis() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        tracing::info!(
+            mode = slot.mode_name.as_str(),
+            "#402 lazy-reloaded mode after eviction"
+        );
+        arc
+    }
+
+    /// #402: re-run the container loader for a single mode. Used by
+    /// `get_mode` on the slow path when the slot has been evicted.
+    /// Requires that the container path was used to construct
+    /// `ServerState` (i.e. `_mmap_arc` and `lazy` are populated).
+    fn lazy_load_mode(&self, mode_name: &str, mode: Mode) -> Result<ModeData> {
+        let mmap = self._mmap_arc.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("lazy_load_mode requires container-backed ServerState")
+        })?;
+        let lazy = self
+            .lazy
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("lazy_load_mode requires LazyContainer"))?;
+        let container = lazy.container();
+        load_mode_data_from_bundle(mode_name, mode, container, mmap, lazy)
+    }
+
+    /// #402: evict a single mode slot if it has been idle for at least
+    /// `threshold_ms`. Drops the inner `Arc<ModeData>`; any in-flight
+    /// query holding its own Arc clone keeps the data alive until that
+    /// query finishes. Returns `true` if the slot was evicted.
+    pub fn try_evict_mode_if_idle(&self, mode_idx: usize, threshold_ms: u64) -> bool {
+        let slot = &self.modes[mode_idx];
+        if !slot.evictable {
+            // #402: variants have a different load shape; can't safely
+            // reload via load_mode_data_from_bundle. Skip.
+            return false;
+        }
+        let now = self.started_at.elapsed().as_millis() as u64;
+        let last = slot.last_used_ms.load(std::sync::atomic::Ordering::Relaxed);
+        // `last == 0` means "never touched by get_mode" — for those
+        // we measure idleness from `now` directly, which makes never-
+        // queried modes the most evictable. Boot grace is provided by
+        // the compactor's poll interval (won't run until at least
+        // ~threshold/4 after boot).
+        let idle_ms = now.saturating_sub(last);
+        if idle_ms < threshold_ms {
+            return false;
+        }
+        let mut w = slot.state.write();
+        // Re-check under the write lock to handle races with get_mode.
+        let last2 = slot.last_used_ms.load(std::sync::atomic::Ordering::Relaxed);
+        if now.saturating_sub(last2) < threshold_ms {
+            return false;
+        }
+        if w.take().is_some() {
+            tracing::info!(
+                mode = slot.mode_name.as_str(),
+                idle_ms = now.saturating_sub(last),
+                "#402 evicted idle mode"
+            );
+            true
+        } else {
+            false
+        }
     }
 
     /// Install the transit subsystem after async bootstrap. Must be

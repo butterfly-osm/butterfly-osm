@@ -123,7 +123,7 @@ fn test_route_table_duration_consistency() {
             };
 
             // Get route distance (P2P bidirectional CCH)
-            let query = CchQuery::new(&state, *mode);
+            let query = CchQuery::new(&mode_data);
             let route_dist = query.query(src_rank, dst_rank).map(|r| r.distance);
 
             // Get table distance (bucket M2M)
@@ -330,7 +330,7 @@ fn test_isochrone_route_consistency() {
         );
 
         // Sample some reachable nodes and verify P2P agrees
-        let query = CchQuery::new(&state, mode);
+        let query = CchQuery::new(&mode_data);
         let sample_count = phast_settled.len().min(50);
 
         for idx in (0..phast_settled.len()).step_by(phast_settled.len() / sample_count.max(1)) {
@@ -428,7 +428,7 @@ fn test_route_path_validity() {
                 }
             };
 
-            let query = CchQuery::new(&state, *mode);
+            let query = CchQuery::new(&mode_data);
             let result = match query.query(src_rank, dst_rank) {
                 Some(r) => r,
                 None => {
@@ -528,7 +528,7 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
     let filtered_ebg = crate::formats::FilteredEbgFile::read(&filtered_ebg_path)
         .expect("test requires step5/filtered.<mode>.ebg on disk");
 
-    let query = CchQuery::new(&state, mode);
+    let query = CchQuery::new(&mode_data);
     let result = query
         .query(src_rank, dst_rank)
         .expect("Ghent -> Liege route should exist");
@@ -736,7 +736,7 @@ fn test_alternative_routes_differ() {
     let (dst_rank, _) = snap_to_rank(&state, mode, 4.4017, 50.8603).unwrap();
 
     // Primary route
-    let query = CchQuery::new(&state, mode);
+    let query = CchQuery::new(&mode_data);
     let primary = query
         .query(src_rank, dst_rank)
         .expect("Primary route should exist");
@@ -810,7 +810,7 @@ fn test_route_geometry_polyline6_round_trips() {
             None => continue,
         };
 
-        let query = CchQuery::new(&state, mode);
+        let query = CchQuery::new(&mode_data);
         let result = match query.query(src_rank, dst_rank) {
             Some(r) => r,
             None => continue,
@@ -1070,7 +1070,7 @@ fn test_route_steps_have_depart_and_arrive() {
             None => continue,
         };
 
-        let query = CchQuery::new(&state, mode);
+        let query = CchQuery::new(&mode_data);
         let result = match query.query(src_rank, dst_rank) {
             Some(r) => r,
             None => continue,
@@ -1188,7 +1188,7 @@ fn test_route_steps_distances_sum_to_total() {
             None => continue,
         };
 
-        let query = CchQuery::new(&state, mode);
+        let query = CchQuery::new(&mode_data);
         let result = match query.query(src_rank, dst_rank) {
             Some(r) => r,
             None => continue,
@@ -1265,7 +1265,7 @@ fn test_route_step_locations_on_route() {
     let (src_rank, _) = snap_to_rank(&state, mode, 4.3517, 50.8503).unwrap();
     let (dst_rank, _) = snap_to_rank(&state, mode, 4.3840, 50.7147).unwrap();
 
-    let query = CchQuery::new(&state, mode);
+    let query = CchQuery::new(&mode_data);
     let result = query.query(src_rank, dst_rank).expect("Route should exist");
 
     let rank_path = unpack_path(
@@ -1342,7 +1342,7 @@ fn test_alternative_routes_all_modes() {
                 None => continue,
             };
 
-            let query = CchQuery::new(&state, *mode);
+            let query = CchQuery::new(&mode_data);
             let primary = match query.query(src_rank, dst_rank) {
                 Some(r) => r,
                 None => continue,
@@ -1444,8 +1444,8 @@ fn test_197_directional_snap_asymmetry_reproducer() {
 
     // Helper: snap with role, then run a P2P CCH query.
     let route = |from: (f64, f64), to: (f64, f64)| -> Option<u32> {
-        let from_role = SnapRole::Src.role_filter(mode_data);
-        let to_role = SnapRole::Dst.role_filter(mode_data);
+        let from_role = SnapRole::Src.role_filter(&mode_data);
+        let to_role = SnapRole::Dst.role_filter(&mode_data);
 
         let from_snap = state
             .snap_index
@@ -1455,7 +1455,7 @@ fn test_197_directional_snap_asymmetry_reproducer() {
             .snap_with_info_filtered_role(to.0, to.1, mode.0, None, to_role)?;
         let from_rank = mode_data.rank_for_original(from_snap.0)?;
         let to_rank = mode_data.rank_for_original(to_snap.0)?;
-        let q = CchQuery::new(&state, mode);
+        let q = CchQuery::new(&mode_data);
         q.query(from_rank, to_rank).map(|r| r.distance)
     };
 
@@ -1534,7 +1534,7 @@ fn test_197_unfiltered_snap_still_demonstrates_bug() {
     let dst = (5.7803053_f64, 49.7258993_f64);
 
     // Force the legacy "Either" role on both ends.
-    let either = SnapRole::Either.role_filter(mode_data);
+    let either = SnapRole::Either.role_filter(&mode_data);
     assert!(either.is_none(), "Either must produce no role filter");
 
     let from_snap = state
@@ -1553,7 +1553,7 @@ fn test_197_unfiltered_snap_still_demonstrates_bug() {
         .rank_for_original(to_snap.0)
         .expect("destination must have a rank");
 
-    let q = CchQuery::new(&state, mode);
+    let q = CchQuery::new(&mode_data);
     let fwd = q.query(from_rank, to_rank);
 
     // The legacy snap demonstrates the bug: forward returns None.
@@ -1577,7 +1577,7 @@ fn test_197_unfiltered_snap_still_demonstrates_bug() {
             dst.1,
             mode.0,
             None,
-            SnapRole::Dst.role_filter(mode_data),
+            SnapRole::Dst.role_filter(&mode_data),
         )
         .expect("dst-role snap must succeed");
     let to_rank_dst = mode_data

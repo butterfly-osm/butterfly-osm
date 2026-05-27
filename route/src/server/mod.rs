@@ -457,8 +457,8 @@ pub async fn serve(
                     return;
                 }
             };
-            let foot = &state_owned.modes[foot_idx as usize];
-            match crate::transit::load_from_disk(&cfg, foot, foot_idx, &state_owned.snap_index) {
+            let foot = state_owned.get_mode(crate::model::types::Mode(foot_idx));
+            match crate::transit::load_from_disk(&cfg, &foot, foot_idx, &state_owned.snap_index) {
                 Ok(snapshot) => {
                     tracing::info!(
                         region = %region_id,
@@ -554,8 +554,11 @@ pub async fn serve(
         let poll_interval = std::time::Duration::from_secs((secs / 4).max(15).min(secs.max(15)));
         // Hold the handle for the life of the server so the
         // background thread keeps running.
-        let _idle_compactor =
-            crate::server::idle_compactor::IdleCompactor::start(threshold, poll_interval);
+        let _idle_compactor = crate::server::idle_compactor::IdleCompactor::start(
+            threshold,
+            poll_interval,
+            Arc::clone(&state),
+        );
         // Leak the handle into a static so it lives forever. Server
         // shutdown is process-exit; explicit cleanup not needed.
         std::mem::forget(_idle_compactor);

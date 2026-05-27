@@ -253,7 +253,7 @@ pub fn road_lasso(
         let src = vertices[i];
         let dst = vertices[(i + 1) % n_verts];
 
-        let route_points = route_between(state, mode_data, mode, src, dst);
+        let route_points = route_between(state, &mode_data, mode, src, dst);
         if route_points.len() > 1 {
             // Append all but last (to avoid duplication with next segment's first)
             ring.extend_from_slice(&route_points[..route_points.len() - 1]);
@@ -310,7 +310,7 @@ fn route_between(
         return vec![src, dst];
     }
 
-    let query = CchQuery::new(state, mode);
+    let query = CchQuery::new(mode_data);
     let (src_rank, dst_rank, result) = match super::snap_kbest::p2p_with_kbest_fallback(
         &query,
         &src_snap.ranks,
@@ -360,7 +360,7 @@ pub fn isochrone_hull(
     let mode_name = &state.mode_names[mode.index()];
 
     // Catchment hull is a depart-isochrone: store acts as source.
-    let store_role = super::types::SnapRole::Src.role_filter(mode_data);
+    let store_role = super::types::SnapRole::Src.role_filter(&mode_data);
     let orig_id = match state
         .snap_index
         .snap_filtered_role(store_lon, store_lat, mode.0, None, store_role)
@@ -801,8 +801,8 @@ pub async fn catchment_handler(
 
     // #197 directional snap: store is the source for the 1-to-N matrix,
     // clients are destinations. Cache the bitsets once outside the loop.
-    let store_role = super::types::SnapRole::Src.role_filter(mode_data);
-    let client_role = super::types::SnapRole::Dst.role_filter(mode_data);
+    let store_role = super::types::SnapRole::Src.role_filter(&mode_data);
+    let client_role = super::types::SnapRole::Dst.role_filter(&mode_data);
 
     // For each store: compute 1-to-N matrix via Bucket M2M, then catchment.
     // K-best snap + per-cell P2P fallback rescues INF cells the same
@@ -813,7 +813,7 @@ pub async fn catchment_handler(
     for store_input in &req.stores {
         let store_rank = match super::snap_kbest::snap_primary_role(
             &state,
-            mode_data,
+            &mode_data,
             mode,
             store_input.lon,
             store_input.lat,
@@ -854,7 +854,7 @@ pub async fn catchment_handler(
             }
             if let Some((_, rank)) = super::snap_kbest::snap_primary_role(
                 &state,
-                mode_data,
+                &mode_data,
                 mode,
                 c.lon,
                 c.lat,
@@ -887,12 +887,12 @@ pub async fn catchment_handler(
         // — typically zero of them on a healthy graph.
         if matrix.contains(&u32::MAX) {
             use rayon::prelude::*;
-            let query = super::query::CchQuery::new(&state, mode);
+            let query = super::query::CchQuery::new(&mode_data);
             // Lazily snap K=64 for the source store and just the
             // failing clients.
             let store_kbest = super::snap_kbest::snap_k_pair_role(
                 &state,
-                mode_data,
+                &mode_data,
                 mode,
                 store_input.lon,
                 store_input.lat,
@@ -910,7 +910,7 @@ pub async fn catchment_handler(
                     let c = &req.clients[ci];
                     let snap = super::snap_kbest::snap_k_pair_role(
                         &state,
-                        mode_data,
+                        &mode_data,
                         mode,
                         c.lon,
                         c.lat,
