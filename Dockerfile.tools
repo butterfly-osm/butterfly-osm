@@ -1,0 +1,64 @@
+# Tools image for butterfly-osm — fat image used by Kubernetes
+# initContainers / Argo Workflows to:
+#   1. Fetch the OSM PBF (+ optional transit feeds) via butterfly-dl
+#   2. Compile the CCH artefacts (step1 → step8) into a /data volume
+#
+# The serving image (Dockerfile) stays minimal — this image carries the
+# extra binary (butterfly-dl), the profile models, and the pipeline
+# script. Nothing in here is required at request-serving time.
+
+FROM rust:1.95-trixie AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+COPY Cargo.toml Cargo.lock ./
+COPY butterfly-common/Cargo.toml butterfly-common/Cargo.toml
+COPY dl/Cargo.toml dl/Cargo.toml
+COPY route/Cargo.toml route/Cargo.toml
+
+RUN mkdir -p butterfly-common/src dl/src route/src route/src/bench && \
+    echo "fn main() {}" > butterfly-common/src/lib.rs && \
+    echo "fn main() {}" > dl/src/lib.rs && \
+    echo "fn main() {}" > dl/src/main.rs && \
+    echo "fn main() {}" > route/src/lib.rs && \
+    echo "fn main() {}" > route/src/main.rs && \
+    echo "fn main() {}" > route/src/bench/main.rs
+
+RUN cargo build --release -p butterfly-dl -p butterfly-route 2>/dev/null || true
+
+COPY butterfly-common/ butterfly-common/
+COPY dl/ dl/
+COPY route/ route/
+
+RUN touch butterfly-common/src/lib.rs dl/src/lib.rs dl/src/main.rs \
+          route/src/lib.rs route/src/main.rs
+
+RUN cargo build --release -p butterfly-dl -p butterfly-route
+
+FROM debian:trixie-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash ca-certificates coreutils curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/butterfly-dl    /usr/local/bin/butterfly-dl
+COPY --from=builder /build/target/release/butterfly-route /usr/local/bin/butterfly-route
+
+# Profile models and traffic profiles — small (< 100 KB total) so we
+# bake them in rather than mount via ConfigMap.
+COPY models/  /opt/butterfly/models/
+COPY traffic/ /opt/butterfly/traffic/
+
+# Pipeline driver (idempotent — checks step8 outputs against PBF mtime).
+COPY scripts/build-pipeline.sh /usr/local/bin/butterfly-build-pipeline
+RUN chmod +x /usr/local/bin/butterfly-build-pipeline
+
+ENV BUTTERFLY_MODELS_DIR=/opt/butterfly/models
+ENV BUTTERFLY_TRAFFIC_DIR=/opt/butterfly/traffic
+
+WORKDIR /data
+ENTRYPOINT ["/bin/bash"]

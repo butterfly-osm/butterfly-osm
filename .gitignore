@@ -73,6 +73,9 @@ shortcuts.tmp
 # Docker
 .dockerignore
 
+# Local deploy script (per-developer, not tracked)
+deploy.sh
+
 # IDE
 .vscode/
 .idea/
