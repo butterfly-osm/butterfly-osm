@@ -468,7 +468,8 @@ else:
 - `route/src/matrix/arrow_stream.rs` — Arrow IPC streaming
 
 ### Benchmarking
-- `route/src/bench/main.rs` — Benchmark harness
+- `route/src/bench/main.rs` — Benchmark harness (`butterfly-bench` binary)
+- `bench/` (top-level) — regression suite + competitor harnesses (OSRM, Valhalla); orchestrates runs against the live server
 
 ### Planning Documents
 - GitHub issues (`gh issue list`) — canonical list of open/closed work
@@ -477,7 +478,7 @@ else:
 
 ---
 
-## Strategic Status (2026-02-08)
+## Strategic Status (snapshot)
 
 **All Core Features Complete** ✅
 
