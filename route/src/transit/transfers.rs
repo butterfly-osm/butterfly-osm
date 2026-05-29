@@ -899,13 +899,30 @@ pub fn load_or_build(
         return Ok(graph);
     }
     let graph = build_transfer_graph(timetable, foot, foot_mode_idx, spatial, opts)?;
-    if let Some(parent) = cache_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating transit cache directory {}", parent.display()))?;
+    // #412: persisting the cache is best-effort. A write failure (e.g.
+    // read-only mount, full disk) must NOT discard the freshly-built
+    // graph and disable transit — that turned a 38-min successful build
+    // into a silent road-only fallback on staging. Log and continue
+    // with the in-memory graph; the only cost is rebuilding next boot.
+    let cache_result = (|| -> Result<()> {
+        if let Some(parent) = cache_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating transit cache directory {}", parent.display()))?;
+        }
+        graph
+            .save_cached(cache_path)
+            .context("writing cached transfer graph")
+    })();
+    if let Err(e) = cache_result {
+        tracing::warn!(
+            path = %cache_path.display(),
+            error = %e,
+            "failed to persist transfer-graph cache; continuing with the \
+             in-memory graph (it will be rebuilt next boot). Make the data \
+             volume writable or pre-build the cache in the builder to avoid \
+             repeated rebuilds."
+        );
     }
-    graph
-        .save_cached(cache_path)
-        .context("writing cached transfer graph")?;
     Ok(graph)
 }
 
