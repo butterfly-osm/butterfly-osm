@@ -785,6 +785,11 @@ impl CchQuery<'_> {
         if source == target {
             return Some(0);
         }
+        // #406: stamp LAST_TOUCH so the #400 idle-compactor can later
+        // drop CCH_QUERY_STATE on worker threads that only ever serve
+        // the transit access/egress 1-to-N loop (which uses this
+        // method, never `query()`).
+        touch_idle_marker();
         let n = self.n_nodes;
         CCH_QUERY_STATE.with(|cell| {
             let mut state_opt = cell.borrow_mut();
