@@ -53,24 +53,45 @@ fi
 
 log() { echo -e "\033[0;32m[pipeline]\033[0m $*"; }
 
-# --- Freshness check: skip if every step8 output is fresher than the PBF
-need_rebuild=0
+CONTAINER="$DATA/belgium.butterfly"
+
+# Freshness model has three states:
+#   1. Container fresh    → nothing to do.
+#   2. Container missing/stale but step8 outputs fresh → re-pack only
+#      (~30 s). Covers the "old PVC: pipeline ran before pack was wired
+#      in" case so we don't repeat the 2-hour pipeline.
+#   3. Step8 outputs missing/stale → run full pipeline, then pack.
+need_pipeline=0
+need_pack=0
 if [[ "${BUTTERFLY_FORCE_REBUILD:-0}" == "1" ]]; then
     log "BUTTERFLY_FORCE_REBUILD=1 — forcing full rebuild"
-    need_rebuild=1
-else
+    need_pipeline=1
+    need_pack=1
+elif [[ ! -f "$CONTAINER" ]] || [[ "$PBF" -nt "$CONTAINER" ]]; then
+    need_pack=1
+    # Step8 outputs decide whether pipeline must also run.
     for m in "${MODES[@]}"; do
         OUT="$DATA/step8/cch.w.${m}.u32"
         if [[ ! -f "$OUT" ]] || [[ "$PBF" -nt "$OUT" ]]; then
-            need_rebuild=1
-            log "Missing or stale: $OUT — will rebuild"
+            need_pipeline=1
+            log "Missing or stale: $OUT — will rebuild pipeline"
             break
         fi
     done
+    if [[ "$need_pipeline" -eq 0 ]]; then
+        log "Step8 outputs are fresh — packing only (skipping step1..8)"
+    fi
 fi
 
-if [[ "$need_rebuild" -eq 0 ]]; then
-    log "All step8 outputs are fresh vs PBF — skipping rebuild"
+if [[ "$need_pipeline" -eq 0 ]] && [[ "$need_pack" -eq 0 ]]; then
+    log "Container $CONTAINER is fresh vs PBF — nothing to do"
+    exit 0
+fi
+
+if [[ "$need_pipeline" -eq 0 ]]; then
+    log "pack -> $CONTAINER"
+    time "$BIN" pack --data-dir "$DATA" --out "$CONTAINER" --region BE
+    log "pipeline DONE — container: $CONTAINER"
     exit 0
 fi
 
@@ -153,4 +174,7 @@ for m in "${MODES[@]}"; do
       --outdir "$DATA/step8"
 done
 
-log "pipeline DONE — artefacts in $DATA/step8/"
+log "pack -> $CONTAINER"
+time "$BIN" pack --data-dir "$DATA" --out "$CONTAINER" --region BE
+
+log "pipeline DONE — container: $CONTAINER"
