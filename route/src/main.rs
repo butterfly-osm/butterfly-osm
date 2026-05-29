@@ -37,9 +37,15 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Use env_logger for pipeline steps (1-8), tracing is initialized
-    // inside the Serve handler via init_tracing()
-    if !matches!(cli.command, Commands::Serve { .. }) {
+    // Use env_logger for pipeline steps (1-8); tracing is initialized
+    // inside the handler via init_tracing() for the commands that emit
+    // tracing events (Serve, TransitBuildTransfers). Installing both
+    // env_logger and a tracing subscriber panics with SetLoggerError, so
+    // those commands must NOT also get env_logger here.
+    if !matches!(
+        cli.command,
+        Commands::Serve { .. } | Commands::TransitBuildTransfers { .. }
+    ) {
         env_logger::init();
     }
 
